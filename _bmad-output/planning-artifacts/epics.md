@@ -305,15 +305,15 @@ So that the Processor commit path architecture is grounded in verified NATS sema
 
 **Acceptance Criteria:**
 
-**Given** a local NATS 2.11+ server with JetStream enabled
+**Given** a local NATS 2.12+ server with JetStream enabled (2.14 recommended — 2.12 is the minimum for atomic batch support; 2.14 is preferred for stability/feature margin)
 **When** the spike harness executes a series of targeted tests against the four behavioral questions
 **Then** a written report is produced covering all four areas:
 
-1. **TTL-in-batch**: A KV put with a per-key TTL issued inside a `PublishBatch` commits successfully; the entry expires independently of other batch entries; behavior is confirmed when mixed TTL and non-TTL entries appear in the same batch.
+1. **TTL-in-batch**: A KV put with a per-key TTL issued inside a `PublishBatch` commits successfully; the entry expires independently of other batch entries; behavior is confirmed when mixed TTL and non-TTL entries appear in the same batch. (Note: per-key TTL is a NATS 2.11+ feature; this test verifies it composes correctly with the 2.12+ atomic batch feature.)
 
 2. **Revision condition atomicity**: A `PublishBatch` containing a compare-and-swap entry (revision condition) commits atomically — the entire batch is rejected if the revision check fails; no partial commit is observable from a concurrent reader.
 
-3. **Multi-subject batches**: A single `PublishBatch` spanning multiple KV bucket subjects (e.g., Core KV + Health KV + Idempotency Tracker) commits or fails as a unit; behavior under concurrent conflicting writes to the same key from a second writer is documented.
+3. **Multi-subject batches within a single KV bucket**: A single `PublishBatch` containing messages targeting multiple distinct subjects within ONE KV bucket (Core KV) — e.g., a vertex create at `vtx.identity.<id>`, an aspect write at `vtx.identity.<id>.email`, a link create at `lnk.identity.<id>.assignedRole.role.<roleId>`, AND the op-tracker write at `vtx.op.<requestId>` — commits or fails as a unit; behavior under concurrent conflicting writes to one of those keys from a second writer is documented. **Atomic batches are constrained to a single stream (= single KV bucket); they DO NOT span multiple buckets (e.g., Core KV + Health KV).** This test validates Processor commit-step-8 architecture which writes only to Core KV; Health KV and Capability KV are populated by separate writers (components direct-write to Health, Refractor projects to Capability).
 
 4. **TTL marker delivery**: After a per-key TTL expires, the KV watcher receives a tombstone/expiry marker on the subject; the marker is distinct from a normal delete; the marker's sequence number is ordered correctly in the stream.
 
@@ -362,7 +362,7 @@ I want a local development environment that starts from a single command and arr
 
 **Given** a developer has Docker and Go installed and has run `git clone`
 **When** they run `make up`
-**Then** a NATS 2.11+ server starts with JetStream enabled, all required KV buckets created (Core KV, Health KV, Capability KV, Idempotency Tracker KV, Weaver Claims KV, Weaver State KV, Token Revocation KV), and all required JetStream streams created (`core-operations`, `ops.meta.>`, `ops.*`).
+**Then** a NATS 2.12+ server (2.14 recommended) starts with JetStream enabled, all required KV buckets created (Core KV, Health KV, Capability KV, Weaver Claims KV, Weaver State KV, Token Revocation KV — note: idempotency tracker entries live in Core KV at `vtx.op.<requestId>` per Contract #4, not in a separate bucket), and all required JetStream streams created (`core-operations`, `ops.meta.>`, `ops.*`).
 **And** the bootstrap sequence writes the primordial identity vertex (`vtx.identity.<bootstrapId>`), the platform actor vertex (`vtx.identity.platform`), the root DDL meta-vertex (`vtx.meta.root`), the **primary Capability Lens definition** (`vtx.meta.lens.capability` — the per-actor projection per Contract #6 §6.2), and the **secondary capability role-coverage index Lens** (`vtx.meta.lens.capabilityRoleIndex` — projects `cap.role-by-operation.<operationType>` entries per Contract #6 §6.1) directly to Core KV with correct document envelopes per `data-contracts.md` Contract #1. Both Lens definitions include their cypher rule body and target adapter declaration (`nats-kv` → `capability` bucket).
 **And** `make up` blocks until a readiness gate confirms Refractor (stub) has observed the bootstrap writes — the gate is satisfied when Health KV shows all bootstrap keys present.
 **And** `make down` tears down all containers cleanly.

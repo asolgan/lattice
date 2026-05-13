@@ -3,3 +3,29 @@
 .DS_Store
 /bin
 CLAUDE.md
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/vendor/
+go.work
+go.work.sum
+coverage.txt
+coverage.html
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local dev
+.env
+.env.local
+*.local
