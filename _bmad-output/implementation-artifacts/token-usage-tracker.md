@@ -20,7 +20,7 @@ updateCadence: Per implementation session at close
 | Story | Title | Model (planned) | Model (actual) | Budget | Actual | Δ | Status | Session Date | Notes |
 |---|---|---|---|---|---|---|---|---|---|
 | 1.1 | NATS Atomic Batch Spike | Sonnet | Sonnet (claude-sonnet-4-6) | 52K | ~78K | +26K | OVERRUN | 2026-05-13 | Prior aborted attempt ~28K (go get permission blocker). This session ~50K. All 4 AC behavioral tests PASS. API discovery (no high-level PublishBatch in nats.go) added investigation tokens. |
-| 1.2 | Starlark Execution Spike | Sonnet | — | 65K | — | — | PENDING | — | Critical spike. Gate 1. |
+| 1.2 | Starlark Execution Spike | Sonnet | Sonnet (claude-sonnet-4-6) | 65K | ~55K | -10K | COMPLETE | 2026-05-13 | All 3 AC areas PASS. Sandbox: 4/4 forbidden ops rejected, 2/2 permitted ops succeed. API ergonomics: ScriptContext→RunScript→ScriptResult pipeline works, Contract #3-conforming output verified. Perf: mean=69µs p95=126µs p99=210µs (1000 iters, no caching). GO recommendation. nanoid.new() deferred to Story 1.6 as expected. |
 | 1.3 | Dev Harness with Primordial Bootstrap | Sonnet | — | 95K | — | — | PENDING | — | Adds Docker, NATS, Postgres, both Capability Lenses seeded. |
 | 1.4 | `internal/substrate` Package | Opus | — | 110K | — | — | PENDING | — | NanoID, key helpers, envelopes, KV helpers. |
 | 1.5 | Processor — Consume, Dedup & Auth Stub (Steps 1-3) | Opus | — | 115K | — | — | PENDING | — | |
@@ -56,9 +56,9 @@ updateCadence: Per implementation session at close
 | Tier | Budget (K tokens) | Actual (K tokens) | Δ | Stories complete |
 |---|---|---|---|---|
 | Opus | 1,820 | 0 | 0 | 0 / 12 |
-| Sonnet | 1,627 | 78 | +26 | 1 / 19 |
+| Sonnet | 1,627 | 133 | +16 | 2 / 19 |
 | Haiku | 0 | 0 | 0 | 0 / 0 |
-| **Phase 1 Total** | **3,447** | **78** | **+26** | **1 / 31** |
+| **Phase 1 Total** | **3,447** | **133** | **+16** | **2 / 31** |
 
 ## Update Procedure (For Each Implementation Session Close)
 

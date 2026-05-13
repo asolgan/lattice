@@ -5,6 +5,7 @@ go 1.26.1
 require (
 	github.com/nats-io/nats-server/v2 v2.14.0
 	github.com/nats-io/nats.go v1.52.0
+	go.starlark.net v0.0.0-20260326113308-fadfc96def35
 )
 
 require (
