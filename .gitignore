@@ -17,6 +17,12 @@ go.work
 go.work.sum
 coverage.txt
 coverage.html
+# Compiled binaries left at repo root by `go build ./internal/spike/...`
+/nats-batch
+/starlark
+/lattice
+/lattice-refractor
+/lattice-processor
 
 # Editor / IDE
 .idea/
