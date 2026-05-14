@@ -119,8 +119,8 @@ func (v *ValidatorImpl) validateOne(env *OperationEnvelope, m MutationOp, rid st
 						ViolatedConstraint: "permittedCommands",
 						MutationKey:        m.Key,
 						OperationRequestID: rid,
-						Detail: fmt.Sprintf("operationType %q not in DDL %q permittedCommands %v",
-							env.OperationType, ref.CanonicalName, ref.PermittedCommands),
+						Detail: fmt.Sprintf("operationType %q not permitted by DDL meta-vertex %q (permittedCommands %v)",
+							env.OperationType, ref.MetaVertexKey, ref.PermittedCommands),
 					}
 				}
 			}
