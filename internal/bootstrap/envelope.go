@@ -3,6 +3,8 @@ package bootstrap
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // BootstrapTime is the canonical createdAt/lastModifiedAt for all primordial
@@ -10,111 +12,64 @@ import (
 // reproducible, which matters for the bypass test oracle in Story 1.10.
 var BootstrapTime = time.Date(2026, 5, 13, 0, 0, 0, 0, time.UTC)
 
-// Envelope is the universal document envelope per Contract #1 §1.3.
-type Envelope struct {
-	Key              string          `json:"key"`
-	Class            string          `json:"class"`
-	IsDeleted        bool            `json:"isDeleted"`
-	CreatedAt        string          `json:"createdAt"`
-	CreatedBy        string          `json:"createdBy"`
-	CreatedByOp      string          `json:"createdByOp"`
-	LastModifiedAt   string          `json:"lastModifiedAt"`
-	LastModifiedBy   string          `json:"lastModifiedBy"`
-	LastModifiedByOp string          `json:"lastModifiedByOp"`
-	Data             json.RawMessage `json:"data"`
-}
-
-// AspectEnvelope extends Envelope for aspects (Contract #1 §1.3).
-type AspectEnvelope struct {
-	Envelope
-	VertexKey string `json:"vertexKey"`
-	LocalName string `json:"localName"`
-}
-
-// LinkEnvelope extends Envelope for links (Contract #1 §1.3).
-type LinkEnvelope struct {
-	Envelope
-	YoungerVertex string `json:"youngerVertex"`
-	OlderVertex   string `json:"olderVertex"`
-	LocalName     string `json:"localName"`
-}
-
-func iso(t time.Time) string {
-	return t.UTC().Format(time.RFC3339Nano)
-}
-
-// MakeVertexEnvelope constructs a vertex envelope (Contract #1 §1.3).
-// All provenance fields point to the primordial bootstrap identity + op.
+// MakeVertexEnvelope constructs a vertex envelope (Contract #1 §1.3) using
+// substrate's universal envelope helper. All provenance fields point to the
+// primordial bootstrap identity + op.
+//
+// Story 1.4 refactor: this function was the bespoke envelope formatter prior
+// to the substrate package; it is now a 4-line adapter that injects the
+// fixed BootstrapTime into substrate's NewDocumentEnvelopeAt and copies the
+// provided data payload.
 func MakeVertexEnvelope(key, class string, data any) ([]byte, error) {
-	dataJSON, err := json.Marshal(data)
-	if err != nil {
-		return nil, err
-	}
-	env := Envelope{
-		Key:              key,
-		Class:            class,
-		IsDeleted:        false,
-		CreatedAt:        iso(BootstrapTime),
-		CreatedBy:        BootstrapIdentityKey,
-		CreatedByOp:      BootstrapOpKey,
-		LastModifiedAt:   iso(BootstrapTime),
-		LastModifiedBy:   BootstrapIdentityKey,
-		LastModifiedByOp: BootstrapOpKey,
-		Data:             json.RawMessage(dataJSON),
+	env := substrate.NewDocumentEnvelopeAt(class, BootstrapIdentityKey, BootstrapOpKey, BootstrapTime)
+	env.Key = key
+	if data != nil {
+		dataMap, err := toMap(data)
+		if err != nil {
+			return nil, err
+		}
+		env.Data = dataMap
 	}
 	return json.Marshal(env)
 }
 
-// MakeAspectEnvelope constructs an aspect envelope.
-// vertexKey is the parent vertex (key segments 1-3).
-// localName is key segment 4.
+// MakeAspectEnvelope constructs an aspect envelope. vertexKey is the parent
+// vertex (key segments 1-3). localName is key segment 4.
 func MakeAspectEnvelope(key, vertexKey, localName, class string, data any) ([]byte, error) {
-	dataJSON, err := json.Marshal(data)
-	if err != nil {
-		return nil, err
+	base := substrate.NewDocumentEnvelopeAt(class, BootstrapIdentityKey, BootstrapOpKey, BootstrapTime)
+	base.Key = key
+	if data != nil {
+		dataMap, err := toMap(data)
+		if err != nil {
+			return nil, err
+		}
+		base.Data = dataMap
 	}
-	env := AspectEnvelope{
-		Envelope: Envelope{
-			Key:              key,
-			Class:            class,
-			IsDeleted:        false,
-			CreatedAt:        iso(BootstrapTime),
-			CreatedBy:        BootstrapIdentityKey,
-			CreatedByOp:      BootstrapOpKey,
-			LastModifiedAt:   iso(BootstrapTime),
-			LastModifiedBy:   BootstrapIdentityKey,
-			LastModifiedByOp: BootstrapOpKey,
-			Data:             json.RawMessage(dataJSON),
-		},
-		VertexKey: vertexKey,
-		LocalName: localName,
+	env := substrate.AspectEnvelope{
+		DocumentEnvelope: base,
+		VertexKey:        vertexKey,
+		LocalName:        localName,
 	}
 	return json.Marshal(env)
 }
 
-// MakeLinkEnvelope constructs a link envelope.
-// youngerVertex is key segments 1-3, olderVertex is segments 4-6 (after localName).
+// MakeLinkEnvelope constructs a link envelope. youngerVertex is key segments
+// 1-3, olderVertex is segments 4-6 (after localName).
 func MakeLinkEnvelope(key, youngerVertex, olderVertex, localName, class string, data any) ([]byte, error) {
-	dataJSON, err := json.Marshal(data)
-	if err != nil {
-		return nil, err
+	base := substrate.NewDocumentEnvelopeAt(class, BootstrapIdentityKey, BootstrapOpKey, BootstrapTime)
+	base.Key = key
+	if data != nil {
+		dataMap, err := toMap(data)
+		if err != nil {
+			return nil, err
+		}
+		base.Data = dataMap
 	}
-	env := LinkEnvelope{
-		Envelope: Envelope{
-			Key:              key,
-			Class:            class,
-			IsDeleted:        false,
-			CreatedAt:        iso(BootstrapTime),
-			CreatedBy:        BootstrapIdentityKey,
-			CreatedByOp:      BootstrapOpKey,
-			LastModifiedAt:   iso(BootstrapTime),
-			LastModifiedBy:   BootstrapIdentityKey,
-			LastModifiedByOp: BootstrapOpKey,
-			Data:             json.RawMessage(dataJSON),
-		},
-		YoungerVertex: youngerVertex,
-		OlderVertex:   olderVertex,
-		LocalName:     localName,
+	env := substrate.LinkEnvelope{
+		DocumentEnvelope: base,
+		YoungerVertex:    youngerVertex,
+		OlderVertex:      olderVertex,
+		LocalName:        localName,
 	}
 	return json.Marshal(env)
 }
@@ -123,22 +78,34 @@ func MakeLinkEnvelope(key, youngerVertex, olderVertex, localName, class string, 
 // Per Contract #7 §7.2: self-referential provenance (the tracker IS the op record).
 // Per Contract #4 §4.1: createdByOp/lastModifiedByOp both point to the tracker itself.
 func MakeBootstrapOpEnvelope() ([]byte, error) {
-	env := Envelope{
-		Key:              BootstrapOpKey,
-		Class:            "op.bootstrap",
-		IsDeleted:        false,
-		CreatedAt:        iso(BootstrapTime),
-		CreatedBy:        BootstrapIdentityKey,
-		CreatedByOp:      BootstrapOpKey, // self-referential per Contract #4
-		LastModifiedAt:   iso(BootstrapTime),
-		LastModifiedBy:   BootstrapIdentityKey,
-		LastModifiedByOp: BootstrapOpKey, // self-referential per Contract #4
-		Data: json.RawMessage(`{
-  "status": "committed",
-  "operationType": "PrimordialBootstrap",
-  "requestId": "` + BootstrapOpID + `",
-  "note": "Synthetic platform genesis op tracker. No TTL — permanent record."
-}`),
+	// Self-referential provenance: both actor and op tracker resolve to the
+	// bootstrap op key itself for the universal envelope's provenance fields
+	// (the bootstrap identity is the actor; the tracker references itself
+	// for createdByOp per Contract #4 §4.1).
+	env := substrate.NewDocumentEnvelopeAt("op.bootstrap", BootstrapIdentityKey, BootstrapOpKey, BootstrapTime)
+	env.Key = BootstrapOpKey
+	env.Data = map[string]any{
+		"status":        "committed",
+		"operationType": "PrimordialBootstrap",
+		"requestId":     BootstrapOpID,
+		"note":          "Synthetic platform genesis op tracker. No TTL — permanent record.",
 	}
 	return json.Marshal(env)
+}
+
+// toMap converts an arbitrary Go value into the map[string]any shape
+// substrate's envelope expects for the Data field. Round-trips via json.
+func toMap(v any) (map[string]any, error) {
+	if m, ok := v.(map[string]any); ok {
+		return m, nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }

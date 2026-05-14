@@ -6,6 +6,7 @@ package bootstrap
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -13,6 +14,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 const (
@@ -142,10 +145,27 @@ func (s *Seeder) provisionStreams(ctx context.Context) error {
 
 // SeedPrimordial writes all primordial Core KV entries per Contract #7 §7.2.
 // Order per §7.7: op tracker → identities → meta DDLs → Lens definitions → roles → permissions → links.
+//
+// Story 1.4 refactor: this method now uses substrate.AtomicBatch for the
+// initial write of the full primordial set, replacing the prior
+// sequential-create loop. Atomic semantics make partial-failure recovery
+// unambiguous (either the entire primordial set lands or none of it does).
+// The idempotent re-run path (Contract #7 §7.4) is preserved: if the
+// bootstrap op tracker key already exists in Core KV, the function returns
+// without re-issuing the batch.
 func (s *Seeder) SeedPrimordial(ctx context.Context) error {
 	kv, err := s.js.KeyValue(ctx, CoreKVBucket)
 	if err != nil {
 		return fmt.Errorf("open Core KV: %w", err)
+	}
+
+	// Idempotent re-run guard: if the op tracker already exists, the
+	// primordial set has previously committed. Skip the whole batch.
+	if _, err := kv.Get(ctx, BootstrapOpKey); err == nil {
+		s.logger.Info("primordial set already present — skipping batch", "key", BootstrapOpKey)
+		return nil
+	} else if !errors.Is(err, jetstream.ErrKeyNotFound) {
+		return fmt.Errorf("probe op tracker key: %w", err)
 	}
 
 	entries, err := buildPrimordialEntries()
@@ -153,15 +173,48 @@ func (s *Seeder) SeedPrimordial(ctx context.Context) error {
 		return fmt.Errorf("build primordial entries: %w", err)
 	}
 
+	conn, err := substrate.Wrap(s.nc)
+	if err != nil {
+		return fmt.Errorf("substrate wrap: %w", err)
+	}
+
+	ops := make([]substrate.BatchOp, 0, len(entries))
 	for _, e := range entries {
-		// Idempotent: skip if key already exists (re-run safety, Contract #7 §7.4).
-		_, getErr := kv.Get(ctx, e.key)
-		if getErr == nil {
+		ops = append(ops, substrate.BatchOp{
+			Bucket:     CoreKVBucket,
+			Key:        e.key,
+			Value:      e.value,
+			CreateOnly: true, // primordial keys must not pre-exist
+		})
+	}
+
+	ack, err := conn.AtomicBatch(ops, 10*time.Second)
+	if err != nil {
+		// If the batch was rejected because a key already exists (e.g., a
+		// concurrent bootstrapper raced us), fall back to the idempotent
+		// per-key check. This protects re-run safety while keeping the
+		// happy path single-batch.
+		if errors.Is(err, substrate.ErrAtomicBatchRejected) && looksLikeCreateConflict(err) {
+			s.logger.Info("atomic batch rejected (likely concurrent bootstrap) — falling back to per-key idempotent path",
+				"error", err)
+			return s.seedPrimordialPerKey(ctx, kv, entries)
+		}
+		return fmt.Errorf("primordial atomic batch: %w", err)
+	}
+	s.logger.Info("primordial atomic batch committed",
+		"count", ack.Count, "stream", ack.Stream, "seq", ack.Sequence, "batchID", ack.BatchID)
+	return nil
+}
+
+// seedPrimordialPerKey is the legacy sequential seeding path retained as a
+// concurrent-bootstrap fallback. Pre-refactor behavior — kept verbatim.
+func (s *Seeder) seedPrimordialPerKey(ctx context.Context, kv jetstream.KeyValue, entries []kvEntry) error {
+	for _, e := range entries {
+		if _, getErr := kv.Get(ctx, e.key); getErr == nil {
 			s.logger.Info("key already exists, skipping", "key", e.key)
 			continue
 		}
 		if _, putErr := kv.Create(ctx, e.key, e.value); putErr != nil {
-			// Race: another writer (unlikely in bootstrap) created it concurrently.
 			if strings.Contains(putErr.Error(), "wrong last sequence") ||
 				strings.Contains(putErr.Error(), "key exists") {
 				s.logger.Info("key created concurrently, skipping", "key", e.key)
@@ -172,6 +225,13 @@ func (s *Seeder) SeedPrimordial(ctx context.Context) error {
 		s.logger.Info("seeded primordial key", "key", e.key)
 	}
 	return nil
+}
+
+func looksLikeCreateConflict(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "wrong last sequence") ||
+		strings.Contains(s, "key exists") ||
+		strings.Contains(s, "10071")
 }
 
 type kvEntry struct {
