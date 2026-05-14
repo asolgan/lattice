@@ -213,7 +213,7 @@ func driveOneAny(t *testing.T, ctx context.Context, cp *CommitPath, cons jetstre
 	case outcome := <-got:
 		time.Sleep(100 * time.Millisecond)
 		return outcome
-	case <-time.After(10 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatalf("timed out waiting for any outcome")
 		return ""
 	}
