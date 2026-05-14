@@ -963,7 +963,7 @@ tools/cli/ or external client
 
 **PRD Requirement (NFR — Security):** "AI agents are regular identity vertices subject to the same Capability Lens authorization as human actors; there is no privileged 'AI actor' class or bypass."
 
-**Architectural Decision:** AI agents are identity vertices with naming convention `identity:ai.<purpose>.<id>`.
+**Architectural Decision:** AI agents are identity vertices with naming convention `identity.ai.<purpose>.<id>`.
 
 **How it works:**
 - AI agents get identity vertices like any other actor: `vtx.identity.ai.onboarding-assistant.001`

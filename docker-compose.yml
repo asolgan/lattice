@@ -1,0 +1,37 @@
+# Compose Spec — no top-level `version` field (deprecated in Docker Compose v2.x).
+
+services:
+  nats:
+    image: nats:2.14-alpine
+    container_name: lattice-nats
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "${NATS_PORT:-4222}:4222"   # client
+      - "${NATS_HTTP_PORT:-8222}:8222" # monitoring
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8222/healthz"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+    # Ephemeral (no named volume): data is lost on `make down`, which is intentional for dev.
+    # Warm restart speed: < 2s because JetStream re-creates buckets from bootstrap.
+    restart: "no"
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: lattice-postgres
+    environment:
+      POSTGRES_DB: lattice
+      POSTGRES_USER: lattice
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-lattice_dev}"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lattice -d lattice"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+      start_period: 5s
+    # Ephemeral: no named volume in dev. Lens target tables created by Story 2.3 adapter.
+    restart: "no"
