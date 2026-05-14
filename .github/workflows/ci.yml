@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+
+      - name: Build
+        run: make build
+
+      - name: Vet
+        run: make vet
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          version: v2.11.4
+
+      - name: Bring up Docker stack + run primordial bootstrap
+        run: make up
+
+      - name: Verify bootstrap (32+ assertions)
+        run: make verify-bootstrap
+
+      - name: Run all tests (unit + integration + bypass)
+        run: go test ./... -count=1 -timeout 5m
+
+      - name: Tear down
+        if: always()
+        run: make down
