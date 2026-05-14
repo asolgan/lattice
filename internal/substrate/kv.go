@@ -102,6 +102,27 @@ func (c *Conn) KVUpdate(ctx context.Context, bucket, key string, value []byte, e
 	return rev, nil
 }
 
+// KVListKeys returns all keys present in bucket. The order is unspecified.
+// Used by the Processor's DDL cache to enumerate `vtx.meta.>` at startup.
+// Heavy on large buckets — callers must scope to buckets where the full
+// key set is bounded (Core KV's meta-vertex sub-set qualifies).
+func (c *Conn) KVListKeys(ctx context.Context, bucket string) ([]string, error) {
+	kv, err := c.bucket(ctx, bucket)
+	if err != nil {
+		return nil, err
+	}
+	lister, err := kv.ListKeys(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("substrate: KV list %s: %w", bucket, err)
+	}
+	defer lister.Stop()
+	var keys []string
+	for k := range lister.Keys() {
+		keys = append(keys, k)
+	}
+	return keys, nil
+}
+
 // KVDelete soft-deletes key (writes a delete marker). Subsequent reads
 // return ErrKeyNotFound.
 func (c *Conn) KVDelete(ctx context.Context, bucket, key string) error {

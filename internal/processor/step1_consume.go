@@ -38,7 +38,13 @@ func (cc *ConsumerConfig) applyDefaults() {
 		cc.Durable = "processor-main"
 	}
 	if len(cc.FilterSubjects) == 0 {
-		cc.FilterSubjects = []string{"ops.default", "ops.urgent", "ops.system"}
+		// Story 1.7: align consumer filter with Contract #2 §2.3
+		// per-lane multi-segment subjects (ops.<lane>.>). The stream
+		// is already provisioned as `ops.>` so both single- and
+		// multi-segment publishes land in it; the filter is broadened
+		// here so a publisher using `ops.default.<requestId>` for
+		// debug-tooling clarity still routes to the Processor.
+		cc.FilterSubjects = []string{"ops.default.>", "ops.urgent.>", "ops.system.>"}
 	}
 	if cc.AckWait == 0 {
 		cc.AckWait = 30 * time.Second

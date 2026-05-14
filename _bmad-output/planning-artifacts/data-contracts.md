@@ -436,6 +436,16 @@ The operation envelope is the message format a client publishes to `core-operati
 
 **`actor` form:** Full vertex key including the `vtx.` prefix. Short forms (`identity.<id>`) are reserved for HTTP headers in Phase 2 (Gateway translates to full key before envelope submission).
 
+**Phase-1 transitional field — `class` (optional, `omitempty`):**
+
+Story 1.6 introduced an optional top-level `class` field on the operation envelope to let the Hydrator resolve the operation's DDL during the window before the full DDL cache could derive class from `operationType`. Story 1.7 brought the DDL cache forward; the field remains in place as a Phase-1-transitional client hint while the operationType→class reverse index matures.
+
+| Field | Required | Type | Mutability | Purpose |
+|-------|----------|------|------------|---------|
+| `class` | optional (Phase-1 transitional) | string (DDL canonical name, e.g., `"identity"`) | immutable | Tells the Hydrator/Validator which DDL meta-vertex applies to this operation. Falls back to `payload.class` if absent. To be removed once the DDL cache fully covers operationType→class derivation (target: Story 1.10 or later). Clients that omit `class` today MUST supply `payload.class`. The field is `omitempty` in the wire format — clients that did not include it before Story 1.6 are unaffected. |
+
+See `cmd/processor/CONTRACT-AMENDMENT-REQUEST.md` (Story 1.6 entry, resolved in Story 1.7) for the full disposition record.
+
 ### 2.3 Lanes and JetStream Subject Mapping
 
 Phase 1 reserves four lanes. Operations on each lane publish to a corresponding JetStream subject prefix; the Processor's lane consumers subscribe to the matching subjects.

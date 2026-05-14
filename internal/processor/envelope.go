@@ -47,10 +47,15 @@ type OperationEnvelope struct {
 	Actor         string          `json:"actor"`
 	SubmittedAt   string          `json:"submittedAt"`
 	Payload       json.RawMessage `json:"payload"`
-	// Class is the optional class hint for Story 1.6 DDL lookup. Once
-	// the DDL cache lands (Story 1.10) this becomes derivable from
-	// operationType and the field can be removed. See
-	// cmd/processor/CONTRACT-AMENDMENT-REQUEST.md (1.6 entry).
+	// Class is the Phase-1 transitional DDL hint. Story 1.6 added it as
+	// a stop-gap; Story 1.7 brought the DDL cache forward so the
+	// Hydrator + Validator can resolve class via the cache once the
+	// operationType→class derivation is wired (Story 1.10+). Until
+	// then `class` remains the supported way for clients to tell the
+	// Processor which DDL their operation targets — it stays `omitempty`
+	// so existing wire payloads are unaffected. See
+	// cmd/processor/CONTRACT-AMENDMENT-REQUEST.md (1.6 entry, resolved
+	// in 1.7) and data-contracts.md Contract #2 §2.1 addendum.
 	Class       string       `json:"class,omitempty"`
 	ContextHint *ContextHint `json:"contextHint,omitempty"`
 	AuthContext *AuthContext `json:"authContext,omitempty"`
@@ -69,6 +74,9 @@ const (
 	// Story 1.6 error codes for steps 4/5 typed failures.
 	ErrCodeHydrationFailed ErrorCode = "HydrationFailed"
 	ErrCodeScriptFailed    ErrorCode = "ScriptFailed"
+	// Story 1.7 error codes for steps 6/8 typed failures.
+	ErrCodeDDLViolation     ErrorCode = "DDLViolation"
+	ErrCodeRevisionConflict ErrorCode = "RevisionConflict"
 )
 
 // Status is the reply envelope status enum per Contract #2 §2.4.
@@ -90,10 +98,12 @@ type ReplyError struct {
 // OperationReply is the request-reply response the Processor sends back
 // to the operation submitter per Contract #2 §2.4.
 //
-// For Story 1.5 with steps 4-10 stubbed, `accepted` replies carry the
-// `decision: accepted-stub` marker in Details so callers can disambiguate
-// stubbed-success from fully-committed success (Story 1.7 swaps to real
-// commit semantics with `decision` removed).
+// Story 1.7 swaps the Story-1.5 `decision: accepted-stub` marker for the
+// canonical `decision: committed` semantic — alongside a `revisions`
+// map that lets clients perform read-your-own-writes against the
+// committed keys' revisions. The Decision field is preserved as a
+// transitional disambiguator until the meta-lane request-reply contract
+// stabilises (Story 1.9+).
 type OperationReply struct {
 	RequestID           string      `json:"requestId"`
 	OpTrackerKey        string      `json:"opTrackerKey"`
@@ -101,9 +111,14 @@ type OperationReply struct {
 	CommittedAt         string      `json:"committedAt,omitempty"`
 	OriginalCommittedAt string      `json:"originalCommittedAt,omitempty"`
 	Error               *ReplyError `json:"error,omitempty"`
-	// Decision is a Story 1.5 marker that the reply was produced by the
-	// stubbed commit path. Removed in Story 1.7 once real commit lands.
+	// Decision: "committed" (Story 1.7+ success), "accepted-stub"
+	// (Story 1.5 transitional — no longer emitted), "duplicate" when
+	// step 2 short-circuits.
 	Decision string `json:"decision,omitempty"`
+	// Revisions: per-key revision map returned by the substrate after
+	// a successful atomic batch. Populated on `accepted` replies in
+	// Story 1.7+. Useful for client RYOW polling.
+	Revisions map[string]uint64 `json:"revisions,omitempty"`
 }
 
 // ParseEnvelope unmarshals raw bytes and validates required fields per

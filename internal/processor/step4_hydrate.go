@@ -11,29 +11,42 @@ import (
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
-// HydratorImpl is the Story 1.6 implementation of step 4 (JIT Hydrate).
+// HydratorImpl is the Story 1.6/1.7 implementation of step 4 (JIT
+// Hydrate).
+//
+// Story 1.7 swaps Story 1.6's shadow-key (`vtx.meta.<class>`) approach
+// for a DDL cache lookup. The cache resolves canonicalName → real
+// MetaVertexRef (NanoID-keyed), exposing the meta-vertex's
+// canonicalName, permittedCommands, script, and sensitivity flag in
+// one map lookup.
 //
 // Responsibilities:
-//  1. Resolve the operation's class — for Story 1.6 the class is the
-//     `class` field on the envelope (top-level), or, if absent, the
-//     `payload.class` field. A missing class is an error: every
-//     committed operation MUST identify a DDL.
-//  2. Hydrate the DDL meta-vertex and its `script` aspect for that
-//     class. The DDL key for Story 1.6 is the logical name
-//     `vtx.meta.<class>` (see CONTRACT-AMENDMENT-REQUEST 1.6); the
-//     script source lives at `vtx.meta.<class>.script`. Missing script
-//     → HydrationError(Code="NoScriptForClass").
-//  3. Hydrate every key in envelope.contextHint.reads. Any miss →
-//     HydrationError(Code="HydrationMiss"). An empty/missing
-//     contextHint is permitted (e.g., pure-create operations).
+//  1. Resolve the operation's class — `class` envelope field first,
+//     `payload.class` fallback. Missing class is a HydrationError.
+//  2. Lookup the class in the DDL cache. Miss → NoDDLForClass.
+//  3. Load the script source (carried on the cache entry). Empty
+//     script → EmptyScript / NoScriptForClass depending on whether
+//     the underlying DDL declared a script aspect at all.
+//  4. Hydrate every key in envelope.contextHint.reads.
 type HydratorImpl struct {
 	Conn       *substrate.Conn
 	CoreBucket string
+	DDLs       *DDLCache
 	Logger     *slog.Logger
 }
 
-// NewHydrator wires a real Hydrator.
+// NewHydrator wires a real Hydrator. The DDL cache parameter is
+// optional for tests that exercise contextHint-only paths; production
+// wiring always supplies a populated cache.
 func NewHydrator(conn *substrate.Conn, coreBucket string, logger *slog.Logger) *HydratorImpl {
+	return NewHydratorWithCache(conn, coreBucket, nil, logger)
+}
+
+// NewHydratorWithCache is the Story 1.7 constructor that injects the
+// DDL cache. Kept separate so existing tests using NewHydrator continue
+// to compile while production wiring routes through the cache-aware
+// constructor.
+func NewHydratorWithCache(conn *substrate.Conn, coreBucket string, cache *DDLCache, logger *slog.Logger) *HydratorImpl {
 	if conn == nil {
 		panic("processor: NewHydrator requires Conn")
 	}
@@ -43,7 +56,7 @@ func NewHydrator(conn *substrate.Conn, coreBucket string, logger *slog.Logger) *
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &HydratorImpl{Conn: conn, CoreBucket: coreBucket, Logger: logger}
+	return &HydratorImpl{Conn: conn, CoreBucket: coreBucket, DDLs: cache, Logger: logger}
 }
 
 // Hydrate implements Hydrator.
@@ -58,54 +71,78 @@ func (h *HydratorImpl) Hydrate(ctx context.Context, env *OperationEnvelope) (Hyd
 		}
 	}
 
-	// 2. Hydrate DDL meta-vertex.
-	ddlKey := metaVertexKeyForClass(class)
-	ddlEntry, err := h.Conn.KVGet(ctx, h.CoreBucket, ddlKey)
-	if err != nil {
-		if errors.Is(err, substrate.ErrKeyNotFound) {
+	// 2. Resolve DDL meta-vertex. Story 1.7: prefer the DDL cache when
+	// wired. Falls back to the Story-1.6 shadow-key read so tests that
+	// don't wire a cache continue to work.
+	var (
+		ddlKey  string
+		metaVtx MetaVertex
+		source  string
+	)
+	if h.DDLs != nil {
+		ref, ok := h.DDLs.Lookup(class)
+		if !ok {
 			return HydratedState{}, &HydrationError{
-				Code: "NoDDLForClass", MissingKey: ddlKey, OperationRequestID: rid,
+				Code: "NoDDLForClass", MissingKey: "vtx.meta.<" + class + ">", OperationRequestID: rid,
 			}
 		}
-		return HydratedState{}, fmt.Errorf("step4: read DDL %s: %w", ddlKey, err)
-	}
-	ddlDoc, err := parseVertexDoc(ddlEntry.Value, ddlKey)
-	if err != nil {
-		return HydratedState{}, fmt.Errorf("step4: parse DDL %s: %w", ddlKey, err)
-	}
-	metaVtx := MetaVertex{
-		Key:           ddlKey,
-		CanonicalName: class,
-	}
-	if pcAny, ok := ddlDoc.Data["permittedCommands"]; ok {
-		if pcList, ok := pcAny.([]interface{}); ok {
-			for _, c := range pcList {
-				if s, ok := c.(string); ok {
-					metaVtx.PermittedCommands = append(metaVtx.PermittedCommands, s)
+		ddlKey = ref.MetaVertexKey
+		metaVtx = MetaVertex{
+			Key:               ref.MetaVertexKey,
+			CanonicalName:     ref.CanonicalName,
+			PermittedCommands: ref.PermittedCommands,
+		}
+		source = ref.ScriptSource
+		if strings.TrimSpace(source) == "" {
+			return HydratedState{}, &HydrationError{
+				Code: "NoScriptForClass", MissingKey: ref.MetaVertexKey + ".script", OperationRequestID: rid,
+			}
+		}
+	} else {
+		// Fallback: Story-1.6 shadow-key path.
+		ddlKey = metaVertexKeyForClass(class)
+		ddlEntry, err := h.Conn.KVGet(ctx, h.CoreBucket, ddlKey)
+		if err != nil {
+			if errors.Is(err, substrate.ErrKeyNotFound) {
+				return HydratedState{}, &HydrationError{
+					Code: "NoDDLForClass", MissingKey: ddlKey, OperationRequestID: rid,
+				}
+			}
+			return HydratedState{}, fmt.Errorf("step4: read DDL %s: %w", ddlKey, err)
+		}
+		ddlDoc, err := parseVertexDoc(ddlEntry.Value, ddlKey)
+		if err != nil {
+			return HydratedState{}, fmt.Errorf("step4: parse DDL %s: %w", ddlKey, err)
+		}
+		metaVtx = MetaVertex{Key: ddlKey, CanonicalName: class}
+		if pcAny, ok := ddlDoc.Data["permittedCommands"]; ok {
+			if pcList, ok := pcAny.([]interface{}); ok {
+				for _, c := range pcList {
+					if s, ok := c.(string); ok {
+						metaVtx.PermittedCommands = append(metaVtx.PermittedCommands, s)
+					}
 				}
 			}
 		}
-	}
-
-	// 3. Hydrate script aspect.
-	scriptKey := ddlKey + ".script"
-	scriptEntry, err := h.Conn.KVGet(ctx, h.CoreBucket, scriptKey)
-	if err != nil {
-		if errors.Is(err, substrate.ErrKeyNotFound) {
-			return HydratedState{}, &HydrationError{
-				Code: "NoScriptForClass", MissingKey: scriptKey, OperationRequestID: rid,
+		scriptKey := ddlKey + ".script"
+		scriptEntry, err := h.Conn.KVGet(ctx, h.CoreBucket, scriptKey)
+		if err != nil {
+			if errors.Is(err, substrate.ErrKeyNotFound) {
+				return HydratedState{}, &HydrationError{
+					Code: "NoScriptForClass", MissingKey: scriptKey, OperationRequestID: rid,
+				}
 			}
+			return HydratedState{}, fmt.Errorf("step4: read script %s: %w", scriptKey, err)
 		}
-		return HydratedState{}, fmt.Errorf("step4: read script %s: %w", scriptKey, err)
-	}
-	scriptDoc, err := parseVertexDoc(scriptEntry.Value, scriptKey)
-	if err != nil {
-		return HydratedState{}, fmt.Errorf("step4: parse script %s: %w", scriptKey, err)
-	}
-	source, _ := scriptDoc.Data["source"].(string)
-	if strings.TrimSpace(source) == "" {
-		return HydratedState{}, &HydrationError{
-			Code: "EmptyScript", MissingKey: scriptKey, OperationRequestID: rid,
+		scriptDoc, err := parseVertexDoc(scriptEntry.Value, scriptKey)
+		if err != nil {
+			return HydratedState{}, fmt.Errorf("step4: parse script %s: %w", scriptKey, err)
+		}
+		source, _ = scriptDoc.Data["source"].(string)
+		if strings.TrimSpace(source) == "" {
+			return HydratedState{}, &HydrationError{
+				Code: "EmptyScript", MissingKey: scriptKey, OperationRequestID: rid,
+			}
 		}
 	}
 

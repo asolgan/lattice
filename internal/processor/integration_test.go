@@ -371,16 +371,16 @@ func (r *racyCommitter) Commit(ctx context.Context, env *OperationEnvelope, resu
 }
 
 // ReplyShape: unit-level assertion that BuildAcceptedReply produces the
-// Contract #2 §2.4 wire shape with the Story-1.5 `accepted-stub` decision
-// marker. End-to-end request-reply through JetStream is deferred to
-// Story 1.7 (handoff brief decision #11 — stub reply form only in 1.5).
-func TestReplyShape_AcceptedStub(t *testing.T) {
+// Contract #2 §2.4 wire shape with Story 1.7's `committed` decision
+// marker. (Story 1.5 emitted `accepted-stub`; the marker swapped over
+// when the real commit landed in 1.7.)
+func TestReplyShape_AcceptedCommitted(t *testing.T) {
 	r := BuildAcceptedReply(testNanoID1, time.Date(2026, 5, 13, 10, 0, 0, 0, time.UTC))
 	if r.Status != ReplyStatusAccepted {
 		t.Fatalf("Status = %q", r.Status)
 	}
-	if r.Decision != "accepted-stub" {
-		t.Fatalf("Decision = %q, want accepted-stub", r.Decision)
+	if r.Decision != "committed" {
+		t.Fatalf("Decision = %q, want committed", r.Decision)
 	}
 	if r.OpTrackerKey != "vtx.op."+testNanoID1 {
 		t.Fatalf("OpTrackerKey = %q", r.OpTrackerKey)
@@ -393,7 +393,7 @@ func TestReplyShape_AcceptedStub(t *testing.T) {
 	if err := json.Unmarshal(b, &back); err != nil {
 		t.Fatalf("round-trip unmarshal: %v", err)
 	}
-	if back.Decision != "accepted-stub" {
+	if back.Decision != "committed" {
 		t.Fatalf("round-trip Decision = %q", back.Decision)
 	}
 }

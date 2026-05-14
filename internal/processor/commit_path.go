@@ -178,6 +178,23 @@ func (cp *CommitPath) HandleMessage(ctx context.Context, msg jetstream.Msg) Mess
 	}
 	if cp.deps.Validator != nil {
 		if err := cp.deps.Validator.Validate(ctx, env, result); err != nil {
+			// DDL violations terminate the commit path (no redelivery).
+			var ddlErr *DDLViolation
+			if errors.As(err, &ddlErr) {
+				cp.deps.Metrics.OpsRejected.Add(1)
+				cp.deps.Logger.Info("step 6: DDL violation; rejecting",
+					"requestId", env.RequestID,
+					"constraint", ddlErr.ViolatedConstraint,
+					"mutationKey", ddlErr.MutationKey,
+					"detail", ddlErr.Detail)
+				cp.replyTo(msg, BuildRejectedReply(env.RequestID, ErrCodeDDLViolation,
+					ddlErr.Error(), map[string]any{
+						"constraint":  ddlErr.ViolatedConstraint,
+						"mutationKey": ddlErr.MutationKey,
+					}))
+				_ = msg.TermWithReason("DDLViolation: " + ddlErr.Detail)
+				return OutcomeRejected
+			}
 			return cp.handleStubFailure(ctx, msg, env, "validate", err)
 		}
 	}
@@ -197,6 +214,23 @@ func (cp *CommitPath) HandleMessage(ctx context.Context, msg jetstream.Msg) Mess
 				cp.replyTo(msg, BuildDuplicateReply(env.RequestID, probe.Tracker))
 				_ = msg.Ack()
 				return OutcomeDuplicate
+			}
+			// Tracker not present — genuine revision conflict on one of
+			// the business mutations. Surface as RevisionConflict
+			// (Contract #2 §2.6) and terminate (script's assertion of
+			// the world disagrees with reality).
+			var confErr *ConflictError
+			if errors.As(err, &confErr) {
+				cp.deps.Metrics.OpsRejected.Add(1)
+				cp.deps.Logger.Info("step 8: revision conflict; rejecting",
+					"requestId", env.RequestID,
+					"conflictingKey", confErr.ConflictingKey)
+				cp.replyTo(msg, BuildRejectedReply(env.RequestID, ErrCodeRevisionConflict,
+					confErr.Error(), map[string]any{
+						"conflictingKey": confErr.ConflictingKey,
+					}))
+				_ = msg.TermWithReason("RevisionConflict")
+				return OutcomeRejected
 			}
 		}
 		// Genuine commit failure → nak so JetStream redelivers. Because
@@ -319,9 +353,14 @@ func (cp *CommitPath) Run(ctx context.Context, cons jetstream.Consumer) error {
 	return nil
 }
 
-// MakeStubPipeline assembles a complete Story-1.5 commit path with stub
-// downstream steps. It exists so cmd/processor/main.go and the
-// integration tests share identical wiring.
+// MakeStubPipeline assembles a complete Story-1.7 commit path with the
+// real Hydrator, Executor, Validator, and Committer wired against a
+// DDL cache built at startup. The event publisher remains stubbed
+// (Story 1.8). It exists so cmd/processor/main.go and the integration
+// tests share identical wiring.
+//
+// The function name is retained for backwards compatibility with Story
+// 1.5's call sites; "stub" now refers only to the EventPublisher.
 func MakeStubPipeline(conn *substrate.Conn, coreBucket, healthBucket string, authMode AuthMode, logger *slog.Logger, instance string) (*CommitPath, *HealthHeartbeater, error) {
 	authz, err := SelectAuthorizer(authMode, logger)
 	if err != nil {
@@ -329,15 +368,22 @@ func MakeStubPipeline(conn *substrate.Conn, coreBucket, healthBucket string, aut
 	}
 	metrics := &Metrics{}
 	hb := NewHealthHeartbeater(conn, healthBucket, instance, 10*time.Second, metrics, logger)
-	committer := NewStubCommitter(conn, coreBucket, logger, time.Now)
+
+	// Build the DDL cache from a full scan of Core KV's `vtx.meta.>`.
+	ddls := NewDDLCache(conn, coreBucket, logger)
+	if err := ddls.Refresh(context.Background()); err != nil {
+		return nil, nil, fmt.Errorf("ddl cache refresh: %w", err)
+	}
+
+	committer := NewCommitter(conn, coreBucket, ddls, logger, time.Now)
 	cp := NewCommitPath(Deps{
 		Conn:        conn,
 		CoreBucket:  coreBucket,
 		HealthKV:    healthBucket,
 		Authorizer:  authz,
-		Hydrator:    NewHydrator(conn, coreBucket, logger),
+		Hydrator:    NewHydratorWithCache(conn, coreBucket, ddls, logger),
 		Executor:    NewExecutor(NewStarlarkRunner(0, 0), logger),
-		Validator:   &StubValidator{logger: logger},
+		Validator:   NewValidator(ddls, logger),
 		Committer:   committer,
 		Events:      &StubEventPublisher{logger: logger},
 		Metrics:     metrics,

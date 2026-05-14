@@ -110,8 +110,55 @@ No change made to either bootstrap or `data-contracts.md` by this agent.
 
 raisedBy: Story 1.6 implementation agent (claude-opus-4-7)
 raisedAt: 2026-05-13
-status: Open — awaits Winston adjudication
+resolvedAt: 2026-05-14
+status: RESOLVED — Story 1.7 implementation agent applied Winston's directives below
 severity: Medium (workable today; needs alignment before Story 1.7/1.10)
+
+## Resolution (Story 1.7, Winston directives baked into the handoff brief)
+
+**Issue 1 — DDL shadow key `vtx.meta.<class>`:** RESOLVED via Resolution 2
+(bring the DDL cache forward into Story 1.7).
+- `internal/processor/ddl_cache.go` now scans `vtx.meta.>` at Processor
+  startup, building `map[canonicalName]MetaVertexRef` where
+  `MetaVertexRef` carries the real NanoID-keyed meta-vertex key plus the
+  cached aspects (canonicalName, permittedCommands, sensitive, script).
+- The cache is refreshed synchronously on any successful step-8 commit
+  that touches `vtx.meta.*` keys (per the Story 1.7 AC's "DDL mutations
+  lane synchronous cache invalidation" requirement).
+- `internal/processor/step4_hydrate.go` consults the cache when wired
+  via `NewHydratorWithCache`; the Story-1.6 shadow-key fallback remains
+  in place behind a nil-cache guard so existing tests that don't wire a
+  cache continue to compile and pass.
+- `internal/processor/step6_validate.go` consults the same cache for
+  permittedCommands + sensitive aspect write-scope enforcement.
+- The DDL cache's loader also accepts the Story-1.6 shadow-key fixtures
+  (e.g. `vtx.meta.identity`) — the last segment is treated as the
+  canonical name when it is not a NanoID. This keeps the Story 1.6
+  integration tests green during the migration. Removal of the shadow-
+  key fixtures themselves is deferred to a follow-up housekeeping pass
+  (the bootstrap's primordial DDLs are already NanoID-keyed; only Story
+  1.6's test fixtures need migration, and they continue to work via
+  the loader's fallback).
+
+**Issue 2 — Top-level `class` field on `OperationEnvelope`:** RESOLVED
+as documented (keep as a Phase-1-transient optional hint).
+- The doc-comment on `OperationEnvelope.Class` in
+  `internal/processor/envelope.go` has been updated to flag the field
+  as Phase-1-transitional, with a pointer to this amendment and the
+  Contract #2 §2.1 addendum.
+- The field remains `omitempty` in the JSON struct tag, so existing
+  clients that don't supply it are unaffected; the Hydrator still
+  consults `payload.class` as a fallback.
+- A scoped addendum to `data-contracts.md` Contract #2 §2.1
+  documenting this disposition is part of the Story 1.7 deliverable
+  set (flagged explicitly in the closing summary).
+- Removal of the `class` field is reserved for a future story when
+  the DDL cache covers 100% of operationType → class derivation
+  (target: Story 1.10 or later).
+
+---
+
+## Original Request (preserved for audit)
 
 ## Issue 1 — Logical key `vtx.meta.<class>` not contract-compliant
 

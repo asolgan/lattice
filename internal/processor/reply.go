@@ -8,17 +8,29 @@ import (
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
-// BuildAcceptedReply constructs an `accepted` reply marked with the
-// Story-1.5 `decision: accepted-stub` flag (Contract #2 §2.4 + handoff
-// brief decision #11).
+// BuildAcceptedReply constructs an `accepted` reply for a successful
+// step-8 commit. Story 1.7 swaps the Story-1.5 `accepted-stub` marker
+// for `decision: committed` and (optionally) carries the per-key
+// revision map for client RYOW polling.
 func BuildAcceptedReply(requestID string, committedAt time.Time) OperationReply {
 	return OperationReply{
 		RequestID:    requestID,
 		OpTrackerKey: TrackerKey(requestID),
 		Status:       ReplyStatusAccepted,
 		CommittedAt:  substrate.FormatTimestamp(committedAt),
-		Decision:     "accepted-stub",
+		Decision:     "committed",
 	}
+}
+
+// BuildAcceptedReplyWithRevisions extends BuildAcceptedReply with the
+// per-key revisions map returned by the atomic-batch commit. Empty
+// `revisions` is treated the same as the basic form.
+func BuildAcceptedReplyWithRevisions(requestID string, committedAt time.Time, revisions map[string]uint64) OperationReply {
+	r := BuildAcceptedReply(requestID, committedAt)
+	if len(revisions) > 0 {
+		r.Revisions = revisions
+	}
+	return r
 }
 
 // BuildDuplicateReply constructs a `duplicate` reply from an existing
