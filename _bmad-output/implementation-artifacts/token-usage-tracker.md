@@ -23,7 +23,7 @@ updateCadence: Per implementation session at close
 | 1.2 | Starlark Execution Spike | Sonnet | Sonnet (claude-sonnet-4-6) | 65K | ~55K | -10K | COMPLETE | 2026-05-13 | All 3 AC areas PASS. Sandbox: 4/4 forbidden ops rejected, 2/2 permitted ops succeed. API ergonomics: ScriptContext→RunScript→ScriptResult pipeline works, Contract #3-conforming output verified. Perf: mean=69µs p95=126µs p99=210µs (1000 iters, no caching). GO recommendation. nanoid.new() deferred to Story 1.6 as expected. |
 | 1.3 | Dev Harness with Primordial Bootstrap | Sonnet | Sonnet (claude-sonnet-4-6) | 95K | ~85K | -10K | COMPLETE | 2026-05-13 | All 12 deliverables shipped. docker-compose + Makefile + cmd/bootstrap + cmd/refractor-stub + internal/bootstrap package + scripts/verify-bootstrap.go. Cold make up: 8.3s. Warm restart: 7.4s. verify-bootstrap exit 0 (29 assertions). Fixed primordial IDs approach taken (not random). LimitMarkerTTL must be ≥1s (not 1ns) — minor API discovery note. |
 | 1.4 | `internal/substrate` Package | Opus | Opus (claude-opus-4-7) | 110K | ~80K | -30K | COMPLETE | 2026-05-13 | All 8 deliverables shipped. substrate package: doc/nanoid/keys/envelope/conn/kv/batch/errors (+ tests). 10K NanoID test PASS. Embedded NATS integration tests PASS (KV CRUD, AtomicBatch commit, all-or-nothing rejection, cross-bucket guard). Bootstrap refactored: envelope helpers delegate to substrate.NewDocumentEnvelopeAt + AspectEnvelope/LinkEnvelope; SeedPrimordial uses substrate.AtomicBatch (single 30-msg batch replacing sequential kv.Create loop); alphabet centralized via substrate const re-export. CONTRACT-AMENDMENT-REQUEST raised: bootstrap primordial IDs violate Contract #1 (12/12 forbidden chars, 7/12 wrong length); awaits adjudication. Bootstrap key construction not migrated to substrate.VertexKey (would panic on non-compliant fixed IDs). `make verify-bootstrap` passes 29/29. |
-| 1.5 | Processor — Consume, Dedup & Auth Stub (Steps 1-3) | Opus | — | 115K | — | — | PENDING | — | |
+| 1.5 | Processor — Consume, Dedup & Auth Stub (Steps 1-3) | Opus | Opus (claude-opus-4-7) | 115K | ~70K | -45K | COMPLETE | 2026-05-13 | All 8 deliverables shipped. internal/processor package: doc/envelope/tracker/step1_consume/step2_dedup/step3_auth/steps_4_10_stub/commit_path/reply/health/errors (+ envelope/tracker/integration tests). cmd/processor/main.go runnable binary. StubAuthorizer (LATTICE_AUTH_MODE=stub default; capability reserved for Story 3.3). Tracker write via substrate.AtomicBatch with 24h TTL (single-message batch, Story 1.7 adds mutations). Integration tests PASS: first-delivery-accepted, duplicate-short-circuit, malformed-nack-with-term + malformed-operation Health KV marker, tracker-write-conflict-acked-as-duplicate (retry-safe), reply-shape unit. `make verify-bootstrap` regression 30/30. E2E manual exercise PASS: fresh op → step 10 ack; resubmit same requestId → DuplicateDetected short-circuit; malformed envelope → term=true. CONTRACT-AMENDMENT-REQUEST raised at cmd/processor/CONTRACT-AMENDMENT-REQUEST.md: bootstrap stream subjects `["ops.*", "ops.meta.>"]` disagree with Contract #2 §2.3 requirement of `ops.<lane>.>` — Story 1.5 used bootstrap-compatible single-segment subjects; awaits Winston adjudication (recommended fix: broaden bootstrap to `ops.>`). |
 | 1.6 | Processor — Starlark Sandbox & JIT Hydration (Steps 4-5) | Opus | — | 130K | — | — | PENDING | — | |
 | 1.7 | Processor — DDL Validation & Atomic Batch (Steps 6-8) | Opus | — | 145K | — | — | PENDING | — | |
 | 1.8 | Processor — Event Publication & Fault Injection (Steps 9-10) | Opus | — | 145K | — | — | PENDING | — | NFR-R1 fault injection harness. |
@@ -55,10 +55,10 @@ updateCadence: Per implementation session at close
 
 | Tier | Budget (K tokens) | Actual (K tokens) | Δ | Stories complete |
 |---|---|---|---|---|
-| Opus | 1,820 | 0 | 0 | 0 / 12 |
+| Opus | 1,820 | 150 | -75 | 2 / 12 |
 | Sonnet | 1,627 | 218 | +6 | 3 / 19 |
 | Haiku | 0 | 0 | 0 | 0 / 0 |
-| **Phase 1 Total** | **3,447** | **218** | **+6** | **3 / 31** |
+| **Phase 1 Total** | **3,447** | **368** | **-69** | **5 / 31** |
 
 ## Update Procedure (For Each Implementation Session Close)
 

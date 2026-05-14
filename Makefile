@@ -15,7 +15,7 @@ BOOTSTRAP_JSON ?= ./lattice.bootstrap.json
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up down verify-bootstrap build vet clean logs ps
+.PHONY: up down verify-bootstrap build vet test processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 up:
@@ -55,6 +55,24 @@ build:
 	mkdir -p bin
 	go build -o bin/bootstrap ./cmd/bootstrap
 	go build -o bin/refractor-stub ./cmd/refractor-stub
+	go build -o bin/processor ./cmd/processor
+
+## processor — Build the Processor binary (Story 1.5).
+processor:
+	@echo "==> Building processor binary..."
+	mkdir -p bin
+	go build -o bin/processor ./cmd/processor
+
+## run-processor — Run the Processor against the local make-up harness.
+## Requires `make up` to have completed (NATS reachable, core-operations stream live).
+run-processor: processor
+	@echo "==> Starting processor (Ctrl-C to stop)..."
+	NATS_URL=$(NATS_URL) ./bin/processor
+
+## test — Run all Go unit + integration tests.
+test:
+	@echo "==> go test ./..."
+	go test ./...
 
 ## vet — Run go vet on all packages.
 vet:
