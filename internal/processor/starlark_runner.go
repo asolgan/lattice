@@ -62,6 +62,7 @@ func (r *StarlarkRunner) Run(ctx context.Context, sc ScriptContext) (ScriptResul
 	// Compile. Resolve errors (referencing `os`, `time`, etc. without binding)
 	// fire here because go.starlark.net resolves names at compile time when
 	// `globals.Has` is supplied as the predeclared probe.
+	//nolint:staticcheck // SA1019: SourceProgramOptions migration deferred; current API verified safe in Story 1.6
 	_, prog, err := starlarklib.SourceProgram("<script>", sc.ScriptSource, globals.Has)
 	if err != nil {
 		return ScriptResult{}, classifyStarlarkError(err, rid)

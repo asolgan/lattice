@@ -3,7 +3,6 @@ package processor
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -172,7 +171,3 @@ func EventSubject(class string) string {
 	return "events." + safe
 }
 
-// errEmptyEvents is returned internally by EventPublisherImpl when the
-// EventList is empty — exported only for tests that need to assert the
-// noop short-circuit.
-var errEmptyEvents = errors.New("step 9: no events to publish")

@@ -1,0 +1,15 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+linters:
+  default: standard
+  disable:
+    - errcheck
+  exclusions:
+    paths:
+      - internal/spike
+    rules:
+      - linters: [staticcheck]
+        text: "QF1001"
