@@ -16,6 +16,7 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/engine"
 	"github.com/asolgan/lattice/internal/refractor/failure"
 	"github.com/asolgan/lattice/internal/refractor/health"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 const reconnectDelay = 5 * time.Second
@@ -574,11 +575,37 @@ func (p *Pipeline) processMsg(ctx context.Context, msg jetstream.Msg) (failure.C
 	prefix := "$KV." + p.coreKVBucket + "."
 	key := strings.TrimPrefix(msg.Subject(), prefix)
 
-	// Parse node label from key format "node_<label>_<id>".
-	label, ok := parseCoreKVKey(key)
-	if !ok {
+	// Classify the key by Lattice Contract #1 §1.5 shape.
+	switch substrate.ClassifyKey(key) {
+	case substrate.KindAspect:
+		slog.Info("pipeline: aspect mutation observed but no handler registered",
+			"ruleId", p.ruleID, "key", key,
+			"parentVertexKey", key[:strings.LastIndex(key, ".")])
 		if err := msg.Ack(); err != nil {
-			slog.Error("pipeline: ack unrecognized key", "ruleId", p.ruleID, "key", key, "err", err)
+			slog.Error("pipeline: ack aspect key", "ruleId", p.ruleID, "key", key, "err", err)
+		}
+		return failure.CatTransient, nil
+	case substrate.KindLink:
+		slog.Info("pipeline: link mutation observed but no handler registered",
+			"ruleId", p.ruleID, "key", key)
+		if err := msg.Ack(); err != nil {
+			slog.Error("pipeline: ack link key", "ruleId", p.ruleID, "key", key, "err", err)
+		}
+		return failure.CatTransient, nil
+	case substrate.KindUnknown:
+		slog.Warn("pipeline: unknown key shape — defect signal",
+			"ruleId", p.ruleID, "key", key)
+		if err := msg.Ack(); err != nil {
+			slog.Error("pipeline: ack unknown key", "ruleId", p.ruleID, "key", key, "err", err)
+		}
+		return failure.CatTransient, nil
+	}
+	// KindVertex: parse type and id.
+	label, _, ok := substrate.ParseVertexKey(key)
+	if !ok {
+		// Should not occur after ClassifyKey == KindVertex, but guard defensively.
+		if err := msg.Ack(); err != nil {
+			slog.Error("pipeline: ack vertex parse failure", "ruleId", p.ruleID, "key", key, "err", err)
 		}
 		return failure.CatTransient, nil
 	}
@@ -1023,7 +1050,7 @@ func (p *Pipeline) handleAdjUpdate(ctx context.Context, adjEntry jetstream.KeyVa
 		return
 	}
 
-	label, ok := parseCoreKVKey(nodeKey)
+	label, _, ok := substrate.ParseVertexKey(nodeKey)
 	if !ok {
 		return
 	}
@@ -1081,12 +1108,3 @@ func (p *Pipeline) handleAdjUpdate(ctx context.Context, adjEntry jetstream.KeyVa
 	}
 }
 
-// parseCoreKVKey extracts the node label from a Core KV key (format: "node_<label>_<id>").
-// Returns ("", false) if the key does not match the expected format or has an empty label.
-func parseCoreKVKey(key string) (nodeLabel string, ok bool) {
-	parts := strings.SplitN(key, "_", 3)
-	if len(parts) < 3 || parts[0] != "node" || parts[1] == "" {
-		return "", false
-	}
-	return parts[1], true
-}

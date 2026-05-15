@@ -18,8 +18,7 @@
 //   - Per-mutation latency (write → projected) is captured and the
 //     distribution (p50/p95/p99/max) is asserted against NFR-P3.
 //
-// DELIBERATE DEVIATION from the Story 2.1b handoff brief Gap 2 spec
-// (logged as MORPH-DEVIATIONS Deviation 13):
+// Notes on test design:
 //
 //  1. The write path bypasses the Processor (no `ops.default.<reqId>`
 //     submission). Reason: a Processor write path for class `contract`
@@ -29,13 +28,10 @@
 //     from the CDC arrival; the Processor's ack-loop adds constant
 //     overhead orthogonal to what we're measuring.
 //
-//  2. The pipeline's `parseCoreKVKey` accepts only the legacy Materializer
-//     key shape `node_<label>_<id>` (NOT the Lattice `vtx.<type>.<id>`
-//     shape). Story 2.1 morphed adapters + lens loader but did NOT yet
-//     adapt the pipeline's key parser — this is documented as a NEW
-//     Deviation 13. The test writes legacy-shape keys to honor this
-//     existing constraint and confirms the projection latency budget for
-//     the morphed pipeline.
+//  2. Story 2.3 (Deviation 13 RESOLVED): the pipeline now uses
+//     substrate.ParseVertexKey to parse Contract #1 §1.5 vertex key
+//     shape `vtx.<type>.<NanoID>`. This test was updated from the legacy
+//     `node_<label>_<id>` shape to the Lattice shape.
 //
 //  3. Target is NATS KV (not Postgres). The latency budget is dominated
 //     by CDC fan-out + cypher evaluation, both adapter-independent. NATS
@@ -71,6 +67,25 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
 	"github.com/asolgan/lattice/internal/substrate"
 )
+
+// e2eContractNanoID returns a deterministic 20-character NanoID (Contract #1 alphabet)
+// for a given integer index, used to build vtx.contract.<NanoID> test keys.
+// Format: "E2eContract" (11 chars) + 9-char base-58 index suffix.
+func e2eContractNanoID(i int) string {
+	const (
+		alpha  = substrate.Alphabet
+		n      = len(alpha)
+		prefix = "E2eContract" // 11 valid alphabet chars
+		digits = 9             // encodes up to 58^9 unique values
+	)
+	buf := make([]byte, digits)
+	x := i
+	for d := digits - 1; d >= 0; d-- {
+		buf[d] = alpha[x%n]
+		x /= n
+	}
+	return prefix + string(buf)
+}
 
 // TestRefractor_E2E_P99 is the Story 2.1 AC #10 end-to-end latency test.
 // It drives 100 mutations through the morphed Refractor pipeline and
@@ -212,9 +227,11 @@ func TestRefractor_E2E_P99(t *testing.T) {
 
 	for i := 0; i < mutations; i++ {
 		id := fmt.Sprintf("contract%04d", i)
-		// Legacy Materializer key shape — pipeline parses `node_<label>_<id>`.
-		// See Deviation 13.
-		key := "node_contract_" + id
+		// Lattice Contract #1 §1.5 vertex key shape: vtx.<type>.<NanoID>.
+		// Deviation 13 is now closed by Story 2.3 — pipeline uses substrate.ParseVertexKey.
+		// NanoID is deterministic: prefix "E2eContract" (11 chars) + 9-char base-58 index.
+		nanoID := e2eContractNanoID(i)
+		key := "vtx.contract." + nanoID
 		body := map[string]any{
 			"id":        id,
 			"name":      fmt.Sprintf("Contract %d", i),

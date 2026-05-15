@@ -27,6 +27,35 @@ import (
 
 const coreKVBucket = "CORE"
 
+// Sentinel NanoIDs for deterministic test fixtures (Contract #1, 20 chars, Lattice alphabet).
+// Each constant maps to the legacy node_<label>_<id> fixture it replaces.
+const (
+	sentinelAgreementA1      = "Tsnt1AgreementAaaaaa" // was node_agreement_a1
+	sentinelAgreementA2      = "Tsnt2AgreementBbbbbb" // was node_agreement_a2
+	sentinelAgreementErr1    = "Tsnt3AgreementErrrrr" // was node_agreement_err1
+	sentinelAgreementX1      = "Tsnt4AgreementXxxxxx" // was node_agreement_x1
+	sentinelIdentityI1       = "Tsnt5JdentityJjjjjjj" // was node_identity_i1
+	sentinelAgreementInf1    = "Tsnt6AgreementJnfrrr" // was node_agreement_inf1
+	sentinelAgreementStr1    = "Tsnt7AgreementStrrrr" // was node_agreement_str1
+	sentinelAgreementRst1    = "Tsnt8AgreementRst111" // was node_agreement_rst1
+	sentinelAgreementRst2    = "Tsnt9AgreementRst222" // was node_agreement_rst2
+	sentinelAgreementRes1    = "TsntAagreementRes111" // was node_agreement_res1
+	sentinelAgreementRes2    = "TsntBagreementRes222" // was node_agreement_res2
+	sentinelAgreementHr1     = "TsntCagreementHr1111" // was node_agreement_hr1
+	sentinelAgreementHr2     = "TsntDagreementHr2222" // was node_agreement_hr2
+	sentinelAgreementHp1     = "TsntEagreementHp1111" // was node_agreement_hp1
+	sentinelAgreementHp2     = "TsntFagreementHp2222" // was node_agreement_hp2
+	sentinelAgreementRetry1  = "TsntGagreementRetry1" // was node_agreement_retry1
+	sentinelAgreementTerm1   = "TsntHagreementTerm11" // was node_agreement_term1
+	sentinelAgreementTerm2   = "TsntJagreementTerm22" // was node_agreement_term2
+	sentinelAgreementNilTst  = "TsntKagreementNikTst" // was node_agreement_niltest1
+	sentinelAgreementEnt1    = "TsntLagreementEnt111" // was node_agreement_ent1
+	sentinelAgreementFail1   = "TsntMagreementFaik11" // was node_agreement_fail1
+	sentinelAgreementMp1     = "TsntNagreementMp1111" // was node_agreement_mp1
+	sentinelAgreementMp2     = "TsntPagreementMp2222" // was node_agreement_mp2
+	sentinelAgreementRi1     = "TsntQagreementRi1111" // was node_agreement_ri1
+)
+
 // pipelineEnv holds all resources for a pipeline integration test.
 type pipelineEnv struct {
 	nc      *nats.Conn // underlying NATS connection; needed for core-NATS subscriptions (e.g. metrics)
@@ -220,7 +249,7 @@ func TestPipeline_Upsert(t *testing.T) {
 	require.NoError(t, err)
 	startPipeline(t, env, p, "rule-1")
 
-	putNode(t, env.coreKV, "node_agreement_a1", map[string]any{"id": "a1", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementA1, map[string]any{"id": "a1", "isDeleted": false})
 
 	pollUntil(t, 2*time.Second, func() bool {
 		_, err := targetKV.Get(context.Background(), "a1")
@@ -249,7 +278,7 @@ func TestPipeline_Delete(t *testing.T) {
 	startPipeline(t, env, p, "rule-2")
 
 	// Upsert first.
-	putNode(t, env.coreKV, "node_agreement_a2", map[string]any{"id": "a2", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementA2, map[string]any{"id": "a2", "isDeleted": false})
 	pollUntil(t, 2*time.Second, func() bool {
 		_, err := targetKV.Get(context.Background(), "a2")
 		return err == nil
@@ -257,7 +286,7 @@ func TestPipeline_Delete(t *testing.T) {
 
 	// Now soft-delete. Story 2.1 AC #4: NATS-KV adapter writes a
 	// tombstone document {"isDeleted": true} instead of physical KVDelete.
-	putNode(t, env.coreKV, "node_agreement_a2", map[string]any{"id": "a2", "isDeleted": true})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementA2, map[string]any{"id": "a2", "isDeleted": true})
 	pollUntil(t, 2*time.Second, func() bool {
 		entry, err := targetKV.Get(context.Background(), "a2")
 		if err != nil {
@@ -282,7 +311,7 @@ func TestPipeline_ErrorNak(t *testing.T) {
 	require.NoError(t, err)
 	startPipeline(t, env, p, "rule-err")
 
-	putNode(t, env.coreKV, "node_agreement_err1", map[string]any{"id": "err1", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementErr1, map[string]any{"id": "err1", "isDeleted": false})
 
 	// Wait for at least 2 adapter calls: the first attempt plus at least one redelivery.
 	// Redelivery only happens if the message was NAK'd (not ACK'd) — confirming the NAK path.
@@ -351,8 +380,8 @@ func TestPipeline_MultiRule_Independent(t *testing.T) {
 	startPipeline(t, env, pB, "rule-b")
 
 	// Put an agreement node and an identity node.
-	putNode(t, env.coreKV, "node_agreement_x1", map[string]any{"id": "x1", "isDeleted": false})
-	putNode(t, env.coreKV, "node_identity_i1", map[string]any{"name": "Alice", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementX1, map[string]any{"id": "x1", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.identity."+sentinelIdentityI1, map[string]any{"name": "Alice", "isDeleted": false})
 
 	// Rule A target should have agreement x1; Rule B target should have identity i1.
 	pollUntil(t, 2*time.Second, func() bool {
@@ -413,7 +442,7 @@ func TestPipeline_InfrastructurePause(t *testing.T) {
 	t.Cleanup(func() { cancel(); wg.Wait() })
 
 	// Put a node — pipeline tries Upsert → infra failure → probe loop → recovery.
-	putNode(t, env.coreKV, "node_agreement_inf1", map[string]any{"id": "inf1", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementInf1, map[string]any{"id": "inf1", "isDeleted": false})
 
 	// The infraAdapter never actually writes. We verify:
 	// 1. Pipeline entered infra pause (upsert was called).
@@ -450,7 +479,7 @@ func TestPipeline_StructuralPause(t *testing.T) {
 	startPipeline(t, env, p, "rule-structural")
 
 	// Put a node — pipeline tries Upsert → structural failure → pause.
-	putNode(t, env.coreKV, "node_agreement_str1", map[string]any{"id": "str1", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementStr1, map[string]any{"id": "str1", "isDeleted": false})
 
 	// Health KV should be updated to paused/structural.
 	pollUntil(t, 3*time.Second, func() bool {
@@ -555,8 +584,8 @@ func TestPipeline_HealthKV_StartupRestore_Structural(t *testing.T) {
 	startPipeline(t, env, p, "rule-restore-structural")
 
 	// Put two nodes — pipeline should ignore them (blocked in structural pause restore).
-	putNode(t, env.coreKV, "node_agreement_rst1", map[string]any{"id": "rst1", "isDeleted": false})
-	putNode(t, env.coreKV, "node_agreement_rst2", map[string]any{"id": "rst2", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementRst1, map[string]any{"id": "rst1", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementRst2, map[string]any{"id": "rst2", "isDeleted": false})
 
 	// Wait briefly and verify health KV remains paused and no writes occurred.
 	time.Sleep(300 * time.Millisecond)
@@ -590,7 +619,7 @@ func TestPipeline_StructuralPauseResumes(t *testing.T) {
 	startPipeline(t, env, p, "rule-resume")
 
 	// First node — triggers structural error → pause.
-	putNode(t, env.coreKV, "node_agreement_res1", map[string]any{"id": "res1", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementRes1, map[string]any{"id": "res1", "isDeleted": false})
 
 	// Wait for health KV to show paused/structural.
 	pollUntil(t, 3*time.Second, func() bool {
@@ -618,7 +647,7 @@ func TestPipeline_StructuralPauseResumes(t *testing.T) {
 	assert.Equal(t, "active", entry.Status, "health KV must be active after resume")
 
 	// Put a second node — pipeline is now active, must process it.
-	putNode(t, env.coreKV, "node_agreement_res2", map[string]any{"id": "res2", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementRes2, map[string]any{"id": "res2", "isDeleted": false})
 
 	// Verify the adapter is called for the second entity (structuralOnceAdapter succeeds on call >= 2).
 	pollUntil(t, 5*time.Second, func() bool {
@@ -679,7 +708,7 @@ func TestPipeline_HotReloadInto_NextMessageUsesNewAdapter(t *testing.T) {
 	startPipeline(t, env, p, "rule-hotreload")
 
 	// First message → goes to adapter A.
-	putNode(t, env.coreKV, "node_agreement_hr1", map[string]any{"id": "hr1", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementHr1, map[string]any{"id": "hr1", "isDeleted": false})
 	pollUntil(t, 2*time.Second, func() bool { return adptA.Count() >= 1 })
 	assert.Equal(t, 0, adptB.Count(), "adapter B must receive nothing before hot-reload")
 
@@ -687,7 +716,7 @@ func TestPipeline_HotReloadInto_NextMessageUsesNewAdapter(t *testing.T) {
 	require.NoError(t, p.HotReloadInto(adptB))
 
 	// Second message → goes to adapter B.
-	putNode(t, env.coreKV, "node_agreement_hr2", map[string]any{"id": "hr2", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementHr2, map[string]any{"id": "hr2", "isDeleted": false})
 	pollUntil(t, 2*time.Second, func() bool { return adptB.Count() >= 1 })
 
 	countAAfterReload := adptA.Count()
@@ -728,7 +757,7 @@ func TestPipeline_HotReloadPlan_NextMessageUsesNewPlan(t *testing.T) {
 	startPipeline(t, env, p, "rule-hotreload-plan")
 
 	// First message → plan A → keys must contain agreement_id.
-	putNode(t, env.coreKV, "node_agreement_hp1", map[string]any{"id": "hp1", "name": "name1", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementHp1, map[string]any{"id": "hp1", "name": "name1", "isDeleted": false})
 	pollUntil(t, 2*time.Second, func() bool { return ra.Count() >= 1 })
 
 	firstKeys := ra.KeyAt(0)
@@ -739,7 +768,7 @@ func TestPipeline_HotReloadPlan_NextMessageUsesNewPlan(t *testing.T) {
 	require.NoError(t, p.HotReloadPlan(planB))
 
 	// Second message → plan B → keys must contain agreement_name.
-	putNode(t, env.coreKV, "node_agreement_hp2", map[string]any{"id": "hp2", "name": "name2", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementHp2, map[string]any{"id": "hp2", "name": "name2", "isDeleted": false})
 	pollUntil(t, 2*time.Second, func() bool { return ra.Count() >= 2 })
 
 	secondKeys := ra.KeyAt(1)
@@ -785,7 +814,7 @@ func TestPipeline_TransientWriteEnqueuesRetry(t *testing.T) {
 	startPipeline(t, env, p, "rule-retry")
 
 	// Publish a node message that will cause a transient write error.
-	putNode(t, env.coreKV, "node_agreement_retry1", map[string]any{"id": "retry1", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementRetry1, map[string]any{"id": "retry1", "isDeleted": false})
 
 	// Wait for the adapter to be called at least once.
 	pollUntil(t, 2*time.Second, func() bool {
@@ -847,9 +876,9 @@ func TestPipeline_TerminalWritePublishesDLQAndContinues(t *testing.T) {
 	startPipeline(t, env, p, ruleID)
 
 	// First node — will produce a Terminal write error and DLQ message.
-	putNode(t, env.coreKV, "node_agreement_term1", map[string]any{"id": "term1", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementTerm1, map[string]any{"id": "term1", "isDeleted": false})
 	// Second node — should succeed; proves the pipeline continued.
-	putNode(t, env.coreKV, "node_agreement_term2", map[string]any{"id": "term2", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementTerm2, map[string]any{"id": "term2", "isDeleted": false})
 
 	// Wait until the adapter is called for both entities.
 	pollUntil(t, 3*time.Second, func() bool {
@@ -887,7 +916,7 @@ func TestPipeline_TerminalWritePublishesDLQAndContinues(t *testing.T) {
 	assert.Equal(t, 0, dlqMsg.RetryCount, "retryCount must be 0 — no retries for terminal failures")
 	assert.Equal(t, "write", dlqMsg.FailedStage, "failedStage must be 'write'")
 	assert.Equal(t, ruleID, dlqMsg.RuleID, "ruleId must match pipeline ruleID")
-	assert.Equal(t, "node_agreement_term1", dlqMsg.EntityID, "entityId must be the Core KV key of the failed entity")
+	assert.Equal(t, "vtx.agreement."+sentinelAgreementTerm1, dlqMsg.EntityID, "entityId must be the Core KV key of the failed entity")
 	assert.NotEmpty(t, dlqMsg.ErrorMessage, "errorMessage must be populated")
 	assert.NotEmpty(t, dlqMsg.RawPayload, "rawPayload must be populated")
 	_, tsErr := time.Parse(time.RFC3339, dlqMsg.Timestamp)
@@ -917,7 +946,7 @@ func TestPipeline_NilAuditWriter_NoOp(t *testing.T) {
 	startPipeline(t, env, p, ruleID)
 
 	// Put a node — the pipeline must process it without panicking (nil-guard in writeAudit).
-	putNode(t, env.coreKV, "node_agreement_niltest1", map[string]any{"id": "niltest1"})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementNilTst, map[string]any{"id": "niltest1"})
 
 	// Wait until the target KV has the upserted row — confirms the pipeline ran normally.
 	pollUntil(t, 3*time.Second, func() bool {
@@ -950,7 +979,7 @@ func TestPipeline_AuditEntry_WrittenOnSuccess(t *testing.T) {
 	startPipeline(t, env, p, ruleID)
 
 	// Put a node into Core KV — this triggers an upsert.
-	putNode(t, env.coreKV, "node_agreement_ent1", map[string]any{"id": "ent1", "status": "active"})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementEnt1, map[string]any{"id": "ent1", "status": "active"})
 
 	// Read the audit entry from the JetStream stream.
 	cons, err := env.js.CreateOrUpdateConsumer(context.Background(), "AUDIT_"+ruleID, jetstream.ConsumerConfig{
@@ -965,7 +994,7 @@ func TestPipeline_AuditEntry_WrittenOnSuccess(t *testing.T) {
 
 	var entry health.AuditEntry
 	require.NoError(t, json.Unmarshal(msg.Data(), &entry))
-	assert.Equal(t, "node_agreement_ent1", entry.EntityID)
+	assert.Equal(t, "vtx.agreement."+sentinelAgreementEnt1, entry.EntityID)
 	assert.Equal(t, "upsert", entry.Operation)
 	assert.NotEmpty(t, entry.OutputRowHash, "upsert audit entry must have a non-empty outputRowHash")
 	_, tsErr := time.Parse(time.RFC3339, entry.Timestamp)
@@ -996,7 +1025,7 @@ func TestPipeline_NoAuditEntry_OnWriteFailure(t *testing.T) {
 	startPipeline(t, env, p, ruleID)
 
 	// Trigger a write attempt that will fail.
-	putNode(t, env.coreKV, "node_agreement_fail1", map[string]any{"id": "fail1"})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementFail1, map[string]any{"id": "fail1"})
 
 	// Give the pipeline time to process and (attempt to) write.
 	time.Sleep(300 * time.Millisecond)
@@ -1080,7 +1109,7 @@ func TestPipeline_ManualPause_HaltsAndResumes(t *testing.T) {
 	startPipeline(t, env, p, "rule-manual-pause")
 
 	// Put first node and wait for processing to confirm pipeline is active.
-	putNode(t, env.coreKV, "node_agreement_mp1", map[string]any{"id": "mp1", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementMp1, map[string]any{"id": "mp1", "isDeleted": false})
 	pollUntil(t, 3*time.Second, func() bool { return ra.Count() >= 1 })
 
 	// Call Pause — pipeline should set health KV to paused/manual and halt.
@@ -1100,7 +1129,7 @@ func TestPipeline_ManualPause_HaltsAndResumes(t *testing.T) {
 	assert.Equal(t, health.PauseReasonManual, *entry.PauseReason)
 
 	// Put second node while paused — should not be processed while paused (AC1, AC3).
-	putNode(t, env.coreKV, "node_agreement_mp2", map[string]any{"id": "mp2", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementMp2, map[string]any{"id": "mp2", "isDeleted": false})
 	countAfterPause := ra.Count()
 
 	// Call Resume — pipeline should set health KV to active and restart processing (AC2).
@@ -1200,7 +1229,7 @@ func TestPipeline_Resume_OverridesInfraPause(t *testing.T) {
 	t.Cleanup(func() { cancel(); wg.Wait() })
 
 	// Put a node to trigger an infrastructure failure → probe loop enters.
-	putNode(t, env.coreKV, "node_agreement_ri1", map[string]any{"id": "ri1", "isDeleted": false})
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementRi1, map[string]any{"id": "ri1", "isDeleted": false})
 
 	// Wait for the pipeline to enter infra pause.
 	pollUntil(t, 3*time.Second, func() bool {
