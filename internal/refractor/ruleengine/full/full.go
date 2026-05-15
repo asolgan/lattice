@@ -1,51 +1,100 @@
-// Package full is the v2 openCypher rule engine — the visitor + executor
-// pair that consumes the vendored ANTLR parser at
-// internal/refractor/ruleengine/full/cypher.
+// Package full is the v2 openCypher rule engine — visitor + AST (parse
+// side) in 3.1b-i, with the executor landing in 3.1b-ii.
 //
-// Story 3.1b will replace this stub with the real visitor + executor.
-// In 3.1a Parse() always returns a ParseError so selection-logic can verify
-// the boundary behaves correctly when a Lens explicitly opts into "full"
-// or when absent-fallback exhausts the simple engine.
-//
-// The cypher subpackage is intentionally NOT imported here in 3.1a — there
-// is nothing for the stub to do with the parser yet. 3.1b will add that
-// import alongside the visitor implementation.
+// Story 3.1b-i replaces 3.1a's stub Parse with the real lex/parse/walk
+// pipeline. Execute remains a typed-error stub until 3.1b-ii.
 package full
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/antlr4-go/antlr/v4"
 
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
+	"github.com/asolgan/lattice/internal/refractor/ruleengine/full/cypher"
 )
 
-// stubMessage is the error text emitted by Parse(). Tests assert on this
-// substring; keep it stable until 3.1b replaces the stub.
-const stubMessage = "full engine not yet implemented (Story 3.1b)"
-
-// Engine is the stub v2 engine. It satisfies ruleengine.RuleEngine so the
-// registry + selection-logic compile and behave correctly today, but every
-// Parse() call fails by design.
+// Engine is the v2 engine. Satisfies ruleengine.RuleEngine.
 type Engine struct{}
 
-// New returns a ready-to-register stub full engine.
+// New returns a ready-to-register full engine.
 func New() *Engine { return &Engine{} }
 
 // Name implements ruleengine.RuleEngine.
 func (*Engine) Name() string { return ruleengine.EngineFull }
 
-// Parse implements ruleengine.RuleEngine. ALWAYS returns a ParseError in
-// 3.1a — this is the contracted stub behaviour.
-func (*Engine) Parse(_ string) (ruleengine.CompiledRule, error) {
-	return nil, &ruleengine.ParseError{
-		Engine:  ruleengine.EngineFull,
-		Message: stubMessage,
-	}
+// errorListener accumulates ANTLR syntax errors so Parse can return them
+// as a structured *ruleengine.ParseError instead of swallowing them.
+type errorListener struct {
+	*antlr.DefaultErrorListener
+	errs []string
 }
 
-// Execute is defensively reachable only if a caller bypasses Parse(). In
-// that case we panic — Parse() is the gate, and any caller skipping it has
-// a serious bug we want surfaced immediately.
+func (l *errorListener) SyntaxError(_ antlr.Recognizer, _ any, line, column int, msg string, _ antlr.RecognitionException) {
+	l.errs = append(l.errs, fmt.Sprintf("line %d:%d %s", line, column, msg))
+}
+
+// Parse lexes, parses, and walks the rule body, returning a CompiledRule
+// wrapping a Refractor-native AST. Errors collected from the ANTLR error
+// listener and from the AST visitor are merged into a single ParseError.
+func (*Engine) Parse(ruleBody string) (ruleengine.CompiledRule, error) {
+	if strings.TrimSpace(ruleBody) == "" {
+		return nil, &ruleengine.ParseError{
+			Engine:  ruleengine.EngineFull,
+			Message: "empty rule body",
+		}
+	}
+
+	input := antlr.NewInputStream(ruleBody)
+
+	lexer := cypher.NewCypherLexer(input)
+	lexerListener := &errorListener{}
+	lexer.RemoveErrorListeners()
+	lexer.AddErrorListener(lexerListener)
+
+	stream := antlr.NewCommonTokenStream(lexer, antlr.TokenDefaultChannel)
+
+	parser := cypher.NewCypherParser(stream)
+	parserListener := &errorListener{}
+	parser.RemoveErrorListeners()
+	parser.AddErrorListener(parserListener)
+	parser.BuildParseTrees = true
+
+	tree := parser.OC_Cypher()
+
+	if len(lexerListener.errs) > 0 || len(parserListener.errs) > 0 {
+		msgs := append([]string{}, lexerListener.errs...)
+		msgs = append(msgs, parserListener.errs...)
+		return nil, &ruleengine.ParseError{
+			Engine:  ruleengine.EngineFull,
+			Message: strings.Join(msgs, "; "),
+		}
+	}
+
+	v := newASTVisitor()
+	antlr.ParseTreeWalkerDefault.Walk(v, tree)
+
+	if v.err != nil {
+		return nil, &ruleengine.ParseError{
+			Engine:  ruleengine.EngineFull,
+			Message: v.err.Error(),
+		}
+	}
+	if v.query == nil {
+		return nil, &ruleengine.ParseError{
+			Engine:  ruleengine.EngineFull,
+			Message: "visitor produced no query",
+		}
+	}
+
+	return &CompiledRule{Query: v.query}, nil
+}
+
+// Execute is a typed-error stub in 3.1b-i. 3.1b-ii replaces it with the
+// real executor (Core/Adjacency KV traversal, WITH grouping, projections).
 func (*Engine) Execute(_ context.Context, _ ruleengine.CompiledRule, _ ruleengine.EventContext) (ruleengine.ProjectionResult, error) {
-	panic(fmt.Sprintf("full.Engine.Execute called but %s — Parse() should have failed", stubMessage))
+	return ruleengine.ProjectionResult{}, errors.New("full engine: executor not yet implemented (Story 3.1b-ii)")
 }

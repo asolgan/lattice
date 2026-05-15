@@ -2,7 +2,6 @@ package ruleengine_test
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
@@ -73,16 +72,21 @@ func TestSelectForLens_ExplicitSimple_Fails(t *testing.T) {
 	}
 }
 
-// Test 3: explicit full, stub always fails.
-func TestSelectForLens_ExplicitFull_StubFailsByDesign(t *testing.T) {
+// Test 3: explicit full, parse fails on invalid cypher.
+//
+// (3.1a asserted "stub fails by design"; in 3.1b-i full.Parse is real, so
+// the test now feeds malformed cypher to keep the explicit-full failure
+// path covered. The 3.1b-i handoff brief Decision #9 explicitly permits
+// either renaming this test or adding a sibling — we renamed.)
+func TestSelectForLens_ExplicitFull_FailsOnInvalidCypher(t *testing.T) {
 	reg := newRegistry()
 	_, _, attempted, err := reg.SelectForLens(ruleengine.LensDefinition{
 		ID:         "lens-3",
-		RuleBody:   validMatch, // even valid bodies are rejected by the stub
+		RuleBody:   malformedMatch,
 		RuleEngine: ruleengine.EngineFull,
 	})
 	if err == nil {
-		t.Fatalf("expected stub failure, got success")
+		t.Fatalf("expected parse failure, got success")
 	}
 	var se *ruleengine.SelectionError
 	if !errors.As(err, &se) {
@@ -91,8 +95,31 @@ func TestSelectForLens_ExplicitFull_StubFailsByDesign(t *testing.T) {
 	if len(se.Errors) != 1 || se.Errors[0].Engine != ruleengine.EngineFull {
 		t.Fatalf("expected one full ParseError, got %v", se.Errors)
 	}
-	if !strings.Contains(se.Errors[0].Message, "not yet implemented") {
-		t.Fatalf("expected stub message containing 'not yet implemented', got %q", se.Errors[0].Message)
+	if len(attempted) != 1 || attempted[0] != ruleengine.EngineFull {
+		t.Fatalf("expected attempted=[full], got %v", attempted)
+	}
+}
+
+// Test 3b: explicit full, valid cypher succeeds.
+//
+// Uses a feature simple doesn't support (OPTIONAL MATCH + WITH) to make
+// the assertion that the full engine actually compiled the rule meaningful.
+func TestSelectForLens_ExplicitFull_Succeeds(t *testing.T) {
+	reg := newRegistry()
+	body := `MATCH (a) OPTIONAL MATCH (a)-[:r]->(b) WITH a, b RETURN a, b`
+	eng, cr, attempted, err := reg.SelectForLens(ruleengine.LensDefinition{
+		ID:         "lens-3b",
+		RuleBody:   body,
+		RuleEngine: ruleengine.EngineFull,
+	})
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if eng == nil || eng.Name() != ruleengine.EngineFull {
+		t.Fatalf("expected resolved engine=full, got %#v", eng)
+	}
+	if cr == nil || cr.EngineName() != ruleengine.EngineFull {
+		t.Fatalf("expected compiled rule from full, got %#v", cr)
 	}
 	if len(attempted) != 1 || attempted[0] != ruleengine.EngineFull {
 		t.Fatalf("expected attempted=[full], got %v", attempted)
@@ -141,8 +168,35 @@ func TestSelectForLens_AbsentFallback_BothFail(t *testing.T) {
 	if se.Errors[1].Engine != ruleengine.EngineFull {
 		t.Fatalf("expected second error from full, got %q", se.Errors[1].Engine)
 	}
-	if !strings.Contains(se.Errors[1].Message, "not yet implemented") {
-		t.Fatalf("expected full stub message, got %q", se.Errors[1].Message)
+	if se.Errors[1].Message == "" {
+		t.Fatalf("expected non-empty full parser error, got %q", se.Errors[1].Message)
+	}
+	if len(attempted) != 2 || attempted[0] != ruleengine.EngineSimple || attempted[1] != ruleengine.EngineFull {
+		t.Fatalf("expected attempted=[simple, full], got %v", attempted)
+	}
+}
+
+// Test 5b (Decision #10): absent ruleEngine, simple rejects but full
+// accepts → resolved=full, both engines attempted in [simple, full] order.
+//
+// Body uses OPTIONAL MATCH + WITH, which the simple engine does not
+// support — so simple fails parse and the absent-fallback path falls
+// through to full.
+func TestSelectForLens_AbsentFallback_FullWins(t *testing.T) {
+	reg := newRegistry()
+	body := `MATCH (a) OPTIONAL MATCH (a)-[:r]->(b) WITH a, b RETURN a, b`
+	eng, cr, attempted, err := reg.SelectForLens(ruleengine.LensDefinition{
+		ID:       "lens-5b",
+		RuleBody: body,
+	})
+	if err != nil {
+		t.Fatalf("expected success via full, got %v", err)
+	}
+	if eng == nil || eng.Name() != ruleengine.EngineFull {
+		t.Fatalf("expected resolved engine=full, got %#v", eng)
+	}
+	if cr == nil || cr.EngineName() != ruleengine.EngineFull {
+		t.Fatalf("expected compiled rule from full, got %#v", cr)
 	}
 	if len(attempted) != 2 || attempted[0] != ruleengine.EngineSimple || attempted[1] != ruleengine.EngineFull {
 		t.Fatalf("expected attempted=[simple, full], got %v", attempted)
