@@ -253,7 +253,8 @@ This project does not use a starter template. The foundation is the existing **M
 - Determinism guard: no I/O, no time, no random in sandbox
 
 **openCypher Parser:**
-- Open-source Go parser (candidate: `github.com/jtejido/go-opencypher`) — requires evaluation spike in Stream 0/Stream 2
+- ANTLR runtime: `github.com/antlr4-go/antlr/v4 v4.13.1`
+- Grammar + generated Go parser vendored from `github.com/jtejido/go-opencypher` (as of 2026-05-15); see `internal/refractor/ruleengine/full/cypher/README.md` for the copied files. Vendoring avoids an upstream-module dependency and lets Refractor own the listener/visitor.
 
 **Note:** The first implementation work is NOT "initialize a project" — it is the Stream 0 spike stories (NATS atomic batch ceiling, durable consumer limits) followed by the Materializer fork and module rename.
 

@@ -139,7 +139,7 @@ func Parse(data []byte) (*Rule, error) {
 
 	// Resolve the engine per Decision #3 (explicit-simple, explicit-full,
 	// absent-fallback). Selection failure is surfaced as InvalidRule.
-	_, _, attempted, selErr := defaultRegistry.SelectForLens(ruleengine.LensDefinition{
+	_, compiled, attempted, selErr := defaultRegistry.SelectForLens(ruleengine.LensDefinition{
 		ID:         r.ID,
 		RuleBody:   r.Match,
 		RuleEngine: r.RuleEngine,
@@ -156,16 +156,17 @@ func Parse(data []byte) (*Rule, error) {
 	// it succeeded directly; full if simple failed and full succeeded).
 	r.ResolvedEngine = attempted[len(attempted)-1]
 
-	// Story 3.1a: only the simple engine performs further compile-stage
-	// validation (key fields, traversal cycles, etc.). The stub full engine
-	// would have already rejected at Parse() — if we get here with
-	// ResolvedEngine=="full" then 3.1b's real engine ran and we trust it.
+	// Engine-specific post-parse validation (Story 3.1b-ii C2 convergence).
+	// We reuse the *simple.CompiledRule's parsed AST returned from the
+	// registry instead of re-parsing — eliminating the duplicate parse call.
+	// The Compile step still runs because it needs the key fields, which
+	// the engine-neutral SelectForLens contract doesn't carry.
 	if r.ResolvedEngine == ruleengine.EngineSimple {
-		query, err := simple.Parse(r.Match)
-		if err != nil {
-			return nil, fmt.Errorf("rule validation: invalid match query: %w", err)
+		sc, ok := compiled.(*simple.CompiledRule)
+		if !ok {
+			return nil, fmt.Errorf("rule validation: simple engine returned unexpected compiled type %T", compiled)
 		}
-		if _, err := simple.Compile(query, r.Into.Key); err != nil {
+		if _, err := simple.Compile(sc.Query, r.Into.Key); err != nil {
 			return nil, fmt.Errorf("rule validation: invalid query plan: %w", err)
 		}
 	}

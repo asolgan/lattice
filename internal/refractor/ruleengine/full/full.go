@@ -6,8 +6,6 @@
 package full
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"strings"
 
@@ -93,8 +91,7 @@ func (*Engine) Parse(ruleBody string) (ruleengine.CompiledRule, error) {
 	return &CompiledRule{Query: v.query}, nil
 }
 
-// Execute is a typed-error stub in 3.1b-i. 3.1b-ii replaces it with the
-// real executor (Core/Adjacency KV traversal, WITH grouping, projections).
-func (*Engine) Execute(_ context.Context, _ ruleengine.CompiledRule, _ ruleengine.EventContext) (ruleengine.ProjectionResult, error) {
-	return ruleengine.ProjectionResult{}, errors.New("full engine: executor not yet implemented (Story 3.1b-ii)")
-}
+// Execute is implemented in executor.go (Story 3.1b-ii). The interface-level
+// stub here is unused; the engine-neutral signature can't carry KV handles,
+// so the real entry point is ExecuteWith. Execute(ctx, cr, ec) returns a
+// typed error directing callers to use ExecuteWith.

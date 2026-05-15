@@ -639,6 +639,17 @@ func (p *Pipeline) processMsg(ctx context.Context, msg jetstream.Msg) (failure.C
 	}
 
 	// Evaluate.
+	//
+	// TODO(3.2 or later): C1 convergence — route through ruleengine.RuleEngine.
+	// The simple engine's execution surface returns []EvalResult with Delete
+	// semantics that the engine-neutral RuleEngine.Execute (single
+	// ProjectionResult per call) doesn't currently model. The full engine's
+	// production entry point (ExecuteWith) also takes KV handles directly.
+	// Reconciling both into one interface that drives this pipeline is a
+	// >5-file change across pipeline.go, fixture/runner.go, control/service.go,
+	// and the ruleengine package itself — outside Story 3.1b-ii scope per
+	// Decision #10 scope guard. Story 3.2 will land the full engine on the
+	// real Capability Lens pipeline; convergence happens there.
 	results, err := simple.Evaluate(ctx, p.currentPlan(), entry, p.adjKV, p.coreKV)
 	if err != nil {
 		slog.Error("pipeline: evaluate",

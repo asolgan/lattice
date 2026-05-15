@@ -35,12 +35,30 @@ type CompiledRule interface {
 }
 
 // EventContext carries the per-event inputs an engine needs to project a
-// result. Concrete shape is intentionally minimal in 3.1a; 3.1b will extend.
+// result. Concrete shape is intentionally minimal in 3.1a; 3.1b adds the
+// Parameters map used by the full engine to bind `$name` references.
 type EventContext struct {
 	// NodeKey is the KV key of the entity that changed (e.g. "agreement:42").
 	NodeKey string
 	// NodeProps holds the current properties of the changed entity.
 	NodeProps map[string]any
+	// Parameters resolves `$name` references in the rule body. Story 3.1b-ii.
+	// May be nil/empty — engines must tolerate missing maps and return a
+	// typed MissingParameterError when an unbound parameter is referenced.
+	Parameters map[string]any
+}
+
+// MissingParameterError indicates a `$name` reference in the rule body was
+// not bound by the caller via EventContext.Parameters. The full engine
+// surfaces this so the caller (Story 3.2) can distinguish a bug (missing
+// param wiring) from a graph-shape failure.
+type MissingParameterError struct {
+	Name string
+}
+
+// Error implements the error interface.
+func (e *MissingParameterError) Error() string {
+	return fmt.Sprintf("missing parameter $%s", e.Name)
 }
 
 // ProjectionResult is one row produced by Execute. 3.1a does not consume
