@@ -40,6 +40,25 @@ type LatticeHeartbeater struct {
 	// consumer_acked_seq) values for inclusion in the heartbeat metrics.
 	// May be nil before any lens is active.
 	LagProvider func() map[string]uint64
+
+	// LensLatencyProvider optionally returns per-Lens projection
+	// latency stats (Story 3.2b §6 / Contract #5 §5.2 / NFR-P3). The
+	// map is keyed by Lens canonical name (e.g. "capability",
+	// "capabilityRoleIndex") and produces {mean,p95,p99,count} as
+	// nanosecond-precision durations. May be nil before any lens
+	// activates with a latency buffer installed.
+	LensLatencyProvider func() map[string]LensLatencySnapshot
+}
+
+// LensLatencySnapshot is the per-Lens summary the heartbeater emits
+// under `health.refractor.<instance>.lens.<canonicalName>.*` (or as a
+// sub-map of the main heartbeat document — see emit()).
+// Count is the number of samples behind the mean/p95/p99 figures.
+type LensLatencySnapshot struct {
+	Count int           `json:"count"`
+	Mean  time.Duration `json:"mean"`
+	P95   time.Duration `json:"p95"`
+	P99   time.Duration `json:"p99"`
 }
 
 // NewLatticeHeartbeater wires the heartbeater. instance must be stable
@@ -93,6 +112,32 @@ func (h *LatticeHeartbeater) emit(ctx context.Context, status string) {
 				lensLags[k] = v
 			}
 			metrics["lensLags"] = lensLags
+		}
+	}
+	// Story 3.2b §6: per-Lens projection latency under metrics.lensLatency.
+	// Each entry carries {count, mean, p95, p99} expressed in nanoseconds
+	// (Go's native time.Duration JSON encoding). The heartbeater emits
+	// only Lenses that have recorded at least one sample since startup.
+	// Skipping zero-sample lenses avoids reporting misleading zeros on
+	// quiet instances per Contract #5 §5.2 ("issues array" convention).
+	if h.LensLatencyProvider != nil {
+		stats := h.LensLatencyProvider()
+		if len(stats) > 0 {
+			out := make(map[string]map[string]any, len(stats))
+			for name, s := range stats {
+				if s.Count == 0 {
+					continue
+				}
+				out[name] = map[string]any{
+					"count":  s.Count,
+					"meanNs": s.Mean.Nanoseconds(),
+					"p95Ns":  s.P95.Nanoseconds(),
+					"p99Ns":  s.P99.Nanoseconds(),
+				}
+			}
+			if len(out) > 0 {
+				metrics["lensLatency"] = out
+			}
 		}
 	}
 	doc := LatticeHealthDoc{

@@ -14,6 +14,7 @@ import (
 
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
 	"github.com/asolgan/lattice/internal/refractor/consumer"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // startJS launches an in-memory NATS server with JetStream and returns a
@@ -118,6 +119,157 @@ func TestBootstrapper_ReadyAfterProcessingMessages(t *testing.T) {
 		ids[i] = e.EdgeID
 	}
 	assert.ElementsMatch(t, []string{"e1", "e2"}, ids)
+}
+
+// stableNanoID returns a deterministic 20-char Contract #1 NanoID. We
+// use this so the link-bridge test produces real valid keys.
+func stableNanoIDForBootstrap(seedStr string) string {
+	alphabet := substrate.Alphabet
+	var seed uint64 = 1469598103934665603
+	for _, b := range []byte("bootstrap-test:" + seedStr) {
+		seed ^= uint64(b)
+		seed *= 1099511628211
+	}
+	var out [20]byte
+	for i := 0; i < 20; i++ {
+		out[i] = alphabet[seed%uint64(len(alphabet))]
+		seed = seed*1099511628211 + 0x9E3779B97F4A7C15
+	}
+	return string(out[:])
+}
+
+// TestBootstrapper_LinkEnvelopeBridge — Story 3.2b §1: a Contract #1 link
+// envelope (key `lnk.<srcType>.<srcId>.<linkName>.<dstType>.<dstId>`) must
+// produce TWO directional adjacency entries (outbound from src, inbound
+// from dst) when seen by the bootstrapper.
+func TestBootstrapper_LinkEnvelopeBridge(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS JetStream")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	js, _ := startJS(t)
+
+	coreKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-boot-link"})
+	require.NoError(t, err)
+	adjKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "adj-boot-link"})
+	require.NoError(t, err)
+
+	// Seed one Contract #1 link envelope: identity → holdsRole → role.
+	identityID := stableNanoIDForBootstrap("alice")
+	roleID := stableNanoIDForBootstrap("editor")
+	identityKey := substrate.VertexKey("identity", identityID)
+	roleKey := substrate.VertexKey("role", roleID)
+	linkKey := substrate.LinkKey("identity", identityID, "holdsRole", "role", roleID)
+
+	envelope := map[string]any{
+		"key":           linkKey,
+		"class":         "holdsRole",
+		"isDeleted":     false,
+		"youngerVertex": identityKey,
+		"olderVertex":   roleKey,
+		"localName":     "holdsRole",
+	}
+	body, err := json.Marshal(envelope)
+	require.NoError(t, err)
+	_, err = coreKV.Put(ctx, linkKey, body)
+	require.NoError(t, err)
+
+	b := consumer.NewBootstrapper(js, "core-boot-link", adjKV)
+	go func() { _ = b.Run(ctx) }()
+	select {
+	case <-b.Ready():
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for bootstrap Ready with link envelope")
+	}
+
+	// Source-side: identityID → outbound `holdsRole` → roleID.
+	srcEdges, err := adjacency.Neighbors(adjKV, identityID)
+	require.NoError(t, err)
+	require.Len(t, srcEdges, 1, "src adjacency must have one outbound edge")
+	assert.Equal(t, "outbound", srcEdges[0].Direction)
+	assert.Equal(t, "holdsRole", srcEdges[0].Name)
+	assert.Equal(t, roleID, srcEdges[0].OtherNodeID)
+	assert.Equal(t, "role", srcEdges[0].OtherType)
+	assert.Equal(t, linkKey, srcEdges[0].EdgeID)
+
+	// Dst-side: roleID → inbound `holdsRole` → identityID.
+	dstEdges, err := adjacency.Neighbors(adjKV, roleID)
+	require.NoError(t, err)
+	require.Len(t, dstEdges, 1, "dst adjacency must have one inbound edge")
+	assert.Equal(t, "inbound", dstEdges[0].Direction)
+	assert.Equal(t, identityID, dstEdges[0].OtherNodeID)
+	assert.Equal(t, "identity", dstEdges[0].OtherType)
+}
+
+// TestBootstrapper_LinkEnvelopeBridge_Tombstone — Story 3.2b §1: an
+// `isDeleted: true` link envelope must REMOVE both directional adjacency
+// entries when seen by the bootstrapper.
+func TestBootstrapper_LinkEnvelopeBridge_Tombstone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS JetStream")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	js, _ := startJS(t)
+
+	coreKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-boot-linktomb"})
+	require.NoError(t, err)
+	adjKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "adj-boot-linktomb"})
+	require.NoError(t, err)
+
+	identityID := stableNanoIDForBootstrap("bob")
+	roleID := stableNanoIDForBootstrap("viewer")
+	linkKey := substrate.LinkKey("identity", identityID, "holdsRole", "role", roleID)
+
+	// Pre-seed the live edge.
+	live := map[string]any{
+		"key":       linkKey,
+		"class":     "holdsRole",
+		"isDeleted": false,
+	}
+	body, err := json.Marshal(live)
+	require.NoError(t, err)
+	_, err = coreKV.Put(ctx, linkKey, body)
+	require.NoError(t, err)
+
+	// Then write the tombstone (overwrite). Both messages arrive in order
+	// via the durable consumer.
+	tomb := map[string]any{
+		"key":       linkKey,
+		"class":     "holdsRole",
+		"isDeleted": true,
+	}
+	body, err = json.Marshal(tomb)
+	require.NoError(t, err)
+	_, err = coreKV.Put(ctx, linkKey, body)
+	require.NoError(t, err)
+
+	b := consumer.NewBootstrapper(js, "core-boot-linktomb", adjKV)
+	go func() { _ = b.Run(ctx) }()
+	select {
+	case <-b.Ready():
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for bootstrap Ready with link tombstone")
+	}
+
+	// Both directional edges must be removed after the tombstone is
+	// processed. KV consumer DeliverAllPolicy + per-subject ordering
+	// guarantees the tombstone follows the live event.
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		srcEdges, _ := adjacency.Neighbors(adjKV, identityID)
+		dstEdges, _ := adjacency.Neighbors(adjKV, roleID)
+		if len(srcEdges) == 0 && len(dstEdges) == 0 {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	srcEdges, _ := adjacency.Neighbors(adjKV, identityID)
+	dstEdges, _ := adjacency.Neighbors(adjKV, roleID)
+	t.Fatalf("link tombstone did not remove both adjacency entries: src=%v dst=%v", srcEdges, dstEdges)
 }
 
 func TestBootstrapper_SkipsNonEdgeEntries(t *testing.T) {

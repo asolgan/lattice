@@ -41,10 +41,11 @@ const (
 )
 
 type pipelineEntry struct {
-	cancel   context.CancelFunc
-	done     chan struct{}
-	pipeline *pipeline.Pipeline
-	reporter *health.Reporter
+	cancel        context.CancelFunc
+	done          chan struct{}
+	pipeline      *pipeline.Pipeline
+	reporter      *health.Reporter
+	canonicalName string // Story 3.2b §6 — keyed under lensLatency in heartbeats.
 }
 
 func main() {
@@ -105,6 +106,34 @@ func main() {
 		registry = make(map[string]*pipelineEntry)
 		wg       sync.WaitGroup
 	)
+
+	// Story 3.2b §6 — per-Lens latency stats provider for the heartbeater.
+	// Falls back to a no-op when no pipeline has a latency buffer.
+	hb.LensLatencyProvider = func() map[string]health.LensLatencySnapshot {
+		mu.Lock()
+		defer mu.Unlock()
+		out := make(map[string]health.LensLatencySnapshot, len(registry))
+		for _, entry := range registry {
+			if entry.pipeline == nil || entry.canonicalName == "" {
+				continue
+			}
+			buf := entry.pipeline.LatencyBuffer()
+			if buf == nil {
+				continue
+			}
+			snap := buf.Snapshot()
+			if snap.Count == 0 {
+				continue
+			}
+			out[entry.canonicalName] = health.LensLatencySnapshot{
+				Count: snap.Count,
+				Mean:  snap.Mean,
+				P95:   snap.P95,
+				P99:   snap.P99,
+			}
+		}
+		return out
+	}
 
 	// LagProvider for the heartbeater — read consumer NumPending per lens.
 	hb.LagProvider = func() map[string]uint64 {
@@ -226,14 +255,25 @@ func main() {
 		case "capability":
 			lensDefKey := "vtx.meta." + r.ID
 			p.SetEnvelopeFn(capabilityenv.NewWrapper(lensDefKey, projectionRevision))
-			logger.Info("capability envelope wrapper installed", "lensId", r.ID, "lensDefKey", lensDefKey)
+			// Story 3.2b §3 — cross-vertex fan-out enumerator. Non-identity
+			// CDC events are expanded into the set of affected actors via
+			// adjacency BFS (depth + actor-set caps per Decision #3).
+			p.SetActorEnumerator(pipeline.NewActorEnumerator(adjKV, coreKV, capabilityenv.IdentityType))
+			// Story 3.2b §6 — per-Lens latency ring buffer for NFR-P3
+			// heartbeat emission (Decision #5).
+			p.SetLatencyBuffer(pipeline.NewLatencyRingBuffer(pipeline.DefaultLatencyBufferSize))
+			logger.Info("capability envelope + fan-out + latency installed",
+				"lensId", r.ID, "lensDefKey", lensDefKey)
 		case "capabilityRoleIndex":
-			// Story 3.2a Decision #12 — defer full activation to 3.2b.
-			// Install a null-key skipper so primordial CDC events that
-			// the cypher can't produce a real operationType row for don't
-			// crash the pipeline with "invalid key" writes.
-			p.SetEnvelopeFn(capabilityenv.NewNullKeySkipper("operationType"))
-			logger.Info("capabilityRoleIndex null-key skipper installed", "lensId", r.ID)
+			// Story 3.2b §2 — full activation. The envelope rewrites
+			// each row into Contract #6 §6.1 `cap.role-by-operation.<op>`
+			// shape and skips rows whose operationType is null/empty
+			// (replaces the 3.2a NullKeySkipper shim).
+			p.SetEnvelopeFn(capabilityenv.NewRoleIndexWrapper())
+			// Latency buffer also installed for the secondary Lens — the
+			// heartbeater emits stats per Lens regardless of envelope shape.
+			p.SetLatencyBuffer(pipeline.NewLatencyRingBuffer(pipeline.DefaultLatencyBufferSize))
+			logger.Info("capabilityRoleIndex envelope installed", "lensId", r.ID)
 		}
 
 		if err := manager.Add(ctx, r.ID); err != nil {
@@ -249,7 +289,13 @@ func main() {
 		done := make(chan struct{})
 
 		mu.Lock()
-		registry[r.ID] = &pipelineEntry{cancel: cancel, done: done, pipeline: p, reporter: reporter}
+		registry[r.ID] = &pipelineEntry{
+			cancel:        cancel,
+			done:          done,
+			pipeline:      p,
+			reporter:      reporter,
+			canonicalName: r.CanonicalName,
+		}
 		mu.Unlock()
 
 		wg.Add(1)
@@ -289,28 +335,46 @@ func main() {
 			entry.reporter.SetRuleEngine(newLens.ResolvedEngine)
 			logger.Info("lens INTO hot-reloaded", "lensId", newLens.ID)
 		case lens.MatchChange:
-			q, err := simple.Parse(newLens.Match)
-			if err != nil {
-				logger.Error("parse updated match", "lensId", newLens.ID, "err", err)
-				return
-			}
-			newPlan, err := simple.Compile(q, newLens.Into.Key)
-			if err != nil {
-				logger.Error("compile updated plan", "lensId", newLens.ID, "err", err)
-				return
-			}
+			// Story 3.2b §8 (Decision #8): mirror startPipeline's per-engine
+			// routing for hot-reload. The 3.2a updateCB only handled the
+			// simple-engine plan path; a full-engine lens whose MATCH
+			// changed would silently fall back to a stale stale plan.
 			mu.Lock()
 			entry, ok := registry[newLens.ID]
 			mu.Unlock()
-			if ok {
+			if !ok {
+				logger.Warn("MATCH update on unknown lens", "lensId", newLens.ID)
+				return
+			}
+			switch newLens.ResolvedEngine {
+			case ruleengine.EngineFull:
+				// CoreKVSource has already compiled the new rule; reuse it.
+				if newLens.CompiledRule == nil {
+					logger.Error("full engine MATCH update missing CompiledRule",
+						"lensId", newLens.ID)
+					return
+				}
+				entry.pipeline.UseFullEngine(fullEngine, newLens.CompiledRule)
+				logger.Info("lens MATCH hot-reloaded (full engine)", "lensId", newLens.ID)
+			default:
+				q, err := simple.Parse(newLens.Match)
+				if err != nil {
+					logger.Error("parse updated match", "lensId", newLens.ID, "err", err)
+					return
+				}
+				newPlan, err := simple.Compile(q, newLens.Into.Key)
+				if err != nil {
+					logger.Error("compile updated plan", "lensId", newLens.ID, "err", err)
+					return
+				}
 				if err := entry.pipeline.HotReloadPlan(newPlan); err != nil {
 					logger.Error("hot-reload plan", "lensId", newLens.ID, "err", err)
 				} else {
-					logger.Info("lens MATCH hot-reloaded", "lensId", newLens.ID)
+					logger.Info("lens MATCH hot-reloaded (simple engine)", "lensId", newLens.ID)
 				}
-				entry.reporter.SetRuleSequence(newLens.Sequence)
-				entry.reporter.SetRuleEngine(newLens.ResolvedEngine)
 			}
+			entry.reporter.SetRuleSequence(newLens.Sequence)
+			entry.reporter.SetRuleEngine(newLens.ResolvedEngine)
 		}
 	}
 

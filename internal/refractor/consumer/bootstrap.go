@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
 	"github.com/asolgan/lattice/internal/refractor/subjects"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 const (
@@ -25,23 +27,27 @@ const (
 // After adjacency is updated for a node, rule pipelines are notified via their
 // adjacency KV watch (ADR-16) — no writes to Core KV are required.
 type Bootstrapper struct {
-	js         jetstream.JetStream
-	streamName string
-	filterSubj string
-	adjKV      jetstream.KeyValue
-	ready      chan struct{}
-	once       sync.Once
+	js           jetstream.JetStream
+	streamName   string
+	filterSubj   string
+	bucket       string
+	subjectPrefx string // "$KV.<bucket>." — strip this from msg.Subject() to recover the Core KV key
+	adjKV        jetstream.KeyValue
+	ready        chan struct{}
+	once         sync.Once
 }
 
 // NewBootstrapper creates a Bootstrapper that reads from coreKVBucket via the
 // dedicated adjacency durable consumer and writes edge index entries to adjKV.
 func NewBootstrapper(js jetstream.JetStream, coreKVBucket string, adjKV jetstream.KeyValue) *Bootstrapper {
 	return &Bootstrapper{
-		js:         js,
-		streamName: subjects.CoreKVStream(coreKVBucket),
-		filterSubj: subjects.CoreKVFilter(coreKVBucket),
-		adjKV:      adjKV,
-		ready:      make(chan struct{}),
+		js:           js,
+		streamName:   subjects.CoreKVStream(coreKVBucket),
+		filterSubj:   subjects.CoreKVFilter(coreKVBucket),
+		bucket:       coreKVBucket,
+		subjectPrefx: "$KV." + coreKVBucket + ".",
+		adjKV:        adjKV,
+		ready:        make(chan struct{}),
 	}
 }
 
@@ -130,12 +136,31 @@ func (b *Bootstrapper) drain(ctx context.Context, mc jetstream.MessagesContext) 
 }
 
 // processMsg applies the appropriate disposition to a single Core KV message.
+//
+// Story 3.2b — Contract #1 link envelope bridge (Decision #1 / Phase A):
+// link envelopes (key shape `lnk.<srcType>.<srcId>.<linkName>.<dstType>.<dstId>`)
+// don't carry the legacy `nodeId` field, so they were silently skipped under the
+// 3.2a code path. The bridge detects link envelopes by key shape, parses the
+// 6-segment key, reads the envelope's `isDeleted` flag, and emits TWO
+// adjacency.CoreKVEvents — one outbound from src, one inbound from dst —
+// preserving the same shape the existing Materializer-style edge events use
+// so adjacency.Build is unchanged.
 func (b *Bootstrapper) processMsg(ctx context.Context, msg jetstream.Msg) {
 	// NATS KV tombstone entries (DEL/PURGE operations) have empty bodies — ack and skip.
 	if len(msg.Data()) == 0 {
 		if ackErr := msg.Ack(); ackErr != nil {
 			slog.Error("adjacency bootstrap: ack tombstone", "err", ackErr)
 		}
+		return
+	}
+
+	// Recover the Core KV key from the JetStream subject ($KV.<bucket>.<key>).
+	key := strings.TrimPrefix(msg.Subject(), b.subjectPrefx)
+
+	// Branch on Contract #1 §1.5 key shape. Link envelopes feed the bridge;
+	// everything else falls through to the legacy `CoreKVEvent` path.
+	if substrate.ClassifyKey(key) == substrate.KindLink {
+		b.processLinkEnvelope(msg, key)
 		return
 	}
 
@@ -169,6 +194,74 @@ func (b *Bootstrapper) processMsg(ctx context.Context, msg jetstream.Msg) {
 
 	if ackErr := msg.Ack(); ackErr != nil {
 		slog.Error("adjacency bootstrap: ack failed", "err", ackErr)
+	}
+}
+
+// processLinkEnvelope is the Story 3.2b §1 link bridge — it translates one
+// Contract #1 link envelope into two directional adjacency.CoreKVEvents
+// (outbound from src, inbound from dst) and feeds them to adjacency.Build.
+// The link key is its own EdgeID (Contract #1 link keys are globally unique).
+func (b *Bootstrapper) processLinkEnvelope(msg jetstream.Msg, key string) {
+	srcType, srcID, linkName, dstType, dstID, ok := substrate.ParseLinkKey(key)
+	if !ok {
+		// Defensive — ClassifyKey already gated on this; never reachable.
+		slog.Error("adjacency bootstrap: link bridge: ParseLinkKey failed after ClassifyKey pass", "key", key)
+		if termErr := msg.Term(); termErr != nil {
+			slog.Error("adjacency bootstrap: term failed", "err", termErr)
+		}
+		return
+	}
+
+	// Pull the `isDeleted` field out of the value envelope. We only need
+	// that one field; an inline struct keeps the bridge cheap and decoupled
+	// from the full LinkEnvelope shape.
+	var meta struct {
+		IsDeleted bool `json:"isDeleted"`
+	}
+	if jsonErr := json.Unmarshal(msg.Data(), &meta); jsonErr != nil {
+		slog.Error("adjacency bootstrap: link bridge: unmarshal envelope", "err", jsonErr, "key", key)
+		if termErr := msg.Term(); termErr != nil {
+			slog.Error("adjacency bootstrap: term failed", "err", termErr)
+		}
+		return
+	}
+
+	// Emit both directional events. The link key serves as a unique EdgeID
+	// per Decision #1 (Contract #1 link keys are globally unique).
+	outbound := adjacency.CoreKVEvent{
+		CoreKvKey:   key,
+		EdgeID:      key,
+		Name:        linkName,
+		Direction:   "outbound",
+		NodeID:      srcID,
+		OtherNodeID: dstID,
+		OtherType:   dstType,
+		IsDeleted:   meta.IsDeleted,
+	}
+	inbound := adjacency.CoreKVEvent{
+		CoreKvKey:   key,
+		EdgeID:      key,
+		Name:        linkName,
+		Direction:   "inbound",
+		NodeID:      dstID,
+		OtherNodeID: srcID,
+		OtherType:   srcType,
+		IsDeleted:   meta.IsDeleted,
+	}
+
+	for _, evt := range []adjacency.CoreKVEvent{outbound, inbound} {
+		if buildErr := adjacency.Build(b.adjKV, evt); buildErr != nil {
+			slog.Error("adjacency bootstrap: link bridge: build",
+				"err", buildErr, "key", key, "nodeId", evt.NodeID, "direction", evt.Direction)
+			if nakErr := msg.Nak(); nakErr != nil {
+				slog.Error("adjacency bootstrap: nak failed", "err", nakErr)
+			}
+			return
+		}
+	}
+
+	if ackErr := msg.Ack(); ackErr != nil {
+		slog.Error("adjacency bootstrap: link bridge: ack failed", "err", ackErr)
 	}
 }
 

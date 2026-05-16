@@ -61,6 +61,20 @@ type Pipeline struct {
 	fullEngine *full.Engine
 	fullCR     ruleengine.CompiledRule
 	envelopeFn EnvelopeFn
+
+	// Story 3.2b §3 (Decision #3): cross-vertex fan-out.
+	// When non-nil and engineKind == Full, evaluateForEntry consults
+	// this enumerator on every CDC event whose vertex type does not
+	// match the enumerator's actorType, expanding the event into the
+	// set of affected actors and re-executing the cypher per actor.
+	// Nil leaves the legacy single-execute path (3.2a behaviour).
+	actorEnumerator *ActorEnumerator
+
+	// Story 3.2b §6 — per-event projection latency ring buffer.
+	// Captures the (CDC → projection-write) latency for each evaluated
+	// event so the heartbeat can compute mean/p95/p99 per Lens. Nil
+	// when latency emission is disabled.
+	latencyBuf *LatencyRingBuffer
 	adapterMu    sync.RWMutex    // protects adpt for concurrent hot-reload
 	adpt         adapter.Adapter // access via currentAdapter(); swap via HotReloadInto
 	planMu       sync.RWMutex   // protects plan for concurrent hot-reload
@@ -169,6 +183,28 @@ func (p *Pipeline) UseFullEngine(eng *full.Engine, cr ruleengine.CompiledRule) {
 // Phase C). Pass nil to clear. Must be called before Run.
 func (p *Pipeline) SetEnvelopeFn(fn EnvelopeFn) {
 	p.envelopeFn = fn
+}
+
+// SetActorEnumerator installs the cross-vertex fan-out enumerator for
+// the full-engine path (Story 3.2b §3 / Decision #3). When set,
+// evaluateForEntry expands every non-actor CDC event into the set of
+// affected actors and re-executes the cypher per actor.
+// Pass nil to disable. Must be called before Run.
+func (p *Pipeline) SetActorEnumerator(en *ActorEnumerator) {
+	p.actorEnumerator = en
+}
+
+// SetLatencyBuffer installs the per-Lens latency ring buffer
+// (Story 3.2b §6 / Decision #5). Pass nil to disable. Must be called
+// before Run.
+func (p *Pipeline) SetLatencyBuffer(buf *LatencyRingBuffer) {
+	p.latencyBuf = buf
+}
+
+// LatencyBuffer returns the installed ring buffer (or nil). Used by
+// the heartbeater to summarise per-Lens latency at tick.
+func (p *Pipeline) LatencyBuffer() *LatencyRingBuffer {
+	return p.latencyBuf
 }
 
 // currentAdapter returns the active adapter under a read lock.

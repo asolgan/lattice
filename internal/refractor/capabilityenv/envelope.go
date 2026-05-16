@@ -111,6 +111,47 @@ func emptyArrayIfNil(v any) any {
 	return v
 }
 
+// NewRoleIndexWrapper returns the EnvelopeFn for the secondary
+// capabilityRoleIndex lens (Contract #6 §6.1 / Story 3.2b §2).
+//
+// Input row (produced by the cypher RETURN):
+//
+//	{operationType: "read", roles: [...], projectedAt: "..."}
+//
+// Output (Contract #6 §6.1 secondary-key shape):
+//
+//	{key: "cap.role-by-operation.<operationType>",
+//	 projectedAt: <projectedAt>,
+//	 roles: [...]}
+//
+// Rows whose operationType is null/empty are dropped (ErrSkipProjection) —
+// the executor's `collect` over zero MATCH bindings produces such rows
+// when the CDC event doesn't touch a role/permission grant.
+func NewRoleIndexWrapper() pipeline.EnvelopeFn {
+	return func(row map[string]any, keys map[string]any, params map[string]any) (map[string]any, map[string]any, error) {
+		op, _ := row["operationType"].(string)
+		if op == "" {
+			return nil, nil, pipeline.ErrSkipProjection
+		}
+		projectedAt, _ := row["projectedAt"].(string)
+		if projectedAt == "" {
+			projectedAt, _ = params["projectedAt"].(string)
+		}
+		envKey := "cap.role-by-operation." + op
+		envelope := map[string]any{
+			"key":         envKey,
+			"projectedAt": projectedAt,
+			"roles":       emptyArrayIfNil(row["roles"]),
+		}
+		// The natskv adapter constructs the bucket key from the seeded
+		// Into.Key list, which for capabilityRoleIndex is ["operationType"].
+		// Set that field to the full Contract #6 §6.1 key so the bucket
+		// entry lands at `cap.role-by-operation.<op>` (mirrors the
+		// primary lens's `keys["key"] = "cap.identity.<id>"` convention).
+		return envelope, map[string]any{"operationType": envKey}, nil
+	}
+}
+
 // NewNullKeySkipper returns an EnvelopeFn that passes rows through
 // verbatim but returns ErrSkipProjection when the configured key field
 // resolves to nil/empty. Used for the secondary capabilityRoleIndex
