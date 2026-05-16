@@ -21,8 +21,11 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/asolgan/lattice/internal/refractor/adapter"
+	"github.com/asolgan/lattice/internal/refractor/capabilityenv"
 	"github.com/asolgan/lattice/internal/refractor/consumer"
 	"github.com/asolgan/lattice/internal/refractor/control"
+	"github.com/asolgan/lattice/internal/refractor/ruleengine"
+	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/refractor/health"
 	"github.com/asolgan/lattice/internal/refractor/lens"
@@ -124,9 +127,16 @@ func main() {
 	buildAdapter := func(r *lens.Rule) (adapter.Adapter, error) {
 		switch r.Into.Target {
 		case "nats_kv":
-			targetKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: r.Into.Bucket})
+			// Story 3.2a Phase D: bootstrap pre-provisions buckets
+			// (e.g. capability-kv). Try Open before Create so primordial
+			// lenses can attach to existing buckets instead of failing
+			// with "bucket name already in use".
+			targetKV, err := js.KeyValue(ctx, r.Into.Bucket)
 			if err != nil {
-				return nil, err
+				targetKV, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: r.Into.Bucket})
+				if err != nil {
+					return nil, err
+				}
 			}
 			return adapter.New(targetKV, r.Into.Key)
 		case "postgres":
@@ -145,16 +155,40 @@ func main() {
 		}
 	}
 
-	startPipeline := func(r *lens.Rule) {
-		q, err := simple.Parse(r.Match)
-		if err != nil {
-			logger.Error("parse lens cypher", "lensId", r.ID, "err", err)
-			return
+	// Story 3.2a Phase B/D — share a single full.Engine across all
+	// full-engine lenses (the engine itself is stateless; per-rule state
+	// lives in the CompiledRule passed to UseFullEngine).
+	fullEngine := full.New()
+
+	// projectionRevisionFn reads the current Core KV revision for an
+	// arbitrary key. Used by the Capability envelope wrapper to populate
+	// `projectedFromRevisions`. Errors and absent keys collapse to 0,
+	// which the envelope drops (Story 3.2a Decision #7: partial
+	// coverage acceptable).
+	projectionRevision := func(k string) uint64 {
+		entry, err := coreKV.Get(context.Background(), k)
+		if err != nil || entry == nil {
+			return 0
 		}
-		plan, err := simple.Compile(q, r.Into.Key)
-		if err != nil {
-			logger.Error("compile lens query plan", "lensId", r.ID, "err", err)
-			return
+		return entry.Revision()
+	}
+
+	startPipeline := func(r *lens.Rule) {
+		// For the simple engine we still compile the plan (legacy path).
+		// For the full engine we only need a placeholder — evaluateForEntry
+		// switches on engineKind and never touches the plan.
+		var plan *simple.QueryPlan
+		if r.ResolvedEngine == ruleengine.EngineSimple || r.ResolvedEngine == "" {
+			q, err := simple.Parse(r.Match)
+			if err != nil {
+				logger.Error("parse lens cypher", "lensId", r.ID, "err", err)
+				return
+			}
+			plan, err = simple.Compile(q, r.Into.Key)
+			if err != nil {
+				logger.Error("compile lens query plan", "lensId", r.ID, "err", err)
+				return
+			}
 		}
 		adpt, err := buildAdapter(r)
 		if err != nil {
@@ -172,6 +206,35 @@ func main() {
 			return
 		}
 		p.SetConsumerResetter(manager)
+
+		// Wire full engine when selected. Story 3.2a — Decision #2.
+		if r.ResolvedEngine == ruleengine.EngineFull {
+			if r.CompiledRule == nil {
+				logger.Error("full engine selected but CompiledRule is nil", "lensId", r.ID)
+				return
+			}
+			p.UseFullEngine(fullEngine, r.CompiledRule)
+		}
+
+		// Story 3.2a Phase C — install Capability KV envelope for the
+		// primary capability lens. The canonical name is the only stable
+		// identifier between the seeded LensDefinition and the runtime
+		// Rule. capabilityRoleIndex has a different RETURN shape and
+		// stays out of envelope wrapping for 3.2a (Story 3.2b will
+		// extend coverage if needed).
+		switch r.CanonicalName {
+		case "capability":
+			lensDefKey := "vtx.meta." + r.ID
+			p.SetEnvelopeFn(capabilityenv.NewWrapper(lensDefKey, projectionRevision))
+			logger.Info("capability envelope wrapper installed", "lensId", r.ID, "lensDefKey", lensDefKey)
+		case "capabilityRoleIndex":
+			// Story 3.2a Decision #12 — defer full activation to 3.2b.
+			// Install a null-key skipper so primordial CDC events that
+			// the cypher can't produce a real operationType row for don't
+			// crash the pipeline with "invalid key" writes.
+			p.SetEnvelopeFn(capabilityenv.NewNullKeySkipper("operationType"))
+			logger.Info("capabilityRoleIndex null-key skipper installed", "lensId", r.ID)
+		}
 
 		if err := manager.Add(ctx, r.ID); err != nil {
 			logger.Error("manager add consumer", "lensId", r.ID, "err", err)

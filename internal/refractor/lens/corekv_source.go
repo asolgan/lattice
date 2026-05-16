@@ -11,6 +11,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -68,6 +69,11 @@ type LensSpec struct {
 	TargetConfig  json.RawMessage `json:"targetConfig"`  // adapter-specific JSON object
 	CypherRule    string          `json:"cypherRule"`    // openCypher MATCH/RETURN
 	OutputSchema  json.RawMessage `json:"outputSchema"`  // JSON schema for projection rows (passthrough)
+	// Engine is the explicit engine selector. "" (absent) triggers the
+	// simple-then-full fallback. Story 3.2a — set to "full" on the
+	// primordial Capability Lens specs so the full engine handles them
+	// without depending on simple's parser to fail first.
+	Engine string `json:"engine,omitempty"`
 }
 
 // TargetPostgresConfig is the expected shape of LensSpec.TargetConfig
@@ -255,9 +261,22 @@ func (s *CoreKVSource) handle(entry jetstream.KeyValueEntry) {
 
 // dispatchSpec parses a LensSpec body, translates it to a *Rule, and
 // invokes load or update callbacks as appropriate.
+//
+// The body may either be a bare LensSpec JSON object (the legacy
+// Processor-written form) or a substrate aspect envelope whose `data`
+// field carries the LensSpec (the form bootstrap-seeded primordial
+// lenses use — Story 3.2a Phase D). Probe the shape: if the body
+// unmarshals to a struct with a non-empty `cypherRule`, take it
+// verbatim; otherwise look for `data.cypherRule` and re-decode from
+// that sub-object.
 func (s *CoreKVSource) dispatchSpec(lensID string, body []byte, revision uint64) {
+	specBody, err := unwrapSpecBody(body)
+	if err != nil {
+		s.logger.Error("lens spec unwrap failed", "lensId", lensID, "err", err)
+		return
+	}
 	var spec LensSpec
-	if err := json.Unmarshal(body, &spec); err != nil {
+	if err := json.Unmarshal(specBody, &spec); err != nil {
 		s.logger.Error("lens spec unmarshal failed", "lensId", lensID, "err", err)
 		return
 	}
@@ -301,9 +320,11 @@ func translateSpec(spec *LensSpec) (*Rule, error) {
 	}
 
 	r := &Rule{
-		ID:    spec.ID,
-		Team:  "lattice", // Story 2.1 retains a constant Team (see MORPH-DEVIATIONS Deviation 4)
-		Match: spec.CypherRule,
+		ID:            spec.ID,
+		Team:          "lattice", // Story 2.1 retains a constant Team (see MORPH-DEVIATIONS Deviation 4)
+		Match:         spec.CypherRule,
+		RuleEngine:    spec.Engine,
+		CanonicalName: spec.CanonicalName,
 	}
 
 	switch spec.TargetType {
@@ -339,7 +360,46 @@ func translateSpec(spec *LensSpec) (*Rule, error) {
 	default:
 		return nil, fmt.Errorf("lens %q: unknown targetType %q (expected postgres|nats_kv)", spec.ID, spec.TargetType)
 	}
+
+	// Story 3.2a: resolve the engine through the registry so the pipeline
+	// can route per-engine (Decision #2). On success populate
+	// ResolvedEngine + CompiledRule; on failure surface the SelectionError
+	// to the caller (dispatchSpec logs and drops the spec).
+	_, compiled, attempted, selErr := defaultRegistry.SelectForLens(ruleengine.LensDefinition{
+		ID:         r.ID,
+		RuleBody:   r.Match,
+		RuleEngine: r.RuleEngine,
+	})
+	r.AttemptedEngines = attempted
+	if selErr != nil {
+		return nil, fmt.Errorf("lens %q: engine selection: %w", spec.ID, selErr)
+	}
+	r.ResolvedEngine = attempted[len(attempted)-1]
+	r.CompiledRule = compiled
 	return r, nil
+}
+
+// unwrapSpecBody returns either the original body (bare LensSpec) or
+// the `data` sub-object (when the body is a substrate aspect envelope
+// that wraps the LensSpec under `data`). Per Story 3.2a Phase D the
+// primordial bootstrap seeds LensSpec via the aspect envelope path.
+func unwrapSpecBody(body []byte) ([]byte, error) {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return nil, fmt.Errorf("probe spec body: %w", err)
+	}
+	// Bare LensSpec — has cypherRule at top level.
+	if _, ok := probe["cypherRule"]; ok {
+		return body, nil
+	}
+	// Envelope-wrapped — pull `data`.
+	if data, ok := probe["data"]; ok {
+		return data, nil
+	}
+	// Fall through — return original; the LensSpec unmarshal will
+	// produce the "cypherRule required" downstream error which is
+	// still the right thing to log.
+	return body, nil
 }
 
 func parseTimeoutOrDefault(s string, fallback time.Duration) time.Duration {

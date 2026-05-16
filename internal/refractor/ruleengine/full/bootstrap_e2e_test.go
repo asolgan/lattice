@@ -33,59 +33,60 @@ func TestBootstrap_CapabilityLensE2E(t *testing.T) {
 		t.Skip("requires NATS")
 	}
 	adjKV, coreKV := startExecKVs(t)
+	reg := newFixtureRegistry()
 
 	// Identities
-	putVertex(t, coreKV, "alice", "identity", map[string]any{"name": "alice"})
-	putVertex(t, coreKV, "bob", "identity", map[string]any{"name": "bob"})
+	putVertex(t, reg, coreKV, "alice", "identity", map[string]any{"name": "alice"})
+	putVertex(t, reg, coreKV, "bob", "identity", map[string]any{"name": "bob"})
 
 	// Roles + permissions
-	putVertex(t, coreKV, "admin", "role", map[string]any{"canonicalName": "admin"})
-	putVertex(t, coreKV, "permread", "permission", map[string]any{
+	putVertex(t, reg, coreKV, "admin", "role", map[string]any{"canonicalName": "admin"})
+	putVertex(t, reg, coreKV, "permread", "permission", map[string]any{
 		"operationType": "read", "scope": "any",
 	})
-	putVertex(t, coreKV, "permwrite", "permission", map[string]any{
+	putVertex(t, reg, coreKV, "permwrite", "permission", map[string]any{
 		"operationType": "write", "scope": "owned",
 	})
-	putEdge(t, adjKV, "holdsRole", "alice", "admin")
-	putEdge(t, adjKV, "grantsPermission", "admin", "permread")
-	putEdge(t, adjKV, "grantsPermission", "admin", "permwrite")
+	putEdge(t, reg, adjKV, "holdsRole", "alice", "admin")
+	putEdge(t, reg, adjKV, "grantsPermission", "admin", "permread")
+	putEdge(t, reg, adjKV, "grantsPermission", "admin", "permwrite")
 
 	// Locations + services
-	putVertex(t, coreKV, "hq", "location", nil)
-	putVertex(t, coreKV, "svcok", "service", map[string]any{"class": "service"})
-	putVertex(t, coreKV, "svcblocked", "service", map[string]any{"class": "service"})
-	putEdge(t, adjKV, "containedIn", "alice", "hq")
-	putEdge(t, adjKV, "availableAt", "hq", "svcok")
-	putEdge(t, adjKV, "availableAt", "hq", "svcblocked")
-	putEdge(t, adjKV, "unavailableAt", "hq", "svcblocked")
-	putVertex(t, coreKV, "opread", "operation", map[string]any{"operationType": "read"})
-	putEdge(t, adjKV, "permitsOperation", "svcok", "opread")
+	putVertex(t, reg, coreKV, "hq", "location", nil)
+	putVertex(t, reg, coreKV, "svcok", "service", map[string]any{"class": "service"})
+	putVertex(t, reg, coreKV, "svcblocked", "service", map[string]any{"class": "service"})
+	putEdge(t, reg, adjKV, "containedIn", "alice", "hq")
+	putEdge(t, reg, adjKV, "availableAt", "hq", "svcok")
+	putEdge(t, reg, adjKV, "availableAt", "hq", "svcblocked")
+	putEdge(t, reg, adjKV, "unavailableAt", "hq", "svcblocked")
+	putVertex(t, reg, coreKV, "opread", "operation", map[string]any{"operationType": "read"})
+	putEdge(t, reg, adjKV, "permitsOperation", "svcok", "opread")
 
 	// Tasks (ephemeral grants)
 	future := time.Now().Add(24 * time.Hour).Unix()
 	past := time.Now().Add(-24 * time.Hour).Unix()
-	putVertex(t, coreKV, "task1", "task", map[string]any{
+	putVertex(t, reg, coreKV, "task1", "task", map[string]any{
 		"expiresAt":            float64(future),
 		"grantedOperationType": "delete",
 		"targetKey":            "doc1",
 	})
-	putVertex(t, coreKV, "taskexpired", "task", map[string]any{
+	putVertex(t, reg, coreKV, "taskexpired", "task", map[string]any{
 		"expiresAt":            float64(past),
 		"grantedOperationType": "admin",
 		"targetKey":            "doc2",
 	})
-	putEdge(t, adjKV, "assignedTo", "task1", "alice")
-	putEdge(t, adjKV, "assignedTo", "taskexpired", "alice")
+	putEdge(t, reg, adjKV, "assignedTo", "task1", "alice")
+	putEdge(t, reg, adjKV, "assignedTo", "taskexpired", "alice")
 
 	// Reports-to chain
-	putVertex(t, coreKV, "task2", "task", map[string]any{
+	putVertex(t, reg, coreKV, "task2", "task", map[string]any{
 		"expiresAt":            float64(future),
 		"grantedOperationType": "approve",
 		"targetKey":            "doc3",
 	})
-	putEdge(t, adjKV, "assignedTo", "task2", "bob")
+	putEdge(t, reg, adjKV, "assignedTo", "task2", "bob")
 	// alice reports to bob: identity -[:reportsTo]-> report; bob is the manager.
-	putEdge(t, adjKV, "reportsTo", "alice", "bob")
+	putEdge(t, reg, adjKV, "reportsTo", "alice", "bob")
 
 	body := bootstrap.CapabilityLensDefinition().CypherRule
 	eng := New()
@@ -93,8 +94,9 @@ func TestBootstrap_CapabilityLensE2E(t *testing.T) {
 	require.NoError(t, err, "bootstrap cypher must parse")
 
 	now := time.Now().Unix()
+	aliceKey := vtxKey(reg, "alice")
 	params := map[string]any{
-		"actorKey":    "alice",
+		"actorKey":    aliceKey,
 		"now":         float64(now),
 		"projectedAt": time.Now().UTC().Format(time.RFC3339),
 	}
@@ -118,7 +120,7 @@ func TestBootstrap_CapabilityLensE2E(t *testing.T) {
 	row := results[0].Values
 
 	// actorKey
-	require.Equal(t, "alice", row["actorKey"])
+	require.Equal(t, aliceKey, row["actorKey"])
 
 	// platformPermissions: collect of {operationType, scope} for permread+permwrite.
 	pp, ok := row["platformPermissions"].([]any)
@@ -136,10 +138,10 @@ func TestBootstrap_CapabilityLensE2E(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if m["service"] == "svcok" {
+		if m["service"] == vtxKey(reg, "svcok") {
 			foundSvcOk = true
 		}
-		if m["service"] == "svcblocked" {
+		if m["service"] == vtxKey(reg, "svcblocked") {
 			foundSvcBlocked = true
 		}
 	}
@@ -156,13 +158,13 @@ func TestBootstrap_CapabilityLensE2E(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if m["taskKey"] == "task1" {
+		if m["taskKey"] == vtxKey(reg, "task1") {
 			foundTask1 = true
 		}
-		if m["taskKey"] == "task2" {
+		if m["taskKey"] == vtxKey(reg, "task2") {
 			foundTask2 = true
 		}
-		if m["taskKey"] == "taskexpired" {
+		if m["taskKey"] == vtxKey(reg, "taskexpired") {
 			foundExpired = true
 		}
 	}

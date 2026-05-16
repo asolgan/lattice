@@ -82,11 +82,17 @@ type RetryConfig struct {
 
 // Rule is the parsed, validated representation of a Materializer rule.
 type Rule struct {
-	ID    string      `yaml:"id"`
-	Team  string      `yaml:"team"`
-	Match string      `yaml:"match"`
-	Into  IntoConfig  `yaml:"into"`
-	Retry RetryConfig `yaml:"retry"`
+	ID            string      `yaml:"id"`
+	Team          string      `yaml:"team"`
+	Match         string      `yaml:"match"`
+	Into          IntoConfig  `yaml:"into"`
+	Retry         RetryConfig `yaml:"retry"`
+	// CanonicalName mirrors the LensSpec.canonicalName field — used by
+	// downstream wiring (e.g. the cmd/refractor startPipeline path) to
+	// select target-specific envelopes (Story 3.2a Phase C). Not
+	// authoritative for routing; pipeline behaviour stays canonical-
+	// name-agnostic except for envelope selection.
+	CanonicalName string `yaml:"-"`
 
 	// RuleEngine is the explicit engine selector (Story 3.1a). Valid values:
 	//   "simple"  — v1 Materializer-derived parser (only engine functional in 3.1a).
@@ -98,6 +104,15 @@ type Rule struct {
 	// validation. Populated by Parse(); blank until Parse() returns successfully.
 	// Not from YAML.
 	ResolvedEngine string `yaml:"-"`
+
+	// CompiledRule is the engine-specific compiled artifact produced by
+	// Parse() via the registry's SelectForLens. Story 3.2a wires the full
+	// engine through the pipeline; callers route on ResolvedEngine and
+	// pass this back to the matching engine's Execute path. May be nil
+	// for the simple engine (which re-compiles via simple.Compile against
+	// the Into.Key list) — see startPipeline in cmd/refractor for the
+	// per-engine routing.
+	CompiledRule ruleengine.CompiledRule `yaml:"-"`
 
 	// AttemptedEngines is the ordered list of engines consulted during
 	// selection. Populated by Parse() for log/health surfaces.
@@ -155,6 +170,7 @@ func Parse(data []byte) (*Rule, error) {
 	// On success the resolved engine is the LAST attempted name (simple if
 	// it succeeded directly; full if simple failed and full succeeded).
 	r.ResolvedEngine = attempted[len(attempted)-1]
+	r.CompiledRule = compiled
 
 	// Engine-specific post-parse validation (Story 3.1b-ii C2 convergence).
 	// We reuse the *simple.CompiledRule's parsed AST returned from the

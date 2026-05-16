@@ -9,7 +9,29 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
+	"github.com/asolgan/lattice/internal/substrate"
 )
+
+// adjLookupID extracts the bare NodeID from a Core KV key when it is a
+// valid Contract #1 vtx.<type>.<id> shape; otherwise it returns the key
+// verbatim so legacy / Materializer-style fixtures still work.
+func adjLookupID(key string) string {
+	if _, id, ok := substrate.ParseVertexKey(key); ok {
+		return id
+	}
+	return key
+}
+
+// otherCoreKey reconstructs the OTHER endpoint's Core KV key from an
+// EdgeEntry. If the edge carries an OtherType (Contract #1 link
+// convention), it builds the full vtx key; otherwise it returns the bare
+// OtherNodeID (Materializer-style legacy path).
+func otherCoreKey(otherType, otherNodeID string) string {
+	if otherType != "" {
+		return substrate.VertexPrefix + "." + otherType + "." + otherNodeID
+	}
+	return otherNodeID
+}
 
 // NodeEntry describes one Core KV node entry received from a rule consumer.
 type NodeEntry struct {
@@ -105,9 +127,10 @@ func evaluateAnchor(ctx context.Context, plan *QueryPlan, anchorKey string, anch
 			}
 
 			// Look up edges from the FROM node.
-			neighbors, err := adjacency.Neighbors(adjKV, fromKey)
+			fromAdjID := adjLookupID(fromKey)
+			neighbors, err := adjacency.Neighbors(adjKV, fromAdjID)
 			if err != nil {
-				return nil, fmt.Errorf("evaluateAnchor: neighbors(%s): %w", fromKey, err)
+				return nil, fmt.Errorf("evaluateAnchor: neighbors(%s): %w", fromAdjID, err)
 			}
 			matching := filterEdges(neighbors, step.EdgeType, step.Direction)
 
@@ -125,12 +148,13 @@ func evaluateAnchor(ctx context.Context, plan *QueryPlan, anchorKey string, anch
 
 			// Fan-out: one new binding per matching edge.
 			for _, edge := range matching {
-				neighborProps, _, err := fetchNodeProps(ctx, coreKV, edge.OtherNodeID)
+				neighborKey := otherCoreKey(edge.OtherType, edge.OtherNodeID)
+				neighborProps, _, err := fetchNodeProps(ctx, coreKV, neighborKey)
 				if err != nil {
-					return nil, fmt.Errorf("evaluateAnchor: fetch neighbor %s: %w", edge.OtherNodeID, err)
+					return nil, fmt.Errorf("evaluateAnchor: fetch neighbor %s: %w", neighborKey, err)
 				}
 				nb := copyBinding(b)
-				nb.varKeys[step.ToVariable] = edge.OtherNodeID
+				nb.varKeys[step.ToVariable] = neighborKey
 				nb.varProps[step.ToVariable] = neighborProps
 				next = append(next, nb)
 			}
@@ -200,13 +224,14 @@ func walkBackToAnchor(ctx context.Context, plan *QueryPlan, stepIdx int, startKe
 
 	var prevKeys []string
 	for _, nodeKey := range startKeys {
-		neighbors, err := adjacency.Neighbors(adjKV, nodeKey)
+		adjID := adjLookupID(nodeKey)
+		neighbors, err := adjacency.Neighbors(adjKV, adjID)
 		if err != nil {
-			return nil, fmt.Errorf("walkBack: neighbors(%s): %w", nodeKey, err)
+			return nil, fmt.Errorf("walkBack: neighbors(%s): %w", adjID, err)
 		}
 		matching := filterEdges(neighbors, step.EdgeType, reverseDir)
 		for _, edge := range matching {
-			prevKeys = append(prevKeys, edge.OtherNodeID)
+			prevKeys = append(prevKeys, otherCoreKey(edge.OtherType, edge.OtherNodeID))
 		}
 	}
 

@@ -525,9 +525,17 @@ func (ex *executor) traverseRel(b binding, from *nodeRef, rel RelPattern, to Nod
 	for hop := 1; hop <= maxHops; hop++ {
 		var nextFrontier []frontier
 		for _, f := range current {
-			edges, err := adjacency.Neighbors(ex.adjKV, f.node.key)
+			// Adjacency KV is indexed by bare NodeID, not full Contract #1
+			// vertex keys. When f.node.key is a Contract #1 vtx key, extract
+			// the NodeID; otherwise treat the key as a bare NodeID (test /
+			// legacy Materializer fixture path).
+			adjLookupID := f.node.key
+			if _, nodeID, ok := substrate.ParseVertexKey(f.node.key); ok {
+				adjLookupID = nodeID
+			}
+			edges, err := adjacency.Neighbors(ex.adjKV, adjLookupID)
 			if err != nil {
-				return nil, fmt.Errorf("full engine: neighbors(%s): %w", f.node.key, err)
+				return nil, fmt.Errorf("full engine: neighbors(%s): %w", adjLookupID, err)
 			}
 			for _, e := range edges {
 				if rel.Type != "" && e.Name != rel.Type {
@@ -536,10 +544,18 @@ func (ex *executor) traverseRel(b binding, from *nodeRef, rel RelPattern, to Nod
 				if !directionMatches(e.Direction, rel.Direction) {
 					continue
 				}
-				if _, seen := f.seen[e.OtherNodeID]; seen {
+				// Reconstruct the OTHER endpoint's Core KV key. If the edge
+				// carries OtherType (Contract #1 link convention), build the
+				// full vtx key; otherwise the OtherNodeID itself is the
+				// Core KV key (Materializer-style fixture path).
+				otherCoreKey := e.OtherNodeID
+				if e.OtherType != "" {
+					otherCoreKey = substrate.VertexPrefix + "." + e.OtherType + "." + e.OtherNodeID
+				}
+				if _, seen := f.seen[otherCoreKey]; seen {
 					continue
 				}
-				neighbor, err := ex.fetchNode(e.OtherNodeID)
+				neighbor, err := ex.fetchNode(otherCoreKey)
 				if err != nil {
 					return nil, err
 				}

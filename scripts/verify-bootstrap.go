@@ -141,7 +141,9 @@ func main() {
 	}
 
 	// 3. Check Capability Lens aspects exist.
-	lensAspects := []string{"canonicalName", "targetBucket", "cypherRule", "outputSchema"}
+	// Story 3.2a adds `spec` — the LensSpec JSON body that
+	// Refractor's CoreKVSource consumes to activate the lens.
+	lensAspects := []string{"canonicalName", "targetBucket", "cypherRule", "outputSchema", "spec"}
 	for _, aspect := range lensAspects {
 		aspectKey := bootstrap.CapabilityLensKey + "." + aspect
 		_, err := coreKV.Get(ctx, aspectKey)

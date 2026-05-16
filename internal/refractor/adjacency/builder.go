@@ -12,12 +12,20 @@ import (
 )
 
 // EdgeEntry is one graph edge stored in the adjacency list for a node.
+//
+// OtherType is the Contract #1 vertex-type segment of the OTHER endpoint.
+// When set, executors can reconstruct the OTHER endpoint's full vertex key
+// (vtx.<OtherType>.<OtherNodeID>) for a Core KV point read without needing
+// to scan the bucket. OtherType is empty for legacy Materializer-style
+// edge events (which carry no type information); executors must fall
+// back to coreKV lookup by NodeID-only in that case.
 type EdgeEntry struct {
 	CoreKvKey   string `json:"coreKvKey"`
 	EdgeID      string `json:"edgeId"`
 	Name        string `json:"name"`
 	Direction   string `json:"direction"`
 	OtherNodeID string `json:"otherNodeId"`
+	OtherType   string `json:"otherType,omitempty"`
 }
 
 // AdjValue is the JSON structure stored at key adj.<nodeId> in the Adjacency KV.
@@ -26,13 +34,18 @@ type AdjValue struct {
 }
 
 // CoreKVEvent is the parsed payload of an incoming Core KV edge event.
+//
+// OtherType mirrors EdgeEntry.OtherType — see that comment. The
+// adjacency builder propagates this field through to the persisted
+// EdgeEntry verbatim.
 type CoreKVEvent struct {
 	CoreKvKey   string `json:"coreKvKey"`
 	EdgeID      string `json:"edgeId"`
 	Name        string `json:"name"`
 	Direction   string `json:"direction"`
 	NodeID      string `json:"nodeId"`      // the node to index under (determines the adj key)
-	OtherNodeID string `json:"otherNodeId"` // the other endpoint
+	OtherNodeID string `json:"otherNodeId"` // the other endpoint (bare NodeID)
+	OtherType   string `json:"otherType,omitempty"`
 	IsDeleted   bool   `json:"isDeleted"`
 }
 
@@ -45,6 +58,7 @@ func Build(kv jetstream.KeyValue, evt CoreKVEvent) error {
 		Name:        evt.Name,
 		Direction:   evt.Direction,
 		OtherNodeID: evt.OtherNodeID,
+		OtherType:   evt.OtherType,
 	}
 	return upsertEdge(kv, key, edge, evt.IsDeleted)
 }

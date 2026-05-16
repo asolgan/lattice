@@ -13,6 +13,8 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/asolgan/lattice/internal/refractor/adapter"
+	"github.com/asolgan/lattice/internal/refractor/ruleengine"
+	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/refractor/failure"
 	"github.com/asolgan/lattice/internal/refractor/health"
@@ -47,6 +49,18 @@ type Pipeline struct {
 	coreKVBucket string // Core KV bucket name; used to strip the $KV prefix from subjects
 	adjKV        jetstream.KeyValue
 	coreKV       jetstream.KeyValue
+
+	// Story 3.2a — C1 convergence (per-engine routing, Decision #2).
+	// engineKind selects the evaluate code path; "simple" (default) drives
+	// the plan-based simple.Evaluate; "full" drives full.Engine.ExecuteWith
+	// against fullCR and the live event context. envelopeFn (when non-nil)
+	// rewrites each projection row into the on-wire envelope expected by
+	// the adapter target (Contract #6 §6.2 Capability KV shape for the
+	// Capability Lens).
+	engineKind string
+	fullEngine *full.Engine
+	fullCR     ruleengine.CompiledRule
+	envelopeFn EnvelopeFn
 	adapterMu    sync.RWMutex    // protects adpt for concurrent hot-reload
 	adpt         adapter.Adapter // access via currentAdapter(); swap via HotReloadInto
 	planMu       sync.RWMutex   // protects plan for concurrent hot-reload
@@ -95,6 +109,15 @@ type Pipeline struct {
 	rebuildPollInterval time.Duration     // captured from RebuildPollInterval at construction time
 }
 
+// EnvelopeFn rewrites a projection-row map into the on-wire shape the
+// adapter writes. Story 3.2a uses it for the Contract #6 §6.2
+// Capability KV envelope. The function receives the raw RETURN-row map
+// produced by the engine plus the EventContext.Parameters (so it can
+// derive `projectedAt`, `$actorKey`, etc.) and returns the wrapped row
+// + a possibly-rewritten Key map. A nil EnvelopeFn is the legacy
+// "write the row verbatim" path.
+type EnvelopeFn func(row map[string]any, keys map[string]any, params map[string]any) (newRow, newKeys map[string]any, err error)
+
 // New creates a Pipeline for the given rule.
 // adapterName is a display label for slog ("nats_kv" or "postgres").
 // reporter may be nil — health KV reads/writes are skipped when nil.
@@ -126,9 +149,26 @@ func New(
 		rebuildPollInterval: iv,
 		manualPauseTrigger:  make(chan struct{}, 1),
 		forceResumeCh:       make(chan struct{}, 1),
+		engineKind:          ruleengine.EngineSimple,
 	}
 	p.adpt = adpt
 	return p, nil
+}
+
+// UseFullEngine switches this pipeline's evaluate path to the full
+// openCypher engine (Story 3.2a — C1 convergence per Decision #2).
+// cr must be the *full.CompiledRule that lens.Parse / corekv_source
+// produced for this rule. Must be called before Run.
+func (p *Pipeline) UseFullEngine(eng *full.Engine, cr ruleengine.CompiledRule) {
+	p.engineKind = ruleengine.EngineFull
+	p.fullEngine = eng
+	p.fullCR = cr
+}
+
+// SetEnvelopeFn installs the on-wire envelope wrapper (Story 3.2a
+// Phase C). Pass nil to clear. Must be called before Run.
+func (p *Pipeline) SetEnvelopeFn(fn EnvelopeFn) {
+	p.envelopeFn = fn
 }
 
 // currentAdapter returns the active adapter under a read lock.
@@ -638,19 +678,12 @@ func (p *Pipeline) processMsg(ctx context.Context, msg jetstream.Msg) (failure.C
 		Properties: props,
 	}
 
-	// Evaluate.
-	//
-	// TODO(3.2 or later): C1 convergence — route through ruleengine.RuleEngine.
-	// The simple engine's execution surface returns []EvalResult with Delete
-	// semantics that the engine-neutral RuleEngine.Execute (single
-	// ProjectionResult per call) doesn't currently model. The full engine's
-	// production entry point (ExecuteWith) also takes KV handles directly.
-	// Reconciling both into one interface that drives this pipeline is a
-	// >5-file change across pipeline.go, fixture/runner.go, control/service.go,
-	// and the ruleengine package itself — outside Story 3.1b-ii scope per
-	// Decision #10 scope guard. Story 3.2 will land the full engine on the
-	// real Capability Lens pipeline; convergence happens there.
-	results, err := simple.Evaluate(ctx, p.currentPlan(), entry, p.adjKV, p.coreKV)
+	// Evaluate. Story 3.2a — C1 convergence (Decision #2): route per
+	// engine. The simple engine returns []EvalResult{Delete,Keys,Row};
+	// the full engine returns []ProjectionResult{Key,Values,Delete}.
+	// evaluateForEntry normalises and wraps (Phase C envelope) so the
+	// downstream write path sees a single []simple.EvalResult shape.
+	results, err := p.evaluateForEntry(ctx, entry)
 	if err != nil {
 		slog.Error("pipeline: evaluate",
 			"ruleId", p.ruleID, "team", p.team, "entityId", key,
@@ -1086,7 +1119,7 @@ func (p *Pipeline) handleAdjUpdate(ctx context.Context, adjEntry jetstream.KeyVa
 		Properties: props,
 	}
 
-	results, err := simple.Evaluate(ctx, p.currentPlan(), entry, p.adjKV, p.coreKV)
+	results, err := p.evaluateForEntry(ctx, entry)
 	if err != nil {
 		if ctx.Err() != nil {
 			return

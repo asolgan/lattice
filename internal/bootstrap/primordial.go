@@ -396,6 +396,14 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 }
 
 // addLensAspects appends aspect entries for a Lens definition vertex.
+//
+// Story 3.2a: in addition to the four human-readable aspects
+// (canonicalName, targetBucket, cypherRule, outputSchema) we now emit a
+// fifth `spec` aspect carrying a complete LensSpec JSON body. The
+// Refractor's CoreKVSource reads this `spec` aspect to activate the
+// lens (its parse path expects a single envelope; the four individual
+// aspects are documentation surface for operators and for the
+// verify-bootstrap regression gate).
 func addLensAspects(entries *[]kvEntry, lensKey string, def LensDefinition) error {
 	aspects := []struct {
 		localName string
@@ -415,7 +423,71 @@ func addLensAspects(entries *[]kvEntry, lensKey string, def LensDefinition) erro
 		}
 		*entries = append(*entries, kvEntry{key: key, value: val})
 	}
+
+	// `spec` — full LensSpec body, the form Refractor's CoreKVSource
+	// activation watch consumes (Story 3.2a Phase D). The seeded
+	// capability lenses target the capability-kv bucket and select the
+	// full openCypher engine explicitly.
+	_, lensID, ok := strings.Cut(lensKey, "vtx.meta.")
+	_ = ok
+	specBody, err := makeLensSpecBody(lensID, def)
+	if err != nil {
+		return fmt.Errorf("build lens spec body for %q: %w", lensKey, err)
+	}
+	specKey := lensKey + ".spec"
+	specVal, err := MakeAspectEnvelope(specKey, lensKey, "spec", "lensSpec", specBody)
+	if err != nil {
+		return fmt.Errorf("build lens spec aspect %q: %w", specKey, err)
+	}
+	*entries = append(*entries, kvEntry{key: specKey, value: specVal})
 	return nil
+}
+
+// makeLensSpecBody constructs the on-wire LensSpec JSON body for a
+// primordial Capability Lens. The Refractor CoreKVSource consumes
+// exactly this shape (LensSpec in internal/refractor/lens/corekv_source.go).
+func makeLensSpecBody(lensID string, def LensDefinition) (map[string]any, error) {
+	target := def.TargetBucket
+	if target == "" {
+		target = CapabilityKVBucket
+	}
+	// Refractor maps lens spec target buckets to provisioned NATS KV
+	// buckets by name. The bootstrap LensDefinition.TargetBucket is the
+	// short canonical name ("capability"); the actual provisioned
+	// bucket is CapabilityKVBucket ("capability-kv"). Translate here.
+	bucket := target
+	if bucket == "capability" {
+		bucket = CapabilityKVBucket
+	}
+	// Key field list matches the RETURN's first/primary output column.
+	// For the primary capability Lens that's the envelope `key` (added
+	// by the pipeline envelope wrapper at write time). The secondary
+	// capabilityRoleIndex projects per-operationType records; its key
+	// column is `operationType` and the bucket entry is keyed by that
+	// (Story 3.2b verifies the capabilityRoleIndex shape end-to-end).
+	keyField := []string{"key"}
+	if def.CanonicalName == "capabilityRoleIndex" {
+		keyField = []string{"operationType"}
+	}
+	targetConfig := map[string]any{
+		"bucket": bucket,
+		"key":    keyField,
+	}
+	cfgJSON, err := json.Marshal(targetConfig)
+	if err != nil {
+		return nil, fmt.Errorf("marshal targetConfig: %w", err)
+	}
+	schemaRaw := json.RawMessage(def.OutputSchema)
+	spec := map[string]any{
+		"id":            lensID,
+		"canonicalName": def.CanonicalName,
+		"targetType":    "nats_kv",
+		"targetConfig":  json.RawMessage(cfgJSON),
+		"cypherRule":    strings.TrimSpace(def.CypherRule),
+		"outputSchema":  schemaRaw,
+		"engine":        "full",
+	}
+	return spec, nil
 }
 
 // MarkBootstrapComplete writes the `health.bootstrap.complete` marker
