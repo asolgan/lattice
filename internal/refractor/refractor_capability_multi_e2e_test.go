@@ -60,22 +60,6 @@ func stableMultiID(role string) string {
 	return string(out[:])
 }
 
-// multiE2EFixture bundles the fixture wiring so the tombstone sub-tests
-// can re-issue Core KV writes against the same live pipelines.
-type multiE2EFixture struct {
-	t            *testing.T
-	ctx          context.Context
-	js           jetstream.JetStream
-	coreKV       jetstream.KeyValue
-	capabilityKV jetstream.KeyValue
-	// Latency buffer for NFR-P3 evidence print at end.
-	latencyBuf *pipeline.LatencyRingBuffer
-	// Identity vertex keys.
-	identityA, identityB, identityC string
-	identityAID, identityBID, identityCID string
-	// Topology keys used by tombstone tests.
-	holdsRoleBKey string // identity B → role
-}
 
 func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	if testing.Short() {
@@ -597,5 +581,3 @@ func adjacencyNeighborsLocal(kv jetstream.KeyValue, nodeID string) ([]any, error
 	return v.Edges, nil
 }
 
-// silence unused import warnings during incremental edits.
-var _ = multiE2EFixture{}
