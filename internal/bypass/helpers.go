@@ -16,7 +16,6 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/test"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -139,11 +138,3 @@ func marshalJSON(v interface{}) []byte {
 	return b
 }
 
-// noopEventPublisher is a Gate 3 helper that satisfies processor.EventPublisher
-// without requiring access to unexported fields. Used in adversarial test pipelines
-// where event publishing is not under test.
-type noopEventPublisher struct{}
-
-func (n *noopEventPublisher) Publish(_ context.Context, _ *processor.OperationEnvelope, _ processor.ScriptResult) error {
-	return nil
-}

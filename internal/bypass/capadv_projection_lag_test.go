@@ -31,8 +31,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -365,52 +363,3 @@ def execute(state, op):
 	}
 }
 
-// setupCapAdvPipeline builds a CommitPath for Gate 3 integration scenarios.
-// It uses the CapabilityAuthorizer with a fixed clock so freshness is deterministic.
-func setupCapAdvPipeline(t *testing.T, ctx context.Context, conn *substrate.Conn, capKey string, clock processor.Clock, durable string) (*processor.CommitPath, jetstream.Consumer) {
-	t.Helper()
-
-	cfg := processor.DefaultCapabilityAuthorizerConfig()
-	authz := processor.NewCapabilityAuthorizer(conn, capadvCapBucket, clock, cfg, nil, bypassLogger())
-
-	return buildCapAdvCommitPath(t, ctx, conn, authz, durable)
-}
-
-// buildCapAdvCommitPath builds a CommitPath with the given authorizer.
-func buildCapAdvCommitPath(t *testing.T, ctx context.Context, conn *substrate.Conn, authz processor.Authorizer, durable string) (*processor.CommitPath, jetstream.Consumer) {
-	t.Helper()
-
-	metrics := &processor.Metrics{}
-	hb := processor.NewHealthHeartbeater(conn, capadvHealthBucket, "capadv-"+durable, 10*time.Second, metrics, bypassLogger())
-	cache := processor.NewDDLCache(conn, capadvCoreBucket, bypassLogger())
-	if err := cache.Refresh(ctx); err != nil {
-		t.Fatalf("capadv: ddl cache refresh: %v", err)
-	}
-
-	committer := processor.NewCommitter(conn, capadvCoreBucket, cache, bypassLogger(), time.Now)
-	cp := processor.NewCommitPath(processor.Deps{
-		Conn:        conn,
-		CoreBucket:  capadvCoreBucket,
-		HealthKV:    capadvHealthBucket,
-		Authorizer:  authz,
-		Hydrator:    processor.NewHydratorWithCache(conn, capadvCoreBucket, cache, bypassLogger()),
-		Executor:    processor.NewExecutor(processor.NewStarlarkRunner(0, 0), bypassLogger()),
-		Validator:   processor.NewValidator(cache, bypassLogger()),
-		Committer:   committer,
-		Events:      &noopEventPublisher{},
-		Metrics:     metrics,
-		Heartbeater: hb,
-		Logger:      bypassLogger(),
-	})
-
-	cons, err := processor.EnsureConsumer(ctx, conn.JetStream(), processor.ConsumerConfig{
-		StreamName:     capadvOpsStream,
-		Durable:        durable,
-		FilterSubjects: []string{"ops.default"},
-		AckWait:        10 * time.Second,
-	}, bypassLogger())
-	if err != nil {
-		t.Fatalf("capadv: EnsureConsumer: %v", err)
-	}
-	return cp, cons
-}

@@ -58,11 +58,6 @@ const (
 	capadvReqV4Pos   = "CdV4PosRq2345678912d" // Vector #4 positive alice
 	capadvReqV4CT    = "CdV4CTRq23456789012e" // Vector #4 cross-target
 	capadvReqV4CM    = "CdV4CMRq23456789012f" // Vector #4 cross-manager
-
-	// Durable consumer names.
-	capadvDurableV2 = "capadv-proc-v2"
-	capadvDurableV3 = "capadv-proc-v3"
-	capadvDurableV4 = "capadv-proc-v4"
 )
 
 // setupCapAdvHarness starts embedded NATS and provisions Core KV, Health KV,
@@ -128,19 +123,6 @@ func provisionCapAdvInfra(t *testing.T, ctx context.Context, conn *substrate.Con
 	})
 	if err != nil {
 		t.Fatalf("capadv: create core-operations stream: %v", err)
-	}
-}
-
-// seedCapEntry writes a CapabilityDoc to Capability KV for the given actor.
-func seedCapEntry(t *testing.T, ctx context.Context, conn *substrate.Conn, doc *processor.CapabilityDoc) {
-	t.Helper()
-	raw, err := json.Marshal(doc)
-	if err != nil {
-		t.Fatalf("capadv: marshal cap doc: %v", err)
-	}
-	capKey := "cap.identity." + doc.Key[len("cap.identity."):]
-	if _, err := conn.KVPut(ctx, capadvCapBucket, capKey, raw); err != nil {
-		t.Fatalf("capadv: seed cap entry %q: %v", capKey, err)
 	}
 }
 
