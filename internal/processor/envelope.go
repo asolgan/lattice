@@ -93,6 +93,12 @@ const (
 	// distinguish "auth-plane broken" from "any other internal error" —
 	// wired through if/when 3.5 (traceability) needs it.
 	ErrCodeAuthInfrastructureFailure ErrorCode = "AuthInfrastructureFailure"
+	// ErrCodeClaimKeyInvalid is the generic rejection code for all
+	// ClaimIdentity failure modes (Story 4.3 / NFR-S6 anti-enumeration).
+	// Callers cannot distinguish wrong-key / wrong-state / already-bound /
+	// merged — all map to this single code. Specific outcomes surface only
+	// via Health KV at health.processor.<instance>.claim-attempts.<outcome>.
+	ErrCodeClaimKeyInvalid ErrorCode = "ClaimKeyInvalid"
 )
 
 // Status is the reply envelope status enum per Contract #2 §2.4.

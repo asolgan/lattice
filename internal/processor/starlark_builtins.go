@@ -2,6 +2,7 @@ package processor
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
@@ -89,8 +90,9 @@ func deterministicNanoID(src *rand.PCG, n int) string {
 }
 
 // cryptoModule returns a Starlark struct exposing:
-//   - crypto.sha256(s)        → lowercase hex-encoded SHA-256 digest (64 chars)
-//   - crypto.sha256NanoID(s)  → 20-char NanoID-alphabet ID derived from SHA-256(s)
+//   - crypto.sha256(s)                  → lowercase hex-encoded SHA-256 digest (64 chars)
+//   - crypto.sha256NanoID(s)            → 20-char NanoID-alphabet ID derived from SHA-256(s)
+//   - crypto.constant_time_equal(a, b)  → bool (constant-time byte comparison)
 //
 // Both functions are pure (side-effect-free, deterministic) and consistent
 // with the sandbox principles established in Story 1.6:
@@ -138,9 +140,36 @@ func cryptoModule() *starlarkstruct.Struct {
 		return starlarklib.String(deterministicNanoID(pcg, substrate.NanoIDLength)), nil
 	})
 
+	// constant_time_equal(a, b) → bool
+	//
+	// Compares two strings in constant time with respect to content. Length
+	// mismatch returns False immediately (not constant-time across length, but
+	// timing reveals only length, not content — acceptable Phase 1; document
+	// as a known limitation in the closing summary).
+	//
+	// Implementation: crypto/subtle.ConstantTimeCompare (stdlib). Returns True
+	// iff both strings are identical, False otherwise. Sandboxed: pure function,
+	// no I/O, no OS access, no randomness.
+	constantTimeEqualFn := starlarklib.NewBuiltin("constant_time_equal", func(_ *starlarklib.Thread, _ *starlarklib.Builtin, args starlarklib.Tuple, kwargs []starlarklib.Tuple) (starlarklib.Value, error) {
+		if len(args) != 2 || len(kwargs) != 0 {
+			return nil, errBuiltin("crypto.constant_time_equal(a, b) takes exactly 2 positional arguments")
+		}
+		a, aOK := args[0].(starlarklib.String)
+		b, bOK := args[1].(starlarklib.String)
+		if !aOK {
+			return nil, errBuiltin("crypto.constant_time_equal: first argument must be a string, got " + args[0].Type())
+		}
+		if !bOK {
+			return nil, errBuiltin("crypto.constant_time_equal: second argument must be a string, got " + args[1].Type())
+		}
+		eq := subtle.ConstantTimeCompare([]byte(string(a)), []byte(string(b))) == 1
+		return starlarklib.Bool(eq), nil
+	})
+
 	return starlarkstruct.FromStringDict(starlarkstruct.Default, starlarklib.StringDict{
-		"sha256":       sha256Fn,
-		"sha256NanoID": sha256NanoIDFn,
+		"sha256":               sha256Fn,
+		"sha256NanoID":         sha256NanoIDFn,
+		"constant_time_equal":  constantTimeEqualFn,
 	})
 }
 

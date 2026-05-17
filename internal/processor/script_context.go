@@ -114,9 +114,17 @@ func (e *HydrationError) Unwrap() error { return e.Cause }
 // ScriptError is the typed step-5 failure for any Starlark-side problem:
 // script compile/runtime errors, sandbox violations (which manifest as
 // resolve errors for unbound globals), and timeouts.
+//
+// Detail is a side-channel field used exclusively for ClaimKeyInvalid errors
+// (Story 4.3). The script encodes a specific outcome (e.g. "invalid-key",
+// "wrong-state") in the fail() message; classifyStarlarkError parses it into
+// this field. The executor reads Detail for Health KV emission then strips it
+// before the reply reaches the caller (NFR-S6 anti-enumeration: callers see
+// only Code="ClaimKeyInvalid" with no detail).
 type ScriptError struct {
-	Code               string // "ScriptError" | "SandboxViolation" | "ScriptTimeout" | "InvalidReturnShape"
+	Code               string // "ScriptError" | "SandboxViolation" | "ScriptTimeout" | "InvalidReturnShape" | "ClaimKeyInvalid"
 	Message            string
+	Detail             string // Side-channel for ClaimKeyInvalid outcome; stripped before reply egress.
 	Line               int
 	Column             int
 	OperationRequestID string

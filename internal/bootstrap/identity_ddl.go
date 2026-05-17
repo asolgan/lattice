@@ -347,9 +347,117 @@ def execute(state, op):
             },
         }
 
-    # Stub branches for 4.3-4.5 operations.
     if ot == "ClaimIdentity":
-        fail("NotYetImplemented: Story 4.3: ClaimIdentity")
+        # --- Story 4.3: Two-Phase Identity Claim (FR2, FR5) ---
+        #
+        # NFR-S6 anti-enumeration: every failure returns the same generic
+        # "ClaimKeyInvalid: <outcome>" message. The <outcome> is parsed by
+        # classifyStarlarkError in Go and emitted to Health KV only;
+        # callers see ErrCodeClaimKeyInvalid with no detail.
+        #
+        # Decision #10: scope=self for ClaimIdentity is realized as
+        # one-credential-one-identity (credentialindex) not actor==target.
+        # Decision #11: enforce_not_merged is NOT used; merged state is
+        # conflated into the generic error path to avoid leaking mergedInto.
+
+        def fail_claim(outcome):
+            fail("ClaimKeyInvalid: " + outcome)
+
+        # --- Input validation ---
+        claim_key_plaintext = p.claimKey if hasattr(p, "claimKey") else None
+        if claim_key_plaintext == None or type(claim_key_plaintext) != type("") or len(claim_key_plaintext) == 0:
+            fail_claim("invalid-key")
+
+        target_identity_key = p.targetIdentityKey if hasattr(p, "targetIdentityKey") else None
+        if target_identity_key == None or type(target_identity_key) != type("") or len(target_identity_key) == 0:
+            fail_claim("no-target")
+        if not target_identity_key.startswith("vtx.identity."):
+            fail_claim("no-target")
+
+        # --- Read target identity vertex ---
+        target_vtx = state[target_identity_key] if target_identity_key in state else None
+        if target_vtx == None or (hasattr(target_vtx, "isDeleted") and target_vtx.isDeleted):
+            fail_claim("no-target")
+
+        # --- Read target identity state aspect ---
+        state_aspect_key = target_identity_key + ".state"
+        state_aspect = state[state_aspect_key] if state_aspect_key in state else None
+        if state_aspect == None:
+            fail_claim("no-target")
+        current_state = state_aspect.data["value"] if state_aspect.data != None and "value" in state_aspect.data else None
+        if current_state == None:
+            fail_claim("no-target")
+
+        # State check before claimKey check (Decision #8: re-attempt on claimed
+        # identity yields wrong-state, not invalid-key — both are generic to caller).
+        if current_state == "claimed":
+            fail_claim("wrong-state")
+        if current_state == "flagged-for-review":
+            fail_claim("flagged")
+        if current_state == "merged":
+            # Do NOT call enforce_not_merged (would leak mergedInto — NFR-S6).
+            fail_claim("merged")
+        # Any other non-unclaimed state is also wrong-state.
+        if current_state != "unclaimed":
+            fail_claim("wrong-state")
+
+        # --- Check credentialindex (scope=self: one credential per identity) ---
+        actor_key = op.actor
+        cred_index_key = "vtx.credentialindex." + crypto.sha256NanoID(actor_key)
+        cred_index = state[cred_index_key] if cred_index_key in state else None
+        if cred_index != None and not (hasattr(cred_index, "isDeleted") and cred_index.isDeleted):
+            fail_claim("credential-already-bound")
+
+        # --- Validate claim key ---
+        claim_key_aspect_key = target_identity_key + ".claimKey"
+        claim_key_aspect = state[claim_key_aspect_key] if claim_key_aspect_key in state else None
+        if claim_key_aspect == None or (hasattr(claim_key_aspect, "isDeleted") and claim_key_aspect.isDeleted):
+            fail_claim("invalid-key")
+        if claim_key_aspect.data == None or "hash" not in claim_key_aspect.data:
+            fail_claim("invalid-key")
+
+        submitted_hash = crypto.sha256(claim_key_plaintext)
+        stored_hash = claim_key_aspect.data["hash"]
+        if not crypto.constant_time_equal(submitted_hash, stored_hash):
+            fail_claim("invalid-key")
+
+        # --- Build MutationBatch (success path) ---
+        observed_at = op.submittedAt
+
+        mutations = [
+            # credentialBinding aspect
+            {"op": "create", "key": target_identity_key + ".credentialBinding",
+             "document": {"class": "credentialBinding", "vertexKey": target_identity_key,
+                          "localName": "credentialBinding", "isDeleted": False,
+                          "data": {"actorKey": actor_key, "boundAt": observed_at}}},
+            # state transition: unclaimed → claimed
+            {"op": "update", "key": target_identity_key + ".state",
+             "document": {"class": "state", "vertexKey": target_identity_key,
+                          "localName": "state", "isDeleted": False,
+                          "data": {"value": "claimed"}}},
+            # claimKey tombstone (one-time-use via isDeleted: true)
+            {"op": "tombstone", "key": target_identity_key + ".claimKey"},
+            # credentialindex vertex (one-credential-one-identity enforcement)
+            {"op": "create", "key": cred_index_key,
+             "document": {"class": "credentialindex", "isDeleted": False,
+                          "data": {"actorKey": actor_key,
+                                   "identityKey": target_identity_key,
+                                   "boundAt": observed_at}}},
+        ]
+
+        # --- EventList ---
+        events = [{"class": "IdentityClaimed", "data": {
+            "identityKey": target_identity_key,
+            "actorKey": actor_key,
+            # NFR-S7: do NOT include claimKey plaintext in events.
+        }}]
+
+        # --- Response (identityKey only; no sensitive tokens) ---
+        return {
+            "mutations": mutations,
+            "events": events,
+            "response": {"identityKey": target_identity_key},
+        }
     if ot == "FlagIdentityForReview":
         fail("NotYetImplemented: Story 4.3: FlagIdentityForReview")
     if ot == "ApproveIdentityMerge":

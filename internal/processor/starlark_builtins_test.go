@@ -97,6 +97,96 @@ func TestCryptoSha256_NonString(t *testing.T) {
 
 // --- crypto.sha256NanoID ---
 
+// --- crypto.constant_time_equal ---
+
+// TestCryptoConstantTimeEqual covers equal strings, unequal strings,
+// length-mismatch strings, and wrong-arity / non-string argument rejection.
+func TestCryptoConstantTimeEqual(t *testing.T) {
+	mod := cryptoModule()
+	fn, err := mod.Attr("constant_time_equal")
+	if err != nil || fn == nil {
+		t.Fatalf("crypto.constant_time_equal attr: %v", err)
+	}
+	thread := &starlarklib.Thread{Name: "test"}
+
+	call := func(a, b starlarklib.Value) (starlarklib.Value, error) {
+		return starlarklib.Call(thread, fn, starlarklib.Tuple{a, b}, nil)
+	}
+
+	// Equal strings → True.
+	res, err := call(starlarklib.String("abc"), starlarklib.String("abc"))
+	if err != nil {
+		t.Fatalf("equal: unexpected error: %v", err)
+	}
+	if res != starlarklib.Bool(true) {
+		t.Fatalf("equal strings: got %v, want True", res)
+	}
+
+	// Unequal same-length strings → False.
+	res, err = call(starlarklib.String("abc"), starlarklib.String("abd"))
+	if err != nil {
+		t.Fatalf("unequal: unexpected error: %v", err)
+	}
+	if res != starlarklib.Bool(false) {
+		t.Fatalf("unequal same-length: got %v, want False", res)
+	}
+
+	// Length mismatch → False.
+	res, err = call(starlarklib.String("abc"), starlarklib.String("ab"))
+	if err != nil {
+		t.Fatalf("length mismatch: unexpected error: %v", err)
+	}
+	if res != starlarklib.Bool(false) {
+		t.Fatalf("length mismatch: got %v, want False", res)
+	}
+
+	// Empty strings are equal.
+	res, err = call(starlarklib.String(""), starlarklib.String(""))
+	if err != nil {
+		t.Fatalf("empty strings: unexpected error: %v", err)
+	}
+	if res != starlarklib.Bool(true) {
+		t.Fatalf("empty strings: got %v, want True", res)
+	}
+
+	// Wrong arity (0 args) → error.
+	_, err = starlarklib.Call(thread, fn, starlarklib.Tuple{}, nil)
+	if err == nil {
+		t.Fatal("0 args: expected error, got nil")
+	}
+
+	// Wrong arity (1 arg) → error.
+	_, err = starlarklib.Call(thread, fn, starlarklib.Tuple{starlarklib.String("a")}, nil)
+	if err == nil {
+		t.Fatal("1 arg: expected error, got nil")
+	}
+
+	// Wrong arity (3 args) → error.
+	_, err = starlarklib.Call(thread, fn, starlarklib.Tuple{
+		starlarklib.String("a"), starlarklib.String("b"), starlarklib.String("c"),
+	}, nil)
+	if err == nil {
+		t.Fatal("3 args: expected error, got nil")
+	}
+
+	// Non-string first arg → error.
+	_, err = call(starlarklib.MakeInt(42), starlarklib.String("abc"))
+	if err == nil {
+		t.Fatal("non-string first arg: expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "int") {
+		t.Fatalf("error should mention 'int', got: %v", err)
+	}
+
+	// Non-string second arg → error.
+	_, err = call(starlarklib.String("abc"), starlarklib.MakeInt(42))
+	if err == nil {
+		t.Fatal("non-string second arg: expected error, got nil")
+	}
+}
+
+// --- crypto.sha256NanoID ---
+
 // TestCryptoSha256NanoID_Deterministic checks that sha256NanoID returns a
 // 20-char NanoID-alphabet string and is deterministic (same input → same output).
 func TestCryptoSha256NanoID_Deterministic(t *testing.T) {

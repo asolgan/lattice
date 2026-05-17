@@ -41,6 +41,10 @@ type Deps struct {
 	// FR23 (Story 3.5). Nil when not wired (stub mode). Fire-and-forget:
 	// the emitter launches a goroutine so step 3 latency is unaffected.
 	TraceEmitter *AuthTraceEmitter
+	// ClaimEmitter records ClaimIdentity attempt outcomes to Health KV at
+	// health.processor.<instance>.claim-attempts.<outcome> (Story 4.3).
+	// Nil safe: a nil ClaimEmitter silently skips emission.
+	ClaimEmitter ClaimAttemptEmitter
 }
 
 // CommitPath drives steps 1-3 (and stubbed 4-10) for a single envelope.
@@ -298,6 +302,10 @@ func (cp *CommitPath) HandleMessage(ctx context.Context, msg jetstream.Msg) Mess
 	}
 
 	cp.deps.Metrics.OpsCommitted.Add(1)
+	// Story 4.3: emit claim-attempt success for ClaimIdentity ops only.
+	if env.OperationType == "ClaimIdentity" && cp.deps.ClaimEmitter != nil {
+		cp.deps.ClaimEmitter.RecordClaimAttempt(ctx, "success")
+	}
 	// Surface script ResponseDetail in the success reply (Story 4.2).
 	// Detail may carry sensitive tokens (e.g. plaintext claim keys) —
 	// NFR-S6/S7: we do NOT log it. BuildAcceptedReplyWithDetail is a
@@ -333,10 +341,20 @@ func resolvedPermissionProjectedAt(rp *ResolvedPermission) string {
 	return rp.ProjectedAt
 }
 
-func (cp *CommitPath) handleStubFailure(_ context.Context, msg jetstream.Msg, env *OperationEnvelope, step string, err error) MessageOutcome {
+func (cp *CommitPath) handleStubFailure(ctx context.Context, msg jetstream.Msg, env *OperationEnvelope, step string, err error) MessageOutcome {
 	cp.deps.Metrics.OpsRejected.Add(1)
 	cp.deps.Logger.Warn("step returned error",
 		"step", step, "requestId", env.RequestID, "error", err)
+
+	// Story 4.3 (NFR-S6): emit specific ClaimKeyInvalid outcome to Health KV
+	// before building the reply. The reply carries only the generic
+	// ErrCodeClaimKeyInvalid code with no detail (anti-enumeration).
+	var sErr *ScriptError
+	if errors.As(err, &sErr) && sErr.Code == "ClaimKeyInvalid" {
+		if cp.deps.ClaimEmitter != nil {
+			cp.deps.ClaimEmitter.RecordClaimAttempt(ctx, sErr.Detail)
+		}
+	}
 
 	code, details := classifyStepError(err)
 	cp.replyTo(msg, BuildRejectedReply(env.RequestID, code,
@@ -348,6 +366,11 @@ func (cp *CommitPath) handleStubFailure(_ context.Context, msg jetstream.Msg, en
 // classifyStepError maps a typed step-4/5 error onto the wire-shape
 // ErrorCode plus a details map. Falls back to InternalError for
 // untyped failures.
+//
+// ClaimKeyInvalid (Story 4.3 / NFR-S6): returns ErrCodeClaimKeyInvalid with
+// no detail so callers cannot enumerate specific failure reasons. The Detail
+// field on *ScriptError is the internal side-channel for Health KV emission
+// only; it must NOT appear in the response details map.
 func classifyStepError(err error) (ErrorCode, map[string]any) {
 	var hErr *HydrationError
 	if errors.As(err, &hErr) {
@@ -358,6 +381,10 @@ func classifyStepError(err error) (ErrorCode, map[string]any) {
 	}
 	var sErr *ScriptError
 	if errors.As(err, &sErr) {
+		// ClaimKeyInvalid: generic rejection with no detail for anti-enumeration.
+		if sErr.Code == "ClaimKeyInvalid" {
+			return ErrCodeClaimKeyInvalid, nil
+		}
 		d := map[string]any{
 			"code":    sErr.Code,
 			"message": sErr.Message,
@@ -496,6 +523,9 @@ func MakePipeline(conn *substrate.Conn, coreBucket, healthBucket, capabilityBuck
 		traceEmitter = NewAuthTraceEmitter(conn, healthBucket, instance, traceAllowDecisions, logger)
 	}
 
+	// Story 4.3: claim attempt emitter for ClaimIdentity Health KV signals.
+	claimEmitter := NewClaimAttemptEmitter(conn, healthBucket, instance, logger)
+
 	committer := NewCommitter(conn, coreBucket, ddls, logger, time.Now)
 	cp := NewCommitPath(Deps{
 		Conn:          conn,
@@ -512,6 +542,7 @@ func MakePipeline(conn *substrate.Conn, coreBucket, healthBucket, capabilityBuck
 		Logger:        logger,
 		DenialBuilder: denialBuilder,
 		TraceEmitter:  traceEmitter,
+		ClaimEmitter:  claimEmitter,
 	})
 	return cp, hb, nil
 }

@@ -158,6 +158,27 @@ func classifyStarlarkError(err error, rid string) *ScriptError {
 			OperationRequestID: rid,
 		}
 	}
+	// ClaimKeyInvalid: structured error from the ClaimIdentity script branch
+	// (Story 4.3). The script calls fail("ClaimKeyInvalid: <outcome>") where
+	// outcome is the internal diagnostic detail. We parse it here so the
+	// executor can emit the specific outcome to Health KV before stripping it
+	// from the caller reply (NFR-S6 anti-enumeration).
+	if idx := strings.Index(msg, "ClaimKeyInvalid: "); idx >= 0 {
+		detail := strings.TrimSpace(msg[idx+len("ClaimKeyInvalid: "):])
+		// Strip any trailing ") or similar Starlark backtrace decoration.
+		if nl := strings.IndexAny(detail, "\n)"); nl >= 0 {
+			detail = strings.TrimSpace(detail[:nl])
+		}
+		line, col := extractStarlarkPosition(err)
+		return &ScriptError{
+			Code:               "ClaimKeyInvalid",
+			Message:            "ClaimKeyInvalid",
+			Detail:             detail,
+			Line:               line,
+			Column:             col,
+			OperationRequestID: rid,
+		}
+	}
 	// Anything else — syntax error, runtime fail() call, division by zero, etc.
 	line, col := extractStarlarkPosition(err)
 	return &ScriptError{
