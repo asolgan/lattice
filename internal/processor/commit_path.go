@@ -37,6 +37,10 @@ type Deps struct {
 	// rejections (Story 3.4). Nil when capability mode is not active (stub
 	// mode) — in that case denials fall back to the pre-3.4 minimal reply.
 	DenialBuilder *DenialResponseBuilder
+	// TraceEmitter writes three-plane auth trace records to Health KV per
+	// FR23 (Story 3.5). Nil when not wired (stub mode). Fire-and-forget:
+	// the emitter launches a goroutine so step 3 latency is unaffected.
+	TraceEmitter *AuthTraceEmitter
 }
 
 // CommitPath drives steps 1-3 (and stubbed 4-10) for a single envelope.
@@ -171,6 +175,9 @@ func (cp *CommitPath) HandleMessage(ctx context.Context, msg jetstream.Msg) Mess
 			denialDetails = DenialDetailsAsMap(dd)
 		}
 		cp.replyTo(msg, BuildRejectedReply(env.RequestID, code, decision.Reason, denialDetails))
+		// Story 3.5 (FR23): emit three-plane auth trace record asynchronously.
+		// Fire-and-forget — does not block step 3 path (per AC).
+		cp.deps.TraceEmitter.Emit(env, decision)
 		_ = msg.TermWithReason("auth denied: " + decision.Reason)
 		return OutcomeRejected
 	}
@@ -184,6 +191,9 @@ func (cp *CommitPath) HandleMessage(ctx context.Context, msg jetstream.Msg) Mess
 		"requestId", env.RequestID, "stub", decision.Stub,
 		"authPath", resolvedPermissionPath(resolvedPermission),
 		"projectedAt", resolvedPermissionProjectedAt(resolvedPermission))
+	// Story 3.5 (FR23): emit auth trace for allowed decisions when flag is ON.
+	// The emitter guards internally on traceAllowDecisions; nil emitter is a no-op.
+	cp.deps.TraceEmitter.Emit(env, decision)
 	_ = resolvedPermission // wired through; downstream consumers in 3.4+
 
 	// --- Steps 4-10: stubbed pipeline. ---
@@ -419,7 +429,7 @@ func (cp *CommitPath) Run(ctx context.Context, cons jetstream.Consumer) error {
 // The function name is retained for backwards compatibility with Story
 // 1.5's call sites; "stub" now refers only to the EventPublisher.
 func MakeStubPipeline(conn *substrate.Conn, coreBucket, healthBucket string, authMode AuthMode, logger *slog.Logger, instance string) (*CommitPath, *HealthHeartbeater, error) {
-	return MakePipeline(conn, coreBucket, healthBucket, "", authMode, logger, instance)
+	return MakePipeline(conn, coreBucket, healthBucket, "", authMode, false, logger, instance)
 }
 
 // MakePipeline is the Story-3.3 wiring entry point. capabilityBucket is
@@ -427,7 +437,11 @@ func MakeStubPipeline(conn *substrate.Conn, coreBucket, healthBucket string, aut
 // regardless of the requested mode (test-friendly default). authMode is
 // applied via SelectAuthorizerArgs so the Capability KV reader + alert
 // emitter are wired in one place.
-func MakePipeline(conn *substrate.Conn, coreBucket, healthBucket, capabilityBucket string, authMode AuthMode, logger *slog.Logger, instance string) (*CommitPath, *HealthHeartbeater, error) {
+//
+// traceAllowDecisions (Story 3.5 FR23): when true, auth trace records are
+// also written for ALLOWED decisions. Defaults off (false) per AC — volume
+// implications for high-traffic deployments.
+func MakePipeline(conn *substrate.Conn, coreBucket, healthBucket, capabilityBucket string, authMode AuthMode, traceAllowDecisions bool, logger *slog.Logger, instance string) (*CommitPath, *HealthHeartbeater, error) {
 	metrics := &Metrics{}
 	hb := NewHealthHeartbeater(conn, healthBucket, instance, 10*time.Second, metrics, logger)
 	alertEmitter := NewHealthAlertEmitter(conn, healthBucket, logger)
@@ -470,6 +484,14 @@ func MakePipeline(conn *substrate.Conn, coreBucket, healthBucket, capabilityBuck
 		denialBuilder = NewDenialResponseBuilder(conn, capabilityBucket, logger)
 	}
 
+	// Story 3.5 (FR23): wire AuthTraceEmitter when health bucket is available.
+	// The emitter writes to health-kv with per-key 1h TTL. Nil emitter is a
+	// no-op (safe to call Emit on nil *AuthTraceEmitter per the guard in Emit).
+	var traceEmitter *AuthTraceEmitter
+	if healthBucket != "" && instance != "" {
+		traceEmitter = NewAuthTraceEmitter(conn, healthBucket, instance, traceAllowDecisions, logger)
+	}
+
 	committer := NewCommitter(conn, coreBucket, ddls, logger, time.Now)
 	cp := NewCommitPath(Deps{
 		Conn:          conn,
@@ -485,6 +507,7 @@ func MakePipeline(conn *substrate.Conn, coreBucket, healthBucket, capabilityBuck
 		Heartbeater:   hb,
 		Logger:        logger,
 		DenialBuilder: denialBuilder,
+		TraceEmitter:  traceEmitter,
 	})
 	return cp, hb, nil
 }

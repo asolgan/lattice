@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -121,6 +122,31 @@ func (c *Conn) KVListKeys(ctx context.Context, bucket string) ([]string, error) 
 		keys = append(keys, k)
 	}
 	return keys, nil
+}
+
+// KVPutWithTTL writes value to key with a per-message TTL. The bucket must
+// have been provisioned with AllowMsgTTL (LimitMarkerTTL) enabled; otherwise
+// the NATS server ignores the TTL header.
+//
+// The TTL is set via the NATS-TTL message header published directly to the
+// KV subject ($KV.<bucket>.<key>) so that it lands as a JetStream message
+// with the TTL header the server honours. This is the same mechanism the
+// AtomicBatch path uses for op-tracker entries.
+//
+// Returns the sequence number of the new message.
+func (c *Conn) KVPutWithTTL(ctx context.Context, bucket, key string, value []byte, ttl time.Duration) (uint64, error) {
+	if ttl <= 0 {
+		return c.KVPut(ctx, bucket, key, value)
+	}
+	subj := "$KV." + bucket + "." + key
+	msg := nats.NewMsg(subj)
+	msg.Data = value
+	msg.Header.Set("Nats-TTL", ttl.String())
+	pubAck, err := c.js.PublishMsg(ctx, msg)
+	if err != nil {
+		return 0, fmt.Errorf("substrate: KV put-with-ttl %s/%s: %w", bucket, key, err)
+	}
+	return pubAck.Sequence, nil
 }
 
 // KVDelete soft-deletes key (writes a delete marker). Subsequent reads

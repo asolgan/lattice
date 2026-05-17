@@ -7,13 +7,14 @@
 //
 // Environment:
 //
-//	NATS_URL              NATS server URL (default: nats://localhost:4222)
-//	LATTICE_AUTH_MODE     capability (default, Story 3.3+) | stub (test/dev — emits stub-auth-active alert)
-//	PROCESSOR_INSTANCE    instance id (default: auto-generated proc-<NanoID>)
-//	PROCESSOR_DURABLE     JetStream durable consumer name (default: processor-main)
-//	PROCESSOR_STREAM      JetStream stream name (default: core-operations)
-//	PROCESSOR_FILTER      comma-separated subject filters (default: ops.default,ops.urgent,ops.system)
-//	HEALTH_INTERVAL_SEC   heartbeat interval in seconds (default: 10, minimum: 10 per NFR-O1)
+//	NATS_URL                          NATS server URL (default: nats://localhost:4222)
+//	LATTICE_AUTH_MODE                 capability (default, Story 3.3+) | stub (test/dev — emits stub-auth-active alert)
+//	LATTICE_AUTH_TRACE_ALLOW_DECISIONS  "true" to also trace ALLOWED decisions (default: "false" — denial-only per FR23)
+//	PROCESSOR_INSTANCE                instance id (default: auto-generated proc-<NanoID>)
+//	PROCESSOR_DURABLE                 JetStream durable consumer name (default: processor-main)
+//	PROCESSOR_STREAM                  JetStream stream name (default: core-operations)
+//	PROCESSOR_FILTER                  comma-separated subject filters (default: ops.default,ops.urgent,ops.system)
+//	HEALTH_INTERVAL_SEC               heartbeat interval in seconds (default: 10, minimum: 10 per NFR-O1)
 //
 // Logs to stderr in slog text format. Exits non-zero on any startup
 // failure; on graceful shutdown (SIGINT/SIGTERM) the heartbeater emits a
@@ -55,6 +56,7 @@ func run(logger *slog.Logger) error {
 	// dev/test deployments; operators selecting it see WARN logs + a
 	// Health KV `stub-auth-active` alert.
 	authMode := processor.AuthMode(envOrDefault("LATTICE_AUTH_MODE", string(processor.AuthModeCapability)))
+	traceAllowDecisions := os.Getenv("LATTICE_AUTH_TRACE_ALLOW_DECISIONS") == "true"
 
 	instance := os.Getenv("PROCESSOR_INSTANCE")
 	if instance == "" {
@@ -96,7 +98,7 @@ func run(logger *slog.Logger) error {
 	}
 	defer conn.Close()
 
-	cp, hb, err := processor.MakePipeline(conn, bootstrap.CoreKVBucket, bootstrap.HealthKVBucket, bootstrap.CapabilityKVBucket, authMode, logger, instance)
+	cp, hb, err := processor.MakePipeline(conn, bootstrap.CoreKVBucket, bootstrap.HealthKVBucket, bootstrap.CapabilityKVBucket, authMode, traceAllowDecisions, logger, instance)
 	if err != nil {
 		return err
 	}
