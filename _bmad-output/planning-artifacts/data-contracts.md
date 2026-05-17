@@ -1403,6 +1403,65 @@ Phase 1 stub implementation:
 
 The Capability Lens 4 attack vectors (Phase 1 Gate 3) test against the real Lens output, not the stub. Test data: a graph that exercises each attack vector listed in §6.10 item 6.
 
+### 6.13 Role / Permission Domain DDL (Phase 1 — Story 3.6)
+
+**Decision record**: the AC text in epics.md Story 3.6 refers to a link named `assignedRole`. In live code the Capability Lens cypher (Story 3.2a/b) and all primordial seeding use `holdsRole`. Story 3.6 adopts `holdsRole` for consistency. The AC-implied name `assignedRole` is not present anywhere in the codebase.
+
+**DDL key form**: all five DDL meta-vertices are keyed as `vtx.meta.<NanoID>` (per Contract #1 §1.5 three-segment vertex rule). Their canonical names live in the `.canonicalName` aspect, not in the key segment.
+
+#### Canonical Role Inventory (Story 1.3 + Story 3.6 stability note)
+
+| NanoID Variable         | Vertex Key              | Description                                                      |
+|-------------------------|-------------------------|------------------------------------------------------------------|
+| `RoleConsumerID`        | `vtx.role.<NanoID>`     | End-consumer of platform services (resident / tenant).           |
+| `RoleFrontOfHouseID`    | `vtx.role.<NanoID>`     | Front-of-house staff with resident-facing visibility.            |
+| `RoleBackOfHouseID`     | `vtx.role.<NanoID>`     | Back-of-house staff for internal operational tasks.              |
+| `RoleOperatorID`        | `vtx.role.<NanoID>`     | Platform operator with elevated management privileges.           |
+| `RolePlatformIntlID`    | `vtx.role.<NanoID>`     | Internal platform service actor; root-equivalent across all ops. |
+
+NanoIDs are generated once per deployment on `make up` and persisted in `lattice.bootstrap.json`. They are stable for the lifetime of a deployment; `make down` + `make up` regenerates a fresh primordial key space.
+
+#### DDL Meta-Vertex Inventory
+
+| Canonical Name      | Class                   | Permitted Commands                                           |
+|---------------------|-------------------------|--------------------------------------------------------------|
+| `role`              | `meta.ddl.vertexType`   | `CreateRole`, `UpdateRole`, `TombstoneRole`                  |
+| `permission`        | `meta.ddl.vertexType`   | `CreatePermission`, `UpdatePermission`, `TombstonePermission`|
+| `holdsRole`         | `meta.ddl.linkType`     | `AssignRole`, `RevokeRole`                                   |
+| `grantsPermission`  | `meta.ddl.linkType`     | `GrantPermission`, `RevokePermission`                        |
+| `reportsTo`         | `meta.ddl.linkType`     | `AssignReportingChain`, `RemoveReportingChain`               |
+
+Each DDL meta-vertex carries four aspects: `.canonicalName`, `.permittedCommands`, `.description`, `.script`. The `.script` aspect contains a Starlark program that the Processor executes at step 5 to produce the `MutationBatch + EventList` return per Contract #3.
+
+#### 12 Operator-Grant Permissions (Story 3.6 Decision #2)
+
+The Capability Lens exact-operationType matching (Contract #6 §6.4) requires one permission vertex per concrete operation type. A single umbrella `ManageRoleAssignments` permission would not authorize any specific operation because no operation carries that operationType. Therefore Story 3.6 seeds one permission vertex per management operation, each with `scope: "any"`, all granted to the `operator` role via `grantsPermission` links.
+
+| Permission variable             | operationType           |
+|---------------------------------|-------------------------|
+| `PermCreateRoleID`              | `CreateRole`            |
+| `PermUpdateRoleID`              | `UpdateRole`            |
+| `PermTombstoneRoleID`           | `TombstoneRole`         |
+| `PermCreatePermissionID`        | `CreatePermission`      |
+| `PermUpdatePermissionID`        | `UpdatePermission`      |
+| `PermTombstonePermissionID`     | `TombstonePermission`   |
+| `PermAssignRoleID`              | `AssignRole`            |
+| `PermRevokeRoleID`              | `RevokeRole`            |
+| `PermGrantPermissionID`         | `GrantPermission`       |
+| `PermRevokePermissionID`        | `RevokePermission`      |
+| `PermAssignReportingChainID`    | `AssignReportingChain`  |
+| `PermRemoveReportingChainID`    | `RemoveReportingChain`  |
+
+#### Link Key Alphabetical-Ordering Convention
+
+Link keys follow the younger-vertex-first ordering established in Contract #1 §1.4 and the Story 1.4 CAR. For the role/permission domain:
+
+- `holdsRole` links: `identity` < `role` alphabetically → `lnk.identity.<identityID>.holdsRole.role.<roleID>`
+- `grantsPermission` links: `permission` < `role` alphabetically → `lnk.permission.<permID>.grantsPermission.role.<roleID>`
+- `reportsTo` links: both vertices are `identity` type → order by NanoID string comparison (alphabetical by ID)
+
+See Contract #1 §1.4 and `internal/bootstrap/nanoid.go:RoleMgmtGrantLinkKeys()` for implementation.
+
 ## Contract #7 — Primordial Bootstrap
 
 The primordial bootstrap is the set of Core KV entries that `make up` seeds into a fresh Lattice deployment before any operation can be processed. It establishes the self-describing meta-meta layer, the platform's foundational types, and the topology required for the Capability Lens to produce auth projections for system identities.

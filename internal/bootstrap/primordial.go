@@ -392,6 +392,71 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		return nil, err
 	}
 
+	// Story 3.6: five DDL meta-vertices for the role/permission domain.
+	for _, ddl := range RoleMgmtDDLs() {
+		vtxVal, vtxErr := MakeVertexEnvelope(ddl.Key, ddl.Class, map[string]any{})
+		if err := add(ddl.Key, vtxVal, vtxErr); err != nil {
+			return nil, err
+		}
+		// .canonicalName aspect.
+		cnKey := ddl.Key + ".canonicalName"
+		cnVal, cnErr := MakeAspectEnvelope(cnKey, ddl.Key, "canonicalName", "canonicalName",
+			map[string]any{"value": ddl.CanonicalName})
+		if err := add(cnKey, cnVal, cnErr); err != nil {
+			return nil, err
+		}
+		// .permittedCommands aspect.
+		pcKey := ddl.Key + ".permittedCommands"
+		pcVal, pcErr := MakeAspectEnvelope(pcKey, ddl.Key, "permittedCommands", "permittedCommands",
+			map[string]any{"commands": ddl.PermittedCommands})
+		if err := add(pcKey, pcVal, pcErr); err != nil {
+			return nil, err
+		}
+		// .description aspect.
+		descKey := ddl.Key + ".description"
+		descVal, descErr := MakeAspectEnvelope(descKey, ddl.Key, "description", "description",
+			map[string]any{"text": ddl.Description})
+		if err := add(descKey, descVal, descErr); err != nil {
+			return nil, err
+		}
+		// .script aspect.
+		scriptKey := ddl.Key + ".script"
+		scriptVal, scriptErr := MakeAspectEnvelope(scriptKey, ddl.Key, "script", "script",
+			map[string]any{"source": ddl.Script})
+		if err := add(scriptKey, scriptVal, scriptErr); err != nil {
+			return nil, err
+		}
+	}
+
+	// Story 3.6: 12 per-op permission vertices granted to the operator role.
+	for _, perm := range RoleMgmtOperatorPermissions() {
+		permData := map[string]any{
+			"operationType": perm.OperationType,
+			"scope":         perm.Scope,
+			"note": "Grants the operator role the right to submit " + perm.OperationType +
+				" operations. Seeded at bootstrap per Story 3.6.",
+		}
+		permVal, permErr := MakeVertexEnvelope(perm.Key, "permission", permData)
+		if err := add(perm.Key, permVal, permErr); err != nil {
+			return nil, err
+		}
+	}
+
+	// Story 3.6: 12 grantsPermission links — each per-op permission → operator role.
+	// Link key: lnk.permission.<permID>.grantsPermission.role.<operatorID>
+	// "permission" < "role" alphabetically → permission is younger vertex.
+	for _, perm := range RoleMgmtOperatorPermissions() {
+		linkKey := "lnk.permission." + perm.ID + ".grantsPermission.role." + RoleOperatorID
+		linkVal, linkErr := MakeLinkEnvelope(
+			linkKey,
+			"vtx.permission."+perm.ID,
+			"vtx.role."+RoleOperatorID,
+			"grantsPermission", "grantsPermission", map[string]any{})
+		if err := add(linkKey, linkVal, linkErr); err != nil {
+			return nil, err
+		}
+	}
+
 	return entries, nil
 }
 

@@ -228,6 +228,122 @@ func main() {
 		}
 	}
 
+	// 6. Story 3.6: Assert DDL meta-vertices exist with correct aspects.
+	ddlDefs := bootstrap.RoleMgmtDDLs()
+	fmt.Printf("\nChecking %d role-mgmt DDL meta-vertices...\n", len(ddlDefs))
+	for _, ddl := range ddlDefs {
+		// Vertex itself.
+		vtxEntry, err := coreKV.Get(ctx, ddl.Key)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("MISSING DDL vertex: %s (%v)", ddl.Key, err))
+			continue
+		}
+		var vtxEnv map[string]any
+		if err := json.Unmarshal(vtxEntry.Value(), &vtxEnv); err != nil {
+			failures = append(failures, fmt.Sprintf("INVALID JSON for DDL vertex %s: %v", ddl.Key, err))
+			continue
+		}
+		if cls, _ := vtxEnv["class"].(string); cls != ddl.Class {
+			failures = append(failures, fmt.Sprintf("DDL vertex %s class=%q, want %q", ddl.Key, cls, ddl.Class))
+		}
+		fmt.Printf("  OK  %s (class=%s)\n", ddl.Key, ddl.Class)
+
+		// Required aspects: canonicalName, permittedCommands, description, script.
+		for _, aspect := range []string{"canonicalName", "permittedCommands", "description", "script"} {
+			aspectKey := ddl.Key + "." + aspect
+			aspEntry, err := coreKV.Get(ctx, aspectKey)
+			if err != nil {
+				failures = append(failures, fmt.Sprintf("MISSING DDL aspect: %s (%v)", aspectKey, err))
+				continue
+			}
+			if aspect == "canonicalName" {
+				var aspEnv map[string]any
+				if err := json.Unmarshal(aspEntry.Value(), &aspEnv); err == nil {
+					if data, ok := aspEnv["data"].(map[string]any); ok {
+						if val, _ := data["value"].(string); val != ddl.CanonicalName {
+							failures = append(failures, fmt.Sprintf("DDL aspect %s canonicalName=%q, want %q",
+								aspectKey, val, ddl.CanonicalName))
+							continue
+						}
+					}
+				}
+			}
+			fmt.Printf("  OK  %s\n", aspectKey)
+		}
+	}
+
+	// 7. Story 3.6: Assert 12 per-op permission vertices for operator grants.
+	opPerms := bootstrap.RoleMgmtOperatorPermissions()
+	fmt.Printf("\nChecking %d role-mgmt permission vertices...\n", len(opPerms))
+	for _, perm := range opPerms {
+		permEntry, err := coreKV.Get(ctx, perm.Key)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("MISSING permission vertex: %s (%v)", perm.Key, err))
+			continue
+		}
+		var permEnv map[string]any
+		if err := json.Unmarshal(permEntry.Value(), &permEnv); err != nil {
+			failures = append(failures, fmt.Sprintf("INVALID JSON for permission vertex %s: %v", perm.Key, err))
+			continue
+		}
+		if cls, _ := permEnv["class"].(string); cls != "permission" {
+			failures = append(failures, fmt.Sprintf("permission vertex %s class=%q, want permission", perm.Key, cls))
+		}
+		if data, ok := permEnv["data"].(map[string]any); ok {
+			if ot, _ := data["operationType"].(string); ot != perm.OperationType {
+				failures = append(failures, fmt.Sprintf("permission vertex %s operationType=%q, want %q",
+					perm.Key, ot, perm.OperationType))
+			}
+			if scope, _ := data["scope"].(string); scope != "any" {
+				failures = append(failures, fmt.Sprintf("permission vertex %s scope=%q, want any", perm.Key, scope))
+			}
+		}
+		fmt.Printf("  OK  %s (operationType=%s)\n", perm.Key, perm.OperationType)
+	}
+
+	// 8. Story 3.6: Assert 12 grantsPermission links to operator role.
+	grantLinks := bootstrap.RoleMgmtGrantLinkKeys()
+	fmt.Printf("\nChecking %d role-mgmt grant links to operator role...\n", len(grantLinks))
+	for _, linkKey := range grantLinks {
+		lnkEntry, err := coreKV.Get(ctx, linkKey)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("MISSING grant link: %s (%v)", linkKey, err))
+			continue
+		}
+		var lnkEnv map[string]any
+		if err := json.Unmarshal(lnkEntry.Value(), &lnkEnv); err != nil {
+			failures = append(failures, fmt.Sprintf("INVALID JSON for grant link %s: %v", linkKey, err))
+			continue
+		}
+		if cls, _ := lnkEnv["class"].(string); cls != "grantsPermission" {
+			failures = append(failures, fmt.Sprintf("grant link %s class=%q, want grantsPermission", linkKey, cls))
+		}
+		// Verify key shape: lnk.permission.<permID>.grantsPermission.role.<operatorID>
+		if !strings.HasPrefix(linkKey, "lnk.permission.") || !strings.Contains(linkKey, ".grantsPermission.role.") {
+			failures = append(failures, fmt.Sprintf("grant link %s has unexpected key shape", linkKey))
+		}
+		// Verify it terminates with the operator role ID.
+		if !strings.HasSuffix(linkKey, "."+bootstrap.RoleOperatorID) {
+			failures = append(failures, fmt.Sprintf("grant link %s does not end with operator role ID", linkKey))
+		}
+		if isDeleted, _ := lnkEnv["isDeleted"].(bool); isDeleted {
+			failures = append(failures, fmt.Sprintf("grant link %s is tombstoned (isDeleted=true)", linkKey))
+		}
+		fmt.Printf("  OK  %s\n", linkKey)
+	}
+
+	// 9. Story 3.6: Verify canonical roles still have description aspects (Story 1.3).
+	canonicalRoles := bootstrap.CanonicalRoles()
+	fmt.Printf("\nChecking %d canonical role description aspects...\n", len(canonicalRoles))
+	for _, role := range canonicalRoles {
+		descKey := role.Key + ".description"
+		if _, err := coreKV.Get(ctx, descKey); err != nil {
+			failures = append(failures, fmt.Sprintf("MISSING role description aspect: %s (%v)", descKey, err))
+		} else {
+			fmt.Printf("  OK  %s\n", descKey)
+		}
+	}
+
 	// Report.
 	fmt.Printf("\n")
 	if len(failures) == 0 {

@@ -89,6 +89,44 @@ var (
 	PermPlatformAnyID              string
 	PermPlatformAnyKey             string
 
+	// Story 3.6: DDL meta-vertex IDs + keys for the role/permission domain.
+	DDLRoleID                string // vtx.meta.<NanoID>, canonicalName="role"
+	DDLRoleKey               string
+	DDLPermissionID          string // vtx.meta.<NanoID>, canonicalName="permission"
+	DDLPermissionKey         string
+	DDLHoldsRoleID           string // vtx.meta.<NanoID>, canonicalName="holdsRole"
+	DDLHoldsRoleKey          string
+	DDLGrantsPermissionID    string // vtx.meta.<NanoID>, canonicalName="grantsPermission"
+	DDLGrantsPermissionKey   string
+	DDLReportsToID           string // vtx.meta.<NanoID>, canonicalName="reportsTo"
+	DDLReportsToKey          string
+
+	// Story 3.6: 12 per-op permission vertex IDs + keys for operator grants.
+	PermCreateRoleID                string
+	PermCreateRoleKey               string
+	PermUpdateRoleID                string
+	PermUpdateRoleKey               string
+	PermTombstoneRoleID             string
+	PermTombstoneRoleKey            string
+	PermCreatePermissionID          string
+	PermCreatePermissionKey         string
+	PermUpdatePermissionID          string
+	PermUpdatePermissionKey         string
+	PermTombstonePermissionID       string
+	PermTombstonePermissionKey      string
+	PermAssignRoleID                string
+	PermAssignRoleKey               string
+	PermRevokeRoleID                string
+	PermRevokeRoleKey               string
+	PermGrantPermissionID           string
+	PermGrantPermissionKey          string
+	PermRevokePermissionID          string
+	PermRevokePermissionKey         string
+	PermAssignReportingChainID      string
+	PermAssignReportingChainKey     string
+	PermRemoveReportingChainID      string
+	PermRemoveReportingChainKey     string
+
 	// Derived link keys.
 	BootstrapHoldsRoleLinkKey string
 	PlatformHoldsRoleLinkKey  string
@@ -109,6 +147,27 @@ type PrimordialIDsRaw struct {
 	RoleOperator            string `json:"roleOperator"`
 	RolePlatformIntl        string `json:"rolePlatformIntl"`
 	PermPlatformAny         string `json:"permPlatformAny"`
+
+	// Story 3.6: DDL meta-vertex IDs for the role/permission domain.
+	DDLRole             string `json:"ddlRole"`
+	DDLPermission       string `json:"ddlPermission"`
+	DDLHoldsRole        string `json:"ddlHoldsRole"`
+	DDLGrantsPermission string `json:"ddlGrantsPermission"`
+	DDLReportsTo        string `json:"ddlReportsTo"`
+
+	// Story 3.6: 12 per-op permission vertex IDs.
+	PermCreateRole           string `json:"permCreateRole"`
+	PermUpdateRole           string `json:"permUpdateRole"`
+	PermTombstoneRole        string `json:"permTombstoneRole"`
+	PermCreatePermission     string `json:"permCreatePermission"`
+	PermUpdatePermission     string `json:"permUpdatePermission"`
+	PermTombstonePermission  string `json:"permTombstonePermission"`
+	PermAssignRole           string `json:"permAssignRole"`
+	PermRevokeRole           string `json:"permRevokeRole"`
+	PermGrantPermission      string `json:"permGrantPermission"`
+	PermRevokePermission     string `json:"permRevokePermission"`
+	PermAssignReportingChain string `json:"permAssignReportingChain"`
+	PermRemoveReportingChain string `json:"permRemoveReportingChain"`
 }
 
 // BootstrapFile is the wire format of lattice.bootstrap.json.
@@ -169,6 +228,24 @@ func currentRaw() PrimordialIDsRaw {
 		RoleOperator:            RoleOperatorID,
 		RolePlatformIntl:        RolePlatformIntlID,
 		PermPlatformAny:         PermPlatformAnyID,
+		// Story 3.6.
+		DDLRole:                  DDLRoleID,
+		DDLPermission:            DDLPermissionID,
+		DDLHoldsRole:             DDLHoldsRoleID,
+		DDLGrantsPermission:      DDLGrantsPermissionID,
+		DDLReportsTo:             DDLReportsToID,
+		PermCreateRole:           PermCreateRoleID,
+		PermUpdateRole:           PermUpdateRoleID,
+		PermTombstoneRole:        PermTombstoneRoleID,
+		PermCreatePermission:     PermCreatePermissionID,
+		PermUpdatePermission:     PermUpdatePermissionID,
+		PermTombstonePermission:  PermTombstonePermissionID,
+		PermAssignRole:           PermAssignRoleID,
+		PermRevokeRole:           PermRevokeRoleID,
+		PermGrantPermission:      PermGrantPermissionID,
+		PermRevokePermission:     PermRevokePermissionID,
+		PermAssignReportingChain: PermAssignReportingChainID,
+		PermRemoveReportingChain: PermRemoveReportingChainID,
 	}
 }
 
@@ -201,6 +278,25 @@ func generate() (PrimordialIDsRaw, error) {
 		&raw.RoleOperator,
 		&raw.RolePlatformIntl,
 		&raw.PermPlatformAny,
+		// Story 3.6: DDL meta-vertices.
+		&raw.DDLRole,
+		&raw.DDLPermission,
+		&raw.DDLHoldsRole,
+		&raw.DDLGrantsPermission,
+		&raw.DDLReportsTo,
+		// Story 3.6: per-op permission vertices.
+		&raw.PermCreateRole,
+		&raw.PermUpdateRole,
+		&raw.PermTombstoneRole,
+		&raw.PermCreatePermission,
+		&raw.PermUpdatePermission,
+		&raw.PermTombstonePermission,
+		&raw.PermAssignRole,
+		&raw.PermRevokeRole,
+		&raw.PermGrantPermission,
+		&raw.PermRevokePermission,
+		&raw.PermAssignReportingChain,
+		&raw.PermRemoveReportingChain,
 	}
 	for _, dst := range targets {
 		id, err := substrate.NewNanoID()
@@ -230,6 +326,25 @@ func populate(raw PrimordialIDsRaw) error {
 		{"roleOperator", raw.RoleOperator},
 		{"rolePlatformIntl", raw.RolePlatformIntl},
 		{"permPlatformAny", raw.PermPlatformAny},
+		// Story 3.6 DDL meta-vertices.
+		{"ddlRole", raw.DDLRole},
+		{"ddlPermission", raw.DDLPermission},
+		{"ddlHoldsRole", raw.DDLHoldsRole},
+		{"ddlGrantsPermission", raw.DDLGrantsPermission},
+		{"ddlReportsTo", raw.DDLReportsTo},
+		// Story 3.6 per-op permission vertices.
+		{"permCreateRole", raw.PermCreateRole},
+		{"permUpdateRole", raw.PermUpdateRole},
+		{"permTombstoneRole", raw.PermTombstoneRole},
+		{"permCreatePermission", raw.PermCreatePermission},
+		{"permUpdatePermission", raw.PermUpdatePermission},
+		{"permTombstonePermission", raw.PermTombstonePermission},
+		{"permAssignRole", raw.PermAssignRole},
+		{"permRevokeRole", raw.PermRevokeRole},
+		{"permGrantPermission", raw.PermGrantPermission},
+		{"permRevokePermission", raw.PermRevokePermission},
+		{"permAssignReportingChain", raw.PermAssignReportingChain},
+		{"permRemoveReportingChain", raw.PermRemoveReportingChain},
 	}
 	for _, f := range fields {
 		if !substrate.IsValidNanoID(f.val) {
@@ -268,6 +383,44 @@ func populate(raw PrimordialIDsRaw) error {
 	PlatformHoldsRoleLinkKey = "lnk.identity." + PlatformActorID + ".holdsRole.role." + RolePlatformIntlID
 	GrantsPermissionLinkKey = "lnk.permission." + PermPlatformAnyID + ".grantsPermission.role." + RolePlatformIntlID
 
+	// Story 3.6: populate DDL meta-vertex IDs + keys.
+	DDLRoleID = raw.DDLRole
+	DDLRoleKey = "vtx.meta." + DDLRoleID
+	DDLPermissionID = raw.DDLPermission
+	DDLPermissionKey = "vtx.meta." + DDLPermissionID
+	DDLHoldsRoleID = raw.DDLHoldsRole
+	DDLHoldsRoleKey = "vtx.meta." + DDLHoldsRoleID
+	DDLGrantsPermissionID = raw.DDLGrantsPermission
+	DDLGrantsPermissionKey = "vtx.meta." + DDLGrantsPermissionID
+	DDLReportsToID = raw.DDLReportsTo
+	DDLReportsToKey = "vtx.meta." + DDLReportsToID
+
+	// Story 3.6: populate per-op permission vertex IDs + keys.
+	PermCreateRoleID = raw.PermCreateRole
+	PermCreateRoleKey = "vtx.permission." + PermCreateRoleID
+	PermUpdateRoleID = raw.PermUpdateRole
+	PermUpdateRoleKey = "vtx.permission." + PermUpdateRoleID
+	PermTombstoneRoleID = raw.PermTombstoneRole
+	PermTombstoneRoleKey = "vtx.permission." + PermTombstoneRoleID
+	PermCreatePermissionID = raw.PermCreatePermission
+	PermCreatePermissionKey = "vtx.permission." + PermCreatePermissionID
+	PermUpdatePermissionID = raw.PermUpdatePermission
+	PermUpdatePermissionKey = "vtx.permission." + PermUpdatePermissionID
+	PermTombstonePermissionID = raw.PermTombstonePermission
+	PermTombstonePermissionKey = "vtx.permission." + PermTombstonePermissionID
+	PermAssignRoleID = raw.PermAssignRole
+	PermAssignRoleKey = "vtx.permission." + PermAssignRoleID
+	PermRevokeRoleID = raw.PermRevokeRole
+	PermRevokeRoleKey = "vtx.permission." + PermRevokeRoleID
+	PermGrantPermissionID = raw.PermGrantPermission
+	PermGrantPermissionKey = "vtx.permission." + PermGrantPermissionID
+	PermRevokePermissionID = raw.PermRevokePermission
+	PermRevokePermissionKey = "vtx.permission." + PermRevokePermissionID
+	PermAssignReportingChainID = raw.PermAssignReportingChain
+	PermAssignReportingChainKey = "vtx.permission." + PermAssignReportingChainID
+	PermRemoveReportingChainID = raw.PermRemoveReportingChain
+	PermRemoveReportingChainKey = "vtx.permission." + PermRemoveReportingChainID
+
 	return nil
 }
 
@@ -291,7 +444,7 @@ func persist(path string, raw PrimordialIDsRaw) error {
 // the verify-bootstrap command checks for. MUST be called only after Load
 // or LoadOrGenerate has populated the package variables.
 func PrimordialVertexKeys() []string {
-	return []string{
+	keys := []string{
 		// bootstrap op tracker
 		BootstrapOpKey,
 		// system identities
@@ -313,6 +466,60 @@ func PrimordialVertexKeys() []string {
 		BootstrapHoldsRoleLinkKey,
 		PlatformHoldsRoleLinkKey,
 		GrantsPermissionLinkKey,
+		// Story 3.6: DDL meta-vertices for the role/permission domain.
+		DDLRoleKey,
+		DDLPermissionKey,
+		DDLHoldsRoleKey,
+		DDLGrantsPermissionKey,
+		DDLReportsToKey,
+	}
+	// Story 3.6: 12 per-op permission vertices.
+	keys = append(keys, RoleMgmtPermissionKeys()...)
+	// Story 3.6: 12 grantsPermission links to operator role.
+	keys = append(keys, RoleMgmtGrantLinkKeys()...)
+	return keys
+}
+
+// RoleMgmtPermissionKeys returns the 12 per-op permission vertex keys
+// for the role-management domain (Story 3.6).
+func RoleMgmtPermissionKeys() []string {
+	return []string{
+		PermCreateRoleKey,
+		PermUpdateRoleKey,
+		PermTombstoneRoleKey,
+		PermCreatePermissionKey,
+		PermUpdatePermissionKey,
+		PermTombstonePermissionKey,
+		PermAssignRoleKey,
+		PermRevokeRoleKey,
+		PermGrantPermissionKey,
+		PermRevokePermissionKey,
+		PermAssignReportingChainKey,
+		PermRemoveReportingChainKey,
+	}
+}
+
+// RoleMgmtGrantLinkKeys returns the 12 grantsPermission link keys from each
+// per-op permission to the operator role (Story 3.6).
+// Link key: lnk.permission.<permID>.grantsPermission.role.<operatorID>
+// "permission" < "role" alphabetically → permission is younger vertex (first segment).
+func RoleMgmtGrantLinkKeys() []string {
+	mkLink := func(permID string) string {
+		return "lnk.permission." + permID + ".grantsPermission.role." + RoleOperatorID
+	}
+	return []string{
+		mkLink(PermCreateRoleID),
+		mkLink(PermUpdateRoleID),
+		mkLink(PermTombstoneRoleID),
+		mkLink(PermCreatePermissionID),
+		mkLink(PermUpdatePermissionID),
+		mkLink(PermTombstonePermissionID),
+		mkLink(PermAssignRoleID),
+		mkLink(PermRevokeRoleID),
+		mkLink(PermGrantPermissionID),
+		mkLink(PermRevokePermissionID),
+		mkLink(PermAssignReportingChainID),
+		mkLink(PermRemoveReportingChainID),
 	}
 }
 
@@ -320,4 +527,6 @@ func PrimordialVertexKeys() []string {
 // (vertices + links). Used by cmd/refractor-stub as a count-only readiness
 // gate (avoids needing to load lattice.bootstrap.json before the file is
 // written by cmd/bootstrap — which would create a startup race).
-const PrimordialVertexKeyCount = 15
+// Story 3.6 adds 5 DDL meta-vertex keys + 12 permission keys + 12 link keys = 29
+// Total: 15 (prior) + 5 + 12 + 12 = 44
+const PrimordialVertexKeyCount = 44
