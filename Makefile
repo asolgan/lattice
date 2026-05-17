@@ -15,7 +15,7 @@ BOOTSTRAP_JSON ?= ./lattice.bootstrap.json
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up down verify-bootstrap build vet test test-bypass processor run-processor clean logs ps
+.PHONY: up down verify-bootstrap build vet test test-bypass test-capability-adversarial processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 up:
@@ -91,6 +91,21 @@ test-bypass:
 	@$(MAKE) up
 	@$(MAKE) verify-bootstrap
 	go test ./internal/bypass/... -v -count=1
+
+## test-capability-adversarial — Run the Phase 1 Gate 3 Capability Lens
+## adversarial test suite. Requires a running Docker stack (make up). Exits 0
+## only when all 4 attack vectors are DEFENDED. Writes gate3-report.txt and the
+## Health KV marker at health.gates.phase1.gate3.
+##
+## Per-vector tests (TestCapAdv_*) use embedded NATS and are self-contained.
+## The TestGate3_Report roll-up connects to the live stack for the Health KV marker.
+.PHONY: test-capability-adversarial
+test-capability-adversarial:
+	@$(MAKE) down
+	@$(MAKE) up
+	@$(MAKE) verify-bootstrap
+	go test ./internal/bypass/... -v -run TestCapAdv -count=1
+	go test ./internal/bypass/... -v -run TestGate3_Report -count=1
 
 ## vet — Run go vet on all packages except vendored ANTLR-generated parsers
 ## (which contain expected unreachable-code patterns from the generator).
