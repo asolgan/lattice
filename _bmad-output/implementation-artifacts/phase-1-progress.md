@@ -1,18 +1,18 @@
 # Phase 1 Progress
 
-**Updated:** 2026-05-17, after Story 3.7 (commit ecb2e68 + 008b420 lint cleanup). **Epic 3 closed.**
+**Updated:** 2026-05-17, after Story 4.1 (commit 3cb5a06). **Epic 4 underway.**
 
 This file tracks **what's shipped, what's next, what's still open**. Operating rules and workflow live in [`WINSTON-RESUME.md`](./WINSTON-RESUME.md). Token-by-token accounting lives in [`token-usage-tracker.md`](./token-usage-tracker.md).
 
 ## Current State
 
-**Stories shipped: 22 / 32+** (the `+` denotes stories added outside the original 31-story plan: Story 2.3 hardening; Story 3.1 split into 3.1a + 3.1b-i + 3.1b-ii; Story 3.2 split into 3.2a + 3.2b).
+**Stories shipped: 23 / 32+** (the `+` denotes stories added outside the original 31-story plan: Story 2.3 hardening; Story 3.1 split into 3.1a + 3.1b-i + 3.1b-ii; Story 3.2 split into 3.2a + 3.2b).
 
-**Latest commit on main:** `008b420` (lint cleanup after Story 3.7 ecb2e68).
+**Latest commit on main:** `3cb5a06` (Story 4.1 — Identity Domain DDL & State Machine).
 
-**Epic 3 closed.** All Phase 1 Gate 3 attack vectors DEFENDED. Next work is Epic 4 (Identity & Member Lifecycle).
+**Epic 3 closed; Epic 4 in progress** (1/5 stories complete).
 
-**Token totals so far:** ~3,093K / 3,517K (88%) for 22/32+ stories (69%). Token efficiency tracks ~19 points behind story-progress; quality bar maintained across all gates.
+**Token totals so far:** ~3,298K / 3,517K (94%) for 23/32+ stories (72%). Token efficiency tracks ~22 points behind story-progress; quality bar maintained across all gates.
 
 ## Shipped Story Index
 
@@ -43,11 +43,11 @@ Quick reference; full details in token-usage-tracker.md.
 | 3.5 | Three-plane auth trace (FR23) | 19bd508 | AuthTraceEmitter + KVPutWithTTL |
 | 3.6 | Role-scoped access domain (FR24/25) | 22a132f | 5 DDLs + 12 operator perms + §6.13 |
 | 3.7 | Capability Lens adversarial suite (Gate 3) | ecb2e68 | 4/4 DEFENDED; Epic 3 closed |
+| 4.1 | Identity Domain DDL & State Machine | 3cb5a06 | 1 DDL + 5 perms + 10 grants + state machine; verify-bootstrap 154 OK |
 
 ## Upcoming Sequence
 
-**Epic 4 — Identity & Member Lifecycle (next epic):**
-- **4.1** Identity Domain DDL & State Machine (Opus, ~120K)
+**Epic 4 — Identity & Member Lifecycle (in progress, 1/5 complete):**
 - **4.2** Staff Creates Unclaimed Identity FR1 (Sonnet, ~90K)
 - **4.3** Two-Phase Identity Claim FR2/FR5 (Sonnet, ~100K)
 - **4.4** Duplicate Identity Detection FR3 (Sonnet, ~110K)
