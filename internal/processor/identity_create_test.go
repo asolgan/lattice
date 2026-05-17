@@ -289,45 +289,6 @@ func iciNanoIDsFromRequestID(requestID string) (identityID, claimKeyPlaintext st
 	return
 }
 
-// driveOneWithReply publishes an envelope with a reply inbox set, drives the
-// pipeline with the given consumer, and returns the parsed reply envelope.
-// The caller must pass a pre-created consumer (from newCreatePipeline or
-// EnsureConsumer) — this helper does NOT create its own consumer.
-func driveOneWithReply(t *testing.T, ctx context.Context, cp *CommitPath, conn *substrate.Conn, env *OperationEnvelope, cons jetstream.Consumer, want MessageOutcome) OperationReply {
-	t.Helper()
-
-	// Subscribe to a reply inbox first.
-	inbox := conn.NATS().NewRespInbox()
-	sub, err := conn.NATS().SubscribeSync(inbox)
-	if err != nil {
-		t.Fatalf("subscribe inbox: %v", err)
-	}
-	defer sub.Unsubscribe() //nolint:errcheck
-
-	// Marshal and publish with Reply set.
-	b, err := json.Marshal(env)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	if err := conn.NATS().PublishRequest("ops.default", inbox, b); err != nil {
-		t.Fatalf("PublishRequest: %v", err)
-	}
-
-	// Drive the pipeline.
-	driveOne(t, ctx, cp, cons, want)
-
-	// Read reply (may be a duplicate/rejected reply — shape varies).
-	replyMsg, err := sub.NextMsg(5 * time.Second)
-	if err != nil {
-		t.Fatalf("no reply within 5s: %v", err)
-	}
-	var reply OperationReply
-	if err := json.Unmarshal(replyMsg.Data, &reply); err != nil {
-		t.Fatalf("unmarshal reply: %v", err)
-	}
-	return reply
-}
-
 // ---- Tests ----
 
 // TestCreateUnclaimed_Success: operator submits name+email+phone; asserts
