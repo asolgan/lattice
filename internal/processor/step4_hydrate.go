@@ -210,27 +210,40 @@ func (h *HydratorImpl) Hydrate(ctx context.Context, env *OperationEnvelope) (Hyd
 // identityScanAspects lists the aspect localNames the hydrator bulk-loads
 // for each identity vertex when ScanPrefixes contains "vtx.identity.".
 // Hard-coded for Phase 1; the only consumer of ScanPrefixes is
-// ScanIdentityDuplicates. 4 aspects cover match criteria + state transition.
-var identityScanAspects = []string{"name", "email", "phone", "state"}
+// ScanIdentityDuplicates (4.4) and ApproveIdentityMerge (4.5). 5 aspects
+// cover match criteria, state transition, and credential-binding presence.
+// .credentialBinding (4.5) is read as an existence check so the review op
+// can report hasCredentialBinding without back-channel reads.
+var identityScanAspects = []string{"name", "email", "phone", "state", "credentialBinding"}
 
 // hydrateScanPrefix implements one prefix scan for the ScanPrefixes bulk-load
-// path (Story 4.4). Allowed prefixes: "vtx.identity." and "lnk.identity.".
+// path. Allowed prefixes (Phase 1 — extended as Identity stories grow):
+//
+//   - "vtx.identity." (4.4): 3-segment vertex keys + 5 hard-coded aspects.
+//   - "lnk.identity." (4.4): 6-segment link keys anchored on identity-as-src.
+//   - "lnk." (4.5):          ALL 6-segment link keys anywhere in the bucket,
+//     so MergeIdentity can find inbound links to secondary regardless of
+//     which endpoint position they occupy.
 //
 // For "vtx.identity.": filters to 3-segment vertex keys and loads each vertex
-// + 4 hard-coded aspects (.name/.email/.phone/.state). Non-existing aspect
-// keys are silently skipped (optional aspects).
+// + 5 hard-coded aspects (.name/.email/.phone/.state/.credentialBinding).
+// Non-existing aspect keys are silently skipped (optional aspects).
 //
-// For "lnk.identity.": filters to 6-segment link keys (lnk.<type>.<id>.<rel>.<type>.<id>)
-// and loads each link envelope as-is. The script uses these for idempotency
-// checks on prior duplicateOf pairs without extra round-trips.
+// For "lnk.identity." and "lnk.": filters to 6-segment link keys
+// (lnk.<type>.<id>.<rel>.<type>.<id>) and loads each link envelope as-is.
+// No aspect expansion — links don't have aspects.
 //
-// Soft cap: >1000 matching keys per prefix → HydrationError("scan-too-large").
+// Soft caps:
+//   - "vtx.identity." + "lnk.identity.": >1000 matching keys → "scan-too-large"
+//   - "lnk." (4.5 global):                >5000 matching keys → "scan-too-large"
+//     (NFR-SC1: ≤500 identities × modest link density keeps this well under)
 func (h *HydratorImpl) hydrateScanPrefix(ctx context.Context, rid, prefix string, hydrated map[string]VertexDoc) error {
 	const (
 		scanPrefixIdentityVtx = "vtx.identity."
 		scanPrefixIdentityLnk = "lnk.identity."
+		scanPrefixAllLinks    = "lnk." // Story 4.5: MergeIdentity global link scan
 	)
-	if prefix != scanPrefixIdentityVtx && prefix != scanPrefixIdentityLnk {
+	if prefix != scanPrefixIdentityVtx && prefix != scanPrefixIdentityLnk && prefix != scanPrefixAllLinks {
 		return &HydrationError{
 			Code:               "scan-prefix-not-supported",
 			MissingKey:         prefix,
@@ -296,8 +309,12 @@ func (h *HydratorImpl) hydrateScanPrefix(ctx context.Context, rid, prefix string
 		return nil
 	}
 
-	// prefix == scanPrefixIdentityLnk
-	// Collect 6-segment link keys: lnk.identity.<id>.duplicateOf.identity.<id>
+	// prefix == scanPrefixIdentityLnk OR scanPrefixAllLinks
+	// Collect 6-segment link keys (exactly 5 dots).
+	//   - "lnk.identity.":  src-anchored on identity (4.4 ScanIdentityDuplicates).
+	//   - "lnk." (global):  ALL links in the bucket so MergeIdentity (4.5) can
+	//     find inbound links to secondary regardless of endpoint position.
+	// Soft caps differ: 1000 for the narrow scan, 5000 for the global scan.
 	var lnkKeys []string
 	for _, k := range allKeys {
 		if !strings.HasPrefix(k, prefix) {
@@ -309,10 +326,14 @@ func (h *HydratorImpl) hydrateScanPrefix(ctx context.Context, rid, prefix string
 		}
 		lnkKeys = append(lnkKeys, k)
 	}
-	if len(lnkKeys) > 1000 {
+	softCap := 1000
+	if prefix == scanPrefixAllLinks {
+		softCap = 5000
+	}
+	if len(lnkKeys) > softCap {
 		return &HydrationError{
 			Code:               "scan-too-large",
-			MissingKey:         fmt.Sprintf("count=%d", len(lnkKeys)),
+			MissingKey:         fmt.Sprintf("count=%d prefix=%s", len(lnkKeys), prefix),
 			OperationRequestID: rid,
 		}
 	}

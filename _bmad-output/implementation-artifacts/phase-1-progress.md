@@ -1,18 +1,18 @@
 # Phase 1 Progress
 
-**Updated:** 2026-05-17, after Story 4.4 (commit e89c4f7). **Epic 4 in progress (4/5).**
+**Updated:** 2026-05-17, after Story 4.5 (commit pending). **Epic 4 CLOSED (5/5).**
 
 This file tracks **what's shipped, what's next, what's still open**. Operating rules and workflow live in [`WINSTON-RESUME.md`](./WINSTON-RESUME.md). Token-by-token accounting lives in [`token-usage-tracker.md`](./token-usage-tracker.md).
 
 ## Current State
 
-**Stories shipped: 26 / 32+** (the `+` denotes stories added outside the original 31-story plan: Story 2.3 hardening; Story 3.1 split into 3.1a + 3.1b-i + 3.1b-ii; Story 3.2 split into 3.2a + 3.2b).
+**Stories shipped: 27 / 32+** (the `+` denotes stories added outside the original 31-story plan: Story 2.3 hardening; Story 3.1 split into 3.1a + 3.1b-i + 3.1b-ii; Story 3.2 split into 3.2a + 3.2b).
 
-**Latest commit on main:** `e89c4f7` (Story 4.4 — Duplicate Identity Detection / FR3).
+**Latest commit on main:** pending (Story 4.5 — Staff-Approved Identity Merge / FR4). Predecessor: `e89c4f7` (Story 4.4).
 
-**Epic 3 closed; Epic 4 in progress** (4/5 stories complete).
+**Epic 3 closed; Epic 4 CLOSED** (5/5 stories complete).
 
-**Token totals so far:** ~3,753K / 3,517K (107%) for 26/32+ stories (81%). Budget over phase-1 plan; 4.3 + 4.4 were both two-session OVERRUNs (4.3 hit quota mid-debug; 4.4 first session implemented wrong data model, killed by Winston, continuation fixed). Quality bar maintained across all gates.
+**Token totals so far:** ~3,968K / 3,517K (113%) for 27/32+ stories (84%). Budget over phase-1 plan; Epic 4 ran hot (4.3 + 4.4 both two-session OVERRUNs; 4.5 single-session OVERRUN +80K). Quality bar maintained across all gates.
 
 ## Shipped Story Index
 
@@ -47,11 +47,11 @@ Quick reference; full details in token-usage-tracker.md.
 | 4.2 | Staff Creates Unclaimed Identity (FR1) | 7462fc7 | crypto.sha256 + sha256NanoID + duplicate index vertices; 65K Sonnet UNDERRUN |
 | 4.3 | Two-Phase Identity Claim (FR2, FR5) | 677747c | crypto.constant_time_equal + RecordClaimAttempt + generic ClaimKeyInvalid + credentialindex; two-session OVERRUN |
 | 4.4 | Duplicate Identity Detection (FR3) | e89c4f7 | strings.levenshtein + ScanPrefixes hydrator + canonical duplicateOf link + capabilityenv pendingReview; two-session OVERRUN |
+| 4.5 | Staff-Approved Identity Merge (FR4) | pending | ApproveIdentityMerge (review) + MergeIdentity (link rekey + state→merged + mergedInto); lnk. global-scan hydrator; 12 integration tests across capability+stub auth; 215K single-session OVERRUN; Epic 4 CLOSED |
 
 ## Upcoming Sequence
 
-**Epic 4 — Identity & Member Lifecycle (in progress, 4/5 complete):**
-- **4.5** Staff-Approved Identity Merge FR4 (Opus, ~135K)
+**Epic 4 — Identity & Member Lifecycle: CLOSED (5/5).**
 
 **Epic 5 — DDL Self-Description & AI Agent Cold-Start:**
 - **5.1** DDL Self-Description Aspects FR19 (Opus, ~115K)
@@ -73,6 +73,11 @@ Quick reference; full details in token-usage-tracker.md.
 - **3.5**: `lattice auth-trace` CLI deferred to Story 6.1; `LookupAuthTrace` helper available for the wrap.
 - **3.6**: AC text `assignedRole` resolved to `holdsRole` per cypher consistency; documented in data-contracts.md §6.13. Phase 2 may re-canonicalize.
 - **3.7 Vector #1**: Phase 1 defense is Refractor reprojection only. NATS-account-level write restriction on Capability KV (Contract #6 §6.1) is the Phase 2 hardening — adds substrate-level enforcement on top of the current overwrite-by-reprojection guarantee.
+- **4.5 carry — `MergeIdentity` grant unseeded**: `permittedCommands` includes `MergeIdentity` but no `PermMergeIdentity` vertex / no role grant was seeded by 4.1. Phase 1 worked around this with stub-mode integration tests for `MergeIdentity`. A small follow-up story (Story 5.x candidate) must seed `PermMergeIdentity → operator` + the grant link, and rebaseline verify-bootstrap from 154 OK to ~156 OK.
+- **4.5 carry — `TombstoneIdentity` stub**: still returns `NotYetImplemented`. AC for 4.5 did not require it; Phase 1 closure may need it; Phase 2 candidate.
+- **4.5 carry — `SplitIdentities` (un-merge)**: out of Phase 1 per AC. Phase 2+.
+- **4.5 carry — Refractor reprojection NFR-P3 test for merge**: brief §5 listed `TestMergeIdentity_CapKVReprojection_NFR_P3`; sub-agent deferred citing duplication with existing `refractor_capability_multi_e2e_test.go` + 3.2b adjacency-bridge coverage. Accepted as soft trade; revisit if a real reprojection-on-merge regression slips later.
+- **4.5 carry — capabilityenv `merged: true, mergedInto: <primary>` field**: not added. Existing reprojection on `state` aspect mutation suffices for AC. Add if a Phase 2 consumer needs it.
 - **4.4 Winston note (post-Epic-4 cleanup)**: `data-contracts.md` has accreted internal-to-component / story-specific decisions (especially §6.13 from 3.6) that conceptually belong with the component code or domain docs, not next to cross-component interface contracts. Plan a documentation refactor pass after Epic 4 closes: split inter-component contracts from intra-component algorithm specs / DDL behavior notes. 4.4 explicitly skipped adding §6.14 per this concern.
 
 ### Residual carries from 3.2b (still open for 3.7+ / Phase 2)
