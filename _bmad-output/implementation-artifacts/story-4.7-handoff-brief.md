@@ -106,7 +106,7 @@ declares:
 - `TombstonePermission { permKey }` → soft-delete (orphaned grants handled separately)
 - `AssignRole { actorKey, roleKey }` → `lnk.<actorType>.<actorId>.holdsRole.role.<roleId>` — actor on the source side, role on the target side, because roles pre-exist actors in the typical graph-growth pattern (per Contract #1 §1.1 DDL authoring convention).
 - `RevokeRole { actorKey, roleKey }` → soft-delete the link
-- `GrantPermission { permKey, roleKey }` → `lnk.permission.<permId>.grantsPermission.role.<roleId>`
+- `GrantPermission { permKey, roleKey }` → `lnk.permission.<permId>.grantedBy.role.<roleId>` — link DDL canonical name is `grantedBy` (reads as "permission granted by role"); link direction `permission → role` per the typical-graph-growth convention in Contract #1 §1.1 (permissions are seeded in close proximity to roles, but the package designer encodes "permission depends on role" as the conceptual direction). The `GrantPermission` *operation* verb stays — that's the operator-action name, distinct from the link DDL's canonical name.
 - `RevokePermission { permKey, roleKey }` → soft-delete the link
 
 Each script branch enforces basic input validation (required fields, valid NanoID format, target vertices exist if referenced).
@@ -181,9 +181,9 @@ Script LOC target: ~200 LOC.
 - `vtx.permission.<NanoID-pTMV>` with `.operationType: "TombstoneMetaVertex"`, `.scope: "any"`
 
 **Three grant links** (operator gets all three meta-permissions):
-- `lnk.permission.<pCMV>.grantsPermission.role.<operator>`
-- `lnk.permission.<pUMV>.grantsPermission.role.<operator>`
-- `lnk.permission.<pTMV>.grantsPermission.role.<operator>`
+- `lnk.permission.<pCMV>.grantedBy.role.<operator>`
+- `lnk.permission.<pUMV>.grantedBy.role.<operator>`
+- `lnk.permission.<pTMV>.grantedBy.role.<operator>`
 
 **Primordial admin identity**:
 - `vtx.identity.<NanoID-admin>` — type **identity** despite the identity DDL not being in the kernel (Decision #4 below)
@@ -270,6 +270,15 @@ The 4.5 stub-mode `MergeIdentity` test carry is resolved: post-4.6 + 4.7, MergeI
 14. **Cutover migration of integration tests is mechanical**, not architectural. Don't redesign tests; just add the `InstallPhase1Packages(t, conn)` call where DDLs are assumed.
 
 15. **`verify-kernel`, not `verify-bootstrap`.** The name change reflects the conceptual shift: bootstrap now produces a kernel, packages add domain machinery on top.
+
+16. **Rename `grantsPermission` link → `grantedBy`** as part of authoring rbac-domain. The shipped Story 3.6 code in `internal/bootstrap/identity_ddl.go` uses link canonical name `grantsPermission` with direction `permission → role`. The direction is correct but the name reads from the wrong endpoint's perspective ("role grants permission" requires source = role; "permission granted by role" requires source = permission, which is what we actually have). The rename was deferred until 4.7 so the cross-cutting code change lands in the package that replaces the bootstrap-seeded one. Scope of the rename:
+    - **`packages/rbac-domain/ddls.go` — `GrantPermission` script branch**: constructs `lnk.permission.<permId>.grantedBy.role.<roleId>` keys when called with `{permKey, roleKey}`. Reads value-envelope `class: "grantedBy"`.
+    - **`packages/rbac-domain/ddls.go` — `RevokePermission` script branch**: targets the SAME link key shape (`lnk.permission.<permId>.grantedBy.role.<roleId>`) to soft-delete. The script computes the canonical key from `{permKey, roleKey}` identically to `GrantPermission`, then writes the soft-delete envelope (`isDeleted: true`) at that exact key. Any pre-existing Story-3.6-seeded link with the OLD `grantsPermission` name remains addressable only by its old key; RevokePermission against a not-yet-renamed link is an `UnknownLink` error — the kernel rewrite in this story re-seeds the admin grant links under the new name so no old links survive in a post-4.7 deployment.
+    - **The link-type DDL meta-vertex** itself: rbac-domain declares one link-DDL with `canonicalName: "grantedBy"` and `permittedCommands: ["GrantPermission", "RevokePermission"]`. The DDL's `.description` aspect explicitly documents direction: source = permission (later-added in graph growth), target = role (pre-existing), reads as "permission granted by role". This satisfies FR19's self-description requirement (Story 5.1) for inbound discovery.
+    - **The kernel rewrite in `internal/bootstrap/primordial.go`**: the 3 admin-meta-perm grant links are `lnk.permission.<id>.grantedBy.role.<operator>` (not `grantsPermission`). No old-name links exist in the kernel after the rewrite.
+    - **The kernel's Capability Lens cypher**: rewrite the permission-discovery pattern from `(:role)-[:grantsPermission]->(:permission)` to `(:role)<-[:grantedBy]-(:permission)`. Same topology; different traversal direction (inbound vs outbound).
+    - **Tests** in `internal/refractor/ruleengine/full/capability_lens_contract_test.go` + `refractor_capability_*_e2e_test.go` + `internal/bypass/capadv_*_test.go`: any fixture that constructs `grantsPermission` link keys gets updated to `grantedBy`. Cypher patterns in test cypher source updated to match.
+    - **The `GrantPermission` / `RevokePermission` operation verbs STAY** — those are operator-action names ("grant a permission to a role" / "revoke a permission from a role"), distinct from the link DDL's canonical name (`grantedBy`). An operation type and a link type are orthogonal concepts; the operations write the link, but their names follow operator-action semantics, not link-direction semantics.
 
 ## Required Context — Read These Only
 

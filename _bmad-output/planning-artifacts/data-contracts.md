@@ -46,7 +46,7 @@ Three key shapes are valid in Core KV. No other shapes are permitted.
 - **`<localName>`** — for aspects and links: a lowercase camelCase identifier matching `[a-z][a-zA-Z0-9]*`. Underscore prefix (`_name`) is reserved for platform-generated system metadata; business DDL must not use underscore-prefixed local names.
 - **Link directionality** — every link DDL declares its canonical name and direction at **design time**, encoding the typical graph-growth pattern: the link's source side (`<typeA>.<idA>`) is the vertex that is *typically added later* in the graph's lifetime; the target side (`<typeB>.<idB>`) is the vertex that *typically pre-exists* (it was already in the graph when the source side appeared). The convention is semantic, not algorithmic — there is no auto-sort by type, by NanoID, or by `createdAt`. Examples:
   - `lnk.identity.<idA>.holdsRole.role.<idB>` — role vertices are typically seeded (by package install or earlier provisioning) before identity vertices, which are added in flight. The link points from the later-arriving identity to the pre-existing role.
-  - `lnk.permission.<idA>.grantsPermission.role.<idB>` — both endpoints are seeded by package install in close proximity, but the package designer picks `permission → role` as the canonical direction. Once the link DDL is authored, that direction is fixed.
+  - `lnk.permission.<idA>.grantedBy.role.<idB>` — both endpoints are seeded by package install in close proximity, but the package designer picks `permission → role` as the canonical direction (reads as "permission granted by role"). Once the link DDL is authored, that direction is fixed.
   - `lnk.identity.<idA>.reportsTo.identity.<idB>` — both endpoints are type `identity`, but the manager identity pre-exists the report. The link points from the report (later-added) to the manager (pre-existing). Same-type links follow the same conceptual rule; runtime callers know which endpoint is which from the operation's semantics, not from string comparison.
 
   Substrate is **direction-agnostic**: `substrate.LinkKey(type1, id1, linkName, type2, id2)` constructs the key in caller-provided order; the substrate does NOT validate or re-sort. The DDL's Starlark script (or other authorized caller) is responsible for emitting endpoints in the DDL-declared direction. The link DDL's `.description` aspect SHOULD document its directional semantics for downstream consumers (FR19 self-description aspect).
@@ -1450,8 +1450,8 @@ This is the critical design principle: every actor's auth traces back to graph t
 - `outputSchema` (used by Lens definitions to declare projection document shape)
 
 **4. Reserved link-type DDLs** — link types the Capability Lens cypher rule walks:
-- `holdsRole` — identity → role
-- `grantsPermission` — role → permission
+- `holdsRole` — identity → role (identity holds role)
+- `grantedBy` — permission → role (permission is granted by role)
 - (additional link types the rule walks; the exact set is established by the cypher rule's authoring in Story 3.x)
 
 **5. Capability Lens definition** — a `vtx.meta.<NanoID>` vertex with `class: "meta.lens"` carrying:
@@ -1463,7 +1463,7 @@ This is the critical design principle: every actor's auth traces back to graph t
 **6. Root role and root permission vertices** — the topology that produces root-equivalent capability when projected:
 - One or more `vtx.role.<NanoID>` vertices with `canonicalName: "systemRoot"` (or similar)
 - Permission vertices granting `scope: "any"` on all platform operation types
-- Links: `grantsPermission` from root role to each permission vertex
+- Links: `grantedBy` from each permission vertex to the root role (link direction is `permission → role`; reads as "permission granted by role")
 
 **7. System identity vertices:**
 - `vtx.identity.<NanoID>` with `class: "identity.system.bootstrap"` — the identity used to author all primordial entries' provenance fields
@@ -1577,7 +1577,7 @@ The order of primordial writes matters for some consistency properties: write th
 The cypher rule must produce root-equivalent capability when projecting an identity that holds the root role. Concretely:
 - Walk identity → `holdsRole` → role
 - For role.canonicalName matching `"systemRoot"` (or the deployment's root role convention), emit `platformPermissions[]` entries with `scope: "any"` for every known operation type
-- This means the cypher rule must know the operation types — Phase 1 handles this by walking from role → `grantsPermission` → permission vertices, which carry the operation types as aspects
+- This means the cypher rule must know the operation types — Phase 1 handles this by walking inbound `grantedBy` links from the role to discover permission vertices, which carry the operation types as aspects (cypher: `MATCH (r:role)<-[:grantedBy]-(p:permission)`)
 - For non-root roles, the same traversal applies but only the explicitly granted operations are emitted
 
 The rule is uniform across system and non-system identities; root capability is established by graph topology, not by class-based special-casing.
@@ -1587,7 +1587,7 @@ The rule is uniform across system and non-system identities; root capability is 
 Test cases that MUST be covered:
 - Bootstrap identity submits operations and they succeed (validates the Lens correctly projects from topology)
 - A non-bootstrap identity with the same `class: "identity.system.bootstrap"` value but without `holdsRole` topology does NOT get root capability (proves class doesn't grant access; topology does)
-- Tampering with the root role vertex (e.g., removing its `grantsPermission` links) causes the bootstrap identity to lose corresponding capabilities on the next projection cycle (proves the auth boundary is reactive to topology changes)
+- Tampering with the root role vertex (e.g., removing inbound `grantedBy` links from its permissions) causes the bootstrap identity to lose corresponding capabilities on the next projection cycle (proves the auth boundary is reactive to topology changes)
 
 ---
 

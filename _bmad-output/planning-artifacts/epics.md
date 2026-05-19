@@ -804,11 +804,11 @@ I want both bootstrap-seeded Capability Lenses activated against the `full` engi
 
 **Given** the bootstrap identities, roles, services, and topology links (per Contract #7) have landed in Core KV
 **When** the primary Capability Lens runs its initial materialization
-**Then** for every identity vertex in Core KV, a `capability.<identityId>` entry is written conforming to Contract #6 §6.2's three-section structure: `platformPermissions` (resolved from `assignedRole → role → grantsPermission → permission`), `serviceAccess` (resolved from `identity → containedIn* → location → availableAt → service`), `ephemeralGrants` (resolved from direct task assignment AND manager-via-reporting-chain delegation per FR56).
+**Then** for every identity vertex in Core KV, a `capability.<identityId>` entry is written conforming to Contract #6 §6.2's three-section structure: `platformPermissions` (resolved from `identity -[:holdsRole]-> role <-[:grantedBy]- permission`), `serviceAccess` (resolved from `identity → containedIn* → location <- [:availableAt] <- service`), `ephemeralGrants` (resolved from direct task assignment AND manager-via-reporting-chain delegation per FR56).
 
 **Given** the secondary capabilityRoleIndex Lens runs its initial materialization
 **When** the Lens executes its cypher query
-**Then** for every distinct operation type in the graph (computed by traversing all `Role → grantsPermission → Permission` patterns), a `cap.role-by-operation.<operationType>` entry is written per Contract #6 §6.1 containing the list of role names that grant that operation type; used by Story 3.4's denial response construction.
+**Then** for every distinct operation type in the graph (computed by traversing all `Permission -[:grantedBy]-> Role` patterns), a `cap.role-by-operation.<operationType>` entry is written per Contract #6 §6.1 containing the list of role names that grant that operation type; used by Story 3.4's denial response construction.
 
 **Given** a new mutation lands in Core KV that affects permission topology
 **When** Refractor's Capability Lens consumers process the CDC event
@@ -973,12 +973,12 @@ I want the role and permission domain expressed as DDL meta-vertices with operat
 - `vtx.meta.role` — class definition for role vertices; `permittedCommands: ["create", "update", "tombstone"]`
 - `vtx.meta.permission` — class definition for permission vertices; `permittedCommands: ["create", "update", "tombstone"]`
 - `vtx.meta.link.assignedRole` — identity → role link DDL
-- `vtx.meta.link.grantsPermission` — role → permission link DDL
+- A link-DDL meta-vertex with `canonicalName: "grantedBy"` — link direction `permission → role` (reads as "permission granted by role")
 - `vtx.meta.link.reportsTo` — identity → identity link DDL (for manager delegation per FR56)
 
 **Given** the bootstrap also seeds canonical role vertices for the five actor types per FR24
 **When** the bootstrap completes
-**Then** the following role vertices exist: `vtx.role.consumer`, `vtx.role.frontOfHouse`, `vtx.role.backOfHouse`, `vtx.role.operator`, `vtx.role.platformInternal`; each has an aspect describing its purpose; permission grants seeded as `lnk.role.<roleId>.grantsPermission.permission.<permId>` per Contract #1.
+**Then** the following role vertices exist (keyed `vtx.role.<NanoID>` per Contract #1 §1.5, with their canonical names in `.canonicalName` aspects): `consumer`, `frontOfHouse`, `backOfHouse`, `operator`, `platformInternal`; each has a `.description` aspect describing its purpose; permission grants seeded as `lnk.permission.<permId>.grantedBy.role.<roleId>` (direction: permission → role; reads as "permission granted by role") per Contract #1 §1.1.
 
 **Given** an operator submits an operation to create a new role, grant a permission, assign a role, or revoke any of these
 **When** the operation flows through Processor (Story 3.3 + Story 1.7 DDL validation)
