@@ -104,7 +104,7 @@ declares:
 - `CreatePermission { operationType, scope }` → `vtx.permission.<NanoID>` + aspects
 - `UpdatePermission { permKey, scope }` → aspect-update
 - `TombstonePermission { permKey }` → soft-delete (orphaned grants handled separately)
-- `AssignRole { actorKey, roleKey }` → `lnk.<actorType>.<actorId>.holdsRole.role.<roleId>` (alphabetical-type ordering per Contract #1 §1.1)
+- `AssignRole { actorKey, roleKey }` → `lnk.<actorType>.<actorId>.holdsRole.role.<roleId>` — actor on the source side, role on the target side, because roles pre-exist actors in the typical graph-growth pattern (per Contract #1 §1.1 DDL authoring convention).
 - `RevokeRole { actorKey, roleKey }` → soft-delete the link
 - `GrantPermission { permKey, roleKey }` → `lnk.permission.<permId>.grantsPermission.role.<roleId>`
 - `RevokePermission { permKey, roleKey }` → soft-delete the link
