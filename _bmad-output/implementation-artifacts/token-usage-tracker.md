@@ -62,12 +62,14 @@ updateCadence: Per implementation session at close
 
 | Tier | Budget (K tokens) | Actual (K tokens) | Δ | Stories complete |
 |---|---|---|---|---|
-| Opus | 1,890 | 2,406 | +516 | 13 / 13 |
-| Sonnet | 1,627 | 900 | +328 | 9 / 19 |
+| Opus | 1,890 | 2,611 | +721 | 15 shipped (planned 13; splits added 2) |
+| Sonnet | 1,627 | 1,540 | -87 | 13 shipped (planned 19) |
 | Haiku | 0 | 0 | 0 | 0 / 0 |
-| **Phase 1 Total** | **3,517** | **3,306** | **-211** | **22 / 32+** (Story 4.5 complete; Epic 4 closed) |
+| **Phase 1 Total** | **3,517** | **4,151** | **+634** | **28 shipped / 32+ planned** (Story 4.5 complete; Epic 4 closed; +5 new stories from 2026-05-19 course correction not yet planned-row) |
 
-> **Note:** Per-tier rolling totals above are spot-incremented per row and may drift from a clean re-sum of the table. The phase-1-progress.md totals are the human-facing source of truth.
+> **Source-of-truth rule:** these rolling totals are RE-COMPUTED from the per-row Actual column at every Epic close, NOT spot-incremented. Use `awk -F'|' '/^\| [0-9]/ {gsub(/[ ~K]/,"",$7); if ($7 ~ /^[0-9]+$/) sum += $7} END {print sum}' token-usage-tracker.md` to verify. The phase-1-progress.md totals must agree with this block; if they drift, this block wins.
+>
+> **Course correction note (2026-05-19):** five new stories added to the upcoming sequence — 6.0 (component docs), 4.6 (capability package format + identity-hygiene), 4.7 (kernel minimization + rbac/identity packages), 2.4a (Refractor token eviction), 2.4b (Refractor Lattice-native source). Their budgets enter the Phase 1 Total once their handoff briefs are authored.
 
 ## Update Procedure (For Each Implementation Session Close)
 

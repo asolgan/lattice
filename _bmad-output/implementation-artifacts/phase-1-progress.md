@@ -1,18 +1,18 @@
 # Phase 1 Progress
 
-**Updated:** 2026-05-17, after Story 4.5 (commit pending). **Epic 4 CLOSED (5/5).**
+**Updated:** 2026-05-19, after Story 4.5 (commit `b314677`) + 2026-05-19 course correction. **Epic 4 CLOSED (5/5)** but with architectural-realignment carry — see [PHASE-1-COURSE-CORRECTION.md](./PHASE-1-COURSE-CORRECTION.md).
 
 This file tracks **what's shipped, what's next, what's still open**. Operating rules and workflow live in [`WINSTON-RESUME.md`](./WINSTON-RESUME.md). Token-by-token accounting lives in [`token-usage-tracker.md`](./token-usage-tracker.md).
 
 ## Current State
 
-**Stories shipped: 27 / 32+** (the `+` denotes stories added outside the original 31-story plan: Story 2.3 hardening; Story 3.1 split into 3.1a + 3.1b-i + 3.1b-ii; Story 3.2 split into 3.2a + 3.2b).
+**Stories shipped: 28** (recomputed from per-row tracker; original plan was 31 stories, splits added 4 — 2.1+2.1b, 3.1→3.1a+3.1b-i+3.1b-ii, 3.2→3.2a+3.2b — and Story 2.3 was added between 2.2 and 3.1).
 
-**Latest commit on main:** pending (Story 4.5 — Staff-Approved Identity Merge / FR4). Predecessor: `e89c4f7` (Story 4.4).
+**Latest commit on main:** `b314677` (Story 4.5 — Staff-Approved Identity Merge / FR4).
 
-**Epic 3 closed; Epic 4 CLOSED** (5/5 stories complete).
+**Epic 3 closed; Epic 4 CLOSED** (5/5 stories complete) — with realignment carry tracked in [PHASE-1-COURSE-CORRECTION.md](./PHASE-1-COURSE-CORRECTION.md) (the 2026-05-19 audit found Epic 4 drifted from the "operations write, lenses read" architecture; corrective stories 4.6 + 4.7 are queued before Epic 5).
 
-**Token totals so far:** ~3,968K / 3,517K (113%) for 27/32+ stories (84%). Budget over phase-1 plan; Epic 4 ran hot (4.3 + 4.4 both two-session OVERRUNs; 4.5 single-session OVERRUN +80K). Quality bar maintained across all gates.
+**Token totals so far:** **~4,151K actual / 3,517K original-plan-budget (118%) for 28 / 32+ stories (88%).** Re-computed from per-row tracker actuals (28 rows × Actual column). Five new stories added 2026-05-19 from course correction (6.0, 4.6, 4.7, 2.4a, 2.4b — see Upcoming Sequence below) are not yet reflected in budget total. Quality bar maintained across all shipped gates.
 
 ## Shipped Story Index
 
@@ -51,7 +51,14 @@ Quick reference; full details in token-usage-tracker.md.
 
 ## Upcoming Sequence
 
-**Epic 4 — Identity & Member Lifecycle: CLOSED (5/5).**
+**Epic 4 — Identity & Member Lifecycle: CLOSED (5/5)** — realignment pending in 4.6 + 4.7.
+
+**Course-correction stories (2026-05-19; ahead of Epic 5):**
+- **6.0** Component reference pages — `docs/components/{processor,refractor,substrate}.md` + `_index.md` (docs-only, ~30K) — handoff brief pending
+- **4.6** Capability Package format + installer + identity-hygiene package (Opus, ~180K) — handoff brief pending
+- **4.7** Kernel minimization + rbac-domain + identity-domain packages (Opus, ~150K) — handoff brief pending
+- **2.4a** Refractor token eviction — mechanical rename sweep (Sonnet, ~90K) — handoff brief pending
+- **2.4b** Refractor Lattice-native source plane — durable JetStream consumer for lens defs + NATS Services control plane (Opus, ~100K) — handoff brief pending
 
 **Epic 5 — DDL Self-Description & AI Agent Cold-Start:**
 - **5.1** DDL Self-Description Aspects FR19 (Opus, ~115K)
