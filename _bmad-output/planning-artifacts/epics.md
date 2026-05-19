@@ -20,6 +20,23 @@ This document provides the complete epic and story breakdown for Lattice, decomp
 
 ---
 
+## Documentation Layering Rule (2026-05-19)
+
+When a story's AC needs to document something, choose the destination by **what kind of decision it is**:
+
+| Decision kind | Lives in | Examples |
+|---|---|---|
+| Cross-component interface contract | `_bmad-output/planning-artifacts/data-contracts.md` | Envelope shapes, key shapes, MutationBatch return shape, Capability KV layout, Health KV convention |
+| Per-component implementation choice | `docs/components/<name>.md` (per-component reference page) | DDL inventories, internal helper names, state-machine semantics, internal naming, choice-of-algorithm |
+| Per-package capability definition | `packages/<package-name>/` directory | Package-specific DDLs, Lens defs, permissions, scripts (added by 2026-05-19 course correction; see PHASE-1-COURSE-CORRECTION.md) |
+| Story-specific decision (rationale, deviations) | Handoff brief + commit message + MORPH-DEVIATIONS.md (where applicable) | Per-story choices, brief-imprecision corrections, scope splits |
+
+**Story ACs MUST NOT direct edits to `data-contracts.md` for per-component or per-story details.** Instructions like "documented in `data-contracts.md` as an addendum to Contract #N" are a pattern this rule prohibits. Use one of the other three destinations.
+
+This rule was added retroactively to address the 2026-05-19 audit finding (concern 2) that `data-contracts.md` accreted Story-specific dumps (notably the evicted §6.13). Existing AC text in Stories 1.x–4.x that violates this rule was left in place because those stories have shipped; the rule binds Stories 5.x and 6.x going forward.
+
+---
+
 ## Requirements Inventory
 
 ### Functional Requirements
@@ -148,7 +165,7 @@ NFR-O4: Authorization failures are traceable across three observable planes: the
 - **Materializer morph, not rewrite:** Existing Materializer codebase becomes Refractor. Failure tier classification must be re-audited — crypto-shred failures are privacy-critical; Capability Lens failures are security-critical. May require new tier definitions beyond original 4-tier model.
 - **NATS-only core plane:** JetStream for ledger, KV for state, services for control plane. No other core plane dependencies.
 - **Open-source Go openCypher parser:** Required for Capability Lens cypher evaluation. Avoids Java/ANTLR4 toolchain dependency.
-- **Key structure is immutable by convention:** Keys are addressing conventions only (`vtx.<type>.<id>`, `asp.<vtxId>.<name>`, `lnk.<youngerId>.<name>.<olderId>`). No key migration tool needed.
+- **Key structure is immutable by convention** (per Contract #1 §1.5): vertex keys are 3-segment `vtx.<type>.<id>`; aspect keys are 4-segment `vtx.<type>.<id>.<localName>` (an aspect is namespaced under its parent vertex); link keys are 6-segment `lnk.<typeA>.<idA>.<relation>.<typeB>.<idB>` with canonical ordering per Contract #1 §1.1 (type-alphabetical, then NanoID-alphabetical within identical types). No `asp.*` or `lnk.<id>.<name>.<id>` legacy shapes; those references in earlier draft text were superseded.
 - **`isDeleted` filtering enforced independently by every KV reader:** Soft-deleted entities remain addressable by key. Processor enforces in commit path; Refractor enforces independently during CDC. No KV-level access control on tombstones.
 - **DDL mutations serialized via `ops.meta.>` lane:** Processor cache invalidation is synchronous with meta-lane commit. No concurrent DDL changes by design.
 - **Starlark spike is a Stream 0 gate:** Must complete before Stream 1 commit path design begins. If p99 > 100ms, commit path architecture changes materially.
@@ -621,11 +638,11 @@ I want the Materializer codebase lifted into Lattice as Refractor — adjusted o
 
 **Given** the Materializer Go module exists at its current path
 **When** the morph is complete
-**Then** all packages previously named `materializer/*` are renamed `refractor/*`; the binary is `lattice-refractor`; the package layout follows the morph plan's recommended structure except where `data-contracts.md` mandates otherwise; existing Materializer unit and integration tests pass against the morphed codebase with only import-path updates.
+**Then** Go packages previously named `materializer/*` are renamed `refractor/*`; the binary is `refractor` (deviation from original AC `lattice-refractor` per Story 2.1 Deviation 1); subject namespaces, durable consumer names, JetStream stream names, and KV bucket defaults retain `materializer.*` tokens **as a Phase 1 carry** — full token eviction is scoped to Story 2.4a (2026-05-19 course correction); the package layout follows the morph plan's recommended structure except where `data-contracts.md` mandates otherwise; existing Materializer unit and integration tests pass against the morphed codebase with only import-path updates.
 
 **Given** Refractor's CDC consumption layer
 **When** the morph adjusts it to Lattice
-**Then** Refractor sources CDC events via named durable JetStream consumers on the `KV_<core-bucket>` backing stream (one durable consumer per active Lens definition); consumer sequence positions persist across restarts (NFR-R2); CDC events are classified by Lattice key prefix — `vtx.*` → vertex mutation, `asp.*` → aspect mutation, `lnk.*` → link mutation — per Contract #1, before being routed to Lens handlers.
+**Then** Refractor sources CDC events via named durable JetStream consumers on the `KV_<core-bucket>` backing stream (one durable consumer per active Lens definition); consumer sequence positions persist across restarts (NFR-R2); CDC events are classified by **segment count** per Contract #1 §1.5 — 3-segment `vtx.<type>.<id>` → vertex mutation, 4-segment `vtx.<type>.<id>.<localName>` → aspect mutation, 6-segment `lnk.<typeA>.<idA>.<relation>.<typeB>.<idB>` → link mutation — before being routed to Lens handlers. (Story 2.1 deviated to KV Watch for lens-source CDC; Story 2.4b realigns to the durable-consumer pattern this AC originally specified.)
 
 **Given** Materializer's existing rule-definition stream consumption
 **When** the morph adjusts it to Lattice
@@ -976,7 +993,7 @@ I want the role and permission domain expressed as DDL meta-vertices with operat
 **Then** they exist as `vtx.identity.platform.<service>` with `assignedRole` link to `vtx.role.platformInternal`; root-equivalent capability grants documented in `lattice-architecture.md` Additional Requirements (locked).
 
 **And** integration tests cover: each of the five role types created and exercised, role assignment propagating to Capability KV within lag window, role revocation reducing permissions, unauthorized role management attempt (denied per Story 3.4), operator audit via direct Capability KV read.
-**And** the role/permission domain DDL is documented in `data-contracts.md` as an addendum to Contract #6 — canonical role inventory and link DDL.
+**And** the role/permission domain DDL is documented in the rbac-domain package directory (`packages/rbac-domain/`) once Story 4.7 has authored that package; until then, the canonical inventory lives in `internal/bootstrap/identity_ddl.go` source. (Original AC text directed this to `data-contracts.md` Contract #6 §6.13; superseded by the 2026-05-19 Documentation Layering Rule — §6.13 was evicted.)
 
 ---
 
@@ -1018,7 +1035,9 @@ I want a dedicated adversarial test suite that proves the four Capability Lens a
 
 ## Epic 4: Identity & Member Lifecycle
 
-**Goal:** Staff can register unclaimed member identities. Residents can self-register or claim grandfathered accounts via the two-phase claim model. The identity state machine (unclaimed → claimed → flagged → merged) is fully operational. Enables Journey 0 Paths A and C.
+> **Course-correction status (2026-05-19):** Stories 4.1–4.5 shipped (commits `3cb5a06` through `b314677`) but drifted from the "operations write, lenses read" architecture. Stories **4.6** and **4.7** (queued before Epic 5) realign Epic 4: 4.6 introduces the Capability Package format + installer + identity-hygiene package (lens-based duplicate detection replacing `ScanIdentityDuplicates`; CLI-read replacing `ApproveIdentityMerge`); 4.7 minimizes the bootstrap kernel and moves identity-domain itself to an installed package. After 4.7, the state machine described below collapses to `unclaimed → claimed → merged` in the identity-domain package; the `flagged-for-review` state and `pendingReview` cap field are removed; duplicate flagging is an emergent lens projection, not a stored state. See [PHASE-1-COURSE-CORRECTION.md](../implementation-artifacts/PHASE-1-COURSE-CORRECTION.md).
+
+**Goal (original):** Staff can register unclaimed member identities. Residents can self-register or claim grandfathered accounts via the two-phase claim model. The identity state machine (unclaimed → claimed → flagged → merged) is fully operational. Enables Journey 0 Paths A and C.
 
 **FRs covered:** FR1, FR2, FR3, FR4, FR5, FR6, FR7
 
@@ -1161,7 +1180,7 @@ I want to scan for potential duplicate identity records via fuzzy matching — a
 
 **Given** the matching algorithm needs operator visibility
 **When** the operation is documented
-**Then** algorithm, thresholds, normalization rules documented in `data-contracts.md` as addendum to identity DDL; operator can override thresholds via operation parameters; threshold changes logged in envelope for audit.
+**Then** algorithm, thresholds, normalization rules documented in the identity-hygiene package directory (`packages/identity-hygiene/` — authored by Story 4.6); operator can override thresholds via operation parameters; threshold changes logged in envelope for audit. (Original AC text directed this to `data-contracts.md`; superseded by the 2026-05-19 Documentation Layering Rule.)
 
 **Given** synchronous detection on create (Story 4.2)
 **When** Story 4.2's create runs
@@ -1215,6 +1234,8 @@ I want to review flagged duplicate identity pairs and explicitly approve a merge
 
 ## Epic 5: AI-Native Platform Navigation
 
+> **Prerequisite (post-2026-05-19 course correction):** Epic 5 depends on Stories 4.6 (Capability Package format + installer + identity-hygiene) and 4.7 (kernel minimization + rbac-domain + identity-domain packages) having shipped. The integration tests in Stories 5.1, 5.2, 5.3 assume the package machinery exists; the example AI-agent identity is provisioned via the identity-domain package, not direct bootstrap seeding. Without 4.6 + 4.7, Epic 5 stories regress to the pre-correction Epic 4 shape.
+
 **Goal:** A Lattice-aware AI agent with zero prior knowledge of the deployment can traverse the graph from its own identity vertex — discovering available commands, input schemas, and plain-language descriptions — and submit a validated intent through the standard write path. Any capability change is revertable via compensating operation. This is Journey 6: the Phase 1 north star.
 
 **FRs covered:** FR19, FR34, FR53
@@ -1240,28 +1261,32 @@ I want every operation type, role, service, and aspect meta-vertex to carry plai
 
 **Acceptance Criteria:**
 
-**Given** the DDL meta-vertex sensitivity registry is extended for self-description
+**Given** the DDL meta-vertex schema is extended for self-description
 **When** the bootstrap completes
-**Then** the following descriptive aspect schemas exist in DDL:
-- `vtx.meta.aspect.description` — non-sensitive aspect; markdown text; max 10KB
-- `vtx.meta.aspect.inputSchema` — non-sensitive; JSON Schema for operation payload
-- `vtx.meta.aspect.outputSchema` — non-sensitive; JSON Schema for response
-- `vtx.meta.aspect.fieldDescription` — non-sensitive; map of `fieldPath → plain-language description`
-- `vtx.meta.aspect.examples` — non-sensitive; array of `{ name, payload, expectedOutcome }`
+**Then** five aspect-type meta-vertices exist (each is a `vtx.meta.<NanoID>` vertex with `class: "meta.ddl.aspectType"` and a `.canonicalName` aspect):
+- canonicalName `description` — non-sensitive; markdown text; max 10KB
+- canonicalName `inputSchema` — non-sensitive; JSON Schema for operation payload
+- canonicalName `outputSchema` — non-sensitive; JSON Schema for response
+- canonicalName `fieldDescription` — non-sensitive; map of `fieldPath → plain-language description`
+- canonicalName `examples` — non-sensitive; array of `{ name, payload, expectedOutcome }`
 
-**Given** every bootstrap-seeded operation type, role, service, and identity DDL meta-vertex
+  When applied to a DDL meta-vertex with canonical name `X`, these aspects are addressed as `vtx.meta.<X-NanoID>.description`, `vtx.meta.<X-NanoID>.inputSchema`, etc. — standard 4-segment aspect keys per Contract #1 §1.5.
+
+**Given** every bootstrap-seeded DDL meta-vertex (operation type, role type, service, identity DDL, etc.)
 **When** the bootstrap completes
-**Then** each has all five descriptive aspects populated — no placeholders; the bootstrap fails fast if any required descriptive aspect is missing (hard quality gate).
+**Then** each carries the five descriptive aspects populated — no placeholders; the bootstrap fails fast if any required descriptive aspect is missing (hard quality gate). (Post-2026-05-19 course correction: the kernel after Story 4.7 minimization is smaller, so "every bootstrap-seeded DDL" is the post-4.7 kernel set, not the pre-correction set.)
 
-**Given** a new operation type is created post-bootstrap
-**When** the DDL meta-vertex creation operation runs
-**Then** Starlark validation requires all five descriptive aspects present at create time; operations missing any are rejected with `MissingSelfDescription`; enforced at meta-meta-DDL level (`vtx.meta.meta.operation` declares descriptive aspects as required).
+**Given** a new DDL meta-vertex is created post-bootstrap via `CreateMetaVertex` op
+**When** the meta-DDL Starlark validates the mutation
+**Then** validation requires all five descriptive aspects present at create time; operations missing any are rejected with `MissingSelfDescription`. The requirement is enforced by the meta-DDL's `.script` aspect — not by a separate meta-meta-DDL vertex (no fourth-level meta-vertex is introduced).
 
-**Given** an AI agent or human reads an operation meta-vertex
-**When** retrieved
-**Then** the five descriptive aspects are returned alongside other DDL data; no separate "documentation API" — the graph IS the documentation.
+**Given** an AI agent or human reads an operation's DDL meta-vertex
+**When** the agent has the operation's canonical name (from the cap entry's `platformPermissions[]`)
+**Then** the agent resolves the canonical name to the DDL meta-vertex key via the DDL cache lookup convention (Contract #1 §1.5); the five descriptive aspects are returned alongside other DDL data; no separate "documentation API" — the graph IS the documentation.
 
-**And** integration test covers: every bootstrap-seeded operation meta-vertex has all five aspects, post-bootstrap operation creation without descriptions rejected, descriptive aspects readable without elevated grants.
+**And** integration test covers: every bootstrap-seeded DDL meta-vertex has all five aspects, post-bootstrap DDL creation without descriptions rejected with `MissingSelfDescription`, descriptive aspects readable without elevated grants.
+
+**Note on Documentation Layering Rule:** any per-DDL field definitions (e.g., schema specifics for the identity DDL) live in `packages/identity-domain/` (or wherever that DDL is authored), NOT in `data-contracts.md`. Cross-DDL aspect-shape definitions (the five aspect types themselves) ARE a cross-component contract and live in this story's bootstrap.
 
 ---
 
@@ -1275,13 +1300,13 @@ I want to discover my own identity vertex, my permitted operations, and the sche
 
 **Acceptance Criteria:**
 
-**Given** an AI agent identity is bootstrapped with an `assignedRole` link
+**Given** an AI agent identity is seeded with a `holdsRole` link (post-4.7: this seeding is done by `packages/identity-domain/` install, not bootstrap; the rbac-domain package must be installed for `holdsRole` ops to exist)
 **When** the AI agent connects with its credential
-**Then** the agent's first read is its own `cap.<actorId>` from Capability KV; this single read returns the full resolved capability set per Contract #6 §6.2; no other prior knowledge of the deployment is required beyond NATS connection details + credential.
+**Then** the agent's first read is its own `cap.identity.<actorId>` from Capability KV (Contract #6 §6.2 key shape); this single read returns the full resolved capability set; no other prior knowledge of the deployment is required beyond NATS connection details + credential.
 
 **Given** the agent has its capability set
-**When** the agent decides to invoke a specific operation type
-**Then** the agent reads the corresponding `vtx.meta.operation.<type>` from Core KV (resolution: operation type string → DDL meta-vertex key by canonical class lookup per Contract #1); the meta-vertex returns the five descriptive aspects from Story 5.1; the agent now has sufficient knowledge to construct a valid payload.
+**When** the agent decides to invoke a specific operation type (a string from `cap.platformPermissions[]` or similar)
+**Then** the agent resolves the operation-type string to the DDL meta-vertex key by reading the `capability-role-by-operation` index Lens output (`cap.role-by-operation.<operationType>` per Contract #6 §6.1) or by enumerating `vtx.meta.*` keys and matching on the `.canonicalName` aspect. For Phase 1, the agent enumerates: `lattice graph keys vtx.meta.` followed by per-vertex `.canonicalName` read until the match is found. The resolved DDL meta-vertex has key `vtx.meta.<NanoID>`; the agent then reads its five descriptive aspects (from Story 5.1) at `vtx.meta.<NanoID>.{description,inputSchema,outputSchema,fieldDescription,examples}`; the agent now has sufficient knowledge to construct a valid payload.
 
 **Given** the agent constructs an operation envelope per Contract #2 with correct `authContext`
 **When** the agent submits to `ops.*`
@@ -1313,14 +1338,13 @@ I want every capability change to be revertible via a compensating operation thr
 
 **Given** the contract surface for "capability change" is documented
 **When** the documentation is reviewed
-**Then** `data-contracts.md` includes an addendum naming the operation categories per FR53:
-- DDL meta-vertex creation, update, or tombstone
-- Role-permission grant creation or revocation
-- Lens definition (`vtx.meta.lens.*`) creation, update, or tombstone (including Capability Lens itself)
-- Identity-role assignment change
-- Service availability topology change
+**Then** `docs/components/processor.md` (per the Documentation Layering Rule — this is a Processor-internal classification of which operations carry the `compensatingOperation` field) names the operation categories per FR53:
+- DDL meta-vertex creation, update, or tombstone (via `CreateMetaVertex` / `UpdateMetaVertex` / `TombstoneMetaVertex` ops; this includes both DDL meta-vertices and Lens meta-vertices since the kernel collapses them under one meta-DDL — post-4.7)
+- Role-permission grant creation or revocation (rbac-domain package ops)
+- Identity-role assignment change (rbac-domain package ops)
+- Service availability topology change (Phase 2 — service DDL not in Phase 1 scope)
 
-Each category names its **forward operation type** AND its **compensating operation type** (e.g., `CreateOperationDDL` ↔ `TombstoneOperationDDL`). Pairing is exhaustive.
+Each category names its **forward operation type** AND its **compensating operation type** (e.g., `CreateMetaVertex` ↔ `TombstoneMetaVertex`). Pairing is exhaustive. (Original AC text directed this to `data-contracts.md`; superseded by the 2026-05-19 Documentation Layering Rule.)
 
 **Given** an operator submits a forward operation that effects a capability change
 **When** the operation commits
@@ -1337,20 +1361,20 @@ Each category names its **forward operation type** AND its **compensating operat
 **Given** the Phase 1 Gate 4 integration test
 **When** the test runs
 **Then** it executes:
-1. Bootstrap completes; baseline captured
-2. Submit forward `CreateOperationDDL` for `vtx.meta.operation.testCapability` with all five descriptive aspects (Story 5.1)
-3. Verify operation type is invokable: grant permission, attempt invocation, receive success
-4. Submit compensating `TombstoneOperationDDL`
-5. Verify operation type no longer invokable (rejected at step 6 DDL validation with `OperationTypeTombstoned`)
+1. Bootstrap completes; rbac-domain + identity-domain packages installed (post-4.7); baseline captured
+2. Submit forward `CreateMetaVertex` for a new DDL meta-vertex with `canonicalName: "testCapability"` and `class: "meta.ddl.vertexType"`, written to `vtx.meta.<NanoID>` (NanoID generated by Starlark), with all five descriptive aspects from Story 5.1 attached
+3. Verify the operation declared in `testCapability` DDL is invokable: install permission + grant via rbac ops, submit the declared op, receive success
+4. Submit compensating `TombstoneMetaVertex` targeting `vtx.meta.<NanoID>` from step 2 (operator retrieves NanoID from step 2's response or via canonicalName lookup)
+5. Verify the operation type is no longer invokable (rejected at step 6 DDL validation with `OperationTypeTombstoned` or similar — the DDL cache misses on the canonical name)
 6. Verify Capability KV reprojections removed the operation from `platformPermissions[]`
-7. Verify no Refractor or Processor restart occurred
-8. Repeat assertions independently for a Lens definition change (do both)
+7. Verify no Refractor or Processor restart occurred (consumer sequence positions held; no `make down`/`make up`)
+8. Repeat assertions independently for a Lens meta-vertex change (`CreateMetaVertex` with `class: "meta.lens"`, then `TombstoneMetaVertex`)
 
 **Given** Gate 4 must be observable
 **When** the integration test passes
 **Then** Health KV records `health.gates.phase1.gate4` as `passed: true` with timestamp; runnable standalone via `make test-rollback`.
 
-**And** the `data-contracts.md` addendum lists every Phase 1 capability-change operation pairing in a table for operator reference.
+**And** `docs/components/processor.md` lists every Phase 1 capability-change operation pairing in a table for operator reference (per the Documentation Layering Rule — was originally a `data-contracts.md` addendum).
 
 ---
 
@@ -1396,7 +1420,8 @@ I want a unified CLI tool to submit operations, inspect graph state, query proje
 | `lattice lens` | `list`, `activate <file>`, `deactivate <key>`, `lag` | Lens lifecycle + lag inspection |
 | `lattice query` | `postgres <sql>`, `cap <actorKey>` | Postgres queries, Capability KV reads |
 | `lattice health` | `summary`, `component <name>`, `gates` | Health KV summary, per-component, gate statuses |
-| `lattice identity` | `create-unclaimed`, `claim`, `merge`, `detect-duplicates` | Epic 4 identity operations |
+| `lattice identity` | `create-unclaimed`, `claim` | Identity-domain package operations (Story 4.7). `merge` lives under `lattice candidates` (see next row) post-4.6 redesign |
+| `lattice candidates` | `list`, `merge <primary> <secondary>` | Identity-hygiene package — reads from Duplicate Candidates Lens KV; operator-only grants per package install |
 | `lattice auth-trace` | `<requestId>` | Story 3.5 three-plane auth trace |
 | `lattice bootstrap` | `verify`, `inspect` | Story 1.3 verification |
 
@@ -1510,11 +1535,11 @@ I want a canonical reference implementation that takes me from `git clone` to a 
 
 1. **Setup (≤ 10 min)**: `make up` provisions NATS + Postgres + bootstrap (NFR-P7); developer reads `lattice health gates` and sees Phase 1 gates 1-5 as `passed: true` (or `pending`); `lattice bootstrap verify` confirms primordial state.
 
-2. **Define one entity type (≤ 10 min)**: developer authors `vtx.meta.book` DDL declaring `permittedCommands`, descriptive aspects per Story 5.1, one aspect schema (`title`); submits via `lattice op submit --file book-ddl.yaml`; verifies with `lattice graph read vtx.meta.book`.
+2. **Define one entity type (≤ 10 min)**: developer authors a "book" DDL meta-vertex (`class: meta.ddl.vertexType`, `canonicalName: "book"`, `permittedCommands: ["CreateBook"]`, descriptive aspects per Story 5.1) and submits via `lattice op submit --file book-ddl.yaml`; the platform writes it to `vtx.meta.<NanoID>` (3-segment vertex key per Contract #1 §1.5); developer verifies with `lattice graph read --canonical book`.
 
-3. **Author one Starlark rule (≤ 10 min)**: developer writes Starlark validating `title` non-empty and emitting MutationBatch creating `vtx.book.<NanoID>`; submits rule as DDL operation; submits `CreateBook` operation; verifies book vertex exists.
+3. **Author one Starlark rule (≤ 10 min)**: developer writes Starlark validating `title` non-empty and emitting MutationBatch creating `vtx.book.<NanoID>`; submits as `UpdateMetaVertex` against the book DDL's `.script` aspect; submits `CreateBook` operation with `{title: "..."}`; verifies book vertex exists via `lattice graph read vtx.book.<NanoID>`.
 
-4. **Author one Lens projection (≤ 10 min)**: developer authors `vtx.meta.lens.books` with simple cypher query (`simple` engine) projecting books to Postgres `books` table; submits as DDL operation; waits for activation (≤ 500ms NFR-P3); runs `lattice query postgres "SELECT * FROM books"` and sees the created book.
+4. **Author one Lens projection (≤ 10 min)**: developer authors a "books" Lens meta-vertex (`class: meta.lens`, `canonicalName: "books"`, `.spec` aspect with simple cypher query against the `simple` engine projecting books to a Postgres `books` table) and submits as `CreateMetaVertex`; the platform writes it to `vtx.meta.<NanoID>`; waits for activation (≤ 500ms NFR-P3); runs `lattice query postgres "SELECT * FROM books"` and sees the created book.
 
 5. **One AI traversal query (≤ 10 min)**: developer runs `lattice query cap vtx.identity.<theirAgentKey>` to see AI agent's capability set including `CreateBook`; runs a provided script simulating an AI agent doing cold-start traversal (Story 5.2) and submitting a new `CreateBook`; confirms via Postgres query.
 
