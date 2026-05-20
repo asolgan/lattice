@@ -241,7 +241,9 @@ func TestRefractor_CapabilityLens_E2E(t *testing.T) {
 		}))
 	}
 	buildEdge("holdsRole", "identity", identityID, "role", roleID)
-	buildEdge("grantsPermission", "role", roleID, "permission", permID)
+	// Story 4.7 rename: grantsPermission(role→permission) became
+	// grantedBy(permission→role); direction reverses.
+	buildEdge("grantedBy", "permission", permID, "role", roleID)
 	buildEdge("containedIn", "identity", identityID, "location", locationID)
 	buildEdge("availableAt", "location", locationID, "service", serviceID)
 

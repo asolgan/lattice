@@ -15,7 +15,7 @@ BOOTSTRAP_JSON ?= ./lattice.bootstrap.json
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up down verify-bootstrap build vet test test-bypass test-capability-adversarial processor run-processor clean logs ps
+.PHONY: up down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene build vet test test-bypass test-capability-adversarial processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 up:
@@ -43,10 +43,36 @@ down:
 	-pkill -f "bin/refractor" 2>/dev/null || true
 	@echo "==> Down complete."
 
-## verify-bootstrap — Assert all primordial keys exist with correct envelopes.
-verify-bootstrap:
-	@echo "==> Running bootstrap verification..."
-	NATS_URL=$(NATS_URL) go run ./scripts/verify-bootstrap.go
+## verify-kernel — Assert post-Story-4.7 kernel keys exist with correct envelopes.
+## Replaces the old verify-bootstrap target. Expected count ≈ 33 OK lines.
+verify-kernel:
+	@echo "==> Running kernel verification..."
+	NATS_URL=$(NATS_URL) go run ./scripts/verify-kernel.go
+
+## verify-package-rbac — Install rbac-domain package and verify its keys.
+verify-package-rbac:
+	@echo "==> Building lattice-pkg..."
+	go build -o bin/lattice-pkg ./cmd/lattice-pkg
+	@echo "==> Installing rbac-domain..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/rbac-domain
+	@echo "==> rbac-domain install complete (verify via package list)."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg list
+
+## verify-package-identity — Install identity-domain package and verify its keys.
+verify-package-identity:
+	@echo "==> Building lattice-pkg..."
+	go build -o bin/lattice-pkg ./cmd/lattice-pkg
+	@echo "==> Installing identity-domain..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/identity-domain
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg list
+
+## verify-package-identity-hygiene — Install identity-hygiene and verify.
+verify-package-identity-hygiene:
+	@echo "==> Building lattice-pkg..."
+	go build -o bin/lattice-pkg ./cmd/lattice-pkg
+	@echo "==> Installing identity-hygiene..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/identity-hygiene
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg list
 
 ## build — Compile all binaries under cmd/.
 build:
@@ -89,7 +115,7 @@ test:
 test-bypass:
 	@$(MAKE) down
 	@$(MAKE) up
-	@$(MAKE) verify-bootstrap
+	@$(MAKE) verify-kernel
 	go test ./internal/bypass/... -v -count=1
 
 ## test-capability-adversarial — Run the Phase 1 Gate 3 Capability Lens
@@ -103,7 +129,7 @@ test-bypass:
 test-capability-adversarial:
 	@$(MAKE) down
 	@$(MAKE) up
-	@$(MAKE) verify-bootstrap
+	@$(MAKE) verify-kernel
 	go test ./internal/bypass/... -v -run TestCapAdv -count=1
 	go test ./internal/bypass/... -v -run TestGate3_Report -count=1
 

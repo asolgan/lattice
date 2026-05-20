@@ -32,6 +32,15 @@ type Installer struct {
 	Conn       *substrate.Conn
 	AdminActor string // The provenance `createdBy` for every aspect written.
 	Now        func() time.Time
+
+	// RoleIDs maps role canonical names to NanoIDs for grant-link
+	// resolution. Callers (cmd/lattice-pkg) populate this from
+	// lattice.bootstrap.json so packages whose `GrantsTo` references
+	// canonical names (e.g. "operator") get the right link target.
+	// Additional roles minted by a package's PreInstall hook are
+	// merged in at install time. The map may be unset (nil) for tests
+	// that hard-code NanoIDs in GrantsTo.
+	RoleIDs map[string]string
 }
 
 // NewInstaller builds a default-configured installer.
@@ -94,6 +103,29 @@ func (i *Installer) Install(ctx context.Context, def Definition) (*InstallResult
 		return nil, fmt.Errorf("%w: installed=%s requested=%s", ErrVersionMismatch, existing.Version, def.Version)
 	}
 
+	// Step 2.5 — optional PreInstall hook (per-package Go-side seeding
+	// that must complete before the atomic batch — e.g. identity-domain
+	// seeds its 3 user-facing roles so subsequent grant links can
+	// reference them). Hooks must be idempotent.
+	if def.PreInstall != nil {
+		extraRoles, err := def.PreInstall(ctx, i.Conn, i.AdminActor)
+		if err != nil {
+			return nil, fmt.Errorf("pkgmgr: PreInstall %s: %w", def.Name, err)
+		}
+		if len(extraRoles) > 0 {
+			if i.RoleIDs == nil {
+				i.RoleIDs = map[string]string{}
+			}
+			for k, v := range extraRoles {
+				i.RoleIDs[k] = v
+			}
+		}
+		res.PreInstallRan = true
+	}
+
+	// Resolve any unresolved canonical names in GrantsTo via i.RoleIDs.
+	def = i.resolveGrants(def)
+
 	// Step 3 — build the atomic batch.
 	pkgNanoID, err := substrate.NewNanoID()
 	if err != nil {
@@ -141,6 +173,39 @@ func (i *Installer) Install(ctx context.Context, def Definition) (*InstallResult
 	return res, nil
 }
 
+// resolveGrants returns a copy of def with each PermissionSpec.GrantsTo
+// entry translated through i.RoleIDs. Entries already shaped as a
+// vtx.role.<NanoID> prefix or as a raw NanoID are passed through
+// unchanged. Unrecognized canonical names are passed through unchanged
+// so callers can choose to fail or warn downstream. Defensive against
+// i.RoleIDs being nil.
+func (i *Installer) resolveGrants(def Definition) Definition {
+	if len(def.Permissions) == 0 {
+		return def
+	}
+	out := def
+	out.Permissions = make([]PermissionSpec, len(def.Permissions))
+	for idx, p := range def.Permissions {
+		newGrants := make([]string, 0, len(p.GrantsTo))
+		for _, g := range p.GrantsTo {
+			if len(g) > len("vtx.role.") && g[:len("vtx.role.")] == "vtx.role." {
+				newGrants = append(newGrants, g[len("vtx.role."):])
+				continue
+			}
+			if i.RoleIDs != nil {
+				if id, ok := i.RoleIDs[g]; ok && id != "" {
+					newGrants = append(newGrants, id)
+					continue
+				}
+			}
+			newGrants = append(newGrants, g)
+		}
+		p.GrantsTo = newGrants
+		out.Permissions[idx] = p
+	}
+	return out
+}
+
 // InstallResult summarises an install attempt.
 type InstallResult struct {
 	PackageName        string
@@ -150,6 +215,7 @@ type InstallResult struct {
 	Skipped            bool
 	Reason             string
 	DependencyWarnings []string
+	PreInstallRan      bool
 }
 
 // ErrVersionMismatch is returned by Install when a different version of

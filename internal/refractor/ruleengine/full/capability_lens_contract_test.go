@@ -139,7 +139,9 @@ func TestCapabilityLens_ContractConformance(t *testing.T) {
 		"operationType": "read", "scope": "any",
 	})
 	contractPutEdge(t, adjKV, "holdsRole", "identity", "alice", "role", "admin")
-	contractPutEdge(t, adjKV, "grantsPermission", "role", "admin", "permission", "permread")
+	// Story 4.7 rename: grantsPermission(role→permission) became
+	// grantedBy(permission→role); direction reverses.
+	contractPutEdge(t, adjKV, "grantedBy", "permission", "permread", "role", "admin")
 
 	contractPutVertex(t, coreKV, "location", "hq", nil)
 	contractPutVertex(t, coreKV, "service", "svc", map[string]any{"class": "service"})

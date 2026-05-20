@@ -270,8 +270,10 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	})
 
 	// --- topology links (these now flow through the 3.2b link-bridge bootstrapper) ---
-	writeLink("role", adminRoleID, "grantsPermission", "permission", adminPermID)
-	writeLink("role", userRoleID, "grantsPermission", "permission", userPermID)
+	// Story 4.7 rename: grantsPermission(role→permission) became
+	// grantedBy(permission→role).
+	writeLink("permission", adminPermID, "grantedBy", "role", adminRoleID)
+	writeLink("permission", userPermID, "grantedBy", "role", userRoleID)
 	holdsAKey := writeLink("identity", identityAID, "holdsRole", "role", adminRoleID)
 	holdsBKey := writeLink("identity", identityBID, "holdsRole", "role", userRoleID)
 	writeLink("identity", identityBID, "containedIn", "location", locationID)

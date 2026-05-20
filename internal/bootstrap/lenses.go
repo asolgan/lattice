@@ -26,8 +26,11 @@ func CapabilityLensDefinition() LensDefinition {
 MATCH (identity:identity {key: $actorKey})
 
 // --- platformPermissions ---
-// Walk: identity → holdsRole → role → grantsPermission → permission
-OPTIONAL MATCH (identity)-[:holdsRole]->(role:role)-[:grantsPermission]->(perm:permission)
+// Walk: identity → holdsRole → role <-grantedBy- permission
+// Story 4.7 rename: grantsPermission(role→permission) became
+// grantedBy(permission→role); the topology is identical, the traversal
+// direction reverses.
+OPTIONAL MATCH (identity)-[:holdsRole]->(role:role)<-[:grantedBy]-(perm:permission)
 
 // --- serviceAccess ---
 // Walk: identity → containedIn* → location → availableAt → service
@@ -111,7 +114,7 @@ func CapabilityRoleIndexLensDefinition() LensDefinition {
 		// Produces one entry per operationType listing roles that grant it.
 		// Used by Processor denial-response (Story 3.4) to build FR22 rolesCarryingPermission.
 		CypherRule: `
-MATCH (role:role)-[:grantsPermission]->(perm:permission)
+MATCH (role:role)<-[:grantedBy]-(perm:permission)
 RETURN
   perm.operationType AS operationType,
   collect(DISTINCT role.canonicalName) AS roles,

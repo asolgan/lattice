@@ -24,7 +24,9 @@ import (
 
 	"github.com/asolgan/lattice/internal/pkgmgr"
 	"github.com/asolgan/lattice/internal/substrate"
+	identitydomain "github.com/asolgan/lattice/packages/identity-domain"
 	identityhygiene "github.com/asolgan/lattice/packages/identity-hygiene"
+	rbacdomain "github.com/asolgan/lattice/packages/rbac-domain"
 )
 
 // bootstrapJSON is the on-disk shape of lattice.bootstrap.json. We need
@@ -36,6 +38,8 @@ type bootstrapJSON struct {
 // packageRegistry maps a directory name to its Go Definition. Phase 1
 // is a static import map; future package discovery is out of scope.
 var packageRegistry = map[string]pkgmgr.Definition{
+	"rbac-domain":      rbacdomain.Package,
+	"identity-domain":  identitydomain.Package,
 	"identity-hygiene": identityhygiene.Package,
 }
 
@@ -108,13 +112,14 @@ func runInstall(pkgPath, natsURL, bootstrapPath string, logger *slog.Logger) err
 	if err := manifest.VerifyAgainstDefinition(def); err != nil {
 		return err
 	}
-	// Resolve `grantsTo` role canonical names → role NanoIDs from
-	// lattice.bootstrap.json.
+	// Read admin actor + kernel role NanoIDs from lattice.bootstrap.json.
+	// The Installer resolves Permission.GrantsTo canonical names through
+	// the RoleIDs map; any names a package's PreInstall hook mints are
+	// merged in at install time (see pkgmgr.Installer.resolveGrants).
 	bs, adminActor, err := loadBootstrap(bootstrapPath)
 	if err != nil {
 		return err
 	}
-	def = resolveGrantsToRoleIDs(def, bs)
 
 	conn, err := substrate.Connect(context.Background(), substrate.ConnectOpts{URL: natsURL, Name: "lattice-pkg"})
 	if err != nil {
@@ -123,6 +128,7 @@ func runInstall(pkgPath, natsURL, bootstrapPath string, logger *slog.Logger) err
 	defer conn.Close()
 
 	inst := pkgmgr.NewInstaller(conn, adminActor)
+	inst.RoleIDs = roleIDsFromBootstrap(bs)
 	res, err := inst.Install(context.Background(), def)
 	if err != nil {
 		return err
@@ -206,33 +212,42 @@ func loadBootstrap(path string) (*bootstrapJSON, string, error) {
 	return &b, "vtx.identity." + bootstrapID, nil
 }
 
-// resolveGrantsToRoleIDs walks each Permission and translates each
-// `grantsTo` entry from a role canonical name (e.g. "operator") to the
-// real role NanoID from lattice.bootstrap.json. Unrecognized canonical
-// names are passed through unchanged so the installer can flag them.
-func resolveGrantsToRoleIDs(def pkgmgr.Definition, bs *bootstrapJSON) pkgmgr.Definition {
-	roleMap := map[string]string{
-		"consumer":     bs.PrimordialIDs["roleConsumer"],
-		"frontOfHouse": bs.PrimordialIDs["roleFrontOfHouse"],
-		"backOfHouse":  bs.PrimordialIDs["roleBackOfHouse"],
-		"operator":     bs.PrimordialIDs["roleOperator"],
-		"platformIntl": bs.PrimordialIDs["rolePlatformIntl"],
+// roleIDsFromBootstrap returns the canonical-name → NanoID map for
+// kernel-seeded roles. After Story 4.7 the kernel only seeds `operator`;
+// the other roles (consumer, frontOfHouse, backOfHouse) are seeded by
+// identity-domain's PreInstall hook and merged into Installer.RoleIDs
+// at install time.
+func roleIDsFromBootstrap(bs *bootstrapJSON) map[string]string {
+	out := map[string]string{}
+	if id := bs.PrimordialIDs["roleOperator"]; id != "" {
+		out["operator"] = id
 	}
-	out := def
-	out.Permissions = make([]pkgmgr.PermissionSpec, len(def.Permissions))
-	for i, p := range def.Permissions {
-		grants := make([]string, 0, len(p.GrantsTo))
-		for _, g := range p.GrantsTo {
-			if id, ok := roleMap[g]; ok && id != "" {
-				grants = append(grants, id)
-			} else {
-				grants = append(grants, g)
-			}
+	// Legacy fields tolerated for warm-tree compatibility — empty values
+	// drop out as no-ops in the installer's resolveGrants pass.
+	for _, name := range []string{"roleConsumer", "roleFrontOfHouse", "roleBackOfHouse", "rolePlatformIntl"} {
+		short := canonicalFromBootstrapField(name)
+		if short == "" {
+			continue
 		}
-		p.GrantsTo = grants
-		out.Permissions[i] = p
+		if id := bs.PrimordialIDs[name]; id != "" {
+			out[short] = id
+		}
 	}
 	return out
+}
+
+func canonicalFromBootstrapField(field string) string {
+	switch field {
+	case "roleConsumer":
+		return "consumer"
+	case "roleFrontOfHouse":
+		return "frontOfHouse"
+	case "roleBackOfHouse":
+		return "backOfHouse"
+	case "rolePlatformIntl":
+		return "platformIntl"
+	}
+	return ""
 }
 
 func envOrDefault(k, def string) string {

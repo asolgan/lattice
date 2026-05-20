@@ -1,0 +1,43 @@
+name: rbac-domain
+version: 0.1.0
+description: |
+  Role, permission, and grant management operations. Provides CreateRole,
+  UpdateRole, TombstoneRole, CreatePermission, UpdatePermission,
+  TombstonePermission, AssignRole, RevokeRole, GrantPermission,
+  RevokePermission. Single DDL `rbac` with vertex-type class.
+depends: []
+declares:
+  ddls:
+    - canonicalName: rbac
+      class: meta.ddl.vertexType
+  permissions:
+    - operationType: CreateRole
+      scope: any
+      grantsTo: [operator]
+    - operationType: UpdateRole
+      scope: any
+      grantsTo: [operator]
+    - operationType: TombstoneRole
+      scope: any
+      grantsTo: [operator]
+    - operationType: CreatePermission
+      scope: any
+      grantsTo: [operator]
+    - operationType: UpdatePermission
+      scope: any
+      grantsTo: [operator]
+    - operationType: TombstonePermission
+      scope: any
+      grantsTo: [operator]
+    - operationType: AssignRole
+      scope: any
+      grantsTo: [operator]
+    - operationType: RevokeRole
+      scope: any
+      grantsTo: [operator]
+    - operationType: GrantPermission
+      scope: any
+      grantsTo: [operator]
+    - operationType: RevokePermission
+      scope: any
+      grantsTo: [operator]

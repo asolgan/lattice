@@ -48,8 +48,10 @@ func TestBootstrap_CapabilityLensE2E(t *testing.T) {
 		"operationType": "write", "scope": "owned",
 	})
 	putEdge(t, reg, adjKV, "holdsRole", "alice", "admin")
-	putEdge(t, reg, adjKV, "grantsPermission", "admin", "permread")
-	putEdge(t, reg, adjKV, "grantsPermission", "admin", "permwrite")
+	// Story 4.7 rename: grantsPermission(role→permission) became
+	// grantedBy(permission→role).
+	putEdge(t, reg, adjKV, "grantedBy", "permread", "admin")
+	putEdge(t, reg, adjKV, "grantedBy", "permwrite", "admin")
 
 	// Locations + services
 	putVertex(t, reg, coreKV, "hq", "location", nil)

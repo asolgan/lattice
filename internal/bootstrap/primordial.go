@@ -167,6 +167,28 @@ func (s *Seeder) provisionStreams(ctx context.Context) error {
 	return nil
 }
 
+// Story 4.7 kernel composition (post-minimization):
+//
+//   - 1 meta-meta DDL (vtx.meta.<NanoID-root>, canonicalName="root")
+//     with permittedCommands [CreateMetaVertex, UpdateMetaVertex,
+//     TombstoneMetaVertex] and a Starlark dispatcher on op.payload.targetClass.
+//   - 2 Lens meta-vertices (Capability + capabilityRoleIndex) — unchanged
+//     cypher except `grantsPermission` → `grantedBy`.
+//   - 1 operator role vertex + canonicalName + description aspects.
+//   - 3 meta-permission vertices (CreateMetaVertex, UpdateMetaVertex,
+//     TombstoneMetaVertex), all scope=any.
+//   - 3 grantedBy links (each meta-permission → operator).
+//   - 1 primordial admin identity vertex (vtx.identity.<NanoID-admin>);
+//     no .state aspect (state is identity-domain-package territory).
+//   - 1 admin→operator holdsRole link.
+//
+// Total ≈ 33 Core KV entries. See `scripts/verify-kernel.go`.
+//
+// Roles consumer/frontOfHouse/backOfHouse and the identity DDL + its
+// permissions and grants move to packages (rbac-domain, identity-domain,
+// identity-hygiene). The five RoleMgmt DDLs are likewise gone; the
+// `rbac` package DDL handles all role/permission/grant operations.
+//
 // SeedPrimordial writes all primordial Core KV entries per Contract #7 §7.2.
 // Order per §7.7: op tracker → identities → meta DDLs → Lens definitions → roles → permissions → links.
 //
@@ -263,7 +285,11 @@ type kvEntry struct {
 	value []byte
 }
 
-// buildPrimordialEntries assembles all primordial KV entries in seeding order.
+// buildPrimordialEntries assembles all primordial KV entries in seeding
+// order for the post-Story-4.7 minimized kernel. Roles consumer/
+// frontOfHouse/backOfHouse, the identity DDL, and the 5 RoleMgmt DDLs
+// have all moved to installable packages. See SeedPrimordial doc comment
+// for the full composition.
 func buildPrimordialEntries() ([]kvEntry, error) {
 	var entries []kvEntry
 
@@ -282,38 +308,43 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		return nil, err
 	}
 
-	// 2. Bootstrap identity vertex.
-	bsIdVal, bsIdErr := MakeVertexEnvelope(BootstrapIdentityKey, "identity.system.bootstrap",
-		map[string]any{"note": "Primordial bootstrap identity. Authors all primordial provenance fields."})
+	// 2. Primordial admin identity (class=identity; no .state aspect —
+	// state is identity-domain-package territory).
+	bsIdVal, bsIdErr := MakeVertexEnvelope(BootstrapIdentityKey, "identity",
+		map[string]any{"note": "Primordial admin identity. Authors all primordial provenance fields. No state aspect."})
 	if err := add(BootstrapIdentityKey, bsIdVal, bsIdErr); err != nil {
 		return nil, err
 	}
 
-	// 3. Platform actor identity vertex.
-	platVal, platErr := MakeVertexEnvelope(PlatformActorKey, "identity.system.platform",
-		map[string]any{"note": "Internal platform service actor identity."})
-	if err := add(PlatformActorKey, platVal, platErr); err != nil {
-		return nil, err
-	}
-
-	// 4. Root DDL meta-vertex (vtx.meta.root — the meta-meta root per AC).
-	rootVal, rootErr := MakeVertexEnvelope(MetaRootKey, "meta.ddl.root",
-		map[string]any{"note": "Root meta-DDL vertex. Anchors the meta-meta layer."})
+	// 3. Meta-meta root DDL meta-vertex — the kernel's sole DDL.
+	rootVal, rootErr := MakeVertexEnvelope(MetaRootKey, "meta.ddl.vertexType",
+		map[string]any{"note": "Meta-meta-DDL. Governs all vtx.meta.* mutations via " +
+			"CreateMetaVertex / UpdateMetaVertex / TombstoneMetaVertex."})
 	if err := add(MetaRootKey, rootVal, rootErr); err != nil {
 		return nil, err
 	}
-	// canonicalName aspect for the root DDL vertex.
 	rootCanonicalAspectKey := MetaRootKey + ".canonicalName"
 	rca, rcaErr := MakeAspectEnvelope(rootCanonicalAspectKey, MetaRootKey, "canonicalName", "canonicalName",
-		map[string]any{"value": "meta.ddl.root"})
+		map[string]any{"value": "root"})
 	if err := add(rootCanonicalAspectKey, rca, rcaErr); err != nil {
 		return nil, err
 	}
-	// description aspect.
+	rootPCKey := MetaRootKey + ".permittedCommands"
+	rpc, rpcErr := MakeAspectEnvelope(rootPCKey, MetaRootKey, "permittedCommands", "permittedCommands",
+		map[string]any{"commands": []string{"CreateMetaVertex", "UpdateMetaVertex", "TombstoneMetaVertex"}})
+	if err := add(rootPCKey, rpc, rpcErr); err != nil {
+		return nil, err
+	}
 	rootDescAspectKey := MetaRootKey + ".description"
 	rda, rdaErr := MakeAspectEnvelope(rootDescAspectKey, MetaRootKey, "description", "description",
-		map[string]any{"text": "Root DDL meta-vertex anchoring the Lattice meta-meta layer."})
+		map[string]any{"text": "Meta-meta-DDL governing all vtx.meta.* mutations. Dispatches on op.payload.targetClass."})
 	if err := add(rootDescAspectKey, rda, rdaErr); err != nil {
+		return nil, err
+	}
+	rootScriptKey := MetaRootKey + ".script"
+	rsv, rsErr := MakeAspectEnvelope(rootScriptKey, MetaRootKey, "script", "script",
+		map[string]any{"source": MetaRootDDLScript})
+	if err := add(rootScriptKey, rsv, rsErr); err != nil {
 		return nil, err
 	}
 
@@ -337,185 +368,77 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		return nil, err
 	}
 
-	// 7. Five canonical role vertices.
-	for _, role := range CanonicalRoles() {
-		roleVal, roleErr := MakeVertexEnvelope(role.Key, "role", map[string]any{})
-		if err := add(role.Key, roleVal, roleErr); err != nil {
+	// 7. Operator role — the only primordial role. Identity-domain
+	// installs the user-facing roles (consumer/frontOfHouse/backOfHouse)
+	// via its PreInstall hook.
+	{
+		roleVal, roleErr := MakeVertexEnvelope(RoleOperatorKey, "role", map[string]any{})
+		if err := add(RoleOperatorKey, roleVal, roleErr); err != nil {
 			return nil, err
 		}
-		// description aspect on each role.
-		descKey := role.Key + ".description"
-		descVal, descErr := MakeAspectEnvelope(descKey, role.Key, "description", "description",
-			map[string]any{"text": role.Description})
+		cnKey := RoleOperatorKey + ".canonicalName"
+		cnVal, cnErr := MakeAspectEnvelope(cnKey, RoleOperatorKey, "canonicalName", "canonicalName",
+			map[string]any{"value": "operator"})
+		if err := add(cnKey, cnVal, cnErr); err != nil {
+			return nil, err
+		}
+		descKey := RoleOperatorKey + ".description"
+		descVal, descErr := MakeAspectEnvelope(descKey, RoleOperatorKey, "description", "description",
+			map[string]any{"text": "Platform operator role with kernel-meta privileges. " +
+				"Receives CreateMetaVertex/UpdateMetaVertex/TombstoneMetaVertex grants from the kernel " +
+				"and additional package-defined grants from rbac-domain + identity-domain after install."})
 		if err := add(descKey, descVal, descErr); err != nil {
 			return nil, err
 		}
 	}
 
-	// 8. Permission vertex for platformInternal role.
-	permData := PlatformInternalPermission()
-	permVal, permErr := MakeVertexEnvelope(PermPlatformAnyKey, "permission", permData)
-	if err := add(PermPlatformAnyKey, permVal, permErr); err != nil {
-		return nil, err
+	// 8. Three meta-permission vertices (CreateMetaVertex / UpdateMetaVertex /
+	// TombstoneMetaVertex). These authorize the operator to mutate
+	// vtx.meta.* — which is how package installs land DDLs and Lenses
+	// once Story 5.3's ops-routed installer arrives.
+	metaPerms := []struct {
+		key, id, op string
+	}{
+		{PermCreateMetaVertexKey, PermCreateMetaVertexID, "CreateMetaVertex"},
+		{PermUpdateMetaVertexKey, PermUpdateMetaVertexID, "UpdateMetaVertex"},
+		{PermTombstoneMetaVertexKey, PermTombstoneMetaVertexID, "TombstoneMetaVertex"},
+	}
+	for _, mp := range metaPerms {
+		data := map[string]any{
+			"operationType": mp.op,
+			"scope":         "any",
+			"note":          "Kernel meta-permission. Authorizes operator to mutate vtx.meta.* vertices.",
+		}
+		permVal, permErr := MakeVertexEnvelope(mp.key, "permission", data)
+		if err := add(mp.key, permVal, permErr); err != nil {
+			return nil, err
+		}
 	}
 
-	// 9. Topology links.
-	// bootstrap identity → holdsRole → platformInternal role.
+	// 9. Three grantedBy links: meta-permission → operator role.
+	for _, mp := range metaPerms {
+		linkKey := "lnk.permission." + mp.id + ".grantedBy.role." + RoleOperatorID
+		linkVal, linkErr := MakeLinkEnvelope(
+			linkKey,
+			"vtx.permission."+mp.id,
+			"vtx.role."+RoleOperatorID,
+			"grantedBy", "grantedBy", map[string]any{})
+		if err := add(linkKey, linkVal, linkErr); err != nil {
+			return nil, err
+		}
+	}
+
+	// 10. Primordial admin → operator holdsRole link. Decision #11: even
+	// though `holdsRole` is an rbac-domain-package op type, the link
+	// itself is a primordial relationship — the admin pre-exists the
+	// rbac-domain package install.
 	bsHoldsVal, bsHoldsErr := MakeLinkEnvelope(
 		BootstrapHoldsRoleLinkKey,
 		"vtx.identity."+BootstrapIdentityID,
-		"vtx.role."+RolePlatformIntlID,
+		"vtx.role."+RoleOperatorID,
 		"holdsRole", "holdsRole", map[string]any{})
 	if err := add(BootstrapHoldsRoleLinkKey, bsHoldsVal, bsHoldsErr); err != nil {
 		return nil, err
-	}
-
-	// platform actor → holdsRole → platformInternal role.
-	platHoldsVal, platHoldsErr := MakeLinkEnvelope(
-		PlatformHoldsRoleLinkKey,
-		"vtx.identity."+PlatformActorID,
-		"vtx.role."+RolePlatformIntlID,
-		"holdsRole", "holdsRole", map[string]any{})
-	if err := add(PlatformHoldsRoleLinkKey, platHoldsVal, platHoldsErr); err != nil {
-		return nil, err
-	}
-
-	// permission vertex → grantsPermission → platformInternal role.
-	// Permission (bspermPlatformAnyV11j) > role (bsrolePlatformIntlV10h) alphabetically
-	// → permission is the "younger" vertex (first three segments of link key).
-	grantsVal, grantsErr := MakeLinkEnvelope(
-		GrantsPermissionLinkKey,
-		"vtx.permission."+PermPlatformAnyID,
-		"vtx.role."+RolePlatformIntlID,
-		"grantsPermission", "grantsPermission", map[string]any{})
-	if err := add(GrantsPermissionLinkKey, grantsVal, grantsErr); err != nil {
-		return nil, err
-	}
-
-	// Story 3.6: five DDL meta-vertices for the role/permission domain.
-	for _, ddl := range RoleMgmtDDLs() {
-		vtxVal, vtxErr := MakeVertexEnvelope(ddl.Key, ddl.Class, map[string]any{})
-		if err := add(ddl.Key, vtxVal, vtxErr); err != nil {
-			return nil, err
-		}
-		// .canonicalName aspect.
-		cnKey := ddl.Key + ".canonicalName"
-		cnVal, cnErr := MakeAspectEnvelope(cnKey, ddl.Key, "canonicalName", "canonicalName",
-			map[string]any{"value": ddl.CanonicalName})
-		if err := add(cnKey, cnVal, cnErr); err != nil {
-			return nil, err
-		}
-		// .permittedCommands aspect.
-		pcKey := ddl.Key + ".permittedCommands"
-		pcVal, pcErr := MakeAspectEnvelope(pcKey, ddl.Key, "permittedCommands", "permittedCommands",
-			map[string]any{"commands": ddl.PermittedCommands})
-		if err := add(pcKey, pcVal, pcErr); err != nil {
-			return nil, err
-		}
-		// .description aspect.
-		descKey := ddl.Key + ".description"
-		descVal, descErr := MakeAspectEnvelope(descKey, ddl.Key, "description", "description",
-			map[string]any{"text": ddl.Description})
-		if err := add(descKey, descVal, descErr); err != nil {
-			return nil, err
-		}
-		// .script aspect.
-		scriptKey := ddl.Key + ".script"
-		scriptVal, scriptErr := MakeAspectEnvelope(scriptKey, ddl.Key, "script", "script",
-			map[string]any{"source": ddl.Script})
-		if err := add(scriptKey, scriptVal, scriptErr); err != nil {
-			return nil, err
-		}
-	}
-
-	// Story 3.6: 12 per-op permission vertices granted to the operator role.
-	for _, perm := range RoleMgmtOperatorPermissions() {
-		permData := map[string]any{
-			"operationType": perm.OperationType,
-			"scope":         perm.Scope,
-			"note": "Grants the operator role the right to submit " + perm.OperationType +
-				" operations. Seeded at bootstrap per Story 3.6.",
-		}
-		permVal, permErr := MakeVertexEnvelope(perm.Key, "permission", permData)
-		if err := add(perm.Key, permVal, permErr); err != nil {
-			return nil, err
-		}
-	}
-
-	// Story 3.6: 12 grantsPermission links — each per-op permission → operator role.
-	// Link key: lnk.permission.<permID>.grantsPermission.role.<operatorID>
-	// "permission" < "role" alphabetically → permission is younger vertex.
-	for _, perm := range RoleMgmtOperatorPermissions() {
-		linkKey := "lnk.permission." + perm.ID + ".grantsPermission.role." + RoleOperatorID
-		linkVal, linkErr := MakeLinkEnvelope(
-			linkKey,
-			"vtx.permission."+perm.ID,
-			"vtx.role."+RoleOperatorID,
-			"grantsPermission", "grantsPermission", map[string]any{})
-		if err := add(linkKey, linkVal, linkErr); err != nil {
-			return nil, err
-		}
-	}
-
-	// Story 4.1: identity domain DDL meta-vertex + 4 aspects.
-	{
-		ddl := IdentityDDL()
-		vtxVal, vtxErr := MakeVertexEnvelope(ddl.Key, ddl.Class, map[string]any{})
-		if err := add(ddl.Key, vtxVal, vtxErr); err != nil {
-			return nil, err
-		}
-		cnKey := ddl.Key + ".canonicalName"
-		cnVal, cnErr := MakeAspectEnvelope(cnKey, ddl.Key, "canonicalName", "canonicalName",
-			map[string]any{"value": ddl.CanonicalName})
-		if err := add(cnKey, cnVal, cnErr); err != nil {
-			return nil, err
-		}
-		pcKey := ddl.Key + ".permittedCommands"
-		pcVal, pcErr := MakeAspectEnvelope(pcKey, ddl.Key, "permittedCommands", "permittedCommands",
-			map[string]any{"commands": ddl.PermittedCommands})
-		if err := add(pcKey, pcVal, pcErr); err != nil {
-			return nil, err
-		}
-		descKey := ddl.Key + ".description"
-		descVal, descErr := MakeAspectEnvelope(descKey, ddl.Key, "description", "description",
-			map[string]any{"text": ddl.Description})
-		if err := add(descKey, descVal, descErr); err != nil {
-			return nil, err
-		}
-		scriptKey := ddl.Key + ".script"
-		scriptVal, scriptErr := MakeAspectEnvelope(scriptKey, ddl.Key, "script", "script",
-			map[string]any{"source": ddl.Script})
-		if err := add(scriptKey, scriptVal, scriptErr); err != nil {
-			return nil, err
-		}
-	}
-
-	// Story 4.1: 5 identity-domain permission vertices.
-	for _, perm := range IdentityPermissions() {
-		permData := map[string]any{
-			"operationType": perm.OperationType,
-			"scope":         perm.Scope,
-			"note":          perm.Note,
-		}
-		permVal, permErr := MakeVertexEnvelope(perm.Key, "permission", permData)
-		if err := add(perm.Key, permVal, permErr); err != nil {
-			return nil, err
-		}
-	}
-
-	// Story 4.1: 10 grantsPermission links per the identity-domain role
-	// matrix. Link key: lnk.permission.<permID>.grantsPermission.role.<roleID>
-	// "permission" < "role" alphabetically → permission is younger vertex.
-	for _, g := range IdentityGrants() {
-		linkKey := "lnk.permission." + g.PermID + ".grantsPermission.role." + g.RoleID
-		linkVal, linkErr := MakeLinkEnvelope(
-			linkKey,
-			"vtx.permission."+g.PermID,
-			"vtx.role."+g.RoleID,
-			"grantsPermission", "grantsPermission", map[string]any{})
-		if err := add(linkKey, linkVal, linkErr); err != nil {
-			return nil, err
-		}
 	}
 
 	return entries, nil

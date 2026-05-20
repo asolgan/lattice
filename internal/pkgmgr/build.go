@@ -146,9 +146,12 @@ func (i *Installer) buildInstallBatch(
 			if len(role) > len("vtx.role.") && role[:len("vtx.role.")] == "vtx.role." {
 				roleID = role[len("vtx.role."):]
 			}
-			linkKey := "lnk.permission." + permID + ".grantsPermission.role." + roleID
+			// Story 4.7: link canonical name is `grantedBy` (permission
+			// granted by role). Direction permission → role per Contract
+			// #1 §1.1: permissions are conceptually later in graph growth.
+			linkKey := "lnk.permission." + permID + ".grantedBy.role." + roleID
 			linkEnv, err := i.makeLinkEnvelope(linkKey, "vtx.permission."+permID, "vtx.role."+roleID,
-				"grantsPermission", "grantsPermission", nil, createdByOp, now)
+				"grantedBy", "grantedBy", nil, createdByOp, now)
 			if err != nil {
 				return nil, nil, err
 			}

@@ -31,8 +31,17 @@ jobs:
       - name: Bring up Docker stack + run primordial bootstrap
         run: make up
 
-      - name: Verify bootstrap (32+ assertions)
-        run: make verify-bootstrap
+      - name: Verify kernel (~33 assertions, post-Story-4.7)
+        run: make verify-kernel
+
+      - name: Install + verify rbac-domain package
+        run: make verify-package-rbac
+
+      - name: Install + verify identity-domain package
+        run: make verify-package-identity
+
+      - name: Install + verify identity-hygiene package
+        run: make verify-package-identity-hygiene
 
       - name: Run Gate 2 bypass suite (Phase 1 Gate 2)
         # Runs the 4-category bypass suite; exits non-zero if any category

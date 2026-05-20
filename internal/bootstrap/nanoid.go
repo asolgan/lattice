@@ -89,6 +89,17 @@ var (
 	PermPlatformAnyID              string
 	PermPlatformAnyKey             string
 
+	// Story 4.7: meta-permission NanoIDs + keys. Three kernel-seeded
+	// permissions authorizing the operator to mutate vtx.meta.* vertices
+	// (the entry point for package-installed DDLs + Lenses once Story 5.3
+	// routes installs through CreateMetaVertex ops).
+	PermCreateMetaVertexID     string
+	PermCreateMetaVertexKey    string
+	PermUpdateMetaVertexID     string
+	PermUpdateMetaVertexKey    string
+	PermTombstoneMetaVertexID  string
+	PermTombstoneMetaVertexKey string
+
 	// Story 3.6: DDL meta-vertex IDs + keys for the role/permission domain.
 	DDLRoleID                string // vtx.meta.<NanoID>, canonicalName="role"
 	DDLRoleKey               string
@@ -163,6 +174,11 @@ type PrimordialIDsRaw struct {
 	RoleOperator            string `json:"roleOperator"`
 	RolePlatformIntl        string `json:"rolePlatformIntl"`
 	PermPlatformAny         string `json:"permPlatformAny"`
+
+	// Story 4.7 meta-permission NanoIDs.
+	PermCreateMetaVertex    string `json:"permCreateMetaVertex"`
+	PermUpdateMetaVertex    string `json:"permUpdateMetaVertex"`
+	PermTombstoneMetaVertex string `json:"permTombstoneMetaVertex"`
 
 	// Story 3.6: DDL meta-vertex IDs for the role/permission domain.
 	DDLRole             string `json:"ddlRole"`
@@ -252,6 +268,10 @@ func currentRaw() PrimordialIDsRaw {
 		RoleOperator:            RoleOperatorID,
 		RolePlatformIntl:        RolePlatformIntlID,
 		PermPlatformAny:         PermPlatformAnyID,
+		// Story 4.7 meta-permissions.
+		PermCreateMetaVertex:    PermCreateMetaVertexID,
+		PermUpdateMetaVertex:    PermUpdateMetaVertexID,
+		PermTombstoneMetaVertex: PermTombstoneMetaVertexID,
 		// Story 3.6.
 		DDLRole:                  DDLRoleID,
 		DDLPermission:            DDLPermissionID,
@@ -309,6 +329,10 @@ func generate() (PrimordialIDsRaw, error) {
 		&raw.RoleOperator,
 		&raw.RolePlatformIntl,
 		&raw.PermPlatformAny,
+		// Story 4.7: kernel meta-permissions.
+		&raw.PermCreateMetaVertex,
+		&raw.PermUpdateMetaVertex,
+		&raw.PermTombstoneMetaVertex,
 		// Story 3.6: DDL meta-vertices.
 		&raw.DDLRole,
 		&raw.DDLPermission,
@@ -364,6 +388,10 @@ func populate(raw PrimordialIDsRaw) error {
 		{"roleOperator", raw.RoleOperator},
 		{"rolePlatformIntl", raw.RolePlatformIntl},
 		{"permPlatformAny", raw.PermPlatformAny},
+		// Story 4.7 kernel meta-permissions.
+		{"permCreateMetaVertex", raw.PermCreateMetaVertex},
+		{"permUpdateMetaVertex", raw.PermUpdateMetaVertex},
+		{"permTombstoneMetaVertex", raw.PermTombstoneMetaVertex},
 		// Story 3.6 DDL meta-vertices.
 		{"ddlRole", raw.DDLRole},
 		{"ddlPermission", raw.DDLPermission},
@@ -410,6 +438,14 @@ func populate(raw PrimordialIDsRaw) error {
 	RolePlatformIntlID = raw.RolePlatformIntl
 	PermPlatformAnyID = raw.PermPlatformAny
 
+	// Story 4.7 kernel meta-permissions.
+	PermCreateMetaVertexID = raw.PermCreateMetaVertex
+	PermCreateMetaVertexKey = "vtx.permission." + PermCreateMetaVertexID
+	PermUpdateMetaVertexID = raw.PermUpdateMetaVertex
+	PermUpdateMetaVertexKey = "vtx.permission." + PermUpdateMetaVertexID
+	PermTombstoneMetaVertexID = raw.PermTombstoneMetaVertex
+	PermTombstoneMetaVertexKey = "vtx.permission." + PermTombstoneMetaVertexID
+
 	// Derive keys.
 	BootstrapOpKey = "vtx.op." + BootstrapOpID
 	BootstrapIdentityKey = "vtx.identity." + BootstrapIdentityID
@@ -424,9 +460,11 @@ func populate(raw PrimordialIDsRaw) error {
 	RolePlatformIntlKey = "vtx.role." + RolePlatformIntlID
 	PermPlatformAnyKey = "vtx.permission." + PermPlatformAnyID
 
-	BootstrapHoldsRoleLinkKey = "lnk.identity." + BootstrapIdentityID + ".holdsRole.role." + RolePlatformIntlID
+	// Story 4.7: admin's primordial holdsRole link targets the operator
+	// role (formerly platformInternal — the latter retired).
+	BootstrapHoldsRoleLinkKey = "lnk.identity." + BootstrapIdentityID + ".holdsRole.role." + RoleOperatorID
 	PlatformHoldsRoleLinkKey = "lnk.identity." + PlatformActorID + ".holdsRole.role." + RolePlatformIntlID
-	GrantsPermissionLinkKey = "lnk.permission." + PermPlatformAnyID + ".grantsPermission.role." + RolePlatformIntlID
+	GrantsPermissionLinkKey = "lnk.permission." + PermPlatformAnyID + ".grantedBy.role." + RolePlatformIntlID
 
 	// Story 3.6: populate DDL meta-vertex IDs + keys.
 	DDLRoleID = raw.DDLRole
@@ -499,50 +537,37 @@ func persist(path string, raw PrimordialIDsRaw) error {
 	return nil
 }
 
-// PrimordialVertexKeys returns the complete ordered list of Core KV keys that
-// the verify-bootstrap command checks for. MUST be called only after Load
-// or LoadOrGenerate has populated the package variables.
+// PrimordialVertexKeys returns the post-Story-4.7 kernel's vertex keys —
+// only those entries the kernel itself seeds. After 4.7 this is a small
+// fixed set; package-installed DDLs/Lenses/permissions are addressed
+// separately by `verify-package-*` gates.
+//
+// The legacy RoleMgmt + Identity DDL key sets are retained as exported
+// helpers (RoleMgmtPermissionKeys, IdentityPermissionKeys, etc.) for
+// test compatibility but are NOT part of the kernel surface.
 func PrimordialVertexKeys() []string {
-	keys := []string{
+	return []string{
 		// bootstrap op tracker
 		BootstrapOpKey,
-		// system identities
+		// admin identity
 		BootstrapIdentityKey,
-		PlatformActorKey,
-		// meta vertices
+		// meta-meta DDL
 		MetaRootKey,
+		// 2 Lens definitions
 		CapabilityLensKey,
 		CapabilityRoleIndexLensKey,
-		// roles
-		RoleConsumerKey,
-		RoleFrontOfHouseKey,
-		RoleBackOfHouseKey,
+		// operator role
 		RoleOperatorKey,
-		RolePlatformIntlKey,
-		// permission
-		PermPlatformAnyKey,
-		// links
+		// 3 kernel meta-permissions
+		PermCreateMetaVertexKey,
+		PermUpdateMetaVertexKey,
+		PermTombstoneMetaVertexKey,
+		// 3 grantedBy links (meta-perm → operator) + admin holdsRole link
+		"lnk.permission." + PermCreateMetaVertexID + ".grantedBy.role." + RoleOperatorID,
+		"lnk.permission." + PermUpdateMetaVertexID + ".grantedBy.role." + RoleOperatorID,
+		"lnk.permission." + PermTombstoneMetaVertexID + ".grantedBy.role." + RoleOperatorID,
 		BootstrapHoldsRoleLinkKey,
-		PlatformHoldsRoleLinkKey,
-		GrantsPermissionLinkKey,
-		// Story 3.6: DDL meta-vertices for the role/permission domain.
-		DDLRoleKey,
-		DDLPermissionKey,
-		DDLHoldsRoleKey,
-		DDLGrantsPermissionKey,
-		DDLReportsToKey,
-		// Story 4.1: Identity domain DDL meta-vertex.
-		DDLIdentityKey,
 	}
-	// Story 3.6: 12 per-op permission vertices.
-	keys = append(keys, RoleMgmtPermissionKeys()...)
-	// Story 3.6: 12 grantsPermission links to operator role.
-	keys = append(keys, RoleMgmtGrantLinkKeys()...)
-	// Story 4.1: 5 identity-domain permission vertices.
-	keys = append(keys, IdentityPermissionKeys()...)
-	// Story 4.1: 10 grantsPermission links to per-role grants.
-	keys = append(keys, IdentityGrantLinkKeys()...)
-	return keys
 }
 
 // IdentityPermissionKeys returns the per-op permission vertex keys
@@ -629,11 +654,9 @@ func RoleMgmtGrantLinkKeys() []string {
 	}
 }
 
-// PrimordialVertexKeyCount is the total number of primordial Core KV keys
-// (vertices + links). Used by cmd/refractor-stub as a count-only readiness
-// gate (avoids needing to load lattice.bootstrap.json before the file is
-// written by cmd/bootstrap — which would create a startup race).
-// Story 3.6 adds 5 DDL meta-vertex keys + 12 permission keys + 12 link keys = 29
-// Story 4.1 adds 1 DDL meta-vertex key + 5 permission keys + 10 link keys = 16
-// Total: 15 (prior) + 5 + 12 + 12 + 1 + 5 + 10 = 60
-const PrimordialVertexKeyCount = 60
+// PrimordialVertexKeyCount is the count of TOP-LEVEL kernel keys (the
+// ones in PrimordialVertexKeys()). Used as a count-only readiness gate
+// where loading lattice.bootstrap.json would race startup. After Story
+// 4.7 this is just the kernel set (13 entries — 1 op + 1 admin + 1
+// meta-DDL + 2 lenses + 1 role + 3 meta-perms + 4 links).
+const PrimordialVertexKeyCount = 13
