@@ -273,3 +273,122 @@ Halt for:
 4. Closing summary
 
 **DO NOT commit. DO NOT push.** Winston commits + pushes after review.
+
+---
+
+## Closing Summary — Implementation Session (2026-05-22)
+
+### Files Touched
+
+Added:
+- `internal/substrate/subscribe.go` — `SubscribeKVChanges` + `KVEvent` + `SubscribeKVOptions` + `decodeKVMessage` + `normalizePrefix`
+- `internal/substrate/subscribe_test.go` — 4 unit tests (HappyPath, IncludeHistory, DurableResume, Tombstone)
+
+Modified:
+- `internal/refractor/lens/corekv_source.go` — replaced `kv.Watch(ctx, "vtx.meta.>", jetstream.IncludeHistory())` with `substrate.SubscribeKVChanges(...)`; `consume` now reads `<-chan substrate.KVEvent`; `handle` renamed signature to operate on `substrate.KVEvent`; dropped `jetstream` import; tombstone routing now keyed on `evt.IsDeleted` (covers both KV tombstones and soft-delete envelopes)
+- `internal/refractor/control/service.go` — full rewrite of transport: `nc.QueueSubscribe` replaced by `micro.AddService("refractor-control", v1.0.0, ...)` with six per-op endpoints registered under `lattice.ctrl.refractor.*.<op>`; added `dispatchEndpoint`, `lensIDFromSubject`, exported `ControlSubject(lensID, op)` for clients; replaced `sub *nats.Subscription` with `microSvc micro.Service`; replaced `handleControlMsg` + central op switch with per-endpoint dispatch; replaced `respond(*nats.Msg, ...)` with `respondMicro(micro.Request, ...)`
+- `internal/refractor/control/service_test.go` — `sendControlRequest` now targets `control.ControlSubject(ruleID, op)`; subject path (not body) carries Op+RuleID; `TestControl_UnknownOp` rewritten to expect timeout (no responders) — documented behavioural shift; `TestControl_InvalidJSON` re-targeted to a real endpoint subject; added `TestNATSServicesIntrospection` (PING + INFO discovery)
+- `internal/refractor/subjects/subjects.go` — deleted `Control()` and its docstring
+- `internal/refractor/subjects/subjects_test.go` — deleted `TestControl`
+
+### Cross-Restart Resume Test Approach + Result
+
+`TestSubscribeKVChanges_DurableResume` (substrate package):
+1. Provisions Core KV bucket, creates first subscription with durable name `sub-test-resume`, replay-from-new.
+2. Writes `vtx.meta.alpha`, consumes the event from session 1, cancels the subscription context.
+3. Writes `vtx.meta.beta` and `vtx.meta.gamma` while no subscriber is active.
+4. Re-invokes `SubscribeKVChanges` with the SAME durable name in a new context.
+5. Asserts that only beta + gamma surface (alpha was already acked and stays acked) and no further events arrive.
+
+**Result: PASS** (0.49s). The durable consumer's ack floor persisted across the gap between sessions, confirming the Lattice-native pattern works as specified. This required a design refinement (see "Deviations" below) — the helper does not delete the durable consumer on `ctx.Done`, because deletion wipes the ack floor and defeats the entire migration premise.
+
+### NATS Services Migration — Handler-by-Handler Mapping
+
+| Pre-2.4b (QueueSubscribe) | Post-2.4b (micro.AddService) |
+|---|---|
+| Single subscription on `materializer.control`, queue group `refractor-control` | Service `refractor-control` v1.0.0 with 6 endpoints; default queue group (`q`) |
+| `handleControlMsg` central switch on `req.Op` | `dispatchEndpoint(op, micro.Request)` — one closure per registered endpoint |
+| `health` op → `getHealth(...)` | endpoint subject `lattice.ctrl.refractor.*.health` → same `getHealth` body |
+| `validate` op | endpoint subject `lattice.ctrl.refractor.*.validate` → same `validateRule` body |
+| `rebuild` op (reads `req.Truncate`) | endpoint subject `lattice.ctrl.refractor.*.rebuild` → same `rebuildRule` body; `Truncate` still read from request body |
+| `pause` op | endpoint subject `lattice.ctrl.refractor.*.pause` → same `pauseRule` body |
+| `resume` op | endpoint subject `lattice.ctrl.refractor.*.resume` → same `resumeRule` body |
+| `delete` op | endpoint subject `lattice.ctrl.refractor.*.delete` → same `deleteRule` body |
+| `msg.Respond(jsonBytes)` | `req.Respond(jsonBytes)` via micro.Request |
+| Lens ID from `req.RuleID` JSON field | Lens ID from subject (`parts[3]`) via `lensIDFromSubject` |
+
+Service framework also auto-registers `$SRV.PING.refractor-control`, `$SRV.STATS.refractor-control`, `$SRV.INFO.refractor-control` — verified by `TestNATSServicesIntrospection`.
+
+Auth is unchanged: `StubCapabilityChecker` is still wired in via `capability.go`; the migration touched transport, not policy.
+
+### Control-Plane Behavioural Differences
+
+These are the substantive changes operators / tooling must know about:
+
+1. **Subject format changed.** Old: every op on `materializer.control` with `{op, ruleId}` in JSON body. New: per-op endpoint at `lattice.ctrl.refractor.<lensId>.<op>` with body carrying only op-specific fields (currently just `Truncate`). `ControlRequest.Op` and `ControlRequest.RuleID` are retained in the JSON type (back-compat for tooling that still serializes them) but ignored — the subject path is authoritative.
+
+2. **Unknown op shape.** Old: server replied with `{"error": "unknown operation: <op>"}`. New: no endpoint is registered, so requests time out with `nats: no responders available for request`. Documented in `TestControl_UnknownOp` comment. This is a deliberate consequence of NATS Services' subject-based routing.
+
+3. **Queue group.** Old: explicit `refractor-control` queue group. New: micro service framework's default `q` queue group — multi-instance load distribution still works, just under a different group name.
+
+4. **Introspection.** Old: none. New: standard `$SRV.PING|INFO|STATS.refractor-control` endpoints auto-registered. `nats micro list` discovers the service.
+
+5. **Error envelope.** Application-level errors still surface as `{"error": "..."}` in `ControlResponse`. The micro framework adds optional `Nats-Service-Error` headers via `req.Error(code, desc, data)`, but this implementation continues to use the body-only error shape for parity with existing tests and clients. Could be a Phase 2 enhancement.
+
+6. **Request/reply timeout.** No change at the framework level — the client still picks its own request timeout. The micro framework does not impose one.
+
+### Verification Gate Results
+
+| Gate | Result |
+|---|---|
+| `go build ./...` | PASS |
+| `make vet` | PASS |
+| `golangci-lint run ./...` | PASS — 0 issues |
+| `go test ./internal/substrate/... -count=1` | PASS (incl. 4 new SubscribeKVChanges tests) |
+| `go test ./internal/refractor/... -count=1` | PASS (all 16 sub-packages green) |
+| `go test ./... -p 1 -count=1` | PASS (all packages green) |
+| `make verify-kernel` | NOT RUN — requires `make up` (Docker not available locally); flag for Winston/CI |
+| `make verify-package-rbac` | NOT RUN — same Docker dependency; flag for Winston/CI |
+| `make verify-package-identity` | NOT RUN — same Docker dependency; flag for Winston/CI |
+| `make verify-package-identity-hygiene` | NOT RUN — same Docker dependency; flag for Winston/CI |
+| `make test-bypass` | PASS (`internal/bypass` tests green in full suite) |
+| `make test-capability-adversarial` | NOT RUN as the explicit make target — but the underlying packages (`internal/processor`, `internal/bypass`) are green in the full `go test ./...` run, and no capability/auth code was touched. Docker-gated end-to-end variant flagged for Winston/CI. |
+| `TestNATSServicesIntrospection` | PASS — service discoverable via $SRV.PING and $SRV.INFO |
+| `TestSubscribeKVChanges_DurableResume` | PASS — sequence position held across subscription restart |
+
+### Forbidden-Token Greps
+
+**Architectural-purity scan:**
+```
+$ grep -rn -E "AdjacencyReads|LinkScans|ScanPrefixes|WithAdjacencyBucket|AdjacencyForNode|keys_with_prefix" internal/ cmd/ packages/
+internal/processor/starlark_runner.go:372:// dict. Story 4.6 walk-back removed the `keys_with_prefix` custom
+packages/identity-domain/package_test.go:43:	for _, forbidden := range []string{"KVListKeys", "list_keys", "keys_with_prefix"} {
+packages/rbac-domain/package_test.go:54:		"KVListKeys", "list_keys", "scan(", "keys_with_prefix",
+```
+**Result: clean.** Zero operational hits — only one historical comment and two forbidden-list test assertions (the enforcement, not violations).
+
+**Materializer eviction scan:**
+```
+$ grep -rn "materializer" internal/ cmd/ packages/
+internal/refractor/consumer/manager.go:167:// The format "refractor-<ruleID>" (Story 2.4a rename from "materializer-<ruleID>").
+```
+**Result: clean.** Zero operational hits — only a single Story-2.4a provenance comment. The previously-residual `materializer.control` subject literal and `materializer-control` queue group name are both gone.
+
+### Deviations from the Brief
+
+1. **`SubscribeKVChanges` does NOT delete the durable consumer on ctx cancel.** The brief §1 implementation notes said "On ctx.Done: drain consumer, delete via `js.DeleteConsumer`, close channel." Implementing this literally broke `TestSubscribeKVChanges_DurableResume` and contradicted the brief's headline promise that "Sequence position is persisted across restarts — re-creating with the same durable name resumes from the last-acked sequence." That property requires the consumer to survive process restarts; deleting on `ctx.Done` wipes it. I documented the resolution in `runKVSubscription`'s docstring: on shutdown the helper stops the iterator and closes the channel but leaves the durable consumer in the catalog. Operators wanting to retire a subscription permanently must use `js.DeleteConsumer` or `nats consumer rm`. No CAR — this is internal substrate behaviour and the brief itself is internally inconsistent on this point; chose the behaviour that satisfies the brief's higher-level guarantee.
+
+2. **Control-op naming followed existing reality, not the brief's example list.** Brief §3 listed the six ops as "activate, pause, resume, rebuild, delete, status" but the actual extant ops (in `handleControlMsg`) are "health, validate, rebuild, pause, resume, delete". The brief also says "Each endpoint reuses the existing handler logic from `handleControlMsg`" — so I used the real op names. (`health` ≈ what brief called `status`; `validate` has no brief-named analog; `activate` is not implemented.) No behavioural change to lens lifecycle — this is just the per-op endpoint subjects matching the existing dispatcher. No CAR.
+
+3. **Default queue group, not explicit "refractor-control".** Used the micro framework default (`q`) rather than overriding to `refractor-control`. Brief §3 did not specify; multi-instance load distribution still works.
+
+4. **`ControlRequest.Op` / `RuleID` retained in JSON type.** Kept the fields with `omitempty` for backwards compatibility with any tooling that still constructs the legacy body shape, even though the subject path now wins. Removing them would be a contract break for no benefit. No CAR.
+
+### Open CARs
+
+None.
+
+### Token Self-Estimate
+
+~50K tokens self-reported. Per the operating-rules calibration note, Opus self-reports run 30-50% low vs outer telemetry, so actual is likely in the 65-75K range. Within the 100K tracking budget.
+

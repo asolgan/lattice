@@ -5,16 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nats.go/micro"
 
-	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/refractor/health"
 	"github.com/asolgan/lattice/internal/refractor/lens"
-	"github.com/asolgan/lattice/internal/refractor/subjects"
+	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 )
 
 // validateSampleSize is the maximum number of Core KV entries sampled by the validate op.
@@ -61,10 +62,15 @@ type Deleter interface {
 	Delete(ctx context.Context) error
 }
 
-// ControlRequest is the JSON payload sent to the control subject (materializer.control until 2.4b) for all operations.
+// ControlRequest is the JSON payload sent to control endpoints. Op and RuleID
+// are now expressed in the request subject (lattice.ctrl.refractor.<lensId>.<op>),
+// so on the wire only the operation-specific fields (Team, Truncate) carry
+// meaning. The Op and RuleID fields are retained for backwards compatibility
+// with tooling that still constructs the legacy single-subject payload — when
+// the subject path provides values the subject path wins.
 type ControlRequest struct {
-	Op       string `json:"op"`                 // operation: "health" | "validate" | "rebuild" | "pause" | "resume" | "delete"
-	RuleID   string `json:"ruleId"`             // target rule identifier
+	Op       string `json:"op,omitempty"`       // legacy; subject path is authoritative
+	RuleID   string `json:"ruleId,omitempty"`   // legacy; subject path is authoritative
 	Team     string `json:"team,omitempty"`     // optional; used for context in "validate" op
 	Truncate bool   `json:"truncate,omitempty"` // used by "rebuild" op; default false
 }
@@ -78,7 +84,7 @@ type ControlRequest struct {
 // On success (delete op): Delete field is present; Entry fields are absent.
 // On error: only "error" field is present.
 type ControlResponse struct {
-	*health.Entry                              // embedded; nil on non-health ops → fields absent in JSON
+	*health.Entry                  // embedded; nil on non-health ops → fields absent in JSON
 	Error    string          `json:"error,omitempty"`
 	Validate *ValidateResult `json:"validate,omitempty"` // present only for "validate" op
 	Rebuild  *RebuildResult  `json:"rebuild,omitempty"`  // present only for "rebuild" op
@@ -143,9 +149,9 @@ type Service struct {
 	rebuilderByRuleID map[string]Rebuilder
 	deleterByRuleID   map[string]Deleter
 	reporters         map[string]*health.Reporter
-	sub               *nats.Subscription // set by StartNATSListener; nil until started
-	ruleGetter        RuleGetter         // set via SetRuleGetter; used by validate op
-	coreKV            jetstream.KeyValue  // set via SetCoreKV; used by validate op
+	microSvc          micro.Service     // set by StartNATSListener; nil until started
+	ruleGetter        RuleGetter        // set via SetRuleGetter; used by validate op
+	coreKV            jetstream.KeyValue // set via SetCoreKV; used by validate op
 }
 
 // NewService creates a new Service with empty registries.
@@ -276,68 +282,146 @@ func (s *Service) ResumeRule(ctx context.Context, ruleID string) error {
 	return nil
 }
 
-// StartNATSListener registers a NATS queue subscription on subjects.Control()
-// (currently "materializer.control" — 2.4b will migrate to NATS Services) that
-// handles JSON control requests. The queue group "refractor-control" ensures
-// exactly one instance handles each request when multiple Refractor processes
-// are running (stateless, NFR14).
-// The subscription is unsubscribed when ctx is cancelled.
-// Returns an error if the subscription cannot be established or if already started.
+// controlSubjectPrefix is the wildcard subject pattern the control
+// endpoints are registered under. Each endpoint adds two trailing
+// tokens: <lensId>.<op>. Wildcards in micro endpoint subjects let one
+// endpoint handler serve all lens IDs — necessary because the Refractor
+// does not know the full set of lens IDs at startup (handoff brief
+// Decision #6).
+const controlSubjectPrefix = "lattice.ctrl.refractor"
+
+// supportedOps enumerates the per-op endpoint suffixes registered under
+// the NATS Services framework. The op name is taken from the trailing
+// subject token; see opFromSubject.
+var supportedOps = []string{"health", "validate", "rebuild", "pause", "resume", "delete"}
+
+// StartNATSListener registers the Refractor control plane as a NATS
+// micro-service named "refractor-control". Six endpoints are added —
+// one per op — all sharing the wildcard subject pattern
+// "lattice.ctrl.refractor.*.<op>" so a single handler instance serves
+// every lens ID without prior knowledge.
+//
+// All endpoints share the default queue group ("q") so multiple
+// Refractor instances distribute load — replaces the explicit
+// "refractor-control" QueueSubscribe group used pre-2.4b.
+//
+// The service framework auto-registers the standard $SRV.PING /
+// $SRV.STATS / $SRV.INFO introspection endpoints. Operators can
+// discover the service with `nats micro list` or `$SRV.PING.refractor-control`.
+//
+// The service is stopped when ctx is cancelled. Returns an error if the
+// service cannot be created or if already started.
 func (s *Service) StartNATSListener(ctx context.Context, nc *nats.Conn) error {
 	s.mu.Lock()
-	if s.sub != nil {
+	if s.microSvc != nil {
 		s.mu.Unlock()
 		return fmt.Errorf("control: NATS listener already started")
 	}
 	s.mu.Unlock()
 
-	sub, err := nc.QueueSubscribe(subjects.Control(), "refractor-control", s.handleControlMsg)
+	svc, err := micro.AddService(nc, micro.Config{
+		Name:        "refractor-control",
+		Version:     "1.0.0",
+		Description: "Refractor control plane endpoints (lattice.ctrl.refractor.<lensId>.<op>)",
+	})
 	if err != nil {
-		return fmt.Errorf("control: subscribe to %s: %w", subjects.Control(), err)
+		return fmt.Errorf("control: micro.AddService: %w", err)
 	}
-	s.sub = sub
+
+	for _, op := range supportedOps {
+		op := op // capture for closure
+		subj := controlSubjectPrefix + ".*." + op
+		err := svc.AddEndpoint(
+			"refractor-control-"+op,
+			micro.HandlerFunc(func(req micro.Request) { s.dispatchEndpoint(op, req) }),
+			micro.WithEndpointSubject(subj),
+		)
+		if err != nil {
+			// Best effort: stop the partially-registered service to
+			// avoid leaking subscriptions, then surface the error.
+			_ = svc.Stop()
+			return fmt.Errorf("control: AddEndpoint %q on %q: %w", op, subj, err)
+		}
+	}
+
+	s.mu.Lock()
+	s.microSvc = svc
+	s.mu.Unlock()
+
 	go func() {
 		<-ctx.Done()
-		if err := sub.Unsubscribe(); err != nil {
-			slog.Error("control: unsubscribe from control subject", "err", err)
+		if err := svc.Stop(); err != nil {
+			slog.Error("control: stop micro service", "err", err)
 		}
 	}()
 	return nil
 }
 
-// handleControlMsg is the NATS message handler for all control requests.
-// It parses the JSON request, dispatches by op, and writes a JSON response.
-func (s *Service) handleControlMsg(msg *nats.Msg) {
-	var req ControlRequest
-	if err := json.Unmarshal(msg.Data, &req); err != nil {
-		s.respond(msg, ControlResponse{Error: fmt.Sprintf("invalid request: %s", err.Error())})
+// dispatchEndpoint is the single entry point for every per-op endpoint.
+// It extracts the lens ID from the subject (the second-to-last token),
+// decodes the request body (legacy ControlRequest shape for Truncate
+// support), dispatches by op, and writes the JSON response via
+// micro.Request.Respond.
+func (s *Service) dispatchEndpoint(op string, req micro.Request) {
+	subject := req.Subject()
+	lensID, ok := lensIDFromSubject(subject)
+	if !ok {
+		s.respondMicro(req, ControlResponse{Error: fmt.Sprintf("invalid control subject %q", subject)})
 		return
 	}
 
-	switch req.Op {
+	// Decode body for op-specific fields (Truncate). Empty body is fine
+	// for ops that don't need it (health, pause, resume, delete, validate).
+	var body ControlRequest
+	if len(req.Data()) > 0 {
+		if err := json.Unmarshal(req.Data(), &body); err != nil {
+			s.respondMicro(req, ControlResponse{Error: fmt.Sprintf("invalid request: %s", err.Error())})
+			return
+		}
+	}
+
+	switch op {
 	case "health":
-		resp := s.getHealth(context.Background(), req.RuleID)
-		s.respond(msg, resp)
+		s.respondMicro(req, s.getHealth(context.Background(), lensID))
 	case "validate":
 		ctx, cancel := context.WithTimeout(context.Background(), validateTimeout)
 		defer cancel()
-		resp := s.validateRule(ctx, req.RuleID)
-		s.respond(msg, resp)
+		s.respondMicro(req, s.validateRule(ctx, lensID))
 	case "rebuild":
-		resp := s.rebuildRule(req.RuleID, req.Truncate)
-		s.respond(msg, resp)
+		s.respondMicro(req, s.rebuildRule(lensID, body.Truncate))
 	case "pause":
-		resp := s.pauseRule(context.Background(), req.RuleID)
-		s.respond(msg, resp)
+		s.respondMicro(req, s.pauseRule(context.Background(), lensID))
 	case "resume":
-		resp := s.resumeRule(context.Background(), req.RuleID)
-		s.respond(msg, resp)
+		s.respondMicro(req, s.resumeRule(context.Background(), lensID))
 	case "delete":
-		resp := s.deleteRule(context.Background(), req.RuleID)
-		s.respond(msg, resp)
+		s.respondMicro(req, s.deleteRule(context.Background(), lensID))
 	default:
-		s.respond(msg, ControlResponse{Error: fmt.Sprintf("unknown operation: %s", req.Op)})
+		// Unreachable — supportedOps gates the endpoint registration.
+		s.respondMicro(req, ControlResponse{Error: fmt.Sprintf("unknown operation: %s", op)})
 	}
+}
+
+// lensIDFromSubject extracts the lens ID from a control subject. The
+// expected shape is "lattice.ctrl.refractor.<lensId>.<op>" — exactly 5
+// dot-separated tokens. Returns ok=false on any deviation.
+func lensIDFromSubject(subject string) (string, bool) {
+	parts := strings.Split(subject, ".")
+	if len(parts) != 5 {
+		return "", false
+	}
+	if parts[0] != "lattice" || parts[1] != "ctrl" || parts[2] != "refractor" {
+		return "", false
+	}
+	if parts[3] == "" {
+		return "", false
+	}
+	return parts[3], true
+}
+
+// ControlSubject returns the canonical request subject for the given
+// lens ID + op. Exposed for tests and tooling.
+func ControlSubject(lensID, op string) string {
+	return controlSubjectPrefix + "." + lensID + "." + op
 }
 
 // getHealth returns the health KV entry for ruleID as a ControlResponse.
@@ -537,15 +621,16 @@ func buildEmptyValidateResult(columns []simple.Column) *ValidateResult {
 	return &ValidateResult{SampleSize: 0, FieldReports: reports, Warnings: warnings}
 }
 
-// respond marshals v to JSON and sends it as a NATS reply.
-// Logs errors rather than returning them — the caller cannot do anything useful with them.
-func (s *Service) respond(msg *nats.Msg, v any) {
+// respondMicro marshals v to JSON and sends it as the micro reply.
+// Logs marshal failures rather than returning them — the caller cannot
+// do anything useful with them.
+func (s *Service) respondMicro(req micro.Request, v any) {
 	data, err := json.Marshal(v)
 	if err != nil {
 		slog.Error("control: marshal response", "err", err)
 		return
 	}
-	if err := msg.Respond(data); err != nil {
+	if err := req.Respond(data); err != nil {
 		slog.Error("control: send response", "err", err)
 	}
 }

@@ -77,11 +77,6 @@ func TestAudit(t *testing.T) {
 	}
 }
 
-func TestControl(t *testing.T) {
-	// materializer.control is NOT renamed in 2.4a — Story 2.4b owns this migration.
-	assert.Equal(t, "materializer.control", Control())
-}
-
 func TestCoreKVStream(t *testing.T) {
 	assert.Equal(t, "KV_core", CoreKVStream("core"))
 	assert.Equal(t, "KV_my-bucket", CoreKVStream("my-bucket"))

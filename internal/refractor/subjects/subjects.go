@@ -40,13 +40,6 @@ func AdjKey(nodeID string) string {
 	return fmt.Sprintf("adj.%s", nodeID)
 }
 
-// Control returns the NATS subject for the Refractor control API service.
-// All control operations (validate, rebuild, pause, resume, delete) are sent to this subject.
-// NOTE: this subject is NOT renamed in 2.4a — Story 2.4b migrates it to NATS Services.
-func Control() string {
-	return "materializer.control"
-}
-
 // CoreKVStream returns the JetStream stream name for the given NATS KV bucket.
 // NATS convention: KV bucket "foo" is backed by stream "KV_foo".
 func CoreKVStream(bucket string) string {

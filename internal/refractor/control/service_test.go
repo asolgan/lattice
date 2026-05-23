@@ -16,7 +16,6 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/control"
 	"github.com/asolgan/lattice/internal/refractor/health"
 	"github.com/asolgan/lattice/internal/refractor/lens"
-	"github.com/asolgan/lattice/internal/refractor/subjects"
 )
 
 // mockResumer records Resume calls so tests can assert the pipeline was told to resume.
@@ -113,13 +112,19 @@ func TestControl_Unregister(t *testing.T) {
 
 // ── NATS listener tests ───────────────────────────────────────────────────────
 
-// sendControlRequest marshals req and sends it via NATS request-reply, returning the decoded response.
+// sendControlRequest marshals req's body fields and dispatches it to the
+// NATS Services endpoint for (req.RuleID, req.Op). The Op + RuleID are
+// embedded in the request subject (lattice.ctrl.refractor.<ruleId>.<op>);
+// the body now carries only op-specific fields (Truncate). This mirrors
+// what production clients do post-2.4b.
 func sendControlRequest(t *testing.T, nc *nats.Conn, req control.ControlRequest) control.ControlResponse {
 	t.Helper()
-	data, err := json.Marshal(req)
+	body := control.ControlRequest{Team: req.Team, Truncate: req.Truncate}
+	data, err := json.Marshal(body)
 	require.NoError(t, err)
-	reply, err := nc.Request(subjects.Control(), data, 2*time.Second)
-	require.NoError(t, err, "NATS request to control endpoint must succeed")
+	subj := control.ControlSubject(req.RuleID, req.Op)
+	reply, err := nc.Request(subj, data, 2*time.Second)
+	require.NoError(t, err, "NATS request to control endpoint %s must succeed", subj)
 	var resp control.ControlResponse
 	require.NoError(t, json.Unmarshal(reply.Data, &resp))
 	return resp
@@ -167,7 +172,12 @@ func TestControl_Health_UnknownRule(t *testing.T) {
 	assert.Contains(t, resp.Error, "ghost-rule")
 }
 
-// TestControl_UnknownOp verifies that an unrecognized op returns the correct error (AC2).
+// TestControl_UnknownOp verifies that a request to an unknown op subject
+// receives no response — there is no endpoint registered for it, so the
+// request times out. Behavioural shift vs pre-2.4b: previously a single
+// subject handler returned an "unknown operation" error response; under
+// NATS Services unknown ops simply have no endpoint and surface as
+// nats.ErrNoResponders / timeout. This is the documented contract.
 func TestControl_UnknownOp(t *testing.T) {
 	nc, _ := startControlTestServerConn(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -176,13 +186,13 @@ func TestControl_UnknownOp(t *testing.T) {
 	svc := control.NewService()
 	require.NoError(t, svc.StartNATSListener(ctx, nc))
 
-	resp := sendControlRequest(t, nc, control.ControlRequest{Op: "bogus", RuleID: "any"})
-
-	assert.NotEmpty(t, resp.Error, "error field must be set for unknown op")
-	assert.Contains(t, resp.Error, "unknown operation: bogus")
+	subj := control.ControlSubject("any", "bogus")
+	_, err := nc.Request(subj, []byte("{}"), 250*time.Millisecond)
+	require.Error(t, err, "request to unregistered op subject must fail (no responders / timeout)")
 }
 
-// TestControl_InvalidJSON verifies that malformed request bytes return a parse error (AC2).
+// TestControl_InvalidJSON verifies that malformed request bytes on a
+// valid op subject return a parse error.
 func TestControl_InvalidJSON(t *testing.T) {
 	nc, _ := startControlTestServerConn(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -191,8 +201,9 @@ func TestControl_InvalidJSON(t *testing.T) {
 	svc := control.NewService()
 	require.NoError(t, svc.StartNATSListener(ctx, nc))
 
-	// Send raw non-JSON bytes directly (bypass helper).
-	reply, err := nc.Request(subjects.Control(), []byte("not-json{{"), 2*time.Second)
+	// Send raw non-JSON bytes directly (bypass helper) to a real endpoint subject.
+	subj := control.ControlSubject("rebuild-bad-body", "rebuild")
+	reply, err := nc.Request(subj, []byte("not-json{{"), 2*time.Second)
 	require.NoError(t, err)
 
 	var resp control.ControlResponse
@@ -785,4 +796,62 @@ func TestControl_Delete_UnregistersRule(t *testing.T) {
 	resp2 := sendControlRequest(t, nc, control.ControlRequest{Op: "health", RuleID: "delete-unreg-rule"})
 	assert.NotEmpty(t, resp2.Error, "health op after delete must return error")
 	assert.Contains(t, resp2.Error, "delete-unreg-rule")
+}
+
+// ── NATS Services introspection (Story 2.4b) ─────────────────────────────────
+
+// TestNATSServicesIntrospection verifies that the migrated control plane is
+// discoverable via the standard NATS Services PING/INFO introspection
+// subjects ($SRV.PING.refractor-control, $SRV.INFO.refractor-control).
+// Operators rely on this for `nats micro list` and friends.
+func TestNATSServicesIntrospection(t *testing.T) {
+	nc, _ := startControlTestServerConn(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	svc := control.NewService()
+	require.NoError(t, svc.StartNATSListener(ctx, nc))
+
+	// PING — service-name-scoped: $SRV.PING.refractor-control
+	pingReply, err := nc.Request("$SRV.PING.refractor-control", nil, 2*time.Second)
+	require.NoError(t, err, "service must respond to $SRV.PING.refractor-control")
+
+	var ping struct {
+		Name    string `json:"name"`
+		Version string `json:"version"`
+		Type    string `json:"type"`
+	}
+	require.NoError(t, json.Unmarshal(pingReply.Data, &ping))
+	assert.Equal(t, "refractor-control", ping.Name)
+	assert.Equal(t, "1.0.0", ping.Version)
+
+	// INFO — must list all six endpoint subjects under the
+	// lattice.ctrl.refractor wildcard prefix.
+	infoReply, err := nc.Request("$SRV.INFO.refractor-control", nil, 2*time.Second)
+	require.NoError(t, err, "service must respond to $SRV.INFO.refractor-control")
+
+	var info struct {
+		Name      string `json:"name"`
+		Endpoints []struct {
+			Name    string `json:"name"`
+			Subject string `json:"subject"`
+		} `json:"endpoints"`
+	}
+	require.NoError(t, json.Unmarshal(infoReply.Data, &info))
+	assert.Equal(t, "refractor-control", info.Name)
+
+	wantOps := map[string]bool{
+		"health": false, "validate": false, "rebuild": false,
+		"pause": false, "resume": false, "delete": false,
+	}
+	for _, ep := range info.Endpoints {
+		for op := range wantOps {
+			if ep.Subject == "lattice.ctrl.refractor.*."+op {
+				wantOps[op] = true
+			}
+		}
+	}
+	for op, found := range wantOps {
+		assert.True(t, found, "endpoint for op %q must be registered with subject lattice.ctrl.refractor.*.%s", op, op)
+	}
 }

@@ -9,11 +9,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/substrate"
 )
+
+// lensSourceDurableName is the JetStream durable consumer name shared by
+// the per-instance lens-definition subscription. Multi-cell deployments
+// (Phase 3) will include a cell-id segment.
+const lensSourceDurableName = "refractor-lens-source"
 
 // UpdateCallback is called when an existing rule is updated (not on first load).
 // old is a snapshot of the previous version; new is the updated version.
@@ -21,11 +24,12 @@ import (
 // The callback is called outside the source's mutex, after the rule is indexed and ACK'd.
 type UpdateCallback func(old, new *Rule, kind UpdateKind)
 
-// CoreKVSource watches Core KV under `vtx.meta.>` and routes only those
-// updates whose envelope class is `meta.lens` to the lens loader. Other
-// meta classes (`meta.ddl.*`, `meta.event.*`, etc.) are skipped silently
-// — they belong to future routers, not the Refractor (data-contracts.md
-// §1.2 line 70).
+// CoreKVSource subscribes to Core KV under `vtx.meta.>` via a Lattice-
+// native durable JetStream consumer (substrate.SubscribeKVChanges) and
+// routes only those updates whose envelope class is `meta.lens` to the
+// lens loader. Other meta classes (`meta.ddl.*`, `meta.event.*`, etc.)
+// are skipped silently — they belong to future routers, not the
+// Refractor (data-contracts.md §1.2 line 70).
 //
 // It pushes loaded / updated / deleted events through the supplied load
 // and update callbacks — the SAME callbacks the JetStream-backed Loader
@@ -36,8 +40,16 @@ type UpdateCallback func(old, new *Rule, kind UpdateKind)
 // source of lens definitions. Lens definitions arrive via the normal
 // Processor write path as `vtx.meta.<NanoID>` (vertex, class `meta.lens`)
 // + a `vtx.meta.<NanoID>.spec` aspect carrying the LensSpec body. CDC
-// delivers them here through the Core KV watch and the class filter
-// routes them to the loader (Story 2.1b correctness pass).
+// delivers them here through the durable consumer subscription and the
+// class filter routes them to the loader (Story 2.1b correctness pass).
+//
+// Story 2.4b: migrated from jetstream.KeyValue.Watch (ephemeral, replays
+// full history on every connect) to substrate.SubscribeKVChanges (durable
+// JetStream consumer on the KV_<bucket> backing stream filtered to
+// `$KV.<bucket>.vtx.meta.>`). Sequence position now persists across
+// restarts. IncludeHistory=true is passed so the first connect after a
+// fresh deployment still loads the entire installed lens set; subsequent
+// restarts pick up from the durable ack floor.
 type CoreKVSource struct {
 	conn     *substrate.Conn
 	bucket   string
@@ -123,53 +135,52 @@ func (s *CoreKVSource) SetLoadCallback(fn func(*Rule)) { s.loadCB = fn }
 // SetUpdateCallback registers the update callback. Must be set before Start.
 func (s *CoreKVSource) SetUpdateCallback(fn UpdateCallback) { s.updateCB = fn }
 
-// Start launches the Core KV watch goroutine. Returns when the watch is
-// established (or fails to establish). The goroutine runs until ctx is
-// cancelled.
+// Start subscribes to lens-definition mutations via the substrate's
+// durable JetStream-consumer helper and launches the dispatch goroutine.
+// Returns when the subscription is established (or fails to establish).
+// The goroutine runs until ctx is cancelled.
+//
+// Per data-contracts.md §1.2 line 70 lens definitions are meta-vertices
+// distinguished by envelope class `meta.lens`; the subscription filter
+// is the prefix only, and class-based routing happens inside handle().
+//
+// IncludeHistory=true preserves the pre-2.4b "replay all meta vertices
+// on first connect" behaviour. On subsequent restarts the durable
+// consumer's ack floor picks up where the previous session left off, so
+// re-replay is bounded by the unacked tail.
 func (s *CoreKVSource) Start(ctx context.Context) error {
-	js := s.conn.JetStream()
-	kv, err := js.KeyValue(ctx, s.bucket)
+	events, err := s.conn.SubscribeKVChanges(
+		ctx,
+		s.bucket,
+		"vtx.meta.",
+		lensSourceDurableName,
+		substrate.SubscribeKVOptions{
+			IncludeHistory: true,
+			Logger:         s.logger,
+		},
+	)
 	if err != nil {
-		return fmt.Errorf("open core KV %q: %w", s.bucket, err)
+		return fmt.Errorf("subscribe core KV vtx.meta.>: %w", err)
 	}
-	// Watch all meta-vertices and their aspects. Per data-contracts.md
-	// §1.2 line 70, lens definitions are meta-vertices distinguished by
-	// envelope class `meta.lens`. We route by class, not by key prefix.
-	// Watch starts from existing entries so on restart we re-load all
-	// known lenses.
-	watcher, err := kv.Watch(ctx, "vtx.meta.>", jetstream.IncludeHistory())
-	if err != nil {
-		return fmt.Errorf("kv watch vtx.meta.>: %w", err)
-	}
-	go s.consume(ctx, watcher)
+	go s.consume(ctx, events)
 	return nil
 }
 
-func (s *CoreKVSource) consume(ctx context.Context, watcher jetstream.KeyWatcher) {
-	defer func() {
-		if err := watcher.Stop(); err != nil {
-			s.logger.Warn("core-kv lens watcher stop", "err", err)
-		}
-	}()
-	updates := watcher.Updates()
+func (s *CoreKVSource) consume(ctx context.Context, events <-chan substrate.KVEvent) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case entry, ok := <-updates:
+		case evt, ok := <-events:
 			if !ok {
 				return
 			}
-			if entry == nil {
-				// Initial-state-complete sentinel — nothing to do.
-				continue
-			}
-			s.handle(entry)
+			s.handle(evt)
 		}
 	}
 }
 
-// handle dispatches one KV update from `vtx.meta.>`. Routing is driven
+// handle dispatches one KV mutation from `vtx.meta.>`. Routing is driven
 // by the envelope `class` field (data-contracts.md §1.2 line 70):
 //   - vertex (3-seg) with class `meta.lens`: register as a lens vertex;
 //     replay any buffered spec aspect.
@@ -179,10 +190,13 @@ func (s *CoreKVSource) consume(ctx context.Context, watcher jetstream.KeyWatcher
 //     parse + translate + dispatch to loader.
 //   - aspect (4-seg) under an unknown parent: buffer until the parent
 //     vertex's class is observed (CDC ordering is not guaranteed).
-func (s *CoreKVSource) handle(entry jetstream.KeyValueEntry) {
-	key := entry.Key()
+//
+// The IsDeleted signal covers both NATS KV tombstones (empty body) and
+// soft-delete envelopes (canonical envelope's `isDeleted: true`). Both
+// trigger lens removal.
+func (s *CoreKVSource) handle(evt substrate.KVEvent) {
+	key := evt.Key
 	kind := substrate.ClassifyKey(key)
-	op := entry.Operation()
 
 	switch kind {
 	case substrate.KindVertex:
@@ -191,7 +205,7 @@ func (s *CoreKVSource) handle(entry jetstream.KeyValueEntry) {
 			return
 		}
 		// Vertex delete: purge tracking + emit removal.
-		if op == jetstream.KeyValueDelete || op == jetstream.KeyValuePurge {
+		if evt.IsDeleted {
 			s.mu.Lock()
 			delete(s.lensVertices, lensID)
 			_, existed := s.known[lensID]
@@ -205,8 +219,8 @@ func (s *CoreKVSource) handle(entry jetstream.KeyValueEntry) {
 		}
 		// Inspect class to decide whether this is a lens vertex.
 		var probe envelopeProbe
-		if err := json.Unmarshal(entry.Value(), &probe); err != nil {
-			s.logger.Debug("core-kv watch: vertex envelope unmarshal failed",
+		if err := json.Unmarshal(evt.Value, &probe); err != nil {
+			s.logger.Debug("core-kv subscribe: vertex envelope unmarshal failed",
 				"key", key, "err", err)
 			return
 		}
@@ -222,7 +236,7 @@ func (s *CoreKVSource) handle(entry jetstream.KeyValueEntry) {
 		}
 		s.mu.Unlock()
 		if hasBuffered {
-			s.dispatchSpec(lensID, buffered, entry.Revision())
+			s.dispatchSpec(lensID, buffered, evt.Revision)
 		}
 		return
 
@@ -234,7 +248,7 @@ func (s *CoreKVSource) handle(entry jetstream.KeyValueEntry) {
 		if localName != "spec" {
 			return
 		}
-		if op == jetstream.KeyValueDelete || op == jetstream.KeyValuePurge {
+		if evt.IsDeleted {
 			// Spec deletion = lens removed.
 			s.mu.Lock()
 			_, existed := s.known[lensID]
@@ -253,13 +267,13 @@ func (s *CoreKVSource) handle(entry jetstream.KeyValueEntry) {
 			// Parent vertex's class not yet observed (or not a lens).
 			// Buffer the body in case the vertex arrives next.
 			s.mu.Lock()
-			s.pendingSpecs[lensID] = append([]byte(nil), entry.Value()...)
+			s.pendingSpecs[lensID] = append([]byte(nil), evt.Value...)
 			s.mu.Unlock()
 			s.logger.Debug("buffering spec until parent meta-vertex class observed",
 				"key", key, "lensId", lensID)
 			return
 		}
-		s.dispatchSpec(lensID, entry.Value(), entry.Revision())
+		s.dispatchSpec(lensID, evt.Value, evt.Revision)
 		return
 	}
 	// Unknown / link / malformed → ignore.
