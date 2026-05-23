@@ -49,30 +49,32 @@ verify-kernel:
 	@echo "==> Running kernel verification..."
 	NATS_URL=$(NATS_URL) go run ./scripts/verify-kernel.go
 
-## verify-package-rbac — Install rbac-domain package and verify its keys.
+## verify-package-rbac — Install rbac-domain package and assert its KV state.
 verify-package-rbac:
 	@echo "==> Building lattice-pkg..."
 	go build -o bin/lattice-pkg ./cmd/lattice-pkg
 	@echo "==> Installing rbac-domain..."
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/rbac-domain
-	@echo "==> rbac-domain install complete (verify via package list)."
-	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg list
+	@echo "==> Running rbac-domain package assertions..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) go run ./scripts/verify-package-rbac.go
 
-## verify-package-identity — Install identity-domain package and verify its keys.
+## verify-package-identity — Install identity-domain package and assert its KV state.
 verify-package-identity:
 	@echo "==> Building lattice-pkg..."
 	go build -o bin/lattice-pkg ./cmd/lattice-pkg
 	@echo "==> Installing identity-domain..."
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/identity-domain
-	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg list
+	@echo "==> Running identity-domain package assertions..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) go run ./scripts/verify-package-identity.go
 
-## verify-package-identity-hygiene — Install identity-hygiene and verify.
+## verify-package-identity-hygiene — Install identity-hygiene and assert its KV state.
 verify-package-identity-hygiene:
 	@echo "==> Building lattice-pkg..."
 	go build -o bin/lattice-pkg ./cmd/lattice-pkg
 	@echo "==> Installing identity-hygiene..."
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/identity-hygiene
-	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg list
+	@echo "==> Running identity-hygiene package assertions..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) go run ./scripts/verify-package-identity-hygiene.go
 
 ## build — Compile all binaries under cmd/.
 build:
