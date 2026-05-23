@@ -1,8 +1,7 @@
-description: "Composite key: two-field key joined with '/' in NATS KV"
+description: "Composite key: two-field key joined with '.' in NATS KV (Contract #1)"
 
 rule:
   id: composite-key
-  team: test-team
   match: "MATCH (a:agreement) RETURN a.teamId AS team_id, a.id AS agreement_id"
   into:
     target: nats_kv
@@ -18,7 +17,7 @@ inputs:
 
 expect:
   nats_kv:
-    - key: "team1/abc"
+    - key: "team1.abc"
       value:
         team_id: "team1"
         agreement_id: "abc"

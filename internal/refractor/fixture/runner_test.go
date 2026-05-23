@@ -172,8 +172,9 @@ func TestRunFixture_OutOfOrderRetry(t *testing.T) {
 		"target KV value must match expected projection after out-of-order delivery")
 }
 
-// TestRunFixture_CompositeKey verifies that a two-field into.key produces a '/' joined
-// KV key and that both key fields appear in the projected row (AC4).
+// TestRunFixture_CompositeKey verifies that a two-field into.key produces a '.'-joined
+// KV key (Contract #1 segment separator) and that both key fields appear in the
+// projected row (AC4).
 func TestRunFixture_CompositeKey(t *testing.T) {
 	fix, err := fixture.Load(fixtureDataPath("composite_key.yaml"))
 	require.NoError(t, err)
@@ -183,8 +184,8 @@ func TestRunFixture_CompositeKey(t *testing.T) {
 
 	fixture.RunFixture(t, fix, adjKV, coreKV, targetKV)
 
-	entry, err := targetKV.Get(context.Background(), "team1/abc")
-	require.NoError(t, err, "target KV key 'team1/abc' must exist after fixture run")
+	entry, err := targetKV.Get(context.Background(), "team1.abc")
+	require.NoError(t, err, "target KV key 'team1.abc' must exist after fixture run")
 	assert.JSONEq(t, `{"team_id":"team1","agreement_id":"abc"}`, string(entry.Value()),
 		"target KV value must contain both composite key fields")
 }
