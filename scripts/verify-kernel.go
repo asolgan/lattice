@@ -3,14 +3,14 @@
 // verify-kernel.go — assertion tool for `make verify-kernel`.
 //
 // Connects to a running Lattice NATS instance and checks that all
-// post-Story-5.1 KERNEL Core KV keys exist with correct envelopes per
-// Contract #1 §1.3. The kernel set after Story 5.1 (~68 entries):
+// post-Story-5.3 KERNEL Core KV keys exist with correct envelopes per
+// Contract #1 §1.3. The kernel set after Story 5.3 (~69 entries):
 //
 //	 1 bootstrap op tracker
 //	 1 admin identity vertex
-//	 1 meta-meta-DDL vertex + 8 aspects
+//	 1 meta-meta-DDL vertex + 9 aspects
 //	   (canonicalName/permittedCommands/description/script +
-//	    inputSchema/outputSchema/fieldDescription/examples)
+//	    inputSchema/outputSchema/fieldDescription/examples + compensation)
 //	 2 Lens definitions × 5 aspects each
 //	 5 aspect-type meta-vertices × 7 aspects each
 //	   (canonicalName + description + inputSchema + outputSchema +
@@ -20,7 +20,7 @@
 //	 3 grantedBy links (meta-perm → operator)
 //	 1 admin → operator holdsRole link
 //
-// Total ≈ 68 OK lines.
+// Total ≈ 69 OK lines.
 //
 // Package gates (verify-package-rbac etc.) cover package-installed
 // DDLs / lenses / permissions / grants separately.
@@ -115,16 +115,41 @@ func main() {
 		fmt.Printf("  OK  %s\n", key)
 	}
 
-	// 2. Meta-meta DDL aspects (8 aspects — 4 structural + 4 self-description).
+	// 2. Meta-meta DDL aspects (9 aspects — 4 structural + 4 self-description + 1 compensation).
 	for _, aspect := range []string{
 		"canonicalName", "permittedCommands", "description", "script",
 		"inputSchema", "outputSchema", "fieldDescription", "examples",
+		"compensation", // Story 5.3: sixth self-description aspect
 	} {
 		k := bootstrap.MetaRootKey + "." + aspect
 		if _, err := coreKV.Get(ctx, k); err != nil {
 			failures = append(failures, fmt.Sprintf("MISSING meta-DDL aspect: %s (%v)", k, err))
 		} else {
 			fmt.Printf("  OK  %s\n", k)
+		}
+	}
+
+	// 2b. Story 5.3: verify .compensation aspect data.inverseOperationType.
+	{
+		compKey := bootstrap.MetaRootKey + ".compensation"
+		entry, err := coreKV.Get(ctx, compKey)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("CANNOT read compensation aspect: %s (%v)", compKey, err))
+		} else {
+			var compDoc struct {
+				Data struct {
+					InverseOperationType string `json:"inverseOperationType"`
+				} `json:"data"`
+			}
+			if jsonErr := json.Unmarshal(entry.Value(), &compDoc); jsonErr != nil {
+				failures = append(failures, fmt.Sprintf("INVALID JSON for compensation aspect %s: %v", compKey, jsonErr))
+			} else if compDoc.Data.InverseOperationType != "TombstoneMetaVertex" {
+				failures = append(failures, fmt.Sprintf(
+					"WRONG compensation.data.inverseOperationType: got %q want %q",
+					compDoc.Data.InverseOperationType, "TombstoneMetaVertex"))
+			} else {
+				fmt.Printf("  OK  %s.data.inverseOperationType=%q\n", compKey, compDoc.Data.InverseOperationType)
+			}
 		}
 	}
 

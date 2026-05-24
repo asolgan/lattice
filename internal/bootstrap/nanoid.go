@@ -50,6 +50,11 @@ const Alphabet = substrate.Alphabet
 // deployments — it's an addressing convention, not a NanoID.
 const HealthBootstrapCompleteKey = "health.bootstrap.complete"
 
+// CompensationAspectClass is the class and localName value for the
+// .compensation sixth self-description aspect (Story 5.3). It is a key
+// suffix token, not a NanoID — no primordial ID is required.
+const CompensationAspectClass = "compensation"
+
 // Primordial NanoIDs and derived keys.
 //
 // MUST be populated via LoadOrGenerate (cmd/bootstrap) or Load

@@ -133,18 +133,98 @@ by Gate 2 (`nfr_r1_test.go`).
 
 ## Capability change operations (FR53 — Story 5.3)
 
-The table below lists the forward/compensating operation pairs for capability
-management. This represents the post-Story-4.7 shape. Pre-4.7 (current Phase
-1) state has more granular DDL operations (`CreateRole`, `CreatePermission`,
-etc.) which collapse into `CreateMetaVertex` after Story 4.7's DDL
-consolidation.
+### `.compensation` aspect as the FR53 contract surface
 
-| Category | Forward | Compensating |
-|----------|---------|-------------|
-| Meta-vertex management | `CreateMetaVertex` | `TombstoneMetaVertex` |
-| Meta-vertex update | `UpdateMetaVertex` | `UpdateMetaVertex` (with prior payload) |
-| Role-permission grant | `GrantPermission` | `RevokePermission` |
-| Identity-role assignment | `AssignRole` | `RevokeRole` |
+Every capability-change DDL meta-vertex carries a sixth self-description
+aspect named `.compensation` (stored at `<metaKey>.compensation` in Core KV).
+This aspect encodes the compensating (inverse) operation as a template
+reference so that an operator or AI agent can construct a rollback without any
+new Processor reply fields.
+
+**The Processor commit response carries NO new field for compensation.** An
+earlier design proposed a `compensatingOperation` field in `OperationReply`
+(see `internal/processor/envelope.go`). This was rejected by the PO + architect
+because:
+1. It embeds routing logic inside the Processor response — coupling the write
+   path to compensation semantics it should not own.
+2. It implies the Processor knows the "inverse" of every operation, violating
+   the single-responsibility principle of the commit path.
+3. It requires new `OperationReply` fields, directly contradicting Guardrail 1
+   (no new envelope fields).
+
+The replacement design (Option A — canonical): the compensation contract lives
+in the DDL meta-vertex as a sixth self-description aspect. The compensating
+operation is constructed **client-side** by reading this aspect via
+`aiagent.Traverser.ReadCompensation`, then substituting field references from
+the original commit response. No new Processor code required.
+
+#### `.compensation` aspect shape (canonical)
+
+```json
+{
+  "class": "compensation",
+  "vertexKey": "vtx.meta.<NanoID>",
+  "localName": "compensation",
+  "isDeleted": false,
+  "data": {
+    "inverseOperationType": "TombstoneMetaVertex",
+    "payloadTemplate": {
+      "metaKey": "{{detail.metaKey}}"
+    },
+    "revisionTemplate": {
+      "metaKey": "{{revisions[detail.metaKey]}}"
+    }
+  }
+}
+```
+
+Template variable substitution is **client-side only** (Guardrail 2 — no new
+Processor read surface):
+- `{{detail.metaKey}}` → value of `OperationReply.Detail["metaKey"]` (the
+  created meta-vertex key, already returned by the MetaRoot DDL's `response`
+  field).
+- `{{revisions[detail.metaKey]}}` → value of
+  `OperationReply.Revisions[<metaKey>]` (the per-key NATS revision from the
+  atomic batch commit).
+
+#### Phase 1 operation pairing table
+
+| Forward operation | Compensating operation | Notes |
+|---|---|---|
+| `CreateMetaVertex` | `TombstoneMetaVertex` | Tombstones the newly-created meta-vertex. `expectedRevision` from commit response prevents racing compensating ops. |
+| `UpdateMetaVertex` | `UpdateMetaVertex` | Restores prior description using the revision from the forward op's commit response. The `.compensation` aspect stores the prior description concretely (read from state at script execution time). |
+| `TombstoneMetaVertex` | none (Phase 1 irreversible) | `.compensation` aspect encodes `inverseOperationType: "none"` with a note that prior payload must be known by the operator. Phase 1: operator responsibility. |
+| rbac-domain `CreateRole` | rbac-domain `TombstoneRole` | Phase 2 scope — rbac-domain DDL carries its own `.compensation` aspect. |
+| rbac-domain `AssignRole` / `GrantPermission` | rbac-domain `RevokeRole` / `RevokePermission` | Phase 2 scope. |
+
+#### Client-side revert flow
+
+Given a forward `CreateMetaVertex` op that committed successfully:
+
+1. Operator (or AI agent) has: `metaKey` (from `Detail["metaKey"]`) and
+   `revisions[metaKey]` (from `OperationReply.Revisions`).
+2. Operator calls `aiagent.Traverser.ReadCompensation(ctx, metaKey)` —
+   reads `<metaKey>.compensation` from Core KV.
+3. Operator substitutes template variables with commit-response values to
+   construct the `TombstoneMetaVertex` payload with `expectedRevision`.
+4. Operator submits via Processor (same write path, same lane).
+5. State reverts; Capability KV reprojection updates within NFR-P3 lag; no
+   platform restart required.
+
+#### Conflict handling
+
+The `TombstoneMetaVertex` and `UpdateMetaVertex` Starlark scripts accept an
+optional `expectedRevision` integer field. When present:
+- The Starlark pre-flight check validates it is an integer.
+- The revision condition is propagated to `mutation["expectedRevision"]`, which
+  the `CommitterImpl.Commit` at step 8 translates to `BatchOp.HasRevision = true`
+  and `BatchOp.Revision = *m.ExpectedRevision` (see `internal/processor/step8_commit.go`
+  lines 131–140). This gives atomic, substrate-level revision enforcement.
+- If the caller passes `force: true` in the payload, the revision assertion is
+  skipped (last-writer-wins).
+
+Revision mismatch surfaces as `RevisionConflict` at the NATS layer — the same
+error code returned for any other revision-conditioned update conflict.
 
 ---
 

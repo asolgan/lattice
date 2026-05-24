@@ -291,6 +291,15 @@ func parseMutations(d *starlarklib.Dict, rid string) ([]MutationOp, error) {
 				m.Document = starlarkDictToGoMap(dd)
 			}
 		}
+		// MF-1 (Story 5.3): extract optional expectedRevision integer so
+		// step8_commit.go can propagate the revision assertion to AtomicBatch.
+		if rev, found, _ := md.Get(starlarklib.String("expectedRevision")); found && rev != starlarklib.None {
+			if revInt, ok := rev.(starlarklib.Int); ok {
+				if v, ok := revInt.Uint64(); ok {
+					m.ExpectedRevision = &v
+				}
+			}
+		}
 		out = append(out, m)
 	}
 	return out, nil

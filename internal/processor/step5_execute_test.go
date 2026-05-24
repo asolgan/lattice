@@ -269,3 +269,32 @@ def something_else(state, op):
 		t.Fatalf("expected InvalidReturnShape for missing execute, got %v", err)
 	}
 }
+
+// TestParseMutations_ExpectedRevision verifies that a mutation dict containing
+// an integer "expectedRevision" field is correctly parsed into a MutationOp
+// with a non-nil ExpectedRevision (MF-1, Story 5.3).
+func TestParseMutations_ExpectedRevision(t *testing.T) {
+	exec := NewExecutor(NewStarlarkRunner(0, 0), testLogger())
+	script := `
+def execute(state, op):
+    m = {"op": "tombstone", "key": "vtx.meta.AAAAAAAAAAAAAAAAAAAA",
+         "document": {"isDeleted": True, "data": {}}}
+    m["expectedRevision"] = 42
+    return {"mutations": [m], "events": []}
+`
+	sc := buildContext(script)
+	res, err := exec.Execute(context.Background(), sc.Operation, HydratedState{Context: sc})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(res.Mutations) != 1 {
+		t.Fatalf("expected 1 mutation, got %d", len(res.Mutations))
+	}
+	m := res.Mutations[0]
+	if m.ExpectedRevision == nil {
+		t.Fatal("ExpectedRevision is nil — parseMutations failed to extract expectedRevision from Starlark dict")
+	}
+	if *m.ExpectedRevision != 42 {
+		t.Fatalf("ExpectedRevision: got %d want 42", *m.ExpectedRevision)
+	}
+}

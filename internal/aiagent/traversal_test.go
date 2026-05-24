@@ -292,3 +292,107 @@ func TestReadDDLAspects_MissingAspect(t *testing.T) {
 		t.Errorf("expected ErrAspectMissing, got: %v", err)
 	}
 }
+
+// --- ReadCompensation tests ---
+
+// TestTraverser_ReadCompensation_HappyPath seeds a .compensation aspect and
+// asserts ReadCompensation returns the expected map with inverseOperationType.
+func TestTraverser_ReadCompensation_HappyPath(t *testing.T) {
+	ctx, conn, tr := setupUnitEnv(t)
+
+	metaKey := "vtx.meta." + "CompensationTestID0001"
+	// Seed the .compensation aspect with canonical shape.
+	putKV(t, ctx, conn, unitCoreBucket, metaKey+".compensation", map[string]any{
+		"class": "compensation", "isDeleted": false,
+		"data": map[string]any{
+			"inverseOperationType": "TombstoneMetaVertex",
+			"payloadTemplate":      map[string]any{"metaKey": "{{detail.metaKey}}"},
+			"revisionTemplate":     map[string]any{"metaKey": "{{revisions[detail.metaKey]}}"},
+		},
+	})
+
+	got, err := tr.ReadCompensation(ctx, metaKey)
+	if err != nil {
+		t.Fatalf("ReadCompensation: %v", err)
+	}
+	if got == nil {
+		t.Fatal("ReadCompensation returned nil map")
+	}
+	if got["inverseOperationType"] != "TombstoneMetaVertex" {
+		t.Errorf("inverseOperationType: got %v want TombstoneMetaVertex", got["inverseOperationType"])
+	}
+	// Verify payloadTemplate is present and has expected key.
+	pt, ok := got["payloadTemplate"].(map[string]any)
+	if !ok || pt == nil {
+		t.Fatalf("payloadTemplate is not a map: %v", got["payloadTemplate"])
+	}
+	if pt["metaKey"] != "{{detail.metaKey}}" {
+		t.Errorf("payloadTemplate.metaKey: got %v want {{detail.metaKey}}", pt["metaKey"])
+	}
+}
+
+// TestTraverser_ReadCompensation_MissingAspect asserts ErrCompensationAspectMissing
+// is returned when the .compensation aspect key is absent.
+func TestTraverser_ReadCompensation_MissingAspect(t *testing.T) {
+	ctx, _, tr := setupUnitEnv(t)
+
+	_, err := tr.ReadCompensation(ctx, "vtx.meta."+"NoCompensationID00001")
+	if err == nil {
+		t.Fatal("expected error for missing compensation aspect, got nil")
+	}
+	if !errors.Is(err, aiagent.ErrCompensationAspectMissing) {
+		t.Errorf("expected ErrCompensationAspectMissing in error chain, got: %v", err)
+	}
+}
+
+// TestTraverser_ReadCompensation_TombstonedAspect asserts that a tombstoned
+// .compensation aspect returns ErrCompensationAspectMissing.
+func TestTraverser_ReadCompensation_TombstonedAspect(t *testing.T) {
+	ctx, conn, tr := setupUnitEnv(t)
+
+	metaKey := "vtx.meta." + "TombstonedCompID00001"
+	putKV(t, ctx, conn, unitCoreBucket, metaKey+".compensation", map[string]any{
+		"class": "compensation", "isDeleted": true,
+		"data": map[string]any{
+			"inverseOperationType": "TombstoneMetaVertex",
+		},
+	})
+
+	_, err := tr.ReadCompensation(ctx, metaKey)
+	if err == nil {
+		t.Fatal("expected ErrCompensationAspectMissing for tombstoned aspect, got nil")
+	}
+	if !errors.Is(err, aiagent.ErrCompensationAspectMissing) {
+		t.Errorf("expected ErrCompensationAspectMissing, got: %v", err)
+	}
+}
+
+// TestDiscoverDDL_SkipsTombstonedVertex asserts that DiscoverDDL skips a
+// meta-vertex whose vertex key is tombstoned (isDeleted: true) even when
+// its .canonicalName aspect is still intact.
+//
+// This test validates the Story 5.3 tombstone guard added to DiscoverDDL:
+// TombstoneMetaVertex only tombstones the vertex key, not the aspects.
+func TestDiscoverDDL_SkipsTombstonedVertex(t *testing.T) {
+	ctx, conn, tr := setupUnitEnv(t)
+
+	metaKey := "vtx.meta." + "TombstonedVertexID00001"
+	// Meta-vertex itself is tombstoned.
+	putKV(t, ctx, conn, unitCoreBucket, metaKey, map[string]any{
+		"class": "meta.ddl.vertexType", "isDeleted": true, "data": map[string]any{},
+	})
+	// But its .canonicalName aspect is still intact (not tombstoned).
+	putKV(t, ctx, conn, unitCoreBucket, metaKey+".canonicalName", map[string]any{
+		"class": "canonicalName", "isDeleted": false,
+		"data": map[string]any{"value": "TombstonedVertexOp"},
+	})
+
+	// DiscoverDDL should NOT return this vertex — it is tombstoned.
+	_, err := tr.DiscoverDDL(ctx, "TombstonedVertexOp")
+	if err == nil {
+		t.Fatal("expected ErrDDLNotFound for tombstoned vertex, got nil")
+	}
+	if !errors.Is(err, aiagent.ErrDDLNotFound) {
+		t.Errorf("expected ErrDDLNotFound, got: %v", err)
+	}
+}

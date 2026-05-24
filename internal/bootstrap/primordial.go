@@ -182,7 +182,7 @@ func (s *Seeder) provisionStreams(ctx context.Context) error {
 //     no .state aspect (state is identity-domain-package territory).
 //   - 1 admin→operator holdsRole link.
 //
-// Total ≈ 33 Core KV entries. See `scripts/verify-kernel.go`.
+// Total ≈ 34 Core KV entries. See `scripts/verify-kernel.go`.
 //
 // Roles consumer/frontOfHouse/backOfHouse and the identity DDL + its
 // permissions and grants move to packages (rbac-domain, identity-domain,
@@ -396,6 +396,22 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 			},
 		}})
 	if err := add(rootExamplesKey, rex, rexErr); err != nil {
+		return nil, err
+	}
+
+	// 4a. Story 5.3: seed the .compensation aspect on the primordial kernel
+	// root DDL meta-vertex (the meta-meta-DDL). This describes how to roll
+	// back a CreateMetaVertex call: tombstone the created meta-vertex.
+	// The Processor reads NO compensation aspects (Guardrail 2); this entry
+	// is for client-side traversal only (aiagent.Traverser.ReadCompensation).
+	rootCompKey := MetaRootKey + "." + CompensationAspectClass
+	rootComp, rootCompErr := MakeAspectEnvelope(rootCompKey, MetaRootKey, CompensationAspectClass, CompensationAspectClass,
+		map[string]any{
+			"inverseOperationType": "TombstoneMetaVertex",
+			"payloadTemplate":      map[string]any{"metaKey": "{{detail.metaKey}}"},
+			"revisionTemplate":     map[string]any{"metaKey": "{{revisions[detail.metaKey]}}"},
+		})
+	if err := add(rootCompKey, rootComp, rootCompErr); err != nil {
 		return nil, err
 	}
 

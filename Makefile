@@ -15,7 +15,7 @@ BOOTSTRAP_JSON ?= ./lattice.bootstrap.json
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene build vet test test-bypass test-capability-adversarial processor run-processor clean logs ps
+.PHONY: up down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene build vet test test-bypass test-capability-adversarial test-rollback processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 up:
@@ -134,6 +134,14 @@ test-capability-adversarial:
 	@$(MAKE) verify-kernel
 	go test ./internal/bypass/... -v -run TestCapAdv -count=1
 	go test ./internal/bypass/... -v -run TestGate3_Report -count=1
+
+## test-rollback — Run the Phase 1 Gate 4 compensating-op rollback test suite.
+## Self-contained: uses embedded NATS, no Docker stack required.
+## Exits 0 when the full create → discover → compensate → verify cycle passes
+## for both DDL vertex type and lens branches.
+.PHONY: test-rollback
+test-rollback:
+	go test ./internal/aiagent/... -run TestGate4_CompensatingOpRollback -v -p 1 -count=1
 
 ## vet — Run go vet on all packages except vendored ANTLR-generated parsers
 ## (which contain expected unreachable-code patterns from the generator).

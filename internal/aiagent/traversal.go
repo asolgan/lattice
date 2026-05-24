@@ -157,11 +157,64 @@ func (t *Traverser) DiscoverDDL(ctx context.Context, operationType string) (stri
 			continue
 		}
 		if aspDoc.Data.Value == operationType {
+			// Story 5.3: guard against tombstoned meta-vertices.
+			// TombstoneMetaVertex only tombstones the vertex key itself, not
+			// the .canonicalName aspect — so the aspect may still be readable
+			// even after the vertex is tombstoned. Read the 3-segment vertex
+			// key and skip if isDeleted: true.
+			vtxEntry, vtxErr := t.conn.KVGet(ctx, t.coreBucket, key)
+			if vtxErr != nil {
+				// Can't confirm liveness — skip conservatively.
+				continue
+			}
+			var vtxDoc struct {
+				IsDeleted bool `json:"isDeleted"`
+			}
+			if jsonErr := json.Unmarshal(vtxEntry.Value, &vtxDoc); jsonErr != nil || vtxDoc.IsDeleted {
+				continue
+			}
 			return key, nil
 		}
 	}
 
 	return "", fmt.Errorf("%w: %s", ErrDDLNotFound, operationType)
+}
+
+// ErrCompensationAspectMissing is returned by ReadCompensation when the
+// .compensation aspect is absent from the DDL meta-vertex.
+var ErrCompensationAspectMissing = errors.New("aiagent: .compensation aspect missing")
+
+// ReadCompensation reads the .compensation aspect from a DDL meta-vertex.
+// Returns the aspect data map as-is; caller is responsible for template
+// substitution from their commit response values.
+//
+// The compensation contract lives in the DDL meta-vertex as a sixth
+// self-description aspect (Story 5.3). The Processor never reads or
+// interprets .compensation aspects (Guardrail 2 — no new Processor read
+// surface); this method is the sole client-side read path.
+func (t *Traverser) ReadCompensation(ctx context.Context, metaKey string) (map[string]any, error) {
+	key := metaKey + ".compensation"
+	entry, err := t.conn.KVGet(ctx, t.coreBucket, key)
+	if err != nil {
+		return nil, fmt.Errorf("%w: at %s: %w", ErrCompensationAspectMissing, metaKey, err)
+	}
+
+	// Aspect envelope shape (Story 5.1 convention):
+	//   {"class": "compensation", "isDeleted": false, "data": {...}}
+	var aspDoc struct {
+		IsDeleted bool           `json:"isDeleted"`
+		Data      map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(entry.Value, &aspDoc); err != nil {
+		return nil, fmt.Errorf("aiagent: parse .compensation aspect at %s: %w", metaKey, err)
+	}
+	if aspDoc.IsDeleted {
+		return nil, fmt.Errorf("%w: tombstoned at %s", ErrCompensationAspectMissing, metaKey)
+	}
+	if aspDoc.Data == nil {
+		return nil, fmt.Errorf("aiagent: .compensation aspect at %s has nil data", metaKey)
+	}
+	return aspDoc.Data, nil
 }
 
 // ReadDDLAspects reads the five self-description aspects seeded by Story 5.1
