@@ -5,7 +5,7 @@ package bypass
 // Enforcement: JetStream consumer FilterSubjects in step1_consume.go.
 //
 // The Processor's durable consumer is configured with:
-//   FilterSubjects: []string{"ops.default.>", "ops.urgent.>", "ops.system.>"}
+//   FilterSubjects: []string{"ops.default.>", "ops.urgent.>", "ops.system.>", "ops.meta.>"}
 //
 // A message published to a subject outside those filters (e.g.,
 // "bypass.attempt" or "core-operations" directly) will NOT be delivered
@@ -123,7 +123,7 @@ func TestBypass2_ValidLanePublish_IsConsumed(t *testing.T) {
 
 // TestBypass2_FilterSubjects_CoverageCheck verifies that the production
 // consumer's FilterSubjects exactly match the values from step1_consume.go's
-// applyDefaults(): ["ops.default.>", "ops.urgent.>", "ops.system.>"].
+// applyDefaults(): ["ops.default.>", "ops.urgent.>", "ops.system.>", "ops.meta.>"].
 // This test fails if the defaults change without updating the bypass test.
 func TestBypass2_FilterSubjects_CoverageCheck(t *testing.T) {
 	ctx, conn := setupBypassHarness(t)
@@ -150,6 +150,7 @@ func TestBypass2_FilterSubjects_CoverageCheck(t *testing.T) {
 		"ops.default.>": false,
 		"ops.urgent.>":  false,
 		"ops.system.>":  false,
+		"ops.meta.>":    false,
 	}
 	for _, f := range filters {
 		if _, ok := expected[f]; ok {
