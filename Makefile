@@ -32,6 +32,10 @@ up:
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/bootstrap
 	@echo "==> Starting refractor in background..."
 	NATS_URL=$(NATS_URL) REFRACTOR_PG_DSN="postgres://lattice:lattice_dev@localhost:5432/lattice?sslmode=disable" ./bin/refractor >refractor.log 2>&1 </dev/null &
+	@echo "==> Building processor binary..."
+	go build -o bin/processor ./cmd/processor
+	@echo "==> Starting processor in background..."
+	NATS_URL=$(NATS_URL) PROCESSOR_FILTER=ops.default,ops.urgent,ops.system,ops.meta ./bin/processor >processor.log 2>&1 </dev/null &
 	@echo "==> Lattice ready."
 
 ## down — Tear down all containers and remove the bootstrap JSON.
@@ -43,6 +47,8 @@ down:
 	rm -f $(BOOTSTRAP_JSON)
 	@echo "==> Killing any background refractor processes..."
 	-pkill -f "bin/refractor" 2>/dev/null || true
+	@echo "==> Killing any background processor processes..."
+	-pkill -f "bin/processor" 2>/dev/null || true
 	@echo "==> Down complete."
 
 ## verify-kernel — Assert post-Story-4.7 kernel keys exist with correct envelopes.

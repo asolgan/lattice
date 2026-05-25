@@ -13,7 +13,7 @@
 //	PROCESSOR_INSTANCE                instance id (default: auto-generated proc-<NanoID>)
 //	PROCESSOR_DURABLE                 JetStream durable consumer name (default: processor-main)
 //	PROCESSOR_STREAM                  JetStream stream name (default: core-operations)
-//	PROCESSOR_FILTER                  comma-separated subject filters (default: ops.default,ops.urgent,ops.system)
+//	PROCESSOR_FILTER                  comma-separated subject filters (default: ops.default,ops.urgent,ops.system,ops.meta)
 //	HEALTH_INTERVAL_SEC               heartbeat interval in seconds (default: 10, minimum: 10 per NFR-O1)
 //
 // Logs to stderr in slog text format. Exits non-zero on any startup
@@ -69,7 +69,7 @@ func run(logger *slog.Logger) error {
 
 	durable := envOrDefault("PROCESSOR_DURABLE", "processor-main")
 	stream := envOrDefault("PROCESSOR_STREAM", "core-operations")
-	filterCSV := envOrDefault("PROCESSOR_FILTER", "ops.default,ops.urgent,ops.system")
+	filterCSV := envOrDefault("PROCESSOR_FILTER", "ops.default,ops.urgent,ops.system,ops.meta")
 	filter := splitCSV(filterCSV)
 	hbSec := envIntOrDefault("HEALTH_INTERVAL_SEC", 10)
 	if hbSec < 10 {

@@ -17,10 +17,11 @@ type ConsumerConfig struct {
 	// Durable name. Defaults to `processor-main`.
 	Durable string
 	// FilterSubjects restricts which subjects this consumer receives.
-	// Bootstrap publishes ops on `ops.*` and `ops.meta.>`. Story 1.5's
-	// default consumer listens on the `default` lane only — meta-lane
-	// consumption requires MaxAckPending=1 and is wired by a future
-	// story when DDL-mutation operations exist.
+	// Bootstrap provisions the stream as `ops.>` covering all lanes.
+	// Defaults to ops.default.>, ops.urgent.>, ops.system.>, and
+	// ops.meta.> so DDL-mutation operations (CreateMetaVertex,
+	// TombstoneMetaVertex, UpdateMetaVertex) are delivered alongside
+	// standard lane messages.
 	FilterSubjects []string
 	// MaxAckPending caps in-flight messages. 0 → JetStream default.
 	MaxAckPending int
@@ -38,13 +39,14 @@ func (cc *ConsumerConfig) applyDefaults() {
 		cc.Durable = "processor-main"
 	}
 	if len(cc.FilterSubjects) == 0 {
-		// Story 1.7: align consumer filter with Contract #2 §2.3
-		// per-lane multi-segment subjects (ops.<lane>.>). The stream
-		// is already provisioned as `ops.>` so both single- and
-		// multi-segment publishes land in it; the filter is broadened
-		// here so a publisher using `ops.default.<requestId>` for
-		// debug-tooling clarity still routes to the Processor.
-		cc.FilterSubjects = []string{"ops.default.>", "ops.urgent.>", "ops.system.>"}
+		// Align consumer filter with Contract #2 §2.3 per-lane
+		// multi-segment subjects (ops.<lane>.>). The stream is
+		// provisioned as `ops.>` so both single- and multi-segment
+		// publishes land in it. ops.meta.> carries DDL-mutation
+		// operations (CreateMetaVertex, TombstoneMetaVertex,
+		// UpdateMetaVertex) and must be included alongside the
+		// standard lanes so the Processor receives meta-lane messages.
+		cc.FilterSubjects = []string{"ops.default.>", "ops.urgent.>", "ops.system.>", "ops.meta.>"}
 	}
 	if cc.AckWait == 0 {
 		cc.AckWait = 30 * time.Second
