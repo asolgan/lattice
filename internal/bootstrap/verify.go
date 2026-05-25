@@ -8,14 +8,12 @@ import (
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
-// VerifyKernel checks that all post-Story-5.3 kernel Core KV keys and
-// infrastructure elements exist with correct envelopes. It returns a
-// (possibly empty) slice of failure descriptions; an empty slice means
-// all assertions passed.
+// VerifyKernel checks that all kernel Core KV keys and infrastructure
+// elements exist with correct envelopes. Returns a (possibly empty)
+// slice of failure descriptions; an empty slice means all assertions passed.
 //
 // This is the callable equivalent of scripts/verify-kernel.go so that
-// cmd/lattice/bootstrap and any future tooling can reuse the same
-// assertions without drift.
+// any tooling can reuse the same assertions without drift.
 func VerifyKernel(ctx context.Context, conn *substrate.Conn) []string {
 	js := conn.JetStream()
 	var failures []string
@@ -62,16 +60,47 @@ func VerifyKernel(ctx context.Context, conn *substrate.Conn) []string {
 		}
 	}
 
-	// 2. Meta-meta DDL aspects.
-	for _, aspect := range []string{
-		"canonicalName", "permittedCommands", "description", "script",
-		"inputSchema", "outputSchema", "fieldDescription", "examples",
-		"compensation",
-	} {
-		k := MetaRootKey + "." + aspect
-		if _, err := coreKV.Get(ctx, k); err != nil {
-			failures = append(failures, fmt.Sprintf("MISSING meta-DDL aspect: %s (%v)", k, err))
+	// checkAspect validates an aspect envelope: JSON valid, key echo,
+	// class matches expected, isDeleted=false, vertexKey matches parent.
+	checkAspect := func(k, parentKey, expectedClass string) {
+		entry, err := coreKV.Get(ctx, k)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("MISSING aspect: %s (%v)", k, err))
+			return
 		}
+		var env map[string]any
+		if err := json.Unmarshal(entry.Value(), &env); err != nil {
+			failures = append(failures, fmt.Sprintf("INVALID JSON for aspect %s: %v", k, err))
+			return
+		}
+		if echoKey, ok := env["key"].(string); !ok || echoKey != k {
+			failures = append(failures, fmt.Sprintf("KEY MISMATCH in aspect %s: envelope.key=%q", k, echoKey))
+		}
+		if cls, ok := env["class"].(string); !ok || cls != expectedClass {
+			failures = append(failures, fmt.Sprintf("CLASS MISMATCH for aspect %s: got %q want %q", k, env["class"], expectedClass))
+		}
+		if isDeleted, ok := env["isDeleted"].(bool); !ok || isDeleted {
+			failures = append(failures, fmt.Sprintf("INVALID isDeleted for aspect %s", k))
+		}
+		if vk, ok := env["vertexKey"].(string); !ok || vk != parentKey {
+			failures = append(failures, fmt.Sprintf("WRONG vertexKey for aspect %s: got %q want %q", k, env["vertexKey"], parentKey))
+		}
+	}
+
+	// 2. Meta-meta DDL aspects.
+	metaDDLAspects := []struct{ name, class string }{
+		{"canonicalName", "canonicalName"},
+		{"permittedCommands", "permittedCommands"},
+		{"description", "description"},
+		{"script", "script"},
+		{"inputSchema", "inputSchema"},
+		{"outputSchema", "outputSchema"},
+		{"fieldDescription", "fieldDescription"},
+		{"examples", "examples"},
+		{"compensation", "compensation"},
+	}
+	for _, a := range metaDDLAspects {
+		checkAspect(MetaRootKey+"."+a.name, MetaRootKey, a.class)
 	}
 
 	// 2a. Aspect-type meta-vertex aspects.
@@ -82,36 +111,41 @@ func VerifyKernel(ctx context.Context, conn *substrate.Conn) []string {
 		AspectTypeFieldDescriptionKey,
 		AspectTypeExamplesKey,
 	}
+	aspectTypeAspects := []struct{ name, class string }{
+		{"canonicalName", "canonicalName"},
+		{"description", "description"},
+		{"inputSchema", "inputSchema"},
+		{"outputSchema", "outputSchema"},
+		{"fieldDescription", "fieldDescription"},
+		{"examples", "examples"},
+	}
 	for _, vtxKey := range aspectTypeKeys {
-		for _, asp := range []string{"canonicalName", "description", "inputSchema", "outputSchema", "fieldDescription", "examples"} {
-			k := vtxKey + "." + asp
-			if _, err := coreKV.Get(ctx, k); err != nil {
-				failures = append(failures, fmt.Sprintf("MISSING aspect-type aspect: %s (%v)", k, err))
-			}
+		for _, a := range aspectTypeAspects {
+			checkAspect(vtxKey+"."+a.name, vtxKey, a.class)
 		}
 	}
 
 	// 3. Operator role aspects.
-	for _, aspect := range []string{"canonicalName", "description"} {
-		k := RoleOperatorKey + "." + aspect
-		if _, err := coreKV.Get(ctx, k); err != nil {
-			failures = append(failures, fmt.Sprintf("MISSING operator role aspect: %s (%v)", k, err))
-		}
+	for _, a := range []struct{ name, class string }{
+		{"canonicalName", "canonicalName"},
+		{"description", "description"},
+	} {
+		checkAspect(RoleOperatorKey+"."+a.name, RoleOperatorKey, a.class)
 	}
 
 	// 4. Capability Lens aspects.
-	lensAspects := []string{"canonicalName", "targetBucket", "cypherRule", "outputSchema", "spec"}
-	for _, aspect := range lensAspects {
-		k := CapabilityLensKey + "." + aspect
-		if _, err := coreKV.Get(ctx, k); err != nil {
-			failures = append(failures, fmt.Sprintf("MISSING Capability Lens aspect: %s (%v)", k, err))
-		}
+	lensAspects := []struct{ name, class string }{
+		{"canonicalName", "canonicalName"},
+		{"targetBucket", "targetBucket"},
+		{"cypherRule", "cypherRule"},
+		{"outputSchema", "outputSchema"},
+		{"spec", "lensSpec"},
 	}
-	for _, aspect := range lensAspects {
-		k := CapabilityRoleIndexLensKey + "." + aspect
-		if _, err := coreKV.Get(ctx, k); err != nil {
-			failures = append(failures, fmt.Sprintf("MISSING CapabilityRoleIndex Lens aspect: %s (%v)", k, err))
-		}
+	for _, a := range lensAspects {
+		checkAspect(CapabilityLensKey+"."+a.name, CapabilityLensKey, a.class)
+	}
+	for _, a := range lensAspects {
+		checkAspect(CapabilityRoleIndexLensKey+"."+a.name, CapabilityRoleIndexLensKey, a.class)
 	}
 
 	// 5. Health KV readiness signal.

@@ -1,13 +1,18 @@
-// cmd/bootstrap — Primordial bootstrap binary for Story 1.3.
+// cmd/bootstrap — Lattice primordial bootstrap binary.
 //
 // Invoked by `make up` after NATS and Postgres containers are healthy.
 // Provisions KV buckets + streams, writes all primordial Core KV entries,
-// starts the refractor-stub (via subprocess or waits for it to write the
-// readiness signal), then exits 0.
+// then exits 0.
 //
-// Idempotent: if lattice.bootstrap.json already exists, bucket/stream
-// provisioning still runs (to recover from partial failures) but primordial
-// key seeding is skipped per Contract #7 §7.4.
+// Idempotent: if lattice.bootstrap.json already exists with
+// status="committed", bucket/stream provisioning still runs (to recover
+// from partial failures) but primordial key seeding is skipped per
+// Contract #7 §7.4.
+//
+// Crash recovery: if lattice.bootstrap.json exists with
+// status="in-progress", the same NanoIDs are reused and SeedPrimordial
+// is re-run. SeedPrimordial's own idempotency guard skips keys that
+// already exist in Core KV, so partial-seeding crashes are safe to retry.
 package main
 
 import (
@@ -35,18 +40,23 @@ func main() {
 
 	logger.Info("lattice bootstrap starting", "natsURL", natsURL, "bootstrapJSON", bootstrapJSONPath)
 
-	// Load existing primordial IDs from lattice.bootstrap.json if it exists
-	// (idempotent re-run after a successful prior bootstrap), otherwise
-	// generate fresh per-deployment unique NanoIDs in memory. The JSON is
-	// persisted ONLY AFTER SeedPrimordial succeeds, so an interrupted
-	// bootstrap doesn't leave a stale file pointing to nonexistent keys.
+	// LoadOrGenerate implements a two-phase commit protocol:
+	//   - No file: generates fresh NanoIDs and writes lattice.bootstrap.json
+	//     with status="in-progress" before calling SeedPrimordial. Returns
+	//     freshlyGenerated=true.
+	//   - File with status="in-progress": reuses the existing IDs (crash
+	//     recovery). Returns freshlyGenerated=true so SeedPrimordial is
+	//     re-run; its idempotency guard skips already-committed keys.
+	//   - File with status="committed": loads IDs, skips seeding.
+	// This ensures the NanoID set is stable across restarts regardless of
+	// where a crash occurred.
 	freshlyGenerated, err := bootstrap.LoadOrGenerate(bootstrapJSONPath)
 	if err != nil {
 		logger.Error("failed to load or generate primordial IDs", "error", err)
 		os.Exit(1)
 	}
 	if freshlyGenerated {
-		logger.Info("generated fresh primordial IDs for this deployment (in-memory)",
+		logger.Info("seeding primordial IDs (fresh or crash-recovery)",
 			"bootstrapIdentity", bootstrap.BootstrapIdentityKey)
 	} else {
 		logger.Info("loaded existing primordial IDs from lattice.bootstrap.json",
@@ -84,26 +94,24 @@ func main() {
 			logger.Error("primordial seeding failed", "error", err)
 			os.Exit(1)
 		}
-		// Persist JSON only AFTER successful seeding. Order matters:
-		// presence of lattice.bootstrap.json must imply Core KV is seeded.
-		if err := bootstrap.Persist(bootstrapJSONPath); err != nil {
+		// Rewrite lattice.bootstrap.json with status="committed" now that
+		// seeding has succeeded. The in-progress file written by
+		// LoadOrGenerate already holds the stable NanoIDs; this rewrite
+		// marks the two-phase commit complete.
+		if err := bootstrap.PersistCommitted(bootstrapJSONPath); err != nil {
 			logger.Error("failed to persist lattice.bootstrap.json", "error", err)
 			os.Exit(1)
 		}
-		logger.Info("lattice.bootstrap.json persisted", "path", bootstrapJSONPath)
+		logger.Info("lattice.bootstrap.json committed", "path", bootstrapJSONPath)
 	} else {
 		logger.Info("primordial seeding skipped — already done on prior run")
 	}
 
-	// Story 2.1b housekeeping: refractor-stub was deleted in Story 2.1
-	// (MORPH-DEVIATIONS Deviation 9) — it was the historical writer of
-	// `health.bootstrap.complete`. The real Refractor binary is started
-	// AFTER cmd/bootstrap exits (Makefile order), so it cannot write the
-	// marker that cmd/bootstrap waits on. Resolution: cmd/bootstrap now
-	// writes the marker itself once primordial seeding (or skip-because-
-	// already-seeded) is complete; the subsequent WaitForBootstrapComplete
-	// becomes a sanity check that catches its own write — preserving the
-	// gate's semantics for downstream poll-based readiness consumers.
+	// cmd/bootstrap writes this marker itself because it is the only process
+	// guaranteed to run after primordial seeding completes. The subsequent
+	// WaitForBootstrapComplete becomes a sanity check that catches its own
+	// write — preserving the gate's semantics for downstream poll-based
+	// readiness consumers.
 	if err := bootstrap.MarkBootstrapComplete(ctx, nc, logger); err != nil {
 		logger.Error("write readiness marker failed", "error", err)
 		os.Exit(1)

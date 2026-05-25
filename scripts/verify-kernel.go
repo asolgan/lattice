@@ -3,8 +3,8 @@
 // verify-kernel.go — assertion tool for `make verify-kernel`.
 //
 // Connects to a running Lattice NATS instance and checks that all
-// post-Story-5.3 KERNEL Core KV keys exist with correct envelopes per
-// Contract #1 §1.3. The kernel set after Story 5.3 (~69 entries):
+// kernel Core KV keys exist with correct envelopes per Contract #1 §1.3.
+// The kernel set (~69 entries):
 //
 //	 1 bootstrap op tracker
 //	 1 admin identity vertex
@@ -115,21 +115,58 @@ func main() {
 		fmt.Printf("  OK  %s\n", key)
 	}
 
-	// 2. Meta-meta DDL aspects (9 aspects — 4 structural + 4 self-description + 1 compensation).
-	for _, aspect := range []string{
-		"canonicalName", "permittedCommands", "description", "script",
-		"inputSchema", "outputSchema", "fieldDescription", "examples",
-		"compensation", // Story 5.3: sixth self-description aspect
-	} {
-		k := bootstrap.MetaRootKey + "." + aspect
-		if _, err := coreKV.Get(ctx, k); err != nil {
-			failures = append(failures, fmt.Sprintf("MISSING meta-DDL aspect: %s (%v)", k, err))
+	// checkAspect validates an aspect envelope: JSON valid, key echo,
+	// class matches expected, isDeleted=false, vertexKey matches parent.
+	checkAspect := func(k, parentKey, expectedClass string) {
+		entry, err := coreKV.Get(ctx, k)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("MISSING aspect: %s (%v)", k, err))
+			return
+		}
+		var env map[string]any
+		if err := json.Unmarshal(entry.Value(), &env); err != nil {
+			failures = append(failures, fmt.Sprintf("INVALID JSON for aspect %s: %v", k, err))
+			return
+		}
+		var aspFailures []string
+		if echoKey, ok := env["key"].(string); !ok || echoKey != k {
+			aspFailures = append(aspFailures, fmt.Sprintf("key echo: got %q", env["key"]))
+		}
+		if cls, ok := env["class"].(string); !ok || cls != expectedClass {
+			aspFailures = append(aspFailures, fmt.Sprintf("class: got %q want %q", env["class"], expectedClass))
+		}
+		if isDeleted, ok := env["isDeleted"].(bool); !ok || isDeleted {
+			aspFailures = append(aspFailures, "isDeleted is true or missing")
+		}
+		if vk, ok := env["vertexKey"].(string); !ok || vk != parentKey {
+			aspFailures = append(aspFailures, fmt.Sprintf("vertexKey: got %q want %q", env["vertexKey"], parentKey))
+		}
+		if len(aspFailures) > 0 {
+			for _, f := range aspFailures {
+				failures = append(failures, fmt.Sprintf("ASPECT INVALID %s: %s", k, f))
+			}
 		} else {
 			fmt.Printf("  OK  %s\n", k)
 		}
 	}
 
-	// 2b. Story 5.3: verify .compensation aspect data.inverseOperationType.
+	// 2. Meta-meta DDL aspects (9 aspects — 4 structural + 4 self-description + 1 compensation).
+	metaDDLAspects := []struct{ name, class string }{
+		{"canonicalName", "canonicalName"},
+		{"permittedCommands", "permittedCommands"},
+		{"description", "description"},
+		{"script", "script"},
+		{"inputSchema", "inputSchema"},
+		{"outputSchema", "outputSchema"},
+		{"fieldDescription", "fieldDescription"},
+		{"examples", "examples"},
+		{"compensation", "compensation"},
+	}
+	for _, a := range metaDDLAspects {
+		checkAspect(bootstrap.MetaRootKey+"."+a.name, bootstrap.MetaRootKey, a.class)
+	}
+
+	// 2b. Verify .compensation aspect data.inverseOperationType.
 	{
 		compKey := bootstrap.MetaRootKey + ".compensation"
 		entry, err := coreKV.Get(ctx, compKey)
@@ -153,52 +190,49 @@ func main() {
 		}
 	}
 
-	// 2a. Story 5.1: five aspect-type meta-vertices, each with 6 aspects.
-	aspectTypeKeys := []string{
-		bootstrap.AspectTypeDescriptionKey,
-		bootstrap.AspectTypeInputSchemaKey,
-		bootstrap.AspectTypeOutputSchemaKey,
-		bootstrap.AspectTypeFieldDescriptionKey,
-		bootstrap.AspectTypeExamplesKey,
+	// 2a. Five aspect-type meta-vertices, each with 6 aspects.
+	aspectTypeKeys := []struct{ key string }{
+		{bootstrap.AspectTypeDescriptionKey},
+		{bootstrap.AspectTypeInputSchemaKey},
+		{bootstrap.AspectTypeOutputSchemaKey},
+		{bootstrap.AspectTypeFieldDescriptionKey},
+		{bootstrap.AspectTypeExamplesKey},
 	}
-	for _, vtxKey := range aspectTypeKeys {
-		for _, asp := range []string{"canonicalName", "description", "inputSchema", "outputSchema", "fieldDescription", "examples"} {
-			k := vtxKey + "." + asp
-			if _, err := coreKV.Get(ctx, k); err != nil {
-				failures = append(failures, fmt.Sprintf("MISSING aspect-type meta-vertex aspect: %s (%v)", k, err))
-			} else {
-				fmt.Printf("  OK  %s\n", k)
-			}
+	aspectTypeAspects := []struct{ name, class string }{
+		{"canonicalName", "canonicalName"},
+		{"description", "description"},
+		{"inputSchema", "inputSchema"},
+		{"outputSchema", "outputSchema"},
+		{"fieldDescription", "fieldDescription"},
+		{"examples", "examples"},
+	}
+	for _, vtx := range aspectTypeKeys {
+		for _, a := range aspectTypeAspects {
+			checkAspect(vtx.key+"."+a.name, vtx.key, a.class)
 		}
 	}
 
 	// 3. Operator role aspects (canonicalName + description).
-	for _, aspect := range []string{"canonicalName", "description"} {
-		k := bootstrap.RoleOperatorKey + "." + aspect
-		if _, err := coreKV.Get(ctx, k); err != nil {
-			failures = append(failures, fmt.Sprintf("MISSING operator role aspect: %s (%v)", k, err))
-		} else {
-			fmt.Printf("  OK  %s\n", k)
-		}
+	for _, a := range []struct{ name, class string }{
+		{"canonicalName", "canonicalName"},
+		{"description", "description"},
+	} {
+		checkAspect(bootstrap.RoleOperatorKey+"."+a.name, bootstrap.RoleOperatorKey, a.class)
 	}
 
 	// 4. Capability Lens + Capability-Role-Index Lens aspects.
-	lensAspects := []string{"canonicalName", "targetBucket", "cypherRule", "outputSchema", "spec"}
-	for _, aspect := range lensAspects {
-		k := bootstrap.CapabilityLensKey + "." + aspect
-		if _, err := coreKV.Get(ctx, k); err != nil {
-			failures = append(failures, fmt.Sprintf("MISSING Capability Lens aspect: %s (%v)", k, err))
-		} else {
-			fmt.Printf("  OK  %s\n", k)
-		}
+	lensAspects := []struct{ name, class string }{
+		{"canonicalName", "canonicalName"},
+		{"targetBucket", "targetBucket"},
+		{"cypherRule", "cypherRule"},
+		{"outputSchema", "outputSchema"},
+		{"spec", "lensSpec"},
 	}
-	for _, aspect := range lensAspects {
-		k := bootstrap.CapabilityRoleIndexLensKey + "." + aspect
-		if _, err := coreKV.Get(ctx, k); err != nil {
-			failures = append(failures, fmt.Sprintf("MISSING CapabilityRoleIndex Lens aspect: %s (%v)", k, err))
-		} else {
-			fmt.Printf("  OK  %s\n", k)
-		}
+	for _, a := range lensAspects {
+		checkAspect(bootstrap.CapabilityLensKey+"."+a.name, bootstrap.CapabilityLensKey, a.class)
+	}
+	for _, a := range lensAspects {
+		checkAspect(bootstrap.CapabilityRoleIndexLensKey+"."+a.name, bootstrap.CapabilityRoleIndexLensKey, a.class)
 	}
 
 	// 5. Health KV readiness signal.

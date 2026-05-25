@@ -1,6 +1,6 @@
-// Package bootstrap implements the primordial seeding sequence for Story 1.3.
+// Package bootstrap implements the Lattice primordial seeding sequence.
 // All primordial writes go directly to Core KV — the sole sanctioned non-Processor
-// write path (Contract #7 §7.1, handoff brief decision #1).
+// write path (Contract #7 §7.1).
 package bootstrap
 
 import (
@@ -25,21 +25,17 @@ const (
 	CapabilityKVBucket     = "capability-kv"
 	WeaverStateBucket      = "weaver-state"
 	WeaverClaimsBucket     = "weaver-claims"
-	RefractorAdjacencyKV   = "refractor-adjacency" // Story 2.1: Refractor's internal adjacency store (private, not a Lens target)
+	RefractorAdjacencyKV   = "refractor-adjacency" // Refractor's internal adjacency store (private, not a Lens target)
 
 	// JetStream stream names.
 	CoreOpsStreamName    = "core-operations"
-	OpsMetaStreamName    = "ops-meta"
 	CoreEventsStreamName = "core-events"
 
 	// JetStream subjects. Per Contract #2 §2.3, lane subjects are
 	// `ops.<lane>.>` (multi-segment). The `ops.>` wildcard covers all
-	// lanes including future ones. Story 1.5's CONTRACT-AMENDMENT-REQUEST
-	// flagged the old single-segment `ops.*` pattern as inconsistent with
-	// Contract #2; this resolves it.
+	// lanes including future ones — including `ops.meta.>` (the meta lane).
 	OpsWildcardSubject    = "ops.>"
-	OpsMetaSubject        = "ops.meta.>" // retained for explicit meta-stream documentation
-	EventsWildcardSubject = "events.>"   // Story 1.8: Processor step-9 event fan-out
+	EventsWildcardSubject = "events.>"
 )
 
 // Seeder holds the NATS JetStream context and performs all primordial writes.
@@ -82,9 +78,8 @@ func (s *Seeder) ProvisionBuckets(ctx context.Context) error {
 			// History: 1 (default)
 		}
 		if b.ttl {
-			// LimitMarkerTTL → AllowMsgTTL: true on the underlying stream.
-			// Required for per-key TTL support per Contract #4 §4.3 and
-			// Story 1.1 spike finding (nats-batch README).
+			// LimitMarkerTTL enables per-key TTL support (Contract #4 §4.3).
+			// Enables AllowMsgTTL on the underlying stream.
 			// NATS requires LimitMarkerTTL >= 1 second.
 			cfg.LimitMarkerTTL = 1 * time.Second
 		}
@@ -96,8 +91,7 @@ func (s *Seeder) ProvisionBuckets(ctx context.Context) error {
 		s.logger.Info("KV bucket ready", "bucket", kv.Bucket())
 
 		// For Core KV: also set AllowAtomicPublish: true on the underlying stream.
-		// Per Story 1.1 spike: CreateKeyValue does NOT set this automatically.
-		// We must UpdateStream after KV creation (handoff brief decision #5).
+		// CreateKeyValue does NOT set this automatically; UpdateStream is required.
 		if b.name == CoreKVBucket {
 			if err := s.enableAtomicPublish(ctx, CoreKVBucket); err != nil {
 				return fmt.Errorf("enable AtomicPublish on %q: %w", CoreKVBucket, err)
@@ -105,7 +99,7 @@ func (s *Seeder) ProvisionBuckets(ctx context.Context) error {
 		}
 	}
 
-	// Provision core-operations and ops.meta streams.
+	// Provision core-operations and core-events streams.
 	if err := s.provisionStreams(ctx); err != nil {
 		return fmt.Errorf("provision streams: %w", err)
 	}
@@ -143,11 +137,10 @@ func (s *Seeder) provisionStreams(ctx context.Context) error {
 			Subjects:    []string{OpsWildcardSubject}, // "ops.>" covers all lanes including "ops.meta.>" per Contract #2 §2.3
 		},
 		{
-			// Story 1.8: Processor step-9 event fan-out. Events are
-			// short-lived per Contract #3 lifetime norms; 7-day MaxAge is
-			// the Phase 1 default. AllowAtomicPublish enables the
-			// substrate.PublishBatch step-9 path (sequential-with-retry
-			// batch publish — see internal/processor/step9_publish.go).
+			// Events are short-lived per Contract #3 lifetime norms; 7-day
+			// MaxAge is the Phase 1 default. AllowAtomicPublish enables the
+			// substrate.PublishBatch step-9 path (see
+			// internal/processor/step9_publish.go).
 			Name:               CoreEventsStreamName,
 			Description:        "Core events stream — Processor publishes business events here at step 9",
 			Subjects:           []string{EventsWildcardSubject},
@@ -167,22 +160,26 @@ func (s *Seeder) provisionStreams(ctx context.Context) error {
 	return nil
 }
 
-// Story 4.7 kernel composition (post-minimization):
+// Kernel composition:
 //
-//   - 1 meta-meta DDL (vtx.meta.<NanoID-root>, canonicalName="root")
-//     with permittedCommands [CreateMetaVertex, UpdateMetaVertex,
-//     TombstoneMetaVertex] and a Starlark dispatcher on op.payload.targetClass.
-//   - 2 Lens meta-vertices (Capability + capabilityRoleIndex) — unchanged
-//     cypher except `grantsPermission` → `grantedBy`.
-//   - 1 operator role vertex + canonicalName + description aspects.
+//   - 1 bootstrap op tracker
+//   - 1 primordial admin identity (vtx.identity.<NanoID>); no .state aspect
+//     (state is identity-domain-package territory)
+//   - 1 meta-meta DDL (vtx.meta.<NanoID-root>, canonicalName="root") +
+//     9 aspects (canonicalName, permittedCommands, description, script,
+//     inputSchema, outputSchema, fieldDescription, examples, compensation)
+//   - 2 Lens meta-vertices (Capability + capabilityRoleIndex) × 5 aspects each
+//     (canonicalName, targetBucket, cypherRule, outputSchema, spec)
+//   - 5 aspect-type meta-vertices × 7 aspects each
+//     (vertex + canonicalName, description, inputSchema, outputSchema,
+//     fieldDescription, examples)
+//   - 1 operator role vertex + canonicalName + description aspects
 //   - 3 meta-permission vertices (CreateMetaVertex, UpdateMetaVertex,
-//     TombstoneMetaVertex), all scope=any.
-//   - 3 grantedBy links (each meta-permission → operator).
-//   - 1 primordial admin identity vertex (vtx.identity.<NanoID-admin>);
-//     no .state aspect (state is identity-domain-package territory).
-//   - 1 admin→operator holdsRole link.
+//     TombstoneMetaVertex), all scope=any
+//   - 3 grantedBy links (each meta-permission → operator)
+//   - 1 admin→operator holdsRole link
 //
-// Total ≈ 34 Core KV entries. See `scripts/verify-kernel.go`.
+// Total ≈ 69 Core KV entries. See `scripts/verify-kernel.go`.
 //
 // Roles consumer/frontOfHouse/backOfHouse and the identity DDL + its
 // permissions and grants move to packages (rbac-domain, identity-domain,
@@ -191,13 +188,9 @@ func (s *Seeder) provisionStreams(ctx context.Context) error {
 //
 // SeedPrimordial writes all primordial Core KV entries per Contract #7 §7.2.
 // Order per §7.7: op tracker → identities → meta DDLs → Lens definitions → roles → permissions → links.
-//
-// Story 1.4 refactor: this method now uses substrate.AtomicBatch for the
-// initial write of the full primordial set, replacing the prior
-// sequential-create loop. Atomic semantics make partial-failure recovery
-// unambiguous (either the entire primordial set lands or none of it does).
-// The idempotent re-run path (Contract #7 §7.4) is preserved: if the
-// bootstrap op tracker key already exists in Core KV, the function returns
+// Uses substrate.AtomicBatch so either the entire primordial set lands or none
+// of it does. The idempotent re-run path (Contract #7 §7.4) is preserved: if
+// the bootstrap op tracker key already exists in Core KV, the function returns
 // without re-issuing the batch.
 func (s *Seeder) SeedPrimordial(ctx context.Context) error {
 	kv, err := s.js.KeyValue(ctx, CoreKVBucket)
@@ -234,6 +227,9 @@ func (s *Seeder) SeedPrimordial(ctx context.Context) error {
 		})
 	}
 
+	// AtomicBatch does not accept a context, so the caller's ctx cancellation
+	// is not propagated to this call. The 30s timeout is a fixed substrate
+	// limit; it cannot be shortened by a SIGTERM during the batch.
 	ack, err := conn.AtomicBatch(ops, 30*time.Second)
 	if err != nil {
 		// If the batch was rejected because a key already exists (e.g., a
@@ -261,8 +257,7 @@ func (s *Seeder) seedPrimordialPerKey(ctx context.Context, kv jetstream.KeyValue
 			continue
 		}
 		if _, putErr := kv.Create(ctx, e.key, e.value); putErr != nil {
-			if strings.Contains(putErr.Error(), "wrong last sequence") ||
-				strings.Contains(putErr.Error(), "key exists") {
+			if looksLikeCreateConflict(putErr) {
 				s.logger.Info("key created concurrently, skipping", "key", e.key)
 				continue
 			}
@@ -274,6 +269,12 @@ func (s *Seeder) seedPrimordialPerKey(ctx context.Context, kv jetstream.KeyValue
 }
 
 func looksLikeCreateConflict(err error) bool {
+	// Check the typed sentinel first (covers current nats.go versions that
+	// wrap ErrKeyExists on kv.Create conflicts). The string fallbacks cover
+	// older NATS server versions that emit raw API error text instead.
+	if errors.Is(err, jetstream.ErrKeyExists) {
+		return true
+	}
 	s := err.Error()
 	return strings.Contains(s, "wrong last sequence") ||
 		strings.Contains(s, "key exists") ||
@@ -347,7 +348,6 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 	if err := add(rootScriptKey, rsv, rsErr); err != nil {
 		return nil, err
 	}
-	// Story 5.1: 4 additional self-description aspects for the root DDL.
 	rootInputSchemaKey := MetaRootKey + ".inputSchema"
 	risa, risaErr := MakeAspectEnvelope(rootInputSchemaKey, MetaRootKey, "inputSchema", "inputSchema",
 		map[string]any{"schema": `{"type":"object","required":["targetClass","canonicalName"],"properties":{"targetClass":{"type":"string","description":"One of meta.ddl.vertexType|linkType|aspectType|eventType|meta.lens"},"canonicalName":{"type":"string"},"permittedCommands":{"type":"array","items":{"type":"string"}},"description":{"type":"string"},"script":{"type":"string"},"inputSchema":{"type":"string"},"outputSchema":{"type":"string"},"fieldDescription":{"type":"object"},"examples":{"type":"array"},"spec":{"type":"string"}}}`})
@@ -399,11 +399,11 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		return nil, err
 	}
 
-	// 4a. Story 5.3: seed the .compensation aspect on the primordial kernel
-	// root DDL meta-vertex (the meta-meta-DDL). This describes how to roll
-	// back a CreateMetaVertex call: tombstone the created meta-vertex.
-	// The Processor reads NO compensation aspects (Guardrail 2); this entry
-	// is for client-side traversal only (aiagent.Traverser.ReadCompensation).
+	// 4a. Seed the .compensation aspect on the primordial kernel root DDL
+	// meta-vertex. Describes how to roll back a CreateMetaVertex call:
+	// tombstone the created meta-vertex. The Processor reads NO compensation
+	// aspects (Guardrail 2); this entry is for client-side traversal only
+	// (aiagent.Traverser.ReadCompensation).
 	rootCompKey := MetaRootKey + "." + CompensationAspectClass
 	rootComp, rootCompErr := MakeAspectEnvelope(rootCompKey, MetaRootKey, CompensationAspectClass, CompensationAspectClass,
 		map[string]any{
@@ -435,10 +435,10 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		return nil, err
 	}
 
-	// 6a. Story 5.1: five aspect-type meta-vertices — the DDLs for the
-	// self-description aspect classes. Each has class=meta.ddl.aspectType
-	// and carries all 5 descriptive aspects itself (bootstrapped primordially
-	// to avoid a chicken-and-egg dependency with post-bootstrap DDL enforcement).
+	// 6a. Five aspect-type meta-vertices — the DDLs for the self-description
+	// aspect classes. Each has class=meta.ddl.aspectType and carries all 5
+	// descriptive aspects itself (bootstrapped primordially to avoid a
+	// chicken-and-egg dependency with post-bootstrap DDL enforcement).
 	if err := seedAspectTypeMeta(&entries, add); err != nil {
 		return nil, err
 	}
@@ -469,8 +469,7 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 
 	// 8. Three meta-permission vertices (CreateMetaVertex / UpdateMetaVertex /
 	// TombstoneMetaVertex). These authorize the operator to mutate
-	// vtx.meta.* — which is how package installs land DDLs and Lenses
-	// once Story 5.3's ops-routed installer arrives.
+	// vtx.meta.* — the entry point for package-installed DDLs and Lenses.
 	metaPerms := []struct {
 		key, id, op string
 	}{
@@ -519,8 +518,8 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 	return entries, nil
 }
 
-// seedAspectTypeMeta seeds the five aspect-type meta-vertices for Story 5.1.
-// These are the primordial DDLs for the self-description aspect classes:
+// seedAspectTypeMeta seeds the five aspect-type meta-vertices — the
+// primordial DDLs for the self-description aspect classes:
 // description, inputSchema, outputSchema, fieldDescription, examples.
 // Each carries all 5 descriptive aspects (bootstrapped directly so the
 // enforcement rule in CreateMetaVertex can reference them without circularity).
@@ -674,14 +673,11 @@ func seedAspectTypeMeta(entries *[]kvEntry, add func(string, []byte, error) erro
 }
 
 // addLensAspects appends aspect entries for a Lens definition vertex.
-//
-// Story 3.2a: in addition to the four human-readable aspects
-// (canonicalName, targetBucket, cypherRule, outputSchema) we now emit a
-// fifth `spec` aspect carrying a complete LensSpec JSON body. The
-// Refractor's CoreKVSource reads this `spec` aspect to activate the
-// lens (its parse path expects a single envelope; the four individual
+// Emits five aspects: canonicalName, targetBucket, cypherRule, outputSchema,
+// and spec. The `spec` aspect carries a complete LensSpec JSON body that
+// Refractor's CoreKVSource reads to activate the lens. The four individual
 // aspects are documentation surface for operators and for the
-// verify-bootstrap regression gate).
+// verify-bootstrap regression gate.
 func addLensAspects(entries *[]kvEntry, lensKey string, def LensDefinition) error {
 	aspects := []struct {
 		localName string
@@ -702,12 +698,13 @@ func addLensAspects(entries *[]kvEntry, lensKey string, def LensDefinition) erro
 		*entries = append(*entries, kvEntry{key: key, value: val})
 	}
 
-	// `spec` — full LensSpec body, the form Refractor's CoreKVSource
-	// activation watch consumes (Story 3.2a Phase D). The seeded
-	// capability lenses target the capability-kv bucket and select the
-	// full openCypher engine explicitly.
+	// `spec` — full LensSpec body consumed by Refractor's CoreKVSource
+	// activation watch. The seeded capability lenses target the
+	// capability-kv bucket and select the full openCypher engine explicitly.
 	_, lensID, ok := strings.Cut(lensKey, "vtx.meta.")
-	_ = ok
+	if !ok {
+		return fmt.Errorf("addLensAspects: lensKey %q does not have expected vtx.meta. prefix", lensKey)
+	}
 	specBody, err := makeLensSpecBody(lensID, def)
 	if err != nil {
 		return fmt.Errorf("build lens spec body for %q: %w", lensKey, err)
@@ -741,8 +738,7 @@ func makeLensSpecBody(lensID string, def LensDefinition) (map[string]any, error)
 	// For the primary capability Lens that's the envelope `key` (added
 	// by the pipeline envelope wrapper at write time). The secondary
 	// capabilityRoleIndex projects per-operationType records; its key
-	// column is `operationType` and the bucket entry is keyed by that
-	// (Story 3.2b verifies the capabilityRoleIndex shape end-to-end).
+	// column is `operationType` and the bucket entry is keyed by that.
 	keyField := []string{"key"}
 	if def.CanonicalName == "capabilityRoleIndex" {
 		keyField = []string{"operationType"}
@@ -769,11 +765,8 @@ func makeLensSpecBody(lensID string, def LensDefinition) (map[string]any, error)
 }
 
 // MarkBootstrapComplete writes the `health.bootstrap.complete` marker
-// to the Health KV bucket. Historically this was refractor-stub's job;
-// after Story 2.1 deleted refractor-stub (MORPH-DEVIATIONS Deviation 9)
-// the marker write moved to cmd/bootstrap itself — see Story 2.1b
-// housekeeping.
-//
+// to the Health KV bucket. cmd/bootstrap writes this marker itself because
+// it is the only process guaranteed to run after primordial seeding completes.
 // The marker value is a tiny JSON blob with a wall-clock timestamp so
 // operators can read it via `nats kv get health-kv health.bootstrap.complete`.
 func MarkBootstrapComplete(ctx context.Context, nc *nats.Conn, logger *slog.Logger) error {
@@ -804,6 +797,13 @@ func WaitForBootstrapComplete(ctx context.Context, nc *nats.Conn, logger *slog.L
 	kv, err := js.KeyValue(ctx, HealthKVBucket)
 	if err != nil {
 		return fmt.Errorf("open Health KV: %w", err)
+	}
+
+	// Check immediately before starting the poll loop — the key is typically
+	// already present since MarkBootstrapComplete runs just before this call.
+	if _, err := kv.Get(ctx, HealthBootstrapCompleteKey); err == nil {
+		logger.Info("readiness gate satisfied", "key", HealthBootstrapCompleteKey)
+		return nil
 	}
 
 	ticker := time.NewTicker(500 * time.Millisecond)

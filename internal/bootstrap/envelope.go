@@ -8,18 +8,13 @@ import (
 )
 
 // BootstrapTime is the canonical createdAt/lastModifiedAt for all primordial
-// entries.  Using a fixed timestamp makes bootstrap output deterministic and
-// reproducible, which matters for the bypass test oracle in Story 1.10.
+// entries. Using a fixed timestamp makes bootstrap output deterministic and
+// reproducible.
 var BootstrapTime = time.Date(2026, 5, 13, 0, 0, 0, 0, time.UTC)
 
 // MakeVertexEnvelope constructs a vertex envelope (Contract #1 §1.3) using
 // substrate's universal envelope helper. All provenance fields point to the
 // primordial bootstrap identity + op.
-//
-// Story 1.4 refactor: this function was the bespoke envelope formatter prior
-// to the substrate package; it is now a 4-line adapter that injects the
-// fixed BootstrapTime into substrate's NewDocumentEnvelopeAt and copies the
-// provided data payload.
 func MakeVertexEnvelope(key, class string, data any) ([]byte, error) {
 	env := substrate.NewDocumentEnvelopeAt(class, BootstrapIdentityKey, BootstrapOpKey, BootstrapTime)
 	env.Key = key

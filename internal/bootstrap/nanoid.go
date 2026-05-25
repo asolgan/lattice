@@ -24,10 +24,9 @@
 // custom 58-char alphabet, no I/l/O/0) since they come from
 // substrate.NewNanoID() which is the canonical generator.
 //
-// Story 4.7 trim: the identity-domain and rbac-domain NanoID surfaces
-// (DDLRole*, PermCreateRole, PermCreateUnclaimedIdentity, etc.) moved
-// to their respective Capability Packages. This file now keeps only
-// kernel NanoIDs — the post-4.7 minimal primordial set.
+// This file keeps only kernel NanoIDs — the minimal primordial set.
+// Identity-domain and rbac-domain NanoID surfaces live in their
+// respective Capability Packages.
 package bootstrap
 
 import (
@@ -51,8 +50,8 @@ const Alphabet = substrate.Alphabet
 const HealthBootstrapCompleteKey = "health.bootstrap.complete"
 
 // CompensationAspectClass is the class and localName value for the
-// .compensation sixth self-description aspect (Story 5.3). It is a key
-// suffix token, not a NanoID — no primordial ID is required.
+// .compensation self-description aspect. It is a key suffix token,
+// not a NanoID — no primordial ID is required.
 const CompensationAspectClass = "compensation"
 
 // Primordial NanoIDs and derived keys.
@@ -79,10 +78,10 @@ var (
 	RoleOperatorID             string
 	RoleOperatorKey            string
 
-	// Story 4.7: meta-permission NanoIDs + keys. Three kernel-seeded
-	// permissions authorizing the operator to mutate vtx.meta.* vertices
-	// (the entry point for package-installed DDLs + Lenses once Story 5.3
-	// routes installs through CreateMetaVertex ops).
+	// Three kernel-seeded meta-permission NanoIDs authorizing the operator
+	// to mutate vtx.meta.* vertices (CreateMetaVertex, UpdateMetaVertex,
+	// TombstoneMetaVertex). These are the entry point for package-installed
+	// DDLs and Lenses.
 	PermCreateMetaVertexID     string
 	PermCreateMetaVertexKey    string
 	PermUpdateMetaVertexID     string
@@ -90,9 +89,9 @@ var (
 	PermTombstoneMetaVertexID  string
 	PermTombstoneMetaVertexKey string
 
-	// Story 5.1: five aspect-type meta-vertex NanoIDs. These are the
-	// primordial DDLs for the self-description aspect classes
-	// (description, inputSchema, outputSchema, fieldDescription, examples).
+	// Five aspect-type meta-vertex NanoIDs — the primordial DDLs for the
+	// self-description aspect classes (description, inputSchema,
+	// outputSchema, fieldDescription, examples).
 	AspectTypeDescriptionID       string
 	AspectTypeDescriptionKey      string
 	AspectTypeInputSchemaID       string
@@ -109,11 +108,9 @@ var (
 )
 
 // PrimordialIDsRaw is the persisted form (matches lattice.bootstrap.json).
-//
-// Story 4.7 trim: identity-domain and rbac-domain NanoID fields are
-// retired. Existing lattice.bootstrap.json files that include those
-// extra fields parse fine — encoding/json ignores unknown fields by
-// default — but fresh generations no longer emit them.
+// Identity-domain and rbac-domain NanoID fields are not present in this
+// struct; encoding/json ignores unknown fields so older files that include
+// extra fields still parse correctly.
 type PrimordialIDsRaw struct {
 	BootstrapOp             string `json:"bootstrapOp"`
 	BootstrapIdentity       string `json:"bootstrapIdentity"`
@@ -122,12 +119,12 @@ type PrimordialIDsRaw struct {
 	CapabilityRoleIndexLens string `json:"capabilityRoleIndexLens"`
 	RoleOperator            string `json:"roleOperator"`
 
-	// Story 4.7 meta-permission NanoIDs.
+	// Meta-permission NanoIDs.
 	PermCreateMetaVertex    string `json:"permCreateMetaVertex"`
 	PermUpdateMetaVertex    string `json:"permUpdateMetaVertex"`
 	PermTombstoneMetaVertex string `json:"permTombstoneMetaVertex"`
 
-	// Story 5.1 aspect-type meta-vertex NanoIDs.
+	// Aspect-type meta-vertex NanoIDs.
 	AspectTypeDescription       string `json:"aspectTypeDescription"`
 	AspectTypeInputSchema        string `json:"aspectTypeInputSchema"`
 	AspectTypeOutputSchema       string `json:"aspectTypeOutputSchema"`
@@ -136,30 +133,72 @@ type PrimordialIDsRaw struct {
 }
 
 // BootstrapFile is the wire format of lattice.bootstrap.json.
+//
+// Version history:
+//   - "1"-"2": retired; fields removed.
+//   - "3": aspect-type meta-vertex NanoIDs added (current stable format).
+//   - "4": status field added to survive crash between SeedPrimordial and
+//     Persist. status="in-progress" means IDs are stable but seeding may
+//     not have completed; status="committed" means seeding and persist both
+//     succeeded.
 type BootstrapFile struct {
 	Version       string           `json:"version"`
 	GeneratedAt   string           `json:"generatedAt"`
+	Status        string           `json:"status,omitempty"` // "in-progress" | "committed"
 	PrimordialIDs PrimordialIDsRaw `json:"primordialIDs"`
 }
 
-// LoadOrGenerate is called by cmd/bootstrap. If the file exists, load
-// IDs from it (idempotent re-run after partial failure). If not, generate
-// fresh IDs **in memory only** — the caller MUST invoke Persist(path)
-// after SeedPrimordial succeeds. This separation prevents a poisoned
-// state in which the JSON exists but Core KV was never seeded (e.g.,
-// when cmd/bootstrap is killed between LoadOrGenerate and SeedPrimordial).
+// LoadOrGenerate is called by cmd/bootstrap. It implements a two-phase
+// commit protocol to survive crashes between SeedPrimordial and Persist:
+//
+//  1. If no file exists: generate fresh IDs, write the file with
+//     status="in-progress" (so the IDs survive a crash), then return
+//     freshlyGenerated=true. Caller MUST call PersistCommitted after
+//     SeedPrimordial succeeds.
+//
+//  2. If file exists with status="in-progress": reuse the IDs already
+//     written (crash recovery — SeedPrimordial may or may not have
+//     completed; its own idempotency guard handles the case where it did).
+//     Returns freshlyGenerated=true so the caller re-runs SeedPrimordial.
+//
+//  3. If file exists with status="committed" (or legacy v3 without status):
+//     load IDs and return freshlyGenerated=false (seeding already done).
 //
 // The "generate" path produces a unique primordial key space PER
 // DEPLOYMENT — this is the architectural requirement.
 //
-// Returns true if IDs were freshly generated (caller must Persist),
-// false if loaded from existing file (caller should NOT re-Persist).
+// Returns true if the caller must run SeedPrimordial + PersistCommitted.
 func LoadOrGenerate(path string) (freshlyGenerated bool, err error) {
 	if _, statErr := os.Stat(path); statErr == nil {
-		return false, Load(path)
+		// File exists — check its status.
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return false, fmt.Errorf("read %s: %w", path, readErr)
+		}
+		var f BootstrapFile
+		if parseErr := json.Unmarshal(data, &f); parseErr != nil {
+			return false, fmt.Errorf("parse %s: %w", path, parseErr)
+		}
+		if err := checkVersion(f); err != nil {
+			return false, err
+		}
+		if f.Status == "in-progress" {
+			// Crash recovery: IDs are stable; re-run seeding.
+			if popErr := populate(f.PrimordialIDs); popErr != nil {
+				return false, fmt.Errorf("populate primordial IDs: %w", popErr)
+			}
+			return true, nil
+		}
+		// status="committed" or legacy v3 (treated as committed).
+		if popErr := populate(f.PrimordialIDs); popErr != nil {
+			return false, fmt.Errorf("populate primordial IDs: %w", popErr)
+		}
+		return false, nil
 	} else if !errors.Is(statErr, os.ErrNotExist) {
 		return false, fmt.Errorf("stat %s: %w", path, statErr)
 	}
+
+	// No file: generate fresh IDs and write in-progress immediately.
 	raw, err := generate()
 	if err != nil {
 		return false, fmt.Errorf("generate primordial IDs: %w", err)
@@ -167,15 +206,24 @@ func LoadOrGenerate(path string) (freshlyGenerated bool, err error) {
 	if err := populate(raw); err != nil {
 		return false, fmt.Errorf("populate primordial IDs: %w", err)
 	}
-	// In-memory only. Caller must Persist after seeding.
+	if err := persistWithStatus(path, raw, "in-progress"); err != nil {
+		return false, fmt.Errorf("write in-progress bootstrap file: %w", err)
+	}
 	return true, nil
 }
 
-// Persist writes the currently-loaded primordial IDs to path. Call this
-// only AFTER seeding succeeds. The JSON file is the artifact of a
-// successful bootstrap — its presence implies seeded Core KV.
+// PersistCommitted rewrites lattice.bootstrap.json with status="committed"
+// after SeedPrimordial has successfully committed all primordial keys.
+// Call this instead of Persist when using the two-phase commit protocol.
+func PersistCommitted(path string) error {
+	return persistWithStatus(path, currentRaw(), "committed")
+}
+
+// Persist writes the currently-loaded primordial IDs to path with
+// status="committed". Retained for callers that do not use the
+// two-phase LoadOrGenerate / PersistCommitted protocol.
 func Persist(path string) error {
-	return persist(path, currentRaw())
+	return persistWithStatus(path, currentRaw(), "committed")
 }
 
 // currentRaw rebuilds a PrimordialIDsRaw from the populated package vars.
@@ -199,7 +247,7 @@ func currentRaw() PrimordialIDsRaw {
 }
 
 // Load reads existing IDs from path. Used by read-only callers
-// (cmd/refractor-stub, scripts/verify-kernel).
+// (scripts/verify-kernel).
 func Load(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -209,7 +257,26 @@ func Load(path string) error {
 	if err := json.Unmarshal(data, &f); err != nil {
 		return fmt.Errorf("parse %s: %w", path, err)
 	}
+	if err := checkVersion(f); err != nil {
+		return err
+	}
 	return populate(f.PrimordialIDs)
+}
+
+// checkVersion returns a clear error when the bootstrap file's version is
+// not one of the supported versions ("3" or "4"). This surfaces a
+// meaningful message instead of a confusing NanoID validation failure
+// when an operator upgrades Lattice without running `make down` first.
+func checkVersion(f BootstrapFile) error {
+	switch f.Version {
+	case "3", "4":
+		return nil
+	default:
+		return fmt.Errorf(
+			"bootstrap file version mismatch: got %q, want \"3\" or \"4\" — run `make down && make up`",
+			f.Version,
+		)
+	}
 }
 
 func generate() (PrimordialIDsRaw, error) {
@@ -300,17 +367,17 @@ func populate(raw PrimordialIDsRaw) error {
 	CapabilityRoleIndexLensKey = "vtx.meta." + CapabilityRoleIndexLensID
 	RoleOperatorKey = "vtx.role." + RoleOperatorID
 
-	// Story 4.7: admin's primordial holdsRole link targets the operator
-	// role (formerly platformInternal — the latter retired).
+	// Admin's primordial holdsRole link targets the operator role.
 	BootstrapHoldsRoleLinkKey = "lnk.identity." + BootstrapIdentityID + ".holdsRole.role." + RoleOperatorID
 
 	return nil
 }
 
-func persist(path string, raw PrimordialIDsRaw) error {
+func persistWithStatus(path string, raw PrimordialIDsRaw, status string) error {
 	f := BootstrapFile{
-		Version:       "3",
+		Version:       "4",
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		Status:        status,
 		PrimordialIDs: raw,
 	}
 	data, err := json.MarshalIndent(f, "", "  ")
@@ -323,9 +390,9 @@ func persist(path string, raw PrimordialIDsRaw) error {
 	return nil
 }
 
-// PrimordialVertexKeys returns the post-Story-5.1 kernel's top-level vertex
-// keys — only those entries the kernel itself seeds. Package-installed
-// DDLs/Lenses/permissions are addressed separately by `verify-package-*` gates.
+// PrimordialVertexKeys returns the kernel's top-level vertex keys — only
+// those entries the kernel itself seeds. Package-installed DDLs/Lenses/
+// permissions are addressed separately by `verify-package-*` gates.
 func PrimordialVertexKeys() []string {
 	return []string{
 		// bootstrap op tracker
@@ -348,7 +415,7 @@ func PrimordialVertexKeys() []string {
 		"lnk.permission." + PermUpdateMetaVertexID + ".grantedBy.role." + RoleOperatorID,
 		"lnk.permission." + PermTombstoneMetaVertexID + ".grantedBy.role." + RoleOperatorID,
 		BootstrapHoldsRoleLinkKey,
-		// Story 5.1: 5 aspect-type meta-vertices (self-description DDLs)
+		// 5 aspect-type meta-vertices (self-description DDLs)
 		AspectTypeDescriptionKey,
 		AspectTypeInputSchemaKey,
 		AspectTypeOutputSchemaKey,
@@ -359,7 +426,7 @@ func PrimordialVertexKeys() []string {
 
 // PrimordialVertexKeyCount is the count of TOP-LEVEL kernel keys (the
 // ones in PrimordialVertexKeys()). Used as a count-only readiness gate
-// where loading lattice.bootstrap.json would race startup. After Story
-// 5.1 this is 18 entries: 1 op + 1 admin + 1 meta-DDL + 2 lenses +
+// where loading lattice.bootstrap.json would race startup. Current count
+// is 18 entries: 1 op + 1 admin + 1 meta-DDL + 2 lenses +
 // 1 role + 3 meta-perms + 4 links + 5 aspect-type meta-vertices.
 const PrimordialVertexKeyCount = 18
