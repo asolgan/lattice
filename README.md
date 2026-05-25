@@ -316,6 +316,80 @@ Expected: one row with the new book.
 
 ---
 
+### Milestone 6: Rollback the book DDL (≤ 5 min)
+
+**Goal:** Demonstrate Story 5.3's compensation contract — roll back the book DDL
+itself by reading its `.compensation` aspect and submitting the inverse operation.
+**Expected time:** ≤ 5 min
+
+**Step 6a — Read the compensation aspect:**
+
+```console
+lattice graph read $BOOK_DDL_KEY.compensation
+```
+
+The aspect data contains `inverseOperationType: TombstoneMetaVertex` plus template
+fields for the metaKey and expectedRevision. These encode exactly what to submit to
+undo the DDL creation.
+
+**Step 6b — Capture the current revision for conflict detection:**
+
+```console
+lattice graph read $BOOK_DDL_KEY
+```
+
+Note the `_revision` field in the output. This is passed as `expectedRevision` in the
+tombstone payload to prevent a lost-update race.
+
+**Step 6c — Submit the compensating TombstoneMetaVertex:**
+
+```console
+lattice op submit \
+  --operation-type TombstoneMetaVertex \
+  --lane meta \
+  --actor $BOOTSTRAP_ACTOR_KEY \
+  --context-hint-reads $BOOK_DDL_KEY \
+  --payload "{\"metaKey\":\"$BOOK_DDL_KEY\",\"expectedRevision\":<revision>}"
+```
+
+Expected reply: `status: accepted`.
+
+**Step 6d — Verify the book DDL is no longer discoverable:**
+
+```console
+lattice graph keys vtx.meta.
+```
+
+The book DDL key still appears in the key list (tombstoned entries are retained
+in KV), but `lattice graph read $BOOK_DDL_KEY` now shows `isDeleted: true`.
+
+Confirm via the traversal API — any attempt to discover the `book` DDL should return
+`ErrDDLNotFound` because the vertex's `isDeleted` flag is `true`.
+
+**Step 6e — Verify the compensation aspect reads "none":**
+
+```console
+lattice graph read $BOOK_DDL_KEY.compensation
+```
+
+Expected: `data.inverseOperationType: none` — the irreversibility signal from
+Story 5.3. Once a DDL is tombstoned, there is no inverse to the tombstone.
+
+**Step 6f — Verify subsequent CreateBook is rejected:**
+
+```console
+lattice op submit \
+  --operation-type CreateBook \
+  --lane default \
+  --actor $BOOTSTRAP_ACTOR_KEY \
+  --payload '{"title":"This should be rejected"}'
+```
+
+Expected reply: `status: rejected` — the Processor's DDL cache no longer has an
+entry for `book`, so `CreateBook` cannot be resolved.
+
+---
+
 ## Architecture
 
 See [`docs/components/_index.md`](docs/components/_index.md) for the component overview.

@@ -8,6 +8,8 @@
 //  3. Milestone 3: CreateBook; verify vtx.book.* in Core KV with correct title.
 //  4. Milestone 4: CreateMetaVertex for the "books" Lens; poll Postgres for the book row.
 //  5. Milestone 5: AI agent cold-start traversal; agent submits CreateBook; verify in Postgres.
+//  6. Milestone 6: Rollback the book DDL via TombstoneMetaVertex; verify DiscoverDDL returns
+//     ErrDDLNotFound; verify .compensation aspect reads inverseOperationType: "none".
 //
 // Build tags:
 //
@@ -28,6 +30,7 @@ package hellolattice_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -78,6 +81,10 @@ var suiteStart time.Time
 
 // bookDDLKey holds the meta-vertex key for the book DDL (set in Milestone 2).
 var bookDDLKey string
+
+// bookDDLRevision holds the Core KV revision of the book DDL meta-vertex
+// after Milestone 2 commits it. Used by Milestone 6 for conflict detection.
+var bookDDLRevision uint64
 
 // bookVertexKey holds the vtx.book.* key created in Milestone 3.
 var bookVertexKey string
@@ -212,6 +219,14 @@ func TestHelloLattice_Milestone2_DefineDDL(t *testing.T) {
 	}
 	bookDDLKey = metaKey
 	t.Logf("book DDL created at %s", bookDDLKey)
+
+	// Capture the revision of the book DDL meta-vertex for Milestone 6
+	// conflict detection (TombstoneMetaVertex expectedRevision field).
+	vtxEntry, err := harnessConn.KVGet(ctx, bootstrap.CoreKVBucket, bookDDLKey)
+	if err != nil {
+		t.Fatalf("read book DDL meta-vertex for revision: %v", err)
+	}
+	bookDDLRevision = vtxEntry.Revision
 
 	// Verify .canonicalName aspect.
 	aspEntry, err := harnessConn.KVGet(ctx, bootstrap.CoreKVBucket, bookDDLKey+".canonicalName")
@@ -593,6 +608,112 @@ func TestHelloLattice_WriteGate5Marker(t *testing.T) {
 	}
 }
 
+// TestHelloLattice_Milestone6_RollbackBookDDL demonstrates Story 5.3's
+// compensation contract end-to-end using the book DDL created in Milestone 2.
+//
+// Sequence:
+//  1. Read the .compensation aspect via aiagent.Traverser.ReadCompensation.
+//  2. Get the current meta-vertex revision from Core KV.
+//  3. Submit TombstoneMetaVertex with expectedRevision (conflict detection).
+//  4. Verify DiscoverDDL returns ErrDDLNotFound (DDL no longer live).
+//  5. Verify .compensation aspect now reads inverseOperationType: "none".
+//  6. Verify subsequent CreateBook is rejected (DDL cache miss after tombstone).
+func TestHelloLattice_Milestone6_RollbackBookDDL(t *testing.T) {
+	if bookDDLKey == "" {
+		t.Skip("bookDDLKey not set — run Milestone2 first")
+	}
+	start := time.Now()
+	ctx := testCtx(t)
+
+	tr := aiagent.NewTraverser(harnessConn, bootstrap.CoreKVBucket, bootstrap.CapabilityKVBucket)
+
+	// Step 1: read the .compensation aspect — verify the forward contract.
+	compData, err := tr.ReadCompensation(ctx, bookDDLKey)
+	if err != nil {
+		t.Fatalf("ReadCompensation(%s): %v", bookDDLKey, err)
+	}
+	if compData["inverseOperationType"] != "TombstoneMetaVertex" {
+		t.Fatalf("compensation inverseOperationType = %v, want TombstoneMetaVertex", compData["inverseOperationType"])
+	}
+	t.Logf("compensation aspect verified: inverseOperationType=TombstoneMetaVertex")
+
+	// Step 2: read the current revision of the meta-vertex from Core KV.
+	// bookDDLRevision was captured in Milestone 2; re-read here for the
+	// current value in case any intervening mutation (e.g., Milestone 5
+	// warm-up) incremented it.
+	vtxEntry, err := harnessConn.KVGet(ctx, bootstrap.CoreKVBucket, bookDDLKey)
+	if err != nil {
+		t.Fatalf("KVGet book DDL meta-vertex %s: %v", bookDDLKey, err)
+	}
+	expectedRevision := int(vtxEntry.Revision)
+	t.Logf("book DDL meta-vertex revision for conflict detection: %d", expectedRevision)
+
+	// Step 3: submit TombstoneMetaVertex as the bootstrap operator.
+	// ContextHint.Reads declares bookDDLKey so the Hydrator loads it into
+	// the Starlark state for the vertex_alive() check.
+	tombPayload := map[string]any{
+		"metaKey":          bookDDLKey,
+		"expectedRevision": expectedRevision,
+	}
+	tombReply := submitOpWithHint(t, ctx, "TombstoneMetaVertex", processor.LaneMeta,
+		bootstrap.BootstrapIdentityKey, tombPayload,
+		&processor.ContextHint{Reads: []string{bookDDLKey}})
+	if tombReply.Status != processor.ReplyStatusAccepted {
+		t.Fatalf("TombstoneMetaVertex rejected: %v", tombReply)
+	}
+	t.Logf("TombstoneMetaVertex accepted for %s", bookDDLKey)
+
+	// Step 4: verify DiscoverDDL returns ErrDDLNotFound.
+	// Poll briefly to allow any in-flight DDL cache invalidation to settle
+	// (the Processor synchronously invalidates on meta-lane commits, but a
+	// bounded poll is safer for timing).
+	var discoverErr error
+	discoverDeadline := time.Now().Add(500 * time.Millisecond)
+	for {
+		_, discoverErr = tr.DiscoverDDL(ctx, "book")
+		if errors.Is(discoverErr, aiagent.ErrDDLNotFound) {
+			break
+		}
+		if discoverErr == nil {
+			if time.Now().After(discoverDeadline) {
+				t.Fatal("DiscoverDDL still returns the book DDL after TombstoneMetaVertex within 500ms")
+			}
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		// Unexpected error type — fail immediately.
+		t.Fatalf("DiscoverDDL after tombstone: unexpected error: %v", discoverErr)
+	}
+	t.Log("DiscoverDDL correctly returns ErrDDLNotFound after tombstone")
+
+	// Step 5: verify .compensation aspect now reads inverseOperationType: "none"
+	// (MF-2 from Story 5.3 — irreversibility signal).
+	tombCompData, err := tr.ReadCompensation(ctx, bookDDLKey)
+	if err != nil {
+		t.Fatalf("ReadCompensation after tombstone: %v", err)
+	}
+	if tombCompData["inverseOperationType"] != "none" {
+		t.Fatalf("compensation inverseOperationType after tombstone = %v, want \"none\"",
+			tombCompData["inverseOperationType"])
+	}
+	t.Log("compensation aspect correctly reads inverseOperationType=\"none\" after tombstone")
+
+	// Step 6: verify CreateBook is now rejected — the DDL is tombstoned so
+	// the Processor's DDL cache no longer has an entry for "book". Submit
+	// as the bootstrap operator (who has CreateBook granted via Milestone 5
+	// if that ran, or as the operator whose CreateBook grant exists in the
+	// cache). A rejection with any non-accepted status confirms the DDL is gone.
+	createReply := submitOp(t, ctx, "CreateBook", processor.LaneDefault,
+		bootstrap.BootstrapIdentityKey, map[string]any{"title": "Should be rejected"})
+	if createReply.Status == processor.ReplyStatusAccepted {
+		t.Error("CreateBook accepted after book DDL tombstone — DDL cache should have evicted the entry")
+	} else {
+		t.Logf("CreateBook correctly rejected after DDL tombstone: status=%s", createReply.Status)
+	}
+
+	t.Logf("milestone 6 elapsed: %v", time.Since(start))
+}
+
 // testCtx returns a context with a generous deadline for each test.
 func testCtx(t *testing.T) context.Context {
 	t.Helper()
@@ -623,6 +744,67 @@ func submitOp(t *testing.T, ctx context.Context, operationType string, lane proc
 		Actor:         actor,
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Payload:       json.RawMessage(payloadBytes),
+	}
+
+	envBytes, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	nc := harnessConn.NATS()
+	inbox := natsgo.NewInbox()
+	sub, err := nc.SubscribeSync(inbox)
+	if err != nil {
+		t.Fatalf("subscribe inbox: %v", err)
+	}
+	defer func() { _ = sub.Unsubscribe() }()
+
+	subject := "ops." + string(lane)
+	msg := &natsgo.Msg{
+		Subject: subject,
+		Data:    envBytes,
+		Header:  natsgo.Header{replyInboxHeader: []string{inbox}},
+	}
+	if _, err := harnessConn.JetStream().PublishMsg(ctx, msg); err != nil {
+		t.Fatalf("publish %s to %s: %v", operationType, subject, err)
+	}
+
+	replyMsg, err := sub.NextMsgWithContext(ctx)
+	if err != nil {
+		t.Fatalf("wait for reply to %s: %v", operationType, err)
+	}
+
+	var reply processor.OperationReply
+	if err := json.Unmarshal(replyMsg.Data, &reply); err != nil {
+		t.Fatalf("parse reply for %s: %v", operationType, err)
+	}
+	return &reply
+}
+
+// submitOpWithHint is like submitOp but attaches a ContextHint to the envelope.
+// Required for operations such as TombstoneMetaVertex that declare reads via
+// ContextHint.Reads so the Hydrator loads the keys into the Starlark state.
+func submitOpWithHint(t *testing.T, ctx context.Context, operationType string, lane processor.Lane, actor string, payload map[string]any, hint *processor.ContextHint) *processor.OperationReply {
+	t.Helper()
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	reqID, err := substrate.NewNanoID()
+	if err != nil {
+		t.Fatalf("generate requestId: %v", err)
+	}
+
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          lane,
+		OperationType: operationType,
+		Actor:         actor,
+		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		Payload:       json.RawMessage(payloadBytes),
+		ContextHint:   hint,
 	}
 
 	envBytes, err := json.Marshal(env)

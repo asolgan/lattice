@@ -829,3 +829,44 @@ D4: `lib/pq` not in go.mod — integration test switched from `database/sql`+`li
 - `examples/hello-lattice/README.md`
 - `internal/hellolattice/hellolattice_test.go`
 - `_bmad-output/planning-artifacts/gate5-external-tester-report.md`
+
+---
+
+## Fast-follow: Milestone 6 (Compensation)
+
+**Scope:** Extends Hello Lattice with a sixth terminal milestone demonstrating
+Story 5.3's compensation contract end-to-end against the live book DDL.
+
+### What was added
+
+**`internal/hellolattice/hellolattice_test.go`** — `TestHelloLattice_Milestone6_RollbackBookDDL`:
+- Reads `.compensation` aspect via `aiagent.Traverser.ReadCompensation`; asserts
+  `inverseOperationType == "TombstoneMetaVertex"`.
+- Re-reads the meta-vertex revision from Core KV (live value, not stale capture).
+- Submits `TombstoneMetaVertex` with `expectedRevision` and `ContextHint.Reads`
+  via new `submitOpWithHint` helper (exact parallel of `submitOp` but with hint).
+- Bounded poll (10ms × 500ms) for `DiscoverDDL` to return `ErrDDLNotFound` — no fixed sleep.
+- Asserts `.compensation` aspect reads `inverseOperationType == "none"` (MF-2 irreversibility signal).
+- Asserts subsequent `CreateBook` is rejected (DDL cache evicted).
+
+Two supporting additions: package-level `bookDDLRevision uint64` var populated in
+Milestone 2 (belt-and-suspenders — Milestone 6 re-reads the live revision anyway),
+and `submitOpWithHint` helper.
+
+**`README.md`** (repo root) — "Milestone 6: Rollback the book DDL (≤ 5 min)" section
+added after Milestone 5. Six steps with exact `lattice op submit` commands and expected
+output for each verification. Approximately 55 lines.
+
+**`examples/hello-lattice/README.md`** — "Milestone 6: Rollback the book DDL" summary
+section explaining the five-step compensation cycle and noting that Milestone 6 is terminal.
+
+### Architecture compliance
+
+- No CLI changes.
+- No Processor or Refractor changes.
+- No new permissions — `TombstoneMetaVertex` is already granted to the operator role
+  by primordial bootstrap.
+- Milestone 6 is terminal: after the book DDL is tombstoned, `CreateBook` is
+  rejected for the remainder of the session. Test ordering: Milestone 6 must run
+  after Milestones 2 and 5.
+- AC numbering in this document is unchanged — Milestone 6 is additive scope.
