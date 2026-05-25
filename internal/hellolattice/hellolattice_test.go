@@ -212,7 +212,12 @@ func TestHelloLattice_Milestone2_DefineDDL(t *testing.T) {
 
 	reply := submitOp(t, ctx, "CreateMetaVertex", processor.LaneMeta, bootstrap.BootstrapIdentityKey, payload)
 	if reply.Status != processor.ReplyStatusAccepted {
-		t.Fatalf("CreateMetaVertex rejected: %v", reply)
+		errCode, errMsg := "", ""
+		if reply.Error != nil {
+			errCode = string(reply.Error.Code)
+			errMsg = reply.Error.Message
+		}
+		t.Fatalf("CreateMetaVertex rejected: status=%s code=%s msg=%q detail=%v", reply.Status, errCode, errMsg, reply.Detail)
 	}
 
 	// Extract metaKey from the reply detail.
