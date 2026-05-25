@@ -210,7 +210,7 @@ func TestHelloLattice_Milestone2_DefineDDL(t *testing.T) {
 		},
 	}
 
-	reply := submitOp(t, ctx, "CreateMetaVertex", processor.LaneMeta, bootstrap.BootstrapIdentityKey, payload)
+	reply := submitOp(t, ctx, "CreateMetaVertex", "root", processor.LaneMeta, bootstrap.BootstrapIdentityKey, payload)
 	if reply.Status != processor.ReplyStatusAccepted {
 		errCode, errMsg := "", ""
 		if reply.Error != nil {
@@ -272,7 +272,7 @@ func TestHelloLattice_Milestone3_CreateBook(t *testing.T) {
 	start := time.Now()
 	ctx := testCtx(t)
 
-	reply := submitOp(t, ctx, "CreateBook", processor.LaneDefault, bootstrap.BootstrapIdentityKey,
+	reply := submitOp(t, ctx, "CreateBook", "book", processor.LaneDefault, bootstrap.BootstrapIdentityKey,
 		map[string]any{"title": "The Pragmatic Programmer"})
 	if reply.Status != processor.ReplyStatusAccepted {
 		t.Fatalf("CreateBook rejected: %v", reply)
@@ -333,7 +333,7 @@ func TestHelloLattice_Milestone4_LensProjection(t *testing.T) {
 		"spec":          lensSpec,
 	}
 
-	reply := submitOp(t, ctx, "CreateMetaVertex", processor.LaneMeta, bootstrap.BootstrapIdentityKey, payload)
+	reply := submitOp(t, ctx, "CreateMetaVertex", "root", processor.LaneMeta, bootstrap.BootstrapIdentityKey, payload)
 	if reply.Status != processor.ReplyStatusAccepted {
 		t.Fatalf("CreateMetaVertex(meta.lens) rejected: %v", reply)
 	}
@@ -407,7 +407,7 @@ func TestHelloLattice_Milestone5_AITraversal(t *testing.T) {
 	}
 
 	// Step 1: create a new identity for the AI agent.
-	idReply := submitOp(t, ctx, "CreateUnclaimedIdentity", processor.LaneDefault,
+	idReply := submitOp(t, ctx, "CreateUnclaimedIdentity", "identity", processor.LaneDefault,
 		bootstrap.BootstrapIdentityKey, map[string]any{})
 	if idReply.Status != processor.ReplyStatusAccepted {
 		t.Fatalf("CreateUnclaimedIdentity rejected: %v", idReply)
@@ -420,7 +420,7 @@ func TestHelloLattice_Milestone5_AITraversal(t *testing.T) {
 	t.Logf("AI agent identity: %s", agentKey)
 
 	// Step 2: create a CreateBook permission.
-	permReply := submitOp(t, ctx, "CreatePermission", processor.LaneDefault,
+	permReply := submitOp(t, ctx, "CreatePermission", "rbac", processor.LaneDefault,
 		bootstrap.BootstrapIdentityKey, map[string]any{"operationType": "CreateBook", "scope": "any"})
 	if permReply.Status != processor.ReplyStatusAccepted {
 		t.Fatalf("CreatePermission rejected: %v", permReply)
@@ -432,7 +432,7 @@ func TestHelloLattice_Milestone5_AITraversal(t *testing.T) {
 	t.Logf("CreateBook permission: %s", permKey)
 
 	// Step 3: grant the permission to the operator role.
-	grantReply := submitOp(t, ctx, "GrantPermission", processor.LaneDefault,
+	grantReply := submitOp(t, ctx, "GrantPermission", "rbac", processor.LaneDefault,
 		bootstrap.BootstrapIdentityKey, map[string]any{"permKey": permKey, "roleKey": bootstrap.RoleOperatorKey})
 	if grantReply.Status != processor.ReplyStatusAccepted {
 		t.Fatalf("GrantPermission rejected: %v", grantReply)
@@ -440,7 +440,7 @@ func TestHelloLattice_Milestone5_AITraversal(t *testing.T) {
 	t.Log("CreateBook granted to operator role")
 
 	// Step 4: assign the agent to the operator role.
-	assignReply := submitOp(t, ctx, "AssignRole", processor.LaneDefault,
+	assignReply := submitOp(t, ctx, "AssignRole", "rbac", processor.LaneDefault,
 		bootstrap.BootstrapIdentityKey, map[string]any{"actorKey": agentKey, "roleKey": bootstrap.RoleOperatorKey})
 	if assignReply.Status != processor.ReplyStatusAccepted {
 		t.Fatalf("AssignRole rejected: %v", assignReply)
@@ -533,7 +533,7 @@ capFound:
 
 	// Step 10: submit CreateBook as the agent.
 	agentBookTitle := "Hello Lattice (AI Agent)"
-	agentBookReply := submitOp(t, ctx, "CreateBook", processor.LaneDefault, agentKey,
+	agentBookReply := submitOp(t, ctx, "CreateBook", "book", processor.LaneDefault, agentKey,
 		map[string]any{"title": agentBookTitle})
 	if agentBookReply.Status != processor.ReplyStatusAccepted {
 		t.Fatalf("agent CreateBook rejected: %v", agentBookReply)
@@ -663,7 +663,7 @@ func TestHelloLattice_Milestone6_RollbackBookDDL(t *testing.T) {
 		"metaKey":          bookDDLKey,
 		"expectedRevision": expectedRevision,
 	}
-	tombReply := submitOpWithHint(t, ctx, "TombstoneMetaVertex", processor.LaneMeta,
+	tombReply := submitOpWithHint(t, ctx, "TombstoneMetaVertex", "root", processor.LaneMeta,
 		bootstrap.BootstrapIdentityKey, tombPayload,
 		&processor.ContextHint{Reads: []string{bookDDLKey}})
 	if tombReply.Status != processor.ReplyStatusAccepted {
@@ -711,7 +711,7 @@ func TestHelloLattice_Milestone6_RollbackBookDDL(t *testing.T) {
 	// as the bootstrap operator (who has CreateBook granted via Milestone 5
 	// if that ran, or as the operator whose CreateBook grant exists in the
 	// cache). A rejection with any non-accepted status confirms the DDL is gone.
-	createReply := submitOp(t, ctx, "CreateBook", processor.LaneDefault,
+	createReply := submitOp(t, ctx, "CreateBook", "book", processor.LaneDefault,
 		bootstrap.BootstrapIdentityKey, map[string]any{"title": "Should be rejected"})
 	if createReply.Status == processor.ReplyStatusAccepted {
 		t.Error("CreateBook accepted after book DDL tombstone — DDL cache should have evicted the entry")
@@ -732,7 +732,7 @@ func testCtx(t *testing.T) context.Context {
 
 // submitOp publishes an OperationEnvelope to ops.<lane> via JetStream and
 // waits for the Processor's reply on a NATS core inbox.
-func submitOp(t *testing.T, ctx context.Context, operationType string, lane processor.Lane, actor string, payload map[string]any) *processor.OperationReply {
+func submitOp(t *testing.T, ctx context.Context, operationType string, class string, lane processor.Lane, actor string, payload map[string]any) *processor.OperationReply {
 	t.Helper()
 
 	payloadBytes, err := json.Marshal(payload)
@@ -749,6 +749,7 @@ func submitOp(t *testing.T, ctx context.Context, operationType string, lane proc
 		RequestID:     reqID,
 		Lane:          lane,
 		OperationType: operationType,
+		Class:         class,
 		Actor:         actor,
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Payload:       json.RawMessage(payloadBytes),
@@ -792,7 +793,7 @@ func submitOp(t *testing.T, ctx context.Context, operationType string, lane proc
 // submitOpWithHint is like submitOp but attaches a ContextHint to the envelope.
 // Required for operations such as TombstoneMetaVertex that declare reads via
 // ContextHint.Reads so the Hydrator loads the keys into the Starlark state.
-func submitOpWithHint(t *testing.T, ctx context.Context, operationType string, lane processor.Lane, actor string, payload map[string]any, hint *processor.ContextHint) *processor.OperationReply {
+func submitOpWithHint(t *testing.T, ctx context.Context, operationType string, class string, lane processor.Lane, actor string, payload map[string]any, hint *processor.ContextHint) *processor.OperationReply {
 	t.Helper()
 
 	payloadBytes, err := json.Marshal(payload)
@@ -809,6 +810,7 @@ func submitOpWithHint(t *testing.T, ctx context.Context, operationType string, l
 		RequestID:     reqID,
 		Lane:          lane,
 		OperationType: operationType,
+		Class:         class,
 		Actor:         actor,
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Payload:       json.RawMessage(payloadBytes),
