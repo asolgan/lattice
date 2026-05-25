@@ -35,7 +35,7 @@ up:
 	@echo "==> Building processor binary..."
 	go build -o bin/processor ./cmd/processor
 	@echo "==> Starting processor in background..."
-	NATS_URL=$(NATS_URL) PROCESSOR_FILTER=ops.default,ops.urgent,ops.system,ops.meta ./bin/processor >processor.log 2>&1 </dev/null &
+	NATS_URL=$(NATS_URL) PROCESSOR_FILTER=ops.default,ops.urgent,ops.system,ops.meta LATTICE_AUTH_MODE=stub ./bin/processor >processor.log 2>&1 </dev/null &
 	@echo "==> Lattice ready."
 
 ## down — Tear down all containers and remove the bootstrap JSON.
