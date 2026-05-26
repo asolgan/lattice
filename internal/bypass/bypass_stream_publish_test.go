@@ -123,7 +123,10 @@ func TestBypass2_ValidLanePublish_IsConsumed(t *testing.T) {
 
 // TestBypass2_FilterSubjects_CoverageCheck verifies that the production
 // consumer's FilterSubjects exactly match the values from step1_consume.go's
-// applyDefaults(): ["ops.default.>", "ops.urgent.>", "ops.system.>", "ops.meta.>"].
+// applyDefaults(): ["ops.default", "ops.urgent", "ops.system", "ops.meta"].
+// Production publishers send two-segment subjects (ops.<lane>); the consumer
+// filter must match the publish form exactly. NATS '>' matches one-or-more
+// trailing segments and does not cover the two-segment form by itself.
 // This test fails if the defaults change without updating the bypass test.
 func TestBypass2_FilterSubjects_CoverageCheck(t *testing.T) {
 	ctx, conn := setupBypassHarness(t)
@@ -147,10 +150,10 @@ func TestBypass2_FilterSubjects_CoverageCheck(t *testing.T) {
 
 	filters := info.Config.FilterSubjects
 	expected := map[string]bool{
-		"ops.default.>": false,
-		"ops.urgent.>":  false,
-		"ops.system.>":  false,
-		"ops.meta.>":    false,
+		"ops.default": false,
+		"ops.urgent":  false,
+		"ops.system":  false,
+		"ops.meta":    false,
 	}
 	for _, f := range filters {
 		if _, ok := expected[f]; ok {
