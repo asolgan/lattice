@@ -368,21 +368,54 @@ def execute(state, op):
             fail("UnknownMetaVertex: " + meta_key)
         # force=True skips the revision assertion (last-writer-wins merge policy).
         force = hasattr(p, "force") and p.force == True
-        # Also update the .compensation aspect to record that this
-        # tombstone is irreversible in Phase 1.
-        mutations = [
-            make_tombstone(meta_key),
-            make_update(meta_key + ".compensation",
-                {"inverseOperationType": "none",
-                 "note": "Tombstone is irreversible in Phase 1; operator must recreate via CreateMetaVertex with prior payload."}),
-        ]
+
+        # Cascade the tombstone to the root vertex and every aspect key of
+        # the meta-vertex's class, so a delete leaves no live aspects behind
+        # (no orphaned description/script/spec keys). The class of the
+        # hydrated root selects the aspect set. compensation is tombstoned
+        # like any other aspect: no Go code reads .compensation from Core KV
+        # post-commit (the compensating-op contract is resolved client-side
+        # from the forward op's reply), so removing it yields a fully
+        # coherent delete.
+        target_class = ""
+        root = state[meta_key]
+        if hasattr(root, "class"):
+            target_class = getattr(root, "class")
+        is_lens = target_class == "meta.lens"
+
+        if is_lens:
+            # Union of the DDL-created lens aspects (.description,
+            # .compensation) and the primordial-seeded lens aspects
+            # (.targetBucket, .cypherRule, .outputSchema) so a delete leaves
+            # no live orphan regardless of how the lens was created.
+            # Tombstoning an aspect the lens never had writes a harmless
+            # isDeleted entry (never read, evicted from cache) — strictly
+            # safer than leaving a live aspect under a dead root.
+            aspect_suffixes = [".canonicalName", ".description", ".spec",
+                               ".compensation", ".targetBucket", ".cypherRule",
+                               ".outputSchema"]
+        else:
+            aspect_suffixes = [".canonicalName", ".permittedCommands",
+                               ".description", ".script", ".inputSchema",
+                               ".outputSchema", ".fieldDescription",
+                               ".examples", ".compensation"]
+
+        # The root tombstone is mutations[0] so expectedRevision (when
+        # present) lands on the root only. Aspect tombstones are
+        # unconditional and carry no revision assertion — each aspect has an
+        # independent NATS revision sequence, so asserting a shared revision
+        # would cause spurious conflicts.
+        mutations = [make_tombstone(meta_key)]
+        for suffix in aspect_suffixes:
+            mutations.append(make_tombstone(meta_key + suffix))
+
         if hasattr(p, "expectedRevision") and not force:
             expected_rev = p.expectedRevision
             if type(expected_rev) != type(0):
                 fail("InvalidArgument: expectedRevision must be an integer")
             # Propagate revision assertion to the substrate AtomicBatch layer
             # (CommitterImpl already handles mutation["expectedRevision"] at
-            # step8_commit.go lines 131-140 — no Committer changes needed).
+            # step8_commit.go — no Committer changes needed).
             mutations[0]["expectedRevision"] = expected_rev
         events = [{"class": "MetaVertexTombstoned", "data": {"metaKey": meta_key}}]
         return {"mutations": mutations, "events": events,

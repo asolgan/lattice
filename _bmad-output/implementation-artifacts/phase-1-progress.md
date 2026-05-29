@@ -22,11 +22,13 @@ Plan: `_bmad-output/planning-artifacts/sprint-change-proposal-2026-05-28.md`. Pr
 |---|---|---|---|
 | 1.5.1 | Substrate write-path contracts (ctx + per-key revisions) | ✅ SHIPPED (CI green) | `09edf5c` |
 | 1.5.3 | UpdateMetaVertex expansion | ✅ SHIPPED (CI green) | `d58311c` |
-| 1.5.2 | DDL tombstone coherence (M6) | 🔧 in dev | — |
-| 1.5.4 | Capability auth freshness coherence (B4) | queued (Wave A) | — |
+| 1.5.2 | DDL tombstone coherence (M6) | ✅ SHIPPED (CI green) | `pending` |
+| 1.5.4 | Capability auth freshness coherence (B4) | 🔧 next (Wave A) | — |
 | 1.5.5 | Route cap-pkg installs through Processor (M5) | queued (Wave B; needs 1.5.1) | — |
 | 1.5.7 | Contract conformance suite + freeze | queued (Wave C; needs 1.5.1+1.5.3) | — |
 | 1.5.6 | Re-enable Hello Lattice M4–M6 + flip Gate 5 | queued (Wave D) | — |
+
+**1.5.2 note:** CR found 1 P1 (primordial-lens cascade mismatch) + 1 P2. Winston adjudicated (CAR resolution in `cmd/processor/CONTRACT-AMENDMENT-REQUEST.md`): (a) ratified tombstoning `.compensation` — `ReadCompensation` already maps `isDeleted:true`→`ErrCompensationAspectMissing`; (b) FIXED F-1 by making the lens cascade the UNION of DDL-created + primordial lens aspects (no live orphan for either lens kind; absent-aspect tombstones are harmless). **RESIDUAL → Story 1.5.5:** no guard prevents `TombstoneMetaVertex`/`UpdateMetaVertex` from targeting primordial kernel entities (kernel root DDL, CapabilityLens) — a pre-existing catastrophic foot-gun; needs a protected-key mechanism, deferred to the install-routing/kernel-protection story.
 
 **1.5.3 note:** CR clean (0 P0/P1, 2 P2 + 1 nit), all adjudicated and fixed inline by Winston: permittedCommands per-element string check (parity with Create); fail-the-forward-op when a changed field's prior value is unavailable (a null prior would bake an un-submittable rollback) instead of capturing nil; doc wording. Fixed a latent description-blanking bug as part of "mutate only fields present".
 

@@ -126,14 +126,11 @@ func TestGate4_CompensatingOpRollback(t *testing.T) {
 			t.Fatalf("DiscoverDDL after tombstone: expected ErrDDLNotFound, got: %v", err)
 		}
 
-		// MF-2 (AC3): after tombstone, .compensation aspect must say "none".
-		// Option A: aspect remains readable (parent tombstone does NOT filter it).
-		tombCompData, err := tr.ReadCompensation(ctx, metaKey)
-		if err != nil {
-			t.Fatalf("ReadCompensation after tombstone: %v", err)
-		}
-		if tombCompData["inverseOperationType"] != "none" {
-			t.Fatalf("inverseOperationType after tombstone: got %v want none", tombCompData["inverseOperationType"])
+		// MF-2 (AC3): the tombstone cascades to every aspect, .compensation
+		// included, so a deleted meta-vertex leaves no live compensation to
+		// read. ReadCompensation reports the aspect as tombstoned/absent.
+		if _, err := tr.ReadCompensation(ctx, metaKey); !errors.Is(err, aiagent.ErrCompensationAspectMissing) {
+			t.Fatalf("ReadCompensation after tombstone: want ErrCompensationAspectMissing, got: %v", err)
 		}
 
 		// Step 8: verify isDeleted: true in Core KV.

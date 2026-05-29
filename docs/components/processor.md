@@ -193,7 +193,7 @@ Processor read surface):
 |---|---|---|
 | `CreateMetaVertex` | `TombstoneMetaVertex` | Tombstones the newly-created meta-vertex. `expectedRevision` from commit response prevents racing compensating ops. |
 | `UpdateMetaVertex` | `UpdateMetaVertex` | Restores the prior values of exactly the fields the forward op changed (see [`UpdateMetaVertex` field set](#updatemetavertex-field-set)). The `.compensation` aspect stores those prior values concretely (read from hydrated state at script execution time). |
-| `TombstoneMetaVertex` | none (Phase 1 irreversible) | `.compensation` aspect encodes `inverseOperationType: "none"` with a note that prior payload must be known by the operator. Phase 1: operator responsibility. |
+| `TombstoneMetaVertex` | none (Phase 1 irreversible) | The tombstone cascades to the root **and every aspect** (`.compensation` included), so no live aspect survives the delete. There is no machine-readable compensation; re-creating the meta-vertex is the operator's responsibility (a fresh `CreateMetaVertex` with the prior payload mints a new NanoID). |
 | rbac-domain `CreateRole` | rbac-domain `TombstoneRole` | Phase 2 scope — rbac-domain DDL carries its own `.compensation` aspect. |
 | rbac-domain `AssignRole` / `GrantPermission` | rbac-domain `RevokeRole` / `RevokePermission` | Phase 2 scope. |
 
@@ -282,6 +282,53 @@ permittedCommands, inputSchema, outputSchema, fieldDescription, examples,
 spec` — never to `.compensation` (independent sequence; would cause spurious
 conflicts). Multi-aspect atomic OCC across several changed aspects is a known
 **Phase-2 limitation**.
+
+### `TombstoneMetaVertex` cascade and cache eviction
+
+A tombstone must leave Core KV and the DDL cache fully coherent: no orphaned
+aspect keys and no stale cache entry that keeps hydrating a deleted class.
+
+**Cascade tombstone (Starlark `TombstoneMetaVertex` branch).** After the
+`vertex_alive` liveness check, the script emits a `make_tombstone` for the root
+`vtx.meta.<id>` key **and for every aspect key of the meta-vertex's class**. The
+class is read from the hydrated root (`getattr(root, "class")`); `meta.lens`
+selects the lens aspect set, everything else the DDL set:
+
+| Class | Aspect keys cascaded (in addition to the root) |
+|---|---|
+| `meta.ddl.*` | `.canonicalName`, `.permittedCommands`, `.description`, `.script`, `.inputSchema`, `.outputSchema`, `.fieldDescription`, `.examples`, `.compensation` |
+| `meta.lens` | `.canonicalName`, `.description`, `.spec`, `.compensation`, `.targetBucket`, `.cypherRule`, `.outputSchema` (union of DDL-created and primordial-seeded lens aspects — tombstoning an aspect a given lens lacks writes a harmless `isDeleted` entry) |
+
+`.compensation` is tombstoned like any other aspect — no Go code reads
+`.compensation` from Core KV post-commit (the compensating-op contract is
+resolved client-side from the forward op's reply, Guardrail 1), so removing it
+breaks nothing and yields a fully-coherent delete.
+
+The root tombstone is `mutations[0]`, so `expectedRevision` (when present, and
+not bypassed by `force: true`) is asserted on the **root only**. Aspect
+tombstones are unconditional: each aspect has an independent NATS revision
+sequence, so a shared revision assertion would cause spurious conflicts. The
+`MetaVertexTombstoned` event is emitted with the `metaKey`.
+
+> Residual: aspect keys orphaned by tombstones committed **before** this cascade
+> shipped are not retroactively cleaned; a background GC sweep is out of scope.
+
+**Cache eviction (`DDLCache.loadMetaVertex`).** The cached root document carries
+an `isDeleted` flag. Immediately after unmarshaling the root — **before** any
+aspect read or `canonicalName` resolution — a tombstoned root (`isDeleted ==
+true`) returns absent (`ref, false, nil`). Because `Invalidate` re-runs
+`loadMetaVertex`, this drops the entry from both `byName` and `byMetaPK` and
+never re-inserts it; a direct load of a tombstoned vertex also reports absent.
+The net effect: after a `TombstoneMetaVertex` commits, `Lookup` /
+`LookupByMetaKey` report absent and follow-up operations on the class are no
+longer hydrated (they fall through to the permissive-default / `NoDDLForClass`
+path).
+
+**Step-8 invalidation dedup.** A cascade emits many `vtx.meta.<id>.*` mutations
+that all normalize to the same 3-segment root. The post-commit invalidation loop
+collapses the committed `vtx.meta.*` mutation keys to their distinct roots and
+calls `DDLCache.Invalidate` **once per root** (`Invalidate` is idempotent; this
+just avoids redundant Core KV reads).
 
 ---
 

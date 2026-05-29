@@ -306,3 +306,63 @@ and in this documentation.
 Winston should confirm whether `crypto.sha256NanoID` should be
 documented in the sandbox builtins inventory or treated as a private
 implementation detail of the identity domain scripts.
+
+---
+
+## Story 1.5.2 — TombstoneMetaVertex now tombstones `.compensation`; gate4 assertion updated
+
+**Context:** §3.1 (LOCKED) of story 1.5.2 cascades `make_tombstone` to the root
+**and every aspect** of a tombstoned meta-vertex, including `.compensation`, and
+removes the prior `make_update(meta_key + ".compensation", {inverseOperationType:
+"none", note: "...irreversible..."})` rewrite.
+
+**Conflict surfaced:** the pre-existing Gate-4 rollback test
+(`internal/aiagent/gate4_rollback_test.go`, DDL_VertexType subtest) asserted that
+after a tombstone, `Traverser.ReadCompensation` still SUCCEEDS and returns
+`inverseOperationType == "none"` (the old "irreversible note" contract, MF-2/AC3,
+"Option A: aspect remains readable"). With the cascade, `.compensation` is
+tombstoned, so `ReadCompensation` now returns `ErrCompensationAspectMissing`
+(tombstoned). The two requirements — "remove the none-rewrite" (§3.1, LOCKED) and
+"gate4 still passes" (§6) — were mutually exclusive against the test as written.
+
+**Resolution applied (flagged for Winston):** the gate4 file is outside this
+story's stated confine set, but its MF-2/AC3 assertion *is* a direct test of the
+behavior §3.1 changes. I updated that single assertion (lines ~129-137) to expect
+`ErrCompensationAspectMissing` after tombstone instead of `inverseOperationType ==
+"none"`. No production aiagent code changed. The doc pairing-table row for
+`TombstoneMetaVertex` in `docs/components/processor.md` was updated to match (no
+machine-readable compensation survives a tombstone). `ReadCompensation` itself
+already handled the tombstoned case (returns `ErrCompensationAspectMissing`) —
+no change there.
+
+Winston: please confirm this reconciliation of the MF-2/AC3 acceptance criterion
+(compensation is no longer readable post-tombstone; re-create is operator
+responsibility) is the intended Phase-1.5 contract.
+
+---
+
+### WINSTON RESOLUTION — Story 1.5.2 (2026-05-29)
+
+1. **Compensation-tombstone (MF-2/AC3): RATIFIED.** A fully-tombstoned meta-vertex
+   has no readable compensation. `Traverser.ReadCompensation` already maps a
+   tombstoned aspect (`isDeleted:true`) to `ErrCompensationAspectMissing`
+   (traversal.go:268) by design, so callers using `errors.Is` handle it gracefully.
+   The gate4 MF-2/AC3 assertion update (expect `ErrCompensationAspectMissing` after
+   tombstone) is the correct reconciliation. Re-create after tombstone is operator
+   responsibility (Phase-1 tombstone is irreversible).
+
+2. **Primordial-lens cascade (CR F-1): FIXED in 1.5.2.** The lens cascade set is now
+   the UNION of DDL-created (`.description`, `.compensation`) and primordial-seeded
+   (`.targetBucket`, `.cypherRule`, `.outputSchema`) lens aspects plus shared
+   (`.canonicalName`, `.spec`). Tombstoning an aspect a given lens lacks writes a
+   harmless `isDeleted` entry (never read, cache-evicted) — strictly safer than
+   leaving a live aspect under a dead root. No live orphan for either lens kind.
+
+3. **Kernel/primordial tombstone PROTECTION (CR F-1 foot-gun): DEFERRED to Story
+   1.5.5.** There is no guard preventing `TombstoneMetaVertex` (or `UpdateMetaVertex`)
+   from targeting primordial kernel entities — including the kernel root DDL
+   (`MetaRootKey`) and the `CapabilityLens` that powers auth — which would be
+   catastrophic. This is a PRE-EXISTING gap (not introduced by 1.5.2) and needs a
+   protected-key mechanism (where the protected set lives + who enforces it). It
+   belongs with 1.5.5 (route installs through Processor / kernel-protection surface).
+   Recorded as a residual in phase-1-progress.md.

@@ -162,15 +162,29 @@ func (c *CommitterImpl) Commit(ctx context.Context, env *OperationEnvelope, resu
 		return CommitAck{}, batchErr
 	}
 
-	// Synchronous DDL cache invalidation for any committed `vtx.meta.*` mutation.
+	// Synchronous DDL cache invalidation for any committed `vtx.meta.*`
+	// mutation. A single operation (e.g. a cascade tombstone) emits many
+	// aspect mutations under one meta-vertex root; collapse them to the
+	// distinct 3-segment roots so each root is invalidated exactly once
+	// (Invalidate is idempotent, but this avoids redundant KV reads).
 	if c.DDLs != nil && hasMetaVertexMutation(result.Mutations) {
+		seen := map[string]struct{}{}
 		for _, m := range result.Mutations {
 			if !strings.HasPrefix(m.Key, "vtx.meta.") {
 				continue
 			}
-			if err := c.DDLs.Invalidate(ctx, m.Key); err != nil {
+			parts := strings.Split(m.Key, ".")
+			if len(parts) < 3 {
+				continue
+			}
+			root := strings.Join(parts[:3], ".")
+			if _, dup := seen[root]; dup {
+				continue
+			}
+			seen[root] = struct{}{}
+			if err := c.DDLs.Invalidate(ctx, root); err != nil {
 				c.Logger.Warn("step 8: DDL cache invalidation failed (commit already durable)",
-					"key", m.Key, "error", err)
+					"key", root, "error", err)
 			}
 		}
 	}

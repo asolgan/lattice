@@ -158,11 +158,18 @@ func (c *DDLCache) loadMetaVertex(ctx context.Context, root string, _ []string) 
 		return ref, false, fmt.Errorf("read root %s: %w", root, err)
 	}
 	var rootDoc struct {
-		Class string                 `json:"class"`
-		Data  map[string]interface{} `json:"data"`
+		Class     string                 `json:"class"`
+		IsDeleted bool                   `json:"isDeleted"`
+		Data      map[string]interface{} `json:"data"`
 	}
 	if err := json.Unmarshal(rootEntry.Value, &rootDoc); err != nil {
 		return ref, false, fmt.Errorf("unmarshal root %s: %w", root, err)
+	}
+	// A tombstoned root means the whole meta-vertex is gone. Report absent
+	// before any aspect reads so Invalidate drops the entry from byName /
+	// byMetaPK (and never re-inserts it) and any direct load reports absent.
+	if rootDoc.IsDeleted {
+		return ref, false, nil
 	}
 	ref.Kind = deriveDDLKind(rootDoc.Class)
 
