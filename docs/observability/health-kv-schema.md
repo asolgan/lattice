@@ -1,7 +1,7 @@
 # Health KV Schema — Phase 1
 
 > **Canonical reference.** This is the authoritative Health KV key inventory for Phase 1.
-> When in doubt, trust this file over `_bmad-output/planning-artifacts/data-contracts.md` §5
+> When in doubt, trust this file over [`/docs/contracts/05-health-kv.md`](/docs/contracts/05-health-kv.md) §5
 > for key-level details. Contract §5 retains schema-level contracts only (bucket name, key
 > naming conventions, document shape).
 
