@@ -38,9 +38,20 @@ package bootstrap
 // needed (Guardrail 1).
 //
 // TombstoneMetaVertex and UpdateMetaVertex each accept an optional
-// expectedRevision field for conflict detection. UpdateMetaVertex also
-// writes the prior description into .compensation so the next rollback
-// restores the correct prior state.
+// expectedRevision field for conflict detection.
+//
+// UpdateMetaVertex mutates only the self-description aspects present in the
+// payload, preserving the meta-vertex's metaKey identity and canonicalName.
+// For DDL classes the updatable set is {description, script,
+// permittedCommands, inputSchema, outputSchema, fieldDescription, examples};
+// for meta.lens it is {description, spec}. canonicalName is immutable and
+// ignored if supplied; an empty update (no updatable field) is rejected.
+// .compensation captures the prior values of exactly the changed fields so
+// the next rollback restores the correct prior state. expectedRevision, when
+// present, is applied to the first present field in canonical order only —
+// each aspect has its own NATS revision sequence, so multi-aspect atomic OCC
+// is a Phase-2 limitation. The caller must declare meta_key+".<field>" for
+// each field it updates in ContextHint.Reads.
 const MetaRootDDLScript = `
 def make_vtx(key, cls, data):
     return {"op": "create", "key": key,
@@ -207,37 +218,145 @@ def execute(state, op):
         meta_key = required_string(p, "metaKey")
         if not vertex_alive(state, meta_key):
             fail("UnknownMetaVertex: " + meta_key)
-        # Update description aspect (the structural-stable target).
-        desc = ""
-        if hasattr(p, "description") and type(p.description) == type(""):
-            desc = p.description
-        # Read prior description from state for .compensation aspect.
-        # Caller must declare meta_key + ".description" in ContextHint.Reads.
-        # state entries are structs; the .data field is a dict (key access).
-        prior_desc = ""
-        desc_key = meta_key + ".description"
-        if desc_key in state and state[desc_key] != None:
-            d = state[desc_key]
-            if hasattr(d, "data") and type(d.data) == type({}) and "text" in d.data:
-                prior_desc = d.data["text"]
+
+        # The meta-vertex class selects the updatable field set. DDL classes
+        # expose all self-description aspects; meta.lens exposes description
+        # and spec. canonicalName is the stable logical identity and is never
+        # mutated here (ignored if supplied). compensation is script-managed.
+        target_class = ""
+        root = state[meta_key]
+        if hasattr(root, "class"):
+            target_class = getattr(root, "class")
+        is_lens = target_class == "meta.lens"
+
+        # Read the prior value of an aspect's data field from state for the
+        # .compensation payloadTemplate. Caller must declare meta_key+".<field>"
+        # in ContextHint.Reads. state entries are structs; .data is a dict.
+        def prior_data_field(suffix, data_field):
+            akey = meta_key + suffix
+            if akey not in state or state[akey] == None:
+                return None
+            d = state[akey]
+            if not hasattr(d, "data") or type(d.data) != type({}):
+                return None
+            if data_field not in d.data:
+                return None
+            return d.data[data_field]
+
+        # Capture a changed field's prior value for .compensation, failing
+        # the forward op if it is missing — a null prior would bake an
+        # un-submittable rollback (the inverse UpdateMetaVertex would reject
+        # the field). A missing prior means the aspect key was not declared
+        # in ContextHint.Reads (or the vertex is malformed).
+        def capture_prior(field, suffix, data_field):
+            pv = prior_data_field(suffix, data_field)
+            if pv == None:
+                fail("InvalidArgument: " + field +
+                     ": prior value unavailable for compensation; declare " +
+                     meta_key + suffix + " in ContextHint.Reads")
+            return pv
+
+        # Canonical field order. expectedRevision (OCC) is applied to the
+        # first present field in this order; .compensation is excluded
+        # because it has an independent NATS revision sequence.
+        mutations = []
+        prior_payload = {"metaKey": meta_key}
+
+        def add_string_field(field, suffix, data_field):
+            if not hasattr(p, field):
+                return
+            v = getattr(p, field)
+            if v == None or type(v) != type("") or len(v.strip()) == 0:
+                fail("InvalidArgument: " + field + ": required non-empty string")
+            v = v.strip()
+            mutations.append(make_update(meta_key + suffix, {data_field: v}))
+            prior_payload[field] = capture_prior(field, suffix, data_field)
+
+        def add_list_field(field, suffix, data_field, elem_string=False):
+            if not hasattr(p, field):
+                return
+            v = getattr(p, field)
+            if v == None or type(v) != type([]):
+                fail("InvalidArgument: " + field + ": required list")
+            if elem_string:
+                for c in v:
+                    if type(c) != type(""):
+                        fail("InvalidArgument: " + field + ": each entry must be a string")
+            mutations.append(make_update(meta_key + suffix, {data_field: v}))
+            prior_payload[field] = capture_prior(field, suffix, data_field)
+
+        def add_dict_field(field, suffix, data_field):
+            if not hasattr(p, field):
+                return
+            v = getattr(p, field)
+            if v == None or type(v) != type({}):
+                fail("InvalidArgument: " + field + ": required object")
+            mutations.append(make_update(meta_key + suffix, {data_field: v}))
+            prior_payload[field] = capture_prior(field, suffix, data_field)
+
+        # description applies to both DDL and lens classes.
+        add_string_field("description", ".description", "text")
+
+        if is_lens:
+            # spec is validated exactly as the Create-lens branch does and the
+            # decoded dict is stored verbatim as the .spec aspect data so
+            # Refractor's CoreKVSource can unmarshal a LensSpec directly.
+            if hasattr(p, "spec"):
+                spec_str = p.spec
+                if spec_str == None or type(spec_str) != type("") or len(spec_str.strip()) == 0:
+                    fail("InvalidArgument: spec: required non-empty string")
+                spec_obj = json.decode(spec_str.strip())
+                if type(spec_obj) != type({}):
+                    fail("InvalidArgument: spec: must be a JSON object string")
+                if "cypherRule" not in spec_obj:
+                    fail("InvalidArgument: spec.cypherRule: required")
+                if "targetType" not in spec_obj:
+                    fail("InvalidArgument: spec.targetType: required (postgres|nats_kv)")
+                if "targetConfig" not in spec_obj:
+                    fail("InvalidArgument: spec.targetConfig: required")
+                mutations.append(make_update(meta_key + ".spec", spec_obj))
+                # The .spec aspect stores the decoded dict verbatim, while the
+                # spec payload field is a JSON string. Re-encode the prior dict
+                # so the compensating UpdateMetaVertex can resubmit it.
+                prior_spec = None
+                spec_key = meta_key + ".spec"
+                if spec_key in state and state[spec_key] != None:
+                    sd = state[spec_key]
+                    if hasattr(sd, "data") and type(sd.data) == type({}):
+                        prior_spec = json.encode(sd.data)
+                if prior_spec == None:
+                    fail("InvalidArgument: spec: prior value unavailable for compensation; declare " +
+                         spec_key + " in ContextHint.Reads")
+                prior_payload["spec"] = prior_spec
+        else:
+            add_string_field("script", ".script", "source")
+            add_list_field("permittedCommands", ".permittedCommands", "commands", True)
+            add_string_field("inputSchema", ".inputSchema", "schema")
+            add_string_field("outputSchema", ".outputSchema", "schema")
+            add_dict_field("fieldDescription", ".fieldDescription", "fieldDescriptions")
+            add_list_field("examples", ".examples", "examples")
+
+        if len(mutations) == 0:
+            fail("InvalidArgument: UpdateMetaVertex: no updatable fields provided")
+
+        # .compensation lets a rollback restore the prior value of exactly the
+        # fields this op changed. payloadTemplate carries metaKey plus the
+        # prior value of each changed field; revisionTemplate stays empty.
+        mutations.append(make_update(meta_key + ".compensation",
+            {"inverseOperationType": "UpdateMetaVertex",
+             "payloadTemplate": prior_payload,
+             "revisionTemplate": {}}))
+
         force = hasattr(p, "force") and p.force == True
-        mutations = [
-            make_update(meta_key + ".description", {"text": desc}),
-            # Update .compensation to reflect post-update inverse.
-            # prior_desc is read from state at execution time.
-            make_update(meta_key + ".compensation",
-                {"inverseOperationType": "UpdateMetaVertex",
-                 "payloadTemplate": {"metaKey": meta_key, "description": prior_desc},
-                 "revisionTemplate": {}}),
-        ]
         if hasattr(p, "expectedRevision") and not force:
             expected_rev = p.expectedRevision
             if type(expected_rev) != type(0):
                 fail("InvalidArgument: expectedRevision must be an integer")
-            # Only apply expectedRevision to the description mutation
-            # (mutations[0]). The .compensation aspect has its own
-            # independent NATS revision sequence — applying the same
-            # revision would cause spurious RevisionConflict on later updates.
+            # Apply expectedRevision to the first field mutation only
+            # (mutations[0]). Each aspect has an independent NATS revision
+            # sequence, so multi-aspect atomic OCC is not expressible here;
+            # asserting the same revision across aspects would cause spurious
+            # RevisionConflict. Multi-aspect atomic OCC is a Phase-2 item.
             mutations[0]["expectedRevision"] = expected_rev
         events = [{"class": "MetaVertexUpdated", "data": {"metaKey": meta_key}}]
         return {"mutations": mutations, "events": events,

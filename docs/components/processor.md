@@ -192,7 +192,7 @@ Processor read surface):
 | Forward operation | Compensating operation | Notes |
 |---|---|---|
 | `CreateMetaVertex` | `TombstoneMetaVertex` | Tombstones the newly-created meta-vertex. `expectedRevision` from commit response prevents racing compensating ops. |
-| `UpdateMetaVertex` | `UpdateMetaVertex` | Restores prior description using the revision from the forward op's commit response. The `.compensation` aspect stores the prior description concretely (read from state at script execution time). |
+| `UpdateMetaVertex` | `UpdateMetaVertex` | Restores the prior values of exactly the fields the forward op changed (see [`UpdateMetaVertex` field set](#updatemetavertex-field-set)). The `.compensation` aspect stores those prior values concretely (read from hydrated state at script execution time). |
 | `TombstoneMetaVertex` | none (Phase 1 irreversible) | `.compensation` aspect encodes `inverseOperationType: "none"` with a note that prior payload must be known by the operator. Phase 1: operator responsibility. |
 | rbac-domain `CreateRole` | rbac-domain `TombstoneRole` | Phase 2 scope — rbac-domain DDL carries its own `.compensation` aspect. |
 | rbac-domain `AssignRole` / `GrantPermission` | rbac-domain `RevokeRole` / `RevokePermission` | Phase 2 scope. |
@@ -225,6 +225,63 @@ optional `expectedRevision` integer field. When present:
 
 Revision mismatch surfaces as `RevisionConflict` at the NATS layer — the same
 error code returned for any other revision-conditioned update conflict.
+
+### `UpdateMetaVertex` field set
+
+`UpdateMetaVertex` hot-fixes a meta-vertex's self-description aspects **in
+place**, preserving the vertex's `metaKey` identity. It never mints a new
+NanoID, so every caller holding the old key keeps working — there is no need
+for a `TombstoneMetaVertex` + `CreateMetaVertex` cycle to correct a DDL/Lens
+script.
+
+**Updatable fields** (each optional; mutate only those present in the payload):
+
+| Meta-vertex class | Updatable payload fields | Aspect written | Validation |
+|---|---|---|---|
+| `meta.ddl.*` | `description` | `.description` `{"text": v}` | non-empty string |
+| `meta.ddl.*` | `script` | `.script` `{"source": v}` | non-empty string |
+| `meta.ddl.*` | `permittedCommands` | `.permittedCommands` `{"commands": v}` | list of strings |
+| `meta.ddl.*` | `inputSchema` | `.inputSchema` `{"schema": v}` | non-empty string |
+| `meta.ddl.*` | `outputSchema` | `.outputSchema` `{"schema": v}` | non-empty string |
+| `meta.ddl.*` | `fieldDescription` | `.fieldDescription` `{"fieldDescriptions": v}` | dict |
+| `meta.ddl.*` | `examples` | `.examples` `{"examples": v}` | list |
+| `meta.lens` | `description` | `.description` `{"text": v}` | non-empty string |
+| `meta.lens` | `spec` | `.spec` (decoded dict, verbatim) | JSON object string with `cypherRule`, `targetType`, `targetConfig` — same validation as the `CreateMetaVertex` lens branch |
+
+**Identity and immutability rules:**
+
+- **`metaKey` is preserved.** It is read from the payload and reused verbatim;
+  the vertex root key and `canonicalName` are untouched.
+- **`canonicalName` is immutable.** It is the stable logical identity. If the
+  caller includes it in the payload it is **ignored** — neither mutated nor
+  treated as an error.
+- **`compensation` is script-managed**; callers never set it directly.
+- **An empty update is rejected.** If no updatable field is present (e.g. only
+  `metaKey`, or only the ignored `canonicalName`), the script fails with
+  `InvalidArgument: UpdateMetaVertex: no updatable fields provided`. Absent
+  fields are never blanked.
+
+**`ContextHint.Reads` requirement.** Beyond the vertex root key (needed for the
+liveness check), the caller MUST declare `<metaKey>.<field>` in
+`ContextHint.Reads` for **each field it intends to update**, so the Hydrator
+loads the prior aspect document into `state`. The script reads those prior
+values to build the `.compensation` `payloadTemplate`, which carries `metaKey`
+plus the prior value of **only the changed fields**. If a changed field's prior
+value is absent or malformed in state (typically a missing `ContextHint.Reads`
+declaration), the forward op **fails** with `InvalidArgument: <field>: prior
+value unavailable for compensation` rather than baking a `null` prior — a null
+prior would produce an un-submittable rollback. For `spec`, the prior `.spec`
+aspect dict is re-encoded to a JSON string so a compensating `UpdateMetaVertex`
+can resubmit it.
+
+**`expectedRevision` (OCC) — single-aspect assertion.** An update may now touch
+any subset of aspects, and each aspect has its own independent NATS revision
+sequence. `expectedRevision` is therefore applied to the `make_update` of the
+**first present field** in the canonical order `description, script,
+permittedCommands, inputSchema, outputSchema, fieldDescription, examples,
+spec` — never to `.compensation` (independent sequence; would cause spurious
+conflicts). Multi-aspect atomic OCC across several changed aspects is a known
+**Phase-2 limitation**.
 
 ---
 
