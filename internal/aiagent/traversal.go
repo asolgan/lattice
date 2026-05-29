@@ -15,9 +15,9 @@
 //  2. Agent picks an operationType from platformPermissions[].
 //  3. Agent calls DiscoverDDL to find the matching vtx.meta.<NanoID> by
 //     enumerating vtx.meta.* keys and reading .canonicalName aspects.
-//  4. Agent calls ReadDDLAspects for the five self-description aspects
-//     seeded by Story 5.1 (description, inputSchema, outputSchema,
-//     fieldDescription, examples).
+//  4. Agent calls ReadDDLAspects for the seven self-description aspects
+//     (description, inputSchema, outputSchema, fieldDescription, examples,
+//     script, permittedCommands).
 //  5. Agent constructs payload from inputSchema and submits to ops.default
 //     (or appropriate lane) — same Processor commit path as any human op.
 package aiagent
@@ -39,20 +39,25 @@ var ErrDDLNotFound = errors.New("aiagent: DDL not found for operation type")
 
 // ErrAspectMissing is returned by ReadDDLAspects when a required
 // self-description aspect is absent from the DDL meta-vertex.
+//
+// When the absence is caused by a missing KV key, the error also wraps
+// substrate.ErrKeyNotFound; callers can use errors.Is to check for either
+// sentinel independently. When caused by a tombstoned aspect envelope
+// (isDeleted: true), only ErrAspectMissing is wrapped.
 var ErrAspectMissing = errors.New("aiagent: required DDL aspect missing")
 
 // ExampleEntry represents one named usage example from a DDL's .examples
-// aspect (Story 5.1 shape: {"examples": [{"name":...,"payload":...,"expectedOutcome":...}]}).
+// aspect (shape: {"examples": [{"name":...,"payload":...,"expectedOutcome":...}]}).
 type ExampleEntry struct {
 	Name            string         `json:"name"`
 	Payload         map[string]any `json:"payload"`
 	ExpectedOutcome string         `json:"expectedOutcome"`
 }
 
-// DDLAspects holds the five self-description aspects of a DDL meta-vertex
-// seeded by Story 5.1. These give an AI agent (or any traverser) full
-// knowledge of an operation's purpose, input contract, output contract,
-// per-field guidance, and usage examples.
+// DDLAspects holds the seven self-description aspects of a DDL meta-vertex.
+// These give an AI agent (or any traverser) full knowledge of an
+// operation's purpose, input contract, output contract, per-field
+// guidance, usage examples, execution script, and permitted command names.
 type DDLAspects struct {
 	// Description is the markdown plain-language description of the DDL.
 	// Source: vtx.meta.<id>.description → data.text
@@ -73,6 +78,16 @@ type DDLAspects struct {
 	// Examples is the list of named usage examples for this DDL.
 	// Source: vtx.meta.<id>.examples → data.examples
 	Examples []ExampleEntry
+
+	// Script is the Starlark source of the DDL's execute(state, op) function.
+	// Source: vtx.meta.<id>.script → data.source
+	Script string
+
+	// PermittedCommands lists the operationType strings that trigger this DDL.
+	// An agent constructing an operation envelope must set Class to one of
+	// these values.
+	// Source: vtx.meta.<id>.permittedCommands → data.commands
+	PermittedCommands []string
 }
 
 // Traverser is the cold-start traversal client for a Lattice-aware AI agent.
@@ -87,7 +102,16 @@ type Traverser struct {
 // NewTraverser constructs a Traverser. coreBucket is typically "core-kv";
 // capBucket is typically "capability-kv". Both names must match the
 // deployment's bucket provisioning.
+//
+// Panics if conn is nil or either bucket name is empty — these are
+// programming errors, not runtime conditions.
 func NewTraverser(conn *substrate.Conn, coreBucket, capBucket string) *Traverser {
+	if conn == nil {
+		panic("aiagent: NewTraverser: conn must not be nil")
+	}
+	if coreBucket == "" || capBucket == "" {
+		panic("aiagent: NewTraverser: bucket names must not be empty")
+	}
 	return &Traverser{
 		conn:       conn,
 		coreBucket: coreBucket,
@@ -102,6 +126,13 @@ func NewTraverser(conn *substrate.Conn, coreBucket, capBucket string) *Traverser
 //
 // Returns ErrKeyNotFound (wrapped) when no capability entry exists for the
 // actor. Callers should treat this as "agent has no capabilities yet".
+//
+// Staleness note: the returned doc reflects a Refractor projection that
+// may have been written some time ago. The Processor enforces
+// AuthFreshnessExceeded independently based on doc.ProjectedAt vs. its
+// configured ceiling. Callers in latency-sensitive paths should check
+// doc.ProjectedAt against their local clock before submitting operations;
+// a stale doc will be rejected by the Processor with AuthFreshnessExceeded.
 func (t *Traverser) ReadCapability(ctx context.Context, actorID string) (*processor.CapabilityDoc, error) {
 	key := "cap.identity." + actorID
 	entry, err := t.conn.KVGet(ctx, t.capBucket, key)
@@ -125,11 +156,25 @@ func (t *Traverser) ReadCapability(ctx context.Context, actorID string) (*proces
 // Returns (metaVertexKey, nil) on success where metaVertexKey is a valid
 // vtx.meta.<NanoID> key. Returns ("", ErrDDLNotFound) when no DDL with the
 // requested operationType as its canonicalName is found.
+//
+// Returns an error (not ErrDDLNotFound) if more than one live meta-vertex
+// shares the same canonicalName — this indicates an inconsistent cell state
+// (e.g. two concurrent CreateMetaVertex ops committed without conflict
+// detection).
+//
+// Performance note: DiscoverDDL scans all Core KV keys on every call,
+// filtering to 3-segment vtx.meta.* candidates client-side before issuing
+// KVGet calls. KVListKeys is O(all keys in the bucket), which becomes
+// expensive as Core KV grows to thousands of non-meta keys. A
+// KVListKeysByPrefix("vtx.meta.") substrate method plus optional
+// per-Traverser DDL caching is tracked as contracts-hardening work.
 func (t *Traverser) DiscoverDDL(ctx context.Context, operationType string) (string, error) {
 	keys, err := t.conn.KVListKeys(ctx, t.coreBucket)
 	if err != nil {
 		return "", fmt.Errorf("aiagent: list Core KV keys: %w", err)
 	}
+
+	var matches []string
 
 	for _, key := range keys {
 		// Only consider 3-segment vtx.meta.* vertex keys.
@@ -157,7 +202,7 @@ func (t *Traverser) DiscoverDDL(ctx context.Context, operationType string) (stri
 			continue
 		}
 		if aspDoc.Data.Value == operationType {
-			// Story 5.3: guard against tombstoned meta-vertices.
+			// Guard against tombstoned meta-vertices.
 			// TombstoneMetaVertex only tombstones the vertex key itself, not
 			// the .canonicalName aspect — so the aspect may still be readable
 			// even after the vertex is tombstoned. Read the 3-segment vertex
@@ -173,15 +218,27 @@ func (t *Traverser) DiscoverDDL(ctx context.Context, operationType string) (stri
 			if jsonErr := json.Unmarshal(vtxEntry.Value, &vtxDoc); jsonErr != nil || vtxDoc.IsDeleted {
 				continue
 			}
-			return key, nil
+			matches = append(matches, key)
 		}
 	}
 
-	return "", fmt.Errorf("%w: %s", ErrDDLNotFound, operationType)
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("%w: %s", ErrDDLNotFound, operationType)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("aiagent: multiple live DDLs with canonicalName %q; cell is in inconsistent state", operationType)
+	}
 }
 
 // ErrCompensationAspectMissing is returned by ReadCompensation when the
 // .compensation aspect is absent from the DDL meta-vertex.
+//
+// When the absence is caused by a missing KV key, the error also wraps
+// substrate.ErrKeyNotFound; callers can use errors.Is to check for either
+// sentinel independently. When caused by a tombstoned aspect envelope
+// (isDeleted: true), only ErrCompensationAspectMissing is wrapped.
 var ErrCompensationAspectMissing = errors.New("aiagent: .compensation aspect missing")
 
 // ReadCompensation reads the .compensation aspect from a DDL meta-vertex.
@@ -189,9 +246,9 @@ var ErrCompensationAspectMissing = errors.New("aiagent: .compensation aspect mis
 // substitution from their commit response values.
 //
 // The compensation contract lives in the DDL meta-vertex as a sixth
-// self-description aspect (Story 5.3). The Processor never reads or
-// interprets .compensation aspects (Guardrail 2 — no new Processor read
-// surface); this method is the sole client-side read path.
+// self-description aspect. The Processor never reads or interprets
+// .compensation aspects (Guardrail 2 — no new Processor read surface);
+// this method is the sole client-side read path.
 func (t *Traverser) ReadCompensation(ctx context.Context, metaKey string) (map[string]any, error) {
 	key := metaKey + ".compensation"
 	entry, err := t.conn.KVGet(ctx, t.coreBucket, key)
@@ -199,7 +256,7 @@ func (t *Traverser) ReadCompensation(ctx context.Context, metaKey string) (map[s
 		return nil, fmt.Errorf("%w: at %s: %w", ErrCompensationAspectMissing, metaKey, err)
 	}
 
-	// Aspect envelope shape (Story 5.1 convention):
+	// Aspect envelope shape:
 	//   {"class": "compensation", "isDeleted": false, "data": {...}}
 	var aspDoc struct {
 		IsDeleted bool           `json:"isDeleted"`
@@ -217,14 +274,43 @@ func (t *Traverser) ReadCompensation(ctx context.Context, metaKey string) (map[s
 	return aspDoc.Data, nil
 }
 
-// ReadDDLAspects reads the five self-description aspects seeded by Story 5.1
-// from a DDL meta-vertex. All five aspects are required; missing any returns
+// aspectEnvelope is a decode helper for aspect envelope documents.
+// All aspect keys in Core KV share the outer shape:
+//
+//	{"class": "<aspectClass>", "isDeleted": <bool>, "data": {...}}
+//
+// The Data field is left as json.RawMessage so each aspect can decode
+// its own data shape separately.
+type aspectEnvelope struct {
+	IsDeleted bool            `json:"isDeleted"`
+	Data      json.RawMessage `json:"data"`
+}
+
+// ReadDDLAspects reads the seven self-description aspects from a DDL
+// meta-vertex. All seven aspects are required; missing any returns
 // ErrAspectMissing (wrapped with the aspect name).
 //
 // This is step 4 of the cold-start traversal algorithm: after DiscoverDDL
 // returns the meta-vertex key, ReadDDLAspects gives the agent full schema
 // knowledge to construct a valid payload.
+//
+// A liveness pre-check is performed first: if the vertex at ddlKey is
+// tombstoned or unreadable, an error is returned before any aspect reads.
+// This closes the TOCTOU window between DiscoverDDL and ReadDDLAspects
+// and makes ReadDDLAspects safe to call as a standalone API.
 func (t *Traverser) ReadDDLAspects(ctx context.Context, ddlKey string) (*DDLAspects, error) {
+	// Liveness pre-check: verify the DDL vertex itself is live before reading aspects.
+	vtxEntry, err := t.conn.KVGet(ctx, t.coreBucket, ddlKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w: vertex at %s: %w", ErrAspectMissing, ddlKey, err)
+	}
+	var vtxDoc struct {
+		IsDeleted bool `json:"isDeleted"`
+	}
+	if err := json.Unmarshal(vtxEntry.Value, &vtxDoc); err != nil || vtxDoc.IsDeleted {
+		return nil, fmt.Errorf("aiagent: DDL %s is tombstoned", ddlKey)
+	}
+
 	aspects := &DDLAspects{}
 
 	// description aspect: data.text
@@ -232,69 +318,140 @@ func (t *Traverser) ReadDDLAspects(ctx context.Context, ddlKey string) (*DDLAspe
 	if err != nil {
 		return nil, fmt.Errorf("%w: description at %s: %w", ErrAspectMissing, ddlKey, err)
 	}
-	var descDoc struct {
-		Data struct{ Text string `json:"text"` } `json:"data"`
-	}
-	if err := json.Unmarshal(descEntry.Value, &descDoc); err != nil {
+	var descEnv aspectEnvelope
+	if err := json.Unmarshal(descEntry.Value, &descEnv); err != nil {
 		return nil, fmt.Errorf("aiagent: parse description aspect at %s: %w", ddlKey, err)
 	}
-	aspects.Description = descDoc.Data.Text
+	if descEnv.IsDeleted {
+		return nil, fmt.Errorf("%w: description at %s: aspect is tombstoned", ErrAspectMissing, ddlKey)
+	}
+	var descData struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(descEnv.Data, &descData); err != nil {
+		return nil, fmt.Errorf("aiagent: parse description data at %s: %w", ddlKey, err)
+	}
+	aspects.Description = descData.Text
 
 	// inputSchema aspect: data.schema
 	isEntry, err := t.conn.KVGet(ctx, t.coreBucket, ddlKey+".inputSchema")
 	if err != nil {
 		return nil, fmt.Errorf("%w: inputSchema at %s: %w", ErrAspectMissing, ddlKey, err)
 	}
-	var isDoc struct {
-		Data struct{ Schema string `json:"schema"` } `json:"data"`
-	}
-	if err := json.Unmarshal(isEntry.Value, &isDoc); err != nil {
+	var isEnv aspectEnvelope
+	if err := json.Unmarshal(isEntry.Value, &isEnv); err != nil {
 		return nil, fmt.Errorf("aiagent: parse inputSchema aspect at %s: %w", ddlKey, err)
 	}
-	aspects.InputSchema = isDoc.Data.Schema
+	if isEnv.IsDeleted {
+		return nil, fmt.Errorf("%w: inputSchema at %s: aspect is tombstoned", ErrAspectMissing, ddlKey)
+	}
+	var isData struct {
+		Schema string `json:"schema"`
+	}
+	if err := json.Unmarshal(isEnv.Data, &isData); err != nil {
+		return nil, fmt.Errorf("aiagent: parse inputSchema data at %s: %w", ddlKey, err)
+	}
+	aspects.InputSchema = isData.Schema
 
 	// outputSchema aspect: data.schema
 	osEntry, err := t.conn.KVGet(ctx, t.coreBucket, ddlKey+".outputSchema")
 	if err != nil {
 		return nil, fmt.Errorf("%w: outputSchema at %s: %w", ErrAspectMissing, ddlKey, err)
 	}
-	var osDoc struct {
-		Data struct{ Schema string `json:"schema"` } `json:"data"`
-	}
-	if err := json.Unmarshal(osEntry.Value, &osDoc); err != nil {
+	var osEnv aspectEnvelope
+	if err := json.Unmarshal(osEntry.Value, &osEnv); err != nil {
 		return nil, fmt.Errorf("aiagent: parse outputSchema aspect at %s: %w", ddlKey, err)
 	}
-	aspects.OutputSchema = osDoc.Data.Schema
+	if osEnv.IsDeleted {
+		return nil, fmt.Errorf("%w: outputSchema at %s: aspect is tombstoned", ErrAspectMissing, ddlKey)
+	}
+	var osData struct {
+		Schema string `json:"schema"`
+	}
+	if err := json.Unmarshal(osEnv.Data, &osData); err != nil {
+		return nil, fmt.Errorf("aiagent: parse outputSchema data at %s: %w", ddlKey, err)
+	}
+	aspects.OutputSchema = osData.Schema
 
 	// fieldDescription aspect: data.fieldDescriptions (map[string]string)
 	fdEntry, err := t.conn.KVGet(ctx, t.coreBucket, ddlKey+".fieldDescription")
 	if err != nil {
 		return nil, fmt.Errorf("%w: fieldDescription at %s: %w", ErrAspectMissing, ddlKey, err)
 	}
-	var fdDoc struct {
-		Data struct {
-			FieldDescriptions map[string]string `json:"fieldDescriptions"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(fdEntry.Value, &fdDoc); err != nil {
+	var fdEnv aspectEnvelope
+	if err := json.Unmarshal(fdEntry.Value, &fdEnv); err != nil {
 		return nil, fmt.Errorf("aiagent: parse fieldDescription aspect at %s: %w", ddlKey, err)
 	}
-	aspects.FieldDescriptions = fdDoc.Data.FieldDescriptions
+	if fdEnv.IsDeleted {
+		return nil, fmt.Errorf("%w: fieldDescription at %s: aspect is tombstoned", ErrAspectMissing, ddlKey)
+	}
+	var fdData struct {
+		FieldDescriptions map[string]string `json:"fieldDescriptions"`
+	}
+	if err := json.Unmarshal(fdEnv.Data, &fdData); err != nil {
+		return nil, fmt.Errorf("aiagent: parse fieldDescription data at %s: %w", ddlKey, err)
+	}
+	aspects.FieldDescriptions = fdData.FieldDescriptions
 
 	// examples aspect: data.examples ([]ExampleEntry)
 	exEntry, err := t.conn.KVGet(ctx, t.coreBucket, ddlKey+".examples")
 	if err != nil {
 		return nil, fmt.Errorf("%w: examples at %s: %w", ErrAspectMissing, ddlKey, err)
 	}
-	var exDoc struct {
-		Data struct {
-			Examples []ExampleEntry `json:"examples"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(exEntry.Value, &exDoc); err != nil {
+	var exEnv aspectEnvelope
+	if err := json.Unmarshal(exEntry.Value, &exEnv); err != nil {
 		return nil, fmt.Errorf("aiagent: parse examples aspect at %s: %w", ddlKey, err)
 	}
-	aspects.Examples = exDoc.Data.Examples
+	if exEnv.IsDeleted {
+		return nil, fmt.Errorf("%w: examples at %s: aspect is tombstoned", ErrAspectMissing, ddlKey)
+	}
+	var exData struct {
+		Examples []ExampleEntry `json:"examples"`
+	}
+	if err := json.Unmarshal(exEnv.Data, &exData); err != nil {
+		return nil, fmt.Errorf("aiagent: parse examples data at %s: %w", ddlKey, err)
+	}
+	aspects.Examples = exData.Examples
+
+	// script aspect: data.source
+	scriptEntry, err := t.conn.KVGet(ctx, t.coreBucket, ddlKey+".script")
+	if err != nil {
+		return nil, fmt.Errorf("%w: script at %s: %w", ErrAspectMissing, ddlKey, err)
+	}
+	var scriptEnv aspectEnvelope
+	if err := json.Unmarshal(scriptEntry.Value, &scriptEnv); err != nil {
+		return nil, fmt.Errorf("aiagent: parse script aspect at %s: %w", ddlKey, err)
+	}
+	if scriptEnv.IsDeleted {
+		return nil, fmt.Errorf("%w: script at %s: aspect is tombstoned", ErrAspectMissing, ddlKey)
+	}
+	var scriptData struct {
+		Source string `json:"source"`
+	}
+	if err := json.Unmarshal(scriptEnv.Data, &scriptData); err != nil {
+		return nil, fmt.Errorf("aiagent: parse script data at %s: %w", ddlKey, err)
+	}
+	aspects.Script = scriptData.Source
+
+	// permittedCommands aspect: data.commands ([]string)
+	pcEntry, err := t.conn.KVGet(ctx, t.coreBucket, ddlKey+".permittedCommands")
+	if err != nil {
+		return nil, fmt.Errorf("%w: permittedCommands at %s: %w", ErrAspectMissing, ddlKey, err)
+	}
+	var pcEnv aspectEnvelope
+	if err := json.Unmarshal(pcEntry.Value, &pcEnv); err != nil {
+		return nil, fmt.Errorf("aiagent: parse permittedCommands aspect at %s: %w", ddlKey, err)
+	}
+	if pcEnv.IsDeleted {
+		return nil, fmt.Errorf("%w: permittedCommands at %s: aspect is tombstoned", ErrAspectMissing, ddlKey)
+	}
+	var pcData struct {
+		Commands []string `json:"commands"`
+	}
+	if err := json.Unmarshal(pcEnv.Data, &pcData); err != nil {
+		return nil, fmt.Errorf("aiagent: parse permittedCommands data at %s: %w", ddlKey, err)
+	}
+	aspects.PermittedCommands = pcData.Commands
 
 	return aspects, nil
 }

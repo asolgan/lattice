@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,9 +63,28 @@ func putKV(t *testing.T, ctx context.Context, conn *substrate.Conn, bucket, key 
 	}
 }
 
-// seedDDLAspects seeds all five self-description aspects for a DDL key.
+// seedDDLAspects seeds the vertex key and all seven self-description aspects
+// for a DDL key. The vertex itself is seeded as a live (isDeleted: false)
+// meta.ddl.vertexType entry so ReadDDLAspects' liveness pre-check passes.
+// Script defaults to a no-op execute stub; permittedCommands defaults to
+// []string{"TestOp"} unless the caller provides non-empty values via the
+// optional script/permittedCommands parameters.
 func seedDDLAspects(t *testing.T, ctx context.Context, conn *substrate.Conn, ddlKey, description, inputSchema, outputSchema string, fieldDescs map[string]string, examples []aiagent.ExampleEntry) {
 	t.Helper()
+	seedDDLAspectsFull(t, ctx, conn, ddlKey, description, inputSchema, outputSchema, fieldDescs, examples,
+		"def execute(state, op):\n    return {\"mutations\": [], \"events\": []}\n",
+		[]string{"TestOp"})
+}
+
+// seedDDLAspectsFull seeds the vertex key, all seven self-description aspects,
+// accepting explicit script and permittedCommands values.
+func seedDDLAspectsFull(t *testing.T, ctx context.Context, conn *substrate.Conn, ddlKey, description, inputSchema, outputSchema string, fieldDescs map[string]string, examples []aiagent.ExampleEntry, script string, permittedCommands []string) {
+	t.Helper()
+
+	// Seed the vertex itself (required for F-007 liveness pre-check).
+	putKV(t, ctx, conn, unitCoreBucket, ddlKey, map[string]any{
+		"class": "meta.ddl.vertexType", "isDeleted": false, "data": map[string]any{},
+	})
 
 	putKV(t, ctx, conn, unitCoreBucket, ddlKey+".description", map[string]any{
 		"class": "description", "isDeleted": false,
@@ -99,6 +119,18 @@ func seedDDLAspects(t *testing.T, ctx context.Context, conn *substrate.Conn, ddl
 	putKV(t, ctx, conn, unitCoreBucket, ddlKey+".examples", map[string]any{
 		"class": "examples", "isDeleted": false,
 		"data": map[string]any{"examples": exSlice},
+	})
+	putKV(t, ctx, conn, unitCoreBucket, ddlKey+".script", map[string]any{
+		"class": "script", "isDeleted": false,
+		"data": map[string]any{"source": script},
+	})
+	cmds := make([]any, len(permittedCommands))
+	for i, c := range permittedCommands {
+		cmds[i] = c
+	}
+	putKV(t, ctx, conn, unitCoreBucket, ddlKey+".permittedCommands", map[string]any{
+		"class": "permittedCommands", "isDeleted": false,
+		"data": map[string]any{"commands": cmds},
 	})
 }
 
@@ -237,18 +269,20 @@ func TestDiscoverDDL_SkipsTombstonedCanonicalName(t *testing.T) {
 
 // --- ReadDDLAspects tests ---
 
-// TestReadDDLAspects_HappyPath seeds all five self-description aspects and
+// TestReadDDLAspects_HappyPath seeds all seven self-description aspects and
 // asserts ReadDDLAspects parses them correctly.
 func TestReadDDLAspects_HappyPath(t *testing.T) {
 	ctx, conn, tr := setupUnitEnv(t)
 
 	ddlKey := "vtx.meta." + "ReadDDLAspectsID00001"
-	seedDDLAspects(t, ctx, conn, ddlKey,
+	seedDDLAspectsFull(t, ctx, conn, ddlKey,
 		"Test description.",
 		`{"type":"object","properties":{"note":{"type":"string"}}}`,
 		`{"type":"object","properties":{}}`,
 		map[string]string{"note": "A test note field."},
 		[]aiagent.ExampleEntry{{Name: "ex1", Payload: map[string]any{"note": "hello"}, ExpectedOutcome: "ok"}},
+		"def execute(state, op):\n    return {\"mutations\": [], \"events\": []}\n",
+		[]string{"TestOp", "AltOp"},
 	)
 
 	got, err := tr.ReadDDLAspects(ctx, ddlKey)
@@ -270,15 +304,25 @@ func TestReadDDLAspects_HappyPath(t *testing.T) {
 	if len(got.Examples) != 1 || got.Examples[0].Name != "ex1" {
 		t.Errorf("Examples: got %v", got.Examples)
 	}
+	if got.Script == "" {
+		t.Error("Script is empty")
+	}
+	if len(got.PermittedCommands) != 2 || got.PermittedCommands[0] != "TestOp" || got.PermittedCommands[1] != "AltOp" {
+		t.Errorf("PermittedCommands: got %v want [TestOp AltOp]", got.PermittedCommands)
+	}
 }
 
 // TestReadDDLAspects_MissingAspect asserts ErrAspectMissing is returned when
-// a required aspect is absent.
+// a required aspect is absent. The vertex itself is seeded as live; only the
+// description aspect is written — all other six are missing.
 func TestReadDDLAspects_MissingAspect(t *testing.T) {
 	ctx, conn, tr := setupUnitEnv(t)
 
 	ddlKey := "vtx.meta." + "MissingAspectDDLID0001"
-	// Seed only description — omit the other four.
+	// Seed the vertex (so liveness pre-check passes) and description only.
+	putKV(t, ctx, conn, unitCoreBucket, ddlKey, map[string]any{
+		"class": "meta.ddl.vertexType", "isDeleted": false, "data": map[string]any{},
+	})
 	putKV(t, ctx, conn, unitCoreBucket, ddlKey+".description", map[string]any{
 		"class": "description", "isDeleted": false,
 		"data": map[string]any{"text": "Only description, nothing else."},
@@ -290,6 +334,36 @@ func TestReadDDLAspects_MissingAspect(t *testing.T) {
 	}
 	if !errors.Is(err, aiagent.ErrAspectMissing) {
 		t.Errorf("expected ErrAspectMissing, got: %v", err)
+	}
+}
+
+// TestDiscoverDDL_DuplicateCanonicalName asserts that DiscoverDDL returns an
+// error (not ErrDDLNotFound) when two live meta-vertices share the same
+// canonicalName — indicating inconsistent cell state.
+func TestDiscoverDDL_DuplicateCanonicalName(t *testing.T) {
+	ctx, conn, tr := setupUnitEnv(t)
+
+	for _, id := range []string{"DupCanonMetaID000001", "DupCanonMetaID000002"} {
+		metaKey := "vtx.meta." + id
+		putKV(t, ctx, conn, unitCoreBucket, metaKey, map[string]any{
+			"class": "meta.ddl.vertexType", "isDeleted": false, "data": map[string]any{},
+		})
+		putKV(t, ctx, conn, unitCoreBucket, metaKey+".canonicalName", map[string]any{
+			"class": "canonicalName", "isDeleted": false,
+			"data": map[string]any{"value": "DuplicateOp"},
+		})
+	}
+
+	_, err := tr.DiscoverDDL(ctx, "DuplicateOp")
+	if err == nil {
+		t.Fatal("expected error for duplicate canonicalName, got nil")
+	}
+	// Must NOT be ErrDDLNotFound — it should be a distinct inconsistency error.
+	if errors.Is(err, aiagent.ErrDDLNotFound) {
+		t.Errorf("expected distinct inconsistency error, got ErrDDLNotFound: %v", err)
+	}
+	if !strings.Contains(err.Error(), "inconsistent") {
+		t.Errorf("expected error message to mention inconsistent state, got: %v", err)
 	}
 }
 
