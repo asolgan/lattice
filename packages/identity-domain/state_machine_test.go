@@ -23,7 +23,6 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -262,9 +261,9 @@ func TestIdentity_FR7_LeaseTombstoneDoesNotCascade(t *testing.T) {
 		"isDeleted": true,
 		"data":      map[string]any{},
 	})
-	_, err = conn.AtomicBatch([]substrate.BatchOp{
+	_, err = conn.AtomicBatch(ctx, []substrate.BatchOp{
 		{Bucket: testutil.HarnessCoreBucket, Key: leaseKey, Value: tombDoc, CreateOnly: false},
-	}, 5*time.Second)
+	})
 	if err != nil {
 		t.Fatalf("tombstone batch: %v", err)
 	}

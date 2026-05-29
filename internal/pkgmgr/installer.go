@@ -186,7 +186,9 @@ func (i *Installer) Install(ctx context.Context, def Definition) (*InstallResult
 	}
 
 	// Step 4 — single atomic batch.
-	if _, err := i.Conn.AtomicBatch(ops, DefaultBatchTimeout); err != nil {
+	bctx, cancel := context.WithTimeout(ctx, DefaultBatchTimeout)
+	defer cancel()
+	if _, err := i.Conn.AtomicBatch(bctx, ops); err != nil {
 		return nil, fmt.Errorf("pkgmgr: install atomic batch: %w", err)
 	}
 	res.DeclaredKeys = declared
@@ -406,7 +408,9 @@ func (i *Installer) Uninstall(ctx context.Context, packageName string) (*Uninsta
 	if len(ops) == 0 {
 		return &UninstallResult{PackageName: packageName, Note: "nothing to uninstall"}, nil
 	}
-	if _, err := i.Conn.AtomicBatch(ops, DefaultBatchTimeout); err != nil {
+	bctx, cancel := context.WithTimeout(ctx, DefaultBatchTimeout)
+	defer cancel()
+	if _, err := i.Conn.AtomicBatch(bctx, ops); err != nil {
 		return nil, fmt.Errorf("pkgmgr: uninstall atomic batch: %w", err)
 	}
 	return &UninstallResult{

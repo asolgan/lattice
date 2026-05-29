@@ -38,7 +38,7 @@ func TestPublishBatch_HappyPath(t *testing.T) {
 		{Subject: "events.identity.updated", Data: []byte(`{"i":2}`)},
 		{Subject: "events.identity.linked", Data: []byte(`{"i":3}`)},
 	}
-	ack, err := c.PublishBatch(ops, 5*time.Second)
+	ack, err := c.PublishBatch(ctx, ops)
 	if err != nil {
 		t.Fatalf("PublishBatch: %v", err)
 	}
@@ -81,8 +81,8 @@ func TestPublishBatch_HappyPath(t *testing.T) {
 
 // TestPublishBatch_EmptyRejected confirms the helper rejects empty op lists.
 func TestPublishBatch_EmptyRejected(t *testing.T) {
-	c, _ := newTestConn(t)
-	if _, err := c.PublishBatch(nil, time.Second); err == nil {
+	c, ctx := newTestConn(t)
+	if _, err := c.PublishBatch(ctx, nil); err == nil {
 		t.Fatalf("PublishBatch(nil) should error")
 	}
 }
@@ -99,7 +99,7 @@ func TestPublishBatch_HeaderForwarded(t *testing.T) {
 			Header:  map[string]string{"X-Lattice-RequestId": "test-request-id"},
 		},
 	}
-	if _, err := c.PublishBatch(ops, 5*time.Second); err != nil {
+	if _, err := c.PublishBatch(ctx, ops); err != nil {
 		t.Fatalf("PublishBatch: %v", err)
 	}
 	js := c.JetStream()

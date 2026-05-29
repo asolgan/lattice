@@ -47,6 +47,10 @@ type CommitAck struct {
 	BatchID  string
 	Count    uint64
 	Events   EventList
+	// Revisions maps each business mutation key to the Core KV revision it
+	// committed at, filtered to exclude the idempotency tracker key. Nil
+	// when the substrate could not derive per-key revisions.
+	Revisions map[string]uint64
 }
 
 // EventPublisher (step 9) — fans events out to `core-events`.
@@ -110,7 +114,7 @@ func NewStubCommitter(conn *substrate.Conn, bucket string, logger *slog.Logger, 
 
 // Commit writes the tracker via substrate.AtomicBatch with a single-op
 // payload. CreateOnly + 24h TTL. Returns the BatchAck.
-func (s *StubCommitter) Commit(_ context.Context, env *OperationEnvelope, _ ScriptResult, tracker Tracker) (CommitAck, error) {
+func (s *StubCommitter) Commit(ctx context.Context, env *OperationEnvelope, _ ScriptResult, tracker Tracker) (CommitAck, error) {
 	s.logger.Info("step 8: stubbed (tracker-only atomic batch)",
 		"step", "commit", "requestId", env.RequestID, "trackerKey", tracker.Key)
 	val, err := tracker.Marshal()
@@ -124,7 +128,9 @@ func (s *StubCommitter) Commit(_ context.Context, env *OperationEnvelope, _ Scri
 		CreateOnly: true,
 		TTL:        TrackerTTL,
 	}}
-	ack, err := s.conn.AtomicBatch(ops, 5*time.Second)
+	bctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ack, err := s.conn.AtomicBatch(bctx, ops)
 	if err != nil {
 		return CommitAck{}, err
 	}

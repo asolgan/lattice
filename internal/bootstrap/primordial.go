@@ -227,10 +227,7 @@ func (s *Seeder) SeedPrimordial(ctx context.Context) error {
 		})
 	}
 
-	// AtomicBatch does not accept a context, so the caller's ctx cancellation
-	// is not propagated to this call. The 30s timeout is a fixed substrate
-	// limit; it cannot be shortened by a SIGTERM during the batch.
-	ack, err := conn.AtomicBatch(ops, 30*time.Second)
+	ack, err := conn.AtomicBatch(ctx, ops)
 	if err != nil {
 		// If the batch was rejected because a key already exists (e.g., a
 		// concurrent bootstrapper raced us), fall back to the idempotent

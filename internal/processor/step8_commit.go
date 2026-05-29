@@ -146,7 +146,9 @@ func (c *CommitterImpl) Commit(ctx context.Context, env *OperationEnvelope, resu
 		TTL:        TrackerTTL,
 	})
 
-	ack, batchErr := c.Conn.AtomicBatch(ops, c.Timeout)
+	bctx, cancel := context.WithTimeout(ctx, c.Timeout)
+	defer cancel()
+	ack, batchErr := c.Conn.AtomicBatch(bctx, ops)
 	if batchErr != nil {
 		// Wrap in ConflictError if the underlying cause looks like a
 		// revision conflict.
@@ -183,12 +185,32 @@ func (c *CommitterImpl) Commit(ctx context.Context, env *OperationEnvelope, resu
 		"batchID", ack.BatchID)
 
 	return CommitAck{
-		Stream:   ack.Stream,
-		Sequence: ack.Sequence,
-		BatchID:  ack.BatchID,
-		Count:    ack.Count,
-		Events:   events,
+		Stream:    ack.Stream,
+		Sequence:  ack.Sequence,
+		BatchID:   ack.BatchID,
+		Count:     ack.Count,
+		Events:    events,
+		Revisions: mutationRevisions(ack.Revisions, result.Mutations),
 	}, nil
+}
+
+// mutationRevisions filters the substrate's per-key revision map down to
+// the operation's business mutation keys, excluding the idempotency
+// tracker key. Returns nil when the substrate did not derive revisions.
+func mutationRevisions(acked map[string]uint64, mutations []MutationOp) map[string]uint64 {
+	if len(acked) == 0 {
+		return nil
+	}
+	out := make(map[string]uint64, len(mutations))
+	for _, m := range mutations {
+		if rev, ok := acked[m.Key]; ok {
+			out[m.Key] = rev
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // buildMutationValue assembles the JSON value the substrate writes for

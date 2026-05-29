@@ -312,7 +312,7 @@ func (cp *CommitPath) HandleMessage(ctx context.Context, msg jetstream.Msg) Mess
 	// Surface script ResponseDetail in the success reply. Detail may carry
 	// sensitive tokens (e.g. plaintext claim keys) — NFR-S6/S7: do NOT log it.
 	// BuildAcceptedReplyWithDetail is a no-op when detail is nil/empty.
-	cp.replyTo(msg, BuildAcceptedReplyWithDetail(env.RequestID, now, result.ResponseDetail))
+	cp.replyTo(msg, BuildAcceptedReplyWithRevisions(env.RequestID, now, result.ResponseDetail, commitAck.Revisions))
 
 	// --- Step 10: explicit Acker boundary. ---
 	acker := cp.deps.AckerFactory(msg, cp.deps.Logger)

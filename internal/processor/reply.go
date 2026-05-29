@@ -32,6 +32,20 @@ func BuildAcceptedReplyWithDetail(requestID string, committedAt time.Time, detai
 	return r
 }
 
+// BuildAcceptedReplyWithRevisions extends BuildAcceptedReplyWithDetail
+// with the per-key committed revisions returned by the substrate. The
+// revisions map is set on the reply only when non-empty so callers can
+// use it for read-your-own-writes polling. As with detail, a nil/empty
+// map leaves the corresponding reply field absent.
+func BuildAcceptedReplyWithRevisions(requestID string, committedAt time.Time,
+	detail map[string]any, revisions map[string]uint64) OperationReply {
+	r := BuildAcceptedReplyWithDetail(requestID, committedAt, detail)
+	if len(revisions) > 0 {
+		r.Revisions = revisions
+	}
+	return r
+}
+
 // BuildDuplicateReply constructs a `duplicate` reply from an existing
 // tracker.
 func BuildDuplicateReply(requestID string, original *Tracker) OperationReply {

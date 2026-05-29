@@ -1,6 +1,7 @@
 package substrate
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -46,11 +47,19 @@ type BatchOp struct {
 // successful AtomicBatch. Stream + Sequence identify the last message
 // (the commit message); BatchID echoes the unique batch identifier
 // substrate assigned; Count is the total messages in the batch.
+//
+// Revisions maps each op's key to the Core KV revision it committed at.
+// An atomic batch commits all N messages as a contiguous stream block,
+// and for a Core KV bucket an entry's revision equals its stream
+// sequence; the per-key revision is therefore derived from the commit
+// ack's last sequence and batch size. Revisions is nil when the
+// contiguous-sequence invariant cannot be verified from the ack.
 type BatchAck struct {
-	Stream   string
-	Sequence uint64
-	BatchID  string
-	Count    uint64
+	Stream    string
+	Sequence  uint64
+	BatchID   string
+	Count     uint64
+	Revisions map[string]uint64
 }
 
 // AtomicBatch publishes ops as a single NATS JetStream atomic batch.
@@ -71,10 +80,10 @@ type BatchAck struct {
 //     Cross-bucket atomicity is not supported by NATS atomic batch;
 //     pass one bucket per call.
 //
-//   - timeout bounds the round trip on the commit message. Choose a value
-//     consistent with the operation's lane SLA (Processor uses 5s by
-//     default).
-func (c *Conn) AtomicBatch(ops []BatchOp, timeout time.Duration) (*BatchAck, error) {
+//   - ctx bounds the round trip on the commit message and is checked
+//     before each fire-and-forget publish. Callers wrap ctx with the
+//     deadline appropriate to the operation's lane SLA.
+func (c *Conn) AtomicBatch(ctx context.Context, ops []BatchOp) (*BatchAck, error) {
 	if len(ops) == 0 {
 		return nil, fmt.Errorf("substrate: AtomicBatch: empty op list")
 	}
@@ -113,7 +122,7 @@ func (c *Conn) AtomicBatch(ops []BatchOp, timeout time.Duration) (*BatchAck, err
 		msgs[i] = m
 	}
 
-	ack, err := publishAtomicBatch(c.nc, batchID, msgs, timeout)
+	ack, err := publishAtomicBatch(ctx, c.nc, batchID, msgs)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrAtomicBatchRejected, err)
 	}
@@ -122,11 +131,31 @@ func (c *Conn) AtomicBatch(ops []BatchOp, timeout time.Duration) (*BatchAck, err
 			ErrAtomicBatchRejected, ack.Error.Code, ack.Error.ErrCode, ack.Error.Description)
 	}
 	return &BatchAck{
-		Stream:   ack.Stream,
-		Sequence: ack.Sequence,
-		BatchID:  batchID,
-		Count:    ack.BatchSize,
+		Stream:    ack.Stream,
+		Sequence:  ack.Sequence,
+		BatchID:   batchID,
+		Count:     ack.BatchSize,
+		Revisions: deriveRevisions(ops, ack.Sequence, ack.BatchSize),
 	}, nil
+}
+
+// deriveRevisions maps each op's key to its committed Core KV revision.
+// An atomic batch lands as a contiguous block of stream sequences ending
+// at lastSeq; the first member's sequence is lastSeq-batchSize+1, and a
+// Core KV entry's revision equals its stream sequence. Revisions are only
+// derived when the contiguous-sequence invariant holds for this ack;
+// otherwise nil is returned and no revisions are fabricated. Duplicate
+// keys resolve last-write-wins in op order.
+func deriveRevisions(ops []BatchOp, lastSeq, batchSize uint64) map[string]uint64 {
+	if batchSize != uint64(len(ops)) || lastSeq+1 < batchSize {
+		return nil
+	}
+	firstSeq := lastSeq - batchSize + 1
+	revisions := make(map[string]uint64, len(ops))
+	for i, op := range ops {
+		revisions[op.Key] = firstSeq + uint64(i)
+	}
+	return revisions
 }
 
 // kvBucketSubject returns the JetStream publish subject for a Core KV key.
@@ -185,7 +214,7 @@ type PublishBatchAck struct {
 //
 // Order is preserved via `Nats-Batch-Sequence` (1..N). On failure, no
 // message is durably stored — semantics are all-or-nothing.
-func (c *Conn) PublishBatch(ops []PublishOp, timeout time.Duration) (*PublishBatchAck, error) {
+func (c *Conn) PublishBatch(ctx context.Context, ops []PublishOp) (*PublishBatchAck, error) {
 	if len(ops) == 0 {
 		return nil, fmt.Errorf("substrate: PublishBatch: empty op list")
 	}
@@ -211,7 +240,7 @@ func (c *Conn) PublishBatch(ops []PublishOp, timeout time.Duration) (*PublishBat
 		msgs[i] = m
 	}
 
-	ack, err := publishAtomicBatch(c.nc, batchID, msgs, timeout)
+	ack, err := publishAtomicBatch(ctx, c.nc, batchID, msgs)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrAtomicBatchRejected, err)
 	}
@@ -229,9 +258,11 @@ func (c *Conn) PublishBatch(ops []PublishOp, timeout time.Duration) (*PublishBat
 
 // publishAtomicBatch is the raw-protocol atomic-batch publisher.
 // All-but-last messages are fire-and-forget; the last carries
-// Nats-Batch-Commit and is sent via RequestMsg so the server's commit ack
-// can be parsed.
-func publishAtomicBatch(nc *nats.Conn, batchID string, messages []*nats.Msg, timeout time.Duration) (*pubAckResponse, error) {
+// Nats-Batch-Commit and is sent via RequestMsgWithContext so the server's
+// commit ack can be parsed and so ctx cancellation/deadline bounds the
+// round trip. nats.go has no PublishMsgWithContext, so each
+// fire-and-forget send is gated on a ctx.Err() check.
+func publishAtomicBatch(ctx context.Context, nc *nats.Conn, batchID string, messages []*nats.Msg) (*pubAckResponse, error) {
 	if len(messages) == 0 {
 		return nil, fmt.Errorf("empty batch")
 	}
@@ -244,6 +275,9 @@ func publishAtomicBatch(nc *nats.Conn, batchID string, messages []*nats.Msg, tim
 		m.Header.Set("Nats-Batch-Sequence", strconv.FormatUint(seq, 10))
 
 		if i < len(messages)-1 {
+			if err := ctx.Err(); err != nil {
+				return nil, fmt.Errorf("publish msg %d: %w", seq, err)
+			}
 			if err := nc.PublishMsg(m); err != nil {
 				return nil, fmt.Errorf("publish msg %d: %w", seq, err)
 			}
@@ -251,7 +285,7 @@ func publishAtomicBatch(nc *nats.Conn, batchID string, messages []*nats.Msg, tim
 		}
 		// Last message — commit and wait for ack.
 		m.Header.Set("Nats-Batch-Commit", "1")
-		resp, err := nc.RequestMsg(m, timeout)
+		resp, err := nc.RequestMsgWithContext(ctx, m)
 		if err != nil {
 			return nil, fmt.Errorf("request commit msg: %w", err)
 		}

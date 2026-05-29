@@ -151,7 +151,7 @@ func TestAtomicBatch_Commits(t *testing.T) {
 		{Bucket: bucket, Key: keyAsp, Value: []byte(`{"class":"email"}`), CreateOnly: true},
 		{Bucket: bucket, Key: keyOp, Value: []byte(`{"class":"op"}`), CreateOnly: true, TTL: 3 * time.Second},
 	}
-	ack, err := c.AtomicBatch(ops, 5*time.Second)
+	ack, err := c.AtomicBatch(ctx, ops)
 	if err != nil {
 		t.Fatalf("AtomicBatch: %v", err)
 	}
@@ -159,10 +159,24 @@ func TestAtomicBatch_Commits(t *testing.T) {
 		t.Fatalf("ack.Count = %d, want 3", ack.Count)
 	}
 
-	// All three present.
+	// All three present, and the derived per-key revision must match the
+	// revision the KV API reports on read-back. This proves the
+	// contiguous-sequence + revision==stream-sequence premise behind
+	// BatchAck.Revisions on live NATS.
+	if ack.Revisions == nil {
+		t.Fatalf("ack.Revisions is nil; expected derived per-key revisions")
+	}
 	for _, k := range []string{keyVtx, keyAsp, keyOp} {
-		if _, err := c.KVGet(ctx, bucket, k); err != nil {
+		entry, err := c.KVGet(ctx, bucket, k)
+		if err != nil {
 			t.Fatalf("post-batch KVGet %q: %v", k, err)
+		}
+		got, ok := ack.Revisions[k]
+		if !ok {
+			t.Fatalf("ack.Revisions missing key %q", k)
+		}
+		if entry.Revision != got {
+			t.Fatalf("revision mismatch for %q: KV API=%d ack.Revisions=%d", k, entry.Revision, got)
 		}
 	}
 }
@@ -187,7 +201,7 @@ func TestAtomicBatch_AllOrNothing(t *testing.T) {
 		{Bucket: bucket, Key: keyA, Value: []byte(`{"v":"updated"}`), HasRevision: true, Revision: revA + 9},
 		{Bucket: bucket, Key: keyB, Value: []byte(`{"v":"new"}`), CreateOnly: true},
 	}
-	_, err = c.AtomicBatch(ops, 5*time.Second)
+	_, err = c.AtomicBatch(ctx, ops)
 	if err == nil {
 		t.Fatalf("expected AtomicBatch rejection")
 	}
@@ -210,12 +224,12 @@ func TestAtomicBatch_AllOrNothing(t *testing.T) {
 }
 
 func TestAtomicBatch_RejectsCrossBucket(t *testing.T) {
-	c, _ := newTestConn(t)
+	c, ctx := newTestConn(t)
 	ops := []BatchOp{
 		{Bucket: "a", Key: "k1", Value: []byte(`x`)},
 		{Bucket: "b", Key: "k2", Value: []byte(`y`)},
 	}
-	_, err := c.AtomicBatch(ops, time.Second)
+	_, err := c.AtomicBatch(ctx, ops)
 	if err == nil || !contains(err.Error(), "cross-bucket") {
 		t.Fatalf("expected cross-bucket error, got %v", err)
 	}

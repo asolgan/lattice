@@ -98,7 +98,9 @@ func PreInstall(ctx context.Context, conn *substrate.Conn, adminActor string) (m
 	if len(ops) == 0 {
 		return out, nil
 	}
-	if _, err := conn.AtomicBatch(ops, 15*time.Second); err != nil {
+	bctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	if _, err := conn.AtomicBatch(bctx, ops); err != nil {
 		return nil, fmt.Errorf("identity-domain seed atomic batch: %w", err)
 	}
 	return out, nil

@@ -138,7 +138,9 @@ func (p *EventPublisherImpl) Publish(ctx context.Context, env *OperationEnvelope
 	attempt := 0
 	var lastErr error
 	for attempt < p.MaxRetries {
-		ack, perr := p.Conn.PublishBatch(ops, p.Timeout)
+		bctx, cancel := context.WithTimeout(ctx, p.Timeout)
+		ack, perr := p.Conn.PublishBatch(bctx, ops)
+		cancel()
 		if perr == nil {
 			p.Logger.Info("step 9: events published",
 				"requestId", env.RequestID,

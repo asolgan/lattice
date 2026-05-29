@@ -165,3 +165,25 @@ This is the architectural boundary that makes Starlark execution deterministic a
   - `tombstone` → revision condition = hydrated revision
   - Plus the idempotency tracker write at `vtx.op.<requestId>` with revision condition = 0
 - Step 8 atomic batch failure → reply with `RevisionConflict` (or `MetaLaneCollision` if on meta lane).
+
+### 3.9 Substrate Batch Helpers and Committed Revisions
+
+The substrate batch helpers are cancellation-aware. Both take a `context.Context` as their first argument:
+
+```go
+func (c *Conn) AtomicBatch(ctx context.Context, ops []BatchOp) (*BatchAck, error)
+func (c *Conn) PublishBatch(ctx context.Context, ops []PublishOp) (*PublishBatchAck, error)
+```
+
+The context bounds the commit round trip and is checked before each fire-and-forget publish, so an upstream deadline or `SIGTERM`-driven cancellation propagates end-to-end during a batch commit. Each call site supplies the deadline appropriate to its lane SLA (the Processor commit path wraps `ctx` with its commit timeout per attempt).
+
+**Committed revisions.** An atomic batch lands all N messages as a contiguous block of stream sequences. For a Core KV bucket, an entry's revision equals its stream sequence, so the per-key committed revision is derived from the commit ack's last sequence and batch size:
+
+```
+firstSeq := ack.Sequence - ack.BatchSize + 1
+revisions[ops[i].Key] = firstSeq + uint64(i)   // for i in 0..N-1
+```
+
+`BatchAck.Revisions` carries this map. It is populated only when the contiguous-sequence invariant holds for the ack (`BatchSize == len(ops)`); otherwise it is nil and no revisions are fabricated.
+
+**Reply propagation.** The Processor filters these revisions to the operation's business mutation keys (excluding the idempotency tracker key) and surfaces them on the accepted reply as `OperationReply.Revisions` (per Contract #2 §2.4). Clients use this map for read-your-own-writes polling against Core KV. Events carry no revisions — `PublishBatchAck` has no revisions field because events are not KV entries.

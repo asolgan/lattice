@@ -90,7 +90,10 @@ func main() {
 
 	if freshlyGenerated {
 		logger.Info("seeding primordial Core KV entries")
-		if err := seeder.SeedPrimordial(ctx); err != nil {
+		seedCtx, cancelSeed := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+		err := seeder.SeedPrimordial(seedCtx)
+		cancelSeed()
+		if err != nil {
 			logger.Error("primordial seeding failed", "error", err)
 			os.Exit(1)
 		}
