@@ -14,6 +14,22 @@ This file tracks **what's shipped, what's next, what's still open**. Operating r
 
 **Token totals so far:** **~4,972K actual / 3,847K plan-budget (129%) for 31 / 32+ stories (97%).** Re-computed from per-row tracker actuals. Quality bar maintained across all gates.
 
+## Phase 1.5 — Hardening Block (status)
+
+Plan: `_bmad-output/planning-artifacts/sprint-change-proposal-2026-05-28.md`. Process: Winston runs CS→DS→CR via no-commit sub-agents; Winston adjudicates/commits/watches CI. 7 stories.
+
+| Story | Title | Status | Commit |
+|---|---|---|---|
+| 1.5.1 | Substrate write-path contracts (ctx + per-key revisions) | ✅ SHIPPED (CI green) | `09edf5c` |
+| 1.5.3 | UpdateMetaVertex expansion | 🔧 in dev | — |
+| 1.5.2 | DDL tombstone coherence (M6) | queued (after 1.5.3) | — |
+| 1.5.4 | Capability auth freshness coherence (B4) | queued (Wave A) | — |
+| 1.5.5 | Route cap-pkg installs through Processor (M5) | queued (Wave B; needs 1.5.1) | — |
+| 1.5.7 | Contract conformance suite + freeze | queued (Wave C; needs 1.5.1+1.5.3) | — |
+| 1.5.6 | Re-enable Hello Lattice M4–M6 + flip Gate 5 | queued (Wave D) | — |
+
+**1.5.1 note:** CR found one Major (M-1) — bootstrap seeding lost its timeout bound because the locked design's premise (`readyCtx` governs seeding) was wrong (`main.go` seeds with `context.Background()` before `readyCtx` exists). Winston fix: bound `SeedPrimordial` with a `BOOTSTRAP_READY_TIMEOUT_SEC`-derived context in `cmd/bootstrap/main.go`. All other CR observations confirmed the impl solid. Empirical revision==stream-sequence assertion passed on live NATS.
+
 ## Shipped Story Index
 
 Quick reference; full details in token-usage-tracker.md.
