@@ -12,7 +12,7 @@
 //   - TTL passed to writer (1 hour)
 //   - async write does not block caller
 //   - NoCapabilityEntry (no doc) — minimal plane 1, empty planes 2+3
-//   - AuthFreshnessExceeded (doc available) — planes 2+3 populated
+//   - AuthDenied (doc available) — planes 2+3 populated
 //   - buildRecord constructs Class = "meta.healthRecord"
 package processor
 
@@ -307,15 +307,15 @@ func TestAuthTrace_NoCapabilityEntry_MinimalPlanes(t *testing.T) {
 	}
 }
 
-func TestAuthTrace_AuthFreshnessExceeded_PlanesPopulated(t *testing.T) {
+func TestAuthTrace_DenialWithDoc_PlanesPopulated(t *testing.T) {
 	projectedAt := time.Now().Add(-5 * time.Second)
 	doc := traceTestDoc(projectedAt)
 	emitter, w := traceTestEmitter(t, false)
 
 	dec := Decision{
 		Authorized: false,
-		Code:       ErrCodeAuthFreshnessExceeded,
-		Reason:     "Capability KV projection age 5000ms exceeds ceiling 2500ms",
+		Code:       ErrCodeAuthDenied,
+		Reason:     "no matching platformPermission",
 		Doc:        doc,
 	}
 	env := baseEnv("PingPlatform", capTestActorKey)
@@ -327,7 +327,7 @@ func TestAuthTrace_AuthFreshnessExceeded_PlanesPopulated(t *testing.T) {
 	}
 
 	rec := parseTraceRecord(t, w.last().value)
-	if rec.AuthCode != string(ErrCodeAuthFreshnessExceeded) {
+	if rec.AuthCode != string(ErrCodeAuthDenied) {
 		t.Errorf("authCode: got %q", rec.AuthCode)
 	}
 	// Plane 2 should have lens revision from the doc.

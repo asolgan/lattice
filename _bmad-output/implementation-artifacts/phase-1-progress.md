@@ -23,10 +23,12 @@ Plan: `_bmad-output/planning-artifacts/sprint-change-proposal-2026-05-28.md`. Pr
 | 1.5.1 | Substrate write-path contracts (ctx + per-key revisions) | ✅ SHIPPED (CI green) | `09edf5c` |
 | 1.5.3 | UpdateMetaVertex expansion | ✅ SHIPPED (CI green) | `d58311c` |
 | 1.5.2 | DDL tombstone coherence (M6) | ✅ SHIPPED (CI green) | `pending` |
-| 1.5.4 | Capability auth freshness coherence (B4) | 🔧 next (Wave A) | — |
-| 1.5.5 | Route cap-pkg installs through Processor (M5) | queued (Wave B; needs 1.5.1) | — |
+| 1.5.4 | Capability auth freshness coherence (B4) | ✅ SHIPPED (CI green) | `pending` |
+| 1.5.5 | Route cap-pkg installs through Processor (M5) | 🔧 next (Wave B; needs 1.5.1) + picks up kernel-tombstone-protection residual | — |
 | 1.5.7 | Contract conformance suite + freeze | queued (Wave C; needs 1.5.1+1.5.3) | — |
 | 1.5.6 | Re-enable Hello Lattice M4–M6 + flip Gate 5 | queued (Wave D) | — |
+
+**1.5.4 note (architectural decision):** Per Andrew's decision this session, the Processor's per-operation capability projection-**freshness gate was REMOVED entirely** (it false-denied unchanged-but-valid actors — the Hello-Lattice M4 failure). Freshness is a property of the *projector*, not each doc; per-doc reprojection of quiet actors would be O(actors) write-amplification measuring the wrong thing. Grounded in brainstorming #111(a)/#91/architecture L90. The bounded staleness window is now **accepted**, backstopped operationally (Refractor Capability-Lens health — surveyed, currently no dedicated signal/alert; documented as a known gap) and by future Gateway JWT/token revocation. `projectedAt` is now **deterministic provenance** from the anchor vertex's `lastModifiedAt` (F-009 churn closed; fail-loud, no wall-clock fallback). Winston updated NFR-S7 + the Gate-3 Vector-#2 AC (epics.md); Gate-3 now reports 3 DEFENDED + 1 ACCEPTED-WINDOW. CR: 1 P1 + 1 P2, both doc/comment-only (stale `docs/observability/health-kv-schema.md` cap-staleness refs), fixed by Winston. **Wave A complete (1.5.1–1.5.4).**
 
 **1.5.2 note:** CR found 1 P1 (primordial-lens cascade mismatch) + 1 P2. Winston adjudicated (CAR resolution in `cmd/processor/CONTRACT-AMENDMENT-REQUEST.md`): (a) ratified tombstoning `.compensation` — `ReadCompensation` already maps `isDeleted:true`→`ErrCompensationAspectMissing`; (b) FIXED F-1 by making the lens cascade the UNION of DDL-created + primordial lens aspects (no live orphan for either lens kind; absent-aspect tombstones are harmless). **RESIDUAL → Story 1.5.5:** no guard prevents `TombstoneMetaVertex`/`UpdateMetaVertex` from targeting primordial kernel entities (kernel root DDL, CapabilityLens) — a pre-existing catastrophic foot-gun; needs a protected-key mechanism, deferred to the install-routing/kernel-protection story.
 

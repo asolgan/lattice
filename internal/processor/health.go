@@ -49,9 +49,9 @@ type HealthHeartbeater struct {
 	metrics   *Metrics
 	logger    *slog.Logger
 
-	// Per-tick step-3 capability auth signals. The CapabilityAuthorizer is
+	// Per-tick step-3 capability auth signal. The CapabilityAuthorizer is
 	// wired by MakePipeline when AuthMode resolves to capability. step3-latency
-	// always emits; cap-staleness skips emission when zero samples in the window.
+	// always emits.
 	capAuthorizer *CapabilityAuthorizer
 }
 
@@ -104,9 +104,9 @@ func (h *HealthHeartbeater) SetInterval(d time.Duration) {
 	h.interval = d
 }
 
-// AttachCapabilityAuthorizer wires the step-3 latency + staleness ring buffers
-// so each heartbeat tick emits the two derived keys. Idempotent: calling twice
-// replaces the prior authorizer.
+// AttachCapabilityAuthorizer wires the step-3 latency ring buffer so each
+// heartbeat tick emits the derived step3-latency key. Idempotent: calling
+// twice replaces the prior authorizer.
 func (h *HealthHeartbeater) AttachCapabilityAuthorizer(ca *CapabilityAuthorizer) {
 	h.capAuthorizer = ca
 }
@@ -170,9 +170,8 @@ func (h *HealthHeartbeater) emit(ctx context.Context, status string) {
 	h.emitCapabilityAuthSignals(ctx)
 }
 
-// emitCapabilityAuthSignals writes the step3-latency (always) and
-// cap-staleness (only when non-empty window) signals derived from the
-// CapabilityAuthorizer's ring buffers. No-op when no authorizer is
+// emitCapabilityAuthSignals writes the step3-latency signal derived from the
+// CapabilityAuthorizer's latency ring buffer. No-op when no authorizer is
 // attached (stub mode).
 func (h *HealthHeartbeater) emitCapabilityAuthSignals(ctx context.Context) {
 	if h.capAuthorizer == nil {
@@ -183,42 +182,18 @@ func (h *HealthHeartbeater) emitCapabilityAuthSignals(ctx context.Context) {
 	latency := h.capAuthorizer.LatencyStats()
 	latencyKey := "health.processor." + h.instance + ".step3-latency"
 	latencyDoc := map[string]any{
-		"key":         latencyKey,
-		"component":   "processor",
-		"instance":    h.instance,
-		"observedAt":  substrate.FormatTimestamp(time.Now()),
-		"count":       latency.Count,
-		"meanNs":      latency.Mean.Nanoseconds(),
-		"p95Ns":       latency.P95.Nanoseconds(),
-		"p99Ns":       latency.P99.Nanoseconds(),
+		"key":        latencyKey,
+		"component":  "processor",
+		"instance":   h.instance,
+		"observedAt": substrate.FormatTimestamp(time.Now()),
+		"count":      latency.Count,
+		"meanNs":     latency.Mean.Nanoseconds(),
+		"p95Ns":      latency.P95.Nanoseconds(),
+		"p99Ns":      latency.P99.Nanoseconds(),
 	}
 	if raw, err := json.Marshal(latencyDoc); err == nil {
 		if _, err := h.conn.KVPut(ctx, h.bucket, latencyKey, raw); err != nil {
 			h.logger.Warn("health: write step3-latency", "key", latencyKey, "error", err)
-		}
-	}
-
-	// cap-staleness — skip when no samples in window (Decision #4: no
-	// misleading zeros).
-	staleness := h.capAuthorizer.StalenessStats()
-	if staleness.Count == 0 {
-		return
-	}
-	stalenessKey := "health.processor." + h.instance + ".cap-staleness"
-	stalenessDoc := map[string]any{
-		"key":             stalenessKey,
-		"component":       "processor",
-		"instance":        h.instance,
-		"observedAt":      substrate.FormatTimestamp(time.Now()),
-		"count":           staleness.Count,
-		"meanMs":          staleness.Mean.Milliseconds(),
-		"p95Ms":           staleness.P95.Milliseconds(),
-		"p99Ms":           staleness.P99.Milliseconds(),
-		"exceedingNFRP3":  h.capAuthorizer.StalenessExceedingNFRP3(),
-	}
-	if raw, err := json.Marshal(stalenessDoc); err == nil {
-		if _, err := h.conn.KVPut(ctx, h.bucket, stalenessKey, raw); err != nil {
-			h.logger.Warn("health: write cap-staleness", "key", stalenessKey, "error", err)
 		}
 	}
 }

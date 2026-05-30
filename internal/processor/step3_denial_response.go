@@ -11,9 +11,9 @@
 //  3. Populates actorRoles from the CapabilityDoc.Roles field (already parsed at
 //     step 3 — no extra read).
 //
-// For AuthContextMismatch and AuthFreshnessExceeded the actor-role and
-// role-coverage fields are omitted (denial is not about role coverage per AC);
-// a diagnosticHint is included instead.
+// For AuthContextMismatch the actor-role and role-coverage fields are
+// omitted (denial is not about role coverage per AC); a diagnosticHint is
+// included instead.
 //
 // NFR-S6: no other actors' identities, role membership lists, graph paths, or
 // internal vertex keys leak through this response. actorRoles uses the raw role
@@ -89,17 +89,16 @@ type DenialDetails struct {
 
 	// EvaluatedSection — which permission section was examined.
 	// One of "platformPermissions", "serviceAccess", "ephemeralGrants".
-	// Omitted for NoCapabilityEntry (no doc to evaluate) and
-	// AuthFreshnessExceeded (freshness check precedes dispatch).
+	// Omitted for NoCapabilityEntry (no doc to evaluate).
 	EvaluatedSection string `json:"evaluatedSection,omitempty"`
 
 	// Role-coverage fields — present for AuthDenied/OperationNotPermitted denials only.
-	// Omitted for AuthContextMismatch and AuthFreshnessExceeded per AC.
+	// Omitted for AuthContextMismatch per AC.
 	ActorRoles              []string `json:"actorRoles,omitempty"`
 	RolesCarryingPermission []string `json:"rolesCarryingPermission,omitempty"`
 
-	// DiagnosticHint — operator-actionable text for AuthContextMismatch +
-	// AuthFreshnessExceeded where role-coverage context is inapplicable.
+	// DiagnosticHint — operator-actionable text for AuthContextMismatch
+	// where role-coverage context is inapplicable.
 	DiagnosticHint string `json:"diagnosticHint,omitempty"`
 }
 
@@ -108,8 +107,7 @@ type DenialDetails struct {
 //
 // The method performs a single KV GET for cap.role-by-operation.<operationType>
 // when the denial requires role-coverage information. The GET is suppressed for
-// AuthContextMismatch and AuthFreshnessExceeded (per AC — those denials omit
-// role-coverage fields).
+// AuthContextMismatch (per AC — that denial omits role-coverage fields).
 func (b *DenialResponseBuilder) BuildDenialDetails(
 	ctx context.Context,
 	env *OperationEnvelope,
@@ -126,14 +124,6 @@ func (b *DenialResponseBuilder) BuildDenialDetails(
 	switch dec.Code {
 	case ErrCodeAuthContextMismatch:
 		details.DiagnosticHint = diagnosticHintForMismatch(dec, env)
-		return details
-
-	case ErrCodeAuthFreshnessExceeded:
-		details.DiagnosticHint = fmt.Sprintf(
-			"The Capability KV projection for actor %q is too stale. "+
-				"Wait for the Refractor to re-project the actor's permissions before retrying.",
-			env.Actor,
-		)
 		return details
 	}
 
@@ -155,16 +145,13 @@ func (b *DenialResponseBuilder) BuildDenialDetails(
 }
 
 // denialReason maps the Decision to the canonical FR22 reason string.
-// The AC enumerates: NoCapabilityEntry, OperationNotPermitted, AuthContextMismatch,
-// AuthFreshnessExceeded.
+// The AC enumerates: NoCapabilityEntry, OperationNotPermitted, AuthContextMismatch.
 func denialReason(dec Decision) string {
 	switch {
 	case dec.Reason == "NoCapabilityEntry":
 		return "NoCapabilityEntry"
 	case dec.Code == ErrCodeAuthContextMismatch:
 		return "AuthContextMismatch"
-	case dec.Code == ErrCodeAuthFreshnessExceeded:
-		return "AuthFreshnessExceeded"
 	default:
 		// All other AuthDenied reasons normalise to OperationNotPermitted.
 		return "OperationNotPermitted"

@@ -33,8 +33,7 @@ type Decision struct {
 	// Authorized=true.
 	Reason string
 	// Code is set when Authorized=false. Maps to Contract #2 §2.6 reply
-	// error codes (LaneUnauthorized, AuthDenied, AuthContextMismatch,
-	// AuthFreshnessExceeded).
+	// error codes (LaneUnauthorized, AuthDenied, AuthContextMismatch).
 	Code ErrorCode
 	// Resolved is the per-operation permission entry that matched at step 3.
 	// Nil on denials and on the StubAuthorizer path. Threaded through the
@@ -155,10 +154,10 @@ func SelectAuthorizerArgs(opts SelectAuthorizerOpts) (Authorizer, error) {
 			return nil, errCapabilityModeRequiresReader
 		}
 		cfg := opts.Config
-		if cfg.NFRP3 == 0 && cfg.StaleCeiling == 0 && cfg.LatencyBufferSize == 0 {
+		if cfg.NFRP3 == 0 && cfg.LatencyBufferSize == 0 {
 			cfg = DefaultCapabilityAuthorizerConfig()
 		}
-		return NewCapabilityAuthorizer(opts.Reader, opts.CapabilityBucket, opts.Clock, cfg, opts.Emitter, opts.Logger), nil
+		return NewCapabilityAuthorizer(opts.Reader, opts.CapabilityBucket, opts.Clock, cfg, opts.Logger), nil
 	default:
 		return nil, errUnknownAuthMode(opts.Mode)
 	}

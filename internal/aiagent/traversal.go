@@ -128,11 +128,13 @@ func NewTraverser(conn *substrate.Conn, coreBucket, capBucket string) *Traverser
 // actor. Callers should treat this as "agent has no capabilities yet".
 //
 // Staleness note: the returned doc reflects a Refractor projection that
-// may have been written some time ago. The Processor enforces
-// AuthFreshnessExceeded independently based on doc.ProjectedAt vs. its
-// configured ceiling. Callers in latency-sensitive paths should check
-// doc.ProjectedAt against their local clock before submitting operations;
-// a stale doc will be rejected by the Processor with AuthFreshnessExceeded.
+// may have been written some time ago. doc.ProjectedAt is deterministic
+// provenance ("as-of input state") derived from the anchor vertex's
+// committedAt — it is NOT a freshness ceiling. The Processor no longer
+// rejects operations on projection age: a stale-but-recent entry is an
+// accepted, bounded window (NFR-S7) backstopped operationally by Refractor
+// Capability-Lens health and, in future, Gateway token revocation. Callers
+// must NOT rely on the Processor denying stale projections.
 func (t *Traverser) ReadCapability(ctx context.Context, actorID string) (*processor.CapabilityDoc, error) {
 	key := "cap.identity." + actorID
 	entry, err := t.conn.KVGet(ctx, t.capBucket, key)

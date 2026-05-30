@@ -2,8 +2,6 @@
 //
 //   - `stub-auth-active` — emitted at Processor startup AND every Nth
 //     Authorize call when AuthModeStub is selected
-//   - `auth-freshness-exceeded` — emitted alongside the AuthFreshnessExceeded
-//     denial when a Capability KV projection is staler than 5×NFR-P3
 //
 // Key shape (Contract #5 alert convention): health.alerts.security.<alertCode>
 //
@@ -133,8 +131,6 @@ func (e *HealthAlertEmitter) EmitAlert(ctx context.Context, code string, details
 // Unknown codes fall back to "warning".
 func alertSeverity(code string) string {
 	switch code {
-	case "auth-freshness-exceeded":
-		return "error"
 	case "stub-auth-active":
 		// Stub mode in production is a security risk; "warning" is the
 		// least-noisy enum that still surfaces in dashboards.

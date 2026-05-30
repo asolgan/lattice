@@ -203,8 +203,17 @@ func TestRefractor_CapabilityLens_E2E(t *testing.T) {
 
 	// 1. Write vertices to Core KV. Each carries `class` so the
 	// executor's nodeMatches sees the cypher label.
+	// Real Core KV vertices carry the universal envelope provenance fields
+	// (Contract #1 §1.3). The capability lens derives projectedAt from the
+	// anchor vertex's lastModifiedAt, so the fixture must include it.
+	provenanceAt := "2026-05-15T10:00:00Z"
 	writeVertex := func(key, class string, extra map[string]any) {
-		body := map[string]any{"key": key, "class": class}
+		body := map[string]any{
+			"key":            key,
+			"class":          class,
+			"createdAt":      provenanceAt,
+			"lastModifiedAt": provenanceAt,
+		}
 		for k, v := range extra {
 			body[k] = v
 		}
@@ -275,7 +284,9 @@ func TestRefractor_CapabilityLens_E2E(t *testing.T) {
 	require.Equal(t, expectedKey, env["key"])
 	require.Equal(t, identityKey, env["actor"])
 	require.Equal(t, "1.0", env["version"])
-	require.NotEmpty(t, env["projectedAt"])
+	// projectedAt is deterministic provenance: the anchor identity vertex's
+	// lastModifiedAt, not a wall-clock read (Story 1.5.4 §3.2).
+	require.Equal(t, provenanceAt, env["projectedAt"])
 
 	lanes, _ := env["lanes"].([]any)
 	require.ElementsMatch(t, []any{"default"}, lanes)

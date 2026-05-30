@@ -33,7 +33,6 @@
 //   - health.processor.<instance>.auth-trace.<requestId>
 //   - health.processor.<instance>.malformed-operation.<requestId>
 //   - health.processor.<instance>.claim-attempts.<outcome>
-//   - health.processor.<instance>.cap-staleness (only when non-zero samples exist)
 //   - health.alerts.security.<alertCode>
 //   - health.gates.phase1.gate<N>
 package healthkv_test

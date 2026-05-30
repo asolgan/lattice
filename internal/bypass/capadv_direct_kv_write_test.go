@@ -327,7 +327,7 @@ func TestCapAdv_V1_DirectKVWrite_AuthorizerReadsOverwrittenEntry(t *testing.T) {
 
 	// Construct a CapabilityAuthorizer reading from our embedded NATS instance.
 	cfg := processor.DefaultCapabilityAuthorizerConfig()
-	authz := processor.NewCapabilityAuthorizer(conn, capadvCapBucket, nil, cfg, nil, bypassLogger())
+	authz := processor.NewCapabilityAuthorizer(conn, capadvCapBucket, nil, cfg, bypassLogger())
 
 	// Submit an op that the fabricated entry would have allowed (AdminAll scope=any).
 	// The graph-derived entry has no such permission → should be denied.

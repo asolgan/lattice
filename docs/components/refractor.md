@@ -164,8 +164,8 @@ RETURN row into the canonical Capability KV shape.
 | `key` | `cap.identity.<actorId>` (constructed from `vtx.identity.<id>` via `capabilityKey`) |
 | `actor` | Vertex key of the actor (`vtx.identity.<id>`) |
 | `version` | `"1.0"` (pinned for Phase 1) |
-| `projectedAt` | RFC3339 timestamp of the projection |
-| `projectedFromRevisions` | Map of `{actorKey: revision, lensDefKey: revision}`; used by Processor step 3 for freshness checks |
+| `projectedAt` | RFC3339 **provenance** timestamp: the anchor actor vertex's `lastModifiedAt` (the committing op's timestamp per Contract #1 §1.3), bound into the cypher as `$projectedAt`. It is deterministic ("as-of input state") — replay/rebuild over the same vertex yields an identical value (no wall-clock churn, F-009 closed). It is consumed only by monitoring + the Processor auth trace; the Processor no longer compares it against any freshness ceiling (Story 1.5.4). |
+| `projectedFromRevisions` | Map of `{actorKey: revision, lensDefKey: revision}`; recorded as projection provenance and surfaced in the Processor auth trace (planes 2+3). Not a freshness gate. |
 | `lanes` | `["default"]` (Phase 1; multi-lane projection is Phase 2) |
 | `platformPermissions` | Array from cypher RETURN; `[]` if absent |
 | `serviceAccess` | Array from cypher RETURN; `[]` if absent |
@@ -184,6 +184,39 @@ Phase 1 retains `cap.identity.` as the key prefix (per the 2026-05-19 design
 decision). Post-Story 4.7 the prefix generalizes to `cap.<actorType>.` to
 support non-identity actor types. The Processor's `CapabilityAuthorizer`
 reads the Phase 1 prefix in current code.
+
+---
+
+## Capability-Lens health (operational backstop) — current state
+
+Story 1.5.4 removed the Processor's per-operation projection-freshness gate.
+The accepted bounded-staleness window is now backstopped *operationally* by the
+Refractor's per-lens health, and (in future) by Gateway token revocation for
+hard identity/session revocation. This subsection documents **what the
+Capability-Lens pipeline emits today** (survey, as-is — no new alerting was
+built in 1.5.4).
+
+The Capability Lens (`vtx.meta.lens.capability`, `engine: "full"`) is wired
+through the same generic per-lens health path as every other lens — there is
+**no Capability-Lens-specific liveness or lag signal, and no alerting**. The
+signals it does emit:
+
+| Signal | Source | Key / subject | Semantics |
+|--------|--------|---------------|-----------|
+| Per-lens status | `health.Reporter` | Health KV, keyed by the lens `ruleID` | `active` / `paused` / `rebuilding`, plus `errorCount`, `activeSequence`, `pauseReason`, `lastError`. Updated on lifecycle transitions and `RecordError`. |
+| Consumer lag | `health.LagPoller` → `Reporter.SetConsumerLag` | `materializer.metrics.<lensId>` + the `consumerLag` field on the per-lens health entry | `NumPending` on the lens consumer, polled on an interval. |
+| Per-lens latency | `pipeline.LatencyRingBuffer` → `LatticeHeartbeater.LensLatencyProvider` | `health.refractor.<instance>.lens.<canonicalName>` | p95 / p99 / mean / count of per-event projection latency (NFR-P3 instrument). |
+| Instance heartbeat | `LatticeHeartbeater` | `health.refractor.<instance>` | 10s heartbeat with TTL purge (NFR-O1). |
+| Audit | `health.AuditWriter` | `materializer.audit.<lensId>` | Per-projection audit append. |
+
+**Known gap (do NOT fix here — out of scope for 1.5.4):** none of the above is
+Capability-Lens-aware, and there is **no threshold/alert** that fires when the
+Capability Lens is `paused`, accumulating `consumerLag`, or has stopped
+projecting (projector grossly behind). Detecting a dead/lagging Capability
+projector today requires an operator to read these generic signals and apply
+judgment. A dedicated Capability-Lens liveness alert (and the Gateway
+token-revocation hard control) are the planned follow-ups; until they land, the
+backstop for the removed freshness gate is operator-observed, not automated.
 
 ---
 

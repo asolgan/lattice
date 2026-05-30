@@ -37,7 +37,6 @@ Source package: `internal/processor/`
 |---|---|---|---|
 | `health.processor.<instance>` | ≥ 10s heartbeat | `internal/processor/health.go` | `HealthHeartbeater.emit()` |
 | `health.processor.<instance>.step3-latency` | per heartbeat tick | `internal/processor/health.go` | `HealthHeartbeater.emitCapabilityAuthSignals()` |
-| `health.processor.<instance>.cap-staleness` | per tick (non-zero window only) | `internal/processor/health.go` | `HealthHeartbeater.emitCapabilityAuthSignals()` |
 | `health.processor.<instance>.malformed-operation.<requestId>` | per malformed envelope | `internal/processor/health.go` | `HealthHeartbeater.EmitMalformedOperation()` |
 | `health.processor.<instance>.claim-attempts.<outcome>` | per `ClaimIdentity` call | `internal/processor/health_alerts.go` | `HealthAlertEmitter.RecordClaimAttempt()` |
 | `health.alerts.security.<alertCode>` | on security event | `internal/processor/health_alerts.go` | `HealthAlertEmitter.EmitAlert()` |
@@ -48,14 +47,13 @@ Source package: `internal/processor/`
 **`<outcome>` enum** for claim-attempts: `success`, `invalid-key`, `wrong-state`, `flagged`,
 `merged`, `credential-already-bound`, `no-target`.
 
-**`<alertCode>` enum** (known Phase 1 codes): `stub-auth-active`, `auth-freshness-exceeded`.
+**`<alertCode>` enum** (known Phase 1 codes): `stub-auth-active`.
 
 **Event-driven keys** (only present when the described event occurs — not asserted by the
 completeness test):
 - `health.processor.<instance>.auth-trace.<requestId>` — per denial only
 - `health.processor.<instance>.malformed-operation.<requestId>` — per malformed envelope only
 - `health.processor.<instance>.claim-attempts.<outcome>` — per ClaimIdentity call only
-- `health.processor.<instance>.cap-staleness` — only when non-zero samples exist in the window
 - `health.alerts.security.<alertCode>` — on event only
 
 ### Refractor (instance heartbeat)
@@ -187,24 +185,6 @@ prevents future namespace collisions and documents the intended purpose.
   "p99Ns": <int64>
 }
 ```
-
-### `health.processor.<instance>.cap-staleness` — Capability projection staleness
-
-```json
-{
-  "key": "health.processor.<instance>.cap-staleness",
-  "component": "processor",
-  "instance": "<instance>",
-  "observedAt": "<RFC3339>",
-  "count": <int>,
-  "meanMs": <int64>,
-  "p95Ms": <int64>,
-  "p99Ms": <int64>,
-  "exceedingNFRP3": <int>
-}
-```
-
-Only written when `count > 0` in the current window.
 
 ### `health.processor.<instance>.malformed-operation.<requestId>`
 
@@ -351,7 +331,7 @@ Default: `60s`. Configurable via:
 6. **Overall** = worst of all component statuses.
 
 > **Note:** Sub-component event-driven keys (classified as `processor-event` or
-> `refractor-event` by `classifyKey` — e.g. `step3-latency`, `cap-staleness`,
+> `refractor-event` by `classifyKey` — e.g. `step3-latency`,
 > `malformed-operation.*`) are intentionally excluded from the rollup. They carry
 > point-in-time event data, not steady-state heartbeat data, so they do not contribute
 > to the green/yellow/red calculation.

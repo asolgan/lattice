@@ -2,12 +2,12 @@
 //
 // Covered cases:
 //   - denial for each reason value: NoCapabilityEntry, OperationNotPermitted,
-//     AuthContextMismatch (task / service / both / platform-scope), AuthFreshnessExceeded
+//     AuthContextMismatch (task / service / both / platform-scope)
 //   - rolesCarryingPermission: populated from index, empty for unknown operation
 //   - actorRoles: populated from doc.Roles; empty for NoCapabilityEntry
 //   - actor with multiple roles
 //   - evaluatedSection: platform / service / task / absent for NoCapabilityEntry
-//   - diagnosticHint: present for mismatch + freshness; absent for OperationNotPermitted
+//   - diagnosticHint: present for mismatch; absent for OperationNotPermitted
 //   - NFR-S6 leak check: no other-actor data in denial response
 package processor
 
@@ -221,32 +221,6 @@ func TestDenialBuilder_AuthContextMismatch_ServiceNotInProjection(t *testing.T) 
 	}
 }
 
-// --- AuthFreshnessExceeded ---
-
-func TestDenialBuilder_AuthFreshnessExceeded(t *testing.T) {
-	b := newDenialBuilderForTest(t, nil)
-	doc := baseDoc([]string{"vtx.role.admin"})
-	env := baseEnv("PingPlatform", capTestActorKey)
-	dec := Decision{
-		Authorized: false,
-		Code:       ErrCodeAuthFreshnessExceeded,
-		Reason:     "Capability KV projection age 10000ms exceeds ceiling 2500ms",
-		Doc:        doc,
-	}
-	dd := b.BuildDenialDetails(context.Background(), env, dec, doc)
-	if dd.Reason != "AuthFreshnessExceeded" {
-		t.Errorf("reason: got %q want AuthFreshnessExceeded", dd.Reason)
-	}
-	if dd.DiagnosticHint == "" {
-		t.Errorf("diagnosticHint: expected non-empty for freshness exceeded")
-	}
-	// Role-coverage fields must be absent.
-	if dd.ActorRoles != nil || dd.RolesCarryingPermission != nil {
-		t.Errorf("role fields must be absent for AuthFreshnessExceeded; actorRoles=%v rolesCarrying=%v",
-			dd.ActorRoles, dd.RolesCarryingPermission)
-	}
-}
-
 // --- Unknown operation type (no role-by-operation index) ---
 
 func TestDenialBuilder_UnknownOperationType_EmptyRolesCarrying(t *testing.T) {
@@ -404,21 +378,6 @@ func TestCapabilityAuthorizer_DenialThreadsDoc(t *testing.T) {
 	}
 	if len(dec.Doc.Roles) == 0 {
 		t.Errorf("Dec.Doc.Roles should match the fixture; got empty")
-	}
-}
-
-func TestCapabilityAuthorizer_FreshnessDenialThreadsDoc(t *testing.T) {
-	projected := time.Date(2026, 5, 15, 10, 0, 0, 0, time.UTC)
-	clockAt := projected.Add(10 * time.Second) // above ceiling
-	doc := freshDoc(projected)
-	a, _, _ := newCapAuthForTest(t, doc, clockAt)
-	env := envFor("PingPlatform", capTestActorKey, nil)
-	dec, _ := a.Authorize(context.Background(), env)
-	if dec.Code != ErrCodeAuthFreshnessExceeded {
-		t.Fatalf("expected freshness denial; got %+v", dec)
-	}
-	if dec.Doc == nil {
-		t.Fatalf("Dec.Doc must be non-nil on freshness denial")
 	}
 }
 

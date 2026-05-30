@@ -86,7 +86,7 @@ func newCapAuthForTest(t *testing.T, doc *CapabilityDoc, clockAt time.Time) (*Ca
 		reader.entries[capTestActorCap] = raw
 	}
 	clock := &fakeClock{now: clockAt}
-	a := NewCapabilityAuthorizer(reader, "capability-kv", clock, DefaultCapabilityAuthorizerConfig(), emitter, capTestLogger())
+	a := NewCapabilityAuthorizer(reader, "capability-kv", clock, DefaultCapabilityAuthorizerConfig(), capTestLogger())
 	return a, emitter, reader
 }
 
@@ -321,38 +321,27 @@ func TestCapabilityAuthorizer_InfrastructureFailure_ReturnsError(t *testing.T) {
 	}
 }
 
-func TestCapabilityAuthorizer_Freshness_AboveCeiling_DeniesAndAlerts(t *testing.T) {
+// A grossly-stale projectedAt no longer denies: the per-operation freshness
+// gate was removed (Story 1.5.4 §3.1). The operation proceeds on a
+// permission match and the bounded-staleness window is an accepted risk
+// (NFR-S7) backstopped operationally, not by a per-op denial.
+func TestCapabilityAuthorizer_StaleProjection_StillAllows(t *testing.T) {
 	projected := time.Date(2026, 5, 15, 10, 0, 0, 0, time.UTC)
-	clockAt := projected.Add(10 * time.Second) // way above 2.5s ceiling
+	clockAt := projected.Add(10 * time.Second) // far beyond any former ceiling
 	a, emitter, _ := newCapAuthForTest(t, freshDoc(projected), clockAt)
 	env := envFor("PingPlatform", capTestActorKey, nil)
-	dec, _ := a.Authorize(context.Background(), env)
-	if dec.Code != ErrCodeAuthFreshnessExceeded {
-		t.Fatalf("expected AuthFreshnessExceeded; got %+v", dec)
+	dec, err := a.Authorize(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
 	}
-	if len(emitter.calls) == 0 || emitter.calls[0].code != "auth-freshness-exceeded" {
-		t.Fatalf("expected auth-freshness-exceeded alert; got %+v", emitter.calls)
-	}
-}
-
-func TestCapabilityAuthorizer_Freshness_AboveNFRP3_AllowsAndRecords(t *testing.T) {
-	projected := time.Date(2026, 5, 15, 10, 0, 0, 0, time.UTC)
-	clockAt := projected.Add(800 * time.Millisecond) // above 500ms but below 2.5s
-	a, emitter, _ := newCapAuthForTest(t, freshDoc(projected), clockAt)
-	env := envFor("PingPlatform", capTestActorKey, nil)
-	dec, _ := a.Authorize(context.Background(), env)
 	if !dec.Authorized {
-		t.Fatalf("expected allow despite sub-ceiling staleness; got %+v", dec)
+		t.Fatalf("stale projection must not deny; got %+v", dec)
+	}
+	if dec.Resolved == nil || dec.Resolved.ProjectedAt != projected.Format(time.RFC3339Nano) {
+		t.Fatalf("expected projectedAt threaded as provenance; got %+v", dec.Resolved)
 	}
 	if len(emitter.calls) != 0 {
-		t.Fatalf("expected no alerts for sub-ceiling staleness; got %+v", emitter.calls)
-	}
-	stats := a.StalenessStats()
-	if stats.Count != 1 {
-		t.Fatalf("expected one staleness sample recorded; got %d", stats.Count)
-	}
-	if got := a.StalenessExceedingNFRP3(); got != 1 {
-		t.Fatalf("expected StalenessExceedingNFRP3=1; got %d", got)
+		t.Fatalf("expected no freshness alert; got %+v", emitter.calls)
 	}
 }
 

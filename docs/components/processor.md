@@ -47,7 +47,7 @@ Key files:
 |----------|--------|-------|
 | **Operation envelopes** (Contract #2) | JetStream `ops.<lane>.>` | Pulled by a durable JetStream push consumer; lane determines priority (default / meta / urgent / system) |
 | **DDL meta-vertices** (Contract #1) | Core KV `vtx.meta.>` | Read into `DDLCache` at startup; cache is invalidated on any `vtx.meta.*` mutation to keep the pipeline current |
-| **Capability KV** (Contract #6) | Capability KV bucket | Read at step 3 by `CapabilityAuthorizer`; key pattern `cap.identity.<actorId>` (Phase 1 shape); auth freshness checked against 5×NFR-P3 ceiling |
+| **Capability KV** (Contract #6) | Capability KV bucket | Read at step 3 by `CapabilityAuthorizer`; key pattern `cap.identity.<actorId>` (Phase 1 shape). A missing entry denies (`NoCapabilityEntry`, fail-safe). There is **no per-operation projection-freshness gate** — `projectedAt` is deterministic provenance, not a TTL; the bounded staleness window is an accepted risk backstopped operationally (see Refractor Capability-Lens health) and, in future, by Gateway token revocation. |
 | **Adjacency KV** | `refractor-adjacency` | Not yet read by Processor; targeted for Story 4.6 `MergeIdentity` inbound-link enumeration (Phase 2 candidate) |
 
 ---
@@ -60,7 +60,7 @@ Key files:
 | **Events** (Contract #3 EventList) | JetStream `events.<class>` subjects on `core-events` stream | Published as an unconditional `substrate.PublishBatch` at step 9 after the commit is durable |
 | **Idempotency tracker entries** (Contract #4) | Core KV at `vtx.op.<requestId>` | Written as part of the step-8 atomic batch; 24h TTL; provides step-2 dedup on re-delivery |
 | **Operation replies** (Contract #2 §2.4) | Per-op reply-to inbox | `accepted` (post-step-8), `duplicate` (step-2 short-circuit), or `rejected` (any termination branch) |
-| **Health KV signals** (Contract #5) | Health KV `health.processor.<instance>.*` | Heartbeat every 10s; per-op metrics (OpsConsumed / OpsCommitted / OpsDuplicates / OpsRejected / OpsMalformed); step-3 latency; capability staleness; auth trace records (Story 3.5); claim-attempt outcomes (Story 4.3); alerts under `health.alerts.security.*` |
+| **Health KV signals** (Contract #5) | Health KV `health.processor.<instance>.*` | Heartbeat every 10s; per-op metrics (OpsConsumed / OpsCommitted / OpsDuplicates / OpsRejected / OpsMalformed); step-3 latency; auth trace records (Story 3.5); claim-attempt outcomes (Story 4.3); alerts under `health.alerts.security.*` |
 | **`OperationReply.Detail`** | Inline in accepted reply | Carries **commit-trace data only** — mutation count, event count, revision map, traceId. NOT business data. The script's `response` return key populates this field (Story 4.2). Sensitive tokens (e.g. claim keys) may appear here — field is NOT logged (NFR-S6/S7). The pre-correction Epic 4 usage as a business-data channel is being walked back in Story 4.6. |
 
 ---
@@ -75,7 +75,7 @@ and exits with one of five outcomes: `accepted`, `duplicate`, `rejected`,
 |------|------|-------------|
 | 1 | **Consume** | `parseEnvelopeFromMessage` — deserializes `OperationEnvelope` from the JetStream message; validates `requestId` (must be a valid 20-char NanoID), `lane` (must be a recognized enum value), `operationType`, `actor`, `submittedAt`, and `payload`. Malformed → term with reason; if a reply inbox is present, reply with `EnvelopeMalformed` code. |
 | 2 | **Dedup** | `CheckDedup` — reads the tracker key `vtx.op.<requestId>` from Core KV. If already present, emit `DuplicateDetected` log + health marker, reply with `duplicate`, ack, return. On KV error, nak for re-delivery. |
-| 3 | **Auth** | `Authorizer.Authorize` — in production, `CapabilityAuthorizer` reads `cap.identity.<actorId>` from Capability KV, checks lane authorization + permission match + freshness ceiling. Denied → term with reason, reply with structured denial (FR22 when `DenialBuilder` is wired). Auth trace emitted fire-and-forget via `AuthTraceEmitter` (FR23) for both allowed and denied decisions when configured. |
+| 3 | **Auth** | `Authorizer.Authorize` — in production, `CapabilityAuthorizer` reads `cap.identity.<actorId>` from Capability KV, checks lane authorization + permission match. A missing entry denies (`NoCapabilityEntry`). There is no projection-freshness gate (Story 1.5.4): a stale-but-permission-matching projection is allowed; `projectedAt` is recorded as provenance in the auth trace, not compared against a ceiling. `ephemeralGrants[].expiresAt` (a real grant TTL) is still enforced. Denied → term with reason, reply with structured denial (FR22 when `DenialBuilder` is wired). Auth trace emitted fire-and-forget via `AuthTraceEmitter` (FR23) for both allowed and denied decisions when configured. |
 | 4 | **Hydrate** | `Hydrator.Hydrate` — loads `contextHint.Reads` (explicit per-key reads) + (post-Story 4.4) `ScanPrefixes` from Core KV into the `HydratedState` map. Soft cap: >1000 keys per prefix returns `HydrationError("scan-too-large")`. **NOTE**: `ScanPrefixes` is on the deprecation list — Story 4.6 replaces it with narrow `LinkScans`. |
 | 5 | **Execute** | `Executor.Execute` — compiles and runs the DDL's `.script` aspect in the Starlark sandbox via `StarlarkRunner.Run`. Produces `ScriptResult{Mutations, Events, ResponseDetail}`. Timeout: 250ms wall budget + 1,000,000 step limit. |
 | 6 | **Validate** | `Validator.Validate` — checks `permittedCommands` (operation type must be in the DDL's list), `sensitiveAspectScope` (script may not create underscore-prefixed aspects except system-reserved ones), and key-pattern checks from Story 1.7 + 1.9. `DDLViolation` → term, reply with `DDLViolation` code. |
@@ -341,7 +341,7 @@ just avoids redundant Core KV reads).
 | `SandboxViolation` / `ScriptError` | Step 5 | Reply with `ScriptFailed` code; term |
 | `ScriptTimeout` | Step 5 | Reply with `ScriptFailed` code; term |
 | `HydrationError` | Step 4 | Reply with `HydrationFailed` code; term |
-| `AuthDenied` | Step 3 | Reply with `AuthDenied` / `LaneUnauthorized` / `AuthFreshnessExceeded` code; term; ack (no retry — this is a final decision) |
+| `AuthDenied` | Step 3 | Reply with `AuthDenied` / `LaneUnauthorized` / `AuthContextMismatch` code; term; ack (no retry — this is a final decision) |
 | `AuthInfrastructureFailure` | Step 3 | `InternalError` reply; nak (retryable) |
 | `PublicationError` | Step 9 | Nak; JetStream re-delivers; step-2 dedup short-circuits mutation; step 9 re-runs |
 | `MalformedEnvelope` | Step 1 | Reply with `EnvelopeMalformed` code (if reply inbox present); term |
@@ -352,7 +352,7 @@ just avoids redundant Core KV reads).
 
 | Mode | Behavior |
 |------|----------|
-| `AuthModeCapability` (default) | Real `CapabilityAuthorizer`; reads Capability KV; checks lane + permission + freshness |
+| `AuthModeCapability` (default) | Real `CapabilityAuthorizer`; reads Capability KV; checks lane + permission (+ `ephemeralGrants` expiry). No projection-freshness gate (Story 1.5.4). |
 | `AuthModeStub` | `StubAuthorizer`; always allows; emits `WARN` log + Health KV alert every 1000 calls. Test/dev only. |
 
 The auth mode defaults to `AuthModeCapability` as of Story 3.3. `LATTICE_AUTH_MODE=stub` opts back in to the stub; production deployments that enable stub receive visible degradation signals in Health KV dashboards.

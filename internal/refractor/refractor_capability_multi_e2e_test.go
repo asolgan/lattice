@@ -221,8 +221,17 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	serviceKey := substrate.VertexKey("service", serviceID)
 	taskKey := substrate.VertexKey("task", taskID)
 
+	// Real Core KV vertices carry the universal envelope provenance fields
+	// (Contract #1 §1.3); the capability lens derives projectedAt from the
+	// anchor vertex's lastModifiedAt, so the fixture includes it.
+	const provenanceAt = "2026-05-15T10:00:00Z"
 	writeVertex := func(key, class string, extra map[string]any) {
-		body := map[string]any{"key": key, "class": class}
+		body := map[string]any{
+			"key":            key,
+			"class":          class,
+			"createdAt":      provenanceAt,
+			"lastModifiedAt": provenanceAt,
+		}
 		for k, v := range extra {
 			body[k] = v
 		}

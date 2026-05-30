@@ -80,11 +80,6 @@ const (
 	ErrCodeDDLViolation     ErrorCode = "DDLViolation"
 	ErrCodeRevisionConflict ErrorCode = "RevisionConflict"
 	// Step-3 Capability KV auth codes.
-	// ErrCodeAuthFreshnessExceeded fires when the Capability KV projection
-	// for the actor is staler than the freshness ceiling (5 × NFR-P3 by
-	// default). Hard denial — operation rejected so the actor doesn't see
-	// auth state from an arbitrarily-out-of-date projection (Contract #6 §6.8).
-	ErrCodeAuthFreshnessExceeded ErrorCode = "AuthFreshnessExceeded"
 	// ErrCodeAuthInfrastructureFailure surfaces a NATS / Capability KV outage
 	// to the reply path. The CapabilityAuthorizer returns an error (not a
 	// Decision) when the KV GET fails; the commit path maps that to this code

@@ -118,7 +118,7 @@ cap.role-by-operation.BookExecutiveCleaning
 | `key` | yes | Echo of the Capability KV key |
 | `actor` | yes | Full vertex key of the actor |
 | `version` | yes | Document schema version. Phase 1 = `"1.0"`. Consumers branch on this; the contract evolves under Stream 3 oversight. |
-| `projectedAt` | yes | Refractor's clock when the projection was written |
+| `projectedAt` | yes | **Deterministic provenance** ("as-of input state"): the anchor actor vertex's `lastModifiedAt` (Contract #1 §1.3), not a wall-clock read at projection time. Same input → same value across replay/rebuild. RFC3339 string. Consumed by monitoring + the Processor auth trace; it is **not** a freshness ceiling — the Processor performs no per-operation projection-age check (Story 1.5.4). |
 | `projectedFromRevisions` | yes | Map of source-vertex-key → revision-at-projection. Enables consistency-window detection used by the bypass test suite. Includes the actor's identity vertex, the Capability Lens definition vertex, all role vertices held, any active task vertices for ephemeral grants, and any location/lease vertices referenced by `resolvedVia` paths. |
 | `lanes` | yes | Array of JetStream lanes the actor may submit to. Subset of `["default", "meta", "urgent", "system"]`. |
 | `platformPermissions` | yes (may be empty `[]`) | Standing operation permissions not scoped to a service. See §6.4. |

@@ -21,10 +21,35 @@ import (
 // MATCH-bindings (no real actor).
 var ErrSkipProjection = errors.New("pipeline: envelope: skip projection")
 
+// ErrNoProvenanceTimestamp signals that an anchor vertex body carried no
+// usable commit-provenance timestamp (neither lastModifiedAt nor createdAt),
+// so a deterministic projectedAt cannot be derived. The pipeline surfaces
+// this rather than substituting a wall-clock value.
+var ErrNoProvenanceTimestamp = errors.New("pipeline: anchor vertex carries no commit-provenance timestamp")
+
+// projectedAtFromProvenance derives the deterministic projectedAt value for a
+// capability projection from the anchor vertex body's commit provenance. The
+// universal Core KV envelope (Contract #1 §1.3) records the committing op's
+// timestamp as lastModifiedAt (updated on every commit; equal to createdAt on
+// creation). Using it makes projectedAt a pure function of the input state, so
+// replay/rebuild over the same vertex yields an identical value — it is
+// provenance ("as-of input state"), never a wall-clock read.
+func projectedAtFromProvenance(nodeProps map[string]any) (string, error) {
+	if nodeProps != nil {
+		if v, ok := nodeProps["lastModifiedAt"].(string); ok && v != "" {
+			return v, nil
+		}
+		if v, ok := nodeProps["createdAt"].(string); ok && v != "" {
+			return v, nil
+		}
+	}
+	return "", ErrNoProvenanceTimestamp
+}
+
 // evaluateForEntry runs the per-engine evaluate path against entry and
 // returns the normalised []simple.EvalResult shape the write loop expects.
 // The simple engine delegates to simple.Evaluate; the full engine binds
-// `$actorKey`, `$now`, `$projectedAt` from the event/clock and calls
+// `$actorKey`, `$now`, `$projectedAt` from the event/provenance and calls
 // full.Engine.ExecuteWith. When an EnvelopeFn is installed, each row
 // is rewritten before being handed to the adapter.
 func (p *Pipeline) evaluateForEntry(ctx context.Context, entry simple.NodeEntry) ([]simple.EvalResult, error) {
@@ -77,9 +102,13 @@ func (p *Pipeline) evaluateForEntry(ctx context.Context, entry simple.NodeEntry)
 		if p.envelopeFn == nil {
 			return results, nil
 		}
+		projectedAt, perr := projectedAtFromProvenance(entry.Properties)
+		if perr != nil {
+			return nil, fmt.Errorf("pipeline: projectedAt for %q: %w", entry.CoreKVKey, perr)
+		}
 		params := map[string]any{
 			"actorKey":    entry.CoreKVKey,
-			"projectedAt": time.Now().UTC().Format(time.RFC3339),
+			"projectedAt": projectedAt,
 		}
 		filtered := results[:0]
 		for i := range results {
@@ -110,10 +139,14 @@ func (p *Pipeline) evaluateForEntry(ctx context.Context, entry simple.NodeEntry)
 func (p *Pipeline) executeFullForActor(ctx context.Context, actorKey string, nodeProps map[string]any) ([]simple.EvalResult, error) {
 	start := time.Now()
 	now := start.UTC()
+	projectedAt, perr := projectedAtFromProvenance(nodeProps)
+	if perr != nil {
+		return nil, fmt.Errorf("pipeline: projectedAt for %q: %w", actorKey, perr)
+	}
 	params := map[string]any{
 		"actorKey":    actorKey,
 		"now":         now.Format(time.RFC3339),
-		"projectedAt": now.Format(time.RFC3339),
+		"projectedAt": projectedAt,
 	}
 	out, err := p.fullEngine.ExecuteWith(ctx, p.fullCR,
 		ruleengine.EventContext{

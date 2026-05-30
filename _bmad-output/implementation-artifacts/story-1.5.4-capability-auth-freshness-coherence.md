@@ -105,4 +105,42 @@ If an unrelated package flakes on a repeated full-suite run, re-run it in isolat
 - [ ] All §5 gates green.
 
 ## 7. Closing summary (sub-agent fills in)
-_(append here)_
+
+### Deliverables vs §6 — all met
+- [x] Freshness gate removed: `checkFreshness`, `StaleCeiling`, the projectedAt-age denial, and the `cap-staleness` Health signal are all gone. Build clean, zero dangling refs (grep across `internal/ cmd/ packages/` for all removed symbols returns nothing).
+- [x] `ephemeralGrants` expiry, latency ring, cap-doc/`NoCapabilityEntry` denial, and auth-trace `projectedAt` recording — all preserved untouched.
+- [x] `projectedAt` deterministic from source provenance in both engine paths (`evaluate.go`): `projectedAtFromProvenance` derives it from the anchor vertex's `lastModifiedAt` (createdAt fallback). No wall-clock. Replay yields identical value — asserted in `refractor_capability_e2e_test.go` (`require.Equal(provenanceAt, env["projectedAt"])`).
+- [x] `ErrCodeAuthFreshnessExceeded` + its denial-response branches removed as fully dead (survey confirmed no non-trivial coupling); no emit path remains.
+- [x] Gate-3 Vector #2 reframed honestly: tests now assert a grossly-stale projection ALLOWS (no denial) with projectedAt observable; `gate3_test.go` row = `ACCEPTED-WINDOW | bounded; operational + Gateway enforcement (1.5.4)`. Other 3 vectors unchanged + DEFENDED.
+- [x] aiagent `traversal.go` dependency note rewritten — callers must NOT rely on the Processor denying stale projections.
+- [x] Docs updated: `docs/components/{processor,refractor}.md`, `docs/contracts/06-capability-kv.md`. (05-health-kv.md did not enumerate cap-staleness, so no edit needed there.) §3.5 Capability-Lens health current-state surveyed + documented.
+- [x] All §5 gates green.
+
+### §3.0 two-time-checks — correctly distinguished
+Removed ONLY the projectedAt freshness gate. Kept: `ephemeralGrants[].expiresAt` (real grant TTL, `matchEphemeralGrant`), the cap-doc read + `NoCapabilityEntry` fail-safe denial, the Authorize latency ring + `step3-latency` emission, and auth-trace `projectedAt` recording. The injected `Clock` is retained — it now serves grant-expiry only.
+
+### Key implementation notes
+- `NewCapabilityAuthorizer` lost its `emitter AuthAlertEmitter` parameter (it was used only by the removed freshness alert). `AuthAlertEmitter`/`noopAlertEmitter` are retained — still used by `stub-auth-active`. All callers (prod `step3_auth.go` + 4 bypass test files + processor unit test) updated.
+- The deterministic projectedAt source is `lastModifiedAt`, NOT a literal `committedAt` key: the universal Core KV envelope (Contract #1 §1.3) has no top-level `committedAt`; `lastModifiedAt` IS the committing op's timestamp on the vertex and is the correct deterministic provenance ("as-of input state"). `committedAt` was cleanly reachable in spirit, so no CAR was needed. If neither `lastModifiedAt` nor `createdAt` is present, `projectedAtFromProvenance` returns `ErrNoProvenanceTimestamp` and the projection errors loudly — NO wall-clock fallback (§3.2 honored).
+- Two e2e fixtures (`refractor_capability_e2e_test.go`, `refractor_capability_multi_e2e_test.go`) seeded actor vertices WITHOUT envelope provenance; they would now fail the no-fallback guard. Fixed the fixtures to carry `createdAt`/`lastModifiedAt` (mirroring real vertices) rather than weakening the guard.
+- Auth-trace observability test for Vector #2 now constructs the emitter with `traceAllowDecisions=true` (the stale-projection ALLOW is the observable signal now that there's no denial).
+- gate3 roll-up pass logic generalized: gate passes when all 4 vectors clear (DEFENDED or ACCEPTED-WINDOW); honest report string distinguishes the two.
+
+### §3.5 health survey finding (DO NOT BUILD — documented as-is)
+The Capability Lens (`vtx.meta.lens.capability`, full engine) flows through the SAME generic per-lens health path as every other lens — there is **no Capability-Lens-specific liveness/lag signal and no alerting/threshold anywhere in `internal/refractor/health`**. What it emits today: per-lens `Reporter` status (`active`/`paused`/`rebuilding` + errorCount/activeSequence) keyed by ruleID; `LagPoller` consumerLag (`materializer.metrics.<lensId>` + the health entry field); per-lens projection latency (p95/p99/mean via `LatticeHeartbeater.LensLatencyProvider` at `health.refractor.<instance>.lens.<canonicalName>`); the 10s instance heartbeat; and audit appends. **Known gap (left unfixed, out of scope):** nothing fires an alert when the Capability projector is paused/lagging/dead — detecting "projector grossly behind" is operator-observed, not automated. The dedicated Capability-Lens liveness alert + the Gateway token-revocation hard control are the planned follow-ups. Documented in `docs/components/refractor.md` → "Capability-Lens health (operational backstop) — current state".
+
+### Deviations / CARs
+- None. No stuck loops; no CAR appended; no planning artifacts touched. Deviation 14 (`make down && make up` between full-suite runs) followed.
+
+### Gate tails (§5)
+- `go build ./...` — clean.
+- `make vet` — clean.
+- `golangci-lint run ./...` — `0 issues.`
+- `make verify-kernel` — `verify-kernel: ALL ASSERTIONS PASSED`.
+- `go test ./internal/processor/... -p 1 -count=1` — `ok ... 20.166s`.
+- `go test ./internal/refractor/... -p 1 -count=1` — all packages `ok`.
+- `go test ./... -p 1 -count=1` — entire repo green (cmd, internal, packages — all `ok`/no-test-files; no FAIL).
+- `make test-bypass` — `--- PASS: TestGate3_Report` / `ok internal/bypass 3.286s`.
+- `make test-capability-adversarial` — `PHASE 1 GATE 3: PASSED (4/4 cleared — 3 DEFENDED, 1 ACCEPTED-WINDOW)`; report row #2 = `Projection lag window | ACCEPTED-WINDOW | bounded; operational + Gateway enforcement (1.5.4)`.
+
+Changes left in working tree (uncommitted) for Winston.

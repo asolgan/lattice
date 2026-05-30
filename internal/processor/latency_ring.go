@@ -11,9 +11,8 @@ import (
 )
 
 // LatencyStats is the snapshot view of a ring at heartbeat tick.
-// Count==0 means no samples — heartbeat callers may use that to skip
-// emission for staleness (Decision #4) or to emit a zero-count signal
-// for liveness (Decision #5 — step3-latency always emits).
+// Count==0 means no samples — step3-latency still emits a zero-count
+// signal so a live-but-idle authorizer produces a liveness heartbeat.
 type LatencyStats struct {
 	Count int
 	Mean  time.Duration
