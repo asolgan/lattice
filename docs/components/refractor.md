@@ -150,6 +150,29 @@ Story 4.6 `MergeIdentity` reads adjacency for inbound link enumeration via a
 new substrate helper `AdjacencyForNode(nodeKey) -> []EdgeID`. Until that
 helper ships, the adjacency is consumed directly by the cypher executor only.
 
+### Link fan-out on the capability pipeline
+
+Most lenses only project on **vertex** CDC events; `pipeline.processMsg`
+ack-and-skips link and aspect events. The capability pipeline is the exception:
+it has an `ActorEnumerator` installed, and a pure link mutation (e.g.
+`holdsRole`, `grantedBy`) changes an actor's authorization with **no
+accompanying vertex change**. So on the actor-aware pipeline a `KindLink` CDC
+event — create *and* tombstone (revocation) — drives a fan-out reprojection
+(`evaluateLinkFanOut`): the link key is parsed into its two endpoint vertices,
+affected actors are enumerated from **both** endpoints (union), and each is
+reprojected through the same per-actor machinery as the vertex fan-out
+(`reprojectActors`).
+
+Because the dedicated adjacency `Bootstrapper` and the capability pipeline both
+observe the same link event with no cross-consumer ordering guarantee, the
+pipeline first **idempotently applies the link to the adjacency KV itself**
+(via `adjacency.Build`, mirroring the bootstrapper's two directional events,
+keyed by the link key as EdgeID) before enumerating. This guarantees the
+reprojection cypher sees a consistent edge set and never races ahead of the
+edge that triggered it; the bootstrapper's later `Build` for the same edge is a
+no-op. A link whose endpoints reach no actor (e.g. a `book → author` link)
+enumerates to the empty set and is a correct no-op.
+
 ---
 
 ## Capability KV envelope (Contract #6 §6.2)

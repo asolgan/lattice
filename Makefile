@@ -160,7 +160,7 @@ test-capability-adversarial:
 
 ## test-hello-lattice — Run the Phase 1 Gate 5 Hello Lattice integration test suite.
 ## Requires a running Docker stack (make up) with Refractor live.
-## Exits 0 when all five milestones pass and the gate5 Health KV marker is written.
+## Exits 0 when all six milestones pass and the gate5 Health KV marker is written.
 .PHONY: test-hello-lattice
 POSTGRES_URL ?= postgres://lattice:lattice_dev@localhost:5432/lattice?sslmode=disable
 

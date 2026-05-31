@@ -627,21 +627,18 @@ func (p *Pipeline) drain(ctx context.Context, mc jetstream.MessagesContext) (fai
 //   - (Infrastructure, err)  → do NOT ack/nak; drain must stop and signal Run to pause
 //   - (Structural, err)      → do NOT ack/nak; drain must stop and signal Run to pause
 func (p *Pipeline) processMsg(ctx context.Context, msg jetstream.Msg) (failure.Category, error) {
-	// Tombstone entries (DEL/PURGE) have empty bodies — ack and skip.
-	if len(msg.Data()) == 0 {
-		if err := msg.Ack(); err != nil {
-			slog.Error("pipeline: ack tombstone", "ruleId", p.ruleID, "err", err)
-		}
-		return failure.CatTransient, nil
-	}
-
 	// Extract Core KV key from subject: "$KV.<bucket>.<key>" → "<key>".
+	// Done before the empty-body short-circuit so a link TOMBSTONE (which has
+	// an empty body) can still be classified and fanned out on the actor-aware
+	// pipeline (revocation must shrink capability docs).
 	prefix := "$KV." + p.coreKVBucket + "."
 	key := strings.TrimPrefix(msg.Subject(), prefix)
+	tombstone := len(msg.Data()) == 0
 
 	// Classify the key by Lattice Contract #1 §1.5 shape.
 	switch substrate.ClassifyKey(key) {
 	case substrate.KindAspect:
+		// Aspect tombstones and mutations are not handled by any lens; ack+skip.
 		slog.Info("pipeline: aspect mutation observed but no handler registered",
 			"ruleId", p.ruleID, "key", key,
 			"parentVertexKey", key[:strings.LastIndex(key, ".")])
@@ -650,6 +647,13 @@ func (p *Pipeline) processMsg(ctx context.Context, msg jetstream.Msg) (failure.C
 		}
 		return failure.CatTransient, nil
 	case substrate.KindLink:
+		// On the actor-aware (capability) pipeline a pure link mutation
+		// (holdsRole/grantedBy/...) changes actors' topology with no vertex
+		// event, so it must drive a fan-out reprojection from both endpoints.
+		// Other lenses keep the legacy ack-and-skip behaviour.
+		if p.actorEnumerator != nil {
+			return p.processLinkFanOut(ctx, msg, key, tombstone)
+		}
 		slog.Info("pipeline: link mutation observed but no handler registered",
 			"ruleId", p.ruleID, "key", key)
 		if err := msg.Ack(); err != nil {
@@ -664,6 +668,17 @@ func (p *Pipeline) processMsg(ctx context.Context, msg jetstream.Msg) (failure.C
 		}
 		return failure.CatTransient, nil
 	}
+
+	// KindVertex. A vertex tombstone (empty body) is handled below by the
+	// normal evaluate path (the actor-aware pipeline emits a cap Delete);
+	// for other lenses an empty body carries no props, so ack and skip.
+	if tombstone {
+		if err := msg.Ack(); err != nil {
+			slog.Error("pipeline: ack tombstone", "ruleId", p.ruleID, "err", err)
+		}
+		return failure.CatTransient, nil
+	}
+
 	// KindVertex: parse type and id.
 	label, _, ok := substrate.ParseVertexKey(key)
 	if !ok {
@@ -731,12 +746,68 @@ func (p *Pipeline) processMsg(ctx context.Context, msg jetstream.Msg) (failure.C
 		return failure.CatTransient, err
 	}
 
-	// Capture the adapter once so all results in this message use the same instance.
-	// HotReloadInto may swap adpt between messages; within a single message we
-	// want consistent adapter behaviour across the results loop.
-	adpt := p.currentAdapter()
+	// Write each result through the shared write path (failure classification,
+	// terminal DLQ, retry enqueue, ack/nak discipline). The adapter is captured
+	// once inside writeResults so all results in this message use a consistent
+	// instance even if HotReloadInto swaps it between messages.
+	return p.writeResults(ctx, msg, key, results)
+}
 
-	// Write each result to the adapter.
+// processLinkFanOut handles a KindLink CDC event on the actor-aware pipeline.
+// It determines whether the link is a create or a tombstone, drives the
+// endpoint-seeded fan-out reprojection (evaluateLinkFanOut), and writes the
+// resulting capability projections through the normal write path.
+//
+// A link tombstone arrives with an empty body (NATS DEL/PURGE). A link create
+// or update arrives with a body whose `isDeleted` field distinguishes a
+// soft-delete (revocation) from an active link.
+func (p *Pipeline) processLinkFanOut(ctx context.Context, msg jetstream.Msg, key string, tombstone bool) (failure.Category, error) {
+	isDeleted := tombstone
+	if !tombstone {
+		var props map[string]any
+		if err := json.Unmarshal(msg.Data(), &props); err != nil {
+			slog.Error("pipeline: link fan-out: unmarshal payload",
+				"ruleId", p.ruleID, "entityId", key, "err", err)
+			if nakErr := msg.Nak(); nakErr != nil {
+				slog.Error("pipeline: nak failed", "ruleId", p.ruleID, "err", nakErr)
+			}
+			return failure.CatTransient, err
+		}
+		isDeleted, _ = props["isDeleted"].(bool)
+	}
+
+	results, err := p.evaluateLinkFanOut(ctx, key, isDeleted)
+	if err != nil {
+		slog.Error("pipeline: link fan-out: evaluate",
+			"ruleId", p.ruleID, "entityId", key, "stage", "traversal", "err", err)
+		cat := failure.Classify(err)
+		if cat == failure.CatInfra || cat == failure.CatStructural {
+			// Do NOT ack/nak — leave pending for redelivery when the pipeline resumes.
+			return cat, err
+		}
+		if cat == failure.CatTerminal {
+			p.publishTerminalDLQ(ctx, msg, key, "traversal", err)
+			if ackErr := msg.Ack(); ackErr != nil {
+				slog.Error("pipeline: ack after terminal link fan-out", "ruleId", p.ruleID, "err", ackErr)
+			}
+			return failure.CatTransient, nil
+		}
+		if nakErr := msg.Nak(); nakErr != nil {
+			slog.Error("pipeline: nak failed", "ruleId", p.ruleID, "err", nakErr)
+		}
+		return failure.CatTransient, err
+	}
+
+	return p.writeResults(ctx, msg, key, results)
+}
+
+// writeResults writes a slice of evaluation results through the active adapter,
+// applying the same failure-classification, terminal-DLQ, retry-enqueue, and
+// ack/nak discipline as the inline vertex write loop. Returns the failure
+// category and error; on a successful or fully-disposed message the message is
+// acked and (Transient, nil) is returned.
+func (p *Pipeline) writeResults(ctx context.Context, msg jetstream.Msg, key string, results []simple.EvalResult) (failure.Category, error) {
+	adpt := p.currentAdapter()
 	var enqueuedCount, terminalCount int
 	for _, result := range results {
 		var writeErr error
@@ -757,78 +828,27 @@ func (p *Pipeline) processMsg(ctx context.Context, msg jetstream.Msg) (failure.C
 				"stage", "write", "adapter", p.adapterName, "err", writeErr)
 
 			if cat == failure.CatInfra || cat == failure.CatStructural {
-				// Do NOT ack or nak — leave message pending for NATS AckWait redelivery.
-				// The pipeline pauses; when it resumes, the message is redelivered.
 				return cat, writeErr
 			}
-			// Terminal: permanently bad data — DLQ immediately, no retry.
-			// ACK occurs after the loop so remaining results are still processed.
 			if cat == failure.CatTerminal {
 				p.publishTerminalDLQ(ctx, msg, key, "write", writeErr)
 				terminalCount++
 				continue
 			}
-			// Transient: enqueue for exponential-backoff retry if a queue is configured
-			// and retry is enabled (maxAttempts > 0). Otherwise fall through to Nak.
 			if cat == failure.CatTransient && p.retryQueue != nil && p.retryMaxAttempts > 0 {
-				capturedResult := result  // explicit capture for WriteFn closure
-				capturedReporter := p.reporter // capture for OnDLQPublished closure
-				// Capture active sequence at enqueue time so the DLQ message stamps
-				// the version that was active when the failure first occurred.
-				capturedSeq := ""
-				if p.reporter != nil {
-					if seq := p.reporter.ActiveSequence(); seq != 0 {
-						capturedSeq = fmt.Sprintf("%d", seq)
-					}
-				}
-				e := &failure.RetryEntry{
-					RuleID:       p.ruleID,
-					EntityID:     key,
-					Stage:        "write",
-					RawPayload:   msg.Data(),
-					RuleSequence: capturedSeq,
-					WriteFn: func(rctx context.Context) error {
-						// Call currentAdapter() at retry time so that a hot-reload
-						// between the initial failure and the retry uses the live
-						// adapter target rather than the stale snapshot.
-						a := p.currentAdapter()
-						if capturedResult.Delete {
-							return a.Delete(rctx, capturedResult.Keys)
-						}
-						return a.Upsert(rctx, capturedResult.Keys, capturedResult.Row)
-					},
-					Attempt:     0,
-					MaxAttempts: p.retryMaxAttempts,
-					BaseBackoff: p.retryBaseBackoff,
-					JS:          p.retryJS,
-					// AC3: record error in health KV when retry escalates to DLQ.
-					OnDLQPublished: func(rctx context.Context, errMsg string) {
-						if capturedReporter != nil {
-							if recErr := capturedReporter.RecordError(rctx, errMsg); recErr != nil {
-								slog.Error("pipeline: update health errorCount after retry DLQ",
-									"ruleId", p.ruleID, "err", recErr)
-							}
-						}
-					},
-				}
-				p.retryQueue.Enqueue(e)
+				p.enqueueRetry(key, msg.Data(), result)
 				enqueuedCount++
-				continue // remaining results are processed; Ack occurs at end of loop
+				continue
 			}
-			// No retry queue, not transient, or maxAttempts==0 — Nak for redelivery.
 			if nakErr := msg.Nak(); nakErr != nil {
 				slog.Error("pipeline: nak failed", "ruleId", p.ruleID, "err", nakErr)
 			}
 			return cat, writeErr
 		}
 
-		// Write succeeded — append an audit entry (AC1, AC4: only on success).
 		p.writeAudit(ctx, key, result)
 	}
 
-	// If any results were Terminal or enqueued for retry, ACK the message.
-	// NATS must not redeliver: Terminal entities can never succeed, and enqueued
-	// entries are tracked by the retry queue.
 	if enqueuedCount > 0 || terminalCount > 0 {
 		if ackErr := msg.Ack(); ackErr != nil {
 			slog.Error("pipeline: ack after terminal/retry enqueue", "ruleId", p.ruleID, "err", ackErr)
@@ -843,6 +863,46 @@ func (p *Pipeline) processMsg(ctx context.Context, msg jetstream.Msg) (failure.C
 		slog.Error("pipeline: ack failed", "ruleId", p.ruleID, "err", err)
 	}
 	return failure.CatTransient, nil
+}
+
+// enqueueRetry constructs and enqueues a RetryEntry for a transient write
+// failure, mirroring the inline retry-enqueue path in processMsg.
+func (p *Pipeline) enqueueRetry(key string, rawPayload []byte, result simple.EvalResult) {
+	capturedResult := result
+	capturedReporter := p.reporter
+	capturedSeq := ""
+	if p.reporter != nil {
+		if seq := p.reporter.ActiveSequence(); seq != 0 {
+			capturedSeq = fmt.Sprintf("%d", seq)
+		}
+	}
+	e := &failure.RetryEntry{
+		RuleID:       p.ruleID,
+		EntityID:     key,
+		Stage:        "write",
+		RawPayload:   rawPayload,
+		RuleSequence: capturedSeq,
+		WriteFn: func(rctx context.Context) error {
+			a := p.currentAdapter()
+			if capturedResult.Delete {
+				return a.Delete(rctx, capturedResult.Keys)
+			}
+			return a.Upsert(rctx, capturedResult.Keys, capturedResult.Row)
+		},
+		Attempt:     0,
+		MaxAttempts: p.retryMaxAttempts,
+		BaseBackoff: p.retryBaseBackoff,
+		JS:          p.retryJS,
+		OnDLQPublished: func(rctx context.Context, errMsg string) {
+			if capturedReporter != nil {
+				if recErr := capturedReporter.RecordError(rctx, errMsg); recErr != nil {
+					slog.Error("pipeline: update health errorCount after retry DLQ",
+						"ruleId", p.ruleID, "err", recErr)
+				}
+			}
+		},
+	}
+	p.retryQueue.Enqueue(e)
 }
 
 // initResumeCh creates a fresh buffered channel for the current structural pause cycle.

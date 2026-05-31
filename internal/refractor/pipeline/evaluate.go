@@ -10,6 +10,7 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/asolgan/lattice/internal/refractor/adjacency"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/substrate"
@@ -203,7 +204,80 @@ func (p *Pipeline) evaluateFanOut(ctx context.Context, entry simple.NodeEntry) (
 	if len(actorKeys) == 0 {
 		return nil, nil
 	}
+	return p.reprojectActors(ctx, actorKeys)
+}
 
+// evaluateLinkFanOut handles a link CDC event (create or tombstone) on the
+// actor-aware pipeline. A pure link mutation (e.g. holdsRole, grantedBy)
+// carries no vertex change, so the only way affected actors are reprojected
+// is to seed the fan-out from BOTH link endpoints.
+//
+// Adjacency consistency: the dedicated adjacency consumer
+// (internal/refractor/consumer/bootstrap.go) and this pipeline both react to
+// the same link event with no cross-consumer ordering guarantee. Before
+// enumerating, we idempotently apply the link to adjKV ourselves (mirroring
+// processLinkEnvelope) so the reprojection cypher sees a consistent edge set
+// regardless of which consumer reached the link first. adjacency.Build upserts
+// (create) / removes (tombstone) by EdgeID, so the dedicated consumer's later
+// Build for the same edge is a no-op. This guarantees the reprojection never
+// races ahead of the edge that triggered it.
+func (p *Pipeline) evaluateLinkFanOut(ctx context.Context, linkKey string, isDeleted bool) ([]simple.EvalResult, error) {
+	srcType, srcID, linkName, dstType, dstID, ok := substrate.ParseLinkKey(linkKey)
+	if !ok {
+		// ClassifyKey already gated KindLink; unreachable in practice.
+		return nil, fmt.Errorf("pipeline: link fan-out: not a Contract #1 link key: %q", linkKey)
+	}
+
+	// Idempotently reflect this link in adjKV before enumerating. The link key
+	// is its own EdgeID (Contract #1 link keys are globally unique), so a
+	// create upserts and a tombstone removes by that EdgeID — matching the
+	// dedicated consumer's directional events exactly.
+	outbound := adjacency.CoreKVEvent{
+		CoreKvKey: linkKey, EdgeID: linkKey, Name: linkName, Direction: "outbound",
+		NodeID: srcID, OtherNodeID: dstID, OtherType: dstType, IsDeleted: isDeleted,
+	}
+	inbound := adjacency.CoreKVEvent{
+		CoreKvKey: linkKey, EdgeID: linkKey, Name: linkName, Direction: "inbound",
+		NodeID: dstID, OtherNodeID: srcID, OtherType: srcType, IsDeleted: isDeleted,
+	}
+	for _, evt := range []adjacency.CoreKVEvent{outbound, inbound} {
+		if err := adjacency.Build(ctx, p.adjKV, evt); err != nil {
+			return nil, fmt.Errorf("pipeline: link fan-out: adjacency build for %q: %w", linkKey, err)
+		}
+	}
+
+	// Seed the actor enumeration from BOTH endpoint vertices and union the
+	// results. Either endpoint may be (or reach) an actor.
+	srcVtx := substrate.VertexKey(srcType, srcID)
+	dstVtx := substrate.VertexKey(dstType, dstID)
+
+	actorSet := map[string]struct{}{}
+	for _, ep := range []struct{ key, typ string }{{srcVtx, srcType}, {dstVtx, dstType}} {
+		actors, err := p.actorEnumerator.Enumerate(ctx, ep.key, ep.typ)
+		if err != nil {
+			return nil, fmt.Errorf("pipeline: link fan-out enumerate from %q: %w", ep.key, err)
+		}
+		for _, a := range actors {
+			actorSet[a] = struct{}{}
+		}
+	}
+	if len(actorSet) == 0 {
+		// A link whose endpoints reach no actors (e.g. a book→author link)
+		// is a correct no-op.
+		return nil, nil
+	}
+	actorKeys := make([]string, 0, len(actorSet))
+	for a := range actorSet {
+		actorKeys = append(actorKeys, a)
+	}
+	return p.reprojectActors(ctx, actorKeys)
+}
+
+// reprojectActors re-executes the capability cypher for each actor key and
+// returns the concatenated result set. A missing (tombstoned) actor yields a
+// Delete against its Capability KV key. Shared by the vertex fan-out
+// (evaluateFanOut) and the link fan-out (evaluateLinkFanOut).
+func (p *Pipeline) reprojectActors(ctx context.Context, actorKeys []string) ([]simple.EvalResult, error) {
 	var all []simple.EvalResult
 	for _, actorKey := range actorKeys {
 		// Fetch the actor's properties via Core KV so the engine can
