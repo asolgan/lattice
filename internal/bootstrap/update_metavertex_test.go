@@ -342,8 +342,11 @@ func TestUpdateMetaVertex_MetaKeyPreserved(t *testing.T) {
 			t.Errorf("mutation key %q not rooted at original metaKey %q", m.Key, ddlMetaKey)
 		}
 	}
-	if res.ResponseDetail["metaKey"] != ddlMetaKey {
-		t.Errorf("response metaKey = %v, want %q", res.ResponseDetail["metaKey"], ddlMetaKey)
+	// UpdateMetaVertex mutates aspects, not the root vertex; primaryKey names the
+	// principal entity (the meta-vertex), accepted by the Processor as the
+	// 3-segment root of the committed aspects.
+	if res.PrimaryKey != ddlMetaKey {
+		t.Errorf("response primaryKey = %q, want %q", res.PrimaryKey, ddlMetaKey)
 	}
 }
 

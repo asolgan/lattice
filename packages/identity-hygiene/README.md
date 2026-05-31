@@ -35,9 +35,11 @@ After `lattice-pkg install packages/identity-hygiene`:
     primary key.
   - Optionally applies `aspectConflictResolution` for `name` / `email`
     / `phone` (`secondary-wins`).
-  - Emits an `IdentityMerged` event.
-  - Returns a commit-trace shaped `OperationReply.Detail` — counts and
-    keys only, no business data leak.
+  - Emits an `IdentityMerged` event carrying the merge counts
+    (linkCount + the per-bucket breakdown).
+  - Multi-key op: returns no `primaryKey`. The committed key set is the
+    key set of `OperationReply.Revisions`; merge counts ride the
+    `IdentityMerged` event.
 
 - **MergeIdentity permission** + grant link to the operator role.
 

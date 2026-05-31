@@ -114,8 +114,10 @@ def execute(state, op):
 
     events = [{"class": "PackageInstalled",
                "data": {"name": name, "version": version, "keyCount": len(declared)}}]
-    return {"mutations": out, "events": events,
-            "response": {"name": name, "version": version, "declaredKeys": declared}}
+    # InstallPackage is multi-key with no single principal entity; it omits
+    # primaryKey. Clients read the committed key set from OperationReply.Revisions
+    # and name/version/keyCount from the PackageInstalled event.
+    return {"mutations": out, "events": events}
 `
 
 // UninstallPackageDDLScript tombstones each declared key. Payload shape:
@@ -169,19 +171,27 @@ def execute(state, op):
 
     events = [{"class": "PackageUninstalled",
                "data": {"name": name, "keyCount": len(tombstoned)}}]
-    return {"mutations": out, "events": events,
-            "response": {"name": name, "tombstonedKeys": tombstoned}}
+    # UninstallPackage is multi-key with no single principal entity; it omits
+    # primaryKey. Clients read the committed key set from OperationReply.Revisions
+    # and name/keyCount from the PackageUninstalled event.
+    return {"mutations": out, "events": events}
 `
 
 // --- Self-description constants for the two package-install DDLs. ---
 
 const installPackageInputSchema = `{"type":"object","required":["name","version","mutations"],"properties":{"name":{"type":"string"},"version":{"type":"string"},"mutations":{"type":"array","items":{"type":"object","required":["op","key","document"],"properties":{"op":{"type":"string","enum":["create"]},"key":{"type":"string"},"document":{"type":"object"}}}}}}`
 
-const installPackageOutputSchema = `{"type":"object","required":["name","version","declaredKeys"],"properties":{"name":{"type":"string"},"version":{"type":"string"},"declaredKeys":{"type":"array","items":{"type":"string"}}}}`
+// InstallPackage is multi-key with no single principal entity, so the reply
+// carries no primaryKey. The committed key set is the key set of
+// OperationReply.Revisions; name/version/keyCount ride the PackageInstalled event.
+const installPackageOutputSchema = `{"type":"object","properties":{}}`
 
 const uninstallPackageInputSchema = `{"type":"object","required":["name","declaredKeys"],"properties":{"name":{"type":"string"},"declaredKeys":{"type":"array","items":{"oneOf":[{"type":"string"},{"type":"object","required":["key"],"properties":{"key":{"type":"string"},"expectedRevision":{"type":"integer"}}}]}}}}`
 
-const uninstallPackageOutputSchema = `{"type":"object","required":["name","tombstonedKeys"],"properties":{"name":{"type":"string"},"tombstonedKeys":{"type":"array","items":{"type":"string"}}}}`
+// UninstallPackage is multi-key with no single principal entity, so the reply
+// carries no primaryKey. The committed (tombstoned) key set is the key set of
+// OperationReply.Revisions; name/keyCount ride the PackageUninstalled event.
+const uninstallPackageOutputSchema = `{"type":"object","properties":{}}`
 
 var installPackageFieldDescription = map[string]any{
 	"name":               "The Capability Package canonical name (matches the package directory).",

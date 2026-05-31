@@ -29,6 +29,8 @@ package hellolattice_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,7 +73,7 @@ const bookDDLScript = `def execute(state, op):
                       "data": {"title": title}}},
     ]
     events = [{"class": "BookCreated", "data": {"bookKey": book_key}}]
-    return {"mutations": mutations, "events": events, "response": {"bookKey": book_key}}`
+    return {"mutations": mutations, "events": events, "response": {"primaryKey": book_key}}`
 
 // harnessConn is the shared NATS connection for the test suite.
 var harnessConn *substrate.Conn
@@ -199,13 +201,13 @@ func TestHelloLattice_Milestone2_DefineDDL(t *testing.T) {
 		"description":      "Book vertex DDL. A book carries a title.",
 		"script":           bookDDLScript,
 		"inputSchema":      `{"type":"object","required":["title"],"properties":{"title":{"type":"string","maxLength":500}}}`,
-		"outputSchema":     `{"type":"object","required":["bookKey"],"properties":{"bookKey":{"type":"string"}}}`,
+		"outputSchema":     `{"type":"object","properties":{"primaryKey":{"type":"string"}}}`,
 		"fieldDescription": map[string]string{"title": "Book title, max 500 characters. Required."},
 		"examples": []map[string]any{
 			{
 				"name":            "CreateBook — minimal",
 				"payload":         map[string]any{"title": "The Pragmatic Programmer"},
-				"expectedOutcome": "Creates vtx.book.<NanoID>; returns bookKey.",
+				"expectedOutcome": "Creates vtx.book.<NanoID>; returns primaryKey.",
 			},
 		},
 	}
@@ -217,11 +219,11 @@ func TestHelloLattice_Milestone2_DefineDDL(t *testing.T) {
 			errCode = string(reply.Error.Code)
 			errMsg = reply.Error.Message
 		}
-		t.Fatalf("CreateMetaVertex rejected: status=%s code=%s msg=%q detail=%v", reply.Status, errCode, errMsg, reply.Detail)
+		t.Fatalf("CreateMetaVertex rejected: status=%s code=%s msg=%q primaryKey=%q", reply.Status, errCode, errMsg, reply.PrimaryKey)
 	}
 
 	// Extract metaKey from the reply detail.
-	metaKey, _ := reply.Detail["metaKey"].(string)
+	metaKey := reply.PrimaryKey
 	if !strings.HasPrefix(metaKey, "vtx.meta.") {
 		t.Fatalf("metaKey not a vtx.meta.* key: %q", metaKey)
 	}
@@ -280,11 +282,11 @@ func TestHelloLattice_Milestone3_CreateBook(t *testing.T) {
 			errCode = string(reply.Error.Code)
 			errMsg = reply.Error.Message
 		}
-		t.Fatalf("CreateBook rejected: status=%s code=%s msg=%q detail=%v", reply.Status, errCode, errMsg, reply.Detail)
+		t.Fatalf("CreateBook rejected: status=%s code=%s msg=%q primaryKey=%q", reply.Status, errCode, errMsg, reply.PrimaryKey)
 	}
 
 	// Extract bookKey from the reply.
-	bKey, _ := reply.Detail["bookKey"].(string)
+	bKey := reply.PrimaryKey
 	if !strings.HasPrefix(bKey, "vtx.book.") {
 		t.Fatalf("bookKey not a vtx.book.* key: %q", bKey)
 	}
@@ -347,10 +349,10 @@ func TestHelloLattice_Milestone4_LensProjection(t *testing.T) {
 			errCode = string(reply.Error.Code)
 			errMsg = reply.Error.Message
 		}
-		t.Fatalf("CreateMetaVertex(meta.lens) rejected: status=%s code=%s msg=%q detail=%v", reply.Status, errCode, errMsg, reply.Detail)
+		t.Fatalf("CreateMetaVertex(meta.lens) rejected: status=%s code=%s msg=%q primaryKey=%q", reply.Status, errCode, errMsg, reply.PrimaryKey)
 	}
 
-	metaKey, _ := reply.Detail["metaKey"].(string)
+	metaKey := reply.PrimaryKey
 	if !strings.HasPrefix(metaKey, "vtx.meta.") {
 		t.Fatalf("lensMetaKey not a vtx.meta.* key: %q", metaKey)
 	}
@@ -437,17 +439,23 @@ func TestHelloLattice_Milestone5_AITraversal(t *testing.T) {
 	}
 
 	// Step 1: create a new identity for the AI agent.
+	// Option C: client mints the claim secret and submits only its sha256 hash.
+	agentClaimSum := sha256.Sum256([]byte("hello-lattice-agent-claim-secret"))
 	idReply := submitOp(t, ctx, "CreateUnclaimedIdentity", "identity", processor.LaneDefault,
-		bootstrap.BootstrapIdentityKey, map[string]any{})
+		bootstrap.BootstrapIdentityKey, map[string]any{
+			"name":         "Hello Lattice Agent",
+			"email":        "agent@hello.example",
+			"claimKeyHash": hex.EncodeToString(agentClaimSum[:]),
+		})
 	if idReply.Status != processor.ReplyStatusAccepted {
 		errCode, errMsg := "", ""
 		if idReply.Error != nil {
 			errCode = string(idReply.Error.Code)
 			errMsg = idReply.Error.Message
 		}
-		t.Fatalf("CreateUnclaimedIdentity rejected: status=%s code=%s msg=%q detail=%v", idReply.Status, errCode, errMsg, idReply.Detail)
+		t.Fatalf("CreateUnclaimedIdentity rejected: status=%s code=%s msg=%q primaryKey=%q", idReply.Status, errCode, errMsg, idReply.PrimaryKey)
 	}
-	agentKey, _ := idReply.Detail["identityKey"].(string)
+	agentKey := idReply.PrimaryKey
 	if !strings.HasPrefix(agentKey, "vtx.identity.") {
 		t.Fatalf("agentKey not a vtx.identity.* key: %q", agentKey)
 	}
@@ -463,9 +471,9 @@ func TestHelloLattice_Milestone5_AITraversal(t *testing.T) {
 			errCode = string(permReply.Error.Code)
 			errMsg = permReply.Error.Message
 		}
-		t.Fatalf("CreatePermission rejected: status=%s code=%s msg=%q detail=%v", permReply.Status, errCode, errMsg, permReply.Detail)
+		t.Fatalf("CreatePermission rejected: status=%s code=%s msg=%q primaryKey=%q", permReply.Status, errCode, errMsg, permReply.PrimaryKey)
 	}
-	permKey, _ := permReply.Detail["permKey"].(string)
+	permKey := permReply.PrimaryKey
 	if !strings.HasPrefix(permKey, "vtx.permission.") {
 		t.Fatalf("permKey not a vtx.permission.* key: %q", permKey)
 	}
@@ -480,7 +488,7 @@ func TestHelloLattice_Milestone5_AITraversal(t *testing.T) {
 			errCode = string(grantReply.Error.Code)
 			errMsg = grantReply.Error.Message
 		}
-		t.Fatalf("GrantPermission rejected: status=%s code=%s msg=%q detail=%v", grantReply.Status, errCode, errMsg, grantReply.Detail)
+		t.Fatalf("GrantPermission rejected: status=%s code=%s msg=%q primaryKey=%q", grantReply.Status, errCode, errMsg, grantReply.PrimaryKey)
 	}
 	t.Log("CreateBook granted to operator role")
 
@@ -493,7 +501,7 @@ func TestHelloLattice_Milestone5_AITraversal(t *testing.T) {
 			errCode = string(assignReply.Error.Code)
 			errMsg = assignReply.Error.Message
 		}
-		t.Fatalf("AssignRole rejected: status=%s code=%s msg=%q detail=%v", assignReply.Status, errCode, errMsg, assignReply.Detail)
+		t.Fatalf("AssignRole rejected: status=%s code=%s msg=%q primaryKey=%q", assignReply.Status, errCode, errMsg, assignReply.PrimaryKey)
 	}
 	t.Log("Agent assigned to operator role")
 
@@ -591,9 +599,9 @@ capFound:
 			errCode = string(agentBookReply.Error.Code)
 			errMsg = agentBookReply.Error.Message
 		}
-		t.Fatalf("agent CreateBook rejected: status=%s code=%s msg=%q detail=%v", agentBookReply.Status, errCode, errMsg, agentBookReply.Detail)
+		t.Fatalf("agent CreateBook rejected: status=%s code=%s msg=%q primaryKey=%q", agentBookReply.Status, errCode, errMsg, agentBookReply.PrimaryKey)
 	}
-	agentBookKey, _ := agentBookReply.Detail["bookKey"].(string)
+	agentBookKey := agentBookReply.PrimaryKey
 	t.Logf("Agent created book: %s", agentBookKey)
 
 	// Step 11: verify book vertex in Core KV.
@@ -733,7 +741,7 @@ func TestHelloLattice_Milestone6_RollbackBookDDL(t *testing.T) {
 			errCode = string(tombReply.Error.Code)
 			errMsg = tombReply.Error.Message
 		}
-		t.Fatalf("TombstoneMetaVertex rejected: status=%s code=%s msg=%q detail=%v", tombReply.Status, errCode, errMsg, tombReply.Detail)
+		t.Fatalf("TombstoneMetaVertex rejected: status=%s code=%s msg=%q primaryKey=%q", tombReply.Status, errCode, errMsg, tombReply.PrimaryKey)
 	}
 	t.Logf("TombstoneMetaVertex accepted for %s", bookDDLKey)
 

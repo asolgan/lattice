@@ -134,8 +134,8 @@ func main() {
 		log.Fatalf("CreateBook rejected: %s — %s", reply.Error.Code, reply.Error.Message)
 	}
 
-	// Step 7: print the bookKey from the reply.
-	bookKey, _ := reply.Detail["bookKey"].(string)
+	// Step 7: print the bookKey from the reply (the committed primaryKey).
+	bookKey := reply.PrimaryKey
 	fmt.Printf("CreateBook accepted!\n")
 	fmt.Printf("  requestId:   %s\n", reply.RequestID)
 	fmt.Printf("  opTracker:   %s\n", reply.OpTrackerKey)

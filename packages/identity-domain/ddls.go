@@ -24,37 +24,42 @@ func DDLs() []pkgmgr.DDLSpec {
 				"Vertex shape: vtx.identity.<NanoID>, class=identity. " +
 				"Aspects: name (sensitive, required, maxLen 200), email (sensitive, lowercase-normalized), " +
 				"phone (sensitive, E.164-normalized), state (enum: unclaimed|claimed|merged), " +
-				"claimKey (sensitive, one-time-use; null after claim), credentialBinding (sensitive; null pre-claim), " +
+				"claimKey (sensitive, stores the client-supplied claimKeyHash verbatim; tombstoned after claim), " +
+				"credentialBinding (sensitive; null pre-claim), " +
 				"mergedInto (vertex-key reference, set only by identity-hygiene package's MergeIdentity). " +
+				"The client mints the claim secret, submits only claimKeyHash; Lattice never holds the plaintext. " +
 				"State machine + IdentityMerged guard enforced in .script.",
 			Script: identityDDLScript,
 			InputSchema: `{"type":"object","properties":` +
 				`{"name":{"type":"string","maxLength":200,"description":"Person's display name. Required for CreateUnclaimedIdentity."},` +
 				`"email":{"type":"string","description":"Email address, case-insensitive normalized. At least one of email/phone required."},` +
 				`"phone":{"type":"string","description":"Phone number, E.164 digits only. At least one of email/phone required."},` +
+				`"claimKeyHash":{"type":"string","description":"Lowercase hex sha256 of the client-minted claim secret (CreateUnclaimedIdentity, required). Lattice stores it verbatim; the plaintext never enters Lattice."},` +
+				`"claimKeyAlgo":{"type":"string","enum":["sha256"],"description":"Hash algorithm for claimKeyHash. Optional; defaults to sha256 (the only accepted value)."},` +
 				`"identityKey":{"type":"string","description":"vtx.identity.<NanoID> — target identity for UpdateIdentityState."},` +
 				`"newState":{"type":"string","enum":["claimed"],"description":"Target state for UpdateIdentityState. Only unclaimed→claimed is permitted."},` +
-				`"claimKey":{"type":"string","description":"One-time-use claim key plaintext (ClaimIdentity). Must match stored hash."},` +
+				`"claimKey":{"type":"string","description":"One-time-use claim key plaintext (ClaimIdentity). Its sha256 must match the stored hash."},` +
 				`"targetIdentityKey":{"type":"string","description":"vtx.identity.<NanoID> of the unclaimed identity to claim (ClaimIdentity)."}}}`,
 			OutputSchema: `{"type":"object","properties":` +
-				`{"identityKey":{"type":"string","description":"vtx.identity.<NanoID> of the created or claimed identity."},` +
-				`"claimKey":{"type":"string","description":"Plaintext one-time claim key returned only on CreateUnclaimedIdentity."},` +
-				`"possibleDuplicateFlag":{"type":"boolean","description":"True when an existing live identity with the same email or phone was found during create."}}}`,
+				`{"primaryKey":{"type":"string","description":"vtx.identity.<NanoID> of the created or claimed identity (the operation's principal key)."}}}`,
 			FieldDescription: map[string]string{
 				"name":              "Person's display name. Required on CreateUnclaimedIdentity. Stored as sensitive aspect.",
 				"email":             "Email address. Stored lowercase-normalized. Used as a deduplication index key.",
 				"phone":             "Phone number. Stored as E.164 digit string. Used as a deduplication index key.",
+				"claimKeyHash":      "Lowercase hex sha256 of the client-minted claim secret. Required on CreateUnclaimedIdentity. Stored verbatim; Lattice never holds the plaintext.",
+				"claimKeyAlgo":      "Hash algorithm for claimKeyHash. Optional; defaults to sha256 (the only accepted value).",
 				"identityKey":       "Full vtx.identity.<NanoID> key of an existing identity vertex.",
 				"newState":          "Desired state after UpdateIdentityState. State machine: unclaimed → claimed only.",
-				"claimKey":          "The plaintext one-time claim key issued during CreateUnclaimedIdentity. Used for ClaimIdentity verification.",
+				"claimKey":          "The plaintext one-time claim key the client minted at CreateUnclaimedIdentity. Used for ClaimIdentity verification (its sha256 is compared to the stored hash).",
 				"targetIdentityKey": "Full vtx.identity.<NanoID> of the unclaimed identity the calling actor wants to claim.",
 			},
 			Examples: []pkgmgr.ExampleSpec{
 				{
 					Name:    "CreateUnclaimedIdentity — new customer with email",
-					Payload: map[string]any{"name": "Alice Smith", "email": "alice@example.com"},
-					ExpectedOutcome: "Creates vtx.identity.<NanoID> with class=identity, writes name/email/state/claimKey aspects. " +
-						"Returns identityKey, claimKey plaintext, possibleDuplicateFlag.",
+					Payload: map[string]any{"name": "Alice Smith", "email": "alice@example.com", "claimKeyHash": "<sha256-hex-of-client-minted-secret>"},
+					ExpectedOutcome: "Creates vtx.identity.<NanoID> with class=identity, writes name/email/state/claimKey aspects " +
+						"(claimKey stores the supplied hash verbatim). Returns primaryKey (the identity key). " +
+						"Duplicate detection rides the IdentityCreated event's data.duplicate flag, not the reply.",
 				},
 				{
 					Name:    "ClaimIdentity — actor claims their identity",
@@ -153,6 +158,20 @@ def execute(state, op):
         if email == None and phone == None:
             fail("InvalidArgument: email or phone: at least one required")
 
+        claim_key_hash = p.claimKeyHash if hasattr(p, "claimKeyHash") else None
+        if claim_key_hash == None or type(claim_key_hash) != type("") or len(claim_key_hash) == 0:
+            fail("InvalidArgument: claimKeyHash: required non-empty lowercase hex sha256")
+        if len(claim_key_hash) != 64:
+            fail("InvalidArgument: claimKeyHash: must be 64-char lowercase hex sha256")
+        for ch in claim_key_hash.elems():
+            if not ((ch >= "0" and ch <= "9") or (ch >= "a" and ch <= "f")):
+                fail("InvalidArgument: claimKeyHash: must be lowercase hex")
+        claim_key_algo = p.claimKeyAlgo if hasattr(p, "claimKeyAlgo") else None
+        if claim_key_algo == None or claim_key_algo == "":
+            claim_key_algo = "sha256"
+        if claim_key_algo != "sha256":
+            fail("InvalidArgument: claimKeyAlgo: only sha256 is supported")
+
         duplicate = False
         if email != None:
             email_index_key = "vtx.identityindex." + crypto.sha256NanoID("email:" + email)
@@ -167,8 +186,6 @@ def execute(state, op):
 
         identity_id = nanoid.new()
         identity_key = "vtx.identity." + identity_id
-        claim_key_plaintext = nanoid.new()
-        claim_key_hash = crypto.sha256(claim_key_plaintext)
 
         initial_state = "unclaimed"
 
@@ -183,7 +200,7 @@ def execute(state, op):
                           "isDeleted": False, "data": {"value": initial_state}}},
             {"op": "create", "key": identity_key + ".claimKey",
              "document": {"class": "claimKey", "vertexKey": identity_key, "localName": "claimKey",
-                          "isDeleted": False, "data": {"hash": claim_key_hash, "algo": "sha256"}}},
+                          "isDeleted": False, "data": {"hash": claim_key_hash, "algo": claim_key_algo}}},
         ]
         if email != None:
             mutations.append({"op": "create", "key": identity_key + ".email",
@@ -211,11 +228,7 @@ def execute(state, op):
         return {
             "mutations": mutations,
             "events": events,
-            "response": {
-                "identityKey": identity_key,
-                "claimKey": claim_key_plaintext,
-                "possibleDuplicateFlag": duplicate,
-            },
+            "response": {"primaryKey": identity_key},
         }
 
     if ot == "ClaimIdentity":
@@ -295,10 +308,14 @@ def execute(state, op):
             "actorKey": actor_key,
         }}]
 
+        # The identity vertex itself is not mutated by a claim; the principal
+        # committed key is the state aspect (unclaimed -> claimed). primaryKey
+        # names the principal entity (the identity); the Processor accepts it as
+        # the 3-segment root of the committed aspects.
         return {
             "mutations": mutations,
             "events": events,
-            "response": {"identityKey": target_identity_key},
+            "response": {"primaryKey": target_identity_key},
         }
     fail("identity DDL: unknown operationType: " + ot)
 `

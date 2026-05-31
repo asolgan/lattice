@@ -116,7 +116,36 @@ For dedup-detected resubmits:
 | `status` | yes | `accepted` (committed), `duplicate` (already committed via prior submission), `rejected` (validation/auth failure — no commit) |
 | `committedAt` | for `accepted` | Timestamp of step 8 commit |
 | `originalCommittedAt` | for `duplicate` | Timestamp of original commit |
+| `decision` | for `accepted` | `"committed"` on a fresh commit |
+| `revisions` | optional, for `accepted` | Per-key revision map (`{key: revision}`) returned by the substrate after the atomic batch. **The committed mutation key set IS the key set of this map.** Useful for client RYOW polling and for addressing any committed key. |
+| `primaryKey` | optional, for `accepted` | The single principal Core KV key the operation wrote (e.g. the created identity/role/permission vertex, or a link key). The Processor **validates that `primaryKey` is within the committed write footprint** — either a committed key, or the 3-segment vertex root of a committed key (so an aspect-only update names its principal vertex, not an internal aspect). A script can only name an entity it actually wrote. Multi-key operations with no single principal entity (InstallPackage / UninstallPackage / MergeIdentity) omit it; clients read the full key set from `revisions`. |
 | `error` | for `rejected` | Structured error: `code` (machine-readable), `message` (human-readable), `details` (structured context). Error codes are enumerated; see §2.6. |
+
+There is **no `detail` field**. The reply carries only commit-trace identifiers
+the Processor itself produced (`primaryKey`, `revisions`) — never arbitrary,
+script-returned data. The write path is not a read channel: read-derived signals
+travel on business events (e.g. `IdentityCreated.data.duplicate`), and one-time
+secrets are never returned (see §2.7).
+
+### 2.7 Closed `response` script-return schema
+
+A Starlark operation script MAY return a top-level `response` dict to name the
+operation's principal committed key. The schema is **closed**: the only permitted
+key is `primaryKey` (a string).
+
+- Any other key in `response` is a fail-closed `ScriptFailed` /
+  `InvalidReturnShape` error at parse time, before commit.
+- When set, the Processor validates `primaryKey` is within the committed write
+  footprint — a committed key, or the 3-segment vertex root of a committed key
+  (letting aspect-only updates name their principal vertex). Otherwise the
+  operation is rejected with `DDLViolation`.
+- Absent `response` / absent `primaryKey` is allowed (the reply simply omits
+  `primaryKey`).
+
+This makes the synchronous reply incapable of carrying arbitrary or sensitive
+data. Claim secrets follow Option C: the **client** mints the secret, submits
+only its `sha256` hash (`claimKeyHash`) in the op payload, and Lattice stores the
+hash verbatim — the plaintext never enters Lattice and is never returned.
 
 **The reply does NOT wait for:**
 - Event publication (step 9) — fire-and-forget after atomic commit

@@ -3,6 +3,9 @@ package identity
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +19,19 @@ import (
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
 )
+
+// mintClaimSecret generates a fresh client-side claim secret and returns the
+// plaintext (shown to the operator once) plus its lowercase-hex sha256 hash
+// (submitted to Lattice). Option C: the plaintext never enters Lattice.
+func mintClaimSecret() (plaintext, hash string, err error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", "", err
+	}
+	plaintext = hex.EncodeToString(buf)
+	sum := sha256.Sum256([]byte(plaintext))
+	return plaintext, hex.EncodeToString(sum[:]), nil
+}
 
 // NewCommand returns the cobra.Command for the identity command group.
 func NewCommand(natsURL, outputFmt, defaultActor *string) *cobra.Command {
@@ -36,8 +52,10 @@ func newCreateUnclaimedCommand(natsURL, outputFmt, defaultActor *string) *cobra.
 		Use:   "create-unclaimed",
 		Short: "Submit a CreateUnclaimedIdentity operation",
 		Long: `create-unclaimed submits a CreateUnclaimedIdentity operation on the
-default lane. On acceptance, prints the requestId, opTrackerKey, and
-the one-time claimKey from the reply (if present).`,
+default lane. The CLI mints a one-time claim secret locally, submits only its
+sha256 hash (claimKeyHash) in the payload, and prints the plaintext once. The
+plaintext never enters Lattice. On acceptance, prints the requestId,
+opTrackerKey, the created identity key (primaryKey), and the claim secret.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if actor == "" {
 				actor = *defaultActor
@@ -49,6 +67,25 @@ the one-time claimKey from the reply (if present).`,
 			payloadBytes, err := readPayload(payload)
 			if err != nil {
 				return fmt.Errorf("payload: %w", err)
+			}
+
+			// Option C: the client mints the claim secret and submits only its
+			// hash. Merge claimKeyHash into the payload object.
+			claimPlaintext, claimHash, err := mintClaimSecret()
+			if err != nil {
+				return fmt.Errorf("mint claim secret: %w", err)
+			}
+			var payloadObj map[string]any
+			if err := json.Unmarshal(payloadBytes, &payloadObj); err != nil {
+				return fmt.Errorf("payload must be a JSON object: %w", err)
+			}
+			if payloadObj == nil {
+				payloadObj = map[string]any{}
+			}
+			payloadObj["claimKeyHash"] = claimHash
+			payloadBytes, err = json.Marshal(payloadObj)
+			if err != nil {
+				return fmt.Errorf("payload: re-encode: %w", err)
 			}
 
 			requestID, err := substrate.NewNanoID()
@@ -94,15 +131,29 @@ the one-time claimKey from the reply (if present).`,
 				os.Exit(1)
 			}
 
+			// The claim plaintext is meaningful only when THIS op created the
+			// identity: its hash matches the stored aspect only on `accepted`.
+			// On `duplicate` the stored hash belongs to the original op, so this
+			// invocation's plaintext would be misleading — suppress it.
+			accepted := reply.Status == processor.ReplyStatusAccepted
 			if *outputFmt == "json" {
+				if accepted {
+					// Option C: the plaintext is delivered here only — it never
+					// enters Lattice, so it is not in the reply.
+					return output.PrintJSON(struct {
+						processor.OperationReply
+						ClaimKey string `json:"claimKey"`
+					}{OperationReply: *reply, ClaimKey: claimPlaintext})
+				}
 				return output.PrintJSON(reply)
 			}
 			fmt.Printf("requestId:    %s\nopTrackerKey: %s\nstatus:       %s\n",
 				reply.RequestID, reply.OpTrackerKey, reply.Status)
-			if reply.Detail != nil {
-				if claimKey, ok := reply.Detail["claimKey"].(string); ok && claimKey != "" {
-					fmt.Printf("claimKey:     %s\n", claimKey)
-				}
+			if reply.PrimaryKey != "" {
+				fmt.Printf("identityKey:  %s\n", reply.PrimaryKey)
+			}
+			if accepted {
+				fmt.Printf("claimKey:     %s\n", claimPlaintext)
 			}
 			return nil
 		},

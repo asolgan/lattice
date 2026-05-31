@@ -20,26 +20,20 @@ func BuildAcceptedReply(requestID string, committedAt time.Time) OperationReply 
 	}
 }
 
-// BuildAcceptedReplyWithDetail extends BuildAcceptedReply with a script-
-// supplied detail map. The detail map is surfaced as-is to the caller and
-// MUST NOT be logged (NFR-S6/S7 — may carry sensitive tokens). A nil or
-// empty detail map is a no-op.
-func BuildAcceptedReplyWithDetail(requestID string, committedAt time.Time, detail map[string]any) OperationReply {
-	r := BuildAcceptedReply(requestID, committedAt)
-	if len(detail) > 0 {
-		r.Detail = detail
-	}
-	return r
-}
-
-// BuildAcceptedReplyWithRevisions extends BuildAcceptedReplyWithDetail
-// with the per-key committed revisions returned by the substrate. The
-// revisions map is set on the reply only when non-empty so callers can
-// use it for read-your-own-writes polling. As with detail, a nil/empty
-// map leaves the corresponding reply field absent.
+// BuildAcceptedReplyWithRevisions extends BuildAcceptedReply with the
+// validated principal primaryKey (a commit-trace identifier — see
+// OperationReply.PrimaryKey) and the per-key committed revisions returned
+// by the substrate. Both fields are set only when non-empty so callers can
+// use Revisions for read-your-own-writes polling and PrimaryKey to address
+// the operation's principal entity. The caller (commit path) is responsible
+// for validating primaryKey membership in the committed mutation set before
+// invoking this builder.
 func BuildAcceptedReplyWithRevisions(requestID string, committedAt time.Time,
-	detail map[string]any, revisions map[string]uint64) OperationReply {
-	r := BuildAcceptedReplyWithDetail(requestID, committedAt, detail)
+	primaryKey string, revisions map[string]uint64) OperationReply {
+	r := BuildAcceptedReply(requestID, committedAt)
+	if primaryKey != "" {
+		r.PrimaryKey = primaryKey
+	}
 	if len(revisions) > 0 {
 		r.Revisions = revisions
 	}

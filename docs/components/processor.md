@@ -61,7 +61,7 @@ Key files:
 | **Idempotency tracker entries** (Contract #4) | Core KV at `vtx.op.<requestId>` | Written as part of the step-8 atomic batch; 24h TTL; provides step-2 dedup on re-delivery |
 | **Operation replies** (Contract #2 §2.4) | Per-op reply-to inbox | `accepted` (post-step-8), `duplicate` (step-2 short-circuit), or `rejected` (any termination branch) |
 | **Health KV signals** (Contract #5) | Health KV `health.processor.<instance>.*` | Heartbeat every 10s; per-op metrics (OpsConsumed / OpsCommitted / OpsDuplicates / OpsRejected / OpsMalformed); step-3 latency; auth trace records (Story 3.5); claim-attempt outcomes (Story 4.3); alerts under `health.alerts.security.*` |
-| **`OperationReply.Detail`** | Inline in accepted reply | Carries **commit-trace data only** — mutation count, event count, revision map, traceId. NOT business data. The script's `response` return key populates this field (Story 4.2). Sensitive tokens (e.g. claim keys) may appear here — field is NOT logged (NFR-S6/S7). The pre-correction Epic 4 usage as a business-data channel is being walked back in Story 4.6. |
+| **`OperationReply.PrimaryKey` + `Revisions`** | Inline in accepted reply | Commit-trace identifiers the Processor itself produced. `primaryKey` is the operation's single principal entity, surfaced via the closed `response: {"primaryKey": <key>}` script-return schema and **validated by the Processor to be within the committed write footprint** (a committed key, or the vertex root of one). `revisions` is the per-key revision map (its key set IS the committed mutation set). There is no arbitrary `detail` map: the write reply is not a read channel and carries no script-returned data or secrets (Contract #2 §2.4 / §2.7). |
 
 ---
 
@@ -115,7 +115,10 @@ by Gate 2 (`nfr_r1_test.go`).
 {
   "mutations": [{op: "create"|"update"|"tombstone", key: "...", document: {...}}],
   "events":    [{class: "...", data: {...}}],
-  "response":  {...}   # optional; becomes OperationReply.Detail
+  "response":  {"primaryKey": "..."}   # optional; CLOSED schema — only primaryKey
+                                       # permitted; must be a committed key or the
+                                       # vertex root of one. Surfaced as
+                                       # OperationReply.PrimaryKey.
 }
 ```
 
@@ -169,10 +172,10 @@ the original commit response. No new Processor code required.
   "data": {
     "inverseOperationType": "TombstoneMetaVertex",
     "payloadTemplate": {
-      "metaKey": "{{detail.metaKey}}"
+      "metaKey": "{{primaryKey}}"
     },
     "revisionTemplate": {
-      "metaKey": "{{revisions[detail.metaKey]}}"
+      "metaKey": "{{revisions[primaryKey]}}"
     }
   }
 }
@@ -180,12 +183,15 @@ the original commit response. No new Processor code required.
 
 Template variable substitution is **client-side only** (Guardrail 2 — no new
 Processor read surface):
-- `{{detail.metaKey}}` → value of `OperationReply.Detail["metaKey"]` (the
-  created meta-vertex key, already returned by the MetaRoot DDL's `response`
-  field).
-- `{{revisions[detail.metaKey]}}` → value of
-  `OperationReply.Revisions[<metaKey>]` (the per-key NATS revision from the
-  atomic batch commit).
+- `{{primaryKey}}` → value of `OperationReply.PrimaryKey` (the operation's
+  principal entity — e.g. the meta-vertex key — validated by the Processor to be
+  within the committed write footprint).
+- `{{revisions[primaryKey]}}` → value of `OperationReply.Revisions[<primaryKey>]`
+  (resolves only for create ops, where `primaryKey` is itself a committed key)
+  (the per-key NATS revision from the atomic batch commit).
+- `{{payload.<field>}}` → value of the forward op's own request payload field
+  (used where the inverse op has no single principal key — e.g. the
+  InstallPackage→UninstallPackage pair sources `name` from `{{payload.name}}`).
 
 #### Phase 1 operation pairing table
 
@@ -201,7 +207,7 @@ Processor read surface):
 
 Given a forward `CreateMetaVertex` op that committed successfully:
 
-1. Operator (or AI agent) has: `metaKey` (from `Detail["metaKey"]`) and
+1. Operator (or AI agent) has: `metaKey` (from `OperationReply.PrimaryKey`) and
    `revisions[metaKey]` (from `OperationReply.Revisions`).
 2. Operator calls `aiagent.Traverser.ReadCompensation(ctx, metaKey)` —
    reads `<metaKey>.compensation` from Core KV.
@@ -434,7 +440,7 @@ The auth mode defaults to `AuthModeCapability` as of Story 3.3. `LATTICE_AUTH_MO
 - **No bypass**: even for capability management operations (Stories 5.x), mutations enter through the operation write path, not via direct KV writes.
 - **Idempotent under retry**: the step-8 tracker provides dedup; re-delivered operations that already committed short-circuit at step 2 and receive a `duplicate` reply.
 - **ContextHint is surgical**: `contextHint.Reads` specifies per-key pre-loads. `ScanPrefixes` is being walked back (deprecation target: Story 4.6 replaces with narrow `LinkScans`).
-- **ResponseDetail is commit-trace, not business-data**: `OperationReply.Detail` carries only the script's `response` dict, which is intended for audit payloads (mutation count, revision map, traceId). It is NOT a query channel. Pre-correction Epic 4 usage as a business-data channel is being corrected in Story 4.6.
+- **The reply is not a read channel**: the only script-influenced reply field is `primaryKey`, drawn from the closed `response: {"primaryKey": <key>}` schema and validated to be within the committed write footprint (a committed key or the vertex root of one). There is no arbitrary `detail` map; read-derived signals travel on business events, and one-time secrets are never returned (Contract #2 §2.7).
 - **Starlark cannot touch NATS**: all side effects are declared via the mutations + events return shape (Contract #3 §3.7).
 
 ---

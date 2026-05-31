@@ -240,6 +240,23 @@ func (cp *CommitPath) HandleMessage(ctx context.Context, msg jetstream.Msg) Mess
 		}
 	}
 
+	// Reply-constraint, enforced BEFORE commit: a script-named primaryKey must
+	// lie within the operation's write footprint (a mutation key, or the
+	// 3-segment vertex root of one). The write path is not a read channel — a
+	// script cannot surface a key it did not write. Rejecting here, ahead of the
+	// atomic batch, guarantees a contract violation never mutates Core KV or
+	// publishes events.
+	if result.PrimaryKey != "" && !primaryKeyInCommit(result.PrimaryKey, result.Mutations) {
+		cp.deps.Metrics.OpsRejected.Add(1)
+		cp.deps.Logger.Warn("reply-constraint violation: response.primaryKey is not within the write footprint; rejecting before commit",
+			"requestId", env.RequestID, "primaryKey", result.PrimaryKey)
+		cp.replyTo(msg, BuildRejectedReply(env.RequestID, ErrCodeDDLViolation,
+			"response.primaryKey is not within the committed write footprint",
+			map[string]any{"primaryKey": result.PrimaryKey}))
+		_ = msg.TermWithReason("DDLViolation: primaryKey not within write footprint")
+		return OutcomeRejected
+	}
+
 	now := cp.deps.Clock()
 	tracker := NewTracker(env, now)
 	commitAck, err := cp.deps.Committer.Commit(ctx, env, result, tracker)
@@ -330,10 +347,10 @@ func (cp *CommitPath) HandleMessage(ctx context.Context, msg jetstream.Msg) Mess
 	if env.OperationType == "ClaimIdentity" && cp.deps.ClaimEmitter != nil {
 		cp.deps.ClaimEmitter.RecordClaimAttempt(ctx, "success")
 	}
-	// Surface script ResponseDetail in the success reply. Detail may carry
-	// sensitive tokens (e.g. plaintext claim keys) — NFR-S6/S7: do NOT log it.
-	// BuildAcceptedReplyWithDetail is a no-op when detail is nil/empty.
-	cp.replyTo(msg, BuildAcceptedReplyWithRevisions(env.RequestID, now, result.ResponseDetail, commitAck.Revisions))
+	// Surface the validated principal primaryKey + per-key revisions in the
+	// success reply. PrimaryKey is empty for multi-key ops (clients read the
+	// committed key set from Revisions).
+	cp.replyTo(msg, BuildAcceptedReplyWithRevisions(env.RequestID, now, result.PrimaryKey, commitAck.Revisions))
 
 	// --- Step 10: explicit Acker boundary. ---
 	acker := cp.deps.AckerFactory(msg, cp.deps.Logger)
@@ -346,6 +363,27 @@ func (cp *CommitPath) HandleMessage(ctx context.Context, msg jetstream.Msg) Mess
 	}
 	cp.deps.Logger.Info("step 10: ack", "requestId", env.RequestID)
 	return OutcomeAccepted
+}
+
+// primaryKeyInCommit reports whether a script-named primaryKey lies within the
+// operation's write footprint: it must be a mutation key, or the 3-segment
+// vertex root of a mutation key (the vertex an op attached an aspect to). This
+// keeps primaryKey from surfacing any entity the op did not write — the write
+// path is not a read channel — while letting aspect-only updates name their
+// principal vertex rather than an internal aspect. It operates on the mutation
+// set (known pre-commit), so the check can reject ahead of the atomic batch.
+func primaryKeyInCommit(primaryKey string, mutations []MutationOp) bool {
+	if primaryKey == "" {
+		return false
+	}
+	for _, m := range mutations {
+		// protectedRootKey returns "" for non-vertex keys (e.g. links); the
+		// non-empty primaryKey above guarantees that never spuriously matches.
+		if m.Key == primaryKey || protectedRootKey(m.Key) == primaryKey {
+			return true
+		}
+	}
+	return false
 }
 
 // resolvedPermissionPath returns rp.Path or "stub" / "none" for log fields.

@@ -39,8 +39,9 @@ These contracts specify **what exactly** the data looks like. Architecture expla
 | [06-capability-kv.md](./06-capability-kv.md) | Contract #6 — Capability KV Shape | FROZEN |
 | [07-primordial-bootstrap.md](./07-primordial-bootstrap.md) | Contract #7 — Primordial Bootstrap | FROZEN |
 | [08-package-install.md](./08-package-install.md) | Contract #8 — Capability-Package Install (`InstallPackage` / `UninstallPackage`) | Phase 1.5 (Story 1.5.5) |
+| [09-identity-claim-flow.md](./09-identity-claim-flow.md) | Contract #9 — Identity Claim Flow (client-minted claim secret) | Phase 1.5 (Story 1.5.7) |
 
-The original seven Phase-1 contracts are locked. Contract #8 was added in the Phase-1.5 hardening block (Story 1.5.5) when package install/uninstall moved from substrate-direct writes to Processor-routed kernel operations. Subsequent revisions follow the standard process: changes go through architectural review with Andrew, are recorded in the document's revision history, and propagate to downstream stories.
+The original seven Phase-1 contracts are locked. Contract #8 was added in the Phase-1.5 hardening block (Story 1.5.5) when package install/uninstall moved from substrate-direct writes to Processor-routed kernel operations. Contract #9 was added in Story 1.5.7, which froze the reply shape (closed `response` schema, `primaryKey` replacing the arbitrary `detail` map) and the identity claim secret flow (Option C — client mints, Lattice never holds plaintext). Subsequent revisions follow the standard process: changes go through architectural review with Andrew, are recorded in the document's revision history, and propagate to downstream stories.
 
 ---
 

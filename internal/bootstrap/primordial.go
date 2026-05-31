@@ -396,8 +396,8 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 	rootComp, rootCompErr := MakeAspectEnvelope(rootCompKey, MetaRootKey, CompensationAspectClass, CompensationAspectClass,
 		map[string]any{
 			"inverseOperationType": "TombstoneMetaVertex",
-			"payloadTemplate":      map[string]any{"metaKey": "{{detail.metaKey}}"},
-			"revisionTemplate":     map[string]any{"metaKey": "{{revisions[detail.metaKey]}}"},
+			"payloadTemplate":      map[string]any{"metaKey": "{{primaryKey}}"},
+			"revisionTemplate":     map[string]any{"metaKey": "{{revisions[primaryKey]}}"},
 		})
 	if err := add(rootCompKey, rootComp, rootCompErr); err != nil {
 		return nil, err
@@ -594,7 +594,7 @@ func seedPackageInstallDDL(
 		{"examples", "examples", map[string]any{"examples": examples}},
 		{CompensationAspectClass, CompensationAspectClass, map[string]any{
 			"inverseOperationType": "UninstallPackage",
-			"payloadTemplate":      map[string]any{"name": "{{detail.name}}"},
+			"payloadTemplate":      map[string]any{"name": "{{payload.name}}"},
 			"revisionTemplate":     map[string]any{},
 		}},
 	}

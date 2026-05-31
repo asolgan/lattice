@@ -222,7 +222,7 @@ backstop for the removed freshness gate is operator-observed, not automated.
 
 ## Principles (binding)
 
-- **Lenses are the read path**: reads never go through the write path. Story 4.6 corrects the pre-correction Epic 4 pattern where `OperationReply.Detail` was being used as a query channel.
+- **Lenses are the read path**: reads never go through the write path. The operation reply carries only commit-trace identifiers (`primaryKey`, `revisions`) — it is never a query channel (Story 1.5.7 removed the arbitrary `detail` map and enforces the constraint in code).
 - **Every Core KV mutation must be observable** via at least one lens projection (NFR-P3 ≤500ms end-to-end latency target). The `LatencyRingBuffer` p99 is the primary instrument.
 - **Lens output is overwrite-by-reprojection**: fabricated or stale KV writes in a lens target are corrected on the next reprojection event. This is the Story 3.7 Vector #1 defense. Phase 2 adds substrate-level write restriction to the lens target buckets.
 - **Lens definitions live in Core KV vertices**, not in source code. The platform discovers them via the `vtx.meta.>` CDC stream. Seeding a new lens requires a `CreateMetaVertex` operation through the Processor write path.

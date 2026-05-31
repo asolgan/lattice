@@ -34,7 +34,7 @@ func TestIdentityCreateUnclaimed_HappyPath(t *testing.T) {
 		Actor:         testActorKey,
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "identity",
-		Payload:       json.RawMessage(`{"name":"Test User","email":"test@example.com"}`),
+		Payload:       json.RawMessage(`{"name":"Test User","email":"test@example.com","claimKeyHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
 	}
 
 	doneC := make(chan processor.MessageOutcome, 1)

@@ -15,7 +15,7 @@ BOOTSTRAP_JSON ?= $(abspath ./lattice.bootstrap.json)
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene build vet test test-bypass test-capability-adversarial test-rollback test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
+.PHONY: up down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-conformance build vet test test-bypass test-capability-adversarial test-rollback test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 up:
@@ -83,6 +83,16 @@ verify-package-identity-hygiene:
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/identity-hygiene
 	@echo "==> Running identity-hygiene package assertions..."
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) go run ./scripts/verify-package-identity-hygiene.go
+
+## verify-conformance — Run the contract-conformance freeze suite: the frozen
+## OperationReply / envelope / contextHint shapes, Core KV key shapes, the DDL
+## aspect set, the closed `response` script-return schema, and the in-code
+## reply-constraint enforcement proof (a non-primaryKey response key or a
+## primaryKey not in the committed mutation set is rejected fail-closed).
+## Self-contained: uses embedded NATS, no Docker stack required.
+verify-conformance:
+	@echo "==> go test ./internal/processor -run TestConformance"
+	go test ./internal/processor -run TestConformance -count=1
 
 ## build — Compile all binaries under cmd/.
 build:

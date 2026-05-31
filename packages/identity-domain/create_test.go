@@ -46,9 +46,11 @@ func TestCreateUnclaimed_Success(t *testing.T) {
 	cp, cons := newCreatePipeline(t, ctx, conn, "ici-success")
 
 	reqID := testutil.GenReqID("CUISuccess")
-	identityID, claimKeyPlaintext := nanoIDsFromRequestID(reqID)
+	identityID := identityIDFromRequestID(reqID)
 	identityKey := "vtx.identity." + identityID
 
+	claimKeyPlaintext := "andrew-test-claim-secret-0001"
+	claimKeyHash := sha256HexOf(claimKeyPlaintext)
 	env := &processor.OperationEnvelope{
 		RequestID:     reqID,
 		Lane:          processor.LaneDefault,
@@ -56,7 +58,7 @@ func TestCreateUnclaimed_Success(t *testing.T) {
 		Actor:         staffActorKey,
 		SubmittedAt:   "2026-05-22T10:00:00Z",
 		Class:         "identity",
-		Payload:       json.RawMessage(`{"name":"Andrew Test","email":"andrew@example.com","phone":"+15551234567"}`),
+		Payload:       json.RawMessage(`{"name":"Andrew Test","email":"andrew@example.com","phone":"+15551234567","claimKeyHash":"` + claimKeyHash + `"}`),
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
@@ -144,7 +146,7 @@ func TestCreateUnclaimed_NormalizesEmailCase(t *testing.T) {
 	cp, cons := newCreatePipeline(t, ctx, conn, "ici-normalize")
 
 	reqID := testutil.GenReqID("CUINormEmail")
-	identityID, _ := nanoIDsFromRequestID(reqID)
+	identityID := identityIDFromRequestID(reqID)
 	identityKey := "vtx.identity." + identityID
 
 	env := &processor.OperationEnvelope{
@@ -154,7 +156,7 @@ func TestCreateUnclaimed_NormalizesEmailCase(t *testing.T) {
 		Actor:         staffActorKey,
 		SubmittedAt:   "2026-05-22T10:00:00Z",
 		Class:         "identity",
-		Payload:       json.RawMessage(`{"name":"Bob","email":"Foo@BAR.com"}`),
+		Payload:       json.RawMessage(`{"name":"Bob","email":"Foo@BAR.com","claimKeyHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
@@ -194,7 +196,7 @@ func TestCreateUnclaimed_DuplicateEmail_RemainsUnclaimed(t *testing.T) {
 	}
 
 	reqID := testutil.GenReqID("CUIDupEmail")
-	identityID, _ := nanoIDsFromRequestID(reqID)
+	identityID := identityIDFromRequestID(reqID)
 	identityKey := "vtx.identity." + identityID
 
 	env := &processor.OperationEnvelope{
@@ -204,7 +206,7 @@ func TestCreateUnclaimed_DuplicateEmail_RemainsUnclaimed(t *testing.T) {
 		Actor:         staffActorKey,
 		SubmittedAt:   "2026-05-22T10:00:00Z",
 		Class:         "identity",
-		Payload:       json.RawMessage(`{"name":"Charlie","email":"x@y.com"}`),
+		Payload:       json.RawMessage(`{"name":"Charlie","email":"x@y.com","claimKeyHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
 		ContextHint:   &processor.ContextHint{Reads: []string{emailIdxKey}},
 	}
 	testutil.PublishOp(t, conn, env)
@@ -214,8 +216,8 @@ func TestCreateUnclaimed_DuplicateEmail_RemainsUnclaimed(t *testing.T) {
 	if got, _ := stateAspect["value"].(string); got != "unclaimed" {
 		t.Fatalf("state = %q, want unclaimed (duplicate does not change state)", got)
 	}
-	// IdentityFlaggedForReview must NOT be emitted — duplicate detection
-	// sets possibleDuplicateFlag on the response only, not the state.
+	// IdentityFlaggedForReview must NOT be emitted — duplicate detection rides
+	// the IdentityCreated event's data.duplicate, not the reply or the state.
 	assertTrackerNotEvent(t, ctx, conn, reqID, "IdentityFlaggedForReview")
 	assertTrackerEvent(t, ctx, conn, reqID, "IdentityCreated")
 }
@@ -246,7 +248,7 @@ func TestCreateUnclaimed_Idempotent(t *testing.T) {
 	cp, cons1 := newCreatePipeline(t, ctx, conn, "ici-idem-1")
 
 	reqID := testutil.GenReqID("CUIIdempotnt")
-	identityID, _ := nanoIDsFromRequestID(reqID)
+	identityID := identityIDFromRequestID(reqID)
 	identityKey := "vtx.identity." + identityID
 
 	env := &processor.OperationEnvelope{
@@ -256,7 +258,7 @@ func TestCreateUnclaimed_Idempotent(t *testing.T) {
 		Actor:         staffActorKey,
 		SubmittedAt:   "2026-05-22T10:00:00Z",
 		Class:         "identity",
-		Payload:       json.RawMessage(`{"name":"Dana","email":"dana@example.com"}`),
+		Payload:       json.RawMessage(`{"name":"Dana","email":"dana@example.com","claimKeyHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons1, processor.OutcomeAccepted)
@@ -275,16 +277,19 @@ func TestCreateUnclaimed_Idempotent(t *testing.T) {
 	}
 }
 
-// TestCreateUnclaimed_ClaimKeyHashOnly: claimKey aspect must store
-// only the hash; plaintext appears only in reply.Detail.
+// TestCreateUnclaimed_ClaimKeyHashOnly: the client supplies claimKeyHash;
+// the claimKey aspect must store only that hash. The plaintext is never
+// submitted to Lattice (Option C), so it must appear nowhere in Core KV.
 func TestCreateUnclaimed_ClaimKeyHashOnly(t *testing.T) {
 	ctx, conn := setupTestEnv(t)
 	cp, cons := newCreatePipeline(t, ctx, conn, "ici-hashonly")
 
 	reqID := testutil.GenReqID("CUIHashOnly")
-	identityID, claimKeyPlaintext := nanoIDsFromRequestID(reqID)
+	identityID := identityIDFromRequestID(reqID)
 	identityKey := "vtx.identity." + identityID
 
+	claimKeyPlaintext := "frank-claim-secret-plaintext-9999"
+	claimKeyHash := sha256HexOf(claimKeyPlaintext)
 	env := &processor.OperationEnvelope{
 		RequestID:     reqID,
 		Lane:          processor.LaneDefault,
@@ -292,7 +297,7 @@ func TestCreateUnclaimed_ClaimKeyHashOnly(t *testing.T) {
 		Actor:         staffActorKey,
 		SubmittedAt:   "2026-05-22T10:00:00Z",
 		Class:         "identity",
-		Payload:       json.RawMessage(`{"name":"Frank","email":"frank@test.com"}`),
+		Payload:       json.RawMessage(`{"name":"Frank","email":"frank@test.com","claimKeyHash":"` + claimKeyHash + `"}`),
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)

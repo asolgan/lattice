@@ -181,13 +181,7 @@ func newActivateCommand(natsURL, outputFmt, defaultActor *string) *cobra.Command
 			if *outputFmt == "json" {
 				return output.PrintJSON(reply)
 			}
-			metaKey := ""
-			if reply.Detail != nil {
-				if mk, ok := reply.Detail["metaKey"].(string); ok {
-					metaKey = mk
-				}
-			}
-			fmt.Printf("requestId: %s\nmetaKey:   %s\n", reply.RequestID, metaKey)
+			fmt.Printf("requestId: %s\nmetaKey:   %s\n", reply.RequestID, reply.PrimaryKey)
 			return nil
 		},
 	}

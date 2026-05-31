@@ -127,39 +127,18 @@ type OperationReply struct {
 	// step 2 short-circuits.
 	Decision string `json:"decision,omitempty"`
 	// Revisions: per-key revision map returned by the substrate after a
-	// successful atomic batch. Useful for client RYOW polling.
+	// successful atomic batch. Useful for client RYOW polling. The full
+	// committed key set is the key set of this map.
 	Revisions map[string]uint64 `json:"revisions,omitempty"`
-	// Detail: optional structured data the script surfaced via its
-	// "response" return key. May contain sensitive tokens (e.g.
-	// plaintext claim keys). MUST NOT be logged by any middleware or
-	// interceptor (NFR-S6/S7 compliance). Only present on accepted
-	// replies when the script populated it.
-	//
-	// Convention-enforced semantics:
-	//
-	//   ALLOWED  (commit-trace shape):
-	//     - Identifiers that already exist in the commit (linkKey,
-	//       primary/secondary keys, requestId echoes).
-	//     - Counts and ratios computed from the commit batch
-	//       (mutationCount, linksMigrated, linkCollisionsMerged,
-	//       eventCount, etc.).
-	//     - One-time-use tokens delivered *only* in the reply
-	//       (plaintext claimKey on CreateUnclaimedIdentity is the
-	//       canonical exception — it is created server-side, has no
-	//       Core-KV plaintext counterpart, and the reply is the
-	//       single delivery channel).
-	//
-	//   FORBIDDEN (business data leak):
-	//     - Identity .name / .email / .phone aspect values.
-	//     - mergedInto target keys when the caller did not author the
-	//       merge (NFR-S6 anti-enumeration).
-	//     - Any aspect value the actor would otherwise need a
-	//       Capability-Lens-authorized read to obtain.
-	//
-	// Reviewers (Winston + brief authors) maintain compliance; the
-	// processor does not enforce in code. New op authors: cite this
-	// block in your script's Detail-building section.
-	Detail map[string]any `json:"detail,omitempty"`
+	// PrimaryKey: the single principal Core KV key an operation wrote,
+	// surfaced by the script via the closed `response` return dict
+	// (`{"primaryKey": <key>}`). The Processor validates that the value
+	// is a member of the committed mutation key set before it reaches the
+	// reply — a script can only point at a key it actually committed; it
+	// cannot smuggle arbitrary data. Multi-key operations with no single
+	// principal entity (InstallPackage / UninstallPackage) omit it; their
+	// clients read the full key set from Revisions.
+	PrimaryKey string `json:"primaryKey,omitempty"`
 }
 
 // ParseEnvelope unmarshals raw bytes and validates required fields per

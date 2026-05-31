@@ -69,11 +69,7 @@ func DDLs() []pkgmgr.DDLSpec {
 				`"permKey":{"type":"string","description":"vtx.permission.<NanoID> — target permission (UpdatePermission/TombstonePermission/GrantPermission/RevokePermission)."},` +
 				`"actorKey":{"type":"string","description":"vtx.<type>.<NanoID> — the actor to assign/revoke a role for (AssignRole/RevokeRole)."}}}`,
 			OutputSchema: `{"type":"object","properties":` +
-				`{"roleKey":{"type":"string","description":"vtx.role.<NanoID> of the created/updated/tombstoned role."},` +
-				`"permissionKey":{"type":"string","description":"vtx.permission.<NanoID> of the created/updated/tombstoned permission."},` +
-				`"linkKey":{"type":"string","description":"Link key written for holdsRole or grantedBy operations."},` +
-				`"alreadyAssigned":{"type":"boolean","description":"True if AssignRole was a no-op (link already existed alive)."},` +
-				`"alreadyGranted":{"type":"boolean","description":"True if GrantPermission was a no-op (link already existed alive)."}}}`,
+				`{"primaryKey":{"type":"string","description":"The principal Core KV key the operation wrote: the role/permission vertex key for create/update/tombstone ops, or the holdsRole/grantedBy link key for assign/grant ops. Absent on idempotent no-op replays (nothing committed)."}}}`,
 			FieldDescription: map[string]string{
 				"name":          "Canonical name for the new role. Used in holdsRole link shape and audit queries.",
 				"description":   "Optional plain-language description of the role's purpose or permission's semantics.",
@@ -89,18 +85,19 @@ func DDLs() []pkgmgr.DDLSpec {
 					Name:    "CreateRole — operator creates a consumer role",
 					Payload: map[string]any{"name": "consumer", "description": "Default customer-facing role with read-only access."},
 					ExpectedOutcome: "Creates vtx.role.<NanoID> with class=role, " +
-						"writes .canonicalName=consumer and .description aspects. Returns roleKey.",
+						"writes .canonicalName=consumer and .description aspects. Returns primaryKey (the role key).",
 				},
 				{
 					Name:    "AssignRole — assign consumer role to an identity",
 					Payload: map[string]any{"actorKey": "vtx.identity.<actorNanoID>", "roleKey": "vtx.role.<roleNanoID>"},
 					ExpectedOutcome: "Writes lnk.identity.<actorNanoID>.holdsRole.role.<roleNanoID> with class=holdsRole. " +
-						"Returns linkKey. Idempotent: alreadyAssigned=true if link existed.",
+						"Returns primaryKey (the link key). Idempotent: a replay where the link already exists alive " +
+						"commits nothing and omits primaryKey.",
 				},
 				{
 					Name:    "GrantPermission — grant CreateRole permission to operator role",
 					Payload: map[string]any{"permKey": "vtx.permission.<permNanoID>", "roleKey": "vtx.role.<operatorNanoID>"},
-					ExpectedOutcome: "Writes lnk.permission.<permNanoID>.grantedBy.role.<operatorNanoID> with class=grantedBy. Returns linkKey.",
+					ExpectedOutcome: "Writes lnk.permission.<permNanoID>.grantedBy.role.<operatorNanoID> with class=grantedBy. Returns primaryKey (the link key).",
 				},
 			},
 		},
@@ -204,7 +201,7 @@ def execute(state, op):
         ]
         events = [{"class": "RoleCreated", "data": {"roleKey": role_key, "name": name}}]
         return {"mutations": mutations, "events": events,
-                "response": {"roleKey": role_key}}
+                "response": {"primaryKey": role_key}}
 
     if ot == "UpdateRole":
         role_key = required_string(p, "roleKey")
@@ -219,8 +216,11 @@ def execute(state, op):
                 {"text": desc}),
         ]
         events = [{"class": "RoleUpdated", "data": {"roleKey": role_key}}]
+        # UpdateRole mutates only the .description aspect (not the vertex).
+        # primaryKey names the principal entity (the role); the Processor accepts
+        # it as the 3-segment root of the committed aspect.
         return {"mutations": mutations, "events": events,
-                "response": {"roleKey": role_key}}
+                "response": {"primaryKey": role_key}}
 
     if ot == "TombstoneRole":
         role_key = required_string(p, "roleKey")
@@ -230,7 +230,7 @@ def execute(state, op):
         mutations = [make_tombstone(role_key)]
         events = [{"class": "RoleTombstoned", "data": {"roleKey": role_key}}]
         return {"mutations": mutations, "events": events,
-                "response": {"roleKey": role_key}}
+                "response": {"primaryKey": role_key}}
 
     if ot == "CreatePermission":
         opt = required_string(p, "operationType")
@@ -249,7 +249,7 @@ def execute(state, op):
         events = [{"class": "PermissionCreated",
                    "data": {"permissionKey": perm_key, "operationType": opt}}]
         return {"mutations": mutations, "events": events,
-                "response": {"permissionKey": perm_key}}
+                "response": {"primaryKey": perm_key}}
 
     if ot == "UpdatePermission":
         perm_key = required_string(p, "permKey")
@@ -267,7 +267,7 @@ def execute(state, op):
         ]
         events = [{"class": "PermissionUpdated", "data": {"permissionKey": perm_key}}]
         return {"mutations": mutations, "events": events,
-                "response": {"permissionKey": perm_key}}
+                "response": {"primaryKey": perm_key}}
 
     if ot == "TombstonePermission":
         perm_key = required_string(p, "permKey")
@@ -277,7 +277,7 @@ def execute(state, op):
         mutations = [make_tombstone(perm_key)]
         events = [{"class": "PermissionTombstoned", "data": {"permissionKey": perm_key}}]
         return {"mutations": mutations, "events": events,
-                "response": {"permissionKey": perm_key}}
+                "response": {"primaryKey": perm_key}}
 
     if ot == "AssignRole":
         actor_key = required_string(p, "actorKey")
@@ -289,16 +289,17 @@ def execute(state, op):
         if not vertex_alive(state, role_key):
             fail("UnknownRole: " + role_key)
         lnk_key = "lnk." + actor_type + "." + actor_id + ".holdsRole.role." + role_id
-        # Idempotent assign: if link exists alive, return ok no-op.
+        # Idempotent assign: if link exists alive, return ok no-op. No
+        # mutations means no committed key, so no primaryKey is returned
+        # (the link key is deterministic and already known to the caller).
         existing = state[lnk_key] if lnk_key in state else None
         if existing != None and not (hasattr(existing, "isDeleted") and existing.isDeleted):
-            return {"mutations": [], "events": [],
-                    "response": {"linkKey": lnk_key, "alreadyAssigned": True}}
+            return {"mutations": [], "events": []}
         mutations = [make_link(lnk_key, actor_key, role_key, "holdsRole", "holdsRole", {})]
         events = [{"class": "RoleAssigned",
                    "data": {"actorKey": actor_key, "roleKey": role_key, "linkKey": lnk_key}}]
         return {"mutations": mutations, "events": events,
-                "response": {"linkKey": lnk_key}}
+                "response": {"primaryKey": lnk_key}}
 
     if ot == "RevokeRole":
         actor_key = required_string(p, "actorKey")
@@ -313,7 +314,7 @@ def execute(state, op):
         events = [{"class": "RoleRevoked",
                    "data": {"actorKey": actor_key, "roleKey": role_key, "linkKey": lnk_key}}]
         return {"mutations": mutations, "events": events,
-                "response": {"linkKey": lnk_key}}
+                "response": {"primaryKey": lnk_key}}
 
     if ot == "GrantPermission":
         perm_key = required_string(p, "permKey")
@@ -325,15 +326,16 @@ def execute(state, op):
         if not vertex_alive(state, role_key):
             fail("UnknownRole: " + role_key)
         lnk_key = "lnk.permission." + perm_id + ".grantedBy.role." + role_id
+        # Idempotent grant: if link exists alive, return ok no-op. No
+        # mutations means no committed key, so no primaryKey is returned.
         existing = state[lnk_key] if lnk_key in state else None
         if existing != None and not (hasattr(existing, "isDeleted") and existing.isDeleted):
-            return {"mutations": [], "events": [],
-                    "response": {"linkKey": lnk_key, "alreadyGranted": True}}
+            return {"mutations": [], "events": []}
         mutations = [make_link(lnk_key, perm_key, role_key, "grantedBy", "grantedBy", {})]
         events = [{"class": "PermissionGranted",
                    "data": {"permissionKey": perm_key, "roleKey": role_key, "linkKey": lnk_key}}]
         return {"mutations": mutations, "events": events,
-                "response": {"linkKey": lnk_key}}
+                "response": {"primaryKey": lnk_key}}
 
     if ot == "RevokePermission":
         perm_key = required_string(p, "permKey")
@@ -348,7 +350,7 @@ def execute(state, op):
         events = [{"class": "PermissionRevoked",
                    "data": {"permissionKey": perm_key, "roleKey": role_key, "linkKey": lnk_key}}]
         return {"mutations": mutations, "events": events,
-                "response": {"linkKey": lnk_key}}
+                "response": {"primaryKey": lnk_key}}
 
     fail("rbac DDL: unknown operationType: " + ot)
 `

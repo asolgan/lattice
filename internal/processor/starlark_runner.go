@@ -215,11 +215,11 @@ func extractStarlarkPosition(err error) (int, int) {
 
 // parseScriptResult converts the Starlark return value into a ScriptResult.
 // The script must return {"mutations": [...], "events": [...]} per
-// Contract #3 §3.1. An optional "response" dict key carries structured
-// data to surface in the success reply.
-//
-// NOTE: ResponseDetail is NOT logged by the executor (NFR-S6/S7 —
-// it may carry sensitive tokens such as plaintext claim keys).
+// Contract #3 §3.1. An optional "response" dict carries a CLOSED schema whose
+// only permitted key is "primaryKey" (a string). Any other key is a
+// fail-closed InvalidReturnShape error: the write path is not a read channel,
+// so a script may only point at a key it committed — it cannot return
+// arbitrary data. Absent "response" / absent "primaryKey" is allowed (empty).
 func parseScriptResult(val starlarklib.Value, rid string) (ScriptResult, error) {
 	d, ok := val.(*starlarklib.Dict)
 	if !ok {
@@ -237,15 +237,52 @@ func parseScriptResult(val starlarklib.Value, rid string) (ScriptResult, error) 
 	if err != nil {
 		return ScriptResult{}, err
 	}
-	// Optional "response" dict. Never validate strictly;
-	// absent = nil; non-dict = silently ignored (don't break existing scripts).
-	var detail map[string]any
-	if respRaw, found, _ := d.Get(starlarklib.String("response")); found {
-		if respDict, ok := respRaw.(*starlarklib.Dict); ok {
-			detail = starlarkDictToGoMap(respDict)
+	primaryKey, err := parseResponse(d, rid)
+	if err != nil {
+		return ScriptResult{}, err
+	}
+	return ScriptResult{Mutations: muts, Events: evs, PrimaryKey: primaryKey}, nil
+}
+
+// parseResponse parses the optional, closed "response" dict. The only
+// permitted key is "primaryKey" (string); any other key fails closed. Absent
+// "response" or absent "primaryKey" yields an empty string.
+func parseResponse(d *starlarklib.Dict, rid string) (string, error) {
+	respRaw, found, _ := d.Get(starlarklib.String("response"))
+	if !found {
+		return "", nil
+	}
+	respDict, ok := respRaw.(*starlarklib.Dict)
+	if !ok {
+		return "", &ScriptError{
+			Code:               "InvalidReturnShape",
+			Message:            fmt.Sprintf("'response' must be a dict, got %s", respRaw.Type()),
+			OperationRequestID: rid,
 		}
 	}
-	return ScriptResult{Mutations: muts, Events: evs, ResponseDetail: detail}, nil
+	for _, item := range respDict.Items() {
+		k, ok := item[0].(starlarklib.String)
+		if !ok || string(k) != "primaryKey" {
+			return "", &ScriptError{
+				Code:               "InvalidReturnShape",
+				Message:            fmt.Sprintf("'response' permits only the 'primaryKey' key, got %q", item[0].String()),
+				OperationRequestID: rid,
+			}
+		}
+	}
+	raw, found, _ := respDict.Get(starlarklib.String("primaryKey"))
+	if !found {
+		return "", nil
+	}
+	s, ok := raw.(starlarklib.String)
+	if !ok {
+		return "", &ScriptError{
+			Code:               "InvalidReturnShape",
+			Message:            fmt.Sprintf("'response.primaryKey' must be a string, got %s", raw.Type()),
+			OperationRequestID: rid,
+		}
+	}
+	return string(s), nil
 }
 
 func parseMutations(d *starlarklib.Dict, rid string) ([]MutationOp, error) {

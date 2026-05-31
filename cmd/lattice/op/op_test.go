@@ -37,7 +37,7 @@ func TestOpSubmit_HappyPath(t *testing.T) {
 		Actor:         staffActorKey,
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "identity",
-		Payload:       json.RawMessage(`{"name":"Submit Test","email":"submit@example.com"}`),
+		Payload:       json.RawMessage(`{"name":"Submit Test","email":"submit@example.com","claimKeyHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
 	}
 
 	// Drive the processor inline — RequestWithContext in submitOp returns

@@ -41,12 +41,13 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //   - optional aspectConflictResolution for {name, email, phone}
 //     (secondary-wins overwrites primary aspect)
 //
-// Events: one IdentityMerged.
+// Events: one IdentityMerged carrying primary, secondary, linkCount and the
+// per-bucket link counts (linksMigrated, linksTombstonedOnly,
+// linkCollisionsMerged).
 //
-// ResponseDetail (OperationReply.Detail convention — commit-trace
-// shape only, NO business data):
-//   {primary, secondary, mutationCount, linksMigrated,
-//    linksTombstonedOnly, linkCollisionsMerged, eventCount}
+// Reply: MergeIdentity is multi-key with no single principal entity, so it
+// returns no primaryKey. The committed key set is the key set of
+// OperationReply.Revisions; merge counts ride the IdentityMerged event.
 func DDLs() []pkgmgr.DDLSpec {
 	return []pkgmgr.DDLSpec{
 		{
@@ -57,20 +58,16 @@ func DDLs() []pkgmgr.DDLSpec {
 				"operator-explicit merge of two identities. `edges` arrives as a " +
 				"command parameter (discovered by the caller via the " +
 				"duplicateCandidates Lens) and is validated against Core KV by " +
-				"the script. ResponseDetail is commit-trace only (no business data).",
+				"the script. Multi-key op: returns no primaryKey; merge counts " +
+				"ride the IdentityMerged event and the committed key set is in " +
+				"OperationReply.Revisions.",
 			Script: identityHygieneScript,
 			InputSchema: `{"type":"object","required":["primary","secondary","edges"],"properties":` +
 				`{"primary":{"type":"string","description":"vtx.identity.<NanoID> of the surviving identity."},` +
 				`"secondary":{"type":"string","description":"vtx.identity.<NanoID> of the identity to be merged and tombstoned."},` +
 				`"edges":{"type":"array","items":{"type":"string"},"description":"Link vertex keys touching secondary, obtained from duplicateCandidates Lens output."},` +
 				`"aspectConflictResolution":{"type":"object","description":"Optional. Map of aspect name (name|email|phone) to 'secondary-wins' to overwrite the primary aspect with the secondary's value.","additionalProperties":{"type":"string","enum":["secondary-wins"]}}}}`,
-			OutputSchema: `{"type":"object","required":["primary","secondary","mutationCount","linksMigrated","linksTombstonedOnly","linkCollisionsMerged","eventCount"],"properties":` +
-				`{"primary":{"type":"string"},"secondary":{"type":"string"},` +
-				`"mutationCount":{"type":"integer","description":"Total KV mutations in the committed batch."},` +
-				`"linksMigrated":{"type":"integer","description":"Links rekeyed from secondary to primary endpoint."},` +
-				`"linksTombstonedOnly":{"type":"integer","description":"Self-loop links tombstoned without rekeying."},` +
-				`"linkCollisionsMerged":{"type":"integer","description":"Rekeyed links skipped because the new key already existed alive."},` +
-				`"eventCount":{"type":"integer"}}}`,
+			OutputSchema: `{"type":"object","properties":{}}`,
 			FieldDescription: map[string]string{
 				"primary":                  "The surviving identity. All rekeyed edges will reference this identity's NanoID after merge.",
 				"secondary":                "The identity being merged. Its state is set to 'merged'; its edges are rekeyed to primary.",
@@ -86,7 +83,7 @@ func DDLs() []pkgmgr.DDLSpec {
 						"edges":     []any{"lnk.identity.<secondaryNanoID>.holdsRole.role.<roleNanoID>"},
 					},
 					ExpectedOutcome: "Tombstones secondary holdsRole link, creates rekeyed link under primary. " +
-						"Sets secondary.state=merged, secondary.mergedInto=primary. Returns commit-trace response.",
+						"Sets secondary.state=merged, secondary.mergedInto=primary. Returns no primaryKey; merge counts ride the IdentityMerged event.",
 				},
 				{
 					Name: "MergeIdentity — with secondary-wins phone overwrite",
@@ -303,23 +300,18 @@ def execute(state, op):
         "primary": primary,
         "secondary": secondary,
         "linkCount": links_migrated + links_tombstoned_only + link_collisions_merged,
+        "linksMigrated": links_migrated,
+        "linksTombstonedOnly": links_tombstoned_only,
+        "linkCollisionsMerged": link_collisions_merged,
         "mergedAt": op.submittedAt,
     }}]
 
-    # --- Response Detail: commit-trace shape only; no business data
-    # (no name/email/phone leak). See OperationReply.Detail convention
-    # in internal/processor/envelope.go.
+    # MergeIdentity is multi-key with no single principal entity, so it omits
+    # primaryKey. The committed key set (rekeyed links, secondary.state,
+    # secondary.mergedInto, optional aspect overwrites) is the key set of
+    # OperationReply.Revisions; counts ride the IdentityMerged event.
     return {
         "mutations": mutations,
         "events": events,
-        "response": {
-            "primary": primary,
-            "secondary": secondary,
-            "mutationCount": len(mutations),
-            "linksMigrated": links_migrated,
-            "linksTombstonedOnly": links_tombstoned_only,
-            "linkCollisionsMerged": link_collisions_merged,
-            "eventCount": len(events),
-        },
     }
 `

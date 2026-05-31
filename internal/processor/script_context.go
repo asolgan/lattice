@@ -74,15 +74,15 @@ type HydratedState struct {
 // ScriptResult is the parsed return value of step 5 (Execute). The
 // commit path passes it forward to step 6 (Validate).
 //
-// ResponseDetail is optional structured data the script surfaces to the caller
-// in the success reply. The script populates it via a top-level "response"
-// dict key in its return value; the commit path threads it into
-// OperationReply.Detail. MUST NOT be logged — may contain sensitive tokens
-// (NFR-S6/S7).
+// PrimaryKey is the optional single principal Core KV key the script names
+// via the closed `response` return dict (`{"primaryKey": <key>}`). It is a
+// commit-trace identifier only: the commit path validates it is a member of
+// the committed mutation set before surfacing it as OperationReply.PrimaryKey.
+// The script cannot return any other `response` key (fail-closed at parse).
 type ScriptResult struct {
-	Mutations      []MutationOp
-	Events         []EventSpec
-	ResponseDetail map[string]any
+	Mutations  []MutationOp
+	Events     []EventSpec
+	PrimaryKey string
 }
 
 // HydrationError is the typed step-4 failure surfaced when a contextHint

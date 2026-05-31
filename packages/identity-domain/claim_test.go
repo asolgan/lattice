@@ -49,9 +49,12 @@ func newClaimPipeline(t *testing.T, ctx context.Context, conn *substrate.Conn, d
 // claim.
 func createIdentityAndGetKeys(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, reqID string) (identityKey, claimKey string) {
 	t.Helper()
-	identityID, claimKeyPlaintext := nanoIDsFromRequestID(reqID)
+	identityID := identityIDFromRequestID(reqID)
 	identityKey = "vtx.identity." + identityID
 
+	// Option C: the client mints the claim secret and submits only its hash.
+	claimKeyPlaintext := "claim-secret-for-" + reqID
+	claimKeyHash := sha256HexOf(claimKeyPlaintext)
 	env := &processor.OperationEnvelope{
 		RequestID:     reqID,
 		Lane:          processor.LaneDefault,
@@ -59,7 +62,7 @@ func createIdentityAndGetKeys(t *testing.T, ctx context.Context, conn *substrate
 		Actor:         staffActorKey,
 		SubmittedAt:   "2026-05-22T10:00:00Z",
 		Class:         "identity",
-		Payload:       json.RawMessage(`{"name":"Test Identity","email":"test@claim.example"}`),
+		Payload:       json.RawMessage(`{"name":"Test Identity","email":"test@claim.example","claimKeyHash":"` + claimKeyHash + `"}`),
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)

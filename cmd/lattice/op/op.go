@@ -136,10 +136,11 @@ and opTrackerKey. On rejection, prints the error code and message.`,
 			}
 			fmt.Printf("requestId:    %s\nopTrackerKey: %s\nstatus:       %s\n",
 				reply.RequestID, reply.OpTrackerKey, reply.Status)
-			if reply.Detail != nil {
-				for k, v := range reply.Detail {
-					fmt.Printf("%-13s %v\n", k+":", v)
-				}
+			if reply.PrimaryKey != "" {
+				fmt.Printf("primaryKey:   %s\n", reply.PrimaryKey)
+			}
+			for k := range reply.Revisions {
+				fmt.Printf("committedKey: %s\n", k)
 			}
 			return nil
 		},

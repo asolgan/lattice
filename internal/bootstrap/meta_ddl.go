@@ -186,14 +186,14 @@ def execute(state, op):
                 make_aspect(meta_key + ".compensation", meta_key, "compensation",
                             "compensation",
                             {"inverseOperationType": "TombstoneMetaVertex",
-                             "payloadTemplate": {"metaKey": "{{detail.metaKey}}"},
-                             "revisionTemplate": {"metaKey": "{{revisions[detail.metaKey]}}"}}),
+                             "payloadTemplate": {"metaKey": "{{primaryKey}}"},
+                             "revisionTemplate": {"metaKey": "{{revisions[primaryKey]}}"}}),
             ]
             events = [{"class": "MetaVertexCreated",
                        "data": {"metaKey": meta_key, "targetClass": target_class,
                                 "canonicalName": canonical_name}}]
             return {"mutations": mutations, "events": events,
-                    "response": {"metaKey": meta_key}}
+                    "response": {"primaryKey": meta_key}}
 
         if target_class == "meta.lens":
             description = required_string(p, "description")
@@ -220,14 +220,14 @@ def execute(state, op):
                 make_aspect(meta_key + ".compensation", meta_key, "compensation",
                             "compensation",
                             {"inverseOperationType": "TombstoneMetaVertex",
-                             "payloadTemplate": {"metaKey": "{{detail.metaKey}}"},
-                             "revisionTemplate": {"metaKey": "{{revisions[detail.metaKey]}}"}}),
+                             "payloadTemplate": {"metaKey": "{{primaryKey}}"},
+                             "revisionTemplate": {"metaKey": "{{revisions[primaryKey]}}"}}),
             ]
             events = [{"class": "MetaVertexCreated",
                        "data": {"metaKey": meta_key, "targetClass": "meta.lens",
                                 "canonicalName": canonical_name}}]
             return {"mutations": mutations, "events": events,
-                    "response": {"metaKey": meta_key}}
+                    "response": {"primaryKey": meta_key}}
 
         fail("UnknownMetaClass: " + target_class)
 
@@ -378,8 +378,11 @@ def execute(state, op):
             # RevisionConflict. Multi-aspect atomic OCC is a Phase-2 item.
             mutations[0]["expectedRevision"] = expected_rev
         events = [{"class": "MetaVertexUpdated", "data": {"metaKey": meta_key}}]
+        # UpdateMetaVertex mutates aspects (not the root vertex). primaryKey names
+        # the principal entity (the meta-vertex); the Processor accepts it as the
+        # 3-segment root of the committed aspects.
         return {"mutations": mutations, "events": events,
-                "response": {"metaKey": meta_key}}
+                "response": {"primaryKey": meta_key}}
 
     if ot == "TombstoneMetaVertex":
         meta_key = required_string(p, "metaKey")
@@ -440,7 +443,7 @@ def execute(state, op):
             mutations[0]["expectedRevision"] = expected_rev
         events = [{"class": "MetaVertexTombstoned", "data": {"metaKey": meta_key}}]
         return {"mutations": mutations, "events": events,
-                "response": {"metaKey": meta_key}}
+                "response": {"primaryKey": meta_key}}
 
     fail("root DDL: unknown operationType: " + ot)
 `

@@ -102,15 +102,15 @@ func readAspectData(t *testing.T, ctx context.Context, conn *substrate.Conn, key
 	return data
 }
 
-// nanoIDsFromRequestID returns the first two NanoIDs the identity
-// DDL's Starlark would generate from the given requestId. The first
-// is the identity ID; the second is the claim-key plaintext.
-func nanoIDsFromRequestID(requestID string) (identityID, claimKeyPlaintext string) {
+// identityIDFromRequestID returns the first NanoID the identity DDL's
+// Starlark would generate from the given requestId — the identity ID.
+// Under Option C the script no longer mints a claim-key plaintext; the
+// client supplies claimKeyHash, so a single deterministic NanoID is all
+// the test needs to predict the created identity key.
+func identityIDFromRequestID(requestID string) string {
 	seed := processor.SeedFromRequestID(requestID)
 	pcg := rand.NewPCG(seed[0], seed[1])
-	identityID = processor.DeterministicNanoID(pcg, substrate.NanoIDLength)
-	claimKeyPlaintext = processor.DeterministicNanoID(pcg, substrate.NanoIDLength)
-	return
+	return processor.DeterministicNanoID(pcg, substrate.NanoIDLength)
 }
 
 // contactIndexKey mirrors the Starlark `crypto.sha256NanoID(prefix +
