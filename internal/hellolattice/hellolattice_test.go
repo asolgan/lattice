@@ -472,7 +472,7 @@ func TestHelloLattice_Milestone4_LensProjection(t *testing.T) {
 // TestHelloLattice_Milestone5_AITraversal creates an AI agent identity,
 // grants it CreateBook, and runs the cold-start traversal.
 func TestHelloLattice_Milestone5_AITraversal(t *testing.T) {
-	t.Skip("Milestone 5 deferred: the capability-lens link fan-out is implemented and correct (the agent's capability doc reprojects on holdsRole/grantedBy link mutations — see internal/refractor/refractor_capability_linkfanout_e2e_test.go), but NFR-P3 (≤500ms reprojection) cannot be met because the capability lens consumer's delivery is starved by the events-publish 'atomic publish is disabled' storm (NATS err_code 10174): step 9 publishes events via substrate.PublishBatch (atomic) to core-events, the server rejects it, and the 3×-retry + nak/redeliver loop on every op saturates NATS. Fix is to make step-9 event publish non-atomic (events are best-effort post-commit, consumed idempotently). Re-enable this milestone after that fix — the drain-then-time body below is the intended NFR-P3 assertion.")
+	t.Skip("Milestone 5 deferred: M5 fails FUNCTIONAL convergence (not latency). The seeded capability cypher reads domain permission fields as flat node properties (perm.operationType / perm.scope), but the Processor stores a vertex's domain fields nested under a `data` envelope (perm.data.operationType). The full-engine property resolver (propertyOf, internal/refractor/ruleengine/full/executor.go) reads top-level props only, so perm.operationType resolves to null: an agent assigned to the operator role projects a capability doc with platformPermissions=[{operationType:null,scope:null}] regardless of how many grantedBy edges exist (verified: 19 grantedBy edges present with OtherType=permission, adjacency correct, fresh reprojection still null). This is a lens-cypher vs vertex-storage property-model mismatch. NOTE: the earlier 'atomic-publish-storm (NATS 10174)' diagnosis was INCORRECT — atomic batch publish to core-events works on NATS 2.14 (AllowAtomicPublish=true, verified by direct PublishBatch). The capability link/aspect fan-out E2E tests pass because their fixtures write domain fields flat (top-level), masking the `data`-envelope mismatch. Re-enable after the property-model fix.")
 	if bookDDLKey == "" {
 		t.Skip("bookDDLKey not set — run Milestone2 first")
 	}
@@ -912,7 +912,7 @@ func TestHelloLattice_WriteGate5Marker(t *testing.T) {
 	if len(deferredList) > 0 {
 		marker["partial"] = true
 		marker["milestonesDeferred"] = deferredList
-		marker["deferredReason"] = "M5 deferred: capability-lens link fan-out implemented, but NFR-P3 reprojection blocked by the events-publish atomic-publish storm starving the capability consumer (step-9 PublishBatch vs NATS err 10174). Fix: non-atomic step-9 event publish."
+		marker["deferredReason"] = "M5 deferred: capability reprojection projects an operator-role agent with a null permission set ([{operationType:null,scope:null}]) because the seeded cypher reads flat domain fields (perm.operationType) while the Processor stores them under a `data` envelope (perm.data.operationType); the full-engine property resolver reads top-level props only. Lens-cypher vs vertex-storage property-model mismatch (not latency; the earlier atomic-publish-storm diagnosis was incorrect — atomic batch publish works on NATS 2.14). Fix: reference the `data` envelope in the seeded lens cypher rules (perm.data.operationType)."
 	}
 	markerValue, err := json.Marshal(marker)
 	if err != nil {

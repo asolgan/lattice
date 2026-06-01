@@ -638,7 +638,14 @@ func (p *Pipeline) processMsg(ctx context.Context, msg jetstream.Msg) (failure.C
 	// Classify the key by Lattice Contract #1 §1.5 shape.
 	switch substrate.ClassifyKey(key) {
 	case substrate.KindAspect:
-		// Aspect tombstones and mutations are not handled by any lens; ack+skip.
+		// On the actor-aware (capability) pipeline an aspect-only mutation
+		// (e.g. identity .state, role .description) changes a vertex's
+		// projected state with no vertex-root event, so it must drive a
+		// fan-out reprojection seeded from the parent vertex. Other lenses
+		// keep the legacy ack-and-skip behaviour.
+		if p.actorEnumerator != nil {
+			return p.processAspectFanOut(ctx, msg, key)
+		}
 		slog.Info("pipeline: aspect mutation observed but no handler registered",
 			"ruleId", p.ruleID, "key", key,
 			"parentVertexKey", key[:strings.LastIndex(key, ".")])
@@ -789,6 +796,42 @@ func (p *Pipeline) processLinkFanOut(ctx context.Context, msg jetstream.Msg, key
 			p.publishTerminalDLQ(ctx, msg, key, "traversal", err)
 			if ackErr := msg.Ack(); ackErr != nil {
 				slog.Error("pipeline: ack after terminal link fan-out", "ruleId", p.ruleID, "err", ackErr)
+			}
+			return failure.CatTransient, nil
+		}
+		if nakErr := msg.Nak(); nakErr != nil {
+			slog.Error("pipeline: nak failed", "ruleId", p.ruleID, "err", nakErr)
+		}
+		return failure.CatTransient, err
+	}
+
+	return p.writeResults(ctx, msg, key, results)
+}
+
+// processAspectFanOut handles a KindAspect CDC event on the actor-aware
+// pipeline. An aspect-only mutation (e.g. identity .state, role .description)
+// carries no vertex-root event, so the parent vertex's projection is re-derived
+// by seeding the fan-out from the parent vertex (evaluateAspectFanOut) and
+// writing the resulting capability projections through the normal write path.
+//
+// Unlike a link, an aspect mutation does not change graph topology, so no
+// adjacency update is required; the aspect body is irrelevant to the fan-out
+// (the reprojection cypher re-reads current Core KV state), so a tombstone
+// (empty body) and a value change take the same path.
+func (p *Pipeline) processAspectFanOut(ctx context.Context, msg jetstream.Msg, key string) (failure.Category, error) {
+	results, err := p.evaluateAspectFanOut(ctx, key)
+	if err != nil {
+		slog.Error("pipeline: aspect fan-out: evaluate",
+			"ruleId", p.ruleID, "entityId", key, "stage", "traversal", "err", err)
+		cat := failure.Classify(err)
+		if cat == failure.CatInfra || cat == failure.CatStructural {
+			// Do NOT ack/nak — leave pending for redelivery when the pipeline resumes.
+			return cat, err
+		}
+		if cat == failure.CatTerminal {
+			p.publishTerminalDLQ(ctx, msg, key, "traversal", err)
+			if ackErr := msg.Ack(); ackErr != nil {
+				slog.Error("pipeline: ack after terminal aspect fan-out", "ruleId", p.ruleID, "err", ackErr)
 			}
 			return failure.CatTransient, nil
 		}

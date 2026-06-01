@@ -273,6 +273,36 @@ func (p *Pipeline) evaluateLinkFanOut(ctx context.Context, linkKey string, isDel
 	return p.reprojectActors(ctx, actorKeys)
 }
 
+// evaluateAspectFanOut handles an aspect CDC event (mutation or tombstone) on
+// the actor-aware pipeline. An aspect-only mutation (e.g. identity .state,
+// role .description) carries no vertex-root change, so affected actors are
+// reprojected by seeding the fan-out from the aspect's parent vertex.
+//
+// When the parent vertex is itself an actor (e.g. an identity .state flip), the
+// enumerator returns it as a singleton and only that actor is reprojected. When
+// the parent is a non-actor vertex (e.g. a role .description), the enumerator
+// walks adjacency to the actors that reach it. Adjacency is untouched — an
+// aspect change never alters graph topology — so, unlike the link fan-out, no
+// adjacency.Build is performed here.
+func (p *Pipeline) evaluateAspectFanOut(ctx context.Context, aspectKey string) ([]simple.EvalResult, error) {
+	parentVtx, parentType, _, _, ok := substrate.ParseAspectKey(aspectKey)
+	if !ok {
+		// ClassifyKey already gated KindAspect; unreachable in practice.
+		return nil, fmt.Errorf("pipeline: aspect fan-out: not a Contract #1 aspect key: %q", aspectKey)
+	}
+
+	actorKeys, err := p.actorEnumerator.Enumerate(ctx, parentVtx, parentType)
+	if err != nil {
+		return nil, fmt.Errorf("pipeline: aspect fan-out enumerate from %q: %w", parentVtx, err)
+	}
+	// No affected actors → no projection to write (e.g. a meta-vertex aspect,
+	// or a vertex no actor reaches). A correct no-op.
+	if len(actorKeys) == 0 {
+		return nil, nil
+	}
+	return p.reprojectActors(ctx, actorKeys)
+}
+
 // reprojectActors re-executes the capability cypher for each actor key and
 // returns the concatenated result set. A missing (tombstoned) actor yields a
 // Delete against its Capability KV key. Shared by the vertex fan-out
