@@ -161,7 +161,7 @@ The platform stores all business and meta-domain state as **vertices, aspects, a
 
 Streams 0–3 partial:
 - **Stream 0 (Substrate):** NATS spike stories resolved, operation envelope schema, NanoID, dev harness (`make up`)
-- **Stream 1 (Core):** Processor 10-step commit path, Starlark sandbox, DDL meta-vertices, atomic batch, idempotency
+- **Stream 1 (Core):** Processor 9-step commit path, Starlark sandbox, DDL meta-vertices, atomic batch, idempotency
 - **Stream 2 (Refractor):** Materializer fork, durable consumer per Lens, Postgres adapter, Capability Lens
 - **Stream 3 partial (Identity — spec and contract):** Identity vertex type, JWT/Lattice-Actor header spec and contract, Capability KV shape. *Gateway implementation (NGINX + thin Go service) deferred to Phase 2 — no HTTP clients exist at Phase 1.*
 - **Reference:** "Hello Lattice" CLI — one resident vertex, one lease aspect, one payment rule, one Lens projection, one AI traversal query
@@ -574,7 +574,7 @@ Lattice is a hybrid of two project types: a **B2B platform/data OS** (multi-tena
 - `make test` / `make test-integration` targets
 
 **Stream 1 — Core Processor:**
-- 10-step commit path
+- 9-step commit path
 - Starlark sandbox (enforced: no I/O, no non-determinism, no secret access)
 - DDL meta-vertices authored via `ops.meta.>` lane
 - Atomic batch + idempotency

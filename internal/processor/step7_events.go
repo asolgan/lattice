@@ -11,7 +11,7 @@ import (
 // eventId (NanoID), requestId (from envelope), eventType (canonical event
 // class), targetKey (the mutation key the event corresponds to — or empty
 // for events without a direct mutation counterpart), payload, and timestamp.
-// Events are published to `core-events` at step 9 via substrate.PublishBatch.
+// Events are published to `core-events` by the outbox consumer via substrate.PublishBatch.
 type Event struct {
 	EventID   string                 `json:"eventId"`
 	RequestID string                 `json:"requestId"`
@@ -22,7 +22,7 @@ type Event struct {
 }
 
 // EventList is the ordered list of events constructed from a validated
-// ScriptResult at step 7 (BuildEventList) and published at step 9.
+// ScriptResult at step 7 (BuildEventList) and published by the outbox consumer.
 type EventList []Event
 
 // BuildEventList constructs the EventList for a validated MutationBatch

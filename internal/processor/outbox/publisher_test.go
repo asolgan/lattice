@@ -1,30 +1,18 @@
-package processor
+package outbox
 
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
 )
-
-// provisionEvents creates the core-events stream in the test cluster.
-func provisionEvents(t *testing.T, ctx context.Context, conn *substrate.Conn) {
-	t.Helper()
-	_, err := conn.JetStream().CreateOrUpdateStream(ctx, jetstream.StreamConfig{
-		Name:               "core-events",
-		Subjects:           []string{"events.>"},
-		Retention:          jetstream.LimitsPolicy,
-		MaxAge:             7 * 24 * time.Hour,
-		AllowAtomicPublish: true,
-	})
-	if err != nil {
-		t.Fatalf("provision core-events: %v", err)
-	}
-}
 
 func TestEventSubject_Sanitization(t *testing.T) {
 	cases := map[string]string{
@@ -41,28 +29,28 @@ func TestEventSubject_Sanitization(t *testing.T) {
 }
 
 func TestEventPublisher_NoEventsShortCircuits(t *testing.T) {
-	ctx, conn, _, _, _ := setupTestPipeline(t)
-	provisionEvents(t, ctx, conn)
-	pub := NewEventPublisher(conn, testLogger())
-	env := newTestEnvelope(testNanoID1)
-	if err := pub.Publish(ctx, env, EventList{}); err != nil {
+	ctx, conn := setup(t)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	pub := NewEventPublisher(conn, logger)
+	env := &processor.OperationEnvelope{RequestID: "Aj4kPmRtw9nbCxz5vQ2y"}
+	if err := pub.Publish(ctx, env, processor.EventList{}); err != nil {
 		t.Fatalf("expected nil on empty events, got %v", err)
 	}
 }
 
 func TestEventPublisher_HappyPath(t *testing.T) {
-	ctx, conn, _, _, _ := setupTestPipeline(t)
-	provisionEvents(t, ctx, conn)
-	pub := NewEventPublisher(conn, testLogger())
-	env := newTestEnvelope(testNanoID1)
-	result := ScriptResult{
-		Mutations: []MutationOp{{Op: "create", Key: "vtx.identity." + testNanoID2}},
-		Events: []EventSpec{
+	ctx, conn := setup(t)
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	pub := NewEventPublisher(conn, logger)
+	env := &processor.OperationEnvelope{RequestID: "Aj4kPmRtw9nbCxz5vQ2y"}
+	result := processor.ScriptResult{
+		Mutations: []processor.MutationOp{{Op: "create", Key: "vtx.identity.Bj4kPmRtw9nbCxz5vQ2y"}},
+		Events: []processor.EventSpec{
 			{Class: "identity.created", Data: map[string]interface{}{"x": 1}},
 			{Class: "identity.linked", Data: map[string]interface{}{"y": 2}},
 		},
 	}
-	events, err := BuildEventList(env, result, time.Now())
+	events, err := processor.BuildEventList(env, result, time.Now())
 	if err != nil {
 		t.Fatalf("BuildEventList: %v", err)
 	}
@@ -101,16 +89,16 @@ func TestEventPublisher_HappyPath(t *testing.T) {
 // at the substrate level is invasive, so this test instead temporarily
 // removes the stream, then re-creates it after the first attempt.
 func TestEventPublisher_RetriesOnTransientFailure(t *testing.T) {
-	ctx, conn, _, _, _ := setupTestPipeline(t)
-	// Provision the stream so the FIRST publish succeeds.
-	provisionEvents(t, ctx, conn)
-	pub := NewEventPublisher(conn, testLogger())
+	ctx, conn := setup(t)
+	// core-events is already provisioned by setup(t).
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	pub := NewEventPublisher(conn, logger)
 	pub.BackoffSchedule = []time.Duration{0, 0, 0} // fast retries
-	env := newTestEnvelope(testNanoID1)
-	result := ScriptResult{
-		Events: []EventSpec{{Class: "test.event", Data: map[string]interface{}{}}},
+	env := &processor.OperationEnvelope{RequestID: "Cj4kPmRtw9nbCxz5vQ2y"}
+	result := processor.ScriptResult{
+		Events: []processor.EventSpec{{Class: "test.event", Data: map[string]interface{}{}}},
 	}
-	events, err := BuildEventList(env, result, time.Now())
+	events, err := processor.BuildEventList(env, result, time.Now())
 	if err != nil {
 		t.Fatalf("BuildEventList: %v", err)
 	}
@@ -119,31 +107,42 @@ func TestEventPublisher_RetriesOnTransientFailure(t *testing.T) {
 	}
 }
 
-// TestEventPublisher_FailureSurfacesPublicationError deletes the
-// core-events stream so PublishBatch fails repeatedly; the wrapper
-// surfaces a *PublicationError after MaxRetries.
+// TestEventPublisher_FailureSurfacesPublicationError connects to a NATS server
+// where core-events is NOT provisioned so PublishBatch fails repeatedly; the
+// wrapper surfaces a *PublicationError after MaxRetries.
 func TestEventPublisher_FailureSurfacesPublicationError(t *testing.T) {
-	ctx, conn, _, _, _ := setupTestPipeline(t)
-	// Do NOT provision core-events — every PublishBatch call should
-	// receive "no stream matches subject" from the server.
-	pub := NewEventPublisher(conn, testLogger())
+	// Use a fresh NATS server without core-events so PublishBatch fails.
+	ctx, cancel := func() (context.Context, func()) {
+		c, cc := context.WithCancel(context.Background())
+		return c, cc
+	}()
+	t.Cleanup(cancel)
+	url := startEmbeddedNATS(t)
+	conn, err := substrate.Connect(ctx, substrate.ConnectOpts{URL: url, Name: "pub-fail-test"})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(conn.Close)
+	// core-events stream is intentionally NOT provisioned.
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	pub := NewEventPublisher(conn, logger)
 	pub.BackoffSchedule = []time.Duration{0, 0, 0}
 	pub.MaxRetries = 2
-	env := newTestEnvelope(testNanoID1)
-	result := ScriptResult{
-		Events: []EventSpec{{Class: "test.event", Data: map[string]interface{}{}}},
+	env := &processor.OperationEnvelope{RequestID: "Dj4kPmRtw9nbCxz5vQ2y"}
+	result := processor.ScriptResult{
+		Events: []processor.EventSpec{{Class: "test.event", Data: map[string]interface{}{}}},
 	}
-	events, buildErr := BuildEventList(env, result, time.Now())
+	events, buildErr := processor.BuildEventList(env, result, time.Now())
 	if buildErr != nil {
 		t.Fatalf("BuildEventList: %v", buildErr)
 	}
-	err := pub.Publish(ctx, env, events)
-	if err == nil {
+	pubErr := pub.Publish(ctx, env, events)
+	if pubErr == nil {
 		t.Fatalf("expected PublicationError, got nil")
 	}
 	var pe *PublicationError
-	if !errors.As(err, &pe) {
-		t.Fatalf("expected *PublicationError, got %T: %v", err, err)
+	if !errors.As(pubErr, &pe) {
+		t.Fatalf("expected *PublicationError, got %T: %v", pubErr, pubErr)
 	}
 	if pe.Attempts < 1 {
 		t.Fatalf("PublicationError.Attempts = %d, want >= 1", pe.Attempts)

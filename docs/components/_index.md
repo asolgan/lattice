@@ -13,7 +13,7 @@ under `packages/<package-name>/` (post-Story 4.6).
 
 ## Phase 1 components (shipped code)
 
-- [Processor](./processor.md) — operation write path, 10-step commit pipeline
+- [Processor](./processor.md) — operation write path, 9-step commit pipeline
 - [Refractor](./refractor.md) — lens projection engine + openCypher full
   engine + control plane
 - [Substrate](./substrate.md) — NATS / KV / NanoID / atomic-batch primitives

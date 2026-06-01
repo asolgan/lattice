@@ -1,6 +1,6 @@
 // Package bypass contains the Phase 1 Gate 2 adversarial test suite.
 // These tests prove that all four architectural bypass categories are
-// impossible against the 10-step Processor commit path (Stories 1.3-1.9).
+// impossible against the 9-step Processor commit path (Stories 1.3-1.9).
 //
 // Run via: make test-bypass
 package bypass
@@ -113,7 +113,7 @@ func provisionBypassInfra(t *testing.T, ctx context.Context, conn *substrate.Con
 }
 
 // provisionEventsStream creates the core-events stream (needed when the
-// full commit path including step 9 is exercised).
+// full commit path including the outbox publish is exercised).
 func provisionEventsStream(t *testing.T, ctx context.Context, conn *substrate.Conn) {
 	t.Helper()
 	_, err := conn.JetStream().CreateOrUpdateStream(ctx, jetstream.StreamConfig{

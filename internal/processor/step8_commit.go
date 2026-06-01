@@ -110,7 +110,7 @@ func (c *CommitterImpl) Commit(ctx context.Context, env *OperationEnvelope, resu
 		mutKeys = append(mutKeys, m.Key)
 	}
 	// Build the EventList once here. The same list is returned in CommitAck
-	// so step 9 publishes identical event IDs to those recorded in the tracker.
+	// so the outbox consumer publishes identical event IDs to those recorded in the tracker.
 	events, err := BuildEventList(env, result, now)
 	if err != nil {
 		return CommitAck{}, fmt.Errorf("step 8: build event list: %w", err)

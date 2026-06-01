@@ -8,7 +8,7 @@
 
 Processor is the sole authorized write surface to Core KV. Operations arrive
 as JetStream messages on subjects `ops.<lane>.>`, flow through a deterministic
-10-step commit pipeline, and result in atomic KV mutations plus published
+9-step commit pipeline, and result in atomic KV mutations plus asynchronously published
 events. Each operation is either accepted (commit durable, reply sent, message
 acked), rejected with a structured reply (message term'd), or retried
 (transient failure, message nak'd). **There is no read API** — read-side
@@ -21,12 +21,13 @@ Nothing outside this pipeline may write to Core KV.
 
 | Path | Role |
 |------|------|
-| `internal/processor/` | Pipeline logic — all 10 steps, Starlark sandbox, DDL cache, authorizer, hydrator, committer, event publisher |
+| `internal/processor/` | Pipeline logic — all 9 steps, Starlark sandbox, DDL cache, authorizer, hydrator, committer |
+| `internal/processor/outbox/` | Durable outbox consumer + event publisher |
 | `cmd/processor/` | Binary entry point; wires `MakePipeline` + JetStream consumer |
 
 Key files:
 
-- `commit_path.go` — `CommitPath.HandleMessage` drives the 10-step loop; `Deps` bundles all injected interfaces; `MakePipeline` is the production wiring entry point
+- `commit_path.go` — `CommitPath.HandleMessage` drives the 9-step loop; `Deps` bundles all injected interfaces; `MakePipeline` is the production wiring entry point
 - `step1_consume.go` — parses + validates the `OperationEnvelope` wire format
 - `step3_auth.go` — `Authorizer` interface; `StubAuthorizer` (test-only after Story 3.3); `CapabilityAuthorizer` (production default); `SelectAuthorizerArgs` wiring entry point
 - `step3_denial_response.go` — `DenialResponseBuilder` for FR22 structured denial replies (Story 3.4)
@@ -37,7 +38,7 @@ Key files:
 - `script_context.go` — `ScriptContext` struct; bridges hydrated state to Starlark globals
 - `envelope.go` — `OperationEnvelope`, `Lane`, `ContextHint`, `AuthContext`, `ErrorCode` definitions; `ParseEnvelope` validates the wire contract
 - `reply.go` — `OperationReply`, `BuildAcceptedReply*`, `BuildRejectedReply`, `BuildDuplicateReply`, `MarshalReply`
-- `nfr_r1_test.go` — Gate 2 bypass test (no 10-step bypass; every write path verifiable)
+- `nfr_r1_test.go` — Gate 2 bypass test (no 9-step bypass; every write path verifiable)
 
 ---
 
@@ -57,7 +58,7 @@ Key files:
 | Artifact | Destination | Notes |
 |----------|-------------|-------|
 | **Core KV mutations** (Contract #1 + #3) | Core KV bucket (`core-kv`) | Written as an atomic batch via `substrate.AtomicBatch`; each mutation is a `create`, `update`, or `tombstone` operation |
-| **Events** (Contract #3 EventList) | JetStream `events.<class>` subjects on `core-events` stream | Published as an unconditional `substrate.PublishBatch` at step 9 after the commit is durable |
+| **Events** (Contract #3 EventList) | JetStream `events.<class>` subjects on `core-events` stream | Persisted in the step-8 atomic batch (vtx.op.<id>.events) and published asynchronously by the durable outbox consumer via substrate.PublishBatch |
 | **Idempotency tracker entries** (Contract #4) | Core KV at `vtx.op.<requestId>` | Written as part of the step-8 atomic batch; 24h TTL; provides step-2 dedup on re-delivery |
 | **Operation replies** (Contract #2 §2.4) | Per-op reply-to inbox | `accepted` (post-step-8), `duplicate` (step-2 short-circuit), or `rejected` (any termination branch) |
 | **Health KV signals** (Contract #5) | Health KV `health.processor.<instance>.*` | Heartbeat every 10s; per-op metrics (OpsConsumed / OpsCommitted / OpsDuplicates / OpsRejected / OpsMalformed); step-3 latency; auth trace records (Story 3.5); claim-attempt outcomes (Story 4.3); alerts under `health.alerts.security.*` |
@@ -65,7 +66,7 @@ Key files:
 
 ---
 
-## The 10-step write path
+## The 9-step write path
 
 Each message delivered by the JetStream consumer enters `CommitPath.HandleMessage`
 and exits with one of five outcomes: `accepted`, `duplicate`, `rejected`,
@@ -81,8 +82,9 @@ and exits with one of five outcomes: `accepted`, `duplicate`, `rejected`,
 | 6 | **Validate** | `Validator.Validate` — checks `permittedCommands` (operation type must be in the DDL's list), `sensitiveAspectScope` (script may not create underscore-prefixed aspects except system-reserved ones), and key-pattern checks from Story 1.7 + 1.9. `DDLViolation` → term, reply with `DDLViolation` code. |
 | 7 | **Materialize events** | Assigns per-event NanoIDs to events in `ScriptResult.Events` before the commit. NanoIDs are generated via `substrate.NewNanoID()` — entropy is from `crypto/rand`, not PCG (the script's `nanoid` global uses a PCG seeded from the requestId for deterministic per-script behavior; step 7 uses real entropy). |
 | 8 | **Commit** | `Committer.Commit` — calls `substrate.AtomicBatch` on the `core-kv` bucket. Batch includes all mutation ops + the tracker `vtx.op.<requestId>` as a create-only entry. Revision conditions on update ops; any condition failure → `ErrAtomicBatchRejected`. If the tracker was the conflicting key (concurrent re-delivery), short-circuit as duplicate. If a business mutation conflicted → `RevisionConflict` reply, term. On transient failure: nak. |
-| 9 | **Publish** | `EventPublisher.Publish` — calls `substrate.PublishBatch` targeting `events.<class>` subjects on the `core-events` stream. All-or-nothing; if publish fails after the commit, nak so JetStream re-delivers — step 2 dedup short-circuits the mutation, and step 9 runs again. Reply to the caller is deferred until step 9 succeeds (Contract #2 §2.4 anchors durability at step 8, but observability of the full path requires step 9). |
-| 10 | **Ack** | `Acker.Ack` — JetStream ack the original message. The explicit Acker boundary (introduced in Story 1.8) ensures the reply is already sent before the ack fires. Ack failure is non-fatal from the caller's perspective (commit + reply already durable); the message will be re-delivered and step-2 dedup short-circuits. |
+| 9 | **Ack** | `Acker.Ack` — JetStream ack the original message. The explicit Acker boundary (introduced in Story 1.8) ensures the reply is already sent before the ack fires. Ack failure is non-fatal from the caller's perspective (commit + reply already durable); the message will be re-delivered and step-2 dedup short-circuits. |
+
+**Event publishing (asynchronous, not a numbered step).** The faithful EventList is persisted in the step-8 atomic batch as `vtx.op.<id>.events`; the durable outbox consumer (`internal/processor/outbox`) publishes it to `events.<class>` on `core-events`, acking only after a confirmed publish. See Story 1.5.10.
 
 ---
 
@@ -418,7 +420,7 @@ required by the `vertex_alive` liveness check), so the root document — and its
 | `HydrationError` | Step 4 | Reply with `HydrationFailed` code; term |
 | `AuthDenied` | Step 3 | Reply with `AuthDenied` / `LaneUnauthorized` / `AuthContextMismatch` code; term; ack (no retry — this is a final decision) |
 | `AuthInfrastructureFailure` | Step 3 | `InternalError` reply; nak (retryable) |
-| `PublicationError` | Step 9 | Nak; JetStream re-delivers; step-2 dedup short-circuits mutation; step 9 re-runs |
+| `PublicationError` | Outbox publish | Nak; outbox consumer redelivers and republishes the persisted EventList (at-least-once) |
 | `MalformedEnvelope` | Step 1 | Reply with `EnvelopeMalformed` code (if reply inbox present); term |
 
 ---
@@ -436,7 +438,7 @@ The auth mode defaults to `AuthModeCapability` as of Story 3.3. `LATTICE_AUTH_MO
 
 ## Principles (binding)
 
-- **Sole authorized write surface** (NFR-S2): every Core KV mutation passes through all 10 steps. Gate 2 (`nfr_r1_test.go`) verifies no bypass path exists.
+- **Sole authorized write surface** (NFR-S2): every Core KV mutation passes through all 9 steps. Gate 2 (`nfr_r1_test.go`) verifies no bypass path exists.
 - **No bypass**: even for capability management operations (Stories 5.x), mutations enter through the operation write path, not via direct KV writes.
 - **Idempotent under retry**: the step-8 tracker provides dedup; re-delivered operations that already committed short-circuit at step 2 and receive a `duplicate` reply.
 - **ContextHint is surgical**: `contextHint.Reads` specifies per-key pre-loads. `ScanPrefixes` is being walked back (deprecation target: Story 4.6 replaces with narrow `LinkScans`).

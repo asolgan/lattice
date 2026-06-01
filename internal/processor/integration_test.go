@@ -81,6 +81,22 @@ func provisionHarness(t *testing.T, ctx context.Context, conn *substrate.Conn) {
 	}
 }
 
+// provisionEvents creates the core-events stream in the test cluster.
+// Required by tests that exercise the outbox aspect or verify event publishing.
+func provisionEvents(t *testing.T, ctx context.Context, conn *substrate.Conn) {
+	t.Helper()
+	_, err := conn.JetStream().CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:               "core-events",
+		Subjects:           []string{"events.>"},
+		Retention:          jetstream.LimitsPolicy,
+		MaxAge:             7 * 24 * time.Hour,
+		AllowAtomicPublish: true,
+	})
+	if err != nil {
+		t.Fatalf("provision core-events: %v", err)
+	}
+}
+
 // newPipeline builds a CommitPath + heartbeater + consumer ready to run.
 func newPipeline(t *testing.T, ctx context.Context, conn *substrate.Conn, logger *slog.Logger) (*CommitPath, jetstream.Consumer, *Metrics) {
 	t.Helper()

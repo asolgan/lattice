@@ -139,10 +139,10 @@ func (s *Seeder) provisionStreams(ctx context.Context) error {
 		{
 			// Events are short-lived per Contract #3 lifetime norms; 7-day
 			// MaxAge is the Phase 1 default. AllowAtomicPublish enables the
-			// substrate.PublishBatch step-9 path (see
-			// internal/processor/step9_publish.go).
+			// substrate.PublishBatch outbox path (see
+			// internal/processor/outbox/publisher.go).
 			Name:               CoreEventsStreamName,
-			Description:        "Core events stream — Processor publishes business events here at step 9",
+			Description:        "Core events stream — the Processor's outbox consumer publishes business events here",
 			Subjects:           []string{EventsWildcardSubject},
 			Retention:          jetstream.LimitsPolicy,
 			Storage:            jetstream.FileStorage,

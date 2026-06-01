@@ -1,7 +1,7 @@
 // cmd/processor — Lattice Processor binary.
 //
 // Connects to NATS, ensures the durable JetStream consumer exists, and drives
-// the full 10-step commit path on each delivered operation envelope.
+// the full 9-step commit path on each delivered operation envelope.
 //
 // Environment:
 //

@@ -176,12 +176,13 @@ The Processor's commit sequence for a single operation:
 6. **Validate MutationBatch** — check against DDL JSON Schema
 7. **Validate EventList** — check against event DDL meta-vertices (`vtx.meta.event.<name>`) — event schema validation happens BEFORE any KV writes
 8. **Atomic batch** — write all KV mutations AND the idempotency tracker (`vtx.op.<request-id>`) in a single NATS 2.12 atomic batch with revision conditions. The tracker is part of the batch, not a separate write.
-9. **Publish events** — publish validated events to `core-events` JetStream
-10. **Ack** — acknowledge the `core-operations` JetStream message
+9. **Ack** — acknowledge the `core-operations` JetStream message
+
+> **Event publishing is asynchronous (not a numbered commit step).** Per Story 1.5.10, the faithful EventList is persisted in the step-8 atomic batch (vtx.op.<id>.events) and published to core-events by a durable outbox consumer, acking only on confirmed publish. The synchronous commit path is 9 steps; publishing is decoupled.
 
 If step 7 (event validation) fails, the entire operation is rejected — no KV writes occur. Events are schema-governed via DDL meta-vertices, same as vertices/aspects/links.
 
-**Crash recovery and idempotency:** The `core-operations` message is only acked after the entire commit path completes (step 10). If the Processor crashes between step 8 (atomic batch) and step 9 (event publish), JetStream redelivers the operation. On retry, step 2 finds the idempotency tracker (written as part of the atomic batch in step 8). **The entire commit path must be idempotent:** on dedup detection, the Processor must still publish events before acking, since the previous attempt may have crashed before event publication. KV writes are naturally idempotent (revision conditions cause a no-op on retry); event publication must also be safe to repeat (Loom/Weaver consumers must tolerate duplicate events via their own dedup or idempotent handling).
+**Crash recovery and idempotency:** The `core-operations` message is only acked after the commit path completes (step 9, ack). The faithful EventList is persisted atomically in step 8; a durable outbox consumer publishes it to core-events. A crash between commit and publish is recovered by the outbox consumer's redelivery — the synchronous path no longer publishes, so dedup on redelivery simply acks.
 
 > **Transactional outbox — pre-Phase-2 hardening (Story 1.5.10, REQUIRED before Loom/Weaver).** The Phase 1 implementation re-derives the redelivery EventList by reconstructing events from Core KV keys (`RebuildEventListFromClasses`, best-effort). This is wrong: `core-events` are not CDC — they are intentional, declared-schema events that Loom/Weaver depend on, and a reconstruction from KV keys is not equal to the events the Starlark script actually returned. The correct model is a **transactional outbox**: the script-returned `EventList` is persisted as part of the step-8 atomic batch (on the `op` tracker vertex), and a durable consumer publishes from that persisted record to `core-events`, acking only on confirmed publish. This makes redelivery republish the *real* events, not a guess, and decouples publish durability from the commit. Event fidelity is a hard prerequisite for Phase 2 orchestration — this story lands before any Loom/Weaver work.
 
@@ -632,7 +633,7 @@ lattice/
 │   │
 │   ├── processor/                    # Stream 1 — Core (Processor + KV write plane)
 │   │   ├── processor.go             # Main service: consumer → dispatcher → commit path
-│   │   ├── commit.go                # 10-step commit path implementation
+│   │   ├── commit_path.go           # 9-step commit path implementation
 │   │   ├── starlark/                # Starlark sandbox, stdlib (incl. NanoID), script loader/cache
 │   │   ├── ddl/                     # DDL meta-vertex types, JSON Schema validator, event DDL
 │   │   ├── kv/                      # Core KV read/write primitives, atomic batch
@@ -735,10 +736,10 @@ tools/cli/ or external client
         → gateway/ (JWT → Lattice-Actor, token revocation check, HTTP → NATS)
             → NATS publish to core-operations
                 → processor/ consumes from JetStream (3 lane consumers)
-                    → processor/commit.go runs 10-step commit path
+                    → processor/commit_path.go runs 9-step commit path
                     → processor/starlark/ executes script from scripts/
                     → processor/kv/ atomic batch to Core KV
-                    → NATS publish to core-events
+                    → outbox consumer publishes to core-events
                         → loom/ consumes events
                         → weaver/ consumes events
                 → Core KV backing stream
@@ -798,7 +799,7 @@ tools/cli/ or external client
 **Functional Requirements Coverage:**
 - Storage/data plane: covered by single Core KV bucket, KV Bucket Taxonomy, key structure convention
 - Ledger/operations: covered by `core-operations` 3-lane JetStream, Processor commit path
-- Processor/logic: covered by 10-step commit path, Starlark sandbox, DDL validation
+- Processor/logic: covered by 9-step commit path, Starlark sandbox, DDL validation
 - Schema/DDL: covered by `ops.meta.>` lane, DDL meta-vertices, event DDL
 - Identity/auth/ReBAC: covered by Capability Lens, Gateway architecture, internal service actor model
 - Refractor/lenses: covered by Materializer morph, durable consumer model, adapter framework

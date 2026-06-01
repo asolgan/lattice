@@ -210,7 +210,7 @@ type PublishBatchAck struct {
 // PublishBatch publishes ops as a single JetStream atomic batch to
 // arbitrary subjects (no revision conditions, no per-key TTL). All
 // subjects must belong to the same JetStream stream — typically the
-// `core-events` stream's `events.>` filter for the Processor's step 9.
+// `core-events` stream's `events.>` filter, published by the Processor's outbox consumer.
 //
 // Order is preserved via `Nats-Batch-Sequence` (1..N). On failure, no
 // message is durably stored — semantics are all-or-nothing.

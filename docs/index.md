@@ -29,7 +29,7 @@ Per-component pages. Updated in the same commit as code changes. Drift between p
 | Doc | Description |
 |-----|-------------|
 | [components/_index.md](./components/_index.md) | Component directory — how to use these pages, Phase 1 vs Phase 2+ components |
-| [components/processor.md](./components/processor.md) | Processor — 10-step commit pipeline, lane consumers, DDL cache, auth stub, Starlark sandbox |
+| [components/processor.md](./components/processor.md) | Processor — 9-step commit pipeline, lane consumers, DDL cache, auth stub, Starlark sandbox |
 | [components/refractor.md](./components/refractor.md) | Refractor — Lens projection engine, openCypher full engine, control plane |
 | [components/substrate.md](./components/substrate.md) | Substrate — NATS/KV primitives, NanoID generator, atomic-batch utilities, key builders |
 | [components/_packages.md](./components/_packages.md) | Capability packages — package install path, DDL seeding, Phase 1 vs Phase 2 installer |

@@ -12,18 +12,19 @@ import (
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
-// TestE2E_FullTenStepCommitPath is the Story 1.8 capstone: a single
+// TestE2E_FullNineStepCommitPath is the Story 1.8 capstone: a single
 // integration test that publishes one fully-formed operation, traces
-// it through all 10 commit-path steps, and asserts:
+// it through all 9 commit-path steps, and asserts:
 //
 //   - Core KV: the mutation document exists at its expected key.
 //   - Idempotency Tracker: vtx.op.<requestId> exists with mutationKeys
 //     and eventClasses populated.
-//   - core-events: the published event is durably stored at events.<class>.
+//   - Outbox aspect: the faithful EventList is persisted atomically with
+//     the commit (vtx.op.<id>.events), the durable consumer's publish source.
 //
-// Step ordering is asserted at the log level (steps 1-10 in order) by
+// Step ordering is asserted at the log level (steps 1-9 in order) by
 // counting structured log lines via a capture handler.
-func TestE2E_FullTenStepCommitPath(t *testing.T) {
+func TestE2E_FullNineStepCommitPath(t *testing.T) {
 	ctx, conn, _, _, _ := setupTestPipeline(t)
 	provisionEvents(t, ctx, conn)
 
@@ -33,7 +34,7 @@ func TestE2E_FullTenStepCommitPath(t *testing.T) {
 		t.Fatalf("seed script: %v", err)
 	}
 
-	cp, cons := newPipelineWithRealEvents(t, ctx, conn, "fullten")
+	cp, cons := newPipelineWithRealEvents(t, ctx, conn, "fullnine")
 	env := newTestEnvelope(testNanoID1)
 	publishEnvelope(t, conn, env)
 	driveOne(t, ctx, cp, cons, OutcomeAccepted)
@@ -66,6 +67,8 @@ func TestE2E_FullTenStepCommitPath(t *testing.T) {
 
 	// (c) Outbox aspect — the faithful EventList is persisted atomically with
 	// the commit (vtx.op.<id>.events), the durable consumer's publish source.
+	// The commit path's job ends here; publishing is the outbox consumer's job
+	// (covered by internal/processor/outbox/consumer_test.go).
 	ae, err := conn.KVGet(ctx, testCoreBucket, OutboxAspectKey(env.RequestID))
 	if err != nil {
 		t.Fatalf("outbox aspect not persisted: %v", err)
@@ -77,56 +80,10 @@ func TestE2E_FullTenStepCommitPath(t *testing.T) {
 	if len(aspect.Data.Events) != 1 || aspect.Data.Events[0].Payload["identityKey"] != "vtx.identity."+testNanoID2 {
 		t.Fatalf("outbox aspect events not faithful: %+v", aspect.Data.Events)
 	}
-
-	// Model the durable outbox consumer (in-package tests cannot import
-	// internal/processor/outbox without a cycle): publish the persisted
-	// EventList, then tombstone the aspect.
-	pub := NewEventPublisher(conn, testLogger())
-	if err := pub.Publish(ctx, env, aspect.Data.Events); err != nil {
-		t.Fatalf("outbox publish: %v", err)
-	}
-	if err := conn.KVDelete(ctx, testCoreBucket, OutboxAspectKey(env.RequestID)); err != nil {
-		t.Fatalf("outbox tombstone: %v", err)
-	}
-
-	// (d) core-events — the event landed on `events.identity.created`.
-	eventsCons, err := conn.JetStream().CreateOrUpdateConsumer(ctx, "core-events", jetstream.ConsumerConfig{
-		Durable:        "fullten-events",
-		AckPolicy:      jetstream.AckExplicitPolicy,
-		FilterSubjects: []string{"events.>"},
-	})
-	if err != nil {
-		t.Fatalf("event consumer: %v", err)
-	}
-	batch, err := eventsCons.Fetch(1, jetstream.FetchMaxWait(2*time.Second))
-	if err != nil {
-		t.Fatalf("Fetch event: %v", err)
-	}
-	got := 0
-	for m := range batch.Messages() {
-		got++
-		if m.Subject() != "events.identity.created" {
-			t.Fatalf("event subject = %q, want events.identity.created", m.Subject())
-		}
-		var ev Event
-		if err := json.Unmarshal(m.Data(), &ev); err != nil {
-			t.Fatalf("event unmarshal: %v", err)
-		}
-		if ev.RequestID != env.RequestID {
-			t.Fatalf("event requestId = %q, want %q", ev.RequestID, env.RequestID)
-		}
-		if ev.EventType != "identity.created" {
-			t.Fatalf("event type = %q", ev.EventType)
-		}
-		_ = m.Ack()
-	}
-	if got != 1 {
-		t.Fatalf("expected exactly 1 event on core-events, got %d", got)
-	}
 }
 
 // newPipelineWithRealEvents builds a CommitPath wired with the Story
-// 1.7 real Committer + Story 1.8 real EventPublisher + real Acker.
+// 1.7 real Committer + outbox-published events + real Acker.
 // Each subtest passes a unique `tag` so durables don't collide.
 func newPipelineWithRealEvents(t *testing.T, ctx context.Context, conn *substrate.Conn, tag string) (*CommitPath, jetstream.Consumer) {
 	t.Helper()

@@ -29,7 +29,7 @@ const (
 	nfrFaultStep6Validate nfrFaultLabel = "step6-validate"
 	nfrFaultStep7Events   nfrFaultLabel = "step7-events"
 	nfrFaultStep8Commit   nfrFaultLabel = "step8-commit"
-	nfrFaultStep10Ack     nfrFaultLabel = "step10-ack"
+	nfrFaultStep9Ack      nfrFaultLabel = "step9-ack"
 )
 
 // nfrR1Result records the post-commit state of one fault-injection run.
@@ -39,7 +39,7 @@ type nfrR1Result struct {
 	eventCount  int
 }
 
-// nfrCleanBaseline runs the full 10-step happy path with NO fault
+// nfrCleanBaseline runs the full 9-step happy path with NO fault
 // injection and returns the post-commit state for diff. Each NFR-R1
 // subtest asserts its final state matches this baseline byte-for-byte
 // (modulo timestamps and tracker IDs which differ per requestId).
@@ -83,44 +83,20 @@ func captureNFRState(t *testing.T, ctx context.Context, conn *substrate.Conn, re
 	var doc map[string]interface{}
 	_ = json.Unmarshal(me.Value, &doc)
 
-	// Publishing is outbox-only: events reach core-events solely through the
-	// durable outbox consumer reading the persisted vtx.op.<id>.events aspect.
-	// In-package tests cannot import internal/processor/outbox (cycle), so we
-	// model the consumer here: read the persisted aspect once, publish its
-	// faithful EventList, then tombstone it (delete-after-publish). This both
-	// drives the events onto core-events and proves the persisted record is the
-	// publish source. Skipped if the aspect is absent (already published, or a
-	// zero-event op).
+	// Publishing is outbox-only: events reach core-events through the durable
+	// outbox consumer. Commit-path tests assert the persisted outbox aspect —
+	// the number of events durably committed is the eventCount. The aspect is
+	// absent if the op had zero events or it was already published+tombstoned.
+	eventCount := 0
 	if ae, aerr := conn.KVGet(ctx, testCoreBucket, OutboxAspectKey(requestID)); aerr == nil && len(ae.Value) > 0 {
 		aspect, perr := ParseOutboxAspect(ae.Value)
 		if perr != nil {
 			t.Fatalf("parse outbox aspect: %v", perr)
 		}
-		pub := NewEventPublisher(conn, testLogger())
-		if err := pub.Publish(ctx, &OperationEnvelope{RequestID: requestID}, aspect.Data.Events); err != nil {
-			t.Fatalf("outbox publish: %v", err)
-		}
-		if err := conn.KVDelete(ctx, testCoreBucket, OutboxAspectKey(requestID)); err != nil {
-			t.Fatalf("outbox tombstone: %v", err)
-		}
+		eventCount = len(aspect.Data.Events)
 	}
 
-	// Drain events on a fresh ephemeral consumer.
-	cons, err := conn.JetStream().CreateOrUpdateConsumer(ctx, "core-events", jetstream.ConsumerConfig{
-		Durable:        eventDurable,
-		AckPolicy:      jetstream.AckExplicitPolicy,
-		FilterSubjects: []string{"events.>"},
-	})
-	if err != nil {
-		t.Fatalf("event consumer: %v", err)
-	}
-	batch, _ := cons.Fetch(10, jetstream.FetchMaxWait(1*time.Second))
-	count := 0
-	for m := range batch.Messages() {
-		count++
-		_ = m.Ack()
-	}
-	return nfrR1Result{tracker: tr, mutationDoc: doc, eventCount: count}
+	return nfrR1Result{tracker: tr, mutationDoc: doc, eventCount: eventCount}
 }
 
 // assertMatchesBaseline checks invariants that must hold after fault
@@ -240,7 +216,7 @@ func runNFRWithDeps(t *testing.T, label string, buildDeps func(d Deps) Deps, fir
 	assertMatchesBaseline(t, got)
 }
 
-// --- 10 subtests ---
+// --- 9 subtests ---
 
 // TestNFR_R1_FaultAtStep1: step 1 = consume + envelope parse. A
 // "consumer crash" is the natural fault model. We stop the consumer
@@ -378,9 +354,9 @@ func TestNFR_R1_FaultAtStep6(t *testing.T) {
 }
 
 // TestNFR_R1_FaultAtStep7: step 7 = event build. BuildEventList runs
-// inside the Committer (Story 1.7) and inside EventPublisher (Story
-// 1.8 step 9). We inject at the Committer seam: a faulty Committer
-// fails the first call before AtomicBatch runs, then passes through.
+// inside the Committer (Story 1.7) and inside the outbox publisher (Story 1.8).
+// We inject at the Committer seam: a faulty Committer fails the first call
+// before AtomicBatch runs, then passes through.
 // (Step 7's logical role — event spec validation — has no separate
 // interface seam yet; this captures the "crash between validate and
 // commit" recovery property.)
@@ -405,8 +381,8 @@ func TestNFR_R1_FaultAtStep8(t *testing.T) {
 	}, OutcomeRetryable)
 }
 
-// TestNFR_R1_FaultAtStep9: event publication is now outbox-only — the
-// faithful EventList is persisted in the step-8 atomic batch as the
+// TestNFR_R1_CrashBeforeOutboxPublish: event publication is now outbox-only —
+// the faithful EventList is persisted in the step-8 atomic batch as the
 // vtx.op.<id>.events aspect and published by the durable outbox consumer.
 // The crash-between-commit-and-publish case is therefore: the commit lands
 // (tracker + outbox aspect durable) but the consumer has not yet published.
@@ -414,7 +390,7 @@ func TestNFR_R1_FaultAtStep8(t *testing.T) {
 // is untouched and remains the publish source. We assert the outbox aspect was
 // persisted with the FULL faithful event (non-empty payload, original eventId)
 // and survives the redelivery.
-func TestNFR_R1_FaultAtStep9(t *testing.T) {
+func TestNFR_R1_CrashBeforeOutboxPublish(t *testing.T) {
 	ctx, conn, _, _, _ := setupTestPipeline(t)
 	provisionEvents(t, ctx, conn)
 	seedNFRScript(t, ctx, conn)
@@ -464,12 +440,12 @@ func TestNFR_R1_FaultAtStep9(t *testing.T) {
 	}
 }
 
-// TestNFR_R1_FaultAtStep10: Acker fails first call. The commit_path
-// logs and returns Accepted (step 8+9 already succeeded). JetStream
+// TestNFR_R1_FaultAtStep9: Acker fails first call. The commit_path
+// logs and returns Accepted (step 8 commit already durable). JetStream
 // redelivers (no ack received); the redelivered message hits step 2,
 // finds the tracker, short-circuits with Duplicate.
-func TestNFR_R1_FaultAtStep10(t *testing.T) {
-	trip := nfrOneShotTrip(nfrFaultStep10Ack)
+func TestNFR_R1_FaultAtStep9(t *testing.T) {
+	trip := nfrOneShotTrip(nfrFaultStep9Ack)
 	ctx, conn, _, _, _ := setupTestPipeline(t)
 	provisionEvents(t, ctx, conn)
 	seedNFRScript(t, ctx, conn)
@@ -477,7 +453,7 @@ func TestNFR_R1_FaultAtStep10(t *testing.T) {
 	logger := testLogger()
 	authz := NewStubAuthorizer(logger)
 	metrics := &Metrics{}
-	hb := NewHealthHeartbeater(conn, testHealthBucket, "proc-test-step10", 10*time.Second, metrics, logger)
+	hb := NewHealthHeartbeater(conn, testHealthBucket, "proc-test-step9", 10*time.Second, metrics, logger)
 	cache := NewDDLCache(conn, testCoreBucket, logger)
 	_ = cache.Refresh(ctx)
 	committer := NewCommitter(conn, testCoreBucket, cache, logger, time.Now)
@@ -499,7 +475,7 @@ func TestNFR_R1_FaultAtStep10(t *testing.T) {
 	})
 	cons, err := EnsureConsumer(ctx, conn.JetStream(), ConsumerConfig{
 		StreamName:     testStream,
-		Durable:        testDurable + "-step10",
+		Durable:        testDurable + "-step9",
 		FilterSubjects: []string{"ops.default"},
 		AckWait:        1 * time.Second,
 	}, logger)
@@ -508,13 +484,13 @@ func TestNFR_R1_FaultAtStep10(t *testing.T) {
 	}
 	env := newTestEnvelope(testNanoID1)
 	publishEnvelope(t, conn, env)
-	// First delivery: step 10 ack fails → commit_path logs and returns
+	// First delivery: step 9 ack fails → commit_path logs and returns
 	// Accepted (commit was durable). JetStream redelivers.
 	driveOne(t, ctx, cp, cons, OutcomeAccepted)
 	// Redelivery: step 2 short-circuits.
 	driveOne(t, ctx, cp, cons, OutcomeDuplicate)
 
-	got := captureNFRState(t, ctx, conn, env.RequestID, "nfr-step10-events")
+	got := captureNFRState(t, ctx, conn, env.RequestID, "nfr-step9-events")
 	assertMatchesBaseline(t, got)
 }
 
@@ -528,7 +504,7 @@ func TestNFR_R1_Summary(t *testing.T) {
 	if t.Failed() {
 		return
 	}
-	fmt.Println("NFR-R1: VERIFIED (10/10 steps)")
+	fmt.Println("NFR-R1: VERIFIED (9/9 steps)")
 }
 
 // --- One-shot wrappers (local to NFR-R1 to keep cross-package coupling minimal) ---

@@ -1,4 +1,4 @@
-package processor
+package outbox
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -31,10 +32,10 @@ func (e *PublicationError) Error() string {
 
 func (e *PublicationError) Unwrap() error { return e.LastErr }
 
-// EventPublisherImpl is the step-9 implementation. It batch-publishes every
+// EventPublisherImpl is the outbox publisher. It batch-publishes every
 // event in the pre-built EventList to `core-events` in order. Behavior:
 //
-//  1. Skip step entirely if the EventList is empty (no events to publish).
+//  1. Skip entirely if the EventList is empty (no events to publish).
 //  2. Build one PublishOp per event with subject `events.<class>` and
 //     a JSON-serialized Event body (see step7_events.go for shape).
 //  3. Submit via Conn.PublishBatch — either all events land or none do.
@@ -61,7 +62,7 @@ type EventPublisherImpl struct {
 // NewEventPublisher constructs the real EventPublisher.
 func NewEventPublisher(conn *substrate.Conn, logger *slog.Logger) *EventPublisherImpl {
 	if conn == nil {
-		panic("processor: NewEventPublisher requires Conn")
+		panic("outbox: NewEventPublisher requires Conn")
 	}
 	if logger == nil {
 		logger = slog.Default()
@@ -76,13 +77,12 @@ func NewEventPublisher(conn *substrate.Conn, logger *slog.Logger) *EventPublishe
 	}
 }
 
-// Publish implements EventPublisher (step 9). It batch-publishes the
-// pre-built EventList to `core-events`. The EventList is built exactly once
-// at step 8 and passed here so event IDs are identical to those recorded in
-// the idempotency tracker.
-func (p *EventPublisherImpl) Publish(ctx context.Context, env *OperationEnvelope, events EventList) error {
+// Publish batch-publishes the pre-built EventList to `core-events`. The
+// EventList is built exactly once at step 8 and passed here so event IDs
+// are identical to those recorded in the idempotency tracker.
+func (p *EventPublisherImpl) Publish(ctx context.Context, env *processor.OperationEnvelope, events processor.EventList) error {
 	if len(events) == 0 {
-		p.Logger.Info("step 9: no events to publish", "requestId", env.RequestID)
+		p.Logger.Info("outbox: no events to publish", "requestId", env.RequestID)
 		return nil
 	}
 
@@ -90,7 +90,7 @@ func (p *EventPublisherImpl) Publish(ctx context.Context, env *OperationEnvelope
 	for _, ev := range events {
 		body, err := json.Marshal(ev)
 		if err != nil {
-			return fmt.Errorf("step 9: marshal event %s: %w", ev.EventID, err)
+			return fmt.Errorf("outbox: marshal event %s: %w", ev.EventID, err)
 		}
 		ops = append(ops, substrate.PublishOp{
 			Subject: EventSubject(ev.EventType),
@@ -110,7 +110,7 @@ func (p *EventPublisherImpl) Publish(ctx context.Context, env *OperationEnvelope
 		ack, perr := p.Conn.PublishBatch(bctx, ops)
 		cancel()
 		if perr == nil {
-			p.Logger.Info("step 9: events published",
+			p.Logger.Info("outbox: events published",
 				"requestId", env.RequestID,
 				"count", ack.Count,
 				"stream", ack.Stream,
@@ -120,7 +120,7 @@ func (p *EventPublisherImpl) Publish(ctx context.Context, env *OperationEnvelope
 			return nil
 		}
 		lastErr = perr
-		p.Logger.Warn("step 9: batch publish failed; retrying",
+		p.Logger.Warn("outbox: batch publish failed; retrying",
 			"requestId", env.RequestID, "attempt", attempt+1, "error", perr)
 		attempt++
 		// Break immediately after the final attempt — no sleep on the last

@@ -38,9 +38,9 @@ type Committer interface {
 }
 
 // CommitAck mirrors substrate.BatchAck for the commit path. Events carries
-// the EventList built during step 8 so step 9 can publish the exact same
-// event IDs that were recorded in the tracker — BuildEventList is called
-// exactly once per operation.
+// the EventList built during step 8 so the outbox consumer can publish the
+// exact same event IDs that were recorded in the tracker — BuildEventList is
+// called exactly once per operation.
 type CommitAck struct {
 	Stream   string
 	Sequence uint64
@@ -53,15 +53,8 @@ type CommitAck struct {
 	Revisions map[string]uint64
 }
 
-// EventPublisher (step 9) — fans events out to `core-events`.
-// Publish receives the EventList built at step 8 so no second NanoID
-// generation occurs; event IDs are identical to those stored in the tracker.
-type EventPublisher interface {
-	Publish(ctx context.Context, env *OperationEnvelope, events EventList) error
-}
-
-// Acker (step 10) — acks the JetStream message. AckerImpl is the production
-// implementation (step10_ack.go); fault-injection tests substitute a
+// Acker (step 9) — acks the JetStream message. AckerImpl is the production
+// implementation (step9_ack.go); fault-injection tests substitute a
 // FailAfterN-wrapped implementation.
 type Acker interface {
 	Ack(ctx context.Context) error

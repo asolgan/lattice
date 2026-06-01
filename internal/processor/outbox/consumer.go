@@ -37,7 +37,7 @@ type Consumer struct {
 	filterSubj   string
 	bucket       string
 	subjectPrefx string // "$KV.<bucket>." — strip from msg.Subject() to recover the Core KV key
-	publisher    *processor.EventPublisherImpl
+	publisher    *EventPublisherImpl
 	logger       *slog.Logger
 }
 
@@ -58,7 +58,7 @@ func New(conn *substrate.Conn, coreKVBucket string, logger *slog.Logger) *Consum
 		filterSubj:   "$KV." + coreKVBucket + ".vtx.op.*.events",
 		bucket:       coreKVBucket,
 		subjectPrefx: "$KV." + coreKVBucket + ".",
-		publisher:    processor.NewEventPublisher(conn, logger),
+		publisher:    NewEventPublisher(conn, logger),
 		logger:       logger,
 	}
 }

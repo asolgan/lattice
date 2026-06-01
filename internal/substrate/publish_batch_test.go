@@ -9,7 +9,7 @@ import (
 )
 
 // provisionEventsStream creates a JetStream stream that accepts the
-// `events.>` subjects the Processor's step 9 publishes onto. We enable
+// `events.>` subjects the Processor's outbox consumer publishes onto. We enable
 // AllowAtomicPublish to match the production `core-events` provisioning
 // (see internal/bootstrap/primordial.go).
 func provisionEventsStream(ctx context.Context, t *testing.T, c *Conn) {

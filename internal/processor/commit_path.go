@@ -337,16 +337,16 @@ func (cp *CommitPath) HandleMessage(ctx context.Context, msg jetstream.Msg) Mess
 	// committed key set from Revisions).
 	cp.replyTo(msg, BuildAcceptedReplyWithRevisions(env.RequestID, now, result.PrimaryKey, commitAck.Revisions))
 
-	// --- Step 10: explicit Acker boundary. ---
+	// --- Step 9: explicit Acker boundary. ---
 	acker := cp.deps.AckerFactory(msg, cp.deps.Logger)
 	if ackErr := acker.Ack(ctx); ackErr != nil {
-		cp.deps.Logger.Warn("step 10: ack failed", "requestId", env.RequestID, "error", ackErr)
+		cp.deps.Logger.Warn("step 9: ack failed", "requestId", env.RequestID, "error", ackErr)
 		// Ack failure: JetStream will redeliver; tracker short-circuits.
 		// We still consider the operation accepted from the caller's
 		// perspective because step 8 was durable + reply was sent.
 		return OutcomeAccepted
 	}
-	cp.deps.Logger.Info("step 10: ack", "requestId", env.RequestID)
+	cp.deps.Logger.Info("step 9: ack", "requestId", env.RequestID)
 	return OutcomeAccepted
 }
 

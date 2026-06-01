@@ -3,7 +3,7 @@
 //
 // Validates the identity DDL's Starlark script, hydration of state +
 // mergedInto aspects, the state-machine validator, and the
-// IdentityMerged guard end-to-end through the 10-step Processor
+// IdentityMerged guard end-to-end through the 9-step Processor
 // pipeline.
 //
 // Coverage:

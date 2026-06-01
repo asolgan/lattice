@@ -35,7 +35,7 @@ const (
 	FaultStep6Validate FaultLabel = "step6-validate"
 	FaultStep7Events   FaultLabel = "step7-events"
 	FaultStep8Commit   FaultLabel = "step8-commit"
-	FaultStep10Ack     FaultLabel = "step10-ack"
+	FaultStep9Ack      FaultLabel = "step9-ack"
 )
 
 // FaultError is the error returned by a triggered fault. Wraps
@@ -204,7 +204,7 @@ func FailAuthorizerAfterN(inner processor.Authorizer, n int) *FaultyAuthorizer {
 	return &FaultyAuthorizer{Inner: inner, Trip: FailAfterN(n, FaultStep3Auth)}
 }
 
-// FaultyAcker wraps an inner Acker (Story 1.8 step 10).
+// FaultyAcker wraps an inner Acker (Story 1.8 step 9).
 type FaultyAcker struct {
 	Inner processor.Acker
 	Trip  func() error
@@ -219,5 +219,5 @@ func (f *FaultyAcker) Ack(ctx context.Context) error {
 
 // FailAckerAfterN returns an Acker that fails on its Nth call.
 func FailAckerAfterN(inner processor.Acker, n int) *FaultyAcker {
-	return &FaultyAcker{Inner: inner, Trip: FailAfterN(n, FaultStep10Ack)}
+	return &FaultyAcker{Inner: inner, Trip: FailAfterN(n, FaultStep9Ack)}
 }

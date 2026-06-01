@@ -8,7 +8,7 @@ import (
 // TestE2E_FullPipelineCleanExecution exercises the entire commit path
 // steps 1→5 with a real Hydrator and Executor. The noop script seeded
 // by setupTestPipeline returns an empty mutation set. Story 1.6's
-// stubbed step 6+8+9 swallow the empty result; step 10 acks.
+// stubbed step 6+8 swallow the empty result; step 9 acks.
 func TestE2E_FullPipelineCleanExecution(t *testing.T) {
 	ctx, conn, cp, cons, metrics := setupTestPipeline(t)
 	env := newTestEnvelope(testNanoID1)
