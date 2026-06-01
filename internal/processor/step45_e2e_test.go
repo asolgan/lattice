@@ -105,7 +105,6 @@ func TestE2E_ContextHintHydratedAndPassedToScript(t *testing.T) {
 		Executor:   NewExecutor(NewStarlarkRunner(0, 0), logger),
 		Validator:  &StubValidator{logger: logger},
 		Committer:  committer,
-		Events:     &StubEventPublisher{logger: logger},
 		Metrics:    metrics, Heartbeater: hb, Logger: logger,
 	})
 	cons, err := EnsureConsumer(ctx, conn.JetStream(), ConsumerConfig{

@@ -29,7 +29,6 @@ const (
 	nfrFaultStep6Validate nfrFaultLabel = "step6-validate"
 	nfrFaultStep7Events   nfrFaultLabel = "step7-events"
 	nfrFaultStep8Commit   nfrFaultLabel = "step8-commit"
-	nfrFaultStep9Publish  nfrFaultLabel = "step9-publish"
 	nfrFaultStep10Ack     nfrFaultLabel = "step10-ack"
 )
 
@@ -83,6 +82,28 @@ func captureNFRState(t *testing.T, ctx context.Context, conn *substrate.Conn, re
 	}
 	var doc map[string]interface{}
 	_ = json.Unmarshal(me.Value, &doc)
+
+	// Publishing is outbox-only: events reach core-events solely through the
+	// durable outbox consumer reading the persisted vtx.op.<id>.events aspect.
+	// In-package tests cannot import internal/processor/outbox (cycle), so we
+	// model the consumer here: read the persisted aspect once, publish its
+	// faithful EventList, then tombstone it (delete-after-publish). This both
+	// drives the events onto core-events and proves the persisted record is the
+	// publish source. Skipped if the aspect is absent (already published, or a
+	// zero-event op).
+	if ae, aerr := conn.KVGet(ctx, testCoreBucket, OutboxAspectKey(requestID)); aerr == nil && len(ae.Value) > 0 {
+		aspect, perr := ParseOutboxAspect(ae.Value)
+		if perr != nil {
+			t.Fatalf("parse outbox aspect: %v", perr)
+		}
+		pub := NewEventPublisher(conn, testLogger())
+		if err := pub.Publish(ctx, &OperationEnvelope{RequestID: requestID}, aspect.Data.Events); err != nil {
+			t.Fatalf("outbox publish: %v", err)
+		}
+		if err := conn.KVDelete(ctx, testCoreBucket, OutboxAspectKey(requestID)); err != nil {
+			t.Fatalf("outbox tombstone: %v", err)
+		}
+	}
 
 	// Drain events on a fresh ephemeral consumer.
 	cons, err := conn.JetStream().CreateOrUpdateConsumer(ctx, "core-events", jetstream.ConsumerConfig{
@@ -169,7 +190,6 @@ func runNFRWithDeps(t *testing.T, label string, buildDeps func(d Deps) Deps, fir
 		Executor:    NewExecutor(NewStarlarkRunner(0, 0), logger),
 		Validator:   NewValidator(cache, logger),
 		Committer:   committer,
-		Events:      NewEventPublisher(conn, logger),
 		Metrics:     metrics,
 		Heartbeater: hb,
 		Logger:      logger,
@@ -248,7 +268,6 @@ func TestNFR_R1_FaultAtStep1(t *testing.T) {
 		Executor:    NewExecutor(NewStarlarkRunner(0, 0), logger),
 		Validator:   NewValidator(cache, logger),
 		Committer:   NewCommitter(conn, testCoreBucket, cache, logger, time.Now),
-		Events:      NewEventPublisher(conn, logger),
 		Metrics:     metrics,
 		Heartbeater: hb,
 		Logger:      logger,
@@ -386,79 +405,62 @@ func TestNFR_R1_FaultAtStep8(t *testing.T) {
 	}, OutcomeRetryable)
 }
 
-// TestNFR_R1_FaultAtStep9: EventPublisher fails first call. The
-// commit_path nak's; redelivery sees the tracker present (step 8 did
-// commit before step 9 ran), so step 2 short-circuits with Duplicate.
-// The event was never published on the first attempt; the second
-// attempt (after dedup short-circuit) does NOT re-publish either. So
-// the eventCount on the stream is 0, which fails the baseline match
-// — this is the documented limitation of step-9-then-tracker order:
-// once committed-without-publish, replay is a tracker-known-dup and
-// the events are lost unless a separate reconciliation runs.
-//
-// Per Architecture Decision #3 and Contract #4 §4.4, this is the
-// intended Phase-1 behavior: step 9 failure logs PublicationError;
-// observability surfaces the gap. NFR-R1 verifies the **state
-// invariant** holds (no partial Core KV state; tracker accurate).
-// We assert: no double-commit, no partial mutation, tracker committed.
+// TestNFR_R1_FaultAtStep9: event publication is now outbox-only — the
+// faithful EventList is persisted in the step-8 atomic batch as the
+// vtx.op.<id>.events aspect and published by the durable outbox consumer.
+// The crash-between-commit-and-publish case is therefore: the commit lands
+// (tracker + outbox aspect durable) but the consumer has not yet published.
+// A redelivery hits step-2 dedup and simply acks; the persisted outbox aspect
+// is untouched and remains the publish source. We assert the outbox aspect was
+// persisted with the FULL faithful event (non-empty payload, original eventId)
+// and survives the redelivery.
 func TestNFR_R1_FaultAtStep9(t *testing.T) {
-	trip := nfrOneShotTrip(nfrFaultStep9Publish)
 	ctx, conn, _, _, _ := setupTestPipeline(t)
 	provisionEvents(t, ctx, conn)
 	seedNFRScript(t, ctx, conn)
 
-	logger := testLogger()
-	authz := NewStubAuthorizer(logger)
-	metrics := &Metrics{}
-	hb := NewHealthHeartbeater(conn, testHealthBucket, "proc-test-step9", 10*time.Second, metrics, logger)
-	cache := NewDDLCache(conn, testCoreBucket, logger)
-	_ = cache.Refresh(ctx)
-	committer := NewCommitter(conn, testCoreBucket, cache, logger, time.Now)
-	realEvents := NewEventPublisher(conn, logger)
-	cp := NewCommitPath(Deps{
-		Conn:        conn,
-		CoreBucket:  testCoreBucket,
-		HealthKV:    testHealthBucket,
-		Authorizer:  authz,
-		Hydrator:    NewHydratorWithCache(conn, testCoreBucket, cache, logger),
-		Executor:    NewExecutor(NewStarlarkRunner(0, 0), logger),
-		Validator:   NewValidator(cache, logger),
-		Committer:   committer,
-		Events:      &nfrEventPub{inner: realEvents, trip: trip},
-		Metrics:     metrics,
-		Heartbeater: hb,
-		Logger:      logger,
-	})
-	cons, err := EnsureConsumer(ctx, conn.JetStream(), ConsumerConfig{
-		StreamName:     testStream,
-		Durable:        testDurable + "-step9",
-		FilterSubjects: []string{"ops.default"},
-		AckWait:        1 * time.Second,
-	}, logger)
-	if err != nil {
-		t.Fatalf("EnsureConsumer: %v", err)
-	}
+	cp, cons := newPipelineWithRealEvents(t, ctx, conn, "step9")
 	env := newTestEnvelope(testNanoID1)
 	publishEnvelope(t, conn, env)
-	driveOne(t, ctx, cp, cons, OutcomeRetryable) // step 9 fail → nak
-	// Redelivery (or re-publish): tracker now exists from the first
-	// attempt's step 8, so step 2 short-circuits with Duplicate.
+	driveOne(t, ctx, cp, cons, OutcomeAccepted)
+
+	// The outbox aspect is durably persisted with the faithful EventList.
+	ae, err := conn.KVGet(ctx, testCoreBucket, OutboxAspectKey(env.RequestID))
+	if err != nil {
+		t.Fatalf("outbox aspect missing after commit: %v", err)
+	}
+	aspect, err := ParseOutboxAspect(ae.Value)
+	if err != nil {
+		t.Fatalf("parse outbox aspect: %v", err)
+	}
+	if len(aspect.Data.Events) != 1 {
+		t.Fatalf("outbox events = %d, want 1", len(aspect.Data.Events))
+	}
+	ev := aspect.Data.Events[0]
+	if ev.EventID == "" {
+		t.Fatalf("outbox event missing eventId")
+	}
+	if got := ev.Payload["identityKey"]; got != "vtx.identity."+testNanoID2 {
+		t.Fatalf("outbox event payload not faithful: %v", ev.Payload)
+	}
+
+	// Simulate crash-before-publish: redelivery hits step-2 dedup and acks.
 	publishEnvelope(t, conn, env)
 	if oc := driveOneAny(t, ctx, cp, cons); oc != OutcomeDuplicate {
 		t.Fatalf("second delivery = %q, want duplicate", oc)
 	}
 
-	// Assert: tracker committed; mutation present; NO double-write.
-	te, err := conn.KVGet(ctx, testCoreBucket, TrackerKey(env.RequestID))
+	// The outbox aspect is unchanged by the redelivery (still the publish source).
+	ae2, err := conn.KVGet(ctx, testCoreBucket, OutboxAspectKey(env.RequestID))
 	if err != nil {
-		t.Fatalf("tracker missing: %v", err)
+		t.Fatalf("outbox aspect missing after redelivery: %v", err)
 	}
-	tr, _ := ParseTracker(te.Value)
-	if !tr.Data["committed"].(bool) {
-		t.Fatalf("tracker not committed")
+	aspect2, err := ParseOutboxAspect(ae2.Value)
+	if err != nil {
+		t.Fatalf("parse outbox aspect (2): %v", err)
 	}
-	if _, err := conn.KVGet(ctx, testCoreBucket, "vtx.identity."+testNanoID2); err != nil {
-		t.Fatalf("mutation missing: %v", err)
+	if len(aspect2.Data.Events) != 1 || aspect2.Data.Events[0].EventID != ev.EventID {
+		t.Fatalf("outbox aspect changed on redelivery: %+v", aspect2.Data.Events)
 	}
 }
 
@@ -480,15 +482,14 @@ func TestNFR_R1_FaultAtStep10(t *testing.T) {
 	_ = cache.Refresh(ctx)
 	committer := NewCommitter(conn, testCoreBucket, cache, logger, time.Now)
 	cp := NewCommitPath(Deps{
-		Conn:        conn,
-		CoreBucket:  testCoreBucket,
-		HealthKV:    testHealthBucket,
-		Authorizer:  authz,
-		Hydrator:    NewHydratorWithCache(conn, testCoreBucket, cache, logger),
-		Executor:    NewExecutor(NewStarlarkRunner(0, 0), logger),
-		Validator:   NewValidator(cache, logger),
-		Committer:   committer,
-		Events:      NewEventPublisher(conn, logger),
+		Conn:       conn,
+		CoreBucket: testCoreBucket,
+		HealthKV:   testHealthBucket,
+		Authorizer: authz,
+		Hydrator:   NewHydratorWithCache(conn, testCoreBucket, cache, logger),
+		Executor:   NewExecutor(NewStarlarkRunner(0, 0), logger),
+		Validator:  NewValidator(cache, logger),
+		Committer:  committer,
 		AckerFactory: func(m jetstream.Msg, lg *slog.Logger) Acker {
 			return &nfrAcker{inner: NewAcker(m, lg), trip: trip}
 		},
@@ -591,18 +592,6 @@ func (n *nfrCommitter) Commit(ctx context.Context, env *OperationEnvelope, resul
 		return CommitAck{}, err
 	}
 	return n.inner.Commit(ctx, env, result, tracker)
-}
-
-type nfrEventPub struct {
-	inner EventPublisher
-	trip  func() error
-}
-
-func (n *nfrEventPub) Publish(ctx context.Context, env *OperationEnvelope, events EventList) error {
-	if err := n.trip(); err != nil {
-		return err
-	}
-	return n.inner.Publish(ctx, env, events)
 }
 
 type nfrAcker struct {

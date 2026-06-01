@@ -6,6 +6,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // buildCommitterPipeline assembles a CommitterImpl wired against a
@@ -211,5 +213,104 @@ func TestCommit_TrackerCarriesMutationKeysAndEventClasses(t *testing.T) {
 	evs, _ := parsed.Data["eventClasses"].([]interface{})
 	if len(evs) != 1 || evs[0] != "identityCreated" {
 		t.Fatalf("eventClasses = %v", parsed.Data["eventClasses"])
+	}
+}
+
+// TestCommit_WritesOutboxAspectWithFaithfulEvents asserts the step-8 atomic
+// batch persists the vtx.op.<id>.events outbox aspect carrying the FULL
+// faithful EventList (eventId, payload, targetKey, timestamp), and that the
+// outbox aspect carries NO Nats-TTL header (so it outlives the 24h tracker).
+func TestCommit_WritesOutboxAspectWithFaithfulEvents(t *testing.T) {
+	ctx, c, _ := buildCommitterPipeline(t)
+	env := newTestEnvelope(testNanoID1)
+	result := ScriptResult{
+		Mutations: []MutationOp{{
+			Op:  "create",
+			Key: "vtx.identity." + testNanoID2,
+			Document: map[string]interface{}{
+				"class": "identity",
+			},
+		}},
+		Events: []EventSpec{{Class: "identity.created", Data: map[string]interface{}{
+			"identityKey": "vtx.identity." + testNanoID2,
+			"name":        "Andrew",
+		}}},
+	}
+	tracker := NewTracker(env, time.Now())
+	ack, err := c.Commit(ctx, env, result, tracker)
+	if err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+
+	// The outbox aspect exists and carries the faithful EventList.
+	ae, err := c.Conn.KVGet(ctx, testCoreBucket, OutboxAspectKey(env.RequestID))
+	if err != nil {
+		t.Fatalf("outbox aspect missing: %v", err)
+	}
+	aspect, err := ParseOutboxAspect(ae.Value)
+	if err != nil {
+		t.Fatalf("ParseOutboxAspect: %v", err)
+	}
+	if aspect.Class != OutboxAspectClass || aspect.LocalName != OutboxLocalName {
+		t.Fatalf("aspect envelope wrong: class=%q localName=%q", aspect.Class, aspect.LocalName)
+	}
+	if aspect.VertexKey != tracker.Key {
+		t.Fatalf("aspect vertexKey = %q, want %q", aspect.VertexKey, tracker.Key)
+	}
+	if len(aspect.Data.Events) != 1 {
+		t.Fatalf("aspect events = %d, want 1", len(aspect.Data.Events))
+	}
+	ev := aspect.Data.Events[0]
+	// Byte-identical to the EventList returned in the CommitAck.
+	if len(ack.Events) != 1 || ack.Events[0].EventID != ev.EventID {
+		t.Fatalf("persisted eventId %q != committed eventId", ev.EventID)
+	}
+	if ev.EventID == "" || ev.EventType != "identity.created" {
+		t.Fatalf("event not faithful: %+v", ev)
+	}
+	if ev.Payload["identityKey"] != "vtx.identity."+testNanoID2 || ev.Payload["name"] != "Andrew" {
+		t.Fatalf("event payload not faithful (the reconstruction-from-classes regression): %v", ev.Payload)
+	}
+
+	// The outbox aspect carries NO Nats-TTL; the tracker DOES (24h).
+	js := c.Conn.JetStream()
+	stream, err := js.Stream(ctx, "KV_"+testCoreBucket)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	outboxMsg, err := stream.GetLastMsgForSubject(ctx, "$KV."+testCoreBucket+"."+OutboxAspectKey(env.RequestID))
+	if err != nil {
+		t.Fatalf("get outbox msg: %v", err)
+	}
+	if ttl := outboxMsg.Header.Get("Nats-TTL"); ttl != "" {
+		t.Fatalf("outbox aspect carries Nats-TTL=%q; must be unset so it outlives the tracker", ttl)
+	}
+	trackerMsg, err := stream.GetLastMsgForSubject(ctx, "$KV."+testCoreBucket+"."+tracker.Key)
+	if err != nil {
+		t.Fatalf("get tracker msg: %v", err)
+	}
+	if ttl := trackerMsg.Header.Get("Nats-TTL"); ttl == "" {
+		t.Fatalf("tracker lost its Nats-TTL header")
+	}
+}
+
+// TestCommit_ZeroEventsWritesNoOutboxAspect asserts an op with no events writes
+// no outbox aspect (the extra BatchOp is skipped).
+func TestCommit_ZeroEventsWritesNoOutboxAspect(t *testing.T) {
+	ctx, c, _ := buildCommitterPipeline(t)
+	env := newTestEnvelope(testNanoID1)
+	result := ScriptResult{
+		Mutations: []MutationOp{{
+			Op:       "create",
+			Key:      "vtx.identity." + testNanoID2,
+			Document: map[string]interface{}{"class": "identity"},
+		}},
+	}
+	tracker := NewTracker(env, time.Now())
+	if _, err := c.Commit(ctx, env, result, tracker); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	if _, err := c.Conn.KVGet(ctx, testCoreBucket, OutboxAspectKey(env.RequestID)); !errors.Is(err, substrate.ErrKeyNotFound) {
+		t.Fatalf("zero-event op outbox lookup: got err=%v, want ErrKeyNotFound", err)
 	}
 }

@@ -21,8 +21,9 @@ const TrackerTTL = 24 * time.Hour
 // Tracker is the Contract #4 §4.1 idempotency-tracker entry written at step 8.
 // Shape: `class`, `isDeleted`, `requestId`, `committed`, `observedAt` plus the
 // universal provenance triplet (self-referential, per Contract #4 §4.1).
-// The Committer enriches `data` with `mutationKeys`, `eventClasses`, and
-// (after step 9) `eventsPublishedAt` per Contract #4 §4.2.
+// The Committer enriches `data` with `mutationKeys` and `eventClasses` per
+// Contract #4 §4.2 (traceability). The publish source for events is the
+// sibling outbox aspect (vtx.op.<id>.events), not the tracker.
 type Tracker struct {
 	Key              string         `json:"key"`
 	Class            string         `json:"class"`

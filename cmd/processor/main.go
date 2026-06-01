@@ -35,6 +35,7 @@ import (
 
 	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/processor"
+	"github.com/asolgan/lattice/internal/processor/outbox"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -138,6 +139,19 @@ func run(logger *slog.Logger) error {
 		consumeErrCh <- cp.Run(ctx, cons)
 	}()
 
+	// Start the durable transactional-outbox consumer: it publishes each
+	// committed operation's persisted EventList to `core-events`, then
+	// tombstones the outbox aspect. Shares the substrate connection and the
+	// same ctx for clean shutdown on cancel.
+	outboxConsumer := outbox.New(conn, bootstrap.CoreKVBucket, logger)
+	outboxDone := make(chan struct{})
+	go func() {
+		defer close(outboxDone)
+		if oerr := outboxConsumer.Run(ctx); oerr != nil && !errors.Is(oerr, context.Canceled) {
+			logger.Error("outbox consumer exited with error", "error", oerr)
+		}
+	}()
+
 	logger.Info("processor ready",
 		"instance", instance,
 		"healthKey", "health.processor."+instance,
@@ -151,11 +165,13 @@ func run(logger *slog.Logger) error {
 		if err != nil && !errors.Is(err, context.Canceled) {
 			cancel()
 			<-hbDone
+			<-outboxDone
 			return err
 		}
 	}
 
 	<-hbDone
+	<-outboxDone
 	logger.Info("processor exited cleanly", "instance", instance)
 	return nil
 }

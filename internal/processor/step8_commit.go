@@ -51,8 +51,8 @@ func (e *ProtectedKeyError) Error() string {
 // CommitterImpl is the step-8 implementation. Behavior:
 //  1. Build a single substrate.AtomicBatch op list:
 //     - one BatchOp per mutation (revision condition derived from
-//       mutation.op: create→0, update→expectedRevision, tombstone→
-//       expectedRevision)
+//     mutation.op: create→0, update→expectedRevision, tombstone→
+//     expectedRevision)
 //     - one BatchOp for the idempotency tracker (CreateOnly, TTL=24h)
 //  2. Submit via Conn.AtomicBatch.
 //  3. On a successful commit that touched `vtx.meta.*` keys: invalidate
@@ -173,6 +173,26 @@ func (c *CommitterImpl) Commit(ctx context.Context, env *OperationEnvelope, resu
 		CreateOnly: true,
 		TTL:        TrackerTTL,
 	})
+
+	// Transactional outbox: persist the faithful EventList as a sibling
+	// aspect (vtx.op.<id>.events) in the SAME atomic batch, so it is durable
+	// iff the commit succeeds. The durable outbox consumer publishes from this
+	// record. It carries NO per-key TTL — it must outlive the 24h tracker so a
+	// >24h Processor/consumer outage never drops events; the consumer tombstones
+	// it after a confirmed publish. Ops with zero events write no outbox aspect.
+	if len(events) > 0 {
+		outboxAsp := NewOutboxAspect(rid, env.Actor, tracker.Key, substrate.FormatTimestamp(now), events)
+		outboxVal, err := outboxAsp.Marshal()
+		if err != nil {
+			return CommitAck{}, fmt.Errorf("step 8: marshal outbox aspect: %w", err)
+		}
+		ops = append(ops, substrate.BatchOp{
+			Bucket:     c.CoreBucket,
+			Key:        outboxAsp.Key,
+			Value:      outboxVal,
+			CreateOnly: true,
+		})
+	}
 
 	bctx, cancel := context.WithTimeout(ctx, c.Timeout)
 	defer cancel()

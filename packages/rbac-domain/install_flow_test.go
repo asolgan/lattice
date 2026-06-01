@@ -55,7 +55,6 @@ func sharedCachePipeline(
 		Executor:    processor.NewExecutor(processor.NewStarlarkRunner(0, 0), logger),
 		Validator:   processor.NewValidator(cache, logger),
 		Committer:   committer,
-		Events:      processor.NewStubEventPublisher(logger),
 		Metrics:     metrics,
 		Heartbeater: hb,
 		Logger:      logger,

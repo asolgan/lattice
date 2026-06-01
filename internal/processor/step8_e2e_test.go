@@ -107,7 +107,6 @@ func newRealPipeline(t *testing.T, ctx context.Context, conn *substrate.Conn) (*
 		Executor:    NewExecutor(NewStarlarkRunner(0, 0), logger),
 		Validator:   NewValidator(cache, logger),
 		Committer:   committer,
-		Events:      &StubEventPublisher{logger: logger},
 		Metrics:     metrics,
 		Heartbeater: hb,
 		Logger:      logger,

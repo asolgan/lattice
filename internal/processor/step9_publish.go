@@ -11,44 +11,12 @@ import (
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
-// RebuildEventListFromClasses constructs a minimal EventList from the class
-// names and mutation keys stored in the idempotency tracker. Used on the
-// dedup-hit re-publish path (P1-002) when the original EventList is
-// unavailable. Each event receives a fresh NanoID (the original IDs are not
-// stored in the tracker), so this is a best-effort re-publish rather than
-// an exact replay.
-func RebuildEventListFromClasses(requestID string, classes []string, mutationKeys []string, at time.Time) (EventList, error) {
-	stamp := substrate.FormatTimestamp(at)
-	out := make(EventList, 0, len(classes))
-	for i, class := range classes {
-		if class == "" {
-			continue
-		}
-		id, err := substrate.NewNanoID()
-		if err != nil {
-			return nil, fmt.Errorf("rebuild event list: event %d: NanoID: %w", i, err)
-		}
-		target := ""
-		if i < len(mutationKeys) {
-			target = mutationKeys[i]
-		}
-		out = append(out, Event{
-			EventID:   id,
-			RequestID: requestID,
-			EventType: class,
-			TargetKey: target,
-			Payload:   map[string]interface{}{},
-			Timestamp: stamp,
-		})
-	}
-	return out, nil
-}
-
-// PublicationError is the typed step-9 failure surfaced when the batch
-// publish to `core-events` fails after all retries. Step 8 has already
-// committed durably. The commit path naks and JetStream redelivers; the
-// dedup short-circuit at step 2 detects the committed tracker and attempts
-// a best-effort re-publish before acking (Contract #4 §4.4 + NFR-R1).
+// PublicationError is the typed failure surfaced when the batch publish to
+// `core-events` fails after all retries. It is returned by EventPublisherImpl,
+// which is driven by the durable transactional-outbox consumer (events are
+// published from the persisted vtx.op.<id>.events aspect, not synchronously in
+// the commit path). On this error the consumer naks and JetStream redelivers;
+// events are at-least-once and consumer-idempotent (Contract #4 §4.4).
 type PublicationError struct {
 	EventClass string
 	Subject    string
@@ -204,4 +172,3 @@ func EventSubject(class string) string {
 	}
 	return "events." + safe
 }
-

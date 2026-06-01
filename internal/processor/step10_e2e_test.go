@@ -64,7 +64,32 @@ func TestE2E_FullTenStepCommitPath(t *testing.T) {
 		t.Fatalf("tracker eventClasses = %v", tr.Data["eventClasses"])
 	}
 
-	// (c) core-events — the event landed on `events.identity.created`.
+	// (c) Outbox aspect — the faithful EventList is persisted atomically with
+	// the commit (vtx.op.<id>.events), the durable consumer's publish source.
+	ae, err := conn.KVGet(ctx, testCoreBucket, OutboxAspectKey(env.RequestID))
+	if err != nil {
+		t.Fatalf("outbox aspect not persisted: %v", err)
+	}
+	aspect, err := ParseOutboxAspect(ae.Value)
+	if err != nil {
+		t.Fatalf("parse outbox aspect: %v", err)
+	}
+	if len(aspect.Data.Events) != 1 || aspect.Data.Events[0].Payload["identityKey"] != "vtx.identity."+testNanoID2 {
+		t.Fatalf("outbox aspect events not faithful: %+v", aspect.Data.Events)
+	}
+
+	// Model the durable outbox consumer (in-package tests cannot import
+	// internal/processor/outbox without a cycle): publish the persisted
+	// EventList, then tombstone the aspect.
+	pub := NewEventPublisher(conn, testLogger())
+	if err := pub.Publish(ctx, env, aspect.Data.Events); err != nil {
+		t.Fatalf("outbox publish: %v", err)
+	}
+	if err := conn.KVDelete(ctx, testCoreBucket, OutboxAspectKey(env.RequestID)); err != nil {
+		t.Fatalf("outbox tombstone: %v", err)
+	}
+
+	// (d) core-events — the event landed on `events.identity.created`.
 	eventsCons, err := conn.JetStream().CreateOrUpdateConsumer(ctx, "core-events", jetstream.ConsumerConfig{
 		Durable:        "fullten-events",
 		AckPolicy:      jetstream.AckExplicitPolicy,
@@ -123,7 +148,6 @@ func newPipelineWithRealEvents(t *testing.T, ctx context.Context, conn *substrat
 		Executor:    NewExecutor(NewStarlarkRunner(0, 0), logger),
 		Validator:   NewValidator(cache, logger),
 		Committer:   committer,
-		Events:      NewEventPublisher(conn, logger),
 		Metrics:     metrics,
 		Heartbeater: hb,
 		Logger:      logger,

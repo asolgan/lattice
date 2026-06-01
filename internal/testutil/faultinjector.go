@@ -27,16 +27,15 @@ var ErrFaultInjected = errors.New("fault injected")
 type FaultLabel string
 
 const (
-	FaultStep1Consume   FaultLabel = "step1-consume"
-	FaultStep2Dedup     FaultLabel = "step2-dedup"
-	FaultStep3Auth      FaultLabel = "step3-auth"
-	FaultStep4Hydrate   FaultLabel = "step4-hydrate"
-	FaultStep5Execute   FaultLabel = "step5-execute"
-	FaultStep6Validate  FaultLabel = "step6-validate"
-	FaultStep7Events    FaultLabel = "step7-events"
-	FaultStep8Commit    FaultLabel = "step8-commit"
-	FaultStep9Publish   FaultLabel = "step9-publish"
-	FaultStep10Ack      FaultLabel = "step10-ack"
+	FaultStep1Consume  FaultLabel = "step1-consume"
+	FaultStep2Dedup    FaultLabel = "step2-dedup"
+	FaultStep3Auth     FaultLabel = "step3-auth"
+	FaultStep4Hydrate  FaultLabel = "step4-hydrate"
+	FaultStep5Execute  FaultLabel = "step5-execute"
+	FaultStep6Validate FaultLabel = "step6-validate"
+	FaultStep7Events   FaultLabel = "step7-events"
+	FaultStep8Commit   FaultLabel = "step8-commit"
+	FaultStep10Ack     FaultLabel = "step10-ack"
 )
 
 // FaultError is the error returned by a triggered fault. Wraps
@@ -185,26 +184,6 @@ func (f *FaultyCommitter) Commit(ctx context.Context, env *processor.OperationEn
 // FailCommitterAfterN returns a Committer that fails on its Nth call.
 func FailCommitterAfterN(inner processor.Committer, n int) *FaultyCommitter {
 	return &FaultyCommitter{Inner: inner, Trip: FailAfterN(n, FaultStep8Commit)}
-}
-
-// FaultyEventPublisher wraps an inner EventPublisher with FailAfterN
-// semantics — used for step-7-event-build and step-9-publish injection.
-type FaultyEventPublisher struct {
-	Inner processor.EventPublisher
-	Trip  func() error
-}
-
-func (f *FaultyEventPublisher) Publish(ctx context.Context, env *processor.OperationEnvelope, events processor.EventList) error {
-	if err := f.Trip(); err != nil {
-		return err
-	}
-	return f.Inner.Publish(ctx, env, events)
-}
-
-// FailEventPublisherAfterN returns an EventPublisher that fails on its
-// Nth call (Story 1.8 step 9).
-func FailEventPublisherAfterN(inner processor.EventPublisher, n int) *FaultyEventPublisher {
-	return &FaultyEventPublisher{Inner: inner, Trip: FailAfterN(n, FaultStep9Publish)}
 }
 
 // FaultyAuthorizer wraps an inner Authorizer.

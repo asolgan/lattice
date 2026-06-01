@@ -141,18 +141,3 @@ func (s *StubCommitter) Commit(ctx context.Context, env *OperationEnvelope, _ Sc
 		Count:    ack.Count,
 	}, nil
 }
-
-type StubEventPublisher struct{ logger *slog.Logger }
-
-// NewStubEventPublisher constructs a StubEventPublisher. Exported so
-// external test packages (packages/identity-domain/_test, packages/
-// rbac-domain/_test, etc.) can wire it into Deps without reaching the
-// unexported `logger` field.
-func NewStubEventPublisher(logger *slog.Logger) *StubEventPublisher {
-	return &StubEventPublisher{logger: logger}
-}
-
-func (s *StubEventPublisher) Publish(_ context.Context, env *OperationEnvelope, _ EventList) error {
-	s.logger.Info("step 9: stubbed", "step", "events", "requestId", env.RequestID)
-	return nil
-}

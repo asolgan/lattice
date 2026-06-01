@@ -123,8 +123,8 @@ type PipelineConfig struct {
 // CapabilityPipeline builds a CommitPath wired with the real
 // CapabilityAuthorizer (reading Capability KV at HarnessCapBucket),
 // real DDLCache (from HarnessCoreBucket), real Hydrator + Executor +
-// Validator + Committer, a StubEventPublisher, and a JetStream
-// consumer bound to the `ops.default` subject. Mirrors the
+// Validator + Committer, and a JetStream consumer bound to the
+// `ops.default` subject. Mirrors the
 // newCapabilityPipeline helper that lived in
 // internal/processor/role_mgmt_integration_test.go and friends.
 func CapabilityPipeline(t *testing.T, ctx context.Context, conn *substrate.Conn, cfg PipelineConfig) (*processor.CommitPath, jetstream.Consumer) {
@@ -159,7 +159,6 @@ func CapabilityPipeline(t *testing.T, ctx context.Context, conn *substrate.Conn,
 		Executor:    processor.NewExecutor(processor.NewStarlarkRunner(0, 0), logger),
 		Validator:   processor.NewValidator(cache, logger),
 		Committer:   committer,
-		Events:      processor.NewStubEventPublisher(logger),
 		Metrics:     metrics,
 		Heartbeater: hb,
 		Logger:      logger,

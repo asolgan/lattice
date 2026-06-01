@@ -17,19 +17,18 @@ import (
 // an in-process Committer that fails the first call to exercise the
 // retry-safe assertion).
 type Deps struct {
-	Conn        *substrate.Conn
-	CoreBucket  string
-	HealthKV    string
-	Authorizer  Authorizer
-	Hydrator    Hydrator
-	Executor    Executor
-	Validator   Validator
-	Committer   Committer
-	Events      EventPublisher
+	Conn         *substrate.Conn
+	CoreBucket   string
+	HealthKV     string
+	Authorizer   Authorizer
+	Hydrator     Hydrator
+	Executor     Executor
+	Validator    Validator
+	Committer    Committer
 	AckerFactory AckerFactory
-	Metrics     *Metrics
-	Heartbeater *HealthHeartbeater
-	Logger      *slog.Logger
+	Metrics      *Metrics
+	Heartbeater  *HealthHeartbeater
+	Logger       *slog.Logger
 	// Clock is the wall clock the commit path uses for tracker timestamps
 	// and reply CommittedAt. Tests override it.
 	Clock func() time.Time
@@ -89,11 +88,11 @@ func NewCommitPath(deps Deps) *CommitPath {
 type MessageOutcome string
 
 const (
-	OutcomeAccepted   MessageOutcome = "accepted"
-	OutcomeDuplicate  MessageOutcome = "duplicate"
-	OutcomeRejected   MessageOutcome = "rejected"
-	OutcomeMalformed  MessageOutcome = "malformed"
-	OutcomeRetryable  MessageOutcome = "retryable" // transient failure → nak
+	OutcomeAccepted  MessageOutcome = "accepted"
+	OutcomeDuplicate MessageOutcome = "duplicate"
+	OutcomeRejected  MessageOutcome = "rejected"
+	OutcomeMalformed MessageOutcome = "malformed"
+	OutcomeRetryable MessageOutcome = "retryable" // transient failure → nak
 )
 
 // HandleMessage executes steps 1-3 then the stubbed 4-10. It is the
@@ -144,11 +143,9 @@ func (cp *CommitPath) HandleMessage(ctx context.Context, msg jetstream.Msg) Mess
 		cp.deps.Logger.Info("DuplicateDetected: short-circuit at step 2",
 			"requestId", env.RequestID,
 			"trackerKey", TrackerKey(env.RequestID))
-		// Best-effort re-publish: if the tracker has eventClasses recorded but
-		// eventsPublishedAt is absent, step 9 never completed for this operation
-		// (commit durable, events not yet delivered). Attempt re-publish now
-		// before acking so the fan-out is not permanently lost.
-		cp.maybeRepublishEvents(ctx, env, dedup.Tracker)
+		// Events were persisted atomically with the original commit (the outbox
+		// aspect) and the durable outbox consumer owns publishing. A redelivery
+		// therefore simply acks — there is nothing to re-derive or re-publish here.
 		cp.replyTo(msg, BuildDuplicateReply(env.RequestID, dedup.Tracker))
 		if ackErr := msg.Ack(); ackErr != nil {
 			cp.deps.Logger.Warn("ack on duplicate failed", "error", ackErr)
@@ -291,7 +288,6 @@ func (cp *CommitPath) HandleMessage(ctx context.Context, msg jetstream.Msg) Mess
 				cp.deps.Metrics.OpsDuplicates.Add(1)
 				cp.deps.Logger.Info("commit: tracker already exists (concurrent redelivery); ack + duplicate reply",
 					"requestId", env.RequestID)
-				cp.maybeRepublishEvents(ctx, env, probe.Tracker)
 				cp.replyTo(msg, BuildDuplicateReply(env.RequestID, probe.Tracker))
 				_ = msg.Ack()
 				return OutcomeDuplicate
@@ -324,23 +320,12 @@ func (cp *CommitPath) HandleMessage(ctx context.Context, msg jetstream.Msg) Mess
 		return OutcomeRetryable
 	}
 
-	// --- Step 9: event publication. ---
-	// Commit (step 8) is durable. If step 9 fails after all retries, we nak
-	// so JetStream redelivers. Step 2 will detect the tracker (DedupDuplicate)
-	// and the dedup short-circuit calls maybeRepublishEvents before acking —
-	// so events are delivered on best-effort on the redelivery path. The reply
-	// to the caller is deferred until step 9 + 10 complete on the primary path.
-	if cp.deps.Events != nil {
-		if err := cp.deps.Events.Publish(ctx, env, commitAck.Events); err != nil {
-			cp.deps.Logger.Warn("step 9: event publish failed (commit already durable); nak for redelivery",
-				"requestId", env.RequestID, "error", err)
-			_ = msg.Nak()
-			return OutcomeRetryable
-		}
-		// Mark events as published in the tracker so the dedup-hit re-publish
-		// path skips re-delivery on subsequent redeliveries.
-		cp.markEventsPublished(ctx, env.RequestID, tracker)
-	}
+	// Event publication is outbox-only: the faithful EventList was persisted in
+	// the step-8 atomic batch (vtx.op.<id>.events) and the durable outbox
+	// consumer publishes it to `core-events`, acking only after a confirmed
+	// publish. There is no in-commit publish — this eliminates the double-publish
+	// race and guarantees redelivery republishes the REAL events, never a
+	// reconstruction.
 
 	cp.deps.Metrics.OpsCommitted.Add(1)
 	// Emit claim-attempt success for ClaimIdentity ops only.
@@ -510,84 +495,6 @@ func (cp *CommitPath) maybeReplyMalformed(msg jetstream.Msg, requestID, reason s
 	_ = cp.deps.Conn.NATS().Publish(subject, b)
 }
 
-// maybeRepublishEvents is the best-effort re-publish path for the dedup
-// short-circuit. When the tracker has eventClasses recorded but
-// eventsPublishedAt is absent, step 9 never completed for this operation
-// (commit was durable; events were not delivered). This method rebuilds a
-// minimal EventList from the tracker's recorded classes and mutation keys,
-// then calls Events.Publish. On success it writes the eventsPublishedAt
-// timestamp so subsequent redeliveries skip re-delivery.
-func (cp *CommitPath) maybeRepublishEvents(ctx context.Context, env *OperationEnvelope, t *Tracker) {
-	if cp.deps.Events == nil || t == nil || t.Data == nil {
-		return
-	}
-	// Skip if already published.
-	if _, ok := t.Data["eventsPublishedAt"].(string); ok {
-		return
-	}
-	rawClasses, ok := t.Data["eventClasses"]
-	if !ok {
-		return
-	}
-	classesRaw, ok := rawClasses.([]interface{})
-	if !ok {
-		return
-	}
-	if len(classesRaw) == 0 {
-		return
-	}
-	classes := make([]string, 0, len(classesRaw))
-	for _, c := range classesRaw {
-		if s, ok := c.(string); ok {
-			classes = append(classes, s)
-		}
-	}
-	var mutationKeys []string
-	if rawKeys, ok := t.Data["mutationKeys"]; ok {
-		if keysRaw, ok := rawKeys.([]interface{}); ok {
-			for _, k := range keysRaw {
-				if s, ok := k.(string); ok {
-					mutationKeys = append(mutationKeys, s)
-				}
-			}
-		}
-	}
-	events, err := RebuildEventListFromClasses(env.RequestID, classes, mutationKeys, cp.deps.Clock())
-	if err != nil {
-		cp.deps.Logger.Warn("dedup: rebuild event list failed; skipping re-publish",
-			"requestId", env.RequestID, "error", err)
-		return
-	}
-	if err := cp.deps.Events.Publish(ctx, env, events); err != nil {
-		cp.deps.Logger.Warn("dedup: best-effort re-publish failed",
-			"requestId", env.RequestID, "error", err)
-		return
-	}
-	cp.markEventsPublished(ctx, env.RequestID, Tracker{
-		Key:  t.Key,
-		Data: t.Data,
-	})
-}
-
-// markEventsPublished writes the eventsPublishedAt timestamp into the tracker
-// via an unconditional KVPut. This is a best-effort update — failure is
-// logged and tolerated (the events were published; the marker is for dedup
-// optimization only).
-func (cp *CommitPath) markEventsPublished(ctx context.Context, requestID string, t Tracker) {
-	if t.Data == nil {
-		t.Data = map[string]any{}
-	}
-	t.Data["eventsPublishedAt"] = substrate.FormatTimestamp(cp.deps.Clock())
-	b, err := t.Marshal()
-	if err != nil {
-		cp.deps.Logger.Warn("markEventsPublished: marshal failed", "requestId", requestID, "error", err)
-		return
-	}
-	if _, err := cp.deps.Conn.KVPut(ctx, cp.deps.CoreBucket, t.Key, b); err != nil {
-		cp.deps.Logger.Warn("markEventsPublished: KVPut failed", "requestId", requestID, "error", err)
-	}
-}
-
 // Run drives a Consume loop until ctx is cancelled. The callback wires
 // each delivered message through HandleMessage. Errors from Consume
 // itself are logged; the caller decides when to stop the consumer.
@@ -682,7 +589,6 @@ func MakePipeline(conn *substrate.Conn, coreBucket, healthBucket, capabilityBuck
 		Executor:      NewExecutor(NewStarlarkRunner(0, 0), logger),
 		Validator:     NewValidator(ddls, logger),
 		Committer:     committer,
-		Events:        NewEventPublisher(conn, logger),
 		Metrics:       metrics,
 		Heartbeater:   hb,
 		Logger:        logger,
@@ -692,4 +598,3 @@ func MakePipeline(conn *substrate.Conn, coreBucket, healthBucket, capabilityBuck
 	})
 	return cp, hb, nil
 }
-
