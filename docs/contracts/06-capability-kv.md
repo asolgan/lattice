@@ -21,6 +21,7 @@ This contract is **security-critical** per the architecture's "Capability Lens i
 ```
 cap.<actor-vertex-key-suffix>             # primary per-actor entry
 cap.role-by-operation.<operationType>     # secondary role-coverage index
+cap.ephemeral.<actor-vertex-key-suffix>   # per-actor ephemeral task grants (Phase 2, Story 7.1 — see §6.6 amendment)
 ```
 
 **Primary entry** — Where `<actor-vertex-key-suffix>` is the actor's vertex key with the `vtx.` prefix dropped. Examples:
@@ -40,6 +41,8 @@ cap.role-by-operation.BookExecutiveCleaning
 ```
 
 **Architectural note on multi-Lens pattern.** The two key spaces are produced by **two separate Lens definitions**, both seeded at primordial bootstrap (Contract #7), both projecting to the same Capability KV bucket with disjoint key prefixes. This follows Lattice's standard pattern from the architectural decisions: *each Lens has one RETURN producing one shape; multi-output patterns are expressed as additional Lenses, not as Lens-internal complexity* (lattice-architecture.md §"Multi-target Lens adapters"; brainstorming session items #38, #39, #61). The same pattern applies to Phase 2+ Personal Lens fan-out and Postgres RLS link mirroring.
+
+**Phase 2 extends this to a *package-owned* producer.** The `cap.ephemeral.*` key space is produced by a **third Lens (`capabilityEphemeral`) shipped by the `orchestration-base` package** — not seeded at bootstrap. This is the first instance of the **contract-contribution model**: core owns the Capability KV bucket + the step-3 reader; *packages project the grant types they own* into disjoint key spaces. It is what lets the bootstrap `capability` cypher **stop referencing the package-owned `task` type** (the dependency direction becomes package→core). The broader decomposition — moving the `role`/`permission` (rbac-domain) and service/location grant sections out of the bootstrap god-cypher likewise, and making the step-3 consumer generic via package-installed **auth hooks** — is a tracked future-ADR open item (lattice-architecture.md). `capabilityEphemeral` is its first proof-of-pattern.
 
 ### 6.2 Document Shape
 
@@ -123,7 +126,7 @@ cap.role-by-operation.BookExecutiveCleaning
 | `lanes` | yes | Array of JetStream lanes the actor may submit to. Subset of `["default", "meta", "urgent", "system"]`. |
 | `platformPermissions` | yes (may be empty `[]`) | Standing operation permissions not scoped to a service. See §6.4. |
 | `serviceAccess` | yes (may be empty `[]`) | Service-scoped operation permissions. The cypher rule pre-resolves availability via graph topology. See §6.5. |
-| `ephemeralGrants` | yes (may be empty `[]`) | Task-derived, time-bounded, target-specific grants (FR56). See §6.6. |
+| `ephemeralGrants` | yes (may be empty `[]`) | Task-derived, time-bounded, target-specific grants (FR56). See §6.6. **Phase 2:** relocated out of this doc to its own `cap.ephemeral.<actor>` entry — see §6.6 amendment. |
 | `roles` | yes (may be empty `[]`) | Vertex keys of role vertices the actor currently holds. Used by Processor for FR22 structural denial responses. |
 
 ### 6.4 platformPermissions[]
@@ -140,7 +143,7 @@ Processor dispatch (when `authContext.service` is null AND `authContext.task` is
 2. Validate scope:
    - `any` → allow
    - `self` → require `authContext.target == actor`
-   - `specific` → require `authContext.target` exact-match on the scope's allowed targets (Phase 2)
+   - `specific` → require `authContext.target` exact-match on the scope's allowed targets — **platform-path `specific` is currently a deny-stub** (returns `AuthContextMismatch`, "not implemented"); full impl deferred to **Phase 3** (see §6.7 note + Contract #10 §10.8 `StartLoomPattern`). Distinct from task/ephemeral `target` matching, which **is** implemented.
    - `owned` → deferred to Phase 2 (requires ownership-link model)
 3. → allow or deny
 
@@ -179,13 +182,58 @@ Processor dispatch (when `authContext.task` is set):
 2. If not found → `AuthContextMismatch`
 3. → allow
 
+#### Phase 2 amendment — ephemeral grants relocate to their own entry + lens (a1, Story 7.1)
+
+The Phase-1 shape above (an `ephemeralGrants[]` *section inside the per-actor `cap.<actor>` doc*,
+produced by the bootstrap `capability` god-cypher) is **superseded for Phase 2** by an extraction
+that removes the `task` package type from the core/bootstrap cypher. The grant **field shape is
+unchanged**; what changes is its *container, key, producer, and source paths*:
+
+- **New entry**, projected by the **`orchestration-base`-owned `capabilityEphemeral` lens** (not
+  bootstrap), to the disjoint key `cap.ephemeral.<actor-suffix>`:
+  ```json
+  {
+    "key":         "cap.ephemeral.identity.Hj4kPmRtw9nbCxz5vQ2y",
+    "actor":       "vtx.identity.Hj4kPmRtw9nbCxz5vQ2y",
+    "version":     "1.0",
+    "projectedAt": "2026-05-12T14:32:18.142Z",
+    "ephemeralGrants": [
+      { "source": "task",
+        "taskKey": "vtx.task.Rm7q3pntwzkfbcxv5p9j",
+        "operationType": "ApproveLeaseApplication",
+        "target": "vtx.lease.applicant-NanoID",
+        "expiresAt": "2026-05-13T14:00:00.000Z" }
+    ]
+  }
+  ```
+- **Link-sourced** (Contract #10 §10.1 — task relationships are links, not fields): the lens walks
+  `(identity)<-[:assignedTo]-(task)` (+ `reportsTo` 2-hop for manager delegation), then
+  `operationType` ← `(task)-[:forOperation]->(op)`, `target` ← `(task)-[:scopedTo]->(t)`,
+  `expiresAt` ← `task.data.expiresAt`. *(Was: `task.data.grantedOperationType` / `task.data.targetKey`
+  fields — corrected anti-pattern.)*
+- **Bootstrap `capability` cypher drops its two `task` OPTIONAL MATCHes** and the `ephemeralGrants`
+  section of `cap.<actor>` (it goes empty / is removed there). §6.10 item 5 is satisfied by the new
+  lens instead.
+- **Step-3 (`step3_auth_capability.go`):** the `task`-dispatch branch (`matchEphemeralGrant`) reads
+  `cap.ephemeral.<actor>` (it needs only grants) — a **single GET, no fallback**. The **matching logic
+  is unchanged**. A task-path no-match denies with `AuthContextMismatch`; the denial builder
+  (`BuildDenialDetails`) returns early for that code and emits **no `actorRoles`**, so there is **no
+  `cap.<actor>` second read** on this path. (Earlier drafts claimed a roles-fallback-on-denial — that
+  was based on a false premise about the denial shape and is dropped.)
+- **Conformance:** the §6.6 contract-conformance test moves with the lens (now asserts the
+  `cap.ephemeral.<actor>` entry against the `orchestration-base` `capabilityEphemeral` cypher); the
+  bootstrap `capability` conformance test drops its `ephemeralGrants` expectations.
+
+Rationale + the broader god-cypher decomposition (auth-hooks consumer side, rbac/service projections):
+Contract #10 §10.1/§10.7 + lattice-architecture.md future-ADR open item.
+
 ### 6.7 Scope Enumeration
 
 | Scope | Meaning | Phase |
 |-------|---------|-------|
 | `any` | Operation permitted on any target — broadest scope. | Phase 1 |
 | `self` | Operation permitted only when `authContext.target == actor`. | Phase 1 |
-| `specific` | Operation permitted only on a named target list (declared by the permission entry). | Phase 1 (used by ephemeral grants via `target` field) |
+| `specific` | Operation permitted only on a named target list (declared by the permission entry). | **Task/ephemeral path** (match on the grant's `target`): **implemented**. **Platform path** (`matchPlatformPermission`): **deny-stub** — `AuthContextMismatch`, full impl **deferred to Phase 3** (Contract #10 §10.8 external `StartLoomPattern` callers). |
 | `owned` | Operation permitted on vertices the actor "owns" via a defined ownership link. | Phase 2 (requires ownership-link model) |
 
 ### 6.8 "No Entry = No Access"
@@ -224,7 +272,7 @@ The Capability Lens cypher rule (the data of a `vtx.meta.<id>` with `class: "met
 
 4. **Role specialization.** Permissions derived from `vtx.role.*` linked to the identity contribute to `platformPermissions[]` independent of location-scoped service access. An actor may have both location-derived service access AND role-derived platform permissions; both must appear in their projection.
 
-5. **Task-derived ephemeral grants (FR56).** Tasks `assignedTo` the actor produce `ephemeralGrants[]` entries with `expiresAt` populated from the task's `dueAt` or expiry aspect. Manager delegation: tasks assigned to direct reports (via `reportsTo`) produce ephemeral grants for the manager. Two-hop traversal limit at Phase 1; deeper delegation chains are Phase 2+.
+5. **Task-derived ephemeral grants (FR56).** Tasks `assignedTo` the actor produce `ephemeralGrants[]` entries with `expiresAt` populated from the task's `dueAt` or expiry aspect. Manager delegation: tasks assigned to direct reports (via `reportsTo`) produce ephemeral grants for the manager. Two-hop traversal limit at Phase 1; deeper delegation chains are Phase 2+. **Phase 2 (a1):** this behavior moves to the `orchestration-base` `capabilityEphemeral` lens (key `cap.ephemeral.<actor>`); the bootstrap `capability` cypher no longer produces ephemeral grants. See §6.6 amendment.
 
 6. **Adversarial test coverage (Phase 1 Gate 3).** The Capability Lens 4 attack vectors must be tested and rejected:
    - Direct manipulation of `vtx.role.*` to grant unauthorized permissions

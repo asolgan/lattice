@@ -18,12 +18,15 @@ under `packages/<package-name>/` (post-Story 4.6).
   engine + control plane
 - [Substrate](./substrate.md) — NATS / KV / NanoID / atomic-batch primitives
 
-## Phase 2+ components (no Phase 1 code yet — placeholders)
+## Phase 2 components (design pages — no code yet)
 
-- Gateway — TBD (Phase 2+; not in Phase 1 scope)
-- Loom — TBD (Phase 2+)
-- Weaver — TBD (Phase 2+)
-- Vault — TBD (Phase 2+ crypto-shred / PII)
+- [Loom](./loom.md) — deterministic procedure engine (linear-sequence interpreter)
+- [Weaver](./weaver.md) — convergence engine (target-as-Lens, Two-Phase Nudge)
+
+## Phase 3+ components (no code yet — placeholders)
+
+- Gateway — TBD (Phase 3; JWT validation, `Lattice-Actor` stamping, read-path auth enforcement)
+- Vault — TBD (Phase 3 crypto-shred / PII)
 
 ## How to use these pages
 

@@ -1,8 +1,9 @@
 ---
-stepsCompleted: [1, 2, 3, 4, 5, 6, 7, 8, "prd-alignment"]
-lastStep: "prd-alignment"
+stepsCompleted: [1, 2, 3, 4, 5, 6, 7, 8, "prd-alignment", "phase2-orchestration"]
+lastStep: "phase2-orchestration"
 status: 'complete'
 completedAt: '2026-04-11'
+phase2DecidedAt: '2026-06-01'
 inputDocuments:
   - "brainstorming-session-2026-04-08.md"
   - "materializer-morph-plan.md"
@@ -580,6 +581,8 @@ gateway:
 | Config values for Lens definitions | Lens defs are meta-vertices in Core KV | Load from Core KV via bootstrap Lens |
 | Ephemeral KV watchers for CDC | No resume, no ack, no offset tracking | Durable JetStream consumers on backing stream |
 | Go import from Loom/Weaver to Processor | Creates extraction-blocking coupling | Communicate via NATS subjects; share only `substrate/*` types |
+| History/decision comments in code (`// Story X.Y`, `// Replaces`, `// Previously …`, `// changed from …`) | Comments rot; the decision history is already in git | **Comments describe WHAT the code does and WHY it must, never which story decided or changed it.** `git blame`/log is the decision record. **Binding for every story brief.** |
+| **Relationships between vertices stored as `data` fields** (a `*Key`/`*Id`/`*Ref`/`target`/`type` value that points at another vertex — e.g. `task.data.targetKey`, `task.data.grantedOperationType`) | Breaks decision #2 (relationships are topology, not document data); the graph can't be traversed, fan-out/adjacency can't see it, and Lenses must string-match instead of walking | **Express every vertex→vertex relationship as a LINK.** Root `data` holds only **scalar attributes** (status, timestamps, counts, enums). Link **direction = Contract #1 §1.1**: the *later-arriving* vertex is the source side, the *pre-existing* vertex the target; the link name reads from the source (e.g. `task -forOperation-> op`, `lease -heldBy-> identity`). A Lens may *project* a flattened `{ref}` field in its read-model output (denormalization is correct there) — but it must **source it by walking the link**, not by reading a stored ref field. **Documented exception:** `permission` vertices keep grant data on root `data` (Andrew's call). **Binding for every DDL/Lens story brief.** |
 
 ## Project Structure & Boundaries
 
@@ -1043,3 +1046,172 @@ Principle P6 referenced "Quantitative Targets TBD" — now resolved. The MVP dat
 | 6 | NFR Privacy | Aspect-level `sensitive: true` in DDL; identity-anchored; MutationBatch enforced | DDL schema, Processor validation, Refractor |
 | 7 | NFR Performance | Quantitative Targets section updated from TBD to locked values | Stream 0 spikes, cache TTLs, consumer sizing |
 | 8 | P6 | Single-cell validated against locked targets | Architecture principle P6 |
+
+---
+
+## Phase 2 Architecture — Orchestration Core (2026-06-01)
+
+> **Decision-of-record layer only.** Engine implementation detail lives in the component
+> pages [`docs/components/loom.md`](/docs/components/loom.md) and
+> [`docs/components/weaver.md`](/docs/components/weaver.md); interface shapes live in
+> [`docs/contracts/`](/docs/contracts/_index.md). Consult those first; trace back here for
+> rationale. Input of record: [`phase-2-charter.md`](./phase-2-charter.md). Decided with
+> Andrew via an architecture sprint (5 open decisions resolved + party-mode review).
+
+**Scope:** orchestration core — Loom + Weaver + Two-Phase Nudge (FR26–30, FR58) + a reference
+package. Read-path auth, Gateway, Vault, AI-authoring, console, historical query → Phase 3.
+
+**Engine vs package (organizing principle, per architectural decision #10 — minimal core +
+everything-is-a-package):** **Loom and Weaver are core engines** (`internal/loom`,
+`internal/weaver`) — generic interpreters that ship *zero* domain knowledge. The **Loftspace
+lease-application demo ships as an installable package** (`lease-signing`) via the
+`InstallPackage` kernel op: target Lens cypher, Loom pattern definitions, playbooks,
+permissions. The demo doubles as the dogfood test that the package model can carry
+orchestration content.
+
+### D1 — Read-path authorization (DEFERRED to Phase 3; rubric pre-written)
+
+Lens targets (Postgres/ES/streams) can be read directly, bypassing the Capability-Lens
+**write**-path boundary (NFR-S2). Phase 1/2 assume trusted readers. **Leading Phase-3
+approach:** **Postgres RLS backed by a dedicated Capability-Read Lens** — a Lens projects the
+resolved actor→(resource, permission) grants to Postgres; RLS policies *join* against it, so
+filtering is DB-level and the graph-path/ReBAC traversal still runs **once** in the Refractor
+(single source of truth = Core KV). This is the Capability-KV pattern with a Postgres target —
+"everything derived from Core KV is a Lens." **Binding:** external actors authenticate to
+obtain a **JWT carrying the identity id**; the **Gateway enforces JWT** and propagates the
+verified identity as `lattice.actor_id` to the DB session (same mechanism as write-path
+`Lattice-Actor` stamping — it authenticates, it does *not* filter rows). Protected business
+Lenses must project an **authz-anchor column**; staleness is bounded by CDC lag. **Rubric:**
+choose the read-proxy fallback only if reads are non-Postgres or the connection-trust/latency
+constraints prove painful. Decision owner: Phase 3 sprint, on measured target-mix + latency.
+
+### D2 — `core-events` subject partitioning (LOCKED)
+
+Loom/Weaver consume business events on `events.<domain>.<name>`. **Decision: one durable
+consumer per *domain* (`events.<domain>.>`), with the engine fanning out to registered patterns
+internally.** Per-domain ordering (cross-domain causality rides the revision-convergent
+CDC→Lens plane, not the event consumer); failure blast-radius is domain-scoped (acceptable for
+Phase 2, subdividable later). **Packages declare event→pattern bindings; they do NOT provision
+NATS infra** — the engine **reconciles** one consumer per *referenced* domain from the binding
+registry (this is how a package introducing a new domain, e.g. `lease`, gets a consumer without
+mutating infra at install). Rejected: a single wildcard consumer (head-of-line blocking across
+all domains); per-(pattern×event) consumers (forces infra mutation into the package contract).
+
+### D3 — Loom & Weaver runtime mechanics (LOCKED)
+
+**Loom = generic linear-sequence interpreter** for deterministic procedures (NOT inherently
+user-facing — steps may be user-tasks *or* system-ops; e.g. a tenant-provisioning saga). A
+**pattern** (package data) is an ordered step list; a **step = (operation to perform) +
+(completion event that advances the cursor)**. Steps carry an **optional on/off guard**
+(skip-if-already-satisfied — this is the "collect vs verify" reuse). **Guards are pure
+deterministic predicates over current state** (binding) — no branches, no loops, no fan-out;
+branching/conditional-path logic belongs to Weaver. **State:** the **tasks** are Core KV
+business state (queryable, UI-rendered, audited, read by the Weaver target Lens); the
+**instance cursor** lives in Loom-internal `loom.state.>` and is **rebuildable by replaying the
+(pure) guards** against Core KV tasks — source of truth stays in the ledger. Waiting for user
+input fits the `event → advance → op → event` loop (the advancing event is user-triggered);
+long waits exceed the 24h idempotency horizon (engine concern, noted).
+
+**Weaver = convergence engine.** Pipeline `Sensorium → Evaluator → Strategist → Actuator`. A
+**3-lane work stream** (`weaver.work.>`), each lane existing because the others structurally
+can't see its violations: **(1) violation-driven** (CDC over a target Lens's output — the main
+path); **(2) event-driven targeted-audit** (re-evaluate only the touched subgraph; for targets
+too costly to keep continuously projected — *built but unexercised in the Phase 2 demo*); **(3)
+temporal** (time-derived violations that emit no CDC — see D4). **Evaluator** is tiered: **L1**
+(cheap re-confirm + in-flight de-dup), **L2** (hydrate + classify gap + select playbook input);
+**L3** (AI-assisted) **deferred to Phase 3**. **Strategist** = generic dispatcher over a
+**playbook registry** (package data: gap-type → action). **Actuator** submits ops via the
+Processor with **revision-condition optimistic commits** (OCC, substrate per-key revisions); it
+triggers Loom **via an op** (auditable, idempotent — not a Go call; engines share only
+`substrate/*`); external actions take the **Two-Phase Nudge** path. **Operational state**
+(`weaver.state.>`) tracks in-flight convergence as the **anti-storm guard** (the violation
+persists until the gap closes *and* re-projects, so Weaver must mark in-flight or re-trigger
+every tick). **In-flight marks carry a TTL/lease; a reconciliation reclaims expired leases** so
+an Actuator crash mid-flight cannot wedge a target forever.
+
+### D4 — Weaver target-as-Lens mechanics (LOCKED)
+
+A Weaver **target is a Lens** — Weaver is a *consumer* of the Refractor, never its own cypher
+runtime. To avoid forcing Refractor retraction work now, targets project **one row per
+*candidate* entity carrying a `violating` boolean** (+ gap columns + authz anchor), **not**
+row-only-when-violating: a gap closing flips the flag via a normal **upsert** (already
+supported); only true entity deletion needs a delete (already handled via `IsDeleted`).
+Targets project to a **NATS-KV bucket** (`weaver-targets.<target>.>`) via the existing NATS-KV
+adapter; Weaver **watches** it (lane 1). True "emit-only-when-violating" + Refractor
+**negative/filter-retraction** projection is recorded as a **deferred** scale-time capability,
+surfaced here, **not forced**. **Temporal** (D3 lane 3) uses **NATS native scheduled messages
+(ADR-51, stable in 2.14)**: the Actuator publishes an `@at` scheduled message on an
+`AllowMsgSchedules` stream, subject keyed per-entity (durable across restart;
+replace-on-reschedule); at expiry NATS republishes to an **internal** subject; the temporal
+lane turns it into a normal **op** via the Processor — **never injected into `core-events`
+directly** (the transactional outbox, Story 1.5.10, stays the sole event producer). No custom
+scheduler subsystem; the full temporal scheduler / op-vertex pruner (#47/#49) remain Phase 2+
+engine maturity. Requires a bootstrap stream-config flag `AllowMsgSchedules` (same shape as the
+existing atomic-publish flag).
+
+### D5 — Task/service DDL data placement (LOCKED)
+
+**Default:** business data lives in **aspects**; vertices walk links. **Rule:** any field the
+**Capability Lens reads → vertex root `data`** (the auth-visible surface — subsumes the
+permissions exception). Root placement is **not limited** to cap-lens-read; it remains
+available for other deliberately-justified, documented cases. **Tasks:** auth fields
+(`status`, `expiresAt`, bound operation = the ephemeral grant) on root `data`; descriptive
+fields (UI hints, params) in aspects.
+> **Superseded in part (2026-06-02 contracts session):** task *relationships* (granted operation,
+> scoped target) are **links, not `data` fields** (links-not-fields correction) — only scalars
+> (`status`, `expiresAt`) stay on root. And the ephemeral-grant projection **extracts out of the
+> bootstrap cap-lens** into an `orchestration-base` `capabilityEphemeral` lens (a1) — so
+> `internal/bootstrap/lenses.go` does **not** keep `task.data.*`; it drops `task` entirely. See the
+> "Capability Lens god-cypher" open item below + Contract #6 §6.6 / Contract #10 §10.1/§10.7.
+
+The generic **`task` DDL ships in a foundational package `orchestration-base`**
+(engines assume the task contract, don't define it; `lease-signing` creates task *instances*).
+**Service-actor vertices** (Loom/Weaver/Refractor) are provisioned at **bootstrap (primordial)**
+with root-equivalent capability; `class` on root.
+
+### Phase 2 hand-off notes (for `create-epics-and-stories`)
+
+- **FR28 (role-queue + fallback) / FR29 (unrouted tasks surface in health; never silently
+  dropped)** are **in-Phase-2 stories sequenced *after* the engine skeleton** — the demo uses
+  direct identity assignment, but these are not deferred out of phase (FR29 is a safety AC).
+- **Engines decompose skeleton-first** for session-per-story: e.g. Loom one-pattern/system-op
+  steps/no-guards → user-task steps → guards; Weaver lane-1 only → temporal → targeted-audit.
+- **Demo decomposition (corrects the charter's first draft):** Loom is *not* the
+  onboarding→bgcheck→Stripe *chain* — that conditionality is **Weaver convergence**. Loom runs
+  the deterministic **onboarding / verify-info** flows; **background-check and Stripe are Weaver
+  Two-Phase Nudges** (external), not Loom steps.
+- **Deferred carries surfaced this sprint:** Refractor negative/filter-retraction projection
+  (D4); Weaver lane-2 on-demand evaluation (built, unexercised); L3 evaluator; full temporal
+  scheduler / op-vertex pruner (#47/#49); promotion of the nudge actuator to a shared package
+  if a future Loom *saga* needs external steps.
+
+### Open item (future ADR) — Capability Lens god-cypher → contract-contribution model
+
+**Surfaced 2026-06-02 (Phase 2 contracts session), while extracting the task grant projection.**
+
+**Problem.** The bootstrap `capability` Lens (`internal/bootstrap/lenses.go`) is a **single
+god-cypher in core** that hard-codes the grant vocabulary of *multiple packages* into one per-actor
+document: `role`/`permission`/`holdsRole`/`grantedBy` (**rbac-domain**), `containedIn`/`availableAt`/
+`service` (service-location), `reportsTo` (org), and — until (a1) — `task`/`assignedTo`
+(**orchestration-base**). Core depends on package types; the inversion is only hidden by `OPTIONAL
+MATCH` degrading to empty when a package is absent. Symmetrically, **step-3
+(`step3_auth_capability.go`) hard-codes the dispatch** (`taskSet → matchEphemeralGrant`,
+`serviceSet → matchServiceAccess`, default → `matchPlatformPermission`) — the *consumer* side knows
+each grant type too.
+
+**Target model — contracts, not monoliths. Two sides:**
+1. **Projection side.** Core owns the Capability KV bucket + key conventions; **each package
+   projects the grant types it owns** into a disjoint key space (the existing `capabilityRoleIndex`
+   disjoint-prefix pattern, Contract #6 §6.1). The bootstrap cypher shrinks toward only the
+   primordial-identity anchor; rbac-domain owns role/permission grants, service-location owns
+   service access, orchestration-base owns ephemeral task grants.
+2. **Consumer side — package-installed *auth hooks*.** Step-3 becomes a **generic dispatcher** over
+   grant-matchers that packages register, so it no longer names `task`/`service`/etc. (Andrew's
+   framing.) The dispatch table is data, contributed at install time, not a hardcoded `switch`.
+
+**Status:** **(a1) done as first proof-of-pattern** (Story 7.1) — `orchestration-base`
+`capabilityEphemeral` lens → `cap.ephemeral.<actor>`; bootstrap cypher drops `task`. The rbac/service
+projection moves and the generic auth-hook consumer side are **NOT scheduled** — future ADR. **Not a
+Weaver prerequisite.** This is also the concrete shape of the broader **package-interoperation model**
+(packages collaborate via: shared graph reads w/ declared `requires:` deps; the `events.<domain>.>`
+plane per D2; and *contract contribution* into core-owned buckets — this item).
