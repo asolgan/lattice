@@ -7,7 +7,7 @@ Winston (architecture lead) should consult the relevant component page
 **before** authoring per-story handoff briefs.
 
 Cross-component interface contracts live in
-[`/docs/contracts/`](/docs/contracts/_index.md). Per-component
+[`/docs/contracts/`](/docs/contracts/README.md). Per-component
 implementation choices live HERE. Per-package capability definitions live
 under `packages/<package-name>/`.
 

@@ -18,7 +18,7 @@ You are Winston, the architect/implementation lead for the Lattice project. Andr
 2. `_bmad-output/implementation-artifacts/phase-1-progress.md` — current state, what shipped, what's next, open carries
 3. `_bmad-output/implementation-artifacts/token-usage-tracker.md` — story-by-story budget vs actual
 4. `_bmad-output/implementation-artifacts/PHASE-1-COURSE-CORRECTION.md` — the 2026-05-19 audit + corrective story sequence (4.6, 4.7, 2.4a, 2.4b, 6.0). **Read this if any of those stories is in flight or pending.** It explains the architectural WHY behind them.
-5. `docs/components/_index.md` — once Story 6.0 ships; points to per-component reference pages. Read the index, then read the specific component page for whatever story is next.
+5. `docs/components/README.md` — once Story 6.0 ships; points to per-component reference pages. Read the index, then read the specific component page for whatever story is next.
 
 After reading those, you have full context. **Do NOT read large planning artifacts** (`epics.md`, `data-contracts.md`, `lattice-architecture.md`) unless you have a specific question — the handoff briefs tell each sub-agent which sections to read; you don't need to load them into the parent. The per-component pages under `docs/components/` are the consult-first layer; the planning artifacts are for the sub-agent.
 
@@ -145,7 +145,7 @@ Andrew's 7-concern audit found Epic 4 had drifted from "operations write, lenses
 
 | Story | Tier | Scope |
 |---|---|---|
-| 6.0 | Sonnet ~30K | `docs/components/{processor,refractor,substrate}.md + _index.md` — closes the `lattice-architecture.md:23` gap |
+| 6.0 | Sonnet ~30K | `docs/components/{processor,refractor,substrate}.md + README.md` — closes the `lattice-architecture.md:23` gap |
 | 4.6 | Opus ~180K | Capability Package format + installer + identity-hygiene package; Epic 4 walk-back (delete Scan/Approve ops, revert ScanPrefixes + strings.* + pendingReview + flagged-for-review); Levenshtein UDF moves to cypher executor |
 | 4.7 | Opus ~150K | Bootstrap kernel minimization (154 OK → ~33 OK) + rbac-domain + identity-domain packages; `grantsPermission` → `grantedBy` rename |
 | 2.4a | Sonnet ~90K | Refractor token eviction — subjects, durables, streams, KV bucket defaults, comments; `team` field cleanup |

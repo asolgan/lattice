@@ -1,29 +1,136 @@
 # Lattice
 
-Lattice is a graph-native application platform. Entities are **vertices** and
-relationships are **links** in a Core KV store; every state change is an auditable
-operation that runs a user-defined **Starlark** script on a single authorized write
-path (the **Processor**). Derived, queryable views are **lenses** — openCypher
-projections the **Refractor** maintains continuously into query targets (Postgres,
-NATS KV) — so the read side is always derived from Core KV, never written directly.
+**A graph-native, AI-native application platform built on NATS.**
 
-The kernel is deliberately **minimal**: identity, RBAC, and all business capability
-ship as installable **Capability Packages** (DDLs + lenses + permissions) rather than
-being baked in. Because every DDL is **self-describing**, AI agents discover and invoke
-operations cold-start by reading the DDL graph. Phase 2 adds orchestration on top — the
-**Loom** procedure engine and the **Weaver** convergence engine — driving target states
-by orchestrating these operations.
+> ⚠️ **Work in progress.** Lattice is an active, in-development project. 
+> The sections below describe the platform as designed. 
+> See **[Project status](#project-status)** for what's implemented today.
 
-## Prerequisites
+---
 
-- Go 1.26+
-- Docker + Docker Compose
-- `make`
+## What is Lattice?
+
+Most software is a "dumb warehouse" of data, and we bolt AI onto it after the fact — agents
+that guess at API shapes, hallucinate schemas, and fight inconsistent state. Lattice inverts
+that: it's an operating system for application state where **the data model is the integration
+surface**, designed from the ground up for both human logic and machine intelligence.
+
+Lattice stores everything as a graph and treats every change as a deterministic, auditable
+operation:
+
+- **State is a graph.** Entities are **vertices**, their data lives in **aspects**, and every
+  relationship — including authorization — is a **link**. Keys are opaque addresses; meaning
+  lives in the documents. This is the **VAL** (Vertex · Aspect · Link) model.
+- **Writes are deterministic operations.** A change is an *intent* submitted to an immutable
+  ledger. A single authorized writer — the **Processor** — runs a sandboxed **Starlark** script
+  that validates the intent against the schema and returns the mutations + business events to
+  commit atomically. No code path writes state except through this pipeline.
+- **Reads are derived views.** The **Refractor** continuously projects the graph into queryable
+  **lenses** (openCypher → Postgres, NATS KV) via change-data-capture. The read side is always
+  derived from the source of truth, never written directly — and authorization itself is just a
+  lens (ReBAC projected into an O(1) capability check).
+- **The platform is self-describing.** Every operation and type is a DDL meta-vertex carrying
+  its own schema, description, and examples. An AI agent starts at an identity, follows links to
+  discover what it can do, reads the schema, and submits a valid operation — **cold-start, with
+  no SDK and no integration code.** The graph *is* the prompt context.
+- **The kernel is minimal.** Identity, RBAC, and all business capability ship as installable
+  **Capability Packages** (DDLs + lenses + permissions), not baked into the core.
+
+On top of this core, two engines drive *action*: the **Loom** runs deterministic, imperative
+procedures ("do A, then B, then C"); the **Weaver** drives declarative convergence ("this target
+state must hold — make it so"), nudging external systems and AI agents to close the gap.
+
+The longer-form vision (the Lattice Manifest and System Spec) lives in a separate design vault;
+the architecture of record is in [`docs/`](docs/README.md).
+
+---
+
+## Built by AI agents
+
+Lattice is **deliberately developed by AI agents** — as much an experiment in AI-driven software
+development as it is a platform. **The agents write everything**: the code, the tests, the
+contracts, and the documentation. The work is organized with the
+[BMAD method](https://github.com/bmad-code-org/BMAD-METHOD) (a structured agentic workflow with
+analyst, architect, scrum master, developer, and reviewer roles) and a session-per-story model
+where each story is implemented by a fresh agent against a self-contained brief, then reviewed
+by another.
+
+My role (Andrew) is **architect and supervisor**, not implementer: I set the vision and the
+binding architectural decisions, freeze the data contracts, pressure-test proposals, review and
+adjudicate the agents' output, and steer course — but I don't write the implementation. The
+goal is to see how far a rigorously-supervised, contract-first agentic process can carry a
+genuinely complex distributed system.
+
+---
+
+## How it works
+
+Lattice is a small set of cooperating components, each with a living reference page:
+
+| Component | Role |
+|-----------|------|
+| [Processor](docs/components/processor.md) | The sole authorized writer — a 9-step commit pipeline that runs Starlark over Core KV, with atomic batch commit and a transactional event outbox |
+| [Refractor](docs/components/refractor.md) | The read side — continuous openCypher lens projections (Postgres / NATS KV), the security-critical Capability Lens, and CDC consumers |
+| [Substrate](docs/components/substrate.md) | NATS / KV / NanoID primitives — key shapes, atomic batch, durable CDC consumers |
+| [Capability Packages](docs/components/_packages.md) | Installable bundles (identity, RBAC, domain logic) added through the `InstallPackage` kernel op — the kernel stays minimal |
+| [Loom](docs/components/loom.md) | The procedure engine — deterministic, idempotent, linear flows (the "executive") |
+| [Weaver](docs/components/weaver.md) | The convergence engine — drives a declared target state, with Two-Phase Nudge for safe external side effects (the "visionary") |
+
+The exact wire shapes, key patterns, and behavioral rules are pinned in the data contracts under
+[`docs/contracts/`](docs/contracts/README.md).
+
+### The wider platform
+
+The same primitives extend outward into the rest of the Lattice vision:
+
+- **Gateway** — the trust boundary at the edge: it authenticates actors (JWT), stamps identity
+  onto every operation, and enforces read-path authorization so an agent's view of the world is
+  bounded by the same ReBAC links as a human's.
+- **Vault & crypto-shredding** — sensitive aspects are encrypted with per-identity keys, so the
+  "right to be forgotten" is *physical*: destroy the key and that identity's data — even in the
+  immutable ledger — becomes permanent, unrecoverable gibberish.
+- **Semantic Contracts ("Executable Paper")** — legal prose modeled as atomic **clause vertices**
+  linked directly to the state they govern. The Weaver enforces each clause continuously, turning
+  a contract into a live billing-and-compliance engine with a perfect chain of custody from the
+  signed paragraph to every action it authorized.
+- **Edge Lattice & Personal Lenses** — a sovereign client-side node (mobile / web / IoT) running
+  the same VAL model and Starlark locally for offline-first, zero-latency, privacy-first
+  interaction. The cloud Refractor pushes each device a **Personal Lens** — a security-filtered
+  stream of just the sub-graph that identity may see (a filter, not a clone) — and the Edge node
+  reconciles by revision when it reconnects.
+- **Cells & sharding** — the graph scales by **cells**: a root vertex and its sub-graph are
+  co-located in one bucket so writes stay atomic, while a global adjacency index and bridge links
+  carry cross-cell traversal, and live data migration runs as a dual-write "shadow" dance with no
+  downtime.
+
+---
+
+## Project status
+
+This is the one place that distinguishes what's built from what's designed.
+
+| Phase | Scope | State |
+|-------|-------|-------|
+| **Phase 1** | Trustworthy core: substrate, Processor write path, Refractor lens projections, identity/RBAC packages, Capability-Lens authorization, the Hello Lattice reference slice | ✅ Implemented + tested (CI-gated) |
+| **Phase 1.5** | Hardening: kernel minimization, package installs routed through the Processor, contract conformance suite, transactional event outbox | ✅ Complete |
+| **Phase 2** | Orchestration: Loom + Weaver + Two-Phase Nudge + a Loftspace lease-application reference vertical | 🔨 Contracts frozen; implementation starting |
+| **Phase 3+** | Gateway (read-path auth, JWT), Vault (crypto-shredding / PII), AI-authored capabilities, Semantic Contracts, Edge Lattice + Personal Lenses, multi-cell sharding | 🔭 Designed, future work |
+
+---
+
+## Documentation
+
+- **[`docs/`](docs/README.md)** — the documentation map (contracts, components, observability, operations)
+- **[`docs/contracts/`](docs/contracts/README.md)** — the data contracts (source of truth for wire shapes)
+- **[`docs/components/`](docs/components/README.md)** — living per-component reference pages
+- **[`docs/hello-lattice.md`](docs/hello-lattice.md)** — the 60-minute end-to-end tutorial
+
+---
 
 ## Quick start
 
 ```console
-# Start NATS + Postgres, bootstrap primordial state, start Refractor
+# Start NATS + Postgres, bootstrap primordial state, start the Refractor
 make up
 
 # Confirm everything is healthy
@@ -39,391 +146,23 @@ health.gates.phase1.gate3  passed: true
 health.gates.phase1.gate4  passed: true
 ```
 
-`make up` seeds only the primordial kernel. Identity and RBAC ship as **Capability
-Packages**, so install them before using identity/role operations (the Hello Lattice
-tutorial's Milestone 5 needs them):
+`make up` seeds only the primordial kernel. Identity and RBAC ship as **Capability Packages**,
+so install them before using identity/role operations:
 
 ```console
 lattice-pkg install packages/identity-domain
 lattice-pkg install packages/rbac-domain
 ```
 
----
-
-## Hello Lattice (60-minute tutorial)
-
-This tutorial walks through the complete Lattice vertical slice: define an entity type,
-create entities, project them to Postgres via a Lens, and query them with an AI agent —
-all from `git clone` to a working demo in under 60 minutes.
+Then walk the full vertical slice — define a type, create entities, project to Postgres, drive
+it with an AI agent, and roll a schema change back — in the
+**[Hello Lattice tutorial](docs/hello-lattice.md)**.
 
 ### Prerequisites
 
-A running `make up` stack with the identity + RBAC packages installed (Milestone 5
-needs them — see [Quick start](#quick-start)):
-
-```console
-lattice health gates    # gates 1–4 should show passed: true
-lattice bootstrap verify
-lattice-pkg install packages/identity-domain   # if not already installed
-lattice-pkg install packages/rbac-domain       # if not already installed
-```
-
-Obtain your bootstrap actor key (needed for all meta-lane operations):
-
-```console
-lattice bootstrap inspect
-# or
-lattice graph keys vtx.identity.
-```
-
-Export it as `BOOTSTRAP_ACTOR_KEY` for use in the tutorial commands below.
-
----
-
-### Milestone 1: Setup
-
-**Goal:** Verify the platform is healthy and primordial state is confirmed.
-**Expected time:** ≤ 10 min
-
-```console
-lattice health gates
-```
-
-Expected output:
-
-```console
-health.gates.phase1.gate1  passed: true
-health.gates.phase1.gate2  passed: true
-health.gates.phase1.gate3  passed: true
-health.gates.phase1.gate4  passed: true
-```
-
-```console
-lattice bootstrap verify
-```
-
-Expected output: `OK` on every primordial key check.
-
----
-
-### Milestone 2: Define "book" entity type
-
-**Goal:** Register the book DDL meta-vertex via `CreateMetaVertex`.
-**Expected time:** ≤ 10 min
-
-The "book" DDL is a normal user-defined DDL submitted at runtime — it is not
-primordially seeded. Submit it on the `meta` lane:
-
-```console
-lattice op submit \
-  --operation-type CreateMetaVertex \
-  --lane meta \
-  --actor $BOOTSTRAP_ACTOR_KEY \
-  --payload '{
-    "targetClass": "meta.ddl.vertexType",
-    "canonicalName": "book",
-    "permittedCommands": ["CreateBook"],
-    "description": "Book vertex DDL. A book carries a title.",
-    "script": "def execute(state, op):\n    p = op.payload\n    if not hasattr(p, \"title\") or len(p.title.strip()) == 0:\n        fail(\"InvalidArgument: title: required non-empty string\")\n    title = p.title.strip()\n    book_id = nanoid.new()\n    book_key = \"vtx.book.\" + book_id\n    mutations = [{\"op\": \"create\", \"key\": book_key, \"document\": {\"class\": \"book\", \"isDeleted\": false, \"key\": book_key, \"title\": title, \"data\": {\"title\": title}}}]\n    events = [{\"class\": \"BookCreated\", \"data\": {\"bookKey\": book_key}}]\n    return {\"mutations\": mutations, \"events\": events, \"response\": {\"bookKey\": book_key}}",
-    "inputSchema": "{\"type\":\"object\",\"required\":[\"title\"],\"properties\":{\"title\":{\"type\":\"string\",\"maxLength\":500}}}",
-    "outputSchema": "{\"type\":\"object\",\"required\":[\"bookKey\"],\"properties\":{\"bookKey\":{\"type\":\"string\"}}}",
-    "fieldDescription": {"title": "Book title, max 500 characters. Required."},
-    "examples": [{"name": "CreateBook — minimal", "payload": {"title": "The Pragmatic Programmer"}, "expectedOutcome": "Creates vtx.book.<NanoID>; returns bookKey."}]
-  }'
-```
-
-Expected output:
-
-```console
-requestId:    <NanoID>
-opTrackerKey: vtx.op.<NanoID>
-status:       accepted
-metaKey:      vtx.meta.<NanoID>
-```
-
-Verify the DDL was written:
-
-```console
-lattice graph keys vtx.meta.
-# find the vtx.meta.<NanoID> key from the reply, then:
-lattice graph read vtx.meta.<NanoID>
-```
-
-Expected: document with `class: meta.ddl.vertexType` and all 9 aspects (canonicalName,
-permittedCommands, description, script, inputSchema, outputSchema, fieldDescription,
-examples, compensation).
-
----
-
-### Milestone 3: Author Starlark rule and create a book vertex
-
-**Goal:** Submit a `CreateBook` operation; verify the book vertex appears in Core KV.
-**Expected time:** ≤ 10 min
-
-The Starlark script was submitted as part of the DDL in Milestone 2 — no separate
-script-upload step is needed for a fresh DDL.
-
-```console
-lattice op submit \
-  --operation-type CreateBook \
-  --lane default \
-  --actor $BOOTSTRAP_ACTOR_KEY \
-  --payload '{"title":"The Pragmatic Programmer"}'
-```
-
-Expected output:
-
-```console
-requestId:    <NanoID>
-opTrackerKey: vtx.op.<NanoID>
-status:       accepted
-bookKey:      vtx.book.<NanoID>
-```
-
-Verify the book vertex:
-
-```console
-lattice graph read vtx.book.<NanoID>
-```
-
-Expected: `class: book`, `data.title: "The Pragmatic Programmer"`.
-
----
-
-### Milestone 4: Author Lens projection and query Postgres
-
-**Goal:** Register a Lens that projects all `book` vertices to a Postgres `books` table;
-query it via `lattice query postgres`.
-**Expected time:** ≤ 10 min
-
-**Step 4a — Provision the target table (out-of-band).** The Refractor's Postgres adapter
-is thin: it upserts rows into an **existing** table and issues no table DDL. Create the
-`books` table before registering the Lens, with columns matching the Lens RETURN
-(`book_id`, `title`) plus the soft-delete columns the adapter uses for tombstones:
-
-```console
-docker exec -i lattice-postgres psql -U lattice -d lattice -c \
-  'CREATE TABLE IF NOT EXISTS books (book_id TEXT PRIMARY KEY, title TEXT, is_deleted BOOLEAN NOT NULL DEFAULT FALSE, deleted_at TIMESTAMPTZ);'
-```
-
-**Step 4b — Register the Lens.** The `spec` field must be a JSON string containing a
-`LensSpec` object. The platform decodes it and stores it verbatim as the `.spec` aspect
-data for the Refractor.
-
-```console
-lattice op submit \
-  --operation-type CreateMetaVertex \
-  --lane meta \
-  --actor $BOOTSTRAP_ACTOR_KEY \
-  --payload '{
-    "targetClass": "meta.lens",
-    "canonicalName": "books",
-    "description": "Projects all book vertices to the Postgres books table.",
-    "spec": "{\"canonicalName\":\"books\",\"targetType\":\"postgres\",\"targetConfig\":{\"dsn\":\"postgres://lattice:lattice_dev@localhost:5432/lattice?sslmode=disable\",\"table\":\"books\",\"key\":[\"book_id\"]},\"cypherRule\":\"MATCH (b:book) RETURN b.key AS book_id, b.title AS title\",\"engine\":\"simple\"}"
-  }'
-```
-
-Expected output:
-
-```console
-requestId:    <NanoID>
-opTrackerKey: vtx.op.<NanoID>
-status:       accepted
-metaKey:      vtx.meta.<NanoID>
-```
-
-The Refractor picks up the new Lens via CDC within ≤ 500ms and projects all existing
-`book` vertices to the `books` table.
-
-Query Postgres:
-
-```console
-lattice query postgres "SELECT * FROM books"
-```
-
-Expected:
-
-```console
-book_id                              | title
--------------------------------------+------------------------
-vtx.book.<NanoID>                    | The Pragmatic Programmer
-```
-
-Check Lens lag:
-
-```console
-lattice lens lag
-```
-
-Expected: `lag: 0` once projection is complete.
-
----
-
-### Milestone 5: AI traversal query
-
-**Goal:** Create an AI agent identity, grant it `CreateBook`, and run the cold-start
-traversal program.
-**Expected time:** ≤ 10 min
-
-**Step 5a — Create a new identity for the AI agent:**
-
-```console
-lattice op submit \
-  --operation-type CreateUnclaimedIdentity \
-  --lane default \
-  --actor $BOOTSTRAP_ACTOR_KEY \
-  --payload '{}'
-```
-
-Note the `identityKey` from the reply (e.g. `vtx.identity.<agentId>`).
-
-**Step 5b — Create a `CreateBook` permission:**
-
-```console
-lattice op submit \
-  --operation-type CreatePermission \
-  --lane default \
-  --actor $BOOTSTRAP_ACTOR_KEY \
-  --payload '{"operationType":"CreateBook","scope":"any"}'
-```
-
-Note the `permissionKey` from the reply.
-
-**Step 5c — Grant the permission to the operator role:**
-
-```console
-# Get operator role key:
-lattice graph keys vtx.role.
-
-lattice op submit \
-  --operation-type GrantPermission \
-  --lane default \
-  --actor $BOOTSTRAP_ACTOR_KEY \
-  --payload '{"permKey":"vtx.permission.<permId>","roleKey":"vtx.role.<operatorId>"}'
-```
-
-**Step 5d — Assign the agent to the operator role:**
-
-```console
-lattice op submit \
-  --operation-type AssignRole \
-  --lane default \
-  --actor $BOOTSTRAP_ACTOR_KEY \
-  --payload '{"actorKey":"vtx.identity.<agentId>","roleKey":"vtx.role.<operatorId>"}'
-```
-
-**Step 5e — Run the AI agent program:**
-
-```console
-AGENT_ACTOR_KEY=vtx.identity.<agentId> go run examples/hello-lattice/ai-agent.go
-```
-
-Expected output:
-
-```console
-Agent has N platform permission(s)
-CreateBook permission confirmed in capability set
-Book DDL key: vtx.meta.<NanoID>
-Verified: DDL permittedCommands includes CreateBook
-DDL inputSchema: {"type":"object","required":["title"],...}
-CreateBook accepted!
-  requestId:   <NanoID>
-  opTracker:   vtx.op.<NanoID>
-  bookKey:     vtx.book.<NanoID>
-
-Verify the projection:
-  lattice query postgres "SELECT * FROM books WHERE title = 'Hello Lattice (AI Agent)'"
-
-Done.
-```
-
-After the Refractor projects (≤ 500ms):
-
-```console
-lattice query postgres "SELECT * FROM books WHERE title = 'Hello Lattice (AI Agent)'"
-```
-
-Expected: one row with the new book.
-
----
-
-### Milestone 6: Rollback the book DDL (≤ 5 min)
-
-**Goal:** Demonstrate the compensation contract — roll back the book DDL itself by
-reading its `.compensation` aspect and submitting the inverse operation.
-**Expected time:** ≤ 5 min
-
-**Step 6a — Read the compensation aspect:**
-
-```console
-lattice graph read $BOOK_DDL_KEY.compensation
-```
-
-The aspect data contains `inverseOperationType: TombstoneMetaVertex` plus template
-fields for the metaKey and expectedRevision. These encode exactly what to submit to
-undo the DDL creation.
-
-**Step 6b — Capture the current revision for conflict detection:**
-
-```console
-lattice graph read $BOOK_DDL_KEY
-```
-
-Note the `_revision` field in the output. This is passed as `expectedRevision` in the
-tombstone payload to prevent a lost-update race.
-
-**Step 6c — Submit the compensating TombstoneMetaVertex:**
-
-```console
-lattice op submit \
-  --operation-type TombstoneMetaVertex \
-  --lane meta \
-  --actor $BOOTSTRAP_ACTOR_KEY \
-  --context-hint-reads $BOOK_DDL_KEY \
-  --payload "{\"metaKey\":\"$BOOK_DDL_KEY\",\"expectedRevision\":<revision>}"
-```
-
-Expected reply: `status: accepted`.
-
-**Step 6d — Verify the book DDL is no longer discoverable:**
-
-```console
-lattice graph keys vtx.meta.
-```
-
-The book DDL key still appears in the key list (tombstoned entries are retained
-in KV), but `lattice graph read $BOOK_DDL_KEY` now shows `isDeleted: true`.
-
-Confirm via the traversal API — any attempt to discover the `book` DDL should return
-`ErrDDLNotFound` because the vertex's `isDeleted` flag is `true`.
-
-**Step 6e — Verify the compensation aspect reads "none":**
-
-```console
-lattice graph read $BOOK_DDL_KEY.compensation
-```
-
-Expected: `data.inverseOperationType: none` — the irreversibility signal. Once a
-DDL is tombstoned, there is no inverse to the tombstone.
-
-**Step 6f — Verify subsequent CreateBook is rejected:**
-
-```console
-lattice op submit \
-  --operation-type CreateBook \
-  --lane default \
-  --actor $BOOTSTRAP_ACTOR_KEY \
-  --payload '{"title":"This should be rejected"}'
-```
-
-Expected reply: `status: rejected` — the Processor's DDL cache no longer has an
-entry for `book`, so `CreateBook` cannot be resolved.
-
----
-
-## Architecture
-
-See [`docs/components/_index.md`](docs/components/_index.md) for the component overview.
+- Go 1.26+
+- Docker + Docker Compose
+- `make`
 
 ---
 

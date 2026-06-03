@@ -1054,7 +1054,7 @@ Principle P6 referenced "Quantitative Targets TBD" — now resolved. The MVP dat
 > **Decision-of-record layer only.** Engine implementation detail lives in the component
 > pages [`docs/components/loom.md`](/docs/components/loom.md) and
 > [`docs/components/weaver.md`](/docs/components/weaver.md); interface shapes live in
-> [`docs/contracts/`](/docs/contracts/_index.md). Consult those first; trace back here for
+> [`docs/contracts/`](/docs/contracts/README.md). Consult those first; trace back here for
 > rationale. Input of record: [`phase-2-charter.md`](./phase-2-charter.md). Decided with
 > Andrew via an architecture sprint (5 open decisions resolved + party-mode review).
 
