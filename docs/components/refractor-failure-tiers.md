@@ -1,77 +1,75 @@
-# Refractor Failure Tiers — Story 2.1
+# Refractor Failure Tiers
 
-This document classifies the failure modes the Refractor can encounter
-and the operational response each requires. Story 2.1 inherits the
-4-tier failure model from Materializer (`internal/refractor/failure/`):
+**Component reference** | Audience: implementers + architects | Last verified: 2026-06-03
 
-| Tier | Materializer source | Lattice meaning | Route |
+This document classifies the failure modes the Refractor can encounter and the
+operational response each requires.
+
+## Base model — four tiers
+
+Refractor inherits the 4-tier failure model from Materializer
+(`internal/refractor/failure/`):
+
+| Tier | Source | Lattice meaning | Route |
 |---|---|---|---|
-| **Infrastructure** | `failure.Infrastructure` | NATS / Postgres / Vault / target store outage | fetch-loop pause, buffer in NATS |
+| **Infrastructure** | `failure.Infrastructure` | NATS / Postgres / target store outage | fetch-loop pause, buffer in NATS |
 | **Structural** | `failure.Structural` | DDL validation failure, lens spec invalid, schema mismatch | pause the affected Lens until reconciled |
 | **Terminal** | `failure.Terminal` | Atomic-batch rejection, malformed Core KV event | DLQ for forensics |
-| **Transient** | `failure.Transient` | Vault decryption failure (re-fetchable key), retryable target write | deferred retry queue |
-
-## Privacy-critical (alert, no silent retry)
-
-**Crypto-shred failure (Vault `KeyShredded` event handling).** Per AC #6
-the crypto-shred path is privacy-critical. If a row's encryption key has
-been shredded but Refractor's projection still surfaces decrypted
-values, that's a confidentiality breach.
-
-- Classification: **privacy-critical**, supersedes the four base tiers.
-- Action: emit an alert via `health.refractor.<instance>.privacy.<lensId>`
-  with status `privacy-critical`; halt the affected Lens (no automatic
-  retry); page on-call.
-- Story 2.1 status: **listener not yet implemented** (out of scope per
-  handoff brief "Not for 2.1"). Documented as a gap for Story 2.2.
-
-## Security-critical (alert, halt affected Lens)
-
-**Capability Lens failure.** Per AC #6 Capability Lens failures are
-security-critical: if the projection that feeds the Capability KV
-breaks, every authz check downstream may fail open.
-
-- Classification: **security-critical**, supersedes the four base tiers.
-- Action: emit an alert via `health.refractor.<instance>.security.<lensId>`
-  with status `security-critical`; halt the affected Lens; page on-call.
-- Story 2.1 status: Capability Lens is not yet defined (Epic 3 territory).
-  The failure-tier mapping is documented here so the structure exists
-  when the Capability Lens is wired in.
+| **Transient** | `failure.Transient` | Retryable target write (e.g. transient Postgres error) | deferred retry queue |
 
 ## Mapping examples
 
 - **Postgres connection refused** → Infrastructure → fetch-loop pause
-- **DDL `permittedCommands` mismatch on lens spec aspect** → Structural
-  → pause this Lens; operator must fix the meta-vertex DDL
-- **Malformed `vtx.contract.*` payload from CDC** → Terminal → DLQ
-  (the lens's classify path rejected the event)
-- **Postgres unique constraint violation transient (network glitch)** →
-  Transient → deferred retry per RetryConfig
+- **DDL `permittedCommands` mismatch on lens spec aspect** → Structural → pause this Lens; operator must fix the meta-vertex DDL
+- **Malformed payload from CDC** → Terminal → DLQ (the lens's classify path rejected the event)
+- **Postgres unique-constraint violation from a network glitch** → Transient → deferred retry per `RetryConfig`
 
 ## Health emissions and lag
 
-Per AC #6 + NFR-O1 + NFR-O3:
-
 - Per-instance heartbeat: `health.refractor.<instance>` every 10s
-  (`internal/refractor/health/lattice_heartbeater.go`)
-- Per-Lens lag: `health.refractor.<instance>.lens.<lensId>.lag` every
-  10s — current implementation surfaces `NumPending` from the JetStream
-  consumer via `LagProvider` on the heartbeater and inlines it into the
-  per-instance metrics document (`metrics.lensLags`). A separate
-  per-Lens health key is a Story 2.2 enhancement.
+  (`internal/refractor/health/lattice_heartbeater.go`), TTL-purged (NFR-O1).
+- Per-lens latency: `health.refractor.<instance>.lens.<canonicalName>` —
+  p95/p99/mean/count from the `LatencyRingBuffer` (NFR-P3 instrument).
+- Consumer lag: `NumPending` on the lens consumer, polled by `health.LagPoller`
+  and surfaced both on `lattice.refractor.metrics.<lensId>` and as the
+  `consumerLag` field on the per-lens health entry.
 
-## Capability KV auth (stubbed)
-
-The control service in Story 2.1 ships with `StubCapabilityChecker`
-(allow-all + log). Real Capability KV integration is Epic 3.
-See `internal/refractor/control/capability.go`.
-
-## Tombstone semantics (AC #4)
+## Tombstone semantics
 
 Refractor's adapters NEVER physically delete:
 
 - Postgres: `UPDATE ... SET is_deleted=true, deleted_at=NOW()`
-- NATS-KV: PUT a tombstone document `{"isDeleted": true}` (rather than KVDelete)
+- NATS-KV: PUT a tombstone document `{"isDeleted": true}` (rather than `KVDelete`)
 
-Soft-delete preserves lineage for crypto-shred forensics and Capability
-audit trails.
+Soft-delete preserves lineage for downstream audit and forensics.
+
+## Control-plane authorization (currently stubbed)
+
+The control service authorizes control-plane operations (list lenses, force
+re-project) through a `CapabilityChecker` interface
+(`internal/refractor/control/capability.go`). The default implementation is
+`StubCapabilityChecker` (allow-all + log). Real control-plane authorization —
+checking the actor's Capability KV entry before honoring a control op — is
+deferred; the data-plane Capability **Lens** that feeds Processor write-path
+auth is unrelated and is live.
+
+## Designed-but-not-built: privacy / security supersession tiers
+
+Two supersession classifications sit above the four base tiers in the design but
+have **no implementation today** — no alert subject is emitted and no listener
+exists. They are recorded here so the structure is ready when their
+dependencies land.
+
+- **Security-critical — Capability Lens failure.** If the projection that feeds
+  Capability KV breaks, downstream authz could fail open, so a Capability-Lens
+  failure should halt the lens and page on-call rather than route through the
+  base tiers. Today the Capability Lens emits only the generic per-lens health
+  signals above; there is **no Capability-Lens-aware alert** (the same gap noted
+  in [refractor.md](./refractor.md#capability-lens-health-operational-backstop)).
+
+- **Privacy-critical — crypto-shred failure.** When Vault key-shred handling
+  exists (Phase 3), a row whose encryption key has been shredded but whose
+  projection still surfaces decrypted values is a confidentiality breach: the
+  affected lens must halt with no automatic retry and page on-call. Vault /
+  privacy is Phase 3, so neither the `KeyShredded` listener nor this tier is
+  built.

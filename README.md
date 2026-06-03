@@ -1,10 +1,18 @@
 # Lattice
 
-Lattice is a graph-native application platform that stores entities as vertices and
-relationships as links in a Core KV store, executes user-defined Starlark scripts on
-the write path, and projects graph subsets to query targets (Postgres, NATS KV) via a
-Refractor lens pipeline. AI agents discover operations cold-start by reading the
-platform's self-describing DDL graph.
+Lattice is a graph-native application platform. Entities are **vertices** and
+relationships are **links** in a Core KV store; every state change is an auditable
+operation that runs a user-defined **Starlark** script on a single authorized write
+path (the **Processor**). Derived, queryable views are **lenses** — openCypher
+projections the **Refractor** maintains continuously into query targets (Postgres,
+NATS KV) — so the read side is always derived from Core KV, never written directly.
+
+The kernel is deliberately **minimal**: identity, RBAC, and all business capability
+ship as installable **Capability Packages** (DDLs + lenses + permissions) rather than
+being baked in. Because every DDL is **self-describing**, AI agents discover and invoke
+operations cold-start by reading the DDL graph. Phase 2 adds orchestration on top — the
+**Loom** procedure engine and the **Weaver** convergence engine — driving target states
+by orchestrating these operations.
 
 ## Prerequisites
 
@@ -31,6 +39,15 @@ health.gates.phase1.gate3  passed: true
 health.gates.phase1.gate4  passed: true
 ```
 
+`make up` seeds only the primordial kernel. Identity and RBAC ship as **Capability
+Packages**, so install them before using identity/role operations (the Hello Lattice
+tutorial's Milestone 5 needs them):
+
+```console
+lattice-pkg install packages/identity-domain
+lattice-pkg install packages/rbac-domain
+```
+
 ---
 
 ## Hello Lattice (60-minute tutorial)
@@ -41,11 +58,14 @@ all from `git clone` to a working demo in under 60 minutes.
 
 ### Prerequisites
 
-A running `make up` stack. Confirm with:
+A running `make up` stack with the identity + RBAC packages installed (Milestone 5
+needs them — see [Quick start](#quick-start)):
 
 ```console
 lattice health gates    # gates 1–4 should show passed: true
 lattice bootstrap verify
+lattice-pkg install packages/identity-domain   # if not already installed
+lattice-pkg install packages/rbac-domain       # if not already installed
 ```
 
 Obtain your bootstrap actor key (needed for all meta-lane operations):
@@ -176,8 +196,19 @@ Expected: `class: book`, `data.title: "The Pragmatic Programmer"`.
 query it via `lattice query postgres`.
 **Expected time:** ≤ 10 min
 
-The `spec` field must be a JSON string containing a `LensSpec` object. The platform
-decodes it and stores it verbatim as the `.spec` aspect data for the Refractor.
+**Step 4a — Provision the target table (out-of-band).** The Refractor's Postgres adapter
+is thin: it upserts rows into an **existing** table and issues no table DDL. Create the
+`books` table before registering the Lens, with columns matching the Lens RETURN
+(`book_id`, `title`) plus the soft-delete columns the adapter uses for tombstones:
+
+```console
+docker exec -i lattice-postgres psql -U lattice -d lattice -c \
+  'CREATE TABLE IF NOT EXISTS books (book_id TEXT PRIMARY KEY, title TEXT, is_deleted BOOLEAN NOT NULL DEFAULT FALSE, deleted_at TIMESTAMPTZ);'
+```
+
+**Step 4b — Register the Lens.** The `spec` field must be a JSON string containing a
+`LensSpec` object. The platform decodes it and stores it verbatim as the `.spec` aspect
+data for the Refractor.
 
 ```console
 lattice op submit \
@@ -318,8 +349,8 @@ Expected: one row with the new book.
 
 ### Milestone 6: Rollback the book DDL (≤ 5 min)
 
-**Goal:** Demonstrate Story 5.3's compensation contract — roll back the book DDL
-itself by reading its `.compensation` aspect and submitting the inverse operation.
+**Goal:** Demonstrate the compensation contract — roll back the book DDL itself by
+reading its `.compensation` aspect and submitting the inverse operation.
 **Expected time:** ≤ 5 min
 
 **Step 6a — Read the compensation aspect:**
@@ -372,8 +403,8 @@ Confirm via the traversal API — any attempt to discover the `book` DDL should 
 lattice graph read $BOOK_DDL_KEY.compensation
 ```
 
-Expected: `data.inverseOperationType: none` — the irreversibility signal from
-Story 5.3. Once a DDL is tombstoned, there is no inverse to the tombstone.
+Expected: `data.inverseOperationType: none` — the irreversibility signal. Once a
+DDL is tombstoned, there is no inverse to the tombstone.
 
 **Step 6f — Verify subsequent CreateBook is rejected:**
 

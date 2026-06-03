@@ -88,7 +88,7 @@ code**. Pattern definitions, guards, step→operation bindings, and the `task` t
 
 | Contract | Source | Notes |
 |----------|--------|-------|
-| `events.<domain>.>` per-domain durable consumer | `core-events` (post-outbox, Story 1.5.10) | D2: one consumer per referenced domain, engine-reconciled from declared bindings; engine fans out to registered patterns |
+| `events.<domain>.>` per-domain durable consumer | `core-events` (post-outbox) | D2: one consumer per referenced domain, engine-reconciled from declared bindings; engine fans out to registered patterns |
 | Pattern definitions | Core KV meta-vertices (package-installed) | Loaded via CDC like Lens defs |
 | Trigger ops | Weaver Actuator (op-based, D3) or a client `StartX` op | Auditable ledger entry starts a flow |
 | Current Core KV state | point-reads for guard evaluation | Guards are pure over this snapshot |

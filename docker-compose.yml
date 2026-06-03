@@ -33,5 +33,6 @@ services:
       timeout: 5s
       retries: 15
       start_period: 5s
-    # Ephemeral: no named volume in dev. Lens target tables created by Story 2.3 adapter.
+    # Ephemeral: no named volume in dev. Lens target tables are provisioned
+    # out-of-band (the Refractor adapter is thin and issues no table DDL).
     restart: "no"

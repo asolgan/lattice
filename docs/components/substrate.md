@@ -1,6 +1,6 @@
 # Substrate
 
-**Component reference** | Audience: implementers + architects | Last verified: 2026-05-19
+**Component reference** | Audience: implementers + architects | Last verified: 2026-06-03
 
 ---
 
@@ -116,13 +116,12 @@ are wrapped with operation context for log correlation.
 
 Publishes a slice of `BatchOp` as a single NATS JetStream atomic batch. All
 ops commit or none do. Implements the raw-NATS protocol (Nats-Batch-Id,
-Nats-Batch-Sequence, Nats-Batch-Commit headers) described in the Story 1.1
-spike, because the nats.go client does not expose a high-level batch API.
+Nats-Batch-Sequence, Nats-Batch-Commit headers) directly, because the nats.go
+client does not expose a high-level batch API.
 
 Constraints:
 - All ops must target the **same bucket** (cross-bucket atomicity is not
-  supported by the NATS atomic batch primitive — documented in the Story 1.1
-  spike; Story 4.6 confirms this constraint remains for Phase 1).
+  supported by the NATS atomic batch primitive).
 - The target bucket's underlying `KV_<bucket>` stream must have
   `AllowAtomicPublish` enabled (Core KV is provisioned this way by bootstrap).
 
@@ -140,12 +139,36 @@ On failure, error wraps `ErrAtomicBatchRejected`.
 
 Publishes a slice of `PublishOp` as a single unconditional JetStream atomic
 batch to arbitrary subjects (no revision conditions, no per-key TTL). Used by
-Processor's step 9 to publish events to `events.<class>` subjects on the
-`core-events` stream. All-or-nothing; order preserved via `Nats-Batch-Sequence`.
+the Processor's durable outbox consumer to publish events to `events.<class>`
+subjects on the `core-events` stream. All-or-nothing; order preserved via
+`Nats-Batch-Sequence`.
 
 All subjects must belong to the same JetStream stream.
 
 `PublishOp` fields: `Subject`, `Data`, `Header` (optional extra headers).
+
+### Durable KV change consumer
+
+`(*Conn).SubscribeKVChanges(ctx, bucket, keyPrefix, durableName string, opts SubscribeKVOptions) (<-chan KVEvent, error)`
+
+Creates a durable JetStream consumer over the `KV_<bucket>` backing stream,
+filtered to `keyPrefix`. Re-invoking with the same `durableName` resumes from
+the persisted ack position, so a restarted consumer continues rather than
+replaying from the start. This is the CDC primitive Refractor's `corekv_source`
+uses to watch Core KV (both the all-mutations stream and the `vtx.meta.>`
+lens-def watch).
+
+`KVEvent` fields: `Bucket`, `Key`, `Value`, `Revision` (KV revision = backing
+stream sequence), `IsDeleted` (envelope `isDeleted`, or true on a KV tombstone).
+The event carries enough to reconstruct post-mutation state without an extra
+`Get`.
+
+`SubscribeKVOptions` (zero value is valid — replay-from-new, AckExplicit,
+MaxDeliver=10):
+- `IncludeHistory bool` — replay every existing entry under `keyPrefix` from the start of the stream (default false = new mutations only).
+- `AckPolicy jetstream.AckPolicy` — overrides the default `AckExplicitPolicy`; most callers leave it zero.
+- `MaxDeliver int` — redelivery bound on Nak; defaults to 10 when zero.
+- `Logger *slog.Logger` — diagnostics sink; defaults to `slog.Default()`.
 
 ### Sentinel errors
 
@@ -169,22 +192,11 @@ All three are plain `errors.New` sentinels wrapped with context via
 
 ---
 
-## Post-Story-4.7 planned additions
-
-These helpers are not in the current codebase. They are described here so
-Winston can place them correctly in substrate when they ship.
-
-| Planned symbol | Description |
-|----------------|-------------|
-| `(*Conn).AdjacencyForNode(nodeKey string) -> []string` | Reads Refractor's `refractor-adjacency` bucket; returns list of EdgeIDs (= link keys) for all inbound + outbound edges of the given node. Required by Story 4.6 `MergeIdentity` for inbound-link enumeration without a global `lnk.*` scan. |
-| `(*Conn).SubscribeKVChanges(bucket, keyPrefix, durableName) -> <-chan KVEvent` | Durable JetStream consumer over the `KV_<bucket>` backing stream, filtered to `keyPrefix`. Replaces `kv.Watch` in Refractor's `corekv_source.go` per Story 2.4b. Will land in substrate because Refractor's consumer unification (Story 2.4b) uses it, and the pattern may be reused by other components in Phase 2. |
-
----
-
 ## What's deferred
 
 | Feature | Phase | Notes |
 |---------|-------|-------|
-| Real NATS auth | Phase 2 | Current `substrate.Connect` inherits connection auth from the environment; no account-level enforcement. Story 3.7 Vector #1 (fabricated-KV-write attack) noted the gap; full enforcement is Phase 2. |
-| Inner-package migration of Refractor packages to use substrate uniformly | Story 2.4b (partial) | Deviation 5 carry: some Refractor sub-packages hold their own JetStream / KV handles rather than going through `substrate.Conn`. Story 2.4b absorbs some of this; full migration is ongoing. |
-| Cross-bucket atomic batch | Not planned (NATS limitation) | Cross-bucket atomicity is not supported by the NATS atomic batch primitive (Story 1.1 spike). Callers that need cross-bucket coordination must implement application-level compensation. |
+| NATS account-level auth | Phase 2 | `substrate.Connect` inherits connection auth from the environment; there is no account-level write enforcement. The fabricated-KV-write attack surface (defended today by Refractor overwrite-by-reprojection) is closed at the substrate level in Phase 2. |
+| Inner-package migration of Refractor sub-packages to substrate | Phase 2 (partial) | Some Refractor sub-packages still hold their own JetStream / KV handles rather than going through `substrate.Conn`; full migration is ongoing. |
+| `AdjacencyForNode` substrate helper | Not built | A standalone `(*Conn).AdjacencyForNode` was contemplated for inbound-link enumeration but never needed — the adjacency index is read directly by Refractor's cypher executor. Revisit only if another component needs adjacency lookups outside Refractor. |
+| Cross-bucket atomic batch | Not planned (NATS limitation) | Cross-bucket atomicity is not supported by the NATS atomic batch primitive. Callers that need cross-bucket coordination must implement application-level compensation. |

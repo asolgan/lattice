@@ -75,6 +75,9 @@ milestone-4:
 	  echo "ERROR: BOOTSTRAP_ACTOR_KEY is required."; \
 	  exit 1; \
 	fi
+	@echo "==> Milestone 4: Provision books table (out-of-band — the adapter issues no DDL)"
+	docker exec -i lattice-postgres psql -U lattice -d lattice -c \
+	  'CREATE TABLE IF NOT EXISTS books (book_id TEXT PRIMARY KEY, title TEXT, is_deleted BOOLEAN NOT NULL DEFAULT FALSE, deleted_at TIMESTAMPTZ);'
 	@echo "==> Milestone 4: Register books Lens"
 	NATS_URL=$(NATS_URL) $(LATTICE) op submit \
 	  --operation-type CreateMetaVertex \

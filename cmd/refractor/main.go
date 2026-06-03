@@ -175,11 +175,10 @@ func main() {
 			if err != nil {
 				return nil, err
 			}
-			// Ensure the target table exists with soft-delete columns;
-			// idempotent CREATE IF NOT EXISTS keeps all lenses runnable.
-			if err := ensurePostgresTable(ctx, pool, r.Into.Table, r.Into.Key); err != nil {
-				return nil, err
-			}
+			// The adapter is thin: it upserts into a pre-existing table.
+			// Target tables are provisioned out-of-band (the adapter and
+			// Refractor never issue table DDL) — see
+			// docs/components/refractor.md.
 			return adapter.NewPostgresAdapter(pool, r.Into.Table, r.Into.Key, r.Into.QueryTimeout)
 		default:
 			return nil, fmt.Errorf("unknown adapter target %q", r.Into.Target)

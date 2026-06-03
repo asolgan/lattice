@@ -67,7 +67,7 @@ package (`lease-signing`):
 
 ### Actuator
 
-- **OCC** — every op carries a revision-condition (substrate per-key revisions, Story 1.5.1) so
+- **OCC** — every op carries a revision-condition (substrate per-key revisions) so
   two ticks can't double-apply.
 - **Triggers Loom via an op** — auditable, idempotent ledger entry (not a Go call; engines share
   only `substrate/*`).
@@ -115,10 +115,10 @@ Actuator resolves bgcheck
 - **Durable** across restart; **replace-on-reschedule** (re-doing a check before expiry
   re-publishes to the same subject, replacing the prior timer; one schedule per subject → key by
   entity id).
-- **Never injected into `core-events` directly** — the transactional outbox (Story 1.5.10) stays
+- **Never injected into `core-events` directly** — the transactional outbox stays
   the sole event producer; the timer fires an internal subject that becomes a normal **op**.
 - Uses the **lattice-wide** `lattice-schedules` stream (`AllowMsgSchedules: true`, bootstrapped as
-  platform infra — Epic 7 Story 7.4 — not owned by Weaver). No custom scheduler subsystem; full
+  platform infra in Epic 7 — not owned by Weaver). No custom scheduler subsystem; full
   scheduler/op-vertex-pruner (#47/#49) remain Phase 2+ maturity.
 
 ---

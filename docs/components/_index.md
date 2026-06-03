@@ -9,7 +9,7 @@ Winston (architecture lead) should consult the relevant component page
 Cross-component interface contracts live in
 [`/docs/contracts/`](/docs/contracts/_index.md). Per-component
 implementation choices live HERE. Per-package capability definitions live
-under `packages/<package-name>/` (post-Story 4.6).
+under `packages/<package-name>/`.
 
 ## Phase 1 components (shipped code)
 
@@ -32,9 +32,9 @@ under `packages/<package-name>/` (post-Story 4.6).
 
 When authoring a story handoff brief that touches a component, read that
 component's page first to understand: what's already there, what
-contracts it honors, what principles apply, what's deferred to Phase 2.
-This replaces the previous practice of inlining component framing inside
-each brief.
+contracts it honors, what principles apply, what's deferred. These pages
+are the consult-first layer, so a brief can cite a component page rather
+than re-explaining the component inline.
 
 When adding a new principle, new contract surface, or new failure mode
 to a Phase 1 component, update the page in the same commit as the code.
