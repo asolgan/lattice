@@ -22,6 +22,16 @@ import (
 // MATCH-bindings (no real actor).
 var ErrSkipProjection = errors.New("pipeline: envelope: skip projection")
 
+// ErrDeleteProjection signals that an EnvelopeFn declined to project a row
+// AND that the row's target key must be deleted (not merely skipped). The
+// pipeline synthesizes a Delete against the keys the envelope returned. Used
+// by the ephemeral-grant envelope: a live actor whose grants have all
+// expired/been removed produces no real grant, so its `cap.ephemeral.<actor>`
+// key must be hard-deleted (absence = denial, Contract #6 §6.8). Unlike
+// ErrSkipProjection (drop silently, leave any existing key untouched), this
+// actively removes the target.
+var ErrDeleteProjection = errors.New("pipeline: envelope: delete projection")
+
 // ErrNoProvenanceTimestamp signals that an anchor vertex body carried no
 // usable commit-provenance timestamp (neither lastModifiedAt nor createdAt),
 // so a deterministic projectedAt cannot be derived. The pipeline surfaces
@@ -121,6 +131,13 @@ func (p *Pipeline) evaluateForEntry(ctx context.Context, entry simple.NodeEntry)
 			if errors.Is(envErr, ErrSkipProjection) {
 				continue
 			}
+			if errors.Is(envErr, ErrDeleteProjection) {
+				results[i].Delete = true
+				results[i].Keys = newKeys
+				results[i].Row = nil
+				filtered = append(filtered, results[i])
+				continue
+			}
 			if envErr != nil {
 				return nil, fmt.Errorf("pipeline: envelope: %w", envErr)
 			}
@@ -165,6 +182,14 @@ func (p *Pipeline) executeFullForActor(ctx context.Context, actorKey string, nod
 		if p.envelopeFn != nil {
 			newRow, newKeys, envErr := p.envelopeFn(row, keys, params)
 			if errors.Is(envErr, ErrSkipProjection) {
+				continue
+			}
+			if errors.Is(envErr, ErrDeleteProjection) {
+				results = append(results, simple.EvalResult{
+					Delete: true,
+					Keys:   newKeys,
+					Row:    nil,
+				})
 				continue
 			}
 			if envErr != nil {

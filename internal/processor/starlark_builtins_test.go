@@ -11,6 +11,66 @@ import (
 	starlarklib "go.starlark.net/starlark"
 )
 
+// --- time.rfc3339_utc ---
+
+// TestTimeRFC3339UTC_Normalizes verifies offset + fractional-second inputs
+// normalize to canonical UTC whole-second RFC3339 (the form $now uses), so a
+// lexical expiresAt > now comparison in the lens is sound.
+func TestTimeRFC3339UTC_Normalizes(t *testing.T) {
+	mod := timeModule()
+	fn, err := mod.Attr("rfc3339_utc")
+	if err != nil || fn == nil {
+		t.Fatalf("time.rfc3339_utc attr: %v", err)
+	}
+	thread := &starlarklib.Thread{Name: "test"}
+	cases := []struct{ in, want string }{
+		{"2026-06-04T14:00:00Z", "2026-06-04T14:00:00Z"},
+		{"2026-06-04T23:00:00+09:00", "2026-06-04T14:00:00Z"},   // +09:00 → UTC
+		{"2026-06-04T09:00:00-05:00", "2026-06-04T14:00:00Z"},   // -05:00 → UTC
+		{"2026-06-04T14:00:00.123456Z", "2026-06-04T14:00:00Z"}, // fractional dropped
+	}
+	for _, tc := range cases {
+		res, err := starlarklib.Call(thread, fn, starlarklib.Tuple{starlarklib.String(tc.in)}, nil)
+		if err != nil {
+			t.Fatalf("time.rfc3339_utc(%q): %v", tc.in, err)
+		}
+		got, _ := res.(starlarklib.String)
+		if string(got) != tc.want {
+			t.Fatalf("time.rfc3339_utc(%q) = %q, want %q", tc.in, string(got), tc.want)
+		}
+	}
+}
+
+// TestTimeRFC3339UTC_Malformed rejects non-RFC3339 input with an
+// InvalidArgument-prefixed error (surfaced as a structured ScriptError).
+func TestTimeRFC3339UTC_Malformed(t *testing.T) {
+	mod := timeModule()
+	fn, _ := mod.Attr("rfc3339_utc")
+	thread := &starlarklib.Thread{Name: "test"}
+	for _, bad := range []string{"not-a-time", "2026-06-04", "06/04/2026", ""} {
+		_, err := starlarklib.Call(thread, fn, starlarklib.Tuple{starlarklib.String(bad)}, nil)
+		if err == nil {
+			t.Fatalf("time.rfc3339_utc(%q) expected error, got nil", bad)
+		}
+		if !strings.Contains(err.Error(), "InvalidArgument") {
+			t.Fatalf("time.rfc3339_utc(%q) error = %q, want InvalidArgument", bad, err.Error())
+		}
+	}
+}
+
+// TestTimeRFC3339UTC_WrongArity rejects 0/2 args and non-string args.
+func TestTimeRFC3339UTC_WrongArity(t *testing.T) {
+	mod := timeModule()
+	fn, _ := mod.Attr("rfc3339_utc")
+	thread := &starlarklib.Thread{Name: "test"}
+	if _, err := starlarklib.Call(thread, fn, starlarklib.Tuple{}, nil); err == nil {
+		t.Fatal("time.rfc3339_utc() with 0 args expected error")
+	}
+	if _, err := starlarklib.Call(thread, fn, starlarklib.Tuple{starlarklib.MakeInt(1)}, nil); err == nil {
+		t.Fatal("time.rfc3339_utc(int) expected error")
+	}
+}
+
 // --- crypto.sha256 ---
 
 // TestCryptoSha256_KnownDigest verifies that crypto.sha256("") equals the

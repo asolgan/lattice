@@ -136,10 +136,16 @@ func emptyArrayIfNil(v any) any {
 //	 version: "1.0", projectedAt: "...", ephemeralGrants: [...]}
 //
 // Rows whose anchor isn't a bound identity are dropped (ErrSkipProjection),
-// identical to the primary wrapper. DEFAULT HARD delete applies via the
-// adapter: when an actor has no live grants the lens reprojects no row →
-// the key is hard-deleted → step-3 reads absent → AuthContextMismatch
-// (absence = denial, Contract #6 §6.8).
+// identical to the primary wrapper.
+//
+// The lens cypher anchors on a non-optional `MATCH (identity {key})`, so a
+// live actor always yields exactly one row whose `ephemeralGrants` collect
+// may contain degenerate `{taskKey:null}` artifacts when the actor has no
+// (live) task. The wrapper filters those out: a grant counts only when its
+// `taskKey` is a non-empty string. When zero real grants remain it returns
+// ErrDeleteProjection keyed at the actor's ephemeral key — the pipeline
+// emits a Delete and the default-hard adapter removes the key, so step-3
+// reads absent → AuthContextMismatch (absence = denial, Contract #6 §6.8).
 func NewEphemeralWrapper(lensDefKey string, projectionRevision func(actorKey string) uint64) pipeline.EnvelopeFn {
 	return func(row map[string]any, keys map[string]any, params map[string]any) (map[string]any, map[string]any, error) {
 		rowActor, _ := row["actorKey"].(string)
@@ -156,16 +162,46 @@ func NewEphemeralWrapper(lensDefKey string, projectionRevision func(actorKey str
 		}
 
 		envKey := ephemeralKey(actorKey)
+		grants := realEphemeralGrants(row["ephemeralGrants"])
+		if len(grants) == 0 {
+			// No live grants for this actor → delete the ephemeral key.
+			return nil, map[string]any{"key": envKey}, pipeline.ErrDeleteProjection
+		}
 		envelope := map[string]any{
 			"key":                    envKey,
 			"actor":                  actorKey,
 			"version":                Version,
 			"projectedAt":            params["projectedAt"],
 			"projectedFromRevisions": projectedFromRevisions(actorKey, lensDefKey, projectionRevision),
-			"ephemeralGrants":        emptyArrayIfNil(row["ephemeralGrants"]),
+			"ephemeralGrants":        grants,
 		}
 		return envelope, map[string]any{"key": envKey}, nil
 	}
+}
+
+// realEphemeralGrants returns the subset of a cypher `ephemeralGrants`
+// collect whose entries carry a non-empty string `taskKey`. The lens's
+// non-optional actor anchor plus OPTIONAL task matches mean a grant-less
+// actor still produces a degenerate `{taskKey:null,...}` collect artifact;
+// those are dropped so absence is real.
+func realEphemeralGrants(v any) []any {
+	list, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]any, 0, len(list))
+	for _, e := range list {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		tk, ok := m["taskKey"].(string)
+		if !ok || tk == "" {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // ephemeralKey converts an actor vertex key (vtx.identity.<NanoID>) into the

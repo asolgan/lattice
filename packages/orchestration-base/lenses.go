@@ -14,10 +14,12 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // dotted key + the `cap.ephemeral.` prefix are produced by the
 // capabilityenv.NewEphemeralWrapper envelope, not by the cypher.
 //
-// DEFAULT HARD delete: Bucket has no deleteMode override, so
-// when an actor's last grant expires / their task goes away the lens
-// reprojects to no row → the key is hard-deleted → absent → step-3 denies
-// with AuthContextMismatch (absence = denial, Contract #6 §6.8).
+// DEFAULT HARD delete: Bucket has no deleteMode override. When an actor's
+// last grant expires / their task goes away the cypher's OPTIONAL task
+// matches yield only degenerate (null-taskKey) collect entries; the
+// envelope wrapper drops those and, finding zero real grants, signals a
+// delete → the key is hard-deleted → absent → step-3 denies with
+// AuthContextMismatch (absence = denial, Contract #6 §6.8).
 func Lenses() []pkgmgr.LensSpec {
 	return []pkgmgr.LensSpec{
 		{
@@ -34,7 +36,8 @@ func Lenses() []pkgmgr.LensSpec {
 // capabilityEphemeralSpec is the link-sourced ephemeral-grant cypher.
 //
 // Per actor it walks (identity)<-[:assignedTo]-(task) (direct + a
-// reportsTo 2-hop for manager delegation), and for each task LINK-sources
+// reportsTo 2-hop where a manager inherits the tasks of the reports that
+// report to it — downward delegation), and for each task LINK-sources
 // the grant fields (Contract #10 §10.1 — task relationships are links, not
 // fields):
 //
@@ -62,7 +65,9 @@ OPTIONAL MATCH (task)-[:forOperation]->(op)
 OPTIONAL MATCH (task)-[:scopedTo]->(tgt)
 
 // --- manager delegation: reportsTo 2-hop ---
-OPTIONAL MATCH (identity)-[:reportsTo]->(report:identity)<-[:assignedTo]-(task2:task)
+// identity is the manager; each report reportsTo identity, so identity
+// inherits the tasks assigned to its reports (downward delegation).
+OPTIONAL MATCH (identity)<-[:reportsTo]-(report:identity)<-[:assignedTo]-(task2:task)
   WHERE task2.data.expiresAt > $now
 OPTIONAL MATCH (task2)-[:forOperation]->(op2)
 OPTIONAL MATCH (task2)-[:scopedTo]->(tgt2)

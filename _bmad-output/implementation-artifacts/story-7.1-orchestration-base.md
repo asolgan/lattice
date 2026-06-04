@@ -170,3 +170,145 @@ Landed in ONE pass (no split). **Drift-detection + adversarial CR: no blockers.*
 **Follow-up (out of scope, not blocking):** the Story 1.5.12 commit (`e92bef2`) shipped a handful of `// Story 1.5.12` history comments before CLAUDE.md existed — a small mechanical scrub to spin off separately.
 
 **Verdict: no blockers. Committing to main + watching CI.**
+
+---
+
+## 5. Fix-forward (retro-review) — 2026-06-04 (DS sub-agent)
+
+3-layer adversarial review surfaced four items. FIX 1–3 applied; FIX 4 is a genuine
+pre-existing security-semantics inversion → STOPPED and reported (not flipped), per brief.
+
+### FIX 1 — Ephemeral lens now produces REAL absence on no live grants (DONE)
+**Root cause (deeper than the brief assumed):** the brief expected `ErrSkipProjection` to
+trigger a delete. It does **not** — `pipeline.evaluate.go` treats `ErrSkipProjection` as
+"drop this row, leave any existing key untouched". The only existing delete-synthesis path
+fires when the actor **vertex** is gone (`reprojectActors`/`fetchVertexProps == nil`). A live,
+grant-less actor produces exactly one (degenerate) row whose key would persist forever.
+- Added `pipeline.ErrDeleteProjection` sentinel: an EnvelopeFn returning it (with the target
+  keys) makes the pipeline synthesize `EvalResult{Delete:true}` → the default-hard adapter
+  removes the key. Handled in both envelope-application loops in `evaluate.go`.
+- `capabilityenv.NewEphemeralWrapper` now filters the cypher's `ephemeralGrants` collect to
+  entries with a non-empty string `taskKey` (drops the null/degenerate artifacts the
+  OPTIONAL task matches emit). Zero real grants → `ErrDeleteProjection` keyed at
+  `cap.ephemeral.<actor>`; ≥1 real grant → envelope with only the real grants.
+- A3 comments in `lenses.go`/`envelope.go` rewritten to present-tense reality (filter →
+  delete signal → hard delete), no history narration.
+- `matchEphemeralGrant` untouched (byte-for-byte).
+- **Tests:** `capabilityenv/envelope_test.go` +3 (NoRealGrants→delete, EmptyCollect→delete,
+  RealGrant→projects-filtered). `ruleengine/full/bootstrap_e2e_test.go` +1
+  (`..._NoLiveGrants_NoRealRow`: carol/no-task + dave/expired-only → zero real grants at the
+  cypher level). Step-3 test (b) was **already covered** by existing
+  `TaskPath_AbsentEphemeralKey` (absent → AuthContextMismatch, single GET) +
+  `TaskPath_TargetMismatch`/`EmptyGrantsDoc` (present non-matching doc → AuthContextMismatch);
+  those remain valid and were not weakened.
+
+### FIX 2 — expiresAt validated + normalized in CreateTask (DONE; principled, not a hack)
+- **`$now` format determined:** `internal/refractor/pipeline/evaluate.go:149` sets
+  `now = time.Now().UTC().Format(time.RFC3339)` — UTC, whole-second, `Z`-suffixed.
+- **Starlark time facilities:** the sandbox exposes `state`/`op`/`ddl`/`nanoid`/`crypto`/`json`
+  only — **no `time` module**. The language cannot parse timestamps. Per the brief this is the
+  "Starlark can't cleanly parse" branch — but rather than a brittle string check I added a
+  **pure host builtin** following the exact `crypto.sha256`/`nanoid.new` precedent:
+  `time.rfc3339_utc(s)` parses RFC3339(Nano) and re-emits canonical UTC whole-second RFC3339.
+  It is deterministic (function of its argument only; **never reads the host wall clock**), so
+  it is sandbox-safe by the same principles as the other pure builtins. Registered as the
+  `time` global; CreateTask calls `time.rfc3339_utc(required_string(p,"expiresAt"))`, so a
+  `+09:00`/fractional/any-offset input normalizes to the same lexical form as `$now` →
+  `expiresAt > $now` is sound. Malformed input → `InvalidArgument`-prefixed ScriptError.
+- **Tests:** `starlark_builtins_test.go` +3 (normalize offset/fractional, malformed reject,
+  arity). `packages/orchestration-base/task_script_test.go` (new) +3 script-level
+  (offset-normalized, fractional-normalized, malformed-rejected). `TestCreateTask_Success`
+  still passes (its input is already canonical → identity normalization).
+
+### FIX 3 — empty type-segment guard in `parts_of` (DONE)
+- `ddls.go parts_of` now rejects `parts[1] == ""` (e.g. `vtx..<id>`) with an
+  `InvalidArgument: empty type segment` ScriptError. Test in `task_script_test.go`
+  (`..._EmptyTypeSegment_Rejected`, via a `scopedTo` with want_type=="").
+
+### FIX 4 — `reportsTo` 2-hop direction: GENUINELY INVERTED vs Contract #6 §6.6 → STOPPED, NOT FLIPPED
+**Verdict: this is a real escalation-vs-delegation inversion against a FROZEN contract.** Per
+the brief I did **not** touch the cypher; reporting evidence for Andrew/Winston to adjudicate.
+
+Evidence:
+- **Contract #1 §1.1** (`docs/contracts/01-addressing-and-envelope.md:21`): a `reportsTo` link
+  "points from the **report** (later-added) to the **manager** (pre-existing)" → relation
+  direction is `(report)-[:reportsTo]->(manager)`, source=subordinate, target=manager.
+- **Contract #6 §6.6** (`docs/contracts/06-capability-kv.md:275`): "Manager delegation: tasks
+  assigned to direct reports (via reportsTo) produce ephemeral grants **for the manager**" —
+  intended semantic = the **manager inherits the reports' tasks** (downward delegation).
+- **Lens cypher** (`packages/orchestration-base/lenses.go`):
+  `(identity)-[:reportsTo]->(report:identity)<-[:assignedTo]-(task2)`. Given the §1.1
+  direction, `(identity)-[:reportsTo]->X` binds identity=report, X=manager → it grants the
+  **subordinate** the **manager's** tasks = **upward escalation**, the inverse of §6.6.
+- **The bootstrap e2e encodes the escalation as expected:**
+  `ruleengine/full/bootstrap_e2e_test.go:208` does `putEdge("reportsTo","alice","bob")`
+  (alice reports to bob ⇒ bob is alice's manager) and then asserts **alice inherits bob's
+  task2** (lines 250-254) — i.e. the subordinate getting the manager's grant.
+- The Gate 3 bypass test (`capadv_cross_target_bleed_test.go`) does **not** create `reportsTo`
+  edges (it pre-seeds cap docs), so it does not constrain the 2-hop direction and stays green
+  either way — it only proves no *transitive* bleed, not the hop direction.
+
+This is carried byte-for-byte from the old bootstrap god-cypher (pre-existing), so it predates
+Story 7.1. Flipping the cypher to match §6.6 would also require flipping the e2e fixture/assert
+— a semantics change on a frozen contract surface. **Not done here. Escalate to Andrew.**
+
+### FIX 4 — RESOLVED 2026-06-04 (Andrew approved): arrow flipped to downward delegation
+Andrew approved correcting the inversion. Applied:
+- **Cypher** (`packages/orchestration-base/lenses.go`): the 2-hop now reads
+  `(identity)<-[:reportsTo]-(report:identity)<-[:assignedTo]-(task2:task)` — `identity` is the
+  **manager**, each `report` reportsTo it, so the manager inherits the tasks assigned to its
+  reports (downward delegation, matching §6.6 and Contract #1 §1.1). Only the `reportsTo` arrow
+  was flipped; the expiry `WHERE`, the `forOperation`/`scopedTo` walks, and the collect/RETURN
+  are unchanged. Spec/inline comments rewritten present-tense to describe downward delegation.
+- **E2E** (`ruleengine/full/bootstrap_e2e_test.go`, `TestCapabilityEphemeralLens_E2E`): keeps
+  the `alice reportsTo bob` fixture (bob = manager) but now projects for **both** actors and
+  asserts the secure direction: bob (manager) inherits alice's task1; bob also has his own
+  task2; **alice does NOT inherit bob's task2** (no upward escalation). taskexpired still filtered.
+- **Gate 2** (`internal/bypass/capadv_cross_target_bleed_test.go`): unchanged — it pre-seeds cap
+  docs and never creates `reportsTo` edges, so it does not constrain the hop direction. Its
+  "alice's entry contains only her own grant, no transitive bleed" assertion remains correct and
+  secure under the fix.
+
+### Gates (all green; docker stack up)
+- `go build ./...` ✅ · `make vet` ✅ · `golangci-lint run ./...` ✅ (0 issues)
+- `make verify-kernel` ✅ (ALL ASSERTIONS PASSED)
+- `make test-bypass` (Gate 2) ✅ 4/4 BLOCKED
+- `make test-capability-adversarial` (Gate 3) ✅ 4/4 (3 DEFENDED + 1 ACCEPTED-WINDOW; vector #4 DEFENDED)
+- `go test ./internal/processor/... ./internal/bootstrap/... ./packages/orchestration-base/...` ✅
+  (one flake: `processor/outbox.TestOutbox_NoDoublePublish` failed under full-package parallel
+  run — JetStream tmp-file race — green on isolated re-run; Deviation 14, untouched package)
+- `go test ./internal/refractor/...` ✅ (incl. capability/ephemeral/bootstrap e2e + pipeline)
+
+### Security-test changes (each a faithful re-source, NOT a weakened assertion)
+- `step5_execute_test.go`: `TestSandbox_ForbidsTime` → `TestSandbox_ForbidsWallClock` +
+  new `TestSandbox_TimeNormalizerOnly`. The `time` module is now a **bound, pure-only**
+  builtin (one function: `rfc3339_utc`); `time.now()` is no longer an unbound-name
+  SandboxViolation but a **no-such-attribute** error. The security property (no wall-clock
+  read) is unchanged and re-asserted; the new test confirms only the pure normalizer is
+  reachable.
+- `bypass_starlark_io_test.go` (Gate 2 vector #3): the `time-now` probe (standalone +
+  AllFourForbiddenOps subtest) now asserts the wall clock is **unreachable** (no-such-attribute
+  ScriptError) via new `assertWallClockUnreachable`, instead of the old "undefined: time"
+  SandboxViolation. HTTP/filesystem/os probes unchanged (still SandboxViolation). The vector
+  still BLOCKED. Faithful: same guarantee (script cannot read the host clock), updated for the
+  bound pure-time module.
+
+### Test count (from diff)
++13 new test functions: capabilityenv +3, bootstrap_e2e +1, starlark_builtins +3, task_script
+(new file) +6, step5_execute +1 (net +2: one renamed, one added). 2 Gate-2 security tests
+re-pointed (faithful).
+
+### Deviations / halts
+- HALT (as instructed) on **FIX 4** — genuine pre-existing escalation/delegation inversion vs
+  frozen Contract #6 §6.6; reported with evidence, cypher untouched.
+- FIX 2 implemented as a **pure host builtin** (not in-script parsing, which Starlark can't do;
+  not a brittle string check) — flagged for review as a sandbox-surface addition.
+- **Latent bug noted (out of FIX scope, not changed):** `evaluate.go`'s actor-tombstone
+  shortcut (line ~78) and `reprojectActors`'s missing-actor branch both delete
+  `capabilityKeyForActor` = `cap.<actor>`, NOT `cap.ephemeral.<actor>`. On the **ephemeral**
+  pipeline, a soft-deleted/absent actor would therefore delete the wrong key, leaving a stale
+  `cap.ephemeral.<actor>`. FIX 1 fully covers the *grant-expiry/removal* absence path (the A3
+  mechanism); the *actor-deletion* path on the ephemeral pipeline is a separate gap worth a
+  follow-up.
+- Outbox flake under parallel run (Dev 14), green isolated.
+- Reverted auto-regenerated gate2/gate3 report churn. Did NOT commit.

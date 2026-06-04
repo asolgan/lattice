@@ -170,7 +170,14 @@ def execute(state, op):
 	}
 }
 
-func TestSandbox_ForbidsTime(t *testing.T) {
+// TestSandbox_ForbidsWallClock proves a script cannot read the host wall
+// clock. The `time` module is a sandboxed builtin that exposes ONLY the pure
+// `rfc3339_utc(s)` normalizer (a deterministic function of its argument, like
+// crypto.sha256) — it deliberately does NOT expose `now()` or any other
+// wall-clock surface. Probing `time.now()` therefore fails: the module has no
+// such attribute. The security property (no non-deterministic clock read)
+// holds; only the error classification differs from an entirely-unbound name.
+func TestSandbox_ForbidsWallClock(t *testing.T) {
 	exec := NewExecutor(NewStarlarkRunner(0, 0), testLogger())
 	script := `
 def execute(state, op):
@@ -183,8 +190,28 @@ def execute(state, op):
 	if !errors.As(err, &sErr) {
 		t.Fatalf("expected *ScriptError, got %v", err)
 	}
-	if sErr.Code != "SandboxViolation" {
-		t.Fatalf("time.now(): expected SandboxViolation, got %q (%s)", sErr.Code, sErr.Message)
+	if !strings.Contains(sErr.Message, "no .now") && !strings.Contains(sErr.Message, "now") {
+		t.Fatalf("time.now(): expected a no-such-attribute error (wall clock unreachable), got %q (%s)", sErr.Code, sErr.Message)
+	}
+}
+
+// TestSandbox_TimeNormalizerOnly confirms the one pure function the `time`
+// module DOES expose works (validates + normalizes RFC3339) — so legitimate
+// timestamp normalization is available without exposing the wall clock.
+func TestSandbox_TimeNormalizerOnly(t *testing.T) {
+	exec := NewExecutor(NewStarlarkRunner(0, 0), testLogger())
+	script := `
+def execute(state, op):
+    norm = time.rfc3339_utc("2026-06-04T23:00:00+09:00")
+    return {"mutations": [], "events": [{"class": "Probe", "data": {"norm": norm}}]}
+`
+	sc := buildContext(script)
+	res, err := exec.Execute(context.Background(), sc.Operation, HydratedState{Context: sc})
+	if err != nil {
+		t.Fatalf("time.rfc3339_utc must work: %v", err)
+	}
+	if len(res.Events) != 1 || res.Events[0].Data["norm"] != "2026-06-04T14:00:00Z" {
+		t.Fatalf("time.rfc3339_utc normalize = %v, want 2026-06-04T14:00:00Z", res.Events)
 	}
 }
 

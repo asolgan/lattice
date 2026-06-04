@@ -2,6 +2,7 @@
 package capabilityenv
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
@@ -70,5 +71,93 @@ func TestWrapper_SkipsNonIdentityActorKey(t *testing.T) {
 	_, _, err := fn(row, map[string]any{}, makeParams())
 	if err != pipeline.ErrSkipProjection {
 		t.Fatalf("expected ErrSkipProjection for non-identity actorKey, got %v", err)
+	}
+}
+
+// realGrant builds a non-degenerate ephemeral grant collect entry.
+func realGrant(taskKey string) map[string]any {
+	return map[string]any{
+		"source":        "task",
+		"taskKey":       taskKey,
+		"operationType": "approve",
+		"target":        "vtx.leaseapp." + testIdentityActorID,
+		"expiresAt":     "2026-06-04T14:00:00Z",
+	}
+}
+
+// TestEphemeralWrapper_NoRealGrants_Deletes: a live actor whose collect
+// contains only degenerate (null-taskKey) artifacts has zero real grants →
+// the wrapper signals ErrDeleteProjection keyed at cap.ephemeral.<actor> so
+// the key is hard-deleted (absence = denial). This is the A3 mechanism.
+func TestEphemeralWrapper_NoRealGrants_Deletes(t *testing.T) {
+	actorKey := "vtx.identity." + testIdentityActorID
+	fn := NewEphemeralWrapper("vtx.meta.test-lens", func(string) uint64 { return 0 })
+
+	// The cypher's OPTIONAL task matches over a grant-less actor produce a
+	// degenerate collect entry with a null taskKey.
+	row := map[string]any{
+		"actorKey": actorKey,
+		"ephemeralGrants": []any{
+			map[string]any{"source": "task", "taskKey": nil, "operationType": nil, "target": nil, "expiresAt": nil},
+		},
+	}
+	env, keys, err := fn(row, map[string]any{}, makeParams())
+	if !errors.Is(err, pipeline.ErrDeleteProjection) {
+		t.Fatalf("expected ErrDeleteProjection for grant-less actor, got %v", err)
+	}
+	if env != nil {
+		t.Fatalf("delete signal must carry no envelope, got %v", env)
+	}
+	if got := keys["key"]; got != "cap.ephemeral.identity."+testIdentityActorID {
+		t.Fatalf("delete key = %v, want cap.ephemeral.identity.%s", got, testIdentityActorID)
+	}
+}
+
+// TestEphemeralWrapper_EmptyCollect_Deletes: an empty ephemeralGrants array
+// (no entries at all) also yields a delete — no live grant.
+func TestEphemeralWrapper_EmptyCollect_Deletes(t *testing.T) {
+	actorKey := "vtx.identity." + testIdentityActorID
+	fn := NewEphemeralWrapper("vtx.meta.test-lens", func(string) uint64 { return 0 })
+
+	row := map[string]any{"actorKey": actorKey, "ephemeralGrants": []any{}}
+	_, _, err := fn(row, map[string]any{}, makeParams())
+	if !errors.Is(err, pipeline.ErrDeleteProjection) {
+		t.Fatalf("expected ErrDeleteProjection for empty collect, got %v", err)
+	}
+}
+
+// TestEphemeralWrapper_RealGrant_Projects: at least one real grant → the
+// wrapper emits the envelope carrying only the real grants (degenerate
+// artifacts filtered out).
+func TestEphemeralWrapper_RealGrant_Projects(t *testing.T) {
+	actorKey := "vtx.identity." + testIdentityActorID
+	fn := NewEphemeralWrapper("vtx.meta.test-lens", func(string) uint64 { return 0 })
+
+	taskKey := "vtx.task." + testRoleActorID
+	row := map[string]any{
+		"actorKey": actorKey,
+		"ephemeralGrants": []any{
+			realGrant(taskKey),
+			// a degenerate artifact alongside the real grant must be dropped
+			map[string]any{"source": "task", "taskKey": nil},
+		},
+	}
+	env, keys, err := fn(row, map[string]any{}, makeParams())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := keys["key"]; got != "cap.ephemeral.identity."+testIdentityActorID {
+		t.Fatalf("key = %v, want cap.ephemeral.identity.%s", got, testIdentityActorID)
+	}
+	grants, ok := env["ephemeralGrants"].([]any)
+	if !ok {
+		t.Fatalf("ephemeralGrants type = %T, want []any", env["ephemeralGrants"])
+	}
+	if len(grants) != 1 {
+		t.Fatalf("real grants = %d, want 1 (degenerate artifact must be filtered)", len(grants))
+	}
+	g := grants[0].(map[string]any)
+	if g["taskKey"] != taskKey {
+		t.Fatalf("grant taskKey = %v, want %v", g["taskKey"], taskKey)
 	}
 }

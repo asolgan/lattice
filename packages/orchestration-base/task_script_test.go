@@ -1,0 +1,140 @@
+// Script-level unit tests for the task DDL CreateTask branch.
+//
+// These run the DDL's Starlark script directly through the Processor's
+// StarlarkRunner — no NATS — so the validation/normalization branches
+// (expiresAt RFC3339 normalize, empty type-segment guard) are exercised in
+// isolation from the commit pipeline.
+package orchestrationbase_test
+
+import (
+	"context"
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/asolgan/lattice/internal/processor"
+	orchestrationbase "github.com/asolgan/lattice/packages/orchestration-base"
+)
+
+const (
+	tsReqID      = "BBscripttestHJKMNPQR"
+	tsAssignee   = "vtx.identity.BBassigneeHJKMNPQRST"
+	tsForOp      = "vtx.meta.BBapproveBpHJKMNPQRS"
+	tsScopedTo   = "vtx.leaseapp.BBease4ppHJKMNPQRSTU"
+	tsScopedID   = "BBease4ppHJKMNPQRSTU"
+	tsAssigneeID = "BBassigneeHJKMNPQRST"
+)
+
+// taskScript returns the CreateTask DDL script body.
+func taskScript(t *testing.T) string {
+	t.Helper()
+	for _, d := range orchestrationbase.DDLs() {
+		if d.CanonicalName == "task" {
+			return d.Script
+		}
+	}
+	t.Fatal("task DDL not found")
+	return ""
+}
+
+// aliveEndpoints hydrates the three CreateTask link endpoints as live vertices.
+func aliveEndpoints() map[string]processor.VertexDoc {
+	return map[string]processor.VertexDoc{
+		tsAssignee: {Key: tsAssignee, Class: "identity", Data: map[string]any{"state": "claimed"}},
+		tsForOp:    {Key: tsForOp, Class: "meta", Data: map[string]any{"operationType": "ApproveLeaseApplication"}},
+		tsScopedTo: {Key: tsScopedTo, Class: "leaseapp", Data: map[string]any{"state": "pending"}},
+	}
+}
+
+func runCreateTask(t *testing.T, scopedTo, expiresAt string, endpoints map[string]processor.VertexDoc) (processor.ScriptResult, error) {
+	t.Helper()
+	payload, _ := json.Marshal(map[string]any{
+		"assignee":     tsAssignee,
+		"forOperation": tsForOp,
+		"scopedTo":     scopedTo,
+		"expiresAt":    expiresAt,
+	})
+	sc := processor.ScriptContext{
+		Operation: &processor.OperationEnvelope{
+			RequestID:     tsReqID,
+			Lane:          processor.LaneDefault,
+			OperationType: "CreateTask",
+			Actor:         tsAssignee,
+			SubmittedAt:   "2026-06-04T00:00:00Z",
+			Payload:       payload,
+		},
+		Hydrated:     endpoints,
+		ScriptSource: taskScript(t),
+		ScriptClass:  "task",
+	}
+	return processor.NewStarlarkRunner(0, 0).Run(context.Background(), sc)
+}
+
+// taskExpiresAt pulls the expiresAt scalar from the created task vertex mutation.
+func taskExpiresAt(t *testing.T, res processor.ScriptResult) string {
+	t.Helper()
+	for _, m := range res.Mutations {
+		if strings.HasPrefix(m.Key, "vtx.task.") {
+			data, _ := m.Document["data"].(map[string]any)
+			s, _ := data["expiresAt"].(string)
+			return s
+		}
+	}
+	t.Fatal("no task vertex mutation produced")
+	return ""
+}
+
+// TestCreateTask_NormalizesOffsetExpiresAt: a +offset expiresAt is normalized
+// to canonical UTC whole-second RFC3339 (the form the lens $now uses), so the
+// lexical expiresAt > now comparison is sound.
+func TestCreateTask_NormalizesOffsetExpiresAt(t *testing.T) {
+	res, err := runCreateTask(t, tsScopedTo, "2026-06-04T23:00:00+09:00", aliveEndpoints())
+	if err != nil {
+		t.Fatalf("CreateTask with offset expiresAt: unexpected error: %v", err)
+	}
+	if got := taskExpiresAt(t, res); got != "2026-06-04T14:00:00Z" {
+		t.Fatalf("normalized expiresAt = %q, want 2026-06-04T14:00:00Z", got)
+	}
+}
+
+// TestCreateTask_NormalizesFractionalExpiresAt: fractional seconds are dropped.
+func TestCreateTask_NormalizesFractionalExpiresAt(t *testing.T) {
+	res, err := runCreateTask(t, tsScopedTo, "2026-06-04T14:00:00.987654Z", aliveEndpoints())
+	if err != nil {
+		t.Fatalf("CreateTask with fractional expiresAt: unexpected error: %v", err)
+	}
+	if got := taskExpiresAt(t, res); got != "2026-06-04T14:00:00Z" {
+		t.Fatalf("normalized expiresAt = %q, want 2026-06-04T14:00:00Z", got)
+	}
+}
+
+// TestCreateTask_MalformedExpiresAt_Rejected: a non-RFC3339 expiresAt is
+// rejected as a structured ScriptError before any mutation is produced.
+func TestCreateTask_MalformedExpiresAt_Rejected(t *testing.T) {
+	_, err := runCreateTask(t, tsScopedTo, "next-tuesday", aliveEndpoints())
+	if err == nil {
+		t.Fatal("malformed expiresAt: expected rejection, got nil error")
+	}
+	if !strings.Contains(err.Error(), "InvalidArgument") {
+		t.Fatalf("malformed expiresAt error = %q, want InvalidArgument", err.Error())
+	}
+}
+
+// TestCreateTask_EmptyTypeSegment_Rejected: a scopedTo key whose type segment
+// is empty (vtx..<id>) is rejected (FIX 3 parts_of guard).
+func TestCreateTask_EmptyTypeSegment_Rejected(t *testing.T) {
+	badScoped := "vtx.." + tsScopedID
+	// Hydrate the malformed key as alive so the rejection is the shape guard,
+	// not the vertex_alive check.
+	eps := aliveEndpoints()
+	delete(eps, tsScopedTo)
+	eps[badScoped] = processor.VertexDoc{Key: badScoped, Class: "leaseapp"}
+
+	_, err := runCreateTask(t, badScoped, "2026-06-04T14:00:00Z", eps)
+	if err == nil {
+		t.Fatal("empty type segment: expected rejection, got nil error")
+	}
+	if !strings.Contains(err.Error(), "empty type segment") {
+		t.Fatalf("empty type segment error = %q, want 'empty type segment'", err.Error())
+	}
+}

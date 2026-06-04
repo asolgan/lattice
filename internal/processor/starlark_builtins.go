@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"math/rand/v2"
+	"time"
 
 	starlarklib "go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
@@ -185,6 +186,46 @@ func cryptoModule() *starlarkstruct.Struct {
 		"sha256":              sha256Fn,
 		"sha256NanoID":        sha256NanoIDFn,
 		"constant_time_equal": constantTimeEqualFn,
+	})
+}
+
+// timeModule returns a Starlark struct exposing:
+//   - time.rfc3339_utc(s) → s parsed as an RFC3339 timestamp and re-emitted
+//     in canonical UTC form (whole seconds, "Z" suffix), e.g.
+//     "2026-06-04T23:00:00+09:00" → "2026-06-04T14:00:00Z".
+//
+// It is pure (deterministic, no I/O, no wall-clock read): the output is a
+// function of the input string only — the host clock is never consulted.
+// This is the same sandbox-safe builtin pattern as crypto.sha256 / nanoid.
+//
+// The canonical form matches the format the Refractor populates `$now` with
+// (`time.Now().UTC().Format(time.RFC3339)`), so a lens cypher comparing
+// `task.data.expiresAt > $now` lexically is sound: both sides are UTC,
+// whole-second, "Z"-suffixed RFC3339. Callers normalize timestamps before
+// they are stored as task scalars.
+//
+// A malformed input raises a Starlark error; CreateTask surfaces it as a
+// structured ScriptError ("InvalidArgument: expiresAt: ...").
+func timeModule() *starlarkstruct.Struct {
+	rfc3339UTCFn := starlarklib.NewBuiltin("rfc3339_utc", func(_ *starlarklib.Thread, _ *starlarklib.Builtin, args starlarklib.Tuple, kwargs []starlarklib.Tuple) (starlarklib.Value, error) {
+		if len(args) != 1 || len(kwargs) != 0 {
+			return nil, errBuiltin("time.rfc3339_utc(s) takes exactly 1 positional argument")
+		}
+		s, ok := args[0].(starlarklib.String)
+		if !ok {
+			return nil, errBuiltin("time.rfc3339_utc: argument must be a string, got " + args[0].Type())
+		}
+		// Accept both whole-second and fractional-second RFC3339; both
+		// normalize to whole-second UTC. RFC3339Nano parses both forms.
+		t, err := time.Parse(time.RFC3339Nano, string(s))
+		if err != nil {
+			return nil, errBuiltin("InvalidArgument: not a valid RFC3339 timestamp: " + string(s))
+		}
+		return starlarklib.String(t.UTC().Format(time.RFC3339)), nil
+	})
+
+	return starlarkstruct.FromStringDict(starlarkstruct.Default, starlarklib.StringDict{
+		"rfc3339_utc": rfc3339UTCFn,
 	})
 }
 

@@ -61,6 +61,12 @@ func (r *StarlarkRunner) Run(ctx context.Context, sc ScriptContext) (ScriptResul
 		// crypto.sha256(s) — pure SHA-256 hash builtin. Deterministic,
 		// side-effect-free: safe under sandbox principles.
 		"crypto": cryptoModule(),
+		// time.rfc3339_utc(s) — parse + normalize an RFC3339 timestamp to
+		// canonical UTC whole-second form. Pure: no wall-clock read, output
+		// is a function of the input only. Lets ops validate + normalize
+		// caller-supplied timestamps so lexical comparisons against the
+		// Refractor's `$now` are sound. Does NOT expose the host clock.
+		"time": timeModule(),
 		// json.decode(s) / json.encode(v) — standard Starlark JSON module.
 		// Pure (no I/O, deterministic): safe under sandbox principles.
 		// Used by MetaRootDDLScript's meta.lens branch to parse the spec
@@ -68,8 +74,8 @@ func (r *StarlarkRunner) Run(ctx context.Context, sc ScriptContext) (ScriptResul
 		"json": starlarkjson.Module,
 	}
 
-	// Compile. Resolve errors (referencing `os`, `time`, etc. without binding)
-	// fire here because go.starlark.net resolves names at compile time when
+	// Compile. Resolve errors (referencing an unbound name like `os` without
+	// binding) fire here because go.starlark.net resolves names at compile time when
 	// `globals.Has` is supplied as the predeclared probe.
 	//nolint:staticcheck // SA1019: SourceProgramOptions migration deferred; current API verified safe for the sandboxed use case
 	_, prog, err := starlarklib.SourceProgram("<script>", sc.ScriptSource, globals.Has)

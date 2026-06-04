@@ -113,6 +113,8 @@ def parts_of(key, name, want_type):
     parts = split_key(key)
     if len(parts) < 3 or parts[0] != "vtx":
         fail("InvalidArgument: " + name + ": required vtx.<type>.<NanoID>; got " + key)
+    if parts[1] == "":
+        fail("InvalidArgument: " + name + ": empty type segment; required vtx.<type>.<NanoID>; got " + key)
     if want_type != "" and parts[1] != want_type:
         fail("InvalidArgument: " + name + ": required vtx." + want_type + ".<NanoID>; got " + key)
     return parts[1], parts[2]
@@ -135,7 +137,12 @@ def execute(state, op):
         assignee = required_string(p, "assignee")
         for_op = required_string(p, "forOperation")
         scoped_to = required_string(p, "scopedTo")
-        expires_at = required_string(p, "expiresAt")
+        # Validate + normalize expiresAt to canonical UTC whole-second RFC3339
+        # (the same form the Refractor now param uses), so the lens lexical
+        # expiresAt > now compare is sound regardless of the caller offset /
+        # fractional-second formatting. Malformed input is rejected with a
+        # structured ScriptError.
+        expires_at = time.rfc3339_utc(required_string(p, "expiresAt"))
 
         # Validate endpoint key shapes.
         _, assignee_id = parts_of(assignee, "assignee", "identity")
