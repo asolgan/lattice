@@ -49,10 +49,16 @@ func startKV(t *testing.T) jetstream.KeyValue {
 	return kv
 }
 
-// newAdapter is a test helper that requires New to succeed.
+// newAdapter is a test helper that requires New to succeed, using the default
+// hard delete mode.
 func newAdapter(t *testing.T, kv jetstream.KeyValue, keyOrder []string) *adapter.NatsKVAdapter {
+	return newAdapterMode(t, kv, keyOrder, adapter.DeleteModeHard)
+}
+
+// newAdapterMode is like newAdapter but lets the caller choose the delete mode.
+func newAdapterMode(t *testing.T, kv jetstream.KeyValue, keyOrder []string, mode adapter.DeleteMode) *adapter.NatsKVAdapter {
 	t.Helper()
-	a, err := adapter.New(kv, keyOrder)
+	a, err := adapter.New(kv, keyOrder, mode)
 	require.NoError(t, err)
 	return a
 }
@@ -62,9 +68,9 @@ func TestNatsKVAdapter_New_EmptyKeyOrder(t *testing.T) {
 		t.Skip("skipping NATS integration test in short mode")
 	}
 	kv := startKV(t)
-	_, err := adapter.New(kv, nil)
+	_, err := adapter.New(kv, nil, adapter.DeleteModeHard)
 	require.Error(t, err)
-	_, err = adapter.New(kv, []string{})
+	_, err = adapter.New(kv, []string{}, adapter.DeleteModeHard)
 	require.Error(t, err)
 }
 
@@ -134,9 +140,9 @@ func TestNatsKVAdapter_Upsert_AbsentKeyField(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestNatsKVAdapter_Delete(t *testing.T) {
+func TestNatsKVAdapter_Delete_Hard(t *testing.T) {
 	kv := startKV(t)
-	a := newAdapter(t, kv, []string{"id"})
+	a := newAdapterMode(t, kv, []string{"id"}, adapter.DeleteModeHard)
 
 	keys := map[string]any{"id": "e1"}
 
@@ -144,18 +150,48 @@ func TestNatsKVAdapter_Delete(t *testing.T) {
 
 	require.NoError(t, a.Delete(context.Background(), keys))
 
-	// Story 2.1 AC #4: NATS-KV Delete writes a tombstone document
-	// {"isDeleted": true}, NOT a physical KV delete.
+	// Story 1.5.12: the default hard mode physically removes the key.
+	_, err := kv.Get(context.Background(), "e1")
+	require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+}
+
+func TestNatsKVAdapter_Delete_Soft(t *testing.T) {
+	kv := startKV(t)
+	a := newAdapterMode(t, kv, []string{"id"}, adapter.DeleteModeSoft)
+
+	keys := map[string]any{"id": "e1"}
+
+	require.NoError(t, a.Upsert(context.Background(), keys, map[string]any{"x": 1}))
+
+	require.NoError(t, a.Delete(context.Background(), keys))
+
+	// Soft mode writes a tombstone document {"isDeleted": true} instead of a
+	// physical KV delete (opt-in audit/forensic behavior).
 	entry, err := kv.Get(context.Background(), "e1")
 	require.NoError(t, err)
 	require.Contains(t, string(entry.Value()), `"isDeleted":true`)
 }
 
-func TestNatsKVAdapter_Delete_NeverExisted(t *testing.T) {
+func TestNatsKVAdapter_Delete_NeverExisted_Hard(t *testing.T) {
 	kv := startKV(t)
-	a := newAdapter(t, kv, []string{"id"})
+	a := newAdapterMode(t, kv, []string{"id"}, adapter.DeleteModeHard)
 
-	// Deleting a key that was never upserted must succeed (no-op / idempotent).
+	// Hard-deleting a key that was never upserted must succeed (no-op /
+	// idempotent): jetstream.ErrKeyNotFound is swallowed.
+	err := a.Delete(context.Background(), map[string]any{"id": "ghost"})
+	require.NoError(t, err)
+
+	// And the key must still be absent afterwards.
+	_, gErr := kv.Get(context.Background(), "ghost")
+	require.ErrorIs(t, gErr, jetstream.ErrKeyNotFound)
+}
+
+func TestNatsKVAdapter_Delete_NeverExisted_Soft(t *testing.T) {
+	kv := startKV(t)
+	a := newAdapterMode(t, kv, []string{"id"}, adapter.DeleteModeSoft)
+
+	// Soft-deleting a key that was never upserted must succeed (Put creates a
+	// tombstone) — idempotent.
 	err := a.Delete(context.Background(), map[string]any{"id": "ghost"})
 	require.NoError(t, err)
 }

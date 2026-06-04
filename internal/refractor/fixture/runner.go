@@ -50,8 +50,10 @@ func RunFixture(t *testing.T, fix *Fixture, adjKV, coreKV, targetKV jetstream.Ke
 		}
 	}
 
-	// Build adapter using the rule's key order.
-	adpt, err := adapter.New(targetKV, []string(fix.Rule.Into.Key))
+	// Build adapter using the rule's key order and delete mode (default hard).
+	deleteMode, err := adapter.ParseDeleteMode(fix.Rule.Into.DeleteMode)
+	require.NoError(t, err, "fixture: parse delete mode")
+	adpt, err := adapter.New(targetKV, []string(fix.Rule.Into.Key), deleteMode)
 	require.NoError(t, err, "fixture: create nats_kv adapter")
 
 	// Steps 3+4: For each input (in list order): seed Core KV, evaluate, write.

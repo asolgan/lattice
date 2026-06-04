@@ -34,14 +34,29 @@ Refractor inherits the 4-tier failure model from Materializer
   and surfaced both on `lattice.refractor.metrics.<lensId>` and as the
   `consumerLag` field on the per-lens health entry.
 
-## Tombstone semantics
+## Delete-projection semantics
 
-Refractor's adapters NEVER physically delete:
+Delete projection is **per-lens and mode-dependent** (`targetConfig.deleteMode`),
+with **hard delete as the default** (Story 1.5.12). Lineage already lives in Core
+KV, so the derived view reflects deletions as removals unless a lens explicitly
+opts into tombstones for audit/forensic targets.
 
-- Postgres: `UPDATE ... SET is_deleted=true, deleted_at=NOW()`
-- NATS-KV: PUT a tombstone document `{"isDeleted": true}` (rather than `KVDelete`)
+- **`hard` (default)** — physically removes the row/key:
+  - Postgres: `DELETE FROM "<table>" WHERE <keys>`
+  - NATS-KV: `kv.Delete(key)`
+- **`soft` (opt-in)** — retains a tombstone:
+  - Postgres: `UPDATE ... SET is_deleted=true, deleted_at=NOW()` (requires the
+    `is_deleted` / `deleted_at` columns)
+  - NATS-KV: PUT a tombstone document `{"isDeleted": true}` (rather than `kv.Delete`)
 
-Soft-delete preserves lineage for downstream audit and forensics.
+Both modes are idempotent: deleting an absent row/key is a no-op, not an error.
+
+The **capability plane uses the default hard delete**: the capability authorizer
+treats an absent key (`NoCapabilityEntry`) and a tombstone doc identically as
+denial (Contract #6 §6.8, "absence equals denial"), and the freshness-ceiling
+comparison that originally motivated soft-delete on this plane was removed in
+Story 1.5.4. Hard delete is the contract-aligned semantics and avoids indefinite
+tombstone accumulation in the capability KV.
 
 ## Control-plane authorization (currently stubbed)
 

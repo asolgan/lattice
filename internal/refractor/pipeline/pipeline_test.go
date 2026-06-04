@@ -137,12 +137,19 @@ func compileSimplePlan(t *testing.T, query string, keyFields []string) *simple.Q
 	return plan
 }
 
-// newTargetKV creates a fresh target NATS KV bucket and wraps it with NatsKVAdapter.
+// newTargetKV creates a fresh target NATS KV bucket and wraps it with a
+// hard-delete NatsKVAdapter (the default mode).
 func newTargetKV(t *testing.T, env *pipelineEnv, bucketName string, keyOrder []string) (jetstream.KeyValue, *adapter.NatsKVAdapter) {
+	return newTargetKVMode(t, env, bucketName, keyOrder, adapter.DeleteModeHard)
+}
+
+// newTargetKVMode is like newTargetKV but lets the caller choose the adapter's
+// delete mode (hard removes the key; soft writes a tombstone).
+func newTargetKVMode(t *testing.T, env *pipelineEnv, bucketName string, keyOrder []string, mode adapter.DeleteMode) (jetstream.KeyValue, *adapter.NatsKVAdapter) {
 	t.Helper()
 	kv, err := env.js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{Bucket: bucketName})
 	require.NoError(t, err)
-	adpt, err := adapter.New(kv, keyOrder)
+	adpt, err := adapter.New(kv, keyOrder, mode)
 	require.NoError(t, err)
 	return kv, adpt
 }
@@ -263,7 +270,8 @@ func TestPipeline_Upsert(t *testing.T) {
 	assert.Equal(t, "a1", got["agreement_id"])
 }
 
-// TestPipeline_Delete verifies isDeleted=true triggers adapter.Delete and removes the KV key (AC #1, #2).
+// TestPipeline_Delete verifies isDeleted=true triggers adapter.Delete on a
+// default (hard) lens and physically removes the KV key (Story 1.5.12 AC #1, #2).
 func TestPipeline_Delete(t *testing.T) {
 	env := startPipelineEnv(t)
 
@@ -284,8 +292,39 @@ func TestPipeline_Delete(t *testing.T) {
 		return err == nil
 	})
 
-	// Now soft-delete. Story 2.1 AC #4: NATS-KV adapter writes a
-	// tombstone document {"isDeleted": true} instead of physical KVDelete.
+	// Now project the tombstone. The default hard-delete lens removes the key
+	// from the target entirely (lineage already lives in Core KV).
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementA2, map[string]any{"id": "a2", "isDeleted": true})
+	pollUntil(t, 2*time.Second, func() bool {
+		_, err := targetKV.Get(context.Background(), "a2")
+		return errors.Is(err, jetstream.ErrKeyNotFound)
+	})
+}
+
+// TestPipeline_Delete_SoftMode verifies a deleteMode:soft lens retains a
+// tombstone document {"isDeleted": true} instead of removing the key
+// (Story 1.5.12 — opt-in audit/forensic behavior).
+func TestPipeline_Delete_SoftMode(t *testing.T) {
+	env := startPipelineEnv(t)
+
+	plan := compileSimplePlan(t,
+		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+		[]string{"agreement_id"})
+
+	targetKV, adpt := newTargetKVMode(t, env, "target-delete-soft", []string{"agreement_id"}, adapter.DeleteModeSoft)
+
+	p, err := pipeline.New("rule-2-soft", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, adpt, nil)
+	require.NoError(t, err)
+	startPipeline(t, env, p, "rule-2-soft")
+
+	// Upsert first.
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementA2, map[string]any{"id": "a2", "isDeleted": false})
+	pollUntil(t, 2*time.Second, func() bool {
+		_, err := targetKV.Get(context.Background(), "a2")
+		return err == nil
+	})
+
+	// Project the tombstone. Soft mode retains the key with isDeleted=true.
 	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementA2, map[string]any{"id": "a2", "isDeleted": true})
 	pollUntil(t, 2*time.Second, func() bool {
 		entry, err := targetKV.Get(context.Background(), "a2")

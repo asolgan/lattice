@@ -194,6 +194,43 @@ func TestParse_RetryOptional(t *testing.T) {
 	assert.Equal(t, "", r.Retry.Backoff)
 }
 
+func TestParse_DeleteMode_DefaultHard(t *testing.T) {
+	// No delete_mode set → defaults to "hard" (Story 1.5.12).
+	r, err := lens.Parse(validRuleYAML())
+	require.NoError(t, err)
+	assert.Equal(t, "hard", r.Into.DeleteMode)
+}
+
+func TestParse_DeleteMode_Soft(t *testing.T) {
+	y := []byte(`
+id: test-rule
+match: MATCH (a:agreement) RETURN a.id AS agreement_id
+into:
+  target: nats_kv
+  bucket: agreements
+  key: agreement_id
+  delete_mode: soft
+`)
+	r, err := lens.Parse(y)
+	require.NoError(t, err)
+	assert.Equal(t, "soft", r.Into.DeleteMode)
+}
+
+func TestParse_DeleteMode_Invalid(t *testing.T) {
+	y := []byte(`
+id: test-rule
+match: MATCH (a:agreement) RETURN a.id AS agreement_id
+into:
+  target: nats_kv
+  bucket: agreements
+  key: agreement_id
+  delete_mode: bogus
+`)
+	_, err := lens.Parse(y)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "delete")
+}
+
 func TestParse_PostgresTarget(t *testing.T) {
 	y := []byte(`
 id: test-rule

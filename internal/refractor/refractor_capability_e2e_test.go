@@ -156,7 +156,7 @@ func TestRefractor_CapabilityLens_E2E(t *testing.T) {
 
 	targetKV, err := js.KeyValue(ctx, capabilityRule.Into.Bucket)
 	require.NoError(t, err)
-	adpt, err := adapter.New(targetKV, capabilityRule.Into.Key)
+	adpt, err := adapter.New(targetKV, capabilityRule.Into.Key, adapter.DeleteModeHard)
 	require.NoError(t, err)
 
 	p, err := pipeline.New(capabilityRule.ID, "nats_kv",

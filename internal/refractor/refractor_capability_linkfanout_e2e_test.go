@@ -141,7 +141,7 @@ func TestRefractor_CapabilityLens_LinkFanOut_E2E(t *testing.T) {
 
 	capTargetKV, err := js.KeyValue(ctx, capabilityRule.Into.Bucket)
 	require.NoError(t, err)
-	capAdpt, err := adapter.New(capTargetKV, capabilityRule.Into.Key)
+	capAdpt, err := adapter.New(capTargetKV, capabilityRule.Into.Key, adapter.DeleteModeHard)
 	require.NoError(t, err)
 
 	capP, err := pipeline.New(capabilityRule.ID, "nats_kv",

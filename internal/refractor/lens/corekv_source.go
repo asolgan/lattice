@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/asolgan/lattice/internal/refractor/adapter"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -88,14 +89,16 @@ type TargetPostgresConfig struct {
 	DSN          string   `json:"dsn"`
 	Table        string   `json:"table"`
 	Key          []string `json:"key"`
-	QueryTimeout string   `json:"queryTimeout"` // optional, e.g., "5s"
+	QueryTimeout string   `json:"queryTimeout"`         // optional, e.g., "5s"
+	DeleteMode   string   `json:"deleteMode,omitempty"` // optional; "hard" (default) or "soft"
 }
 
 // TargetNATSKVConfig is the expected shape of LensSpec.TargetConfig
 // when TargetType == "nats_kv".
 type TargetNATSKVConfig struct {
-	Bucket string   `json:"bucket"`
-	Key    []string `json:"key"`
+	Bucket     string   `json:"bucket"`
+	Key        []string `json:"key"`
+	DeleteMode string   `json:"deleteMode,omitempty"` // optional; "hard" (default) or "soft"
 }
 
 // NewCoreKVSource constructs a watcher. logger may be nil.
@@ -352,6 +355,10 @@ func translateSpec(spec *LensSpec) (*Rule, error) {
 		if cfg.DSN == "" || cfg.Table == "" || len(cfg.Key) == 0 {
 			return nil, fmt.Errorf("lens %q: targetConfig.{dsn,table,key} required for postgres", spec.ID)
 		}
+		dm, err := adapter.ParseDeleteMode(cfg.DeleteMode)
+		if err != nil {
+			return nil, fmt.Errorf("lens %q: targetConfig.deleteMode: %w", spec.ID, err)
+		}
 		r.Into = IntoConfig{
 			Target:          "postgres",
 			DSN:             cfg.DSN,
@@ -359,6 +366,7 @@ func translateSpec(spec *LensSpec) (*Rule, error) {
 			Key:             KeyField(cfg.Key),
 			QueryTimeoutRaw: cfg.QueryTimeout,
 			QueryTimeout:    parseTimeoutOrDefault(cfg.QueryTimeout, 30*time.Second),
+			DeleteMode:      string(dm),
 		}
 	case "nats_kv":
 		var cfg TargetNATSKVConfig
@@ -368,10 +376,15 @@ func translateSpec(spec *LensSpec) (*Rule, error) {
 		if cfg.Bucket == "" || len(cfg.Key) == 0 {
 			return nil, fmt.Errorf("lens %q: targetConfig.{bucket,key} required for nats_kv", spec.ID)
 		}
+		dm, err := adapter.ParseDeleteMode(cfg.DeleteMode)
+		if err != nil {
+			return nil, fmt.Errorf("lens %q: targetConfig.deleteMode: %w", spec.ID, err)
+		}
 		r.Into = IntoConfig{
-			Target: "nats_kv",
-			Bucket: cfg.Bucket,
-			Key:    KeyField(cfg.Key),
+			Target:     "nats_kv",
+			Bucket:     cfg.Bucket,
+			Key:        KeyField(cfg.Key),
+			DeleteMode: string(dm),
 		}
 	default:
 		return nil, fmt.Errorf("lens %q: unknown targetType %q (expected postgres|nats_kv)", spec.ID, spec.TargetType)

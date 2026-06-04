@@ -149,11 +149,12 @@ query it via `lattice query postgres`.
 **Step 4a — Provision the target table (out-of-band).** The Refractor's Postgres adapter
 is thin: it upserts rows into an **existing** table and issues no table DDL. Create the
 `books` table before registering the Lens, with columns matching the Lens RETURN
-(`book_id`, `title`) plus the soft-delete columns the adapter uses for tombstones:
+(`book_id`, `title`). The default delete mode is **hard** (`DELETE FROM`), so no
+soft-delete columns are needed (those are only required for `deleteMode: soft` targets):
 
 ```console
 docker exec -i lattice-postgres psql -U lattice -d lattice -c \
-  'CREATE TABLE IF NOT EXISTS books (book_id TEXT PRIMARY KEY, title TEXT, is_deleted BOOLEAN NOT NULL DEFAULT FALSE, deleted_at TIMESTAMPTZ);'
+  'CREATE TABLE IF NOT EXISTS books (book_id TEXT PRIMARY KEY, title TEXT);'
 ```
 
 **Step 4b — Register the Lens.** The `spec` field must be a JSON string containing a

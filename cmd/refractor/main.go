@@ -158,6 +158,12 @@ func main() {
 	}
 
 	buildAdapter := func(r *lens.Rule) (adapter.Adapter, error) {
+		// DeleteMode is defaulted to "hard" and validated upstream (Parse /
+		// translateSpec); re-parse here to obtain the typed value for the adapter.
+		deleteMode, err := adapter.ParseDeleteMode(r.Into.DeleteMode)
+		if err != nil {
+			return nil, fmt.Errorf("lens %q: delete_mode: %w", r.ID, err)
+		}
 		switch r.Into.Target {
 		case "nats_kv":
 			// Try Open before Create so pre-provisioned buckets (e.g. capability-kv)
@@ -169,7 +175,7 @@ func main() {
 					return nil, err
 				}
 			}
-			return adapter.New(targetKV, r.Into.Key)
+			return adapter.New(targetKV, r.Into.Key, deleteMode)
 		case "postgres":
 			pool, err := poolManager.Acquire(ctx, r.Into.DSN)
 			if err != nil {
@@ -179,7 +185,7 @@ func main() {
 			// Target tables are provisioned out-of-band (the adapter and
 			// Refractor never issue table DDL) — see
 			// docs/components/refractor.md.
-			return adapter.NewPostgresAdapter(pool, r.Into.Table, r.Into.Key, r.Into.QueryTimeout)
+			return adapter.NewPostgresAdapter(pool, r.Into.Table, r.Into.Key, r.Into.QueryTimeout, deleteMode)
 		default:
 			return nil, fmt.Errorf("unknown adapter target %q", r.Into.Target)
 		}

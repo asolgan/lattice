@@ -21,6 +21,7 @@ package refractor_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -151,7 +152,7 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	// --- primary capability pipeline ---
 	capTargetKV, err := js.KeyValue(ctx, capabilityRule.Into.Bucket)
 	require.NoError(t, err)
-	capAdpt, err := adapter.New(capTargetKV, capabilityRule.Into.Key)
+	capAdpt, err := adapter.New(capTargetKV, capabilityRule.Into.Key, adapter.DeleteModeHard)
 	require.NoError(t, err)
 
 	capP, err := pipeline.New(capabilityRule.ID, "nats_kv",
@@ -176,7 +177,7 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	// --- secondary capabilityRoleIndex pipeline ---
 	idxTargetKV, err := js.KeyValue(ctx, roleIndexRule.Into.Bucket)
 	require.NoError(t, err)
-	idxAdpt, err := adapter.New(idxTargetKV, roleIndexRule.Into.Key)
+	idxAdpt, err := adapter.New(idxTargetKV, roleIndexRule.Into.Key, adapter.DeleteModeHard)
 	require.NoError(t, err)
 	idxP, err := pipeline.New(roleIndexRule.ID, "nats_kv",
 		nil, bootstrap.CoreKVBucket, adjKV, coreKV, idxAdpt, nil)
@@ -524,25 +525,16 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 		_, perr := coreKV.Put(ctx, identityCKey, body)
 		require.NoError(t, perr)
 
-		// The natskv adapter writes a soft-delete tombstone (`{isDeleted: true}`)
-		// rather than physically deleting, per Story 2.1 AC #4. Assert the
-		// entry is either absent or carries the tombstone marker.
+		// Story 1.5.12: the capability plane uses the default hard delete, so the
+		// natskv adapter physically removes cap.identity.<C> on projection of the
+		// identity tombstone. The capability authorizer treats absence and the
+		// (legacy) tombstone identically as denial, so absence is the correct,
+		// contract-aligned outcome (Contract #6 §6.8 "absence equals denial").
 		require.Eventually(t, func() bool {
-			entry, gErr := capabilityKV.Get(ctx, "cap.identity."+identityCID)
-			if gErr != nil {
-				return true // genuine ErrKeyNotFound is also acceptable
-			}
-			if entry == nil || len(entry.Value()) == 0 {
-				return true
-			}
-			var env map[string]any
-			if jerr := json.Unmarshal(entry.Value(), &env); jerr != nil {
-				return false
-			}
-			isDel, _ := env["isDeleted"].(bool)
-			return isDel
+			_, gErr := capabilityKV.Get(ctx, "cap.identity."+identityCID)
+			return errors.Is(gErr, jetstream.ErrKeyNotFound)
 		}, 15*time.Second, 100*time.Millisecond,
-			"cap.identity.<C> must be tombstoned after identity tombstone")
+			"cap.identity.<C> must be hard-deleted (key gone) after identity tombstone")
 	})
 
 	// --- NFR-P3 evidence print ---

@@ -16,19 +16,22 @@ var _ Adapter = (*NatsKVAdapter)(nil)
 
 // NatsKVAdapter writes materialized rows to a NATS KV bucket.
 type NatsKVAdapter struct {
-	kv       jetstream.KeyValue
-	keyOrder []string // ordered key field names; used for deterministic composite key construction
+	kv         jetstream.KeyValue
+	keyOrder   []string   // ordered key field names; used for deterministic composite key construction
+	deleteMode DeleteMode // hard (default): kv.Delete; soft: tombstone Put
 }
 
 // New creates a NatsKVAdapter that writes to kv.
 // keyOrder must match the rule's into.key field list and determines the order
 // in which key values are concatenated to form the KV key
 // (e.g. ["account_id","agreement_id"] → "acct-001.abc123").
-func New(kv jetstream.KeyValue, keyOrder []string) (*NatsKVAdapter, error) {
+// deleteMode selects hard (kv.Delete) vs soft (tombstone Put) delete projection;
+// it is fixed for the life of the adapter.
+func New(kv jetstream.KeyValue, keyOrder []string, deleteMode DeleteMode) (*NatsKVAdapter, error) {
 	if len(keyOrder) == 0 {
 		return nil, errors.New("natskv: keyOrder must not be empty")
 	}
-	return &NatsKVAdapter{kv: kv, keyOrder: keyOrder}, nil
+	return &NatsKVAdapter{kv: kv, keyOrder: keyOrder, deleteMode: deleteMode}, nil
 }
 
 // buildKey concatenates key field values in keyOrder order, joined with ".".
@@ -64,25 +67,47 @@ func (a *NatsKVAdapter) Upsert(ctx context.Context, keys map[string]any, row map
 	return nil
 }
 
-// Delete writes a tombstone document with `isDeleted: true` and a `projectedAt`
-// timestamp instead of physically deleting the KV entry. Soft-delete semantics per
-// Contract #1 ensure downstream auth-freshness readers see a current timestamp and
-// can correctly classify the deletion. Deleting a non-existent key is idempotent.
+// Delete projects a Core KV deletion into the target KV bucket. The behavior is
+// fixed at construction time by the adapter's deleteMode:
+//
+//   - DeleteModeHard (default): physically removes the key via kv.Delete. Lineage
+//     already lives in Core KV, so the derived view reflects deletions as
+//     removals. Deleting a never-existed key is idempotent — jetstream's
+//     ErrKeyNotFound is swallowed and nil returned.
+//   - DeleteModeSoft: writes a tombstone document {isDeleted:true, projectedAt:…}
+//     for audit/forensic targets that opt in. Overwriting a never-existed key is
+//     naturally idempotent (Put creates).
+//
+// Both absence (hard) and tombstone (soft) are treated as denial by the
+// capability authorizer (step3_auth_capability): an absent key resolves to
+// NoCapabilityEntry and an isDeleted doc to a denied entry. The freshness-ceiling
+// comparison that originally motivated soft-delete on the capability plane was
+// removed in Story 1.5.4, so absence and tombstone are now equivalent for auth.
 func (a *NatsKVAdapter) Delete(ctx context.Context, keys map[string]any) error {
 	key, err := a.buildKey(keys)
 	if err != nil {
 		return fmt.Errorf("natskv delete: %w", err)
 	}
-	tombstone := map[string]any{
-		"isDeleted":   true,
-		"projectedAt": time.Now().UTC().Format(time.RFC3339),
+	if a.deleteMode == DeleteModeSoft {
+		tombstone := map[string]any{
+			"isDeleted":   true,
+			"projectedAt": time.Now().UTC().Format(time.RFC3339),
+		}
+		data, err := json.Marshal(tombstone)
+		if err != nil {
+			return fmt.Errorf("natskv delete: marshal tombstone: %w", err)
+		}
+		if _, err := a.kv.Put(ctx, key, data); err != nil {
+			return fmt.Errorf("natskv delete: put tombstone %s: %w", key, err)
+		}
+		return nil
 	}
-	data, err := json.Marshal(tombstone)
-	if err != nil {
-		return fmt.Errorf("natskv delete: marshal tombstone: %w", err)
-	}
-	if _, err := a.kv.Put(ctx, key, data); err != nil {
-		return fmt.Errorf("natskv delete: put tombstone %s: %w", key, err)
+	// Hard delete: physically remove the key. Deleting an absent key is a no-op.
+	if err := a.kv.Delete(ctx, key); err != nil {
+		if errors.Is(err, jetstream.ErrKeyNotFound) {
+			return nil
+		}
+		return fmt.Errorf("natskv delete: delete %s: %w", key, err)
 	}
 	return nil
 }

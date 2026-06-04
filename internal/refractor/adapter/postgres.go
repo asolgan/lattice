@@ -22,6 +22,7 @@ type PostgresAdapter struct {
 	table        string
 	keyOrder     []string
 	queryTimeout time.Duration // applied per operation via context.WithTimeout
+	deleteMode   DeleteMode    // hard (default): DELETE FROM; soft: UPDATE … SET is_deleted=true
 }
 
 // NewPostgresAdapter creates a PostgresAdapter.
@@ -29,7 +30,9 @@ type PostgresAdapter struct {
 // table is the target Postgres table name.
 // keyOrder lists key field names in the order used for ON CONFLICT / WHERE clauses.
 // queryTimeout is applied to each write operation; 0 means no timeout.
-func NewPostgresAdapter(pool *pgxpool.Pool, table string, keyOrder []string, queryTimeout time.Duration) (*PostgresAdapter, error) {
+// deleteMode selects hard (DELETE FROM) vs soft (UPDATE … SET is_deleted=true)
+// delete projection; it is fixed for the life of the adapter.
+func NewPostgresAdapter(pool *pgxpool.Pool, table string, keyOrder []string, queryTimeout time.Duration, deleteMode DeleteMode) (*PostgresAdapter, error) {
 	if pool == nil {
 		return nil, fmt.Errorf("postgres: pool must not be nil")
 	}
@@ -54,6 +57,7 @@ func NewPostgresAdapter(pool *pgxpool.Pool, table string, keyOrder []string, que
 		table:        table,
 		keyOrder:     keyOrder,
 		queryTimeout: queryTimeout,
+		deleteMode:   deleteMode,
 	}, nil
 }
 
@@ -213,7 +217,15 @@ func (a *PostgresAdapter) Upsert(ctx context.Context, keys map[string]any, row m
 	return err
 }
 
-// buildDeleteSQL constructs the DELETE ... WHERE SQL and its argument slice.
+// buildDeleteSQL constructs the delete SQL and its argument slice, branching on
+// the adapter's construction-time deleteMode.
+//
+//   - DeleteModeHard (default): `DELETE FROM "<table>" WHERE <clauses>` — the row
+//     is physically removed. Lineage already lives in Core KV.
+//   - DeleteModeSoft: `UPDATE "<table>" SET is_deleted=true, deleted_at=NOW()
+//     WHERE <clauses>` — a tombstone is retained for audit/forensic targets. The
+//     target table must then have `is_deleted boolean` and `deleted_at
+//     timestamptz` columns.
 //
 // Key columns appear in a.keyOrder order with positional placeholders $1, $2, ...
 // All identifiers are double-quoted via quoteIdent.
@@ -228,10 +240,13 @@ func (a *PostgresAdapter) buildDeleteSQL(keys map[string]any) (string, []any, er
 		args[i] = v
 		clauses[i] = fmt.Sprintf("%s = $%d", quoteIdent(k), i+1)
 	}
-	// Soft-delete instead of DELETE FROM. Tombstones use `is_deleted=true,
-	// deleted_at=NOW()` so privacy/lineage tracking is preserved. The target
-	// table must have `is_deleted boolean` and `deleted_at timestamptz` columns.
-	sql := fmt.Sprintf(`UPDATE "%s" SET is_deleted=true, deleted_at=NOW() WHERE %s`, a.table, strings.Join(clauses, " AND "))
+	where := strings.Join(clauses, " AND ")
+	var sql string
+	if a.deleteMode == DeleteModeSoft {
+		sql = fmt.Sprintf(`UPDATE "%s" SET is_deleted=true, deleted_at=NOW() WHERE %s`, a.table, where)
+	} else {
+		sql = fmt.Sprintf(`DELETE FROM "%s" WHERE %s`, a.table, where)
+	}
 	return sql, args, nil
 }
 

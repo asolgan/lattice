@@ -13,7 +13,7 @@ import (
 )
 
 func TestNewPostgresAdapter_NilPool(t *testing.T) {
-	_, err := NewPostgresAdapter(nil, "my_table", []string{"id"}, 0)
+	_, err := NewPostgresAdapter(nil, "my_table", []string{"id"}, 0, DeleteModeHard)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "pool")
 }
@@ -24,7 +24,7 @@ func TestNewPostgresAdapter_EmptyTable(t *testing.T) {
 	require.NoError(t, err)
 	defer pool.Close()
 
-	_, err = NewPostgresAdapter(pool, "", []string{"id"}, 0)
+	_, err = NewPostgresAdapter(pool, "", []string{"id"}, 0, DeleteModeHard)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "table")
 }
@@ -34,7 +34,7 @@ func TestNewPostgresAdapter_EmptyKeyOrder(t *testing.T) {
 	require.NoError(t, err)
 	defer pool.Close()
 
-	_, err = NewPostgresAdapter(pool, "my_table", nil, 0)
+	_, err = NewPostgresAdapter(pool, "my_table", nil, 0, DeleteModeHard)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "keyOrder")
 }
@@ -44,7 +44,7 @@ func TestNewPostgresAdapter_Valid(t *testing.T) {
 	require.NoError(t, err)
 	defer pool.Close()
 
-	a, err := NewPostgresAdapter(pool, "my_table", []string{"id"}, 5*time.Second)
+	a, err := NewPostgresAdapter(pool, "my_table", []string{"id"}, 5*time.Second, DeleteModeHard)
 	require.NoError(t, err)
 	assert.NotNil(t, a)
 }
@@ -54,7 +54,7 @@ func TestPostgresAdapter_Close_IsNoOp(t *testing.T) {
 	require.NoError(t, err)
 	defer pool.Close()
 
-	a, err := NewPostgresAdapter(pool, "my_table", []string{"id"}, 0)
+	a, err := NewPostgresAdapter(pool, "my_table", []string{"id"}, 0, DeleteModeHard)
 	require.NoError(t, err)
 
 	assert.NoError(t, a.Close(), "Close must be a no-op and return nil")
@@ -66,7 +66,7 @@ func TestPostgresAdapter_WithTimeout_AppliesDeadline(t *testing.T) {
 	defer pool.Close()
 
 	timeout := 5 * time.Second
-	a, err := NewPostgresAdapter(pool, "my_table", []string{"id"}, timeout)
+	a, err := NewPostgresAdapter(pool, "my_table", []string{"id"}, timeout, DeleteModeHard)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -83,7 +83,7 @@ func TestPostgresAdapter_WithTimeout_NoDeadlineWhenZero(t *testing.T) {
 	require.NoError(t, err)
 	defer pool.Close()
 
-	a, err := NewPostgresAdapter(pool, "my_table", []string{"id"}, 0)
+	a, err := NewPostgresAdapter(pool, "my_table", []string{"id"}, 0, DeleteModeHard)
 	require.NoError(t, err)
 
 	ctx := context.Background()
@@ -97,11 +97,15 @@ func TestPostgresAdapter_WithTimeout_NoDeadlineWhenZero(t *testing.T) {
 // ── buildUpsertSQL unit tests (no real Postgres needed) ──────────────────────
 
 func newTestAdapter(t *testing.T, table string, keyOrder []string) *PostgresAdapter {
+	return newTestAdapterMode(t, table, keyOrder, DeleteModeHard)
+}
+
+func newTestAdapterMode(t *testing.T, table string, keyOrder []string, mode DeleteMode) *PostgresAdapter {
 	t.Helper()
 	pool, err := pgxpool.New(context.Background(), "host=fake user=test")
 	require.NoError(t, err)
 	t.Cleanup(func() { pool.Close() })
-	a, err := NewPostgresAdapter(pool, table, keyOrder, 0)
+	a, err := NewPostgresAdapter(pool, table, keyOrder, 0, mode)
 	require.NoError(t, err)
 	return a
 }
@@ -217,7 +221,7 @@ func TestNewPostgresAdapter_DuplicateKeyOrder(t *testing.T) {
 	require.NoError(t, err)
 	defer pool.Close()
 
-	_, err = NewPostgresAdapter(pool, "t", []string{"id", "id"}, 0)
+	_, err = NewPostgresAdapter(pool, "t", []string{"id", "id"}, 0, DeleteModeHard)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "duplicate")
 }
@@ -227,7 +231,7 @@ func TestNewPostgresAdapter_TableNameWithDoubleQuote(t *testing.T) {
 	require.NoError(t, err)
 	defer pool.Close()
 
-	_, err = NewPostgresAdapter(pool, `bad"name`, []string{"id"}, 0)
+	_, err = NewPostgresAdapter(pool, `bad"name`, []string{"id"}, 0, DeleteModeHard)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "double-quote")
 }
@@ -247,7 +251,7 @@ func TestPostgresAdapter_Probe_RequiresPostgres(t *testing.T) {
 	require.NoError(t, err)
 	defer pool.Close()
 
-	a, err := NewPostgresAdapter(pool, "any_table", []string{"id"}, 5*time.Second)
+	a, err := NewPostgresAdapter(pool, "any_table", []string{"id"}, 5*time.Second, DeleteModeHard)
 	require.NoError(t, err)
 
 	err = a.Probe(context.Background())
@@ -281,7 +285,7 @@ func TestPostgresAdapter_Upsert_Integration(t *testing.T) {
 	_, err = pool.Exec(ctx, `CREATE TEMP TABLE upsert_test (id TEXT PRIMARY KEY, name TEXT)`)
 	require.NoError(t, err)
 
-	a, err := NewPostgresAdapter(pool, "upsert_test", []string{"id"}, 5*time.Second)
+	a, err := NewPostgresAdapter(pool, "upsert_test", []string{"id"}, 5*time.Second, DeleteModeHard)
 	require.NoError(t, err)
 
 	// First upsert — inserts the row.
@@ -313,7 +317,7 @@ func TestPostgresAdapter_Upsert_CompositeKey_Integration(t *testing.T) {
 	_, err = pool.Exec(ctx, `CREATE TEMP TABLE upsert_composite (team_id TEXT, agreement_id TEXT, party_name TEXT, PRIMARY KEY (team_id, agreement_id))`)
 	require.NoError(t, err)
 
-	a, err := NewPostgresAdapter(pool, "upsert_composite", []string{"team_id", "agreement_id"}, 5*time.Second)
+	a, err := NewPostgresAdapter(pool, "upsert_composite", []string{"team_id", "agreement_id"}, 5*time.Second, DeleteModeHard)
 	require.NoError(t, err)
 
 	// Insert.
@@ -345,7 +349,7 @@ func TestPostgresAdapter_Upsert_MissingTable_Integration(t *testing.T) {
 	require.NoError(t, err)
 	defer pool.Close()
 
-	a, err := NewPostgresAdapter(pool, "table_does_not_exist_xyz", []string{"id"}, 5*time.Second)
+	a, err := NewPostgresAdapter(pool, "table_does_not_exist_xyz", []string{"id"}, 5*time.Second, DeleteModeHard)
 	require.NoError(t, err)
 
 	err = a.Upsert(context.Background(), map[string]any{"id": "x"}, map[string]any{"val": "y"})
@@ -354,8 +358,20 @@ func TestPostgresAdapter_Upsert_MissingTable_Integration(t *testing.T) {
 
 // ── buildDeleteSQL unit tests (no real Postgres needed) ──────────────────────
 
-func TestBuildDeleteSQL_SingleKey(t *testing.T) {
-	a := newTestAdapter(t, "occupancy_view", []string{"agreement_id"})
+func TestBuildDeleteSQL_SingleKey_Hard(t *testing.T) {
+	a := newTestAdapterMode(t, "occupancy_view", []string{"agreement_id"}, DeleteModeHard)
+
+	sql, args, err := a.buildDeleteSQL(map[string]any{"agreement_id": "abc"})
+	require.NoError(t, err)
+	assert.Equal(t,
+		`DELETE FROM "occupancy_view" WHERE "agreement_id" = $1`,
+		sql,
+	)
+	assert.Equal(t, []any{"abc"}, args)
+}
+
+func TestBuildDeleteSQL_SingleKey_Soft(t *testing.T) {
+	a := newTestAdapterMode(t, "occupancy_view", []string{"agreement_id"}, DeleteModeSoft)
 
 	sql, args, err := a.buildDeleteSQL(map[string]any{"agreement_id": "abc"})
 	require.NoError(t, err)
@@ -366,8 +382,20 @@ func TestBuildDeleteSQL_SingleKey(t *testing.T) {
 	assert.Equal(t, []any{"abc"}, args)
 }
 
-func TestBuildDeleteSQL_CompositeKey(t *testing.T) {
-	a := newTestAdapter(t, "occupancy_view", []string{"team_id", "agreement_id"})
+func TestBuildDeleteSQL_CompositeKey_Hard(t *testing.T) {
+	a := newTestAdapterMode(t, "occupancy_view", []string{"team_id", "agreement_id"}, DeleteModeHard)
+
+	sql, args, err := a.buildDeleteSQL(map[string]any{"team_id": "t1", "agreement_id": "abc"})
+	require.NoError(t, err)
+	assert.Equal(t,
+		`DELETE FROM "occupancy_view" WHERE "team_id" = $1 AND "agreement_id" = $2`,
+		sql,
+	)
+	assert.Equal(t, []any{"t1", "abc"}, args)
+}
+
+func TestBuildDeleteSQL_CompositeKey_Soft(t *testing.T) {
+	a := newTestAdapterMode(t, "occupancy_view", []string{"team_id", "agreement_id"}, DeleteModeSoft)
 
 	sql, args, err := a.buildDeleteSQL(map[string]any{"team_id": "t1", "agreement_id": "abc"})
 	require.NoError(t, err)
@@ -413,7 +441,7 @@ func TestPostgresAdapter_Delete_Integration(t *testing.T) {
 	_, err = pool.Exec(ctx, `INSERT INTO delete_test VALUES ('abc', 'Acme')`)
 	require.NoError(t, err)
 
-	a, err := NewPostgresAdapter(pool, "delete_test", []string{"id"}, 5*time.Second)
+	a, err := NewPostgresAdapter(pool, "delete_test", []string{"id"}, 5*time.Second, DeleteModeHard)
 	require.NoError(t, err)
 
 	// Delete the row.
@@ -439,7 +467,7 @@ func TestPostgresAdapter_Delete_Idempotent_Integration(t *testing.T) {
 	_, err = pool.Exec(ctx, `CREATE TEMP TABLE delete_idempotent_test (id TEXT PRIMARY KEY)`)
 	require.NoError(t, err)
 
-	a, err := NewPostgresAdapter(pool, "delete_idempotent_test", []string{"id"}, 5*time.Second)
+	a, err := NewPostgresAdapter(pool, "delete_idempotent_test", []string{"id"}, 5*time.Second, DeleteModeHard)
 	require.NoError(t, err)
 
 	// Delete a row that was never inserted — must return nil (idempotent, NFR2).
@@ -462,7 +490,7 @@ func TestPostgresAdapter_Delete_CompositeKey_Integration(t *testing.T) {
 	_, err = pool.Exec(ctx, `INSERT INTO delete_composite_test VALUES ('t1', 'a1')`)
 	require.NoError(t, err)
 
-	a, err := NewPostgresAdapter(pool, "delete_composite_test", []string{"team_id", "agreement_id"}, 5*time.Second)
+	a, err := NewPostgresAdapter(pool, "delete_composite_test", []string{"team_id", "agreement_id"}, 5*time.Second, DeleteModeHard)
 	require.NoError(t, err)
 
 	err = a.Delete(ctx, map[string]any{"team_id": "t1", "agreement_id": "a1"})
@@ -472,6 +500,35 @@ func TestPostgresAdapter_Delete_CompositeKey_Integration(t *testing.T) {
 	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM delete_composite_test WHERE team_id='t1' AND agreement_id='a1'`).Scan(&count)
 	require.NoError(t, err)
 	assert.Equal(t, 0, count, "composite-key row must be gone after Delete")
+}
+
+func TestPostgresAdapter_Delete_Soft_Integration(t *testing.T) {
+	dsn := skipIfNoPostgres(t)
+
+	pool, err := pgxpool.New(context.Background(), dsn)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	ctx := context.Background()
+
+	// Soft-delete targets must carry is_deleted + deleted_at columns.
+	_, err = pool.Exec(ctx, `CREATE TEMP TABLE delete_soft_test (id TEXT PRIMARY KEY, name TEXT, is_deleted BOOLEAN DEFAULT false, deleted_at TIMESTAMPTZ)`)
+	require.NoError(t, err)
+
+	_, err = pool.Exec(ctx, `INSERT INTO delete_soft_test (id, name) VALUES ('abc', 'Acme')`)
+	require.NoError(t, err)
+
+	a, err := NewPostgresAdapter(pool, "delete_soft_test", []string{"id"}, 5*time.Second, DeleteModeSoft)
+	require.NoError(t, err)
+
+	err = a.Delete(ctx, map[string]any{"id": "abc"})
+	require.NoError(t, err)
+
+	// Row must still exist with is_deleted=true (tombstone retained).
+	var isDeleted bool
+	err = pool.QueryRow(ctx, `SELECT is_deleted FROM delete_soft_test WHERE id = 'abc'`).Scan(&isDeleted)
+	require.NoError(t, err)
+	assert.True(t, isDeleted, "soft-delete must retain the row with is_deleted=true")
 }
 
 // ── coerceForPgx unit tests (no real Postgres needed) ────────────────────────
@@ -537,7 +594,7 @@ func TestPostgresAdapter_Upsert_JSONBColumn_Integration(t *testing.T) {
 	_, err = pool.Exec(ctx, `CREATE TEMP TABLE jsonb_test (id TEXT PRIMARY KEY, tags JSONB, meta JSONB)`)
 	require.NoError(t, err)
 
-	a, err := NewPostgresAdapter(pool, "jsonb_test", []string{"id"}, 5*time.Second)
+	a, err := NewPostgresAdapter(pool, "jsonb_test", []string{"id"}, 5*time.Second, DeleteModeHard)
 	require.NoError(t, err)
 
 	tagsInput := []any{"alpha", "beta", "gamma"}

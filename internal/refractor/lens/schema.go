@@ -8,6 +8,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/asolgan/lattice/internal/refractor/adapter"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
@@ -69,6 +70,7 @@ type IntoConfig struct {
 	Key             KeyField      `yaml:"key"`           // Output key field(s) — required
 	QueryTimeoutRaw string        `yaml:"query_timeout"` // e.g. "5s", "30s" — parsed into QueryTimeout by Parse()
 	QueryTimeout    time.Duration `yaml:"-"`             // populated by Parse(); defaults to 30s for postgres rules
+	DeleteMode      string        `yaml:"delete_mode"`   // "hard" (default) or "soft"; defaulted+validated by Parse()
 }
 
 // RetryConfig describes retry behaviour for transient write failures.
@@ -197,6 +199,15 @@ func Parse(data []byte) (*Rule, error) {
 	default:
 		return nil, fmt.Errorf("rule validation: into.target must be \"nats_kv\" or \"postgres\", got %q", r.Into.Target)
 	}
+
+	// Validate + default delete_mode: absent → "hard"; reject values outside
+	// {hard,soft} (adapter.ParseDeleteMode is the single source of truth for the
+	// allowed set). Normalize the stored value to the canonical mode string.
+	dm, err := adapter.ParseDeleteMode(r.Into.DeleteMode)
+	if err != nil {
+		return nil, fmt.Errorf("rule validation: into.delete_mode: %w", err)
+	}
+	r.Into.DeleteMode = string(dm)
 
 	// Parse per-rule query timeout (used by Postgres adapter; harmless for nats_kv).
 	if r.Into.QueryTimeoutRaw != "" {
