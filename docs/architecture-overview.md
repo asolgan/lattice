@@ -4,109 +4,82 @@ This diagram shows the full platform as designed — including components that a
 
 ```mermaid
 flowchart TB
-    subgraph Actors["Actors"]
-        Human("Human Actor<br/>(web · mobile)")
-        AI("AI Agent<br/>(identity vertex)")
-        Admin("Admin / CLI<br/>(internal service actor)")
+    subgraph Actors
+        Human("Human"); AI("AI Agent"); Admin("Admin / CLI")
     end
 
     subgraph EdgeLattice["Edge Lattice — Phase 3+"]
-        EdgeNode("Sovereign Client Node<br/>local VAL + Starlark<br/>mobile · web · IoT")
+        EdgeNode("Sovereign Client Node<br/>local VAL + Starlark")
     end
 
     subgraph GW["Gateway — Trust Boundary"]
-        Proxy["Reverse Proxy<br/>NGINX / Envoy<br/>TLS · rate-limit · CORS"]
-        Trans["Gateway Translator<br/>JWT → Lattice-Actor<br/>token revocation check<br/>HTTP → NATS"]
+        Proxy["Reverse Proxy<br/>NGINX/Envoy · TLS · rate-limit"]
+        Trans["Translator<br/>JWT → Lattice-Actor · revocation"]
     end
 
-    subgraph NATS["NATS — Core Plane"]
-        Ops[["core-operations<br/>(meta · urgent · bulk lanes)"]]
-        Evts[["core-events<br/>(at-least-once)"]]
+    subgraph NATS["NATS Core Plane"]
+        Ops[["core-operations (meta · urgent · bulk)"]]
+        Evts[["core-events"]]
     end
 
-    subgraph WritePath["Write Path"]
-        Proc["Processor<br/>─────────────────<br/>Sole writer to Core KV<br/>9-step commit path<br/>Starlark sandbox<br/>Event schema validation"]
+    Proc["Processor<br/>sole writer · Starlark · 9-step commit"]
+    CoreKV[("Core KV<br/>vertices · aspects · links · DDL")]
+    Refr["Refractor<br/>openCypher lenses · CDC · Capability Lens"]
+
+    subgraph OpKV["Operational KV"]
+        CapKV[("Capability KV")]; HealthKV[("Health KV")]
+        TokKV[("Token Revocation KV")]; WeavKV[("Weaver KV")]
     end
 
-    CoreKV[("Core KV<br/>vertices · aspects · links<br/>DDL meta-vertices<br/>Loom instances · op trackers")]
-
-    subgraph ReadPath["Read Path"]
-        Refr["Refractor<br/>─────────────────<br/>openCypher lens engine<br/>Durable CDC consumers<br/>Capability Lens (auth)<br/>Crypto-shred handler"]
-    end
-
-    subgraph OpKV["Operational State (NATS KV)"]
-        CapKV[("Capability KV<br/>O(1) auth cache")]
-        HealthKV[("Health KV<br/>all components")]
-        TokKV[("Token Revocation KV")]
-        WeavKV[("Weaver State & Claims KV")]
-    end
-
-    subgraph Targets["Lens Targets — Query Surfaces"]
-        PG[("Postgres<br/>business lenses")]
-        NKV[("NATS KV targets<br/>capability · Weaver")]
-        PLens[("Personal Lens<br/>per-device security-filtered<br/>Phase 3+")]
+    subgraph Targets["Lens Targets"]
+        PG[("Postgres")]; NKV[("NATS KV")]
+        PLens[("Personal Lens — Phase 3+")]
     end
 
     subgraph Orch["Orchestration"]
-        Loom["Loom<br/>─────────────────<br/>Linear procedure engine<br/>Pattern interpreter<br/>Task coordination"]
-        Weaver["Weaver<br/>─────────────────<br/>Convergence engine<br/>Target-as-Lens<br/>Two-Phase Nudge<br/>Temporal scheduler"]
+        Loom["Loom — procedure engine"]
+        Weaver["Weaver — convergence · Two-Phase Nudge"]
     end
 
     subgraph VaultExt["Vault & Crypto — Phase 3+"]
-        Vault["Vault<br/>Per-identity key management<br/>Encrypt-on-write · Crypto-shredding"]
-        KMS["KMS / HSM<br/>(external key material)"]
+        Vault["Vault — per-identity keys · shredding"]
+        KMS["KMS / HSM"]
     end
 
     subgraph External["External"]
-        IdP["External IdP<br/>(JWT signing keys)"]
-        Svc["Third-Party Services<br/>(Stripe · email · …)"]
+        IdP["External IdP"]; Svc["Third-Party Services"]
     end
 
-    %% Actors → Gateway
     Human & AI -->|HTTPS| Proxy
-    Admin -->|"NATS direct"| Ops
-
-    %% Gateway flow
+    Admin -->|NATS direct| Ops
     Proxy --> Trans
-    Trans <-->|revocation check| TokKV
+    Trans <-->|revocation| TokKV
     Trans -->|publish op| Ops
     IdP -.->|signing keys| Trans
 
-    %% Write path
     Ops --> Proc
-    Proc <-->|"O(1) auth check"| CapKV
-    Proc <-->|entity state reads| CoreKV
-    Proc -->|atomic batch write| CoreKV
-    Proc -->|outbox publish| Evts
-    Proc <-.->|"encrypt / decrypt — Phase 3+"| Vault
+    Proc -->|auth check| CapKV
+    Proc <-->|reads + writes| CoreKV
+    Proc -->|outbox| Evts
+    Proc <-.->|Phase 3+| Vault
 
-    %% Refractor (read path)
-    CoreKV -->|"CDC (durable consumer per lens)"| Refr
+    CoreKV -->|CDC per lens| Refr
     Refr -->|projects| CapKV
     Refr -->|projects| PG
     Refr -->|projects| NKV
-    Refr -->|"pushes filtered stream"| PLens
-    Refr <-.->|"key lookups / shred — Phase 3+"| Vault
+    Refr -->|filtered stream| PLens
+    Refr <-.->|Phase 3+| Vault
 
-    %% Orchestration
-    Evts --> Loom
-    Evts --> Weaver
-    Loom -->|submit ops| Ops
-    Weaver -->|submit ops| Ops
+    Evts --> Loom & Weaver
+    Loom & Weaver -->|submit ops| Ops
     Weaver <-->|convergence state| WeavKV
-    Weaver -->|reads violation flags| NKV
+    Weaver -->|reads targets| NKV
     Weaver -->|Two-Phase Nudge| Svc
-
-    %% Vault
     Vault <-->|key material| KMS
 
-    %% Health heartbeats
     Proc & Refr & Loom & Weaver -->|heartbeat| HealthKV
+    PLens <-->|sync on reconnect| EdgeNode
 
-    %% Edge Lattice
-    PLens <-->|"sync on reconnect (revision-based reconcile)"| EdgeNode
-
-    %% Styles
     classDef store fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
     classDef engine fill:#fefce8,stroke:#ca8a04,color:#713f12
     classDef gwStyle fill:#f0fdf4,stroke:#16a34a,color:#14532d
