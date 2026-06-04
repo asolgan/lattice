@@ -1,6 +1,6 @@
 # Story 7.1 — `orchestration-base` package + `task` DDL + CreateTask (assignee required)
 
-**Status:** SPEC — Winston-authored + adjudicated. §0 is the binding build target; where it elaborates or overrides the epics AC or older notes, §0 wins.
+**Status:** done — shipped `0d89e36` (CI green) + 3-layer adversarial retro-review fix-forward `886dadd` (CI green, 2026-06-04). §0 was the binding build target. One follow-up spun off (ephemeral pipeline actor-deletion delete-key derivation deletes `cap.<actor>` not `cap.ephemeral.<actor>` — low severity, separate task).
 **Tier:** Opus (DDL + package + new op + new lens + **security-plane capability migration** + test migration). This is the FIRST Phase 2 story — it sets package + lens-migration patterns.
 **Epic spec:** `_bmad-output/planning-artifacts/epics/phase-2-epics.md` → "Story 7.1" (line ~12). Read it for the user-story framing.
 **Binding grounding (FROZEN — read these, do not redefine):** `docs/contracts/10-orchestration-surfaces.md` §10.1, §10.6 (auto-complete is NOT in 7.1 — see scope), §10.7; `docs/contracts/06-capability-kv.md` §6.6 (Phase-2 amendment) + §6.1 (disjoint-prefix multi-lens pattern). Contract #1 §1.1 (link direction). P4 (single-op invariants). D5 (Capability-Lens-read fields on root `data`).
