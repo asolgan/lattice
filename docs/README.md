@@ -43,14 +43,6 @@ Per-component pages. Updated in the same commit as code changes. Drift between p
 
 ---
 
-## Decisions
-
-| Doc | Description |
-|-----|-------------|
-| [decisions/README.md](./decisions/README.md) | Architecture Decision Records — code-adjacent rationale; `Proposed` records feed an architecture session before canonical ADR-NN assignment |
-
----
-
 ## Observability
 
 | Doc | Description |

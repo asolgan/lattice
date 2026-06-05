@@ -1,20 +1,20 @@
-# ADR 0001 — Refractor per-actor lens projection: generalization, capability decomposition, and projection-plane integrity
+# Architecture brief — Refractor per-actor lens projection: generalization, capability decomposition, and projection-plane integrity
 
-- **Status:** Proposed — framing document for a dedicated Winston architecture session. Nothing here is ratified.
+- **Type:** Planning open-item brief, for a dedicated Winston architecture session. Nothing here is ratified — this is agenda + options, not a decision.
 - **Date:** 2026-06-05
 - **Deciders:** Andrew + Winston (architecture session, to be scheduled)
-- **Canonical ADR number:** to be assigned at ratification (the global ADR-NN sequence is planning-owned, in `_bmad-output/planning-artifacts/lattice-architecture.md`). This file uses a local `docs/decisions` number until then.
-- **Supersedes/extends:** the open item *"Capability Lens god-cypher → contract-contribution model"* in `lattice-architecture.md` (§ near line 1188). This ADR keeps that item's two decisions and adds two more that the 7.2 review surfaced.
+- **Extends:** the existing open item *"Capability Lens god-cypher → contract-contribution model"* in `lattice-architecture.md` (§ near line 1188). This brief keeps that item's two decisions and adds two more surfaced by the Story 7.2 review. The session may fold the conclusions back into `lattice-architecture.md` (planning lead's call).
+- **Note on "ADR-NN":** Lattice does **not** maintain a numbered ADR series. The `ADR-51` references in the codebase (e.g. Contract #10, `weaver.md`) are to the **NATS.io JetStream "Scheduled Messages" ADR** — an external dependency's design record, not ours. Lattice tracks its own decisions as named open items in `lattice-architecture.md`.
 
 ---
 
-## 1. Why this document exists
+## 1. Why this brief exists
 
-Story 7.2 added a `myTasks` lens to `orchestration-base`. Both the Acceptance Auditor and Andrew independently flagged the same smell: a *package* lens cannot be added without editing **core** — specifically a new `case` in `cmd/refractor/main.go` and a new wrapper in `internal/refractor/capabilityenv/`. That contradicts the minimal-core / everything-is-a-package principle and the package-layering rule (a package may depend on core, never the reverse).
+Story 7.2 added a `myTasks` lens to `orchestration-base`. Both the Acceptance Auditor and Andrew independently flagged the same smell: a *package* lens cannot be added without editing **core** — a new `case` in `cmd/refractor/main.go` plus a new wrapper in `internal/refractor/capabilityenv/`. That contradicts the minimal-core / everything-is-a-package principle and the package-layering rule (a package may depend on core, never the reverse).
 
-This ADR consolidates four related decisions so they can be taken together rather than piecemeal across stories. Two are already-tracked planning open items; two are new from the 7.2 review.
+This brief consolidates four related decisions so they're taken together rather than piecemeal across stories. Two are already-tracked planning open items; two are new from the 7.2 review.
 
-A crucial framing the existing open item does **not** capture: the existing item assumes "each package projects the grant types it owns." The 7.2 review shows packages **currently can't** do that without a core code change. **Decision D-PIPELINE below is therefore a prerequisite** for the projection side of the existing decomposition — not an independent nicety.
+The crucial framing the existing open item does **not** capture: it assumes "each package projects the grant types it owns." The 7.2 review shows packages **currently can't** do that without a core code change. **Decision D-PIPELINE below is therefore a prerequisite** for the projection side of the existing decomposition — not an independent nicety.
 
 ---
 
@@ -53,7 +53,7 @@ What is **not** data-driven — hardcoded in Go, keyed on `CanonicalName` — is
 
 **Options to weigh:**
 1. **Full data-drive** — all four declarable; refractor becomes a generic per-actor projector; switch dies entirely.
-2. **Typed engine-kind** — add a `projectionKind` (e.g. `per-actor-aggregate`) to the definition; refractor selects a generic envelope/fan-out *engine* parameterized by a few declared fields. Less expressive than (1), much smaller blast radius, still kills the per-name switch.
+2. **Typed projection-kind** — add a `projectionKind` (e.g. `per-actor-aggregate`) to the definition; refractor selects a generic envelope/fan-out *engine* parameterized by a few declared fields. Less expressive than (1), much smaller blast radius, still kills the per-name switch.
 3. **Status quo + guardrail** — keep the switch but add a registry interface so packages *register* a wrapper at install time instead of core hardcoding names. Removes the core-edit requirement without a full contract change.
 
 **Winston's lean:** (2) for the near term — a typed `projectionKind` captures `capability`, `capabilityEphemeral`, and `myTasks` (all "per-actor aggregate, disjoint key, fan-out over adjacency") with a handful of declared fields, kills the switch, and is a far smaller change than a full template language. Revisit (1) only if a lens appears that (2) can't express. (3) is a fallback if we want to unblock package authorship *before* the contract work lands.
