@@ -238,6 +238,15 @@ multiplexer**; the durable bucket + work-item shape land when lane-2 does.
 
 ## 10.4 Message scheduling — platform-wide (ADR-51) — **FROZEN 2026-06-02**
 
+> **Corrected 2026-06-05 (Story 7.4 implementation finding).** The fired-message **target subject
+> must lie within `schedule.>`**: the NATS scheduler republishes the fired payload **back into the
+> `core-schedules` stream** at the target subject and validates that target against the stream's own
+> subjects, rejecting an out-of-stream target at publish time (`JSMessageSchedulesTargetInvalidError`).
+> The earlier example target (`weaver.timer.fired.<…>`, outside `schedule.>`) was therefore wrong and
+> is corrected below. Components consume their fired messages via a **JetStream consumer filtered on
+> their target-subject prefix**. The shape is otherwise unchanged (`core-schedules` /
+> `AllowMsgSchedules: true` / subject root `schedule.>`).
+
 Message scheduling is a **platform-wide capability**, not Weaver-specific — same status as Health
 KV. It is bootstrapped as core infra and usable by any component (Weaver's temporal lane is the
 first consumer; op-vertex pruner / retention are future consumers).
@@ -248,8 +257,10 @@ stream:            core-schedules             # platform-bootstrapped, AllowMsgS
 schedule subject:  schedule.<domain>.<kind>.<entityId>    # publish here; one schedule per subject
                                               #   (bare-word subject root, like ops.> / events.>)
 header:            @at <RFC3339>   (absolute; or @every for recurring — Phase 2 uses @at one-shot)
-target subject:    <component-chosen>         # the publisher sets where the fired message republishes
-                                              #   e.g. Weaver uses  weaver.timer.fired.<domain>.<kind>.<entityId>
+                   Nats-Schedule-Target: <target subject>   # republish target (must be within schedule.>)
+target subject:    schedule.<component>.fired.<entityId>    # publisher-chosen, but MUST be within schedule.>
+                                              #   e.g. Weaver uses  schedule.weaver.timer.fired.<entityId>
+                                              #   (the scheduler republishes back into core-schedules here)
 ```
 
 - **Naming:** stream `core-schedules` (dash-form, no project name — matches `core-operations` /
@@ -260,7 +271,11 @@ target subject:    <component-chosen>         # the publisher sets where the fir
   story), alongside `core-operations`/`core-events`; `AllowMsgSchedules: true` is set at provisioning.
   (It does not exist yet — same "new, joins the create list" status as `loom-state` in §10.3.)
 - The **stream** is shared/platform-wide; the **target (fired) subject** is chosen per publisher,
-  so each component consumes only its own fired messages.
+  so each component consumes only its own fired messages — but it **must lie within `schedule.>`**.
+  When the timer fires, the NATS scheduler republishes the payload **back into `core-schedules`** at
+  the target subject (an out-of-stream target is rejected at publish time). Each component consumes
+  its fired messages via a **JetStream consumer filtered on its target-subject prefix** (e.g.
+  `schedule.weaver.timer.fired.>`).
 - Per-entity schedule subject → re-scheduling **replaces** the prior timer (one schedule per subject).
 - Durable across restart. The fired message hits the publisher's target subject; that component
   converts it to a normal **op** via the Processor — it is **never** published to `core-events`
