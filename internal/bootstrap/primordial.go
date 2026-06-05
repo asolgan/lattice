@@ -28,14 +28,16 @@ const (
 	RefractorAdjacencyKV   = "refractor-adjacency" // Refractor's internal adjacency store (private, not a Lens target)
 
 	// JetStream stream names.
-	CoreOpsStreamName    = "core-operations"
-	CoreEventsStreamName = "core-events"
+	CoreOpsStreamName       = "core-operations"
+	CoreEventsStreamName    = "core-events"
+	CoreSchedulesStreamName = "core-schedules"
 
 	// JetStream subjects. Per Contract #2 §2.3, lane subjects are
 	// `ops.<lane>.>` (multi-segment). The `ops.>` wildcard covers all
 	// lanes including future ones — including `ops.meta.>` (the meta lane).
-	OpsWildcardSubject    = "ops.>"
-	EventsWildcardSubject = "events.>"
+	OpsWildcardSubject      = "ops.>"
+	EventsWildcardSubject   = "events.>"
+	SchedulesWildcardSubject = "schedule.>"
 )
 
 // Seeder holds the NATS JetStream context and performs all primordial writes.
@@ -99,7 +101,7 @@ func (s *Seeder) ProvisionBuckets(ctx context.Context) error {
 		}
 	}
 
-	// Provision core-operations and core-events streams.
+	// Provision core-operations, core-events, and core-schedules streams.
 	if err := s.provisionStreams(ctx); err != nil {
 		return fmt.Errorf("provision streams: %w", err)
 	}
@@ -148,6 +150,20 @@ func (s *Seeder) provisionStreams(ctx context.Context) error {
 			Storage:            jetstream.FileStorage,
 			MaxAge:             7 * 24 * time.Hour,
 			AllowAtomicPublish: true,
+		},
+		{
+			// Contract #10 §10.4 (FROZEN 2026-06-02). AllowMsgSchedules enables
+			// NATS-native @at scheduling; the server auto-enables AllowRollup
+			// which enforces per-subject rollup (one active schedule per subject).
+			// MaxMsgsPerSubject: 1 provides an additional storage bound so the
+			// stream cannot accumulate unbounded pending-schedule entries.
+			Name:                CoreSchedulesStreamName,
+			Description:         "Platform-wide message-scheduling stream (ADR-51). AllowMsgSchedules enables NATS-native @at/@every scheduling. Subject root: schedule.>",
+			Subjects:            []string{SchedulesWildcardSubject},
+			Retention:           jetstream.LimitsPolicy,
+			Storage:             jetstream.FileStorage,
+			MaxMsgsPerSubject:   1,
+			AllowMsgSchedules:   true,
 		},
 	}
 	for _, sc := range streams {
