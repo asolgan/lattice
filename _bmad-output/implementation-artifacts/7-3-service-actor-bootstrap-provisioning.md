@@ -1,6 +1,6 @@
 # Story 7.3 — Service-actor bootstrap provisioning (`identity:loom` + `identity:weaver`)
 
-Status: review
+Status: done — shipped `d203bdf` (CI green, 2026-06-05). 3-layer adversarial review clean (security crux unanimous); fixes-forward applied (deterministic readiness-gate test, non-leakable `-skip-ready-wait` flag, warm-rerun daemon guard, verify-kernel count assertion).
 
 **Tier:** Opus (primordial bootstrap + the security plane). This seeds two new **root-equivalent** actor identities into the kernel and asserts they pass commit-path step-3 auth *identically to a human actor*. A mistake here either (a) silently grants root to the wrong topology, or (b) introduces a service-actor special-case branch in auth that the adversarial suite is designed to forbid. Treat the auth-parity assertion as the crux.
 **Epic spec:** `_bmad-output/planning-artifacts/epics/phase-2-epics.md` → "### Story 7.3: Service-actor bootstrap provisioning" (line ~49). Read it for the user-story framing and the exact AC.
