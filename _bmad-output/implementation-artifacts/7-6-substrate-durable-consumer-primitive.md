@@ -1,6 +1,6 @@
 # Story 7.6 — Substrate durable-consumer primitive
 
-Status: review
+Status: done — shipped `30acacd` (CI green, 2026-06-05). Thorough lead review (behavior-preserving substrate refactor; outbox tests unchanged as the sufficiency proof). A pre-existing readiness-gate test flake surfaced by CI was root-caused + fixed separately in `c8c997f`.
 
 **Tier:** Opus (substrate primitive serving multiple consumers). This extracts an ack-disciplined durable-consumer surface into `internal/substrate` — the lowest, most-imported package in Lattice. The danger is not behavioral complexity; it is **surface design**: too small and the outbox can't refactor onto it (the sufficiency proof fails); too large and you've baked Refractor's pause/lag/reset machinery into the shared base (the AC explicitly forbids this). Treat "the outbox tests stay green, byte-for-byte behavior preserved" as the crux, and "the surface is the *minimal* common need" as the equally-binding second constraint.
 
