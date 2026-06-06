@@ -989,25 +989,26 @@ func WaitForBootstrapComplete(ctx context.Context, nc *nats.Conn, logger *slog.L
 		{"weaver", capabilityKeyForIdentity(WeaverIdentityID)},
 	}
 
-	// checkAll reports whether every required key is present. A genuine
-	// key-absence (jetstream.ErrKeyNotFound) is a not-ready signal that keeps
-	// the caller polling; any other Get error is a transport/bucket failure
-	// that is returned immediately so the caller fails fast on the true cause
-	// rather than burning the whole timeout as a false "missing projection."
-	// A context cancellation/deadline is neither — it is the caller's own
-	// timeout, handled by the <-ctx.Done() branch as a clean "timed out" so
-	// the named missing key is reported, not a raw transport error.
+	// checkAll classifies each key's Get error into three outcomes. A genuine
+	// key-absence (jetstream.ErrKeyNotFound) is a definitive not-ready signal:
+	// it names the missing key so the eventual timeout reports it. A context
+	// cancellation/deadline or a transient NATS condition is NOT definitive —
+	// the key's presence is undetermined — so it returns an empty name and the
+	// caller must not let it overwrite the last known-missing key (otherwise a
+	// deadline firing mid-poll, always during the first/Health Get, would
+	// mislabel the timeout as "Health missing" rather than the real laggard).
+	// Any other Get error is a transport/bucket failure, returned immediately so
+	// the caller fails fast on the true cause rather than burning the timeout.
 	classify := func(bucket, key string, err error) (missing string, fatal error) {
 		switch {
 		case errors.Is(err, jetstream.ErrKeyNotFound):
 			return key, nil
-		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-			return key, nil
-		case errors.Is(err, nats.ErrTimeout), errors.Is(err, nats.ErrNoResponders):
-			// Transient conditions while NATS settles during startup — the gate
-			// exists to wait through these, so keep polling rather than aborting
-			// on a momentary blip. A persistent failure surfaces as a timeout.
-			return key, nil
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded),
+			errors.Is(err, nats.ErrTimeout), errors.Is(err, nats.ErrNoResponders):
+			// Undetermined (caller's own deadline, or a transient NATS blip the
+			// gate is meant to wait through) — keep polling, but report no
+			// specific missing key.
+			return "", nil
 		default:
 			return "", fmt.Errorf("read %s %s: %w", bucket, key, err)
 		}
@@ -1030,18 +1031,20 @@ func WaitForBootstrapComplete(ctx context.Context, nc *nats.Conn, logger *slog.L
 	// Check immediately before starting the poll loop — the Health marker is
 	// typically already present since MarkBootstrapComplete runs just before
 	// this call, though the cap.* projections usually lag behind Refractor.
-	if _, ok, fatal := checkAll(); fatal != nil {
+	var lastMissing string
+	if missing, ok, fatal := checkAll(); fatal != nil {
 		return fatal
 	} else if ok {
 		logger.Info("readiness gate satisfied", "marker", HealthBootstrapCompleteKey,
 			"capProjections", len(capProjections))
 		return nil
+	} else if missing != "" {
+		lastMissing = missing
 	}
 
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
-	var lastMissing string
 	for {
 		select {
 		case <-ctx.Done():
@@ -1056,7 +1059,12 @@ func WaitForBootstrapComplete(ctx context.Context, nc *nats.Conn, logger *slog.L
 					"capProjections", len(capProjections))
 				return nil
 			}
-			lastMissing = missing
+			// Only a definitively-absent key updates lastMissing; an
+			// undetermined poll (empty name) leaves the prior value intact so the
+			// timeout names the real laggard, not a deadline-interrupted Get.
+			if missing != "" {
+				lastMissing = missing
+			}
 			logger.Debug("waiting for readiness gate", "missing", missing)
 		}
 	}
