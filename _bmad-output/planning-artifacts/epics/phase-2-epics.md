@@ -183,6 +183,38 @@ So that one pattern serves both "collect" and "verify-info," and the cursor is c
 
 *FRs: FR26 · Depends on: 8.2 · Model: Opus · Grounding: D3 guard purity; Contract #10 §10.5*
 
+### Story 8.4: Loom durable-consumer backoff (hardening — F4)
+
+As a platform operator,
+I want Loom's durable consumers to back off on repeated failure instead of hot-looping,
+So that a sustained downstream outage degrades gracefully rather than burning CPU.
+
+**Acceptance Criteria:**
+
+**Given** a Loom durable consumer (the command-outbox relay, the deadline watcher, the trigger consumer, or a per-domain completion consumer) whose handler repeatedly returns Nak (e.g. `ops.<lane>` down, a `patternRef` that never loads)
+**When** redelivery occurs
+**Then** redelivery is **delayed with backoff** (a substrate `NakWithDelay`/backoff capability on the durable-consumer primitive — the `HandlerFunc` Decision enum currently carries no delay), not an unbounded tight loop
+**And** the **relay's retry stays unbounded** (at-least-once delivery — a `MaxDeliver` cap that dropped the op would be wrong); only the *cadence* is bounded
+**And** a test asserts a failing handler does not spin at zero delay
+
+*Surfaced by: Story 8.1 adversarial review (F4). Depends on: 8.1 · Model: Opus · Grounding: Contract #10 §10.6; internal/substrate/consumer.go*
+
+### Story 8.5: Per-domain completion-consumer teardown (hardening — F6)
+
+As a platform developer,
+I want Loom to tear down a per-domain completion consumer when no registered pattern references that domain,
+So that removing a pattern does not leak a durable consumer + goroutine for the engine's lifetime.
+
+**Acceptance Criteria:**
+
+**Given** a pattern whose `completionDomains` references a domain no other registered pattern uses
+**When** that pattern is removed (the pattern source fires the update callback)
+**Then** `reconcileConsumers` diffs desired vs running domains and **cancels** the now-orphaned `loom-<domain>` consumer (calling the stored `CancelFunc`, removing the registry entry) — matching the doc claim that an unreferenced domain's consumer is torn down without an engine restart
+**And** the durable's ack-floor persistence convention is honored (stop driving it; do not delete unless intended — see `internal/substrate/subscribe.go`)
+**And** a test installs then removes a pattern referencing a unique domain and asserts teardown
+
+*Surfaced by: Story 8.1 adversarial review (F6). Depends on: 8.1 · Model: Opus · Grounding: lattice-architecture #D2; internal/loom/engine.go*
+
 ## Epic 9: Weaver — Convergence Engine
 
 **Goal:** A declared target state converges; gaps detected + remediated; operators manage targets. Weaver consumes the Refractor (target = Lens); never a cypher runtime.
@@ -333,7 +365,7 @@ So that Loom + Weaver + Two-Phase Nudge + temporal are proven to converge.
 | Epic | Stories | Notes |
 |---|---|---|
 | Epic 7: Orchestration Foundations | 5 (7.5 won't-do) | task model + service actors + platform-wide schedule stream + substrate durable-consumer (FR29 creation-time already satisfied by 7.1/7.2 — 7.5 closed) |
-| Epic 8: Loom — Deterministic Flow Engine | 3 | skeleton → user-tasks → guards |
+| Epic 8: Loom — Deterministic Flow Engine | 5 | skeleton → user-tasks → guards → hardening (backoff, consumer teardown) |
 | Epic 9: Weaver — Convergence Engine | 4 | target-as-Lens+lane1 → anti-storm → temporal → control-API (FR30) |
 | Epic 10: External Convergence — Two-Phase Nudge | 2 | framework + idempotency proof |
 | Epic 11: Loftspace Reference Vertical | 2 | package authoring + e2e convergence harness |

@@ -1,6 +1,6 @@
 # Story 8.1: Loom walking skeleton
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -211,8 +211,8 @@ through the same outbox), and the C2 blocking-callback.
 **Fixed this pass (small, safe):** `StepTimeout` clamped to >= 1s (ECH M1, was silently degradable);
 History:1 + CreateOnly invariants documented in `state.go`.
 
-**Remaining follow-ups (NOT blocking; fold into the F4 robustness item):**
-- **F4 (expanded) — hot Nak-loop / no backoff on the relay + deadline durables** (BH F3 / ECH H1). Under
+**Remaining follow-ups (NOT blocking; tracked as Epic 8 hardening stories 8.4 & 8.5, spawned 2026-06-07):**
+- **F4 → Story 8.4 (durable-consumer backoff) — hot Nak-loop / no backoff on the relay + deadline durables** (BH F3 / ECH H1). Under
   *sustained* downstream failure (e.g. `ops.<lane>` down) the relay re-publishes / the deadline re-arms
   in a tight loop with no delay. Note: the relay SHOULD retry unboundedly (at-least-once delivery — a
   `MaxDeliver` cap would drop the op), so the fix is **`NakWithDelay`/backoff**, which needs a substrate
@@ -223,7 +223,7 @@ History:1 + CreateOnly invariants documented in `state.go`.
   (§10.6: deadline ≫ op latency; late commit finds the pointer gone → dropped + alerted) — inherent to
   the off-stream design, mitigated by the generous default. No code change; ensure deployments set
   `StepTimeout` ≫ real op latency.
-- **F6** — per-domain consumer teardown on pattern removal (unchanged from the first review).
+- **F6 → Story 8.5 (per-domain consumer teardown)** — teardown on pattern removal (unchanged from the first review).
 - **DeliverAll cold-start sweep** (ECH C1): on first creation of the relay/deadline durables they replay
   loom-state history (bounded by History:1, one msg/subject); mostly desired recovery, terminal markers
   no-op via the status guard. Acceptable; revisit if a `DeliverPolicy` knob is added to the substrate
