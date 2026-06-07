@@ -314,3 +314,44 @@ func TestCommit_ZeroEventsWritesNoOutboxAspect(t *testing.T) {
 		t.Fatalf("zero-event op outbox lookup: got err=%v, want ErrKeyNotFound", err)
 	}
 }
+
+// TestCommit_ZeroMutationEventOnly asserts an op with an EMPTY MutationBatch and
+// a non-empty EventList commits a tracker-only atomic batch plus the outbox
+// aspect (Contract #10 §10.9 event-only lifecycle ops). The commit path must
+// accept the zero-mutation case: no upstream guard rejects an empty mutation set
+// when result.Events is non-empty.
+func TestCommit_ZeroMutationEventOnly(t *testing.T) {
+	ctx, c, _ := buildCommitterPipeline(t)
+	env := newTestEnvelope(testNanoID1)
+	result := ScriptResult{
+		Mutations: nil,
+		Events: []EventSpec{{Class: "loom.patternStarted", Data: map[string]interface{}{
+			"instanceId": testNanoID1,
+			"patternRef": "vtx.meta." + testNanoID2,
+		}}},
+	}
+	tracker := NewTracker(env, time.Now())
+	ack, err := c.Commit(ctx, env, result, tracker)
+	if err != nil {
+		t.Fatalf("zero-mutation event-only Commit must succeed, got: %v", err)
+	}
+	// Tracker landed (idempotency infra) despite zero mutations.
+	if _, err := c.Conn.KVGet(ctx, testCoreBucket, tracker.Key); err != nil {
+		t.Fatalf("tracker missing after zero-mutation commit: %v", err)
+	}
+	// The outbox aspect carries the one event, so the outbox consumer publishes it.
+	ae, err := c.Conn.KVGet(ctx, testCoreBucket, OutboxAspectKey(env.RequestID))
+	if err != nil {
+		t.Fatalf("outbox aspect missing for event-only op: %v", err)
+	}
+	aspect, err := ParseOutboxAspect(ae.Value)
+	if err != nil {
+		t.Fatalf("ParseOutboxAspect: %v", err)
+	}
+	if len(aspect.Data.Events) != 1 || aspect.Data.Events[0].EventType != "loom.patternStarted" {
+		t.Fatalf("event-only outbox not faithful: %+v", aspect.Data.Events)
+	}
+	if len(ack.Events) != 1 || ack.Events[0].EventType != "loom.patternStarted" {
+		t.Fatalf("ack.Events not faithful: %+v", ack.Events)
+	}
+}

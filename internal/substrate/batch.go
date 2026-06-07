@@ -34,13 +34,19 @@ import (
 //     against a given key; in practice the Processor always uses Create
 //     or Update.)
 type BatchOp struct {
-	Bucket       string
-	Key          string
-	Value        []byte
-	CreateOnly   bool
-	HasRevision  bool
-	Revision     uint64
-	TTL          time.Duration
+	Bucket      string
+	Key         string
+	Value       []byte
+	CreateOnly  bool
+	HasRevision bool
+	Revision    uint64
+	TTL         time.Duration
+	// Delete writes a NATS KV delete marker (KV-Operation: DEL) instead of a
+	// value put, so a key can be removed within the same atomic batch as other
+	// puts. Value is ignored when Delete is set; a subsequent read returns
+	// ErrKeyNotFound. HasRevision/Revision still apply (a revision-conditioned
+	// delete); CreateOnly is meaningless for a delete and is ignored.
+	Delete bool
 }
 
 // BatchAck describes the server's atomic-commit acknowledgement for a
@@ -110,7 +116,14 @@ func (c *Conn) AtomicBatch(ctx context.Context, ops []BatchOp) (*BatchAck, error
 		m := nats.NewMsg(kvBucketSubject(op.Bucket, op.Key))
 		m.Data = op.Value
 		m.Header = nats.Header{}
-		if op.CreateOnly {
+		if op.Delete {
+			// NATS KV delete marker: an empty body carrying the KV-Operation
+			// header. The server removes the visible value; subsequent reads
+			// return ErrKeyNotFound.
+			m.Data = nil
+			m.Header.Set("KV-Operation", "DEL")
+		}
+		if op.CreateOnly && !op.Delete {
 			m.Header.Set("Nats-Expected-Last-Subject-Sequence", "0")
 		} else if op.HasRevision {
 			m.Header.Set("Nats-Expected-Last-Subject-Sequence",

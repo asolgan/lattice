@@ -5,13 +5,19 @@
 //
 // It declares:
 //
+//   - A `loomLifecycle` DDL defining the three EVENT-ONLY Loom lifecycle ops
+//     (Contract #10 §10.9): StartLoomPattern (→ loom.patternStarted),
+//     CompletePattern (→ loom.patternCompleted), FailPattern
+//     (→ loom.patternFailed). They produce NO business mutation; the Loom
+//     instance is operational-only (loom-state, no Core-KV vertex).
+//
 //   - One DDL (`task`) defining the generic task vertex type + the
 //     CreateTask operation. Task root data is scalars only
 //     ({status, expiresAt}); relationships are LINKS:
 //
-//	lnk.task.<id>.assignedTo.identity.<assigneeId>   # who performs it
-//	lnk.task.<id>.forOperation.meta.<opId>           # the op this task grants
-//	lnk.task.<id>.scopedTo.<type>.<targetId>         # the grant's target
+//     lnk.task.<id>.assignedTo.identity.<assigneeId>   # who performs it
+//     lnk.task.<id>.forOperation.meta.<opId>           # the op this task grants
+//     lnk.task.<id>.scopedTo.<type>.<targetId>         # the grant's target
 //
 //   - One Lens (`capabilityEphemeral`) projecting per-actor ephemeral
 //     grants to the disjoint key `cap.ephemeral.<actor-suffix>` in the
@@ -21,7 +27,8 @@
 //     delegation) — NOT the old task.data.grantedOperationType/targetKey
 //     fields (the corrected anti-pattern, Contract #10 §10.1).
 //
-//   - One permission (`CreateTask`, scope any) granted to `operator`.
+//   - Permissions granting the task ops + the three Loom lifecycle ops to
+//     `operator` (all scope: any).
 //
 // Install via the InstallPackage kernel op. See
 // docs/components/_packages.md.

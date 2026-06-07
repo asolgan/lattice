@@ -1094,8 +1094,13 @@ CDC→Lens plane, not the event consumer); failure blast-radius is domain-scoped
 Phase 2, subdividable later). **Packages declare event→pattern bindings; they do NOT provision
 NATS infra** — the engine **reconciles** one consumer per *referenced* domain from the binding
 registry (this is how a package introducing a new domain, e.g. `lease`, gets a consumer without
-mutating infra at install). Rejected: a single wildcard consumer (head-of-line blocking across
-all domains); per-(pattern×event) consumers (forces infra mutation into the package contract).
+mutating infra at install). The concrete binding is the pattern's **`completionDomains`** field
+(Contract #10 §10.5, default `[subjectType]`); within a domain, a completion is correlated to its
+instance by **`requestId` in the event body** (the durable `token.` index, §10.6) — domain-independent,
+no topological guessing. Loom's own **trigger/lifecycle** rides the `loom` domain (`events.loom.>`,
+§10.9), so `loom` is itself a first-class — and nestable — domain. Rejected: a single wildcard consumer
+(head-of-line blocking across all domains); per-(pattern×event) consumers (forces infra mutation into
+the package contract).
 
 ### D3 — Loom & Weaver runtime mechanics (LOCKED)
 
@@ -1106,11 +1111,21 @@ user-facing — steps may be user-tasks *or* system-ops; e.g. a tenant-provision
 (skip-if-already-satisfied — this is the "collect vs verify" reuse). **Guards are pure
 deterministic predicates over current state** (binding) — no branches, no loops, no fan-out;
 branching/conditional-path logic belongs to Weaver. **State:** the **tasks** are Core KV
-business state (queryable, UI-rendered, audited, read by the Weaver target Lens); the
-**instance cursor** lives in Loom-internal `loom.state.>` and is **rebuildable by replaying the
-(pure) guards** against Core KV tasks — source of truth stays in the ledger. Waiting for user
-input fits the `event → advance → op → event` loop (the advancing event is user-triggered);
-long waits exceed the 24h idempotency horizon (engine concern, noted).
+business state (queryable, UI-rendered, audited, read by the Weaver target Lens); the **instance is
+operational-only** — it lives in Loom-internal `loom-state` (never a Core-KV vertex), as an
+`instance.<id>` cursor + a durable `token.<token>` reverse index + an `outbox.<token>` op record + a
+`deadline.<instanceId>` TTL (Contract #10 §10.3), all updated in a single `AtomicBatch` per transition.
+token→instance correlation is that **durable** co-located index (§10.6), not in-memory; normal restart
+resumes from it. Op submission rides a **command outbox** (the op-to-submit is in the same atomic batch as
+the cursor advance; a durable relay fire-and-forget publishes it to `core-operations`, re-publish
+idempotent via the Contract #4 tracker) — symmetric to the Processor's *event* outbox, so submission is
+never a dual write. A rejected/lost op (invisible on core-events) is caught off-stream by the
+`deadline.<instanceId>` TTL expiry + a read-before-act tracker probe (§10.6), never a synchronous reply.
+As a disaster-recovery fallback (loom-state lost) the cursor is **re-derivable by replaying the (pure)
+guards** against Core KV tasks — source of truth stays in the ledger. Trigger and `complete`/`fail`
+lifecycle are **event-only ops** on the `loom` domain (§10.9); "which flows are running" is served by
+Loom's **control plane** (reading loom-state), not Core KV. Waiting for user input fits the `event → advance → op → event` loop (the advancing event is
+user-triggered); long waits exceed the 24h idempotency horizon (engine concern, noted).
 
 **Weaver = convergence engine.** Pipeline `Sensorium → Evaluator → Strategist → Actuator`. A
 **3-lane work stream** (`weaver.work.>`), each lane existing because the others structurally

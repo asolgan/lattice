@@ -11,6 +11,8 @@ declares:
   ddls:
     - canonicalName: task
       class: meta.ddl.vertexType
+    - canonicalName: loomLifecycle
+      class: meta.ddl.vertexType
   lenses:
     - canonicalName: capabilityEphemeral
       adapter: nats-kv
@@ -31,5 +33,14 @@ declares:
       scope: any
       grantsTo: [operator]
     - operationType: CancelTask
+      scope: any
+      grantsTo: [operator]
+    - operationType: StartLoomPattern
+      scope: any
+      grantsTo: [operator]
+    - operationType: CompletePattern
+      scope: any
+      grantsTo: [operator]
+    - operationType: FailPattern
       scope: any
       grantsTo: [operator]

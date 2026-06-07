@@ -6,21 +6,21 @@
 // kernel Core KV keys exist with correct envelopes per Contract #1 §1.3.
 // The kernel set (~73 entries):
 //
-//	 1 bootstrap op tracker
-//	 1 admin identity vertex
-//	 2 internal service-actor identity vertices (Loom + Weaver, arch §92)
-//	 1 meta-meta-DDL vertex + 9 aspects
-//	   (canonicalName/permittedCommands/description/script +
-//	    inputSchema/outputSchema/fieldDescription/examples + compensation)
-//	 2 Lens definitions × 5 aspects each
-//	 5 aspect-type meta-vertices × 7 aspects each
-//	   (canonicalName + description + inputSchema + outputSchema +
-//	    fieldDescription + examples)
-//	 1 operator role vertex + canonicalName + description
-//	 3 meta-permission vertices
-//	 3 grantedBy links (meta-perm → operator)
-//	 1 admin → operator holdsRole link
-//	 2 service-actor → operator holdsRole links (Loom + Weaver)
+//	1 bootstrap op tracker
+//	1 admin identity vertex
+//	2 internal service-actor identity vertices (Loom + Weaver, arch §92)
+//	1 meta-meta-DDL vertex + 9 aspects
+//	  (canonicalName/permittedCommands/description/script +
+//	   inputSchema/outputSchema/fieldDescription/examples + compensation)
+//	2 Lens definitions × 5 aspects each
+//	5 aspect-type meta-vertices × 7 aspects each
+//	  (canonicalName + description + inputSchema + outputSchema +
+//	   fieldDescription + examples)
+//	1 operator role vertex + canonicalName + description
+//	3 meta-permission vertices
+//	3 grantedBy links (meta-perm → operator)
+//	1 admin → operator holdsRole link
+//	2 service-actor → operator holdsRole links (Loom + Weaver)
 //
 // Total ≈ 73 OK lines.
 //
@@ -262,12 +262,29 @@ func main() {
 	}
 	for _, bucket := range []string{
 		bootstrap.CoreKVBucket, bootstrap.HealthKVBucket, bootstrap.CapabilityKVBucket,
-		bootstrap.WeaverStateBucket, bootstrap.WeaverClaimsBucket, bootstrap.RefractorAdjacencyKV,
+		bootstrap.WeaverStateBucket, bootstrap.WeaverClaimsBucket, bootstrap.LoomStateBucket,
+		bootstrap.RefractorAdjacencyKV,
 	} {
 		if _, err := js.KeyValue(ctx, bucket); err != nil {
 			failures = append(failures, fmt.Sprintf("MISSING KV bucket: %s (%v)", bucket, err))
 		} else {
 			fmt.Printf("  OK  bucket: %s\n", bucket)
+		}
+	}
+
+	// AllowAtomicPublish must be set on the buckets whose writers use atomic
+	// batches: Core KV (Processor commit) and loom-state (Loom step transition,
+	// Contract #10 §10.3). Without it, Conn.AtomicBatch on the bucket is rejected.
+	for _, bucket := range []string{bootstrap.CoreKVBucket, bootstrap.LoomStateBucket} {
+		stream, err := js.Stream(ctx, "KV_"+bucket)
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("CANNOT read stream KV_%s for AllowAtomicPublish check: %v", bucket, err))
+			continue
+		}
+		if !stream.CachedInfo().Config.AllowAtomicPublish {
+			failures = append(failures, fmt.Sprintf("AllowAtomicPublish NOT set on KV_%s (Conn.AtomicBatch would be rejected)", bucket))
+		} else {
+			fmt.Printf("  OK  AllowAtomicPublish: KV_%s\n", bucket)
 		}
 	}
 

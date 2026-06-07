@@ -23,12 +23,21 @@ func TestPackage_ManifestMatchesDefinition(t *testing.T) {
 	}
 }
 
-func TestPackage_OneDDLTwoLensesFourPermissions(t *testing.T) {
-	if got := len(Package.DDLs); got != 1 {
-		t.Fatalf("expected 1 DDL, got %d", got)
+func TestPackage_DDLsLensesPermissions(t *testing.T) {
+	if got := len(Package.DDLs); got != 2 {
+		t.Fatalf("expected 2 DDLs, got %d", got)
+	}
+	ddlNames := map[string]bool{}
+	for _, d := range Package.DDLs {
+		ddlNames[d.CanonicalName] = true
+	}
+	for _, want := range []string{"task", "loomLifecycle"} {
+		if !ddlNames[want] {
+			t.Fatalf("missing DDL %q (have %v)", want, ddlNames)
+		}
 	}
 	if got := Package.DDLs[0].CanonicalName; got != "task" {
-		t.Fatalf("DDL canonicalName = %q, want task", got)
+		t.Fatalf("DDL[0] canonicalName = %q, want task", got)
 	}
 	if got := len(Package.Lenses); got != 2 {
 		t.Fatalf("expected 2 lenses, got %d", got)
@@ -42,8 +51,53 @@ func TestPackage_OneDDLTwoLensesFourPermissions(t *testing.T) {
 			t.Fatalf("missing lens %q (have %v)", want, lensNames)
 		}
 	}
-	if got := len(Package.Permissions); got != 4 {
-		t.Fatalf("expected 4 permissions, got %d", got)
+	if got := len(Package.Permissions); got != 7 {
+		t.Fatalf("expected 7 permissions, got %d", got)
+	}
+}
+
+// TestPackage_LoomLifecycleOps pins the three event-only lifecycle ops
+// (Contract #10 §10.9) on the loomLifecycle DDL + their operator grants.
+func TestPackage_LoomLifecycleOps(t *testing.T) {
+	var lifecycle *pkgmgr.DDLSpec
+	for i := range Package.DDLs {
+		if Package.DDLs[i].CanonicalName == "loomLifecycle" {
+			lifecycle = &Package.DDLs[i]
+		}
+	}
+	if lifecycle == nil {
+		t.Fatal("loomLifecycle DDL missing")
+	}
+	wantCmds := map[string]bool{"StartLoomPattern": false, "CompletePattern": false, "FailPattern": false}
+	for _, c := range lifecycle.PermittedCommands {
+		if _, ok := wantCmds[c]; !ok {
+			t.Fatalf("unexpected loomLifecycle command %q", c)
+		}
+		wantCmds[c] = true
+	}
+	for c, seen := range wantCmds {
+		if !seen {
+			t.Fatalf("loomLifecycle missing command %q", c)
+		}
+	}
+	// Event-only: the script must produce no mutations (empty list) for each branch.
+	if strings.Contains(lifecycle.Script, `"op": "create"`) || strings.Contains(lifecycle.Script, `"op": "update"`) {
+		t.Error("loomLifecycle ops must be event-only — no mutations")
+	}
+	wantPerms := map[string]bool{"StartLoomPattern": false, "CompletePattern": false, "FailPattern": false}
+	for _, p := range Package.Permissions {
+		if _, ok := wantPerms[p.OperationType]; !ok {
+			continue
+		}
+		wantPerms[p.OperationType] = true
+		if len(p.GrantsTo) != 1 || p.GrantsTo[0] != "operator" {
+			t.Fatalf("%s grantsTo = %v, want [operator]", p.OperationType, p.GrantsTo)
+		}
+	}
+	for op, seen := range wantPerms {
+		if !seen {
+			t.Fatalf("missing permission for lifecycle op %q", op)
+		}
 	}
 }
 
@@ -69,7 +123,7 @@ func TestPackage_LifecycleOpsGrantedToOperator(t *testing.T) {
 	want := map[string]bool{"CreateTask": false, "ReAssignTask": false, "CompleteTask": false, "CancelTask": false}
 	for _, p := range Package.Permissions {
 		if _, ok := want[p.OperationType]; !ok {
-			t.Fatalf("unexpected permission op %q", p.OperationType)
+			continue // lifecycle ops are checked in TestPackage_LoomLifecycleOps
 		}
 		want[p.OperationType] = true
 		if len(p.GrantsTo) != 1 || p.GrantsTo[0] != "operator" {

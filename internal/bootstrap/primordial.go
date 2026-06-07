@@ -25,6 +25,7 @@ const (
 	CapabilityKVBucket     = "capability-kv"
 	WeaverStateBucket      = "weaver-state"
 	WeaverClaimsBucket     = "weaver-claims"
+	LoomStateBucket        = "loom-state" // Loom's per-instance cursor store (Contract #10 §10.3)
 	RefractorAdjacencyKV   = "refractor-adjacency" // Refractor's internal adjacency store (private, not a Lens target)
 
 	// JetStream stream names.
@@ -69,6 +70,7 @@ func (s *Seeder) ProvisionBuckets(ctx context.Context) error {
 		{CapabilityKVBucket, "Lattice Capability KV — Refractor projection targets", true},
 		{WeaverStateBucket, "Lattice Weaver State KV", true},
 		{WeaverClaimsBucket, "Lattice Weaver Claims KV", true},
+		{LoomStateBucket, "Lattice Loom State KV — per-instance pattern cursors", true},
 		{RefractorAdjacencyKV, "Refractor internal adjacency store (private)", false},
 	}
 
@@ -92,11 +94,14 @@ func (s *Seeder) ProvisionBuckets(ctx context.Context) error {
 		}
 		s.logger.Info("KV bucket ready", "bucket", kv.Bucket())
 
-		// For Core KV: also set AllowAtomicPublish: true on the underlying stream.
-		// CreateKeyValue does NOT set this automatically; UpdateStream is required.
-		if b.name == CoreKVBucket {
-			if err := s.enableAtomicPublish(ctx, CoreKVBucket); err != nil {
-				return fmt.Errorf("enable AtomicPublish on %q: %w", CoreKVBucket, err)
+		// AllowAtomicPublish must be set on the underlying stream for buckets
+		// whose writers use Conn.AtomicBatch: Core KV (the Processor's commit
+		// batch + tracker) and loom-state (Loom's per-transition cursor + token
+		// batch, Contract #10 §10.3). CreateKeyValue does NOT set this
+		// automatically; UpdateStream is required.
+		if b.name == CoreKVBucket || b.name == LoomStateBucket {
+			if err := s.enableAtomicPublish(ctx, b.name); err != nil {
+				return fmt.Errorf("enable AtomicPublish on %q: %w", b.name, err)
 			}
 		}
 	}

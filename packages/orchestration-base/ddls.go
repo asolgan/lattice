@@ -38,50 +38,55 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //   - scopedTo   (vtx.<type>.<targetId>)
 func DDLs() []pkgmgr.DDLSpec {
 	return []pkgmgr.DDLSpec{
-		{
-			CanonicalName:     "task",
-			Class:             "meta.ddl.vertexType",
-			PermittedCommands: []string{"CreateTask", "ReAssignTask", "CompleteTask", "CancelTask"},
-			Description: "Orchestration task DDL. Vertex shape: vtx.task.<NanoID>, class=task, " +
-				"root data = scalars only {status (open|complete|cancelled), expiresAt}; NO aspects " +
-				"(the UI renders from the bound op's self-describing DDL via the forOperation link). " +
-				"Relationships are LINKS: assignedTo (task→identity: who performs it), forOperation " +
-				"(task→op-meta: the operation this task grants), scopedTo (task→target: the grant's " +
-				"target). All links: task is the later-arriving source, the other vertex is the " +
-				"pre-existing target (Contract #1 §1.1). CreateTask requires + validates the assignee " +
-				"identity (no-orphan invariant, FR29/P4). Lifecycle ops: ReAssignTask validates the " +
-				"new assignee + re-points the assignedTo link atomically (old tombstoned, new created); " +
-				"CompleteTask (open→complete) and CancelTask (open→cancelled) transition the root " +
-				"data.status. All lifecycle ops require the task to be open, assert the task root " +
-				"revision (OCC, Contract #2 §2.6), and reject any other source state (§10.6).",
-			Script: taskDDLScript,
-			InputSchema: `{"type":"object","properties":` +
-				`{"assignee":{"type":"string","description":"vtx.identity.<NanoID> — the identity that will perform the task (required; validated)."},` +
-				`"forOperation":{"type":"string","description":"vtx.meta.<NanoID> — the operation meta-vertex this task grants the assignee permission to perform."},` +
-				`"scopedTo":{"type":"string","description":"vtx.<type>.<NanoID> — the specific target the granted operation is scoped to (often ≠ the assignee)."},` +
-				`"expiresAt":{"type":"string","description":"RFC3339 expiry timestamp; the grant is valid only while expiresAt > now."}},` +
-				`"required":["assignee","forOperation","scopedTo","expiresAt"]}`,
-			OutputSchema: `{"type":"object","properties":` +
-				`{"primaryKey":{"type":"string","description":"vtx.task.<NanoID> of the created task (the operation's principal key)."}}}`,
-			FieldDescription: map[string]string{
-				"assignee":     "Full vtx.identity.<NanoID> key of the identity that will perform this task. Required; CreateTask rejects if absent/invalid.",
-				"forOperation": "Full vtx.meta.<NanoID> key of the operation meta-vertex the task grants. The capabilityEphemeral lens link-sources the granted operationType from this op.",
-				"scopedTo":     "Full vtx.<type>.<NanoID> key of the specific entity the granted operation is scoped to (e.g. the lease application to approve).",
-				"expiresAt":    "RFC3339 timestamp after which the task no longer grants. Stored as a scalar on the task root data.",
-			},
-			Examples: []pkgmgr.ExampleSpec{
-				{
-					Name: "CreateTask — assign a lease-approval task to a manager",
-					Payload: map[string]any{
-						"assignee":     "vtx.identity.<managerNanoID>",
-						"forOperation": "vtx.meta.<approveLeaseApplicationOpNanoID>",
-						"scopedTo":     "vtx.leaseApp.<applicantNanoID>",
-						"expiresAt":    "2026-06-04T14:00:00Z",
-					},
-					ExpectedOutcome: "Validates the assignee identity, forOperation op-meta, and scopedTo target all exist. " +
-						"Atomically commits vtx.task.<NanoID> (status=open, expiresAt) + the assignedTo/forOperation/scopedTo " +
-						"links in one batch. Returns primaryKey (the task key). Rejects with ScriptError if any endpoint is absent.",
+		taskDDL(),
+		LoomLifecycleDDL(),
+	}
+}
+
+func taskDDL() pkgmgr.DDLSpec {
+	return pkgmgr.DDLSpec{
+		CanonicalName:     "task",
+		Class:             "meta.ddl.vertexType",
+		PermittedCommands: []string{"CreateTask", "ReAssignTask", "CompleteTask", "CancelTask"},
+		Description: "Orchestration task DDL. Vertex shape: vtx.task.<NanoID>, class=task, " +
+			"root data = scalars only {status (open|complete|cancelled), expiresAt}; NO aspects " +
+			"(the UI renders from the bound op's self-describing DDL via the forOperation link). " +
+			"Relationships are LINKS: assignedTo (task→identity: who performs it), forOperation " +
+			"(task→op-meta: the operation this task grants), scopedTo (task→target: the grant's " +
+			"target). All links: task is the later-arriving source, the other vertex is the " +
+			"pre-existing target (Contract #1 §1.1). CreateTask requires + validates the assignee " +
+			"identity (no-orphan invariant, FR29/P4). Lifecycle ops: ReAssignTask validates the " +
+			"new assignee + re-points the assignedTo link atomically (old tombstoned, new created); " +
+			"CompleteTask (open→complete) and CancelTask (open→cancelled) transition the root " +
+			"data.status. All lifecycle ops require the task to be open, assert the task root " +
+			"revision (OCC, Contract #2 §2.6), and reject any other source state (§10.6).",
+		Script: taskDDLScript,
+		InputSchema: `{"type":"object","properties":` +
+			`{"assignee":{"type":"string","description":"vtx.identity.<NanoID> — the identity that will perform the task (required; validated)."},` +
+			`"forOperation":{"type":"string","description":"vtx.meta.<NanoID> — the operation meta-vertex this task grants the assignee permission to perform."},` +
+			`"scopedTo":{"type":"string","description":"vtx.<type>.<NanoID> — the specific target the granted operation is scoped to (often ≠ the assignee)."},` +
+			`"expiresAt":{"type":"string","description":"RFC3339 expiry timestamp; the grant is valid only while expiresAt > now."}},` +
+			`"required":["assignee","forOperation","scopedTo","expiresAt"]}`,
+		OutputSchema: `{"type":"object","properties":` +
+			`{"primaryKey":{"type":"string","description":"vtx.task.<NanoID> of the created task (the operation's principal key)."}}}`,
+		FieldDescription: map[string]string{
+			"assignee":     "Full vtx.identity.<NanoID> key of the identity that will perform this task. Required; CreateTask rejects if absent/invalid.",
+			"forOperation": "Full vtx.meta.<NanoID> key of the operation meta-vertex the task grants. The capabilityEphemeral lens link-sources the granted operationType from this op.",
+			"scopedTo":     "Full vtx.<type>.<NanoID> key of the specific entity the granted operation is scoped to (e.g. the lease application to approve).",
+			"expiresAt":    "RFC3339 timestamp after which the task no longer grants. Stored as a scalar on the task root data.",
+		},
+		Examples: []pkgmgr.ExampleSpec{
+			{
+				Name: "CreateTask — assign a lease-approval task to a manager",
+				Payload: map[string]any{
+					"assignee":     "vtx.identity.<managerNanoID>",
+					"forOperation": "vtx.meta.<approveLeaseApplicationOpNanoID>",
+					"scopedTo":     "vtx.leaseApp.<applicantNanoID>",
+					"expiresAt":    "2026-06-04T14:00:00Z",
 				},
+				ExpectedOutcome: "Validates the assignee identity, forOperation op-meta, and scopedTo target all exist. " +
+					"Atomically commits vtx.task.<NanoID> (status=open, expiresAt) + the assignedTo/forOperation/scopedTo " +
+					"links in one batch. Returns primaryKey (the task key). Rejects with ScriptError if any endpoint is absent.",
 			},
 		},
 	}

@@ -1,0 +1,596 @@
+package loom_test
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"os"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	natsserver "github.com/nats-io/nats-server/v2/server"
+	natstest "github.com/nats-io/nats-server/v2/test"
+	nats "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+	"github.com/stretchr/testify/require"
+
+	"github.com/asolgan/lattice/internal/loom"
+	"github.com/asolgan/lattice/internal/substrate"
+)
+
+// --- Embedded NATS + provisioning -------------------------------------------
+
+func startNATS(t *testing.T) *nats.Conn {
+	t.Helper()
+	opts := &natsserver.Options{Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: t.TempDir()}
+	s := natstest.RunServer(opts)
+	t.Cleanup(s.Shutdown)
+	nc, err := nats.Connect(s.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+	return nc
+}
+
+const (
+	coreKVBucket    = "core-kv"
+	loomStateBucket = "loom-state"
+	eventsStream    = "core-events"
+	opsStream       = "core-operations"
+	loomActorKey    = "vtx.identity.LoomServiceActor123abc" // fixture actor key (fake processor does not auth)
+)
+
+func provision(t *testing.T, ctx context.Context, conn *substrate.Conn) {
+	t.Helper()
+	js := conn.JetStream()
+	// loom-state must allow atomic publish: Loom's per-transition AtomicBatch
+	// (Contract #10 §10.3) requires it, exactly as bootstrap provisions it.
+	for _, b := range []string{coreKVBucket, loomStateBucket} {
+		_, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: b, LimitMarkerTTL: time.Second})
+		require.NoError(t, err)
+		stream, err := js.Stream(ctx, "KV_"+b)
+		require.NoError(t, err)
+		cfg := stream.CachedInfo().Config
+		cfg.AllowAtomicPublish = true
+		_, err = js.UpdateStream(ctx, cfg)
+		require.NoError(t, err)
+	}
+	_, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name: opsStream, Subjects: []string{"ops.>"},
+	})
+	require.NoError(t, err)
+	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name: eventsStream, Subjects: []string{"events.>"},
+		Retention: jetstream.LimitsPolicy, MaxAge: time.Hour, AllowAtomicPublish: true,
+	})
+	require.NoError(t, err)
+}
+
+func testLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
+}
+
+// --- Fake Processor ---------------------------------------------------------
+//
+// A minimal stand-in for the Processor that reproduces exactly the contract
+// seams Loom depends on (Contract #10 §10.6 + §10.9), no more. It publishes the
+// FULL Event envelope shape the outbox publishes: a top-level `requestId` plus a
+// `payload` object — Loom reads requestId top-level (completion correlation) and
+// the business fields under payload (the patternStarted trigger).
+//
+//   - StartLoomPattern (event-only) → emits events.loom.patternStarted with
+//     payload {instanceId=requestId, patternRef, subjectKey}. No mutation.
+//   - CompletePattern / FailPattern (event-only) → emits
+//     events.loom.patternCompleted / events.loom.patternFailed. No mutation.
+//   - any other op (systemOp) → writes the Contract #4 vtx.op.<requestId>
+//     tracker (dedup), replies "accepted", and publishes ONE business event
+//     whose top-level requestId is the committed terminal Loom correlates on. A
+//     repeat requestId replies "duplicate" and publishes NO second event
+//     (idempotent — the exactly-once guarantee).
+//   - an operationType in rejectOps → replies "rejected" with NO tracker and NO
+//     event (the off-stream failed terminal, AC #4).
+type fakeProcessor struct {
+	conn      *substrate.Conn
+	logger    *slog.Logger
+	eventFor  func(op string) string // systemOp operationType → full business event class
+	rejectOps map[string]struct{}
+	submitted int64 // count of accepted (non-duplicate) systemOp commits, for exactly-once
+	gate      <-chan struct{}
+}
+
+const replyInboxHeader = "Lattice-Reply-Inbox"
+
+func (f *fakeProcessor) run(ctx context.Context, t *testing.T) {
+	cons, err := f.conn.JetStream().CreateOrUpdateConsumer(ctx, opsStream, jetstream.ConsumerConfig{
+		Durable:       "fake-processor",
+		FilterSubject: "ops.>",
+		AckPolicy:     jetstream.AckExplicitPolicy,
+	})
+	require.NoError(t, err)
+	go func() {
+		mc, err := cons.Messages()
+		if err != nil {
+			return
+		}
+		go func() { <-ctx.Done(); mc.Stop() }()
+		for {
+			msg, err := mc.Next()
+			if err != nil {
+				return
+			}
+			f.handle(ctx, msg)
+			_ = msg.Ack()
+		}
+	}()
+}
+
+func (f *fakeProcessor) handle(ctx context.Context, msg jetstream.Msg) {
+	var env struct {
+		RequestID     string          `json:"requestId"`
+		OperationType string          `json:"operationType"`
+		Payload       json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(msg.Data(), &env); err != nil {
+		return
+	}
+	inbox := msg.Headers().Get(replyInboxHeader)
+
+	reply := func(status, code string) {
+		if inbox == "" {
+			return
+		}
+		body := map[string]any{"requestId": env.RequestID, "status": status}
+		if code != "" {
+			body["error"] = map[string]string{"code": code, "message": code}
+		}
+		b, _ := json.Marshal(body)
+		_ = f.conn.NATS().Publish(inbox, b)
+	}
+
+	// publishEvent emits the full Event envelope the outbox produces.
+	publishEvent := func(class string, payload map[string]any) {
+		ev := map[string]any{
+			"eventId":   mustNanoIDStr(),
+			"requestId": env.RequestID,
+			"eventType": class,
+			"payload":   payload,
+			"timestamp": substrate.FormatTimestamp(time.Now()),
+		}
+		eb, _ := json.Marshal(ev)
+		_, _ = f.conn.JetStream().Publish(context.Background(), "events."+class, eb)
+	}
+
+	if _, rej := f.rejectOps[env.OperationType]; rej {
+		// Off-stream failed terminal: no tracker, no event.
+		reply("rejected", "AuthContextMismatch")
+		return
+	}
+
+	// Event-only lifecycle ops (Contract #10 §10.9): no tracker accounting in
+	// `submitted` (that counter is for systemOp exactly-once), but still dedup on
+	// the tracker so a redelivery does not double-emit.
+	switch env.OperationType {
+	case "StartLoomPattern":
+		var p struct {
+			PatternRef string `json:"patternRef"`
+			SubjectKey string `json:"subjectKey"`
+		}
+		_ = json.Unmarshal(env.Payload, &p)
+		if !f.trackOnce(ctx, env.RequestID) {
+			reply("duplicate", "")
+			return
+		}
+		reply("accepted", "")
+		publishEvent("loom.patternStarted", map[string]any{
+			"instanceId": env.RequestID, // §10.9: instanceId = StartLoomPattern requestId
+			"patternRef": p.PatternRef,
+			"subjectKey": p.SubjectKey,
+		})
+		return
+	case "CompletePattern", "FailPattern":
+		var p struct {
+			InstanceID string `json:"instanceId"`
+		}
+		_ = json.Unmarshal(env.Payload, &p)
+		if !f.trackOnce(ctx, env.RequestID) {
+			reply("duplicate", "")
+			return
+		}
+		reply("accepted", "")
+		class := "loom.patternCompleted"
+		if env.OperationType == "FailPattern" {
+			class = "loom.patternFailed"
+		}
+		publishEvent(class, map[string]any{"instanceId": p.InstanceID})
+		return
+	}
+
+	// systemOp.
+	if !f.trackOnce(ctx, env.RequestID) {
+		reply("duplicate", "")
+		return
+	}
+	atomic.AddInt64(&f.submitted, 1)
+	reply("accepted", "")
+
+	class := f.eventFor(env.OperationType)
+	publish := func() { publishEvent(class, map[string]any{"op": env.OperationType}) }
+	if f.gate != nil {
+		go func() {
+			select {
+			case <-f.gate:
+				publish()
+			case <-ctx.Done():
+			}
+		}()
+		return
+	}
+	publish()
+}
+
+// trackOnce writes the Contract #4 tracker; returns false if it already exists
+// (a duplicate / crash re-attempt collapsed on the tracker).
+func (f *fakeProcessor) trackOnce(ctx context.Context, requestID string) bool {
+	_, err := f.conn.KVCreate(ctx, coreKVBucket, "vtx.op."+requestID, []byte(`{"class":"op","data":{}}`))
+	return err == nil
+}
+
+func mustNanoIDStr() string {
+	id, _ := substrate.NewNanoID()
+	return id
+}
+
+// --- Pattern install + trigger ----------------------------------------------
+
+// installPattern writes a meta.loomPattern vertex + spec aspect to Core KV the
+// way the Processor write path would, so Loom's CDC pattern source loads it.
+func installPattern(t *testing.T, ctx context.Context, conn *substrate.Conn, patternID string, p loom.Pattern) {
+	t.Helper()
+	vtxKey := "vtx.meta." + patternID
+	vtxBody, _ := json.Marshal(map[string]any{"class": "meta.loomPattern", "data": map[string]any{}})
+	_, err := conn.KVPut(ctx, coreKVBucket, vtxKey, vtxBody)
+	require.NoError(t, err)
+
+	specBody, _ := json.Marshal(p)
+	specEnvelope, _ := json.Marshal(map[string]any{"class": "loomPatternSpec", "data": json.RawMessage(specBody)})
+	_, err = conn.KVPut(ctx, coreKVBucket, vtxKey+".spec", specEnvelope)
+	require.NoError(t, err)
+}
+
+// submitStartLoomPattern publishes a real StartLoomPattern op to ops.<lane>; the
+// fake Processor commits it and emits the events.loom.patternStarted trigger.
+// Returns the instanceId (= the StartLoomPattern requestId, §10.9). The submit
+// is retried until the fake replies accepted, so it races the engine startup
+// gracefully.
+func submitStartLoomPattern(t *testing.T, ctx context.Context, conn *substrate.Conn, patternRef, subjectKey string) string {
+	t.Helper()
+	requestID := mustNanoID(t)
+	payload, _ := json.Marshal(map[string]string{"patternRef": patternRef, "subjectKey": subjectKey})
+	env, _ := json.Marshal(map[string]any{
+		"requestId":     requestID,
+		"lane":          "system",
+		"operationType": "StartLoomPattern",
+		"actor":         loomActorKey,
+		"submittedAt":   substrate.FormatTimestamp(time.Now()),
+		"payload":       json.RawMessage(payload),
+		"authContext":   map[string]string{"target": patternRef},
+	})
+
+	inbox := nats.NewInbox()
+	sub, err := conn.NATS().SubscribeSync(inbox)
+	require.NoError(t, err)
+	defer func() { _ = sub.Unsubscribe() }()
+
+	msg := &nats.Msg{Subject: "ops.system", Data: env, Header: nats.Header{replyInboxHeader: []string{inbox}}}
+	_, err = conn.JetStream().PublishMsg(ctx, msg)
+	require.NoError(t, err)
+
+	reply, err := sub.NextMsgWithContext(ctx)
+	require.NoError(t, err)
+	var r struct {
+		Status string `json:"status"`
+	}
+	require.NoError(t, json.Unmarshal(reply.Data, &r))
+	require.Contains(t, []string{"accepted", "duplicate"}, r.Status, "StartLoomPattern must commit")
+	return requestID
+}
+
+func newEngine(conn *substrate.Conn, opts ...func(*loom.Config)) *loom.Engine {
+	cfg := loom.Config{
+		CoreKVBucket:    coreKVBucket,
+		LoomStateBucket: loomStateBucket,
+		EventsStream:    eventsStream,
+		ActorKey:        loomActorKey,
+		Lane:            "system",
+		Logger:          testLogger(),
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	return loom.NewEngine(conn, cfg)
+}
+
+// --- Tests ------------------------------------------------------------------
+
+// TestLoomE2E_RunsToCompletion proves AC #3/#4/#8/#9: a real StartLoomPattern
+// submission emits the trigger event that drives instance creation; the pattern
+// runs step → committed-event → advance → next step → exhaustion, each step's op
+// committed exactly once, and events.loom.patternStarted → patternCompleted is
+// the lifecycle.
+func TestLoomE2E_RunsToCompletion(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	nc := startNATS(t)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+	provision(t, ctx, conn)
+
+	startedSub, err := nc.SubscribeSync("events.loom.patternStarted")
+	require.NoError(t, err)
+	completedSub, err := nc.SubscribeSync("events.loom.patternCompleted")
+	require.NoError(t, err)
+
+	fp := &fakeProcessor{
+		conn: conn, logger: testLogger(),
+		rejectOps: map[string]struct{}{},
+		eventFor:  func(string) string { return "identity.stepDone" },
+	}
+	fp.run(ctx, t)
+
+	patternID := mustNanoID(t)
+	installPattern(t, ctx, conn, patternID, loom.Pattern{
+		PatternID:   patternID,
+		SubjectType: "identity",
+		Steps: []loom.Step{
+			{Kind: "systemOp", Operation: "StepA"},
+			{Kind: "systemOp", Operation: "StepB"},
+		},
+	})
+
+	engine := newEngine(conn)
+	engCtx, engCancel := context.WithCancel(ctx)
+	defer engCancel()
+	go func() { _ = engine.Start(engCtx) }()
+	time.Sleep(500 * time.Millisecond) // let the pattern source replay history
+
+	subjectKey := "vtx.identity." + mustNanoID(t)
+	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
+
+	// The trigger event was emitted (drove instance creation).
+	_, err = startedSub.NextMsg(15 * time.Second)
+	require.NoError(t, err, "events.loom.patternStarted must be emitted")
+
+	// Lifecycle completion event.
+	_, err = completedSub.NextMsg(15 * time.Second)
+	require.NoError(t, err, "events.loom.patternCompleted must be emitted")
+
+	// Instance must reach status=complete with cursor exhausted (2 steps).
+	inst := waitInstanceStatus(t, ctx, conn, instanceID, "complete")
+	require.Equal(t, 2, inst.Cursor, "cursor must advance to exhaustion")
+
+	// Exactly the two systemOp steps committed.
+	require.Equal(t, int64(2), atomic.LoadInt64(&fp.submitted),
+		"each systemOp step committed exactly once")
+}
+
+// TestLoomE2E_MidRunRestartExactlyOnce proves AC #6/#9: a mid-run engine restart
+// resumes to the SAME completion exactly once — no double submission — correlated
+// against the durable token.<token> pointer (no in-memory index). Step A's
+// committed event is held until after the restart, so the restart happens with
+// step A still pending; the durable consumer redelivers it from its ack floor
+// and the durable pointer carries the run to completion.
+func TestLoomE2E_MidRunRestartExactlyOnce(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	nc := startNATS(t)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+	provision(t, ctx, conn)
+
+	gate := make(chan struct{})
+	fp := &fakeProcessor{
+		conn: conn, logger: testLogger(),
+		rejectOps: map[string]struct{}{},
+		gate:      gate,
+		eventFor:  func(string) string { return "identity.stepDone" },
+	}
+	fp.run(ctx, t)
+
+	patternID := mustNanoID(t)
+	installPattern(t, ctx, conn, patternID, loom.Pattern{
+		PatternID:   patternID,
+		SubjectType: "identity",
+		Steps: []loom.Step{
+			{Kind: "systemOp", Operation: "StepA"},
+			{Kind: "systemOp", Operation: "StepB"},
+		},
+	})
+
+	subjectKey := "vtx.identity." + mustNanoID(t)
+
+	// --- Engine generation 1: start the instance, then crash it. ---
+	e1 := newEngine(conn)
+	e1Ctx, e1Cancel := context.WithCancel(ctx)
+	go func() { _ = e1.Start(e1Ctx) }()
+	time.Sleep(500 * time.Millisecond)
+
+	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
+
+	// Wait until step A is persisted as the pending token (write-ahead) + its
+	// durable token pointer exists.
+	waitPending(t, ctx, conn, instanceID)
+	committedAfterGen1 := atomic.LoadInt64(&fp.submitted)
+	require.GreaterOrEqual(t, committedAfterGen1, int64(1), "step A must have committed")
+
+	// Crash generation 1, THEN release step A's committed event.
+	e1Cancel()
+	time.Sleep(500 * time.Millisecond)
+	close(gate)
+
+	// --- Engine generation 2: restart. The durable consumer redelivers step A's
+	// committed event from its ack floor; correlation is the durable token GET;
+	// the run carries to completion. ---
+	e2 := newEngine(conn)
+	e2Ctx, e2Cancel := context.WithCancel(ctx)
+	defer e2Cancel()
+	go func() { _ = e2.Start(e2Ctx) }()
+
+	inst := waitInstanceStatus(t, ctx, conn, instanceID, "complete")
+	require.Equal(t, 2, inst.Cursor)
+
+	// Exactly-once: 2 systemOp steps across BOTH generations. Any double
+	// submission would push this above 2 (the fake counts only non-duplicate
+	// commits; a redelivery collapsing on the tracker does not inflate it).
+	require.Equal(t, int64(2), atomic.LoadInt64(&fp.submitted),
+		"mid-run restart must not double-submit any step (exactly once)")
+}
+
+// TestLoomE2E_RejectedStepFails proves AC #4: a rejected systemOp (off-stream
+// terminal via the submit reply) marks the instance failed rather than waiting
+// forever for a committed event that can never arrive.
+func TestLoomE2E_RejectedStepFails(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	nc := startNATS(t)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+	provision(t, ctx, conn)
+
+	failedSub, err := nc.SubscribeSync("events.loom.patternFailed")
+	require.NoError(t, err)
+
+	fp := &fakeProcessor{
+		conn: conn, logger: testLogger(),
+		rejectOps: map[string]struct{}{"StepA": {}},
+		eventFor:  func(string) string { return "identity.stepDone" },
+	}
+	fp.run(ctx, t)
+
+	patternID := mustNanoID(t)
+	installPattern(t, ctx, conn, patternID, loom.Pattern{
+		PatternID:   patternID,
+		SubjectType: "identity",
+		Steps:       []loom.Step{{Kind: "systemOp", Operation: "StepA"}},
+	})
+
+	// A rejected op is invisible on core-events (no tracker, no event), so the
+	// failed terminal is learned off-stream via the per-step deadline + probe
+	// (§10.6). Use a short deadline so the test does not wait the 60s default.
+	engine := newEngine(conn, func(c *loom.Config) { c.StepTimeout = 2 * time.Second })
+	engCtx, engCancel := context.WithCancel(ctx)
+	defer engCancel()
+	go func() { _ = engine.Start(engCtx) }()
+	time.Sleep(500 * time.Millisecond)
+
+	subjectKey := "vtx.identity." + mustNanoID(t)
+	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
+
+	inst := waitInstanceStatus(t, ctx, conn, instanceID, "failed")
+	require.Equal(t, "failed", inst.Status)
+	require.Equal(t, int64(0), atomic.LoadInt64(&fp.submitted), "rejected op writes no tracker/event")
+
+	// FailPattern is announced on the event plane.
+	_, err = failedSub.NextMsg(15 * time.Second)
+	require.NoError(t, err, "events.loom.patternFailed must be emitted")
+}
+
+// TestLoomE2E_LivePatternInstallNoRestart proves AC #1/#2: a pattern installed
+// AFTER the engine is already running registers via the CDC source's callback
+// and reconciles its per-domain consumer — no engine restart.
+func TestLoomE2E_LivePatternInstallNoRestart(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	nc := startNATS(t)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+	provision(t, ctx, conn)
+
+	fp := &fakeProcessor{
+		conn: conn, logger: testLogger(),
+		rejectOps: map[string]struct{}{},
+		eventFor:  func(string) string { return "lease.stepDone" },
+	}
+	fp.run(ctx, t)
+
+	// Start the engine BEFORE any pattern exists.
+	engine := newEngine(conn)
+	engCtx, engCancel := context.WithCancel(ctx)
+	defer engCancel()
+	go func() { _ = engine.Start(engCtx) }()
+	time.Sleep(500 * time.Millisecond)
+
+	// Install a pattern live over a never-before-seen domain (lease).
+	patternID := mustNanoID(t)
+	installPattern(t, ctx, conn, patternID, loom.Pattern{
+		PatternID:   patternID,
+		SubjectType: "lease",
+		Steps:       []loom.Step{{Kind: "systemOp", Operation: "StepA"}},
+	})
+	time.Sleep(500 * time.Millisecond) // let the pattern register + reconcile its consumer
+
+	subjectKey := "vtx.lease." + mustNanoID(t)
+	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
+
+	inst := waitInstanceStatus(t, ctx, conn, instanceID, "complete")
+	require.Equal(t, 1, inst.Cursor)
+	require.Equal(t, int64(1), atomic.LoadInt64(&fp.submitted), "1 systemOp step committed")
+}
+
+// --- helpers ----------------------------------------------------------------
+
+func mustNanoID(t *testing.T) string {
+	t.Helper()
+	id, err := substrate.NewNanoID()
+	require.NoError(t, err)
+	return id
+}
+
+func waitInstanceStatus(t *testing.T, ctx context.Context, conn *substrate.Conn, instanceID, status string) *loom.Instance {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if entry, err := conn.KVGet(ctx, loomStateBucket, "instance."+instanceID); err == nil {
+			var inst loom.Instance
+			if json.Unmarshal(entry.Value, &inst) == nil && inst.Status == status {
+				return &inst
+			}
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	t.Fatalf("instance %q never reached status %q", instanceID, status)
+	return nil
+}
+
+func waitPending(t *testing.T, ctx context.Context, conn *substrate.Conn, instanceID string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if entry, err := conn.KVGet(ctx, loomStateBucket, "instance."+instanceID); err == nil {
+			var inst loom.Instance
+			if json.Unmarshal(entry.Value, &inst) == nil && inst.PendingToken != "" {
+				// The durable reverse pointer must also exist.
+				if _, perr := conn.KVGet(ctx, loomStateBucket, "token."+inst.PendingToken); perr == nil {
+					return
+				}
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("instance %q never wrote a pending token + pointer", instanceID)
+}

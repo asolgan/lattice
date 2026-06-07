@@ -131,22 +131,23 @@ So that the outbox, Loom, and Weaver share one ack-disciplined consumer rather t
 **Goal:** Deterministic multi-step procedures (user-task or system-op steps) run to completion via a generic interpreter; patterns are package data.
 **FRs covered:** FR26 (conditional = on/off guards + human-approval = user-tasks; *branching* is Weaver, per D3)
 
-### Story 8.1: Loom walking skeleton
+### Story 8.1: Loom engine machinery
 
 As a platform developer,
-I want the Loom engine to drive a fixture pattern of system-op steps to completion,
+I want the Loom engine machinery stood up — durable pattern source, event-driven trigger, per-domain completion consumers, and a durable correlation index — driving one simple system-op pattern to completion,
 So that the core interpreter loop is proven before user-tasks and guards.
 
 **Acceptance Criteria:**
 
-**Given** a `meta.loomPattern` of system-op steps (no guards) installed as package/fixture data
-**When** an op triggers a Loom instance (`internal/loom`, `identity:loom` actor)
-**Then** the engine loads the pattern (CDC), reconciles a per-domain durable consumer from declared bindings (D2), and runs `event → advance cursor → submit next op → event` to completion
-**And** the instance cursor is stored in `loom-state` (not Core KV)
-**And** on engine restart the durable consumer resumes; the run completes exactly once (idempotent op submission)
+**Given** a `meta.loomPattern` of system-op steps (no guards) with `completionDomains` (default `[subjectType]`), installed as package/fixture data
+**When** a caller submits `StartLoomPattern{patternRef, subjectKey}` and its committed `loom.patternStarted` event reaches the engine (`internal/loom`, `identity:loom` actor)
+**Then** the engine (patterns loaded via a durable Core-KV subscription) instantiates, reconciles one durable per-domain consumer per `completionDomains` entry (D2), and runs `event → advance cursor → submit next op → event` to `CompletePattern` (`loom.patternCompleted`)
+**And** the instance lives only in `loom-state` (operational; never a Core-KV vertex), keyed `instance.<id>` + a durable `token.<token>` reverse pointer, each transition one `AtomicBatch` (`loom-state` provisioned `AllowAtomicPublish`)
+**And** completions correlate by `requestId` in the event body via the durable `token.` pointer (domain-independent; no in-memory index); a rejected step fails off-stream via the submit reply
+**And** on engine restart the durable consumers resume and the run completes exactly once (idempotent via the Contract #4 tracker + token-pointer presence)
 **And** `loom` imports only `substrate/*` (no Go import of Processor/Weaver)
 
-*FRs: FR26 · Depends on: 7.1, 7.6 (substrate durable-consumer), 1.5.10 (outbox) · Model: Opus (engine, multi-file) · Grounding: `docs/components/loom.md`, D2/D3*
+*FRs: FR26 · Depends on: 7.1, 7.6 (substrate durable-consumer), 1.5.10 (outbox) · Model: Opus (engine, multi-file) · Grounding: `docs/components/loom.md`, Contract #10 §10.3/§10.5/§10.6/§10.9, D2*
 
 ### Story 8.2: User-task steps
 
@@ -177,7 +178,7 @@ So that one pattern serves both "collect" and "verify-info," and the cursor is c
 **When** Loom evaluates the step and the guard is false (data already present)
 **Then** the step is skipped (no task created), cursor advances; guard true → step runs
 **And** guards are **pure, deterministic** predicates (no side effects, no external reads) — verified by the engine contract
-**And** with `loom-state` discarded, the engine **rebuilds the cursor by replaying guards** over Core KV tasks (first step whose guard is true and whose task is incomplete) — a crash-recovery test asserts identical resumption
+**And** with `loom-state` **lost entirely** (disaster recovery — normal restart resumes from the durable `loom-state` cursor + `token.` index per §10.6), the engine can **re-derive the cursor by replaying guards** over Core KV tasks (first step whose guard is true and whose task is incomplete) — a recovery test asserts identical resumption
 **And** no branches/loops/fan-out are expressible (linear only)
 
 *FRs: FR26 · Depends on: 8.2 · Model: Opus · Grounding: D3 guard purity; Contract #10 §10.5*

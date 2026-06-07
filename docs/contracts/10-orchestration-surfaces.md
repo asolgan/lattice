@@ -5,7 +5,7 @@
 all four Weaver sections). Rationale: `lattice-architecture.md` → "Phase 2 Architecture —
 Orchestration Core". Component detail: `docs/components/{loom,weaver}.md`.
 
-This contract defines the data shapes the orchestration engines introduce. All sections (§10.1–§10.8)
+This contract defines the data shapes the orchestration engines introduce. All sections (§10.1–§10.9)
 are frozen — implementation stories build to these shapes; changes require a contract revision, not an
 in-flight redefinition. **Known deferred carries** (do NOT reopen the frozen shapes — they extend them
 later): shared pure-Starlark guard evaluator (until the first Starlark guard is authored, §10.5);
@@ -148,24 +148,71 @@ notation was loose). `weaver-state` / `weaver-claims` already exist as primordia
 
 | Bucket | Owner | Key | Status |
 |--------|-------|-----|--------|
-| `loom-state` | Loom | `<instanceId>` | primordial (new) |
+| `loom-state` | Loom | `instance.<instanceId>` / `token.<pendingToken>` / `outbox.<token>` / `deadline.<instanceId>` | primordial (new), `AllowAtomicPublish: true` |
 | `weaver-state` | Weaver | `<targetId>.<entityId>.<gapColumn>` | primordial (exists) |
 | `weaver-claims` | Weaver | `<claimId>` | primordial (exists), 90d retention |
 | `weaver-work` | Weaver | — | **in-process only; no durable bucket in Phase 2** (see below) |
 
-### `loom-state` — per-instance Loom cursor
+### `loom-state` — per-instance Loom cursor + co-located reverse index
+
+`loom-state` holds **four disjoint-prefixed key shapes** in the one bucket (the same one-bucket /
+disjoint-prefix pattern capability-kv §6.1 uses for `cap.ephemeral.*`):
 
 ```
-key:   <instanceId>                          # NanoID minted at StartLoomPattern
-value: { instanceId, patternRef, subjectKey, cursor, pendingToken, status, retryCount }
+key:  instance.<instanceId>     value: { instanceId, patternRef, subjectKey, cursor, pendingToken, status, retryCount }
+key:  token.<pendingToken>      value: { instanceId }                                          # thin reverse pointer (committed-path)
+key:  outbox.<token>            value: { requestId, operation, payload, target, lane, actor }  # command-outbox record (the op to submit)
+key:  deadline.<instanceId>     value: { setAt }   with a per-key TTL = the step deadline       # timeout backstop (one per instance; linear interpreter)
 ```
 - `cursor` = current step index; `pendingToken` = the `taskId | requestId` of the step being awaited
   (§10.6); `status ∈ {running, complete, failed}`.
-- **Rebuildable** (D3): the cursor replays from pure guards over Core KV tasks. The §10.6
-  correlation `pendingToken → instance` is an **in-memory index Loom rebuilds from the persisted
-  `pendingToken` fields on startup** — no secondary KV index. **Crash-ordering is NOT free latitude:**
-  the **write-ahead-`pendingToken`**, **guardless-step-token-only**, and **watch-suspended-until-rebuild**
-  invariants in **§10.6 "Crash-safety invariants"** are what make "rebuildable" actually hold.
+- The `pendingToken → instance` correlation is a **durable co-located reverse index** (the `token.`
+  pointer), resolved by a **direct GET** on completion — **not** an in-memory index. This is
+  **multi-instance-safe**: any engine replica resolves any token via the bucket.
+- Each step transition is a **single `substrate.AtomicBatch` on `loom-state`** (all ops target the one
+  bucket — `internal/substrate/batch.go`): update `instance.<id>` (`cursor`, `pendingToken`), write the
+  new `token.<newToken> → instanceId`, delete the prior `token.<oldToken>`, **write the
+  `outbox.<newToken>` record**, and **re-arm `deadline.<instanceId>`** (a PUT with a fresh per-step TTL).
+  All-or-nothing — the same construct the Processor uses for the mutation-batch + tracker at commit
+  step 8. **The op submission is part of this atomic fact (the `outbox.` record), not a second write** —
+  this is the **command-outbox** pattern, symmetric to the Processor's transactional *event* outbox.
+
+#### Command outbox — `outbox.<token>` + the relay
+
+A rejected/lost op submission must not be a dual write (state committed, op never sent). Loom writes the
+**op to submit** as an `outbox.<token>` record **in the same batch** as the cursor/token transition; an
+async **relay** — a durable consumer on the `loom-state` backing stream filtered to `outbox.>`
+(mirroring `internal/processor/outbox/consumer.go`) — **fire-and-forget publishes** the op to
+`core-operations` and **deletes `outbox.<token>` on publish-ack**. Re-publish is idempotent (Loom chose
+the `requestId`; a duplicate collapses on the Contract #4 `vtx.op.<requestId>` tracker), so a crash
+between batch and publish self-heals on resume. The relay needs only a publish — **no request-reply** —
+so `internal/loom` carries no raw `nats.io`/`jetstream` handle. The §10.9 lifecycle ops route through the
+same outbox.
+
+#### Deadline — `deadline.<instanceId>` (per-instance, TTL-armed)
+
+`deadline.<instanceId>` carries a **per-key TTL** = the current step's deadline; its **expiry** is the
+off-stream failed/rejected backstop (§10.6). It is keyed on **`instanceId`** (not the token) because the
+interpreter is linear (§10.5) — exactly one step is pending per instance — so one key always denotes the
+current step's clock, and the TTL **expiry marker's subject carries the instanceId** (a delete-marker
+carries no old value, so a `token.`-keyed TTL would lose the reverse mapping). Lifecycle: **created** in
+the submit-step-0 batch; **re-armed** (PUT, fresh TTL) in each advance batch; **deleted** in the terminal
+(`complete`/`fail`) batch; or **auto-expires** → the loom-state CDC observes the expiry marker
+(`KeyValuePurge` / `Nats-Marker-Reason: MaxAge`, distinct from a normal DEL) → the step-deadline-exceeded
+handler runs (§10.6). The value is thin (`setAt`, observability only) — the handler reconstructs from
+`instance.<instanceId>`.
+- **"No secondary KV index" is reinterpreted:** it forbids a **separate index bucket** (dual-write
+  atomicity / drift); a co-located disjoint-prefix index in the *same* bucket, written in the same
+  atomic batch, is sanctioned and stronger.
+- **Provisioning (binding):** `loom-state` **must** be provisioned with **`AllowAtomicPublish: true`**
+  on its underlying stream — the same flag `core-kv` gets. Today `enableAtomicPublish` is gated to
+  `CoreKVBucket` only (`internal/bootstrap/primordial.go`); extend it to `loom-state` (alongside the
+  existing bucket-create + the `verify-kernel` assertion). Without it, `Conn.AtomicBatch` on
+  `loom-state` is rejected.
+- **Rebuildability (D3)** no longer rests on a startup index rebuild: the durable `token.` pointer is a
+  single atomic fact written write-ahead, so any replica correlates any completion by direct GET. The
+  **write-ahead** and **guardless-step-token-only** invariants in **§10.6 "Crash-safety invariants"**
+  still bind; the former watch-suspended-until-rebuild invariant is retired (no in-memory index).
 
 ### `weaver-state` — anti-storm in-flight mark (§10.8)
 
@@ -303,6 +350,7 @@ the pattern-*start* auth (distinct from the per-step auth of §10.6/§10.7).
 {
   "patternId":   "onboarding",
   "subjectType": "identity",
+  "completionDomains": ["identity"],
   "steps": [
     { "kind": "userTask", "operation": "SetName",
       "guard": { "absent": "subject.profile.data.name" } },
@@ -312,6 +360,17 @@ the pattern-*start* auth (distinct from the per-step auth of §10.6/§10.7).
   ]
 }
 ```
+
+**`completionDomains?: ["<domain>", …]`** (optional) — the set of `events.<domain>.>` the engine
+reconciles a **durable per-domain consumer** for (D2). A **domain** is the **first dot-free segment of
+an event class** — the `<domain>` in `events.<domain>.>` (the outbox subjects events as
+`events.<sanitizedClass>`, e.g. class `tenant.created` → domain `tenant`; this keeps `loom-<domain>` a
+valid durable name). **Defaults to `[subjectType]`** when omitted (covers the common same-domain flow).
+A flow whose steps complete in a domain other than the subject's **must list it explicitly**; the §10.6
+per-step completion **timeout** is the not-silent backstop for an omitted/mis-declared domain (FR29
+never-silently-drop). The engine reads `completionDomains` — it does not *know* domains; per-step
+granularity is unnecessary because correlation is domain-independent (§10.6), so the **set** of domains
+is sufficient.
 
 **Step shape:** `{ kind, operation, guard? }` — completion is implicit (§10.6), no per-step event.
 - `kind` ∈ `userTask` (engine creates a task with links `assignedTo` → the subject,
@@ -353,10 +412,54 @@ A step is correlated to its instance by a **unique token Loom already knows or t
 event already carries** — concurrent-safe (multiple instances per subject, or many tasks of one
 op-type per actor, are unambiguous), with **no topological guessing**.
 
+**Correlation is a durable `token.<token>` GET** (§10.3), **domain-independent**: a consumed
+`core-events` message on *any* subscribed domain whose body `requestId`/`taskId` matches a live
+`token.` pointer is the **committed** terminal → advance via the atomic batch. The per-domain consumer
+only decides *which events Loom sees* (the partition, §10.5 `completionDomains`), never *which instance*
+— that is the pointer. **Idempotency** (at-least-once redelivery): the `token.` pointer's **presence is
+the guard** — pointer gone (step already advanced, pointer deleted in the batch) → drop/ack, no
+re-advance.
+
 | Step kind | Pending token (in `loom-state`) | Completion signal Loom consumes |
 |-----------|----------------------------------|----------------------------------|
-| **userTask** | the **`taskId`** of the task it created | `TaskCompleted` core-event → carries `taskId` → `taskId → instance` |
-| **systemOp** | the **`requestId`** of the op it submitted | the op's idempotency tracker `vtx.op.<requestId>` (Contract #4) reaches a **terminal** state — **committed** → advance cursor; **failed/rejected** → `status=failed` / `retryCount` per policy (Loom watches *both* terminals; a rejected systemOp must not wait forever) |
+| **userTask** | the **`taskId`** of the task it created | `TaskCompleted` core-event → body carries `taskId` → live `token.<taskId>` GET → instance |
+| **systemOp** | the **`requestId`** of the op it submitted | a committed business event on a subscribed domain whose body `requestId` matches a live `token.<requestId>` → advance via the atomic batch. **failed/rejected** is **off-stream** (a rejected op writes no tracker/event) — learned via the **per-step deadline + a read-before-act probe** (below), never the submit reply → `status=failed` / `retryCount` per policy; the deadline also backstops a mis-declared `completionDomains` (§10.5) → alert, never a silent wedge |
+
+### systemOp terminals — committed on-stream, failed/rejected off-stream (deadline + probe)
+
+A submitted systemOp has three orthogonal outcomes; separating them is what removes the wedge:
+
+- **committed** — a `core-events` body `requestId` matches a live `token.` pointer → advance. (on-stream)
+- **crash / transient** — **not a terminal**: the command-outbox relay re-publishes and the durable
+  consumers resume from their ack floor. The outbox owns crash-recovery; the deadline does not.
+- **rejected / failed / unseen** — **off-stream** (a rejected op writes no tracker and emits no event,
+  Processor denies before commit step 8), learned via the **per-step `deadline.<instanceId>` TTL**
+  (§10.3). The synchronous `ops.<lane>` submit-reply is **not** used — it blocks the consumer and forces
+  a raw NATS handle into the engine.
+
+**Step-deadline-exceeded handler.** When `deadline.<instanceId>` expires (the loom-state CDC observes
+the `KeyValuePurge`/MaxAge marker; or the reconciler fallback detects an overdue instance), the handler
+for instance `I`:
+
+1. **GET `instance.<I>`.** Absent or `status != running` → **ack/no-op** (already terminal, or a stale
+   marker). Re-reading current state — never acting on the marker alone — is the idempotency +
+   multi-replica guard.
+2. Let `T = instance.pendingToken`. **Read-before-act probe: GET the Contract #4 op tracker `vtx.op.<T>`**
+   (a Core-KV *read* — Loom reads, never writes Core KV; symmetric to Weaver's recovery read, §10.3
+   `weaver-claims`):
+   - **tracker present** → the op committed; its completion event was missed (mis-declared
+     `completionDomains` / lost) → **advance** exactly as the committed terminal would, **and alert**
+     ("completion recovered via deadline probe — check `completionDomains`"). Flow stays live.
+   - **tracker absent, `outbox.<T>` present** → the relay has not delivered yet → **re-arm**
+     `deadline.<I>` (fresh TTL); do **not** fail.
+   - **tracker absent, `outbox.<T>` absent** → published but did not commit → **rejected** → per
+     `retryCount` policy re-submit (fresh `outbox.<T>` + re-arm) or `status=failed` (atomic batch also
+     deletes `token.<T>` + `deadline.<I>`) → submit `FailPattern` (§10.9). **Alert.**
+3. Every branch re-reads `instance` and is CAS-on-`running`, so a redelivered marker / second replica
+   finds the work done → no-op.
+
+The deadline is set **≫ expected op latency** (the `weaver-state` lease precedent); a late commit after a
+false-fail finds the pointer gone → dropped (a bounded, alerted divergence, not a silent one).
 
 ### Completing a userTask — by `taskId`, via `TaskCompleted` (RESOLVED)
 
@@ -395,29 +498,34 @@ Loom watches `TaskCompleted(taskId)` regardless of which path emitted it.
 
 ### Constraint
 
-`loom-state` maps `{taskId | requestId} → instance`; the instance records its single pending
-token. Because tokens are unique per pending step, no one-active-instance-per-subject restriction
-is needed — concurrent instances for the same subject are fully distinguishable.
+`loom-state` maps `{taskId | requestId} → instance` via the durable co-located `token.<token>`
+pointer (§10.3), resolved by direct GET; the instance records its single pending token. Because tokens
+are unique per pending step, no one-active-instance-per-subject restriction is needed — concurrent
+instances for the same subject are fully distinguishable, and any engine replica resolves any token.
 
 ### Crash-safety invariants (binding — "rebuildable" depends on these)
 
 D3 calls the cursor "rebuildable," but rebuildability only holds if these orderings are mandated
 (they are contract invariants, **not** Loom-story latitude):
 
-1. **Write-ahead `pendingToken`.** Loom persists the step's `pendingToken` to `loom-state`
-   **before** performing the side effect (creating the userTask / submitting the systemOp). On
-   restart, a persisted `pendingToken` with no live task/op means "the side effect may or may not
-   have happened; re-attempt is safe" — re-attempt is safe because `CreateTask` /
-   `StartLoomPattern` / the systemOp are keyed/idempotent (systemOp is already write-ahead — Loom
-   chose the `requestId`). Without this, a crash between side effect and persist orphans the token
-   → the later completion event correlates to nothing → the instance wedges.
-2. **Guardless steps complete only via their token.** A step with no guard has **no guard-replay
-   signal** (guard-replay can't tell a guardless step ran). So a guardless step's completion comes
-   **solely** from its `pendingToken` (taskId/requestId); rebuild must **not** re-run a step whose
-   token is still pending, or it double-submits. (The §10.5 example ends on a guardless `SetAddress`.)
-3. **Completion watch is suspended until the in-memory index finishes rebuilding** (or completions
-   ride a durable consumer whose position guarantees redelivery). A `TaskCompleted`/tracker event
-   that arrives mid-rebuild must not hit a half-built index and be dropped.
+1. **Write-ahead = the atomic batch (retained, now outbox-inclusive).** The `token.<token>` pointer, the
+   `instance.<id>` update, **the `outbox.<token>` op record**, and the `deadline.<instanceId>` TTL are
+   persisted to `loom-state` in **one `substrate.AtomicBatch`**. For a systemOp the side effect (the op
+   reaching `core-operations`) is the **relay's** decoupled, idempotent publish *from* that batch — so
+   the batch and the side effect are **no longer a dual write**: invariant 1 holds by construction, not
+   by ordering discipline. (For a userTask the side effect is still `CreateTask`, keyed/idempotent.) On
+   restart, a persisted `pendingToken` whose `outbox.` record still exists is simply re-published by the
+   relay; one whose op already committed collapses on the Contract #4 `vtx.op.<requestId>` tracker. A
+   crash can no longer orphan a token between side effect and persist.
+2. **Guardless steps complete only via their token (retained).** A step with no guard has **no
+   guard-replay signal** (guard-replay can't tell a guardless step ran). So a guardless step's
+   completion comes **solely** from its `pendingToken` (taskId/requestId); re-drive must **not** re-run
+   a step whose token is still pending, or it double-submits. (The §10.5 example ends on a guardless
+   `SetAddress`.)
+3. **(REMOVED) Completion watch suspended until rebuild.** There is no in-memory index to rebuild — a
+   redelivered completion resolves against the durable `token.<token>` pointer (§10.3) regardless of
+   engine age or replica. The durable per-domain consumer redelivers from its ack floor, and the
+   pointer's presence is the idempotency guard, so no suspend-until-warm gate is needed.
 
 ---
 
@@ -559,6 +667,65 @@ Target + playbook are **package data**; the Weaver engine is a generic dispatche
 
 ---
 
+## 10.9 Pattern trigger & lifecycle — `loom`-domain ops
+
+§10.5/§10.8 settle the *auth* to start a pattern (`StartLoomPattern` + pattern-as-target) but not how a
+**committed** trigger reaches the engine, nor how a pattern's terminal is announced. This section closes
+both on the **event plane**, with no Core-KV instance state.
+
+**Instance is operational-only (binding).** A Loom instance is **operational state** — it lives **only
+in `loom-state`** (P1, the `instance.<instanceId>` cursor, §10.3) and gets **no Core-KV business
+vertex**. Its lifecycle is announced on the **event plane** (`core-events`), **not** projected as
+Core-KV business state. These ops emit their `loom.*` events the ordinary way: at commit the faithful
+`EventList` is persisted as the **outbox aspect `vtx.op.<requestId>.events`** — alongside the universal
+`vtx.op.<requestId>` tracker, in the same step-8 atomic batch — and the outbox CDC consumer publishes
+from that aspect (`internal/processor/outbox/consumer.go`, filter `$KV.<bucket>.vtx.op.*.events`). So
+each writes the **standard tracker + outbox-events aspect**; the distinguishing property is only that it
+creates **no business-domain vertex** — the instance's sole durable home is the `loom-state` cursor.
+
+**Three lifecycle ops** (shipped by `orchestration-base`; the engine stays generic), each → outbox →
+`events.loom.*` (**P2: never a direct publish**):
+
+| Op | Posted by | Business vertex | Emits (body: `instanceId, patternRef, subjectKey, requestId`) |
+|----|-----------|-----------------|------|
+| `StartLoomPattern{patternRef, subjectKey}` | **caller** (Weaver `scope:any` / client / fixture) | none | `loom.patternStarted` |
+| `CompletePattern{instanceId}` | **Loom** (`identity:loom`) | none | `loom.patternCompleted` |
+| `FailPattern{instanceId, reason?}` | **Loom** (`identity:loom`) | none | `loom.patternFailed` |
+
+(Each also writes the universal `vtx.op.<requestId>` tracker + the `…events` outbox aspect — that is how
+the event is emitted; none writes a business vertex.)
+
+- **`instanceId` = the `StartLoomPattern` `requestId`** (already a NanoID) — no minting, and redelivery
+  dedup is automatic (Loom's `loom-state instance.<instanceId>` cursor keyed on it → already present →
+  skip). The instance's sole durable home is that cursor (§10.3).
+- Loom runs a **fixed durable consumer on `events.loom.patternStarted`** (always-on, **independent of
+  `completionDomains`**). On the event: validate `patternRef` against the loaded pattern registry, create
+  the `loom-state instance.<instanceId>` cursor, submit step 0.
+- The engine's **internal** completion/failure is a **`loom-state` status transition** (operational,
+  `status ∈ {running, complete, failed}`); the `CompletePattern`/`FailPattern` op is the *outward
+  announcement* (loop closure + nesting), the terminal Actuator op of an exhausted/failed pattern.
+- **Idempotency needs no new machinery:** `StartLoomPattern`'s Contract #4 tracker dedups a duplicate
+  trigger op at the Processor; Loom dedups at-least-once event redelivery on the `instanceId` (the
+  `loom-state` cursor presence).
+- **`loom` is a first-class domain:** Loom *consumes* `patternStarted` (trigger) and *emits*
+  `patternCompleted`/`patternFailed`. A Loom completion is therefore itself a consumable completion
+  event — so a Phase-3 **nested** pattern (a step that runs a sub-flow and waits) simply lists `loom`
+  in its `completionDomains` (§10.5) and correlates on the sub-instance's token, with **no new
+  machinery**.
+- **Queryability** ("which flows are running") is served by **Loom's control plane** — analogous to
+  Refractor's (`internal/refractor/control/service.go`), reading `loom-state` — **not** Core KV. It is
+  its own (future) control-plane story; Weaver gets the analogous one (Story 9.4 control-API). A
+  Refractor lens over the `loom.*` event stream remains an option for a durable read model if one is
+  later wanted.
+
+**No special Processor capability needed.** Event emission already rides the outbox aspect
+(`vtx.op.<requestId>.events`) written in the commit batch, so a lifecycle op is an ordinary op that
+emits events and writes no business vertex — nothing in the pipeline special-cases it. (An op whose
+`result.Mutations` is empty but whose `result.Events` is non-empty still commits the tracker + the
+`…events` aspect and publishes; confirm no upstream guard rejects an empty *business*-mutation set.)
+
+---
+
 ## Revision history
 
 | Date | Change |
@@ -574,4 +741,6 @@ Target + playbook are **package data**; the Weaver engine is a generic dispatche
 | 2026-06-02 | **§10.3 FROZEN (Andrew).** Operational KV namespaces. Bucket names fixed to dash-form (`loom-state`/`weaver-state`/`weaver-claims`; latter two exist primordially, `loom-state` joins the create list). `loom-state` key `<instanceId>`, value `{instanceId,patternRef,subjectKey,cursor,pendingToken,status,retryCount}`; token→instance correlation = in-memory index rebuilt from persisted `pendingToken` (no secondary KV index). `weaver-state` key `<targetId>.<entityId>.<gapColumn>`, value `{targetId,entityKey,gap,action,claimId?,claimedAt,leaseExpiresAt,heldBy?}` (CAS-create=OCC; clears on gap-close/lease-expiry; `claimId` only for nudge). `weaver-claims` key `<claimId>`, value `{claimId,adapter,operation,subject,params,idempotencyKey,state,claimedAt,resolvedAt?,resolveRef?}` — **external idempotency = `idempotencyKey`(=claimId) the adapter dedups on**, no CAS on claim (weaver-state already serialized dispatch); Claim→Execute→Resolve per arch Item 3; 90d retention. **`weaver-work` DEFERRED** (Andrew): its purpose = normalized intake for the 3 trigger lanes + durability; but Phase-2 live lanes already replay from their sources (lane-1 from `weaver-targets`, temporal from `core-schedules`), dedup is in `weaver-state` → durable queue redundant. Only lane-2 (transient event-targeted-audit, Phase-3) needs it. Phase 2 = in-process lane mux, no bucket. |
 | 2026-06-02 | **§10.8 FROZEN + entity-ID key fix (Andrew).** Weaver target+playbook settled. §10.2↔§10.8 seam made binding: `targetId` = both the vertex id and the `weaver-targets` key prefix; every `gaps` key must be a `missing_<gap>` column; a true gap with no playbook entry = config error → Health alert (FR29 discipline). Action contracts pinned: `triggerLoom{pattern,subject}`, `nudge{adapter,subject,params?}`, `assignTask{operation,assignee,target}` (→ §10.1 task links), `directOp{operation,target?,params?}`. Templating: literal vs `row.<column>`, null reference = data error. **`triggerLoom` auth resolved** (Andrew's security catch — the unresolved Loom pattern-*start* auth): generic **`StartLoomPattern`** op with **pattern vertex as `authContext.target`** → per-pattern granularity via existing capability scope (Weaver `scope:any`, seeded in orchestration-base; external `scope:specific`/task-grant = Phase-3 carry since platform `specific` is stubbed). Added a §10.5 pointer. Anti-storm: in-flight mark `weaver-state` key `<targetId>.<entityId>.<gapColumn>` set via CAS-create (=OCC), clears on gap-close or lease expiry. **Entity-ID key fix (both §10.2 + §10.8):** candidate is **always a vertex** (never an aspect — aspects are gap predicates/param columns *within* a row), so key on the **NanoID** not the dotted full key (`vtx.X.<id>` dots are subject separators → brittle); full `entityKey` stays in the document (doc-is-truth principle). §10.2 key `<targetId>.<entityKey>`→`<targetId>.<entityId>`. |
 | 2026-06-02 | **§10.2 FROZEN (Andrew).** Target Lens output settled. Bucket fixed: NATS KV bucket names take no dots — one shared primordial **`weaver-targets`** bucket, key `<targetId>.<entityKey>`, filtered watch `<targetId>.>` (same contract-contribution pattern as capability-kv §6.1; no per-install bucket). Authz-anchor field **removed** — the bucket is internal Weaver-only operational state, off the read-path (D1 read-path auth is Phase-3); scoping rides the **param columns** + each remediation op's own `authContext`. Frozen column conventions: `entityKey` echo, lens-projected `violating` (lane-1 filter), `missing_<gap>` snake_case bools (**keys bind exactly to §10.8 `gaps`**), free-form param columns, `projectedAt` (Contract #6 as-of semantics); dropped value-`revision` (NATS entry revision is free on watch). **Carry:** §10.3's `weaver.state.>`/`weaver.claims.>` notation is loose — real buckets are `weaver-state`/`weaver-claims` (primordial); fix when §10.3 freezes. |
+| 2026-06-06 | **Loom amendment ratified (Andrew) — §10.3/§10.5/§10.6 reshaped + new §10.9** (`cmd/loom/CONTRACT-AMENDMENT-REQUEST.md`, Story 8.1 structural session). **§10.3:** `loom-state` now holds two disjoint-prefixed keys `instance.<instanceId>` (cursor) + `token.<pendingToken>` (thin `{instanceId}` reverse pointer); the `pendingToken → instance` correlation is a **durable co-located index resolved by direct GET** (multi-instance-safe), each step transition a single `substrate.AtomicBatch` on the one bucket; "no secondary KV index" reinterpreted (forbids a *separate* bucket; co-located disjoint-prefix in the same batch is sanctioned); `loom-state` **provisioned `AllowAtomicPublish: true`** (extend the `CoreKVBucket`-only `enableAtomicPublish` gate). **§10.5:** optional **`completionDomains`** added (default `[subjectType]`; cross-domain flows list explicitly; §10.6 timeout backstops). **§10.6:** correlation rewritten to the durable `token.<token>` GET (domain-independent; pointer-presence idempotency; off-stream failed/rejected via submit reply / timeout); **crash-safety invariant 3 (watch-suspended-until-rebuild) REMOVED** (no in-memory index), invariants 1–2 retained. **§10.9 (NEW):** pattern trigger & lifecycle via three `loom`-domain ops `StartLoomPattern`/`CompletePattern`/`FailPattern` (no business vertex; events ride the standard `vtx.op.<requestId>.events` outbox aspect) emitting `loom.patternStarted`/`Completed`/`Failed` on a first-class **`loom`** domain; `instanceId` = `StartLoomPattern` `requestId`; fixed `events.loom.patternStarted` trigger consumer (independent of `completionDomains`); instance stays **operational-only** (`loom-state`, NO Core-KV vertex); "which flows are running" served by Loom's **control plane** (like `internal/refractor/control`, reading `loom-state`), not Core KV. |
+| 2026-06-06 | **Loom command-outbox ratified (Andrew) — §10.3 + §10.6** (CAR Request 5, Story 8.1 review finding F2). **§10.3:** `loom-state` gains two disjoint prefixes — `outbox.<token>` (the op-to-submit record) and `deadline.<instanceId>` (per-key TTL = the step deadline). The per-step transition writes/re-arms both in the **same `substrate.AtomicBatch`** as the cursor/token update, so op submission is no longer a dual write (the **command-outbox** pattern, symmetric to the Processor's *event* outbox). An async **relay** (durable consumer on the `loom-state` backing stream `outbox.>`) fire-and-forget publishes the op to `core-operations` and deletes the record on publish-ack (re-publish idempotent via Loom's chosen `requestId` + the Contract #4 tracker) — **no request-reply, no raw NATS handle in `internal/loom`**. `deadline.<instanceId>` is per-instance (linear interpreter ⇒ one pending step), re-armed on advance, deleted on terminal, or auto-expires (`KeyValuePurge`/MaxAge marker, distinct from DEL). **§10.6:** the failed/rejected terminal is **off-stream via the deadline + a read-before-act probe** (`GET vtx.op.<token>`: present→advance+alert; absent+outbox-present→re-arm; absent+no-outbox→fail) — the **synchronous `ops.<lane>` submit-reply terminal is REMOVED**. Crash-safety invariant 1 restated as outbox-inclusive (write-ahead holds by construction). Retires findings F1/F2/F5 + the C2 blocking-callback. Mechanism verified against the repo (`BatchOp.TTL`; `internal/spike/nats-batch/test_ttl_marker_delivery.go`); reconciler-sweep is the sanctioned fallback. |
 | 2026-06-02 | **(a1) cap-lens extraction (Andrew).** Reading `step3_auth_capability.go` + `lenses.go` revealed the Capability Lens is a **god-cypher in core/bootstrap** that hard-codes the grant vocabulary of *multiple packages* (rbac-domain `role`/`permission`/`holdsRole`/`grantedBy`; service/location; Phase-2 `task`/`assignedTo`) into one per-actor doc — `task` is the newest tenant of a pre-existing inverted dependency. Fix (Story 7.1 scope): ephemeral grants leave the bootstrap god-cypher for an **`orchestration-base`-owned `capabilityEphemeral` lens** → disjoint key **`cap.ephemeral.<actor>`** (reuses the `capabilityRoleIndex` disjoint-prefix pattern, Contract #6 §6.1; no Refractor lens-merge needed). Bootstrap cypher **drops all `task` refs** (dependency direction flips package→core). Step-3 task branch reads the new key; `cap.<actor>` still read for `roles` on task-path denials. Grant *field shape* unchanged. Broader god-lens decomposition (role/permission/service projections + a generic step-3 **auth-hooks** consumer side) recorded as a future-ADR open item in `lattice-architecture.md`. |

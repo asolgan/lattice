@@ -181,6 +181,37 @@ func TestAtomicBatch_Commits(t *testing.T) {
 	}
 }
 
+// TestAtomicBatch_DeleteMarkerInBatch proves a BatchOp{Delete:true} removes a
+// key within the same atomic batch as other puts (Contract #10 §10.3 Loom step
+// transition: update instance.<id> + write the new token + delete the prior
+// token, all-or-nothing).
+func TestAtomicBatch_DeleteMarkerInBatch(t *testing.T) {
+	c, ctx := newTestConn(t)
+	bucket := "core-kv"
+	provisionCoreBucket(ctx, t, c, bucket)
+
+	oldKey := VertexKey("op", testNanoID1)
+	newKey := VertexKey("op", testNanoID2)
+	if _, err := c.KVCreate(ctx, bucket, oldKey, []byte(`{"class":"op"}`)); err != nil {
+		t.Fatalf("seed oldKey: %v", err)
+	}
+
+	ops := []BatchOp{
+		{Bucket: bucket, Key: newKey, Value: []byte(`{"class":"op"}`), CreateOnly: true},
+		{Bucket: bucket, Key: oldKey, Delete: true},
+	}
+	if _, err := c.AtomicBatch(ctx, ops); err != nil {
+		t.Fatalf("AtomicBatch with delete: %v", err)
+	}
+
+	if _, err := c.KVGet(ctx, bucket, newKey); err != nil {
+		t.Fatalf("newKey must be present after batch: %v", err)
+	}
+	if _, err := c.KVGet(ctx, bucket, oldKey); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("oldKey must be deleted by the batch: got err=%v", err)
+	}
+}
+
 func TestAtomicBatch_AllOrNothing(t *testing.T) {
 	c, ctx := newTestConn(t)
 	bucket := "core-kv"

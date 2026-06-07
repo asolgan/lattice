@@ -14,7 +14,7 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // and CancelTask close it out-of-band (the §10.6 auto-complete path needs no
 // permission — it is platform-injected on the commit path, not a submitted op).
 func Permissions() []pkgmgr.PermissionSpec {
-	return []pkgmgr.PermissionSpec{
+	perms := []pkgmgr.PermissionSpec{
 		{
 			OperationType: "CreateTask",
 			Scope:         "any",
@@ -40,4 +40,5 @@ func Permissions() []pkgmgr.PermissionSpec {
 			GrantsTo:      []string{"operator"},
 		},
 	}
+	return append(perms, LoomLifecyclePermissions()...)
 }
