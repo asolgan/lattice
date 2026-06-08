@@ -314,6 +314,8 @@ So that the idempotency guarantee is proven end-to-end.
 
 ## Epic 11: Loftspace Reference Vertical
 
+> **Sequencing: runs AFTER Epic 12.** The reference vertical is authored on the post-12 projection plane (sound under retry/reorder; packages own their own grant projections). See the execution-order note in the Phase 2 Story Total section.
+
 **Goal:** An installable `lease-signing` package converges a Lease Application end-to-end — the dogfood test that the package model carries orchestration content. Thin: engines are fixture-proven.
 **FRs covered:** integration (FR26, FR27, FR29, FR30, FR58)
 
@@ -349,6 +351,199 @@ So that Loom + Weaver + Two-Phase Nudge + temporal are proven to converge.
 
 *FRs: integration (FR26, FR27, FR29, FR30, FR58) · Depends on: 11.1 · Model: Opus (e2e harness) · Grounding: charter; Quinn's drain-then-assert pattern (cf. M5)*
 
+## Epic 12: Projection-Plane Integrity & Capability Decomposition
+
+> **Sequencing: runs BEFORE Epic 11** (Andrew, 2026-06-07) even though it is numbered later — see the execution-order note in the Phase 2 Story Total section. Epic numbers ≠ execution order.
+
+> **Source:** Winston architecture session against `_bmad-output/planning-artifacts/refractor-lens-decomposition-brief.md` (2026-06-07). The brief's four decisions are adjudicated here: **D-INTEGRITY** (12.1), **D-PIPELINE** (12.2–12.4), **D-CONSUMER** (12.5), **D-PROJECTION** (12.6–12.7). Decision record + rationale: [docs/decisions/projection-plane-decomposition.md](../../../docs/decisions/projection-plane-decomposition.md). Proposed contract amendments: `cmd/refractor/CONTRACT-AMENDMENT-REQUEST.md` (Requests 4–7) and `cmd/processor/CONTRACT-AMENDMENT-REQUEST.md` (D-CONSUMER).
+
+**Goal:** Make the per-actor projection plane (1) **sound** under retry/reorder so a revoked grant can never be resurrected on the security plane, (2) **authorable by packages without core edits**, then (3) **decompose** the bootstrap `capability` god-cypher into package-owned grant projections with a generic consumer-side dispatcher — so "packages own the grant types they own" is true on **both** the write (projection) and read (auth) sides, while preserving the single-GET auth hot path.
+
+**FRs covered:** (architecture hardening — no new FR; protects NFR-S2 single-authorization-surface, the Contract #6 O(1) auth promise, and the minimal-core/everything-is-a-package principle)
+
+**Why this epic exists.** Story 7.2's review surfaced that a *package* lens cannot be added without editing **core** (a new `case` in `cmd/refractor/main.go` + a wrapper in `internal/refractor/capabilityenv/`) — the inverse of the package-layering rule. The same review surfaced a confirmed security-plane resurrection window (below). The brief's existing god-cypher open item assumed "each package projects the grant types it owns," but packages currently *can't* — so the projection plumbing must be made data-driven first.
+
+**Adjudicated positions (deviations from the brief flagged):**
+- **D-INTEGRITY is a confirmed-reachable security bug, not theoretical.** The pipeline retry queue captures a *row* (`enqueueRetry` → `capturedResult`), not a re-evaluation, and replays it via `a.Upsert(capturedResult.Keys, capturedResult.Row)` (`internal/refractor/pipeline/pipeline.go:944-949`). So: an "open-era" ephemeral-grant Upsert that fails transiently is captured; a later close-event Delete succeeds; the retried capture lands **after** the delete and re-writes the revoked grant — and no further CDC event re-deletes it (the task is already closed). On `capabilityEphemeral` this is a revoked-grant resurrection on the **security plane**.
+- **Ordering-guard mechanism — Winston overrides the brief's lean.** The brief proposed using `projectedFromRevisions` (the auth-coherence vector) as the ordering guard. Two problems make it unfit *as the guard*: (a) `projectedAt` is derived from the **anchor (actor) vertex** provenance, and the actor vertex is unchanged when a *task* closes, so open-era and close-era projections of the same actor are indistinguishable by `projectedAt`; (b) the current `projectedFromRevisions` only stamps the actor + lens-def revisions — it doesn't capture the task/link sources at all, and even a fixed version faces the brief's own open question (multi-source vector dominance when the source *set* shrinks on close). **Winston's mechanism: a monotonic `projectionSeq` = the JetStream stream sequence of the triggering CDC message.** It is globally totally-ordered by the substrate, plan-independent, deterministic-replay-safe (rebuild replays in stream order → highest-seq write wins → identical steady state), and sidesteps the multi-source dominance question entirely. `projectedFromRevisions` stays as the coherence/debug datum and is *separately* widened (by D-PIPELINE's compiled plan) to cover the full source set — two concerns, two data.
+- **D-PIPELINE is tractable because the machinery already exists on both sides.** The **simple** engine already compiles reverse-traversal invalidation (`simple.reverseTraverse`/`walkBackToAnchor` over `QueryPlan.Steps` — the Materializer pattern). The **full** engine has a clean, ANTLR-free AST (`full/ast.go`: MATCH patterns, directions, hop bounds). The invalidation compiler walks the full AST into a `simple.TraversalStep`-shaped plan and reuses the existing reverse-traversal to find affected anchors — replacing the broad `ActorEnumerator` BFS for full-engine actor-aggregate lenses.
+- **The per-name switch fully reduces to declarative aspects.** All four wrappers (`capability`, `capabilityRoleIndex`, `capabilityEphemeral`, `myTasks`) differ only in: output-key pattern, which RETURN columns form the body, freshness stamping, and empty→delete-vs-skip. Even the `realEphemeralGrants`/`realOpenTasks` "drop degenerate `{taskKey:null}` collect artifacts" logic generalizes to a declarative `realnessFilter`. So `projectionKind: actorAggregate` + a small descriptor + the compiled plan = the whole behavior, no Go.
+- **D-PROJECTION multiplies the step-3 read fan-out — and D-CONSUMER is what keeps it O(1).** Moving role/permission and service-access to disjoint keys means step-3 no longer finds them in one `cap.<actor>` doc. The brief under-states this. The resolution: step-3 **already** path-dispatches (task/service/platform) *before* the read (the 7.1 ephemeral pattern). So each path reads exactly **one** path-specific disjoint key — the single-GET hot path is *preserved*, not lost. D-CONSUMER's generic dispatcher is therefore not symmetric-nicety; it's the mechanism that makes decomposition free on the read side. D-PROJECTION and D-CONSUMER land **together per grant-type** so the read and write sides never drift.
+
+> **Party-review applied (2026-06-07).** The multi-agent review (Bob/Amelia/Quinn/Sally/John) split the original 12.1 into **12.1a** (the guard) + **12.1b** (rebuild reconciliation), and threaded 11 other corrections through the epic. The pre-review version had 7 stories; this is the post-review 8-story shape. Findings ledger: `docs/decisions/projection-plane-decomposition.md` § "Party review".
+
+### Story 12.1a: Monotonic projection-write guard — security/correctness plane (D-INTEGRITY)
+
+> **Independently shippable and sequenced first** — no dependency on the rest of the epic; supersedes background task `task_3d57a524`. Scope is **NATS-KV, the two at-risk lenses only** (`capabilityEphemeral`, `my-tasks`); the primary `capability` lens + rebuild interaction are 12.1b.
+
+As the platform security owner,
+I want every guarded per-actor projection write to be rejected if a newer projection for that key already landed,
+So that a retried or reordered stale projection can never resurrect a revoked ephemeral grant (security plane) or a closed task (correctness plane).
+
+**Acceptance Criteria:**
+
+**Given** the confirmed resurrection window — the retry queue runs on its **own goroutine** (`failure/retry.go:102`) and replays a **captured `EvalResult`** (`pipeline.go:929-950`, `a.Upsert(capturedResult.Keys, capturedResult.Row)`), so a captured "open-era" `Upsert` can land after a successful close-`Delete` and re-write a revoked grant
+**When** a guarded projection is evaluated
+**Then** **`projectionSeq` is plumbed end-to-end**: `processMsg` captures `msg.Metadata().Sequence.Stream`, threads it into `simple.EvalResult` (a new field, so the retry-queue capture carries it), and the pipeline passes it to the adapter — for **both** the fan-out path and the inline path
+**And** the **`adapter.Adapter` interface is extended** to carry the ordering token on writes (e.g. `Upsert`/`Delete` gain a `projectionSeq uint64` param or an `EvalResult`-shaped arg) — `Delete`'s nil-row case is handled because the token is **not** carried in the row body; the **Postgres adapter is explicitly OUT of scope** (it implements the new signature as a pass-through/no-guard — documented), only `NatsKVAdapter` enforces the guard
+**And** the NATS-KV adapter writes **conditionally via CAS, not read-then-write**: `Get` (current rev + stored `projectionSeq`) → drop as idempotent no-op when `incoming ≤ stored` → else `Update` with `ExpectedRevision`; on a revision-conflict error **re-read and re-compare in a bounded loop** (the concurrent retry-goroutine writer makes this load-bearing, not theoretical)
+**And** a **`Delete` on a guarded key becomes a soft tombstone** `{isDeleted:true, projectionSeq:<seq>}` so the high-water mark survives physical absence; step-3 already denies on both absent key and tombstone (no grants → no match), so auth semantics are unchanged (Contract #6 §6.8)
+**And** the **`my-tasks` E2E assertion is flipped**: `refractor_mytasks_e2e_test.go:226` ("closed task must vanish from my-tasks") currently asserts the key is **absent** after close — with soft-tombstone it asserts the key is a **tombstone** (`isDeleted:true`); the `requireQuiescentRevision` settle-wait (`:253`) is **removed** (the masked race is now structurally closed)
+**And** a **fail-without/pass-with adversarial regression test** reproduces the exact captured-retry resurrection (enqueue an open-era `Upsert`, commit a close-`Delete`, fire the retry) and asserts the stale replay is **rejected** — the test must FAIL against `main` (no guard) and PASS with the guard; it lands in the **Gate 3 (DEFENDED)** adversarial suite, not a lone unit test
+**And** the change is raised as a Contract #6 §6.2/§6.3/§6.8 amendment (`cmd/refractor/CONTRACT-AMENDMENT-REQUEST.md` Request 4) — `projectionSeq` field, interface change, CAS, soft-tombstone-carries-watermark
+**And** the **my-tasks shape amendment** (Contract #10 §10.1) records that consumers MUST skip `isDeleted` tombstones — a forward obligation for any UI/query reader of the `my-tasks` bucket (no production reader exists yet; only the E2E)
+**And** Gate 2 (BLOCKED) + Gate 3 (DEFENDED) pass
+
+*FRs: (security/correctness hardening; protects NFR-S2) · Depends on: nothing (ships first) · Model: Opus (security plane, concurrency) · Grounding: brief D-INTEGRITY; `adapter/{adapter,natskv}.go`, `pipeline/pipeline.go:929-950`, `failure/retry.go:102`, `refractor_mytasks_e2e_test.go:226`; Contract #6 §6.2/§6.3/§6.8*
+
+### Story 12.1b: Guard ↔ rebuild reconciliation + primary capability lens (D-INTEGRITY pt.2)
+
+> Follows 12.1a. Closes the operational footgun the guard introduces for `Rebuild`, and extends the guard to the primary `capability` lens.
+
+As the platform operator,
+I want a rebuild to correctly restore guarded projections despite the monotonic write-guard,
+So that the integrity guard never silently prevents a rebuild from rewriting live state.
+
+**Acceptance Criteria:**
+
+**Given** the guard from 12.1a and the existing `Pipeline.Rebuild(ctx, truncate)` (`pipeline.go:437`) — a `Rebuild(truncate=false)` replays **historical** events carrying their **original, lower** stream seqs, which the guard would reject against a bucket still holding live high-seq watermarks (rebuild silently restores nothing)
+**When** a guarded-bucket rebuild runs
+**Then** the conflict is resolved by an explicit, tested rule — **either** guarded buckets force `truncate=true` (watermarks cleared with the data, first replay write wins) **or** rebuild bypasses the guard for the duration of the replay (documented bypass flag) — the story picks one and ACs it; a `Rebuild(truncate=false)` on a guarded bucket must **either** be rejected with a clear error **or** correctly restore every key
+**And** a test drives a rebuild of `capabilityEphemeral`/`my-tasks` after live traffic and asserts the post-rebuild projection equals a from-scratch projection (no rejected-write holes)
+**And** the guard is **extended to the primary `capability` lens** (the fan-out aggregate over identity/roles/services) with the same CAS+tombstone mechanism
+**And** **`capabilityRoleIndex` is explicitly excluded** from this guard family — it is keyed by `operationType`, not actor (`envelope.go:344`); it is an operation-aggregate, not an actor-aggregate, and its resurrection profile differs (decided here, not hand-waved as "for consistency")
+**And** Gate 2 + Gate 3 pass
+
+*FRs: (security/correctness hardening) · Depends on: 12.1a · Model: Opus (security plane + rebuild semantics) · Grounding: `pipeline/pipeline.go:437`, `adapter/adapter.go` (Truncater); Contract #6 §6.2*
+
+### Story 12.2: Invalidation-compiler spike (D-PIPELINE spike)
+
+> **Spike — non-shipping.** Output is a decision report + a passing equivalence test, not production wiring. De-risks 12.3.
+
+As the architect,
+I want to prove a narrow invalidation compiler can derive the affected-anchor set from the full openCypher AST,
+So that 12.3 is built on a validated approach rather than a speculative one.
+
+**Acceptance Criteria:**
+
+**Given** the full-engine ASTs for `myTasks` and `capabilityEphemeral` and the existing `simple.reverseTraverse`/`walkBackToAnchor` machinery
+**When** the spike compiles each AST's MATCH/OPTIONAL-MATCH patterns into a `simple.TraversalStep`-shaped step list (anchor → leaf, with direction + hop bounds) and runs reverse-traversal from a changed non-anchor vertex / link / aspect
+**Then** the **correctness oracle** holds on a fixture graph, for vertex, link, and aspect CDC events: the compiled affected-anchor set is a **subset of** the broad `ActorEnumerator` BFS set (the compiled plan is *precise*, the BFS *over-reprojects* — they are deliberately **not** equal) **and** it **contains every actor whose projection output actually changes** (verified by reprojecting the BFS superset and diffing — no missed anchor). The win is recorded as the BFS-minus-compiled count (the over-reprojection the plan eliminates)
+**And** the spike report enumerates exactly which openCypher constructs the narrow compiler covers (`MATCH`/`OPTIONAL MATCH`, labels, rel names/directions, variable-length hops within the existing cap, conservative `WHERE`, simple path-preserving `WITH`) and which it does **not**, with the fallback policy: **non-security** projections may fall back to broad BFS; **auth-plane actor-aggregate** lenses must compile or **fail activation closed**
+**And** a go/no-go recommendation for 12.3 is recorded
+
+*FRs: (enabler) · Depends on: nothing (informs 12.3) · Model: Opus (compiler design) · Grounding: brief D-PIPELINE "Spike"; `ruleengine/full/ast.go`, `ruleengine/simple/{plan,evaluator}.go`*
+
+### Story 12.3: Projection plan compiler + `projectionKind: actorAggregate` marker (D-PIPELINE core)
+
+As a platform developer,
+I want Refractor to compile an actor-aggregate lens into a projection + invalidation plan from declarative contract data,
+So that the per-actor projection behavior is data, not core Go keyed on a lens name.
+
+**Acceptance Criteria:**
+
+**Given** the spike's validated approach (12.2)
+**When** a lens definition declares `projectionKind: "actorAggregate"` (a new `meta.lens` aspect, Contract #6 §6.13)
+**Then** Refractor compiles a `ProjectionPlan{Execution, Invalidation, Output}`: **Execution** = evaluate the lens for a bound `$actorKey` (already present); **Invalidation** = the compiled reverse-traversal plan (12.2) that derives affected anchors from a changed vertex/link/aspect, replacing the broad BFS for these lenses; **Output** = the declarative descriptor below
+**And** the **Output descriptor** is read from the lens definition aspects, covering every behavior the four Go wrappers encode: `anchorType` (or inferred from `MATCH (x:identity {key:$actorKey})`), `outputKeyPattern` (constrained, e.g. `cap.ephemeral.{actorSuffix}`), `bodyColumns` (which RETURN aliases form the doc body), `emptyBehavior` (`delete` | `softDelete` | `emptyDoc` | `skip`), `realnessFilter` (drop degenerate collect artifacts by a non-empty key field — generalizes `realEphemeralGrants`/`realOpenTasks`), and `freshness: auto` (stamp `projectionSeq` per 12.1 + the widened `projectedFromRevisions`)
+**And** `projectedFromRevisions` is widened to cover the **contributing source set the plan read** (actor + tasks/roles/links). **Scope decision (party review):** v1 covers sources that *contributed* a binding; covering sources that were *read-then-excluded* (e.g. a now-closed task) requires the full executor to report every Core-KV key it touched-then-dropped (executor instrumentation) — that is called out as **either in-scope for this story or deferred to a 12.3-follow-up**, and the AC must state which. Either way this is the coherence/debug datum, **not** the ordering guard (which is `projectionSeq`, 12.1a) (Contract #6 §6.3 amendment, Request 6)
+**And** an actor-aggregate lens whose MATCH uses an unsupported construct **fails activation** when it is an auth-plane lens (fail closed) and logs a fallback-to-BFS warning when it is not
+**And** the descriptor's `emptyBehavior: softDelete` reuses the **same tombstone mechanism** as 12.1a's guard (one mechanism, not two)
+**And** no behavior changes yet for the built-in lenses (this story adds the machinery; 12.4 migrates onto it) — the existing switch still drives them
+
+*FRs: (enabler) · Depends on: 12.2 · Model: Opus (compiler + contract) · Grounding: brief D-PIPELINE option 1; Contract #6 §6.13/§6.3; `cmd/refractor/main.go:256-313`*
+
+### Story 12.4: Migrate built-in lenses off the `CanonicalName` switch (D-PIPELINE landing)
+
+As a platform developer,
+I want the four built-in capability lenses re-expressed as declarative `actorAggregate` lenses and the per-name switch deleted,
+So that a package can ship a per-actor aggregating lens with **zero** core edits — proving the layering inversion is gone.
+
+**Acceptance Criteria:**
+
+**Given** the plan compiler (12.3) and the integrity guard (12.1a/12.1b)
+**When** the **three actor-aggregate** lenses — `capability`, `capabilityEphemeral`, `myTasks` — are re-declared with `projectionKind: actorAggregate` + the Output descriptor (12.3); **`capabilityRoleIndex` is handled separately** — it is an operation-aggregate (keyed by `operationType`), so it either gets its own `projectionKind` (e.g. `operationAggregate`) or remains a small bespoke path, **stated explicitly in the AC** (no silent "fourth actor-aggregate")
+**Then** the per-`CanonicalName` `switch` in `cmd/refractor/main.go` and the bespoke wrappers in `internal/refractor/capabilityenv/` are **deleted** (envelope/fan-out/delete-key now flow from the compiled plan)
+**And** the change is **behavior-preserving in outcome**: the Contract #6 §6.2/§6.6 conformance tests, the Capability-Lens 4-attack-vector bypass suite, and the `my-tasks` E2E all pass — **test fixtures/oracles may change** where the declarative descriptor replaces wrapper internals, but the asserted outcomes hold
+**And** a **proof test installs a brand-new actor-aggregate package lens** (a throwaway fixture lens) via `InstallPackage` and observes it project + invalidate correctly **with no change to any file under `cmd/` or `internal/refractor/capabilityenv/`** — the acceptance gate for "packages can do this now"
+**And** Gate 2 + Gate 3 pass (the `capability`/`capabilityEphemeral` paths are security-critical)
+
+*FRs: (enabler; minimal-core principle) · Depends on: 12.3, 12.1a, 12.1b · Model: Opus (security-critical migration) · Grounding: brief §1, §2 origin note; `cmd/refractor/main.go`, `capabilityenv/envelope.go`*
+
+### Story 12.5: Generic step-3 auth-hook dispatcher (D-CONSUMER)
+
+> **Security-critical** — the auth hot path. Full 3-layer + Gate 2/3.
+
+As the platform security owner,
+I want step-3 to dispatch over a registry of grant-matchers configured by data instead of a hardcoded `switch`,
+So that the *consumer* side stops naming each grant type, symmetric to the data-driven projection side.
+
+> **Party-review pin (the gap that would have cost a whole story).** "Packages register a matcher" is **NOT** package-shipped Go/plugin code — Lattice packages are **data** (cypher, Starlark, manifest). The model is a **fixed set of core-provided matcher *kinds*** (the existing ephemeral / service-scoped / platform-scope logics live in core), and a package **declares, as install-time data, which matcher kind authorizes its grant type and which disjoint Capability-KV key holds it** (+ the field mapping). Core owns the matcher *implementations*; data owns the *wiring*. This keeps Lattice data-only and bounds the effort.
+
+**Acceptance Criteria:**
+
+**Given** step-3's current hardcoded dispatch (`taskSet → matchEphemeralGrant`, `serviceSet → matchServiceAccess`, default → `matchPlatformPermission` — `step3_auth_capability.go:142-282`)
+**When** step-3 is refactored into a **generic dispatcher** over a registry whose entries are **data**: each entry binds an authContext path → a **core matcher kind** → the **disjoint Capability-KV key** that path reads (+ field mapping)
+**Then** the dispatch table is **data**, not a `switch` naming `task`/`service`; the three existing logics become the seed **core matcher kinds**, re-expressed with **identical** behavior
+**And** the **single-GET hot path is preserved by the one-key-per-path invariant**: path selection happens **before** the read (as today), each path maps to **exactly one** disjoint key, so exactly one GET per Authorize call. **Two packages contributing the same path is a config error** (or requires upstream merge) — the dispatcher never fans a single path into N reads. The denial-path `actorRoles` second read stays off the hot path
+**And** the bypass suite and §6.4–§6.8 dispatch tests pass — **fixtures migrate** where the registry replaces the `switch`, asserted outcomes hold
+**And** the change is raised as a Contract #6 / Contract #2 §2.8 amendment (`cmd/processor/CONTRACT-AMENDMENT-REQUEST.md`) describing the fixed-matcher-kind registry + one-key-per-path read model
+**And** Gate 2 (BLOCKED) + Gate 3 (DEFENDED) pass
+
+*FRs: (security architecture) · Depends on: 7.1 (existing dispatch); **hard prerequisite of 12.6** · Model: Opus (auth hot path) · Grounding: brief D-CONSUMER; lattice-architecture.md god-cypher open item "Consumer side"; `step3_auth_capability.go:142-282`*
+
+### Story 12.6: Decompose god-cypher — rbac-domain role/permission projection (D-PROJECTION pt.1)
+
+> **Security-critical.** First god-cypher decomposition after the keystone is in place.
+
+As a platform developer,
+I want `rbac-domain` to own its role/permission grant projection as a package lens,
+So that core stops referencing the rbac grant vocabulary and the bootstrap cypher shrinks.
+
+**Acceptance Criteria:**
+
+**Given** the plan compiler (12.4) and the generic dispatcher (12.5)
+**When** `rbac-domain` ships a `capabilityRoles` actor-aggregate lens projecting role-derived `platformPermissions` (+ `roles`) to a **disjoint key** (e.g. `cap.roles.<actor>`) and **registers its auth-hook** (12.5) in the same story
+**Then** the bootstrap `capability` cypher **drops** its `holdsRole`/`grantedBy`/`role`/`permission` MATCHes (core no longer references the rbac package types — dependency direction flips package→core, mirroring the 7.1 `task` extraction)
+**And** the platform-path step-3 read targets `cap.roles.<actor>` via the registered hook; the FR22 denial `actorRoles` source moves with it
+**And** **primordial-vs-package composition is defined (party review):** the primordial/bootstrap identity has root-equivalent platform grants that core projects even when `rbac-domain` is absent. The story ACs how a core-projected primordial grant and an `rbac-domain`-projected `cap.roles.<actor>` grant **compose on the platform read path without collision** — the lean: the dispatcher reads exactly one key by actor class (primordial → core-owned key; ordinary → `cap.roles.<actor>`), preserving one-key-per-path (12.5)
+**And** **`capabilityRoleIndex` ownership is resolved**: it moves to / is owned by `rbac-domain` consistently — and the AC states the **degradation** when rbac-domain is absent (FR22 `rolesCarryingPermission` is empty), so it's a chosen behavior, not a surprise
+**And** behavior is preserved: the bypass suite (role-manipulation attack vector), §6.10 role-specialization behavior, and the §6.2 conformance test pass — **fixtures migrate** to the disjoint key (asserted outcomes hold)
+**And** Gate 2 + Gate 3 pass
+
+*FRs: (security architecture) · Depends on: 12.4, 12.5 · Model: Opus (security-critical) · Grounding: brief D-PROJECTION; Contract #6 §6.1 contract-contribution; `internal/bootstrap/lenses.go:41`*
+
+### Story 12.7: Retire the god-cypher's service/location remnants (D-PROJECTION pt.2)
+
+> **Security-critical. Two-path story (Andrew, 2026-06-07).** The `service-location` package **does
+> not exist today** and may not exist when 12.7 runs (no `packages/service-location/` — only a
+> concept write-up: `packages/service-location/CONCEPT.md`). So 12.7 is not "make a package ship a
+> lens"; it is **"get the service/location grant vocabulary out of core,"** which has two acceptable
+> endings depending on what's landed:
+> - **Path A — package exists:** implement more-or-less as originally stated — `service-location`
+>   ships `capabilityServiceAccess` (actor-aggregate, §6.10 behaviors intact) to a disjoint key and
+>   registers its auth-hook; the god-cypher drops the service/location MATCHes.
+> - **Path B — package absent (default):** **just delete the god-cypher's service/location remnants**
+>   and let the future service package own its projection **when it lands** (the 12.3/12.4/12.5
+>   machinery makes that a pure package addition — no core edit). Core ends owning only the bucket +
+>   key conventions + the dispatcher. Do **not** build a placeholder package to satisfy symmetry.
+
+As a platform developer,
+I want the bootstrap `capability` god-cypher's service/location grant vocabulary removed from core,
+So that core stops referencing service/location types regardless of whether a service package exists yet.
+
+**Acceptance Criteria:**
+
+**Given** the rbac decomposition (12.6) — and a check of whether `packages/service-location/` exists at story time
+**When** Path A applies (package exists): it ships a `capabilityServiceAccess` actor-aggregate lens projecting `serviceAccess` (with the §6.10 multi-level containment-exclusion + transitive-availability + operation-override behaviors intact) to a disjoint key and registers its auth-hook **per `packages/service-location/CONCEPT.md`**
+**Or** Path B applies (package absent): the bootstrap cypher's service/location MATCHes are simply **deleted**, with no replacement projection authored — the service-path step-3 matcher kind + disjoint key remain registered-but-unpopulated (absence = denial, Contract #6 §6.8) until a real service package projects into it
+**Then** in **both** paths the bootstrap `capability` cypher **drops** its `containedIn`/`availableAt`/`unavailableAt`/`permitsOperation` MATCHes and shrinks to only the **primordial-identity anchor** (or retires entirely, leaving core owning just the bucket + key conventions + the step-3 dispatcher) — **core no longer references service/location types**
+**And** the bypass suite's service-access oracle is reconciled to the chosen path: Path A migrates fixtures to the disjoint key (outcomes hold); Path B asserts a service op now denies with the no-entry path until a service package lands (the `Hello Lattice` / §6.10 service fixtures move with whatever owns service projection — documented, not silently dropped)
+**And** the brief's god-cypher open item in `lattice-architecture.md` is marked resolved (proposed to the planning lead) and Contract #6 §6.1 records the completed contract-contribution decomposition (amendment)
+**And** Gate 2 + Gate 3 pass
+
+*FRs: (security architecture) · Depends on: 12.6 · Model: Opus (security-critical) · Grounding: brief D-PROJECTION; Contract #6 §6.10; `internal/bootstrap/lenses.go:46-48`; `packages/service-location/CONCEPT.md`*
+
 ## Phase 2 Story Total
 
 | Epic | Stories | Notes |
@@ -358,7 +553,17 @@ So that Loom + Weaver + Two-Phase Nudge + temporal are proven to converge.
 | Epic 9: Weaver — Convergence Engine | 4 | target-as-Lens+lane1 → anti-storm → temporal → control-API (FR30) |
 | Epic 10: External Convergence — Two-Phase Nudge | 2 | framework + idempotency proof |
 | Epic 11: Loftspace Reference Vertical | 2 | package authoring + e2e convergence harness |
-| **Total** | **17 stories** | Phase 2 FRs FR26, FR27, FR29, FR30, FR58 covered |
+| Epic 12: Projection-Plane Integrity & Capability Decomposition | 8 | D-INTEGRITY guard 12.1a + rebuild reconciliation 12.1b (ship first) → invalidation compiler spike+build+migration (12.2–12.4) → generic auth-hook consumer (12.5) → god-cypher decomposition rbac (12.6) → retire service/location remnants (12.7, two-path: implement if `service-location` exists, else just delete the remnants); architecture hardening from the refractor-lens-decomposition brief, party-reviewed 2026-06-07. **Lands BEFORE Epic 11** (see ordering note). |
+| **Total** | **25 stories** | Phase 2 FRs FR26, FR27, FR29, FR30, FR58 covered; Epic 12 = NFR-S2 / minimal-core hardening; **execution order: Epics 7–10 → 12 → 11** |
+
+> **⚠️ Execution order (Andrew, 2026-06-07): Epics 7–10 → 12 → 11.** Epic 12 (projection-plane
+> integrity + capability decomposition) **lands before Epic 11** (Loftspace reference vertical). Two
+> reasons: (1) Epic 11's convergence e2e leans on tasks / ephemeral grants / `my-tasks`
+> vanish-on-close as *correctness guarantees* — exactly what the 12.1a/b D-INTEGRITY guard makes sound
+> (Epic 11 built first would inherit the masked resurrection race + the settle-wait crutch); (2)
+> authoring `lease-signing` on the *decomposed* projection model (12.3–12.5) lets the reference package
+> own its own grant projections cleanly via the contract-contribution path, instead of being written
+> against the god-cypher and migrated later. Epic numbers are not execution order here.
 
 > **✅ Implementation gate (satisfied 2026-06-02):** the dedicated Loom/Weaver data-contracts session is **complete** — `docs/contracts/10-orchestration-surfaces.md` §10.1–§10.8 are **FROZEN** (guard grammar + subject/state-access, the `loomPattern` schema, target-Lens output, operational-KV shapes, scheduling subjects, Weaver target+playbook, and the cross-package cap-lens layering via the **(a1)** extraction; the narrow post-hoc-orphan referential case is deferred — no-orphan-**by-construction** in Story 7.5 stands). Per-story briefs are authored against the frozen contracts; **implementation may proceed — CS→DS→CR, Epic 7 first.**
 

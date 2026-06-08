@@ -414,3 +414,69 @@ Persist the per-subject committed revisions (from the install reply's
 `Revisions` map) into the package `.manifest` aspect at install time, then
 read them back at uninstall and pass them as per-key `expectedRevision`.
 The script path already accepts them; only the client plumbing is missing.
+
+---
+
+# Contract Amendment Request — generic step-3 auth-hook dispatcher (Story 12.5, D-CONSUMER)
+
+raisedBy: Winston architecture session (refractor-lens-decomposition brief)
+raisedAt: 2026-06-07
+status: OPEN — proposal for Epic 12 / Story 12.5
+severity: Architecture (security plane); not blocking until 12.5 is scheduled
+
+## Context
+
+Source: `_bmad-output/planning-artifacts/refractor-lens-decomposition-brief.md` (D-CONSUMER);
+rationale in `docs/decisions/projection-plane-decomposition.md`. Companion to the projection-side
+amendments in `cmd/refractor/CONTRACT-AMENDMENT-REQUEST.md` Requests 5–7.
+
+## Problem
+
+`internal/processor/step3_auth_capability.go` **hardcodes** the consumer-side dispatch — `taskSet →
+matchEphemeralGrant` (reads `cap.ephemeral.<actor>`), `serviceSet → matchServiceAccess`, default →
+`matchPlatformPermission` (both read `cap.<actor>`). The *consumer* side therefore names each grant
+type, mirroring the (now-being-decomposed) projection-side god-cypher. As D-PROJECTION moves
+role/permission and service-access projections to disjoint package-owned keys (Stories 12.6/12.7),
+step-3 must read different keys per grant type — which a hardcoded `switch` cannot accommodate without
+a core edit per package.
+
+## Requested amendment (Contract #2 §2.8 + Contract #6 §6.4–§6.8)
+
+Define a **generic step-3 dispatcher** over a **data-configured registry**. The dispatch table is
+data; the **matcher implementations stay in core**.
+
+> **Party-review pin (finding #8 — the gap that would have stalled implementation).** Lattice
+> packages are **data** (cypher, Starlark, manifest), not code/plugins. "Package-registered matcher"
+> therefore means: a **fixed set of core-provided matcher *kinds*** (the existing
+> `matchEphemeralGrant` / `matchServiceAccess` / `matchPlatformPermission` logics live in core), and a
+> package **declares as install-time data** which matcher kind authorizes its grant type, which
+> disjoint Capability-KV key holds it, and the field mapping. Core owns the *implementations*; data
+> owns the *wiring*. This is **not** a Go/plugin contribution mechanism.
+
+Each registry entry declares (as data):
+
+1. the `authContext` predicate that selects it (its "path");
+2. the **core matcher kind** that authorizes it;
+3. the **disjoint Capability-KV key** that path reads (+ field mapping).
+
+Invariants the amendment must preserve:
+
+- **Single-GET hot path via one-key-per-path.** Path selection happens **before** the read (as
+  today — `Authorize` → `authorizeTaskPath` / `authorizeCapabilityPath`), and each path maps to
+  **exactly one** disjoint key, so exactly one GET per `Authorize` call. **Two packages contributing
+  the same path is a config error** (or requires upstream merge) — the dispatcher never fans one path
+  into N reads. The denial-path `actorRoles` second read stays off the hot path.
+- **No-entry = denial** (Contract #6 §6.8) is preserved per matcher.
+- **Primordial composition (finding #9):** the primordial/bootstrap identity's core-projected grants
+  and a package's `cap.<grant>.<actor>` grants compose without collision on a shared path — the
+  dispatcher reads one key by actor class (resolved in Story 12.6).
+- The seed matcher kinds (ephemeral/service/platform) re-express the existing logics with **identical**
+  behavior; bypass + §6.4–§6.8 dispatch tests pass (fixtures migrate, outcomes hold).
+
+## Rationale
+
+This is the read-side half of the god-cypher decomposition. Without it, decomposing the projection
+relocates the coupling from the bootstrap cypher into a hardcoded consumer `switch` — the brief's
+explicit warning ("or the decomposition just relocates the coupling"). It is what keeps the auth
+hot path O(1) under decomposition. **Security-critical** — full 3-layer adversarial review + Gate 2
+(BLOCKED) + Gate 3 (DEFENDED) when scheduled.

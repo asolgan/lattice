@@ -317,6 +317,10 @@ The platform calls external systems **exactly once**: claim (`weaver-claims`, be
 Author the installable `lease-signing` package — target Lens cypher ("Lease Application complete"), playbooks (gap → action), Loom pattern definitions, mocked-adapter config — and prove it end-to-end with a **convergence-harness e2e** (drain-then-assert: drive a lease-app from all-gaps-violating to steady state; assert the target row's `violating` flips false and *stays* false). Engines are already fixture-proven, so this epic is thin: package authoring + the e2e. Dogfoods that the package model carries orchestration content.
 **FRs covered:** integration (FR26, FR27, FR29, FR30, FR58 end-to-end)
 
+#### Epic 12: Projection-Plane Integrity & Capability Decomposition
+Architecture hardening from the `refractor-lens-decomposition-brief` (party-reviewed 2026-06-07 — 13 corrections applied; original 7 stories → 8). Makes the per-actor projection plane (1) **sound** under retry/reorder — a monotonic `projectionSeq` write-guard closes a *confirmed-reachable* revoked-ephemeral-grant resurrection on the security plane (12.1a guard + 12.1b rebuild reconciliation, ship first); (2) **authorable by packages without core edits** — a compiled projection+invalidation plan + a `projectionKind: actorAggregate` contract marker replaces the per-`CanonicalName` switch in `cmd/refractor/main.go` (12.2 spike → 12.3 compiler → 12.4 migrate+delete-switch, reviving the Materializer reverse-traversal pattern for the full openCypher engine); then (3) **decomposes** the bootstrap `capability` god-cypher into package-owned grant projections with a **generic step-3 auth-hook dispatcher** (12.5, D-CONSUMER — fixed core matcher kinds + package-declared keys, one-key-per-path) so the read side stays single-GET, followed by rbac-domain (12.6) and retiring the god-cypher's service/location remnants (12.7, two-path: implement `capabilityServiceAccess` if a `service-location` package exists, else just delete the remnants — concept: `packages/service-location/CONCEPT.md`). **Execution order: Epics 7–10 → 12 → 11** (Epic 12 lands before the Loftspace reference vertical so it's built on the sound, decomposed plane). Decision record + party-review ledger: `docs/decisions/projection-plane-decomposition.md`.
+**FRs covered:** (architecture hardening — protects NFR-S2 single-authorization-surface, the Contract #6 O(1) auth promise, and the minimal-core/everything-is-a-package principle)
+
 ---
 
 **Phase 2 (Orchestration Core) FRs:** FR26, FR27, FR29, FR30, FR58 — see "Phase 2: Orchestration Core" epic list above (Epics 7–11).
@@ -370,6 +374,6 @@ Detailed stories (BDD acceptance criteria + source hints) are sharded by phase:
 | Shard | Contents | Status |
 |-------|----------|--------|
 | [phase-1-epics.md](./phase-1-epics.md) | Epics 1–6 — Substrate, Lens projections, Auth perimeter, Identity lifecycle, AI-native navigation, DX/Hello-Lattice | SHIPPED |
-| [phase-2-epics.md](./phase-2-epics.md) | Epics 7–11 — Orchestration Foundations, Loom, Weaver, Two-Phase Nudge, Loftspace reference vertical | Active |
+| [phase-2-epics.md](./phase-2-epics.md) | Epics 7–12 — Orchestration Foundations, Loom, Weaver, Two-Phase Nudge, Loftspace reference vertical, Projection-Plane Integrity & Capability Decomposition | Active |
 
 This `index.md` holds the cross-phase material (Overview, Documentation Layering Rule, Requirements Inventory, Epic List, Phase 2 sprint reference). `bmad-create-story` reads the sharded dir (`*epic*/*.md`, SELECTIVE_LOAD); the top-level `epics.md` is a pointer here.
