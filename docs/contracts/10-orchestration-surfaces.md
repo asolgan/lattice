@@ -350,7 +350,7 @@ the pattern-*start* auth (distinct from the per-step auth of §10.6/§10.7).
 {
   "patternId":   "onboarding",
   "subjectType": "identity",
-  "completionDomains": ["identity"],
+  "completionDomains": ["orchestration"],
   "steps": [
     { "kind": "userTask", "operation": "SetName",
       "guard": { "absent": "subject.profile.data.name" } },
@@ -362,15 +362,23 @@ the pattern-*start* auth (distinct from the per-step auth of §10.6/§10.7).
 ```
 
 **`completionDomains?: ["<domain>", …]`** (optional) — the set of `events.<domain>.>` the engine
-reconciles a **durable per-domain consumer** for (D2). A **domain** is the **first dot-free segment of
-an event class** — the `<domain>` in `events.<domain>.>` (the outbox subjects events as
-`events.<sanitizedClass>`, e.g. class `tenant.created` → domain `tenant`; this keeps `loom-<domain>` a
-valid durable name). **Defaults to `[subjectType]`** when omitted (covers the common same-domain flow).
-A flow whose steps complete in a domain other than the subject's **must list it explicitly**; the §10.6
-per-step completion **timeout** is the not-silent backstop for an omitted/mis-declared domain (FR29
-never-silently-drop). The engine reads `completionDomains` — it does not *know* domains; per-step
-granularity is unnecessary because correlation is domain-independent (§10.6), so the **set** of domains
-is sufficient.
+reconciles a **durable per-domain consumer** for (D2). A **domain** is the **first segment of an event
+class** — the `<domain>` in `events.<domain>.>`. Every event class is `<domain>.<eventName>`
+(Contract #3 §3.4, validated at commit step 7), so this model is **true codebase-wide**, not
+illustrative: e.g. class `identity.created` → domain `identity`, class `orchestration.taskCompleted` →
+domain `orchestration`; `loom-<domain>` is always a valid durable name. **Defaults to `[subjectType]`**
+when omitted (covers the common same-domain flow). A flow whose steps complete in a domain other than
+the subject's **must list it explicitly**; the §10.6 per-step completion **deadline** is the not-silent
+backstop for an omitted/mis-declared domain (FR29 never-silently-drop). The engine reads
+`completionDomains` — it does not *know* domains; per-step granularity is unnecessary because
+correlation is domain-independent (§10.6), so the **set** of domains is sufficient.
+
+**A userTask completes on the `orchestration` domain.** A userTask step completes via the
+`orchestration.taskCompleted` event (the §10.6 commit-path auto-complete), regardless of the subject's
+type — so an all-userTask onboarding pattern over `identity` subjects declares
+`completionDomains: ["orchestration"]` (NOT `["identity"]`, which would reconcile a `loom-identity`
+consumer that never sees the completion). A pattern mixing userTask + systemOp steps lists every domain
+it completes on.
 
 **Step shape:** `{ kind, operation, guard? }` — completion is implicit (§10.6), no per-step event.
 - `kind` ∈ `userTask` (engine creates a task with links `assignedTo` → the subject,
@@ -422,8 +430,13 @@ re-advance.
 
 | Step kind | Pending token (in `loom-state`) | Completion signal Loom consumes |
 |-----------|----------------------------------|----------------------------------|
-| **userTask** | the **`taskId`** of the task it created | `TaskCompleted` core-event → body carries `taskId` → live `token.<taskId>` GET → instance |
-| **systemOp** | the **`requestId`** of the op it submitted | a committed business event on a subscribed domain whose body `requestId` matches a live `token.<requestId>` → advance via the atomic batch. **failed/rejected** is **off-stream** (a rejected op writes no tracker/event) — learned via the **per-step deadline + a read-before-act probe** (below), never the submit reply → `status=failed` / `retryCount` per policy; the deadline also backstops a mis-declared `completionDomains` (§10.5) → alert, never a silent wedge |
+| **userTask** | the **`taskKey`** (`vtx.task.<id>`) of the task it created | `orchestration.taskCompleted` core-event → **`payload.taskKey`** → live `token.<taskKey>` GET → instance |
+| **systemOp** | the **`requestId`** of the op it submitted | a committed business event on a subscribed domain whose top-level `requestId` matches a live `token.<requestId>` → advance via the atomic batch. **failed/rejected** is **off-stream** (a rejected op writes no tracker/event) — learned via the **per-step deadline + a read-before-act probe** (below), never the submit reply → `status=failed` / `retryCount` per policy; the deadline also backstops a mis-declared `completionDomains` (§10.5) → alert, never a silent wedge |
+
+All event business fields ride the Event envelope's **`payload`** object (Contract #3 §3.4), so Loom's
+two structural correlation keys are **top-level `requestId`** (systemOp) and **`payload.taskKey`**
+(userTask). Loom stays domain-ignorant — it tries both keys against the durable token store and the
+pointer decides which (at most one) resolves.
 
 ### systemOp terminals — committed on-stream, failed/rejected off-stream (deadline + probe)
 
@@ -461,44 +474,83 @@ for instance `I`:
 The deadline is set **≫ expected op latency** (the `weaver-state` lease precedent); a late commit after a
 false-fail finds the pointer gone → dropped (a bounded, alerted divergence, not a silent one).
 
-### Completing a userTask — by `taskId`, via `TaskCompleted` (RESOLVED)
+### userTask creation path — bounded creation-deadline + task-vertex probe
 
-A task is closed by **`taskId`** (never by inferring actor+op-type — a manager may hold many open
-tasks of one op-type for different targets). Completion emits `TaskCompleted(taskId)`; Loom
-correlates `taskId → instance`. No new envelope field, no Contract #2 change — the op already
-carries `authContext.task` for §10.7 auth.
+A userTask step is **two waits in sequence**: a **bounded** wait for the task to be *created* (a machine
+action — `CreateTask` commits in milliseconds), then an **unbounded** wait for the human to act on it.
+The deadline+probe above covers the *systemOp* step; the userTask **creation** wait gets the analogous
+backstop so a rejected/lost `CreateTask` (e.g. the subject identity is dead → `CreateTask`'s no-orphan
+validation rejects it, or a taskId collision) fails the instance instead of parking `token.<taskKey>`
+forever (the silent wedge §10.6 forbids).
+
+- A userTask step arms a **bounded creation-deadline** (`CreateTaskTimeout`, sized ≫ any `CreateTask`
+  commit latency — **not** a human-response window).
+- When it fires, a read-before-act probe GETs the task vertex **`vtx.task.<taskId>`** from Core KV (a
+  Loom *read*, like the systemOp tracker GET):
+  - **present** → the task was created; the flow is now in the legitimate **unbounded human wait** →
+    **disarm** the deadline (cursor/token untouched) and stop. The human may take days — there is no
+    further runtime timeout.
+  - **absent** → probe the `CreateTask` op's Contract #4 tracker / `outbox` record exactly like the
+    systemOp path (tracker present → committed-but-raced → re-arm; outbox present → relay not yet
+    delivered → re-arm; neither → `CreateTask` **rejected/lost** → `FailPattern` + alert).
+- Every branch is CAS-on-`running`, mirroring the systemOp handler. Loom only **reads** Core KV here;
+  the module boundary (substrate-only) is unchanged.
+
+**Honest nuance:** after the creation-deadline disarms (the task vertex exists), there is **no runtime
+timeout** on the human wait — so a *mis-declared userTask `completionDomains`* (one that omits the
+`orchestration` domain) is caught by a **load-time warn** when the pattern is loaded, not by a runtime
+backstop. The warn is loud; the pattern is not rejected (a future userTask completion domain could
+differ).
+
+### Completing a userTask — by `taskKey`, via `orchestration.taskCompleted` (RESOLVED)
+
+A task is closed by **`taskKey`** (`vtx.task.<id>`; never by inferring actor+op-type — a manager may
+hold many open tasks of one op-type for different targets). Completion emits
+`orchestration.taskCompleted` carrying **`payload.taskKey`**; Loom correlates `payload.taskKey →
+instance` via a live `token.<taskKey>` GET. No new envelope field, no Contract #2 change — the op
+already carries `authContext.task` for §10.7 auth.
 
 - **Primary path — auto-complete on the authorizing op's commit.** A task exists to authorize +
   track exactly one op (`forOperation`) on one target (`scopedTo`); performing that op **is**
   fulfilling the task. So when an op authorized via `authContext.task = T` commits successfully, the
-  **commit path injects T's completion** (`status → complete` + `TaskCompleted(T)`) into the **same
-  atomic batch** — platform-injected, like provenance, in the same code path that already matched
-  the grant at step-3. Atomic, no "did-the-op-but-task-still-open" wedge, no per-op script coupling.
+  **commit path injects T's completion** (`status → complete` + `orchestration.taskCompleted{taskKey:
+  T}`) into the **same atomic batch** — platform-injected, like provenance, in the same code path that
+  already matched the grant at step-3. Atomic, no "did-the-op-but-task-still-open" wedge, no per-op
+  script coupling.
   - **The injection is conditional on `status == open` (read-and-CAS within the same batch).** This
     closes the race with admin `CompleteTask`/`CancelTask`: if T was already completed, the second
-    flip is a **no-op** (no double `TaskCompleted`); if T was **cancelled**, auto-complete must **not**
-    resurrect it (the CAS-on-`open` fails → the op still commits, but T stays `cancelled` and emits no
-    `TaskCompleted`). This also bounds the stale-grant window (the cap-lens projection lags the status
-    flip, so a just-closed task can still authorize via the stale projection — the CAS makes that
-    commit's auto-complete a harmless no-op rather than a double-act).
-  - **`TaskCompleted(taskId)` consumption at Loom is idempotent** (JetStream is at-least-once): a
-    redelivered `TaskCompleted` for an already-advanced instance is dropped, not re-advanced.
-- **`CompleteTask(taskId)`** — retained only as an explicit admin / out-of-band completion path.
-- **`CancelTask(taskId)`** — for a task that is no longer needed (e.g. its target was withdrawn);
+    flip is a **no-op** (no double `orchestration.taskCompleted`); if T was **cancelled**, auto-complete
+    must **not** resurrect it (the CAS-on-`open` fails → the op still commits, but T stays `cancelled`
+    and emits no completion event). This also bounds the stale-grant window (the cap-lens projection
+    lags the status flip, so a just-closed task can still authorize via the stale projection — the CAS
+    makes that commit's auto-complete a harmless no-op rather than a double-act).
+  - **`orchestration.taskCompleted` consumption at Loom is idempotent** (JetStream is at-least-once): a
+    redelivered completion for an already-advanced instance is dropped, not re-advanced.
+- **`CompleteTask(taskKey)`** — retained only as an explicit admin / out-of-band completion path.
+- **`CancelTask(taskKey)`** — for a task that is no longer needed (e.g. its target was withdrawn);
   distinct from completion.
 
-Loom watches `TaskCompleted(taskId)` regardless of which path emitted it.
+Loom watches `orchestration.taskCompleted` regardless of which path emitted it.
+
+**The engine supplies the task id (write-ahead requires it).** Crash-safety invariant 1 requires the
+`token.<taskKey>` pointer be written **before** the side effect (`CreateTask`), so Loom must know the
+`taskKey` ahead of commit. `CreateTask` therefore accepts an **optional caller-supplied `taskId`**
+(present → used verbatim; absent → minted internally, so admin/manual callers are unaffected). The
+engine derives a deterministic `taskId` from `(instanceId, cursor)` and passes it, making the `taskKey`
+(`vtx.task.<taskId>`) known write-ahead. A crash-retry re-submits the **same** `CreateTask` and
+collapses on the Contract #4 `vtx.op.<requestId>` tracker — no duplicate task. The `task` DDL is package
+data (not a frozen contract); the grant/auth path (§10.7) is unchanged.
 
 ### Why this needs NO frozen-contract change
 
 - **systemOp** correlation watches the tracker keyed by the `requestId` Loom itself chose.
-- **userTask** correlation watches the generic `TaskCompleted` event, which carries `taskId`
-  intrinsically.
+- **userTask** correlation watches the generic `orchestration.taskCompleted` event, which carries the
+  `taskKey` under `payload` intrinsically.
 - Authorization reuses the existing `authContext.{task,target}` + `ephemeralGrants` (§10.7).
 
 ### Constraint
 
-`loom-state` maps `{taskId | requestId} → instance` via the durable co-located `token.<token>`
+`loom-state` maps `{taskKey | requestId} → instance` via the durable co-located `token.<token>`
 pointer (§10.3), resolved by direct GET; the instance records its single pending token. Because tokens
 are unique per pending step, no one-active-instance-per-subject restriction is needed — concurrent
 instances for the same subject are fully distinguishable, and any engine replica resolves any token.
@@ -513,7 +565,8 @@ D3 calls the cursor "rebuildable," but rebuildability only holds if these orderi
    persisted to `loom-state` in **one `substrate.AtomicBatch`**. For a systemOp the side effect (the op
    reaching `core-operations`) is the **relay's** decoupled, idempotent publish *from* that batch — so
    the batch and the side effect are **no longer a dual write**: invariant 1 holds by construction, not
-   by ordering discipline. (For a userTask the side effect is still `CreateTask`, keyed/idempotent.) On
+   by ordering discipline. (For a userTask the side effect is still `CreateTask`, keyed/idempotent — the
+   engine supplies the deterministic `taskId` so the `token.<taskKey>` is known write-ahead.) On
    restart, a persisted `pendingToken` whose `outbox.` record still exists is simply re-published by the
    relay; one whose op already committed collapses on the Contract #4 `vtx.op.<requestId>` tracker. A
    crash can no longer orphan a token between side effect and persist.
@@ -744,3 +797,4 @@ emits events and writes no business vertex — nothing in the pipeline special-c
 | 2026-06-06 | **Loom amendment ratified (Andrew) — §10.3/§10.5/§10.6 reshaped + new §10.9** (`cmd/loom/CONTRACT-AMENDMENT-REQUEST.md`, Story 8.1 structural session). **§10.3:** `loom-state` now holds two disjoint-prefixed keys `instance.<instanceId>` (cursor) + `token.<pendingToken>` (thin `{instanceId}` reverse pointer); the `pendingToken → instance` correlation is a **durable co-located index resolved by direct GET** (multi-instance-safe), each step transition a single `substrate.AtomicBatch` on the one bucket; "no secondary KV index" reinterpreted (forbids a *separate* bucket; co-located disjoint-prefix in the same batch is sanctioned); `loom-state` **provisioned `AllowAtomicPublish: true`** (extend the `CoreKVBucket`-only `enableAtomicPublish` gate). **§10.5:** optional **`completionDomains`** added (default `[subjectType]`; cross-domain flows list explicitly; §10.6 timeout backstops). **§10.6:** correlation rewritten to the durable `token.<token>` GET (domain-independent; pointer-presence idempotency; off-stream failed/rejected via submit reply / timeout); **crash-safety invariant 3 (watch-suspended-until-rebuild) REMOVED** (no in-memory index), invariants 1–2 retained. **§10.9 (NEW):** pattern trigger & lifecycle via three `loom`-domain ops `StartLoomPattern`/`CompletePattern`/`FailPattern` (no business vertex; events ride the standard `vtx.op.<requestId>.events` outbox aspect) emitting `loom.patternStarted`/`Completed`/`Failed` on a first-class **`loom`** domain; `instanceId` = `StartLoomPattern` `requestId`; fixed `events.loom.patternStarted` trigger consumer (independent of `completionDomains`); instance stays **operational-only** (`loom-state`, NO Core-KV vertex); "which flows are running" served by Loom's **control plane** (like `internal/refractor/control`, reading `loom-state`), not Core KV. |
 | 2026-06-06 | **Loom command-outbox ratified (Andrew) — §10.3 + §10.6** (CAR Request 5, Story 8.1 review finding F2). **§10.3:** `loom-state` gains two disjoint prefixes — `outbox.<token>` (the op-to-submit record) and `deadline.<instanceId>` (per-key TTL = the step deadline). The per-step transition writes/re-arms both in the **same `substrate.AtomicBatch`** as the cursor/token update, so op submission is no longer a dual write (the **command-outbox** pattern, symmetric to the Processor's *event* outbox). An async **relay** (durable consumer on the `loom-state` backing stream `outbox.>`) fire-and-forget publishes the op to `core-operations` and deletes the record on publish-ack (re-publish idempotent via Loom's chosen `requestId` + the Contract #4 tracker) — **no request-reply, no raw NATS handle in `internal/loom`**. `deadline.<instanceId>` is per-instance (linear interpreter ⇒ one pending step), re-armed on advance, deleted on terminal, or auto-expires (`KeyValuePurge`/MaxAge marker, distinct from DEL). **§10.6:** the failed/rejected terminal is **off-stream via the deadline + a read-before-act probe** (`GET vtx.op.<token>`: present→advance+alert; absent+outbox-present→re-arm; absent+no-outbox→fail) — the **synchronous `ops.<lane>` submit-reply terminal is REMOVED**. Crash-safety invariant 1 restated as outbox-inclusive (write-ahead holds by construction). Retires findings F1/F2/F5 + the C2 blocking-callback. Mechanism verified against the repo (`BatchOp.TTL`; `internal/spike/nats-batch/test_ttl_marker_delivery.go`); reconciler-sweep is the sanctioned fallback. |
 | 2026-06-02 | **(a1) cap-lens extraction (Andrew).** Reading `step3_auth_capability.go` + `lenses.go` revealed the Capability Lens is a **god-cypher in core/bootstrap** that hard-codes the grant vocabulary of *multiple packages* (rbac-domain `role`/`permission`/`holdsRole`/`grantedBy`; service/location; Phase-2 `task`/`assignedTo`) into one per-actor doc — `task` is the newest tenant of a pre-existing inverted dependency. Fix (Story 7.1 scope): ephemeral grants leave the bootstrap god-cypher for an **`orchestration-base`-owned `capabilityEphemeral` lens** → disjoint key **`cap.ephemeral.<actor>`** (reuses the `capabilityRoleIndex` disjoint-prefix pattern, Contract #6 §6.1; no Refractor lens-merge needed). Bootstrap cypher **drops all `task` refs** (dependency direction flips package→core). Step-3 task branch reads the new key; `cap.<actor>` still read for `roles` on task-path denials. Grant *field shape* unchanged. Broader god-lens decomposition (role/permission/service projections + a generic step-3 **auth-hooks** consumer side) recorded as a future-ADR open item in `lattice-architecture.md`. |
+| 2026-06-07 | **Event-domain model ratified (Andrew) — §10.5/§10.6** (CAR Requests 6–9, folded into Story 8.2; superseded by the broader Contract #3 event-domain model). Every event class is now `<domain>.<eventName>` (Contract #3 §3.4, enforced at commit step 7), so the §10.5 "domain = first segment" routing model is **true**, not illustrative. **§10.5:** the onboarding example becomes `completionDomains: ["orchestration"]` — a userTask completes on the **`orchestration`** domain (the `orchestration.taskCompleted` event), regardless of subject type. **§10.6:** the userTask correlation row reads `taskKey` (`vtx.task.<id>`) → completion `orchestration.taskCompleted` → **`payload.taskKey`** → `token.<taskKey>` GET (all event business fields ride the envelope `payload`, Contract #3 §3.4; Loom's two correlation keys are top-level `requestId` (systemOp) and `payload.taskKey` (userTask)); the userTask completion subsection retitled "by `taskKey`"; crash-safety invariant 1 notes the engine supplies the deterministic `taskId` via `CreateTask`'s optional `taskId` so the `taskKey` is known write-ahead (no Contract #2 change; §10.7 auth unchanged). Added the **userTask creation-deadline + task-vertex probe** (R9): a userTask arms a bounded `CreateTaskTimeout` that disarms once the task vertex exists (then the human wait is unbounded), failing a rejected/lost `CreateTask` rather than wedging — with the honest nuance that after disarm a mis-declared `completionDomains` is caught by a load-time warn, not a runtime backstop. |

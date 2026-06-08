@@ -106,9 +106,9 @@ func DDLs() []pkgmgr.DDLSpec {
 //   - primary                (vtx.identity.<primaryNanoID>)
 //   - secondary              (vtx.identity.<secondaryNanoID>)
 //   - edges                  (list of link vertex keys touching secondary;
-//                             caller obtains them from the
-//                             duplicateCandidates Lens entry's
-//                             secondaryInboundEdges + secondaryOutboundEdges)
+//     caller obtains them from the
+//     duplicateCandidates Lens entry's
+//     secondaryInboundEdges + secondaryOutboundEdges)
 //   - aspectConflictResolution  (optional; {name|email|phone: "secondary-wins"})
 //
 // Caller's ContextHint.Reads MUST include:
@@ -118,7 +118,7 @@ func DDLs() []pkgmgr.DDLSpec {
 //   - secondary.state, secondary.mergedInto
 //   - every link vertex key in `edges`
 //   - (optional) primary.{name,email,phone} +
-//                secondary.{name,email,phone}  when ACR is requested
+//     secondary.{name,email,phone}  when ACR is requested
 //
 // The script reads only the hydrated map by known key. It never
 // enumerates, never scans, and never reads any lens-output bucket.
@@ -296,7 +296,7 @@ def execute(state, op):
                                          "isDeleted": False, "data": {"value": sec_val}}})
 
     # --- Event ---
-    events = [{"class": "IdentityMerged", "data": {
+    events = [{"class": "identity.merged", "data": {
         "primary": primary,
         "secondary": secondary,
         "linkCount": links_migrated + links_tombstoned_only + link_collisions_merged,

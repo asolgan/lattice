@@ -7,12 +7,12 @@
 //     CreateMetaVertex through the Processor's meta lane.
 //  3. The agent's capability doc is seeded granting the new operation.
 //  4. The agent performs cold-start discovery:
-//       a. Reads cap.identity.<agentId> from Capability KV.
-//       b. Discovers the new operation in platformPermissions[].
-//       c. Enumerates vtx.meta.* keys and matches .canonicalName aspect.
-//       d. Reads the five self-description aspects (Story 5.1).
-//       e. Constructs a payload from the inputSchema.
-//       f. Submits the operation via the standard Processor write path.
+//     a. Reads cap.identity.<agentId> from Capability KV.
+//     b. Discovers the new operation in platformPermissions[].
+//     c. Enumerates vtx.meta.* keys and matches .canonicalName aspect.
+//     d. Reads the five self-description aspects (Story 5.1).
+//     e. Constructs a payload from the inputSchema.
+//     f. Submits the operation via the standard Processor write path.
 //  5. Asserts OutcomeAccepted — same Processor path as any human op (NFR-S10).
 //  6. Writes health.fr19.cold-start-test to Health KV on success.
 //
@@ -328,7 +328,7 @@ func buildCapDoc(actorKey, capKey string, perms []processor.PlatformPermission, 
 // payload for a new DDL vertex type. All nine fields required by the
 // Story 5.1 MissingSelfDescription enforcement are present.
 //
-// The DDL describes a `BookRegistered` operation type with a non-trivial
+// The DDL describes a `loftspace.bookRegistered` operation type with a non-trivial
 // input schema (two required fields of different types + one optional)
 // and a Starlark script that actually consumes the fields and emits a
 // matching event. The point: the agent's cold-start traversal must
@@ -344,7 +344,7 @@ func buildCreateMetaVertexPayload(t *testing.T, canonicalName string) map[string
 		"permittedCommands": []string{canonicalName},
 		"description":       "North-star test DDL: a book-registration operation. The agent discovers this DDL from its capability set and constructs a payload from the inputSchema below.",
 		// Script reads p.title (required string), p.year (required int), and
-		// optional p.isbn; emits a BookRegistered event carrying the values.
+		// optional p.isbn; emits a loftspace.bookRegistered event carrying the values.
 		// If the agent's payload is missing title/year or has the wrong type,
 		// the script fails and the commit never lands.
 		"script": "def execute(state, op):\n" +
@@ -356,7 +356,7 @@ func buildCreateMetaVertexPayload(t *testing.T, canonicalName string) map[string
 			"    if type(year) != type(0):\n" +
 			"        fail(\"InvalidArgument: year required int\")\n" +
 			"    isbn = p.isbn if hasattr(p, \"isbn\") else \"\"\n" +
-			"    events = [{\"class\": \"BookRegistered\", \"data\": {\"title\": title, \"year\": year, \"isbn\": isbn}}]\n" +
+			"    events = [{\"class\": \"loftspace.bookRegistered\", \"data\": {\"title\": title, \"year\": year, \"isbn\": isbn}}]\n" +
 			"    return {\"mutations\": [], \"events\": events}\n",
 		"inputSchema":  `{"type":"object","required":["title","year"],"properties":{"title":{"type":"string","minLength":1,"description":"Book title."},"year":{"type":"integer","description":"Publication year."},"isbn":{"type":"string","description":"Optional ISBN-13."}}}`,
 		"outputSchema": `{"type":"object","properties":{}}`,
@@ -368,7 +368,7 @@ func buildCreateMetaVertexPayload(t *testing.T, canonicalName string) map[string
 		"examples": []any{map[string]any{
 			"name":            "north-star-example",
 			"payload":         map[string]any{"title": "Designing Data-Intensive Applications", "year": 2017, "isbn": "9781449373320"},
-			"expectedOutcome": "Accepted by Processor; emits BookRegistered event with the supplied fields.",
+			"expectedOutcome": "Accepted by Processor; emits loftspace.bookRegistered event with the supplied fields.",
 		}},
 	}
 }
@@ -382,7 +382,7 @@ func buildCreateMetaVertexPayload(t *testing.T, canonicalName string) map[string
 // Test-realistic value choices (not random — deterministic per field
 // name to keep failures reproducible):
 //   - string  → "northstar-<fieldname>" (or 1 if the field is a known
-//                short-form like "year"/"count" but type says string)
+//     short-form like "year"/"count" but type says string)
 //   - integer → a stable, plausible year-shaped int (2026)
 //   - number  → 1.0
 //   - boolean → true
@@ -441,4 +441,3 @@ func mustMarshal(t *testing.T, val any) []byte {
 	}
 	return b
 }
-

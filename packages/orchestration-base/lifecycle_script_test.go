@@ -87,8 +87,8 @@ func TestReAssign_Success(t *testing.T) {
 	oldLnk := "lnk.task." + lcTaskID + ".assignedTo.identity." + lcOldAssID
 	newLnk := "lnk.task." + lcTaskID + ".assignedTo.identity." + lcNewAssID
 	hydrated := map[string]processor.VertexDoc{
-		lcTaskKey:  taskRoot("open", 7),
-		oldLnk:     oldAssignedLink(),
+		lcTaskKey:   taskRoot("open", 7),
+		oldLnk:      oldAssignedLink(),
 		lcNewAssign: {Key: lcNewAssign, Class: "identity", Data: map[string]any{"state": "claimed"}},
 	}
 	res, err := runLifecycle(t, "ReAssignTask",
@@ -124,7 +124,7 @@ func TestReAssign_Success(t *testing.T) {
 		t.Fatalf("reassign must keep status open, got %q", got)
 	}
 	// Event.
-	if len(res.Events) != 1 || res.Events[0].Class != "TaskReAssigned" {
+	if len(res.Events) != 1 || res.Events[0].Class != "orchestration.taskReAssigned" {
 		t.Fatalf("events = %+v, want one TaskReAssigned", res.Events)
 	}
 	if got, _ := res.Events[0].Data["newAssignee"].(string); got != lcNewAssign {
@@ -157,8 +157,8 @@ func TestReAssign_NotOpen_Rejected(t *testing.T) {
 	for _, st := range []string{"complete", "cancelled"} {
 		oldLnk := "lnk.task." + lcTaskID + ".assignedTo.identity." + lcOldAssID
 		hydrated := map[string]processor.VertexDoc{
-			lcTaskKey:  taskRoot(st, 4),
-			oldLnk:     oldAssignedLink(),
+			lcTaskKey:   taskRoot(st, 4),
+			oldLnk:      oldAssignedLink(),
 			lcNewAssign: {Key: lcNewAssign, Class: "identity", Data: map[string]any{"state": "claimed"}},
 		}
 		_, err := runLifecycle(t, "ReAssignTask",
@@ -189,7 +189,7 @@ func TestComplete_OpenToComplete(t *testing.T) {
 	if got, _ := data["status"].(string); got != "complete" {
 		t.Fatalf("status = %q, want complete", got)
 	}
-	if len(res.Events) != 1 || res.Events[0].Class != "TaskCompleted" {
+	if len(res.Events) != 1 || res.Events[0].Class != "orchestration.taskCompleted" {
 		t.Fatalf("events = %+v, want one TaskCompleted", res.Events)
 	}
 	if got, _ := res.Events[0].Data["taskKey"].(string); got != lcTaskKey {
@@ -209,7 +209,7 @@ func TestCancel_OpenToCancelled(t *testing.T) {
 	if got, _ := data["status"].(string); got != "cancelled" {
 		t.Fatalf("status = %q, want cancelled", got)
 	}
-	if len(res.Events) != 1 || res.Events[0].Class != "TaskCancelled" {
+	if len(res.Events) != 1 || res.Events[0].Class != "orchestration.taskCancelled" {
 		t.Fatalf("events = %+v, want one TaskCancelled", res.Events)
 	}
 }

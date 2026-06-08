@@ -62,8 +62,8 @@ func DDLs() []pkgmgr.DDLSpec {
 						"Duplicate detection rides the IdentityCreated event's data.duplicate flag, not the reply.",
 				},
 				{
-					Name:    "ClaimIdentity — actor claims their identity",
-					Payload: map[string]any{"targetIdentityKey": "vtx.identity.<NanoID>", "claimKey": "<plaintextKey>"},
+					Name:            "ClaimIdentity — actor claims their identity",
+					Payload:         map[string]any{"targetIdentityKey": "vtx.identity.<NanoID>", "claimKey": "<plaintextKey>"},
 					ExpectedOutcome: "Verifies claimKey hash, writes credentialBinding aspect, transitions state unclaimed→claimed, tombstones claimKey aspect.",
 				},
 			},
@@ -120,7 +120,7 @@ def execute(state, op):
         enforce_not_merged(current, merged_into)
         validate_state_transition(current, new_state)
         mutations = [make_update(identity_key + ".state", {"value": new_state})]
-        events = [{"class": "IdentityStateChanged", "data": {
+        events = [{"class": "identity.stateChanged", "data": {
             "identityKey": identity_key,
             "oldState": current,
             "newState": new_state,
@@ -219,7 +219,7 @@ def execute(state, op):
                     "document": {"class": "identityindex", "isDeleted": False,
                                  "data": {"contactType": "phone", "identityKey": identity_key}}})
 
-        events = [{"class": "IdentityCreated", "data": {
+        events = [{"class": "identity.created", "data": {
             "identityKey": identity_key,
             "state": initial_state,
             "duplicate": duplicate,
@@ -303,7 +303,7 @@ def execute(state, op):
                                    "boundAt": observed_at}}},
         ]
 
-        events = [{"class": "IdentityClaimed", "data": {
+        events = [{"class": "identity.claimed", "data": {
             "identityKey": target_identity_key,
             "actorKey": actor_key,
         }}]

@@ -14,8 +14,8 @@ func TestBuildEventList_OrderAndIDs(t *testing.T) {
 			{Op: "create", Key: "vtx.identity." + testNanoID1},
 		},
 		Events: []EventSpec{
-			{Class: "identityCreated", Data: map[string]interface{}{"x": 1}},
-			{Class: "auditEntry", Data: map[string]interface{}{"y": 2}},
+			{Class: "identity.created", Data: map[string]interface{}{"x": 1}},
+			{Class: "audit.entry", Data: map[string]interface{}{"y": 2}},
 		},
 	}
 	at := time.Date(2026, 5, 14, 10, 0, 0, 0, time.UTC)
@@ -26,8 +26,11 @@ func TestBuildEventList_OrderAndIDs(t *testing.T) {
 	if len(list) != 2 {
 		t.Fatalf("len = %d", len(list))
 	}
-	if list[0].EventType != "identityCreated" || list[1].EventType != "auditEntry" {
+	if list[0].EventType != "identity.created" || list[1].EventType != "audit.entry" {
 		t.Fatalf("order broken: %+v", list)
+	}
+	if list[0].Domain != "identity" || list[1].Domain != "audit" {
+		t.Fatalf("domain not derived from class first segment: %+v", list)
 	}
 	if list[0].RequestID != env.RequestID {
 		t.Fatalf("RequestID not propagated")
@@ -70,11 +73,21 @@ func TestBuildEventList_MissingClassError(t *testing.T) {
 	}
 }
 
+func TestBuildEventList_RejectsDotFreeClass(t *testing.T) {
+	env := &OperationEnvelope{RequestID: testNanoID1}
+	for _, class := range []string{"TaskCompleted", "identityCreated", ".created", "loom."} {
+		result := ScriptResult{Events: []EventSpec{{Class: class, Data: map[string]interface{}{}}}}
+		if _, err := BuildEventList(env, result, time.Now()); err == nil {
+			t.Fatalf("class %q must be rejected: a domain segment is required (<domain>.<eventName>)", class)
+		}
+	}
+}
+
 func TestBuildEventList_ExplicitTargetKeyWins(t *testing.T) {
 	env := &OperationEnvelope{RequestID: testNanoID1}
 	result := ScriptResult{
 		Events: []EventSpec{{
-			Class: "x",
+			Class: "test.x",
 			Data:  map[string]interface{}{"targetKey": "vtx.identity.aaa"},
 		}},
 	}

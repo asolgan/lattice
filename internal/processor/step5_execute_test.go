@@ -203,7 +203,7 @@ func TestSandbox_TimeNormalizerOnly(t *testing.T) {
 	script := `
 def execute(state, op):
     norm = time.rfc3339_utc("2026-06-04T23:00:00+09:00")
-    return {"mutations": [], "events": [{"class": "Probe", "data": {"norm": norm}}]}
+    return {"mutations": [], "events": [{"class": "health.probe", "data": {"norm": norm}}]}
 `
 	sc := buildContext(script)
 	res, err := exec.Execute(context.Background(), sc.Operation, HydratedState{Context: sc})

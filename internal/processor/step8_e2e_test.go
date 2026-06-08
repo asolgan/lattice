@@ -20,7 +20,7 @@ func TestE2E_FullCommitWithRealMutation(t *testing.T) {
 	ctx, conn, _, _, _ := setupTestPipeline(t)
 
 	// Replace the noop script with one that creates a real identity.
-	script := []byte(`{"class":"meta.script","isDeleted":false,"data":{"source":"def execute(state, op):\n    return {\"mutations\": [{\"op\": \"create\", \"key\": \"vtx.identity.` + testNanoID2 + `\", \"document\": {\"class\": \"identity\", \"data\": {\"name\": op.payload.name}}}], \"events\": [{\"class\": \"identityCreated\", \"data\": {\"identityKey\": \"vtx.identity.` + testNanoID2 + `\"}}]}\n"}}`)
+	script := []byte(`{"class":"meta.script","isDeleted":false,"data":{"source":"def execute(state, op):\n    return {\"mutations\": [{\"op\": \"create\", \"key\": \"vtx.identity.` + testNanoID2 + `\", \"document\": {\"class\": \"identity\", \"data\": {\"name\": op.payload.name}}}], \"events\": [{\"class\": \"identity.created\", \"data\": {\"identityKey\": \"vtx.identity.` + testNanoID2 + `\"}}]}\n"}}`)
 	if _, err := conn.KVPut(ctx, testCoreBucket, "vtx.meta.identity.script", script); err != nil {
 		t.Fatalf("seed script: %v", err)
 	}

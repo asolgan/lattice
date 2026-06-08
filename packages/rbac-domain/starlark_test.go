@@ -99,7 +99,7 @@ func TestStarlark_Rbac_CreateRole(t *testing.T) {
 	if !strings.HasPrefix(result.Mutations[0].Key, "vtx.role.") {
 		t.Fatalf("mutations[0].key = %q, want vtx.role.*", result.Mutations[0].Key)
 	}
-	if len(result.Events) == 0 || result.Events[0].Class != "RoleCreated" {
+	if len(result.Events) == 0 || result.Events[0].Class != "rbac.roleCreated" {
 		t.Fatalf("expected RoleCreated, got %+v", result.Events)
 	}
 }
@@ -152,7 +152,7 @@ func TestStarlark_Rbac_CreatePermission(t *testing.T) {
 	if !strings.HasPrefix(result.Mutations[0].Key, "vtx.permission.") {
 		t.Fatalf("mutations[0].key = %q, want vtx.permission.*", result.Mutations[0].Key)
 	}
-	if len(result.Events) == 0 || result.Events[0].Class != "PermissionCreated" {
+	if len(result.Events) == 0 || result.Events[0].Class != "rbac.permissionCreated" {
 		t.Fatalf("expected PermissionCreated, got %+v", result.Events)
 	}
 }
@@ -178,7 +178,7 @@ func TestStarlark_Rbac_AssignRole(t *testing.T) {
 	if result.Mutations[0].Key != wantKey {
 		t.Fatalf("mutations[0].key = %q, want %q", result.Mutations[0].Key, wantKey)
 	}
-	if len(result.Events) == 0 || result.Events[0].Class != "RoleAssigned" {
+	if len(result.Events) == 0 || result.Events[0].Class != "rbac.roleAssigned" {
 		t.Fatalf("expected RoleAssigned, got %+v", result.Events)
 	}
 }
@@ -228,7 +228,7 @@ func TestStarlark_Rbac_GrantPermission(t *testing.T) {
 	if result.Mutations[0].Key != wantKey {
 		t.Fatalf("mutations[0].key = %q, want %q", result.Mutations[0].Key, wantKey)
 	}
-	if len(result.Events) == 0 || result.Events[0].Class != "PermissionGranted" {
+	if len(result.Events) == 0 || result.Events[0].Class != "rbac.permissionGranted" {
 		t.Fatalf("expected PermissionGranted, got %+v", result.Events)
 	}
 }

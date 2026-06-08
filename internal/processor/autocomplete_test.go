@@ -38,7 +38,7 @@ func TestInjectTaskAutoCompletion(t *testing.T) {
 	rev := uint64(42)
 	orig := ScriptResult{
 		Mutations:  []MutationOp{{Op: "update", Key: "vtx.leaseapp.X"}},
-		Events:     []EventSpec{{Class: "LeaseApproved"}},
+		Events:     []EventSpec{{Class: "loftspace.leaseApproved"}},
 		PrimaryKey: "vtx.leaseapp.X",
 	}
 	ac := taskAutoCompletion{
@@ -46,7 +46,7 @@ func TestInjectTaskAutoCompletion(t *testing.T) {
 		open:     true,
 		revision: rev,
 		mutation: MutationOp{Op: "update", Key: "vtx.task.T", ExpectedRevision: &rev},
-		event:    EventSpec{Class: "TaskCompleted", Data: map[string]interface{}{"taskKey": "vtx.task.T"}},
+		event:    EventSpec{Class: "orchestration.taskCompleted", Data: map[string]interface{}{"taskKey": "vtx.task.T"}},
 	}
 	got := injectTaskAutoCompletion(orig, ac)
 
@@ -59,8 +59,8 @@ func TestInjectTaskAutoCompletion(t *testing.T) {
 	if got.Mutations[1].ExpectedRevision == nil || *got.Mutations[1].ExpectedRevision != rev {
 		t.Fatalf("injected mutation must carry the CAS revision %d", rev)
 	}
-	if len(got.Events) != 2 || got.Events[1].Class != "TaskCompleted" {
-		t.Fatalf("expected TaskCompleted appended; events=%+v", got.Events)
+	if len(got.Events) != 2 || got.Events[1].Class != "orchestration.taskCompleted" {
+		t.Fatalf("expected orchestration.taskCompleted appended; events=%+v", got.Events)
 	}
 	if got.PrimaryKey != orig.PrimaryKey {
 		t.Fatalf("primaryKey changed: %q != %q", got.PrimaryKey, orig.PrimaryKey)

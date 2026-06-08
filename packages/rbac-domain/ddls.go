@@ -43,8 +43,8 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 func DDLs() []pkgmgr.DDLSpec {
 	return []pkgmgr.DDLSpec{
 		{
-			CanonicalName:     "rbac",
-			Class:             "meta.ddl.vertexType",
+			CanonicalName: "rbac",
+			Class:         "meta.ddl.vertexType",
 			PermittedCommands: []string{
 				"CreateRole", "UpdateRole", "TombstoneRole",
 				"CreatePermission", "UpdatePermission", "TombstonePermission",
@@ -95,8 +95,8 @@ func DDLs() []pkgmgr.DDLSpec {
 						"commits nothing and omits primaryKey.",
 				},
 				{
-					Name:    "GrantPermission — grant CreateRole permission to operator role",
-					Payload: map[string]any{"permKey": "vtx.permission.<permNanoID>", "roleKey": "vtx.role.<operatorNanoID>"},
+					Name:            "GrantPermission — grant CreateRole permission to operator role",
+					Payload:         map[string]any{"permKey": "vtx.permission.<permNanoID>", "roleKey": "vtx.role.<operatorNanoID>"},
 					ExpectedOutcome: "Writes lnk.permission.<permNanoID>.grantedBy.role.<operatorNanoID> with class=grantedBy. Returns primaryKey (the link key).",
 				},
 			},
@@ -199,7 +199,7 @@ def execute(state, op):
             make_aspect(role_key + ".description", role_key, "description", "description",
                 {"text": desc}),
         ]
-        events = [{"class": "RoleCreated", "data": {"roleKey": role_key, "name": name}}]
+        events = [{"class": "rbac.roleCreated", "data": {"roleKey": role_key, "name": name}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": role_key}}
 
@@ -215,7 +215,7 @@ def execute(state, op):
             make_update_aspect(role_key + ".description", role_key, "description", "description",
                 {"text": desc}),
         ]
-        events = [{"class": "RoleUpdated", "data": {"roleKey": role_key}}]
+        events = [{"class": "rbac.roleUpdated", "data": {"roleKey": role_key}}]
         # UpdateRole mutates only the .description aspect (not the vertex).
         # primaryKey names the principal entity (the role); the Processor accepts
         # it as the 3-segment root of the committed aspect.
@@ -228,7 +228,7 @@ def execute(state, op):
         if not vertex_alive(state, role_key):
             fail("UnknownRole: " + role_key)
         mutations = [make_tombstone(role_key)]
-        events = [{"class": "RoleTombstoned", "data": {"roleKey": role_key}}]
+        events = [{"class": "rbac.roleTombstoned", "data": {"roleKey": role_key}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": role_key}}
 
@@ -246,7 +246,7 @@ def execute(state, op):
         if note != "":
             data["note"] = note
         mutations = [make_vtx(perm_key, "permission", data)]
-        events = [{"class": "PermissionCreated",
+        events = [{"class": "rbac.permissionCreated",
                    "data": {"permissionKey": perm_key, "operationType": opt}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": perm_key}}
@@ -265,7 +265,7 @@ def execute(state, op):
              "document": {"class": "permission", "isDeleted": False,
                           "data": {"operationType": opt, "scope": scope}}},
         ]
-        events = [{"class": "PermissionUpdated", "data": {"permissionKey": perm_key}}]
+        events = [{"class": "rbac.permissionUpdated", "data": {"permissionKey": perm_key}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": perm_key}}
 
@@ -275,7 +275,7 @@ def execute(state, op):
         if not vertex_alive(state, perm_key):
             fail("UnknownPermission: " + perm_key)
         mutations = [make_tombstone(perm_key)]
-        events = [{"class": "PermissionTombstoned", "data": {"permissionKey": perm_key}}]
+        events = [{"class": "rbac.permissionTombstoned", "data": {"permissionKey": perm_key}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": perm_key}}
 
@@ -296,7 +296,7 @@ def execute(state, op):
         if existing != None and not (hasattr(existing, "isDeleted") and existing.isDeleted):
             return {"mutations": [], "events": []}
         mutations = [make_link(lnk_key, actor_key, role_key, "holdsRole", "holdsRole", {})]
-        events = [{"class": "RoleAssigned",
+        events = [{"class": "rbac.roleAssigned",
                    "data": {"actorKey": actor_key, "roleKey": role_key, "linkKey": lnk_key}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": lnk_key}}
@@ -311,7 +311,7 @@ def execute(state, op):
         if existing == None or (hasattr(existing, "isDeleted") and existing.isDeleted):
             fail("UnknownLink: " + lnk_key)
         mutations = [make_tombstone(lnk_key)]
-        events = [{"class": "RoleRevoked",
+        events = [{"class": "rbac.roleRevoked",
                    "data": {"actorKey": actor_key, "roleKey": role_key, "linkKey": lnk_key}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": lnk_key}}
@@ -332,7 +332,7 @@ def execute(state, op):
         if existing != None and not (hasattr(existing, "isDeleted") and existing.isDeleted):
             return {"mutations": [], "events": []}
         mutations = [make_link(lnk_key, perm_key, role_key, "grantedBy", "grantedBy", {})]
-        events = [{"class": "PermissionGranted",
+        events = [{"class": "rbac.permissionGranted",
                    "data": {"permissionKey": perm_key, "roleKey": role_key, "linkKey": lnk_key}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": lnk_key}}
@@ -347,7 +347,7 @@ def execute(state, op):
         if existing == None or (hasattr(existing, "isDeleted") and existing.isDeleted):
             fail("UnknownLink: " + lnk_key)
         mutations = [make_tombstone(lnk_key)]
-        events = [{"class": "PermissionRevoked",
+        events = [{"class": "rbac.permissionRevoked",
                    "data": {"permissionKey": perm_key, "roleKey": role_key, "linkKey": lnk_key}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": lnk_key}}

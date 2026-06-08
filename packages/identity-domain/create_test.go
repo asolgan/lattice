@@ -106,7 +106,7 @@ func TestCreateUnclaimed_Success(t *testing.T) {
 	}
 
 	// Tracker records IdentityCreated.
-	assertTrackerEvent(t, ctx, conn, reqID, "IdentityCreated")
+	assertTrackerEvent(t, ctx, conn, reqID, "identity.created")
 }
 
 func TestCreateUnclaimed_MissingName_Rejected(t *testing.T) {
@@ -219,7 +219,7 @@ func TestCreateUnclaimed_DuplicateEmail_RemainsUnclaimed(t *testing.T) {
 	// IdentityFlaggedForReview must NOT be emitted — duplicate detection rides
 	// the IdentityCreated event's data.duplicate, not the reply or the state.
 	assertTrackerNotEvent(t, ctx, conn, reqID, "IdentityFlaggedForReview")
-	assertTrackerEvent(t, ctx, conn, reqID, "IdentityCreated")
+	assertTrackerEvent(t, ctx, conn, reqID, "identity.created")
 }
 
 // TestCreateUnclaimed_NonStaffActor_Denied: consumer actor (ClaimIdentity

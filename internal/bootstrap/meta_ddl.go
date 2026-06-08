@@ -189,7 +189,7 @@ def execute(state, op):
                              "payloadTemplate": {"metaKey": "{{primaryKey}}"},
                              "revisionTemplate": {"metaKey": "{{revisions[primaryKey]}}"}}),
             ]
-            events = [{"class": "MetaVertexCreated",
+            events = [{"class": "meta.vertexCreated",
                        "data": {"metaKey": meta_key, "targetClass": target_class,
                                 "canonicalName": canonical_name}}]
             return {"mutations": mutations, "events": events,
@@ -223,7 +223,7 @@ def execute(state, op):
                              "payloadTemplate": {"metaKey": "{{primaryKey}}"},
                              "revisionTemplate": {"metaKey": "{{revisions[primaryKey]}}"}}),
             ]
-            events = [{"class": "MetaVertexCreated",
+            events = [{"class": "meta.vertexCreated",
                        "data": {"metaKey": meta_key, "targetClass": "meta.lens",
                                 "canonicalName": canonical_name}}]
             return {"mutations": mutations, "events": events,
@@ -377,7 +377,7 @@ def execute(state, op):
             # asserting the same revision across aspects would cause spurious
             # RevisionConflict. Multi-aspect atomic OCC is a Phase-2 item.
             mutations[0]["expectedRevision"] = expected_rev
-        events = [{"class": "MetaVertexUpdated", "data": {"metaKey": meta_key}}]
+        events = [{"class": "meta.vertexUpdated", "data": {"metaKey": meta_key}}]
         # UpdateMetaVertex mutates aspects (not the root vertex). primaryKey names
         # the principal entity (the meta-vertex); the Processor accepts it as the
         # 3-segment root of the committed aspects.
@@ -441,7 +441,7 @@ def execute(state, op):
             # (CommitterImpl already handles mutation["expectedRevision"] at
             # step8_commit.go — no Committer changes needed).
             mutations[0]["expectedRevision"] = expected_rev
-        events = [{"class": "MetaVertexTombstoned", "data": {"metaKey": meta_key}}]
+        events = [{"class": "meta.vertexTombstoned", "data": {"metaKey": meta_key}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": meta_key}}
 

@@ -96,7 +96,7 @@ func TestCompleteTask_E2E(t *testing.T) {
 	if got := taskStatus(t, ctx, conn, taskKey); got != "complete" {
 		t.Fatalf("task status = %q, want complete", got)
 	}
-	assertTrackerEvent(t, ctx, conn, env.RequestID, "TaskCompleted")
+	assertTrackerEvent(t, ctx, conn, env.RequestID, "orchestration.taskCompleted")
 }
 
 // TestCompleteTask_Redelivery_E2E_DedupNoDoubleEmit: a CompleteTask op that is
@@ -126,8 +126,8 @@ func TestCompleteTask_Redelivery_E2E_DedupNoDoubleEmit(t *testing.T) {
 	if got := taskStatus(t, ctx, conn, taskKey); got != "complete" {
 		t.Fatalf("task status after first complete = %q, want complete", got)
 	}
-	assertTrackerEvent(t, ctx, conn, env.RequestID, "TaskCompleted")
-	if n := trackerEventCount(t, ctx, conn, env.RequestID, "TaskCompleted"); n != 1 {
+	assertTrackerEvent(t, ctx, conn, env.RequestID, "orchestration.taskCompleted")
+	if n := trackerEventCount(t, ctx, conn, env.RequestID, "orchestration.taskCompleted"); n != 1 {
 		t.Fatalf("TaskCompleted recorded %d times after first commit, want 1", n)
 	}
 
@@ -140,10 +140,10 @@ func TestCompleteTask_Redelivery_E2E_DedupNoDoubleEmit(t *testing.T) {
 	}
 	// The dedup short-circuit must not append a second TaskCompleted, nor
 	// fabricate any other lifecycle event onto this op's tracker.
-	if n := trackerEventCount(t, ctx, conn, env.RequestID, "TaskCompleted"); n != 1 {
+	if n := trackerEventCount(t, ctx, conn, env.RequestID, "orchestration.taskCompleted"); n != 1 {
 		t.Fatalf("TaskCompleted recorded %d times after redelivery, want 1 (no double-emit)", n)
 	}
-	assertTrackerNotEvent(t, ctx, conn, env.RequestID, "TaskCancelled")
+	assertTrackerNotEvent(t, ctx, conn, env.RequestID, "orchestration.taskCancelled")
 }
 
 // TestCancelTask_E2E: open→cancelled commits and emits TaskCancelled.
@@ -169,7 +169,7 @@ func TestCancelTask_E2E(t *testing.T) {
 	if got := taskStatus(t, ctx, conn, taskKey); got != "cancelled" {
 		t.Fatalf("task status = %q, want cancelled", got)
 	}
-	assertTrackerEvent(t, ctx, conn, env.RequestID, "TaskCancelled")
+	assertTrackerEvent(t, ctx, conn, env.RequestID, "orchestration.taskCancelled")
 }
 
 // TestCompleteTask_OfCancelled_E2E_Rejected is the named AC invariant through
@@ -250,7 +250,7 @@ func TestReAssignTask_E2E(t *testing.T) {
 	if got := taskStatus(t, ctx, conn, taskKey); got != "open" {
 		t.Fatalf("task status after reassign = %q, want open", got)
 	}
-	assertTrackerEvent(t, ctx, conn, env.RequestID, "TaskReAssigned")
+	assertTrackerEvent(t, ctx, conn, env.RequestID, "orchestration.taskReAssigned")
 }
 
 // TestReAssignTask_AbsentNewAssignee_E2E_Rejected: the no-orphan invariant

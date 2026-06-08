@@ -377,3 +377,117 @@ R5-7. **Frozen-contract edits (post-ratification):** apply 5a/5b/5c to §10.3 + 
 > Findings **F4** (trigger Nak-storm → use `NakWithDelay` + `MaxDeliver`/`Term`) and **F6** (per-domain
 > consumer teardown on pattern removal) are **out of scope for Request 5** — they remain independent
 > fix-forward items in the Story 8.1 Senior Review triage.
+
+---
+
+# Contract #10 Amendment Requests (Story 8.2 — userTask steps)
+
+Story 8.2 (userTask step kind) surfaced three doc/code drifts in the **FROZEN** §10.5/§10.6, plus the
+deeper finding that the whole event taxonomy was domain-less. Per CLAUDE.md "Frozen contracts," these
+were **not** in-flight edits — they were raised here for Andrew's ratification + a revision-history entry.
+
+**STATUS: RATIFIED 2026-06-07.** Requests 6–9 are ratified and **superseded/absorbed by the broader
+event-domain model** (every event class is `<domain>.<eventName>`, enforced at commit step 7; see
+Contract #3 §3.4 revision 2026-06-07 + Contract #10 §10.5/§10.6 revision 2026-06-07). The original
+surgical R6/R7 ("raise a CAR note, do not rename the class") are now consequences of the model: the
+class **is** renamed (`TaskCompleted` → `orchestration.taskCompleted`), so a userTask completes on the
+**`orchestration`** domain (not the fictional `TaskCompleted` domain). The frozen contracts have been
+amended; the working tree builds to the ratified shapes.
+
+## Request 6: §10.5 — the example onboarding `completionDomains` is misleading
+
+**Location:** §10.5 "Loom pattern definition," the `onboarding` example JSON.
+
+**Current text:** the example pattern declares `"completionDomains": ["identity"]` for an all-`userTask`
+onboarding flow.
+
+**Problem:** a userTask completes via the **`TaskCompleted`** core-event (the commit-path auto-complete,
+§10.6). `EventSubject("TaskCompleted")` → subject `events.TaskCompleted`
+(`internal/processor/outbox/publisher.go`), whose **domain is `TaskCompleted`** (the first dot-free
+segment, §10.5). A pattern declaring `completionDomains: ["identity"]` reconciles a `loom-identity`
+consumer on `events.identity.*` and **never sees** `events.TaskCompleted` — the flow waits forever
+(now that a userTask arms no bounded deadline backstop, AC#6, there is no probe to recover it). The
+correct value for an all-userTask onboarding pattern is **`completionDomains: ["TaskCompleted"]`**.
+
+**Requested text:** change the §10.5 example to `"completionDomains": ["TaskCompleted"]` and add a note:
+*a userTask step completes on the `TaskCompleted` domain, regardless of the subject's type; a pattern
+mixing userTask + systemOp steps lists every domain it completes on.*
+
+## Request 7: §10.6 — the `TaskCompleted` correlation key is `taskKey` and rides `payload`, not a bare `taskId` in the "body"
+
+**Location:** §10.6 the step-completion correlation table (userTask row) + "Completing a userTask."
+
+**Current text:** "userTask … the **`taskId`** of the task it created … `TaskCompleted` core-event →
+body carries `taskId`."
+
+**Problem (two parts):**
+1. The implemented `TaskCompleted` event carries **`taskKey`** = the full `vtx.task.<id>` key
+   (`internal/processor/autocomplete.go`, `packages/orchestration-base/ddls.go` `transition_task`), not
+   a bare `taskId`. Loom write-aheads `token.<vtx.task.<id>>` and correlates on the full `taskKey`.
+2. The field is nested under the Event envelope's **`payload`** object, **not** a top-level `data`/`body`
+   field. `BuildEventList` (`internal/processor/step7_events.go`) maps an op's `EventSpec.Data` →
+   `Event.payload`, so the wire shape is `{ requestId, eventType:"TaskCompleted", payload:{ taskKey },
+   … }`. The systemOp correlation reads the **top-level** `requestId`; the userTask correlation reads
+   **`payload.taskKey`**. (The §10.6 prose "body carries `taskId`" reads as a top-level field — it is
+   neither top-level nor named `taskId`.)
+
+**Requested text:** the userTask row reads "the **`taskKey`** (`vtx.task.<id>`) of the task it created
+… `TaskCompleted` core-event → **`payload.taskKey`** → live `token.<taskKey>` GET → instance." Note
+that all event business fields ride the envelope `payload` (Contract #3 §3.4), so the two structural
+correlation keys Loom tries are top-level `requestId` (systemOp) and `payload.taskKey` (userTask).
+
+## Request 8: §10.6 crash-safety invariant 1 — the userTask write-ahead requires a caller-controlled task id
+
+**Location:** §10.6 crash-safety invariant 1 (write-ahead) + the §10.6 userTask narrative.
+
+**Problem:** invariant 1 requires the `token.<token>` pointer persisted **before** the side effect. For
+a userTask the token is the task's `taskKey`, but `CreateTask` minted `task_id = nanoid.new()`
+**internally**, so Loom could not know the `taskKey` ahead of commit and could not write-ahead the
+pointer. The §10.6 narrative ("a task is closed by `taskId` … no new envelope field, no Contract #2
+change") tacitly assumed the engine could not (and need not) control the id — which contradicts
+invariant 1 for userTask.
+
+**Resolution implemented (Story 8.2, Winston-adjudicated):** `CreateTask` gains an **optional**
+caller-supplied `taskId` (`packages/orchestration-base/ddls.go`): present → used verbatim (validated as
+a bare NanoID), absent → `nanoid.new()` (every existing admin/manual caller unaffected). Loom derives a
+deterministic `taskId` from `(instanceId, cursor)` (a sibling of the systemOp `deriveRequestID`), passes
+it to `CreateTask`, and write-aheads `token.<vtx.task.<taskId>>` in the transition batch. A crash-retry
+re-submits the same `CreateTask` (same op `requestId`) and collapses on the Contract #4 tracker — no
+duplicate task. The `task` DDL is **package data**, not a frozen `docs/contracts/*` contract, so this is
+a backward-compatible package change; it is logged here only because it is the seam §10.6 invariant 1
+implicitly requires.
+
+**Requested text:** §10.6 invariant 1's userTask clause notes that the engine supplies the task id (so
+the `taskKey` is known write-ahead), via `CreateTask`'s optional `taskId`. No Contract #2 envelope
+change; the grant/auth path (§10.7) is unchanged.
+
+## Request 9: §10.6 deadline+probe — now also covers the userTask creation path
+
+**Location:** §10.6 step-deadline-exceeded handler (the deadline+probe) + the userTask narrative.
+
+**Problem:** §10.6 specifies the deadline+probe for a **systemOp** step (a bounded machine action whose
+committed event may be missed/rejected/lost). A userTask wait is unbounded (a human may take days), so
+the original implementation armed NO deadline for a userTask and the deadline handler no-op'd any
+`vtx.task.` token. But the userTask step is really **two** waits in sequence: a **bounded** wait for the
+task to be CREATED (a machine action — `CreateTask` commits in milliseconds), then an **unbounded** wait
+for the human to act on it. With no backstop on the first wait, a **rejected/lost `CreateTask`** (e.g.
+the subject identity is dead/absent → `CreateTask`'s no-orphan validation rejects it, or a taskId
+collision) parks `token.<taskKey>` **forever** with no recovery and no alert — the silent wedge §10.6
+forbids.
+
+**Resolution implemented (Story 8.2, Winston-adjudicated):** the userTask step now arms a **bounded
+creation-deadline** (`CreateTaskTimeout`, sized ≫ any `CreateTask` commit latency, NOT a human-response
+window). When it fires, a read-before-act probe runs the userTask analog of the §10.6 systemOp probe:
+GET the task vertex `vtx.task.<taskId>` from Core KV — **present** → the task was created and the flow is
+now in the legitimate **unbounded human wait** → **disarm** the deadline (cursor/token untouched) and stop
+(the human may take days); **absent** → probe the `CreateTask` op's Contract #4 tracker / `outbox` record
+exactly like the systemOp path (tracker present → committed-but-raced → re-arm; outbox present → relay
+not yet delivered → re-arm; neither → `CreateTask` **rejected/lost** → `FailPattern` + Warn alert). Every
+branch is CAS-on-`running`, mirroring the systemOp `onDeadline`. Loom only **READs** Core KV here (the
+task-vertex GET, like the existing tracker GET) — it never writes Core KV, and the module boundary
+(substrate-only) is unchanged.
+
+**Requested text:** §10.6 notes the deadline+probe applies to the userTask **creation** path as well — a
+bounded creation-deadline that **disarms once the task vertex exists** (after which the human wait is
+unbounded), so a rejected/lost `CreateTask` fails the instance instead of wedging it (§10.6: "never a
+silent wedge"). No envelope/contract shape change.

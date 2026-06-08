@@ -273,9 +273,9 @@ def execute(state, op):
     if ot == "CreateRole":
         role_id = nanoid.new()
         role_key = "vtx.role." + role_id
-        return {"mutations": [{"op": "create", "key": role_key, "document": {"class": "role", "isDeleted": False, "data": {"name": p.name}}}], "events": [{"class": "RoleCreated", "data": {"roleKey": role_key}}]}
+        return {"mutations": [{"op": "create", "key": role_key, "document": {"class": "role", "isDeleted": False, "data": {"name": p.name}}}], "events": [{"class": "rbac.roleCreated", "data": {"roleKey": role_key}}]}
     if ot == "ApproveLeaseApplication":
-        return {"mutations": [], "events": [{"class": "LeaseApproved", "data": {"target": p.get("target","")}}]}
+        return {"mutations": [], "events": [{"class": "loftspace.leaseApproved", "data": {"target": p.get("target","")}}]}
     fail("capadv DDL: unknown op: " + ot)
 `
 	ddlDoc := map[string]any{

@@ -100,7 +100,7 @@ func TestTombstoneMetaVertex_DDLCascadesAllAspects(t *testing.T) {
 		}
 	}
 	// MetaVertexTombstoned event emitted with the metaKey.
-	if len(res.Events) != 1 || res.Events[0].Class != "MetaVertexTombstoned" {
+	if len(res.Events) != 1 || res.Events[0].Class != "meta.vertexTombstoned" {
 		t.Fatalf("events = %+v, want one MetaVertexTombstoned", res.Events)
 	}
 	if res.Events[0].Data["metaKey"] != key {

@@ -41,11 +41,14 @@ steps**. A **step**:
 | guard (optional) | an **on/off** predicate — if false, the step is **skipped** (cursor advances), no op emitted |
 
 Step completion is **implicit** — there is no per-step completion-event field. A step is correlated
-to its instance by a **unique token** (the `taskId` of the task it created, or the `requestId` of the
-systemOp it submitted), resolved against the durable reverse pointer in `loom-state` (§10.6). The
-pattern declares an optional **`completionDomains: ["<domain>", …]`** — the set of `events.<domain>.>`
-the engine reconciles a durable consumer for (default `[subjectType]`); a flow completing in a domain
-other than the subject's lists it explicitly (Contract #10 §10.5).
+to its instance by a **unique token** (the `taskKey` (`vtx.task.<id>`) of the task it created, read from
+`payload.taskKey` on the completion event, or the `requestId` of the systemOp it submitted), resolved
+against the durable reverse pointer in `loom-state` (§10.6). The pattern declares an optional
+**`completionDomains: ["<domain>", …]`** — the set of `events.<domain>.>` the engine reconciles a durable
+consumer for (default `[subjectType]`); a flow completing in a domain other than the subject's lists it
+explicitly (Contract #10 §10.5). Every event class is `<domain>.<eventName>` (Contract #3 §3.4), so a
+**userTask completes on the `orchestration` domain** — the `orchestration.taskCompleted` event — and an
+all-userTask onboarding pattern declares `completionDomains: ["orchestration"]` (NOT `["identity"]`).
 
 **Binding constraints:**
 
@@ -70,8 +73,9 @@ StartLoomPattern{patternRef, subjectKey}  →  outbox  →  events.loom.patternS
                      + outbox.<token> op record + arm deadline.<instanceId> (TTL);
                      the relay then publishes the op from that record (e.g. create task
                      vertex; task.operation = the bound op the UI renders) ... WAIT ...
-  ← completion event (user submits bound op, or system op commits) on a per-domain consumer
-       → GET token.<requestId|taskId> → instance → advance cursor (atomic batch) → next step
+  ← completion event (user submits bound op → orchestration.taskCompleted, or system op commits)
+       on a per-domain consumer
+       → GET token.<requestId | payload.taskKey> → instance → advance cursor (atomic batch) → next step
   ⌛ deadline.<instanceId> TTL expiry (no completion seen) → read-before-act probe
        → GET vtx.op.<token>: committed → advance+alert; not yet relayed → re-arm; else → fail
   pattern exhausted → CompletePattern{instanceId} (via outbox) → events.loom.patternCompleted
@@ -84,8 +88,12 @@ outbox aspect); Loom runs a fixed durable consumer on that subject (always-on, i
 durable reverse pointer — domain-independent and multi-instance-safe; the per-domain consumer only
 decides *which events Loom sees*, never *which instance* (§10.6). Waiting for user input does not break
 the loop — the advancing event is simply user-triggered.
-**Long waits** (a user takes days) exceed the 24h idempotency horizon; handled at the engine
-(extended-dedupe), not by changing the loop shape.
+**Long waits** (a user takes days) are correct by construction: a userTask arms a **bounded
+creation-deadline** (`CreateTaskTimeout`) that **disarms once the task vertex exists** (Contract #10
+§10.6), after which the human wait is **unbounded** — the durable cursor + live `token.<taskKey>`
+pointer survive any restart, so when the user finally acts the completion correlates and the cursor
+advances. A rejected/lost `CreateTask` is failed by the creation-deadline probe (never a silent wedge);
+a mis-declared `completionDomains` is caught by a load-time warn.
 
 ---
 
@@ -110,7 +118,7 @@ code**. Pattern definitions, guards, step→operation bindings, and the `task` t
 |----------|--------|-------|
 | Pattern definitions | Core KV `vtx.meta.>` (package-installed) | Durable `SubscribeKVChanges` on the Core-KV backing stream, routed by class `meta.loomPattern` — loaded via CDC like Lens defs; live-registers new patterns without restart |
 | `events.loom.patternStarted` trigger consumer | `core-events` (post-outbox) | **Fixed**, always-on durable consumer (independent of `completionDomains`); validates `patternRef`, creates the cursor, submits step 0 |
-| `events.<domain>.>` per-domain completion consumer | `core-events` (post-outbox) | D2: one consumer per domain in a registered pattern's `completionDomains` (default `[subjectType]`), engine-reconciled; correlates by `requestId`/`taskId` in the event body |
+| `events.<domain>.>` per-domain completion consumer | `core-events` (post-outbox) | D2: one consumer per domain in a registered pattern's `completionDomains` (default `[subjectType]`), engine-reconciled; correlates by top-level `requestId` (systemOp) or `payload.taskKey` (userTask) in the event body |
 | Current Core KV state | point-reads for guard evaluation | Guards are pure over this snapshot |
 
 ## Out-contracts (produces)

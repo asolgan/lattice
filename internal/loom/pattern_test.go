@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestPatternValidate_RejectsNonSystemOpAndGuards(t *testing.T) {
+func TestPatternValidate_AcceptsSystemOpAndUserTask_RejectsGuardsAndUnknownKinds(t *testing.T) {
 	cases := []struct {
 		name    string
 		pattern Pattern
@@ -17,13 +17,28 @@ func TestPatternValidate_RejectsNonSystemOpAndGuards(t *testing.T) {
 			wantErr: false,
 		},
 		{
-			name:    "userTask rejected in 8.1",
+			name:    "userTask accepted",
 			pattern: Pattern{PatternID: "p2", SubjectType: "identity", Steps: []Step{{Kind: "userTask", Operation: "SetName"}}},
+			wantErr: false,
+		},
+		{
+			name:    "userTask without operation rejected",
+			pattern: Pattern{PatternID: "p2b", SubjectType: "identity", Steps: []Step{{Kind: "userTask", Operation: ""}}},
 			wantErr: true,
 		},
 		{
-			name:    "guard rejected in 8.1",
+			name:    "unknown kind rejected",
+			pattern: Pattern{PatternID: "p2c", SubjectType: "identity", Steps: []Step{{Kind: "decision", Operation: "X"}}},
+			wantErr: true,
+		},
+		{
+			name:    "guarded systemOp rejected",
 			pattern: Pattern{PatternID: "p3", SubjectType: "identity", Steps: []Step{{Kind: "systemOp", Operation: "SetName", Guard: json.RawMessage(`{"absent":"subject.data.name"}`)}}},
+			wantErr: true,
+		},
+		{
+			name:    "guarded userTask rejected",
+			pattern: Pattern{PatternID: "p3b", SubjectType: "identity", Steps: []Step{{Kind: "userTask", Operation: "SetName", Guard: json.RawMessage(`{"absent":"subject.data.name"}`)}}},
 			wantErr: true,
 		},
 		{
@@ -79,6 +94,46 @@ func TestBindingRegistry_DedupesDomainsAcrossPatterns(t *testing.T) {
 	}
 	if len(got) != 3 {
 		t.Fatalf("registry should dedupe to 3 domains, got %d: %v", len(got), got)
+	}
+}
+
+func TestUserTaskCompletionUnobservable(t *testing.T) {
+	cases := []struct {
+		name string
+		p    Pattern
+		want bool
+	}{
+		{
+			name: "userTask omitting orchestration domain is unobservable",
+			p: Pattern{SubjectType: "identity", CompletionDomains: []string{"identity"},
+				Steps: []Step{{Kind: StepKindUserTask, Operation: "SetName"}}},
+			want: true,
+		},
+		{
+			name: "userTask defaulting to subjectType (no orchestration domain) is unobservable",
+			p: Pattern{SubjectType: "identity",
+				Steps: []Step{{Kind: StepKindUserTask, Operation: "SetName"}}},
+			want: true,
+		},
+		{
+			name: "userTask listing orchestration domain is observable",
+			p: Pattern{SubjectType: "identity", CompletionDomains: []string{"orchestration"},
+				Steps: []Step{{Kind: StepKindUserTask, Operation: "SetName"}}},
+			want: false,
+		},
+		{
+			name: "systemOp-only pattern is never flagged",
+			p: Pattern{SubjectType: "identity", CompletionDomains: []string{"identity"},
+				Steps: []Step{{Kind: StepKindSystemOp, Operation: "StepA"}}},
+			want: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.p.userTaskCompletionUnobservable(); got != c.want {
+				t.Fatalf("userTaskCompletionUnobservable()=%v, want %v", got, c.want)
+			}
+		})
 	}
 }
 

@@ -183,37 +183,26 @@ So that one pattern serves both "collect" and "verify-info," and the cursor is c
 
 *FRs: FR26 · Depends on: 8.2 · Model: Opus · Grounding: D3 guard purity; Contract #10 §10.5*
 
-### Story 8.4: Loom durable-consumer backoff (hardening — F4)
+### Story 8.4: Loom durable-consumer lifecycle manager + Health KV (hardening — F4/F6 + observability)
 
 As a platform operator,
-I want Loom's durable consumers to back off on repeated failure instead of hot-looping,
-So that a sustained downstream outage degrades gracefully rather than burning CPU.
+I want Loom's durable consumers managed by a shared lifecycle machinery (the same pause/resume/recreate/teardown Refractor uses) and Loom to publish its liveness to Health KV,
+So that a sustained outage degrades gracefully, a removed pattern leaks no consumer, an in-place filter change recreates cleanly, and Loom's operational state is observable.
 
 **Acceptance Criteria:**
 
-**Given** a Loom durable consumer (the command-outbox relay, the deadline watcher, the trigger consumer, or a per-domain completion consumer) whose handler repeatedly returns Nak (e.g. `ops.<lane>` down, a `patternRef` that never loads)
-**When** redelivery occurs
-**Then** redelivery is **delayed with backoff** (a substrate `NakWithDelay`/backoff capability on the durable-consumer primitive — the `HandlerFunc` Decision enum currently carries no delay), not an unbounded tight loop
-**And** the **relay's retry stays unbounded** (at-least-once delivery — a `MaxDeliver` cap that dropped the op would be wrong); only the *cadence* is bounded
-**And** a test asserts a failing handler does not spin at zero delay
+**Given** Refractor's `consumer.Manager` already implements `Add`/`Remove`/`Reset` (delete+recreate)/`Stop` + the pipeline's `Pause`/`Resume`, while Loom hand-rolls its per-domain consumers on the bare `RunDurableConsumer` primitive
+**When** the shared lifecycle is extracted into **substrate** (so no `nats.io`/`jetstream` handle leaks into `internal/loom` — AC#8 of 8.1 holds; the extraction wraps jetstream, it is not imported from Refractor)
+**Then** Loom's per-domain completion consumers (and the trigger/relay/deadline-watcher durables) are driven through the shared manager, which provides:
+**And** **backoff on repeated failure** (a `NakWithDelay`/backoff capability — the `HandlerFunc` Decision enum currently carries no delay) so a handler that keeps returning Nak does not hot-loop; the **relay's retry stays unbounded** (at-least-once — only the *cadence* is bounded, never a `MaxDeliver` drop) — *subsumes the former Story 8.4 (F4)*
+**And** **teardown** (`Remove`): when the last pattern referencing a domain is removed, `reconcileConsumers` diffs desired-vs-running and cancels the orphaned `loom-<domain>` consumer + goroutine, honoring the ack-floor persistence convention — *subsumes the former Story 8.5 (F6)*
+**And** **in-place recreate** (`Reset`): a durable whose filter/config changed (e.g. an 8.1→8.2 `events.<domain>.>` filter that JetStream rejects updating in place) is delete-and-recreated rather than silently failing — *covers Story 8.2 review ECH Path #3*
 
-*Surfaced by: Story 8.1 adversarial review (F4). Depends on: 8.1 · Model: Opus · Grounding: Contract #10 §10.6; internal/substrate/consumer.go*
+**And** Loom writes `health.loom.<instance>` heartbeats to Health KV (Contract #5 already names `loom` as a Phase-2 publisher) with `status`/`heartbeatAt`/`metrics` (running instance count, per-domain consumer states, relay + deadline-watcher liveness) + `issues`, mirroring Refractor's `health.Reporter`
+**And** consumer **pause-state is persisted in Health KV** and restored on restart (mirroring Refractor's `restoreHealthState`), so a paused consumer resumes its prior state across a Loom restart
+**And** tests assert: a failing handler does not spin at zero delay; a removed-pattern domain consumer is torn down; a filter change recreates; Loom emits a well-formed `health.loom.<instance>` heartbeat
 
-### Story 8.5: Per-domain completion-consumer teardown (hardening — F6)
-
-As a platform developer,
-I want Loom to tear down a per-domain completion consumer when no registered pattern references that domain,
-So that removing a pattern does not leak a durable consumer + goroutine for the engine's lifetime.
-
-**Acceptance Criteria:**
-
-**Given** a pattern whose `completionDomains` references a domain no other registered pattern uses
-**When** that pattern is removed (the pattern source fires the update callback)
-**Then** `reconcileConsumers` diffs desired vs running domains and **cancels** the now-orphaned `loom-<domain>` consumer (calling the stored `CancelFunc`, removing the registry entry) — matching the doc claim that an unreferenced domain's consumer is torn down without an engine restart
-**And** the durable's ack-floor persistence convention is honored (stop driving it; do not delete unless intended — see `internal/substrate/subscribe.go`)
-**And** a test installs then removes a pattern referencing a unique domain and asserts teardown
-
-*Surfaced by: Story 8.1 adversarial review (F6). Depends on: 8.1 · Model: Opus · Grounding: lattice-architecture #D2; internal/loom/engine.go*
+*Consolidates former 8.4 (F4 backoff) + 8.5 (F6 teardown), plus ECH Path #3 (filter-recreate) and the Loom Health-KV gap (Contract #5). Surfaced by: Story 8.1 + 8.2 adversarial reviews. Depends on: 8.1, 8.2 · Model: Opus · Grounding: internal/refractor/consumer/manager.go, internal/refractor/health/*, internal/refractor/pipeline/pipeline.go (Pause/Resume + restoreHealthState), internal/substrate/consumer.go, docs/contracts/05-health-kv.md, lattice-architecture #D2*
 
 ## Epic 9: Weaver — Convergence Engine
 

@@ -19,7 +19,16 @@ import (
 const (
 	opCompletePattern = "CompletePattern"
 	opFailPattern     = "FailPattern"
+	// opCreateTask is the op a userTask step submits to assign its bound op to
+	// the instance subject (Contract #10 §10.5).
+	opCreateTask = "CreateTask"
 )
+
+// userTaskGrantTTL is the expiry horizon set on a userTask's task grant. A
+// userTask wait is unbounded by design (§10.6), so the grant outlives any
+// realistic human response window; the grant authorizes the user's bound op,
+// whose commit auto-completes the task and advances the cursor.
+const userTaskGrantTTL = 30 * 24 * time.Hour
 
 // triggerDurable is the fixed always-on trigger consumer's durable name
 // (Contract #10 §10.9). It is independent of completionDomains.
@@ -40,7 +49,7 @@ type Config struct {
 	// consumers attach to. Default "core-events".
 	EventsStream string
 	// ActorKey is the identity:loom service-actor vertex key the Actuator
-	// submits under (vtx.identity.<id>, provisioned by Story 7.3).
+	// submits under (vtx.identity.<id>, the primordial loom service actor).
 	ActorKey string
 	// Lane is the ops lane systemOps + lifecycle ops are submitted on. Default "system".
 	Lane string
@@ -49,6 +58,15 @@ type Config struct {
 	// off-stream failed/rejected backstop, §10.6). Must be >= 1s (NATS per-key
 	// TTL floor). Default 60s.
 	StepTimeout time.Duration
+	// CreateTaskTimeout is the bounded creation-deadline a userTask step arms
+	// while it waits for its CreateTask to commit (the §10.6 deadline+probe
+	// applied to the task-creation path). It backstops a CreateTask that is
+	// rejected or lost — without it a userTask whose CreateTask never commits
+	// parks forever. It is sized ≫ any CreateTask commit latency (NOT a human
+	// response window): once the probe confirms the task vertex exists, the
+	// deadline is disarmed and the wait for the human becomes unbounded
+	// (§10.6). Must be >= 1s (NATS per-key TTL floor). Default 60s.
+	CreateTaskTimeout time.Duration
 	// Instance distinguishes this engine process; it suffixes the per-boot
 	// pattern-source durable so each boot replays the installed pattern set.
 	// Auto-generated when empty.
@@ -78,6 +96,12 @@ func (c *Config) withDefaults() {
 		// so a sub-second deadline would not arm a marker and the off-stream
 		// failed terminal would never fire. Clamp up rather than silently degrade.
 		c.StepTimeout = time.Second
+	}
+	if c.CreateTaskTimeout <= 0 {
+		c.CreateTaskTimeout = 60 * time.Second
+	}
+	if c.CreateTaskTimeout < time.Second {
+		c.CreateTaskTimeout = time.Second
 	}
 	if c.Instance == "" {
 		if id, err := substrate.NewNanoID(); err == nil {
@@ -244,7 +268,7 @@ func (e *Engine) handleTrigger(ctx context.Context, msg substrate.Message) subst
 // reconcileConsumers rebuilds the binding registry from the current pattern set
 // and starts a durable per-domain completion consumer (loom-<domain>) for any
 // referenced domain not already running. Additive: a newly-referenced domain
-// spins up a consumer live, without an engine restart (D2, AC #2).
+// spins up a consumer live, without an engine restart (D2).
 func (e *Engine) reconcileConsumers() {
 	domains := bindingRegistry(e.source.snapshot())
 	e.mu.Lock()
@@ -261,11 +285,14 @@ func (e *Engine) reconcileConsumers() {
 	}
 }
 
-// runDomainConsumer drives one durable completion consumer on core-events,
-// filtered to events.<domain>.>, durable loom-<domain>. The handler is
-// idempotent (at-least-once): it reads Event.requestId from the body, resolves
-// the durable token.<requestId> pointer, and advances the matching instance —
-// dropping any completion whose pointer is gone (already advanced).
+// runDomainConsumer drives one durable completion consumer on core-events for a
+// domain, durable loom-<domain>. It filters events.<domain>.> — every event
+// class is `<domain>.<eventName>` (Contract #3 §3.4), subjected
+// events.<domain>.<eventName>, so events.<domain>.> always matches. The handler
+// is idempotent (at-least-once): it reads the body's correlation keys
+// (requestId, taskKey), resolves the durable token pointer, and advances the
+// matching instance — dropping any completion whose pointer is gone (already
+// advanced).
 func (e *Engine) runDomainConsumer(ctx context.Context, domain string) {
 	err := e.conn.RunDurableConsumer(ctx, substrate.DurableConsumerConfig{
 		Stream:        e.cfg.EventsStream,
@@ -278,15 +305,30 @@ func (e *Engine) runDomainConsumer(ctx context.Context, domain string) {
 	}
 }
 
-// eventBody is the minimal view of a core-events message Loom reads. requestId
-// is the Event envelope's top-level field (the outbox publishes the full Event
-// per Contract #3 §3.4) — read from the body, never from the subject.
+// eventBody is the minimal view of a core-events message Loom reads. It carries
+// the two structural correlation keys the contract defines (Contract #10 §10.6),
+// both from the Event envelope body (read-from-body, never from the subject):
+//   - requestId — the top-level field; the systemOp token (the op's own
+//     requestId Loom chose).
+//   - payload.taskKey — the userTask token (a vtx.task.<id> the
+//     orchestration.taskCompleted event carries under the Event envelope's
+//     payload object, Contract #3 §3.4; the top-level requestId on that event is
+//     the user's bound-op requestId, which Loom does not know, so it cannot be
+//     the correlation key).
+//
+// Loom stays domain-ignorant: it does not know which event is which, it tries
+// both keys against the durable token store and the pointer decides.
 type eventBody struct {
 	RequestID string `json:"requestId"`
+	Payload   struct {
+		TaskKey string `json:"taskKey"`
+	} `json:"payload"`
 }
 
 // handleCompletion correlates a committed business event to its instance by a
-// direct token.<requestId> GET on loom-state and advances the cursor. There is
+// direct token.<token> GET on loom-state and advances the cursor. It tries both
+// structural correlation keys (requestId for systemOp, payload.taskKey for
+// userTask); at most one resolves a live pointer (tokens are unique). There is
 // no in-memory index; the pointer's presence is the correlation + idempotency
 // guard (Contract #10 §10.6).
 func (e *Engine) handleCompletion(ctx context.Context, msg substrate.Message) substrate.Decision {
@@ -298,27 +340,43 @@ func (e *Engine) handleCompletion(ctx context.Context, msg substrate.Message) su
 		// A core-events body Loom cannot parse is not its concern; ack + skip.
 		return substrate.Ack
 	}
-	if ev.RequestID == "" {
+
+	for _, token := range correlationKeys(ev) {
+		instanceID, live, err := e.state.resolveToken(ctx, token)
+		if err != nil {
+			e.logger.Error("loom: token resolve failed; nak", "token", token, "err", err)
+			return substrate.Nak
+		}
+		if !live {
+			continue
+		}
+		if err := e.advance(ctx, instanceID, token); err != nil {
+			e.logger.Error("loom advance failed; nak for redelivery",
+				"instanceId", instanceID, "token", token, "err", err)
+			return substrate.Nak
+		}
 		return substrate.Ack
 	}
-
-	instanceID, live, err := e.state.resolveToken(ctx, ev.RequestID)
-	if err != nil {
-		e.logger.Error("loom: token resolve failed; nak", "requestId", ev.RequestID, "err", err)
-		return substrate.Nak
-	}
-	if !live {
-		// Not a token Loom is awaiting (another component's event, or a
-		// redelivered completion for an already-advanced instance). Drop.
-		return substrate.Ack
-	}
-
-	if err := e.advance(ctx, instanceID, ev.RequestID); err != nil {
-		e.logger.Error("loom advance failed; nak for redelivery",
-			"instanceId", instanceID, "requestId", ev.RequestID, "err", err)
-		return substrate.Nak
-	}
+	// Not a token Loom is awaiting (another component's event, or a redelivered
+	// completion for an already-advanced instance). Drop.
 	return substrate.Ack
+}
+
+// correlationKeys returns the distinct, non-empty structural correlation keys to
+// try for a completion event, in order (systemOp requestId first, userTask
+// taskKey second). Trying requestId before payload.taskKey is safe because both
+// namespaces are unguessable NanoIDs: an orchestration.taskCompleted event's top-level requestId
+// is the user's bound-op id, which cannot collide with a live Loom systemOp token
+// (Loom's own op requestId), so the wrong key never resolves a live pointer.
+func correlationKeys(ev eventBody) []string {
+	keys := make([]string, 0, 2)
+	if ev.RequestID != "" {
+		keys = append(keys, ev.RequestID)
+	}
+	if ev.Payload.TaskKey != "" && ev.Payload.TaskKey != ev.RequestID {
+		keys = append(keys, ev.Payload.TaskKey)
+	}
+	return keys
 }
 
 // --- Transition Engine -----------------------------------------------------
@@ -351,11 +409,25 @@ func (e *Engine) advance(ctx context.Context, instanceID, token string) error {
 
 // submitStep write-aheads the next step in a single AtomicBatch (update
 // instance.<id>, write token.<newToken>, delete the prior token.<oldToken>,
-// write the outbox.<token> op record, arm deadline.<instanceId>). The relay
-// publishes the op off that batch — submission is part of the atomic fact, not a
-// dual write (Crash-safety invariant 1, §10.6). oldToken == "" for step 0.
+// write the outbox.<opRequestId> op record, arm or disarm deadline.<instanceId>).
+// The relay publishes the op off that batch — submission is part of the atomic
+// fact, not a dual write (Crash-safety invariant 1, §10.6). oldToken == "" for
+// step 0. The step is dispatched by Kind: a systemOp submits its bound op
+// directly with a bounded deadline; a userTask submits CreateTask and parks for
+// a human (the human wait is unbounded; the bounded deadline backstops only the
+// task creation, §10.6).
 func (e *Engine) submitStep(ctx context.Context, inst *Instance, pattern *Pattern, oldToken string) error {
 	step := pattern.Steps[inst.Cursor]
+	if step.Kind == StepKindUserTask {
+		return e.submitUserTask(ctx, inst, pattern, step, oldToken)
+	}
+	return e.submitSystemOp(ctx, inst, pattern, step, oldToken)
+}
+
+// submitSystemOp submits a step's bound op directly. The write-ahead token is
+// the op's own requestId; the step arms the bounded deadline (the off-stream
+// rejected/lost backstop, §10.6).
+func (e *Engine) submitSystemOp(ctx context.Context, inst *Instance, pattern *Pattern, step Step, oldToken string) error {
 	token := deriveRequestID(inst.InstanceID, inst.Cursor)
 	inst.PendingToken = token
 
@@ -370,7 +442,56 @@ func (e *Engine) submitStep(ctx context.Context, inst *Instance, pattern *Patter
 	}
 	e.logger.Info("loom step write-ahead",
 		"instanceId", inst.InstanceID, "cursor", inst.Cursor,
-		"operation", step.Operation, "requestId", token)
+		"kind", step.Kind, "operation", step.Operation, "requestId", token)
+	return nil
+}
+
+// submitUserTask submits a CreateTask assigning the step's bound op to the
+// instance subject (§10.5: assignedTo/scopedTo = the subject, forOperation = the
+// bound op's meta-vertex). The write-ahead token is the taskKey — the
+// completion-correlation handle the orchestration.taskCompleted event will carry — derived
+// deterministically so a crash-retry re-supplies the SAME taskId and collapses
+// on the Contract #4 tracker (no duplicate task). The CreateTask op's own
+// requestId is a disjoint deterministic id (the submission idempotency handle).
+//
+// A bounded CreateTaskTimeout creation-deadline IS armed (the §10.6 deadline+
+// probe applied to the task-creation path): waiting for the task vertex to be
+// CREATED is a machine action with a tight latency bound, so a rejected/lost
+// CreateTask must not park the token forever. The deadline backstops only the
+// creation; once onDeadline's probe confirms the task vertex exists, it disarms
+// the deadline and the wait for the human becomes unbounded (§10.6) — a
+// human may take days, and false-failing that wait would be a correctness bug.
+func (e *Engine) submitUserTask(ctx context.Context, inst *Instance, pattern *Pattern, step Step, oldToken string) error {
+	forOperation, ok := e.source.opMetaKey(step.Operation)
+	if !ok {
+		return fmt.Errorf("loom: userTask step %d: no op meta-vertex for operation %q (forOperation unresolved)",
+			inst.Cursor, step.Operation)
+	}
+
+	taskID := deriveTaskID(inst.InstanceID, inst.Cursor)
+	taskKey := "vtx.task." + taskID
+	token := taskKey
+	inst.PendingToken = token
+
+	opRequestID := deriveRequestID(inst.InstanceID, inst.Cursor)
+	payload := map[string]any{
+		"assignee":     inst.SubjectKey,
+		"forOperation": forOperation,
+		"scopedTo":     inst.SubjectKey,
+		"expiresAt":    substrate.FormatTimestamp(time.Now().Add(userTaskGrantTTL)),
+		"taskId":       taskID,
+	}
+	ob, err := buildOutbox(opRequestID, opCreateTask, payload, inst.SubjectKey, e.cfg.Lane, e.cfg.ActorKey)
+	if err != nil {
+		return err
+	}
+	if err := e.state.transition(ctx, inst, token, oldToken, ob, e.cfg.CreateTaskTimeout); err != nil {
+		return err
+	}
+	e.logger.Info("loom userTask write-ahead",
+		"instanceId", inst.InstanceID, "cursor", inst.Cursor,
+		"operation", step.Operation, "forOperation", forOperation,
+		"taskKey", taskKey, "createTaskRequestId", opRequestID)
 	return nil
 }
 
@@ -421,6 +542,16 @@ func (e *Engine) fail(ctx context.Context, inst *Instance, oldToken, reason stri
 	e.logger.Warn("loom instance failed",
 		"instanceId", inst.InstanceID, "cursor", inst.Cursor, "reason", reason)
 	return nil
+}
+
+// userTaskTokenPrefix is the key prefix of a userTask write-ahead token (the
+// taskKey, vtx.task.<id>). A token with this prefix is an unbounded human wait,
+// distinguishing it from a systemOp token (a bare requestId).
+const userTaskTokenPrefix = "vtx.task."
+
+// isUserTaskToken reports whether a pending token is a userTask taskKey.
+func isUserTaskToken(token string) bool {
+	return strings.HasPrefix(token, userTaskTokenPrefix)
 }
 
 // lifecycleCursor is the deterministic cursor sentinel used to derive the
@@ -481,6 +612,10 @@ func (e *Engine) handleDeadline(ctx context.Context, subjPrefix string, msg subs
 // re-arm; absent and no outbox record → rejected → fail. Every branch re-reads
 // instance state and is CAS-on-running (the advance/fail paths verify the
 // pending token), so a redelivered marker / second replica is a no-op.
+//
+// A userTask token (vtx.task.<id>) routes to onUserTaskDeadline: the deadline is
+// bounded on the task-CREATION only, so the probe reads the task vertex and the
+// CreateTask op's tracker/outbox to decide created-vs-rejected.
 func (e *Engine) onDeadline(ctx context.Context, instanceID string) error {
 	inst, err := e.state.getInstance(ctx, instanceID)
 	if err != nil {
@@ -494,6 +629,9 @@ func (e *Engine) onDeadline(ctx context.Context, instanceID string) error {
 	token := inst.PendingToken
 	if token == "" {
 		return nil
+	}
+	if isUserTaskToken(token) {
+		return e.onUserTaskDeadline(ctx, inst)
 	}
 
 	committed, err := e.trackerExists(ctx, token)
@@ -524,6 +662,70 @@ func (e *Engine) onDeadline(ctx context.Context, instanceID string) error {
 	return e.fail(ctx, inst, token, fmt.Sprintf("step %d deadline exceeded; op rejected or lost", inst.Cursor))
 }
 
+// onUserTaskDeadline runs the read-before-act probe for a userTask whose bounded
+// creation-deadline fired (the §10.6 deadline+probe applied to task creation). It
+// distinguishes "still waiting for the task to be CREATED" (a bounded machine
+// action) from "the task exists, now waiting for the HUMAN" (unbounded):
+//
+//  1. GET the task vertex vtx.task.<taskId> from Core KV. Present → the
+//     CreateTask committed and the flow is now in the legitimate unbounded human
+//     wait → disarm the creation-deadline (the cursor/token are untouched) and
+//     stop; the human may take days.
+//  2. Absent → probe the CreateTask op like a systemOp deadline: its tracker
+//     present → CreateTask committed but the task-vertex read raced/missed →
+//     re-arm; else its outbox record still present → the relay has not delivered
+//     → re-arm; else (no task, no tracker, no outbox) → CreateTask rejected/lost
+//     → fail.
+//
+// Every branch re-reads instance state via the caller and is CAS-on-running (the
+// fail path verifies the pending token), so a redelivered marker / second replica
+// is a no-op.
+func (e *Engine) onUserTaskDeadline(ctx context.Context, inst *Instance) error {
+	taskID := deriveTaskID(inst.InstanceID, inst.Cursor)
+	created, err := e.taskVertexExists(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if created {
+		// The task vertex exists: the bounded creation wait is over and the
+		// unbounded human wait begins. Disarm the deadline without touching the
+		// cursor/token — the instance stays running until the human acts.
+		e.logger.Info("loom: userTask created; disarming creation-deadline for unbounded human wait",
+			"instanceId", inst.InstanceID, "cursor", inst.Cursor, "taskId", taskID)
+		return e.state.disarmDeadline(ctx, inst.InstanceID)
+	}
+
+	opRequestID := deriveRequestID(inst.InstanceID, inst.Cursor)
+	committed, err := e.trackerExists(ctx, opRequestID)
+	if err != nil {
+		return err
+	}
+	if committed {
+		// CreateTask committed but the task-vertex read raced the commit; the next
+		// probe will see the vertex. Extend the creation-deadline rather than fail.
+		e.logger.Info("loom: CreateTask committed but task vertex not yet visible; re-arming",
+			"instanceId", inst.InstanceID, "cursor", inst.Cursor, "createTaskRequestId", opRequestID)
+		return e.state.rearmDeadline(ctx, inst.InstanceID, e.cfg.CreateTaskTimeout)
+	}
+
+	outboxPending, err := e.state.outboxExists(ctx, opRequestID)
+	if err != nil {
+		return err
+	}
+	if outboxPending {
+		// The relay has not delivered the CreateTask yet — extend rather than fail.
+		e.logger.Info("loom: creation-deadline fired before relay delivered CreateTask; re-arming",
+			"instanceId", inst.InstanceID, "cursor", inst.Cursor, "createTaskRequestId", opRequestID)
+		return e.state.rearmDeadline(ctx, inst.InstanceID, e.cfg.CreateTaskTimeout)
+	}
+
+	// No task vertex, no tracker, no outbox record → the CreateTask was rejected
+	// or lost. Fail the instance rather than park the token forever (§10.6: never
+	// a silent wedge).
+	return e.fail(ctx, inst, inst.PendingToken,
+		fmt.Sprintf("step %d CreateTask rejected", inst.Cursor))
+}
+
 // trackerExists reports whether the Contract #4 op tracker vtx.op.<requestId>
 // exists in Core KV (a read — Loom never writes Core KV). A committed op writes
 // the tracker; a rejected op (denied before commit step 8) writes none.
@@ -534,6 +736,21 @@ func (e *Engine) trackerExists(ctx context.Context, requestID string) (bool, err
 			return false, nil
 		}
 		return false, fmt.Errorf("loom: probe tracker %q: %w", requestID, err)
+	}
+	return true, nil
+}
+
+// taskVertexExists reports whether the task vertex vtx.task.<taskId> exists in
+// Core KV (a read — Loom never writes Core KV). A committed CreateTask mints it;
+// a rejected CreateTask mints none. It is the signal that a userTask's bounded
+// creation wait is over and the unbounded human wait may begin (§10.6).
+func (e *Engine) taskVertexExists(ctx context.Context, taskID string) (bool, error) {
+	_, err := e.conn.KVGet(ctx, e.cfg.CoreKVBucket, "vtx.task."+taskID)
+	if err != nil {
+		if errors.Is(err, substrate.ErrKeyNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("loom: probe task vertex %q: %w", taskID, err)
 	}
 	return true, nil
 }

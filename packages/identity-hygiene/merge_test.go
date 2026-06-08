@@ -124,7 +124,7 @@ func TestMerge_HappyPath(t *testing.T) {
 	}
 
 	// Assert exactly 1 IdentityMerged event in the tracker
-	assertTrackerEvent(t, ctx, conn, reqID, "IdentityMerged")
+	assertTrackerEvent(t, ctx, conn, reqID, "identity.merged")
 }
 
 // --- 2. TestMerge_EnumeratedEdgesFromLens ---
@@ -180,7 +180,7 @@ func TestMerge_EnumeratedEdgesFromLens(t *testing.T) {
 	if got, _ := stateData["value"].(string); got != "merged" {
 		t.Fatalf("secondary.state = %q, want merged", got)
 	}
-	assertTrackerEvent(t, ctx, conn, reqID, "IdentityMerged")
+	assertTrackerEvent(t, ctx, conn, reqID, "identity.merged")
 }
 
 // --- 3. TestMerge_RejectsFabricatedEdge ---

@@ -160,9 +160,18 @@ func (p *EventPublisherImpl) Publish(ctx context.Context, env *processor.Operati
 // to replace non-subject-token chars (whitespace, `>`, `*`, `.` at
 // boundaries) with `_`. DDL class names already conform; this is a
 // belt-and-braces guard so a typo cannot inject wildcard routing.
+//
+// Every event class is `<domain>.<eventName>` (Contract #3 §3.4), enforced at
+// commit step 7. A dot-free class is a programming error by the time it reaches
+// here; rather than route it to a domain-less `events.<class>` (which no
+// per-domain consumer would ever match), it is sent to `events._nodomain` so
+// the misrouting is loud, not silent.
 func EventSubject(class string) string {
 	if class == "" {
 		return "events._unknown"
+	}
+	if !strings.Contains(class, ".") {
+		return "events._nodomain"
 	}
 	// Replace dangerous tokens. Keep dots — class names like
 	// `identity.created` legally segment the subject (matches `events.>`).

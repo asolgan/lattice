@@ -112,7 +112,7 @@ def execute(state, op):
     if len(out) == 0:
         fail("InvalidArgument: install produced no mutations")
 
-    events = [{"class": "PackageInstalled",
+    events = [{"class": "package.installed",
                "data": {"name": name, "version": version, "keyCount": len(declared)}}]
     # InstallPackage is multi-key with no single principal entity; it omits
     # primaryKey. Clients read the committed key set from OperationReply.Revisions
@@ -169,7 +169,7 @@ def execute(state, op):
     if len(out) == 0:
         fail("InvalidArgument: uninstall produced no mutations")
 
-    events = [{"class": "PackageUninstalled",
+    events = [{"class": "package.uninstalled",
                "data": {"name": name, "keyCount": len(tombstoned)}}]
     # UninstallPackage is multi-key with no single principal entity; it omits
     # primaryKey. Clients read the committed key set from OperationReply.Revisions
@@ -194,18 +194,18 @@ const uninstallPackageInputSchema = `{"type":"object","required":["name","declar
 const uninstallPackageOutputSchema = `{"type":"object","properties":{}}`
 
 var installPackageFieldDescription = map[string]any{
-	"name":               "The Capability Package canonical name (matches the package directory).",
-	"version":            "The package version string. Combined with name to derive a deterministic op requestId for idempotent re-install.",
-	"mutations":          "The pre-built mutation manifest: every Core KV entry the install writes.",
-	"mutations[].op":     "Must be 'create' — installs are create-only.",
-	"mutations[].key":    "The Contract #1 key the entry is written to (vtx.* or lnk.*).",
+	"name":                 "The Capability Package canonical name (matches the package directory).",
+	"version":              "The package version string. Combined with name to derive a deterministic op requestId for idempotent re-install.",
+	"mutations":            "The pre-built mutation manifest: every Core KV entry the install writes.",
+	"mutations[].op":       "Must be 'create' — installs are create-only.",
+	"mutations[].key":      "The Contract #1 key the entry is written to (vtx.* or lnk.*).",
 	"mutations[].document": "The logical document body (class, data, isDeleted, and for aspects vertexKey/localName). Provenance is stamped by the Processor.",
 }
 
 var uninstallPackageFieldDescription = map[string]any{
-	"name":                         "The Capability Package canonical name to uninstall.",
-	"declaredKeys":                 "The keys recorded in the package's .manifest aspect. Each is tombstoned.",
-	"declaredKeys[].key":           "A declared key to tombstone.",
+	"name":                            "The Capability Package canonical name to uninstall.",
+	"declaredKeys":                    "The keys recorded in the package's .manifest aspect. Each is tombstoned.",
+	"declaredKeys[].key":              "A declared key to tombstone.",
 	"declaredKeys[].expectedRevision": "Optional NATS revision for OCC — the tombstone fails if the key was modified since the client read it.",
 }
 

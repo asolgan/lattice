@@ -94,7 +94,7 @@ func readTaskAutoCompletion(ctx context.Context, conn *substrate.Conn, coreBucke
 		},
 	}
 	out.event = EventSpec{
-		Class: "TaskCompleted",
+		Class: "orchestration.taskCompleted",
 		Data: map[string]interface{}{
 			"taskKey": taskKey,
 		},

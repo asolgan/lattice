@@ -143,7 +143,7 @@ func TestClaimIdentity_Success(t *testing.T) {
 		t.Fatalf("credentialindex vertex not found at %s: %v", credIndexKey, err)
 	}
 
-	assertTrackerEvent(t, ctx, conn, claimReqID, "IdentityClaimed")
+	assertTrackerEvent(t, ctx, conn, claimReqID, "identity.claimed")
 
 	instance := claimInstance + "-succ"
 	count, ok := readClaimHealthCounter(t, ctx, conn, instance, "success")

@@ -2,6 +2,7 @@ package processor
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/asolgan/lattice/internal/substrate"
@@ -9,16 +10,28 @@ import (
 
 // Event is one item in an EventList per Contract #3 §3.4: each event has
 // eventId (NanoID), requestId (from envelope), eventType (canonical event
-// class), targetKey (the mutation key the event corresponds to — or empty
-// for events without a direct mutation counterpart), payload, and timestamp.
-// Events are published to `core-events` by the outbox consumer via substrate.PublishBatch.
+// class of the shape `<domain>.<eventName>`), domain (the class's first
+// segment, single source of truth), targetKey (the mutation key the event
+// corresponds to — or empty for events without a direct mutation counterpart),
+// payload, and timestamp. Events are published to `core-events` by the outbox
+// consumer via substrate.PublishBatch.
 type Event struct {
 	EventID   string                 `json:"eventId"`
 	RequestID string                 `json:"requestId"`
 	EventType string                 `json:"eventType"`
+	Domain    string                 `json:"domain"`
 	TargetKey string                 `json:"targetKey,omitempty"`
 	Payload   map[string]interface{} `json:"payload"`
 	Timestamp string                 `json:"timestamp"`
+}
+
+// eventDomain returns the domain segment (the part before the first dot) of an
+// event class. A class of the shape `<domain>.<eventName>` yields `<domain>`.
+func eventDomain(class string) string {
+	if i := strings.IndexByte(class, '.'); i >= 0 {
+		return class[:i]
+	}
+	return ""
 }
 
 // EventList is the ordered list of events constructed from a validated
@@ -45,6 +58,13 @@ func BuildEventList(env *OperationEnvelope, result ScriptResult, at time.Time) (
 		if spec.Class == "" {
 			return nil, fmt.Errorf("event %d: missing class", i)
 		}
+		domain := eventDomain(spec.Class)
+		if domain == "" || domain == spec.Class {
+			return nil, fmt.Errorf("event %d: class %q is not <domain>.<eventName>: a domain segment is required", i, spec.Class)
+		}
+		if name := spec.Class[len(domain)+1:]; name == "" {
+			return nil, fmt.Errorf("event %d: class %q is not <domain>.<eventName>: the event name is empty", i, spec.Class)
+		}
 		id, err := substrate.NewNanoID()
 		if err != nil {
 			return nil, fmt.Errorf("event %d: NanoID: %w", i, err)
@@ -62,6 +82,7 @@ func BuildEventList(env *OperationEnvelope, result ScriptResult, at time.Time) (
 			EventID:   id,
 			RequestID: env.RequestID,
 			EventType: spec.Class,
+			Domain:    domain,
 			TargetKey: target,
 			Payload:   spec.Data,
 			Timestamp: stamp,

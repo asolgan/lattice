@@ -57,7 +57,7 @@ Key files:
 | Artifact | Destination | Notes |
 |----------|-------------|-------|
 | **Core KV mutations** (Contract #1 + #3) | Core KV bucket (`core-kv`) | Written as an atomic batch via `substrate.AtomicBatch`; each mutation is a `create`, `update`, or `tombstone` operation |
-| **Events** (Contract #3 EventList) | JetStream `events.<class>` subjects on `core-events` stream | Persisted in the step-8 atomic batch (`vtx.op.<id>.events`) and published asynchronously by the durable outbox consumer via `substrate.PublishBatch` |
+| **Events** (Contract #3 EventList) | JetStream `events.<domain>.<eventName>` subjects on `core-events` stream (every class is `<domain>.<eventName>`, enforced at step 7) | Persisted in the step-8 atomic batch (`vtx.op.<id>.events`) and published asynchronously by the durable outbox consumer via `substrate.PublishBatch` |
 | **Idempotency tracker entries** (Contract #4) | Core KV at `vtx.op.<requestId>` | Written as part of the step-8 atomic batch; 24h TTL; provides step-2 dedup on re-delivery |
 | **Operation replies** (Contract #2 §2.4) | Per-op reply-to inbox | `accepted` (post-step-8), `duplicate` (step-2 short-circuit), or `rejected` (any termination branch) |
 | **Health KV signals** (Contract #5) | Health KV `health.processor.<instance>.*` | Heartbeat every 10s; per-op metrics (OpsConsumed / OpsCommitted / OpsDuplicates / OpsRejected / OpsMalformed); step-3 latency; auth trace records; claim-attempt outcomes; alerts under `health.alerts.security.*` |
@@ -79,16 +79,17 @@ and exits with one of five outcomes: `accepted`, `duplicate`, `rejected`,
 | 4 | **Hydrate** | `Hydrator.Hydrate` — loads `contextHint.Reads` (explicit per-key reads) from Core KV into the `HydratedState` map. The graph topology an op needs is delivered as declared command parameters, not discovered by scanning: a Lens projects topology into its own bucket, the client reads the lens, and the resulting keys travel back in `ContextHint.Reads`. The script validates each declared key (envelope class, endpoint touch, not tombstoned) before acting on it. |
 | 5 | **Execute** | `Executor.Execute` — compiles and runs the DDL's `.script` aspect in the Starlark sandbox via `StarlarkRunner.Run`. Produces `ScriptResult{Mutations, Events, ResponseDetail}`. Timeout: 250ms wall budget + 1,000,000 step limit. |
 | 6 | **Validate** | `Validator.Validate` — checks `permittedCommands` (operation type must be in the DDL's list), `sensitiveAspectScope` (script may not create underscore-prefixed aspects except system-reserved ones), and key-pattern checks. `DDLViolation` → term, reply with `DDLViolation` code. |
-| 7 | **Materialize events** | Assigns per-event NanoIDs to events in `ScriptResult.Events` before the commit. NanoIDs are generated via `substrate.NewNanoID()` — entropy is from `crypto/rand`, not PCG (the script's `nanoid` global uses a PCG seeded from the requestId for deterministic per-script behavior; step 7 uses real entropy). |
+| 7 | **Materialize events** | Assigns per-event NanoIDs to events in `ScriptResult.Events` before the commit. NanoIDs are generated via `substrate.NewNanoID()` — entropy is from `crypto/rand`, not PCG (the script's `nanoid` global uses a PCG seeded from the requestId for deterministic per-script behavior; step 7 uses real entropy). **Enforces the event-domain model:** every event `class` must be `<domain>.<eventName>` (Contract #3 §3.4) — a dot-free class (no domain segment) is rejected; the Event document's `domain` field is set from the class's first segment. |
 | 8 | **Commit** | `Committer.Commit` — calls `substrate.AtomicBatch` on the `core-kv` bucket. Batch includes all mutation ops + the tracker `vtx.op.<requestId>` as a create-only entry + the faithful EventList at `vtx.op.<id>.events`. Revision conditions on update ops; any condition failure → `ErrAtomicBatchRejected`. If the tracker was the conflicting key (concurrent re-delivery), short-circuit as duplicate. If a business mutation conflicted → `RevisionConflict` reply, term. On transient failure: nak. |
 | 9 | **Ack** | `Acker.Ack` — JetStream ack the original message. The explicit Acker boundary ensures the reply is already sent before the ack fires. Ack failure is non-fatal from the caller's perspective (commit + reply already durable); the message will be re-delivered and step-2 dedup short-circuits. |
 
 **Event publishing (asynchronous, not a numbered step).** The faithful EventList
 persisted in the step-8 atomic batch as `vtx.op.<id>.events` is published by the
-durable outbox consumer (`internal/processor/outbox`) to `events.<class>` on
-`core-events`, acking only after a confirmed publish. Because the EventList is the
-exact list the script returned (not reconstructed from committed keys), redelivery
-republishes the *real* events.
+durable outbox consumer (`internal/processor/outbox`) to `events.<domain>.<eventName>`
+on `core-events` (the class is `<domain>.<eventName>`, so the subject's second segment
+is the domain consumers partition on), acking only after a confirmed publish. Because
+the EventList is the exact list the script returned (not reconstructed from committed
+keys), redelivery republishes the *real* events.
 
 ---
 

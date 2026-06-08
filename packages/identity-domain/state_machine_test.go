@@ -80,11 +80,11 @@ func seedIdentityVertex(t *testing.T, ctx context.Context, conn *substrate.Conn,
 // step-8 commit + IdentityStateChanged event.
 func TestIdentity_StateMachine_AllowedTransitions(t *testing.T) {
 	cases := []struct {
-		name      string
-		fromState string
-		toState   string
+		name       string
+		fromState  string
+		toState    string
 		identityID string
-		reqLabel  string
+		reqLabel   string
 	}{
 		{"unclaimed-to-claimed", "unclaimed", "claimed", "JdAU1cHJKMNPQRSTUVWX", "AllU2c"},
 	}
@@ -119,7 +119,7 @@ func TestIdentity_StateMachine_AllowedTransitions(t *testing.T) {
 			if got, _ := stateAspect["value"].(string); got != tc.toState {
 				t.Fatalf("state = %q, want %q", got, tc.toState)
 			}
-			assertTrackerEvent(t, ctx, conn, env.RequestID, "IdentityStateChanged")
+			assertTrackerEvent(t, ctx, conn, env.RequestID, "identity.stateChanged")
 		})
 	}
 }
@@ -232,12 +232,12 @@ func TestIdentity_FR7_LeaseTombstoneDoesNotCascade(t *testing.T) {
 
 	linkKey := "lnk.identity." + identityID + ".hasLease.lease." + leaseID
 	linkDoc, _ := json.Marshal(map[string]any{
-		"class":         "hasLease",
-		"isDeleted":     false,
+		"class":        "hasLease",
+		"isDeleted":    false,
 		"sourceVertex": identityKey,
-		"targetVertex":   leaseKey,
-		"localName":     "hasLease",
-		"data":          map[string]any{},
+		"targetVertex": leaseKey,
+		"localName":    "hasLease",
+		"data":         map[string]any{},
 	})
 	if _, err := conn.KVPut(ctx, testutil.HarnessCoreBucket, linkKey, linkDoc); err != nil {
 		t.Fatalf("seed link: %v", err)

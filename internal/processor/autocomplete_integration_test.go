@@ -14,8 +14,8 @@ import (
 // test script the per-call error (e.g. an OCC conflict on the first attempt).
 type recordingCommitter struct {
 	calls   []ScriptResult
-	errs    []error           // errs[i] returned on call i; nil/short → nil
-	onCall  map[int]func()    // side effect to run just before call i returns (models a concurrent transition)
+	errs    []error        // errs[i] returned on call i; nil/short → nil
+	onCall  map[int]func() // side effect to run just before call i returns (models a concurrent transition)
 	commits int
 }
 
@@ -68,7 +68,7 @@ func seedTaskRoot(t *testing.T, ctx context.Context, conn *substrate.Conn, id, s
 func acUserResult() ScriptResult {
 	return ScriptResult{
 		Mutations:  []MutationOp{{Op: "update", Key: "vtx.leaseapp.ABCDEFGHJKMNPQRSTUVW", Document: map[string]any{"data": map[string]any{"state": "approved"}}}},
-		Events:     []EventSpec{{Class: "LeaseApproved"}},
+		Events:     []EventSpec{{Class: "loftspace.leaseApproved"}},
 		PrimaryKey: "vtx.leaseapp.ABCDEFGHJKMNPQRSTUVW",
 	}
 }
@@ -83,7 +83,7 @@ func committedHasTaskCompletion(result ScriptResult, taskKey string) (hasMut, ha
 		}
 	}
 	for _, e := range result.Events {
-		if e.Class == "TaskCompleted" {
+		if e.Class == "orchestration.taskCompleted" {
 			if tk, _ := e.Data["taskKey"].(string); tk == taskKey {
 				hasEvent = true
 			}
@@ -194,8 +194,8 @@ func TestAutoComplete_NonTaskPath_NoInjection(t *testing.T) {
 		}
 	}
 	for _, e := range committed.Events {
-		if e.Class == "TaskCompleted" {
-			t.Fatalf("non-task-path op must not emit TaskCompleted")
+		if e.Class == "orchestration.taskCompleted" {
+			t.Fatalf("non-task-path op must not emit orchestration.taskCompleted")
 		}
 	}
 }

@@ -260,6 +260,33 @@ func (s *stateStore) rearmDeadline(ctx context.Context, instanceID string, ttl t
 	return nil
 }
 
+// disarmDeadline deletes deadline.<instanceId> without touching the cursor or
+// token — used by the userTask creation-deadline probe once the task vertex
+// exists: the bounded creation wait is over, so the deadline is removed and the
+// wait for the human becomes unbounded (§10.6).
+//
+// The delete is guarded on the key already being present. This matters because
+// disarming a still-running instance does NOT change instance state, so the
+// onDeadline handler does not self-guard against re-entry: the disarm's own DEL
+// marker re-fires the deadline watcher, which probes and disarms again. Skipping
+// the delete when the key is already gone makes the second pass a true no-op
+// (no fresh marker) and breaks that loop. A missing key is not an error.
+func (s *stateStore) disarmDeadline(ctx context.Context, instanceID string) error {
+	if _, err := s.conn.KVGet(ctx, s.bucket, deadlineKey(instanceID)); err != nil {
+		if errors.Is(err, substrate.ErrKeyNotFound) {
+			return nil
+		}
+		return fmt.Errorf("loom: probe deadline %q: %w", instanceID, err)
+	}
+	if err := s.conn.KVDelete(ctx, s.bucket, deadlineKey(instanceID)); err != nil {
+		if errors.Is(err, substrate.ErrKeyNotFound) {
+			return nil
+		}
+		return fmt.Errorf("loom: disarm deadline %q: %w", instanceID, err)
+	}
+	return nil
+}
+
 // deleteToken removes a token.<token> reverse pointer (used when a redelivered
 // completion resolves to an already-advanced instance and the stale pointer must
 // be cleared). A missing pointer is not an error.

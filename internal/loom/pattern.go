@@ -6,16 +6,17 @@ import (
 	"strings"
 )
 
-// Step kinds (Contract #10 §10.5). Only systemOp is interpreted in the
-// Phase-8.1 walking skeleton; userTask arrives with the task stories.
+// Step kinds (Contract #10 §10.5). A systemOp step submits its bound op
+// directly; a userTask step submits CreateTask and waits for the user to
+// perform the bound op (auto-completing the task).
 const (
 	StepKindSystemOp = "systemOp"
 	StepKindUserTask = "userTask"
 )
 
 // Step is one entry in a pattern's linear step list (Contract #10 §10.5
-// shape `{kind, operation, guard?}`). The walking skeleton interprets
-// systemOp steps and carries no guard handling.
+// shape `{kind, operation, guard?}`). For both kinds `operation` names the
+// bound op; guards are not yet interpreted.
 type Step struct {
 	Kind      string          `json:"kind"`
 	Operation string          `json:"operation"`
@@ -78,9 +79,43 @@ func firstSegment(s string) string {
 	return s
 }
 
-// validate rejects a pattern the walking skeleton cannot run. Guards and
-// userTask steps are out of scope for Phase 8.1: a guarded or userTask step
-// is rejected so a half-understood pattern never partially executes.
+// userTaskCompletionDomain is the event domain a userTask completion arrives
+// on: the orchestration.taskCompleted event is subjected events.orchestration.>,
+// so its domain is `orchestration`. A pattern with a userTask step whose
+// effective completionDomains omits it will never observe its userTask
+// completions.
+const userTaskCompletionDomain = "orchestration"
+
+// hasUserTaskStep reports whether any step is a userTask.
+func (p *Pattern) hasUserTaskStep() bool {
+	for _, s := range p.Steps {
+		if s.Kind == StepKindUserTask {
+			return true
+		}
+	}
+	return false
+}
+
+// userTaskCompletionUnobservable reports whether the pattern has a userTask step
+// but its effective completion domains (after the [subjectType] default) omit
+// the orchestration domain — the almost-certain misconfiguration where userTask
+// completions can never be observed.
+func (p *Pattern) userTaskCompletionUnobservable() bool {
+	if !p.hasUserTaskStep() {
+		return false
+	}
+	for _, d := range p.Domains() {
+		if d == userTaskCompletionDomain {
+			return false
+		}
+	}
+	return true
+}
+
+// validate rejects a pattern the engine cannot run. systemOp and userTask
+// steps are interpreted; any other kind is rejected so a half-understood
+// pattern never partially executes. Guards are not yet interpreted; a guarded
+// step of either kind is rejected.
 func (p *Pattern) validate() error {
 	if strings.TrimSpace(p.SubjectType) == "" {
 		return fmt.Errorf("pattern %q: subjectType required", p.PatternID)
@@ -89,15 +124,15 @@ func (p *Pattern) validate() error {
 		return fmt.Errorf("pattern %q: at least one step required", p.PatternID)
 	}
 	for i, s := range p.Steps {
-		if s.Kind != StepKindSystemOp {
-			return fmt.Errorf("pattern %q step %d: kind %q unsupported in Phase 8.1 (systemOp only)",
+		if s.Kind != StepKindSystemOp && s.Kind != StepKindUserTask {
+			return fmt.Errorf("pattern %q step %d: kind %q unsupported (systemOp | userTask)",
 				p.PatternID, i, s.Kind)
 		}
 		if strings.TrimSpace(s.Operation) == "" {
 			return fmt.Errorf("pattern %q step %d: operation required", p.PatternID, i)
 		}
 		if len(s.Guard) != 0 {
-			return fmt.Errorf("pattern %q step %d: guards are out of scope in Phase 8.1", p.PatternID, i)
+			return fmt.Errorf("pattern %q step %d: guards are out of scope", p.PatternID, i)
 		}
 	}
 	return nil

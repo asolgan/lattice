@@ -65,7 +65,8 @@ func taskDDL() pkgmgr.DDLSpec {
 			`{"assignee":{"type":"string","description":"vtx.identity.<NanoID> — the identity that will perform the task (required; validated)."},` +
 			`"forOperation":{"type":"string","description":"vtx.meta.<NanoID> — the operation meta-vertex this task grants the assignee permission to perform."},` +
 			`"scopedTo":{"type":"string","description":"vtx.<type>.<NanoID> — the specific target the granted operation is scoped to (often ≠ the assignee)."},` +
-			`"expiresAt":{"type":"string","description":"RFC3339 expiry timestamp; the grant is valid only while expiresAt > now."}},` +
+			`"expiresAt":{"type":"string","description":"RFC3339 expiry timestamp; the grant is valid only while expiresAt > now."},` +
+			`"taskId":{"type":"string","description":"Optional bare NanoID for the task vertex; supplied by a caller that must know the task key before commit (e.g. Loom's write-ahead). Absent → minted internally."}},` +
 			`"required":["assignee","forOperation","scopedTo","expiresAt"]}`,
 		OutputSchema: `{"type":"object","properties":` +
 			`{"primaryKey":{"type":"string","description":"vtx.task.<NanoID> of the created task (the operation's principal key)."}}}`,
@@ -74,6 +75,7 @@ func taskDDL() pkgmgr.DDLSpec {
 			"forOperation": "Full vtx.meta.<NanoID> key of the operation meta-vertex the task grants. The capabilityEphemeral lens link-sources the granted operationType from this op.",
 			"scopedTo":     "Full vtx.<type>.<NanoID> key of the specific entity the granted operation is scoped to (e.g. the lease application to approve).",
 			"expiresAt":    "RFC3339 timestamp after which the task no longer grants. Stored as a scalar on the task root data.",
+			"taskId":       "Optional bare NanoID (no dots / key segments) for the created task vertex (vtx.task.<taskId>). Supplied by a caller that must know the task key before the op commits, e.g. Loom write-aheading its token.<taskKey> pointer. Absent → minted with nanoid.new(). A crash-retry with the same id collapses on the Contract #4 tracker.",
 		},
 		Examples: []pkgmgr.ExampleSpec{
 			{
@@ -117,6 +119,24 @@ def required_string(p, name):
     if v == None or type(v) != type("") or len(v.strip()) == 0:
         fail("InvalidArgument: " + name + ": required non-empty string")
     return v.strip()
+
+def bare_nanoid_or_mint(p):
+    # Returns the caller-supplied taskId when present (validated as a bare
+    # NanoID), else a freshly minted one. A bare NanoID carries no dots and no
+    # key-prefix segments, so "vtx.task." + id is a single well-formed 3-segment
+    # vertex key.
+    if not hasattr(p, "taskId"):
+        return nanoid.new()
+    v = getattr(p, "taskId")
+    if v == None:
+        return nanoid.new()
+    if type(v) != type("") or len(v.strip()) == 0:
+        fail("InvalidArgument: taskId: must be a non-empty bare NanoID string")
+    v = v.strip()
+    for bad in [".", "*", ">", " ", "\t", "\n"]:
+        if bad in v:
+            fail("InvalidArgument: taskId: must be a bare NanoID (no dots / key segments, wildcards, or whitespace); got " + v)
+    return v
 
 def parts_of(key, name, want_type):
     parts = split_key(key)
@@ -170,7 +190,14 @@ def execute(state, op):
         if not vertex_alive(state, scoped_to):
             fail("UnknownTarget: " + scoped_to)
 
-        task_id = nanoid.new()
+        # taskId is a caller-supplied write-ahead seam (Contract #10 §10.6): a
+        # caller that must know the task key before the op commits (e.g. Loom
+        # write-aheading its token.<taskKey> pointer) supplies a bare NanoID and
+        # the minted task uses it verbatim. Absent → mint internally. A supplied
+        # id must be a bare NanoID (no dots / key segments) so task_key stays a
+        # well-formed vtx.task.<id>. CreateOnly semantics make a crash-retry with
+        # the same id collapse on the Contract #4 tracker — no duplicate task.
+        task_id = bare_nanoid_or_mint(p)
         task_key = "vtx.task." + task_id
 
         assigned_lnk = "lnk.task." + task_id + ".assignedTo.identity." + assignee_id
@@ -183,7 +210,7 @@ def execute(state, op):
             make_link(forop_lnk, task_key, for_op, "forOperation", "forOperation", {}),
             make_link(scoped_lnk, task_key, scoped_to, "scopedTo", "scopedTo", {}),
         ]
-        events = [{"class": "TaskCreated",
+        events = [{"class": "orchestration.taskCreated",
                    "data": {"taskKey": task_key, "assignee": assignee,
                             "forOperation": for_op, "scopedTo": scoped_to,
                             "expiresAt": expires_at}}]
@@ -240,17 +267,17 @@ def execute(state, op):
             {"op": "tombstone", "key": old_link},
             make_link(new_link, task_key, new_assignee, "assignedTo", "assignedTo", {}),
         ]
-        events = [{"class": "TaskReAssigned",
+        events = [{"class": "orchestration.taskReAssigned",
                    "data": {"taskKey": task_key, "oldAssignee": old_target,
                             "newAssignee": new_assignee}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": task_key}}
 
     if ot == "CompleteTask":
-        return transition_task(state, p, "complete", "TaskCompleted")
+        return transition_task(state, p, "complete", "orchestration.taskCompleted")
 
     if ot == "CancelTask":
-        return transition_task(state, p, "cancelled", "TaskCancelled")
+        return transition_task(state, p, "cancelled", "orchestration.taskCancelled")
 
     fail("task DDL: unknown operationType: " + ot)
 

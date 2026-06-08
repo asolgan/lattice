@@ -192,7 +192,7 @@ func TestCommit_TrackerCarriesMutationKeysAndEventClasses(t *testing.T) {
 				"class": "identity",
 			},
 		}},
-		Events: []EventSpec{{Class: "identityCreated", Data: map[string]interface{}{"x": 1}}},
+		Events: []EventSpec{{Class: "identity.created", Data: map[string]interface{}{"x": 1}}},
 	}
 	tracker := NewTracker(env, time.Now())
 	if _, err := c.Commit(ctx, env, result, tracker); err != nil {
@@ -211,7 +211,7 @@ func TestCommit_TrackerCarriesMutationKeysAndEventClasses(t *testing.T) {
 		t.Fatalf("mutationKeys = %v", parsed.Data["mutationKeys"])
 	}
 	evs, _ := parsed.Data["eventClasses"].([]interface{})
-	if len(evs) != 1 || evs[0] != "identityCreated" {
+	if len(evs) != 1 || evs[0] != "identity.created" {
 		t.Fatalf("eventClasses = %v", parsed.Data["eventClasses"])
 	}
 }

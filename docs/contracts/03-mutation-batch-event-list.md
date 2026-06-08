@@ -62,7 +62,7 @@ Each event declares a business event to publish to `core-events` JetStream.
 
 ```python
 {
-    "class": "identityCreated",
+    "class": "identity.created",
     "data": {
         "identityKey": "vtx.identity.Hj4kPmRtw9nbCxz5vQ2y",
         "createdBy": "vtx.identity.St6mP3qBn4rT8wYxK7Vc"
@@ -72,8 +72,10 @@ Each event declares a business event to publish to `core-events` JetStream.
 
 | Field | Required | Purpose |
 |-------|----------|---------|
-| `class` | yes | Event type. Must match `canonicalName` of a registered event-type DDL (`class: "meta.ddl.eventType"`). Validated at commit step 7. Events with no registered DDL are rejected — unlike vertex/aspect/link writes, events MUST be declared. The `core-events` stream is a typed contract; consumers (Loom, Weaver) depend on schema knowledge. |
+| `class` | yes | Event type. MUST be `<domain>.<eventName>` — a **domain segment is required** (the first dot-segment), `eventName` in lowerCamelCase (e.g. `identity.created`, `orchestration.taskCompleted`, `rbac.roleAssigned`). The domain segment is validated at commit step 7; a dot-free class (no domain) is rejected. Must also match `canonicalName` of a registered event-type DDL (`class: "meta.ddl.eventType"`) where one is registered. Events are a typed contract; consumers (Loom, Weaver) depend on schema knowledge, and the **domain** is the partition key those consumers subscribe on (`events.<domain>.>`). |
 | `data` | yes | Event payload. Validated against the event DDL's schema at commit step 7. May be `{}` for parameterless events. |
+
+**Event domain.** Every event class names a `<domain>` as its first segment. The Processor sets a discrete **`domain`** field on the published Event document (`internal/processor/step7_events.go` `Event.domain`) from the class's first segment — the class is the single source of truth, producers do not pass `domain` separately. The subject the outbox publishes on is `events.<domain>.<eventName>`, so the domain appears in both the subject and the document. Per-domain consumers (Loom) subscribe `events.<domain>.>`; because every class carries a domain, that filter always matches.
 
 **Event payload convention:** Events SHOULD carry vertex key references rather than full document copies. Consumers hydrate context from Lens projections rather than expecting events to carry all required state. This keeps events lean, decouples producers from consumers' evolving context needs, and prevents events from becoming an alternate source of truth.
 
@@ -123,7 +125,7 @@ def execute(state, op):
         ],
         "events": [
             {
-                "class": "identityCreated",
+                "class": "identity.created",
                 "data": {"identityKey": identity_key, "createdBy": op.actor}
             }
         ]
@@ -158,7 +160,7 @@ This is the architectural boundary that makes Starlark execution deterministic a
 
 - At step 6: for each mutation in the batch, resolve DDL by class (per Contract #1 §1.5), validate `document.data` against DDL schema, enforce `permittedCommands` (Story 1.10/FR57), apply sensitivity constraints. Inject provenance fields (`createdAt`, `createdBy`, `createdByOp`, `lastModifiedAt`, `lastModifiedBy`, `lastModifiedByOp`).
 - At step 6 batch-internal consistency: resolve all link endpoints and aspect host vertices; reject the entire operation with `SchemaViolation: DanglingReference` on any unresolved reference.
-- At step 7: for each event, resolve event-type DDL by `event.class`. Events without registered DDL fail with `EventSchemaViolation: UndeclaredEventType`. Validate `event.data` against schema.
+- At step 7: reject any event whose `class` is not `<domain>.<eventName>` (no dot, or an empty domain/eventName segment) — a domain segment is required. Set the Event document's `domain` field to the class's first segment. For each event, resolve event-type DDL by `event.class`; events without registered DDL fail with `EventSchemaViolation: UndeclaredEventType`. Validate `event.data` against schema.
 - At step 8: construct the NATS atomic batch with revision conditions per `mutation.op`:
   - `create` → revision condition = 0 (create-if-absent)
   - `update` → revision condition = `expectedRevision` if provided, else hydrated revision
@@ -187,3 +189,9 @@ revisions[ops[i].Key] = firstSeq + uint64(i)   // for i in 0..N-1
 `BatchAck.Revisions` carries this map. It is populated only when the contiguous-sequence invariant holds for the ack (`BatchSize == len(ops)`); otherwise it is nil and no revisions are fabricated.
 
 **Reply propagation.** The Processor filters these revisions to the operation's business mutation keys (excluding the idempotency tracker key) and surfaces them on the accepted reply as `OperationReply.Revisions` (per Contract #2 §2.4). Clients use this map for read-your-own-writes polling against Core KV. Events carry no revisions — `PublishBatchAck` has no revisions field because events are not KV entries.
+
+## Revision history
+
+| Date | Change |
+|------|--------|
+| 2026-06-07 | **Event-domain model (Andrew-ratified, folded into Story 8.2).** §3.4: an event `class` MUST be `<domain>.<eventName>` — a domain segment (the first dot-segment) is now **required** and validated at commit step 7; a dot-free class is rejected. The published Event document carries a discrete `domain` field set by the Processor from the class's first segment (single source of truth = the class). Subject stays `events.<domain>.<eventName>`; per-domain consumers subscribe `events.<domain>.>`. Examples re-cased from PascalCase (`identityCreated`) to `<domain>.<eventName>` (`identity.created`). No envelope-shape change beyond the additive `domain` field. |

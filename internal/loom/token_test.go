@@ -32,3 +32,28 @@ func TestDeriveRequestID_DeterministicAndValid(t *testing.T) {
 		t.Fatal("distinct instances produced the same token")
 	}
 }
+
+// TestDeriveTaskID_DeterministicValidAndDisjoint proves the userTask taskId is a
+// valid stable NanoID AND is disjoint from the same step's CreateTask requestId
+// — the two derivations are the completion-correlation handle and the submission
+// idempotency handle respectively, and must never collide.
+func TestDeriveTaskID_DeterministicValidAndDisjoint(t *testing.T) {
+	id, err := substrate.NewNanoID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := deriveTaskID(id, 0)
+	if a != deriveTaskID(id, 0) {
+		t.Fatal("deriveTaskID not deterministic")
+	}
+	if !substrate.IsValidNanoID(a) {
+		t.Fatalf("deriveTaskID produced invalid NanoID: %q", a)
+	}
+	if deriveTaskID(id, 0) == deriveTaskID(id, 1) {
+		t.Fatal("cursor 0 and 1 produced the same taskId")
+	}
+	// Disjoint from the same step's CreateTask requestId.
+	if deriveTaskID(id, 0) == deriveRequestID(id, 0) {
+		t.Fatal("taskId collided with the step's requestId (handles must be disjoint)")
+	}
+}

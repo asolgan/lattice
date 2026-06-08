@@ -18,8 +18,10 @@ func TestEventSubject_Sanitization(t *testing.T) {
 	cases := map[string]string{
 		"identity.created": "events.identity.created",
 		"":                 "events._unknown",
-		"bad name>":        "events.bad_name_",
-		"with*star":        "events.with_star",
+		"TaskCompleted":    "events._nodomain",
+		"with*star":        "events._nodomain",
+		"domain.bad name>": "events.domain.bad_name_",
+		"domain.with*star": "events.domain.with_star",
 	}
 	for in, want := range cases {
 		if got := EventSubject(in); got != want {

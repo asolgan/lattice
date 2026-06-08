@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -96,6 +97,15 @@ type fakeProcessor struct {
 	rejectOps map[string]struct{}
 	submitted int64 // count of accepted (non-duplicate) systemOp commits, for exactly-once
 	gate      <-chan struct{}
+
+	// taskOps is the set of bound-op operationTypes that, on commit, simulate the
+	// commit-path auto-complete: they emit TaskCompleted(taskKey) read from the
+	// op's authContext.task (the task-auth path). Empty for systemOp-only tests.
+	taskOps map[string]struct{}
+
+	mu           sync.Mutex
+	createdTasks map[string]struct{} // taskKey → minted (CreateTask)
+	createTasks  int                 // count of accepted (non-duplicate) CreateTask commits
 }
 
 const replyInboxHeader = "Lattice-Reply-Inbox"
@@ -129,6 +139,9 @@ func (f *fakeProcessor) handle(ctx context.Context, msg jetstream.Msg) {
 		RequestID     string          `json:"requestId"`
 		OperationType string          `json:"operationType"`
 		Payload       json.RawMessage `json:"payload"`
+		AuthContext   struct {
+			Task string `json:"task"`
+		} `json:"authContext"`
 	}
 	if err := json.Unmarshal(msg.Data(), &env); err != nil {
 		return
@@ -205,6 +218,44 @@ func (f *fakeProcessor) handle(ctx context.Context, msg jetstream.Msg) {
 		return
 	}
 
+	// CreateTask: mint vtx.task.<suppliedTaskId> + tracker (dedup), reply
+	// accepted, emit NO completion event (the task is created, not completed).
+	if env.OperationType == "CreateTask" {
+		var p struct {
+			TaskID string `json:"taskId"`
+		}
+		_ = json.Unmarshal(env.Payload, &p)
+		if !f.trackOnce(ctx, env.RequestID) {
+			reply("duplicate", "")
+			return
+		}
+		reply("accepted", "")
+		taskKey := "vtx.task." + p.TaskID
+		f.mu.Lock()
+		if f.createdTasks == nil {
+			f.createdTasks = map[string]struct{}{}
+		}
+		f.createdTasks[taskKey] = struct{}{}
+		f.createTasks++
+		f.mu.Unlock()
+		return
+	}
+
+	// A bound op (task-authorized): on commit, simulate the commit-path
+	// auto-complete — emit orchestration.taskCompleted(taskKey) read from
+	// authContext.task.
+	if _, ok := f.taskOps[env.OperationType]; ok {
+		if !f.trackOnce(ctx, env.RequestID) {
+			reply("duplicate", "")
+			return
+		}
+		reply("accepted", "")
+		if env.AuthContext.Task != "" {
+			publishEvent("orchestration.taskCompleted", map[string]any{"taskKey": env.AuthContext.Task})
+		}
+		return
+	}
+
 	// systemOp.
 	if !f.trackOnce(ctx, env.RequestID) {
 		reply("duplicate", "")
@@ -233,6 +284,21 @@ func (f *fakeProcessor) handle(ctx context.Context, msg jetstream.Msg) {
 func (f *fakeProcessor) trackOnce(ctx context.Context, requestID string) bool {
 	_, err := f.conn.KVCreate(ctx, coreKVBucket, "vtx.op."+requestID, []byte(`{"class":"op","data":{}}`))
 	return err == nil
+}
+
+// taskCreated reports whether CreateTask minted taskKey.
+func (f *fakeProcessor) taskCreated(taskKey string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	_, ok := f.createdTasks[taskKey]
+	return ok
+}
+
+// createTaskCount is the number of accepted (non-duplicate) CreateTask commits.
+func (f *fakeProcessor) createTaskCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.createTasks
 }
 
 func mustNanoIDStr() string {

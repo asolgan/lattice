@@ -56,6 +56,7 @@ type patternSource struct {
 	known           map[string]*Pattern // patternId → last-loaded pattern
 	patternVertices map[string]struct{} // ids of vtx.meta.<id> with class meta.loomPattern
 	pendingSpecs    map[string][]byte   // spec bodies seen before their parent vertex's class
+	opMetaByType    map[string]string   // operationType → vtx.meta.<opId> (userTask forOperation resolution)
 }
 
 func newPatternSource(conn *substrate.Conn, bucket, instance string, logger *slog.Logger) *patternSource {
@@ -70,6 +71,7 @@ func newPatternSource(conn *substrate.Conn, bucket, instance string, logger *slo
 		known:           make(map[string]*Pattern),
 		patternVertices: make(map[string]struct{}),
 		pendingSpecs:    make(map[string][]byte),
+		opMetaByType:    make(map[string]string),
 	}
 }
 
@@ -128,6 +130,7 @@ func (s *patternSource) handle(evt substrate.KVEvent) {
 		}
 		if evt.IsDeleted {
 			s.removePattern(id)
+			s.removeOpMeta(id)
 			return
 		}
 		var probe classProbe
@@ -136,6 +139,7 @@ func (s *patternSource) handle(evt substrate.KVEvent) {
 			return
 		}
 		if probe.Class != loomPatternClass {
+			s.indexOpMeta(evt.Key, evt.Value)
 			return
 		}
 		s.mu.Lock()
@@ -191,6 +195,10 @@ func (s *patternSource) dispatchSpec(id string, body []byte) {
 		s.logger.Error("loom: pattern rejected", "patternId", id, "err", err)
 		return
 	}
+	if p.userTaskCompletionUnobservable() {
+		s.logger.Warn("loom: userTask pattern completionDomains omits the orchestration domain — userTask completions will never be observed",
+			"patternId", id, "completionDomains", p.Domains())
+	}
 
 	s.mu.Lock()
 	old, exists := s.known[id]
@@ -223,6 +231,54 @@ func (s *patternSource) removePattern(id string) {
 			s.updateCB(nil, nil)
 		}
 	}
+}
+
+// opMetaProbe reads the operationType scalar off an op meta-vertex envelope.
+type opMetaProbe struct {
+	Data struct {
+		OperationType string `json:"operationType"`
+	} `json:"data"`
+}
+
+// indexOpMeta records the operationType → vtx.meta.<opId> mapping for a
+// non-pattern meta-vertex that carries data.operationType. A userTask step
+// names its bound op by operationType (Contract #10 §10.5); the engine resolves
+// that to the op's meta-vertex key (the CreateTask forOperation endpoint) from
+// this index, built off the same vtx.meta.> CDC the pattern source already
+// consumes — no Core-KV scan, no separate index key shape.
+func (s *patternSource) indexOpMeta(vertexKey string, body []byte) {
+	var probe opMetaProbe
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return
+	}
+	if probe.Data.OperationType == "" {
+		return
+	}
+	s.mu.Lock()
+	s.opMetaByType[probe.Data.OperationType] = vertexKey
+	s.mu.Unlock()
+}
+
+// removeOpMeta drops any operationType entry pointing at the deleted op
+// meta-vertex id (vtx.meta.<id>).
+func (s *patternSource) removeOpMeta(id string) {
+	key := "vtx.meta." + id
+	s.mu.Lock()
+	for ot, k := range s.opMetaByType {
+		if k == key {
+			delete(s.opMetaByType, ot)
+		}
+	}
+	s.mu.Unlock()
+}
+
+// opMetaKey returns the vtx.meta.<opId> for an operationType, or ("", false)
+// when no op meta-vertex with that operationType has been observed.
+func (s *patternSource) opMetaKey(operationType string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k, ok := s.opMetaByType[operationType]
+	return k, ok
 }
 
 // get returns the last-loaded pattern for patternId.

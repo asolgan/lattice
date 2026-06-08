@@ -48,12 +48,19 @@ func aliveEndpoints() map[string]processor.VertexDoc {
 
 func runCreateTask(t *testing.T, scopedTo, expiresAt string, endpoints map[string]processor.VertexDoc) (processor.ScriptResult, error) {
 	t.Helper()
-	payload, _ := json.Marshal(map[string]any{
+	return runCreateTaskWith(t, map[string]any{
 		"assignee":     tsAssignee,
 		"forOperation": tsForOp,
 		"scopedTo":     scopedTo,
 		"expiresAt":    expiresAt,
-	})
+	}, endpoints)
+}
+
+// runCreateTaskWith runs CreateTask with a caller-built payload so a test can
+// add (or omit) the optional taskId field.
+func runCreateTaskWith(t *testing.T, payloadFields map[string]any, endpoints map[string]processor.VertexDoc) (processor.ScriptResult, error) {
+	t.Helper()
+	payload, _ := json.Marshal(payloadFields)
 	sc := processor.ScriptContext{
 		Operation: &processor.OperationEnvelope{
 			RequestID:     tsReqID,
@@ -136,5 +143,85 @@ func TestCreateTask_EmptyTypeSegment_Rejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "empty type segment") {
 		t.Fatalf("empty type segment error = %q, want 'empty type segment'", err.Error())
+	}
+}
+
+// taskKey pulls the created task vertex key from the mutation set.
+func taskKeyOf(t *testing.T, res processor.ScriptResult) string {
+	t.Helper()
+	for _, m := range res.Mutations {
+		if strings.HasPrefix(m.Key, "vtx.task.") {
+			return m.Key
+		}
+	}
+	t.Fatal("no task vertex mutation produced")
+	return ""
+}
+
+// TestCreateTask_SuppliedTaskId_UsedVerbatim: a caller-supplied bare-NanoID
+// taskId mints vtx.task.<thatId> verbatim (the write-ahead seam, AC#3).
+func TestCreateTask_SuppliedTaskId_UsedVerbatim(t *testing.T) {
+	const suppliedID = "BBsuppliedHJKMNPQRST"
+	res, err := runCreateTaskWith(t, map[string]any{
+		"assignee":     tsAssignee,
+		"forOperation": tsForOp,
+		"scopedTo":     tsScopedTo,
+		"expiresAt":    "2026-06-04T14:00:00Z",
+		"taskId":       suppliedID,
+	}, aliveEndpoints())
+	if err != nil {
+		t.Fatalf("CreateTask with supplied taskId: unexpected error: %v", err)
+	}
+	if got, want := taskKeyOf(t, res), "vtx.task."+suppliedID; got != want {
+		t.Fatalf("task key = %q, want %q (supplied taskId used verbatim)", got, want)
+	}
+}
+
+// TestCreateTask_NoTaskId_Mints: an absent taskId mints a fresh task key (every
+// existing admin/manual caller is unaffected — backward compatible).
+func TestCreateTask_NoTaskId_Mints(t *testing.T) {
+	res, err := runCreateTask(t, tsScopedTo, "2026-06-04T14:00:00Z", aliveEndpoints())
+	if err != nil {
+		t.Fatalf("CreateTask without taskId: unexpected error: %v", err)
+	}
+	if got := taskKeyOf(t, res); got == "vtx.task." || !strings.HasPrefix(got, "vtx.task.") {
+		t.Fatalf("task key = %q, want a minted vtx.task.<id>", got)
+	}
+}
+
+// TestCreateTask_DottedTaskId_Rejected: a taskId carrying a dot (not a bare
+// NanoID) is rejected before any mutation — it would corrupt the vtx.task.<id>
+// key shape (Contract #1).
+func TestCreateTask_DottedTaskId_Rejected(t *testing.T) {
+	_, err := runCreateTaskWith(t, map[string]any{
+		"assignee":     tsAssignee,
+		"forOperation": tsForOp,
+		"scopedTo":     tsScopedTo,
+		"expiresAt":    "2026-06-04T14:00:00Z",
+		"taskId":       "vtx.task.injected",
+	}, aliveEndpoints())
+	if err == nil {
+		t.Fatal("dotted taskId: expected rejection, got nil error")
+	}
+	if !strings.Contains(err.Error(), "bare NanoID") {
+		t.Fatalf("dotted taskId error = %q, want 'bare NanoID'", err.Error())
+	}
+}
+
+// TestCreateTask_EmptyTaskId_Rejected: a present-but-empty taskId is rejected
+// (an explicit empty string is a caller error, distinct from omission).
+func TestCreateTask_EmptyTaskId_Rejected(t *testing.T) {
+	_, err := runCreateTaskWith(t, map[string]any{
+		"assignee":     tsAssignee,
+		"forOperation": tsForOp,
+		"scopedTo":     tsScopedTo,
+		"expiresAt":    "2026-06-04T14:00:00Z",
+		"taskId":       "   ",
+	}, aliveEndpoints())
+	if err == nil {
+		t.Fatal("empty taskId: expected rejection, got nil error")
+	}
+	if !strings.Contains(err.Error(), "taskId") {
+		t.Fatalf("empty taskId error = %q, want a taskId rejection", err.Error())
 	}
 }

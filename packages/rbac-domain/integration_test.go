@@ -133,7 +133,7 @@ func TestRoleMgmt_CreateRole(t *testing.T) {
 	ecs, _ := tr.Data["eventClasses"].([]interface{})
 	found := false
 	for _, ec := range ecs {
-		if ec == "RoleCreated" {
+		if ec == "rbac.roleCreated" {
 			found = true
 		}
 	}

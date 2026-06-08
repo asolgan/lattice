@@ -40,8 +40,8 @@ import (
 	"testing"
 	"time"
 
-	natsgo "github.com/nats-io/nats.go"
 	"github.com/jackc/pgx/v5"
+	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/asolgan/lattice/internal/aiagent"
 	"github.com/asolgan/lattice/internal/bootstrap"
@@ -72,7 +72,7 @@ const bookDDLScript = `def execute(state, op):
                       "title": title,
                       "data": {"title": title}}},
     ]
-    events = [{"class": "BookCreated", "data": {"bookKey": book_key}}]
+    events = [{"class": "loftspace.bookCreated", "data": {"bookKey": book_key}}]
     return {"mutations": mutations, "events": events, "response": {"primaryKey": book_key}}`
 
 // harnessConn is the shared NATS connection for the test suite.
@@ -241,14 +241,14 @@ func TestHelloLattice_Milestone2_DefineDDL(t *testing.T) {
 
 	// Build the book DDL payload with all required self-description fields.
 	payload := map[string]any{
-		"targetClass":      "meta.ddl.vertexType",
-		"canonicalName":    "book",
+		"targetClass":       "meta.ddl.vertexType",
+		"canonicalName":     "book",
 		"permittedCommands": []string{"CreateBook"},
-		"description":      "Book vertex DDL. A book carries a title.",
-		"script":           bookDDLScript,
-		"inputSchema":      `{"type":"object","required":["title"],"properties":{"title":{"type":"string","maxLength":500}}}`,
-		"outputSchema":     `{"type":"object","properties":{"primaryKey":{"type":"string"}}}`,
-		"fieldDescription": map[string]string{"title": "Book title, max 500 characters. Required."},
+		"description":       "Book vertex DDL. A book carries a title.",
+		"script":            bookDDLScript,
+		"inputSchema":       `{"type":"object","required":["title"],"properties":{"title":{"type":"string","maxLength":500}}}`,
+		"outputSchema":      `{"type":"object","properties":{"primaryKey":{"type":"string"}}}`,
+		"fieldDescription":  map[string]string{"title": "Book title, max 500 characters. Required."},
 		"examples": []map[string]any{
 			{
 				"name":            "CreateBook — minimal",
@@ -290,7 +290,9 @@ func TestHelloLattice_Milestone2_DefineDDL(t *testing.T) {
 		t.Fatalf("read .canonicalName aspect: %v", err)
 	}
 	var aspDoc struct {
-		Data struct{ Value string `json:"value"` } `json:"data"`
+		Data struct {
+			Value string `json:"value"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal(aspEntry.Value, &aspDoc); err != nil {
 		t.Fatalf("parse .canonicalName aspect: %v", err)
@@ -675,7 +677,9 @@ func TestHelloLattice_Milestone5_AITraversal(t *testing.T) {
 		t.Fatalf("read .permittedCommands: %v", err)
 	}
 	var pcDoc struct {
-		Data struct{ Commands []string `json:"commands"` } `json:"data"`
+		Data struct {
+			Commands []string `json:"commands"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal(pcEntry.Value, &pcDoc); err != nil {
 		t.Fatalf("parse .permittedCommands: %v", err)
