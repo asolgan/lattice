@@ -105,6 +105,83 @@ genuinely complex distributed system.
 
 ---
 
+### Why NATS
+
+[NATS](https://nats.io) is a lightweight, open-source messaging system — a single small
+Go-embeddable binary that, via its JetStream extension, doubles as a durable event log, a
+key-value store, and a pub/sub fabric. Lattice needed exactly that combination: one substrate
+that could be a ledger, a fast KV layer, and a message bus, without stitching together Kafka +
+Redis + a broker and reconciling their consistency models by hand. JetStream gives us all three
+in one dependency: ordered streams for `core-operations`/`core-events`, atomic-batch KV for Core
+KV (vertices, aspects, links), and lightweight pub/sub for everything in between, all addressable
+through the same key-shape and subject conventions ([Substrate](docs/components/substrate.md) is
+the thin primitive layer over it).
+
+That unification matters beyond convenience. The Processor's commit pipeline depends on **atomic
+batch publish** — a write either lands as a whole (vertices + aspects + links + outbox event) or
+not at all — and NATS's raw-protocol atomic batch is what makes that guarantee cheap. The
+Refractor's lens projections depend on **durable CDC consumers** reading the same KV change stream
+that fed Core KV, so reads can always be rebuilt from the ledger rather than drifting from it.
+And because NATS is a single small embeddable binary, it's also what makes **Edge Lattice**
+possible later: a sovereign client node can run the same substrate locally, offline, and reconcile
+by revision when it reconnects — there's no separate "edge stack" to design.
+
+In short: NATS isn't a queue we bolted on, it *is* the addressable, ledgered, atomically-batched
+foundation the rest of the architecture is built to assume.
+
+### Why the VAL model
+
+Most platforms end up with state spread across a relational schema, a document store, an
+authorization engine, and a search index — each with its own shape, its own migration story, and
+its own blind spots when an agent (human or AI) tries to reason across them. Lattice instead
+models *everything* — business entities, their data, their relationships, their types, their
+operations, even authorization itself — as one graph: **vertices** (the entities), **aspects**
+(their data, addressable independently so they can be versioned, encrypted, or migrated one at a
+time), and **links** (typed, directional relationships that double as the authorization graph via
+ReBAC).
+
+That collapse buys three things we couldn't get from a conventional schema:
+
+- **One traversal model for everything.** "Can this identity do this operation on this vertex?"
+  is the same kind of graph walk as "what leases does this resident have?" — there's no separate
+  policy engine with its own mental model to keep in sync with the data.
+- **The graph can describe itself to agents.** Because types, operations, and schemas are
+  themselves vertices with aspects and links, an AI agent can discover what it's allowed to do by
+  *walking from its identity*, instead of depending on a hand-written SDK or out-of-band API docs.
+- **Uniform mechanics for change.** Every mutation — whether it's "create a lease" or "install a
+  capability package" or "propose a new Starlark rule" — goes through the same deterministic
+  write path, the same schema validation, the same authorization check, and produces the same
+  kind of CDC event for projections to pick up.
+
+A fourth strength shows up once the platform is already running: **extensibility without
+fragmentation**. A new business vertical doesn't have to choose between bolting onto the existing
+graph (and risking entanglement with data it doesn't own) or standing up its own silo (and losing
+the ability to relate to anything that already exists). Because a vertex's data lives in
+independently-addressable aspects, a new capability package can attach its *own* aspects to an
+*existing* vertex — a `vtx.identity.<id>` gains a `vtx.identity.<id>.loyaltyTier` aspect owned by
+a new loyalty package — and link into the graph from there, immediately benefiting from
+everything already known about that entity (its roles, its history, its other relationships)
+without copying any of it. What's actually *protected* is the **write path** — every mutation,
+including the one that creates that new aspect or link, must pass through the same Processor
+pipeline, the same schema validation, and the same permission checks as everything else. So a new
+vertical can extend the graph freely, but it can only ever change it through the door everyone
+else uses, with the same authorization gate guarding it. The graph grows outward by accretion,
+not by replication — and the blast radius of a bad actor or a bad migration stays exactly as
+small as the permissions on that one write path.
+
+The cost is real — a graph-of-everything is a less familiar shape than tables-plus-services. That's
+precisely the gap the [Refractor](docs/components/refractor.md) is there to close: it continuously
+projects the graph into **lenses** — openCypher-derived materialized views that can land in
+ordinary Postgres tables (or NATS KV) — so the people and tools that want a familiar relational
+shape get one, kept live off the same CDC stream that feeds every other reader, while the graph
+underneath stays the single addressable source of truth. You don't have to give up the graph to
+get the table; you get both, and the table is just a read-side projection that can be rebuilt from
+the ledger at will. That's the bet the whole platform rests on: that a system AI agents can safely
+co-author, and that new business ideas can safely extend, needs one addressable model underneath —
+not twelve — even if the views on top of it look as familiar as ever.
+
+---
+
 ## How it works
 
 Lattice is a small set of cooperating components, each with a living reference page:
