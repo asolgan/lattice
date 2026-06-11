@@ -172,10 +172,92 @@ over the `loom.*` event stream remains an option for a durable read model if one
 | Engine restart / replica change | Durable per-domain consumers resume from last ack; completion resolves via the durable `token.<token>` pointer (no in-memory index to rebuild) |
 | Long-waiting instance > 24h | Extended-dedupe at engine (idempotency horizon, arch §85) |
 | Crash mid-step | Write-ahead atomic batch (pointer + cursor + outbox record before any side effect); the relay re-publishes the `outbox.<token>` op on resume, collapsing on the Contract #4 tracker → re-drive safely; pointer presence is the idempotency guard |
-| Relay publish fails | The outbox record persists; the relay Naks → JetStream redelivers → re-publish (idempotent). Submission cannot be lost between batch and broker |
+| Relay publish (or outbox-delete) fails | The outbox record persists; the relay returns **`NakWithDelay`** → JetStream redelivers no sooner than the 5s floor (`substrate.DefaultRedeliveryDelay`) → re-publish (idempotent). Bounded cadence, unbounded count: at-least-once preserved, no `MaxDeliver`, and the relay never hot-loops against a failing ops stream **or** a failing `loom-state` KV. Submission cannot be lost between batch and broker |
 | Rejected / failed / unseen step | Off-stream terminal (a rejected op writes no tracker/event) — learned via the `deadline.<instanceId>` TTL expiry + a read-before-act probe (`GET vtx.op.<token>`: committed → advance+alert; not yet relayed → re-arm; else → `status=failed`). Never the submit reply; never wedges |
 
 ---
+
+## Supervised consumers (`substrate.ConsumerSupervisor`)
+
+All four of Loom's durables run on one per-engine `substrate.ConsumerSupervisor`: the fixed trigger
+(`loom-trigger`), the dynamic per-domain completion consumers (`loom-<domain>`), the command-outbox
+relay (`loom-outbox-relay`), and the deadline watcher (`loom-deadline`). The supervisor owns the pump
+goroutines, a composable pause state machine (infra / structural / manual), the `NakWithDelay` backoff
+floor, and `HealthSink` persist/restore. Loom continues to import only `substrate/*` — no
+`jetstream`/`nats.go` import appears anywhere in `internal/loom` (non-test code).
+
+### Desired-vs-running reconcile (per-domain set)
+
+`reconcileConsumers` runs on every pattern load/update/remove callback and resolves to a real diff of
+the desired domain set (`bindingRegistry` aggregated across the pattern snapshot) against the
+last-applied set:
+
+- **Add** — a domain newly referenced by any pattern spins up `loom-<domain>` live (unchanged additive
+  behavior).
+- **Remove (F6)** — when the **last** pattern referencing a domain is removed/updated-away, the
+  supervisor stops the pump **and deletes the JetStream durable**. "No leaked consumer" is the
+  guarantee: an un-pumped server-side durable IS the leak. Correctness on a future re-add rests on
+  `loom-state` + Contract #4 idempotency + `token.` pointer presence (a `DeliverAll` replay on re-add is
+  safe; its cost is accepted) — not a preserved ack floor.
+- **Reset** — a domain whose desired spec config diverges from the running durable is recreated
+  (delete-and-recreate), never silently left unchanged. The per-domain filter (`events.<domain>.>`) is
+  name-derived and stable, so this branch is reachable in practice only if a future spec field changes;
+  the diff is written generically so such a change is caught.
+
+The three fixed durables (trigger, relay, deadline) are `Add`ed once at `Start` and are **not**
+force-removed on shutdown — `Stop()` preserves their ack-floor position (substrate doctrine: a durable's
+persisted position is the point of its durability). Only a live per-domain teardown diff calls `Remove`.
+
+**Known limitation (not fixed here):** removing a pattern while an in-flight instance of it exists orphans
+that instance's completion. The cause is the **pattern definition** disappearing from the engine's loaded
+set — `handleCompletion`'s `advance` looks up the instance's `PatternRef` to find its next step, and that
+lookup fails once the definition is gone, regardless of whether `loom-<domain>` is torn down. This applies
+even when the domain consumer **survives** because another pattern still references the same domain
+(`bindingRegistry` keeps it live, so no Remove fires) — the consumer keeps delivering events on that
+domain, but the removed instance's completion still cannot resolve because its pattern definition is gone.
+Delete-vs-preserve of the consumer changes nothing about this orphan; it is documented rather than
+mitigated.
+
+### Health surface (Contract #5)
+
+- **Heartbeat** — Loom writes a Contract #5 §5.2 document to `health.loom.<instance>` (bucket
+  `health-kv`) every 10s. `metrics` carries `runningInstances` (a heartbeat-cadence scan of
+  `instance.<id>` entries with `status=running`, never per-message) and `consumers` (a map of consumer
+  name → state: `running` | `pausedInfra` | `pausedStructural` | `pausedManual`). The consumer states
+  come from a Loom-side cache fed by the per-consumer `HealthSink` writes — the supervisor persists
+  through the sink but exposes no read-back, so Loom caches each transition. `issues` is empty unless a
+  consumer sits in `pausedStructural` (one `warning` / `ConsumerPaused` entry).
+- **Per-consumer pause-state** — each managed consumer also implements `substrate.HealthSink`, persisting
+  a small `{status, pauseReason, lastError}` document to `health.loom.<instance>.consumer.<name>` (a
+  SEPARATE key from the heartbeat). Pause-state persists and restores across an engine restart via the
+  supervisor's `Add`-time restore semantics (manual > structural > infra precedence): a consumer paused
+  before a restart comes back paused without an explicit `Resume`. Loom exposes no operator
+  `Pause`/`Resume` control surface in this story — that is a future control-plane story; the supervisor
+  API is callable but not externally surfaced. When a per-domain consumer is torn down (Remove, above),
+  both its `consumerStateCache` entry and its `health.loom.<instance>.consumer.loom-<domain>` pause entry
+  are deleted, so a future re-add of the same domain starts clean (active, not resurrected into a stale
+  pause) and the heartbeat does not keep reporting a phantom consumer.
+
+### `Instance` uniqueness (Contract #5 precondition)
+
+`Config.Instance` is the key segment for this process's heartbeat (`health.loom.<instance>`) and every
+per-consumer pause entry (`health.loom.<instance>.consumer.<name>`) in the shared `health-kv` bucket. **It
+MUST be unique per Loom process sharing that bucket.** When empty it defaults to
+`<hostname>-<pid>-<NanoID>` (sanitized for KV key segments) — the hostname+pid prefix makes an
+auto-generated heartbeat attributable to the process that wrote it, and the NanoID suffix keeps each
+`Engine` construction unique (the pattern-source durable name is also derived from `Instance` and depends
+on per-boot uniqueness, even across multiple `Engine`s in one process). The default is therefore unique per
+construction, not just per host/pid — operators running multiple Loom replicas who want a *stable*,
+human-recognizable `Instance` across restarts (for dashboards/alerting) should set it explicitly to
+something cluster-unique.
+
+If two processes ever do run with the same `Instance` against the same `health-kv` bucket:
+
+- their `health.loom.<instance>` heartbeats last-write-wins each other — an operator sees one flapping
+  liveness/uptime document for two processes, not two;
+- their per-consumer pause entries (`health.loom.<instance>.consumer.<name>`) are the same key — one
+  process's manual pause can be silently restored onto the other process's consumer of the same name at
+  its next restart (cross-process pause restore).
 
 ## Principles that apply
 

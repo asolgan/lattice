@@ -58,30 +58,23 @@ func newRelay(conn *substrate.Conn, bucket string, logger *slog.Logger) *relay {
 	}
 }
 
-// run drives the relay's durable consumer until ctx is cancelled.
-func (r *relay) run(ctx context.Context) {
-	err := r.conn.RunDurableConsumer(ctx, substrate.DurableConsumerConfig{
-		Stream:        "KV_" + r.bucket,
-		FilterSubject: r.subjPrefix + outboxPrefix + ">",
-		Durable:       relayDurable,
-		Logger:        r.logger,
-	}, r.handle)
-	if err != nil && ctx.Err() == nil {
-		r.logger.Error("loom outbox relay exited", "err", err)
-	}
-}
-
 // handle publishes one outbox record to ops.<lane> and deletes it on success.
 // An empty body is a delete marker (the relay's own delete-on-publish, or a
-// tombstone) — nothing to relay. An unparseable record is poison (Term).
-func (r *relay) handle(ctx context.Context, msg substrate.Message) substrate.Decision {
+// tombstone) — nothing to relay. An unparseable record is poison (Term). Both
+// failure-return paths (publish and the subsequent KVDelete) return
+// NakWithDelay: one consistent backoff posture so the relay never hot-loops
+// against a failing dependency (with the ops stream healthy but loom-state KV
+// failing, an immediate Nak would re-publish — idempotent but not free — and
+// re-fail the delete at full speed for the outage's duration). Bounded cadence,
+// unbounded count (at-least-once preserved; the supervisor sets no MaxDeliver).
+func (r *relay) handle(ctx context.Context, msg substrate.Message) (substrate.Decision, error) {
 	if len(msg.Body) == 0 {
-		return substrate.Ack
+		return substrate.Ack, nil
 	}
 	var rec outboxRecord
 	if err := json.Unmarshal(msg.Body, &rec); err != nil {
 		r.logger.Error("loom relay: outbox record unparseable; term", "err", err)
-		return substrate.Term
+		return substrate.Term, nil
 	}
 	env := opEnvelope{
 		RequestID:     rec.RequestID,
@@ -97,19 +90,19 @@ func (r *relay) handle(ctx context.Context, msg substrate.Message) substrate.Dec
 	data, err := json.Marshal(env)
 	if err != nil {
 		r.logger.Error("loom relay: marshal envelope; term", "requestId", rec.RequestID, "err", err)
-		return substrate.Term
+		return substrate.Term, nil
 	}
 	if err := r.conn.Publish(ctx, "ops."+rec.Lane, data, nil); err != nil {
-		r.logger.Error("loom relay: publish failed; nak", "requestId", rec.RequestID, "err", err)
-		return substrate.Nak
+		r.logger.Error("loom relay: publish failed; nak with delay", "requestId", rec.RequestID, "err", err)
+		return substrate.NakWithDelay, nil
 	}
 	key := strings.TrimPrefix(msg.Subject, r.subjPrefix)
 	if err := r.conn.KVDelete(ctx, r.bucket, key); err != nil && !errors.Is(err, substrate.ErrKeyNotFound) {
-		r.logger.Error("loom relay: delete outbox record failed; nak", "key", key, "err", err)
-		return substrate.Nak
+		r.logger.Error("loom relay: delete outbox record failed; nak with delay", "key", key, "err", err)
+		return substrate.NakWithDelay, nil
 	}
 	r.logger.Info("loom op relayed", "requestId", rec.RequestID, "operation", rec.Operation, "lane", rec.Lane)
-	return substrate.Ack
+	return substrate.Ack, nil
 }
 
 // buildOutbox constructs the outbox record the engine writes into a transition

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -48,6 +50,10 @@ type Config struct {
 	// EventsStream is the core-events stream the trigger + per-domain completion
 	// consumers attach to. Default "core-events".
 	EventsStream string
+	// HealthKVBucket holds the Contract #5 heartbeat (health.loom.<instance>)
+	// and the per-consumer pause-state entries. Default "health-kv" — matches
+	// internal/bootstrap.HealthKVBucket; cmd/loom may override from there.
+	HealthKVBucket string
 	// ActorKey is the identity:loom service-actor vertex key the Actuator
 	// submits under (vtx.identity.<id>, the primordial loom service actor).
 	ActorKey string
@@ -68,11 +74,44 @@ type Config struct {
 	// (§10.6). Must be >= 1s (NATS per-key TTL floor). Default 60s.
 	CreateTaskTimeout time.Duration
 	// Instance distinguishes this engine process; it suffixes the per-boot
-	// pattern-source durable so each boot replays the installed pattern set.
-	// Auto-generated when empty.
+	// pattern-source durable so each boot replays the installed pattern set,
+	// and it is the key segment for this process's Contract #5 heartbeat
+	// (health.loom.<instance>) and per-consumer pause-state entries
+	// (health.loom.<instance>.consumer.<name>). MUST be unique per Loom
+	// process sharing a health-kv bucket — see docs/components/loom.md for the
+	// shared-bucket collision consequences. Defaults to
+	// "<hostname>-<pid>-<NanoID>" (sanitized) when empty.
 	Instance string
 	// Logger is the diagnostics sink. Defaults to slog.Default().
 	Logger *slog.Logger
+}
+
+// instanceSegmentReplacer sanitizes a hostname for use as a KV key segment
+// (Contract #5 health.loom.<instance> / health.loom.<instance>.consumer.<name>):
+// '.' would be read as a key-segment separator and is replaced with '-'.
+var instanceSegmentReplacer = strings.NewReplacer(".", "-")
+
+// defaultInstance returns a host/pid-attributable, per-construction-unique
+// instance id ("<hostname>-<pid>-<NanoID>", sanitized for KV key segments) used
+// when Config.Instance is empty. The hostname+pid prefix makes an
+// auto-generated health.loom.<instance> document attributable to the process
+// that wrote it (Contract #5); the NanoID suffix preserves the existing
+// per-boot uniqueness the pattern-source durable relies on (multiple Engine
+// constructions in one process — e.g. a restart in the same test/host process —
+// must not collide on the same patternSourceDurable name, see source.go). See
+// docs/components/loom.md for why an explicit, cluster-unique Instance is
+// preferred for production multi-replica deployments.
+func defaultInstance() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "loom"
+	}
+	host = instanceSegmentReplacer.Replace(host)
+	suffix, err := substrate.NewNanoID()
+	if err != nil {
+		suffix = strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	return host + "-" + strconv.Itoa(os.Getpid()) + "-" + suffix
 }
 
 func (c *Config) withDefaults() {
@@ -84,6 +123,12 @@ func (c *Config) withDefaults() {
 	}
 	if c.EventsStream == "" {
 		c.EventsStream = "core-events"
+	}
+	if c.HealthKVBucket == "" {
+		// Literal default mirrors internal/bootstrap.HealthKVBucket; kept literal
+		// (like CoreKVBucket/LoomStateBucket/EventsStream) so internal/loom does
+		// not import internal/bootstrap.
+		c.HealthKVBucket = "health-kv"
 	}
 	if c.Lane == "" {
 		c.Lane = "system"
@@ -104,11 +149,7 @@ func (c *Config) withDefaults() {
 		c.CreateTaskTimeout = time.Second
 	}
 	if c.Instance == "" {
-		if id, err := substrate.NewNanoID(); err == nil {
-			c.Instance = id
-		} else {
-			c.Instance = "loom"
-		}
+		c.Instance = defaultInstance()
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
@@ -121,32 +162,58 @@ func (c *Config) withDefaults() {
 // correlation index — completions correlate by a durable token.<token> GET on
 // loom-state (Contract #10 §10.6), so any replica resolves any token.
 type Engine struct {
-	cfg    Config
-	conn   *substrate.Conn
-	logger *slog.Logger
-	source *patternSource
-	state  *stateStore
-	relay  *relay
+	cfg        Config
+	conn       *substrate.Conn
+	logger     *slog.Logger
+	source     *patternSource
+	state      *stateStore
+	relay      *relay
+	supervisor *substrate.ConsumerSupervisor
+	states     *consumerStateCache
 
 	mu sync.Mutex
-	// domainConsumers tracks which domains already have a running per-domain
-	// completion consumer (durable loom-<domain>), so reconcile is additive and
-	// idempotent.
-	domainConsumers map[string]context.CancelFunc
+	// domains is the last-applied desired per-domain consumer set, diffed on
+	// each reconcile against the live binding registry. The value is the
+	// comparable config fingerprint of the applied spec, so a future spec-shape
+	// change is detected and drives a Reset; the supervisor owns the pump
+	// lifecycle, so the engine tracks only what the diff needs.
+	domains map[string]specFingerprint
 
 	ctx context.Context
+}
+
+// specFingerprint is the subset of a ConsumerSpec's config that, if it changes,
+// requires the durable to be recreated (Reset). Hooks (Handler/Classify/Probe/
+// Health) are intentionally excluded — they are refreshed via UpdateSpec without
+// recreating the durable.
+type specFingerprint struct {
+	stream        string
+	filterSubject string
+	deliverPolicy substrate.DeliverPolicy
+	deliverGroup  string
+}
+
+func fingerprintOf(spec substrate.ConsumerSpec) specFingerprint {
+	return specFingerprint{
+		stream:        spec.Stream,
+		filterSubject: spec.FilterSubject,
+		deliverPolicy: spec.DeliverPolicy,
+		deliverGroup:  spec.DeliverGroup,
+	}
 }
 
 // NewEngine constructs an Engine over conn.
 func NewEngine(conn *substrate.Conn, cfg Config) *Engine {
 	cfg.withDefaults()
 	e := &Engine{
-		cfg:             cfg,
-		conn:            conn,
-		logger:          cfg.Logger,
-		state:           newStateStore(conn, cfg.LoomStateBucket),
-		relay:           newRelay(conn, cfg.LoomStateBucket, cfg.Logger),
-		domainConsumers: make(map[string]context.CancelFunc),
+		cfg:        cfg,
+		conn:       conn,
+		logger:     cfg.Logger,
+		state:      newStateStore(conn, cfg.LoomStateBucket),
+		relay:      newRelay(conn, cfg.LoomStateBucket, cfg.Logger),
+		supervisor: substrate.NewConsumerSupervisor(conn),
+		states:     newConsumerStateCache(),
+		domains:    make(map[string]specFingerprint),
 	}
 	e.source = newPatternSource(conn, cfg.CoreKVBucket, cfg.Instance, cfg.Logger)
 	return e
@@ -158,12 +225,23 @@ func NewEngine(conn *substrate.Conn, cfg Config) *Engine {
 // blocks on ctx. There is no startup index rebuild and no watch-suspend gate
 // (Crash-safety invariant 3 removed, §10.6): a redelivered completion resolves
 // against the durable token.<token> pointer regardless of engine age.
-func (e *Engine) Start(ctx context.Context) error {
+func (e *Engine) Start(ctx context.Context) (err error) {
 	e.ctx = ctx
 
-	go e.runTriggerConsumer(ctx)
-	go e.relay.run(ctx)
-	go e.runDeadlineWatcher(ctx)
+	defer func() {
+		if err != nil {
+			e.supervisor.Stop()
+		}
+	}()
+
+	for _, spec := range []substrate.ConsumerSpec{e.triggerSpec(), e.relaySpec(), e.deadlineSpec()} {
+		if err := e.supervisor.Add(ctx, spec); err != nil {
+			return fmt.Errorf("loom: add %s consumer: %w", spec.Name, err)
+		}
+	}
+
+	hb := newHeartbeater(e.conn, e.cfg.HealthKVBucket, e.cfg.LoomStateBucket, e.cfg.Instance, e.states, e.logger)
+	go hb.run(ctx)
 
 	e.source.setLoadCallback(func(p *Pattern) { e.reconcileConsumers() })
 	e.source.setUpdateCallback(func(_, _ *Pattern) { e.reconcileConsumers() })
@@ -174,26 +252,89 @@ func (e *Engine) Start(ctx context.Context) error {
 	e.logger.Info("loom engine started",
 		"coreKV", e.cfg.CoreKVBucket, "loomState", e.cfg.LoomStateBucket, "lane", e.cfg.Lane)
 	<-ctx.Done()
+	e.supervisor.Stop()
 	return nil
 }
 
-// --- Trigger consumer (Contract #10 §10.9) ---------------------------------
-
-// runTriggerConsumer drives the fixed always-on durable consumer on
-// events.loom.patternStarted. It is independent of completionDomains. On each
-// event it creates the instance cursor and submits step 0; idempotent on the
-// instanceId (cursor already present → skip).
-func (e *Engine) runTriggerConsumer(ctx context.Context) {
-	err := e.conn.RunDurableConsumer(ctx, substrate.DurableConsumerConfig{
-		Stream:        e.cfg.EventsStream,
-		FilterSubject: triggerSubject,
-		Durable:       triggerDurable,
-		Logger:        e.logger,
-	}, e.handleTrigger)
-	if err != nil && ctx.Err() == nil {
-		e.logger.Error("loom trigger consumer exited", "err", err)
+// supervisedHandler adapts an existing Decision-returning handler to the
+// supervisor's SupervisedHandler signature. The wrapped handlers already encode
+// every outcome as a Decision, so the error channel is always nil and Classify
+// is never exercised on these paths.
+func supervisedHandler(h func(context.Context, substrate.Message) substrate.Decision) substrate.SupervisedHandler {
+	return func(ctx context.Context, msg substrate.Message) (substrate.Decision, error) {
+		return h(ctx, msg), nil
 	}
 }
+
+// healthSinkFor builds a per-consumer HealthSink that persists pause-state to
+// health-kv and feeds the engine's consumer-state cache.
+func (e *Engine) healthSinkFor(name string) substrate.HealthSink {
+	return newConsumerHealthSink(e.conn, e.cfg.HealthKVBucket, e.cfg.Instance, name, e.states)
+}
+
+// triggerSpec describes the fixed trigger consumer (loom-trigger) on
+// events.loom.patternStarted.
+func (e *Engine) triggerSpec() substrate.ConsumerSpec {
+	return substrate.ConsumerSpec{
+		Name:          triggerDurable,
+		Stream:        e.cfg.EventsStream,
+		FilterSubject: triggerSubject,
+		DeliverPolicy: substrate.DeliverAll,
+		Handler:       supervisedHandler(e.handleTrigger),
+		Health:        e.healthSinkFor(triggerDurable),
+		Logger:        e.logger,
+	}
+}
+
+// domainSpec describes a per-domain completion consumer (loom-<domain>) on
+// events.<domain>.>.
+func (e *Engine) domainSpec(domain string) substrate.ConsumerSpec {
+	name := "loom-" + domain
+	return substrate.ConsumerSpec{
+		Name:          name,
+		Stream:        e.cfg.EventsStream,
+		FilterSubject: "events." + domain + ".>",
+		DeliverPolicy: substrate.DeliverAll,
+		Handler:       supervisedHandler(e.handleCompletion),
+		Health:        e.healthSinkFor(name),
+		Logger:        e.logger,
+	}
+}
+
+// relaySpec describes the command-outbox relay (loom-outbox-relay), a KV-CDC
+// consumer on the loom-state backing stream filtered to outbox.>. Its
+// publish/delete-failure paths return NakWithDelay (bounded cadence), so
+// RedeliveryDelay is left zero to take substrate.DefaultRedeliveryDelay (5s).
+func (e *Engine) relaySpec() substrate.ConsumerSpec {
+	return substrate.ConsumerSpec{
+		Name:          relayDurable,
+		Stream:        "KV_" + e.cfg.LoomStateBucket,
+		FilterSubject: "$KV." + e.cfg.LoomStateBucket + "." + outboxPrefix + ">",
+		DeliverPolicy: substrate.DeliverAll,
+		Handler:       e.relay.handle,
+		Health:        e.healthSinkFor(relayDurable),
+		Logger:        e.logger,
+	}
+}
+
+// deadlineSpec describes the deadline watcher (loom-deadline), a KV-CDC consumer
+// on the loom-state backing stream filtered to deadline.>.
+func (e *Engine) deadlineSpec() substrate.ConsumerSpec {
+	subjPrefix := "$KV." + e.cfg.LoomStateBucket + "."
+	return substrate.ConsumerSpec{
+		Name:          deadlineDurable,
+		Stream:        "KV_" + e.cfg.LoomStateBucket,
+		FilterSubject: subjPrefix + deadlinePrefix + ">",
+		DeliverPolicy: substrate.DeliverAll,
+		Handler: supervisedHandler(func(ctx context.Context, msg substrate.Message) substrate.Decision {
+			return e.handleDeadline(ctx, subjPrefix, msg)
+		}),
+		Health: e.healthSinkFor(deadlineDurable),
+		Logger: e.logger,
+	}
+}
+
+// --- Trigger consumer (Contract #10 §10.9) ---------------------------------
 
 // triggerBody is the patternStarted event Loom reads (Contract #10 §10.9:
 // instanceId = the StartLoomPattern requestId). The business fields ride the
@@ -265,43 +406,81 @@ func (e *Engine) handleTrigger(ctx context.Context, msg substrate.Message) subst
 
 // --- Per-domain completion consumers (D2) ----------------------------------
 
-// reconcileConsumers rebuilds the binding registry from the current pattern set
-// and starts a durable per-domain completion consumer (loom-<domain>) for any
-// referenced domain not already running. Additive: a newly-referenced domain
-// spins up a consumer live, without an engine restart (D2).
+// reconcileConsumers diffs the desired per-domain completion-consumer set (the
+// binding registry aggregated across the current pattern snapshot) against the
+// last-applied set, driving the supervisor's Add / Remove / Reset:
+//
+//   - a domain newly referenced by any pattern → Add loom-<domain>;
+//   - a domain referenced by no current pattern (its last pattern was
+//     removed/updated-away) → Remove (the supervisor stops the pump AND deletes
+//     the JetStream durable — an un-pumped server-side durable IS the leak F6
+//     forbids);
+//   - a domain in both whose desired spec differs from the running one → Reset
+//     (delete-and-recreate), never silently unchanged.
+//
+// The per-domain filter (events.<domain>.>) is name-derived and stable, so the
+// Reset branch is mechanically reachable only if a future spec field changes;
+// the diff is written generically so such a change is caught.
+//
+// Caveat (out of scope, documented): removing a pattern while an in-flight
+// instance of it exists orphans that instance's completion. The cause is the
+// pattern definition disappearing from the engine's loaded set — advance's
+// pattern lookup by PatternRef fails once the definition is gone, regardless of
+// whether loom-<domain> is torn down. This applies even when the domain
+// consumer survives because another pattern still references the same domain
+// (no Remove fires): the consumer keeps delivering, but the removed instance's
+// completion still cannot resolve. Delete-vs-preserve of the consumer changes
+// nothing about this orphan.
 func (e *Engine) reconcileConsumers() {
-	domains := bindingRegistry(e.source.snapshot())
+	desired := bindingRegistry(e.source.snapshot())
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	for d := range domains {
-		if _, running := e.domainConsumers[d]; running {
+	if e.ctx == nil {
+		return
+	}
+	for d := range desired {
+		spec := e.domainSpec(d)
+		fp := fingerprintOf(spec)
+		applied, running := e.domains[d]
+		if !running {
+			if err := e.supervisor.Add(e.ctx, spec); err != nil {
+				e.logger.Error("loom domain consumer add failed", "domain", d, "err", err)
+				continue
+			}
+			e.domains[d] = fp
+			e.logger.Info("loom domain consumer added", "domain", d, "durable", spec.Name)
 			continue
 		}
-		cctx, cancel := context.WithCancel(e.ctx)
-		e.domainConsumers[d] = cancel
-		domain := d
-		go e.runDomainConsumer(cctx, domain)
-		e.logger.Info("loom domain consumer reconciled", "domain", domain, "durable", "loom-"+domain)
+		if applied == fp {
+			continue
+		}
+		// Desired config diverged from the running durable — recreate cleanly.
+		if err := e.supervisor.UpdateSpec(spec.Name, func(s *substrate.ConsumerSpec) { *s = spec }); err != nil {
+			e.logger.Error("loom domain consumer update-spec failed", "domain", d, "err", err)
+			continue
+		}
+		if err := e.supervisor.Reset(e.ctx, spec.Name); err != nil {
+			e.logger.Error("loom domain consumer reset failed", "domain", d, "err", err)
+			continue
+		}
+		e.domains[d] = fp
+		e.logger.Info("loom domain consumer reset", "domain", d, "durable", spec.Name)
 	}
-}
-
-// runDomainConsumer drives one durable completion consumer on core-events for a
-// domain, durable loom-<domain>. It filters events.<domain>.> — every event
-// class is `<domain>.<eventName>` (Contract #3 §3.4), subjected
-// events.<domain>.<eventName>, so events.<domain>.> always matches. The handler
-// is idempotent (at-least-once): it reads the body's correlation keys
-// (requestId, taskKey), resolves the durable token pointer, and advances the
-// matching instance — dropping any completion whose pointer is gone (already
-// advanced).
-func (e *Engine) runDomainConsumer(ctx context.Context, domain string) {
-	err := e.conn.RunDurableConsumer(ctx, substrate.DurableConsumerConfig{
-		Stream:        e.cfg.EventsStream,
-		FilterSubject: "events." + domain + ".>",
-		Durable:       "loom-" + domain,
-		Logger:        e.logger,
-	}, e.handleCompletion)
-	if err != nil && ctx.Err() == nil {
-		e.logger.Error("loom domain consumer exited", "domain", domain, "err", err)
+	for d := range e.domains {
+		if _, want := desired[d]; want {
+			continue
+		}
+		name := "loom-" + d
+		if err := e.supervisor.Remove(e.ctx, name); err != nil {
+			e.logger.Error("loom domain consumer remove failed", "domain", d, "err", err)
+			continue
+		}
+		delete(e.domains, d)
+		sink := newConsumerHealthSink(e.conn, e.cfg.HealthKVBucket, e.cfg.Instance, name, e.states)
+		if err := sink.delete(e.ctx); err != nil {
+			e.logger.Error("loom domain consumer health-state cleanup failed", "domain", d, "durable", name, "err", err)
+		}
+		e.logger.Info("loom domain consumer removed", "domain", d, "durable", name)
 	}
 }
 
@@ -565,27 +744,6 @@ const lifecycleCursor = -1
 
 // deadlineDurable is the deadline watcher's durable consumer name.
 const deadlineDurable = "loom-deadline"
-
-// runDeadlineWatcher drives a durable consumer on the loom-state backing stream
-// filtered to deadline.>, so a deadline.<instanceId> TTL expiry (a
-// KeyValuePurge/MaxAge marker — an empty-body message) trips the
-// step-deadline-exceeded handler. The handler self-guards on status, so the
-// explicit deletes that disarm the deadline on a normal advance/terminal (also
-// empty-body) resolve to a harmless no-op.
-func (e *Engine) runDeadlineWatcher(ctx context.Context) {
-	subjPrefix := "$KV." + e.cfg.LoomStateBucket + "."
-	err := e.conn.RunDurableConsumer(ctx, substrate.DurableConsumerConfig{
-		Stream:        "KV_" + e.cfg.LoomStateBucket,
-		FilterSubject: subjPrefix + deadlinePrefix + ">",
-		Durable:       deadlineDurable,
-		Logger:        e.logger,
-	}, func(ctx context.Context, msg substrate.Message) substrate.Decision {
-		return e.handleDeadline(ctx, subjPrefix, msg)
-	})
-	if err != nil && ctx.Err() == nil {
-		e.logger.Error("loom deadline watcher exited", "err", err)
-	}
-}
 
 // handleDeadline reacts to a deadline.<instanceId> delete/expiry marker (empty
 // body). A value write (the re-arm PUT) carries a body and is ignored.

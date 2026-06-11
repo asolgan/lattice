@@ -78,7 +78,9 @@ func run(logger *slog.Logger) error {
 		CoreKVBucket:    bootstrap.CoreKVBucket,
 		LoomStateBucket: bootstrap.LoomStateBucket,
 		EventsStream:    bootstrap.CoreEventsStreamName,
+		HealthKVBucket:  bootstrap.HealthKVBucket,
 		ActorKey:        actorKey,
+		Instance:        instance,
 		Lane:            lane,
 		Logger:          logger,
 	})
