@@ -142,16 +142,19 @@ type heartbeater struct {
 	logger    *slog.Logger
 }
 
-func newHeartbeater(conn *substrate.Conn, healthBucket, stateBucket, instance string, states *consumerStateCache, logger *slog.Logger) *heartbeater {
+func newHeartbeater(conn *substrate.Conn, healthBucket, stateBucket, instance string, every time.Duration, states *consumerStateCache, logger *slog.Logger) *heartbeater {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if every <= 0 {
+		every = defaultHeartbeatEvery
 	}
 	return &heartbeater{
 		conn:      conn,
 		bucket:    healthBucket,
 		instance:  instance,
 		startedAt: time.Now(),
-		interval:  defaultHeartbeatEvery,
+		interval:  every,
 		states:    states,
 		counter:   &runningInstanceCounter{conn: conn, bucket: stateBucket, logger: logger},
 		logger:    logger,

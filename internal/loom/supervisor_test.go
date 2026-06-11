@@ -155,6 +155,7 @@ func TestSupervisor_HealthHeartbeatWellFormed(t *testing.T) {
 	engine := newEngine(conn, func(c *loom.Config) {
 		c.HealthKVBucket = healthKVBucket
 		c.Instance = instance
+		c.HeartbeatEvery = time.Second
 	})
 	go func() { _ = engine.Start(ctx) }()
 
@@ -225,6 +226,7 @@ func TestSupervisor_PauseStateSurvivesRestart(t *testing.T) {
 	e1 := newEngine(conn, func(c *loom.Config) {
 		c.HealthKVBucket = healthKVBucket
 		c.Instance = instance
+		c.HeartbeatEvery = time.Second
 	})
 	go func() { _ = e1.Start(ctx1) }()
 
@@ -261,6 +263,7 @@ func TestSupervisor_PauseStateSurvivesRestart(t *testing.T) {
 	e2 := newEngine(conn, func(c *loom.Config) {
 		c.HealthKVBucket = healthKVBucket
 		c.Instance = instance
+		c.HeartbeatEvery = time.Second
 	})
 	go func() { _ = e2.Start(ctx2) }()
 
@@ -324,6 +327,7 @@ func TestSupervisor_RemovedDomainDisappearsFromHeartbeat(t *testing.T) {
 	engine := newEngine(conn, func(c *loom.Config) {
 		c.HealthKVBucket = healthKVBucket
 		c.Instance = instance
+		c.HeartbeatEvery = time.Second
 	})
 	go func() { _ = engine.Start(ctx) }()
 
@@ -376,6 +380,7 @@ func TestSupervisor_RemovedDomainPauseDoesNotResurrectOnReAdd(t *testing.T) {
 	engine := newEngine(conn, func(c *loom.Config) {
 		c.HealthKVBucket = healthKVBucket
 		c.Instance = instance
+		c.HeartbeatEvery = time.Second
 	})
 	go func() { _ = engine.Start(ctx) }()
 

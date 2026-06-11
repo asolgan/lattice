@@ -73,6 +73,11 @@ type Config struct {
 	// deadline is disarmed and the wait for the human becomes unbounded
 	// (§10.6). Must be >= 1s (NATS per-key TTL floor). Default 60s.
 	CreateTaskTimeout time.Duration
+	// HeartbeatEvery is the Contract #5 heartbeat cadence. The 10s default is
+	// the §5.6/NFR-O1 production cadence; a shorter value lets a test observe
+	// heartbeat-driven state without waiting out production timing. Values <= 0
+	// take the default.
+	HeartbeatEvery time.Duration
 	// Instance distinguishes this engine process; it suffixes the per-boot
 	// pattern-source durable so each boot replays the installed pattern set,
 	// and it is the key segment for this process's Contract #5 heartbeat
@@ -240,7 +245,7 @@ func (e *Engine) Start(ctx context.Context) (err error) {
 		}
 	}
 
-	hb := newHeartbeater(e.conn, e.cfg.HealthKVBucket, e.cfg.LoomStateBucket, e.cfg.Instance, e.states, e.logger)
+	hb := newHeartbeater(e.conn, e.cfg.HealthKVBucket, e.cfg.LoomStateBucket, e.cfg.Instance, e.cfg.HeartbeatEvery, e.states, e.logger)
 	go hb.run(ctx)
 
 	e.source.setLoadCallback(func(p *Pattern) { e.reconcileConsumers() })
