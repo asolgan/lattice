@@ -8,22 +8,49 @@ import (
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
+// healthReporter is the slice of *health.Reporter the sink writes through.
+// Narrowed to an interface so the sink's status arbitration is unit-testable
+// without a backing KV bucket.
+type healthReporter interface {
+	SetActive(ctx context.Context) error
+	SetPaused(ctx context.Context, reason, lastError string) error
+	SetRebuilding(ctx context.Context) error
+	GetStatus(ctx context.Context) (health.Entry, error)
+}
+
 // healthSink adapts a *health.Reporter to substrate.HealthSink. The Entry
 // schema, KV bucket, and key (the bare ruleID) stay byte-identical — the
 // reporter is unchanged; this only maps the substrate pause-reason vocabulary
-// onto the reporter's string reasons and back.
+// onto the reporter's string reasons and back. rebuildInFlight reports whether
+// a rebuild rescan is still draining, so a supervisor active-persist during
+// that window re-persists "rebuilding" instead of a premature "active".
 type healthSink struct {
-	reporter *health.Reporter
+	reporter        healthReporter
+	rebuildInFlight func() bool
 }
 
-func newHealthSink(r *health.Reporter) substrate.HealthSink {
+func newHealthSink(r *health.Reporter, rebuildInFlight func() bool) substrate.HealthSink {
 	if r == nil {
 		return nil
 	}
-	return &healthSink{reporter: r}
+	return &healthSink{reporter: r, rebuildInFlight: rebuildInFlight}
 }
 
 func (h *healthSink) SetActive(ctx context.Context) error {
+	if h.rebuildInFlight != nil && h.rebuildInFlight() {
+		// A pause that recovers mid-rebuild returns the entry to "rebuilding",
+		// not "active" — consumer lag is still non-zero; the rebuild watcher
+		// owns the eventual rebuilding → active transition.
+		if err := h.reporter.SetRebuilding(ctx); err != nil {
+			return err
+		}
+		if h.rebuildInFlight() {
+			return nil
+		}
+		// The rebuild completed between the flag check and the write — fall
+		// through to "active" so the entry is not left "rebuilding" with no
+		// watcher remaining to clear it.
+	}
 	return h.reporter.SetActive(ctx)
 }
 

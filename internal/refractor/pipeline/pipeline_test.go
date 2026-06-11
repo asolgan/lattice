@@ -55,6 +55,7 @@ const (
 	sentinelAgreementMp1     = "TsntNagreementMp1111" // was node_agreement_mp1
 	sentinelAgreementMp2     = "TsntPagreementMp2222" // was node_agreement_mp2
 	sentinelAgreementRi1     = "TsntQagreementRi1111" // was node_agreement_ri1
+	sentinelAgreementRbp1    = "TsntRagreementRbp111"
 )
 
 // pipelineEnv holds all resources for a pipeline integration test.
@@ -1289,4 +1290,113 @@ func TestPipeline_Resume_OverridesInfraPause(t *testing.T) {
 	entry, err := reporter.GetStatus(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, "active", entry.Status, "health KV must be active after Resume() overrides infra probe loop")
+}
+
+// gateAdapter simulates a target store that is down (every Upsert fails infra)
+// with an operator-controllable probe: Probe fails until probeOK is set.
+type gateAdapter struct {
+	upsertCalls atomic.Int64
+	probeCalls  atomic.Int64
+	probeOK     atomic.Bool
+}
+
+func (a *gateAdapter) Upsert(_ context.Context, _ map[string]any, _ map[string]any) error {
+	a.upsertCalls.Add(1)
+	return nats.ErrConnectionClosed // classified as Infrastructure
+}
+func (a *gateAdapter) Delete(_ context.Context, _ map[string]any) error { return nil }
+func (a *gateAdapter) Probe(_ context.Context) error {
+	a.probeCalls.Add(1)
+	if a.probeOK.Load() {
+		return nil
+	}
+	return nats.ErrConnectionClosed
+}
+func (a *gateAdapter) Close() error { return nil }
+
+// TestPipeline_Rebuild_ProbeRecoveryKeepsRebuildingStatus verifies that an
+// infra pause recovering mid-rebuild does not persist a premature "active":
+// while the rebuild rescan is still draining (consumer lag non-zero), the
+// supervisor's recovery persist re-publishes "rebuilding". The health KV
+// history records every status write, so the assertion is timing-independent.
+func TestPipeline_Rebuild_ProbeRecoveryKeepsRebuildingStatus(t *testing.T) {
+	env := startPipelineEnv(t)
+
+	origProbe := pipeline.ProbeInterval
+	pipeline.ProbeInterval = 50 * time.Millisecond
+	t.Cleanup(func() { pipeline.ProbeInterval = origProbe })
+	origPoll := pipeline.RebuildPollInterval
+	pipeline.RebuildPollInterval = 100 * time.Millisecond
+	t.Cleanup(func() { pipeline.RebuildPollInterval = origPoll })
+
+	plan := compileSimplePlan(t,
+		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+		[]string{"agreement_id"})
+
+	ga := &gateAdapter{}
+
+	// History-enabled health bucket so every status transition is observable.
+	healthKV, err := env.js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{
+		Bucket:  "HEALTH-rule-rbp",
+		History: 50,
+	})
+	require.NoError(t, err)
+	reporter := health.New(healthKV, "rule-rbp")
+
+	p, err := pipeline.New("rule-rbp", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, ga, reporter)
+	require.NoError(t, err)
+	startPipeline(t, env, p, "rule-rbp")
+
+	rebuildCtx, rebuildCancel := context.WithCancel(context.Background())
+	t.Cleanup(rebuildCancel)
+
+	// 1. Put a node — the upsert fails infra and the pipeline pauses.
+	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementRbp1, map[string]any{"id": "rbp1", "isDeleted": false})
+	pollUntil(t, 3*time.Second, func() bool {
+		entry, gerr := reporter.GetStatus(context.Background())
+		return gerr == nil && entry.Status == "paused"
+	})
+
+	// 2. Rebuild while paused: the un-acked message keeps consumer lag
+	//    non-zero, so the completion watcher cannot finish.
+	require.NoError(t, p.Rebuild(rebuildCtx, false))
+	pollUntil(t, 3*time.Second, func() bool {
+		entry, gerr := reporter.GetStatus(context.Background())
+		return gerr == nil && entry.Status == "rebuilding"
+	})
+
+	// 3. Release the probe: the infra pause recovers mid-rebuild. The pump
+	//    resumes, the redelivered upsert fails infra again, and the pipeline
+	//    re-pauses; re-hold the probe so the cycle stops there.
+	before := ga.probeCalls.Load()
+	ga.probeOK.Store(true)
+	pollUntil(t, 3*time.Second, func() bool { return ga.probeCalls.Load() > before })
+	pollUntil(t, 3*time.Second, func() bool {
+		entry, gerr := reporter.GetStatus(context.Background())
+		return gerr == nil && entry.Status == "paused"
+	})
+	ga.probeOK.Store(false)
+
+	// 4. The recovery persist ran while the rebuild was in flight: after the
+	//    first "rebuilding" write the history must never show "active".
+	hist, err := healthKV.History(context.Background(), "rule-rbp")
+	require.NoError(t, err)
+	var statuses []string
+	for _, e := range hist {
+		var entry health.Entry
+		require.NoError(t, json.Unmarshal(e.Value(), &entry))
+		statuses = append(statuses, entry.Status)
+	}
+	first := -1
+	for i, s := range statuses {
+		if s == "rebuilding" {
+			first = i
+			break
+		}
+	}
+	require.GreaterOrEqual(t, first, 0, "rebuild must have written a rebuilding entry: %v", statuses)
+	for _, s := range statuses[first+1:] {
+		assert.NotEqual(t, "active", s,
+			"premature active persisted while the rebuild was still draining: %v", statuses)
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
@@ -94,8 +95,13 @@ type Pipeline struct {
 
 	// Rebuild support. rebuildPollInterval is captured from RebuildPollInterval
 	// at construction time; watchRebuildCompletion polls the supervisor for
-	// pending count.
+	// pending count. rebuildInFlight is true from the start of Rebuild until
+	// watchRebuildCompletion observes zero consumer lag (or the rebuild aborts);
+	// the health sink consults it so a supervisor-driven active-persist (e.g.
+	// probe recovery mid-rebuild) re-persists "rebuilding" instead of
+	// prematurely reporting "active" while the rescan is still draining.
 	rebuildPollInterval time.Duration
+	rebuildInFlight     atomic.Bool
 
 	// Supervised runtime. The supervisor hosts the pump skeleton (restore →
 	// pump → classify → pause/probe/resume); the pipeline supplies the handler
@@ -312,7 +318,7 @@ func (p *Pipeline) Run(ctx context.Context) {
 	spec.Handler = p.handle
 	spec.Classify = classifyForSupervisor
 	spec.Probe = func(pctx context.Context) error { return p.currentAdapter().Probe(pctx) }
-	spec.Health = newHealthSink(p.reporter)
+	spec.Health = newHealthSink(p.reporter, p.rebuildInFlight.Load)
 	// ProbeInterval is exported so tests can shrink it for fast recovery detection.
 	if spec.ProbeInterval <= 0 {
 		spec.ProbeInterval = ProbeInterval
@@ -349,6 +355,11 @@ func (p *Pipeline) Run(ctx context.Context) {
 // service) MUST call Rebuild in its own goroutine and return an async ack to the
 // operator before Rebuild returns.
 func (p *Pipeline) Rebuild(ctx context.Context, truncate bool) error {
+	// Mark the rebuild in flight before the status write so a concurrent
+	// supervisor health persist (probe recovery, operator resume) cannot
+	// publish "active" while the rescan is still draining.
+	p.rebuildInFlight.Store(true)
+
 	// 1. Set health status to "rebuilding".
 	if p.reporter != nil {
 		if err := p.reporter.SetRebuilding(ctx); err != nil {
@@ -361,6 +372,7 @@ func (p *Pipeline) Rebuild(ctx context.Context, truncate bool) error {
 		adpt := p.currentAdapter()
 		if t, ok := adpt.(adapter.Truncater); ok {
 			if err := t.Truncate(ctx); err != nil {
+				p.rebuildInFlight.Store(false)
 				return fmt.Errorf("pipeline: rebuild: truncate: %w", err)
 			}
 		} else {
@@ -371,15 +383,20 @@ func (p *Pipeline) Rebuild(ctx context.Context, truncate bool) error {
 
 	// 3. Reset the durable via the supervisor (delete-recreate-swap).
 	if p.supervisor == nil {
+		p.rebuildInFlight.Store(false)
 		return fmt.Errorf("pipeline: rebuild: no supervisor configured")
 	}
 	if err := p.supervisor.Reset(ctx, p.consumerCfg.Name); err != nil {
+		p.rebuildInFlight.Store(false)
 		return fmt.Errorf("pipeline: rebuild: reset consumer: %w", err)
 	}
 
 	// 4. Launch background goroutine to transition to "active" when lag reaches zero.
 	if p.reporter != nil {
 		go p.watchRebuildCompletion(ctx)
+	} else {
+		// No reporter → no completion watcher will ever clear the flag.
+		p.rebuildInFlight.Store(false)
 	}
 
 	return nil
@@ -389,6 +406,10 @@ func (p *Pipeline) Rebuild(ctx context.Context, truncate bool) error {
 // rebuildPollInterval. When it reaches zero, it transitions health KV from
 // "rebuilding" back to "active" (AC5).
 func (p *Pipeline) watchRebuildCompletion(ctx context.Context) {
+	// The rebuild window ends when this watcher exits for any reason; the
+	// deferred clear keeps the health sink from pinning "rebuilding" forever
+	// after a cancelled watch.
+	defer p.rebuildInFlight.Store(false)
 	ticker := time.NewTicker(p.rebuildPollInterval)
 	defer ticker.Stop()
 	for {
@@ -405,6 +426,9 @@ func (p *Pipeline) watchRebuildCompletion(ctx context.Context) {
 				continue
 			}
 			if pending == 0 {
+				// Clear the flag before the status write so a concurrent health
+				// sink SetActive that re-checks the flag converges on "active".
+				p.rebuildInFlight.Store(false)
 				if p.reporter != nil {
 					if serr := p.reporter.SetActive(ctx); serr != nil {
 						slog.Error("pipeline: rebuild: set active", "ruleId", p.ruleID, "err", serr)
@@ -595,9 +619,16 @@ func (p *Pipeline) dispositionEvalErr(ctx context.Context, msg substrate.Message
 // ack discipline as the inline vertex write loop. Returns the Decision the
 // supervisor applies (plus a non-nil error on an infra/structural write failure,
 // which leaves the message pending and pauses the pump).
+//
+// Retry enqueues and terminal DLQ publishes are buffered and flushed only when
+// the whole batch is known free of infra/structural failures. Any path that
+// leaves the message pending (Nak) makes redelivery re-run every result, so
+// flushing eagerly would enqueue/publish a duplicate for the already-disposed
+// results on every redelivery (e.g. each pause/resume cycle).
 func (p *Pipeline) writeResults(ctx context.Context, msg substrate.Message, key string, results []simple.EvalResult) (substrate.Decision, error) {
 	adpt := p.currentAdapter()
-	var enqueuedCount, terminalCount int
+	var retryResults []simple.EvalResult
+	var terminalErrs []error
 	for _, result := range results {
 		var writeErr error
 		if result.Delete {
@@ -617,16 +648,16 @@ func (p *Pipeline) writeResults(ctx context.Context, msg substrate.Message, key 
 				"stage", "write", "adapter", p.adapterName, "err", writeErr)
 
 			if cat == failure.CatInfra || cat == failure.CatStructural {
+				// Buffered dispositions are dropped — redelivery re-evaluates
+				// every result after the pause resolves.
 				return substrate.Nak, writeErr
 			}
 			if cat == failure.CatTerminal {
-				p.publishTerminalDLQ(ctx, msg.Body, key, "write", writeErr)
-				terminalCount++
+				terminalErrs = append(terminalErrs, writeErr)
 				continue
 			}
 			if cat == failure.CatTransient && p.retryQueue != nil && p.retryMaxAttempts > 0 {
-				p.enqueueRetry(key, msg.Body, result)
-				enqueuedCount++
+				retryResults = append(retryResults, result)
 				continue
 			}
 			return substrate.Nak, nil
@@ -635,7 +666,14 @@ func (p *Pipeline) writeResults(ctx context.Context, msg substrate.Message, key 
 		p.writeAudit(ctx, key, result)
 	}
 
-	if enqueuedCount > 0 || terminalCount > 0 {
+	for _, terr := range terminalErrs {
+		p.publishTerminalDLQ(ctx, msg.Body, key, "write", terr)
+	}
+	for _, r := range retryResults {
+		p.enqueueRetry(key, msg.Body, r)
+	}
+
+	if len(retryResults) > 0 || len(terminalErrs) > 0 {
 		// Transient enqueue / terminal DLQ: the message is fully disposed —
 		// ack to prevent redelivery (the retry queue owns the eventual write).
 		return substrate.Ack, nil
