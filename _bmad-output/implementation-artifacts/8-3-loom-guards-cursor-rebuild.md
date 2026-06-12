@@ -1,6 +1,6 @@
 # Story 8.3: Pure on/off guards + cursor rebuild
 
-Status: review
+Status: done
 
 ## Story
 
