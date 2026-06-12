@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -82,25 +83,38 @@ func (s *patternSource) setUpdateCallback(fn func(old, new *Pattern)) { s.update
 // goroutine. Returns once the subscription is established. IncludeHistory is
 // set so a fresh deployment replays the entire installed pattern set; restarts
 // resume from the ack floor.
+//
+// Each boot's durable name carries a unique instance suffix (full-replay
+// semantics, above), so a prior boot's durable is never reused and would
+// otherwise linger forever as a parked consumer on KV_<bucket>. Before
+// creating its own durable, start prunes any stale "<prefix>-*" durables left
+// behind by no-longer-running instances; the durable created below is then
+// deleted on clean shutdown (consume's ctx.Done branch) so it never becomes
+// next boot's stale entry.
 func (s *patternSource) start(ctx context.Context) error {
+	durable := patternSourceDurablePrefix + "-" + s.instance
+	if err := s.conn.PruneStaleDurables(ctx, s.bucket, patternSourceDurablePrefix+"-", durable, s.logger); err != nil {
+		s.logger.Warn("loom: prune stale pattern-source durables failed", "err", err)
+	}
 	events, err := s.conn.SubscribeKVChanges(
 		ctx,
 		s.bucket,
 		"vtx.meta.",
-		patternSourceDurablePrefix+"-"+s.instance,
+		durable,
 		substrate.SubscribeKVOptions{IncludeHistory: true, Logger: s.logger},
 	)
 	if err != nil {
 		return fmt.Errorf("loom: subscribe core KV vtx.meta.>: %w", err)
 	}
-	go s.consume(ctx, events)
+	go s.consume(ctx, events, durable)
 	return nil
 }
 
-func (s *patternSource) consume(ctx context.Context, events <-chan substrate.KVEvent) {
+func (s *patternSource) consume(ctx context.Context, events <-chan substrate.KVEvent, durable string) {
 	for {
 		select {
 		case <-ctx.Done():
+			s.deleteOwnDurable(durable)
 			return
 		case evt, ok := <-events:
 			if !ok {
@@ -108,6 +122,18 @@ func (s *patternSource) consume(ctx context.Context, events <-chan substrate.KVE
 			}
 			s.handle(evt)
 		}
+	}
+}
+
+// deleteOwnDurable removes this boot's per-instance durable on clean shutdown
+// so it never lingers as a stale entry for the next boot's PruneStaleDurables
+// to clean up. Best-effort: ctx is already cancelled, so a fresh background
+// context with a short bound is used for the delete call.
+func (s *patternSource) deleteOwnDurable(durable string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.conn.DeleteDurable(ctx, s.bucket, durable); err != nil {
+		s.logger.Warn("loom: delete own pattern-source durable failed", "durable", durable, "err", err)
 	}
 }
 

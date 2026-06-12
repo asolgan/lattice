@@ -132,25 +132,38 @@ func (s *targetSource) setUpdateCallback(fn func(old, new *Target)) { s.updateCB
 // start establishes the durable subscription and launches the dispatch
 // goroutine. IncludeHistory replays the entire installed meta set on each
 // boot (the durable name carries the per-boot instance suffix).
+//
+// Each boot's durable name carries a unique instance suffix (full-replay
+// semantics), so a prior boot's durable is never reused and would otherwise
+// linger forever as a parked consumer on KV_<bucket>. Before creating its own
+// durable, start prunes any stale "<prefix>-*" durables left behind by
+// no-longer-running instances; the durable created below is then deleted on
+// clean shutdown (consume's ctx.Done branch) so it never becomes next boot's
+// stale entry.
 func (s *targetSource) start(ctx context.Context) error {
+	durable := targetSourceDurablePrefix + "-" + s.instance
+	if err := s.conn.PruneStaleDurables(ctx, s.bucket, targetSourceDurablePrefix+"-", durable, s.logger); err != nil {
+		s.logger.Warn("weaver: prune stale target-source durables failed", "err", err)
+	}
 	events, err := s.conn.SubscribeKVChanges(
 		ctx,
 		s.bucket,
 		"vtx.meta.",
-		targetSourceDurablePrefix+"-"+s.instance,
+		durable,
 		substrate.SubscribeKVOptions{IncludeHistory: true, Logger: s.logger},
 	)
 	if err != nil {
 		return fmt.Errorf("weaver: subscribe core KV vtx.meta.>: %w", err)
 	}
-	go s.consume(ctx, events)
+	go s.consume(ctx, events, durable)
 	return nil
 }
 
-func (s *targetSource) consume(ctx context.Context, events <-chan substrate.KVEvent) {
+func (s *targetSource) consume(ctx context.Context, events <-chan substrate.KVEvent, durable string) {
 	for {
 		select {
 		case <-ctx.Done():
+			s.deleteOwnDurable(durable)
 			return
 		case evt, ok := <-events:
 			if !ok {
@@ -158,6 +171,18 @@ func (s *targetSource) consume(ctx context.Context, events <-chan substrate.KVEv
 			}
 			s.handle(evt)
 		}
+	}
+}
+
+// deleteOwnDurable removes this boot's per-instance durable on clean shutdown
+// so it never lingers as a stale entry for the next boot's
+// PruneStaleDurables to clean up. Best-effort: ctx is already cancelled, so a
+// fresh background context with a short bound is used for the delete call.
+func (s *targetSource) deleteOwnDurable(durable string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := s.conn.DeleteDurable(ctx, s.bucket, durable); err != nil {
+		s.logger.Warn("weaver: delete own target-source durable failed", "durable", durable, "err", err)
 	}
 }
 

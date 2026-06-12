@@ -3,6 +3,7 @@ package substrate
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -128,6 +129,65 @@ func (c *Conn) SubscribeKVChanges(
 	out := make(chan KVEvent)
 	go c.runKVSubscription(ctx, cons, durableName, bucket, subjectPrefix, out, logger)
 	return out, nil
+}
+
+// PruneStaleDurables deletes every durable JetStream consumer on the named
+// KV bucket's backing stream (KV_<bucket>) whose name starts with namePrefix,
+// except keep. It is intended for the per-boot-durable pattern used by
+// SubscribeKVChanges callers that derive a fresh durable name on every
+// process start (e.g. "<prefix>-<instance>"): each boot prunes durables left
+// behind by prior, no-longer-running instances before creating its own.
+//
+// A consumer-not-found error from a concurrent deletion (another instance
+// pruning the same stale name) is not an error. Any other deletion error is
+// logged and otherwise ignored — pruning is best-effort cleanup, never a
+// reason to fail startup.
+func (c *Conn) PruneStaleDurables(ctx context.Context, bucket, namePrefix, keep string, logger *slog.Logger) error {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	streamName := "KV_" + bucket
+	stream, err := c.js.Stream(ctx, streamName)
+	if err != nil {
+		return fmt.Errorf("substrate: PruneStaleDurables: get stream %q: %w", streamName, err)
+	}
+	lister := stream.ConsumerNames(ctx)
+	for name := range lister.Name() {
+		if name == keep || !strings.HasPrefix(name, namePrefix) {
+			continue
+		}
+		if err := c.js.DeleteConsumer(ctx, streamName, name); err != nil {
+			if errors.Is(err, jetstream.ErrConsumerNotFound) {
+				continue
+			}
+			logger.Warn("substrate: PruneStaleDurables: delete stale durable failed",
+				"stream", streamName, "durable", name, "err", err)
+		} else {
+			logger.Info("substrate: pruned stale durable", "stream", streamName, "durable", name)
+		}
+	}
+	if err := lister.Err(); err != nil {
+		return fmt.Errorf("substrate: PruneStaleDurables: list consumers on %q: %w", streamName, err)
+	}
+	return nil
+}
+
+// DeleteDurable removes a single named durable JetStream consumer from the
+// named KV bucket's backing stream (KV_<bucket>). It is intended for clean
+// shutdown of a per-boot durable created by SubscribeKVChanges: the caller
+// deletes its own durable so it does not linger as a stale entry for the next
+// boot's PruneStaleDurables to clean up.
+//
+// A consumer-not-found error is not an error (already gone).
+func (c *Conn) DeleteDurable(ctx context.Context, bucket, durableName string) error {
+	streamName := "KV_" + bucket
+	if err := c.js.DeleteConsumer(ctx, streamName, durableName); err != nil {
+		if errors.Is(err, jetstream.ErrConsumerNotFound) {
+			return nil
+		}
+		return fmt.Errorf("substrate: DeleteDurable: delete %q on %q: %w", durableName, streamName, err)
+	}
+	return nil
 }
 
 // normalizePrefix ensures the prefix ends in a wildcard token so that the
