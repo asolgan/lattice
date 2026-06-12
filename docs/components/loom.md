@@ -60,6 +60,60 @@ all-userTask onboarding pattern declares `completionDomains: ["orchestration"]` 
   pattern serves first-time collection (guards false → all become tasks) and re-verification
   (guards skip fields already present).
 
+### Guard grammar (shipped)
+
+A guard is a **declarative** predicate (Contract #10 §10.5), parsed and validated at pattern-load
+time and rejected wholesale if malformed (`internal/loom/pattern.go` `validate()` →
+`internal/loom/guard.go` `parseGuard`, same doctrine as an unknown `kind`):
+
+- **Atoms** — `{"absent": <path>}`, `{"present": <path>}`, `{"equals": {"path": <path>, "value": <any>}}`.
+- **Composition** — `{"allOf": [<guard>…]}`, `{"anyOf": [<guard>…]}`, `{"not": <guard>}`, composed
+  into ONE boolean (never branching). An empty `allOf`/`anyOf` list is a validate error.
+- **Paths are explicit**, exactly two shapes: `subject.data.<field>` (root vertex's own `data`
+  envelope) or `subject.<aspect>.data.<field>` (point-read the `<subjectKey>.<aspect>` aspect, read
+  its `data.<field>`). Any other shape is rejected at parse time. Guards read **only** the subject +
+  its aspects — no link-walking.
+- **Pinned absence semantics** (binding): `absent` = the path resolves to **null / missing /
+  soft-deleted aspect (`isDeleted`) / (for strings) empty-after-trim**; `present` = not absent. An
+  empty-string-after-trim is **absent**; `"0"` / `false` / `0` are **present** (never "falsy"). An
+  absent path never `equals` anything (including a `null`/`""` comparand).
+- **Starlark escape hatch (`{"reads": […], "starlark": "…"}`) is RESERVED** — recognized at parse
+  time and rejected with a precise "reserved, not yet supported" error. The pure-evaluator extraction
+  lands only when the first Starlark guard is authored (§10.5); declarative-only ships without it.
+
+Hydration is **per-evaluation** (no cross-step cache): at step entry the engine JIT-reads the subject
+root + the referenced aspects from Core KV and resolves the path. The loom-local resolver
+(`internal/loom/guard_eval.go`) mirrors the Refractor executor's `resolveProperty` /
+`fetchNode` aspect-navigation and tombstone check
+(`internal/refractor/ruleengine/full/executor.go:1270-1290` / `:453-476`) — re-implemented, not
+imported (loom imports only `substrate/*` + stdlib). Within one guard evaluation the resolver dedupes
+GETs per distinct key, so a composite guard sees ONE snapshot of each key (a correctness property:
+two reads of the same key mid-evaluation must not straddle a concurrent write).
+
+### Disaster recovery — guardless steps
+
+Total `loom-state` loss (not a normal restart — see State & crash-safety below) followed by a
+re-triggered `StartLoomPattern` re-runs **every guardless step whose effects don't alter a guard**.
+A fresh instance (a new `instanceId`, since the lost cursor was the old one's key) replays guards
+from cursor 0 against the subject's current Core KV state: a guarded step whose guard is now false
+is correctly re-skipped (no double-submit), but a guardless step has no guard-replay signal — its
+run/skip can never be inferred from Core KV (§10.6 invariant 2) — so replay always **lands on** and
+**re-runs** it. Because each step's `requestId` derives from `(instanceId, cursor)`, the re-run's
+`requestId` is gen-2's own, distinct from gen-1's already-committed one — Contract #4's
+`vtx.op.<requestId>` dedup tracker cannot see across generations, so the guardless step's op commits
+a second time.
+
+This is the Contract #10 **documented-bound** doctrine (Contract #10 ~line 242): the duplicate is
+**bounded and operator-visible** (one extra commit per guardless step in the recovery window, never
+an unbounded loop), not a silent risk. A robust check-before-act variant is Phase-3 hardening.
+
+**Authoring guidance:** give a guard to any step whose re-run is costly. A guarded step is
+**recovery-idempotent by construction** — guard replay re-skips it once its precondition is already
+satisfied, so it never re-runs after the first generation that satisfied the guard. A guardless step
+trades that idempotency for "always runs" — appropriate for cheap/idempotent ops (e.g. a `Sync`),
+not for ops with an observable side effect that a duplicate would double (e.g. sending a
+notification).
+
 ### Execution loop
 
 ```
@@ -274,5 +328,7 @@ If two processes ever do run with the same `Instance` against the same `health-k
 - External-call steps in Loom (a deterministic *saga* with outbound calls) — would require
   promoting the Two-Phase Nudge actuator to a shared package. Today external calls are
   Weaver-owned. Flagged, not built.
-- Guard expression surface — pure-predicate language TBD at implementation (simple declarative
-  field-presence checks vs. a restricted pure-Starlark subset). Must remain side-effect-free.
+- Starlark guard evaluation — the reserved `{reads, starlark}` escape hatch (validated-and-rejected
+  today). The shared verified-pure sandbox lands only when the first Starlark guard is authored
+  (§10.5); the shipped declarative grammar (above) covers the field-presence/equality predicates the
+  current flows need. Must remain side-effect-free.

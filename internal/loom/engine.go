@@ -401,6 +401,27 @@ func (e *Engine) handleTrigger(ctx context.Context, msg substrate.Message) subst
 		e.logger.Error("loom: create instance failed; nak", "instanceId", t.InstanceID, "err", err)
 		return substrate.Nak
 	}
+	runCursor, completed, err := e.advanceToRunnableStep(ctx, inst, pattern)
+	if err != nil {
+		e.logger.Error("loom: step-0 guard evaluation failed; nak", "instanceId", t.InstanceID, "err", err)
+		return substrate.Nak
+	}
+	if completed {
+		// Step 0's guard — and every subsequent guard — is false: there is nothing
+		// to do (a legitimate "verify-info, already satisfied" run). Complete
+		// immediately instead of submitting a step. runCursor == len(pattern.Steps)
+		// here (advanceToRunnableStep's exhaustion return), matching the cursor a
+		// normal completion would persist.
+		inst.Cursor = runCursor
+		if err := e.complete(ctx, inst, pattern, ""); err != nil {
+			e.logger.Error("loom: complete-on-trigger failed; nak", "instanceId", t.InstanceID, "err", err)
+			return substrate.Nak
+		}
+		e.logger.Info("loom instance completed on trigger (all guards skipped)",
+			"instanceId", t.InstanceID, "patternId", patternID)
+		return substrate.Ack
+	}
+	inst.Cursor = runCursor
 	if err := e.submitStep(ctx, inst, pattern, ""); err != nil {
 		e.logger.Error("loom: submit step 0 failed; nak", "instanceId", t.InstanceID, "err", err)
 		return substrate.Nak
@@ -585,10 +606,64 @@ func (e *Engine) advance(ctx context.Context, instanceID, token string) error {
 	}
 
 	inst.Cursor++
-	if inst.Cursor >= len(pattern.Steps) {
+	runCursor, completed, err := e.advanceToRunnableStep(ctx, inst, pattern)
+	if err != nil {
+		return err
+	}
+	if completed {
+		// runCursor == len(pattern.Steps) (advanceToRunnableStep's exhaustion
+		// return) — set it before complete so the durable terminal record shows
+		// the true off-the-end position, matching a normal completion's cursor.
+		inst.Cursor = runCursor
 		return e.complete(ctx, inst, pattern, token)
 	}
+	inst.Cursor = runCursor
 	return e.submitStep(ctx, inst, pattern, token)
+}
+
+// advanceToRunnableStep evaluates step guards forward from inst.Cursor against
+// the subject's CURRENT Core KV state, skipping every step whose guard is false,
+// and returns the cursor of the first step that should RUN (absent guard = true
+// = run) — or completed=true if the cursor runs off the end (every remaining
+// guard was false). It does NOT mutate inst.Cursor; the caller sets it before
+// submitStep so submitStep reads pattern.Steps[inst.Cursor].
+//
+// Guard replay is a forward-skip mechanism only: it answers "is this step's
+// precondition already satisfied, so skip it?", never "did this step already
+// run?" (that is the durable token's job, §10.6). A guardless step's run/skip is
+// NOT derivable from Core KV (it has no guard-replay signal, §10.6 invariant 2),
+// so replay always LANDS ON a guardless step (no guard = run), never skips past
+// one on inferred completion. This is what makes the cursor crash-rebuildable: a
+// fresh instance over a partially-populated subject lands on the same effective
+// step a surviving instance would occupy.
+func (e *Engine) advanceToRunnableStep(ctx context.Context, inst *Instance, pattern *Pattern) (runCursor int, completed bool, err error) {
+	cursor := inst.Cursor
+	for {
+		if cursor >= len(pattern.Steps) {
+			return cursor, true, nil
+		}
+		step := pattern.Steps[cursor]
+		if len(step.Guard) == 0 {
+			// No guard → always runs.
+			return cursor, false, nil
+		}
+		g, perr := parseGuard(step.Guard)
+		if perr != nil {
+			// A loaded pattern passed validate(), so its guards parse — a parse
+			// failure here is an unexpected invariant break, surfaced as an error.
+			return 0, false, fmt.Errorf("loom: step %d guard parse: %w", cursor, perr)
+		}
+		run, eerr := evalGuard(ctx, e.conn, e.cfg.CoreKVBucket, inst.SubjectKey, g)
+		if eerr != nil {
+			return 0, false, eerr
+		}
+		if run {
+			return cursor, false, nil
+		}
+		// Guard false → skip this step (no task, no op, no token, no outbox) and
+		// re-evaluate the next one within this same transition.
+		cursor++
+	}
 }
 
 // submitStep write-aheads the next step in a single AtomicBatch (update

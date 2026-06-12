@@ -2,9 +2,24 @@ package loom
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/asolgan/lattice/internal/substrate"
 )
+
+// ParseGuardForTest exposes parseGuard to the external loom_test package so the
+// e2e absence-semantics table test can build guard ASTs without re-deriving the
+// grammar. The returned *guard is opaque to the caller (it holds it only to pass
+// to EvalGuardForTest).
+func ParseGuardForTest(raw string) (*guard, error) {
+	return parseGuard(json.RawMessage(raw))
+}
+
+// EvalGuardForTest exposes evalGuard to the external loom_test package for the
+// pinned-absence-semantics table test against a real Core KV.
+func EvalGuardForTest(ctx context.Context, conn *substrate.Conn, coreKVBucket, subjectKey string, g *guard) (bool, error) {
+	return evalGuard(ctx, conn, coreKVBucket, subjectKey, g)
+}
 
 // PauseForTest manually pauses a managed consumer via the supervisor. Test-only
 // seam: Loom exposes no operator Pause/Resume control surface in production

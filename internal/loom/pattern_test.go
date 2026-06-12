@@ -2,6 +2,8 @@ package loom
 
 import (
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 )
 
@@ -32,13 +34,38 @@ func TestPatternValidate_AcceptsSystemOpAndUserTask_RejectsGuardsAndUnknownKinds
 			wantErr: true,
 		},
 		{
-			name:    "guarded systemOp rejected",
+			name:    "valid guarded systemOp accepted",
 			pattern: Pattern{PatternID: "p3", SubjectType: "identity", Steps: []Step{{Kind: "systemOp", Operation: "SetName", Guard: json.RawMessage(`{"absent":"subject.data.name"}`)}}},
+			wantErr: false,
+		},
+		{
+			name:    "valid guarded userTask accepted",
+			pattern: Pattern{PatternID: "p3b", SubjectType: "identity", Steps: []Step{{Kind: "userTask", Operation: "SetName", Guard: json.RawMessage(`{"absent":"subject.profile.data.name"}`)}}},
+			wantErr: false,
+		},
+		{
+			name:    "guard with unknown top-level key rejected",
+			pattern: Pattern{PatternID: "p3c", SubjectType: "identity", Steps: []Step{{Kind: "systemOp", Operation: "X", Guard: json.RawMessage(`{"exists":"subject.data.name"}`)}}},
 			wantErr: true,
 		},
 		{
-			name:    "guarded userTask rejected",
-			pattern: Pattern{PatternID: "p3b", SubjectType: "identity", Steps: []Step{{Kind: "userTask", Operation: "SetName", Guard: json.RawMessage(`{"absent":"subject.data.name"}`)}}},
+			name:    "multi-key guard object rejected",
+			pattern: Pattern{PatternID: "p3d", SubjectType: "identity", Steps: []Step{{Kind: "systemOp", Operation: "X", Guard: json.RawMessage(`{"absent":"subject.data.a","present":"subject.data.b"}`)}}},
+			wantErr: true,
+		},
+		{
+			name:    "empty allOf rejected",
+			pattern: Pattern{PatternID: "p3e", SubjectType: "identity", Steps: []Step{{Kind: "systemOp", Operation: "X", Guard: json.RawMessage(`{"allOf":[]}`)}}},
+			wantErr: true,
+		},
+		{
+			name:    "bad path shape rejected",
+			pattern: Pattern{PatternID: "p3f", SubjectType: "identity", Steps: []Step{{Kind: "systemOp", Operation: "X", Guard: json.RawMessage(`{"absent":"subject.profile.name"}`)}}},
+			wantErr: true,
+		},
+		{
+			name:    "starlark guard rejected",
+			pattern: Pattern{PatternID: "p3g", SubjectType: "identity", Steps: []Step{{Kind: "systemOp", Operation: "X", Guard: json.RawMessage(`{"reads":["profile"],"starlark":"def guard(subject): return True"}`)}}},
 			wantErr: true,
 		},
 		{
@@ -59,6 +86,26 @@ func TestPatternValidate_AcceptsSystemOpAndUserTask_RejectsGuardsAndUnknownKinds
 				t.Fatalf("validate() err=%v, wantErr=%v", err, tc.wantErr)
 			}
 		})
+	}
+}
+
+// TestPatternValidate_StarlarkGuardRejectedAsReserved asserts the reserved
+// Starlark escape hatch rejects with the reserved-specific sentinel/message —
+// NOT a generic malformed-guard error (§10.5: the Starlark evaluator is reserved
+// until the first such guard is authored).
+func TestPatternValidate_StarlarkGuardRejectedAsReserved(t *testing.T) {
+	p := Pattern{PatternID: "ps", SubjectType: "identity", Steps: []Step{
+		{Kind: "systemOp", Operation: "X", Guard: json.RawMessage(`{"reads":["profile"],"starlark":"def guard(subject): return True"}`)},
+	}}
+	err := p.validate()
+	if err == nil {
+		t.Fatalf("validate() accepted a starlark guard, want rejection")
+	}
+	if !errors.Is(err, errStarlarkReserved) {
+		t.Fatalf("validate() err=%v, want errStarlarkReserved", err)
+	}
+	if !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("validate() err=%q, want a 'reserved' message", err.Error())
 	}
 }
 

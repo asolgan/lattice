@@ -3,10 +3,13 @@
 // completion. The engine ships zero domain knowledge — patterns are package
 // data (meta.loomPattern meta-vertices) and the engine interprets them.
 //
-// This package is the Phase-8.1 walking skeleton: systemOp steps only, no
-// guards and no user-tasks (those arrive in later Epic-8 stories). The loader
+// Steps are systemOp or userTask, each optionally carrying a §10.5 declarative
+// guard (a pure on/off predicate over the subject's current Core KV state;
+// guard.go / guard_eval.go). A false guard skips its step (cursor advances, no
+// op); replaying guards forward over a partially-populated subject rebuilds the
+// cursor, which is what makes a lost loom-state recoverable (§10.6). The loader
 // spine, per-domain completion consumers, write-ahead cursor, and crash-safe
-// restart are fully present — only the set of step kinds is thin.
+// restart are fully present.
 //
 // Module boundary (Contract / Story 8.1 AC #8): loom imports ONLY
 // internal/substrate + stdlib. Every cross-component interaction is via NATS:

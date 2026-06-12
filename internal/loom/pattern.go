@@ -114,8 +114,10 @@ func (p *Pattern) userTaskCompletionUnobservable() bool {
 
 // validate rejects a pattern the engine cannot run. systemOp and userTask
 // steps are interpreted; any other kind is rejected so a half-understood
-// pattern never partially executes. Guards are not yet interpreted; a guarded
-// step of either kind is rejected.
+// pattern never partially executes. A guarded step's guard must parse as a
+// §10.5 declarative shape (atoms/composition); a malformed guard or the
+// reserved Starlark escape hatch rejects the whole pattern, the same doctrine as
+// an unknown kind — a half-understood pattern never partially executes.
 func (p *Pattern) validate() error {
 	if strings.TrimSpace(p.SubjectType) == "" {
 		return fmt.Errorf("pattern %q: subjectType required", p.PatternID)
@@ -132,7 +134,9 @@ func (p *Pattern) validate() error {
 			return fmt.Errorf("pattern %q step %d: operation required", p.PatternID, i)
 		}
 		if len(s.Guard) != 0 {
-			return fmt.Errorf("pattern %q step %d: guards are out of scope", p.PatternID, i)
+			if _, err := parseGuard(s.Guard); err != nil {
+				return fmt.Errorf("pattern %q step %d: %w", p.PatternID, i, err)
+			}
 		}
 	}
 	return nil
