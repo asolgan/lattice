@@ -235,14 +235,18 @@ So that a declared target state converges.
 
 **Acceptance Criteria:**
 
-**Given** a fixture target Lens projecting **one row per candidate with a `violating` flag** (+ gap columns) to the shared `weaver-targets` bucket, key `<targetId>.<entityId>` (NATS-KV; entity = vertex, key on the NanoID, full `entityKey` in the value)
+**Given** a fixture target Lens projecting **one row per candidate with a `violating` flag** (+ gap columns) to the shared `weaver-targets` bucket, key `<targetId>.<entityId>` (NATS-KV; entity = vertex, key on the NanoID, full `entityKey` in the value), the target discovered via a **`meta.weaverTarget` registry CDC source** (§10.8; mirrors Loom's `internal/loom/source.go`) carrying §10.8's install-time validations (`targetId` uniqueness; every `gaps` key matches `missing_*`)
+**And given** **`weaver-targets` joins the primordial bucket create list** (§10.2 "NEW", like `loom-state`) with a `verify-kernel` assertion
 **When** a row with `violating: true` appears
-**Then** the Sensorium enqueues lane-1 work; Evaluator L1 confirms still-violating + not in-flight; L2 classifies the gap; Strategist selects a playbook; the Actuator submits a remediation op via the Processor with an **OCC revision-condition**
+**Then** the Sensorium's lane-1 is a **per-target supervised KV-CDC durable** on the `weaver-targets` backing stream (`FilterSubject $KV.weaver-targets.<targetId>.>`, `DeliverLastPerSubject` — the Refractor CDC pattern, **not** a raw KV watcher), driven through `substrate.ConsumerSupervisor` (8.4) as a desired-vs-running reconcile over the registry: a removed/revoked target's consumer is `Remove`d **and its JetStream durable deleted**; a changed filter/config is `Reset`, never silently unchanged (the 8.5 lessons, adopted day one)
+**And** Evaluator L1 confirms still-violating + **not in-flight** — the in-flight check reads the `weaver-state` **CAS-create mark** (§10.8's dispatch OCC, created in this story; mark-clearing is **level-reconciled on each watch update**: any mark whose `missing_<col>` is now `false` is deleted; the TTL/lease + reconciler sweep land in 9.2); L2 classifies the gap; Strategist selects a playbook; the Actuator submits a remediation op via the Processor with an **OCC revision-condition**
+**And** the Actuator's submit is a **fire-and-forget publish** to `core-operations` via substrate with a deterministic per-dispatch-episode `requestId` (Contract #4 collapses a re-fire within the horizon) — **no request-reply** (the Loom F1 lesson); rejected/lost-op recovery is the §10.3 mark-lease + level-reconcile, **not** a command outbox (Weaver has no cursor advance to dual-write — pinned so review does not demand one)
 **And** triggering a Loom utility is done **via an op** (not a Go call)
-**And** when the gap closes the row's flag flips `false` via upsert (no retraction needed); Weaver stops acting
-**And** `weaver` imports only `substrate/*`
+**And** when the gap closes the row's flag flips `false` via upsert (no retraction needed); Weaver stops acting and the mark is cleared
+**And** each supervised consumer carries a **`health.weaver.<target>` HealthSink** and Weaver publishes a Contract #5 heartbeat, mirroring `internal/loom/health_sink.go` / `health.go`
+**And** `weaver` imports only `substrate/*`, enforced by a `boundary_test.go` forbidding `nats-io/*` from day one
 
-*FRs: FR27 · Depends on: 7.x, 7.6 (substrate durable-consumer), 8.1, 1.5.1 (OCC revisions) · Model: Opus (engine) · Grounding: `docs/components/weaver.md`, D4*
+*FRs: FR27 · Depends on: 7.x, 8.4/8.5 (substrate ConsumerSupervisor + Loom adoption precedent), 8.1, 1.5.1 (OCC revisions) · Model: Opus (engine) · Grounding: `docs/components/weaver.md`, Contract #10 §10.2/§10.3/§10.8, D4, `internal/loom/{source.go,engine.go,health_sink.go}` (precedents)*
 
 ### Story 9.2: Anti-storm in-flight marks + TTL reconciliation
 
@@ -252,13 +256,14 @@ So that Weaver neither re-triggers on a persisting violation nor wedges forever 
 
 **Acceptance Criteria:**
 
-**Given** a violation Weaver is already remediating
-**When** the same row is re-observed before it re-projects (CDC lag)
-**Then** a `weaver-state` in-flight mark (key `<targetId>.<entityId>.<gapColumn>`, set via CAS-create) suppresses re-triggering
-**And** the mark carries a **TTL/lease**; a reconciliation reclaims expired leases
+**Given** the 9.1 CAS-create in-flight mark (key `<targetId>.<entityId>.<gapColumn>`) suppressing re-triggering on a re-observed row (CDC lag)
+**When** the mark is hardened to the full frozen §10.3 `weaver-state` shape
+**Then** the mark carries a **NATS per-key TTL** (the bucket is TTL-provisioned) mirrored by `leaseExpiresAt`, sized ≫ expected remediation latency, **and** an **active reconciler sweep** reclaims expired leases promptly — TTL is the backstop, so a missing/dead reconciler can never wedge a gap forever
+**And** mark-clearing is level-reconciled on the **sweep** as well as on watch updates (9.1); the sweep also reclaims **orphaned marks** — marks whose target is no longer installed, or whose gap column is absent from both the current row and the current playbook (the stale-mark escapes the 9.1 review catalogued: coalesced close→reopen, playbook-changed strays, removed-target leftovers); `claimedAt`/`claimId` tag the episode so a stale prior-episode mark can't shadow a re-open (the `claimId` field lands now per the frozen value shape; it is populated when Epic 10's nudge arrives)
+**And** re-fire-after-lease-expiry idempotency follows §10.3: `nudge` safe via `claimId`; `triggerLoom`/`assignTask` = documented rare-double, operator-visible
 **And** a **mid-flight-kill test** (Actuator crashes after marking in-flight, before completing) asserts the lease expires and the target is re-attempted — never permanently wedged
 
-*FRs: FR27 · Depends on: 9.1 · Model: Opus · Grounding: D3/D4 anti-storm; `docs/components/weaver.md` failure modes*
+*FRs: FR27 · Depends on: 9.1 · Model: Opus · Grounding: Contract #10 §10.3 (`weaver-state`), D3/D4 anti-storm; `docs/components/weaver.md` failure modes*
 
 ### Story 9.3: Temporal lane (ADR-51 scheduled messages)
 
@@ -269,13 +274,13 @@ So that freshness rules (e.g. "background check older than N") converge.
 **Acceptance Criteria:**
 
 **Given** a resolved entity with a freshness window
-**When** the Actuator schedules an `@at(resolve+window)` message on the `AllowMsgSchedules` stream, subject keyed per-entity
-**Then** at expiry NATS republishes to an internal `weaver.timer.fired.>` subject; the temporal lane submits a `MarkExpired` **op** via the Processor (never injected into `core-events`)
+**When** the Actuator schedules an `@at(resolve+window)` message on the **`core-schedules`** stream (`AllowMsgSchedules`, provisioned since 7.4), schedule subject `schedule.weaver.timer.<entityId>`, with `Nats-Schedule-Target: schedule.weaver.timer.fired.<entityId>` — per the **corrected §10.4 (2026-06-05)**: the fired target **must lie within `schedule.>`** (the earlier `weaver.timer.fired.>` internal-subject notation is obsolete; an out-of-stream target is rejected at publish time)
+**Then** at expiry NATS republishes back into `core-schedules` at the target subject; the temporal lane — a **supervised consumer** filtered on `schedule.weaver.timer.fired.>` — submits a `MarkExpired` **op** via the Processor (never injected into `core-events`), carrying a **deterministic `requestId`** derived from the schedule subject + fire instant so the Contract #4 tracker collapses at-least-once redelivery (a redelivered timer never double-acts)
 **And** CDC re-projects the target; the freshness gap flips violating
-**And** re-doing the entity before expiry re-publishes to the same subject, **replacing** the prior timer
+**And** re-doing the entity before expiry re-publishes to the same schedule subject, **replacing** the prior timer
 **And** the schedule is durable across a Weaver restart
 
-*FRs: FR27 · Depends on: 9.1, 7.4 · Model: Opus · Grounding: Contract #10 §10.4, ADR-51, D4*
+*FRs: FR27 · Depends on: 9.1, 7.4 · Model: Opus · Grounding: Contract #10 §10.4 (as corrected 2026-06-05), ADR-51, D4*
 
 ### Story 9.4: Weaver control-API / CLI (FR30)
 
@@ -288,6 +293,7 @@ So that I can manage convergence without a console (Phase 2 has no UI).
 **Given** installed targets
 **When** I invoke the Weaver control API / CLI (mirroring the Refractor control plane — NATS Services or equivalent)
 **Then** I can `list` active targets, `disable` (pause) a target so Weaver stops acting on it, and `revoke` it
+**And** `disable` maps to the supervisor's `Pause` of the target's lane consumers + dispatch skip; `revoke` maps to `Remove` (JetStream durable deleted) + clearing the target's `weaver-state` marks
 **And** disabling a target halts its convergence without deleting its Lens definition
 **And** the control surface is operator-facing only (no console dependency)
 
