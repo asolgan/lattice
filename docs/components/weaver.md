@@ -1,11 +1,35 @@
 # Weaver
 
-**Component reference** | Audience: implementers + architects | Status: **Phase 2 — design (no code yet)** | Decided: 2026-06-01
+**Component reference** | Audience: implementers + architects | Status: **Phase 2 — in progress (lane 1 shipped, Story 9.1)** | Decided: 2026-06-01
 
 > Design page authored in the Phase 2 architecture sprint. Decisions of record live in
 > `_bmad-output/planning-artifacts/lattice-architecture.md` → "Phase 2 Architecture —
-> Orchestration Core" (D3, D4) and PRD-Alignment Item 3 (Two-Phase Nudge). Update this page in
-> the same commit as the code; drift is a documentation bug.
+> Orchestration Core" (D3, D4) and PRD-Alignment Item 3 (Two-Phase Nudge). Data shapes are
+> frozen in Contract #10 (§10.2 target rows, §10.3 weaver-state, §10.8 target+playbook) — where
+> this page and the contract diverge, the contract governs. Update this page in the same commit
+> as the code; drift is a documentation bug.
+
+---
+
+## Phase 2 implementation status (Story 9.1)
+
+What ships today in `internal/weaver` + `cmd/weaver`, and what is deliberately deferred:
+
+| Surface | Status |
+|---------|--------|
+| **Lane 1 (violation-driven)** | ✅ Shipped. One **supervised KV-CDC durable per target** on the `KV_weaver-targets` backing stream (`$KV.weaver-targets.<targetId>.>`, `DeliverLastPerSubject`) via `substrate.ConsumerSupervisor` — never a raw `kv.Watch`. Desired-vs-running reconcile over the `meta.weaverTarget` registry: removal deletes the JetStream durable; a spec change Resets it. |
+| **Target registry** | ✅ Shipped. `meta.weaverTarget` CDC source (Core KV `vtx.meta.>`), §10.8 install-time validations (`missing_*` gaps keys, `targetId` uniqueness + dot-free), reject-and-alert (Health KV issue), never silent. |
+| **Dispatch OCC (§10.3 subset)** | ✅ Shipped **without TTL/lease**: the `weaver-state` mark is a plain **CAS-create** (`<targetId>.<entityId>.<gapColumn>`); mark-clearing is **level-reconciled on each watch update**. The TTL lease, `claimId`, and the reconciler sweep land in **Story 9.2** — until then an Actuator crash between CAS-create and publish wedges that one gap (accepted 9.1 interim). |
+| **Actuator** | ✅ Shipped as **fire-and-forget publish** to `ops.<lane>` with a deterministic per-dispatch-episode `requestId` (derived from the mark's create revision; Contract #4 collapses re-fires). **No request-reply, no command outbox** — Weaver has no cursor advance to dual-write; recovery is the mark + level-reconcile (+ 9.2 lease). A rejected/lost op leaves the mark in place until 9.2's lease re-attempts it. The op payload carries the row's `expectedRevision` (the OCC revision-condition); `triggerLoom` resolves the live `meta.loomPattern` vertex for `authContext.target` (pattern-as-target). |
+| **Actions** | `triggerLoom` (→ `StartLoomPattern` op, never a Go call), `assignTask` (→ `CreateTask` with episode-deterministic `taskId`), `directOp` ✅. **`nudge` is a loud stub** (logged + Health KV issue) until Epic 10 builds the Two-Phase Nudge + `internal/weaver/nudge/`. |
+| **Health** | ✅ Contract #5 heartbeat at `health.weaver.<instance>` (metrics: `consumers`, `targets`, `marksInFlight`) + per-consumer pause-state docs at `health.weaver.<instance>.consumer.<name>`; config/data errors surface as issues. |
+| **Lane 3 (temporal)** | ⏳ Story 9.3 (`core-schedules`, Contract #10 §10.4). |
+| **Control API/CLI (Pause/Resume surface)** | ⏳ Story 9.4 (the supervisor's `Pause`/`Resume` exist; no operator surface yet). |
+| **Lane 2 (event-targeted-audit) + `weaver-work`** | ⏳ Phase 3 (§10.3: no durable bucket in Phase 2). |
+| **Real target Lens via Refractor + playbook package data** | ⏳ Epic 11 (`lease-signing`); 9.1 exercises the engine with test-written §10.2 fixture rows. |
+
+The engine ships **zero domain knowledge** — targets and playbooks are package data; domain
+literals appear only in tests/fixtures.
 
 ---
 
@@ -21,8 +45,9 @@ Crucially, **a Weaver target is a Lens** — Weaver is a **consumer of the Refra
 own cypher runtime. The Refractor projects "currently-violating" rows; Weaver reacts.
 
 Weaver is an **internal service actor** at root-equivalent capability. It **submits operations
-through the Processor** (never writes Core KV directly). Its direct writes are to `weaver.state.>`
-(dispatch/bookkeeping) and `weaver.claims.>` (Two-Phase Nudge claims).
+through the Processor** (never writes Core KV directly). Its direct writes are to the
+`weaver-state` bucket (dispatch/bookkeeping marks, Contract #10 §10.3) and the `weaver-claims`
+bucket (Two-Phase Nudge claims, Epic 10).
 
 ---
 
@@ -158,12 +183,12 @@ config (`lease-signing`).
 
 | Direction | Contract | Notes |
 |-----------|----------|-------|
-| In | `weaver-targets.<target>.>` KV watch | lane 1 (primary input — **not** the core-events consumer) |
-| In | `events.<domain>.>` per-domain consumer | lane 2 targeted-audit only |
-| In | `weaver.timer.fired.>` internal subject | lane 3 (from ADR-51 scheduled messages) |
-| Out | ops via `core-operations` | OCC; trigger-Loom; resolve mutations carry `claim-id` |
-| Out (own) | `weaver.state.>` | in-flight convergence (anti-storm), TTL-leased |
-| Out (own) | `weaver.claims.>` | Two-Phase Nudge claims (90d retention) |
+| In | `weaver-targets` `<targetId>.>` KV-CDC durable | lane 1 (primary input — **not** the core-events consumer) |
+| In | `events.<domain>.>` per-domain consumer | lane 2 targeted-audit only (Phase 3) |
+| In | `schedule.weaver.timer.fired.>` on `core-schedules` | lane 3 (ADR-51 scheduled messages, Story 9.3) |
+| Out | ops via `core-operations` (`ops.<lane>`) | fire-and-forget; OCC `expectedRevision` payload; trigger-Loom; resolve mutations carry `claim-id` |
+| Out (own) | `weaver-state` bucket | in-flight convergence marks (anti-storm); TTL lease lands in 9.2 |
+| Out (own) | `weaver-claims` bucket | Two-Phase Nudge claims (90d retention, Epic 10) |
 
 ---
 

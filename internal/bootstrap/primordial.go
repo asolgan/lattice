@@ -26,6 +26,7 @@ const (
 	WeaverStateBucket      = "weaver-state"
 	WeaverClaimsBucket     = "weaver-claims"
 	LoomStateBucket        = "loom-state" // Loom's per-instance cursor store (Contract #10 §10.3)
+	WeaverTargetsBucket    = "weaver-targets" // shared target-Lens projection bucket (Contract #10 §10.2)
 	RefractorAdjacencyKV   = "refractor-adjacency" // Refractor's internal adjacency store (private, not a Lens target)
 
 	// JetStream stream names.
@@ -71,6 +72,10 @@ func (s *Seeder) ProvisionBuckets(ctx context.Context) error {
 		{WeaverStateBucket, "Lattice Weaver State KV", true},
 		{WeaverClaimsBucket, "Lattice Weaver Claims KV", true},
 		{LoomStateBucket, "Lattice Loom State KV — per-instance pattern cursors", true},
+		// weaver-targets rows are durable Lens projections — no per-key TTL keys
+		// live here (TTL-leased marks live in weaver-state). History stays the KV
+		// default 1, which is what DeliverLastPerSubject CDC consumers expect.
+		{WeaverTargetsBucket, "Lattice Weaver Targets KV — shared target-Lens projection bucket", false},
 		{RefractorAdjacencyKV, "Refractor internal adjacency store (private)", false},
 	}
 

@@ -263,7 +263,7 @@ func main() {
 	for _, bucket := range []string{
 		bootstrap.CoreKVBucket, bootstrap.HealthKVBucket, bootstrap.CapabilityKVBucket,
 		bootstrap.WeaverStateBucket, bootstrap.WeaverClaimsBucket, bootstrap.LoomStateBucket,
-		bootstrap.RefractorAdjacencyKV,
+		bootstrap.WeaverTargetsBucket, bootstrap.RefractorAdjacencyKV,
 	} {
 		if _, err := js.KeyValue(ctx, bucket); err != nil {
 			failures = append(failures, fmt.Sprintf("MISSING KV bucket: %s (%v)", bucket, err))
