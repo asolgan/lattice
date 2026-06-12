@@ -56,8 +56,10 @@ func run(logger *slog.Logger) error {
 	}
 
 	// Resolve the primordial identity:loom service-actor key (Story 7.3).
-	if _, err := bootstrap.LoadOrGenerate(bootstrapJSONPath); err != nil {
-		return fmt.Errorf("load primordial IDs: %w", err)
+	// Uses the strict loader: an absent/invalid bootstrap file is a fatal
+	// startup error, never a freshly-minted (and unrecognized) identity.
+	if err := bootstrap.Load(bootstrapJSONPath); err != nil {
+		return fmt.Errorf("load primordial IDs from %s: %w", bootstrapJSONPath, err)
 	}
 	actorKey := bootstrap.LoomIdentityKey
 
