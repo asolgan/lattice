@@ -137,6 +137,134 @@ func TestKV_PutGetCreateUpdateDelete(t *testing.T) {
 	}
 }
 
+// TestKVCreateWithTTL proves the per-key-TTL create: CAS semantics hold (a
+// second create conflicts while the key lives), the key self-expires at the
+// TTL, and the CAS stays tombstone-aware (create-after-soft-delete succeeds).
+// The bucket is LimitMarkerTTL-provisioned (provisionCoreBucket), the
+// per-key-TTL prerequisite.
+func TestKVCreateWithTTL(t *testing.T) {
+	c, ctx := newTestConn(t)
+	bucket := "core-kv"
+	provisionCoreBucket(ctx, t, c, bucket)
+
+	key := VertexKey("identity", testNanoID1)
+	val := []byte(`{"hello":"ttl"}`)
+
+	// Create with the NATS-floor TTL.
+	rev, err := c.KVCreateWithTTL(ctx, bucket, key, val, time.Second)
+	if err != nil {
+		t.Fatalf("KVCreateWithTTL: %v", err)
+	}
+	if rev == 0 {
+		t.Fatalf("Create returned revision 0")
+	}
+
+	// CAS holds while the key lives: a duplicate create conflicts.
+	if _, err := c.KVCreateWithTTL(ctx, bucket, key, val, time.Second); !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("expected ErrRevisionConflict on duplicate create, got %v", err)
+	}
+
+	// The key self-expires: poll until the server's TTL deletion lands.
+	deadline := time.Now().Add(10 * time.Second)
+	expired := false
+	for time.Now().Before(deadline) {
+		if _, err := c.KVGet(ctx, bucket, key); errors.Is(err, ErrKeyNotFound) {
+			expired = true
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !expired {
+		t.Fatalf("key %q never expired via its per-key TTL", key)
+	}
+
+	// Tombstone-aware CAS: a soft-deleted key accepts a fresh TTL create.
+	key2 := VertexKey("identity", testNanoID2)
+	if _, err := c.KVCreate(ctx, bucket, key2, val); err != nil {
+		t.Fatalf("KVCreate %q: %v", key2, err)
+	}
+	if err := c.KVDelete(ctx, bucket, key2); err != nil {
+		t.Fatalf("KVDelete %q: %v", key2, err)
+	}
+	if _, err := c.KVCreateWithTTL(ctx, bucket, key2, val, time.Second); err != nil {
+		t.Fatalf("create-after-soft-delete with TTL must succeed, got %v", err)
+	}
+
+	// ttl <= 0 falls back to a plain create (no expiry header, CAS preserved).
+	key3 := VertexKey("identity", testNanoID3)
+	if _, err := c.KVCreateWithTTL(ctx, bucket, key3, val, 0); err != nil {
+		t.Fatalf("KVCreateWithTTL(ttl=0): %v", err)
+	}
+	if _, err := c.KVCreateWithTTL(ctx, bucket, key3, val, 0); !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("expected ErrRevisionConflict on duplicate ttl=0 create, got %v", err)
+	}
+}
+
+// TestKVUpdateWithTTL proves the revision-conditioned TTL update: the write
+// lands only at the expected revision (a stale revision conflicts and leaves
+// the entry intact), the update RE-ARMS the per-key TTL (the new entry's TTL
+// governs, superseding the prior entry's), and ttl <= 0 falls back to a plain
+// revision-conditioned update.
+func TestKVUpdateWithTTL(t *testing.T) {
+	c, ctx := newTestConn(t)
+	bucket := "core-kv"
+	provisionCoreBucket(ctx, t, c, bucket)
+
+	key := VertexKey("identity", testNanoID1)
+	rev, err := c.KVCreateWithTTL(ctx, bucket, key, []byte(`{"n":1}`), time.Hour)
+	if err != nil {
+		t.Fatalf("KVCreateWithTTL: %v", err)
+	}
+
+	// A stale revision conflicts and leaves the live entry untouched.
+	if _, err := c.KVUpdateWithTTL(ctx, bucket, key, []byte(`{"n":0}`), rev+1, time.Second); !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("expected ErrRevisionConflict on stale update, got %v", err)
+	}
+	entry, err := c.KVGet(ctx, bucket, key)
+	if err != nil || string(entry.Value) != `{"n":1}` {
+		t.Fatalf("a conflicted update must leave the entry intact (err=%v value=%s)", err, entry.Value)
+	}
+
+	// At the live revision the update lands and re-arms the TTL: the entry
+	// was created with a 1h TTL but expires at the UPDATE's 1s TTL.
+	rev2, err := c.KVUpdateWithTTL(ctx, bucket, key, []byte(`{"n":2}`), rev, time.Second)
+	if err != nil {
+		t.Fatalf("KVUpdateWithTTL: %v", err)
+	}
+	if rev2 <= rev {
+		t.Fatalf("update revision %d must exceed the prior revision %d", rev2, rev)
+	}
+	entry, err = c.KVGet(ctx, bucket, key)
+	if err != nil || string(entry.Value) != `{"n":2}` {
+		t.Fatalf("updated value not visible (err=%v value=%s)", err, entry.Value)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	expired := false
+	for time.Now().Before(deadline) {
+		if _, err := c.KVGet(ctx, bucket, key); errors.Is(err, ErrKeyNotFound) {
+			expired = true
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !expired {
+		t.Fatalf("key %q never expired via the update's re-armed TTL", key)
+	}
+
+	// ttl <= 0 falls back to a plain revision-conditioned update (no expiry).
+	key2 := VertexKey("identity", testNanoID2)
+	rev, err = c.KVCreate(ctx, bucket, key2, []byte(`{"n":1}`))
+	if err != nil {
+		t.Fatalf("KVCreate %q: %v", key2, err)
+	}
+	if _, err := c.KVUpdateWithTTL(ctx, bucket, key2, []byte(`{"n":2}`), rev+1, 0); !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("expected ErrRevisionConflict on stale ttl=0 update, got %v", err)
+	}
+	if _, err := c.KVUpdateWithTTL(ctx, bucket, key2, []byte(`{"n":2}`), rev, 0); err != nil {
+		t.Fatalf("KVUpdateWithTTL(ttl=0): %v", err)
+	}
+}
+
 func TestAtomicBatch_Commits(t *testing.T) {
 	c, ctx := newTestConn(t)
 	bucket := "core-kv"

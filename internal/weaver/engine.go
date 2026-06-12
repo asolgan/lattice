@@ -43,6 +43,30 @@ type Config struct {
 	// heartbeat-driven state without waiting out production timing. Values <= 0
 	// take the default.
 	HeartbeatEvery time.Duration
+	// MarkLease is the §10.3 in-flight mark lease: an episode whose mark
+	// outlives this window is presumed dead and reclaimed by the reconciler
+	// sweep (the mark's per-key TTL backstops at markTTLBackstopFactor × this
+	// value). Sized ≫ expected remediation latency so expiry is rare. Must be
+	// >= 1s (NATS per-key TTL floor). Default 30m; values <= 0 take the
+	// default.
+	MarkLease time.Duration
+	// SweepInterval is the reconciler sweep cadence: each pass level-reconciles
+	// every weaver-state mark against its current row and reclaims expired
+	// leases and orphaned marks. Values <= 0 take the 1m default; values above
+	// MarkLease are clamped down to it (with a Warn), so the sweep always
+	// observes an expired lease while the key still exists — before the
+	// markTTLBackstopFactor × MarkLease per-key TTL deletes it unseen.
+	SweepInterval time.Duration
+	// SweepOrphanWarmup gates the sweep's orphan legs (target not installed;
+	// playbook lacks the gap column) for this long after engine start. It is a
+	// registry-replay-readiness proxy: the registry source replays
+	// meta.weaverTarget history asynchronously and exposes no replay-done
+	// signal, so an early "uninstalled"/"column dropped" verdict may be replay
+	// lag — deleting on it would orphan a live gap. Expired-lease reclaim and
+	// level clearing are never gated. Values <= 0 take the 5m default; values
+	// below SweepInterval are clamped up to it (a warm-up shorter than one
+	// tick gates nothing).
+	SweepOrphanWarmup time.Duration
 	// Instance distinguishes this engine process; it suffixes the per-boot
 	// registry-source durable so each boot replays the installed target set,
 	// and it is the key segment for this process's Contract #5 heartbeat
@@ -84,6 +108,9 @@ func defaultInstance() string {
 }
 
 func (c *Config) withDefaults() {
+	if c.Logger == nil {
+		c.Logger = slog.Default()
+	}
 	if c.CoreKVBucket == "" {
 		c.CoreKVBucket = "core-kv"
 	}
@@ -102,11 +129,36 @@ func (c *Config) withDefaults() {
 	if c.Lane == "" {
 		c.Lane = "system"
 	}
+	if c.MarkLease <= 0 {
+		c.MarkLease = defaultMarkLease
+	}
+	if c.MarkLease < time.Second {
+		// NATS per-key TTL floor: weaver-state is provisioned LimitMarkerTTL >= 1s,
+		// and the server rejects per-key TTLs under a second; the mark's TTL is
+		// derived from the lease, so the lease shares the floor.
+		c.MarkLease = time.Second
+	}
+	if c.SweepInterval <= 0 {
+		c.SweepInterval = defaultSweepInterval
+	}
+	if c.SweepInterval > c.MarkLease {
+		// The sweep is the only actor that can re-attempt an expired mark, and
+		// it can only act while the key still exists — the per-key TTL deletes
+		// it at markTTLBackstopFactor × MarkLease. A sweep slower than the
+		// lease could let every expired mark be TTL-deleted unobserved,
+		// degrading every recovery to the unwedge-without-re-attempt backstop.
+		c.Logger.Warn("weaver: SweepInterval exceeds MarkLease; clamping",
+			"sweepInterval", c.SweepInterval, "markLease", c.MarkLease)
+		c.SweepInterval = c.MarkLease
+	}
+	if c.SweepOrphanWarmup <= 0 {
+		c.SweepOrphanWarmup = defaultSweepOrphanWarmup
+	}
+	if c.SweepOrphanWarmup < c.SweepInterval {
+		c.SweepOrphanWarmup = c.SweepInterval
+	}
 	if c.Instance == "" {
 		c.Instance = defaultInstance()
-	}
-	if c.Logger == nil {
-		c.Logger = slog.Default()
 	}
 }
 
@@ -123,6 +175,7 @@ type Engine struct {
 	logger           *slog.Logger
 	source           *targetSource
 	marks            *markStore
+	sweep            *sweeper
 	act              *actuator
 	supervisor       *substrate.ConsumerSupervisor
 	states           *consumerStateCache
@@ -166,7 +219,7 @@ func NewEngine(conn *substrate.Conn, cfg Config) *Engine {
 		cfg:              cfg,
 		conn:             conn,
 		logger:           cfg.Logger,
-		marks:            newMarkStore(conn, cfg.WeaverStateBucket),
+		marks:            newMarkStore(conn, cfg.WeaverStateBucket, cfg.MarkLease, cfg.Instance),
 		act:              newActuator(conn, cfg.Lane, cfg.ActorKey, cfg.Logger),
 		supervisor:       substrate.NewConsumerSupervisor(conn),
 		states:           newConsumerStateCache(),
@@ -175,12 +228,14 @@ func NewEngine(conn *substrate.Conn, cfg Config) *Engine {
 		targets:          make(map[string]specFingerprint),
 	}
 	e.source = newTargetSource(conn, cfg.CoreKVBucket, cfg.Instance, issues, cfg.Logger)
+	e.sweep = newSweeper(e, cfg.SweepInterval, cfg.SweepOrphanWarmup)
 	return e
 }
 
 // Start runs the engine until ctx is cancelled. It (1) validates the config
 // tokens that feed KV keys, subjects, and durable names; (2) starts the
-// Contract #5 heartbeater; (3) starts the registry source whose load/update
+// Contract #5 heartbeater and the reconciler sweep; (3) starts the registry
+// source whose load/update
 // callbacks reconcile the per-target lane-1 consumers; (4) seeds one reconcile
 // (a restart must not depend solely on source callbacks to bring consumers
 // up); (5) blocks on ctx.
@@ -202,8 +257,9 @@ func (e *Engine) Start(ctx context.Context) (err error) {
 	}()
 
 	hb := newHeartbeater(e.conn, e.cfg.HealthKVBucket, e.cfg.Instance, e.cfg.HeartbeatEvery,
-		e.states, e.issues, e.source, e.marks, e.logger)
+		e.states, e.issues, e.source, e.marks, e.sweep, e.logger)
 	go hb.run(ctx)
+	go e.sweep.run(ctx)
 
 	e.source.setLoadCallback(func(*Target) { e.reconcileConsumers() })
 	e.source.setUpdateCallback(func(_, _ *Target) { e.reconcileConsumers() })

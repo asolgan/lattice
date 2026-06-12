@@ -1,0 +1,871 @@
+package weaver
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"testing"
+	"time"
+
+	natsserver "github.com/nats-io/nats-server/v2/server"
+	natstest "github.com/nats-io/nats-server/v2/test"
+	nats "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/asolgan/lattice/internal/substrate"
+)
+
+// sweepHarness is an Engine wired to an embedded NATS server with its registry
+// seeded directly, so sweeper passes can be driven synchronously against
+// constructed weaver-state marks and weaver-targets rows (no tickers, no
+// CDC consumers).
+type sweepHarness struct {
+	engine *Engine
+	conn   *substrate.Conn
+	ops    *nats.Subscription
+}
+
+func newSweepHarness(t *testing.T, ctx context.Context, opts ...func(*Config)) *sweepHarness {
+	t.Helper()
+	srvOpts := &natsserver.Options{Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: t.TempDir()}
+	srv := natstest.RunServer(srvOpts)
+	t.Cleanup(srv.Shutdown)
+	nc, err := nats.Connect(srv.ClientURL())
+	if err != nil {
+		t.Fatalf("nats connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	conn, err := substrate.Wrap(nc)
+	if err != nil {
+		t.Fatalf("substrate wrap: %v", err)
+	}
+	js := conn.JetStream()
+	if _, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "weaver-state", LimitMarkerTTL: time.Second}); err != nil {
+		t.Fatalf("create weaver-state: %v", err)
+	}
+	if _, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "weaver-targets"}); err != nil {
+		t.Fatalf("create weaver-targets: %v", err)
+	}
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name: "core-operations", Subjects: []string{"ops.>"},
+	}); err != nil {
+		t.Fatalf("create ops stream: %v", err)
+	}
+	ops, err := nc.SubscribeSync("ops.system")
+	if err != nil {
+		t.Fatalf("subscribe ops: %v", err)
+	}
+	t.Cleanup(func() { _ = ops.Unsubscribe() })
+
+	cfg := Config{
+		ActorKey: "vtx.identity.WeaverServiceActor1abc",
+		Instance: "sweep-" + testNanoID(t),
+		Logger:   discardLogger(),
+	}
+	for _, opt := range opts {
+		opt(&cfg)
+	}
+	engine := NewEngine(conn, cfg)
+	return &sweepHarness{engine: engine, conn: conn, ops: ops}
+}
+
+func (h *sweepHarness) seedTarget(target *Target) {
+	h.engine.source.mu.Lock()
+	h.engine.source.targets[target.TargetID] = target
+	h.engine.source.mu.Unlock()
+}
+
+func (h *sweepHarness) putRow(t *testing.T, ctx context.Context, targetID, entityID string, row map[string]any) {
+	t.Helper()
+	body, err := json.Marshal(row)
+	if err != nil {
+		t.Fatalf("marshal row: %v", err)
+	}
+	if _, err := h.conn.KVPut(ctx, "weaver-targets", targetID+"."+entityID, body); err != nil {
+		t.Fatalf("put row: %v", err)
+	}
+}
+
+// putMark writes a constructed §10.3 mark value directly (no TTL — the shape a
+// lease-less mark has when its writer died before arming the lease, or a
+// manually-aged episode) and returns its revision.
+func (h *sweepHarness) putMark(t *testing.T, ctx context.Context, key string, rec mark) uint64 {
+	t.Helper()
+	body, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatalf("marshal mark: %v", err)
+	}
+	rev, err := h.conn.KVCreate(ctx, "weaver-state", key, body)
+	if err != nil {
+		t.Fatalf("create mark %q: %v", key, err)
+	}
+	return rev
+}
+
+func (h *sweepHarness) pass(ctx context.Context) { h.engine.sweep.pass(ctx) }
+
+// agePastWarmup rewinds the sweeper's start anchor so the orphan legs'
+// warm-up window reads as elapsed.
+func (h *sweepHarness) agePastWarmup() {
+	h.engine.sweep.startedAt = time.Now().Add(-2 * h.engine.sweep.warmup)
+}
+
+func (h *sweepHarness) markExists(t *testing.T, ctx context.Context, key string) bool {
+	t.Helper()
+	_, err := h.conn.KVGet(ctx, "weaver-state", key)
+	if err != nil && !errors.Is(err, substrate.ErrKeyNotFound) {
+		t.Fatalf("mark read %q: %v", key, err)
+	}
+	return err == nil
+}
+
+func (h *sweepHarness) nextOp(t *testing.T) map[string]any {
+	t.Helper()
+	msg, err := h.ops.NextMsg(5 * time.Second)
+	if err != nil {
+		t.Fatalf("expected an op on ops.system: %v", err)
+	}
+	var op map[string]any
+	if err := json.Unmarshal(msg.Data, &op); err != nil {
+		t.Fatalf("unmarshal op: %v", err)
+	}
+	return op
+}
+
+func (h *sweepHarness) requireNoOp(t *testing.T) {
+	t.Helper()
+	if msg, err := h.ops.NextMsg(500 * time.Millisecond); err == nil {
+		t.Fatalf("expected no op on ops.system, got: %s", string(msg.Data))
+	}
+}
+
+func pastLease() string   { return substrate.FormatTimestamp(time.Now().Add(-time.Minute)) }
+func futureLease() string { return substrate.FormatTimestamp(time.Now().Add(time.Hour)) }
+
+func fixtureMark(targetID, entityID, col, action, lease string) mark {
+	return mark{
+		TargetID:       targetID,
+		EntityKey:      "vtx.leaseApp." + entityID,
+		Gap:            col,
+		Action:         action,
+		ClaimedAt:      substrate.FormatTimestamp(time.Now().Add(-2 * time.Minute)),
+		LeaseExpiresAt: lease,
+		HeldBy:         "dead-instance",
+	}
+}
+
+// TestSweep_LevelClear proves the sweep leg of §10.3 level-reconciled clearing
+// (F6's prompt half and F7's row-tombstone variant): a mark whose column is no
+// longer true — or whose row is gone — is deleted promptly with NO lease wait
+// and no dispatch, while an unparseable row never clears a mark (unreadable
+// evidence).
+func TestSweep_LevelClear(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+
+	const targetID = "fixtureClear"
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps:     map[string]GapAction{"missing_x": {Action: actionDirectOp, Operation: "FixX"}},
+	})
+
+	// (1) Column flipped false: cleared despite a live lease.
+	closedEntity := testNanoID(t)
+	closedKey := markKey(targetID, closedEntity, "missing_x")
+	h.putMark(t, ctx, closedKey, fixtureMark(targetID, closedEntity, "missing_x", "directOp", futureLease()))
+	h.putRow(t, ctx, targetID, closedEntity, map[string]any{
+		"entityKey": "vtx.leaseApp." + closedEntity, "violating": false, "missing_x": false,
+	})
+
+	// (2) Row gone entirely (entity tombstoned): cleared.
+	goneEntity := testNanoID(t)
+	goneKey := markKey(targetID, goneEntity, "missing_x")
+	h.putMark(t, ctx, goneKey, fixtureMark(targetID, goneEntity, "missing_x", "directOp", futureLease()))
+
+	// (3) Column absent from the current row (the Lens re-projected without
+	// it): a mark may only stand for a currently-true column — cleared.
+	absentEntity := testNanoID(t)
+	absentKey := markKey(targetID, absentEntity, "missing_x")
+	h.putMark(t, ctx, absentKey, fixtureMark(targetID, absentEntity, "missing_x", "directOp", futureLease()))
+	h.putRow(t, ctx, targetID, absentEntity, map[string]any{
+		"entityKey": "vtx.leaseApp." + absentEntity, "violating": false,
+	})
+
+	// (4) Row unparseable: the mark must survive (never delete on unreadable
+	// evidence).
+	badRowEntity := testNanoID(t)
+	badRowKey := markKey(targetID, badRowEntity, "missing_x")
+	h.putMark(t, ctx, badRowKey, fixtureMark(targetID, badRowEntity, "missing_x", "directOp", futureLease()))
+	if _, err := h.conn.KVPut(ctx, "weaver-targets", targetID+"."+badRowEntity, []byte("{not json")); err != nil {
+		t.Fatalf("put bad row: %v", err)
+	}
+
+	h.pass(ctx)
+
+	if h.markExists(t, ctx, closedKey) {
+		t.Fatalf("closed-gap mark must be cleared by the sweep")
+	}
+	if h.markExists(t, ctx, goneKey) {
+		t.Fatalf("row-gone mark must be cleared by the sweep")
+	}
+	if h.markExists(t, ctx, absentKey) {
+		t.Fatalf("a mark at a column absent from the current row must be cleared")
+	}
+	if !h.markExists(t, ctx, badRowKey) {
+		t.Fatalf("a mark must survive an unparseable row")
+	}
+	h.requireNoOp(t)
+}
+
+// TestSweep_ReclaimExpired proves the lease-expiry reclaim (F5's lost publish,
+// F6's coalesced close→reopen shadow, the mid-flight-kill recovery): an
+// expired mark at a still-true column is replaced IN PLACE and re-dispatched
+// as a FRESH episode — new mark revision, new requestId, fresh lease and
+// re-armed per-key TTL, this instance as holder — and the sweepReclaims
+// counter records it.
+func TestSweep_ReclaimExpired(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+
+	const targetID = "fixtureReclaim"
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps:     map[string]GapAction{"missing_x": {Action: actionDirectOp, Operation: "FixX"}},
+	})
+	entityID := testNanoID(t)
+	key := markKey(targetID, entityID, "missing_x")
+	oldRev := h.putMark(t, ctx, key, fixtureMark(targetID, entityID, "missing_x", "directOp", pastLease()))
+	h.putRow(t, ctx, targetID, entityID, map[string]any{
+		"entityKey": "vtx.leaseApp." + entityID, "violating": true, "missing_x": true,
+	})
+
+	h.pass(ctx)
+
+	op := h.nextOp(t)
+	entry, err := h.conn.KVGet(ctx, "weaver-state", key)
+	if err != nil {
+		t.Fatalf("the reclaim must leave the mark standing, got %v", err)
+	}
+	if entry.Revision == oldRev {
+		t.Fatalf("the reclaimed mark must carry a fresh episode revision (old revision %d)", oldRev)
+	}
+	// The in-place replace re-arms the per-key TTL: the new entry carries the
+	// wire Nats-TTL header at markTTLBackstopFactor × MarkLease.
+	stream, err := h.conn.JetStream().Stream(ctx, "KV_weaver-state")
+	if err != nil {
+		t.Fatalf("open weaver-state stream: %v", err)
+	}
+	raw, err := stream.GetLastMsgForSubject(ctx, "$KV.weaver-state."+key)
+	if err != nil {
+		t.Fatalf("read raw reclaimed mark message: %v", err)
+	}
+	wantTTL := (markTTLBackstopFactor * h.engine.cfg.MarkLease).String()
+	if got := raw.Header.Get("Nats-TTL"); got != wantTTL {
+		t.Fatalf("reclaimed mark Nats-TTL header = %q, want %q (the replace must re-arm the TTL)", got, wantTTL)
+	}
+	var rec mark
+	if err := json.Unmarshal(entry.Value, &rec); err != nil {
+		t.Fatalf("unmarshal reclaimed mark: %v", err)
+	}
+	if rec.HeldBy != h.engine.cfg.Instance {
+		t.Fatalf("reclaimed mark heldBy = %q, want this instance %q", rec.HeldBy, h.engine.cfg.Instance)
+	}
+	if leaseExp, err := time.Parse(time.RFC3339Nano, rec.LeaseExpiresAt); err != nil || !leaseExp.After(time.Now()) {
+		t.Fatalf("reclaimed mark must carry a fresh live lease, got %q (err=%v)", rec.LeaseExpiresAt, err)
+	}
+	deadRequestID := deriveEpisodeRequestID(targetID, entityID, "missing_x", oldRev)
+	wantRequestID := deriveEpisodeRequestID(targetID, entityID, "missing_x", entry.Revision)
+	if op["requestId"] == deadRequestID {
+		t.Fatalf("the reclaim must mint a NEW episode, not re-fire the dead one (%s)", deadRequestID)
+	}
+	if op["requestId"] != wantRequestID {
+		t.Fatalf("reclaim requestId = %v, want the fresh episode %v", op["requestId"], wantRequestID)
+	}
+	if reclaims, _, _, _ := h.engine.sweep.metrics(); reclaims != 1 {
+		t.Fatalf("sweepReclaims = %d, want 1", reclaims)
+	}
+	h.requireNoOp(t)
+}
+
+// TestSweep_LegacyMarkReclaimed proves a lease-less mark (the pre-lease value
+// shape: no leaseExpiresAt, no TTL) reads as expired — reclaimed on the first
+// sweep, never immortal.
+func TestSweep_LegacyMarkReclaimed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+
+	const targetID = "fixtureLegacy"
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps:     map[string]GapAction{"missing_x": {Action: actionDirectOp, Operation: "FixX"}},
+	})
+	entityID := testNanoID(t)
+	key := markKey(targetID, entityID, "missing_x")
+	legacy := fixtureMark(targetID, entityID, "missing_x", "directOp", "")
+	legacy.HeldBy = ""
+	oldRev := h.putMark(t, ctx, key, legacy)
+	h.putRow(t, ctx, targetID, entityID, map[string]any{
+		"entityKey": "vtx.leaseApp." + entityID, "violating": true, "missing_x": true,
+	})
+
+	h.pass(ctx)
+
+	h.nextOp(t)
+	entry, err := h.conn.KVGet(ctx, "weaver-state", key)
+	if err != nil || entry.Revision == oldRev {
+		t.Fatalf("legacy mark must be reclaimed into a fresh episode (err=%v)", err)
+	}
+}
+
+// TestSweep_LeaseUnexpired proves a live lease is respected: the episode is in
+// flight, the sweep leaves the mark and dispatches nothing.
+func TestSweep_LeaseUnexpired(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+
+	const targetID = "fixtureLive"
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps:     map[string]GapAction{"missing_x": {Action: actionDirectOp, Operation: "FixX"}},
+	})
+	entityID := testNanoID(t)
+	key := markKey(targetID, entityID, "missing_x")
+	rev := h.putMark(t, ctx, key, fixtureMark(targetID, entityID, "missing_x", "directOp", futureLease()))
+	h.putRow(t, ctx, targetID, entityID, map[string]any{
+		"entityKey": "vtx.leaseApp." + entityID, "violating": true, "missing_x": true,
+	})
+
+	h.pass(ctx)
+
+	entry, err := h.conn.KVGet(ctx, "weaver-state", key)
+	if err != nil || entry.Revision != rev {
+		t.Fatalf("a live-lease mark must be untouched (err=%v)", err)
+	}
+	h.requireNoOp(t)
+}
+
+// TestSweep_WarmUpGuardAndOrphanTarget proves F8 with the registry warm-up
+// guard: while the warm-up window (a registry-replay-readiness proxy) is
+// open, BOTH orphan legs — target not installed AND playbook lacking the gap
+// column — leave their expired marks standing on every pass, while the
+// expired-lease reclaim of an installed target runs ungated; once the window
+// elapses both orphans are deleted without dispatch.
+func TestSweep_WarmUpGuardAndOrphanTarget(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx, func(c *Config) { c.SweepOrphanWarmup = time.Hour })
+
+	// Orphan leg 1: no target installed.
+	const goneTarget = "fixtureGone"
+	goneEntity := testNanoID(t)
+	goneKey := markKey(goneTarget, goneEntity, "missing_x")
+	h.putMark(t, ctx, goneKey, fixtureMark(goneTarget, goneEntity, "missing_x", "triggerLoom", pastLease()))
+	h.putRow(t, ctx, goneTarget, goneEntity, map[string]any{
+		"entityKey": "vtx.leaseApp." + goneEntity, "violating": true, "missing_x": true,
+	})
+
+	// Orphan leg 2: target installed but its playbook no longer names the gap.
+	const droppedTarget = "fixtureDropGap"
+	h.seedTarget(&Target{
+		TargetID: droppedTarget,
+		Gaps:     map[string]GapAction{"missing_other": {Action: actionDirectOp, Operation: "FixOther"}},
+	})
+	droppedEntity := testNanoID(t)
+	droppedKey := markKey(droppedTarget, droppedEntity, "missing_x")
+	h.putMark(t, ctx, droppedKey, fixtureMark(droppedTarget, droppedEntity, "missing_x", "directOp", pastLease()))
+	h.putRow(t, ctx, droppedTarget, droppedEntity, map[string]any{
+		"entityKey": "vtx.leaseApp." + droppedEntity, "violating": true, "missing_x": true,
+	})
+
+	// Ungated control: an installed target's expired mark reclaims during
+	// warm-up.
+	const liveTarget = "fixtureLiveReclaim"
+	h.seedTarget(&Target{
+		TargetID: liveTarget,
+		Gaps:     map[string]GapAction{"missing_x": {Action: actionDirectOp, Operation: "FixX"}},
+	})
+	liveEntity := testNanoID(t)
+	liveKey := markKey(liveTarget, liveEntity, "missing_x")
+	h.putMark(t, ctx, liveKey, fixtureMark(liveTarget, liveEntity, "missing_x", "directOp", pastLease()))
+	h.putRow(t, ctx, liveTarget, liveEntity, map[string]any{
+		"entityKey": "vtx.leaseApp." + liveEntity, "violating": true, "missing_x": true,
+	})
+
+	h.pass(ctx)
+	h.pass(ctx)
+	if !h.markExists(t, ctx, goneKey) {
+		t.Fatalf("inside the warm-up window every pass must skip the target-uninstalled orphan leg")
+	}
+	if !h.markExists(t, ctx, droppedKey) {
+		t.Fatalf("inside the warm-up window every pass must skip the orphan-column leg")
+	}
+	h.nextOp(t)
+	h.requireNoOp(t)
+	if reclaims, orphans, _, _ := h.engine.sweep.metrics(); reclaims != 1 || orphans != 0 {
+		t.Fatalf("during warm-up: sweepReclaims = %d, sweepOrphansDeleted = %d; want 1, 0", reclaims, orphans)
+	}
+
+	h.agePastWarmup()
+	h.pass(ctx)
+	if h.markExists(t, ctx, goneKey) {
+		t.Fatalf("after the warm-up window a removed target's mark must be deleted")
+	}
+	if h.markExists(t, ctx, droppedKey) {
+		t.Fatalf("after the warm-up window an orphan-column mark must be deleted")
+	}
+	h.requireNoOp(t)
+	if _, orphans, _, _ := h.engine.sweep.metrics(); orphans != 2 {
+		t.Fatalf("sweepOrphansDeleted = %d, want 2", orphans)
+	}
+}
+
+// TestSweep_OrphanColumn proves F7's playbook-drop half: once the warm-up
+// window has elapsed, a still-true column the CURRENT playbook no longer
+// names is an orphan — deleted without dispatch — and a spec that later
+// re-adds the column dispatches fresh, unshadowed.
+func TestSweep_OrphanColumn(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+	h.agePastWarmup()
+
+	const targetID = "fixtureDropped"
+	// The playbook no longer names missing_x (only missing_other).
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps:     map[string]GapAction{"missing_other": {Action: actionDirectOp, Operation: "FixOther"}},
+	})
+	entityID := testNanoID(t)
+	key := markKey(targetID, entityID, "missing_x")
+	h.putMark(t, ctx, key, fixtureMark(targetID, entityID, "missing_x", "directOp", pastLease()))
+	row := map[string]any{
+		"entityKey": "vtx.leaseApp." + entityID, "violating": true, "missing_x": true,
+	}
+	h.putRow(t, ctx, targetID, entityID, row)
+
+	h.pass(ctx)
+	if h.markExists(t, ctx, key) {
+		t.Fatalf("a mark at a column absent from the current playbook must be deleted")
+	}
+	h.requireNoOp(t)
+	if _, orphans, _, _ := h.engine.sweep.metrics(); orphans != 1 {
+		t.Fatalf("sweepOrphansDeleted = %d, want 1", orphans)
+	}
+
+	// The spec re-adds the column: a fresh delivery dispatches, unshadowed.
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps:     map[string]GapAction{"missing_x": {Action: actionDirectOp, Operation: "FixX"}},
+	})
+	body, _ := json.Marshal(row)
+	dec := h.engine.handleRow(ctx, substrate.Message{
+		Subject:      h.engine.rowSubjectPrefix + targetID + "." + entityID,
+		Body:         body,
+		Sequence:     9,
+		NumDelivered: 1,
+	})
+	if dec != substrate.Ack {
+		t.Fatalf("re-added column must dispatch, got %v", dec)
+	}
+	h.nextOp(t)
+}
+
+// TestSweep_CorruptMark proves disposition (a): an unparseable mark value and
+// a malformed mark key both alert (CorruptMark Health issue) and are deleted —
+// weaver-state is weaver-private, so garbage left in place lives forever. The
+// alert follows the delete (a skipped stale-revision delete must not claim a
+// deletion), and the issue is retired by the next pass that no longer lists
+// the key.
+func TestSweep_CorruptMark(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+
+	// Bad value at a well-formed key.
+	entityID := testNanoID(t)
+	badValKey := markKey("fixtureCorrupt", entityID, "missing_x")
+	staleRev, err := h.conn.KVCreate(ctx, "weaver-state", badValKey, []byte("{not json"))
+	if err != nil {
+		t.Fatalf("create corrupt-value mark: %v", err)
+	}
+	// Malformed key (no NanoID entity segment).
+	badKey := "fixtureCorrupt.notananoid.missing_x"
+	if _, err := h.conn.KVCreate(ctx, "weaver-state", badKey, []byte(`{}`)); err != nil {
+		t.Fatalf("create corrupt-key mark: %v", err)
+	}
+
+	// A stale-revision delete is skipped — and must not raise the "deleted"
+	// alert for a deletion that did not happen.
+	if _, err := h.conn.KVPut(ctx, "weaver-state", badValKey, []byte("{still not json")); err != nil {
+		t.Fatalf("bump corrupt mark revision: %v", err)
+	}
+	h.engine.sweep.deleteCorrupt(ctx, badValKey, staleRev, "stale-revision probe")
+	if hasIssueCode(h.engine.issues.snapshot(), "CorruptMark") {
+		t.Fatalf("a skipped corrupt delete must not alert a deletion")
+	}
+	if !h.markExists(t, ctx, badValKey) {
+		t.Fatalf("a stale-revision corrupt delete must be skipped")
+	}
+
+	h.pass(ctx)
+
+	if h.markExists(t, ctx, badValKey) || h.markExists(t, ctx, badKey) {
+		t.Fatalf("corrupt marks must be deleted")
+	}
+	if !hasIssueCode(h.engine.issues.snapshot(), "CorruptMark") {
+		t.Fatalf("a deleted corrupt mark must surface a CorruptMark Health issue")
+	}
+	if _, _, corrupt, _ := h.engine.sweep.metrics(); corrupt != 2 {
+		t.Fatalf("sweepCorrupt = %d, want 2", corrupt)
+	}
+	h.requireNoOp(t)
+
+	// The next pass no longer lists the keys: the issues are retired, so a
+	// one-off corrupt entry does not degrade the heartbeat forever.
+	h.pass(ctx)
+	if hasIssueCode(h.engine.issues.snapshot(), "CorruptMark") {
+		t.Fatalf("the CorruptMark issue must be retired once the key stays gone")
+	}
+}
+
+// TestSweep_PlanFailureLeavesMark proves the plan-before-delete ordering: a
+// reclaim whose plan fails (unresolved pattern reference) leaves the expired
+// mark in place for the next sweep — deleting first would orphan the gap until
+// the next row delivery — and surfaces the failure to Health.
+func TestSweep_PlanFailureLeavesMark(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+
+	const targetID = "fixturePlanFail"
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps: map[string]GapAction{
+			"missing_x": {Action: actionTriggerLoom, Pattern: "ghostFlow", Subject: "row.entityKey"},
+		},
+	})
+	entityID := testNanoID(t)
+	key := markKey(targetID, entityID, "missing_x")
+	rev := h.putMark(t, ctx, key, fixtureMark(targetID, entityID, "missing_x", "triggerLoom", pastLease()))
+	h.putRow(t, ctx, targetID, entityID, map[string]any{
+		"entityKey": "vtx.leaseApp." + entityID, "violating": true, "missing_x": true,
+	})
+
+	h.pass(ctx)
+
+	entry, err := h.conn.KVGet(ctx, "weaver-state", key)
+	if err != nil || entry.Revision != rev {
+		t.Fatalf("a failed plan must leave the expired mark in place (err=%v)", err)
+	}
+	if !hasIssueCode(h.engine.issues.snapshot(), "UnresolvedReference") {
+		t.Fatalf("a failed reclaim plan must surface to Health")
+	}
+	h.requireNoOp(t)
+
+	// The pattern is installed later: the next sweep reclaims.
+	h.engine.source.mu.Lock()
+	h.engine.source.patternMeta["ghostFlow"] = "vtx.meta." + testNanoID(t)
+	h.engine.source.mu.Unlock()
+	h.pass(ctx)
+	h.nextOp(t)
+	if reclaims, _, _, _ := h.engine.sweep.metrics(); reclaims != 1 {
+		t.Fatalf("sweepReclaims = %d, want 1", reclaims)
+	}
+}
+
+// TestSweep_DeleteRevisionRace proves every sweep delete is conditioned on the
+// revision read this pass: a fresh episode CAS-created between the sweep's
+// read and its delete wins the race — the delete is skipped and the fresh mark
+// stays intact.
+func TestSweep_DeleteRevisionRace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+
+	const targetID = "fixtureRace"
+	entityID := testNanoID(t)
+	key := markKey(targetID, entityID, "missing_x")
+	staleRev := h.putMark(t, ctx, key, fixtureMark(targetID, entityID, "missing_x", "directOp", pastLease()))
+
+	// A fresh episode replaces the mark after the sweep's (simulated) read.
+	if err := h.conn.KVDelete(ctx, "weaver-state", key); err != nil {
+		t.Fatalf("delete stale mark: %v", err)
+	}
+	fresh := fixtureMark(targetID, entityID, "missing_x", "directOp", futureLease())
+	body, _ := json.Marshal(fresh)
+	freshRev, err := h.conn.KVCreate(ctx, "weaver-state", key, body)
+	if err != nil {
+		t.Fatalf("create fresh mark: %v", err)
+	}
+
+	if h.engine.sweep.deleteMark(ctx, key, staleRev, "directOp", sweepReasonTargetRemoved,
+		targetID, entityID, "missing_x") {
+		t.Fatalf("a stale-revision delete must be skipped, not succeed")
+	}
+	entry, err := h.conn.KVGet(ctx, "weaver-state", key)
+	if err != nil || entry.Revision != freshRev {
+		t.Fatalf("the fresh episode's mark must stay intact (err=%v)", err)
+	}
+}
+
+// TestSweep_ReclaimConflictSkips proves the reclaim's atomicity: the in-place
+// replace is conditioned on the revision read this pass, so a mark that
+// changed under the sweep (a fresh episode won the race) is skipped — no op,
+// no counter — and the key is never absent at any point (the crash window of
+// a delete-then-recreate reclaim does not exist).
+func TestSweep_ReclaimConflictSkips(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+
+	const targetID = "fixtureConflict"
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps:     map[string]GapAction{"missing_x": {Action: actionDirectOp, Operation: "FixX"}},
+	})
+	entityID := testNanoID(t)
+	key := markKey(targetID, entityID, "missing_x")
+	expired := fixtureMark(targetID, entityID, "missing_x", "directOp", pastLease())
+	staleRev := h.putMark(t, ctx, key, expired)
+	row := map[string]any{
+		"entityKey": "vtx.leaseApp." + entityID, "violating": true, "missing_x": true,
+	}
+	h.putRow(t, ctx, targetID, entityID, row)
+
+	// A fresh episode replaces the mark after the sweep's (simulated) read.
+	fresh := fixtureMark(targetID, entityID, "missing_x", "directOp", futureLease())
+	body, _ := json.Marshal(fresh)
+	freshRev, err := h.conn.KVUpdate(ctx, "weaver-state", key, body, staleRev)
+	if err != nil {
+		t.Fatalf("replace with fresh mark: %v", err)
+	}
+
+	h.engine.sweep.reclaim(ctx, key, staleRev, &expired, targetID, entityID, "missing_x", row, 7)
+
+	entry, err := h.conn.KVGet(ctx, "weaver-state", key)
+	if err != nil || entry.Revision != freshRev {
+		t.Fatalf("the fresh episode's mark must stay intact and present (err=%v)", err)
+	}
+	if reclaims, _, _, _ := h.engine.sweep.metrics(); reclaims != 0 {
+		t.Fatalf("sweepReclaims = %d, want 0 (a conflicted reclaim is a skip)", reclaims)
+	}
+	h.requireNoOp(t)
+}
+
+// TestSweep_NonViolatingRowNotReclaimed proves the reclaim mirrors lane-1's
+// L1 gate: an expired mark whose row carries an open missing_* column but
+// violating=false is left alone — no dispatch (lane-1 would never fire it)
+// and no delete (level clearing or the next CDC delivery owns the mark; the
+// TTL backstop bounds a stale one).
+func TestSweep_NonViolatingRowNotReclaimed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+	h.agePastWarmup()
+
+	const targetID = "fixtureNotViolating"
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps:     map[string]GapAction{"missing_x": {Action: actionDirectOp, Operation: "FixX"}},
+	})
+	entityID := testNanoID(t)
+	key := markKey(targetID, entityID, "missing_x")
+	rev := h.putMark(t, ctx, key, fixtureMark(targetID, entityID, "missing_x", "directOp", pastLease()))
+	h.putRow(t, ctx, targetID, entityID, map[string]any{
+		"entityKey": "vtx.leaseApp." + entityID, "violating": false, "missing_x": true,
+	})
+
+	h.pass(ctx)
+
+	entry, err := h.conn.KVGet(ctx, "weaver-state", key)
+	if err != nil || entry.Revision != rev {
+		t.Fatalf("a non-violating row's expired mark must be left untouched (err=%v)", err)
+	}
+	if reclaims, _, _, _ := h.engine.sweep.metrics(); reclaims != 0 {
+		t.Fatalf("sweepReclaims = %d, want 0", reclaims)
+	}
+	h.requireNoOp(t)
+}
+
+// TestSweep_MissingEntityKeyMarks proves a violating row with no entityKey
+// echo routes its expired mark through the corrupt leg — alert + delete —
+// instead of re-alerting forever over an unreclaimable mark, and the issue
+// key is per-mark, so two bad entities under one target alert independently.
+func TestSweep_MissingEntityKeyMarks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+	h.agePastWarmup()
+
+	const targetID = "fixtureNoEntityKey"
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps:     map[string]GapAction{"missing_x": {Action: actionDirectOp, Operation: "FixX"}},
+	})
+	keys := make([]string, 0, 2)
+	for range 2 {
+		entityID := testNanoID(t)
+		key := markKey(targetID, entityID, "missing_x")
+		h.putMark(t, ctx, key, fixtureMark(targetID, entityID, "missing_x", "directOp", pastLease()))
+		h.putRow(t, ctx, targetID, entityID, map[string]any{
+			"violating": true, "missing_x": true,
+		})
+		keys = append(keys, key)
+	}
+
+	h.pass(ctx)
+
+	for _, key := range keys {
+		if h.markExists(t, ctx, key) {
+			t.Fatalf("an entityKey-less violating row's expired mark must be deleted (%s)", key)
+		}
+	}
+	count := 0
+	for _, issue := range h.engine.issues.snapshot() {
+		if issue.Code == "CorruptMark" {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Fatalf("CorruptMark issues = %d, want 2 (one per entity, no key collision)", count)
+	}
+	if _, _, corrupt, _ := h.engine.sweep.metrics(); corrupt != 2 {
+		t.Fatalf("sweepCorrupt = %d, want 2", corrupt)
+	}
+	h.requireNoOp(t)
+
+	// Retired once the keys stay gone.
+	h.pass(ctx)
+	if hasIssueCode(h.engine.issues.snapshot(), "CorruptMark") {
+		t.Fatalf("the CorruptMark issues must be retired once the keys stay gone")
+	}
+}
+
+// TestConfigClamps proves the withDefaults invariants that keep the sweep's
+// reclaim leg reachable: SweepInterval is clamped to MarkLease (an expired
+// mark must be observed before its 2×lease TTL deletes it unseen) and
+// SweepOrphanWarmup is clamped up to SweepInterval (a warm-up shorter than
+// one tick gates nothing), defaulting to 5m.
+func TestConfigClamps(t *testing.T) {
+	cfg := Config{
+		MarkLease:         5 * time.Second,
+		SweepInterval:     time.Minute,
+		SweepOrphanWarmup: time.Millisecond,
+		Logger:            discardLogger(),
+	}
+	cfg.withDefaults()
+	if cfg.SweepInterval != 5*time.Second {
+		t.Fatalf("SweepInterval = %v, want the MarkLease clamp 5s", cfg.SweepInterval)
+	}
+	if cfg.SweepOrphanWarmup != 5*time.Second {
+		t.Fatalf("SweepOrphanWarmup = %v, want the SweepInterval clamp 5s", cfg.SweepOrphanWarmup)
+	}
+
+	def := Config{Logger: discardLogger()}
+	def.withDefaults()
+	if def.SweepInterval != defaultSweepInterval {
+		t.Fatalf("default SweepInterval = %v, want %v", def.SweepInterval, defaultSweepInterval)
+	}
+	if def.SweepOrphanWarmup != defaultSweepOrphanWarmup {
+		t.Fatalf("default SweepOrphanWarmup = %v, want %v", def.SweepOrphanWarmup, defaultSweepOrphanWarmup)
+	}
+}
+
+// TestMarkCreate_TTLBackstop proves the dispatch-path create arms the NATS
+// per-key TTL at markTTLBackstopFactor × MarkLease (the wire Nats-TTL header)
+// and mirrors the lease in leaseExpiresAt — the "dead reconciler" guarantee is
+// this header plus the substrate-level expiry test.
+func TestMarkCreate_TTLBackstop(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	lease := 2 * time.Second
+	h := newSweepHarness(t, ctx, func(c *Config) { c.MarkLease = lease })
+
+	const targetID = "fixtureTTL"
+	entityID := testNanoID(t)
+	before := time.Now()
+	_, exists, err := h.engine.marks.create(ctx, targetID, entityID, "missing_x",
+		"vtx.leaseApp."+entityID, "directOp")
+	if err != nil || exists {
+		t.Fatalf("mark create: err=%v exists=%v", err, exists)
+	}
+
+	key := markKey(targetID, entityID, "missing_x")
+	stream, err := h.conn.JetStream().Stream(ctx, "KV_weaver-state")
+	if err != nil {
+		t.Fatalf("open weaver-state stream: %v", err)
+	}
+	raw, err := stream.GetLastMsgForSubject(ctx, "$KV.weaver-state."+key)
+	if err != nil {
+		t.Fatalf("read raw mark message: %v", err)
+	}
+	wantTTL := (markTTLBackstopFactor * lease).String()
+	if got := raw.Header.Get("Nats-TTL"); got != wantTTL {
+		t.Fatalf("mark Nats-TTL header = %q, want %q (markTTLBackstopFactor × MarkLease)", got, wantTTL)
+	}
+
+	entry, err := h.conn.KVGet(ctx, "weaver-state", key)
+	if err != nil {
+		t.Fatalf("read mark: %v", err)
+	}
+	var rec mark
+	if err := json.Unmarshal(entry.Value, &rec); err != nil {
+		t.Fatalf("unmarshal mark: %v", err)
+	}
+	leaseExp, err := time.Parse(time.RFC3339Nano, rec.LeaseExpiresAt)
+	if err != nil {
+		t.Fatalf("leaseExpiresAt %q: %v", rec.LeaseExpiresAt, err)
+	}
+	if leaseExp.Before(before.Add(lease)) || leaseExp.After(time.Now().Add(lease)) {
+		t.Fatalf("leaseExpiresAt %v must mirror claimedAt + MarkLease", leaseExp)
+	}
+	if rec.HeldBy != h.engine.cfg.Instance {
+		t.Fatalf("heldBy = %q, want %q", rec.HeldBy, h.engine.cfg.Instance)
+	}
+	if rec.ClaimID != "" {
+		t.Fatalf("claimId must stay empty until Epic 10's nudge path, got %q", rec.ClaimID)
+	}
+}

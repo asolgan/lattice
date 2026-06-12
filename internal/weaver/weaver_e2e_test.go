@@ -627,6 +627,196 @@ func hasIssue(issues []map[string]any, code string) bool {
 	return false
 }
 
+// putDeadMark writes a §10.3 mark directly into weaver-state — the state an
+// Actuator that died after its CAS-create (before publishing) leaves behind —
+// and returns its revision.
+func putDeadMark(t *testing.T, ctx context.Context, conn *substrate.Conn,
+	targetID, entityID, gapColumn, action string, leaseExpiresAt time.Time) uint64 {
+	t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"targetId":       targetID,
+		"entityKey":      "vtx.leaseApp." + entityID,
+		"gap":            gapColumn,
+		"action":         action,
+		"claimedAt":      substrate.FormatTimestamp(time.Now()),
+		"leaseExpiresAt": substrate.FormatTimestamp(leaseExpiresAt),
+		"heldBy":         "dead-instance",
+	})
+	require.NoError(t, err)
+	rev, err := conn.KVCreate(ctx, weaverStateBucket, targetID+"."+entityID+"."+gapColumn, body)
+	require.NoError(t, err)
+	return rev
+}
+
+// TestWeaverE2E_MidFlightKill proves the crash-recovery AC: an Actuator that
+// died after CAS-creating its mark but before publishing (a dead episode with
+// a live lease) wedges nothing — the lane-1 fresh delivery anti-storm-drops
+// (the F5 coalesce angle: a re-observed violating row alone does NOT re-fire),
+// and once the lease expires the reconciler sweep reclaims the mark and
+// re-dispatches a fresh episode. Exactly one op lands and the mark is
+// re-created under this instance with a live lease.
+func TestWeaverE2E_MidFlightKill(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	nc := startNATS(t)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+	provision(t, ctx, conn)
+	ops := subscribeOps(t, nc)
+
+	patternVtx := mustNanoID(t)
+	installLoomPattern(t, ctx, conn, patternVtx, "fixtureFlow")
+	targetID := "fixtureKill"
+	installWeaverTarget(t, ctx, conn, mustNanoID(t), map[string]any{
+		"targetId": targetID,
+		"lensRef":  mustNanoID(t),
+		"gaps": map[string]any{
+			"missing_step": map[string]any{
+				"action": "triggerLoom", "pattern": "fixtureFlow", "subject": "row.applicant",
+			},
+		},
+	})
+
+	// The dead episode: mark present, op never published, lease expiring soon.
+	entityID := mustNanoID(t)
+	deadRev := putDeadMark(t, ctx, conn, targetID, entityID, "missing_step", "triggerLoom",
+		time.Now().Add(4*time.Second))
+	row := map[string]any{
+		"entityKey":    "vtx.leaseApp." + entityID,
+		"violating":    true,
+		"missing_step": true,
+		"applicant":    "vtx.identity." + mustNanoID(t),
+	}
+	putRow(t, ctx, conn, targetID, entityID, row)
+
+	instance := "e2e-kill-" + mustNanoID(t)
+	engine := newEngine(conn, instance, func(c *weaver.Config) {
+		c.SweepInterval = 300 * time.Millisecond
+	})
+	engCtx, engCancel := context.WithCancel(ctx)
+	defer engCancel()
+	go func() { _ = engine.Start(engCtx) }()
+	waitConsumer(t, ctx, conn, "weaver-target-"+targetID)
+
+	// While the lease lives: the replayed fresh delivery anti-storm-drops and
+	// the sweep leaves the in-flight episode alone.
+	requireNoOp(t, ops, time.Second)
+
+	// Lease expiry → the sweep reclaims and re-dispatches a fresh episode.
+	op := nextOp(t, ops, 15*time.Second)
+	require.Equal(t, "StartLoomPattern", op.OperationType)
+	require.NotZero(t, op.Payload["expectedRevision"])
+
+	markKey := targetID + "." + entityID + ".missing_step"
+	entry, err := conn.KVGet(ctx, weaverStateBucket, markKey)
+	require.NoError(t, err, "the reclaim must re-create the mark")
+	require.NotEqual(t, deadRev, entry.Revision, "the reclaimed mark must be a fresh episode")
+	var mk map[string]any
+	require.NoError(t, json.Unmarshal(entry.Value, &mk))
+	require.Equal(t, instance, mk["heldBy"], "the fresh mark is held by this instance")
+	leaseExp, err := time.Parse(time.RFC3339Nano, mk["leaseExpiresAt"].(string))
+	require.NoError(t, err)
+	require.True(t, leaseExp.After(time.Now()), "the fresh mark must carry a live lease")
+
+	// Exactly one re-attempt — never a storm.
+	requireNoOp(t, ops, 2*time.Second)
+
+	// F5 coalesce angle: a fresh re-upsert of the still-violating row alone
+	// does not re-fire (the fresh episode is in flight).
+	putRow(t, ctx, conn, targetID, entityID, row)
+	requireNoOp(t, ops, 2*time.Second)
+}
+
+// TestWeaverE2E_SweepOrphanedTargetMarks proves F8 at engine level: a mark
+// whose target is no longer installed survives the warm-up window after start
+// (registry warm-up guard — the meta replay is asynchronous) and is deleted
+// once the window elapses, with no dispatch; re-installing the same targetId
+// replays the row via DeliverLastPerSubject and dispatches fresh, unshadowed.
+func TestWeaverE2E_SweepOrphanedTargetMarks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	nc := startNATS(t)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+	provision(t, ctx, conn)
+	ops := subscribeOps(t, nc)
+
+	// A leftover expired mark + violating row for a target that is NOT
+	// installed (its vertex was removed while the engine was down).
+	targetID := "fixtureOrphan"
+	entityID := mustNanoID(t)
+	putDeadMark(t, ctx, conn, targetID, entityID, "missing_x", "directOp",
+		time.Now().Add(-time.Minute))
+	putRow(t, ctx, conn, targetID, entityID, map[string]any{
+		"entityKey": "vtx.leaseApp." + entityID,
+		"violating": true,
+		"missing_x": true,
+	})
+
+	instance := "e2e-orphan-" + mustNanoID(t)
+	engine := newEngine(conn, instance, func(c *weaver.Config) {
+		c.SweepInterval = 2 * time.Second
+		c.SweepOrphanWarmup = 2 * time.Second
+		c.HeartbeatEvery = 200 * time.Millisecond
+	})
+	engCtx, engCancel := context.WithCancel(ctx)
+	defer engCancel()
+	go func() { _ = engine.Start(engCtx) }()
+
+	// Observe the first completed pass via the heartbeat's sweepLastRunAt and
+	// assert the warm-up guard left the orphan mark standing.
+	markKey := targetID + "." + entityID + ".missing_x"
+	deadline := time.Now().Add(15 * time.Second)
+	swept := false
+	for time.Now().Before(deadline) {
+		entry, err := conn.KVGet(ctx, healthKVBucket, "health.weaver."+instance)
+		if err == nil {
+			var doc struct {
+				Metrics map[string]any `json:"metrics"`
+			}
+			if json.Unmarshal(entry.Value, &doc) == nil && doc.Metrics["sweepLastRunAt"] != nil {
+				swept = true
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	require.True(t, swept, "the sweep's first pass never completed")
+	_, err = conn.KVGet(ctx, weaverStateBucket, markKey)
+	require.NoError(t, err, "the first pass must skip the target-uninstalled orphan leg")
+
+	// From the second pass on the orphan is reclaimed — delete only, no op.
+	waitMarkGone(t, ctx, conn, markKey)
+	requireNoOp(t, ops, time.Second)
+
+	// Re-install the same targetId: DeliverLastPerSubject replays the row and
+	// dispatches fresh — not shadowed by the dead mark.
+	opVtx := mustNanoID(t)
+	installOpMeta(t, ctx, conn, opVtx, "FixX")
+	installWeaverTarget(t, ctx, conn, mustNanoID(t), map[string]any{
+		"targetId": targetID,
+		"lensRef":  mustNanoID(t),
+		"gaps": map[string]any{
+			"missing_x": map[string]any{
+				"action": "assignTask", "operation": "FixX",
+				"assignee": "row.entityKey", "target": "row.entityKey",
+			},
+		},
+	})
+	waitConsumer(t, ctx, conn, "weaver-target-"+targetID)
+	op := nextOp(t, ops, 15*time.Second)
+	require.Equal(t, "CreateTask", op.OperationType)
+	waitMark(t, ctx, conn, markKey)
+}
+
 // TestWeaverE2E_NudgeStub proves adjudicated decision 6: a nudge gap is
 // recognised, routed to the loud stub (Health KV issue), and never silently
 // dropped — and no mark or op is produced.

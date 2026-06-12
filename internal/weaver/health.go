@@ -138,9 +138,9 @@ func consumerState(paused bool, reason substrate.PauseReason) string {
 
 // heartbeater writes the Contract #5 health.weaver.<instance> document on a
 // ticker. Metrics carry the per-consumer state map, the registered-target
-// count, and the in-flight mark count (a heartbeat-cadence weaver-state scan,
-// never per-message). Issues carry pausedStructural consumers plus the active
-// config/data-error alerts.
+// count, the in-flight mark count (a heartbeat-cadence weaver-state scan,
+// never per-message), and the reconciler sweep counters. Issues carry
+// pausedStructural consumers plus the active config/data-error alerts.
 type heartbeater struct {
 	conn      *substrate.Conn
 	bucket    string
@@ -151,12 +151,13 @@ type heartbeater struct {
 	issues    *issueCache
 	source    *targetSource
 	marks     *markStore
+	sweep     *sweeper
 	logger    *slog.Logger
 }
 
 func newHeartbeater(conn *substrate.Conn, healthBucket, instance string, every time.Duration,
 	states *consumerStateCache, issues *issueCache, source *targetSource, marks *markStore,
-	logger *slog.Logger) *heartbeater {
+	sweep *sweeper, logger *slog.Logger) *heartbeater {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -173,6 +174,7 @@ func newHeartbeater(conn *substrate.Conn, healthBucket, instance string, every t
 		issues:    issues,
 		source:    source,
 		marks:     marks,
+		sweep:     sweep,
 		logger:    logger,
 	}
 }
@@ -212,6 +214,15 @@ func (h *heartbeater) emit(ctx context.Context, status string) {
 		metrics["marksInFlight"] = n
 	} else {
 		h.logger.Warn("weaver heartbeat: in-flight mark scan failed", "err", err)
+	}
+	if h.sweep != nil {
+		reclaims, orphans, corrupt, lastRun := h.sweep.metrics()
+		metrics["sweepReclaims"] = reclaims
+		metrics["sweepOrphansDeleted"] = orphans
+		metrics["sweepCorrupt"] = corrupt
+		if !lastRun.IsZero() {
+			metrics["sweepLastRunAt"] = substrate.FormatTimestamp(lastRun)
+		}
 	}
 
 	issues := h.issues.snapshot()

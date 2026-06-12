@@ -90,6 +90,69 @@ func (c *Conn) KVCreate(ctx context.Context, bucket, key string, value []byte) (
 	return rev, nil
 }
 
+// KVCreateWithTTL writes value to key only if the key does not already exist,
+// arming a per-key TTL after which the server deletes the entry. Returns
+// ErrRevisionConflict if the key exists.
+//
+// The bucket must be provisioned with LimitMarkerTTL (which enables AllowMsgTTL
+// on the underlying stream); NATS enforces a 1-second TTL floor. A ttl <= 0
+// falls back to a plain KVCreate (no expiry), mirroring KVPutWithTTL's posture.
+//
+// The write goes through kv.Create (with the KeyTTL option), never a raw
+// publish: kv.Create's CAS is tombstone-aware, so create-after-delete succeeds
+// while create-over-live conflicts — the OCC semantics callers rely on.
+func (c *Conn) KVCreateWithTTL(ctx context.Context, bucket, key string, value []byte, ttl time.Duration) (uint64, error) {
+	if ttl <= 0 {
+		return c.KVCreate(ctx, bucket, key, value)
+	}
+	kv, err := c.bucket(ctx, bucket)
+	if err != nil {
+		return 0, err
+	}
+	rev, err := kv.Create(ctx, key, value, jetstream.KeyTTL(ttl))
+	if err != nil {
+		if IsRevisionConflict(err) {
+			return 0, fmt.Errorf("%w: bucket=%s key=%s (create requires absent): %v",
+				ErrRevisionConflict, bucket, key, err)
+		}
+		return 0, fmt.Errorf("substrate: KV create-with-ttl %s/%s: %w", bucket, key, err)
+	}
+	return rev, nil
+}
+
+// KVUpdateWithTTL writes value to key only if the current revision matches
+// expectedRevision, arming a per-key TTL on the resulting entry — the
+// revision-conditioned analog of KVCreateWithTTL. The new entry's TTL fully
+// supersedes the prior entry's (an update IS a TTL re-arm). Returns
+// ErrRevisionConflict if the revision does not match — including when a TTL
+// marker or delete landed after the caller's read (either bumps the subject's
+// last sequence).
+//
+// jetstream's kv.Update carries no TTL option, so the write composes the same
+// two publish options the KV layer's Create/Update use internally: the
+// per-subject revision condition and the message TTL, published to the KV
+// subject. The bucket must be provisioned with LimitMarkerTTL (NATS enforces
+// a 1-second TTL floor); a ttl <= 0 falls back to a plain KVUpdate (no
+// expiry).
+func (c *Conn) KVUpdateWithTTL(ctx context.Context, bucket, key string, value []byte, expectedRevision uint64, ttl time.Duration) (uint64, error) {
+	if ttl <= 0 {
+		return c.KVUpdate(ctx, bucket, key, value, expectedRevision)
+	}
+	msg := nats.NewMsg("$KV." + bucket + "." + key)
+	msg.Data = value
+	ack, err := c.js.PublishMsg(ctx, msg,
+		jetstream.WithExpectLastSequencePerSubject(expectedRevision),
+		jetstream.WithMsgTTL(ttl))
+	if err != nil {
+		if IsRevisionConflict(err) {
+			return 0, fmt.Errorf("%w: bucket=%s key=%s expected=%d: %v",
+				ErrRevisionConflict, bucket, key, expectedRevision, err)
+		}
+		return 0, fmt.Errorf("substrate: KV update-with-ttl %s/%s: %w", bucket, key, err)
+	}
+	return ack.Sequence, nil
+}
+
 // KVUpdate writes value to key only if the current revision matches
 // expectedRevision. Returns ErrRevisionConflict if revisions disagree, or
 // ErrKeyNotFound if the key was purged out from under the caller.

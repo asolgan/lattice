@@ -39,7 +39,9 @@ func newHandlerHarness(t *testing.T, ctx context.Context) *handlerHarness {
 		t.Fatalf("substrate wrap: %v", err)
 	}
 	js := conn.JetStream()
-	if _, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "weaver-state"}); err != nil {
+	// LimitMarkerTTL mirrors bootstrap provisioning: weaver-state marks carry a
+	// per-key TTL, which the server only honours on a TTL-capable bucket.
+	if _, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "weaver-state", LimitMarkerTTL: time.Second}); err != nil {
 		t.Fatalf("create weaver-state: %v", err)
 	}
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{

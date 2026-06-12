@@ -15,12 +15,24 @@ import (
 // missing_<gap> snake_case bool.
 const gapColumnPrefix = "missing_"
 
+// markTTLBackstopFactor sizes the mark's NATS per-key TTL relative to its
+// lease: TTL = markTTLBackstopFactor × lease. The TTL must be STRICTLY longer
+// than the lease — the reconciler sweep is the prompt reclaim and the TTL is
+// only the backstop, and the sweep can re-attempt a gap only while the key
+// still exists past leaseExpiresAt. Nothing watches weaver-state, so a raw TTL
+// deletion unwedges the gap but cannot re-attempt it; a TTL equal to the lease
+// would make the sweep's re-attempt leg unreachable. A constant, not a config
+// knob.
+const markTTLBackstopFactor = 2
+
 // mark is the weaver-state anti-storm in-flight record (Contract #10 §10.3),
 // keyed <targetId>.<entityId>.<gapColumn>. The CAS-create of this key is the
 // dispatch OCC: concurrent evaluations of the same gap race the create, the
-// loser drops, the winner dispatches. ClaimID, LeaseExpiresAt, and HeldBy are
-// declared (omitempty) so the §10.3 lease/claim fields extend this struct
-// without a migration; they are not populated by the lane-1 dispatch path.
+// loser drops, the winner dispatches. LeaseExpiresAt mirrors the lease the
+// per-key TTL backstops (§10.3 visibility); HeldBy is the writing engine
+// instance. ClaimID is declared (omitempty) per the frozen §10.3 value shape
+// but stays empty until Epic 10's nudge path mints it atomically with the
+// CAS-create.
 type mark struct {
 	TargetID       string `json:"targetId"`
 	EntityKey      string `json:"entityKey"`
@@ -34,14 +46,18 @@ type mark struct {
 
 // markStore is the weaver-state accessor for in-flight marks. The in-flight
 // check is always a KV read — never an in-memory map: durable dispatch state
-// lives in the bucket so any replica resolves it.
+// lives in the bucket so any replica resolves it. lease sizes each mark's
+// leaseExpiresAt (and, scaled by markTTLBackstopFactor, its per-key TTL);
+// instance is the heldBy holder tag.
 type markStore struct {
-	conn   *substrate.Conn
-	bucket string
+	conn     *substrate.Conn
+	bucket   string
+	lease    time.Duration
+	instance string
 }
 
-func newMarkStore(conn *substrate.Conn, bucket string) *markStore {
-	return &markStore{conn: conn, bucket: bucket}
+func newMarkStore(conn *substrate.Conn, bucket string, lease time.Duration, instance string) *markStore {
+	return &markStore{conn: conn, bucket: bucket, lease: lease, instance: instance}
 }
 
 // markKey builds the §10.3 mark key. Entity is keyed by NanoID, never the
@@ -54,23 +70,27 @@ func markKey(targetID, entityID, gapColumn string) string {
 // create CAS-creates the mark (KV create-on-absent — the dispatch OCC) and
 // returns its create revision, the per-dispatch-episode tag the deterministic
 // requestId derives from. exists=true means the create lost the race: another
-// dispatch of this gap is in flight. The mark is written WITHOUT a TTL: the
-// §10.3 lease fields are intentionally absent from this write — mark expiry
-// and orphan cleanup are a reconciler sweep's concern, not the dispatch
-// path's.
+// dispatch of this gap is in flight. The mark carries the §10.3 lease
+// (leaseExpiresAt = now + lease, heldBy = this instance) and a NATS per-key
+// TTL of markTTLBackstopFactor × lease — the backstop that bounds the mark's
+// life even if no reconciler ever sweeps it.
 func (m *markStore) create(ctx context.Context, targetID, entityID, gapColumn, entityKey, action string) (revision uint64, exists bool, err error) {
+	now := time.Now()
 	rec := mark{
-		TargetID:  targetID,
-		EntityKey: entityKey,
-		Gap:       gapColumn,
-		Action:    action,
-		ClaimedAt: substrate.FormatTimestamp(time.Now()),
+		TargetID:       targetID,
+		EntityKey:      entityKey,
+		Gap:            gapColumn,
+		Action:         action,
+		ClaimedAt:      substrate.FormatTimestamp(now),
+		LeaseExpiresAt: substrate.FormatTimestamp(now.Add(m.lease)),
+		HeldBy:         m.instance,
 	}
 	body, err := json.Marshal(rec)
 	if err != nil {
 		return 0, false, fmt.Errorf("weaver: marshal mark: %w", err)
 	}
-	rev, err := m.conn.KVCreate(ctx, m.bucket, markKey(targetID, entityID, gapColumn), body)
+	rev, err := m.conn.KVCreateWithTTL(ctx, m.bucket, markKey(targetID, entityID, gapColumn), body,
+		markTTLBackstopFactor*m.lease)
 	if err != nil {
 		if errors.Is(err, substrate.ErrRevisionConflict) {
 			return 0, true, nil
@@ -80,9 +100,10 @@ func (m *markStore) create(ctx context.Context, targetID, entityID, gapColumn, e
 	return rev, false, nil
 }
 
-// get reads the mark for one gap, returning its current revision. The dispatch
-// path only ever CAS-creates and deletes marks — a mark is never updated after
-// its create — so the read revision IS the create revision (the episode tag).
+// get reads the mark for one gap, returning its current revision. Lane-1 only
+// ever CAS-creates and deletes marks, and the sweep's reclaim replaces the
+// whole value under a revision condition — so the current revision always
+// identifies the episode currently holding the gap (the episode tag).
 // found=false means no dispatch is in flight.
 func (m *markStore) get(ctx context.Context, targetID, entityID, gapColumn string) (rec *mark, revision uint64, found bool, err error) {
 	entry, err := m.conn.KVGet(ctx, m.bucket, markKey(targetID, entityID, gapColumn))
@@ -97,6 +118,43 @@ func (m *markStore) get(ctx context.Context, targetID, entityID, gapColumn strin
 		return nil, 0, false, fmt.Errorf("weaver: unmarshal mark %s: %w", entry.Key, err)
 	}
 	return &rc, entry.Revision, true, nil
+}
+
+// replace re-arms an expired mark in place — the reconciler's reclaim claim.
+// The write is revision-conditioned on expectedRevision (the revision the
+// sweep read this pass) and produces a fresh §10.3 value (new claimedAt and
+// leaseExpiresAt, heldBy = this instance) with a re-armed per-key TTL, so the
+// key is never absent across a reclaim: a crash at any point leaves either
+// the old expired mark (re-swept next pass) or the fresh mark (its lease
+// bounds the retry). The returned revision is the fresh dispatch-episode tag.
+// conflict=true means the mark changed since the read (a fresh episode
+// CAS-created it, or its TTL marker landed) — the caller must skip.
+func (m *markStore) replace(ctx context.Context, targetID, entityID, gapColumn, entityKey, action string,
+	expectedRevision uint64) (revision uint64, conflict bool, err error) {
+
+	now := time.Now()
+	rec := mark{
+		TargetID:       targetID,
+		EntityKey:      entityKey,
+		Gap:            gapColumn,
+		Action:         action,
+		ClaimedAt:      substrate.FormatTimestamp(now),
+		LeaseExpiresAt: substrate.FormatTimestamp(now.Add(m.lease)),
+		HeldBy:         m.instance,
+	}
+	body, err := json.Marshal(rec)
+	if err != nil {
+		return 0, false, fmt.Errorf("weaver: marshal mark: %w", err)
+	}
+	rev, err := m.conn.KVUpdateWithTTL(ctx, m.bucket, markKey(targetID, entityID, gapColumn), body,
+		expectedRevision, markTTLBackstopFactor*m.lease)
+	if err != nil {
+		if errors.Is(err, substrate.ErrRevisionConflict) {
+			return 0, true, nil
+		}
+		return 0, false, err
+	}
+	return rev, false, nil
 }
 
 // delete clears one gap's mark (gap closed — level-reconciled clearing). A

@@ -11,7 +11,7 @@
 
 ---
 
-## Phase 2 implementation status (Story 9.1)
+## Phase 2 implementation status (Stories 9.1–9.2)
 
 What ships today in `internal/weaver` + `cmd/weaver`, and what is deliberately deferred:
 
@@ -19,10 +19,11 @@ What ships today in `internal/weaver` + `cmd/weaver`, and what is deliberately d
 |---------|--------|
 | **Lane 1 (violation-driven)** | ✅ Shipped. One **supervised KV-CDC durable per target** on the `KV_weaver-targets` backing stream (`$KV.weaver-targets.<targetId>.>`, `DeliverLastPerSubject`) via `substrate.ConsumerSupervisor` — never a raw `kv.Watch`. Desired-vs-running reconcile over the `meta.weaverTarget` registry: removal deletes the JetStream durable; a spec change Resets it. |
 | **Target registry** | ✅ Shipped. `meta.weaverTarget` CDC source (Core KV `vtx.meta.>`), §10.8 install-time validations (`missing_*` gaps keys, `targetId` uniqueness + dot-free), reject-and-alert (Health KV issue), never silent. |
-| **Dispatch OCC (§10.3 subset)** | ✅ Shipped **without TTL/lease**: the `weaver-state` mark is a plain **CAS-create** (`<targetId>.<entityId>.<gapColumn>`); mark-clearing is **level-reconciled on each watch update**. The TTL lease, `claimId`, and the reconciler sweep land in **Story 9.2** — until then an Actuator crash between CAS-create and publish wedges that one gap (accepted 9.1 interim). |
-| **Actuator** | ✅ Shipped as **fire-and-forget publish** to `ops.<lane>` with a deterministic per-dispatch-episode `requestId` (derived from the mark's create revision; Contract #4 collapses re-fires). **No request-reply, no command outbox** — Weaver has no cursor advance to dual-write; recovery is the mark + level-reconcile (+ 9.2 lease). A rejected/lost op leaves the mark in place until 9.2's lease re-attempts it. The op payload carries the row's `expectedRevision` (the OCC revision-condition); `triggerLoom` resolves the live `meta.loomPattern` vertex for `authContext.target` (pattern-as-target). |
+| **Dispatch OCC (§10.3)** | ✅ Shipped in the full frozen shape: the `weaver-state` mark (`<targetId>.<entityId>.<gapColumn>`) is a **CAS-create** carrying `claimedAt`/`leaseExpiresAt`/`heldBy` and a **NATS per-key TTL at 2× the lease** (the backstop — a dead reconciler can never wedge a gap forever); mark-clearing is **level-reconciled on each watch update AND each reconciler sweep**. `claimId` is shape-only until Epic 10's nudge mints it **atomically with the CAS-create** — an empty `claimId` on a nudge mark is corrupt: the reconciler alerts and **never mints a fresh id** (a fresh id would mean a second `idempotencyKey` → a duplicate external call). |
+| **Reconciler sweep** | ✅ Shipped (`internal/weaver/reconciler.go`): an interval-cadence pass (default 1m, clamped ≤ the lease so expiry is always observed before the TTL backstop; lease default 30m, both `Config`-tunable) over every mark — prompt level-clearing of closed gaps, orphan reclaim (target removed, column dropped from row + playbook), corrupt-mark delete+alert (the issue retires once the key stays gone), and **expired-lease reclaim as a fresh episode**: a revision-conditioned **in-place replace** of the mark (fresh lease, re-armed TTL → new revision → new `requestId`), so the key is never absent across a reclaim and only **violating** rows re-dispatch (mirroring lane-1's L1 gate). Re-fire idempotency follows §10.3 by action: `nudge` is safe via `claimId` (Epic 10); a re-fired `triggerLoom`/`assignTask` is the **documented rare-double** — operator-visible via the sweep's Warn logs and heartbeat counters, with the check-before-act probe deferred to Phase 3. All sweep deletes are revision-conditioned; both orphan legs are gated for a warm-up window after start (`SweepOrphanWarmup`, default 5m — a registry-replay-readiness proxy). |
+| **Actuator** | ✅ Shipped as **fire-and-forget publish** to `ops.<lane>` with a deterministic per-dispatch-episode `requestId` (derived from the mark's current revision — its CAS-create, or the sweep's reclaim replace; Contract #4 collapses re-fires). **No request-reply, no command outbox** — Weaver has no cursor advance to dual-write; recovery is the mark + level-reconcile + lease: a rejected/lost op leaves the mark in place and the sweep re-attempts it at lease expiry. The op payload carries the row's `expectedRevision` (the OCC revision-condition); `triggerLoom` resolves the live `meta.loomPattern` vertex for `authContext.target` (pattern-as-target). |
 | **Actions** | `triggerLoom` (→ `StartLoomPattern` op, never a Go call), `assignTask` (→ `CreateTask` with episode-deterministic `taskId`), `directOp` ✅. **`nudge` is a loud stub** (logged + Health KV issue) until Epic 10 builds the Two-Phase Nudge + `internal/weaver/nudge/`. |
-| **Health** | ✅ Contract #5 heartbeat at `health.weaver.<instance>` (metrics: `consumers`, `targets`, `marksInFlight`) + per-consumer pause-state docs at `health.weaver.<instance>.consumer.<name>`; config/data errors surface as issues. |
+| **Health** | ✅ Contract #5 heartbeat at `health.weaver.<instance>` (metrics: `consumers`, `targets`, `marksInFlight`, `sweepReclaims`, `sweepOrphansDeleted`, `sweepCorrupt`, `sweepLastRunAt`) + per-consumer pause-state docs at `health.weaver.<instance>.consumer.<name>`; config/data errors surface as issues. |
 | **Lane 3 (temporal)** | ⏳ Story 9.3 (`core-schedules`, Contract #10 §10.4). |
 | **Control API/CLI (Pause/Resume surface)** | ⏳ Story 9.4 (the supervisor's `Pause`/`Resume` exist; no operator surface yet). |
 | **Lane 2 (event-targeted-audit) + `weaver-work`** | ⏳ Phase 3 (§10.3: no durable bucket in Phase 2). |
@@ -187,7 +188,7 @@ config (`lease-signing`).
 | In | `events.<domain>.>` per-domain consumer | lane 2 targeted-audit only (Phase 3) |
 | In | `schedule.weaver.timer.fired.>` on `core-schedules` | lane 3 (ADR-51 scheduled messages, Story 9.3) |
 | Out | ops via `core-operations` (`ops.<lane>`) | fire-and-forget; OCC `expectedRevision` payload; trigger-Loom; resolve mutations carry `claim-id` |
-| Out (own) | `weaver-state` bucket | in-flight convergence marks (anti-storm); TTL lease lands in 9.2 |
+| Out (own) | `weaver-state` bucket | in-flight convergence marks (anti-storm); per-key TTL backstop (2× lease) + reconciler sweep |
 | Out (own) | `weaver-claims` bucket | Two-Phase Nudge claims (90d retention, Epic 10) |
 
 ---
@@ -197,7 +198,7 @@ config (`lease-signing`).
 | Mode | Behavior |
 |------|----------|
 | Re-trigger storm | violation persists until gap closes *and* re-projects → `weaver.state.>` in-flight mark suppresses re-trigger |
-| **Actuator crash mid-flight** | in-flight marks carry a **TTL/lease**; reconciliation reclaims expired leases so a target is never wedged. *(Test: kill mid-flight.)* |
+| **Actuator crash mid-flight** | in-flight marks carry a **TTL/lease**; the reconciler sweep reclaims expired leases so a target is never wedged. *(Tested: `TestWeaverE2E_MidFlightKill` kills the episode between CAS-create and publish and proves the re-attempt.)* |
 | External call retried/failed | Two-Phase Nudge claim prevents double-charge; resolve is idempotent |
 | Target too costly to keep live | lane-2 on-demand evaluation (deferred-exercise) |
 

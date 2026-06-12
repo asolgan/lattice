@@ -130,7 +130,30 @@ func (e *Engine) dispatchGap(ctx context.Context, target *Target, targetID, enti
 			"targetId", targetID, "entityId", entityID, "gap", col)
 		return substrate.NakWithDelay
 	}
-	pl, perr := buildPlan(e.source, targetID, entityID, col, ga, row, msg.Sequence)
+	pl, dec := e.planGap(targetID, entityID, col, ga, row, msg.Sequence)
+	if pl == nil {
+		return dec
+	}
+
+	// redelivered classifies this delivery for the in-flight branch: only
+	// NumDelivered 1 is a definitively FRESH delivery (the anti-storm drop).
+	// NumDelivered 0 (metadata unavailable) deliberately counts as a
+	// redelivery: it may be a retry whose prior delivery never published, and
+	// re-firing is the safe side (the same episode requestId collapses on the
+	// Contract #4 tracker; a drop could wedge a lost publish behind its own
+	// mark).
+	return e.fireEpisode(ctx, targetID, entityID, entityKey, col, ga.Action, pl, msg.NumDelivered != 1)
+}
+
+// planGap resolves one gap's plan (Evaluator L2 + Strategist), routing a
+// failure by its class: an unresolved reference defers on the bounded
+// redelivery cadence; a config/data error is alerted and the gap skipped
+// (retrying cannot fix it). pl == nil means do not dispatch — the returned
+// Decision is the caller's disposition for this gap.
+func (e *Engine) planGap(targetID, entityID, col string, ga GapAction, row map[string]any,
+	rowRevision uint64) (*plan, substrate.Decision) {
+
+	pl, perr := buildPlan(e.source, targetID, entityID, col, ga, row, rowRevision)
 	if perr != nil {
 		switch perr.kind {
 		case errTransient:
@@ -143,19 +166,31 @@ func (e *Engine) dispatchGap(ctx context.Context, target *Target, targetID, enti
 				"targetId", targetID, "entityId", entityID, "gap", col, "reason", perr.msg)
 			e.issues.set(issueKeyGap(targetID, col), "warning", "UnresolvedReference",
 				"target "+targetID+" gap "+col+": "+perr.msg)
-			return substrate.NakWithDelay
+			return nil, substrate.NakWithDelay
 		case errData:
 			e.alert(issueKeyData(targetID, col), "error", "TemplateDataError",
 				"target "+targetID+" gap "+col+": "+perr.msg)
-			return substrate.Ack
+			return nil, substrate.Ack
 		default:
 			e.alert(issueKeyGap(targetID, col), "error", "PlaybookConfigError",
 				"target "+targetID+" gap "+col+": "+perr.msg)
-			return substrate.Ack
+			return nil, substrate.Ack
 		}
 	}
 	e.issues.clear(issueKeyGap(targetID, col))
 	e.issues.clear(issueKeyData(targetID, col))
+	return pl, substrate.Ack
+}
+
+// fireEpisode is the lane-1 dispatch core: resolve the in-flight mark,
+// CAS-create on absence (the dispatch OCC), and fire the episode op.
+// redelivered selects the in-flight disposition — false drops (the anti-storm
+// gate: another episode is in flight), true re-publishes the SAME episode
+// requestId (idempotent at the Contract #4 tracker). The reconciler sweep
+// does not pass through here: its reclaim replaces the expired mark in place
+// under a revision condition and fires directly.
+func (e *Engine) fireEpisode(ctx context.Context, targetID, entityID, entityKey, col, action string,
+	pl *plan, redelivered bool) substrate.Decision {
 
 	_, markRev, inFlight, err := e.marks.get(ctx, targetID, entityID, col)
 	if err != nil {
@@ -163,20 +198,16 @@ func (e *Engine) dispatchGap(ctx context.Context, target *Target, targetID, enti
 		return substrate.NakWithDelay
 	}
 	if inFlight {
-		if msg.NumDelivered == 1 {
-			// A fresh row upsert while the episode is in flight — the anti-storm
-			// drop. NumDelivered 0 (metadata unavailable) deliberately does NOT
-			// take this branch: it may be a redelivery whose prior delivery
-			// never published, and re-firing is the safe side (the same episode
-			// requestId collapses on the Contract #4 tracker; a drop could
-			// wedge a lost publish behind its own mark).
+		if !redelivered {
+			// A fresh delivery while the episode is in flight — the anti-storm
+			// drop.
 			return substrate.Ack
 		}
 		// Redelivery retry path: re-publish the same episode.
 		return e.fire(ctx, targetID, entityID, col, markRev, pl)
 	}
 
-	rev, lost, err := e.marks.create(ctx, targetID, entityID, col, entityKey, ga.Action)
+	rev, lost, err := e.marks.create(ctx, targetID, entityID, col, entityKey, action)
 	if err != nil {
 		e.logger.Error("weaver: mark create failed; nak with delay",
 			"targetId", targetID, "entityId", entityID, "gap", col, "err", err)
