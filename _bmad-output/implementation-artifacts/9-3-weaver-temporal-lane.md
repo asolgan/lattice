@@ -1,6 +1,6 @@
 # Story 9.3: Temporal lane (ADR-51 scheduled messages)
 
-Status: review
+Status: done
 
 ## Story
 
