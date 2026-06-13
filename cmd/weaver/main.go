@@ -36,6 +36,7 @@ import (
 	"github.com/asolgan/lattice/internal/substrate"
 	"github.com/asolgan/lattice/internal/weaver"
 	"github.com/asolgan/lattice/internal/weaver/control"
+	"github.com/asolgan/lattice/internal/weaver/nudge"
 )
 
 // engineControl is satisfied structurally by *weaver.Engine; declared here
@@ -101,6 +102,20 @@ func run(logger *slog.Logger) error {
 		Lane:                lane,
 		Logger:              logger,
 	})
+
+	// Register the Phase-2 reference nudge adapters (mocked, in-memory — the
+	// real Stripe / background-check integrations are Phase 3). The §10.8
+	// playbooks an Epic 11 lease-signing package authors name these by the same
+	// strings; package-data-driven adapter registration is Epic 11. Must run
+	// before Start: the registry has no lock-step with the dispatch path.
+	for name, adapter := range map[string]nudge.Adapter{
+		"stripe":          nudge.NewFakeStripe(),
+		"backgroundCheck": nudge.NewFakeBackgroundCheck(),
+	} {
+		if err := engine.RegisterAdapter(name, adapter); err != nil {
+			return fmt.Errorf("register nudge adapter %q: %w", name, err)
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

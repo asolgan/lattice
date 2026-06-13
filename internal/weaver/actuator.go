@@ -122,6 +122,19 @@ func deriveEpisodeTaskID(targetID, entityID, gapColumn string, markRevision uint
 	return deriveID("task:", targetID+"\x00"+entityID+"\x00"+gapColumn, markRevision)
 }
 
+// deriveResolveRequestID returns the deterministic requestId for one nudge
+// resolve op, derived from the claimId (NOT the mark revision). The resolve must
+// collapse to the SAME op across a recovery that re-submits it under a DIFFERENT
+// (reclaimed) mark revision — so it is keyed on the claimId, the one identifier
+// that survives a reclaim (§10.3 carries it forward). A redelivery or recovery
+// re-derives the same requestId and the duplicate resolve collapses on the
+// Contract #4 vtx.op.<requestId> tracker → exactly one resolve mutation in Core
+// KV. Namespaced disjoint from the episode/task/timer derivations so a claimId
+// and a mark-revision seed can never collide.
+func deriveResolveRequestID(claimID string) string {
+	return deriveID("resolve:", claimID, 0)
+}
+
 // deriveTimerRequestID returns the deterministic requestId for one fired-timer
 // conversion (Contract #10 §10.4): derived from the schedule subject + the
 // fire instant, so an at-least-once redelivery of the SAME firing reuses the

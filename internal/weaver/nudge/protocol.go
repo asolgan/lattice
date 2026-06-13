@@ -2,8 +2,16 @@ package nudge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
+
+// ErrAdapterNotFound reports that a nudge dispatch named an adapter the registry
+// does not know — a config error, not an in-flight failure. Run and Recover wrap
+// it on a registry miss so the caller can classify the posture (Ack + a config
+// Health issue): redelivery can never fix a name the registry does not hold, so
+// Nak'ing would hot-loop lane-1 against a config error.
+var ErrAdapterNotFound = errors.New("nudge: no adapter registered for the dispatch adapter (config error)")
 
 // ResolveFunc submits the resolve op through the Processor and returns the
 // op's requestId (the resolveRef recorded on the claim — the Core KV audit-join
@@ -81,7 +89,7 @@ func (d Dispatch) request() Request {
 func (n *Nudger) Run(ctx context.Context, d Dispatch, resolve ResolveFunc) (*Claim, error) {
 	adapter, ok := n.registry.Lookup(d.Adapter)
 	if !ok {
-		return nil, fmt.Errorf("nudge: no adapter registered for %q (config error)", d.Adapter)
+		return nil, fmt.Errorf("%w: %q", ErrAdapterNotFound, d.Adapter)
 	}
 
 	rec, err := n.claims.Write(ctx, d.ClaimID, d.Adapter, d.Operation, d.Subject, d.Params)
@@ -159,7 +167,7 @@ func (n *Nudger) Recover(ctx context.Context, d Dispatch, probe ResolveProbe, re
 	// attempt; either way the reused idempotencyKey makes the adapter call safe.
 	adapter, ok := n.registry.Lookup(d.Adapter)
 	if !ok {
-		return rec, fmt.Errorf("nudge: no adapter registered for %q (config error)", d.Adapter)
+		return rec, fmt.Errorf("%w: %q", ErrAdapterNotFound, d.Adapter)
 	}
 	if !found {
 		if _, err := n.claims.Write(ctx, d.ClaimID, d.Adapter, d.Operation, d.Subject, d.Params); err != nil {

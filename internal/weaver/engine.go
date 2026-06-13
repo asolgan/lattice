@@ -2,6 +2,8 @@ package weaver
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -488,3 +490,86 @@ func (e *Engine) reconcileConsumers() {
 }
 
 func issueKeyConsumer(targetID string) string { return "consumer:" + targetID }
+
+// RegisterAdapter binds a §10.8 nudge adapter name to a concrete nudge.Adapter,
+// the seam that wires the reference adapters (cmd/weaver demo, tests) before
+// Start. The engine itself stays adapter-agnostic — the framework is the engine,
+// the adapter set is config — so registration is an external call, never
+// hard-coded inside the engine. A duplicate name or nil adapter is rejected by
+// the registry (a wiring bug, surfaced). MUST be called before Start: the
+// registry has no lock-step with the dispatch path, so registering after a nudge
+// gap has already dispatched would be a race against Lookup.
+func (e *Engine) RegisterAdapter(name string, a nudge.Adapter) error {
+	return e.adapters.Register(name, a)
+}
+
+// resolveFunc builds the nudge.ResolveFunc the protocol calls to submit the
+// resolve op (the Resolve phase of the Two-Phase Nudge). The resolve op is a
+// normal fire-and-forget submit through the Actuator (the Processor is the sole
+// Core KV writer): its requestId is deterministic from the claimId
+// (deriveResolveRequestID) so a redelivery/recovery re-submit collapses on the
+// Contract #4 vtx.op.<requestId> tracker — exactly one resolve mutation. The
+// payload carries the claimId reference field (arch Item 3, the audit join) and
+// the adapter Result detail, plus the row's OCC revision-condition. authTarget
+// is the nudge subject (the entity the external action concerns, §10.8 target
+// semantics). The returned resolveRef recorded on the claim IS that requestId
+// (the Core KV op key). Captures the subject + expectedRevision per dispatch.
+func (e *Engine) resolveFunc(np *nudgePlan, expectedRevision uint64) nudge.ResolveFunc {
+	return func(ctx context.Context, claimID string, result nudge.Result) (string, error) {
+		requestID := deriveResolveRequestID(claimID)
+		payload := map[string]any{
+			"claimId":          claimID,
+			"result":           result.Detail,
+			"expectedRevision": expectedRevision,
+		}
+		if err := e.act.submit(ctx, requestID, np.operation, payload, np.subject); err != nil {
+			return "", err
+		}
+		return requestID, nil
+	}
+}
+
+// resolveProbe builds the nudge.ResolveProbe the protocol calls during recovery
+// to ask whether the resolve op for a claim has ALREADY landed in Core KV before
+// re-executing (read-before-act, mirroring the §10.6 Loom tracker-GET precedent
+// in internal/loom trackerExists). It GETs the Contract #4 idempotency tracker
+// vtx.op.<resolveRequestId> in Core KV, keyed on the deterministic resolve
+// requestId derived from the claimId.
+//
+// The landed test mirrors Contract #4's dedup rule exactly — "found AND
+// isDeleted:false": Core KV holds logically-deleted entries by design (KVGet
+// returns an isDeleted:true envelope normally, err == nil), and §4.3 reserves
+// isDeleted:true as an operator-driven retry signal — "treat as not-found and
+// proceed". So a present-but-tombstoned tracker is NOT a landed resolve: treating
+// it as landed would silently abandon a genuinely-incomplete claim (advance to
+// resolved off a tombstone) instead of re-driving it. found+isDeleted:false ⇒
+// landed=true, resolveRef = that requestId (the Core KV audit-join key);
+// ErrKeyNotFound (a hard NATS purge) or an unparseable/tombstoned envelope ⇒ not
+// landed, so the recovery re-executes on the same idempotencyKey (the adapter
+// dedups).
+func (e *Engine) resolveProbe() nudge.ResolveProbe {
+	return func(ctx context.Context, claimID string) (string, bool, error) {
+		requestID := deriveResolveRequestID(claimID)
+		entry, err := e.conn.KVGet(ctx, e.cfg.CoreKVBucket, "vtx.op."+requestID)
+		if err != nil {
+			if errors.Is(err, substrate.ErrKeyNotFound) {
+				return "", false, nil
+			}
+			return "", false, fmt.Errorf("weaver: probe resolve tracker %q: %w", requestID, err)
+		}
+		var env substrate.DocumentEnvelope
+		if uerr := json.Unmarshal(entry.Value, &env); uerr != nil {
+			// An unparseable tracker is not trustworthy landed evidence; treat as
+			// not-landed and re-drive (the adapter dedups the reused idempotencyKey).
+			e.logger.Warn("weaver: resolve tracker unparseable; treating as not landed",
+				"requestId", requestID, "claimId", claimID, "err", uerr)
+			return "", false, nil
+		}
+		if env.IsDeleted {
+			// Contract #4 §4.3: a tombstoned (isDeleted:true) tracker is the
+			// operator-driven retry signal — treat as not-found, not landed.
+			return "", false, nil
+		}
+		return requestID, true, nil
+	}
+}

@@ -60,10 +60,32 @@ func (e *planError) Error() string { return e.msg }
 // requestId and collapses on the Contract #4 tracker — idempotency rests on
 // the requestId, not payload equality (time-derived fields such as
 // assignTask's expiresAt differ per fire).
+//
+// nudge is non-nil only for the §10.8 nudge action: that action does not fire a
+// plain ops.<lane> submit off operationType/authTarget/payload — it runs the
+// Two-Phase Nudge protocol (claim → adapter execute → resolve op) over a minted
+// claimId. operationType/authTarget/payload are unused for a nudge plan; the
+// nudge carrier holds the adapter name, resolve op type, subject, and resolved
+// params the protocol needs at fire time. fireEpisode branches on nudge != nil.
 type plan struct {
 	operationType string
 	authTarget    string
 	payload       func(markRevision uint64) map[string]any
+	nudge         *nudgePlan
+}
+
+// nudgePlan carries one nudge gap's resolved §10.8 fields to the live dispatch
+// path: the adapter name (config — never templated from the row), the resolve
+// operation type (the §10.8 nudge action's Operation — a literal op type the
+// resolve mutation submits under), the subject the external action concerns
+// (templated), and the resolved params (each a literal or a row.<column>
+// substitution). The claimId is NOT here — it is minted at fire time with the
+// weaver-state mark CAS-create (§10.3) and threaded through the protocol.
+type nudgePlan struct {
+	adapter   string
+	operation string
+	subject   string
+	params    map[string]string
 }
 
 // buildPlan resolves one open gap against its playbook entry: templated params
@@ -73,8 +95,10 @@ type plan struct {
 // row's substrate per-key revision off the CDC message; every remediation op's
 // payload carries it as the OCC revision-condition.
 //
-// The nudge action is not yet implemented: it is recognised and rejected
-// loudly as a planError so the caller surfaces it — never silently dropped.
+// The nudge action resolves into a nudgePlan (adapter/operation/subject/params)
+// rather than a plain-submit plan: the live dispatch path runs the Two-Phase
+// Nudge protocol over it (claim → adapter → resolve op) instead of a single
+// ops.<lane> publish.
 func buildPlan(source *targetSource, targetID, entityID, gapColumn string,
 	ga GapAction, row map[string]any, expectedRevision uint64) (*plan, *planError) {
 
@@ -177,9 +201,43 @@ func buildPlan(source *targetSource, targetID, entityID, gapColumn string,
 		}, nil
 
 	case actionNudge:
-		// Two-Phase Nudge is not yet implemented. Recognised and surfaced —
-		// never silent.
-		return nil, &planError{kind: errConfig, msg: "nudge is not yet implemented"}
+		// The adapter name is config (the §10.8 GapAction.Adapter field), never
+		// templated from the row — a blank one is a config error, and a row.
+		// prefix is a config error too (mirrors directOp's operation guard).
+		if ga.Adapter == "" {
+			return nil, &planError{kind: errConfig, msg: "nudge requires an adapter"}
+		}
+		if strings.HasPrefix(ga.Adapter, rowTemplatePrefix) {
+			return nil, &planError{kind: errConfig, msg: "nudge adapter must be a literal adapter name"}
+		}
+		// The resolve operation type is likewise config (the §10.8 nudge action's
+		// Operation — the op type the resolve mutation submits under).
+		if ga.Operation == "" {
+			return nil, &planError{kind: errConfig, msg: "nudge requires an operation (the resolve op type)"}
+		}
+		if strings.HasPrefix(ga.Operation, rowTemplatePrefix) {
+			return nil, &planError{kind: errConfig, msg: "nudge operation must be a literal operationType"}
+		}
+		subject, perr := resolveStringParam("subject", ga.Subject, row)
+		if perr != nil {
+			return nil, perr
+		}
+		params := make(map[string]string, len(ga.Params))
+		for name, v := range ga.Params {
+			resolved, perr := resolveStringParam(name, v, row)
+			if perr != nil {
+				return nil, perr
+			}
+			params[name] = resolved
+		}
+		return &plan{
+			nudge: &nudgePlan{
+				adapter:   ga.Adapter,
+				operation: ga.Operation,
+				subject:   subject,
+				params:    params,
+			},
+		}, nil
 
 	default:
 		return nil, &planError{kind: errConfig, msg: fmt.Sprintf("unknown action %q", ga.Action)}

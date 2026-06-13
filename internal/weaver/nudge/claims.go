@@ -52,11 +52,22 @@ func (c ClaimState) terminal() bool {
 // ClaimStore is the weaver-claims accessor (Contract #10 §10.3). Each claim is
 // keyed by its claimId and written with a per-key TTL = retention (the bucket is
 // primordial and TTL-capable; the simplest contract-faithful 90d-retention
-// mechanism, mirroring markStore's TTL discipline). The store has a single
-// writer per claim: the weaver-state mark already serialized the dispatch
-// (§10.3), so the lifecycle transitions (Advance/Resolve/reopen) are plain
-// read-modify-write with no CAS. The initial claim Write is create-semantic
-// (create-on-absent) so a redelivery routed to a fresh dispatch cannot clobber a
+// mechanism, mirroring markStore's TTL discipline). The lifecycle transitions
+// (Advance/Resolve/reopen) are plain read-modify-write with no CAS.
+//
+// Concurrency: within one Weaver instance the reconciler sweep and the lane-1
+// redelivery handler are independent goroutines that can BOTH drive recovery for
+// the same claimId at once, so these read-modify-writes are not strictly
+// single-writer. That is accepted (no CAS in Phase 2): duplicate-safety does NOT
+// rest on a single writer. It rests on (a) the adapter de-duping two Execute calls
+// on the SAME idempotencyKey (=claimId) to at most one external side-effect, and
+// (b) the resolve op collapsing on its deterministic Contract #4 requestId (derived
+// from the claimId) to exactly one Core KV mutation. A concurrent transition can
+// only flip the claim record's state field between executing/failed/resolved; that
+// transient is self-healing on the next recovery (recovery short-circuits on the
+// terminal resolved state and otherwise re-drives idempotently), and it never
+// causes a second side-effect. The initial claim Write is still create-semantic
+// (create-on-absent) so a redelivery routed to a FRESH dispatch cannot clobber a
 // live claim — it lands ErrClaimExists and is bounced to Recover instead.
 type ClaimStore struct {
 	conn      *substrate.Conn

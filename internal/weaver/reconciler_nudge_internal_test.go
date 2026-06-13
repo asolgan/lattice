@@ -51,11 +51,13 @@ func TestSweep_CorruptEmptyClaimIDNudgeMark(t *testing.T) {
 	h.requireNoOp(t)
 }
 
-// TestSweep_NudgeMarkWithClaimIDNotCorrupt proves the guard is precise: a nudge
-// mark that DOES carry a claimId is not treated as corrupt by the empty-claimId
-// guard. (Its live-nudge reclaim/dispatch is Story 10.2 — buildPlan's actionNudge
-// still returns a planError here, so the mark is left for the next sweep, not
-// deleted as corrupt and not re-fired.)
+// TestSweep_NudgeMarkWithClaimIDNotCorrupt proves the corrupt-empty-claimId
+// guard is precise: a nudge mark that DOES carry a claimId is not treated as
+// corrupt. The reclaim re-arms it (carrying the claimId forward) rather than
+// deleting it; with no adapter registered in this bare harness the recovery
+// surfaces a NudgeDispatchError and publishes no op, so the assertions here
+// remain "mark survives, not CorruptMark, no op" — the live recovery path with a
+// registered adapter is exercised by the dispatch/crash proofs.
 func TestSweep_NudgeMarkWithClaimIDNotCorrupt(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")

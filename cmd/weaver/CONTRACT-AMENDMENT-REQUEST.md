@@ -90,3 +90,49 @@ an `@at` schedule (the time→op leg, §10.4) and never computes the window itse
 adding a config knob for the column name. The frozen column list is otherwise silent on where the
 freshness deadline rides; pinning the convention into §10.2 makes the engine/Lens seam explicit (the
 7.4 annotation-CAR precedent).
+
+---
+
+# Contract #10 Amendment Request (Story 10.2 — Weaver Two-Phase Nudge actuator)
+
+This amendment to the **FROZEN** Contract #10 (`docs/contracts/10-orchestration-surfaces.md`) was
+adjudicated during Story 10.2 (Weaver §10.3 Two-Phase Nudge live-wiring), 2026-06-13. Per CLAUDE.md
+"Frozen contracts," it is not an in-flight edit — it is raised here for ratification by the contract
+owner (Andrew) + a Contract #10 revision-history entry. The implementation
+(`internal/weaver/{evaluator.go,engine.go,strategist.go}`, `internal/weaver/nudge/protocol.go`)
+already builds to the requested text; the existing §10.8 `nudge` example omits `operation` and is
+adjusted by the same amendment.
+
+**STATUS: PROPOSED — awaiting ratification (Andrew).**
+
+## Request 4: §10.8 `nudge` action gains a required `operation` field (the resolve-op type)
+
+**Location:** §10.8 "Action contracts" table — the `nudge` row — and the §10.8 `meta.weaverTarget`
+example's `missing_bgcheck` nudge entry.
+
+**Current text:** the `nudge` action params are `{ adapter, subject, params? }`. The example
+`missing_bgcheck` nudge omits any operation field:
+
+```json
+"missing_bgcheck": { "action": "nudge", "adapter": "backgroundCheck", "subject": "row.applicant" }
+```
+
+**Requested text:** the `nudge` action params are **`{ adapter, operation, subject, params? }`**, where
+`operation` is the **resolve operation type** — the op the Two-Phase Nudge submits in its Resolve
+phase to record the external outcome back into Core KV (the second leg of Claim→Execute→Resolve,
+arch Item 3 / §10.3). It is **required** on a nudge action. The example gains it:
+
+```json
+"missing_bgcheck": { "action": "nudge", "adapter": "backgroundCheck",
+                     "operation": "ResolveBackgroundCheck", "subject": "row.applicant" }
+```
+
+**Rationale:** the §10.3 `weaver-claims` record value shape — frozen in the same contract — **already
+includes `operation`** (`value: { claimId, adapter, operation, subject, params, idempotencyKey, … }`,
+§10.3). The claim's `operation` can only come from the playbook's nudge action, but the §10.8 action
+row that authors the playbook has no field to carry it: the two frozen shapes are internally
+inconsistent. The resolve phase is not optional — without an `operation` type the Resolve leg has no
+op to submit and the claim could never reach `state=resolved` — so `operation` is required, not
+`operation?`. The implementation routes a blank or `row.`-templated `operation` to the same
+`errConfig` posture as a blank/templated `adapter` (surfaced to Health, not dispatched). Epic 11
+playbooks will be authored against this amended row.
