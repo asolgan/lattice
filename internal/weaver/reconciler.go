@@ -24,6 +24,11 @@ const defaultSweepInterval = time.Minute
 // legs stay gated — a registry-replay-readiness proxy (see sweeper.warmup).
 const defaultSweepOrphanWarmup = 5 * time.Minute
 
+// defaultClaimRetention is the §10.3 weaver-claims per-key TTL (90 days,
+// configurable via Config.ClaimRetention) — long enough that an audit can join
+// the resolve op (Core KV business outcome) to the claim (operational intent).
+const defaultClaimRetention = 90 * 24 * time.Hour
+
 // Sweep dispositions logged on every mark the sweep deletes or reclaims.
 const (
 	sweepReasonLeaseExpired  = "leaseExpired"
@@ -273,6 +278,18 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 		// dispatches fresh.
 		s.deleteCorrupt(ctx, key, markRev,
 			"row "+targetID+"."+entityID+" is violating but carries no entityKey")
+		return
+	}
+
+	// Corrupt-claim guard (§10.3): a nudge mark ALWAYS carries its claimId
+	// (minted atomically with the CAS-create, createNudge). An empty claimId on
+	// a nudge mark is impossible-by-construction; if the sweep ever sees one it
+	// is corrupt — alert and delete, and NEVER mint a fresh claimId (a fresh id
+	// would be a second idempotencyKey → a duplicate external call). The delete
+	// is revision-conditioned, like every other sweep delete.
+	if ga.Action == actionNudge && rec.ClaimID == "" {
+		s.deleteCorrupt(ctx, key, markRev,
+			"nudge mark "+key+" carries an empty claimId (a fresh id would risk a duplicate external call)")
 		return
 	}
 

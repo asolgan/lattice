@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/asolgan/lattice/internal/substrate"
+	"github.com/asolgan/lattice/internal/weaver/nudge"
 )
 
 // laneConsumerPrefix prefixes a lane-1 durable name: weaver-target-<targetId>.
@@ -27,6 +28,16 @@ type Config struct {
 	WeaverTargetsBucket string
 	// WeaverStateBucket holds the §10.3 in-flight marks. Default "weaver-state".
 	WeaverStateBucket string
+	// WeaverClaimsBucket holds the §10.3 Two-Phase Nudge claim records (keyed by
+	// claimId). Default "weaver-claims" — matches
+	// internal/bootstrap.WeaverClaimsBucket; kept literal so internal/weaver does
+	// not import internal/bootstrap.
+	WeaverClaimsBucket string
+	// ClaimRetention is the per-key TTL on each weaver-claims record (§10.3 "90d
+	// retention, configurable"). The weaver-claims bucket is provisioned
+	// TTL-capable, so retention is a per-key TTL (mirroring the mark's TTL
+	// discipline), no bucket MaxAge change. Values <= 0 take the 90d default.
+	ClaimRetention time.Duration
 	// HealthKVBucket holds the Contract #5 heartbeat (health.weaver.<instance>)
 	// and the per-consumer pause-state entries. Default "health-kv" — matches
 	// internal/bootstrap.HealthKVBucket; cmd/weaver may override from there.
@@ -125,6 +136,12 @@ func (c *Config) withDefaults() {
 	if c.WeaverStateBucket == "" {
 		c.WeaverStateBucket = "weaver-state"
 	}
+	if c.WeaverClaimsBucket == "" {
+		c.WeaverClaimsBucket = "weaver-claims"
+	}
+	if c.ClaimRetention <= 0 {
+		c.ClaimRetention = defaultClaimRetention
+	}
 	if c.HealthKVBucket == "" {
 		// Literal default mirrors internal/bootstrap.HealthKVBucket; kept literal
 		// (like the other bucket defaults) so internal/weaver does not import
@@ -183,6 +200,9 @@ type Engine struct {
 	logger           *slog.Logger
 	source           *targetSource
 	marks            *markStore
+	claims           *nudge.ClaimStore
+	adapters         *nudge.Registry
+	nudger           *nudge.Nudger
 	sweep            *sweeper
 	temporal         *temporalStats
 	act              *actuator
@@ -267,11 +287,16 @@ func fingerprintOf(spec substrate.ConsumerSpec) specFingerprint {
 func NewEngine(conn *substrate.Conn, cfg Config) *Engine {
 	cfg.withDefaults()
 	issues := newIssueCache()
+	adapters := nudge.NewRegistry()
+	claims := nudge.NewClaimStore(conn, cfg.WeaverClaimsBucket, cfg.ClaimRetention)
 	e := &Engine{
 		cfg:              cfg,
 		conn:             conn,
 		logger:           cfg.Logger,
 		marks:            newMarkStore(conn, cfg.WeaverStateBucket, cfg.MarkLease, cfg.Instance),
+		claims:           claims,
+		adapters:         adapters,
+		nudger:           nudge.NewNudger(claims, adapters),
 		temporal:         &temporalStats{},
 		act:              newActuator(conn, cfg.Lane, cfg.ActorKey, cfg.Logger),
 		supervisor:       substrate.NewConsumerSupervisor(conn),
