@@ -7,6 +7,20 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// Schedule-publish header names (Contract #10 §10.4, ADR-51). Publishing to a
+// stream provisioned with AllowMsgSchedules and these headers set arms a
+// NATS-native scheduled message; the scheduler republishes the payload back
+// into the same stream at the target subject when the schedule fires.
+const (
+	// ScheduleHeader carries the schedule spec. Phase 2 uses the one-shot
+	// absolute form "@at <RFC3339>".
+	ScheduleHeader = "Nats-Schedule"
+	// ScheduleTargetHeader carries the republish target subject. The target
+	// MUST lie within the scheduling stream's own subject space — the server
+	// rejects an out-of-stream target at publish time.
+	ScheduleTargetHeader = "Nats-Schedule-Target"
+)
+
 // Publish sends a single message to subject through JetStream and waits for the
 // server's store ack (ctx-bounds the round trip). It is the fire-and-forget
 // primitive for command submission where no reply is awaited — the durable

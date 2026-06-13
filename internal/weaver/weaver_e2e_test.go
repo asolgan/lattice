@@ -37,6 +37,7 @@ const (
 	weaverStateBucket   = "weaver-state"
 	healthKVBucket      = "health-kv"
 	opsStream           = "core-operations"
+	schedulesStream     = "core-schedules"
 	weaverActorKey      = "vtx.identity.WeaverServiceActor1abc" // fixture actor key (no Processor in these tests)
 )
 
@@ -53,6 +54,18 @@ func provision(t *testing.T, ctx context.Context, conn *substrate.Conn) {
 	require.NoError(t, err)
 	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: opsStream, Subjects: []string{"ops.>"},
+	})
+	require.NoError(t, err)
+	// core-schedules mirrors internal/bootstrap/primordial.go: AllowMsgSchedules
+	// (NATS-native @at scheduling) + MaxMsgsPerSubject 1 (per-subject rollup
+	// storage bound), file storage, limits retention.
+	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:              schedulesStream,
+		Subjects:          []string{"schedule.>"},
+		Storage:           jetstream.FileStorage,
+		Retention:         jetstream.LimitsPolicy,
+		MaxMsgsPerSubject: 1,
+		AllowMsgSchedules: true,
 	})
 	require.NoError(t, err)
 }
@@ -219,6 +232,57 @@ func consumerExists(t *testing.T, ctx context.Context, conn *substrate.Conn, dur
 	t.Helper()
 	_, err := conn.JetStream().Consumer(ctx, "KV_"+weaverTargetsBucket, durable)
 	return err == nil
+}
+
+// waitStreamConsumer waits for a durable to appear on an arbitrary stream
+// (the lane-3 weaver-temporal durable lives on core-schedules, not on the
+// weaver-targets backing stream waitConsumer is bound to).
+func waitStreamConsumer(t *testing.T, ctx context.Context, conn *substrate.Conn, stream, durable string) {
+	t.Helper()
+	js := conn.JetStream()
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := js.Consumer(ctx, stream, durable); err == nil {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("durable %q never appeared on %s", durable, stream)
+}
+
+// waitScheduleHeader waits until the pending schedule message at subject
+// carries the given @at header value (proving the schedule — or its
+// replacement — is armed).
+func waitScheduleHeader(t *testing.T, ctx context.Context, conn *substrate.Conn, subject, wantAt string) {
+	t.Helper()
+	stream, err := conn.JetStream().Stream(ctx, schedulesStream)
+	require.NoError(t, err)
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if msg, err := stream.GetLastMsgForSubject(ctx, subject); err == nil {
+			if msg.Header.Get(substrate.ScheduleHeader) == "@at "+wantAt {
+				return
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("schedule message at %q never carried %q", subject, "@at "+wantAt)
+}
+
+// waitFiredMessage waits until a fired-timer message lands in core-schedules at
+// subject (the NATS scheduler has republished the payload at the target subject).
+func waitFiredMessage(t *testing.T, ctx context.Context, conn *substrate.Conn, subject string) {
+	t.Helper()
+	stream, err := conn.JetStream().Stream(ctx, schedulesStream)
+	require.NoError(t, err)
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := stream.GetLastMsgForSubject(ctx, subject); err == nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("a fired-timer message never landed at %q", subject)
 }
 
 func waitMark(t *testing.T, ctx context.Context, conn *substrate.Conn, key string) {
@@ -815,6 +879,277 @@ func TestWeaverE2E_SweepOrphanedTargetMarks(t *testing.T) {
 	op := nextOp(t, ops, 15*time.Second)
 	require.Equal(t, "CreateTask", op.OperationType)
 	waitMark(t, ctx, conn, markKey)
+}
+
+// --- Temporal lane (lane 3, §10.4) -------------------------------------------
+
+// installFreshTarget installs a fixture target (the caller-supplied targetID)
+// whose playbook remediates missing_fresh via directOp.
+func installFreshTarget(t *testing.T, ctx context.Context, conn *substrate.Conn, targetID string) {
+	t.Helper()
+	installWeaverTarget(t, ctx, conn, mustNanoID(t), map[string]any{
+		"targetId": targetID,
+		"lensRef":  mustNanoID(t),
+		"gaps": map[string]any{
+			"missing_fresh": map[string]any{"action": "directOp", "operation": "FixFresh"},
+		},
+	})
+}
+
+// freshInstant returns now+d truncated to whole seconds (the byte-identical
+// header/payload/requestId instant) as an RFC3339 string.
+func freshInstant(d time.Duration) string {
+	return time.Now().Add(d).UTC().Truncate(time.Second).Format(time.RFC3339)
+}
+
+// TestWeaverE2E_TemporalHappyLoop proves AC 1–3: a row carrying a future
+// freshUntil arms the per-target-per-entity @at schedule on core-schedules
+// (with the §10.4 headers); at expiry the NATS scheduler republishes to the
+// fired subject; the weaver-temporal durable converts the firing into exactly
+// one MarkExpired op carrying the §10.4-derived deterministic requestId and no
+// authContext; the fixture then re-projects the row violating (the CDC leg —
+// Refractor wiring is Epic 11) and lane-1 dispatches the remediation.
+func TestWeaverE2E_TemporalHappyLoop(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	nc := startNATS(t)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+	provision(t, ctx, conn)
+	ops := subscribeOps(t, nc)
+
+	targetID := "fixtureFresh"
+	installFreshTarget(t, ctx, conn, targetID)
+
+	engine := newEngine(conn, "e2e-temporal-"+mustNanoID(t))
+	engCtx, engCancel := context.WithCancel(ctx)
+	defer engCancel()
+	go func() { _ = engine.Start(engCtx) }()
+	waitConsumer(t, ctx, conn, "weaver-target-"+targetID)
+	waitStreamConsumer(t, ctx, conn, schedulesStream, "weaver-temporal")
+
+	entityID := mustNanoID(t)
+	entityKey := "vtx.leaseApp." + entityID
+	// A comfortable fuse so the pending schedule is still armed when the target
+	// header is read back below (a tight fuse can let the firing roll the pending
+	// entry away before the read).
+	fireAt := freshInstant(6 * time.Second)
+	putRow(t, ctx, conn, targetID, entityID, map[string]any{
+		"entityKey":  entityKey,
+		"violating":  false,
+		"freshUntil": fireAt,
+	})
+
+	// AC 1: the schedule message is armed with the §10.4 headers.
+	schedSubject := "schedule.weaver.timer." + targetID + "." + entityID
+	waitScheduleHeader(t, ctx, conn, schedSubject, fireAt)
+	stream, err := conn.JetStream().Stream(ctx, schedulesStream)
+	require.NoError(t, err)
+	sched, err := stream.GetLastMsgForSubject(ctx, schedSubject)
+	require.NoError(t, err)
+	require.Equal(t, "schedule.weaver.timer.fired."+targetID+"."+entityID,
+		sched.Header.Get(substrate.ScheduleTargetHeader),
+		"the republish target must be the fired subject within schedule.>")
+
+	// AC 2: at expiry, exactly one MarkExpired op with the deterministic
+	// requestId, the {entityKey, targetId, expiredAt} payload, no authContext.
+	op := nextOp(t, ops, 20*time.Second)
+	require.Equal(t, "MarkExpired", op.OperationType)
+	require.Equal(t, weaverActorKey, op.Actor)
+	require.Equal(t, weaver.DeriveTimerRequestID(schedSubject, fireAt), op.RequestID,
+		"the requestId must derive from the schedule subject + fire instant (§10.4)")
+	require.Equal(t, entityKey, op.Payload["entityKey"])
+	require.Equal(t, targetID, op.Payload["targetId"])
+	require.Equal(t, fireAt, op.Payload["expiredAt"])
+	require.Empty(t, op.AuthContext.Target, "MarkExpired carries no authContext")
+	requireNoOp(t, ops, 2*time.Second)
+
+	// AC 3: the fixture re-projects the entity violating (CDC leg) and lane-1
+	// dispatches the remediation — mark + op, the full time→op→violation→
+	// remediation chain.
+	putRow(t, ctx, conn, targetID, entityID, map[string]any{
+		"entityKey":     entityKey,
+		"violating":     true,
+		"missing_fresh": true,
+	})
+	rem := nextOp(t, ops, 15*time.Second)
+	require.Equal(t, "FixFresh", rem.OperationType)
+	waitMark(t, ctx, conn, targetID+"."+entityID+".missing_fresh")
+}
+
+// TestWeaverE2E_TemporalReplace proves AC 4: re-projecting the entity with a
+// NEW freshUntil before expiry re-publishes to the same schedule subject,
+// REPLACING the prior timer — no firing at the first instant, exactly ONE
+// MarkExpired overall, carrying the second instant. (Both schedules sit inside
+// the observation window, so a broken replace fails this test with the
+// first-instant firing.)
+func TestWeaverE2E_TemporalReplace(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	nc := startNATS(t)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+	provision(t, ctx, conn)
+	ops := subscribeOps(t, nc)
+
+	targetID := "fixtureFresh"
+	installFreshTarget(t, ctx, conn, targetID)
+
+	engine := newEngine(conn, "e2e-replace-"+mustNanoID(t))
+	engCtx, engCancel := context.WithCancel(ctx)
+	defer engCancel()
+	go func() { _ = engine.Start(engCtx) }()
+	waitConsumer(t, ctx, conn, "weaver-target-"+targetID)
+	waitStreamConsumer(t, ctx, conn, schedulesStream, "weaver-temporal")
+
+	entityID := mustNanoID(t)
+	entityKey := "vtx.leaseApp." + entityID
+	schedSubject := "schedule.weaver.timer." + targetID + "." + entityID
+
+	// A roomy first fuse so the replace lands before the first instant fires even
+	// on a slow runner (both instants sit inside the observation window, so a
+	// broken replace still fails this test with the first-instant firing).
+	firstAt := freshInstant(5 * time.Second)
+	putRow(t, ctx, conn, targetID, entityID, map[string]any{
+		"entityKey":  entityKey,
+		"violating":  false,
+		"freshUntil": firstAt,
+	})
+	waitScheduleHeader(t, ctx, conn, schedSubject, firstAt)
+
+	// Re-done before expiry: a NEW deadline replaces the prior timer.
+	secondAt := freshInstant(10 * time.Second)
+	putRow(t, ctx, conn, targetID, entityID, map[string]any{
+		"entityKey":  entityKey,
+		"violating":  false,
+		"freshUntil": secondAt,
+	})
+	waitScheduleHeader(t, ctx, conn, schedSubject, secondAt)
+
+	// Exactly one firing, at the SECOND instant.
+	op := nextOp(t, ops, 20*time.Second)
+	require.Equal(t, "MarkExpired", op.OperationType)
+	require.Equal(t, secondAt, op.Payload["expiredAt"],
+		"the replaced timer must fire at the re-armed instant, not the original")
+	require.Equal(t, weaver.DeriveTimerRequestID(schedSubject, secondAt), op.RequestID)
+	requireNoOp(t, ops, 2*time.Second)
+}
+
+// TestWeaverE2E_TemporalRestartDurability proves AC 5: the schedule is held by
+// NATS, not by the engine — a full engine stop before expiry loses nothing; a
+// FRESH engine (same server, fixed weaver-temporal durable) converts the
+// firing into exactly one op.
+func TestWeaverE2E_TemporalRestartDurability(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	nc := startNATS(t)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+	provision(t, ctx, conn)
+	ops := subscribeOps(t, nc)
+
+	targetID := "fixtureFresh"
+	installFreshTarget(t, ctx, conn, targetID)
+
+	engine := newEngine(conn, "e2e-restart-a-"+mustNanoID(t))
+	engCtx, engCancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { _ = engine.Start(engCtx); close(done) }()
+	waitConsumer(t, ctx, conn, "weaver-target-"+targetID)
+	waitStreamConsumer(t, ctx, conn, schedulesStream, "weaver-temporal")
+
+	entityID := mustNanoID(t)
+	schedSubject := "schedule.weaver.timer." + targetID + "." + entityID
+	fireAt := freshInstant(3 * time.Second)
+	putRow(t, ctx, conn, targetID, entityID, map[string]any{
+		"entityKey":  "vtx.leaseApp." + entityID,
+		"violating":  false,
+		"freshUntil": fireAt,
+	})
+	waitScheduleHeader(t, ctx, conn, schedSubject, fireAt)
+
+	// Full stop BEFORE expiry.
+	engCancel()
+	<-done
+
+	// A fresh engine resumes the fixed durable; the timer fires and converts.
+	engine2 := newEngine(conn, "e2e-restart-b-"+mustNanoID(t))
+	eng2Ctx, eng2Cancel := context.WithCancel(ctx)
+	defer eng2Cancel()
+	go func() { _ = engine2.Start(eng2Ctx) }()
+
+	op := nextOp(t, ops, 20*time.Second)
+	require.Equal(t, "MarkExpired", op.OperationType)
+	require.Equal(t, weaver.DeriveTimerRequestID(schedSubject, fireAt), op.RequestID)
+	requireNoOp(t, ops, 2*time.Second)
+}
+
+// TestWeaverE2E_TemporalMissedWhileDown proves the ack-floor recovery: a timer
+// that fires while NO engine is running leaves its fired message durable in
+// core-schedules; the restarted engine's weaver-temporal durable picks it up
+// and converts it — exactly one op.
+func TestWeaverE2E_TemporalMissedWhileDown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	nc := startNATS(t)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+	provision(t, ctx, conn)
+	ops := subscribeOps(t, nc)
+
+	targetID := "fixtureFresh"
+	installFreshTarget(t, ctx, conn, targetID)
+
+	engine := newEngine(conn, "e2e-missed-a-"+mustNanoID(t))
+	engCtx, engCancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { _ = engine.Start(engCtx); close(done) }()
+	waitConsumer(t, ctx, conn, "weaver-target-"+targetID)
+	waitStreamConsumer(t, ctx, conn, schedulesStream, "weaver-temporal")
+
+	entityID := mustNanoID(t)
+	schedSubject := "schedule.weaver.timer." + targetID + "." + entityID
+	fireAt := freshInstant(2 * time.Second)
+	putRow(t, ctx, conn, targetID, entityID, map[string]any{
+		"entityKey":  "vtx.leaseApp." + entityID,
+		"violating":  false,
+		"freshUntil": fireAt,
+	})
+	waitScheduleHeader(t, ctx, conn, schedSubject, fireAt)
+
+	// Stop, then let the timer fire with no engine running.
+	engCancel()
+	<-done
+	firedSubject := "schedule.weaver.timer.fired." + targetID + "." + entityID
+	waitFiredMessage(t, ctx, conn, firedSubject)
+
+	// Restart: the durable resumes from its ack floor and converts the stored
+	// firing.
+	engine2 := newEngine(conn, "e2e-missed-b-"+mustNanoID(t))
+	eng2Ctx, eng2Cancel := context.WithCancel(ctx)
+	defer eng2Cancel()
+	go func() { _ = engine2.Start(eng2Ctx) }()
+
+	op := nextOp(t, ops, 20*time.Second)
+	require.Equal(t, "MarkExpired", op.OperationType)
+	require.Equal(t, weaver.DeriveTimerRequestID(schedSubject, fireAt), op.RequestID)
+	requireNoOp(t, ops, 2*time.Second)
 }
 
 // TestWeaverE2E_NudgeStub proves adjudicated decision 6: a nudge gap is

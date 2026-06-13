@@ -16,9 +16,11 @@ import (
 	"github.com/asolgan/lattice/internal/bootstrap"
 )
 
-// requireNATSStack connects to the real Docker NATS stack and skips if it
-// is not reachable. The embedded test server does not run the NATS scheduler,
-// so AllowMsgSchedules smoke tests require the full stack (make up).
+// requireNATSStack connects to the real Docker NATS stack and skips if it is
+// not reachable. The embedded test server runs the NATS scheduler too (the
+// internal/weaver e2e suite exercises the full @at firing loop on it); this
+// smoke test deliberately stays pinned to the production-shaped Docker stack
+// (make up) as the real-deployment check.
 func requireNATSStack(t *testing.T) *nats.Conn {
 	t.Helper()
 	url := os.Getenv("NATS_URL")

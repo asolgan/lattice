@@ -28,7 +28,9 @@ schedule.<domain>.<kind>.<entityId>
 | `<kind>` | Entity type — e.g. `timer`, `task`, `lease` |
 | `<entityId>` | **NanoID only** (20-char, substrate alphabet). Must NOT be a dotted vertex key (`vtx.op.abc`) because dots are NATS subject-token separators. The full entity key rides the message payload. |
 
-Example schedule subject: `schedule.weaver.timer.sL9k2mN3pQrT7vWx8yZ0`
+Example schedule subject (generic per-entity template): `schedule.weaver.timer.sL9k2mN3pQrT7vWx8yZ0`. This is the minimal one-token-per-entity shape; Weaver itself keys per *target* and entity (see the next paragraph), and the publish example below shows the generic form.
+
+A publisher may key its schedules with additional dot-free tokens between `<kind>` and `<entityId>` when one timer slot per entity is too coarse — replace semantics are per *subject*, so the keying chooses the replacement granularity. Weaver keys per target AND entity (`schedule.weaver.timer.<targetId>.<entityId>`), so two targets watching the same entity hold independent timers.
 
 ---
 
@@ -39,19 +41,19 @@ Set two headers on your `nats.Msg` before publishing to `schedule.<domain>.<kind
 | Header constant | Wire value | Meaning |
 |-----------------|-----------|---------|
 | `server.JSSchedulePattern` | `"Nats-Schedule"` | Schedule spec — Phase 2 supports `@at <RFC3339>` (one-shot absolute time). Example: `@at 2026-06-06T14:00:00Z` |
-| `server.JSScheduleTarget` | `"Nats-Schedule-Target"` | The subject the NATS scheduler publishes to when the schedule fires |
+| `server.JSScheduleTarget` | `"Nats-Schedule-Target"` | The subject the NATS scheduler republishes the payload to when the schedule fires — **must lie within `schedule.>`** (the server rejects an out-of-stream target at publish time) |
 
-Use the constants from `github.com/nats-io/nats-server/v2/server` — do not hardcode the raw strings.
+Use the constants from `github.com/nats-io/nats-server/v2/server` — do not hardcode the raw strings. In-repo components use `substrate.ScheduleHeader` / `substrate.ScheduleTargetHeader` (`internal/substrate/publish.go`), which are test-pinned to the server constants, and publish through `Conn.Publish` (a JetStream publish) rather than holding a raw NATS handle.
 
 ```go
 msg := nats.NewMsg("schedule.weaver.timer." + entityID)
 msg.Header.Set(server.JSSchedulePattern, "@at "+fireAt.UTC().Format(time.RFC3339))
-msg.Header.Set(server.JSScheduleTarget, "weaver.timer.fired."+entityID)
+msg.Header.Set(server.JSScheduleTarget, "schedule.weaver.timer.fired."+entityID)
 msg.Data = []byte(`{"entityKey":"vtx.op.` + entityID + `"}`)
-err = nc.PublishMsg(msg)
+_, err = js.PublishMsg(ctx, msg) // JetStream publish — the schedule is stored in the stream
 ```
 
-The payload is preserved and delivered verbatim to the target subject when the schedule fires.
+The payload is preserved and delivered verbatim at the target subject when the schedule fires.
 
 ---
 
@@ -65,12 +67,12 @@ To cancel a pending schedule, publish to the same subject with `Nats-Schedule-Ne
 
 ## Choosing the republish target subject
 
-The target subject is **publisher-chosen**. Each component subscribes to its own namespace:
+The target subject is **publisher-chosen but MUST lie within `schedule.>`**: the NATS scheduler fires by storing the payload **back into the `core-schedules` stream** at the target subject and validates that target against the stream's own subjects, rejecting an out-of-stream target at publish time (`JSMessageSchedulesTargetInvalidError`). Each component namespaces its own fired subjects and consumes them via a **JetStream consumer filtered on its target-subject prefix** (a plain NATS subscribe never sees them):
 
-- Weaver would use `weaver.timer.fired.<domain>.<kind>.<entityId>` and subscribes on `weaver.timer.fired.>`.
-- No cross-component fan-out occurs — only the subscribing component receives the fired message.
+- Weaver schedules at `schedule.weaver.timer.<targetId>.<entityId>` with target `schedule.weaver.timer.fired.<targetId>.<entityId>`, and consumes via the durable `weaver-temporal` filtered on `schedule.weaver.timer.fired.>`.
+- No cross-component fan-out occurs — each component's filtered consumer receives only its own fired messages.
 
-The fired message is then processed by the subscribing component (e.g. Weaver converts it to a normal op via the Processor). The transactional outbox (Contract #3) remains the sole event producer — the `core-schedules` stream does not route to `core-events`.
+The fired message is then processed by the consuming component (e.g. Weaver converts it to a normal op via the Processor). The transactional outbox (Contract #3) remains the sole event producer — the `core-schedules` stream does not route to `core-events`.
 
 ---
 

@@ -20,6 +20,7 @@ const (
 const (
 	opStartLoomPattern = "StartLoomPattern"
 	opCreateTask       = "CreateTask"
+	opMarkExpired      = "MarkExpired"
 )
 
 // assignTaskGrantTTL is the expiry horizon set on an assignTask grant. The

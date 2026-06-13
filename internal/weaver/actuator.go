@@ -82,6 +82,25 @@ func (a *actuator) submit(ctx context.Context, requestID, operationType string, 
 	return nil
 }
 
+// scheduleTimer publishes one §10.4 @at scheduled message on the
+// core-schedules stream: subject schedule.weaver.timer.<targetId>.<entityId>,
+// republish target schedule.weaver.timer.fired.<targetId>.<entityId> (within
+// the stream's own subject space, as the server requires). Fire-and-forget
+// like submit — one publish, no reply; re-publishing to the same subject
+// replaces the prior schedule (one schedule per subject).
+func (a *actuator) scheduleTimer(ctx context.Context, targetID, entityID string, payload []byte, fireAt string) error {
+	subject := scheduleSubjectPrefix + targetID + "." + entityID
+	header := map[string]string{
+		substrate.ScheduleHeader:       "@at " + fireAt,
+		substrate.ScheduleTargetHeader: firedSubjectPrefix + targetID + "." + entityID,
+	}
+	if err := a.conn.Publish(ctx, subject, payload, header); err != nil {
+		return fmt.Errorf("weaver: schedule timer %s: %w", subject, err)
+	}
+	a.logger.Info("weaver timer scheduled", "targetId", targetID, "entityId", entityID, "fireAt", fireAt)
+	return nil
+}
+
 // deriveEpisodeRequestID returns a deterministic 20-char NanoID (over the
 // canonical Lattice alphabet, Contract #1) for one dispatch episode. The
 // episode tag is the mark's KV create revision: a re-fire of the SAME episode
@@ -101,6 +120,15 @@ func deriveEpisodeRequestID(targetID, entityID, gapColumn string, markRevision u
 // requestId and the task id never collide for the same episode.
 func deriveEpisodeTaskID(targetID, entityID, gapColumn string, markRevision uint64) string {
 	return deriveID("task:", targetID+"\x00"+entityID+"\x00"+gapColumn, markRevision)
+}
+
+// deriveTimerRequestID returns the deterministic requestId for one fired-timer
+// conversion (Contract #10 §10.4): derived from the schedule subject + the
+// fire instant, so an at-least-once redelivery of the SAME firing reuses the
+// same requestId and collapses on the Contract #4 vtx.op.<requestId> tracker,
+// while a new firing of a re-armed timer (a new fireAt) is a genuinely new op.
+func deriveTimerRequestID(scheduleSubject, fireAt string) string {
+	return deriveID("timer:", scheduleSubject+"\x00"+fireAt, 0)
 }
 
 // deriveID is the shared deterministic NanoID derivation: sha256 over the

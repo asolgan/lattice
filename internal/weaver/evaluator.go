@@ -56,6 +56,13 @@ func (e *Engine) handleRow(ctx context.Context, msg substrate.Message) substrate
 	if row == nil {
 		return substrate.Ack
 	}
+	// Lane-3 scheduling leg: a row carrying a future freshUntil (re-)arms its
+	// per-target-per-entity @at timer on EVERY delivery, violating or not —
+	// level-driven, idempotent under one-schedule-per-subject replace. Only a
+	// schedule-publish failure defers the row.
+	if !e.scheduleFreshness(ctx, targetID, entityID, key, row) {
+		return substrate.NakWithDelay
+	}
 	if !e.boolColumn(targetID, row, "violating") {
 		// L1: not violating — clearing already ran; nothing to dispatch.
 		return substrate.Ack

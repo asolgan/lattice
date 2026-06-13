@@ -31,6 +31,11 @@ type Config struct {
 	// and the per-consumer pause-state entries. Default "health-kv" — matches
 	// internal/bootstrap.HealthKVBucket; cmd/weaver may override from there.
 	HealthKVBucket string
+	// CoreSchedulesStream is the platform message-scheduling stream the lane-3
+	// temporal consumer binds to and the Actuator publishes @at schedules on
+	// (Contract #10 §10.4). Default "core-schedules" — kept literal, like the
+	// bucket defaults, so internal/weaver does not import internal/bootstrap.
+	CoreSchedulesStream string
 	// ActorKey is the identity:weaver service-actor vertex key the Actuator
 	// submits under (vtx.identity.<id>, the primordial weaver service actor).
 	ActorKey string
@@ -126,6 +131,9 @@ func (c *Config) withDefaults() {
 		// internal/bootstrap.
 		c.HealthKVBucket = "health-kv"
 	}
+	if c.CoreSchedulesStream == "" {
+		c.CoreSchedulesStream = "core-schedules"
+	}
 	if c.Lane == "" {
 		c.Lane = "system"
 	}
@@ -176,6 +184,7 @@ type Engine struct {
 	source           *targetSource
 	marks            *markStore
 	sweep            *sweeper
+	temporal         *temporalStats
 	act              *actuator
 	supervisor       *substrate.ConsumerSupervisor
 	states           *consumerStateCache
@@ -220,6 +229,7 @@ func NewEngine(conn *substrate.Conn, cfg Config) *Engine {
 		conn:             conn,
 		logger:           cfg.Logger,
 		marks:            newMarkStore(conn, cfg.WeaverStateBucket, cfg.MarkLease, cfg.Instance),
+		temporal:         &temporalStats{},
 		act:              newActuator(conn, cfg.Lane, cfg.ActorKey, cfg.Logger),
 		supervisor:       substrate.NewConsumerSupervisor(conn),
 		states:           newConsumerStateCache(),
@@ -234,11 +244,12 @@ func NewEngine(conn *substrate.Conn, cfg Config) *Engine {
 
 // Start runs the engine until ctx is cancelled. It (1) validates the config
 // tokens that feed KV keys, subjects, and durable names; (2) starts the
-// Contract #5 heartbeater and the reconciler sweep; (3) starts the registry
-// source whose load/update
-// callbacks reconcile the per-target lane-1 consumers; (4) seeds one reconcile
-// (a restart must not depend solely on source callbacks to bring consumers
-// up); (5) blocks on ctx.
+// Contract #5 heartbeater and the reconciler sweep; (3) starts the static
+// lane-3 temporal consumer (the fixed weaver-temporal durable on
+// core-schedules); (4) starts the registry source whose load/update callbacks
+// reconcile the per-target lane-1 consumers; (5) seeds one reconcile (a
+// restart must not depend solely on source callbacks to bring consumers up);
+// (6) blocks on ctx.
 func (e *Engine) Start(ctx context.Context) (err error) {
 	if !singleTokenPattern.MatchString(e.cfg.Instance) {
 		return fmt.Errorf("weaver: Instance %q must be a single dot-free token (it is a Contract #5 health key segment and a durable-name segment; must match %s)",
@@ -257,9 +268,13 @@ func (e *Engine) Start(ctx context.Context) (err error) {
 	}()
 
 	hb := newHeartbeater(e.conn, e.cfg.HealthKVBucket, e.cfg.Instance, e.cfg.HeartbeatEvery,
-		e.states, e.issues, e.source, e.marks, e.sweep, e.logger)
+		e.states, e.issues, e.source, e.marks, e.sweep, e.temporal, e.logger)
 	go hb.run(ctx)
 	go e.sweep.run(ctx)
+
+	if err := e.supervisor.Add(ctx, e.temporalSpec()); err != nil {
+		return fmt.Errorf("weaver: start temporal consumer: %w", err)
+	}
 
 	e.source.setLoadCallback(func(*Target) { e.reconcileConsumers() })
 	e.source.setUpdateCallback(func(_, _ *Target) { e.reconcileConsumers() })
