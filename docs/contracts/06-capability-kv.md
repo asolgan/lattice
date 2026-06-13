@@ -22,6 +22,8 @@ This contract is **security-critical** per the architecture's "Capability Lens i
 cap.<actor-vertex-key-suffix>             # primary per-actor entry
 cap.role-by-operation.<operationType>     # secondary role-coverage index
 cap.ephemeral.<actor-vertex-key-suffix>   # per-actor ephemeral task grants (Phase 2, Story 7.1 — see §6.6 amendment)
+cap.roles.<actor-vertex-key-suffix>       # per-actor rbac role/permission grants (Phase 2, Story 12.6 — rbac-domain-owned; see decomposition note below)
+cap.svc.<actor-vertex-key-suffix>         # per-actor service-access grants (Phase 2, Story 12.7 — service-package-owned; key space registered-but-may-be-empty until a service package projects)
 ```
 
 **Primary entry** — Where `<actor-vertex-key-suffix>` is the actor's vertex key with the `vtx.` prefix dropped. Examples:
@@ -42,7 +44,27 @@ cap.role-by-operation.BookExecutiveCleaning
 
 **Architectural note on multi-Lens pattern.** The two key spaces are produced by **two separate Lens definitions**, both seeded at primordial bootstrap (Contract #7), both projecting to the same Capability KV bucket with disjoint key prefixes. This follows Lattice's standard pattern from the architectural decisions: *each Lens has one RETURN producing one shape; multi-output patterns are expressed as additional Lenses, not as Lens-internal complexity* (lattice-architecture.md §"Multi-target Lens adapters"; brainstorming session items #38, #39, #61). The same pattern applies to Phase 2+ Personal Lens fan-out and Postgres RLS link mirroring.
 
-**Phase 2 extends this to a *package-owned* producer.** The `cap.ephemeral.*` key space is produced by a **third Lens (`capabilityEphemeral`) shipped by the `orchestration-base` package** — not seeded at bootstrap. This is the first instance of the **contract-contribution model**: core owns the Capability KV bucket + the step-3 reader; *packages project the grant types they own* into disjoint key spaces. It is what lets the bootstrap `capability` cypher **stop referencing the package-owned `task` type** (the dependency direction becomes package→core). The broader decomposition — moving the `role`/`permission` (rbac-domain) and service/location grant sections out of the bootstrap god-cypher likewise, and making the step-3 consumer generic via package-installed **auth hooks** — is a tracked future-ADR open item (lattice-architecture.md). `capabilityEphemeral` is its first proof-of-pattern.
+**Phase 2 extends this to a *package-owned* producer.** The `cap.ephemeral.*` key space is produced by a **third Lens (`capabilityEphemeral`) shipped by the `orchestration-base` package** — not seeded at bootstrap. This is the first instance of the **contract-contribution model**: core owns the Capability KV bucket + the step-3 reader; *packages project the grant types they own* into disjoint key spaces. It is what lets the bootstrap `capability` cypher **stop referencing the package-owned `task` type** (the dependency direction becomes package→core). `capabilityEphemeral` is its first proof-of-pattern.
+
+**Phase 2 decomposition — the god-cypher splits to package-owned disjoint keys (Epic 12).** The
+broader decomposition is now adjudicated (`docs/decisions/projection-plane-decomposition.md`,
+D-PROJECTION + D-CONSUMER). The mechanism — a declarative `projectionKind: actorAggregate` plan
+compiler (§6.13, Story 12.3/12.4) on the write side and a **generic one-key-per-path auth-hook
+dispatcher** on the read side (Contract #2 §2.8, Story 12.5) — lets each grant type move to its own
+disjoint key with **no core edit**:
+
+- **`cap.roles.<actor>`** — `rbac-domain` projects the role/permission grants (Story 12.6); the
+  bootstrap `capability` cypher **drops its `holdsRole`/`grantedBy`/`role`/`permission` MATCHes**.
+- **`cap.svc.<actor>`** — a service package projects service-access grants (Story 12.7); the bootstrap
+  cypher **drops its `containedIn`/`availableAt`/`unavailableAt`/`permitsOperation` MATCHes**. Two-path:
+  if `service-location` exists it projects this key, else the MATCHes are simply deleted and the key
+  space stays registered-but-empty (absence = denial, §6.8) until a real service package lands.
+
+After the decomposition the bootstrap `capability` cypher shrinks to the **primordial-identity anchor**
+(root-equivalent platform grants core must project even when no RBAC package is installed) — or retires
+entirely — leaving core owning only the bucket, the key conventions, and the step-3 dispatcher. Step-3
+preserves its single-GET hot path because it path-dispatches **before** the read: each path reads
+exactly one disjoint key by actor class (§2.8 amendment).
 
 ### 6.2 Document Shape
 
@@ -52,6 +74,7 @@ cap.role-by-operation.BookExecutiveCleaning
   "actor": "vtx.identity.Hj4kPmRtw9nbCxz5vQ2y",
   "version": "1.0",
   "projectedAt": "2026-05-12T14:32:18.142Z",
+  "projectionSeq": 10472,
   "projectedFromRevisions": {
     "vtx.identity.Hj4kPmRtw9nbCxz5vQ2y": 47,
     "vtx.meta.capabilityLensDefinition": 12,
@@ -112,6 +135,37 @@ cap.role-by-operation.BookExecutiveCleaning
 }
 ```
 
+#### Phase 2 amendment — projection-write integrity guard (`projectionSeq`, Story 12.1)
+
+Actor-aggregate capability projections are written under a **monotonic write-ordering guard** so a
+retried or reordered stale projection can never resurrect a revoked grant on the security plane. The
+exposure is confirmed-reachable on `cap.ephemeral.<actor>`: Refractor's retry queue replays a *captured
+row* (not a re-evaluation) from a **separate goroutine**, so a stale "open-era" `Upsert` can land after
+a close-`Delete` and re-write a revoked grant, with no further CDC event to re-delete it.
+
+- **`projectionSeq`** (integer) is stamped on every guarded write = the **JetStream stream sequence of
+  the triggering CDC message**. It is a total order maintained by the substrate, plan-independent, and
+  deterministic-replay-safe (a rebuild replays in stream order → highest-seq write wins → identical
+  steady state). It supersedes `projectedAt`/`projectedFromRevisions` *as the ordering key* — those are
+  anchor-provenance-derived and identical across the open/close reprojections of an unchanged actor
+  vertex, so they cannot order a task-driven reprojection.
+- **Guarded keys** (actor-aggregate classes): `cap.<actor>`, `cap.ephemeral.<actor>`,
+  `my-tasks.<actor>` (Contract #10 §10.1), and — as they land — the decomposed `cap.roles.<actor>` /
+  `cap.svc.<actor>`. **`cap.role-by-operation.<op>` is NOT guarded** — it is an operation-aggregate
+  (keyed by `operationType`, not actor), with a different resurrection profile.
+- **Write semantics:** a write to a guarded key is **rejected as an idempotent no-op when
+  `incoming.projectionSeq ≤ stored.projectionSeq`**. The compare-and-set is **atomic against the target
+  key's KV revision** (`Update` with `ExpectedRevision`), with a **bounded re-read-on-conflict loop**
+  (load-bearing: the retry queue writes concurrently with the main consumer).
+- **Enforcement is adapter-local:** only the NATS-KV adapter enforces the guard; the Postgres adapter is
+  exempt (implements the extended write signature as a pass-through, no guard).
+- **Rebuild interaction (Story 12.1b):** a `Rebuild(truncate=false)` replays historical lower-seq events
+  that the guard would reject against live high-seq watermarks. Resolution: guarded buckets either force
+  `truncate=true` (watermark cleared with the data) or the rebuild bypasses the guard for the replay —
+  defined and tested in 12.1b.
+
+See §6.8 for the soft-tombstone that carries the watermark across a delete.
+
 ### 6.3 Field Specification
 
 **Top-level envelope:**
@@ -121,8 +175,9 @@ cap.role-by-operation.BookExecutiveCleaning
 | `key` | yes | Echo of the Capability KV key |
 | `actor` | yes | Full vertex key of the actor |
 | `version` | yes | Document schema version. Phase 1 = `"1.0"`. Consumers branch on this; the contract evolves under Stream 3 oversight. |
-| `projectedAt` | yes | **Deterministic provenance** ("as-of input state"): the anchor actor vertex's `lastModifiedAt` (Contract #1 §1.3), not a wall-clock read at projection time. Same input → same value across replay/rebuild. RFC3339 string. Consumed by monitoring + the Processor auth trace; it is **not** a freshness ceiling — the Processor performs no per-operation projection-age check (Story 1.5.4). |
-| `projectedFromRevisions` | yes | Map of source-vertex-key → revision-at-projection. Enables consistency-window detection used by the bypass test suite. Includes the actor's identity vertex, the Capability Lens definition vertex, all role vertices held, any active task vertices for ephemeral grants, and any location/lease vertices referenced by `resolvedVia` paths. |
+| `projectedAt` | yes | **Deterministic provenance** ("as-of input state"): the anchor actor vertex's `lastModifiedAt` (Contract #1 §1.3), not a wall-clock read at projection time. Same input → same value across replay/rebuild. RFC3339 string. Consumed by monitoring + the Processor auth trace; it is **not** a freshness ceiling — the Processor performs no per-operation projection-age check (Story 1.5.4). It is **not** the write-ordering key (see `projectionSeq`). |
+| `projectionSeq` | yes on guarded keys (Phase 2, Story 12.1) | **Monotonic write-ordering token** = the JetStream stream sequence of the triggering CDC message. A guarded-key write whose `projectionSeq ≤` the stored value is rejected as an idempotent no-op (§6.2 amendment). Present on the actor-aggregate classes (`cap.<actor>`, `cap.ephemeral.<actor>`, `my-tasks.<actor>`, and the decomposed `cap.roles`/`cap.svc` as they land); **not** present/enforced on `cap.role-by-operation.<op>` or on Postgres targets. Survives a delete via the §6.8 soft-tombstone. |
+| `projectedFromRevisions` | yes | Map of source-vertex-key → revision-at-projection — the **coherence/debug** datum (consistency-window detection in the bypass suite), **not** the write-ordering guard (that is `projectionSeq`). **Phase 2 widening (Story 12.3):** covers the full contributing source set the compiled plan read — the actor's identity vertex, the lens-definition vertex, and the roles/tasks/services/links that *contributed a binding*. **Scope:** v1 covers contributing sources; covering sources that were *read-then-excluded* (e.g. a now-closed task) needs full-executor touched-then-dropped instrumentation — Story 12.3 states whether that is in-scope or a follow-up. (Phase 1 stamped only the actor + lens-def revisions.) |
 | `lanes` | yes | Array of JetStream lanes the actor may submit to. Subset of `["default", "meta", "urgent", "system"]`. |
 | `platformPermissions` | yes (may be empty `[]`) | Standing operation permissions not scoped to a service. See §6.4. |
 | `serviceAccess` | yes (may be empty `[]`) | Service-scoped operation permissions. The cypher rule pre-resolves availability via graph topology. See §6.5. |
@@ -197,6 +252,7 @@ unchanged**; what changes is its *container, key, producer, and source paths*:
     "actor":       "vtx.identity.Hj4kPmRtw9nbCxz5vQ2y",
     "version":     "1.0",
     "projectedAt": "2026-05-12T14:32:18.142Z",
+    "projectionSeq": 10472,
     "ephemeralGrants": [
       { "source": "task",
         "taskKey": "vtx.task.Rm7q3pntwzkfbcxv5p9j",
@@ -243,6 +299,14 @@ If Processor at step 3 fetches `cap.<actor>` and receives no document (key does 
 The Capability Lens must produce a projection for every identity that may submit operations, including AI agents and internal service actors. The bootstrap identity gets its projection at platform initialization via primordial meta-vertices (Contract #7).
 
 This is the architecture's NFR-S2 boundary: the Capability Lens is the sole authorization surface. Anything not in the projection is denied.
+
+**Phase 2 — soft tombstone on guarded keys (Story 12.1).** A `Delete` on a **guarded** key (the
+actor-aggregate classes — §6.2 amendment) is written as a **soft tombstone**
+`{ "isDeleted": true, "projectionSeq": <seq> }` so the high-water mark survives physical absence (a
+stale lower-seq replay arriving after the delete is still rejected). **Absence and tombstone are
+equivalent for authorization** — both yield no grants, so step-3 denies in both cases; there is **no
+step-3 behavior change**. A non-auth consumer of a guarded bucket (e.g. `my-tasks`) MUST treat an
+`isDeleted: true` document as absence and skip it (Contract #10 §10.1 forward obligation).
 
 ### 6.9 Recommended Business Link Names
 
@@ -337,3 +401,37 @@ Phase 1 stub implementation:
 **For the bypass test suite (Stories 1.11 and 3.x):**
 
 The Capability Lens 4 attack vectors (Phase 1 Gate 3) test against the real Lens output, not the stub. Test data: a graph that exercises each attack vector listed in §6.10 item 6.
+
+**For the AI agent implementing Story 12.3/12.4 (declarative actor-aggregate projection):**
+
+A per-actor aggregating lens is driven by **declarative aspects**, not core Go keyed on the lens
+canonical name (the per-`CanonicalName` `switch` in `cmd/refractor/main.go` and the bespoke
+`internal/refractor/capabilityenv/` wrappers are **deleted** in Story 12.4). A `meta.lens` definition
+opts in with a new aspect **`projectionKind: "actorAggregate"`**; Refractor then compiles a
+`ProjectionPlan{Execution, Invalidation, Output}`:
+
+- **Execution** — evaluate the lens for a bound `$actorKey` (the existing per-actor eval).
+- **Invalidation** — a **compiled reverse-traversal plan** derived from the lens MATCH that yields the
+  affected anchors from a changed vertex / link / aspect, replacing the broad `ActorEnumerator` BFS.
+  The covered-construct set is validated by the Story 12.2 spike.
+- **Output descriptor** (lens-definition aspects) — replaces the four Go wrappers:
+
+  | Aspect | Meaning |
+  |--------|---------|
+  | `anchorType` | actor vertex type (or inferred from `MATCH (x:identity {key:$actorKey})`) |
+  | `outputKeyPattern` | constrained key template, e.g. `cap.ephemeral.{actorSuffix}` |
+  | `bodyColumns` | which RETURN aliases form the document body |
+  | `emptyBehavior` | `delete` \| `softDelete` \| `emptyDoc` \| `skip` (empty-result handling) |
+  | `realnessFilter` | `{ field }` — drop degenerate collect artifacts (e.g. `{taskKey:null}`); generalizes `realEphemeralGrants` / `realOpenTasks` |
+  | `freshness` | `auto` — stamp `projectionSeq` (§6.2 guard) + the widened `projectedFromRevisions` (§6.3) |
+
+- **Fail closed on the security plane:** an **auth-plane** `actorAggregate` lens whose MATCH uses a
+  construct the narrow invalidation compiler does not cover **fails activation**; a non-auth lens falls
+  back to broad BFS with a warning.
+- **One mechanism, not two:** `emptyBehavior: softDelete` reuses the §6.2 guard's tombstone.
+- **`capabilityRoleIndex` is NOT an `actorAggregate`** — it is keyed by `operationType`. It keeps a
+  bespoke path or gets a separate `operationAggregate` kind (decided in Story 12.4).
+
+The Story 12.4 acceptance gate: installing a **brand-new** actor-aggregate package lens via
+`InstallPackage` projects + invalidates correctly with **zero** edits under `cmd/` or
+`internal/refractor/capabilityenv/`.

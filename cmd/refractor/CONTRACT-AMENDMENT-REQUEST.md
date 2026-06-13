@@ -30,7 +30,19 @@ These are planning-artifact-only corrections discovered during Story 2.1 morph w
 
 # Epic 12 — Projection-plane integrity & capability decomposition (proposed 2026-06-07)
 
-Source: Winston architecture session on `_bmad-output/planning-artifacts/refractor-lens-decomposition-brief.md`; rationale in `docs/decisions/projection-plane-decomposition.md`. Contract #6 §6.1/§6.2/§6.3/§6.8/§6.13 are FROZEN — these are amendment *requests*, ratified by the planning lead before any edit.
+> **✅ RATIFIED 2026-06-13 (Andrew, planning lead).** Requests 4, 4b, 5, 6, 7 are ratified and the
+> amendments are **applied to the frozen contracts ahead of implementation**: Contract #6 §6.1/§6.2/§6.3/§6.6/§6.8/§6.13
+> ([docs/contracts/06-capability-kv.md](../../docs/contracts/06-capability-kv.md)) and Contract #10 §10.1
+> ([docs/contracts/10-orchestration-surfaces.md](../../docs/contracts/10-orchestration-surfaces.md)). The companion
+> D-CONSUMER amendment (Story 12.5, Contract #2 §2.8) is ratified + applied via
+> [cmd/processor/CONTRACT-AMENDMENT-REQUEST.md](../processor/CONTRACT-AMENDMENT-REQUEST.md). `projectionSeq`
+> ratified as the field name. The contracts now *describe the post-Epic-12 shapes ahead of the code*; each
+> shape carries its landing-story tag, and the per-story implementation lands the code against the
+> already-amended contract (inverting the usual same-operation rule, by planning-lead choice). The
+> `lattice-architecture.md` god-cypher open item is left for the planning lead to mark resolved when
+> 12.6/12.7 actually land (it is not resolved yet — the god-cypher still exists in code).
+
+Source: Winston architecture session on `_bmad-output/planning-artifacts/refractor-lens-decomposition-brief.md`; rationale in `docs/decisions/projection-plane-decomposition.md`. Contract #6 §6.1/§6.2/§6.3/§6.8/§6.13 are FROZEN — these were amendment *requests*, now ratified by the planning lead and applied.
 
 ## Request 4 [Story 12.1 — D-INTEGRITY]: monotonic `projectionSeq` write-ordering guard on the capability plane
 

@@ -421,7 +421,7 @@ The script path already accepts them; only the client plumbing is missing.
 
 raisedBy: Winston architecture session (refractor-lens-decomposition brief)
 raisedAt: 2026-06-07
-status: OPEN — proposal for Epic 12 / Story 12.5
+status: RATIFIED 2026-06-13 (Andrew, planning lead) — forward note applied to Contract #2 §2.8 ahead of implementation; the dispatch pseudocode is rewritten to the registry form when Story 12.5 lands
 severity: Architecture (security plane); not blocking until 12.5 is scheduled
 
 ## Context

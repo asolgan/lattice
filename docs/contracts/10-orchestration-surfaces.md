@@ -69,6 +69,16 @@ lnk.task.<id>.scopedTo.<type>.<targetId>         # the target the grant is scope
 - **Phase 3:** FR28 (role-queue + fallback) is deferred; when it lands, a role-queue with no
   eligible actor *is* unroutable and the FR29 Health-KV monitor returns for that case.
 
+**`my-tasks` projection + tombstone obligation (Phase 2, Story 12.1a).** The `orchestration-base`
+package ships a `my-tasks` actor-aggregate lens projecting, per identity, that identity's **open**
+tasks to the package-owned bucket keyed `my-tasks.<actor-suffix>` (e.g. `my-tasks.identity.<id>`). It is
+a **guarded** actor-aggregate key under the projection-write integrity guard (Contract #6 §6.2/§6.8):
+the close-task delete is a **soft tombstone** `{ isDeleted: true, projectionSeq }`, not a physical key
+removal, so a stale lower-seq replay cannot resurrect a completed task. **Forward obligation:** any
+UI/query consumer of the `my-tasks` bucket **MUST treat an `isDeleted: true` document as absence** (skip
+it) — otherwise a user sees ghost tasks they already completed. No production reader exists yet (only
+the E2E); this records the obligation for the first one.
+
 ---
 
 ## 10.2 Weaver target Lens output (D4) — **FROZEN 2026-06-02**

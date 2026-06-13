@@ -255,6 +255,29 @@ else:
 
 Task auth takes precedence over service auth, which takes precedence over platform auth. An actor may hold multiple auth paths to the same operation; they explicitly declare which path they're invoking via `authContext`. This makes the auth path inspectable at the wire level and testable in adversarial suites.
 
+**Phase 2 amendment — generic auth-hook dispatcher, one-key-per-path (Story 12.5, D-CONSUMER).** As the
+bootstrap god-cypher decomposes into package-owned disjoint Capability-KV keys (Contract #6 §6.1, Epic
+12), step-3 stops scanning sections of a single `cap.<actor>` document and instead **dispatches over a
+data-driven registry**. The model (party-review-pinned):
+
+- **Core owns a fixed set of matcher *kinds*** — the existing `task` (ephemeral-grant), `service`
+  (service-access), and `platform` (platform-permission) logics become the seed matcher kinds,
+  re-expressed with **identical** behavior. Matcher kinds are core Go; Lattice packages remain
+  **data-only** and never ship matcher code.
+- **A package declares, as install-time data**, which matcher kind authorizes its grant type and which
+  **disjoint Capability-KV key** that path reads (+ the field mapping). The dispatch table is data, not
+  a `switch` naming `task`/`service`.
+- **One-key-per-path invariant (preserves the single-GET hot path):** path selection happens **before**
+  the read (as today), and each path maps to **exactly one** disjoint key — so exactly one GET per
+  `Authorize` call. **Two packages contributing the same path is a config error** (or requires upstream
+  merge); the dispatcher never fans a single path into N reads. The denial-path `actorRoles` second
+  read stays off the hot path.
+
+The precedence order (task → service → platform) and the forgery-resistance property below are
+unchanged. The dispatch pseudocode above describes the Phase-1 single-document form; the Phase-2 form
+reads the path-specific disjoint key via the registered hook. Full shape: Contract #6 §6.1/§6.13 +
+`cmd/processor/CONTRACT-AMENDMENT-REQUEST.md`.
+
 **Forgery resistance:**
 
 `authContext` is a *hint about which auth path to check*, not a claim of authorization. An actor can submit any value in `authContext.service` — but unless that service appears in their actual `serviceAccess[]` projection (produced by the Capability Lens), the check fails. The routing-via-`authContext` does not grant access; it only selects which subsection of the capability projection to consult. Bypass test suite (Story 1.11 / Story 3.x) MUST include test cases proving that mismatched `authContext` values are rejected.
