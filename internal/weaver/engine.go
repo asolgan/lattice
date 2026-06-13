@@ -190,6 +190,7 @@ type Engine struct {
 	states           *consumerStateCache
 	issues           *issueCache
 	rowSubjectPrefix string
+	disabled         *disabledTargetSet
 
 	mu sync.Mutex
 	// targets is the last-applied desired lane-1 consumer set (targetId →
@@ -198,6 +199,48 @@ type Engine struct {
 	targets map[string]specFingerprint
 
 	ctx context.Context
+}
+
+// disabledTargetSet is the engine's in-memory cache of currently-disabled
+// targetIds: the per-row/per-firing dispatch-skip guards
+// (handleRow, scheduleFreshness, handleFiredTimer) read this set rather than
+// KV-Get the `<targetId>.__control` marker on every message — the same
+// "in-memory cache rebuilt from durable backing" line the registry source and
+// consumerStateCache already draw. The `<targetId>.__control` weaver-state
+// marker is the durable truth (it is what survives a restart, seeding this
+// set at Start via seedDisabledTargets); Disable/Enable/Revoke update both the
+// marker and this set synchronously so the two never disagree mid-process.
+type disabledTargetSet struct {
+	mu  sync.RWMutex
+	ids map[string]struct{}
+}
+
+func newDisabledTargetSet() *disabledTargetSet {
+	return &disabledTargetSet{ids: make(map[string]struct{})}
+}
+
+func (d *disabledTargetSet) has(targetID string) bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	_, ok := d.ids[targetID]
+	return ok
+}
+
+func (d *disabledTargetSet) set(targetID string, disabled bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if disabled {
+		d.ids[targetID] = struct{}{}
+	} else {
+		delete(d.ids, targetID)
+	}
+}
+
+// isTargetDisabled reports whether targetID currently carries the
+// `<targetId>.__control` dispatch-skip marker, per the in-memory
+// disabled-set — no per-message KV read.
+func (e *Engine) isTargetDisabled(targetID string) bool {
+	return e.disabled.has(targetID)
 }
 
 // specFingerprint is the subset of a ConsumerSpec's config that, if it
@@ -235,6 +278,7 @@ func NewEngine(conn *substrate.Conn, cfg Config) *Engine {
 		states:           newConsumerStateCache(),
 		issues:           issues,
 		rowSubjectPrefix: "$KV." + cfg.WeaverTargetsBucket + ".",
+		disabled:         newDisabledTargetSet(),
 		targets:          make(map[string]specFingerprint),
 	}
 	e.source = newTargetSource(conn, cfg.CoreKVBucket, cfg.Instance, issues, cfg.Logger)
@@ -266,6 +310,10 @@ func (e *Engine) Start(ctx context.Context) (err error) {
 			e.supervisor.Stop()
 		}
 	}()
+
+	if err := e.seedDisabledTargets(ctx); err != nil {
+		return fmt.Errorf("weaver: seed disabled-target set: %w", err)
+	}
 
 	hb := newHeartbeater(e.conn, e.cfg.HealthKVBucket, e.cfg.Instance, e.cfg.HeartbeatEvery,
 		e.states, e.issues, e.source, e.marks, e.sweep, e.temporal, e.logger)
@@ -401,6 +449,15 @@ func (e *Engine) reconcileConsumers() {
 		if err := sink.delete(e.ctx); err != nil {
 			e.logger.Error("weaver target consumer health-state cleanup failed", "targetId", id, "durable", name, "err", err)
 		}
+		// A target leaving the registry is a genuine uninstall — delete its
+		// `<targetId>.__control` dispatch-skip marker and prune the in-memory
+		// disabled-set, so a re-install of the same targetId does not silently
+		// come up disabled (the marker would otherwise be re-seeded at the next
+		// Start and orphan-leak in weaver-state).
+		if err := e.marks.setDisabled(e.ctx, id, false); err != nil {
+			e.logger.Error("weaver target control-marker cleanup failed", "targetId", id, "err", err)
+		}
+		e.disabled.set(id, false)
 		e.logger.Info("weaver target consumer removed", "targetId", id, "durable", name)
 	}
 }

@@ -92,6 +92,10 @@ func (e *Engine) temporalSpec() substrate.ConsumerSpec {
 // bounded cadence, never a hot loop); data errors are surfaced and skipped
 // (redelivery cannot fix a projected row).
 func (e *Engine) scheduleFreshness(ctx context.Context, targetID, entityID, key string, row map[string]any) bool {
+	// Freshness timers arm/re-arm even while the target is disabled: scheduling
+	// is bookkeeping that keeps lane-3 state current, so an instant re-enable
+	// loses no deadline. The disabled state suppresses only the remediation
+	// loop (handleRow's dispatch leg), not this state-recording leg.
 	v, ok := row[freshUntilColumn]
 	if !ok || v == nil {
 		// The column is absent (never projected, or a prior bad value was fixed
@@ -197,6 +201,14 @@ func (e *Engine) handleFiredTimer(ctx context.Context, msg substrate.Message) su
 			"fired-timer subject tail "+tail+" is not <targetId>.<entityId>; dropped")
 		return substrate.Ack
 	}
+	// A disabled target's already-armed timer STILL submits MarkExpired:
+	// recording a freshness expiry is state-recording bookkeeping, not
+	// remediation (the §9.3 read-before-act guards below already gate it on
+	// the current row's presence/renewed deadline). Suppressing it here would
+	// silently drop a freshness expiry across a disable→enable window. The
+	// disabled state suppresses only the remediation loop (handleRow's
+	// dispatch leg), not violation-detection bookkeeping.
+
 	// The schedule subject is reconstructed from the fired subject — never
 	// trusted from the payload.
 	scheduleSubject := scheduleSubjectPrefix + targetID + "." + entityID

@@ -20,6 +20,7 @@ import (
 	"github.com/asolgan/lattice/cmd/lattice/op"
 	"github.com/asolgan/lattice/cmd/lattice/output"
 	"github.com/asolgan/lattice/cmd/lattice/query"
+	"github.com/asolgan/lattice/cmd/lattice/weaver"
 )
 
 // Global persistent flag values shared across all subcommands.
@@ -64,7 +65,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&flagConfig, "config", "", "config file (env: LATTICE_CONFIG, default ~/.lattice/config.json)")
 	rootCmd.PersistentFlags().StringVarP(&flagOutput, "output", "o", "", "output format: json (default: human-readable table)")
 
-	// Register all 9 command groups.
+	// Register all 11 command groups.
 	rootCmd.AddCommand(config.NewCommand(&flagNATSURL, &flagOutput))
 	rootCmd.AddCommand(op.NewCommand(&flagNATSURL, &flagOutput, &flagActorKey))
 	rootCmd.AddCommand(graph.NewCommand(&flagNATSURL, &flagOutput))
@@ -75,6 +76,7 @@ func init() {
 	rootCmd.AddCommand(candidates.NewCommand(&flagNATSURL, &flagOutput, &flagActorKey))
 	rootCmd.AddCommand(authtrace.NewCommand(&flagNATSURL, &flagOutput))
 	rootCmd.AddCommand(bootstrap.NewCommand(&flagNATSURL, &flagOutput))
+	rootCmd.AddCommand(weaver.NewCommand(&flagNATSURL, &flagOutput))
 }
 
 // initCredentials loads the credential file and populates the default

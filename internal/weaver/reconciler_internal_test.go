@@ -781,6 +781,48 @@ func TestSweep_MissingEntityKeyMarks(t *testing.T) {
 	}
 }
 
+// TestSweep_ControlMarkerSurvives proves the reserved-key guard (AC #3
+// reserved-key safety): a `<targetId>.__control` dispatch-skip marker is not
+// a §10.3 mark (it has no <entityId>.<gapColumn> tail, so splitMarkKey would
+// reject it as corrupt) — the sweep must skip it entirely, never enumerating
+// it as corrupt and never deleting it, across both warm-up states.
+func TestSweep_ControlMarkerSurvives(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+	h.agePastWarmup()
+
+	const targetID = "fixtureControlMarker"
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps:     map[string]GapAction{"missing_x": {Action: actionDirectOp, Operation: "FixX"}},
+	})
+	if err := h.engine.marks.setDisabled(ctx, targetID, true); err != nil {
+		t.Fatalf("setDisabled: %v", err)
+	}
+
+	h.pass(ctx)
+	h.pass(ctx)
+
+	disabled, err := h.engine.marks.isDisabled(ctx, targetID)
+	if err != nil {
+		t.Fatalf("isDisabled after sweep: %v", err)
+	}
+	if !disabled {
+		t.Fatalf("the __control marker must survive sweep passes, got disabled=false")
+	}
+	if hasIssueCode(h.engine.issues.snapshot(), "CorruptMark") {
+		t.Fatalf("the __control marker must never be enumerated as a CorruptMark")
+	}
+	if _, _, corrupt, _ := h.engine.sweep.metrics(); corrupt != 0 {
+		t.Fatalf("sweepCorrupt = %d, want 0 (the __control marker is not a mark)", corrupt)
+	}
+	h.requireNoOp(t)
+}
+
 // TestConfigClamps proves the withDefaults invariants that keep the sweep's
 // reclaim leg reachable: SweepInterval is clamped to MarkLease (an expired
 // mark must be observed before its 2×lease TTL deletes it unseen) and

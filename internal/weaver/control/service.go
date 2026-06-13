@@ -1,0 +1,294 @@
+// Package control implements the Weaver control plane (FR30): a NATS
+// Services responder exposing list/disable/enable/revoke operator commands
+// for Weaver convergence targets, plus the cmd/lattice/weaver CLI's server
+// side. Depends on internal/weaver only for the four engineControl methods
+// and the weaver.TargetSummary type — internal/weaver never imports this
+// package (one-way dependency, mirrors internal/refractor/control being a
+// sibling of internal/refractor/{pipeline,lens,...}).
+package control
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
+	"time"
+
+	nats "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/micro"
+
+	"github.com/asolgan/lattice/internal/weaver"
+)
+
+// engineControl is the minimal interface this package needs from
+// *weaver.Engine — list/disable/enable/revoke. Defining it here
+// (rather than depending on the full *weaver.Engine) keeps the dependency
+// surface to exactly these four methods plus weaver.TargetSummary.
+type engineControl interface {
+	ListTargets(ctx context.Context) ([]weaver.TargetSummary, error)
+	Disable(ctx context.Context, targetID string) error
+	Enable(ctx context.Context, targetID string) error
+	Revoke(ctx context.Context, targetID string) error
+}
+
+// subjectPrefix is the wildcard subject pattern the control endpoints are
+// registered under. "list" is registered on the exact subject
+// subjectPrefix+".list"; disable/enable/revoke are registered on
+// subjectPrefix+".*.<op>" — wildcards let one endpoint handler serve all
+// target IDs, since the Weaver does not know the full set of target IDs at
+// registration time.
+const subjectPrefix = "lattice.ctrl.weaver"
+
+// handlerTimeout bounds each control handler's engine call so a blocked KV op
+// (KV unavailable, a slow list/delete loop) fails the request with an error
+// reply instead of wedging the responder goroutine and leaving the operator's
+// CLI to time out with no server-side cancellation.
+const handlerTimeout = 5 * time.Second
+
+// ControlResponse is the JSON payload returned by the control service.
+// On success (list op): Targets is present.
+// On success (disable op): Disable is present.
+// On success (enable op): Enable is present.
+// On success (revoke op): Revoke is present.
+// On error: only Error is present.
+type ControlResponse struct {
+	Targets []weaver.TargetSummary `json:"targets,omitempty"`
+	Disable *DisableResult         `json:"disable,omitempty"`
+	Enable  *EnableResult          `json:"enable,omitempty"`
+	Revoke  *RevokeResult          `json:"revoke,omitempty"`
+	Error   string                 `json:"error,omitempty"`
+}
+
+// DisableResult is the synchronous acknowledgement returned by the
+// "disable" op. Disabled is always true when the op succeeds.
+type DisableResult struct {
+	Disabled bool `json:"disabled"`
+}
+
+// EnableResult is the synchronous acknowledgement returned by the "enable"
+// op. Enabled is always true when the op succeeds.
+type EnableResult struct {
+	Enabled bool `json:"enabled"`
+}
+
+// RevokeResult is the synchronous acknowledgement returned by the "revoke"
+// op. Revoked is always true when the op succeeds.
+type RevokeResult struct {
+	Revoked bool `json:"revoked"`
+}
+
+// listOp and the disable/enable/revoke per-target ops registered as
+// individual NATS Services endpoints.
+const (
+	opList    = "list"
+	opDisable = "disable"
+	opEnable  = "enable"
+	opRevoke  = "revoke"
+)
+
+// targetOps enumerates the per-target (wildcard-subject) ops registered
+// under subjectPrefix+".*.<op>".
+var targetOps = []string{opDisable, opEnable, opRevoke}
+
+// Service is the Weaver control-plane NATS responder. It
+// wraps an engineControl (in production, *weaver.Engine) and a
+// CapabilityChecker (in production, a stub allow-all — Epic 3 wires the
+// real Capability KV check).
+type Service struct {
+	engine     engineControl
+	capability CapabilityChecker
+	logger     *slog.Logger
+
+	mu       sync.Mutex
+	microSvc micro.Service // set by StartNATSListener; nil until started
+}
+
+// NewService constructs a Service wrapping engine. capability may be nil —
+// a StubCapabilityChecker is used in that case. logger may be nil — slog's
+// default logger is used in that case.
+func NewService(engine engineControl, capability CapabilityChecker, logger *slog.Logger) *Service {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if capability == nil {
+		capability = NewStubCapabilityChecker(logger)
+	}
+	return &Service{engine: engine, capability: capability, logger: logger}
+}
+
+// StartNATSListener registers the Weaver control plane as a NATS
+// micro-service named "weaver-control". Four endpoints are added: "list" on
+// the exact subject subjectPrefix+".list", and "disable"/"enable"/"revoke"
+// on the wildcard subjectPrefix+".*.<op>" so a single handler instance
+// serves every target ID without prior knowledge.
+//
+// All endpoints share the default queue group ("q") so multiple Weaver
+// instances distribute load. The service framework auto-registers the
+// standard $SRV.PING / $SRV.STATS / $SRV.INFO introspection endpoints.
+//
+// The service is stopped when ctx is cancelled. Returns an error if the
+// service cannot be created or if already started.
+func (s *Service) StartNATSListener(ctx context.Context, nc *nats.Conn) error {
+	s.mu.Lock()
+	if s.microSvc != nil {
+		s.mu.Unlock()
+		return fmt.Errorf("control: NATS listener already started")
+	}
+	s.mu.Unlock()
+
+	svc, err := micro.AddService(nc, micro.Config{
+		Name:        "weaver-control",
+		Version:     "1.0.0",
+		Description: "Weaver control plane endpoints (lattice.ctrl.weaver.*)",
+	})
+	if err != nil {
+		return fmt.Errorf("control: micro.AddService: %w", err)
+	}
+
+	if err := svc.AddEndpoint("weaver-control-"+opList,
+		micro.HandlerFunc(func(req micro.Request) { s.handleList(req) }),
+		micro.WithEndpointSubject(subjectPrefix+"."+opList)); err != nil {
+		_ = svc.Stop()
+		return fmt.Errorf("control: AddEndpoint %q: %w", opList, err)
+	}
+
+	for _, op := range targetOps {
+		op := op // capture for closure
+		subj := subjectPrefix + ".*." + op
+		if err := svc.AddEndpoint("weaver-control-"+op,
+			micro.HandlerFunc(func(req micro.Request) { s.dispatchEndpoint(op, req) }),
+			micro.WithEndpointSubject(subj)); err != nil {
+			_ = svc.Stop()
+			return fmt.Errorf("control: AddEndpoint %q on %q: %w", op, subj, err)
+		}
+	}
+
+	s.mu.Lock()
+	s.microSvc = svc
+	s.mu.Unlock()
+
+	go func() {
+		<-ctx.Done()
+		if err := svc.Stop(); err != nil {
+			s.logger.Error("control: stop micro service", "err", err)
+		}
+	}()
+	return nil
+}
+
+// handleList serves the "list" op, registered on the exact subject
+// subjectPrefix+".list" (no targetID in the subject).
+func (s *Service) handleList(req micro.Request) {
+	ctx, cancel := context.WithTimeout(context.Background(), handlerTimeout)
+	defer cancel()
+	if err := s.capability.Authorize(ctx, "", opList, ""); err != nil {
+		s.respondMicro(req, ControlResponse{Error: err.Error()})
+		return
+	}
+	targets, err := s.engine.ListTargets(ctx)
+	if err != nil {
+		s.respondMicro(req, ControlResponse{Error: err.Error()})
+		return
+	}
+	s.respondMicro(req, ControlResponse{Targets: targets})
+}
+
+// dispatchEndpoint is the entry point for the disable/enable/revoke
+// endpoints. It extracts the target ID from the subject, authorizes the
+// operation, dispatches by op, and writes the JSON response.
+func (s *Service) dispatchEndpoint(op string, req micro.Request) {
+	subject := req.Subject()
+	targetID, ok := targetIDFromSubject(subject)
+	if !ok {
+		s.respondMicro(req, ControlResponse{Error: fmt.Sprintf("invalid control subject %q", subject)})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), handlerTimeout)
+	defer cancel()
+	if err := s.capability.Authorize(ctx, "", op, targetID); err != nil {
+		s.respondMicro(req, ControlResponse{Error: err.Error()})
+		return
+	}
+
+	switch op {
+	case opDisable:
+		if err := s.engine.Disable(ctx, targetID); err != nil {
+			s.respondMicro(req, ControlResponse{Error: err.Error()})
+			return
+		}
+		s.respondMicro(req, ControlResponse{Disable: &DisableResult{Disabled: true}})
+	case opEnable:
+		if err := s.engine.Enable(ctx, targetID); err != nil {
+			s.respondMicro(req, ControlResponse{Error: err.Error()})
+			return
+		}
+		s.respondMicro(req, ControlResponse{Enable: &EnableResult{Enabled: true}})
+	case opRevoke:
+		if err := s.engine.Revoke(ctx, targetID); err != nil {
+			s.respondMicro(req, ControlResponse{Error: err.Error()})
+			return
+		}
+		s.respondMicro(req, ControlResponse{Revoke: &RevokeResult{Revoked: true}})
+	default:
+		// Unreachable — targetOps gates the endpoint registration.
+		s.respondMicro(req, ControlResponse{Error: fmt.Sprintf("unknown operation: %s", op)})
+	}
+}
+
+// targetIDFromSubject extracts the target ID from a control subject. The
+// expected shape is "lattice.ctrl.weaver.<targetId>.<op>" — exactly 5
+// dot-separated tokens. Returns ok=false on any deviation. Mirrors
+// internal/refractor/control.lensIDFromSubject.
+func targetIDFromSubject(subject string) (string, bool) {
+	parts := strings.Split(subject, ".")
+	if len(parts) != 5 {
+		return "", false
+	}
+	if parts[0] != "lattice" || parts[1] != "ctrl" || parts[2] != "weaver" {
+		return "", false
+	}
+	if parts[3] == "" {
+		return "", false
+	}
+	return parts[3], true
+}
+
+// ListSubject returns the canonical request subject for the "list" op.
+// Exposed for tests and tooling.
+func ListSubject() string {
+	return subjectPrefix + "." + opList
+}
+
+// TargetSubject returns the canonical request subject for the given target
+// ID + op (disable/enable/revoke). Exposed for tests and tooling.
+func TargetSubject(targetID, op string) string {
+	return subjectPrefix + "." + targetID + "." + op
+}
+
+// respondMicro marshals v to JSON and sends it as the micro reply. On a
+// marshal failure it still sends a structured error reply (never returns
+// silently), so the client sees an error rather than a request timeout.
+func (s *Service) respondMicro(req micro.Request, v any) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		s.logger.Error("control: marshal response", "err", err)
+		// Marshal a minimal hand-built error envelope — a plain
+		// {"error":...} string cannot itself fail to marshal.
+		fallback, fErr := json.Marshal(ControlResponse{Error: "control: failed to marshal response: " + err.Error()})
+		if fErr != nil {
+			// Should be unreachable (a string-only struct). Reply with a raw
+			// literal so the client still gets a response, not a timeout.
+			fallback = []byte(`{"error":"control: response marshal failure"}`)
+		}
+		if rErr := req.Respond(fallback); rErr != nil {
+			s.logger.Error("control: send error response", "err", rErr)
+		}
+		return
+	}
+	if err := req.Respond(data); err != nil {
+		s.logger.Error("control: send response", "err", err)
+	}
+}

@@ -385,6 +385,90 @@ func TestScheduleFreshness_PublishFailure(t *testing.T) {
 	}
 }
 
+// TestDisabled_FreshnessExpiryRecordedNoRemediation proves the narrowed
+// disabled semantic (ECH-5 correction): a disabled target's already-armed
+// freshness timer STILL records the freshness expiry (handleFiredTimer submits
+// MarkExpired — state-recording bookkeeping), and a violating row STILL clears
+// marks / arms timers, but runs NO remediation while disabled. On enable,
+// remediation dispatches for whatever is still violating — without re-touching
+// the row.
+func TestDisabled_FreshnessExpiryRecordedNoRemediation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newHandlerHarness(t, ctx)
+	provisionSchedules(t, ctx, h.conn)
+
+	const targetID = "fixtureFresh"
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps:     map[string]GapAction{"missing_fresh": {Action: actionDirectOp, Operation: "FixFresh"}},
+	})
+
+	// Disable the target (in-memory set — the dispatch-skip authority on the
+	// hot path).
+	h.engine.disabled.set(targetID, true)
+
+	entityID := testNanoID(t)
+	entityKey := "vtx.leaseApp." + entityID
+	firedAt := time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
+	// The read-before-act guard reads the current row: present, not renewed.
+	putTargetRow(t, ctx, h, targetID, entityID, map[string]any{
+		"entityKey": entityKey, "freshUntil": firedAt,
+	})
+
+	// A fired freshness timer for the DISABLED target still records MarkExpired
+	// (bookkeeping — not remediation).
+	msg := firedMessage(targetID, entityID, map[string]any{
+		"entityKey": entityKey, "targetId": targetID, "fireAt": firedAt,
+	})
+	if dec := h.engine.handleFiredTimer(ctx, msg); dec != substrate.Ack {
+		t.Fatalf("fired timer for disabled target must Ack, got %v", dec)
+	}
+	expired := h.nextOp(t)
+	if expired["operationType"] != opMarkExpired {
+		t.Fatalf("disabled target's fired timer must still submit MarkExpired, got %v", expired["operationType"])
+	}
+
+	// A violating row while disabled: clears marks + arms a freshness timer
+	// (bookkeeping), but creates NO mark and runs NO remediation.
+	violRow := map[string]any{
+		"entityKey":     entityKey,
+		"violating":     true,
+		"missing_fresh": true,
+		"freshUntil":    time.Now().Add(time.Hour).UTC().Truncate(time.Second).Format(time.RFC3339),
+	}
+	if dec := h.engine.handleRow(ctx, h.rowMessage(t, targetID, entityID, violRow, 1, 1)); dec != substrate.Ack {
+		t.Fatalf("disabled violating row must Ack, got %v", dec)
+	}
+	h.requireNoOp(t)
+	if _, _, found, err := h.engine.marks.get(ctx, targetID, entityID, "missing_fresh"); err != nil {
+		t.Fatalf("get mark while disabled: %v", err)
+	} else if found {
+		t.Fatalf("no in-flight mark must be created while disabled")
+	}
+	// The freshness timer armed even while disabled (bookkeeping leg ran).
+	if scheduleMsg(t, ctx, h.conn, scheduleSubjectPrefix+targetID+"."+entityID) == nil {
+		t.Fatalf("a disabled target must still arm its freshness timer (bookkeeping)")
+	}
+
+	// Enable → remediation resumes; the SAME row redelivered dispatches (no
+	// row re-touch needed beyond redelivery — state was kept current).
+	h.engine.disabled.set(targetID, false)
+	if dec := h.engine.handleRow(ctx, h.rowMessage(t, targetID, entityID, violRow, 2, 1)); dec != substrate.Ack {
+		t.Fatalf("post-enable dispatch must Ack, got %v", dec)
+	}
+	op := h.nextOp(t)
+	if op["operationType"] != "FixFresh" {
+		t.Fatalf("post-enable remediation op = %v, want FixFresh", op["operationType"])
+	}
+	if _, _, found, err := h.engine.marks.get(ctx, targetID, entityID, "missing_fresh"); err != nil || !found {
+		t.Fatalf("mark must exist after post-enable remediation (err=%v, found=%v)", err, found)
+	}
+}
+
 // putTargetRow writes a weaver-targets row the read-before-act guard reads
 // (the engine's WeaverTargetsBucket, key <targetId>.<entityId>).
 func putTargetRow(t *testing.T, ctx context.Context, h *handlerHarness, targetID, entityID string, row map[string]any) {

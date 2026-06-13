@@ -117,6 +117,14 @@ func (s *sweeper) pass(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		if strings.HasSuffix(key, controlKeySuffix) {
+			// The `<targetId>.__control` dispatch-skip marker is not a
+			// §10.3 mark — it has no <entityId>.<gapColumn> tail, so
+			// splitMarkKey would reject it as corrupt. It is reserved and
+			// engine-owned (Disable/Enable/Revoke write it directly); the sweep
+			// never enumerates, reclaims, or deletes it.
+			continue
+		}
 		s.sweepMark(ctx, key)
 	}
 	s.mu.Lock()

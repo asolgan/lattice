@@ -1,6 +1,6 @@
 # Weaver
 
-**Component reference** | Audience: implementers + architects | Status: **Phase 2 — in progress (lanes 1 + 3 shipped, Stories 9.1–9.3)** | Decided: 2026-06-01
+**Component reference** | Audience: implementers + architects | Status: **Phase 2 — in progress (lanes 1 + 3 + control plane shipped, Stories 9.1–9.4)** | Decided: 2026-06-01
 
 > Design page authored in the Phase 2 architecture sprint. Decisions of record live in
 > `_bmad-output/planning-artifacts/lattice-architecture.md` → "Phase 2 Architecture —
@@ -11,7 +11,7 @@
 
 ---
 
-## Phase 2 implementation status (Stories 9.1–9.3)
+## Phase 2 implementation status (Stories 9.1–9.4)
 
 What ships today in `internal/weaver` + `cmd/weaver`, and what is deliberately deferred:
 
@@ -25,7 +25,7 @@ What ships today in `internal/weaver` + `cmd/weaver`, and what is deliberately d
 | **Actions** | `triggerLoom` (→ `StartLoomPattern` op, never a Go call), `assignTask` (→ `CreateTask` with episode-deterministic `taskId`), `directOp` ✅. **`nudge` is a loud stub** (logged + Health KV issue) until Epic 10 builds the Two-Phase Nudge + `internal/weaver/nudge/`. |
 | **Health** | ✅ Contract #5 heartbeat at `health.weaver.<instance>` (metrics: `consumers`, `targets`, `marksInFlight`, `sweepReclaims`, `sweepOrphansDeleted`, `sweepCorrupt`, `sweepLastRunAt`, `timersScheduled`, `timersFired`) + per-consumer pause-state docs at `health.weaver.<instance>.consumer.<name>`; config/data errors surface as issues. |
 | **Lane 3 (temporal)** | ✅ Shipped (Contract #10 §10.4). One **fixed supervised durable** `weaver-temporal` on `core-schedules` filtered `schedule.weaver.timer.fired.>`; the lane-1 row handler's **scheduling leg** re-arms `@at(freshUntil)` per delivery (level-driven, replace-on-reschedule); the fired→op conversion submits `MarkExpired` under the **deterministic timer `requestId`** (schedule subject + fire instant) with **no weaver-state mark**. See "Temporal lane" below for the convention column and the accepted Phase 2 bounds. |
-| **Control API/CLI (Pause/Resume surface)** | ⏳ Story 9.4 (the supervisor's `Pause`/`Resume` exist; no operator surface yet). |
+| **Control API/CLI (Pause/Resume surface)** | ✅ Shipped (Story 9.4, FR30). `internal/weaver/control` exposes `list`/`disable`/`enable`/`revoke` over a `nats-io/nats.go/micro` Services responder; `lattice weaver` CLI group. See "Control plane" below. |
 | **Lane 2 (event-targeted-audit) + `weaver-work`** | ⏳ Phase 3 (§10.3: no durable bucket in Phase 2). |
 | **Real target Lens via Refractor + playbook package data** | ⏳ Epic 11 (`lease-signing`); 9.1 exercises the engine with test-written §10.2 fixture rows. |
 
@@ -201,13 +201,122 @@ the claim (operational intent).
 
 ---
 
+## Control plane (FR30, Story 9.4)
+
+Operators manage Weaver's currently-registered convergence targets via a `nats-io/nats.go/micro`
+Services responder (`internal/weaver/control`), mirroring Refractor's control plane
+(`internal/refractor/control`), plus a `lattice weaver` CLI command group
+(`cmd/lattice/weaver/`). `cmd/weaver` starts the listener alongside the engine.
+
+### Subjects
+
+| Subject | Operation |
+|---------|-----------|
+| `lattice.ctrl.weaver.list` (exact) | `list` — every registered target: `targetId`, `lensRef`, sorted playbook `gaps` columns, and `state` (`active` \| `disabled`) |
+| `lattice.ctrl.weaver.<targetId>.disable` | `disable` — pause dispatch for `<targetId>` |
+| `lattice.ctrl.weaver.<targetId>.enable` | `enable` — resume dispatch for `<targetId>` |
+| `lattice.ctrl.weaver.<targetId>.revoke` | `revoke` — immediate cleanup + disable for `<targetId>` |
+
+`TargetSummary.state` is a 2-value enum — there is no durable "revoked" state; `revoke` is a
+strict superset of `disable` (see below) and reports `"disabled"`.
+
+### Dispatch-skip marker and in-memory cache
+
+Durable truth for the disabled state is the `<targetId>.__control` key in `weaver-state`
+(Contract #10 §10.3 bucket; reserved-leading-underscore shape — `__control` can never collide
+with a `<targetId>.<entityId>.<gapColumn>` mark, because `entityId`s are NanoIDs and
+`substrate.Alphabet` contains no underscore). The reconciler sweep (`internal/weaver/reconciler.go`)
+explicitly skips `__control`-suffixed keys — it is not a §10.3 mark and is never enumerated as
+`CorruptMark` or deleted by a sweep pass.
+
+The engine maintains an in-memory `disabledTargetSet`, seeded at `Start` by scanning
+`weaver-state` for `*.__control` markers (`seedDisabledTargets`) and updated synchronously by
+`Disable`/`Enable`/`Revoke` — the same "in-memory cache rebuilt from durable backing" pattern as
+the target registry (`targetSource`) and `consumerStateCache`. The hot-path remediation guard
+(`handleRow`'s dispatch leg) reads this in-memory set — no per-message KV read.
+
+The disabled state suppresses **only remediation**, not violation-detection bookkeeping. A
+disabled target still:
+
+- clears resolved marks (`clearClosedMarks`, run unconditionally before the disabled-skip);
+- arms/re-arms freshness timers (`scheduleFreshness`, lane-3 — keeps lane-3 state current so an
+  instant re-enable loses no deadline);
+- records freshness expiries (`handleFiredTimer` still submits `MarkExpired` for an already-armed
+  timer — state-recording, already gated by the §9.3 read-before-act row-presence/renewed guards).
+
+What it does NOT do while disabled: create a new in-flight mark or run any Strategist/Actuator
+remediation (`triggerLoom`/`nudge`/`assignTask`/`directOp`). On `enable`, lane-3/clearing state is
+already current and remediation resumes for whatever is still violating — nothing is lost across a
+disable→enable window, and no row re-touch is required.
+
+### `disable` / `enable`
+
+`disable <targetId>` writes the `<targetId>.__control` marker (and updates the in-memory set)
+**first**, **then** calls `substrate.ConsumerSupervisor.Pause` on the target's lane-1 KV-CDC
+durable (`PauseManual` — survives restart via the existing `HealthSink` pause-restore, the same
+mechanism Story 9.2 uses). `enable <targetId>` calls `Resume` **first**, **then** deletes the
+marker and clears the in-memory set, and re-runs `reconcileConsumers` so a consumer removed by a
+prior `revoke` is restored immediately rather than waiting for the next registry event. Both
+return an error if `targetId` is not currently registered.
+
+**Fail-safe-to-inert ordering.** The `__control` marker is the authority for the remediation-skip;
+the `HealthSink` pause-restore is independent and governs only lane-1 pumping. The write order
+makes every partial failure / restart window land on "still disabled (inert)", never "acting when
+the operator said stop":
+
+- `disable` writes the marker before the pause — a partial failure (marker set, pause failed or the
+  process died) is remediation-inert (`handleRow` already skips), which is safe.
+- `enable` resumes before deleting the marker — a partial failure (resumed, marker still present) is
+  still remediation-inert; the operator re-issues `enable` to heal.
+
+On restart the `__control` marker is authoritative for the remediation-skip (re-seeded into the
+in-memory set by `seedDisabledTargets`).
+
+### `revoke`
+
+`revoke <targetId>` is a **strict superset of `disable`**: it (a) removes the target's lane-1
+durable entirely (`ConsumerSupervisor.Remove` — durable deleted, mirroring
+`reconcileConsumers`'s removal path), drops the engine's last-applied fingerprint
+(`e.targets[targetId]`), and deletes the consumer's health-sink entry, (b) deletes every
+`weaver-state` key with prefix `<targetId>.` — every in-flight `<targetId>.<entityId>.<gapColumn>`
+mark **and** the `<targetId>.__control` marker — and clears the target's standing Health issues,
+then (c) **re-writes** the `<targetId>.__control` disabled marker. Step (a)'s `e.targets` drop is
+what lets the next `reconcileConsumers` pass re-Add the consumer (it now sees `running==false`);
+step (c) means that re-added consumer comes up inert — because the target is still
+`meta.weaverTarget`-registered (`revoke` does not unregister it or touch its Lens definition),
+dispatch stays inert until an explicit `enable` (which clears the marker and re-runs reconcile).
+Unlike `disable`/`enable`, `revoke` on an unregistered/unknown `targetId` is **not** an error —
+idempotent, mirroring `ConsumerSupervisor.Remove`'s no-op-if-unmanaged posture, and still writes
+the disabled marker so a future registration of that `targetId` starts disabled.
+
+**Uninstall vs. revoke.** A `revoke` keeps the target registered and disabled. A genuine uninstall
+(the target leaving `targetSource` — e.g. its Lens is retired) is the `reconcileConsumers` removal
+branch, which deletes the consumer, its health-sink entry, **and** the `<targetId>.__control`
+marker, and prunes the in-memory set — so a re-install of the same `targetId` does not silently
+come up disabled and no orphan marker leaks in `weaver-state`.
+
+**`revoke` is immediate-cleanup, not standing suppression of re-registration** — it does not
+prevent the target from being re-installed via a fresh `meta.weaverTarget` vertex, and it does
+not retire the target's underlying Lens. Fully decommissioning a target requires also retiring
+its Lens (out of this story's scope — an op-path/Refractor concern).
+
+### Capability authorization
+
+`internal/weaver/control` ships a `StubCapabilityChecker` (allow-all, logs every call) — mirrors
+`internal/refractor/control`'s 2.1 stub posture, not a new gap introduced by this story. Full
+Capability-KV integration is Epic 3 work.
+
+---
+
 ## What this component will own
 
 | Path | Role |
 |------|------|
 | `internal/weaver/` | Engine: Sensorium, 3-lane work stream, Evaluator tiers, Strategist dispatcher, Actuator |
 | `internal/weaver/nudge/` | External Adapter framework + Two-Phase Nudge |
-| `cmd/weaver/` | Binary entry point (extractable; shares only `substrate/*`) |
+| `internal/weaver/control/` | Operator control plane (FR30): `list`/`disable`/`enable`/`revoke` NATS Services responder |
+| `cmd/weaver/` | Binary entry point (extractable; shares only `substrate/*`) — starts the control-plane listener alongside the engine |
+| `cmd/lattice/weaver/` | `lattice weaver list\|disable\|enable\|revoke` CLI command group |
 
 **Package data:** target Lens cypher, playbook definitions, gap→action mappings, mocked-adapter
 config (`lease-signing`).
@@ -225,6 +334,7 @@ config (`lease-signing`).
 | Out | `@at` schedules via `core-schedules` (`schedule.weaver.timer.<targetId>.<entityId>`) | lane 3 scheduling leg; replace-on-reschedule (one schedule per subject) |
 | Out (own) | `weaver-state` bucket | in-flight convergence marks (anti-storm); per-key TTL backstop (2× lease) + reconciler sweep |
 | Out (own) | `weaver-claims` bucket | Two-Phase Nudge claims (90d retention, Epic 10) |
+| In/Out | `micro.Service` endpoints at `lattice.ctrl.weaver.<targetId>.<op>` and `lattice.ctrl.weaver.list` | Control plane (FR30): operator `list`/`disable`/`enable`/`revoke` — see "Control plane" below |
 
 ---
 

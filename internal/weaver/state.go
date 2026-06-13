@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/asolgan/lattice/internal/substrate"
@@ -168,12 +169,120 @@ func (m *markStore) delete(ctx context.Context, targetID, entityID, gapColumn st
 	return nil
 }
 
-// countInFlight reports how many marks exist in the bucket, scanned on the
-// heartbeat cadence (never per-message).
+// countInFlight reports how many in-flight marks exist in the bucket, scanned
+// on the heartbeat cadence (never per-message). Reserved `<targetId>.__control`
+// dispatch-skip markers are skipped — they are not §10.3 marks (same guard the
+// reconciler sweep applies), so the marksInFlight gauge counts only real
+// in-flight dispatch.
 func (m *markStore) countInFlight(ctx context.Context) (int, error) {
 	keys, err := m.conn.KVListKeys(ctx, m.bucket)
 	if err != nil {
 		return 0, err
 	}
-	return len(keys), nil
+	n := 0
+	for _, key := range keys {
+		if strings.HasSuffix(key, controlKeySuffix) {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
+// controlKeySuffix names the reserved per-target dispatch-skip marker
+// : `<targetId>.__control`. The marker is matched by suffix
+// (seedDisabledTargets, the reconciler sweep), so the collision guard is the
+// LAST key segment, not the entityId: a real mark's last segment is a
+// `missing_*` gap column (validateTarget forces it), and "__control" does not
+// start with "missing_". Combined with targetId being a single dot-free token,
+// a 2-segment `<targetId>.__control` key can never equal a 3-segment
+// `<targetId>.<entityId>.<gapColumn>` mark key.
+const controlKeySuffix = ".__control"
+
+// controlMark is the JSON body of the `<targetId>.__control` dispatch-skip
+// marker.
+type controlMark struct {
+	Disabled   bool   `json:"disabled"`
+	DisabledAt string `json:"disabledAt,omitempty"`
+}
+
+// controlKey builds the reserved per-target dispatch-skip marker key.
+func controlKey(targetID string) string {
+	return targetID + controlKeySuffix
+}
+
+// setDisabled writes or clears the `<targetId>.__control` dispatch-skip
+// marker. disabled=true CAS-free-writes `{"disabled":true,
+// "disabledAt":<now>}`; disabled=false deletes the key (missing-key-is-success,
+// mirroring delete's missing-key posture — enable/resume on an already-enabled
+// target is idempotent).
+func (m *markStore) setDisabled(ctx context.Context, targetID string, disabled bool) error {
+	if !disabled {
+		err := m.conn.KVDelete(ctx, m.bucket, controlKey(targetID))
+		if err != nil && !errors.Is(err, substrate.ErrKeyNotFound) {
+			return err
+		}
+		return nil
+	}
+	body, err := json.Marshal(controlMark{Disabled: true, DisabledAt: substrate.FormatTimestamp(time.Now())})
+	if err != nil {
+		return fmt.Errorf("weaver: marshal control mark: %w", err)
+	}
+	if _, err := m.conn.KVPut(ctx, m.bucket, controlKey(targetID), body); err != nil {
+		return err
+	}
+	return nil
+}
+
+// isDisabled reads the `<targetId>.__control` dispatch-skip marker. A
+// missing key means active (not disabled) — never an error.
+func (m *markStore) isDisabled(ctx context.Context, targetID string) (bool, error) {
+	return m.isDisabledKey(ctx, controlKey(targetID))
+}
+
+// isDisabledKey reads the disabled flag from an already-known `__control` key
+// (the key seedDisabledTargets already listed) — one KV read, no rebuild of a
+// key it just parsed off the listing. A missing key means active (not
+// disabled) — never an error.
+func (m *markStore) isDisabledKey(ctx context.Context, key string) (bool, error) {
+	entry, err := m.conn.KVGet(ctx, m.bucket, key)
+	if err != nil {
+		if errors.Is(err, substrate.ErrKeyNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	var cm controlMark
+	if err := json.Unmarshal(entry.Value, &cm); err != nil {
+		return false, fmt.Errorf("weaver: unmarshal control mark %s: %w", entry.Key, err)
+	}
+	return cm.Disabled, nil
+}
+
+// deleteByTargetPrefix deletes every weaver-state key with prefix
+// "<targetID>." — every `<targetId>.<entityId>.<gapColumn>` in-flight mark AND
+// the `<targetId>.__control` dispatch-skip marker. The trailing
+// "." in the prefix means "t1." never matches a key under "t10." — no
+// accidental cross-target overlap from a shared numeric prefix. Tolerates
+// ErrKeyNotFound mid-scan (mirrors the reconciler sweep's scan-tolerance
+// posture: a key deleted between the list and the delete is not an error).
+func (m *markStore) deleteByTargetPrefix(ctx context.Context, targetID string) (deleted int, err error) {
+	keys, err := m.conn.KVListKeys(ctx, m.bucket)
+	if err != nil {
+		return 0, err
+	}
+	prefix := targetID + "."
+	for _, key := range keys {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if delErr := m.conn.KVDelete(ctx, m.bucket, key); delErr != nil {
+			if errors.Is(delErr, substrate.ErrKeyNotFound) {
+				continue
+			}
+			return deleted, delErr
+		}
+		deleted++
+	}
+	return deleted, nil
 }

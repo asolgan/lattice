@@ -35,7 +35,18 @@ import (
 	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/substrate"
 	"github.com/asolgan/lattice/internal/weaver"
+	"github.com/asolgan/lattice/internal/weaver/control"
 )
+
+// engineControl is satisfied structurally by *weaver.Engine; declared here
+// only as a compile-time check that internal/weaver/control's interface
+// hasn't drifted from the engine's actual method set.
+var _ interface {
+	ListTargets(ctx context.Context) ([]weaver.TargetSummary, error)
+	Disable(ctx context.Context, targetID string) error
+	Enable(ctx context.Context, targetID string) error
+	Revoke(ctx context.Context, targetID string) error
+} = (*weaver.Engine)(nil)
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -101,6 +112,12 @@ func run(logger *slog.Logger) error {
 		logger.Info("signal received; shutting down", "signal", sig.String())
 		cancel()
 	}()
+
+	controlSvc := control.NewService(engine, nil, logger)
+	if err := controlSvc.StartNATSListener(ctx, conn.NATS()); err != nil {
+		return fmt.Errorf("start control NATS listener: %w", err)
+	}
+	logger.Info("weaver control service started")
 
 	logger.Info("weaver ready", "instance", instance)
 	if err := engine.Start(ctx); err != nil {

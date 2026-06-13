@@ -569,6 +569,17 @@ func (s *targetSource) target(targetID string) (*Target, bool) {
 	return t, ok
 }
 
+// ownerVertexID returns the vtx.meta.<id> vertex id that registered targetId,
+// the same id the "target:"+id issue-cache key is keyed by (registry.go's
+// rejectTarget/load path). Used by Revoke to clear that target's standing
+// "target:" issue, if any.
+func (s *targetSource) ownerVertexID(targetID string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, ok := s.targetOwner[targetID]
+	return id, ok
+}
+
 // targetIDs returns the currently-registered target ids (the desired lane-1
 // consumer set).
 func (s *targetSource) targetIDs() []string {

@@ -56,13 +56,28 @@ func (e *Engine) handleRow(ctx context.Context, msg substrate.Message) substrate
 	if row == nil {
 		return substrate.Ack
 	}
+
 	// Lane-3 scheduling leg: a row carrying a future freshUntil (re-)arms its
 	// per-target-per-entity @at timer on EVERY delivery, violating or not —
-	// level-driven, idempotent under one-schedule-per-subject replace. Only a
+	// level-driven, idempotent under one-schedule-per-subject replace. Runs
+	// even for a disabled target: arming the timer is state-recording
+	// bookkeeping, so an instant re-enable loses no deadline. Only a
 	// schedule-publish failure defers the row.
 	if !e.scheduleFreshness(ctx, targetID, entityID, key, row) {
 		return substrate.NakWithDelay
 	}
+
+	// Dispatch-skip: a target carrying the `<targetId>.__control`
+	// disabled marker (reflected in the in-memory disabled-set) Acks
+	// here — mark-clearing (above) and freshness arming (above) still ran (a
+	// disabled target keeps its violation-detection bookkeeping current), but
+	// no NEW in-flight mark is created and no remediation
+	// (Strategist/Actuator: triggerLoom/nudge/assignTask/directOp) runs for
+	// this row. On enable, remediation resumes for whatever is still violating.
+	if e.isTargetDisabled(targetID) {
+		return substrate.Ack
+	}
+
 	if !e.boolColumn(targetID, row, "violating") {
 		// L1: not violating — clearing already ran; nothing to dispatch.
 		return substrate.Ack
