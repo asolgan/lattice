@@ -103,7 +103,7 @@ owner (Andrew) + a Contract #10 revision-history entry. The implementation
 already builds to the requested text; the existing §10.8 `nudge` example omits `operation` and is
 adjusted by the same amendment.
 
-**STATUS: PROPOSED — awaiting ratification (Andrew).**
+**STATUS: RATIFIED 2026-06-13 (Andrew).** Applied to Contract #10 (§10.8 action table + `missing_bgcheck` example) + revision-history entry; the working tree already built to this text.
 
 ## Request 4: §10.8 `nudge` action gains a required `operation` field (the resolve-op type)
 
