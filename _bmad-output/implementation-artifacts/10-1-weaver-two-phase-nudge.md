@@ -1,6 +1,6 @@
 # Story 10.1: External Adapter framework + Two-Phase Nudge protocol
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
