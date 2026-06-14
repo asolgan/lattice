@@ -1,6 +1,6 @@
 # Story 12.1b: Guard ↔ rebuild reconciliation + primary capability lens (D-INTEGRITY pt.2)
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
