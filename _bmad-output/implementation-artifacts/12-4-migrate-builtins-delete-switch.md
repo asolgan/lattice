@@ -1,6 +1,6 @@
 # Story 12.4: Migrate built-in lenses off the `CanonicalName` switch (D-PIPELINE landing)
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -347,3 +347,29 @@ Deleted:
 ### Change Log
 
 - 2026-06-14: Story 12.4 implemented — migrated the three actor-aggregate built-in lenses (capability, capabilityEphemeral, myTasks) onto the data-driven 12.3 ProjectionPlan; DELETED the per-CanonicalName switch in cmd/refractor + the capabilityenv actor-aggregate wrappers; routed capabilityRoleIndex via a generic Into.Key predicate (zero canonical names in cmd/); guard-enable derived from the plan predicate; AC5 proof test (brand-new package lens via InstallPackage, zero core edits) passing; Gate 2 + Gate 3 green.
+
+### Winston adjudication + done (2026-06-14)
+
+Full 3-layer review (Blind Hunter / Edge Case Hunter / Acceptance Auditor):
+**ACCEPT / ACCEPT / ACCEPT**, no blocking findings. All ACs verified against the
+code, not just the Completion Notes. Adjudication outcomes:
+
+- **BFS-fallback for the uncoverable auth-plane `capability` cypher (AC3.1 deviation):**
+  ACCEPTED as sound — all three reviewers independently confirmed live fan-out uses
+  the broad-BFS superset (never under-reprojects), the compiled forest is not wired
+  into live fan-out yet, and refusing would regress a working auth plane for no
+  security gain. Carried obligation (flip to fail-activation when the forest drives
+  live fan-out) recorded in `docs/decisions/projection-plane-decomposition.md`.
+- **Fix-forward (applied):** `verify-kernel` now asserts the capability lens's two new
+  auth-plane aspects (projectionKind, output); the driver handles `ActionWriteEmptyDoc`
+  explicitly.
+- **Follow-ups spun off (out of scope):** harden the `Into.Key==["operationType"]`
+  routing against an unrelated package lens; have the AC5 proof test exercise the
+  production routing instead of a mirrored helper.
+
+Committed `186254b` (migration) + `d2c1506` (CI fix: verify-package-identity-hygiene
+reads the lens cypher from `spec.cypherRule` now that the spec aspect carries the full
+LensSpec body). Local verification mirrored the full CI pipeline in exact order
+(build/vet/lint, verify-kernel, rbac+identity+identity-hygiene package installs,
+Gate 2 4/4 BLOCKED, Gate 3 6/6, Gate 5 Hello Lattice all 6 milestones, full
+`go test ./... -p 1`) — all green. **CI green** (run 27514161840). Status → done.
