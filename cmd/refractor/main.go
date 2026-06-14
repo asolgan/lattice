@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -262,17 +261,18 @@ func main() {
 		// (keyed by operationType) is driven by the generic null-key-skip envelope.
 		switch {
 		case projection.IsActorAggregate(r):
-			if !installActorAggregate(p, adpt, r, projectionRevision, adjKV, coreKV, logger) {
+			if !projection.InstallActorAggregate(p, adpt, r, projectionRevision, adjKV, coreKV, logger) {
 				return
 			}
-		case len(r.Into.Key) == 1 && r.Into.Key[0] == "operationType":
+		case isOperationRoleIndexLens(r):
 			// Operation-aggregate lens (the role-by-operation index): keyed by
-			// operationType, it rewrites each row into the Contract #6 §6.1
-			// `cap.role-by-operation.<op>` shape and skips rows whose
-			// operationType is null/empty (a collect over zero MATCH bindings).
-			// It is keyed by operationType, not by actor — no per-actor
-			// revoke→resurrect race — so it is NOT guarded (Contract #6 §6.2/§6.3).
-			// Routed off the operationType key, not a canonical name.
+			// operationType and targeting the capability-kv bucket, it rewrites
+			// each row into the Contract #6 §6.1 `cap.role-by-operation.<op>`
+			// shape and skips rows whose operationType is null/empty (a collect
+			// over zero MATCH bindings). It is keyed by operationType, not by
+			// actor — no per-actor revoke→resurrect race — so it is NOT guarded
+			// (Contract #6 §6.2/§6.3). Routed off the operationType key plus the
+			// capability-kv bucket, not a canonical name.
 			p.SetEnvelopeFn(capabilityenv.NewRoleIndexWrapper())
 			p.SetLatencyBuffer(pipeline.NewLatencyRingBuffer(pipeline.DefaultLatencyBufferSize))
 			logger.Info("operation-aggregate envelope installed", "lensId", r.ID, "key", r.Into.Key[0])
@@ -451,6 +451,16 @@ func main() {
 	poolManager.Close()
 }
 
+// isOperationRoleIndexLens reports whether r is the operation-aggregate
+// role-by-operation index: its sole output key is operationType AND it
+// targets the capability-kv bucket (Contract #6 §6.1). Both conditions are
+// required — a package lens keyed solely by operationType but targeting a
+// different bucket does not match, and is left to its default envelope.
+// Derived from the lens's Into descriptor, never from a canonical name.
+func isOperationRoleIndexLens(r *lens.Rule) bool {
+	return len(r.Into.Key) == 1 && r.Into.Key[0] == "operationType" && projection.IsAuthPlane(r)
+}
+
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -462,87 +472,4 @@ func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
-}
-
-// installActorAggregate wires an actor-aggregate lens through the compiled
-// ProjectionPlan: the §6.13 Output descriptor drives the on-wire envelope, the
-// per-actor cross-vertex fan-out, the empty/delete-key behavior, and the §6.2
-// guard predicate — all from lens-definition data, with no canonical-name
-// knowledge. Returns false when the lens must NOT be registered (a fail-closed
-// descriptor error), true once the components are installed.
-//
-// Fan-out uses the broad adjacency ActorEnumerator (the sound superset that can
-// never miss an affected anchor). The compiled invalidation forest is the more
-// precise alternative the plan also carries; the live pipeline does not yet
-// consume it, so an auth-plane lens whose MATCH the forest compiler cannot prove
-// subset-safe (e.g. the primary capability cypher's variable-length
-// `containedIn*0..`) is still wired with the BFS enumerator rather than refused —
-// BFS over-reprojects, never under-reprojects, so no anchor is ever missed.
-func installActorAggregate(
-	p *pipeline.Pipeline,
-	adpt adapter.Adapter,
-	r *lens.Rule,
-	projectionRevision func(string) uint64,
-	adjKV, coreKV jetstream.KeyValue,
-	logger *slog.Logger,
-) bool {
-	desc, err := projection.ParseOutputDescriptor(r.Output)
-	if err != nil {
-		logger.Error("actor-aggregate output descriptor invalid — refusing registration",
-			"lensId", r.ID, "err", err)
-		return false
-	}
-
-	authPlane := projection.IsAuthPlane(r)
-	if _, cErr := projection.Compile(r, logger); cErr != nil {
-		var ce *projection.CompileError
-		if errors.As(cErr, &ce) {
-			// Auth-plane lens whose MATCH the forest compiler cannot prove
-			// subset-safe. The live fan-out is the broad BFS enumerator (the
-			// sound superset), so registering with BFS is safe; refusing would
-			// regress the security-plane projection. Log loudly and proceed.
-			logger.Warn("actor-aggregate invalidation forest not subset-safe; using broad BFS fan-out",
-				"lensId", r.ID, "reason", ce.Reason)
-		} else {
-			logger.Error("actor-aggregate plan compile failed — refusing registration",
-				"lensId", r.ID, "err", cErr)
-			return false
-		}
-	}
-
-	lensDefKey := "vtx.meta." + r.ID
-	p.SetEnvelopeFn(desc.EnvelopeFn(lensDefKey, projectionRevision))
-	p.SetActorEnumerator(pipeline.NewActorEnumerator(adjKV, coreKV, desc.AnchorType))
-	p.SetActorDeleteKey(desc.BuildKey)
-	p.SetLatencyBuffer(pipeline.NewLatencyRingBuffer(pipeline.DefaultLatencyBufferSize))
-
-	guarded := authPlane || desc.RequiresGuardedTombstone()
-	if guarded {
-		if gErr := enableProjectionGuard(adpt, r.ID); gErr != nil {
-			logger.Error("actor-aggregate guard", "lensId", r.ID, "err", gErr)
-			return false
-		}
-	}
-
-	logger.Info("actor-aggregate envelope + fan-out + delete-key + latency installed",
-		"lensId", r.ID, "lensDefKey", lensDefKey,
-		"anchorType", desc.AnchorType, "guarded", guarded, "authPlane", authPlane)
-	return true
-}
-
-// enableProjectionGuard turns on the monotonic projection-write guard for a
-// NATS-KV-backed lens. buildAdapter stays free of lens knowledge; the caller
-// decides which lenses are guarded from the compiled plan predicate (auth-plane
-// or empty-delete tombstone) and flips the flag here. The guarded lenses are
-// security/correctness-plane, so an adapter that cannot enforce the guard
-// (e.g. a Postgres target) is a fail-closed error, not a silent downgrade: a
-// guarded lens running unguarded re-opens the resurrection window the guard
-// exists to close.
-func enableProjectionGuard(adpt adapter.Adapter, lensID string) error {
-	nkv, ok := adpt.(*adapter.NatsKVAdapter)
-	if !ok {
-		return fmt.Errorf("projection-write guard required for lens %s but target adapter cannot enforce it (not NATS-KV)", lensID)
-	}
-	nkv.SetGuarded(true)
-	return nil
 }

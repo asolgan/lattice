@@ -8,8 +8,8 @@
 // output bucket, and a simple per-actor cypher. It is installed via the real
 // InstallPackage op path (pkgmgr.Installer → meta-lane Processor → atomic commit),
 // then activated by the live lens.CoreKVSource watch and wired through the
-// generic projectionKind-keyed actor-aggregate path (wireActorAggregate mirrors
-// cmd/refractor's installActorAggregate exactly).
+// generic projectionKind-keyed actor-aggregate path via the production
+// projection.InstallActorAggregate — the exact function cmd/refractor calls.
 //
 // If this lens projects + reprojects, the layering inversion is gone: a package
 // can ship a per-actor aggregating lens with no core edit. The test fails if any
@@ -40,6 +40,7 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/consumer"
 	"github.com/asolgan/lattice/internal/refractor/lens"
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
+	"github.com/asolgan/lattice/internal/refractor/projection"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -201,9 +202,11 @@ func TestRefractor_PackageActorAggregateLens_ProjectsWithZeroCoreEdits(t *testin
 	require.NoError(t, err)
 	require.NotNil(t, rosterRule.CompiledRule, "actor-aggregate lens must resolve a compiled rule")
 	p.UseFullEngine(fullEngine, rosterRule.CompiledRule)
-	// The SAME generic wiring cmd/refractor's installActorAggregate uses —
-	// keyed off the descriptor, with no canonical-name knowledge.
-	wireActorAggregate(t, p, rosterRule, adjKV, coreKV, projectionRevision)
+	// The SAME production wiring cmd/refractor's startPipeline calls —
+	// projection.InstallActorAggregate, keyed off the descriptor, with no
+	// canonical-name knowledge.
+	require.True(t, projection.InstallActorAggregate(p, rosterAdpt, rosterRule, projectionRevision, adjKV, coreKV, logger),
+		"proofRoster lens must install through projection.InstallActorAggregate")
 
 	p.RunOn(conn, e2eSpec(rosterRule.ID, bootstrap.CoreKVBucket))
 	pipelineCtx, pipelineCancel := context.WithCancel(ctx)

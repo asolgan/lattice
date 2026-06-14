@@ -38,9 +38,10 @@ func descFromPkgSpec(t *testing.T, l pkgmgr.LensSpec) projection.OutputDescripto
 
 // wireActorAggregate installs the envelope + cross-vertex fan-out + actor-
 // delete-key on an actor-aggregate pipeline from the activated lens Rule's §6.13
-// Output descriptor, mirroring cmd/refractor's installActorAggregate. The e2e
-// tests use it so they exercise the same data-driven projection path production
-// runs.
+// Output descriptor — the subset of projection.InstallActorAggregate's wiring
+// that does not require an adapter or logger (no guard, no plan-compile
+// diagnostics). The e2e tests use it so they exercise the same data-driven
+// envelope/fan-out/delete-key path production runs.
 func wireActorAggregate(t *testing.T, p *pipeline.Pipeline, r *lens.Rule, adjKV, coreKV jetstream.KeyValue, projectionRevision func(string) uint64) {
 	t.Helper()
 	desc, err := projection.ParseOutputDescriptor(r.Output)
