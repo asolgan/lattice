@@ -583,10 +583,67 @@ func (v *astVisitor) visitAtom(ctx cypher.IOC_AtomContext) Expr {
 	if vr := ctx.OC_Variable(); vr != nil {
 		return &VariableRef{Name: identifierText(vr)}
 	}
-	// CaseExpression, ListComprehension, COUNT(*), ALL/ANY/NONE/SINGLE
-	// filter expressions are out of scope for 3.1b-i.
+	if ce := ctx.OC_CaseExpression(); ce != nil {
+		return v.visitCaseExpression(ce)
+	}
+	// ListComprehension, COUNT(*), ALL/ANY/NONE/SINGLE filter expressions
+	// are out of scope for 3.1b-i.
 	v.fail("unsupported atom: %q", ctx.GetText())
 	return nil
+}
+
+// visitCaseExpression handles the generic form of CASE:
+//
+//	CASE (WHEN <cond> THEN <result>)+ (ELSE <default>)? END
+//
+// The simple (test-expression) form `CASE <expr> WHEN <value> THEN ...` is
+// rejected — none of the lenses shipped today need it, and supporting it
+// would require threading an extra equality comparison through every
+// alternative.
+func (v *astVisitor) visitCaseExpression(ctx cypher.IOC_CaseExpressionContext) Expr {
+	alts := ctx.AllOC_CaseAlternatives()
+	if len(alts) == 0 {
+		v.fail("unsupported atom: %q", ctx.GetText())
+		return nil
+	}
+
+	exprs := ctx.AllOC_Expression()
+	var elseExpr cypher.IOC_ExpressionContext
+	switch len(exprs) {
+	case 0:
+		// No ELSE, generic form.
+	case 1:
+		// Either the simple-form test-expression (before the first WHEN) or
+		// a trailing ELSE (after the last alternative). Position relative to
+		// the first WHEN/THEN pair disambiguates.
+		if exprs[0].GetStart().GetTokenIndex() < alts[0].GetStart().GetTokenIndex() {
+			v.fail("unsupported atom: %q (simple-form CASE <expr> WHEN ... is not supported)", ctx.GetText())
+			return nil
+		}
+		elseExpr = exprs[0]
+	default:
+		// >=2 expressions outside the alternatives implies a simple-form
+		// test-expression plus an ELSE — both unsupported together here.
+		v.fail("unsupported atom: %q (simple-form CASE <expr> WHEN ... is not supported)", ctx.GetText())
+		return nil
+	}
+
+	out := &CaseExpr{}
+	for _, alt := range alts {
+		altExprs := alt.AllOC_Expression()
+		if len(altExprs) != 2 {
+			v.fail("malformed CASE alternative: %q", alt.GetText())
+			return nil
+		}
+		out.Alternatives = append(out.Alternatives, CaseWhenThen{
+			When: v.visitExpression(altExprs[0]),
+			Then: v.visitExpression(altExprs[1]),
+		})
+	}
+	if elseExpr != nil {
+		out.Else = v.visitExpression(elseExpr)
+	}
+	return out
 }
 
 func (v *astVisitor) visitLiteral(ctx cypher.IOC_LiteralContext) Expr {

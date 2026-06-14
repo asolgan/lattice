@@ -1077,6 +1077,20 @@ func (ex *executor) evalExpr(b binding, e Expr) (any, error) {
 		return out, nil
 	case *PatternComprehension:
 		return ex.evalPatternComprehension(b, x)
+	case *CaseExpr:
+		for _, alt := range x.Alternatives {
+			cond, err := ex.evalExpr(b, alt.When)
+			if err != nil {
+				return nil, err
+			}
+			if truthy(cond) {
+				return ex.evalExpr(b, alt.Then)
+			}
+		}
+		if x.Else != nil {
+			return ex.evalExpr(b, x.Else)
+		}
+		return nil, nil
 	}
 	return nil, fmt.Errorf("full engine: unsupported expression %T", e)
 }
@@ -1514,5 +1528,11 @@ func walkExprAll(root Expr, f func(Expr)) {
 	case *PatternComprehension:
 		walkExprAll(e.Where, f)
 		walkExprAll(e.Projection, f)
+	case *CaseExpr:
+		for _, alt := range e.Alternatives {
+			walkExprAll(alt.When, f)
+			walkExprAll(alt.Then, f)
+		}
+		walkExprAll(e.Else, f)
 	}
 }

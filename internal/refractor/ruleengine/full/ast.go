@@ -217,6 +217,26 @@ type PatternComprehension struct {
 
 func (*PatternComprehension) isExpr() {}
 
+// CaseWhenThen is one `WHEN <cond> THEN <result>` alternative of a generic
+// CASE expression.
+type CaseWhenThen struct {
+	When Expr
+	Then Expr
+}
+
+// CaseExpr is the generic (no test-expression) form of a CASE expression:
+// `CASE (WHEN cond THEN result)+ (ELSE default)? END`. Each WHEN condition
+// is evaluated in order and is truthy-tested; the first match's THEN value
+// is returned. Else is nil when absent (matching Cypher's implicit
+// `ELSE NULL`). The simple (test-expression) form `CASE expr WHEN val ...`
+// is not supported.
+type CaseExpr struct {
+	Alternatives []CaseWhenThen
+	Else         Expr
+}
+
+func (*CaseExpr) isExpr() {}
+
 // CompiledRule satisfies ruleengine.CompiledRule. It is the opaque value
 // full.Engine.Parse returns; full.Engine.Execute (3.1b-ii) will consume it.
 type CompiledRule struct {

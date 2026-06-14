@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/asolgan/lattice/internal/bootstrap"
+	identityhygiene "github.com/asolgan/lattice/packages/identity-hygiene"
 )
 
 // parse compiles a body via the public Engine API and returns the wrapped
@@ -260,6 +261,40 @@ func TestParse_PropertyAccess(t *testing.T) {
 	}
 }
 
+func TestParse_CaseExpression(t *testing.T) {
+	q := parse(t, `MATCH (a), (b) RETURN CASE
+         WHEN a.email = b.email THEN 'exact-email'
+         WHEN a.phone = b.phone THEN 'exact-phone'
+         ELSE 'levenshtein-name'
+       END AS criterion`)
+	r := firstReturn(t, q)
+	if len(r.Items) != 1 {
+		t.Fatalf("expected 1 return item, got %d", len(r.Items))
+	}
+	if r.Items[0].Alias != "criterion" {
+		t.Fatalf("expected alias 'criterion', got %q", r.Items[0].Alias)
+	}
+	ce, ok := r.Items[0].Expr.(*CaseExpr)
+	if !ok {
+		t.Fatalf("expected *CaseExpr, got %T", r.Items[0].Expr)
+	}
+	if len(ce.Alternatives) != 2 {
+		t.Fatalf("expected 2 WHEN/THEN alternatives, got %d", len(ce.Alternatives))
+	}
+	if _, ok := ce.Alternatives[0].When.(*BinaryOp); !ok {
+		t.Fatalf("expected first WHEN to be a BinaryOp, got %T", ce.Alternatives[0].When)
+	}
+	if lit, ok := ce.Alternatives[0].Then.(*Literal); !ok || lit.Value != "exact-email" {
+		t.Fatalf("expected first THEN literal 'exact-email', got %+v", ce.Alternatives[0].Then)
+	}
+	if ce.Else == nil {
+		t.Fatalf("expected ELSE branch to be present")
+	}
+	if lit, ok := ce.Else.(*Literal); !ok || lit.Value != "levenshtein-name" {
+		t.Fatalf("expected ELSE literal 'levenshtein-name', got %+v", ce.Else)
+	}
+}
+
 // --- Bootstrap acceptance oracle ---
 
 func TestParse_BootstrapCapabilityLens(t *testing.T) {
@@ -329,6 +364,45 @@ func TestParse_BootstrapCapabilityLens(t *testing.T) {
 	}
 }
 
+// TestParse_IdentityHygieneDuplicateCandidatesLens parses the real
+// `duplicateCandidates` lens spec from packages/identity-hygiene through the
+// full engine — the same engine selected at activation time via
+// `engine: "full"` — and asserts it compiles, including the `criterion`
+// CASE expression.
+func TestParse_IdentityHygieneDuplicateCandidatesLens(t *testing.T) {
+	if len(identityhygiene.Package.Lenses) != 1 {
+		t.Fatalf("expected exactly 1 lens, got %d", len(identityhygiene.Package.Lenses))
+	}
+	lens := identityhygiene.Package.Lenses[0]
+	if lens.Engine != "full" {
+		t.Fatalf("expected lens.Engine=%q, got %q", "full", lens.Engine)
+	}
+
+	q := parse(t, lens.Spec)
+
+	r := firstReturn(t, q)
+	var found *CaseExpr
+	var alias string
+	for _, it := range r.Items {
+		if ce, ok := it.Expr.(*CaseExpr); ok {
+			found = ce
+			alias = it.Alias
+		}
+	}
+	if found == nil {
+		t.Fatalf("expected a CASE expression in RETURN, got items %+v", r.Items)
+	}
+	if alias != "criterion" {
+		t.Fatalf("expected CASE expression aliased 'criterion', got %q", alias)
+	}
+	if len(found.Alternatives) != 2 {
+		t.Fatalf("expected 2 WHEN/THEN alternatives, got %d", len(found.Alternatives))
+	}
+	if found.Else == nil {
+		t.Fatalf("expected ELSE 'levenshtein-name' branch")
+	}
+}
+
 func hasAntiPattern(e Expr) bool {
 	found := false
 	walkExpr(e, func(x Expr) {
@@ -374,5 +448,11 @@ func walkExpr(root Expr, f func(Expr)) {
 	case *PatternComprehension:
 		walkExpr(e.Where, f)
 		walkExpr(e.Projection, f)
+	case *CaseExpr:
+		for _, alt := range e.Alternatives {
+			walkExpr(alt.When, f)
+			walkExpr(alt.Then, f)
+		}
+		walkExpr(e.Else, f)
 	}
 }
