@@ -254,10 +254,10 @@ func TestCompile_NonActorAggregate_Rejected(t *testing.T) {
 }
 
 func TestIsAuthPlane(t *testing.T) {
-	if !isAuthPlane(&lens.Rule{Into: lens.IntoConfig{Target: "nats_kv", Bucket: AuthPlaneBucket}}) {
+	if !IsAuthPlane(&lens.Rule{Into: lens.IntoConfig{Target: "nats_kv", Bucket: AuthPlaneBucket}}) {
 		t.Fatalf("capability-kv bucket must classify as auth-plane")
 	}
-	if isAuthPlane(&lens.Rule{Into: lens.IntoConfig{Target: "nats_kv", Bucket: "my-tasks"}}) {
+	if IsAuthPlane(&lens.Rule{Into: lens.IntoConfig{Target: "nats_kv", Bucket: "my-tasks"}}) {
 		t.Fatalf("my-tasks bucket must NOT be auth-plane")
 	}
 }

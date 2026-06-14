@@ -1,13 +1,12 @@
 // Package projection compiles an actor-aggregate lens definition into a
-// ProjectionPlan{Execution, Invalidation, Output}. The plan turns per-actor
-// projection behavior into data (lens-definition aspects) rather than core Go
-// keyed on a lens canonical name.
-//
-// This package adds the machinery; it does not yet replace the per-canonical-
-// name switch or the capabilityenv wrappers that drive the built-in lenses.
-// The compiled plan is proven by its own tests against the real reverse-walk
-// (the simple engine's invalidation forest compiler) and the real per-actor
-// executor (the full engine).
+// ProjectionPlan{Execution, Invalidation, Output} and drives the live pipeline
+// from it. The plan turns per-actor projection behavior into data (lens-
+// definition aspects) rather than core Go keyed on a lens canonical name: the
+// Output descriptor's EnvelopeFn, BuildKey, and guard predicate replace the
+// per-CanonicalName wrappers, so a brand-new package lens projects with no core
+// edit. The compiled invalidation forest is the precise reverse-walk the plan
+// also carries; the live fan-out uses the broad adjacency BFS (the sound
+// superset).
 package projection
 
 import (
@@ -97,10 +96,20 @@ func IsActorAggregate(r *lens.Rule) bool {
 	return r != nil && r.ProjectionKind == ActorAggregateKind
 }
 
-// isAuthPlane classifies a lens as auth-plane iff its target bucket is
+// RequiresGuard reports whether this plan's writes must run under the §6.2
+// monotonic projection-write guard. It is true when the lens projects an
+// authorization surface (AuthPlane, target bucket capability-kv) OR its empty
+// behavior produces a §6.2 soft tombstone (emptyBehavior ∈ {delete, softDelete}).
+// This is the sole gate on enabling the guard — derived from the compiled plan,
+// never from a canonical-name list.
+func (p *ProjectionPlan) RequiresGuard() bool {
+	return p.AuthPlane || p.Output.RequiresGuardedTombstone()
+}
+
+// IsAuthPlane classifies a lens as auth-plane iff its target bucket is
 // capability-kv. Derived from the bucket, never from a canonical-name list and
 // never from an extra aspect (neither is in the ratified Contract #6 §6.13).
-func isAuthPlane(r *lens.Rule) bool {
+func IsAuthPlane(r *lens.Rule) bool {
 	return r.Into.Target == "nats_kv" && r.Into.Bucket == AuthPlaneBucket
 }
 
@@ -143,7 +152,7 @@ func Compile(r *lens.Rule, logger Logger) (*ProjectionPlan, error) {
 		return nil, fmt.Errorf("projection: lens %q: %w", r.CanonicalName, err)
 	}
 
-	authPlane := isAuthPlane(r)
+	authPlane := IsAuthPlane(r)
 
 	cov, covErr := simple.AnalyzeInvalidationCoverage(r.Match)
 	if covErr != nil {

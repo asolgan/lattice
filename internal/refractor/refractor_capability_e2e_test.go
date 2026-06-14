@@ -9,9 +9,8 @@
 //     primary `capability` lens the engine resolves to `full` and the
 //     pipeline routes through full.Engine.ExecuteWith with live
 //     EventContext.Parameters (`$actorKey`, `$now`, `$projectedAt`).
-//   - The Capability KV envelope wrapper (capabilityenv.NewWrapper)
-//     wraps each projection row into the Contract #6 §6.2 shape
-//     before the adapter writes.
+//   - The compiled Output descriptor's envelope wraps each projection
+//     row into the Contract #6 §6.2 shape before the adapter writes.
 //   - A single fixture identity + role/permission/service-availability
 //     topology is seeded directly to Core KV (Story 3.2a Decision #6 —
 //     the test must NOT go through the Processor; that is Story 3.3).
@@ -42,10 +41,10 @@ import (
 	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/refractor/adapter"
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
-	"github.com/asolgan/lattice/internal/refractor/capabilityenv"
 	"github.com/asolgan/lattice/internal/refractor/consumer"
 	"github.com/asolgan/lattice/internal/refractor/lens"
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
+	"github.com/asolgan/lattice/internal/refractor/projection"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
 	"github.com/asolgan/lattice/internal/substrate"
@@ -169,7 +168,9 @@ func TestRefractor_CapabilityLens_E2E(t *testing.T) {
 		return entry.Revision()
 	}
 	lensDefKey := "vtx.meta." + capabilityRule.ID
-	p.SetEnvelopeFn(capabilityenv.NewWrapper(lensDefKey, projectionRevision))
+	capDesc, err := projection.ParseOutputDescriptor(capabilityRule.Output)
+	require.NoError(t, err, "capability lens must carry a valid Output descriptor")
+	p.SetEnvelopeFn(capDesc.EnvelopeFn(lensDefKey, projectionRevision))
 
 	p.RunOn(conn, e2eSpec(capabilityRule.ID, bootstrap.CoreKVBucket))
 

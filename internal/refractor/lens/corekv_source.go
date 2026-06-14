@@ -94,8 +94,12 @@ type LensSpec struct {
 }
 
 // OutputDescriptorSpec mirrors the JSON shape of the §6.13 Output descriptor
-// carried on an actor-aggregate lens spec. Each field maps to a behavior the
-// per-canonical-name Go wrappers encode imperatively.
+// carried on an actor-aggregate lens spec. The first six fields are the ratified
+// Contract #6 §6.13 descriptor. The remaining fields are envelope-shape options
+// the projection driver reads so the on-wire document is byte-identical to the
+// shape each built-in lens emits; they default to the generic auth-aggregate
+// shape (top-level actor field "actor", no lanes, no always-empty columns) so a
+// brand-new package lens needs only the six standard fields.
 type OutputDescriptorSpec struct {
 	AnchorType       string   `json:"anchorType"`       // actor vertex type, e.g. "identity"
 	OutputKeyPattern string   `json:"outputKeyPattern"` // constrained key template, e.g. "cap.ephemeral.{actorSuffix}"
@@ -103,6 +107,22 @@ type OutputDescriptorSpec struct {
 	EmptyBehavior    string   `json:"emptyBehavior"`    // delete | softDelete | emptyDoc | skip
 	RealnessFilter   string   `json:"realnessFilter"`   // field whose non-empty value marks a real collect entry
 	Freshness        string   `json:"freshness"`        // "auto"
+
+	// ActorField names the top-level envelope field that carries the actor
+	// vertex key. Defaults to "actor" (the cap.* documents); the my-tasks
+	// document uses "assignee".
+	ActorField string `json:"actorField,omitempty"`
+
+	// Lanes, when non-empty, is emitted verbatim as the document's `lanes`
+	// array. Only the primary cap.<actor> document carries lanes.
+	Lanes []string `json:"lanes,omitempty"`
+
+	// StaticEmptyColumns names body columns the document always materializes as
+	// an empty array regardless of the RETURN row. The primary cap.<actor>
+	// document carries an always-empty `ephemeralGrants` (the live grants live
+	// in the disjoint cap.ephemeral.<actor> document; §6.2/§6.3 require the field
+	// to be present here).
+	StaticEmptyColumns []string `json:"staticEmptyColumns,omitempty"`
 }
 
 // TargetPostgresConfig is the expected shape of LensSpec.TargetConfig

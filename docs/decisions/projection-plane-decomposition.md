@@ -122,6 +122,22 @@ freshness:        auto              # stamp projectionSeq (12.1) + widened proje
 construct the narrow compiler does not cover **fails activation** when it is an auth-plane lens, and
 logs a fallback-to-broad-BFS warning when it is not.
 
+**12.4 clarification — fail-closed-refuse binds only once the compiled forest drives live fan-out.**
+The fallback policy above assumes the compiled invalidation forest *is* what reprojects affected
+anchors. As of 12.4 it is not: live fan-out still runs through the broad-BFS `ActorEnumerator`
+(`pipeline/actor_enumerator.go`), which the 12.2 oracle proved is a sound **superset** of the
+compiled forest (it over-reprojects, never misses an affected anchor). The built-in `capability`
+cypher uses a variable-length `containedIn*0..` hop the narrow compiler cannot prove subset-safe, so
+`projection.Compile` returns a `*CompileError` for this auth-plane lens. Refusing activation would
+take the live auth plane *down* for a lens that projects correctly via BFS — strictly worse than the
+status quo, with no security gain (BFS cannot under-reproject). So `installActorAggregate` logs the
+coverage gap loudly (Warn) and activates with descriptor + BFS rather than refusing; a
+non-`*CompileError` (e.g. a malformed descriptor) still refuses. `Compile`'s 12.3 fail-closed
+contract and tests are untouched. **Carried obligation:** when a later story wires the compiled
+forest into live fan-out (replacing BFS for these lenses), this Warn-and-proceed *must* be flipped
+back to fail-activation — at that point an uncovered auth-plane lens would genuinely under-reproject.
+Until then, fail-closed-refuse protects a forest-driven path that does not yet exist live.
+
 **Sequencing:** spike (prove the compiler equals the BFS on a fixture — **12.2**) → build the plan
 compiler + `projectionKind` marker (**12.3**) → migrate the four built-ins off the switch and **delete
 the switch** (**12.4**). The 12.4 acceptance gate is a proof test that installs a *brand-new*

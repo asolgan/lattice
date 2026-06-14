@@ -12,7 +12,9 @@
 //	1 meta-meta-DDL vertex + 9 aspects
 //	  (canonicalName/permittedCommands/description/script +
 //	   inputSchema/outputSchema/fieldDescription/examples + compensation)
-//	2 Lens definitions × 5 aspects each
+//	2 Lens definitions: capability (7 aspects — the 5 shared + projectionKind +
+//	  output) and capabilityRoleIndex (5 aspects: canonicalName, targetBucket,
+//	  cypherRule, outputSchema, spec)
 //	5 aspect-type meta-vertices × 7 aspects each
 //	  (canonicalName + description + inputSchema + outputSchema +
 //	   fieldDescription + examples)
@@ -238,6 +240,15 @@ func main() {
 		{"spec", "lensSpec"},
 	}
 	for _, a := range lensAspects {
+		checkAspect(bootstrap.CapabilityLensKey+"."+a.name, bootstrap.CapabilityLensKey, a.class)
+	}
+	// The actor-aggregate capability lens additionally carries the projectionKind
+	// marker and the §6.13 Output descriptor that drive its data-driven projection
+	// path. The operation-aggregate role-index lens carries neither.
+	for _, a := range []struct{ name, class string }{
+		{"projectionKind", "projectionKind"},
+		{"output", "output"},
+	} {
 		checkAspect(bootstrap.CapabilityLensKey+"."+a.name, bootstrap.CapabilityLensKey, a.class)
 	}
 	for _, a := range lensAspects {

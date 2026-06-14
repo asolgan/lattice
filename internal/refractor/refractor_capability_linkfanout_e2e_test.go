@@ -27,7 +27,6 @@ import (
 
 	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/refractor/adapter"
-	"github.com/asolgan/lattice/internal/refractor/capabilityenv"
 	"github.com/asolgan/lattice/internal/refractor/consumer"
 	"github.com/asolgan/lattice/internal/refractor/lens"
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
@@ -148,8 +147,7 @@ func TestRefractor_CapabilityLens_LinkFanOut_E2E(t *testing.T) {
 	require.Equal(t, ruleengine.EngineFull, capabilityRule.ResolvedEngine)
 	require.NotNil(t, capabilityRule.CompiledRule)
 	capP.UseFullEngine(fullEngine, capabilityRule.CompiledRule)
-	capP.SetEnvelopeFn(capabilityenv.NewWrapper("vtx.meta."+capabilityRule.ID, projectionRevision))
-	capP.SetActorEnumerator(pipeline.NewActorEnumerator(adjKV, coreKV, capabilityenv.IdentityType))
+	wireActorAggregate(t, capP, capabilityRule, adjKV, coreKV, projectionRevision)
 
 	capP.RunOn(conn, e2eSpec(capabilityRule.ID, bootstrap.CoreKVBucket))
 
@@ -190,12 +188,12 @@ func TestRefractor_CapabilityLens_LinkFanOut_E2E(t *testing.T) {
 	writeLink := func(srcType, srcID, name, dstType, dstID string, isDeleted bool) string {
 		linkKey := substrate.LinkKey(srcType, srcID, name, dstType, dstID)
 		envelope := map[string]any{
-			"key":           linkKey,
-			"class":         name,
-			"isDeleted":     isDeleted,
+			"key":          linkKey,
+			"class":        name,
+			"isDeleted":    isDeleted,
 			"sourceVertex": substrate.VertexKey(srcType, srcID),
-			"targetVertex":   substrate.VertexKey(dstType, dstID),
-			"localName":     name,
+			"targetVertex": substrate.VertexKey(dstType, dstID),
+			"localName":    name,
 		}
 		body, jerr := json.Marshal(envelope)
 		require.NoError(t, jerr)

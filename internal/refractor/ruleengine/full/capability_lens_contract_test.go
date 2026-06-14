@@ -12,9 +12,9 @@
 //   - Seeds a deterministic graph that exercises all three sections
 //     (platformPermissions, serviceAccess, ephemeralGrants) and the
 //     `roles` projection.
-//   - Wraps the executor's RETURN row through capabilityenv.NewWrapper
-//     so the assertion targets the on-wire envelope, not the raw
-//     RETURN-row map.
+//   - Wraps the executor's RETURN row through the lens's §6.13 Output
+//     descriptor envelope so the assertion targets the on-wire envelope,
+//     not the raw RETURN-row map.
 //   - Asserts the envelope's structure field-by-field with descriptive
 //     failure messages (NOT raw byte diff per Decision #6). Timestamps
 //     and revisions are checked for presence + type only — their values
@@ -35,16 +35,64 @@ import (
 
 	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
-	"github.com/asolgan/lattice/internal/refractor/capabilityenv"
+	"github.com/asolgan/lattice/internal/refractor/lens"
+	"github.com/asolgan/lattice/internal/refractor/projection"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
 	"github.com/asolgan/lattice/internal/substrate"
 	orchestrationbase "github.com/asolgan/lattice/packages/orchestration-base"
 )
 
+// capabilityDescriptor builds the compiled §6.13 Output descriptor for the
+// primary bootstrap capability lens, so the contract test wraps each RETURN row
+// through the same data-driven envelope the live pipeline uses.
+func capabilityDescriptor(t *testing.T) projection.OutputDescriptor {
+	t.Helper()
+	o := bootstrap.CapabilityLensDefinition().Output
+	require.NotNil(t, o, "capability lens must declare an Output descriptor")
+	desc, err := projection.ParseOutputDescriptor(&lens.OutputDescriptorSpec{
+		AnchorType:         o.AnchorType,
+		OutputKeyPattern:   o.OutputKeyPattern,
+		BodyColumns:        o.BodyColumns,
+		EmptyBehavior:      o.EmptyBehavior,
+		RealnessFilter:     o.RealnessFilter,
+		Freshness:          o.Freshness,
+		ActorField:         o.ActorField,
+		Lanes:              o.Lanes,
+		StaticEmptyColumns: o.StaticEmptyColumns,
+	})
+	require.NoError(t, err)
+	return desc
+}
+
+// ephemeralDescriptor builds the compiled §6.13 Output descriptor for the
+// orchestration-base capabilityEphemeral lens.
+func ephemeralDescriptor(t *testing.T) projection.OutputDescriptor {
+	t.Helper()
+	for _, l := range orchestrationbase.Lenses() {
+		if l.CanonicalName == "capabilityEphemeral" {
+			require.NotNil(t, l.Output, "capabilityEphemeral lens must declare an Output descriptor")
+			desc, err := projection.ParseOutputDescriptor(&lens.OutputDescriptorSpec{
+				AnchorType:       l.Output.AnchorType,
+				OutputKeyPattern: l.Output.OutputKeyPattern,
+				BodyColumns:      l.Output.BodyColumns,
+				EmptyBehavior:    l.Output.EmptyBehavior,
+				RealnessFilter:   l.Output.RealnessFilter,
+				Freshness:        l.Output.Freshness,
+				ActorField:       l.Output.ActorField,
+				Lanes:            l.Output.Lanes,
+			})
+			require.NoError(t, err)
+			return desc
+		}
+	}
+	t.Fatal("orchestration-base must declare a capabilityEphemeral lens")
+	return projection.OutputDescriptor{}
+}
+
 // --- local test helpers (mirror the package-internal test scaffolding;
 // kept here so the contract test can live in an external test package
-// to avoid a capabilityenv→pipeline→full import cycle). ---
+// to avoid a projection→pipeline→full import cycle). ---
 
 func contractStartKVs(t *testing.T) (jetstream.JetStream, jetstream.KeyValue, jetstream.KeyValue) {
 	t.Helper()
@@ -176,8 +224,8 @@ func TestCapabilityLens_ContractConformance(t *testing.T) {
 	row := out[0].Values
 	keys := out[0].Key
 
-	// --- wrap through the production envelope (Story 3.2a / Contract #6 §6.2) ---
-	wrapper := capabilityenv.NewWrapper("vtx.meta.test-lens",
+	// --- wrap through the production envelope (Contract #6 §6.2 Output descriptor) ---
+	wrapper := capabilityDescriptor(t).EnvelopeFn("vtx.meta.test-lens",
 		func(k string) uint64 { return 42 })
 	envRow, envKeys, envErr := wrapper(row, keys, params)
 	require.NoError(t, envErr, "envelope wrapping must succeed")
@@ -207,21 +255,17 @@ func TestCapabilityLens_ContractConformance(t *testing.T) {
 	require.True(t, ok, "envelope.projectedAt must be a string")
 	require.Equalf(t, projectedAt, pa, "envelope.projectedAt must equal params.projectedAt")
 
-	// `projectedFromRevisions`: must be a map; presence-checked only —
-	// the test stub returns 42 for every key, so anchor + lens-def
-	// revisions must both be present per Story 3.2a Decision #7.
-	revs, ok := envRow["projectedFromRevisions"].(map[string]any)
-	require.True(t, ok, "envelope.projectedFromRevisions must be a map")
+	// `projectedFromRevisions`: must be a revision map; presence-checked only —
+	// the test stub returns 42 for every key, so anchor + lens-def revisions
+	// must both be present. The descriptor's ContributingSources returns a
+	// map[string]uint64 (widened in 12.3 to the contributing-binding set, §6.3);
+	// it JSON-serializes to the same object the §6.2 reader sees.
+	revs, ok := envRow["projectedFromRevisions"].(map[string]uint64)
+	require.True(t, ok, "envelope.projectedFromRevisions must be a map[string]uint64")
 	require.Containsf(t, revs, aliceKey,
 		"projectedFromRevisions must include anchor revision; got %v", revs)
 	require.Containsf(t, revs, "vtx.meta.test-lens",
 		"projectedFromRevisions must include lens-def revision; got %v", revs)
-	for k, v := range revs {
-		_, isFloat := v.(float64)
-		_, isUint64 := v.(uint64)
-		require.Truef(t, isFloat || isUint64,
-			"projectedFromRevisions[%q] must be numeric; got %T", k, v)
-	}
 
 	// `lanes`: must be a non-empty string array including "default".
 	lanes, ok := envRow["lanes"].([]string)
@@ -369,7 +413,7 @@ func TestCapabilityEphemeralLens_ContractConformance(t *testing.T) {
 	keys := out[0].Key
 
 	// --- wrap through the production ephemeral envelope ---
-	wrapper := capabilityenv.NewEphemeralWrapper("vtx.meta.test-eph-lens",
+	wrapper := ephemeralDescriptor(t).EnvelopeFn("vtx.meta.test-eph-lens",
 		func(k string) uint64 { return 7 })
 	envRow, envKeys, envErr := wrapper(row, keys, params)
 	require.NoError(t, envErr, "ephemeral envelope wrapping must succeed")

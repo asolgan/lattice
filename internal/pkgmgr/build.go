@@ -114,14 +114,20 @@ func (i *Installer) buildInstallBatch(
 	// Lens meta-vertices + canonical aspects.
 	for idx, l := range def.Lenses {
 		lensKey := metaVertexPrefix + lensIDs[idx]
+		lensID := lensIDs[idx]
 		class := l.Class
 		if class == "" {
 			class = "meta.lens"
 		}
 		addCreate(lensKey, docVertex(class, nil))
+		// The `spec` aspect carries the full LensSpec body Refractor's
+		// CoreKVSource activates the lens from (cypherRule + targetConfig +
+		// engine + projectionKind + the §6.13 Output descriptor). The sibling
+		// canonicalName/adapter/bucket/engine aspects remain an operator-facing
+		// documentation surface.
 		aspects := map[string]map[string]any{
 			"canonicalName": {"value": l.CanonicalName},
-			"spec":          {"source": l.Spec},
+			"spec":          lensSpecBody(lensID, l),
 			"adapter":       {"value": l.Adapter},
 			"bucket":        {"value": l.Bucket},
 			"engine":        {"value": l.Engine},
@@ -205,6 +211,33 @@ func sha256NanoID(s string) string {
 		out[i] = substrate.Alphabet[idx]
 	}
 	return string(out)
+}
+
+// lensSpecBody builds the LensSpec body stored as the `spec` aspect's data.
+// Refractor's CoreKVSource unwraps the aspect's `data` to this object and
+// activates the lens from it (cypherRule + targetConfig + engine +
+// projectionKind + the §6.13 Output descriptor). A package lens targets a
+// nats-kv bucket; its envelope keys each row under "key".
+func lensSpecBody(lensID string, l LensSpec) map[string]any {
+	targetConfig := map[string]any{
+		"bucket": l.Bucket,
+		"key":    []string{"key"},
+	}
+	spec := map[string]any{
+		"id":            lensID,
+		"canonicalName": l.CanonicalName,
+		"targetType":    "nats_kv",
+		"targetConfig":  targetConfig,
+		"cypherRule":    l.Spec,
+		"engine":        l.Engine,
+	}
+	if l.ProjectionKind != "" {
+		spec["projectionKind"] = l.ProjectionKind
+	}
+	if l.Output != nil {
+		spec["output"] = l.Output
+	}
+	return spec
 }
 
 func docVertex(class string, data map[string]any) map[string]any {

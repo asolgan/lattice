@@ -11,8 +11,9 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // in the shared, primordial `capability-kv` bucket — the same
 // disjoint-prefix contribution pattern Contract #6 §6.1 endorses and
 // `capabilityRoleIndex` (`cap.role-by-operation.*`) already proves. The
-// dotted key + the `cap.ephemeral.` prefix are produced by the
-// capabilityenv.NewEphemeralWrapper envelope, not by the cypher.
+// dotted key + the `cap.ephemeral.` prefix are produced from the lens's
+// §6.13 Output descriptor (anchorType identity, outputKeyPattern
+// `cap.ephemeral.{actorSuffix}`), not by the cypher.
 //
 // DEFAULT HARD delete: Bucket has no deleteMode override. When an actor's
 // last grant expires / their task goes away the cypher's OPTIONAL task
@@ -23,20 +24,39 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 func Lenses() []pkgmgr.LensSpec {
 	return []pkgmgr.LensSpec{
 		{
-			CanonicalName: "capabilityEphemeral",
-			Class:         "meta.lens",
-			Adapter:       "nats-kv",
-			Bucket:        "capability-kv",
-			Engine:        "full",
-			Spec:          capabilityEphemeralSpec,
+			CanonicalName:  "capabilityEphemeral",
+			Class:          "meta.lens",
+			Adapter:        "nats-kv",
+			Bucket:         "capability-kv",
+			Engine:         "full",
+			Spec:           capabilityEphemeralSpec,
+			ProjectionKind: "actorAggregate",
+			Output: &pkgmgr.OutputDescriptorSpec{
+				AnchorType:       "identity",
+				OutputKeyPattern: "cap.ephemeral.{actorSuffix}",
+				BodyColumns:      []string{"ephemeralGrants"},
+				EmptyBehavior:    "delete",
+				RealnessFilter:   "taskKey",
+				Freshness:        "auto",
+			},
 		},
 		{
-			CanonicalName: "myTasks",
-			Class:         "meta.lens",
-			Adapter:       "nats-kv",
-			Bucket:        MyTasksBucket,
-			Engine:        "full",
-			Spec:          myTasksSpec,
+			CanonicalName:  "myTasks",
+			Class:          "meta.lens",
+			Adapter:        "nats-kv",
+			Bucket:         MyTasksBucket,
+			Engine:         "full",
+			Spec:           myTasksSpec,
+			ProjectionKind: "actorAggregate",
+			Output: &pkgmgr.OutputDescriptorSpec{
+				AnchorType:       "identity",
+				OutputKeyPattern: "my-tasks.{actorSuffix}",
+				BodyColumns:      []string{"openTasks"},
+				EmptyBehavior:    "delete",
+				RealnessFilter:   "taskKey",
+				Freshness:        "auto",
+				ActorField:       "assignee",
+			},
 		},
 	}
 }

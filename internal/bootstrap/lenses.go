@@ -2,12 +2,37 @@ package bootstrap
 
 // LensDefinition holds the data payload for a Capability Lens meta-vertex.
 // The Lens vertex has class "meta.lens" per Contract #6 §6.13.
-// Aspects: canonicalName, cypherRule, targetBucket, outputSchema.
+// Aspects: canonicalName, cypherRule, targetBucket, outputSchema, and — for an
+// actor-aggregate lens — projectionKind + the §6.13 Output descriptor.
 type LensDefinition struct {
 	CanonicalName string
 	CypherRule    string
 	TargetBucket  string
 	OutputSchema  string
+
+	// ProjectionKind opts the lens into the declarative actor-aggregate
+	// projection plan ("actorAggregate"); empty for an operation-aggregate lens.
+	ProjectionKind string
+
+	// Output is the §6.13 Output descriptor for an actor-aggregate lens; nil
+	// otherwise.
+	Output *OutputDescriptorSpec
+}
+
+// OutputDescriptorSpec mirrors the on-wire §6.13 Output descriptor a primordial
+// actor-aggregate lens seeds. It is encoded into the `output` aspect + the spec
+// body so Refractor's CoreKVSource compiles a ProjectionPlan from it. Field
+// shape matches the Refractor-side lens.OutputDescriptorSpec.
+type OutputDescriptorSpec struct {
+	AnchorType         string   `json:"anchorType"`
+	OutputKeyPattern   string   `json:"outputKeyPattern"`
+	BodyColumns        []string `json:"bodyColumns"`
+	EmptyBehavior      string   `json:"emptyBehavior"`
+	RealnessFilter     string   `json:"realnessFilter,omitempty"`
+	Freshness          string   `json:"freshness,omitempty"`
+	ActorField         string   `json:"actorField,omitempty"`
+	Lanes              []string `json:"lanes,omitempty"`
+	StaticEmptyColumns []string `json:"staticEmptyColumns,omitempty"`
 }
 
 // CapabilityLensDefinition returns the primary Capability Lens definition.
@@ -19,6 +44,22 @@ func CapabilityLensDefinition() LensDefinition {
 	return LensDefinition{
 		CanonicalName: "capability",
 		TargetBucket:  "capability",
+		// Actor-aggregate: the compiled ProjectionPlan drives the §6.2 envelope.
+		// The primary cap.<actor> doc carries `lanes` and an always-empty
+		// `ephemeralGrants` (live grants live in the disjoint cap.ephemeral.<actor>
+		// doc; §6.2/§6.3 require the field present here). emptyBehavior:delete is
+		// the actor-disappearance tombstone (the doc is never deleted on an empty
+		// permission set — it has no realness filter).
+		ProjectionKind: "actorAggregate",
+		Output: &OutputDescriptorSpec{
+			AnchorType:         "identity",
+			OutputKeyPattern:   "cap.{actorSuffix}",
+			BodyColumns:        []string{"platformPermissions", "serviceAccess", "roles"},
+			EmptyBehavior:      "delete",
+			Freshness:          "auto",
+			Lanes:              []string{"default"},
+			StaticEmptyColumns: []string{"ephemeralGrants"},
+		},
 		// Cypher rule per Contract #6 §6.10 and brief decision #8.
 		// Produces platformPermissions, serviceAccess, and roles.
 		// Story 3.1 connects the openCypher engine; Story 3.2 activates live projection.

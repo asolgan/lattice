@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -26,6 +27,7 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/health"
 	"github.com/asolgan/lattice/internal/refractor/lens"
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
+	"github.com/asolgan/lattice/internal/refractor/projection"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
@@ -196,10 +198,10 @@ func main() {
 	// is stateless; per-rule state lives in the CompiledRule passed to UseFullEngine.
 	fullEngine := full.New()
 
-	// projectionRevisionFn reads the current Core KV revision for an
-	// arbitrary key. Used by the Capability envelope wrapper to populate
-	// `projectedFromRevisions`. Errors and absent keys collapse to 0,
-	// which the envelope drops (partial coverage is acceptable).
+	// projectionRevision reads the current Core KV revision for an arbitrary
+	// key. The actor-aggregate envelope uses it to populate
+	// `projectedFromRevisions`. Errors and absent keys collapse to 0, which the
+	// envelope drops (partial coverage is acceptable).
 	projectionRevision := func(k string) uint64 {
 		entry, err := coreKV.Get(context.Background(), k)
 		if err != nil || entry == nil {
@@ -250,96 +252,30 @@ func main() {
 			p.UseFullEngine(fullEngine, r.CompiledRule)
 		}
 
-		// Install per-lens envelope + fan-out + latency components. The canonical
-		// name is the only stable identifier between a seeded LensDefinition and
-		// the runtime Rule.
-		switch r.CanonicalName {
-		case "capability":
-			lensDefKey := "vtx.meta." + r.ID
-			// Capability KV envelope rewrites each projection row into the
-			// Contract #6 §6.2 per-actor shape keyed at cap.identity.<id>.
-			p.SetEnvelopeFn(capabilityenv.NewWrapper(lensDefKey, projectionRevision))
-			// Cross-vertex fan-out: non-identity CDC events are expanded into the
-			// set of affected actors via adjacency BFS (depth + actor-set caps).
-			p.SetActorEnumerator(pipeline.NewActorEnumerator(adjKV, coreKV, capabilityenv.IdentityType))
-			// Per-Lens latency ring buffer for heartbeat NFR-P3 emission.
-			p.SetLatencyBuffer(pipeline.NewLatencyRingBuffer(pipeline.DefaultLatencyBufferSize))
-			// Security plane: the primary per-actor capability doc (cap.identity.<id>)
-			// is the surface step-3 authorization reads, so it is guarded by the
-			// monotonic projection-write guard — a retried or reordered stale write
-			// can never resurrect a revoked grant on it (Contract #6 §6.2).
-			if err := enableProjectionGuard(adpt, r.ID); err != nil {
-				logger.Error("capability guard", "lensId", r.ID, "err", err)
+		// Install the per-lens projection components via data-driven paths keyed
+		// off lens-definition aspects — never off the canonical name. An
+		// actor-aggregate lens (projectionKind: actorAggregate) is driven by the
+		// compiled ProjectionPlan: the §6.13 Output descriptor shapes the on-wire
+		// envelope, the cross-vertex fan-out, the empty/delete-key behavior, and the
+		// guard predicate. A brand-new package lens that opts in flows through the
+		// same path with zero edits here. The operation-aggregate role-index lens
+		// (keyed by operationType) is driven by the generic null-key-skip envelope.
+		switch {
+		case projection.IsActorAggregate(r):
+			if !installActorAggregate(p, adpt, r, projectionRevision, adjKV, coreKV, logger) {
 				return
 			}
-			logger.Info("capability envelope + fan-out + latency installed",
-				"lensId", r.ID, "lensDefKey", lensDefKey)
-		case "capabilityRoleIndex":
-			// The role-index envelope rewrites each row into the Contract #6 §6.1
+		case len(r.Into.Key) == 1 && r.Into.Key[0] == "operationType":
+			// Operation-aggregate lens (the role-by-operation index): keyed by
+			// operationType, it rewrites each row into the Contract #6 §6.1
 			// `cap.role-by-operation.<op>` shape and skips rows whose
-			// operationType is null/empty. capabilityRoleIndex does not use the
-			// per-actor envelope.
-			//
-			// This lens is intentionally NOT guarded: it is keyed by operationType
-			// (cap.role-by-operation.<op>), an operation-aggregate rather than an
-			// actor-aggregate, with no per-actor revoke→resurrect race (a role's
-			// operation coverage is recomputed from the role graph, not subject to
-			// the open-era/close-era capture window). Per Contract #6 §6.2/§6.3 it
-			// is NOT a guarded key.
+			// operationType is null/empty (a collect over zero MATCH bindings).
+			// It is keyed by operationType, not by actor — no per-actor
+			// revoke→resurrect race — so it is NOT guarded (Contract #6 §6.2/§6.3).
+			// Routed off the operationType key, not a canonical name.
 			p.SetEnvelopeFn(capabilityenv.NewRoleIndexWrapper())
-			// Latency buffer also installed for the secondary Lens — the
-			// heartbeater emits stats per Lens regardless of envelope shape.
 			p.SetLatencyBuffer(pipeline.NewLatencyRingBuffer(pipeline.DefaultLatencyBufferSize))
-			logger.Info("capabilityRoleIndex envelope installed", "lensId", r.ID)
-		case "capabilityEphemeral":
-			// The orchestration-base ephemeral-grant lens (Contract #6 §6.6
-			// amendment / Contract #10 §10.7). It projects FR56 grants to the
-			// DISJOINT key `cap.ephemeral.<actor>` in the shared
-			// capability-kv bucket. Like the primary capability lens it needs
-			// cross-vertex fan-out: a CDC event on a task / link must
-			// re-project the affected actor(s) rather than only direct
-			// identity events.
-			lensDefKey := "vtx.meta." + r.ID
-			p.SetEnvelopeFn(capabilityenv.NewEphemeralWrapper(lensDefKey, projectionRevision))
-			p.SetActorEnumerator(pipeline.NewActorEnumerator(adjKV, coreKV, capabilityenv.IdentityType))
-			// Actor disappearance must delete this lens's disjoint
-			// cap.ephemeral.<actor> key, not the primary cap.<actor> doc.
-			p.SetActorDeleteKey(capabilityenv.EphemeralKey)
-			p.SetLatencyBuffer(pipeline.NewLatencyRingBuffer(pipeline.DefaultLatencyBufferSize))
-			// Security plane: this per-actor ephemeral-grant projection is guarded
-			// by the monotonic projection-write guard so a retried or reordered
-			// stale write can never resurrect a revoked grant (Contract #6 §6.2).
-			if err := enableProjectionGuard(adpt, r.ID); err != nil {
-				logger.Error("capabilityEphemeral guard", "lensId", r.ID, "err", err)
-				return
-			}
-			logger.Info("capabilityEphemeral envelope + fan-out + latency installed",
-				"lensId", r.ID, "lensDefKey", lensDefKey)
-		case "myTasks":
-			// The orchestration-base my-tasks lens (Contract #10 §10.1). It
-			// projects, per identity, that identity's OPEN tasks into the
-			// package-owned my-tasks bucket keyed my-tasks.identity.<id>. Like
-			// the ephemeral lens it is link-sourced + needs cross-vertex
-			// fan-out: a CDC event on a task root (open→closed) or an
-			// assignedTo link (reassign) must reproject the affected actor(s),
-			// and zero open tasks must hard-delete the key (vanish-on-close).
-			lensDefKey := "vtx.meta." + r.ID
-			p.SetEnvelopeFn(capabilityenv.NewMyTasksWrapper(lensDefKey, projectionRevision))
-			p.SetActorEnumerator(pipeline.NewActorEnumerator(adjKV, coreKV, capabilityenv.IdentityType))
-			// Actor disappearance must delete this lens's my-tasks.identity.<id>
-			// key, not the primary cap.<actor> doc.
-			p.SetActorDeleteKey(capabilityenv.MyTasksKey)
-			p.SetLatencyBuffer(pipeline.NewLatencyRingBuffer(pipeline.DefaultLatencyBufferSize))
-			// Correctness plane: the per-actor my-tasks projection is guarded so a
-			// closed task can never be resurrected by a stale replay; a close
-			// becomes a soft tombstone carrying the watermark (Contract #6 §6.2,
-			// Contract #10 §10.1).
-			if err := enableProjectionGuard(adpt, r.ID); err != nil {
-				logger.Error("myTasks guard", "lensId", r.ID, "err", err)
-				return
-			}
-			logger.Info("myTasks envelope + fan-out + latency installed",
-				"lensId", r.ID, "lensDefKey", lensDefKey)
+			logger.Info("operation-aggregate envelope installed", "lensId", r.ID, "key", r.Into.Key[0])
 		}
 
 		// Create the durable up-front so the lag poller has a handle; the
@@ -528,10 +464,76 @@ func randHex(n int) string {
 	return hex.EncodeToString(b)
 }
 
+// installActorAggregate wires an actor-aggregate lens through the compiled
+// ProjectionPlan: the §6.13 Output descriptor drives the on-wire envelope, the
+// per-actor cross-vertex fan-out, the empty/delete-key behavior, and the §6.2
+// guard predicate — all from lens-definition data, with no canonical-name
+// knowledge. Returns false when the lens must NOT be registered (a fail-closed
+// descriptor error), true once the components are installed.
+//
+// Fan-out uses the broad adjacency ActorEnumerator (the sound superset that can
+// never miss an affected anchor). The compiled invalidation forest is the more
+// precise alternative the plan also carries; the live pipeline does not yet
+// consume it, so an auth-plane lens whose MATCH the forest compiler cannot prove
+// subset-safe (e.g. the primary capability cypher's variable-length
+// `containedIn*0..`) is still wired with the BFS enumerator rather than refused —
+// BFS over-reprojects, never under-reprojects, so no anchor is ever missed.
+func installActorAggregate(
+	p *pipeline.Pipeline,
+	adpt adapter.Adapter,
+	r *lens.Rule,
+	projectionRevision func(string) uint64,
+	adjKV, coreKV jetstream.KeyValue,
+	logger *slog.Logger,
+) bool {
+	desc, err := projection.ParseOutputDescriptor(r.Output)
+	if err != nil {
+		logger.Error("actor-aggregate output descriptor invalid — refusing registration",
+			"lensId", r.ID, "err", err)
+		return false
+	}
+
+	authPlane := projection.IsAuthPlane(r)
+	if _, cErr := projection.Compile(r, logger); cErr != nil {
+		var ce *projection.CompileError
+		if errors.As(cErr, &ce) {
+			// Auth-plane lens whose MATCH the forest compiler cannot prove
+			// subset-safe. The live fan-out is the broad BFS enumerator (the
+			// sound superset), so registering with BFS is safe; refusing would
+			// regress the security-plane projection. Log loudly and proceed.
+			logger.Warn("actor-aggregate invalidation forest not subset-safe; using broad BFS fan-out",
+				"lensId", r.ID, "reason", ce.Reason)
+		} else {
+			logger.Error("actor-aggregate plan compile failed — refusing registration",
+				"lensId", r.ID, "err", cErr)
+			return false
+		}
+	}
+
+	lensDefKey := "vtx.meta." + r.ID
+	p.SetEnvelopeFn(desc.EnvelopeFn(lensDefKey, projectionRevision))
+	p.SetActorEnumerator(pipeline.NewActorEnumerator(adjKV, coreKV, desc.AnchorType))
+	p.SetActorDeleteKey(desc.BuildKey)
+	p.SetLatencyBuffer(pipeline.NewLatencyRingBuffer(pipeline.DefaultLatencyBufferSize))
+
+	guarded := authPlane || desc.RequiresGuardedTombstone()
+	if guarded {
+		if gErr := enableProjectionGuard(adpt, r.ID); gErr != nil {
+			logger.Error("actor-aggregate guard", "lensId", r.ID, "err", gErr)
+			return false
+		}
+	}
+
+	logger.Info("actor-aggregate envelope + fan-out + delete-key + latency installed",
+		"lensId", r.ID, "lensDefKey", lensDefKey,
+		"anchorType", desc.AnchorType, "guarded", guarded, "authPlane", authPlane)
+	return true
+}
+
 // enableProjectionGuard turns on the monotonic projection-write guard for a
-// NATS-KV-backed lens. buildAdapter stays free of lens-name knowledge; the
-// canonical-name switch (the only place that knows which lenses are guarded, and
-// the place a later epic deletes) flips the flag here. The guarded lenses are
+// NATS-KV-backed lens. buildAdapter stays free of lens knowledge; the caller
+// decides which lenses are guarded from the compiled plan predicate (auth-plane
+// or empty-delete tombstone) and flips the flag here. The guarded lenses are
 // security/correctness-plane, so an adapter that cannot enforce the guard
 // (e.g. a Postgres target) is a fail-closed error, not a silent downgrade: a
 // guarded lens running unguarded re-opens the resurrection window the guard

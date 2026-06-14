@@ -27,7 +27,6 @@ import (
 	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/refractor/adapter"
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
-	"github.com/asolgan/lattice/internal/refractor/capabilityenv"
 	"github.com/asolgan/lattice/internal/refractor/consumer"
 	"github.com/asolgan/lattice/internal/refractor/lens"
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
@@ -136,7 +135,7 @@ func TestRefractor_ServiceActorRootEquivalence_E2E(t *testing.T) {
 		}
 		return entry.Revision()
 	}
-	p.SetEnvelopeFn(capabilityenv.NewWrapper("vtx.meta."+capabilityRule.ID, projectionRevision))
+	wireActorAggregate(t, p, capabilityRule, adjKV, coreKV, projectionRevision)
 
 	p.RunOn(conn, e2eSpec(capabilityRule.ID, bootstrap.CoreKVBucket))
 

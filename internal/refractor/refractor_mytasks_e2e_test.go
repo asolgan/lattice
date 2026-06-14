@@ -6,9 +6,9 @@
 // surfaces the closed task. The guard makes the close authoritative — a stale
 // open-era re-projection carries a lower stream sequence and is rejected, so it
 // cannot resurrect the closed task. The lens reuses the proven ephemeral-lens
-// architecture (link-sourced cypher + actor fan-out + wrapper-driven delete), so
-// this test exercises the package's myTasks cypher + the NewMyTasksWrapper
-// end-to-end through the real pipeline.
+// architecture (link-sourced cypher + actor fan-out + descriptor-driven delete),
+// so this test exercises the package's myTasks cypher + its §6.13 Output
+// descriptor end-to-end through the real pipeline.
 package refractor_test
 
 import (
@@ -26,9 +26,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/asolgan/lattice/internal/bootstrap"
+	"github.com/asolgan/lattice/internal/pkgmgr"
 	"github.com/asolgan/lattice/internal/refractor/adapter"
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
-	"github.com/asolgan/lattice/internal/refractor/capabilityenv"
 	"github.com/asolgan/lattice/internal/refractor/consumer"
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
@@ -86,16 +86,16 @@ func TestRefractor_MyTasksLens_E2E(t *testing.T) {
 	}
 
 	// Compile the package's myTasks cypher and wire a pipeline exactly as
-	// cmd/refractor's startPipeline `case "myTasks"` does.
+	// cmd/refractor's data-driven actor-aggregate path does.
 	fullEngine := full.New()
-	var myTasksSpec string
+	var myTasksLensSpec pkgmgr.LensSpec
 	for _, l := range orchestrationbase.Lenses() {
 		if l.CanonicalName == "myTasks" {
-			myTasksSpec = l.Spec
+			myTasksLensSpec = l
 		}
 	}
-	require.NotEmpty(t, myTasksSpec, "myTasks lens spec must exist")
-	cr, err := fullEngine.Parse(myTasksSpec)
+	require.NotEmpty(t, myTasksLensSpec.Spec, "myTasks lens spec must exist")
+	cr, err := fullEngine.Parse(myTasksLensSpec.Spec)
 	require.NoError(t, err, "myTasks spec must parse")
 
 	adpt, err := adapter.New(myTasksKV, []string{"key"}, adapter.DeleteModeHard)
@@ -116,9 +116,10 @@ func TestRefractor_MyTasksLens_E2E(t *testing.T) {
 		}
 		return entry.Revision()
 	}
-	p.SetEnvelopeFn(capabilityenv.NewMyTasksWrapper("vtx.meta."+lensID, projectionRevision))
-	p.SetActorEnumerator(pipeline.NewActorEnumerator(adjKV, coreKV, capabilityenv.IdentityType))
-	p.SetActorDeleteKey(capabilityenv.MyTasksKey)
+	myTasksDesc := descFromPkgSpec(t, myTasksLensSpec)
+	p.SetEnvelopeFn(myTasksDesc.EnvelopeFn("vtx.meta."+lensID, projectionRevision))
+	p.SetActorEnumerator(pipeline.NewActorEnumerator(adjKV, coreKV, myTasksDesc.AnchorType))
+	p.SetActorDeleteKey(myTasksDesc.BuildKey)
 
 	p.RunOn(conn, e2eSpec(lensID, bootstrap.CoreKVBucket))
 
@@ -176,7 +177,7 @@ func TestRefractor_MyTasksLens_E2E(t *testing.T) {
 	// Finally write the identity vertex — the CDC event the lens projects on.
 	writeVertex(identityKey, "identity", map[string]any{"name": "assignee"})
 
-	expectedKey := capabilityenv.MyTasksKey(identityKey)
+	expectedKey := myTasksDesc.BuildKey(identityKey)
 
 	// --- assert the open task projects a my-tasks row for its assignee ---
 	require.Eventually(t, func() bool {

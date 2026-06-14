@@ -25,17 +25,20 @@ const (
 )
 
 // ActorSuffixPlaceholder is the only key-template placeholder the constrained
-// outputKeyPattern accepts: the actor key with the "vtx." prefix stripped
-// (mirrors capabilityenv.EphemeralKey / MyTasksKey).
+// outputKeyPattern accepts: the actor key with the "vtx." prefix stripped.
 const ActorSuffixPlaceholder = "{actorSuffix}"
+
+// DefaultActorField is the top-level envelope field carrying the actor vertex
+// key when the descriptor does not override it (the cap.* documents).
+const DefaultActorField = "actor"
 
 // FreshnessAuto stamps projectionSeq (§6.2 guard) plus the widened
 // projectedFromRevisions (§6.3) on each write.
 const FreshnessAuto = "auto"
 
 // OutputDescriptor is the validated, compile-time representation of the §6.13
-// Output descriptor. It reproduces declaratively every behavior the four Go
-// wrappers encode imperatively.
+// Output descriptor plus the envelope-shape options that let the driver emit a
+// document byte-identical to each built-in lens's on-wire shape.
 type OutputDescriptor struct {
 	AnchorType       string
 	OutputKeyPattern string
@@ -43,6 +46,14 @@ type OutputDescriptor struct {
 	EmptyBehavior    EmptyBehavior
 	RealnessFilter   string
 	Freshness        string
+
+	// ActorField is the top-level field carrying the actor vertex key
+	// ("actor" by default; "assignee" for the my-tasks document).
+	ActorField string
+	// Lanes, when non-empty, is emitted as the document's `lanes` array.
+	Lanes []string
+	// StaticEmptyColumns are body columns always materialized as an empty array.
+	StaticEmptyColumns []string
 }
 
 // ParseOutputDescriptor validates a raw OutputDescriptorSpec and returns the
@@ -84,13 +95,21 @@ func ParseOutputDescriptor(spec *lens.OutputDescriptorSpec) (OutputDescriptor, e
 		return OutputDescriptor{}, fmt.Errorf("output descriptor: freshness must be %q or empty, got %q", FreshnessAuto, spec.Freshness)
 	}
 
+	actorField := spec.ActorField
+	if strings.TrimSpace(actorField) == "" {
+		actorField = DefaultActorField
+	}
+
 	return OutputDescriptor{
-		AnchorType:       spec.AnchorType,
-		OutputKeyPattern: spec.OutputKeyPattern,
-		BodyColumns:      append([]string(nil), spec.BodyColumns...),
-		EmptyBehavior:    eb,
-		RealnessFilter:   spec.RealnessFilter,
-		Freshness:        spec.Freshness,
+		AnchorType:         spec.AnchorType,
+		OutputKeyPattern:   spec.OutputKeyPattern,
+		BodyColumns:        append([]string(nil), spec.BodyColumns...),
+		EmptyBehavior:      eb,
+		RealnessFilter:     spec.RealnessFilter,
+		Freshness:          spec.Freshness,
+		ActorField:         actorField,
+		Lanes:              append([]string(nil), spec.Lanes...),
+		StaticEmptyColumns: append([]string(nil), spec.StaticEmptyColumns...),
 	}, nil
 }
 
@@ -134,8 +153,7 @@ func validateKeyPattern(pattern string) error {
 }
 
 // BuildKey renders the constrained outputKeyPattern for one actor key by
-// substituting {actorSuffix} with the actor key minus its "vtx." prefix —
-// mirroring capabilityenv.EphemeralKey / MyTasksKey.
+// substituting {actorSuffix} with the actor key minus its "vtx." prefix.
 func (d OutputDescriptor) BuildKey(actorKey string) string {
 	suffix := actorKey
 	if rest, ok := strings.CutPrefix(actorKey, substrate.VertexPrefix+"."); ok {
@@ -145,9 +163,10 @@ func (d OutputDescriptor) BuildKey(actorKey string) string {
 }
 
 // RealnessFiltered returns the subset of a collect array whose entries carry a
-// real (present and non-empty) value at the realnessFilter field. It generalizes
-// capabilityenv.realEphemeralGrants / realOpenTasks. When no realnessFilter is
-// configured the input is returned unchanged.
+// real (present and non-empty) value at the realnessFilter field. It drops the
+// degenerate null-key collect artifacts an OPTIONAL-match cypher produces for an
+// actor with no real rows. When no realnessFilter is configured the input is
+// returned unchanged.
 //
 // "Real" is defined by isRealField: a non-empty string keeps the entry; a
 // missing field or an empty/whitespace string drops it (the degenerate

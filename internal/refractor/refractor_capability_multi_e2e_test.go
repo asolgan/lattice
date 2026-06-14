@@ -35,6 +35,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/asolgan/lattice/internal/bootstrap"
+	"github.com/asolgan/lattice/internal/pkgmgr"
 	"github.com/asolgan/lattice/internal/refractor/adapter"
 	"github.com/asolgan/lattice/internal/refractor/capabilityenv"
 	"github.com/asolgan/lattice/internal/refractor/consumer"
@@ -61,7 +62,6 @@ func stableMultiID(role string) string {
 	}
 	return string(out[:])
 }
-
 
 func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	if testing.Short() {
@@ -160,8 +160,7 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	require.Equal(t, ruleengine.EngineFull, capabilityRule.ResolvedEngine)
 	require.NotNil(t, capabilityRule.CompiledRule)
 	capP.UseFullEngine(fullEngine, capabilityRule.CompiledRule)
-	capP.SetEnvelopeFn(capabilityenv.NewWrapper("vtx.meta."+capabilityRule.ID, projectionRevision))
-	capP.SetActorEnumerator(pipeline.NewActorEnumerator(adjKV, coreKV, capabilityenv.IdentityType))
+	wireActorAggregate(t, capP, capabilityRule, adjKV, coreKV, projectionRevision)
 	capLatency := pipeline.NewLatencyRingBuffer(pipeline.DefaultLatencyBufferSize)
 	capP.SetLatencyBuffer(capLatency)
 
@@ -194,14 +193,14 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	// directly (mirroring how the primary cap pipeline is wired). It projects
 	// FR56 grants to the disjoint key cap.ephemeral.<actor> in the same shared
 	// capability-kv bucket.
-	var ephSpec string
+	var ephLensSpec pkgmgr.LensSpec
 	for _, l := range orchestrationbase.Lenses() {
 		if l.CanonicalName == "capabilityEphemeral" {
-			ephSpec = l.Spec
+			ephLensSpec = l
 		}
 	}
-	require.NotEmpty(t, ephSpec, "orchestration-base must declare a capabilityEphemeral lens")
-	ephCR, err := fullEngine.Parse(ephSpec)
+	require.NotEmpty(t, ephLensSpec.Spec, "orchestration-base must declare a capabilityEphemeral lens")
+	ephCR, err := fullEngine.Parse(ephLensSpec.Spec)
 	require.NoError(t, err, "capabilityEphemeral spec must parse")
 	ephTargetKV, err := js.KeyValue(ctx, bootstrap.CapabilityKVBucket)
 	require.NoError(t, err)
@@ -213,8 +212,10 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 		nil, bootstrap.CoreKVBucket, adjKV, coreKV, ephAdpt, nil)
 	require.NoError(t, err)
 	ephP.UseFullEngine(fullEngine, ephCR)
-	ephP.SetEnvelopeFn(capabilityenv.NewEphemeralWrapper("vtx.meta."+ephLensID, projectionRevision))
-	ephP.SetActorEnumerator(pipeline.NewActorEnumerator(adjKV, coreKV, capabilityenv.IdentityType))
+	ephDesc := descFromPkgSpec(t, ephLensSpec)
+	ephP.SetEnvelopeFn(ephDesc.EnvelopeFn("vtx.meta."+ephLensID, projectionRevision))
+	ephP.SetActorEnumerator(pipeline.NewActorEnumerator(adjKV, coreKV, ephDesc.AnchorType))
+	ephP.SetActorDeleteKey(ephDesc.BuildKey)
 
 	ephP.RunOn(conn, e2eSpec(ephLensID, bootstrap.CoreKVBucket))
 	ephDone := make(chan struct{})
@@ -278,12 +279,12 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	writeLink := func(srcType, srcID, name, dstType, dstID string) string {
 		linkKey := substrate.LinkKey(srcType, srcID, name, dstType, dstID)
 		envelope := map[string]any{
-			"key":           linkKey,
-			"class":         name,
-			"isDeleted":     false,
+			"key":          linkKey,
+			"class":        name,
+			"isDeleted":    false,
 			"sourceVertex": substrate.VertexKey(srcType, srcID),
-			"targetVertex":   substrate.VertexKey(dstType, dstID),
-			"localName":     name,
+			"targetVertex": substrate.VertexKey(dstType, dstID),
+			"localName":    name,
 		}
 		body, jerr := json.Marshal(envelope)
 		require.NoError(t, jerr)
@@ -524,12 +525,12 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 		// the trigger (the link envelope IS a Core KV write the
 		// pipeline observes too).
 		tombstone := map[string]any{
-			"key":           holdsBKey,
-			"class":         "holdsRole",
-			"isDeleted":     true,
+			"key":          holdsBKey,
+			"class":        "holdsRole",
+			"isDeleted":    true,
 			"sourceVertex": identityBKey,
-			"targetVertex":   userRoleKey,
-			"localName":     "holdsRole",
+			"targetVertex": userRoleKey,
+			"localName":    "holdsRole",
 		}
 		body, jerr := json.Marshal(tombstone)
 		require.NoError(t, jerr)
@@ -663,4 +664,3 @@ func adjacencyNeighborsLocal(kv jetstream.KeyValue, nodeID string) ([]any, error
 	}
 	return v.Edges, nil
 }
-

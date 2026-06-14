@@ -20,14 +20,14 @@ import (
 
 const (
 	// KV bucket names.
-	CoreKVBucket           = "core-kv"
-	HealthKVBucket         = "health-kv"
-	CapabilityKVBucket     = "capability-kv"
-	WeaverStateBucket      = "weaver-state"
-	WeaverClaimsBucket     = "weaver-claims"
-	LoomStateBucket        = "loom-state" // Loom's per-instance cursor store (Contract #10 §10.3)
-	WeaverTargetsBucket    = "weaver-targets" // shared target-Lens projection bucket (Contract #10 §10.2)
-	RefractorAdjacencyKV   = "refractor-adjacency" // Refractor's internal adjacency store (private, not a Lens target)
+	CoreKVBucket         = "core-kv"
+	HealthKVBucket       = "health-kv"
+	CapabilityKVBucket   = "capability-kv"
+	WeaverStateBucket    = "weaver-state"
+	WeaverClaimsBucket   = "weaver-claims"
+	LoomStateBucket      = "loom-state"          // Loom's per-instance cursor store (Contract #10 §10.3)
+	WeaverTargetsBucket  = "weaver-targets"      // shared target-Lens projection bucket (Contract #10 §10.2)
+	RefractorAdjacencyKV = "refractor-adjacency" // Refractor's internal adjacency store (private, not a Lens target)
 
 	// JetStream stream names.
 	CoreOpsStreamName       = "core-operations"
@@ -37,8 +37,8 @@ const (
 	// JetStream subjects. Per Contract #2 §2.3, lane subjects are
 	// `ops.<lane>.>` (multi-segment). The `ops.>` wildcard covers all
 	// lanes including future ones — including `ops.meta.>` (the meta lane).
-	OpsWildcardSubject      = "ops.>"
-	EventsWildcardSubject   = "events.>"
+	OpsWildcardSubject       = "ops.>"
+	EventsWildcardSubject    = "events.>"
 	SchedulesWildcardSubject = "schedule.>"
 )
 
@@ -167,13 +167,13 @@ func (s *Seeder) provisionStreams(ctx context.Context) error {
 			// which enforces per-subject rollup (one active schedule per subject).
 			// MaxMsgsPerSubject: 1 provides an additional storage bound so the
 			// stream cannot accumulate unbounded pending-schedule entries.
-			Name:                CoreSchedulesStreamName,
-			Description:         "Platform-wide message-scheduling stream (ADR-51). AllowMsgSchedules enables NATS-native @at/@every scheduling. Subject root: schedule.>",
-			Subjects:            []string{SchedulesWildcardSubject},
-			Retention:           jetstream.LimitsPolicy,
-			Storage:             jetstream.FileStorage,
-			MaxMsgsPerSubject:   1,
-			AllowMsgSchedules:   true,
+			Name:              CoreSchedulesStreamName,
+			Description:       "Platform-wide message-scheduling stream (ADR-51). AllowMsgSchedules enables NATS-native @at/@every scheduling. Subject root: schedule.>",
+			Subjects:          []string{SchedulesWildcardSubject},
+			Retention:         jetstream.LimitsPolicy,
+			Storage:           jetstream.FileStorage,
+			MaxMsgsPerSubject: 1,
+			AllowMsgSchedules: true,
 		},
 	}
 	for _, sc := range streams {
@@ -293,7 +293,6 @@ func (s *Seeder) seedPrimordialPerKey(ctx context.Context, kv jetstream.KeyValue
 	}
 	return nil
 }
-
 
 type kvEntry struct {
 	key   string
@@ -699,19 +698,19 @@ func seedPackageInstallDDL(
 // enforcement rule in CreateMetaVertex can reference them without circularity).
 func seedAspectTypeMeta(entries *[]kvEntry, add func(string, []byte, error) error) error {
 	type aspectTypeDef struct {
-		key         string
-		name        string
-		description string
-		inputSchema  string
-		outputSchema string
+		key               string
+		name              string
+		description       string
+		inputSchema       string
+		outputSchema      string
 		fieldDescriptions map[string]any
-		examples    []any
+		examples          []any
 	}
 	defs := []aspectTypeDef{
 		{
-			key:         AspectTypeDescriptionKey,
-			name:        "description",
-			description: "Plain-language markdown description for a DDL meta-vertex, lens, role, or aspect type. Stored at vtx.meta.<X>.description. Max 10KB.",
+			key:          AspectTypeDescriptionKey,
+			name:         "description",
+			description:  "Plain-language markdown description for a DDL meta-vertex, lens, role, or aspect type. Stored at vtx.meta.<X>.description. Max 10KB.",
 			inputSchema:  `{"type":"object","properties":{"text":{"type":"string","maxLength":10240}},"required":["text"]}`,
 			outputSchema: `{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}`,
 			fieldDescriptions: map[string]any{
@@ -726,9 +725,9 @@ func seedAspectTypeMeta(entries *[]kvEntry, add func(string, []byte, error) erro
 			},
 		},
 		{
-			key:         AspectTypeInputSchemaKey,
-			name:        "inputSchema",
-			description: "JSON Schema object describing the valid input payload for a DDL operation. Stored at vtx.meta.<X>.inputSchema.",
+			key:          AspectTypeInputSchemaKey,
+			name:         "inputSchema",
+			description:  "JSON Schema object describing the valid input payload for a DDL operation. Stored at vtx.meta.<X>.inputSchema.",
 			inputSchema:  `{"type":"object","properties":{"schema":{"type":"string"}},"required":["schema"]}`,
 			outputSchema: `{"type":"object","properties":{"schema":{"type":"string"}},"required":["schema"]}`,
 			fieldDescriptions: map[string]any{
@@ -743,9 +742,9 @@ func seedAspectTypeMeta(entries *[]kvEntry, add func(string, []byte, error) erro
 			},
 		},
 		{
-			key:         AspectTypeOutputSchemaKey,
-			name:        "outputSchema",
-			description: "JSON Schema object describing the structure of the operation's response payload. Stored at vtx.meta.<X>.outputSchema.",
+			key:          AspectTypeOutputSchemaKey,
+			name:         "outputSchema",
+			description:  "JSON Schema object describing the structure of the operation's response payload. Stored at vtx.meta.<X>.outputSchema.",
 			inputSchema:  `{"type":"object","properties":{"schema":{"type":"string"}},"required":["schema"]}`,
 			outputSchema: `{"type":"object","properties":{"schema":{"type":"string"}},"required":["schema"]}`,
 			fieldDescriptions: map[string]any{
@@ -760,9 +759,9 @@ func seedAspectTypeMeta(entries *[]kvEntry, add func(string, []byte, error) erro
 			},
 		},
 		{
-			key:         AspectTypeFieldDescriptionKey,
-			name:        "fieldDescription",
-			description: "Map of field paths to plain-language descriptions. Enables AI agents to understand each input field for a DDL operation. Stored at vtx.meta.<X>.fieldDescription.",
+			key:          AspectTypeFieldDescriptionKey,
+			name:         "fieldDescription",
+			description:  "Map of field paths to plain-language descriptions. Enables AI agents to understand each input field for a DDL operation. Stored at vtx.meta.<X>.fieldDescription.",
 			inputSchema:  `{"type":"object","properties":{"fieldDescriptions":{"type":"object","additionalProperties":{"type":"string"}}},"required":["fieldDescriptions"]}`,
 			outputSchema: `{"type":"object","properties":{"fieldDescriptions":{"type":"object","additionalProperties":{"type":"string"}}},"required":["fieldDescriptions"]}`,
 			fieldDescriptions: map[string]any{
@@ -780,15 +779,15 @@ func seedAspectTypeMeta(entries *[]kvEntry, add func(string, []byte, error) erro
 			},
 		},
 		{
-			key:         AspectTypeExamplesKey,
-			name:        "examples",
-			description: "Array of named usage examples for a DDL operation. Each includes a sample payload and expected outcome. Stored at vtx.meta.<X>.examples.",
+			key:          AspectTypeExamplesKey,
+			name:         "examples",
+			description:  "Array of named usage examples for a DDL operation. Each includes a sample payload and expected outcome. Stored at vtx.meta.<X>.examples.",
 			inputSchema:  `{"type":"object","properties":{"examples":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"payload":{"type":"object"},"expectedOutcome":{"type":"string"}},"required":["name","payload","expectedOutcome"]}}},"required":["examples"]}`,
 			outputSchema: `{"type":"object","properties":{"examples":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"payload":{"type":"object"},"expectedOutcome":{"type":"string"}},"required":["name","payload","expectedOutcome"]}}},"required":["examples"]}`,
 			fieldDescriptions: map[string]any{
-				"examples":              "Array of example invocations.",
-				"examples[].name":       "Short descriptive name for this example.",
-				"examples[].payload":    "The operation payload sent by the client.",
+				"examples":                   "Array of example invocations.",
+				"examples[].name":            "Short descriptive name for this example.",
+				"examples[].payload":         "The operation payload sent by the client.",
 				"examples[].expectedOutcome": "Plain English description of what the platform does.",
 			},
 			examples: []any{
@@ -863,6 +862,24 @@ func addLensAspects(entries *[]kvEntry, lensKey string, def LensDefinition) erro
 		{"cypherRule", "cypherRule", map[string]any{"rule": strings.TrimSpace(def.CypherRule)}},
 		{"outputSchema", "outputSchema", map[string]any{"jsonSchema": json.RawMessage(def.OutputSchema)}},
 	}
+	// Actor-aggregate lenses carry the projectionKind + §6.13 Output descriptor
+	// aspects; the operation-aggregate role-index lens carries neither.
+	if def.ProjectionKind != "" {
+		aspects = append(aspects,
+			struct {
+				localName string
+				class     string
+				data      any
+			}{"projectionKind", "projectionKind", map[string]any{"value": def.ProjectionKind}})
+	}
+	if def.Output != nil {
+		aspects = append(aspects,
+			struct {
+				localName string
+				class     string
+				data      any
+			}{"output", "output", map[string]any{"descriptor": def.Output}})
+	}
 	for _, a := range aspects {
 		key := lensKey + "." + a.localName
 		val, err := MakeAspectEnvelope(key, lensKey, a.localName, a.class, a.data)
@@ -934,6 +951,15 @@ func makeLensSpecBody(lensID string, def LensDefinition) (map[string]any, error)
 		"cypherRule":    strings.TrimSpace(def.CypherRule),
 		"outputSchema":  schemaRaw,
 		"engine":        "full",
+	}
+	// Actor-aggregate lenses carry projectionKind + the §6.13 Output descriptor
+	// so Refractor's CoreKVSource compiles a ProjectionPlan; the operation-
+	// aggregate role-index lens carries neither.
+	if def.ProjectionKind != "" {
+		spec["projectionKind"] = def.ProjectionKind
+	}
+	if def.Output != nil {
+		spec["output"] = def.Output
 	}
 	return spec, nil
 }

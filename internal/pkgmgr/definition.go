@@ -133,6 +133,30 @@ type LensSpec struct {
 
 	// Engine selects the cypher engine — `full` for the standard rule set.
 	Engine string
+
+	// ProjectionKind opts the lens into the declarative actor-aggregate
+	// projection plan ("actorAggregate"); empty for a plain projection lens.
+	ProjectionKind string
+
+	// Output is the §6.13 Output descriptor for an actor-aggregate lens. It is
+	// emitted into the lens spec body so Refractor compiles a ProjectionPlan
+	// from it. Nil for a non-actor-aggregate lens.
+	Output *OutputDescriptorSpec
+}
+
+// OutputDescriptorSpec mirrors the on-wire §6.13 Output descriptor a package
+// actor-aggregate lens declares. Field shape matches the Refractor-side
+// lens.OutputDescriptorSpec.
+type OutputDescriptorSpec struct {
+	AnchorType         string   `json:"anchorType"`
+	OutputKeyPattern   string   `json:"outputKeyPattern"`
+	BodyColumns        []string `json:"bodyColumns"`
+	EmptyBehavior      string   `json:"emptyBehavior"`
+	RealnessFilter     string   `json:"realnessFilter,omitempty"`
+	Freshness          string   `json:"freshness,omitempty"`
+	ActorField         string   `json:"actorField,omitempty"`
+	Lanes              []string `json:"lanes,omitempty"`
+	StaticEmptyColumns []string `json:"staticEmptyColumns,omitempty"`
 }
 
 // PermissionSpec is one permission vertex + grant set.
