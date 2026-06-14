@@ -1,6 +1,6 @@
 # Story 12.2: Invalidation-compiler spike (D-PIPELINE spike)
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
