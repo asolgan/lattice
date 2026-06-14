@@ -197,11 +197,18 @@ func evaluateAnchor(ctx context.Context, plan *QueryPlan, anchorKey string, anch
 
 // reverseTraverse finds all anchor Core KV keys affected by a change to a non-anchor node.
 // It walks backward through the traversal steps from the changed node's label to the anchor.
+//
+// A step whose ToLabel is empty matches a changed node of ANY label: an empty
+// ToLabel is an unlabeled cypher leaf (e.g. `(op)` / `(tgt)` in the live
+// myTasks / capabilityEphemeral specs), which the grammar lets match any node.
+// The match stays precise because the reverse walk is still gated by the step's
+// edge type and direction; only the label constraint is relaxed for unlabeled
+// leaves. A labeled step (ToLabel != "") matches only its exact label.
 func reverseTraverse(ctx context.Context, plan *QueryPlan, entry NodeEntry, adjKV jetstream.KeyValue) ([]string, error) {
 	seen := map[string]struct{}{}
 
 	for stepIdx, step := range plan.Steps {
-		if step.ToLabel != entry.NodeLabel {
+		if step.ToLabel != "" && step.ToLabel != entry.NodeLabel {
 			continue
 		}
 		// Walk backward from entry through steps [stepIdx, ..., 0] to reach the anchor.

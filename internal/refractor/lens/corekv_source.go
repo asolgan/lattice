@@ -81,6 +81,28 @@ type LensSpec struct {
 	// simple-then-full fallback. Set to "full" on primordial Capability
 	// Lens specs so the full engine is used without falling back to simple.
 	Engine string `json:"engine,omitempty"`
+
+	// ProjectionKind opts a lens into a declarative projection plan. The only
+	// recognized value is "actorAggregate" (Contract #6 §6.13): the lens
+	// aggregates per actor and is compiled into a ProjectionPlan. Absent or any
+	// other value means the lens is not actor-aggregate.
+	ProjectionKind string `json:"projectionKind,omitempty"`
+
+	// Output carries the §6.13 Output descriptor for an actor-aggregate lens.
+	// It is read declaratively in place of the per-canonical-name Go wrappers.
+	Output *OutputDescriptorSpec `json:"output,omitempty"`
+}
+
+// OutputDescriptorSpec mirrors the JSON shape of the §6.13 Output descriptor
+// carried on an actor-aggregate lens spec. Each field maps to a behavior the
+// per-canonical-name Go wrappers encode imperatively.
+type OutputDescriptorSpec struct {
+	AnchorType       string   `json:"anchorType"`       // actor vertex type, e.g. "identity"
+	OutputKeyPattern string   `json:"outputKeyPattern"` // constrained key template, e.g. "cap.ephemeral.{actorSuffix}"
+	BodyColumns      []string `json:"bodyColumns"`      // RETURN aliases that form the document body
+	EmptyBehavior    string   `json:"emptyBehavior"`    // delete | softDelete | emptyDoc | skip
+	RealnessFilter   string   `json:"realnessFilter"`   // field whose non-empty value marks a real collect entry
+	Freshness        string   `json:"freshness"`        // "auto"
 }
 
 // TargetPostgresConfig is the expected shape of LensSpec.TargetConfig
@@ -340,10 +362,12 @@ func translateSpec(spec *LensSpec) (*Rule, error) {
 	}
 
 	r := &Rule{
-		ID:            spec.ID,
-		Match:         spec.CypherRule,
-		RuleEngine:    spec.Engine,
-		CanonicalName: spec.CanonicalName,
+		ID:             spec.ID,
+		Match:          spec.CypherRule,
+		RuleEngine:     spec.Engine,
+		CanonicalName:  spec.CanonicalName,
+		ProjectionKind: spec.ProjectionKind,
+		Output:         spec.Output,
 	}
 
 	switch spec.TargetType {

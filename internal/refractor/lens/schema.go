@@ -99,6 +99,18 @@ type Rule struct {
 	//   ""        — absent; selection falls back simple-then-full.
 	RuleEngine string `yaml:"ruleEngine"`
 
+	// ProjectionKind mirrors LensSpec.ProjectionKind. "actorAggregate" routes
+	// the lens to the projection plan compiler; absence/any other value leaves
+	// the lens untouched by actor-aggregate machinery. Plumbed from the spec the
+	// same way RuleEngine is. Not from YAML.
+	ProjectionKind string `yaml:"-"`
+
+	// Output mirrors LensSpec.Output: the §6.13 Output descriptor for an
+	// actor-aggregate lens, surfaced onto the Rule so the projection layer can
+	// compile a ProjectionPlan without re-reading the spec. Nil for non-
+	// actor-aggregate lenses. Not from YAML.
+	Output *OutputDescriptorSpec `yaml:"-"`
+
 	// ResolvedEngine is the engine name that successfully parsed Match during
 	// validation. Populated by Parse(); blank until Parse() returns successfully.
 	// Not from YAML.
