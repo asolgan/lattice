@@ -1,6 +1,6 @@
 # Story 12.5: Generic step-3 auth-hook dispatcher (D-CONSUMER)
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
