@@ -1,6 +1,6 @@
 # Story 12.6: God-cypher decomposition — rbac role/permission projection + retire service/location remnants (closes Epic 12)
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
