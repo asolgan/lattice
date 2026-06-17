@@ -80,14 +80,12 @@ var (
 	WeaverIdentityID   string
 	WeaverIdentityKey  string
 
-	MetaRootID                 string
-	MetaRootKey                string
-	CapabilityLensID           string
-	CapabilityLensKey          string
-	CapabilityRoleIndexLensID  string
-	CapabilityRoleIndexLensKey string
-	RoleOperatorID             string
-	RoleOperatorKey            string
+	MetaRootID        string
+	MetaRootKey       string
+	CapabilityLensID  string
+	CapabilityLensKey string
+	RoleOperatorID    string
+	RoleOperatorKey   string
 
 	// Three kernel-seeded meta-permission NanoIDs authorizing the operator
 	// to mutate vtx.meta.* vertices (CreateMetaVertex, UpdateMetaVertex,
@@ -146,10 +144,9 @@ type PrimordialIDsRaw struct {
 	BootstrapIdentity       string `json:"bootstrapIdentity"`
 	LoomIdentity            string `json:"loomIdentity"`
 	WeaverIdentity          string `json:"weaverIdentity"`
-	MetaRoot                string `json:"metaRoot"`
-	CapabilityLens          string `json:"capabilityLens"`
-	CapabilityRoleIndexLens string `json:"capabilityRoleIndexLens"`
-	RoleOperator            string `json:"roleOperator"`
+	MetaRoot       string `json:"metaRoot"`
+	CapabilityLens string `json:"capabilityLens"`
+	RoleOperator   string `json:"roleOperator"`
 
 	// Meta-permission NanoIDs.
 	PermCreateMetaVertex    string `json:"permCreateMetaVertex"`
@@ -184,6 +181,9 @@ type PrimordialIDsRaw struct {
 //     Processor).
 //   - "6": Loom + Weaver internal service-actor identity NanoIDs added
 //     (arch §92 — root-equivalent service actors seeded at bootstrap).
+//   - "7": capabilityRoleIndex Lens NanoID removed — the role-by-operation
+//     index moved to the rbac-domain package (it is rbac vocabulary), so core
+//     no longer seeds or addresses it.
 type BootstrapFile struct {
 	Version       string           `json:"version"`
 	GeneratedAt   string           `json:"generatedAt"`
@@ -278,7 +278,6 @@ func currentRaw() PrimordialIDsRaw {
 		WeaverIdentity:             WeaverIdentityID,
 		MetaRoot:                   MetaRootID,
 		CapabilityLens:             CapabilityLensID,
-		CapabilityRoleIndexLens:    CapabilityRoleIndexLensID,
 		RoleOperator:               RoleOperatorID,
 		PermCreateMetaVertex:       PermCreateMetaVertexID,
 		PermUpdateMetaVertex:       PermUpdateMetaVertexID,
@@ -320,11 +319,11 @@ func Load(path string) error {
 // must be regenerated.
 func checkVersion(f BootstrapFile) error {
 	switch f.Version {
-	case "6":
+	case "7":
 		return nil
 	default:
 		return fmt.Errorf(
-			"bootstrap file version mismatch: got %q, want \"6\" — run `make down && make up`",
+			"bootstrap file version mismatch: got %q, want \"7\" — run `make down && make up`",
 			f.Version,
 		)
 	}
@@ -339,7 +338,6 @@ func generate() (PrimordialIDsRaw, error) {
 		&raw.WeaverIdentity,
 		&raw.MetaRoot,
 		&raw.CapabilityLens,
-		&raw.CapabilityRoleIndexLens,
 		&raw.RoleOperator,
 		&raw.PermCreateMetaVertex,
 		&raw.PermUpdateMetaVertex,
@@ -376,7 +374,6 @@ func populate(raw PrimordialIDsRaw) error {
 		{"weaverIdentity", raw.WeaverIdentity},
 		{"metaRoot", raw.MetaRoot},
 		{"capabilityLens", raw.CapabilityLens},
-		{"capabilityRoleIndexLens", raw.CapabilityRoleIndexLens},
 		{"roleOperator", raw.RoleOperator},
 		{"permCreateMetaVertex", raw.PermCreateMetaVertex},
 		{"permUpdateMetaVertex", raw.PermUpdateMetaVertex},
@@ -403,7 +400,6 @@ func populate(raw PrimordialIDsRaw) error {
 	WeaverIdentityID = raw.WeaverIdentity
 	MetaRootID = raw.MetaRoot
 	CapabilityLensID = raw.CapabilityLens
-	CapabilityRoleIndexLensID = raw.CapabilityRoleIndexLens
 	RoleOperatorID = raw.RoleOperator
 
 	PermCreateMetaVertexID = raw.PermCreateMetaVertex
@@ -440,7 +436,6 @@ func populate(raw PrimordialIDsRaw) error {
 	WeaverIdentityKey = "vtx.identity." + WeaverIdentityID
 	MetaRootKey = "vtx.meta." + MetaRootID
 	CapabilityLensKey = "vtx.meta." + CapabilityLensID
-	CapabilityRoleIndexLensKey = "vtx.meta." + CapabilityRoleIndexLensID
 	RoleOperatorKey = "vtx.role." + RoleOperatorID
 
 	// Admin + service-actor primordial holdsRole links target the operator
@@ -455,7 +450,7 @@ func populate(raw PrimordialIDsRaw) error {
 
 func persistWithStatus(path string, raw PrimordialIDsRaw, status string) error {
 	f := BootstrapFile{
-		Version:       "6",
+		Version:       "7",
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339Nano),
 		Status:        status,
 		PrimordialIDs: raw,
@@ -487,9 +482,8 @@ func PrimordialVertexKeys() []string {
 		// InstallPackage / UninstallPackage primordial DDLs (Story 1.5.5)
 		InstallPackageDDLKey,
 		UninstallPackageDDLKey,
-		// 2 Lens definitions
+		// Capability Lens definition (primordial-identity anchor)
 		CapabilityLensKey,
-		CapabilityRoleIndexLensKey,
 		// operator role
 		RoleOperatorKey,
 		// 3 kernel meta-permissions + 2 package-install permissions
@@ -520,8 +514,8 @@ func PrimordialVertexKeys() []string {
 // PrimordialVertexKeyCount is the count of TOP-LEVEL kernel keys (the
 // ones in PrimordialVertexKeys()). Used as a count-only readiness gate
 // where loading lattice.bootstrap.json would race startup. Current count
-// is 28 entries: 1 op + 1 admin + 2 service actors (Loom + Weaver) +
-// 1 meta-DDL + 2 install/uninstall DDLs + 2 lenses + 1 role + 5 perms
-// (3 meta + 2 install) + 8 links (5 grantedBy + 3 holdsRole) + 5
-// aspect-type meta-vertices.
-const PrimordialVertexKeyCount = 28
+// is 27 entries: 1 op + 1 admin + 2 service actors (Loom + Weaver) +
+// 1 meta-DDL + 2 install/uninstall DDLs + 1 lens (the capability
+// primordial-identity anchor) + 1 role + 5 perms (3 meta + 2 install) +
+// 8 links (5 grantedBy + 3 holdsRole) + 5 aspect-type meta-vertices.
+const PrimordialVertexKeyCount = 27

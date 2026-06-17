@@ -182,27 +182,13 @@ func TestCapabilityLens_ContractConformance(t *testing.T) {
 	_, adjKV, coreKV := contractStartKVs(t)
 
 	// --- deterministic graph fixture ---
-	// One actor exercising all three sections + roles.
-	aliceKey := contractPutVertex(t, coreKV, "identity", "alice", map[string]any{"name": "alice"})
-	contractPutVertex(t, coreKV, "role", "admin", map[string]any{"canonicalName": "admin"})
-	contractPutVertex(t, coreKV, "permission", "permread", map[string]any{
-		"operationType": "read", "scope": "any",
-	})
-	contractPutEdge(t, adjKV, "holdsRole", "identity", "alice", "role", "admin")
-	// Story 4.7 rename: grantsPermission(role→permission) became
-	// grantedBy(permission→role); direction reverses.
-	contractPutEdge(t, adjKV, "grantedBy", "permission", "permread", "role", "admin")
-
-	contractPutVertex(t, coreKV, "location", "hq", nil)
-	contractPutVertex(t, coreKV, "service", "svc", map[string]any{"class": "service"})
-	contractPutEdge(t, adjKV, "containedIn", "identity", "alice", "location", "hq")
-	contractPutEdge(t, adjKV, "availableAt", "location", "hq", "service", "svc")
-
-	// The bootstrap `capability` cypher does not produce ephemeralGrants —
-	// those are owned by the orchestration-base `capabilityEphemeral` lens
-	// (key cap.ephemeral.<actor>). The link-sourced ephemeral conformance
-	// lives in TestCapabilityEphemeralLens_ContractConformance below. No
-	// task fixture is seeded here.
+	// The capability lens is the primordial-identity anchor: it projects the
+	// fixed kernel root-grant set for protected (kernel-seeded) identities only,
+	// with no rbac/service graph walk. serviceAccess + roles are static empty
+	// arrays (their producers are the future service package + rbac-domain's
+	// capabilityRoles lens). A protected actor is seeded; no role/service graph.
+	aliceKey := contractPutVertex(t, coreKV, "identity", "alice",
+		map[string]any{"name": "alice", "protected": true})
 
 	// --- run the LITERAL bootstrap cypher ---
 	body := bootstrap.CapabilityLensDefinition().CypherRule
@@ -217,6 +203,7 @@ func TestCapabilityLens_ContractConformance(t *testing.T) {
 		"now":         float64(now),
 		"projectedAt": projectedAt,
 	}
+	_ = adjKV
 	out, err := eng.ExecuteWith(context.Background(), cr,
 		ruleengine.EventContext{Parameters: params}, adjKV, coreKV)
 	require.NoError(t, err, "literal bootstrap cypher must execute")
@@ -280,51 +267,41 @@ func TestCapabilityLens_ContractConformance(t *testing.T) {
 		require.Equal(t, "default", lanes[0])
 	}
 
-	// `platformPermissions`: array of {operationType, scope}.
+	// `platformPermissions`: array of {operationType, scope} carrying the fixed
+	// kernel root-grant set.
 	pp, ok := envRow["platformPermissions"].([]any)
 	require.True(t, ok, "envelope.platformPermissions must be an array")
-	require.NotEmpty(t, pp, "platformPermissions must include at least one entry")
-	foundRead := false
+	require.NotEmpty(t, pp, "platformPermissions must include the root grant set")
+	wantOps := map[string]bool{
+		"CreateMetaVertex": false, "UpdateMetaVertex": false, "TombstoneMetaVertex": false,
+		"InstallPackage": false, "UninstallPackage": false,
+	}
 	for _, e := range pp {
 		m, ok := e.(map[string]any)
 		if !ok {
 			continue
 		}
-		if m["operationType"] == "read" && m["scope"] == "any" {
-			foundRead = true
-		}
 		// Every non-null entry must carry both fields (Contract #6 §6.2).
-		if m["operationType"] != nil {
-			require.Contains(t, m, "operationType",
-				"platformPermissions entry must carry operationType")
-			require.Contains(t, m, "scope",
-				"platformPermissions entry must carry scope")
+		require.Contains(t, m, "operationType",
+			"platformPermissions entry must carry operationType")
+		require.Contains(t, m, "scope",
+			"platformPermissions entry must carry scope")
+		require.Equal(t, "any", m["scope"], "every anchor grant is scope:any")
+		if op, _ := m["operationType"].(string); op != "" {
+			if _, known := wantOps[op]; known {
+				wantOps[op] = true
+			}
 		}
 	}
-	require.True(t, foundRead,
-		"platformPermissions must include the seeded read/any entry")
+	for op, seen := range wantOps {
+		require.Truef(t, seen, "platformPermissions must include the %q root grant", op)
+	}
 
-	// `serviceAccess`: array of {service, serviceClass, resolvedVia, allowedOperations}.
+	// `serviceAccess`: a static empty array in the core anchor (Path B — the
+	// service projection is retired; a future service package will own it).
 	sa, ok := envRow["serviceAccess"].([]any)
 	require.True(t, ok, "envelope.serviceAccess must be an array")
-	require.NotEmpty(t, sa, "serviceAccess must include the seeded service entry")
-	svcEntryOK := false
-	for _, e := range sa {
-		m, ok := e.(map[string]any)
-		if !ok {
-			continue
-		}
-		if m["service"] == nil {
-			continue // aggregation null row
-		}
-		require.Contains(t, m, "service")
-		require.Contains(t, m, "serviceClass")
-		require.Contains(t, m, "resolvedVia")
-		require.Contains(t, m, "allowedOperations")
-		svcEntryOK = true
-	}
-	require.True(t, svcEntryOK,
-		"serviceAccess must include a real (non-null) entry per Contract #6 §6.2")
+	require.Empty(t, sa, "core anchor projects no serviceAccess (Path B)")
 
 	// `ephemeralGrants`: the bootstrap envelope still carries the field for
 	// shape stability (the wrapper hardcodes it), but post-7.1 the bootstrap
@@ -342,10 +319,11 @@ func TestCapabilityLens_ContractConformance(t *testing.T) {
 			"bootstrap cypher must produce NO real ephemeral grant post-7.1 (moved to capabilityEphemeral lens)")
 	}
 
-	// `roles`: array of role vertex keys.
+	// `roles`: a static empty array in the core anchor (rbac-domain's
+	// capabilityRoles lens owns the role-derived roles list).
 	roles, ok := envRow["roles"].([]any)
 	require.True(t, ok, "envelope.roles must be an array")
-	require.NotEmpty(t, roles, "roles must include the seeded admin role")
+	require.Empty(t, roles, "core anchor projects no roles (rbac-domain owns them)")
 }
 
 // TestCapabilityEphemeralLens_ContractConformance asserts the Contract #6

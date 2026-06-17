@@ -1,26 +1,21 @@
-// Story 3.2a — Capability Lens live activation e2e.
+// Capability Lens (primordial-identity anchor) live activation e2e.
 //
-// This test exercises the production wiring landed in Story 3.2a:
+// This test exercises the production wiring for the shrunk capability lens:
 //
-//   - Bootstrap seeds the two Capability Lenses (capability,
-//     capabilityRoleIndex) as `meta.lens` vertices + spec aspects
-//     carrying the LensSpec JSON body.
-//   - Refractor's CoreKVSource watch activates both lenses; for the
-//     primary `capability` lens the engine resolves to `full` and the
-//     pipeline routes through full.Engine.ExecuteWith with live
-//     EventContext.Parameters (`$actorKey`, `$now`, `$projectedAt`).
-//   - The compiled Output descriptor's envelope wraps each projection
-//     row into the Contract #6 §6.2 shape before the adapter writes.
-//   - A single fixture identity + role/permission/service-availability
-//     topology is seeded directly to Core KV (Story 3.2a Decision #6 —
-//     the test must NOT go through the Processor; that is Story 3.3).
-//   - The expected `cap.identity.<NanoID>` entry must appear in
-//     capability-kv with three sections (platformPermissions,
-//     serviceAccess, ephemeralGrants) and the roles list populated.
-//
-// Out of scope (defer to 3.2b): multi-identity (3 actors),
-// byte-level contract conformance, tombstone re-projection,
-// NFR-P3 latency emission for capability.
+//   - Bootstrap seeds the `capability` Lens as a `meta.lens` vertex + spec
+//     aspect carrying the LensSpec JSON body. The role-by-operation index is
+//     owned by the rbac-domain package, not the kernel seed.
+//   - Refractor's CoreKVSource watch activates the lens; the engine resolves
+//     to `full` and the pipeline routes through full.Engine.ExecuteWith with
+//     live EventContext.Parameters (`$actorKey`, `$now`, `$projectedAt`).
+//   - The compiled Output descriptor's envelope wraps each projection row into
+//     the Contract #6 §6.2 shape before the adapter writes.
+//   - A single protected fixture identity is seeded directly to Core KV. The
+//     anchor projects the fixed kernel root-grant set for it; serviceAccess +
+//     roles are static empty arrays (their producers are the future service
+//     package + rbac-domain's capabilityRoles lens).
+//   - The expected `cap.identity.<NanoID>` entry must appear in capability-kv
+//     with the §6.2 sections present.
 package refractor_test
 
 import (
@@ -40,7 +35,6 @@ import (
 
 	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/refractor/adapter"
-	"github.com/asolgan/lattice/internal/refractor/adjacency"
 	"github.com/asolgan/lattice/internal/refractor/consumer"
 	"github.com/asolgan/lattice/internal/refractor/lens"
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
@@ -132,7 +126,7 @@ func TestRefractor_CapabilityLens_E2E(t *testing.T) {
 	src.SetUpdateCallback(func(_, _ *lens.Rule, _ lens.UpdateKind) {})
 	require.NoError(t, src.Start(ctx))
 
-	// Collect both primordial-seeded lenses (capability + capabilityRoleIndex).
+	// Collect the primordial-seeded capability lens.
 	timeout := time.After(10 * time.Second)
 	var capabilityRule *lens.Rule
 	for capabilityRule == nil {
@@ -185,18 +179,13 @@ func TestRefractor_CapabilityLens_E2E(t *testing.T) {
 		<-doneCh
 	})
 
-	// --- fixture topology: identity + role + permission + service+location ---
+	// --- fixture: a protected (kernel-class) identity ---
+	// The capability lens is the primordial-identity anchor: it projects the
+	// fixed kernel root-grant set for protected identities only, with no rbac /
+	// service graph walk. Ordinary actors read role-derived grants from
+	// rbac-domain's cap.roles.<actor> projection (see the capabilityRoles e2e).
 	identityID := stableNanoID("alice")
-	roleID := stableNanoID("editor")
-	permID := stableNanoID("read-any")
-	locationID := stableNanoID("office")
-	serviceID := stableNanoID("docs")
-
 	identityKey := substrate.VertexKey("identity", identityID)
-	roleKey := substrate.VertexKey("role", roleID)
-	permKey := substrate.VertexKey("permission", permID)
-	locationKey := substrate.VertexKey("location", locationID)
-	serviceKey := substrate.VertexKey("service", serviceID)
 
 	// 1. Write vertices to Core KV. Each carries `class` so the
 	// executor's nodeMatches sees the cypher label.
@@ -219,47 +208,9 @@ func TestRefractor_CapabilityLens_E2E(t *testing.T) {
 		_, perr := coreKV.Put(ctx, key, data)
 		require.NoError(t, perr)
 	}
-	writeVertex(roleKey, "role", map[string]any{"canonicalName": "editor"})
-	writeVertex(permKey, "permission", map[string]any{
-		"operationType": "read",
-		"scope":         "any",
-	})
-	writeVertex(locationKey, "location", nil)
-	writeVertex(serviceKey, "service", map[string]any{
-		"class": "service",
-	})
-
-	// 2. Build adjacency directly (the production CDC → adjacency path
-	// is gated on edge-event payloads with a `nodeId` field; primordial
-	// link envelopes don't carry that — see closing summary residual
-	// risk for 3.2b: bridge Contract #1 link envelopes through the
-	// adjacency bootstrapper).
-	buildEdge := func(name, fromType, fromID, toType, toID string) {
-		linkKey := substrate.LinkKey(fromType, fromID, name, toType, toID)
-		edgeID := name + ":" + fromID + ":" + toID
-		require.NoError(t, adjacency.Build(ctx, adjKV, adjacency.CoreKVEvent{
-			CoreKvKey: linkKey, EdgeID: edgeID, Name: name,
-			Direction: "outbound", NodeID: fromID, OtherNodeID: toID, OtherType: toType,
-		}))
-		require.NoError(t, adjacency.Build(ctx, adjKV, adjacency.CoreKVEvent{
-			CoreKvKey: linkKey, EdgeID: edgeID, Name: name,
-			Direction: "inbound", NodeID: toID, OtherNodeID: fromID, OtherType: fromType,
-		}))
-	}
-	buildEdge("holdsRole", "identity", identityID, "role", roleID)
-	// Story 4.7 rename: grantsPermission(role→permission) became
-	// grantedBy(permission→role); direction reverses.
-	buildEdge("grantedBy", "permission", permID, "role", roleID)
-	buildEdge("containedIn", "identity", identityID, "location", locationID)
-	buildEdge("availableAt", "location", locationID, "service", serviceID)
-
-	// 3. Finally write the identity vertex — this is the CDC event the
-	// capability lens projects on. We write it last so adjacency is
-	// already in place when the projection runs (NFR-P3 ordering is
-	// best-effort but production drains in order via the durable
-	// consumer; for a one-shot test this avoids racing the projection
-	// against half-built adjacency).
-	writeVertex(identityKey, "identity", map[string]any{"name": "alice"})
+	// The identity vertex carries data.protected — the anchor's selection
+	// predicate. This is the CDC event the capability lens projects on.
+	writeVertex(identityKey, "identity", map[string]any{"name": "alice", "protected": true})
 
 	// --- poll capability-kv for the projection ---
 	expectedKey := "cap.identity." + identityID
@@ -293,58 +244,48 @@ func TestRefractor_CapabilityLens_E2E(t *testing.T) {
 	// Anchor revision must be present.
 	require.Contains(t, revs, identityKey)
 
-	// Three sections + roles must be present (may be non-empty given the seeded topology).
+	// All §6.2 sections must be present. platformPermissions carries the fixed
+	// kernel root-grant set; serviceAccess + roles are static empty arrays in
+	// the core anchor (their producers are the future service package +
+	// rbac-domain's capabilityRoles lens).
 	require.Contains(t, env, "platformPermissions")
 	require.Contains(t, env, "serviceAccess")
 	require.Contains(t, env, "ephemeralGrants")
 	require.Contains(t, env, "roles")
 
-	// platformPermissions should include the editor's read-any.
+	// platformPermissions must include the kernel meta + install root grants.
 	pp, _ := env["platformPermissions"].([]any)
-	foundRead := false
+	wantOps := map[string]bool{
+		"CreateMetaVertex": false, "UpdateMetaVertex": false, "TombstoneMetaVertex": false,
+		"InstallPackage": false, "UninstallPackage": false,
+	}
 	for _, e := range pp {
 		m, ok := e.(map[string]any)
 		if !ok {
 			continue
 		}
-		if m["operationType"] == "read" && m["scope"] == "any" {
-			foundRead = true
-			break
+		if op, _ := m["operationType"].(string); op != "" {
+			require.Equal(t, "any", m["scope"], "every anchor grant is scope:any")
+			if _, known := wantOps[op]; known {
+				wantOps[op] = true
+			}
 		}
 	}
-	require.True(t, foundRead, "platformPermissions must include read/any: %v", pp)
-
-	// roles should include the editor role key.
-	roles, _ := env["roles"].([]any)
-	foundRole := false
-	for _, r := range roles {
-		if r == roleKey {
-			foundRole = true
-			break
-		}
+	for op, seen := range wantOps {
+		require.Truef(t, seen, "protected identity's platformPermissions must include %q: %v", op, pp)
 	}
-	require.True(t, foundRole, "roles must include editor: %v", roles)
 
-	// serviceAccess should reference the docs service.
+	// serviceAccess + roles are empty in the core anchor.
 	sa, _ := env["serviceAccess"].([]any)
-	foundSvc := false
-	for _, e := range sa {
-		m, ok := e.(map[string]any)
-		if !ok {
-			continue
-		}
-		if m["service"] == serviceKey {
-			foundSvc = true
-			break
-		}
-	}
-	require.True(t, foundSvc, "serviceAccess must include docs service: %v", sa)
+	require.Empty(t, sa, "core anchor projects no serviceAccess (Path B): %v", sa)
+	roles, _ := env["roles"].([]any)
+	require.Empty(t, roles, "core anchor projects no roles (rbac-domain owns them): %v", roles)
 
-	fmt.Printf("\n=== Story 3.2a capability lens e2e ===\n"+
+	fmt.Printf("\n=== capability primordial-anchor e2e ===\n"+
 		"  capability key: %s\n"+
 		"  actor:          %s\n"+
 		"  revisions:      %v\n"+
-		"  roles:          %v\n"+
+		"  platformPerms:  %v\n"+
 		"========================================\n\n",
-		expectedKey, identityKey, revs, roles)
+		expectedKey, identityKey, revs, pp)
 }

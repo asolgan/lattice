@@ -32,5 +32,6 @@ var Package = pkgmgr.Definition{
 	Description: "Role, permission, and grant management operations.",
 	Depends:     []string{},
 	DDLs:        DDLs(),
+	Lenses:      Lenses(),
 	Permissions: Permissions(),
 }

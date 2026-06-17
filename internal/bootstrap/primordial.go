@@ -196,8 +196,10 @@ func (s *Seeder) provisionStreams(ctx context.Context) error {
 //   - 1 meta-meta DDL (vtx.meta.<NanoID-root>, canonicalName="root") +
 //     9 aspects (canonicalName, permittedCommands, description, script,
 //     inputSchema, outputSchema, fieldDescription, examples, compensation)
-//   - 2 Lens meta-vertices (Capability + capabilityRoleIndex) × 5 aspects each
-//     (canonicalName, targetBucket, cypherRule, outputSchema, spec)
+//   - 1 Lens meta-vertex (the Capability primordial-identity anchor) × 5
+//     aspects (canonicalName, targetBucket, cypherRule, outputSchema, spec)
+//     plus projectionKind + output. The role-by-operation index is owned by
+//     the rbac-domain package, not seeded here.
 //   - 5 aspect-type meta-vertices × 7 aspects each
 //     (vertex + canonicalName, description, inputSchema, outputSchema,
 //     fieldDescription, examples)
@@ -492,17 +494,7 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		return nil, err
 	}
 
-	// 6. Capability role-index Lens definition.
-	roleIdxLens := CapabilityRoleIndexLensDefinition()
-	roleIdxLensVal, roleIdxLensErr := MakeVertexEnvelope(CapabilityRoleIndexLensKey, "meta.lens", map[string]any{"protected": true})
-	if err := add(CapabilityRoleIndexLensKey, roleIdxLensVal, roleIdxLensErr); err != nil {
-		return nil, err
-	}
-	if err := addLensAspects(&entries, CapabilityRoleIndexLensKey, roleIdxLens); err != nil {
-		return nil, err
-	}
-
-	// 6a. Five aspect-type meta-vertices — the DDLs for the self-description
+	// 6. Five aspect-type meta-vertices — the DDLs for the self-description
 	// aspect classes. Each has class=meta.ddl.aspectType and carries all 5
 	// descriptive aspects itself (bootstrapped primordially to avoid a
 	// chicken-and-egg dependency with post-bootstrap DDL enforcement).
@@ -925,15 +917,10 @@ func makeLensSpecBody(lensID string, def LensDefinition) (map[string]any, error)
 	if bucket == "capability" {
 		bucket = CapabilityKVBucket
 	}
-	// Key field list matches the RETURN's first/primary output column.
-	// For the primary capability Lens that's the envelope `key` (added
-	// by the pipeline envelope wrapper at write time). The secondary
-	// capabilityRoleIndex projects per-operationType records; its key
-	// column is `operationType` and the bucket entry is keyed by that.
+	// Key field list matches the RETURN's first/primary output column. For
+	// the capability anchor that's the envelope `key` added by the pipeline
+	// envelope wrapper at write time.
 	keyField := []string{"key"}
-	if def.CanonicalName == "capabilityRoleIndex" {
-		keyField = []string{"operationType"}
-	}
 	targetConfig := map[string]any{
 		"bucket": bucket,
 		"key":    keyField,

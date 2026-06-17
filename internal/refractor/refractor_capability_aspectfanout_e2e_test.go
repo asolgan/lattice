@@ -33,9 +33,7 @@ import (
 	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/refractor/adapter"
 	"github.com/asolgan/lattice/internal/refractor/consumer"
-	"github.com/asolgan/lattice/internal/refractor/lens"
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
-	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -109,29 +107,12 @@ func TestRefractor_CapabilityLens_AspectFanOut_E2E(t *testing.T) {
 		t.Fatal("adjacency bootstrapper did not reach Ready within 10s")
 	}
 
-	// --- CoreKVSource activation: collect the capability lens ---
-	src := lens.NewCoreKVSource(conn, bootstrap.CoreKVBucket, logger)
-	loaded := make(chan *lens.Rule, 8)
-	src.SetLoadCallback(func(r *lens.Rule) { loaded <- r })
-	src.SetUpdateCallback(func(_, _ *lens.Rule, _ lens.UpdateKind) {})
-	require.NoError(t, src.Start(ctx))
-
-	var capabilityRule *lens.Rule
-	deadline := time.Now().Add(15 * time.Second)
-	for capabilityRule == nil {
-		if time.Now().After(deadline) {
-			t.Fatal("did not load the capability lens within 15s")
-		}
-		select {
-		case r := <-loaded:
-			if r.CanonicalName == "capability" {
-				capabilityRule = r
-			}
-		case <-time.After(200 * time.Millisecond):
-		}
-	}
-
-	// --- primary capability pipeline (full engine + envelope + fan-out) ---
+	// --- rbac-domain capabilityRoles pipeline (full engine + envelope +
+	// fan-out). The role-derived grant projection is owned by rbac-domain
+	// (cap.roles.<actor>); this exercises the aspect fan-out reprojection on
+	// that actor-aggregate lens. The spec is compiled directly from the package
+	// declaration (not bootstrap-seeded), mirroring how a package lens activates. ---
+	rolesSpec := capabilityRolesSpecForTest(t)
 	fullEngine := full.New()
 	projectionRevision := func(k string) uint64 {
 		entry, gErr := coreKV.Get(ctx, k)
@@ -141,20 +122,24 @@ func TestRefractor_CapabilityLens_AspectFanOut_E2E(t *testing.T) {
 		return entry.Revision()
 	}
 
-	capTargetKV, err := js.KeyValue(ctx, capabilityRule.Into.Bucket)
+	rolesCR, err := fullEngine.Parse(rolesSpec.Spec)
+	require.NoError(t, err, "capabilityRoles spec must parse")
+	capTargetKV, err := js.KeyValue(ctx, bootstrap.CapabilityKVBucket)
 	require.NoError(t, err)
-	capAdpt, err := adapter.New(capTargetKV, capabilityRule.Into.Key, adapter.DeleteModeHard)
+	rolesDesc := descFromPkgSpec(t, rolesSpec)
+	capAdpt, err := adapter.New(capTargetKV, []string{"key"}, adapter.DeleteModeHard)
 	require.NoError(t, err)
 
-	capP, err := pipeline.New(capabilityRule.ID, "nats_kv",
+	const rolesLensID = "AspFanRolesLens00001"
+	capP, err := pipeline.New(rolesLensID, "nats_kv",
 		nil, bootstrap.CoreKVBucket, adjKV, coreKV, capAdpt, nil)
 	require.NoError(t, err)
-	require.Equal(t, ruleengine.EngineFull, capabilityRule.ResolvedEngine)
-	require.NotNil(t, capabilityRule.CompiledRule)
-	capP.UseFullEngine(fullEngine, capabilityRule.CompiledRule)
-	wireActorAggregate(t, capP, capabilityRule, adjKV, coreKV, projectionRevision)
+	capP.UseFullEngine(fullEngine, rolesCR)
+	capP.SetEnvelopeFn(rolesDesc.EnvelopeFn("vtx.meta."+rolesLensID, projectionRevision))
+	capP.SetActorEnumerator(pipeline.NewActorEnumerator(adjKV, coreKV, rolesDesc.AnchorType))
+	capP.SetActorDeleteKey(rolesDesc.BuildKey)
 
-	capP.RunOn(conn, e2eSpec(capabilityRule.ID, bootstrap.CoreKVBucket))
+	capP.RunOn(conn, e2eSpec(rolesLensID, bootstrap.CoreKVBucket))
 
 	pipelineCtx, pipelineCancel := context.WithCancel(ctx)
 	capDone := make(chan struct{})
@@ -225,7 +210,7 @@ func TestRefractor_CapabilityLens_AspectFanOut_E2E(t *testing.T) {
 	writeLink("permission", permID, "grantedBy", "role", roleID)
 	writeLink("identity", identityID, "holdsRole", "role", roleID)
 
-	capKey := "cap.identity." + identityID
+	capKey := "cap.roles.identity." + identityID
 	hasCreateBook := func(env map[string]any) bool {
 		pp, _ := env["platformPermissions"].([]any)
 		for _, e := range pp {

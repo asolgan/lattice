@@ -39,12 +39,11 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/adapter"
 	"github.com/asolgan/lattice/internal/refractor/capabilityenv"
 	"github.com/asolgan/lattice/internal/refractor/consumer"
-	"github.com/asolgan/lattice/internal/refractor/lens"
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
-	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
 	"github.com/asolgan/lattice/internal/substrate"
 	orchestrationbase "github.com/asolgan/lattice/packages/orchestration-base"
+	rbacdomain "github.com/asolgan/lattice/packages/rbac-domain"
 )
 
 // stableMultiID returns a deterministic NanoID for a multi-e2e fixture role.
@@ -112,31 +111,24 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 		t.Fatal("adjacency bootstrapper did not reach Ready within 10s")
 	}
 
-	// --- CoreKVSource activation: collect both seeded lenses ---
-	src := lens.NewCoreKVSource(conn, bootstrap.CoreKVBucket, logger)
-	loaded := make(chan *lens.Rule, 8)
-	src.SetLoadCallback(func(r *lens.Rule) { loaded <- r })
-	src.SetUpdateCallback(func(_, _ *lens.Rule, _ lens.UpdateKind) {})
-	require.NoError(t, src.Start(ctx))
-
-	var capabilityRule, roleIndexRule *lens.Rule
-	deadline := time.Now().Add(15 * time.Second)
-	for capabilityRule == nil || roleIndexRule == nil {
-		if time.Now().After(deadline) {
-			t.Fatalf("did not load both seeded lenses within 15s; cap=%v idx=%v",
-				capabilityRule != nil, roleIndexRule != nil)
-		}
-		select {
-		case r := <-loaded:
-			switch r.CanonicalName {
-			case "capability":
-				capabilityRule = r
-			case "capabilityRoleIndex":
-				roleIndexRule = r
-			}
-		case <-time.After(200 * time.Millisecond):
+	// --- rbac-domain lenses are PACKAGE lenses, not bootstrap-seeded. Compile
+	// their literal specs and wire pipelines directly (mirroring how the
+	// capabilityEphemeral pipeline is wired below). capabilityRoles projects
+	// role-derived grants to the disjoint cap.roles.<actor> key; the
+	// capabilityRoleIndex (operation-aggregate) projects the FR22
+	// cap.role-by-operation.<op> index. Service-access projection is retired
+	// (Path B) — no location/service topology is seeded. ---
+	var rolesLensSpec, roleIndexLensSpec pkgmgr.LensSpec
+	for _, l := range rbacdomain.Lenses() {
+		switch l.CanonicalName {
+		case "capabilityRoles":
+			rolesLensSpec = l
+		case "capabilityRoleIndex":
+			roleIndexLensSpec = l
 		}
 	}
+	require.NotEmpty(t, rolesLensSpec.Spec, "rbac-domain must declare a capabilityRoles lens")
+	require.NotEmpty(t, roleIndexLensSpec.Spec, "rbac-domain must declare a capabilityRoleIndex lens")
 
 	// --- shared full engine ---
 	fullEngine := full.New()
@@ -148,41 +140,46 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 		return entry.Revision()
 	}
 
-	// --- primary capability pipeline ---
-	capTargetKV, err := js.KeyValue(ctx, capabilityRule.Into.Bucket)
-	require.NoError(t, err)
-	capAdpt, err := adapter.New(capTargetKV, capabilityRule.Into.Key, adapter.DeleteModeHard)
-	require.NoError(t, err)
+	pipelineCtx, pipelineCancel := context.WithCancel(ctx)
 
-	capP, err := pipeline.New(capabilityRule.ID, "nats_kv",
+	// --- capabilityRoles pipeline (actor-aggregate → cap.roles.<actor>) ---
+	rolesCR, err := fullEngine.Parse(rolesLensSpec.Spec)
+	require.NoError(t, err, "capabilityRoles spec must parse")
+	capTargetKV, err := js.KeyValue(ctx, bootstrap.CapabilityKVBucket)
+	require.NoError(t, err)
+	rolesDesc := descFromPkgSpec(t, rolesLensSpec)
+	capAdpt, err := adapter.New(capTargetKV, []string{"key"}, adapter.DeleteModeHard)
+	require.NoError(t, err)
+	const rolesLensID = "RolesLensId000000001" // synthetic 20-char id for the consumer
+	capP, err := pipeline.New(rolesLensID, "nats_kv",
 		nil, bootstrap.CoreKVBucket, adjKV, coreKV, capAdpt, nil)
 	require.NoError(t, err)
-	require.Equal(t, ruleengine.EngineFull, capabilityRule.ResolvedEngine)
-	require.NotNil(t, capabilityRule.CompiledRule)
-	capP.UseFullEngine(fullEngine, capabilityRule.CompiledRule)
-	wireActorAggregate(t, capP, capabilityRule, adjKV, coreKV, projectionRevision)
+	capP.UseFullEngine(fullEngine, rolesCR)
+	capP.SetEnvelopeFn(rolesDesc.EnvelopeFn("vtx.meta."+rolesLensID, projectionRevision))
+	capP.SetActorEnumerator(pipeline.NewActorEnumerator(adjKV, coreKV, rolesDesc.AnchorType))
+	capP.SetActorDeleteKey(rolesDesc.BuildKey)
 	capLatency := pipeline.NewLatencyRingBuffer(pipeline.DefaultLatencyBufferSize)
 	capP.SetLatencyBuffer(capLatency)
 
-	capP.RunOn(conn, e2eSpec(capabilityRule.ID, bootstrap.CoreKVBucket))
-
-	pipelineCtx, pipelineCancel := context.WithCancel(ctx)
+	capP.RunOn(conn, e2eSpec(rolesLensID, bootstrap.CoreKVBucket))
 	capDone := make(chan struct{})
 	go func() { defer close(capDone); capP.Run(pipelineCtx) }()
 
-	// --- secondary capabilityRoleIndex pipeline ---
-	idxTargetKV, err := js.KeyValue(ctx, roleIndexRule.Into.Bucket)
+	// --- capabilityRoleIndex pipeline (operation-aggregate) ---
+	idxCR, err := fullEngine.Parse(roleIndexLensSpec.Spec)
+	require.NoError(t, err, "capabilityRoleIndex spec must parse")
+	idxTargetKV, err := js.KeyValue(ctx, bootstrap.CapabilityKVBucket)
 	require.NoError(t, err)
-	idxAdpt, err := adapter.New(idxTargetKV, roleIndexRule.Into.Key, adapter.DeleteModeHard)
+	idxAdpt, err := adapter.New(idxTargetKV, []string{"operationType"}, adapter.DeleteModeHard)
 	require.NoError(t, err)
-	idxP, err := pipeline.New(roleIndexRule.ID, "nats_kv",
+	const roleIndexLensID = "RoleIdxLensId0000001" // synthetic 20-char id for the consumer
+	idxP, err := pipeline.New(roleIndexLensID, "nats_kv",
 		nil, bootstrap.CoreKVBucket, adjKV, coreKV, idxAdpt, nil)
 	require.NoError(t, err)
-	require.Equal(t, ruleengine.EngineFull, roleIndexRule.ResolvedEngine)
-	idxP.UseFullEngine(fullEngine, roleIndexRule.CompiledRule)
+	idxP.UseFullEngine(fullEngine, idxCR)
 	idxP.SetEnvelopeFn(capabilityenv.NewRoleIndexWrapper())
 
-	idxP.RunOn(conn, e2eSpec(roleIndexRule.ID, bootstrap.CoreKVBucket))
+	idxP.RunOn(conn, e2eSpec(roleIndexLensID, bootstrap.CoreKVBucket))
 
 	idxDone := make(chan struct{})
 	go func() { defer close(idxDone); idxP.Run(pipelineCtx) }()
@@ -236,8 +233,6 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	userRoleID := stableMultiID("role-user")
 	adminPermID := stableMultiID("perm-admin-write")
 	userPermID := stableMultiID("perm-user-read")
-	locationID := stableMultiID("office-3.2b")
-	serviceID := stableMultiID("docs-3.2b")
 	taskID := stableMultiID("task-bigreport")
 	// The task grant is LINK-sourced — the op meta-vertex (forOperation) +
 	// the scopedTo target are real graph vertices.
@@ -251,8 +246,6 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	userRoleKey := substrate.VertexKey("role", userRoleID)
 	adminPermKey := substrate.VertexKey("permission", adminPermID)
 	userPermKey := substrate.VertexKey("permission", userPermID)
-	locationKey := substrate.VertexKey("location", locationID)
-	serviceKey := substrate.VertexKey("service", serviceID)
 	taskKey := substrate.VertexKey("task", taskID)
 	taskOpKey := substrate.VertexKey("meta", taskOpID)
 	taskTargetKey := substrate.VertexKey("leaseapp", taskTargetID)
@@ -323,8 +316,6 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	writeVertex(userPermKey, "permission", map[string]any{
 		"operationType": "read", "scope": "any",
 	})
-	writeVertex(locationKey, "location", nil)
-	writeVertex(serviceKey, "service", map[string]any{"class": "service"})
 	// Task root data is scalars only {status, expiresAt} — NO
 	// grantedOperationType/targetKey fields. The granted operationType +
 	// target are LINK-sourced (forOperation→op, scopedTo→target). Use a
@@ -346,8 +337,6 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	writeLink("permission", userPermID, "grantedBy", "role", userRoleID)
 	holdsAKey := writeLink("identity", identityAID, "holdsRole", "role", adminRoleID)
 	holdsBKey := writeLink("identity", identityBID, "holdsRole", "role", userRoleID)
-	writeLink("identity", identityBID, "containedIn", "location", locationID)
-	writeLink("location", locationID, "availableAt", "service", serviceID)
 	writeLink("task", taskID, "assignedTo", "identity", identityCID)
 	// Link-sourced grant: forOperation→op, scopedTo→target.
 	writeLink("task", taskID, "forOperation", "meta", taskOpID)
@@ -366,11 +355,10 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 		ec, _ := adjacencyNeighborsLocal(adjKV, identityCID)
 		eAdmin, _ := adjacencyNeighborsLocal(adjKV, adminRoleID)
 		eUser, _ := adjacencyNeighborsLocal(adjKV, userRoleID)
-		eLoc, _ := adjacencyNeighborsLocal(adjKV, locationID)
-		return len(ea) >= 1 && len(eb) >= 2 && len(ec) >= 1 &&
-			len(eAdmin) >= 2 && len(eUser) >= 2 && len(eLoc) >= 2
+		return len(ea) >= 1 && len(eb) >= 1 && len(ec) >= 1 &&
+			len(eAdmin) >= 2 && len(eUser) >= 2
 	}, 10*time.Second, 50*time.Millisecond,
-		"adjacency not fully populated by 3.2b link bridge")
+		"adjacency not fully populated by link bridge")
 
 	// --- finally: write the identity vertices (the CDC events that drive
 	// the primary projection) ---
@@ -421,21 +409,6 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 			return false
 		}
 	}
-	hasServiceAccess := func(svc string) func(map[string]any) bool {
-		return func(env map[string]any) bool {
-			sa, _ := env["serviceAccess"].([]any)
-			for _, e := range sa {
-				m, ok := e.(map[string]any)
-				if !ok {
-					continue
-				}
-				if m["service"] == svc {
-					return true
-				}
-			}
-			return false
-		}
-	}
 	hasEphemeralForTask := func(taskKey string) func(map[string]any) bool {
 		return func(env map[string]any) bool {
 			eg, _ := env["ephemeralGrants"].([]any)
@@ -451,10 +424,10 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 			return false
 		}
 	}
-	envA := waitForKeyConverged("cap.identity."+identityAID,
-		hasPlatformPerm("write", "any"), "identity A admin platform permission")
-	envB := waitForKeyConverged("cap.identity."+identityBID,
-		hasServiceAccess(serviceKey), "identity B service access via location")
+	envA := waitForKeyConverged("cap.roles.identity."+identityAID,
+		hasPlatformPerm("write", "any"), "identity A admin role-derived platform permission")
+	envB := waitForKeyConverged("cap.roles.identity."+identityBID,
+		hasPlatformPerm("read", "any"), "identity B user role-derived platform permission")
 	// Identity C's ephemeral grant projects to the DISJOINT cap.ephemeral.<C>
 	// key (orchestration-base capabilityEphemeral lens), NOT the primary
 	// cap.identity.<C> doc.
@@ -477,13 +450,12 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	}, time.Second, 10*time.Millisecond,
 		"identity C ephemeral grant must be link-sourced {operationType:read, target:scopedTo}")
 
-	// Primary cap docs (A/B/C) must carry the Contract #6 §6.2 sections; the
-	// ephemeralGrants section on the PRIMARY doc is now empty post-7.1 (the
-	// grants moved to cap.ephemeral.<actor>).
+	// cap.roles docs (A/B) carry platformPermissions + roles; they project no
+	// serviceAccess (Path B — service projection retired).
 	for label, env := range map[string]map[string]any{"A": envA, "B": envB} {
 		require.Containsf(t, env, "platformPermissions", "identity %s missing platformPermissions", label)
-		require.Containsf(t, env, "serviceAccess", "identity %s missing serviceAccess", label)
 		require.Containsf(t, env, "roles", "identity %s missing roles", label)
+		require.NotContainsf(t, env, "serviceAccess", "identity %s must not carry serviceAccess (Path B)", label)
 		require.Equalf(t, "1.0", env["version"], "identity %s wrong envelope version", label)
 	}
 
@@ -513,11 +485,10 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	require.Truef(t, hasAdmin || hasUser,
 		"capabilityRoleIndex must include admin or user role canonicalName; got %v", allRoles)
 
-	// --- Sub-test: tombstone the role-link for identity B → serviceAccess
-	// re-projects (it shouldn't lose serviceAccess since location-derived
-	// access doesn't depend on the role; instead this tests fan-out: a
-	// role-link tombstone enumerates affected actors and re-projects them
-	// with the holdsRole removed → empty roles, empty platformPermissions). ---
+	// --- Sub-test: tombstone the role-link for identity B → cap.roles.<B>
+	// re-projects with the holdsRole removed → empty platformPermissions. The
+	// capabilityRoles emptyBehavior:delete drives the key away once no real
+	// grant remains. ---
 	t.Run("tombstone role link shrinks platformPermissions", func(t *testing.T) {
 		// Overwrite the link envelope with isDeleted=true. The adjacency
 		// bootstrapper observes it, removes the edges, then the role
@@ -549,7 +520,7 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 
 		// platformPermissions must now be empty (the holdsRole edge is gone).
 		require.Eventually(t, func() bool {
-			entry, gErr := capabilityKV.Get(ctx, "cap.identity."+identityBID)
+			entry, gErr := capabilityKV.Get(ctx, "cap.roles.identity."+identityBID)
 			if gErr != nil || entry == nil {
 				return false
 			}
@@ -572,7 +543,7 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 			"identity B platformPermissions must empty after holdsRole tombstone")
 	})
 
-	// --- Sub-test: tombstone identity C itself → cap.identity.<C> entry deleted ---
+	// --- Sub-test: tombstone identity C itself → cap.roles.<C> entry deleted ---
 	t.Run("tombstone identity deletes cap entry", func(t *testing.T) {
 		tomb := map[string]any{
 			"key":       identityCKey,
@@ -586,15 +557,15 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 		require.NoError(t, perr)
 
 		// The capability plane uses the default hard delete, so the natskv
-		// adapter physically removes cap.identity.<C> on projection of the
+		// adapter physically removes cap.roles.<C> on projection of the
 		// identity tombstone. The capability authorizer treats absence as
 		// denial, so absence is the correct, contract-aligned outcome
 		// (Contract #6 §6.8 "absence equals denial").
 		require.Eventually(t, func() bool {
-			_, gErr := capabilityKV.Get(ctx, "cap.identity."+identityCID)
+			_, gErr := capabilityKV.Get(ctx, "cap.roles.identity."+identityCID)
 			return errors.Is(gErr, jetstream.ErrKeyNotFound)
 		}, 15*time.Second, 100*time.Millisecond,
-			"cap.identity.<C> must be hard-deleted (key gone) after identity tombstone")
+			"cap.roles.<C> must be hard-deleted (key gone) after identity tombstone")
 	})
 
 	// --- NFR-P3 evidence print ---

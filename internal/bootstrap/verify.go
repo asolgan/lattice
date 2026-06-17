@@ -133,19 +133,21 @@ func VerifyKernel(ctx context.Context, conn *substrate.Conn) []string {
 		checkAspect(RoleOperatorKey+"."+a.name, RoleOperatorKey, a.class)
 	}
 
-	// 4. Capability Lens aspects.
+	// 4. Capability Lens aspects (the primordial-identity anchor). It is an
+	// actor-aggregate lens, so it also carries projectionKind + the §6.13
+	// output descriptor. The role-by-operation index is owned by the
+	// rbac-domain package and is verified by verify-package-rbac, not here.
 	lensAspects := []struct{ name, class string }{
 		{"canonicalName", "canonicalName"},
 		{"targetBucket", "targetBucket"},
 		{"cypherRule", "cypherRule"},
 		{"outputSchema", "outputSchema"},
+		{"projectionKind", "projectionKind"},
+		{"output", "output"},
 		{"spec", "lensSpec"},
 	}
 	for _, a := range lensAspects {
 		checkAspect(CapabilityLensKey+"."+a.name, CapabilityLensKey, a.class)
-	}
-	for _, a := range lensAspects {
-		checkAspect(CapabilityRoleIndexLensKey+"."+a.name, CapabilityRoleIndexLensKey, a.class)
 	}
 
 	// 5. Health KV readiness signal.

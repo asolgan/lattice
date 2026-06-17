@@ -12,9 +12,9 @@
 //	1 meta-meta-DDL vertex + 9 aspects
 //	  (canonicalName/permittedCommands/description/script +
 //	   inputSchema/outputSchema/fieldDescription/examples + compensation)
-//	2 Lens definitions: capability (7 aspects — the 5 shared + projectionKind +
-//	  output) and capabilityRoleIndex (5 aspects: canonicalName, targetBucket,
-//	  cypherRule, outputSchema, spec)
+//	1 Lens definition: capability — the primordial-identity anchor (7 aspects:
+//	  the 5 shared + projectionKind + output). The role-by-operation index is
+//	  owned by the rbac-domain package (verify-package-rbac), not the kernel.
 //	5 aspect-type meta-vertices × 7 aspects each
 //	  (canonicalName + description + inputSchema + outputSchema +
 //	   fieldDescription + examples)
@@ -24,7 +24,7 @@
 //	1 admin → operator holdsRole link
 //	2 service-actor → operator holdsRole links (Loom + Weaver)
 //
-// Total ≈ 73 OK lines.
+// Total ≈ 67 OK lines.
 //
 // Package gates (verify-package-rbac etc.) cover package-installed
 // DDLs / lenses / permissions / grants separately.
@@ -231,7 +231,9 @@ func main() {
 		checkAspect(bootstrap.RoleOperatorKey+"."+a.name, bootstrap.RoleOperatorKey, a.class)
 	}
 
-	// 4. Capability Lens + Capability-Role-Index Lens aspects.
+	// 4. Capability Lens aspects (the primordial-identity anchor). The
+	// role-by-operation index is owned by the rbac-domain package and is
+	// verified by verify-package-rbac, not the kernel.
 	lensAspects := []struct{ name, class string }{
 		{"canonicalName", "canonicalName"},
 		{"targetBucket", "targetBucket"},
@@ -244,15 +246,12 @@ func main() {
 	}
 	// The actor-aggregate capability lens additionally carries the projectionKind
 	// marker and the §6.13 Output descriptor that drive its data-driven projection
-	// path. The operation-aggregate role-index lens carries neither.
+	// path.
 	for _, a := range []struct{ name, class string }{
 		{"projectionKind", "projectionKind"},
 		{"output", "output"},
 	} {
 		checkAspect(bootstrap.CapabilityLensKey+"."+a.name, bootstrap.CapabilityLensKey, a.class)
-	}
-	for _, a := range lensAspects {
-		checkAspect(bootstrap.CapabilityRoleIndexLensKey+"."+a.name, bootstrap.CapabilityRoleIndexLensKey, a.class)
 	}
 
 	// 5. Health KV readiness signal.

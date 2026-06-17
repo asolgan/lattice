@@ -130,11 +130,28 @@ type SelectAuthorizerOpts struct {
 	Clock            Clock
 	Emitter          AuthAlertEmitter
 	Config           CapabilityAuthorizerConfig
-	// ExtraEntries are package-declared dispatch entries appended to the three
-	// core seed entries. A duplicate path is rejected at construction
-	// (one-key-per-path invariant). Empty in Phase-2 base wiring; the seam a
-	// package uses to relocate its grant projection to a disjoint key.
+	// ExtraEntries are package-declared dispatch entries appended to the core
+	// seed entries. An extra that overlaps a core path, claims the always-true
+	// platform catch-all, or reuses a core path name is rejected fail-closed at
+	// construction (see buildAuthRegistry). The seam a package uses to add a
+	// genuinely-disjoint dispatch path.
 	ExtraEntries []authEntry
+
+	// RbacRolesActive routes the platform read by actor class when true:
+	// the kernel-seeded system actors (SystemActorKeys) read their core
+	// cap.<actor> primordial-anchor doc; every other (ordinary) actor reads
+	// cap.roles.<actor> (rbac-domain's capabilityRoles projection). Set true
+	// only when rbac-domain is installed. When false the platform read targets
+	// cap.<actor> for all actors (rbac-absent degradation: ordinary actors deny
+	// by absence, Contract #6 §6.8). The rbac hook is folded into the platform
+	// entry's key derivation here — NOT a separate dispatch entry — so
+	// one-key-per-path holds and the overlap guard is not tripped.
+	RbacRolesActive bool
+
+	// SystemActorKeys are the full vtx.identity.<id> keys of the kernel-seeded
+	// system actors (primordial admin + Loom + Weaver) that keep reading
+	// cap.<actor> when RbacRolesActive is true.
+	SystemActorKeys []string
 }
 
 // SelectAuthorizerArgs is the production wiring entry point.
@@ -162,7 +179,15 @@ func SelectAuthorizerArgs(opts SelectAuthorizerOpts) (Authorizer, error) {
 		if cfg.NFRP3 == 0 && cfg.LatencyBufferSize == 0 {
 			cfg = DefaultCapabilityAuthorizerConfig()
 		}
-		return NewCapabilityAuthorizer(opts.Reader, opts.CapabilityBucket, opts.Clock, cfg, opts.Logger, opts.ExtraEntries...)
+		var platformKeyDerivation func(string) (string, error)
+		if opts.RbacRolesActive {
+			platformKeyDerivation = classAwarePlatformKey(opts.SystemActorKeys)
+		}
+		return newCapabilityAuthorizer(opts.Reader, opts.CapabilityBucket, opts.Clock, cfg, opts.Logger,
+			capabilityAuthorizerOptions{
+				extraEntries:          opts.ExtraEntries,
+				platformKeyDerivation: platformKeyDerivation,
+			})
 	default:
 		return nil, errUnknownAuthMode(opts.Mode)
 	}

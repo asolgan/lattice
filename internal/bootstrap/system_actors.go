@@ -1,0 +1,65 @@
+package bootstrap
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+
+	"github.com/asolgan/lattice/internal/substrate"
+)
+
+// SystemActorKeys scans core-kv and returns the actor keys of the kernel-seeded
+// system identities — the protected, kernel-fixed actors the Capability Lens
+// primordial-identity anchor projects root grants for (the primordial admin +
+// Loom + Weaver). They are identified by the same predicate the anchor cypher
+// uses: an `identity`-type vertex carrying `data.protected = true`.
+//
+// The step-3 platform read routes these actors to their core cap.<actor> doc
+// (the primordial anchor) and every other actor to cap.roles.<actor> when
+// rbac-domain is installed. Discovering them from the graph keeps the processor
+// self-contained (it already reads core-kv) and exactly matches the set the
+// anchor projects, rather than depending on the bootstrap-file key space being
+// loaded into the processor process.
+func SystemActorKeys(ctx context.Context, conn *substrate.Conn) ([]string, error) {
+	keys, err := conn.KVListKeys(ctx, CoreKVBucket)
+	if err != nil {
+		return nil, fmt.Errorf("bootstrap: list core-kv keys: %w", err)
+	}
+	var out []string
+	for _, k := range keys {
+		vtxType, _, ok := substrate.ParseVertexKey(k)
+		if !ok || vtxType != "identity" {
+			continue
+		}
+		// Exclude aspect keys (vtx.identity.<id>.<localName>) — only the root
+		// vertex carries the data envelope.
+		if strings.Count(k, ".") != 2 {
+			continue
+		}
+		entry, gErr := conn.KVGet(ctx, CoreKVBucket, k)
+		if gErr != nil {
+			if errors.Is(gErr, substrate.ErrKeyNotFound) {
+				continue
+			}
+			return nil, fmt.Errorf("bootstrap: read %s: %w", k, gErr)
+		}
+		var env struct {
+			IsDeleted bool           `json:"isDeleted"`
+			Data      map[string]any `json:"data"`
+		}
+		if jErr := json.Unmarshal(entry.Value, &env); jErr != nil {
+			continue
+		}
+		if env.IsDeleted {
+			continue
+		}
+		if prot, _ := env.Data["protected"].(bool); prot {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}

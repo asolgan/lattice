@@ -34,6 +34,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/asolgan/lattice/internal/bootstrap"
+	"github.com/asolgan/lattice/internal/pkgmgr"
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/processor/outbox"
 	"github.com/asolgan/lattice/internal/substrate"
@@ -96,7 +97,31 @@ func run(logger *slog.Logger) error {
 	}
 	defer conn.Close()
 
-	cp, hb, err := processor.MakePipeline(conn, bootstrap.CoreKVBucket, bootstrap.HealthKVBucket, bootstrap.CapabilityKVBucket, authMode, traceAllowDecisions, logger, instance)
+	// Probe rbac-domain install state to route the platform read by actor
+	// class. When rbac-domain is installed, ordinary actors read their
+	// role-derived grants from cap.roles.<actor> (rbac-domain's projection)
+	// while the kernel-seeded system actors keep reading cap.<actor> (the core
+	// primordial anchor). When it is absent, the platform read targets
+	// cap.<actor> for all actors and ordinary actors deny by absence.
+	probeCtx, probeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	rbacInstalled, err := pkgmgr.IsPackageInstalled(probeCtx, conn, "rbac-domain")
+	if err != nil {
+		probeCancel()
+		return fmt.Errorf("probe rbac-domain install state: %w", err)
+	}
+	systemActorKeys, err := bootstrap.SystemActorKeys(probeCtx, conn)
+	probeCancel()
+	if err != nil {
+		return fmt.Errorf("discover system actor keys: %w", err)
+	}
+	authWiring := processor.AuthWiring{
+		RbacRolesActive: rbacInstalled,
+		SystemActorKeys: systemActorKeys,
+	}
+	logger.Info("step-3 platform routing wired",
+		"rbacRolesActive", rbacInstalled, "systemActors", len(systemActorKeys))
+
+	cp, hb, err := processor.MakePipeline(conn, bootstrap.CoreKVBucket, bootstrap.HealthKVBucket, bootstrap.CapabilityKVBucket, authMode, traceAllowDecisions, logger, instance, authWiring)
 	if err != nil {
 		return err
 	}

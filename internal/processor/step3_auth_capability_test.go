@@ -564,6 +564,7 @@ func TestAuthRegistry_ExtensionPoint_RoutesNewPath(t *testing.T) {
 		},
 		absentKeyCode:   ErrCodeAuthDenied,
 		absentKeyReason: "NoCapabilityEntry",
+		coverage:        authCoverage{kind: pathPlatform, scopeTag: "ext-route"},
 	}
 	a, err := NewCapabilityAuthorizer(reader, "capability-kv", &fakeClock{now: now},
 		DefaultCapabilityAuthorizerConfig(), capTestLogger(), extEntry)

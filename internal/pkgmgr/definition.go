@@ -142,6 +142,13 @@ type LensSpec struct {
 	// emitted into the lens spec body so Refractor compiles a ProjectionPlan
 	// from it. Nil for a non-actor-aggregate lens.
 	Output *OutputDescriptorSpec
+
+	// IntoKey is the lens's primary output-key column list — the RETURN
+	// column(s) the nats-kv adapter keys each projected record under. Empty
+	// defaults to ["key"] (the per-row envelope key produced by an actor-
+	// aggregate lens). An operation-aggregate index keys by its aggregation
+	// column instead (e.g. ["operationType"] for the role-by-operation index).
+	IntoKey []string
 }
 
 // OutputDescriptorSpec mirrors the on-wire §6.13 Output descriptor a package

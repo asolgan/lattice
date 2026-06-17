@@ -91,13 +91,32 @@ type CapabilityAuthorizer struct {
 	latency *latencyRing
 }
 
+// capabilityAuthorizerOptions carries the optional dispatch-wiring inputs to
+// NewCapabilityAuthorizer that go beyond the always-required reader/bucket.
+type capabilityAuthorizerOptions struct {
+	// extraEntries adds package-declared dispatch entries to the core seeds.
+	// They are guarded fail-closed at registration (see buildAuthRegistry).
+	extraEntries []authEntry
+	// platformKeyDerivation overrides the platform entry's key derivation. Nil
+	// keeps the default cap.<actor>. When rbac-domain is installed, core passes
+	// the class-aware derivation (system actor → cap.<actor>, ordinary actor →
+	// cap.roles.<actor>).
+	platformKeyDerivation func(string) (string, error)
+}
+
 // NewCapabilityAuthorizer constructs the production authorizer. `reader`
 // is typically a `*substrate.Conn`. `bucket` is the Capability KV bucket
 // name (`bootstrap.CapabilityKVBucket` = `capability-kv`). Nil clock falls
 // back to SystemClock; nil logger uses slog.Default(). `extraEntries` adds
-// package-declared dispatch entries to the three core seed entries; a
-// duplicate path is rejected (one-key-per-path invariant) with an error.
+// package-declared dispatch entries to the core seed entries; an extra that
+// overlaps a core path, claims the always-true platform catch-all, or reuses a
+// core path name is rejected (fail-closed) with an error.
 func NewCapabilityAuthorizer(reader CapabilityReader, bucket string, clock Clock, cfg CapabilityAuthorizerConfig, logger *slog.Logger, extraEntries ...authEntry) (*CapabilityAuthorizer, error) {
+	return newCapabilityAuthorizer(reader, bucket, clock, cfg, logger,
+		capabilityAuthorizerOptions{extraEntries: extraEntries})
+}
+
+func newCapabilityAuthorizer(reader CapabilityReader, bucket string, clock Clock, cfg CapabilityAuthorizerConfig, logger *slog.Logger, opts capabilityAuthorizerOptions) (*CapabilityAuthorizer, error) {
 	if reader == nil {
 		panic("processor: CapabilityAuthorizer requires a CapabilityReader")
 	}
@@ -116,7 +135,7 @@ func NewCapabilityAuthorizer(reader CapabilityReader, bucket string, clock Clock
 	if logger == nil {
 		logger = slog.Default()
 	}
-	registry, err := buildAuthRegistry(extraEntries)
+	registry, err := buildAuthRegistry(opts.extraEntries, opts.platformKeyDerivation)
 	if err != nil {
 		return nil, err
 	}
@@ -421,6 +440,22 @@ func capabilityKeyFromActor(actor string) (string, error) {
 		return "", fmt.Errorf("actor %q lacks %q prefix", actor, substrate.VertexPrefix+".")
 	}
 	return "cap." + rest, nil
+}
+
+// rolesKeyFromActor converts `vtx.identity.<NanoID>` →
+// `cap.roles.identity.<NanoID>` — the disjoint key rbac-domain's
+// capabilityRoles lens projects an ordinary actor's role-derived grants into
+// (Contract #6 §6.1). It is the platform path's key for ordinary actors when
+// rbac-domain is installed.
+func rolesKeyFromActor(actor string) (string, error) {
+	if actor == "" {
+		return "", errors.New("empty actor")
+	}
+	rest, ok := strings.CutPrefix(actor, substrate.VertexPrefix+".")
+	if !ok {
+		return "", fmt.Errorf("actor %q lacks %q prefix", actor, substrate.VertexPrefix+".")
+	}
+	return "cap.roles." + rest, nil
 }
 
 // ephemeralKeyFromActor converts `vtx.identity.<NanoID>` →

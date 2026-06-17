@@ -8,9 +8,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	orchestrationbase "github.com/asolgan/lattice/packages/orchestration-base"
+	rbacdomain "github.com/asolgan/lattice/packages/rbac-domain"
 )
 
 // ephemeralLensSpec returns the orchestration-base capabilityEphemeral lens
@@ -27,28 +27,24 @@ func ephemeralLensSpec(t *testing.T) string {
 	return ""
 }
 
-// TestBootstrap_CapabilityLensE2E is the Story 3.1b-ii acceptance test.
+// TestRbacCapabilityRolesLens_E2E exercises rbac-domain's capabilityRoles lens
+// (the role-derived grant projection the god-cypher's role branch used to
+// produce, now decomposed into the package). It uses the LITERAL
+// capabilityRoles lens spec from packages/rbac-domain and asserts Contract #6
+// §6.10 item 4 / §6.2 platform + roles output for an ordinary role-holding
+// actor.
 //
 // Representative graph seeded:
 //
 //	alice (identity)
-//	  ─[holdsRole]─> admin (role) ─[grantsPermission]─> permRead (permission)
-//	                              ─[grantsPermission]─> permWrite (permission)
-//	  ─[containedIn]─> hq (location) ─[availableAt]─> svcOK
-//	                                  ─[availableAt]─> svcBlocked
-//	                                  ─[unavailableAt]─> svcBlocked  // exclusion
-//	  svcOK ─[permitsOperation]─> opRead
+//	  ─[holdsRole]─> admin (role) <─[grantedBy]─ permRead (permission)
+//	                              <─[grantedBy]─ permWrite (permission)
 //
-// The bootstrap god-cypher does NOT produce ephemeralGrants. FR56 ephemeral
-// grant behaviors (task / reportsTo / expiry-filtering) are exercised by
-// TestCapabilityEphemeralLens_E2E below via the orchestration-base
-// capabilityEphemeral lens. This test does not seed tasks or assert
-// ephemeralGrants.
-//
-// It uses the LITERAL CapabilityLensDefinition.RuleBody (parent brief
-// Decision #8) and asserts Contract #6 §6.10 / §6.2 output (platform +
-// service + roles).
-func TestBootstrap_CapabilityLensE2E(t *testing.T) {
+// Service access is no longer projected by any core or rbac lens (Path B —
+// retired with the service/location remnants); it is deferred to a future
+// service package, so this test does not seed services and asserts no
+// serviceAccess column.
+func TestRbacCapabilityRolesLens_E2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -67,26 +63,13 @@ func TestBootstrap_CapabilityLensE2E(t *testing.T) {
 		"data": map[string]any{"operationType": "write", "scope": "owned"},
 	})
 	putEdge(t, reg, adjKV, "holdsRole", "alice", "admin")
-	// Story 4.7 rename: grantsPermission(role→permission) became
-	// grantedBy(permission→role).
 	putEdge(t, reg, adjKV, "grantedBy", "permread", "admin")
 	putEdge(t, reg, adjKV, "grantedBy", "permwrite", "admin")
 
-	// Locations + services
-	putVertex(t, reg, coreKV, "hq", "location", nil)
-	putVertex(t, reg, coreKV, "svcok", "service", map[string]any{"class": "service"})
-	putVertex(t, reg, coreKV, "svcblocked", "service", map[string]any{"class": "service"})
-	putEdge(t, reg, adjKV, "containedIn", "alice", "hq")
-	putEdge(t, reg, adjKV, "availableAt", "hq", "svcok")
-	putEdge(t, reg, adjKV, "availableAt", "hq", "svcblocked")
-	putEdge(t, reg, adjKV, "unavailableAt", "hq", "svcblocked")
-	putVertex(t, reg, coreKV, "opread", "operation", map[string]any{"data": map[string]any{"operationType": "read"}})
-	putEdge(t, reg, adjKV, "permitsOperation", "svcok", "opread")
-
-	body := bootstrap.CapabilityLensDefinition().CypherRule
+	body := rolesLensSpec(t)
 	eng := New()
 	cr, err := eng.Parse(body)
-	require.NoError(t, err, "bootstrap cypher must parse")
+	require.NoError(t, err, "capabilityRoles cypher must parse")
 
 	now := time.Now().Unix()
 	aliceKey := vtxKey(reg, "alice")
@@ -105,13 +88,12 @@ func TestBootstrap_CapabilityLensE2E(t *testing.T) {
 		out, err := eng.ExecuteWith(context.Background(), cr,
 			ruleengine.EventContext{Parameters: params}, adjKV, coreKV)
 		dur := time.Since(start)
-		require.NoError(t, err, "bootstrap query must execute without error")
+		require.NoError(t, err, "capabilityRoles query must execute without error")
 		durations = append(durations, dur)
 		results = out
 	}
 
-	// Three-section output assertion (Contract #6 §6.10 / §6.2).
-	require.Len(t, results, 1, "bootstrap query should produce exactly one row per actor")
+	require.Len(t, results, 1, "capabilityRoles query should produce exactly one row per actor")
 	row := results[0].Values
 
 	// actorKey
@@ -122,37 +104,16 @@ func TestBootstrap_CapabilityLensE2E(t *testing.T) {
 	require.True(t, ok, "platformPermissions must be a list, got %T", row["platformPermissions"])
 	require.Len(t, pp, 2, "platformPermissions should have 2 entries")
 
-	// serviceAccess: svcok only (svcblocked excluded by anti-pattern).
-	sa, ok := row["serviceAccess"].([]any)
-	require.True(t, ok, "serviceAccess must be a list")
-	// At minimum, svcok must be present; svcblocked must NOT be present.
-	require.NotEmpty(t, sa, "serviceAccess must include svcok")
-	foundSvcOk, foundSvcBlocked := false, false
-	for _, e := range sa {
-		m, ok := e.(map[string]any)
-		if !ok {
-			continue
-		}
-		if m["service"] == vtxKey(reg, "svcok") {
-			foundSvcOk = true
-		}
-		if m["service"] == vtxKey(reg, "svcblocked") {
-			foundSvcBlocked = true
-		}
-	}
-	require.True(t, foundSvcOk, "serviceAccess must include svcok")
-	require.False(t, foundSvcBlocked, "serviceAccess must NOT include svcblocked (anti-pattern)")
-
-	// The bootstrap cypher does not RETURN ephemeralGrants.
-	require.NotContains(t, row, "ephemeralGrants",
-		"bootstrap cypher must NOT produce ephemeralGrants (owned by capabilityEphemeral lens)")
+	// capabilityRoles projects no serviceAccess column (Path B).
+	require.NotContains(t, row, "serviceAccess",
+		"capabilityRoles must NOT project serviceAccess (Path B — service projection retired)")
 
 	// roles
 	roles, ok := row["roles"].([]any)
 	require.True(t, ok)
 	require.NotEmpty(t, roles, "expected at least one role")
 
-	// Latency: log mean / p95 / p99 (records, doesn't halt — Decision #11).
+	// Latency: log mean / p95 / p99 (records, doesn't halt).
 	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
 	var sum time.Duration
 	for _, d := range durations {
@@ -161,8 +122,22 @@ func TestBootstrap_CapabilityLensE2E(t *testing.T) {
 	mean := sum / time.Duration(len(durations))
 	p95 := durations[int(float64(len(durations))*0.95)]
 	p99 := durations[len(durations)-1]
-	t.Logf("bootstrap CapabilityLens latency over %d runs: mean=%v p95=%v p99=%v",
+	t.Logf("capabilityRoles lens latency over %d runs: mean=%v p95=%v p99=%v",
 		runs, mean, p95, p99)
+}
+
+// rolesLensSpec returns the rbac-domain capabilityRoles lens cypher, selected
+// by CanonicalName so the package may declare additional lenses without this
+// conformance test silently exercising the wrong one.
+func rolesLensSpec(t *testing.T) string {
+	t.Helper()
+	for _, l := range rbacdomain.Lenses() {
+		if l.CanonicalName == "capabilityRoles" {
+			return l.Spec
+		}
+	}
+	t.Fatal("rbac-domain must declare a capabilityRoles lens")
+	return ""
 }
 
 // TestCapabilityEphemeralLens_E2E exercises the link-sourced ephemeral-grant

@@ -614,7 +614,23 @@ func (cp *CommitPath) Run(ctx context.Context, cons jetstream.Consumer) error {
 // to stub implementations — all other components (Hydrator, Executor, Validator,
 // Committer, EventPublisher) are production-identical.
 func MakeStubPipeline(conn *substrate.Conn, coreBucket, healthBucket string, authMode AuthMode, logger *slog.Logger, instance string) (*CommitPath, *HealthHeartbeater, error) {
-	return MakePipeline(conn, coreBucket, healthBucket, "", authMode, false, logger, instance)
+	return MakePipeline(conn, coreBucket, healthBucket, "", authMode, false, logger, instance, AuthWiring{})
+}
+
+// AuthWiring carries the platform-path routing inputs the step-3 authorizer
+// needs but the processor cannot compute itself (they depend on bootstrap key
+// constants + an install-state probe, both of which live above the processor
+// import boundary). The caller (cmd/processor) computes them and threads them
+// in. Zero value = rbac-domain not installed (today's cap.<actor> platform read
+// for all actors).
+type AuthWiring struct {
+	// RbacRolesActive routes the platform read by actor class (system →
+	// cap.<actor>, ordinary → cap.roles.<actor>). Set true when rbac-domain is
+	// installed.
+	RbacRolesActive bool
+	// SystemActorKeys are the kernel-seeded system actor keys
+	// (vtx.identity.<id> of admin + Loom + Weaver) that keep reading cap.<actor>.
+	SystemActorKeys []string
 }
 
 // MakePipeline is the production wiring entry point. capabilityBucket is the
@@ -625,7 +641,9 @@ func MakeStubPipeline(conn *substrate.Conn, coreBucket, healthBucket string, aut
 //
 // traceAllowDecisions (FR23): when true, auth trace records are also written
 // for ALLOWED decisions. Defaults off — volume implications for busy deployments.
-func MakePipeline(conn *substrate.Conn, coreBucket, healthBucket, capabilityBucket string, authMode AuthMode, traceAllowDecisions bool, logger *slog.Logger, instance string) (*CommitPath, *HealthHeartbeater, error) {
+//
+// authWiring carries the rbac-domain platform-path routing (see AuthWiring).
+func MakePipeline(conn *substrate.Conn, coreBucket, healthBucket, capabilityBucket string, authMode AuthMode, traceAllowDecisions bool, logger *slog.Logger, instance string, authWiring AuthWiring) (*CommitPath, *HealthHeartbeater, error) {
 	metrics := &Metrics{}
 	hb := NewHealthHeartbeater(conn, healthBucket, instance, 10*time.Second, metrics, logger)
 	alertEmitter := NewHealthAlertEmitter(conn, healthBucket, logger)
@@ -643,6 +661,8 @@ func MakePipeline(conn *substrate.Conn, coreBucket, healthBucket, capabilityBuck
 		Reader:           conn,
 		CapabilityBucket: capabilityBucket,
 		Emitter:          alertEmitter,
+		RbacRolesActive:  authWiring.RbacRolesActive,
+		SystemActorKeys:  authWiring.SystemActorKeys,
 	})
 	if err != nil {
 		return nil, nil, err

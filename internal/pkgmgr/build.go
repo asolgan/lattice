@@ -219,9 +219,13 @@ func sha256NanoID(s string) string {
 // projectionKind + the §6.13 Output descriptor). A package lens targets a
 // nats-kv bucket; its envelope keys each row under "key".
 func lensSpecBody(lensID string, l LensSpec) map[string]any {
+	keyField := l.IntoKey
+	if len(keyField) == 0 {
+		keyField = []string{"key"}
+	}
 	targetConfig := map[string]any{
 		"bucket": l.Bucket,
-		"key":    []string{"key"},
+		"key":    keyField,
 	}
 	spec := map[string]any{
 		"id":            lensID,

@@ -257,3 +257,133 @@ Contract #6 §6.2/§6.3 and Contract #2 §2.8 are FROZEN. All shape changes here
 **amendment requests** (the `CONTRACT-AMENDMENT-REQUEST.md` files), not in-flight edits — per
 `CLAUDE.md`. The planning lead ratifies before any frozen contract or `lattice-architecture.md` text
 changes.
+
+## Story 12.6 — god-cypher decomposition (implemented)
+
+Closing story of Epic 12. Two parts landed together; the bootstrap `capability` cypher no longer
+references the rbac (role/permission/holdsRole/grantedBy) OR service/location
+(containedIn/availableAt/unavailableAt/permitsOperation) vocabularies.
+
+### Part A — rbac role/permission projection moves to `rbac-domain`
+
+`packages/rbac-domain` now declares two lenses (`packages/rbac-domain/lenses.go`):
+
+- **`capabilityRoles`** (actor-aggregate) — walks `identity -[:holdsRole]-> role <-[:grantedBy]-
+  permission` and projects each role-holding actor's role-derived `platformPermissions[]` + `roles[]`
+  to the disjoint key `cap.roles.<actor>` (Contract #6 §6.1). Activates through the live 12.3/12.4
+  `projectionKind: actorAggregate` path with zero `cmd/` edits.
+- **`capabilityRoleIndex`** (operation-aggregate, `IntoKey: ["operationType"]`) — the FR22
+  role-by-operation index (`cap.role-by-operation.<op>`), moved out of the kernel seed. The Processor
+  denial-response builder reads it by string key, producer-agnostic; when rbac-domain is absent the
+  key is simply not found → `rolesCarryingPermission`/`actorRoles` degrade to empty (a chosen,
+  tested behavior, not a surprise).
+
+The read side routes by actor class through the **platform entry's key derivation** (NOT a separate
+dispatch entry — see registry hardening below). When rbac-domain is installed, the platform path
+derives `cap.roles.<actor>` for ordinary actors and `cap.<actor>` for the kernel-seeded system
+actors; when absent, it derives `cap.<actor>` for everyone (ordinary actors then deny by absence,
+Contract #6 §6.8). rbac-install state is a startup probe for the `rbac-domain` package vertex
+(`pkgmgr.IsPackageInstalled`), wired in `cmd/processor/main.go` and threaded through
+`processor.MakePipeline` → `SelectAuthorizerOpts`.
+
+### Primordial-composition resolution (Open Question #1 → Option (a))
+
+The kernel admin + Loom + Weaver got their root-equivalent platform grants through the exact rbac
+vocabulary Part A deletes. Naively dropping the rbac walk would brick them. **Resolution (Andrew +
+Winston): Option (a) — a narrow primordial-only anchor cypher.** Core's shrunk `capability` cypher
+(`internal/bootstrap/lenses.go`) anchors per-identity and projects a **hard-coded** root-grant set
+(`Create/Update/TombstoneMetaVertex`, `Install/UninstallPackage`, all scope:any) for **protected**
+(kernel-seeded) identities only — `WHERE identity.data.protected = true`. Ordinary actors match
+nothing (zero rows → no core `cap.<actor>` doc; they read `cap.roles.<actor>`). The grant set is a
+literal, not a graph walk, so `role`/`permission`/`holdsRole`/`grantedBy` truly vanish from core.
+The dispatcher reads exactly ONE key by actor class — system actor → `cap.<actor>`, ordinary actor →
+`cap.roles.<actor>` — and a core primordial grant never collides with a package grant on one key
+(one-key-per-path, Contract #2 §2.8). The system actors keep reading `cap.<actor>` (no new
+`cap.system.<actor>` key space — minimal key-shape churn).
+
+The system-actor set the platform read routes to `cap.<actor>` is discovered at processor startup by
+scanning core-kv for protected `identity` vertices (`bootstrap.SystemActorKeys`) — exactly the set
+the anchor projects — keeping the processor self-contained rather than dependent on the bootstrap-file
+key space being loaded into the processor process.
+
+Non-brick is proved by `internal/processor/service_actor_auth_parity_test.go` (admin/Loom/Weaver still
+authorize via `cap.<actor>`) and the migrated capability anchor e2e/conformance tests.
+
+### Part B — service/location remnants retired (Path B)
+
+`packages/service-location/` holds only `CONCEPT.md` (confirmed — no `package.go`). The god-cypher's
+`containedIn`/`availableAt`/`unavailableAt`/`permitsOperation` branch + `serviceAccess` RETURN column
+are **deleted with no replacement projection**. The service matcher kind (`matchServiceAccessKind`)
+and its key derivation (left on the 12.5 seed key `cap.<actor>`, per Open Question #3 — Part B is a
+deletion, not a re-key) stay registered-but-unpopulated: a service op now finds no `serviceAccess`
+entry and **denies by absence** (Contract #6 §6.8). A future service package projects into them as a
+pure package addition (no core edit).
+
+**Service-fixture disposition (Path B).** The §6.10 service behaviors (multi-level containment
+exclusion, transitive availability, operation override — Contract #6 §6.10 items 1/2/3) and the
+Hello-Lattice service milestones are **deferred to a future service package** — they are SERVICE-package
+behaviors now, not core behaviors. The capability conformance/e2e tests that previously asserted
+service-access projection through the god-cypher were reconciled: the role-derived platform/roles
+assertions moved to the `capabilityRoles` lens (rbac-domain), and the service-access assertions were
+dropped (no producer until a service package ships). They are recorded here rather than silently
+deleted; when a service package lands, its own fixture set re-establishes the §6.10 behaviors against
+its disjoint key.
+
+### Registry hardening (carried obligation from 12.5)
+
+`buildAuthRegistry` (`internal/processor/step3_auth_matcher.go`) moved from name-only duplicate
+detection to **structural predicate-overlap / coverage**. Each `authEntry` declares a coverage
+descriptor (`pathKind` ∈ {platform, task, service}, a `catchAll` flag for the core platform fallback,
+and an optional `scopeTag` for a narrowed platform slice). A package-derived extra is REJECTED at
+registration (fail-closed) when it: reuses a core path name; claims a core specific path-kind cell
+(task/service); claims the always-true platform catch-all (no scope tag); reuses a platform scope tag;
+or whose predicate matches a cell it does not declare (probe-matrix cross-check against
+representative authContexts — catches an always-true predicate hiding behind a narrow declaration).
+
+The rbac contribution is **folded into the platform entry's class-aware key derivation, NOT supplied
+as a separate `ExtraEntries` entry** — so it never trips the overlap guard and one-key-per-path holds
+(exactly one key chosen per Authorize call). The guard governs any genuinely-separate future package
+path; the legitimately-disjoint case (a platform-kind entry with a unique scope tag matching only a
+narrow, non-always-true slice) is accepted. Tests: `internal/processor/step3_auth_rbac_hook_test.go`.
+
+### Review adjudication (Winston, full 3-layer) + carried obligations
+
+Acceptance Auditor **ACCEPT** (all ACs MET, no must-fix; the X1 overlap guard is sound against the
+named root/scope:any-capture threat). Edge Case Hunter: no green-CI regression. Blind Hunter
+(diff-only) raised items that reconcile against repo facts as follows — none blocks, three become
+carried obligations:
+
+- **`protected:true` is the sole marker distinguishing the admin from an ordinary identity** (the admin
+  is class `identity`, *not* `identity.system.*` — only Loom/Weaver carry the system class; see
+  `primordial.go:327/354/360`). So a class-based defense-in-depth guard is **not available** without
+  restructuring the admin's class. The narrow anchor (`WHERE identity.data.protected = true`) and
+  `SystemActorKeys` both trust this flag. Today only 3 protected identities exist and setting
+  `protected` requires vertex-write permission (root-only; `rejectProtectedMutations` blocks
+  update/delete of protected vertices, exempting only create). **Carried obligation / chip:** verify
+  the identity create/claim path cannot let a non-root actor set `data.protected:true` on an identity —
+  if it can, 12.6's anchor amplifies it into the 5 root grants. This is a write-side create-gate
+  concern, separate from this read-side decomposition.
+- **Stale `cap.<actor>` eviction.** The anchor has no realness filter, and a "WHERE no longer matches"
+  transition (a `protected:true→false` downgrade, or an ordinary actor that pre-existed under the old
+  god-cypher) yields zero rows without a delete — the stale doc lingers. Moot on the supported upgrade
+  path (the 6→7 bootstrap version bump forces `down && up`, a fresh store), and a misrouted/stale read
+  degrades safe when rbac is active (system actors still authorize via their operator role in
+  `cap.roles.<actor>`). **Carried obligation:** an actorAggregate "anchor exists but no longer matches
+  the WHERE → tombstone" eviction, if in-place upgrade (no store reset) ever becomes a supported path.
+- **Overlap guard is a finite probe matrix over an opaque closure.** Sound for the threat that matters
+  (the root/scope:any read carries a nil/`{}` authContext → caught by the unconditional probes), and
+  `ExtraEntries` is empty today (rbac is folded into the platform key, not an extra), so there is no
+  live exposure. **Carried obligation:** when packages actually supply registry entries, replace the
+  opaque-closure + probe-matrix with a **declarative discriminator** (the entry declares the exact
+  field+value it keys on; the dispatcher evaluates it) so overlap is decidable, and make the probe
+  calls nil-safe (a non-nil-safe package predicate currently panics the probe at startup — fail-closed,
+  but a startup DoS).
+
+### Follow-ups for the planning lead (NOT done in this story)
+
+- Mark the `lattice-architecture.md` god-cypher open item resolved.
+- Record the completed contract-contribution decomposition in Contract #6 §6.1 ("decomposition
+  complete").
+
+Both are planning-artifact / frozen-contract edits owned by the planning lead — proposed, not
+performed.

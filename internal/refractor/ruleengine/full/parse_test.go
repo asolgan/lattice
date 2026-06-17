@@ -6,6 +6,7 @@ import (
 
 	"github.com/asolgan/lattice/internal/bootstrap"
 	identityhygiene "github.com/asolgan/lattice/packages/identity-hygiene"
+	rbacdomain "github.com/asolgan/lattice/packages/rbac-domain"
 )
 
 // parse compiles a body via the public Engine API and returns the wrapped
@@ -301,7 +302,7 @@ func TestParse_BootstrapCapabilityLens(t *testing.T) {
 	body := bootstrap.CapabilityLensDefinition().CypherRule
 	q := parse(t, body)
 
-	var matchCount, optMatchCount, withCount, returnCount int
+	var matchCount, optMatchCount, returnCount int
 	for _, c := range q.Clauses {
 		switch m := c.(type) {
 		case *Match:
@@ -310,40 +311,85 @@ func TestParse_BootstrapCapabilityLens(t *testing.T) {
 			} else {
 				matchCount++
 			}
-		case *With:
-			withCount++
-			_ = m
 		case *Return:
 			returnCount++
 		}
 	}
-	if matchCount < 1 {
-		t.Fatalf("expected at least one MATCH, got %d", matchCount)
+	// The primordial-identity anchor is a single required MATCH whose WHERE
+	// restricts projection to the protected (kernel-seeded) system identities,
+	// and exactly one RETURN. It references no rbac/service graph vocabulary, so
+	// it carries no OPTIONAL MATCH and no anti-pattern (those moved with the
+	// role/permission walk to rbac-domain's capabilityRoles lens).
+	if matchCount != 1 {
+		t.Fatalf("expected exactly one MATCH, got %d", matchCount)
 	}
-	if optMatchCount < 1 {
-		t.Fatalf("expected at least one OPTIONAL MATCH, got %d", optMatchCount)
+	if optMatchCount != 0 {
+		t.Fatalf("expected no OPTIONAL MATCH, got %d", optMatchCount)
 	}
 	if returnCount != 1 {
 		t.Fatalf("expected exactly 1 RETURN, got %d", returnCount)
 	}
 
-	// Find anti-pattern (Not wrapping PatternExpr) in any MATCH WHERE.
-	var foundAnti bool
+	// The anchor MATCH carries a WHERE gating on the protected flag.
+	var anchorWhere Expr
 	for _, c := range q.Clauses {
-		m, ok := c.(*Match)
-		if !ok || m.Where == nil {
-			continue
-		}
-		if hasAntiPattern(m.Where) {
-			foundAnti = true
+		if m, ok := c.(*Match); ok && !m.Optional && m.Where != nil {
+			anchorWhere = m.Where
 			break
 		}
 	}
-	if !foundAnti {
-		t.Fatalf("expected anti-pattern (NOT (path)) in some WHERE clause")
+	if anchorWhere == nil {
+		t.Fatalf("expected the anchor MATCH to carry a WHERE clause")
 	}
 
-	// Inspect RETURN for collect(DISTINCT ...) and map literals.
+	// RETURN projects platformPermissions as a literal list of map literals —
+	// the fixed kernel root-grant set, NOT a graph walk.
+	r := firstReturn(t, q)
+	var foundListLit, foundMapLit bool
+	for _, it := range r.Items {
+		walkExpr(it.Expr, func(e Expr) {
+			if _, ok := e.(*ListLiteral); ok {
+				foundListLit = true
+			}
+			if _, ok := e.(*MapLiteral); ok {
+				foundMapLit = true
+			}
+		})
+	}
+	if !foundListLit {
+		t.Fatalf("expected a list literal in RETURN")
+	}
+	if !foundMapLit {
+		t.Fatalf("expected a map literal in RETURN")
+	}
+}
+
+// TestParse_RbacCapabilityRolesLens parses rbac-domain's capabilityRoles lens
+// spec through the full engine and asserts it carries the role/permission walk
+// (collect(DISTINCT ...) over the OPTIONAL holdsRole→role←grantedBy→permission
+// pattern) the primordial anchor no longer contains.
+func TestParse_RbacCapabilityRolesLens(t *testing.T) {
+	var body string
+	for _, l := range rbacdomain.Lenses() {
+		if l.CanonicalName == "capabilityRoles" {
+			body = l.Spec
+		}
+	}
+	if body == "" {
+		t.Fatal("rbac-domain must declare a capabilityRoles lens")
+	}
+	q := parse(t, body)
+
+	var optMatchCount int
+	for _, c := range q.Clauses {
+		if m, ok := c.(*Match); ok && m.Optional {
+			optMatchCount++
+		}
+	}
+	if optMatchCount < 1 {
+		t.Fatalf("expected at least one OPTIONAL MATCH in capabilityRoles, got %d", optMatchCount)
+	}
+
 	r := firstReturn(t, q)
 	var foundCollectDistinct, foundMapLit bool
 	for _, it := range r.Items {
@@ -357,10 +403,10 @@ func TestParse_BootstrapCapabilityLens(t *testing.T) {
 		})
 	}
 	if !foundCollectDistinct {
-		t.Fatalf("expected collect(DISTINCT ...) in RETURN")
+		t.Fatalf("expected collect(DISTINCT ...) in capabilityRoles RETURN")
 	}
 	if !foundMapLit {
-		t.Fatalf("expected a map literal in RETURN")
+		t.Fatalf("expected a map literal in capabilityRoles RETURN")
 	}
 }
 
@@ -401,18 +447,6 @@ func TestParse_IdentityHygieneDuplicateCandidatesLens(t *testing.T) {
 	if found.Else == nil {
 		t.Fatalf("expected ELSE 'levenshtein-name' branch")
 	}
-}
-
-func hasAntiPattern(e Expr) bool {
-	found := false
-	walkExpr(e, func(x Expr) {
-		if n, ok := x.(*Not); ok {
-			if _, ok := n.Operand.(*PatternExpr); ok {
-				found = true
-			}
-		}
-	})
-	return found
 }
 
 // walkExpr applies f to every expression node reachable from root.

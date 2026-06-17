@@ -13,7 +13,23 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/projection"
 	"github.com/asolgan/lattice/internal/refractor/subjects"
 	"github.com/asolgan/lattice/internal/substrate"
+	rbacdomain "github.com/asolgan/lattice/packages/rbac-domain"
 )
+
+// capabilityRolesSpecForTest returns rbac-domain's capabilityRoles LensSpec,
+// selected by canonical name. The capability e2e tests drive it directly to
+// exercise the role-derived grant projection + its fan-out/reprojection on the
+// disjoint cap.roles.<actor> key.
+func capabilityRolesSpecForTest(t *testing.T) pkgmgr.LensSpec {
+	t.Helper()
+	for _, l := range rbacdomain.Lenses() {
+		if l.CanonicalName == "capabilityRoles" {
+			return l
+		}
+	}
+	require.FailNow(t, "rbac-domain must declare a capabilityRoles lens")
+	return pkgmgr.LensSpec{}
+}
 
 // descFromPkgSpec converts a package LensSpec's §6.13 Output descriptor into a
 // compiled projection.OutputDescriptor for wiring a package actor-aggregate

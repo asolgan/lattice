@@ -11,10 +11,16 @@
 //    Each aspect also validated for correct vertexKey + localName envelope fields.
 // 10 permission vertices (vtx.permission.<NanoID>) — one per op
 // 10 grantedBy link keys (each permission → operator role)
+//  2 Lens meta-vertices (vtx.meta.<NanoID>, class=meta.lens):
+//      - capabilityRoles (actorAggregate; cypher walks holdsRole/grantedBy →
+//        platformPermissions; projects cap.roles.<actor>)
+//      - capabilityRoleIndex (operation-aggregate; the FR22 role-by-operation
+//        index)
+//    plus each lens's .spec + .canonicalName aspects.
 //  1 package vertex (vtx.package.<NanoID>)
 //  1 package manifest aspect (vtx.package.<NanoID>.manifest) with name=rbac-domain
 //
-// Total target: ~34 OK lines.
+// Total target: ~45 OK lines.
 //
 // Exit 0: all assertions pass.
 // Exit 1: one or more assertions failed.
@@ -304,6 +310,98 @@ func main() {
 				fail(pkgManifestKey+" envelope", err.Error())
 			} else {
 				ok(pkgManifestKey + " envelope shape OK")
+			}
+		}
+	}
+
+	// -------------------------------------------------------------------------
+	// 7b. Verify rbac-domain's two Lens meta-vertices (capabilityRoles +
+	// capabilityRoleIndex). rbac-domain owns the role-derived grant projection
+	// (cap.roles.<actor>) and the role-by-operation index (the FR22 denial-path
+	// source) — both decomposed out of the bootstrap god-cypher into the
+	// package. Each lens is a vtx.meta.<NanoID> class=meta.lens carrying a spec
+	// aspect whose cypherRule walks the rbac grant vocabulary.
+	// -------------------------------------------------------------------------
+	rbacLenses := []struct {
+		canonical    string
+		cypherTerms  []string
+		hasProjKind  bool
+		projKindWant string
+	}{
+		{
+			canonical:    "capabilityRoles",
+			cypherTerms:  []string{"holdsRole", "grantedBy", "platformPermissions"},
+			hasProjKind:  true,
+			projKindWant: "actorAggregate",
+		},
+		{
+			canonical:   "capabilityRoleIndex",
+			cypherTerms: []string{"grantedBy", "operationType"},
+			hasProjKind: false,
+		},
+	}
+	for _, l := range rbacLenses {
+		lensKey, err := pkgverify.FindMetaByCanonical(ctx, coreKV, allKeys, l.canonical)
+		if err != nil || lensKey == "" {
+			fail(l.canonical+" Lens meta-vertex", fmt.Sprintf("vtx.meta.*.canonicalName=%q not found: %v", l.canonical, err))
+			continue
+		}
+		ok(fmt.Sprintf("%s Lens meta-vertex exists: %s", l.canonical, lensKey))
+
+		if env, err := pkgverify.GetEnvelope(ctx, coreKV, lensKey); err != nil {
+			fail(lensKey+" class", fmt.Sprintf("cannot read: %v", err))
+		} else {
+			cls, _ := env["class"].(string)
+			if cls != "meta.lens" {
+				fail(lensKey+" class", fmt.Sprintf("got %q want meta.lens", cls))
+			} else {
+				ok(lensKey + " class=meta.lens")
+			}
+			if isDeleted, _ := env["isDeleted"].(bool); isDeleted {
+				fail(lensKey, "Lens vertex is tombstoned")
+			}
+		}
+
+		specKey := lensKey + ".spec"
+		if env, err := pkgverify.GetEnvelope(ctx, coreKV, specKey); err != nil {
+			fail(specKey, fmt.Sprintf("missing: %v", err))
+		} else {
+			data, _ := env["data"].(map[string]any)
+			src, _ := data["cypherRule"].(string)
+			missing := []string{}
+			for _, term := range l.cypherTerms {
+				if !strings.Contains(src, term) {
+					missing = append(missing, term)
+				}
+			}
+			if len(missing) > 0 {
+				fail(specKey, fmt.Sprintf("spec cypherRule missing terms: %v", missing))
+			} else {
+				ok(fmt.Sprintf("%s contains %v", specKey, l.cypherTerms))
+			}
+			if l.hasProjKind {
+				pk, _ := data["projectionKind"].(string)
+				if pk != l.projKindWant {
+					fail(specKey+" projectionKind", fmt.Sprintf("got %q want %q", pk, l.projKindWant))
+				} else {
+					ok(specKey + " projectionKind=" + l.projKindWant)
+				}
+			}
+			if err := pkgverify.CheckAspectEnvelope(env, specKey, lensKey, "spec"); err != nil {
+				fail(specKey+" envelope", err.Error())
+			} else {
+				ok(specKey + " envelope shape OK")
+			}
+		}
+
+		cnKey := lensKey + ".canonicalName"
+		if env, err := pkgverify.GetEnvelope(ctx, coreKV, cnKey); err != nil {
+			fail(cnKey, fmt.Sprintf("missing: %v", err))
+		} else {
+			if err := pkgverify.CheckAspectEnvelope(env, cnKey, lensKey, "canonicalName"); err != nil {
+				fail(cnKey+" envelope", err.Error())
+			} else {
+				ok(cnKey + " envelope shape OK")
 			}
 		}
 	}

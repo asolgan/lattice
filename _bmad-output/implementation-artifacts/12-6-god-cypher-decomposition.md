@@ -1,6 +1,6 @@
 # Story 12.6: God-cypher decomposition — rbac role/permission projection + retire service/location remnants (closes Epic 12)
 
-Status: ready-for-dev
+Status: review
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -121,44 +121,44 @@ This story completes the read+write decomposition the keystone stories (12.1–1
 
 ## Tasks / Subtasks
 
-- [ ] **Task 1 — Add the `capabilityRoles` lens to rbac-domain (Part A write side). (AC: A1)**
-  - [ ] Add a `Lenses()` source (mirror `DDLs()` / `Permissions()`) returning a `pkgmgr.LensSpec` for `capabilityRoles`: `CanonicalName: "capabilityRoles"`, `Class: "meta.lens"`, `Engine: "full"`, `Adapter: "nats-kv"`, `Bucket: "capability"`, `ProjectionKind: "actorAggregate"`, `Output: &pkgmgr.OutputDescriptorSpec{AnchorType:"identity", OutputKeyPattern:"cap.roles.{actorSuffix}", BodyColumns:["platformPermissions","roles"], EmptyBehavior:"delete", Freshness:"auto"}`, and a `Spec` cypher walking `MATCH (identity:identity {key:$actorKey}) OPTIONAL MATCH (identity)-[:holdsRole]->(role:role)<-[:grantedBy]-(perm:permission) RETURN identity.key AS actorKey, collect(DISTINCT {operationType: perm.data.operationType, scope: perm.data.scope}) AS platformPermissions, collect(DISTINCT role.key) AS roles`. Wire `Lenses: Lenses()` into `Package` in `package.go`.
-  - [ ] Update `packages/rbac-domain/manifest.yaml` `lenses: []` → declare the `capabilityRoles` (+ `capabilityRoleIndex` if AC-A5 moves it here) lens(es) — the manifest cross-check (`internal/pkgmgr/manifest.go:97-114`) asserts manifest lens count + canonicalName matches `Definition.Lenses`.
-  - [ ] Confirm the `cap.roles.<actor>` key resolves GUARDED via the 12.4 plan predicate (auth-plane bucket) — add/extend a test asserting `projectionSeq` + soft-tombstone apply to `cap.roles.<actor>` like `cap.<actor>`.
+- [x] **Task 1 — Add the `capabilityRoles` lens to rbac-domain (Part A write side). (AC: A1)**
+  - [x] Add a `Lenses()` source (mirror `DDLs()` / `Permissions()`) returning a `pkgmgr.LensSpec` for `capabilityRoles`: `CanonicalName: "capabilityRoles"`, `Class: "meta.lens"`, `Engine: "full"`, `Adapter: "nats-kv"`, `Bucket: "capability"`, `ProjectionKind: "actorAggregate"`, `Output: &pkgmgr.OutputDescriptorSpec{AnchorType:"identity", OutputKeyPattern:"cap.roles.{actorSuffix}", BodyColumns:["platformPermissions","roles"], EmptyBehavior:"delete", Freshness:"auto"}`, and a `Spec` cypher walking `MATCH (identity:identity {key:$actorKey}) OPTIONAL MATCH (identity)-[:holdsRole]->(role:role)<-[:grantedBy]-(perm:permission) RETURN identity.key AS actorKey, collect(DISTINCT {operationType: perm.data.operationType, scope: perm.data.scope}) AS platformPermissions, collect(DISTINCT role.key) AS roles`. Wire `Lenses: Lenses()` into `Package` in `package.go`.
+  - [x] Update `packages/rbac-domain/manifest.yaml` `lenses: []` → declare the `capabilityRoles` (+ `capabilityRoleIndex` if AC-A5 moves it here) lens(es) — the manifest cross-check (`internal/pkgmgr/manifest.go:97-114`) asserts manifest lens count + canonicalName matches `Definition.Lenses`.
+  - [x] Confirm the `cap.roles.<actor>` key resolves GUARDED via the 12.4 plan predicate (auth-plane bucket) — add/extend a test asserting `projectionSeq` + soft-tombstone apply to `cap.roles.<actor>` like `cap.<actor>`.
 
-- [ ] **Task 2 — Register the rbac auth-hook (Part A read side). (AC: A2, A4)**
-  - [ ] In core (where the processor's `CapabilityAuthorizer` is constructed — `internal/processor/commit_path.go:640` `MakePipeline` → `SelectAuthorizerArgs`), construct the rbac `authEntry` from rbac-domain's install-time declaration and pass it via `SelectAuthorizerOpts.ExtraEntries`. Gate it on rbac-domain being installed (state HOW you detect installed: package vertex presence, a lens-presence probe, or a config flag — pin #2). The matcher kind is the EXISTING `matchPlatformPermissionKind`; the key derivation is `cap.roles.<actor>`; `threadsDocOnDenial: true`.
-  - [ ] Ensure the rbac entry selects ONLY the ordinary-actor platform read (NOT the task path, NOT the service path, NOT always-true) — this is what lets it pass the AC-X1 overlap guard and preserves one-key-per-path.
-  - [ ] Confirm exactly ONE KV GET fires for an ordinary-actor platform authorize (reuse the single-GET test pattern from `step3_auth_capability_test.go`).
+- [x] **Task 2 — Register the rbac auth-hook (Part A read side). (AC: A2, A4)**
+  - [x] In core (where the processor's `CapabilityAuthorizer` is constructed — `internal/processor/commit_path.go:640` `MakePipeline` → `SelectAuthorizerArgs`), construct the rbac `authEntry` from rbac-domain's install-time declaration and pass it via `SelectAuthorizerOpts.ExtraEntries`. Gate it on rbac-domain being installed (state HOW you detect installed: package vertex presence, a lens-presence probe, or a config flag — pin #2). The matcher kind is the EXISTING `matchPlatformPermissionKind`; the key derivation is `cap.roles.<actor>`; `threadsDocOnDenial: true`.
+  - [x] Ensure the rbac entry selects ONLY the ordinary-actor platform read (NOT the task path, NOT the service path, NOT always-true) — this is what lets it pass the AC-X1 overlap guard and preserves one-key-per-path.
+  - [x] Confirm exactly ONE KV GET fires for an ordinary-actor platform authorize (reuse the single-GET test pattern from `step3_auth_capability_test.go`).
 
-- [ ] **Task 3 — The primordial-composition resolution (Part A). (AC: A4)**
-  - [ ] Implement Winston's adjudicated answer to Open Question #1. Do NOT proceed past this task on best-judgment alone if the kernel-admin/Loom/Weaver authorization would break — this is the brick-the-platform risk. Default (pending adjudication): core's shrunk `capability` cypher keeps a NARROW primordial-only platform-grant projection anchored on the system identities, NOT referencing the rbac vocabulary for ordinary actors; the dispatcher reads `cap.<actor>` for the system actor class and `cap.roles.<actor>` for ordinary actors.
-  - [ ] Prove the system actors still authorize: `internal/processor/service_actor_auth_parity_test.go` + the bootstrap-quiescent / Hello-Lattice E2E pass with admin + Loom + Weaver retaining their `CreateMetaVertex`/`UpdateMetaVertex`/`TombstoneMetaVertex`/`InstallPackage`/`UninstallPackage` platform grants.
+- [x] **Task 3 — The primordial-composition resolution (Part A). (AC: A4)**
+  - [x] Implement Winston's adjudicated answer to Open Question #1. Do NOT proceed past this task on best-judgment alone if the kernel-admin/Loom/Weaver authorization would break — this is the brick-the-platform risk. Default (pending adjudication): core's shrunk `capability` cypher keeps a NARROW primordial-only platform-grant projection anchored on the system identities, NOT referencing the rbac vocabulary for ordinary actors; the dispatcher reads `cap.<actor>` for the system actor class and `cap.roles.<actor>` for ordinary actors.
+  - [x] Prove the system actors still authorize: `internal/processor/service_actor_auth_parity_test.go` + the bootstrap-quiescent / Hello-Lattice E2E pass with admin + Loom + Weaver retaining their `CreateMetaVertex`/`UpdateMetaVertex`/`TombstoneMetaVertex`/`InstallPackage`/`UninstallPackage` platform grants.
 
-- [ ] **Task 4 — Drop the god-cypher rbac MATCHes + resolve `capabilityRoleIndex`. (AC: A3, A5, G1)**
-  - [ ] Edit `internal/bootstrap/lenses.go` `CapabilityLensDefinition().CypherRule`: remove the `holdsRole`/`grantedBy`/`role`/`permission` branch + the `platformPermissions`/`roles` RETURN columns (subject to Task 3's primordial anchor). Update the Output descriptor `bodyColumns` accordingly. Keep the §6.2-required field shape the Processor's `CapabilityDoc` parser tolerates (verify `internal/processor/capability_doc.go`).
-  - [ ] Move `capabilityRoleIndex` to rbac-domain (AC-A5): add it as a `pkgmgr.LensSpec` (operation-aggregate, `Into.Key==["operationType"]` path), remove `CapabilityRoleIndexLensDefinition` from the primordial seed (`internal/bootstrap/primordial.go:495-503` + `lenses.go:136`). Confirm the FR22 denial path degrades to empty `rolesCarryingPermission` when rbac-domain is absent, and a test asserts it.
+- [x] **Task 4 — Drop the god-cypher rbac MATCHes + resolve `capabilityRoleIndex`. (AC: A3, A5, G1)**
+  - [x] Edit `internal/bootstrap/lenses.go` `CapabilityLensDefinition().CypherRule`: remove the `holdsRole`/`grantedBy`/`role`/`permission` branch + the `platformPermissions`/`roles` RETURN columns (subject to Task 3's primordial anchor). Update the Output descriptor `bodyColumns` accordingly. Keep the §6.2-required field shape the Processor's `CapabilityDoc` parser tolerates (verify `internal/processor/capability_doc.go`).
+  - [x] Move `capabilityRoleIndex` to rbac-domain (AC-A5): add it as a `pkgmgr.LensSpec` (operation-aggregate, `Into.Key==["operationType"]` path), remove `CapabilityRoleIndexLensDefinition` from the primordial seed (`internal/bootstrap/primordial.go:495-503` + `lenses.go:136`). Confirm the FR22 denial path degrades to empty `rolesCarryingPermission` when rbac-domain is absent, and a test asserts it.
 
-- [ ] **Task 5 — Delete service/location remnants, Path B (Part B). (AC: B1, B2, B3)**
-  - [ ] Confirm `packages/service-location/` holds ONLY `CONCEPT.md` (no `package.go`); if a real package exists, STOP and raise to Winston.
-  - [ ] Edit `internal/bootstrap/lenses.go` `CypherRule`: delete the `containedIn`/`availableAt`/`unavailableAt`/`permitsOperation` branch + the `serviceAccess` RETURN column. No replacement.
-  - [ ] Confirm the service matcher kind + its disjoint key derivation stay registered (12.5 seed) and now deny-by-absence. Decide + state whether the service key derivation moves to `cap.svc.<actor>` (matches §6.1) — if so, treat as a CI-only-check trigger.
-  - [ ] Reconcile the bypass service-access oracle to Path B; relocate/defer the §6.10 + Hello Lattice service fixtures with a `docs/decisions/` note (do not silently drop).
+- [x] **Task 5 — Delete service/location remnants, Path B (Part B). (AC: B1, B2, B3)**
+  - [x] Confirm `packages/service-location/` holds ONLY `CONCEPT.md` (no `package.go`); if a real package exists, STOP and raise to Winston.
+  - [x] Edit `internal/bootstrap/lenses.go` `CypherRule`: delete the `containedIn`/`availableAt`/`unavailableAt`/`permitsOperation` branch + the `serviceAccess` RETURN column. No replacement.
+  - [x] Confirm the service matcher kind + its disjoint key derivation stay registered (12.5 seed) and now deny-by-absence. Decide + state whether the service key derivation moves to `cap.svc.<actor>` (matches §6.1) — if so, treat as a CI-only-check trigger.
+  - [x] Reconcile the bypass service-access oracle to Path B; relocate/defer the §6.10 + Hello Lattice service fixtures with a `docs/decisions/` note (do not silently drop).
 
-- [ ] **Task 6 — Harden `buildAuthRegistry` (cross-cutting). (AC: X1, X2)**
-  - [ ] In `internal/processor/step3_auth_matcher.go`, extend `buildAuthRegistry` so package-derived extras are rejected when their `selects` overlaps a core path (task/service/platform) or is always-true. Retain name-collision rejection + the missing-predicate/kind/key guard. State the overlap model in Completion Notes (e.g. an explicit coverage descriptor per entry, or a representative-authContext probe matrix — structural, not best-effort).
-  - [ ] Tests: a package entry overlapping the platform path (and one always-true) → `buildAuthRegistry`/`NewCapabilityAuthorizer` returns error (nil authorizer); the legitimate rbac-shaped disjoint entry → accepted + routes.
+- [x] **Task 6 — Harden `buildAuthRegistry` (cross-cutting). (AC: X1, X2)**
+  - [x] In `internal/processor/step3_auth_matcher.go`, extend `buildAuthRegistry` so package-derived extras are rejected when their `selects` overlaps a core path (task/service/platform) or is always-true. Retain name-collision rejection + the missing-predicate/kind/key guard. State the overlap model in Completion Notes (e.g. an explicit coverage descriptor per entry, or a representative-authContext probe matrix — structural, not best-effort).
+  - [x] Tests: a package entry overlapping the platform path (and one always-true) → `buildAuthRegistry`/`NewCapabilityAuthorizer` returns error (nil authorizer); the legitimate rbac-shaped disjoint entry → accepted + routes.
 
-- [ ] **Task 7 — Code conventions sweep (house rules). (AC: all)**
-  - [ ] NO history/changelog comments (`// Story 12.6…`, `// was…`, `// previously…`, `// dropped the rbac MATCHes…`, `// moved from core…`). Comments describe what the code does NOW for a reader who has no idea a change happened.
-  - [ ] Key-shape conventions (Contract #1): `cap.roles.<actor-suffix>` / `cap.svc.<actor-suffix>` are Capability-KV keys (NOT `vtx.*`); `{actorSuffix}` strips `vtx.` (→ `cap.roles.identity.<id>`). Link-naming reads as a sentence; do not invent new shapes.
-  - [ ] New docs → `/docs` (e.g. extend `docs/decisions/projection-plane-decomposition.md` with the primordial-anchor resolution + the Path-B service-fixture disposition), NOT `_bmad-output/`.
+- [x] **Task 7 — Code conventions sweep (house rules). (AC: all)**
+  - [x] NO history/changelog comments (`// Story 12.6…`, `// was…`, `// previously…`, `// dropped the rbac MATCHes…`, `// moved from core…`). Comments describe what the code does NOW for a reader who has no idea a change happened.
+  - [x] Key-shape conventions (Contract #1): `cap.roles.<actor-suffix>` / `cap.svc.<actor-suffix>` are Capability-KV keys (NOT `vtx.*`); `{actorSuffix}` strips `vtx.` (→ `cap.roles.identity.<id>`). Link-naming reads as a sentence; do not invent new shapes.
+  - [x] New docs → `/docs` (e.g. extend `docs/decisions/projection-plane-decomposition.md` with the primordial-anchor resolution + the Path-B service-fixture disposition), NOT `_bmad-output/`.
 
-- [ ] **Task 8 — Verification gates (security plane), run INLINE in CI's exact order. (AC: G2)**
-  - [ ] `go build ./...`; `make vet`; `golangci-lint run ./...`; `make verify-kernel`.
-  - [ ] **CI-only checks (the lesson that bit 12.4 — DO NOT SKIP):** `grep scripts/verify-*.go` for the affected shapes. `make verify-package-rbac` (`scripts/verify-package-rbac.go`) asserts the rbac-domain install shape (~34 OK lines: 1 DDL, 10 perms, 10 grantedBy links, package vertex + manifest). Adding `capabilityRoles`(+`capabilityRoleIndex`) lens(es) changes the install shape → UPDATE the verify script's expected lens/aspect counts. Also check `verify-package-identity-hygiene.go` (which 12.4 had to fix to read lens cypher from `spec.cypherRule`) and `verify-kernel.go` (asserts the capability lens's aspect set — Part A/B shrink the cypher + change `bodyColumns`).
-  - [ ] `make test-bypass` (Gate 2 — all BLOCKED); `make test-capability-adversarial` (Gate 3 — all DEFENDED, incl. the role-manipulation vector).
-  - [ ] `go test ./...` (FULL tree). Note: an unrelated embedded-NATS JetStream timing flake (e.g. `internal/loom`, `processor/outbox`, a `pkgmgr` race) may surface under fully-parallel `go test ./...` — but the story's OWN packages (`internal/bootstrap`, `internal/processor`, `internal/refractor`, `packages/rbac-domain`, `internal/bypass`) must be deterministically green; re-run isolated to confirm any flake is pre-existing.
+- [x] **Task 8 — Verification gates (security plane), run INLINE in CI's exact order. (AC: G2)**
+  - [x] `go build ./...`; `make vet`; `golangci-lint run ./...`; `make verify-kernel`.
+  - [x] **CI-only checks (the lesson that bit 12.4 — DO NOT SKIP):** `grep scripts/verify-*.go` for the affected shapes. `make verify-package-rbac` (`scripts/verify-package-rbac.go`) asserts the rbac-domain install shape (~34 OK lines: 1 DDL, 10 perms, 10 grantedBy links, package vertex + manifest). Adding `capabilityRoles`(+`capabilityRoleIndex`) lens(es) changes the install shape → UPDATE the verify script's expected lens/aspect counts. Also check `verify-package-identity-hygiene.go` (which 12.4 had to fix to read lens cypher from `spec.cypherRule`) and `verify-kernel.go` (asserts the capability lens's aspect set — Part A/B shrink the cypher + change `bodyColumns`).
+  - [x] `make test-bypass` (Gate 2 — all BLOCKED); `make test-capability-adversarial` (Gate 3 — all DEFENDED, incl. the role-manipulation vector).
+  - [x] `go test ./...` (FULL tree). Note: an unrelated embedded-NATS JetStream timing flake (e.g. `internal/loom`, `processor/outbox`, a `pkgmgr` race) may surface under fully-parallel `go test ./...` — but the story's OWN packages (`internal/bootstrap`, `internal/processor`, `internal/refractor`, `packages/rbac-domain`, `internal/bypass`) must be deterministically green; re-run isolated to confirm any flake is pre-existing.
 
 ## Dev Notes
 
@@ -257,16 +257,35 @@ Reproduce CI in its EXACT order (build → vet → lint → verify-kernel → pa
 
 ## Open Questions for Winston
 
-1. **Primordial-composition resolution (AC-A4 / Task 3 — the load-bearing decision).** Two viable shapes, both preserve one-key-per-path and keep the kernel un-bricked:
-   - **(a)** Core's shrunk `capability` cypher keeps a NARROW primordial-only platform-grant projection for the system identities — ideally by hard-coding the system actors' root-grant set in core (they ARE core: protected, kernel-seeded, fixed) so `role`/`permission`/`holdsRole`/`grantedBy` truly vanish from core's cypher. Ordinary actors read `cap.roles.<actor>` (rbac-domain).
-   - **(b)** rbac-domain's `capabilityRoles` lens projects `cap.roles.<actor>` for the system actors too (they hold the operator role), with core retaining a minimal hard-coded root-grant ONLY as the no-rbac-installed fallback.
-   Recommendation: **(a)** — it makes "core references no rbac vocabulary" literally true (the strongest interpretation of AC-A3/AC-G1) and removes the dependency on rbac-domain being installed for the kernel to function. Confirm (a) vs (b), and whether the system actors' core key stays `cap.<actor>` or moves to a dedicated `cap.system.<actor>` space.
+> **RESOLVED by Andrew + Winston before dev; implemented exactly as adjudicated.**
 
-2. **`capabilityRoleIndex` ownership (AC-A5).** The AC default moves it to rbac-domain (it is pure rbac vocabulary), accepting empty FR22 `rolesCarryingPermission` when rbac-domain is absent. Confirm — or, if you prefer the index stays a core seed for denial-response richness, note that core would then RETAIN an rbac-type reference (`role <-grantedBy- permission`), partially weakening AC-G1's "core references no rbac types." Recommendation: move it to rbac-domain for a clean AC-G1.
+1. **Primordial-composition resolution (AC-A4 / Task 3).** **RESOLVED = Option (a)** — narrow
+   primordial-anchor cypher. Core's shrunk `capability` cypher (`internal/bootstrap/lenses.go`)
+   projects a **hard-coded** root-grant set (`Create/Update/TombstoneMetaVertex`,
+   `Install/UninstallPackage`, all scope:any) for **protected** identities only
+   (`WHERE identity.data.protected = true`); ordinary actors match nothing → no core `cap.<actor>`
+   doc. `role`/`permission`/`holdsRole`/`grantedBy` truly vanish from core's cypher. System actors
+   keep reading `cap.<actor>` (NO `cap.system.<actor>` key space — minimal churn). The read-side
+   class-aware branch is a SINGLE platform entry whose key derivation routes system → `cap.<actor>`,
+   ordinary → `cap.roles.<actor>`. Non-brick proved live: `make up` readiness gate satisfied
+   `capProjections=3` and the admin `cap.identity.<id>` carries the 5 root grants.
 
-3. **Service key derivation under Path B (AC-B2).** The 12.5 service seed entry derives `cap.<actor>`. Contract #6 §6.1 names `cap.svc.<actor>` as the future service key. Should Part B move the service path's key derivation to `cap.svc.<actor>` now (matching §6.1, treated as a CI-only-check trigger), or leave it on `cap.<actor>` (deny-by-absence either way) and let the future service package set the key when it lands? Recommendation: leave on the 12.5 seed key for this story (Part B is a deletion, not a re-key) unless you want §6.1 alignment locked in now.
+2. **`capabilityRoleIndex` ownership (AC-A5).** **RESOLVED = move to rbac-domain.** Declared as the
+   second `rbac-domain` lens (operation-aggregate, `IntoKey: ["operationType"]`); removed from the
+   kernel seed (`CapabilityRoleIndexLensDefinition` deleted, nanoid registry bumped to bootstrap-file
+   version 7). Core retains NO `role <-grantedBy- permission` reference (clean AC-G1). FR22
+   `rolesCarryingPermission` degrades to empty when rbac-domain is absent (the denial builder's GET
+   simply not-founds — already-handled path, no code change).
 
-4. **rbac-installed detection for the auth-hook (AC-A2 / pin #2).** How should core gate construction of the rbac `authEntry` on rbac-domain being installed — package-vertex presence probe at processor startup, a lens-presence probe, or a config/env flag? Recommendation: a startup probe for the rbac-domain package vertex (consistent with how install-state is otherwise detected), so an uninstalled rbac-domain cleanly degrades per AC-A2.
+3. **Service key derivation under Path B (AC-B2).** **RESOLVED = leave on the 12.5 seed key
+   `cap.<actor>`.** Part B is a deletion, not a re-key. After deleting the service MATCHes the service
+   path finds no `serviceAccess` entry and denies by absence (§6.8). Not moved to `cap.svc.<actor>`.
+
+4. **rbac-installed detection for the auth-hook (AC-A2 / pin #2).** **RESOLVED = startup package-vertex
+   probe.** `pkgmgr.IsPackageInstalled(ctx, conn, "rbac-domain")` is called in `cmd/processor/main.go`
+   and threaded through `processor.MakePipeline` (`AuthWiring.RbacRolesActive`) →
+   `SelectAuthorizerOpts`. Uninstalled rbac-domain → `RbacRolesActive=false` → platform read targets
+   `cap.<actor>` for all actors (ordinary actors deny by absence, AC-A2 degradation).
 
 ## Dev Agent Record
 
@@ -276,6 +295,141 @@ claude-opus-4-8 (Amelia / bmad-dev-story)
 
 ### Debug Log References
 
+(none — no stuck-loop halts.)
+
 ### Completion Notes List
 
+**Part A — rbac role/permission decomposition.**
+- `packages/rbac-domain/lenses.go` (NEW) declares two lenses wired into `Package.Lenses`:
+  `capabilityRoles` (actor-aggregate, `cap.roles.{actorSuffix}`, bodyColumns `[platformPermissions,
+  roles]`, walks `holdsRole → role <-grantedBy- permission`) and `capabilityRoleIndex`
+  (operation-aggregate, `IntoKey: ["operationType"]`, the FR22 `cap.role-by-operation.<op>` index).
+  Both activate through the live 12.3/12.4 `projectionKind`/operation-aggregate paths with zero
+  `cmd/` edits. Added `LensSpec.IntoKey` (`internal/pkgmgr/definition.go`) + emission in `build.go`
+  so the operation-aggregate lens keys by `operationType` (routes via the existing
+  `isOperationRoleIndexLens` in `cmd/refractor/main.go`).
+- **Where the rbac auth-hook is constructed + how it is gated (pin #2):** NOT a separate
+  `ExtraEntries` dispatch entry. Per Q1, the rbac routing is folded into the SINGLE platform entry's
+  **class-aware key derivation** (`classAwarePlatformKey` in `step3_auth_matcher.go`): system actor →
+  `cap.<actor>`, ordinary actor → `cap.roles.<actor>`. It is gated by `AuthWiring.RbacRolesActive`,
+  computed in `cmd/processor/main.go` from `pkgmgr.IsPackageInstalled(ctx, conn, "rbac-domain")` (a
+  startup core-kv package-vertex probe) and threaded through `processor.MakePipeline` →
+  `SelectAuthorizerArgs`. The system-actor set is discovered at startup via
+  `bootstrap.SystemActorKeys` (scans core-kv for protected `identity` vertices — exactly the set the
+  anchor projects — so the processor stays self-contained and does not depend on the bootstrap-file
+  key space being loaded into the processor process).
+
+**Primordial-anchor approach (Q1 = Option (a)).** Core's `capability` cypher anchors per-identity,
+filters `WHERE identity.data.protected = true`, and RETURNs a LITERAL list of the 5 scope:any kernel
+root grants — no rbac graph walk. Ordinary actors → zero rows → no core `cap.<actor>` doc (they read
+`cap.roles.<actor>`). bodyColumns shrank to `[platformPermissions]`; `serviceAccess`/`roles` moved to
+`StaticEmptyColumns` so the §6.2 doc shape stays intact (parser-tolerant). Proven non-brick LIVE: the
+`make up` readiness gate satisfied `capProjections=3` and the admin doc carries the 5 root grants;
+`service_actor_auth_parity_test.go` still green.
+
+**Part B — service/location remnants retired (Path B).** Confirmed `packages/service-location/` holds
+only `CONCEPT.md`. Deleted the `containedIn`/`availableAt`/`unavailableAt`/`permitsOperation` branch +
+`serviceAccess` RETURN column from the god-cypher (done as part of the anchor rewrite — the new cypher
+names none of those types). Service path stays on the 12.5 seed key `cap.<actor>` (Q3) and denies by
+absence. §6.10 service behaviors + Hello-Lattice service milestones deferred to a future service
+package; recorded in `docs/decisions/projection-plane-decomposition.md` (not silently dropped). The
+capability conformance/e2e tests that asserted service-access via the god-cypher were reconciled:
+role/platform assertions moved to the `capabilityRoles` lens, service assertions dropped.
+
+**Registry hardening (AC-X) — overlap model + why it accepts the real rbac config but rejects a
+hostile one.** Moved `buildAuthRegistry` from name-only to a **structural coverage descriptor**: each
+`authEntry` declares `authCoverage{kind ∈ {platform,task,service}, catchAll, scopeTag}`. A
+package-derived extra is rejected fail-closed when it reuses a core path name, claims a core
+specific cell (task/service), claims the always-true platform catch-all (no scope tag), reuses a
+platform scope tag, or — via a representative-authContext **probe matrix
+(`checkCoverageMatchesPredicate`)** — matches a foreign cell or an unconditional platform context
+(`nil`/`{}`). The probe matrix is structural, never a runtime fan-out. **Why it accepts the real rbac
+config:** the rbac contribution is NOT an extra at all — it is the platform entry's key derivation, so
+it is structurally part of the trusted core platform path and never enters the guard. **Why it rejects
+a hostile one:** an attacker-supplied extra ordered before `platform` that selects the platform cell
+(to siphon the read onto a package key) either declares `pathPlatform` with no scope tag → rejected as
+the always-true claim, or declares a narrow scope but its predicate matches `nil`/`{}` → rejected by
+the probe-matrix cross-check. A legitimately disjoint scoped extra (unique scope tag, matches only a
+narrow non-unconditional slice) is accepted. The pre-existing 12.5 `ext-route` extension-point test
+was reconciled with the new coverage field and still passes. Tests:
+`internal/processor/step3_auth_rbac_hook_test.go` (overlap reject + always-true reject + mislabeled
+reject + disjoint accept + name-reuse reject + ordinary-actor cap.roles single-GET + system-actor
+cap.<actor> single-GET + ordinary-deny-by-absence).
+
+**capabilityRoleIndex move + bootstrap-file version bump.** Removed `CapabilityRoleIndexLensDefinition`
+(core's last `role <-grantedBy- permission` reference) and its primordial seed + nanoid-registry
+fields; bumped the bootstrap-file version 6 → 7 (forces a clean regen on `make down && up`, which CI
+does for Gate 2/3). `PrimordialVertexKeyCount` 28 → 27. `verify-kernel.go` + `internal/bootstrap/
+verify.go` updated to verify 1 lens (capability anchor, now incl. projectionKind+output aspects);
+`verify-package-rbac.go` extended to verify the 2 new rbac lenses (install via the REAL InstallPackage
+path → 64 OK, was ~34).
+
+**Follow-ups for the planning lead (NOT done — flagged per AC-G1):** (1) mark the
+`lattice-architecture.md` god-cypher open item resolved; (2) record the completed decomposition in
+Contract #6 §6.1. Both are planning-artifact / frozen-contract edits — proposed, not performed.
+
+**Verification gates — all PASS (run inline, CI order):**
+- `go build ./...` → PASS (exit 0).
+- `make vet` → PASS.
+- `golangci-lint run ./...` → PASS (0 issues).
+- `make verify-kernel` → PASS (ALL ASSERTIONS PASSED; live anchor projection confirmed,
+  `capProjections=3`).
+- `make verify-package-rbac` → PASS (64 OK; both new lenses verified via real install).
+- `make verify-package-identity-hygiene` → PASS (31 OK; lens-cypher hygiene unaffected).
+- `go test ./...` (FULL tree) → PASS (47 packages OK, 0 failures). `internal/processor/outbox`
+  flaked once on the known embedded-NATS `meta.inf.tmp` JetStream timing issue; passed on re-run.
+- `make test-bypass` (Gate 2) → PASS (4/4 BLOCKED).
+- `make test-capability-adversarial` (Gate 3) → PASS (6/6 cleared — 5 DEFENDED, 1 ACCEPTED-WINDOW;
+  matches pre-existing baseline; role-manipulation vectors v1/v3/v4 DEFENDED).
+
+**Uncertain / for review:** (1) The narrow-anchor's `protected:true` predicate selects exactly the
+3 kernel-seeded system identities (only the kernel sets `protected` on identities; the step-8 commit
+gate blocks packages from setting it). If a future kernel change ever seeds a protected NON-system
+identity it would erroneously receive root grants — worth a guard rail later, but out of scope here.
+(2) Stale-key cleanup on a PRODUCTION upgrade: an ordinary actor that had a core `cap.<actor>` under
+the old god-cypher gets no new core projection (zero rows ≠ delete without a realness filter), so a
+pre-existing `cap.<actor>` would linger until rbac-domain reprojects `cap.roles.<actor>`. Fresh
+systems + all tests start clean so this is invisible to the gates; production migration is an ops/
+Winston concern, noted not handled.
+
 ### File List
+
+**New:**
+- `packages/rbac-domain/lenses.go`
+- `internal/bootstrap/system_actors.go`
+- `internal/processor/step3_auth_rbac_hook_test.go`
+
+**Modified — core/source:**
+- `internal/bootstrap/lenses.go` (narrow primordial-anchor cypher; removed `CapabilityRoleIndexLensDefinition`)
+- `internal/bootstrap/primordial.go` (dropped role-index seed; updated `makeLensSpecBody`)
+- `internal/bootstrap/nanoid.go` (removed `CapabilityRoleIndexLens*`; version 6→7; `PrimordialVertexKeyCount` 28→27)
+- `internal/bootstrap/verify.go` (capability-lens aspect set incl. projectionKind+output; dropped role-index)
+- `internal/pkgmgr/definition.go` (`LensSpec.IntoKey`)
+- `internal/pkgmgr/build.go` (emit `IntoKey` in lens spec body)
+- `internal/pkgmgr/installer.go` (`IsPackageInstalled` probe)
+- `internal/processor/step3_auth_matcher.go` (coverage model + hardened `buildAuthRegistry` + class-aware platform key)
+- `internal/processor/step3_auth_capability.go` (`rolesKeyFromActor`; `newCapabilityAuthorizer` options)
+- `internal/processor/step3_auth.go` (`RbacRolesActive`/`SystemActorKeys` opts → class-aware derivation)
+- `internal/processor/commit_path.go` (`AuthWiring` param on `MakePipeline`)
+- `cmd/processor/main.go` (rbac-installed probe + `SystemActorKeys` → `AuthWiring`)
+- `packages/rbac-domain/package.go` (`Lenses: Lenses()`)
+- `packages/rbac-domain/manifest.yaml` (declare the 2 lenses)
+
+**Modified — CI verify scripts:**
+- `scripts/verify-kernel.go` (1 lens; dropped role-index assertions; counts)
+- `scripts/verify-package-rbac.go` (verify the 2 new rbac lenses)
+
+**Modified — tests reconciled:**
+- `internal/processor/step3_auth_capability_test.go` (ext-route coverage field)
+- `internal/refractor/refractor_capability_e2e_test.go` (anchor: protected actor, no service/roles)
+- `internal/refractor/refractor_capability_multi_e2e_test.go` (drive capabilityRoles + role-index; cap.roles keys; drop service)
+- `internal/refractor/refractor_capability_aspectfanout_e2e_test.go` (drive capabilityRoles; cap.roles key)
+- `internal/refractor/refractor_capability_linkfanout_e2e_test.go` (drive capabilityRoles; cap.roles key)
+- `internal/refractor/e2e_supervisor_helper_test.go` (`capabilityRolesSpecForTest` helper)
+- `internal/refractor/ruleengine/full/parse_test.go` (anchor shape; new capabilityRoles parse test; removed unused `hasAntiPattern`)
+- `internal/refractor/ruleengine/full/service_actor_class_test.go` (primordial-anchor protected-gates-root)
+- `internal/refractor/ruleengine/full/bootstrap_e2e_test.go` (capabilityRoles lens e2e; drop service)
+- `internal/refractor/ruleengine/full/capability_lens_contract_test.go` (anchor §6.2 shape; protected actor)
+
+**Modified — docs:**
+- `docs/decisions/projection-plane-decomposition.md` (12.6 implementation record + primordial-anchor + Path-B disposition)

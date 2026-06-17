@@ -10,7 +10,15 @@ declares:
   ddls:
     - canonicalName: rbac
       class: meta.ddl.vertexType
-  lenses: []
+  lenses:
+    - canonicalName: capabilityRoles
+      adapter: nats-kv
+      bucket: capability
+      engine: full
+    - canonicalName: capabilityRoleIndex
+      adapter: nats-kv
+      bucket: capability
+      engine: full
   permissions:
     - operationType: CreateRole
       scope: any

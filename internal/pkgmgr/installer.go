@@ -345,6 +345,21 @@ func (i *Installer) checkCoreBucketExists(ctx context.Context) error {
 	return nil
 }
 
+// IsPackageInstalled reports whether a non-tombstoned package vertex with the
+// given canonical name is present in core-kv. It is the install-state probe the
+// processor wiring uses to gate rbac-domain-dependent dispatch (the
+// cap.roles.<actor> platform routing). A bootstrap-not-run / bucket-absent
+// condition is surfaced as an error so the caller can fail loudly rather than
+// silently degrading auth.
+func IsPackageInstalled(ctx context.Context, conn *substrate.Conn, name string) (bool, error) {
+	i := NewInstaller(conn, "")
+	pkg, err := i.findInstalledPackage(ctx, name)
+	if err != nil {
+		return false, err
+	}
+	return pkg != nil, nil
+}
+
 // findInstalledPackage scans `vtx.package.>` and returns the first
 // package vertex whose manifest aspect's `name` matches.
 func (i *Installer) findInstalledPackage(ctx context.Context, name string) (*installedPackage, error) {
