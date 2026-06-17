@@ -539,6 +539,8 @@ So that core stops referencing the rbac grant vocabulary and the bootstrap cyphe
 
 ### Story 12.7: Retire the god-cypher's service/location remnants (D-PROJECTION pt.2)
 
+NOTE: This story (path B) was folded into 12.6 at implementation time. 
+
 > **Security-critical. Two-path story (Andrew, 2026-06-07).** The `service-location` package **does
 > not exist today** and may not exist when 12.7 runs (no `packages/service-location/` — only a
 > concept write-up: `packages/service-location/CONCEPT.md`). So 12.7 is not "make a package ship a
