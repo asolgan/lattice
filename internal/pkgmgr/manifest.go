@@ -23,9 +23,12 @@ type Manifest struct {
 
 // ManifestBlock is the `declares:` sub-tree.
 type ManifestBlock struct {
-	DDLs        []ManifestDDL        `yaml:"ddls,omitempty"`
-	Lenses      []ManifestLens       `yaml:"lenses,omitempty"`
-	Permissions []ManifestPermission `yaml:"permissions,omitempty"`
+	DDLs          []ManifestDDL          `yaml:"ddls,omitempty"`
+	Lenses        []ManifestLens         `yaml:"lenses,omitempty"`
+	Permissions   []ManifestPermission   `yaml:"permissions,omitempty"`
+	WeaverTargets []ManifestWeaverTarget `yaml:"weaverTargets,omitempty"`
+	LoomPatterns  []ManifestLoomPattern  `yaml:"loomPatterns,omitempty"`
+	OpMetas       []ManifestOpMeta       `yaml:"opMetas,omitempty"`
 }
 
 // ManifestDDL is one DDL declaration entry. Class defaults to
@@ -48,6 +51,26 @@ type ManifestPermission struct {
 	OperationType string   `yaml:"operationType"`
 	Scope         string   `yaml:"scope,omitempty"`
 	GrantsTo      []string `yaml:"grantsTo,omitempty"`
+}
+
+// ManifestWeaverTarget is one weaver-target declaration entry. The identity
+// field VerifyAgainstDefinition cross-checks is `targetId`.
+type ManifestWeaverTarget struct {
+	TargetID string `yaml:"targetId"`
+	LensRef  string `yaml:"lensRef,omitempty"`
+}
+
+// ManifestLoomPattern is one loom-pattern declaration entry. The identity
+// field VerifyAgainstDefinition cross-checks is `patternId`.
+type ManifestLoomPattern struct {
+	PatternID   string `yaml:"patternId"`
+	SubjectType string `yaml:"subjectType,omitempty"`
+}
+
+// ManifestOpMeta is one op-meta declaration entry. The identity field
+// VerifyAgainstDefinition cross-checks is `operationType`.
+type ManifestOpMeta struct {
+	OperationType string `yaml:"operationType"`
 }
 
 // ParseManifest reads and validates a manifest.yaml file. Required
@@ -100,6 +123,15 @@ func (m *Manifest) VerifyAgainstDefinition(d Definition) error {
 	if got, want := len(m.Declares.Permissions), len(d.Permissions); got != want {
 		return fmt.Errorf("pkgmgr: manifest declares %d permissions but Definition has %d", got, want)
 	}
+	if got, want := len(m.Declares.WeaverTargets), len(d.WeaverTargets); got != want {
+		return fmt.Errorf("pkgmgr: manifest declares %d weaverTargets but Definition has %d", got, want)
+	}
+	if got, want := len(m.Declares.LoomPatterns), len(d.LoomPatterns); got != want {
+		return fmt.Errorf("pkgmgr: manifest declares %d loomPatterns but Definition has %d", got, want)
+	}
+	if got, want := len(m.Declares.OpMetas), len(d.OpMetas); got != want {
+		return fmt.Errorf("pkgmgr: manifest declares %d opMetas but Definition has %d", got, want)
+	}
 	for i, dm := range m.Declares.DDLs {
 		if dm.CanonicalName != d.DDLs[i].CanonicalName {
 			return fmt.Errorf("pkgmgr: DDL[%d] canonicalName mismatch: manifest=%q definition=%q",
@@ -122,6 +154,24 @@ func (m *Manifest) VerifyAgainstDefinition(d Definition) error {
 		// the Definition's GrantsTo, not the manifest's).
 		if err := crossCheckGrantsTo(i, pm.GrantsTo, d.Permissions[i].GrantsTo); err != nil {
 			return err
+		}
+	}
+	for i, tm := range m.Declares.WeaverTargets {
+		if tm.TargetID != d.WeaverTargets[i].TargetID {
+			return fmt.Errorf("pkgmgr: WeaverTarget[%d] targetId mismatch: manifest=%q definition=%q",
+				i, tm.TargetID, d.WeaverTargets[i].TargetID)
+		}
+	}
+	for i, pm := range m.Declares.LoomPatterns {
+		if pm.PatternID != d.LoomPatterns[i].PatternID {
+			return fmt.Errorf("pkgmgr: LoomPattern[%d] patternId mismatch: manifest=%q definition=%q",
+				i, pm.PatternID, d.LoomPatterns[i].PatternID)
+		}
+	}
+	for i, om := range m.Declares.OpMetas {
+		if om.OperationType != d.OpMetas[i].OperationType {
+			return fmt.Errorf("pkgmgr: OpMeta[%d] operationType mismatch: manifest=%q definition=%q",
+				i, om.OperationType, d.OpMetas[i].OperationType)
 		}
 	}
 	return nil

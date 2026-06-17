@@ -89,6 +89,15 @@ func (i *Installer) Install(ctx context.Context, def Definition) (*InstallResult
 	if err := def.validateLensAdapters(); err != nil {
 		return nil, err
 	}
+	if err := def.validateWeaverTargets(); err != nil {
+		return nil, err
+	}
+	if err := def.validateLoomPatterns(); err != nil {
+		return nil, err
+	}
+	if err := def.validateOpMetas(); err != nil {
+		return nil, err
+	}
 
 	res := &InstallResult{PackageName: def.Name, PackageVersion: def.Version}
 
@@ -166,6 +175,9 @@ func (i *Installer) Install(ctx context.Context, def Definition) (*InstallResult
 	ddlNanoIDs := make([]string, len(def.DDLs))
 	lensNanoIDs := make([]string, len(def.Lenses))
 	permNanoIDs := make([]string, len(def.Permissions))
+	weaverTargetNanoIDs := make([]string, len(def.WeaverTargets))
+	loomPatternNanoIDs := make([]string, len(def.LoomPatterns))
+	opMetaNanoIDs := make([]string, len(def.OpMetas))
 	for idx, d := range def.DDLs {
 		ddlNanoIDs[idx] = deterministicNanoID(def.Name, def.Version, "ddl:"+d.CanonicalName)
 	}
@@ -176,8 +188,18 @@ func (i *Installer) Install(ctx context.Context, def Definition) (*InstallResult
 		permNanoIDs[idx] = deterministicNanoID(def.Name, def.Version,
 			fmt.Sprintf("perm:%d:%s", idx, p.OperationType))
 	}
+	for idx, t := range def.WeaverTargets {
+		weaverTargetNanoIDs[idx] = deterministicNanoID(def.Name, def.Version, "weaverTarget:"+t.TargetID)
+	}
+	for idx, p := range def.LoomPatterns {
+		loomPatternNanoIDs[idx] = deterministicNanoID(def.Name, def.Version, "loomPattern:"+p.PatternID)
+	}
+	for idx, o := range def.OpMetas {
+		opMetaNanoIDs[idx] = deterministicNanoID(def.Name, def.Version, "opMeta:"+o.OperationType)
+	}
 
-	ops, declared, err := i.buildInstallBatch(def, pkgKey, ddlNanoIDs, lensNanoIDs, permNanoIDs, roleNanoIDs)
+	ops, declared, err := i.buildInstallBatch(def, pkgKey, ddlNanoIDs, lensNanoIDs, permNanoIDs, roleNanoIDs,
+		weaverTargetNanoIDs, loomPatternNanoIDs, opMetaNanoIDs)
 	if err != nil {
 		return nil, err
 	}

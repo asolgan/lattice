@@ -8,6 +8,20 @@ import (
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
+// Envelope classes for the orchestration meta-vertices this installer emits.
+// They match exactly what the Weaver registry / Loom pattern source route on:
+// a meta.weaverTarget / meta.loomPattern vertex carries its body in a sibling
+// `.spec` aspect; an op-meta vertex carries operationType on the vertex `data`
+// itself and is classed meta.ddl.vertexType (a non-routed meta class the op
+// index probes).
+const (
+	weaverTargetClass     = "meta.weaverTarget"
+	weaverTargetSpecClass = "weaverTargetSpec"
+	loomPatternClass      = "meta.loomPattern"
+	loomPatternSpecClass  = "loomPatternSpec"
+	opMetaClass           = "meta.ddl.vertexType"
+)
+
 // metaVertexPrefix is the Contract #1 prefix for both DDL and Lens
 // meta-vertices (`vtx.meta.<NanoID>`).
 const metaVertexPrefix = "vtx.meta."
@@ -31,6 +45,7 @@ func (i *Installer) buildInstallBatch(
 	def Definition,
 	pkgKey string,
 	ddlIDs, lensIDs, permIDs, roleIDs []string,
+	weaverTargetIDs, loomPatternIDs, opMetaIDs []string,
 ) ([]installMutation, []string, error) {
 	var ops []installMutation
 	var declared []string
@@ -142,6 +157,46 @@ func (i *Installer) buildInstallBatch(
 		for _, name := range names {
 			addCreate(lensKey+"."+name, docAspect(lensKey, name, name, aspects[name]))
 		}
+	}
+
+	// canonicalName → in-batch lens NanoID, so a WeaverTarget's LensRef
+	// authored as a lens canonicalName resolves to the id the engine's control
+	// surface expects.
+	lensByCanonical := make(map[string]string, len(def.Lenses))
+	for idx, l := range def.Lenses {
+		lensByCanonical[l.CanonicalName] = lensIDs[idx]
+	}
+
+	// WeaverTarget meta-vertices + spec aspect. The vertex carries empty data;
+	// the `.spec` aspect carries the target body the Weaver registry CDC source
+	// unwraps from `.data` and deserializes into a runtime Target.
+	for idx, t := range def.WeaverTargets {
+		targetKey := metaVertexPrefix + weaverTargetIDs[idx]
+		lensRef, err := resolveLensRef(t.LensRef, lensByCanonical)
+		if err != nil {
+			return nil, nil, fmt.Errorf("pkgmgr: WeaverTarget[%d] %q: %w", idx, t.TargetID, err)
+		}
+		addCreate(targetKey, docVertex(weaverTargetClass, nil))
+		addCreate(targetKey+".spec", docAspect(targetKey, "spec", weaverTargetSpecClass,
+			weaverTargetSpecBody(t, lensRef)))
+	}
+
+	// LoomPattern meta-vertices + spec aspect. Same envelope as the Lens spec;
+	// the Loom pattern source unwraps the pattern body from `.data`.
+	for idx, p := range def.LoomPatterns {
+		patternKey := metaVertexPrefix + loomPatternIDs[idx]
+		addCreate(patternKey, docVertex(loomPatternClass, nil))
+		addCreate(patternKey+".spec", docAspect(patternKey, "spec", loomPatternSpecClass,
+			loomPatternSpecBody(p)))
+	}
+
+	// Op-meta vertices: a non-routed meta-vertex carrying operationType on its
+	// own `data`, indexed by both engines so a forOperation reference resolves.
+	// No spec aspect — operationType lives on the vertex envelope.
+	for idx, o := range def.OpMetas {
+		opMetaKey := metaVertexPrefix + opMetaIDs[idx]
+		addCreate(opMetaKey, docVertex(opMetaClass,
+			map[string]any{"operationType": o.OperationType}))
 	}
 
 	// Permissions + grant links.
@@ -259,6 +314,105 @@ func lensSpecBody(lensID string, l LensSpec) map[string]any {
 		spec["output"] = l.Output
 	}
 	return spec
+}
+
+// resolveLensRef maps a WeaverTarget's authored LensRef to the id the engine's
+// control surface expects. A LensRef matching a declared lens canonicalName
+// resolves to that lens's in-batch NanoID; a LensRef already shaped as a valid
+// NanoID is passed through verbatim (it names a lens in an already-installed
+// package). Anything else is a fail-closed install error — a dangling
+// control-surface reference is a config bug. An empty LensRef passes through
+// (the target declares no violation lens binding).
+func resolveLensRef(lensRef string, lensByCanonical map[string]string) (string, error) {
+	if lensRef == "" {
+		return "", nil
+	}
+	if id, ok := lensByCanonical[lensRef]; ok {
+		return id, nil
+	}
+	if substrate.IsValidNanoID(lensRef) {
+		return lensRef, nil
+	}
+	return "", fmt.Errorf("LensRef %q matches no declared lens canonicalName and is not a valid NanoID", lensRef)
+}
+
+// weaverTargetSpecBody builds the meta.weaverTarget body stored as the `spec`
+// aspect's data — the §10.8 `{targetId, lensRef, gaps}` shape the Weaver
+// registry deserializes into a runtime Target. Optional gap-action fields are
+// omitted when empty so the emitted body matches the engine's minimal shape.
+// The `pattern` (triggerLoom) and `operation` (assignTask/nudge/directOp) refs
+// are shipped verbatim; the engine registry resolves them live at dispatch
+// (patternMetaKey / opMetaKey).
+func weaverTargetSpecBody(t WeaverTargetSpec, lensRef string) map[string]any {
+	gaps := make(map[string]any, len(t.Gaps))
+	for col, ga := range t.Gaps {
+		gaps[col] = gapActionBody(ga)
+	}
+	return map[string]any{
+		"targetId": t.TargetID,
+		"lensRef":  lensRef,
+		"gaps":     gaps,
+	}
+}
+
+// gapActionBody emits one playbook entry, including only the fields the engine
+// parses and omitting empty optionals so the body matches the fixture shape.
+func gapActionBody(ga GapActionSpec) map[string]any {
+	body := map[string]any{"action": ga.Action}
+	if ga.Pattern != "" {
+		body["pattern"] = ga.Pattern
+	}
+	if ga.Subject != "" {
+		body["subject"] = ga.Subject
+	}
+	if ga.Adapter != "" {
+		body["adapter"] = ga.Adapter
+	}
+	if ga.Operation != "" {
+		body["operation"] = ga.Operation
+	}
+	if ga.Assignee != "" {
+		body["assignee"] = ga.Assignee
+	}
+	if ga.Target != "" {
+		body["target"] = ga.Target
+	}
+	if len(ga.Params) > 0 {
+		params := make(map[string]any, len(ga.Params))
+		for k, v := range ga.Params {
+			params[k] = v
+		}
+		body["params"] = params
+	}
+	return body
+}
+
+// loomPatternSpecBody builds the meta.loomPattern body stored as the `spec`
+// aspect's data — the §10.5 `{patternId, subjectType, completionDomains?,
+// steps}` shape the Loom pattern source deserializes into a runtime Pattern.
+// completionDomains is omitted when empty (it defaults to {subjectType}); a
+// step's guard is omitted when nil.
+func loomPatternSpecBody(p LoomPatternSpec) map[string]any {
+	steps := make([]any, len(p.Steps))
+	for i, s := range p.Steps {
+		step := map[string]any{
+			"kind":      s.Kind,
+			"operation": s.Operation,
+		}
+		if len(s.Guard) > 0 {
+			step["guard"] = s.Guard
+		}
+		steps[i] = step
+	}
+	body := map[string]any{
+		"patternId":   p.PatternID,
+		"subjectType": p.SubjectType,
+		"steps":       steps,
+	}
+	if len(p.CompletionDomains) > 0 {
+		body["completionDomains"] = p.CompletionDomains
+	}
+	return body
 }
 
 func docVertex(class string, data map[string]any) map[string]any {

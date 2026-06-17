@@ -108,6 +108,14 @@ declares:
     - operationType: MergeIdentity
       scope: any
       grantsTo: [operator]
+  weaverTargets:
+    - targetId: leaseSigning
+      lensRef: leaseSigningCandidates
+  loomPatterns:
+    - patternId: leaseSigning
+      subjectType: lease
+  opMetas:
+    - operationType: SignLease
 ```
 
 Field semantics:
@@ -124,6 +132,20 @@ Field semantics:
   lenses via its `vtx.meta.>` watch.
 - **declares.permissions[]**: each entry maps to one permission vertex + N
   `grantedBy` links (one per role in `grantsTo`).
+- **declares.weaverTargets[]**: each entry maps to one `meta.weaverTarget`
+  meta-vertex + its `.spec` aspect (Contract #10 §10.8). `targetId` is the
+  weaver-targets row prefix; `lensRef` (authored as a lens canonicalName, or a
+  literal NanoID for an already-installed lens) resolves to that lens's id at
+  install; the Go `Definition` carries the `gaps` remediation playbook. The
+  Weaver registry auto-picks-up new targets via its `vtx.meta.>` watch.
+- **declares.loomPatterns[]**: each entry maps to one `meta.loomPattern`
+  meta-vertex + its `.spec` aspect (Contract #10 §10.5). `patternId` and
+  `subjectType` identify the flow; the Go `Definition` carries the linear
+  `steps` (each `{kind, operation, guard?}`). Loom CDC-loads new patterns.
+- **declares.opMetas[]**: each entry maps to one op-meta vertex carrying
+  `operationType` on its `data`, making that op discoverable by `forOperation`
+  resolution. A package declaring an op as the target of a Weaver `assignTask`
+  or a Loom `userTask` step must declare a matching `opMetas` entry.
 
 ## Installation semantics
 

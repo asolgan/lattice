@@ -115,3 +115,62 @@ func TestVerifyAgainstDefinition_CountMismatch(t *testing.T) {
 		t.Fatalf("expected count-mismatch error, got %v", err)
 	}
 }
+
+// TestVerifyAgainstDefinition_OrchestrationHappyPath asserts the new
+// orchestration kinds cross-check cleanly when manifest and Definition agree.
+func TestVerifyAgainstDefinition_OrchestrationHappyPath(t *testing.T) {
+	m := &Manifest{
+		Name:    "x",
+		Version: "1.0",
+		Declares: ManifestBlock{
+			WeaverTargets: []ManifestWeaverTarget{{TargetID: "T"}},
+			LoomPatterns:  []ManifestLoomPattern{{PatternID: "P"}},
+			OpMetas:       []ManifestOpMeta{{OperationType: "Op"}},
+		},
+	}
+	def := Definition{
+		Name:          "x",
+		Version:       "1.0",
+		WeaverTargets: []WeaverTargetSpec{{TargetID: "T"}},
+		LoomPatterns:  []LoomPatternSpec{{PatternID: "P"}},
+		OpMetas:       []OpMetaSpec{{OperationType: "Op"}},
+	}
+	if err := m.VerifyAgainstDefinition(def); err != nil {
+		t.Fatalf("VerifyAgainstDefinition: %v", err)
+	}
+}
+
+func TestVerifyAgainstDefinition_WeaverTargetCountMismatch(t *testing.T) {
+	m := &Manifest{Name: "x", Version: "1.0"}
+	def := Definition{Name: "x", Version: "1.0", WeaverTargets: []WeaverTargetSpec{{TargetID: "T"}}}
+	err := m.VerifyAgainstDefinition(def)
+	if err == nil || !strings.Contains(err.Error(), "weaverTargets") {
+		t.Fatalf("expected weaverTargets count-mismatch error, got %v", err)
+	}
+}
+
+func TestVerifyAgainstDefinition_LoomPatternIdentityMismatch(t *testing.T) {
+	m := &Manifest{
+		Name:     "x",
+		Version:  "1.0",
+		Declares: ManifestBlock{LoomPatterns: []ManifestLoomPattern{{PatternID: "P1"}}},
+	}
+	def := Definition{Name: "x", Version: "1.0", LoomPatterns: []LoomPatternSpec{{PatternID: "P2"}}}
+	err := m.VerifyAgainstDefinition(def)
+	if err == nil || !strings.Contains(err.Error(), "patternId mismatch") {
+		t.Fatalf("expected patternId-mismatch error, got %v", err)
+	}
+}
+
+func TestVerifyAgainstDefinition_OpMetaIdentityMismatch(t *testing.T) {
+	m := &Manifest{
+		Name:     "x",
+		Version:  "1.0",
+		Declares: ManifestBlock{OpMetas: []ManifestOpMeta{{OperationType: "A"}}},
+	}
+	def := Definition{Name: "x", Version: "1.0", OpMetas: []OpMetaSpec{{OperationType: "B"}}}
+	err := m.VerifyAgainstDefinition(def)
+	if err == nil || !strings.Contains(err.Error(), "operationType mismatch") {
+		t.Fatalf("expected operationType-mismatch error, got %v", err)
+	}
+}
