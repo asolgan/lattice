@@ -5,23 +5,26 @@
 // Connects to a running Lattice NATS instance and checks that the
 // identity-domain package has been correctly installed. Asserts:
 //
-//  1 DDL meta-vertex (vtx.meta.<NanoID>) with class=meta.ddl.vertexType
-//  8 DDL aspects: .canonicalName=identity, .permittedCommands (3 ops),
+//  1 identity DDL meta-vertex (vtx.meta.<NanoID>) with class=meta.ddl.vertexType
+//  8 DDL aspects: .canonicalName=identity, .permittedCommands (4 ops),
 //                 .description, .script,
 //                 .inputSchema, .outputSchema, .fieldDescription, .examples
 //    Each aspect also validated for correct vertexKey + localName envelope fields.
-//  3 permission vertices (vtx.permission.<NanoID>) — CreateUnclaimedIdentity,
-//    UpdateIdentityState, ClaimIdentity
-//  5 grantedBy link keys:
+//  2 sensitive aspect-type DDLs (ssn, dob): class=meta.ddl.aspectType, each
+//    carrying a .sensitive aspect with value=true
+//  4 permission vertices (vtx.permission.<NanoID>) — CreateUnclaimedIdentity,
+//    UpdateIdentityState, ClaimIdentity, RecordIdentityPII
+//  6 grantedBy link keys:
 //    CreateUnclaimedIdentity → operator, frontOfHouse, backOfHouse
 //    UpdateIdentityState     → operator
 //    ClaimIdentity           → consumer
+//    RecordIdentityPII       → operator, frontOfHouse, backOfHouse
 //  3 user-facing role vertices (consumer, frontOfHouse, backOfHouse)
 //    seeded by PreInstall hook (vtx.role.<NanoID>)
 //  1 package vertex (vtx.package.<NanoID>)
 //  1 package manifest aspect with name=identity-domain
 //
-// Total target: ~30 OK lines.
+// Total target: ~40 OK lines.
 //
 // Exit 0: all assertions pass.
 // Exit 1: one or more assertions failed.
@@ -54,18 +57,21 @@ var identityGrantTargets = map[string][]string{
 	"CreateUnclaimedIdentity": {"operator", "frontOfHouse", "backOfHouse"},
 	"UpdateIdentityState":     {"operator"},
 	"ClaimIdentity":           {"consumer"},
+	"RecordIdentityPII":       {"operator", "frontOfHouse", "backOfHouse"},
 }
 
 var identityExpectedOps = []string{
 	"CreateUnclaimedIdentity",
 	"UpdateIdentityState",
 	"ClaimIdentity",
+	"RecordIdentityPII",
 }
 
 var identityOpScopes = map[string]string{
 	"CreateUnclaimedIdentity": "any",
 	"UpdateIdentityState":     "any",
 	"ClaimIdentity":           "self",
+	"RecordIdentityPII":       "any",
 }
 
 // userFacingRoles are seeded by identity-domain's PreInstall hook.
@@ -170,7 +176,7 @@ func main() {
 			}
 		}
 
-		// 4. Aspect: .permittedCommands = [CreateUnclaimedIdentity, UpdateIdentityState, ClaimIdentity].
+		// 4. Aspect: .permittedCommands = identityExpectedOps.
 		pcKey := identityDDLKey + ".permittedCommands"
 		if env, err := pkgverify.GetEnvelope(ctx, coreKV, pcKey); err != nil {
 			fail(pcKey, fmt.Sprintf("missing: %v", err))
@@ -190,7 +196,7 @@ func main() {
 				allPresent = false
 			}
 			if allPresent && len(cmds) == len(identityExpectedOps) {
-				ok(fmt.Sprintf("%s contains all 3 commands", pcKey))
+				ok(fmt.Sprintf("%s contains all %d commands", pcKey, len(identityExpectedOps)))
 			}
 			if err := pkgverify.CheckAspectEnvelope(env, pcKey, identityDDLKey, "permittedCommands"); err != nil {
 				fail(pcKey+" envelope", err.Error())
@@ -249,6 +255,48 @@ func main() {
 				} else {
 					ok(k + " envelope shape OK")
 				}
+			}
+		}
+	}
+
+	// -------------------------------------------------------------------------
+	// 6b. Sensitive applicant-PII aspect-type DDLs (ssn, dob): each is a
+	//     meta.ddl.aspectType meta-vertex carrying a .sensitive aspect with
+	//     value=true, which is what makes the Processor's step-6 validator
+	//     anchor ssn/dob aspects to identity vertices (NFR-S3).
+	// -------------------------------------------------------------------------
+	for _, aspectType := range []string{"ssn", "dob"} {
+		ddlKey, err := pkgverify.FindMetaByCanonical(ctx, coreKV, allKeys, aspectType)
+		if err != nil || ddlKey == "" {
+			fail("sensitive aspect-type DDL ["+aspectType+"]",
+				fmt.Sprintf("vtx.meta.*.canonicalName=%q not found: %v", aspectType, err))
+			continue
+		}
+		ok(fmt.Sprintf("sensitive aspect-type DDL exists: %s canonicalName=%s", ddlKey, aspectType))
+
+		if env, err := pkgverify.GetEnvelope(ctx, coreKV, ddlKey); err != nil {
+			fail(ddlKey+" class", fmt.Sprintf("cannot read: %v", err))
+		} else if cls, _ := env["class"].(string); cls != "meta.ddl.aspectType" {
+			fail(ddlKey+" class", fmt.Sprintf("got %q want meta.ddl.aspectType", cls))
+		} else {
+			ok(ddlKey + " class=meta.ddl.aspectType")
+		}
+
+		sKey := ddlKey + ".sensitive"
+		if env, err := pkgverify.GetEnvelope(ctx, coreKV, sKey); err != nil {
+			fail(sKey, fmt.Sprintf("missing: %v", err))
+		} else {
+			data, _ := env["data"].(map[string]any)
+			val, _ := data["value"].(bool)
+			if !val {
+				fail(sKey, "sensitive value is not true")
+			} else {
+				ok(sKey + " value=true")
+			}
+			if err := pkgverify.CheckAspectEnvelope(env, sKey, ddlKey, "sensitive"); err != nil {
+				fail(sKey+" envelope", err.Error())
+			} else {
+				ok(sKey + " envelope shape OK")
 			}
 		}
 	}
