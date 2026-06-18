@@ -301,6 +301,8 @@ So that I can manage convergence without a console (Phase 2 has no UI).
 
 ## Epic 10: External Convergence — Two-Phase Nudge
 
+> **⚠️ SUPERSEDED 2026-06-18 (External I/O Bridge — see Epic 13).** The Two-Phase Nudge **protocol** is retired: external idempotent I/O moves out of Weaver into **Loom's `externalTask` step + the new generic `bridge` component**. **Carries forward:** the adapter interface + the two `Fake*` shims (relocated to the bridge) and the idempotency *principle* (now the claim-vertex key). Stories 10.1/10.2 shipped and are **not** rolled back; the `internal/weaver/nudge/` path + `weaver-claims` are torn down in **Story 13.5**. Grounding: `sprint-change-proposal-2026-06-18.md` (RATIFIED); Contract #10 §10.3/§10.8 (amended 2026-06-18); `docs/components/bridge.md`.
+
 **Goal:** The platform calls external systems exactly once (idempotent), proven against mocked reference adapters.
 **FRs covered:** FR58 (+ NFR-S11)
 
@@ -336,44 +338,34 @@ So that the idempotency guarantee is proven end-to-end.
 
 *FRs: FR58 · Depends on: 10.1 · Model: Opus · Grounding: arch Item 3; FR58*
 
-## Epic 11: Loftspace Reference Vertical
+## Epic 11: Loftspace Reference Vertical — CLOSED 2026-06-18
 
-> **Sequencing: runs AFTER Epic 12.** The reference vertical is authored on the post-12 projection plane (sound under retry/reorder; packages own their own grant projections). See the execution-order note in the Phase 2 Story Total section.
+> **CLOSED 2026-06-18.** Delivered **11.1a** only. Implementing the original 11.1 dogfooded the
+> orchestration core and surfaced that external-I/O placement was wrong and the leaseApp-scalar domain
+> model could not converge (`sprint-change-proposal-2026-06-18.md`, RATIFIED). The reference vertical is
+> **redesigned and re-homed to Epic 14** on the post-bridge plane; the 11.1a install seam is a
+> foundation it builds on. Original Stories **11.1 / 11.2 are WON'T-DO** (superseded by Epics 13 + 14).
 
-**Goal:** An installable `lease-signing` package converges a Lease Application end-to-end — the dogfood test that the package model carries orchestration content. Thin: engines are fixture-proven.
-**FRs covered:** integration (FR26, FR27, FR29, FR30, FR58)
+**Goal (delivered, narrowed):** the package-manager can install orchestration content
+(`meta.weaverTarget` / `meta.loomPattern` / op-meta), unblocking a real installable vertical.
 
-### Story 11.1: `lease-signing` package authoring
+### Story 11.1a: pkgmgr orchestration-content install seam — ✅ DONE
 
-As a vertical author,
-I want the Loftspace lease-application shipped as an installable package,
-So that the orchestration engines run a real convergence scenario from package data alone.
+As a platform developer,
+I want `InstallPackage` to emit weaver-target / loom-pattern / op-meta package data,
+So that a real vertical can ship orchestration content (no package had an install path for it before).
 
-**Acceptance Criteria:**
+**Acceptance Criteria (met):**
 
-**Given** the `lease-signing` package (`packages/lease-signing/{manifest,ddls,lenses,permissions}.go` + adapter config)
-**When** installed via `InstallPackage`
-**Then** it provides: a lease-application DDL; a **target Lens cypher** projecting "Lease Application complete" (row-per-candidate + `violating` + gap columns incl. a recent-background-check freshness predicate); **playbooks** mapping each gap → action (Loom onboarding / Two-Phase Nudge bgcheck / Two-Phase Nudge or Loom payment / sign task); **Loom pattern(s)** (onboarding/verify-info); and `FakeStripe`/`FakeBackgroundCheck` config
-**And** no engine code changes are required to run it (engines stay generic)
+**Given** `pkgmgr.Definition` extended with `WeaverTargets`/`LoomPatterns` (and op-meta discoverability)
+**When** a package is installed
+**Then** the installer emits `vtx.meta.<NanoID>` + `.spec` aspect for each, with install-time validation (`targetId` uniqueness §10.2/§10.8, key-shape, reserved-key guardrails) — **no engine change** (the 4 guarded engines untouched)
 
-*FRs: integration · Depends on: 8.x, 9.x, 10.x · Model: Opus (package authoring across DDL/Lens/Starlark) · Grounding: charter demo decomposition; `docs/components/_packages.md`*
+*FRs: integration · Status: **DONE** (commit `5fb3a04`, CI run 27727278263 green) · Grounding: Contract #10 §10.2/§10.5/§10.8; `docs/components/_packages.md`. Carried obligation: pkgmgr lens `canonicalName` uniqueness (addressed in Epic 14).*
 
-### Story 11.2: Convergence-harness end-to-end
-
-As the platform team,
-I want an end-to-end test that drives a lease application to steady state,
-So that Loom + Weaver + Two-Phase Nudge + temporal are proven to converge.
-
-**Acceptance Criteria:**
-
-**Given** a freshly created lease-application with all gaps violating
-**When** the orchestration runs (Weaver detects gaps → triggers Loom onboarding + nudges bgcheck/payment → temporal handles freshness → sign task)
-**Then** a **drain-then-assert** harness observes the target row's `violating` flip `false` and **remain** false (steady state), within a bounded window
-**And** the background-check freshness predicate is exercised via a short ADR-51 window
-**And** a retried external call does not double-act (idempotency holds end-to-end)
-**And** the demo runs from `InstallPackage` of `lease-signing` on an otherwise minimal core
-
-*FRs: integration (FR26, FR27, FR29, FR30, FR58) · Depends on: 11.1 · Model: Opus (e2e harness) · Grounding: charter; Quinn's drain-then-assert pattern (cf. M5)*
+### Stories 11.1 / 11.2 — WON'T-DO (superseded)
+The original `lease-signing` authoring (leaseApp-scalar model, Weaver Two-Phase Nudge) and its
+convergence harness are **re-homed to Epic 14** on the bridge plane. Retained here only as a pointer.
 
 ## Epic 12: Projection-Plane Integrity & Capability Decomposition
 
@@ -570,6 +562,190 @@ So that core stops referencing service/location types regardless of whether a se
 
 *FRs: (security architecture) · Depends on: 12.6 · Model: Opus (security-critical) · Grounding: brief D-PROJECTION; Contract #6 §6.10; `internal/bootstrap/lenses.go:46-48`; `packages/service-location/CONCEPT.md`*
 
+## Epic 13: External I/O Bridge
+
+> **Sequencing: Epics 7–10 → 12 → 13 → 14; Story 13.5 lands LAST (after 14.5 green).** Re-homes external
+> idempotent I/O out of Weaver (Epic 10, superseded) into Loom + a new generic `bridge`. Grounding:
+> `sprint-change-proposal-2026-06-18.md` (RATIFIED); Contract #10 §10.2/§10.3/§10.5/§10.6/§10.8 (amended
+> 2026-06-18); `docs/components/{bridge,loom,weaver,service-actors}.md`.
+>
+> **Build order:** 13.2, 13.3 → 13.4 → (Epic 14: 14.1, 14.2, 14.3) → 14.4 → 14.5 → **13.5**.
+
+**Goal:** External idempotent I/O is event-driven and symmetric to userTasks — Loom dispatches an
+`externalTask` and parks; a generic, **vertex-type-agnostic** `bridge` executes the call idempotently and
+posts the result back; the FR58 visible-claim is a package-chosen claim vertex (outcome in **aspect(s)**, D5).
+**FRs covered:** FR58 (+ NFR-S11), re-homed from Epic 10.
+
+**Two invariants on every Epic-13/14 AC** (Andrew, 2026-06-18): **(a) type-agnostic** engines/bridge —
+proven by a **non-`service` fixture vertex type**, not asserted; **(b) D5** — the external outcome is
+recorded as **aspect(s)**, vertex root `data` minimal, **gate-asserted**.
+
+### Story 13.1: Gating contracts + architecture/doc updates — ✅ DONE 2026-06-18
+Contract #10 §10.2/§10.3/§10.5/§10.6/§10.8 amended (Contract #3 no change), M2 settled (Option b), and
+component docs landed (new `bridge.md`; Loom +externalTask; Weaver −nudge). *Hard gate satisfied — the
+surface is agreed.* (Applied; committed with this package.)
+
+### Story 13.2: Loom `externalTask` step kind
+
+As a platform developer,
+I want a Loom step that dispatches an idempotent external call and waits for its result,
+So that a deterministic procedure can include external I/O without Loom leaving its substrate-only boundary.
+
+**Acceptance Criteria:**
+
+**Given** a pattern step `{ kind: "externalTask", adapter, params, replyOp, instanceOp }`
+**When** the interpreter reaches it
+**Then** Loom mints the **`instanceKey` write-ahead** (caller-supplied id to `instanceOp`, like `CreateTask`'s `taskId`), submits `instanceOp` via the command outbox, and **parks** on `token.<instanceKey>`; a committed `replyOp` event carrying **`payload.externalRef`** resolves `token.<instanceKey> → instance` and advances (third `correlationKeys` key)
+**And** the engine test proves the loop with a **non-`service` fixture claim type** (e.g. `vtx.widget.<id>`) — no vertex type is hardcoded (invariant a)
+**And** a rejected/lost `instanceOp` or never-arriving `replyOp` is caught by the per-step deadline + read-before-act tracker probe → re-arm / `FailPattern` + **Health alert**, never a silent wedge (FR29; mirrors the systemOp path)
+**And** the `external` event needs **no** Processor/bootstrap change (ordinary domain; the `instanceOp` DDL emits it via the op's outbox — Loom holds no NATS handle); `instanceOp`/`replyOp`/event-type are **fixtures** here (real versions in 14.4)
+
+*FRs: FR58, NFR-S11 · Depends on: 13.1 · Model: Opus · Grounding: Contract #10 §10.5/§10.6; `docs/components/loom.md`. Review: full 3-layer (guarded engine `internal/loom`) + verify-kernel.*
+
+### Story 13.3: Bridge service actor + bootstrap provisioning
+
+As a platform developer,
+I want a bootstrap-provisioned bridge service identity,
+So that the bridge posts result ops under root-equivalent authority like Loom and Weaver.
+
+**Acceptance Criteria:**
+
+**Given** the primordial bootstrap (`internal/bootstrap/primordial.go`)
+**When** it seeds the kernel topology
+**Then** it provisions **`identity.system.bridge`** — `protected: true`, root-equivalent purely via `holdsRole → operator` (no new role/permission/cypher), NanoID persisted to `lattice.bootstrap.json`
+**And** the **bootstrap-file `version` bumps** and **both** kernel-verify enumerations — `scripts/verify-kernel.go` **and** `internal/bootstrap/verify.go` — add the bridge identity **in lockstep**; `make up` readiness-gate waits on its `cap.*` projection (Contract #7 §7.5)
+**And** the `system`-lane carry is documented for it (same deferral as Loom/Weaver)
+
+*FRs: NFR-S11 · Depends on: 13.1 (parallels 13.2) · Model: Opus · Grounding: `docs/components/service-actors.md`; Contract #7 §7.1/§7.5. Review: full 3-layer (kernel topology) + verify-kernel + `make down && make up`.*
+
+### Story 13.4: Bridge component — consumer, registry, moved adapters, FR58 proof
+
+As a platform developer,
+I want the generic egress component,
+So that all external calls are made idempotently in one purpose-built place.
+
+**Acceptance Criteria:**
+
+**Given** `internal/bridge/` + `cmd/bridge/` with a durable consumer on `events.external.>`
+**When** an `external.<adapter>` event is delivered
+**Then** the bridge dispatches to the named registered adapter with `idempotencyKey = instanceKey` and posts `replyOp` to `core-operations` with **`requestId = deterministic(instanceKey)`** + `payload.externalRef = instanceKey` (under the 13.3 service actor)
+**And** it is **vertex-type-agnostic** — treats `instanceKey`/`externalRef` as opaque; the optional skip-on-redelivery uses the **generic Contract #4 op tracker** (`vtx.op.<det-reqId>`), not a typed-vertex read
+**And** the two `Fake*` adapters are **moved** (not copied) from `internal/weaver/nudge/`; an unregistered adapter is `errConfig` (Ack + Health), never a silent skip
+**And** the **FR58 crash/retry proof** passes on a **bridge-only harness** (`FakeStripe.FailUntil` + `SideEffects == 1` under event redelivery + mid-flight-failure recovery), exercised with a **non-`service` claim type** (invariant a)
+
+*FRs: FR58, NFR-S11 · Depends on: 13.3 (13.2 provides the real emitter; integrated at 14.5) · Model: Opus · Grounding: `docs/components/bridge.md`. Review: full 3-layer + Gate 2 (BLOCKED) + the FR58 proof. Tested with **fixture** `external.*` events.*
+
+### Story 13.5: Retire Weaver's Two-Phase Nudge path — BLOCKED until 14.5 green
+
+> **Deliberately deferred cleanup — not a forward dependency.** Move-then-delete: the `Fake*` adapters
+> relocate to the bridge in 13.4, and the nudge path is torn down **only after** the bridge path is
+> proven end-to-end (14.5 green), so there is never a window where neither external path works.
+
+As a platform developer,
+I want the dead nudge machinery removed,
+So that there is exactly one external-I/O path and no retired surface lingers.
+
+**Acceptance Criteria:**
+
+**Given** 14.5 green and the `Fake*` adapters already in the bridge
+**When** the nudge path is removed
+**Then** `internal/weaver/nudge/`, the `fireNudge`/`recoverNudge` call sites, the `nudge` strategist case, and `weaver-claims` (bucket + primordial constant/provisioning) are deleted; **both** `scripts/verify-kernel.go` and `internal/bootstrap/verify.go` drop the claims bucket **in lockstep** (bootstrap-file version bump)
+**And** the reconciler/sweeper + `weaver-state` are **KEPT** (serve `triggerLoom`/`assignTask`/`directOp`)
+**And** Gate 3 convergence stays **DEFENDED** with the nudge gone; `grep -rn "weaver-claims\|nudge" scripts/ Makefile .github/ internal/bootstrap/` is clean
+**And** an AC confirms **no package authored a `nudge` gap** during the 13.4→14.5 coexistence window (lease-signing uses `triggerLoom`)
+
+*FRs: FR58 (no regression) · Depends on: 13.4 + **14.5 green** · Model: Opus · Grounding: Contract #10 §10.3/§10.8. Review: full 3-layer + Gate 2 + Gate 3 + verify-kernel.*
+
+## Epic 14: Loftspace Lease-Application Reference Vertical
+
+> **Sequencing: depends on Epic 13 (and 11.1a, Epic 12).** The redesigned reference vertical on the
+> post-bridge plane — replaces the closed Epic 11's original stories. Multi-vertex convergence
+> (identity aspects + a service instance across links), not a leaseApp-scalar model.
+
+**Goal:** An installable `lease-signing` package converges a Lease Application end-to-end on the
+post-bridge orchestration plane — the dogfood proof that the package model carries real, multi-vertex
+orchestration content. **FRs covered:** integration (FR26, FR27, FR29, FR30, FR58).
+
+### Story 14.1: Service domain foundation
+
+As a vertical author,
+I want a `service` domain (templates + instances),
+So that a background check / payment is a real linked vertex, forcing genuine multi-vertex convergence.
+
+**Acceptance Criteria:**
+
+**Given** a `service`-domain package (depends identity-domain + orchestration-base)
+**When** installed via `InstallPackage`
+**Then** it ships the `service` vertex type with `class: "service.<x>.template"` (offering: `availableAt`, `providedBy`) vs `class: "service.<x>.instance"` (a run: `instanceOf`, `providedTo`) + lifecycle ops, **scoped to the vertices the lease demo traverses**
+**And** the instance records its external-call **outcome as aspect(s)** (status + `completedAt` for the freshness predicate) per **D5** — root `data` minimal
+**And** the **serviceAccess / `cap.svc` read-path auth plane is DEFERRED to Phase 3** (charter); the service-location ownership boundary is settled (templates + spatial graph = a future service-location package; **instances = this vertical**)
+
+*FRs: integration · Depends on: 11.1a (install seam) · Model: Opus · Grounding: `packages/service-location/CONCEPT.md`; Contract #10 §10.2; D5. Risk: the pkgmgr lens `canonicalName` uniqueness gap (carried from 11.1a) — validate or accept before a second same-named lens installs.*
+
+### Story 14.2: Refractor actorAggregate explicit key-column (Contract §10.2 Option b)
+
+As a platform developer,
+I want an actorAggregate lens destined for `weaver-targets` to emit a bare-NanoID key,
+So that a convergence lens can fan out across links **and** satisfy the frozen §10.2 key shape.
+
+**Acceptance Criteria:**
+
+**Given** Refractor's Output descriptor (`internal/refractor/projection/output.go` `BuildKey`)
+**When** an actorAggregate lens declares an explicit **key column**
+**Then** `BuildKey` emits that bare-NanoID `<entityId>` **instead of** the default `{actorSuffix}` (= `<type>.<id>`), so the row key stays `<targetId>.<entityId>` and Weaver's `splitRowKey` accepts it unchanged
+**And** the **frozen §10.2 key + `splitRowKey` are untouched** (Option b); a non-`weaver-targets` actorAggregate lens is unaffected
+
+*FRs: integration (enabler) · Depends on: 13.1 (§10.2 amended) · Model: Opus · Grounding: Contract #10 §10.2; the Epic-12 Output-descriptor machinery. Review: full 3-layer (guarded engine `internal/refractor`) + verify. **Gates 14.4.***
+
+### Story 14.3: Identity sensitive PII aspects
+
+As a vertical author,
+I want applicant PII as sensitive identity aspects,
+So that the bgcheck inputs are modeled per the privacy boundary.
+
+**Acceptance Criteria:**
+
+**Given** the identity domain
+**When** the package declares applicant SSN / DOB
+**Then** they are **separate `sensitive: true` aspect-types on the identity** (`vtx.identity.<id>.ssn`, `.dob`), extending the proven name/email/phone pattern
+**And** the MutationBatch sensitive-aspect validator enforces **identity-anchoring** (Contract Item 6)
+
+*FRs: integration (NFR Privacy) · Depends on: identity-domain (exists) · Model: Opus · Grounding: arch Item 6; PRD §358. Review: full 3-layer (security plane).*
+
+### Story 14.4: leaseApp convergence lens + externalTask patterns + signing
+
+As a vertical author,
+I want the lease-application convergence modeled across identity aspects + a service instance,
+So that the vertical proves real cross-vertex convergence and the bridge path together.
+
+**Acceptance Criteria:**
+
+**Given** the redesigned `lease-signing` package
+**When** installed
+**Then** `leaseApplicationComplete` is an **`actorAggregate`** lens (`AnchorType: leaseApp`, multi-hop `MATCH (app)-[:applicationFor]->(id), (id)<-[:providedTo]-(inst:service)`) reading **identity aspects + the service instance's outcome aspect**, emitting the bare-NanoID key via 14.2's key column, reprojecting on any linked-constituent change
+**And** the playbook remediates external gaps via **`triggerLoom`** of a pattern containing an **`externalTask`** (bgcheck, payment); `missing_signature` → `assignTask`; `missing_onboarding` → `triggerLoom(onboarding)`
+**And** each `externalTask` pattern declares the **`replyOp`'s completion domain** in `completionDomains` (else the step only completes via the deadline backstop)
+**And** the lens is testable via **direct writes of the instance's outcome aspect** (does not serialize behind the bridge)
+
+*FRs: integration (FR26/27/58) · Depends on: 14.1 + 14.2 + 14.3 + 13.2 · Model: Opus · Grounding: Contract #10 §10.2/§10.5/§10.8; D5. Review: full 3-layer.*
+
+### Story 14.5: e2e convergence harness + `test-lease-convergence` gate
+
+As the platform team,
+I want an end-to-end test that drives a lease application to steady state through the bridge,
+So that Loom `externalTask` + bridge + temporal + tasks are proven to converge and stay converged.
+
+**Acceptance Criteria:**
+
+**Given** a fresh lease application with all gaps violating, from `InstallPackage` on an otherwise minimal core
+**When** orchestration runs (Weaver → `triggerLoom` onboarding + bgcheck/payment `externalTask` → bridge → result ops reproject → temporal freshness → sign task)
+**Then** a **drain-then-assert** harness observes `violating` flip `false` and **remain** false (steady state) within a bounded window
+**And** a **retried external call does not double-act** (FR58 end-to-end through the bridge); the bgcheck freshness predicate is exercised via a short ADR-51 window
+**And** the harness **asserts the instance's outcome lives in an aspect, root `data` minimal** (D5 enforced by gate, not review)
+**And** a new **`test-lease-convergence` CI gate** is added (Gate 2/3/5 don't cover an external-I/O idempotency loop)
+
+*FRs: integration (FR26, FR27, FR29, FR30, FR58) · Depends on: 14.4 + 13.4 · Model: Opus · Grounding: charter; Quinn's drain-then-assert pattern. **Green here unblocks 13.5.** e2e held to the end (John/Andrew, 2026-06-18) — no early skeleton.*
+
 ## Phase 2 Story Total
 
 | Epic | Stories | Notes |
@@ -577,19 +753,21 @@ So that core stops referencing service/location types regardless of whether a se
 | Epic 7: Orchestration Foundations | 5 (7.5 won't-do) | task model + service actors + platform-wide schedule stream + substrate durable-consumer (FR29 creation-time already satisfied by 7.1/7.2 — 7.5 closed) |
 | Epic 8: Loom — Deterministic Flow Engine | 5 | skeleton → user-tasks → guards → hardening (backoff, consumer teardown) |
 | Epic 9: Weaver — Convergence Engine | 4 | target-as-Lens+lane1 → anti-storm → temporal → control-API (FR30) |
-| Epic 10: External Convergence — Two-Phase Nudge | 2 | framework + idempotency proof |
-| Epic 11: Loftspace Reference Vertical | 2 | package authoring + e2e convergence harness |
-| Epic 12: Projection-Plane Integrity & Capability Decomposition | 8 | D-INTEGRITY guard 12.1a + rebuild reconciliation 12.1b (ship first) → invalidation compiler spike+build+migration (12.2–12.4) → generic auth-hook consumer (12.5) → god-cypher decomposition rbac (12.6) → retire service/location remnants (12.7, two-path: implement if `service-location` exists, else just delete the remnants); architecture hardening from the refractor-lens-decomposition brief, party-reviewed 2026-06-07. **Lands BEFORE Epic 11** (see ordering note). |
-| **Total** | **25 stories** | Phase 2 FRs FR26, FR27, FR29, FR30, FR58 covered; Epic 12 = NFR-S2 / minimal-core hardening; **execution order: Epics 7–10 → 12 → 11** |
+| Epic 10: External Convergence — Two-Phase Nudge | 2 | **SUPERSEDED** by Epic 13 (protocol retired; adapters + idempotency principle carry forward). 10.1/10.2 shipped, not rolled back. |
+| Epic 11: Loftspace Reference Vertical | 1 (11.1a; 11.1/11.2 won't-do) | **CLOSED** — pkgmgr install seam only; the vertical re-homed to Epic 14. |
+| Epic 12: Projection-Plane Integrity & Capability Decomposition | 8 | D-INTEGRITY guard 12.1a + rebuild reconciliation 12.1b (ship first) → invalidation compiler spike+build+migration (12.2–12.4) → generic auth-hook consumer (12.5) → god-cypher decomposition rbac (12.6) → retire service/location remnants (12.7, two-path: implement if `service-location` exists, else just delete the remnants); architecture hardening from the refractor-lens-decomposition brief, party-reviewed 2026-06-07. **Lands BEFORE Epics 13/14** (see ordering note). |
+| **Epic 13: External I/O Bridge** | 5 (13.1 done) | gating contracts+docs → Loom externalTask → bridge service actor → bridge component+FR58 proof → retire Weaver nudge (13.5, blocked until 14.5 green). Re-homes Epic 10. |
+| **Epic 14: Loftspace Lease-Application Reference Vertical** | 5 | service domain → refractor key-column (Option b) → identity sensitive PII aspects → convergence lens+externalTask patterns → e2e + `test-lease-convergence` gate. Replaces closed Epic 11's vertical. |
+| **Total** | ~35 stories | Phase 2 FRs FR26/27/29/30/58 covered; Epic 12 = NFR-S2 / minimal-core hardening; Epic 10 superseded, Epic 11 closed (11.1a only); **execution order: Epics 7–10 → 12 → 13 → 14 (13.5 last, after 14.5)** |
 
-> **⚠️ Execution order (Andrew, 2026-06-07): Epics 7–10 → 12 → 11.** Epic 12 (projection-plane
-> integrity + capability decomposition) **lands before Epic 11** (Loftspace reference vertical). Two
-> reasons: (1) Epic 11's convergence e2e leans on tasks / ephemeral grants / `my-tasks`
-> vanish-on-close as *correctness guarantees* — exactly what the 12.1a/b D-INTEGRITY guard makes sound
-> (Epic 11 built first would inherit the masked resurrection race + the settle-wait crutch); (2)
-> authoring `lease-signing` on the *decomposed* projection model (12.3–12.5) lets the reference package
-> own its own grant projections cleanly via the contract-contribution path, instead of being written
-> against the god-cypher and migrated later. Epic numbers are not execution order here.
+> **⚠️ Execution order (Andrew; updated 2026-06-18): Epics 7–10 → 12 → 13 → 14, with Story 13.5 LAST
+> (after 14.5 green).** Epic 12 (projection-plane integrity + capability decomposition) lands before the
+> bridge + vertical work. Reasons: (1) Epic 14's convergence e2e leans on tasks / ephemeral grants /
+> `my-tasks` vanish-on-close as *correctness guarantees* — exactly what the 12.1a/b D-INTEGRITY guard
+> makes sound; (2) the redesigned `lease-signing` is authored on the *decomposed* projection model
+> (12.3–12.5) and reuses its Output-descriptor machinery for the actorAggregate key-column (Story 14.2),
+> not the god-cypher; (3) the bridge (Epic 13) is orchestration *core* that Epic 14 *consumes* — 13.2
+> (externalTask) + 13.4 (bridge) must exist before 14.4/14.5. Epic numbers are not execution order here.
 
 > **✅ Implementation gate (satisfied 2026-06-02):** the dedicated Loom/Weaver data-contracts session is **complete** — `docs/contracts/10-orchestration-surfaces.md` §10.1–§10.8 are **FROZEN** (guard grammar + subject/state-access, the `loomPattern` schema, target-Lens output, operational-KV shapes, scheduling subjects, Weaver target+playbook, and the cross-package cap-lens layering via the **(a1)** extraction; the narrow post-hoc-orphan referential case is deferred — no-orphan-**by-construction** in Story 7.5 stands). Per-story briefs are authored against the frozen contracts; **implementation may proceed — CS→DS→CR, Epic 7 first.**
 

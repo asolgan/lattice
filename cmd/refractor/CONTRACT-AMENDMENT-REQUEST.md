@@ -94,3 +94,113 @@ Source: Winston architecture session on `_bmad-output/planning-artifacts/refract
 **Requested amendment:** register the new disjoint key prefixes produced by package-owned grant lenses as the god-cypher decomposes — `cap.roles.<actor>` (rbac-domain role/permission grants, Story 12.6) and a service-access disjoint key (working name `cap.svc.<actor>`, Story 12.7) — mirroring the existing `cap.ephemeral.<actor>` contribution (§6.6 amendment). Record that the bootstrap `capability` cypher shrinks to the primordial-identity anchor (or retires), with core owning only the bucket + key conventions + the step-3 dispatcher. Mark the `lattice-architecture.md` god-cypher open item resolved (planning-lead action).
 
 **Note on `service-location` (Story 12.7).** The `service-location` package **does not exist** — it is specified only as a concept (`packages/service-location/CONCEPT.md`, authored 2026-06-07). 12.7 is two-path: implement `capabilityServiceAccess` → `cap.svc.<actor>` if the package exists, **else just delete** the service/location MATCHes from the bootstrap cypher and leave the `cap.svc.*` key space registered-but-empty for a future service package. The contract amendment should register the `cap.svc.*` prefix regardless (so a later package projects into it with no core/contract churn).
+
+---
+
+# Contract #10 Amendment Request (13.1 — External I/O Bridge package)
+
+Part of the **External I/O Bridge** amendment package (ratify together with the sibling requests in
+`cmd/{loom,weaver}/CONTRACT-AMENDMENT-REQUEST.md`; umbrella =
+`_bmad-output/planning-artifacts/sprint-change-proposal-2026-06-18.md`). **STATUS: RATIFIED 2026-06-18 (Andrew), Option (b) — APPLIED 2026-06-18**: §10.2 of
+`docs/contracts/10-orchestration-surfaces.md` amended (a convergence lens MAY be an `actorAggregate`; the frozen
+§10.2 key + `splitRowKey` stay unchanged via an explicit bare-NanoID key column — Option (b)) and the 13.1
+revision-history entry added. Raised **before** implementation; the External I/O Bridge
+epic builds to the ratified text. This is a **gating** request: the convergence lens (Epic 14, Story 14.4) **cannot be built**
+until the key-shape decision below is settled.
+
+This file's block carries the **Contract #10 §10.2** touch (the convergence target-lens key shape vs the
+actorAggregate projection key). The companion amendments touch Contract #10 §10.5/§10.6 (`cmd/loom`)
++ §10.3/§10.8 (`cmd/weaver`). The `external` event domain needs **no** Contract #3 amendment (an
+ordinary domain under the open `<domain>.<eventName>` model; realized via a package event-type DDL +
+the bridge consumer).
+
+## Request E5: §10.2 + the actorAggregate projection — reconcile the convergence-lens key shape (the M2 seam — GATING)
+
+**Location:** §10.2 "Weaver target Lens output" — the **key shape** (`<targetId>.<entityId>`, where
+`<entityId>` is a **bare NanoID**) — vs. the **actorAggregate** projection's forced output key
+(`{actorSuffix}` = `<type>.<id>`, the post-`vtx.`-prefix actor suffix) defined by Refractor's Output
+descriptor (Request 5 above, `projectionKind: "actorAggregate"`) and rendered by `OutputDescriptor.BuildKey`
+(`internal/refractor/projection/output.go:155-163`), vs. Weaver's `splitRowKey`
+(`internal/weaver/evaluator.go:505-518`), which **rejects** a non-bare-NanoID entity segment and **drops
+the row**.
+
+**Current text (§10.2, the key shape — read as normative):**
+
+> **Key on the entity *ID*, not the full vertex key.** A candidate entity is **always a vertex** … so its
+> key is always `vtx.<type>.<id>`. The dotted full key must **not** be embedded in the NATS KV key … Within
+> a `<targetId>.` partition every candidate is the same type, so the type segment is redundant: the entity
+> segment is just the **NanoID**. …
+>
+> ```
+> bucket:  weaver-targets
+> key:     <targetId>.<entityId>                       # e.g. leaseApplicationComplete.Lk2Pn6mQrtwzKbcXvP3T
+> ```
+
+**Current text (§10.2 ↔ §10.8 binding):**
+
+> **`targetId` is the single binding token:** it is *both* this vertex's id *and* the `weaver-targets` key
+> prefix the `lensRef`'d Lens projects rows under (`<targetId>.<entityId>`). They must match …
+
+**Current behaviour (the incompatibility):**
+- `OutputDescriptor.BuildKey` (`output.go:157-162`) renders an actorAggregate key by substituting
+  `{actorSuffix}` with **the actor key minus its `vtx.` prefix** — i.e. `<type>.<id>` (e.g.
+  `leaseApp.Lk2Pn6mQrtwzKbcXvP3T`), with **no `IntoKey` / escape** to emit a bare NanoID.
+- Weaver's `splitRowKey` (`evaluator.go:508-518`) splits at the **first** `.`, then requires
+  `substrate.IsValidNanoID(entityID)` (lines 514-516); a `<type>.<id>` entity segment (which itself
+  contains a `.`) **fails** that check → `ok=false` → **the row is dropped** → the gap **never converges**.
+
+So a convergence lens that needs to be an **actorAggregate** (for multi-vertex reprojection) emits a key
+shape §10.2 + `splitRowKey` reject — the M2 incompatibility. This is **promoted to a gating decision**
+(was "small; possibly a §10.2 clarification" in §4C of the proposal): the convergence lens cannot be
+built until it is resolved.
+
+**Requested text — a convergence target lens MAY be an `actorAggregate`** (needed because a leaseApp
+convergence target now reads identity aspects + a service-instance vertex **across links**, which the
+plain projection — reprojecting only its own anchor — cannot fan out to; only actorAggregate's
+link-walking enumerator reprojects on any constituent change). Resolve the key incompatibility by **one
+of two options:**
+
+**Option (a) — Weaver `splitRowKey` accepts `<type>.<id>`; re-spec §10.2's `<entityId>`.** Change
+`splitRowKey` (`evaluator.go`) to accept a `<type>.<id>` entity segment (split at the **last** `.`, or
+validate `<type>` + `<id>` as a 2-segment suffix) and re-spec §10.2's key as
+`<targetId>.<entityKey-suffix>` where the entity segment **MAY** carry the `<type>.<id>` shape an
+actorAggregate emits (the bare-NanoID form stays valid for plain projections). `entityKey` in the
+document remains the source of truth, unchanged.
+- *Pro:* no projection change; actorAggregate's existing `{actorSuffix}` output works as-is; one
+  well-scoped engine + contract edit.
+- *Con:* widens the §10.2 key shape (the "entity segment is just the NanoID, dots are subject-token
+  separators → brittle" reasoning was deliberate); `splitRowKey` must handle both shapes; touches the
+  frozen §10.2 key spec that several Weaver call sites assume.
+
+**Option (b) — the actorAggregate projection honors an explicit key column for `weaver-targets` lenses.**
+Extend the Output descriptor (Request 5's `projectionKind: "actorAggregate"` machinery) so a
+`weaver-targets`-destined actorAggregate lens may declare an explicit **key column** (the bare-NanoID
+`<id>`) that `BuildKey` emits **instead of** `{actorSuffix}`, keeping §10.2's `<targetId>.<entityId>`
+bare-NanoID key intact.
+- *Pro:* §10.2 and `splitRowKey` are **untouched** (the frozen key shape and its brittleness reasoning
+  stand); the change is localized to the projection descriptor that Epic 12 already owns.
+- *Con:* a new descriptor knob (key-column override) on the actorAggregate Output path; the projection
+  must thread a non-`{actorSuffix}` key for this lens class only (a special case in an otherwise uniform
+  key-rendering path).
+
+**Recommendation: Option (b).** It leaves the **frozen** §10.2 key contract and `splitRowKey`
+**unchanged** (no widening of a frozen shape, no two-shape branch in multiple Weaver call sites), and
+lands the change in the **Refractor Output-descriptor machinery that Epic 12 just introduced** for
+exactly this kind of declarative projection control (Request 5 above, `projectionKind`/Output descriptor)
+— the smaller, better-contained blast radius. The cost is one descriptor knob (an explicit key-column
+override) versus Option (a)'s widening of the §10.2 key shape that the entity-ID-discipline reasoning
+(dots are subject-token separators) was specifically chosen to avoid. **Andrew decides between (a) and
+(b) at ratification; the convergence lens (Epic 14, Story 14.4) does not start until it is settled.**
+
+**Rationale:** a leaseApp convergence target now reads **identity aspects + a service-instance vertex
+across links** (`MATCH (app)-[:applicationFor]->(id), (id)<-[:providedTo]-(inst:service)`), which requires
+actorAggregate **fan-out** — the plain `nats_kv` projection only reprojects its own anchor vertex, so a
+change to a *linked* constituent (the service instance flipping to `complete`) would not retrigger the
+convergence row. But actorAggregate's forced `{actorSuffix}` = `<type>.<id>` key collides with §10.2's
+bare-NanoID `<entityId>` **and** `splitRowKey`'s NanoID validation (which silently drops the row). Either
+the consumer (Weaver `splitRowKey` + §10.2) widens to accept the type segment, or the producer (the
+actorAggregate projection) is steered to emit the bare-NanoID key for this lens class — both reconcile
+the seam; (b) does so without touching a frozen contract. **Security-adjacent** (a non-auth
+`weaver-targets` lens, so the actorAggregate BFS fallback is safe — proposal §4 Refractor note) — but
+because it touches the frozen §10.2 contract under Option (a), full 3-layer adversarial review applies
+when the convergence lens lands.

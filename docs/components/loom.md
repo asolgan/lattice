@@ -14,8 +14,10 @@
 Loom is the **deterministic procedure engine** — a generic interpreter that drives a
 **pre-determined, linear sequence of steps** to completion. It is *not* inherently
 user-facing: a step may be a **user-task** (collect/verify a field via a task assigned to an
-identity) or a **system-op** (e.g. a tenant-provisioning saga: `createTenant → seedRoles →
-createWorkspace → markReady`). Loom ships **zero domain knowledge** — patterns are package
+identity), a **system-op** (e.g. a tenant-provisioning saga: `createTenant → seedRoles →
+createWorkspace → markReady`), or an **external-task** (dispatch an idempotent external call via the
+**bridge** and await its result — Contract #10 §10.5/§10.6, ratified 2026-06-18, landing in the
+External I/O Bridge epic). Loom ships **zero domain knowledge** — patterns are package
 data; the engine interprets them.
 
 Loom is the imperative counterpart to Weaver's declarative convergence (brainstorming #122):
@@ -180,6 +182,36 @@ creation-deadline** (`CreateTaskTimeout`) that **disarms once the task vertex ex
 pointer survive any restart, so when the user finally acts the completion correlates and the cursor
 advances. A rejected/lost `CreateTask` is failed by the creation-deadline probe (never a silent wedge);
 a mis-declared `completionDomains` is caught by a load-time warn.
+
+### External steps (`externalTask`) — ratified design, lands in Epic 13 (Story 13.2)
+
+A third step kind, **`externalTask`**, makes an idempotent external call **wait-for-result** — symmetric
+to a userTask (dispatch to an async completer, then park; the completer is a human for userTask, the
+**bridge** for externalTask). It is **two-op-shaped** (unlike the single-op userTask/systemOp):
+
+```
+{ "kind": "externalTask", "adapter": "<name>", "params": { … }, "replyOp": "<ResolveOp>", "instanceOp": "<CreateInstanceOp>" }
+```
+
+- Loom submits the **`instanceOp`**, whose DDL creates the **claim vertex** (Core KV — the FR58
+  *visible claim before the call*; its **type is package-chosen** — the lease demo uses
+  `service.<x>.instance`, but the bridge is **type-agnostic**) and emits an `external.<adapter>` event
+  via **that op's transactional outbox**; Loom then **parks** on `token.<instanceKey>`. The external
+  **outcome is later recorded as aspect(s)** on this vertex by the `replyOp` (**D5** — business data in
+  aspects, not fat root `data`).
+- The **instance key** is the write-ahead handle Loom **mints itself** — Loom does not own the bridge's
+  later result-op `requestId`, so it parks on a handle it controls, minted exactly as the deterministic
+  `taskId` is for a userTask (§10.6 invariant 1).
+- The **bridge** (`docs/components/bridge.md`) consumes `events.external.>`, calls the adapter
+  idempotently (`idempotencyKey = instanceKey`), and posts the **`replyOp`** back carrying
+  `payload.externalRef = instanceKey`. Loom's **third** correlation key `payload.externalRef` resolves
+  `→ token.<instanceKey> → instance` and the cursor advances (a later step may branch on the outcome).
+- **Loom stays pure:** the external event rides the **instanceOp's outbox**, not a Loom-held NATS handle
+  — the `internal/loom` substrate-only boundary is unchanged. The §10.6 deadline + read-before-act probe
+  backstop a never-completing call exactly as for a systemOp.
+
+Ratified in the External I/O Bridge package (Contract #10 §10.5/§10.6, 2026-06-18); the engine work lands
+in that epic (Story 13.2). This **supersedes** the former "external calls are Weaver-owned" deferral below.
 
 ---
 
@@ -359,9 +391,11 @@ If two processes ever do run with the same `Instance` against the same `health-k
 
 ## Deferred (Phase 2+)
 
-- External-call steps in Loom (a deterministic *saga* with outbound calls) — would require
-  promoting the Two-Phase Nudge actuator to a shared package. Today external calls are
-  Weaver-owned. Flagged, not built.
+- External-call steps in Loom — **now the ratified design, no longer deferred to Weaver**: the
+  **`externalTask`** step kind (Core model above) dispatches an idempotent external call via the
+  **bridge** and awaits its result. This **supersedes** the former Two-Phase-Nudge / Weaver-owned
+  external-call placement (Contract #10 §10.3/§10.8 retired 2026-06-18). The engine work lands in the
+  External I/O Bridge epic (Story 13.2); until then `externalTask` is ratified-but-unbuilt.
 - Starlark guard evaluation — the reserved `{reads, starlark}` escape hatch (validated-and-rejected
   today). The shared verified-pure sandbox lands only when the first Starlark guard is authored
   (§10.5); the shipped declarative grammar (above) covers the field-presence/equality predicates the

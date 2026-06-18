@@ -81,7 +81,7 @@ the E2E); this records the obligation for the first one.
 
 ---
 
-## 10.2 Weaver target Lens output (D4) — **FROZEN 2026-06-02**
+## 10.2 Weaver target Lens output (D4) — **FROZEN 2026-06-02** (amended 2026-06-18, 13.1)
 
 One row **per candidate entity**, carrying a `violating` flag — **not** row-only-when-violating
 (avoids Refractor retraction). Projected by the existing `nats_kv` adapter.
@@ -116,6 +116,19 @@ value:   {
            "projectedAt": "2026-05-12T14:32:18.142Z" # deterministic as-of (Contract #6 semantics)
          }
 ```
+
+**Convergence lens as an `actorAggregate` (Amended 2026-06-18 — 13.1, External I/O Bridge).** A
+convergence target whose row must reproject on a change to a *linked* constituent — e.g. a leaseApp
+that reads identity aspects **and** a service-instance vertex **across links**
+(`MATCH (app)-[:applicationFor]->(id), (id)<-[:providedTo]-(inst:service)`) — MAY be projected by an
+**`actorAggregate`** lens (Refractor Output descriptor, `projectionKind: "actorAggregate"`) instead of
+the plain `nats_kv` projection (which reprojects only its own anchor vertex and would miss a linked
+constituent flipping). **The §10.2 key shape is unchanged** (Option (b) at ratification): such a lens
+declares an explicit **key column** (the bare-NanoID `<entityId>`) that the actorAggregate `BuildKey`
+emits **instead of** its default `{actorSuffix}` (= `<type>.<id>`), so the row key stays
+`<targetId>.<entityId>` (bare NanoID) and Weaver's `splitRowKey` accepts it unchanged. The frozen
+§10.2 key + `splitRowKey` stay frozen; the change is localized to the Refractor Output-descriptor
+machinery Epic 12 introduced.
 
 **Watch.** Weaver does a **filtered watch `<targetId>.>`** per target it manages (discovering each
 target's id from the `meta.weaverTarget` registry, §10.8). Row-per-candidate (incl. non-violating)
@@ -154,19 +167,22 @@ Refractor negative/filter-retraction projection. Freshness rules live in the **t
 
 ---
 
-## 10.3 Operational KV namespaces — **FROZEN 2026-06-02**
+## 10.3 Operational KV namespaces — **FROZEN 2026-06-02** (amended 2026-06-18, 13.1)
 
 All buckets here are **operational state (P1)** — single-component bookkeeping, never Core KV. **Bucket
 names are dash-named** (NATS KV stream tokens, no dots — the earlier `loom.state.>` / `weaver.state.>`
-notation was loose). `weaver-state` / `weaver-claims` already exist as primordial constants
+notation was loose). `weaver-state` already exists as a primordial constant
 (`primordial.go`); `loom-state` joins the primordial create list (Loom bootstrap story).
+(`weaver-claims` is **retired** — see below; its bucket/constant teardown lands in the External I/O
+Bridge nudge-retirement story.)
 
 | Bucket | Owner | Key | Status |
 |--------|-------|-----|--------|
 | `loom-state` | Loom | `instance.<instanceId>` / `instance.<instanceId>.pattern` / `token.<pendingToken>` / `outbox.<token>` / `deadline.<instanceId>` | primordial (new), `AllowAtomicPublish: true` |
 | `weaver-state` | Weaver | `<targetId>.<entityId>.<gapColumn>` | primordial (exists) |
-| `weaver-claims` | Weaver | `<claimId>` | primordial (exists), 90d retention |
 | `weaver-work` | Weaver | — | **in-process only; no durable bucket in Phase 2** (see below) |
+
+*(`weaver-claims` — **RETIRED** 2026-06-18, 13.1; the row is dropped here, the subsection below records why and what replaces it, and the bucket/primordial-constant/verify-enumeration teardown lands in the External I/O Bridge nudge-retirement story.)*
 
 ### `loom-state` — per-instance Loom cursor + co-located reverse index
 
@@ -272,46 +288,52 @@ value: { targetId, entityKey, gap, action, claimId?, claimedAt, leaseExpiresAt, 
 - **Mark-clearing is level-reconciled, not edge-triggered** (§10.8): on each watch update **and** each
   reconciler sweep, Weaver compares the **current** row's `missing_<col>` against existing marks for
   that `<targetId>.<entityId>` and deletes any mark whose column is now `false` — it does **not** rely
-  on catching the transitional flip (a coalescing watch can drop edges). `claimedAt`/`claimId` tag the
+  on catching the transitional flip (a coalescing watch can drop edges). `claimedAt` tags the
   episode so a stale mark from a prior closed episode can't shadow a fresh re-open.
-- **`claimId` (nudge only) is minted and written into the mark in the SAME atomic op as the
-  CAS-create** — so a mark for a nudge gap **always** carries its `claimId`. An empty `claimId` on a
-  nudge mark is impossible-by-construction; if a reconciler ever sees one it treats it as corrupt and
-  **alerts — never mints a new `claimId`** (a fresh id would mean a second `idempotencyKey` → a
-  duplicate external call). This is the link that lets a crash-retry within a live lease resume the
-  *same* claim.
-- **Re-fire after lease expiry — idempotency by action:** `nudge` is safe (same `claimId` →
-  adapter dedups). `triggerLoom` / `assignTask` re-fire is **accepted as a rare double** (lease ≫
-  remediation latency makes it rare; Loom guard-idempotency limits damage, and a duplicate task is
-  operator-visible) — **documented bound, not a silent risk**; the robust check-before-act variant is
-  a Phase-3 hardening.
+- **Re-fire after lease expiry — idempotency by action:** `triggerLoom` / `assignTask` re-fire is
+  **accepted as a rare double** (lease ≫ remediation latency makes it rare; Loom guard-idempotency
+  limits damage, and a duplicate task is operator-visible) — **documented bound, not a silent risk**;
+  the robust check-before-act variant is a Phase-3 hardening. *(The `nudge`-specific `claimId`
+  clauses — `claimId` minted atomically with the CAS-create, and "`nudge` is safe via `claimId`" —
+  retired 2026-06-18, 13.1: `nudge` is gone (§10.8) and external idempotency is now the
+  service-instance key on the bridge path. `claimId?` in the value shape above is left optional but
+  has no remaining producer.)*
 - `entityKey` carries the full `vtx.<type>.<id>` (doc-is-truth); the key holds only the ID.
 
-### `weaver-claims` — Two-Phase Nudge claim record (FR58, arch Item 3)
+### `weaver-claims` — RETIRED (Amended 2026-06-18 — 13.1, External I/O Bridge)
 
-```
-key:   <claimId>                             # minted NanoID per nudge dispatch
-value: { claimId, adapter, operation, subject, params,
-         idempotencyKey,                     # = claimId; handed to the adapter so IT dedups the real external action
-         state,                              # claimed → executing → resolved | failed
-         claimedAt, resolvedAt?, resolveRef? }   # resolveRef = requestId / op key of the resolve mutation in Core KV
-```
-- Protocol (arch Item 3): **Claim** (write record, `state=claimed`) → **Execute** (external call with
-  `idempotencyKey`; `state=executing`) → **Resolve** (submit a normal op through the Processor → Core
-  KV, carrying `claimId`; `state=resolved`). The resolve mutation is the audit join (Core KV =
-  business outcome, `weaver-claims` = operational intent).
-- **External idempotency is the `idempotencyKey` (=claimId) the adapter dedups on** — *not* a CAS on
-  the claim key. The `weaver-state` mark already serialized the dispatch (and now carries the `claimId`
-  atomically, §10.3 weaver-state), so the claim has a single writer. A legitimately re-opened gap (Lens
-  flips `missing_*` true again after a window) is a fresh dispatch → fresh `claimId` → a new, correct
-  external call.
-- **Recovery (reconciler) is read-before-act.** A claim found in `claimed`/`executing` past its lease:
-  the reconciler (a) **reuses the same `claimId`/`idempotencyKey`** — never mints a new one — and
-  (b) **checks `resolveRef` / Core KV for an already-landed resolve before re-executing**. If the
-  resolve already committed, it just advances the record to `resolved`; the Core KV resolve is the
-  **authoritative truth** (a claim stuck pre-`resolved` is merely a stale operational record).
-  Adapter idempotency on the reused `idempotencyKey` is what makes an `executing`-state retry safe.
-- 90d retention (configurable).
+The Two-Phase Nudge claim record and the in-Weaver **Claim → Execute → Resolve** protocol are
+**retired**. External idempotent I/O moves out of Weaver (convergence *detection*) into **Loom + the
+bridge** (deterministic *execution*) — see `cmd/loom`'s §10.5/§10.6 `externalTask` step and
+`docs/components/bridge.md`. The bucket, its primordial constant + provisioning, and the **two**
+kernel-verify enumerations (`scripts/verify-kernel.go`, `internal/bootstrap/verify.go`) are removed in
+the bridge epic's nudge-teardown story — **move-then-delete** (the `Fake*` adapters relocate to the
+bridge first, so there is never a window where neither external path works; full teardown only after
+the convergence e2e is green).
+
+**Why it was retired:** the resolve op **could not address a candidate entity distinct from the nudge
+`subject`** — the resolve-op payload was hard-coded `{ claimId, result, expectedRevision }` with
+`authTarget = np.subject`, and a Starlark DDL op cannot read `authContext`
+(`internal/processor/starlark_runner.go` binds only `{ requestId, lane, operationType, actor,
+submittedAt, payload }`), so the DDL that should record the result had **no channel** to learn which
+vertex (candidate ≠ subject) to write. The reference vertical surfaced this structural defect.
+
+**What replaces it (FR58 / NFR-S11 preserved, more honestly):** the **claim vertex in Core KV** created
+by the `externalTask`'s `instanceOp` **before** the `external.*` event is even publishable **is** the
+visible claim (its **type is package-chosen** — the lease demo uses `service.<x>.instance`; the bridge
+is **type-agnostic**). The claim, the resolve target, and the result holder unify into **one auditable
+business vertex** with a natural idempotency key (one instance = one call). The external **outcome is
+recorded as aspect(s)** on that vertex per **D5** (business data lives in aspects; the vertex root `data`
+stays minimal — at most a justified lifecycle scalar), never fat root `data`. Idempotency on redelivery
+rests on the **deterministic result-op `requestId`** (below) + the adapter's own `idempotencyKey` dedup
+— **not** on the bridge reading any typed vertex.
+
+**Hard invariant (FR58 determinism — pinned):** the bridge's result-op **`requestId` MUST be
+`deterministic(idempotencyKey = instanceKey)`**, so a redelivered `external.*` event produces the
+**same** result-op requestId, which collapses on the Contract #4 `vtx.op.<requestId>` tracker
+(`internal/processor/step2_dedup.go`) → **exactly one** result mutation. This is the event-plane analog
+of the §10.4 deterministic-`requestId` rule for the fired-timer→op path (and of the retired Weaver
+resolve op's own `deriveResolveRequestID`).
 
 ### `weaver-work` — deferred (no durable bucket in Phase 2)
 
@@ -433,12 +455,46 @@ type — so an all-userTask onboarding pattern over `identity` subjects declares
 consumer that never sees the completion). A pattern mixing userTask + systemOp steps lists every domain
 it completes on.
 
-**Step shape:** `{ kind, operation, guard? }` — completion is implicit (§10.6), no per-step event.
+**Step shape:** `{ kind, operation, guard? }` for `userTask`/`systemOp` — completion is implicit
+(§10.6), no per-step event. The `externalTask` kind (below) is **two-op-shaped** and carries its own
+fields `{ kind, adapter, params, replyOp, instanceOp }`.
 - `kind` ∈ `userTask` (engine creates a task with links `assignedTo` → the subject,
   `forOperation` → the step's op, `scopedTo` → **the subject** — a Loom `userTask` scopes its grant
   to the instance subject; the frozen step shape carries no separate target field; UI renders from
-  the op's self-describing DDL via the `forOperation` link) | `systemOp` (engine submits the op directly).
-- **Linear only** — no branches/loops/fan-out. A compound *path* is a Weaver signal.
+  the op's self-describing DDL via the `forOperation` link) | `systemOp` (engine submits the op
+  directly) | **`externalTask`** (engine submits the `instanceOp`, then parks awaiting the external
+  result — see below).
+- **Linear only** — no branches/loops/fan-out. A compound *path* is a Weaver signal. The
+  `externalTask`'s two ops (submit-instanceOp → park) are **one logical step**, not a branch/fan-out.
+
+**`externalTask` (Amended 2026-06-18 — 13.1, External I/O Bridge).** A step that dispatches an idempotent
+external call and **waits for its result** — symmetric to a `userTask` (dispatch to an async completer,
+then park; the completer is a human for userTask, the bridge for externalTask). Shape:
+
+```
+{ "kind": "externalTask", "adapter": "<name>", "params": { ... }, "replyOp": "<ResolveOp>", "instanceOp": "<CreateInstanceOp>" }
+```
+
+- The engine submits the **`instanceOp`**, whose DDL (a) creates the **claim vertex** (Core KV business
+  state — the FR58 "visible claim before the call", §10.3; its **type is package-chosen** — the lease
+  demo uses `service.<x>.instance`, but the bridge is **type-agnostic**) and (b) emits the
+  `external.<adapter>` event via **that op's transactional outbox**. The `external` domain is
+  **ordinary** — no Contract #3 change (the open `<domain>.<eventName>` model, no Processor allowlist);
+  the `instanceOp` DDL declares + emits the event-type as package data. The bridge
+  (`docs/components/bridge.md`) consumes `events.external.>`, calls the adapter idempotently, and posts
+  `replyOp` back.
+- The engine **then PARKS** on `token.<instanceKey>` (§10.6) — the instance key it **mints write-ahead**
+  and passes to `instanceOp` as a caller-supplied id (exactly as it supplies `CreateTask`'s
+  deterministic `taskId` write-ahead, §10.6 invariant 1).
+- `adapter` is the external adapter name; `params` are row/subject templates resolved per the
+  §10.5/§10.8 templating rule; `replyOp` is the result-op type the bridge posts back (carrying
+  `payload.externalRef = instanceKey`, §10.6) — **its DDL records the external outcome as aspect(s) on
+  the claim vertex** (**D5**: business data lives in aspects; the vertex root `data` stays minimal — at
+  most a justified lifecycle scalar such as `status`), **not** as fat root `data`; `instanceOp` is the
+  DDL op that mints the claim vertex + emits the event.
+- **Loom stays pure:** the event rides the **`instanceOp`'s transactional outbox** (the op Loom submits
+  through the command-outbox relay), **not** a Loom-held NATS handle — the `internal/loom`
+  substrate-only boundary is unchanged.
 
 **Guards — pure predicate over the subject's current state.** Absent guard = step always runs.
 
@@ -485,11 +541,18 @@ re-advance.
 |-----------|----------------------------------|----------------------------------|
 | **userTask** | the **`taskKey`** (`vtx.task.<id>`) of the task it created | `orchestration.taskCompleted` core-event → **`payload.taskKey`** → live `token.<taskKey>` GET → instance |
 | **systemOp** | the **`requestId`** of the op it submitted | a committed business event on a subscribed domain whose top-level `requestId` matches a live `token.<requestId>` → advance via the atomic batch. **failed/rejected** is **off-stream** (a rejected op writes no tracker/event) — learned via the **per-step deadline + a read-before-act probe** (below), never the submit reply → `status=failed` / `retryCount` per policy; the deadline also backstops a mis-declared `completionDomains` (§10.5) → alert, never a silent wedge |
+| **externalTask** *(13.1, 2026-06-18)* | the **`instanceKey`** — the `vtx.<type>.<id>` key of the claim vertex the `instanceOp` mints (type **package-chosen**; the lease demo uses `service.<x>.instance`) — Loom mints it write-ahead and passes it to `instanceOp` | the bridge's `replyOp` completion event → **`payload.externalRef`** → live `token.<instanceKey>` GET → instance. A never-completing call is caught by the **per-step deadline + read-before-act probe** (below), exactly like a systemOp (the `instanceOp`'s own committed/rejected status is probed via its Contract #4 tracker) |
 
 All event business fields ride the Event envelope's **`payload`** object (Contract #3 §3.4), so Loom's
-two structural correlation keys are **top-level `requestId`** (systemOp) and **`payload.taskKey`**
-(userTask). Loom stays domain-ignorant — it tries both keys against the durable token store and the
-pointer decides which (at most one) resolves.
+**three** structural correlation keys are **top-level `requestId`** (systemOp), **`payload.taskKey`**
+(userTask), and **`payload.externalRef`** (externalTask — *Amended 2026-06-18, 13.1*). Loom stays
+domain-ignorant — it tries each field against the durable token store (`token.<requestId>`,
+`token.<taskKey>`, `token.<externalRef>`) and **at most one live pointer resolves** — the one for the
+current pending step. Disjointness is **by field + by the single live pointer**, not by the key's type
+segment: `externalRef` is the full `vtx.<type>.<id>` key Loom minted (**any** package-chosen claim-vertex
+type), so it needs no fixed shape. The `externalTask`'s write-ahead handle is that **instance key Loom
+mints** — it does not own the bridge's later result-op `requestId`, so it parks on a handle it controls
+and the bridge echoes it back as `payload.externalRef`.
 
 ### systemOp terminals — committed on-stream, failed/rejected off-stream (deadline + probe)
 
@@ -511,8 +574,8 @@ for instance `I`:
    marker). Re-reading current state — never acting on the marker alone — is the idempotency +
    multi-replica guard.
 2. Let `T = instance.pendingToken`. **Read-before-act probe: GET the Contract #4 op tracker `vtx.op.<T>`**
-   (a Core-KV *read* — Loom reads, never writes Core KV; symmetric to Weaver's recovery read, §10.3
-   `weaver-claims`):
+   (a Core-KV *read* — Loom reads, never writes Core KV; symmetric to the bridge's read-before-act
+   recovery on the service-instance vertex, §10.3):
    - **tracker present** → the op committed; its completion event was missed (mis-declared
      `completionDomains` / lost) → **advance** exactly as the committed terminal would, **and alert**
      ("completion recovered via deadline probe — check `completionDomains`"). Flow stays live.
@@ -670,7 +733,7 @@ projection to a package-owned lens + disjoint key (a1 extraction), and link-sour
 
 ---
 
-## 10.8 Weaver target + playbook (package data) — **FROZEN 2026-06-02**
+## 10.8 Weaver target + playbook (package data) — **FROZEN 2026-06-02** (amended 2026-06-18, 13.1)
 
 A `meta.weaverTarget` meta-vertex bundles the **detection** (violation Lens, §10.2) and the
 **remediation** (gap → action playbook). CDC-loaded like `meta.lens` / `meta.loomPattern`; Weaver
@@ -683,8 +746,8 @@ meta.weaverTarget {
   "gaps": {
     "missing_onboarding": { "action": "triggerLoom",  "pattern": "onboarding",
                             "subject": "row.applicant" },
-    "missing_bgcheck":    { "action": "nudge",        "adapter": "backgroundCheck",
-                            "operation": "ResolveBackgroundCheck", "subject": "row.applicant" },
+    "missing_bgcheck":    { "action": "triggerLoom",  "pattern": "backgroundCheck",
+                            "subject": "row.applicant" },
     "missing_payment":    { "action": "triggerLoom",  "pattern": "collectPayment",
                             "subject": "row.applicant" },
     "missing_signature":  { "action": "assignTask",   "operation": "SignLease",
@@ -712,10 +775,17 @@ Every action's params are resolved per row (templating below). The Actuator subm
 
 | `action` | params | effect |
 |----------|--------|--------|
-| `triggerLoom` | `{ pattern, subject }` | submit `StartLoomPattern{ patternRef: pattern, subjectKey: subject }` → Loom (§10.5). `subject` must resolve to a vertex of the pattern's `subjectType`. **Auth: see below.** |
-| `nudge` | `{ adapter, operation, subject, params? }` | Two-Phase Nudge to the external adapter (§10.3 `weaver-claims`); `subject` = the entity the nudge concerns. `operation` is **required** — it is the **resolve-op type** submitted in the Resolve leg to record the external outcome back into Core KV (the `operation` field of the §10.3 `weaver-claims` record). A blank or `row.`-templated `operation` is a config error → alert (same posture as a blank `adapter`). |
+| `triggerLoom` | `{ pattern, subject }` | submit `StartLoomPattern{ patternRef: pattern, subjectKey: subject }` → Loom (§10.5). `subject` must resolve to a vertex of the pattern's `subjectType`. **Auth: see below.** Also the path for **external remediation** (since 2026-06-18, 13.1): `triggerLoom` a pattern whose body is an `externalTask` (§10.5) — this **replaces the retired `nudge` action**. |
 | `assignTask` | `{ operation, assignee, target }` | `CreateTask` (§10.1): `assignedTo`→`assignee`, `forOperation`→`operation`, `scopedTo`→`target`. |
 | `directOp` | `{ operation, target?, params? }` | submit `operation` directly as a remediation op. |
+
+> **`nudge` — RETIRED (Amended 2026-06-18 — 13.1, External I/O Bridge).** The `nudge` GapAction (and the
+> `operation` field added to it in Story 10.2) is removed: external I/O moves out of Weaver (convergence
+> *detection*) into **Loom + the bridge** (deterministic *execution*). Weaver's job collapses to **detect
+> → `triggerLoom`**; it no longer dispatches or resolves external calls. External remediation is now
+> `triggerLoom` of a pattern containing an `externalTask` (§10.5/§10.6), and the FR58 claim/idempotency
+> guarantee is carried by the service-instance vertex on the bridge path (§10.3 `weaver-claims` retirement
+> note). Weaver retains `triggerLoom` / `assignTask` / `directOp`.
 
 ### Templating
 
@@ -758,10 +828,11 @@ in-flight**, the Strategist looks up `gaps[col]` and the Actuator executes:
   `missing_<col>` against existing marks and deletes any whose column is now `false` (a coalescing watch
   can drop the transitional flip, so Weaver must not depend on *seeing* it). Lease expiry is enforced by
   a **NATS per-key TTL + active reconciler** (§10.3) — a dead reconciler can't wedge a gap forever.
-  Async remediations (Loom/nudge) close their gap when their downstream work lands and the Lens
-  re-projects `false`; `claimId`/`claimedAt` tag the episode so a stale prior-episode mark can't shadow
-  a re-open. **Re-fire idempotency by action** is pinned in §10.3 (nudge safe via `claimId`;
-  triggerLoom/assignTask = documented rare-double).
+  Async remediations (Loom — incl. an `externalTask`'s external call via the bridge) close their gap
+  when their downstream work lands and the Lens re-projects `false`; `claimedAt` tags the episode so a
+  stale prior-episode mark can't shadow a re-open. **Re-fire idempotency by action** is pinned in §10.3
+  (`triggerLoom` / `assignTask` = documented rare-double; an `externalTask` external call dedups on the
+  **deterministic** bridge result-op `requestId`, §10.3 `weaver-claims` retirement note).
 - **Gaps fire in parallel** — independent remediations run concurrently.
 - **Gap *dependencies* are encoded in the target Lens predicates, not in Weaver.** If bgcheck needs
   onboarding first, the Lens makes `missing_bgcheck` true only once onboarding is done
@@ -854,3 +925,4 @@ emits events and writes no business vertex — nothing in the pipeline special-c
 | 2026-06-12 | **Weaver amendments ratified (Andrew) — §10.2/§10.3/§10.4** (`cmd/weaver/CONTRACT-AMENDMENT-REQUEST.md`, Stories 9.2/9.3). **§10.3 (R1):** the `weaver-state` mark's per-key TTL is **`2 × lease`** (`markTTLBackstopFactor`), not a literal mirror of `leaseExpiresAt` — `leaseExpiresAt` mirrors the *lease* (`claimedAt + lease`) and the TTL is the strictly-longer dead-reconciler backstop. The interval-cadence sweep reclaims a lease only while the mark still exists (the mark is its only evidence — it enumerates marks, not rows), so the key must outlive `leaseExpiresAt` for the *sweep-reclaims-expired-leases* clause to be reachable; `2 ×` is the smallest factor satisfying both the never-wedge (TTL) and re-attempt (sweep) clauses, with `SweepInterval` clamped ≤ lease. **§10.4 (R2):** the schedule-subject template's segments after `schedule.<domain>.<kind>.` are **publisher-chosen dot-free tokens** within `schedule.>` — Weaver keys per **target AND entity** (`schedule.weaver.timer.<targetId>.<entityId>`, fired `…fired.<targetId>.<entityId>`) so two targets projecting a `freshUntil` for the same entity hold independent timer slots instead of colliding on the `MaxMsgsPerSubject: 1` rollup (pins the same "publisher-chosen" reading the fired-target line already had). **§10.2 (R3):** **`freshUntil`** named as an optional engine-recognized convention column (RFC3339, a free-form param column by storage) — the target cypher computes `resolve + window` and projects the deadline; the engine converts it to an `@at` schedule (§10.4) and never computes the window. |
 | 2026-06-12 | **Pattern-definition pinning ratified (Andrew) — §10.3** (CAR Request 10, post-8.3 fix-forward, finding F2). `loom-state` gains a **fifth key shape**, `instance.<instanceId>.pattern` — the full pattern definition as loaded at trigger time, written in the **same `AtomicBatch`** that creates `instance.<instanceId>` (both `CreateOnly`) and deleted in the **same terminal batch** that flips `status` to `complete`/`failed`. It is deliberately a **sub-key of its instance**, not a fifth disjoint prefix (instanceIds are NanoIDs, so `.pattern` is unambiguous); the other four prefixes remain disjoint. **Definitions bind at instance start**: all step resolution (advance, completion, deadline recovery) reads this pin, never the live pattern source, so a pattern update mid-flight (reordered/inserted/changed steps) cannot mis-index a running instance's `cursor` — pattern updates affect **new instances only**. Listing `instance.*.pattern` yields exactly the live-instance set, which is the second leg of the §10.9 per-domain consumer reconcile (current definitions ∪ pinned definitions of live instances): an in-flight instance survives its pattern being removed/updated-away, and the domain consumer drains once its last live instance completes — superseding the prior documented in-flight-orphan-on-pattern-removal caveat. A missing pin for a `status=running` instance is an invariant break, surfaced as an operator-visible failed terminal (never a silent wedge or a Nak loop). Disaster recovery (total `loom-state` loss → fresh `StartLoomPattern`) re-binds to the current definition, unchanged from the Story 8.3 narrow recovery semantics. Event-embedded pins were analyzed and rejected (`core-events` `MaxAge=7d` vs unbounded userTask waits). |
 | 2026-06-13 | **§10.8 `nudge` action `operation` field ratified (Andrew) — §10.8** (`cmd/weaver/CONTRACT-AMENDMENT-REQUEST.md` Request 4, Story 10.2). The `nudge` action params become **`{ adapter, operation, subject, params? }`** (`operation` **required**), and the `missing_bgcheck` example gains `"operation": "ResolveBackgroundCheck"`. `operation` is the **resolve-op type** — the op the Two-Phase Nudge submits in its Resolve leg to record the external outcome back into Core KV (Claim→Execute→Resolve, arch Item 3). Reconciles an internal inconsistency: the §10.3 `weaver-claims` record already carries `operation`, but that value could only come from the playbook's nudge action, which had no field for it; without it the Resolve leg has no op to submit and a claim could never reach `state=resolved`. A blank or `row.`-templated `operation` routes to the same `errConfig`-surfaced-to-Health posture as a blank/templated `adapter`. |
+| 2026-06-18 | **External I/O Bridge amendments ratified (Andrew) — §10.2 / §10.3 / §10.5 / §10.6 / §10.8** (one coherent package; CARs in `cmd/{loom,weaver,refractor}/CONTRACT-AMENDMENT-REQUEST.md`; umbrella `_bmad-output/planning-artifacts/sprint-change-proposal-2026-06-18.md`). The reference vertical surfaced that external I/O sat in the wrong engine; it moves out of Weaver (convergence *detection*) into **Loom + a new generic `bridge` component** (deterministic *execution*), event-driven and symmetric to userTasks. **§10.5/§10.6 (loom):** new **`externalTask`** step kind — two-op-shaped `{kind, adapter, params, replyOp, instanceOp}` (Loom submits the `instanceOp`, which creates the `service.<x>.instance` claim vertex + emits an `external.<adapter>` event via that op's transactional outbox, then **parks**); a **third** completion-correlation key **`payload.externalRef`** (= the `instanceKey` Loom mints write-ahead and parks on as `token.<instanceKey>`; the bridge's `replyOp` echoes it back). The "no new envelope field" userTask assumption is **struck** — this is a real engine extension (a 3rd `correlationKeys` key). Loom stays pure (event rides the op's outbox, no NATS handle). **§10.3 (weaver A):** **`weaver-claims` RETIRED** — the Two-Phase Nudge claim record + Claim→Execute→Resolve protocol leave Weaver; the visible-claim guarantee (FR58/NFR-S11) is now the **service-instance vertex in Core KV** (created before the `external.*` event is publishable). Reason: the resolve op could not address a candidate ≠ the nudge `subject` (hard-coded payload + Starlark can't read `authContext`). **Hard invariant pinned:** the bridge result-op `requestId` MUST be `deterministic(idempotencyKey = instanceKey)` (redelivery collapses on the Contract #4 tracker → exactly one result mutation). `weaver-state` + the reconciler/sweeper are **KEPT** (they serve `triggerLoom`/`assignTask`/`directOp`); only the nudge-specific `claimId` clauses retired. **§10.8 (weaver B):** **`nudge` GapAction RETIRED** (supersedes the Story-10.2 `operation`-on-nudge addition above) — external remediation is now `triggerLoom` of a pattern containing an `externalTask`; the `missing_bgcheck` example becomes a `triggerLoom`. **§10.2 (refractor, Option (b)):** a convergence target lens MAY be an **`actorAggregate`** (needed to reproject on linked-constituent change — identity aspects + service-instance across links); the **frozen §10.2 key + `splitRowKey` stay UNCHANGED** — such a lens declares an explicit key column emitting the bare-NanoID `<entityId>` instead of the default `{actorSuffix}` (= `<type>.<id>`), landing in the Epic-12 Output-descriptor machinery. **Contract #3 — NO amendment** (dropped at ratification): `external` is an ordinary domain under the open `<domain>.<eventName>` model (no Processor allowlist), realized via a package event-type DDL + the bridge's `events.external.>` consumer (envelope spec → `docs/components/bridge.md`). Bucket/constant/verify-enumeration teardown + the engine work land in the External I/O Bridge epic — Epic 13, stories 13.2–13.5 — under full 3-layer review + the FR58 crash/retry proof; the `Fake*` adapters move-then-delete to the bridge (never a window where neither path works). **Pre-commit coherence refinement (Andrew, 2026-06-18):** the claim vertex's **type is package-chosen** (the bridge is **type-agnostic** — `service.<x>.instance` is the lease demo's choice, not a contract constraint), the external **outcome is recorded as aspect(s) per D5** (minimum data in the vertex root, never fat root `data`), and bridge idempotency rests on the deterministic result-op `requestId` + the adapter's `idempotencyKey` dedup — **not** a typed-vertex read. |

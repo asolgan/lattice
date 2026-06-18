@@ -20,8 +20,9 @@ under `packages/<package-name>/`.
 
 ## Phase 2 components (design pages — no code yet)
 
-- [Loom](./loom.md) — deterministic procedure engine (linear-sequence interpreter)
-- [Weaver](./weaver.md) — convergence engine (target-as-Lens, Two-Phase Nudge)
+- [Loom](./loom.md) — deterministic procedure engine (linear-sequence interpreter; +`externalTask` step, E.1)
+- [Weaver](./weaver.md) — convergence engine (target-as-Lens; external I/O moving to the Bridge, E.1)
+- [Bridge](./bridge.md) — generic external-I/O egress (durable `events.external.>` consumer; ratified design, built in E.3)
 
 ## Phase 3+ components (no code yet — placeholders)
 

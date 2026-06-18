@@ -540,3 +540,117 @@ sub-key of its instance (instanceIds are NanoIDs, so the `.pattern` suffix is un
 other four prefixes remain disjoint. A note records that definitions bind at instance start and
 that the per-domain consumer set (D2/§10.9) is derived from the union of current definitions and
 live-instance pins.
+
+---
+
+# Contract #10 Amendment Requests (13.1 — External I/O Bridge package)
+
+Part of the **External I/O Bridge** amendment package (ratify together with the sibling requests in
+`cmd/{weaver,refractor}/CONTRACT-AMENDMENT-REQUEST.md`; umbrella =
+`_bmad-output/planning-artifacts/sprint-change-proposal-2026-06-18.md`). **STATUS: RATIFIED 2026-06-18 (Andrew) — APPLIED 2026-06-18**: §10.5/§10.6 of
+`docs/contracts/10-orchestration-surfaces.md` amended (new `externalTask` step kind + the `payload.externalRef`
+correlation key) and the 13.1 revision-history entry added. Raised **before** implementation; the External I/O Bridge
+epic builds to the ratified text. Unlike Requests 1–10 above (which were retroactive — the working tree already built
+to the requested text), this is a **gating** request: the 13.1 story does not start until the surface is
+agreed.
+
+> **Pre-commit coherence refinement (Andrew, 2026-06-18).** The **applied** §10.5/§10.6 text
+> **generalizes** the claim-vertex type: it is **package-chosen** (the bridge is type-agnostic),
+> `service.<x>.instance` being the lease demo's choice, not a contract constraint. The external
+> **outcome is recorded as aspect(s) per D5** (minimum data in the vertex root), not fat root `data`. The
+> "Requested text" below uses the lease demo's `service.<x>.instance` illustratively; the applied §10.x
+> text is the generic form.
+
+This file's block carries the **Contract #10 §10.5/§10.6** touch (a new `externalTask` step kind + a
+third completion-correlation key). The companion amendments touch Contract #10 §10.3/§10.8
+(`cmd/weaver`) and §10.2 (`cmd/refractor`). The `external` event domain needs **no** Contract #3
+amendment — it is an ordinary domain under the open `<domain>.<eventName>` model (the Processor derives
+the domain from the class's first segment, no allowlist — `internal/processor/step7_events.go`); it is
+realized via a package-declared `external.<adapter>` event-type DDL + the bridge's `events.external.>`
+consumer (envelope spec in `docs/components/bridge.md`).
+
+## Request E2: §10.5 / §10.6 — new `externalTask` step kind + a third completion-correlation key (`payload.externalRef`)
+
+**Location:** §10.5 "Loom pattern definition" — the **step-kind set** (currently `userTask` / `systemOp`)
+and the "Step shape" `kind` bullet; **and** §10.6 "Step completion & instance correlation" — the
+completion-correlation table (currently top-level `requestId` for systemOp, `payload.taskKey` for
+userTask) + the "Loom's two structural correlation keys" closing paragraph.
+
+**Current text (§10.5, the `kind` bullet):**
+
+> `kind` ∈ `userTask` (engine creates a task with links `assignedTo` → the subject, `forOperation` → the
+> step's op, `scopedTo` → **the subject** … the frozen step shape carries no separate target field; UI
+> renders from the op's self-describing DDL via the `forOperation` link) | `systemOp` (engine submits the
+> op directly).
+> **Linear only** — no branches/loops/fan-out. A compound *path* is a Weaver signal.
+
+**Current text (§10.6, the completion-correlation table):**
+
+> | Step kind | Pending token (in `loom-state`) | Completion signal Loom consumes |
+> |-----------|----------------------------------|----------------------------------|
+> | **userTask** | the **`taskKey`** (`vtx.task.<id>`) of the task it created | `orchestration.taskCompleted` core-event → **`payload.taskKey`** → live `token.<taskKey>` GET → instance |
+> | **systemOp** | the **`requestId`** of the op it submitted | a committed business event on a subscribed domain whose top-level `requestId` matches a live `token.<requestId>` → advance via the atomic batch. **failed/rejected** is **off-stream** … |
+
+**Current text (§10.6, the closing-paragraph correlation-key claim):**
+
+> All event business fields ride the Event envelope's **`payload`** object (Contract #3 §3.4), so Loom's
+> two structural correlation keys are **top-level `requestId`** (systemOp) and **`payload.taskKey`**
+> (userTask). Loom stays domain-ignorant — it tries both keys against the durable token store and the
+> pointer decides which (at most one) resolves.
+
+**Requested text — two coupled changes:**
+
+**(a) §10.5 — add the `externalTask` step kind (a two-op-shaped step).** Extend the step-kind set to
+`userTask` / `systemOp` / **`externalTask`**, with shape:
+
+```
+{ "kind": "externalTask", "adapter": "<name>", "params": { ... }, "replyOp": "<ResolveOp>", "instanceOp": "<CreateInstanceOp>" }
+```
+
+`externalTask` is **two-op-shaped**, unlike the single-op `userTask`/`systemOp`: Loom submits the
+**`instanceOp`** (which creates the `service.<x>.instance` claim vertex **and** emits the
+`external.<adapter>` event via that op's transactional outbox; the `external` domain is ordinary — no
+Contract #3 change, the instanceOp DDL declares + emits the event-type as package data), and **then
+PARKS** awaiting the external result (whereas a `userTask`/`systemOp` is one submission whose own
+completion advances the step). `params` are row/subject templates resolved per the §10.8/§10.5 templating
+rule; `replyOp` is the result-op type the bridge posts back; `instanceOp` is the DDL op that mints the
+instance + emits the event. **Still linear** — the two ops are one logical step (submit-instanceOp →
+park), not a branch/fan-out.
+
+**(b) §10.6 — add a THIRD completion-correlation key `payload.externalRef`.** The `externalTask` parks on
+`token.<instanceKey>` (the instance key Loom **mints write-ahead** and passes to `instanceOp` as a
+caller-supplied id, exactly as it supplies `CreateTask`'s deterministic `taskId` write-ahead for the
+userTask path, §10.6 invariant 1 / Story 8.2 Request 8). The bridge's **result-op** (`replyOp`) carries
+**`payload.externalRef = instanceKey`**, so on the result-op's completion event Loom's `correlationKeys`
+resolves `payload.externalRef → live token.<instanceKey> GET → instance` and **advances**. The §10.6
+new completion-correlation table row:
+
+> | **externalTask** | the **`instanceKey`** (`vtx.service.<id>`, class `service.<x>.instance`) Loom mints write-ahead and passes to `instanceOp` | the bridge's `replyOp` completion event → **`payload.externalRef`** → live `token.<instanceKey>` GET → instance |
+
+The closing paragraph is amended: Loom's structural correlation keys become **three** — top-level
+`requestId` (systemOp), `payload.taskKey` (userTask), and **`payload.externalRef`** (externalTask) — all
+tried against the durable token store, at most one resolving (the namespaces are disjoint: `requestId`
+and `taskKey` are bare-NanoID / `vtx.task.` handles, `externalRef` is a `vtx.service.<id>` key).
+The **§10.6 per-step deadline backstop applies** to the `externalTask` (a never-completing external call
+trips `deadline.<instanceId>` → the read-before-act probe; the instanceOp's own committed/rejected status
+is probed via its Contract #4 tracker exactly like a systemOp). **This STRIKES any "no new envelope
+field" assumption** carried from the userTask design — the bridge's result-op genuinely carries a new
+`payload.externalRef` field, and `correlationKeys` (`internal/loom/engine.go`) gains a third key.
+
+**Rationale:** Loom's pending token has always been the **requestId of the op Loom ITSELF submitted**,
+known write-ahead — that is the whole crash-safety basis (`deriveRequestID`,
+`internal/loom/token.go:20`; the `correlationKeys` machinery, `internal/loom/engine.go:653-712`,
+specifically the `correlationKeys` builder lines 697-712 and the `eventBody` struct lines 653-658 that
+read only `requestId` + `payload.taskKey`). To genuinely **WAIT for an external result** (Andrew's
+dispatch-and-await symmetry with userTask, decision 2 in the proposal) — not fire-and-forget — Loom needs
+a write-ahead handle **it controls**, because it does **not** own the bridge's later result-op requestId
+(the bridge mints that). The instance key Loom mints write-ahead is exactly that handle: it rides into the
+`external.*` event (via the instanceOp's outbox) and comes back on the result-op as `payload.externalRef`.
+This **preserves "Loom stays pure / no raw NATS"**: the event rides the **instanceOp's transactional
+outbox** (the op Loom submits through the command-outbox relay), not a Loom-held NATS handle — `internal/loom`
+keeps its substrate-only boundary (no `nats.go`/`jetstream` import). The B1 BLOCKER in the proposal
+(v1's "no new field, completes like userTask") is mechanically impossible and is **struck** here: this is
+a real §10.5/§10.6 amendment plus a one-key engine extension to `correlationKeys`. **Net-new design** is
+the two-op dispatch + the `externalRef` correlation contract; it **reuses** the userTask park/token/deadline
+spine wholesale. Security/trusted-infra plane — full 3-layer adversarial review + the FR58 idempotency
+proof when 13.2/13.4 land.
