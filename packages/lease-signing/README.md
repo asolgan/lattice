@@ -76,19 +76,54 @@ timestamp). **A `failed` outcome has NO producer on the Phase-2 bridge path.**
 instead of hard-coding `completed`, and the lens's `missing_*` predicate keys off
 the real status.
 
-## LOUD FLAG — freshness is "completed outcome exists", not a rolling window
+## Freshness — bgcheck is freshness-gated, payment is ever-completed
 
 The §10.2 model is `missing_bgcheck = NOT EXISTS(check WHERE date > now − window)`.
-The `full` rule engine has **no date arithmetic**, the actorAggregate projection
-supplies only `$now`/`$projectedAt` (no window param), and the Starlark sandbox has
-**no duration-add** for the replyOp to precompute an `expiresAt`. So for Phase 2 the
-lens freshness predicate is **"a completed outcome of that family exists"** (the
-Fake adapters always produce a completed outcome). The replyOp records
-`completedAt` for provenance and that future use.
+14.4 ships the freshness **PREDICATE**; the eager auto-reopen-at-expiry is **Story
+14.5** (see "Deferred to 14.5" below).
 
-**Phase-3 refinement:** add a Starlark duration builtin (replyOp precomputes
-`expiresAt = completedAt + window`, lens compares `inst.outcome.data.expiresAt > $now`)
-**or** have the projection supply a window-floor param.
+- The replyOp stamps `validUntil = completedAt + bgcheckFreshnessWindow` onto the
+  `.outcome` aspect (`time.rfc3339_add` — a pure, deterministic Starlark duration
+  add; the op stays read-free). `bgcheckFreshnessWindow` is a named package
+  constant (the **demo window `5m`**, short enough for 14.5's e2e to watch a
+  bgcheck lapse; 14.5 may tune it). The replyOp is family-agnostic, so it stamps
+  `validUntil` on **every** outcome; the value on a payment outcome is harmless and
+  unused — the freshness rule lives in the lens cypher.
+- The lens applies freshness to **bgcheck only**:
+  `missing_bgcheck = NOT(a completed bgcheck with validUntil > $now)`. A **stale**
+  bgcheck (validUntil ≤ `$now`) stops counting and the gap **re-opens** whenever the
+  row is (re)evaluated — a stale background check IS a missing background check.
+  **`missing_payment` is ever-completed** (a completed payment counts forever; its
+  validUntil is ignored).
+- The freshness test lives **inside the count `CASE`** on the single
+  `OPTIONAL MATCH (id)<-[:providedTo]-(inst:service)` fan-out — **one** providedTo
+  match, **no** filtering `WHERE`. It binds every service neighbor and discriminates
+  family + freshness inside the `CASE`, so a fully-filtered optional can never drop
+  the anchor row. `$now` is the projection-supplied param (`executeFullForActor`
+  sets `params["now"] = time.Now().UTC().Format(time.RFC3339)`); the `>` on
+  canonical-UTC RFC3339 strings is lexicographic = chronological.
+
+**Deferred to 14.5 — eager auto-reopen-at-expiry (the §10.2 `freshUntil` column).**
+14.4 re-opens a stale bgcheck on the **next** reprojection of the row, not eagerly at
+the instant of lapse. Eager re-eval needs the lens to project a single scalar
+`freshUntil` per anchor (the bgcheck's `validUntil`) so Weaver's temporal lane
+schedules an `@at` at that instant and re-touches the row the moment freshness lapses.
+Projecting that scalar cleanly needs an **engine change 14.4 does not make**: the
+`full` engine has **no list→scalar reducer** (no `max`/`head`/`min`/`coalesce`/`UNWIND`
+— all verified unsupported), so a `collect` of validUntil over the providedTo fan-out
+projects a **list**, which Weaver rejects; and a **dedicated family-filtered
+`OPTIONAL MATCH … WHERE`** is unsafe today — when the applicant has a payment instance
+but **no bgcheck instance yet** (a real transient convergence window: payment's
+instanceOp commits + reprojects before bgcheck's), the `WHERE` filters the sole
+`providedTo` neighbor and the engine's null-restore (`internal/refractor/ruleengine/full/executor.go`
+`applyMatch`) fails to re-emit the anchor → **the row drops**. A dropped weaver-targets
+row reads to Weaver as an entity deletion (`clearClosedMarks`), which on row
+re-appearance re-dispatches a **second** bgcheck Loom instance — a second external call
+(FR58 double-act). 14.5 lands the engine fix (either making a fully-filtered optional
+preserve the anchor with nulls, or adding the list→scalar reducer) and exercises the
+eager `@at` via a short-window e2e. The
+`TestLeaseApplicationComplete_PaymentInstanceNoBgcheck_NoDrop` rule-engine test guards
+that 14.4's single-fan lens does not drop the anchor in that window.
 
 ## Scalar convergence columns through the actorAggregate projection
 

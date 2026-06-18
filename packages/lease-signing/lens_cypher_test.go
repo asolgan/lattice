@@ -116,7 +116,22 @@ func (f *lensFixture) edge(t *testing.T, name, fromName, toName string) {
 		CoreKvKey: linkKey, EdgeID: edgeID, Name: name, Direction: "inbound", NodeID: toID, OtherNodeID: fromID, OtherType: fromType}))
 }
 
+// farFutureValidUntil is a validUntil far enough ahead that a bgcheck stamped
+// with it is FRESH regardless of when the suite runs (the cypher's
+// `validUntil > $now` holds for any realistic wall clock). Used by the
+// gap-closure tests that care about completeness, not the freshness boundary.
+const farFutureValidUntil = "2099-01-01T00:00:00Z"
+
 func (f *lensFixture) project(t *testing.T, appName string) []ruleengine.ProjectionResult {
+	t.Helper()
+	return f.projectAt(t, appName, time.Now().UTC().Format(time.RFC3339))
+}
+
+// projectAt runs the lens with an INJECTED $now so freshness boundary tests can
+// place validUntil before/after the projection instant deterministically. $now
+// here is the same param the live pipeline supplies (executeFullForActor sets
+// params["now"] = time.Now().UTC().Format(time.RFC3339)).
+func (f *lensFixture) projectAt(t *testing.T, appName, now string) []ruleengine.ProjectionResult {
 	t.Helper()
 	eng := full.New()
 	cr, err := eng.Parse(leaseApplicationCompleteSpec)
@@ -124,8 +139,8 @@ func (f *lensFixture) project(t *testing.T, appName string) []ruleengine.Project
 	appKey := "vtx.leaseapp." + f.ids[appName]
 	out, err := eng.ExecuteWith(context.Background(), cr, ruleengine.EventContext{Parameters: map[string]any{
 		"actorKey":    appKey,
-		"now":         time.Now().UTC().Format(time.RFC3339),
-		"projectedAt": time.Now().UTC().Format(time.RFC3339),
+		"now":         now,
+		"projectedAt": now,
 	}}, f.adjKV, f.coreKV)
 	require.NoError(t, err)
 	return out
@@ -169,9 +184,10 @@ func TestLeaseApplicationComplete_ProjectsOneRowPerAnchor(t *testing.T) {
 
 // TestLeaseApplicationComplete_OutcomeFlipsGap_DirectWrite (test 2 — AC #1 + AC
 // #4 + the dependent freshness). From all-gaps-open, recording the bgcheck
-// instance's .outcome (status completed) flips missing_bgcheck false while a
-// payment instance with NO outcome leaves missing_payment true; recording the
-// applicant's ssn flips missing_onboarding false. Still exactly one row.
+// instance's .outcome (status completed, validUntil in the future) flips
+// missing_bgcheck false while a payment instance with NO outcome leaves
+// missing_payment true; recording the applicant's ssn flips missing_onboarding
+// false. Still exactly one row.
 func TestLeaseApplicationComplete_OutcomeFlipsGap_DirectWrite(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")
@@ -182,7 +198,8 @@ func TestLeaseApplicationComplete_OutcomeFlipsGap_DirectWrite(t *testing.T) {
 	f.aspect(t, "alice", "ssn", "ssn", map[string]any{"value": "123456789"}) // onboarded
 	f.vtx(t, "bg1", "service")
 	f.aspect(t, "bg1", "family", "family", map[string]any{"value": "backgroundCheck"})
-	f.aspect(t, "bg1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-01T00:00:00Z"})
+	// A FRESH completed bgcheck: validUntil far in the future (time-independent).
+	f.aspect(t, "bg1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-01T00:00:00Z", "validUntil": farFutureValidUntil})
 	f.vtx(t, "pay1", "service")
 	f.aspect(t, "pay1", "family", "family", map[string]any{"value": "payment"}) // no outcome
 	f.edge(t, "applicationFor", "app", "alice")
@@ -193,7 +210,7 @@ func TestLeaseApplicationComplete_OutcomeFlipsGap_DirectWrite(t *testing.T) {
 	require.Len(t, rows, 1)
 	v := rows[0].Values
 	require.Equal(t, false, v["missing_onboarding"], "ssn present → onboarded")
-	require.Equal(t, false, v["missing_bgcheck"], "completed bgcheck outcome → not missing")
+	require.Equal(t, false, v["missing_bgcheck"], "completed AND fresh bgcheck outcome → not missing")
 	require.Equal(t, true, v["missing_payment"], "payment instance with no outcome → still missing")
 	require.Equal(t, true, v["missing_signature"], "no signature yet")
 	require.Equal(t, true, v["violating"], "payment + signature still open → violating")
@@ -214,9 +231,11 @@ func TestLeaseApplicationComplete_SignatureFlipsGap(t *testing.T) {
 	f.aspect(t, "app", "signature", "signature", map[string]any{"signedAt": "2026-06-10T00:00:00Z"})
 	f.vtx(t, "bg1", "service")
 	f.aspect(t, "bg1", "family", "family", map[string]any{"value": "backgroundCheck"})
-	f.aspect(t, "bg1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-01T00:00:00Z"})
+	f.aspect(t, "bg1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-01T00:00:00Z", "validUntil": farFutureValidUntil})
 	f.vtx(t, "pay1", "service")
 	f.aspect(t, "pay1", "family", "family", map[string]any{"value": "payment"})
+	// Payment is ever-completed: it carries NO validUntil here, proving the lens
+	// does not apply the freshness gate to payment.
 	f.aspect(t, "pay1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-02T00:00:00Z"})
 	f.edge(t, "applicationFor", "app", "alice")
 	f.edge(t, "providedTo", "bg1", "alice")
@@ -228,6 +247,183 @@ func TestLeaseApplicationComplete_SignatureFlipsGap(t *testing.T) {
 	require.Equal(t, false, v["missing_signature"], "signature present → not missing")
 	require.Equal(t, false, v["missing_onboarding"])
 	require.Equal(t, false, v["missing_bgcheck"])
+	require.Equal(t, false, v["missing_payment"], "completed payment with no validUntil → not missing (ever-completed)")
+	require.Equal(t, false, v["violating"], "all gaps closed → not violating")
+}
+
+// bgFreshnessFixture builds a one-applicant fixture (onboarded, signed) with a
+// completed payment (ever-completed, no validUntil) and a completed bgcheck whose
+// validUntil is the caller's choice — the multi-instance fan-out the freshness
+// tests share. All gaps but bgcheck are closed, so missing_bgcheck alone decides
+// `violating`. Returns the app name for projection.
+func bgFreshnessFixture(t *testing.T, f *lensFixture, bgValidUntil string) string {
+	t.Helper()
+	f.vtx(t, "app", "leaseapp")
+	f.vtx(t, "alice", "identity")
+	f.aspect(t, "alice", "ssn", "ssn", map[string]any{"value": "123456789"})
+	f.aspect(t, "app", "signature", "signature", map[string]any{"signedAt": "2026-06-10T00:00:00Z"})
+	f.vtx(t, "bg1", "service")
+	f.aspect(t, "bg1", "family", "family", map[string]any{"value": "backgroundCheck"})
+	f.aspect(t, "bg1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-01T00:00:00Z", "validUntil": bgValidUntil})
+	f.vtx(t, "pay1", "service")
+	f.aspect(t, "pay1", "family", "family", map[string]any{"value": "payment"})
+	f.aspect(t, "pay1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-02T00:00:00Z"})
+	f.edge(t, "applicationFor", "app", "alice")
+	f.edge(t, "providedTo", "bg1", "alice")
+	f.edge(t, "providedTo", "pay1", "alice")
+	return "app"
+}
+
+// TestLeaseApplicationComplete_FreshBgcheck (freshness predicate case a). A
+// completed bgcheck whose validUntil is AFTER the injected $now counts toward
+// convergence: missing_bgcheck false, exactly one row even with the
+// bgcheck+payment fan-out.
+func TestLeaseApplicationComplete_FreshBgcheck(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	const now = "2026-06-18T00:00:00Z"
+	const validUntil = "2026-06-18T00:05:00Z" // 5 minutes after now → fresh
+	app := bgFreshnessFixture(t, f, validUntil)
+
+	rows := f.projectAt(t, app, now)
+	require.Len(t, rows, 1, "exactly one row per anchor (bgcheck+payment fan-out)")
+	v := rows[0].Values
+	require.Equal(t, false, v["missing_bgcheck"], "completed bgcheck with validUntil > now → not missing")
 	require.Equal(t, false, v["missing_payment"])
 	require.Equal(t, false, v["violating"], "all gaps closed → not violating")
+}
+
+// TestLeaseApplicationComplete_StaleBgcheck (freshness predicate case b — the
+// core of the refinement). A completed bgcheck whose validUntil is AT/BEFORE $now
+// no longer counts: missing_bgcheck RE-OPENS to true whenever the row is
+// (re)evaluated (a stale background check is a missing background check). The
+// eager auto-reopen-at-expiry via a §10.2 freshUntil column is Story 14.5; here
+// we prove the predicate alone re-opens the gap at the injected $now.
+func TestLeaseApplicationComplete_StaleBgcheck(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	const now = "2026-06-18T00:00:00Z"
+	const validUntil = "2026-06-17T23:55:00Z" // 5 minutes BEFORE now → stale
+	app := bgFreshnessFixture(t, f, validUntil)
+
+	rows := f.projectAt(t, app, now)
+	require.Len(t, rows, 1)
+	v := rows[0].Values
+	require.Equal(t, true, v["missing_bgcheck"], "stale bgcheck (validUntil <= now) → gap RE-OPENS")
+	require.Equal(t, false, v["missing_payment"], "payment unaffected by bgcheck staleness")
+	require.Equal(t, true, v["violating"], "re-opened bgcheck gap → violating again")
+}
+
+// TestLeaseApplicationComplete_StaleBgcheck_BoundaryEqualsNow pins the boundary:
+// validUntil EXACTLY equal to $now is stale (the cypher's strict `>` excludes the
+// equal instant), so the gap is open.
+func TestLeaseApplicationComplete_StaleBgcheck_BoundaryEqualsNow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	const now = "2026-06-18T00:00:00Z"
+	app := bgFreshnessFixture(t, f, now) // validUntil == now
+
+	v := f.projectAt(t, app, now)[0].Values
+	require.Equal(t, true, v["missing_bgcheck"], "validUntil == now is NOT fresh (strict > boundary)")
+}
+
+// TestLeaseApplicationComplete_PaymentIgnoresValidUntil (freshness case c). A
+// completed payment whose validUntil is in the PAST still closes missing_payment:
+// the freshness policy is bgcheck-only; payment is ever-completed. The bgcheck
+// here is fresh so missing_bgcheck stays false — only the payment branch is under
+// test. Exactly one row across the multi-instance fan-out.
+func TestLeaseApplicationComplete_PaymentIgnoresValidUntil(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	const now = "2026-06-18T00:00:00Z"
+	f.vtx(t, "app", "leaseapp")
+	f.vtx(t, "alice", "identity")
+	f.aspect(t, "alice", "ssn", "ssn", map[string]any{"value": "123456789"})
+	f.aspect(t, "app", "signature", "signature", map[string]any{"signedAt": "2026-06-10T00:00:00Z"})
+	f.vtx(t, "bg1", "service")
+	f.aspect(t, "bg1", "family", "family", map[string]any{"value": "backgroundCheck"})
+	f.aspect(t, "bg1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-17T00:00:00Z", "validUntil": "2026-06-18T00:05:00Z"})
+	f.vtx(t, "pay1", "service")
+	f.aspect(t, "pay1", "family", "family", map[string]any{"value": "payment"})
+	// Payment completed long ago with a PAST validUntil — the lens must ignore it.
+	f.aspect(t, "pay1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-01-01T00:00:00Z", "validUntil": "2026-01-01T00:05:00Z"})
+	f.edge(t, "applicationFor", "app", "alice")
+	f.edge(t, "providedTo", "bg1", "alice")
+	f.edge(t, "providedTo", "pay1", "alice")
+
+	rows := f.projectAt(t, "app", now)
+	require.Len(t, rows, 1, "exactly one row per anchor")
+	v := rows[0].Values
+	require.Equal(t, false, v["missing_payment"], "payment with a PAST validUntil still counts (ever-completed)")
+	require.Equal(t, false, v["missing_bgcheck"], "the bgcheck is fresh")
+	require.Equal(t, false, v["violating"])
+}
+
+// TestLeaseApplicationComplete_NoCompletedBgcheck. A bgcheck instance that is NOT
+// yet completed (no .outcome) leaves missing_bgcheck true, and the row still
+// projects despite the completed payment sharing the providedTo link.
+func TestLeaseApplicationComplete_NoCompletedBgcheck(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	const now = "2026-06-18T00:00:00Z"
+	f.vtx(t, "app", "leaseapp")
+	f.vtx(t, "alice", "identity")
+	f.aspect(t, "alice", "ssn", "ssn", map[string]any{"value": "123456789"})
+	f.vtx(t, "bg1", "service")
+	f.aspect(t, "bg1", "family", "family", map[string]any{"value": "backgroundCheck"}) // no outcome yet
+	f.vtx(t, "pay1", "service")
+	f.aspect(t, "pay1", "family", "family", map[string]any{"value": "payment"})
+	f.aspect(t, "pay1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-02T00:00:00Z"})
+	f.edge(t, "applicationFor", "app", "alice")
+	f.edge(t, "providedTo", "bg1", "alice")
+	f.edge(t, "providedTo", "pay1", "alice")
+
+	rows := f.projectAt(t, "app", now)
+	require.Len(t, rows, 1, "row still projects when the bgcheck is not yet completed")
+	v := rows[0].Values
+	require.Equal(t, true, v["missing_bgcheck"], "bgcheck instance present but no completed outcome → missing")
+}
+
+// TestLeaseApplicationComplete_PaymentInstanceNoBgcheck_NoDrop is the regression
+// guard for the FR58 double-act path the freshness refinement must NOT reintroduce.
+// The applicant has a COMPLETED payment instance and NO bgcheck instance at all —
+// the real transient convergence window (payment's instanceOp commits + reprojects
+// before bgcheck's). With a dedicated family-filtered bgcheck OPTIONAL MATCH this
+// would WHERE-filter the sole providedTo neighbor (the payment) and the full
+// engine's null-restore would fail to re-emit the anchor → the row DROPS → Weaver
+// reads an entity deletion, clears the leaseapp's gap marks, and on row
+// re-appearance re-dispatches a SECOND bgcheck Loom instance (a second external
+// call). The single no-WHERE providedTo fan keeps the anchor: exactly one row,
+// missing_bgcheck true, missing_payment false.
+func TestLeaseApplicationComplete_PaymentInstanceNoBgcheck_NoDrop(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	const now = "2026-06-18T00:00:00Z"
+	f.vtx(t, "app", "leaseapp")
+	f.vtx(t, "alice", "identity")
+	f.aspect(t, "alice", "ssn", "ssn", map[string]any{"value": "123456789"})
+	// Only a COMPLETED payment instance providedTo alice — NO bgcheck instance.
+	f.vtx(t, "pay1", "service")
+	f.aspect(t, "pay1", "family", "family", map[string]any{"value": "payment"})
+	f.aspect(t, "pay1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-02T00:00:00Z"})
+	f.edge(t, "applicationFor", "app", "alice")
+	f.edge(t, "providedTo", "pay1", "alice")
+
+	rows := f.projectAt(t, "app", now)
+	require.Len(t, rows, 1, "the anchor row MUST NOT drop when a payment instance exists but no bgcheck (FR58 double-act guard)")
+	v := rows[0].Values
+	require.Equal(t, true, v["missing_bgcheck"], "no bgcheck instance → gap open")
+	require.Equal(t, false, v["missing_payment"], "completed payment → gap closed")
 }

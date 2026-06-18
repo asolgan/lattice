@@ -1,5 +1,7 @@
 package leasesigning
 
+import "fmt"
+
 // leaseAppDDLScript handles the leaseapp lifecycle ops CreateLeaseApplication
 // and SignLease. Known-key reads only (validates every link/aspect endpoint by
 // the keys the caller lists in ContextHint.Reads). Root data stays {} on every
@@ -270,12 +272,26 @@ def execute(state, op):
     fail("leaseServiceInstance DDL: unknown operationType: " + ot)
 `
 
+// bgcheckFreshnessWindow is the validity span the replyOp stamps onto every
+// service outcome as `validUntil = completedAt + window` (a Go duration string,
+// time.ParseDuration form). The lease-signing lens applies the freshness policy
+// to the BGCHECK family only: a completed bgcheck counts toward convergence
+// solely while `validUntil > $now`; once it lapses the gap re-opens (a stale
+// background check IS a missing background check). Payment ignores validUntil
+// (ever-completed), so the value stamped on a payment outcome is harmless and
+// unused — the freshness rule lives in the lens cypher, per Contract #10 §10.2.
+//
+// This is a deliberately SHORT demo window — brief enough that an end-to-end run
+// can watch a bgcheck lapse and the gap re-open within the test, while leaving
+// headroom to complete the rest of the flow first. Tune it for production.
+const bgcheckFreshnessWindow = "5m"
+
 // leaseServiceReplyDDLScript is the externalTask replyOp the bridge submits.
 // The bridge posts only {externalRef, result}; this op reconstructs the claim
-// vertex key, derives status + completedAt, writes the .outcome aspect, and
-// emits orchestration.externalTaskCompleted{externalRef} — the completion
-// signal Loom correlates on. Without that event the externalTask never
-// completes.
+// vertex key, derives status + completedAt + validUntil, writes the .outcome
+// aspect, and emits orchestration.externalTaskCompleted{externalRef} — the
+// completion signal Loom correlates on. Without that event the externalTask
+// never completes.
 //
 // The bridge submits this op with no ContextHint.Reads (internal/bridge's
 // actuator builds an envelope with no Reads field), so the op reads NOTHING
@@ -286,7 +302,10 @@ def execute(state, op):
 // bridge's deterministic deriveReplyRequestID already collapses most
 // redeliveries at the Contract #4 tracker). The instance root, already minted
 // {data:{}} by the instanceOp, is left untouched (D5).
-const leaseServiceReplyDDLScript = `
+//
+// validUntil is pure arithmetic on the op's own completedAt
+// (time.rfc3339_add), so the op stays read-free.
+var leaseServiceReplyDDLScript = fmt.Sprintf(`
 def make_aspect(vtx_key, local_name, cls, data):
     return {"op": "create", "key": vtx_key + "." + local_name,
             "document": {"class": cls, "isDeleted": False,
@@ -328,8 +347,9 @@ def execute(state, op):
 
         # The bridge supplies only a free-form result string. It is NOT written
         # to the projection-plane .outcome aspect (it can carry PII / payment
-        # data in production and the lens reads only status / completedAt); it
-        # rides the service.outcomeRecorded provenance event body instead.
+        # data in production and the lens reads only status / completedAt /
+        # validUntil); it rides the service.outcomeRecorded provenance event body
+        # instead.
         result = optional_string(p, "result")
 
         # Derive status + completedAt. The bridge only posts a reply on adapter
@@ -341,13 +361,25 @@ def execute(state, op):
         status = "completed"
         completed_at = time.rfc3339_utc(op.submittedAt)
 
-        # Write the .outcome aspect {status, completedAt} as a create-only
-        # mutation. This create-only IS the once-only guarantee: a redelivered
-        # reply conflicts on the existing key and the batch is rejected (FR58 at
-        # the DDL layer, atop the bridge's deterministic requestId collapse). The
-        # instance root, already {data:{}}, is not touched (D5).
+        # Stamp validUntil = completedAt + the freshness window. This op is
+        # read-free and cannot tell bgcheck from payment, so it stamps validUntil
+        # on EVERY outcome (family-agnostic). The lens applies the freshness
+        # policy to bgcheck only — it counts a completed bgcheck toward
+        # convergence solely while validUntil > $now, re-opening the gap once it
+        # lapses; payment ignores validUntil (ever-completed). So validUntil on a
+        # payment outcome is harmless and unused: the freshness rule lives in the
+        # cypher (Contract #10 §10.2). The add is pure arithmetic on completed_at
+        # — no clock read, so the op stays read-free and deterministic.
+        valid_until = time.rfc3339_add(completed_at, %q)
+
+        # Write the .outcome aspect {status, completedAt, validUntil} as a
+        # create-only mutation. This create-only IS the once-only guarantee: a
+        # redelivered reply conflicts on the existing key and the batch is
+        # rejected (FR58 at the DDL layer, atop the bridge's deterministic
+        # requestId collapse). The instance root, already {data:{}}, is not
+        # touched (D5).
         mutations = [
-            make_aspect(inst_key, "outcome", "outcome", {"status": status, "completedAt": completed_at}),
+            make_aspect(inst_key, "outcome", "outcome", {"status": status, "completedAt": completed_at, "validUntil": valid_until}),
         ]
 
         # Emit the completion signal Loom correlates on (the BARE handle as
@@ -356,7 +388,7 @@ def execute(state, op):
         # completion event is load-bearing: without it the externalTask never
         # completes (the creation-deadline disarmed on instanceOp commit; the
         # bridge reply carried no completion signal).
-        provenance = {"serviceKey": inst_key, "status": status, "completedAt": completed_at}
+        provenance = {"serviceKey": inst_key, "status": status, "completedAt": completed_at, "validUntil": valid_until}
         if result != None:
             provenance["result"] = result
         events = [
@@ -369,4 +401,4 @@ def execute(state, op):
                 "response": {"primaryKey": inst_key}}
 
     fail("leaseServiceReply DDL: unknown operationType: " + ot)
-`
+`, bgcheckFreshnessWindow)

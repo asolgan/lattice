@@ -62,12 +62,13 @@ func Lenses() []pkgmgr.LensSpec {
 //   - missing_onboarding — the applicant has not recorded PII (no .ssn aspect).
 //     RecordIdentityPII (the onboarding pattern's userTask) writes .ssn/.dob,
 //     flipping this false.
-//   - missing_bgcheck / missing_payment — no completed service instance of that
-//     family providedTo the applicant. The family is discriminated by the
+//   - missing_bgcheck / missing_payment — keyed on a completed service instance
+//     of that family providedTo the applicant. The family is discriminated by the
 //     instance's .family aspect (read as a distinct aspect because the vertex
 //     envelope `class` field shadows the .class aspect on the read path); the
 //     completed test reads the .outcome aspect status. The replyOp writing the
-//     .outcome aspect flips the matching gap false.
+//     .outcome aspect flips the matching gap false. bgcheck additionally requires
+//     freshness (see FRESHNESS below); payment is ever-completed.
 //   - missing_signature — the application has no .signature aspect. SignLease
 //     writes it, flipping this false.
 //
@@ -77,14 +78,45 @@ func Lenses() []pkgmgr.LensSpec {
 //
 // applicant + entityKey are the param columns the §10.8 playbook templates name
 // (row.applicant, row.entityKey). They stay non-null even when gaps are open
-// because no OPTIONAL MATCH carries a filtering WHERE.
+// because the single providedTo OPTIONAL MATCH carries NO filtering WHERE: it
+// binds every service neighbor and the family/freshness discrimination happens
+// inside the count CASE, so no row is ever dropped to null by a fully-filtered
+// optional.
 //
-// FRESHNESS (Phase-2): "a completed outcome exists" — NOT a rolling
-// completedAt+window > now window. The full rule engine has no date arithmetic
-// and the actorAggregate projection supplies only $now/$projectedAt (no window
-// param), and the Starlark sandbox has no duration-add for the replyOp to
-// precompute an expiresAt — so the rolling window is a Phase-3 refinement (see
-// README). The replyOp records completedAt for provenance and that future use.
+// FRESHNESS (the freshness PREDICATE — bgcheck-only; payment ever-completed).
+//
+//   - missing_bgcheck counts a completed bgcheck toward convergence ONLY while
+//     its op-stamped validUntil is still in the future
+//     (inst.outcome.data.validUntil > $now). A STALE bgcheck (validUntil ≤ $now)
+//     stops counting and missing_bgcheck re-opens whenever the row is
+//     (re)evaluated — a stale background check IS a missing background check. The
+//     freshness test lives inside the count CASE on the single providedTo fan
+//     (no second match, no WHERE), so it cannot drop the anchor. validUntil is
+//     computed by the replyOp as completedAt + bgcheckFreshnessWindow (Starlark
+//     time.rfc3339_add — no clock read), the §10.2 "the freshness rule lives in
+//     the cypher" convention. The `>` on these canonical-UTC RFC3339 strings is
+//     lexicographic = chronological (ruleengine/full executor.go compareAny
+//     string branch); $now is the projection-supplied param (Refractor's
+//     executeFullForActor sets params["now"] = time.Now().UTC().Format(time.RFC3339)).
+//   - missing_payment is ever-completed: a completed payment counts forever,
+//     validUntil ignored.
+//
+// This lens ships the freshness PREDICATE only — no §10.2 freshUntil column.
+// The EAGER auto-reopen-at-expiry (projecting a single scalar freshUntil per
+// anchor so Weaver's temporal lane schedules an @at at validUntil and re-touches
+// the row the instant it lapses) is deferred: projecting that scalar cleanly
+// needs an engine change this lens does NOT make — either fixing the
+// `OPTIONAL MATCH ... WHERE` null-restore in ruleengine/full executor.go so a
+// fully-filtered optional preserves the anchor with nulls (a dedicated
+// family-filtered bgcheck match drops the anchor when the applicant has a
+// payment neighbor but no bgcheck yet — the transient convergence window), or a
+// list→scalar reducer the engine lacks (max/head/coalesce unsupported). Until
+// that lands, a stale bgcheck re-opens on the NEXT reprojection of the row, not
+// eagerly at the instant of lapse.
+//
+// '= null' (not IS NULL) is the full engine's null test (ruleengine/full
+// executor.go equalsAny treats null = null as true and any value = null as
+// false). Do not "correct" it to unsupported IS NULL.
 const leaseApplicationCompleteSpec = `
 MATCH (app:leaseapp {key: $actorKey})
 OPTIONAL MATCH (app)-[:applicationFor]->(id:identity)
@@ -94,18 +126,15 @@ WITH
   id.key  AS applicant,
   app.signature.data.signedAt AS signedAt,
   id.ssn.data.value AS ssnVal,
-  count(DISTINCT CASE WHEN inst.family.data.value = 'backgroundCheck' AND inst.outcome.data.status = 'completed' THEN inst.key ELSE null END) AS bgComplete,
+  count(DISTINCT CASE WHEN inst.family.data.value = 'backgroundCheck' AND inst.outcome.data.status = 'completed' AND inst.outcome.data.validUntil > $now THEN inst.key ELSE null END) AS freshBgComplete,
   count(DISTINCT CASE WHEN inst.family.data.value = 'payment' AND inst.outcome.data.status = 'completed' THEN inst.key ELSE null END) AS payComplete
 RETURN
   entityKey AS actorKey,
   entityKey,
   applicant,
-  // The full engine's grammar has no IS NULL; '= null' is its null test
-  // (ruleengine/full executor.go equalsAny treats null = null as true and any
-  // value = null as false). Do not "correct" it to unsupported IS NULL.
-  (ssnVal = null)    AS missing_onboarding,
-  (bgComplete = 0)   AS missing_bgcheck,
-  (payComplete = 0)  AS missing_payment,
-  (signedAt = null)  AS missing_signature,
-  ((ssnVal = null) OR (bgComplete = 0) OR (payComplete = 0) OR (signedAt = null)) AS violating
+  (ssnVal = null)        AS missing_onboarding,
+  (freshBgComplete = 0)  AS missing_bgcheck,
+  (payComplete = 0)      AS missing_payment,
+  (signedAt = null)      AS missing_signature,
+  ((ssnVal = null) OR (freshBgComplete = 0) OR (payComplete = 0) OR (signedAt = null)) AS violating
 `

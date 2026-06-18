@@ -193,9 +193,12 @@ func cryptoModule() *starlarkstruct.Struct {
 //   - time.rfc3339_utc(s) → s parsed as an RFC3339 timestamp and re-emitted
 //     in canonical UTC form (whole seconds, "Z" suffix), e.g.
 //     "2026-06-04T23:00:00+09:00" → "2026-06-04T14:00:00Z".
+//   - time.rfc3339_add(s, duration) → s parsed as RFC3339, advanced by a Go
+//     duration string (time.ParseDuration, e.g. "720h", "90s"), re-emitted in
+//     canonical UTC form. A negative duration ("-1h") subtracts.
 //
-// It is pure (deterministic, no I/O, no wall-clock read): the output is a
-// function of the input string only — the host clock is never consulted.
+// Both are pure (deterministic, no I/O, no wall-clock read): the output is a
+// function of the input string(s) only — the host clock is never consulted.
 // This is the same sandbox-safe builtin pattern as crypto.sha256 / nanoid.
 //
 // The canonical form matches the format the Refractor populates `$now` with
@@ -203,6 +206,11 @@ func cryptoModule() *starlarkstruct.Struct {
 // `task.data.expiresAt > $now` lexically is sound: both sides are UTC,
 // whole-second, "Z"-suffixed RFC3339. Callers normalize timestamps before
 // they are stored as task scalars.
+//
+// rfc3339_add lets a read-free op precompute a deadline from its own
+// completedAt without consulting the clock (e.g. a freshness window
+// `validUntil = completedAt + window`); the result is whole-second UTC RFC3339,
+// directly comparable against `$now` by the same lexical rule.
 //
 // A malformed input raises a Starlark error; CreateTask surfaces it as a
 // structured ScriptError ("InvalidArgument: expiresAt: ...").
@@ -224,8 +232,34 @@ func timeModule() *starlarkstruct.Struct {
 		return starlarklib.String(t.UTC().Format(time.RFC3339)), nil
 	})
 
+	rfc3339AddFn := starlarklib.NewBuiltin("rfc3339_add", func(_ *starlarklib.Thread, _ *starlarklib.Builtin, args starlarklib.Tuple, kwargs []starlarklib.Tuple) (starlarklib.Value, error) {
+		if len(args) != 2 || len(kwargs) != 0 {
+			return nil, errBuiltin("time.rfc3339_add(s, duration) takes exactly 2 positional arguments")
+		}
+		s, ok := args[0].(starlarklib.String)
+		if !ok {
+			return nil, errBuiltin("time.rfc3339_add: first argument must be a string, got " + args[0].Type())
+		}
+		durStr, ok := args[1].(starlarklib.String)
+		if !ok {
+			return nil, errBuiltin("time.rfc3339_add: second argument must be a string, got " + args[1].Type())
+		}
+		// Same parse surface as rfc3339_utc: accept whole- and fractional-second
+		// RFC3339, normalize the result to whole-second UTC.
+		t, err := time.Parse(time.RFC3339Nano, string(s))
+		if err != nil {
+			return nil, errBuiltin("InvalidArgument: not a valid RFC3339 timestamp: " + string(s))
+		}
+		d, err := time.ParseDuration(string(durStr))
+		if err != nil {
+			return nil, errBuiltin("InvalidArgument: not a valid Go duration: " + string(durStr))
+		}
+		return starlarklib.String(t.Add(d).UTC().Format(time.RFC3339)), nil
+	})
+
 	return starlarkstruct.FromStringDict(starlarkstruct.Default, starlarklib.StringDict{
 		"rfc3339_utc": rfc3339UTCFn,
+		"rfc3339_add": rfc3339AddFn,
 	})
 }
 

@@ -71,6 +71,112 @@ func TestTimeRFC3339UTC_WrongArity(t *testing.T) {
 	}
 }
 
+// --- time.rfc3339_add ---
+
+// TestTimeRFC3339Add_Adds verifies a Go duration is added to an RFC3339 instant
+// and the result is canonical whole-second UTC (the form $now uses), so a lexical
+// validUntil > now comparison in the lens is sound. A negative duration subtracts.
+func TestTimeRFC3339Add_Adds(t *testing.T) {
+	mod := timeModule()
+	fn, err := mod.Attr("rfc3339_add")
+	if err != nil || fn == nil {
+		t.Fatalf("time.rfc3339_add attr: %v", err)
+	}
+	thread := &starlarklib.Thread{Name: "test"}
+	cases := []struct{ in, dur, want string }{
+		{"2026-06-04T14:00:00Z", "720h", "2026-07-04T14:00:00Z"},      // +30 days
+		{"2026-06-04T14:00:00Z", "90s", "2026-06-04T14:01:30Z"},       // +90 seconds
+		{"2026-06-04T14:00:00Z", "-1h", "2026-06-04T13:00:00Z"},       // negative subtracts
+		{"2026-06-04T23:00:00+09:00", "0s", "2026-06-04T14:00:00Z"},   // offset normalized to UTC
+		{"2026-06-04T14:00:00.123456Z", "1m", "2026-06-04T14:01:00Z"}, // fractional dropped
+		{"2026-06-04T14:00:00Z", "5m", "2026-06-04T14:05:00Z"},        // the demo window magnitude
+	}
+	for _, tc := range cases {
+		res, err := starlarklib.Call(thread, fn, starlarklib.Tuple{starlarklib.String(tc.in), starlarklib.String(tc.dur)}, nil)
+		if err != nil {
+			t.Fatalf("time.rfc3339_add(%q, %q): %v", tc.in, tc.dur, err)
+		}
+		got, _ := res.(starlarklib.String)
+		if string(got) != tc.want {
+			t.Fatalf("time.rfc3339_add(%q, %q) = %q, want %q", tc.in, tc.dur, string(got), tc.want)
+		}
+	}
+}
+
+// TestTimeRFC3339Add_Deterministic confirms the builtin reads no wall clock:
+// the same (instant, duration) pair always yields the same output.
+func TestTimeRFC3339Add_Deterministic(t *testing.T) {
+	mod := timeModule()
+	fn, _ := mod.Attr("rfc3339_add")
+	thread := &starlarklib.Thread{Name: "test"}
+	call := func() string {
+		res, err := starlarklib.Call(thread, fn, starlarklib.Tuple{starlarklib.String("2026-06-04T14:00:00Z"), starlarklib.String("720h")}, nil)
+		if err != nil {
+			t.Fatalf("time.rfc3339_add: %v", err)
+		}
+		s, _ := res.(starlarklib.String)
+		return string(s)
+	}
+	if a, b := call(), call(); a != b {
+		t.Fatalf("time.rfc3339_add not deterministic: %q != %q", a, b)
+	}
+}
+
+// TestTimeRFC3339Add_BadTimestamp rejects a non-RFC3339 first argument.
+func TestTimeRFC3339Add_BadTimestamp(t *testing.T) {
+	mod := timeModule()
+	fn, _ := mod.Attr("rfc3339_add")
+	thread := &starlarklib.Thread{Name: "test"}
+	for _, bad := range []string{"not-a-time", "2026-06-04", ""} {
+		_, err := starlarklib.Call(thread, fn, starlarklib.Tuple{starlarklib.String(bad), starlarklib.String("1h")}, nil)
+		if err == nil {
+			t.Fatalf("time.rfc3339_add(%q, ...) expected error, got nil", bad)
+		}
+		if !strings.Contains(err.Error(), "InvalidArgument") {
+			t.Fatalf("time.rfc3339_add(%q, ...) error = %q, want InvalidArgument", bad, err.Error())
+		}
+	}
+}
+
+// TestTimeRFC3339Add_BadDuration rejects an unparseable Go duration.
+func TestTimeRFC3339Add_BadDuration(t *testing.T) {
+	mod := timeModule()
+	fn, _ := mod.Attr("rfc3339_add")
+	thread := &starlarklib.Thread{Name: "test"}
+	for _, bad := range []string{"720", "thirty-minutes", "", "1x"} {
+		_, err := starlarklib.Call(thread, fn, starlarklib.Tuple{starlarklib.String("2026-06-04T14:00:00Z"), starlarklib.String(bad)}, nil)
+		if err == nil {
+			t.Fatalf("time.rfc3339_add(_, %q) expected error, got nil", bad)
+		}
+		if !strings.Contains(err.Error(), "InvalidArgument") {
+			t.Fatalf("time.rfc3339_add(_, %q) error = %q, want InvalidArgument", bad, err.Error())
+		}
+	}
+}
+
+// TestTimeRFC3339Add_WrongArity rejects 0/1/3 args and non-string args.
+func TestTimeRFC3339Add_WrongArity(t *testing.T) {
+	mod := timeModule()
+	fn, _ := mod.Attr("rfc3339_add")
+	thread := &starlarklib.Thread{Name: "test"}
+	if _, err := starlarklib.Call(thread, fn, starlarklib.Tuple{}, nil); err == nil {
+		t.Fatal("time.rfc3339_add() with 0 args expected error")
+	}
+	if _, err := starlarklib.Call(thread, fn, starlarklib.Tuple{starlarklib.String("2026-06-04T14:00:00Z")}, nil); err == nil {
+		t.Fatal("time.rfc3339_add(s) with 1 arg expected error")
+	}
+	three := starlarklib.Tuple{starlarklib.String("2026-06-04T14:00:00Z"), starlarklib.String("1h"), starlarklib.String("x")}
+	if _, err := starlarklib.Call(thread, fn, three, nil); err == nil {
+		t.Fatal("time.rfc3339_add(s, d, x) with 3 args expected error")
+	}
+	if _, err := starlarklib.Call(thread, fn, starlarklib.Tuple{starlarklib.MakeInt(1), starlarklib.String("1h")}, nil); err == nil {
+		t.Fatal("time.rfc3339_add(int, d) expected error")
+	}
+	if _, err := starlarklib.Call(thread, fn, starlarklib.Tuple{starlarklib.String("2026-06-04T14:00:00Z"), starlarklib.MakeInt(1)}, nil); err == nil {
+		t.Fatal("time.rfc3339_add(s, int) expected error")
+	}
+}
+
 // --- crypto.sha256 ---
 
 // TestCryptoSha256_KnownDigest verifies that crypto.sha256("") equals the
