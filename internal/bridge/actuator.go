@@ -1,0 +1,76 @@
+package bridge
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/asolgan/lattice/internal/substrate"
+)
+
+// opEnvelope is the wire format published to ops.<lane> (Contract #2 §2.1) — the
+// same shape internal/processor.OperationEnvelope serializes to; the bridge
+// carries its own copy to keep the module boundary clean (it imports no
+// internal/processor — substrate-only, like Loom's relay).
+type opEnvelope struct {
+	RequestID     string          `json:"requestId"`
+	Lane          string          `json:"lane"`
+	OperationType string          `json:"operationType"`
+	Actor         string          `json:"actor"`
+	SubmittedAt   string          `json:"submittedAt"`
+	Payload       json.RawMessage `json:"payload"`
+	AuthContext   *authContext    `json:"authContext,omitempty"`
+}
+
+type authContext struct {
+	Target string `json:"target,omitempty"`
+}
+
+// actuator submits the result op (replyOp) for a completed external call. It is
+// a direct fire-and-forget publish to ops.<lane>: the bridge holds no command
+// outbox (it persists no cursor to keep atomic with the publish — there is no
+// dual write). Crash-safety holds via at-least-once event redelivery plus the
+// deterministic requestId: a re-published replyOp collapses on the Contract #4
+// vtx.op.<requestId> tracker. The actuator uses ONLY substrate primitives — no
+// raw nats.go/jetstream handle in internal/bridge.
+type actuator struct {
+	conn  *substrate.Conn
+	lane  string
+	actor string
+}
+
+func newActuator(conn *substrate.Conn, lane, actor string) *actuator {
+	return &actuator{conn: conn, lane: lane, actor: actor}
+}
+
+// submit publishes one replyOp envelope to ops.<lane>. requestId is the
+// deterministic result-op id (deriveReplyRequestID) so a redelivered external
+// event re-submits the same id and collapses on the Contract #4 tracker.
+// payload carries payload.externalRef = the opaque instanceKey plus the outcome
+// fields. authContext is omitted: the bridge service actor is root-equivalent
+// (operator scope:"any") and authorizes regardless of target, and the bridge is
+// type-agnostic so it never synthesizes a typed claim-vertex target (the real
+// replyOp DDL supplies any narrow target).
+func (a *actuator) submit(ctx context.Context, requestID, operation string, payload map[string]any) error {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("bridge: marshal replyOp payload: %w", err)
+	}
+	env := opEnvelope{
+		RequestID:     requestID,
+		Lane:          a.lane,
+		OperationType: operation,
+		Actor:         a.actor,
+		SubmittedAt:   substrate.FormatTimestamp(time.Now()),
+		Payload:       body,
+	}
+	data, err := json.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("bridge: marshal replyOp envelope: %w", err)
+	}
+	if err := a.conn.Publish(ctx, "ops."+a.lane, data, nil); err != nil {
+		return fmt.Errorf("bridge: publish replyOp %q to ops.%s: %w", requestID, a.lane, err)
+	}
+	return nil
+}

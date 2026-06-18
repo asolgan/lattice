@@ -11,6 +11,7 @@ import (
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/asolgan/lattice/internal/bridge"
 	"github.com/asolgan/lattice/internal/substrate"
 	"github.com/asolgan/lattice/internal/weaver/nudge"
 )
@@ -24,7 +25,7 @@ type nudgeHarness struct {
 	engine *Engine
 	conn   *substrate.Conn
 	nc     *nats.Conn
-	stripe *nudge.FakeStripe
+	stripe *bridge.FakeStripe
 	ops    *nats.Subscription
 }
 
@@ -59,7 +60,7 @@ func newNudgeHarness(t *testing.T, ctx context.Context) *nudgeHarness {
 		Logger:   discardLogger(),
 	}
 	engine := NewEngine(conn, cfg)
-	stripe := nudge.NewFakeStripe()
+	stripe := bridge.NewFakeStripe()
 	if err := engine.RegisterAdapter("stripe", stripe); err != nil {
 		t.Fatalf("register adapter: %v", err)
 	}

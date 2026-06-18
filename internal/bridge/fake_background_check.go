@@ -1,17 +1,16 @@
-package nudge
+package bridge
 
 import (
 	"context"
 	"sync"
 )
 
-// FakeBackgroundCheck is the reference Adapter that proves the framework
-// end-to-end without real I/O. It is the literal demonstration of external
-// idempotency: it records every idempotencyKey it has executed and, on a repeat
-// key, returns the SAME Result WITHOUT a second side-effect (the per-key
-// side-effect counter does not increment). Demo / Phase-2 adapters are mocked
-// like this; the real Stripe / background-check integrations are Phase 3
-// (docs/components/weaver.md Two-Phase Nudge).
+// FakeBackgroundCheck is a reference Adapter that proves the bridge end-to-end
+// without real I/O. It is the literal demonstration of external idempotency: it
+// records every idempotencyKey it has executed and, on a repeat key, returns
+// the SAME Result WITHOUT a second side-effect (the per-key side-effect counter
+// does not increment). Demo / Phase-2 adapters are mocked like this; the real
+// Stripe / background-check integrations are Phase 3 (docs/components/bridge.md).
 type FakeBackgroundCheck struct {
 	mu sync.Mutex
 	// results memoizes the Result returned for each idempotencyKey, so a repeat

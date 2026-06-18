@@ -1,15 +1,15 @@
-package nudge_test
+package bridge_test
 
 import (
 	"context"
 	"testing"
 
-	"github.com/asolgan/lattice/internal/weaver/nudge"
+	"github.com/asolgan/lattice/internal/bridge"
 )
 
 func TestRegistry_RegisterAndLookup(t *testing.T) {
-	r := nudge.NewRegistry()
-	a := nudge.NewFakeBackgroundCheck()
+	r := bridge.NewRegistry()
+	a := bridge.NewFakeBackgroundCheck()
 	if err := r.Register("backgroundCheck", a); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
@@ -23,24 +23,24 @@ func TestRegistry_RegisterAndLookup(t *testing.T) {
 }
 
 func TestRegistry_LookupMissingIsConfigError(t *testing.T) {
-	r := nudge.NewRegistry()
+	r := bridge.NewRegistry()
 	if _, ok := r.Lookup("nope"); ok {
 		t.Fatal("Lookup: want ok=false for an unregistered adapter (surfaced as a config error, never silent)")
 	}
 }
 
 func TestRegistry_RejectsBlankNameNilAndDuplicate(t *testing.T) {
-	r := nudge.NewRegistry()
-	if err := r.Register("", nudge.NewFakeBackgroundCheck()); err == nil {
+	r := bridge.NewRegistry()
+	if err := r.Register("", bridge.NewFakeBackgroundCheck()); err == nil {
 		t.Error("Register: want error for a blank name")
 	}
 	if err := r.Register("x", nil); err == nil {
 		t.Error("Register: want error for a nil adapter")
 	}
-	if err := r.Register("dup", nudge.NewFakeBackgroundCheck()); err != nil {
+	if err := r.Register("dup", bridge.NewFakeBackgroundCheck()); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	if err := r.Register("dup", nudge.NewFakeBackgroundCheck()); err == nil {
+	if err := r.Register("dup", bridge.NewFakeBackgroundCheck()); err == nil {
 		t.Error("Register: want error re-registering an already-bound name")
 	}
 }
@@ -49,8 +49,8 @@ func TestRegistry_RejectsBlankNameNilAndDuplicate(t *testing.T) {
 // external idempotency: a repeat idempotencyKey returns the SAME Result and
 // performs NO second side-effect.
 func TestFakeBackgroundCheck_IdempotentOnRepeatedKey(t *testing.T) {
-	a := nudge.NewFakeBackgroundCheck()
-	req := nudge.Request{IdempotencyKey: "claim-1", Subject: "vtx.identity.abc"}
+	a := bridge.NewFakeBackgroundCheck()
+	req := bridge.Request{IdempotencyKey: "claim-1", Subject: "vtx.identity.abc"}
 
 	first, err := a.Execute(context.Background(), req)
 	if err != nil {
@@ -73,11 +73,11 @@ func TestFakeBackgroundCheck_IdempotentOnRepeatedKey(t *testing.T) {
 }
 
 func TestFakeBackgroundCheck_DistinctKeysEachActOnce(t *testing.T) {
-	a := nudge.NewFakeBackgroundCheck()
-	if _, err := a.Execute(context.Background(), nudge.Request{IdempotencyKey: "k1"}); err != nil {
+	a := bridge.NewFakeBackgroundCheck()
+	if _, err := a.Execute(context.Background(), bridge.Request{IdempotencyKey: "k1"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Execute(context.Background(), nudge.Request{IdempotencyKey: "k2"}); err != nil {
+	if _, err := a.Execute(context.Background(), bridge.Request{IdempotencyKey: "k2"}); err != nil {
 		t.Fatal(err)
 	}
 	if a.SideEffects("k1") != 1 || a.SideEffects("k2") != 1 {

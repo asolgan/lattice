@@ -12,6 +12,11 @@ import (
 	"sync"
 	"time"
 
+	// internal/bridge owns the external-adapter contract types (Adapter,
+	// Registry, Request, Result). The Weaver Two-Phase Nudge path dispatches
+	// through that contract, so the engine wires the registry and resolve
+	// callback against the bridge package's types.
+	"github.com/asolgan/lattice/internal/bridge"
 	"github.com/asolgan/lattice/internal/substrate"
 	"github.com/asolgan/lattice/internal/weaver/nudge"
 )
@@ -203,7 +208,7 @@ type Engine struct {
 	source           *targetSource
 	marks            *markStore
 	claims           *nudge.ClaimStore
-	adapters         *nudge.Registry
+	adapters         *bridge.Registry
 	nudger           *nudge.Nudger
 	sweep            *sweeper
 	temporal         *temporalStats
@@ -289,7 +294,7 @@ func fingerprintOf(spec substrate.ConsumerSpec) specFingerprint {
 func NewEngine(conn *substrate.Conn, cfg Config) *Engine {
 	cfg.withDefaults()
 	issues := newIssueCache()
-	adapters := nudge.NewRegistry()
+	adapters := bridge.NewRegistry()
 	claims := nudge.NewClaimStore(conn, cfg.WeaverClaimsBucket, cfg.ClaimRetention)
 	e := &Engine{
 		cfg:              cfg,
@@ -491,15 +496,15 @@ func (e *Engine) reconcileConsumers() {
 
 func issueKeyConsumer(targetID string) string { return "consumer:" + targetID }
 
-// RegisterAdapter binds a §10.8 nudge adapter name to a concrete nudge.Adapter,
+// RegisterAdapter binds a §10.8 nudge adapter name to a concrete bridge.Adapter,
 // the seam that wires the reference adapters (cmd/weaver demo, tests) before
-// Start. The engine itself stays adapter-agnostic — the framework is the engine,
-// the adapter set is config — so registration is an external call, never
-// hard-coded inside the engine. A duplicate name or nil adapter is rejected by
-// the registry (a wiring bug, surfaced). MUST be called before Start: the
-// registry has no lock-step with the dispatch path, so registering after a nudge
-// gap has already dispatched would be a race against Lookup.
-func (e *Engine) RegisterAdapter(name string, a nudge.Adapter) error {
+// Start. The engine itself stays adapter-agnostic — the adapter set is config —
+// so registration is an external call, never hard-coded inside the engine. A
+// duplicate name or nil adapter is rejected by the registry (a wiring bug,
+// surfaced). MUST be called before Start: the registry has no lock-step with the
+// dispatch path, so registering after a nudge gap has already dispatched would
+// be a race against Lookup.
+func (e *Engine) RegisterAdapter(name string, a bridge.Adapter) error {
 	return e.adapters.Register(name, a)
 }
 
@@ -515,7 +520,7 @@ func (e *Engine) RegisterAdapter(name string, a nudge.Adapter) error {
 // semantics). The returned resolveRef recorded on the claim IS that requestId
 // (the Core KV op key). Captures the subject + expectedRevision per dispatch.
 func (e *Engine) resolveFunc(np *nudgePlan, expectedRevision uint64) nudge.ResolveFunc {
-	return func(ctx context.Context, claimID string, result nudge.Result) (string, error) {
+	return func(ctx context.Context, claimID string, result bridge.Result) (string, error) {
 		requestID := deriveResolveRequestID(claimID)
 		payload := map[string]any{
 			"claimId":          claimID,

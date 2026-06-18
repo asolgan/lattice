@@ -1,18 +1,18 @@
-package nudge_test
+package bridge_test
 
 import (
 	"context"
 	"testing"
 
-	"github.com/asolgan/lattice/internal/weaver/nudge"
+	"github.com/asolgan/lattice/internal/bridge"
 )
 
 // TestFakeStripe_IdempotentOnRepeatedKey is the literal proof of external
 // idempotency: a repeat idempotencyKey returns the SAME Result and performs NO
 // second side-effect (the FR58 charge that must never double-bill).
 func TestFakeStripe_IdempotentOnRepeatedKey(t *testing.T) {
-	a := nudge.NewFakeStripe()
-	req := nudge.Request{IdempotencyKey: "claim-1", Subject: "vtx.leaseApp.abc"}
+	a := bridge.NewFakeStripe()
+	req := bridge.Request{IdempotencyKey: "claim-1", Subject: "vtx.leaseApp.abc"}
 
 	first, err := a.Execute(context.Background(), req)
 	if err != nil {
@@ -35,11 +35,11 @@ func TestFakeStripe_IdempotentOnRepeatedKey(t *testing.T) {
 }
 
 func TestFakeStripe_DistinctKeysEachChargeOnce(t *testing.T) {
-	a := nudge.NewFakeStripe()
-	if _, err := a.Execute(context.Background(), nudge.Request{IdempotencyKey: "k1"}); err != nil {
+	a := bridge.NewFakeStripe()
+	if _, err := a.Execute(context.Background(), bridge.Request{IdempotencyKey: "k1"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := a.Execute(context.Background(), nudge.Request{IdempotencyKey: "k2"}); err != nil {
+	if _, err := a.Execute(context.Background(), bridge.Request{IdempotencyKey: "k2"}); err != nil {
 		t.Fatal(err)
 	}
 	if a.SideEffects("k1") != 1 || a.SideEffects("k2") != 1 {
@@ -53,9 +53,9 @@ func TestFakeStripe_DistinctKeysEachChargeOnce(t *testing.T) {
 // exactly one side-effect — the failed attempt did not bill, so the eventual
 // single success is the only charge.
 func TestFakeStripe_FailNextChargesNothingThenRetrySucceedsOnce(t *testing.T) {
-	a := nudge.NewFakeStripe()
+	a := bridge.NewFakeStripe()
 	a.FailNext()
-	req := nudge.Request{IdempotencyKey: "claim-x", Subject: "vtx.leaseApp.xyz"}
+	req := bridge.Request{IdempotencyKey: "claim-x", Subject: "vtx.leaseApp.xyz"}
 
 	if _, err := a.Execute(context.Background(), req); err == nil {
 		t.Fatal("first Execute: want an injected failure")
@@ -79,9 +79,9 @@ func TestFakeStripe_FailNextChargesNothingThenRetrySucceedsOnce(t *testing.T) {
 // TestFakeStripe_FailUntilFailsNThenSucceeds proves the fail-n toggle spans
 // multiple attempts before the real charge lands.
 func TestFakeStripe_FailUntilFailsNThenSucceeds(t *testing.T) {
-	a := nudge.NewFakeStripe()
+	a := bridge.NewFakeStripe()
 	a.FailUntil(2)
-	req := nudge.Request{IdempotencyKey: "claim-n"}
+	req := bridge.Request{IdempotencyKey: "claim-n"}
 
 	for i := 0; i < 2; i++ {
 		if _, err := a.Execute(context.Background(), req); err == nil {

@@ -201,9 +201,11 @@ Lens projects the deadline: row column freshUntil = resolve + window (RFC3339)
 > below **move** to the bridge. The structural reason for the move: the resolve op could not address a
 > candidate vertex distinct from the nudge `subject` (the reference vertical surfaced it).
 
-External adapter framework lives in `internal/weaver/nudge/`. The **framework is engine**; a
-**reference adapter** proves it (demo uses mocked adapters — `FakeBackgroundCheck` and `FakeStripe`,
-both substrate-only and idempotent on the `idempotencyKey`; real Stripe / background-check is Phase 3).
+The external-adapter contract (`Adapter`/`Registry`/`Request`/`Result`) and the reference adapters
+live in `internal/bridge/`; the Two-Phase Nudge protocol in `internal/weaver/nudge/` dispatches
+through that contract. The **adapter set is config**; a **reference adapter** proves it (demo uses
+mocked adapters — `FakeBackgroundCheck` and `FakeStripe`, both substrate-only and idempotent on the
+`idempotencyKey`; real Stripe / background-check is Phase 3).
 Adapters are registered by name via `Engine.RegisterAdapter` before `Start` (the engine is
 adapter-agnostic — `cmd/weaver` registers the reference adapters for the demo; package-data-driven
 registration is Epic 14). A nudge gap naming an unregistered adapter is a **config error**:
@@ -373,7 +375,7 @@ Capability-KV integration is Epic 3 work.
 | Path | Role |
 |------|------|
 | `internal/weaver/` | Engine: Sensorium, 3-lane work stream, Evaluator tiers, Strategist dispatcher, Actuator |
-| `internal/weaver/nudge/` | External Adapter framework + Two-Phase Nudge |
+| `internal/weaver/nudge/` | Two-Phase Nudge protocol (dispatches through the `internal/bridge` adapter contract) |
 | `internal/weaver/control/` | Operator control plane (FR30): `list`/`disable`/`enable`/`revoke` NATS Services responder |
 | `cmd/weaver/` | Binary entry point (extractable; shares only `substrate/*`) — starts the control-plane listener alongside the engine |
 | `cmd/lattice/weaver/` | `lattice weaver list\|disable\|enable\|revoke` CLI command group |

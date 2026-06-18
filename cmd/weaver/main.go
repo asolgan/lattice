@@ -33,10 +33,10 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/asolgan/lattice/internal/bootstrap"
+	"github.com/asolgan/lattice/internal/bridge"
 	"github.com/asolgan/lattice/internal/substrate"
 	"github.com/asolgan/lattice/internal/weaver"
 	"github.com/asolgan/lattice/internal/weaver/control"
-	"github.com/asolgan/lattice/internal/weaver/nudge"
 )
 
 // engineControl is satisfied structurally by *weaver.Engine; declared here
@@ -108,9 +108,9 @@ func run(logger *slog.Logger) error {
 	// playbooks an Epic 11 lease-signing package authors name these by the same
 	// strings; package-data-driven adapter registration is Epic 11. Must run
 	// before Start: the registry has no lock-step with the dispatch path.
-	for name, adapter := range map[string]nudge.Adapter{
-		"stripe":          nudge.NewFakeStripe(),
-		"backgroundCheck": nudge.NewFakeBackgroundCheck(),
+	for name, adapter := range map[string]bridge.Adapter{
+		"stripe":          bridge.NewFakeStripe(),
+		"backgroundCheck": bridge.NewFakeBackgroundCheck(),
 	} {
 		if err := engine.RegisterAdapter(name, adapter); err != nil {
 			return fmt.Errorf("register nudge adapter %q: %w", name, err)

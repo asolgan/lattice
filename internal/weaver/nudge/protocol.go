@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+
+	"github.com/asolgan/lattice/internal/bridge"
 )
 
 // ErrAdapterNotFound reports that a nudge dispatch named an adapter the registry
@@ -19,7 +21,7 @@ var ErrAdapterNotFound = errors.New("nudge: no adapter registered for the dispat
 // never holds an Actuator: it stays substrate-only, and the live actuator.submit
 // wiring is supplied at dispatch time. The callback receives the claimId so the
 // resolve op's payload can carry it as the reference field (arch Item 3).
-type ResolveFunc func(ctx context.Context, claimID string, result Result) (resolveRef string, err error)
+type ResolveFunc func(ctx context.Context, claimID string, result bridge.Result) (resolveRef string, err error)
 
 // ResolveProbe reports whether a resolve op for claimId has ALREADY landed in
 // Core KV, and if so its resolveRef. It is the read half of read-before-act
@@ -37,11 +39,11 @@ type ResolveProbe func(ctx context.Context, claimID string) (resolveRef string, 
 // the engine wires in Story 10.2.
 type Nudger struct {
 	claims   *ClaimStore
-	registry *Registry
+	registry *bridge.Registry
 }
 
 // NewNudger constructs a Nudger over the claim store and adapter registry.
-func NewNudger(claims *ClaimStore, registry *Registry) *Nudger {
+func NewNudger(claims *ClaimStore, registry *bridge.Registry) *Nudger {
 	return &Nudger{claims: claims, registry: registry}
 }
 
@@ -58,8 +60,8 @@ type Dispatch struct {
 }
 
 // request builds the adapter Request for this dispatch, keyed on claimId.
-func (d Dispatch) request() Request {
-	return Request{
+func (d Dispatch) request() bridge.Request {
+	return bridge.Request{
 		IdempotencyKey: d.ClaimID,
 		Operation:      d.Operation,
 		Subject:        d.Subject,
@@ -194,10 +196,10 @@ func (n *Nudger) Recover(ctx context.Context, d Dispatch, probe ResolveProbe, re
 // an ordinary error, so the claim lands in state=failed (re-drivable on the same
 // idempotencyKey) instead of crashing the dispatch goroutine and stranding the
 // claim in state=executing.
-func execute(ctx context.Context, adapter Adapter, req Request) (result Result, err error) {
+func execute(ctx context.Context, adapter bridge.Adapter, req bridge.Request) (result bridge.Result, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			result = Result{}
+			result = bridge.Result{}
 			err = fmt.Errorf("nudge: adapter panicked during execute: %v", r)
 		}
 	}()
@@ -206,7 +208,7 @@ func execute(ctx context.Context, adapter Adapter, req Request) (result Result, 
 
 // resolve submits the resolve op and advances the claim to resolved. Shared by
 // Run and Recover so both record resolveRef identically.
-func (n *Nudger) resolve(ctx context.Context, claimID string, result Result, resolve ResolveFunc) (*Claim, error) {
+func (n *Nudger) resolve(ctx context.Context, claimID string, result bridge.Result, resolve ResolveFunc) (*Claim, error) {
 	resolveRef, err := resolve(ctx, claimID, result)
 	if err != nil {
 		// The claim stays in state=executing; recovery re-drives it (the adapter

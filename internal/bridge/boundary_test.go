@@ -1,0 +1,74 @@
+package bridge_test
+
+import (
+	"context"
+	"os/exec"
+	"strings"
+	"testing"
+
+	"github.com/asolgan/lattice/internal/bridge"
+)
+
+// TestStart_EmptyActorKeyFails asserts the bridge fails LOUD at Start when
+// ActorKey is empty, rather than silently publishing result ops under actor:""
+// (which the Processor rejects off-stream with no signal). The guard fires
+// before any consumer attaches, so a nil conn never gets dereferenced; there is
+// no fabricated default identity.
+func TestStart_EmptyActorKeyFails(t *testing.T) {
+	eng := bridge.NewEngine(nil, bridge.Config{ActorKey: ""})
+	err := eng.Start(context.Background())
+	if err == nil {
+		t.Fatal("Start must error on empty ActorKey, got nil")
+	}
+	if !strings.Contains(err.Error(), "ActorKey") {
+		t.Errorf("Start error should name ActorKey, got %q", err.Error())
+	}
+}
+
+// TestModuleBoundary_OnlySubstrate enforces the module-boundary rule
+// (docs/components/bridge.md Principles): internal/bridge imports only
+// internal/substrate. It never imports internal/processor, internal/loom,
+// internal/refractor, or internal/weaver (incl. internal/weaver/nudge) anywhere
+// in its dependency tree — the bridge is a leaf on substrate, so an edge back
+// into Weaver would form an import cycle (Weaver depends on the bridge for the
+// adapter contract types). All cross-component interaction is over NATS.
+func TestModuleBoundary_OnlySubstrate(t *testing.T) {
+	out, err := exec.Command("go", "list", "-deps", "github.com/asolgan/lattice/internal/bridge").Output()
+	if err != nil {
+		t.Fatalf("go list -deps: %v", err)
+	}
+	forbidden := []string{
+		"github.com/asolgan/lattice/internal/processor",
+		"github.com/asolgan/lattice/internal/loom",
+		"github.com/asolgan/lattice/internal/refractor",
+		"github.com/asolgan/lattice/internal/weaver",
+		"github.com/asolgan/lattice/internal/weaver/nudge",
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		dep := strings.TrimSpace(line)
+		for _, f := range forbidden {
+			if dep == f || strings.HasPrefix(dep, f+"/") {
+				t.Errorf("internal/bridge must not import %q (module boundary)", dep)
+			}
+		}
+	}
+}
+
+// TestModuleBoundary_NoRawNATS enforces that internal/bridge carries no raw
+// nats.io/jetstream handle of its own — every NATS interaction goes through a
+// substrate primitive. DIRECT imports only: substrate itself legitimately
+// depends on nats.go transitively, so a transitive check would false-positive.
+func TestModuleBoundary_NoRawNATS(t *testing.T) {
+	out, err := exec.Command("go", "list", "-f", "{{ join .Imports \"\\n\" }}",
+		"github.com/asolgan/lattice/internal/bridge").Output()
+	if err != nil {
+		t.Fatalf("go list imports: %v", err)
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		dep := strings.TrimSpace(line)
+		if strings.HasPrefix(dep, "github.com/nats-io/") {
+			t.Errorf("internal/bridge must not directly import %q (no raw NATS handle — "+
+				"use a substrate primitive)", dep)
+		}
+	}
+}

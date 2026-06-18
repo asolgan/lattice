@@ -1,4 +1,4 @@
-package nudge
+package bridge
 
 import (
 	"context"
@@ -12,12 +12,12 @@ import (
 // it records every idempotencyKey it has charged and, on a repeat key, returns
 // the SAME Result with NO second side-effect (the per-key side-effect counter
 // does not increment). Demo / Phase-2 adapters are mocked like this; the real
-// Stripe integration is Phase 3 (docs/components/weaver.md Two-Phase Nudge).
+// Stripe integration is Phase 3 (docs/components/bridge.md).
 //
 // FailUntil configures a fail-once / fail-n mode for the idempotency proof: the
 // first failUntil Execute calls (across ALL keys) return an error, and crucially
 // a FAILED attempt records NO side-effect — a charge that errored did not charge.
-// So a claim that fails its first attempt and is later re-driven on the SAME
+// So a call that fails its first attempt and is later re-driven on the SAME
 // idempotencyKey converges to exactly one side-effect: the eventual success. A
 // failing attempt does not memoize a Result either, so the retry runs the real
 // (now-succeeding) charge path rather than replaying a phantom success.
@@ -67,7 +67,7 @@ func (f *FakeStripe) Execute(_ context.Context, req Request) (Result, error) {
 	defer f.mu.Unlock()
 	if f.failRemaining > 0 {
 		f.failRemaining--
-		return Result{}, fmt.Errorf("nudge: FakeStripe injected failure (no charge performed) for key %s", req.IdempotencyKey)
+		return Result{}, fmt.Errorf("bridge: FakeStripe injected failure (no charge performed) for key %s", req.IdempotencyKey)
 	}
 	if res, seen := f.results[req.IdempotencyKey]; seen {
 		return res, nil

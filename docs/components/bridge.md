@@ -1,6 +1,6 @@
 # Bridge
 
-**Component reference** | Audience: implementers + architects | Status: **Phase 2 — ratified design; built in Epic 13 (service actor 13.3 + component 13.4)** | Decided: 2026-06-18
+**Component reference** | Audience: implementers + architects | Status: **Phase 2 — built (service actor 13.3 + component 13.4); end-to-end wiring lands in Epic 14** | Decided: 2026-06-18
 
 > Decisions of record: `_bmad-output/planning-artifacts/sprint-change-proposal-2026-06-18.md`
 > (the "External I/O Bridge" change proposal, RATIFIED 2026-06-18). Data shapes are frozen in
@@ -10,8 +10,10 @@
 > package + bridge data, not a contract amendment — the `external` domain is ordinary, §10.5). Update
 > this page in the same commit as the code; drift between page and code is a documentation bug.
 >
-> **Not yet built.** This page is the ratified design; the component lands in Epic 13 (Stories
-> 13.3–13.4). Sections describe the intended shape so the build story has a target.
+> **Built (Stories 13.3–13.4).** The bridge service actor (13.3) and the component itself
+> (`internal/bridge/` + `cmd/bridge/`, the adapter registry, the moved `Fake*` adapters, the FR58
+> crash/retry proof — 13.4) are implemented. The end-to-end Loom→bridge wiring on a real `externalTask`
+> is Epic 14 (Story 14.5); in 13.4 the `external.*` events are test fixtures.
 
 ---
 
@@ -55,7 +57,7 @@ declared as package DDL.
 ```
 class:   external.<adapter>                 # e.g. external.backgroundCheck, external.stripe
 payload: {
-  "instanceKey":    "vtx.<type>.<id>",      # the claim vertex Loom minted write-ahead (package-chosen type; demo: vtx.service.<id>)
+  "instanceKey":    "<handle>",             # opaque correlation token (a bare handle in the reference vertical); Loom minted it write-ahead and the instanceOp's DDL forms the claim-vertex key vtx.<type>.<handle> from it (package-chosen type; demo: vtx.service.<id>). The bridge never parses it.
   "adapter":        "<name>",               # which registered adapter to dispatch to
   "params":         { … },                  # adapter call inputs (resolved from the Loom step's row/subject templates)
   "replyOp":        "<ResolveOp>",          # the result-op type the bridge posts back
@@ -154,13 +156,12 @@ exactly like Loom and Weaver (`docs/components/service-actors.md`). Consequences
 
 ---
 
-## What this component will own
+## What this component owns
 
 | Path | Role |
 |------|------|
-| `internal/bridge/` | Engine: durable `events.external.>` consumer, adapter registry, idempotent dispatch (deterministic result-op requestId + adapter `idempotencyKey` dedup; optional generic op-tracker skip-on-redelivery), result-op submission via the command path |
-| `internal/bridge/adapters/` | The `Fake*` adapters **moved** (not copied) from `internal/weaver/nudge/` — `FakeBackgroundCheck`, `FakeStripe` (substrate-only, idempotent on `idempotencyKey`); real Stripe / background-check is Phase 3 |
-| `cmd/bridge/` | Binary entry point (extractable; shares only `substrate/*`); registers the reference adapters for the demo |
+| `internal/bridge/` | Engine: durable `events.external.>` consumer, adapter registry, idempotent dispatch (deterministic result-op requestId + adapter `idempotencyKey` dedup; optional generic op-tracker skip-on-redelivery), result-op submission to `ops.<lane>`. Also the `Fake*` adapters **moved** (not copied) from `internal/weaver/nudge/` — `FakeBackgroundCheck`, `FakeStripe` (substrate-only, idempotent on `idempotencyKey`); real Stripe / background-check is Phase 3 |
+| `cmd/bridge/` | Binary entry point (extractable; shares only `substrate/*`); pins `ActorKey = bootstrap.BridgeIdentityKey` and registers the reference adapters for the demo |
 
 **Engine vs package:** the consumer, registry, dispatch, recovery, and result-op submission are
 **engine code**. Which adapters exist, the `external.<adapter>` event-type DDL, the `instanceOp` /
@@ -233,10 +234,14 @@ Crash points and their recovery:
 - **13.1 (done)** — gating contract amendments ratified + applied (this page, the Loom/Weaver doc
   updates, Contract #10 §10.2/§10.3/§10.5/§10.6/§10.8).
 - **13.2** — Loom `externalTask` step kind (the `external` event needs no Processor/bootstrap change).
-- **13.3** — the **bridge service actor** + bootstrap provisioning (bootstrap-file version bump; both
-  verify enumerations in lockstep).
-- **13.4** — **this component**: `internal/bridge/` + `cmd/bridge/`, the adapter registry, the moved
-  `Fake*` adapters, the FR58 crash/retry proof on a bridge-only harness.
+- **13.3 (done)** — the **bridge service actor** + bootstrap provisioning (bootstrap-file version bump;
+  both verify enumerations in lockstep).
+- **13.4 (done)** — **this component**: `internal/bridge/` + `cmd/bridge/`, the adapter registry, the
+  moved `Fake*` adapters, the FR58 crash/retry proof on a bridge-only harness. The adapter contract
+  types (`Adapter`/`Registry`/`Request`/`Result`) moved here too; the still-live Weaver nudge path
+  references them via a temporary `internal/weaver/nudge → internal/bridge` import (removed wholesale in
+  13.5 when the nudge package is deleted). The `external.*` events are test fixtures; the result-op
+  `requestId` is `deriveReplyRequestID(instanceKey)` and the bridge holds no durable bucket of its own.
 - **13.5** — retire Weaver's nudge path (move-then-delete; the `Fake*` adapters already relocated here in
   13.4), only after **Epic 14's convergence e2e (Story 14.5)** is green.
 
