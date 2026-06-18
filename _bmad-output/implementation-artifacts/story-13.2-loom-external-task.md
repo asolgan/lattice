@@ -1,6 +1,6 @@
 # Story 13.2 — Loom `externalTask` step kind
 
-**Status:** review
+**Status:** done
 **Epic:** 13 — External I/O Bridge (orchestration core)
 **Tier:** Opus — guarded engine (`internal/loom`), security-plane-adjacent; net-new step kind + a 3rd correlation key + two-op dispatch. Review: full 3-layer adversarial + `make verify-kernel`.
 **Epic spec:** `_bmad-output/planning-artifacts/epics/phase-2-epics.md` → "Story 13.2: Loom `externalTask` step kind" (lines ~588–603). Read it for the user-story framing and the four ACs.

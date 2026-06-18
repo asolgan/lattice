@@ -585,7 +585,7 @@ Contract #10 §10.2/§10.3/§10.5/§10.6/§10.8 amended (Contract #3 no change),
 component docs landed (new `bridge.md`; Loom +externalTask; Weaver −nudge). *Hard gate satisfied — the
 surface is agreed.* (Applied; committed with this package.)
 
-### Story 13.2: Loom `externalTask` step kind
+### Story 13.2: Loom `externalTask` step kind — ✅ DONE 2026-06-18
 
 As a platform developer,
 I want a Loom step that dispatches an idempotent external call and waits for its result,
