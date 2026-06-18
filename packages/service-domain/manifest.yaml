@@ -1,0 +1,30 @@
+name: service-domain
+version: 0.1.0
+description: |
+  Service template + instance vertex type (the service DDL + lifecycle ops
+  CreateServiceTemplate, CreateServiceInstance, RecordServiceOutcome). A
+  service instance is a real linked vertex (instanceOf a template, providedTo
+  an applicant identity) whose external-call outcome (status + completedAt)
+  is recorded as aspects per D5 — vertex root data minimal. Declares no lens
+  (the serviceAccess / cap.svc read-path auth plane is Phase-3 deferred).
+  Depends on identity-domain and orchestration-base.
+depends:
+  - identity-domain
+  - orchestration-base
+declares:
+  ddls:
+    - canonicalName: service
+      class: meta.ddl.vertexType
+  permissions:
+    - operationType: CreateServiceTemplate
+      scope: any
+      grantsTo: [operator]
+    - operationType: CreateServiceInstance
+      scope: any
+      grantsTo: [operator]
+    - operationType: RecordServiceOutcome
+      scope: any
+      grantsTo: [operator]
+  opMetas:
+    - operationType: CreateServiceInstance
+    - operationType: RecordServiceOutcome
