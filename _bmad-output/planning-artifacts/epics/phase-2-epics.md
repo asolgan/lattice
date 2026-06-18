@@ -669,7 +669,7 @@ So that there is exactly one external-I/O path and no retired surface lingers.
 post-bridge orchestration plane — the dogfood proof that the package model carries real, multi-vertex
 orchestration content. **FRs covered:** integration (FR26, FR27, FR29, FR30, FR58).
 
-### Story 14.1: Service domain foundation
+### Story 14.1: Service domain foundation — ✅ DONE 2026-06-18
 
 As a vertical author,
 I want a `service` domain (templates + instances),

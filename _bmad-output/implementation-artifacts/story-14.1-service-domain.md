@@ -1,6 +1,6 @@
 # Story 14.1 — Service domain foundation (service-domain Capability Package: templates + instances)
 
-**Status:** review
+**Status:** done
 **Epic:** 14 — Loftspace Lease-Application Reference Vertical
 **Tier:** Opus — but a **small, well-scoped, additive** story. It is **package data only** (a new `packages/service-domain/` Capability Package installed via the 11.1a `InstallPackage` seam) — **NO core/engine change, NO new processor/bootstrap/pkgmgr code**. The risk is not size; it is **getting the contract shapes exactly right** so 14.4's convergence lens + 14.5's e2e can build on the instance's outcome aspect across links. Review: **full 3-layer adversarial** (Blind Hunter / Edge Case Hunter / Acceptance Auditor) per `bmad-code-review` — the package defines new link vocabulary + a D5 placement that 14.4/14.5 depend on, so the independent lenses earn their keep (a single inline review consistently misses what the three catch). Plus the gates in §8.
 **Epic spec:** `_bmad-output/planning-artifacts/epics/phase-2-epics.md` → "Story 14.1: Service domain foundation" (lines ~669–683) + the Epic 14 framing (~659–667). Read it for the user-story framing and the **three** ACs (verbatim in §1).
