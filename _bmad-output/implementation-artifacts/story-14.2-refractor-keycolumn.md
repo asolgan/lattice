@@ -1,6 +1,6 @@
 # Story 14.2 — Refractor actorAggregate explicit key-column (Contract §10.2 Option b)
 
-**Status:** review
+**Status:** done
 **Epic:** 14 — Loftspace Lease-Application Reference Vertical
 **Tier:** Opus — a **small, surgical, opt-in** change to a **guarded engine** (`internal/refractor`). It is **engine-enabler only** — it ships **no package content** (14.4 ships the lease lens), **no Weaver change**, **no frozen-contract edit**. The risk is **not** size; it is that this is the **projection-plane / convergence engine**, and the change must be **byte-for-byte transparent** to every existing actorAggregate lens (the four built-ins + the proof lens) while adding one new branch. Review: **full 3-layer adversarial** (Blind Hunter / Edge Case Hunter / Acceptance Auditor) per `bmad-code-review` — a guarded-engine key-shape change is exactly what the three independent lenses catch (the Acceptance Auditor against the 2 ACs + §10.2 Option (b); the Edge Case Hunter on the project-vs-delete-path consistency + the bare-NanoID validation; Blind Hunter on the diff). Plus the gates in §8.
 **Epic spec:** `_bmad-output/planning-artifacts/epics/phase-2-epics.md` → "Story 14.2: Refractor actorAggregate explicit key-column (Contract §10.2 Option b)" (lines ~688–701) + the Epic 14 framing (~662–670) + the build order (14.1, 14.2, 14.3 → 14.4 → 14.5). Read it for the user-story framing and the **two** ACs (verbatim in §1).

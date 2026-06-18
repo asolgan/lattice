@@ -685,7 +685,7 @@ So that a background check / payment is a real linked vertex, forcing genuine mu
 
 *FRs: integration · Depends on: 11.1a (install seam) · Model: Opus · Grounding: `packages/service-location/CONCEPT.md`; Contract #10 §10.2; D5. Risk: the pkgmgr lens `canonicalName` uniqueness gap (carried from 11.1a) — validate or accept before a second same-named lens installs.*
 
-### Story 14.2: Refractor actorAggregate explicit key-column (Contract §10.2 Option b)
+### Story 14.2: Refractor actorAggregate explicit key-column (Contract §10.2 Option b) — ✅ DONE 2026-06-18
 
 As a platform developer,
 I want an actorAggregate lens destined for `weaver-targets` to emit a bare-NanoID key,
