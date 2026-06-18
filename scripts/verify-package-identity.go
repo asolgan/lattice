@@ -10,8 +10,9 @@
 //                 .description, .script,
 //                 .inputSchema, .outputSchema, .fieldDescription, .examples
 //    Each aspect also validated for correct vertexKey + localName envelope fields.
-//  2 sensitive aspect-type DDLs (ssn, dob): class=meta.ddl.aspectType, each
-//    carrying a .sensitive aspect with value=true
+//  7 sensitive aspect-type DDLs (ssn, dob, name, email, phone, claimKey,
+//    credentialBinding): class=meta.ddl.aspectType, each carrying a .sensitive
+//    aspect with value=true
 //  4 permission vertices (vtx.permission.<NanoID>) — CreateUnclaimedIdentity,
 //    UpdateIdentityState, ClaimIdentity, RecordIdentityPII
 //  6 grantedBy link keys:
@@ -24,7 +25,7 @@
 //  1 package vertex (vtx.package.<NanoID>)
 //  1 package manifest aspect with name=identity-domain
 //
-// Total target: ~40 OK lines.
+// Total target: ~55 OK lines.
 //
 // Exit 0: all assertions pass.
 // Exit 1: one or more assertions failed.
@@ -260,12 +261,15 @@ func main() {
 	}
 
 	// -------------------------------------------------------------------------
-	// 6b. Sensitive applicant-PII aspect-type DDLs (ssn, dob): each is a
-	//     meta.ddl.aspectType meta-vertex carrying a .sensitive aspect with
-	//     value=true, which is what makes the Processor's step-6 validator
-	//     anchor ssn/dob aspects to identity vertices (NFR-S3).
+	// 6b. Sensitive identity-PII aspect-type DDLs: each is a meta.ddl.aspectType
+	//     meta-vertex carrying a .sensitive aspect with value=true, which is what
+	//     makes the Processor's step-6 validator anchor these aspects to identity
+	//     vertices (NFR-S3). ssn/dob are written only by RecordIdentityPII; the
+	//     other five are written by multiple ops across packages
+	//     (CreateUnclaimedIdentity, ClaimIdentity, identity-hygiene's
+	//     MergeIdentity), so their DDLs carry empty permittedCommands.
 	// -------------------------------------------------------------------------
-	for _, aspectType := range []string{"ssn", "dob"} {
+	for _, aspectType := range []string{"ssn", "dob", "name", "email", "phone", "claimKey", "credentialBinding"} {
 		ddlKey, err := pkgverify.FindMetaByCanonical(ctx, coreKV, allKeys, aspectType)
 		if err != nil || ddlKey == "" {
 			fail("sensitive aspect-type DDL ["+aspectType+"]",

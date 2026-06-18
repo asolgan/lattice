@@ -39,8 +39,8 @@ func TestPackage_DeclaresUserFacingRoles(t *testing.T) {
 }
 
 func TestPackage_DDLsAndOps(t *testing.T) {
-	if got := len(Package.DDLs); got != 3 {
-		t.Fatalf("expected 3 DDLs (identity, ssn, dob), got %d", got)
+	if got := len(Package.DDLs); got != 8 {
+		t.Fatalf("expected 8 DDLs (identity + ssn, dob, name, email, phone, claimKey, credentialBinding), got %d", got)
 	}
 	identity := ddlByCanonicalName(t, "identity")
 	if identity.Class != "meta.ddl.vertexType" {
@@ -55,6 +55,8 @@ func TestPackage_DDLsAndOps(t *testing.T) {
 // TestPackage_SensitivePIIAspectTypes pins the ssn/dob aspect-type DDLs as
 // sensitive=true — the structural declaration that makes the step-6 validator
 // anchor them to identity vertices (lattice-architecture Item 6 / NFR-S3).
+// ssn/dob are written only by RecordIdentityPII, so they pin
+// permittedCommands:[RecordIdentityPII].
 func TestPackage_SensitivePIIAspectTypes(t *testing.T) {
 	for _, name := range []string{"ssn", "dob"} {
 		d := ddlByCanonicalName(t, name)
@@ -66,6 +68,28 @@ func TestPackage_SensitivePIIAspectTypes(t *testing.T) {
 		}
 		if got := d.PermittedCommands; len(got) != 1 || got[0] != "RecordIdentityPII" {
 			t.Errorf("%s DDL permittedCommands = %v, want [RecordIdentityPII]", name, got)
+		}
+	}
+}
+
+// TestPackage_LifecyclePIIAspectTypesSensitive pins the name/email/phone/
+// claimKey/credentialBinding aspect-type DDLs as sensitive=true with EMPTY
+// permittedCommands. They are written by multiple ops across packages
+// (CreateUnclaimedIdentity, ClaimIdentity, and identity-hygiene's
+// MergeIdentity), so a non-empty permittedCommands would make step-6 reject a
+// legitimate writer (e.g. MergeIdentity writing name) — identity-anchoring is
+// their only enforcement.
+func TestPackage_LifecyclePIIAspectTypesSensitive(t *testing.T) {
+	for _, name := range []string{"name", "email", "phone", "claimKey", "credentialBinding"} {
+		d := ddlByCanonicalName(t, name)
+		if d.Class != "meta.ddl.aspectType" {
+			t.Errorf("%s DDL class = %q, want meta.ddl.aspectType", name, d.Class)
+		}
+		if !d.Sensitive {
+			t.Errorf("%s DDL Sensitive = false, want true", name)
+		}
+		if got := len(d.PermittedCommands); got != 0 {
+			t.Errorf("%s DDL permittedCommands = %v, want empty (multiple writers across packages)", name, d.PermittedCommands)
 		}
 	}
 }

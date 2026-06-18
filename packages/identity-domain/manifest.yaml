@@ -16,6 +16,16 @@ declares:
       class: meta.ddl.aspectType
     - canonicalName: dob
       class: meta.ddl.aspectType
+    - canonicalName: name
+      class: meta.ddl.aspectType
+    - canonicalName: email
+      class: meta.ddl.aspectType
+    - canonicalName: phone
+      class: meta.ddl.aspectType
+    - canonicalName: claimKey
+      class: meta.ddl.aspectType
+    - canonicalName: credentialBinding
+      class: meta.ddl.aspectType
   permissions:
     - operationType: CreateUnclaimedIdentity
       scope: any

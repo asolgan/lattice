@@ -442,6 +442,143 @@ func TestRecordPII_AspectTypeDDLsInstalled(t *testing.T) {
 	}
 }
 
+// sensitivePIIClasses are the identity-PII aspect types whose DDLs carry
+// sensitive=true: written by CreateUnclaimedIdentity / ClaimIdentity /
+// identity-hygiene's MergeIdentity, so their DDLs carry NO permittedCommands
+// (identity-anchoring is their only enforcement).
+var sensitivePIIClasses = []string{"name", "email", "phone", "claimKey", "credentialBinding"}
+
+// TestRecordPII_PIIClassesAreSensitive_AfterInstall — the sensitivity proof for
+// the identity-PII classes. After the real package install, the DDL cache must
+// carry ref.Sensitive==true for each, confirming the pkgmgr.DDLSpec Sensitive
+// field travels through build.go's `.sensitive` aspect to the cache. Their
+// permittedCommands MUST be empty (multiple writers across packages) — a
+// non-empty list would reject MergeIdentity writing name/email/phone.
+func TestRecordPII_PIIClassesAreSensitive_AfterInstall(t *testing.T) {
+	ctx, conn := setupTestEnv(t)
+	cache := freshDDLCache(t, ctx, conn)
+
+	for _, name := range sensitivePIIClasses {
+		ref, ok := cache.Lookup(name)
+		if !ok {
+			t.Fatalf("DDL cache has no entry for %q after install", name)
+		}
+		if !ref.Sensitive {
+			t.Fatalf("%q ref.Sensitive = false after install; the .sensitive aspect did not reach the cache", name)
+		}
+		if ref.Kind != "aspectType" {
+			t.Errorf("%q Kind = %q, want aspectType", name, ref.Kind)
+		}
+		if len(ref.PermittedCommands) != 0 {
+			t.Fatalf("%q permittedCommands = %v, want empty (multiple writers across packages)", name, ref.PermittedCommands)
+		}
+		// The meta-vertex root resolves and its `.sensitive` aspect exists.
+		if !kvExists(t, ctx, conn, ref.MetaVertexKey+".sensitive") {
+			t.Fatalf("%q meta-vertex %s has no .sensitive aspect in Core KV", name, ref.MetaVertexKey)
+		}
+	}
+}
+
+// TestRecordPII_SensitivePIIOnNonIdentityRejected — the anchoring negative for
+// the identity-PII classes (the real proof). With the REAL installed DDLs
+// (ref.Sensitive==true, empty permittedCommands), the step-6 validator rejects
+// a name/email/claimKey aspect on a non-identity vertex with
+// sensitiveAspectScope, and permits the same class on an identity vertex.
+func TestRecordPII_SensitivePIIOnNonIdentityRejected(t *testing.T) {
+	ctx, conn := setupTestEnv(t)
+	cache := freshDDLCache(t, ctx, conn)
+	validator := processor.NewValidator(cache, testutil.TestLogger())
+
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("PIIBackfillAnchor"),
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateUnclaimedIdentity",
+		Actor:         staffActorKey,
+		SubmittedAt:   "2026-05-22T11:00:00Z",
+	}
+
+	// Cover name + email + claimKey on a non-identity (widget) vertex.
+	for _, class := range []string{"name", "email", "claimKey"} {
+		widgetVtx := "vtx.widget." + testutil.GenReqID("PIIBackfillWdg")
+		reject := processor.ScriptResult{
+			Mutations: []processor.MutationOp{{
+				Op:  "create",
+				Key: widgetVtx + "." + class,
+				Document: map[string]any{
+					"class":     class,
+					"vertexKey": widgetVtx,
+					"localName": class,
+					"isDeleted": false,
+					"data":      map[string]any{"value": "x"},
+				},
+			}},
+		}
+		err := validator.Validate(ctx, env, reject)
+		var ddlErr *processor.DDLViolation
+		if !errors.As(err, &ddlErr) {
+			t.Fatalf("sensitive %q on widget: expected *DDLViolation, got %T: %v", class, err, err)
+		}
+		if ddlErr.ViolatedConstraint != "sensitiveAspectScope" {
+			t.Fatalf("%q ViolatedConstraint = %q, want sensitiveAspectScope", class, ddlErr.ViolatedConstraint)
+		}
+
+		// Positive: same class on an identity vertex passes (anchored). Empty
+		// permittedCommands means the writer's operationType is not checked.
+		idVtx := "vtx.identity." + testutil.GenReqID("PIIBackfillId")
+		accept := processor.ScriptResult{
+			Mutations: []processor.MutationOp{{
+				Op:  "create",
+				Key: idVtx + "." + class,
+				Document: map[string]any{
+					"class":     class,
+					"vertexKey": idVtx,
+					"localName": class,
+					"isDeleted": false,
+					"data":      map[string]any{"value": "x"},
+				},
+			}},
+		}
+		if err := validator.Validate(ctx, env, accept); err != nil {
+			t.Fatalf("sensitive %q on identity: want pass, got %v", class, err)
+		}
+	}
+}
+
+// TestRecordPII_CreateIdentityWritesSensitiveAspects — positive no-regression:
+// CreateUnclaimedIdentity still succeeds end-to-end and writes the
+// sensitive name/email/claimKey aspects onto the identity vertex. They are
+// identity-anchored, so they pass the step-6 sensitiveAspectScope check on the
+// real commit path.
+func TestRecordPII_CreateIdentityWritesSensitiveAspects(t *testing.T) {
+	ctx, conn := setupTestEnv(t)
+	cp, cons := newPIIPipeline(t, ctx, conn, "pii-backfill-create")
+
+	identityKey := createIdentity(t, ctx, conn, cp, cons, "PIIBackfillCreate")
+
+	// name aspect landed (sensitive, identity-anchored).
+	name := readAspectData(t, ctx, conn, identityKey+".name")
+	if got, _ := name["value"].(string); got != "PII Applicant" {
+		t.Fatalf("name aspect value = %q, want PII Applicant", got)
+	}
+	if c := readAspectClass(t, ctx, conn, identityKey+".name"); c != "name" {
+		t.Fatalf("name aspect class = %q, want name", c)
+	}
+	// email aspect landed.
+	if !kvExists(t, ctx, conn, identityKey+".email") {
+		t.Fatalf("email aspect not written by CreateUnclaimedIdentity")
+	}
+	if c := readAspectClass(t, ctx, conn, identityKey+".email"); c != "email" {
+		t.Fatalf("email aspect class = %q, want email", c)
+	}
+	// claimKey aspect landed (the create writes it; ClaimIdentity tombstones it).
+	if !kvExists(t, ctx, conn, identityKey+".claimKey") {
+		t.Fatalf("claimKey aspect not written by CreateUnclaimedIdentity")
+	}
+	if c := readAspectClass(t, ctx, conn, identityKey+".claimKey"); c != "claimKey" {
+		t.Fatalf("claimKey aspect class = %q, want claimKey", c)
+	}
+}
+
 // --- helpers ---
 
 // readVertexRootData reads a vertex root document and returns its data map.

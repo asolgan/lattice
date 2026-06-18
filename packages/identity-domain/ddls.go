@@ -7,10 +7,17 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //     UpdateIdentityState, ClaimIdentity, RecordIdentityPII. State machine:
 //     unclaimed → claimed; merged is set only by identity-hygiene's
 //     MergeIdentity.
-//   - `ssn`, `dob` (meta.ddl.aspectType, sensitive) — declare the two
-//     applicant-PII aspect types. Marking them sensitive=true makes the
-//     Processor's step-6 validator anchor them to identity vertices
-//     (NFR-S3 / lattice-architecture Item 6). RecordIdentityPII writes them.
+//   - `ssn`, `dob`, `name`, `email`, `phone`, `claimKey`,
+//     `credentialBinding` (meta.ddl.aspectType, sensitive) — declare the
+//     identity domain's sensitive PII aspect types. Marking them sensitive=true
+//     makes the Processor's step-6 validator anchor them to identity vertices
+//     (NFR-S3 / lattice-architecture Item 6). ssn/dob are written only by
+//     RecordIdentityPII and carry permittedCommands:["RecordIdentityPII"]. The
+//     other five are written by multiple ops across packages
+//     (CreateUnclaimedIdentity, ClaimIdentity, and identity-hygiene's
+//     MergeIdentity), so they carry no permittedCommands — sensitivity
+//     (identity-anchoring) is their only enforcement, deliberately leaving the
+//     writer unrestricted.
 //
 // Architectural rules: known-key reads only. The duplicate-detection
 // index lookups (vtx.identityindex.*) use crypto.sha256NanoID-derived
@@ -133,14 +140,137 @@ func DDLs() []pkgmgr.DDLSpec {
 				},
 			},
 		},
+		{
+			CanonicalName: "name",
+			Class:         "meta.ddl.aspectType",
+			Sensitive:     true,
+			Description: "Person's display name. Sensitive aspect-type " +
+				"(lattice-architecture Item 6 / PRD §358): stored as vtx.identity.<NanoID>.name, " +
+				"sensitive=true, identity-anchored. Written by CreateUnclaimedIdentity and " +
+				"overwritten by identity-hygiene's MergeIdentity aspectConflictResolution; " +
+				"permittedCommands is intentionally empty so any identity-anchored writer is allowed.",
+			Script: sensitiveAspectDDLScript,
+			InputSchema: `{"type":"object","properties":` +
+				`{"name":{"type":"string","maxLength":200,"description":"Person's display name."}}}`,
+			OutputSchema: `{"type":"object"}`,
+			FieldDescription: map[string]string{
+				"name": "Person's display name, stored as a sensitive aspect on the identity.",
+			},
+			Examples: []pkgmgr.ExampleSpec{
+				{
+					Name:            "name aspect",
+					Payload:         map[string]any{"name": "Alice Smith"},
+					ExpectedOutcome: "Stored as sensitive vtx.identity.<NanoID>.name; rejected on any non-identity vertex by step-6 sensitiveAspectScope.",
+				},
+			},
+		},
+		{
+			CanonicalName: "email",
+			Class:         "meta.ddl.aspectType",
+			Sensitive:     true,
+			Description: "Email address. Sensitive aspect-type " +
+				"(lattice-architecture Item 6 / PRD §358): stored as vtx.identity.<NanoID>.email, " +
+				"sensitive=true, identity-anchored. Written by CreateUnclaimedIdentity and " +
+				"overwritten by identity-hygiene's MergeIdentity aspectConflictResolution; " +
+				"permittedCommands is intentionally empty so any identity-anchored writer is allowed.",
+			Script: sensitiveAspectDDLScript,
+			InputSchema: `{"type":"object","properties":` +
+				`{"email":{"type":"string","description":"Email address, lowercase-normalized."}}}`,
+			OutputSchema: `{"type":"object"}`,
+			FieldDescription: map[string]string{
+				"email": "Email address, lowercase-normalized, stored as a sensitive aspect on the identity.",
+			},
+			Examples: []pkgmgr.ExampleSpec{
+				{
+					Name:            "email aspect",
+					Payload:         map[string]any{"email": "alice@example.com"},
+					ExpectedOutcome: "Stored as sensitive vtx.identity.<NanoID>.email; rejected on any non-identity vertex by step-6 sensitiveAspectScope.",
+				},
+			},
+		},
+		{
+			CanonicalName: "phone",
+			Class:         "meta.ddl.aspectType",
+			Sensitive:     true,
+			Description: "Phone number. Sensitive aspect-type " +
+				"(lattice-architecture Item 6 / PRD §358): stored as vtx.identity.<NanoID>.phone, " +
+				"sensitive=true, identity-anchored. Written by CreateUnclaimedIdentity and " +
+				"overwritten by identity-hygiene's MergeIdentity aspectConflictResolution; " +
+				"permittedCommands is intentionally empty so any identity-anchored writer is allowed.",
+			Script: sensitiveAspectDDLScript,
+			InputSchema: `{"type":"object","properties":` +
+				`{"phone":{"type":"string","description":"Phone number, E.164 digit string."}}}`,
+			OutputSchema: `{"type":"object"}`,
+			FieldDescription: map[string]string{
+				"phone": "Phone number, E.164 digit string, stored as a sensitive aspect on the identity.",
+			},
+			Examples: []pkgmgr.ExampleSpec{
+				{
+					Name:            "phone aspect",
+					Payload:         map[string]any{"phone": "+15551234567"},
+					ExpectedOutcome: "Stored as sensitive vtx.identity.<NanoID>.phone; rejected on any non-identity vertex by step-6 sensitiveAspectScope.",
+				},
+			},
+		},
+		{
+			CanonicalName: "claimKey",
+			Class:         "meta.ddl.aspectType",
+			Sensitive:     true,
+			Description: "Client-supplied claim-key hash. Sensitive aspect-type " +
+				"(lattice-architecture Item 6 / PRD §358): stored as vtx.identity.<NanoID>.claimKey, " +
+				"sensitive=true, identity-anchored. Written by CreateUnclaimedIdentity and tombstoned " +
+				"by ClaimIdentity; permittedCommands is intentionally empty so any identity-anchored " +
+				"writer is allowed.",
+			Script: sensitiveAspectDDLScript,
+			InputSchema: `{"type":"object","properties":` +
+				`{"hash":{"type":"string","description":"Lowercase hex sha256 of the client-minted claim secret, stored verbatim."}}}`,
+			OutputSchema: `{"type":"object"}`,
+			FieldDescription: map[string]string{
+				"hash": "Lowercase hex sha256 of the client-minted claim secret, stored verbatim as a sensitive aspect on the identity.",
+			},
+			Examples: []pkgmgr.ExampleSpec{
+				{
+					Name:            "claimKey aspect",
+					Payload:         map[string]any{"hash": "<sha256-hex-of-client-minted-secret>"},
+					ExpectedOutcome: "Stored as sensitive vtx.identity.<NanoID>.claimKey; rejected on any non-identity vertex by step-6 sensitiveAspectScope.",
+				},
+			},
+		},
+		{
+			CanonicalName: "credentialBinding",
+			Class:         "meta.ddl.aspectType",
+			Sensitive:     true,
+			Description: "Actor-to-identity credential binding. Sensitive aspect-type " +
+				"(lattice-architecture Item 6 / PRD §358): stored as vtx.identity.<NanoID>.credentialBinding, " +
+				"sensitive=true, identity-anchored. Written by ClaimIdentity; permittedCommands is " +
+				"intentionally empty so any identity-anchored writer is allowed.",
+			Script: sensitiveAspectDDLScript,
+			InputSchema: `{"type":"object","properties":` +
+				`{"actorKey":{"type":"string","description":"Actor key bound to the identity at claim time."},` +
+				`"boundAt":{"type":"string","description":"Timestamp the binding was established."}}}`,
+			OutputSchema: `{"type":"object"}`,
+			FieldDescription: map[string]string{
+				"actorKey": "Actor key bound to the identity at claim time, stored as a sensitive aspect on the identity.",
+				"boundAt":  "Timestamp the credential binding was established.",
+			},
+			Examples: []pkgmgr.ExampleSpec{
+				{
+					Name:            "credentialBinding aspect",
+					Payload:         map[string]any{"actorKey": "vtx.actor.<NanoID>", "boundAt": "2026-05-22T11:00:00Z"},
+					ExpectedOutcome: "Stored as sensitive vtx.identity.<NanoID>.credentialBinding; rejected on any non-identity vertex by step-6 sensitiveAspectScope.",
+				},
+			},
+		},
 	}
 }
 
-// sensitiveAspectDDLScript is the declaration-only Starlark for the ssn/dob
-// aspect-type DDLs. An aspect-type DDL declares a sensitive aspect's shape and
-// anchoring; it is not an operation handler (RecordIdentityPII, on the identity
-// DDL, writes the aspects). No operation carries ssn/dob as its operation
-// class, so execute is never dispatched here — it fails closed if it ever is.
+// sensitiveAspectDDLScript is the declaration-only Starlark shared by every
+// sensitive aspect-type DDL in this package (ssn, dob, name, email, phone,
+// claimKey, credentialBinding). An aspect-type DDL declares a sensitive
+// aspect's shape and anchoring; it is not an operation handler (the identity
+// DDL's operations write the aspects). No operation carries an aspect class as
+// its operation class, so execute is never dispatched here — it fails closed if
+// it ever is.
 const sensitiveAspectDDLScript = `
 def execute(state, op):
     fail("aspect-type DDL: not an operation handler: " + op.operationType)
