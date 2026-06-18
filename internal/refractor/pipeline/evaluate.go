@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
+	"github.com/asolgan/lattice/internal/refractor/failure"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/substrate"
@@ -145,6 +147,15 @@ func (p *Pipeline) evaluateForEntry(ctx context.Context, entry simple.NodeEntry)
 			results[i].Keys = newKeys
 			filtered = append(filtered, results[i])
 		}
+		// Same anchor-derived-key collision guard as the full-engine path: an
+		// envelope makes the output key anchor-derived, so 2+ non-delete rows for
+		// one actor would collide and silently overwrite (FR29). In practice the
+		// seeded actor-aggregate lenses use the full engine, so this rarely fires,
+		// but the simple path wraps through the identical envelope and must not
+		// silently drop either.
+		if err := p.guardOutputKeyCollision(ctx, entry.CoreKVKey, filtered); err != nil {
+			return nil, err
+		}
 		return filtered, nil
 	}
 }
@@ -204,6 +215,18 @@ func (p *Pipeline) executeFullForActor(ctx context.Context, actorKey string, nod
 			Row:    row,
 		})
 	}
+	// An actor-aggregate lens (envelope installed) derives its output key from the
+	// anchor, not the row, so every non-delete row for one actor carries the same
+	// key. If the cypher returns 2+ such rows, the write loop would overwrite them
+	// in turn (last-writer-wins) and silently drop the rest — an FR29 violation.
+	// The aggregation belongs in the cypher (collect → one row per anchor); when it
+	// is missing, surface the authoring defect and fail the actor's projection
+	// closed rather than write a half-result.
+	if p.envelopeFn != nil {
+		if err := p.guardOutputKeyCollision(ctx, actorKey, results); err != nil {
+			return nil, err
+		}
+	}
 	// Record per-event projection latency for the heartbeat aggregator.
 	// The buffer is cheap (single atomic-protected ring slot per insert)
 	// so calling it on every fan-out actor is fine.
@@ -211,6 +234,68 @@ func (p *Pipeline) executeFullForActor(ctx context.Context, actorKey string, nod
 		p.latencyBuf.Record(time.Since(start))
 	}
 	return results, nil
+}
+
+// guardOutputKeyCollision enforces the one-row-per-anchor invariant of an
+// actor-aggregate projection. When 2+ non-delete results for a single actor map
+// to the same anchor-derived output key, writing them in turn would overwrite
+// last-writer-wins and silently drop the earlier rows (FR29 — Refractor must
+// never silently drop). It records the defect on the Health-KV surface
+// (errorCount + lastError, the same surface a terminal write failure uses) and
+// logs a WARN, then returns a Terminal-classified error so the actor's
+// projection fails closed: the colliding rows are never written, and the
+// disposition path routes the event to the DLQ + Health rather than wedging the
+// rule. The correct authoring fix is to aggregate in the cypher
+// (collect(DISTINCT …) → one row per anchor); this guard catches the case where
+// that aggregation is missing. A delete result paired with a write, or rows for
+// different actors, are not collisions and pass through untouched.
+func (p *Pipeline) guardOutputKeyCollision(ctx context.Context, actorKey string, results []simple.EvalResult) error {
+	collidingKey, count, found := detectOutputKeyCollision(results)
+	if !found {
+		return nil
+	}
+	msg := fmt.Sprintf(
+		"actor-aggregate projection produced %d non-delete rows for actor %q sharing output key %q; "+
+			"the cypher must aggregate to one row per anchor (collect)",
+		count, actorKey, collidingKey)
+	slog.Warn("pipeline: actor-aggregate output-key collision — defect signal",
+		"ruleId", p.ruleID, "actorKey", actorKey,
+		"outputKey", collidingKey, "rowCount", count)
+	if p.reporter != nil {
+		if recErr := p.reporter.RecordError(ctx, msg); recErr != nil {
+			slog.Error("pipeline: record output-key collision on health KV",
+				"ruleId", p.ruleID, "err", recErr)
+		}
+	}
+	return failure.Terminal(fmt.Errorf("pipeline: %s", msg))
+}
+
+// detectOutputKeyCollision reports the first output key carried by 2+ non-delete
+// results in a single actor's result set, along with the total number of results
+// that share it. Delete results are excluded: a delete + a write for the same key
+// is the normal retract-then-write shape, not a collision. found is false when
+// every non-delete result has a distinct output key (the overwhelmingly common
+// one-row-per-anchor path).
+func detectOutputKeyCollision(results []simple.EvalResult) (collidingKey string, count int, found bool) {
+	counts := make(map[string]int, len(results))
+	var firstRepeated string
+	for i := range results {
+		if results[i].Delete {
+			continue
+		}
+		key, _ := results[i].Keys["key"].(string)
+		if key == "" {
+			continue
+		}
+		counts[key]++
+		if counts[key] == 2 && firstRepeated == "" {
+			firstRepeated = key
+		}
+	}
+	if firstRepeated == "" {
+		return "", 0, false
+	}
+	return firstRepeated, counts[firstRepeated], true
 }
 
 // evaluateFanOut handles the cross-vertex fan-out path: the CDC event arrived
