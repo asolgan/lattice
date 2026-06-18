@@ -441,3 +441,36 @@ opts in with a new aspect **`projectionKind: "actorAggregate"`**; Refractor then
 The Story 12.4 acceptance gate: installing a **brand-new** actor-aggregate package lens via
 `InstallPackage` projects + invalidates correctly with **zero** edits under `cmd/` or
 `internal/refractor/capabilityenv/`.
+
+#### Phase 2 amendment — scalar passthrough body columns (CAR E6, ratified 2026-06-18, Andrew)
+
+The `bodyColumns` above were originally **roster** columns: each is a `collect(DISTINCT {...})` **list**,
+and `realnessFilter` drops the degenerate null-collect artifact an OPTIONAL-match cypher leaves for an
+actor with no real rows. A §10.2 **convergence** lens (External I/O Bridge) instead projects **scalar**
+columns — `violating` (bool), each `missing_<gap>` (bool), and the `row.<col>` param columns the §10.8
+playbook templates (`entityKey`, `applicant` — strings) — which Weaver reads as scalars (`boolColumn`
+requires a Go `bool`; param columns resolve as strings).
+
+An actorAggregate Output descriptor's body columns **MAY therefore be scalar passthroughs**, detected by
+the **shape of the RETURN value at projection time** (no new descriptor field — opt-in by value shape):
+
+- A body column whose RETURN value is a **list** (`[]`) is **realness-filtered** (the roster behavior,
+  unchanged) — degenerate null-collect entries are dropped.
+- A body column whose RETURN value is a **scalar** (bool / string / number / `nil`) projects **verbatim**:
+  the raw value as-is, bypassing the realness filter. A `nil` scalar projects as a genuine **null**
+  (present field, null value), so a downstream bool reads `false` and a string param reads absent —
+  **never** coerced to `[]`. (Before this amendment every body column ran through the list filter, so a
+  scalar projected as `[]` and Weaver's `boolColumn` could not read it.)
+
+This is what lets a §10.2 convergence lens project the scalar `violating` / `missing_*` / param columns
+Weaver reads end-to-end — together with the §10.2 Option (b) `keyColumn` (bare-NanoID row key), it makes a
+convergence lens projectable through Refractor's actorAggregate path.
+
+The change is **additive and opt-in by value shape**: existing roster lenses (`my-tasks`,
+`capabilityEphemeral`, the bootstrap `capability`) declare list body columns and are **unaffected**
+(byte-for-byte identical projections + delete-when-empty). The empty-actor delete path is preserved: a
+convergence lens that disappears (its required anchor MATCH yields no row) still retracts via the
+actor-disappearance delete at `BuildKey(actorKey)`; a lens that designates a **scalar** `realnessFilter`
+column (e.g. `entityKey` non-null = anchor alive) still drives the `emptyBehavior` retract when that scalar
+is absent. Landed in Refractor's Epic-12 Output-descriptor machinery
+(`internal/refractor/projection/driver.go` `EnvelopeFn`); no frozen-contract widening.

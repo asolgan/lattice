@@ -23,15 +23,14 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //
 // Bucket: the shared primordial weaver-targets convergence bucket (§10.2).
 //
-// NOTE — see README "Known seam: scalar convergence columns". The §10.2
-// convergence row carries SCALAR columns (violating / missing_* bools,
-// entityKey / applicant strings), but the actorAggregate projection
-// EnvelopeFn realness-filters every BodyColumn to a LIST (it was built for the
-// roster lenses my-tasks / capabilityEphemeral). A scalar column projects as
-// [] through that path today — Weaver's boolColumn cannot read it. This lens
-// declaration is correct and its cypher is proven one-row-per-anchor at the
-// rule-engine level; the bucket round-trip of scalar columns needs a Refractor
-// projection change (flagged, not made here — Q9).
+// The §10.2 convergence row carries SCALAR columns (violating / missing_* bools,
+// entityKey / applicant strings). The actorAggregate projection EnvelopeFn
+// projects each body column by the shape of its RETURN value: a list / collect
+// column is realness-filtered (the roster behavior — my-tasks /
+// capabilityEphemeral), and a scalar column projects verbatim so Weaver's
+// boolColumn reads a Go bool and the §10.8 row.<col> params resolve as strings
+// (Contract #6 §6.13 scalar-passthrough amendment). With 14.2's keyColumn (the
+// bare-NanoID row key) the row is Weaver-readable end-to-end.
 func Lenses() []pkgmgr.LensSpec {
 	return []pkgmgr.LensSpec{
 		{

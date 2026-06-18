@@ -12,9 +12,9 @@ package leasesigning
 //
 // NOTE: these assert the engine PROJECTION (the rule-engine row). The bucket
 // round-trip of the SCALAR convergence columns through the actorAggregate
-// projection EnvelopeFn is the flagged Refractor gap (README "scalar convergence
-// columns"; cmd/refractor/CONTRACT-AMENDMENT-REQUEST.md E6) — the cypher itself
-// is correct and proven here.
+// projection EnvelopeFn (scalar passthrough — Contract #6 §6.13, CAR E6) is
+// proven in internal/refractor's lease-signing scalar convergence e2e; the cypher
+// itself is proven here.
 
 import (
 	"context"

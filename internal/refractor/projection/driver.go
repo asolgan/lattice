@@ -29,10 +29,17 @@ import (
 //     params["actorKey"] before declining, so a last-task-closed actor deletes
 //     its key rather than leaving it stale; this driver does the same.
 //   - A row whose anchor is not the descriptor's AnchorType is declined.
-//   - The realness filter drops degenerate null-key collect entries from every
-//     body column it applies to. When the empty behavior is delete/softDelete
-//     and every realness-filtered body column is empty, the row is declined with
-//     ErrDeleteProjection keyed at BuildKey(actorKey).
+//   - Each body column projects by the SHAPE of its RETURN value: a list
+//     (collect) value is realness-filtered (the roster path — drop degenerate
+//     null-key collect entries); a scalar value (bool, string, number, or nil)
+//     projects VERBATIM (the convergence path — a scalar Weaver reads as a bool
+//     or a string param). A nil scalar projects as a genuine null so a downstream
+//     bool reads false and a string param reads absent, never as `[]`.
+//   - When the empty behavior is delete/softDelete and the realness check finds
+//     no real value, the row is declined with ErrDeleteProjection keyed at
+//     BuildKey(actorKey). Realness for a list column is "any real entry after the
+//     filter"; for a designated scalar realness column it is "the scalar is
+//     present and real" (a convergence lens marks the anchor alive that way).
 //   - Otherwise the envelope is {key, <actorField>: actorKey, version,
 //     projectedAt, projectedFromRevisions, [lanes], <bodyColumns...>,
 //     <staticEmptyColumns...: []>}.
@@ -55,17 +62,40 @@ func (d OutputDescriptor) EnvelopeFn(lensDefKey string, revisionOf func(string) 
 
 		outKey := d.BuildKey(actorKey)
 
-		// Realness-filter each body column and decide the empty-result action.
-		filtered := make(map[string]any, len(d.BodyColumns))
+		// Project each body column by the SHAPE of its RETURN value and decide
+		// the empty-result action. A list column is realness-filtered (the roster
+		// path); a scalar column projects verbatim (the convergence path) — a
+		// scalar RETURN value (bool, string, number, nil) is never coerced to []
+		// so Weaver's boolColumn / string-param resolution reads it directly.
+		projected := make(map[string]any, len(d.BodyColumns))
 		anyReal := false
 		for _, col := range d.BodyColumns {
-			vals := d.RealnessFiltered(row[col])
-			if vals == nil {
-				vals = []any{}
+			if list, isList := row[col].([]any); isList {
+				vals := d.RealnessFiltered(list)
+				if vals == nil {
+					vals = []any{}
+				}
+				projected[col] = vals
+				if len(vals) > 0 {
+					anyReal = true
+				}
+				continue
 			}
-			filtered[col] = vals
-			if len(vals) > 0 {
-				anyReal = true
+			// Scalar passthrough: the raw value as-is (a nil scalar stays nil, so
+			// the envelope carries a genuine null, not an empty list).
+			projected[col] = row[col]
+		}
+
+		// A designated scalar realness column (e.g. a convergence lens's
+		// entityKey) marks the anchor alive when present and real. This is
+		// distinct from the roster realness (a field inside each list entry); a
+		// roster lens names a field that lives inside its collect entries, never a
+		// top-level scalar column, so this check is dormant for the roster lenses.
+		if d.RealnessFilter != "" {
+			if v, isCol := row[d.RealnessFilter]; isCol {
+				if _, isList := v.([]any); !isList && isRealField(v) {
+					anyReal = true
+				}
 			}
 		}
 
@@ -93,7 +123,7 @@ func (d OutputDescriptor) EnvelopeFn(lensDefKey string, revisionOf func(string) 
 			envelope["lanes"] = append([]string(nil), d.Lanes...)
 		}
 		for _, col := range d.BodyColumns {
-			envelope[col] = filtered[col]
+			envelope[col] = projected[col]
 		}
 		for _, col := range d.StaticEmptyColumns {
 			envelope[col] = []any{}

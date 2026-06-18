@@ -207,13 +207,18 @@ when the convergence lens lands.
 
 ## Request E6: actorAggregate projection — SCALAR body columns for a §10.2 convergence lens (discovered Story 14.4 — BLOCKING)
 
-> **STATUS: OPEN — raised during Story 14.4 implementation (2026-06-18).** Request E5 (Option (b),
-> ratified + applied via Story 14.2) closed the convergence-lens **key** seam (the bare-NanoID
+> **STATUS: RATIFIED 2026-06-18 (Andrew) — "implicit auto-passthrough" — APPLIED 2026-06-18.** Request E5
+> (Option (b), ratified + applied via Story 14.2) closed the convergence-lens **key** seam (the bare-NanoID
 > `<targetId>.<entityId>` key, via `OutputDescriptor.KeyColumn` / `BuildKey`). This request covers the
-> **body** seam E5 did not address: the §10.2 row's **scalar** columns. **The 14.4 convergence lens
-> cannot project a Weaver-readable row until this is resolved.** Surfaced, not implemented (Story 14.4 is
-> package content; this is a Refractor `internal/` change — a CONTRACT-AMENDMENT-REQUEST, not an in-flight
-> edit).
+> **body** seam E5 did not address: the §10.2 row's **scalar** columns. **Resolution (implicit, not an
+> explicit descriptor field):** the actorAggregate `EnvelopeFn` (`internal/refractor/projection/driver.go`)
+> now projects each body column by the **shape of its RETURN value** — a list / `collect` column is
+> realness-filtered (the roster path, unchanged); a **scalar** column (bool / string / number / `nil`)
+> projects **verbatim** (a `nil` scalar as a genuine null, never `[]`). No `scalarColumns` knob was added —
+> detection is by value type at projection time (Andrew chose the implicit form). Contract #6 §6.13 amended
+> additively (opt-in by value shape; roster lenses unaffected). The shipped `leaseApplicationComplete` lens
+> needed **zero** change (pre-shaped); proven end-to-end in
+> `internal/refractor/refractor_leasesigning_scalar_e2e_test.go`.
 
 **Location:** Contract #6 §6.13 (the actorAggregate Output descriptor) + `internal/refractor/projection/output.go`
 (`OutputDescriptor.EnvelopeFn` ~39-110, `RealnessFiltered` ~204-235) + `driver.go` (~58-99).

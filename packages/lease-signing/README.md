@@ -90,26 +90,22 @@ Fake adapters always produce a completed outcome). The replyOp records
 `expiresAt = completedAt + window`, lens compares `inst.outcome.data.expiresAt > $now`)
 **or** have the projection supply a window-floor param.
 
-## LOUD FLAG (BLOCKING) — scalar convergence columns through the actorAggregate projection
+## Scalar convergence columns through the actorAggregate projection
 
 The §10.2 convergence row carries **scalar** columns (`violating` / `missing_*`
 bools, `entityKey` / `applicant` strings). The lens **cypher** produces them
-correctly and is proven one-row-per-anchor at the rule-engine level. **But** the
-actorAggregate projection `EnvelopeFn`
-(`internal/refractor/projection/output.go` + `driver.go`) realness-filters **every**
-`BodyColumn` to a **list** — it was built for the roster lenses (`my-tasks`,
-`capabilityEphemeral`). A scalar body column projects as `[]` through that path
-today, and Weaver's `boolColumn` cannot read `[]` as a bool.
+correctly and is proven one-row-per-anchor at the rule-engine level. The
+actorAggregate projection `EnvelopeFn` (`internal/refractor/projection/driver.go`)
+projects each body column by the **shape** of its RETURN value: a list / `collect`
+column is realness-filtered (the roster behavior — `my-tasks`,
+`capabilityEphemeral`), and a **scalar** column projects **verbatim** so Weaver's
+`boolColumn` reads a Go bool and the §10.8 `row.<col>` params resolve as strings
+(Contract #6 §6.13 scalar-passthrough amendment, CAR E6). The 14.2 `keyColumn`
+mechanism carries the bare-NanoID row key; together they make this convergence lens
+projectable end-to-end through Refractor.
 
-14.2 wired only the **key** column (proven with a roster-list lens); the scalar
-**body** path was never built. **No package-only authoring works around it** — a
-plain (non-actorAggregate) lens preserves scalars but loses the linked-constituent
-reprojection that is the entire point of AC#1.
-
-This needs a Refractor projection change (a per-column "scalar/passthrough" mode in
-the Output descriptor). It is **flagged, not made here** — see
-`cmd/refractor/CONTRACT-AMENDMENT-REQUEST.md`. The lens declaration in this package
-is correct and ready for the moment that lands.
+The lens declaration in this package is already pre-shaped for that path (keyColumn
+set, scalar body columns named) and needs no change.
 
 ## Other notes
 
