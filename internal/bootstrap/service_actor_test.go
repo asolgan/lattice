@@ -2,7 +2,10 @@ package bootstrap
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // populateForTest generates a fresh primordial ID set into the package vars.
@@ -46,9 +49,9 @@ type linkEnvelope struct {
 	LocalName    string `json:"localName"`
 }
 
-// TestServiceActorIdentities_Seeded asserts both Loom and Weaver identity
-// vertices are present in the primordial batch with the correct class,
-// protected flag, and Contract #1 vtx.identity.<id> key shape.
+// TestServiceActorIdentities_Seeded asserts the Loom, Weaver, and Bridge
+// identity vertices are present in the primordial batch with the correct
+// class, protected flag, and Contract #1 vtx.identity.<id> key shape.
 func TestServiceActorIdentities_Seeded(t *testing.T) {
 	populateForTest(t)
 	idx := entriesByKey(t)
@@ -59,6 +62,7 @@ func TestServiceActorIdentities_Seeded(t *testing.T) {
 	}{
 		{LoomIdentityKey, "identity.system.loom"},
 		{WeaverIdentityKey, "identity.system.weaver"},
+		{BridgeIdentityKey, "identity.system.bridge"},
 	}
 	for _, tc := range cases {
 		raw, ok := idx[tc.key]
@@ -84,7 +88,7 @@ func TestServiceActorIdentities_Seeded(t *testing.T) {
 	}
 }
 
-// TestServiceActorHoldsRoleLinks_Seeded asserts the two holdsRole links are
+// TestServiceActorHoldsRoleLinks_Seeded asserts the three holdsRole links are
 // present with identity=source, operator role=target (Contract #1 §1.1
 // direction: later-arriving vertex is the source) and read as the sentence
 // "<service> holdsRole operator".
@@ -99,6 +103,7 @@ func TestServiceActorHoldsRoleLinks_Seeded(t *testing.T) {
 	}{
 		{LoomHoldsRoleLinkKey, "vtx.identity." + LoomIdentityID},
 		{WeaverHoldsRoleLinkKey, "vtx.identity." + WeaverIdentityID},
+		{BridgeHoldsRoleLinkKey, "vtx.identity." + BridgeIdentityID},
 	}
 	for _, tc := range cases {
 		raw, ok := idx[tc.key]
@@ -123,24 +128,27 @@ func TestServiceActorHoldsRoleLinks_Seeded(t *testing.T) {
 
 // TestServiceActors_ReuseOperatorRole proves the AC #2 invariant: the service
 // actors add NO new role/permission/grantedBy entries. The only new keys
-// beyond the admin baseline are exactly the 2 identity vertices + 2 holdsRole
+// beyond the admin baseline are exactly the 3 identity vertices + 3 holdsRole
 // links; root-equivalence is established by reusing the existing operator
 // topology.
 func TestServiceActors_ReuseOperatorRole(t *testing.T) {
 	populateForTest(t)
 	idx := entriesByKey(t)
 
-	newKeys := []string{LoomIdentityKey, WeaverIdentityKey, LoomHoldsRoleLinkKey, WeaverHoldsRoleLinkKey}
+	newKeys := []string{
+		LoomIdentityKey, WeaverIdentityKey, BridgeIdentityKey,
+		LoomHoldsRoleLinkKey, WeaverHoldsRoleLinkKey, BridgeHoldsRoleLinkKey,
+	}
 	for _, k := range newKeys {
 		if _, ok := idx[k]; !ok {
 			t.Fatalf("expected new primordial key absent: %s", k)
 		}
 	}
 
-	// Both links must target the SAME pre-existing operator role the admin
+	// All links must target the SAME pre-existing operator role the admin
 	// holds — not a fresh "systemRoot"-style role.
 	roleTarget := "vtx.role." + RoleOperatorID
-	for _, k := range []string{LoomHoldsRoleLinkKey, WeaverHoldsRoleLinkKey} {
+	for _, k := range []string{LoomHoldsRoleLinkKey, WeaverHoldsRoleLinkKey, BridgeHoldsRoleLinkKey} {
 		var l linkEnvelope
 		if err := json.Unmarshal(idx[k], &l); err != nil {
 			t.Fatalf("unmarshal %q: %v", k, err)
@@ -152,15 +160,17 @@ func TestServiceActors_ReuseOperatorRole(t *testing.T) {
 }
 
 // TestPrimordialVertexKeys_IncludesServiceActors asserts the kernel-
-// verification enumeration covers all four new keys (so verify-kernel checks
-// them).
+// verification enumeration covers all six service-actor keys (so verify-kernel
+// checks them).
 func TestPrimordialVertexKeys_IncludesServiceActors(t *testing.T) {
 	populateForTest(t)
 	want := map[string]bool{
 		LoomIdentityKey:        false,
 		WeaverIdentityKey:      false,
+		BridgeIdentityKey:      false,
 		LoomHoldsRoleLinkKey:   false,
 		WeaverHoldsRoleLinkKey: false,
+		BridgeHoldsRoleLinkKey: false,
 	}
 	for _, k := range PrimordialVertexKeys() {
 		if _, ok := want[k]; ok {
@@ -175,7 +185,7 @@ func TestPrimordialVertexKeys_IncludesServiceActors(t *testing.T) {
 }
 
 // TestServiceActors_KeyCountDelta asserts the primordial batch grew by exactly
-// 4 entries (2 vertices + 2 links) relative to a baseline computed by removing
+// 6 entries (3 vertices + 3 links) relative to a baseline computed by removing
 // the service-actor keys — guarding the verify-kernel count delta.
 func TestServiceActors_KeyCountDelta(t *testing.T) {
 	populateForTest(t)
@@ -184,8 +194,10 @@ func TestServiceActors_KeyCountDelta(t *testing.T) {
 	serviceKeys := map[string]bool{
 		LoomIdentityKey:        true,
 		WeaverIdentityKey:      true,
+		BridgeIdentityKey:      true,
 		LoomHoldsRoleLinkKey:   true,
 		WeaverHoldsRoleLinkKey: true,
+		BridgeHoldsRoleLinkKey: true,
 	}
 	count := 0
 	for k := range idx {
@@ -193,7 +205,99 @@ func TestServiceActors_KeyCountDelta(t *testing.T) {
 			count++
 		}
 	}
-	if count != 4 {
-		t.Fatalf("expected exactly 4 service-actor entries in batch, got %d", count)
+	if count != 6 {
+		t.Fatalf("expected exactly 6 service-actor entries in batch, got %d", count)
+	}
+}
+
+// TestPrimordialVertexKeyCount_AgreesWithEnumeration asserts the declared
+// count constant matches the enumerated slice length and is the expected 29
+// after the Bridge identity vertex + holdsRole link were added. This is the
+// pure-Go mirror of the scripts/verify-kernel.go len()==Count agreement check
+// (the kernel-topology lockstep guard).
+func TestPrimordialVertexKeyCount_AgreesWithEnumeration(t *testing.T) {
+	populateForTest(t)
+	keys := PrimordialVertexKeys()
+	if len(keys) != PrimordialVertexKeyCount {
+		t.Fatalf("PrimordialVertexKeys() enumerates %d but PrimordialVertexKeyCount is %d",
+			len(keys), PrimordialVertexKeyCount)
+	}
+	if PrimordialVertexKeyCount != 29 {
+		t.Fatalf("PrimordialVertexKeyCount = %d, want 29", PrimordialVertexKeyCount)
+	}
+}
+
+// TestBridgeKeyDerivation asserts the Bridge identity and holdsRole link keys
+// derive from the persisted NanoID exactly as Contract #1 §1.1 specifies
+// (4-segment vtx.identity.<id>; 6-segment lnk.identity.<id>.holdsRole.role.<id>).
+func TestBridgeKeyDerivation(t *testing.T) {
+	populateForTest(t)
+	if want := "vtx.identity." + BridgeIdentityID; BridgeIdentityKey != want {
+		t.Errorf("BridgeIdentityKey = %q, want %q", BridgeIdentityKey, want)
+	}
+	if want := "lnk.identity." + BridgeIdentityID + ".holdsRole.role." + RoleOperatorID; BridgeHoldsRoleLinkKey != want {
+		t.Errorf("BridgeHoldsRoleLinkKey = %q, want %q", BridgeHoldsRoleLinkKey, want)
+	}
+}
+
+// TestGeneratePopulateRoundTrip_Bridge proves generate() mints a non-empty
+// Bridge NanoID and that it round-trips through currentRaw() → JSON →
+// populate() with the derived keys intact — the persisted-and-stable mechanism
+// the Bridge shares verbatim with Loom/Weaver (NanoID is random-then-persisted,
+// not seed-computed).
+func TestGeneratePopulateRoundTrip_Bridge(t *testing.T) {
+	raw, err := generate()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if !substrate.IsValidNanoID(raw.BridgeIdentity) {
+		t.Fatalf("generate() produced invalid bridgeIdentity NanoID: %q", raw.BridgeIdentity)
+	}
+	if err := populate(raw); err != nil {
+		t.Fatalf("populate: %v", err)
+	}
+	wantID := raw.BridgeIdentity
+	if BridgeIdentityID != wantID {
+		t.Errorf("BridgeIdentityID = %q, want %q", BridgeIdentityID, wantID)
+	}
+
+	// Round-trip through the persisted form and re-populate; the derived keys
+	// must be stable across the JSON boundary.
+	data, err := json.Marshal(currentRaw())
+	if err != nil {
+		t.Fatalf("marshal currentRaw: %v", err)
+	}
+	var back PrimordialIDsRaw
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.BridgeIdentity != wantID {
+		t.Fatalf("round-tripped bridgeIdentity = %q, want %q", back.BridgeIdentity, wantID)
+	}
+	if err := populate(back); err != nil {
+		t.Fatalf("re-populate: %v", err)
+	}
+	if BridgeIdentityKey != "vtx.identity."+wantID {
+		t.Errorf("after round-trip BridgeIdentityKey = %q, want %q", BridgeIdentityKey, "vtx.identity."+wantID)
+	}
+}
+
+// TestCheckVersion_RejectsStaleAcceptsCurrent proves the version-8 gate: a
+// version-8 file passes, and any older version (notably "7", which lacks the
+// bridgeIdentity field) is hard-rejected with the make-down/make-up guidance so
+// a stale file can never silently run with a missing service actor (AC #2).
+func TestCheckVersion_RejectsStaleAcceptsCurrent(t *testing.T) {
+	if err := checkVersion(BootstrapFile{Version: "8"}); err != nil {
+		t.Errorf("checkVersion(version=8): unexpected error %v", err)
+	}
+	for _, v := range []string{"7", "6", "5", "", "9"} {
+		err := checkVersion(BootstrapFile{Version: v})
+		if err == nil {
+			t.Errorf("checkVersion(version=%q): expected rejection, got nil", v)
+			continue
+		}
+		if !strings.Contains(err.Error(), "make down && make up") {
+			t.Errorf("checkVersion(version=%q): error missing teardown guidance: %v", v, err)
+		}
 	}
 }

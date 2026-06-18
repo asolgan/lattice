@@ -14,8 +14,8 @@ import (
 // SystemActorKeys scans core-kv and returns the actor keys of the kernel-seeded
 // system identities — the protected, kernel-fixed actors the Capability Lens
 // primordial-identity anchor projects root grants for (the primordial admin +
-// Loom + Weaver). They are identified by the same predicate the anchor cypher
-// uses: an `identity`-type vertex carrying `data.protected = true`.
+// Loom + Weaver + Bridge). They are identified by the same predicate the anchor
+// cypher uses: an `identity`-type vertex carrying `data.protected = true`.
 //
 // The step-3 platform read routes these actors to their core cap.<actor> doc
 // (the primordial anchor) and every other actor to cap.roles.<actor> when

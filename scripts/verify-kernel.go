@@ -4,11 +4,11 @@
 //
 // Connects to a running Lattice NATS instance and checks that all
 // kernel Core KV keys exist with correct envelopes per Contract #1 §1.3.
-// The kernel set (~73 entries):
+// The kernel set (~75 entries):
 //
 //	1 bootstrap op tracker
 //	1 admin identity vertex
-//	2 internal service-actor identity vertices (Loom + Weaver, arch §92)
+//	3 internal service-actor identity vertices (Loom + Weaver + Bridge, arch §92)
 //	1 meta-meta-DDL vertex + 9 aspects
 //	  (canonicalName/permittedCommands/description/script +
 //	   inputSchema/outputSchema/fieldDescription/examples + compensation)
@@ -22,9 +22,9 @@
 //	3 meta-permission vertices
 //	3 grantedBy links (meta-perm → operator)
 //	1 admin → operator holdsRole link
-//	2 service-actor → operator holdsRole links (Loom + Weaver)
+//	3 service-actor → operator holdsRole links (Loom + Weaver + Bridge)
 //
-// Total ≈ 67 OK lines.
+// Total ≈ 69 OK lines.
 //
 // Package gates (verify-package-rbac etc.) cover package-installed
 // DDLs / lenses / permissions / grants separately.

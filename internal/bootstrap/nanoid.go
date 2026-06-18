@@ -70,15 +70,17 @@ var (
 	BootstrapIdentityID        string
 	BootstrapIdentityKey       string
 
-	// Internal service-actor identities (arch §92). Loom and Weaver
-	// operate within the trust boundary at root-equivalent capability,
-	// submitting ops directly to the ledger. Root-equivalence is
-	// established purely by their holdsRole link to the operator role
+	// Internal service-actor identities (arch §92). Loom, Weaver, and the
+	// Bridge operate within the trust boundary at root-equivalent
+	// capability, submitting ops directly to the ledger. Root-equivalence
+	// is established purely by their holdsRole link to the operator role
 	// (Contract #7 §7.7) — the class field never gates capability.
 	LoomIdentityID     string
 	LoomIdentityKey    string
 	WeaverIdentityID   string
 	WeaverIdentityKey  string
+	BridgeIdentityID   string
+	BridgeIdentityKey  string
 
 	MetaRootID        string
 	MetaRootKey       string
@@ -133,6 +135,7 @@ var (
 	BootstrapHoldsRoleLinkKey string
 	LoomHoldsRoleLinkKey      string
 	WeaverHoldsRoleLinkKey    string
+	BridgeHoldsRoleLinkKey    string
 )
 
 // PrimordialIDsRaw is the persisted form (matches lattice.bootstrap.json).
@@ -144,6 +147,7 @@ type PrimordialIDsRaw struct {
 	BootstrapIdentity       string `json:"bootstrapIdentity"`
 	LoomIdentity            string `json:"loomIdentity"`
 	WeaverIdentity          string `json:"weaverIdentity"`
+	BridgeIdentity          string `json:"bridgeIdentity"`
 	MetaRoot       string `json:"metaRoot"`
 	CapabilityLens string `json:"capabilityLens"`
 	RoleOperator   string `json:"roleOperator"`
@@ -184,6 +188,8 @@ type PrimordialIDsRaw struct {
 //   - "7": capabilityRoleIndex Lens NanoID removed — the role-by-operation
 //     index moved to the rbac-domain package (it is rbac vocabulary), so core
 //     no longer seeds or addresses it.
+//   - "8": Bridge internal service-actor identity NanoID added (Epic 13 —
+//     External I/O Bridge service actor).
 type BootstrapFile struct {
 	Version       string           `json:"version"`
 	GeneratedAt   string           `json:"generatedAt"`
@@ -276,6 +282,7 @@ func currentRaw() PrimordialIDsRaw {
 		BootstrapIdentity:          BootstrapIdentityID,
 		LoomIdentity:               LoomIdentityID,
 		WeaverIdentity:             WeaverIdentityID,
+		BridgeIdentity:             BridgeIdentityID,
 		MetaRoot:                   MetaRootID,
 		CapabilityLens:             CapabilityLensID,
 		RoleOperator:               RoleOperatorID,
@@ -314,16 +321,16 @@ func Load(path string) error {
 // checkVersion returns a clear error when the bootstrap file's version is
 // not one of the supported versions. This surfaces a meaningful message
 // instead of a confusing NanoID validation failure when an operator
-// upgrades Lattice without running `make down` first. Version 6 adds the
-// Loom/Weaver service-actor identity NanoIDs; older files lack them and
-// must be regenerated.
+// upgrades Lattice without running `make down` first. Version 8 adds the
+// Bridge service-actor identity NanoID; older files lack it and must be
+// regenerated.
 func checkVersion(f BootstrapFile) error {
 	switch f.Version {
-	case "7":
+	case "8":
 		return nil
 	default:
 		return fmt.Errorf(
-			"bootstrap file version mismatch: got %q, want \"7\" — run `make down && make up`",
+			"bootstrap file version mismatch: got %q, want \"8\" — run `make down && make up`",
 			f.Version,
 		)
 	}
@@ -336,6 +343,7 @@ func generate() (PrimordialIDsRaw, error) {
 		&raw.BootstrapIdentity,
 		&raw.LoomIdentity,
 		&raw.WeaverIdentity,
+		&raw.BridgeIdentity,
 		&raw.MetaRoot,
 		&raw.CapabilityLens,
 		&raw.RoleOperator,
@@ -372,6 +380,7 @@ func populate(raw PrimordialIDsRaw) error {
 		{"bootstrapIdentity", raw.BootstrapIdentity},
 		{"loomIdentity", raw.LoomIdentity},
 		{"weaverIdentity", raw.WeaverIdentity},
+		{"bridgeIdentity", raw.BridgeIdentity},
 		{"metaRoot", raw.MetaRoot},
 		{"capabilityLens", raw.CapabilityLens},
 		{"roleOperator", raw.RoleOperator},
@@ -398,6 +407,7 @@ func populate(raw PrimordialIDsRaw) error {
 	BootstrapIdentityID = raw.BootstrapIdentity
 	LoomIdentityID = raw.LoomIdentity
 	WeaverIdentityID = raw.WeaverIdentity
+	BridgeIdentityID = raw.BridgeIdentity
 	MetaRootID = raw.MetaRoot
 	CapabilityLensID = raw.CapabilityLens
 	RoleOperatorID = raw.RoleOperator
@@ -434,6 +444,7 @@ func populate(raw PrimordialIDsRaw) error {
 	BootstrapIdentityKey = "vtx.identity." + BootstrapIdentityID
 	LoomIdentityKey = "vtx.identity." + LoomIdentityID
 	WeaverIdentityKey = "vtx.identity." + WeaverIdentityID
+	BridgeIdentityKey = "vtx.identity." + BridgeIdentityID
 	MetaRootKey = "vtx.meta." + MetaRootID
 	CapabilityLensKey = "vtx.meta." + CapabilityLensID
 	RoleOperatorKey = "vtx.role." + RoleOperatorID
@@ -444,13 +455,14 @@ func populate(raw PrimordialIDsRaw) error {
 	BootstrapHoldsRoleLinkKey = "lnk.identity." + BootstrapIdentityID + ".holdsRole.role." + RoleOperatorID
 	LoomHoldsRoleLinkKey = "lnk.identity." + LoomIdentityID + ".holdsRole.role." + RoleOperatorID
 	WeaverHoldsRoleLinkKey = "lnk.identity." + WeaverIdentityID + ".holdsRole.role." + RoleOperatorID
+	BridgeHoldsRoleLinkKey = "lnk.identity." + BridgeIdentityID + ".holdsRole.role." + RoleOperatorID
 
 	return nil
 }
 
 func persistWithStatus(path string, raw PrimordialIDsRaw, status string) error {
 	f := BootstrapFile{
-		Version:       "7",
+		Version:       "8",
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339Nano),
 		Status:        status,
 		PrimordialIDs: raw,
@@ -474,9 +486,10 @@ func PrimordialVertexKeys() []string {
 		BootstrapOpKey,
 		// admin identity
 		BootstrapIdentityKey,
-		// internal service-actor identities (Loom + Weaver, arch §92)
+		// internal service-actor identities (Loom + Weaver + Bridge, arch §92)
 		LoomIdentityKey,
 		WeaverIdentityKey,
+		BridgeIdentityKey,
 		// meta-meta DDL
 		MetaRootKey,
 		// InstallPackage / UninstallPackage primordial DDLs (Story 1.5.5)
@@ -499,9 +512,10 @@ func PrimordialVertexKeys() []string {
 		"lnk.permission." + PermInstallPackageID + ".grantedBy.role." + RoleOperatorID,
 		"lnk.permission." + PermUninstallPackageID + ".grantedBy.role." + RoleOperatorID,
 		BootstrapHoldsRoleLinkKey,
-		// service-actor holdsRole links (Loom + Weaver → operator)
+		// service-actor holdsRole links (Loom + Weaver + Bridge → operator)
 		LoomHoldsRoleLinkKey,
 		WeaverHoldsRoleLinkKey,
+		BridgeHoldsRoleLinkKey,
 		// 5 aspect-type meta-vertices (self-description DDLs)
 		AspectTypeDescriptionKey,
 		AspectTypeInputSchemaKey,
@@ -514,8 +528,8 @@ func PrimordialVertexKeys() []string {
 // PrimordialVertexKeyCount is the count of TOP-LEVEL kernel keys (the
 // ones in PrimordialVertexKeys()). Used as a count-only readiness gate
 // where loading lattice.bootstrap.json would race startup. Current count
-// is 27 entries: 1 op + 1 admin + 2 service actors (Loom + Weaver) +
-// 1 meta-DDL + 2 install/uninstall DDLs + 1 lens (the capability
+// is 29 entries: 1 op + 1 admin + 3 service actors (Loom + Weaver +
+// Bridge) + 1 meta-DDL + 2 install/uninstall DDLs + 1 lens (the capability
 // primordial-identity anchor) + 1 role + 5 perms (3 meta + 2 install) +
-// 8 links (5 grantedBy + 3 holdsRole) + 5 aspect-type meta-vertices.
-const PrimordialVertexKeyCount = 27
+// 9 links (5 grantedBy + 4 holdsRole) + 5 aspect-type meta-vertices.
+const PrimordialVertexKeyCount = 29

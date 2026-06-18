@@ -1,9 +1,9 @@
 // Story 7.3 AC #1 / A3 — root-equivalence projection proof.
 //
-// After primordial bootstrap seeds the admin + Loom + Weaver identities and
-// their holdsRole → operator links, the Capability Lens must project a
+// After primordial bootstrap seeds the admin + Loom + Weaver + Bridge identities
+// and their holdsRole → operator links, the Capability Lens must project a
 // cap.identity.<id> doc for EACH that carries the operator role's scope:"any"
-// platformPermissions — identical across all three. This proves topology →
+// platformPermissions — identical across all four. This proves topology →
 // projection works uniformly for the service actors despite their non-plain
 // `identity.system.*` class (the cypher + actor pipeline anchor on the
 // vtx.identity key-type segment, never on class; Contract #7 §7.7).
@@ -50,8 +50,8 @@ func permScopeSet(t *testing.T, env map[string]any) []string {
 	return out
 }
 
-// TestRefractor_ServiceActorRootEquivalence_E2E asserts the Loom and Weaver
-// cap.* projections carry the SAME platformPermissions set as the admin's.
+// TestRefractor_ServiceActorRootEquivalence_E2E asserts the Loom, Weaver, and
+// Bridge cap.* projections carry the SAME platformPermissions set as the admin's.
 func TestRefractor_ServiceActorRootEquivalence_E2E(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping service-actor projection e2e in -short mode")
@@ -171,6 +171,7 @@ func TestRefractor_ServiceActorRootEquivalence_E2E(t *testing.T) {
 	buildEdge("holdsRole", "identity", bootstrap.BootstrapIdentityID, "role", roleID)
 	buildEdge("holdsRole", "identity", bootstrap.LoomIdentityID, "role", roleID)
 	buildEdge("holdsRole", "identity", bootstrap.WeaverIdentityID, "role", roleID)
+	buildEdge("holdsRole", "identity", bootstrap.BridgeIdentityID, "role", roleID)
 	// grantedBy: each operator-granted meta/install permission → operator role.
 	for _, permID := range []string{
 		bootstrap.PermCreateMetaVertexID, bootstrap.PermUpdateMetaVertexID,
@@ -192,6 +193,7 @@ func TestRefractor_ServiceActorRootEquivalence_E2E(t *testing.T) {
 	retouch(bootstrap.BootstrapIdentityKey)
 	retouch(bootstrap.LoomIdentityKey)
 	retouch(bootstrap.WeaverIdentityKey)
+	retouch(bootstrap.BridgeIdentityKey)
 
 	poll := func(capKey string) map[string]any {
 		deadline := time.Now().Add(25 * time.Second)
@@ -214,6 +216,7 @@ func TestRefractor_ServiceActorRootEquivalence_E2E(t *testing.T) {
 	adminEnv := poll("cap.identity." + bootstrap.BootstrapIdentityID)
 	loomEnv := poll("cap.identity." + bootstrap.LoomIdentityID)
 	weaverEnv := poll("cap.identity." + bootstrap.WeaverIdentityID)
+	bridgeEnv := poll("cap.identity." + bootstrap.BridgeIdentityID)
 
 	adminPerms := permScopeSet(t, adminEnv)
 	require.NotEmpty(t, adminPerms, "admin must project scope:any platformPermissions")
@@ -223,6 +226,8 @@ func TestRefractor_ServiceActorRootEquivalence_E2E(t *testing.T) {
 		"loom platformPermissions must equal admin's (root-equivalent)")
 	require.Equal(t, adminPerms, permScopeSet(t, weaverEnv),
 		"weaver platformPermissions must equal admin's (root-equivalent)")
+	require.Equal(t, adminPerms, permScopeSet(t, bridgeEnv),
+		"bridge platformPermissions must equal admin's (root-equivalent)")
 
 	// All operator perms are scope:any (the root-equivalent shape).
 	for _, ps := range adminPerms {
@@ -233,4 +238,5 @@ func TestRefractor_ServiceActorRootEquivalence_E2E(t *testing.T) {
 	// proving the non-plain class does not break projection addressing.
 	require.Equal(t, "cap.identity."+bootstrap.LoomIdentityID, loomEnv["key"])
 	require.Equal(t, "cap.identity."+bootstrap.WeaverIdentityID, weaverEnv["key"])
+	require.Equal(t, "cap.identity."+bootstrap.BridgeIdentityID, bridgeEnv["key"])
 }

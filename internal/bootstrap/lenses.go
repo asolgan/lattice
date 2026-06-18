@@ -40,8 +40,8 @@ type OutputDescriptorSpec struct {
 // with class "meta.lens"; Contract #6 §6.1 decomposition note.
 //
 // Core projects root-equivalent platform grants for the kernel-seeded system
-// identities only — the primordial admin and the Loom + Weaver service actors
-// (`internal/bootstrap/primordial.go`). These actors ARE core: protected,
+// identities only — the primordial admin and the Loom + Weaver + Bridge service
+// actors (`internal/bootstrap/primordial.go`). These actors ARE core: protected,
 // kernel-seeded, and fixed, so their root-grant set is hard-coded here rather
 // than derived through the rbac role/permission graph. That keeps the
 // kernel authorizable even when no rbac package is installed and removes every

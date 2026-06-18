@@ -71,8 +71,10 @@ func TestSeedPrimordial_ServiceActorsIdempotent(t *testing.T) {
 	serviceKeys := []string{
 		bootstrap.LoomIdentityKey,
 		bootstrap.WeaverIdentityKey,
+		bootstrap.BridgeIdentityKey,
 		bootstrap.LoomHoldsRoleLinkKey,
 		bootstrap.WeaverHoldsRoleLinkKey,
+		bootstrap.BridgeHoldsRoleLinkKey,
 	}
 	revBefore := map[string]uint64{}
 	for _, k := range serviceKeys {
@@ -94,7 +96,7 @@ func TestSeedPrimordial_ServiceActorsIdempotent(t *testing.T) {
 
 // TestWaitForBootstrapComplete_BlocksOnServiceActorCapProjections proves the
 // AC #4 readiness gate: WaitForBootstrapComplete does NOT return ready until
-// the admin, Loom, AND Weaver cap.* projections all exist — and that a
+// the admin, Loom, Weaver, AND Bridge cap.* projections all exist — and that a
 // missing projection times out cleanly within the caller's bound rather than
 // hanging.
 func TestWaitForBootstrapComplete_BlocksOnServiceActorCapProjections(t *testing.T) {
@@ -123,6 +125,7 @@ func TestWaitForBootstrapComplete_BlocksOnServiceActorCapProjections(t *testing.
 	adminID := bootstrap.BootstrapIdentityID
 	loomID := bootstrap.LoomIdentityID
 	weaverID := bootstrap.WeaverIdentityID
+	bridgeID := bootstrap.BridgeIdentityID
 
 	// With the health marker present but NO cap.* projections, the gate must
 	// time out cleanly (never hang past the bound).
@@ -132,22 +135,23 @@ func TestWaitForBootstrapComplete_BlocksOnServiceActorCapProjections(t *testing.
 	require.Error(t, err, "gate must NOT be ready with missing cap.* projections")
 	require.Contains(t, err.Error(), "timed out")
 
-	// Land admin + loom only; weaver still missing → still not ready.
+	// Land admin + loom + weaver only; bridge still missing → still not ready.
 	// The budget is comfortably above many 500ms poll ticks so the deadline
 	// fires only after several clean polls have settled lastMissing on the
-	// weaver key, even under embedded-NATS read jitter.
+	// bridge key, even under embedded-NATS read jitter.
 	put(adminID)
 	put(loomID)
+	put(weaverID)
 	shortCtx2, shortCancel2 := context.WithTimeout(ctx, 10*time.Second)
 	err = bootstrap.WaitForBootstrapComplete(shortCtx2, nc, logger)
 	shortCancel2()
-	require.Error(t, err, "gate must NOT be ready while weaver cap.* is missing")
-	require.Contains(t, err.Error(), "weaver")
+	require.Error(t, err, "gate must NOT be ready while bridge cap.* is missing")
+	require.Contains(t, err.Error(), "bridge")
 
-	// Land weaver — all three present → ready.
-	put(weaverID)
+	// Land bridge — all four present → ready.
+	put(bridgeID)
 	readyCtx, readyCancel := context.WithTimeout(ctx, 5*time.Second)
 	err = bootstrap.WaitForBootstrapComplete(readyCtx, nc, logger)
 	readyCancel()
-	require.NoError(t, err, "gate must be ready once admin + loom + weaver cap.* all exist")
+	require.NoError(t, err, "gate must be ready once admin + loom + weaver + bridge cap.* all exist")
 }

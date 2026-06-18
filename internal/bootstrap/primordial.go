@@ -191,8 +191,9 @@ func (s *Seeder) provisionStreams(ctx context.Context) error {
 //   - 1 bootstrap op tracker
 //   - 1 primordial admin identity (vtx.identity.<NanoID>); no .state aspect
 //     (state is identity-domain-package territory)
-//   - 2 internal service-actor identities (Loom + Weaver, arch §92;
-//     class identity.system.loom / identity.system.weaver); no .state aspect
+//   - 3 internal service-actor identities (Loom + Weaver + Bridge, arch §92;
+//     class identity.system.loom / identity.system.weaver /
+//     identity.system.bridge); no .state aspect
 //   - 1 meta-meta DDL (vtx.meta.<NanoID-root>, canonicalName="root") +
 //     9 aspects (canonicalName, permittedCommands, description, script,
 //     inputSchema, outputSchema, fieldDescription, examples, compensation)
@@ -208,9 +209,9 @@ func (s *Seeder) provisionStreams(ctx context.Context) error {
 //     TombstoneMetaVertex), all scope=any
 //   - 3 grantedBy links (each meta-permission → operator)
 //   - 1 admin→operator holdsRole link
-//   - 2 service-actor→operator holdsRole links (Loom + Weaver)
+//   - 3 service-actor→operator holdsRole links (Loom + Weaver + Bridge)
 //
-// Total ≈ 73 Core KV entries. See `scripts/verify-kernel.go`.
+// Total ≈ 75 Core KV entries. See `scripts/verify-kernel.go`.
 //
 // Roles consumer/frontOfHouse/backOfHouse and the identity DDL + its
 // permissions and grants move to packages (rbac-domain, identity-domain,
@@ -334,11 +335,11 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		return nil, err
 	}
 
-	// 2a. Internal service-actor identities — Loom and Weaver (arch §92).
-	// Root-equivalent actors that submit ops directly to the ledger within
-	// the trust boundary. Root capability is established solely by their
-	// holdsRole link to the operator role (entry 10a below), projected by
-	// the Capability Lens identically to the admin — the `identity.system.*`
+	// 2a. Internal service-actor identities — Loom, Weaver, and the Bridge
+	// (arch §92). Root-equivalent actors that submit ops directly to the
+	// ledger within the trust boundary. Root capability is established solely
+	// by their holdsRole link to the operator role (entry 10a below), projected
+	// by the Capability Lens identically to the admin — the `identity.system.*`
 	// class is a descriptive marker and never gates capability (Contract #7
 	// §7.7). Protected (§3.4) so a package uninstall can never tombstone a
 	// kernel service actor.
@@ -361,6 +362,12 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		map[string]any{"protected": true,
 			"note": "Internal Weaver service-actor identity. Root-equivalent via holdsRole to the operator role."})
 	if err := add(WeaverIdentityKey, weaverIDVal, weaverIDErr); err != nil {
+		return nil, err
+	}
+	bridgeIDVal, bridgeIDErr := MakeVertexEnvelope(BridgeIdentityKey, "identity.system.bridge",
+		map[string]any{"protected": true,
+			"note": "Internal Bridge service-actor identity. Root-equivalent via holdsRole to the operator role."})
+	if err := add(BridgeIdentityKey, bridgeIDVal, bridgeIDErr); err != nil {
 		return nil, err
 	}
 
@@ -609,12 +616,12 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 
 	// 10a. Service-actor → operator holdsRole links. Identity is the source
 	// (later-arriving vertex per Contract #1 §1.1); the operator role is the
-	// target. Reads "loom holdsRole operator" / "weaver holdsRole operator".
-	// This single edge is the sole source of each actor's root-equivalent
-	// capability: the Capability Lens walks holdsRole → operator → grantedBy
-	// → permission and projects the operator's scope:"any" permissions into
-	// `cap.identity.<id>.platformPermissions[]` — no new role, permission,
-	// grantedBy link, cypher branch, or step-3 code (Contract #7 §7.7).
+	// target. Reads "loom holdsRole operator" / "weaver holdsRole operator" /
+	// "bridge holdsRole operator". This single edge is the sole source of each
+	// actor's root-equivalent capability: the Capability Lens walks holdsRole →
+	// operator → grantedBy → permission and projects the operator's scope:"any"
+	// permissions into `cap.identity.<id>.platformPermissions[]` — no new role,
+	// permission, grantedBy link, cypher branch, or step-3 code (Contract #7 §7.7).
 	loomHoldsVal, loomHoldsErr := MakeLinkEnvelope(
 		LoomHoldsRoleLinkKey,
 		"vtx.identity."+LoomIdentityID,
@@ -629,6 +636,14 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		"vtx.role."+RoleOperatorID,
 		"holdsRole", "holdsRole", map[string]any{})
 	if err := add(WeaverHoldsRoleLinkKey, weaverHoldsVal, weaverHoldsErr); err != nil {
+		return nil, err
+	}
+	bridgeHoldsVal, bridgeHoldsErr := MakeLinkEnvelope(
+		BridgeHoldsRoleLinkKey,
+		"vtx.identity."+BridgeIdentityID,
+		"vtx.role."+RoleOperatorID,
+		"holdsRole", "holdsRole", map[string]any{})
+	if err := add(BridgeHoldsRoleLinkKey, bridgeHoldsVal, bridgeHoldsErr); err != nil {
 		return nil, err
 	}
 
@@ -982,9 +997,9 @@ func MarkBootstrapComplete(ctx context.Context, nc *nats.Conn, logger *slog.Logg
 //
 //   - the Health KV `health.bootstrap.complete` marker, and
 //   - the Capability KV projections of every actor that must be able to
-//     submit ops at startup: the primordial admin and the two internal
-//     service actors (Loom + Weaver). Their `cap.identity.<id>` docs are
-//     produced asynchronously by the Capability Lens once Refractor runs;
+//     submit ops at startup: the primordial admin and the three internal
+//     service actors (Loom + Weaver + Bridge). Their `cap.identity.<id>` docs
+//     are produced asynchronously by the Capability Lens once Refractor runs;
 //     gating on them guarantees the engines are authorizable the moment
 //     `make up` returns ready (the AC #4 intent).
 //
@@ -1013,6 +1028,7 @@ func WaitForBootstrapComplete(ctx context.Context, nc *nats.Conn, logger *slog.L
 		{"admin", capabilityKeyForIdentity(BootstrapIdentityID)},
 		{"loom", capabilityKeyForIdentity(LoomIdentityID)},
 		{"weaver", capabilityKeyForIdentity(WeaverIdentityID)},
+		{"bridge", capabilityKeyForIdentity(BridgeIdentityID)},
 	}
 
 	// checkAll classifies each key's Get error into three outcomes. A genuine
