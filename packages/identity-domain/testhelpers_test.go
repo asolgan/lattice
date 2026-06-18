@@ -50,6 +50,7 @@ func staffCapDoc() *processor.CapabilityDoc {
 		PlatformPermissions: []processor.PlatformPermission{
 			{OperationType: "CreateUnclaimedIdentity", Scope: "any"},
 			{OperationType: "UpdateIdentityState", Scope: "any"},
+			{OperationType: "RecordIdentityPII", Scope: "any"},
 		},
 		ServiceAccess:   []processor.ServiceAccessEntry{},
 		EphemeralGrants: []processor.EphemeralGrant{},

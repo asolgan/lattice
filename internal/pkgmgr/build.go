@@ -124,6 +124,15 @@ func (i *Installer) buildInstallBatch(
 			map[string]any{"fieldDescriptions": fdMap}))
 		addCreate(ddlKey+".examples", docAspect(ddlKey, "examples", "examples",
 			map[string]any{"examples": exList}))
+		// Sensitivity marker (lattice-architecture Item 6). Emitted only for
+		// a sensitive aspect-type DDL; absent → the DDL cache treats the
+		// aspect type as non-sensitive (ddl_cache loadMetaVertex reads
+		// <root>.sensitive). Conditional keeps the common non-sensitive DDL's
+		// install batch byte-for-byte unchanged.
+		if d.Sensitive {
+			addCreate(ddlKey+".sensitive", docAspect(ddlKey, "sensitive", "sensitive",
+				map[string]any{"value": true}))
+		}
 	}
 
 	// Lens meta-vertices + canonical aspects.

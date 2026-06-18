@@ -1,6 +1,6 @@
 // Package identitydomain is the identity-domain Capability Package. It
-// provides CreateUnclaimedIdentity, UpdateIdentityState, and ClaimIdentity
-// operations.
+// provides CreateUnclaimedIdentity, UpdateIdentityState, ClaimIdentity, and
+// RecordIdentityPII operations.
 //
 // Install via `lattice-pkg install packages/identity-domain`. The install
 // is ONE atomic commit routed through the Processor (Story 1.5.5):
@@ -8,9 +8,9 @@
 //   - the 3 user-facing roles (consumer, frontOfHouse, backOfHouse) — role
 //     vertex + canonicalName/description aspects + a canonical-name index
 //     vertex, with deterministic NanoIDs;
-//   - the identity DDL + 3 permission vertices + grantedBy links from those
-//     permissions to the relevant roles (frontOfHouse, backOfHouse,
-//     operator, consumer).
+//   - the identity DDL + the ssn/dob sensitive aspect-type DDLs + the
+//     permission vertices + grantedBy links from those permissions to the
+//     relevant roles (frontOfHouse, backOfHouse, operator, consumer).
 //
 // Everything (roles included) lands in the single install batch and in the
 // manifest's declaredKeys, so uninstall reclaims it all (closes F-001).

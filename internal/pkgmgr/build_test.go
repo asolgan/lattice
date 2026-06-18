@@ -112,3 +112,76 @@ func TestLensSpecBody_IntoKey_DefaultsToKey(t *testing.T) {
 		t.Errorf("key: want [key], got %v", keys)
 	}
 }
+
+// minimalDDL returns a DDLSpec satisfying buildInstallBatch's self-description
+// gate, with the given canonicalName/class/sensitivity.
+func minimalDDL(name, class string, sensitive bool) DDLSpec {
+	return DDLSpec{
+		CanonicalName:    name,
+		Class:            class,
+		Sensitive:        sensitive,
+		Description:      name + " ddl",
+		Script:           "def execute(state, op):\n    fail(\"noop\")\n",
+		InputSchema:      `{"type":"object"}`,
+		OutputSchema:     `{"type":"object"}`,
+		FieldDescription: map[string]string{name: "the " + name},
+		Examples:         []ExampleSpec{{Name: name, Payload: map[string]any{}, ExpectedOutcome: "ok"}},
+	}
+}
+
+// findOp returns the install mutation for the given key, or false.
+func findOp(ops []installMutation, key string) (installMutation, bool) {
+	for _, op := range ops {
+		if op.Key == key {
+			return op, true
+		}
+	}
+	return installMutation{}, false
+}
+
+// TestBuildInstallBatch_SensitiveAspectEmittedOnlyWhenTrue pins Item A: a DDL
+// with Sensitive:true emits a `.sensitive` aspect carrying data.value=true; a
+// default (Sensitive:false) DDL emits NO `.sensitive` aspect (opt-in
+// regression pin — the read side, ddl_cache, treats absent as non-sensitive).
+func TestBuildInstallBatch_SensitiveAspectEmittedOnlyWhenTrue(t *testing.T) {
+	def := Definition{
+		Name:    "sensitive-test-pkg",
+		Version: "0.0.1",
+		DDLs: []DDLSpec{
+			minimalDDL("plainType", "meta.ddl.vertexType", false),
+			minimalDDL("secretType", "meta.ddl.aspectType", true),
+		},
+	}
+
+	inst := &Installer{}
+	pkgKey := PackageVertexPrefix + DeterministicNanoIDForTest(def.Name, def.Version, "package")
+	ddlIDs := []string{
+		DeterministicNanoIDForTest(def.Name, def.Version, "ddl:plainType"),
+		DeterministicNanoIDForTest(def.Name, def.Version, "ddl:secretType"),
+	}
+	ops, _, err := inst.buildInstallBatch(def, pkgKey, ddlIDs, nil, nil, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("buildInstallBatch: %v", err)
+	}
+
+	plainKey := metaVertexPrefix + ddlIDs[0]
+	secretKey := metaVertexPrefix + ddlIDs[1]
+
+	// Sensitive DDL: `.sensitive` aspect present with data.value == true.
+	sOp, ok := findOp(ops, secretKey+".sensitive")
+	if !ok {
+		t.Fatalf("sensitive DDL: no %s aspect emitted", secretKey+".sensitive")
+	}
+	if got := sOp.Document["class"]; got != "sensitive" {
+		t.Errorf("sensitive aspect class = %v, want \"sensitive\"", got)
+	}
+	data, _ := sOp.Document["data"].(map[string]any)
+	if v, _ := data["value"].(bool); !v {
+		t.Errorf("sensitive aspect data.value = %v, want true", data["value"])
+	}
+
+	// Non-sensitive DDL: NO `.sensitive` aspect (the opt-in regression pin).
+	if _, ok := findOp(ops, plainKey+".sensitive"); ok {
+		t.Errorf("non-sensitive DDL emitted a %s aspect; want none (opt-in)", plainKey+".sensitive")
+	}
+}

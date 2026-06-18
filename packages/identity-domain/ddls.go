@@ -2,10 +2,15 @@ package identitydomain
 
 import "github.com/asolgan/lattice/internal/pkgmgr"
 
-// DDLs returns the package's DDL meta-vertex declarations. One DDL —
-// `identity` — handles CreateUnclaimedIdentity, UpdateIdentityState,
-// ClaimIdentity. State machine: unclaimed → claimed; merged is set only
-// by identity-hygiene's MergeIdentity.
+// DDLs returns the package's DDL meta-vertex declarations:
+//   - `identity` (meta.ddl.vertexType) — handles CreateUnclaimedIdentity,
+//     UpdateIdentityState, ClaimIdentity, RecordIdentityPII. State machine:
+//     unclaimed → claimed; merged is set only by identity-hygiene's
+//     MergeIdentity.
+//   - `ssn`, `dob` (meta.ddl.aspectType, sensitive) — declare the two
+//     applicant-PII aspect types. Marking them sensitive=true makes the
+//     Processor's step-6 validator anchor them to identity vertices
+//     (NFR-S3 / lattice-architecture Item 6). RecordIdentityPII writes them.
 //
 // Architectural rules: known-key reads only. The duplicate-detection
 // index lookups (vtx.identityindex.*) use crypto.sha256NanoID-derived
@@ -19,11 +24,14 @@ func DDLs() []pkgmgr.DDLSpec {
 				"CreateUnclaimedIdentity",
 				"UpdateIdentityState",
 				"ClaimIdentity",
+				"RecordIdentityPII",
 			},
 			Description: "Identity domain DDL. " +
 				"Vertex shape: vtx.identity.<NanoID>, class=identity. " +
 				"Aspects: name (sensitive, required, maxLen 200), email (sensitive, lowercase-normalized), " +
 				"phone (sensitive, E.164-normalized), state (enum: unclaimed|claimed|merged), " +
+				"ssn (sensitive, applicant SSN: 9 digits; any hyphens accepted and stripped; written by RecordIdentityPII), " +
+				"dob (sensitive, ISO YYYY-MM-DD applicant date of birth, written by RecordIdentityPII), " +
 				"claimKey (sensitive, stores the client-supplied claimKeyHash verbatim; tombstoned after claim), " +
 				"credentialBinding (sensitive; null pre-claim), " +
 				"mergedInto (vertex-key reference, set only by identity-hygiene package's MergeIdentity). " +
@@ -36,12 +44,14 @@ func DDLs() []pkgmgr.DDLSpec {
 				`"phone":{"type":"string","description":"Phone number, E.164 digits only. At least one of email/phone required."},` +
 				`"claimKeyHash":{"type":"string","description":"Lowercase hex sha256 of the client-minted claim secret (CreateUnclaimedIdentity, required). Lattice stores it verbatim; the plaintext never enters Lattice."},` +
 				`"claimKeyAlgo":{"type":"string","enum":["sha256"],"description":"Hash algorithm for claimKeyHash. Optional; defaults to sha256 (the only accepted value)."},` +
-				`"identityKey":{"type":"string","description":"vtx.identity.<NanoID> — target identity for UpdateIdentityState."},` +
+				`"identityKey":{"type":"string","description":"vtx.identity.<NanoID> — target identity for UpdateIdentityState and RecordIdentityPII."},` +
 				`"newState":{"type":"string","enum":["claimed"],"description":"Target state for UpdateIdentityState. Only unclaimed→claimed is permitted."},` +
 				`"claimKey":{"type":"string","description":"One-time-use claim key plaintext (ClaimIdentity). Its sha256 must match the stored hash."},` +
-				`"targetIdentityKey":{"type":"string","description":"vtx.identity.<NanoID> of the unclaimed identity to claim (ClaimIdentity)."}}}`,
+				`"targetIdentityKey":{"type":"string","description":"vtx.identity.<NanoID> of the unclaimed identity to claim (ClaimIdentity)."},` +
+				`"ssn":{"type":"string","description":"Applicant Social Security Number (RecordIdentityPII, required). 9 digits; any hyphens are accepted and stripped; stored normalized as a sensitive aspect."},` +
+				`"dob":{"type":"string","description":"Applicant date of birth (RecordIdentityPII, required). ISO YYYY-MM-DD; stored as a sensitive aspect."}}}`,
 			OutputSchema: `{"type":"object","properties":` +
-				`{"primaryKey":{"type":"string","description":"vtx.identity.<NanoID> of the created or claimed identity (the operation's principal key)."}}}`,
+				`{"primaryKey":{"type":"string","description":"vtx.identity.<NanoID> of the created, claimed, or PII-recorded identity (the operation's principal key)."}}}`,
 			FieldDescription: map[string]string{
 				"name":              "Person's display name. Required on CreateUnclaimedIdentity. Stored as sensitive aspect.",
 				"email":             "Email address. Stored lowercase-normalized. Used as a deduplication index key.",
@@ -52,6 +62,8 @@ func DDLs() []pkgmgr.DDLSpec {
 				"newState":          "Desired state after UpdateIdentityState. State machine: unclaimed → claimed only.",
 				"claimKey":          "The plaintext one-time claim key the client minted at CreateUnclaimedIdentity. Used for ClaimIdentity verification (its sha256 is compared to the stored hash).",
 				"targetIdentityKey": "Full vtx.identity.<NanoID> of the unclaimed identity the calling actor wants to claim.",
+				"ssn":               "Applicant SSN. Required on RecordIdentityPII. 9 digits; any hyphens are accepted and stripped; stored normalized in a sensitive vtx.identity.<NanoID>.ssn aspect.",
+				"dob":               "Applicant date of birth. Required on RecordIdentityPII. ISO YYYY-MM-DD; stored in a sensitive vtx.identity.<NanoID>.dob aspect.",
 			},
 			Examples: []pkgmgr.ExampleSpec{
 				{
@@ -66,10 +78,73 @@ func DDLs() []pkgmgr.DDLSpec {
 					Payload:         map[string]any{"targetIdentityKey": "vtx.identity.<NanoID>", "claimKey": "<plaintextKey>"},
 					ExpectedOutcome: "Verifies claimKey hash, writes credentialBinding aspect, transitions state unclaimed→claimed, tombstones claimKey aspect.",
 				},
+				{
+					Name:    "RecordIdentityPII — capture applicant SSN/DOB",
+					Payload: map[string]any{"identityKey": "vtx.identity.<NanoID>", "ssn": "123-45-6789", "dob": "1990-01-15"},
+					ExpectedOutcome: "Validates formats, writes sensitive vtx.identity.<NanoID>.ssn (normalized to 123456789) and " +
+						".dob aspects onto the existing identity; the identity vertex root data is not mutated. " +
+						"A sensitive ssn/dob aspect on any non-identity vertex is rejected by the step-6 sensitiveAspectScope rule.",
+				},
+			},
+		},
+		{
+			CanonicalName:     "ssn",
+			Class:             "meta.ddl.aspectType",
+			Sensitive:         true,
+			PermittedCommands: []string{"RecordIdentityPII"},
+			Description: "Applicant Social Security Number. Sensitive aspect-type " +
+				"(lattice-architecture Item 6 / PRD §358): stored as vtx.identity.<NanoID>.ssn, " +
+				"sensitive=true, identity-anchored, the crypto-shred unit. Written by RecordIdentityPII.",
+			Script: sensitiveAspectDDLScript,
+			InputSchema: `{"type":"object","properties":` +
+				`{"ssn":{"type":"string","description":"SSN: 9 digits; any hyphens are accepted and stripped."}}}`,
+			OutputSchema: `{"type":"object"}`,
+			FieldDescription: map[string]string{
+				"ssn": "Applicant SSN: 9 digits; any hyphens are accepted and stripped; stored normalized as a sensitive aspect on the identity.",
+			},
+			Examples: []pkgmgr.ExampleSpec{
+				{
+					Name:            "ssn aspect",
+					Payload:         map[string]any{"ssn": "123-45-6789"},
+					ExpectedOutcome: "Stored as sensitive vtx.identity.<NanoID>.ssn; rejected on any non-identity vertex by step-6 sensitiveAspectScope.",
+				},
+			},
+		},
+		{
+			CanonicalName:     "dob",
+			Class:             "meta.ddl.aspectType",
+			Sensitive:         true,
+			PermittedCommands: []string{"RecordIdentityPII"},
+			Description: "Applicant date of birth. Sensitive aspect-type " +
+				"(lattice-architecture Item 6 / PRD §358): stored as vtx.identity.<NanoID>.dob, " +
+				"sensitive=true, identity-anchored, the crypto-shred unit. Written by RecordIdentityPII.",
+			Script: sensitiveAspectDDLScript,
+			InputSchema: `{"type":"object","properties":` +
+				`{"dob":{"type":"string","description":"ISO 8601 calendar date, YYYY-MM-DD."}}}`,
+			OutputSchema: `{"type":"object"}`,
+			FieldDescription: map[string]string{
+				"dob": "Applicant date of birth, ISO YYYY-MM-DD, stored as a sensitive aspect on the identity.",
+			},
+			Examples: []pkgmgr.ExampleSpec{
+				{
+					Name:            "dob aspect",
+					Payload:         map[string]any{"dob": "1990-01-15"},
+					ExpectedOutcome: "Stored as sensitive vtx.identity.<NanoID>.dob; rejected on any non-identity vertex by step-6 sensitiveAspectScope.",
+				},
 			},
 		},
 	}
 }
+
+// sensitiveAspectDDLScript is the declaration-only Starlark for the ssn/dob
+// aspect-type DDLs. An aspect-type DDL declares a sensitive aspect's shape and
+// anchoring; it is not an operation handler (RecordIdentityPII, on the identity
+// DDL, writes the aspects). No operation carries ssn/dob as its operation
+// class, so execute is never dispatched here — it fails closed if it ever is.
+const sensitiveAspectDDLScript = `
+def execute(state, op):
+    fail("aspect-type DDL: not an operation handler: " + op.operationType)
+`
 
 // identityDDLScript is the identity DDL Starlark script. State machine:
 // unclaimed -> claimed. The merged state is set only by the
@@ -317,5 +392,104 @@ def execute(state, op):
             "events": events,
             "response": {"primaryKey": target_identity_key},
         }
+
+    if ot == "RecordIdentityPII":
+        identity_key = p.identityKey if hasattr(p, "identityKey") else None
+        if identity_key == None or type(identity_key) != type("") or len(identity_key) == 0:
+            fail("InvalidArgument: identityKey: required")
+        if not identity_key.startswith("vtx.identity."):
+            fail("InvalidArgument: identityKey: must be a vtx.identity.<NanoID> key")
+
+        # The target identity must already exist, not be tombstoned, and not be
+        # merged. The caller declares identity_key + its .state aspect in
+        # ContextHint.Reads — known-key reads only. The .state aspect is always
+        # present on a created identity; the merged guard keys off
+        # state == "merged" (MergeIdentity sets state and mergedInto together),
+        # so .mergedInto need not be hydrated here (it is absent pre-merge and
+        # would otherwise be a hydration miss).
+        target_vtx = state[identity_key] if identity_key in state else None
+        if target_vtx == None or (hasattr(target_vtx, "isDeleted") and target_vtx.isDeleted):
+            fail("InvalidArgument: identityKey: no such identity")
+        current_state = read_state(state, identity_key)
+        enforce_not_merged(current_state, read_merged_into(state, identity_key))
+
+        # SSN: 9 digits; any hyphens are accepted and stripped regardless of
+        # position; any other character is rejected. Stored normalized (digits
+        # only). Format gate only — SSN allocation rules (area/group/serial) are
+        # out of scope (the bgcheck externalTask, not this op, verifies the
+        # identity).
+        raw_ssn = p.ssn if hasattr(p, "ssn") else None
+        if raw_ssn == None or type(raw_ssn) != type("") or len(raw_ssn) == 0:
+            fail("InvalidArgument: ssn: required")
+        ssn_digits = ""
+        for ch in raw_ssn.elems():
+            if ch >= "0" and ch <= "9":
+                ssn_digits += ch
+            elif ch == "-":
+                continue
+            else:
+                fail("InvalidArgument: ssn: must be 9 digits")
+        if len(ssn_digits) != 9:
+            fail("InvalidArgument: ssn: must be 9 digits")
+
+        # DOB: ISO YYYY-MM-DD. Two gates: (1) string-shape (length 10, '-' at
+        # positions 4 and 7, the rest digits), then (2) a real calendar date —
+        # month 1..12, day within the month's length, Feb 29 only in leap years.
+        # The deterministic Starlark sandbox has no clock, so the date is NOT
+        # bounded against "today" (no future-date / age check here). Stored
+        # verbatim.
+        dob = p.dob if hasattr(p, "dob") else None
+        if dob == None or type(dob) != type("") or len(dob) != 10:
+            fail("InvalidArgument: dob: must be ISO YYYY-MM-DD")
+        dob_chars = dob.elems()
+        idx = 0
+        for ch in dob_chars:
+            if idx == 4 or idx == 7:
+                if ch != "-":
+                    fail("InvalidArgument: dob: must be ISO YYYY-MM-DD")
+            elif ch < "0" or ch > "9":
+                fail("InvalidArgument: dob: must be ISO YYYY-MM-DD")
+            idx += 1
+
+        year = int(dob[0:4])
+        month = int(dob[5:7])
+        day = int(dob[8:10])
+        if year < 1:
+            fail("InvalidArgument: dob: year out of range")
+        if month < 1 or month > 12:
+            fail("InvalidArgument: dob: month out of range")
+        days_in_month = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+        max_day = days_in_month[month - 1]
+        is_leap = (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)
+        if month == 2 and is_leap:
+            max_day = 29
+        if day < 1 or day > max_day:
+            fail("InvalidArgument: dob: day out of range for month")
+
+        # Write the PII as sensitive aspects on the identity. class MUST be
+        # ssn/dob so the step-6 validator's Lookup(class) resolves the sensitive
+        # aspect-type DDL and anchors the aspect to the identity. The identity
+        # vertex root is NOT mutated (D5: PII lives in aspects, not vertex root).
+        mutations = [
+            {"op": "create", "key": identity_key + ".ssn",
+             "document": {"class": "ssn", "vertexKey": identity_key, "localName": "ssn",
+                          "isDeleted": False, "data": {"value": ssn_digits}}},
+            {"op": "create", "key": identity_key + ".dob",
+             "document": {"class": "dob", "vertexKey": identity_key, "localName": "dob",
+                          "isDeleted": False, "data": {"value": dob}}},
+        ]
+
+        # The event carries only the identity key — no SSN/DOB plaintext (events
+        # are not sensitive-aspect-scoped; PII stays in the anchored aspects).
+        events = [{"class": "identity.piiRecorded", "data": {
+            "identityKey": identity_key,
+        }}]
+
+        return {
+            "mutations": mutations,
+            "events": events,
+            "response": {"primaryKey": identity_key},
+        }
+
     fail("identity DDL: unknown operationType: " + ot)
 `

@@ -38,22 +38,59 @@ func TestPackage_DeclaresUserFacingRoles(t *testing.T) {
 	}
 }
 
-func TestPackage_ThreeOps(t *testing.T) {
-	if got := len(Package.DDLs); got != 1 {
-		t.Fatalf("expected 1 DDL, got %d", got)
+func TestPackage_DDLsAndOps(t *testing.T) {
+	if got := len(Package.DDLs); got != 3 {
+		t.Fatalf("expected 3 DDLs (identity, ssn, dob), got %d", got)
 	}
-	if got := len(Package.DDLs[0].PermittedCommands); got != 3 {
-		t.Fatalf("permittedCommands: got %d, want 3", got)
+	identity := ddlByCanonicalName(t, "identity")
+	if identity.Class != "meta.ddl.vertexType" {
+		t.Fatalf("identity DDL class = %q, want meta.ddl.vertexType", identity.Class)
+	}
+	if got := len(identity.PermittedCommands); got != 4 {
+		t.Fatalf("identity permittedCommands: got %d, want 4 "+
+			"(CreateUnclaimedIdentity, UpdateIdentityState, ClaimIdentity, RecordIdentityPII)", got)
+	}
+}
+
+// TestPackage_SensitivePIIAspectTypes pins the ssn/dob aspect-type DDLs as
+// sensitive=true — the structural declaration that makes the step-6 validator
+// anchor them to identity vertices (lattice-architecture Item 6 / NFR-S3).
+func TestPackage_SensitivePIIAspectTypes(t *testing.T) {
+	for _, name := range []string{"ssn", "dob"} {
+		d := ddlByCanonicalName(t, name)
+		if d.Class != "meta.ddl.aspectType" {
+			t.Errorf("%s DDL class = %q, want meta.ddl.aspectType", name, d.Class)
+		}
+		if !d.Sensitive {
+			t.Errorf("%s DDL Sensitive = false, want true", name)
+		}
+		if got := d.PermittedCommands; len(got) != 1 || got[0] != "RecordIdentityPII" {
+			t.Errorf("%s DDL permittedCommands = %v, want [RecordIdentityPII]", name, got)
+		}
 	}
 }
 
 func TestPackage_ScriptUsesOnlyKnownKeyReads(t *testing.T) {
-	src := Package.DDLs[0].Script
-	for _, forbidden := range []string{"KVListKeys", "list_keys", "keys_with_prefix"} {
-		if strings.Contains(src, forbidden) {
-			t.Errorf("script must not reference prefix-scan helper %q", forbidden)
+	for _, d := range Package.DDLs {
+		for _, forbidden := range []string{"KVListKeys", "list_keys", "keys_with_prefix"} {
+			if strings.Contains(d.Script, forbidden) {
+				t.Errorf("DDL %q script must not reference prefix-scan helper %q", d.CanonicalName, forbidden)
+			}
 		}
 	}
+}
+
+// ddlByCanonicalName returns the DDLSpec with the given canonicalName, failing
+// the test if absent.
+func ddlByCanonicalName(t *testing.T, name string) pkgmgr.DDLSpec {
+	t.Helper()
+	for _, d := range Package.DDLs {
+		if d.CanonicalName == name {
+			return d
+		}
+	}
+	t.Fatalf("no DDL with canonicalName %q", name)
+	return pkgmgr.DDLSpec{}
 }
 
 func TestPackage_DependsOnRbacDomain(t *testing.T) {

@@ -214,6 +214,15 @@ type DDLSpec struct {
 	// a branch; the runner returns ScriptError for unrecognized ops.
 	Script string
 
+	// Sensitive marks an aspect-type DDL as carrying sensitive data
+	// (lattice-architecture Item 6 — the aspect-level sensitivity
+	// boundary). The Processor's step-6 validator anchors sensitive
+	// aspects to identity vertices (NFR-S3). Meaningful only for
+	// Class == "meta.ddl.aspectType"; defaults false (non-sensitive),
+	// so a DDL that omits it installs exactly as before (no `.sensitive`
+	// aspect emitted).
+	Sensitive bool
+
 	// Self-description aspects. Required for all DDL classes.
 
 	// InputSchema is the JSON Schema string for this DDL's operation payload.
