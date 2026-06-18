@@ -247,34 +247,40 @@ func TestRecordPII_ResubmitRejected(t *testing.T) {
 // TestRecordPII_RejectsBadFormats — format validation (AC #1 / Item D). Bad
 // ssn/dob are rejected; the aspect keys are absent from Core KV afterward.
 func TestRecordPII_RejectsBadFormats(t *testing.T) {
+	// suffix makes each case's identity key and op RequestID unique within the
+	// shared environment (GenReqID is deterministic in its label, so distinct
+	// labels are required to avoid idempotent-dedup collisions).
 	cases := []struct {
-		name string
-		ssn  string
-		dob  string
+		name   string
+		suffix string
+		ssn    string
+		dob    string
 	}{
-		{"ssn-too-short", "12-34", "1990-01-15"},
-		{"ssn-non-numeric", "abcdefghi", "1990-01-15"},
-		{"ssn-ten-digits", "1234567890", "1990-01-15"},
-		{"ssn-unicode-digits", "१२३४५६७८९", "1990-01-15"},
-		{"dob-slashes", "123-45-6789", "1990/01/15"},
-		{"dob-wrong-order", "123-45-6789", "15-01-1990"},
-		{"dob-not-a-date", "123-45-6789", "not-a-date"},
-		{"dob-month-13", "123-45-6789", "2000-13-01"},
-		{"dob-month-00", "123-45-6789", "2000-00-15"},
-		{"dob-feb-30", "123-45-6789", "2000-02-30"},
-		{"dob-feb-29-non-leap", "123-45-6789", "2001-02-29"},
-		{"dob-apr-31", "123-45-6789", "2000-04-31"},
-		{"dob-year-0000", "123-45-6789", "0000-01-01"},
-		{"ssn-empty", "", "1990-01-15"},
-		{"dob-empty", "123-45-6789", ""},
+		{"ssn-too-short", "Sa", "12-34", "1990-01-15"},
+		{"ssn-non-numeric", "Sb", "abcdefghi", "1990-01-15"},
+		{"ssn-ten-digits", "Sc", "1234567890", "1990-01-15"},
+		{"ssn-unicode-digits", "Sd", "१२३४५६७८९", "1990-01-15"},
+		{"dob-slashes", "Da", "123-45-6789", "1990/01/15"},
+		{"dob-wrong-order", "Db", "123-45-6789", "15-01-1990"},
+		{"dob-not-a-date", "Dc", "123-45-6789", "not-a-date"},
+		{"dob-month-13", "Dd", "123-45-6789", "2000-13-01"},
+		{"dob-month-00", "De", "123-45-6789", "2000-00-15"},
+		{"dob-feb-30", "Df", "123-45-6789", "2000-02-30"},
+		{"dob-feb-29-non-leap", "Dg", "123-45-6789", "2001-02-29"},
+		{"dob-apr-31", "Dh", "123-45-6789", "2000-04-31"},
+		{"dob-year-0000", "Dj", "123-45-6789", "0000-01-01"},
+		{"ssn-empty", "Se", "", "1990-01-15"},
+		{"dob-empty", "Dk", "123-45-6789", ""},
 	}
+	// One real install + one durable-consumer pipeline shared across all cases;
+	// each case drives a fresh identity through it sequentially.
+	ctx, conn := setupTestEnv(t)
+	cp, cons := newPIIPipeline(t, ctx, conn, "pii-bad")
+
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			ctx, conn := setupTestEnv(t)
-			cp, cons := newPIIPipeline(t, ctx, conn, "pii-bad-"+tc.name)
-
-			identityKey := createIdentity(t, ctx, conn, cp, cons, "PIIBad")
+			identityKey := createIdentity(t, ctx, conn, cp, cons, "PIIBad"+tc.suffix)
 
 			payload, _ := json.Marshal(map[string]any{
 				"identityKey": identityKey,
@@ -282,7 +288,7 @@ func TestRecordPII_RejectsBadFormats(t *testing.T) {
 				"dob":         tc.dob,
 			})
 			env := &processor.OperationEnvelope{
-				RequestID:     testutil.GenReqID("PIIBadOp"),
+				RequestID:     testutil.GenReqID("PIIBadOp" + tc.suffix),
 				Lane:          processor.LaneDefault,
 				OperationType: "RecordIdentityPII",
 				Actor:         staffActorKey,
