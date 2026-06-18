@@ -618,7 +618,7 @@ So that the bridge posts result ops under root-equivalent authority like Loom an
 
 *FRs: NFR-S11 · Depends on: 13.1 (parallels 13.2) · Model: Opus · Grounding: `docs/components/service-actors.md`; Contract #7 §7.1/§7.5. Review: full 3-layer (kernel topology) + verify-kernel + `make down && make up`.*
 
-### Story 13.4: Bridge component — consumer, registry, moved adapters, FR58 proof
+### Story 13.4: Bridge component — consumer, registry, moved adapters, FR58 proof — ✅ DONE 2026-06-18
 
 As a platform developer,
 I want the generic egress component,

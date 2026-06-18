@@ -1,6 +1,6 @@
 # Story 13.4 — Bridge component (consumer, registry, moved adapters, FR58 proof)
 
-**Status:** review
+**Status:** done
 **Epic:** 13 — External I/O Bridge (orchestration core)
 **Tier:** Opus — **largest, highest-risk story in the epic.** Net-new long-running engine (`internal/bridge` + `cmd/bridge`) on the security plane (posts result-ops under the 13.3 root-equivalent bridge service actor), PLUS a cross-package **move** (`internal/weaver/nudge/` adapters → `internal/bridge/`) that must NOT break the still-live Weaver nudge path. Review: **full 3-layer adversarial** (Blind Hunter / Edge Case Hunter / Acceptance Auditor) + **Gate 2 (`make test-bypass`, BLOCKED)** + **Gate 3 (`make test-capability-adversarial`, DEFENDED — the proof the coexisting nudge path is intact)** + the FR58 bridge-only proof.
 **Epic spec:** `_bmad-output/planning-artifacts/epics/phase-2-epics.md` → "Story 13.4: Bridge component — consumer, registry, moved adapters, FR58 proof" (lines ~621–636) + the Epic 13 framing (~565–582). Read it for the user-story framing and the **four** ACs (verbatim in § 1).
