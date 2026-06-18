@@ -335,6 +335,12 @@ func (e *Engine) Start(ctx context.Context) (err error) {
 		return fmt.Errorf("weaver: Lane %q must be a single dot-free subject token (ops are published to ops.<lane>; must match %s)",
 			e.cfg.Lane, singleTokenPattern.String())
 	}
+	// An empty ActorKey would publish nudge ops under actor:"" — the Processor
+	// rejects those off-stream with no signal. Fail loud here; there is no
+	// sensible default identity key.
+	if e.cfg.ActorKey == "" {
+		return fmt.Errorf("weaver: ActorKey required")
+	}
 	e.ctx = ctx
 
 	defer func() {

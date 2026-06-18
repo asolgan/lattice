@@ -1,10 +1,28 @@
 package loom_test
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/asolgan/lattice/internal/loom"
 )
+
+// TestStart_EmptyActorKeyFails asserts Loom fails LOUD at Start when ActorKey is
+// empty, rather than silently publishing instance/result ops under actor:""
+// (which the Processor rejects off-stream with no signal). The guard fires
+// before any consumer attaches, so a nil conn is never dereferenced.
+func TestStart_EmptyActorKeyFails(t *testing.T) {
+	eng := loom.NewEngine(nil, loom.Config{ActorKey: ""})
+	err := eng.Start(context.Background())
+	if err == nil {
+		t.Fatal("Start must error on empty ActorKey, got nil")
+	}
+	if !strings.Contains(err.Error(), "ActorKey") {
+		t.Errorf("Start error should name ActorKey, got %q", err.Error())
+	}
+}
 
 // TestModuleBoundary_OnlySubstrate enforces AC #7/#8: internal/loom never
 // imports internal/processor, internal/weaver, or internal/refractor anywhere in

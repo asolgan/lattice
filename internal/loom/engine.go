@@ -234,6 +234,12 @@ func NewEngine(conn *substrate.Conn, cfg Config) *Engine {
 // (Crash-safety invariant 3 removed, §10.6): a redelivered completion resolves
 // against the durable token.<token> pointer regardless of engine age.
 func (e *Engine) Start(ctx context.Context) (err error) {
+	// An empty ActorKey would publish instance/result ops under actor:"" —
+	// the Processor rejects those off-stream with no signal. Fail loud here,
+	// before any consumer attaches; there is no sensible default identity key.
+	if e.cfg.ActorKey == "" {
+		return fmt.Errorf("loom: ActorKey required")
+	}
 	e.ctx = ctx
 
 	defer func() {

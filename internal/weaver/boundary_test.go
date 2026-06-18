@@ -1,10 +1,28 @@
 package weaver_test
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"testing"
+
+	"github.com/asolgan/lattice/internal/weaver"
 )
+
+// TestStart_EmptyActorKeyFails asserts Weaver fails LOUD at Start when ActorKey
+// is empty, rather than silently publishing nudge ops under actor:"" (which the
+// Processor rejects off-stream with no signal). Instance/Lane are set to valid
+// tokens so Start reaches the ActorKey guard (it runs after the token checks).
+func TestStart_EmptyActorKeyFails(t *testing.T) {
+	eng := weaver.NewEngine(nil, weaver.Config{ActorKey: "", Instance: "test", Lane: "system"})
+	err := eng.Start(context.Background())
+	if err == nil {
+		t.Fatal("Start must error on empty ActorKey, got nil")
+	}
+	if !strings.Contains(err.Error(), "ActorKey") {
+		t.Errorf("Start error should name ActorKey, got %q", err.Error())
+	}
+}
 
 // TestModuleBoundary_OnlySubstrate enforces AC #9: internal/weaver never
 // imports internal/processor, internal/loom, or internal/refractor anywhere in
