@@ -98,6 +98,9 @@ func (i *Installer) Install(ctx context.Context, def Definition) (*InstallResult
 	if err := def.validateOpMetas(); err != nil {
 		return nil, err
 	}
+	if err := def.validateCanonicalNameUniqueness(); err != nil {
+		return nil, err
+	}
 
 	res := &InstallResult{PackageName: def.Name, PackageVersion: def.Version}
 
@@ -131,6 +134,17 @@ func (i *Installer) Install(ctx context.Context, def Definition) (*InstallResult
 			return res, nil
 		}
 		return nil, fmt.Errorf("%w: installed=%s requested=%s", ErrVersionMismatch, existing.Version, def.Version)
+	}
+
+	// Step 2.6 — meta canonicalName collision against the already-installed
+	// kernel. Run AFTER the idempotency check confirms this is a genuinely
+	// fresh install of a not-yet-installed package name: a re-install of an
+	// already-present package short-circuits above, so the scan below never
+	// sees a package's own previously-written meta-vertices as a collision.
+	// A collision the install introduces would otherwise silently shadow one
+	// definition at runtime (the DDL cache keeps first-seen, logs a WARN).
+	if err := i.checkCanonicalNameCollision(ctx, def); err != nil {
+		return nil, err
 	}
 
 	// Step 2.5 — mint deterministic NanoIDs for any roles this package
@@ -353,6 +367,13 @@ type InstallResult struct {
 // followed by `lattice-pkg install` to upgrade.
 var ErrVersionMismatch = errors.New("pkgmgr: installed package version differs from requested")
 
+// ErrCanonicalNameCollision is returned by Install when a meta-vertex
+// canonicalName the package declares (a DDL, Lens, or op-meta name) already
+// exists on a meta-vertex in the kernel. Installing it would silently shadow
+// one definition at runtime (the Processor's DDL cache keeps first-seen), so
+// the install is rejected.
+var ErrCanonicalNameCollision = errors.New("pkgmgr: meta canonicalName already present in the kernel")
+
 // ErrBootstrapRequired is returned when the core-kv bucket is absent,
 // indicating bootstrap has not been run.
 var ErrBootstrapRequired = errors.New("pkgmgr: core-kv bucket not found — run bootstrap (or make up) before installing packages")
@@ -436,6 +457,70 @@ func (i *Installer) findInstalledPackage(ctx context.Context, name string) (*ins
 		return &installedPackage{Name: gotName, Version: gotVersion, Key: pkgVertexKey}, nil
 	}
 	return nil, nil
+}
+
+// checkCanonicalNameCollision rejects an install whose declared meta-vertex
+// canonicalNames (DDL + Lens + op-meta OperationType) collide with a
+// canonicalName already carried by a meta-vertex in the kernel. It is a single
+// KVListKeys pass plus a targeted read of only the `vtx.meta.*.canonicalName`
+// aspect keys (the same shape the DDL cache reads), so it does not over-fetch.
+// A tombstoned aspect is ignored — its canonicalName is no longer live.
+func (i *Installer) checkCanonicalNameCollision(ctx context.Context, def Definition) error {
+	declared := make(map[string]struct{}, len(def.DDLs)+len(def.Lenses)+len(def.OpMetas))
+	for _, d := range def.DDLs {
+		declared[d.CanonicalName] = struct{}{}
+	}
+	for _, l := range def.Lenses {
+		declared[l.CanonicalName] = struct{}{}
+	}
+	for _, o := range def.OpMetas {
+		declared[o.OperationType] = struct{}{}
+	}
+	if len(declared) == 0 {
+		return nil
+	}
+
+	keys, err := i.Conn.KVListKeys(ctx, CoreBucket)
+	if err != nil {
+		return fmt.Errorf("pkgmgr: list keys: %w", err)
+	}
+	const metaPrefix = "vtx.meta."
+	const cnSuffix = ".canonicalName"
+	for _, k := range keys {
+		if len(k) < len(metaPrefix)+len(cnSuffix) {
+			continue
+		}
+		if k[:len(metaPrefix)] != metaPrefix {
+			continue
+		}
+		if k[len(k)-len(cnSuffix):] != cnSuffix {
+			continue
+		}
+		entry, err := i.Conn.KVGet(ctx, CoreBucket, k)
+		if err != nil {
+			if errors.Is(err, substrate.ErrKeyNotFound) {
+				continue
+			}
+			return fmt.Errorf("pkgmgr: get %s: %w", k, err)
+		}
+		var env struct {
+			IsDeleted bool `json:"isDeleted"`
+			Data      struct {
+				Value string `json:"value"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(entry.Value, &env); err != nil {
+			continue
+		}
+		if env.IsDeleted {
+			continue
+		}
+		if _, collides := declared[env.Data.Value]; collides {
+			return fmt.Errorf("%w: %q (declared by package %q, already on %s)",
+				ErrCanonicalNameCollision, env.Data.Value, def.Name, k)
+		}
+	}
+	return nil
 }
 
 // List returns every currently-installed package summary (one entry per

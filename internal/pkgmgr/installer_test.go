@@ -197,6 +197,92 @@ func sampleDef(version string) Definition {
 	}
 }
 
+// otherDef returns a second synthetic package (distinct Name) whose single
+// DDL canonicalName is the supplied value, so a test can choose whether it
+// collides with an already-installed package's meta canonicalName.
+func otherDef(version, ddlCanonical string) Definition {
+	return Definition{
+		Name:        "other-pkg",
+		Version:     version,
+		Description: "Second package for collision tests.",
+		DDLs: []DDLSpec{
+			{
+				CanonicalName:     ddlCanonical,
+				Class:             "meta.ddl.vertexType",
+				PermittedCommands: []string{"OtherOp"},
+				Description:       "other",
+				Script:            "def execute(state, op):\n    return {\"mutations\": [], \"events\": []}\n",
+				InputSchema:       `{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}`,
+				OutputSchema:      `{"type":"object","properties":{"key":{"type":"string"}},"required":["key"]}`,
+				FieldDescription:  map[string]string{"id": "Other entity ID."},
+				Examples: []ExampleSpec{
+					{Name: "OtherOp example", Payload: map[string]any{"id": "xyz"}, ExpectedOutcome: "Creates other vertex."},
+				},
+			},
+		},
+	}
+}
+
+// TestInstaller_RejectsCanonicalNameCollision installs package A, then a
+// package B (distinct name) whose DDL reuses A's lens canonicalName. The
+// second install must fail with ErrCanonicalNameCollision; a non-colliding B
+// then installs cleanly.
+func TestInstaller_RejectsCanonicalNameCollision(t *testing.T) {
+	ctx, _, inst := newInstallerHarness(t)
+
+	if _, err := inst.Install(ctx, sampleDef("0.1.0")); err != nil {
+		t.Fatalf("install A: %v", err)
+	}
+
+	// B reuses A's lens canonicalName ("sampleLens") on its DDL → collision.
+	colliding := otherDef("0.1.0", "sampleLens")
+	_, err := inst.Install(ctx, colliding)
+	if err == nil {
+		t.Fatal("expected ErrCanonicalNameCollision installing a package that reuses an installed canonicalName, got nil")
+	}
+	if !errors.Is(err, ErrCanonicalNameCollision) {
+		t.Fatalf("expected ErrCanonicalNameCollision, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "sampleLens") {
+		t.Errorf("collision error should name the colliding canonicalName; got %v", err)
+	}
+
+	// A non-colliding B installs fine.
+	clean := otherDef("0.1.0", "otherClass")
+	if _, err := inst.Install(ctx, clean); err != nil {
+		t.Fatalf("non-colliding package should install, got: %v", err)
+	}
+}
+
+// TestInstaller_CollisionCheckPreservesIdempotency asserts the against-installed
+// collision scan does not break re-install idempotency or version-mismatch
+// detection: re-installing the same name+version still skips (the scan must not
+// see the package's own previously-written meta-vertices as a self-collision),
+// and a different-version re-install still returns ErrVersionMismatch.
+func TestInstaller_CollisionCheckPreservesIdempotency(t *testing.T) {
+	ctx, _, inst := newInstallerHarness(t)
+
+	if _, err := inst.Install(ctx, sampleDef("0.1.0")); err != nil {
+		t.Fatalf("first install: %v", err)
+	}
+
+	// Same name+version re-install skips idempotently (no false self-collision).
+	res, err := inst.Install(ctx, sampleDef("0.1.0"))
+	if err != nil {
+		t.Fatalf("re-install same version: %v", err)
+	}
+	if !res.Skipped {
+		t.Fatalf("expected Skipped=true on same-version re-install, got %+v", res)
+	}
+
+	// Different version still returns ErrVersionMismatch (collision check must
+	// not preempt the version-mismatch path).
+	_, err = inst.Install(ctx, sampleDef("0.2.0"))
+	if !errors.Is(err, ErrVersionMismatch) {
+		t.Fatalf("expected ErrVersionMismatch on different-version re-install, got %v", err)
+	}
+}
+
 // TestInstaller_HappyPath installs a synthetic package and asserts the
 // DDL meta-vertex, Lens meta-vertex, permission vertex, grant link, and
 // package vertex are all written.

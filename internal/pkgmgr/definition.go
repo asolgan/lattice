@@ -12,6 +12,52 @@
 //   - Install writes directly to core-kv (substrate-direct).
 package pkgmgr
 
+import "fmt"
+
+// validateCanonicalNameUniqueness rejects a package that declares the same
+// meta-vertex canonicalName twice across the union of its DDLs, Lenses, and
+// op-metas — the exact namespace the Processor's DDL cache indexes in one
+// byName map (vtx.meta.<NanoID> keyed by canonicalName). A collision there
+// silently shadows one definition at runtime (the cache keeps first-seen and
+// only logs a WARN), so the install must fail closed instead. It is a pure
+// function (no I/O) so it runs before any KV operation and is unit-testable
+// without a live substrate. Roles (vtx.role.*) are intentionally excluded —
+// they are a separate, deliberately shared namespace.
+//
+// An op-meta's canonicalName is its OperationType: an op-meta vertex is keyed
+// vtx.meta.<NanoID> and is the only meta-vertex kind whose identifying name is
+// its operation type, so it shares the collision namespace with DDL and Lens
+// canonicalNames.
+func (def Definition) validateCanonicalNameUniqueness() error {
+	seen := make(map[string]string,
+		len(def.DDLs)+len(def.Lenses)+len(def.OpMetas))
+	check := func(name, kind string) error {
+		if prev, dup := seen[name]; dup {
+			return fmt.Errorf(
+				"pkgmgr: duplicate meta canonicalName %q declared by both a %s and a %s",
+				name, prev, kind)
+		}
+		seen[name] = kind
+		return nil
+	}
+	for _, d := range def.DDLs {
+		if err := check(d.CanonicalName, "DDL"); err != nil {
+			return err
+		}
+	}
+	for _, l := range def.Lenses {
+		if err := check(l.CanonicalName, "lens"); err != nil {
+			return err
+		}
+	}
+	for _, o := range def.OpMetas {
+		if err := check(o.OperationType, "op-meta"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // Definition is the static, install-time bundle for one package. Package
 // authors construct one of these in their package's top-level Go file and
 // export it as `var Package = pkgmgr.Definition{...}`.
