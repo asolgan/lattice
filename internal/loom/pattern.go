@@ -103,17 +103,28 @@ func firstSegment(s string) string {
 	return s
 }
 
-// userTaskCompletionDomain is the event domain a userTask completion arrives
-// on: the orchestration.taskCompleted event is subjected events.orchestration.>,
-// so its domain is `orchestration`. A pattern with a userTask step whose
-// effective completionDomains omits it will never observe its userTask
+// orchestrationCompletionDomain is the event domain both async-completer step
+// kinds complete on: a userTask completes via orchestration.taskCompleted and an
+// externalTask via orchestration.externalTaskCompleted, both subjected
+// events.orchestration.> (domain `orchestration`). A pattern with either step
+// kind whose effective completionDomains omits it will never observe those
 // completions.
-const userTaskCompletionDomain = "orchestration"
+const orchestrationCompletionDomain = "orchestration"
 
 // hasUserTaskStep reports whether any step is a userTask.
 func (p *Pattern) hasUserTaskStep() bool {
 	for _, s := range p.Steps {
 		if s.Kind == StepKindUserTask {
+			return true
+		}
+	}
+	return false
+}
+
+// hasExternalTaskStep reports whether any step is an externalTask.
+func (p *Pattern) hasExternalTaskStep() bool {
+	for _, s := range p.Steps {
+		if s.Kind == StepKindExternalTask {
 			return true
 		}
 	}
@@ -129,7 +140,24 @@ func (p *Pattern) userTaskCompletionUnobservable() bool {
 		return false
 	}
 	for _, d := range p.Domains() {
-		if d == userTaskCompletionDomain {
+		if d == orchestrationCompletionDomain {
+			return false
+		}
+	}
+	return true
+}
+
+// externalTaskCompletionUnobservable reports whether the pattern has an
+// externalTask step but its effective completion domains (after the [subjectType]
+// default) omit the orchestration domain — the almost-certain misconfiguration
+// where externalTask completions (orchestration.externalTaskCompleted) can never
+// be observed. The externalTask analog of userTaskCompletionUnobservable.
+func (p *Pattern) externalTaskCompletionUnobservable() bool {
+	if !p.hasExternalTaskStep() {
+		return false
+	}
+	for _, d := range p.Domains() {
+		if d == orchestrationCompletionDomain {
 			return false
 		}
 	}

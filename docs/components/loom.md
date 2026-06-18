@@ -183,7 +183,7 @@ pointer survive any restart, so when the user finally acts the completion correl
 advances. A rejected/lost `CreateTask` is failed by the creation-deadline probe (never a silent wedge);
 a mis-declared `completionDomains` is caught by a load-time warn.
 
-### External steps (`externalTask`) — ratified design, lands in Epic 13 (Story 13.2)
+### External steps (`externalTask`)
 
 A third step kind, **`externalTask`**, makes an idempotent external call **wait-for-result** — symmetric
 to a userTask (dispatch to an async completer, then park; the completer is a human for userTask, the
@@ -204,14 +204,25 @@ to a userTask (dispatch to an async completer, then park; the completer is a hum
   `taskId` is for a userTask (§10.6 invariant 1).
 - The **bridge** (`docs/components/bridge.md`) consumes `events.external.>`, calls the adapter
   idempotently (`idempotencyKey = instanceKey`), and posts the **`replyOp`** back carrying
-  `payload.externalRef = instanceKey`. Loom's **third** correlation key `payload.externalRef` resolves
-  `→ token.<instanceKey> → instance` and the cursor advances (a later step may branch on the outcome).
+  `payload.externalRef = instanceKey`. The `replyOp` DDL records the outcome aspect(s) **and emits
+  `orchestration.externalTaskCompleted{externalRef}`** — the uniform orchestration-domain completion
+  signal, symmetric to a userTask's `orchestration.taskCompleted{taskKey}`. Loom's **third** correlation
+  key `payload.externalRef` resolves `→ token.<instanceKey> → instance` on the **`orchestration`** domain
+  and the cursor advances (a later step may branch on the outcome). An externalTask pattern therefore
+  declares `completionDomains: ["orchestration"]`, exactly like an all-userTask pattern.
 - **Loom stays pure:** the external event rides the **instanceOp's outbox**, not a Loom-held NATS handle
-  — the `internal/loom` substrate-only boundary is unchanged. The §10.6 deadline + read-before-act probe
-  backstop a never-completing call exactly as for a systemOp.
+  — the `internal/loom` substrate-only boundary is unchanged.
+- **The deadline is handled like a userTask, not a systemOp** (§10.6): it is a **bounded creation-deadline
+  on the `instanceOp` submission**, probed via the `instanceOp`'s own `vtx.op.<opRequestId>` tracker. Once
+  the `instanceOp` commits the deadline **disarms** and the wait for the bridge's `replyOp` is
+  **unbounded** — it **never advances the cursor** (only `orchestration.externalTaskCompleted` does). A
+  rejected/lost `instanceOp` → `FailPattern` (FR29, never a silent wedge). A dead bridge surfaces on the
+  **bridge's own** Health, not a per-instance Loom timeout — symmetric to the unbounded human wait.
 
-Ratified in the External I/O Bridge package (Contract #10 §10.5/§10.6, 2026-06-18); the engine work lands
-in that epic (Story 13.2). This **supersedes** the former "external calls are Weaver-owned" deferral below.
+Ratified in the External I/O Bridge package (Contract #10 §10.5/§10.6, 2026-06-18) and implemented in
+`internal/loom` (the `externalTask` step kind, two-op dispatch, the third `payload.externalRef`
+correlation key, and the userTask-symmetric deadline). This **supersedes** the former "external calls are
+Weaver-owned" deferral below.
 
 ---
 

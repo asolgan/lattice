@@ -92,7 +92,7 @@ Weaver detects a stale/absent gap  →  triggerLoom the execution pattern
   │        payload   = { externalRef: instanceKey, <outcome fields> }                             │
   └─────────────────────────────────────────────────────────────────────────────────────────────┘
   replyOp DDL commits → records the outcome as ASPECT(s) on the claim vertex (D5; root data stays
-                        minimal) → emits its completion event carrying externalRef
+                        minimal) → emits orchestration.externalTaskCompleted{externalRef}
     → Loom correlationKeys: payload.externalRef → live token.<instanceKey> GET → instance → ADVANCE
     → the actorAggregate convergence lens reprojects (the claim's outcome aspect changed) → gap clears
 ```
@@ -175,7 +175,7 @@ exactly like Loom and Weaver (`docs/components/service-actors.md`). Consequences
 |-----------|----------|-------|
 | In | `events.external.>` durable consumer | one fixed durable; the envelope above; domain is ordinary (no allowlist) |
 | In (optional) | the Contract #4 op tracker `vtx.op.<deterministic-reqId>` | generic skip-on-redelivery probe (same key shape for all ops) — **not** a read of the typed claim vertex; the bridge stays type-agnostic |
-| Out | `replyOp` result op via `core-operations` | `requestId = deterministic(instanceKey)`; `payload.externalRef = instanceKey` + outcome fields; its DDL records the outcome as **aspect(s)** on the claim vertex (D5); submitted under the bridge service actor |
+| Out | `replyOp` result op via `core-operations` | `requestId = deterministic(instanceKey)`; `payload.externalRef = instanceKey` + outcome fields; its DDL records the outcome as **aspect(s)** on the claim vertex (D5) **and emits `orchestration.externalTaskCompleted{externalRef}`** (the uniform Loom completion signal, §10.6); submitted under the bridge service actor |
 | Out | adapter calls | the actual external I/O — the only component that makes them; `idempotencyKey = instanceKey` |
 | Out | Health (Contract #5) | heartbeat at `health.bridge.<instance>`; an unregistered adapter / unparseable envelope surfaces an issue, never a silent skip |
 

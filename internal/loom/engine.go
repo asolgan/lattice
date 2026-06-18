@@ -64,14 +64,17 @@ type Config struct {
 	// off-stream failed/rejected backstop, §10.6). Must be >= 1s (NATS per-key
 	// TTL floor). Default 60s.
 	StepTimeout time.Duration
-	// CreateTaskTimeout is the bounded creation-deadline a userTask step arms
-	// while it waits for its CreateTask to commit (the §10.6 deadline+probe
-	// applied to the task-creation path). It backstops a CreateTask that is
-	// rejected or lost — without it a userTask whose CreateTask never commits
-	// parks forever. It is sized ≫ any CreateTask commit latency (NOT a human
-	// response window): once the probe confirms the task vertex exists, the
-	// deadline is disarmed and the wait for the human becomes unbounded
-	// (§10.6). Must be >= 1s (NATS per-key TTL floor). Default 60s.
+	// CreateTaskTimeout is the bounded creation-deadline a userTask or
+	// externalTask step arms while it waits for its dispatch op to commit — a
+	// userTask's CreateTask, or an externalTask's instanceOp (the §10.6
+	// deadline+probe applied to the creation path of both async-completer kinds).
+	// It backstops a dispatch op that is rejected or lost — without it a step
+	// whose dispatch never commits parks forever. It is sized ≫ any commit
+	// latency (NOT a human/bridge response window): once the probe confirms the
+	// dispatch committed (the task vertex exists, or the instanceOp's tracker
+	// exists), the deadline is disarmed and the wait for the completer (human or
+	// bridge) becomes unbounded (§10.6). Must be >= 1s (NATS per-key TTL floor).
+	// Default 60s.
 	CreateTaskTimeout time.Duration
 	// HeartbeatEvery is the Contract #5 heartbeat cadence. The 10s default is
 	// the §5.6/NFR-O1 production cadence; a shorter value lets a test observe
@@ -932,10 +935,14 @@ func (e *Engine) submitUserTask(ctx context.Context, inst *Instance, pattern *Pa
 // parked handle — exactly as submitUserTask keeps the CreateTask requestId
 // disjoint from the taskId.
 //
-// A bounded StepTimeout deadline IS armed (an externalTask is a machine wait —
-// the bridge is the completer — so a never-arriving reply must trip the FR29
-// backstop, exactly like a systemOp; it is NOT the unbounded human wait of a
-// userTask, so CreateTaskTimeout does not apply). Loom stays substrate-only: the
+// A bounded CreateTaskTimeout creation-deadline IS armed — symmetric to a
+// userTask (§10.6). An externalTask is two waits in sequence: a bounded wait for
+// the instanceOp to COMMIT (the machine action that mints the claim vertex +
+// emits the external.<adapter> event), then an unbounded wait for the bridge to
+// post the replyOp. The deadline bounds only the submission; once the instanceOp
+// commits it is disarmed and the bridge wait is unbounded (onExternalTaskDeadline)
+// — so the bound is CreateTaskTimeout (the machine-action creation-wait), not the
+// StepTimeout external round-trip. Loom stays substrate-only: the
 // external.<adapter> event is emitted by the instanceOp DDL's transactional
 // outbox, never by Loom — the relay just submits the instanceOp like any op.
 func (e *Engine) submitExternalTask(ctx context.Context, inst *Instance, pattern *Pattern, step Step, oldToken string) error {
@@ -963,7 +970,10 @@ func (e *Engine) submitExternalTask(ctx context.Context, inst *Instance, pattern
 	if err != nil {
 		return err
 	}
-	if err := e.state.transition(ctx, inst, token, oldToken, ob, e.cfg.StepTimeout); err != nil {
+	// The deadline bounds the instanceOp submission (a machine action), like a
+	// userTask's CreateTask creation-deadline — not the external round-trip; it
+	// disarms once the instanceOp commits (onExternalTaskDeadline).
+	if err := e.state.transition(ctx, inst, token, oldToken, ob, e.cfg.CreateTaskTimeout); err != nil {
 		return err
 	}
 	e.logger.Info("loom externalTask write-ahead",
@@ -1081,11 +1091,13 @@ func (e *Engine) handleDeadline(ctx context.Context, subjPrefix string, msg subs
 //   - userTask (vtx.task.<id> token) → onUserTaskDeadline: the deadline is
 //     bounded on the task-CREATION only, so the probe reads the task vertex and
 //     the CreateTask op's tracker/outbox to decide created-vs-rejected.
-//   - externalTask → onExternalTaskDeadline: the pending token is the bare
-//     instance handle, but the instanceOp's tracker/outbox are keyed by the
-//     instanceOp's own requestId (not the handle), so the probe MUST re-derive
-//     that requestId — it cannot reuse the systemOp branch (which probes the
-//     pending token directly).
+//   - externalTask → onExternalTaskDeadline: bounded on the instanceOp
+//     SUBMISSION only (symmetric to a userTask), so the probe disarms on commit
+//     for an unbounded bridge wait rather than advancing. The pending token is
+//     the bare instance handle, but the instanceOp's tracker/outbox are keyed by
+//     the instanceOp's own requestId (not the handle), so the probe MUST
+//     re-derive that requestId — it cannot reuse the systemOp branch (which
+//     probes the pending token directly).
 //   - systemOp → the inline probe below: the pending token IS the op requestId,
 //     so trackerExists(token)/outboxExists(token) probe the right keys.
 //
@@ -1219,22 +1231,33 @@ func (e *Engine) onUserTaskDeadline(ctx context.Context, inst *Instance) error {
 }
 
 // onExternalTaskDeadline runs the read-before-act probe for an externalTask
-// whose bounded StepTimeout deadline fired. It is the systemOp ladder
-// (committed-but-missed → advance+alert; not-yet-relayed → re-arm; rejected/lost
-// → fail) with one critical difference: the pending token is the bare instance
-// HANDLE Loom parked on, but the instanceOp's Contract #4 tracker and its outbox
-// record are keyed by the instanceOp's OWN requestId (deriveRequestID), NOT the
-// handle. Probing the handle would read keys that never exist (vtx.op.<handle> /
-// outbox.<handle>) and ALWAYS wrongly fail a healthy instance — so the probe
+// whose bounded creation-deadline fired. An externalTask is symmetric to a
+// userTask (the §10.6 deadline+probe applied to the creation path, with the
+// bridge in the human's role): the deadline bounds only the instanceOp
+// SUBMISSION — once the instanceOp commits, the claim vertex exists and the
+// external.<adapter> event was emitted, so the bridge will (at-least-once +
+// idempotent) reply, and the wait for that reply is unbounded. The cursor
+// advances solely on orchestration.externalTaskCompleted — never on this probe.
+//
+// The pending token is the bare instance HANDLE Loom parked on, but the
+// instanceOp's Contract #4 tracker and its outbox record are keyed by the
+// instanceOp's OWN requestId (deriveRequestID), NOT the handle — Loom cannot read
+// the package-typed claim vertex, so it probes the instanceOp's own tracker.
+// Probing the handle would read keys that never exist (vtx.op.<handle> /
+// outbox.<handle>) and always wrongly fail a healthy instance, so the probe
 // re-derives the instanceOp requestId (exactly as onUserTaskDeadline re-derives
-// the CreateTask requestId) while the advance/fail act on the pending handle
-// token. Unlike a userTask there is no created-vs-human-wait split: an
-// externalTask park is a pure bounded machine wait (the bridge completes it), so
-// there is no disarm-and-go-unbounded branch.
+// the CreateTask requestId) while the fail path acts on the pending handle token:
+//
+//  1. tracker present → the instanceOp committed → disarm the creation-deadline
+//     (cursor/token untouched) and stop; the bridge wait is now unbounded.
+//  2. tracker absent, outbox record present → the relay has not delivered the
+//     instanceOp yet → re-arm.
+//  3. tracker absent, outbox absent → the instanceOp was rejected/lost → fail
+//     (FR29 — the submission is never a silent wedge).
 //
 // Every branch re-reads instance state via the caller and is CAS-on-running (the
-// advance/fail paths verify the pending token), so a redelivered marker / second
-// replica is a no-op.
+// fail path verifies the pending token), so a redelivered marker / second replica
+// is a no-op.
 func (e *Engine) onExternalTaskDeadline(ctx context.Context, inst *Instance) error {
 	token := inst.PendingToken
 	opRequestID := deriveRequestID(inst.InstanceID, inst.Cursor)
@@ -1244,13 +1267,14 @@ func (e *Engine) onExternalTaskDeadline(ctx context.Context, inst *Instance) err
 		return err
 	}
 	if committed {
-		// The instanceOp committed; the external/replyOp completion event was
-		// missed (mis-declared completionDomains / lost reply). Advance off the
-		// durable tracker on the pending handle token (§10.6).
-		e.logger.Warn("loom: completion recovered via deadline probe; check completionDomains",
-			"instanceId", inst.InstanceID, "instanceKey", token, "instanceOpRequestId", opRequestID,
-			"patternRef", inst.PatternRef)
-		return e.advance(ctx, inst.InstanceID, token)
+		// The instanceOp committed: the claim vertex exists and the
+		// external.<adapter> event was emitted, so the bridge will reply. The
+		// bounded creation wait is over and the unbounded bridge wait begins.
+		// Disarm the deadline without touching the cursor/token — the cursor
+		// advances only on orchestration.externalTaskCompleted.
+		e.logger.Info("loom: instanceOp committed; disarming creation-deadline for unbounded bridge wait",
+			"instanceId", inst.InstanceID, "instanceKey", token, "instanceOpRequestId", opRequestID)
+		return e.state.disarmDeadline(ctx, inst.InstanceID)
 	}
 
 	outboxPending, err := e.state.outboxExists(ctx, opRequestID)
@@ -1258,17 +1282,17 @@ func (e *Engine) onExternalTaskDeadline(ctx context.Context, inst *Instance) err
 		return err
 	}
 	if outboxPending {
-		// The relay has not delivered the instanceOp yet — extend the deadline
-		// rather than fail.
-		e.logger.Info("loom: deadline fired before relay delivered instanceOp; re-arming",
+		// The relay has not delivered the instanceOp yet — extend the
+		// creation-deadline rather than fail.
+		e.logger.Info("loom: creation-deadline fired before relay delivered instanceOp; re-arming",
 			"instanceId", inst.InstanceID, "instanceOpRequestId", opRequestID)
-		return e.state.rearmDeadline(ctx, inst.InstanceID, e.cfg.StepTimeout)
+		return e.state.rearmDeadline(ctx, inst.InstanceID, e.cfg.CreateTaskTimeout)
 	}
 
 	// Tracker absent and the instanceOp was relayed (no outbox record) →
 	// rejected/lost. Fail on the pending handle token.
 	return e.fail(ctx, inst, token,
-		fmt.Sprintf("step %d deadline exceeded; instanceOp rejected or lost", inst.Cursor))
+		fmt.Sprintf("step %d instanceOp rejected", inst.Cursor))
 }
 
 // trackerExists reports whether the Contract #4 op tracker vtx.op.<requestId>

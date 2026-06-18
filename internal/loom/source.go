@@ -225,6 +225,10 @@ func (s *patternSource) dispatchSpec(id string, body []byte) {
 		s.logger.Warn("loom: userTask pattern completionDomains omits the orchestration domain — userTask completions will never be observed",
 			"patternId", id, "completionDomains", p.Domains())
 	}
+	if p.externalTaskCompletionUnobservable() {
+		s.logger.Warn("loom: externalTask pattern completionDomains omits the orchestration domain — externalTask completions will never be observed",
+			"patternId", id, "completionDomains", p.Domains())
+	}
 
 	s.mu.Lock()
 	old, exists := s.known[id]

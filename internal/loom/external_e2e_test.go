@@ -18,10 +18,14 @@ import (
 // externalTask step submits its instanceOp (which mints a claim vertex of a
 // NON-service, package-chosen type — invariant a, the engine names no type), the
 // flow parks on the bare instance handle, the bridge's replyOp posts back
-// carrying payload.externalRef = the handle and records the outcome as an ASPECT
-// (invariant b / D5), Loom correlates by externalRef and advances; plus the FR29
-// deadline backstops (rejected instanceOp fails; committed-but-no-reply advances
-// off the instanceOp's own tracker; not-yet-relayed re-arms).
+// carrying payload.externalRef = the handle, records the outcome as an ASPECT
+// (invariant b / D5), and emits orchestration.externalTaskCompleted; Loom
+// correlates by externalRef and advances ONLY on that completion event.
+//
+// The externalTask is symmetric to a userTask: the bounded creation-deadline
+// backstops the instanceOp SUBMISSION only — committed instanceOp → disarm to an
+// unbounded bridge wait; rejected/lost instanceOp → FailPattern (FR29);
+// not-yet-relayed → re-arm. The deadline never advances the cursor.
 //
 // instanceOp/replyOp/the external.<adapter> event are TEST FIXTURES here (the
 // real DDLs land in 14.4). The fakeProcessor in loom_e2e_test.go models them.
@@ -32,12 +36,15 @@ const (
 	fixtureReplyOp     = "ResolveWidget"
 	fixtureAdapter     = "widgetmaker"
 	fixtureReplyAspect = "outcome"
-	fixtureReplyEvent  = "widget.resolved"
+	// The completion event is the uniform orchestration-domain signal the replyOp
+	// DDL emits (§10.5/§10.6) — symmetric to a userTask's
+	// orchestration.taskCompleted; Loom correlates it via payload.externalRef.
+	fixtureReplyEvent = "orchestration.externalTaskCompleted"
 )
 
 // newExternalProcessor returns a fake Processor wired with the externalTask
 // fixtures: instanceOp mints vtx.widget.<handle>, replyOp records the outcome
-// aspect + emits widget.resolved(externalRef).
+// aspect + emits orchestration.externalTaskCompleted(externalRef).
 func newExternalProcessor(conn *substrate.Conn) *fakeProcessor {
 	return &fakeProcessor{
 		conn:        conn,
@@ -52,12 +59,14 @@ func newExternalProcessor(conn *substrate.Conn) *fakeProcessor {
 }
 
 // externalPattern builds a single-step externalTask pattern over a widget
-// subject completing on the widget domain (the replyOp's widget.resolved event).
+// subject completing on the orchestration domain — where the replyOp's
+// orchestration.externalTaskCompleted signal lands (§10.5/§10.6), exactly like an
+// all-userTask pattern.
 func externalPattern(patternID string) loom.Pattern {
 	return loom.Pattern{
 		PatternID:         patternID,
 		SubjectType:       fixtureClaimType,
-		CompletionDomains: []string{fixtureClaimType},
+		CompletionDomains: []string{"orchestration"},
 		Steps: []loom.Step{{
 			Kind:       "externalTask",
 			Adapter:    fixtureAdapter,
@@ -144,10 +153,12 @@ func readVertexData(t *testing.T, ctx context.Context, conn *substrate.Conn, key
 // TestExternalE2E_RunsToCompletion is the headline proof (invariant a + b +
 // idempotency): an externalTask step parks on a bare handle, the instanceOp
 // mints vtx.widget.<handle> (a NON-service type — the engine names no type), the
-// bridge's replyOp records the outcome as an aspect and emits the completion
-// event, Loom correlates by payload.externalRef and advances to completion. D5
-// is gate-asserted: the outcome lives in an aspect, the claim-vertex root data
-// is minimal. Idempotency: a redelivered replyOp completion does not re-advance.
+// bridge's replyOp records the outcome as an aspect and emits
+// orchestration.externalTaskCompleted, Loom correlates by payload.externalRef and
+// advances to completion. Advance happens ONLY on that completion event (after
+// the unbounded post-commit bridge wait) — never on the deadline. D5 is
+// gate-asserted: the outcome lives in an aspect, the claim-vertex root data is
+// minimal. Idempotency: a redelivered completion does not re-advance.
 func TestExternalE2E_RunsToCompletion(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")
@@ -258,8 +269,9 @@ func TestExternalE2E_RejectedInstanceOpFails(t *testing.T) {
 	patternID := mustNanoID(t)
 	installPattern(t, ctx, conn, patternID, externalPattern(patternID))
 
-	// A short deadline so the rejected instanceOp is detected off-stream fast.
-	engine := newEngine(conn, func(c *loom.Config) { c.StepTimeout = 2 * time.Second })
+	// A short creation-deadline so the rejected instanceOp is detected off-stream
+	// fast (the externalTask arms CreateTaskTimeout, like a userTask).
+	engine := newEngine(conn, func(c *loom.Config) { c.CreateTaskTimeout = 2 * time.Second })
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
 	go func() { _ = engine.Start(engCtx) }()
@@ -276,15 +288,16 @@ func TestExternalE2E_RejectedInstanceOpFails(t *testing.T) {
 	require.NoError(t, err, "events.loom.patternFailed must be emitted for a rejected instanceOp")
 }
 
-// TestExternalE2E_CommittedNoReplyAdvancesViaProbe is the load-bearing proof of
-// the §item-4 subtle point: the instanceOp COMMITS (claim vertex + tracker
-// minted) but the reply NEVER arrives (no completion event). The bounded
-// deadline fires and the probe must find the instanceOp's tracker present —
-// which it can ONLY do by keying off the instanceOp's OWN requestId, NOT the
-// parked handle (vtx.op.<handle> / outbox.<handle> never exist). The probe
-// recovers the completion and the instance ADVANCES (to completion) — it does
-// NOT false-fail a healthy instance.
-func TestExternalE2E_CommittedNoReplyAdvancesViaProbe(t *testing.T) {
+// TestExternalE2E_CommittedNoReply_DisarmsToUnboundedWait is the load-bearing
+// proof that an externalTask is symmetric to a userTask, NOT a systemOp: the
+// instanceOp COMMITS (claim vertex + tracker minted) but the reply NEVER arrives.
+// The bounded creation-deadline fires, the probe finds the instanceOp's tracker
+// present (keyed off its OWN requestId, NOT the parked handle) and DISARMS the
+// deadline — the bridge wait is now unbounded. The instance must stay running at
+// the SAME cursor (NOT advanced — advancing on a committed-but-unreplied
+// instanceOp would skip the external result — and NOT failed); the cursor moves
+// only when orchestration.externalTaskCompleted arrives.
+func TestExternalE2E_CommittedNoReply_DisarmsToUnboundedWait(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -296,19 +309,25 @@ func TestExternalE2E_CommittedNoReplyAdvancesViaProbe(t *testing.T) {
 	require.NoError(t, err)
 	provision(t, ctx, conn)
 
+	// A committed-but-unreplied instanceOp must NOT advance to completion off the
+	// deadline probe (that would emit patternCompleted) — subscribe so the test
+	// can assert it does NOT happen.
 	completedSub, err := nc.SubscribeSync("events.loom.patternCompleted")
+	require.NoError(t, err)
+	failedSub, err := nc.SubscribeSync("events.loom.patternFailed")
 	require.NoError(t, err)
 
 	// The instanceOp commits (mints the claim vertex + tracker) but NO replyOp is
 	// ever submitted — so no completion event arrives. The deadline+probe must
-	// recover it off the instanceOp's own tracker.
+	// DISARM off the instanceOp's own tracker and leave the instance running.
 	fp := newExternalProcessor(conn)
 	fp.run(ctx, t)
 
 	patternID := mustNanoID(t)
 	installPattern(t, ctx, conn, patternID, externalPattern(patternID))
 
-	engine := newEngine(conn, func(c *loom.Config) { c.StepTimeout = 2 * time.Second })
+	// A short creation-deadline so the committed instanceOp is probed fast.
+	engine := newEngine(conn, func(c *loom.Config) { c.CreateTaskTimeout = 2 * time.Second })
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
 	go func() { _ = engine.Start(engCtx) }()
@@ -318,19 +337,35 @@ func TestExternalE2E_CommittedNoReplyAdvancesViaProbe(t *testing.T) {
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
 
 	// The instanceOp commits (claim vertex minted) — but we NEVER submit a
-	// replyOp, so no completion event arrives. The deadline fires; the probe finds
-	// the instanceOp's tracker (keyed off its OWN requestId) and advances.
+	// replyOp, so no completion event arrives.
 	handle := waitExternalHandle(t, ctx, conn, instanceID, 0)
 	claimKey := "vtx." + fixtureClaimType + "." + handle
 	require.Eventually(t, func() bool { return readVertexData(t, ctx, conn, claimKey) != nil },
 		10*time.Second, 100*time.Millisecond, "instanceOp must commit (claim vertex minted)")
 
-	// No replyOp. The deadline+probe recovers completion off the tracker.
-	_, err = completedSub.NextMsg(20 * time.Second)
-	require.NoError(t, err, "deadline probe must recover the committed instanceOp and advance to completion")
+	// Let several creation-deadlines fire (CreateTaskTimeout=2s). Each probe must
+	// find the tracker present and DISARM — never advance, never fail. The
+	// instance must stay running at the same cursor, unbounded.
+	time.Sleep(5 * time.Second)
+	entry, err := conn.KVGet(ctx, loomStateBucket, "instance."+instanceID)
+	require.NoError(t, err)
+	var parked loom.Instance
+	require.NoError(t, json.Unmarshal(entry.Value, &parked))
+	require.Equal(t, "running", parked.Status, "a committed-but-unreplied instanceOp must DISARM to an unbounded wait, not advance or fail")
+	require.Equal(t, 0, parked.Cursor, "the cursor must NOT advance off the deadline (advancing would skip the external result)")
+	require.Equal(t, handle, parked.PendingToken, "the instance stays parked on the same handle for the bridge reply")
+
+	// The deadline was disarmed (no completion, no failure announced).
+	_, err = completedSub.NextMsg(500 * time.Millisecond)
+	require.Error(t, err, "a committed-but-unreplied instanceOp must NOT advance to completion off the deadline")
+	_, err = failedSub.NextMsg(500 * time.Millisecond)
+	require.Error(t, err, "a committed-but-unreplied instanceOp must NOT fail off the deadline")
+
+	// The bridge eventually replies → the flow advances ONLY now (proving the wait
+	// was unbounded, not lost). The handle's token pointer is still live.
+	submitReplyOp(t, ctx, conn, handle, map[string]any{"signed": true})
 	inst := waitInstanceStatus(t, ctx, conn, instanceID, "complete")
-	require.Equal(t, "complete", inst.Status, "a committed-but-unreplied instanceOp must ADVANCE, not fail")
-	require.Equal(t, 1, inst.Cursor)
+	require.Equal(t, 1, inst.Cursor, "advance happens only on orchestration.externalTaskCompleted, after the unbounded wait")
 }
 
 // TestExternalE2E_NotYetRelayedRearms proves the re-arm branch: with the relay
@@ -356,15 +391,15 @@ func TestExternalE2E_NotYetRelayedRearms(t *testing.T) {
 	patternID := mustNanoID(t)
 	installPattern(t, ctx, conn, patternID, externalPattern(patternID))
 
-	engine := newEngine(conn, func(c *loom.Config) { c.StepTimeout = 2 * time.Second })
+	engine := newEngine(conn, func(c *loom.Config) { c.CreateTaskTimeout = 2 * time.Second })
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
 	go func() { _ = engine.Start(engCtx) }()
 	time.Sleep(600 * time.Millisecond)
 
 	// Pause the outbox relay so the instanceOp record sits in loom-state
-	// undelivered: the deadline will fire with the outbox present + no tracker →
-	// the probe must RE-ARM, not fail.
+	// undelivered: the creation-deadline will fire with the outbox present + no
+	// tracker → the probe must RE-ARM, not fail.
 	engine.PauseForTest(ctx, "loom-outbox-relay")
 
 	subjectKey := "vtx." + fixtureClaimType + "." + mustNanoID(t)
@@ -374,8 +409,8 @@ func TestExternalE2E_NotYetRelayedRearms(t *testing.T) {
 	handle := waitExternalHandle(t, ctx, conn, instanceID, 0)
 	require.NotEmpty(t, handle)
 
-	// Let at least one deadline fire while the relay is paused (StepTimeout=2s).
-	// The instance MUST still be running (re-armed), not failed.
+	// Let at least one creation-deadline fire while the relay is paused
+	// (CreateTaskTimeout=2s). The instance MUST still be running (re-armed), not failed.
 	time.Sleep(3 * time.Second)
 	entry, err := conn.KVGet(ctx, loomStateBucket, "instance."+instanceID)
 	require.NoError(t, err)

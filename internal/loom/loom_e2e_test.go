@@ -114,13 +114,14 @@ type fakeProcessor struct {
 	//   - replyOps: operationTypes that, on commit, model the bridge posting the
 	//     result back — record the outcome as an ASPECT on the claim vertex
 	//     (vtx.<claimType>.<handle>.<replyAspect>; the root data stays minimal —
-	//     invariant b / D5) and emit a completion event carrying
-	//     payload.externalRef = the handle (read from payload.externalRef).
+	//     invariant b / D5) and emit orchestration.externalTaskCompleted carrying
+	//     payload.externalRef = the handle (the uniform orchestration-domain
+	//     completion signal, symmetric to a userTask's taskCompleted; §10.5/§10.6).
 	instanceOps map[string]struct{}
 	replyOps    map[string]struct{}
 	claimType   string // claim-vertex type the instanceOp mints (e.g. "widget"); non-"service"
 	replyAspect string // aspect localName the replyOp writes the outcome under
-	replyEvent  string // completion event class the replyOp emits (e.g. "widget.signed")
+	replyEvent  string // completion event class the replyOp emits (orchestration.externalTaskCompleted)
 
 	mu              sync.Mutex
 	createdTasks    map[string]struct{} // taskKey → minted (CreateTask)
@@ -292,8 +293,8 @@ func (f *fakeProcessor) handle(ctx context.Context, msg jetstream.Msg) {
 
 	// replyOp (externalTask): model the bridge posting the result
 	// back — record the outcome as an ASPECT on the claim vertex (root data left
-	// minimal — D5) and emit a completion event carrying payload.externalRef =
-	// the bare handle.
+	// minimal — D5) and emit orchestration.externalTaskCompleted carrying
+	// payload.externalRef = the bare handle (the uniform completion signal).
 	if _, ok := f.replyOps[env.OperationType]; ok {
 		var p struct {
 			ExternalRef string         `json:"externalRef"`

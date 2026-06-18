@@ -239,6 +239,84 @@ func TestUserTaskCompletionUnobservable(t *testing.T) {
 	}
 }
 
+func TestHasExternalTaskStep(t *testing.T) {
+	cases := []struct {
+		name string
+		p    Pattern
+		want bool
+	}{
+		{
+			name: "pattern with an externalTask step",
+			p: Pattern{SubjectType: "widget",
+				Steps: []Step{{Kind: StepKindExternalTask, Adapter: "a", InstanceOp: "Create", ReplyOp: "Resolve"}}},
+			want: true,
+		},
+		{
+			name: "externalTask among other kinds",
+			p: Pattern{SubjectType: "identity",
+				Steps: []Step{
+					{Kind: StepKindSystemOp, Operation: "StepA"},
+					{Kind: StepKindExternalTask, Adapter: "a", InstanceOp: "Create", ReplyOp: "Resolve"},
+				}},
+			want: true,
+		},
+		{
+			name: "no externalTask step",
+			p: Pattern{SubjectType: "identity",
+				Steps: []Step{
+					{Kind: StepKindSystemOp, Operation: "StepA"},
+					{Kind: StepKindUserTask, Operation: "SetName"},
+				}},
+			want: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.p.hasExternalTaskStep(); got != c.want {
+				t.Fatalf("hasExternalTaskStep()=%v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestExternalTaskCompletionUnobservable(t *testing.T) {
+	ext := Step{Kind: StepKindExternalTask, Adapter: "a", InstanceOp: "Create", ReplyOp: "Resolve"}
+	cases := []struct {
+		name string
+		p    Pattern
+		want bool
+	}{
+		{
+			name: "externalTask omitting orchestration domain is unobservable",
+			p:    Pattern{SubjectType: "widget", CompletionDomains: []string{"widget"}, Steps: []Step{ext}},
+			want: true,
+		},
+		{
+			name: "externalTask defaulting to subjectType (no orchestration domain) is unobservable",
+			p:    Pattern{SubjectType: "widget", Steps: []Step{ext}},
+			want: true,
+		},
+		{
+			name: "externalTask listing orchestration domain is observable",
+			p:    Pattern{SubjectType: "widget", CompletionDomains: []string{"orchestration"}, Steps: []Step{ext}},
+			want: false,
+		},
+		{
+			name: "systemOp-only pattern is never flagged",
+			p: Pattern{SubjectType: "identity", CompletionDomains: []string{"identity"},
+				Steps: []Step{{Kind: StepKindSystemOp, Operation: "StepA"}}},
+			want: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := c.p.externalTaskCompletionUnobservable(); got != c.want {
+				t.Fatalf("externalTaskCompletionUnobservable()=%v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
 func TestPatternIDFromRef(t *testing.T) {
 	if got := patternIDFromRef("vtx.meta.abc"); got != "abc" {
 		t.Fatalf("patternIDFromRef(vtx.meta.abc)=%q, want abc", got)
