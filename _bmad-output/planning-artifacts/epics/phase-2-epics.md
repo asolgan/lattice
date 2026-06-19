@@ -732,7 +732,7 @@ So that the vertical proves real cross-vertex convergence and the bridge path to
 
 *FRs: integration (FR26/27/58) · Depends on: 14.1 + 14.2 + 14.3 + 13.2 · Model: Opus · Grounding: Contract #10 §10.2/§10.5/§10.8; D5. Review: full 3-layer.*
 
-### Story 14.5: e2e convergence harness + `test-lease-convergence` gate
+### Story 14.5: e2e convergence harness + `test-lease-convergence` gate — ✅ DONE 2026-06-18
 
 As the platform team,
 I want an end-to-end test that drives a lease application to steady state through the bridge,
@@ -748,6 +748,14 @@ So that Loom `externalTask` + bridge + temporal + tasks are proven to converge a
 **And** a new **`test-lease-convergence` CI gate** is added (Gate 2/3/5 don't cover an external-I/O idempotency loop)
 
 *FRs: integration (FR26, FR27, FR29, FR30, FR58) · Depends on: 14.4 + 13.4 · Model: Opus · Grounding: charter; Quinn's drain-then-assert pattern. **Green here unblocks 13.5.** e2e held to the end (John/Andrew, 2026-06-18) — no early skeleton.*
+
+### Story 14.6: orchestration dispatch integration (emergent) — ✅ DONE 2026-06-18
+
+**Emerged from 14.5** — the first all-engines e2e proved the orchestration dispatch plane had never been exercised through the **real** Processor (every prior Loom/Weaver test used a `fakeProcessor` keyed by `operationType`; the real Processor resolves a DDL by `class` and hydrates OCC reads from `ContextHint.Reads`, neither of which the engines set, and the temporal lane's `MarkExpired` op had no DDL). 14.5's e2e only converged via a documented harness shim. 14.6 closed the gap so the shim drops and 14.5's AC#1/#2b are genuinely Met.
+
+**Acceptance Criteria (all Met):** RF#1 — the Processor resolves `class` from `operationType` when the envelope omits it (vertexType-only `PermittedCommands` reverse index in the DDL cache + global ambiguity guard; auth-neutral — auth keys on operationType, not class). RF#2 — Loom + Weaver declare `ContextHint.Reads` (bare endpoint keys) on the three dispatch sites that hydrate (Weaver `CreateTask`, Loom userTask `CreateTask`, Loom externalTask `instanceOp`), with drift guards pinning each read-set to its DDL. RF#3 — a generic `MarkExpired` DDL (orchestration-base) re-touches an entity of any type via a non-sensitive `freshnessExpiry` marker (unconditioned update, target-existence guard, Weaver-actor grant) so Refractor reprojects and the stale-freshness gap re-opens eagerly. Type-agnostic + D5 preserved.
+
+*FRs: integration (enabler for FR26/27/29/30/58 through the real Processor) · Depends on: 14.5 (surfaced it) · Model: Opus · Grounding: Contract #2 §2.1 (the anticipated operationType→class index, amended in-place — **uncommitted pending Andrew**); Contract #10 §10.4 (MarkExpired/temporal). Review: 2-lens design review (caught 2 critical pre-code) + full 3-layer code review + fix-forward. **Unblocks 13.5.***
 
 ## Phase 2 Story Total
 
