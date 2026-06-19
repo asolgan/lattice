@@ -209,22 +209,27 @@ func (c *Conn) drainDurable(
 	}
 }
 
-// ConsumerPending returns the number of pending (un-delivered) messages for the
-// named durable consumer on stream — the consumer's lag. It is the standalone
-// analogue of ConsumerSupervisor.PendingForConsumer for a durable created via
-// RunDurableConsumer (which the supervisor does not manage), letting a caller
-// detect "caught up" without a jetstream.Consumer handle. Returns a wrapped
-// error if the consumer does not exist yet or its info cannot be read.
-func (c *Conn) ConsumerPending(ctx context.Context, stream, durable string) (uint64, error) {
+// ConsumerCaughtUp reports whether the named durable consumer has fully drained
+// its backlog: nothing pending delivery (NumPending) AND nothing delivered but
+// not yet acked (NumAckPending). The two-field check is load-bearing — NumPending
+// drops as soon as a message is delivered into the client's prefetch buffer, well
+// before the handler has processed it, so a NumPending==0-only check would report
+// "caught up" while a prefetched batch is still being worked. Requiring
+// NumAckPending==0 too means the consumer is caught up only once every delivered
+// message has been processed and acked. It is the standalone analogue of
+// ConsumerSupervisor.PendingForConsumer for a durable created via
+// RunDurableConsumer (which the supervisor does not manage). Returns an error if
+// the consumer does not exist yet or its info cannot be read.
+func (c *Conn) ConsumerCaughtUp(ctx context.Context, stream, durable string) (bool, error) {
 	cons, err := c.js.Consumer(ctx, stream, durable)
 	if err != nil {
-		return 0, fmt.Errorf("substrate: ConsumerPending: consumer %q on %q: %w", durable, stream, err)
+		return false, fmt.Errorf("substrate: ConsumerCaughtUp: consumer %q on %q: %w", durable, stream, err)
 	}
 	info, err := cons.Info(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("substrate: ConsumerPending: info %q: %w", durable, err)
+		return false, fmt.Errorf("substrate: ConsumerCaughtUp: info %q: %w", durable, err)
 	}
-	return info.NumPending, nil
+	return info.NumPending == 0 && info.NumAckPending == 0, nil
 }
 
 // newMessage builds the caller-facing Message view from a raw JetStream

@@ -101,9 +101,9 @@ func (s *ConsumerSupervisor) Add(ctx context.Context, spec ConsumerSpec) error {
 }
 
 // Remove stops the pump for name and deletes its server-side durable. If name is
-// not managed, Remove is a no-op. Generalises consumer.Manager.Remove: deleting
-// the durable is the caller's explicit intent (operator retiring a consumer),
-// distinct from Stop, which preserves durables.
+// not managed, Remove is a no-op. Deleting the durable is the caller's explicit
+// intent (operator retiring a consumer), distinct from Stop, which preserves
+// durables.
 func (s *ConsumerSupervisor) Remove(ctx context.Context, name string) error {
 	s.mu.Lock()
 	mc, exists := s.managed[name]
@@ -126,12 +126,11 @@ func (s *ConsumerSupervisor) Remove(ctx context.Context, name string) error {
 
 // Reset deletes and recreates the durable for name (preserving the spec's
 // delivery policy and all other config) and points the pump at the new durable.
-// Generalises consumer.Manager.Reset, including its unconditional-delete +
-// ErrConsumerNotFound-tolerant TOCTOU hardening: the delete runs whether or not
-// the durable is locally known, so a durable that exists in NATS but not in the
-// registry is still recreated cleanly. If name is not managed, an optional spec
-// override may be supplied via UpdateSpec before Reset; otherwise Reset on an
-// unmanaged name returns an error.
+// The delete is unconditional and ErrConsumerNotFound-tolerant (TOCTOU
+// hardening): it runs whether or not the durable is locally known, so a durable
+// that exists in NATS but not in the registry is still recreated cleanly. If name
+// is not managed, an optional spec override may be supplied via UpdateSpec before
+// Reset; otherwise Reset on an unmanaged name returns an error.
 //
 // Reset is the migration target for Refractor's rebuild delete-recreate-swap.
 func (s *ConsumerSupervisor) Reset(ctx context.Context, name string) error {

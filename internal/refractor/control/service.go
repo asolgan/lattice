@@ -55,7 +55,7 @@ type Rebuilder interface {
 // Deleter is implemented by any component that can cleanly stop a rule and remove
 // its associated NATS resources. Typically implemented as an orchestrator closure that:
 //  1. Cancels the pipeline's run context and waits for Run() to return.
-//  2. Calls consumer.Manager.Remove(ctx, ruleID) to delete the durable consumer.
+//  2. Removes the rule's durable consumer (the pipeline's supervisor owns it).
 //  3. Calls health.Reporter.Delete(ctx) to remove the health KV entry.
 //
 // Defined here so internal/control does not import internal/pipeline (architecture boundary).

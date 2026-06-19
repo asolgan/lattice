@@ -67,7 +67,7 @@ func (k *KV) ListKeys(ctx context.Context) ([]string, error) {
 }
 
 // Purge removes key and its history, leaving a purge marker. Purging an absent
-// key returns ErrKeyNotFound. See Conn.KVPurge.
+// key is a no-op (idempotent). See Conn.KVPurge.
 func (k *KV) Purge(ctx context.Context, key string) error {
 	return k.conn.KVPurge(ctx, k.bucket, key)
 }

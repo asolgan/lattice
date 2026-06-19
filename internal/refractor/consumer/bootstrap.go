@@ -75,9 +75,16 @@ func (b *Bootstrapper) Run(ctx context.Context) error {
 
 // pollReady covers the empty-stream case: RunDurableConsumer never invokes the
 // handler when there is nothing to deliver, so Ready would never fire from the
-// handler. The poll closes Ready as soon as the durable reports zero pending
-// (immediate for an empty stream). It exits once Ready is signalled (by either
-// path) or ctx is done.
+// handler. The poll closes Ready once the durable is fully caught up — both
+// NumPending and NumAckPending zero (ConsumerCaughtUp), which is immediate for an
+// empty stream. The ack-aware check is essential: NumPending alone drops the
+// instant a backlog is prefetched into the client buffer, so signalling on
+// NumPending==0 would fire Ready while the handler is still building the
+// adjacency index for that prefetched batch — closing the gate on a partial
+// index. Requiring NumAckPending==0 means pollReady never fires mid-drain; on a
+// non-empty stream the handler's msg.NumPending==0 path (delivery-accurate,
+// raised after the last edge is built) signals first. pollReady exits once Ready
+// is signalled (by either path) or ctx is done.
 func (b *Bootstrapper) pollReady(ctx context.Context) {
 	ticker := time.NewTicker(bootstrapReadyPoll)
 	defer ticker.Stop()
@@ -88,13 +95,13 @@ func (b *Bootstrapper) pollReady(ctx context.Context) {
 		case <-b.ready:
 			return
 		case <-ticker.C:
-			pending, err := b.conn.ConsumerPending(ctx, b.streamName, adjConsumerName)
+			caughtUp, err := b.conn.ConsumerCaughtUp(ctx, b.streamName, adjConsumerName)
 			if err != nil {
 				// The durable may not be created yet (RunDurableConsumer creates
 				// it as it starts) — keep polling.
 				continue
 			}
-			if pending == 0 {
+			if caughtUp {
 				b.signalReady()
 				return
 			}

@@ -3,6 +3,7 @@ package consumer_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -76,6 +77,65 @@ func TestBootstrapper_ReadyOnEmptyStream(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("timed out waiting for bootstrap Ready on empty stream")
 	}
+}
+
+// TestBootstrapper_ReadyAfterLargeBacklog guards the prefetch race: a non-empty
+// backlog is prefetched into the consumer's client buffer (server NumPending → 0)
+// well before the handler finishes building the adjacency index, so a
+// NumPending-only "caught up" check would close Ready on a partial index. All
+// edges target one node, so each adjacency.Build is a CAS on the same growing
+// adj.<nodeId> entry — making the build slower than the prefetch and widening the
+// window. With the ack-aware ConsumerCaughtUp check, Ready must not fire until
+// every seeded edge is indexed.
+func TestBootstrapper_ReadyAfterLargeBacklog(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS JetStream")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	js, nc := startJS(t)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+
+	coreKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-boot-backlog"})
+	require.NoError(t, err)
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "adj-boot-backlog"})
+	require.NoError(t, err)
+	adjKV, err := conn.OpenKV(ctx, "adj-boot-backlog")
+	require.NoError(t, err)
+
+	const backlog = 300
+	for i := 0; i < backlog; i++ {
+		evt := adjacency.CoreKVEvent{
+			CoreKvKey:   fmt.Sprintf("core.e%d", i),
+			EdgeID:      fmt.Sprintf("e%d", i),
+			Name:        "HAS_PARTY",
+			Direction:   "outbound",
+			NodeID:      "nodeBig",
+			OtherNodeID: fmt.Sprintf("other%d", i),
+		}
+		data, marshalErr := json.Marshal(evt)
+		require.NoError(t, marshalErr)
+		_, putErr := coreKV.Put(ctx, "edge."+evt.EdgeID, data)
+		require.NoError(t, putErr)
+	}
+
+	b := consumer.NewBootstrapper(conn, "core-boot-backlog", adjKV)
+	go func() { _ = b.Run(ctx) }()
+
+	select {
+	case <-b.Ready():
+	case <-ctx.Done():
+		t.Fatal("timed out waiting for bootstrap Ready after large backlog")
+	}
+
+	// At the instant Ready fires, EVERY seeded edge must already be indexed —
+	// Ready must not have been raised on a partially-built index.
+	edges, err := adjacency.Neighbors(ctx, adjKV, "nodeBig")
+	require.NoError(t, err)
+	assert.Len(t, edges, backlog,
+		"all %d edges must be indexed at the instant Ready fires (prefetch-race guard)", backlog)
 }
 
 func TestBootstrapper_ReadyAfterProcessingMessages(t *testing.T) {
