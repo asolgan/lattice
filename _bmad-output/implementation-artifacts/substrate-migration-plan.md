@@ -1,6 +1,6 @@
 # Refractor substrate inner-package migration — build brief
 
-**Status:** building (Andrew ruled **Path B**; executing in worktree `refractor-substrate-migration`).
+**Status:** ✅ DONE — shipped to `main` (Path B; 7-commit fast-forward, head **d420ca4**, **CI green** run 27853447804). End-state assertion holds (only `control/service.go` micro remains). The 3-layer review caught + fixed a Bootstrapper `Ready` prefetch race (now gated on `NumPending==0 && NumAckPending==0`).
 **Backlog item:** Refractor substrate inner-package migration. See `backlog.md`.
 **Mandate (Andrew, verbatim intent):** *"I want no raw NATS calls from Refractor. Except micro.service
 for now. Path B is the right one... when we extracted the ConsumerSupervisor out of Refractor I thought
