@@ -4,13 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"sync"
 	"time"
 
-	nats "github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/asolgan/lattice/internal/refractor/subjects"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // MetricsInterval is the default polling interval for new LagPoller instances.
@@ -28,54 +25,49 @@ type LagMetric struct {
 	Timestamp   string `json:"timestamp"` // RFC3339 UTC
 }
 
+// LagFunc returns the current consumer lag (pending message count) for the rule.
+// It returns an error when the lag source is not yet available — e.g. the
+// supervised consumer has not finished registering at startup — which the poller
+// treats as "skip this cycle", not a fatal condition.
+type LagFunc func(ctx context.Context) (uint64, error)
+
 // LagPoller publishes per-lens consumer lag metrics to lattice.refractor.metrics.<lensId>
 // at the interval captured from MetricsInterval at construction time.
 // It also updates the health KV consumerLag field on each cycle.
 // Call Start in a dedicated goroutine.
 type LagPoller struct {
-	nc       *nats.Conn
-	mu       sync.RWMutex   // protects consumer
-	consumer jetstream.Consumer
+	conn     *substrate.Conn
+	lag      LagFunc
 	reporter *Reporter     // may be nil — health KV update skipped when nil
 	ruleID   string
 	interval time.Duration // captured from MetricsInterval at NewLagPoller time
 }
 
-// NewLagPoller creates a LagPoller for the given rule.
-// Panics if nc or consumer is nil (both are required for correct operation).
-// reporter may be nil — health KV updates are skipped in that case.
-// The polling interval is captured from MetricsInterval at call time.
-func NewLagPoller(nc *nats.Conn, consumer jetstream.Consumer, reporter *Reporter, ruleID string) *LagPoller {
-	if nc == nil {
-		panic("health: NewLagPoller: nc must not be nil")
+// NewLagPoller creates a LagPoller for the given rule. The lag source is read
+// from the supervised consumer (the pipeline's ConsumerSupervisor) by durable
+// name, so it tracks the live consumer across a rebuild reset with no handle
+// re-binding. Metrics are published through the substrate connection.
+// Panics if conn or lag is nil (both required). reporter may be nil — health KV
+// updates are skipped in that case. The polling interval is captured from
+// MetricsInterval at call time.
+func NewLagPoller(conn *substrate.Conn, lag LagFunc, reporter *Reporter, ruleID string) *LagPoller {
+	if conn == nil {
+		panic("health: NewLagPoller: conn must not be nil")
 	}
-	if consumer == nil {
-		panic("health: NewLagPoller: consumer must not be nil")
+	if lag == nil {
+		panic("health: NewLagPoller: lag must not be nil")
 	}
 	iv := MetricsInterval
 	if iv <= 0 {
 		iv = 5 * time.Second // safe default if MetricsInterval was set to an invalid value
 	}
 	return &LagPoller{
-		nc:       nc,
-		consumer: consumer,
+		conn:     conn,
+		lag:      lag,
 		reporter: reporter,
 		ruleID:   ruleID,
 		interval: iv,
 	}
-}
-
-// SetConsumer atomically replaces the consumer used by the poller.
-// Call after a rebuild consumer reset so the poller does not query a deleted consumer.
-// Thread-safe; may be called while Start is running.
-// Panics if c is nil — a nil consumer would cause the next poll to panic.
-func (lp *LagPoller) SetConsumer(c jetstream.Consumer) {
-	if c == nil {
-		panic("health: LagPoller.SetConsumer: consumer must not be nil")
-	}
-	lp.mu.Lock()
-	lp.consumer = c
-	lp.mu.Unlock()
 }
 
 // Start runs the lag polling loop until ctx is cancelled.
@@ -96,19 +88,17 @@ func (lp *LagPoller) Start(ctx context.Context) {
 // poll reads the consumer lag and publishes one metric message.
 // Errors are logged as warnings — polling continues on failure.
 func (lp *LagPoller) poll(ctx context.Context) {
-	lp.mu.RLock()
-	cons := lp.consumer
-	lp.mu.RUnlock()
-	info, err := cons.Info(ctx)
+	lag, err := lp.lag(ctx)
 	if err != nil {
-		// Suppress context-cancellation noise on graceful shutdown.
+		// Suppress context-cancellation noise on graceful shutdown. A transient
+		// "not managed" at startup (the supervised consumer is still registering)
+		// also lands here — the next cycle recovers.
 		if ctx.Err() == nil {
-			slog.Warn("lag poller: consumer.Info failed",
+			slog.Warn("lag poller: lag source unavailable",
 				"ruleId", lp.ruleID, "err", err)
 		}
 		return
 	}
-	lag := info.NumPending
 
 	msg := LagMetric{
 		RuleID:      lp.ruleID,
@@ -121,9 +111,11 @@ func (lp *LagPoller) poll(ctx context.Context) {
 			"ruleId", lp.ruleID, "err", err)
 		return
 	}
-	if err := lp.nc.Publish(subjects.Metrics(lp.ruleID), data); err != nil {
-		slog.Warn("lag poller: publish failed",
-			"ruleId", lp.ruleID, "err", err)
+	if err := lp.conn.PublishCore(ctx, subjects.Metrics(lp.ruleID), data); err != nil {
+		if ctx.Err() == nil {
+			slog.Warn("lag poller: publish failed",
+				"ruleId", lp.ruleID, "err", err)
+		}
 	}
 
 	if lp.reporter != nil {

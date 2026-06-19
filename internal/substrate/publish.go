@@ -47,3 +47,22 @@ func (c *Conn) Publish(ctx context.Context, subject string, data []byte, header 
 	}
 	return nil
 }
+
+// PublishCore sends a single message to subject over core NATS — no JetStream
+// stream, no store ack. It is the fire-and-forget primitive for ephemeral
+// fan-out (e.g. observability metrics) where no durable record is wanted and the
+// subject is not stream-backed; use Publish (JetStream) for durable command
+// submission. ctx is honoured for cancellation only — a core publish is a local
+// buffer enqueue with no server round trip.
+func (c *Conn) PublishCore(ctx context.Context, subject string, data []byte) error {
+	if subject == "" {
+		return fmt.Errorf("substrate: PublishCore: subject required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := c.nc.Publish(subject, data); err != nil {
+		return fmt.Errorf("substrate: publish-core %q: %w", subject, err)
+	}
+	return nil
+}

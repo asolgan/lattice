@@ -17,7 +17,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/asolgan/lattice/internal/refractor/adapter"
-	"github.com/asolgan/lattice/internal/refractor/consumer"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/refractor/failure"
 	"github.com/asolgan/lattice/internal/refractor/health"
@@ -65,7 +64,6 @@ type pipelineEnv struct {
 	conn    *substrate.Conn // substrate handle the pipeline's supervisor runs on
 	coreKV  jetstream.KeyValue
 	adjKV   jetstream.KeyValue
-	manager *consumer.Manager
 }
 
 // specFor builds the supervised-consumer spec for a rule in tests, mirroring the
@@ -122,8 +120,7 @@ func startPipelineEnv(t *testing.T) *pipelineEnv {
 	conn, err := substrate.Wrap(nc)
 	require.NoError(t, err)
 
-	mgr := consumer.NewManager(js, coreKVBucket)
-	return &pipelineEnv{nc: nc, js: js, conn: conn, coreKV: coreKV, adjKV: adjKV, manager: mgr}
+	return &pipelineEnv{nc: nc, js: js, conn: conn, coreKV: coreKV, adjKV: adjKV}
 }
 
 // putNode writes a node entry to Core KV.
@@ -1114,16 +1111,12 @@ func TestPipeline_SetLagPoller_StartsMetricsPublishing(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sub.Unsubscribe() })
 
-	// Attach the lag poller — uses the same consumer as the pipeline message loop.
-	ctx := context.Background()
-	require.NoError(t, env.manager.Add(ctx, ruleID))
-	lagCons := env.manager.Consumer(ruleID)
-	require.NotNil(t, lagCons)
-
-	lp := health.NewLagPoller(env.nc, lagCons, nil, ruleID)
+	// Attach the lag poller — reads pending from the pipeline's supervised
+	// consumer (p.Pending), which becomes live once startPipeline calls RunOn.
+	lp := health.NewLagPoller(env.conn, p.Pending, nil, ruleID)
 	p.SetLagPoller(lp)
 
-	// Start the pipeline (env.manager.Add is idempotent for the same ruleID).
+	// Start the pipeline; the supervisor creates the durable on Run.
 	startPipeline(t, env, p, ruleID)
 
 	// Verify the lag poller goroutine is running: receive at least one metric.

@@ -277,6 +277,19 @@ func (p *Pipeline) Supervisor() *substrate.ConsumerSupervisor {
 	return p.supervisor
 }
 
+// Pending returns the supervised consumer's pending (un-delivered) message
+// count — the lens's consumer lag. It returns an error before RunOn (no
+// supervisor) and during the brief startup window before Run registers the
+// consumer with the supervisor (PendingForConsumer reports "not managed"); the
+// lag poller treats either as "skip this cycle". This is the substrate-typed
+// replacement for reading NumPending off a raw jetstream.Consumer handle.
+func (p *Pipeline) Pending(ctx context.Context) (uint64, error) {
+	if p.supervisor == nil {
+		return 0, fmt.Errorf("pipeline: pending: no supervisor configured (RunOn not called)")
+	}
+	return p.supervisor.PendingForConsumer(ctx, p.consumerCfg.Name)
+}
+
 // HotReloadInto atomically replaces the adapter. Any message already in processMsg
 // continues with the adapter it captured at the start of that call; the next message
 // will use newAdpt. Returns an error if newAdpt is nil.

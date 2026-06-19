@@ -102,7 +102,6 @@ func main() {
 		}
 	}()
 
-	manager := consumer.NewManager(js, coreKVBucket)
 	poolManager := adapter.NewPoolManager()
 	controlSvc := control.NewService()
 	controlSvc.SetCoreKV(coreKV)
@@ -141,20 +140,21 @@ func main() {
 		return out
 	}
 
-	// LagProvider for the heartbeater — read consumer NumPending per lens.
+	// LagProvider for the heartbeater — read pending count per lens from each
+	// pipeline's supervised consumer (by durable name, via the supervisor).
 	hb.LagProvider = func() map[string]uint64 {
 		mu.Lock()
 		defer mu.Unlock()
 		out := make(map[string]uint64, len(registry))
-		for lensID := range registry {
-			cons := manager.Consumer(lensID)
-			if cons == nil {
+		for lensID, entry := range registry {
+			if entry.pipeline == nil {
 				continue
 			}
-			info, err := cons.Info(context.Background())
-			if err == nil && info != nil {
-				out[lensID] = info.NumPending
+			pending, err := entry.pipeline.Pending(context.Background())
+			if err != nil {
+				continue
 			}
+			out[lensID] = pending
 		}
 		return out
 	}
@@ -278,21 +278,11 @@ func main() {
 			logger.Info("operation-aggregate envelope installed", "lensId", r.ID, "key", r.Into.Key[0])
 		}
 
-		// Create the durable up-front so the lag poller has a handle; the
-		// pipeline's supervisor reuses it idempotently (CreateOrUpdateConsumer).
-		if err := manager.Add(ctx, r.ID); err != nil {
-			logger.Error("manager add consumer", "lensId", r.ID, "err", err)
-			return
-		}
-		cons := manager.Consumer(r.ID)
-
-		lp := health.NewLagPoller(nc, cons, reporter, r.ID)
-		p.SetLagPoller(lp)
-
 		// Configure the supervised runtime: durable name refractor-<ruleID>,
 		// queue group = same name (NFR12), DeliverLastPerSubject (ADR-15), Core
-		// KV stream + filter. ruleID must not be "adjacency" (collides with the
-		// bootstrapper's refractor-adjacency consumer).
+		// KV stream + filter. The supervisor creates the durable idempotently when
+		// Run registers it (CreateOrUpdateConsumer). ruleID must not be "adjacency"
+		// (collides with the bootstrapper's refractor-adjacency consumer).
 		p.RunOn(conn, substrate.ConsumerSpec{
 			Name:          "refractor-" + r.ID,
 			Stream:        subjects.CoreKVStream(coreKVBucket),
@@ -300,6 +290,12 @@ func main() {
 			DeliverPolicy: substrate.DeliverLastPerSubject,
 			DeliverGroup:  "refractor-" + r.ID,
 		})
+
+		// Per-lens lag metrics: read pending from the supervised consumer by
+		// durable name, so the poller tracks the live consumer across a rebuild
+		// reset with no handle re-binding.
+		lp := health.NewLagPoller(conn, p.Pending, reporter, r.ID)
+		p.SetLagPoller(lp)
 
 		lensCtx, cancel := context.WithCancel(ctx)
 		done := make(chan struct{})

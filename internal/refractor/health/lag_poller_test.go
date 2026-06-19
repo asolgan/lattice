@@ -13,17 +13,24 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/asolgan/lattice/internal/refractor/consumer"
 	"github.com/asolgan/lattice/internal/refractor/health"
 	"github.com/asolgan/lattice/internal/refractor/subjects"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // lagEnv holds all components needed for LagPoller tests.
 type lagEnv struct {
 	nc       *nats.Conn
+	conn     *substrate.Conn
 	js       jetstream.JetStream
 	healthKV jetstream.KeyValue
 }
+
+// zeroLag is a LagFunc that always reports zero lag with no error. The LagPoller
+// tests assert publish cadence / rule isolation / health-KV update — not a
+// specific lag value — so a constant source decouples them from a live
+// supervised consumer.
+func zeroLag(context.Context) (uint64, error) { return 0, nil }
 
 // startLagServer starts an in-memory NATS server with JetStream and creates the
 // health KV bucket. Returns a lagEnv for building per-test components.
@@ -48,26 +55,16 @@ func startLagServer(t *testing.T) *lagEnv {
 	require.NoError(t, err, "connect to test NATS server")
 	t.Cleanup(func() { nc.Close(); s.Shutdown() })
 
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
 
 	healthKV, err := js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{Bucket: "LAG_HEALTH"})
 	require.NoError(t, err)
 
-	return &lagEnv{nc: nc, js: js, healthKV: healthKV}
-}
-
-// makeConsumer creates a core KV bucket (unique per name) and returns a consumer for ruleID.
-func (e *lagEnv) makeConsumer(t *testing.T, bucketName, ruleID string) jetstream.Consumer {
-	t.Helper()
-	_, err := e.js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{Bucket: bucketName})
-	require.NoError(t, err)
-
-	mgr := consumer.NewManager(e.js, bucketName)
-	require.NoError(t, mgr.Add(context.Background(), ruleID))
-	cons := mgr.Consumer(ruleID)
-	require.NotNil(t, cons)
-	return cons
+	return &lagEnv{nc: nc, conn: conn, js: js, healthKV: healthKV}
 }
 
 // startPoller starts a LagPoller goroutine and returns a WaitGroup that signals when it exits.
@@ -92,7 +89,6 @@ func TestLagPoller_PublishesMetric(t *testing.T) {
 	defer func() { health.MetricsInterval = 5 * time.Second }()
 
 	const ruleID = "rule-publish"
-	cons := env.makeConsumer(t, "core-pub", ruleID)
 	reporter := health.New(env.healthKV, ruleID)
 
 	msgCh := make(chan *nats.Msg, 5)
@@ -103,7 +99,7 @@ func TestLagPoller_PublishesMetric(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	lp := health.NewLagPoller(env.nc, cons, reporter, ruleID)
+	lp := health.NewLagPoller(env.conn, zeroLag, reporter, ruleID)
 	_ = startPoller(lp, ctx)
 
 	// Wait up to 2s for the first metric message.
@@ -129,7 +125,6 @@ func TestLagPoller_UpdatesHealthKV(t *testing.T) {
 	defer func() { health.MetricsInterval = 5 * time.Second }()
 
 	const ruleID = "rule-kv"
-	cons := env.makeConsumer(t, "core-kv", ruleID)
 	reporter := health.New(env.healthKV, ruleID)
 
 	// Establish an initial health entry.
@@ -140,7 +135,7 @@ func TestLagPoller_UpdatesHealthKV(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	lp := health.NewLagPoller(env.nc, cons, reporter, ruleID)
+	lp := health.NewLagPoller(env.conn, zeroLag, reporter, ruleID)
 	_ = startPoller(lp, ctx)
 
 	// Wait for SetConsumerLag to update LastUpdated beyond the initial value.
@@ -165,9 +160,6 @@ func TestLagPoller_PerRuleIsolation(t *testing.T) {
 	const ruleA = "rule-iso-a"
 	const ruleB = "rule-iso-b"
 
-	consA := env.makeConsumer(t, "core-iso-a", ruleA)
-	consB := env.makeConsumer(t, "core-iso-b", ruleB)
-
 	msgsA := make(chan *nats.Msg, 10)
 	msgsB := make(chan *nats.Msg, 10)
 	subA, err := env.nc.ChanSubscribe(subjects.Metrics(ruleA), msgsA)
@@ -178,8 +170,8 @@ func TestLagPoller_PerRuleIsolation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	lpA := health.NewLagPoller(env.nc, consA, nil, ruleA)
-	lpB := health.NewLagPoller(env.nc, consB, nil, ruleB)
+	lpA := health.NewLagPoller(env.conn, zeroLag, nil, ruleA)
+	lpB := health.NewLagPoller(env.conn, zeroLag, nil, ruleB)
 	wgA := startPoller(lpA, ctx)
 	wgB := startPoller(lpB, ctx)
 
@@ -227,7 +219,6 @@ func TestLagPoller_StopsOnContextCancel(t *testing.T) {
 	defer func() { health.MetricsInterval = 5 * time.Second }()
 
 	const ruleID = "rule-cancel"
-	cons := env.makeConsumer(t, "core-cancel", ruleID)
 
 	msgCh := make(chan *nats.Msg, 20)
 	sub, err := env.nc.ChanSubscribe(subjects.Metrics(ruleID), msgCh)
@@ -236,7 +227,7 @@ func TestLagPoller_StopsOnContextCancel(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	lp := health.NewLagPoller(env.nc, cons, nil, ruleID)
+	lp := health.NewLagPoller(env.conn, zeroLag, nil, ruleID)
 	wg := startPoller(lp, ctx)
 
 	// Let at least one message publish before cancelling.
@@ -265,7 +256,6 @@ func TestLagPoller_ContinuesDuringPause(t *testing.T) {
 	defer func() { health.MetricsInterval = 5 * time.Second }()
 
 	const ruleID = "rule-pause"
-	cons := env.makeConsumer(t, "core-pause", ruleID)
 
 	msgCh := make(chan *nats.Msg, 30)
 	sub, err := env.nc.ChanSubscribe(subjects.Metrics(ruleID), msgCh)
@@ -275,7 +265,7 @@ func TestLagPoller_ContinuesDuringPause(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	lp := health.NewLagPoller(env.nc, cons, nil, ruleID)
+	lp := health.NewLagPoller(env.conn, zeroLag, nil, ruleID)
 	_ = startPoller(lp, ctx)
 
 	// Receive at least 3 consecutive messages to prove continuous autonomous polling.
