@@ -80,7 +80,9 @@ Core KV; the **Refractor** derives queryable **lenses** from Core KV change-data
 
 On top of this core, two engines drive *action*: the **Loom** runs deterministic, imperative
 procedures ("do A, then B, then C"); the **Weaver** drives declarative convergence ("this target
-state must hold — make it so"), nudging external systems and AI agents to close the gap.
+state must hold — make it so"), detecting gaps and dispatching the work that closes them. When that
+work is an **outbound call to an external system**, it runs through the **Bridge** — the single,
+idempotent egress for all external I/O — so the orchestration engines stay pure and event-driven.
 
 The longer-form vision (the Lattice Manifest and System Spec) lives in a separate design vault;
 the architecture of record is in [`docs/`](docs/README.md).
@@ -194,6 +196,7 @@ Lattice is a small set of cooperating components, each with a living reference p
 | [Capability Packages](docs/components/_packages.md) | Installable bundles (identity, RBAC, domain logic) added through the `InstallPackage` kernel op — the kernel stays minimal |
 | [Loom](docs/components/loom.md) | The procedure engine — deterministic, idempotent, linear flows (the "executive") |
 | [Weaver](docs/components/weaver.md) | The convergence engine — drives a declared target state toward convergence (the "visionary") |
+| [Bridge](docs/components/bridge.md) | The external-I/O egress — the one component that makes outbound calls to external systems, idempotently, via a durable `events.external.>` consumer and a pluggable adapter registry |
 
 The exact wire shapes, key patterns, and behavioral rules are pinned in the data contracts under
 [`docs/contracts/`](docs/contracts/README.md).

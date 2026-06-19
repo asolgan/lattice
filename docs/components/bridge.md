@@ -1,19 +1,12 @@
 # Bridge
 
-**Component reference** | Audience: implementers + architects | Status: **Phase 2 — built (service actor 13.3 + component 13.4); end-to-end wiring lands in Epic 14** | Decided: 2026-06-18
+**Component reference** | Audience: implementers + architects
 
-> Decisions of record: `_bmad-output/planning-artifacts/sprint-change-proposal-2026-06-18.md`
-> (the "External I/O Bridge" change proposal, RATIFIED 2026-06-18). Data shapes are frozen in
-> `docs/contracts/10-orchestration-surfaces.md` — §10.5/§10.6 (Loom's `externalTask` step + the
-> `payload.externalRef` correlation key), §10.3 (the retired `weaver-claims` / Two-Phase Nudge, and the
-> pinned FR58-determinism invariant). The `external.<adapter>` event envelope spec lives **here** (it is
+> Data shapes are frozen in `docs/contracts/10-orchestration-surfaces.md` — §10.5/§10.6 (Loom's
+> `externalTask` step + the `payload.externalRef` correlation key) and §10.3 (the pinned
+> FR58-determinism invariant). The `external.<adapter>` event envelope spec lives **here** (it is
 > package + bridge data, not a contract amendment — the `external` domain is ordinary, §10.5). Update
 > this page in the same commit as the code; drift between page and code is a documentation bug.
->
-> **Built (Stories 13.3–13.4).** The bridge service actor (13.3) and the component itself
-> (`internal/bridge/` + `cmd/bridge/`, the adapter registry, the moved `Fake*` adapters, the FR58
-> crash/retry proof — 13.4) are implemented. The end-to-end Loom→bridge wiring on a real `externalTask`
-> is Epic 14 (Story 14.5); in 13.4 the `external.*` events are test fixtures.
 
 ---
 
@@ -31,10 +24,10 @@ constraint. A package could anchor its external-call claim on any vertex type it
 
 The bridge exists because external I/O does not belong in either orchestration engine. Weaver
 *detects* divergence; Loom *executes* deterministic procedures. Embedding outbound calls in Weaver's
-convergence lane (the retired Two-Phase Nudge) smeared I/O into detection and forced Weaver to
-re-implement durable-claim / idempotency / recovery machinery Loom already has. The bridge isolates
-**all** external I/O in one purpose-built, trusted component, and keeps Loom and Weaver pure and
-event-driven — consistent with Lattice's CDC / event-sourced spine.
+convergence lane would smear I/O into detection and force Weaver to re-implement the durable-claim /
+idempotency / recovery machinery Loom already has. The bridge isolates **all** external I/O in one
+purpose-built, trusted component, and keeps Loom and Weaver pure and event-driven — consistent with
+Lattice's CDC / event-sourced spine.
 
 External calls become **event-driven and symmetric to userTasks**: Loom dispatches to an async
 completer and parks; the completer is a **human** (userTask) or the **bridge** (`externalTask`). See
@@ -126,17 +119,16 @@ third is an optimization:
    a redundant adapter round-trip that (2) would dedup anyway.
 
 **The claim vertex IS the visible claim — structurally, before the bridge acts.** FR58 / NFR-S11 ("a
-visible claim recorded before the external call") is satisfied **more honestly** than the retired
-`weaver-claims` record: the claim vertex is created by the `instanceOp` **before** the `external.*`
-event is even publishable (the event rides that op's post-commit outbox), so the claim is **always**
-visible before the bridge consumes the event — the bridge needs **no read** to guarantee it. The vertex
+visible claim recorded before the external call") is satisfied structurally: the claim vertex is
+created by the `instanceOp` **before** the `external.*` event is even publishable (the event rides that
+op's post-commit outbox), so the claim is **always** visible before the bridge consumes the event — the
+bridge needs **no read** to guarantee it. The vertex
 unifies the claim + the result holder + the audit record into **one auditable business vertex** in Core
 KV; its **type is package-chosen** (the lease demo's `service.<x>.instance`), and its **outcome lives in
 aspect(s)** per **D5**, not fat root `data`.
 
-The FR58 crash/retry idempotency proof lands **with the bridge**, on a **bridge-only harness** (Story 13.4 —
-pulled forward, not deferred to the final lease e2e): `FakeStripe.FailUntil` / `SideEffects == 1` under
-event redelivery + mid-flight-failure recovery.
+The FR58 crash/retry idempotency proof runs on a **bridge-only harness**: `FakeStripe.FailUntil` /
+`SideEffects == 1` under event redelivery + mid-flight-failure recovery.
 
 ---
 
@@ -144,12 +136,12 @@ event redelivery + mid-flight-failure recovery.
 
 The bridge posts its result ops under a **bootstrap-provisioned service actor** —
 `identity.system.bridge`, operator-equivalent, established purely by a `holdsRole → operator` edge,
-exactly like Loom and Weaver (`docs/components/service-actors.md`). Consequences handled in Story 13.3:
+exactly like Loom and Weaver (`docs/components/service-actors.md`). Consequences:
 
 - It is a **third** primordial service identity → it **moves the `verify-kernel` assertion count** and
   the bootstrap-file identity set. The bootstrap-file `version` bumps (a hard mismatch → `make down &&
   make up`, no in-place migration — see service-actors.md), and **both** kernel-verify enumerations
-  (`scripts/verify-kernel.go`, `internal/bootstrap/verify.go`) update **in lockstep** (the 12.4 lesson).
+  (`scripts/verify-kernel.go`, `internal/bootstrap/verify.go`) update **in lockstep**.
 - `protected: true` (a package uninstall must never tombstone a kernel service actor).
 - When lane enforcement lands, its capability projection must include the `system` lane (same carry as
   Loom/Weaver).
@@ -160,7 +152,7 @@ exactly like Loom and Weaver (`docs/components/service-actors.md`). Consequences
 
 | Path | Role |
 |------|------|
-| `internal/bridge/` | Engine: durable `events.external.>` consumer, adapter registry, idempotent dispatch (deterministic result-op requestId + adapter `idempotencyKey` dedup; optional generic op-tracker skip-on-redelivery), result-op submission to `ops.<lane>`. Also the `Fake*` adapters **moved** (not copied) from `internal/weaver/nudge/` — `FakeBackgroundCheck`, `FakeStripe` (substrate-only, idempotent on `idempotencyKey`); real Stripe / background-check is Phase 3 |
+| `internal/bridge/` | Engine: durable `events.external.>` consumer, adapter registry, idempotent dispatch (deterministic result-op requestId + adapter `idempotencyKey` dedup; optional generic op-tracker skip-on-redelivery), result-op submission to `ops.<lane>`. Also the reference `Fake*` adapters — `FakeBackgroundCheck`, `FakeStripe` (substrate-only, idempotent on `idempotencyKey`); real Stripe / background-check is Phase 3 |
 | `cmd/bridge/` | Binary entry point (extractable; shares only `substrate/*`); pins `ActorKey = bootstrap.BridgeIdentityKey` and registers the reference adapters for the demo |
 
 **Engine vs package:** the consumer, registry, dispatch, recovery, and result-op submission are
@@ -183,8 +175,7 @@ exactly like Loom and Weaver (`docs/components/service-actors.md`). Consequences
 
 ## State & crash-safety
 
-The bridge holds **no durable bucket of its own** — this is the deliberate simplification over the
-retired Two-Phase Nudge (which needed `weaver-claims`). Its durable state is:
+The bridge holds **no durable bucket of its own** — a deliberate simplification. Its durable state is:
 
 - the **claim vertex** (Core KV, written by the `instanceOp`; outcome recorded as aspect(s) by the
   result op) — the claim + outcome + audit, **type package-chosen**;
@@ -229,26 +220,23 @@ Crash points and their recovery:
 
 ---
 
-## Build status (Epic 13, stories 13.1 → 13.5)
+## Implementation status
 
-- **13.1 (done)** — gating contract amendments ratified + applied (this page, the Loom/Weaver doc
-  updates, Contract #10 §10.2/§10.3/§10.5/§10.6/§10.8).
-- **13.2** — Loom `externalTask` step kind (the `external` event needs no Processor/bootstrap change).
-- **13.3 (done)** — the **bridge service actor** + bootstrap provisioning (bootstrap-file version bump;
-  both verify enumerations in lockstep).
-- **13.4 (done)** — **this component**: `internal/bridge/` + `cmd/bridge/`, the adapter registry, the
-  moved `Fake*` adapters, the FR58 crash/retry proof on a bridge-only harness. The adapter contract
-  types (`Adapter`/`Registry`/`Request`/`Result`) live here. The `external.*` events are test fixtures;
-  the result-op `requestId` is `deriveReplyRequestID(instanceKey)` and the bridge holds no durable
-  bucket of its own.
-- **13.5 (done)** — retired Weaver's former external-I/O path: the `internal/weaver/nudge/` package and
-  the `weaver-claims` bucket are gone, and `internal/weaver` depends on neither `internal/bridge` nor any
-  adapter contract. External I/O is `triggerLoom` of an `externalTask`, executed by this component.
+**Built (Phase 2).** The bridge is fully implemented and CI-gated: the engine (`internal/bridge/` +
+`cmd/bridge/`), the adapter registry and contract types (`Adapter` / `Registry` / `Request` / `Result`),
+the reference `Fake*` adapters, the deterministic result-op `requestId`
+(`deriveReplyRequestID(instanceKey)`), and the FR58 crash/retry idempotency proof on a bridge-only
+harness. The bridge holds no durable bucket of its own. The bootstrap-provisioned
+`identity.system.bridge` service actor is seeded primordially (see `docs/components/service-actors.md`).
+External I/O is reached as `triggerLoom` of an `externalTask` executed by this component — `internal/weaver`
+holds no adapter and makes no external call. End-to-end Loom → bridge convergence on a real `externalTask`
+is exercised by the `lease-signing` reference vertical.
 
-## Deferred (Phase 3+)
+**Deferred (Phase 3+).**
 
-- Real external adapters (Stripe, background-check) — Phase 3 integration; Phase 2 uses the substrate-only
-  `Fake*` adapters.
-- Generic egress as a first-class platform feature beyond the two demo integrations (the PM's
-  "Phase-3 dividend" framing) — the bridge is built generic now, inside the reference vertical, but its
-  broad reuse is a Phase-3 concern.
+- Real external adapters (Stripe, background-check) — the platform ships the substrate-only `Fake*`
+  adapters; production integrations are a Phase 3 concern.
+- Generic egress as a first-class platform feature beyond the reference integrations — the bridge is
+  built generic, but its broad reuse outside the reference vertical is a Phase 3 concern.
+- The `system` lane on the bridge's capability projection, once lane enforcement lands (the same carry
+  as Loom / Weaver).

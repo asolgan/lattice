@@ -1,6 +1,6 @@
 # Refractor
 
-**Component reference** | Audience: implementers + architects | Last verified: 2026-06-03
+**Component reference** | Audience: implementers + architects
 
 ---
 
@@ -163,7 +163,7 @@ near-duplicate identities.
 6. **Each CDC event** → `pipeline.Pipeline.HandleMessage` → engine evaluates → projection row(s) emitted → `EnvelopeFn` wraps row → adapter writes to target
 7. **Latency** tracked in `pipeline.LatencyRingBuffer` (128-sample ring buffer, thread-safe). Per-mutation health signals via `LatticeHeartbeater.LensLatencyProvider`
 8. **Lens spec update** → `CoreKVSource.updateCB` fires; `ClassifyUpdate` determines whether a hot-swap (query change only) or full pipeline restart is required
-9. **Lens tombstone** (parent vertex deleted or `.spec` deleted) → pipeline drained, consumer removed, adjacency entries left in place (tombstone re-projection is a Phase 2 carry)
+9. **Lens tombstone** (parent vertex deleted or `.spec` deleted) → pipeline drained, consumer removed, adjacency entries left in place (tombstone re-projection is a Phase 3 carry)
 
 ---
 
@@ -223,7 +223,7 @@ RETURN row into the canonical Capability KV shape.
 | `version` | `"1.0"` |
 | `projectedAt` | RFC3339 **provenance** timestamp: the anchor actor vertex's `lastModifiedAt` (the committing op's timestamp per Contract #1 §1.3), bound into the cypher as `$projectedAt`. It is deterministic ("as-of input state") — replay/rebuild over the same vertex yields an identical value (no wall-clock churn). It is consumed only by monitoring + the Processor auth trace; the Processor does not compare it against any freshness ceiling. |
 | `projectedFromRevisions` | Map of `{actorKey: revision, lensDefKey: revision}`; recorded as projection provenance and surfaced in the Processor auth trace (planes 2+3). Not a freshness gate. |
-| `lanes` | `["default"]` (multi-lane projection is Phase 2) |
+| `lanes` | `["default"]` (multi-lane projection is Phase 3) |
 | `platformPermissions` | Array from cypher RETURN; `[]` if absent |
 | `serviceAccess` | Array from cypher RETURN; `[]` if absent |
 | `ephemeralGrants` | Array from cypher RETURN; `[]` if absent |
@@ -301,7 +301,7 @@ not automated.
 
 - **Lenses are the read path**: reads never go through the write path. The operation reply carries only commit-trace identifiers (`primaryKey`, `revisions`) — it is never a query channel (there is no arbitrary `detail` map, and the constraint is enforced in code).
 - **Every Core KV mutation must be observable** via at least one lens projection (NFR-P3 ≤500ms end-to-end latency target). The `LatencyRingBuffer` p99 is the primary instrument.
-- **Lens output is overwrite-by-reprojection**: fabricated or stale KV writes in a lens target are corrected on the next reprojection event. This is the fabricated-KV-write defense. Phase 2 adds substrate-level write restriction to the lens target buckets.
+- **Lens output is overwrite-by-reprojection**: fabricated or stale KV writes in a lens target are corrected on the next reprojection event. This is the fabricated-KV-write defense. Substrate-level write restriction on the lens target buckets is a Phase 3 hardening.
 - **Lens definitions live in Core KV vertices**, not in source code. The platform discovers them via the `vtx.meta.>` CDC stream. Seeding a new lens requires a `CreateMetaVertex` operation through the Processor write path.
 - **openCypher full engine is canonical for new lenses**; the simple engine is legacy-fixture support only. Do not write new lens definitions targeting the simple engine.
 
@@ -311,8 +311,8 @@ not automated.
 
 | Feature | Phase | Notes |
 |---------|-------|-------|
-| Personal Lens / Secure Lens | Phase 2 | Requires per-identity lens scoping |
+| Personal Lens / Secure Lens | Phase 3 | Requires per-identity lens scoping |
 | Multi-cell lens routing | Phase 3 | Current pipeline is single-cell |
-| Cross-instance latency aggregation | Phase 2 | Current `LatencyRingBuffer` is per-instance; no cluster-level rollup |
-| Link-envelope tombstone re-projection | Phase 2 | Currently adjacency entries are left in place on tombstone; re-projection on tombstone is not triggered |
-| Substrate-level write restriction on lens target buckets | Phase 2 | Today the defense against fabricated lens-target writes is overwrite-by-reprojection only |
+| Cross-instance latency aggregation | Phase 3 | Current `LatencyRingBuffer` is per-instance; no cluster-level rollup |
+| Link-envelope tombstone re-projection | Phase 3 | Currently adjacency entries are left in place on tombstone; re-projection on tombstone is not triggered |
+| Substrate-level write restriction on lens target buckets | Phase 3 | Today the defense against fabricated lens-target writes is overwrite-by-reprojection only |

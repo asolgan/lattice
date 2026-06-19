@@ -17,7 +17,7 @@ A Phase 1 deployment consists of:
 - One bootstrap JSON file (`lattice.bootstrap.json`, path overridable via `BOOTSTRAP_JSON_PATH`) written at startup, containing per-deployment NanoIDs for primordial vertices. These IDs are deployment-specific and are generated fresh on first boot.
 - All Lattice binaries — Bootstrap, Processor, Refractor, and the CLI — connect to this single NATS server at startup via the `NATS_URL` environment variable (default: `nats://localhost:4222`). Changing `NATS_URL` is the only configuration change required to point any component at a different deployment.
 
-Phase 1 uses a single NATS server rather than a cluster. This satisfies NFR-R6: single-server mode is acceptable for development and portfolio demonstration. High-availability NATS clustering is a Phase 2+ concern.
+Phase 1 uses a single NATS server rather than a cluster. This satisfies NFR-R6: single-server mode is acceptable for development and portfolio demonstration. High-availability NATS clustering is a Phase 3+ concern.
 
 ### NATS Isolation
 
@@ -110,9 +110,9 @@ Each cell's Refractor projects only its cell's Core KV CDC stream. Lens projecti
 
 ---
 
-## Verification Path (Phase 2)
+## Verification Path (future)
 
-The Phase 1 isolation claim is validated by topology — separate NATS server endpoints, separate Postgres DSNs — rather than by an automated integration test. This section specifies the future integration test that will provide automated verification. The test itself is deferred to Phase 2; this section is the specification for that work.
+The Phase 1 isolation claim is validated by topology — separate NATS server endpoints, separate Postgres DSNs — rather than by an automated integration test. This section specifies the future integration test that will provide automated verification. The test itself is deferred (Phase 3+); this section is the specification for that work.
 
 ### Port-Override Mechanism
 
@@ -137,11 +137,11 @@ No changes to `docker-compose.yml` are required. The override mechanism is alrea
 
 ### Future Test Assertions
 
-The Phase 2 integration test asserts the following properties:
+The future integration test asserts the following properties:
 
 1. **Independent bootstrap.** Bootstrap deployment A and deployment B independently. Confirm that `lattice.bootstrap.json` and `lattice-b.bootstrap.json` contain different primordial NanoIDs — deployments are identity-distinct.
 
-2. **NATS credential isolation.** A Refractor started with `NATS_URL=nats://localhost:4222` (A's server) cannot connect to `nats://localhost:4232` (B's server). The wrong NATS URL results in a connection refused or authentication failure, depending on Phase 2 mTLS configuration.
+2. **NATS credential isolation.** A Refractor started with `NATS_URL=nats://localhost:4222` (A's server) cannot connect to `nats://localhost:4232` (B's server). The wrong NATS URL results in a connection refused or authentication failure, depending on the deployment's mTLS configuration.
 
 3. **Operation isolation.** An operation submitted to deployment A is visible in A's Core KV and A's Refractor Lens projection, but does not appear in B's Core KV or B's Refractor Lens projection.
 

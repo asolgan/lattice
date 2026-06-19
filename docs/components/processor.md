@@ -1,6 +1,6 @@
 # Processor
 
-**Component reference** | Audience: implementers + architects | Last verified: 2026-06-03
+**Component reference** | Audience: implementers + architects
 
 ---
 
@@ -460,7 +460,7 @@ degradation signals in Health KV dashboards.
 
 ## What's deferred
 
-- **Read-side capability authorization** (Phase 2): Refractor lenses produce Capability KV; Processor's step 3 checks it. Direct read-side authz (e.g., for CLI queries) is Phase 2.
+- **Read-path authorization** (Phase 3): the write path is capability-checked at step 3 (Refractor lenses produce Capability KV; the Processor reads it). Authorizing read-side queries directly — e.g. CLI / Gateway reads and the `cap.svc` service-access path — is Phase 3.
 - **Multi-cell routing** (Phase 3): the current pipeline is single-cell; operation routing across cells is Phase 3.
-- **NATS account-level auth** (Phase 2): the current connection uses no NATS account-level auth. NATS account-level write restriction on Capability KV — substrate-level enforcement beneath the overwrite-by-reprojection guarantee — is a Phase 2 hardening.
+- **NATS account-level auth** (Phase 3): the current connection uses no NATS account-level auth. NATS account-level write restriction on Capability KV — substrate-level enforcement beneath the overwrite-by-reprojection guarantee — is a Phase 3 hardening.
 - **Multi-aspect atomic OCC** for `UpdateMetaVertex`: `expectedRevision` is asserted on a single aspect; atomic OCC across several changed aspects in one update is deferred.

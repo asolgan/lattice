@@ -1,6 +1,6 @@
 # Loom
 
-**Component reference** | Audience: implementers + architects | Status: **Phase 2 — engine in build (Epic 8)** | Decided: 2026-06-01
+**Component reference** | Audience: implementers + architects
 
 > Decisions of record live in `_bmad-output/planning-artifacts/lattice-architecture.md` →
 > "Phase 2 Architecture — Orchestration Core" (D2, D3, D5); data shapes are frozen in
@@ -16,9 +16,8 @@ Loom is the **deterministic procedure engine** — a generic interpreter that dr
 user-facing: a step may be a **user-task** (collect/verify a field via a task assigned to an
 identity), a **system-op** (e.g. a tenant-provisioning saga: `createTenant → seedRoles →
 createWorkspace → markReady`), or an **external-task** (dispatch an idempotent external call via the
-**bridge** and await its result — Contract #10 §10.5/§10.6, ratified 2026-06-18, landing in the
-External I/O Bridge epic). Loom ships **zero domain knowledge** — patterns are package
-data; the engine interprets them.
+**bridge** and await its result — Contract #10 §10.5/§10.6). Loom ships **zero domain knowledge** —
+patterns are package data; the engine interprets them.
 
 Loom is the imperative counterpart to Weaver's declarative convergence (brainstorming #122):
 **Loom = "do these things in this order"; Weaver = "this target state must hold, converge to
@@ -81,7 +80,7 @@ silent fallback to the live source. The live source remains authoritative only f
 op definition as it exists when the task is created.
 
 **Disaster recovery re-binds to the CURRENT definition.** Total `loom-state` loss destroys the pin
-along with the cursor; a fresh `StartLoomPattern` (the shipped narrow recovery semantics) starts a
+along with the cursor; a fresh `StartLoomPattern` (the narrow recovery semantics) starts a
 new instance that pins **today's** definition. Recovery is re-convergence under today's truth; the
 guard-replay properties below make that safe. Do **not** attempt event-embedded pins to preserve a
 dead generation's definition: `core-events` has `MaxAge=7d` while a userTask wait is unbounded, so
@@ -92,7 +91,7 @@ in-flight instances of the old id then drain under their pinned (old) definition
 target the new id explicitly. Mechanical edits (wording, an inserted cheap step, a tightened guard)
 may safely update a pattern in place; only new instances see them.
 
-### Guard grammar (shipped)
+### Guard grammar
 
 A guard is a **declarative** predicate (Contract #10 §10.5), parsed and validated at pattern-load
 time and rejected wholesale if malformed (`internal/loom/pattern.go` `validate()` →
@@ -219,19 +218,17 @@ to a userTask (dispatch to an async completer, then park; the completer is a hum
   rejected/lost `instanceOp` → `FailPattern` (FR29, never a silent wedge). A dead bridge surfaces on the
   **bridge's own** Health, not a per-instance Loom timeout — symmetric to the unbounded human wait.
 
-Ratified in the External I/O Bridge package (Contract #10 §10.5/§10.6, 2026-06-18) and implemented in
-`internal/loom` (the `externalTask` step kind, two-op dispatch, the third `payload.externalRef`
-correlation key, and the userTask-symmetric deadline). This **supersedes** the former "external calls are
-Weaver-owned" deferral below.
+The `externalTask` step kind, its two-op dispatch, the third `payload.externalRef` correlation key, and
+the userTask-symmetric deadline are implemented in `internal/loom` (Contract #10 §10.5/§10.6).
 
 ---
 
-## What this component will own
+## What this component owns
 
 | Path | Role |
 |------|------|
 | `internal/loom/` | Engine: pattern source (durable Core-KV subscription), Sensorium (per-domain + trigger consumers), Transition Engine (cursor advance + guard eval), Actuator (the command-outbox relay: `outbox.<token>` → `core-operations`), deadline watcher (timeout backstop), pattern interpreter |
-| `internal/loom/control/` | Control plane — serves "which flows are running" by reading `loom-state` (analogous to `internal/refractor/control`; a future control-API story) |
+| `internal/loom/control/` | Control plane — serves "which flows are running" by reading `loom-state` (analogous to `internal/refractor/control`; the operator-facing control API is future work) |
 | `cmd/loom/` | Binary entry point (extractable later; shares only `substrate/*`) |
 
 **Engine vs package:** the interpreter, Sensorium, Transition Engine, Actuator are **engine
@@ -363,8 +360,8 @@ domain.
   SEPARATE key from the heartbeat). Pause-state persists and restores across an engine restart via the
   supervisor's `Add`-time restore semantics (manual > structural > infra precedence): a consumer paused
   before a restart comes back paused without an explicit `Resume`. Loom exposes no operator
-  `Pause`/`Resume` control surface in this story — that is a future control-plane story; the supervisor
-  API is callable but not externally surfaced. When a per-domain consumer is torn down (Remove, above),
+  `Pause`/`Resume` control surface yet — the supervisor API is callable but not externally surfaced.
+  When a per-domain consumer is torn down (Remove, above),
   both its `consumerStateCache` entry and its `health.loom.<instance>.consumer.loom-<domain>` pause entry
   are deleted, so a future re-add of the same domain starts clean (active, not resurrected into a stale
   pause) and the heartbeat does not keep reporting a phantom consumer.
@@ -400,14 +397,20 @@ If two processes ever do run with the same `Instance` against the same `health-k
 - **Module boundary** — `loom` imports only `substrate/*`; talks to Weaver/Processor via NATS,
   never Go calls.
 
-## Deferred (Phase 2+)
+## Implementation status
 
-- External-call steps in Loom — **the ratified design, no longer deferred to Weaver**: the
-  **`externalTask`** step kind (Core model above) dispatches an idempotent external call via the
-  **bridge** and awaits its result. This is the sole external-I/O placement (Contract #10 §10.3/§10.8,
-  amended 2026-06-18). The engine side is implemented in `internal/loom`; the **bridge** component that
-  consumes `events.external.>` and posts the `replyOp` is shipped (`docs/components/bridge.md`).
-- Starlark guard evaluation — the reserved `{reads, starlark}` escape hatch (validated-and-rejected
-  today). The shared verified-pure sandbox lands only when the first Starlark guard is authored
-  (§10.5); the shipped declarative grammar (above) covers the field-presence/equality predicates the
-  current flows need. Must remain side-effect-free.
+**Built (Phase 2).** The engine is fully implemented and CI-gated: the linear-sequence interpreter,
+the rebuildable durable cursor with definition pinning, the declarative guard grammar, the command
+outbox + deadline backstop, the supervised consumers, and all three step kinds — **userTask**,
+**systemOp**, and **externalTask**. The `externalTask` step dispatches an idempotent external call via
+the **bridge** (`docs/components/bridge.md`) and awaits its result; this is the sole external-I/O
+placement (Contract #10 §10.3/§10.8).
+
+**Deferred (Phase 3+).**
+
+- Starlark guard evaluation — the reserved `{reads, starlark}` escape hatch is recognized and rejected
+  at parse time. The shared verified-pure sandbox lands only when the first Starlark guard is authored
+  (§10.5); the declarative grammar above covers the field-presence / equality predicates the current
+  flows need. It must remain side-effect-free.
+- An externally-surfaced Loom control API (operator pause/resume, a durable `loom.*` read model) — the
+  control plane reads `loom-state` today; a public control surface is future work.

@@ -1,6 +1,6 @@
 # Capability Packages
 
-**Component reference** | Audience: package authors + architects | Last verified: 2026-06-03
+**Component reference** | Audience: package authors + architects
 
 This page is the author-facing guide to building and installing a Capability
 Package. The on-the-wire install/uninstall contract (op payload shape,
@@ -23,17 +23,17 @@ Installed packages:
 - `rbac-domain` — roles, permissions, and the assign/grant ops + their inverses.
 - `identity-hygiene` — duplicate-identity detection (`duplicateCandidates` Lens)
   + operator-approved merge (`MergeIdentity` op).
-- `orchestration-base` (Phase 2) — the generic `task` DDL + `CreateTask` op
-  (assignee required + validated, no-orphan by construction) + the package-owned
+- `orchestration-base` — the generic `task` DDL + `CreateTask` op (assignee
+  required + validated, no-orphan by construction) + the package-owned
   `capabilityEphemeral` Lens. The lens re-sources FR56 ephemeral task grants out
-  of the bootstrap god-cypher into the disjoint key `cap.ephemeral.<actor>` (the
-  (a1) extraction, Contract #6 §6.6 / Contract #10 §10.7) — the first
-  proof-of-pattern for the contract-contribution model (core owns the
-  capability-kv bucket + step-3 reader; a package projects the grant type it
-  owns into a disjoint key space). Step-3's task-dispatch branch reads the new
-  key as a single GET, no fallback.
-
-Phase 2 also adds `lease-signing` (the Loftspace reference vertical).
+  of the bootstrap god-cypher into the disjoint key `cap.ephemeral.<actor>`
+  (Contract #6 §6.6 / Contract #10 §10.7) — a proof-of-pattern for the
+  contract-contribution model (core owns the capability-kv bucket + step-3
+  reader; a package projects the grant type it owns into a disjoint key space).
+  Step-3's task-dispatch branch reads the new key as a single GET, no fallback.
+- `lease-signing` — the Loftspace lease-application reference vertical: a real
+  Weaver convergence target, the Loom `externalTask` patterns, and the bridge
+  adapters wired into one installable package.
 
 A package is **NOT** a runtime plugin. It is a *seed bundle*: at install time it
 writes meta-vertices, permissions, lens definitions, and grant links to Core KV.
@@ -223,7 +223,7 @@ write is needed.
 
 - **No dependency-resolution graph** — a missing dependency warns rather than refuses.
 - **No in-place upgrade** — a different version on an already-installed package fails closed.
-- **No NATS account-level auth** — the install actor is the filesystem-bound admin credential; substrate-level write enforcement is a Phase 2 hardening.
+- **No NATS account-level auth** — the install actor is the filesystem-bound admin credential; substrate-level write enforcement is a Phase 3 hardening.
 
 ## CLI
 

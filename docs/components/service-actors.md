@@ -1,6 +1,6 @@
 # Internal service actors — bootstrap provisioning
 
-**Component reference** | Audience: implementers + architects | Status: **Phase 2 — shipped (kernel topology)** | Decided: 2026-06-05
+**Component reference** | Audience: implementers + architects
 
 > Implementation page for the Loom + Weaver + Bridge service-actor identities seeded into the
 > primordial bootstrap. Grounding of record: `docs/contracts/07-primordial-bootstrap.md`
@@ -21,7 +21,7 @@ internal service-actor identities in the **same atomic batch** that seeds the ad
 | `vtx.identity.<bridgeId>` | `identity.system.bridge` | `lnk.identity.<bridgeId>.holdsRole.role.<operatorId>` |
 
 All three are `protected: true` (a package uninstall must never tombstone a kernel service actor),
-and their NanoIDs persist to `lattice.bootstrap.json` (bootstrap-file version `8`) so post-restart
+and their NanoIDs persist to `lattice.bootstrap.json` (bootstrap-file version `9`) so post-restart
 code resolves "the loom identity" without a class query.
 
 **Root-equivalent capability is established purely by the `holdsRole → operator` edge** — nothing
@@ -63,7 +63,8 @@ graph material**:
   `actor` field and *having* a `cap.identity.<id>` projection — identical to a human operator.
 - The "signing key" is therefore the **engine process's NATS transport credential** (the
   account / nkey / creds it uses to publish to `ops.system.>`), an arch-explicitly-deferred-to-
-  Stream-3 deployment concern (arch lines 285 / 325), wired in Epic 8 / 9 + deployment.
+  Stream-3 deployment concern (arch lines 285 / 325) — provisioned at deployment time, not as graph
+material.
 
 This story seeds **no key material** on the identity vertices (unused load-bearing-looking crypto
 would be a smell). **When envelope-signature verification is ever added, these actors receive key
@@ -96,9 +97,8 @@ cleanly with a named-key error and never hangs.
 
 ## Bootstrap-file version bumps require a full teardown
 
-`lattice.bootstrap.json` carries a `version` field. Any version bump (e.g. the 5 → 6 bump that added
-the Loom/Weaver identity NanoIDs, or the 7 → 8 bump that added the Bridge identity NanoID) is a hard
+`lattice.bootstrap.json` carries a `version` field. Any version bump is a hard
 mismatch on an older file: `checkVersion` fails fast and the operator must run `make down && make up`. There is no in-place migration — `make down` wipes the
 ephemeral NATS/Postgres volumes and removes the JSON, so the next `make up` reseeds the whole
-primordial set with fresh NanoIDs. This is intentional for the Phase 2 single-cell MVP; do not expect
+primordial set with fresh NanoIDs. This is intentional for the single-cell MVP; do not expect
 or build an upgrade-in-place path.

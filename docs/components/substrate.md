@@ -1,6 +1,6 @@
 # Substrate
 
-**Component reference** | Audience: implementers + architects | Last verified: 2026-06-11
+**Component reference** | Audience: implementers + architects
 
 ---
 
@@ -405,7 +405,7 @@ All three are plain `errors.New` sentinels wrapped with context via
 
 | Feature | Phase | Notes |
 |---------|-------|-------|
-| NATS account-level auth | Phase 2 | `substrate.Connect` inherits connection auth from the environment; there is no account-level write enforcement. The fabricated-KV-write attack surface (defended today by Refractor overwrite-by-reprojection) is closed at the substrate level in Phase 2. |
-| Inner-package migration of Refractor sub-packages to substrate | Phase 2 (partial) | Some Refractor sub-packages still hold their own JetStream / KV handles rather than going through `substrate.Conn`; full migration is ongoing. |
+| NATS account-level auth | Phase 3 | `substrate.Connect` inherits connection auth from the environment; there is no account-level write enforcement. The fabricated-KV-write attack surface (defended today by Refractor overwrite-by-reprojection) is closed at the substrate level in Phase 3. |
+| Inner-package migration of Refractor sub-packages to substrate | Phase 3 (partial) | Some Refractor sub-packages still hold their own JetStream / KV handles rather than going through `substrate.Conn`; full migration is ongoing. |
 | `AdjacencyForNode` substrate helper | Not built | A standalone `(*Conn).AdjacencyForNode` was contemplated for inbound-link enumeration but never needed — the adjacency index is read directly by Refractor's cypher executor. Revisit only if another component needs adjacency lookups outside Refractor. |
 | Cross-bucket atomic batch | Not planned (NATS limitation) | Cross-bucket atomicity is not supported by the NATS atomic batch primitive. Callers that need cross-bucket coordination must implement application-level compensation. |

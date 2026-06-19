@@ -1,6 +1,6 @@
 # Refractor Failure Tiers
 
-**Component reference** | Audience: implementers + architects | Last verified: 2026-06-03
+**Component reference** | Audience: implementers + architects
 
 This document classifies the failure modes the Refractor can encounter and the
 operational response each requires.
@@ -37,7 +37,7 @@ Refractor inherits the 4-tier failure model from Materializer
 ## Delete-projection semantics
 
 Delete projection is **per-lens and mode-dependent** (`targetConfig.deleteMode`),
-with **hard delete as the default** (Story 1.5.12). Lineage already lives in Core
+with **hard delete as the default**. Lineage already lives in Core
 KV, so the derived view reflects deletions as removals unless a lens explicitly
 opts into tombstones for audit/forensic targets.
 
@@ -53,10 +53,10 @@ Both modes are idempotent: deleting an absent row/key is a no-op, not an error.
 
 The **capability plane uses the default hard delete**: the capability authorizer
 treats an absent key (`NoCapabilityEntry`) and a tombstone doc identically as
-denial (Contract #6 §6.8, "absence equals denial"), and the freshness-ceiling
-comparison that originally motivated soft-delete on this plane was removed in
-Story 1.5.4. Hard delete is the contract-aligned semantics and avoids indefinite
-tombstone accumulation in the capability KV.
+denial (Contract #6 §6.8, "absence equals denial"), and no freshness-ceiling
+comparison exists on this plane that would require a tombstone to survive. Hard
+delete is the contract-aligned semantics and avoids indefinite tombstone
+accumulation in the capability KV.
 
 ## Control-plane authorization (currently stubbed)
 

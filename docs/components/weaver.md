@@ -1,16 +1,15 @@
 # Weaver
 
-**Component reference** | Audience: implementers + architects | Status: **Phase 2 — design + implementation; lanes 1 & 3 and the control plane are built (Stories 9.1–9.4). See [Implementation status](#implementation-status-phase-2--stories-9194) at the bottom.** | Decided: 2026-06-01
+**Component reference** | Audience: implementers + architects
 
-> Design page authored in the Phase 2 architecture sprint. Decisions of record live in
-> `_bmad-output/planning-artifacts/lattice-architecture.md` → "Phase 2 Architecture —
-> Orchestration Core" (D3, D4). Data shapes are frozen in Contract #10 (§10.2 target rows,
-> §10.3 weaver-state, §10.4 scheduling, §10.8 target+playbook) — where this page and the
-> contract diverge, the contract governs. Update this page in the same commit as the code;
-> drift is a documentation bug.
+> Decisions of record live in `_bmad-output/planning-artifacts/lattice-architecture.md` →
+> "Phase 2 Architecture — Orchestration Core" (D3, D4). Data shapes are frozen in Contract #10
+> (§10.2 target rows, §10.3 weaver-state, §10.4 scheduling, §10.8 target+playbook) — where this
+> page and the contract diverge, the contract governs. Update this page in the same commit as the
+> code; drift is a documentation bug.
 >
 > This page describes **what Weaver is**. A per-surface ledger of what is built vs. deferred lives
-> in [Implementation status](#implementation-status-phase-2--stories-9194) at the end.
+> in [Implementation status](#implementation-status) at the end.
 
 External idempotent I/O (FR58 / NFR-S11) is **not** a Weaver concern: a target that needs an
 external call remediates with **`triggerLoom`** of a Loom **`externalTask`** pattern, and the
@@ -59,13 +58,13 @@ Each lane exists because the others structurally cannot see its violations:
 | Lane | Trigger | Rationale |
 |------|---------|-----------|
 | **1. Violation-driven** | a row in a target Lens's output (CDC over the target KV) | the main path; Refractor keeps the target live |
-| **2. Event-driven (targeted-audit)** | a `core-events` event → re-evaluate only the touched subgraph | for targets too costly to keep continuously projected — **built but unexercised in the Phase 2 demo** |
-| **3. Temporal** | a fired `@at` schedule on `core-schedules` (`schedule.weaver.timer.fired.>`, ADR-51 / §10.4) | time-derived violations emit no CDC (e.g. "bgcheck older than 90d") — **shipped (Story 9.3)** |
+| **2. Event-driven (targeted-audit)** | a `core-events` event → re-evaluate only the touched subgraph | for targets too costly to keep continuously projected |
+| **3. Temporal** | a fired `@at` schedule on `core-schedules` (`schedule.weaver.timer.fired.>`, ADR-51 / §10.4) | time-derived violations emit no CDC (e.g. "bgcheck older than 90d") |
 
 ### Evaluator tiers
 
-| Tier | Job | Phase 2 |
-|------|-----|---------|
+| Tier | Job | Status |
+|------|-----|--------|
 | **L1** | re-confirm row is still violating; drop if already in-flight (`weaver-state` mark) | ✅ |
 | **L2** | hydrate context, classify the specific gap, select playbook input | ✅ |
 | **L3** | AI-assisted reasoning for ambiguous/novel discrepancies | **deferred → Phase 3** |
@@ -162,7 +161,7 @@ Lens projects the deadline: row column freshUntil = resolve + window (RFC3339)
 - **Never injected into `core-events` directly** — the transactional outbox stays the sole event
   producer; the fired message becomes a normal **op** (`MarkExpired`, payload
   `{entityKey, targetId, expiredAt}`, submitted under Weaver's service-actor authority with no
-  `authContext`; the op's DDL/grants are package data, Epic 14).
+  `authContext`; the op's DDL/grants are package data).
 - **Accepted Phase 2 bounds** (operator-visible, self-healing):
   - A `MarkExpired` **rejected at the Processor** is not re-attempted by Weaver (fire-and-forget,
     nothing leases it) — the freshness flip then waits for the next CDC touch of the entity. An
@@ -182,7 +181,7 @@ Lens projects the deadline: row column freshUntil = resolve + window (RFC3339)
 
 ---
 
-## Control plane (FR30, Story 9.4)
+## Control plane (FR30)
 
 Operators manage Weaver's currently-registered convergence targets via a `nats-io/nats.go/micro`
 Services responder (`internal/weaver/control`), mirroring Refractor's control plane
@@ -223,7 +222,7 @@ disabled target still:
 - arms/re-arms freshness timers (`scheduleFreshness`, lane-3 — keeps lane-3 state current so an
   instant re-enable loses no deadline);
 - records freshness expiries (`handleFiredTimer` still submits `MarkExpired` for an already-armed
-  timer — state-recording, already gated by the §9.3 read-before-act row-presence/renewed guards).
+  timer — state-recording, already gated by the read-before-act row-presence/renewed guards).
 
 What it does NOT do while disabled: create a new in-flight mark or run any Strategist/Actuator
 remediation (`triggerLoom`/`assignTask`/`directOp`). On `enable`, lane-3/clearing state is
@@ -235,7 +234,7 @@ disable→enable window, and no row re-touch is required.
 `disable <targetId>` writes the `<targetId>.__control` marker (and updates the in-memory set)
 **first**, **then** calls `substrate.ConsumerSupervisor.Pause` on the target's lane-1 KV-CDC
 durable (`PauseManual` — survives restart via the existing `HealthSink` pause-restore, the same
-mechanism Story 9.2 uses). `enable <targetId>` calls `Resume` **first**, **then** deletes the
+mechanism the supervised consumers use). `enable <targetId>` calls `Resume` **first**, **then** deletes the
 marker and clears the in-memory set, and re-runs `reconcileConsumers` so a consumer removed by a
 prior `revoke` is restored immediately rather than waiting for the next registry event. Both
 return an error if `targetId` is not currently registered.
@@ -283,13 +282,13 @@ its Lens (out of this story's scope — an op-path/Refractor concern).
 
 ### Capability authorization
 
-`internal/weaver/control` ships a `StubCapabilityChecker` (allow-all, logs every call) — mirrors
-`internal/refractor/control`'s 2.1 stub posture, not a new gap introduced by this story. Full
-Capability-KV integration is Epic 3 work.
+`internal/weaver/control` ships a `StubCapabilityChecker` (allow-all, logs every call) — mirroring
+`internal/refractor/control`'s stub posture. Full Capability-KV integration of the control plane is
+deferred (Phase 3).
 
 ---
 
-## What this component will own
+## What this component owns
 
 | Path | Role |
 |------|------|
@@ -336,7 +335,7 @@ Capability-KV integration is Epic 3 work.
 - **Weaver targets ARE Lenses** — Weaver consumes the Refractor; it is not a cypher runtime.
 - **Module boundary** — `weaver` imports only `substrate/*`; triggers Loom via NATS/op.
 
-## Implementation status (Phase 2 — Stories 9.1–9.4, 10.1–10.2)
+## Implementation status
 
 What ships today in `internal/weaver` + `cmd/weaver`, and what is deliberately deferred:
 
@@ -350,13 +349,13 @@ What ships today in `internal/weaver` + `cmd/weaver`, and what is deliberately d
 | **Actions** | `triggerLoom` (→ `StartLoomPattern` op, never a Go call), `assignTask` (→ `CreateTask` with episode-deterministic `taskId`), `directOp` ✅. External idempotent I/O is `triggerLoom` of a Loom `externalTask` pattern — the **bridge** executes the call (`docs/components/bridge.md`); Weaver never holds an adapter. An action the playbook names outside this set fails closed (a loud `PlaybookConfigError` Health issue), never a silent skip. |
 | **Health** | ✅ Contract #5 heartbeat at `health.weaver.<instance>` (metrics: `consumers`, `targets`, `marksInFlight`, `sweepReclaims`, `sweepOrphansDeleted`, `sweepCorrupt`, `sweepLastRunAt`, `timersScheduled`, `timersFired`) + per-consumer pause-state docs at `health.weaver.<instance>.consumer.<name>`; config/data errors surface as issues. |
 | **Lane 3 (temporal)** | ✅ Shipped (Contract #10 §10.4). One **fixed supervised durable** `weaver-temporal` on `core-schedules` filtered `schedule.weaver.timer.fired.>`; the lane-1 row handler's **scheduling leg** re-arms `@at(freshUntil)` per delivery (level-driven, replace-on-reschedule); the fired→op conversion submits `MarkExpired` under the **deterministic timer `requestId`** (schedule subject + fire instant) with **no weaver-state mark**. See "Temporal lane" above for the convention column and the accepted Phase 2 bounds. |
-| **Control API/CLI (Pause/Resume surface)** | ✅ Shipped (Story 9.4, FR30). `internal/weaver/control` exposes `list`/`disable`/`enable`/`revoke` over a `nats-io/nats.go/micro` Services responder; `lattice weaver` CLI group. See "Control plane" above. |
-| **Lane 2 (event-targeted-audit) + `weaver-work`** | ⏳ Phase 3 (§10.3: no durable bucket in Phase 2). |
-| **Real target Lens via Refractor + playbook package data** | ⏳ Epic 14 (`lease-signing`); 9.1 exercises the engine with test-written §10.2 fixture rows. |
+| **Control API/CLI (Pause/Resume surface)** | ✅ Shipped (FR30). `internal/weaver/control` exposes `list`/`disable`/`enable`/`revoke` over a `nats-io/nats.go/micro` Services responder; `lattice weaver` CLI group. See "Control plane" above. |
+| **Lane 2 (event-targeted-audit) + `weaver-work`** | ⏳ Phase 3 (§10.3: no durable bucket today). |
+| **Real target Lens via Refractor + playbook package data** | ✅ Shipped — the `lease-signing` reference vertical provides a real convergence target + §10.8 playbook; the engine also runs against test-written §10.2 fixture rows. |
 
 ---
 
-## Deferred (Phase 2+)
+## Deferred (Phase 3+)
 
 - Refractor negative/filter-retraction projection (true emit-only-when-violating).
 - Lane-2 on-demand evaluation (built, unexercised in demo).

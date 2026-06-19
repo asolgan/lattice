@@ -1,6 +1,6 @@
 # Platform message scheduling — core-schedules stream
 
-**Component reference** | Audience: component authors + architects | Status: **Phase 2 — shipped** | Contract authority: `docs/contracts/10-orchestration-surfaces.md` §10.4 (FROZEN 2026-06-02)
+**Component reference** | Audience: component authors + architects | Contract authority: `docs/contracts/10-orchestration-surfaces.md` §10.4
 
 ---
 
@@ -40,7 +40,7 @@ Set two headers on your `nats.Msg` before publishing to `schedule.<domain>.<kind
 
 | Header constant | Wire value | Meaning |
 |-----------------|-----------|---------|
-| `server.JSSchedulePattern` | `"Nats-Schedule"` | Schedule spec — Phase 2 supports `@at <RFC3339>` (one-shot absolute time). Example: `@at 2026-06-06T14:00:00Z` |
+| `server.JSSchedulePattern` | `"Nats-Schedule"` | Schedule spec — `@at <RFC3339>` (one-shot absolute time). Example: `@at 2026-06-06T14:00:00Z` |
 | `server.JSScheduleTarget` | `"Nats-Schedule-Target"` | The subject the NATS scheduler republishes the payload to when the schedule fires — **must lie within `schedule.>`** (the server rejects an out-of-stream target at publish time) |
 
 Use the constants from `github.com/nats-io/nats-server/v2/server` — do not hardcode the raw strings. In-repo components use `substrate.ScheduleHeader` / `substrate.ScheduleTargetHeader` (`internal/substrate/publish.go`), which are test-pinned to the server constants, and publish through `Conn.Publish` (a JetStream publish) rather than holding a raw NATS handle.
@@ -76,9 +76,9 @@ The fired message is then processed by the consuming component (e.g. Weaver conv
 
 ---
 
-## Phase 2 scope
+## Scope
 
-Phase 2 supports `@at <RFC3339>` (one-shot absolute schedules) only. `@every` recurring schedules are deferred.
+The platform supports `@at <RFC3339>` (one-shot absolute schedules). `@every` recurring schedules are deferred (Phase 3).
 
 ---
 

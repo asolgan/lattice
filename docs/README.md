@@ -32,15 +32,17 @@ Per-component pages. Updated in the same commit as code changes. Drift between p
 
 | Doc | Description |
 |-----|-------------|
-| [components/README.md](./components/README.md) | Component directory — how to use these pages, Phase 1 vs Phase 2 components |
+| [components/README.md](./components/README.md) | Component directory — the per-component reference pages and how to use them |
 | [components/processor.md](./components/processor.md) | Processor — 9-step commit pipeline, lane consumers, DDL cache, capability authorization, Starlark sandbox, transactional outbox |
 | [components/refractor.md](./components/refractor.md) | Refractor — lens projection engine, openCypher full engine, Capability Lens, control plane |
 | [components/substrate.md](./components/substrate.md) | Substrate — NATS/KV primitives, NanoID generator, atomic-batch + durable-consumer utilities, key builders |
 | [components/_packages.md](./components/_packages.md) | Capability packages — Processor-routed install path, DDL/lens/permission seeding, authoring guide |
 | [components/refractor-failure-tiers.md](./components/refractor-failure-tiers.md) | Refractor failure-tier classification — Infrastructure/Structural/Terminal/Transient + designed privacy/security supersession tiers |
-| [components/loom.md](./components/loom.md) | Loom (Phase 2, design) — deterministic procedure engine: linear-sequence interpreter, rebuildable cursor |
-| [components/weaver.md](./components/weaver.md) | Weaver (Phase 2, design) — convergence engine: target-as-Lens, 3-lane work stream, triggerLoom remediation |
-| [components/bridge.md](./components/bridge.md) | Bridge (Phase 2) — idempotent external I/O: `events.external.>` consumer, adapter registry, result-op submission |
+| [components/loom.md](./components/loom.md) | Loom — deterministic procedure engine: linear-sequence interpreter, rebuildable cursor, `externalTask` steps |
+| [components/weaver.md](./components/weaver.md) | Weaver — convergence engine: target-as-Lens, 3-lane work stream, triggerLoom remediation |
+| [components/bridge.md](./components/bridge.md) | Bridge — idempotent external I/O egress: `events.external.>` consumer, adapter registry, result-op submission |
+| [components/scheduling.md](./components/scheduling.md) | Platform message scheduling — the `core-schedules` stream, `@at` scheduled messages, replace-on-reschedule semantics |
+| [components/service-actors.md](./components/service-actors.md) | Internal service actors — the Loom / Weaver / Bridge primordial identities and how root-equivalent capability is established |
 
 ---
 

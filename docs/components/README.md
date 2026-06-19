@@ -1,42 +1,69 @@
 # Lattice Components
 
-This directory contains per-component reference pages. Each page documents
-what the component owns, what it reads/writes, its in/out contracts,
-failure modes, and applicable architectural principles. Implementers and
-Winston (architecture lead) should consult the relevant component page
-**before** authoring per-story handoff briefs.
+This directory contains per-component reference pages. Each page documents what
+the component owns, what it reads and writes, its in/out contracts, failure
+modes, and the architectural principles it honors. Each page describes the
+component **as designed**; a short *Implementation status* section at the end of
+each page records what is built today versus deferred to a later phase.
 
 Cross-component interface contracts live in
-[`/docs/contracts/`](/docs/contracts/README.md). Per-component
-implementation choices live HERE. Per-package capability definitions live
-under `packages/<package-name>/`.
+[`/docs/contracts/`](/docs/contracts/README.md). Per-component implementation
+choices live HERE. Per-package capability definitions live under
+`packages/<package-name>/`.
 
-## Phase 1 components (shipped code)
+## The components
 
-- [Processor](./processor.md) — operation write path, 9-step commit pipeline
-- [Refractor](./refractor.md) — lens projection engine + openCypher full
-  engine + control plane
-- [Substrate](./substrate.md) — NATS / KV / NanoID / atomic-batch primitives
+**Core write / read spine**
 
-## Phase 2 components (design pages — no code yet)
+- [Processor](./processor.md) — the sole authorized writer: the 9-step commit
+  pipeline, the Starlark sandbox, the DDL cache, capability authorization, and the
+  transactional event outbox.
+- [Refractor](./refractor.md) — the read side: continuous openCypher lens
+  projections, the security-critical Capability Lens, CDC consumers, and the
+  control plane.
+- [Substrate](./substrate.md) — the NATS / KV / NanoID primitive layer: key
+  shapes, atomic batch, and durable + supervised consumers.
 
-- [Loom](./loom.md) — deterministic procedure engine (linear-sequence interpreter; +`externalTask` step, E.1)
-- [Weaver](./weaver.md) — convergence engine (target-as-Lens; external I/O moving to the Bridge, E.1)
-- [Bridge](./bridge.md) — generic external-I/O egress (durable `events.external.>` consumer; ratified design, built in E.3)
+**Orchestration**
 
-## Phase 3+ components (no code yet — placeholders)
+- [Loom](./loom.md) — the deterministic procedure engine: a linear-sequence
+  interpreter with userTask / systemOp / externalTask steps and a rebuildable
+  cursor.
+- [Weaver](./weaver.md) — the convergence engine: targets-as-Lenses, the 3-lane
+  work stream, and triggerLoom / assignTask / directOp remediation.
+- [Bridge](./bridge.md) — the external-I/O egress: a durable `events.external.>`
+  consumer, the adapter registry, and idempotent result-op submission.
 
-- Gateway — TBD (Phase 3; JWT validation, `Lattice-Actor` stamping, read-path auth enforcement)
-- Vault — TBD (Phase 3 crypto-shred / PII)
+**Cross-cutting**
+
+- [Capability Packages](./_packages.md) — the install / uninstall model and the
+  package-authoring guide (the kernel stays minimal; everything else is a package).
+- [Service actors](./service-actors.md) — the internal Loom / Weaver / Bridge
+  identities seeded at bootstrap and how they hold root-equivalent capability.
+- [Platform message scheduling](./scheduling.md) — the `core-schedules` stream and
+  the `@at` scheduled-message convention any component uses to turn time into an op.
+- [Refractor failure tiers](./refractor-failure-tiers.md) — the four-tier failure
+  model and the designed-but-not-built privacy / security supersession tiers.
 
 ## How to use these pages
 
 When authoring a story handoff brief that touches a component, read that
-component's page first to understand: what's already there, what
-contracts it honors, what principles apply, what's deferred. These pages
-are the consult-first layer, so a brief can cite a component page rather
-than re-explaining the component inline.
+component's page first to understand what it owns, what contracts it honors, what
+principles apply, and what is deferred. These pages are the consult-first layer,
+so a brief can cite a component page rather than re-explaining the component
+inline.
 
-When adding a new principle, new contract surface, or new failure mode
-to a Phase 1 component, update the page in the same commit as the code.
-Drift between page and code is treated as a documentation bug.
+Update a component page in the same commit as the code it describes. Drift
+between page and code is treated as a documentation bug.
+
+## Implementation status
+
+| Component | Status |
+|-----------|--------|
+| Processor, Refractor, Substrate, Capability Lens, Capability Packages | ✅ Built (Phase 1 / 1.5) |
+| Loom, Weaver, Bridge, service actors, platform scheduling | ✅ Built (Phase 2) |
+| Gateway — JWT auth, `Lattice-Actor` stamping, read-path auth enforcement | 🔭 Designed — Phase 3 |
+| Vault — per-identity keys, crypto-shredding | 🔭 Designed — Phase 3 |
+
+Each page's own *Implementation status* / *What's deferred* section is the
+authoritative, fine-grained record for that component.
