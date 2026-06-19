@@ -70,8 +70,8 @@ type harness struct {
 	conn   *substrate.Conn
 	logger *slog.Logger
 
-	coreKV  jetstream.KeyValue
-	convKV  jetstream.KeyValue // weaver-targets
+	coreKV  *substrate.KV
+	convKV  *substrate.KV // weaver-targets
 	bgFake  *bridge.FakeBackgroundCheck
 	stripe  *bridge.FakeStripe
 	convRID string // the leaseApplicationComplete lens rule ID
@@ -124,11 +124,11 @@ func newHarness(t *testing.T) *harness {
 	require.NoError(t, seeder.ProvisionBuckets(ctx))
 	require.NoError(t, seeder.SeedPrimordial(ctx))
 
-	coreKV, err := js.KeyValue(ctx, bootstrap.CoreKVBucket)
+	coreKV, err := conn.OpenKV(ctx, bootstrap.CoreKVBucket)
 	require.NoError(t, err)
-	adjKV, err := js.KeyValue(ctx, bootstrap.RefractorAdjacencyKV)
+	adjKV, err := conn.OpenKV(ctx, bootstrap.RefractorAdjacencyKV)
 	require.NoError(t, err)
-	convKV, err := js.KeyValue(ctx, bootstrap.WeaverTargetsBucket)
+	convKV, err := conn.OpenKV(ctx, bootstrap.WeaverTargetsBucket)
 	require.NoError(t, err)
 
 	h := &harness{t: t, ctx: ctx, conn: conn, logger: logger, coreKV: coreKV, convKV: convKV}
@@ -172,7 +172,7 @@ func newHarness(t *testing.T) *harness {
 	// --- Refractor: activate the leaseApplicationComplete lens + its actorAggregate
 	// projection through the production wiring (CoreKVSource watch +
 	// projection.InstallActorAggregate), exactly as the scalar e2e + cmd/refractor.
-	h.startAdjacencyBootstrapper(ctx, js, adjKV)
+	h.startAdjacencyBootstrapper(ctx, adjKV)
 	h.startRefractor(ctx, adjKV, coreKV, convKV)
 
 	// --- Loom: trigger/relay/deadline + per-domain completion consumers.
@@ -245,8 +245,8 @@ func (h *harness) installChain() {
 
 // startAdjacencyBootstrapper runs the Refractor adjacency CDC consumer so the
 // lens cypher's link hops (applicationFor / providedTo) resolve.
-func (h *harness) startAdjacencyBootstrapper(ctx context.Context, js jetstream.JetStream, adjKV jetstream.KeyValue) {
-	boots := consumer.NewBootstrapper(js, bootstrap.CoreKVBucket, adjKV)
+func (h *harness) startAdjacencyBootstrapper(ctx context.Context, adjKV *substrate.KV) {
+	boots := consumer.NewBootstrapper(h.conn, bootstrap.CoreKVBucket, adjKV)
 	go func() { _ = boots.Run(ctx) }()
 	select {
 	case <-boots.Ready():
@@ -258,14 +258,14 @@ func (h *harness) startAdjacencyBootstrapper(ctx context.Context, js jetstream.J
 // startRefractor discovers the installed leaseApplicationComplete lens via the
 // live CoreKVSource watch and wires it through projection.InstallActorAggregate
 // (the production actor-aggregate path) onto the weaver-targets bucket.
-func (h *harness) startRefractor(ctx context.Context, adjKV, coreKV, convKV jetstream.KeyValue) {
+func (h *harness) startRefractor(ctx context.Context, adjKV, coreKV, convKV *substrate.KV) {
 	fullEngine := full.New()
 	projectionRevision := func(k string) uint64 {
 		entry, gErr := coreKV.Get(ctx, k)
 		if gErr != nil || entry == nil {
 			return 0
 		}
-		return entry.Revision()
+		return entry.Revision
 	}
 
 	src := lens.NewCoreKVSource(h.conn, bootstrap.CoreKVBucket, h.logger)
@@ -390,11 +390,11 @@ func (h *harness) convKey(appID string) string { return "leaseApplicationComplet
 // readRow reads the convergence row, returning nil when absent/empty.
 func (h *harness) readRow(appID string) map[string]any {
 	entry, err := h.convKV.Get(h.ctx, h.convKey(appID))
-	if err != nil || entry == nil || len(entry.Value()) == 0 {
+	if err != nil || entry == nil || len(entry.Value) == 0 {
 		return nil
 	}
 	var row map[string]any
-	if json.Unmarshal(entry.Value(), &row) != nil {
+	if json.Unmarshal(entry.Value, &row) != nil {
 		return nil
 	}
 	return row
@@ -735,4 +735,3 @@ func mustNanoID(t *testing.T) string {
 	require.NoError(t, err)
 	return id
 }
-
