@@ -31,9 +31,8 @@ const markTTLBackstopFactor = 2
 // dispatch OCC: concurrent evaluations of the same gap race the create, the
 // loser drops, the winner dispatches. LeaseExpiresAt mirrors the lease the
 // per-key TTL backstops (§10.3 visibility); HeldBy is the writing engine
-// instance. ClaimID is declared (omitempty) per the frozen §10.3 value shape
-// but stays empty until Epic 10's nudge path mints it atomically with the
-// CAS-create.
+// instance. ClaimID is declared (omitempty) per the frozen §10.3 value shape;
+// it is always empty on a written mark.
 type mark struct {
 	TargetID       string `json:"targetId"`
 	EntityKey      string `json:"entityKey"`
@@ -101,46 +100,6 @@ func (m *markStore) create(ctx context.Context, targetID, entityID, gapColumn, e
 	return rev, false, nil
 }
 
-// createNudge CAS-creates a nudge mark, minting a fresh NanoID claimId and
-// writing it into the mark's ClaimID field in the SAME KVCreateWithTTL that
-// creates the key — the §10.3 invariant that a nudge mark ALWAYS carries a
-// non-empty claimId, impossible-by-construction. It returns the minted claimId
-// (the join key the weaver-claims record reuses as both its key and its
-// idempotencyKey) alongside the create revision. exists=true means the create
-// lost the dispatch-OCC race; the returned claimId is empty in that case (no
-// new claim was minted). The non-nudge create stays claimId-free: only the
-// nudge action mints one.
-func (m *markStore) createNudge(ctx context.Context, targetID, entityID, gapColumn, entityKey, action string) (claimID string, revision uint64, exists bool, err error) {
-	claimID, err = substrate.NewNanoID()
-	if err != nil {
-		return "", 0, false, fmt.Errorf("weaver: mint nudge claimId: %w", err)
-	}
-	now := time.Now()
-	rec := mark{
-		TargetID:       targetID,
-		EntityKey:      entityKey,
-		Gap:            gapColumn,
-		Action:         action,
-		ClaimID:        claimID,
-		ClaimedAt:      substrate.FormatTimestamp(now),
-		LeaseExpiresAt: substrate.FormatTimestamp(now.Add(m.lease)),
-		HeldBy:         m.instance,
-	}
-	body, err := json.Marshal(rec)
-	if err != nil {
-		return "", 0, false, fmt.Errorf("weaver: marshal nudge mark: %w", err)
-	}
-	rev, err := m.conn.KVCreateWithTTL(ctx, m.bucket, markKey(targetID, entityID, gapColumn), body,
-		markTTLBackstopFactor*m.lease)
-	if err != nil {
-		if errors.Is(err, substrate.ErrRevisionConflict) {
-			return "", 0, true, nil
-		}
-		return "", 0, false, err
-	}
-	return claimID, rev, false, nil
-}
-
 // get reads the mark for one gap, returning its current revision. Lane-1 only
 // ever CAS-creates and deletes marks, and the sweep's reclaim replaces the
 // whole value under a revision condition — so the current revision always
@@ -170,23 +129,7 @@ func (m *markStore) get(ctx context.Context, targetID, entityID, gapColumn strin
 // bounds the retry). The returned revision is the fresh dispatch-episode tag.
 // conflict=true means the mark changed since the read (a fresh episode
 // CAS-created it, or its TTL marker landed) — the caller must skip.
-//
-// This is the non-nudge reclaim: it writes no claimId. A nudge mark reclaim
-// MUST carry forward the existing mark's claimId (never mint a new one) — see
-// replaceCarryingClaim.
 func (m *markStore) replace(ctx context.Context, targetID, entityID, gapColumn, entityKey, action string,
-	expectedRevision uint64) (revision uint64, conflict bool, err error) {
-	return m.replaceCarryingClaim(ctx, targetID, entityID, gapColumn, entityKey, action, "", expectedRevision)
-}
-
-// replaceCarryingClaim re-arms an expired mark in place, carrying forward the
-// supplied claimId. For a nudge reclaim the caller passes the EXISTING mark's
-// claimId so the re-armed mark keeps the same join key — recovery resumes the
-// SAME claim (same idempotencyKey) rather than minting a fresh id (a fresh id
-// would mean a second idempotencyKey → a duplicate external call, §10.3). A
-// blank claimId reproduces the non-nudge reclaim (no claimId on the mark). All
-// other re-arm semantics match replace.
-func (m *markStore) replaceCarryingClaim(ctx context.Context, targetID, entityID, gapColumn, entityKey, action, claimID string,
 	expectedRevision uint64) (revision uint64, conflict bool, err error) {
 
 	now := time.Now()
@@ -195,7 +138,6 @@ func (m *markStore) replaceCarryingClaim(ctx context.Context, targetID, entityID
 		EntityKey:      entityKey,
 		Gap:            gapColumn,
 		Action:         action,
-		ClaimID:        claimID,
 		ClaimedAt:      substrate.FormatTimestamp(now),
 		LeaseExpiresAt: substrate.FormatTimestamp(now.Add(m.lease)),
 		HeldBy:         m.instance,

@@ -24,7 +24,6 @@ const (
 	HealthKVBucket       = "health-kv"
 	CapabilityKVBucket   = "capability-kv"
 	WeaverStateBucket    = "weaver-state"
-	WeaverClaimsBucket   = "weaver-claims"
 	LoomStateBucket      = "loom-state"          // Loom's per-instance cursor store (Contract #10 §10.3)
 	WeaverTargetsBucket  = "weaver-targets"      // shared target-Lens projection bucket (Contract #10 §10.2)
 	RefractorAdjacencyKV = "refractor-adjacency" // Refractor's internal adjacency store (private, not a Lens target)
@@ -70,7 +69,6 @@ func (s *Seeder) ProvisionBuckets(ctx context.Context) error {
 		{HealthKVBucket, "Lattice Health KV — component heartbeats", true},
 		{CapabilityKVBucket, "Lattice Capability KV — Refractor projection targets", true},
 		{WeaverStateBucket, "Lattice Weaver State KV", true},
-		{WeaverClaimsBucket, "Lattice Weaver Claims KV", true},
 		{LoomStateBucket, "Lattice Loom State KV — per-instance pattern cursors", true},
 		// weaver-targets rows are durable Lens projections — no per-key TTL keys
 		// live here (TTL-leased marks live in weaver-state). History stays the KV

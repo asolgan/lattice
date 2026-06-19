@@ -29,9 +29,9 @@ func TestStart_EmptyActorKeyFails(t *testing.T) {
 // (docs/components/bridge.md Principles): internal/bridge imports only
 // internal/substrate. It never imports internal/processor, internal/loom,
 // internal/refractor, or internal/weaver (incl. internal/weaver/nudge) anywhere
-// in its dependency tree — the bridge is a leaf on substrate, so an edge back
-// into Weaver would form an import cycle (Weaver depends on the bridge for the
-// adapter contract types). All cross-component interaction is over NATS.
+// in its dependency tree — the bridge is a leaf on substrate, owning the adapter
+// contract with no dependency on any orchestration engine. All cross-component
+// interaction is over NATS.
 func TestModuleBoundary_OnlySubstrate(t *testing.T) {
 	out, err := exec.Command("go", "list", "-deps", "github.com/asolgan/lattice/internal/bridge").Output()
 	if err != nil {

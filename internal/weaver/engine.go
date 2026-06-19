@@ -2,8 +2,6 @@ package weaver
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -12,13 +10,7 @@ import (
 	"sync"
 	"time"
 
-	// internal/bridge owns the external-adapter contract types (Adapter,
-	// Registry, Request, Result). The Weaver Two-Phase Nudge path dispatches
-	// through that contract, so the engine wires the registry and resolve
-	// callback against the bridge package's types.
-	"github.com/asolgan/lattice/internal/bridge"
 	"github.com/asolgan/lattice/internal/substrate"
-	"github.com/asolgan/lattice/internal/weaver/nudge"
 )
 
 // laneConsumerPrefix prefixes a lane-1 durable name: weaver-target-<targetId>.
@@ -35,16 +27,6 @@ type Config struct {
 	WeaverTargetsBucket string
 	// WeaverStateBucket holds the §10.3 in-flight marks. Default "weaver-state".
 	WeaverStateBucket string
-	// WeaverClaimsBucket holds the §10.3 Two-Phase Nudge claim records (keyed by
-	// claimId). Default "weaver-claims" — matches
-	// internal/bootstrap.WeaverClaimsBucket; kept literal so internal/weaver does
-	// not import internal/bootstrap.
-	WeaverClaimsBucket string
-	// ClaimRetention is the per-key TTL on each weaver-claims record (§10.3 "90d
-	// retention, configurable"). The weaver-claims bucket is provisioned
-	// TTL-capable, so retention is a per-key TTL (mirroring the mark's TTL
-	// discipline), no bucket MaxAge change. Values <= 0 take the 90d default.
-	ClaimRetention time.Duration
 	// HealthKVBucket holds the Contract #5 heartbeat (health.weaver.<instance>)
 	// and the per-consumer pause-state entries. Default "health-kv" — matches
 	// internal/bootstrap.HealthKVBucket; cmd/weaver may override from there.
@@ -143,12 +125,6 @@ func (c *Config) withDefaults() {
 	if c.WeaverStateBucket == "" {
 		c.WeaverStateBucket = "weaver-state"
 	}
-	if c.WeaverClaimsBucket == "" {
-		c.WeaverClaimsBucket = "weaver-claims"
-	}
-	if c.ClaimRetention <= 0 {
-		c.ClaimRetention = defaultClaimRetention
-	}
 	if c.HealthKVBucket == "" {
 		// Literal default mirrors internal/bootstrap.HealthKVBucket; kept literal
 		// (like the other bucket defaults) so internal/weaver does not import
@@ -207,9 +183,6 @@ type Engine struct {
 	logger           *slog.Logger
 	source           *targetSource
 	marks            *markStore
-	claims           *nudge.ClaimStore
-	adapters         *bridge.Registry
-	nudger           *nudge.Nudger
 	sweep            *sweeper
 	temporal         *temporalStats
 	act              *actuator
@@ -294,16 +267,11 @@ func fingerprintOf(spec substrate.ConsumerSpec) specFingerprint {
 func NewEngine(conn *substrate.Conn, cfg Config) *Engine {
 	cfg.withDefaults()
 	issues := newIssueCache()
-	adapters := bridge.NewRegistry()
-	claims := nudge.NewClaimStore(conn, cfg.WeaverClaimsBucket, cfg.ClaimRetention)
 	e := &Engine{
 		cfg:              cfg,
 		conn:             conn,
 		logger:           cfg.Logger,
 		marks:            newMarkStore(conn, cfg.WeaverStateBucket, cfg.MarkLease, cfg.Instance),
-		claims:           claims,
-		adapters:         adapters,
-		nudger:           nudge.NewNudger(claims, adapters),
 		temporal:         &temporalStats{},
 		act:              newActuator(conn, cfg.Lane, cfg.ActorKey, cfg.Logger),
 		supervisor:       substrate.NewConsumerSupervisor(conn),
@@ -335,9 +303,9 @@ func (e *Engine) Start(ctx context.Context) (err error) {
 		return fmt.Errorf("weaver: Lane %q must be a single dot-free subject token (ops are published to ops.<lane>; must match %s)",
 			e.cfg.Lane, singleTokenPattern.String())
 	}
-	// An empty ActorKey would publish nudge ops under actor:"" — the Processor
-	// rejects those off-stream with no signal. Fail loud here; there is no
-	// sensible default identity key.
+	// An empty ActorKey would publish remediation ops under actor:"" — the
+	// Processor rejects those off-stream with no signal. Fail loud here; there
+	// is no sensible default identity key.
 	if e.cfg.ActorKey == "" {
 		return fmt.Errorf("weaver: ActorKey required")
 	}
@@ -501,91 +469,3 @@ func (e *Engine) reconcileConsumers() {
 }
 
 func issueKeyConsumer(targetID string) string { return "consumer:" + targetID }
-
-// RegisterAdapter binds a §10.8 nudge adapter name to a concrete bridge.Adapter,
-// the seam that wires the reference adapters (cmd/weaver demo, tests) before
-// Start. The engine itself stays adapter-agnostic — the adapter set is config —
-// so registration is an external call, never hard-coded inside the engine. A
-// duplicate name or nil adapter is rejected by the registry (a wiring bug,
-// surfaced). MUST be called before Start: the registry has no lock-step with the
-// dispatch path, so registering after a nudge gap has already dispatched would
-// be a race against Lookup.
-func (e *Engine) RegisterAdapter(name string, a bridge.Adapter) error {
-	return e.adapters.Register(name, a)
-}
-
-// resolveFunc builds the nudge.ResolveFunc the protocol calls to submit the
-// resolve op (the Resolve phase of the Two-Phase Nudge). The resolve op is a
-// normal fire-and-forget submit through the Actuator (the Processor is the sole
-// Core KV writer): its requestId is deterministic from the claimId
-// (deriveResolveRequestID) so a redelivery/recovery re-submit collapses on the
-// Contract #4 vtx.op.<requestId> tracker — exactly one resolve mutation. The
-// payload carries the claimId reference field (arch Item 3, the audit join) and
-// the adapter Result detail, plus the row's OCC revision-condition. authTarget
-// is the nudge subject (the entity the external action concerns, §10.8 target
-// semantics). The returned resolveRef recorded on the claim IS that requestId
-// (the Core KV op key). Captures the subject + expectedRevision per dispatch.
-func (e *Engine) resolveFunc(np *nudgePlan, expectedRevision uint64) nudge.ResolveFunc {
-	return func(ctx context.Context, claimID string, result bridge.Result) (string, error) {
-		requestID := deriveResolveRequestID(claimID)
-		payload := map[string]any{
-			"claimId":          claimID,
-			"result":           result.Detail,
-			"expectedRevision": expectedRevision,
-		}
-		// The nudge resolve op carries no engine-declared ContextHint.Reads: its
-		// OCC is the row revision-condition (expectedRevision) in the payload, and
-		// the resolve DDL's own reads are package data, not engine-known. (The
-		// §10.8 nudge action is retired in the Phase-2 lease vertical; this path is
-		// preserved read-free, exactly as it dispatched before.)
-		if err := e.act.submit(ctx, requestID, np.operation, payload, np.subject, nil); err != nil {
-			return "", err
-		}
-		return requestID, nil
-	}
-}
-
-// resolveProbe builds the nudge.ResolveProbe the protocol calls during recovery
-// to ask whether the resolve op for a claim has ALREADY landed in Core KV before
-// re-executing (read-before-act, mirroring the §10.6 Loom tracker-GET precedent
-// in internal/loom trackerExists). It GETs the Contract #4 idempotency tracker
-// vtx.op.<resolveRequestId> in Core KV, keyed on the deterministic resolve
-// requestId derived from the claimId.
-//
-// The landed test mirrors Contract #4's dedup rule exactly — "found AND
-// isDeleted:false": Core KV holds logically-deleted entries by design (KVGet
-// returns an isDeleted:true envelope normally, err == nil), and §4.3 reserves
-// isDeleted:true as an operator-driven retry signal — "treat as not-found and
-// proceed". So a present-but-tombstoned tracker is NOT a landed resolve: treating
-// it as landed would silently abandon a genuinely-incomplete claim (advance to
-// resolved off a tombstone) instead of re-driving it. found+isDeleted:false ⇒
-// landed=true, resolveRef = that requestId (the Core KV audit-join key);
-// ErrKeyNotFound (a hard NATS purge) or an unparseable/tombstoned envelope ⇒ not
-// landed, so the recovery re-executes on the same idempotencyKey (the adapter
-// dedups).
-func (e *Engine) resolveProbe() nudge.ResolveProbe {
-	return func(ctx context.Context, claimID string) (string, bool, error) {
-		requestID := deriveResolveRequestID(claimID)
-		entry, err := e.conn.KVGet(ctx, e.cfg.CoreKVBucket, "vtx.op."+requestID)
-		if err != nil {
-			if errors.Is(err, substrate.ErrKeyNotFound) {
-				return "", false, nil
-			}
-			return "", false, fmt.Errorf("weaver: probe resolve tracker %q: %w", requestID, err)
-		}
-		var env substrate.DocumentEnvelope
-		if uerr := json.Unmarshal(entry.Value, &env); uerr != nil {
-			// An unparseable tracker is not trustworthy landed evidence; treat as
-			// not-landed and re-drive (the adapter dedups the reused idempotencyKey).
-			e.logger.Warn("weaver: resolve tracker unparseable; treating as not landed",
-				"requestId", requestID, "claimId", claimID, "err", uerr)
-			return "", false, nil
-		}
-		if env.IsDeleted {
-			// Contract #4 §4.3: a tombstoned (isDeleted:true) tracker is the
-			// operator-driven retry signal — treat as not-found, not landed.
-			return "", false, nil
-		}
-		return requestID, true, nil
-	}
-}

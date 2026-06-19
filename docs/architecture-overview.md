@@ -37,8 +37,9 @@ flowchart TB
     end
 
     subgraph Orch["Orchestration"]
-        Loom["Loom — procedure engine"]
-        Weaver["Weaver — convergence · Two-Phase Nudge"]
+        Loom["Loom — procedure engine · externalTask"]
+        Weaver["Weaver — convergence"]
+        Bridge["Bridge — idempotent external I/O"]
     end
 
     subgraph VaultExt["Vault & Crypto — Phase 3+"]
@@ -70,14 +71,15 @@ flowchart TB
     Refr -->|filtered stream| PLens
     Refr <-.->|Phase 3+| Vault
 
-    Evts --> Loom & Weaver
-    Loom & Weaver -->|submit ops| Ops
+    Evts --> Loom & Weaver & Bridge
+    Loom & Weaver & Bridge -->|submit ops| Ops
     Weaver <-->|convergence state| WeavKV
     Weaver -->|reads targets| NKV
-    Weaver -->|Two-Phase Nudge| Svc
+    Loom -->|externalTask| Bridge
+    Bridge -->|idempotent call| Svc
     Vault <-->|key material| KMS
 
-    Proc & Refr & Loom & Weaver -->|heartbeat| HealthKV
+    Proc & Refr & Loom & Weaver & Bridge -->|heartbeat| HealthKV
     PLens <-->|sync on reconnect| EdgeNode
 
     classDef store fill:#dbeafe,stroke:#2563eb,color:#1e3a8a
@@ -106,7 +108,7 @@ Clients submit operations over HTTPS → the Gateway authenticates the actor (JW
 The Refractor holds one durable JetStream consumer per active Lens. Each consumer watches Core KV's backing stream, evaluates openCypher rules, and projects results into target stores — Postgres tables for business queries, NATS KV for the Capability cache (auth) and Weaver targets, and Personal Lens streams for edge clients.
 
 **Orchestration (bottom loop):**
-Loom and Weaver consume `core-events`, then submit new operations back through `core-operations` → Processor → Core KV. They never write state directly; the ledger is the only source of truth. Weaver's Two-Phase Nudge reaches external services via a claim-before-execute protocol recorded in `weaver.claims.>`.
+Loom, Weaver, and the Bridge consume `core-events`, then submit new operations back through `core-operations` → Processor → Core KV. They never write state directly; the ledger is the only source of truth. External services are reached only by the Bridge: a Loom `externalTask` step dispatches an idempotent call (keyed on the step's instance), and the Bridge executes it, recording the outcome on a claim vertex in the ledger.
 
 **Authorization (always-on, not a separate call):**
 The Capability Lens is a Refractor projection that continuously maintains a flattened permission cache in Capability KV. The Processor reads it at O(1) in commit-path step 3. No separate auth service; auth correctness is projection correctness.
@@ -118,7 +120,7 @@ The Capability Lens is a Refractor projection that continuously maintains a flat
 | Substrate (NATS/KV primitives), Processor, Refractor, Capability Lens | ✅ Phase 1 — implemented |
 | Identity & RBAC packages, Hello Lattice vertical slice | ✅ Phase 1 — implemented |
 | Package install/uninstall, transactional event outbox, per-lens delete mode | ✅ Phase 1.5 — implemented |
-| Loom, Weaver, Two-Phase Nudge, `orchestration-base` package | 🔨 Phase 2 — in progress |
+| Loom, Weaver, Bridge (external I/O), `orchestration-base` package | 🔨 Phase 2 — in progress |
 | Gateway (JWT auth, token revocation, HTTP→NATS translation) | 🔭 Phase 3 — designed |
 | Vault, crypto-shredding, KMS integration | 🔭 Phase 3 — designed |
 | Edge Lattice, Personal Lens, offline-first sync | 🔭 Phase 3+ — designed |

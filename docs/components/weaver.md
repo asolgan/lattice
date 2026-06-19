@@ -4,23 +4,18 @@
 
 > Design page authored in the Phase 2 architecture sprint. Decisions of record live in
 > `_bmad-output/planning-artifacts/lattice-architecture.md` → "Phase 2 Architecture —
-> Orchestration Core" (D3, D4) and PRD-Alignment Item 3 (Two-Phase Nudge). Data shapes are
-> frozen in Contract #10 (§10.2 target rows, §10.3 weaver-state, §10.4 scheduling, §10.8
-> target+playbook) — where this page and the contract diverge, the contract governs. Update this
-> page in the same commit as the code; drift is a documentation bug.
+> Orchestration Core" (D3, D4). Data shapes are frozen in Contract #10 (§10.2 target rows,
+> §10.3 weaver-state, §10.4 scheduling, §10.8 target+playbook) — where this page and the
+> contract diverge, the contract governs. Update this page in the same commit as the code;
+> drift is a documentation bug.
 >
 > This page describes **what Weaver is**. A per-surface ledger of what is built vs. deferred lives
 > in [Implementation status](#implementation-status-phase-2--stories-9194) at the end.
 
-> **⚠️ External I/O is being retired from Weaver (Contract #10 §10.3/§10.8 amended 2026-06-18, Story 13.1,
-> "External I/O Bridge").** The **Two-Phase Nudge** protocol, the `weaver-claims` bucket, and the
-> `nudge` GapAction are **superseded**: external idempotent I/O moves to **Loom's `externalTask` step +
-> the new `bridge` component** (`docs/components/bridge.md`), and Weaver collapses to **detect →
-> `triggerLoom`**. The nudge sections below describe **what currently ships** (Epic 10) and remain
-> accurate until teardown; the actual retirement — the `internal/weaver/nudge/` package, `weaver-claims`,
-> the `nudge` action, and **move**ing the `Fake*` adapters to the bridge — lands in the bridge epic's
-> nudge-retirement story (13.5), **move-then-delete**, only after the convergence e2e is green (never a
-> window where neither external path works). Mentions are flagged inline.
+External idempotent I/O (FR58 / NFR-S11) is **not** a Weaver concern: a target that needs an
+external call remediates with **`triggerLoom`** of a Loom **`externalTask`** pattern, and the
+**bridge** component (`docs/components/bridge.md`) executes the call idempotently. Weaver detects
+and dispatches; it never reaches an external system itself.
 
 The engine ships **zero domain knowledge** — targets and playbooks are package data; domain
 literals appear only in tests and fixtures.
@@ -39,10 +34,8 @@ Crucially, **a Weaver target is a Lens** — Weaver is a **consumer of the Refra
 own cypher runtime. The Refractor projects "currently-violating" rows; Weaver reacts.
 
 Weaver is an **internal service actor** at root-equivalent capability. It **submits operations
-through the Processor** (never writes Core KV directly). Its direct writes are to the
-`weaver-state` bucket (dispatch/bookkeeping marks, Contract #10 §10.3) and the `weaver-claims`
-bucket (Two-Phase Nudge claims, Epic 10 — **retired**: contract by Story 13.1, code teardown in Story
-13.5; see the banner above; `weaver-state` stays).
+through the Processor** (never writes Core KV directly). Its only direct write is to the
+`weaver-state` bucket (dispatch/bookkeeping marks, Contract #10 §10.3).
 
 ---
 
@@ -52,7 +45,7 @@ bucket (Two-Phase Nudge claims, Epic 10 — **retired**: contract by Story 13.1,
 Sensorium (3-lane intake — an in-process multiplexer; no durable weaver-work bucket in Phase 2, §10.3)
    → Evaluator (L1 re-confirm + in-flight dedup; L2 hydrate + classify gap + select playbook)
    → Strategist (playbook registry: gap-type → action)
-   → Actuator (OCC ops via Processor; trigger Loom via op; external via Two-Phase Nudge)
+   → Actuator (OCC ops via Processor; trigger Loom via op; external I/O via triggerLoom of an externalTask)
 ```
 
 Each Phase-2 lane replays from its own durable **source** (lane 1 from `weaver-targets`, lane 3
@@ -84,10 +77,10 @@ package (`lease-signing`):
 
 | Gap (example) | Action |
 |---------------|--------|
-| `missing_onboarding` | submit `StartOnboarding` op → **triggers Loom** (op-based, D3) |
-| `missing_bgcheck` | **Two-Phase Nudge** → background-check adapter *(Epic 14: becomes `triggerLoom` of a bgcheck `externalTask` pattern)* |
-| `missing_payment` | Two-Phase Nudge (Stripe) or a Loom collect-payment flow *(Epic 14: `triggerLoom` of a payment `externalTask` pattern)* |
-| `missing_signature` | assign a sign **task** (direct op) |
+| `missing_onboarding` | `triggerLoom` of the onboarding pattern → **triggers Loom** (op-based, D3) |
+| `missing_bgcheck` | `triggerLoom` of a background-check `externalTask` pattern (the bridge runs the call) |
+| `missing_payment` | `triggerLoom` of a collect-payment `externalTask` pattern (the bridge runs the call) |
+| `missing_signature` | `assignTask` — assign a sign **task** to the applicant |
 
 ### Actuator
 
@@ -95,9 +88,8 @@ package (`lease-signing`):
   two ticks can't double-apply.
 - **Triggers Loom via an op** — auditable, idempotent ledger entry (not a Go call; engines share
   only `substrate/*`).
-- **External actions** — Two-Phase Nudge (below) — **being retired (Epic 13; code teardown 13.5)**:
-  external I/O moves to Loom's `externalTask` + the bridge, so Weaver's external remediation becomes
-  `triggerLoom` of an `externalTask` pattern.
+- **External actions** — `triggerLoom` of a Loom `externalTask` pattern: the call is dispatched and
+  executed idempotently by the **bridge** (`docs/components/bridge.md`), never by Weaver itself.
 
 ---
 
@@ -190,79 +182,6 @@ Lens projects the deadline: row column freshUntil = resolve + window (RFC3339)
 
 ---
 
-## Two-Phase Nudge (external idempotency, FR58 — PRD-Alignment Item 3) — SUPERSEDED (13.1; retired in 13.5)
-
-> **This whole section is superseded** by the External I/O Bridge (Contract #10 §10.3/§10.8 amended
-> 2026-06-18). It documents the **currently-shipping** Epic 10 protocol, which stands until the 13.5
-> teardown. What replaces it: Loom's `externalTask` step dispatches the external call and the **bridge**
-> (`docs/components/bridge.md`) executes it idempotently; the visible-claim guarantee (FR58/NFR-S11) is
-> a **claim vertex in Core KV** (the demo's `service.<x>.instance`; type package-chosen, outcome in
-> aspect(s) per D5) instead of a `weaver-claims` record. The `Fake*` adapters
-> below **move** to the bridge. The structural reason for the move: the resolve op could not address a
-> candidate vertex distinct from the nudge `subject` (the reference vertical surfaced it).
-
-The external-adapter contract (`Adapter`/`Registry`/`Request`/`Result`) and the reference adapters
-live in `internal/bridge/`; the Two-Phase Nudge protocol in `internal/weaver/nudge/` dispatches
-through that contract. The **adapter set is config**; a **reference adapter** proves it (demo uses
-mocked adapters — `FakeBackgroundCheck` and `FakeStripe`, both substrate-only and idempotent on the
-`idempotencyKey`; real Stripe / background-check is Phase 3).
-Adapters are registered by name via `Engine.RegisterAdapter` before `Start` (the engine is
-adapter-agnostic — `cmd/weaver` registers the reference adapters for the demo; package-data-driven
-registration is Epic 14). A nudge gap naming an unregistered adapter is a **config error**:
-`Nudger.Run`/`Recover` return the `nudge.ErrAdapterNotFound` sentinel, and the engine **Acks +
-raises a `NudgeAdapterMissing` Health issue** (the `errConfig` posture — redelivery can never fix a
-name the registry does not hold, so a Nak would hot-loop lane-1). Surfaced, never a silent skip.
-
-```
-1. Claim   → write weaver-claims.<claimId> (direct KV; intent recorded BEFORE the call)
-2. Execute → call the external (mocked) adapter; claim prevents any other instance re-initiating
-3. Resolve → submit a normal op via Processor recording the result, carrying the claimId reference
-```
-
-Claims retained (default 90d, `Config.ClaimRetention`-tunable, as a per-key TTL on the
-TTL-capable `weaver-claims` bucket) in the `weaver-claims` bucket; audit joins Core KV (business
-outcome, via the resolve op's `requestId` = the claim's `resolveRef`) to the claim (operational
-intent). Recovery is **read-before-act**: a claim found past its lease reuses the same `claimId`/
-`idempotencyKey` (never mints a fresh one), checks for an already-landed resolve before re-executing
-(the resolve **probe is mandatory** — a `nil` probe is rejected like a blank `claimId`, so the
-landed-resolve check can never be silently skipped), and re-executes on the **same** `idempotencyKey`
-(the adapter de-dups) only if no resolve landed — so a crash-retry produces no duplicate external
-action. Recovery short-circuits **only on `resolved`** (the one terminal needing no work): a `failed`
-(or `executing`) claim **re-attempts on the same `idempotencyKey`** rather than wedging the gap
-forever — the reclaimed mark carries the same `claimId` forward, so §10.3's re-fire-is-safe clause
-keeps the gap converging while the adapter dedups any partial side-effect. The fresh-dispatch claim
-write is **create-semantic**: a redelivery routed to a fresh dispatch over a live claim is bounced to
-recovery, never re-claimed. The adapter call is **panic-contained** — the framework, not the adapter,
-is the safety boundary, so an adapter panic lands the claim `failed` (re-drivable) instead of crashing
-the dispatch goroutine.
-
-**Build status:** wired end-to-end (Story 10.2 closed Epic 10). The live lane-1 dispatch path drives
-the protocol: a fresh nudge gap CAS-creates the mark via `markStore.createNudge` (minting the
-`claimId` atomically) and runs `Nudger.Run` (claim → adapter execute on `idempotencyKey=claimId` →
-resolve op); a redelivery over a live mark, and the reconciler sweep's expired-lease reclaim (via
-`markStore.replaceCarryingClaim`, carrying the `claimId` forward), drive `Nudger.Recover` with a real
-Core KV `ResolveProbe` that reads the Contract #4 `vtx.op.<resolveRequestId>` tracker before
-re-executing (read-before-act, mirroring Loom's §10.6 tracker-GET). The probe mirrors Contract #4's
-dedup rule exactly — **landed = found AND `isDeleted:false`**: Core KV returns a logically-deleted
-(`isDeleted:true`) tracker normally, and §4.3 reserves that as an operator-driven retry signal, so a
-tombstoned tracker reads as **not landed** (the claim re-executes on the same `idempotencyKey` rather
-than being silently advanced to `resolved` off a tombstone). The resolve op's `requestId` is
-**deterministic from the `claimId`** (`deriveResolveRequestID`), so a redelivery/recovery re-submit
-collapses on the Contract #4 tracker — exactly one resolve mutation. `FakeStripe` is the second
-reference adapter (a fail-once mode drives the proof). End-to-end FR58 idempotency
-(failed-then-retried → at most one side-effect) and crash-between-claim-and-resolve (claim visible
-before resolve, no re-initiation on redelivery, recovery converges reusing the same `claimId`) are
-proven by `internal/weaver/nudge_dispatch_internal_test.go`. A claim left unresolved past the
-Contract #4 24h idempotency horizon surfaces a `NudgeClaimWedged` Health issue rather than
-re-executing beyond the adapter's dedup window unguarded. The wedge check runs in the **shared
-`recoverNudge` path**, so it fires on **both** the reconciler-sweep reclaim and the lane-1
-live-redelivery recovery, and it raises on its **own** issue key (distinct from the per-recovery
-`NudgeDispatchError`/clear key) so the alert persists for the operator instead of being clobbered. A
-claim whose `claimedAt` is unparseable is itself corrupt — it surfaces a Health issue rather than
-silently skipping the wedge check.
-
----
-
 ## Control plane (FR30, Story 9.4)
 
 Operators manage Weaver's currently-registered convergence targets via a `nats-io/nats.go/micro`
@@ -307,7 +226,7 @@ disabled target still:
   timer — state-recording, already gated by the §9.3 read-before-act row-presence/renewed guards).
 
 What it does NOT do while disabled: create a new in-flight mark or run any Strategist/Actuator
-remediation (`triggerLoom`/`nudge`/`assignTask`/`directOp`). On `enable`, lane-3/clearing state is
+remediation (`triggerLoom`/`assignTask`/`directOp`). On `enable`, lane-3/clearing state is
 already current and remediation resumes for whatever is still violating — nothing is lost across a
 disable→enable window, and no row re-touch is required.
 
@@ -375,13 +294,11 @@ Capability-KV integration is Epic 3 work.
 | Path | Role |
 |------|------|
 | `internal/weaver/` | Engine: Sensorium, 3-lane work stream, Evaluator tiers, Strategist dispatcher, Actuator |
-| `internal/weaver/nudge/` | Two-Phase Nudge protocol (dispatches through the `internal/bridge` adapter contract) |
 | `internal/weaver/control/` | Operator control plane (FR30): `list`/`disable`/`enable`/`revoke` NATS Services responder |
 | `cmd/weaver/` | Binary entry point (extractable; shares only `substrate/*`) — starts the control-plane listener alongside the engine |
 | `cmd/lattice/weaver/` | `lattice weaver list\|disable\|enable\|revoke` CLI command group |
 
-**Package data:** target Lens cypher, playbook definitions, gap→action mappings, mocked-adapter
-config (`lease-signing`).
+**Package data:** target Lens cypher, playbook definitions, gap→action mappings (`lease-signing`).
 
 ---
 
@@ -392,10 +309,9 @@ config (`lease-signing`).
 | In | `weaver-targets` `<targetId>.>` KV-CDC durable | lane 1 (primary input — **not** the core-events consumer) |
 | In | `events.<domain>.>` per-domain consumer | lane 2 targeted-audit only (Phase 3) |
 | In | `schedule.weaver.timer.fired.>` on `core-schedules` | lane 3 (ADR-51 scheduled messages; fixed durable `weaver-temporal`) |
-| Out | ops via `core-operations` (`ops.<lane>`) | fire-and-forget; OCC `expectedRevision` payload; trigger-Loom; resolve mutations carry `claim-id` |
+| Out | ops via `core-operations` (`ops.<lane>`) | fire-and-forget; OCC `expectedRevision` payload; trigger-Loom |
 | Out | `@at` schedules via `core-schedules` (`schedule.weaver.timer.<targetId>.<entityId>`) | lane 3 scheduling leg; replace-on-reschedule (one schedule per subject) |
 | Out (own) | `weaver-state` bucket | in-flight convergence marks (anti-storm); per-key TTL backstop (2× lease) + reconciler sweep |
-| Out (own) | `weaver-claims` bucket | Two-Phase Nudge claims (90d per-key TTL retention). Wired end-to-end (10.2): the live lane-1 dispatch + reconciler reclaim write/advance/resolve claim records through `Nudger.Run`/`Recover`. **Retired** (contract: Story 13.1, Contract #10 §10.3) — bucket/constant/verify teardown lands in Story 13.5; `weaver-state` stays. |
 | In/Out | `micro.Service` endpoints at `lattice.ctrl.weaver.<targetId>.<op>` and `lattice.ctrl.weaver.list` | Control plane (FR30): operator `list`/`disable`/`enable`/`revoke` — see "Control plane" below |
 
 ---
@@ -406,7 +322,7 @@ config (`lease-signing`).
 |------|----------|
 | Re-trigger storm | violation persists until gap closes *and* re-projects → the `weaver-state` in-flight mark suppresses re-trigger |
 | **Actuator crash mid-flight** | in-flight marks carry a **TTL/lease**; the reconciler sweep reclaims expired leases so a target is never wedged. *(Tested: `TestWeaverE2E_MidFlightKill` kills the episode between CAS-create and publish and proves the re-attempt.)* |
-| External call retried/failed | Two-Phase Nudge claim prevents double-charge; resolve is idempotent |
+| External call retried/failed | not a Weaver concern — `triggerLoom` of an `externalTask` hands the call to the bridge, which de-dups on the `idempotencyKey` so a retry produces at most one external effect (FR58; see `docs/components/bridge.md`) |
 | Target too costly to keep live | lane-2 on-demand evaluation (deferred-exercise) |
 
 ---
@@ -428,10 +344,10 @@ What ships today in `internal/weaver` + `cmd/weaver`, and what is deliberately d
 |---------|--------|
 | **Lane 1 (violation-driven)** | ✅ Shipped. One **supervised KV-CDC durable per target** on the `KV_weaver-targets` backing stream (`$KV.weaver-targets.<targetId>.>`, `DeliverLastPerSubject`) via `substrate.ConsumerSupervisor` — never a raw `kv.Watch`. Desired-vs-running reconcile over the `meta.weaverTarget` registry: removal deletes the JetStream durable; a spec change Resets it. |
 | **Target registry** | ✅ Shipped. `meta.weaverTarget` CDC source (Core KV `vtx.meta.>`), §10.8 install-time validations (`missing_*` gaps keys, `targetId` uniqueness + dot-free), reject-and-alert (Health KV issue), never silent. |
-| **Dispatch OCC (§10.3)** | ✅ Shipped in the full frozen shape: the `weaver-state` mark (`<targetId>.<entityId>.<gapColumn>`) is a **CAS-create** carrying `claimedAt`/`leaseExpiresAt`/`heldBy` and a **NATS per-key TTL at 2× the lease** (the backstop — a dead reconciler can never wedge a gap forever); mark-clearing is **level-reconciled on each watch update AND each reconciler sweep**. `claimId` is minted **atomically with the CAS-create** for a nudge mark (10.1, `markStore.createNudge`; non-nudge marks carry no `claimId`, `omitempty`) — an empty `claimId` on a nudge mark is corrupt: the reconciler alerts and **never mints a fresh id** (a fresh id would mean a second `idempotencyKey` → a duplicate external call), and a nudge reclaim **carries the existing `claimId` forward**. |
-| **Reconciler sweep** | ✅ Shipped (`internal/weaver/reconciler.go`): an interval-cadence pass (default 1m, clamped ≤ the lease so expiry is always observed before the TTL backstop; lease default 30m, both `Config`-tunable) over every mark — prompt level-clearing of closed gaps, orphan reclaim (target removed, column dropped from row + playbook), corrupt-mark delete+alert (the issue retires once the key stays gone), and **expired-lease reclaim as a fresh episode**: a revision-conditioned **in-place replace** of the mark (fresh lease, re-armed TTL → new revision → new `requestId`), so the key is never absent across a reclaim and only **violating** rows re-dispatch (mirroring lane-1's L1 gate). Re-fire idempotency follows §10.3 by action: a **nudge** reclaim re-arms via `replaceCarryingClaim` (carrying the `claimId` forward) and drives `Nudger.Recover` (read-before-act, not a blind re-fire) — safe via `claimId` (the adapter de-dups); a re-fired `triggerLoom`/`assignTask` is the **documented rare-double** — operator-visible via the sweep's Warn logs and heartbeat counters, with the check-before-act probe deferred to Phase 3. All sweep deletes are revision-conditioned; both orphan legs are gated for a warm-up window after start (`SweepOrphanWarmup`, default 5m — a registry-replay-readiness proxy). A nudge claim unresolved past the Contract #4 24h idempotency horizon surfaces a `NudgeClaimWedged` Health issue (the gap keeps converging on the lease, but the lapsed dedup guarantee is operator-visible); the check lives in the shared `recoverNudge` path so it fires on both the sweep reclaim and the lane-1 live-redelivery recovery, on its own issue key so the per-recovery `NudgeDispatchError`/clear cannot clobber it. |
+| **Dispatch OCC (§10.3)** | ✅ Shipped in the full frozen shape: the `weaver-state` mark (`<targetId>.<entityId>.<gapColumn>`) is a **CAS-create** carrying `claimedAt`/`leaseExpiresAt`/`heldBy` and a **NATS per-key TTL at 2× the lease** (the backstop — a dead reconciler can never wedge a gap forever); mark-clearing is **level-reconciled on each watch update AND each reconciler sweep**. The mark carries the frozen `claimId` field (`omitempty`) but it is always empty: every action dispatches through a single fire-and-forget `ops.<lane>` submit, so no id is ever minted onto the mark. |
+| **Reconciler sweep** | ✅ Shipped (`internal/weaver/reconciler.go`): an interval-cadence pass (default 1m, clamped ≤ the lease so expiry is always observed before the TTL backstop; lease default 30m, both `Config`-tunable) over every mark — prompt level-clearing of closed gaps, orphan reclaim (target removed, column dropped from row + playbook), corrupt-mark delete+alert (the issue retires once the key stays gone), and **expired-lease reclaim as a fresh episode**: a revision-conditioned **in-place replace** of the mark (fresh lease, re-armed TTL → new revision → new `requestId`), so the key is never absent across a reclaim and only **violating** rows re-dispatch (mirroring lane-1's L1 gate). A re-fired `triggerLoom`/`assignTask`/`directOp` is the **documented rare-double** — operator-visible via the sweep's Warn logs and heartbeat counters, with the check-before-act probe deferred to Phase 3. All sweep deletes are revision-conditioned; both orphan legs are gated for a warm-up window after start (`SweepOrphanWarmup`, default 5m — a registry-replay-readiness proxy). |
 | **Actuator** | ✅ Shipped as **fire-and-forget publish** to `ops.<lane>` with a deterministic per-dispatch-episode `requestId` (derived from the mark's current revision — its CAS-create, or the sweep's reclaim replace; Contract #4 collapses re-fires). **No request-reply, no command outbox** — Weaver has no cursor advance to dual-write; recovery is the mark + level-reconcile + lease: a rejected/lost op leaves the mark in place and the sweep re-attempts it at lease expiry. The op payload carries the row's `expectedRevision` (the OCC revision-condition); `triggerLoom` resolves the live `meta.loomPattern` vertex for `authContext.target` (pattern-as-target). |
-| **Actions** | `triggerLoom` (→ `StartLoomPattern` op, never a Go call), `assignTask` (→ `CreateTask` with episode-deterministic `taskId`), `directOp` ✅. **`nudge` ✅ shipped (10.2) — but RETIRED** (contract: Story 13.1; replaced by `triggerLoom` of a Loom `externalTask`; code teardown in Story 13.5). The shipped protocol still runs until then: `buildPlan` resolves a `nudgePlan` (adapter/operation/subject/params, the loud `planError` stub gone), `markStore.createNudge` mints the `claimId` atomically with the CAS-create, and `Nudger.Run` writes the claim → calls the mapped adapter on `idempotencyKey=claimId` → submits the resolve op (deterministic `requestId` from the `claimId`, so duplicates collapse on the Contract #4 tracker). A redelivery over a live mark and the reconciler reclaim drive `Nudger.Recover` with a real Core KV `ResolveProbe` (read-before-act). `FakeStripe` + `FakeBackgroundCheck` are the reference adapters (registered via `Engine.RegisterAdapter`; `cmd/weaver` wires them for the demo). End-to-end FR58 idempotency + crash-between-claim-and-resolve proofs pass (`nudge_dispatch_internal_test.go`). |
+| **Actions** | `triggerLoom` (→ `StartLoomPattern` op, never a Go call), `assignTask` (→ `CreateTask` with episode-deterministic `taskId`), `directOp` ✅. External idempotent I/O is `triggerLoom` of a Loom `externalTask` pattern — the **bridge** executes the call (`docs/components/bridge.md`); Weaver never holds an adapter. An action the playbook names outside this set fails closed (a loud `PlaybookConfigError` Health issue), never a silent skip. |
 | **Health** | ✅ Contract #5 heartbeat at `health.weaver.<instance>` (metrics: `consumers`, `targets`, `marksInFlight`, `sweepReclaims`, `sweepOrphansDeleted`, `sweepCorrupt`, `sweepLastRunAt`, `timersScheduled`, `timersFired`) + per-consumer pause-state docs at `health.weaver.<instance>.consumer.<name>`; config/data errors surface as issues. |
 | **Lane 3 (temporal)** | ✅ Shipped (Contract #10 §10.4). One **fixed supervised durable** `weaver-temporal` on `core-schedules` filtered `schedule.weaver.timer.fired.>`; the lane-1 row handler's **scheduling leg** re-arms `@at(freshUntil)` per delivery (level-driven, replace-on-reschedule); the fired→op conversion submits `MarkExpired` under the **deterministic timer `requestId`** (schedule subject + fire instant) with **no weaver-state mark**. See "Temporal lane" above for the convention column and the accepted Phase 2 bounds. |
 | **Control API/CLI (Pause/Resume surface)** | ✅ Shipped (Story 9.4, FR30). `internal/weaver/control` exposes `list`/`disable`/`enable`/`revoke` over a `nats-io/nats.go/micro` Services responder; `lattice weaver` CLI group. See "Control plane" above. |

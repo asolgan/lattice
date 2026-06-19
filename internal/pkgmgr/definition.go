@@ -144,7 +144,7 @@ type WeaverTargetSpec struct {
 // table) field-for-field so the emitted body deserializes cleanly into the
 // runtime target. Action selects the contract; the remaining fields carry the
 // per-action params, each a literal or a `row.<column>` template token.
-// `Pattern` (triggerLoom) and `Operation` (assignTask/nudge/directOp) are
+// `Pattern` (triggerLoom) and `Operation` (assignTask/directOp) are
 // shipped verbatim and resolve live in the engine registry — the installer
 // does not rewrite them to NanoIDs.
 type GapActionSpec struct {

@@ -42,9 +42,9 @@ type healthIssue struct {
 }
 
 // issueCache holds the engine's active config/data-error alerts (rejected
-// targets, unknown gap columns, template data errors, the nudge stub), keyed
-// so a condition that resolves clears its own entry. The heartbeater surfaces
-// the snapshot as Contract #5 issues — the FR29 "never silently drop" surface.
+// targets, unknown gap columns, template data errors), keyed so a condition
+// that resolves clears its own entry. The heartbeater surfaces the snapshot as
+// Contract #5 issues — the FR29 "never silently drop" surface.
 type issueCache struct {
 	mu     sync.Mutex
 	issues map[string]healthIssue

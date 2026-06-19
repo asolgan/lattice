@@ -24,22 +24,6 @@ const defaultSweepInterval = time.Minute
 // legs stay gated — a registry-replay-readiness proxy (see sweeper.warmup).
 const defaultSweepOrphanWarmup = 5 * time.Minute
 
-// defaultClaimRetention is the §10.3 weaver-claims per-key TTL (90 days,
-// configurable via Config.ClaimRetention) — long enough that an audit can join
-// the resolve op (Core KV business outcome) to the claim (operational intent).
-const defaultClaimRetention = 90 * 24 * time.Hour
-
-// claimWedgeBound is how long a nudge claim may sit pre-resolved
-// (claimed/executing/failed) before the reconciler surfaces a Health issue
-// rather than silently re-executing it indefinitely. It is anchored on the
-// Contract #4 idempotency horizon (24h: the vtx.op.<requestId> tracker — and any
-// real adapter's dedup window — expires there). A claim still unresolved past
-// that bound can no longer rely on the adapter (or the resolve tracker) to dedup
-// a re-execute, so the reconciler keeps converging the gap (the lease still
-// bounds re-attempts) but raises a visible issue: the operator must investigate
-// rather than trust a duplicate-suppression guarantee that has lapsed.
-const claimWedgeBound = 24 * time.Hour
-
 // Sweep dispositions logged on every mark the sweep deletes or reclaims.
 const (
 	sweepReasonLeaseExpired  = "leaseExpired"
@@ -292,18 +276,6 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 		return
 	}
 
-	// Corrupt-claim guard (§10.3): a nudge mark ALWAYS carries its claimId
-	// (minted atomically with the CAS-create, createNudge). An empty claimId on
-	// a nudge mark is impossible-by-construction; if the sweep ever sees one it
-	// is corrupt — alert and delete, and NEVER mint a fresh claimId (a fresh id
-	// would be a second idempotencyKey → a duplicate external call). The delete
-	// is revision-conditioned, like every other sweep delete.
-	if ga.Action == actionNudge && rec.ClaimID == "" {
-		s.deleteCorrupt(ctx, key, markRev,
-			"nudge mark "+key+" carries an empty claimId (a fresh id would risk a duplicate external call)")
-		return
-	}
-
 	// Plan BEFORE touching the expired mark: a failed plan (unresolved
 	// reference, template data error) alerts through the shared planGap issue
 	// keys and leaves the mark in place — the next sweep retries. Bounded,
@@ -312,11 +284,6 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 	if pl == nil {
 		e.logger.Warn("weaver sweep: reclaim plan failed; leaving expired mark for the next sweep",
 			"targetId", targetID, "entityId", entityID, "gap", gapColumn)
-		return
-	}
-
-	if ga.Action == actionNudge {
-		s.reclaimNudge(ctx, key, markRev, rec, targetID, entityID, gapColumn, entityKey, pl, rowRevision)
 		return
 	}
 
@@ -345,46 +312,6 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 	if e.fire(ctx, targetID, entityID, gapColumn, newRev, pl) != substrate.Ack {
 		e.logger.Warn("weaver sweep: reclaim re-dispatch did not publish; the fresh mark's lease bounds the retry",
 			"targetId", targetID, "entityId", entityID, "gap", gapColumn)
-	}
-}
-
-// reclaimNudge reclaims an expired nudge mark over a still-violating gap: it
-// re-arms the mark via replaceCarryingClaim — carrying the EXISTING claimId
-// forward (never replace, which writes an empty claimId; never minting a new one,
-// which would be a second idempotencyKey → a duplicate external call, §10.3) —
-// and drives Nudger.Recover (read-before-act) rather than e.fire. Recover probes
-// Core KV for an already-landed resolve (resolveProbe) before re-executing on the
-// same idempotencyKey, so a claim whose resolve already committed settles to
-// resolved with no second side-effect, and a claimed/executing/failed claim
-// re-attempts safely (the adapter dedups). A non-Ack outcome leaves the fresh
-// mark's lease to bound the retry, mirroring the non-nudge reclaim posture.
-func (s *sweeper) reclaimNudge(ctx context.Context, key string, markRev uint64, rec *mark,
-	targetID, entityID, gapColumn, entityKey string, pl *plan, rowRevision uint64) {
-
-	e := s.engine
-	newRev, conflict, err := e.marks.replaceCarryingClaim(ctx, targetID, entityID, gapColumn,
-		entityKey, rec.Action, rec.ClaimID, markRev)
-	if err != nil {
-		e.logger.Warn("weaver sweep: nudge reclaim re-arm failed; leaving expired mark for the next sweep",
-			"targetId", targetID, "entityId", entityID, "gap", gapColumn, "err", err)
-		return
-	}
-	if conflict {
-		e.logger.Debug("weaver sweep: nudge mark changed since read; skipping reclaim", "key", key)
-		return
-	}
-	_ = newRev
-	s.bump(&s.reclaims)
-	e.logger.Warn("weaver sweep: nudge mark reclaimed",
-		"targetId", targetID, "entityId", entityID, "gap", gapColumn,
-		"action", rec.Action, "claimId", rec.ClaimID, "reason", sweepReasonLeaseExpired)
-
-	// The executing-wedge / corrupt-claimedAt Health check runs inside
-	// recoverNudge (the shared recovery path), so it fires on both the sweep
-	// reclaim and the lane-1 live-redelivery recovery.
-	if e.recoverNudge(ctx, targetID, entityID, gapColumn, rec.ClaimID, pl, rowRevision) != substrate.Ack {
-		e.logger.Warn("weaver sweep: nudge reclaim recovery did not resolve; the fresh mark's lease bounds the retry",
-			"targetId", targetID, "entityId", entityID, "gap", gapColumn, "claimId", rec.ClaimID)
 	}
 }
 

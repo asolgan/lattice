@@ -206,7 +206,7 @@ Crash points and their recovery:
 
 | Mode | Behavior |
 |------|----------|
-| Unregistered adapter named in an event | `errConfig` posture — Ack + a Health issue (redelivery can never fix a name the registry lacks); never a silent skip (mirrors the retired nudge's `NudgeAdapterMissing`) |
+| Unregistered adapter named in an event | `errConfig` posture — Ack + a Health issue (redelivery can never fix a name the registry lacks); never a silent skip |
 | Adapter call fails transiently | re-attempt on the same `idempotencyKey` (the adapter dedups); bounded-cadence redelivery, never a hot loop |
 | Adapter panics | panic-contained — the framework, not the adapter, is the safety boundary; the event is re-drivable, the dispatch goroutine survives |
 | Never-completing external call | Loom's `externalTask` per-step deadline (§10.6) is the backstop on the *waiting* side — the bridge itself does not wedge Loom |
@@ -238,12 +238,12 @@ Crash points and their recovery:
   both verify enumerations in lockstep).
 - **13.4 (done)** — **this component**: `internal/bridge/` + `cmd/bridge/`, the adapter registry, the
   moved `Fake*` adapters, the FR58 crash/retry proof on a bridge-only harness. The adapter contract
-  types (`Adapter`/`Registry`/`Request`/`Result`) moved here too; the still-live Weaver nudge path
-  references them via a temporary `internal/weaver/nudge → internal/bridge` import (removed wholesale in
-  13.5 when the nudge package is deleted). The `external.*` events are test fixtures; the result-op
-  `requestId` is `deriveReplyRequestID(instanceKey)` and the bridge holds no durable bucket of its own.
-- **13.5** — retire Weaver's nudge path (move-then-delete; the `Fake*` adapters already relocated here in
-  13.4), only after **Epic 14's convergence e2e (Story 14.5)** is green.
+  types (`Adapter`/`Registry`/`Request`/`Result`) live here. The `external.*` events are test fixtures;
+  the result-op `requestId` is `deriveReplyRequestID(instanceKey)` and the bridge holds no durable
+  bucket of its own.
+- **13.5 (done)** — retired Weaver's former external-I/O path: the `internal/weaver/nudge/` package and
+  the `weaver-claims` bucket are gone, and `internal/weaver` depends on neither `internal/bridge` nor any
+  adapter contract. External I/O is `triggerLoom` of an `externalTask`, executed by this component.
 
 ## Deferred (Phase 3+)
 

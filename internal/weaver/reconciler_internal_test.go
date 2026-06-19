@@ -908,6 +908,6 @@ func TestMarkCreate_TTLBackstop(t *testing.T) {
 		t.Fatalf("heldBy = %q, want %q", rec.HeldBy, h.engine.cfg.Instance)
 	}
 	if rec.ClaimID != "" {
-		t.Fatalf("claimId must stay empty until Epic 10's nudge path, got %q", rec.ClaimID)
+		t.Fatalf("claimId must be empty on a written mark, got %q", rec.ClaimID)
 	}
 }

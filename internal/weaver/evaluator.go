@@ -3,14 +3,11 @@ package weaver
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/asolgan/lattice/internal/substrate"
-	"github.com/asolgan/lattice/internal/weaver/nudge"
 )
 
 // handleRow is the lane-1 handler: one KV-CDC message = the current state of
@@ -75,7 +72,7 @@ func (e *Engine) handleRow(ctx context.Context, msg substrate.Message) substrate
 	// here — mark-clearing (above) and freshness arming (above) still ran (a
 	// disabled target keeps its violation-detection bookkeeping current), but
 	// no NEW in-flight mark is created and no remediation
-	// (Strategist/Actuator: triggerLoom/nudge/assignTask/directOp) runs for
+	// (Strategist/Actuator: triggerLoom/assignTask/directOp) runs for
 	// this row. On enable, remediation resumes for whatever is still violating.
 	if e.isTargetDisabled(targetID) {
 		return substrate.Ack
@@ -167,7 +164,7 @@ func (e *Engine) dispatchGap(ctx context.Context, target *Target, targetID, enti
 	// re-firing is the safe side (the same episode requestId collapses on the
 	// Contract #4 tracker; a drop could wedge a lost publish behind its own
 	// mark).
-	return e.fireEpisode(ctx, targetID, entityID, entityKey, col, ga.Action, pl, msg.Sequence, msg.NumDelivered != 1)
+	return e.fireEpisode(ctx, targetID, entityID, entityKey, col, ga.Action, pl, msg.NumDelivered != 1)
 }
 
 // planGap resolves one gap's plan (Evaluator L2 + Strategist), routing a
@@ -213,19 +210,12 @@ func (e *Engine) planGap(targetID, entityID, col string, ga GapAction, row map[s
 // gate: another episode is in flight), true re-publishes the SAME episode
 // requestId (idempotent at the Contract #4 tracker). The reconciler sweep
 // does not pass through here: its reclaim replaces the expired mark in place
-// under a revision condition and fires directly.
-//
-// The nudge action diverges: its mark is CAS-created with createNudge (minting
-// the claimId atomically, §10.3) and dispatch runs the Two-Phase Nudge protocol
-// over that claimId rather than a plain ops.<lane> submit. A redelivery over a
-// live nudge mark routes to Recover (read-before-act, reusing the mark's
-// claimId) — never Run, which would land ErrClaimExists on the existing claim.
-// rowRevision is the §10.2 row's OCC revision-condition, carried into the resolve
-// op payload; it is unused by the non-nudge plain-submit path.
+// under a revision condition and fires directly. action is recorded on the
+// mark (the §10.3 value shape) so the sweep can re-dispatch the right episode.
 func (e *Engine) fireEpisode(ctx context.Context, targetID, entityID, entityKey, col, action string,
-	pl *plan, rowRevision uint64, redelivered bool) substrate.Decision {
+	pl *plan, redelivered bool) substrate.Decision {
 
-	rec, markRev, inFlight, err := e.marks.get(ctx, targetID, entityID, col)
+	_, markRev, inFlight, err := e.marks.get(ctx, targetID, entityID, col)
 	if err != nil {
 		e.logger.Error("weaver: mark read failed; nak with delay", "targetId", targetID, "entityId", entityID, "gap", col, "err", err)
 		return substrate.NakWithDelay
@@ -236,29 +226,8 @@ func (e *Engine) fireEpisode(ctx context.Context, targetID, entityID, entityKey,
 			// drop.
 			return substrate.Ack
 		}
-		if action == actionNudge {
-			// A redelivery over a live nudge mark: the claim already exists, so a
-			// fresh Run would land ErrClaimExists. Recover reuses the mark's
-			// claimId read-before-act (probe Core KV for a landed resolve before
-			// re-executing on the same idempotencyKey).
-			return e.recoverNudge(ctx, targetID, entityID, col, rec.ClaimID, pl, rowRevision)
-		}
 		// Redelivery retry path: re-publish the same episode.
 		return e.fire(ctx, targetID, entityID, col, markRev, pl)
-	}
-
-	if action == actionNudge {
-		claimID, _, lost, err := e.marks.createNudge(ctx, targetID, entityID, col, entityKey, action)
-		if err != nil {
-			e.logger.Error("weaver: nudge mark create failed; nak with delay",
-				"targetId", targetID, "entityId", entityID, "gap", col, "err", err)
-			return substrate.NakWithDelay
-		}
-		if lost {
-			// A concurrent evaluation won the CAS — the winner dispatched.
-			return substrate.Ack
-		}
-		return e.fireNudge(ctx, targetID, entityID, col, claimID, pl, rowRevision)
 	}
 
 	rev, lost, err := e.marks.create(ctx, targetID, entityID, col, entityKey, action)
@@ -285,146 +254,6 @@ func (e *Engine) fire(ctx context.Context, targetID, entityID, col string, markR
 		return substrate.Nak
 	}
 	return substrate.Ack
-}
-
-// nudgeDispatch builds the nudge.Dispatch for one episode from the resolved
-// nudge plan + the minted/carried claimId. IdempotencyKey is the claimId
-// (nudge.Dispatch enforces it).
-func nudgeDispatch(claimID string, np *nudgePlan) nudge.Dispatch {
-	return nudge.Dispatch{
-		ClaimID:   claimID,
-		Adapter:   np.adapter,
-		Operation: np.operation,
-		Subject:   np.subject,
-		Params:    np.params,
-	}
-}
-
-// fireNudge runs the Two-Phase Nudge protocol for a FRESH nudge episode (the
-// claimId was just minted with the mark, §10.3): Nudger.Run writes the claim
-// (state=claimed, NFR-S11 visible-intent-before-execute), advances to executing,
-// calls the adapter on idempotencyKey=claimId, then submits the resolve op and
-// records resolved. The outcome maps to a Decision following the §10.3 /
-// fire-and-forget posture:
-//
-//   - success (claim resolved) → Ack;
-//   - adapter hard-fail (claim left failed) → Ack + Health issue: the claim is
-//     durable and re-drivable, and the reconciler sweep re-attempts at lease
-//     expiry — a Nak would hot-loop lane-1 against a deterministically failing
-//     adapter (the §10.3 model is lease-bounded re-attempt, not a redelivery
-//     storm);
-//   - a missing adapter (config error) → Ack + Health issue (errConfig posture:
-//     redelivery cannot fix a name the registry does not know);
-//   - any other failure (resolve-submit failure leaving the claim executing, or
-//     an infra error) → Nak so the redelivery re-drives via Recover before the
-//     sweep would.
-func (e *Engine) fireNudge(ctx context.Context, targetID, entityID, col, claimID string,
-	pl *plan, rowRevision uint64) substrate.Decision {
-
-	claim, err := e.nudger.Run(ctx, nudgeDispatch(claimID, pl.nudge), e.resolveFunc(pl.nudge, rowRevision))
-	return e.nudgeDecision(targetID, entityID, col, claimID, claim, err)
-}
-
-// recoverNudge re-drives a nudge episode whose claim already exists (a lane-1
-// redelivery over a live mark, or the reconciler reclaim) via Nudger.Recover:
-// read-before-act on the SAME claimId (probe Core KV for an already-landed
-// resolve via resolveProbe; if landed, advance to resolved with no second
-// side-effect; else re-execute on the same idempotencyKey — the adapter dedups).
-// claimID MUST be the existing mark's claimId (§10.3 carries it forward); a blank
-// one is a corrupt mark, surfaced and refused by Recover rather than re-minted.
-// Outcome maps to a Decision like fireNudge.
-func (e *Engine) recoverNudge(ctx context.Context, targetID, entityID, col, claimID string,
-	pl *plan, rowRevision uint64) substrate.Decision {
-
-	if claimID == "" {
-		// A live nudge mark with no claimId is corrupt (§10.3 impossible-by-
-		// construction). Recover would refuse it; surface here and leave the
-		// reconciler's corrupt-claim guard to delete+alert the mark.
-		e.alert(issueKeyData(targetID, col), "error", "CorruptNudgeClaim",
-			"target "+targetID+" gap "+col+": live nudge mark carries an empty claimId")
-		return substrate.Ack
-	}
-	e.checkClaimWedge(ctx, targetID, col, claimID)
-	claim, err := e.nudger.Recover(ctx, nudgeDispatch(claimID, pl.nudge), e.resolveProbe(), e.resolveFunc(pl.nudge, rowRevision))
-	return e.nudgeDecision(targetID, entityID, col, claimID, claim, err)
-}
-
-// checkClaimWedge surfaces the executing-wedge Health signal on EVERY recovery
-// (sweep reclaim and lane-1 live redelivery both route through recoverNudge), on
-// its OWN issue key (issueKeyNudgeWedge) so nudgeDecision's clear/raise on
-// issueKeyNudge cannot clobber it. A claim still pre-resolved past the Contract #4
-// idempotency horizon (claimWedgeBound) can no longer trust the adapter's dedup
-// window (or the resolve tracker) to suppress a duplicate on re-execute: the gap
-// keeps converging (the fresh lease bounds re-attempts) but the lapsed guarantee
-// must be operator-visible, not silent. An unparseable claimedAt is itself a
-// corrupt claim — surfaced rather than skipped (a skip would go dark on the only
-// signal for a lapsed dedup guarantee). A missing/resolved claim, or one still
-// inside the horizon, clears any standing wedge issue.
-func (e *Engine) checkClaimWedge(ctx context.Context, targetID, col, claimID string) {
-	claim, found, err := e.claims.Get(ctx, claimID)
-	if err != nil {
-		// A transient claim-read failure is not evidence of a wedge; leave any
-		// standing issue and let the next recovery re-evaluate.
-		return
-	}
-	if !found || claim.State == nudge.StateResolved {
-		e.issues.clear(issueKeyNudgeWedge(targetID, col))
-		return
-	}
-	claimedAt, perr := time.Parse(time.RFC3339Nano, claim.ClaimedAt)
-	if perr != nil {
-		e.alert(issueKeyNudgeWedge(targetID, col), "warning", "NudgeClaimCorrupt",
-			"target "+targetID+" gap "+col+" claim "+claimID+
-				": claimedAt "+claim.ClaimedAt+" is unparseable; the executing-wedge dedup-horizon check cannot run: "+perr.Error())
-		return
-	}
-	if time.Since(claimedAt) > claimWedgeBound {
-		e.issues.set(issueKeyNudgeWedge(targetID, col), "warning", "NudgeClaimWedged",
-			"target "+targetID+" gap "+col+" claim "+claimID+
-				": claim has been unresolved (state "+string(claim.State)+") past the "+
-				claimWedgeBound.String()+" idempotency horizon; re-execute can no longer be guaranteed duplicate-free")
-		return
-	}
-	e.issues.clear(issueKeyNudgeWedge(targetID, col))
-}
-
-// nudgeDecision maps a Nudger.Run/Recover outcome to a lane-1 Decision and
-// surfaces/clears Health. A nil error clears any standing nudge issue and Acks.
-// A missing adapter is a config error → Ack + Health (errConfig posture:
-// redelivery can never fix a name the registry does not hold, so a Nak would
-// hot-loop lane-1). A claim left in state=failed is an adapter hard-fail → Ack +
-// Health (the sweep re-attempts on the lease, no hot loop). Anything else (a
-// resolve-submit failure leaving the claim executing, or an infra error) → Nak
-// for redelivery, with Health raised so the condition is visible.
-func (e *Engine) nudgeDecision(targetID, entityID, col, claimID string, claim *nudge.Claim, err error) substrate.Decision {
-	if err == nil {
-		e.issues.clear(issueKeyNudge(targetID, col))
-		return substrate.Ack
-	}
-	if errors.Is(err, nudge.ErrAdapterNotFound) {
-		// The nudge action names an adapter the registry does not hold — a config
-		// error. Redelivery can never fix it, so Ack (no hot loop) and surface to
-		// Health, mirroring the planGap errConfig posture.
-		e.alert(issueKeyNudge(targetID, col), "error", "NudgeAdapterMissing",
-			"target "+targetID+" gap "+col+" claim "+claimID+": "+err.Error())
-		return substrate.Ack
-	}
-	if claim != nil && claim.State == nudge.StateFailed {
-		e.alert(issueKeyNudge(targetID, col), "warning", "NudgeAdapterFailed",
-			"target "+targetID+" gap "+col+" claim "+claimID+": adapter failed; the reconciler re-attempts at lease expiry: "+err.Error())
-		return substrate.Ack
-	}
-	if errors.Is(err, nudge.ErrClaimExists) {
-		// The fresh-Run path lost to an existing claim (a redelivery raced the
-		// create). The live claim's owner is converging it; drop this delivery —
-		// re-running would be the duplicate the create-semantics guard against.
-		e.logger.Debug("weaver: nudge claim already exists; dropping racing fresh dispatch",
-			"targetId", targetID, "entityId", entityID, "gap", col, "claimId", claimID)
-		return substrate.Ack
-	}
-	e.alert(issueKeyNudge(targetID, col), "warning", "NudgeDispatchError",
-		"target "+targetID+" gap "+col+" claim "+claimID+": nudge dispatch did not resolve; redelivery re-drives via recovery: "+err.Error())
-	return substrate.Nak
 }
 
 // clearClosedMarks is the level-reconciled mark-clearing pass. Returns false
@@ -524,12 +353,5 @@ func (e *Engine) alert(key, severity, code, message string) {
 	e.issues.set(key, severity, code, message)
 }
 
-func issueKeyGap(targetID, col string) string   { return "gap:" + targetID + "." + col }
-func issueKeyData(targetID, col string) string  { return "data:" + targetID + "." + col }
-func issueKeyNudge(targetID, col string) string { return "nudge:" + targetID + "." + col }
-
-// issueKeyNudgeWedge keys the executing-wedge / corrupt-claimedAt Health issue on
-// its OWN namespace, distinct from issueKeyNudge: nudgeDecision clears and raises
-// issueKeyNudge on every recovery, so the wedge alert (which must persist for the
-// operator across recoveries) cannot share that key or it would be clobbered.
-func issueKeyNudgeWedge(targetID, col string) string { return "nudge-wedge:" + targetID + "." + col }
+func issueKeyGap(targetID, col string) string  { return "gap:" + targetID + "." + col }
+func issueKeyData(targetID, col string) string { return "data:" + targetID + "." + col }

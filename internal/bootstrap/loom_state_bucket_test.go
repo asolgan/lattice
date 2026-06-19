@@ -15,7 +15,7 @@ import (
 
 // TestLoomStateBucket_Provisioned asserts the loom-state operational bucket
 // (Contract #10 §10.3) joins the primordial create list and is TTL-capable,
-// matching its weaver-state/weaver-claims siblings.
+// matching its weaver-state sibling.
 func TestLoomStateBucket_Provisioned(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires embedded NATS")
@@ -45,7 +45,7 @@ func TestLoomStateBucket_Provisioned(t *testing.T) {
 	require.Equal(t, bootstrap.LoomStateBucket, kv.Bucket())
 
 	// TTL-capable: the backing stream must allow per-message TTL (LimitMarkerTTL),
-	// like weaver-state/weaver-claims.
+	// like weaver-state.
 	stream, err := js.Stream(ctx, "KV_"+bootstrap.LoomStateBucket)
 	require.NoError(t, err)
 	info, err := stream.Info(ctx)

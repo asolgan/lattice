@@ -10,8 +10,8 @@ import (
 )
 
 // TestStart_EmptyActorKeyFails asserts Weaver fails LOUD at Start when ActorKey
-// is empty, rather than silently publishing nudge ops under actor:"" (which the
-// Processor rejects off-stream with no signal). Instance/Lane are set to valid
+// is empty, rather than silently publishing remediation ops under actor:"" (which
+// the Processor rejects off-stream with no signal). Instance/Lane are set to valid
 // tokens so Start reaches the ActorKey guard (it runs after the token checks).
 func TestStart_EmptyActorKeyFails(t *testing.T) {
 	eng := weaver.NewEngine(nil, weaver.Config{ActorKey: "", Instance: "test", Lane: "system"})
@@ -26,7 +26,10 @@ func TestStart_EmptyActorKeyFails(t *testing.T) {
 
 // TestModuleBoundary_OnlySubstrate enforces AC #9: internal/weaver never
 // imports internal/processor, internal/loom, or internal/refractor anywhere in
-// its dependency tree. The check uses `go list -deps` (transitive).
+// its dependency tree. It also never imports internal/bridge or the retired
+// internal/weaver/nudge package — external idempotent I/O is carried entirely by
+// Loom's externalTask + the bridge, with no dependency back into Weaver. The
+// check uses `go list -deps` (transitive).
 func TestModuleBoundary_OnlySubstrate(t *testing.T) {
 	out, err := exec.Command("go", "list", "-deps", "github.com/asolgan/lattice/internal/weaver").Output()
 	if err != nil {
@@ -36,6 +39,8 @@ func TestModuleBoundary_OnlySubstrate(t *testing.T) {
 		"github.com/asolgan/lattice/internal/processor",
 		"github.com/asolgan/lattice/internal/loom",
 		"github.com/asolgan/lattice/internal/refractor",
+		"github.com/asolgan/lattice/internal/bridge",
+		"github.com/asolgan/lattice/internal/weaver/nudge",
 	}
 	for _, line := range strings.Split(string(out), "\n") {
 		dep := strings.TrimSpace(line)

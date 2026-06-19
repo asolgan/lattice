@@ -39,7 +39,8 @@ Per-component pages. Updated in the same commit as code changes. Drift between p
 | [components/_packages.md](./components/_packages.md) | Capability packages — Processor-routed install path, DDL/lens/permission seeding, authoring guide |
 | [components/refractor-failure-tiers.md](./components/refractor-failure-tiers.md) | Refractor failure-tier classification — Infrastructure/Structural/Terminal/Transient + designed privacy/security supersession tiers |
 | [components/loom.md](./components/loom.md) | Loom (Phase 2, design) — deterministic procedure engine: linear-sequence interpreter, rebuildable cursor |
-| [components/weaver.md](./components/weaver.md) | Weaver (Phase 2, design) — convergence engine: target-as-Lens, 3-lane work stream, Two-Phase Nudge |
+| [components/weaver.md](./components/weaver.md) | Weaver (Phase 2, design) — convergence engine: target-as-Lens, 3-lane work stream, triggerLoom remediation |
+| [components/bridge.md](./components/bridge.md) | Bridge (Phase 2) — idempotent external I/O: `events.external.>` consumer, adapter registry, result-op submission |
 
 ---
 

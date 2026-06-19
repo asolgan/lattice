@@ -52,7 +52,7 @@ func TestValidateWeaverTargets_DuplicateTargetID(t *testing.T) {
 func TestValidateWeaverTargets_NonMissingGapKeyRejected(t *testing.T) {
 	def := Definition{WeaverTargets: []WeaverTargetSpec{{
 		TargetID: "leaseSigning",
-		Gaps:     map[string]GapActionSpec{"signature": {Action: "nudge"}},
+		Gaps:     map[string]GapActionSpec{"signature": {Action: "directOp", Operation: "SignLease"}},
 	}}}
 	err := def.validateWeaverTargets()
 	if err == nil || !strings.Contains(err.Error(), "missing_<gap>") {
@@ -63,7 +63,7 @@ func TestValidateWeaverTargets_NonMissingGapKeyRejected(t *testing.T) {
 func TestValidateWeaverTargets_BareMissingPrefixRejected(t *testing.T) {
 	def := Definition{WeaverTargets: []WeaverTargetSpec{{
 		TargetID: "leaseSigning",
-		Gaps:     map[string]GapActionSpec{"missing_": {Action: "nudge"}},
+		Gaps:     map[string]GapActionSpec{"missing_": {Action: "directOp", Operation: "SignLease"}},
 	}}}
 	if err := def.validateWeaverTargets(); err == nil {
 		t.Fatal("expected error for bare missing_ gap key, got nil")
@@ -126,28 +126,6 @@ func TestValidateWeaverTargets_TriggerLoomMissingSubject(t *testing.T) {
 	}
 }
 
-func TestValidateWeaverTargets_NudgeMissingAdapter(t *testing.T) {
-	def := Definition{WeaverTargets: []WeaverTargetSpec{{
-		TargetID: "leaseSigning",
-		Gaps:     map[string]GapActionSpec{"missing_signature": {Action: "nudge", Operation: "ResolveNudge"}},
-	}}}
-	err := def.validateWeaverTargets()
-	if err == nil || !strings.Contains(err.Error(), "Adapter") {
-		t.Fatalf("expected nudge missing-Adapter error, got %v", err)
-	}
-}
-
-func TestValidateWeaverTargets_NudgeMissingOperation(t *testing.T) {
-	def := Definition{WeaverTargets: []WeaverTargetSpec{{
-		TargetID: "leaseSigning",
-		Gaps:     map[string]GapActionSpec{"missing_signature": {Action: "nudge", Adapter: "email"}},
-	}}}
-	err := def.validateWeaverTargets()
-	if err == nil || !strings.Contains(err.Error(), "Operation") {
-		t.Fatalf("expected nudge missing-Operation error, got %v", err)
-	}
-}
-
 func TestValidateWeaverTargets_AssignTaskMissingAssignee(t *testing.T) {
 	def := Definition{WeaverTargets: []WeaverTargetSpec{{
 		TargetID: "leaseSigning",
@@ -184,7 +162,6 @@ func TestValidateWeaverTargets_DirectOpMissingOperation(t *testing.T) {
 func TestValidateWeaverTargets_EachActionWellFormedAccepted(t *testing.T) {
 	cases := map[string]GapActionSpec{
 		"missing_a": {Action: "triggerLoom", Pattern: "leaseSigning", Subject: "row.lease"},
-		"missing_b": {Action: "nudge", Adapter: "email", Operation: "ResolveNudge"},
 		"missing_c": {Action: "assignTask", Operation: "SignLease", Assignee: "row.tenant", Target: "row.lease"},
 		"missing_d": {Action: "directOp", Operation: "MarkExpired"},
 	}

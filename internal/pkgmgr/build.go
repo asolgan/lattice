@@ -349,7 +349,7 @@ func resolveLensRef(lensRef string, lensByCanonical map[string]string) (string, 
 // aspect's data — the §10.8 `{targetId, lensRef, gaps}` shape the Weaver
 // registry deserializes into a runtime Target. Optional gap-action fields are
 // omitted when empty so the emitted body matches the engine's minimal shape.
-// The `pattern` (triggerLoom) and `operation` (assignTask/nudge/directOp) refs
+// The `pattern` (triggerLoom) and `operation` (assignTask/directOp) refs
 // are shipped verbatim; the engine registry resolves them live at dispatch
 // (patternMetaKey / opMetaKey).
 func weaverTargetSpecBody(t WeaverTargetSpec, lensRef string) map[string]any {

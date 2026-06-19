@@ -272,7 +272,7 @@ func main() {
 	}
 	for _, bucket := range []string{
 		bootstrap.CoreKVBucket, bootstrap.HealthKVBucket, bootstrap.CapabilityKVBucket,
-		bootstrap.WeaverStateBucket, bootstrap.WeaverClaimsBucket, bootstrap.LoomStateBucket,
+		bootstrap.WeaverStateBucket, bootstrap.LoomStateBucket,
 		bootstrap.WeaverTargetsBucket, bootstrap.RefractorAdjacencyKV,
 	} {
 		if _, err := js.KeyValue(ctx, bucket); err != nil {

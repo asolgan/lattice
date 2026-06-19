@@ -193,7 +193,7 @@ Lattice is a small set of cooperating components, each with a living reference p
 | [Substrate](docs/components/substrate.md) | NATS / KV / NanoID primitives — key shapes, atomic batch, durable CDC consumers |
 | [Capability Packages](docs/components/_packages.md) | Installable bundles (identity, RBAC, domain logic) added through the `InstallPackage` kernel op — the kernel stays minimal |
 | [Loom](docs/components/loom.md) | The procedure engine — deterministic, idempotent, linear flows (the "executive") |
-| [Weaver](docs/components/weaver.md) | The convergence engine — drives a declared target state, with Two-Phase Nudge for safe external side effects (the "visionary") |
+| [Weaver](docs/components/weaver.md) | The convergence engine — drives a declared target state toward convergence (the "visionary") |
 
 The exact wire shapes, key patterns, and behavioral rules are pinned in the data contracts under
 [`docs/contracts/`](docs/contracts/README.md).
@@ -232,7 +232,7 @@ This is the one place that distinguishes what's built from what's designed.
 |-------|-------|-------|
 | **Phase 1** | Trustworthy core: substrate, Processor write path, Refractor lens projections, identity/RBAC packages, Capability-Lens authorization, the Hello Lattice reference slice | ✅ Implemented + tested (CI-gated) |
 | **Phase 1.5** | Hardening: kernel minimization, package installs routed through the Processor, contract conformance suite, transactional event outbox | ✅ Complete |
-| **Phase 2** | Orchestration: Loom + Weaver + Two-Phase Nudge + a Loftspace lease-application reference vertical | 🔨 Contracts frozen; implementation starting |
+| **Phase 2** | Orchestration: Loom (procedures) + Weaver (convergence) + the external-I/O bridge + the Loftspace lease-application reference vertical | ✅ Complete (CI-gated) |
 | **Phase 3+** | Gateway (read-path auth, JWT), Vault (crypto-shredding / PII), AI-authored capabilities, Semantic Contracts, Edge Lattice + Personal Lenses, multi-cell sharding | 🔭 Designed, future work |
 
 ---

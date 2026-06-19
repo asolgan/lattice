@@ -30,7 +30,7 @@ func setupBootstrapEnv(t *testing.T) (context.Context, *substrate.Conn) {
 	// Provision the full bucket + stream surface that VerifyKernel checks.
 	// SetupPackageTestEnv's ProvisionHarness only creates the three buckets
 	// needed by the Processor (core-kv, health-kv, capability-kv). VerifyKernel
-	// also requires weaver-state, weaver-claims, refractor-adjacency, and the
+	// also requires weaver-state, refractor-adjacency, and the
 	// core-events stream. The full seeder's ProvisionBuckets call is idempotent.
 	seeder, err := bootstrap.NewSeeder(conn.NATS(), testutil.TestLogger())
 	if err != nil {

@@ -41,7 +41,6 @@ const (
 // engine resolves the value live).
 const (
 	actionTriggerLoom = "triggerLoom"
-	actionNudge       = "nudge"
 	actionAssignTask  = "assignTask"
 	actionDirectOp    = "directOp"
 )
@@ -96,8 +95,8 @@ func (def Definition) validateWeaverTargets() error {
 // presence only — the engine resolves the literal-or-template value live at
 // dispatch. The required-field set mirrors the engine's dispatch-time
 // requirements (internal/weaver/strategist.go buildPlan): triggerLoom needs
-// Pattern + Subject, nudge needs Adapter + Operation, assignTask needs
-// Operation + Assignee + Target, directOp needs Operation.
+// Pattern + Subject, assignTask needs Operation + Assignee + Target, directOp
+// needs Operation.
 func validateGapAction(targetIdx int, targetID, col string, ga GapActionSpec) error {
 	missing := func(field string) error {
 		return fmt.Errorf("pkgmgr: WeaverTarget[%d] %q: gaps key %q action %q requires field %q",
@@ -110,13 +109,6 @@ func validateGapAction(targetIdx int, targetID, col string, ga GapActionSpec) er
 		}
 		if ga.Subject == "" {
 			return missing("Subject")
-		}
-	case actionNudge:
-		if ga.Adapter == "" {
-			return missing("Adapter")
-		}
-		if ga.Operation == "" {
-			return missing("Operation")
 		}
 	case actionAssignTask:
 		if ga.Operation == "" {
@@ -133,7 +125,7 @@ func validateGapAction(targetIdx int, targetID, col string, ga GapActionSpec) er
 			return missing("Operation")
 		}
 	default:
-		return fmt.Errorf("pkgmgr: WeaverTarget[%d] %q: gaps key %q action %q is not a known action (triggerLoom | nudge | assignTask | directOp)",
+		return fmt.Errorf("pkgmgr: WeaverTarget[%d] %q: gaps key %q action %q is not a known action (triggerLoom | assignTask | directOp)",
 			targetIdx, targetID, col, ga.Action)
 	}
 	return nil

@@ -190,6 +190,9 @@ type PrimordialIDsRaw struct {
 //     no longer seeds or addresses it.
 //   - "8": Bridge internal service-actor identity NanoID added (Epic 13 —
 //     External I/O Bridge service actor).
+//   - "9": one Weaver operational KV bucket retired (Epic 13 — external I/O
+//     re-homed to Loom's externalTask + the bridge). Dropping a provisioned
+//     bucket changes the kernel topology a stale file would not match.
 type BootstrapFile struct {
 	Version       string           `json:"version"`
 	GeneratedAt   string           `json:"generatedAt"`
@@ -321,16 +324,16 @@ func Load(path string) error {
 // checkVersion returns a clear error when the bootstrap file's version is
 // not one of the supported versions. This surfaces a meaningful message
 // instead of a confusing NanoID validation failure when an operator
-// upgrades Lattice without running `make down` first. Version 8 adds the
-// Bridge service-actor identity NanoID; older files lack it and must be
-// regenerated.
+// upgrades Lattice without running `make down` first. Version 9 retires one
+// Weaver operational KV bucket; older files provisioned it and must be
+// regenerated so the kernel topology matches.
 func checkVersion(f BootstrapFile) error {
 	switch f.Version {
-	case "8":
+	case "9":
 		return nil
 	default:
 		return fmt.Errorf(
-			"bootstrap file version mismatch: got %q, want \"8\" — run `make down && make up`",
+			"bootstrap file version mismatch: got %q, want \"9\" — run `make down && make up`",
 			f.Version,
 		)
 	}
@@ -462,7 +465,7 @@ func populate(raw PrimordialIDsRaw) error {
 
 func persistWithStatus(path string, raw PrimordialIDsRaw, status string) error {
 	f := BootstrapFile{
-		Version:       "8",
+		Version:       "9",
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339Nano),
 		Status:        status,
 		PrimordialIDs: raw,
