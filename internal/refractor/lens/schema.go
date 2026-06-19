@@ -82,10 +82,10 @@ type RetryConfig struct {
 
 // Rule is the parsed, validated representation of a Lens (formerly Materializer-domain "Rule").
 type Rule struct {
-	ID            string      `yaml:"id"`
-	Match         string      `yaml:"match"`
-	Into          IntoConfig  `yaml:"into"`
-	Retry         RetryConfig `yaml:"retry"`
+	ID    string      `yaml:"id"`
+	Match string      `yaml:"match"`
+	Into  IntoConfig  `yaml:"into"`
+	Retry RetryConfig `yaml:"retry"`
 	// CanonicalName mirrors the LensSpec.canonicalName field — used by
 	// downstream wiring (e.g. the cmd/refractor startPipeline path) to
 	// select target-specific envelopes. Not authoritative for routing;

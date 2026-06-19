@@ -16,6 +16,7 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/control"
 	"github.com/asolgan/lattice/internal/refractor/health"
 	"github.com/asolgan/lattice/internal/refractor/lens"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // mockResumer records Resume calls so tests can assert the pipeline was told to resume.
@@ -34,14 +35,6 @@ func (m *mockResumer) wasResumed() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.resumed
-}
-
-// startControlTestServer starts an in-memory NATS server for health reporter use.
-// Returns only JetStream; use startControlTestServerConn when nc is also required.
-func startControlTestServer(t *testing.T) jetstream.JetStream {
-	t.Helper()
-	_, js := startControlTestServerConn(t)
-	return js
 }
 
 // startControlTestServerConn starts an in-memory NATS server and returns both
@@ -71,22 +64,35 @@ func startControlTestServerConn(t *testing.T) (*nats.Conn, jetstream.JetStream) 
 	return nc, js
 }
 
+// makeKV creates bucket on js and returns a substrate handle to it (opened over
+// nc), matching the production wiring where migrated functions take *substrate.KV.
+func makeKV(t *testing.T, nc *nats.Conn, js jetstream.JetStream, bucket string) *substrate.KV {
+	t.Helper()
+	ctx := context.Background()
+	_, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucket})
+	require.NoError(t, err)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+	kv, err := conn.OpenKV(ctx, bucket)
+	require.NoError(t, err)
+	return kv
+}
+
 // ── Existing tests ────────────────────────────────────────────────────────────
 
 // TestControl_ResumeRule_CallsResumer verifies that ResumeRule calls the registered Resumer.
 func TestControl_ResumeRule_CallsResumer(t *testing.T) {
 	svc := control.NewService()
 	mr := &mockResumer{}
-	js := startControlTestServer(t)
+	nc, js := startControlTestServerConn(t)
 
 	ctx := context.Background()
-	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "refractor-test-ctrl"})
-	require.NoError(t, err)
+	kv := makeKV(t, nc, js, "refractor-test-ctrl")
 	reporter := health.New(kv, "rule-ctrl")
 
 	svc.Register("rule-ctrl", mr, reporter)
 
-	err = svc.ResumeRule(ctx, "rule-ctrl")
+	err := svc.ResumeRule(ctx, "rule-ctrl")
 	require.NoError(t, err)
 	assert.True(t, mr.wasResumed(), "ResumeRule must call Resumer.Resume")
 }
@@ -137,8 +143,7 @@ func TestControl_Health_ReturnsEntry(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "refractor-test-5-1"})
-	require.NoError(t, err)
+	kv := makeKV(t, nc, js, "refractor-test-5-1")
 	reporter := health.New(kv, "rule-5-1")
 	require.NoError(t, reporter.SetActive(ctx))
 
@@ -244,9 +249,8 @@ func TestControl_Validate_FieldsPresent(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	coreKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-validate-present"})
-	require.NoError(t, err)
-	_, err = coreKV.Put(ctx, "entity-1", []byte(`{"id": "1", "name": "Foo"}`))
+	coreKV := makeKV(t, nc, js, "core-validate-present")
+	_, err := coreKV.Put(ctx, "entity-1", []byte(`{"id": "1", "name": "Foo"}`))
 	require.NoError(t, err)
 	_, err = coreKV.Put(ctx, "entity-2", []byte(`{"id": "2", "name": "Bar"}`))
 	require.NoError(t, err)
@@ -278,9 +282,8 @@ func TestControl_Validate_FieldAbsent(t *testing.T) {
 	t.Cleanup(cancel)
 
 	// Entries contain "id" but NOT "email"
-	coreKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-validate-absent"})
-	require.NoError(t, err)
-	_, err = coreKV.Put(ctx, "entity-1", []byte(`{"id": "1"}`))
+	coreKV := makeKV(t, nc, js, "core-validate-absent")
+	_, err := coreKV.Put(ctx, "entity-1", []byte(`{"id": "1"}`))
 	require.NoError(t, err)
 
 	testRule := validateTestLens("validate-rule-absent", `MATCH (a:agreement) RETURN a.id AS id, a.email AS email`)
@@ -320,10 +323,7 @@ func TestControl_Validate_EmptyBucket(t *testing.T) {
 	t.Cleanup(cancel)
 
 	// Empty bucket — no entries published
-	_, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-validate-empty"})
-	require.NoError(t, err)
-	coreKV, err := js.KeyValue(ctx, "core-validate-empty")
-	require.NoError(t, err)
+	coreKV := makeKV(t, nc, js, "core-validate-empty")
 
 	testRule := validateTestLens("validate-rule-empty", `MATCH (a:agreement) RETURN a.id AS id`)
 	svc := control.NewService()
@@ -348,8 +348,7 @@ func TestControl_Validate_RuleNotLoaded(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	coreKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-validate-norule"})
-	require.NoError(t, err)
+	coreKV := makeKV(t, nc, js, "core-validate-norule")
 
 	svc := control.NewService()
 	// SetRuleGetter with empty map — rule not found
@@ -533,8 +532,7 @@ func TestControl_Resume_ReturnsAck(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "refractor-test-resume-ack"})
-	require.NoError(t, err)
+	kv := makeKV(t, nc, js, "refractor-test-resume-ack")
 	reporter := health.New(kv, "resume-rule-1")
 
 	svc := control.NewService()
@@ -658,8 +656,7 @@ func TestControl_TwoRules_BothRegistered(t *testing.T) {
 	t.Cleanup(cancel)
 
 	// Create health KV entries for both rules.
-	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "refractor-test-two-rules"})
-	require.NoError(t, err)
+	kv := makeKV(t, nc, js, "refractor-test-two-rules")
 	reporterV1 := health.New(kv, "agreement-summary-v1")
 	reporterV2 := health.New(kv, "agreement-summary-v2")
 	require.NoError(t, reporterV1.SetActive(ctx))
@@ -693,8 +690,7 @@ func TestControl_TwoRules_DeleteV1_LeavesV2(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "refractor-test-del-v1"})
-	require.NoError(t, err)
+	kv := makeKV(t, nc, js, "refractor-test-del-v1")
 	reporterV1 := health.New(kv, "agreement-summary-v1")
 	reporterV2 := health.New(kv, "agreement-summary-v2")
 	require.NoError(t, reporterV1.SetActive(ctx))
@@ -773,8 +769,7 @@ func TestControl_Delete_UnregistersRule(t *testing.T) {
 	t.Cleanup(cancel)
 
 	// Register a full set: resumer + reporter + deleter.
-	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "refractor-test-del-unreg"})
-	require.NoError(t, err)
+	kv := makeKV(t, nc, js, "refractor-test-del-unreg")
 	reporter := health.New(kv, "delete-unreg-rule")
 	require.NoError(t, reporter.SetActive(ctx))
 

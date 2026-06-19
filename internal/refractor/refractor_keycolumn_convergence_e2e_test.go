@@ -121,15 +121,17 @@ func TestRefractor_KeyColumnLens_ProjectsBareNanoIDKey(t *testing.T) {
 	require.NoError(t, seeder.ProvisionBuckets(ctx))
 	require.NoError(t, seeder.SeedPrimordial(ctx))
 
-	coreKV, err := js.KeyValue(ctx, bootstrap.CoreKVBucket)
+	coreKV, err := conn.OpenKV(ctx, bootstrap.CoreKVBucket)
 	require.NoError(t, err)
-	adjKV, err := js.KeyValue(ctx, bootstrap.RefractorAdjacencyKV)
+	adjKV, err := conn.OpenKV(ctx, bootstrap.RefractorAdjacencyKV)
 	require.NoError(t, err)
-	convKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: proofConvergenceBucket})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: proofConvergenceBucket})
+	require.NoError(t, err)
+	convKV, err := conn.OpenKV(ctx, proofConvergenceBucket)
 	require.NoError(t, err)
 
 	// --- adjacency bootstrapper ---
-	boots := consumer.NewBootstrapper(js, bootstrap.CoreKVBucket, adjKV)
+	boots := consumer.NewBootstrapper(conn, bootstrap.CoreKVBucket, adjKV)
 	go func() { _ = boots.Run(ctx) }()
 	select {
 	case <-boots.Ready():
@@ -168,7 +170,7 @@ func TestRefractor_KeyColumnLens_ProjectsBareNanoIDKey(t *testing.T) {
 		if gErr != nil || entry == nil {
 			return 0
 		}
-		return entry.Revision()
+		return entry.Revision
 	}
 
 	src := lens.NewCoreKVSource(conn, bootstrap.CoreKVBucket, logger)
@@ -258,11 +260,11 @@ func TestRefractor_KeyColumnLens_ProjectsBareNanoIDKey(t *testing.T) {
 	// --- PROJECT: the open task projects a convergence row keyed by the bare id ---
 	require.Eventually(t, func() bool {
 		entry, gErr := convKV.Get(ctx, bareKey)
-		if gErr != nil || entry == nil || len(entry.Value()) == 0 {
+		if gErr != nil || entry == nil || len(entry.Value) == 0 {
 			return false
 		}
 		var env map[string]any
-		if json.Unmarshal(entry.Value(), &env) != nil {
+		if json.Unmarshal(entry.Value, &env) != nil {
 			return false
 		}
 		roster, _ := env["roster"].([]any)
@@ -277,7 +279,7 @@ func TestRefractor_KeyColumnLens_ProjectsBareNanoIDKey(t *testing.T) {
 	// The default <targetId>.<type>.<id> key must NOT exist — proves the suffix is
 	// the bare id, not the default <type>.<id>.
 	defEntry, defErr := convKV.Get(ctx, defaultKey)
-	require.True(t, defErr != nil || defEntry == nil || len(defEntry.Value()) == 0,
+	require.True(t, defErr != nil || defEntry == nil || len(defEntry.Value) == 0,
 		"the default <type>.<id> key must NOT be written when keyColumn is set: %q", defaultKey)
 
 	// The projected key's tail (after the first dot) must satisfy the exact
@@ -302,7 +304,7 @@ func TestRefractor_KeyColumnLens_ProjectsBareNanoIDKey(t *testing.T) {
 			return true
 		}
 		var env map[string]any
-		if json.Unmarshal(entry.Value(), &env) != nil {
+		if json.Unmarshal(entry.Value, &env) != nil {
 			return false
 		}
 		if isDel, _ := env["isDeleted"].(bool); isDel {

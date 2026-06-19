@@ -75,7 +75,6 @@ func TestRefractor_CapabilityLens_LinkFanOut_E2E(t *testing.T) {
 	defer cancel()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	js := conn.JetStream()
 
 	// --- provision buckets + run primordial bootstrap ---
 	bsJSONPath := t.TempDir() + "/lattice.bootstrap.json"
@@ -86,15 +85,15 @@ func TestRefractor_CapabilityLens_LinkFanOut_E2E(t *testing.T) {
 	require.NoError(t, seeder.ProvisionBuckets(ctx))
 	require.NoError(t, seeder.SeedPrimordial(ctx))
 
-	coreKV, err := js.KeyValue(ctx, bootstrap.CoreKVBucket)
+	coreKV, err := conn.OpenKV(ctx, bootstrap.CoreKVBucket)
 	require.NoError(t, err)
-	adjKV, err := js.KeyValue(ctx, bootstrap.RefractorAdjacencyKV)
+	adjKV, err := conn.OpenKV(ctx, bootstrap.RefractorAdjacencyKV)
 	require.NoError(t, err)
-	capabilityKV, err := js.KeyValue(ctx, bootstrap.CapabilityKVBucket)
+	capabilityKV, err := conn.OpenKV(ctx, bootstrap.CapabilityKVBucket)
 	require.NoError(t, err)
 
 	// --- adjacency bootstrapper (with link-bridge) ---
-	boots := consumer.NewBootstrapper(js, bootstrap.CoreKVBucket, adjKV)
+	boots := consumer.NewBootstrapper(conn, bootstrap.CoreKVBucket, adjKV)
 	go func() { _ = boots.Run(ctx) }()
 	select {
 	case <-boots.Ready():
@@ -114,12 +113,12 @@ func TestRefractor_CapabilityLens_LinkFanOut_E2E(t *testing.T) {
 		if gErr != nil || entry == nil {
 			return 0
 		}
-		return entry.Revision()
+		return entry.Revision
 	}
 
 	rolesCR, err := fullEngine.Parse(rolesSpec.Spec)
 	require.NoError(t, err, "capabilityRoles spec must parse")
-	capTargetKV, err := js.KeyValue(ctx, bootstrap.CapabilityKVBucket)
+	capTargetKV, err := conn.OpenKV(ctx, bootstrap.CapabilityKVBucket)
 	require.NoError(t, err)
 	rolesDesc := descFromPkgSpec(t, rolesSpec)
 	capAdpt, err := adapter.New(capTargetKV, []string{"key"}, adapter.DeleteModeHard)
@@ -213,11 +212,11 @@ func TestRefractor_CapabilityLens_LinkFanOut_E2E(t *testing.T) {
 	}
 	getEnv := func() (map[string]any, bool) {
 		entry, gErr := capabilityKV.Get(ctx, capKey)
-		if gErr != nil || entry == nil || len(entry.Value()) == 0 {
+		if gErr != nil || entry == nil || len(entry.Value) == 0 {
 			return nil, false
 		}
 		var env map[string]any
-		if jerr := json.Unmarshal(entry.Value(), &env); jerr != nil {
+		if jerr := json.Unmarshal(entry.Value, &env); jerr != nil {
 			return nil, false
 		}
 		return env, true

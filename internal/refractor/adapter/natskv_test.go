@@ -13,10 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/asolgan/lattice/internal/refractor/adapter"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // startKV starts an in-memory NATS server with JetStream and returns a KV bucket for testing.
-func startKV(t *testing.T) jetstream.KeyValue {
+func startKV(t *testing.T) *substrate.KV {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping NATS integration test in short mode")
@@ -44,19 +45,24 @@ func startKV(t *testing.T) jetstream.KeyValue {
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
 
-	kv, err := js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{Bucket: "test-target"})
+	_, err = js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{Bucket: "test-target"})
+	require.NoError(t, err)
+
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+	kv, err := conn.OpenKV(context.Background(), "test-target")
 	require.NoError(t, err)
 	return kv
 }
 
 // newAdapter is a test helper that requires New to succeed, using the default
 // hard delete mode.
-func newAdapter(t *testing.T, kv jetstream.KeyValue, keyOrder []string) *adapter.NatsKVAdapter {
+func newAdapter(t *testing.T, kv *substrate.KV, keyOrder []string) *adapter.NatsKVAdapter {
 	return newAdapterMode(t, kv, keyOrder, adapter.DeleteModeHard)
 }
 
 // newAdapterMode is like newAdapter but lets the caller choose the delete mode.
-func newAdapterMode(t *testing.T, kv jetstream.KeyValue, keyOrder []string, mode adapter.DeleteMode) *adapter.NatsKVAdapter {
+func newAdapterMode(t *testing.T, kv *substrate.KV, keyOrder []string, mode adapter.DeleteMode) *adapter.NatsKVAdapter {
 	t.Helper()
 	a, err := adapter.New(kv, keyOrder, mode)
 	require.NoError(t, err)
@@ -67,19 +73,19 @@ func newAdapterMode(t *testing.T, kv jetstream.KeyValue, keyOrder []string, mode
 // key→decoded-value, excluding tombstones (purged/absent keys read as
 // ErrKeyNotFound; tombstones are skipped so two buckets that differ only in
 // physical tombstone presence still compare equal on their live contents).
-func dumpBucket(t *testing.T, ctx context.Context, kv jetstream.KeyValue) string {
+func dumpBucket(t *testing.T, ctx context.Context, kv *substrate.KV) string {
 	t.Helper()
-	lister, err := kv.ListKeys(ctx)
+	keys, err := kv.ListKeys(ctx)
 	require.NoError(t, err)
 	out := map[string]any{}
-	for k := range lister.Keys() {
+	for _, k := range keys {
 		entry, err := kv.Get(ctx, k)
 		if err != nil {
-			require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+			require.ErrorIs(t, err, substrate.ErrKeyNotFound)
 			continue
 		}
 		var v map[string]any
-		require.NoError(t, json.Unmarshal(entry.Value(), &v))
+		require.NoError(t, json.Unmarshal(entry.Value, &v))
 		if del, _ := v["isDeleted"].(bool); del {
 			continue
 		}
@@ -115,7 +121,7 @@ func TestNatsKVAdapter_Upsert_SingleKey(t *testing.T) {
 	require.NoError(t, err)
 
 	var got map[string]any
-	require.NoError(t, json.Unmarshal(entry.Value(), &got))
+	require.NoError(t, json.Unmarshal(entry.Value, &got))
 	assert.Equal(t, "Acme Corp", got["party_name"])
 	assert.Equal(t, "active", got["status"])
 }
@@ -134,7 +140,7 @@ func TestNatsKVAdapter_Upsert_CompositeKey(t *testing.T) {
 	require.NoError(t, err)
 
 	var got map[string]any
-	require.NoError(t, json.Unmarshal(entry.Value(), &got))
+	require.NoError(t, json.Unmarshal(entry.Value, &got))
 	assert.Equal(t, "Widget Agreement", got["name"])
 }
 
@@ -154,7 +160,7 @@ func TestNatsKVAdapter_Upsert_Idempotent(t *testing.T) {
 	require.NoError(t, err)
 
 	var got map[string]any
-	require.NoError(t, json.Unmarshal(entry.Value(), &got))
+	require.NoError(t, json.Unmarshal(entry.Value, &got))
 	assert.Equal(t, "second", got["value"], "expected latest value after two upserts")
 }
 
@@ -179,7 +185,7 @@ func TestNatsKVAdapter_Delete_Hard(t *testing.T) {
 
 	// Story 1.5.12: the default hard mode physically removes the key.
 	_, err := kv.Get(context.Background(), "e1")
-	require.ErrorIs(t, err, jetstream.ErrKeyNotFound)
+	require.ErrorIs(t, err, substrate.ErrKeyNotFound)
 }
 
 func TestNatsKVAdapter_Delete_Soft(t *testing.T) {
@@ -196,7 +202,7 @@ func TestNatsKVAdapter_Delete_Soft(t *testing.T) {
 	// physical KV delete (opt-in audit/forensic behavior).
 	entry, err := kv.Get(context.Background(), "e1")
 	require.NoError(t, err)
-	require.Contains(t, string(entry.Value()), `"isDeleted":true`)
+	require.Contains(t, string(entry.Value), `"isDeleted":true`)
 }
 
 func TestNatsKVAdapter_Delete_NeverExisted_Hard(t *testing.T) {
@@ -204,13 +210,13 @@ func TestNatsKVAdapter_Delete_NeverExisted_Hard(t *testing.T) {
 	a := newAdapterMode(t, kv, []string{"id"}, adapter.DeleteModeHard)
 
 	// Hard-deleting a key that was never upserted must succeed (no-op /
-	// idempotent): jetstream.ErrKeyNotFound is swallowed.
+	// idempotent): substrate.ErrKeyNotFound is swallowed.
 	err := a.Delete(context.Background(), map[string]any{"id": "ghost"}, 0)
 	require.NoError(t, err)
 
 	// And the key must still be absent afterwards.
 	_, gErr := kv.Get(context.Background(), "ghost")
-	require.ErrorIs(t, gErr, jetstream.ErrKeyNotFound)
+	require.ErrorIs(t, gErr, substrate.ErrKeyNotFound)
 }
 
 func TestNatsKVAdapter_Delete_NeverExisted_Soft(t *testing.T) {
@@ -225,7 +231,7 @@ func TestNatsKVAdapter_Delete_NeverExisted_Soft(t *testing.T) {
 
 // guardedAdapter builds a guarded NatsKVAdapter for the projection-write-guard
 // tests.
-func guardedAdapter(t *testing.T, kv jetstream.KeyValue, keyOrder []string) *adapter.NatsKVAdapter {
+func guardedAdapter(t *testing.T, kv *substrate.KV, keyOrder []string) *adapter.NatsKVAdapter {
 	t.Helper()
 	a := newAdapterMode(t, kv, keyOrder, adapter.DeleteModeHard)
 	a.SetGuarded(true)
@@ -242,7 +248,7 @@ func TestNatsKVAdapter_Guarded_StampsProjectionSeqIntoBody(t *testing.T) {
 	entry, err := kv.Get(context.Background(), "cap.ephemeral.identity.A")
 	require.NoError(t, err)
 	var got map[string]any
-	require.NoError(t, json.Unmarshal(entry.Value(), &got))
+	require.NoError(t, json.Unmarshal(entry.Value, &got))
 	require.Equal(t, float64(7), got["projectionSeq"], "guarded upsert must stamp projectionSeq into the body")
 	require.Equal(t, float64(1), got["grants"], "guarded upsert must round-trip the row")
 }
@@ -261,7 +267,7 @@ func TestNatsKVAdapter_Guarded_RejectsLowerSeqUpsert(t *testing.T) {
 	entry, err := kv.Get(ctx, "cap.ephemeral.identity.B")
 	require.NoError(t, err)
 	var got map[string]any
-	require.NoError(t, json.Unmarshal(entry.Value(), &got))
+	require.NoError(t, json.Unmarshal(entry.Value, &got))
 	require.Equal(t, "fresh", got["grants"], "lower-seq replay must not overwrite a newer projection")
 	require.Equal(t, float64(10), got["projectionSeq"])
 }
@@ -279,7 +285,7 @@ func TestNatsKVAdapter_Guarded_DeleteWritesTombstoneWithWatermark(t *testing.T) 
 	entry, err := kv.Get(ctx, "my-tasks.identity.C")
 	require.NoError(t, err, "guarded delete must leave a tombstone, not remove the key")
 	var got map[string]any
-	require.NoError(t, json.Unmarshal(entry.Value(), &got))
+	require.NoError(t, json.Unmarshal(entry.Value, &got))
 	require.Equal(t, true, got["isDeleted"], "guarded delete must be a soft tombstone")
 	require.Equal(t, float64(8), got["projectionSeq"], "tombstone must carry the watermark")
 }
@@ -303,7 +309,7 @@ func TestNatsKVAdapter_Guarded_StaleReplayCannotResurrectTombstone(t *testing.T)
 	entry, err := kv.Get(ctx, "cap.ephemeral.identity.D")
 	require.NoError(t, err)
 	var got map[string]any
-	require.NoError(t, json.Unmarshal(entry.Value(), &got))
+	require.NoError(t, json.Unmarshal(entry.Value, &got))
 	require.Equal(t, true, got["isDeleted"], "stale replay must not resurrect the revoked grant")
 	require.Equal(t, float64(9), got["projectionSeq"], "watermark must remain at the close-era seq")
 }
@@ -321,7 +327,7 @@ func TestNatsKVAdapter_Guarded_EqualSeqIsNoOp(t *testing.T) {
 	entry, err := kv.Get(ctx, "cap.ephemeral.identity.E")
 	require.NoError(t, err)
 	var got map[string]any
-	require.NoError(t, json.Unmarshal(entry.Value(), &got))
+	require.NoError(t, json.Unmarshal(entry.Value, &got))
 	require.Equal(t, "first", got["v"], "equal-seq write must be a no-op")
 }
 
@@ -339,7 +345,7 @@ func TestNatsKVAdapter_Unguarded_IgnoresProjectionSeq(t *testing.T) {
 	entry, err := kv.Get(ctx, "plain.A")
 	require.NoError(t, err)
 	var got map[string]any
-	require.NoError(t, json.Unmarshal(entry.Value(), &got))
+	require.NoError(t, json.Unmarshal(entry.Value, &got))
 	require.Equal(t, "low", got["v"], "unguarded adapter must keep last-writer-wins")
 	_, hasSeq := got["projectionSeq"]
 	require.False(t, hasSeq, "unguarded adapter must not inject projectionSeq")
@@ -363,7 +369,7 @@ func TestNatsKVAdapter_Truncate_GetReturnsKeyNotFound(t *testing.T) {
 
 	for _, k := range []string{"cap.identity.A", "cap.identity.B", "cap.identity.C"} {
 		_, err := kv.Get(ctx, k)
-		require.ErrorIs(t, err, jetstream.ErrKeyNotFound, "key %s must read absent after Truncate", k)
+		require.ErrorIs(t, err, substrate.ErrKeyNotFound, "key %s must read absent after Truncate", k)
 	}
 }
 
@@ -444,7 +450,7 @@ func TestNatsKVAdapter_Truncate_RebuildEquivalence_FailsWithoutTruncate(t *testi
 	entry, err := liveKV.Get(ctx, "cap.identity.A")
 	require.NoError(t, err)
 	var got map[string]any
-	require.NoError(t, json.Unmarshal(entry.Value(), &got))
+	require.NoError(t, json.Unmarshal(entry.Value, &got))
 	require.Equal(t, "live-A", got["grants"],
 		"without force-truncate the lower-seq replay is rejected by the guard (the hole this story removes)")
 }

@@ -5,8 +5,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/asolgan/lattice/internal/pkgmgr"
 	"github.com/asolgan/lattice/internal/refractor/lens"
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
@@ -58,7 +56,7 @@ func descFromPkgSpec(t *testing.T, l pkgmgr.LensSpec) projection.OutputDescripto
 // that does not require an adapter or logger (no guard, no plan-compile
 // diagnostics). The e2e tests use it so they exercise the same data-driven
 // envelope/fan-out/delete-key path production runs.
-func wireActorAggregate(t *testing.T, p *pipeline.Pipeline, r *lens.Rule, adjKV, coreKV jetstream.KeyValue, projectionRevision func(string) uint64) {
+func wireActorAggregate(t *testing.T, p *pipeline.Pipeline, r *lens.Rule, adjKV, coreKV *substrate.KV, projectionRevision func(string) uint64) {
 	t.Helper()
 	desc, err := projection.ParseOutputDescriptor(r.Output)
 	require.NoError(t, err, "lens %q must carry a valid Output descriptor", r.CanonicalName)

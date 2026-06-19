@@ -1,6 +1,10 @@
 package substrate
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/nats-io/nats.go"
+)
 
 // Sentinel errors returned by KV and AtomicBatch operations.
 //
@@ -27,3 +31,14 @@ var (
 	ErrAtomicBatchRejected = errors.New("substrate: atomic batch rejected")
 	ErrBucketNotFound      = errors.New("substrate: bucket not found")
 )
+
+// IsConnectionError reports whether err is (or wraps) a NATS transport-level
+// connection failure — the server is unreachable, the connection was lost, or is
+// draining/disconnected. Callers classify these as infrastructure faults
+// (pause + probe) without importing nats.go to name the sentinels.
+func IsConnectionError(err error) bool {
+	return errors.Is(err, nats.ErrConnectionClosed) ||
+		errors.Is(err, nats.ErrConnectionDraining) ||
+		errors.Is(err, nats.ErrDisconnected) ||
+		errors.Is(err, nats.ErrNoServers)
+}

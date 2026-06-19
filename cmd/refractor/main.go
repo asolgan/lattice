@@ -77,24 +77,25 @@ func main() {
 	hb := health.NewLatticeHeartbeater(conn, healthKVBucket, instance, defaultHeartbeatEvery, logger)
 	go hb.Run(ctx)
 
-	// Open Core KV and the (pre-provisioned) refractor-adjacency bucket.
-	coreKV, err := js.KeyValue(ctx, coreKVBucket)
+	// Open Core KV and the (pre-provisioned) refractor-adjacency bucket as
+	// substrate handles — the read path threads *substrate.KV, not raw jetstream.
+	coreKV, err := conn.OpenKV(ctx, coreKVBucket)
 	if err != nil {
 		logger.Error("open core KV", "bucket", coreKVBucket, "err", err)
 		os.Exit(1)
 	}
-	adjKV, err := js.KeyValue(ctx, adjacencyKVBucket)
+	adjKV, err := conn.OpenKV(ctx, adjacencyKVBucket)
 	if err != nil {
 		logger.Error("open refractor adjacency KV", "bucket", adjacencyKVBucket, "err", err)
 		os.Exit(1)
 	}
-	healthKVHandle, err := js.KeyValue(ctx, healthKVBucket)
+	healthKVHandle, err := conn.OpenKV(ctx, healthKVBucket)
 	if err != nil {
 		logger.Error("open health KV", "bucket", healthKVBucket, "err", err)
 		os.Exit(1)
 	}
 
-	bootstrapper := consumer.NewBootstrapper(js, coreKVBucket, adjKV)
+	bootstrapper := consumer.NewBootstrapper(conn, coreKVBucket, adjKV)
 	go func() {
 		if err := bootstrapper.Run(ctx); err != nil && ctx.Err() == nil {
 			logger.Error("adjacency bootstrap failed — no lenses will start", "err", err)
@@ -168,11 +169,14 @@ func main() {
 		}
 		switch r.Into.Target {
 		case "nats_kv":
-			// Try Open before Create so pre-provisioned buckets (e.g. capability-kv)
-			// are reused instead of failing with "bucket name already in use".
-			targetKV, err := js.KeyValue(ctx, r.Into.Bucket)
+			// Open the target bucket as a substrate handle; create it first if it
+			// does not exist (pre-provisioned buckets like capability-kv are reused).
+			targetKV, err := conn.OpenKV(ctx, r.Into.Bucket)
 			if err != nil {
-				targetKV, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: r.Into.Bucket})
+				if _, cerr := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: r.Into.Bucket}); cerr != nil {
+					return nil, cerr
+				}
+				targetKV, err = conn.OpenKV(ctx, r.Into.Bucket)
 				if err != nil {
 					return nil, err
 				}
@@ -206,7 +210,7 @@ func main() {
 		if err != nil || entry == nil {
 			return 0
 		}
-		return entry.Revision()
+		return entry.Revision
 	}
 
 	startPipeline := func(r *lens.Rule) {

@@ -31,7 +31,6 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natstest "github.com/nats-io/nats-server/v2/test"
 	nats "github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 
 	"github.com/asolgan/lattice/internal/bootstrap"
@@ -84,7 +83,6 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	defer cancel()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	js := conn.JetStream()
 
 	// --- provision buckets + run primordial bootstrap ---
 	bsJSONPath := t.TempDir() + "/lattice.bootstrap.json"
@@ -95,15 +93,15 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	require.NoError(t, seeder.ProvisionBuckets(ctx))
 	require.NoError(t, seeder.SeedPrimordial(ctx))
 
-	coreKV, err := js.KeyValue(ctx, bootstrap.CoreKVBucket)
+	coreKV, err := conn.OpenKV(ctx, bootstrap.CoreKVBucket)
 	require.NoError(t, err)
-	adjKV, err := js.KeyValue(ctx, bootstrap.RefractorAdjacencyKV)
+	adjKV, err := conn.OpenKV(ctx, bootstrap.RefractorAdjacencyKV)
 	require.NoError(t, err)
-	capabilityKV, err := js.KeyValue(ctx, bootstrap.CapabilityKVBucket)
+	capabilityKV, err := conn.OpenKV(ctx, bootstrap.CapabilityKVBucket)
 	require.NoError(t, err)
 
 	// --- adjacency bootstrapper (with 3.2b link-bridge bridge) ---
-	boots := consumer.NewBootstrapper(js, bootstrap.CoreKVBucket, adjKV)
+	boots := consumer.NewBootstrapper(conn, bootstrap.CoreKVBucket, adjKV)
 	go func() { _ = boots.Run(ctx) }()
 	select {
 	case <-boots.Ready():
@@ -137,7 +135,7 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 		if gErr != nil || entry == nil {
 			return 0
 		}
-		return entry.Revision()
+		return entry.Revision
 	}
 
 	pipelineCtx, pipelineCancel := context.WithCancel(ctx)
@@ -145,7 +143,7 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	// --- capabilityRoles pipeline (actor-aggregate → cap.roles.<actor>) ---
 	rolesCR, err := fullEngine.Parse(rolesLensSpec.Spec)
 	require.NoError(t, err, "capabilityRoles spec must parse")
-	capTargetKV, err := js.KeyValue(ctx, bootstrap.CapabilityKVBucket)
+	capTargetKV, err := conn.OpenKV(ctx, bootstrap.CapabilityKVBucket)
 	require.NoError(t, err)
 	rolesDesc := descFromPkgSpec(t, rolesLensSpec)
 	capAdpt, err := adapter.New(capTargetKV, []string{"key"}, adapter.DeleteModeHard)
@@ -168,7 +166,7 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	// --- capabilityRoleIndex pipeline (operation-aggregate) ---
 	idxCR, err := fullEngine.Parse(roleIndexLensSpec.Spec)
 	require.NoError(t, err, "capabilityRoleIndex spec must parse")
-	idxTargetKV, err := js.KeyValue(ctx, bootstrap.CapabilityKVBucket)
+	idxTargetKV, err := conn.OpenKV(ctx, bootstrap.CapabilityKVBucket)
 	require.NoError(t, err)
 	idxAdpt, err := adapter.New(idxTargetKV, []string{"operationType"}, adapter.DeleteModeHard)
 	require.NoError(t, err)
@@ -199,7 +197,7 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	require.NotEmpty(t, ephLensSpec.Spec, "orchestration-base must declare a capabilityEphemeral lens")
 	ephCR, err := fullEngine.Parse(ephLensSpec.Spec)
 	require.NoError(t, err, "capabilityEphemeral spec must parse")
-	ephTargetKV, err := js.KeyValue(ctx, bootstrap.CapabilityKVBucket)
+	ephTargetKV, err := conn.OpenKV(ctx, bootstrap.CapabilityKVBucket)
 	require.NoError(t, err)
 	// DEFAULT HARD delete: no deleteMode override.
 	ephAdpt, err := adapter.New(ephTargetKV, []string{"key"}, adapter.DeleteModeHard)
@@ -378,9 +376,9 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 		var gErr error
 		for time.Now().Before(end) {
 			entry, err := capabilityKV.Get(ctx, key)
-			if err == nil && entry != nil && len(entry.Value()) > 0 {
+			if err == nil && entry != nil && len(entry.Value) > 0 {
 				var env map[string]any
-				if jerr := json.Unmarshal(entry.Value(), &env); jerr == nil {
+				if jerr := json.Unmarshal(entry.Value, &env); jerr == nil {
 					last = env
 					if predicate(env) {
 						return env
@@ -525,7 +523,7 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 				return false
 			}
 			var env map[string]any
-			if jerr := json.Unmarshal(entry.Value(), &env); jerr != nil {
+			if jerr := json.Unmarshal(entry.Value, &env); jerr != nil {
 				return false
 			}
 			pp, _ := env["platformPermissions"].([]any)
@@ -563,7 +561,7 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 		// (Contract #6 §6.8 "absence equals denial").
 		require.Eventually(t, func() bool {
 			_, gErr := capabilityKV.Get(ctx, "cap.roles.identity."+identityCID)
-			return errors.Is(gErr, jetstream.ErrKeyNotFound)
+			return errors.Is(gErr, substrate.ErrKeyNotFound)
 		}, 15*time.Second, 100*time.Millisecond,
 			"cap.roles.<C> must be hard-deleted (key gone) after identity tombstone")
 	})
@@ -585,11 +583,11 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 
 // waitForRoleIndexEntries scans the Capability KV bucket for
 // cap.role-by-operation.* entries with a short retry window.
-func waitForRoleIndexEntries(t *testing.T, ctx context.Context, kv jetstream.KeyValue) []map[string]any {
+func waitForRoleIndexEntries(t *testing.T, ctx context.Context, kv *substrate.KV) []map[string]any {
 	t.Helper()
 	end := time.Now().Add(20 * time.Second)
 	for time.Now().Before(end) {
-		keys, err := kv.Keys(ctx)
+		keys, err := kv.ListKeys(ctx)
 		if err == nil {
 			var envs []map[string]any
 			for _, k := range keys {
@@ -601,7 +599,7 @@ func waitForRoleIndexEntries(t *testing.T, ctx context.Context, kv jetstream.Key
 					continue
 				}
 				var env map[string]any
-				if jerr := json.Unmarshal(entry.Value(), &env); jerr == nil {
+				if jerr := json.Unmarshal(entry.Value, &env); jerr == nil {
 					envs = append(envs, env)
 				}
 			}
@@ -621,7 +619,7 @@ func hasPrefix(s, p string) bool {
 // adjacencyNeighborsLocal avoids reaching into the adjacency package's
 // signature change risk — we call it through a thin wrapper so the
 // multi-e2e test stays decoupled from any internal helper refactor.
-func adjacencyNeighborsLocal(kv jetstream.KeyValue, nodeID string) ([]any, error) {
+func adjacencyNeighborsLocal(kv *substrate.KV, nodeID string) ([]any, error) {
 	ctx := context.Background()
 	entry, err := kv.Get(ctx, "adj."+nodeID)
 	if err != nil {
@@ -630,7 +628,7 @@ func adjacencyNeighborsLocal(kv jetstream.KeyValue, nodeID string) ([]any, error
 	var v struct {
 		Edges []any `json:"edges"`
 	}
-	if jerr := json.Unmarshal(entry.Value(), &v); jerr != nil {
+	if jerr := json.Unmarshal(entry.Value, &v); jerr != nil {
 		return nil, jerr
 	}
 	return v.Edges, nil

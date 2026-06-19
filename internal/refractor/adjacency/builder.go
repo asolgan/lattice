@@ -6,9 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/asolgan/lattice/internal/refractor/subjects"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // EdgeEntry is one graph edge stored in the adjacency list for a node.
@@ -51,7 +50,7 @@ type CoreKVEvent struct {
 
 // Build processes a CoreKVEvent and updates adj.<NodeID> in kv using CAS-with-retry.
 // ctx is propagated to all KV calls so the caller can cancel during shutdown.
-func Build(ctx context.Context, kv jetstream.KeyValue, evt CoreKVEvent) error {
+func Build(ctx context.Context, kv *substrate.KV, evt CoreKVEvent) error {
 	key := subjects.AdjKey(evt.NodeID)
 	edge := EdgeEntry{
 		CoreKvKey:   evt.CoreKvKey,
@@ -64,21 +63,21 @@ func Build(ctx context.Context, kv jetstream.KeyValue, evt CoreKVEvent) error {
 	return upsertEdge(ctx, kv, key, edge, evt.IsDeleted)
 }
 
-func upsertEdge(ctx context.Context, kv jetstream.KeyValue, key string, edge EdgeEntry, remove bool) error {
+func upsertEdge(ctx context.Context, kv *substrate.KV, key string, edge EdgeEntry, remove bool) error {
 	for {
 		var current AdjValue
 		var rev uint64
 
 		entry, err := kv.Get(ctx, key)
 		switch {
-		case errors.Is(err, jetstream.ErrKeyNotFound):
+		case errors.Is(err, substrate.ErrKeyNotFound):
 			current = AdjValue{}
 			rev = 0
 		case err != nil:
 			return fmt.Errorf("adjacency: get %s: %w", key, err)
 		default:
-			rev = entry.Revision()
-			if jsonErr := json.Unmarshal(entry.Value(), &current); jsonErr != nil {
+			rev = entry.Revision
+			if jsonErr := json.Unmarshal(entry.Value, &current); jsonErr != nil {
 				return fmt.Errorf("adjacency: unmarshal %s: %w", key, jsonErr)
 			}
 		}
@@ -99,7 +98,7 @@ func upsertEdge(ctx context.Context, kv jetstream.KeyValue, key string, edge Edg
 			if err == nil {
 				return nil
 			}
-			if errors.Is(err, jetstream.ErrKeyExists) {
+			if errors.Is(err, substrate.ErrRevisionConflict) {
 				continue
 			}
 			return fmt.Errorf("adjacency: create %s: %w", key, err)
@@ -109,7 +108,7 @@ func upsertEdge(ctx context.Context, kv jetstream.KeyValue, key string, edge Edg
 		if err == nil {
 			return nil
 		}
-		if errors.Is(err, jetstream.ErrKeyExists) {
+		if errors.Is(err, substrate.ErrRevisionConflict) {
 			continue
 		}
 		return fmt.Errorf("adjacency: update %s: %w", key, err)

@@ -38,7 +38,7 @@ type LagFunc func(ctx context.Context) (uint64, error)
 type LagPoller struct {
 	conn     *substrate.Conn
 	lag      LagFunc
-	reporter *Reporter     // may be nil — health KV update skipped when nil
+	reporter *Reporter // may be nil — health KV update skipped when nil
 	ruleID   string
 	interval time.Duration // captured from MetricsInterval at NewLagPoller time
 }

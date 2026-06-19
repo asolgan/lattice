@@ -94,7 +94,7 @@ func ephemeralDescriptor(t *testing.T) projection.OutputDescriptor {
 // kept here so the contract test can live in an external test package
 // to avoid a projection→pipeline→full import cycle). ---
 
-func contractStartKVs(t *testing.T) (jetstream.JetStream, jetstream.KeyValue, jetstream.KeyValue) {
+func contractStartKVs(t *testing.T) (*substrate.KV, *substrate.KV) {
 	t.Helper()
 	opts := &natsserver.Options{Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: t.TempDir()}
 	s := natstest.RunServer(opts)
@@ -104,13 +104,19 @@ func contractStartKVs(t *testing.T) (jetstream.JetStream, jetstream.KeyValue, je
 	t.Cleanup(nc.Close)
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	adj, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "contract-adj"})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "contract-adj"})
 	require.NoError(t, err)
-	core, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "contract-core"})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "contract-core"})
 	require.NoError(t, err)
-	return js, adj, core
+	adj, err := conn.OpenKV(ctx, "contract-adj")
+	require.NoError(t, err)
+	core, err := conn.OpenKV(ctx, "contract-core")
+	require.NoError(t, err)
+	return adj, core
 }
 
 // contractStableID returns a deterministic NanoID for fixture names.
@@ -129,7 +135,7 @@ func contractStableID(name string) string {
 	return string(out[:])
 }
 
-func contractPutVertex(t *testing.T, kv jetstream.KeyValue, typ, name string, extra map[string]any) string {
+func contractPutVertex(t *testing.T, kv *substrate.KV, typ, name string, extra map[string]any) string {
 	t.Helper()
 	id := contractStableID(typ + ":" + name)
 	key := "vtx." + typ + "." + id
@@ -146,7 +152,7 @@ func contractPutVertex(t *testing.T, kv jetstream.KeyValue, typ, name string, ex
 	return key
 }
 
-func contractPutEdge(t *testing.T, adjKV jetstream.KeyValue, name, fromType, fromName, toType, toName string) {
+func contractPutEdge(t *testing.T, adjKV *substrate.KV, name, fromType, fromName, toType, toName string) {
 	t.Helper()
 	ctx := context.Background()
 	fromID := contractStableID(fromType + ":" + fromName)
@@ -179,7 +185,7 @@ func TestCapabilityLens_ContractConformance(t *testing.T) {
 		t.Skip("requires NATS")
 	}
 
-	_, adjKV, coreKV := contractStartKVs(t)
+	adjKV, coreKV := contractStartKVs(t)
 
 	// --- deterministic graph fixture ---
 	// The capability lens is the primordial-identity anchor: it projects the
@@ -336,7 +342,7 @@ func TestCapabilityEphemeralLens_ContractConformance(t *testing.T) {
 		t.Skip("requires NATS")
 	}
 
-	_, adjKV, coreKV := contractStartKVs(t)
+	adjKV, coreKV := contractStartKVs(t)
 
 	// --- deterministic graph fixture: a manager with one link-shaped task ---
 	managerKey := contractPutVertex(t, coreKV, "identity", "manager", map[string]any{"name": "manager"})

@@ -60,7 +60,7 @@ type RetryQueue struct {
 	mu      sync.Mutex
 	entries []*RetryEntry
 	trigger chan struct{} // buffered(1); wakes Run when a new entry is added
-	running bool         // guards against multiple concurrent Run callers
+	running bool          // guards against multiple concurrent Run callers
 }
 
 // NewRetryQueue returns a ready-to-use RetryQueue. Start Run in a goroutine before Enqueue.

@@ -21,7 +21,6 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natstest "github.com/nats-io/nats-server/v2/test"
 	nats "github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 
 	"github.com/asolgan/lattice/internal/bootstrap"
@@ -73,7 +72,6 @@ func TestRefractor_ServiceActorRootEquivalence_E2E(t *testing.T) {
 	defer cancel()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	js := conn.JetStream()
 
 	bsJSONPath := t.TempDir() + "/lattice.bootstrap.json"
 	_, err = bootstrap.LoadOrGenerate(bsJSONPath)
@@ -83,14 +81,14 @@ func TestRefractor_ServiceActorRootEquivalence_E2E(t *testing.T) {
 	require.NoError(t, seeder.ProvisionBuckets(ctx))
 	require.NoError(t, seeder.SeedPrimordial(ctx))
 
-	coreKV, err := js.KeyValue(ctx, bootstrap.CoreKVBucket)
+	coreKV, err := conn.OpenKV(ctx, bootstrap.CoreKVBucket)
 	require.NoError(t, err)
-	adjKV, err := js.KeyValue(ctx, bootstrap.RefractorAdjacencyKV)
+	adjKV, err := conn.OpenKV(ctx, bootstrap.RefractorAdjacencyKV)
 	require.NoError(t, err)
-	capabilityKV, err := js.KeyValue(ctx, bootstrap.CapabilityKVBucket)
+	capabilityKV, err := conn.OpenKV(ctx, bootstrap.CapabilityKVBucket)
 	require.NoError(t, err)
 
-	boots := consumer.NewBootstrapper(js, bootstrap.CoreKVBucket, adjKV)
+	boots := consumer.NewBootstrapper(conn, bootstrap.CoreKVBucket, adjKV)
 	go func() { _ = boots.Run(ctx) }()
 	select {
 	case <-boots.Ready():
@@ -119,7 +117,7 @@ func TestRefractor_ServiceActorRootEquivalence_E2E(t *testing.T) {
 	require.Equal(t, ruleengine.EngineFull, capabilityRule.ResolvedEngine)
 	require.NotNil(t, capabilityRule.CompiledRule)
 
-	targetKV, err := js.KeyValue(ctx, capabilityRule.Into.Bucket)
+	targetKV, err := conn.OpenKV(ctx, capabilityRule.Into.Bucket)
 	require.NoError(t, err)
 	adpt, err := adapter.New(targetKV, capabilityRule.Into.Key, adapter.DeleteModeHard)
 	require.NoError(t, err)
@@ -133,7 +131,7 @@ func TestRefractor_ServiceActorRootEquivalence_E2E(t *testing.T) {
 		if getErr != nil || entry == nil {
 			return 0
 		}
-		return entry.Revision()
+		return entry.Revision
 	}
 	wireActorAggregate(t, p, capabilityRule, adjKV, coreKV, projectionRevision)
 
@@ -187,7 +185,7 @@ func TestRefractor_ServiceActorRootEquivalence_E2E(t *testing.T) {
 	retouch := func(key string) {
 		entry, getErr := coreKV.Get(ctx, key)
 		require.NoError(t, getErr)
-		_, putErr := coreKV.Put(ctx, key, entry.Value())
+		_, putErr := coreKV.Put(ctx, key, entry.Value)
 		require.NoError(t, putErr)
 	}
 	retouch(bootstrap.BootstrapIdentityKey)
@@ -197,12 +195,12 @@ func TestRefractor_ServiceActorRootEquivalence_E2E(t *testing.T) {
 
 	poll := func(capKey string) map[string]any {
 		deadline := time.Now().Add(25 * time.Second)
-		var entry jetstream.KeyValueEntry
+		var entry *substrate.KVEntry
 		for time.Now().Before(deadline) {
 			entry, err = capabilityKV.Get(ctx, capKey)
-			if err == nil && entry != nil && len(entry.Value()) > 0 {
+			if err == nil && entry != nil && len(entry.Value) > 0 {
 				var env map[string]any
-				require.NoError(t, json.Unmarshal(entry.Value(), &env))
+				require.NoError(t, json.Unmarshal(entry.Value, &env))
 				if pp, _ := env["platformPermissions"].([]any); len(pp) > 0 {
 					return env
 				}

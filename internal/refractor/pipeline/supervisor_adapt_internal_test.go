@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/refractor/failure"
 	"github.com/asolgan/lattice/internal/refractor/health"
+	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -94,8 +94,8 @@ func (a *keyedAdapter) Upsert(_ context.Context, keys map[string]any, _ map[stri
 func (a *keyedAdapter) Delete(_ context.Context, keys map[string]any, _ uint64) error {
 	return a.write(keys)
 }
-func (a *keyedAdapter) Probe(context.Context) error                         { return nil }
-func (a *keyedAdapter) Close() error                                        { return nil }
+func (a *keyedAdapter) Probe(context.Context) error { return nil }
+func (a *keyedAdapter) Close() error                { return nil }
 
 // TestWriteResults_NoRetryEnqueueWhileBatchLeftPending verifies that a batch
 // whose early result fails transient and whose later result fails infra leaves

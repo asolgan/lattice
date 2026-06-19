@@ -12,10 +12,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/asolgan/lattice/internal/refractor/health"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // startHealthKV starts an in-memory NATS server and returns a KV bucket for health entries.
-func startHealthKV(t *testing.T) jetstream.KeyValue {
+func startHealthKV(t *testing.T) *substrate.KV {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping NATS integration test in short mode")
@@ -39,7 +40,12 @@ func startHealthKV(t *testing.T) jetstream.KeyValue {
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
 
-	kv, err := js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{Bucket: "HEALTH"})
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+
+	_, err = js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{Bucket: "HEALTH"})
+	require.NoError(t, err)
+	kv, err := conn.OpenKV(context.Background(), "HEALTH")
 	require.NoError(t, err)
 	return kv
 }

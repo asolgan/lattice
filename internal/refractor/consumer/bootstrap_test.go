@@ -53,16 +53,20 @@ func TestBootstrapper_ReadyOnEmptyStream(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	js, _ := startJS(t)
+	js, nc := startJS(t)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
 
 	// Create an empty Core KV bucket (underlying stream exists but has no messages).
-	_, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-boot-empty"})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-boot-empty"})
 	require.NoError(t, err)
 
-	adjKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "adj-boot-empty"})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "adj-boot-empty"})
+	require.NoError(t, err)
+	adjKV, err := conn.OpenKV(ctx, "adj-boot-empty")
 	require.NoError(t, err)
 
-	b := consumer.NewBootstrapper(js, "core-boot-empty", adjKV)
+	b := consumer.NewBootstrapper(conn, "core-boot-empty", adjKV)
 
 	go func() { _ = b.Run(ctx) }()
 
@@ -81,12 +85,16 @@ func TestBootstrapper_ReadyAfterProcessingMessages(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	js, _ := startJS(t)
+	js, nc := startJS(t)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
 
 	coreKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-boot-msgs"})
 	require.NoError(t, err)
 
-	adjKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "adj-boot-msgs"})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "adj-boot-msgs"})
+	require.NoError(t, err)
+	adjKV, err := conn.OpenKV(ctx, "adj-boot-msgs")
 	require.NoError(t, err)
 
 	// Write two edge events to Core KV before the bootstrapper starts.
@@ -100,7 +108,7 @@ func TestBootstrapper_ReadyAfterProcessingMessages(t *testing.T) {
 		require.NoError(t, putErr)
 	}
 
-	b := consumer.NewBootstrapper(js, "core-boot-msgs", adjKV)
+	b := consumer.NewBootstrapper(conn, "core-boot-msgs", adjKV)
 	go func() { _ = b.Run(ctx) }()
 
 	select {
@@ -149,11 +157,15 @@ func TestBootstrapper_LinkEnvelopeBridge(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	js, _ := startJS(t)
+	js, nc := startJS(t)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
 
 	coreKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-boot-link"})
 	require.NoError(t, err)
-	adjKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "adj-boot-link"})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "adj-boot-link"})
+	require.NoError(t, err)
+	adjKV, err := conn.OpenKV(ctx, "adj-boot-link")
 	require.NoError(t, err)
 
 	// Seed one Contract #1 link envelope: identity → holdsRole → role.
@@ -164,19 +176,19 @@ func TestBootstrapper_LinkEnvelopeBridge(t *testing.T) {
 	linkKey := substrate.LinkKey("identity", identityID, "holdsRole", "role", roleID)
 
 	envelope := map[string]any{
-		"key":           linkKey,
-		"class":         "holdsRole",
-		"isDeleted":     false,
+		"key":          linkKey,
+		"class":        "holdsRole",
+		"isDeleted":    false,
 		"sourceVertex": identityKey,
-		"targetVertex":   roleKey,
-		"localName":     "holdsRole",
+		"targetVertex": roleKey,
+		"localName":    "holdsRole",
 	}
 	body, err := json.Marshal(envelope)
 	require.NoError(t, err)
 	_, err = coreKV.Put(ctx, linkKey, body)
 	require.NoError(t, err)
 
-	b := consumer.NewBootstrapper(js, "core-boot-link", adjKV)
+	b := consumer.NewBootstrapper(conn, "core-boot-link", adjKV)
 	go func() { _ = b.Run(ctx) }()
 	select {
 	case <-b.Ready():
@@ -213,11 +225,15 @@ func TestBootstrapper_LinkEnvelopeBridge_Tombstone(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	js, _ := startJS(t)
+	js, nc := startJS(t)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
 
 	coreKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-boot-linktomb"})
 	require.NoError(t, err)
-	adjKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "adj-boot-linktomb"})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "adj-boot-linktomb"})
+	require.NoError(t, err)
+	adjKV, err := conn.OpenKV(ctx, "adj-boot-linktomb")
 	require.NoError(t, err)
 
 	identityID := stableNanoIDForBootstrap("bob")
@@ -247,7 +263,7 @@ func TestBootstrapper_LinkEnvelopeBridge_Tombstone(t *testing.T) {
 	_, err = coreKV.Put(ctx, linkKey, body)
 	require.NoError(t, err)
 
-	b := consumer.NewBootstrapper(js, "core-boot-linktomb", adjKV)
+	b := consumer.NewBootstrapper(conn, "core-boot-linktomb", adjKV)
 	go func() { _ = b.Run(ctx) }()
 	select {
 	case <-b.Ready():
@@ -279,12 +295,16 @@ func TestBootstrapper_SkipsNonEdgeEntries(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	js, _ := startJS(t)
+	js, nc := startJS(t)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
 
 	coreKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-boot-noedge"})
 	require.NoError(t, err)
 
-	adjKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "adj-boot-noedge"})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "adj-boot-noedge"})
+	require.NoError(t, err)
+	adjKV, err := conn.OpenKV(ctx, "adj-boot-noedge")
 	require.NoError(t, err)
 
 	// Write a node-only entry (no NodeID in adjacency sense — empty nodeId field).
@@ -293,7 +313,7 @@ func TestBootstrapper_SkipsNonEdgeEntries(t *testing.T) {
 	_, err = coreKV.Put(ctx, "node.n1", data)
 	require.NoError(t, err)
 
-	b := consumer.NewBootstrapper(js, "core-boot-noedge", adjKV)
+	b := consumer.NewBootstrapper(conn, "core-boot-noedge", adjKV)
 	go func() { _ = b.Run(ctx) }()
 
 	select {

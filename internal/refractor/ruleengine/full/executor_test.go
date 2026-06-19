@@ -25,7 +25,7 @@ import (
 // Each "logical" test name (alice, admin, room, ...) maps to a fixed
 // valid 20-char NanoID; helpers materialize the corresponding
 // vtx.<type>.<id> Core KV key when calling putVertex / putEdge.
-func startExecKVs(t *testing.T) (adjKV, coreKV jetstream.KeyValue) {
+func startExecKVs(t *testing.T) (adjKV, coreKV *substrate.KV) {
 	t.Helper()
 	opts := &natsserver.Options{
 		JetStream: true,
@@ -46,10 +46,17 @@ func startExecKVs(t *testing.T) (adjKV, coreKV jetstream.KeyValue) {
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
 
-	ctx := context.Background()
-	adjKV, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "adj-exec-test"})
+	conn, err := substrate.Wrap(nc)
 	require.NoError(t, err)
-	coreKV, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-exec-test"})
+
+	ctx := context.Background()
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "adj-exec-test"})
+	require.NoError(t, err)
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-exec-test"})
+	require.NoError(t, err)
+	adjKV, err = conn.OpenKV(ctx, "adj-exec-test")
+	require.NoError(t, err)
+	coreKV, err = conn.OpenKV(ctx, "core-exec-test")
 	require.NoError(t, err)
 	return adjKV, coreKV
 }
@@ -59,7 +66,7 @@ func startExecKVs(t *testing.T) (adjKV, coreKV jetstream.KeyValue) {
 // names to vtx keys via this map so callers can author tests in plain
 // english names while we exercise the executor's Contract #1 path.
 type fixtureRegistry struct {
-	byName  map[string]string // logicalName → vtx key
+	byName   map[string]string // logicalName → vtx key
 	idByName map[string]string // logicalName → bare NodeID
 	typeByID map[string]string // bare NodeID → type segment
 }
@@ -95,7 +102,7 @@ func c1NanoID(name string) string {
 // the NanoID is deterministically derived from name. Registers the
 // mapping so putEdge can resolve `name` to a vtx key. Returns the
 // full vtx key for callers that need to set up MATCH (i {key: ...}).
-func putVertex(t *testing.T, reg *fixtureRegistry, kv jetstream.KeyValue, name, class string, extra map[string]any) string {
+func putVertex(t *testing.T, reg *fixtureRegistry, kv *substrate.KV, name, class string, extra map[string]any) string {
 	t.Helper()
 	id := c1NanoID(name)
 	vtxKey := "vtx." + class + "." + id
@@ -115,7 +122,7 @@ func putVertex(t *testing.T, reg *fixtureRegistry, kv jetstream.KeyValue, name, 
 
 // putEdge writes both inbound and outbound adjacency entries for one edge.
 // fromName/toName must have been registered via putVertex.
-func putEdge(t *testing.T, reg *fixtureRegistry, adjKV jetstream.KeyValue, name, fromName, toName string) {
+func putEdge(t *testing.T, reg *fixtureRegistry, adjKV *substrate.KV, name, fromName, toName string) {
 	t.Helper()
 	ctx := context.Background()
 	fromID := reg.idByName[fromName]
@@ -143,7 +150,7 @@ func vtxKey(reg *fixtureRegistry, name string) string {
 }
 
 // parseExec compiles body and runs ExecuteWith with the given params.
-func parseExec(t *testing.T, body string, ec ruleengine.EventContext, adjKV, coreKV jetstream.KeyValue) []ruleengine.ProjectionResult {
+func parseExec(t *testing.T, body string, ec ruleengine.EventContext, adjKV, coreKV *substrate.KV) []ruleengine.ProjectionResult {
 	t.Helper()
 	eng := New()
 	cr, err := eng.Parse(body)

@@ -234,7 +234,7 @@ func flattenForest(forest *InvalidationForest) *QueryPlan {
 
 // --- minimal NATS fixture for this package's reverse-walk test ---
 
-func startTestKVs(t *testing.T) (jetstream.KeyValue, jetstream.KeyValue) {
+func startTestKVs(t *testing.T) (*substrate.KV, *substrate.KV) {
 	t.Helper()
 	opts := &natsserver.Options{Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: t.TempDir()}
 	s := natstest.RunServer(opts)
@@ -248,15 +248,25 @@ func startTestKVs(t *testing.T) (jetstream.KeyValue, jetstream.KeyValue) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
+	conn, err := substrate.Wrap(nc)
+	if err != nil {
+		t.Fatalf("wrap: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	adjKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "inv-adj"})
-	if err != nil {
+	if _, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "inv-adj"}); err != nil {
 		t.Fatalf("adj kv: %v", err)
 	}
-	coreKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "inv-core"})
-	if err != nil {
+	if _, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "inv-core"}); err != nil {
 		t.Fatalf("core kv: %v", err)
+	}
+	adjKV, err := conn.OpenKV(ctx, "inv-adj")
+	if err != nil {
+		t.Fatalf("open adj kv: %v", err)
+	}
+	coreKV, err := conn.OpenKV(ctx, "inv-core")
+	if err != nil {
+		t.Fatalf("open core kv: %v", err)
 	}
 	return adjKV, coreKV
 }
@@ -276,7 +286,7 @@ func tID(name string) string {
 	return string(out[:])
 }
 
-func putTestEdge(t *testing.T, adjKV jetstream.KeyValue, name, fromType, fromID, toType, toID string) {
+func putTestEdge(t *testing.T, adjKV *substrate.KV, name, fromType, fromID, toType, toID string) {
 	t.Helper()
 	edgeID := "lnk." + fromType + "." + fromID + "." + name + "." + toType + "." + toID
 	for _, e := range []adjacency.CoreKVEvent{

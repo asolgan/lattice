@@ -30,9 +30,9 @@ func TestTranslateSpec_Postgres_DeleteMode(t *testing.T) {
 			cfg["deleteMode"] = mode
 		}
 		return &LensSpec{
-			ID:         "pg-lens",
-			TargetType: "postgres",
-			CypherRule: "MATCH (a:agreement) RETURN a.id AS agreement_id",
+			ID:           "pg-lens",
+			TargetType:   "postgres",
+			CypherRule:   "MATCH (a:agreement) RETURN a.id AS agreement_id",
 			TargetConfig: mustJSON(t, cfg),
 		}
 	}
@@ -64,9 +64,9 @@ func TestTranslateSpec_NatsKV_DeleteMode(t *testing.T) {
 			cfg["deleteMode"] = mode
 		}
 		return &LensSpec{
-			ID:         "kv-lens",
-			TargetType: "nats_kv",
-			CypherRule: "MATCH (a:agreement) RETURN a.id AS agreement_id",
+			ID:           "kv-lens",
+			TargetType:   "nats_kv",
+			CypherRule:   "MATCH (a:agreement) RETURN a.id AS agreement_id",
 			TargetConfig: mustJSON(t, cfg),
 		}
 	}

@@ -12,9 +12,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
-func startAdjKV(t *testing.T) jetstream.KeyValue {
+func startAdjKV(t *testing.T) *substrate.KV {
 	t.Helper()
 	opts := &natsserver.Options{
 		JetStream: true,
@@ -39,9 +40,14 @@ func startAdjKV(t *testing.T) jetstream.KeyValue {
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
 
-	kv, err := js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{
+	_, err = js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{
 		Bucket: "adjacency-test",
 	})
+	require.NoError(t, err)
+
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+	kv, err := conn.OpenKV(context.Background(), "adjacency-test")
 	require.NoError(t, err)
 	return kv
 }

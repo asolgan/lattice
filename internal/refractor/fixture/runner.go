@@ -7,13 +7,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/asolgan/lattice/internal/refractor/adapter"
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // RunFixture seeds adjKV and coreKV from fix, evaluates each input in list order,
@@ -22,7 +22,7 @@ import (
 //
 // All three KV handles must be pre-created and empty before calling RunFixture.
 // Callers are responsible for testing.Short() skips when in-memory NATS is required.
-func RunFixture(t *testing.T, fix *Fixture, adjKV, coreKV, targetKV jetstream.KeyValue) {
+func RunFixture(t *testing.T, fix *Fixture, adjKV, coreKV, targetKV *substrate.KV) {
 	t.Helper()
 	ctx := context.Background()
 
@@ -110,28 +110,27 @@ func parseCoreKVLabel(key string) (nodeLabel string, ok bool) {
 	return parts[1], true
 }
 
-// assertKeyDeleted verifies that key is absent or tombstoned in kv.
-func assertKeyDeleted(t *testing.T, ctx context.Context, kv jetstream.KeyValue, key string) {
+// assertKeyDeleted verifies that key is absent (hard-deleted) in kv. A hard
+// delete (or a never-written key) surfaces as ErrKeyNotFound through the
+// substrate handle, which covers both the absent and tombstoned cases.
+func assertKeyDeleted(t *testing.T, ctx context.Context, kv *substrate.KV, key string) {
 	t.Helper()
 	entry, err := kv.Get(ctx, key)
-	if errors.Is(err, jetstream.ErrKeyNotFound) {
-		return // correctly absent
+	if errors.Is(err, substrate.ErrKeyNotFound) {
+		return // correctly absent / hard-tombstoned
 	}
 	if err != nil {
 		t.Fatalf("fixture: key %q: unexpected error checking deletion: %v", key, err)
 	}
-	if entry.Operation() == jetstream.KeyValueDelete {
-		return // correctly tombstoned
-	}
-	t.Errorf("fixture: key %q: expected deleted, got value %q", key, string(entry.Value()))
+	t.Errorf("fixture: key %q: expected deleted, got value %q", key, string(entry.Value))
 }
 
 // assertKeyValue verifies that key in kv contains exactly the expected JSON value.
-func assertKeyValue(t *testing.T, ctx context.Context, kv jetstream.KeyValue, key string, expected map[string]any) {
+func assertKeyValue(t *testing.T, ctx context.Context, kv *substrate.KV, key string, expected map[string]any) {
 	t.Helper()
 	entry, err := kv.Get(ctx, key)
 	require.NoError(t, err, "fixture: key %q not found in target KV", key)
 	var actual map[string]any
-	require.NoError(t, json.Unmarshal(entry.Value(), &actual), "fixture: key %q: unmarshal value", key)
+	require.NoError(t, json.Unmarshal(entry.Value, &actual), "fixture: key %q: unmarshal value", key)
 	assert.Equal(t, expected, actual, "fixture: key %q value mismatch", key)
 }

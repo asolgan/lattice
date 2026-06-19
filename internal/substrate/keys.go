@@ -6,9 +6,10 @@ import (
 )
 
 // Key shape constants. Per Contract #1 §1.1:
-//   vertex: vtx.<type>.<id>                                     (3 segments)
-//   aspect: vtx.<type>.<id>.<localName>                         (4 segments)
-//   link:   lnk.<type1>.<id1>.<localName>.<type2>.<id2>         (6 segments)
+//
+//	vertex: vtx.<type>.<id>                                     (3 segments)
+//	aspect: vtx.<type>.<id>.<localName>                         (4 segments)
+//	link:   lnk.<type1>.<id1>.<localName>.<type2>.<id2>         (6 segments)
 const (
 	VertexPrefix = "vtx"
 	LinkPrefix   = "lnk"

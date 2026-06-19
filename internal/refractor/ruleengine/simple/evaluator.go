@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -66,7 +64,7 @@ type evalBinding struct {
 //   - anchor node with isDeleted=true → one Delete result (no traversal)
 //   - anchor node with isDeleted=false → one Upsert result per matched path
 //   - non-anchor node → results for all affected anchor nodes via reverse traversal
-func Evaluate(ctx context.Context, plan *QueryPlan, entry NodeEntry, adjKV, coreKV jetstream.KeyValue) ([]EvalResult, error) {
+func Evaluate(ctx context.Context, plan *QueryPlan, entry NodeEntry, adjKV, coreKV *substrate.KV) ([]EvalResult, error) {
 	if entry.NodeLabel == plan.AnchorLabel {
 		return evaluateAnchor(ctx, plan, entry.CoreKVKey, entry.Properties, adjKV, coreKV)
 	}
@@ -100,7 +98,7 @@ func Evaluate(ctx context.Context, plan *QueryPlan, entry NodeEntry, adjKV, core
 
 // evaluateAnchor performs forward traversal starting from anchorKey/anchorProps and
 // projects all matched paths into EvalResults.
-func evaluateAnchor(ctx context.Context, plan *QueryPlan, anchorKey string, anchorProps map[string]any, adjKV, coreKV jetstream.KeyValue) ([]EvalResult, error) {
+func evaluateAnchor(ctx context.Context, plan *QueryPlan, anchorKey string, anchorProps map[string]any, adjKV, coreKV *substrate.KV) ([]EvalResult, error) {
 	// Check isDeleted on the anchor itself.
 	isDeleted, _ := anchorProps["isDeleted"].(bool)
 	if isDeleted {
@@ -204,7 +202,7 @@ func evaluateAnchor(ctx context.Context, plan *QueryPlan, anchorKey string, anch
 // The match stays precise because the reverse walk is still gated by the step's
 // edge type and direction; only the label constraint is relaxed for unlabeled
 // leaves. A labeled step (ToLabel != "") matches only its exact label.
-func reverseTraverse(ctx context.Context, plan *QueryPlan, entry NodeEntry, adjKV jetstream.KeyValue) ([]string, error) {
+func reverseTraverse(ctx context.Context, plan *QueryPlan, entry NodeEntry, adjKV *substrate.KV) ([]string, error) {
 	seen := map[string]struct{}{}
 
 	for stepIdx, step := range plan.Steps {
@@ -230,7 +228,7 @@ func reverseTraverse(ctx context.Context, plan *QueryPlan, entry NodeEntry, adjK
 
 // walkBackToAnchor recursively walks backward through plan.Steps[0..stepIdx] starting
 // from startKeys, reversing each hop, until it reaches the anchor nodes at step 0.
-func walkBackToAnchor(ctx context.Context, plan *QueryPlan, stepIdx int, startKeys []string, adjKV jetstream.KeyValue) ([]string, error) {
+func walkBackToAnchor(ctx context.Context, plan *QueryPlan, stepIdx int, startKeys []string, adjKV *substrate.KV) ([]string, error) {
 	step := plan.Steps[stepIdx]
 	reverseDir := reverseDirection(step.Direction)
 
@@ -296,16 +294,16 @@ func reverseDirection(dir EdgeDirection) EdgeDirection {
 
 // fetchNodeProps fetches a node's JSON properties from coreKV by key.
 // Returns the properties map, the isDeleted flag, and any fetch/parse error.
-func fetchNodeProps(ctx context.Context, kv jetstream.KeyValue, key string) (map[string]any, bool, error) {
+func fetchNodeProps(ctx context.Context, kv *substrate.KV, key string) (map[string]any, bool, error) {
 	entry, err := kv.Get(ctx, key)
 	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
+		if errors.Is(err, substrate.ErrKeyNotFound) {
 			return nil, false, nil
 		}
 		return nil, false, fmt.Errorf("fetchNodeProps: get %q: %w", key, err)
 	}
 	var props map[string]any
-	if err := json.Unmarshal(entry.Value(), &props); err != nil {
+	if err := json.Unmarshal(entry.Value, &props); err != nil {
 		return nil, false, fmt.Errorf("fetchNodeProps: unmarshal %q: %w", key, err)
 	}
 	isDeleted, _ := props["isDeleted"].(bool)

@@ -4,9 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // MaxBranchLen caps the length of any compiled invalidation branch. It mirrors
@@ -198,7 +197,7 @@ func buildInvalidationBranches(steps []TraversalStep, anchorVar string, labelOf 
 // forest and unions the affected-anchor Core KV keys. Running per-branch is the
 // soundness guarantee: each branch is a contiguous chain, so the reverse walk
 // (the same reverseTraverse the live evaluator uses) is correct within it.
-func (forest *InvalidationForest) AffectedAnchors(ctx context.Context, entry NodeEntry, adjKV jetstream.KeyValue) ([]string, error) {
+func (forest *InvalidationForest) AffectedAnchors(ctx context.Context, entry NodeEntry, adjKV *substrate.KV) ([]string, error) {
 	seen := map[string]struct{}{}
 	for _, branch := range forest.Branches {
 		keys, err := reverseTraverse(ctx, branch, entry, adjKV)

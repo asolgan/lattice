@@ -40,8 +40,8 @@ type Pipeline struct {
 	adapterName  string // "nats_kv" or "postgres" — used for logging only
 	plan         *simple.QueryPlan
 	coreKVBucket string // Core KV bucket name; used to strip the $KV prefix from subjects
-	adjKV        jetstream.KeyValue
-	coreKV       jetstream.KeyValue
+	adjKV        *substrate.KV
+	coreKV       *substrate.KV
 
 	// engineKind selects the evaluate code path; "simple" (default) drives
 	// the plan-based simple.Evaluate; "full" drives full.Engine.ExecuteWith
@@ -130,7 +130,7 @@ func New(
 	ruleID, adapterName string,
 	plan *simple.QueryPlan,
 	coreKVBucket string,
-	adjKV, coreKV jetstream.KeyValue,
+	adjKV, coreKV *substrate.KV,
 	adpt adapter.Adapter,
 	reporter *health.Reporter,
 ) (*Pipeline, error) {
@@ -880,7 +880,7 @@ func (p *Pipeline) runAdjWatch(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		watcher, err := p.adjKV.WatchAll(ctx, jetstream.UpdatesOnly())
+		updates, err := p.adjKV.WatchUpdates(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
@@ -893,38 +893,37 @@ func (p *Pipeline) runAdjWatch(ctx context.Context) {
 			}
 			continue
 		}
-		p.drainAdjWatch(ctx, watcher)
-		watcher.Stop() //nolint:errcheck
+		p.drainAdjWatch(ctx, updates)
 	}
 }
 
-// drainAdjWatch reads entries from watcher until the channel closes or ctx is done.
-func (p *Pipeline) drainAdjWatch(ctx context.Context, watcher jetstream.KeyWatcher) {
+// drainAdjWatch reads adjacency-change events until the channel closes (the
+// watcher stopped — runAdjWatch reconnects) or ctx is done. The substrate watch
+// already filters the end-of-replay nil sentinel, so every event is a real
+// mutation.
+func (p *Pipeline) drainAdjWatch(ctx context.Context, updates <-chan substrate.KVEvent) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case entry, ok := <-watcher.Updates():
+		case evt, ok := <-updates:
 			if !ok {
 				// Channel closed — watcher stopped; runAdjWatch will reconnect.
 				return
 			}
-			if entry == nil {
-				// Sentinel value; should not occur with UpdatesOnly but guard defensively.
-				continue
-			}
-			p.handleAdjUpdate(ctx, entry)
+			p.handleAdjUpdate(ctx, evt.Key)
 		}
 	}
 }
 
-// handleAdjUpdate processes one adjacency KV change. It strips the "adj." prefix
-// to recover the Core KV node key, fetches the node value directly (read-only),
-// and re-evaluates it through the normal evaluate-and-write path.
-func (p *Pipeline) handleAdjUpdate(ctx context.Context, adjEntry jetstream.KeyValueEntry) {
+// handleAdjUpdate processes one adjacency KV change keyed by adjKey. It strips
+// the "adj." prefix to recover the Core KV node key, fetches the node value
+// directly (read-only), and re-evaluates it through the normal
+// evaluate-and-write path.
+func (p *Pipeline) handleAdjUpdate(ctx context.Context, adjKey string) {
 	const adjPrefix = "adj."
-	nodeKey := strings.TrimPrefix(adjEntry.Key(), adjPrefix)
-	if nodeKey == adjEntry.Key() {
+	nodeKey := strings.TrimPrefix(adjKey, adjPrefix)
+	if nodeKey == adjKey {
 		// Key does not start with "adj." — unexpected format, skip.
 		return
 	}
@@ -933,7 +932,7 @@ func (p *Pipeline) handleAdjUpdate(ctx context.Context, adjEntry jetstream.KeyVa
 	// this is a read, not a write (ADR-16).
 	coreEntry, err := p.coreKV.Get(ctx, nodeKey)
 	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
+		if errors.Is(err, substrate.ErrKeyNotFound) {
 			// Node hasn't arrived in Core KV yet. When it does, the normal stream
 			// consumer will evaluate it with adjacency already in place.
 			return
@@ -946,7 +945,7 @@ func (p *Pipeline) handleAdjUpdate(ctx context.Context, adjEntry jetstream.KeyVa
 		return
 	}
 
-	data := coreEntry.Value()
+	data := coreEntry.Value
 	if len(data) == 0 {
 		// Tombstone — node was deleted; skip (the normal consumer handles deletes).
 		return

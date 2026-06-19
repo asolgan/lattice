@@ -18,8 +18,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/substrate"
@@ -45,8 +43,8 @@ type binding map[string]any
 // executor carries per-call mutable state for one Execute invocation.
 type executor struct {
 	ctx    context.Context
-	adjKV  jetstream.KeyValue
-	coreKV jetstream.KeyValue
+	adjKV  *substrate.KV
+	coreKV *substrate.KV
 	params map[string]any
 }
 
@@ -59,7 +57,7 @@ func (e *Engine) ExecuteWith(
 	ctx context.Context,
 	cr ruleengine.CompiledRule,
 	ec ruleengine.EventContext,
-	adjKV, coreKV jetstream.KeyValue,
+	adjKV, coreKV *substrate.KV,
 ) ([]ruleengine.ProjectionResult, error) {
 	compiled, ok := cr.(*CompiledRule)
 	if !ok {
@@ -345,6 +343,7 @@ func (ex *executor) currentNode(b binding, n NodePattern) *nodeRef {
 //  1. the parsed `vtx.<type>.<id>` prefix of its key (Contract #1 keys),
 //  2. a `class` property in its stored JSON,
 //  3. a `label` property in its stored JSON.
+//
 // Returns true when the pattern label is empty.
 func (ex *executor) nodeMatches(ref *nodeRef, n NodePattern) bool {
 	if n.Label == "" {
@@ -431,9 +430,9 @@ func (ex *executor) seedNodes(b binding, n NodePattern) ([]*nodeRef, error) {
 	}
 
 	// Generic path: scan the Core KV bucket. Filters by label first when set.
-	keys, err := ex.coreKV.Keys(ex.ctx)
+	keys, err := ex.coreKV.ListKeys(ex.ctx)
 	if err != nil {
-		// An empty bucket may surface ErrNoKeysFound; treat as no seeds.
+		// An empty bucket (or any list error) yields no seeds.
 		return nil, nil
 	}
 	var refs []*nodeRef
@@ -468,13 +467,13 @@ func (ex *executor) seedNodes(b binding, n NodePattern) ([]*nodeRef, error) {
 func (ex *executor) fetchNode(key string) (*nodeRef, error) {
 	entry, err := ex.coreKV.Get(ex.ctx, key)
 	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
+		if errors.Is(err, substrate.ErrKeyNotFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("full engine: get %q: %w", key, err)
 	}
 	var props map[string]any
-	if err := json.Unmarshal(entry.Value(), &props); err != nil {
+	if err := json.Unmarshal(entry.Value, &props); err != nil {
 		return nil, fmt.Errorf("full engine: unmarshal %q: %w", key, err)
 	}
 	// A JSON "null" body unmarshals to a nil map. Treat as absent/tombstone —
@@ -708,7 +707,7 @@ func (ex *executor) projectItems(bindings []binding, items []ProjectionItem) ([]
 	type groupAcc struct {
 		key       string
 		row       binding
-		aggInputs [][]any // per-item input values across the group
+		aggInputs [][]any               // per-item input values across the group
 		seen      []map[string]struct{} // per-item DISTINCT dedup sets
 	}
 	groups := map[string]*groupAcc{}

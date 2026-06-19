@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/asolgan/lattice/internal/refractor/adapter"
 	"github.com/asolgan/lattice/internal/refractor/lens"
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
@@ -156,7 +154,7 @@ func InstallActorAggregate(
 	adpt adapter.Adapter,
 	r *lens.Rule,
 	projectionRevision func(string) uint64,
-	adjKV, coreKV jetstream.KeyValue,
+	adjKV, coreKV *substrate.KV,
 	logger *slog.Logger,
 ) bool {
 	desc, err := ParseOutputDescriptor(r.Output)

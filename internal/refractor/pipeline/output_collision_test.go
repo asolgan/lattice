@@ -18,6 +18,7 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // writeResult builds a non-delete EvalResult carrying the given output key.
@@ -307,7 +308,7 @@ func TestExecuteFullForActor_OneRowPerAnchor_NoGuard(t *testing.T) {
 
 // newCollisionKVs stands up an in-memory NATS server with empty Core, Adj, and
 // Health KV buckets for the output-key-collision tests.
-func newCollisionKVs(t *testing.T) (coreKV, adjKV, healthKV jetstream.KeyValue) {
+func newCollisionKVs(t *testing.T) (coreKV, adjKV, healthKV *substrate.KV) {
 	t.Helper()
 	opts := &natsserver.Options{
 		JetStream: true,
@@ -330,19 +331,27 @@ func newCollisionKVs(t *testing.T) (coreKV, adjKV, healthKV jetstream.KeyValue) 
 
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
 	ctx := context.Background()
-	coreKV, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "CORE"})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "CORE"})
 	require.NoError(t, err)
-	adjKV, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "ADJ"})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "ADJ"})
 	require.NoError(t, err)
-	healthKV, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "HEALTH"})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "HEALTH"})
+	require.NoError(t, err)
+	coreKV, err = conn.OpenKV(ctx, "CORE")
+	require.NoError(t, err)
+	adjKV, err = conn.OpenKV(ctx, "ADJ")
+	require.NoError(t, err)
+	healthKV, err = conn.OpenKV(ctx, "HEALTH")
 	require.NoError(t, err)
 	return coreKV, adjKV, healthKV
 }
 
 // writeCollisionVertex stores a Contract #1 vertex body in Core KV with the
 // provenance timestamp executeFullForActor needs to derive projectedAt.
-func writeCollisionVertex(t *testing.T, coreKV jetstream.KeyValue, key, class string, data map[string]any) {
+func writeCollisionVertex(t *testing.T, coreKV *substrate.KV, key, class string, data map[string]any) {
 	t.Helper()
 	body := map[string]any{
 		"key": key, "class": class, "isDeleted": false,
@@ -357,7 +366,7 @@ func writeCollisionVertex(t *testing.T, coreKV jetstream.KeyValue, key, class st
 
 // buildCollisionEdge writes both adjacency directions for a Contract #1 link so
 // the full engine's traversal resolves it.
-func buildCollisionEdge(t *testing.T, adjKV jetstream.KeyValue, name, fromType, fromID, toType, toID string) {
+func buildCollisionEdge(t *testing.T, adjKV *substrate.KV, name, fromType, fromID, toType, toID string) {
 	t.Helper()
 	ctx := context.Background()
 	linkKey := "lnk." + fromType + "." + fromID + "." + name + "." + toType + "." + toID

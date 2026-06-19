@@ -7,9 +7,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgconn"
 	nats "github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // ── Heuristic classification — raw error types ────────────────────────────────
@@ -29,9 +30,8 @@ func TestClassify_Infrastructure(t *testing.T) {
 
 func TestClassify_Structural(t *testing.T) {
 	structuralErrors := []error{
-		jetstream.ErrBucketNotFound,
-		jetstream.ErrStreamNotFound,
-		fmt.Errorf("wrapped: %w", jetstream.ErrBucketNotFound),
+		substrate.ErrBucketNotFound,
+		fmt.Errorf("wrapped: %w", substrate.ErrBucketNotFound),
 	}
 	for _, err := range structuralErrors {
 		assert.Equal(t, CatStructural, Classify(err), "expected CatStructural for: %v", err)
@@ -161,10 +161,10 @@ func TestExplicitWrapper_OverridesHeuristic(t *testing.T) {
 	assert.Equal(t, CatStructural, Classify(Structural(natsErr)),
 		"Structural wrapper must override NATS heuristic")
 
-	// JetStream bucket-not-found normally CatStructural — explicit Infrastructure wrapper wins.
-	jsErr := jetstream.ErrBucketNotFound
-	assert.Equal(t, CatInfra, Classify(Infrastructure(jsErr)),
-		"Infrastructure wrapper must override JetStream heuristic")
+	// Bucket-not-found normally CatStructural — explicit Infrastructure wrapper wins.
+	bucketErr := substrate.ErrBucketNotFound
+	assert.Equal(t, CatInfra, Classify(Infrastructure(bucketErr)),
+		"Infrastructure wrapper must override the structural heuristic")
 
 	// Any error forced Transient via explicit wrapper.
 	pgErr := &pgconn.PgError{Code: "42P01", Message: "table missing"}

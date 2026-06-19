@@ -194,9 +194,9 @@ func TestRealnessFiltered(t *testing.T) {
 	d := OutputDescriptor{RealnessFilter: "taskKey"}
 	in := []any{
 		map[string]any{"taskKey": "vtx.task.x", "v": 1},
-		map[string]any{"taskKey": nil},                 // degenerate
-		map[string]any{"taskKey": ""},                  // degenerate
-		map[string]any{"other": "no key"},              // degenerate
+		map[string]any{"taskKey": nil},    // degenerate
+		map[string]any{"taskKey": ""},     // degenerate
+		map[string]any{"other": "no key"}, // degenerate
 	}
 	out := d.RealnessFiltered(in)
 	if len(out) != 1 {
@@ -218,11 +218,11 @@ func TestRealnessFiltered_NoFilterPassesThrough(t *testing.T) {
 func TestRealnessFiltered_NonStringFieldKept(t *testing.T) {
 	d := OutputDescriptor{RealnessFilter: "taskKey"}
 	in := []any{
-		map[string]any{"taskKey": float64(42)},      // non-string but present → real
-		map[string]any{"taskKey": true},             // non-string but present → real
-		map[string]any{"taskKey": "vtx.task.x"},     // string non-empty → real
-		map[string]any{"taskKey": nil},              // degenerate → dropped
-		map[string]any{"taskKey": "   "},            // whitespace string → dropped
+		map[string]any{"taskKey": float64(42)},       // non-string but present → real
+		map[string]any{"taskKey": true},              // non-string but present → real
+		map[string]any{"taskKey": "vtx.task.x"},      // string non-empty → real
+		map[string]any{"taskKey": nil},               // degenerate → dropped
+		map[string]any{"taskKey": "   "},             // whitespace string → dropped
 		map[string]any{"other": "no realness field"}, // missing → dropped
 	}
 	out := d.RealnessFiltered(in)
@@ -380,10 +380,10 @@ func TestContributingSources_WidensToBoundGraphKeys(t *testing.T) {
 		},
 	}
 	revs := map[string]uint64{
-		actor:                          47,
-		lensDef:                        12,
-		"vtx.task.Rm7q3pntwzkfbcxv5p9j": 8,
-		"vtx.op.Qp4Nb2mPq6rTwzKxVyP7":   3,
+		actor:                            47,
+		lensDef:                          12,
+		"vtx.task.Rm7q3pntwzkfbcxv5p9j":  8,
+		"vtx.op.Qp4Nb2mPq6rTwzKxVyP7":    3,
 		"vtx.lease.Zz9q3pntwzkfbcxv5p9k": 5,
 	}
 	got := ContributingSources(actor, lensDef, rows, func(k string) uint64 { return revs[k] })

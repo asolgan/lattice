@@ -67,17 +67,19 @@ func TestRefractor_MyTasksLens_E2E(t *testing.T) {
 	require.NoError(t, seeder.ProvisionBuckets(ctx))
 	require.NoError(t, seeder.SeedPrimordial(ctx))
 
-	coreKV, err := js.KeyValue(ctx, bootstrap.CoreKVBucket)
+	coreKV, err := conn.OpenKV(ctx, bootstrap.CoreKVBucket)
 	require.NoError(t, err)
-	adjKV, err := js.KeyValue(ctx, bootstrap.RefractorAdjacencyKV)
+	adjKV, err := conn.OpenKV(ctx, bootstrap.RefractorAdjacencyKV)
 	require.NoError(t, err)
 
 	// my-tasks is a package-owned bucket (NOT primordial); create it the way
 	// the refractor lazily would.
-	myTasksKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: orchestrationbase.MyTasksBucket})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: orchestrationbase.MyTasksBucket})
+	require.NoError(t, err)
+	myTasksKV, err := conn.OpenKV(ctx, orchestrationbase.MyTasksBucket)
 	require.NoError(t, err)
 
-	boots := consumer.NewBootstrapper(js, bootstrap.CoreKVBucket, adjKV)
+	boots := consumer.NewBootstrapper(conn, bootstrap.CoreKVBucket, adjKV)
 	go func() { _ = boots.Run(ctx) }()
 	select {
 	case <-boots.Ready():
@@ -114,7 +116,7 @@ func TestRefractor_MyTasksLens_E2E(t *testing.T) {
 		if getErr != nil || entry == nil {
 			return 0
 		}
-		return entry.Revision()
+		return entry.Revision
 	}
 	myTasksDesc := descFromPkgSpec(t, myTasksLensSpec)
 	p.SetEnvelopeFn(myTasksDesc.EnvelopeFn("vtx.meta."+lensID, projectionRevision))
@@ -182,11 +184,11 @@ func TestRefractor_MyTasksLens_E2E(t *testing.T) {
 	// --- assert the open task projects a my-tasks row for its assignee ---
 	require.Eventually(t, func() bool {
 		entry, gErr := myTasksKV.Get(ctx, expectedKey)
-		if gErr != nil || entry == nil || len(entry.Value()) == 0 {
+		if gErr != nil || entry == nil || len(entry.Value) == 0 {
 			return false
 		}
 		var env map[string]any
-		if json.Unmarshal(entry.Value(), &env) != nil {
+		if json.Unmarshal(entry.Value, &env) != nil {
 			return false
 		}
 		tasks, _ := env["openTasks"].([]any)
@@ -203,7 +205,7 @@ func TestRefractor_MyTasksLens_E2E(t *testing.T) {
 	entry, gErr := myTasksKV.Get(ctx, expectedKey)
 	require.NoError(t, gErr)
 	var env map[string]any
-	require.NoError(t, json.Unmarshal(entry.Value(), &env))
+	require.NoError(t, json.Unmarshal(entry.Value, &env))
 	require.Equal(t, identityKey, env["assignee"])
 	tasks, _ := env["openTasks"].([]any)
 	require.Len(t, tasks, 1)
@@ -217,7 +219,7 @@ func TestRefractor_MyTasksLens_E2E(t *testing.T) {
 	openEntry, gErr := myTasksKV.Get(ctx, expectedKey)
 	require.NoError(t, gErr)
 	var openEnv map[string]any
-	require.NoError(t, json.Unmarshal(openEntry.Value(), &openEnv))
+	require.NoError(t, json.Unmarshal(openEntry.Value, &openEnv))
 	openSeq, _ := openEnv["projectionSeq"].(float64)
 
 	// --- vanish-on-close: flip the task to complete; the guarded key must
@@ -234,7 +236,7 @@ func TestRefractor_MyTasksLens_E2E(t *testing.T) {
 			return false // the guarded delete tombstones; the key must remain present
 		}
 		var env map[string]any
-		if err := json.Unmarshal(entry.Value(), &env); err != nil {
+		if err := json.Unmarshal(entry.Value, &env); err != nil {
 			return false
 		}
 		isDeleted, _ := env["isDeleted"].(bool)

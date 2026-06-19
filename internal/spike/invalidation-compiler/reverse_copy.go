@@ -17,8 +17,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/substrate"
@@ -54,7 +52,7 @@ func otherCoreKey(otherType, otherNodeID string) string {
 
 // reverseTraverse finds all anchor Core KV keys affected by a change to a non-anchor node.
 // It walks backward through the traversal steps from the changed node's label to the anchor.
-func reverseTraverse(ctx context.Context, plan *simple.QueryPlan, entry NodeEntry, adjKV jetstream.KeyValue) ([]string, error) {
+func reverseTraverse(ctx context.Context, plan *simple.QueryPlan, entry NodeEntry, adjKV *substrate.KV) ([]string, error) {
 	seen := map[string]struct{}{}
 
 	for stepIdx, step := range plan.Steps {
@@ -80,7 +78,7 @@ func reverseTraverse(ctx context.Context, plan *simple.QueryPlan, entry NodeEntr
 
 // walkBackToAnchor recursively walks backward through plan.Steps[0..stepIdx] starting
 // from startKeys, reversing each hop, until it reaches the anchor nodes at step 0.
-func walkBackToAnchor(ctx context.Context, plan *simple.QueryPlan, stepIdx int, startKeys []string, adjKV jetstream.KeyValue) ([]string, error) {
+func walkBackToAnchor(ctx context.Context, plan *simple.QueryPlan, stepIdx int, startKeys []string, adjKV *substrate.KV) ([]string, error) {
 	step := plan.Steps[stepIdx]
 	reverseDir := reverseDirection(step.Direction)
 

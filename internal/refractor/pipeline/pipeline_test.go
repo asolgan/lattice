@@ -17,10 +17,10 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/asolgan/lattice/internal/refractor/adapter"
-	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/refractor/failure"
 	"github.com/asolgan/lattice/internal/refractor/health"
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
+	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/refractor/subjects"
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -30,40 +30,40 @@ const coreKVBucket = "CORE"
 // Sentinel NanoIDs for deterministic test fixtures (Contract #1, 20 chars, Lattice alphabet).
 // Each constant maps to the legacy node_<label>_<id> fixture it replaces.
 const (
-	sentinelAgreementA1      = "Tsnt1AgreementAaaaaa" // was node_agreement_a1
-	sentinelAgreementA2      = "Tsnt2AgreementBbbbbb" // was node_agreement_a2
-	sentinelAgreementErr1    = "Tsnt3AgreementErrrrr" // was node_agreement_err1
-	sentinelAgreementX1      = "Tsnt4AgreementXxxxxx" // was node_agreement_x1
-	sentinelIdentityI1       = "Tsnt5JdentityJjjjjjj" // was node_identity_i1
-	sentinelAgreementInf1    = "Tsnt6AgreementJnfrrr" // was node_agreement_inf1
-	sentinelAgreementStr1    = "Tsnt7AgreementStrrrr" // was node_agreement_str1
-	sentinelAgreementRst1    = "Tsnt8AgreementRst111" // was node_agreement_rst1
-	sentinelAgreementRst2    = "Tsnt9AgreementRst222" // was node_agreement_rst2
-	sentinelAgreementRes1    = "TsntAagreementRes111" // was node_agreement_res1
-	sentinelAgreementRes2    = "TsntBagreementRes222" // was node_agreement_res2
-	sentinelAgreementHr1     = "TsntCagreementHr1111" // was node_agreement_hr1
-	sentinelAgreementHr2     = "TsntDagreementHr2222" // was node_agreement_hr2
-	sentinelAgreementHp1     = "TsntEagreementHp1111" // was node_agreement_hp1
-	sentinelAgreementHp2     = "TsntFagreementHp2222" // was node_agreement_hp2
-	sentinelAgreementRetry1  = "TsntGagreementRetry1" // was node_agreement_retry1
-	sentinelAgreementTerm1   = "TsntHagreementTerm11" // was node_agreement_term1
-	sentinelAgreementTerm2   = "TsntJagreementTerm22" // was node_agreement_term2
-	sentinelAgreementNilTst  = "TsntKagreementNikTst" // was node_agreement_niltest1
-	sentinelAgreementEnt1    = "TsntLagreementEnt111" // was node_agreement_ent1
-	sentinelAgreementFail1   = "TsntMagreementFaik11" // was node_agreement_fail1
-	sentinelAgreementMp1     = "TsntNagreementMp1111" // was node_agreement_mp1
-	sentinelAgreementMp2     = "TsntPagreementMp2222" // was node_agreement_mp2
-	sentinelAgreementRi1     = "TsntQagreementRi1111" // was node_agreement_ri1
-	sentinelAgreementRbp1    = "TsntRagreementRbp111"
+	sentinelAgreementA1     = "Tsnt1AgreementAaaaaa" // was node_agreement_a1
+	sentinelAgreementA2     = "Tsnt2AgreementBbbbbb" // was node_agreement_a2
+	sentinelAgreementErr1   = "Tsnt3AgreementErrrrr" // was node_agreement_err1
+	sentinelAgreementX1     = "Tsnt4AgreementXxxxxx" // was node_agreement_x1
+	sentinelIdentityI1      = "Tsnt5JdentityJjjjjjj" // was node_identity_i1
+	sentinelAgreementInf1   = "Tsnt6AgreementJnfrrr" // was node_agreement_inf1
+	sentinelAgreementStr1   = "Tsnt7AgreementStrrrr" // was node_agreement_str1
+	sentinelAgreementRst1   = "Tsnt8AgreementRst111" // was node_agreement_rst1
+	sentinelAgreementRst2   = "Tsnt9AgreementRst222" // was node_agreement_rst2
+	sentinelAgreementRes1   = "TsntAagreementRes111" // was node_agreement_res1
+	sentinelAgreementRes2   = "TsntBagreementRes222" // was node_agreement_res2
+	sentinelAgreementHr1    = "TsntCagreementHr1111" // was node_agreement_hr1
+	sentinelAgreementHr2    = "TsntDagreementHr2222" // was node_agreement_hr2
+	sentinelAgreementHp1    = "TsntEagreementHp1111" // was node_agreement_hp1
+	sentinelAgreementHp2    = "TsntFagreementHp2222" // was node_agreement_hp2
+	sentinelAgreementRetry1 = "TsntGagreementRetry1" // was node_agreement_retry1
+	sentinelAgreementTerm1  = "TsntHagreementTerm11" // was node_agreement_term1
+	sentinelAgreementTerm2  = "TsntJagreementTerm22" // was node_agreement_term2
+	sentinelAgreementNilTst = "TsntKagreementNikTst" // was node_agreement_niltest1
+	sentinelAgreementEnt1   = "TsntLagreementEnt111" // was node_agreement_ent1
+	sentinelAgreementFail1  = "TsntMagreementFaik11" // was node_agreement_fail1
+	sentinelAgreementMp1    = "TsntNagreementMp1111" // was node_agreement_mp1
+	sentinelAgreementMp2    = "TsntPagreementMp2222" // was node_agreement_mp2
+	sentinelAgreementRi1    = "TsntQagreementRi1111" // was node_agreement_ri1
+	sentinelAgreementRbp1   = "TsntRagreementRbp111"
 )
 
 // pipelineEnv holds all resources for a pipeline integration test.
 type pipelineEnv struct {
-	nc      *nats.Conn // underlying NATS connection; needed for core-NATS subscriptions (e.g. metrics)
-	js      jetstream.JetStream
-	conn    *substrate.Conn // substrate handle the pipeline's supervisor runs on
-	coreKV  jetstream.KeyValue
-	adjKV   jetstream.KeyValue
+	nc     *nats.Conn // underlying NATS connection; needed for core-NATS subscriptions (e.g. metrics)
+	js     jetstream.JetStream
+	conn   *substrate.Conn // substrate handle the pipeline's supervisor runs on
+	coreKV *substrate.KV
+	adjKV  *substrate.KV
 }
 
 // specFor builds the supervised-consumer spec for a rule in tests, mirroring the
@@ -111,20 +111,25 @@ func startPipelineEnv(t *testing.T) *pipelineEnv {
 	require.NoError(t, err)
 
 	ctx := context.Background()
-	coreKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: coreKVBucket})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: coreKVBucket})
 	require.NoError(t, err)
 
-	adjKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "ADJ"})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "ADJ"})
 	require.NoError(t, err)
 
 	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+
+	coreKV, err := conn.OpenKV(ctx, coreKVBucket)
+	require.NoError(t, err)
+	adjKV, err := conn.OpenKV(ctx, "ADJ")
 	require.NoError(t, err)
 
 	return &pipelineEnv{nc: nc, js: js, conn: conn, coreKV: coreKV, adjKV: adjKV}
 }
 
 // putNode writes a node entry to Core KV.
-func putNode(t *testing.T, kv jetstream.KeyValue, key string, props map[string]any) {
+func putNode(t *testing.T, kv *substrate.KV, key string, props map[string]any) {
 	t.Helper()
 	data, err := json.Marshal(props)
 	require.NoError(t, err)
@@ -157,15 +162,18 @@ func compileSimplePlan(t *testing.T, query string, keyFields []string) *simple.Q
 
 // newTargetKV creates a fresh target NATS KV bucket and wraps it with a
 // hard-delete NatsKVAdapter (the default mode).
-func newTargetKV(t *testing.T, env *pipelineEnv, bucketName string, keyOrder []string) (jetstream.KeyValue, *adapter.NatsKVAdapter) {
+func newTargetKV(t *testing.T, env *pipelineEnv, bucketName string, keyOrder []string) (*substrate.KV, *adapter.NatsKVAdapter) {
 	return newTargetKVMode(t, env, bucketName, keyOrder, adapter.DeleteModeHard)
 }
 
 // newTargetKVMode is like newTargetKV but lets the caller choose the adapter's
 // delete mode (hard removes the key; soft writes a tombstone).
-func newTargetKVMode(t *testing.T, env *pipelineEnv, bucketName string, keyOrder []string, mode adapter.DeleteMode) (jetstream.KeyValue, *adapter.NatsKVAdapter) {
+func newTargetKVMode(t *testing.T, env *pipelineEnv, bucketName string, keyOrder []string, mode adapter.DeleteMode) (*substrate.KV, *adapter.NatsKVAdapter) {
 	t.Helper()
-	kv, err := env.js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{Bucket: bucketName})
+	ctx := context.Background()
+	_, err := env.js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucketName})
+	require.NoError(t, err)
+	kv, err := env.conn.OpenKV(ctx, bucketName)
 	require.NoError(t, err)
 	adpt, err := adapter.New(kv, keyOrder, mode)
 	require.NoError(t, err)
@@ -175,7 +183,10 @@ func newTargetKVMode(t *testing.T, env *pipelineEnv, bucketName string, keyOrder
 // newHealthReporter creates a health KV bucket and returns a Reporter for the given ruleID.
 func newHealthReporter(t *testing.T, env *pipelineEnv, ruleID string) *health.Reporter {
 	t.Helper()
-	kv, err := env.js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{Bucket: "HEALTH-" + ruleID})
+	ctx := context.Background()
+	_, err := env.js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "HEALTH-" + ruleID})
+	require.NoError(t, err)
+	kv, err := env.conn.OpenKV(ctx, "HEALTH-"+ruleID)
 	require.NoError(t, err)
 	return health.New(kv, ruleID)
 }
@@ -212,8 +223,8 @@ func (e *errAdapter) Upsert(_ context.Context, _ map[string]any, _ map[string]an
 	return errors.New("injected upsert error")
 }
 func (e *errAdapter) Delete(_ context.Context, _ map[string]any, _ uint64) error { return nil }
-func (e *errAdapter) Probe(_ context.Context) error                    { return nil }
-func (e *errAdapter) Close() error                                     { return nil }
+func (e *errAdapter) Probe(_ context.Context) error                              { return nil }
+func (e *errAdapter) Close() error                                               { return nil }
 
 // infraAdapter simulates a target store that is initially down (infrastructure failure)
 // and recovers after a configurable number of Probe calls.
@@ -241,11 +252,11 @@ func (a *infraAdapter) Close() error { return nil }
 type structuralAdapter struct{}
 
 func (a *structuralAdapter) Upsert(_ context.Context, _ map[string]any, _ map[string]any, _ uint64) error {
-	return jetstream.ErrBucketNotFound // classified as Structural
+	return substrate.ErrBucketNotFound // classified as Structural
 }
 func (a *structuralAdapter) Delete(_ context.Context, _ map[string]any, _ uint64) error { return nil }
-func (a *structuralAdapter) Probe(_ context.Context) error                    { return nil }
-func (a *structuralAdapter) Close() error                                     { return nil }
+func (a *structuralAdapter) Probe(_ context.Context) error                              { return nil }
+func (a *structuralAdapter) Close() error                                               { return nil }
 
 // TestPipeline_New_NilAdapter verifies that New returns an error when adapter is nil.
 func TestPipeline_New_NilAdapter(t *testing.T) {
@@ -282,7 +293,7 @@ func TestPipeline_Upsert(t *testing.T) {
 	entry, err := targetKV.Get(context.Background(), "a1")
 	require.NoError(t, err)
 	var got map[string]any
-	require.NoError(t, json.Unmarshal(entry.Value(), &got))
+	require.NoError(t, json.Unmarshal(entry.Value, &got))
 	assert.Equal(t, "a1", got["agreement_id"])
 }
 
@@ -313,7 +324,7 @@ func TestPipeline_Delete(t *testing.T) {
 	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementA2, map[string]any{"id": "a2", "isDeleted": true})
 	pollUntil(t, 2*time.Second, func() bool {
 		_, err := targetKV.Get(context.Background(), "a2")
-		return errors.Is(err, jetstream.ErrKeyNotFound)
+		return errors.Is(err, substrate.ErrKeyNotFound)
 	})
 }
 
@@ -347,7 +358,7 @@ func TestPipeline_Delete_SoftMode(t *testing.T) {
 		if err != nil {
 			return false
 		}
-		return strings.Contains(string(entry.Value()), `"isDeleted":true`)
+		return strings.Contains(string(entry.Value), `"isDeleted":true`)
 	})
 }
 
@@ -446,11 +457,11 @@ func TestPipeline_MultiRule_Independent(t *testing.T) {
 
 	// Verify Rule A target has ONLY agreement (not identity).
 	_, err = targetA.Get(context.Background(), "Alice")
-	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound, "rule-a target should not contain identity entry")
+	assert.ErrorIs(t, err, substrate.ErrKeyNotFound, "rule-a target should not contain identity entry")
 
 	// Verify Rule B target has ONLY identity (not agreement).
 	_, err = targetB.Get(context.Background(), "x1")
-	assert.ErrorIs(t, err, jetstream.ErrKeyNotFound, "rule-b target should not contain agreement entry")
+	assert.ErrorIs(t, err, substrate.ErrKeyNotFound, "rule-b target should not contain agreement entry")
 }
 
 // TestPipeline_InfrastructurePause verifies that an infrastructure failure pauses the pipeline,
@@ -601,13 +612,15 @@ type structuralOnceAdapter struct {
 
 func (a *structuralOnceAdapter) Upsert(_ context.Context, _ map[string]any, _ map[string]any, _ uint64) error {
 	if a.calls.Add(1) == 1 {
-		return jetstream.ErrBucketNotFound // classified as Structural
+		return substrate.ErrBucketNotFound // classified as Structural
 	}
 	return nil
 }
-func (a *structuralOnceAdapter) Delete(_ context.Context, _ map[string]any, _ uint64) error { return nil }
-func (a *structuralOnceAdapter) Probe(_ context.Context) error                    { return nil }
-func (a *structuralOnceAdapter) Close() error                                     { return nil }
+func (a *structuralOnceAdapter) Delete(_ context.Context, _ map[string]any, _ uint64) error {
+	return nil
+}
+func (a *structuralOnceAdapter) Probe(_ context.Context) error { return nil }
+func (a *structuralOnceAdapter) Close() error                  { return nil }
 
 // TestPipeline_HealthKV_StartupRestore_Structural verifies that when health KV is pre-written
 // as paused/structural, the pipeline blocks immediately on startup without processing messages.
@@ -722,8 +735,8 @@ func (r *recorderAdapter) Upsert(_ context.Context, keys map[string]any, _ map[s
 	return nil
 }
 func (r *recorderAdapter) Delete(_ context.Context, _ map[string]any, _ uint64) error { return nil }
-func (r *recorderAdapter) Probe(_ context.Context) error                    { return nil }
-func (r *recorderAdapter) Close() error                                     { return nil }
+func (r *recorderAdapter) Probe(_ context.Context) error                              { return nil }
+func (r *recorderAdapter) Close() error                                               { return nil }
 
 func (r *recorderAdapter) Count() int {
 	r.mu.Lock()
@@ -894,8 +907,8 @@ func (a *terminalOnceAdapter) Upsert(_ context.Context, _ map[string]any, _ map[
 	return nil
 }
 func (a *terminalOnceAdapter) Delete(_ context.Context, _ map[string]any, _ uint64) error { return nil }
-func (a *terminalOnceAdapter) Probe(_ context.Context) error                    { return nil }
-func (a *terminalOnceAdapter) Close() error                                     { return nil }
+func (a *terminalOnceAdapter) Probe(_ context.Context) error                              { return nil }
+func (a *terminalOnceAdapter) Close() error                                               { return nil }
 
 // TestPipeline_TerminalWritePublishesDLQAndContinues verifies that when the adapter
 // returns failure.Terminal for an entity:
@@ -1329,12 +1342,17 @@ func TestPipeline_Rebuild_ProbeRecoveryKeepsRebuildingStatus(t *testing.T) {
 	ga := &gateAdapter{}
 
 	// History-enabled health bucket so every status transition is observable.
+	// The raw jetstream handle is retained for History() reads (not exposed on
+	// the substrate handle); the reporter runs on a substrate handle to the same
+	// bucket.
 	healthKV, err := env.js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{
 		Bucket:  "HEALTH-rule-rbp",
 		History: 50,
 	})
 	require.NoError(t, err)
-	reporter := health.New(healthKV, "rule-rbp")
+	healthKVH, err := env.conn.OpenKV(context.Background(), "HEALTH-rule-rbp")
+	require.NoError(t, err)
+	reporter := health.New(healthKVH, "rule-rbp")
 
 	p, err := pipeline.New("rule-rbp", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, ga, reporter)
 	require.NoError(t, err)

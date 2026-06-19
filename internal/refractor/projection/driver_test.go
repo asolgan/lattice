@@ -310,9 +310,9 @@ func TestDriver_ListBodyColumn_StillRealnessFilters(t *testing.T) {
 		"actorKey": actor,
 		"ephemeralGrants": []any{
 			map[string]any{"taskKey": "vtx.task.t1", "operationType": "Approve"},
-			map[string]any{"taskKey": nil},                  // degenerate null-collect artifact
-			map[string]any{"taskKey": ""},                   // degenerate empty
-			map[string]any{"other": "no realness field"},    // degenerate missing
+			map[string]any{"taskKey": nil},               // degenerate null-collect artifact
+			map[string]any{"taskKey": ""},                // degenerate empty
+			map[string]any{"other": "no realness field"}, // degenerate missing
 		},
 	}
 	env, _, err := fn(row, nil, map[string]any{"projectedAt": "t"})

@@ -119,15 +119,17 @@ func TestRefractor_PackageActorAggregateLens_ProjectsWithZeroCoreEdits(t *testin
 	require.NoError(t, seeder.ProvisionBuckets(ctx))
 	require.NoError(t, seeder.SeedPrimordial(ctx))
 
-	coreKV, err := js.KeyValue(ctx, bootstrap.CoreKVBucket)
+	coreKV, err := conn.OpenKV(ctx, bootstrap.CoreKVBucket)
 	require.NoError(t, err)
-	adjKV, err := js.KeyValue(ctx, bootstrap.RefractorAdjacencyKV)
+	adjKV, err := conn.OpenKV(ctx, bootstrap.RefractorAdjacencyKV)
 	require.NoError(t, err)
-	rosterKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: proofRosterBucket})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: proofRosterBucket})
+	require.NoError(t, err)
+	rosterKV, err := conn.OpenKV(ctx, proofRosterBucket)
 	require.NoError(t, err)
 
 	// --- adjacency bootstrapper ---
-	boots := consumer.NewBootstrapper(js, bootstrap.CoreKVBucket, adjKV)
+	boots := consumer.NewBootstrapper(conn, bootstrap.CoreKVBucket, adjKV)
 	go func() { _ = boots.Run(ctx) }()
 	select {
 	case <-boots.Ready():
@@ -166,7 +168,7 @@ func TestRefractor_PackageActorAggregateLens_ProjectsWithZeroCoreEdits(t *testin
 		if gErr != nil || entry == nil {
 			return 0
 		}
-		return entry.Revision()
+		return entry.Revision
 	}
 
 	src := lens.NewCoreKVSource(conn, bootstrap.CoreKVBucket, logger)
@@ -255,11 +257,11 @@ func TestRefractor_PackageActorAggregateLens_ProjectsWithZeroCoreEdits(t *testin
 	// --- PROJECT: the open task projects a roster row for its assignee ---
 	require.Eventually(t, func() bool {
 		entry, gErr := rosterKV.Get(ctx, outKey)
-		if gErr != nil || entry == nil || len(entry.Value()) == 0 {
+		if gErr != nil || entry == nil || len(entry.Value) == 0 {
 			return false
 		}
 		var env map[string]any
-		if json.Unmarshal(entry.Value(), &env) != nil {
+		if json.Unmarshal(entry.Value, &env) != nil {
 			return false
 		}
 		roster, _ := env["roster"].([]any)
@@ -282,7 +284,7 @@ func TestRefractor_PackageActorAggregateLens_ProjectsWithZeroCoreEdits(t *testin
 			return true
 		}
 		var env map[string]any
-		if json.Unmarshal(entry.Value(), &env) != nil {
+		if json.Unmarshal(entry.Value, &env) != nil {
 			return false
 		}
 		if isDel, _ := env["isDeleted"].(bool); isDel {

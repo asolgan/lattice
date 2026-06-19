@@ -16,8 +16,8 @@ import (
 type DLQMessage struct {
 	RuleID       string `json:"ruleId"`
 	EntityID     string `json:"entityId"`
-	FailedStage  string `json:"failedStage"`  // "traversal" | "projection" | "write"
-	ErrorClass   string `json:"errorClass"`   // "TRANSIENT" | "TERMINAL"
+	FailedStage  string `json:"failedStage"` // "traversal" | "projection" | "write"
+	ErrorClass   string `json:"errorClass"`  // "TRANSIENT" | "TERMINAL"
 	ErrorMessage string `json:"errorMessage"`
 	RetryCount   int    `json:"retryCount"`
 	RuleSequence string `json:"ruleSequence"` // NATS stream sequence of the active rule version; "" if reporter not configured

@@ -27,7 +27,7 @@ import (
 // full.Engine.ExecuteWith reproject-and-diff. It compiles the LIVE lens specs
 // (orchestration-base myTasksSpec / capabilityEphemeralSpec), not a snapshot.
 
-func startKVs(t *testing.T) (jetstream.KeyValue, jetstream.KeyValue) {
+func startKVs(t *testing.T) (*substrate.KV, *substrate.KV) {
 	t.Helper()
 	opts := &natsserver.Options{Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: t.TempDir()}
 	s := natstest.RunServer(opts)
@@ -41,15 +41,25 @@ func startKVs(t *testing.T) (jetstream.KeyValue, jetstream.KeyValue) {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
+	conn, err := substrate.Wrap(nc)
+	if err != nil {
+		t.Fatalf("wrap: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	adjKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "proj-adj"})
-	if err != nil {
+	if _, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "proj-adj"}); err != nil {
 		t.Fatalf("adj kv: %v", err)
 	}
-	coreKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "proj-core"})
-	if err != nil {
+	if _, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "proj-core"}); err != nil {
 		t.Fatalf("core kv: %v", err)
+	}
+	adjKV, err := conn.OpenKV(ctx, "proj-adj")
+	if err != nil {
+		t.Fatalf("open adj kv: %v", err)
+	}
+	coreKV, err := conn.OpenKV(ctx, "proj-core")
+	if err != nil {
+		t.Fatalf("open core kv: %v", err)
 	}
 	return adjKV, coreKV
 }
@@ -71,14 +81,14 @@ func stableID(name string) string {
 
 func vtxKey(typ, name string) string { return "vtx." + typ + "." + stableID(typ+":"+name) }
 
-func putVertex(t *testing.T, kv jetstream.KeyValue, typ, name string, data map[string]any) string {
+func putVertex(t *testing.T, kv *substrate.KV, typ, name string, data map[string]any) string {
 	t.Helper()
 	key := vtxKey(typ, name)
 	putVertexRaw(t, kv, key, typ, data)
 	return key
 }
 
-func putVertexRaw(t *testing.T, kv jetstream.KeyValue, key, typ string, data map[string]any) {
+func putVertexRaw(t *testing.T, kv *substrate.KV, key, typ string, data map[string]any) {
 	t.Helper()
 	body := map[string]any{"key": key, "class": typ, "data": data}
 	raw, err := json.Marshal(body)
@@ -90,7 +100,7 @@ func putVertexRaw(t *testing.T, kv jetstream.KeyValue, key, typ string, data map
 	}
 }
 
-func putEdge(t *testing.T, adjKV jetstream.KeyValue, name, fromType, fromName, toType, toName string) {
+func putEdge(t *testing.T, adjKV *substrate.KV, name, fromType, fromName, toType, toName string) {
 	t.Helper()
 	fromID := stableID(fromType + ":" + fromName)
 	toID := stableID(toType + ":" + toName)
@@ -105,7 +115,7 @@ func putEdge(t *testing.T, adjKV jetstream.KeyValue, name, fromType, fromName, t
 	})
 }
 
-func removeEdge(t *testing.T, adjKV jetstream.KeyValue, name, fromType, fromName, toType, toName string) {
+func removeEdge(t *testing.T, adjKV *substrate.KV, name, fromType, fromName, toType, toName string) {
 	t.Helper()
 	ctx := context.Background()
 	fromID := stableID(fromType + ":" + fromName)
@@ -121,7 +131,7 @@ func removeEdge(t *testing.T, adjKV jetstream.KeyValue, name, fromType, fromName
 	}
 }
 
-func mustBuild(t *testing.T, adjKV jetstream.KeyValue, evt adjacency.CoreKVEvent) {
+func mustBuild(t *testing.T, adjKV *substrate.KV, evt adjacency.CoreKVEvent) {
 	t.Helper()
 	if err := adjacency.Build(context.Background(), adjKV, evt); err != nil {
 		t.Fatalf("adjacency build: %v", err)
@@ -129,7 +139,7 @@ func mustBuild(t *testing.T, adjKV jetstream.KeyValue, evt adjacency.CoreKVEvent
 }
 
 type fixture struct {
-	adjKV, coreKV jetstream.KeyValue
+	adjKV, coreKV *substrate.KV
 	mgrKey        string
 	repKey        string
 	bystanderKey  string

@@ -31,7 +31,7 @@ type AdjEdge struct {
 	CoreKvKey   string `yaml:"coreKvKey"`
 	EdgeID      string `yaml:"edgeId"`
 	Name        string `yaml:"name"`
-	Direction   string `yaml:"direction"`   // "outbound" | "inbound"
+	Direction   string `yaml:"direction"` // "outbound" | "inbound"
 	OtherNodeID string `yaml:"otherNodeId"`
 }
 

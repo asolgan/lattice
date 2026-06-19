@@ -126,17 +126,23 @@ func TestRefractor_E2E_P99(t *testing.T) {
 	js := conn.JetStream()
 
 	// --- provision buckets analogous to `make up` + verify-bootstrap ---
-	coreKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: coreBucket})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: coreBucket})
 	require.NoError(t, err)
-	adjKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: adjBucket})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: adjBucket})
 	require.NoError(t, err)
-	targetKV, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: targetBucket})
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: targetBucket})
+	require.NoError(t, err)
+	coreKV, err := conn.OpenKV(ctx, coreBucket)
+	require.NoError(t, err)
+	adjKV, err := conn.OpenKV(ctx, adjBucket)
+	require.NoError(t, err)
+	targetKV, err := conn.OpenKV(ctx, targetBucket)
 	require.NoError(t, err)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
 	// --- adjacency bootstrapper (`cmd/refractor` main.go pattern) ---
-	boots := consumer.NewBootstrapper(js, coreBucket, adjKV)
+	boots := consumer.NewBootstrapper(conn, coreBucket, adjKV)
 	go func() { _ = boots.Run(ctx) }()
 	select {
 	case <-boots.Ready():
@@ -248,7 +254,7 @@ func TestRefractor_E2E_P99(t *testing.T) {
 	for i := 0; i < mutations; i++ {
 		for {
 			entry, getErr := targetKV.Get(ctx, samples[i].id)
-			if getErr == nil && entry != nil && len(entry.Value()) > 0 {
+			if getErr == nil && entry != nil && len(entry.Value) > 0 {
 				samples[i].landedAt = time.Now()
 				break
 			}

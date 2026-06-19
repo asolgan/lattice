@@ -293,11 +293,11 @@ func (v *astVisitor) visitRelPattern(ctx cypher.IOC_RelationshipPatternContext) 
 
 // visitRangeLiteral interprets `*` quantifier.
 //
-//	*           → 0, -1 (unbounded both sides; grammar permits but rare)
-//	*N..        → N, -1
-//	*..M        → 0, M    (grammar: leading integer is optional)
-//	*N..M       → N, M
-//	*N          → N, N    (single integer with no `..`)
+//   - → 0, -1 (unbounded both sides; grammar permits but rare)
+//     *N..        → N, -1
+//     *..M        → 0, M    (grammar: leading integer is optional)
+//     *N..M       → N, M
+//     *N          → N, N    (single integer with no `..`)
 //
 // We detect `..` by checking the literal text since the rule loses the
 // dot-dot terminal in the context API.

@@ -13,10 +13,11 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // startEvalKVs spins up an in-memory NATS server and returns adjKV and coreKV buckets.
-func startEvalKVs(t *testing.T) (adjKV, coreKV jetstream.KeyValue) {
+func startEvalKVs(t *testing.T) (adjKV, coreKV *substrate.KV) {
 	t.Helper()
 	opts := &natsserver.Options{
 		JetStream: true,
@@ -41,16 +42,23 @@ func startEvalKVs(t *testing.T) (adjKV, coreKV jetstream.KeyValue) {
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
 
-	ctx := context.Background()
-	adjKV, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "adj-test"})
+	conn, err := substrate.Wrap(nc)
 	require.NoError(t, err)
-	coreKV, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-test"})
+
+	ctx := context.Background()
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "adj-test"})
+	require.NoError(t, err)
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-test"})
+	require.NoError(t, err)
+	adjKV, err = conn.OpenKV(ctx, "adj-test")
+	require.NoError(t, err)
+	coreKV, err = conn.OpenKV(ctx, "core-test")
 	require.NoError(t, err)
 	return adjKV, coreKV
 }
 
 // putCoreKV marshals props and stores them under key in kv.
-func putCoreKV(t *testing.T, kv jetstream.KeyValue, key string, props map[string]any) {
+func putCoreKV(t *testing.T, kv *substrate.KV, key string, props map[string]any) {
 	t.Helper()
 	data, err := json.Marshal(props)
 	require.NoError(t, err)
@@ -59,7 +67,7 @@ func putCoreKV(t *testing.T, kv jetstream.KeyValue, key string, props map[string
 }
 
 // putAdjEdges marshals an AdjValue and stores it under adj.<nodeID>.
-func putAdjEdges(t *testing.T, adjKV jetstream.KeyValue, nodeID string, edges []adjacency.EdgeEntry) {
+func putAdjEdges(t *testing.T, adjKV *substrate.KV, nodeID string, edges []adjacency.EdgeEntry) {
 	t.Helper()
 	val := adjacency.AdjValue{Edges: edges}
 	data, err := json.Marshal(val)

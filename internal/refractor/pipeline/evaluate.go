@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
 	"github.com/asolgan/lattice/internal/refractor/failure"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
@@ -455,23 +453,18 @@ func (p *Pipeline) reprojectActors(ctx context.Context, actorKeys []string) ([]s
 func (p *Pipeline) fetchVertexProps(ctx context.Context, vtxKey string) (map[string]any, error) {
 	entry, err := p.coreKV.Get(ctx, vtxKey)
 	if err != nil {
-		// Use the JetStream-typed error path indirectly via Classify:
-		// if the key isn't found, return (nil, nil). For other errors,
-		// surface so the caller can decide retry/structural handling.
-		// The substrate doesn't export the ErrKeyNotFound type from
-		// here without an import; instead we accept any error as
-		// "missing" only when the data is genuinely absent. To stay
-		// type-safe we use a soft check.
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
+		// A genuinely-absent key is "missing" (nil, nil); any other error
+		// surfaces so the caller can decide retry/structural handling.
+		if errors.Is(err, substrate.ErrKeyNotFound) {
 			return nil, nil
 		}
 		return nil, err
 	}
-	if entry == nil || len(entry.Value()) == 0 {
+	if entry == nil || len(entry.Value) == 0 {
 		return nil, nil
 	}
 	var props map[string]any
-	if jerr := json.Unmarshal(entry.Value(), &props); jerr != nil {
+	if jerr := json.Unmarshal(entry.Value, &props); jerr != nil {
 		return nil, jerr
 	}
 	if isDel, _ := props["isDeleted"].(bool); isDel {

@@ -13,6 +13,7 @@ import (
 
 	"github.com/asolgan/lattice/internal/refractor/adapter"
 	"github.com/asolgan/lattice/internal/refractor/projection"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // TestSoftDelete_ReusesGuardedTombstone proves AC7: emptyBehavior: softDelete
@@ -66,7 +67,7 @@ func TestSoftDelete_ReusesGuardedTombstone(t *testing.T) {
 		t.Fatalf("get tombstone: %v", err)
 	}
 	var doc map[string]any
-	if err := json.Unmarshal(entry.Value(), &doc); err != nil {
+	if err := json.Unmarshal(entry.Value, &doc); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if isDeleted, _ := doc["isDeleted"].(bool); !isDeleted {
@@ -77,7 +78,7 @@ func TestSoftDelete_ReusesGuardedTombstone(t *testing.T) {
 	}
 }
 
-func startTargetKV(t *testing.T) jetstream.KeyValue {
+func startTargetKV(t *testing.T) *substrate.KV {
 	t.Helper()
 	opts := &natsserver.Options{Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: t.TempDir()}
 	s := natstest.RunServer(opts)
@@ -91,11 +92,18 @@ func startTargetKV(t *testing.T) jetstream.KeyValue {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
+	conn, err := substrate.Wrap(nc)
+	if err != nil {
+		t.Fatalf("wrap: %v", err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "proj-target"})
-	if err != nil {
+	if _, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "proj-target"}); err != nil {
 		t.Fatalf("kv: %v", err)
+	}
+	kv, err := conn.OpenKV(ctx, "proj-target")
+	if err != nil {
+		t.Fatalf("open kv: %v", err)
 	}
 	return kv
 }

@@ -10,13 +10,13 @@ import (
 	"time"
 
 	nats "github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/nats-io/nats.go/micro"
 
 	"github.com/asolgan/lattice/internal/refractor/health"
 	"github.com/asolgan/lattice/internal/refractor/lens"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // validateSampleSize is the maximum number of Core KV entries sampled by the validate op.
@@ -84,13 +84,13 @@ type ControlRequest struct {
 // On success (delete op): Delete field is present; Entry fields are absent.
 // On error: only "error" field is present.
 type ControlResponse struct {
-	*health.Entry                  // embedded; nil on non-health ops → fields absent in JSON
-	Error    string          `json:"error,omitempty"`
-	Validate *ValidateResult `json:"validate,omitempty"` // present only for "validate" op
-	Rebuild  *RebuildResult  `json:"rebuild,omitempty"`  // present only for "rebuild" op
-	Pause    *PauseResult    `json:"pause,omitempty"`    // present only for "pause" op
-	Resume   *ResumeResult   `json:"resume,omitempty"`   // present only for "resume" op
-	Delete   *DeleteResult   `json:"delete,omitempty"`   // present only for "delete" op
+	*health.Entry                 // embedded; nil on non-health ops → fields absent in JSON
+	Error         string          `json:"error,omitempty"`
+	Validate      *ValidateResult `json:"validate,omitempty"` // present only for "validate" op
+	Rebuild       *RebuildResult  `json:"rebuild,omitempty"`  // present only for "rebuild" op
+	Pause         *PauseResult    `json:"pause,omitempty"`    // present only for "pause" op
+	Resume        *ResumeResult   `json:"resume,omitempty"`   // present only for "resume" op
+	Delete        *DeleteResult   `json:"delete,omitempty"`   // present only for "delete" op
 }
 
 // RebuildResult is the async acknowledgement returned by the "rebuild" op.
@@ -149,9 +149,9 @@ type Service struct {
 	rebuilderByRuleID map[string]Rebuilder
 	deleterByRuleID   map[string]Deleter
 	reporters         map[string]*health.Reporter
-	microSvc          micro.Service     // set by StartNATSListener; nil until started
-	ruleGetter        RuleGetter        // set via SetRuleGetter; used by validate op
-	coreKV            jetstream.KeyValue // set via SetCoreKV; used by validate op
+	microSvc          micro.Service // set by StartNATSListener; nil until started
+	ruleGetter        RuleGetter    // set via SetRuleGetter; used by validate op
+	coreKV            *substrate.KV // set via SetCoreKV; used by validate op
 }
 
 // NewService creates a new Service with empty registries.
@@ -175,7 +175,7 @@ func (s *Service) SetRuleGetter(rg RuleGetter) {
 
 // SetCoreKV registers the Core KV handle used by the validate op to sample entries.
 // Thread-safe; may be called at any time.
-func (s *Service) SetCoreKV(kv jetstream.KeyValue) {
+func (s *Service) SetCoreKV(kv *substrate.KV) {
 	s.mu.Lock()
 	s.coreKV = kv
 	s.mu.Unlock()
@@ -550,16 +550,17 @@ func (s *Service) validateRule(ctx context.Context, ruleID string) ControlRespon
 		return ControlResponse{Error: fmt.Sprintf("validate: compile plan: %s", err)}
 	}
 
-	// Stream keys from Core KV; stop after validateSampleSize for fast CI response.
-	lister, err := coreKV.ListKeys(ctx)
+	// Sample keys from Core KV; cap at validateSampleSize for a fast CI response.
+	// ListKeys materializes the key set; validate is an infrequent operator
+	// diagnostic over a bounded bucket, so the sampling cap stays the cost bound.
+	allKeys, err := coreKV.ListKeys(ctx)
 	if err != nil {
 		// Empty bucket or context error — not a hard failure; return all-absent report.
 		return ControlResponse{Validate: buildEmptyValidateResult(plan.Columns)}
 	}
-	defer lister.Stop() //nolint:errcheck
 
 	var sampledKeys []string
-	for key := range lister.Keys() {
+	for _, key := range allKeys {
 		sampledKeys = append(sampledKeys, key)
 		if len(sampledKeys) >= validateSampleSize {
 			break
@@ -575,7 +576,7 @@ func (s *Service) validateRule(ctx context.Context, ruleID string) ControlRespon
 			continue
 		}
 		var doc map[string]any
-		if err := json.Unmarshal(entry.Value(), &doc); err != nil {
+		if err := json.Unmarshal(entry.Value, &doc); err != nil {
 			continue // skip non-JSON entries (e.g. deleted markers)
 		}
 		sampleSize++

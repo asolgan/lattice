@@ -30,7 +30,6 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	natstest "github.com/nats-io/nats-server/v2/test"
 	nats "github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 
 	"github.com/asolgan/lattice/internal/bootstrap"
@@ -87,7 +86,6 @@ func TestRefractor_CapabilityLens_E2E(t *testing.T) {
 	defer cancel()
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
-	js := conn.JetStream()
 
 	// --- provision buckets + run primordial bootstrap ---
 	// Generate a fresh primordial key space per test (the bootstrap
@@ -100,15 +98,15 @@ func TestRefractor_CapabilityLens_E2E(t *testing.T) {
 	require.NoError(t, seeder.ProvisionBuckets(ctx))
 	require.NoError(t, seeder.SeedPrimordial(ctx))
 
-	coreKV, err := js.KeyValue(ctx, bootstrap.CoreKVBucket)
+	coreKV, err := conn.OpenKV(ctx, bootstrap.CoreKVBucket)
 	require.NoError(t, err)
-	adjKV, err := js.KeyValue(ctx, bootstrap.RefractorAdjacencyKV)
+	adjKV, err := conn.OpenKV(ctx, bootstrap.RefractorAdjacencyKV)
 	require.NoError(t, err)
-	capabilityKV, err := js.KeyValue(ctx, bootstrap.CapabilityKVBucket)
+	capabilityKV, err := conn.OpenKV(ctx, bootstrap.CapabilityKVBucket)
 	require.NoError(t, err)
 
 	// --- adjacency bootstrapper ---
-	boots := consumer.NewBootstrapper(js, bootstrap.CoreKVBucket, adjKV)
+	boots := consumer.NewBootstrapper(conn, bootstrap.CoreKVBucket, adjKV)
 	go func() { _ = boots.Run(ctx) }()
 	select {
 	case <-boots.Ready():
@@ -145,7 +143,7 @@ func TestRefractor_CapabilityLens_E2E(t *testing.T) {
 		"capability lens must resolve to the full engine")
 	require.NotNil(t, capabilityRule.CompiledRule)
 
-	targetKV, err := js.KeyValue(ctx, capabilityRule.Into.Bucket)
+	targetKV, err := conn.OpenKV(ctx, capabilityRule.Into.Bucket)
 	require.NoError(t, err)
 	adpt, err := adapter.New(targetKV, capabilityRule.Into.Key, adapter.DeleteModeHard)
 	require.NoError(t, err)
@@ -159,7 +157,7 @@ func TestRefractor_CapabilityLens_E2E(t *testing.T) {
 		if getErr != nil || entry == nil {
 			return 0
 		}
-		return entry.Revision()
+		return entry.Revision
 	}
 	lensDefKey := "vtx.meta." + capabilityRule.ID
 	capDesc, err := projection.ParseOutputDescriptor(capabilityRule.Output)
@@ -215,10 +213,10 @@ func TestRefractor_CapabilityLens_E2E(t *testing.T) {
 	// --- poll capability-kv for the projection ---
 	expectedKey := "cap.identity." + identityID
 	deadline := time.Now().Add(20 * time.Second)
-	var entry jetstream.KeyValueEntry
+	var entry *substrate.KVEntry
 	for time.Now().Before(deadline) {
 		entry, err = capabilityKV.Get(ctx, expectedKey)
-		if err == nil && entry != nil && len(entry.Value()) > 0 {
+		if err == nil && entry != nil && len(entry.Value) > 0 {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -227,7 +225,7 @@ func TestRefractor_CapabilityLens_E2E(t *testing.T) {
 
 	// --- assert Contract #6 §6.2 envelope shape ---
 	var env map[string]any
-	require.NoError(t, json.Unmarshal(entry.Value(), &env))
+	require.NoError(t, json.Unmarshal(entry.Value, &env))
 
 	require.Equal(t, expectedKey, env["key"])
 	require.Equal(t, identityKey, env["actor"])

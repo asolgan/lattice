@@ -13,6 +13,7 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // ephemeralDeleteKey mirrors capabilityenv.EphemeralKey; the producer wires the
@@ -29,7 +30,7 @@ func ephemeralDeleteKey(actorKey string) string {
 // newDeleteKeyKV stands up an in-memory NATS server with empty Core/Adj KV
 // buckets so the missing-actor reprojection path resolves a real
 // ErrKeyNotFound.
-func newDeleteKeyKV(t *testing.T) (coreKV, adjKV jetstream.KeyValue) {
+func newDeleteKeyKV(t *testing.T) (coreKV, adjKV *substrate.KV) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping NATS-backed test in short mode")
@@ -55,10 +56,16 @@ func newDeleteKeyKV(t *testing.T) (coreKV, adjKV jetstream.KeyValue) {
 
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
-	ctx := context.Background()
-	coreKV, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "CORE"})
+	conn, err := substrate.Wrap(nc)
 	require.NoError(t, err)
-	adjKV, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "ADJ"})
+	ctx := context.Background()
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "CORE"})
+	require.NoError(t, err)
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "ADJ"})
+	require.NoError(t, err)
+	coreKV, err = conn.OpenKV(ctx, "CORE")
+	require.NoError(t, err)
+	adjKV, err = conn.OpenKV(ctx, "ADJ")
 	require.NoError(t, err)
 	return coreKV, adjKV
 }

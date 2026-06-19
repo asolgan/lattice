@@ -23,7 +23,7 @@ type lagEnv struct {
 	nc       *nats.Conn
 	conn     *substrate.Conn
 	js       jetstream.JetStream
-	healthKV jetstream.KeyValue
+	healthKV *substrate.KV
 }
 
 // zeroLag is a LagFunc that always reports zero lag with no error. The LagPoller
@@ -61,7 +61,9 @@ func startLagServer(t *testing.T) *lagEnv {
 	js, err := jetstream.New(nc)
 	require.NoError(t, err)
 
-	healthKV, err := js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{Bucket: "LAG_HEALTH"})
+	_, err = js.CreateKeyValue(context.Background(), jetstream.KeyValueConfig{Bucket: "LAG_HEALTH"})
+	require.NoError(t, err)
+	healthKV, err := conn.OpenKV(context.Background(), "LAG_HEALTH")
 	require.NoError(t, err)
 
 	return &lagEnv{nc: nc, conn: conn, js: js, healthKV: healthKV}

@@ -16,8 +16,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -42,8 +40,8 @@ import (
 // OtherType (legacy edge events). For Contract #1 link envelopes
 // fed through the 3.2b link bridge OtherType is always set.
 type ActorEnumerator struct {
-	adjKV     jetstream.KeyValue
-	coreKV    jetstream.KeyValue
+	adjKV     *substrate.KV
+	coreKV    *substrate.KV
 	actorType string
 	maxDepth  int
 	maxActors int
@@ -59,7 +57,7 @@ const DefaultActorMaxSet = 10_000
 
 // NewActorEnumerator constructs an enumerator with the given KV handles
 // and target actor type (e.g. "identity").
-func NewActorEnumerator(adjKV, coreKV jetstream.KeyValue, actorType string) *ActorEnumerator {
+func NewActorEnumerator(adjKV, coreKV *substrate.KV, actorType string) *ActorEnumerator {
 	return &ActorEnumerator{
 		adjKV:     adjKV,
 		coreKV:    coreKV,
@@ -104,9 +102,9 @@ func (e *ActorEnumerator) Enumerate(ctx context.Context, eventVertexKey, eventVe
 	visited := map[string]struct{}{eventID: {}}
 	actors := map[string]struct{}{}
 	type frontierEntry struct {
-		nodeID    string
-		nodeType  string
-		depth     int
+		nodeID   string
+		nodeType string
+		depth    int
 	}
 	frontier := []frontierEntry{{nodeID: eventID, nodeType: eventVertexType, depth: 0}}
 	truncated := false

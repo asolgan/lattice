@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/nats-io/nats.go/jetstream"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // PauseReason values used in health KV entries.
@@ -43,7 +43,7 @@ type Entry struct {
 // Reporter reads and writes health KV entries for a single rule.
 // It does NOT import the failure package — that dependency runs the other way.
 type Reporter struct {
-	kv             jetstream.KeyValue
+	kv             *substrate.KV
 	ruleID         string
 	mu             sync.RWMutex // protects activeSequence + ruleEngine
 	activeSequence uint64       // cached rule sequence; set via SetRuleSequence
@@ -52,7 +52,7 @@ type Reporter struct {
 }
 
 // New creates a Reporter for the given rule. kv must be the health KV bucket.
-func New(kv jetstream.KeyValue, ruleID string) *Reporter {
+func New(kv *substrate.KV, ruleID string) *Reporter {
 	return &Reporter{kv: kv, ruleID: ruleID}
 }
 
@@ -231,11 +231,11 @@ func (r *Reporter) RecordError(ctx context.Context, errMsg string) error {
 // Delete removes the health KV entry for this rule (FR39 — rule deletion cleanup).
 // After Delete, subsequent GetStatus calls return the default active zero Entry
 // (ErrKeyNotFound path in readExisting). Safe to call when no entry exists —
-// jetstream.ErrKeyNotFound is silently ignored.
+// substrate.ErrKeyNotFound is silently ignored.
 func (r *Reporter) Delete(ctx context.Context) error {
 	r.writeMu.Lock()
 	defer r.writeMu.Unlock()
-	if err := r.kv.Delete(ctx, r.ruleID); err != nil && !errors.Is(err, jetstream.ErrKeyNotFound) {
+	if err := r.kv.Delete(ctx, r.ruleID); err != nil && !errors.Is(err, substrate.ErrKeyNotFound) {
 		return fmt.Errorf("health: delete entry %s: %w", r.ruleID, err)
 	}
 	slog.Info("health: rule deleted", "ruleId", r.ruleID)
@@ -277,13 +277,13 @@ func (r *Reporter) GetStatus(ctx context.Context) (Entry, error) {
 func (r *Reporter) readExisting(ctx context.Context) (Entry, error) {
 	e, err := r.kv.Get(ctx, r.ruleID)
 	if err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
+		if errors.Is(err, substrate.ErrKeyNotFound) {
 			return Entry{Status: "active", RuleID: r.ruleID}, nil
 		}
 		return Entry{}, fmt.Errorf("health: read existing %s: %w", r.ruleID, err)
 	}
 	var entry Entry
-	if err := json.Unmarshal(e.Value(), &entry); err != nil {
+	if err := json.Unmarshal(e.Value, &entry); err != nil {
 		return Entry{}, fmt.Errorf("health: unmarshal entry %s: %w", r.ruleID, err)
 	}
 	return entry, nil

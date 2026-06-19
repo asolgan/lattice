@@ -4,8 +4,8 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5/pgconn"
-	nats "github.com/nats-io/nats.go"
-	"github.com/nats-io/nats.go/jetstream"
+
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // Category classifies an error into one of four routing tiers.
@@ -112,22 +112,26 @@ func Classify(err error) Category {
 	}
 
 	// 1. Explicit wrapper detection — always wins over heuristics.
-	if errors.As(err, new(*infraError))      { return CatInfra }
-	if errors.As(err, new(*structuralError)) { return CatStructural }
-	if errors.As(err, new(*terminalError))   { return CatTerminal }
-	if errors.As(err, new(*transientError))  { return CatTransient }
+	if errors.As(err, new(*infraError)) {
+		return CatInfra
+	}
+	if errors.As(err, new(*structuralError)) {
+		return CatStructural
+	}
+	if errors.As(err, new(*terminalError)) {
+		return CatTerminal
+	}
+	if errors.As(err, new(*transientError)) {
+		return CatTransient
+	}
 
 	// 2. Infrastructure: NATS transport-level failures (server unreachable, connection lost).
-	if errors.Is(err, nats.ErrConnectionClosed) ||
-		errors.Is(err, nats.ErrConnectionDraining) ||
-		errors.Is(err, nats.ErrDisconnected) ||
-		errors.Is(err, nats.ErrNoServers) {
+	if substrate.IsConnectionError(err) {
 		return CatInfra
 	}
 
 	// 3. Structural: target store configuration errors (bucket or stream absent).
-	if errors.Is(err, jetstream.ErrBucketNotFound) ||
-		errors.Is(err, jetstream.ErrStreamNotFound) {
+	if errors.Is(err, substrate.ErrBucketNotFound) {
 		return CatStructural
 	}
 

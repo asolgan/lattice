@@ -9,8 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -30,7 +28,7 @@ const projectionSeqField = "projectionSeq"
 
 // NatsKVAdapter writes materialized rows to a NATS KV bucket.
 type NatsKVAdapter struct {
-	kv         jetstream.KeyValue
+	kv         *substrate.KV
 	keyOrder   []string   // ordered key field names; used for deterministic composite key construction
 	deleteMode DeleteMode // hard (default): kv.Delete; soft: tombstone Put
 	// guarded selects the monotonic projection-write guard (Contract #6 §6.2).
@@ -51,7 +49,7 @@ type NatsKVAdapter struct {
 // The adapter is built unguarded; SetGuarded enables the projection-write guard
 // for the lenses that require it (the canonical-name switch in cmd/refractor
 // owns that decision, keeping this constructor free of lens-name knowledge).
-func New(kv jetstream.KeyValue, keyOrder []string, deleteMode DeleteMode) (*NatsKVAdapter, error) {
+func New(kv *substrate.KV, keyOrder []string, deleteMode DeleteMode) (*NatsKVAdapter, error) {
 	if len(keyOrder) == 0 {
 		return nil, errors.New("natskv: keyOrder must not be empty")
 	}
@@ -115,7 +113,7 @@ func (a *NatsKVAdapter) Upsert(ctx context.Context, keys map[string]any, row map
 //
 //   - DeleteModeHard (default): physically removes the key via kv.Delete. Lineage
 //     already lives in Core KV, so the derived view reflects deletions as
-//     removals. Deleting a never-existed key is idempotent — jetstream's
+//     removals. Deleting a never-existed key is idempotent — the absent-key
 //     ErrKeyNotFound is swallowed and nil returned.
 //   - DeleteModeSoft: writes a tombstone document {isDeleted:true, projectedAt:…}
 //     for audit/forensic targets that opt in. Overwriting a never-existed key is
@@ -154,7 +152,7 @@ func (a *NatsKVAdapter) Delete(ctx context.Context, keys map[string]any, project
 	}
 	// Hard delete: physically remove the key. Deleting an absent key is a no-op.
 	if err := a.kv.Delete(ctx, key); err != nil {
-		if errors.Is(err, jetstream.ErrKeyNotFound) {
+		if errors.Is(err, substrate.ErrKeyNotFound) {
 			return nil
 		}
 		return fmt.Errorf("natskv delete: delete %s: %w", key, err)
@@ -192,13 +190,13 @@ func (a *NatsKVAdapter) guardedWrite(ctx context.Context, key string, row map[st
 	for attempt := 0; attempt < guardCASMaxAttempts; attempt++ {
 		entry, getErr := a.kv.Get(ctx, key)
 		if getErr != nil {
-			if !errors.Is(getErr, jetstream.ErrKeyNotFound) {
+			if !errors.Is(getErr, substrate.ErrKeyNotFound) {
 				return fmt.Errorf("natskv guarded write: get %s: %w", key, getErr)
 			}
 			// Key absent: create it. A concurrent create wins the revision and
 			// we re-read on the next iteration.
 			if _, createErr := a.kv.Create(ctx, key, data); createErr != nil {
-				if substrate.IsRevisionConflict(createErr) {
+				if errors.Is(createErr, substrate.ErrRevisionConflict) {
 					continue
 				}
 				return fmt.Errorf("natskv guarded write: create %s: %w", key, createErr)
@@ -206,14 +204,14 @@ func (a *NatsKVAdapter) guardedWrite(ctx context.Context, key string, row map[st
 			return nil
 		}
 
-		if storedSeq, ok := storedProjectionSeq(entry.Value()); ok && storedSeq >= incomingSeq {
+		if storedSeq, ok := storedProjectionSeq(entry.Value); ok && storedSeq >= incomingSeq {
 			// A write with an equal-or-higher watermark already landed; this is
 			// an idempotent no-op (a stale lower-seq replay loses).
 			return nil
 		}
 
-		if _, updErr := a.kv.Update(ctx, key, data, entry.Revision()); updErr != nil {
-			if substrate.IsRevisionConflict(updErr) {
+		if _, updErr := a.kv.Update(ctx, key, data, entry.Revision); updErr != nil {
+			if errors.Is(updErr, substrate.ErrRevisionConflict) {
 				continue
 			}
 			return fmt.Errorf("natskv guarded write: update %s: %w", key, updErr)
@@ -288,11 +286,10 @@ func (a *NatsKVAdapter) Truncate(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("natskv truncate: list keys: %w", err)
 	}
-	for key := range keys.Keys() {
+	for _, key := range keys {
+		// Purge is idempotent: a key deleted out from under us between the list
+		// and the purge is not an error.
 		if err := a.kv.Purge(ctx, key); err != nil {
-			if errors.Is(err, jetstream.ErrKeyNotFound) {
-				continue
-			}
 			return fmt.Errorf("natskv truncate: purge %s: %w", key, err)
 		}
 	}
@@ -303,8 +300,7 @@ func (a *NatsKVAdapter) Truncate(ctx context.Context) error {
 // Returns nil if the bucket is accessible; returns an infrastructure or structural
 // error that failure.Classify can route appropriately.
 func (a *NatsKVAdapter) Probe(ctx context.Context) error {
-	_, err := a.kv.Status(ctx)
-	return err
+	return a.kv.Status(ctx)
 }
 
 // Close is a no-op; the NATS KV handle lifecycle is managed by the caller.

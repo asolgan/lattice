@@ -29,13 +29,13 @@ func TestParseISO8601Duration_Variants(t *testing.T) {
 		{"PT1H30M", 90 * time.Minute, false},
 		{"PT1H30M45S", time.Hour + 30*time.Minute + 45*time.Second, false},
 		// Errors
-		{"P1D", 0, true},        // missing T
-		{"PT", 0, true},         // empty after PT
-		{"PT0S", 0, true},       // parses to zero
-		{"PTxS", 0, true},       // non-numeric
-		{"PT5X", 0, true},       // unrecognised unit
-		{"", 0, true},           // empty
-		{"5S", 0, true},         // no PT prefix
+		{"P1D", 0, true},  // missing T
+		{"PT", 0, true},   // empty after PT
+		{"PT0S", 0, true}, // parses to zero
+		{"PTxS", 0, true}, // non-numeric
+		{"PT5X", 0, true}, // unrecognised unit
+		{"", 0, true},     // empty
+		{"5S", 0, true},   // no PT prefix
 	}
 
 	for _, tc := range cases {

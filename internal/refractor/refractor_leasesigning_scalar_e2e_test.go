@@ -106,16 +106,16 @@ func TestRefractor_LeaseSigningConvergence_ProjectsScalarColumns(t *testing.T) {
 	require.NoError(t, seeder.ProvisionBuckets(ctx))
 	require.NoError(t, seeder.SeedPrimordial(ctx))
 
-	coreKV, err := js.KeyValue(ctx, bootstrap.CoreKVBucket)
+	coreKV, err := conn.OpenKV(ctx, bootstrap.CoreKVBucket)
 	require.NoError(t, err)
-	adjKV, err := js.KeyValue(ctx, bootstrap.RefractorAdjacencyKV)
+	adjKV, err := conn.OpenKV(ctx, bootstrap.RefractorAdjacencyKV)
 	require.NoError(t, err)
 	// The real §10.2 convergence bucket (primordial — provisioned by the seeder).
-	convKV, err := js.KeyValue(ctx, "weaver-targets")
+	convKV, err := conn.OpenKV(ctx, "weaver-targets")
 	require.NoError(t, err)
 
 	// --- adjacency bootstrapper ---
-	boots := consumer.NewBootstrapper(js, bootstrap.CoreKVBucket, adjKV)
+	boots := consumer.NewBootstrapper(conn, bootstrap.CoreKVBucket, adjKV)
 	go func() { _ = boots.Run(ctx) }()
 	select {
 	case <-boots.Ready():
@@ -155,7 +155,7 @@ func TestRefractor_LeaseSigningConvergence_ProjectsScalarColumns(t *testing.T) {
 		if gErr != nil || entry == nil {
 			return 0
 		}
-		return entry.Revision()
+		return entry.Revision
 	}
 
 	src := lens.NewCoreKVSource(conn, bootstrap.CoreKVBucket, logger)
@@ -261,11 +261,11 @@ func TestRefractor_LeaseSigningConvergence_ProjectsScalarColumns(t *testing.T) {
 	var openEnv map[string]any
 	require.Eventually(t, func() bool {
 		entry, gErr := convKV.Get(ctx, convKey)
-		if gErr != nil || entry == nil || len(entry.Value()) == 0 {
+		if gErr != nil || entry == nil || len(entry.Value) == 0 {
 			return false
 		}
 		var env map[string]any
-		if json.Unmarshal(entry.Value(), &env) != nil {
+		if json.Unmarshal(entry.Value, &env) != nil {
 			return false
 		}
 		// Wait until violating is the Go bool true (the all-gaps-open steady state),
@@ -314,11 +314,11 @@ func TestRefractor_LeaseSigningConvergence_ProjectsScalarColumns(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		entry, gErr := convKV.Get(ctx, convKey)
-		if gErr != nil || entry == nil || len(entry.Value()) == 0 {
+		if gErr != nil || entry == nil || len(entry.Value) == 0 {
 			return false
 		}
 		var env map[string]any
-		if json.Unmarshal(entry.Value(), &env) != nil {
+		if json.Unmarshal(entry.Value, &env) != nil {
 			return false
 		}
 		v, isBool := env["violating"].(bool)

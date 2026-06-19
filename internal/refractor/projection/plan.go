@@ -13,12 +13,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/nats-io/nats.go/jetstream"
-
 	"github.com/asolgan/lattice/internal/refractor/lens"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // ActorAggregateKind is the projectionKind aspect value that opts a lens into
@@ -48,7 +47,7 @@ type ExecutionPlan struct {
 // Execute evaluates the lens for one bound actor against the live KV, returning
 // the projected RETURN rows. It is the same per-actor eval path the live
 // pipeline uses; the projection plan only references it.
-func (e *ExecutionPlan) Execute(ctx context.Context, params map[string]any, adjKV, coreKV jetstream.KeyValue) ([]ruleengine.ProjectionResult, error) {
+func (e *ExecutionPlan) Execute(ctx context.Context, params map[string]any, adjKV, coreKV *substrate.KV) ([]ruleengine.ProjectionResult, error) {
 	eng := full.New()
 	return eng.ExecuteWith(ctx, e.CompiledRule,
 		ruleengine.EventContext{Parameters: params}, adjKV, coreKV)
@@ -68,7 +67,7 @@ type InvalidationPlan struct {
 // AffectedAnchors runs the compiled reverse walk over the forest, unioning the
 // per-branch affected-anchor keys. It returns an error if the plan is in BFS-
 // fallback mode (the caller must use the broad enumerator instead).
-func (p *InvalidationPlan) AffectedAnchors(ctx context.Context, entry simple.NodeEntry, adjKV jetstream.KeyValue) ([]string, error) {
+func (p *InvalidationPlan) AffectedAnchors(ctx context.Context, entry simple.NodeEntry, adjKV *substrate.KV) ([]string, error) {
 	if p.FallbackToBFS || p.Forest == nil {
 		return nil, fmt.Errorf("invalidation: plan is in BFS-fallback mode; use the broad enumerator")
 	}

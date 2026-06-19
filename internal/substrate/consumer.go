@@ -209,6 +209,24 @@ func (c *Conn) drainDurable(
 	}
 }
 
+// ConsumerPending returns the number of pending (un-delivered) messages for the
+// named durable consumer on stream — the consumer's lag. It is the standalone
+// analogue of ConsumerSupervisor.PendingForConsumer for a durable created via
+// RunDurableConsumer (which the supervisor does not manage), letting a caller
+// detect "caught up" without a jetstream.Consumer handle. Returns a wrapped
+// error if the consumer does not exist yet or its info cannot be read.
+func (c *Conn) ConsumerPending(ctx context.Context, stream, durable string) (uint64, error) {
+	cons, err := c.js.Consumer(ctx, stream, durable)
+	if err != nil {
+		return 0, fmt.Errorf("substrate: ConsumerPending: consumer %q on %q: %w", durable, stream, err)
+	}
+	info, err := cons.Info(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("substrate: ConsumerPending: info %q: %w", durable, err)
+	}
+	return info.NumPending, nil
+}
+
 // newMessage builds the caller-facing Message view from a raw JetStream
 // message. Sequence is the backing-stream sequence when metadata is available.
 func newMessage(msg jetstream.Msg) Message {
