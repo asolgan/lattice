@@ -38,13 +38,15 @@ The operation envelope is the message format a client publishes to `core-operati
 
 **`actor` form:** Full vertex key including the `vtx.` prefix. Short forms (`identity.<id>`) are reserved for HTTP headers in Phase 2 (Gateway translates to full key before envelope submission).
 
-**Phase-1 transitional field — `class` (optional, `omitempty`):**
+**Optional field — `class` (optional, `omitempty`):**
 
-Story 1.6 introduced an optional top-level `class` field on the operation envelope to let the Hydrator resolve the operation's DDL during the window before the full DDL cache could derive class from `operationType`. Story 1.7 brought the DDL cache forward; the field remains in place as a Phase-1-transitional client hint while the operationType→class reverse index matures.
+Story 1.6 introduced an optional top-level `class` field on the operation envelope to let the Hydrator resolve the operation's DDL during the window before the full DDL cache could derive class from `operationType`. Story 1.7 brought the DDL cache forward; the operationType→class reverse index it anticipated is now **built** (the DDL cache's `byCommand` map): when an envelope omits `class`, the Hydrator resolves the DDL from `operationType` — the single **vertexType** DDL whose `permittedCommands` admit it. The index is integrity-safe by two disciplines: it is built from **vertexType (script-bearing) DDLs only** (an aspectType DDL lists an op in `permittedCommands` purely as a step-6 write gate, never as the executing script, so it is never a class-inference target), and a **global ambiguity guard** drops any op admitted by more than one vertexType DDL (such an op still requires an explicit `class` — the inference never guesses). Resolution is **auth-neutral**: authorization (step 3) precedes class resolution (step 4) and keys on `operationType` + actor + authContext, never on `class`, so making `class` optional cannot widen the auth surface; the inferred class is exactly the DDL `permittedCommands` step 6 already enforces.
+
+`class` is therefore **engine-optional**: engine-dispatched ops (Loom/Weaver) and clients MAY omit it and rely on operationType→class derivation; an explicit `class` (or `payload.class`) still takes precedence when supplied.
 
 | Field | Required | Type | Mutability | Purpose |
 |-------|----------|------|------------|---------|
-| `class` | optional (Phase-1 transitional) | string (DDL canonical name, e.g., `"identity"`) | immutable | Tells the Hydrator/Validator which DDL meta-vertex applies to this operation. Falls back to `payload.class` if absent. To be removed once the DDL cache fully covers operationType→class derivation (target: Story 1.10 or later). Clients that omit `class` today MUST supply `payload.class`. The field is `omitempty` in the wire format — clients that did not include it before Story 1.6 are unaffected. |
+| `class` | optional | string (DDL canonical name, e.g., `"identity"`) | immutable | Tells the Hydrator/Validator which DDL meta-vertex applies to this operation. Precedence: top-level `class` → `payload.class` → derived from `operationType` via the DDL cache's operationType→class reverse index (the single vertexType DDL that admits it; ambiguous/unindexed ops still require an explicit `class`). The field is `omitempty` in the wire format. |
 
 See `cmd/processor/CONTRACT-AMENDMENT-REQUEST.md` (Story 1.6 entry, resolved in Story 1.7) for the full disposition record.
 
