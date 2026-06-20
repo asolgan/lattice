@@ -45,6 +45,11 @@ type GapAction struct {
 	Assignee  string            `json:"assignee,omitempty"`
 	Target    string            `json:"target,omitempty"`
 	Params    map[string]string `json:"params,omitempty"`
+	// Reads are the dispatched op's ContextHint.Reads — bare vertex keys, each a
+	// literal or a row.<column> template resolved from the violation row. A
+	// directOp that must read its candidate vertex (e.g. TombstoneObject) routes
+	// the candidate key from the lens row (row.entityKey) into the op's reads.
+	Reads []string `json:"reads,omitempty"`
 }
 
 // Target is a parsed meta.weaverTarget body (Contract #10 §10.8): the binding

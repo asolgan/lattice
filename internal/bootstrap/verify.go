@@ -172,6 +172,13 @@ func VerifyKernel(ctx context.Context, conn *substrate.Conn) []string {
 		}
 	}
 
+	// 7a. core-objects Object Store (the off-graph blob plane). It is a
+	// JetStream Object Store, not a KV bucket, so it is a separate assertion
+	// shape; the substrate helper maps a missing store to ErrBucketNotFound.
+	if err := conn.ObjectStoreExists(ctx, CoreObjectsBucket); err != nil {
+		failures = append(failures, fmt.Sprintf("MISSING Object Store: %s (%v)", CoreObjectsBucket, err))
+	}
+
 	// AllowAtomicPublish must be set on the buckets whose writers use atomic
 	// batches: Core KV (Processor commit) and loom-state (Loom step transition,
 	// Contract #10 §10.3). Without it, Conn.AtomicBatch on the bucket is rejected.

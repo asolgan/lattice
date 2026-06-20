@@ -28,6 +28,15 @@ const (
 	WeaverTargetsBucket  = "weaver-targets"      // shared target-Lens projection bucket (Contract #10 §10.2)
 	RefractorAdjacencyKV = "refractor-adjacency" // Refractor's internal adjacency store (private, not a Lens target)
 
+	// CoreObjectsBucket is the off-graph binary blob store — a JetStream Object
+	// Store (backed by stream OBJ_core-objects), NOT a KV bucket. It is the
+	// third sanctioned write plane (bytes), parallel to Health KV being a third
+	// state plane (Decision #4): trusted clients (Loupe) stream blob bytes here
+	// directly and the bytes never enter the Processor/CDC path. Provisioned as
+	// primordial substrate because pkgmgr writes Core-KV manifests only and has
+	// no path to provision an Object Store.
+	CoreObjectsBucket = "core-objects"
+
 	// JetStream stream names.
 	CoreOpsStreamName       = "core-operations"
 	CoreEventsStreamName    = "core-events"
@@ -40,6 +49,12 @@ const (
 	EventsWildcardSubject    = "events.>"
 	SchedulesWildcardSubject = "schedule.>"
 )
+
+// CoreObjectsMaxBytes is the store-level byte cap on core-objects (5 GiB
+// default for the single-cell MVP). It is distinct from the per-upload cap
+// (OBJECTS_MAX_UPLOAD_BYTES, enforced inside substrate.ObjectPut): this bounds
+// the entire store, that bounds one blob.
+const CoreObjectsMaxBytes int64 = 5 << 30
 
 // Seeder holds the NATS JetStream context and performs all primordial writes.
 type Seeder struct {
@@ -108,6 +123,20 @@ func (s *Seeder) ProvisionBuckets(ctx context.Context) error {
 			}
 		}
 	}
+
+	// Provision the core-objects Object Store — the off-graph blob plane. It is
+	// a JetStream Object Store (stream OBJ_core-objects), not a KV bucket, so it
+	// is provisioned separately from the bucket loop. Idempotent
+	// (CreateOrUpdate), like the buckets above.
+	if _, err := s.js.CreateOrUpdateObjectStore(ctx, jetstream.ObjectStoreConfig{
+		Bucket:      CoreObjectsBucket,
+		Description: "Lattice Core Objects — off-graph binary blob store",
+		Storage:     jetstream.FileStorage,
+		MaxBytes:    CoreObjectsMaxBytes,
+	}); err != nil {
+		return fmt.Errorf("create/update object store %q: %w", CoreObjectsBucket, err)
+	}
+	s.logger.Info("Object Store ready", "bucket", CoreObjectsBucket)
 
 	// Provision core-operations, core-events, and core-schedules streams.
 	if err := s.provisionStreams(ctx); err != nil {

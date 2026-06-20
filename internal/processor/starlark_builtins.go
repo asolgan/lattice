@@ -84,26 +84,12 @@ func DeterministicNanoID(src *rand.PCG, n int) string {
 	return deterministicNanoID(src, n)
 }
 
-// deterministicNanoID emits an n-character NanoID from substrate.Alphabet
-// using rejection sampling against a 6-bit mask, seeded from pcg.
+// deterministicNanoID emits an n-character NanoID from substrate.Alphabet using
+// rejection sampling against a 6-bit mask, seeded from pcg. The generation is
+// owned by substrate (NanoIDFromPCG) so a Go-side caller and a Starlark script
+// derive byte-identical ids from the same seed.
 func deterministicNanoID(src *rand.PCG, n int) string {
-	const mask = 63
-	alpha := substrate.Alphabet
-	out := make([]byte, n)
-	written := 0
-	for written < n {
-		// PCG.Uint64 yields 64 bits; chew through them 6 at a time.
-		v := src.Uint64()
-		for i := 0; i < 10 && written < n; i++ {
-			b := byte(v & mask)
-			v >>= 6
-			if int(b) < len(alpha) {
-				out[written] = alpha[b]
-				written++
-			}
-		}
-	}
-	return string(out)
+	return substrate.NanoIDFromPCG(src, n)
 }
 
 // cryptoModule returns a Starlark struct exposing:
@@ -144,15 +130,9 @@ func cryptoModule() *starlarkstruct.Struct {
 		if !ok {
 			return nil, errBuiltin("crypto.sha256NanoID: argument must be a string, got " + args[0].Type())
 		}
-		sum := sha256.Sum256([]byte(string(s)))
-		// Use the SHA-256 bytes as a PCG seed to generate a valid NanoID.
-		// This is deterministic: same input → same output, always.
-		seed := [2]uint64{
-			binary.BigEndian.Uint64(sum[0:8]),
-			binary.BigEndian.Uint64(sum[8:16]),
-		}
-		pcg := rand.NewPCG(seed[0], seed[1])
-		return starlarklib.String(deterministicNanoID(pcg, substrate.NanoIDLength)), nil
+		// Deterministic content-addressed id, owned by substrate so a Go-side
+		// client (Loupe / the object GC) derives the identical id off-script.
+		return starlarklib.String(substrate.SHA256NanoID(string(s))), nil
 	})
 
 	// constant_time_equal(a, b) → bool

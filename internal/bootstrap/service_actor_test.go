@@ -282,16 +282,16 @@ func TestGeneratePopulateRoundTrip_Bridge(t *testing.T) {
 	}
 }
 
-// TestCheckVersion_RejectsStaleAcceptsCurrent proves the version-9 gate: a
-// version-9 file passes, and any other version (notably "8", which still
-// provisioned the retired Weaver operational bucket) is hard-rejected with the
-// make-down/make-up guidance so a stale file can never silently run against a
-// mismatched kernel topology (AC #2).
+// TestCheckVersion_RejectsStaleAcceptsCurrent proves the version-10 gate: a
+// version-10 file passes, and any other version (notably "9", which predates
+// the core-objects Object Store) is hard-rejected with the make-down/make-up
+// guidance so a stale file can never silently run against a mismatched kernel
+// topology (AC #2).
 func TestCheckVersion_RejectsStaleAcceptsCurrent(t *testing.T) {
-	if err := checkVersion(BootstrapFile{Version: "9"}); err != nil {
-		t.Errorf("checkVersion(version=9): unexpected error %v", err)
+	if err := checkVersion(BootstrapFile{Version: "10"}); err != nil {
+		t.Errorf("checkVersion(version=10): unexpected error %v", err)
 	}
-	for _, v := range []string{"8", "7", "6", "5", ""} {
+	for _, v := range []string{"9", "8", "7", "6", "5", ""} {
 		err := checkVersion(BootstrapFile{Version: v})
 		if err == nil {
 			t.Errorf("checkVersion(version=%q): expected rejection, got nil", v)

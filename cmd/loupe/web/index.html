@@ -14,6 +14,7 @@
       <button class="tab" data-tab="health">Health</button>
       <button class="tab" data-tab="control">Control</button>
       <button class="tab" data-tab="packages">Packages</button>
+      <button class="tab" data-tab="files">Files</button>
       <button class="tab" data-tab="op">Submit Op</button>
     </nav>
   </header>
@@ -102,6 +103,34 @@
         <thead><tr><th>Name</th><th>Version</th><th>Key</th></tr></thead>
         <tbody></tbody>
       </table>
+    </section>
+
+    <!-- Files -->
+    <section class="panel" id="panel-files">
+      <div class="files-upload">
+        <div class="op-row">
+          <label>target key
+            <input type="text" id="files-target" placeholder="vtx.identity.&lt;id&gt;">
+          </label>
+          <label>link name
+            <input type="text" id="files-linkname" value="photoOf">
+          </label>
+          <label>replace object id (optional)
+            <input type="text" id="files-replace" placeholder="&lt;oid&gt; to replace">
+          </label>
+        </div>
+        <div class="op-row files-upload-row">
+          <input type="file" id="files-file">
+          <button id="files-upload-btn">Upload + attach</button>
+          <span class="muted" id="files-upload-status"></span>
+        </div>
+        <pre id="files-upload-reply"></pre>
+      </div>
+      <div class="panel-controls">
+        <button id="files-load">List attached objects</button>
+        <span class="muted" id="files-status"></span>
+      </div>
+      <div class="files-grid" id="files-grid"></div>
     </section>
 
     <!-- Submit Op -->

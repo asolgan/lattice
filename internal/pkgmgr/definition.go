@@ -156,6 +156,12 @@ type GapActionSpec struct {
 	Assignee  string
 	Target    string
 	Params    map[string]string
+	// Reads are the dispatched op's ContextHint.Reads — the bare vertex keys
+	// its DDL hydrates + validates. Each is a literal or a row.<column> template
+	// resolved from the violation row (e.g. `row.entityKey` to hand a directOp
+	// the candidate vertex it must read). Used by directOp; the candidate id is
+	// already in the target lens row, so this just routes it into the op's reads.
+	Reads []string
 }
 
 // LoomPatternSpec is one meta.loomPattern meta-vertex a package declares

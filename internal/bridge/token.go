@@ -1,8 +1,6 @@
 package bridge
 
 import (
-	"crypto/sha256"
-
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -49,23 +47,10 @@ func deriveDispatchRequestID(instanceKey string) string {
 	return deriveID(dispatchRequestNamespace, instanceKey)
 }
 
-// deriveID is the shared deterministic NanoID derivation: a stable hash over
-// namespace+input expanded across the canonical alphabet. The namespace prefix
-// keeps disjoint derivations from colliding for the same input.
+// deriveID is the shared deterministic NanoID derivation, now owned by
+// substrate (DeriveNanoID) so the bridge, Loom, and the object plane share one
+// implementation. Retained as a thin local alias so the bridge's call sites
+// read unchanged.
 func deriveID(namespace, input string) string {
-	sum := sha256.Sum256([]byte(namespace + input))
-	id := make([]byte, substrate.NanoIDLength)
-	// Expand the 32-byte digest across the id by re-hashing as needed.
-	digest := sum[:]
-	di := 0
-	for i := 0; i < substrate.NanoIDLength; i++ {
-		if di >= len(digest) {
-			next := sha256.Sum256(digest)
-			digest = next[:]
-			di = 0
-		}
-		id[i] = substrate.Alphabet[int(digest[di])%len(substrate.Alphabet)]
-		di++
-	}
-	return string(id)
+	return substrate.DeriveNanoID(namespace, input)
 }

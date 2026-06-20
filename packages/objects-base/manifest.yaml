@@ -1,0 +1,40 @@
+name: objects-base
+version: 0.1.0
+description: |
+  Generic large-object vertex type (the object DDL + lifecycle ops
+  AttachObject, DetachObject, TombstoneObject) — the graph side of the
+  off-graph blob plane. An object vertex is content-addressed
+  (vtx.object.<oid>, oid = crypto.sha256NanoID("object:" + digest)) so
+  identical bytes dedup to a single vertex; the content's reference metadata
+  lives on the .content aspect (D5, root data minimal), and the bytes live in
+  the core-objects Object Store, never in the Processor/CDC path. Relationships
+  are links (object -<linkName>-> owner). Type-agnostic; depends on nothing.
+  Declares the objectLiveness GC convergence lens + its meta.weaverTarget (Loop
+  A: an orphaned object dispatches directOp(TombstoneObject)); the only new
+  runtime component is the object-store-manager (Loop B, byte reclaim).
+declares:
+  ddls:
+    - canonicalName: object
+      class: meta.ddl.vertexType
+  lenses:
+    - canonicalName: objectLiveness
+      adapter: nats-kv
+      bucket: weaver-targets
+      engine: full
+  permissions:
+    - operationType: AttachObject
+      scope: any
+      grantsTo: [operator]
+    - operationType: DetachObject
+      scope: any
+      grantsTo: [operator]
+    - operationType: TombstoneObject
+      scope: any
+      grantsTo: [operator]
+  weaverTargets:
+    - targetId: objectLiveness
+      lensRef: objectLiveness
+  opMetas:
+    - operationType: AttachObject
+    - operationType: DetachObject
+    - operationType: TombstoneObject

@@ -393,6 +393,13 @@ func gapActionBody(ga GapActionSpec) map[string]any {
 		}
 		body["params"] = params
 	}
+	if len(ga.Reads) > 0 {
+		reads := make([]any, len(ga.Reads))
+		for i, r := range ga.Reads {
+			reads[i] = r
+		}
+		body["reads"] = reads
+	}
 	return body
 }
 

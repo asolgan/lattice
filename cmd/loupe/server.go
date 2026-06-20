@@ -34,6 +34,9 @@ type server struct {
 	adminActor  string
 	logger      *slog.Logger
 	natsTimeout time.Duration
+	// uploadCap bounds a single object upload (OBJECTS_MAX_UPLOAD_BYTES);
+	// substrate.ObjectPut enforces it at the stream layer.
+	uploadCap int64
 }
 
 func (s *server) registerRoutes(mux *http.ServeMux) {
@@ -52,6 +55,10 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/control/", s.handleControl)
 	mux.HandleFunc("/api/packages", s.handlePackages)
 	mux.HandleFunc("/api/op", s.handleOp)
+	// Objects: POST /api/objects (upload), GET/DELETE /api/objects/<oid>. Both
+	// the bare and trailing-segment patterns route to the same handler.
+	mux.HandleFunc("/api/objects", s.handleObjects)
+	mux.HandleFunc("/api/objects/", s.handleObjects)
 }
 
 // writeJSON encodes v as JSON with the given status code.

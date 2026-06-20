@@ -42,8 +42,9 @@ type Conn struct {
 	nc *nats.Conn
 	js jetstream.JetStream
 
-	mu      sync.Mutex
-	buckets map[string]jetstream.KeyValue
+	mu           sync.Mutex
+	buckets      map[string]jetstream.KeyValue
+	objectStores map[string]jetstream.ObjectStore
 }
 
 // Connect establishes a new NATS + JetStream connection using opts.
@@ -76,7 +77,7 @@ func Connect(ctx context.Context, opts ConnectOpts) (*Conn, error) {
 	// connection time should set ConnectOpts.MaxReconnects and ReconnectWait to
 	// limit the retry loop rather than relying on context deadlines.
 	_ = ctx
-	return &Conn{nc: nc, js: js, buckets: make(map[string]jetstream.KeyValue)}, nil
+	return &Conn{nc: nc, js: js, buckets: make(map[string]jetstream.KeyValue), objectStores: make(map[string]jetstream.ObjectStore)}, nil
 }
 
 // Wrap adapts an existing *nats.Conn into a substrate *Conn. Useful when
@@ -86,7 +87,7 @@ func Wrap(nc *nats.Conn) (*Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("substrate: jetstream context: %w", err)
 	}
-	return &Conn{nc: nc, js: js, buckets: make(map[string]jetstream.KeyValue)}, nil
+	return &Conn{nc: nc, js: js, buckets: make(map[string]jetstream.KeyValue), objectStores: make(map[string]jetstream.ObjectStore)}, nil
 }
 
 // NATS returns the underlying *nats.Conn. Provided as an escape hatch for

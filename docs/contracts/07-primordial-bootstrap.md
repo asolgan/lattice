@@ -10,7 +10,7 @@ This is the critical design principle: every actor's auth traces back to graph t
 
 ### 7.2 Primordial Seeding Inventory
 
-`make up` writes the following directly to Core KV at first initialization (the sole sanctioned non-Processor write path, and only during bootstrap):
+`make up` writes the following directly to Core KV at first initialization (the sole sanctioned non-Processor write path **into Core KV**, and only during bootstrap). One other non-Processor write path exists, and it is deliberately **not** a Core KV path: trusted clients stream binary blob **bytes** directly into the `core-objects` Object Store — the off-graph blob plane, parallel to Health-KV being a non-Processor *state* plane (Decision #4). Those byte writes carry no graph state and never touch the Capability Lens; the **graph** record of an object (its `vtx.object.<oid>` vertex + `.content` aspect + links) is still written through the Processor like any other state. See the large-file/binary design.
 
 **1. Meta-meta DDLs** — DDLs describing how DDL is described. Each is a `vtx.meta.<NanoID>` vertex with appropriate aspects:
 - DDL for `meta.ddl.vertexType` (the DDL that describes what a vertex-type DDL looks like)

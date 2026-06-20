@@ -43,6 +43,9 @@ jobs:
       - name: Install + verify identity-hygiene package
         run: make verify-package-identity-hygiene
 
+      - name: Install + verify objects-base package
+        run: make verify-package-objects-base
+
       - name: Run Gate 2 bypass suite (Phase 1 Gate 2)
         # Runs the 4-category bypass suite; exits non-zero if any category
         # is not BLOCKED. Writes gate2-report.txt + Health KV marker.
@@ -74,6 +77,12 @@ jobs:
         # D5 gate-asserted (AC #3), and the eager bgcheck-freshness @at lapse.
         # Compiled -tags leaseshortwindow so the freshness window is watchable.
         run: make test-lease-convergence
+
+      - name: Run object-GC convergence e2e (Loop A+B)
+        # Boots Processor + outbox + Refractor + Weaver + the object-store-manager
+        # in-process; attach → detach → proves the objectLiveness lens →
+        # directOp(TombstoneObject) → object.tombstoned → byte-reclaim chain.
+        run: make test-object-gc
 
       - name: Run all tests (unit + integration)
         # -p 1: serialize test-package execution. Many fixtures spin

@@ -15,7 +15,7 @@ BOOTSTRAP_JSON ?= $(abspath ./lattice.bootstrap.json)
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-conformance build vet test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
+.PHONY: up down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-conformance build vet test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 up:
@@ -89,6 +89,15 @@ verify-package-identity-hygiene:
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/identity-hygiene
 	@echo "==> Running identity-hygiene package assertions..."
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) go run ./scripts/verify-package-identity-hygiene.go
+
+## verify-package-objects-base — Install objects-base and assert its KV state.
+verify-package-objects-base:
+	@echo "==> Building lattice-pkg..."
+	go build -o bin/lattice-pkg ./cmd/lattice-pkg
+	@echo "==> Installing objects-base..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/objects-base
+	@echo "==> Running objects-base package assertions..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) go run ./scripts/verify-package-objects-base.go
 
 ## verify-conformance — Run the contract-conformance freeze suite: the frozen
 ## OperationReply / envelope / contextHint shapes, Core KV key shapes, the DDL
@@ -203,6 +212,16 @@ test-rollback:
 .PHONY: test-lease-convergence
 test-lease-convergence:
 	go test -tags leaseshortwindow ./internal/leaseconvergence/... -run TestLeaseConvergence -v -p 1 -count=1 -timeout 10m
+
+## test-object-gc — v1b object-GC Loop A+B convergence gate. Self-contained:
+## embedded NATS, boots Processor + outbox + Refractor + Weaver + the
+## object-store-manager in-process, installs rbac → identity → objects-base,
+## attaches + detaches an object, and proves the full chain reclaims the bytes
+## (the objectLiveness lens → Weaver directOp(TombstoneObject) → object.tombstoned
+## → manager byte delete). Compiled with -tags objectgc.
+.PHONY: test-object-gc
+test-object-gc:
+	go test -tags objectgc ./internal/objectgc/... -run TestObjectGC -v -p 1 -count=1 -timeout 3m
 
 ## vet — Run go vet on all packages except vendored ANTLR-generated parsers
 ## (which contain expected unreachable-code patterns from the generator).

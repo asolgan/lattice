@@ -26,6 +26,7 @@ import (
 	identitydomain "github.com/asolgan/lattice/packages/identity-domain"
 	identityhygiene "github.com/asolgan/lattice/packages/identity-hygiene"
 	leasesigning "github.com/asolgan/lattice/packages/lease-signing"
+	objectsbase "github.com/asolgan/lattice/packages/objects-base"
 	orchestrationbase "github.com/asolgan/lattice/packages/orchestration-base"
 	rbacdomain "github.com/asolgan/lattice/packages/rbac-domain"
 	servicedomain "github.com/asolgan/lattice/packages/service-domain"
@@ -46,6 +47,7 @@ var packageRegistry = map[string]pkgmgr.Definition{
 	"orchestration-base": orchestrationbase.Package,
 	"service-domain":     servicedomain.Package,
 	"lease-signing":      leasesigning.Package,
+	"objects-base":       objectsbase.Package,
 }
 
 func main() {

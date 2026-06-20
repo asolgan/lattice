@@ -193,6 +193,11 @@ type PrimordialIDsRaw struct {
 //   - "9": one Weaver operational KV bucket retired (Epic 13 — external I/O
 //     re-homed to Loom's externalTask + the bridge). Dropping a provisioned
 //     bucket changes the kernel topology a stale file would not match.
+//   - "10": core-objects Object Store added (the off-graph blob plane).
+//     Provisioning a new store changes kernel topology a stale file would not
+//     match, so the version is bumped to force `make down && make up`. No
+//     primordial NanoIDs or Core-KV keys are added (the store holds bytes, not
+//     vertices), so PrimordialVertexKeyCount is unchanged.
 type BootstrapFile struct {
 	Version       string           `json:"version"`
 	GeneratedAt   string           `json:"generatedAt"`
@@ -324,16 +329,16 @@ func Load(path string) error {
 // checkVersion returns a clear error when the bootstrap file's version is
 // not one of the supported versions. This surfaces a meaningful message
 // instead of a confusing NanoID validation failure when an operator
-// upgrades Lattice without running `make down` first. Version 9 retires one
-// Weaver operational KV bucket; older files provisioned it and must be
-// regenerated so the kernel topology matches.
+// upgrades Lattice without running `make down` first. Version 10 adds the
+// core-objects Object Store; older files predate it and must be regenerated so
+// the kernel topology (now including the blob plane) matches.
 func checkVersion(f BootstrapFile) error {
 	switch f.Version {
-	case "9":
+	case "10":
 		return nil
 	default:
 		return fmt.Errorf(
-			"bootstrap file version mismatch: got %q, want \"9\" — run `make down && make up`",
+			"bootstrap file version mismatch: got %q, want \"10\" — run `make down && make up`",
 			f.Version,
 		)
 	}
@@ -465,7 +470,7 @@ func populate(raw PrimordialIDsRaw) error {
 
 func persistWithStatus(path string, raw PrimordialIDsRaw, status string) error {
 	f := BootstrapFile{
-		Version:       "9",
+		Version:       "10",
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339Nano),
 		Status:        status,
 		PrimordialIDs: raw,

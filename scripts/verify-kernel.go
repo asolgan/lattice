@@ -282,6 +282,14 @@ func main() {
 		}
 	}
 
+	// core-objects Object Store (the off-graph blob plane) — a JetStream Object
+	// Store, not a KV bucket, so it is asserted separately.
+	if _, err := js.ObjectStore(ctx, bootstrap.CoreObjectsBucket); err != nil {
+		failures = append(failures, fmt.Sprintf("MISSING Object Store: %s (%v)", bootstrap.CoreObjectsBucket, err))
+	} else {
+		fmt.Printf("  OK  object store: %s\n", bootstrap.CoreObjectsBucket)
+	}
+
 	// AllowAtomicPublish must be set on the buckets whose writers use atomic
 	// batches: Core KV (Processor commit) and loom-state (Loom step transition,
 	// Contract #10 §10.3). Without it, Conn.AtomicBatch on the bucket is rejected.

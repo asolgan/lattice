@@ -25,7 +25,8 @@ per-item detail lives in design / story docs + git history, never in agent memor
 |---|---|---|
 | Loom control plane *(Loupe blocker #1)* | ✅ Done | `implementation-artifacts/loom-control-plane.md` |
 | Loupe — view & control app | ✅ Done (v1 stab) | `implementation-artifacts/loupe-v1.md` |
-| Large-file / binary handling | 📋 Designed (ready to launch) | `implementation-artifacts/large-file-binary-design.md` |
+| Large-file / binary handling — **v1a** (attach/read/detach) | ✅ Done (built + 3-layer-reviewed; merged to main) | `implementation-artifacts/large-file-binary-design.md` §1–§18 |
+| Large-file / binary handling — **v1b** (GC) | ✅ Done (Option A: objectLiveness lens + Weaver directOp + epoch-CAS + object-store-manager; full Loop A+B convergence e2e green in CI; 3-layer-reviewed; merged to main; contracts #7 §7.2 + #10 §10.8 directOp.reads ratified) | `implementation-artifacts/large-file-binary-design.md` §20 |
 | Refractor substrate inner-package migration | ✅ Done (Path B, d420ca4) | `implementation-artifacts/substrate-migration-plan.md` |
 | Structured adapter result *(terminal-failure producer)* | ✅ Done (828f24d) | `implementation-artifacts/structured-adapter-result-design.md` |
 | Async external-reply | 🏗️ Active (increments 1–2 done: 0860fb1, 0f85d45; increment 3 in design) | `implementation-artifacts/async-reply-design.md` |

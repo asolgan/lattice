@@ -49,3 +49,5 @@ coverage.html
 lattice.bootstrap.json
 /.agents
 processor.log
+/loupe
+/lattice-pkg

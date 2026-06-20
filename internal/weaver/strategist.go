@@ -179,10 +179,23 @@ func buildPlan(source *targetSource, targetID, entityID, gapColumn string,
 			params[name] = resolved
 		}
 		params["expectedRevision"] = expectedRevision
+		// The dispatched op's reads: each is a literal or a row.<column> template
+		// (e.g. row.entityKey to hand the op its candidate vertex). The candidate
+		// key is already in the lens row, so this just routes it into the op's
+		// ContextHint.Reads so its DDL can hydrate + validate it.
+		var reads []string
+		for i, rt := range ga.Reads {
+			r, perr := resolveStringParam(fmt.Sprintf("reads[%d]", i), rt, row)
+			if perr != nil {
+				return nil, perr
+			}
+			reads = append(reads, r)
+		}
 		return &plan{
 			operationType: ga.Operation,
 			authTarget:    authTarget,
 			payload:       func(uint64) map[string]any { return params },
+			reads:         reads,
 		}, nil
 
 	default:

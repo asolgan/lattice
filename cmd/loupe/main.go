@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -90,11 +91,22 @@ func run(logger *slog.Logger) error {
 		defer conn.Close()
 	}
 
+	uploadCap := int64(defaultUploadCap)
+	if v := os.Getenv("OBJECTS_MAX_UPLOAD_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			uploadCap = n
+		} else {
+			logger.Warn("ignoring invalid OBJECTS_MAX_UPLOAD_BYTES; using default",
+				"value", v, "default", defaultUploadCap)
+		}
+	}
+
 	srv := &server{
 		conn:        conn,
 		adminActor:  adminActor,
 		logger:      logger,
 		natsTimeout: natsRequestLimit,
+		uploadCap:   uploadCap,
 	}
 
 	mux := http.NewServeMux()
@@ -104,6 +116,11 @@ func run(logger *slog.Logger) error {
 		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		// WriteTimeout bounds a slow-reading client holding an object-byte
+		// stream open; sized generously so a legitimate large download on a slow
+		// link still completes. IdleTimeout reclaims idle keep-alive conns.
+		WriteTimeout: 15 * time.Minute,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
