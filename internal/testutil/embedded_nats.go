@@ -45,39 +45,50 @@ func TestLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 }
 
-// DriveOne runs the consumer loop until exactly one message is handled
-// by `cp`, asserts the outcome matches `want` (if non-empty), and returns
-// the observed outcome. Mirrors the processor-internal `driveOne` test
-// helper used by Story 4.x integration tests.
+// driveFetchWait bounds a single synchronous pull. It is a safety ceiling, not
+// a timing assumption: every caller publishes its op (waiting for the PubAck)
+// before driving, so the message is already durable in the stream and a healthy
+// fetch returns the instant the server responds. The ceiling is generous to
+// absorb CI full-suite contention (many test packages, each with its own
+// embedded server); hitting it means a real defect, not a slow runner.
+const driveFetchWait = 30 * time.Second
+
+// DriveOne pulls exactly one message from `cons`, runs it through `cp`, asserts
+// the outcome matches `want` (if non-empty), and returns the observed outcome.
+// Mirrors the processor-internal `driveOne` helper.
+//
+// It uses synchronous pull (Fetch) rather than push (Consume) deliberately.
+// Consume holds a long-lived background subscription whose Stop is asynchronous:
+// when a test drives one delivery and then another on the SAME durable consumer,
+// the first Stop's teardown can still be in flight when the second op is
+// published, so the abandoned callback steals and acks/terminates that op while
+// the live drive blocks until its deadline. Fetch carries no background
+// machinery — each call is self-contained, so repeated sequential drives on one
+// consumer cannot race the teardown.
 func DriveOne(t *testing.T, ctx context.Context, cp *processor.CommitPath, cons jetstream.Consumer, want processor.MessageOutcome) processor.MessageOutcome {
 	t.Helper()
-	got := make(chan processor.MessageOutcome, 1)
-	cc, err := cons.Consume(func(m jetstream.Msg) {
-		outcome := cp.HandleMessage(ctx, m)
-		select {
-		case got <- outcome:
-		default:
-		}
-	})
+	batch, err := cons.Fetch(1, jetstream.FetchMaxWait(driveFetchWait))
 	if err != nil {
-		t.Fatalf("Consume: %v", err)
+		t.Fatalf("Fetch: %v", err)
 	}
-	defer cc.Stop()
-	select {
-	case outcome := <-got:
-		if want != "" && outcome != want {
-			t.Fatalf("outcome mismatch: got %q want %q", outcome, want)
-		}
-		// Brief drain to let JetStream flush the ack.
-		time.Sleep(100 * time.Millisecond)
-		return outcome
-	// Failure deadline only — a delivered outcome returns immediately on the
-	// channel above. Sized generously so CI full-suite embedded-NATS contention
-	// (many packages, one shared server) does not blow a happy-path drive.
-	case <-time.After(60 * time.Second):
-		t.Fatalf("timed out waiting for outcome (want %q)", want)
-		return ""
+	var (
+		outcome processor.MessageOutcome
+		got     bool
+	)
+	for m := range batch.Messages() {
+		outcome = cp.HandleMessage(ctx, m)
+		got = true
 	}
+	if err := batch.Error(); err != nil {
+		t.Fatalf("Fetch batch error: %v", err)
+	}
+	if !got {
+		t.Fatalf("no message delivered within %s (want outcome %q)", driveFetchWait, want)
+	}
+	if want != "" && outcome != want {
+		t.Fatalf("outcome mismatch: got %q want %q", outcome, want)
+	}
+	return outcome
 }
 
 // GenReqID synthesizes a 20-char NanoID-alphabet request id from a label.
