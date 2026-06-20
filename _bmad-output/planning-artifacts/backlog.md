@@ -29,7 +29,7 @@ per-item detail lives in design / story docs + git history, never in agent memor
 | Large-file / binary handling — **v1b** (GC) | ✅ Done (Option A: objectLiveness lens + Weaver directOp + epoch-CAS + object-store-manager; full Loop A+B convergence e2e green in CI; 3-layer-reviewed; merged to main; contracts #7 §7.2 + #10 §10.8 directOp.reads ratified) | `implementation-artifacts/large-file-binary-design.md` §20 |
 | Refractor substrate inner-package migration | ✅ Done (Path B, d420ca4) | `implementation-artifacts/substrate-migration-plan.md` |
 | Structured adapter result *(terminal-failure producer)* | ✅ Done (828f24d) | `implementation-artifacts/structured-adapter-result-design.md` |
-| Async external-reply | 🏗️ Active (increments 1–2 done: 0860fb1, 0f85d45; increment 3 in design) | `implementation-artifacts/async-reply-design.md` |
+| Async external-reply | ✅ Done (increments 1–3: 0860fb1, 0f85d45, 3504db6) | `implementation-artifacts/async-reply-design.md` |
 | _all other items_ | 📋 Backlog | see themed tables below |
 
 ---
