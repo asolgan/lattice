@@ -62,9 +62,35 @@ type Config struct {
 	// requestId + the adapter's idempotencyKey dedup WITHOUT it. Defaults to true;
 	// callers (tests) may disable it to prove correctness without it.
 	SkipOnRedelivery *bool
+	// CoreSchedulesStream is the platform message-scheduling stream the poll/
+	// timeout lane binds to and arms @at schedules on (Contract #10 §10.4). The
+	// fired consumer attaches here; the actuator publishes schedule.bridge.* here.
+	// Default "core-schedules" — kept literal, like the other defaults, so
+	// internal/bridge does not import internal/bootstrap.
+	CoreSchedulesStream string
+	// PollInterval is the cadence between vendor polls for a pending external call:
+	// the first poll is armed at now+PollInterval, and a still-pending poll re-arms
+	// at now+PollInterval (the self-rescheduling @at chain). Values <= 0 take the
+	// default. The 30s default is a sane hours-scale-vendor cadence; a test
+	// shortens it to fire promptly.
+	PollInterval time.Duration
+	// CallDeadline is the give-up horizon for a pending external call: the timeout
+	// schedule fires at now+CallDeadline and posts a terminal failed reply if the
+	// call has not resolved. Values <= 0 take the default. The 24h default outlasts
+	// a typical vendor SLA (the bridge timeout is the SLA give-up; Loom's
+	// per-instance deadline is the dead-bridge backstop). A test shortens it.
+	CallDeadline time.Duration
 	// Logger is the diagnostics sink. Defaults to slog.Default().
 	Logger *slog.Logger
 }
+
+// defaultPollInterval and defaultCallDeadline are the poll-lane horizons applied
+// when Config leaves them unset. The poll cadence is short relative to the
+// give-up deadline, which is sized to outlast a vendor SLA.
+const (
+	defaultPollInterval = 30 * time.Second
+	defaultCallDeadline = 24 * time.Hour
+)
 
 // instanceSegmentReplacer sanitizes a hostname for use as a KV key segment
 // (Contract #5 health.bridge.<instance>): '.' would be read as a key-segment
@@ -106,6 +132,15 @@ func (c *Config) withDefaults() {
 	if c.SkipOnRedelivery == nil {
 		on := true
 		c.SkipOnRedelivery = &on
+	}
+	if c.CoreSchedulesStream == "" {
+		c.CoreSchedulesStream = "core-schedules"
+	}
+	if c.PollInterval <= 0 {
+		c.PollInterval = defaultPollInterval
+	}
+	if c.CallDeadline <= 0 {
+		c.CallDeadline = defaultCallDeadline
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
@@ -185,12 +220,20 @@ func (e *Engine) Start(ctx context.Context) (err error) {
 		return fmt.Errorf("bridge: add %s consumer: %w", externalDurable, err)
 	}
 
+	// The poll/timeout lane: a fixed durable on core-schedules that drives a
+	// pending external call's resolution (poll the vendor) or its give-up
+	// (timeout). Armed schedules are published by handlePending on a Pending
+	// outcome; this consumer fires them.
+	if err := e.supervisor.Add(ctx, e.scheduleSpec()); err != nil {
+		return fmt.Errorf("bridge: add %s consumer: %w", scheduleConsumerName, err)
+	}
+
 	hb := newHeartbeater(e.conn, e.cfg.HealthKVBucket, e.cfg.Instance, e.cfg.HeartbeatEvery, e.states, e.issues, e.metrics, e.logger)
 	go hb.run(ctx)
 
 	e.logger.Info("bridge engine started",
-		"coreKV", e.cfg.CoreKVBucket, "events", e.cfg.EventsStream, "lane", e.cfg.Lane,
-		"skipOnRedelivery", *e.cfg.SkipOnRedelivery)
+		"coreKV", e.cfg.CoreKVBucket, "events", e.cfg.EventsStream, "schedules", e.cfg.CoreSchedulesStream, "lane", e.cfg.Lane,
+		"skipOnRedelivery", *e.cfg.SkipOnRedelivery, "pollInterval", e.cfg.PollInterval, "callDeadline", e.cfg.CallDeadline)
 	<-ctx.Done()
 	e.supervisor.Stop()
 	return nil

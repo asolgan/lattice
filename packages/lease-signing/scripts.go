@@ -407,14 +407,19 @@ def execute(state, op):
 
 // leaseServiceDispatchDDLScript is the externalTask dispatchOp the bridge submits
 // when its adapter returns Pending (the external call was submitted but has not
-// resolved yet). The bridge posts {externalRef, vendorRef}; this op reconstructs
-// the claim vertex key from the bare handle and writes a create-only .dispatch
-// aspect {vendorRef, submittedAt} on it — the pending marker. It does NOT write
-// the create-only .outcome aspect and does NOT emit
-// orchestration.externalTaskCompleted: the externalTask is NOT done, so Loom's
-// token stays parked. The .dispatch and .outcome aspects are deliberately
-// separate (.outcome is the FR58 once-only terminal guard; "pending" is a
-// distinct state the lens/Weaver can read without colliding with it).
+// resolved yet). The bridge posts {externalRef, vendorRef, adapter, replyOp,
+// nextPollAt, deadline}; this op reconstructs the claim vertex key from the bare
+// handle and writes a create-only .dispatch aspect
+// {vendorRef, adapter, replyOp, submittedAt, nextPollAt, deadline} on it — the
+// pending marker. The bridge's poll/timeout schedules carry the routing (adapter /
+// replyOp / vendorRef) on their payload, so the fired handler reads it from there —
+// NOT from this marker; the marker records the same routing for the lens / Weaver
+// read-model (pending-suppression, a later increment). It does NOT write the create-only .outcome
+// aspect and does NOT emit orchestration.externalTaskCompleted: the externalTask
+// is NOT done, so Loom's token stays parked. The .dispatch and .outcome aspects
+// are deliberately separate (.outcome is the FR58 once-only terminal guard;
+// "pending" is a distinct state the lens/Weaver can read without colliding with
+// it).
 //
 // Like the replyOp the bridge submits this with no ContextHint.Reads, so the op
 // reads NOTHING from state: the reconstructed vtx.service.<handle> vertex is
@@ -423,8 +428,9 @@ def execute(state, op):
 // .dispatch key and the batch is rejected (atop the bridge's deterministic
 // deriveDispatchRequestID, which already collapses most redeliveries at the
 // Contract #4 tracker). submittedAt is the op's own timestamp, normalized to
-// canonical UTC for a sound lexical compare (no clock read — read-free,
-// deterministic).
+// canonical UTC; nextPollAt and deadline are the bridge-supplied schedule
+// instants, normalized to canonical UTC for a sound lexical compare (no clock
+// read — read-free, deterministic).
 const leaseServiceDispatchDDLScript = `
 def make_aspect(vtx_key, local_name, cls, data):
     return {"op": "create", "key": vtx_key + "." + local_name,
@@ -438,6 +444,12 @@ def required_string(p, name):
     if v == None or type(v) != type("") or len(v.strip()) == 0:
         fail("InvalidArgument: " + name + ": required non-empty string")
     return v.strip()
+
+def required_instant(p, name):
+    # An RFC3339 instant the bridge computed (nextPollAt / deadline), normalized
+    # to canonical UTC so the marker compares lexically with the schedule headers.
+    v = required_string(p, name)
+    return time.rfc3339_utc(v)
 
 def required_bare_handle(p, name):
     v = required_string(p, name)
@@ -460,19 +472,34 @@ def execute(state, op):
         # got back from the adapter). Required — a Pending with no ref is meaningless.
         vendor_ref = required_string(p, "vendorRef")
 
+        # The routing recorded for the lens / Weaver read-model: which adapter to
+        # Poll on a poll firing, and which replyOp to post when the poll resolves or
+        # the call times out. The fired handler reads these from the schedule
+        # payload, not the marker; both are required here for the read-model record.
+        adapter = required_string(p, "adapter")
+        reply_op = required_string(p, "replyOp")
+
+        # The bridge-supplied schedule instants: when the next poll is due and when
+        # the call gives up. Recorded for the lens / Weaver read-model; the timeout
+        # itself fires from the armed schedule, not this marker.
+        next_poll_at = required_instant(p, "nextPollAt")
+        deadline = required_instant(p, "deadline")
+
         # submittedAt is the op's own timestamp, normalized to canonical UTC. The
         # bridge supplies no timestamp; this is the dispatch instant.
         submitted_at = time.rfc3339_utc(op.submittedAt)
 
-        # Write the .dispatch aspect {vendorRef, submittedAt} as a create-only
-        # mutation. This create-only IS the once-only guarantee: a redelivered
-        # Pending conflicts on the existing key and the batch is rejected (atop the
-        # bridge's deterministic dispatch requestId collapse). NO .outcome is
-        # written and NO orchestration.externalTaskCompleted is emitted — the task
-        # is not done, the token stays parked. The instance root, already {}, is
-        # untouched (D5).
+        # Write the .dispatch aspect {vendorRef, adapter, replyOp, submittedAt,
+        # nextPollAt, deadline} as a create-only mutation. This create-only IS the
+        # once-only guarantee: a redelivered Pending conflicts on the existing key
+        # and the batch is rejected (atop the bridge's deterministic dispatch
+        # requestId collapse). NO .outcome is written and NO
+        # orchestration.externalTaskCompleted is emitted — the task is not done,
+        # the token stays parked. The instance root, already {}, is untouched (D5).
         mutations = [
-            make_aspect(inst_key, "dispatch", "dispatch", {"vendorRef": vendor_ref, "submittedAt": submitted_at}),
+            make_aspect(inst_key, "dispatch", "dispatch",
+                        {"vendorRef": vendor_ref, "adapter": adapter, "replyOp": reply_op,
+                         "submittedAt": submitted_at, "nextPollAt": next_poll_at, "deadline": deadline}),
         ]
 
         # A provenance event marks the submit for the audit join (NOT a completion

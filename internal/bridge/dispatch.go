@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -198,18 +200,31 @@ func (e *Engine) handleExternal(ctx context.Context, msg substrate.Message) subs
 }
 
 // handlePending records the pending marker for an external call the adapter
-// submitted but has not yet resolved (a Pending Dispatch). It posts the
-// dispatchOp — payload {externalRef, vendorRef} — under a deterministic
-// dispatch-op requestId (so a redelivered Pending event collapses on the
-// Contract #4 tracker, exactly one create-only .dispatch marker), posts NO
-// replyOp and writes NO .outcome (the Loom token stays parked), and Acks.
+// submitted but has not yet resolved (a Pending Dispatch), then arms the poll and
+// timeout schedules that will drive its resolution. It posts the dispatchOp —
+// payload {externalRef, vendorRef, adapter, replyOp, nextPollAt, deadline} — under
+// a deterministic dispatch-op requestId (so a redelivered Pending event collapses
+// on the Contract #4 tracker, exactly one create-only .dispatch marker), posts NO
+// replyOp and writes NO .outcome (the Loom token stays parked), then arms
+// schedule.bridge.poll.<handle> @ nextPollAt and schedule.bridge.timeout.<handle>
+// @ deadline, and Acks. nextPollAt / deadline are computed from now and the
+// configured horizons and supplied BOTH on the marker and as the schedule
+// instants, so the marker and the schedules agree.
+//
+// A redelivered Pending re-posts the create-only dispatch op (it collapses on the
+// tracker) and re-arms the schedules (one-schedule-per-subject REPLACE) — minor
+// instant drift across a re-arm is acceptable — the timeout fires from its armed
+// schedule. The handle (the bare claim token the schedules key on, echoed to
+// the dispatchOp/replyOp that reconstruct the typed claim vertex — the bridge never
+// does) is ev.externalRefValue(); a dotted/wildcard value is a config error (the
+// same posture as a missing dispatchOp — redelivery cannot fix it).
 //
 // A Pending outcome for an externalTask with no dispatchOp configured is a config
 // error: a sync-only task was wired to an adapter that went Pending, and there is
 // nowhere to record the marker. It is handled exactly like an unregistered
 // adapter — Ack + a Health issue, never a hot Nak loop (redelivery cannot fix a
-// missing dispatchOp). A publish failure NakWithDelays (the deterministic
-// requestId makes the re-publish idempotent).
+// missing dispatchOp). A publish or schedule-arm failure NakWithDelays (the
+// deterministic requestId + REPLACE arm make the re-drive idempotent).
 func (e *Engine) handlePending(ctx context.Context, ev externalEvent, instanceKey, vendorRef string) substrate.Decision {
 	if ev.DispatchOp == "" {
 		e.logger.Error("bridge: adapter returned Pending but the externalTask has no dispatchOp; ack + health issue (errConfig)",
@@ -219,10 +234,30 @@ func (e *Engine) handlePending(ctx context.Context, ev externalEvent, instanceKe
 		return substrate.Ack
 	}
 
+	handle := ev.externalRefValue()
+	if !isBareHandle(handle) {
+		e.logger.Error("bridge: Pending externalRef is not a bare handle; ack + health issue (errConfig)",
+			"adapter", ev.Adapter, "instanceKey", instanceKey, "externalRef", handle)
+		e.issues.set("dispatch:"+ev.Adapter, severityError, codeDispatchOpMissing,
+			fmt.Sprintf("Pending externalRef %q carries dots/wildcards/whitespace; cannot key the poll/timeout schedules (config error; redelivery cannot fix it)", handle))
+		return substrate.Ack
+	}
+
+	// Compute the schedule instants once, truncated to whole seconds so the marker
+	// strings are byte-identical to the @at schedule headers (scheduleAt also
+	// truncates). The marker carries them as RFC3339; the schedules fire at them.
+	now := time.Now().UTC().Truncate(time.Second)
+	nextPollAt := now.Add(e.cfg.PollInterval)
+	deadline := now.Add(e.cfg.CallDeadline)
+
 	dispatchReqID := deriveDispatchRequestID(instanceKey)
 	payload := map[string]any{
-		"externalRef": ev.externalRefValue(),
+		"externalRef": handle,
 		"vendorRef":   vendorRef,
+		"adapter":     ev.Adapter,
+		"replyOp":     ev.ReplyOp,
+		"nextPollAt":  nextPollAt.Format(time.RFC3339),
+		"deadline":    deadline.Format(time.RFC3339),
 	}
 	if err := e.act.submit(ctx, dispatchReqID, ev.DispatchOp, payload); err != nil {
 		e.logger.Error("bridge: publish dispatchOp failed; nak with delay",
@@ -235,9 +270,33 @@ func (e *Engine) handlePending(ctx context.Context, ev externalEvent, instanceKe
 	e.issues.clear("dispatch:" + ev.Adapter)
 	e.metrics.incPending()
 
-	e.logger.Info("bridge dispatchOp posted (pending)",
+	if err := e.armSchedules(ctx, handle, vendorRef, ev.Adapter, ev.ReplyOp, nextPollAt, deadline); err != nil {
+		// A schedule-arm publish failure is retryable (core-schedules degraded):
+		// NakWithDelay. The redelivery re-posts the create-only dispatch op (it
+		// collapses) and re-arms by REPLACE — no duplicate marker, no duplicate
+		// schedule.
+		e.logger.Error("bridge: arm poll/timeout schedules failed; nak with delay",
+			"handle", handle, "adapter", ev.Adapter, "err", err)
+		e.issues.set("schedule:arm", severityWarning, codeSchedulePublishFail,
+			fmt.Sprintf("arming the poll/timeout schedules failed (transient; redelivering): %v", err))
+		return substrate.NakWithDelay
+	}
+	e.issues.clear("schedule:arm")
+
+	e.logger.Info("bridge dispatchOp posted (pending); schedules armed",
 		"instanceKey", instanceKey, "adapter", ev.Adapter, "dispatchOp", ev.DispatchOp, "vendorRef", vendorRef, "requestId", dispatchReqID)
 	return substrate.Ack
+}
+
+// isBareHandle reports whether s is a non-empty token with no dots / wildcards /
+// whitespace — the discipline the schedule subjects require (and the
+// dispatchOp/replyOp's claim-vertex reconstruction; it mirrors the dispatchOp DDL's
+// required_bare_handle).
+func isBareHandle(s string) bool {
+	if s == "" {
+		return false
+	}
+	return !strings.ContainsAny(s, ".*> \t\n")
 }
 
 // resultAlreadyLanded reports whether the result op for replyReqID has ALREADY

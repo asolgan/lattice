@@ -25,6 +25,22 @@ func newHarness(t *testing.T, ctx context.Context) (*substrate.Conn, *fakeProces
 	return conn, fp
 }
 
+// newServiceHarness is newHarness with the fixture Processor pinned to the
+// 'service' claim type — the type the poll/timeout fired handler reconstructs
+// (vtx.service.<handle>). The schedule-lane tests use it so the marker/outcome the
+// fired handler reads live under the keys it computes.
+func newServiceHarness(t *testing.T, ctx context.Context) (*substrate.Conn, *fakeProcessor) {
+	t.Helper()
+	nc := startNATS(t)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+	provision(t, ctx, conn)
+	fp := newFakeProcessor(conn)
+	fp.claimType = fixtureServiceType
+	fp.run(ctx, t)
+	return conn, fp
+}
+
 // TestBridge_HappyPath_PostsDeterministicReplyOp publishes one external.stripe
 // event and asserts: exactly one real charge (SideEffects == 1), the fixture
 // Processor saw a replyOp with requestId == deriveReplyRequestID(instanceKey)

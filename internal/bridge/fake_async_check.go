@@ -95,3 +95,12 @@ func (f *FakeAsyncCheck) SideEffects(idempotencyKey string) int {
 	defer f.mu.Unlock()
 	return f.submitted[idempotencyKey]
 }
+
+// Polls reports how many times the vendor ref derived from idempotencyKey has
+// been polled — the witness that a still-pending poll re-armed the @at chain (the
+// count climbs past 1 as the chain advances).
+func (f *FakeAsyncCheck) Polls(idempotencyKey string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.polls[asyncRefPrefix+idempotencyKey]
+}

@@ -515,6 +515,10 @@ func TestLeaseServiceDispatch_RecordsPendingMarker_NoCompletion(t *testing.T) {
 	handle := "pendHwK4rqZbVnCdLxYj"
 	instKey := "vtx.service." + handle
 	vendorRef := "vendor-ref-pending-001"
+	adapter := "backgroundCheck"
+	replyOp := "RecordLeaseServiceOutcome"
+	nextPollAt := "2026-06-19T10:00:30Z"
+	deadline := "2026-06-20T10:00:00Z"
 
 	reqID := testutil.GenReqID("dispatchRec01")
 	env := &processor.OperationEnvelope{
@@ -525,12 +529,15 @@ func TestLeaseServiceDispatch_RecordsPendingMarker_NoCompletion(t *testing.T) {
 		SubmittedAt:   "2026-06-19T10:00:00Z",
 		Class:         "leaseServiceDispatch",
 		// No Reads — exactly as the bridge submits.
-		Payload: json.RawMessage(`{"externalRef":"` + handle + `","vendorRef":"` + vendorRef + `"}`),
+		Payload: json.RawMessage(`{"externalRef":"` + handle + `","vendorRef":"` + vendorRef +
+			`","adapter":"` + adapter + `","replyOp":"` + replyOp +
+			`","nextPollAt":"` + nextPollAt + `","deadline":"` + deadline + `"}`),
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
 
-	// (a) the .dispatch aspect — {vendorRef, submittedAt: canonical-UTC(op.submittedAt)}.
+	// (a) the .dispatch aspect — {vendorRef, adapter, replyOp, submittedAt
+	// (canonical-UTC of op.submittedAt), nextPollAt, deadline}.
 	ddoc := readDoc(t, ctx, conn, instKey+".dispatch")
 	ddata, _ := ddoc["data"].(map[string]any)
 	if got, _ := ddata["vendorRef"].(string); got != vendorRef {
@@ -538,6 +545,18 @@ func TestLeaseServiceDispatch_RecordsPendingMarker_NoCompletion(t *testing.T) {
 	}
 	if got, _ := ddata["submittedAt"].(string); got != "2026-06-19T10:00:00Z" {
 		t.Fatalf("dispatch.submittedAt = %q, want canonical 2026-06-19T10:00:00Z", got)
+	}
+	if got, _ := ddata["adapter"].(string); got != adapter {
+		t.Fatalf("dispatch.adapter = %q, want %q", got, adapter)
+	}
+	if got, _ := ddata["replyOp"].(string); got != replyOp {
+		t.Fatalf("dispatch.replyOp = %q, want %q", got, replyOp)
+	}
+	if got, _ := ddata["nextPollAt"].(string); got != nextPollAt {
+		t.Fatalf("dispatch.nextPollAt = %q, want %q", got, nextPollAt)
+	}
+	if got, _ := ddata["deadline"].(string); got != deadline {
+		t.Fatalf("dispatch.deadline = %q, want %q", got, deadline)
 	}
 
 	// (b) NO .outcome aspect — the call is pending, not terminal (the token stays parked).
@@ -573,7 +592,9 @@ func TestLeaseServiceDispatch_RecordsPendingMarker_NoCompletion(t *testing.T) {
 		Actor:         lsActorKey,
 		SubmittedAt:   "2026-06-19T11:00:00Z",
 		Class:         "leaseServiceDispatch",
-		Payload:       json.RawMessage(`{"externalRef":"` + handle + `","vendorRef":"vendor-ref-pending-002"}`),
+		Payload: json.RawMessage(`{"externalRef":"` + handle + `","vendorRef":"vendor-ref-pending-002"` +
+			`,"adapter":"` + adapter + `","replyOp":"` + replyOp +
+			`","nextPollAt":"` + nextPollAt + `","deadline":"` + deadline + `"}`),
 	}
 	testutil.PublishOp(t, conn, dispatch2)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)

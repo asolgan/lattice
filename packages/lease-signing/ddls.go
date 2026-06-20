@@ -223,10 +223,13 @@ func leaseServiceDispatchDDL() pkgmgr.DDLSpec {
 		PermittedCommands: []string{"RecordServiceDispatch"},
 		Description: "ExternalTask dispatchOp DDL (Contract #10 §10.5/§10.6). The op the bridge submits when its adapter " +
 			"returns Pending (the external call was submitted but has not resolved yet): payload {externalRef (the bare " +
-			"handle), vendorRef (the vendor's opaque pending reference — the poll/webhook key)}. The bridge submits it with " +
-			"no ContextHint.Reads, so the op reads NOTHING from state: it reconstructs the claim vertex key " +
-			"vtx.service.<externalRef> from the bare handle and writes a create-only .dispatch aspect {vendorRef, submittedAt " +
-			"(canonical-UTC of op.submittedAt)} — the PENDING MARKER. It writes NO .outcome aspect and emits NO " +
+			"handle), vendorRef (the vendor's opaque pending reference — the poll/webhook key), adapter (which adapter to " +
+			"Poll), replyOp (the result-op to post on resolve/timeout), nextPollAt + deadline (the bridge's schedule " +
+			"instants)}. The bridge submits it with no ContextHint.Reads, so the op reads NOTHING from state: it reconstructs " +
+			"the claim vertex key vtx.service.<externalRef> from the bare handle and writes a create-only .dispatch aspect " +
+			"{vendorRef, adapter, replyOp, submittedAt (canonical-UTC of op.submittedAt), nextPollAt, deadline} — the PENDING " +
+			"MARKER. The bridge's poll/timeout schedules carry only the bare handle in their subject, so the fired handler " +
+			"reads the routing (adapter / replyOp) from the schedule payload, not this marker — the marker records it for the lens / Weaver read-model. It writes NO .outcome aspect and emits NO " +
 			"orchestration.externalTaskCompleted: the externalTask is NOT done, so Loom's token stays parked (the .dispatch " +
 			"and .outcome aspects are deliberately separate — .outcome is the FR58 once-only terminal guard, while pending is " +
 			"a distinct state). It emits service.dispatchRecorded (provenance, NOT a completion signal). The marker is recorded " +
@@ -235,13 +238,21 @@ func leaseServiceDispatchDDL() pkgmgr.DDLSpec {
 		Script: leaseServiceDispatchDDLScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"externalRef":{"type":"string","description":"The BARE instance handle the bridge echoes (no dots / key segments); the op reconstructs vtx.service.<externalRef>. Required."},` +
-			`"vendorRef":{"type":"string","description":"The vendor's opaque pending reference (the poll/webhook key) the bridge got back from the adapter on a Pending outcome. Recorded on the .dispatch marker. Required."}},` +
-			`"required":["externalRef","vendorRef"]}`,
+			`"vendorRef":{"type":"string","description":"The vendor's opaque pending reference (the poll/webhook key) the bridge got back from the adapter on a Pending outcome. Recorded on the .dispatch marker. Required."},` +
+			`"adapter":{"type":"string","description":"The adapter name to re-call on a poll, recorded on the .dispatch marker for the lens / Weaver read-model (the fired handler reads the adapter from the schedule payload). Required."},` +
+			`"replyOp":{"type":"string","description":"The result-op type the fired handler posts when the poll resolves or the call times out (RecordLeaseServiceOutcome). Required."},` +
+			`"nextPollAt":{"type":"string","description":"RFC3339 instant the next poll is due (the bridge armed schedule.bridge.poll at this instant). Normalized to canonical UTC on the marker. Required."},` +
+			`"deadline":{"type":"string","description":"RFC3339 instant the call gives up (the bridge armed schedule.bridge.timeout at this instant); the marker records the same instant for the lens / Weaver read-model. Normalized to canonical UTC. Required."}},` +
+			`"required":["externalRef","vendorRef","adapter","replyOp","nextPollAt","deadline"]}`,
 		OutputSchema: `{"type":"object","properties":` +
 			`{"primaryKey":{"type":"string","description":"vtx.service.<handle> of the claim vertex the pending marker was recorded on (the operation's principal key)."}}}`,
 		FieldDescription: map[string]string{
 			"externalRef": "The bare instance handle the bridge echoes back (the same handle CreateLeaseServiceInstance received). The op reconstructs vtx.service.<externalRef> and writes the create-only .dispatch marker on it. Required.",
 			"vendorRef":   "The vendor's opaque pending reference (the poll/webhook key) the bridge received from its adapter when the external call returned Pending. Written to the .dispatch aspect; a later poll/webhook resolution carries it back. Required.",
+			"adapter":     "The adapter name to re-call on a poll, recorded on the .dispatch marker for the lens / Weaver read-model (the fired handler reads the adapter from the schedule payload, not the marker). Required.",
+			"replyOp":     "The result-op type (RecordLeaseServiceOutcome) the fired handler posts when the poll resolves or the call times out. Required.",
+			"nextPollAt":  "RFC3339 instant the next poll is due — the instant the bridge armed schedule.bridge.poll.<handle> at. Normalized to canonical UTC on the marker. Required.",
+			"deadline":    "RFC3339 instant the call gives up — the instant the bridge armed schedule.bridge.timeout.<handle> at. The marker records the same instant for the lens / Weaver read-model. Normalized to canonical UTC. Required.",
 		},
 		Examples: []pkgmgr.ExampleSpec{
 			{
@@ -249,12 +260,17 @@ func leaseServiceDispatchDDL() pkgmgr.DDLSpec {
 				Payload: map[string]any{
 					"externalRef": "<bareHandle>",
 					"vendorRef":   "vendor-ref-abc123",
+					"adapter":     "backgroundCheck",
+					"replyOp":     "RecordLeaseServiceOutcome",
+					"nextPollAt":  "2026-06-19T10:00:30Z",
+					"deadline":    "2026-06-20T10:00:00Z",
 				},
 				ExpectedOutcome: "Reads no state (the bridge submits no Reads). Reconstructs vtx.service.<handle> from the bare handle. " +
-					"Writes the .dispatch aspect {vendorRef, submittedAt: canonical-UTC(op.submittedAt)} as a create-only mutation " +
-					"(the instance root, already {}, is untouched — D5). Writes NO .outcome and emits NO " +
-					"orchestration.externalTaskCompleted (the task is not done — the token stays parked). Emits service.dispatchRecorded " +
-					"(provenance). Returns primaryKey. Rejects a second dispatch for the same handle (the create-only .dispatch once-only guard).",
+					"Writes the .dispatch aspect {vendorRef, adapter, replyOp, submittedAt: canonical-UTC(op.submittedAt), " +
+					"nextPollAt, deadline} as a create-only mutation (the instance root, already {}, is untouched — D5). Writes NO " +
+					".outcome and emits NO orchestration.externalTaskCompleted (the task is not done — the token stays parked). Emits " +
+					"service.dispatchRecorded (provenance). Returns primaryKey. Rejects a second dispatch for the same handle (the " +
+					"create-only .dispatch once-only guard).",
 			},
 		},
 	}

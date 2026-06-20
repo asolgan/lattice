@@ -74,3 +74,24 @@ func (a *actuator) submit(ctx context.Context, requestID, operation string, payl
 	}
 	return nil
 }
+
+// scheduleAt publishes one §10.4 @at scheduled message on the core-schedules
+// stream: subject scheduleSubject, republish target firedTarget (which MUST lie
+// within the stream's own subject space, as the server requires). It is
+// fire-and-forget like submit — one publish, no reply; re-publishing to the same
+// subject REPLACES the prior schedule (one schedule per subject), so a redelivered
+// Pending re-arms idempotently. fireAt is truncated to whole seconds so the header
+// instant matches the .dispatch marker's canonical-UTC instants; a past instant is
+// published verbatim and the server fires it immediately (correct level
+// semantics).
+func (a *actuator) scheduleAt(ctx context.Context, scheduleSubject, firedTarget string, fireAt time.Time, payload []byte) error {
+	fireAtStr := fireAt.UTC().Truncate(time.Second).Format(time.RFC3339)
+	header := map[string]string{
+		substrate.ScheduleHeader:       "@at " + fireAtStr,
+		substrate.ScheduleTargetHeader: firedTarget,
+	}
+	if err := a.conn.Publish(ctx, scheduleSubject, payload, header); err != nil {
+		return fmt.Errorf("bridge: schedule %q (target %q): %w", scheduleSubject, firedTarget, err)
+	}
+	return nil
+}

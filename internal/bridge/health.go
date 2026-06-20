@@ -27,14 +27,18 @@ const defaultHeartbeatEvery = 10 * time.Second
 // same idempotencyKey, so a sustained outage is observable without being treated
 // as fatal).
 const (
-	codeAdapterMissing    = "BridgeAdapterMissing"
-	codeAdapterFailed     = "BridgeAdapterFailed"
-	codeEventUnparseable  = "BridgeEventUnparseable"
-	codeReplyPublishFail  = "BridgeReplyPublishFailed"
-	codeSkipProbeFailed   = "BridgeSkipProbeFailed"
-	codeDispatchOpMissing = "BridgeDispatchOpMissing"
-	severityError         = "error"
-	severityWarning       = "warning"
+	codeAdapterMissing      = "BridgeAdapterMissing"
+	codeAdapterFailed       = "BridgeAdapterFailed"
+	codeEventUnparseable    = "BridgeEventUnparseable"
+	codeReplyPublishFail    = "BridgeReplyPublishFailed"
+	codeSkipProbeFailed     = "BridgeSkipProbeFailed"
+	codeDispatchOpMissing   = "BridgeDispatchOpMissing"
+	codeScheduleSubject     = "BridgeScheduleSubject"
+	codeScheduleReadFailed  = "BridgeScheduleReadFailed"
+	codeSchedulePublishFail = "BridgeSchedulePublishFailed"
+	codePollFailed          = "BridgePollFailed"
+	severityError           = "error"
+	severityWarning         = "warning"
 )
 
 // bridgeHealthDoc is the Contract #5 §5.2 heartbeat document the bridge writes
@@ -349,15 +353,18 @@ func (h *heartbeater) key() string {
 
 // dispatchMetrics holds the bridge's per-process dispatch counters surfaced on
 // the Contract #5 heartbeat (metrics.dispatched / pending / skipped /
-// adapterErrors). dispatched counts terminal (Resolved) replyOp posts; pending
-// counts pending-marker (dispatchOp) posts for calls the vendor has not yet
-// resolved.
+// adapterErrors / timedOut). dispatched counts terminal (Resolved) replyOp posts
+// — from the synchronous Execute path AND a poll resolving; pending counts
+// pending-marker (dispatchOp) posts for calls the vendor has not yet resolved;
+// timedOut counts calls the poll-timeout closed as failed before the vendor
+// answered.
 type dispatchMetrics struct {
 	mu            sync.Mutex
 	dispatched    int64
 	pending       int64
 	skipped       int64
 	adapterErrors int64
+	timedOut      int64
 }
 
 func newDispatchMetrics() *dispatchMetrics { return &dispatchMetrics{} }
@@ -366,6 +373,7 @@ func (m *dispatchMetrics) incDispatched()    { m.mu.Lock(); m.dispatched++; m.mu
 func (m *dispatchMetrics) incPending()       { m.mu.Lock(); m.pending++; m.mu.Unlock() }
 func (m *dispatchMetrics) incSkipped()       { m.mu.Lock(); m.skipped++; m.mu.Unlock() }
 func (m *dispatchMetrics) incAdapterErrors() { m.mu.Lock(); m.adapterErrors++; m.mu.Unlock() }
+func (m *dispatchMetrics) incTimedOut()      { m.mu.Lock(); m.timedOut++; m.mu.Unlock() }
 
 func (m *dispatchMetrics) snapshot() map[string]any {
 	m.mu.Lock()
@@ -375,6 +383,7 @@ func (m *dispatchMetrics) snapshot() map[string]any {
 		"pending":       m.pending,
 		"skipped":       m.skipped,
 		"adapterErrors": m.adapterErrors,
+		"timedOut":      m.timedOut,
 	}
 }
 

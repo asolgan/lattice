@@ -31,11 +31,12 @@ import (
 // --- Fixtures ---------------------------------------------------------------
 
 const (
-	coreKVBucket   = "core-kv"
-	eventsStream   = "core-events"
-	opsStream      = "core-operations"
-	healthKVBucket = "health-kv"
-	bridgeLane     = "system"
+	coreKVBucket    = "core-kv"
+	eventsStream    = "core-events"
+	opsStream       = "core-operations"
+	schedulesStream = "core-schedules"
+	healthKVBucket  = "health-kv"
+	bridgeLane      = "system"
 	// bridgeActorKey is a fixture service-actor key (the fixture Processor does
 	// not auth; it mirrors loom_e2e_test's fixture actor).
 	bridgeActorKey = "vtx.identity.BridgeServiceActor12abc"
@@ -45,9 +46,15 @@ const (
 	// type is parsed. These mirror 13.2's external_e2e_test fixtures.
 	fixtureAdapter    = "stripe"
 	fixtureReplyOp    = "ResolveCharge"
-	fixtureClaimTyp   = "widget" // non-service — invariant a
+	fixtureClaimTyp   = "widget" // non-service — invariant a (event-dispatch path)
 	fixtureAsyncName  = "asyncCheck"
 	fixtureDispatchOp = "RecordWidgetDispatch" // the pending-marker op (non-service — invariant a)
+	// fixtureServiceType is the claim type the poll/timeout lane reconstructs
+	// (vtx.service.<handle>): the fired handler is NOT type-agnostic (it mirrors
+	// the dispatchOp/replyOp DDLs, which own the 'service' type), so the
+	// schedule-lane fixtures pin 'service' for the marker/outcome the fired
+	// handler reads.
+	fixtureServiceType = "service"
 )
 
 func startNATS(t *testing.T) *nats.Conn {
@@ -75,6 +82,18 @@ func provision(t *testing.T, ctx context.Context, conn *substrate.Conn) {
 	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name: eventsStream, Subjects: []string{"events.>"},
 		Retention: jetstream.LimitsPolicy, MaxAge: time.Hour, AllowAtomicPublish: true,
+	})
+	require.NoError(t, err)
+	// core-schedules mirrors internal/bootstrap/primordial.go (and Weaver's e2e
+	// harness): AllowMsgSchedules (@at scheduling) + MaxMsgsPerSubject 1, file
+	// storage, limits retention. The bridge's poll/timeout lane binds here.
+	_, err = js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:              schedulesStream,
+		Subjects:          []string{"schedule.>"},
+		Storage:           jetstream.FileStorage,
+		Retention:         jetstream.LimitsPolicy,
+		MaxMsgsPerSubject: 1,
+		AllowMsgSchedules: true,
 	})
 	require.NoError(t, err)
 }
@@ -156,6 +175,10 @@ func (f *fakeProcessor) handle(ctx context.Context, msg jetstream.Msg) {
 			Status      string `json:"status"`
 			Result      string `json:"result"`
 			VendorRef   string `json:"vendorRef"`
+			Adapter     string `json:"adapter"`
+			ReplyOp     string `json:"replyOp"`
+			NextPollAt  string `json:"nextPollAt"`
+			Deadline    string `json:"deadline"`
 		} `json:"payload"`
 	}
 	if err := json.Unmarshal(msg.Data(), &env); err != nil {
@@ -176,8 +199,10 @@ func (f *fakeProcessor) handle(ctx context.Context, msg jetstream.Msg) {
 	}
 
 	// The pending-marker op (dispatchOp): record the .dispatch aspect
-	// {vendorRef} (mirrors the RecordServiceDispatch package op), count a
-	// dispatchOp commit, and post NO .outcome — the task stays parked.
+	// {vendorRef, adapter, replyOp, nextPollAt, deadline} (mirrors the
+	// RecordServiceDispatch package op — the fired poll/timeout handler reads the
+	// routing back off this marker), count a dispatchOp commit, and post NO
+	// .outcome — the task stays parked.
 	if env.OperationType == fixtureDispatchOp {
 		atomic.AddInt64(&f.dispatchOps, 1)
 		if env.Payload.ExternalRef != "" {
@@ -186,7 +211,13 @@ func (f *fakeProcessor) handle(ctx context.Context, msg jetstream.Msg) {
 				"class":     f.claimType + ".dispatch",
 				"vertexKey": "vtx." + f.claimType + "." + env.Payload.ExternalRef,
 				"localName": "dispatch",
-				"data":      map[string]any{"vendorRef": env.Payload.VendorRef},
+				"data": map[string]any{
+					"vendorRef":  env.Payload.VendorRef,
+					"adapter":    env.Payload.Adapter,
+					"replyOp":    env.Payload.ReplyOp,
+					"nextPollAt": env.Payload.NextPollAt,
+					"deadline":   env.Payload.Deadline,
+				},
 			})
 			_, _ = f.conn.KVPut(ctx, coreKVBucket, aspectKey, aspectBody)
 		}
