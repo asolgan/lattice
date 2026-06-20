@@ -5,6 +5,14 @@ import (
 	"sync"
 )
 
+// BackgroundCheckDeclineSubject is the designated trigger that makes
+// FakeBackgroundCheck return a terminal OutcomeFailed (a rejected check) instead
+// of clearing — exercising the failed-outcome path end-to-end. Any other subject
+// clears (OutcomeCompleted). It is the instanceKey the bridge passes as
+// Request.Subject (the opaque handle), so a test selects the failed path by
+// minting the instance with this handle.
+const BackgroundCheckDeclineSubject = "decline-background-check"
+
 // FakeBackgroundCheck is a reference Adapter that proves the bridge end-to-end
 // without real I/O. It is the literal demonstration of external idempotency: it
 // records every idempotencyKey it has executed and, on a repeat key, returns
@@ -32,7 +40,10 @@ func NewFakeBackgroundCheck() *FakeBackgroundCheck {
 // Execute performs the (mocked) external action exactly once per
 // idempotencyKey. The first call for a key records the side-effect and a
 // deterministic Result; any later call with the same key returns that Result
-// and performs NO further side-effect. No network, no real I/O.
+// and performs NO further side-effect. A Request whose Subject is
+// BackgroundCheckDeclineSubject yields a terminal OutcomeFailed (a rejected
+// check, err == nil — a definitive verdict, not a transient error); every other
+// subject clears (OutcomeCompleted). No network, no real I/O.
 func (f *FakeBackgroundCheck) Execute(_ context.Context, req Request) (Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -40,7 +51,10 @@ func (f *FakeBackgroundCheck) Execute(_ context.Context, req Request) (Result, e
 		return res, nil
 	}
 	f.calls[req.IdempotencyKey]++
-	res := Result{Detail: "background-check cleared for " + req.Subject}
+	res := Result{Status: OutcomeCompleted, Detail: "background-check cleared for " + req.Subject}
+	if req.Subject == BackgroundCheckDeclineSubject {
+		res = Result{Status: OutcomeFailed, Detail: "background-check declined for " + req.Subject}
+	}
 	f.results[req.IdempotencyKey] = res
 	return res, nil
 }

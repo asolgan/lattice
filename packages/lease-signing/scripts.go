@@ -273,11 +273,11 @@ def execute(state, op):
 `
 
 // leaseServiceReplyDDLScript is the externalTask replyOp the bridge submits.
-// The bridge posts only {externalRef, result}; this op reconstructs the claim
-// vertex key, derives status + completedAt + validUntil, writes the .outcome
-// aspect, and emits orchestration.externalTaskCompleted{externalRef} — the
-// completion signal Loom correlates on. Without that event the externalTask
-// never completes.
+// The bridge posts {externalRef, status, result}; this op reconstructs the claim
+// vertex key, takes the adapter's terminal status (completed | failed), derives
+// completedAt + validUntil, writes the .outcome aspect, and emits
+// orchestration.externalTaskCompleted{externalRef} — the completion signal Loom
+// correlates on. Without that event the externalTask never completes.
 //
 // The bridge submits this op with no ContextHint.Reads (internal/bridge's
 // actuator builds an envelope with no Reads field), so the op reads NOTHING
@@ -320,6 +320,19 @@ def required_bare_handle(p, name):
             fail("InvalidArgument: " + name + ": must carry no dots / key segments, wildcards, or whitespace; got " + v)
     return v
 
+# The terminal outcome values RecordLeaseServiceOutcome admits (mirrors
+# service-domain). completed = the external call succeeded with a satisfying
+# result; failed = a definitive business rejection (a declined charge, a failed
+# background check). The bridge supplies it verbatim from the adapter's
+# Result.Status — it is required, with no default.
+OUTCOME_STATUSES = ["completed", "failed"]
+
+def required_status(p):
+    st = required_string(p, "status")
+    if st not in OUTCOME_STATUSES:
+        fail("InvalidArgument: status: must be one of completed, failed; got " + st)
+    return st
+
 def execute(state, op):
     ot = op.operationType
     p = op.payload
@@ -338,13 +351,12 @@ def execute(state, op):
         # instead.
         result = optional_string(p, "result")
 
-        # Derive status + completedAt. The bridge only posts a reply on adapter
-        # success (an adapter error is Nak+retry, never a reply), so status is
-        # completed on every reply; a failed outcome has no Phase-2 producer on
-        # the bridge path (the deliberate demo simplification — the Phase-3
-        # plug-in point). completedAt is the op's own timestamp (the bridge
-        # supplies none), normalized to canonical UTC for a sound lexical compare.
-        status = "completed"
+        # The terminal status is the adapter's verdict, supplied verbatim by the
+        # bridge (completed | failed) and required — an adapter error is
+        # Nak+retry (never a reply), so every reply carries a definitive business
+        # outcome. completedAt is the op's own timestamp (the bridge supplies
+        # none), normalized to canonical UTC for a sound lexical compare.
+        status = required_status(p)
         completed_at = time.rfc3339_utc(op.submittedAt)
 
         # Stamp validUntil = completedAt + the freshness window. This op is

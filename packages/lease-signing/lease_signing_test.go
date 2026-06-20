@@ -407,7 +407,7 @@ func TestLeaseServiceReply_RecordsOutcome_EmitsExternalTaskCompleted(t *testing.
 		Actor:         lsActorKey,
 		SubmittedAt:   "2026-06-18T14:00:00Z",
 		Class:         "leaseServiceReply",
-		Payload:       json.RawMessage(`{"externalRef":"` + handle + `","result":"background-check cleared for ` + applicantKey + `"}`),
+		Payload:       json.RawMessage(`{"externalRef":"` + handle + `","status":"completed","result":"background-check cleared for ` + applicantKey + `"}`),
 	}
 	testutil.PublishOp(t, conn, replyEnv)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
@@ -468,10 +468,102 @@ func TestLeaseServiceReply_RecordsOutcome_EmitsExternalTaskCompleted(t *testing.
 		Actor:         lsActorKey,
 		SubmittedAt:   "2026-06-18T15:00:00Z",
 		Class:         "leaseServiceReply",
-		Payload:       json.RawMessage(`{"externalRef":"` + handle + `","result":"second attempt"}`),
+		Payload:       json.RawMessage(`{"externalRef":"` + handle + `","status":"completed","result":"second attempt"}`),
 	}
 	testutil.PublishOp(t, conn, reply2)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+}
+
+// TestLeaseServiceReply_FailedStatus_RecordsFailedOutcome: the bridge reply
+// carries the adapter's terminal status=failed (a definitive business rejection,
+// e.g. a declined charge / a failed background check — NOT a transient error,
+// which the bridge Naks and never replies on). The replyOp writes the .outcome
+// aspect {status: failed, completedAt} read-free and still emits the completion +
+// provenance events. The free-form result stays OFF the projection-plane aspect.
+func TestLeaseServiceReply_FailedStatus_RecordsFailedOutcome(t *testing.T) {
+	ctx, conn := setupLeaseEnv(t)
+	cp, cons := newLeasePipeline(t, ctx, conn, "reply-failed")
+
+	handle := "fT8kPmW2rqZbVnCdLxYj"
+	instKey := "vtx.service." + handle
+	reqID := testutil.GenReqID("replyFail0001")
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "RecordLeaseServiceOutcome",
+		Actor:         lsActorKey,
+		SubmittedAt:   "2026-06-18T19:00:00Z",
+		Class:         "leaseServiceReply",
+		// No Reads — exactly as the bridge submits.
+		Payload: json.RawMessage(`{"externalRef":"` + handle + `","status":"failed","result":"background-check declined for vtx.identity.x"}`),
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	// The .outcome aspect records status=failed (the lens reads this as the
+	// service NOT having converged).
+	odoc := readDoc(t, ctx, conn, instKey+".outcome")
+	odata, _ := odoc["data"].(map[string]any)
+	if got, _ := odata["status"].(string); got != "failed" {
+		t.Fatalf("outcome.status = %q, want failed", got)
+	}
+	// The free-form result stays off the projection-plane aspect (PII discipline).
+	if _, present := odata["result"]; present {
+		t.Fatalf("outcome aspect must NOT carry the free-form result, got %v", odata["result"])
+	}
+	// The completion signal is still emitted on a failed outcome (the externalTask
+	// completes — a definitive failure IS a completion).
+	completion := findEmittedEvent(t, ctx, conn, reqID, "orchestration.externalTaskCompleted")
+	if got, _ := completion["externalRef"].(string); got != handle {
+		t.Fatalf("externalTaskCompleted externalRef = %q, want the bare handle %q", got, handle)
+	}
+}
+
+// TestLeaseServiceReply_StatusRequired_Rejected: status is REQUIRED with no
+// default. A reply with no status (the old bridge shape) and a reply with an
+// out-of-enum status are both rejected (InvalidArgument), read-free.
+func TestLeaseServiceReply_StatusRequired_Rejected(t *testing.T) {
+	ctx, conn := setupLeaseEnv(t)
+	cp, cons := newLeasePipeline(t, ctx, conn, "reply-status-required")
+
+	cases := []struct {
+		name    string
+		handle  string
+		reqTag  string
+		payload string
+	}{
+		{
+			name:    "missing status",
+			handle:  "missStatHandl3aBcDeF",
+			reqTag:  "replyMiss00001",
+			payload: `{"externalRef":"missStatHandl3aBcDeF","result":"x"}`,
+		},
+		{
+			name:    "invalid status",
+			handle:  "badStatusHandl9wXyZk",
+			reqTag:  "replyBad000001",
+			payload: `{"externalRef":"badStatusHandl9wXyZk","status":"maybe","result":"x"}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := &processor.OperationEnvelope{
+				RequestID:     testutil.GenReqID(tc.reqTag),
+				Lane:          processor.LaneDefault,
+				OperationType: "RecordLeaseServiceOutcome",
+				Actor:         lsActorKey,
+				SubmittedAt:   "2026-06-18T20:00:00Z",
+				Class:         "leaseServiceReply",
+				Payload:       json.RawMessage(tc.payload),
+			}
+			testutil.PublishOp(t, conn, env)
+			testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+			// No .outcome aspect was written (the op was rejected before any mutation).
+			if keyExists(t, ctx, conn, "vtx.service."+tc.handle+".outcome") {
+				t.Fatalf("a rejected reply must not write the .outcome aspect")
+			}
+		})
+	}
 }
 
 // TestLeaseServiceReply_ReadFree_CommitsWithoutHydration: the replyOp is
@@ -497,7 +589,7 @@ func TestLeaseServiceReply_ReadFree_CommitsWithoutHydration(t *testing.T) {
 		SubmittedAt:   "2026-06-18T18:00:00Z",
 		Class:         "leaseServiceReply",
 		// No Reads — exactly as the bridge submits. The op reads no state.
-		Payload: json.RawMessage(`{"externalRef":"` + handle + `","result":"x"}`),
+		Payload: json.RawMessage(`{"externalRef":"` + handle + `","status":"completed","result":"x"}`),
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)

@@ -11,8 +11,9 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //     instanceOp Loom submits: mints the claim vertex vtx.service.<handle>,
 //     records its family + the providedTo link, and emits external.<adapter>.
 //   - `leaseServiceReply` — RecordLeaseServiceOutcome, the externalTask replyOp
-//     the bridge submits: records the .outcome aspect from {externalRef, result}
-//     and emits orchestration.externalTaskCompleted{externalRef}.
+//     the bridge submits: records the .outcome aspect from
+//     {externalRef, status, result} and emits
+//     orchestration.externalTaskCompleted{externalRef}.
 //
 // The two externalTask wrapper DDLs are a matched pair: both choose `service`
 // as the claim-vertex type, both speak the bare handle ↔ vtx.service.<handle>
@@ -20,10 +21,11 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // instanceOp received. The package ships its own wrappers (not 14.1's
 // CreateServiceInstance / RecordServiceOutcome) because (a) 14.1's create does
 // not emit the external.<adapter> event and (b) 14.1's record takes a full
-// instanceKey + a caller-supplied status/completedAt and emits
-// service.outcomeRecorded — not the orchestration.externalTaskCompleted Loom
-// correlates on — while the bridge supplies only {externalRef, result}. The
-// .outcome aspect SHAPE is reused (D5 fidelity); the ops are package-local.
+// instanceKey + a caller-supplied completedAt and emits service.outcomeRecorded
+// — not the orchestration.externalTaskCompleted Loom correlates on — while the
+// bridge supplies {externalRef, status, result} against a bare handle and needs
+// the completion signal. The .outcome aspect SHAPE is reused (D5 fidelity); the
+// ops are package-local.
 //
 // Known-key reads only (mirrors service-domain / orchestration-base): the
 // leaseapp + instanceOp ops validate their link endpoints by the keys the
@@ -149,15 +151,15 @@ func leaseServiceReplyDDL() pkgmgr.DDLSpec {
 		Class:             "meta.ddl.vertexType",
 		PermittedCommands: []string{"RecordLeaseServiceOutcome"},
 		Description: "ExternalTask replyOp DDL (Contract #10 §10.5/§10.6). The op the bridge submits as the result op: " +
-			"payload {externalRef (the bare handle), result (the adapter's free-form Detail string)} — the bridge supplies " +
-			"NO status and NO completedAt. The bridge submits it with no ContextHint.Reads, so the op reads NOTHING from " +
-			"state: it reconstructs the claim vertex key vtx.service.<externalRef> from the bare handle, derives " +
-			"status=completed (the bridge only posts a reply on adapter success; a failed outcome has no Phase-2 producer on " +
-			"the bridge path — the deliberate demo simplification, the Phase-3 plug-in point) and completedAt = " +
-			"time.rfc3339_utc(op.submittedAt) (the bridge supplies no timestamp), and writes the .outcome aspect " +
-			"{status, completedAt} (D5 — root data stays {}, untouched). The free-form result is kept OFF the lens-readable " +
-			"projection plane (it can carry PII / payment data) and rides the service.outcomeRecorded provenance event body " +
-			"instead. It emits orchestration.externalTaskCompleted{externalRef: <bare handle>} — the uniform " +
+			"payload {externalRef (the bare handle), status (the adapter's terminal verdict, completed | failed — REQUIRED, " +
+			"copied verbatim from the adapter's Result.Status), result (the adapter's free-form Detail string)} — the bridge " +
+			"supplies NO completedAt. The bridge submits it with no ContextHint.Reads, so the op reads NOTHING from " +
+			"state: it reconstructs the claim vertex key vtx.service.<externalRef> from the bare handle, takes the required " +
+			"status (an adapter error is Nak+retry — never a reply — so every reply carries a definitive business outcome) " +
+			"and derives completedAt = time.rfc3339_utc(op.submittedAt) (the bridge supplies no timestamp), and writes the " +
+			".outcome aspect {status, completedAt} (D5 — root data stays {}, untouched). The free-form result is kept OFF the " +
+			"lens-readable projection plane (it can carry PII / payment data) and rides the service.outcomeRecorded provenance " +
+			"event body instead. It emits orchestration.externalTaskCompleted{externalRef: <bare handle>} — the uniform " +
 			"orchestration-domain completion signal Loom correlates on (symmetric to orchestration.taskCompleted{taskKey} for " +
 			"a userTask); WITHOUT it the externalTask never completes (the creation-deadline disarmed on instanceOp commit, " +
 			"the bridge reply carried no completion signal). The outcome is recorded once: the .outcome aspect is create-only, " +
@@ -166,27 +168,44 @@ func leaseServiceReplyDDL() pkgmgr.DDLSpec {
 		Script: leaseServiceReplyDDLScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"externalRef":{"type":"string","description":"The BARE instance handle the bridge echoes (no dots / key segments); the op reconstructs vtx.service.<externalRef>. Required."},` +
-			`"result":{"type":"string","description":"The adapter's free-form result Detail string. Stored verbatim on the .outcome aspect for provenance; NOT parsed for pass/fail (status is derived completed)."}},` +
-			`"required":["externalRef"]}`,
+			`"status":{"type":"string","enum":["completed","failed"],"description":"The adapter's terminal verdict: completed = the external call succeeded with a satisfying result; failed = a definitive business rejection (a declined charge, a failed background check). Copied verbatim by the bridge from the adapter's Result.Status. Required."},` +
+			`"result":{"type":"string","description":"The adapter's free-form result Detail string. Carried on the service.outcomeRecorded provenance event body for the audit join; NOT written to the projection-plane .outcome aspect and NOT parsed for pass/fail (status is its own required field)."}},` +
+			`"required":["externalRef","status"]}`,
 		OutputSchema: `{"type":"object","properties":` +
 			`{"primaryKey":{"type":"string","description":"vtx.service.<handle> of the claim vertex the outcome was recorded on (the operation's principal key)."}}}`,
 		FieldDescription: map[string]string{
 			"externalRef": "The bare instance handle the bridge echoes back (the same handle CreateLeaseServiceInstance received). The op reconstructs vtx.service.<externalRef> and emits orchestration.externalTaskCompleted carrying this bare handle (Loom parks on token.<handle> and correlates payload.externalRef — never the full vtx key). Required.",
-			"result":      "The adapter's free-form result Detail string (e.g. \"background-check cleared for <subject>\"). Carried on the service.outcomeRecorded provenance event body, NOT written to the lens-readable .outcome aspect (it can carry PII / payment data in production). Deliberately NOT parsed for pass/fail (the real verification is the adapter's Phase-3 job).",
+			"status":      "The adapter's terminal verdict, copied verbatim by the bridge from the adapter's Result.Status: completed (the external call succeeded with a satisfying result) or failed (a definitive business rejection — a declined charge, a failed background check). Written to the .outcome aspect; the lens reads it to decide whether the service converged. Required (no default).",
+			"result":      "The adapter's free-form result Detail string (e.g. \"background-check cleared for <subject>\"). Carried on the service.outcomeRecorded provenance event body, NOT written to the lens-readable .outcome aspect (it can carry PII / payment data in production). The pass/fail decision is the separate required status field, not parsed from this string.",
 		},
 		Examples: []pkgmgr.ExampleSpec{
 			{
-				Name: "RecordLeaseServiceOutcome — record a bridge reply",
+				Name: "RecordLeaseServiceOutcome — record a passing bridge reply",
 				Payload: map[string]any{
 					"externalRef": "<bareHandle>",
+					"status":      "completed",
 					"result":      "background-check cleared for vtx.identity.<applicantNanoID>",
 				},
 				ExpectedOutcome: "Reads no state (the bridge submits no Reads). Reconstructs vtx.service.<handle> from the bare handle. " +
-					"Derives status=completed + completedAt = canonical-UTC(op.submittedAt). Writes the .outcome aspect " +
+					"Takes status=completed (required) + derives completedAt = canonical-UTC(op.submittedAt). Writes the .outcome aspect " +
 					"{status: completed, completedAt} as a create-only mutation (the instance root, already {}, is untouched — D5). " +
 					"Emits orchestration.externalTaskCompleted{externalRef: <handle>} (the Loom completion signal) + " +
 					"service.outcomeRecorded (provenance, carrying result). Returns primaryKey. Rejects a second reply for the same " +
 					"handle (the create-only .outcome once-only guard — the FR58 redelivery defense).",
+			},
+			{
+				Name: "RecordLeaseServiceOutcome — record a failing bridge reply",
+				Payload: map[string]any{
+					"externalRef": "<bareHandle>",
+					"status":      "failed",
+					"result":      "background-check declined for vtx.identity.<applicantNanoID>",
+				},
+				ExpectedOutcome: "Same shape as the passing reply, but the terminal status is failed — a definitive business " +
+					"rejection (a declined charge / a failed background check; an adapter ERROR is Nak+retry, never a reply, so this " +
+					"is a verdict, not a transient failure). Writes the .outcome aspect {status: failed, completedAt}. The convergence " +
+					"lens reads status=failed as the service NOT having converged (the applicant stays unsatisfied / the gap predicate " +
+					"keeps violating). Emits the same completion + provenance events. Rejects an absent or non-{completed,failed} status " +
+					"with InvalidArgument.",
 			},
 		},
 	}

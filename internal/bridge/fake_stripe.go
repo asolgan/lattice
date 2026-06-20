@@ -21,6 +21,12 @@ import (
 // idempotencyKey converges to exactly one side-effect: the eventual success. A
 // failing attempt does not memoize a Result either, so the retry runs the real
 // (now-succeeding) charge path rather than replaying a phantom success.
+//
+// A transient error (FailUntil) is distinct from a DECLINE: a Request whose
+// Subject is StripeDeclineSubject returns a terminal OutcomeFailed (err == nil)
+// with NO side-effect — a declined card is a definitive verdict the bridge must
+// NOT retry, not a transient failure. The decline IS memoized, so a redelivery
+// on the same key replays the same Failed verdict.
 type FakeStripe struct {
 	mu sync.Mutex
 	// results memoizes the Result returned for each successfully-charged
@@ -34,6 +40,15 @@ type FakeStripe struct {
 	// it. A failed attempt records no side-effect and no memoized Result.
 	failRemaining int
 }
+
+// StripeDeclineSubject is the designated trigger that makes FakeStripe return a
+// terminal OutcomeFailed (a declined charge) instead of confirming — exercising
+// the failed-outcome path end-to-end. It is the instanceKey the bridge passes as
+// Request.Subject (the opaque handle), so a test selects the decline path by
+// minting the instance with this handle. A decline performs NO charge
+// (SideEffects stays 0) and carries err == nil (a verdict, not a transient
+// error).
+const StripeDeclineSubject = "decline-charge"
 
 // NewFakeStripe returns a fresh in-memory reference payment adapter.
 func NewFakeStripe() *FakeStripe {
@@ -59,9 +74,12 @@ func (f *FakeStripe) FailNext() { f.FailUntil(1) }
 
 // Execute performs the (mocked) charge exactly once per idempotencyKey. While
 // the failure mode is armed it returns an error WITHOUT charging (no side-effect,
-// no memoized Result). Otherwise the first call for a key records the side-effect
-// and a deterministic Result; any later call with the same key returns that
-// Result and performs NO further side-effect. No network, no real I/O.
+// no memoized Result). A Request whose Subject is StripeDeclineSubject returns a
+// terminal OutcomeFailed (err == nil) WITHOUT charging (no side-effect) and
+// memoizes that verdict. Otherwise the first call for a key records the
+// side-effect and a deterministic OutcomeCompleted Result; any later call with
+// the same key returns that Result and performs NO further side-effect. No
+// network, no real I/O.
 func (f *FakeStripe) Execute(_ context.Context, req Request) (Result, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -72,8 +90,15 @@ func (f *FakeStripe) Execute(_ context.Context, req Request) (Result, error) {
 	if res, seen := f.results[req.IdempotencyKey]; seen {
 		return res, nil
 	}
+	if req.Subject == StripeDeclineSubject {
+		// A decline is a terminal verdict, not a charge: no side-effect, memoized
+		// so a redelivery replays the same Failed outcome.
+		res := Result{Status: OutcomeFailed, Detail: "charge declined for " + req.Subject}
+		f.results[req.IdempotencyKey] = res
+		return res, nil
+	}
 	f.calls[req.IdempotencyKey]++
-	res := Result{Detail: "charge confirmed for " + req.Subject}
+	res := Result{Status: OutcomeCompleted, Detail: "charge confirmed for " + req.Subject}
 	f.results[req.IdempotencyKey] = res
 	return res, nil
 }

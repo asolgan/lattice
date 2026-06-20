@@ -19,11 +19,37 @@ type Request struct {
 	Params         map[string]string
 }
 
-// Result is an Adapter's response to a successful Execute. Detail is an
-// adapter-defined opaque outcome string (a confirmation reference, a decision)
-// carried into the result op's payload for the audit join; it is never
-// interpreted by the bridge.
+// Outcome is an adapter's TERMINAL business verdict on an Execute that ran to
+// completion (err == nil). It is opaque to the bridge: the bridge copies it into
+// the result op's payload verbatim and never branches on it — the {Completed,
+// Failed} vocabulary is a contract between an adapter and ITS paired replyOp
+// (the same posture as the free-form Detail), not bridge knowledge. It is
+// distinct from a returned error: an error is a (possibly transient) failure the
+// bridge re-drives on a bounded cadence, whereas a Failed Outcome is a definitive
+// business rejection (a declined charge, a failed background check) that must NOT
+// be retried.
+type Outcome string
+
+const (
+	// OutcomeCompleted is the terminal success verdict: the external call
+	// succeeded with a satisfying result.
+	OutcomeCompleted Outcome = "completed"
+	// OutcomeFailed is the terminal business-failure verdict: the external call
+	// completed but returned a definitive rejection (e.g. a declined payment, a
+	// failed background check). It is returned with err == nil — errors remain
+	// reserved for transient retry.
+	OutcomeFailed Outcome = "failed"
+)
+
+// Result is an Adapter's response to an Execute that ran to completion
+// (err == nil). Status is the terminal business verdict (completed | failed —
+// Failed is a definitive rejection, not an error); it is opaque to the bridge, copied
+// verbatim into the result op's payload for the adapter's paired replyOp to act
+// on. Detail is an adapter-defined opaque outcome string (a confirmation
+// reference, a decision) carried into the result op's payload for the audit join;
+// like Status it is never interpreted by the bridge.
 type Result struct {
+	Status Outcome
 	Detail string
 }
 

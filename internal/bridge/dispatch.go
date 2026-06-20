@@ -163,6 +163,7 @@ func (e *Engine) handleExternal(ctx context.Context, msg substrate.Message) subs
 
 	payload := map[string]any{
 		"externalRef": ev.externalRefValue(),
+		"status":      string(result.Status),
 		"result":      result.Detail,
 	}
 	if err := e.act.submit(ctx, replyReqID, ev.ReplyOp, payload); err != nil {

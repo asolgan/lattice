@@ -76,6 +76,53 @@ func TestFakeStripe_FailNextChargesNothingThenRetrySucceedsOnce(t *testing.T) {
 	}
 }
 
+// TestFakeStripe_HappyPathStatusCompleted: a normal charge carries the terminal
+// OutcomeCompleted verdict (the {completed,failed} vocabulary the replyOp acts
+// on, distinct from the free-form Detail).
+func TestFakeStripe_HappyPathStatusCompleted(t *testing.T) {
+	a := bridge.NewFakeStripe()
+	res, err := a.Execute(context.Background(), bridge.Request{IdempotencyKey: "k-ok", Subject: "vtx.identity.normal"})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if res.Status != bridge.OutcomeCompleted {
+		t.Fatalf("Status = %q, want %q", res.Status, bridge.OutcomeCompleted)
+	}
+}
+
+// TestFakeStripe_DeclineIsTerminalFailureNoCharge: a Request whose Subject is the
+// decline trigger returns a terminal OutcomeFailed with err == nil (a verdict,
+// not a transient error) and performs NO charge (SideEffects stays 0). The
+// decline is memoized, so a repeat key replays the same Failed verdict — never a
+// retry into a charge.
+func TestFakeStripe_DeclineIsTerminalFailureNoCharge(t *testing.T) {
+	a := bridge.NewFakeStripe()
+	req := bridge.Request{IdempotencyKey: "k-declined", Subject: bridge.StripeDeclineSubject}
+
+	res, err := a.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("a decline is a terminal verdict, not a transient error: %v", err)
+	}
+	if res.Status != bridge.OutcomeFailed {
+		t.Fatalf("Status = %q, want %q", res.Status, bridge.OutcomeFailed)
+	}
+	if got := a.SideEffects("k-declined"); got != 0 {
+		t.Fatalf("a declined charge must record NO side-effect, got %d", got)
+	}
+
+	// A repeat key replays the same Failed verdict (memoized), still no charge.
+	res2, err := a.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatalf("repeat Execute: %v", err)
+	}
+	if res2 != res {
+		t.Fatalf("repeat decline returned a different Result: %+v vs %+v", res2, res)
+	}
+	if got := a.SideEffects("k-declined"); got != 0 {
+		t.Fatalf("repeat decline must still record NO side-effect, got %d", got)
+	}
+}
+
 // TestFakeStripe_FailUntilFailsNThenSucceeds proves the fail-n toggle spans
 // multiple attempts before the real charge lands.
 func TestFakeStripe_FailUntilFailsNThenSucceeds(t *testing.T) {

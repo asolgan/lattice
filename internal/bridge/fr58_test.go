@@ -56,6 +56,71 @@ func TestBridge_HappyPath_PostsDeterministicReplyOp(t *testing.T) {
 	require.Equal(t, instanceKey, gotRef, "payload.externalRef must echo the opaque instanceKey")
 }
 
+// TestBridge_HappyPath_PostsStatusCompleted asserts the bridge copies the
+// adapter's terminal Result.Status verbatim into the replyOp payload: a normal
+// charge posts status:"completed". The bridge does NOT branch on status — it is
+// an opaque field forwarded to the adapter's paired replyOp.
+func TestBridge_HappyPath_PostsStatusCompleted(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	conn, fp := newHarness(t, ctx)
+	stripe := bridge.NewFakeStripe()
+	startBridge(t, ctx, conn, stripe, nil)
+
+	instanceKey := nonServiceHandle(t)
+	wantReqID := bridge.DeriveReplyRequestID(instanceKey)
+
+	publishExternalEvent(t, ctx, conn, fixtureAdapter, instanceKey, fixtureReplyOp, nil)
+
+	require.Eventually(t, func() bool { return fp.sawStatus(wantReqID) == "completed" },
+		15*time.Second, 60*time.Millisecond, "the bridge must forward the adapter's completed status verbatim")
+}
+
+// TestBridge_FailedOutcome_PostsStatusFailed drives the adapter's terminal
+// FAILURE path end-to-end: the instanceKey is the decline trigger, so FakeStripe
+// returns Result{Status: failed} with err == nil (a definitive business
+// rejection, NOT a transient error). The bridge ACKs (a failed outcome is a
+// successful Execute) and posts the replyOp with status:"failed" — and exactly
+// one such reply, with NO charge (a decline bills nothing). This is the gap the
+// change closes: a terminal external FAILURE can now exist.
+func TestBridge_FailedOutcome_PostsStatusFailed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	conn, fp := newHarness(t, ctx)
+	stripe := bridge.NewFakeStripe()
+	startBridge(t, ctx, conn, stripe, nil)
+
+	// The instanceKey IS the decline trigger (the bridge passes it as the
+	// adapter's Request.Subject). FakeStripe declines → Result{Status: failed}.
+	instanceKey := bridge.StripeDeclineSubject
+	wantReqID := bridge.DeriveReplyRequestID(instanceKey)
+
+	publishExternalEvent(t, ctx, conn, fixtureAdapter, instanceKey, fixtureReplyOp, nil)
+
+	// The replyOp is posted with status:"failed" (a failed Execute is a successful
+	// dispatch — the bridge ACKs and posts the reply, it does NOT Nak).
+	require.Eventually(t, func() bool { return fp.sawStatus(wantReqID) == "failed" },
+		15*time.Second, 60*time.Millisecond, "a terminal failed outcome must post status:\"failed\" on the replyOp")
+	require.Equal(t, 1, fp.mutations(), "exactly one result mutation for the failed outcome")
+
+	// A decline charges nothing (the failure is a verdict, not a transient error
+	// that retries into a charge).
+	require.Equal(t, 0, stripe.SideEffects(instanceKey), "a declined charge bills nothing")
+
+	// And no second reply / mutation (the deterministic requestId collapses any
+	// redelivery, same as the happy path).
+	require.Never(t, func() bool { return fp.mutations() > 1 },
+		2*time.Second, 100*time.Millisecond, "a failed outcome posts exactly one reply")
+}
+
 // TestBridge_EventRedelivery_AtMostOneSideEffect publishes the SAME
 // external.stripe event TWICE (at-least-once redelivery). The deterministic
 // requestId collapses the second replyOp on the Contract #4 tracker, and the

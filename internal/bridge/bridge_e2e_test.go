@@ -98,9 +98,10 @@ type fakeProcessor struct {
 
 	resultMutations int64 // accepted (non-duplicate) replyOp commits — the exactly-once witness
 
-	mu        sync.Mutex
-	seenReqID map[string]int // requestId → times seen (across redelivery)
-	lastRef   map[string]string
+	mu         sync.Mutex
+	seenReqID  map[string]int // requestId → times seen (across redelivery)
+	lastRef    map[string]string
+	lastStatus map[string]string // requestId → payload.status as posted by the bridge
 }
 
 func newFakeProcessor(conn *substrate.Conn) *fakeProcessor {
@@ -111,6 +112,7 @@ func newFakeProcessor(conn *substrate.Conn) *fakeProcessor {
 		replyAspect: "outcome",
 		seenReqID:   map[string]int{},
 		lastRef:     map[string]string{},
+		lastStatus:  map[string]string{},
 	}
 }
 
@@ -144,6 +146,7 @@ func (f *fakeProcessor) handle(ctx context.Context, msg jetstream.Msg) {
 		OperationType string `json:"operationType"`
 		Payload       struct {
 			ExternalRef string `json:"externalRef"`
+			Status      string `json:"status"`
 			Result      string `json:"result"`
 		} `json:"payload"`
 	}
@@ -154,6 +157,7 @@ func (f *fakeProcessor) handle(ctx context.Context, msg jetstream.Msg) {
 	f.mu.Lock()
 	f.seenReqID[env.RequestID]++
 	f.lastRef[env.RequestID] = env.Payload.ExternalRef
+	f.lastStatus[env.RequestID] = env.Payload.Status
 	f.mu.Unlock()
 
 	// Contract #4 dedup: write the tracker once; a repeat requestId is a no-op.
@@ -190,6 +194,14 @@ func (f *fakeProcessor) sawReply(requestID string) (count int, externalRef strin
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.seenReqID[requestID], f.lastRef[requestID]
+}
+
+// sawStatus returns the payload.status the bridge posted on the replyOp for
+// requestID (empty until a reply has been seen).
+func (f *fakeProcessor) sawStatus(requestID string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastStatus[requestID]
 }
 
 // --- Event publisher --------------------------------------------------------

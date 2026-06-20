@@ -301,6 +301,56 @@ func TestLeaseApplicationComplete_FreshBgcheck(t *testing.T) {
 	require.Equal(t, false, v["violating"], "all gaps closed → not violating")
 }
 
+// TestLeaseApplicationComplete_FailedBgcheck pins that a terminal FAILED outcome
+// is NOT counted toward convergence. A FRESH (validUntil > now) bgcheck whose
+// .outcome.status is "failed" — a definitive business rejection, now a producible
+// terminal state — keeps missing_bgcheck (hence violating) TRUE. The fresh
+// validUntil isolates the status from the freshness predicate: freshness is not
+// the reason the instance is excluded, the status is. Guards against a refactor of
+// the cypher's `outcome.status = 'completed'` CASE (e.g. to `IS NOT NULL`) that
+// would silently count a failed outcome as converged — every other lens test uses
+// completed/absent and would not catch it.
+func TestLeaseApplicationComplete_FailedBgcheck(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	const now = "2026-06-18T00:00:00Z"
+	const validUntil = "2026-06-18T00:05:00Z" // fresh (> now): the status, not staleness, excludes it
+	app := bgFreshnessFixture(t, f, validUntil)
+	// Overwrite the fixture's completed bgcheck with a terminal FAILURE (still fresh).
+	f.aspect(t, "bg1", "outcome", "outcome", map[string]any{"status": "failed", "completedAt": "2026-06-01T00:00:00Z", "validUntil": validUntil})
+
+	rows := f.projectAt(t, app, now)
+	require.Len(t, rows, 1)
+	v := rows[0].Values
+	require.Equal(t, true, v["missing_bgcheck"], "a FAILED bgcheck (even fresh) is not converged → gap stays open")
+	require.Equal(t, false, v["missing_payment"], "the fixture's payment is completed → not missing")
+	require.Equal(t, true, v["violating"], "missing_bgcheck alone keeps the application violating")
+}
+
+// TestLeaseApplicationComplete_FailedPayment pins the same predicate on the
+// payment CASE (a distinct cypher line from bgcheck): a payment instance whose
+// .outcome.status is "failed" is NOT counted, so missing_payment (hence violating)
+// stays TRUE while the bgcheck gap is closed.
+func TestLeaseApplicationComplete_FailedPayment(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	const now = "2026-06-18T00:00:00Z"
+	app := bgFreshnessFixture(t, f, farFutureValidUntil) // bgcheck completed + fresh → not the gap
+	// Overwrite the fixture's completed payment with a terminal FAILURE.
+	f.aspect(t, "pay1", "outcome", "outcome", map[string]any{"status": "failed", "completedAt": "2026-06-02T00:00:00Z"})
+
+	rows := f.projectAt(t, app, now)
+	require.Len(t, rows, 1)
+	v := rows[0].Values
+	require.Equal(t, false, v["missing_bgcheck"], "the fixture's bgcheck is completed + fresh → not missing")
+	require.Equal(t, true, v["missing_payment"], "a FAILED payment is not converged → gap stays open")
+	require.Equal(t, true, v["violating"], "missing_payment alone keeps the application violating")
+}
+
 // TestLeaseApplicationComplete_StaleBgcheck (freshness predicate case b — the
 // core of the refinement). A completed bgcheck whose validUntil is AT/BEFORE $now
 // no longer counts: missing_bgcheck RE-OPENS to true whenever the row is
