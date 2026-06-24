@@ -104,7 +104,6 @@ actor → `cap.roles.<actor>`.
   "serviceAccess": [
     {
       "service": "vtx.service.executive-cleaning-NanoID",
-      "serviceClass": "service.cleaning.executive",
       "resolvedVia": ["vtx.unit.penthouse-Lk2Pn6mQrtwzKbcXvP3T"],
       "allowedOperations": [
         { "operationType": "BookExecutiveCleaning" },
@@ -114,7 +113,6 @@ actor → `cap.roles.<actor>`.
     },
     {
       "service": "vtx.service.payRent-NanoID",
-      "serviceClass": "service.financial.rentPayment",
       "resolvedVia": ["vtx.lease.Op4Nb2mPq6rTwzKxVyP7"],
       "allowedOperations": [
         { "operationType": "InitiatePayment" },
@@ -215,9 +213,10 @@ Each entry describes the actor's resolved access to one service vertex, with the
 | Field | Required | Purpose |
 |-------|----------|---------|
 | `service` | yes | Vertex key of the service. |
-| `serviceClass` | yes | Echo of the service vertex's `class` field. Used in structural denial responses (FR22). |
 | `resolvedVia` | yes | Array of vertex keys that justify access (e.g., the unit, the building, the lease). For auditability and debuggability — answers "why does this actor have access to this service?" |
 | `allowedOperations` | yes | Array of operations the actor may invoke on this service. Each entry has `operationType`. |
+
+The residence-based scheme (`service-location`'s `capabilityServiceAccess` lens) does **not** project a `serviceClass` field: it could only echo the bare root `class` (`service`) — the rich `service.<x>.<variant>` discriminator lives in the service's `.class` aspect, which a projection cypher cannot reach (the root `class` field shadows the like-named aspect). A structural denial that needs the rich class reads the service vertex's `.class` aspect by key at denial time.
 
 Processor dispatch (when `authContext.service` is set):
 1. Scan `serviceAccess[]` for entry where `service == authContext.service`
@@ -372,10 +371,6 @@ When the penthouse resident attempts `BookLaundryService` targeting `vtx.service
       "operationType": "BookLaundryService",
       "deniedService": "vtx.service.laundry-NanoID",
       "deniedServiceClass": "service.cleaning.standard",
-      "actorRoles": [
-        "vtx.role.penthouseResident",
-        "vtx.role.leaseholderInGoodStanding"
-      ],
       "availableServiceClasses": [
         "service.cleaning.executive",
         "service.financial.rentPayment"
@@ -385,7 +380,9 @@ When the penthouse resident attempts `BookLaundryService` targeting `vtx.service
 }
 ```
 
-The denial response is structural (per Journey 5's design): names what was denied, the actor's current roles, and what IS available. No routing or escalation guidance — that's Phase 2 (FR22 deliberately scoped to structural information for Phase 1 per the party mode decision).
+The denial response is structural (per Journey 5's design): names what was denied and what IS available.
+
+**`actorRoles` on a service denial.** A service-op denial does **not** surface `actorRoles`. The service auth path reads the disjoint `cap.svc.<actor>` key projected by the `service-location` package's `capabilityServiceAccess` lens (the residence-based grant scheme), and that document carries `serviceAccess[]` only — no `roles`. Under the residence scheme this is the more faithful denial: a service denial is explained by residence and availability (the `deniedService` / `deniedServiceClass` / `availableServiceClasses` fields), not by the actor's roles, which never participate in the service grant. The `actorRoles` field remains populated on **role-derived** (platform-path) denials, where the role projection is what was evaluated.
 
 ### 6.13 Implementation Notes
 
