@@ -11,10 +11,12 @@
 //     family `<x>` ∈ {backgroundCheck, payment}. Root data is minimal ({});
 //     relationships are LINKS:
 //
-//     lnk.service.<tplId>.availableAt.<locType>.<locId>      # offering's location topology
 //     lnk.service.<tplId>.providedBy.<provType>.<provId>     # offering's provider
 //     lnk.service.<instId>.instanceOf.service.<tplId>        # run → its template
 //     lnk.service.<instId>.providedTo.identity.<applicantId> # run → the applicant
+//
+//     The availableAt availability assertion (template → location) is owned by
+//     the service-location package, not this DDL.
 //
 //     A run records its external-call OUTCOME (status + completedAt) as an
 //     `.outcome` aspect on the instance vertex (D5 — descriptive business
@@ -28,9 +30,10 @@
 //     `forOperation`-resolvable, so a downstream Loom externalTask step can
 //     bind them.
 //
-// It declares NO lens: the serviceAccess / cap.svc read-path auth plane is
-// deferred to Phase 3. The convergence lens that reads an instance's outcome
-// across the providedTo link is a separate downstream concern.
+// It declares NO lens: the serviceAccess / cap.svc read-path auth plane and the
+// availableAt availability assertion it walks are owned by the service-location
+// package. The convergence lens that reads an instance's outcome across the
+// providedTo link is a separate downstream concern.
 //
 // Depends on identity-domain (the providedTo link points at an identity) and
 // orchestration-base (the demo's task/loom substrate). Install via the

@@ -473,3 +473,21 @@ func ephemeralKeyFromActor(actor string) (string, error) {
 	}
 	return "cap.ephemeral." + rest, nil
 }
+
+// serviceKeyFromActor converts `vtx.identity.<NanoID>` →
+// `cap.svc.identity.<NanoID>` — the disjoint key service-location's
+// capabilityServiceAccess lens projects an actor's residence-derived service
+// access into (Contract #6 §6.1). It is the service-dispatch path's key. The
+// service path is unconditional on this key (system actors never set
+// ac.Service), so a service op denies by absence when no cap.svc.<actor>
+// projection exists (Contract #6 §6.8).
+func serviceKeyFromActor(actor string) (string, error) {
+	if actor == "" {
+		return "", errors.New("empty actor")
+	}
+	rest, ok := strings.CutPrefix(actor, substrate.VertexPrefix+".")
+	if !ok {
+		return "", fmt.Errorf("actor %q lacks %q prefix", actor, substrate.VertexPrefix+".")
+	}
+	return "cap.svc." + rest, nil
+}

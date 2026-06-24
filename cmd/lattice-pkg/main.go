@@ -31,6 +31,7 @@ import (
 	orchestrationbase "github.com/asolgan/lattice/packages/orchestration-base"
 	rbacdomain "github.com/asolgan/lattice/packages/rbac-domain"
 	servicedomain "github.com/asolgan/lattice/packages/service-domain"
+	servicelocation "github.com/asolgan/lattice/packages/service-location"
 )
 
 // bootstrapJSON is the on-disk shape of lattice.bootstrap.json. We need
@@ -48,6 +49,7 @@ var packageRegistry = map[string]pkgmgr.Definition{
 	"orchestration-base": orchestrationbase.Package,
 	"service-domain":     servicedomain.Package,
 	"location-domain":    locationdomain.Package,
+	"service-location":   servicelocation.Package,
 	"lease-signing":      leasesigning.Package,
 	"objects-base":       objectsbase.Package,
 }

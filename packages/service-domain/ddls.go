@@ -18,9 +18,9 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //     root + its .class / .outcome aspects by their known keys.
 //   - No-orphan invariant (FR29 / P4): CreateServiceInstance REQUIRES a live
 //     template (instanceOf) and a live applicant identity (providedTo) and
-//     rejects (structured ScriptError) if either is absent. Any optional
-//     template endpoint (availableAt / providedBy) is validated likewise
-//     before its link is written.
+//     rejects (structured ScriptError) if either is absent. The optional
+//     template providedBy endpoint is validated likewise before its link is
+//     written.
 //
 // Service shape (Contract #1 §1.1 + D5 — root data minimal, business data in
 // aspects):
@@ -29,15 +29,15 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //	vtx.service.<id>.class      aspect: { value: "service.<x>.template" | "service.<x>.instance" }
 //	vtx.service.<id>.outcome    aspect (INSTANCE only, written by RecordServiceOutcome):
 //	                            { status ("completed"|"failed"), completedAt (canonical-UTC RFC3339) }
-//	lnk.service.<tplId>.availableAt.<locType>.<locId>      # template availableAt a location
 //	lnk.service.<tplId>.providedBy.<provType>.<provId>     # template providedBy a provider
 //	lnk.service.<instId>.instanceOf.service.<tplId>        # instance instanceOf its template
 //	lnk.service.<instId>.providedTo.identity.<applicantId> # instance providedTo the applicant
 //
-// All four links: the service vertex (template or instance) is the
+// All three links: the service vertex (template or instance) is the
 // later-arriving SOURCE, the other vertex pre-exists = the TARGET (Contract
-// #1 §1.1). The instance→identity providedTo link is the convergence link a
-// downstream actorAggregate lens fans out across to read the instance's
+// #1 §1.1). The availableAt availability assertion (template→location) is owned
+// by service-location. The instance→identity providedTo link is the convergence
+// link a downstream actorAggregate lens fans out across to read the instance's
 // outcome aspect.
 //
 // The outcome (status + completedAt) lives in the `.outcome` ASPECT, never on
@@ -46,7 +46,7 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // data") does not fire here; root data is {}.
 //
 // Caller's ContextHint.Reads MUST include:
-//   - CreateServiceTemplate: any availableAt / providedBy endpoints supplied.
+//   - CreateServiceTemplate: any providedBy endpoint supplied.
 //   - CreateServiceInstance: the template (vtx.service.<tplId>) + the
 //     applicant (vtx.identity.<id>).
 //   - RecordServiceOutcome: the instance (vtx.service.<id>) + its
@@ -83,12 +83,13 @@ func serviceDDL() pkgmgr.DDLSpec {
 			"(minimal, D5). A service vertex is a TEMPLATE (an offering) or an INSTANCE (a run of an " +
 			"offering), discriminated by the .class aspect value (service.<x>.template / " +
 			"service.<x>.instance); the service family <x> is one of {backgroundCheck, payment}. " +
-			"Relationships are LINKS: availableAt (template→location: where the offering is available), " +
-			"providedBy (template→provider: who provides it), instanceOf (instance→template: the offering " +
-			"this run is of), providedTo (instance→identity: the applicant this run is for). All links: " +
-			"the service vertex is the later-arriving source, the other vertex is the pre-existing target " +
-			"(Contract #1 §1.1). CreateServiceTemplate mints a template + its .class aspect and writes the " +
-			"availableAt / providedBy links only when endpoints are supplied (each validated alive). " +
+			"Relationships are LINKS: providedBy (template→provider: who provides it), instanceOf " +
+			"(instance→template: the offering this run is of), providedTo (instance→identity: the applicant " +
+			"this run is for). All links: the service vertex is the later-arriving source, the other vertex " +
+			"is the pre-existing target (Contract #1 §1.1). The availableAt availability assertion " +
+			"(template→location) is owned by service-location, not this DDL. CreateServiceTemplate mints a " +
+			"template + its .class aspect and writes the providedBy link only when the endpoint is supplied " +
+			"(validated alive). " +
 			"CreateServiceInstance mints an instance + its .class aspect, requires + validates a live " +
 			"template (instanceOf) and a live applicant identity (providedTo), and accepts an optional " +
 			"caller-supplied bare-NanoID instanceId (a write-ahead seam: absent → minted). " +
@@ -100,7 +101,6 @@ func serviceDDL() pkgmgr.DDLSpec {
 		InputSchema: `{"type":"object","properties":` +
 			`{"family":{"type":"string","enum":["backgroundCheck","payment"],"description":"The service family <x> (backgroundCheck|payment). Sets the .class aspect value service.<x>.template|instance."},` +
 			`"templateId":{"type":"string","description":"Optional bare NanoID for the template vertex (CreateServiceTemplate); absent → minted."},` +
-			`"availableAt":{"type":"string","description":"Optional vtx.<locType>.<NanoID> the template is available at; the availableAt link is written only when supplied (CreateServiceTemplate)."},` +
 			`"providedBy":{"type":"string","description":"Optional vtx.<provType>.<NanoID> that provides the template; the providedBy link is written only when supplied (CreateServiceTemplate)."},` +
 			`"instanceId":{"type":"string","description":"Optional bare NanoID for the instance vertex (CreateServiceInstance); supplied by a caller that must know the key before commit (e.g. Loom's write-ahead handle). Absent → minted."},` +
 			`"template":{"type":"string","description":"vtx.service.<NanoID> of the template this instance is of (CreateServiceInstance; required, validated alive + is a template)."},` +
@@ -115,7 +115,6 @@ func serviceDDL() pkgmgr.DDLSpec {
 		FieldDescription: map[string]string{
 			"family":           "The service family <x>, one of {backgroundCheck, payment}. Determines the .class aspect value (service.<x>.template for CreateServiceTemplate, service.<x>.instance for CreateServiceInstance). Required for the create ops.",
 			"templateId":       "Optional bare NanoID (no dots / key segments) for the template vertex (vtx.service.<templateId>) created by CreateServiceTemplate. Absent → minted with nanoid.new().",
-			"availableAt":      "Optional full vtx.<locType>.<NanoID> key the template offering is available at. CreateServiceTemplate validates it is alive and writes the availableAt link only when supplied.",
 			"providedBy":       "Optional full vtx.<provType>.<NanoID> key of the provider of the template offering. CreateServiceTemplate validates it is alive and writes the providedBy link only when supplied.",
 			"instanceId":       "Optional bare NanoID (no dots / key segments) for the instance vertex (vtx.service.<instanceId>) created by CreateServiceInstance. Supplied by a caller that must know the instance key before the op commits — e.g. a Loom externalTask step write-aheading its token.<instanceKey> handle. Absent → minted with nanoid.new(). A crash-retry with the same id collapses on the Contract #4 tracker.",
 			"template":         "Full vtx.service.<NanoID> key of the template this instance is a run of. CreateServiceInstance requires it, validates it is alive and is a template (its .class aspect ends in .template), and writes the instanceOf link.",
@@ -132,8 +131,8 @@ func serviceDDL() pkgmgr.DDLSpec {
 					"family": "backgroundCheck",
 				},
 				ExpectedOutcome: "Mints vtx.service.<NanoID> (root data {}) + a .class aspect = service.backgroundCheck.template. " +
-					"availableAt / providedBy links are written only when those endpoints are supplied (and validated alive). " +
-					"Returns primaryKey (the template key).",
+					"The providedBy link is written only when that endpoint is supplied (and validated alive); the availableAt " +
+					"availability assertion is owned by service-location. Returns primaryKey (the template key).",
 			},
 			{
 				Name: "CreateServiceInstance — start a background-check run for an applicant",
@@ -313,18 +312,10 @@ def execute(state, op):
             make_aspect(tpl_key, "class", "class", {"value": class_value_str}),
         ]
 
-        # availableAt / providedBy are the offering's link vocabulary. The link
-        # is written only when the endpoint is supplied; the endpoint must be
-        # alive (no-orphan, FR29 / P4). The spatial graph is owned by the
-        # future service-location package — this op does not build it.
-        available_at = optional_string(p, "availableAt")
-        if available_at != None:
-            loc_type, loc_id = parts_of(available_at, "availableAt", "")
-            if not vertex_alive(state, available_at):
-                fail("UnknownLocation: " + available_at)
-            avail_lnk = "lnk.service." + tpl_id + ".availableAt." + loc_type + "." + loc_id
-            mutations.append(make_link(avail_lnk, tpl_key, available_at, "availableAt", "availableAt", {}))
-
+        # providedBy is the offering's provider link. The link is written only
+        # when the endpoint is supplied; the endpoint must be alive (no-orphan,
+        # FR29 / P4). The availableAt availability assertion + the spatial graph
+        # are owned by service-location — this op does not build them.
         provided_by = optional_string(p, "providedBy")
         if provided_by != None:
             prov_type, prov_id = parts_of(provided_by, "providedBy", "")

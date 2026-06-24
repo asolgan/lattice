@@ -31,6 +31,7 @@ const (
 	capTestActorKey   = "vtx.identity." + capTestActorID
 	capTestActorCap   = "cap.identity." + capTestActorID
 	capTestActorEph   = "cap.ephemeral.identity." + capTestActorID // disjoint ephemeral key
+	capTestActorSvc   = "cap.svc.identity." + capTestActorID        // disjoint service-access key
 	capTestServiceKey = "vtx.service.executive-cleaning-NanoID"
 	capTestTaskKey    = "vtx.task.Rm7q3pntwzkfbcxv5p9j"
 	capTestTargetKey  = "vtx.lease.Op4Nb2mPq6rTwzKxVyP7"
@@ -83,13 +84,17 @@ func newCapAuthForTest(t *testing.T, doc *CapabilityDoc, clockAt time.Time) (*Ca
 	emitter := &recordingEmitter{}
 	reader := &fakeReader{entries: map[string][]byte{}}
 	if doc != nil {
-		// Ephemeral grants live in the disjoint cap.ephemeral.<actor> entry
-		// produced by the orchestration-base capabilityEphemeral lens — NOT
-		// in the primary cap.<actor> doc. Split the fixture: seed the grants
-		// under the ephemeral key, and strip them from the primary doc.
+		// The disjoint-key contribution model (Contract #6 §6.1): each grant
+		// source projects to its own key. Split the single fixture doc across
+		// the keys the dispatcher actually reads per path:
+		//   - ephemeralGrants → cap.ephemeral.<actor> (orchestration-base lens).
+		//   - serviceAccess   → cap.svc.<actor>       (service-location lens).
+		// The primary cap.<actor> doc keeps platformPermissions / roles only.
 		grants := doc.EphemeralGrants
+		svcAccess := doc.ServiceAccess
 		primary := *doc
 		primary.EphemeralGrants = nil
+		primary.ServiceAccess = nil
 		raw, err := json.Marshal(&primary)
 		if err != nil {
 			t.Fatalf("marshal cap doc: %v", err)
@@ -101,6 +106,13 @@ func newCapAuthForTest(t *testing.T, doc *CapabilityDoc, clockAt time.Time) (*Ca
 				t.Fatalf("marshal ephemeral doc: %v", err)
 			}
 			reader.entries[capTestActorEph] = ephRaw
+		}
+		if len(svcAccess) > 0 {
+			svcRaw, err := json.Marshal(freshServiceDoc(svcAccess))
+			if err != nil {
+				t.Fatalf("marshal service doc: %v", err)
+			}
+			reader.entries[capTestActorSvc] = svcRaw
 		}
 	}
 	clock := &fakeClock{now: clockAt}
@@ -121,6 +133,20 @@ func freshEphemeralDoc(grants []EphemeralGrant) *CapabilityDoc {
 		Version:         "1.0",
 		ProjectedAt:     time.Now().UTC().Format(time.RFC3339Nano),
 		EphemeralGrants: grants,
+	}
+}
+
+// freshServiceDoc builds the cap.svc.<actor> entry shape (Contract #6 §6.1 /
+// §6.5, service-location's capabilityServiceAccess lens): key/actor/version/
+// projectedAt + serviceAccess only (no roles/ephemeralGrants/
+// platformPermissions). The service path reads this disjoint key.
+func freshServiceDoc(svc []ServiceAccessEntry) *CapabilityDoc {
+	return &CapabilityDoc{
+		Key:           capTestActorSvc,
+		Actor:         capTestActorKey,
+		Version:       "1.0",
+		ProjectedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+		ServiceAccess: svc,
 	}
 }
 
@@ -285,6 +311,135 @@ func TestCapabilityAuthorizer_ServicePath_OpNotAllowed(t *testing.T) {
 	dec, _ := a.Authorize(context.Background(), env)
 	if dec.Code != ErrCodeAuthDenied {
 		t.Fatalf("expected AuthDenied for op-not-in-service; got %+v", dec)
+	}
+}
+
+// TestCapabilityAuthorizer_ServicePath_ReadsServiceKey proves the re-point: the
+// service path's single KV GET targets the disjoint cap.svc.<actor> key
+// (service-location's projection), NOT the core cap.<actor> key. Exactly one
+// key is read (one-key-per-path).
+func TestCapabilityAuthorizer_ServicePath_ReadsServiceKey(t *testing.T) {
+	now := time.Now().UTC()
+	a, _, reader := newCapAuthForTest(t, freshDoc(now), now)
+	env := envFor("BookExecutiveCleaning", capTestActorKey, &AuthContext{Service: capTestServiceKey})
+	dec, err := a.Authorize(context.Background(), env)
+	if err != nil || !dec.Authorized {
+		t.Fatalf("expected allow; got err=%v dec=%+v", err, dec)
+	}
+	if dec.Resolved.CapKey != capTestActorSvc {
+		t.Fatalf("service path must read %q; got CapKey=%q", capTestActorSvc, dec.Resolved.CapKey)
+	}
+	if len(reader.gets) != 1 || reader.gets[0] != capTestActorSvc {
+		t.Fatalf("service path must issue exactly one GET against %q; got %v", capTestActorSvc, reader.gets)
+	}
+}
+
+// TestCapabilityAuthorizer_ServicePath_DenyByAbsence proves a service op denies
+// by absence when no cap.svc.<actor> projection exists (Contract #6 §6.8): an
+// actor with a primary cap.<actor> doc but NO cap.svc key is denied on the
+// service path. A platform op for the SAME actor still authorizes — the absence
+// is path-local to the service key.
+func TestCapabilityAuthorizer_ServicePath_DenyByAbsence(t *testing.T) {
+	now := time.Now().UTC()
+	// Seed only the primary doc (no serviceAccess → no cap.svc key written).
+	doc := freshDoc(now)
+	doc.ServiceAccess = nil
+	a, _, reader := newCapAuthForTest(t, doc, now)
+	env := envFor("BookExecutiveCleaning", capTestActorKey, &AuthContext{Service: capTestServiceKey})
+	dec, err := a.Authorize(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if dec.Authorized {
+		t.Fatalf("service op must deny by absence with no cap.svc projection; got %+v", dec)
+	}
+	if dec.Reason != "NoCapabilityEntry" {
+		t.Fatalf("expected NoCapabilityEntry deny-by-absence; got code=%s reason=%s", dec.Code, dec.Reason)
+	}
+	if len(reader.gets) != 1 || reader.gets[0] != capTestActorSvc {
+		t.Fatalf("service deny-by-absence must read exactly cap.svc.<actor>; got %v", reader.gets)
+	}
+}
+
+// TestCapabilityAuthorizer_ServicePath_SystemActorDeniesByAbsence proves the
+// re-point is UNCONDITIONAL: a system (kernel-seeded) actor that drives the
+// service path (sets ac.Service) reads cap.svc.<systemActor> like any other
+// actor and denies by absence when that key is missing. System actors never
+// set ac.Service in production, but the dispatch must not special-case them off
+// the service key.
+func TestCapabilityAuthorizer_ServicePath_SystemActorDeniesByAbsence(t *testing.T) {
+	const systemActorID = "LoomSvcActorAaBbCcDd"
+	systemActorKey := "vtx.identity." + systemActorID
+	// Seed the system actor's PLATFORM cap doc (cap.identity.<id>) granting it
+	// root ops — but NO cap.svc.<id>. A platform op would pass; a service op
+	// must deny by absence.
+	reader := &fakeReader{entries: map[string][]byte{}}
+	platDoc := rootEquivalentDoc(systemActorID)
+	raw, err := json.Marshal(platDoc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	reader.entries[platDoc.Key] = raw
+	a, err := NewCapabilityAuthorizer(reader, "capability-kv", &fakeClock{now: time.Now()},
+		DefaultCapabilityAuthorizerConfig(), capTestLogger())
+	if err != nil {
+		t.Fatalf("NewCapabilityAuthorizer: %v", err)
+	}
+
+	env := &OperationEnvelope{
+		RequestID:     "ReqSysSvcDenyAaBbCc0",
+		Lane:          LaneDefault,
+		OperationType: "BookExecutiveCleaning",
+		Actor:         systemActorKey,
+		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		AuthContext:   &AuthContext{Service: "vtx.service.someService"},
+	}
+	dec, err := a.Authorize(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if dec.Authorized {
+		t.Fatalf("system actor on the service path must deny by absence of cap.svc; got %+v", dec)
+	}
+	if dec.Reason != "NoCapabilityEntry" {
+		t.Fatalf("expected NoCapabilityEntry; got code=%s reason=%s", dec.Code, dec.Reason)
+	}
+	if len(reader.gets) != 1 || reader.gets[0] != "cap.svc.identity."+systemActorID {
+		t.Fatalf("system actor service path must read cap.svc.identity.<id>; got %v", reader.gets)
+	}
+}
+
+// TestCapabilityAuthorizer_ServicePath_TombstonedSvcDoc proves the service-plane
+// resurrection guard at the auth boundary: a soft-tombstoned cap.svc.<actor>
+// doc (empty serviceAccess body — what the lens's emptyBehavior:delete leaves
+// transiently, or a stale availableAt-era doc replayed after the residence/
+// availability was withdrawn) authorizes NOTHING. The matcher reads the body,
+// finds no serviceAccess entry, and denies — an availableAt-era grant cannot
+// resurrect access once the topology that produced it is gone.
+func TestCapabilityAuthorizer_ServicePath_TombstonedSvcDoc(t *testing.T) {
+	now := time.Now().UTC()
+	doc := freshDoc(now)
+	// Build an authorizer whose cap.svc key carries an EMPTY serviceAccess body
+	// (the tombstone shape) even though an earlier availableAt-era doc granted
+	// the service. The empty body must not authorize.
+	a, _, reader := newCapAuthForTest(t, doc, now)
+	emptySvc := freshServiceDoc([]ServiceAccessEntry{})
+	raw, err := json.Marshal(emptySvc)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	reader.entries[capTestActorSvc] = raw
+
+	env := envFor("BookExecutiveCleaning", capTestActorKey, &AuthContext{Service: capTestServiceKey})
+	dec, err := a.Authorize(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if dec.Authorized {
+		t.Fatalf("an empty/tombstoned cap.svc body must NOT authorize (no resurrection); got %+v", dec)
+	}
+	if dec.Code != ErrCodeAuthContextMismatch {
+		t.Fatalf("expected AuthContextMismatch (service not in serviceAccess); got %+v", dec)
 	}
 }
 
@@ -471,6 +626,19 @@ func TestCapabilityKeyFromActor(t *testing.T) {
 	}
 	if _, err := capabilityKeyFromActor("ABC"); err == nil {
 		t.Fatalf("expected error for malformed actor")
+	}
+}
+
+func TestServiceKeyFromActor(t *testing.T) {
+	got, err := serviceKeyFromActor("vtx.identity.ABC")
+	if err != nil || got != "cap.svc.identity.ABC" {
+		t.Fatalf("got (%q,%v), want (cap.svc.identity.ABC, nil)", got, err)
+	}
+	if _, err := serviceKeyFromActor("ABC"); err == nil {
+		t.Fatalf("expected error for malformed actor")
+	}
+	if _, err := serviceKeyFromActor(""); err == nil {
+		t.Fatalf("expected error for empty actor")
 	}
 }
 

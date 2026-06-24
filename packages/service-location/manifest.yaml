@@ -1,0 +1,49 @@
+name: service-location
+version: 0.1.0
+description: |
+  Residence-based service-access scheme — the cap.svc grant source. Composes
+  location-domain (the place graph) and service-domain (the service catalog).
+  Owns the residesIn (identity→location), availableAt / unavailableAt
+  (service-template→location), and permitsOperation (service→op-meta) links
+  (single DDL `serviceLocation`, eight wire/unwire ops with endpoint-class
+  validation at the op) plus the capabilityServiceAccess actorAggregate lens
+  projecting cap.svc.<actor> into the shared capability-kv bucket. The core
+  service auth path reads cap.svc.<actor> via the re-pointed serviceKeyFromActor
+  derivation. Depends on location-domain and service-domain.
+depends:
+  - location-domain
+  - service-domain
+declares:
+  ddls:
+    - canonicalName: serviceLocation
+      class: meta.ddl.vertexType
+  lenses:
+    - canonicalName: capabilityServiceAccess
+      adapter: nats-kv
+      bucket: capability-kv
+      engine: full
+  permissions:
+    - operationType: WireResidesIn
+      scope: any
+      grantsTo: [operator]
+    - operationType: UnwireResidesIn
+      scope: any
+      grantsTo: [operator]
+    - operationType: WireAvailableAt
+      scope: any
+      grantsTo: [operator]
+    - operationType: UnwireAvailableAt
+      scope: any
+      grantsTo: [operator]
+    - operationType: WireUnavailableAt
+      scope: any
+      grantsTo: [operator]
+    - operationType: UnwireUnavailableAt
+      scope: any
+      grantsTo: [operator]
+    - operationType: WirePermitsOperation
+      scope: any
+      grantsTo: [operator]
+    - operationType: UnwirePermitsOperation
+      scope: any
+      grantsTo: [operator]

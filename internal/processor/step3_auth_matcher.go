@@ -106,14 +106,19 @@ func seedSpecificEntries() []authEntry {
 			coverage:        authCoverage{kind: pathTask},
 		},
 		{
-			name:               "service",
-			selects:            func(ac *AuthContext) bool { return ac != nil && ac.Service != "" },
-			kind:               matchServiceAccessKind,
-			keyDerivation:      capabilityKeyFromActor,
-			absentKeyCode:      ErrCodeAuthDenied,
-			absentKeyReason:    "NoCapabilityEntry",
-			threadsDocOnDenial: true,
-			coverage:           authCoverage{kind: pathService},
+			name:            "service",
+			selects:         func(ac *AuthContext) bool { return ac != nil && ac.Service != "" },
+			kind:            matchServiceAccessKind,
+			keyDerivation:   serviceKeyFromActor,
+			absentKeyCode:   ErrCodeAuthDenied,
+			absentKeyReason: "NoCapabilityEntry",
+			// The service path reads the disjoint cap.svc.<actor> key projected
+			// by service-location's capabilityServiceAccess lens — the residence
+			// grant scheme. That doc carries serviceAccess[] only, no roles, so a
+			// service-op denial surfaces no actorRoles (Contract #6 §6.12): the
+			// denial is explained by residence/availability, not roles. The doc is
+			// therefore NOT threaded onto the denial.
+			coverage: authCoverage{kind: pathService},
 		},
 	}
 }

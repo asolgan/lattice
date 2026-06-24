@@ -319,19 +319,17 @@ func TestServiceInstance_LinksSentenceValid(t *testing.T) {
 	}
 }
 
-// TestServiceTemplate_OptionalEndpointLinks proves the template's availableAt /
-// providedBy link vocabulary (Q6 option ii): the create-template op writes them
-// only when endpoints are supplied, each validated alive, and the links are
-// sentence-valid (template is source).
+// TestServiceTemplate_OptionalEndpointLinks proves the template's providedBy
+// link vocabulary: the create-template op writes it only when the endpoint is
+// supplied, validated alive, and the link is sentence-valid (template is
+// source). The availableAt availability assertion is owned by service-location,
+// not this DDL.
 func TestServiceTemplate_OptionalEndpointLinks(t *testing.T) {
 	ctx, conn := setupServiceEnv(t)
 	cp, cons := newServicePipeline(t, ctx, conn, "tpl-links")
 
-	locID := "BB1ocationoHJKMNPQRS"
-	locKey := "vtx.location." + locID
 	provID := "BBproviderrHJKMNPQRS"
 	provKey := "vtx.identity." + provID
-	seedVertex(t, ctx, conn, locKey, "location", map[string]any{})
 	seedVertex(t, ctx, conn, provKey, "identity", map[string]any{"state": "claimed"})
 
 	reqID := testutil.GenReqID("tplEndpoints1")
@@ -344,17 +342,12 @@ func TestServiceTemplate_OptionalEndpointLinks(t *testing.T) {
 		Actor:         svcStaffActorKey,
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "service",
-		Payload:       json.RawMessage(`{"family":"backgroundCheck","availableAt":"` + locKey + `","providedBy":"` + provKey + `"}`),
-		ContextHint:   &processor.ContextHint{Reads: []string{locKey, provKey}},
+		Payload:       json.RawMessage(`{"family":"backgroundCheck","providedBy":"` + provKey + `"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{provKey}},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
 
-	availLnk := "lnk.service." + tplID + ".availableAt.location." + locID
-	adoc := readDoc(t, ctx, conn, availLnk)
-	if got, _ := adoc["sourceVertex"].(string); got != tplKey {
-		t.Fatalf("availableAt sourceVertex = %q, want %q (template is source)", got, tplKey)
-	}
 	provLnk := "lnk.service." + tplID + ".providedBy.identity." + provID
 	pdoc := readDoc(t, ctx, conn, provLnk)
 	if got, _ := pdoc["sourceVertex"].(string); got != tplKey {
@@ -363,13 +356,13 @@ func TestServiceTemplate_OptionalEndpointLinks(t *testing.T) {
 }
 
 // TestServiceTemplate_AbsentEndpoint_Rejected proves the no-orphan invariant on
-// the optional template links: a supplied-but-absent availableAt endpoint is
+// the optional template providedBy link: a supplied-but-absent endpoint is
 // rejected (the link is never committed pointing at a non-existent vertex).
 func TestServiceTemplate_AbsentEndpoint_Rejected(t *testing.T) {
 	ctx, conn := setupServiceEnv(t)
 	cp, cons := newServicePipeline(t, ctx, conn, "tpl-orphan")
 
-	missingLoc := "vtx.location.BBmissing1ocHJKMNPQR"
+	missingProv := "vtx.identity.BBmissingprovHJKMNPQR"
 	env := &processor.OperationEnvelope{
 		RequestID:     testutil.GenReqID("tplOrphan0001"),
 		Lane:          processor.LaneDefault,
@@ -377,8 +370,8 @@ func TestServiceTemplate_AbsentEndpoint_Rejected(t *testing.T) {
 		Actor:         svcStaffActorKey,
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "service",
-		Payload:       json.RawMessage(`{"family":"backgroundCheck","availableAt":"` + missingLoc + `"}`),
-		ContextHint:   &processor.ContextHint{Reads: []string{missingLoc}},
+		Payload:       json.RawMessage(`{"family":"backgroundCheck","providedBy":"` + missingProv + `"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{missingProv}},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
