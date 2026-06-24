@@ -31,7 +31,7 @@ per-item detail lives in design / story docs + git history, never in agent memor
 | Structured adapter result *(terminal-failure producer)* | ✅ Done (828f24d) | `implementation-artifacts/structured-adapter-result-design.md` |
 | Async external-reply | ✅ Done (increments 1–3: 0860fb1, 0f85d45, 3504db6) | `implementation-artifacts/async-reply-design.md` |
 | location-domain — spatial base package *(SL.1)* | ✅ Done (ae3a056) | `implementation-artifacts/service-location-design.md` |
-| service-location — service-access authZ scheme *(SL.2)* | 🏗️ Active (design rev.3; built after SL.1) | `implementation-artifacts/service-location-design.md` |
+| service-location — service-access authZ scheme *(SL.2)* | ✅ Done (e4af07c, 715b14b) | `implementation-artifacts/service-location-design.md` |
 | _all other items_ | 📋 Backlog | see themed tables below |
 
 ---

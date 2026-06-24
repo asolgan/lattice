@@ -1,6 +1,6 @@
 # Story SL.2 — service-location package (the cap.svc access scheme)
 
-**Status:** review (build + full 3-layer review complete; all gates green; CI pending; §6.12 contract edit left uncommitted for Andrew)
+**Status:** done (CI green — e4af07c + the 715b14b cypher-pin fix-forward; §6.12 contract edit left UNCOMMITTED for Andrew's review)
 **Design:** `_bmad-output/implementation-artifacts/service-location-design.md` (rev.3 — §2, §3, §4, §5, §6)
 **Review depth:** FULL 3-layer adversarial (security-plane — a projection bug = privilege escalation or DoS).
 **Depends on:** `location-domain` (SL.1, done — `vtx.unit/building/property` + `containedIn`), `service-domain`
