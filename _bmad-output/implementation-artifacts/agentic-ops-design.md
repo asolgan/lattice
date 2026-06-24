@@ -1,0 +1,433 @@
+# Agentic Operating Model — autonomous roles & routines for continuous Lattice improvement
+
+**Status:** team-reviewed (party-mode, 9 BMAD lenses); core shape ratified by Andrew. Bring-up not yet started.
+**Owner:** Winston — this doc has a heartbeat: reviewed at each bring-up milestone so it doesn't drift.
+**Purpose:** define the AI-agent roles, the org that connects them, the autonomy ceiling, and the concrete
+Claude-Code mechanisms that drive continuous improvement in **reliability**, **observability**, and
+**features** — largely unattended.
+**North-star metric:** **Andrew-interventions per shipped change, trending down.** An *intervention* = any time
+the org must wake Andrew (an L3 contract ratification, an out-of-class escalation, a correction). A *shipped
+change* = a merged commit. Rising autonomy = this ratio falling. If it doesn't fall, the model isn't working.
+**Scope read:** converging (Phase 3). Roles run as Claude-Code agents against the dev/local stack *now*, each
+named to an on-platform descendant already specified in the PRD/brainstorm, and migrate on-platform later —
+the same precursor pattern Loupe uses for Edge.
+
+---
+
+## 1. Framing — the dogfooding arc
+
+Loupe is "the first Edge prototype, built *around* Edge machinery without the Edge security layer." This
+applies that pattern to **operations**: stand up Lattice's AI-native ops loop as Claude-Code agents driving
+the dev stack, built around the same closed-loop machinery a self-improving deployment will eventually run
+on-platform. Every role names its on-platform descendant (FR31/FR32/FR53 AI-authored capabilities, FR54
+anomaly detection, brainstorm #96 closed-loop auditor, #100 auto-circuit-breaker). The dev-loop version
+earns trust off-platform first, then migrates onto Weaver/Loom/Loupe.
+
+The substrate already exists: Health KV as a machine-legible signal plane
+([health-kv-schema.md](../../docs/observability/health-kv-schema.md)), the CI gates, the 3-layer
+adversarial review skills, the `backlog.md` Progress board, Loupe as a control surface, and
+`internal/aiagent` proving cold-start traverse-and-submit (FR19). The whole point is measured by the
+north-star metric above — every mechanism below either ships change or shrinks Andrew's surface.
+
+---
+
+## 2. The org
+
+Two-gate top: **Andrew** (human principal) sits above **Winston** (the AI tech lead — *not* human; the
+main-session persona). Winston is the sole committer; Andrew is the sole contract ratifier. Everyone below
+prepares work in the tree and files requests up. Roles are **function-named** — the platform already owns
+the evocative names (Loom/Weaver/Refractor/Loupe), so "the Refractor Owner" is unambiguous; invented names
+are reserved for the cross-cutting ops roles where function alone is vague.
+
+```mermaid
+flowchart TB
+    Andrew(["Andrew — human principal<br/>sole contract ratifier · L3"])
+    Winston["Winston — AI tech lead<br/>sole committer · L2 · owns the frozen contracts"]
+
+    subgraph Platform["Platform tier"]
+        direction TB
+        Core["Core Owner<br/>Processor · KV · core-operations/-events/-schedules"]
+        Weaver["Weaver Owner"]
+        Loom["Loom Owner"]
+        Refr["Refractor Owner"]
+        Loupe["Loupe Owner"]
+        PkgDes["Package Designer<br/>decompose business reqs → reusable packages<br/>(accounting ledger · calendar/scheduling)"]
+    end
+
+    subgraph Product["Product tier — verticals & experience"]
+        LoftPO["LoftSpace PO"]
+        Vert2PO["Clinic PO"]
+        Sally["UX/FE Designer (Sally)<br/>builds Loupe + app front-ends"]
+    end
+
+    subgraph Ops["Cross-cutting ops"]
+        Warden["Warden<br/>reliability · CI/gates/flakes"]
+        Lamp["Lamplighter<br/>observability · Health KV/logs"]
+        Scribe["Scribe<br/>docs · drift sweep"]
+        Arch["Archivist<br/>continuity · memory/checkpoints"]
+    end
+
+    Exec["Shared mechanism: the hardened story loop<br/>(Bob · Amelia · 3 review hunters) + Cartographer grounding stage"]
+
+    Andrew --> Winston
+    Winston --> Core & Weaver & Loom & Refr & Loupe & PkgDes
+    Winston --> Warden & Lamp & Scribe & Arch
+    LoftPO & Vert2PO --> PkgDes
+    LoftPO & Vert2PO & Loupe -. FE briefs .-> Sally
+    PkgDes -. platform gap .-> Winston
+    Core & Weaver & Loom & Refr & Loupe -. ship via .-> Exec
+
+    classDef human fill:#f0f9ff,stroke:#0284c7,color:#0c4a6e
+    classDef lead fill:#fefce8,stroke:#ca8a04,color:#713f12
+    classDef ops fill:#ecfdf5,stroke:#059669,color:#064e3b
+    class Andrew human
+    class Winston lead
+    class Warden,Lamp,Scribe,Arch ops
+```
+
+| Tier | Role(s) | Owns | Ladder |
+|---|---|---|---|
+| **Platform — components** | **Core Owner** (Processor + KV + core-operations/-events/-schedules), **Weaver / Loom / Refractor / Loupe Owners** | component-internal design, its backlog slice, its Health emission, intra-component stories. The **Loupe Owner additionally tracks the other components' consumer-facing surfaces** and updates Loupe to match (§6.1.1 dependency-change trigger) | L1 → Winston L2 |
+| **Platform — solutions** | **Package Designer** | decomposing business reqs into reusable packages; composing Core/Weaver/Refractor/Loom; **flags platform gaps → Winston** | L1 |
+| **Product — verticals & experience** | **LoftSpace PO**, **Clinic PO**; **UX/FE Designer (Sally)** | POs define what each app *does*; **Sally designs & builds the front-ends** — Loupe's operator console + each vertical app's UI | L0/L1 |
+| **Cross-cutting ops** | **Warden** (reliability), **Lamplighter** (observability), **Scribe** (docs), **Archivist** (continuity) | platform-wide health; report to Winston | L0 → L2 (narrow) |
+| **Shared mechanism** | the hardened **story loop** + **Cartographer** grounding stage | *how* every owner ships | — |
+
+---
+
+## 3. The autonomy ladder
+
+"Elevating autonomy" = broadening what runs before a human is needed, *not* removing the gate. Each role is
+pinned to a rung and promoted as it earns trust; the human surface shrinks (the north-star metric tracks it).
+
+| Rung | What the agent may do | Gate above it |
+|---|---|---|
+| **L0 Advisory** | observe, classify, report (chip / backlog note). No writes. | — |
+| **L1 Prepare** | prepare a design/fix **in an isolated worktree**, stop. | Winston review |
+| **L2 Commit-behind-gates** | **Winston only** — review the worktree diff and merge to `main` iff all gates green **and** no contract touched **and** change ∈ a defined low-risk class. | Andrew (for anything outside the class) |
+| **L3 Propose-contract** | flag Andrew; edit the contract **in `main`, uncommitted** (never in a worktree) until ratified. | Andrew ratifies |
+
+The existing house rule ("sub-agents never commit; Winston commits") is preserved. The autonomy lever is the
+**L2 low-risk class** Winston may merge without waking Andrew — **ratified: flake-fixes, docs, and mechanical
+green follow-ups.** Widen the class as confidence grows.
+
+**Gate-hardening (ratified).** Two surfaces are explicitly *not* in the auto-class:
+
+- **Health-emission changes** touch the **canonical** Health-KV schema doc, so they are **not** auto-L2: the
+  schema doc must be updated in the same worktree and the change goes to Andrew. A wrong key shape silently
+  rots the observability plane — a regression already eaten once.
+- An **L2 "flake-fix"** is allowed only when the flake classification meets a deterministic bar — **N-of-N
+  reproductions + a `FLAKE_REGISTRY` entry** — before the word "flake" is used. *A real failure mislabeled as
+  a flake is the one unforgivable case;* when in doubt it is real, and it escalates rather than auto-merging.
+
+**Isolation rule.** *All* work happens in an isolated **worktree** — owners, ops routines, the Forge — so
+parallel agents never conflict; Winston reviews each worktree diff and merges to `main`. The **sole exception
+is a contract change**: a frozen-contract amendment is edited **in `main`, uncommitted**, because it must be
+platform-visible for Andrew's review and for other agents to build against — it cannot be hidden in a
+worktree. Shared coordination artifacts — the `backlog.md` board and `memory/` — are likewise written
+**centrally by Winston / the Steward**, not by owners in worktrees, to avoid merge conflicts on the board.
+
+---
+
+## 4. Roles → area, descendant, mechanism
+
+| Role | Area | On-platform descendant | Primary Claude mechanism |
+|---|---|---|---|
+| **Core / Weaver / Loom / Refractor / Loupe Owner** | features | the component itself, AI-driven (FR31 authorship for its DDL/Starlark/lenses) | a per-component **skill** + an owner **subagent**; **activated by the Steward (§6.1.1)** on pull / signal / dependency / sweep; consults Cartographer; ships via the story loop |
+| **Package Designer** | features (composition) | FR31/FR32 capability bundles assembled from packages | a **skill** encoding decompose→compose→gap-flag; emits feature requests up |
+| **Vertical PO (LoftSpace, Clinic)** | features (product) | the app's own AI assistant over FR19 traversal | a **skill** producing briefs + app-front-end stories |
+| **UX/FE Designer (Sally)** | features (experience) | the apps' UIs over FR19 + DDL self-description (`inputSchema` / `fieldDescription` drive forms) — the human face of the self-describing graph | the **`bmad-agent-ux-designer` (Sally)** + `bmad-create-ux-design` skills; builds Loupe's console + vertical-app FE; ships via the story loop |
+| **Warden** | reliability | #100 auto-circuit-breaker (Weaver PAUSE + investigation Task) | a **routine** (`/loop` + `ScheduleWakeup`) over CI status + a root-cause subagent (deferred — see §8) |
+| **Lamplighter** | observability | #96 closed-loop auditor (reads Health KV → remediation) + FR54 anomaly detection | a **routine** (`/loop`) polling Health KV against a live `up-full` stack |
+| **Archivist** | continuity | FR33/FR50 persisted intent across sessions | **memory** + a checkpoint **skill**, run at gate boundaries |
+| **Scribe** | docs | the self-describing graph keeps the *running* system legible (FR19 + DDL self-description); the Scribe keeps the *repo* docs legible | **`bmad-agent-tech-writer` (Paige)** + `bmad-index-docs`, run as a periodic drift sweep |
+| **Cartographer** (stage, not standing role) | grounding | FR19 cold-start traversal | the **Explore subagent**, mandatory stage-0 of every design/story |
+
+---
+
+## 5. The flywheel — the feature engine
+
+The Package Designer + Vertical POs wire up a closed demand→supply loop. This *is* "continuous improvement
+in features," now with a named driver at each hop; Warden and Lamplighter feed the same owners with the
+reliability/observability signals.
+
+```mermaid
+flowchart LR
+    PO["Vertical PO<br/>app needs X"] --> PD["Package Designer<br/>compose from packages<br/>gap = platform support Y"]
+    PD --> W["Winston<br/>route Y · cross-cutting?"]
+    W --> CO["Component Owner<br/>ships Y via the story loop"]
+    CO --> PKG["richer reusable packages"]
+    PKG --> PO
+    Warden -. CI/gate health .-> CO
+    Lamp["Lamplighter"] -. Health-KV anomalies .-> CO
+
+    classDef ops fill:#ecfdf5,stroke:#059669,color:#064e3b
+    class Warden,Lamp ops
+```
+
+With one real vertical (LoftSpace) the loop is only half-proven. The **clinic vertical is run as a deliberate
+validation of the flywheel** — does product demand actually pull deferred platform work (`@every` schedules,
+the Vault/crypto-shred plane, bridge I/O) into existence? — not as a thought experiment.
+
+---
+
+## 6. Autonomy mechanisms — Claude routines, not cron
+
+The recurring driver is the **dynamic `/loop` + `ScheduleWakeup`** pattern, run **in-session**, not cron.
+This is already the established pattern in this repo: the inter-story credit-window gate runs as hourly
+`ScheduleWakeup` hops that re-check an epoch gate (CLAUDE.md). Routines win over cron here because they are:
+
+- **context-warm** — the loop resumes inside the live session with the working tree, memory, and prior
+  reasoning intact; a cron agent cold-starts and re-derives everything (the expensive path);
+- **state-paced** — dynamic `/loop` self-paces: it picks the next wake based on whether there is work
+  (CI red? Health yellow?), instead of firing on a fixed wall-clock tick and burning tokens on no-ops;
+- **token-budget-aware** — wake cadence respects the prompt-cache window (see §6.6), and work is bounded by
+  the ladder, not a blind schedule;
+- **interruptible** — Andrew can redirect mid-loop; cron runs blind.
+
+Cron / cloud-scheduled agents (the `schedule` skill, `CronCreate`) stay available for a future
+genuinely-unattended-server deployment, but are **not** the Phase-3 mechanism.
+
+### 6.1 Routines (`/loop` + `ScheduleWakeup`)
+
+| Routine | Role | Trigger / cadence | Output |
+|---|---|---|---|
+| **Steward** | Winston | self-driving dispatch `/loop`; wakes on the credit-window epoch gate + cache window (§6.1.1) | selects & activates the next owner, admits/commits output, replenishes the board when idle |
+| **Vigil** | Lamplighter | self-paced `/loop` while an `up-full` stack is up: poll `lattice health summary` / Health KV | anomalies → chips / backlog entries |
+| **Scribe-Sweep** | Scribe | self-paced `/loop`, low frequency (idle-fill): audit `docs/` against code + contracts for drift | doc fixes (L1 → L2 docs class) + a refreshed `bmad-index-docs` index |
+| **Green-Watch** | Warden | self-paced `/loop`: poll `gh run` after a push; tight cadence in-flight, idle long-hop when green | green confirmed, or a classified failure + an L1/L2 fix (deferred — §8) |
+
+Cadence discipline (from the `ScheduleWakeup` contract): poll an in-flight CI/stack at ~**270s** to stay
+inside the 5-min prompt cache; drop to **1200–1800s** idle hops when there is nothing to watch. Never the
+worst-of-both 300s.
+
+#### 6.1.1 Owner activation — the Steward loop & Inquiry
+
+Ops roles are self-triggering (signals fire them). **Owners are not** — without a dispatcher, a component
+owner never acts. The **Steward** is Winston's self-driving dispatch `/loop` (the formalization of the
+autonomous-mandate "drive the story loop," generalized from one linear sequence to a multi-owner pull +
+inquiry-replenish loop). It activates owners under four triggers:
+
+| Trigger | Source | What the owner does |
+|---|---|---|
+| **Pull** | a ready item on the board owned by me | ship it via the hardened story loop (L1) |
+| **Signal-reactive** | Warden / Lamplighter signal, or a demand request filed by a PO / Package Designer | inquire → root-cause / scope → prepare a fix or feature (L1) |
+| **Dependency-change** | a producer ships a consumer-facing surface change (a control op, a Health key, a DDL self-description field, an object-store API) | the consuming owner updates to surface / handle it (L1) |
+| **Proactive sweep** | *idle-fill* — no ready item and no signal | run the **Inquiry skill**: generate improvement candidates and file them to the board |
+
+The **Loupe Owner** is the heaviest consumer of the dependency-change trigger — Loupe surfaces *every*
+component (Core KV, the Refractor / Weaver / Loom control planes, Health KV, the object store, DDL-driven op
+forms), so most surface changes route an update to it. A **dependency map** (consumer → producers), **derived
+from code signals** (§8), drives this trigger.
+
+The **Inquiry skill** ("how can I make my component better") reads the component's Health emissions, its
+flake/CI history, the Deferred / Implementation-status section of its `docs/components/<x>.md`, open
+TODO/FIXME, recent diffs, coverage/lint gaps, and inbound feature requests — then files candidates **scored
+against a Winston-owned rubric** and admitted to the board only when they meet a **definition-of-ready**.
+Owners **file and prepare only** — they never self-prioritize above Winston.
+
+Steward iteration:
+
+```mermaid
+flowchart TB
+    Sense["Sense — board + Warden/Lamplighter signals"] --> Sel{"Ready item or signal?"}
+    Sel -- yes --> Act["Activate owning role · L1 (story loop)"]
+    Sel -- "no · idle" --> Inq["Inquiry — owner generates candidates → board"]
+    Act --> Adm{"Green + in L2 low-risk class?"}
+    Adm -- yes --> L2["Winston commits · L2"]
+    Adm -- no --> Esc["Stage for Andrew · L3 if contract"]
+    L2 --> Wake["ScheduleWakeup — credit gate + cache window"]
+    Esc --> Wake
+    Inq --> Wake
+    Wake --> Sense
+```
+
+**Guardrails.** A **WIP cap** bounds how many owners the Steward runs concurrently (worktree-isolated) —
+bounding token spend and board churn. Reliability/observability signals **pre-empt** the queue (a red gate or
+Health anomaly jumps ahead of feature pulls). A **starvation / aging guard** raises long-skipped low-importance
+items over time so nothing is indefinitely deferred. Andrew may set a **per-cycle theme** (e.g. "reliability
+this cycle") that biases selection without picking individual items. Inquiry is rate-limited to idle-fill +
+signal-reactive, never every tick, so the board is replenished, not spammed.
+
+### 6.2 Hooks (deterministic, harness-run — settings.json)
+
+Hooks catch convention/quality violations **before CI**, so the gates stay meaningful and Warden has less to
+clean up:
+
+- **`PostToolUse` (Edit|Write)** → `gofmt` + `go vet` on touched packages.
+- **`PostToolUse` (Edit|Write)** → a **contract-conformance linter** (new, small): key-shape regex enforcing
+  Contract #1 — reject `asp.*` prefixes, short-form 6-segment links, `vtx.meta.<canonicalName>` — and the
+  **no-history-comment** rule (reject `// Story …`, `// Previously …`, `// renamed from …`).
+- **`Stop` / `SessionStart`** → emit/refresh a `CHECKPOINT` (see §6.5).
+
+### 6.3 Skills (`.claude/skills/<role>/SKILL.md`)
+
+Each role's loop is encoded as a skill so it kicks off consistently without re-explanation, reusing the
+existing BMad cast rather than reinventing it:
+
+- **Owner skills** — wrap `bmad-create-story` → `bmad-dev-story` → the 3-layer review (`bmad-code-review`
+  hunters) → gate run, pinned to that component's mandate (`docs/components/<x>.md`) and the frozen contract.
+- **Package-Designer / PO skills** — decompose→compose→gap-flag, and brief→app-story respectively.
+- **Ops skills** — Vigil, Scribe-Sweep (over `bmad-agent-tech-writer` + `bmad-index-docs`), Green-Watch, and
+  the Archivist checkpoint/consolidate routine (over `consolidate-memory`).
+
+**Docs — both layers, mirroring reliability's hooks-plus-Warden split.** *As-you-go* is the default: updating
+the component's own `docs/components/<x>.md` is part of the story-loop **Definition of Done**, enforced by the
+Acceptance Auditor gate — so component-local docs stay fresh by construction. The **Scribe** sweep owns only
+what no single story owns: the cross-cutting docs (`README`, `architecture-overview.md`, the contracts index)
+and drift between them.
+
+**The static diagram is low-churn by design.** Minimal-core + everything-is-a-package means new *capabilities*
+arrive as packages, not new *components* — the component set (Core, Refractor, Weaver, Loom, Bridge, Loupe) is
+deliberately small and stable, so `architecture-overview.md`'s structural picture rarely changes and the Scribe
+tends it only occasionally. The Scribe reviews doc **quality** (clarity, not merely existence) and keeps the
+**canonical reference docs** (the Health-KV schema, the contracts index) in lockstep with any change that
+touches them. The *operational* truth — what is actually running and its health — moves to Loupe's **live
+system map** (§7); a live diagram generated from Health KV + Core KV cannot go stale.
+
+### 6.4 Isolation, subagents & workflows
+
+- **Worktrees are the default unit of isolation** (per the §3 isolation rule) — *every* work unit runs in its
+  own worktree, not only parallel ones; contract changes are the sole exception (edited in `main`,
+  uncommitted). Winston reviews each worktree diff and merges.
+- **Subagents** (`Agent` / `subagent_type`) — component owners run as owner subagents; **Cartographer** is the
+  `Explore` subagent run as mandatory stage-0; the three review hunters run in parallel (the existing rigor).
+- **Workflow** (opt-in, "ultracode") — the **Forge**: fan out one backlog item per worktree, each through the
+  full grounded loop, with an adversarial contract-conformance gate before any item returns to Winston for
+  commit. The Forge is simply the parallel case of the always-on worktree default.
+
+### 6.5 Memory & checkpoints (continuity)
+
+The Archivist keeps continuity truthful — directly countering the drifted-handoff failure mode:
+
+- **Memory** (`memory/` + `MEMORY.md`) — durable cross-session facts; the Progress board (`backlog.md`) is
+  the work index, never agent memory (house rule).
+- **CHECKPOINT protocol** — after every gate, write a terse state file (done / current / exact-next-steps) so
+  a fresh session resumes without drift if a turn is interrupted. **Verify handoffs against actual files
+  before saving** (the established anti-drift rule).
+
+### 6.6 Token-budget awareness
+
+Per the established stance, budget is **tracked, self-paced, and checkpoint-protected — not hard-halted**
+(halts are stuck-loop, not token-ceiling). Mechanisms:
+
+| Concern | Mechanism |
+|---|---|
+| Don't burn tokens polling idle | dynamic `/loop` self-pacing; long idle `ScheduleWakeup` hops |
+| Stay cache-warm | wake at <300s only when actively watching; else 1200s+ (§6.1) |
+| Scale depth to a budget directive | `Workflow` `budget` object — `budget.total` / `remaining()` to size the Forge fleet and finder depth |
+| Survive an interrupted turn | CHECKPOINT after each gate (§6.5); the ladder bounds work-before-surface |
+| Bound a single run | the autonomy ladder — an agent stops at its rung and hands up, rather than running unbounded |
+
+---
+
+## 7. Operator surface — the Loupe agent console
+
+The model is otherwise all back-end roles; Andrew needs one place to *see* the org and to act at the L3 gate
+— in 30 seconds: what shipped overnight, what's waiting on his contract-review, what's stuck, what the Steward
+is about to do. That place is **Loupe** (it already renders Health and the control planes). Two layers, both
+filed to `planning-artifacts/backlog.md` (Loupe-owned):
+
+- **Platform layer — the live "system map" landing page.** The running component + data-flow topology rendered
+  live: per-component/lens Health colour, edge/link status, drill-in to a vertex or a control plane.
+  Self-truthing (Health KV + Core KV), so it never drifts. (The static `architecture-overview.md` keeps the
+  full *designed* whole — Gateway, Vault, Edge — for teaching; the live map shows the *running* subset.)
+- **Ops layer — the agent-activity console.** Atop the map: the **Steward's queue** + work in flight, the
+  **board** state, per-agent Health, and — Andrew's primary touchpoint — the **L3 contract-review queue**
+  rendered as *what changed / why / which consumers it affects* (the affected-consumers view is exactly the
+  §8 dependency map), not a raw pile of uncommitted diffs. Good L3 UX is where last-inch autonomy is won or lost.
+
+**Dogfooding.** The ops agents (Steward, Lamplighter, Warden, Scribe, Archivist) **emit Health KV like any
+component**, so Loupe watching the platform watches the agents for free — the dependency-watch (§6.1.1) turned
+on its own authors.
+
+---
+
+## 8. Bring-up order & enabling gaps
+
+Andrew's call: **stand up the full org now** (not a phased MVP) — but bring it online in a safe order and with
+the gates hardened (§3). Since CI has been green-enough, **Warden is deferred**; the bring-up pair is the
+**Steward** (the engine that makes owners act) and **Lamplighter** (the eyes — you do not ship autonomously
+into a dark room). Concrete enabling work, each a candidate first story:
+
+1. **Steward loop + Inquiry** — the dispatcher (§6.1.1): the four triggers, the Winston-owned scoring rubric,
+   the definition-of-ready, the starvation guard. (S)
+2. **Lamplighter + Weaver/Loom Health emission** — emission is a **prerequisite, not a follow-on**: the
+   reserved `health.weaver.*` / `health.loom.*` namespaces are still unemitted (schema doc §Reserved), and the
+   Steward will start dispatching Weaver/Loom work immediately. (S + S)
+3. **Contract-conformance linter** — powers the §6.2 hook; encodes Contract #1 + no-history-comments. (XS)
+4. **Dependency map (derived)** — `consumer → producers` **derived from code signals** (imports, control-plane
+   subjects, the substrate surface), *not* a hand-maintained table that would itself drift; drives the
+   dependency-change trigger and the L3 affected-consumers view. (S)
+5. **CHECKPOINT protocol** — the §6.5 state file + the Stop/SessionStart hook. (XS)
+6. **Backlog Owner column** + **role skills** + the **Loupe operator surfaces** (§7, both filed). (XS / S / M)
+7. **Warden (deferred)** — Green-Watch + `FLAKE_REGISTRY` + the flake bar (§3); stand up when reliability
+   actually bites.
+
+---
+
+## 9. Decisions
+
+**Ratified.**
+
+*Org & rollout*
+
+1. **Full org now** — not a phased MVP; bring online in a safe order (§8).
+2. **Bring-up pair = Steward + Lamplighter**; Weaver/Loom Health emission is a prerequisite; **Warden deferred**
+   (CI green-enough).
+3. **Contract ownership** — Winston owns the frozen contracts; the **Core Owner** owns the stream
+   *implementation* and holds **delegated authority for non-breaking stream additions**; an owner escalates to
+   Winston on a contract touch, a cross-component interface change, or anything needing another component.
+
+*Gates & autonomy*
+
+4. **L2 low-risk class** — flake-fixes, docs, mechanical green follow-ups (§3).
+5. **Gate-hardening** — Health-emission is **not** auto-L2 (canonical schema doc + Andrew review); an L2
+   flake-fix requires the **flake bar** (N-of-N + registry); Inquiry candidates are scored against a
+   **Winston-owned rubric** + **definition-of-ready**, with a **starvation guard** (§3, §6.1.1).
+6. **Isolation** — all work in worktrees; sole exception = contract changes (in `main`, uncommitted);
+   coordination artifacts (board, memory) written centrally (§3).
+7. **North-star metric** — Andrew-interventions per shipped change, trending down (header).
+
+*Surfaces, docs, verticals*
+
+8. **Operator surface** — the Loupe live system map + agent-activity console + structured L3 review; ops agents
+   emit Health KV (§7); two backlog items filed.
+9. **Docs — both layers** — as-you-go in the DoD + the Scribe sweep; the static diagram is low-churn by design,
+   the live truth is Loupe's map (§6.3).
+10. **Loupe cross-component watch** — the dependency-change trigger, driven by a **code-derived** dependency map
+    (§6.1.1, §8).
+11. **Second vertical = clinic**, run as a real **flywheel validation** (does demand pull deferred platform work
+    into existence?), forcing `@every` / Vault / bridge I/O.
+12. **Backlog** — single board + Owner column now; shard a slice into its own file only when it outgrows the board.
+13. **This doc** — owner Winston, reviewed at each bring-up milestone.
+
+**Still open (tuning knobs, with recommended defaults).**
+
+14. **Steward WIP cap** — concurrent owners per cycle. *Rec: 1 to prove the loop is safe, then 2–3 behind worktrees.*
+15. **Inquiry cadence** — *Rec: idle-fill + a light sweep when a component hasn't been inquired in the last ~3–5
+    shipped items; floor of once / component / cycle.*
+16. **Per-cycle theme** — *Rec: support an optional Andrew-set focus; default off → importance×readiness.*
+
+---
+
+## 10. Role & term glossary (one-pager for a cold reader / sub-agent)
+
+**Tiers:** *Andrew* (human principal, sole contract ratifier) › *Winston* (AI tech lead, sole committer, owns
+contracts) › the platform / product / ops roles below.
+
+| Term | One line |
+|---|---|
+| **Component Owner** (Core / Weaver / Loom / Refractor / Loupe) | drives its component forward; files + prepares (L1). The Loupe Owner also tracks others' surfaces |
+| **Package Designer** | composes Core/Weaver/Refractor/Loom into reusable packages; flags platform gaps up |
+| **Vertical PO** (LoftSpace, Clinic) | defines what an app *does* + drives its front-end |
+| **UX/FE Designer** (Sally) | designs & builds the front-ends — Loupe's operator console + each vertical app's UI |
+| **Warden** | reliability — CI / gates / flakes (deferred until reliability bites) |
+| **Lamplighter** | observability — watches Health KV / logs against a live stack |
+| **Scribe** | docs — drift sweep over cross-cutting docs + canonical references |
+| **Archivist** | continuity — memory + checkpoints |
+| **Cartographer** | grounding — the mandatory read-only code/contract map run before any design (a stage, not a standing role) |
+| **Steward** | Winston's self-driving dispatch loop that activates owners (pull / signal / dependency / sweep) |
+| **Inquiry** | an owner's "how do I improve my component" generative pass → scored, ready board candidates |
+| **Forge** | the parallel case — fan out items across worktrees via a Workflow |
+| **The ladder** | L0 advise · L1 prepare-in-worktree · L2 Winston-merges-behind-gates · L3 contract-to-Andrew |

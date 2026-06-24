@@ -155,6 +155,8 @@ tombstone-on-convergence**, **production freshness-window tuning**, **multi-aspe
 | Package version upgrade (F-004) | In-place re-install over an existing version + DDL migration semantics (install / uninstall exist; upgrade does not). | ★ | M |
 | FR28 — role-queue + fallback | Assign tasks to a role queue with fallback (the demo uses direct identity assignment). | ★ | M |
 | op-vertex pruner + `@every` schedules | GC of op-tracker vertices (#47 / #49) + recurring schedules (Phase 2 ships one-shot `@at` only). | ★ | M |
+| Loupe live "system map" landing page *(Loupe)* | Landing view renders the running component + data-flow topology (the `architecture-overview` shape, deployed subset) as a **live** diagram — per-component/lens Health indicators, edge/link status, drill-in to vertices and control planes. Self-truthing: generated from Health KV + Core KV, not a static image. Base layer for the planned agent-activity operator console (`implementation-artifacts/agentic-ops-design.md`). | ★★ | M |
+| Loupe agent-activity console *(Loupe)* | The ops layer atop the live system map: the Steward's queue + work in flight, the **L3 contract-review queue** (Andrew's touchpoint — structured what / why / affected-consumers, not raw uncommitted diffs), per-agent Health, and board state. The agents emit Health KV like components, so Loupe watching the platform watches the agents (dogfoods the dependency-watch). Operator surface for `implementation-artifacts/agentic-ops-design.md`. | ★★ | M |
 
 ---
 
