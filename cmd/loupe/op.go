@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/asolgan/lattice/internal/processor"
@@ -11,12 +12,16 @@ import (
 // opRequest is the POST /api/op body. operationType is required; lane defaults
 // to "default"; class is the optional DDL hint; payload is the raw operation
 // payload forwarded verbatim into the envelope (defaults to {} when omitted so
-// the Processor's "payload is required" check passes).
+// the Processor's "payload is required" check passes). reads is the optional
+// Contract #2 §2.5 declared read set — a read-dependent op (Tombstone/Update/
+// Assign/Grant…) must declare the keys it reads or its script sees no state and
+// fails (e.g. UnknownRole). Empty/blank entries are dropped.
 type opRequest struct {
 	OperationType string          `json:"operationType"`
 	Lane          string          `json:"lane,omitempty"`
 	Class         string          `json:"class,omitempty"`
 	Payload       json.RawMessage `json:"payload,omitempty"`
+	Reads         []string        `json:"reads,omitempty"`
 }
 
 // buildEnvelope turns a parsed opRequest into a processor.OperationEnvelope,
@@ -42,7 +47,7 @@ func buildEnvelope(req opRequest, requestID, actor string, now time.Time) (*proc
 	if !json.Valid(payload) {
 		return nil, fmt.Errorf("payload is not valid JSON")
 	}
-	return &processor.OperationEnvelope{
+	env := &processor.OperationEnvelope{
 		RequestID:     requestID,
 		Lane:          lane,
 		OperationType: req.OperationType,
@@ -50,7 +55,30 @@ func buildEnvelope(req opRequest, requestID, actor string, now time.Time) (*proc
 		SubmittedAt:   now.UTC().Format(time.RFC3339),
 		Class:         req.Class,
 		Payload:       payload,
-	}, nil
+	}
+	if reads := cleanReads(req.Reads); len(reads) > 0 {
+		env.ContextHint = &processor.ContextHint{Reads: reads}
+	}
+	return env, nil
+}
+
+// cleanReads trims and drops empty entries from a declared read set, preserving
+// order and removing duplicates.
+func cleanReads(reads []string) []string {
+	if len(reads) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(reads))
+	out := make([]string, 0, len(reads))
+	for _, r := range reads {
+		r = strings.TrimSpace(r)
+		if r == "" || seen[r] {
+			continue
+		}
+		seen[r] = true
+		out = append(out, r)
+	}
+	return out
 }
 
 // laneValid reports whether lane is one of the Contract #2 §2.3 lane enums.

@@ -61,52 +61,107 @@ function lazyLoad(tab) {
   if (tab === "control") loadControl();
   if (tab === "packages") loadPackages();
   if (tab === "files") loadFiles();
+  if (tab === "op") loadOps();
 }
 
 // ---- Core KV ----
 let selectedKeyRow = null;
+
+// shortId drops the "vtx.<type>." prefix, leaving the id (+ any trailing segs).
+function shortId(key) { return key.split(".").slice(2).join("."); }
 
 async function loadCoreKV() {
   const prefix = $("#corekv-prefix").value.trim();
   const limit = $("#corekv-limit").value.trim() || "500";
   setStatus("corekv-status", "loading…");
   const q = new URLSearchParams({ prefix, limit });
-  const body = await api("/api/corekv?" + q.toString());
+  const body = await api("/api/vertices?" + q.toString());
   const list = $("#corekv-keys");
   list.innerHTML = "";
   if (body.error) { setStatus("corekv-status", body.error, true); return; }
-  setStatus("corekv-status", body.count + " keys" + (body.truncated ? " (capped at " + body.limit + ")" : ""));
-  body.keys.forEach((k) => {
-    const row = el("div", "key-row");
-    row.appendChild(el("span", "ktext", k.key));
-    row.appendChild(el("span", "badge " + k.class, k.class));
+  setStatus("corekv-status", body.count + " vertices" + (body.truncated ? " (capped at " + body.limit + ")" : ""));
+  (body.vertices || []).forEach((v) => {
+    const row = el("div", "key-row vtx-row");
+    row.appendChild(el("span", "badge vtype", v.type));
+    const main = el("span", "ktext");
+    main.appendChild(el("span", "vtx-label", v.label || shortId(v.key)));
+    if (v.label) main.appendChild(el("span", "vtx-id", shortId(v.key)));
+    row.appendChild(main);
+    if (v.isDeleted) row.appendChild(el("span", "deleted-flag", "del"));
     row.addEventListener("click", () => {
       if (selectedKeyRow) selectedKeyRow.classList.remove("selected");
       row.classList.add("selected");
       selectedKeyRow = row;
-      loadCoreKVEntry(k.key);
+      loadVertexDetail(v.key);
     });
     list.appendChild(row);
   });
+  if (!body.vertices || !body.vertices.length) list.appendChild(el("div", "muted", "(no vertices)"));
 }
 
-async function loadCoreKVEntry(key) {
-  $("#corekv-valuehead").textContent = key;
-  $("#corekv-value").textContent = "loading…";
-  const body = await api("/api/corekv/entry?key=" + encodeURIComponent(key));
-  if (body.error) {
-    $("#corekv-value").textContent = body.error;
-    $("#corekv-value").className = "error-text";
-    return;
-  }
-  $("#corekv-value").className = "";
+async function loadVertexDetail(key) {
   const head = $("#corekv-valuehead");
+  const detail = $("#corekv-detail");
+  head.textContent = key;
+  detail.innerHTML = "";
+  detail.appendChild(el("div", "muted small", "loading…"));
+  const body = await api("/api/vertex?key=" + encodeURIComponent(key));
+  detail.innerHTML = "";
+  if (body.error) { detail.appendChild(el("div", "error-text", body.error)); return; }
+
   head.textContent = key + " · r" + body.revision;
-  if (body.isDeleted) {
-    const flag = el("span", "deleted-flag", "isDeleted");
-    head.appendChild(flag);
-  }
-  $("#corekv-value").textContent = body.envelope !== null ? pretty(body.envelope) : "(non-JSON value)";
+  if (body.isDeleted) head.appendChild(el("span", "deleted-flag", "isDeleted"));
+
+  // Vertex document.
+  detail.appendChild(el("div", "vtx-section-head", "document" + (body.class ? " · " + body.class : "")));
+  const doc = el("pre", "vtx-doc");
+  doc.textContent = body.envelope ? pretty(body.envelope) : "(non-JSON value)";
+  detail.appendChild(doc);
+
+  // Aspects.
+  const aspects = body.aspects || [];
+  detail.appendChild(el("div", "vtx-section-head", "aspects (" + aspects.length + ")"));
+  if (!aspects.length) detail.appendChild(el("div", "muted small", "(none)"));
+  aspects.forEach((a) => detail.appendChild(expanderRow(a.localName, "aspect", a.key)));
+
+  // Links (either direction).
+  const links = body.links || [];
+  detail.appendChild(el("div", "vtx-section-head", "links (" + links.length + ")"));
+  if (!links.length) detail.appendChild(el("div", "muted small", "(none)"));
+  links.forEach((l) => {
+    const arrow = l.direction === "out" ? "→" : "←";
+    const label = arrow + " " + l.relation + " " + l.otherType + " · " + shortId(l.otherKey);
+    detail.appendChild(expanderRow(label, "link " + l.direction, l.key));
+  });
+}
+
+// expanderRow renders a collapsed row that lazy-loads the entry's document via
+// /api/corekv/entry on first expand and toggles it thereafter.
+function expanderRow(label, badge, key) {
+  const wrap = el("div", "expander");
+  const headEl = el("div", "expander-head");
+  const arrow = el("span", "expander-arrow", "▸");
+  headEl.appendChild(arrow);
+  headEl.appendChild(el("span", "expander-label", label));
+  if (badge) headEl.appendChild(el("span", "badge " + badge, badge));
+  const bodyEl = el("pre", "expander-body");
+  bodyEl.style.display = "none";
+  let loaded = false;
+  headEl.addEventListener("click", async () => {
+    const isOpen = bodyEl.style.display !== "none";
+    bodyEl.style.display = isOpen ? "none" : "block";
+    arrow.textContent = isOpen ? "▸" : "▾";
+    if (!isOpen && !loaded) {
+      loaded = true;
+      bodyEl.textContent = "loading…";
+      const e = await api("/api/corekv/entry?key=" + encodeURIComponent(key));
+      bodyEl.className = "expander-body" + (e.error ? " error-text" : "");
+      bodyEl.textContent = e.error ? e.error : (e.envelope ? pretty(e.envelope) : "(non-JSON value)");
+    }
+  });
+  wrap.appendChild(headEl);
+  wrap.appendChild(bodyEl);
+  return wrap;
 }
 
 $("#corekv-load").addEventListener("click", loadCoreKV);
@@ -132,7 +187,10 @@ async function loadHealth() {
   overall.className = "rollup " + body.overall;
   (body.components || []).forEach((c) => {
     const card = el("div", "card " + c.status);
-    card.appendChild(el("div", "card-key", c.key));
+    const title = el("div", "card-key", c.name || c.key);
+    if (c.group && c.group !== c.name) title.appendChild(el("span", "card-group", c.group));
+    card.appendChild(title);
+    if (c.detail) card.appendChild(el("div", "card-sub", c.detail));
     const meta = el("div", "card-meta");
     meta.appendChild(el("span", "card-status", c.status));
     meta.appendChild(el("span", null, c.freshness));
@@ -251,23 +309,162 @@ async function loadPackages() {
 $("#packages-load").addEventListener("click", loadPackages);
 
 // ---- Submit Op ----
+// opCatalog maps an operationType to its group (service), input schema, and
+// description, built from GET /api/ops. The op picker drives a schema form.
+let opCatalog = {};
+
+async function loadOps() {
+  setStatus("op-catalog-status", "loading…");
+  const sel = $("#op-select");
+  const body = await api("/api/ops");
+  if (body.error) { setStatus("op-catalog-status", body.error, true); return; }
+  opCatalog = {};
+  sel.innerHTML = '<option value="">— choose an operation —</option>';
+  (body.groups || []).forEach((g) => {
+    const og = document.createElement("optgroup");
+    og.label = g.name + (g.commands.length > 1 ? " (" + g.commands.length + ")" : "");
+    (g.commands || []).forEach((cmd) => {
+      opCatalog[cmd] = { group: g.name, schema: g.inputSchema || null, description: g.description || "" };
+      const opt = el("option", null, cmd);
+      opt.value = cmd;
+      og.appendChild(opt);
+    });
+    sel.appendChild(og);
+  });
+  setStatus("op-catalog-status", (body.count || 0) + " service(s), " + Object.keys(opCatalog).length + " ops");
+}
+
+// renderOpForm builds one input per top-level property of a JSON-Schema object.
+function renderOpForm(schema) {
+  const host = $("#op-fields");
+  host.innerHTML = "";
+  if (!schema || schema.type !== "object" || !schema.properties) {
+    host.appendChild(el("div", "muted small",
+      "(no field schema for this op — use the raw payload under Advanced)"));
+    return;
+  }
+  const required = new Set(schema.required || []);
+  Object.keys(schema.properties).forEach((name) => {
+    const p = schema.properties[name] || {};
+    const isReq = required.has(name);
+    const wrap = el("label", "op-field");
+    const head = el("span", "op-field-name", name + (isReq ? " *" : ""));
+    head.appendChild(el("span", "op-field-type", schemaTypeLabel(p)));
+    wrap.appendChild(head);
+    wrap.appendChild(buildInput(name, p, isReq));
+    if (p.description) wrap.appendChild(el("span", "op-field-desc", p.description));
+    host.appendChild(wrap);
+  });
+}
+
+function schemaTypeLabel(p) {
+  if (p.enum) return "enum";
+  return Array.isArray(p.type) ? p.type.join("|") : (p.type || "any");
+}
+
+// buildInput maps a JSON-Schema property to a form control, tagging it with the
+// field name + type so collectOpForm can coerce the value back.
+function buildInput(name, p, isReq) {
+  const type = Array.isArray(p.type) ? p.type[0] : p.type;
+  let input;
+  if (p.enum) {
+    input = document.createElement("select");
+    if (!isReq) input.appendChild(el("option", null, ""));
+    p.enum.forEach((v) => { const o = el("option", null, String(v)); o.value = String(v); input.appendChild(o); });
+  } else if (type === "boolean") {
+    input = document.createElement("input"); input.type = "checkbox";
+  } else if (type === "integer" || type === "number") {
+    input = document.createElement("input"); input.type = "number";
+  } else if (type === "array" || type === "object") {
+    input = document.createElement("textarea"); input.rows = 3;
+    input.placeholder = (type === "array" ? "[ … ]" : "{ … }") + " JSON";
+  } else {
+    input = document.createElement("input"); input.type = "text";
+  }
+  input.dataset.field = name;
+  input.dataset.type = type || "string";
+  if (isReq) input.dataset.required = "1";
+  return input;
+}
+
+// deriveReads walks a payload and collects every key-shaped string value
+// (vtx.* / lnk.*). A read-dependent op (Tombstone/Update/Assign/Grant…) must
+// declare the keys it reads, and those keys are exactly the target references in
+// its payload — so the form can supply ContextHint.Reads automatically.
+function deriveReads(payload) {
+  const out = [];
+  const isKey = (s) => typeof s === "string" && (s.startsWith("vtx.") || s.startsWith("lnk."));
+  const walk = (v) => {
+    if (isKey(v)) out.push(v);
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === "object") Object.values(v).forEach(walk);
+  };
+  walk(payload);
+  return out;
+}
+
+// collectOpForm reads the rendered fields into a payload object. Empty optional
+// fields are omitted; numbers/booleans/JSON are coerced. Throws on a malformed
+// JSON field or a missing required field.
+function collectOpForm() {
+  const out = {};
+  $all("#op-fields [data-field]").forEach((inp) => {
+    const name = inp.dataset.field, type = inp.dataset.type, req = inp.dataset.required;
+    if (type === "boolean") {
+      if (inp.checked) out[name] = true; else if (req) out[name] = false;
+      return;
+    }
+    const raw = inp.value.trim();
+    if (raw === "") { if (req) throw new Error(name + " is required"); return; }
+    if (type === "integer" || type === "number") {
+      const n = Number(raw);
+      if (Number.isNaN(n)) throw new Error(name + ": not a number");
+      out[name] = n;
+    } else if (type === "array" || type === "object") {
+      try { out[name] = JSON.parse(raw); }
+      catch (e) { throw new Error(name + ": invalid JSON — " + e.message); }
+    } else {
+      out[name] = raw;
+    }
+  });
+  return out;
+}
+
+$("#op-select").addEventListener("change", () => {
+  const entry = opCatalog[$("#op-select").value];
+  $("#op-desc").textContent = entry ? (entry.group + (entry.description ? " — " + entry.description : "")) : "";
+  renderOpForm(entry ? entry.schema : null);
+  $("#op-payload").value = ""; // start from the form, not a stale raw payload
+});
+$("#op-reload").addEventListener("click", loadOps);
+
 $("#op-submit").addEventListener("click", async () => {
-  const operationType = $("#op-type").value.trim();
+  const override = $("#op-type").value.trim();
+  const operationType = override || $("#op-select").value;
   const lane = $("#op-lane").value;
   const klass = $("#op-class").value.trim();
-  const payloadText = $("#op-payload").value.trim() || "{}";
+  const rawPayload = $("#op-payload").value.trim();
   const reply = $("#op-reply");
 
-  if (!operationType) { setStatus("op-status", "operationType is required", true); return; }
+  if (!operationType) { setStatus("op-status", "choose an operation (or set an override)", true); return; }
+
   let payload;
-  try { payload = JSON.parse(payloadText); }
-  catch (e) { setStatus("op-status", "payload is not valid JSON: " + e.message, true); return; }
+  if (rawPayload) {
+    try { payload = JSON.parse(rawPayload); }
+    catch (e) { setStatus("op-status", "raw payload is not valid JSON: " + e.message, true); return; }
+  } else {
+    try { payload = collectOpForm(); }
+    catch (e) { setStatus("op-status", e.message, true); return; }
+  }
 
   setStatus("op-status", "submitting…");
   reply.textContent = "";
   reply.className = "";
+  const manualReads = $("#op-reads").value.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+  const reads = deriveReads(payload).concat(manualReads);
   const req = { operationType, lane, payload };
   if (klass) req.class = klass;
+  if (reads.length) req.reads = reads;
   const body = await api("/api/op", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

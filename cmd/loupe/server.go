@@ -51,9 +51,12 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 
 	mux.HandleFunc("/api/corekv", s.handleCoreKVList)
 	mux.HandleFunc("/api/corekv/entry", s.handleCoreKVEntry)
+	mux.HandleFunc("/api/vertices", s.handleVertices)
+	mux.HandleFunc("/api/vertex", s.handleVertex)
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/control/", s.handleControl)
 	mux.HandleFunc("/api/packages", s.handlePackages)
+	mux.HandleFunc("/api/ops", s.handleOps)
 	mux.HandleFunc("/api/op", s.handleOp)
 	// Objects: POST /api/objects (upload), GET/DELETE /api/objects/<oid>. Both
 	// the bare and trailing-segment patterns route to the same handler.
@@ -196,7 +199,23 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		}
 		return doc, true
 	}
-	rollup := computeHealth(keys, readEntry, staleThreshold)
+	// A lens reporter's Health KV key is the lens's meta.lens vertex id (a bare
+	// NanoID), so its canonicalName + description live at vtx.meta.<id>.* in Core
+	// KV. resolveLens surfaces those for a readable card label instead of the id.
+	coreGet := func(key string) ([]byte, bool) {
+		entry, err := conn.KVGet(ctx, bootstrap.CoreKVBucket, key)
+		if err != nil {
+			return nil, false
+		}
+		return entry.Value, true
+	}
+	resolveLens := func(id string) (name, desc string) {
+		metaKey := "vtx.meta." + id
+		name = dataString(metaData(coreGet, metaKey+".canonicalName"), "value", "name", "canonicalName")
+		desc = dataString(metaData(coreGet, metaKey+".description"), "value", "text", "description")
+		return name, desc
+	}
+	rollup := computeHealth(keys, readEntry, resolveLens, staleThreshold)
 	s.writeJSON(w, http.StatusOK, rollup)
 }
 

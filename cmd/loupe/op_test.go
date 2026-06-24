@@ -87,6 +87,34 @@ func TestBuildEnvelope(t *testing.T) {
 			t.Fatal("expected error for invalid payload JSON")
 		}
 	})
+
+	t.Run("reads populate ContextHint (trimmed + deduped)", func(t *testing.T) {
+		req := opRequest{
+			OperationType: "TombstoneRole",
+			Reads:         []string{"vtx.role.X", "  ", "vtx.role.X", "vtx.identity.Y"},
+		}
+		env, err := buildEnvelope(req, reqID, actor, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if env.ContextHint == nil {
+			t.Fatal("ContextHint is nil; reads were dropped")
+		}
+		got := env.ContextHint.Reads
+		if len(got) != 2 || got[0] != "vtx.role.X" || got[1] != "vtx.identity.Y" {
+			t.Errorf("reads = %v, want [vtx.role.X vtx.identity.Y]", got)
+		}
+	})
+
+	t.Run("no reads leaves ContextHint nil", func(t *testing.T) {
+		env, err := buildEnvelope(opRequest{OperationType: "X"}, reqID, actor, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if env.ContextHint != nil {
+			t.Errorf("ContextHint should be nil when no reads declared, got %+v", env.ContextHint)
+		}
+	})
 }
 
 // The envelope buildEnvelope produces must satisfy the Processor's own

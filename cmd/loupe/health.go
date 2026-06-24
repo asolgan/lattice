@@ -7,11 +7,15 @@ import (
 	"time"
 )
 
-// healthComponent is one component card the UI renders: a status label, a
-// human-readable freshness string, and any issue lines.
+// healthComponent is one card the UI renders. Name is the descriptive label
+// (a component name, or a lens's canonicalName); Detail is a secondary line
+// (the component instance id, or "lens · <description>"); Key is the raw Health
+// KV key (kept for reference / control-plane lookups).
 type healthComponent struct {
 	Key       string   `json:"key"`
 	Group     string   `json:"group"`
+	Name      string   `json:"name"`
+	Detail    string   `json:"detail,omitempty"`
 	Status    string   `json:"status"`
 	Freshness string   `json:"freshness"`
 	Issues    []string `json:"issues,omitempty"`
@@ -24,27 +28,38 @@ type healthRollup struct {
 	Alerts     []string          `json:"alerts"`
 }
 
-// classifyHealthKey groups a Health KV key into a component bucket. Mirrors the
-// shape of cmd/lattice/health.classifyKey: a bare heartbeat key (no dot after
-// the component segment) is the component's heartbeat; a deeper key is an event;
-// bootstrap / alert keys are recognized explicitly; everything else is a lens
-// reporter (a bare NanoID).
-func classifyHealthKey(key string) string {
+// How a Health KV key is rendered.
+const (
+	kindComponent = "component"
+	kindLens      = "lens"
+	kindBootstrap = "bootstrap"
+	kindAlert     = "alert"
+	kindGate      = "gate"
+	kindEvent     = "event"
+)
+
+// classifyHealthKey groups a Health KV key. A `health.<component>.<instance>`
+// key (no further dots) is that component's Contract #5 heartbeat — this covers
+// processor, refractor, loom, weaver, bridge, and object-store-manager
+// uniformly. A deeper `health.<component>.…` key is a per-component event;
+// bootstrap / gate / alert keys are recognized explicitly. Everything else is a
+// bare-NanoID lens reporter (the lens's meta.lens vertex id).
+func classifyHealthKey(key string) (group, kind string) {
 	switch {
-	case strings.HasPrefix(key, "health.processor.") && !strings.Contains(strings.TrimPrefix(key, "health.processor."), "."):
-		return "processor"
-	case strings.HasPrefix(key, "health.processor."):
-		return "processor-event"
-	case strings.HasPrefix(key, "health.refractor.") && !strings.Contains(strings.TrimPrefix(key, "health.refractor."), "."):
-		return "refractor"
 	case strings.HasPrefix(key, "health.bootstrap."):
-		return "bootstrap"
+		return "bootstrap", kindBootstrap
 	case strings.HasPrefix(key, "health.gates."):
-		return "gate"
+		return "gate", kindGate
 	case strings.HasPrefix(key, "health.alerts."):
-		return "alert"
+		return "alert", kindAlert
+	case strings.HasPrefix(key, "health."):
+		comp, inst, found := strings.Cut(strings.TrimPrefix(key, "health."), ".")
+		if found && comp != "" && inst != "" && !strings.Contains(inst, ".") {
+			return comp, kindComponent
+		}
+		return comp, kindEvent
 	default:
-		return "lens"
+		return "lens", kindLens
 	}
 }
 
@@ -68,12 +83,29 @@ func parseHealthTime(doc map[string]any, key string) (time.Time, bool) {
 	return t, err == nil
 }
 
+// componentHeartbeat reads a component's heartbeat timestamp. Most daemons stamp
+// "heartbeatAt"; object-store-manager stamps "updatedAt" — both are tried.
+func componentHeartbeat(doc map[string]any) (time.Time, bool) {
+	for _, field := range []string{"heartbeatAt", "updatedAt"} {
+		if ts, ok := parseHealthTime(doc, field); ok {
+			return ts, true
+		}
+	}
+	return time.Time{}, false
+}
+
 // computeHealth evaluates every Health KV entry into component cards plus an
 // overall rollup (green/yellow/red). readEntry returns the decoded JSON doc for
-// a key (and false to skip). staleThreshold is the heartbeat age past which a
-// component is "stale" (yellow). It mirrors the rollup logic in
-// cmd/lattice/health but emits the per-card shape the Loupe UI renders.
-func computeHealth(keys []string, readEntry func(string) (map[string]any, bool), staleThreshold time.Duration) healthRollup {
+// a key (and false to skip). resolveLens maps a lens reporter id to its
+// (canonicalName, description) for a readable card label (nil disables it, e.g.
+// in tests). staleThreshold is the heartbeat age past which a component is
+// "stale" (yellow).
+func computeHealth(
+	keys []string,
+	readEntry func(string) (map[string]any, bool),
+	resolveLens func(id string) (name, desc string),
+	staleThreshold time.Duration,
+) healthRollup {
 	const (
 		green  = 0
 		yellow = 1
@@ -95,11 +127,17 @@ func computeHealth(keys []string, readEntry func(string) (map[string]any, bool),
 		if !ok {
 			continue
 		}
-		group := classifyHealthKey(k)
-		switch group {
-		case "processor", "refractor":
-			c := healthComponent{Key: k, Group: group}
-			if ts, ok := parseHealthTime(doc, "heartbeatAt"); ok {
+		group, kind := classifyHealthKey(k)
+		switch kind {
+		case kindComponent:
+			c := healthComponent{Key: k, Group: group, Name: group}
+			if comp, ok := doc["component"].(string); ok && comp != "" {
+				c.Name = comp
+			}
+			if inst, ok := doc["instance"].(string); ok && inst != "" {
+				c.Detail = inst
+			}
+			if ts, ok := componentHeartbeat(doc); ok {
 				c.Freshness = freshness(ts)
 				if time.Since(ts) > staleThreshold {
 					c.Status = "stale"
@@ -115,8 +153,16 @@ func computeHealth(keys []string, readEntry func(string) (map[string]any, bool),
 			}
 			components = append(components, c)
 
-		case "lens":
-			c := healthComponent{Key: k + " (lens)", Group: group, Freshness: "-"}
+		case kindLens:
+			c := healthComponent{Key: k, Group: "lens", Name: k, Detail: "lens", Freshness: "-"}
+			if resolveLens != nil {
+				if name, desc := resolveLens(k); name != "" {
+					c.Name = name
+					if desc != "" {
+						c.Detail = "lens · " + desc
+					}
+				}
+			}
 			status, _ := doc["status"].(string)
 			consumerLag, _ := doc["consumerLag"].(float64)
 			errorCount, _ := doc["errorCount"].(float64)
@@ -142,16 +188,17 @@ func computeHealth(keys []string, readEntry func(string) (map[string]any, bool),
 			}
 			components = append(components, c)
 
-		case "bootstrap":
+		case kindBootstrap:
 			bootstrapPresent = true
 			components = append(components, healthComponent{
 				Key:       k,
-				Group:     group,
+				Group:     "bootstrap",
+				Name:      "bootstrap",
 				Status:    "green",
 				Freshness: "-",
 			})
 
-		case "alert":
+		case kindAlert:
 			severity, _ := doc["severity"].(string)
 			msg, _ := doc["message"].(string)
 			alerts = append(alerts, fmt.Sprintf("[%s] %s: %s", severity, k, msg))
@@ -162,13 +209,19 @@ func computeHealth(keys []string, readEntry func(string) (map[string]any, bool),
 				worse(yellow)
 			}
 		}
+		// kindGate and kindEvent are not rendered as cards.
 	}
 
 	if !bootstrapPresent {
 		worse(red)
 	}
 
-	sort.Slice(components, func(i, j int) bool { return components[i].Key < components[j].Key })
+	sort.Slice(components, func(i, j int) bool {
+		if components[i].Name != components[j].Name {
+			return components[i].Name < components[j].Name
+		}
+		return components[i].Key < components[j].Key
+	})
 
 	return healthRollup{
 		Overall:    [...]string{"green", "yellow", "red"}[overall],

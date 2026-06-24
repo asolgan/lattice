@@ -23,16 +23,16 @@
     <!-- Core KV -->
     <section class="panel active" id="panel-corekv">
       <div class="panel-controls">
-        <input type="text" id="corekv-prefix" placeholder="key prefix (e.g. vtx.meta.)">
-        <input type="number" id="corekv-limit" value="500" min="1" title="max keys">
-        <button id="corekv-load">List keys</button>
+        <input type="text" id="corekv-prefix" placeholder="type filter (e.g. vtx.role.)">
+        <input type="number" id="corekv-limit" value="500" min="1" title="max vertices">
+        <button id="corekv-load">List vertices</button>
         <span class="muted" id="corekv-status"></span>
       </div>
       <div class="split">
         <div class="keylist" id="corekv-keys"></div>
         <div class="valuepane">
-          <div class="valuepane-head" id="corekv-valuehead">Select a key</div>
-          <pre id="corekv-value"></pre>
+          <div class="valuepane-head" id="corekv-valuehead">Select a vertex</div>
+          <div class="vtx-detail" id="corekv-detail"></div>
         </div>
       </div>
     </section>
@@ -136,9 +136,13 @@
     <!-- Submit Op -->
     <section class="panel" id="panel-op">
       <div class="op-form">
+        <div class="panel-controls">
+          <button id="op-reload">Reload ops</button>
+          <span class="muted" id="op-catalog-status"></span>
+        </div>
         <div class="op-row">
-          <label>operationType
-            <input type="text" id="op-type" placeholder="e.g. CreateIdentity">
+          <label>operation
+            <select id="op-select"><option value="">— choose an operation —</option></select>
           </label>
           <label>lane
             <select id="op-lane">
@@ -148,13 +152,26 @@
               <option value="system">system</option>
             </select>
           </label>
-          <label>class (optional)
-            <input type="text" id="op-class" placeholder="e.g. identity">
-          </label>
         </div>
-        <label>payload (JSON)
-          <textarea id="op-payload" rows="10" spellcheck="false">{}</textarea>
-        </label>
+        <div id="op-desc" class="muted small"></div>
+        <div id="op-fields" class="op-fields"></div>
+        <details id="op-advanced">
+          <summary>Advanced — raw payload &amp; overrides</summary>
+          <div class="op-row">
+            <label>operationType override
+              <input type="text" id="op-type" placeholder="(uses the selected operation)">
+            </label>
+            <label>class (optional)
+              <input type="text" id="op-class" placeholder="(inferred from operationType)">
+            </label>
+          </div>
+          <label>raw payload (JSON) — overrides the form below when non-empty
+            <textarea id="op-payload" rows="8" spellcheck="false" placeholder="{}"></textarea>
+          </label>
+          <label>context-hint reads — keys this op may read (auto-derived from vtx.*/lnk.* payload values; add extras here, one per line or comma-separated)
+            <textarea id="op-reads" rows="2" spellcheck="false" placeholder="vtx.role.&lt;id&gt;"></textarea>
+          </label>
+        </details>
         <div class="op-actions">
           <button id="op-submit">Submit operation</button>
           <span class="muted" id="op-status"></span>

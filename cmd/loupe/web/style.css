@@ -146,6 +146,55 @@ button:active { transform: translateY(1px); }
 }
 .deleted-flag { color: var(--red); margin-left: 8px; }
 
+/* Core KV — vertex list rows */
+.vtx-row .ktext { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.vtx-label { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vtx-id { font-family: var(--mono); font-size: 10px; color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.badge.vtype { color: var(--accent); border-color: var(--accent-dim); }
+.badge.link { color: var(--yellow); border-color: var(--yellow); }
+.badge.out, .badge.in { display: none; }
+
+/* Core KV — vertex detail */
+.vtx-detail { flex: 1; overflow-y: auto; padding: 10px 12px; }
+.vtx-section-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  margin: 14px 0 6px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 4px;
+}
+.vtx-section-head:first-child { margin-top: 0; }
+.vtx-doc {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  max-height: 320px;
+  flex: none;
+}
+.expander { border: 1px solid var(--border); border-radius: 6px; margin-bottom: 5px; overflow: hidden; }
+.expander-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  cursor: pointer;
+  background: var(--bg-input);
+  font-size: 12px;
+}
+.expander-head:hover { background: var(--border); }
+.expander-arrow { color: var(--text-dim); width: 10px; flex-shrink: 0; }
+.expander-label { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+.expander-head .badge { flex-shrink: 0; }
+.expander-body {
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  max-height: 280px;
+  font-size: 11px;
+  flex: none;
+}
+
 pre {
   margin: 0;
   padding: 12px;
@@ -171,7 +220,9 @@ pre {
 .card.red { border-left-color: var(--red); }
 .card.active { border-left-color: var(--green); }
 .card.stale, .card.unknown, .card.paused, .card.rebuilding { border-left-color: var(--yellow); }
-.card-key { font-family: var(--mono); font-size: 12px; word-break: break-all; margin-bottom: 6px; }
+.card-key { font-size: 13px; font-weight: 600; word-break: break-word; margin-bottom: 2px; display: flex; align-items: center; gap: 8px; }
+.card-group { font-size: 10px; font-weight: 400; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; }
+.card-sub { font-family: var(--mono); font-size: 11px; color: var(--text-dim); word-break: break-all; margin-bottom: 6px; }
 .card-meta { display: flex; gap: 12px; color: var(--text-dim); font-size: 12px; }
 .card-status { font-weight: 600; }
 .card-issues { margin-top: 8px; }
@@ -227,6 +278,25 @@ table.grid td { font-family: var(--mono); }
 .op-form { max-width: 820px; }
 .op-row { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 12px; }
 .op-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-dim); }
+.op-form select#op-select { min-width: 320px; }
+#op-desc { margin: -2px 0 12px; }
+#op-desc:empty { display: none; }
+.op-fields { display: flex; flex-direction: column; gap: 12px; margin-bottom: 12px; }
+.op-field {
+  display: flex; flex-direction: column; gap: 4px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+.op-field-name { font-size: 12px; color: var(--text); font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.op-field-type { font-size: 10px; font-weight: 400; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; }
+.op-field-desc { font-size: 11px; color: var(--text-dim); }
+.op-field input[type="text"], .op-field input[type="number"], .op-field select, .op-field textarea { width: 100%; }
+.op-field input[type="checkbox"] { width: auto; align-self: flex-start; }
+#op-advanced { margin-bottom: 12px; border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; background: var(--bg-raised); }
+#op-advanced summary { cursor: pointer; color: var(--text-dim); font-size: 12px; }
+#op-advanced label { margin-top: 8px; }
 .op-actions { display: flex; align-items: center; gap: 12px; margin: 12px 0; }
 #op-reply, .control-out {
   font-family: var(--mono);
