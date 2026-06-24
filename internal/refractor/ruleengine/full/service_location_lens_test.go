@@ -21,9 +21,10 @@ import (
 //
 //   - §6.10 item 1 (MULTI-LEVEL EXCLUSION): an unavailableAt at a CLOSER level
 //     of the actor's residence→containment chain beats an availableAt higher
-//     up. This behavior has NEVER been tested in this codebase — it is the
-//     load-bearing proof that the exclusion existential's FRESH ex0/exLoc
-//     re-walk the actor's whole chain rather than pinning the matched location.
+//     up. The exclusion existential anchors on the granting residence loc0 and
+//     walks up through a FRESH exLoc, so it catches a closer unavailableAt
+//     without pinning the matched availability location — and stays per-chain
+//     (a different residence is unaffected).
 //   - §6.10 item 2 (TRANSITIVE AVAILABILITY): a resident of a unit inside a
 //     building gets a service availableAt the building (the containedIn*0.. hop).
 //   - INSTANCE-NOT-SWEPT: a service instance (carries instanceOf, never
@@ -94,10 +95,10 @@ func slClassAspect(t *testing.T, coreKV interface {
 // exclusion). The laundry must NOT appear in serviceAccess — the closer
 // unavailableAt beats the higher-up availableAt.
 //
-// This proves the exclusion existential's FRESH ex0/exLoc seed independently
-// and re-walk the actor's whole residence→containment chain for the bound svc,
-// rather than pinning the matched availableAt location (which would never see
-// the penthouse-level exclusion and would silently over-grant).
+// This proves the exclusion existential anchored on the granting residence
+// (loc0) walks up through a fresh exLoc for the bound svc, rather than pinning
+// the matched availableAt location (which would never see the penthouse-level
+// exclusion and would silently over-grant).
 func TestServiceLocationLens_MultiLevelExclusion(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")

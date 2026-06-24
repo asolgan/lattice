@@ -194,11 +194,11 @@ func TestPackage_LensCypher(t *testing.T) {
 		"$actorKey",
 		"residesIn",
 		"containedIn*0..",
-		"<-[:availableAt]-(svc)",   // service is the INBOUND side (not inverted)
-		"<-[:unavailableAt]-(svc)", // exclusion, same direction
-		"NOT (svc)-[:instanceOf]->", // template guard (instances carry instanceOf)
-		"ex0",                       // fresh exclusion vars
-		"exLoc",
+		"<-[:availableAt]-(svc)",                 // service is the INBOUND side (not inverted)
+		"<-[:unavailableAt]-(svc)",               // exclusion, same direction
+		"NOT (svc)-[:instanceOf]->",              // template guard (instances carry instanceOf)
+		"NOT (loc0)-[:containedIn*0..]->(exLoc)", // per-chain exclusion anchored on the granting residence
+		"exLoc",                                  // the fresh exclusion location var
 		"permitsOperation",
 		"serviceAccess",
 	} {
@@ -206,9 +206,16 @@ func TestPackage_LensCypher(t *testing.T) {
 			t.Errorf("capabilityServiceAccess cypher must contain %q", want)
 		}
 	}
-	// The over-granting bound-loc exclusion must NOT appear: the exclusion must
-	// re-walk via fresh vars, never reuse the matched loc.
+	// The exclusion walks via a fresh exLoc, never the bound availability loc —
+	// reusing the matched loc would over-grant (§6.10 item 1).
 	if strings.Contains(src, "(loc)<-[:unavailableAt]-(svc)") {
-		t.Errorf("exclusion must use FRESH vars (exLoc), not the bound loc — bound-loc over-grants (§6.10 item 1)")
+		t.Errorf("exclusion must use a fresh exLoc, not the bound loc — bound-loc over-grants (§6.10 item 1)")
+	}
+	// The exclusion anchors on the granting residence loc0; it must NOT re-seed
+	// from identity across the actor's whole residence set (that over-suppresses —
+	// a service unavailableAt one residence wrongly removed from all). residesIn
+	// therefore appears exactly once: the positive match.
+	if n := strings.Count(src, "residesIn"); n != 1 {
+		t.Errorf("exclusion must anchor on loc0 (per residence chain), not re-walk residesIn from identity; residesIn count = %d, want 1", n)
 	}
 }
