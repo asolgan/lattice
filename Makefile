@@ -17,7 +17,7 @@ BOOTSTRAP_JSON ?= $(abspath ./lattice.bootstrap.json)
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up up-full orchestration install-packages run-loupe down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-service-location verify-conformance build vet test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
+.PHONY: up up-full orchestration install-packages run-loupe down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-service-location verify-conformance build vet lint-conventions test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 up:
@@ -338,6 +338,12 @@ test-object-gc:
 vet:
 	@echo "==> go vet ./... (excluding vendored ANTLR parsers)"
 	go vet -unreachable=false $$(go list ./... | grep -v 'internal/refractor/ruleengine/full/cypher')
+
+## lint-conventions — Static check for CLAUDE.md code conventions (history/changelog
+## comments, asp.* key prefixes). Advisory by default; STRICT=1 exits non-zero.
+lint-conventions:
+	@echo "==> Linting code conventions..."
+	go run ./scripts/lint-conventions.go
 
 ## clean — Remove compiled binaries.
 clean:
