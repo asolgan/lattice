@@ -352,16 +352,23 @@ into a dark room). Concrete enabling work, each a candidate first story:
 
 1. **Steward loop + Inquiry** — the dispatcher (§6.1.1): the four triggers, the Winston-owned scoring rubric,
    the definition-of-ready, the starvation guard. (S)
-2. **Lamplighter + Weaver/Loom Health emission** — emission is a **prerequisite, not a follow-on**: the
-   reserved `health.weaver.*` / `health.loom.*` namespaces are still unemitted (schema doc §Reserved), and the
-   Steward will start dispatching Weaver/Loom work immediately. (S + S)
-3. **Contract-conformance linter** — powers the §6.2 hook; encodes Contract #1 + no-history-comments. (XS)
-4. **Dependency map (derived)** — `consumer → producers` **derived from code signals** (imports, control-plane
+2. **Lamplighter v0** — *grounding correction:* **Weaver and Loom already emit** rich Contract #5 heartbeats to
+   `health.weaver.*` / `health.loom.*` (`internal/{weaver,loom}/health.go` — consumers, targets, marks, sweeps,
+   timers, running-instances, `ConsumerPaused` issues), so there is **no emission prerequisite**. The gap is the
+   **consumer side**: Lamplighter reads all of `health-kv`, classifies anomalies (stale heartbeat ·
+   `consumerLag>0` · paused consumers · `issues[]` entries), and surfaces remediation. Confirm
+   `lattice health summary`'s `classifyKey` recognizes the weaver/loom keys. (S)
+3. **Health-KV schema doc refresh (Scribe)** — the **canonical** `docs/observability/health-kv-schema.md` still
+   lists `health.weaver.*` / `health.loom.*` as reserved/unemitted — stale since Phase 2 shipped the emission.
+   Document the real doc shapes, metrics, and issue codes. Dogfoods the Health-emission gate (§3); the Scribe's
+   first real drift catch. (XS)
+4. **Contract-conformance linter** — powers the §6.2 hook; encodes Contract #1 + no-history-comments. (XS)
+5. **Dependency map (derived)** — `consumer → producers` **derived from code signals** (imports, control-plane
    subjects, the substrate surface), *not* a hand-maintained table that would itself drift; drives the
    dependency-change trigger and the L3 affected-consumers view. (S)
-5. **CHECKPOINT protocol** — the §6.5 state file + the Stop/SessionStart hook. (XS)
-6. **Backlog Owner column** + **role skills** + the **Loupe operator surfaces** (§7, both filed). (XS / S / M)
-7. **Warden (deferred)** — Green-Watch + `FLAKE_REGISTRY` + the flake bar (§3); stand up when reliability
+6. **CHECKPOINT protocol** — the §6.5 state file + the Stop/SessionStart hook. (XS)
+7. **Backlog Owner column** + **role skills** + the **Loupe operator surfaces** (§7, both filed). (XS / S / M)
+8. **Warden (deferred)** — Green-Watch + `FLAKE_REGISTRY` + the flake bar (§3); stand up when reliability
    actually bites.
 
 ---
@@ -373,8 +380,8 @@ into a dark room). Concrete enabling work, each a candidate first story:
 *Org & rollout*
 
 1. **Full org now** — not a phased MVP; bring online in a safe order (§8).
-2. **Bring-up pair = Steward + Lamplighter**; Weaver/Loom Health emission is a prerequisite; **Warden deferred**
-   (CI green-enough).
+2. **Bring-up pair = Steward + Lamplighter** (Weaver/Loom *already* emit Health — no emission prerequisite;
+   Lamplighter is consumer-side); **Warden deferred** (CI green-enough).
 3. **Contract ownership** — Winston owns the frozen contracts; the **Core Owner** owns the stream
    *implementation* and holds **delegated authority for non-breaking stream additions**; an owner escalates to
    Winston on a contract touch, a cross-component interface change, or anything needing another component.
