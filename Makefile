@@ -2,7 +2,9 @@
 # Requires: Docker, Docker Compose, Go 1.26.1+
 #
 # Quick reference:
-#   make up              — start everything (cold or warm)
+#   make up              — start the kernel (NATS + Postgres, bootstrap, refractor, processor)
+#   make up-full         — full stack on latest: kernel + orchestration tier + core packages + Loupe
+#   make run-loupe       — build + run Loupe (view/control UI) on http://127.0.0.1:7777
 #   make down            — tear down everything cleanly
 #   make verify-bootstrap — assert primordial state; exit 0 on success
 #   make build           — compile all binaries
@@ -15,7 +17,7 @@ BOOTSTRAP_JSON ?= $(abspath ./lattice.bootstrap.json)
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-conformance build vet test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
+.PHONY: up up-full orchestration install-packages run-loupe down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-conformance build vet test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 up:
@@ -55,6 +57,12 @@ down:
 	-pkill -f "bin/refractor" 2>/dev/null || true
 	@echo "==> Killing any background processor processes..."
 	-pkill -f "bin/processor" 2>/dev/null || true
+	@echo "==> Killing any background orchestration / Loupe processes..."
+	-pkill -f "bin/loom" 2>/dev/null || true
+	-pkill -f "bin/weaver" 2>/dev/null || true
+	-pkill -f "bin/bridge" 2>/dev/null || true
+	-pkill -f "bin/object-store-manager" 2>/dev/null || true
+	-pkill -f "bin/loupe" 2>/dev/null || true
 	@echo "==> Down complete."
 
 ## verify-kernel — Assert post-Story-4.7 kernel keys exist with correct envelopes.
@@ -118,6 +126,11 @@ build:
 	go build -o bin/refractor ./cmd/refractor
 	go build -o bin/processor ./cmd/processor
 	go build -o bin/lattice ./cmd/lattice
+	go build -o bin/lattice-pkg ./cmd/lattice-pkg
+	go build -o bin/loom ./cmd/loom
+	go build -o bin/weaver ./cmd/weaver
+	go build -o bin/bridge ./cmd/bridge
+	go build -o bin/object-store-manager ./cmd/object-store-manager
 	go build -o bin/loupe ./cmd/loupe
 
 ## test-cli — Run the lattice CLI unit + E2E tests.
@@ -135,6 +148,67 @@ processor:
 run-processor: processor
 	@echo "==> Starting processor (Ctrl-C to stop)..."
 	NATS_URL=$(NATS_URL) ./bin/processor
+
+## up-full — Full local deployment on latest source: kernel (make up) +
+## orchestration tier (Loom/Weaver/Bridge/object-store-manager) + core packages
+## + Loupe, all in the background. When it returns, open http://127.0.0.1:7777.
+## For a clean rebuild from scratch, run `make down` first.
+up-full:
+	@$(MAKE) up
+	@$(MAKE) orchestration
+	@$(MAKE) install-packages
+	@echo "==> Building loupe binary..."
+	go build -o bin/loupe ./cmd/loupe
+	@echo "==> Killing any prior Loupe process..."
+	-pkill -f "bin/loupe" 2>/dev/null || true
+	@echo "==> Starting Loupe in background..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/loupe >loupe.log 2>&1 </dev/null &
+	@sleep 1
+	@echo "==> Full Lattice ready. Open http://127.0.0.1:7777 (Loupe)."
+	@echo "==> Logs: loupe.log loom.log weaver.log bridge.log objmgr.log refractor.log processor.log"
+
+## orchestration — Build + start the orchestration tier (Loom, Weaver, Bridge,
+## object-store-manager) in the background. Requires a running deployment
+## (make up). object-store-manager needs no actor key; the rest load the admin
+## actor from the bootstrap JSON. Logs: loom.log weaver.log bridge.log objmgr.log.
+orchestration:
+	@echo "==> Killing any prior orchestration processes..."
+	-pkill -f "bin/loom" 2>/dev/null || true
+	-pkill -f "bin/weaver" 2>/dev/null || true
+	-pkill -f "bin/bridge" 2>/dev/null || true
+	-pkill -f "bin/object-store-manager" 2>/dev/null || true
+	@echo "==> Building orchestration binaries..."
+	go build -o bin/loom ./cmd/loom
+	go build -o bin/weaver ./cmd/weaver
+	go build -o bin/bridge ./cmd/bridge
+	go build -o bin/object-store-manager ./cmd/object-store-manager
+	@echo "==> Starting Loom / Weaver / Bridge / object-store-manager in background..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/loom >loom.log 2>&1 </dev/null &
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/weaver >weaver.log 2>&1 </dev/null &
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/bridge >bridge.log 2>&1 </dev/null &
+	NATS_URL=$(NATS_URL) ./bin/object-store-manager >objmgr.log 2>&1 </dev/null &
+	@echo "==> Orchestration tier started."
+
+## install-packages — Install the core Capability Packages into a running
+## deployment, in dependency order: rbac-domain → identity-domain → objects-base.
+## (lattice-pkg only warns on unmet deps; ordering is the caller's responsibility.)
+install-packages:
+	@echo "==> Building lattice-pkg..."
+	go build -o bin/lattice-pkg ./cmd/lattice-pkg
+	@echo "==> Installing rbac-domain..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/rbac-domain
+	@echo "==> Installing identity-domain..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/identity-domain
+	@echo "==> Installing objects-base..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/objects-base
+
+## run-loupe — Build + run Loupe (the view/control web app) in the FOREGROUND.
+## Open http://127.0.0.1:7777. Requires a running deployment (make up / up-full).
+run-loupe:
+	@echo "==> Building loupe binary..."
+	go build -o bin/loupe ./cmd/loupe
+	@echo "==> Loupe on http://127.0.0.1:7777 (Ctrl-C to stop)..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/loupe
 
 ## test — Run all Go unit + integration tests.
 ## NOTE (Story 2.1b Gap 4): -p 1 serializes test-package execution.
