@@ -193,6 +193,12 @@ Two drivers, selected by whether Andrew is present:
   scaled to size and big items spanning fires); frozen-contract and architectural work escalate to Andrew on
   the board, never committed. *Caveat:* a local scheduled task fires only while the Claude app is running (or on
   next launch if it was closed when due) — true server-side unattendedness is the cloud-routine step below.
+  - **Two staggered loops — supply + demand.** Alongside the Steward (supply) runs a second scheduled task,
+    **`vertical-po-discovery`** (cron `0 3,9,15,21` — offset 3h so the two never collide writing the board):
+    a **Vertical PO** exercises one vertical's packages/app/flows, thinks as the product owner, and **files
+    scored backlog items** — the *demand* side of the flywheel. It is **file-only (L0/L1)** — it never builds
+    or commits; the Steward builds what it files. Without it, demand-generation starved behind building in the
+    single queue and the board ran dry ("nothing actionable"); the two-loop split keeps demand flowing.
 - **In-session — when Andrew is driving.** The **dynamic `/loop` + `ScheduleWakeup`** pattern: context-warm
   (resumes inside the live session with the tree, memory, and prior reasoning intact), state-paced (wakes on
   whether there's work, not a blind tick), token-budget-aware (respects the prompt-cache window, §6.6), and
