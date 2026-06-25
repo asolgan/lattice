@@ -10,6 +10,24 @@
 // advisory (prints findings, exits 0) so it can run as a non-blocking
 // PostToolUse hook.
 //
+// Edit-time hook mode:
+//
+//	go run ./scripts/lint-conventions.go --hook
+//
+// reads a Claude Code PostToolUse payload from stdin, scans the single file the
+// edit touched (tool_input.file_path), prints any findings to stderr, and
+// always exits 0 — advisory, never blocks the edit. Wire it into a (gitignored)
+// .claude/settings.json PostToolUse matcher on Edit|Write|MultiEdit so the same
+// checks CI enforces at STRICT also surface the moment a file is edited:
+//
+//	"hooks": {
+//	  "PostToolUse": [{
+//	    "matcher": "Edit|Write|MultiEdit",
+//	    "hooks": [{ "type": "command",
+//	      "command": "go run ./scripts/lint-conventions.go --hook" }]
+//	  }]
+//	}
+//
 // Checks (v0 — highest-value, lowest-false-positive):
 //   - History/changelog comments — git blame + the commit message are the
 //     record. This is the single most-violated rule (CLAUDE.md).
@@ -24,7 +42,9 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"regexp"
@@ -43,6 +63,11 @@ type finding struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--hook" {
+		runHook()
+		return
+	}
+
 	strict := os.Getenv("STRICT") == "1"
 	var files []string
 	for _, a := range os.Args[1:] {
@@ -75,6 +100,55 @@ func main() {
 	if strict {
 		os.Exit(1)
 	}
+}
+
+// runHook reads a Claude Code PostToolUse payload from stdin and scans the one
+// file the edit touched. It is advisory: any parse/read trouble is swallowed and
+// it always exits 0, so a malformed payload or an unrelated tool never blocks an
+// edit. Findings are fed back to the editing agent via a PostToolUse
+// hookSpecificOutput.additionalContext object on stdout (ignored harmlessly by a
+// harness that predates that field) and mirrored to stderr for the human.
+func runHook() {
+	data, err := io.ReadAll(os.Stdin)
+	if err != nil {
+		return
+	}
+	var payload struct {
+		ToolInput struct {
+			FilePath string `json:"file_path"`
+		} `json:"tool_input"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return
+	}
+	path := payload.ToolInput.FilePath
+	if path == "" || !strings.HasSuffix(path, ".go") {
+		return
+	}
+	findings := scanFile(path)
+	if len(findings) == 0 {
+		return
+	}
+
+	var b strings.Builder
+	for _, fd := range findings {
+		fmt.Fprintf(&b, "%s:%d: %s\n", fd.file, fd.line, fd.msg)
+	}
+	fmt.Fprintf(&b, "lint-conventions: %d convention issue(s) in the file you just edited — fix before commit (CI enforces STRICT).", len(findings))
+	msg := b.String()
+
+	fmt.Fprintln(os.Stderr, msg)
+
+	out, err := json.Marshal(map[string]any{
+		"hookSpecificOutput": map[string]any{
+			"hookEventName":     "PostToolUse",
+			"additionalContext": msg,
+		},
+	})
+	if err != nil {
+		return
+	}
+	fmt.Println(string(out))
 }
 
 func scanFile(path string) []finding {
