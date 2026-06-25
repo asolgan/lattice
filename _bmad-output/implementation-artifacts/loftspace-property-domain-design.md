@@ -6,6 +6,17 @@
 > blocker (the §4 `WITH`-drop) + several issues, all folded below. Backlog item: *Property / Unit / Listing
 > domain + richer application* (LoftSpace, pkg + FE, ★★★ **L** — the PO's "biggest product gap").
 >
+> **Build-grounding correction (2026-06-25, supersedes the original D1/D2):** `location-domain` **already
+> owns `vtx.unit.<id>`** (class=`location` — the physical *place*, root `{}`, containment via `containedIn`,
+> but NO economics). A new `vtx.unit` (class=`unit`) would **collide** on the key namespace. So
+> `loftspace-domain` **depends on `location-domain`** and adds the listing as **aspects on the existing
+> place-unit** — `.listing` (rent/term/availability) + `.address` — via aspect-type DDLs + `SetListing` /
+> `SetUnitAddress` ops. **No new vertex type** (simpler + reuses the place graph; containment to
+> building/property comes free). The unit is minted by `location-domain`'s `CreateLocation(locationType=unit)`.
+> `appliesToUnit` → the location `vtx.unit`; the convergence lens matches `(u:unit)` and reads
+> `u.listing.data.rentAmount` / `u.address.data.line1`. D1/D2/§4–§6 below are updated accordingly. This needs
+> a quick re-review of the changed sections before build (the cypher/B1 fix still stands).
+>
 > **Review changelog (folded):** B1 §4 cypher dropped `u` across the existing `WITH` → rewritten to carry the
 > unit fields through the `WITH` (§4). M1 a `missing_`-prefixed gap with no remediation op wedges Weaver →
 > `unit` is now **required at create**, no gap column (§3 D5, §7 Q2). M2 new columns need an explicit
@@ -43,34 +54,40 @@ applicant app (the next FE) has nothing concrete to render or collect.
 
 ## 3. Design decisions
 
-**D1 — a new `loftspace-domain` package owning the leasable thing; `lease-signing` depends on it.**
-Keep `lease-signing` as the *workflow* package; put the *inventory* (units) in a new `loftspace-domain`
-package. `lease-signing`'s `CreateLeaseApplication` gains a **required** `unit` param (§7 Q2) and writes the
-`appliesToUnit` link; the convergence lens walks it. Rationale: separation mirrors `service-domain`
-(capability) vs `lease-signing` (workflow); a property catalog is reusable beyond one application flow
-(search, availability, a landlord view). *Alternative considered:* fold units into `lease-signing` —
-rejected (conflates inventory with workflow, blocks an independent property catalog).
+**D1 — `loftspace-domain` adds the *listing* economics to `location-domain`'s existing place-unit; it does
+NOT introduce a vertex type.** (Corrected — see the build-grounding note above.) `location-domain` owns
+`vtx.unit.<id>` (class=`location`): the place, with `containedIn` to building/property, but root `{}` and no
+economics. `loftspace-domain` **depends on `location-domain`** and contributes the leasable facets as aspects
+on that same unit:
+- declares the `.listing` + `.address` aspect-type DDLs,
+- provides `SetListing` / `SetUnitAddress` ops that write them on a `vtx.unit`,
+- the unit itself is minted by `location-domain`'s `CreateLocation(locationType=unit)`.
+
+`lease-signing`'s `CreateLeaseApplication` gains a **required** `unit` param (§7 Q2) → writes the
+`appliesToUnit` link to that `vtx.unit`; the convergence lens walks it.
 
 - **Link-DDL ownership + install order (review M3):** the `appliesToUnit` link DDL (canonicalName globally
-  unique per Contract #1 §1.5) is declared by **`lease-signing`** — the verb is the application's, not the
-  unit's. Install is warn-and-proceed (not order-enforcing), so the dependency order **`loftspace-domain`
-  before `lease-signing`** is a hard requirement, stated in both manifests and wired into
-  `make install-loftspace` (loftspace-domain first). `CreateLeaseApplication` reads the `unit` key
-  (`ContextHint.Reads`) and **alive-checks it** (C7), so the unit DDL must be installed first or the create
-  rejects.
+  unique per Contract #1 §1.5) is declared by **`lease-signing`** — the verb is the application's. Install is
+  warn-and-proceed (not order-enforcing), so the order **`location-domain` → `loftspace-domain` →
+  `service-domain` → `lease-signing`** is a hard requirement, stated in the manifests' `depends` and wired
+  into `make install-loftspace`. `CreateLeaseApplication` reads the `unit` key (`ContextHint.Reads`) and
+  **alive-checks it** (C7).
 
-**D2 — vertex shape.** `vtx.unit.<NanoID>`, `class=unit`, root `{}` (D5). Business data in aspects:
-- `.address` `{line1, line2?, city, region, postal}`
-- `.listing` `{rentAmount, rentCurrency, bedrooms, bathrooms, sqft?, availableFrom (RFC3339 date),
-  leaseTermMonths, status ∈ available|pending|leased}`
-- (optional later) `.media` → object-store pointers (photos) via the existing `objects-base` plane.
+**D2 — aspects on the existing `location` unit (no new vertex type).** The unit is `vtx.unit.<NanoID>`,
+`class=location` (location-domain), root `{}` (D5). `loftspace-domain` declares two aspect-type DDLs written
+by its ops onto that unit:
+- `.address` `{line1, line2?, city, region, postal}` — `SetUnitAddress`.
+- `.listing` `{rentAmount, rentCurrency, bedrooms, bathrooms?, sqft?, availableFrom (RFC3339 date),
+  leaseTermMonths, status ∈ available|pending|leased}` — `SetListing`.
+- (later) `.media` → object-store pointers (photos) via the existing `objects-base` plane.
 
-**PO-decided (§7 Q1):** type name is **`unit`**, **flat** (no `property` parent) for v1 — add a `property`
-parent only when a multi-unit landlord/building view is demanded.
+**PO-decided (§7 Q1):** **flat** unit (no `property` parent) for v1 — and the place-unit already supports a
+`property` parent for free via location-domain's `containedIn`, so a landlord/building view is a later lens,
+not a schema change.
 
-**Write-ahead id seam (review C6):** `CreateUnit` takes an optional bare-NanoID `unitId` (mirroring
-`leaseAppId` / service-domain's `instanceId`) so a caller can know the key before commit and a crash-retry
-collapses on the Contract #4 tracker (CreateOnly). The Loupe/FE upload-then-link flow wants this.
+**No write-ahead seam to add here (supersedes review C6):** the unit is minted by location-domain's
+`CreateLocation`, which already has the optional `locationId` bare-NanoID seam. `SetListing`/`SetUnitAddress`
+operate on an existing unit key, so they need none.
 
 **D3 — richer application detail (additive aspects on `leaseapp`).**
 - `.terms` `{requestedRent?, moveInDate (RFC3339 date), leaseTermMonths}` — written by
@@ -156,10 +173,10 @@ RETURN
 
 ## 5. Increments
 
-1. **`loftspace-domain` package** — the `unit` vertex DDL (`.address`/`.listing` aspects), `CreateUnit` (with
-   the `unitId` write-ahead seam) + `SetListing` ops, permissions, manifest,
-   `make verify-package-loftspace-domain` + unit tests. **Ready to build now** (no dependency on the lease
-   integration). L2; M.
+1. **`loftspace-domain` package** (`depends: [location-domain]`) — the `.listing` + `.address`
+   **aspect-type** DDLs, `SetListing` / `SetUnitAddress` ops (operate on an existing `vtx.unit`), permissions,
+   manifest, `make verify-package-loftspace-domain` + unit tests. **No vertex DDL** (the unit is
+   location-domain's). **Ready to build now** (independent of the lease integration). L2; M.
 2. **`lease-signing` integration** — declare the `appliesToUnit` link DDL here; `CreateLeaseApplication`
    takes a **required** `unit`, adds it to `ContextHint.Reads`, **alive-checks** it (C7), writes
    `appliesToUnit`; add the `.terms` aspect; extend the convergence-lens `WITH`/`RETURN` (§4) **and**
@@ -172,10 +189,12 @@ RETURN
 
 ## 6. Contract / frozen-surface check
 
-- **New vertex type `unit`** follows Contract #1 key-shape (`vtx.unit.<NanoID>`) — package-authored,
-  permissive-by-default, **no frozen-contract edit** (review C1, confirmed). New links
-  (`appliesToUnit`/`hasCoApplicant`/`hasGuarantor`) follow the 6-segment shape + the sentence/direction rule
-  (C3).
+- **No new vertex type** (the corrected design reuses location-domain's `vtx.unit`). `loftspace-domain` adds
+  only **aspect-type DDLs** (`.listing`/`.address`) + ops — package-authored, permissive-by-default, **no
+  frozen-contract edit**. New links (`appliesToUnit`/`hasCoApplicant`/`hasGuarantor`) follow the 6-segment
+  shape + the sentence/direction rule (C3). The cross-package aspect-contribution (loftspace aspects on a
+  location-owned vertex) is the same contract-contribution pattern capability-kv uses — packages add aspects
+  to vertices they don't own; the aspect-type DDL just has to be installed.
 - The convergence-lens row gains additive informational columns — §06 says value-shape additions are fine;
   the Weaver target row is FROZEN as *one-row-per-candidate with a `violating` flag* (§10.2), preserved
   because `appliesToUnit` is 0..1 (review C2 — do not later project multi-links as fan-out columns).
