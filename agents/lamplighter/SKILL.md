@@ -60,6 +60,12 @@ Winston.
 
 ## Notes
 
+- **Architecture grounding (lattice-architecture.md).** Health KV (`health.<component>.<instance>`) is the
+  **operational-state plane** — *not* Core KV, *not* a lens, *not* a vertex; it is the one sanctioned
+  direct-KV plane for component self-reporting (P1). **Your data source is Health KV** (via
+  `lattice health summary`), never Core KV (P5 — and you're not the console). Your own emission (roadmap)
+  writes Health KV. Lens / read-model lag and auth-projection drift surface *as component issues in the
+  rollup* — read them there, don't go query Core KV.
 - Reuse the `lattice health summary` rollup — don't reinvent classification.
 - Output is *signal → candidate*, never a silent commit. Winston admits; Andrew ratifies contracts.
 - **Roadmap:** emit the Lamplighter's own pass to Health KV (dogfood — Loupe then watches the watcher);

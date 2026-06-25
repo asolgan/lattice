@@ -27,6 +27,26 @@ Read before proposing anything:
 Summarize the existing pattern + constraints. Do **not** redesign from scratch (ground first — this is the
 antidote to proposing shapes that drift from the code).
 
+**Architecture invariants you build to (lattice-architecture.md — honor, don't relearn the hard way):**
+
+- **P2 — the Processor is the sole writer to Core KV.** Mutate state by *submitting operations*
+  (`core-operations` → Processor); DDL via `ops.meta.>`. Loom / Weaver are clients that submit ops — they
+  **never** write Core KV directly.
+- **P5 — lenses are the only application query surface.** Applications read lens projections (read-model
+  targets: NATS-KV buckets, Postgres), never Core KV. **Loupe is the admin-inspector exception** (and the
+  platform binaries). If a consumer needs a field no lens projects, the fix is a **lens / read-model
+  addition**, not a Core-KV read.
+- **P1 — business & meta state are vertices / aspects / links in Core KV;** operational / internal state lives
+  outside it (Health KV, Weaver dispatch, Adjacency KV). **Health KV** (`health.<component>.<instance>`) is the
+  *only* sanctioned direct-KV write outside Refractor's own lens targets — not Core KV, not a lens, not a vertex.
+- **Every KV reader independently filters `isDeleted` / tombstones** — soft-deleted keys remain addressable
+  (Refractor must filter on read; the Processor enforces it on commit).
+- **Relationships are LINKS, not `data` refs** (Contract #1; root `data` = scalars only). A lens may *project*
+  a flattened `{ref}` but must **source it by walking the link** (documented exception: `permission` vertices).
+- **Capability KV is a lens projection** (the Capability Lens), not a standalone auth store — and it is
+  **security-critical**: projection correctness *is* auth correctness.
+- **Events carry references; consumers hydrate context from lens projections, not fat payloads.**
+
 ## 2. Scope the work
 
 Either the Steward handed a specific board item, or run **Inquiry** ("how do I improve this component"):

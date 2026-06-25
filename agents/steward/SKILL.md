@@ -115,10 +115,20 @@ app capabilities the POs propose are welcome — design → build, M/L fine.
 - Otherwise → **stage for Andrew** (L3 if a contract is touched; a design doc for architectural work).
   **Health-emission changes** must update the canonical Health-KV schema doc *in the same change* (keeps them
   L2-safe — the schema doc never diverges from the emission).
-- **Batch wins — don't stop after one item.** Treat everything that is **not Large** as a small win: for
-  **XS / S / M** items, ship **several per cycle** (each its own green commit + CI watch): pick → ship →
-  commit → pick the next, until you'd take on an **L (or XL)** item, the eligible queue drains, or the
-  token/time budget says stop (don't thrash). An **L+** item is still one per cycle (multi-fire below).
+- **Enforce the architecture invariants at admit** (CLAUDE.md / lattice-architecture.md). For app / FE work
+  especially: **P5** — a vertical app reads **lens read-model targets, never Core KV** (only Loupe, the
+  console, reads Core KV); the `lint-conventions` **P5 gate** must pass. **P2** — state changes via
+  *operations*, never direct KV writes. Also: relationships are **links** not `data` refs; readers filter
+  `isDeleted`. A change that violates these is **not** L2-eligible until fixed — don't merge it.
+- **Keep working until the queue drains — don't stop with work left and room to do it.** You **cannot query
+  your remaining token / credit budget** (there is no usage tool; `/context` is interactive-only), so do
+  **not** treat "budget" as a measurable stop signal or stop early "to be safe." Instead: **commit each
+  completed item green (watch CI), then pick the next**, and keep going while the eligible queue has work.
+  Batch XS/S/M freely; an **L item you finish with the queue still non-empty → keep going too** — **size does
+  not cap items-per-fire.** Fires run every ~2h and every completed item is already committed, so a thorough
+  fire is safe (nothing is lost if the turn ends). **Legitimate stops only:** the eligible queue is drained,
+  OR you're partway through an item too big to finish this turn (checkpoint it → multi-fire), OR a genuine
+  stuck-loop / context wall. **"I finished a big item" is not a stop reason.**
 - **Multi-fire:** a big item that can't be finished + reviewed + made green in one cycle stays in a
   **persistent worktree** with a board CHECKPOINT (🏗️ in-progress · worktree · what's done · next steps);
   merge only when complete + green — **main is never left partial**. A later cycle resumes it before picking new.

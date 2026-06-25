@@ -319,10 +319,15 @@ neglected, so the Steward also tracks each component's freshness via `git log -1
 routine pick with **that component's Inquiry** — guaranteeing every component rotates through attention
 regardless of where the loud items are. Andrew may set a **per-cycle theme** that biases selection. Inquiry
 fires from three triggers — idle-fill, signal-reactive, and **coverage-rotation** — never every tick, so the
-board is replenished, not spammed. **Batching:** a fire is not capped at one item — **everything that is not
-Large is a small win**, so for **XS / S / M** items the Steward ships several per cycle (each its own green
-commit) until it would start an **L (or XL)** item, the eligible queue drains, or the budget says stop; an L+
-item is still one-per-cycle (multi-fire). A six-hour fire shouldn't idle after a single small win.
+board is replenished, not spammed. **Throughput (corrected 2026-06-25 — fires were stopping after one big
+item with budget to spare):** a fire is **not capped at one item, and size does not cap items-per-fire** — the
+Steward commits each completed item green, then picks the next, and **keeps working until the eligible queue
+drains** (an L item finished with the queue still non-empty → keep going too). Critically, a scheduled fire
+**cannot query its remaining token/credit budget** — there is no usage tool, and `/context` is interactive-only
+— so it must **not** treat "budget" as a measurable stop signal or stop early "to be safe." The only legitimate
+stops are: queue drained, an item too big to finish this turn (checkpoint → multi-fire), or a stuck-loop /
+context wall. To offset cold-start conservatism, the **scheduled fire runs every 2h** (was 6h) — frequent
+thorough fires, each fully committed so nothing is lost if a turn ends mid-stream.
 
 ### 6.2 Hooks (deterministic, harness-run — settings.json)
 
@@ -466,7 +471,11 @@ into a dark room). Concrete enabling work, each a candidate first story:
 4. **L2-eligibility is risk-bounded, not size-bounded** — gated + no-frozen-contract + revertible; XS–L all
    qualify (size sets review depth + multi-fire, not eligibility). Contracts + architectural work escalate (§3).
 5. **Gate-hardening** — review scales to risk (lead for small-green XS/S/M, **3-layer for L+ or any
-   security/capability-plane change**); Health-emission must
+   security/capability-plane change**); **the architecture invariants are enforced at admit and grounded in
+   every role skill + CLAUDE.md so cold-start fires don't drift — P5 (apps read lens read-model targets, never
+   Core KV; Loupe is the admin-inspector exception; the `lint-conventions` P5 gate enforces it), P2 (Processor
+   is the sole Core-KV writer — mutate via operations), relationships-are-links, isDeleted filtering**;
+   Health-emission must
    co-update the canonical schema doc in the same change; an L2 flake-fix requires the **flake bar** (N-of-N +
    registry); Inquiry candidates are scored against a **Winston-owned rubric** + **definition-of-ready**, with
    a **starvation guard** (§3, §6.1.1).

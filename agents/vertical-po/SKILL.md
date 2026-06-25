@@ -32,6 +32,13 @@ What should this app *do* that it can't yet? What's missing, awkward, or broken 
 FE/UX would make it usable (feed the FE Engineer)? Where does a package fall short → a platform feature
 request (route via the Package Designer / Winston)?
 
+**File architecture-aware (lattice-architecture.md P5 / P2)** so the Steward + FE Engineer don't go the wrong
+way: a vertical app reads **lens projections, never Core KV** (only Loupe, the console, reads Core KV) and
+writes via **operations** (never direct KV). So when a view the app needs can't be rendered, the gap is
+usually a **missing lens / read-model field** — file it as **platform / owner** work (the component or package
+owner adds the lens column), with the **FE** item that consumes it as a follow-on. Don't file "have the app
+read Core KV" — that violates P5.
+
 ## 4. File scored backlog items
 
 Append to the board (`_bmad-output/planning-artifacts/backlog.md`): features / gaps / bugs, **scored**
