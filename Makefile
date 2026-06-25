@@ -17,7 +17,7 @@ BOOTSTRAP_JSON ?= $(abspath ./lattice.bootstrap.json)
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up up-full orchestration install-packages run-loupe down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-service-location verify-conformance build vet lint-conventions test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
+.PHONY: up up-full orchestration install-packages run-loupe down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-service-location verify-conformance build vet lint-conventions install-skills test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 up:
@@ -344,6 +344,17 @@ vet:
 lint-conventions:
 	@echo "==> Linting code conventions..."
 	go run ./scripts/lint-conventions.go
+
+## install-skills — Install the canonical agentic-ops role-skills from agents/
+## into the (gitignored) .claude/skills/ where the harness discovers them.
+install-skills:
+	@mkdir -p .claude/skills
+	@for d in agents/*/; do \
+		name=$$(basename $$d); \
+		rm -rf ".claude/skills/$$name"; \
+		cp -R "$$d" ".claude/skills/$$name"; \
+		echo "installed skill: $$name"; \
+	done
 
 ## clean — Remove compiled binaries.
 clean:
