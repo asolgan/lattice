@@ -6,8 +6,21 @@
 
 const APPLICANT_KEY = "loftspace.applicant";
 const state = {
-  listings: [], applications: [], tasks: [],
+  listings: [], applications: [], tasks: [], docs: [],
   applicant: null, current: null, currentTask: null, view: "browse", highlight: null,
+  docScope: null,
+  // sessionUploads maps an oid uploaded THIS session to the link it was created
+  // with, so the doc can be detached. A listed doc from a prior session has no
+  // linkName in the read model (the lens cannot project type(r)), so detach of
+  // those is a documented follow-up.
+  sessionUploads: {},
+};
+
+// DOC_SLOTS labels the upload "slot" (the link name) for display.
+const DOC_SLOTS = {
+  idDocument: "ID document",
+  proofOfIncome: "Proof of income",
+  signedLeasePdf: "Signed lease (PDF)",
 };
 
 // COMPLETIONS maps a userTask op to how the applicant completes it in-app. target
@@ -93,11 +106,12 @@ function setApplicant(value) {
   renderListings(); // re-enable/disable Apply for the new applicant
   if (state.view === "apps") loadApplications(); // re-scope the tracker to the new applicant
   if (state.view === "tasks") loadTasks(); // re-scope the inbox to the new applicant
+  if (state.view === "docs") loadDocsView(); // re-scope the documents to the new applicant
 }
 
-// ---- Tabs (Browse & Apply / My Applications / Tasks) ----
+// ---- Tabs (Browse & Apply / My Applications / Tasks / Documents) ----
 
-const VIEWS = ["browse", "apps", "tasks"];
+const VIEWS = ["browse", "apps", "tasks", "docs"];
 
 function showView(view) {
   state.view = view;
@@ -110,6 +124,7 @@ function showView(view) {
   }
   if (view === "apps") loadApplications();
   if (view === "tasks") loadTasks();
+  if (view === "docs") loadDocsView();
 }
 
 // ---- Listings (Browse & Apply) ----
@@ -613,6 +628,217 @@ async function submitComplete(ev) {
   }
 }
 
+// ---- Documents (upload / view / list) ----
+//
+// The applicant's documents, read from the `objectAttachments` lens projection
+// (P5: a vertical app reads a read-model, never Core KV). A document is attached
+// to a "scope" — the applicant's identity (ID docs) or one of their applications
+// (proof-of-income, signed lease) — chosen in the scope selector; uploads attach
+// to that scope and the list shows that scope's documents. Bytes flow through the
+// Go server's object endpoints, never the Refractor.
+
+// loadDocsView refreshes the scope selector (identity + the applicant's
+// applications) then loads the selected scope's documents.
+async function loadDocsView() {
+  const empty = $("#docs-empty");
+  const grid = $("#docs");
+  if (!state.applicant) {
+    grid.innerHTML = "";
+    state.docs = [];
+    $("#doc-scope").innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = "Select an applicant identity above to manage their documents.";
+    $("#docs-summary").textContent = "";
+    return;
+  }
+  // Refresh applications so the scope selector lists the applicant's current
+  // applications; a failure is non-fatal (the identity scope still works).
+  try {
+    const data = await api("/api/applications?applicant=" + encodeURIComponent(state.applicant));
+    state.applications = data.applications || [];
+  } catch (_) {
+    /* keep whatever applications we already had */
+  }
+  populateDocScope();
+  loadDocuments();
+}
+
+// populateDocScope rebuilds the scope <select>: the applicant's identity first,
+// then one option per application (value = the owner key the documents link to).
+function populateDocScope() {
+  const sel = $("#doc-scope");
+  const prev = state.docScope;
+  sel.innerHTML = "";
+  const opt = (value, label) => {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = label;
+    sel.append(o);
+  };
+  opt(state.applicant, "Your identity (" + shortKey(state.applicant) + ")");
+  for (const a of state.applications) {
+    const label = a.unitAddress || (a.unitKey ? shortKey(a.unitKey) : shortKey(a.entityKey));
+    opt(a.entityKey, "Application · " + label);
+  }
+  // Keep the previous selection if it still exists, else default to identity.
+  const values = Array.from(sel.options).map((o) => o.value);
+  state.docScope = prev && values.includes(prev) ? prev : state.applicant;
+  sel.value = state.docScope;
+}
+
+async function loadDocuments() {
+  const grid = $("#docs");
+  const empty = $("#docs-empty");
+  const scope = state.docScope;
+  if (!scope) {
+    grid.innerHTML = "";
+    state.docs = [];
+    return;
+  }
+  $("#docs-summary").textContent = "loading…";
+  try {
+    const data = await api("/api/objects?applicant=" + encodeURIComponent(scope));
+    state.docs = data.documents || [];
+  } catch (e) {
+    grid.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = "Could not load documents: " + e.message;
+    $("#docs-summary").textContent = "";
+    return;
+  }
+  renderDocuments();
+}
+
+function renderDocuments() {
+  const grid = $("#docs");
+  const empty = $("#docs-empty");
+  grid.innerHTML = "";
+  if (state.docs.length === 0) {
+    empty.hidden = false;
+    empty.textContent = "No documents yet. Upload an ID, proof of income, or signed lease above.";
+    $("#docs-summary").textContent = "";
+    return;
+  }
+  empty.hidden = true;
+  for (const d of state.docs) grid.append(renderDocCard(d));
+  const n = state.docs.length;
+  $("#docs-summary").textContent = `${n} document${n === 1 ? "" : "s"}`;
+}
+
+function fmtSize(n) {
+  if (typeof n !== "number" || n < 0) return "";
+  if (n < 1024) return n + " B";
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+  return (n / (1024 * 1024)).toFixed(1) + " MB";
+}
+
+function renderDocCard(d) {
+  const card = document.createElement("div");
+  card.className = "card doc-card";
+
+  const sess = state.sessionUploads[d.oid];
+  const title = document.createElement("div");
+  title.className = "addr";
+  title.textContent = sess && DOC_SLOTS[sess.linkName] ? DOC_SLOTS[sess.linkName] : "Document";
+
+  const meta = document.createElement("div");
+  meta.className = "addr-sub";
+  meta.textContent = [d.contentType || "file", fmtSize(d.size)].filter(Boolean).join("  ·  ");
+
+  const ref = document.createElement("div");
+  ref.className = "addr-sub mono";
+  ref.textContent = d.oid;
+
+  const actions = document.createElement("div");
+  actions.className = "card-actions";
+  const view = document.createElement("a");
+  view.className = "ghost btn-link";
+  view.textContent = "View";
+  view.href = "/api/objects/" + encodeURIComponent(d.oid);
+  view.target = "_blank";
+  view.rel = "noopener";
+  actions.append(view);
+
+  // Detach is available for documents uploaded this session (the FE knows the
+  // link name); a doc listed from a prior session has no link name in the read
+  // model, so detach of those is a documented follow-up.
+  if (sess) {
+    const detach = document.createElement("button");
+    detach.className = "ghost danger";
+    detach.textContent = "Detach";
+    detach.addEventListener("click", () => detachDoc(d.oid, sess));
+    actions.append(detach);
+  }
+
+  card.append(title, meta, ref, actions);
+  return card;
+}
+
+async function submitUpload(ev) {
+  ev.preventDefault();
+  if (!state.applicant) {
+    toast("Select an applicant first.", "err");
+    return;
+  }
+  const scope = state.docScope;
+  if (!scope) {
+    toast("Choose what to attach the document to.", "err");
+    return;
+  }
+  const slot = $("#doc-slot").value;
+  const fileInput = $("#doc-file");
+  const file = fileInput.files && fileInput.files[0];
+  if (!file) {
+    toast("Choose a file to upload.", "err");
+    return;
+  }
+
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("targetKey", scope);
+  fd.append("linkName", slot);
+
+  const submit = $("#upload-submit");
+  submit.disabled = true;
+  try {
+    const reply = await api("/api/objects", { method: "POST", body: fd });
+    if (reply && reply.status === "rejected") {
+      const msg = reply.error ? `${reply.error.code}: ${reply.error.message}` : "rejected";
+      toast("Upload rejected — " + msg, "err");
+      return;
+    }
+    if (reply && reply.oid) {
+      state.sessionUploads[reply.oid] = { linkName: slot, ownerKey: scope };
+    }
+    fileInput.value = "";
+    toast("Document uploaded.", "ok", reply && reply.oid ? reply.oid : "");
+    // The lens may take a moment to project; a Refresh shows it once projected.
+    loadDocuments();
+  } catch (e) {
+    toast("Could not upload: " + e.message, "err");
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function detachDoc(oid, sess) {
+  if (!confirm("Detach this document? The file is removed from this record.")) return;
+  try {
+    const q = "?targetKey=" + encodeURIComponent(sess.ownerKey) + "&linkName=" + encodeURIComponent(sess.linkName);
+    const reply = await api("/api/objects/" + encodeURIComponent(oid) + q, { method: "DELETE" });
+    if (reply && reply.status === "rejected") {
+      const msg = reply.error ? `${reply.error.code}: ${reply.error.message}` : "rejected";
+      toast("Could not detach — " + msg, "err");
+      return;
+    }
+    delete state.sessionUploads[oid];
+    toast("Document detached.", "ok");
+    loadDocuments();
+  } catch (e) {
+    toast("Could not detach: " + e.message, "err");
+  }
+}
+
 // ---- wire up ----
 
 function init() {
@@ -629,8 +855,15 @@ function init() {
   $("#tab-browse").addEventListener("click", () => showView("browse"));
   $("#tab-apps").addEventListener("click", () => showView("apps"));
   $("#tab-tasks").addEventListener("click", () => showView("tasks"));
+  $("#tab-docs").addEventListener("click", () => showView("docs"));
   $("#reload-apps").addEventListener("click", loadApplications);
   $("#reload-tasks").addEventListener("click", loadTasks);
+  $("#reload-docs").addEventListener("click", loadDocsView);
+  $("#doc-scope").addEventListener("change", (e) => {
+    state.docScope = e.target.value;
+    loadDocuments();
+  });
+  $("#upload-form").addEventListener("submit", submitUpload);
   $("#complete-cancel").addEventListener("click", closeComplete);
   $("#complete-overlay").addEventListener("click", (e) => {
     if (e.target === $("#complete-overlay")) closeComplete();

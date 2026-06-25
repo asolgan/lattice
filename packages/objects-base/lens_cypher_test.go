@@ -99,6 +99,19 @@ func (f *objLensFixture) object(t *testing.T, name string, epoch int) string {
 	return key
 }
 
+// content writes the object's .content aspect (the byte-plane metadata the
+// objectAttachments display lens projects). The object vertex must already exist.
+func (f *objLensFixture) content(t *testing.T, objName, storeName, contentType string, size int) {
+	t.Helper()
+	id := f.ids[objName]
+	key := "vtx.object." + id + ".content"
+	body := map[string]any{"key": key, "class": "object", "isDeleted": false,
+		"data": map[string]any{"storeName": storeName, "contentType": contentType, "size": size}}
+	raw, _ := json.Marshal(body)
+	_, err := f.coreKV.Put(context.Background(), key, raw)
+	require.NoError(t, err)
+}
+
 // owner writes an owner (identity) vertex, live or tombstoned (the dead-target case).
 func (f *objLensFixture) owner(t *testing.T, name string, deleted bool) string {
 	t.Helper()
@@ -129,15 +142,43 @@ func (f *objLensFixture) link(t *testing.T, name, objName, ownerName string) {
 
 func (f *objLensFixture) project(t *testing.T, objName string) []ruleengine.ProjectionResult {
 	t.Helper()
+	return f.projectSpec(t, objectLivenessSpec, objName)
+}
+
+func (f *objLensFixture) projectAttachments(t *testing.T, objName string) []ruleengine.ProjectionResult {
+	t.Helper()
+	return f.projectSpec(t, objectAttachmentsSpec, objName)
+}
+
+func (f *objLensFixture) projectSpec(t *testing.T, spec, objName string) []ruleengine.ProjectionResult {
+	t.Helper()
 	eng := full.New()
-	cr, err := eng.Parse(objectLivenessSpec)
-	require.NoError(t, err, "objectLiveness cypher must parse on the full engine")
+	cr, err := eng.Parse(spec)
+	require.NoError(t, err, "cypher must parse on the full engine")
 	objKey := "vtx.object." + f.ids[objName]
 	now := time.Now().UTC().Format(time.RFC3339)
 	out, err := eng.ExecuteWith(context.Background(), cr, ruleengine.EventContext{Parameters: map[string]any{
 		"actorKey": objKey, "now": now, "projectedAt": now,
 	}}, f.adjKV, f.coreKV)
 	require.NoError(t, err)
+	return out
+}
+
+// ownerKeys extracts the non-null owner keys from an objectAttachments `owners`
+// column (the app's filter input), dropping the degenerate {ownerKey:null}
+// artifact a zero-link object null-restores.
+func ownerKeys(t *testing.T, owners any) []string {
+	t.Helper()
+	list, ok := owners.([]any)
+	require.True(t, ok, "owners must be a list, got %T", owners)
+	var out []string
+	for _, e := range list {
+		m, ok := e.(map[string]any)
+		require.True(t, ok, "owners entry must be a map, got %T", e)
+		if k, _ := m["ownerKey"].(string); k != "" {
+			out = append(out, k)
+		}
+	}
 	return out
 }
 
@@ -232,4 +273,68 @@ func TestObjectLiveness_DeadOwnerPlusLiveOwner_NotOrphaned(t *testing.T) {
 	v := rows[0].Values
 	require.Equal(t, false, v["missing_owner"], "one live owner ⇒ not orphaned (the dead owner drops out)")
 	require.Equal(t, false, v["violating"])
+}
+
+// objectAttachments display lens — the per-object byte-plane metadata the
+// vertical apps read instead of Core KV (P5).
+
+// Test A — the metadata (storeName/contentType/size) projects off .content and
+// the owner key is collected, so an app can both stream and list the document.
+func TestObjectAttachments_ProjectsMetadataAndOwner(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newObjLensFixture(t)
+	objKey := f.object(t, "lease", 1)
+	f.content(t, "lease", "store-abc", "application/pdf", 4096)
+	f.owner(t, "leaseapp", false)
+	f.link(t, "signedLeasePdf", "lease", "leaseapp")
+
+	rows := f.projectAttachments(t, "lease")
+	require.Len(t, rows, 1, "exactly one row per object anchor")
+	v := rows[0].Values
+	require.Equal(t, objKey, v["entityKey"])
+	require.Equal(t, "store-abc", v["storeName"], "storeName resolves a GET to the byte store")
+	require.Equal(t, "application/pdf", v["contentType"])
+	require.EqualValues(t, 4096, v["size"])
+	require.Equal(t, []string{"vtx.identity." + f.ids["leaseapp"]}, ownerKeys(t, v["owners"]),
+		"the owner key is collected so the app can list a leaseapp's documents")
+}
+
+// Test B — several owners collapse to one row carrying every owner key (the
+// one-row-per-anchor guard + the list filter input).
+func TestObjectAttachments_MultipleOwners_OneRowAllKeys(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newObjLensFixture(t)
+	f.object(t, "doc", 2)
+	f.content(t, "doc", "store-xyz", "image/png", 100)
+	f.owner(t, "alice", false)
+	f.owner(t, "bob", false)
+	f.link(t, "idDocument", "doc", "alice")
+	f.link(t, "idDocument", "doc", "bob")
+
+	rows := f.projectAttachments(t, "doc")
+	require.Len(t, rows, 1, "several links collapse to exactly one row")
+	keys := ownerKeys(t, rows[0].Values["owners"])
+	require.ElementsMatch(t, []string{"vtx.identity." + f.ids["alice"], "vtx.identity." + f.ids["bob"]}, keys)
+}
+
+// Test C — a zero-link object null-restores to one row whose owners carry only
+// the degenerate {ownerKey:null} artifact (dropped by the app) — the metadata
+// still projects so a just-detached doc remains viewable until GC.
+func TestObjectAttachments_ZeroLinks_OneRowNoOwners(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newObjLensFixture(t)
+	f.object(t, "orphan", 3)
+	f.content(t, "orphan", "store-orphan", "application/octet-stream", 7)
+
+	rows := f.projectAttachments(t, "orphan")
+	require.Len(t, rows, 1, "a zero-link object null-restores to exactly one row")
+	v := rows[0].Values
+	require.Equal(t, "store-orphan", v["storeName"])
+	require.Empty(t, ownerKeys(t, v["owners"]), "no real owner key after the null artifact is dropped")
 }

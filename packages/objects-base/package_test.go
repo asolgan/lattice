@@ -92,14 +92,22 @@ func TestPackage_DDLAndOps(t *testing.T) {
 		}
 	}
 
-	// v1b GC detection + Loop A: exactly one lens (objectLiveness) + one
-	// weaverTarget (objectLiveness → directOp), and NO loom pattern (directOp,
-	// not triggerLoom), no roles, no package dependency (type-agnostic).
-	if got := len(Package.Lenses); got != 1 {
-		t.Fatalf("expected 1 lens, got %d", got)
+	// Two lenses: the v1b GC detection lens (objectLiveness → Loop A directOp) and
+	// the objectAttachments display lens (the vertical apps' P5-clean byte-plane
+	// read model). Exactly one weaverTarget (objectLiveness → directOp — the
+	// display lens drives no convergence), and NO loom pattern (directOp, not
+	// triggerLoom), no roles, no package dependency (type-agnostic).
+	if got := len(Package.Lenses); got != 2 {
+		t.Fatalf("expected 2 lenses, got %d", got)
 	}
-	if Package.Lenses[0].CanonicalName != "objectLiveness" {
-		t.Fatalf("lens canonicalName = %q, want objectLiveness", Package.Lenses[0].CanonicalName)
+	lensNames := map[string]bool{}
+	for _, l := range Package.Lenses {
+		lensNames[l.CanonicalName] = true
+	}
+	for _, want := range []string{"objectLiveness", "objectAttachments"} {
+		if !lensNames[want] {
+			t.Fatalf("missing lens %q (have %v)", want, lensNames)
+		}
 	}
 	if got := len(Package.WeaverTargets); got != 1 {
 		t.Fatalf("expected 1 weaverTarget, got %d", got)

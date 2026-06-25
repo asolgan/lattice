@@ -36,6 +36,22 @@ func Lenses() []pkgmgr.LensSpec {
 				KeyColumn:        "entityId",
 			},
 		},
+		{
+			CanonicalName:  "objectAttachments",
+			Class:          "meta.lens",
+			Adapter:        "nats-kv",
+			Bucket:         "weaver-targets",
+			Engine:         "full",
+			Spec:           objectAttachmentsSpec,
+			ProjectionKind: "actorAggregate",
+			Output: &pkgmgr.OutputDescriptorSpec{
+				AnchorType:       "object",
+				OutputKeyPattern: "objectAttachments.{actorSuffix}",
+				BodyColumns:      []string{"entityKey", "storeName", "contentType", "size", "owners"},
+				EmptyBehavior:    "delete",
+				KeyColumn:        "entityId",
+			},
+		},
 	}
 }
 
@@ -73,4 +89,43 @@ RETURN
   storeName,
   (liveOwners = 0) AS missing_owner,
   (liveOwners = 0) AS violating
+`
+
+// objectAttachmentsSpec is the per-object display read-model the vertical apps
+// (LoftSpace's Documents tab) read in place of Core KV (P5): given an oid it
+// resolves the byte-plane metadata (storeName / contentType / size) to stream a
+// document, and given an owner it lists that owner's attached documents by
+// filtering `owners`.
+//
+//   - One row per anchor object (the §0.C guard): the `OPTIONAL MATCH
+//     (o)-[r]->(owner)` fan is collapsed by the single `collect`, so any number
+//     of links produces one row. A zero-link object null-restores to one row
+//     with `owners` carrying a degenerate `{ownerKey: null}` artifact (the
+//     documented full-engine grouping behaviour, as in `myTasksSpec`); the app
+//     drops null entries.
+//   - The metadata columns are aspect-data reads off `.content` (the
+//     `objectLiveness` storeName idiom), so they resolve directly in the full
+//     engine. A tombstoned object does not bind (`fetchNode` returns nil for a
+//     soft-deleted vertex), so it emits no row and `EmptyBehavior: delete`
+//     reclaims its read-model key.
+//   - The relationship NAME (the upload "slot" / linkName) is NOT projected —
+//     the full engine cannot project `type(r)` — so `owners` carries only the
+//     destination node key. Detach of a listed doc (which needs the linkName)
+//     is therefore a documented follow-up.
+const objectAttachmentsSpec = `
+MATCH (o:object {key: $actorKey})
+OPTIONAL MATCH (o)-[r]->(owner)
+WITH
+  o.key AS entityKey,
+  o.content.data.storeName AS storeName,
+  o.content.data.contentType AS contentType,
+  o.content.data.size AS size,
+  collect(DISTINCT { ownerKey: owner.key }) AS owners
+RETURN
+  entityKey AS actorKey,
+  entityKey,
+  storeName,
+  contentType,
+  size,
+  owners
 `

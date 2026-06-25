@@ -32,6 +32,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -45,6 +46,8 @@ import (
 const (
 	defaultAddr      = "127.0.0.1:7788"
 	natsRequestLimit = 8 * time.Second
+	// defaultUploadCap bounds a single document upload (OBJECTS_MAX_UPLOAD_BYTES).
+	defaultUploadCap = 25 << 20 // 25 MiB
 )
 
 func main() {
@@ -92,11 +95,22 @@ func run(logger *slog.Logger) error {
 		defer conn.Close()
 	}
 
+	uploadCap := int64(defaultUploadCap)
+	if v := os.Getenv("OBJECTS_MAX_UPLOAD_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			uploadCap = n
+		} else {
+			logger.Warn("ignoring invalid OBJECTS_MAX_UPLOAD_BYTES; using default",
+				"value", v, "default", defaultUploadCap)
+		}
+	}
+
 	srv := &server{
 		conn:        conn,
 		adminActor:  adminActor,
 		logger:      logger,
 		natsTimeout: natsRequestLimit,
+		uploadCap:   uploadCap,
 	}
 
 	mux := http.NewServeMux()

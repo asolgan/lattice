@@ -24,6 +24,9 @@ type server struct {
 	adminActor  string
 	logger      *slog.Logger
 	natsTimeout time.Duration
+	// uploadCap bounds a single document upload (OBJECTS_MAX_UPLOAD_BYTES); the
+	// substrate ObjectPut enforces it as the authoritative per-blob limit.
+	uploadCap int64
 }
 
 func (s *server) registerRoutes(mux *http.ServeMux) {
@@ -39,6 +42,8 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/applications", s.handleApplications)
 	mux.HandleFunc("/api/tasks", s.handleTasks)
 	mux.HandleFunc("/api/op", s.handleOp)
+	mux.HandleFunc("/api/objects", s.handleObjects)
+	mux.HandleFunc("/api/objects/", s.handleObjects)
 }
 
 // writeJSON encodes v as JSON with the given status code.
@@ -77,4 +82,14 @@ func (s *server) reqContext(r *http.Request) (context.Context, context.CancelFun
 // op payloads this app submits.
 func requireBody(r *http.Request) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(r.Body, 1<<20))
+}
+
+// mustJSON marshals v, returning a hand-built error object only if marshalling
+// fails (which it cannot for the small maps used here).
+func mustJSON(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return json.RawMessage(`{"error":"internal: marshal failed"}`)
+	}
+	return b
 }

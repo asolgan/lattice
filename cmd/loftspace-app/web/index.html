@@ -20,6 +20,7 @@
     <button id="tab-browse" class="tab active" role="tab" aria-selected="true" aria-controls="view-browse">Browse &amp; Apply</button>
     <button id="tab-apps" class="tab" role="tab" aria-selected="false" aria-controls="view-apps">My Applications</button>
     <button id="tab-tasks" class="tab" role="tab" aria-selected="false" aria-controls="view-tasks">Tasks</button>
+    <button id="tab-docs" class="tab" role="tab" aria-selected="false" aria-controls="view-docs">Documents</button>
   </nav>
 
   <main>
@@ -59,6 +60,35 @@
 
       <div id="tasks" class="grid grid-wide" aria-live="polite"></div>
       <div id="tasks-empty" class="empty" hidden></div>
+    </section>
+
+    <!-- Documents -->
+    <section id="view-docs" role="tabpanel" aria-labelledby="tab-docs" hidden>
+      <div class="panel-controls">
+        <label for="doc-scope">Documents for</label>
+        <select id="doc-scope" aria-label="Choose which record to view and attach documents to"></select>
+        <button id="reload-docs" class="ghost">Refresh</button>
+        <span id="docs-summary" class="summary"></span>
+      </div>
+
+      <form id="upload-form" class="upload">
+        <div class="field">
+          <label for="doc-slot">Document type</label>
+          <select id="doc-slot">
+            <option value="idDocument">ID document</option>
+            <option value="proofOfIncome">Proof of income</option>
+            <option value="signedLeasePdf">Signed lease (PDF)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="doc-file">File</label>
+          <input type="file" id="doc-file" />
+        </div>
+        <button type="submit" id="upload-submit">Upload</button>
+      </form>
+
+      <div id="docs" class="grid grid-wide" aria-live="polite"></div>
+      <div id="docs-empty" class="empty" hidden></div>
     </section>
   </main>
 

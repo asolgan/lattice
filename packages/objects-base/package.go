@@ -36,6 +36,12 @@
 //     linkEpoch from the lens row and routing the object key into the op's reads
 //     so the reclaim hydrates the vertex for its epoch-CAS.
 //
+//   - The `objectAttachments` actorAggregate display lens: per object it projects
+//     the byte-plane metadata (storeName / contentType / size) + the owner keys
+//     it links to. It drives no convergence — it is the read model a vertical app
+//     reads (P5) to stream a document and list an owner's documents, in place of
+//     scanning Core KV.
+//
 // It is type-agnostic (it never learns concrete owner types) and depends on
 // nothing. The only NEW runtime component v1b adds is the object-store-manager
 // (Loop B): it consumes object.tombstoned and deletes the bytes. Install via the
@@ -48,7 +54,7 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 var Package = pkgmgr.Definition{
 	Name:          "objects-base",
 	Version:       "0.1.0",
-	Description:   "Generic large-object vertex type (object DDL + attach/detach/tombstone ops) + the objectLiveness GC convergence lens + meta.weaverTarget; the graph side of the off-graph blob plane. Content-addressed, type-agnostic, content metadata in the .content aspect (D5).",
+	Description:   "Generic large-object vertex type (object DDL + attach/detach/tombstone ops) + the objectLiveness GC convergence lens + meta.weaverTarget + the objectAttachments display lens (the apps' P5-clean byte-plane read model); the graph side of the off-graph blob plane. Content-addressed, type-agnostic, content metadata in the .content aspect (D5).",
 	Depends:       nil,
 	DDLs:          DDLs(),
 	Lenses:        Lenses(),

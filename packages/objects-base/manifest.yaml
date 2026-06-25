@@ -21,6 +21,10 @@ declares:
       adapter: nats-kv
       bucket: weaver-targets
       engine: full
+    - canonicalName: objectAttachments
+      adapter: nats-kv
+      bucket: weaver-targets
+      engine: full
   permissions:
     - operationType: AttachObject
       scope: any
