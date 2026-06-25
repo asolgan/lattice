@@ -54,6 +54,7 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/vertices", s.handleVertices)
 	mux.HandleFunc("/api/vertex", s.handleVertex)
 	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.HandleFunc("/api/systemmap", s.handleSystemMap)
 	mux.HandleFunc("/api/control/", s.handleControl)
 	mux.HandleFunc("/api/packages", s.handlePackages)
 	mux.HandleFunc("/api/ops", s.handleOps)
@@ -217,6 +218,52 @@ func (s *server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	rollup := computeHealth(keys, readEntry, resolveLens, staleThreshold)
 	s.writeJSON(w, http.StatusOK, rollup)
+}
+
+// handleSystemMap implements GET /api/systemmap. It overlays the live Health KV
+// state onto the canonical component topology and returns the self-truthing
+// node / edge graph the landing "system map" view renders. The Health KV reads
+// mirror handleHealth: component heartbeats plus the lens reporters, with lens
+// labels resolved from Core KV meta-vertices.
+func (s *server) handleSystemMap(w http.ResponseWriter, r *http.Request) {
+	conn, ok := s.requireConn(w)
+	if !ok {
+		return
+	}
+	ctx, cancel := s.reqContext(r)
+	defer cancel()
+
+	keys, err := conn.KVListKeys(ctx, bootstrap.HealthKVBucket)
+	if err != nil {
+		s.writeError(w, http.StatusBadGateway, "list health-kv: "+err.Error())
+		return
+	}
+	readEntry := func(k string) (map[string]any, bool) {
+		entry, err := conn.KVGet(ctx, bootstrap.HealthKVBucket, k)
+		if err != nil {
+			return nil, false
+		}
+		var doc map[string]any
+		if err := json.Unmarshal(entry.Value, &doc); err != nil {
+			return nil, false
+		}
+		return doc, true
+	}
+	coreGet := func(key string) ([]byte, bool) {
+		entry, err := conn.KVGet(ctx, bootstrap.CoreKVBucket, key)
+		if err != nil {
+			return nil, false
+		}
+		return entry.Value, true
+	}
+	resolveLens := func(id string) (name, desc string) {
+		metaKey := "vtx.meta." + id
+		name = dataString(metaData(coreGet, metaKey+".canonicalName"), "value", "name", "canonicalName")
+		desc = dataString(metaData(coreGet, metaKey+".description"), "value", "text", "description")
+		return name, desc
+	}
+	m := computeSystemMap(keys, readEntry, resolveLens, staleThreshold)
+	s.writeJSON(w, http.StatusOK, m)
 }
 
 // handleControl implements both:
