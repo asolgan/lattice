@@ -1,14 +1,50 @@
-# Bug — `my-tasks` lens does not project on task assignment (assignedTo not a reprojection trigger)
+# Bug — LoftSpace task inbox showed empty (my-tasks reader decoded the wrong actor field)
 
 **Found:** 2026-06-25 (Steward, live-verifying the LoftSpace applicant task inbox / Increment C).
-**Severity (as filed):** ★★★. **Status: ✅ RESOLVED — NOT an engine bug (environmental).** The
-`assignedTo` reprojection trigger is **sound**; the original symptom was the stale-accumulated dev-stack
-artifact already cleared elsewhere on the board (the Refractor's CDC consumer position drifts on a
-many-times-restarted `up-full`). A clean stack projects correctly. A realistic regression test now guards
-the path. While confirming this, a **real but lower-severity (★★) gap** was found and fixed in the same
-read path (operationName projected null in the real flow — see "Second finding" below).
+**Status: ✅ RESOLVED — the TRUE root cause was a reader field-name bug in `cmd/loftspace-app/tasks.go`,
+NOT the Refractor and NOT environmental.** Fixed + verified live + in-browser (the inbox now renders both
+dispatched userTasks and completion works end-to-end).
 
-## Investigation verdict (Steward, 2026-06-25) — four independent lines of evidence
+## TRUE root cause (definitive, third investigation) — `actorKey` vs `assignee`
+
+The symptom — `GET /api/tasks?applicant=` returns 0 despite open assigned tasks — was **entirely in the
+app reader**. The `my-tasks` actor-aggregate envelope stamps the anchor identity at the row **root under the
+lens ActorField — `assignee`** — alongside `key` + envelope metadata. There is **no `actorKey` field**
+(that is the raw cypher `RETURN identity.key AS actorKey` alias, which the envelope wrapper renames). The
+Increment C reader decoded `myTasksRow{ ActorKey string json:"actorKey" }` and **skipped every row where
+`ActorKey == ""`** — i.e. *every* row → the inbox was always empty.
+
+**Direct proof (live `nats kv get my-tasks my-tasks.identity.<applicant>`):** the projected row was
+*perfect* — both open tasks present, correctly self-describing (`operationName: SignLease` /
+`RecordIdentityPII`, `scopedTo`, `expiresAt`) — but its actor field was `"assignee": "vtx.identity.<id>"`,
+**not** `actorKey`. The Refractor + lens were doing their job flawlessly; the bytes never reached the UI
+because the reader's struct tag didn't match.
+
+**Fix** (`cmd/loftspace-app/tasks.go`): decode + scope on `assignee` (the ActorField the envelope writes),
+not `actorKey`. The unit-test fixtures — which had **fabricated** the wrong `actorKey` shape, which is why
+they passed against the bug — were corrected to the real envelope shape (`assignee` + `key` at the root), so
+they now guard the field name. Live: `/api/tasks` returns both tasks; in-browser the Tasks tab renders two
+cards and `RecordIdentityPII` completion submits green through the real Processor.
+
+## Why two earlier investigations missed it
+
+- **My first filing (★★★ "assignedTo not a reprojection trigger") was wrong** about the mechanism. I read
+  the "no handler registered" log as the trigger failing and never inspected the `my-tasks` bucket directly
+  — so I attributed the empty `/api/tasks` to the engine.
+- **The second run was right that the engine is sound** (the `assignedTo` trigger fires; the realistic e2e
+  passes; `operationName` was a real null-projection bug it correctly fixed). But it validated the **lens
+  output** (read `openTasks` straight from the envelope) and concluded the app-level 0-rows was
+  *environmental* — it never exercised the `loftspace-app` `/api/tasks` endpoint, so it didn't see the
+  reader drop every row. "Environmental" was the wrong call: the symptom reproduces 100% on a clean stack.
+- **Common trap:** the Increment C unit test fabricated `{"actorKey": …}` fixtures (matching the buggy
+  assumption), so it green-lit the bug. The real envelope shape (captured here from `nats kv get`) is the
+  fixture that would have caught it — and now does.
+
+The engine-soundness evidence below (from the second run) **stands and is correct** — it is why we know the
+`assignedTo` trigger and the lens projection are healthy. Only the *conclusion* about the app symptom was
+wrong.
+
+## Engine-soundness evidence (second run — correct, retained) — four independent lines
 
 1. **Realistic-ordering e2e PASSES.** A new `internal/refractor/refractor_mytasks_assignedto_e2e_test.go`
    reproduces the real lifecycle — the assignee **identity is written FIRST**, then (seconds later) the

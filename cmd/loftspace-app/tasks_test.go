@@ -3,18 +3,24 @@ package main
 import "testing"
 
 func TestComputeTasks_ScopesToApplicantAndFlattens(t *testing.T) {
+	// Fixtures mirror the REAL actor-aggregate envelope shape the my-tasks lens
+	// writes: the anchor identity is at the row root under `assignee` (the lens
+	// ActorField) alongside `key` + envelope metadata — there is NO `actorKey`
+	// field (that is the raw cypher RETURN alias the envelope renames). Matching the
+	// real shape is the regression guard for the field-name bug that silently
+	// dropped every row.
 	entries := map[string]string{
 		// alice — two open tasks: a SignLease (scoped to her leaseapp) and a
 		// RecordIdentityPII (scoped to her identity, the userTask invariant).
-		"my-tasks.identity.alice": `{"actorKey":"vtx.identity.alice","openTasks":[` +
+		"my-tasks.identity.alice": `{"key":"my-tasks.identity.alice","assignee":"vtx.identity.alice","projectionSeq":42,"openTasks":[` +
 			`{"taskKey":"vtx.task.t1","assignee":"vtx.identity.alice","forOperation":"vtx.meta.sign","operationName":"SignLease","operationDescription":"Sign your lease","scopedTo":"vtx.leaseapp.app1","expiresAt":"2026-09-01T00:00:00Z"},` +
 			`{"taskKey":"vtx.task.t2","assignee":"vtx.identity.alice","forOperation":"vtx.meta.pii","operationName":"RecordIdentityPII","operationDescription":"Provide your SSN and date of birth","scopedTo":"vtx.identity.alice","expiresAt":"2026-08-01T00:00:00Z"}]}`,
 		// bob — one open task
-		"my-tasks.identity.bob": `{"actorKey":"vtx.identity.bob","openTasks":[` +
+		"my-tasks.identity.bob": `{"key":"my-tasks.identity.bob","assignee":"vtx.identity.bob","openTasks":[` +
 			`{"taskKey":"vtx.task.t3","assignee":"vtx.identity.bob","forOperation":"vtx.meta.sign","operationName":"SignLease","scopedTo":"vtx.leaseapp.app3","expiresAt":"2026-10-01T00:00:00Z"}]}`,
 		// carol — a live identity with no open tasks: the lens leaves a degenerate
 		// {taskKey:null} collect artifact that must be dropped, not rendered.
-		"my-tasks.identity.carol": `{"actorKey":"vtx.identity.carol","openTasks":[{"taskKey":null}]}`,
+		"my-tasks.identity.carol": `{"key":"my-tasks.identity.carol","assignee":"vtx.identity.carol","openTasks":[{"taskKey":null}]}`,
 	}
 	get := fakeKV(entries)
 
@@ -60,7 +66,7 @@ func TestComputeTasks_ScopesToApplicantAndFlattens(t *testing.T) {
 func TestComputeTasks_SkipsUndecodable(t *testing.T) {
 	entries := map[string]string{
 		"my-tasks.identity.alice": `not json`,
-		"my-tasks.identity.bob": `{"actorKey":"vtx.identity.bob","openTasks":[` +
+		"my-tasks.identity.bob": `{"key":"my-tasks.identity.bob","assignee":"vtx.identity.bob","openTasks":[` +
 			`{"taskKey":"vtx.task.t3","operationName":"SignLease","scopedTo":"vtx.leaseapp.app3"}]}`,
 	}
 	got := computeTasks(keysOf(entries), fakeKV(entries), "")

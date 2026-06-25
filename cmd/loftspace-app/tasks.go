@@ -11,12 +11,15 @@ import (
 
 // myTasksRow is one projected `my-tasks` lens entry: a single identity's OPEN
 // tasks. The lens (orchestration-base) keys one row per identity at
-// my-tasks.<actorSuffix>; openTasks carries the link-sourced, self-describing
-// task list (Contract #10 §10.1 — task relationships are links, not fields). The
-// applicant app reads THIS projection, never Core KV (P5): Loupe's /api/tasks
-// scans Core KV only because it is the admin/debug inspector P5 carves out.
+// my-tasks.<actorSuffix>; the actor-aggregate envelope stamps the anchor identity
+// under the lens's ActorField — `assignee` — at the row root (NOT `actorKey`,
+// which is the raw cypher RETURN alias the envelope wrapper renames), and carries
+// the link-sourced, self-describing task list under `openTasks` (Contract #10
+// §10.1 — task relationships are links, not fields). The applicant app reads THIS
+// projection, never Core KV (P5): Loupe's /api/tasks scans Core KV only because it
+// is the admin/debug inspector P5 carves out.
 type myTasksRow struct {
-	ActorKey  string        `json:"actorKey"`
+	Assignee  string        `json:"assignee"`
 	OpenTasks []openTaskRow `json:"openTasks"`
 }
 
@@ -51,12 +54,12 @@ type taskRow struct {
 }
 
 // computeTasks flattens the applicant's open tasks out of the `my-tasks` lens read
-// model. It keeps only the row for the selected applicant (matched on actorKey —
-// the per-identity projection key), then emits one taskRow per open task. The lens
-// collect can leave a degenerate {taskKey:null} artifact when an identity has no
-// open task; an entry without a taskKey is dropped. When applicant is empty every
-// identity's open tasks are returned (the operator-wide view). Rows sort by soonest
-// expiry, then taskKey, for a stable, actionable order.
+// model. It keeps only the row for the selected applicant (matched on the row's
+// `assignee` — the actor the envelope stamps from the lens ActorField), then emits
+// one taskRow per open task. The lens collect can leave a degenerate {taskKey:null}
+// artifact when an identity has no open task; an entry without a taskKey is dropped.
+// When applicant is empty every identity's open tasks are returned (the operator-wide
+// view). Rows sort by soonest expiry, then taskKey, for a stable, actionable order.
 func computeTasks(keys []string, get kvGetter, applicant string) []taskRow {
 	rows := make([]taskRow, 0)
 	for _, k := range keys {
@@ -65,10 +68,10 @@ func computeTasks(keys []string, get kvGetter, applicant string) []taskRow {
 			continue
 		}
 		var mt myTasksRow
-		if json.Unmarshal(raw, &mt) != nil || mt.ActorKey == "" {
+		if json.Unmarshal(raw, &mt) != nil || mt.Assignee == "" {
 			continue
 		}
-		if applicant != "" && mt.ActorKey != applicant {
+		if applicant != "" && mt.Assignee != applicant {
 			continue
 		}
 		for _, t := range mt.OpenTasks {
