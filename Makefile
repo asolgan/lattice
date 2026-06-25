@@ -18,7 +18,7 @@ BOOTSTRAP_JSON ?= $(abspath ./lattice.bootstrap.json)
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up up-full orchestration install-packages install-loftspace run-loupe run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-service-location verify-conformance build vet lint-conventions install-skills test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
+.PHONY: up up-full up-loftspace orchestration install-packages install-loftspace run-loupe run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-service-location verify-conformance build vet lint-conventions install-skills test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 up:
@@ -64,6 +64,7 @@ down:
 	-pkill -f "bin/bridge" 2>/dev/null || true
 	-pkill -f "bin/object-store-manager" 2>/dev/null || true
 	-pkill -f "bin/loupe" 2>/dev/null || true
+	-pkill -f "bin/loftspace-app" 2>/dev/null || true
 	@echo "==> Down complete."
 
 ## verify-kernel — Assert post-Story-4.7 kernel keys exist with correct envelopes.
@@ -206,6 +207,23 @@ up-full:
 	@sleep 1
 	@echo "==> Full Lattice ready. Open http://127.0.0.1:7777 (Loupe)."
 	@echo "==> Logs: loupe.log loom.log weaver.log bridge.log objmgr.log refractor.log processor.log"
+
+## up-loftspace — Full stack + the LoftSpace vertical + the applicant app on :7788.
+## Runs up-full, installs the LoftSpace vertical (orchestration-base → location-domain
+## → loftspace-domain → service-domain → lease-signing), and starts loftspace-app in
+## the background alongside Loupe (:7777). The applicant app is the demand-side view;
+## Loupe is the operator/inspector. Logs: loftspace-app.log (+ the up-full logs).
+up-loftspace:
+	@$(MAKE) up-full
+	@$(MAKE) install-loftspace
+	@echo "==> Building loftspace-app binary..."
+	go build -o bin/loftspace-app ./cmd/loftspace-app
+	@echo "==> Killing any prior loftspace-app process..."
+	-pkill -f "bin/loftspace-app" 2>/dev/null || true
+	@echo "==> Starting loftspace-app in background..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/loftspace-app >loftspace-app.log 2>&1 </dev/null &
+	@sleep 1
+	@echo "==> LoftSpace ready. Operator/inspector: http://127.0.0.1:7777 (Loupe) · applicant app: http://127.0.0.1:7788"
 
 ## orchestration — Build + start the orchestration tier (Loom, Weaver, Bridge,
 ## object-store-manager) in the background. Requires a running deployment
