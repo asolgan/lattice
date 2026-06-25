@@ -70,6 +70,7 @@ func startLoomControlTest(t *testing.T, eng *fakeEngine) string {
 
 	svc := control.NewService(eng, nil, testutil.TestLogger())
 	require.NoError(t, svc.StartNATSListener(ctx, conn))
+	require.NoError(t, conn.Flush())
 
 	return url
 }
