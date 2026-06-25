@@ -4,6 +4,7 @@
 # Quick reference:
 #   make up              — start the kernel (NATS + Postgres, bootstrap, refractor, processor)
 #   make up-full         — full stack on latest: kernel + orchestration tier + core packages + Loupe
+#   make install-loftspace — add the LoftSpace lease-app vertical onto a running up-full
 #   make run-loupe       — build + run Loupe (view/control UI) on http://127.0.0.1:7777
 #   make down            — tear down everything cleanly
 #   make verify-bootstrap — assert primordial state; exit 0 on success
@@ -17,7 +18,7 @@ BOOTSTRAP_JSON ?= $(abspath ./lattice.bootstrap.json)
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up up-full orchestration install-packages run-loupe down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-service-location verify-conformance build vet lint-conventions install-skills test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
+.PHONY: up up-full orchestration install-packages install-loftspace run-loupe down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-service-location verify-conformance build vet lint-conventions install-skills test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 up:
@@ -228,6 +229,22 @@ install-packages:
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/identity-domain
 	@echo "==> Installing objects-base..."
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/objects-base
+
+## install-loftspace — Install the LoftSpace lease-application vertical onto a
+## running full stack (make up-full first), in dependency order:
+## orchestration-base → service-domain → lease-signing. up-full ships only the
+## core packages; the vertical is an opt-in so demos / the PO loop can drive the
+## real lease flow without hand-installing each package.
+install-loftspace:
+	@echo "==> Building lattice-pkg..."
+	go build -o bin/lattice-pkg ./cmd/lattice-pkg
+	@echo "==> Installing orchestration-base..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/orchestration-base
+	@echo "==> Installing service-domain..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/service-domain
+	@echo "==> Installing lease-signing..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/lease-signing
+	@echo "==> LoftSpace vertical installed. Drive it via the lattice CLI or Loupe."
 
 ## run-loupe — Build + run Loupe (the view/control web app) in the FOREGROUND.
 ## Open http://127.0.0.1:7777. Requires a running deployment (make up / up-full).
