@@ -29,6 +29,12 @@ Pre-emption order:
 - **WIP cap:** at most N owners concurrent. Start **N = 1** (prove the loop is safe); raise to 2–3 behind
   worktrees once trusted.
 
+**L2-eligibility is risk-bounded, not size-bounded.** An item may be done *and* committed to main unattended
+iff: all gates can be made green (incl. CI), it touches **no frozen contract**, and it is revertible. **Size
+does not disqualify — XS through L are fair game; be ambitious.** Size only sets review depth (§4) and whether
+the work spans fires (§4 multi-fire). **Escalate** (don't do unattended): frozen-contract changes, and
+genuinely architectural / design-heavy work that warrants human design review (produce a design doc instead).
+
 ## 3. Activate (L1, in a worktree)
 
 Invoke the owning role's skill (an owner skill, or Lamplighter / Warden / Scribe). **All work runs in an
@@ -38,10 +44,15 @@ dev → 3-layer review → gates**.
 
 ## 4. Admit
 
-- Gates green **and** change ∈ **L2 low-risk class** (flake-fix / docs / mechanical-green) **and** no
-  contract → **Winston merges the worktree to `main` (L2)**, then watch CI green.
-- Otherwise → **stage for Andrew** (L3 if a contract is touched). **Health-emission changes are NOT
-  auto-L2** (canonical Health-KV schema doc must be updated + Andrew reviews).
+- Gates green **and** the change is **L2-eligible** (risk-bounded: no frozen contract, revertible) **and** the
+  **size-appropriate review** is clean — lead review for a small green change, **full 3-layer adversarial for
+  M-or-larger** — → **Winston merges the worktree to `main` (L2)**, then watch CI green.
+- Otherwise → **stage for Andrew** (L3 if a contract is touched; a design doc for architectural work).
+  **Health-emission changes** must update the canonical Health-KV schema doc *in the same change* (keeps them
+  L2-safe — the schema doc never diverges from the emission).
+- **Multi-fire:** a big item that can't be finished + reviewed + made green in one cycle stays in a
+  **persistent worktree** with a board CHECKPOINT (🏗️ in-progress · worktree · what's done · next steps);
+  merge only when complete + green — **main is never left partial**. A later cycle resumes it before picking new.
 - **Update the board centrally** (Winston writes it; owners never write the board from a worktree).
 
 ## 5. Replenish if idle

@@ -104,18 +104,24 @@ pinned to a rung and promoted as it earns trust; the human surface shrinks (the 
 |---|---|---|
 | **L0 Advisory** | observe, classify, report (chip / backlog note). No writes. | — |
 | **L1 Prepare** | prepare a design/fix **in an isolated worktree**, stop. | Winston review |
-| **L2 Commit-behind-gates** | **Winston only** — review the worktree diff and merge to `main` iff all gates green **and** no contract touched **and** change ∈ a defined low-risk class. | Andrew (for anything outside the class) |
+| **L2 Commit-behind-gates** | **Winston only** — review the worktree diff and merge to `main` iff all gates green **and** no frozen contract touched **and** the change is **L2-eligible** (risk-bounded — see below). | Andrew (contracts + architecture) |
 | **L3 Propose-contract** | flag Andrew; edit the contract **in `main`, uncommitted** (never in a worktree) until ratified. | Andrew ratifies |
 
-The existing house rule ("sub-agents never commit; Winston commits") is preserved. The autonomy lever is the
-**L2 low-risk class** Winston may merge without waking Andrew — **ratified: flake-fixes, docs, and mechanical
-green follow-ups.** Widen the class as confidence grows.
+The existing house rule ("sub-agents never commit; Winston commits") is preserved. **L2-eligibility is
+risk-bounded, not size-bounded** (ratified — widened from the initial narrow start): Winston may merge a change
+without waking Andrew iff all gates are green (incl. CI), it touches **no frozen contract**, and it is
+revertible. **Size does not cap eligibility — XS through L all qualify**; size sets *review depth* (a thorough
+lead review for a small green change; **full 3-layer adversarial review for M-or-larger**) and whether the work
+spans fires (**multi-fire:** a big item stays in a persistent worktree with a board CHECKPOINT and merges only
+when complete + green — main is never left partial). **Escalated to Andrew, never auto-committed:**
+frozen-contract changes (L3) and genuinely architectural / design-heavy work (produce a design doc, not an
+implementation).
 
-**Gate-hardening (ratified).** Two surfaces are explicitly *not* in the auto-class:
+**Gate-hardening (ratified).** Two safety rules on otherwise-L2-eligible work:
 
-- **Health-emission changes** touch the **canonical** Health-KV schema doc, so they are **not** auto-L2: the
-  schema doc must be updated in the same worktree and the change goes to Andrew. A wrong key shape silently
-  rots the observability plane — a regression already eaten once.
+- **Health-emission changes** must update the **canonical** Health-KV schema doc *in the same change* — that
+  keeps them L2-safe (the schema doc never diverges from the emission; the STRICT linter + the rollup catch
+  shape errors). A wrong key shape silently rots the observability plane — a regression already eaten once.
 - An **L2 "flake-fix"** is allowed only when the flake classification meets a deterministic bar — **N-of-N
   reproductions + a `FLAKE_REGISTRY` entry** — before the word "flake" is used. *A real failure mislabeled as
   a flake is the one unforgivable case;* when in doubt it is real, and it escalates rather than auto-merging.
@@ -180,8 +186,9 @@ Two drivers, selected by whether Andrew is present:
   from Andrew**. This is the genuinely-autonomous mode. Each fire **cold-starts** and re-grounds from durable
   state — the board (`backlog.md`), `memory/`, and this design doc — which is exactly why those artifacts are
   kept truthful (cold-start is the cost; durable context is what makes it tractable). Unattended commit policy
-  is the **ratified L2 low-risk class only**; contracts and out-of-class work are escalated to Andrew on the
-  board, never committed. *Caveat:* a local scheduled task fires only while the Claude app is running (or on
+  is the **ratified L2-eligible set** (risk-bounded — gated, contract-free, revertible; *any size*, with review
+  scaled to size and big items spanning fires); frozen-contract and architectural work escalate to Andrew on
+  the board, never committed. *Caveat:* a local scheduled task fires only while the Claude app is running (or on
   next launch if it was closed when due) — true server-side unattendedness is the cloud-routine step below.
 - **In-session — when Andrew is driving.** The **dynamic `/loop` + `ScheduleWakeup`** pattern: context-warm
   (resumes inside the live session with the tree, memory, and prior reasoning intact), state-paced (wakes on
@@ -236,7 +243,7 @@ flowchart TB
     Sense["Sense — board + Warden/Lamplighter signals"] --> Sel{"Ready item or signal?"}
     Sel -- yes --> Act["Activate owning role · L1 (story loop)"]
     Sel -- "no · idle" --> Inq["Inquiry — owner generates candidates → board"]
-    Act --> Adm{"Green + in L2 low-risk class?"}
+    Act --> Adm{"Green + L2-eligible (no contract)?"}
     Adm -- yes --> L2["Winston commits · L2"]
     Adm -- no --> Esc["Stage for Andrew · L3 if contract"]
     L2 --> Wake["ScheduleWakeup — credit gate + cache window"]
@@ -391,10 +398,12 @@ into a dark room). Concrete enabling work, each a candidate first story:
 
 *Gates & autonomy*
 
-4. **L2 low-risk class** — flake-fixes, docs, mechanical green follow-ups (§3).
-5. **Gate-hardening** — Health-emission is **not** auto-L2 (canonical schema doc + Andrew review); an L2
-   flake-fix requires the **flake bar** (N-of-N + registry); Inquiry candidates are scored against a
-   **Winston-owned rubric** + **definition-of-ready**, with a **starvation guard** (§3, §6.1.1).
+4. **L2-eligibility is risk-bounded, not size-bounded** — gated + no-frozen-contract + revertible; XS–L all
+   qualify (size sets review depth + multi-fire, not eligibility). Contracts + architectural work escalate (§3).
+5. **Gate-hardening** — review scales to size (lead for small-green, **3-layer for M+**); Health-emission must
+   co-update the canonical schema doc in the same change; an L2 flake-fix requires the **flake bar** (N-of-N +
+   registry); Inquiry candidates are scored against a **Winston-owned rubric** + **definition-of-ready**, with
+   a **starvation guard** (§3, §6.1.1).
 6. **Isolation** — all work in worktrees; sole exception = contract changes (in `main`, uncommitted);
    coordination artifacts (board, memory) written centrally (§3).
 7. **North-star metric** — Andrew-interventions per shipped change, trending down (header).
