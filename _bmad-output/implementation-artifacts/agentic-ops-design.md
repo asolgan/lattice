@@ -57,7 +57,8 @@ flowchart TB
     subgraph Product["Product tier — verticals & experience"]
         LoftPO["LoftSpace PO"]
         Vert2PO["Clinic PO"]
-        Sally["UX/FE Designer (Sally)<br/>builds Loupe + app front-ends"]
+        Sally["UX Designer (Sally)<br/>designs the experience"]
+        FE["FE Engineer<br/>builds Loupe + app front-ends"]
     end
 
     subgraph Ops["Cross-cutting ops"]
@@ -73,7 +74,8 @@ flowchart TB
     Winston --> Core & Weaver & Loom & Refr & Loupe & PkgDes
     Winston --> Warden & Lamp & Scribe & Arch
     LoftPO & Vert2PO --> PkgDes
-    LoftPO & Vert2PO & Loupe -. FE briefs .-> Sally
+    LoftPO & Vert2PO & Loupe -. needs .-> Sally
+    Sally -. UX design .-> FE
     PkgDes -. platform gap .-> Winston
     Core & Weaver & Loom & Refr & Loupe -. ship via .-> Exec
 
@@ -89,7 +91,7 @@ flowchart TB
 |---|---|---|---|
 | **Platform — components** | **Core Owner** (Processor + KV + core-operations/-events/-schedules), **Weaver / Loom / Refractor / Loupe Owners** | component-internal design, its backlog slice, its Health emission, intra-component stories. The **Loupe Owner additionally tracks the other components' consumer-facing surfaces** and updates Loupe to match (§6.1.1 dependency-change trigger) | L1 → Winston L2 |
 | **Platform — solutions** | **Package Designer** | decomposing business reqs into reusable packages; composing Core/Weaver/Refractor/Loom; **flags platform gaps → Winston** | L1 |
-| **Product — verticals & experience** | **LoftSpace PO**, **Clinic PO**; **UX/FE Designer (Sally)** | POs define what each app *does*; **Sally designs & builds the front-ends** — Loupe's operator console + each vertical app's UI | L0/L1 |
+| **Product — verticals & experience** | **LoftSpace PO**, **Clinic PO**; **UX Designer (Sally)** + **FE Engineer** | POs define what each app *does*; **Sally designs the UX**, the **FE Engineer builds it** — Loupe's operator UI + each vertical app's front-end | L0/L1 |
 | **Cross-cutting ops** | **Warden** (reliability), **Lamplighter** (observability), **Scribe** (docs), **Archivist** (continuity) | platform-wide health; report to Winston | L0 → L2 (narrow) |
 | **Shared mechanism** | the hardened **story loop** + **Cartographer** grounding stage | *how* every owner ships | — |
 
@@ -142,7 +144,8 @@ worktree. Shared coordination artifacts — the `backlog.md` board and `memory/`
 | **Core / Weaver / Loom / Refractor / Loupe Owner** | features | the component itself, AI-driven (FR31 authorship for its DDL/Starlark/lenses) | a per-component **skill** + an owner **subagent**; **activated by the Steward (§6.1.1)** on pull / signal / dependency / sweep; consults Cartographer; ships via the story loop |
 | **Package Designer** | features (composition) | FR31/FR32 capability bundles assembled from packages | a **skill** encoding decompose→compose→gap-flag; emits feature requests up |
 | **Vertical PO (LoftSpace, Clinic)** | features (product) | the app's own AI assistant over FR19 traversal | a **skill** producing briefs + app-front-end stories |
-| **UX/FE Designer (Sally)** | features (experience) | the apps' UIs over FR19 + DDL self-description (`inputSchema` / `fieldDescription` drive forms) — the human face of the self-describing graph | the **`bmad-agent-ux-designer` (Sally)** + `bmad-create-ux-design` skills; builds Loupe's console + vertical-app FE; ships via the story loop |
+| **UX Designer (Sally)** | features (experience) | the apps' UIs over FR19 + DDL self-description (`inputSchema` / `fieldDescription` drive forms) | **`bmad-agent-ux-designer` (Sally)** + `bmad-create-ux-design` — designs the experience (flows, layout, interaction), hands a spec to the FE Engineer |
+| **FE Engineer** | features (experience) | the human face of the self-describing graph | **`agents/fe-engineer`** — builds Loupe's operator UI (`cmd/loupe/web` vanilla HTML/CSS/JS + Go handlers) + vertical-app front-ends from Sally's design; verifies in-browser (preview) |
 | **Warden** | reliability | #100 auto-circuit-breaker (Weaver PAUSE + investigation Task) | a **routine** (`/loop` + `ScheduleWakeup`) over CI status + a root-cause subagent (deferred — see §8) |
 | **Lamplighter** | observability | #96 closed-loop auditor (reads Health KV → remediation) + FR54 anomaly detection | a **routine** (`/loop`) polling Health KV against a live `up-full` stack |
 | **Archivist** | continuity | FR33/FR50 persisted intent across sessions | **memory** + a checkpoint **skill**, run at gate boundaries |
@@ -465,7 +468,8 @@ contracts) › the platform / product / ops roles below.
 | **Component Owner** (Core / Weaver / Loom / Refractor / Loupe) | drives its component forward; files + prepares (L1). The Loupe Owner also tracks others' surfaces |
 | **Package Designer** | composes Core/Weaver/Refractor/Loom into reusable packages; flags platform gaps up |
 | **Vertical PO** (LoftSpace, Clinic) | defines what an app *does* + drives its front-end |
-| **UX/FE Designer** (Sally) | designs & builds the front-ends — Loupe's operator console + each vertical app's UI |
+| **UX Designer** (Sally) | designs the experience (flows, layout, interaction) for Loupe + the vertical apps |
+| **FE Engineer** | builds the front-ends from Sally's design — Loupe (vanilla HTML/CSS/JS) + vertical apps |
 | **Warden** | reliability — CI / gates / flakes (deferred until reliability bites) |
 | **Lamplighter** | observability — watches Health KV / logs against a live stack |
 | **Scribe** | docs — drift sweep over cross-cutting docs + canonical references |
