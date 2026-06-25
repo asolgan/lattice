@@ -244,7 +244,8 @@ install-packages:
 
 ## install-loftspace — Install the LoftSpace lease-application vertical onto a
 ## running full stack (make up-full first), in dependency order:
-## orchestration-base → service-domain → lease-signing. up-full ships only the
+## orchestration-base → location-domain → loftspace-domain → service-domain →
+## lease-signing. up-full ships only the
 ## core packages; the vertical is an opt-in so demos / the PO loop can drive the
 ## real lease flow without hand-installing each package.
 install-loftspace:

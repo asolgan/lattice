@@ -48,7 +48,7 @@ func Lenses() []pkgmgr.LensSpec {
 			Output: &pkgmgr.OutputDescriptorSpec{
 				AnchorType:       "leaseapp",
 				OutputKeyPattern: "leaseApplicationComplete.{actorSuffix}",
-				BodyColumns:      []string{"violating", "missing_onboarding", "missing_bgcheck", "missing_payment", "missing_signature", "applicant", "entityKey", "freshUntil", "inflight_bgcheck", "inflight_payment", "maxretries_bgcheck", "maxretries_payment"},
+				BodyColumns:      []string{"violating", "missing_onboarding", "missing_bgcheck", "missing_payment", "missing_signature", "applicant", "entityKey", "freshUntil", "inflight_bgcheck", "inflight_payment", "maxretries_bgcheck", "maxretries_payment", "unitKey", "unitAddress", "unitRent"},
 				EmptyBehavior:    "delete",
 				KeyColumn:        "entityId",
 				Freshness:        "auto",
@@ -60,8 +60,9 @@ func Lenses() []pkgmgr.LensSpec {
 // leaseApplicationCompleteSpec is the one-row-per-anchor convergence cypher.
 //
 // It anchors on the leaseapp candidate (a required MATCH), OPTIONAL-walks the
-// applicationFor link to the applicant identity, and OPTIONAL-walks the
-// applicant's providedTo service instances. Each gap is a per-anchor scalar:
+// applicationFor link to the applicant identity, OPTIONAL-walks the appliesToUnit
+// link to the leased unit, and OPTIONAL-walks the applicant's providedTo service
+// instances. Each gap is a per-anchor scalar:
 //
 //   - missing_onboarding — the applicant has not recorded PII (no .ssn aspect).
 //     RecordIdentityPII (the onboarding pattern's userTask) writes .ssn/.dob,
@@ -79,6 +80,14 @@ func Lenses() []pkgmgr.LensSpec {
 // violating is the explicit OR of the four gaps (Contract #10 §10.2: violating
 // is lens-projected, not an implicit OR; for this target the natural rule is
 // "any gap → violating").
+//
+// unitKey / unitAddress / unitRent are INFORMATIONAL columns carried from the
+// appliesToUnit walk (the unit's key, its .address.line1, its .listing.rentAmount
+// — aspect-hops off the live node, read inside the aggregating WITH so they
+// survive the grouping). They answer "applying to lease Unit X at $Y/mo" for the
+// operator / applicant FE; they are NOT in the violating OR-clause — `unit` is
+// required at CreateLeaseApplication, so there is no missing_unit gap (§3 D5).
+// appliesToUnit is 0..1, so these stay scalar and one-row-per-anchor holds.
 //
 // applicant + entityKey are the param columns the §10.8 playbook templates name
 // (row.applicant, row.entityKey). They stay non-null even when gaps are open
@@ -171,6 +180,7 @@ func Lenses() []pkgmgr.LensSpec {
 var leaseApplicationCompleteSpec = fmt.Sprintf(`
 MATCH (app:leaseapp {key: $actorKey})
 OPTIONAL MATCH (app)-[:applicationFor]->(id:identity)
+OPTIONAL MATCH (app)-[:appliesToUnit]->(u:unit)
 OPTIONAL MATCH (id)<-[:providedTo]-(inst:service)
 WITH
   app.key AS entityKey,
@@ -178,6 +188,9 @@ WITH
   id.key  AS applicant,
   app.signature.data.signedAt AS signedAt,
   id.ssn.data.value AS ssnVal,
+  u.key                     AS unitKey,
+  u.address.data.line1      AS unitAddress,
+  u.listing.data.rentAmount AS unitRent,
   count(DISTINCT CASE WHEN inst.family.data.value = 'backgroundCheck' AND inst.outcome.data.status = 'completed' AND inst.outcome.data.validUntil > $now THEN inst.key ELSE null END) AS freshBgComplete,
   count(DISTINCT CASE WHEN inst.family.data.value = 'payment' AND inst.outcome.data.status = 'completed' THEN inst.key ELSE null END) AS payComplete,
   count(DISTINCT CASE WHEN inst.family.data.value = 'backgroundCheck' AND inst.dispatch.data.vendorRef <> null AND inst.outcome.data.status = null THEN inst.key ELSE null END) AS bgInflight,
@@ -188,6 +201,9 @@ RETURN
   entityKey AS actorKey,
   entityKey,
   applicant,
+  unitKey,
+  unitAddress,
+  unitRent,
   bg.outcome.data.validUntil AS freshUntil,
   (ssnVal = null)        AS missing_onboarding,
   (freshBgComplete = 0)  AS missing_bgcheck,

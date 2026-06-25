@@ -58,6 +58,8 @@ import (
 	"github.com/asolgan/lattice/internal/weaver"
 	identitydomain "github.com/asolgan/lattice/packages/identity-domain"
 	leasesigning "github.com/asolgan/lattice/packages/lease-signing"
+	locationdomain "github.com/asolgan/lattice/packages/location-domain"
+	loftspacedomain "github.com/asolgan/lattice/packages/loftspace-domain"
 	orchestrationbase "github.com/asolgan/lattice/packages/orchestration-base"
 	rbacdomain "github.com/asolgan/lattice/packages/rbac-domain"
 	servicedomain "github.com/asolgan/lattice/packages/service-domain"
@@ -78,6 +80,12 @@ type harness struct {
 	bgAsync *bridge.FakeAsyncCheck // registered for backgroundCheck when the async variant is selected
 	stripe  *bridge.FakeStripe
 	convRID string // the leaseApplicationComplete lens rule ID
+
+	// lastUnit* capture the unit minted by the most recent seedApplicant call so
+	// a test can assert the convergence row's informational unit columns.
+	lastUnitKey     string
+	lastUnitAddress string
+	lastUnitRent    float64
 }
 
 // harnessConfig carries the optional horizon/adapter overrides the async
@@ -288,6 +296,8 @@ func (h *harness) installChain() {
 	for _, pkg := range []pkgmgr.Definition{
 		rbacdomain.Package,
 		identitydomain.Package,
+		locationdomain.Package,
+		loftspacedomain.Package,
 		orchestrationbase.Package,
 		servicedomain.Package,
 		leasesigning.Package,
@@ -429,9 +439,33 @@ func (h *harness) seedApplicant() (appKey, appID, applicantKey string) {
 	require.Equalf(h.t, processor.ReplyStatusAccepted, idReply.Status, "CreateUnclaimedIdentity: %+v", idReply.Error)
 	applicantKey = idReply.PrimaryKey
 
+	// Mint the leased unit through location-domain + loftspace-domain, exactly as
+	// a landlord would: CreateLocation(unit) → SetUnitAddress → SetListing. The
+	// application then applies to a REAL unit (required) and the convergence lens
+	// walks the appliesToUnit link to project its address / rent.
+	unitReply := h.submitOp("CreateLocation", "location", "default", bootstrap.BootstrapIdentityKey, map[string]any{
+		"locationType": "unit",
+	}, nil)
+	require.Equalf(h.t, processor.ReplyStatusAccepted, unitReply.Status, "CreateLocation(unit): %+v", unitReply.Error)
+	unitKey := unitReply.PrimaryKey
+
+	h.lastUnitAddress = "742 Evergreen Terrace"
+	addrReply := h.submitOp("SetUnitAddress", "loftspaceListing", "default", bootstrap.BootstrapIdentityKey, map[string]any{
+		"unit": unitKey, "line1": h.lastUnitAddress, "city": "Springfield", "region": "OR", "postal": "97477",
+	}, &processor.ContextHint{Reads: []string{unitKey}})
+	require.Equalf(h.t, processor.ReplyStatusAccepted, addrReply.Status, "SetUnitAddress: %+v", addrReply.Error)
+
+	h.lastUnitRent = 2400
+	listingReply := h.submitOp("SetListing", "loftspaceListing", "default", bootstrap.BootstrapIdentityKey, map[string]any{
+		"unit": unitKey, "rentAmount": h.lastUnitRent, "rentCurrency": "USD", "bedrooms": 2,
+		"availableFrom": "2026-08-01T00:00:00Z", "leaseTermMonths": 12, "status": "available",
+	}, &processor.ContextHint{Reads: []string{unitKey}})
+	require.Equalf(h.t, processor.ReplyStatusAccepted, listingReply.Status, "SetListing: %+v", listingReply.Error)
+	h.lastUnitKey = unitKey
+
 	appReply := h.submitOp("CreateLeaseApplication", "leaseapp", "default", bootstrap.BootstrapIdentityKey, map[string]any{
-		"applicant": applicantKey,
-	}, &processor.ContextHint{Reads: []string{applicantKey}})
+		"applicant": applicantKey, "unit": unitKey,
+	}, &processor.ContextHint{Reads: []string{applicantKey, unitKey}})
 	require.Equalf(h.t, processor.ReplyStatusAccepted, appReply.Status, "CreateLeaseApplication: %+v", appReply.Error)
 	appKey = appReply.PrimaryKey
 	appID = appKey[len("vtx.leaseapp."):]

@@ -93,6 +93,18 @@ func TestLeaseConvergence_DrainThenAssert_SteadyState(t *testing.T) {
 		return row != nil && rowBool(row, "violating")
 	}, 30*time.Second, 150*time.Millisecond, "the fresh application must project a violating row")
 
+	// Increment 2: the convergence lens walked the appliesToUnit link to the leased
+	// unit and projected its informational columns (key / address / rent) — the
+	// cross-package proof that loftspace-domain's aspects on location-domain's unit
+	// reach the row "applying to lease Unit X at $Y/mo".
+	require.Eventually(t, func() bool {
+		row := h.readRow(appID)
+		return row != nil && row["unitKey"] == h.lastUnitKey
+	}, 30*time.Second, 150*time.Millisecond, "the row must project the leased unit's key from the appliesToUnit walk")
+	unitRow := h.readRow(appID)
+	require.Equal(t, h.lastUnitAddress, unitRow["unitAddress"], "unitAddress projected from the unit's .address aspect")
+	require.NotNil(t, unitRow["unitRent"], "unitRent projected from the unit's .listing aspect")
+
 	// Prove the dispatch path actually ran through the real Processor BEFORE
 	// the direct ops close the gaps. Weaver's missing_signature assignTask submits
 	// CreateTask scopedTo the application; Loom's onboarding userTask submits

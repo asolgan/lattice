@@ -155,11 +155,28 @@ func seedApplicant(t *testing.T, ctx context.Context, conn *substrate.Conn, id s
 	return key
 }
 
-// createApplication submits CreateLeaseApplication and returns the app key.
+// seedUnit seeds a live location-domain unit (vtx.unit.<id>, class=location) to
+// be the application's leased unit. Seeded directly (not via location-domain's
+// CreateLocation) because these package tests do not install location-domain;
+// the leaseapp op only alive-checks the unit by key.
+func seedUnit(t *testing.T, ctx context.Context, conn *substrate.Conn, id string) string {
+	t.Helper()
+	key := "vtx.unit." + id
+	seedVertex(t, ctx, conn, key, "location", map[string]any{})
+	return key
+}
+
+// createApplication submits CreateLeaseApplication and returns the app key. It
+// seeds a fresh live unit (vtx.unit.<id>) for the application to apply to (now
+// required) and lists both the applicant and the unit in ContextHint.Reads.
 func createApplication(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, applicantKey string) string {
 	t.Helper()
 	reqID := testutil.GenReqID("createApp" + applicantKey[len(applicantKey)-4:])
 	appID := nanoIDFromRequestID(reqID)
+	// Reuse the applicant's (valid 20-char NanoID) id as the unit id: a distinct
+	// key (vtx.unit.<id> vs vtx.identity.<id>) that still satisfies the link
+	// key-pattern NanoID check the appliesToUnit link must pass.
+	unitKey := seedUnit(t, ctx, conn, applicantKey[len("vtx.identity."):])
 	env := &processor.OperationEnvelope{
 		RequestID:     reqID,
 		Lane:          processor.LaneDefault,
@@ -167,8 +184,8 @@ func createApplication(t *testing.T, ctx context.Context, conn *substrate.Conn, 
 		Actor:         lsActorKey,
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "leaseapp",
-		Payload:       json.RawMessage(`{"applicant":"` + applicantKey + `"}`),
-		ContextHint:   &processor.ContextHint{Reads: []string{applicantKey}},
+		Payload:       json.RawMessage(`{"applicant":"` + applicantKey + `","unit":"` + unitKey + `"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{applicantKey, unitKey}},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
@@ -805,6 +822,79 @@ func TestCreateLeaseApplication_UnknownApplicant_Rejected(t *testing.T) {
 		// UnknownApplicant guard rejects.
 		Payload:     json.RawMessage(`{"applicant":"` + missing + `"}`),
 		ContextHint: &processor.ContextHint{Reads: []string{}},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+}
+
+// TestCreateLeaseApplication_AppliesToUnit_LinkSentenceValid (Increment 2): an
+// application requires a live unit, writes the appliesToUnit link (leaseapp is
+// source, unit is target — sentence-valid, Contract #1 §1.1), and writes the
+// optional .terms aspect when moveInDate is supplied (root data stays {} — D5).
+func TestCreateLeaseApplication_AppliesToUnit_LinkSentenceValid(t *testing.T) {
+	ctx, conn := setupLeaseEnv(t)
+	cp, cons := newLeasePipeline(t, ctx, conn, "create-app-unit")
+
+	applicantKey := seedApplicant(t, ctx, conn, "BBunitapp1cntHJKMNPQ")
+	unitKey := seedUnit(t, ctx, conn, "BBunitvtx1cntHJKMNPQ")
+	unitID := unitKey[len("vtx.unit."):]
+
+	reqID := testutil.GenReqID("appUnit000001")
+	appID := nanoIDFromRequestID(reqID)
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateLeaseApplication",
+		Actor:         lsActorKey,
+		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		Class:         "leaseapp",
+		Payload:       json.RawMessage(`{"applicant":"` + applicantKey + `","unit":"` + unitKey + `","moveInDate":"2026-08-01","leaseTermMonths":12,"requestedRent":2400}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{applicantKey, unitKey}},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+	appKey := "vtx.leaseapp." + appID
+
+	lnk := "lnk.leaseapp." + appID + ".appliesToUnit.unit." + unitID
+	ldoc := readDoc(t, ctx, conn, lnk)
+	if got, _ := ldoc["sourceVertex"].(string); got != appKey {
+		t.Fatalf("appliesToUnit sourceVertex = %q, want %q (leaseapp is source)", got, appKey)
+	}
+	if got, _ := ldoc["targetVertex"].(string); got != unitKey {
+		t.Fatalf("appliesToUnit targetVertex = %q, want %q (unit is target)", got, unitKey)
+	}
+
+	tdoc := readDoc(t, ctx, conn, appKey+".terms")
+	tdata, _ := tdoc["data"].(map[string]any)
+	if got, _ := tdata["moveInDate"].(string); got != "2026-08-01" {
+		t.Fatalf("terms.moveInDate = %q, want 2026-08-01", got)
+	}
+	appDoc := readDoc(t, ctx, conn, appKey)
+	if d, _ := appDoc["data"].(map[string]any); len(d) != 0 {
+		t.Fatalf("application root data must stay minimal ({}), got %v", d)
+	}
+}
+
+// TestCreateLeaseApplication_UnknownUnit_Rejected: an application naming a
+// non-existent unit is rejected (no-orphan; unit is required + alive-checked).
+func TestCreateLeaseApplication_UnknownUnit_Rejected(t *testing.T) {
+	ctx, conn := setupLeaseEnv(t)
+	cp, cons := newLeasePipeline(t, ctx, conn, "create-app-unit-orphan")
+
+	applicantKey := seedApplicant(t, ctx, conn, "BBnxunitapp1HJKMNPQR")
+	missingUnit := "vtx.unit.BBnxunitvtxcntHJKMNP"
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("unitOrphan001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateLeaseApplication",
+		Actor:         lsActorKey,
+		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		Class:         "leaseapp",
+		// The applicant IS alive (listed in Reads); the unit is missing and NOT
+		// listed (a non-existent listed key is a hydration miss), so the op reaches
+		// the script where the UnknownUnit guard rejects.
+		Payload:     json.RawMessage(`{"applicant":"` + applicantKey + `","unit":"` + missingUnit + `"}`),
+		ContextHint: &processor.ContextHint{Reads: []string{applicantKey}},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)

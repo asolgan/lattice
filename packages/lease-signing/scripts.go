@@ -44,6 +44,33 @@ def bare_nanoid_or_mint(p, name):
             fail("InvalidArgument: " + name + ": must carry no dots / key segments, wildcards, or whitespace; got " + v)
     return v
 
+def optional_string(p, name):
+    if not hasattr(p, name):
+        return None
+    v = getattr(p, name)
+    if v == None or type(v) != type(""):
+        return None
+    v = v.strip()
+    if len(v) == 0:
+        return None
+    return v
+
+def require_number(p, name):
+    if not hasattr(p, name):
+        fail("InvalidArgument: " + name + ": required")
+    v = getattr(p, name)
+    if v == None or (type(v) != type(0) and type(v) != type(0.0)):
+        fail("InvalidArgument: " + name + ": required number")
+    return v
+
+def optional_number(p, name):
+    if not hasattr(p, name):
+        return None
+    v = getattr(p, name)
+    if v == None or (type(v) != type(0) and type(v) != type(0.0)):
+        return None
+    return v
+
 def parts_of(key, name, want_type):
     parts = key.split(".")
     if len(parts) != 3 or parts[0] != "vtx":
@@ -77,6 +104,17 @@ def execute(state, op):
         if not vertex_alive(state, applicant):
             fail("UnknownApplicant: " + applicant)
 
+        # The application MUST name the unit it applies to (§7 Q2): a unit-less
+        # application can never exist, so there is no unactuatable missing_unit
+        # gap to wedge Weaver — the convergence lens reads the unit's listing /
+        # address as informational columns ("what am I applying to lease"). The
+        # unit is a location-domain vtx.unit.<NanoID>, alive-checked here (so the
+        # caller must list it in ContextHint.Reads).
+        unit = required_string(p, "unit")
+        _, unit_id = parts_of(unit, "unit", "unit")
+        if not vertex_alive(state, unit):
+            fail("UnknownUnit: " + unit)
+
         # leaseAppId is a caller-supplied write-ahead seam (mirrors
         # service-domain's instanceId). Absent → mint internally. CreateOnly
         # semantics make a crash-retry with the same id collapse on the
@@ -89,14 +127,35 @@ def execute(state, op):
         # "this application is for this applicant."
         app_for_lnk = "lnk.leaseapp." + app_id + ".applicationFor.identity." + applicant_id
 
-        # Root data minimal (D5): {} on root. The applicant is a link; the
+        # appliesToUnit: the leaseapp (later-arriving) is the source, the
+        # pre-existing unit is the target (Contract #1 §1.1). Reads as
+        # "this application applies to this unit." The convergence lens walks it.
+        applies_to_lnk = "lnk.leaseapp." + app_id + ".appliesToUnit.unit." + unit_id
+
+        # Root data minimal (D5): {} on root. The applicant + unit are links; the
         # status/gaps are lens-computed, never stored.
         mutations = [
             make_vtx(app_key, "leaseapp", {}),
             make_link(app_for_lnk, app_key, applicant, "applicationFor", "applicationFor", {}),
+            make_link(applies_to_lnk, app_key, unit, "appliesToUnit", "appliesToUnit", {}),
         ]
+
+        # .terms (D3): the applicant's requested lease terms — additive
+        # application detail for the applicant FE / operator (the convergence lens
+        # does NOT read it). Written only when moveInDate is supplied, so a bare
+        # applicant+unit application stays valid; moveInDate present ⇒
+        # leaseTermMonths required (a half-specified terms block is rejected);
+        # requestedRent is optional.
+        move_in = optional_string(p, "moveInDate")
+        if move_in != None:
+            terms_data = {"moveInDate": move_in, "leaseTermMonths": require_number(p, "leaseTermMonths")}
+            req_rent = optional_number(p, "requestedRent")
+            if req_rent != None:
+                terms_data["requestedRent"] = req_rent
+            mutations.append(make_aspect(app_key, "terms", "terms", terms_data))
+
         events = [{"class": "leaseapp.applicationCreated",
-                   "data": {"leaseAppKey": app_key, "applicant": applicant}}]
+                   "data": {"leaseAppKey": app_key, "applicant": applicant, "unit": unit}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": app_key}}
 

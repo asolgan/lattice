@@ -258,6 +258,56 @@ func TestLeaseApplicationComplete_SignatureFlipsGap(t *testing.T) {
 	require.Equal(t, false, v["violating"], "all gaps closed → not violating")
 }
 
+// TestLeaseApplicationComplete_ProjectsUnitColumns (Increment 2): the appliesToUnit
+// walk projects the leased unit's key / address / rent as informational columns,
+// one row per anchor preserved (appliesToUnit is 0..1). The unit columns are NOT
+// in violating — they are display-only (unit is required at create, no gap).
+func TestLeaseApplicationComplete_ProjectsUnitColumns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	appKey := f.vtx(t, "app", "leaseapp")
+	f.vtx(t, "alice", "identity")
+	unitKey := f.vtx(t, "unit1", "unit")
+	f.aspect(t, "unit1", "address", "address", map[string]any{"line1": "123 Loft St"})
+	f.aspect(t, "unit1", "listing", "listing", map[string]any{"rentAmount": 2400, "status": "available"})
+	f.edge(t, "applicationFor", "app", "alice")
+	f.edge(t, "appliesToUnit", "app", "unit1")
+
+	rows := f.project(t, "app")
+	require.Len(t, rows, 1, "exactly one row per anchor even with the appliesToUnit walk")
+	v := rows[0].Values
+	require.Equal(t, appKey, v["entityKey"])
+	require.Equal(t, unitKey, v["unitKey"], "unitKey carried through the WITH from the appliesToUnit walk")
+	require.Equal(t, "123 Loft St", v["unitAddress"], "unitAddress aspect-hops u.address.line1")
+	require.EqualValues(t, 2400, v["unitRent"], "unitRent aspect-hops u.listing.rentAmount")
+	// All four real gaps still open (no ssn/bgcheck/payment/signature); the unit
+	// columns do not participate in the violating OR.
+	require.Equal(t, true, v["violating"], "the unit columns are informational, not gaps")
+}
+
+// TestLeaseApplicationComplete_NoUnit_NullUnitColumns: an application with no
+// appliesToUnit walk (the cypher OPTIONAL MATCH misses) projects null unit
+// columns and still one row — the null-restore path (a unit is required at
+// create, so this is the cypher-level safety, not a reachable production state).
+func TestLeaseApplicationComplete_NoUnit_NullUnitColumns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	f.vtx(t, "app", "leaseapp")
+	f.vtx(t, "alice", "identity")
+	f.edge(t, "applicationFor", "app", "alice")
+
+	rows := f.project(t, "app")
+	require.Len(t, rows, 1, "no unit walk still yields exactly one row")
+	v := rows[0].Values
+	require.Nil(t, v["unitKey"], "absent unit → null unitKey")
+	require.Nil(t, v["unitAddress"])
+	require.Nil(t, v["unitRent"])
+}
+
 // bgFreshnessFixture builds a one-applicant fixture (onboarded, signed) with a
 // completed payment (ever-completed, no validUntil) and a completed bgcheck whose
 // validUntil is the caller's choice — the multi-instance fan-out the freshness

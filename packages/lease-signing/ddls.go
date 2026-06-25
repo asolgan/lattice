@@ -54,32 +54,44 @@ func leaseAppDDL() pkgmgr.DDLSpec {
 			"(minimal, D5 — the application status/gaps are LENS-computed, not stored). The application's applicant " +
 			"is a LINK (applicationFor → identity: the later-arriving leaseapp is the source, the pre-existing " +
 			"identity is the target, Contract #1 §1.1). The convergence lens walks applicationFor then the service " +
-			"instances' providedTo links to read the applicant's bgcheck/payment outcome aspects. " +
-			"CreateLeaseApplication mints the application + the applicationFor link, requiring + validating a live " +
-			"applicant identity (no-orphan, FR29). SignLease writes the .signature aspect {signedAt (canonical-UTC " +
+			"instances' providedTo links to read the applicant's bgcheck/payment outcome aspects, and walks the " +
+			"appliesToUnit link to the leased location-domain unit (vtx.unit.<NanoID>) to project its address / rent " +
+			"as informational columns. CreateLeaseApplication mints the application + the applicationFor link + the " +
+			"appliesToUnit link, requiring + validating a live applicant identity AND a live unit (no-orphan, FR29; " +
+			"a unit-less application can never exist — there is no missing_unit gap). It optionally writes a .terms " +
+			"aspect {moveInDate, leaseTermMonths, requestedRent?} when moveInDate is supplied. SignLease writes the .signature aspect {signedAt (canonical-UTC " +
 			"RFC3339)} on the application (the fact that closes the missing_signature gap); it is the assignTask " +
 			"forOperation target the §10.8 playbook binds.",
 		Script: leaseAppDDLScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"applicant":{"type":"string","description":"vtx.identity.<NanoID> of the applicant this application is for (CreateLeaseApplication; required, validated alive)."},` +
+			`"unit":{"type":"string","description":"vtx.unit.<NanoID> of the location-domain unit this application is to lease (CreateLeaseApplication; required, validated alive)."},` +
+			`"moveInDate":{"type":"string","description":"Requested move-in date, RFC3339 (CreateLeaseApplication; optional — present ⇒ writes the .terms aspect and requires leaseTermMonths)."},` +
+			`"leaseTermMonths":{"type":"integer","description":"Requested lease term in months (CreateLeaseApplication; required when moveInDate is supplied)."},` +
+			`"requestedRent":{"type":"number","description":"Applicant's offered monthly rent (CreateLeaseApplication; optional, only with moveInDate)."},` +
 			`"leaseAppId":{"type":"string","description":"Optional bare NanoID for the application vertex (CreateLeaseApplication); absent → minted. The write-ahead seam, mirroring service-domain's instanceId."},` +
 			`"leaseAppKey":{"type":"string","description":"vtx.leaseapp.<NanoID> of the application to sign (SignLease; required, validated alive)."}},` +
 			`"required":[]}`,
 		OutputSchema: `{"type":"object","properties":` +
 			`{"primaryKey":{"type":"string","description":"vtx.leaseapp.<NanoID> of the created or signed application (the operation's principal key)."}}}`,
 		FieldDescription: map[string]string{
-			"applicant":   "Full vtx.identity.<NanoID> key of the applicant this application is for. CreateLeaseApplication requires it, validates the identity is alive, and writes the applicationFor link (the convergence link the lens walks).",
-			"leaseAppId":  "Optional bare NanoID (no dots / key segments) for the application vertex (vtx.leaseapp.<leaseAppId>) created by CreateLeaseApplication. Supplied by a caller that must know the key before commit (the write-ahead seam). Absent → minted with nanoid.new().",
-			"leaseAppKey": "Full vtx.leaseapp.<NanoID> key of the application to sign. SignLease validates it is alive and writes the .signature aspect, flipping the missing_signature gap false.",
+			"applicant":       "Full vtx.identity.<NanoID> key of the applicant this application is for. CreateLeaseApplication requires it, validates the identity is alive, and writes the applicationFor link (the convergence link the lens walks).",
+			"unit":            "Full vtx.unit.<NanoID> key of the location-domain unit being applied for. CreateLeaseApplication requires it, validates it is alive, and writes the appliesToUnit link (leaseapp→unit). The convergence lens walks it and projects the unit's address / rent as informational columns. Required (no unit-less application).",
+			"moveInDate":      "Optional requested move-in date (RFC3339). When supplied, CreateLeaseApplication writes the .terms aspect {moveInDate, leaseTermMonths, requestedRent?} and requires leaseTermMonths. Informational application detail (not read by the convergence lens).",
+			"leaseTermMonths": "Requested lease term in months. Required when moveInDate is supplied; written to the .terms aspect.",
+			"requestedRent":   "Optional monthly rent the applicant offers. Written to the .terms aspect when supplied (only meaningful alongside moveInDate).",
+			"leaseAppId":      "Optional bare NanoID (no dots / key segments) for the application vertex (vtx.leaseapp.<leaseAppId>) created by CreateLeaseApplication. Supplied by a caller that must know the key before commit (the write-ahead seam). Absent → minted with nanoid.new().",
+			"leaseAppKey":     "Full vtx.leaseapp.<NanoID> key of the application to sign. SignLease validates it is alive and writes the .signature aspect, flipping the missing_signature gap false.",
 		},
 		Examples: []pkgmgr.ExampleSpec{
 			{
 				Name:    "CreateLeaseApplication — start an application for an applicant",
-				Payload: map[string]any{"applicant": "vtx.identity.<applicantNanoID>"},
-				ExpectedOutcome: "Validates the applicant identity (alive). Atomically commits vtx.leaseapp.<NanoID> (root data {} — D5) " +
-					"+ the applicationFor link (leaseapp→identity). Accepts an optional caller-supplied bare-NanoID leaseAppId. " +
-					"Emits leaseapp.applicationCreated{leaseAppKey, applicant}. Returns primaryKey (the application key). " +
-					"Rejects with ScriptError if the applicant is absent.",
+				Payload: map[string]any{"applicant": "vtx.identity.<applicantNanoID>", "unit": "vtx.unit.<unitNanoID>"},
+				ExpectedOutcome: "Validates the applicant identity + the unit (both alive). Atomically commits vtx.leaseapp.<NanoID> (root data {} — D5) " +
+					"+ the applicationFor link (leaseapp→identity) + the appliesToUnit link (leaseapp→unit). Accepts an optional " +
+					"caller-supplied bare-NanoID leaseAppId, and optional .terms (moveInDate + leaseTermMonths [+ requestedRent]). " +
+					"Emits leaseapp.applicationCreated{leaseAppKey, applicant, unit}. Returns primaryKey (the application key). " +
+					"Rejects with ScriptError if the applicant or unit is absent.",
 			},
 			{
 				Name:    "SignLease — applicant signs the lease",
