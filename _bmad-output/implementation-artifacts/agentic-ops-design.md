@@ -255,9 +255,14 @@ flowchart TB
 **Guardrails.** A **WIP cap** bounds how many owners the Steward runs concurrently (worktree-isolated) —
 bounding token spend and board churn. Reliability/observability signals **pre-empt** the queue (a red gate or
 Health anomaly jumps ahead of feature pulls). A **starvation / aging guard** raises long-skipped low-importance
-items over time so nothing is indefinitely deferred. Andrew may set a **per-cycle theme** (e.g. "reliability
-this cycle") that biases selection without picking individual items. Inquiry is rate-limited to idle-fill +
-signal-reactive, never every tick, so the board is replenished, not spammed.
+*items* over time so nothing is indefinitely deferred. **Component coverage** is the *component*-level analog:
+a demand-driven `importance×readiness` pick would let a component with no loud backlog (a quiet Loupe/Loom) go
+neglected, so the Steward also tracks each component's freshness via `git log -1 --format=%ct -- <path>`
+(stateless, like the dependency map) and, when the **stalest component exceeds ~3 days untouched**, pre-empts a
+routine pick with **that component's Inquiry** — guaranteeing every component rotates through attention
+regardless of where the loud items are. Andrew may set a **per-cycle theme** that biases selection. Inquiry
+fires from three triggers — idle-fill, signal-reactive, and **coverage-rotation** — never every tick, so the
+board is replenished, not spammed.
 
 ### 6.2 Hooks (deterministic, harness-run — settings.json)
 

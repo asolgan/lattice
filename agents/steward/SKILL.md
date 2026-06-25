@@ -16,14 +16,21 @@ One cycle = sense → select → activate → admit → (idle ⇒ replenish) →
 - **Board:** `_bmad-output/planning-artifacts/backlog.md` — ready items + their owners.
 - **Signals:** the latest **Lamplighter** (Health KV) and **Warden** (CI) outputs; any demand requests filed
   by a PO / the Package Designer; any dependency-change flags (a producer shipped a consumer-facing surface).
+- **Component freshness** (breadth signal for §2 coverage): each component's last-touched time via
+  `git log -1 --format=%ct -- <path>` — Core = `internal/processor` + `internal/bootstrap` +
+  `internal/substrate`; Weaver/Loom/Refractor = `internal/<x>`; Loupe = `cmd/loupe`.
 
 ## 2. Select (policy)
 
 Pre-emption order:
 
 1. **Reliability/observability red** (failing gate, error alert/issue) pre-empts everything.
-2. **Andrew's per-cycle theme** (if set) biases the pick; else
-3. highest **importance × readiness** ready item whose owner is free.
+2. **Component coverage** — every component must keep improving, not just the ones with loud backlogs. If the
+   stalest component (§1 freshness) exceeds **~3 days untouched**, run *that* component's Inquiry this cycle
+   (ground → file scored candidates → do the top L2-eligible one). Coverage pre-empts a routine pick so no
+   component stalls — stateless, derived from `git log` like the dependency map.
+3. **Andrew's per-cycle theme** (if set) biases the pick; else
+4. highest **importance × readiness** ready item whose owner is free.
 
 - **Starvation guard:** age long-skipped low-importance items up — nothing is deferred indefinitely.
 - **WIP cap:** at most N owners concurrent. Start **N = 1** (prove the loop is safe); raise to 2–3 behind
