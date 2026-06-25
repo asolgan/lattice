@@ -236,6 +236,26 @@ TODO/FIXME, recent diffs, coverage/lint gaps, and inbound feature requests — t
 against a Winston-owned rubric** and admitted to the board only when they meet a **definition-of-ready**.
 Owners **file and prepare only** — they never self-prioritize above Winston.
 
+**Work-finding never dead-ends — build → design → inquire.** An implement-only loop stalls the moment the
+easy build lane drains and everything left "wants human design review" (observed: a real cycle drained the
+ride-along cleanups and idled). So the ladder has three tiers, and "nothing actionable" almost always means a
+lower tier wasn't worked:
+
+1. **Build** the top L2-eligible item — broader than the named cleanups: it *always* includes design-free
+   continuous improvement (test-coverage gaps, doc/Scribe sweeps, observability build-out incl. the Loupe
+   operator surfaces, simplification/refactor passes).
+2. **Design** the next item — if nothing is build-ready, the loop *produces the design* rather than escalating
+   a bare "needs design" note: ground → a reviewable design doc (`implementation-artifacts/`) →
+   adversarial/party review → commit it as a **📐 awaiting-ratification** proposal. This is L1 (a proposal, no
+   contract/implementation commit), so it's unattended-safe, and it shrinks Andrew to *adjudicating* designs
+   instead of authoring them — the design-first loop, run autonomously. *Exception:* items needing a strategic
+   direction-call (Gateway, read-path auth, Vault, multi-cell) get an options-sketch + a "needs your
+   direction" flag, not a full auto-design.
+3. **Inquire** — only when there is nothing to build *or* design, replenish candidates.
+
+Escalation stays a *proposal, never a decision*: the loop designs design-heavy work but commits **no** frozen
+contract and makes **no** final architectural call — Andrew ratifies those.
+
 Steward iteration:
 
 ```mermaid

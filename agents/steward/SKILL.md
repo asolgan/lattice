@@ -30,7 +30,16 @@ Pre-emption order:
    (ground → file scored candidates → do the top L2-eligible one). Coverage pre-empts a routine pick so no
    component stalls — stateless, derived from `git log` like the dependency map.
 3. **Andrew's per-cycle theme** (if set) biases the pick; else
-4. highest **importance × readiness** ready item whose owner is free.
+4. **Build** the highest **importance × readiness** READY item. The build lane is broader than the named
+   cleanups — it always includes design-free continuous improvement: **test-coverage gaps, doc/Scribe sweeps,
+   observability build-out (incl. the Loupe live-map + agent console), and simplification / refactor passes**.
+5. **Design** the next item — *if nothing is build-ready, make progress by designing, not stopping.* Pick the
+   top item that is designable without a strategic direction-call → ground → write a reviewable design doc in
+   `implementation-artifacts/` → adversarial / party review → commit it as a `📐 awaiting-ratification`
+   proposal. This shrinks Andrew to *adjudicating* designs, not authoring them. (Strategic/architectural items
+   — Gateway, read-path auth, Vault, multi-cell — get an options-sketch + "needs your direction" flag, not a
+   full auto-design.)
+6. else → **Inquiry** (§5) to replenish candidates.
 
 - **Starvation guard:** age long-skipped low-importance items up — nothing is deferred indefinitely.
 - **WIP cap:** at most N owners concurrent. Start **N = 1** (prove the loop is safe); raise to 2–3 behind
@@ -39,8 +48,9 @@ Pre-emption order:
 **L2-eligibility is risk-bounded, not size-bounded.** An item may be done *and* committed to main unattended
 iff: all gates can be made green (incl. CI), it touches **no frozen contract**, and it is revertible. **Size
 does not disqualify — XS through L are fair game; be ambitious.** Size only sets review depth (§4) and whether
-the work spans fires (§4 multi-fire). **Escalate** (don't do unattended): frozen-contract changes, and
-genuinely architectural / design-heavy work that warrants human design review (produce a design doc instead).
+the work spans fires (§4 multi-fire). **Escalate (propose, never decide):** frozen-contract changes and *final* architectural decisions stay
+Andrew's. But design-heavy work is **not** a dead end — the loop **designs** it (step 5) and leaves a
+reviewable proposal; Andrew ratifies. Only contract edits and final-architecture calls truly escalate.
 
 ## 3. Activate (L1, in a worktree)
 
@@ -64,9 +74,11 @@ dev → 3-layer review → gates**.
 
 ## 5. Replenish if idle
 
-No ready item and no signal → run an owner's **Inquiry** on the least-recently-inspected component:
-generate scored, definition-of-ready board candidates. **Idle tokens → backlog generation, not no-op
-polling.** Inquiry is rate-limited (idle-fill + signal-reactive), never every cycle — replenish, don't spam.
+Inquiry is the **last** resort — only when there is nothing to **build** (§2.4) *and* nothing to **design**
+(§2.5). Run an owner's **Inquiry** on the least-recently-inspected component: generate scored,
+definition-of-ready board candidates. **Idle tokens → backlog generation, not no-op polling.** Inquiry fires
+from idle-fill, signal-reactive, and coverage-rotation (§2.2) — never every cycle; replenish, don't spam.
+"Nothing actionable" is almost always a sign the build/design lanes weren't worked, not a true idle.
 
 ## 6. Pace (under `/loop`)
 

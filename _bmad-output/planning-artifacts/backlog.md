@@ -93,9 +93,18 @@ The three enabling items above — **Loom control plane** (unblocks Loupe's comp
 near-term build set. Each is taken design-first (design doc → team review → launch), flagging contract
 changes.
 
-Small self-contained cleanups that can ride along (XS–S): **freshnessExpiry marker
-tombstone-on-convergence**, **production freshness-window tuning**, **multi-aspect atomic OCC for
-`UpdateMetaVertex`**.
+Ride-along cleanups — **triaged by the Steward (2026-06-24); none is a clean unattended XS:**
+
+- **multi-aspect atomic OCC for `UpdateMetaVertex`** → **design-needed.** `meta_ddl.go` applies
+  `expectedRevision` to only the first changed aspect by design (each aspect has an independent NATS revision
+  sequence). True atomic multi-key OCC needs a substrate multi-key per-key-revision primitive — an M+,
+  contract-adjacent commit-path change. *The Steward design tier will draft a proposal; Andrew ratifies.*
+- **freshnessExpiry marker tombstone-on-convergence** → **de-prioritized.** Per the in-code rationale
+  (`packages/orchestration-base/mark_expired.go`), a converged marker is read by nothing and harmless;
+  tombstoning buys cleanup not correctness and adds a convergence-edge write — near-zero value, Contract #10
+  §10.4-adjacent review cost.
+- **production freshness-window tuning** → 📐 **Andrew's policy call** (a staleness-tolerance vs. timer-churn
+  value judgment, not a mechanical bump) — awaiting your decision.
 
 ---
 
