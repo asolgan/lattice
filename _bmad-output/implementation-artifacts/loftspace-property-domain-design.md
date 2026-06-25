@@ -177,6 +177,14 @@ RETURN
    **aspect-type** DDLs, `SetListing` / `SetUnitAddress` ops (operate on an existing `vtx.unit`), permissions,
    manifest, `make verify-package-loftspace-domain` + unit tests. **No vertex DDL** (the unit is
    location-domain's). **Ready to build now** (independent of the lease integration). L2; M.
+   **✅ DONE (Steward, 2026-06-25).** Built as one `loftspaceListing` vertexType DDL owning both ops + two
+   declaration-only aspect-type DDLs (`listing`/`address`) as step-6 write gates (the
+   freshnessMarker/freshnessExpiry split). Both aspects non-sensitive (they attach to a unit, not an
+   identity). Ops are unconditioned upserts (re-publishable; an operator can flip `status` by hand). Gates
+   green + lead-reviewed; `make verify-package-loftspace-domain` passes 67 assertions; **live-verified** on
+   the running stack (minted a unit, set listing+address through the real Processor; bad-status, non-unit-key,
+   and absent-unit all rejected). `make install-loftspace` now installs `location-domain` → `loftspace-domain`
+   before `service-domain`.
 2. **`lease-signing` integration** — declare the `appliesToUnit` link DDL here; `CreateLeaseApplication`
    takes a **required** `unit`, adds it to `ContextHint.Reads`, **alive-checks** it (C7), writes
    `appliesToUnit`; add the `.terms` aspect; extend the convergence-lens `WITH`/`RETURN` (§4) **and**

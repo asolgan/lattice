@@ -1,0 +1,26 @@
+name: loftspace-domain
+version: 0.1.0
+description: |
+  LoftSpace listing economics. Adds the leasable facets of a unit — the
+  .listing aspect (rent / term / availability) and the .address aspect — on
+  top of location-domain's place graph, without introducing a vertex type.
+  The op scripts live on the loftspaceListing vertexType DDL; the listing and
+  address aspect-type DDLs are step-6 write gates. Depends on location-domain
+  (which owns vtx.unit).
+depends:
+  - location-domain
+declares:
+  ddls:
+    - canonicalName: loftspaceListing
+      class: meta.ddl.vertexType
+    - canonicalName: listing
+      class: meta.ddl.aspectType
+    - canonicalName: address
+      class: meta.ddl.aspectType
+  permissions:
+    - operationType: SetListing
+      scope: any
+      grantsTo: [operator]
+    - operationType: SetUnitAddress
+      scope: any
+      grantsTo: [operator]
