@@ -92,11 +92,18 @@ A single-page app with a left identity switcher and four views. Order = the appl
 - **Empty / error states** — no available listings ("No units are listed for lease right now");
   NATS-down → the standard 502 banner.
 
-**New backend endpoint (gap):** `GET /api/listings?status=available` — lists `vtx.unit.<id>` that carry a
-`.listing` aspect, joining `.listing` + `.address`, filtered by status. Today nothing exposes listings;
-this assembles them by listing `core-kv` keys, selecting `vtx.unit.*.listing`, and reading the sibling
-`.address`. Mirror `computeTasks` / `computeSystemMap` (key-scan + per-key read + assemble). Unit-tested
-headlessly.
+**New backend endpoint (gap) — MUST be a lens projection (P5):** `GET /api/listings?status=available`.
+Per `lattice-architecture.md` **P5** ("Lenses are the only application query surface; applications never
+read Core KV directly for queries"), this read MUST come from a **lens projection in a read-model target**,
+NOT a Core KV scan. The gap is a missing read model: add a **listings lens** (loftspace-domain) that
+projects each `vtx.unit` carrying a `.listing` (status, rent, bedrooms, `availableFrom`) joined with its
+`.address` into a NATS-KV target bucket; `/api/listings` reads THAT bucket (the same way §4.2 reads
+`weaver-targets`). A Core KV key-scan here is an explicit P5 violation — Loupe may scan Core KV because it
+is the admin/debug inspector P5 carves out, but a vertical app is an application query surface.
+
+> **Increment-A deviation (to correct):** the shipped Increment A took the expedient Core-KV-scan path for
+> `/api/listings` + `/api/identities`. That is the P5 violation above; the corrective increment replaces
+> the scans with lens-projection reads (listings lens + a roster/identities read model).
 
 ### 4.2 My Applications (status tracker)
 
@@ -165,17 +172,19 @@ identity-domain create op. Persist the selection in `localStorage` so a refresh 
 
 ## 6. New backend surface (the only platform gaps) — summary for the FE Engineer
 
-| Endpoint | Why | Pattern to copy |
-|---|---|---|
-| `GET /api/listings?status=` | Browse leasable units (§4.1) — nothing exposes listings today | `computeSystemMap` (key-scan + per-key read + join `.listing`+`.address`) |
-| `GET /api/applications?applicant=` | Per-applicant status (§4.2) — read the `weaver-targets` lens rows | Loupe bucket-list, against `weaver-targets` not `core-kv` |
-| `GET /api/ops` (catalog) + `POST /api/op` | Intake + task forms (§4.1/4.3) — op `inputSchema`/`fieldDescription`/`examples` + submit | lift verbatim from `cmd/loupe/ops.go` / `op.go` |
-| `GET /api/tasks?assignee=&status=` | Applicant inbox (§4.3) — add an `assignee=` filter | extend `computeTasks` with an assignee filter |
-| `POST/GET/DELETE /api/objects…` | Documents (§4.4) | lift verbatim from `cmd/loupe/objects.go` |
+All app reads go through **lens projections** (P5), never a Core KV scan.
 
-Everything except the two new read assemblers (`/api/listings`, `/api/applications`) is a **lift** of an
-already-shipped, tested Loupe handler. The two new assemblers are **headlessly unit-testable** (feed a key
-list + a fake getter, assert the rows) — no browser needed for their gate.
+| Endpoint | Why | Read model (P5) |
+|---|---|---|
+| `GET /api/listings?status=` | Browse leasable units (§4.1) | a **new listings lens** → NATS-KV target bucket; read that bucket |
+| `GET /api/applications?applicant=` | Per-applicant status (§4.2) | the existing `leaseApplicationComplete` lens rows in `weaver-targets` |
+| `GET /api/ops` (catalog) + `POST /api/op` | Intake + task forms (§4.1/4.3) — op `inputSchema`/`fieldDescription`/`examples` + submit | lift verbatim from `cmd/loupe/ops.go` / `op.go` (op meta is the write-side DDL self-description, not a query) |
+| `GET /api/tasks?assignee=&status=` | Applicant inbox (§4.3) | the task read model (a userTasks lens projection), filtered by assignee |
+| `POST/GET/DELETE /api/objects…` | Documents (§4.4) | object byte plane (the one non-graph exception); lift `cmd/loupe/objects.go` |
+
+The genuine platform gap is the **listings lens** (no read model projects available units today). The
+`leaseApplicationComplete` read model already exists. **P5 reminder:** Loupe scans Core KV because it is
+the admin/debug inspector; a vertical app must read projections.
 
 ---
 
