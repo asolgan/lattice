@@ -41,5 +41,6 @@ var Package = pkgmgr.Definition{
 	Description: "LoftSpace listing economics: the .listing + .address aspects on a location unit, written by SetListing / SetUnitAddress. Depends on location-domain; introduces no vertex type.",
 	Depends:     []string{"location-domain"},
 	DDLs:        DDLs(),
+	Lenses:      Lenses(),
 	Permissions: Permissions(),
 }

@@ -33,6 +33,12 @@
 //     record. This is the single most-violated rule (CLAUDE.md).
 //   - `asp.` key prefix in a Go string literal — aspects are 4-segment
 //     vtx.<type>.<id>.<localName>, never an asp.* prefix (Contract #1).
+//   - P5 — a vertical application cmd reading Core KV directly. Architecture P5:
+//     "Lenses are the only application query surface; applications never read
+//     Core KV directly for queries." A cmd/<name> outside the platform/admin
+//     allowlist (Loupe-the-inspector et al.) that references the core-kv bucket
+//     must instead read a lens projection. The signal is the bucket, not the
+//     call: an app may read a lens TARGET bucket via KVGet/KVListKeys.
 //
 // Markdown/docs are intentionally out of scope: they discuss the conventions
 // (e.g. "never an asp.* prefix") and would false-positive. The 6-segment link
@@ -47,6 +53,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 )
@@ -54,7 +61,38 @@ import (
 var (
 	historyComment = regexp.MustCompile(`//[ \t]*(Story [0-9]|Previously\b|Was:|Replaces\b|renamed from|moved from|formerly\b)`)
 	aspPrefix      = regexp.MustCompile(`"asp\.`)
+	coreKVRead     = regexp.MustCompile(`\bCoreKVBucket\b|"core-kv"`)
 )
+
+// platformCmds are the platform / admin / debug-inspector binaries that
+// legitimately touch Core KV — the platform components ARE the system, and P5
+// carves out admin/debug inspection (Loupe, the lattice CLI). Any OTHER
+// cmd/<name> is a vertical application, which P5 forbids from reading Core KV
+// directly: it must read a lens projection in a read-model target.
+var platformCmds = map[string]bool{
+	"bootstrap": true, "bridge": true, "lattice": true, "lattice-pkg": true,
+	"loom": true, "loupe": true, "object-store-manager": true,
+	"processor": true, "refractor": true, "weaver": true,
+}
+
+// verticalAppCmd returns the app name when path is a non-test .go file under a
+// cmd/<name> that is NOT a platform binary, else "". Such a cmd is an
+// application query surface bound by P5.
+func verticalAppCmd(path string) string {
+	if strings.HasSuffix(path, "_test.go") {
+		return ""
+	}
+	parts := strings.Split(filepath.ToSlash(path), "/")
+	for i, p := range parts {
+		if p == "cmd" && i+1 < len(parts) {
+			if platformCmds[parts[i+1]] {
+				return ""
+			}
+			return parts[i+1]
+		}
+	}
+	return ""
+}
 
 type finding struct {
 	file string
@@ -157,6 +195,7 @@ func scanFile(path string) []finding {
 		return nil
 	}
 	var out []finding
+	app := verticalAppCmd(path)
 	sc := bufio.NewScanner(strings.NewReader(string(data)))
 	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
 	ln := 0
@@ -168,6 +207,9 @@ func scanFile(path string) []finding {
 		}
 		if aspPrefix.MatchString(line) {
 			out = append(out, finding{path, ln, "`asp.` key prefix — aspects are 4-segment vtx.<type>.<id>.<localName> (Contract #1)"})
+		}
+		if app != "" && coreKVRead.MatchString(line) {
+			out = append(out, finding{path, ln, "P5 violation — application cmd/" + app + " reads Core KV directly; an application reads lens projections, never Core KV (lattice-architecture.md P5)"})
 		}
 	}
 	return out

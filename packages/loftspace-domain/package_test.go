@@ -103,10 +103,14 @@ func TestPackage_Permissions(t *testing.T) {
 		t.Fatalf("expected Depends [location-domain], got %v", Package.Depends)
 	}
 
-	// No vertex type, lens, role, weaver target, loom pattern, or op-meta — this
-	// package only contributes aspects + their writer ops.
-	if got := len(Package.Lenses); got != 0 {
-		t.Fatalf("expected 0 lenses, got %d", got)
+	// One projection lens (availableListings — the P5 read model for listed
+	// units); no role, weaver target, loom pattern, or op-meta.
+	if got := len(Package.Lenses); got != 1 {
+		t.Fatalf("expected 1 lens, got %d", got)
+	}
+	if l := Package.Lenses[0]; l.CanonicalName != "availableListings" ||
+		l.Adapter != "nats-kv" || l.Bucket != LoftspaceListingsBucket {
+		t.Fatalf("unexpected lens shape: %+v", Package.Lenses[0])
 	}
 	if got := len(Package.WeaverTargets); got != 0 {
 		t.Fatalf("expected 0 weaverTargets, got %d", got)

@@ -17,6 +17,11 @@ declares:
       class: meta.ddl.aspectType
     - canonicalName: address
       class: meta.ddl.aspectType
+  lenses:
+    - canonicalName: availableListings
+      adapter: nats-kv
+      bucket: loftspace-listings
+      engine: full
   permissions:
     - operationType: SetListing
       scope: any

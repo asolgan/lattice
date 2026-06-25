@@ -5,7 +5,7 @@
 // /api/identities and submits CreateLeaseApplication via /api/op.
 
 const APPLICANT_KEY = "loftspace.applicant";
-const state = { identities: [], listings: [], applicant: null, current: null };
+const state = { listings: [], applicant: null, current: null };
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -41,37 +41,24 @@ function toast(msg, kind, extra) {
   toast._timer = setTimeout(() => (t.hidden = true), 6000);
 }
 
-// ---- Identities (applicant switcher) ----
+// ---- Applicant identity (the trusted-tool switcher) ----
+//
+// No per-user auth yet (P5/trust model): the applicant names who they are. The
+// key is persisted in localStorage so a refresh keeps context. The proper
+// roster lens read model is a tracked follow-up.
 
-async function loadIdentities() {
-  const sel = $("#applicant");
-  try {
-    const data = await api("/api/identities");
-    state.identities = data.identities || [];
-  } catch (e) {
-    toast("Could not load applicants: " + e.message, "err");
-    return;
-  }
-  const saved = localStorage.getItem(APPLICANT_KEY);
-  sel.innerHTML = "";
-  if (state.identities.length === 0) {
-    const o = document.createElement("option");
-    o.value = "";
-    o.textContent = "— no identities —";
-    sel.append(o);
-    state.applicant = null;
-    return;
-  }
-  for (const id of state.identities) {
-    const o = document.createElement("option");
-    o.value = id.key;
-    o.textContent = id.label ? `${id.label} · ${id.key}` : id.key;
-    sel.append(o);
-  }
-  const chosen = state.identities.some((i) => i.key === saved) ? saved : state.identities[0].key;
-  sel.value = chosen;
-  state.applicant = chosen;
-  localStorage.setItem(APPLICANT_KEY, chosen);
+function restoreApplicant() {
+  const saved = (localStorage.getItem(APPLICANT_KEY) || "").trim();
+  state.applicant = saved || null;
+  $("#applicant").value = saved;
+}
+
+function setApplicant(value) {
+  const v = (value || "").trim();
+  state.applicant = v || null;
+  if (v) localStorage.setItem(APPLICANT_KEY, v);
+  else localStorage.removeItem(APPLICANT_KEY);
+  renderListings(); // re-enable/disable Apply for the new applicant
 }
 
 // ---- Listings (Browse & Apply) ----
@@ -260,12 +247,8 @@ async function submitApply(ev) {
 // ---- wire up ----
 
 function init() {
-  $("#applicant").addEventListener("change", (e) => {
-    state.applicant = e.target.value || null;
-    if (state.applicant) localStorage.setItem(APPLICANT_KEY, state.applicant);
-    renderListings(); // re-enable/disable Apply buttons for the new applicant
-  });
-  $("#reload-identities").addEventListener("click", loadIdentities);
+  restoreApplicant();
+  $("#applicant").addEventListener("input", (e) => setApplicant(e.target.value));
   $("#status").addEventListener("change", loadListings);
   $("#reload-listings").addEventListener("click", loadListings);
   $("#apply-cancel").addEventListener("click", closeApply);
@@ -275,7 +258,7 @@ function init() {
   $("#moveInDate").addEventListener("input", syncTermRequirement);
   $("#apply-form").addEventListener("submit", submitApply);
 
-  loadIdentities().then(loadListings);
+  loadListings();
 }
 
 document.addEventListener("DOMContentLoaded", init);

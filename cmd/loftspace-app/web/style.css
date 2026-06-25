@@ -59,7 +59,7 @@ main { padding: 18px; max-width: 1180px; margin: 0 auto; }
 
 input, select, button { font-family: inherit; }
 
-input[type="date"], input[type="number"], select {
+input[type="date"], input[type="number"], input[type="text"], select {
   background: var(--bg-input);
   border: 1px solid var(--border);
   color: var(--text);
@@ -67,6 +67,7 @@ input[type="date"], input[type="number"], select {
   border-radius: 6px;
   font-size: 13px;
 }
+#applicant { min-width: 320px; font-family: var(--mono); font-size: 12px; }
 
 button {
   background: var(--accent-dim);
