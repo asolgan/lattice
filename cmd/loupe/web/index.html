@@ -99,10 +99,14 @@
         </div>
         <div class="control-col" data-comp="loom">
           <h3>Loom</h3>
+          <p class="muted small">inspect → a running <em>instance</em> (from list); pause/resume → a managed <em>consumer</em>. Click a row to fill the matching field.</p>
           <div class="control-list"></div>
           <div class="control-action">
-            <input type="text" class="control-name" placeholder="instance / consumer">
+            <input type="text" class="control-name" data-fill="instance" placeholder="instance id">
             <button data-op="inspect">inspect</button>
+          </div>
+          <div class="control-action">
+            <input type="text" class="control-name" data-fill="consumer" placeholder="consumer name">
             <button data-op="pause">pause</button>
             <button data-op="resume">resume</button>
           </div>

@@ -265,11 +265,19 @@ function renderControlList(comp, box, reply) {
 
   if (!rows) { box.appendChild(Object.assign(el("pre"), { textContent: pretty(reply) })); return; }
   if (!rows.length) { box.appendChild(el("div", "muted small", "(none)")); return; }
+  // A row click fills the name field for its own namespace: a consumer row
+  // (idField "name") fills the consumer field, an instance row ("instanceId")
+  // the instance field; single-field columns (weaver targets) fall back.
+  const fillKind = idField === "name" ? "consumer" : idField === "instanceId" ? "instance" : null;
   rows.forEach((r) => {
     const item = el("div", "control-item");
     const id = idField ? r[idField] : (r.instanceId || r.targetId || r.name || r.id || "");
     const idSpan = el("span", "cid", id || "(no id)");
-    if (id) idSpan.addEventListener("click", () => { $(".control-name", box.closest(".control-col")).value = id; });
+    if (id) idSpan.addEventListener("click", () => {
+      const col = box.closest(".control-col");
+      const input = (fillKind && $('.control-name[data-fill="' + fillKind + '"]', col)) || $(".control-name", col);
+      if (input) input.value = id;
+    });
     item.appendChild(idSpan);
     const state = r.state || r.status || (r.State || r.Status) || "";
     if (state) item.appendChild(el("span", "state-tag", String(state)));
@@ -277,13 +285,16 @@ function renderControlList(comp, box, reply) {
   });
 }
 
-// Wire every control column's action buttons.
+// Wire every control column's action buttons. A column may hold more than one
+// action group, each with its own name field (Loom separates the instance
+// namespace (inspect) from the consumer namespace (pause/resume)); a button
+// reads the field in its own group, falling back to the column's sole field.
 $all(".control-col").forEach((col) => {
   const comp = col.dataset.comp;
-  const nameInput = $(".control-name", col);
   const out = $(".control-out", col);
   $all(".control-action button", col).forEach((btn) => {
     btn.addEventListener("click", async () => {
+      const nameInput = $(".control-name", btn.closest(".control-action")) || $(".control-name", col);
       const name = nameInput.value.trim();
       if (!name) { out.textContent = "enter a name/id first"; out.className = "control-out error-text"; return; }
       out.className = "control-out";
