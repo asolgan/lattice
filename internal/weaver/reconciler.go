@@ -307,7 +307,10 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 	// revision read this pass. A conflict means the key changed under the
 	// sweep — a fresh episode CAS-created it, or its TTL marker landed — and
 	// the current state owns the gap; skip.
-	newRev, conflict, err := e.marks.replace(ctx, targetID, entityID, gapColumn, entityKey, ga.Action, markRev)
+	// Preserve the mark's per-open-episode claimId across the reclaim (§10.3): a
+	// reclaim is the SAME open episode, so the userTask identity it seeds stays
+	// stable and the re-dispatch collapses on the existing task/instance.
+	newRev, conflict, err := e.marks.replace(ctx, targetID, entityID, gapColumn, entityKey, ga.Action, rec.ClaimID, markRev)
 	if err != nil {
 		e.logger.Warn("weaver sweep: reclaim re-arm failed; leaving expired mark for the next sweep",
 			"targetId", targetID, "entityId", entityID, "gap", gapColumn, "err", err)
@@ -326,11 +329,13 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 	// CAS-create path — this is how a multi-attempt chain driven by sweep
 	// re-dispatches (not just CDC touches) accumulates toward maxretries_<g>.
 	e.bumpDispatchCount(ctx, targetID, entityID, gapColumn)
-	// Fresh episode: the requestId derives from the replace revision. A
-	// publish failure here leaves the fresh mark holding a live lease, so the
-	// retry is real — the sweep re-attempts at that lease's expiry, and a
-	// lane-1 redelivery re-fires the same fresh requestId before then.
-	if e.fire(ctx, targetID, entityID, gapColumn, newRev, pl) != substrate.Ack {
+	// Fresh episode: the requestId derives from the replace revision (a real new
+	// dispatch attempt). The preserved claimId keeps the userTask identity stable,
+	// so the new attempt collapses on the existing task/instance. A publish failure
+	// here leaves the fresh mark holding a live lease, so the retry is real — the
+	// sweep re-attempts at that lease's expiry, and a lane-1 redelivery re-fires
+	// the same fresh requestId before then.
+	if e.fire(ctx, targetID, entityID, gapColumn, newRev, rec.ClaimID, pl) != substrate.Ack {
 		e.logger.Warn("weaver sweep: reclaim re-dispatch did not publish; the fresh mark's lease bounds the retry",
 			"targetId", targetID, "entityId", entityID, "gap", gapColumn)
 	}

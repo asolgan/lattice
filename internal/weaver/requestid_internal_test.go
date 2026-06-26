@@ -36,21 +36,38 @@ func TestDeriveEpisodeRequestID_Deterministic(t *testing.T) {
 	}
 }
 
-// TestDeriveEpisodeTaskID_DisjointFromRequestID proves the assignTask task-id
-// namespace never collides with the op requestId namespace for the same
-// episode (the CreateTask submission handle and the task identity are
-// distinct).
-func TestDeriveEpisodeTaskID_DisjointFromRequestID(t *testing.T) {
+// TestDeriveStableTaskID_StableAndDisjoint proves the §10.3 idempotency seam for
+// userTask dispatch: the assignTask task-id (a) is namespace-disjoint from the op
+// requestId, (b) is STABLE across reclaims of the same open episode (same claimId
+// ⇒ same taskId, independent of markRevision — that is what stops the 30-min
+// duplicate), and (c) is FRESH across a close→reopen (a new claimId ⇒ a new
+// taskId). The Loom instanceId derivation shares these properties and is disjoint
+// from the task id.
+func TestDeriveStableTaskID_StableAndDisjoint(t *testing.T) {
+	const claimA = "Lk2Pn6mQrtwzKbcXvP3T"
 	req := deriveEpisodeRequestID("targetA", "Lk2Pn6mQrtwzKbcXvP3T", "missing_signature", 3)
-	task := deriveEpisodeTaskID("targetA", "Lk2Pn6mQrtwzKbcXvP3T", "missing_signature", 3)
+	task := deriveStableTaskID("targetA", "Lk2Pn6mQrtwzKbcXvP3T", "missing_signature", claimA)
 	if req == task {
 		t.Fatalf("task id and op requestId must be namespace-disjoint, both were %q", req)
 	}
 	if !substrate.IsValidNanoID(task) {
 		t.Fatalf("derived taskId %q is not a canonical 20-char NanoID", task)
 	}
-	again := deriveEpisodeTaskID("targetA", "Lk2Pn6mQrtwzKbcXvP3T", "missing_signature", 3)
-	if task != again {
-		t.Fatalf("same episode must re-supply the same taskId: %q vs %q", task, again)
+	// Stable across reclaims: same claimId derives the same taskId.
+	if again := deriveStableTaskID("targetA", "Lk2Pn6mQrtwzKbcXvP3T", "missing_signature", claimA); task != again {
+		t.Fatalf("same open episode (claimId) must re-supply the same taskId: %q vs %q", task, again)
+	}
+	// Fresh across reopen: a new claimId derives a new taskId.
+	const claimB = "Zz9Yx8Wv7Ut6Sr5Qp4N"
+	if reopened := deriveStableTaskID("targetA", "Lk2Pn6mQrtwzKbcXvP3T", "missing_signature", claimB); reopened == task {
+		t.Fatalf("a reopened gap (new claimId) must derive a NEW taskId")
+	}
+	// The Loom instanceId derivation is disjoint from the task id for the same episode.
+	inst := deriveStableInstanceID("targetA", "Lk2Pn6mQrtwzKbcXvP3T", "missing_signature", claimA)
+	if inst == task {
+		t.Fatalf("instanceId and taskId must be namespace-disjoint, both were %q", inst)
+	}
+	if !substrate.IsValidNanoID(inst) {
+		t.Fatalf("derived instanceId %q is not a canonical 20-char NanoID", inst)
 	}
 }

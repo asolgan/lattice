@@ -68,8 +68,12 @@ const dispatchCountTTLBackstopFactor = 256
 // dispatch OCC: concurrent evaluations of the same gap race the create, the
 // loser drops, the winner dispatches. LeaseExpiresAt mirrors the lease the
 // per-key TTL backstops (§10.3 visibility); HeldBy is the writing engine
-// instance. ClaimID is declared (omitempty) per the frozen §10.3 value shape;
-// it is always empty on a written mark.
+// instance. ClaimID is the per-OPEN-EPISODE token (a fresh NanoID minted at the
+// mark's CAS-create, PRESERVED verbatim across every reclaim-replace): it seeds
+// the deterministic userTask identity (assignTask's taskId, triggerLoom's Loom
+// instanceId) so re-dispatch of the same open gap collapses on the existing
+// artifact instead of minting a duplicate (§10.3 consumer-enforced idempotency).
+// A legitimate close→reopen mints a new mark ⇒ new ClaimID ⇒ a fresh artifact.
 type mark struct {
 	TargetID       string `json:"targetId"`
 	EntityKey      string `json:"entityKey"`
@@ -105,36 +109,44 @@ func markKey(targetID, entityID, gapColumn string) string {
 }
 
 // create CAS-creates the mark (KV create-on-absent — the dispatch OCC) and
-// returns its create revision, the per-dispatch-episode tag the deterministic
-// requestId derives from. exists=true means the create lost the race: another
-// dispatch of this gap is in flight. The mark carries the §10.3 lease
-// (leaseExpiresAt = now + lease, heldBy = this instance) and a NATS per-key
-// TTL of markTTLBackstopFactor × lease — the backstop that bounds the mark's
-// life even if no reconciler ever sweeps it.
-func (m *markStore) create(ctx context.Context, targetID, entityID, gapColumn, entityKey, action string) (revision uint64, exists bool, err error) {
+// returns its create revision (the per-dispatch-episode tag the deterministic
+// requestId derives from) AND the freshly-minted per-open-episode claimId (the
+// stable token the userTask identity derives from, §10.3). exists=true means the
+// create lost the race: another dispatch of this gap is in flight (claimId is
+// empty — the winner's claimId lives on the existing mark and the loser does not
+// dispatch). The mark carries the §10.3 lease (leaseExpiresAt = now + lease,
+// heldBy = this instance) and a NATS per-key TTL of markTTLBackstopFactor ×
+// lease — the backstop that bounds the mark's life even if no reconciler ever
+// sweeps it.
+func (m *markStore) create(ctx context.Context, targetID, entityID, gapColumn, entityKey, action string) (revision uint64, claimID string, exists bool, err error) {
+	claimID, err = substrate.NewNanoID()
+	if err != nil {
+		return 0, "", false, fmt.Errorf("weaver: mint mark claimId: %w", err)
+	}
 	now := time.Now()
 	rec := mark{
 		TargetID:       targetID,
 		EntityKey:      entityKey,
 		Gap:            gapColumn,
 		Action:         action,
+		ClaimID:        claimID,
 		ClaimedAt:      substrate.FormatTimestamp(now),
 		LeaseExpiresAt: substrate.FormatTimestamp(now.Add(m.lease)),
 		HeldBy:         m.instance,
 	}
 	body, err := json.Marshal(rec)
 	if err != nil {
-		return 0, false, fmt.Errorf("weaver: marshal mark: %w", err)
+		return 0, "", false, fmt.Errorf("weaver: marshal mark: %w", err)
 	}
 	rev, err := m.conn.KVCreateWithTTL(ctx, m.bucket, markKey(targetID, entityID, gapColumn), body,
 		markTTLBackstopFactor*m.lease)
 	if err != nil {
 		if errors.Is(err, substrate.ErrRevisionConflict) {
-			return 0, true, nil
+			return 0, "", true, nil
 		}
-		return 0, false, err
+		return 0, "", false, err
 	}
-	return rev, false, nil
+	return rev, claimID, false, nil
 }
 
 // get reads the mark for one gap, returning its current revision. Lane-1 only
@@ -166,7 +178,12 @@ func (m *markStore) get(ctx context.Context, targetID, entityID, gapColumn strin
 // bounds the retry). The returned revision is the fresh dispatch-episode tag.
 // conflict=true means the mark changed since the read (a fresh episode
 // CAS-created it, or its TTL marker landed) — the caller must skip.
-func (m *markStore) replace(ctx context.Context, targetID, entityID, gapColumn, entityKey, action string,
+//
+// claimID is the existing mark's per-open-episode token, PRESERVED verbatim: a
+// reclaim is the SAME open episode (only the lease/claimedAt/heldBy refresh), so
+// the userTask identity it seeds stays stable and the re-dispatch collapses on
+// the existing task/instance rather than duplicating it (§10.3).
+func (m *markStore) replace(ctx context.Context, targetID, entityID, gapColumn, entityKey, action, claimID string,
 	expectedRevision uint64) (revision uint64, conflict bool, err error) {
 
 	now := time.Now()
@@ -175,6 +192,7 @@ func (m *markStore) replace(ctx context.Context, targetID, entityID, gapColumn, 
 		EntityKey:      entityKey,
 		Gap:            gapColumn,
 		Action:         action,
+		ClaimID:        claimID,
 		ClaimedAt:      substrate.FormatTimestamp(now),
 		LeaseExpiresAt: substrate.FormatTimestamp(now.Add(m.lease)),
 		HeldBy:         m.instance,

@@ -414,25 +414,10 @@ func TestLeaseApplicationComplete_DeclinedSupersededByFreshRetry(t *testing.T) {
 	require.Equal(t, false, v["declined"], "no standing rejection once the retry clears")
 }
 
-// TestLeaseApplicationComplete_UserTaskDispatchCaps pins that the two HUMAN
-// userTask gaps carry a maxretries_<g> cap of 1 (create-once). Without it the
-// §10.3 reconciler mark-lease reclaim re-dispatches the onboarding / signature
-// userTasks every mark-lease (30m) — the externalTask gaps are protected by
-// inflight_<g>, but the userTask gaps had no suppression companion, so a slow
-// human spawned a duplicate task each sweep. gapSuppressed reads maxretries_<g>;
-// the cap = 1 stops re-dispatch after the single CreateTask.
-func TestLeaseApplicationComplete_UserTaskDispatchCaps(t *testing.T) {
-	if testing.Short() {
-		t.Skip("requires NATS")
-	}
-	f := newLensFixture(t)
-	app := bgFreshnessFixture(t, f, farFutureValidUntil)
-	rows := f.projectAt(t, app, "2026-06-18T00:00:00Z")
-	require.Len(t, rows, 1)
-	v := rows[0].Values
-	require.EqualValues(t, 1, v["maxretries_onboarding"], "the onboarding userTask gap must carry a create-once cap")
-	require.EqualValues(t, 1, v["maxretries_signature"], "the signature userTask gap must carry a create-once cap")
-}
+// The two HUMAN userTask gaps no longer carry a maxretries_<g> cap — the interim
+// create-once cap was retired by the §10.3 general fix (Weaver's stable
+// claimId-derived userTask identity dedups re-dispatch at the Processor/Loom).
+// There is therefore no maxretries_onboarding/_signature column to assert here.
 
 // TestLeaseApplicationComplete_FailedPayment pins the same predicate on the
 // payment CASE (a distinct cypher line from bgcheck): a payment instance whose

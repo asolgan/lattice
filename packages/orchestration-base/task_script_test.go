@@ -56,9 +56,32 @@ func runCreateTask(t *testing.T, scopedTo, expiresAt string, endpoints map[strin
 	}, endpoints)
 }
 
+// taskKVReader is the on-demand kv.Read seam for the CreateTask idempotency
+// branch (§10.3): the script reads the task key to decide create-vs-no-op. The
+// `present` map names the keys that read as live tasks; every other key reads as
+// absent (None). The default harness leaves it empty, so the task is absent and
+// the script takes the create path — preserving every existing assertion.
+type taskKVReader struct {
+	present map[string]processor.VertexDoc
+}
+
+func (r taskKVReader) ReadVertex(_ context.Context, key string) (*processor.VertexDoc, error) {
+	if d, ok := r.present[key]; ok {
+		return &d, nil
+	}
+	return nil, nil
+}
+
 // runCreateTaskWith runs CreateTask with a caller-built payload so a test can
-// add (or omit) the optional taskId field.
+// add (or omit) the optional taskId field. The task key reads as absent.
 func runCreateTaskWith(t *testing.T, payloadFields map[string]any, endpoints map[string]processor.VertexDoc) (processor.ScriptResult, error) {
+	return runCreateTaskWithReader(t, payloadFields, endpoints, taskKVReader{})
+}
+
+// runCreateTaskWithReader is runCreateTaskWith with an explicit kv.Read seam so a
+// test can make the task key read as an already-present (or deleted) task and
+// exercise the §10.3 idempotency branch.
+func runCreateTaskWithReader(t *testing.T, payloadFields map[string]any, endpoints map[string]processor.VertexDoc, reader processor.ScriptKVReader) (processor.ScriptResult, error) {
 	t.Helper()
 	payload, _ := json.Marshal(payloadFields)
 	sc := processor.ScriptContext{
@@ -73,6 +96,7 @@ func runCreateTaskWith(t *testing.T, payloadFields map[string]any, endpoints map
 		Hydrated:     endpoints,
 		ScriptSource: taskScript(t),
 		ScriptClass:  "task",
+		KVReader:     reader,
 	}
 	return processor.NewStarlarkRunner(0, 0).Run(context.Background(), sc)
 }
@@ -174,6 +198,59 @@ func TestCreateTask_SuppliedTaskId_UsedVerbatim(t *testing.T) {
 	}
 	if got, want := taskKeyOf(t, res), "vtx.task."+suppliedID; got != want {
 		t.Fatalf("task key = %q, want %q (supplied taskId used verbatim)", got, want)
+	}
+}
+
+// TestCreateTask_PreexistingLiveTask_NoOp: when the task key already names a
+// live task (a re-dispatch with the same stable taskId, §10.3), the script
+// returns EMPTY mutations AND EMPTY events — a coherent no-op, so no duplicate
+// task and no phantom taskCreated event.
+func TestCreateTask_PreexistingLiveTask_NoOp(t *testing.T) {
+	const suppliedID = "BBsuppliedHJKMNPQRST"
+	taskKey := "vtx.task." + suppliedID
+	reader := taskKVReader{present: map[string]processor.VertexDoc{
+		taskKey: {Key: taskKey, Class: "task", IsDeleted: false, Data: map[string]any{"status": "open"}},
+	}}
+	res, err := runCreateTaskWithReader(t, map[string]any{
+		"assignee":     tsAssignee,
+		"forOperation": tsForOp,
+		"scopedTo":     tsScopedTo,
+		"expiresAt":    "2026-06-04T14:00:00Z",
+		"taskId":       suppliedID,
+	}, aliveEndpoints(), reader)
+	if err != nil {
+		t.Fatalf("CreateTask on a pre-existing task: unexpected error: %v", err)
+	}
+	if len(res.Mutations) != 0 {
+		t.Fatalf("duplicate CreateTask must emit no mutations, got %d", len(res.Mutations))
+	}
+	if len(res.Events) != 0 {
+		t.Fatalf("duplicate CreateTask must emit no events (no phantom taskCreated), got %d", len(res.Events))
+	}
+}
+
+// TestCreateTask_DeletedTask_SelfHeals: a logically-deleted task at the key
+// (isDeleted=true) does NOT suppress — the gap still needs a task, so the script
+// falls through to the create path (§10.3 self-heal). Mirrors the hard-tombstone
+// case (kv.Read None), which also creates.
+func TestCreateTask_DeletedTask_SelfHeals(t *testing.T) {
+	const suppliedID = "BBsuppliedHJKMNPQRST"
+	taskKey := "vtx.task." + suppliedID
+	reader := taskKVReader{present: map[string]processor.VertexDoc{
+		taskKey: {Key: taskKey, Class: "task", IsDeleted: true, Data: map[string]any{}},
+	}}
+	res, err := runCreateTaskWithReader(t, map[string]any{
+		"assignee":     tsAssignee,
+		"forOperation": tsForOp,
+		"scopedTo":     tsScopedTo,
+		"expiresAt":    "2026-06-04T14:00:00Z",
+		"taskId":       suppliedID,
+	}, aliveEndpoints(), reader)
+	if err != nil {
+		t.Fatalf("CreateTask on a deleted task: unexpected error: %v", err)
+	}
+	if got, want := taskKeyOf(t, res), taskKey; got != want {
+		t.Fatalf("a deleted task must self-heal (recreate); task key = %q, want %q", got, want)
 	}
 }
 

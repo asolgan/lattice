@@ -602,6 +602,139 @@ func TestSweep_PlanFailureLeavesMark(t *testing.T) {
 	}
 }
 
+// TestReclaim_StableUserTaskIdentity is the §10.3 anti-duplication proof: a
+// triggerLoom gap reclaimed across TWO mark-lease expiries re-dispatches
+// StartLoomPattern with the SAME claimId-derived Loom instanceId both times — so
+// Loom collapses the second on the existing instance and no duplicate userTask is
+// spawned. (The defect was markRevision-derived ids that differed per reclaim.)
+// The preserved claimId is the load-bearing invariant; the instanceId is what
+// Loom dedups on.
+func TestReclaim_StableUserTaskIdentity(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+
+	const targetID = "fixtureLoomDup"
+	const gap = "missing_onboarding"
+	const claimID = "Lk2Pn6mQrtwzKbcXvP3T" // the preserved per-open-episode token
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps:     map[string]GapAction{gap: {Action: actionTriggerLoom, Pattern: "onboardFlow", Subject: "row.entityKey"}},
+	})
+	h.engine.source.mu.Lock()
+	h.engine.source.patternMeta["onboardFlow"] = "vtx.meta." + testNanoID(t)
+	h.engine.source.mu.Unlock()
+
+	entityID := testNanoID(t)
+	key := markKey(targetID, entityID, gap)
+	h.putRow(t, ctx, targetID, entityID, map[string]any{
+		"entityKey": "vtx.leaseApp." + entityID, "violating": true, gap: true,
+	})
+
+	wantInstance := deriveStableInstanceID(targetID, entityID, gap, claimID)
+
+	// First reclaim: an expired mark carrying claimID.
+	m := fixtureMark(targetID, entityID, gap, "triggerLoom", pastLease())
+	m.ClaimID = claimID
+	h.putMark(t, ctx, key, m)
+	h.pass(ctx)
+	op1 := h.nextOp(t)
+	got1 := op1["payload"].(map[string]any)["instanceId"]
+	if got1 != wantInstance {
+		t.Fatalf("reclaim 1 instanceId = %v, want the claimId-derived stable id %q", got1, wantInstance)
+	}
+
+	// The reclaim PRESERVED the claimId on the re-armed mark.
+	rec, _, found, err := h.engine.marks.get(ctx, targetID, entityID, gap)
+	if err != nil || !found {
+		t.Fatalf("re-armed mark missing: err=%v found=%v", err, found)
+	}
+	if rec.ClaimID != claimID {
+		t.Fatalf("reclaim must preserve claimId: got %q want %q", rec.ClaimID, claimID)
+	}
+
+	// Age the re-armed mark again (unconditional overwrite — the key now exists)
+	// preserving the same claimId, and reclaim a SECOND time: same instanceId.
+	m2 := fixtureMark(targetID, entityID, gap, "triggerLoom", pastLease())
+	m2.ClaimID = claimID
+	m2Body, err := json.Marshal(m2)
+	if err != nil {
+		t.Fatalf("marshal aged mark: %v", err)
+	}
+	if _, err := h.conn.KVPut(ctx, "weaver-state", key, m2Body); err != nil {
+		t.Fatalf("age re-armed mark: %v", err)
+	}
+	h.pass(ctx)
+	op2 := h.nextOp(t)
+	got2 := op2["payload"].(map[string]any)["instanceId"]
+	if got2 != got1 {
+		t.Fatalf("reclaim 2 instanceId = %v, want it STABLE across reclaims (= %v)", got2, got1)
+	}
+}
+
+// TestReclaim_StableTaskId_AssignTask is the assignTask analogue of the proof
+// above: a SignLease assignTask gap reclaimed across two mark-lease expiries
+// re-dispatches CreateTask with the SAME claimId-derived taskId both times, so
+// the CreateTask kv.Read branch collapses the second on the existing task.
+func TestReclaim_StableTaskId_AssignTask(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+
+	const targetID = "fixtureSignDup"
+	const gap = "missing_signature"
+	const claimID = "Zz9Yx8Wv7Ut6Sr5Qp4N"
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps: map[string]GapAction{gap: {
+			Action: actionAssignTask, Operation: "SignLease", Assignee: "row.applicant", Target: "row.entityKey",
+		}},
+	})
+	h.engine.source.mu.Lock()
+	h.engine.source.opMetaByType["SignLease"] = "vtx.meta." + testNanoID(t)
+	h.engine.source.mu.Unlock()
+
+	entityID := testNanoID(t)
+	key := markKey(targetID, entityID, gap)
+	h.putRow(t, ctx, targetID, entityID, map[string]any{
+		"entityKey": "vtx.leaseapp." + entityID, "violating": true, gap: true,
+		"applicant": "vtx.identity." + testNanoID(t),
+	})
+	wantTask := deriveStableTaskID(targetID, entityID, gap, claimID)
+
+	m := fixtureMark(targetID, entityID, gap, "assignTask", pastLease())
+	m.ClaimID = claimID
+	h.putMark(t, ctx, key, m)
+	h.pass(ctx)
+	op1 := h.nextOp(t)
+	got1 := op1["payload"].(map[string]any)["taskId"]
+	if got1 != wantTask {
+		t.Fatalf("reclaim 1 taskId = %v, want the claimId-derived stable id %q", got1, wantTask)
+	}
+
+	// Age the re-armed mark (preserving claimId) and reclaim again: same taskId.
+	m2 := fixtureMark(targetID, entityID, gap, "assignTask", pastLease())
+	m2.ClaimID = claimID
+	m2Body, err := json.Marshal(m2)
+	if err != nil {
+		t.Fatalf("marshal aged mark: %v", err)
+	}
+	if _, err := h.conn.KVPut(ctx, "weaver-state", key, m2Body); err != nil {
+		t.Fatalf("age re-armed mark: %v", err)
+	}
+	h.pass(ctx)
+	op2 := h.nextOp(t)
+	if got2 := op2["payload"].(map[string]any)["taskId"]; got2 != got1 {
+		t.Fatalf("reclaim 2 taskId = %v, want it STABLE across reclaims (= %v)", got2, got1)
+	}
+}
+
 // TestSweep_DeleteRevisionRace proves every sweep delete is conditioned on the
 // revision read this pass: a fresh episode CAS-created between the sweep's
 // read and its delete wins the race — the delete is skipped and the fresh mark
@@ -870,7 +1003,7 @@ func TestMarkCreate_TTLBackstop(t *testing.T) {
 	const targetID = "fixtureTTL"
 	entityID := testNanoID(t)
 	before := time.Now()
-	_, exists, err := h.engine.marks.create(ctx, targetID, entityID, "missing_x",
+	_, _, exists, err := h.engine.marks.create(ctx, targetID, entityID, "missing_x",
 		"vtx.leaseApp."+entityID, "directOp")
 	if err != nil || exists {
 		t.Fatalf("mark create: err=%v exists=%v", err, exists)
@@ -908,8 +1041,10 @@ func TestMarkCreate_TTLBackstop(t *testing.T) {
 	if rec.HeldBy != h.engine.cfg.Instance {
 		t.Fatalf("heldBy = %q, want %q", rec.HeldBy, h.engine.cfg.Instance)
 	}
-	if rec.ClaimID != "" {
-		t.Fatalf("claimId must be empty on a written mark, got %q", rec.ClaimID)
+	// The mark CAS-create now mints the per-open-episode claimId (§10.3): it must
+	// be a valid NanoID, the stable seed the userTask identity derives from.
+	if !substrate.IsValidNanoID(rec.ClaimID) {
+		t.Fatalf("claimId must be a minted NanoID on a written mark, got %q", rec.ClaimID)
 	}
 }
 

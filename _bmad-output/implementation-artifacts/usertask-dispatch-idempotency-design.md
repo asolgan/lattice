@@ -1,16 +1,22 @@
 # Design — userTask dispatch idempotency (stop duplicate human tasks)
 
-**Status:** 🏗️ Partially built — the **§2.5 lazy `kv.Read()` keystone (§4.4 / §8 step 3) is DONE**
-(Processor `internal/processor`: `starlark_kv.go` + the `ScriptKVReader` seam + Hydrator wiring;
-3-layer-reviewed, gates green). The **remainder still awaits Andrew ratification** and a fresh Steward
-run: the Weaver `claimId` mint/derive (§3, §8.1–8.2), the `CreateTask`/`StartLoomPattern` script branches
-(§4.1–4.2, §8.3–8.4), the interim-cap revert (§8.5), and the **Contract #10 §10.3 amendment (§7)**.
-Enforcement is **consumer-side** (Processor/Starlark), not a producer-side GET — see §4.3.
-**Author:** Winston (Steward, 2026-06-25). **Owner area:** Weaver (claimId mint/derive) + the Processor
-(§2.5 lazy `kv.Read()` implementation, §4.4 — **built**) + the `CreateTask` / `StartLoomPattern` ops.
-**Frozen-contract touches:** Contract #10 §10.3 (§7) only — **still pending Andrew**. Contract #2 §2.5
-(lazy `kv.Read()`) was **already specified** — implementing it was a conformance fill, not a new contract
-surface (now landed). The interim `maxretries=1` cap (10a5d7a) holds the line until the rest lands.
+**Status:** ✅ Built (code) — awaiting Andrew on the contract only. ALL code is implemented + 3-layer
+reviewed + gates green: the §2.5 lazy `kv.Read()` keystone (§4.4 / §8 step 3, keystone commit `3a35941`
+on main), the Weaver `claimId` mint/preserve (§3, §8.1), the `deriveStable*` derivations (§8.2), the
+`CreateTask` `kv.Read` branch + `StartLoomPattern` optional `instanceId` (§8.3–8.4), and the interim-cap
+revert (§8.5). Enforcement is **consumer-side** (Processor/Loom), not a producer-side GET — see §4.3.
+The **only** thing pending is the **Contract #10 §10.3 amendment (§7)** — applied **uncommitted in the
+main checkout** for Andrew to ratify + commit (the code commits to main; the frozen contract does not,
+per the autonomous-mandate protocol).
+**Refinement found at build (vs §4.4):** `StartLoomPattern`'s dedup is **at Loom**, not a Processor
+`kv.Read` — the Loom instance lives in **loom-state**, not Core KV, so a Processor read can't reach it.
+`triggerLoom` instead carries the stable `claimId`-seeded `instanceId`, and Loom's `getInstance`
+presence + `createInstance` `CreateOnly` collapse the re-emitted `patternStarted`. Same idempotency
+guarantee, correct tier. Only `assignTask`→`CreateTask` (a Core-KV task) uses the `kv.Read` branch.
+**Author:** Winston (Steward, 2026-06-25; built 2026-06-26). **Frozen-contract touches:** Contract #10
+§10.3 (§7) only — **uncommitted in main, pending Andrew**. Contract #2 §2.5 was already specified —
+implementing it was a conformance fill (landed). The interim `maxretries=1` cap is now **reverted** (the
+general fix supersedes it).
 
 ---
 
@@ -360,7 +366,23 @@ design (§3–§6) are Winston-ratified; the §10.3 amendment is Andrew's to rat
   second is an idempotent op masking a real second-task need — there is none for these gaps (assignee ==
   scopedTo == subject, §10.5; one open task per gap is the invariant). Recommend a full party + 3-layer
   adversarial pass on the **built** change before admit (Weaver core + a frozen-contract amendment clears
-  the L+ bar).
+  the L+ bar). **Done** — 3-layer adversarial review ran on the built change (Blind / Edge / Acceptance):
+  verdict CONFORMS / ship-ready, no Critical/High correctness defects. Findings actioned: the
+  `StartLoomPattern` `oneOf` schema made unambiguous (`additionalProperties:false`); the assignTask
+  taskId reclaim-stability proof added (matching the triggerLoom one); the migration + self-heal-asymmetry
+  notes below + in the §10.3 amendment.
+- **Migration bound (build-time finding).** A userTask gap **already in flight at deploy** has a
+  pre-`claimId` mark (`claimId==""`). Its first post-deploy reclaim derives a stable *empty-seed* id that
+  differs from the id the pre-deploy dispatch used, so it may create **one** duplicate — bounded,
+  one-time, self-healing (later reclaims reuse the empty-seed id and collapse). Strictly better than the
+  every-30-min duplication this fixes; a pre-deploy drain of open human-task gaps avoids even the one.
+  Documented in the §10.3 amendment.
+- **Deferred (nice-to-have, not an admit blocker).** A heavy end-to-end "drive a real lease application,
+  leave the userTasks open across ≥1 mark-lease reclaim through the REAL Processor commit, assert exactly
+  one `RecordIdentityPII` + one `SignLease` persist" test (§9 integration item). The mechanism is covered
+  by: the Weaver-level two-reclaim stability proofs (assignTask `taskId` + triggerLoom `instanceId`), the
+  claimId lifecycle test, the CreateTask present→no-op / deleted→self-heal script tests, and the existing
+  `CreateOnly` commit coverage. The full real-commit-across-a-reclaim e2e remains the gold standard to add.
 
 ---
 

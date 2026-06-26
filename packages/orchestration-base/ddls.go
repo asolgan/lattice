@@ -202,6 +202,28 @@ def execute(state, op):
         task_id = bare_nanoid_or_mint(p)
         task_key = "vtx.task." + task_id
 
+        # Idempotency (Contract #10 §10.3 / §2.5): a re-dispatched CreateTask
+        # supplies the SAME stable taskId (Weaver's claimId-seeded id across
+        # reclaims; Loom's write-ahead id across crash-retries), so the task key
+        # is stable. This kv.Read is the SOLE cross-reclaim dedup for the
+        # assignTask path: Weaver's op requestId is EPISODE-scoped (changes per
+        # reclaim), so the Contract #4 vtx.op.<requestId> tracker collapses only a
+        # same-episode re-fire, NOT a mark-lease reclaim — the durable guard is
+        # this read at the task key. Read it on demand — kv.Read, NOT a contextHint
+        # read: the key
+        # may legitimately not exist yet, and a declared-but-absent read faults
+        # (HydrationMiss), which is exactly what kv.Read avoids. A present, ALIVE
+        # task here means a duplicate dispatch: return empty mutations AND empty
+        # events — a coherent no-op (the CreateOnly mutation below still guards the
+        # same-commit concurrent race). Branch on isDeleted too: kv.Read yields
+        # None for a hard-tombstoned key but a present doc with isDeleted=true for
+        # a logically-deleted one — either means the gap still needs its task, so
+        # absent OR deleted falls through to create (self-heal); only a live task
+        # suppresses.
+        existing = kv.Read(task_key)
+        if existing != None and not existing.isDeleted:
+            return {"mutations": [], "events": []}
+
         assigned_lnk = "lnk.task." + task_id + ".assignedTo.identity." + assignee_id
         forop_lnk = "lnk.task." + task_id + ".forOperation.meta." + op_id
         scoped_lnk = "lnk.task." + task_id + ".scopedTo." + scoped_type + "." + scoped_id

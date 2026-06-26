@@ -222,7 +222,7 @@ func (e *Engine) planGap(targetID, entityID, col string, ga GapAction, row map[s
 func (e *Engine) fireEpisode(ctx context.Context, targetID, entityID, entityKey, col, action string,
 	pl *plan, redelivered bool) substrate.Decision {
 
-	_, markRev, inFlight, err := e.marks.get(ctx, targetID, entityID, col)
+	rec, markRev, inFlight, err := e.marks.get(ctx, targetID, entityID, col)
 	if err != nil {
 		e.logger.Error("weaver: mark read failed; nak with delay", "targetId", targetID, "entityId", entityID, "gap", col, "err", err)
 		return substrate.NakWithDelay
@@ -233,11 +233,12 @@ func (e *Engine) fireEpisode(ctx context.Context, targetID, entityID, entityKey,
 			// drop.
 			return substrate.Ack
 		}
-		// Redelivery retry path: re-publish the same episode.
-		return e.fire(ctx, targetID, entityID, col, markRev, pl)
+		// Redelivery retry path: re-publish the same episode with the existing
+		// mark's preserved claimId (so the userTask identity stays stable).
+		return e.fire(ctx, targetID, entityID, col, markRev, rec.ClaimID, pl)
 	}
 
-	rev, lost, err := e.marks.create(ctx, targetID, entityID, col, entityKey, action)
+	rev, claimID, lost, err := e.marks.create(ctx, targetID, entityID, col, entityKey, action)
 	if err != nil {
 		e.logger.Error("weaver: mark create failed; nak with delay",
 			"targetId", targetID, "entityId", entityID, "gap", col, "err", err)
@@ -257,7 +258,7 @@ func (e *Engine) fireEpisode(ctx context.Context, targetID, entityID, entityKey,
 	// that lost the CAS) is structurally impossible, while under-counting only
 	// allows one extra attempt — far safer than wedging a live dispatch.
 	e.bumpDispatchCount(ctx, targetID, entityID, col)
-	return e.fire(ctx, targetID, entityID, col, rev, pl)
+	return e.fire(ctx, targetID, entityID, col, rev, claimID, pl)
 }
 
 // bumpDispatchCount increments the gap's chain-scoped retry-budget dispatch-count
@@ -274,10 +275,12 @@ func (e *Engine) bumpDispatchCount(ctx context.Context, targetID, entityID, col 
 
 // fire materializes one episode's op and fire-and-forget publishes it. A
 // publish failure Naks: the mark already exists, so the redelivery re-derives
-// the SAME requestId and re-publishes (idempotent at the Processor).
-func (e *Engine) fire(ctx context.Context, targetID, entityID, col string, markRevision uint64, pl *plan) substrate.Decision {
+// the SAME requestId and re-publishes (idempotent at the Processor). The op's
+// requestId is episode-scoped (markRevision); claimId is the per-open-episode
+// token the payload folds into the STABLE userTask identity (§10.3).
+func (e *Engine) fire(ctx context.Context, targetID, entityID, col string, markRevision uint64, claimID string, pl *plan) substrate.Decision {
 	requestID := deriveEpisodeRequestID(targetID, entityID, col, markRevision)
-	if err := e.act.submit(ctx, requestID, pl.operationType, pl.payload(markRevision), pl.authTarget, pl.reads); err != nil {
+	if err := e.act.submit(ctx, requestID, pl.operationType, pl.payload(claimID), pl.authTarget, pl.reads); err != nil {
 		e.logger.Error("weaver: op publish failed; nak for retry",
 			"targetId", targetID, "entityId", entityID, "gap", col, "requestId", requestID, "err", err)
 		return substrate.Nak

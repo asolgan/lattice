@@ -131,14 +131,31 @@ func deriveEpisodeRequestID(targetID, entityID, gapColumn string, markRevision u
 	return deriveID("episode:", targetID+"\x00"+entityID+"\x00"+gapColumn, markRevision)
 }
 
-// deriveEpisodeTaskID returns the deterministic task NanoID an assignTask
-// episode supplies to CreateTask (the verbatim taskId seam, Contract #10
-// §10.6): a re-fire of the same episode re-supplies the same taskId, so the
-// duplicate CreateTask collapses on the Contract #4 tracker — no duplicate
-// task. It is namespaced disjoint from deriveEpisodeRequestID so the op's
-// requestId and the task id never collide for the same episode.
-func deriveEpisodeTaskID(targetID, entityID, gapColumn string, markRevision uint64) string {
-	return deriveID("task:", targetID+"\x00"+entityID+"\x00"+gapColumn, markRevision)
+// deriveStableTaskID returns the deterministic task NanoID an assignTask
+// dispatch supplies to CreateTask (the verbatim taskId seam, Contract #10 §10.6
+// / §10.3), keyed on the mark's per-OPEN-EPISODE claimId rather than the
+// per-reclaim markRevision. The claimId is minted once at the mark's CAS-create
+// and preserved across every reclaim, so EVERY re-dispatch of the same open gap
+// re-supplies the SAME taskId — the duplicate CreateTask collapses on the
+// existing task (the script's kv.Read no-op + the CreateOnly backstop) instead
+// of minting a fresh one per mark-lease expiry. A legitimate close→reopen mints
+// a new mark ⇒ new claimId ⇒ a fresh taskId (a real new task). It is namespaced
+// disjoint from deriveEpisodeRequestID so the op's requestId and the task id
+// never collide for the same episode.
+func deriveStableTaskID(targetID, entityID, gapColumn, claimID string) string {
+	return deriveID("task:", targetID+"\x00"+entityID+"\x00"+gapColumn+"\x00"+claimID, 0)
+}
+
+// deriveStableInstanceID returns the deterministic Loom instanceId a triggerLoom
+// dispatch supplies to StartLoomPattern, keyed on the open-episode claimId (see
+// deriveStableTaskID). A re-dispatch re-supplies the same instanceId, so the
+// re-emitted loom.patternStarted collapses on Loom's existing instance.<id>
+// (getInstance presence + the createInstance CreateOnly race guard) — no new
+// Loom instance, hence no new task. This dedups the whole pattern, not just its
+// task — the correct altitude for triggerLoom. Namespaced disjoint from the task
+// and requestId derivations.
+func deriveStableInstanceID(targetID, entityID, gapColumn, claimID string) string {
+	return deriveID("instance:", targetID+"\x00"+entityID+"\x00"+gapColumn+"\x00"+claimID, 0)
 }
 
 // deriveTimerRequestID returns the deterministic requestId for one fired-timer

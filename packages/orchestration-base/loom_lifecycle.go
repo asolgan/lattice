@@ -25,9 +25,13 @@ const loomLifecycleDDL = "loomLifecycle"
 // mutations, so the zero-mutation path is sound (verified by
 // processor.TestCommit_ZeroMutationEventOnly).
 //
-// The event body carries instanceId + the op's fields; instanceId for
-// StartLoomPattern is the op's own requestId (a NanoID already), so no minting
-// is needed and Loom's cursor presence dedups at-least-once redelivery.
+// The event body carries instanceId + the op's fields. For StartLoomPattern the
+// instanceId is an OPTIONAL caller-supplied stable id (Contract #10 §10.3): when
+// supplied (Weaver's triggerLoom passes a claimId-seeded id that is stable across
+// reclaims of the same open gap) a re-emitted patternStarted collapses on Loom's
+// existing instance.<id> — no duplicate Loom instance, hence no duplicate userTask.
+// Absent, it defaults to the op's own requestId (the prior behavior); either way
+// Loom's instance presence dedups at-least-once redelivery.
 func LoomLifecycleDDL() pkgmgr.DDLSpec {
 	return pkgmgr.DDLSpec{
 		CanonicalName:     loomLifecycleDDL,
@@ -40,18 +44,24 @@ func LoomLifecycleDDL() pkgmgr.DDLSpec {
 			"identity:loom). Each op produces NO business mutation — it writes only the universal " +
 			"vtx.op.<requestId> tracker and emits one event through the Processor → outbox → core-events " +
 			"(P2; never a direct publish). The Loom instance is operational-only: it lives solely in " +
-			"loom-state, with NO Core-KV instance vertex. instanceId for StartLoomPattern is the op's own " +
-			"requestId.",
+			"loom-state, with NO Core-KV instance vertex. StartLoomPattern takes an OPTIONAL stable " +
+			"instanceId (§10.3 — Weaver supplies a claimId-seeded id so re-dispatch collapses on the " +
+			"existing instance); absent → the op's own requestId.",
 		Script: loomLifecycleScript,
+		// additionalProperties:false on BOTH arms keeps the oneOf unambiguous now
+		// that instanceId is valid on the StartLoomPattern arm too: a
+		// {patternRef, subjectKey, instanceId} payload matches ONLY the first arm
+		// (the second forbids patternRef/subjectKey), and {instanceId[, reason]}
+		// matches ONLY the second (the first requires patternRef/subjectKey).
 		InputSchema: `{"type":"object","oneOf":[` +
-			`{"properties":{"patternRef":{"type":"string"},"subjectKey":{"type":"string"}},"required":["patternRef","subjectKey"]},` +
-			`{"properties":{"instanceId":{"type":"string"},"reason":{"type":"string"}},"required":["instanceId"]}` +
+			`{"properties":{"patternRef":{"type":"string"},"subjectKey":{"type":"string"},"instanceId":{"type":"string"}},"required":["patternRef","subjectKey"],"additionalProperties":false},` +
+			`{"properties":{"instanceId":{"type":"string"},"reason":{"type":"string"}},"required":["instanceId"],"additionalProperties":false}` +
 			`]}`,
 		OutputSchema: `{"type":"object","properties":{}}`,
 		FieldDescription: map[string]string{
 			"patternRef": "vtx.meta.<loomPatternId> (or the bare patternId) of the pattern to start. Carried in authContext.target for per-pattern authorization (§10.8).",
 			"subjectKey": "vtx.<subjectType>.<NanoID> — the subject vertex the new instance runs for (must be of the pattern's subjectType).",
-			"instanceId": "The Loom instance id (= the StartLoomPattern requestId). Names the instance whose lifecycle this op announces.",
+			"instanceId": "For Complete/FailPattern: the Loom instance id whose lifecycle this op announces. For StartLoomPattern: an OPTIONAL caller-supplied stable instance id (Contract #10 §10.3) — Weaver's triggerLoom passes a claimId-seeded id stable across reclaims so re-dispatch collapses on the existing instance; absent → defaults to the op's requestId.",
 			"reason":     "Optional human-readable failure reason carried on loom.patternFailed.",
 		},
 		Examples: []pkgmgr.ExampleSpec{
@@ -103,8 +113,20 @@ def execute(state, op):
     if ot == "StartLoomPattern":
         pattern_ref = required_string(p, "patternRef")
         subject_key = required_string(p, "subjectKey")
+        # instanceId is an OPTIONAL caller-supplied stable id (Contract #10 §10.3).
+        # Weaver's triggerLoom passes a claimId-seeded id that is STABLE across
+        # reclaims of the same open gap, so a re-emitted patternStarted collapses
+        # on Loom's existing instance.<id> (getInstance presence + the
+        # createInstance CreateOnly race guard) — no duplicate Loom instance, hence
+        # no duplicate onboarding userTask. Absent → default to the op's own
+        # requestId (the prior behavior, for a client/fixture that does not need
+        # cross-episode dedup). Loom validates the id is a bare NanoID; the same
+        # bare-NanoID discipline holds whether minted here or supplied.
+        instance_id = optional_string(p, "instanceId")
+        if instance_id == "":
+            instance_id = op.requestId
         events = [{"class": "loom.patternStarted",
-                   "data": {"instanceId": op.requestId,
+                   "data": {"instanceId": instance_id,
                             "patternRef": pattern_ref,
                             "subjectKey": subject_key,
                             "requestId": op.requestId}}]

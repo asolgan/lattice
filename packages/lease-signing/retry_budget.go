@@ -13,26 +13,15 @@ package leasesigning
 // leaseApplicationCompleteSpec at package-init time (compile-time constants), the
 // §10.2 "the policy lives in the cypher" convention — the same posture as
 // bgcheckFreshnessWindow.
+//
+// The two HUMAN userTask gaps (onboarding, signature) carry NO maxretries cap:
+// the interim create-once cap (maxOnboardingDispatches / maxSignatureDispatches =
+// 1) that once stopped the every-30m duplicate is RETIRED, superseded by the
+// §10.3 general fix — Weaver derives the userTask identity from the mark's stable
+// per-open-episode claimId, so a reclaim re-dispatches the SAME taskId/instanceId
+// and the Processor/Loom collapses it on the existing artifact (no duplicate,
+// and — unlike the cap — a genuinely lost task still self-heals).
 const (
 	maxBgcheckRetries = 3
 	maxPaymentRetries = 3
-)
-
-// maxOnboardingDispatches and maxSignatureDispatches cap how many times Weaver
-// (re-)dispatches the two HUMAN userTask gaps — onboarding (the RecordIdentityPII
-// task) and signing (the SignLease task). They are 1: a userTask is created ONCE
-// and then left alone, because — unlike an external call that should resolve in
-// minutes — a human may legitimately take days, far longer than the §10.3
-// mark-lease (30m). Without a cap the reconciler's mark-lease reclaim presumes the
-// dispatch dead every 30m and re-dispatches, spawning a DUPLICATE task each pass
-// (the externalTask gaps are protected by their inflight_<g> companion; the
-// userTask gaps had no suppression companion at all). The cap = 1 gives the
-// userTask gaps the same gapSuppressed protection via the maxretries_<g> term:
-// after the single dispatch the per-(target, entity, gap) dispatch-count reaches
-// 1 and re-dispatch is suppressed; completing the task closes the gap and resets
-// the count. Recovering a userTask that is genuinely lost (expired unfilled) is
-// the deferred FR28 role-queue + escalation concern, not auto-re-creation here.
-const (
-	maxOnboardingDispatches = 1
-	maxSignatureDispatches  = 1
 )

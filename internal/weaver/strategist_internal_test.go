@@ -30,7 +30,7 @@ func TestBuildPlan_DirectOp_ResolvesReads(t *testing.T) {
 	if len(pl.reads) != 1 || pl.reads[0] != "vtx.object.AAobjHJKMNPQRSTUVWX" {
 		t.Fatalf("reads = %v want [vtx.object.AAobjHJKMNPQRSTUVWX] (the candidate hydrated for the op)", pl.reads)
 	}
-	payload := pl.payload(0)
+	payload := pl.payload("")
 	if payload["objectKey"] != "vtx.object.AAobjHJKMNPQRSTUVWX" {
 		t.Fatalf("payload objectKey = %v want the templated entityKey", payload["objectKey"])
 	}

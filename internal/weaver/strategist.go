@@ -53,16 +53,19 @@ type planError struct {
 
 func (e *planError) Error() string { return e.msg }
 
-// plan is one gap's fully-resolved dispatch, pending only the episode tag (the
-// mark's create revision): payload(markRevision) materializes the op payload
-// at fire time. A re-fire of the same episode reuses the same deterministic
-// requestId and collapses on the Contract #4 tracker — idempotency rests on
-// the requestId, not payload equality (time-derived fields such as
-// assignTask's expiresAt differ per fire).
+// plan is one gap's fully-resolved dispatch, pending only the per-open-episode
+// claimId: payload(claimID) materializes the op payload at fire time. The
+// userTask actions fold the claimId into a STABLE artifact identity (assignTask's
+// taskId, triggerLoom's Loom instanceId) so re-dispatch of the same open gap
+// collapses on the existing task/instance; the op's own requestId stays
+// episode-scoped (the mark create/replace revision) and collapses a same-episode
+// re-fire on the Contract #4 tracker. Idempotency rests on these derived ids, not
+// payload equality (time-derived fields such as assignTask's expiresAt differ per
+// fire).
 type plan struct {
 	operationType string
 	authTarget    string
-	payload       func(markRevision uint64) map[string]any
+	payload       func(claimID string) map[string]any
 	// reads is the dispatched op's ContextHint.Reads: the BARE vertex keys the
 	// op's DDL script hydrates + validates (vertex_alive). The dispatcher
 	// declares them because it builds the payload and so knows the exact keys
@@ -106,11 +109,18 @@ func buildPlan(source *targetSource, targetID, entityID, gapColumn string,
 			// via the operator role, and per-pattern auth anchors on the pattern
 			// definition vertex.
 			authTarget: metaKey,
-			payload: func(uint64) map[string]any {
+			payload: func(claimID string) map[string]any {
 				return map[string]any{
 					"patternRef":       metaKey,
 					"subjectKey":       subject,
 					"expectedRevision": expectedRevision,
+					// A STABLE Loom instanceId (claimId-seeded, §10.3): every reclaim
+					// re-supplies the same id, so the re-emitted loom.patternStarted
+					// collapses on Loom's existing instance.<id> (no duplicate pattern,
+					// hence no duplicate onboarding userTask). Absent claimId (a
+					// pre-claimId mark mid-migration) yields a stable empty-seed id —
+					// still consistent across that episode's reclaims.
+					"instanceId": deriveStableInstanceID(targetID, entityID, gapColumn, claimID),
 				}
 			},
 		}, nil
@@ -143,13 +153,17 @@ func buildPlan(source *targetSource, targetID, entityID, gapColumn string,
 			// a HydrationMiss). Cross-checked against the script by
 			// TestCreateTaskReads_MatchDDLScript.
 			reads: []string{assignee, forOperation, taskTarget},
-			payload: func(markRevision uint64) map[string]any {
+			payload: func(claimID string) map[string]any {
 				return map[string]any{
-					"assignee":         assignee,
-					"forOperation":     forOperation,
-					"scopedTo":         taskTarget,
-					"expiresAt":        substrate.FormatTimestamp(time.Now().Add(assignTaskGrantTTL)),
-					"taskId":           deriveEpisodeTaskID(targetID, entityID, gapColumn, markRevision),
+					"assignee":     assignee,
+					"forOperation": forOperation,
+					"scopedTo":     taskTarget,
+					"expiresAt":    substrate.FormatTimestamp(time.Now().Add(assignTaskGrantTTL)),
+					// A STABLE taskId (claimId-seeded, §10.3): every reclaim re-supplies
+					// the same id, so a re-dispatched CreateTask collapses on the existing
+					// task (the CreateTask script's kv.Read no-op + the CreateOnly
+					// backstop) instead of spawning a duplicate per mark-lease expiry.
+					"taskId":           deriveStableTaskID(targetID, entityID, gapColumn, claimID),
 					"expectedRevision": expectedRevision,
 				}
 			},
@@ -194,7 +208,7 @@ func buildPlan(source *targetSource, targetID, entityID, gapColumn string,
 		return &plan{
 			operationType: ga.Operation,
 			authTarget:    authTarget,
-			payload:       func(uint64) map[string]any { return params },
+			payload:       func(string) map[string]any { return params },
 			reads:         reads,
 		}, nil
 

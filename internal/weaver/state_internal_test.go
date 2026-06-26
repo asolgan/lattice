@@ -38,6 +38,49 @@ func newStateTestStore(t *testing.T, ctx context.Context) *markStore {
 	return newMarkStore(conn, "weaver-state", time.Minute, "unit-"+testNanoID(t))
 }
 
+// TestMarkClaimID_MintedThenPreserved proves the §10.3 per-open-episode token
+// lifecycle the stable userTask identity rests on: the CAS-create mints a fresh
+// claimId; a reclaim-replace PRESERVES it verbatim (only the lease refreshes); a
+// re-create after a delete (a close→reopen) mints a NEW one.
+func TestMarkClaimID_MintedThenPreserved(t *testing.T) {
+	ctx := context.Background()
+	m := newStateTestStore(t, ctx)
+	const tID, eID, gap = "t1", "entityAAAAAAAAAAAAAA", "missing_onboarding"
+	eKey := "vtx.leaseapp." + eID
+
+	rev, claim1, exists, err := m.create(ctx, tID, eID, gap, eKey, "triggerLoom")
+	if err != nil || exists {
+		t.Fatalf("create: err=%v exists=%v", err, exists)
+	}
+	if !substrate.IsValidNanoID(claim1) {
+		t.Fatalf("create must mint a NanoID claimId, got %q", claim1)
+	}
+
+	// Reclaim-replace preserves the claimId verbatim.
+	if _, conflict, err := m.replace(ctx, tID, eID, gap, eKey, "triggerLoom", claim1, rev); err != nil || conflict {
+		t.Fatalf("replace: err=%v conflict=%v", err, conflict)
+	}
+	rec, _, found, err := m.get(ctx, tID, eID, gap)
+	if err != nil || !found {
+		t.Fatalf("get after replace: err=%v found=%v", err, found)
+	}
+	if rec.ClaimID != claim1 {
+		t.Fatalf("reclaim must PRESERVE claimId: got %q want %q", rec.ClaimID, claim1)
+	}
+
+	// Close→reopen: delete the mark, re-create — a fresh claimId.
+	if err := m.delete(ctx, tID, eID, gap); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	_, claim2, _, err := m.create(ctx, tID, eID, gap, eKey, "triggerLoom")
+	if err != nil {
+		t.Fatalf("re-create: %v", err)
+	}
+	if claim2 == claim1 {
+		t.Fatalf("a reopened episode must mint a NEW claimId, got the same %q", claim2)
+	}
+}
+
 // TestSetDisabled_RoundTrip verifies setDisabled(true)/isDisabled and
 // setDisabled(false)/isDisabled round-trip (AC #3).
 func TestSetDisabled_RoundTrip(t *testing.T) {
@@ -147,7 +190,7 @@ func TestDeleteByTargetPrefix_OnlyMatchesOwnTarget(t *testing.T) {
 	m := newStateTestStore(t, ctx)
 
 	// t1's marks.
-	if _, _, err := m.create(ctx, "t1", "entityAAAAAAAAAAAAAA", "missing_a", "vtx.entity.entityAAAAAAAAAAAAAA", "MarkExpired"); err != nil {
+	if _, _, _, err := m.create(ctx, "t1", "entityAAAAAAAAAAAAAA", "missing_a", "vtx.entity.entityAAAAAAAAAAAAAA", "MarkExpired"); err != nil {
 		t.Fatalf("create t1 mark: %v", err)
 	}
 	if err := m.setDisabled(ctx, "t1", true); err != nil {
@@ -155,7 +198,7 @@ func TestDeleteByTargetPrefix_OnlyMatchesOwnTarget(t *testing.T) {
 	}
 
 	// t10's marks — must survive deleteByTargetPrefix(ctx, "t1").
-	if _, _, err := m.create(ctx, "t10", "entityBBBBBBBBBBBBBB", "missing_b", "vtx.entity.entityBBBBBBBBBBBBBB", "MarkExpired"); err != nil {
+	if _, _, _, err := m.create(ctx, "t10", "entityBBBBBBBBBBBBBB", "missing_b", "vtx.entity.entityBBBBBBBBBBBBBB", "MarkExpired"); err != nil {
 		t.Fatalf("create t10 mark: %v", err)
 	}
 	if err := m.setDisabled(ctx, "t10", true); err != nil {
