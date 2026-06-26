@@ -1,0 +1,58 @@
+name: clinic-domain
+version: 0.1.0
+description: |
+  Clinic bookable domain. Self-contained package owning three vertex types —
+  patient, provider, appointment — with their aspects (.demographics, .profile,
+  .schedule, .status) and links (forPatient, withProvider), written by the
+  Create*/SetAppointmentStatus/Tombstone* ops. Two projection lenses
+  (clinicAppointments, clinicProviders) are the P5 read models a clinic FE reads.
+  No package dependency. PHI/Vault, temporal-availability/double-book, and @every
+  recurring schedules are the separate deferred items this vertical forces — out
+  of scope here.
+declares:
+  ddls:
+    - canonicalName: patient
+      class: meta.ddl.vertexType
+    - canonicalName: provider
+      class: meta.ddl.vertexType
+    - canonicalName: appointment
+      class: meta.ddl.vertexType
+    - canonicalName: patientDemographics
+      class: meta.ddl.aspectType
+    - canonicalName: providerProfile
+      class: meta.ddl.aspectType
+    - canonicalName: appointmentSchedule
+      class: meta.ddl.aspectType
+    - canonicalName: appointmentStatus
+      class: meta.ddl.aspectType
+  lenses:
+    - canonicalName: clinicAppointments
+      adapter: nats-kv
+      bucket: clinic-appointments
+      engine: full
+    - canonicalName: clinicProviders
+      adapter: nats-kv
+      bucket: clinic-providers
+      engine: full
+  permissions:
+    - operationType: CreatePatient
+      scope: any
+      grantsTo: [operator]
+    - operationType: TombstonePatient
+      scope: any
+      grantsTo: [operator]
+    - operationType: CreateProvider
+      scope: any
+      grantsTo: [operator]
+    - operationType: TombstoneProvider
+      scope: any
+      grantsTo: [operator]
+    - operationType: CreateAppointment
+      scope: any
+      grantsTo: [operator]
+    - operationType: SetAppointmentStatus
+      scope: any
+      grantsTo: [operator]
+    - operationType: TombstoneAppointment
+      scope: any
+      grantsTo: [operator]
