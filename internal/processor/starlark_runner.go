@@ -52,6 +52,14 @@ func NewStarlarkRunner(wallBudget time.Duration, maxSteps int64) *StarlarkRunner
 func (r *StarlarkRunner) Run(ctx context.Context, sc ScriptContext) (ScriptResult, error) {
 	rid := sc.Operation.RequestID
 
+	// execCtx is the context the `kv` module reads through. It starts as the
+	// inbound ctx and is swapped to the wall-budget context just before
+	// execution (below). This keeps the wall budget scoped to execution exactly
+	// as before (compile is not charged against it) while still bounding any
+	// kv.Read on-demand round-trip by — and counting it against — that budget.
+	execCtx := ctx
+	getExecCtx := func() context.Context { return execCtx }
+
 	// Build globals.
 	globals := starlarklib.StringDict{
 		"state":  vertexMapToStarlarkWithHydrated(sc.Hydrated),
@@ -72,6 +80,15 @@ func (r *StarlarkRunner) Run(ctx context.Context, sc ScriptContext) (ScriptResul
 		// Used by MetaRootDDLScript's meta.lens branch to parse the spec
 		// payload field into a structured dict for the .spec aspect data.
 		"json": starlarkjson.Module,
+		// kv.Read(key) — Contract #2 §2.5 lazy on-demand Core KV read. Unlike the
+		// pure modules above this is the ONE builtin that performs (potentially)
+		// a NATS round-trip AND is intentionally NON-deterministic: it serves
+		// contextHint-prefetched keys from the hydrated cache and otherwise reads
+		// LIVE Core KV state. A hard-deleted/absent key reads as None; a
+		// logically-deleted key (isDeleted=true) reads as a present doc carrying
+		// the flag. The opt-in read seam for the read-before-create idempotency
+		// pattern — not a read model (P5). See starlark_kv.go.
+		"kv": kvModule(getExecCtx, sc),
 	}
 
 	// Compile. Resolve errors (referencing an unbound name like `os` without
@@ -83,9 +100,12 @@ func (r *StarlarkRunner) Run(ctx context.Context, sc ScriptContext) (ScriptResul
 		return ScriptResult{}, classifyStarlarkError(err, rid)
 	}
 
-	// Per-call thread with cancellation wired to ctx + wall budget.
+	// Per-call thread with cancellation wired to ctx + wall budget. The budget
+	// covers execution (Init + Call), not compile; routing execCtx here means a
+	// kv.Read round-trip shares — and is bounded by — the same budget.
 	wallCtx, cancel := context.WithTimeout(ctx, r.WallBudget)
 	defer cancel()
+	execCtx = wallCtx
 
 	thread := &starlarklib.Thread{
 		Name: "processor:" + rid,
@@ -433,22 +453,31 @@ func (s *stateMapValue) Attr(name string) (starlarklib.Value, error) {
 func vertexMapToStarlarkWithHydrated(m map[string]VertexDoc) *stateMapValue {
 	d := new(starlarklib.Dict)
 	for k, v := range m {
-		fields := starlarklib.StringDict{
-			"key":       starlarklib.String(v.Key),
-			"class":     starlarklib.String(v.Class),
-			"isDeleted": starlarklib.Bool(v.IsDeleted),
-			"data":      goMapToStarlarkDict(v.Data),
-			"revision":  starlarklib.MakeUint64(v.Revision),
-		}
-		if v.VertexKey != "" {
-			fields["vertexKey"] = starlarklib.String(v.VertexKey)
-		}
-		if v.LocalName != "" {
-			fields["localName"] = starlarklib.String(v.LocalName)
-		}
-		_ = d.SetKey(starlarklib.String(k), starlarkstruct.FromStringDict(starlarkstruct.Default, fields))
+		_ = d.SetKey(starlarklib.String(k), vertexDocToStarlark(v))
 	}
 	return &stateMapValue{d: d}
+}
+
+// vertexDocToStarlark projects a single VertexDoc into the Starlark struct a
+// script reads — the shared shape behind both a `state[key]` entry and a
+// `kv.Read(key)` result, so a script consumes either identically (.data.<f>,
+// .class, .isDeleted, .revision, and the aspect-only .vertexKey/.localName when
+// set).
+func vertexDocToStarlark(v VertexDoc) starlarklib.Value {
+	fields := starlarklib.StringDict{
+		"key":       starlarklib.String(v.Key),
+		"class":     starlarklib.String(v.Class),
+		"isDeleted": starlarklib.Bool(v.IsDeleted),
+		"data":      goMapToStarlarkDict(v.Data),
+		"revision":  starlarklib.MakeUint64(v.Revision),
+	}
+	if v.VertexKey != "" {
+		fields["vertexKey"] = starlarklib.String(v.VertexKey)
+	}
+	if v.LocalName != "" {
+		fields["localName"] = starlarklib.String(v.LocalName)
+	}
+	return starlarkstruct.FromStringDict(starlarkstruct.Default, fields)
 }
 
 func operationEnvelopeToStarlark(op *OperationEnvelope) *starlarkstruct.Struct {

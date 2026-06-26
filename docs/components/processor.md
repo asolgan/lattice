@@ -34,8 +34,9 @@ Key files:
 - `step3_auth_trace.go` — `AuthTraceEmitter` for FR23 three-plane auth trace records in Health KV
 - `ddl_cache.go` — in-memory DDL cache; populated at startup via `KVListKeys` over `vtx.meta.>`, re-read on `vtx.meta.*` mutations
 - `starlark_runner.go` — `StarlarkRunner.Run`; compiles + executes the DDL's `.script` aspect; maps Starlark errors to typed `ScriptError`; injects the sandbox globals
-- `starlark_builtins.go` — builtin modules injected into the Starlark sandbox (`nanoid`, `crypto`)
-- `script_context.go` — `ScriptContext` struct; bridges hydrated state to Starlark globals
+- `starlark_builtins.go` — pure builtin modules injected into the Starlark sandbox (`nanoid`, `crypto`, `time`, `json`)
+- `starlark_kv.go` — the `kv.Read(key)` builtin (Contract #2 §2.5 lazy on-demand Core KV read) + the `connKVReader` adapter backing it
+- `script_context.go` — `ScriptContext` struct (incl. the `ScriptKVReader` seam); bridges hydrated state to Starlark globals
 - `envelope.go` — `OperationEnvelope`, `Lane`, `ContextHint`, `AuthContext`, `ErrorCode` definitions; `ParseEnvelope` validates the wire contract
 - `reply.go` — `OperationReply`, `BuildAcceptedReply*`, `BuildRejectedReply`, `BuildDuplicateReply`, `MarshalReply`
 - `nfr_r1_test.go` — Gate 2 bypass test (no 9-step bypass; every write path verifiable)
@@ -109,12 +110,19 @@ by Gate 2 (`nfr_r1_test.go`).
 | `nanoid` | module | `nanoid.new()` — PCG-seeded deterministic NanoID generator (seed derived from `requestId` for reproducibility in tests). |
 | `crypto` | module | `crypto.sha256(s) -> hex string`, `crypto.sha256NanoID(s) -> NanoID`, `crypto.constant_time_equal(a, b) -> bool`. Side-effect-free; used by `ClaimIdentity` for claim-key validation. |
 | `json` | module | Standard Starlark `json.decode(s)` / `json.encode(v)`. Pure (no I/O, deterministic); used where a script parses a JSON payload field into a structured dict (e.g. a Lens `.spec`). |
+| `kv` | module | `kv.Read(key) -> doc-struct \| None` — Contract #2 §2.5 lazy on-demand Core KV read. The **one non-pure builtin**: serves a `contextHint`-prefetched key from the hydrated `state` cache (no round-trip) and otherwise does a single live key GET. Absent / hard-tombstoned → `None`; a logically-deleted vertex (`isDeleted=true`) → a present doc carrying the flag. Bounded by the wall budget. The opt-in read-before-create idempotency seam — **not** a scan or read-model hook (read models are lenses, P5). |
+
+#### `kv.Read` semantics (§2.5)
+
+- **Cache-first.** A key listed in `contextHint.reads` is pre-fetched at step 4 and served from `state` at the step-4 OCC snapshot — `kv.Read` cannot force a fresher re-read of an already-hydrated key (echoing the snapshot revision as `expectedRevision` is what keeps the commit's OCC check sound). A key *not* declared falls through to a single on-demand GET (incurs latency, §2.5).
+- **Absence is graceful.** Unlike a `contextHint` miss (a fatal `HydrationMiss`), `kv.Read` of an absent / hard-tombstoned key returns `None`, so a script can branch present-vs-absent — the read-before-create pattern a `createIfAbsent` mutation cannot express (events stay coherent with mutations because the script decides both in one branch).
+- **Non-deterministic by design.** It reads *live* state, so a replayed (at-least-once) operation can branch differently. That is intentional: the Processor — not replay determinism — is the idempotency authority; the deterministic id + the `CreateOnly` commit backstop resolve the publish→commit race (Contract #10 §10.3 / [userTask-dispatch-idempotency design](../../_bmad-output/implementation-artifacts/usertask-dispatch-idempotency-design.md) §4.3–4.4).
 
 ### Forbidden
 
 - `load(...)` — `Thread.Load` is nil; compile-time rejection.
-- `os`, `time`, `http`, and any other undeclared global — caught as `SandboxViolation` (compile-time resolve error from `starlark.SourceProgram`).
-- Direct NATS access — Starlark cannot call NATS; all side effects are through the `mutations` + `events` + `response` return dict (Contract #3 §3.7).
+- `os`, `http`, and any other undeclared global — caught as `SandboxViolation` (compile-time resolve error from `starlark.SourceProgram`). (`time` is bound, but only as the pure `time.rfc3339_*` helpers — never the host clock.)
+- Arbitrary NATS / I/O — Starlark cannot open connections, scan, or write. The **only** substrate touch is the read-side `kv.Read(key)` single-key GET (§2.5); all **side effects** (writes, events) are still declared via the `mutations` + `events` + `response` return dict (Contract #3 §3.7) and applied by the committer at step 8.
 
 ### Return shape
 

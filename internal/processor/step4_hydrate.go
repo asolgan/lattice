@@ -179,6 +179,10 @@ func (h *HydratorImpl) Hydrate(ctx context.Context, env *OperationEnvelope) (Hyd
 			DDLLookup:    map[string]MetaVertex{class: metaVtx},
 			ScriptSource: source,
 			ScriptClass:  class,
+			// Back the script's lazy kv.Read() (§2.5) with a single-key reader
+			// over the same Conn + Core bucket used for hydration. A read of a
+			// key not pre-fetched via contextHint falls through to this.
+			KVReader: connKVReader{conn: h.Conn, bucket: h.CoreBucket},
 		},
 	}, nil
 }

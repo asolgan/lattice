@@ -1,6 +1,7 @@
 package processor
 
 import (
+	"context"
 	"fmt"
 )
 
@@ -20,12 +21,36 @@ import (
 //     Internal to the runner, not exposed to the script.
 //   - ScriptClass: the canonicalName of the class whose script will run.
 //     Echoed in logs and errors for traceability.
+//   - KVReader: the lazy on-demand Core KV read seam backing the script's
+//     `kv.Read()` builtin (Contract #2 §2.5). Populated by step 4 (Hydrate)
+//     with a live Core-KV-backed reader. Optional: when nil, a `kv.Read()` of a
+//     key not already in Hydrated raises a script error (tests that exercise
+//     contextHint-only paths may leave it unset).
 type ScriptContext struct {
 	Operation    *OperationEnvelope
 	Hydrated     map[string]VertexDoc
 	DDLLookup    map[string]MetaVertex
 	ScriptSource string
 	ScriptClass  string
+	KVReader     ScriptKVReader
+}
+
+// ScriptKVReader performs a single on-demand Core KV read for a Starlark
+// `kv.Read()` call — the Contract #2 §2.5 lazy read that fires when the key was
+// not pre-fetched via `contextHint.reads`.
+//
+// Semantics:
+//   - absent / hard-tombstoned (NATS not-found) → (nil, nil), so kv.Read yields
+//     None and the script can branch on it (the idempotency-create pattern:
+//     present → no-op, absent → create);
+//   - a live OR logically-deleted vertex → a non-nil VertexDoc (the doc carries
+//     isDeleted; the script inspects it, mirroring how `state` exposes deletes);
+//   - any other error → propagated and surfaced as a ScriptError.
+//
+// Implementations perform a single key GET — never a prefix scan. kv.Read is the
+// idempotency-read seam, not a read-model surface (read models are lenses, P5).
+type ScriptKVReader interface {
+	ReadVertex(ctx context.Context, key string) (*VertexDoc, error)
 }
 
 // VertexDoc is the hydrated form of a Core KV vertex or aspect document.
