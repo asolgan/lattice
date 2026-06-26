@@ -401,25 +401,28 @@ function renderApplications() {
 }
 
 // Each step is one gap dimension, derived from the lens columns the row actually
-// carries: a closed gap is "done"; an open gap with a call in flight is "active"
-// (In progress); an open gap with nothing in flight is "todo". The lens does not
-// project a per-row "retries exhausted" signal (maxretries_<g> is a constant cap),
-// so there is no "action needed" state to derive here — a stalled automated step
+// carries: a closed gap is "done"; an open gap with a standing rejection (a failed
+// check no retry has superseded) is "declined"; an open gap with a call in flight
+// is "active" (In progress); an open gap with nothing in flight is "todo". A retry
+// in flight (inflight) takes precedence over a standing rejection — the check is
+// being re-run. The lens does not project a per-row "retries exhausted" signal
+// (maxretries_<g> is a constant cap), so a stalled non-declined automated step
 // reads as "todo".
-function stepState(done, inflight) {
+function stepState(done, inflight, declined) {
   if (done) return "done";
   if (inflight) return "active";
+  if (declined) return "declined";
   return "todo";
 }
 
-const STEP_LABEL = { done: "Done", active: "In progress", todo: "To do" };
+const STEP_LABEL = { done: "Done", active: "In progress", declined: "Declined", todo: "To do" };
 
 function renderStep(num, title, st, note) {
   const step = document.createElement("li");
   step.className = "step " + st;
   const dot = document.createElement("span");
   dot.className = "step-dot";
-  dot.textContent = st === "done" ? "✓" : String(num);
+  dot.textContent = st === "done" ? "✓" : st === "declined" ? "✕" : String(num);
   const body = document.createElement("div");
   body.className = "step-body";
   const t = document.createElement("div");
@@ -461,9 +464,13 @@ function renderApplicationCard(row, highlight) {
   ref.textContent = shortKey(row.entityKey);
   head.append(ref);
 
-  // Decision banner
+  // Decision banner. Declined takes precedence over the in-review state: a
+  // standing rejection is a terminal disposition, not a step still to complete.
   const banner = document.createElement("div");
-  if (!row.violating) {
+  if (row.declined) {
+    banner.className = "decision declined";
+    banner.textContent = "Application declined — a verification check did not pass.";
+  } else if (!row.violating) {
     banner.className = "decision ok";
     banner.textContent = "Application complete — all steps done.";
   } else {
@@ -475,10 +482,10 @@ function renderApplicationCard(row, highlight) {
   const steps = document.createElement("ol");
   steps.className = "stepper";
   steps.append(
-    renderStep(1, "Onboarding (identity details)", stepState(!row.missing_onboarding, false)),
-    renderStep(2, "Background check", stepState(!row.missing_bgcheck, row.inflight_bgcheck)),
-    renderStep(3, "Payment", stepState(!row.missing_payment, row.inflight_payment)),
-    renderStep(4, "Sign lease", stepState(!row.missing_signature, false)),
+    renderStep(1, "Onboarding (identity details)", stepState(!row.missing_onboarding, false, false)),
+    renderStep(2, "Background check", stepState(!row.missing_bgcheck, row.inflight_bgcheck, row.declined_bgcheck)),
+    renderStep(3, "Payment", stepState(!row.missing_payment, row.inflight_payment, row.declined_payment)),
+    renderStep(4, "Sign lease", stepState(!row.missing_signature, false, false)),
   );
 
   card.append(head, banner, steps);

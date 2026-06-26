@@ -17,8 +17,10 @@ const applicationKeyPrefix = "leaseApplicationComplete."
 
 // applicationRow is one projected `leaseApplicationComplete` row, the live state
 // of a single lease application. The gap booleans drive the FE stepper; the
-// inflight_ companion distinguishes "in progress" from "to do"; the unit columns
-// are the informational "what am I leasing" header. maxretries_<g> is the lens's
+// inflight_ companion distinguishes "in progress" from "to do"; the declined_
+// companion marks a standing business rejection (a failed check that no retry has
+// superseded) so the FE shows "Declined" instead of a silent forever-"in review";
+// the unit columns are the informational "what am I leasing" header. maxretries_<g> is the lens's
 // CONSTANT integer retry-budget cap baked onto every row (a count, not a flag —
 // it is an int, not a bool: typing it bool drops every row on decode). unitRent
 // is a pointer so an absent listing rent stays absent rather than 0.
@@ -32,6 +34,9 @@ type applicationRow struct {
 	MissingSignature  bool     `json:"missing_signature"`
 	InflightBgcheck   bool     `json:"inflight_bgcheck"`
 	InflightPayment   bool     `json:"inflight_payment"`
+	DeclinedBgcheck   bool     `json:"declined_bgcheck"`
+	DeclinedPayment   bool     `json:"declined_payment"`
+	Declined          bool     `json:"declined"`
 	MaxretriesBgcheck int      `json:"maxretries_bgcheck"`
 	MaxretriesPayment int      `json:"maxretries_payment"`
 	UnitKey           string   `json:"unitKey"`

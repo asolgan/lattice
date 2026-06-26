@@ -48,7 +48,7 @@ func Lenses() []pkgmgr.LensSpec {
 			Output: &pkgmgr.OutputDescriptorSpec{
 				AnchorType:       "leaseapp",
 				OutputKeyPattern: "leaseApplicationComplete.{actorSuffix}",
-				BodyColumns:      []string{"violating", "missing_onboarding", "missing_bgcheck", "missing_payment", "missing_signature", "applicant", "entityKey", "freshUntil", "inflight_bgcheck", "inflight_payment", "maxretries_bgcheck", "maxretries_payment", "unitKey", "unitAddress", "unitRent"},
+				BodyColumns:      []string{"violating", "missing_onboarding", "missing_bgcheck", "missing_payment", "missing_signature", "applicant", "entityKey", "freshUntil", "inflight_bgcheck", "inflight_payment", "declined_bgcheck", "declined_payment", "declined", "maxretries_bgcheck", "maxretries_payment", "unitKey", "unitAddress", "unitRent"},
 				EmptyBehavior:    "delete",
 				KeyColumn:        "entityId",
 				Freshness:        "auto",
@@ -169,6 +169,30 @@ func Lenses() []pkgmgr.LensSpec {
 //	  Keeping the cap a package-owned column (like freshUntil) leaves the policy in
 //	  the package with no contract change.
 //
+// DECLINED DISPOSITION — the per-family declined_<g> column + the top-level declined.
+//
+//	A FAILED outcome (inst.outcome.data.status = 'failed' — a definitive business
+//	rejection, distinct from a transient error) keeps the gap missing_<g> open the
+//	same as a never-run check, so without a dedicated column a declined application
+//	is indistinguishable from one still "in progress" — it reads as blocked
+//	forever. declined_<g> is the honest terminal disposition the operator / applicant
+//	FE renders instead:
+//
+//	- declined_bgcheck — a failed bgcheck instance exists AND no completed-fresh
+//	  bgcheck supersedes it ((bgFailed > 0) AND (freshBgComplete = 0)). A later
+//	  retry that clears (Weaver re-dispatches a FRESH instance on a failed outcome,
+//	  see inflight_<g>) flips declined_bgcheck back to false — the disposition
+//	  tracks the CURRENT verdict, not a historical one.
+//	- declined_payment — symmetric on the payment family ((payFailed > 0) AND
+//	  (payComplete = 0)); payment is ever-completed so no freshness term.
+//	- declined — the OR of the two: the application carries at least one standing
+//	  rejection. It is NOT in the violating clause (declined ⊂ violating already —
+//	  a declined gap is still a missing gap); it is a presentation column, like
+//	  freshUntil / unitAddress. The lens cannot see Weaver's per-gap dispatch count,
+//	  so declined is "a rejection stands right now," not "retries are terminally
+//	  exhausted"; while a retry is in flight inflight_<g> is true and the FE prefers
+//	  that ("re-checking") over the standing-rejection read.
+//
 // '= null' (not IS NULL) is the full engine's null test (ruleengine/full
 // executor.go equalsAny treats null = null as true and any value = null as
 // false). Do not "correct" it to unsupported IS NULL.
@@ -195,6 +219,8 @@ WITH
   count(DISTINCT CASE WHEN inst.family.data.value = 'payment' AND inst.outcome.data.status = 'completed' THEN inst.key ELSE null END) AS payComplete,
   count(DISTINCT CASE WHEN inst.family.data.value = 'backgroundCheck' AND inst.dispatch.data.vendorRef <> null AND inst.outcome.data.status = null THEN inst.key ELSE null END) AS bgInflight,
   count(DISTINCT CASE WHEN inst.family.data.value = 'payment' AND inst.dispatch.data.vendorRef <> null AND inst.outcome.data.status = null THEN inst.key ELSE null END) AS payInflight,
+  count(DISTINCT CASE WHEN inst.family.data.value = 'backgroundCheck' AND inst.outcome.data.status = 'failed' THEN inst.key ELSE null END) AS bgFailed,
+  count(DISTINCT CASE WHEN inst.family.data.value = 'payment' AND inst.outcome.data.status = 'failed' THEN inst.key ELSE null END) AS payFailed,
   max(CASE WHEN inst.family.data.value = 'backgroundCheck' AND inst.outcome.data.status = 'completed' AND inst.outcome.data.validUntil > $now THEN inst.outcome.data.validUntil ELSE null END) AS freshUntil
 RETURN
   entityKey AS actorKey,
@@ -210,6 +236,9 @@ RETURN
   (signedAt = null)      AS missing_signature,
   (bgInflight > 0)       AS inflight_bgcheck,
   (payInflight > 0)      AS inflight_payment,
+  ((bgFailed > 0) AND (freshBgComplete = 0))  AS declined_bgcheck,
+  ((payFailed > 0) AND (payComplete = 0))     AS declined_payment,
+  (((bgFailed > 0) AND (freshBgComplete = 0)) OR ((payFailed > 0) AND (payComplete = 0))) AS declined,
   %d                     AS maxretries_bgcheck,
   %d                     AS maxretries_payment,
   ((ssnVal = null) OR (freshBgComplete = 0) OR (payComplete = 0) OR (signedAt = null)) AS violating

@@ -378,6 +378,40 @@ func TestLeaseApplicationComplete_FailedBgcheck(t *testing.T) {
 	require.Equal(t, true, v["missing_bgcheck"], "a FAILED bgcheck (even fresh) is not converged → gap stays open")
 	require.Equal(t, false, v["missing_payment"], "the fixture's payment is completed → not missing")
 	require.Equal(t, true, v["violating"], "missing_bgcheck alone keeps the application violating")
+	require.Equal(t, true, v["declined_bgcheck"], "a standing failed bgcheck with no completed-fresh override → declined_bgcheck")
+	require.Equal(t, false, v["declined_payment"], "the fixture's payment is completed → not declined")
+	require.Equal(t, true, v["declined"], "any standing rejection → declined")
+}
+
+// TestLeaseApplicationComplete_DeclinedSupersededByFreshRetry pins that the
+// declined disposition tracks the CURRENT verdict: a failed bgcheck instance that
+// is later superseded by a completed-fresh bgcheck (Weaver re-dispatches a fresh
+// call on a failed outcome) flips declined_bgcheck back to false. The failed
+// instance still exists in the graph, so this guards the (freshBgComplete = 0)
+// AND-term — a naive declined = (bgFailed > 0) would wrongly stay declined after a
+// successful retry.
+func TestLeaseApplicationComplete_DeclinedSupersededByFreshRetry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	const now = "2026-06-18T00:00:00Z"
+	const validUntil = "2026-06-18T00:05:00Z" // fresh (> now)
+	app := bgFreshnessFixture(t, f, validUntil)
+	// The fixture's bg1 cleared (completed + fresh); add a SECOND, earlier bgcheck
+	// instance that FAILED (a prior attempt) providedTo the same applicant (alice) —
+	// the retry (bg1) then cleared.
+	f.vtx(t, "bgFail", "service")
+	f.aspect(t, "bgFail", "family", "family", map[string]any{"value": "backgroundCheck"})
+	f.aspect(t, "bgFail", "outcome", "outcome", map[string]any{"status": "failed", "completedAt": "2026-06-01T00:00:00Z", "validUntil": validUntil})
+	f.edge(t, "providedTo2", "bgFail", "alice")
+
+	rows := f.projectAt(t, app, now)
+	require.Len(t, rows, 1)
+	v := rows[0].Values
+	require.Equal(t, false, v["missing_bgcheck"], "the fresh-completed retry closes the gap")
+	require.Equal(t, false, v["declined_bgcheck"], "a completed-fresh bgcheck supersedes the earlier failure → not declined")
+	require.Equal(t, false, v["declined"], "no standing rejection once the retry clears")
 }
 
 // TestLeaseApplicationComplete_FailedPayment pins the same predicate on the
