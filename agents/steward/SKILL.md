@@ -126,6 +126,12 @@ app capabilities the POs propose are welcome — design → build, M/L fine.
   console, reads Core KV); the `lint-conventions` **P5 gate** must pass. **P2** — state changes via
   *operations*, never direct KV writes. Also: relationships are **links** not `data` refs; readers filter
   `isDeleted`. A change that violates these is **not** L2-eligible until fixed — don't merge it.
+- **Commit hygiene — the working tree is SHARED.** A scheduled fire shares `main`'s working tree with Andrew's
+  interactive session and other fires. **Stage only the files your work changed — explicit `git add <paths>`;
+  NEVER `git add -A` / `git add .` / `git commit -a`.** A broad add sweeps in unrelated, possibly *not-ready*
+  edits sitting in the tree and pushes them (this happened: a fire swept an in-progress README and pushed it
+  before it was finished). `git pull --rebase` before pushing. If you see modified files you didn't touch,
+  **leave them alone** — they're someone else's in-flight work, not yours to commit.
 - **Keep working until the queue drains — don't stop with work left and room to do it.** You **cannot query
   your remaining token / credit budget** (there is no usage tool; `/context` is interactive-only), so do
   **not** treat "budget" as a measurable stop signal or stop early "to be safe." Instead: **commit each
