@@ -1,5 +1,5 @@
 name: loftspace-domain
-version: 0.1.0
+version: 0.2.0
 description: |
   LoftSpace listing economics. Adds the leasable facets of a unit — the
   .listing aspect (rent / term / availability) and the .address aspect — on
@@ -31,5 +31,8 @@ declares:
       scope: any
       grantsTo: [operator]
     - operationType: SetUnitAddress
+      scope: any
+      grantsTo: [operator]
+    - operationType: SetListingStatus
       scope: any
       grantsTo: [operator]

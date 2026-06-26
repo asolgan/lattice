@@ -46,8 +46,8 @@ const (
 )
 
 // loftspaceOps are the ops the staff actor needs: CreateLocation (to mint the
-// unit it operates on) + the two loftspace ops.
-var loftspaceOps = []string{"CreateLocation", "SetListing", "SetUnitAddress"}
+// unit it operates on) + the loftspace ops.
+var loftspaceOps = []string{"CreateLocation", "SetListing", "SetUnitAddress", "SetListingStatus"}
 
 func lsStaffCapDoc() *processor.CapabilityDoc {
 	now := time.Now().UTC()
@@ -179,6 +179,120 @@ func setListing(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *pro
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, want)
+}
+
+// setListingStatus submits SetListingStatus on the given unit. class="" mirrors
+// how Weaver's actuator dispatches a directOp (the operationType resolves via the
+// empty-class permittedCommands reverse index) — the real convergence path; a
+// manual operator call carries "loftspaceListing".
+func setListingStatus(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, unitKey, class, payload string, want processor.MessageOutcome) {
+	t.Helper()
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID(label),
+		Lane:          processor.LaneDefault,
+		OperationType: "SetListingStatus",
+		Actor:         lsStaffActorKey,
+		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		Class:         class,
+		Payload:       json.RawMessage(payload),
+		ContextHint:   &processor.ContextHint{Reads: []string{unitKey}},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, want)
+}
+
+// TestLoftspace_SetListingStatus proves the status-only transition op: it flips
+// .listing.status while PRESERVING the economics verbatim, rejects a unit with no
+// listing (NoListing), is an idempotent no-op when already at the target status,
+// and validates the status enum. The transition uses class="" to exercise the
+// directOp dispatch path (the empty-class reverse index) — exactly how the
+// leaseApplicationComplete convergence target drives it on approval.
+func TestLoftspace_SetListingStatus(t *testing.T) {
+	ctx, conn := setupLoftspaceEnv(t)
+	cp, cons := newLoftspacePipeline(t, ctx, conn, "set-status")
+
+	unitKey := createUnit(t, ctx, conn, cp, cons)
+
+	// NoListing: a unit with no .listing yet is not transitionable, and the op
+	// must NOT mint a bare {status}-only listing.
+	setListingStatus(t, ctx, conn, cp, cons, "noList0001", unitKey, "loftspaceListing",
+		`{"unit":"`+unitKey+`","status":"leased"}`, processor.OutcomeRejected)
+	if _, err := conn.KVGet(ctx, testutil.HarnessCoreBucket, unitKey+".listing"); err == nil {
+		t.Fatalf("SetListingStatus minted a listing on a unit that had none")
+	}
+
+	// Seed a full listing (available) with optional fields.
+	setListing(t, ctx, conn, cp, cons, "seedList001", unitKey,
+		`{"unit":"`+unitKey+`","rentAmount":2400,"rentCurrency":"USD","bedrooms":2,"bathrooms":1.5,"sqft":950,"availableFrom":"2026-08-01T00:00:00Z","leaseTermMonths":12,"status":"available"}`,
+		processor.OutcomeAccepted)
+
+	// Transition available → leased via the directOp path (empty class).
+	setListingStatus(t, ctx, conn, cp, cons, "toLeased001", unitKey, "",
+		`{"unit":"`+unitKey+`","status":"leased"}`, processor.OutcomeAccepted)
+
+	ldoc := lsReadDoc(t, ctx, conn, unitKey+".listing")
+	if ldoc["class"] != "listing" {
+		t.Fatalf("listing class = %v, want listing (status flip must not change class)", ldoc["class"])
+	}
+	if vk, _ := ldoc["vertexKey"].(string); vk != unitKey {
+		t.Fatalf("listing vertexKey = %q, want %q", vk, unitKey)
+	}
+	ldata, _ := ldoc["data"].(map[string]any)
+	if ldata["status"] != "leased" {
+		t.Fatalf("status = %v, want leased", ldata["status"])
+	}
+	// Economics preserved verbatim (the status-only rewrite must not drop fields).
+	if ldata["rentCurrency"] != "USD" {
+		t.Fatalf("rentCurrency not preserved: %v", ldata)
+	}
+	if ldata["availableFrom"] != "2026-08-01T00:00:00Z" {
+		t.Fatalf("availableFrom not preserved: %v", ldata)
+	}
+	for _, f := range []string{"rentAmount", "bedrooms", "bathrooms", "sqft", "leaseTermMonths"} {
+		if _, ok := ldata[f]; !ok {
+			t.Fatalf("economics field %q dropped on status flip; data=%v", f, ldata)
+		}
+	}
+
+	// Idempotent no-op: a re-dispatch to the SAME status (an at-least-once
+	// duplicate) is ACCEPTED, leaves the listing leased, and writes NOTHING — the
+	// KV revision must NOT bump (the no-op branch returns empty mutations, so no CDC
+	// churn / no reprojection storm).
+	beforeEntry, err := conn.KVGet(ctx, testutil.HarnessCoreBucket, unitKey+".listing")
+	if err != nil {
+		t.Fatalf("KVGet listing before no-op: %v", err)
+	}
+	setListingStatus(t, ctx, conn, cp, cons, "toLeased002", unitKey, "",
+		`{"unit":"`+unitKey+`","status":"leased"}`, processor.OutcomeAccepted)
+	afterEntry, err := conn.KVGet(ctx, testutil.HarnessCoreBucket, unitKey+".listing")
+	if err != nil {
+		t.Fatalf("KVGet listing after no-op: %v", err)
+	}
+	if afterEntry.Revision != beforeEntry.Revision {
+		t.Fatalf("idempotent no-op re-dispatch bumped the listing revision %d → %d (it must write NOTHING)", beforeEntry.Revision, afterEntry.Revision)
+	}
+	if d, _ := lsReadDoc(t, ctx, conn, unitKey+".listing")["data"].(map[string]any); d["status"] != "leased" {
+		t.Fatalf("idempotent re-dispatch changed status: %v", d)
+	}
+
+	// Bad status enum → rejected (economics untouched).
+	setListingStatus(t, ctx, conn, cp, cons, "badStat001", unitKey, "loftspaceListing",
+		`{"unit":"`+unitKey+`","status":"bogus"}`, processor.OutcomeRejected)
+	if d, _ := lsReadDoc(t, ctx, conn, unitKey+".listing")["data"].(map[string]any); d["status"] != "leased" {
+		t.Fatalf("a bad-status SetListingStatus mutated the listing: %v", d)
+	}
+}
+
+// TestLoftspace_SetListingStatusRejectsDeadUnit proves the alive guard on the
+// status-only transition: a tombstoned unit cannot be transitioned.
+func TestLoftspace_SetListingStatusRejectsDeadUnit(t *testing.T) {
+	ctx, conn := setupLoftspaceEnv(t)
+	cp, cons := newLoftspacePipeline(t, ctx, conn, "status-dead")
+
+	deadKey := "vtx.unit.LSdeadstatHJKMNPQR"
+	lsSeedVertex(t, ctx, conn, deadKey, "location", true) // alive=false
+	setListingStatus(t, ctx, conn, cp, cons, "deadStat001", deadKey, "loftspaceListing",
+		`{"unit":"`+deadKey+`","status":"leased"}`, processor.OutcomeRejected)
 }
 
 // TestLoftspace_SetListingAndAddress mints a unit, sets a listing with optional

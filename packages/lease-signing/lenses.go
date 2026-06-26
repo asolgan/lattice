@@ -48,7 +48,7 @@ func Lenses() []pkgmgr.LensSpec {
 			Output: &pkgmgr.OutputDescriptorSpec{
 				AnchorType:       "leaseapp",
 				OutputKeyPattern: "leaseApplicationComplete.{actorSuffix}",
-				BodyColumns:      []string{"violating", "missing_onboarding", "missing_bgcheck", "missing_payment", "missing_signature", "applicant", "entityKey", "freshUntil", "inflight_bgcheck", "inflight_payment", "declined_bgcheck", "declined_payment", "declined", "maxretries_bgcheck", "maxretries_payment", "unitKey", "unitAddress", "unitRent"},
+				BodyColumns:      []string{"violating", "missing_onboarding", "missing_bgcheck", "missing_payment", "missing_signature", "missing_listingLeased", "applicantApproved", "applicant", "entityKey", "freshUntil", "inflight_bgcheck", "inflight_payment", "declined_bgcheck", "declined_payment", "declined", "maxretries_bgcheck", "maxretries_payment", "unitKey", "unitAddress", "unitRent", "unitStatus"},
 				EmptyBehavior:    "delete",
 				KeyColumn:        "entityId",
 				Freshness:        "auto",
@@ -77,17 +77,44 @@ func Lenses() []pkgmgr.LensSpec {
 //   - missing_signature — the application has no .signature aspect. SignLease
 //     writes it, flipping this false.
 //
-// violating is the explicit OR of the four gaps (Contract #10 §10.2: violating
-// is lens-projected, not an implicit OR; for this target the natural rule is
-// "any gap → violating").
+// violating is the explicit OR of the four applicant gaps PLUS missing_listingLeased
+// (Contract #10 §10.2: violating is lens-projected, not an implicit OR; for this
+// target the rule is "any applicant gap OR an approved-but-unleased unit →
+// violating"). Folding missing_listingLeased into violating is load-bearing:
+// Weaver skips all dispatch when violating=false, so the listing-flip directOp
+// only fires while the row is violating (and the application's work is not fully
+// done until the unit it is for is marked leased).
 //
-// unitKey / unitAddress / unitRent are INFORMATIONAL columns carried from the
+// unitKey / unitAddress / unitRent / unitStatus are columns carried from the
 // appliesToUnit walk (the unit's key, its .address.line1, its .listing.rentAmount
-// — aspect-hops off the live node, read inside the aggregating WITH so they
-// survive the grouping). They answer "applying to lease Unit X at $Y/mo" for the
-// operator / applicant FE; they are NOT in the violating OR-clause — `unit` is
-// required at CreateLeaseApplication, so there is no missing_unit gap (§3 D5).
-// appliesToUnit is 0..1, so these stay scalar and one-row-per-anchor holds.
+// + .listing.status — aspect-hops off the live node, read inside the aggregating
+// WITH so they survive the grouping). The first three answer "applying to lease
+// Unit X at $Y/mo" for the operator / applicant FE; unitStatus drives the
+// listing-leased convergence below. `unit` is required at CreateLeaseApplication,
+// so there is no missing_unit gap (§3 D5). appliesToUnit is 0..1, so these stay
+// scalar and one-row-per-anchor holds.
+//
+// LISTING-LEASED CONVERGENCE — applicantApproved + missing_listingLeased.
+//
+//   - applicantApproved (informational bool) is true once all four APPLICANT gaps
+//     are closed (ssn recorded, a fresh bgcheck, a completed payment, a signature)
+//     — De Morgan of the four missing_* (the engine has no RETURN-alias
+//     cross-reference, so it re-derives from the WITH values, like violating). The
+//     applicant FE keys its "approved" banner off THIS column, decoupling the
+//     applicant-facing read from violating (which now also covers the listing
+//     flip) so the brief violating-true window between applicant-approval and the
+//     listing-flip does not read as "still in review."
+//   - missing_listingLeased opens when an approved application's unit exists, has a
+//     listing, and is not yet leased ((unitKey <> null) AND applicantApproved AND
+//     (unitStatus <> null) AND (unitStatus <> 'leased')). The (unitStatus <> null)
+//     term requires a listing to exist (a unit with none is not transitionable —
+//     SetListingStatus would reject NoListing), closing the dispatch-thrash hazard.
+//     Weaver dispatches directOp(SetListingStatus status=leased) (§10.8 playbook);
+//     the op flips the unit's .listing.status, the unit (an appliesToUnit neighbor)
+//     reprojects this anchor, unitStatus becomes 'leased', and the gap closes. A
+//     multi-applicant race self-resolves: the first to converge leases the unit,
+//     then every other application's (unitStatus <> 'leased') is false → no
+//     re-dispatch, no double-transition.
 //
 // applicant + entityKey are the param columns the §10.8 playbook templates name
 // (row.applicant, row.entityKey). They stay non-null even when gaps are open
@@ -225,6 +252,7 @@ WITH
   u.key                     AS unitKey,
   u.address.data.line1      AS unitAddress,
   u.listing.data.rentAmount AS unitRent,
+  u.listing.data.status     AS unitStatus,
   count(DISTINCT CASE WHEN inst.family.data.value = 'backgroundCheck' AND inst.outcome.data.status = 'completed' AND inst.outcome.data.validUntil > $now THEN inst.key ELSE null END) AS freshBgComplete,
   count(DISTINCT CASE WHEN inst.family.data.value = 'payment' AND inst.outcome.data.status = 'completed' THEN inst.key ELSE null END) AS payComplete,
   count(DISTINCT CASE WHEN inst.family.data.value = 'backgroundCheck' AND inst.dispatch.data.vendorRef <> null AND inst.outcome.data.status = null THEN inst.key ELSE null END) AS bgInflight,
@@ -239,6 +267,7 @@ RETURN
   unitKey,
   unitAddress,
   unitRent,
+  unitStatus,
   freshUntil,
   (ssnVal = null)        AS missing_onboarding,
   (freshBgComplete = 0)  AS missing_bgcheck,
@@ -249,7 +278,9 @@ RETURN
   ((bgFailed > 0) AND (freshBgComplete = 0))  AS declined_bgcheck,
   ((payFailed > 0) AND (payComplete = 0))     AS declined_payment,
   (((bgFailed > 0) AND (freshBgComplete = 0)) OR ((payFailed > 0) AND (payComplete = 0))) AS declined,
+  ((ssnVal <> null) AND (freshBgComplete > 0) AND (payComplete > 0) AND (signedAt <> null)) AS applicantApproved,
+  ((unitKey <> null) AND (ssnVal <> null) AND (freshBgComplete > 0) AND (payComplete > 0) AND (signedAt <> null) AND (unitStatus <> null) AND (unitStatus <> 'leased')) AS missing_listingLeased,
   %d                     AS maxretries_bgcheck,
   %d                     AS maxretries_payment,
-  ((ssnVal = null) OR (freshBgComplete = 0) OR (payComplete = 0) OR (signedAt = null)) AS violating
+  ((ssnVal = null) OR (freshBgComplete = 0) OR (payComplete = 0) OR (signedAt = null) OR ((unitKey <> null) AND (ssnVal <> null) AND (freshBgComplete > 0) AND (payComplete > 0) AND (signedAt <> null) AND (unitStatus <> null) AND (unitStatus <> 'leased'))) AS violating
 `, maxBgcheckRetries, maxPaymentRetries)

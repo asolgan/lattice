@@ -133,6 +133,54 @@ func TestLeaseConvergence_DrainThenAssert_SteadyState(t *testing.T) {
 		"exactly two service outcomes (one bgcheck + one payment) recorded via the bridge")
 }
 
+// TestLeaseConvergence_ListingLeasedOnApproval proves the listing-status-on-approval
+// convergence end-to-end through the live stack: once the application is approved
+// (all four applicant gaps closed), the lens opens missing_listingLeased, Weaver
+// dispatches directOp(SetListingStatus status=leased) over the appliesToUnit unit,
+// the Processor flips the unit's .listing.status, the leaseapp reprojects (the unit
+// is an appliesToUnit neighbor — the same adjacency reprojection that closes
+// missing_onboarding on a .ssn write), missing_listingLeased closes, and the row
+// converges. A status-only flip that PRESERVES the economics.
+//
+// Because missing_listingLeased is folded into violating, the existing
+// drain-until-converged tests already require this flip; this test asserts it
+// EXPLICITLY (the unit's listing actually became leased, economics intact).
+func TestLeaseConvergence_ListingLeasedOnApproval(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping the all-engines lease convergence e2e in -short mode")
+	}
+	h := newHarness(t)
+	appKey, appID, applicantKey := h.seedApplicant()
+
+	// Starting state: the unit is listed available (it shows in Browse&Apply).
+	require.Equal(t, "available", h.unitListingStatus(h.lastUnitKey), "the unit starts available")
+
+	h.driveApplicantSteps(appKey, applicantKey)
+
+	// Convergence REQUIRES the listing flip (violating includes missing_listingLeased),
+	// so draining to violating=false already proves the directOp fired + reprojected.
+	h.drainUntilConverged(appID, 30*time.Second)
+
+	// Explicit: the unit's listing is now leased, with the economics preserved verbatim
+	// by the status-only rewrite (rentAmount / rentCurrency untouched).
+	require.Equal(t, "leased", h.unitListingStatus(h.lastUnitKey),
+		"the approved application's unit must be marked leased by the convergence directOp")
+	listing := h.aspectData(h.lastUnitKey, "listing")
+	require.NotNil(t, listing, "the .listing aspect must still exist after the status flip")
+	require.EqualValues(t, h.lastUnitRent, listing["rentAmount"], "the status-only flip preserved rentAmount")
+	require.Equal(t, "USD", listing["rentCurrency"], "the status-only flip preserved rentCurrency")
+
+	// The converged row reflects it: unit leased, gap closed, applicant approved.
+	row := h.readRow(appID)
+	require.NotNil(t, row)
+	require.Equal(t, "leased", row["unitStatus"], "the row reprojected the leased status")
+	require.Falsef(t, rowBool(row, "missing_listingLeased"), "the listing gap must be closed; row=%v", row)
+	require.Truef(t, rowBool(row, "applicantApproved"), "the applicant must read approved; row=%v", row)
+
+	// Steady: it stays leased + converged (the idempotent directOp does not thrash).
+	h.assertSteadyState(appID, 3*time.Second)
+}
+
 // TestLeaseConvergence_D5_OutcomeInAspect_RootMinimal is AC #3, gate-asserted (not
 // review-asserted): after the bridge round-trip, the service instance's external
 // outcome lives in the .outcome ASPECT, and the service + leaseapp vertex ROOT data

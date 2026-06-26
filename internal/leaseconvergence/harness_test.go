@@ -557,6 +557,18 @@ func (h *harness) vertexRootData(key string) (map[string]any, bool) {
 	return env.Data, true
 }
 
+// unitListingStatus reads a unit's .listing aspect status ("" when the listing
+// aspect is absent). The listing-status-on-approval convergence flips it to
+// "leased" via directOp(SetListingStatus).
+func (h *harness) unitListingStatus(unitKey string) string {
+	d := h.aspectData(unitKey, "listing")
+	if d == nil {
+		return ""
+	}
+	s, _ := d["status"].(string)
+	return s
+}
+
 // aspectData reads an aspect's `data` object (nil if absent).
 func (h *harness) aspectData(ownerKey, local string) map[string]any {
 	entry, err := h.conn.KVGet(h.ctx, bootstrap.CoreKVBucket, ownerKey+"."+local)

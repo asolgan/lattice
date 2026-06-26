@@ -7,10 +7,10 @@
 // loftspace-domain package has been correctly installed. Asserts:
 //
 //	1 loftspaceListing DDL meta-vertex (class=meta.ddl.vertexType) admitting
-//	  SetListing + SetUnitAddress, with its self-description aspects.
-//	1 listing  aspect-type DDL (class=meta.ddl.aspectType) admitting SetListing.
+//	  SetListing + SetUnitAddress + SetListingStatus, with its self-description aspects.
+//	1 listing  aspect-type DDL (class=meta.ddl.aspectType) admitting SetListing + SetListingStatus.
 //	1 address  aspect-type DDL (class=meta.ddl.aspectType) admitting SetUnitAddress.
-//	2 permission vertices (SetListing, SetUnitAddress), scope any, granted to operator.
+//	3 permission vertices (SetListing, SetUnitAddress, SetListingStatus), scope any, granted to operator.
 //	1 package vertex + manifest aspect (name=loftspace-domain).
 //
 // Run via: go run ./scripts/verify-package-loftspace-domain.go
@@ -36,7 +36,7 @@ const (
 	loftspaceCoreKVBucket = "core-kv"
 )
 
-var loftspaceExpectedOps = []string{"SetListing", "SetUnitAddress"}
+var loftspaceExpectedOps = []string{"SetListing", "SetUnitAddress", "SetListingStatus"}
 
 // ddlCheck describes one DDL to verify: its canonical name, its expected meta
 // class, and the ops its permittedCommands must contain.
@@ -99,7 +99,7 @@ func main() {
 
 	ddlChecks := []ddlCheck{
 		{canonical: loftspaceListingDDL, class: "meta.ddl.vertexType", ops: loftspaceExpectedOps},
-		{canonical: "listing", class: "meta.ddl.aspectType", ops: []string{"SetListing"}},
+		{canonical: "listing", class: "meta.ddl.aspectType", ops: []string{"SetListing", "SetListingStatus"}},
 		{canonical: "address", class: "meta.ddl.aspectType", ops: []string{"SetUnitAddress"}},
 	}
 

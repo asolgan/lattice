@@ -1,8 +1,12 @@
 # LoftSpace — listing-status transition on approval (Increment 2, part a)
 
-**Status:** ✅ Winston-ratified — **build-ready** (no frozen-contract change, no Andrew gate; all
-package-owned mechanisms). Build is its own fire (cross-package convergence + a new op →
-**3-layer adversarial review**).
+**Status:** ✅ **BUILT + SHIPPED** (Steward, 2026-06-26). No frozen-contract change, no Andrew gate;
+all package-owned mechanisms. 3-layer adversarial review clean (Blind Hunter SHIP · Edge Case Hunter
+SHIP · Acceptance Auditor ACCEPT — the two blocker-candidates, neighbor-aspect reprojection + dead-unit
+storm, verified in source; all three build deviations judged improvements). All gates green incl. the
+`test-lease-convergence` heavy e2e (the new `TestLeaseConvergence_ListingLeasedOnApproval` + every
+existing convergence test, which now require the flip because `missing_listingLeased` is folded into
+`violating`).
 
 **Problem (PO-filed, live-observed 2026-06-26).** After an application **fully converges**
 (`violating:false`, all applicant gaps closed = approved), the unit's listing stays
@@ -95,8 +99,12 @@ Add:
   applicant gap re-opens → `applicantApproved` false → `missing_listingLeased` false (unit already
   leased anyway). Nothing to undo. Correct.
 - **At-least-once / mark-lease reclaim.** A re-dispatched `SetListingStatus` is an idempotent no-op
-  once `status=leased`. The directOp carries `expectedRevision` (OCC); a concurrent operator
-  `SetListing` would RevisionConflict and Weaver retries to convergence.
+  once `status=leased` — the op detects the status already matches and emits **zero mutations** (no
+  CDC churn, no reprojection storm), returning Accepted. The `.listing` write is an **unconditioned
+  upsert** (the `SetListing` idiom; Weaver still injects `expectedRevision` into the directOp payload
+  but the script ignores it). A concurrent operator `SetListing` is therefore last-write-wins, which
+  self-heals: if `SetListing` lands a non-`leased` status, the gap re-opens and Weaver re-dispatches
+  while the application stays approved → convergence drives it back to `leased`.
 
 ## What this is NOT (scope discipline)
 

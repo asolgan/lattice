@@ -44,7 +44,7 @@ func TestPackage_DDLs(t *testing.T) {
 	if vertex.Class != "meta.ddl.vertexType" {
 		t.Fatalf("loftspaceListing class = %q, want meta.ddl.vertexType", vertex.Class)
 	}
-	wantCmds := map[string]bool{"SetListing": false, "SetUnitAddress": false}
+	wantCmds := map[string]bool{"SetListing": false, "SetUnitAddress": false, "SetListingStatus": false}
 	for _, c := range vertex.PermittedCommands {
 		if _, ok := wantCmds[c]; !ok {
 			t.Fatalf("unexpected loftspaceListing command %q", c)
@@ -57,7 +57,9 @@ func TestPackage_DDLs(t *testing.T) {
 		}
 	}
 
-	for name, writerOp := range map[string]string{"listing": "SetListing", "address": "SetUnitAddress"} {
+	// The listing aspectType admits two writers (SetListing full upsert +
+	// SetListingStatus status-only rewrite); address admits one.
+	for name, writers := range map[string][]string{"listing": {"SetListing", "SetListingStatus"}, "address": {"SetUnitAddress"}} {
 		asp, ok := byName[name]
 		if !ok {
 			t.Fatalf("missing %s aspectType DDL", name)
@@ -68,8 +70,23 @@ func TestPackage_DDLs(t *testing.T) {
 		if asp.Sensitive {
 			t.Fatalf("%s must NOT be sensitive (it attaches to a unit, not an identity)", name)
 		}
-		if len(asp.PermittedCommands) != 1 || asp.PermittedCommands[0] != writerOp {
-			t.Fatalf("%s permittedCommands = %v, want [%s]", name, asp.PermittedCommands, writerOp)
+		want := map[string]bool{}
+		for _, w := range writers {
+			want[w] = false
+		}
+		if len(asp.PermittedCommands) != len(want) {
+			t.Fatalf("%s permittedCommands = %v, want %v", name, asp.PermittedCommands, writers)
+		}
+		for _, c := range asp.PermittedCommands {
+			if _, ok := want[c]; !ok {
+				t.Fatalf("%s unexpected permittedCommand %q (want %v)", name, c, writers)
+			}
+			want[c] = true
+		}
+		for c, seen := range want {
+			if !seen {
+				t.Fatalf("%s missing permittedCommand %q (have %v)", name, c, asp.PermittedCommands)
+			}
 		}
 	}
 }
@@ -77,7 +94,7 @@ func TestPackage_DDLs(t *testing.T) {
 // TestPackage_Permissions pins both ops granted to operator (scope any) and
 // nothing else, and the location-domain dependency.
 func TestPackage_Permissions(t *testing.T) {
-	wantPerms := map[string]bool{"SetListing": false, "SetUnitAddress": false}
+	wantPerms := map[string]bool{"SetListing": false, "SetUnitAddress": false, "SetListingStatus": false}
 	if got := len(Package.Permissions); got != len(wantPerms) {
 		t.Fatalf("expected %d permissions, got %d", len(wantPerms), got)
 	}

@@ -52,8 +52,16 @@ func TestLeaseSigning_PlaybookColumnsMatchLens(t *testing.T) {
 		if !lensCols[col] {
 			t.Fatalf("gaps key %q is not a lens BodyColumn (lens has %v)", col, lens.cols)
 		}
-		// every row.<col> template the action names is a lens BodyColumn.
-		for _, v := range []string{ga.Subject, ga.Assignee, ga.Target} {
+		// every row.<col> template the action names — across the scalar fields
+		// (Subject / Assignee / Target) AND a directOp's Params values + Reads —
+		// is a lens BodyColumn. Literals (e.g. status=leased) carry no row.
+		// prefix and are skipped.
+		templated := []string{ga.Subject, ga.Assignee, ga.Target}
+		for _, v := range ga.Params {
+			templated = append(templated, v)
+		}
+		templated = append(templated, ga.Reads...)
+		for _, v := range templated {
 			if !strings.HasPrefix(v, "row.") {
 				continue
 			}

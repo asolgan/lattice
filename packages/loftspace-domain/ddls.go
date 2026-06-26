@@ -47,16 +47,19 @@ func loftspaceListingVertexDDL() pkgmgr.DDLSpec {
 	return pkgmgr.DDLSpec{
 		CanonicalName:     loftspaceListingDDL,
 		Class:             "meta.ddl.vertexType",
-		PermittedCommands: []string{"SetListing", "SetUnitAddress"},
-		Description: "LoftSpace listing-economics DDL. Owns SetListing + SetUnitAddress, which attach the " +
-			"leasable facets onto an EXISTING location unit (vtx.unit.<NanoID>, class=location, owned by " +
+		PermittedCommands: []string{"SetListing", "SetUnitAddress", "SetListingStatus"},
+		Description: "LoftSpace listing-economics DDL. Owns SetListing + SetUnitAddress + SetListingStatus, which " +
+			"attach the leasable facets onto an EXISTING location unit (vtx.unit.<NanoID>, class=location, owned by " +
 			"location-domain) — this package introduces NO vertex type. SetListing writes the .listing aspect " +
 			"{rentAmount, rentCurrency, bedrooms, bathrooms?, sqft?, availableFrom (RFC3339 date), " +
 			"leaseTermMonths, status ∈ available|pending|leased}. SetUnitAddress writes the .address aspect " +
-			"{line1, line2?, city, region, postal}. Both are unconditioned upserts (create-if-absent / " +
-			"overwrite-if-present) so an operator can correct a listing or flip status by hand. The target unit " +
-			"MUST be alive + class=location; the caller lists the unit key in ContextHint.Reads. Neither aspect " +
-			"is sensitive (they attach to a unit, not an identity).",
+			"{line1, line2?, city, region, postal}. SetListingStatus is a status-only transition: it reads the " +
+			"existing .listing (kv.Read) and rewrites ONLY status, preserving the economics verbatim (rejects a " +
+			"unit with no listing) — the op a lease-application's convergence directOp dispatches to mark a unit " +
+			"leased on approval. All three are unconditioned upserts (create-if-absent / overwrite-if-present) so " +
+			"an operator can correct a listing or flip status by hand. The target unit MUST be alive + " +
+			"class=location; the caller lists the unit key in ContextHint.Reads. Neither aspect is sensitive (they " +
+			"attach to a unit, not an identity).",
 		Script: loftspaceListingDDLScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"unit":{"type":"string","description":"vtx.unit.<NanoID> of an existing location unit (required; validated alive + class=location)."},` +
@@ -67,7 +70,7 @@ func loftspaceListingVertexDDL() pkgmgr.DDLSpec {
 			`"sqft":{"type":"integer","description":"Floor area in square feet (SetListing; optional, > 0)."},` +
 			`"availableFrom":{"type":"string","description":"Earliest move-in date, RFC3339 (SetListing; required)."},` +
 			`"leaseTermMonths":{"type":"integer","description":"Lease term in months (SetListing; required, > 0)."},` +
-			`"status":{"type":"string","enum":["available","pending","leased"],"description":"Listing availability state (SetListing; required)."},` +
+			`"status":{"type":"string","enum":["available","pending","leased"],"description":"Listing availability state (SetListing / SetListingStatus; required)."},` +
 			`"line1":{"type":"string","description":"Street address line 1 (SetUnitAddress; required)."},` +
 			`"line2":{"type":"string","description":"Street address line 2 (SetUnitAddress; optional)."},` +
 			`"city":{"type":"string","description":"City (SetUnitAddress; required)."},` +
@@ -85,7 +88,7 @@ func loftspaceListingVertexDDL() pkgmgr.DDLSpec {
 			"sqft":            "Optional floor area in square feet (integer > 0). Stored on the .listing aspect when present (SetListing).",
 			"availableFrom":   "Earliest move-in date, RFC3339. Stored verbatim on the .listing aspect (SetListing).",
 			"leaseTermMonths": "Lease term in months (integer > 0). Stored on the .listing aspect (SetListing).",
-			"status":          "Listing availability, one of {available, pending, leased}. Stored on the .listing aspect (SetListing).",
+			"status":          "Listing availability, one of {available, pending, leased}. Stored on the .listing aspect (SetListing sets it alongside the economics; SetListingStatus rewrites only this field, preserving the rest).",
 			"line1":           "Street address line 1. Stored on the .address aspect (SetUnitAddress).",
 			"line2":           "Optional street address line 2. Stored on the .address aspect when present (SetUnitAddress).",
 			"city":            "City. Stored on the .address aspect (SetUnitAddress).",
@@ -123,6 +126,18 @@ func loftspaceListingVertexDDL() pkgmgr.DDLSpec {
 				ExpectedOutcome: "Validates the unit is alive + class=location, then writes vtx.unit.<unitNanoID>.address " +
 					"(class=address) as an unconditioned upsert. Returns primaryKey (the address aspect key).",
 			},
+			{
+				Name: "SetListingStatus — flip a unit's listing status (e.g. mark leased on approval)",
+				Payload: map[string]any{
+					"unit":   "vtx.unit.<unitNanoID>",
+					"status": "leased",
+				},
+				ExpectedOutcome: "Validates the unit is alive + class=location, kv.Reads the existing .listing aspect " +
+					"(rejects NoListing if absent), and rewrites ONLY status — preserving rentAmount / bedrooms / " +
+					"availableFrom / … verbatim. Idempotent: a re-dispatch when status already equals the target is a " +
+					"clean no-op (no mutation). This is the op the leaseApplicationComplete convergence target " +
+					"dispatches as a directOp to mark a unit leased once its application is approved.",
+			},
 		},
 	}
 }
@@ -137,12 +152,13 @@ func listingAspectTypeDDL() pkgmgr.DDLSpec {
 	return pkgmgr.DDLSpec{
 		CanonicalName:     listingAspectDDL,
 		Class:             "meta.ddl.aspectType",
-		PermittedCommands: []string{"SetListing"},
+		PermittedCommands: []string{"SetListing", "SetListingStatus"},
 		Description: "Listing-economics aspect (LoftSpace). Stored as vtx.unit.<NanoID>.listing = {rentAmount, " +
 			"rentCurrency, bedrooms, bathrooms?, sqft?, availableFrom, leaseTermMonths, status}. Non-sensitive; " +
-			"attaches to a location unit, not an identity. Written ONLY by SetListing (whose loftspaceListing " +
-			"vertexType DDL owns the script); this aspect-type DDL exists so step-6's permittedCommands check, " +
-			"keyed on the mutation's class, admits the write. Declaration-only: no op handler.",
+			"attaches to a location unit, not an identity. Written by SetListing (full upsert) and SetListingStatus " +
+			"(status-only rewrite, preserving the rest) — both owned by the loftspaceListing vertexType DDL's " +
+			"script; this aspect-type DDL exists so step-6's permittedCommands check, keyed on the mutation's " +
+			"class, admits the write. Declaration-only: no op handler.",
 		Script: aspectDeclarationOnlyScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"rentAmount":{"type":"number"},"rentCurrency":{"type":"string"},"bedrooms":{"type":"integer"},` +
@@ -275,6 +291,14 @@ def required_status(p):
         fail("InvalidArgument: status: must be one of available, pending, leased; got " + s)
     return s
 
+def copy_data(d):
+    # Shallow-copy a kv.Read .data dict (a real Starlark dict, iterable by key) so
+    # a status-only rewrite preserves every other listing field verbatim.
+    out = {}
+    for k in d:
+        out[k] = d[k]
+    return out
+
 def unit_parts(key):
     # Parse the target as a UNIT vertex key: exactly 3 segments vtx.unit.<NanoID>.
     # A non-3-segment key (aspect/link), or a type segment other than "unit", is
@@ -360,6 +384,47 @@ def execute(state, op):
                    "data": {"unit": unit}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": address_key}}
+
+    if ot == "SetListingStatus":
+        # Status-only transition: rewrite ONLY .listing.status, preserving the
+        # economics. The directOp the leaseApplicationComplete convergence target
+        # dispatches to mark a unit leased once its application is approved; also
+        # operator-callable by hand (a landlord-driven revert leased->available is
+        # allowed — convergence only ever drives it to leased). The unit root is
+        # hydrated via ContextHint.Reads=[unit] (the playbook routes row.unitKey).
+        unit = required_string(p, "unit")
+        unit_parts(unit)
+        require_live_unit(state, unit)
+        status = required_status(p)
+
+        # Read the existing .listing on demand (kv.Read, §2.5) — the directOp
+        # declares reads=[unit] only, so the aspect is NOT in state. A status
+        # transition needs a listing to transition: a unit with none is rejected
+        # (NoListing) rather than minting a bare {status}-only listing.
+        listing_key = unit + ".listing"
+        existing = kv.Read(listing_key)
+        if existing == None or existing.isDeleted:
+            fail("NoListing: unit " + unit + " has no listing to transition")
+
+        # Idempotent no-op: an at-least-once re-dispatch when the listing already
+        # holds the target status emits NOTHING — no mutation, no event, no CDC
+        # churn (the convergence gap is already closed). primaryKey is omitted: the
+        # reply-constraint requires a non-empty primaryKey to be a committed
+        # mutation key, and a no-op commits none.
+        if existing.data.get("status") == status:
+            return {"mutations": [], "events": [], "response": {}}
+
+        # Rewrite preserving every other economics field verbatim (unconditioned
+        # upsert, the SetListing idiom — last-write-wins with a racing SetListing,
+        # which self-heals: if a SetListing loses leased the gap re-opens and
+        # Weaver re-dispatches while the application stays approved).
+        data = copy_data(existing.data)
+        data["status"] = status
+        mutations = [make_aspect_upsert(unit, "listing", "listing", data)]
+        events = [{"class": "loftspace.listingStatusSet",
+                   "data": {"unit": unit, "status": status}}]
+        return {"mutations": mutations, "events": events,
+                "response": {"primaryKey": listing_key}}
 
     fail("loftspaceListing DDL: unknown operationType: " + ot)
 `

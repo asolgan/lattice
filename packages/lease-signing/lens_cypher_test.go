@@ -282,9 +282,175 @@ func TestLeaseApplicationComplete_ProjectsUnitColumns(t *testing.T) {
 	require.Equal(t, unitKey, v["unitKey"], "unitKey carried through the WITH from the appliesToUnit walk")
 	require.Equal(t, "123 Loft St", v["unitAddress"], "unitAddress aspect-hops u.address.line1")
 	require.EqualValues(t, 2400, v["unitRent"], "unitRent aspect-hops u.listing.rentAmount")
-	// All four real gaps still open (no ssn/bgcheck/payment/signature); the unit
-	// columns do not participate in the violating OR.
+	require.Equal(t, "available", v["unitStatus"], "unitStatus aspect-hops u.listing.status")
+	// The four applicant gaps still open (no ssn/bgcheck/payment/signature); the
+	// unit columns + applicantApproved/missing_listingLeased do not flip yet.
+	require.Equal(t, false, v["applicantApproved"], "no applicant gaps closed → not approved")
+	require.Equal(t, false, v["missing_listingLeased"], "not approved → listing gap stays closed")
 	require.Equal(t, true, v["violating"], "the unit columns are informational, not gaps")
+}
+
+// approvedAppFixture seeds a fully-approved application: alice onboarded (.ssn) +
+// the application signed (.signature), a fresh completed bgcheck, and a completed
+// payment — the four applicant gaps all closed (applicantApproved=true). Tests
+// layer a unit with a given listing status on top to exercise the listing-leased
+// convergence (missing_listingLeased → directOp SetListingStatus).
+func approvedAppFixture(t *testing.T) *lensFixture {
+	t.Helper()
+	f := newLensFixture(t)
+	f.vtx(t, "app", "leaseapp")
+	f.vtx(t, "alice", "identity")
+	f.aspect(t, "alice", "ssn", "ssn", map[string]any{"value": "123456789"})
+	f.aspect(t, "app", "signature", "signature", map[string]any{"signedAt": "2026-06-10T00:00:00Z"})
+	f.vtx(t, "bg1", "service")
+	f.aspect(t, "bg1", "family", "family", map[string]any{"value": "backgroundCheck"})
+	f.aspect(t, "bg1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-01T00:00:00Z", "validUntil": farFutureValidUntil})
+	f.vtx(t, "pay1", "service")
+	f.aspect(t, "pay1", "family", "family", map[string]any{"value": "payment"})
+	f.aspect(t, "pay1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-02T00:00:00Z"})
+	f.edge(t, "applicationFor", "app", "alice")
+	f.edge(t, "providedTo", "bg1", "alice")
+	f.edge(t, "providedTo", "pay1", "alice")
+	return f
+}
+
+// TestLeaseApplicationComplete_ListingLeasedGap_OpensWhenApprovedAndAvailable: an
+// approved application on a still-available unit OPENS missing_listingLeased and
+// stays violating until the unit is leased. applicantApproved is true so the
+// applicant FE renders "approved" independent of the in-flight listing flip.
+func TestLeaseApplicationComplete_ListingLeasedGap_OpensWhenApprovedAndAvailable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := approvedAppFixture(t)
+	f.vtx(t, "unit1", "unit")
+	f.aspect(t, "unit1", "listing", "listing", map[string]any{"rentAmount": 2400, "status": "available"})
+	f.edge(t, "appliesToUnit", "app", "unit1")
+
+	rows := f.project(t, "app")
+	require.Len(t, rows, 1)
+	v := rows[0].Values
+	require.Equal(t, false, v["missing_onboarding"])
+	require.Equal(t, false, v["missing_bgcheck"])
+	require.Equal(t, false, v["missing_payment"])
+	require.Equal(t, false, v["missing_signature"])
+	require.Equal(t, true, v["applicantApproved"], "all four applicant gaps closed → approved")
+	require.Equal(t, "available", v["unitStatus"])
+	require.Equal(t, true, v["missing_listingLeased"], "approved + unit not leased → listing gap opens")
+	require.Equal(t, true, v["violating"], "the listing gap keeps the row violating so Weaver dispatches the flip")
+}
+
+// TestLeaseApplicationComplete_ListingLeasedGap_ClosedWhenLeased: once the unit is
+// leased, missing_listingLeased is false and the row CONVERGES (violating false)
+// — applicantApproved stays true. This is the post-directOp reprojection state.
+func TestLeaseApplicationComplete_ListingLeasedGap_ClosedWhenLeased(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := approvedAppFixture(t)
+	f.vtx(t, "unit1", "unit")
+	f.aspect(t, "unit1", "listing", "listing", map[string]any{"rentAmount": 2400, "status": "leased"})
+	f.edge(t, "appliesToUnit", "app", "unit1")
+
+	rows := f.project(t, "app")
+	require.Len(t, rows, 1)
+	v := rows[0].Values
+	require.Equal(t, true, v["applicantApproved"])
+	require.Equal(t, "leased", v["unitStatus"])
+	require.Equal(t, false, v["missing_listingLeased"], "unit leased → listing gap closed")
+	require.Equal(t, false, v["violating"], "all applicant gaps closed AND unit leased → converged")
+}
+
+// TestLeaseApplicationComplete_ListingLeasedGap_NotApprovedGatesEachGap: a not-yet-
+// approved application does NOT open the listing gap even on an available unit — a
+// unit is leased only AFTER the applicant is FULLY approved. Each subtest omits
+// exactly ONE of the four applicant facts so the "no premature lease" guarantee is
+// checked at every corner (not just the missing-signature one) — this also guards
+// against a desync where missing_listingLeased drops one of the four applicant
+// conjuncts that applicantApproved still carries (the two re-derive them inline).
+func TestLeaseApplicationComplete_ListingLeasedGap_NotApprovedGatesEachGap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	for _, omit := range []string{"ssn", "bgcheck", "payment", "signature"} {
+		t.Run("omit_"+omit, func(t *testing.T) {
+			f := newLensFixture(t)
+			f.vtx(t, "app", "leaseapp")
+			f.vtx(t, "alice", "identity")
+			if omit != "ssn" {
+				f.aspect(t, "alice", "ssn", "ssn", map[string]any{"value": "123456789"})
+			}
+			if omit != "signature" {
+				f.aspect(t, "app", "signature", "signature", map[string]any{"signedAt": "2026-06-10T00:00:00Z"})
+			}
+			f.vtx(t, "bg1", "service")
+			f.aspect(t, "bg1", "family", "family", map[string]any{"value": "backgroundCheck"})
+			if omit != "bgcheck" {
+				f.aspect(t, "bg1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-01T00:00:00Z", "validUntil": farFutureValidUntil})
+			}
+			f.vtx(t, "pay1", "service")
+			f.aspect(t, "pay1", "family", "family", map[string]any{"value": "payment"})
+			if omit != "payment" {
+				f.aspect(t, "pay1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-02T00:00:00Z"})
+			}
+			f.vtx(t, "unit1", "unit")
+			f.aspect(t, "unit1", "listing", "listing", map[string]any{"rentAmount": 2400, "status": "available"})
+			f.edge(t, "applicationFor", "app", "alice")
+			f.edge(t, "providedTo", "bg1", "alice")
+			f.edge(t, "providedTo", "pay1", "alice")
+			f.edge(t, "appliesToUnit", "app", "unit1")
+
+			rows := f.project(t, "app")
+			require.Len(t, rows, 1)
+			v := rows[0].Values
+			require.Equalf(t, false, v["applicantApproved"], "omitting %s must leave applicantApproved false", omit)
+			require.Equalf(t, false, v["missing_listingLeased"], "omitting %s must keep the listing gap closed (no lease before full approval)", omit)
+			require.Equalf(t, true, v["violating"], "omitting %s leaves an applicant gap open → violating", omit)
+		})
+	}
+}
+
+// TestLeaseApplicationComplete_ListingLeasedGap_PendingAlsoOpens: a unit in the
+// intermediate 'pending' status also opens the listing gap on approval (the gate
+// is unitStatus <> 'leased', not == 'available'), so convergence drives it to
+// leased too.
+func TestLeaseApplicationComplete_ListingLeasedGap_PendingAlsoOpens(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := approvedAppFixture(t)
+	f.vtx(t, "unit1", "unit")
+	f.aspect(t, "unit1", "listing", "listing", map[string]any{"rentAmount": 2400, "status": "pending"})
+	f.edge(t, "appliesToUnit", "app", "unit1")
+
+	rows := f.project(t, "app")
+	require.Len(t, rows, 1)
+	v := rows[0].Values
+	require.Equal(t, "pending", v["unitStatus"])
+	require.Equal(t, true, v["applicantApproved"])
+	require.Equal(t, true, v["missing_listingLeased"], "pending <> leased → gap opens (drives the flip to leased)")
+	require.Equal(t, true, v["violating"])
+}
+
+// TestLeaseApplicationComplete_ListingLeasedGap_NoListingNoGap: an approved
+// application on a unit that has NO listing aspect does NOT open the listing gap
+// (the unitStatus <> null guard). Closes the dispatch-thrash hazard — without the
+// guard, SetListingStatus would reject NoListing forever while the gap stayed open.
+func TestLeaseApplicationComplete_ListingLeasedGap_NoListingNoGap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := approvedAppFixture(t)
+	f.vtx(t, "unit1", "unit") // a unit with NO .listing aspect
+	f.edge(t, "appliesToUnit", "app", "unit1")
+
+	rows := f.project(t, "app")
+	require.Len(t, rows, 1)
+	v := rows[0].Values
+	require.Equal(t, true, v["applicantApproved"])
+	require.Nil(t, v["unitStatus"], "no listing aspect → unitStatus null")
+	require.Equal(t, false, v["missing_listingLeased"], "no listing → no transition target → gap stays closed (no thrash)")
+	require.Equal(t, false, v["violating"], "approved + nothing to lease → converged")
 }
 
 // TestLeaseApplicationComplete_NoUnit_NullUnitColumns: an application with no

@@ -17,5 +17,6 @@ func Permissions() []pkgmgr.PermissionSpec {
 	return []pkgmgr.PermissionSpec{
 		mk("SetListing"),
 		mk("SetUnitAddress"),
+		mk("SetListingStatus"),
 	}
 }

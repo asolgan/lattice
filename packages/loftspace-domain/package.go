@@ -11,10 +11,13 @@
 //	                          sqft?, availableFrom, leaseTermMonths, status}
 //	vtx.unit.<id>.address  = {line1, line2?, city, region, postal}
 //
-// Two ops write them:
+// Three ops write them:
 //
 //	SetListing       — publishes / updates the .listing aspect
 //	SetUnitAddress   — records / updates the .address aspect
+//	SetListingStatus — status-only transition of the .listing aspect (preserves
+//	                   the economics); the directOp a lease application's
+//	                   convergence target dispatches to mark a unit leased on approval
 //
 // The op scripts live on a single vertexType DDL (loftspaceListing); the listing
 // and address aspect-type DDLs are step-6 write gates (the Processor keys
@@ -37,8 +40,8 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
 	Name:        "loftspace-domain",
-	Version:     "0.1.0",
-	Description: "LoftSpace listing economics: the .listing + .address aspects on a location unit, written by SetListing / SetUnitAddress. Depends on location-domain; introduces no vertex type.",
+	Version:     "0.2.0",
+	Description: "LoftSpace listing economics: the .listing + .address aspects on a location unit, written by SetListing / SetUnitAddress / SetListingStatus. Depends on location-domain; introduces no vertex type.",
 	Depends:     []string{"location-domain"},
 	DDLs:        DDLs(),
 	Lenses:      Lenses(),
