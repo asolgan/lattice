@@ -22,6 +22,10 @@ declares:
       adapter: nats-kv
       bucket: loftspace-listings
       engine: full
+    - canonicalName: applicantRoster
+      adapter: nats-kv
+      bucket: loftspace-identities
+      engine: full
   permissions:
     - operationType: SetListing
       scope: any

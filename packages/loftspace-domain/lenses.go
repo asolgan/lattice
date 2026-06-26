@@ -9,6 +9,17 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // application query surface). The Refractor auto-creates the bucket on lens load.
 const LoftspaceListingsBucket = "loftspace-listings"
 
+// LoftspaceIdentitiesBucket is the NATS-KV read model the applicantRoster lens
+// projects into. It is the **P5 query surface** for "who can I act as": the
+// applicant FE reads THIS projected bucket (one entry per named identity, keyed
+// by the identity key) to render a human-readable identity picker, never Core KV.
+// The Refractor auto-creates the bucket on lens load.
+//
+// The identity `name` is a sensitive aspect; projecting it is consistent with the
+// trusted single-identity tool model (no read-path auth yet, Phase-3+) and with
+// identity-hygiene already projecting names into its duplicate-candidates lens.
+const LoftspaceIdentitiesBucket = "loftspace-identities"
+
 // Lenses returns the package's Lens declarations: the single `availableListings`
 // projection lens. It projects one row per LISTED unit — a location unit
 // carrying a `.listing` aspect — flattening the listing economics + street
@@ -25,6 +36,14 @@ func Lenses() []pkgmgr.LensSpec {
 			Bucket:        LoftspaceListingsBucket,
 			Engine:        "full",
 			Spec:          availableListingsSpec,
+		},
+		{
+			CanonicalName: "applicantRoster",
+			Class:         "meta.lens",
+			Adapter:       "nats-kv",
+			Bucket:        LoftspaceIdentitiesBucket,
+			Engine:        "full",
+			Spec:          applicantRosterSpec,
 		},
 	}
 }
@@ -56,3 +75,19 @@ RETURN
   u.address.data.city AS addrCity,
   u.address.data.region AS addrRegion,
   u.address.data.postal AS addrPostal`
+
+// applicantRosterSpec projects one row per NAMED identity — the human-readable
+// roster the applicant FE renders so a person picks themselves by name instead of
+// a raw vtx.identity.<id> key. The WHERE keeps only identities carrying a `.name`
+// aspect (the `<> null` aspect-presence idiom availableListings uses), so service
+// / unnamed actors are excluded and the picker stays a list of real people. The
+// per-row key is the identity key (the IntoKey default), so the read model is
+// keyed by vtx.identity.<id>; `identityKey` repeats it in the body. `name` and
+// `state` are read by the documented node.<aspect>.data.<field> form.
+const applicantRosterSpec = `MATCH (i:identity)
+WHERE i.name.data.value <> null
+RETURN
+  i.key AS key,
+  i.key AS identityKey,
+  i.name.data.value AS name,
+  i.state.data.value AS state`

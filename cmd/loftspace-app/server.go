@@ -39,6 +39,7 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 
 	mux.HandleFunc("/api/listings", s.handleListings)
+	mux.HandleFunc("/api/identities", s.handleIdentities)
 	mux.HandleFunc("/api/applications", s.handleApplications)
 	mux.HandleFunc("/api/tasks", s.handleTasks)
 	mux.HandleFunc("/api/op", s.handleOp)

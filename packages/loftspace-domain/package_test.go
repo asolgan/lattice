@@ -103,14 +103,23 @@ func TestPackage_Permissions(t *testing.T) {
 		t.Fatalf("expected Depends [location-domain], got %v", Package.Depends)
 	}
 
-	// One projection lens (availableListings — the P5 read model for listed
-	// units); no role, weaver target, loom pattern, or op-meta.
-	if got := len(Package.Lenses); got != 1 {
-		t.Fatalf("expected 1 lens, got %d", got)
+	// Two projection lenses (availableListings — the P5 read model for listed
+	// units; applicantRoster — the P5 read model for the human-readable identity
+	// picker); no role, weaver target, loom pattern, or op-meta.
+	if got := len(Package.Lenses); got != 2 {
+		t.Fatalf("expected 2 lenses, got %d", got)
 	}
-	if l := Package.Lenses[0]; l.CanonicalName != "availableListings" ||
+	lensByName := map[string]pkgmgr.LensSpec{}
+	for _, l := range Package.Lenses {
+		lensByName[l.CanonicalName] = l
+	}
+	if l, ok := lensByName["availableListings"]; !ok ||
 		l.Adapter != "nats-kv" || l.Bucket != LoftspaceListingsBucket {
-		t.Fatalf("unexpected lens shape: %+v", Package.Lenses[0])
+		t.Fatalf("unexpected availableListings shape: %+v", lensByName["availableListings"])
+	}
+	if l, ok := lensByName["applicantRoster"]; !ok ||
+		l.Adapter != "nats-kv" || l.Bucket != LoftspaceIdentitiesBucket {
+		t.Fatalf("unexpected applicantRoster shape: %+v", lensByName["applicantRoster"])
 	}
 	if got := len(Package.WeaverTargets); got != 0 {
 		t.Fatalf("expected 0 weaverTargets, got %d", got)

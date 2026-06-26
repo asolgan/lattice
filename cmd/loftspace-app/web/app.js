@@ -6,7 +6,7 @@
 
 const APPLICANT_KEY = "loftspace.applicant";
 const state = {
-  listings: [], applications: [], tasks: [], docs: [],
+  listings: [], applications: [], tasks: [], docs: [], identities: [],
   applicant: null, current: null, currentTask: null, view: "browse", highlight: null,
   docScope: null,
   // sessionUploads maps an oid uploaded THIS session to the link it was created
@@ -87,14 +87,55 @@ function toast(msg, kind, extra) {
 
 // ---- Applicant identity (the trusted-tool switcher) ----
 //
-// No per-user auth yet (P5/trust model): the applicant names who they are. The
-// key is persisted in localStorage so a refresh keeps context. The proper
-// roster lens read model is a tracked follow-up.
+// No per-user auth yet (P5/trust model): the applicant picks who they are from a
+// human-readable roster (the applicantRoster lens read model, never Core KV). The
+// selected key is persisted in localStorage so a refresh keeps context.
+
+// nameFor resolves an identity key to its human name from the loaded roster,
+// falling back to the short key when the roster has not loaded (or the key is an
+// application/unit, not a person).
+function nameFor(key) {
+  const m = state.identities.find((i) => i.key === key);
+  return m && m.name ? m.name : shortKey(key);
+}
 
 function restoreApplicant() {
   const saved = (localStorage.getItem(APPLICANT_KEY) || "").trim();
   state.applicant = saved || null;
-  $("#applicant").value = saved;
+}
+
+// loadIdentities fetches the applicant roster (named identities) and rebuilds the
+// top-right picker. Non-fatal on error — the picker just shows the empty hint.
+async function loadIdentities() {
+  try {
+    const data = await api("/api/identities");
+    state.identities = data.identities || [];
+  } catch (_) {
+    state.identities = [];
+  }
+  populateApplicantSelect();
+}
+
+// populateApplicantSelect rebuilds the #applicant <select>: a placeholder + one
+// option per named identity (label = name, value = key), selecting the persisted
+// applicant when it is in the roster.
+function populateApplicantSelect() {
+  const sel = $("#applicant");
+  sel.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = state.identities.length
+    ? "Select your identity…"
+    : "No identities — create one via Loupe/CLI";
+  sel.append(placeholder);
+  for (const id of state.identities) {
+    const o = document.createElement("option");
+    o.value = id.key;
+    o.textContent = id.name;
+    sel.append(o);
+  }
+  const values = state.identities.map((i) => i.key);
+  sel.value = state.applicant && values.includes(state.applicant) ? state.applicant : "";
 }
 
 function setApplicant(value) {
@@ -238,7 +279,7 @@ function openApply(row) {
   state.current = row;
   const A = row.address || {};
   $("#apply-unit").textContent = (A.line1 ? A.line1 + " · " : "") + row.unitKey;
-  $("#apply-applicant").textContent = state.applicant;
+  $("#apply-applicant").textContent = nameFor(state.applicant);
   $("#apply-form").reset();
   syncTermRequirement();
   $("#apply-overlay").hidden = false;
@@ -675,7 +716,7 @@ function populateDocScope() {
     o.textContent = label;
     sel.append(o);
   };
-  opt(state.applicant, "Your identity (" + shortKey(state.applicant) + ")");
+  opt(state.applicant, "Your identity (" + nameFor(state.applicant) + ")");
   for (const a of state.applications) {
     const label = a.unitAddress || (a.unitKey ? shortKey(a.unitKey) : shortKey(a.entityKey));
     opt(a.entityKey, "Application · " + label);
@@ -843,7 +884,8 @@ async function detachDoc(oid, sess) {
 
 function init() {
   restoreApplicant();
-  $("#applicant").addEventListener("input", (e) => setApplicant(e.target.value));
+  loadIdentities();
+  $("#applicant").addEventListener("change", (e) => setApplicant(e.target.value));
   $("#status").addEventListener("change", loadListings);
   $("#reload-listings").addEventListener("click", loadListings);
   $("#apply-cancel").addEventListener("click", closeApply);
