@@ -1,0 +1,207 @@
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"sort"
+
+	"github.com/asolgan/lattice/internal/bootstrap"
+	loftspacedomain "github.com/asolgan/lattice/packages/loftspace-domain"
+)
+
+// applicantSummary is one applicant's standing against a unit, as the landlord
+// surface renders it: the application key, the applicant identity + its human
+// name, and a coarse disposition derived from the convergence row. status is
+// "approved" (every applicant gap closed), "declined" (a standing business
+// rejection no retry has superseded), or "in_review" (still converging). signed
+// reflects whether the applicant has executed the lease (the .signature aspect).
+type applicantSummary struct {
+	LeaseAppKey   string `json:"leaseAppKey"`
+	Applicant     string `json:"applicant"`
+	ApplicantName string `json:"applicantName"`
+	Status        string `json:"status"`
+	Signed        bool   `json:"signed"`
+	Approved      bool   `json:"approved"`
+	Declined      bool   `json:"declined"`
+}
+
+// unitApplicationsRow is the landlord's per-unit aggregate: the listed unit's
+// identifying facets plus every live application against it. A unit with a live
+// listing but no applications yet still appears (Applications empty,
+// ApplicationCount 0) so the landlord sees their whole inventory, not only the
+// units someone has applied to. unitRent is a pointer so an absent rent stays
+// absent rather than rendering a misleading 0.
+type unitApplicationsRow struct {
+	UnitKey          string             `json:"unitKey"`
+	UnitAddress      string             `json:"unitAddress"`
+	UnitRent         *float64           `json:"unitRent"`
+	UnitStatus       string             `json:"unitStatus"`
+	ApplicationCount int                `json:"applicationCount"`
+	Applications     []applicantSummary `json:"applications"`
+}
+
+// applicationStatus reduces a convergence row to the landlord's coarse
+// disposition. declined wins over approved (they are mutually exclusive in
+// practice — approval requires a completed-fresh check, a decline requires a
+// standing failed one — but a decline is the safer signal to surface if both
+// were ever true).
+func applicationStatus(a applicationRow) string {
+	switch {
+	case a.Declined:
+		return "declined"
+	case a.ApplicantApproved:
+		return "approved"
+	default:
+		return "in_review"
+	}
+}
+
+// groupByUnit assembles the landlord by-unit view from the three P5 read models
+// already shipped: the `leaseApplicationComplete` convergence rows (one per live
+// application, carrying unitKey + applicant + the gap/approval/declined state),
+// the `applicantRoster` identities (identity key → human name), and the
+// `availableListings` rows (every listed unit, so a unit with zero applications
+// still shows). Units are keyed by unitKey; a listing seeds the unit's facets,
+// and an application overrides them when it carries its own (a unit that has
+// applications but has since lost its listing still shows via the row). An
+// application with no unitKey is skipped — every leaseapp has a unit (required
+// at create), so an empty unitKey marks a malformed/bare row with no place in a
+// by-unit view.
+func groupByUnit(apps []applicationRow, identities []identityView, listings []listingProjection) []unitApplicationsRow {
+	names := make(map[string]string, len(identities))
+	for _, id := range identities {
+		names[id.Key] = id.Name
+	}
+
+	units := make(map[string]*unitApplicationsRow)
+	ensure := func(key string) *unitApplicationsRow {
+		u, ok := units[key]
+		if !ok {
+			u = &unitApplicationsRow{UnitKey: key, Applications: []applicantSummary{}}
+			units[key] = u
+		}
+		return u
+	}
+
+	// Seed from listings so every listed unit appears, even with no applicants.
+	for _, l := range listings {
+		u := ensure(l.UnitKey)
+		u.UnitStatus = l.Status
+		u.UnitRent = l.RentAmount
+		u.UnitAddress = l.AddrLine1
+	}
+	// An application fills a unit the listing did not seed (lost its listing), or
+	// confirms the same facets it reads from the same .listing/.address aspects.
+	for _, a := range apps {
+		if a.UnitKey == "" {
+			continue
+		}
+		u := ensure(a.UnitKey)
+		if a.UnitAddress != "" {
+			u.UnitAddress = a.UnitAddress
+		}
+		if a.UnitRent != nil {
+			u.UnitRent = a.UnitRent
+		}
+		if a.UnitStatus != "" {
+			u.UnitStatus = a.UnitStatus
+		}
+		u.Applications = append(u.Applications, applicantSummary{
+			LeaseAppKey:   a.EntityKey,
+			Applicant:     a.Applicant,
+			ApplicantName: names[a.Applicant],
+			Status:        applicationStatus(a),
+			Signed:        !a.MissingSignature,
+			Approved:      a.ApplicantApproved,
+			Declined:      a.Declined,
+		})
+	}
+
+	rows := make([]unitApplicationsRow, 0, len(units))
+	for _, u := range units {
+		sort.Slice(u.Applications, func(i, j int) bool {
+			return u.Applications[i].LeaseAppKey < u.Applications[j].LeaseAppKey
+		})
+		u.ApplicationCount = len(u.Applications)
+		rows = append(rows, *u)
+	}
+	sort.Slice(rows, func(i, j int) bool { return rows[i].UnitKey < rows[j].UnitKey })
+	return rows
+}
+
+// handleUnitApplications implements GET /api/unit-applications — the landlord /
+// property-manager view: every listed unit and the live applications against it,
+// each with the applicant's name and convergence disposition. It is assembled
+// entirely from existing lens read models (P5: never Core KV) — the
+// `leaseApplicationComplete` convergence rows in weaver-targets, the
+// `applicantRoster` identities, and the `availableListings` units — so it adds no
+// projection and no contract surface; the landlord sees their inventory and who
+// is in the pipeline per unit.
+func (s *server) handleUnitApplications(w http.ResponseWriter, r *http.Request) {
+	conn, ok := s.requireConn(w)
+	if !ok {
+		return
+	}
+	ctx, cancel := s.reqContext(r)
+	defer cancel()
+
+	getter := func(bucket string) (kvGetter, []string, error) {
+		keys, err := conn.KVListKeys(ctx, bucket)
+		if err != nil {
+			return nil, nil, err
+		}
+		get := func(key string) ([]byte, bool) {
+			entry, err := conn.KVGet(ctx, bucket, key)
+			if err != nil {
+				return nil, false
+			}
+			return entry.Value, true
+		}
+		return get, keys, nil
+	}
+
+	appGet, appKeys, err := getter(bootstrap.WeaverTargetsBucket)
+	if err != nil {
+		s.writeError(w, http.StatusBadGateway,
+			"list "+bootstrap.WeaverTargetsBucket+": "+err.Error()+" (is lease-signing installed and the Refractor projecting?)")
+		return
+	}
+	idGet, idKeys, err := getter(loftspacedomain.LoftspaceIdentitiesBucket)
+	if err != nil {
+		s.writeError(w, http.StatusBadGateway,
+			"list "+loftspacedomain.LoftspaceIdentitiesBucket+": "+err.Error()+" (is loftspace-domain installed and the Refractor projecting?)")
+		return
+	}
+	listGet, listKeys, err := getter(loftspacedomain.LoftspaceListingsBucket)
+	if err != nil {
+		s.writeError(w, http.StatusBadGateway,
+			"list "+loftspacedomain.LoftspaceListingsBucket+": "+err.Error()+" (is loftspace-domain installed and the Refractor projecting?)")
+		return
+	}
+
+	apps := computeApplications(appKeys, appGet, "")
+	identities := computeIdentities(idKeys, idGet)
+	listings := decodeListingProjections(listKeys, listGet)
+	rows := groupByUnit(apps, identities, listings)
+	s.writeJSON(w, http.StatusOK, map[string]any{"units": rows, "count": len(rows)})
+}
+
+// decodeListingProjections reads the `availableListings` read model into the
+// flat projection shape (rent / address columns directly accessible), the seed
+// for a unit that has no applications yet. A row that fails to decode or carries
+// no unitKey (a tombstoned projection entry) is skipped.
+func decodeListingProjections(keys []string, get kvGetter) []listingProjection {
+	out := make([]listingProjection, 0, len(keys))
+	for _, k := range keys {
+		raw, ok := get(k)
+		if !ok {
+			continue
+		}
+		var p listingProjection
+		if json.Unmarshal(raw, &p) != nil || p.UnitKey == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}

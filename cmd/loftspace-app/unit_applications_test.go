@@ -1,0 +1,137 @@
+package main
+
+import "testing"
+
+func f64(v float64) *float64 { return &v }
+
+// TestGroupByUnit_GroupsAndJoins exercises the landlord by-unit assembler: it
+// groups live applications under their unit, joins each applicant's human name
+// from the roster, derives the coarse disposition, surfaces a listed unit that
+// has no applications yet, and surfaces a unit that has applications but no
+// (longer a) listing.
+func TestGroupByUnit_GroupsAndJoins(t *testing.T) {
+	apps := []applicationRow{
+		// u1 — alice: every gap closed → approved + signed.
+		{EntityKey: "vtx.leaseapp.a2", Applicant: "vtx.identity.alice", ApplicantApproved: true,
+			UnitKey: "vtx.unit.u1", UnitAddress: "1 Market St", UnitRent: f64(2400), UnitStatus: "leased"},
+		// u1 — bob: a standing decline.
+		{EntityKey: "vtx.leaseapp.a1", Applicant: "vtx.identity.bob", Declined: true, DeclinedBgcheck: true,
+			MissingSignature: true, UnitKey: "vtx.unit.u1", UnitAddress: "1 Market St", UnitRent: f64(2400), UnitStatus: "leased"},
+		// u2 — carol: still converging, not signed.
+		{EntityKey: "vtx.leaseapp.a3", Applicant: "vtx.identity.carol", MissingBgcheck: true, MissingSignature: true,
+			Violating: true, UnitKey: "vtx.unit.u2", UnitRent: f64(1800), UnitStatus: "available"},
+		// u3 — a unit with applications but NO listing (lost its listing): the
+		// row's own unit facets must surface it.
+		{EntityKey: "vtx.leaseapp.a4", Applicant: "vtx.identity.alice", MissingSignature: true,
+			UnitKey: "vtx.unit.u3", UnitAddress: "9 Lost Ln", UnitRent: f64(999), UnitStatus: "pending"},
+		// a malformed/bare row with no unitKey — must be skipped, never a "" unit.
+		{EntityKey: "vtx.leaseapp.bad", Applicant: "vtx.identity.bob"},
+	}
+	identities := []identityView{
+		{Key: "vtx.identity.alice", Name: "Alice Renter"},
+		{Key: "vtx.identity.bob", Name: "Bob Tenant"},
+		// carol is intentionally absent from the roster → her name resolves empty.
+	}
+	listings := []listingProjection{
+		{UnitKey: "vtx.unit.u1", Status: "leased", RentAmount: f64(2400), AddrLine1: "1 Market St"},
+		{UnitKey: "vtx.unit.u2", Status: "available", RentAmount: f64(1800), AddrLine1: "2 Mission St"},
+		// u4 — a listed unit with ZERO applications: it must still appear.
+		{UnitKey: "vtx.unit.u4", Status: "available", RentAmount: f64(3000), AddrLine1: "4 Folsom St"},
+	}
+
+	units := groupByUnit(apps, identities, listings)
+
+	// units sort by unitKey: u1, u2, u3, u4 — no "" unit from the bad row.
+	if len(units) != 4 {
+		t.Fatalf("want 4 units (u1..u4, no empty), got %d: %+v", len(units), units)
+	}
+	got := map[string]unitApplicationsRow{}
+	for _, u := range units {
+		got[u.UnitKey] = u
+	}
+	if _, ok := got[""]; ok {
+		t.Fatalf("a unitless application must not create an empty unit row")
+	}
+	if units[0].UnitKey != "vtx.unit.u1" || units[3].UnitKey != "vtx.unit.u4" {
+		t.Errorf("units must sort by unitKey, got %q..%q", units[0].UnitKey, units[3].UnitKey)
+	}
+
+	// u1: two applications, sorted by leaseAppKey (a1 before a2).
+	u1 := got["vtx.unit.u1"]
+	if u1.ApplicationCount != 2 || len(u1.Applications) != 2 {
+		t.Fatalf("u1 want 2 applications, got %d", u1.ApplicationCount)
+	}
+	if u1.Applications[0].LeaseAppKey != "vtx.leaseapp.a1" || u1.Applications[1].LeaseAppKey != "vtx.leaseapp.a2" {
+		t.Errorf("u1 applications must sort by leaseAppKey, got %q, %q",
+			u1.Applications[0].LeaseAppKey, u1.Applications[1].LeaseAppKey)
+	}
+	// bob (a1) declined, not signed; alice (a2) approved, signed (no missing_signature).
+	bob := u1.Applications[0]
+	if bob.ApplicantName != "Bob Tenant" || bob.Status != "declined" || !bob.Declined || bob.Signed {
+		t.Errorf("u1 bob: want Bob Tenant/declined/!signed, got %+v", bob)
+	}
+	alice := u1.Applications[1]
+	if alice.ApplicantName != "Alice Renter" || alice.Status != "approved" || !alice.Approved || !alice.Signed {
+		t.Errorf("u1 alice: want Alice Renter/approved/signed, got %+v", alice)
+	}
+	if u1.UnitRent == nil || *u1.UnitRent != 2400 || u1.UnitAddress != "1 Market St" || u1.UnitStatus != "leased" {
+		t.Errorf("u1 facets: want 1 Market St/2400/leased, got addr=%q rent=%v status=%q",
+			u1.UnitAddress, u1.UnitRent, u1.UnitStatus)
+	}
+
+	// u2: carol in review; her name is empty (not on the roster) but the row stands.
+	u2 := got["vtx.unit.u2"]
+	if u2.ApplicationCount != 1 || u2.Applications[0].Status != "in_review" {
+		t.Errorf("u2 want 1 in_review application, got %+v", u2.Applications)
+	}
+	if u2.Applications[0].ApplicantName != "" {
+		t.Errorf("u2 carol (off-roster): name should resolve empty, got %q", u2.Applications[0].ApplicantName)
+	}
+	// the listing seeds u2's address even though the convergence row carries none.
+	if u2.UnitAddress != "2 Mission St" {
+		t.Errorf("u2 address should seed from the listing, got %q", u2.UnitAddress)
+	}
+
+	// u3: appears purely from an application (no listing), facets from the row.
+	u3 := got["vtx.unit.u3"]
+	if u3.ApplicationCount != 1 || u3.UnitAddress != "9 Lost Ln" || u3.UnitStatus != "pending" {
+		t.Errorf("u3 (listing-less) want 1 app + row facets, got %+v", u3)
+	}
+
+	// u4: a listed unit with zero applications still appears, count 0.
+	u4 := got["vtx.unit.u4"]
+	if u4.ApplicationCount != 0 || len(u4.Applications) != 0 {
+		t.Errorf("u4 (no applicants) want 0 applications, got %d", u4.ApplicationCount)
+	}
+	if u4.Applications == nil {
+		t.Errorf("u4 Applications must be a non-nil empty slice (renders as [])")
+	}
+	if u4.UnitRent == nil || *u4.UnitRent != 3000 || u4.UnitStatus != "available" {
+		t.Errorf("u4 facets must seed from the listing, got rent=%v status=%q", u4.UnitRent, u4.UnitStatus)
+	}
+}
+
+// TestGroupByUnit_Empty returns an empty (non-nil) slice when nothing is
+// projected, so the handler renders {"units":[],"count":0}.
+func TestGroupByUnit_Empty(t *testing.T) {
+	units := groupByUnit(nil, nil, nil)
+	if units == nil || len(units) != 0 {
+		t.Fatalf("want empty non-nil slice, got %+v", units)
+	}
+}
+
+// TestDecodeListingProjections_SkipsBadRows decodes the availableListings bucket
+// into flat projections, skipping unreadable keys and tombstoned (no-unitKey) rows.
+func TestDecodeListingProjections_SkipsBadRows(t *testing.T) {
+	entries := map[string]string{
+		"vtx.unit.ok":   `{"unitKey":"vtx.unit.ok","status":"available","rentAmount":2200,"addrLine1":"5 Howard St"}`,
+		"vtx.unit.gone": `{}`, // tombstoned projection — no unitKey, skipped
+	}
+	got := decodeListingProjections(keysOf(entries), fakeKV(entries))
+	if len(got) != 1 || got[0].UnitKey != "vtx.unit.ok" {
+		t.Fatalf("want only the decodable unitKey'd row, got %+v", got)
+	}
+	if got[0].RentAmount == nil || *got[0].RentAmount != 2200 || got[0].AddrLine1 != "5 Howard St" {
+		t.Errorf("flat facets must decode, got %+v", got[0])
+	}
+}
