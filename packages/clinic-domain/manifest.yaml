@@ -4,8 +4,9 @@ description: |
   Clinic bookable domain. Self-contained package owning three vertex types —
   patient, provider, appointment — with their aspects (.demographics, .profile,
   .schedule, .status) and links (forPatient, withProvider), written by the
-  Create*/SetAppointmentStatus/Tombstone* ops. Two projection lenses
-  (clinicAppointments, clinicProviders) are the P5 read models a clinic FE reads.
+  Create*/SetAppointmentStatus/Tombstone* ops. Three projection lenses
+  (clinicAppointments, clinicProviders, clinicPatients) are the P5 read models a
+  clinic FE reads.
   No package dependency. PHI/Vault, temporal-availability/double-book, and @every
   recurring schedules are the separate deferred items this vertical forces — out
   of scope here.
@@ -33,6 +34,10 @@ declares:
     - canonicalName: clinicProviders
       adapter: nats-kv
       bucket: clinic-providers
+      engine: full
+    - canonicalName: clinicPatients
+      adapter: nats-kv
+      bucket: clinic-patients
       engine: full
   permissions:
     - operationType: CreatePatient

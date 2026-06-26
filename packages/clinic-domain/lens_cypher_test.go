@@ -207,6 +207,33 @@ func TestClinicAppointments_StatusTransitionProjects(t *testing.T) {
 	require.Nil(t, rows[0].Values["reason"], "absent optional reason → null column")
 }
 
+// TestClinicPatients_RostersNamedPatients proves the patient roster projects one
+// row per NAMED patient (name only — no PHI), excluding a patient with no
+// .demographics aspect (the WHERE presence filter), mirroring clinicProviders.
+func TestClinicPatients_RostersNamedPatients(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	namedKey := f.vtx(t, "alice", "patient")
+	f.aspect(t, "alice", "demographics", "patientDemographics", map[string]any{
+		"fullName": "Alice Rivera", "dob": "1990-04-12T00:00:00Z", "email": "alice@example.com"})
+	// A patient with NO .demographics aspect must be excluded by the WHERE filter.
+	f.vtx(t, "ghost", "patient")
+
+	rows := f.project(t, clinicPatientsSpec)
+	require.Len(t, rows, 1, "only the named patient rosters; the demographics-less one is filtered out")
+	v := rowByKey(rows, namedKey)
+	require.NotNil(t, v)
+	require.Equal(t, namedKey, v["patientKey"])
+	require.Equal(t, "Alice Rivera", v["name"])
+	// PHI must NOT be projected into the roster read model (Vault-plane deferred).
+	_, hasDOB := v["dob"]
+	require.False(t, hasDOB, "patient roster must not project DOB (PHI)")
+	_, hasEmail := v["email"]
+	require.False(t, hasEmail, "patient roster must not project email (PHI)")
+}
+
 // TestClinicProviders_RostersNamedProviders proves the roster projects one row
 // per NAMED provider and excludes a provider with no .profile aspect (the WHERE
 // presence filter).

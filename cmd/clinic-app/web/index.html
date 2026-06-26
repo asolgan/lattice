@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Clinic — book an appointment</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Clinic <span class="brand-sub">book an appointment</span></div>
+    <div class="who">
+      <label for="patient">Patient</label>
+      <select id="patient" aria-label="Choose which patient you are"></select>
+      <button id="new-patient" class="ghost">＋ New patient</button>
+    </div>
+  </header>
+
+  <nav class="tabs" role="tablist" aria-label="Clinic views">
+    <button id="tab-book" class="tab active" role="tab" aria-selected="true" aria-controls="view-book">Book</button>
+    <button id="tab-appts" class="tab" role="tab" aria-selected="false" aria-controls="view-appts">My Appointments</button>
+    <button id="tab-schedule" class="tab" role="tab" aria-selected="false" aria-controls="view-schedule">Schedule</button>
+  </nav>
+
+  <main>
+    <!-- Book -->
+    <section id="view-book" role="tabpanel" aria-labelledby="tab-book">
+      <div class="book">
+        <h2>Book an appointment</h2>
+        <p class="lead" id="book-lead">Pick a provider and a time.</p>
+        <form id="book-form">
+          <div class="field">
+            <label>Patient</label>
+            <div id="book-patient" class="readonly">Select a patient above first.</div>
+          </div>
+          <div class="field">
+            <label for="provider">Provider</label>
+            <select id="provider" aria-label="Choose a provider"></select>
+            <details class="inline-add" id="add-provider">
+              <summary>＋ Add a provider</summary>
+              <div class="field">
+                <label for="np-prov-name">Full name</label>
+                <input type="text" id="np-prov-name" placeholder="Dr. Sam Okafor" />
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label for="np-prov-specialty">Specialty</label>
+                  <input type="text" id="np-prov-specialty" placeholder="Cardiology" />
+                </div>
+                <div class="field">
+                  <label for="np-prov-credentials">Credentials <span class="opt">(optional)</span></label>
+                  <input type="text" id="np-prov-credentials" placeholder="MD" />
+                </div>
+              </div>
+              <button type="button" id="add-provider-submit">Add provider</button>
+            </details>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="startsAt">Date &amp; time</label>
+              <input type="datetime-local" id="startsAt" />
+              <p class="hint">Requested time — availability isn't enforced yet.</p>
+            </div>
+            <div class="field">
+              <label for="duration">Duration</label>
+              <select id="duration">
+                <option value="15">15 min</option>
+                <option value="30" selected>30 min</option>
+                <option value="45">45 min</option>
+                <option value="60">60 min</option>
+              </select>
+            </div>
+          </div>
+          <div class="field">
+            <label for="reason">Reason <span class="opt">(optional)</span></label>
+            <textarea id="reason" placeholder="Annual checkup"></textarea>
+          </div>
+          <div class="book-actions">
+            <button type="submit" id="book-submit">Book appointment</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <!-- My Appointments -->
+    <section id="view-appts" role="tabpanel" aria-labelledby="tab-appts" hidden>
+      <div class="panel-controls">
+        <button id="reload-appts" class="ghost">Refresh</button>
+        <span id="appts-summary" class="summary"></span>
+      </div>
+      <div id="appts" class="grid" aria-live="polite"></div>
+      <div id="appts-empty" class="empty" hidden></div>
+    </section>
+
+    <!-- Provider Schedule -->
+    <section id="view-schedule" role="tabpanel" aria-labelledby="tab-schedule" hidden>
+      <div class="panel-controls">
+        <label for="sched-provider">Provider</label>
+        <select id="sched-provider" aria-label="Choose a provider to view their schedule"></select>
+        <button id="reload-schedule" class="ghost">Refresh</button>
+        <span id="schedule-summary" class="summary"></span>
+      </div>
+      <div id="schedule" class="grid" aria-live="polite"></div>
+      <div id="schedule-empty" class="empty" hidden></div>
+    </section>
+  </main>
+
+  <!-- New patient modal -->
+  <div id="patient-overlay" class="overlay" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="patient-title">
+      <h2 id="patient-title">New patient</h2>
+      <p class="lead">Register a patient. Name is required; the rest is optional.</p>
+      <form id="patient-form">
+        <div class="field">
+          <label for="np-name">Full name</label>
+          <input type="text" id="np-name" placeholder="Alice Rivera" />
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="np-dob">Date of birth <span class="opt">(optional)</span></label>
+            <input type="date" id="np-dob" />
+          </div>
+          <div class="field">
+            <label for="np-phone">Phone <span class="opt">(optional)</span></label>
+            <input type="text" id="np-phone" placeholder="555-0100" />
+          </div>
+        </div>
+        <div class="field">
+          <label for="np-email">Email <span class="opt">(optional)</span></label>
+          <input type="email" id="np-email" placeholder="alice@example.com" />
+        </div>
+        <div class="modal-actions">
+          <button type="button" id="patient-cancel" class="ghost">Cancel</button>
+          <button type="submit" id="patient-submit">Create patient</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

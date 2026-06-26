@@ -17,6 +17,14 @@ const ClinicAppointmentsBucket = "clinic-appointments"
 // render a human-readable provider picker, never Core KV.
 const ClinicProvidersBucket = "clinic-providers"
 
+// ClinicPatientsBucket is the NATS-KV read model the clinicPatients lens projects
+// into — the **P5 query surface** for "who are the patients": the clinic FE reads
+// THIS bucket (one row per named patient, keyed by the patient key) to render the
+// patient-context switcher and to scope a patient's appointments, never Core KV.
+// It projects the patient NAME only — DOB / contact are the PHI the deferred Vault
+// plane owns and are deliberately NOT fanned into a read model here.
+const ClinicPatientsBucket = "clinic-patients"
+
 // Lenses returns the package's two projection lenses. Both are flat projections
 // (no aggregation / WITH), so OPTIONAL-matched neighbour bindings are live
 // directly in RETURN and the §4-B1 "WITH-drop" hazard does not apply. Aspect
@@ -41,6 +49,14 @@ func Lenses() []pkgmgr.LensSpec {
 			Bucket:        ClinicProvidersBucket,
 			Engine:        "full",
 			Spec:          clinicProvidersSpec,
+		},
+		{
+			CanonicalName: "clinicPatients",
+			Class:         "meta.lens",
+			Adapter:       "nats-kv",
+			Bucket:        ClinicPatientsBucket,
+			Engine:        "full",
+			Spec:          clinicPatientsSpec,
 		},
 	}
 }
@@ -88,3 +104,17 @@ RETURN
   pr.profile.data.fullName AS name,
   pr.profile.data.specialty AS specialty,
   pr.profile.data.credentials AS credentials`
+
+// clinicPatientsSpec projects one row per NAMED patient — the roster the clinic FE
+// renders so a person picks who they are (the patient-context switcher) and scopes
+// "my appointments" by patientKey, instead of a raw vtx.patient.<id> key. Same flat
+// no-WITH shape as clinicProviders. The WHERE keeps only patients carrying a
+// `.demographics` aspect (the `<> null` aspect-presence idiom). NAME ONLY: DOB /
+// email / phone are the PHI the deferred Vault plane owns and are intentionally NOT
+// projected into this read model — the switcher needs only a human label.
+const clinicPatientsSpec = `MATCH (p:patient)
+WHERE p.demographics.data.fullName <> null
+RETURN
+  p.key AS key,
+  p.key AS patientKey,
+  p.demographics.data.fullName AS name`

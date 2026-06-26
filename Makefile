@@ -65,6 +65,7 @@ down:
 	-pkill -f "bin/object-store-manager" 2>/dev/null || true
 	-pkill -f "bin/loupe" 2>/dev/null || true
 	-pkill -f "bin/loftspace-app" 2>/dev/null || true
+	-pkill -f "bin/clinic-app" 2>/dev/null || true
 	@echo "==> Down complete."
 
 ## verify-kernel — Assert post-Story-4.7 kernel keys exist with correct envelopes.
@@ -235,6 +236,22 @@ up-loftspace:
 	@sleep 1
 	@echo "==> LoftSpace ready. Operator/inspector: http://127.0.0.1:7777 (Loupe) · applicant app: http://127.0.0.1:7788"
 
+## up-clinic — One-command Clinic vertical: up-full → install-clinic → build +
+## start clinic-app (:7799) in the background alongside Loupe (:7777). The clinic
+## app is the demand-side patient/booking view; Loupe is the operator/inspector.
+## Logs: clinic-app.log (+ the up-full logs).
+up-clinic:
+	@$(MAKE) up-full
+	@$(MAKE) install-clinic
+	@echo "==> Building clinic-app binary..."
+	go build -o bin/clinic-app ./cmd/clinic-app
+	@echo "==> Killing any prior clinic-app process..."
+	-pkill -f "bin/clinic-app" 2>/dev/null || true
+	@echo "==> Starting clinic-app in background..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/clinic-app >clinic-app.log 2>&1 </dev/null &
+	@sleep 1
+	@echo "==> Clinic ready. Operator/inspector: http://127.0.0.1:7777 (Loupe) · patient app: http://127.0.0.1:7799"
+
 ## orchestration — Build + start the orchestration tier (Loom, Weaver, Bridge,
 ## object-store-manager) in the background. Requires a running deployment
 ## (make up). object-store-manager needs no actor key; the rest load the admin
@@ -317,6 +334,15 @@ run-loftspace-app:
 	go build -o bin/loftspace-app ./cmd/loftspace-app
 	@echo "==> LoftSpace applicant app on http://127.0.0.1:7788 (Ctrl-C to stop)..."
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/loftspace-app
+
+## run-clinic-app — Build + run the Clinic app in the FOREGROUND. Open
+## http://127.0.0.1:7799. Requires a running deployment with the clinic vertical
+## installed (make up-full + install-clinic, or make up-clinic).
+run-clinic-app:
+	@echo "==> Building clinic-app binary..."
+	go build -o bin/clinic-app ./cmd/clinic-app
+	@echo "==> Clinic app on http://127.0.0.1:7799 (Ctrl-C to stop)..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/clinic-app
 
 ## test — Run all Go unit + integration tests.
 ## Test packages run concurrently (-p 4). Every embedded NATS/JetStream

@@ -158,8 +158,8 @@ func TestPackage_Permissions(t *testing.T) {
 		t.Fatalf("expected no Depends (self-contained), got %v", Package.Depends)
 	}
 
-	if got := len(Package.Lenses); got != 2 {
-		t.Fatalf("expected 2 lenses, got %d", got)
+	if got := len(Package.Lenses); got != 3 {
+		t.Fatalf("expected 3 lenses, got %d", got)
 	}
 	lensByName := map[string]pkgmgr.LensSpec{}
 	for _, l := range Package.Lenses {
@@ -172,6 +172,10 @@ func TestPackage_Permissions(t *testing.T) {
 	if l, ok := lensByName["clinicProviders"]; !ok ||
 		l.Adapter != "nats-kv" || l.Bucket != ClinicProvidersBucket {
 		t.Fatalf("unexpected clinicProviders shape: %+v", lensByName["clinicProviders"])
+	}
+	if l, ok := lensByName["clinicPatients"]; !ok ||
+		l.Adapter != "nats-kv" || l.Bucket != ClinicPatientsBucket {
+		t.Fatalf("unexpected clinicPatients shape: %+v", lensByName["clinicPatients"])
 	}
 	if got := len(Package.WeaverTargets); got != 0 {
 		t.Fatalf("expected 0 weaverTargets, got %d", got)
