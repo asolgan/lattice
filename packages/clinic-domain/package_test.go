@@ -23,14 +23,14 @@ func TestPackage_ManifestMatchesDefinition(t *testing.T) {
 	}
 }
 
-// TestPackage_DDLs pins the seven DDLs: three vertexType owners (patient,
-// provider, appointment) and four aspectType step-6 gates. The aspect DDLs MUST
+// TestPackage_DDLs pins the eight DDLs: three vertexType owners (patient,
+// provider, appointment) and five aspectType step-6 gates. The aspect DDLs MUST
 // be NON-sensitive (they attach to patient/provider/appointment vertices, not an
 // identity — a sensitive aspect there would trip step-6's sensitiveAspectScope),
 // and each names ONLY its writer op(s) in permittedCommands.
 func TestPackage_DDLs(t *testing.T) {
-	if got := len(Package.DDLs); got != 7 {
-		t.Fatalf("expected 7 DDLs, got %d", got)
+	if got := len(Package.DDLs); got != 8 {
+		t.Fatalf("expected 8 DDLs, got %d", got)
 	}
 
 	byName := map[string]pkgmgr.DDLSpec{}
@@ -73,6 +73,7 @@ func TestPackage_DDLs(t *testing.T) {
 		"providerProfile":     {"CreateProvider"},
 		"appointmentSchedule": {"CreateAppointment", "RescheduleAppointment"},
 		"appointmentStatus":   {"CreateAppointment", "SetAppointmentStatus"},
+		"providerBookings":    {"CreateProvider", "CreateAppointment"},
 	}
 	for name, wantCmds := range aspectWriters {
 		asp, ok := byName[name]
@@ -206,8 +207,8 @@ func TestPackage_ScriptGuards(t *testing.T) {
 		`require_live_typed`, // endpoint alive + class
 		`WrongClass`,         // endpoint-class guard
 		"scheduled, confirmed, completed, cancelled, noShow", // status enum
-		`lnk.appointment.`,                      // link direction (appointment is source)
-		`.forPatient.patient.`,                  // forPatient link shape
+		`lnk.appointment.`,                        // link direction (appointment is source)
+		`.forPatient.patient.`,                    // forPatient link shape
 		`.withProvider.provider.`,                 // withProvider link shape
 		`make_aspect_upsert(appt_key, "status"`,   // SetAppointmentStatus upsert
 		`make_aspect_upsert(appt_key, "schedule"`, // RescheduleAppointment rewrites .schedule

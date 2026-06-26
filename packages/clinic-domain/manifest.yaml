@@ -3,11 +3,12 @@ version: 0.1.0
 description: |
   Clinic bookable domain. Self-contained package owning three vertex types —
   patient, provider, appointment — with their aspects (.demographics, .profile,
-  .schedule, .status) and links (forPatient, withProvider), written by the
-  Create*/SetAppointmentStatus/Tombstone* ops. Three projection lenses
-  (clinicAppointments, clinicProviders, clinicPatients) are the P5 read models a
-  clinic FE reads.
-  No package dependency. PHI/Vault, temporal-availability/double-book, and @every
+  .schedule, .status, provider .bookings) and links (forPatient, withProvider),
+  written by the Create*/Reschedule/SetAppointmentStatus/Tombstone* ops. Three
+  projection lenses (clinicAppointments, clinicProviders, clinicPatients) are the
+  P5 read models a clinic FE reads. CreateAppointment rejects a double-book
+  (SlotConflict) via the provider's OCC-snapshotted .bookings index.
+  No package dependency. PHI/Vault, provider-hours availability, and @every
   recurring schedules are the separate deferred items this vertical forces — out
   of scope here.
 declares:
@@ -25,6 +26,8 @@ declares:
     - canonicalName: appointmentSchedule
       class: meta.ddl.aspectType
     - canonicalName: appointmentStatus
+      class: meta.ddl.aspectType
+    - canonicalName: providerBookings
       class: meta.ddl.aspectType
   lenses:
     - canonicalName: clinicAppointments

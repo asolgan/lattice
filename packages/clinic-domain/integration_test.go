@@ -210,7 +210,7 @@ func TestClinic_CreateBookable(t *testing.T) {
 
 	apptID := clSubmit(t, ctx, conn, cp, cons, "mkappt0001", "CreateAppointment", "appointment",
 		`{"patient":"`+patientKey+`","provider":"`+providerKey+`","startsAt":"2026-07-01T15:00:00Z","endsAt":"2026-07-01T15:30:00Z","reason":"Annual checkup"}`,
-		[]string{patientKey, providerKey}, processor.OutcomeAccepted)
+		[]string{patientKey, providerKey, providerKey + ".bookings"}, processor.OutcomeAccepted)
 	apptKey := "vtx.appointment." + apptID
 
 	if adoc := clReadDoc(t, ctx, conn, apptKey); adoc["class"] != "appointment" {
@@ -240,6 +240,71 @@ func TestClinic_CreateBookable(t *testing.T) {
 	}
 }
 
+// TestClinic_DoubleBookRejected proves op-time double-book rejection: CreateAppointment
+// reads the provider's .bookings index, kv.Reads each candidate's live schedule + status,
+// and rejects an overlap with a still scheduled/confirmed appointment (SlotConflict) while
+// allowing disjoint / back-to-back slots, a different provider, and a freed (cancelled /
+// tombstoned) slot. Also proves the endsAt>startsAt guard.
+func TestClinic_DoubleBookRejected(t *testing.T) {
+	ctx, conn := setupClinicEnv(t)
+	cp, cons := newClinicPipeline(t, ctx, conn, "double-book")
+
+	patientKey := createPatient(t, ctx, conn, cp, cons, "dbpat0001", "Dana Booker")
+	providerKey := createProvider(t, ctx, conn, cp, cons, "dbprv0001", "Dr. Vale", "Cardiology")
+	providerKey2 := createProvider(t, ctx, conn, cp, cons, "dbprv0002", "Dr. West", "Pediatrics")
+
+	bk := providerKey + ".bookings"
+	bk2 := providerKey2 + ".bookings"
+	mkAppt := func(label, prov, bkkey, start, end string, want processor.MessageOutcome) string {
+		return clSubmit(t, ctx, conn, cp, cons, label, "CreateAppointment", "appointment",
+			`{"patient":"`+patientKey+`","provider":"`+prov+`","startsAt":"`+start+`","endsAt":"`+end+`"}`,
+			[]string{patientKey, prov, bkkey}, want)
+	}
+
+	// 1. First booking 10:00–10:30 → accepted.
+	a1 := mkAppt("dbappt0001", providerKey, bk, "2026-08-01T10:00:00Z", "2026-08-01T10:30:00Z", processor.OutcomeAccepted)
+	// 2. Overlapping 10:15–10:45 with the SAME provider → SlotConflict (rejected).
+	mkAppt("dbappt0002", providerKey, bk, "2026-08-01T10:15:00Z", "2026-08-01T10:45:00Z", processor.OutcomeRejected)
+	// 3. Fully containing 09:45–10:50 → also overlaps → rejected.
+	mkAppt("dbappt0003", providerKey, bk, "2026-08-01T09:45:00Z", "2026-08-01T10:50:00Z", processor.OutcomeRejected)
+	// 4. Disjoint 11:00–11:30 with the same provider → accepted.
+	a4 := mkAppt("dbappt0004", providerKey, bk, "2026-08-01T11:00:00Z", "2026-08-01T11:30:00Z", processor.OutcomeAccepted)
+	// 5. Back-to-back 10:30–11:00 (touches a1's end and a4's start, half-open → no overlap) → accepted.
+	mkAppt("dbappt0005", providerKey, bk, "2026-08-01T10:30:00Z", "2026-08-01T11:00:00Z", processor.OutcomeAccepted)
+	// 6. Same 10:00–10:30 slot but a DIFFERENT provider → conflict is per-provider → accepted.
+	mkAppt("dbappt0006", providerKey2, bk2, "2026-08-01T10:00:00Z", "2026-08-01T10:30:00Z", processor.OutcomeAccepted)
+
+	// 7. endsAt <= startsAt → InvalidArgument (rejected), no overlap math needed.
+	mkAppt("dbappt0007", providerKey, bk, "2026-08-01T13:00:00Z", "2026-08-01T13:00:00Z", processor.OutcomeRejected)
+
+	// 8. Cancel a1, then re-book its 10:00–10:30 slot → the cancelled appointment no
+	//    longer blocks (pruned from the index by liveness) → accepted.
+	a1Key := "vtx.appointment." + a1
+	clSubmit(t, ctx, conn, cp, cons, "dbcancel001", "SetAppointmentStatus", "appointment",
+		`{"appointmentKey":"`+a1Key+`","status":"cancelled"}`, []string{a1Key}, processor.OutcomeAccepted)
+	mkAppt("dbappt0008", providerKey, bk, "2026-08-01T10:00:00Z", "2026-08-01T10:30:00Z", processor.OutcomeAccepted)
+
+	// 9. Tombstone a4 (11:00–11:30), then re-book that slot → a tombstoned vertex is
+	//    ignored (gated on the vertex isDeleted, not the lingering aspects) → accepted.
+	a4Key := "vtx.appointment." + a4
+	clSubmit(t, ctx, conn, cp, cons, "dbtomb0001", "TombstoneAppointment", "appointment",
+		`{"appointmentKey":"`+a4Key+`"}`, []string{a4Key}, processor.OutcomeAccepted)
+	mkAppt("dbappt0009", providerKey, bk, "2026-08-01T11:00:00Z", "2026-08-01T11:30:00Z", processor.OutcomeAccepted)
+
+	// The index pruned the cancelled a1 and tombstoned a4 on the subsequent creates.
+	bookings := clReadDoc(t, ctx, conn, bk)
+	bd, _ := bookings["data"].(map[string]any)
+	appts, _ := bd["appts"].([]any)
+	for _, x := range appts {
+		if x == a1Key {
+			t.Fatalf("cancelled appointment %s should have been pruned from the bookings index, got %v", a1Key, appts)
+		}
+		if x == a4Key {
+			t.Fatalf("tombstoned appointment %s should have been pruned from the bookings index, got %v", a4Key, appts)
+		}
+	}
+}
+
 // TestClinic_SetAppointmentStatus proves the unconditioned-upsert idiom: a
 // SetAppointmentStatus overwrites the .status aspect in place (scheduled→confirmed).
 func TestClinic_SetAppointmentStatus(t *testing.T) {
@@ -250,7 +315,7 @@ func TestClinic_SetAppointmentStatus(t *testing.T) {
 	providerKey := createProvider(t, ctx, conn, cp, cons, "mkprv0002", "Dr. Lee", "Dermatology")
 	apptID := clSubmit(t, ctx, conn, cp, cons, "mkappt0002", "CreateAppointment", "appointment",
 		`{"patient":"`+patientKey+`","provider":"`+providerKey+`","startsAt":"2026-07-02T09:00:00Z","endsAt":"2026-07-02T09:20:00Z"}`,
-		[]string{patientKey, providerKey}, processor.OutcomeAccepted)
+		[]string{patientKey, providerKey, providerKey + ".bookings"}, processor.OutcomeAccepted)
 	apptKey := "vtx.appointment." + apptID
 
 	clSubmit(t, ctx, conn, cp, cons, "setstat0001", "SetAppointmentStatus", "appointment",
@@ -279,7 +344,7 @@ func TestClinic_RescheduleAppointment(t *testing.T) {
 	providerKey := createProvider(t, ctx, conn, cp, cons, "mkprv0007", "Dr. Reyes", "Cardiology")
 	apptID := clSubmit(t, ctx, conn, cp, cons, "mkappt0007", "CreateAppointment", "appointment",
 		`{"patient":"`+patientKey+`","provider":"`+providerKey+`","startsAt":"2026-07-10T15:00:00Z","endsAt":"2026-07-10T15:30:00Z","reason":"Annual checkup"}`,
-		[]string{patientKey, providerKey}, processor.OutcomeAccepted)
+		[]string{patientKey, providerKey, providerKey + ".bookings"}, processor.OutcomeAccepted)
 	apptKey := "vtx.appointment." + apptID
 
 	// Reschedule to a new day, re-supplying the reason (the FE round-trips it). The
@@ -341,7 +406,7 @@ func TestClinic_RejectsBadStatus(t *testing.T) {
 	providerKey := createProvider(t, ctx, conn, cp, cons, "mkprv0003", "Dr. Kim", "Pediatrics")
 	apptID := clSubmit(t, ctx, conn, cp, cons, "mkappt0003", "CreateAppointment", "appointment",
 		`{"patient":"`+patientKey+`","provider":"`+providerKey+`","startsAt":"2026-07-03T09:00:00Z","endsAt":"2026-07-03T09:20:00Z"}`,
-		[]string{patientKey, providerKey}, processor.OutcomeAccepted)
+		[]string{patientKey, providerKey, providerKey + ".bookings"}, processor.OutcomeAccepted)
 	apptKey := "vtx.appointment." + apptID
 
 	clSubmit(t, ctx, conn, cp, cons, "badstat0001", "SetAppointmentStatus", "appointment",

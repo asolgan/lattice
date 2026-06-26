@@ -342,10 +342,16 @@ async function submitBook(ev) {
   const submit = $("#book-submit");
   submit.disabled = true;
   try {
-    const reply = await submitOp("CreateAppointment", "appointment", payload, [state.patient, provider]);
+    // The provider's .bookings index is a declared read so the op can detect a
+    // double-book (and so its OCC check serializes concurrent bookings).
+    const reply = await submitOp("CreateAppointment", "appointment", payload,
+      [state.patient, provider, provider + ".bookings"]);
     const msg = rejectionMessage(reply);
     if (msg) {
-      toast("Booking rejected — " + msg, "err");
+      const friendly = msg.indexOf("SlotConflict") === 0
+        ? "That time overlaps an existing appointment for this provider. Pick another slot."
+        : msg;
+      toast("Booking rejected — " + friendly, "err");
       return;
     }
     const key = reply && reply.primaryKey ? reply.primaryKey : "";
