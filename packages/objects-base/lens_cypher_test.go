@@ -5,11 +5,17 @@ package objectsbase
 // directly — the same engine selected at activation via engine:"full" — against
 // an embedded NATS Core/Adjacency KV, asserting the projection ROW.
 //
-// The load-bearing properties pinned here (§20):
-//   - count(owner)=0 ⇒ orphaned; a live owner ⇒ not orphaned.
-//   - DEAD-TARGET awareness: a live link to a TOMBSTONED owner does NOT hold the
-//     object alive (count(owner) excludes the nil-bound dead owner) — the bug a
-//     count(r)-based cypher would have.
+// The load-bearing properties pinned here (§20/§21):
+//   - liveLinks=0 ⇒ orphaned; liveLinks>0 ⇒ not orphaned. Liveness is the
+//     authoritative root-data counter, NOT the adjacency fan.
+//   - ATTACH-LAG race guard (§21): a fresh attach commits the link AND
+//     liveLinks=1 atomically, but refractor-adjacency lags — so an object with
+//     liveLinks=1 and NO adjacency edge yet must NOT be flagged orphaned (the old
+//     adjacency-count cypher reaped it → irreversible data loss).
+//   - DEAD-TARGET is now a deferred leak, not reaped here: a stale liveLinks>=1
+//     left by an owner-tombstone keeps the object un-reaped (a bounded byte leak,
+//     never data loss); authoritative dead-target reclaim is the deferred
+//     owner-cascade trigger's job (§21).
 //   - ONE ROW PER ANCHOR even with several links (the §0.C guard).
 //   - linkEpoch (the object's root-data link-set version) is projected for the
 //     reclaim op's epoch-CAS.
@@ -84,15 +90,20 @@ func newObjLensFixture(t *testing.T) *objLensFixture {
 	return &objLensFixture{adjKV: adjKV, coreKV: coreKV, ids: map[string]string{}, types: map[string]string{}}
 }
 
-// object writes an object vertex with data.linkEpoch = epoch.
-func (f *objLensFixture) object(t *testing.T, name string, epoch int) string {
+// object writes an object vertex with the two GC scalars: data.linkEpoch (the
+// re-link CAS version) and data.liveLinks (the authoritative live-link count the
+// objectLiveness lens now decides orphan-ness on). Tests set liveLinks to the
+// count the DDL would have maintained, INDEPENDENT of the adjacency edges built
+// by link() — that independence is exactly what lets a test reproduce the
+// attach-adjacency-lag race (liveLinks=1 with no adjacency edge yet).
+func (f *objLensFixture) object(t *testing.T, name string, epoch, liveLinks int) string {
 	t.Helper()
 	id := objCNanoID(name)
 	f.ids[name] = id
 	f.types[id] = "object"
 	key := "vtx.object." + id
 	body := map[string]any{"key": key, "class": "object", "isDeleted": false,
-		"data": map[string]any{"linkEpoch": epoch}}
+		"data": map[string]any{"linkEpoch": epoch, "liveLinks": liveLinks}}
 	raw, _ := json.Marshal(body)
 	_, err := f.coreKV.Put(context.Background(), key, raw)
 	require.NoError(t, err)
@@ -182,13 +193,13 @@ func ownerKeys(t *testing.T, owners any) []string {
 	return out
 }
 
-// Test 1 — a live link to a live owner ⇒ not orphaned; linkEpoch projected.
+// Test 1 — liveLinks>0 ⇒ not orphaned; linkEpoch projected.
 func TestObjectLiveness_OneLiveLink_NotOrphaned(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
 	f := newObjLensFixture(t)
-	objKey := f.object(t, "photo", 3)
+	objKey := f.object(t, "photo", 3, 1)
 	f.owner(t, "alice", false)
 	f.link(t, "photoOf", "photo", "alice")
 
@@ -196,44 +207,72 @@ func TestObjectLiveness_OneLiveLink_NotOrphaned(t *testing.T) {
 	require.Len(t, rows, 1)
 	v := rows[0].Values
 	require.Equal(t, objKey, v["entityKey"])
-	require.Equal(t, false, v["missing_owner"], "a live link to a live owner ⇒ not orphaned")
+	require.Equal(t, false, v["missing_owner"], "liveLinks>0 ⇒ not orphaned")
 	require.Equal(t, false, v["violating"])
 	require.EqualValues(t, 3, v["linkEpoch"], "linkEpoch is projected for the reclaim CAS")
 }
 
-// Test 2 — zero links ⇒ orphaned (one null-restored row, not dropped).
+// Test 2 — liveLinks=0 ⇒ orphaned (one null-restored row, not dropped).
 func TestObjectLiveness_ZeroLinks_Orphaned(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
 	f := newObjLensFixture(t)
-	f.object(t, "photo", 5)
+	f.object(t, "photo", 5, 0)
 
 	rows := f.project(t, "photo")
 	require.Len(t, rows, 1, "a zero-link object null-restores to exactly one row, not dropped")
 	v := rows[0].Values
-	require.Equal(t, true, v["missing_owner"], "zero live links ⇒ orphaned")
+	require.Equal(t, true, v["missing_owner"], "liveLinks=0 ⇒ orphaned")
 	require.Equal(t, true, v["violating"])
 	require.EqualValues(t, 5, v["linkEpoch"])
 }
 
-// Test 3 — THE dead-target case: a live link to a TOMBSTONED owner does NOT hold
-// the object alive (count(owner) excludes the nil-bound dead owner). A count(r)
-// cypher would wrongly keep it alive — this is the M-2 regression guard.
-func TestObjectLiveness_DeadTargetOwner_Orphaned(t *testing.T) {
+// Test 3 — THE §21 attach-adjacency-lag race guard (the data-loss bug this fix
+// closes): a freshly-attached object commits its link AND liveLinks=1 atomically,
+// but refractor-adjacency lags — so here liveLinks=1 with NO adjacency edge built
+// at all. The object must NOT be flagged orphaned. The OLD adjacency-count cypher
+// saw count(owner)=0 and reaped it → irreversible byte loss. This is the #1
+// regression guard for this fix.
+func TestObjectLiveness_AttachLag_NotOrphaned(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
 	f := newObjLensFixture(t)
-	f.object(t, "photo", 2)
-	f.owner(t, "ghost", true) // tombstoned owner
+	f.object(t, "photo", 1, 1) // attached: liveLinks=1...
+	f.owner(t, "alice", false) // ...owner exists in core-kv...
+	// ...but NO f.link(): the adjacency edge has not been projected yet (lag).
+
+	rows := f.project(t, "photo")
+	require.Len(t, rows, 1)
+	v := rows[0].Values
+	require.Equal(t, false, v["missing_owner"],
+		"a freshly-attached object (liveLinks=1) must NOT be reaped while adjacency lags")
+	require.Equal(t, false, v["violating"])
+}
+
+// Test 3b — DEAD-TARGET is now a deferred leak, NOT reaped by this lens. An
+// owner-tombstone leaves a stale liveLinks>=1 (it never touches the object), so a
+// dangling link to a dead owner keeps the object un-reaped — a bounded byte leak,
+// never data loss. Authoritative dead-target reclaim is the deferred
+// owner-cascade trigger's job (§21). (Pre-fix this asserted orphaned=true; the
+// adjacency signal that drove it cannot be trusted without reaping fresh attaches
+// — Test 3.)
+func TestObjectLiveness_DeadTargetOwner_LeakedNotReaped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newObjLensFixture(t)
+	f.object(t, "photo", 2, 1) // liveLinks stale at 1: the owner-tombstone never decremented it
+	f.owner(t, "ghost", true)  // tombstoned owner
 	f.link(t, "photoOf", "photo", "ghost")
 
 	rows := f.project(t, "photo")
 	require.Len(t, rows, 1)
 	v := rows[0].Values
-	require.Equal(t, true, v["missing_owner"], "a link to a TOMBSTONED owner must NOT hold the object alive")
-	require.Equal(t, true, v["violating"])
+	require.Equal(t, false, v["missing_owner"],
+		"a dead-target dangling link is a deferred leak (stale liveLinks), not reaped here")
+	require.Equal(t, false, v["violating"])
 }
 
 // Test 4 — several live links ⇒ exactly one row (the one-row-per-anchor guard).
@@ -242,7 +281,7 @@ func TestObjectLiveness_MultipleLiveLinks_OneRow(t *testing.T) {
 		t.Skip("requires NATS")
 	}
 	f := newObjLensFixture(t)
-	f.object(t, "photo", 9)
+	f.object(t, "photo", 9, 2)
 	f.owner(t, "alice", false)
 	f.owner(t, "bob", false)
 	f.link(t, "photoOf", "photo", "alice")
@@ -255,14 +294,14 @@ func TestObjectLiveness_MultipleLiveLinks_OneRow(t *testing.T) {
 	require.Equal(t, false, v["violating"])
 }
 
-// Test 5 — a dead owner alongside a live owner: the live one still counts, so the
-// object is not orphaned (only the dead owner drops out).
-func TestObjectLiveness_DeadOwnerPlusLiveOwner_NotOrphaned(t *testing.T) {
+// Test 5 — liveLinks>0 ⇒ not orphaned regardless of how many owners later die;
+// the count is the authoritative signal.
+func TestObjectLiveness_MultiOwnerLiveLinks_NotOrphaned(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
 	f := newObjLensFixture(t)
-	f.object(t, "photo", 4)
+	f.object(t, "photo", 4, 2) // two attaches → liveLinks=2
 	f.owner(t, "alice", false) // live
 	f.owner(t, "ghost", true)  // tombstoned
 	f.link(t, "photoOf", "photo", "alice")
@@ -271,7 +310,7 @@ func TestObjectLiveness_DeadOwnerPlusLiveOwner_NotOrphaned(t *testing.T) {
 	rows := f.project(t, "photo")
 	require.Len(t, rows, 1)
 	v := rows[0].Values
-	require.Equal(t, false, v["missing_owner"], "one live owner ⇒ not orphaned (the dead owner drops out)")
+	require.Equal(t, false, v["missing_owner"], "liveLinks=2 ⇒ not orphaned")
 	require.Equal(t, false, v["violating"])
 }
 
@@ -285,7 +324,7 @@ func TestObjectAttachments_ProjectsMetadataAndOwner(t *testing.T) {
 		t.Skip("requires NATS")
 	}
 	f := newObjLensFixture(t)
-	objKey := f.object(t, "lease", 1)
+	objKey := f.object(t, "lease", 1, 1)
 	f.content(t, "lease", "store-abc", "application/pdf", 4096)
 	f.owner(t, "leaseapp", false)
 	f.link(t, "signedLeasePdf", "lease", "leaseapp")
@@ -308,7 +347,7 @@ func TestObjectAttachments_MultipleOwners_OneRowAllKeys(t *testing.T) {
 		t.Skip("requires NATS")
 	}
 	f := newObjLensFixture(t)
-	f.object(t, "doc", 2)
+	f.object(t, "doc", 2, 2)
 	f.content(t, "doc", "store-xyz", "image/png", 100)
 	f.owner(t, "alice", false)
 	f.owner(t, "bob", false)
@@ -329,7 +368,7 @@ func TestObjectAttachments_ZeroLinks_OneRowNoOwners(t *testing.T) {
 		t.Skip("requires NATS")
 	}
 	f := newObjLensFixture(t)
-	f.object(t, "orphan", 3)
+	f.object(t, "orphan", 3, 0)
 	f.content(t, "orphan", "store-orphan", "application/octet-stream", 7)
 
 	rows := f.projectAttachments(t, "orphan")

@@ -95,6 +95,16 @@ func isDeleted(t *testing.T, ctx context.Context, conn *substrate.Conn, key stri
 	return d
 }
 
+// liveLinksOf reads the object vertex's data.liveLinks scalar (the authoritative
+// live-link count the objectLiveness lens decides orphan-ness on).
+func liveLinksOf(t *testing.T, ctx context.Context, conn *substrate.Conn, key string) int {
+	t.Helper()
+	doc, _ := readDoc(t, ctx, conn, key)
+	d, _ := doc["data"].(map[string]any)
+	v, _ := d["liveLinks"].(float64)
+	return int(v)
+}
+
 func liveExists(ctx context.Context, conn *substrate.Conn, key string) bool {
 	entry, err := conn.KVGet(ctx, testutil.HarnessCoreBucket, key)
 	if err != nil {
@@ -212,6 +222,12 @@ func TestObject_TombstoneEpochCAS_AbortsOnRelink(t *testing.T) {
 				"storeName": "s-cas", "targetKey": target, "linkName": "photoOf"},
 			reads, processor.OutcomeAccepted)
 	}
+	detach := func(label, target string, reads []string) {
+		submitObj(t, ctx, conn, cp, cons, testutil.GenReqID(label), "DetachObject",
+			map[string]any{"oid": oid, "targetKey": target, "linkName": "photoOf"},
+			reads, processor.OutcomeAccepted)
+	}
+	link1 := "lnk.object." + oid + ".photoOf.identity.AAuserHJKMNPQRSTUVW6"
 	epoch := func() int {
 		doc, _ := readDoc(t, ctx, conn, objKey)
 		d, _ := doc["data"].(map[string]any)
@@ -219,28 +235,110 @@ func TestObject_TombstoneEpochCAS_AbortsOnRelink(t *testing.T) {
 		return int(v)
 	}
 
-	attach("cas1", id1, []string{id1}) // mint → epoch 1
+	attach("cas1", id1, []string{id1}) // mint → epoch 1, liveLinks 1
 	if epoch() != 1 {
 		t.Fatalf("epoch = %d want 1", epoch())
 	}
-	// A re-link after orphan-detection: a dedup attach to a 2nd owner bumps the epoch.
-	attach("cas2", id2, []string{id2, objKey, contentKey})
-	if epoch() != 2 {
-		t.Fatalf("epoch = %d want 2 after the dedup re-link", epoch())
+	// Orphan it (liveLinks → 0) so the lens would project it for reclaim at epoch 2.
+	detach("casD1", id1, []string{link1, objKey})
+	if epoch() != 2 || liveLinksOf(t, ctx, conn, objKey) != 0 {
+		t.Fatalf("after detach: epoch=%d liveLinks=%d want 2/0", epoch(), liveLinksOf(t, ctx, conn, objKey))
+	}
+	// A re-link landing AFTER orphan-detection: re-attach revives the link, bumping
+	// the epoch beyond what the lens saw (and lifting liveLinks back to 1).
+	attach("casReattach", id1, []string{id1, objKey, contentKey, link1})
+	if epoch() != 3 || liveLinksOf(t, ctx, conn, objKey) != 1 {
+		t.Fatalf("after re-attach: epoch=%d liveLinks=%d want 3/1", epoch(), liveLinksOf(t, ctx, conn, objKey))
 	}
 
-	// TombstoneObject with the STALE orphan-detection epoch (1) → aborts Stale.
+	// TombstoneObject with the STALE orphan-detection epoch (2) → aborts Stale: the
+	// re-link bumped the epoch past it, so the reclaim must not reap the live object.
 	submitObj(t, ctx, conn, cp, cons, testutil.GenReqID("tombStale"), "TombstoneObject",
-		map[string]any{"oid": oid, "expectedEpoch": 1}, []string{objKey, contentKey}, processor.OutcomeRejected)
+		map[string]any{"oid": oid, "expectedEpoch": 2}, []string{objKey, contentKey}, processor.OutcomeRejected)
 	if !liveExists(ctx, conn, objKey) {
 		t.Fatalf("a stale-epoch tombstone must NOT reap the re-linked object")
 	}
 
-	// TombstoneObject with the CURRENT epoch (2) → proceeds.
+	// Re-orphan (liveLinks → 0, epoch → 4), then the matching-epoch tombstone of the
+	// genuine orphan proceeds — the liveLinks>0 backstop is satisfied.
+	detach("casD2", id1, []string{link1, objKey})
+	if epoch() != 4 || liveLinksOf(t, ctx, conn, objKey) != 0 {
+		t.Fatalf("after re-detach: epoch=%d liveLinks=%d want 4/0", epoch(), liveLinksOf(t, ctx, conn, objKey))
+	}
 	submitObj(t, ctx, conn, cp, cons, testutil.GenReqID("tombOK"), "TombstoneObject",
-		map[string]any{"oid": oid, "expectedEpoch": 2}, []string{objKey, contentKey}, processor.OutcomeAccepted)
+		map[string]any{"oid": oid, "expectedEpoch": 4}, []string{objKey, contentKey}, processor.OutcomeAccepted)
 	if !isDeleted(t, ctx, conn, objKey) {
-		t.Fatalf("a current-epoch tombstone should soft-delete the object")
+		t.Fatalf("a current-epoch tombstone of an orphan (liveLinks 0) should soft-delete the object")
+	}
+}
+
+// TestObject_ReplaceLeg_DecrementsOldObject pins the replaceObjectId leg's
+// liveLinks accounting — the only counter-mutation path the other tests don't
+// exercise. A "new photo" attach that replaces a prior object in the same
+// (target, linkName) slot must tombstone the OLD object's link AND decrement its
+// liveLinks, reaping it (liveLinks 0) iff that was its last link, while the new
+// object lands live (liveLinks 1).
+func TestObject_ReplaceLeg_DecrementsOldObject(t *testing.T) {
+	ctx, conn := setupObjectsEnv(t)
+	cp, cons := testutil.CapabilityPipeline(t, ctx, conn, testutil.PipelineConfig{Durable: "objrep", Instance: "objrep-1"})
+
+	id1 := "vtx.identity.AAuserHJKMNPQRSTUVR1"
+	seedIdentity(t, ctx, conn, id1, false)
+
+	digestA := "SHA-256=replaceLegOldObjectAAAA"
+	digestB := "SHA-256=replaceLegNewObjectBBBB"
+	oidA := substrate.SHA256NanoID("object:" + digestA)
+	oidB := substrate.SHA256NanoID("object:" + digestB)
+	objA := "vtx.object." + oidA
+	objB := "vtx.object." + oidB
+	linkA := "lnk.object." + oidA + ".photoOf.identity.AAuserHJKMNPQRSTUVR1"
+	linkB := "lnk.object." + oidB + ".photoOf.identity.AAuserHJKMNPQRSTUVR1"
+
+	submit := func(label string, payload map[string]any, reads []string, want processor.MessageOutcome) {
+		t.Helper()
+		pb, _ := json.Marshal(payload)
+		env := &processor.OperationEnvelope{
+			RequestID:     testutil.GenReqID(label),
+			Lane:          processor.LaneDefault,
+			OperationType: "AttachObject",
+			Actor:         objStaffActorKey,
+			SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+			Class:         "object",
+			Payload:       pb,
+			ContextHint:   &processor.ContextHint{Reads: reads},
+		}
+		testutil.PublishOp(t, conn, env)
+		testutil.DriveOne(t, ctx, cp, cons, want)
+	}
+
+	// Attach object A (the old photo) → liveLinks 1.
+	submit("attachA", map[string]any{
+		"digest": digestA, "size": 10, "contentType": "image/jpeg",
+		"storeName": "store-A", "targetKey": id1, "linkName": "photoOf"},
+		[]string{id1}, processor.OutcomeAccepted)
+	if ll := liveLinksOf(t, ctx, conn, objA); ll != 1 {
+		t.Fatalf("object A liveLinks after attach = %d want 1", ll)
+	}
+
+	// Attach object B to the SAME (target, linkName) slot with replaceObjectId=A.
+	// B lands live (liveLinks 1); A's link is tombstoned and A's liveLinks → 0.
+	submit("attachBreplaceA", map[string]any{
+		"digest": digestB, "size": 12, "contentType": "image/jpeg",
+		"storeName": "store-B", "targetKey": id1, "linkName": "photoOf",
+		"replaceObjectId": oidA},
+		[]string{id1, objA, linkA}, processor.OutcomeAccepted)
+
+	if !liveExists(ctx, conn, linkB) {
+		t.Fatalf("new object B's link %s must be live", linkB)
+	}
+	if !isDeleted(t, ctx, conn, linkA) {
+		t.Fatalf("old object A's link %s must be tombstoned by the replace leg", linkA)
+	}
+	if ll := liveLinksOf(t, ctx, conn, objB); ll != 1 {
+		t.Fatalf("new object B liveLinks = %d want 1", ll)
+	}
+	if ll := liveLinksOf(t, ctx, conn, objA); ll != 0 {
+		t.Fatalf("old object A liveLinks after replace = %d want 0 (now a reclaim candidate)", ll)
 	}
 }
 
@@ -296,10 +394,14 @@ func TestObject_Lifecycle(t *testing.T) {
 	if cls, _ := objDoc["class"].(string); cls != "object" {
 		t.Fatalf("object class = %q want object", cls)
 	}
-	// Root data carries only linkEpoch (the GC link-set version — the one
-	// documented scalar exception to D5's root-minimal rule); it starts at 1.
-	if data, _ := objDoc["data"].(map[string]any); len(data) != 1 || data["linkEpoch"] == nil {
-		t.Fatalf("object root data must be {linkEpoch}, got %v", data)
+	// Root data carries exactly the two GC scalars (the documented exceptions to
+	// D5's root-minimal rule): linkEpoch (the re-link CAS version, starts at 1)
+	// and liveLinks (the authoritative live-link count, =1 after the first attach).
+	if data, _ := objDoc["data"].(map[string]any); len(data) != 2 || data["linkEpoch"] == nil || data["liveLinks"] == nil {
+		t.Fatalf("object root data must be {linkEpoch, liveLinks}, got %v", data)
+	}
+	if ll := liveLinksOf(t, ctx, conn, objKey); ll != 1 {
+		t.Fatalf("liveLinks after first attach = %d want 1", ll)
 	}
 
 	// The .content aspect carries ONLY reference metadata — the bytes never
@@ -331,6 +433,9 @@ func TestObject_Lifecycle(t *testing.T) {
 	if objRev2 <= objRev1 {
 		t.Fatalf("dedup must OCC-touch the object vertex (rev %d -> %d)", objRev1, objRev2)
 	}
+	if ll := liveLinksOf(t, ctx, conn, objKey); ll != 2 {
+		t.Fatalf("liveLinks after a dedup re-link to a 2nd owner = %d want 2", ll)
+	}
 
 	// 3. Reject: attach to a meta/system target (CC7 protected-target guard).
 	submit("attachMeta", "AttachObject",
@@ -355,8 +460,27 @@ func TestObject_Lifecycle(t *testing.T) {
 	if !liveExists(ctx, conn, objKey) {
 		t.Fatalf("object must stay alive while owner 2 still links it")
 	}
+	if ll := liveLinksOf(t, ctx, conn, objKey); ll != 1 {
+		t.Fatalf("liveLinks after detaching one of two owners = %d want 1", ll)
+	}
 
-	// 6. TombstoneObject → object vertex + .content soft-deleted, the
+	// 5b. The liveLinks>0 backstop refuses to reap a still-linked object: owner 2
+	//     still links it (liveLinks 1), so a TombstoneObject is rejected.
+	submit("tombLive", "TombstoneObject",
+		map[string]any{"oid": oid}, []string{objKey, contentKey}, processor.OutcomeRejected)
+	if !liveExists(ctx, conn, objKey) {
+		t.Fatalf("the liveLinks>0 backstop must refuse to reap a still-linked object")
+	}
+
+	// 5c. Detach owner 2 → liveLinks 0, now a genuine orphan.
+	submit("detach2", "DetachObject",
+		map[string]any{"oid": oid, "targetKey": id2, "linkName": "photoOf"},
+		[]string{link2, objKey}, processor.OutcomeAccepted)
+	if ll := liveLinksOf(t, ctx, conn, objKey); ll != 0 {
+		t.Fatalf("liveLinks after detaching the last owner = %d want 0", ll)
+	}
+
+	// 6. TombstoneObject on the orphan → object vertex + .content soft-deleted, the
 	//    object.tombstoned event (the v1b byte-reclaim trigger) is emitted.
 	submit("tombstone", "TombstoneObject",
 		map[string]any{"oid": oid}, []string{objKey, contentKey}, processor.OutcomeAccepted)

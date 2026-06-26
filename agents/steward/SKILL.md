@@ -69,8 +69,14 @@ Pre-emption order:
    component stalls — stateless, derived from `git log` like the dependency map.
 3. **Andrew's per-cycle theme** (if set) biases the pick; else
 4. **Build** the highest **importance × readiness** READY item. The build lane is broader than the named
-   cleanups — it always includes design-free continuous improvement: **test-coverage gaps, doc/Scribe sweeps,
+   cleanups — it always includes design-free continuous improvement: **test-coverage gaps, doc sweeps,
    observability build-out (incl. the Loupe live-map + agent console), and simplification / refactor passes**.
+   *Docs sweep* covers both layers (agentic-ops-design §"Docs"): component-local docs are kept fresh by the
+   story-loop **Definition of Done**, but the **cross-cutting docs no single story owns — `README.md`,
+   `docs/architecture-overview.md`, the contracts index — have no running owner** (the dedicated **Scribe**
+   role isn't stood up yet), so **the Steward owns their drift in this lane**: when the system's model shifts
+   (a new phase, a new driver, a retired/added component) refresh them in the same pass — don't let the front
+   door go stale.
 5. **Design** the next item — *if nothing is build-ready, make progress by designing, not stopping.* Ground →
    write a reviewable design doc in `implementation-artifacts/` → adversarial / party review → **then resolve
    its open questions yourself (§0): if they are all implementation / design calls (the normal case), ratify

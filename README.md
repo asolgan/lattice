@@ -99,6 +99,15 @@ analyst, architect, scrum master, developer, and reviewer roles) and a session-p
 where each story is implemented by a fresh agent against a self-contained brief, then reviewed
 by another.
 
+**Phase 3 takes this further — into an autonomous flywheel.** Phases 1–2 ran as a human-orchestrated
+session-per-story loop (Andrew launched each story). Phase 3 is driven by an **agentic operating
+model** that runs on a schedule with no human starting it: a **Steward** loop finds the next
+highest-value work, builds it behind the full gate suite, and commits it, while **Vertical Product
+Owner** agents exercise the apps and file the backlog that feeds the Steward — supply and demand,
+self-sustaining. Andrew is needed only for the two things that are genuinely his: ratifying
+frozen-contract changes and final architectural forks. It is an active, maturing experiment — the
+loop still gets steered — but the trajectory is the point: the system increasingly improves itself.
+
 My role (Andrew) is **architect and supervisor**, not implementer: I set the vision and the
 binding architectural decisions, freeze the data contracts, pressure-test proposals, review and
 adjudicate the agents' output, and steer course — but I don't write the implementation. The
@@ -236,6 +245,7 @@ This is the one place that distinguishes what's built from what's designed.
 | **Phase 1** | Trustworthy core: substrate, Processor write path, Refractor lens projections, identity/RBAC packages, Capability-Lens authorization, the Hello Lattice reference slice | ✅ Implemented + tested (CI-gated) |
 | **Phase 1.5** | Hardening: kernel minimization, package installs routed through the Processor, contract conformance suite, transactional event outbox | ✅ Complete |
 | **Phase 2** | Orchestration: Loom (procedures) + Weaver (convergence) + the external-I/O bridge + the Loftspace lease-application reference vertical | ✅ Complete (CI-gated) |
+| **Phase 3 — in progress** | Driven by the autonomous **agentic flywheel** (see *Built by AI agents*); currently building the experience layer — Loupe operator surfaces + vertical-app front-ends (LoftSpace) | 🏗️ Active |
 | **Phase 3+** | Gateway (read-path auth, JWT), Vault (crypto-shredding / PII), AI-authored capabilities, Semantic Contracts, Edge Lattice + Personal Lenses, multi-cell sharding | 🔭 Designed, future work |
 
 ---

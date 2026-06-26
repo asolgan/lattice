@@ -28,15 +28,19 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //     non-protected (CC7), but its type is whatever the caller supplies.
 //   - Link direction (Contract #1 §1.1): the object arrives AFTER its owner, so
 //     object = source, owner = target — `object -<linkName>-> owner`.
-//   - Vertex-revision tracks the link set (the v1b GC race guard, §19): every
-//     AttachObject / DetachObject writes the object vertex (create / revive /
-//     OCC-touch) in the SAME atomic batch as its link mutation, so a concurrent
-//     re-link moves the revision and the lens-driven TombstoneObject OCC aborts.
+//   - Vertex-revision + liveLinks track the link set (the v1b GC race guards,
+//     §19/§21): every AttachObject / DetachObject writes the object vertex
+//     (create / revive / OCC-touch) in the SAME atomic batch as its link
+//     mutation — advancing linkEpoch (so a concurrent re-link moves the revision
+//     and the lens-driven TombstoneObject OCC aborts) AND maintaining the
+//     liveLinks count (so the objectLiveness lens reads liveness from this
+//     lag-free scalar, never the lagging refractor-adjacency projection — a
+//     freshly-attached object is never reaped during adjacency catch-up).
 //
 // Object shape (D5 — root data minimal, content metadata in the .content
 // aspect, relationships are links):
 //
-//	vtx.object.<oid>                                   root data = {}, class=object
+//	vtx.object.<oid>                                   root data = {linkEpoch, liveLinks}, class=object
 //	vtx.object.<oid>.content                           aspect: { digest, size, contentType, storeName }
 //	lnk.object.<oid>.<linkName>.<tgtType>.<tgtId>      link: object→owner, data { filename? }
 //
@@ -76,7 +80,8 @@ func objectDDL() pkgmgr.DDLSpec {
 		Class:             "meta.ddl.vertexType",
 		PermittedCommands: []string{"AttachObject", "DetachObject", "TombstoneObject"},
 		Description: "Large-object vertex DDL — the graph side of the off-graph blob plane. Vertex shape: " +
-			"vtx.object.<oid>, class=object, root data = {linkEpoch} (the GC link-set version, bumped on " +
+			"vtx.object.<oid>, class=object, root data = {linkEpoch, liveLinks} (linkEpoch the link-set version for the reclaim CAS, liveLinks the " +
+				"authoritative live-link count the objectLiveness lens reads in place of the lagging adjacency, both bumped on " +
 			"every attach/detach; otherwise minimal, D5), where oid = " +
 			"crypto.sha256NanoID(\"object:\" + digest) (content-addressed, D2/D3). The content's reference " +
 			"metadata (digest, size, contentType, storeName) lives on the .content aspect; the bytes live in " +
@@ -90,7 +95,8 @@ func objectDDL() pkgmgr.DDLSpec {
 			"TombstoneObject soft-deletes the object vertex + .content under a linkEpoch stale-check (the " +
 			"lens-projected expectedEpoch vs the current one) + a vertex-revision self-OCC, and emits " +
 			"object.tombstoned (the byte-reclaim trigger). Every attach/detach OCC-touches the object vertex " +
-			"and bumps its linkEpoch so the link set is versioned (the GC race guard, §20).",
+			"and atomically bumps linkEpoch + maintains liveLinks, versioning the link set (the re-link CAS guard, " +
+				"§20) and keeping liveness lag-free (the attach-adjacency-lag reclaim guard, §21).",
 		Script: objectDDLScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"digest":{"type":"string","description":"AttachObject: the NATS-computed content digest \"SHA-256=<base64url>\". Derives the content-addressed oid and is stored on .content for integrity."},` +
@@ -318,15 +324,32 @@ def next_epoch(state, obj_key):
         return 1
     return cur + 1
 
-def touch_vertex(state, obj_key):
-    # OCC-touch the object vertex (self-OCC on its hydrated revision) and bump
-    # its linkEpoch so the lens-projected link-set version advances on every
-    # attach/detach. A concurrent re-link moving the revision makes the touch —
-    # and any concurrent tombstone — conflict (§19/§20 race guard).
+def cur_live_links(state, obj_key):
+    # The object's authoritative live-link count (data.liveLinks), maintained in
+    # the SAME atomic batch as every link mutation. The objectLiveness lens reads
+    # this scalar — NOT the lagging link-projection read model — so a
+    # freshly-attached object is never mis-seen as orphaned during the projection
+    # catch-up window (the §21 attach-lag reclaim race). Defaults to 0 for a
+    # vertex that predates the field (none in a fresh deployment).
+    cur = aspect_field(state, obj_key, "liveLinks")
+    if cur == None or type(cur) != type(0):
+        return 0
+    return cur
+
+def write_vertex(state, obj_key, live_links):
+    # OCC-touch the object vertex (self-OCC on its hydrated revision), advancing
+    # linkEpoch (the re-link CAS version, §20) and writing the atomic live-link
+    # count (the lag-free liveness signal, §21) in one batch with the link
+    # mutation. A concurrent re-link/detach moves the revision so this touch — and
+    # any concurrent tombstone — conflict (§19/§20 race guard). The count never
+    # goes negative.
+    if live_links < 0:
+        live_links = 0
     return {"op": "update", "key": obj_key,
             "expectedRevision": revision_of(state, obj_key),
             "document": {"class": "object", "isDeleted": False,
-                         "data": {"linkEpoch": next_epoch(state, obj_key)}}}
+                         "data": {"linkEpoch": next_epoch(state, obj_key),
+                                  "liveLinks": live_links}}}
 
 def execute(state, op):
     ot = op.operationType
@@ -371,17 +394,29 @@ def attach_object(state, p):
     if filename != None:
         link_data["filename"] = filename
 
+    # Decide the link mutation BEFORE writing the vertex: a new-or-revived link is
+    # +1 to the live-link count; an already-alive link (idempotent re-attach) is
+    # +0. link_ensure_alive returns None only when the link is already alive.
+    link_mut = link_ensure_alive(state, link_key, obj_key, target_key, link_name, link_name, link_data)
+    link_delta = 0
+    if link_mut != None:
+        link_delta = 1
+
+    dedup = present(state, obj_key) and not is_tombstoned(state, obj_key)
     mutations = []
 
     if not present(state, obj_key):
-        # Absent → mint the object vertex (linkEpoch starts at 1) + .content aspect.
-        mutations.append(make_vtx(obj_key, "object", {"linkEpoch": 1}))
+        # Absent → mint the object vertex (linkEpoch starts at 1, liveLinks = the
+        # one new link) + .content aspect.
+        mutations.append(make_vtx(obj_key, "object", {"linkEpoch": 1, "liveLinks": link_delta}))
         mutations.append(make_aspect(obj_key, "content", "content", content_data))
     elif is_tombstoned(state, obj_key):
         # Tombstoned (a prior object reclaimed by GC) → revive the vertex + its
         # .content with the FRESH upload (new storeName). A deleted-then-re-added
-        # object is always restored (CC2, no data loss).
-        mutations.append(touch_vertex(state, obj_key))
+        # object is always restored (CC2, no data loss). A tombstoned object had
+        # zero live links (that is why it was reaped), so the revived count is
+        # exactly this attach's link_delta.
+        mutations.append(write_vertex(state, obj_key, link_delta))
         if present(state, content_key):
             mutations.append({"op": "update", "key": content_key,
                               "expectedRevision": revision_of(state, content_key),
@@ -393,25 +428,25 @@ def attach_object(state, p):
     else:
         # Live → dedup. The .content aspect MUST be hydrated so digest-collision
         # detection is script-enforced, not merely client-cooperative; then OCC-
-        # touch the vertex so its revision tracks the new link.
+        # touch the vertex so its revision tracks the new link and its liveLinks
+        # count rises by the link_delta.
         if not present(state, content_key):
             fail("InvalidArgument: contextHint.reads must include " + content_key + " when the object is live")
         stored_digest = aspect_field(state, content_key, "digest")
         if stored_digest != None and stored_digest != digest:
             fail("DigestCollision: oid " + oid + " already bound to a different digest")
-        mutations.append(touch_vertex(state, obj_key))
+        mutations.append(write_vertex(state, obj_key, cur_live_links(state, obj_key) + link_delta))
 
     # Ensure the link is alive: create when absent, revive when soft-tombstoned
     # (a re-attach after detach), no-op when already alive (graph-layer
     # idempotency — a >24h re-attach past the requestId tracker is a harmless
     # no-op, CC5 layer 2).
-    link_mut = link_ensure_alive(state, link_key, obj_key, target_key, link_name, link_name, link_data)
     if link_mut != None:
         mutations.append(link_mut)
 
     events = [{"class": "object.attached",
                "data": {"objectKey": obj_key, "targetKey": target_key,
-                        "linkName": link_name, "dedup": present(state, obj_key) and not is_tombstoned(state, obj_key)}}]
+                        "linkName": link_name, "dedup": dedup}}]
 
     # Replace leg (§8 — "here's my new photo"): tombstone the prior object's link
     # in the same slot + OCC-touch that object so the lens reprojects it as a
@@ -423,7 +458,7 @@ def attach_object(state, p):
             mutations.append({"op": "tombstone", "key": old_link,
                               "document": {"class": link_name, "data": {}}})
             if present(state, old_obj_key):
-                mutations.append(touch_vertex(state, old_obj_key))
+                mutations.append(write_vertex(state, old_obj_key, cur_live_links(state, old_obj_key) - 1))
             events.append({"class": "object.detached",
                            "data": {"objectKey": old_obj_key, "linkKey": old_link}})
 
@@ -445,9 +480,11 @@ def detach_object(state, p):
 
     mutations = [{"op": "tombstone", "key": link_key,
                   "document": {"class": link_name, "data": {}}}]
-    # OCC-touch the object vertex so its revision tracks the link-set change.
+    # OCC-touch the object vertex so its revision tracks the link-set change and
+    # its liveLinks count drops by one (the lag-free orphan signal — at zero the
+    # objectLiveness lens flags the object for reclaim).
     if present(state, obj_key):
-        mutations.append(touch_vertex(state, obj_key))
+        mutations.append(write_vertex(state, obj_key, cur_live_links(state, obj_key) - 1))
 
     events = [{"class": "object.detached",
                "data": {"objectKey": obj_key, "linkKey": link_key}}]
@@ -479,6 +516,17 @@ def tombstone_object(state, p):
     expected_epoch = optional_int(p, "expectedEpoch")
     if expected_epoch != None and cur_epoch != expected_epoch:
         fail("Stale: object " + obj_key + " linkEpoch changed since orphan-detection (a concurrent re-link)")
+
+    # Authoritative liveness backstop (§21): never reap an object that ATOMICALLY
+    # still has live links. The object vertex is hydrated, so its liveLinks count
+    # is the lag-free truth at op-commit time — a re-link that landed since the
+    # lens projected orphaned shows here even when no expectedEpoch was supplied.
+    # This makes the data-loss invariant authoritative at the op layer (not merely
+    # lens-trusting) and closes the force-tombstone-a-live-object hazard: a direct
+    # caller cannot reap a still-linked object, so the revive path's reset-to-this-
+    # attach's-count can never undercount a live object back into reclaim.
+    if cur_live_links(state, obj_key) > 0:
+        fail("Stale: object " + obj_key + " still has live links — not orphaned, refusing to reap")
 
     # storeName for the byte-reclaim event: the lens-projected value (Weaver
     # templates it from the row, since the GC dispatch hydrates only the vertex),

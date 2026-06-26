@@ -5,19 +5,21 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Lenses returns the package's Lens declarations: the single `objectLiveness`
 // actorAggregate convergence lens (Contract #10 §10.2) — the v1b GC's orphan
 // DETECTION. It anchors on each object vertex and projects a `missing_owner`
-// gap flag (= zero live links) + `violating` + the object's `linkEpoch` (the
-// link-set version the reclaim op CASes against). Weaver's `objectLiveness`
-// target dispatches `directOp(TombstoneObject)` over the orphaned rows.
+// gap flag (= the object's atomic `liveLinks` count is zero) + `violating` + the
+// object's `linkEpoch` (the link-set version the reclaim op CASes against).
+// Weaver's `objectLiveness` target dispatches `directOp(TombstoneObject)` over
+// the orphaned rows.
 //
-// One row per anchor (the §0.C guard fails closed on a multi-row anchor): the
-// `OPTIONAL MATCH (o)-[r]->(owner)` fan is collapsed by `count(owner)`, so any
-// number of links produces exactly one row. Dead-target awareness is free —
-// a tombstoned owner does not bind (the full engine's `fetchNode` returns nil
-// for a soft-deleted vertex and the traversal skips it), so `count(owner)`
-// excludes it; a dangling link to a dead owner reprojects the object as
-// orphaned without any extra consumer (§20 C-b). The object reprojects on any
-// link create/tombstone via the actorAggregate adjacency fan-out (AnchorType
-// `object`).
+// Liveness is read from `o.data.liveLinks` — the authoritative, lag-free
+// live-link count maintained atomically by every attach/detach — NOT from the
+// lagging refractor-adjacency projection (the §21 attach-lag reclaim-race fix;
+// see objectLivenessSpec). The `OPTIONAL MATCH (o)-[r]->(owner)` + `count(owner)`
+// is retained only to collapse the link fan to exactly one row per anchor (the
+// §0.C guard) and to drive the actorAggregate reprojection on any link
+// create/tombstone (AnchorType `object`); every attach/detach also rewrites the
+// object vertex, so the anchor reprojects from the vertex CDC regardless. The
+// dead-target dangling-link case is a deferred owner-cascade concern, not this
+// lens's job (a bounded leak, never data loss — see objectLivenessSpec).
 func Lenses() []pkgmgr.LensSpec {
 	return []pkgmgr.LensSpec{
 		{
@@ -57,21 +59,38 @@ func Lenses() []pkgmgr.LensSpec {
 
 // objectLivenessSpec is the one-row-per-anchor orphan-detection cypher.
 //
-//   - `count(owner.key)` counts only BOUND neighbours, so it is the
-//     dead-target-aware live-link count: a tombstoned owner (nil from fetchNode)
-//     and a tombstoned link (absent from adjacency via removeEdge) both drop
-//     out. It counts the owner's KEY, not the node, because an unbound OPTIONAL
-//     node is a non-Go-nil null sentinel that `count` would tally as 1 — counting
-//     the scalar `.key` (Go-nil when unbound) is the lease-lens idiom. `count(r)`
-//     would be WRONG — an owner-only tombstone leaves the link's adjacency edge
-//     in place, so counting edges would keep a dead-target object alive.
-//   - The single OPTIONAL MATCH carries NO filtering WHERE, so a zero-link object
-//     is null-restored to one row with owner=null (count 0 → orphaned) rather
-//     than dropped — the documented full-engine grouping behaviour.
+//   - Liveness is decided on `o.data.liveLinks` — the object's AUTHORITATIVE,
+//     adjacency-free live-link count, maintained atomically by every
+//     AttachObject / DetachObject in the same batch as the link mutation
+//     (objects-base ddls.go `write_vertex`). It is read directly off the vertex
+//     root data, so it does NOT lag the commit. This is the §21 fix for the
+//     attach-adjacency-lag reclaim race: a freshly-attached object commits its
+//     link AND `liveLinks=1` atomically, so the lens never mis-sees it as
+//     orphaned during the refractor-adjacency catch-up window (the old
+//     adjacency-`count(owner.key)` decision DID — the link was in Core KV but not
+//     yet in adjacency → liveOwners 0 → a premature, irreversible TombstoneObject
+//     that the epoch-CAS could not catch because no re-link had bumped the
+//     epoch).
+//   - The single `OPTIONAL MATCH (o)-[r]->(owner)` + `count(owner.key)` is kept
+//     ONLY to collapse the link fan-out to exactly one row per object anchor (the
+//     §0.C guard) and to drive the actorAggregate reprojection; `liveOwners` is
+//     NOT used in the orphan decision. The carry-no-filtering-WHERE / null-restore
+//     grouping behaviour is the documented full-engine idiom.
+//   - DEAD-TARGET tradeoff (§21): because `liveLinks` is only decremented by the
+//     object's OWN attach/detach, an owner-tombstone (which never touches the
+//     object) leaves a stale `liveLinks >= 1` → a dangling link to a dead owner no
+//     longer reaps the object here. This is a BOUNDED, non-permanent byte LEAK,
+//     not data loss, and is strictly preferable to the prior adjacency decision's
+//     data-loss bug. Authoritative dead-target reclamation belongs to the
+//     deferred owner-tombstone-cascade trigger (CC4 trigger-side, Andrew's GC
+//     domain); the adjacency could no more distinguish a dead-target dangling
+//     link from a not-yet-projected fresh attach anyway (the engine skips a
+//     dead-neighbour edge entirely, executor.go:565-571 — both present as
+//     `count(r)=0, count(owner)=0`).
 //   - `linkEpoch` is the object's root-data link-set version (`o.data.linkEpoch`,
-//     a vertex root-data field the full engine resolves directly); Weaver
-//     templates it into the reclaim op's expectedEpoch so a concurrent re-link
-//     (which bumps the epoch) aborts the tombstone (§20).
+//     resolved directly off root data); Weaver templates it into the reclaim op's
+//     expectedEpoch so a concurrent re-link (which bumps the epoch) aborts the
+//     tombstone (§20 — the re-link race, distinct from the §21 attach-lag race).
 //   - `= null` is not used here, but per the lease-lens convention any null test
 //     would be `= null`, never the unsupported `IS NULL`.
 const objectLivenessSpec = `
@@ -80,6 +99,7 @@ OPTIONAL MATCH (o)-[r]->(owner)
 WITH
   o.key AS entityKey,
   o.data.linkEpoch AS linkEpoch,
+  o.data.liveLinks AS liveLinks,
   o.content.data.storeName AS storeName,
   count(owner.key) AS liveOwners
 RETURN
@@ -87,8 +107,8 @@ RETURN
   entityKey,
   linkEpoch,
   storeName,
-  (liveOwners = 0) AS missing_owner,
-  (liveOwners = 0) AS violating
+  (liveLinks = 0) AS missing_owner,
+  (liveLinks = 0) AS violating
 `
 
 // objectAttachmentsSpec is the per-object display read-model the vertical apps
