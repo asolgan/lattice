@@ -349,9 +349,11 @@ func TestClinic_RescheduleAppointment(t *testing.T) {
 
 	// Reschedule to a new day, re-supplying the reason (the FE round-trips it). The
 	// startsAt is given with a +02:00 offset to prove canonical-UTC normalization.
+	// The provider + its .bookings index are supplied for the conflict check.
+	bk := providerKey + ".bookings"
 	clSubmit(t, ctx, conn, cp, cons, "resched0001", "RescheduleAppointment", "appointment",
-		`{"appointmentKey":"`+apptKey+`","startsAt":"2026-07-12T18:00:00+02:00","endsAt":"2026-07-12T18:30:00+02:00","reason":"Annual checkup"}`,
-		[]string{apptKey}, processor.OutcomeAccepted)
+		`{"appointmentKey":"`+apptKey+`","provider":"`+providerKey+`","startsAt":"2026-07-12T18:00:00+02:00","endsAt":"2026-07-12T18:30:00+02:00","reason":"Annual checkup"}`,
+		[]string{apptKey, bk}, processor.OutcomeAccepted)
 
 	sched := clReadDoc(t, ctx, conn, apptKey+".schedule")
 	sd, _ := sched["data"].(map[string]any)
@@ -379,8 +381,8 @@ func TestClinic_RescheduleAppointment(t *testing.T) {
 
 	// Reschedule again with NO reason → the reason is cleared.
 	clSubmit(t, ctx, conn, cp, cons, "resched0002", "RescheduleAppointment", "appointment",
-		`{"appointmentKey":"`+apptKey+`","startsAt":"2026-07-13T09:00:00Z","endsAt":"2026-07-13T09:20:00Z"}`,
-		[]string{apptKey}, processor.OutcomeAccepted)
+		`{"appointmentKey":"`+apptKey+`","provider":"`+providerKey+`","startsAt":"2026-07-13T09:00:00Z","endsAt":"2026-07-13T09:20:00Z"}`,
+		[]string{apptKey, bk}, processor.OutcomeAccepted)
 	sd2, _ := clReadDoc(t, ctx, conn, apptKey+".schedule")["data"].(map[string]any)
 	if _, present := sd2["reason"]; present {
 		t.Fatalf("an omitted reason should clear it; got reason=%v", sd2["reason"])
@@ -393,8 +395,67 @@ func TestClinic_RescheduleAppointment(t *testing.T) {
 	clSubmit(t, ctx, conn, cp, cons, "tombappt0001", "TombstoneAppointment", "appointment",
 		`{"appointmentKey":"`+apptKey+`"}`, []string{apptKey}, processor.OutcomeAccepted)
 	clSubmit(t, ctx, conn, cp, cons, "resched0003", "RescheduleAppointment", "appointment",
-		`{"appointmentKey":"`+apptKey+`","startsAt":"2026-07-14T09:00:00Z","endsAt":"2026-07-14T09:20:00Z"}`,
-		[]string{apptKey}, processor.OutcomeRejected)
+		`{"appointmentKey":"`+apptKey+`","provider":"`+providerKey+`","startsAt":"2026-07-14T09:00:00Z","endsAt":"2026-07-14T09:20:00Z"}`,
+		[]string{apptKey, bk}, processor.OutcomeRejected)
+}
+
+// TestClinic_RescheduleIntoConflictRejected proves Increment 2's core property: a
+// reschedule that moves an appointment INTO a slot already booked for the provider
+// is rejected (SlotConflict), closing the double-book bypass Increment 1 left open
+// (CreateAppointment was checked, RescheduleAppointment was not). It also pins
+// self-exclusion (moving onto your own current slot is fine), wrong-provider
+// rejection, the endsAt<=startsAt guard, that a cancelled appointment frees its
+// slot for a reschedule, and that the moved interval frees its old slot.
+func TestClinic_RescheduleIntoConflictRejected(t *testing.T) {
+	ctx, conn := setupClinicEnv(t)
+	cp, cons := newClinicPipeline(t, ctx, conn, "reschedule-conflict")
+
+	patientKey := createPatient(t, ctx, conn, cp, cons, "rcpat0001", "Frank Mover")
+	providerKey := createProvider(t, ctx, conn, cp, cons, "rcprv0001", "Dr. Solis", "Cardiology")
+	providerKey2 := createProvider(t, ctx, conn, cp, cons, "rcprv0002", "Dr. Tan", "Pediatrics")
+	bk := providerKey + ".bookings"
+
+	mkAppt := func(label, start, end string) string {
+		return clSubmit(t, ctx, conn, cp, cons, label, "CreateAppointment", "appointment",
+			`{"patient":"`+patientKey+`","provider":"`+providerKey+`","startsAt":"`+start+`","endsAt":"`+end+`"}`,
+			[]string{patientKey, providerKey, bk}, processor.OutcomeAccepted)
+	}
+	resched := func(label, apptKey, start, end string, want processor.MessageOutcome) {
+		clSubmit(t, ctx, conn, cp, cons, label, "RescheduleAppointment", "appointment",
+			`{"appointmentKey":"`+apptKey+`","provider":"`+providerKey+`","startsAt":"`+start+`","endsAt":"`+end+`"}`,
+			[]string{apptKey, bk}, want)
+	}
+
+	a1 := "vtx.appointment." + mkAppt("rcappt0001", "2026-09-01T10:00:00Z", "2026-09-01T10:30:00Z")
+	a2 := "vtx.appointment." + mkAppt("rcappt0002", "2026-09-01T11:00:00Z", "2026-09-01T11:30:00Z")
+
+	// 1. Move a2 onto a1's 10:00–10:30 slot → SlotConflict (the bypass is closed).
+	resched("rcres0001", a2, "2026-09-01T10:15:00Z", "2026-09-01T10:45:00Z", processor.OutcomeRejected)
+	// 2. Move a2 to a free 12:00 slot → accepted.
+	resched("rcres0002", a2, "2026-09-01T12:00:00Z", "2026-09-01T12:30:00Z", processor.OutcomeAccepted)
+	// 3. Re-time a1 within its own slot (self-exclusion: you never conflict with
+	//    your own current booking) → accepted.
+	resched("rcres0003", a1, "2026-09-01T10:00:00Z", "2026-09-01T10:45:00Z", processor.OutcomeAccepted)
+	// 4. Now a1 occupies 10:00–10:45 and a2 occupies 12:00. Moving a2 back to 10:30
+	//    overlaps the extended a1 → rejected.
+	resched("rcres0004", a2, "2026-09-01T10:30:00Z", "2026-09-01T11:00:00Z", processor.OutcomeRejected)
+	// 5. Back-to-back at a1's new end (10:45) is half-open → no overlap → accepted.
+	resched("rcres0005", a2, "2026-09-01T10:45:00Z", "2026-09-01T11:15:00Z", processor.OutcomeAccepted)
+	// 6. endsAt <= startsAt is rejected (the guard reschedule previously lacked).
+	resched("rcres0006", a2, "2026-09-01T14:00:00Z", "2026-09-01T14:00:00Z", processor.OutcomeRejected)
+
+	// 7. Wrong provider (a2 is Dr. Solis's; pass Dr. Tan) → WrongProvider rejected,
+	//    even though Dr. Tan's slot is free — a wrong provider must not bypass the
+	//    check by pointing at an empty book.
+	clSubmit(t, ctx, conn, cp, cons, "rcres0007", "RescheduleAppointment", "appointment",
+		`{"appointmentKey":"`+a2+`","provider":"`+providerKey2+`","startsAt":"2026-09-01T15:00:00Z","endsAt":"2026-09-01T15:30:00Z"}`,
+		[]string{a2, providerKey2 + ".bookings"}, processor.OutcomeRejected)
+
+	// 8. Cancel a1, then move a2 onto a1's (now freed) 10:00 slot → accepted (a
+	//    cancelled appointment no longer blocks; pruned by liveness).
+	clSubmit(t, ctx, conn, cp, cons, "rccancel01", "SetAppointmentStatus", "appointment",
+		`{"appointmentKey":"`+a1+`","status":"cancelled"}`, []string{a1}, processor.OutcomeAccepted)
+	resched("rcres0008", a2, "2026-09-01T10:00:00Z", "2026-09-01T10:30:00Z", processor.OutcomeAccepted)
 }
 
 // TestClinic_RejectsBadStatus proves the status enum guard.

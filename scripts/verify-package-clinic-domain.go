@@ -110,7 +110,7 @@ func main() {
 		{canonical: "providerProfile", class: "meta.ddl.aspectType", ops: []string{"CreateProvider"}},
 		{canonical: "appointmentSchedule", class: "meta.ddl.aspectType", ops: []string{"CreateAppointment", "RescheduleAppointment"}},
 		{canonical: "appointmentStatus", class: "meta.ddl.aspectType", ops: []string{"CreateAppointment", "SetAppointmentStatus"}},
-		{canonical: "providerBookings", class: "meta.ddl.aspectType", ops: []string{"CreateProvider", "CreateAppointment"}},
+		{canonical: "providerBookings", class: "meta.ddl.aspectType", ops: []string{"CreateProvider", "CreateAppointment", "RescheduleAppointment"}},
 	}
 
 	for _, dc := range ddlChecks {

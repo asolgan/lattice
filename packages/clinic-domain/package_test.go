@@ -73,7 +73,7 @@ func TestPackage_DDLs(t *testing.T) {
 		"providerProfile":     {"CreateProvider"},
 		"appointmentSchedule": {"CreateAppointment", "RescheduleAppointment"},
 		"appointmentStatus":   {"CreateAppointment", "SetAppointmentStatus"},
-		"providerBookings":    {"CreateProvider", "CreateAppointment"},
+		"providerBookings":    {"CreateProvider", "CreateAppointment", "RescheduleAppointment"},
 	}
 	for name, wantCmds := range aspectWriters {
 		asp, ok := byName[name]

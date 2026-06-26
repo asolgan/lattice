@@ -867,8 +867,10 @@ async function cancelAppt(a) {
 //
 // RescheduleAppointment rewrites the .schedule aspect with new times; the op
 // re-derives remindAt = startsAt − 24h so the ~24h reminder re-arms for a
-// not-yet-sent reminder. The existing reason is round-tripped (the op clears it if
-// omitted), and the provider / patient links + status are untouched server-side.
+// not-yet-sent reminder, and rejects a move into a slot already booked for the
+// provider (SlotConflict — the provider .bookings index is a declared read). The
+// existing reason is round-tripped (the op clears it if omitted), and the
+// provider / patient links + status are untouched server-side.
 
 function openReschedule(a) {
   state.rescheduling = a;
@@ -907,16 +909,22 @@ async function submitReschedule(ev) {
     return;
   }
 
-  const payload = { appointmentKey: a.appointmentKey, startsAt, endsAt };
+  const payload = { appointmentKey: a.appointmentKey, provider: a.providerKey, startsAt, endsAt };
   if (a.reason) payload.reason = a.reason; // round-trip the existing reason (omitted → cleared)
 
   const submit = $("#reschedule-submit");
   submit.disabled = true;
   try {
-    const reply = await submitOp("RescheduleAppointment", "appointment", payload, [a.appointmentKey]);
+    // The provider's .bookings index is a declared read so the op detects a
+    // double-book against the new time (RescheduleAppointment skips this appointment).
+    const reply = await submitOp("RescheduleAppointment", "appointment", payload,
+      [a.appointmentKey, a.providerKey + ".bookings"]);
     const msg = rejectionMessage(reply);
     if (msg) {
-      toast("Could not reschedule — " + msg, "err");
+      const friendly = msg.indexOf("SlotConflict") !== -1
+        ? "That time overlaps another appointment for this provider. Pick another slot."
+        : msg;
+      toast("Could not reschedule — " + friendly, "err");
       return;
     }
     state.highlight = a.appointmentKey;
