@@ -59,6 +59,12 @@ jobs:
       - name: Install + verify objects-base package
         run: make verify-package-objects-base
 
+      - name: Install + verify clinic-domain package
+        run: make verify-package-clinic-domain
+
+      - name: Install + verify clinic-reminders package (co-installs orchestration-base + clinic-domain)
+        run: make verify-package-clinic-reminders
+
       - name: Run Gate 2 bypass suite (Phase 1 Gate 2)
         # Runs the 4-category bypass suite; exits non-zero if any category
         # is not BLOCKED. Writes gate2-report.txt + Health KV marker.

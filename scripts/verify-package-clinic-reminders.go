@@ -215,20 +215,15 @@ func main() {
 		}
 	}
 
-	// The appointmentReminders meta.lens + meta.weaverTarget. Both carry
-	// canonicalName "appointmentReminders" (the §10.2↔§10.8 binding), so scan +
-	// classify by the meta vertex's class rather than FindMetaByCanonical.
+	// The appointmentReminders meta.lens + meta.weaverTarget (the §10.2↔§10.8
+	// binding). The two meta-vertices identify themselves DIFFERENTLY (per
+	// internal/pkgmgr/build.go): a meta.lens carries its name in a .canonicalName
+	// aspect, while a meta.weaverTarget carries no .canonicalName — its identity is
+	// the targetId in its .spec aspect. Classify by the vertex class, then read the
+	// identifier from the aspect that class actually writes.
 	foundLens, foundTarget := false, false
 	for key := range allKeys {
 		if !strings.HasPrefix(key, "vtx.meta.") || strings.Count(key, ".") != 2 {
-			continue
-		}
-		nameEnv, err := pkgverify.GetEnvelope(ctx, coreKV, key+".canonicalName")
-		if err != nil {
-			continue
-		}
-		nd, _ := nameEnv["data"].(map[string]any)
-		if cn, _ := nd["value"].(string); cn != "appointmentReminders" {
 			continue
 		}
 		env, err := pkgverify.GetEnvelope(ctx, coreKV, key)
@@ -237,11 +232,27 @@ func main() {
 		}
 		switch cls, _ := env["class"].(string); cls {
 		case "meta.lens":
+			nameEnv, err := pkgverify.GetEnvelope(ctx, coreKV, key+".canonicalName")
+			if err != nil {
+				continue
+			}
+			nd, _ := nameEnv["data"].(map[string]any)
+			if cn, _ := nd["value"].(string); cn != "appointmentReminders" {
+				continue
+			}
 			foundLens = true
 			ok("appointmentReminders meta.lens exists: " + key)
 		case "meta.weaverTarget":
+			specEnv, err := pkgverify.GetEnvelope(ctx, coreKV, key+".spec")
+			if err != nil {
+				continue
+			}
+			sd, _ := specEnv["data"].(map[string]any)
+			if tid, _ := sd["targetId"].(string); tid != "appointmentReminders" {
+				continue
+			}
 			foundTarget = true
-			ok("appointmentReminders meta.weaverTarget exists: " + key)
+			ok("appointmentReminders meta.weaverTarget exists (targetId in .spec): " + key)
 		}
 	}
 	if !foundLens {
