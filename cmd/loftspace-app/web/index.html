@@ -12,6 +12,7 @@
     <div class="who">
       <label for="applicant">Applicant</label>
       <select id="applicant" aria-label="Choose your applicant identity"></select>
+      <button id="new-applicant" class="ghost" type="button">＋ New applicant</button>
     </div>
   </header>
 
@@ -137,6 +138,33 @@
         <div class="modal-actions">
           <button type="button" id="complete-cancel" class="ghost">Cancel</button>
           <button type="submit" id="complete-submit">Complete</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- New applicant modal -->
+  <div id="applicant-overlay" class="overlay" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="na-title">
+      <h2 id="na-title">Start an application</h2>
+      <div class="apply-unit">Create a new applicant identity to apply with.</div>
+      <form id="applicant-form">
+        <div class="field">
+          <label for="na-name">Full name</label>
+          <input type="text" id="na-name" placeholder="Priya Patel" />
+        </div>
+        <div class="field">
+          <label for="na-email">Email</label>
+          <input type="email" id="na-email" placeholder="priya@example.com" />
+        </div>
+        <div class="field">
+          <label for="na-phone">Phone <span class="opt">(optional)</span></label>
+          <input type="tel" id="na-phone" placeholder="+15551234567" />
+        </div>
+        <p class="hint">A claim key is generated for you — this trusted demo tool creates the applicant directly.</p>
+        <div class="modal-actions">
+          <button type="button" id="applicant-cancel" class="ghost">Cancel</button>
+          <button type="submit" id="applicant-submit">Create applicant</button>
         </div>
       </form>
     </div>

@@ -150,6 +150,89 @@ function setApplicant(value) {
   if (state.view === "docs") loadDocsView(); // re-scope the documents to the new applicant
 }
 
+// ---- New applicant modal ----
+//
+// CreateUnclaimedIdentity (identity-domain) requires a name + at least one contact
+// (email/phone) + a claimKeyHash = sha256-hex of a client-minted secret (Lattice
+// never holds the plaintext). This trusted-tool app mints a random secret, hashes
+// it in-browser (crypto.subtle — 127.0.0.1 is a secure context), and submits only
+// the hash; the applicant is created directly (no claim ceremony in this demo) and
+// becomes the active applicant. Mirrors clinic-app's in-app "New patient".
+
+function openNewApplicant() {
+  $("#applicant-form").reset();
+  $("#applicant-overlay").hidden = false;
+  $("#na-name").focus();
+}
+
+function closeNewApplicant() {
+  $("#applicant-overlay").hidden = true;
+}
+
+// sha256Hex returns the lowercase hex sha256 of a string — the shape
+// CreateUnclaimedIdentity stores for claimKeyHash.
+async function sha256Hex(s) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// mintClaimSecret returns a random claim-secret plaintext. It is hashed and only the
+// hash is sent; the plaintext never enters Lattice (and, in this demo, is discarded).
+function mintClaimSecret() {
+  const a = new Uint8Array(32);
+  crypto.getRandomValues(a);
+  return Array.from(a).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function submitNewApplicant(ev) {
+  ev.preventDefault();
+  const name = $("#na-name").value.trim();
+  const email = $("#na-email").value.trim();
+  const phone = $("#na-phone").value.trim();
+  if (!name) {
+    toast("A name is required.", "err");
+    return;
+  }
+  if (!email && !phone) {
+    toast("Enter an email or a phone number.", "err");
+    return;
+  }
+
+  const submit = $("#applicant-submit");
+  submit.disabled = true;
+  try {
+    const claimKeyHash = await sha256Hex(mintClaimSecret());
+    const payload = { name, claimKeyHash };
+    if (email) payload.email = email;
+    if (phone) payload.phone = phone;
+    const reply = await api("/api/op", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operationType: "CreateUnclaimedIdentity", class: "identity", payload }),
+    });
+    if (reply && reply.status === "rejected") {
+      const msg = reply.error ? `${reply.error.code}: ${reply.error.message}` : "rejected";
+      toast("Could not create applicant — " + msg, "err");
+      return;
+    }
+    const key = reply && reply.primaryKey ? reply.primaryKey : "";
+    closeNewApplicant();
+    toast("Applicant created.", "ok", key);
+    // Make the new applicant active (the roster lens may take a moment to project;
+    // select now + reload so the switcher shows it once projected).
+    if (key) {
+      state.applicant = key;
+      localStorage.setItem(APPLICANT_KEY, key);
+    }
+    await loadIdentities();
+    renderListings(); // re-enable Apply for the now-selected applicant
+  } catch (e) {
+    toast("Could not create applicant: " + e.message, "err");
+  } finally {
+    submit.disabled = false;
+  }
+}
+
 // ---- Tabs (Browse & Apply / My Applications / Tasks / Documents) ----
 
 const VIEWS = ["browse", "apps", "tasks", "docs"];
@@ -922,6 +1005,12 @@ function init() {
   restoreApplicant();
   loadIdentities();
   $("#applicant").addEventListener("change", (e) => setApplicant(e.target.value));
+  $("#new-applicant").addEventListener("click", openNewApplicant);
+  $("#applicant-cancel").addEventListener("click", closeNewApplicant);
+  $("#applicant-overlay").addEventListener("click", (e) => {
+    if (e.target === $("#applicant-overlay")) closeNewApplicant();
+  });
+  $("#applicant-form").addEventListener("submit", submitNewApplicant);
   $("#status").addEventListener("change", loadListings);
   $("#reload-listings").addEventListener("click", loadListings);
   $("#apply-cancel").addEventListener("click", closeApply);
