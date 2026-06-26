@@ -502,16 +502,17 @@ func TestLeaseApplicationComplete_NoCompletedBgcheck(t *testing.T) {
 }
 
 // TestLeaseApplicationComplete_PaymentInstanceNoBgcheck_NoDrop is the regression
-// guard for the FR58 double-act path the freshness refinement must NOT reintroduce.
+// guard for the FR58 double-act path the freshness design must NOT reintroduce.
 // The applicant has a COMPLETED payment instance and NO bgcheck instance at all —
 // the real transient convergence window (payment's instanceOp commits + reprojects
-// before bgcheck's). With a dedicated family-filtered bgcheck OPTIONAL MATCH this
-// would WHERE-filter the sole providedTo neighbor (the payment) and the full
-// engine's null-restore would fail to re-emit the anchor → the row DROPS → Weaver
-// reads an entity deletion, clears the leaseapp's gap marks, and on row
-// re-appearance re-dispatches a SECOND bgcheck Loom instance (a second external
-// call). The single no-WHERE providedTo fan keeps the anchor: exactly one row,
-// missing_bgcheck true, missing_payment false.
+// before bgcheck's). freshUntil is a max() fold over the single no-WHERE providedTo
+// fan, so with no bgcheck every fresh-bgcheck CASE is null and freshUntil folds to
+// null WITHOUT dropping the anchor — the payment instance keeps the providedTo fan
+// non-empty and the leaseapp projects exactly one row. A design that instead read
+// freshUntil from a separate WHERE-filtered bgcheck match could drop the anchor here
+// (Weaver would read an entity deletion, clear the gap marks, and on row
+// re-appearance re-dispatch a SECOND bgcheck Loom instance — a second external
+// call). One row, missing_bgcheck true, missing_payment false.
 func TestLeaseApplicationComplete_PaymentInstanceNoBgcheck_NoDrop(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")
@@ -533,10 +534,10 @@ func TestLeaseApplicationComplete_PaymentInstanceNoBgcheck_NoDrop(t *testing.T) 
 	v := rows[0].Values
 	require.Equal(t, true, v["missing_bgcheck"], "no bgcheck instance → gap open")
 	require.Equal(t, false, v["missing_payment"], "completed payment → gap closed")
-	// The dedicated bgcheck OPTIONAL MATCH WHERE filters the sole providedTo
-	// neighbor (the payment) → the executor null-restore preserves the anchor with
-	// bg null → freshUntil projects as a genuine null (no timer for Weaver to arm),
-	// the anchor never drops. This is the §0.B engine fix exercised through the lens.
+	// With no bgcheck instance the freshUntil max() folds over a fan that carries
+	// only the payment → every fresh-bgcheck CASE is null → freshUntil null (no timer
+	// for Weaver to arm), and the payment keeps the anchor's providedTo fan non-empty
+	// so the row never drops.
 	require.Nil(t, v["freshUntil"], "no fresh bgcheck → freshUntil is null (anchor preserved, no @at armed)")
 }
 
@@ -554,7 +555,7 @@ func TestLeaseApplicationComplete_FreshUntilProjected(t *testing.T) {
 	app := bgFreshnessFixture(t, f, validUntil)
 
 	rows := f.projectAt(t, app, now)
-	require.Len(t, rows, 1, "exactly one row per anchor (bgcheck+payment fan-out, dedicated bg match ≤1 row)")
+	require.Len(t, rows, 1, "exactly one row per anchor (bgcheck+payment fan-out, freshUntil aggregated via max)")
 	v := rows[0].Values
 	require.Equal(t, validUntil, v["freshUntil"],
 		"a fresh completed bgcheck projects its validUntil as the scalar freshUntil column")
@@ -565,10 +566,55 @@ func TestLeaseApplicationComplete_FreshUntilProjected(t *testing.T) {
 	require.True(t, isString, "freshUntil must be a scalar string, not a list")
 }
 
+// TestLeaseApplicationComplete_MultipleFreshBgchecks is the regression guard for
+// the row-collision bug: providedTo is on the IDENTITY, not the application, so an
+// applicant can accumulate >1 completed-fresh bgcheck (multiple applications on one
+// identity, or freshness re-dispatches). The old freshUntil came from a SEPARATE,
+// unaggregated bgcheck OPTIONAL MATCH that expanded one row per fresh bgcheck → >1
+// row per anchor → guardOutputKeyCollision tripped (lens errors, goes yellow). The
+// fix folds freshUntil with max() into the SAME aggregation as the counts, so the
+// anchor stays one row and freshUntil is the LATEST validUntil (the @at re-open
+// timer must not fire while a later-expiring bgcheck still counts).
+func TestLeaseApplicationComplete_MultipleFreshBgchecks(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	const now = "2026-06-18T00:00:00Z"
+	const earlier = "2026-06-18T00:05:00Z" // both fresh (> now)
+	const later = "2026-06-18T00:09:00Z"
+	f.vtx(t, "app", "leaseapp")
+	f.vtx(t, "alice", "identity")
+	f.aspect(t, "alice", "ssn", "ssn", map[string]any{"value": "123456789"})
+	f.aspect(t, "app", "signature", "signature", map[string]any{"signedAt": "2026-06-10T00:00:00Z"})
+	// TWO completed-fresh bgchecks providedTo the same identity, distinct validUntil.
+	f.vtx(t, "bg1", "service")
+	f.aspect(t, "bg1", "family", "family", map[string]any{"value": "backgroundCheck"})
+	f.aspect(t, "bg1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-01T00:00:00Z", "validUntil": earlier})
+	f.vtx(t, "bg2", "service")
+	f.aspect(t, "bg2", "family", "family", map[string]any{"value": "backgroundCheck"})
+	f.aspect(t, "bg2", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-02T00:00:00Z", "validUntil": later})
+	f.vtx(t, "pay1", "service")
+	f.aspect(t, "pay1", "family", "family", map[string]any{"value": "payment"})
+	f.aspect(t, "pay1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-02T00:00:00Z"})
+	f.edge(t, "applicationFor", "app", "alice")
+	f.edge(t, "providedTo", "bg1", "alice")
+	f.edge(t, "providedTo", "bg2", "alice")
+	f.edge(t, "providedTo", "pay1", "alice")
+
+	rows := f.projectAt(t, "app", now)
+	require.Len(t, rows, 1, "two fresh bgchecks on one identity must still project ONE row (no guardOutputKeyCollision)")
+	v := rows[0].Values
+	require.Equal(t, later, v["freshUntil"],
+		"freshUntil must be the LATEST validUntil among fresh bgchecks (max), so the @at re-open timer waits for the last one")
+	require.Equal(t, false, v["missing_bgcheck"], "a fresh bgcheck counts → gap closed")
+	require.Equal(t, false, v["violating"], "all gaps closed → not violating")
+}
+
 // TestLeaseApplicationComplete_FreshUntilNullWhenStale: a STALE bgcheck (its
-// validUntil already past $now) is excluded by the dedicated bgcheck match's
-// WHERE, so freshUntil is null (Weaver clears any standing @at — there is no
-// future deadline to arm) and the gap re-opens. One row, anchor preserved.
+// validUntil already past $now) fails the fresh-completed CASE inside the
+// freshUntil max(), so it folds to null (Weaver clears any standing @at — there is
+// no future deadline to arm) and the gap re-opens. One row, anchor preserved.
 func TestLeaseApplicationComplete_FreshUntilNullWhenStale(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")

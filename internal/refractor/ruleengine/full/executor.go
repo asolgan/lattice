@@ -815,12 +815,13 @@ func projectionAutoAlias(e Expr, idx int) string {
 }
 
 // containsAggregator returns true if the expression tree contains a
-// recognized aggregator (currently just collect).
+// recognized aggregator (collect, count, max, min).
 func containsAggregator(e Expr) bool {
 	found := false
 	walkExprAll(e, func(x Expr) {
 		if fc, ok := x.(*FunctionCall); ok {
-			if strings.EqualFold(fc.Name, "collect") || strings.EqualFold(fc.Name, "count") {
+			switch strings.ToLower(fc.Name) {
+			case "collect", "count", "max", "min":
 				found = true
 			}
 		}
@@ -899,6 +900,16 @@ func (ex *executor) finalizeAggregator(e Expr, inputs []any) (any, error) {
 			}
 			return int64(n), nil
 		}
+		if strings.EqualFold(x.Name, "max") || strings.EqualFold(x.Name, "min") {
+			if len(x.Args) != 1 {
+				return nil, fmt.Errorf("full engine: %s takes exactly 1 argument, got %d", strings.ToLower(x.Name), len(x.Args))
+			}
+			op := ">"
+			if strings.EqualFold(x.Name, "min") {
+				op = "<"
+			}
+			return reduceExtreme(op, inputs)
+		}
 		return nil, fmt.Errorf("full engine: unsupported aggregator %q", x.Name)
 	case *BinaryOp:
 		// Each input is a `composite` carrying per-row left/right slices.
@@ -920,8 +931,15 @@ func (ex *executor) finalizeAggregator(e Expr, inputs []any) (any, error) {
 			return nil, err
 		}
 		if x.Op == "+" {
-			ll, _ := leftVal.([]any)
-			rr, _ := rightVal.([]any)
+			ll, lok := leftVal.([]any)
+			rr, rok := rightVal.([]any)
+			if !lok || !rok {
+				// The '+' aggregator-op path concatenates two collect() lists.
+				// A scalar child (max/min) is not a list — arithmetic over
+				// scalar aggregators (max(a)+max(b)) is not supported; fail
+				// loudly rather than silently returning an empty list.
+				return nil, fmt.Errorf("full engine: aggregator op %q requires list (collect) operands, got %T and %T", x.Op, leftVal, rightVal)
+			}
 			out := make([]any, 0, len(ll)+len(rr))
 			out = append(out, ll...)
 			out = append(out, rr...)
@@ -930,6 +948,37 @@ func (ex *executor) finalizeAggregator(e Expr, inputs []any) (any, error) {
 		return nil, fmt.Errorf("full engine: unsupported aggregator op %q", x.Op)
 	}
 	return nil, errors.New("full engine: finalizeAggregator: unsupported expression")
+}
+
+// reduceExtreme folds the aggregator inputs to a single max (op ">") or min
+// (op "<") using the engine's own ordering (compareAny: numeric when both
+// sides are numeric, otherwise lexicographic on strings — so ISO-8601
+// timestamps reduce chronologically). Nulls are dropped (Cypher semantics);
+// all-null / empty input yields null. Incomparable values follow compareAny
+// (no swap), matching how the engine orders them in WHERE.
+func reduceExtreme(op string, inputs []any) (any, error) {
+	var acc any
+	have := false
+	for _, v := range inputs {
+		if v == nil {
+			continue
+		}
+		if !have {
+			acc, have = v, true
+			continue
+		}
+		swap, err := compareAny(op, v, acc)
+		if err != nil {
+			return nil, err
+		}
+		if swap {
+			acc = v
+		}
+	}
+	if !have {
+		return nil, nil
+	}
+	return acc, nil
 }
 
 // --- RETURN ---
@@ -1129,6 +1178,16 @@ func (ex *executor) evalFunctionCall(b binding, fc *FunctionCall) (any, error) {
 		return []any{v}, nil
 	case "count":
 		return int64(1), nil
+	case "max", "min":
+		// Row-local (no grouping, or nested inside another expression):
+		// the extreme of a single row's value is that value. Grouping goes
+		// through projectItems → finalizeAggregator instead. max/min are
+		// unary aggregators; a multi-arg call is a query error, not a silent
+		// "use the first arg".
+		if len(fc.Args) != 1 {
+			return nil, fmt.Errorf("full engine: %s takes exactly 1 argument, got %d", name, len(fc.Args))
+		}
+		return ex.evalExpr(b, fc.Args[0])
 	case "levenshteindist":
 		// levenshteinDist(a, b) → int — classical Wagner-Fischer edit distance.
 		// Pure / deterministic / O(N*M) time + O(min(N,M)) space.

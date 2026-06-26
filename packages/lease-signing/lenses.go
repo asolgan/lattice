@@ -116,25 +116,26 @@ func Lenses() []pkgmgr.LensSpec {
 //
 // EAGER auto-reopen-at-expiry — the §10.2 freshUntil column.
 //
-//   - The lens projects a single scalar freshUntil per anchor: the completed,
-//     still-fresh bgcheck's validUntil. Weaver's temporal lane reads it
-//     (freshUntilColumn) and schedules an @at one-shot at that instant; when the
-//     timer fires it marks the row expired, the row reprojects, and the freshness
-//     predicate re-opens missing_bgcheck the moment freshness lapses — eagerly,
-//     not waiting for an incidental CDC touch.
-//   - freshUntil is read by a DEDICATED family-filtered bgcheck OPTIONAL MATCH
-//     (after the aggregation WITH) whose WHERE selects the completed, fresh
-//     bgcheck. When no fresh bgcheck exists the WHERE filters every providedTo
-//     neighbor and the executor null-restores the anchor with bg null, so
-//     freshUntil projects as a genuine null (Weaver clears any standing @at — no
-//     deadline to arm) and the anchor never drops. That null-restore is the
-//     ruleengine/full executor.go applyMatch OPTIONAL MATCH ... WHERE semantics:
-//     a fully-filtered optional preserves the source binding with nulls.
-//   - The dedicated bgcheck match yields AT MOST ONE row per anchor: the vertical
-//     dispatches at most one bgcheck per application (FR58), so at most one
-//     completed-fresh bgcheck instance is providedTo the applicant. That keeps the
-//     projection one-row-per-anchor (guardOutputKeyCollision stays satisfied).
-//     The single no-WHERE providedTo fan above still drives the missing_* counts.
+//   - The lens projects a single scalar freshUntil per anchor: the LATEST
+//     validUntil among the applicant's completed, still-fresh bgchecks. Weaver's
+//     temporal lane reads it (freshUntilColumn) and schedules an @at one-shot at
+//     that instant; when the timer fires it marks the row expired, the row
+//     reprojects, and the freshness predicate re-opens missing_bgcheck the moment
+//     freshness lapses — eagerly, not waiting for an incidental CDC touch.
+//   - freshUntil is a max() aggregator on the SAME single no-WHERE providedTo fan
+//     that drives the missing_* counts — max(validUntil) over the completed-fresh
+//     bgcheck CASE, folded inside the aggregation WITH. So it is aggregated, not
+//     re-expanded: an applicant with N completed-fresh bgchecks (multiple
+//     applications on one identity, or accumulated freshness re-dispatches —
+//     providedTo is on the identity, not the application) yields exactly one row,
+//     not N (guardOutputKeyCollision stays satisfied — no separate, unaggregated
+//     match to multiply the anchor). When no fresh bgcheck exists every CASE is
+//     null and max() folds to null, so freshUntil projects as a genuine null
+//     (Weaver clears any standing @at — no deadline to arm) and the anchor never
+//     drops. Picking the LATEST (max, not min/first) is required: the @at re-open
+//     timer must not fire while a later-expiring fresh bgcheck still counts toward
+//     missing_bgcheck. max() over canonical-UTC RFC3339 strings is lexicographic =
+//     chronological (ruleengine/full executor.go reduceExtreme → compareAny).
 //
 // DISPATCH SUPPRESSION — the per-gap inflight_<g> companion + maxretries_<g> cap.
 //
@@ -184,7 +185,6 @@ OPTIONAL MATCH (app)-[:appliesToUnit]->(u:unit)
 OPTIONAL MATCH (id)<-[:providedTo]-(inst:service)
 WITH
   app.key AS entityKey,
-  id      AS applicantNode,
   id.key  AS applicant,
   app.signature.data.signedAt AS signedAt,
   id.ssn.data.value AS ssnVal,
@@ -194,9 +194,8 @@ WITH
   count(DISTINCT CASE WHEN inst.family.data.value = 'backgroundCheck' AND inst.outcome.data.status = 'completed' AND inst.outcome.data.validUntil > $now THEN inst.key ELSE null END) AS freshBgComplete,
   count(DISTINCT CASE WHEN inst.family.data.value = 'payment' AND inst.outcome.data.status = 'completed' THEN inst.key ELSE null END) AS payComplete,
   count(DISTINCT CASE WHEN inst.family.data.value = 'backgroundCheck' AND inst.dispatch.data.vendorRef <> null AND inst.outcome.data.status = null THEN inst.key ELSE null END) AS bgInflight,
-  count(DISTINCT CASE WHEN inst.family.data.value = 'payment' AND inst.dispatch.data.vendorRef <> null AND inst.outcome.data.status = null THEN inst.key ELSE null END) AS payInflight
-OPTIONAL MATCH (applicantNode)<-[:providedTo]-(bg:service)
-  WHERE bg.family.data.value = 'backgroundCheck' AND bg.outcome.data.status = 'completed' AND bg.outcome.data.validUntil > $now
+  count(DISTINCT CASE WHEN inst.family.data.value = 'payment' AND inst.dispatch.data.vendorRef <> null AND inst.outcome.data.status = null THEN inst.key ELSE null END) AS payInflight,
+  max(CASE WHEN inst.family.data.value = 'backgroundCheck' AND inst.outcome.data.status = 'completed' AND inst.outcome.data.validUntil > $now THEN inst.outcome.data.validUntil ELSE null END) AS freshUntil
 RETURN
   entityKey AS actorKey,
   entityKey,
@@ -204,7 +203,7 @@ RETURN
   unitKey,
   unitAddress,
   unitRent,
-  bg.outcome.data.validUntil AS freshUntil,
+  freshUntil,
   (ssnVal = null)        AS missing_onboarding,
   (freshBgComplete = 0)  AS missing_bgcheck,
   (payComplete = 0)      AS missing_payment,

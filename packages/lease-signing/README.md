@@ -113,21 +113,19 @@ The lens projects a single scalar `freshUntil` per anchor (the completed, still-
 bgcheck's `validUntil`). Weaver's temporal lane reads it (`freshUntilColumn`), schedules
 an `@at` one-shot at that instant, and converts the firing into a `MarkExpired` op — so
 `missing_bgcheck` re-opens the moment freshness lapses (eagerly), not waiting for an
-incidental CDC touch. `freshUntil` is read by a **dedicated family-filtered bgcheck
-`OPTIONAL MATCH … WHERE`** (after the aggregation `WITH`) that selects the completed,
-fresh bgcheck. When no fresh bgcheck exists the `WHERE` filters every `providedTo`
-neighbor and the executor null-restores the anchor with `bg` null, so `freshUntil`
-projects as a genuine null (Weaver clears any standing `@at` — no deadline to arm) and
-the anchor never drops. That null-restore is the OPTIONAL MATCH `… WHERE` semantics in
-`internal/refractor/ruleengine/full/executor.go` `applyMatch`: a fully-WHERE-filtered
-optional preserves the source binding with nulls (the dedicated bgcheck match would
-otherwise drop the anchor when the applicant has a payment instance but no bgcheck yet —
-the transient convergence window; a dropped row reads to Weaver as an entity deletion via
-`clearClosedMarks` and re-dispatches a **second** bgcheck Loom instance — an FR58
-double-act). The dedicated match yields **at most one row per anchor** (FR58 dispatches at
-most one bgcheck per application, so at most one completed-fresh bgcheck instance exists),
-keeping the projection one-row-per-anchor (`guardOutputKeyCollision`). The single
-no-`WHERE` `providedTo` fan still drives the `missing_*` counts.
+incidental CDC touch. `freshUntil` is a **`max()` aggregator on the same single no-`WHERE`
+`providedTo` fan** that drives the `missing_*` counts — `max(validUntil)` over the
+completed-fresh bgcheck `CASE`, folded inside the aggregation `WITH`. Because it is
+aggregated (not a separate match), an applicant with N completed-fresh bgchecks
+(`providedTo` is on the identity, not the application — multiple applications on one
+identity, or accumulated freshness re-dispatches) still yields **exactly one row**, never
+N (`guardOutputKeyCollision` stays satisfied). When no fresh bgcheck exists every `CASE`
+is null and `max()` folds to null, so `freshUntil` projects as a genuine null (Weaver
+clears any standing `@at` — no deadline to arm) and the anchor never drops. Picking the
+**latest** (`max`, not `min`/first) is required: the `@at` re-open timer must not fire
+while a later-expiring fresh bgcheck still counts toward `missing_bgcheck`. `max()` over
+canonical-UTC RFC3339 strings is lexicographic = chronological
+(`internal/refractor/ruleengine/full/executor.go` `reduceExtreme` → `compareAny`).
 
 The `bgcheckFreshnessWindow` is a **compile-time** constant baked into the replyOp DDL
 script at package-init time (the value is interpolated into `leaseServiceReplyDDLScript`
