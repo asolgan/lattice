@@ -121,6 +121,7 @@ The Capability Lens is a Refractor projection that continuously maintains a flat
 | Identity & RBAC packages, Hello Lattice vertical slice | ✅ Phase 1 — implemented |
 | Package install/uninstall, transactional event outbox, per-lens delete mode | ✅ Phase 1.5 — implemented |
 | Loom, Weaver, Bridge (external I/O), `orchestration-base` + `lease-signing` (Loftspace reference vertical) packages | ✅ Phase 2 — implemented |
+| Experience layer — Loupe (operator/inspector, reads Core KV; :7777) + vertical apps LoftSpace (:7788) & Clinic (:7799), which read **lens read-model projections** (P5), never Core KV; all trusted single-identity, loopback, no per-user auth yet | 🏗️ Phase 3 — implemented (building out) |
 | Gateway (JWT auth, token revocation, HTTP→NATS translation) | 🔭 Phase 3 — designed |
 | Vault, crypto-shredding, KMS integration | 🔭 Phase 3 — designed |
 | Edge Lattice, Personal Lens, offline-first sync | 🔭 Phase 3+ — designed |
