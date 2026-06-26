@@ -253,11 +253,15 @@ func TestObjectLiveness_AttachLag_NotOrphaned(t *testing.T) {
 
 // Test 3b — DEAD-TARGET is now a deferred leak, NOT reaped by this lens. An
 // owner-tombstone leaves a stale liveLinks>=1 (it never touches the object), so a
-// dangling link to a dead owner keeps the object un-reaped — a bounded byte leak,
-// never data loss. Authoritative dead-target reclaim is the deferred
-// owner-cascade trigger's job (§21). (Pre-fix this asserted orphaned=true; the
-// adjacency signal that drove it cannot be trusted without reaping fresh attaches
-// — Test 3.)
+// dangling link to a dead owner keeps the object un-reaped BY THE LENS ALONE — the
+// lens is intentionally lag-free-but-owner-blind (§21). Authoritative dead-target
+// reclaim is the owner-tombstone-cascade's job (§22): it reacts to the owner's
+// core-kv tombstone and submits DetachObject, which decrements liveLinks and lets
+// the SAME Loop A+B reap the orphan — proven end-to-end by
+// TestObjectGC_OwnerTombstoneCascadeReclaims. So this asserts the lens-only
+// behaviour (unchanged); the cascade closes the loop around it. (Pre-§21 this
+// asserted orphaned=true off the adjacency signal, which cannot be trusted
+// without reaping fresh attaches — Test 3.)
 func TestObjectLiveness_DeadTargetOwner_LeakedNotReaped(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")

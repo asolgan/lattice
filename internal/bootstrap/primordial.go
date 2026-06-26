@@ -397,6 +397,12 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 	if err := add(BridgeIdentityKey, bridgeIDVal, bridgeIDErr); err != nil {
 		return nil, err
 	}
+	objmgrIDVal, objmgrIDErr := MakeVertexEnvelope(ObjmgrIdentityKey, "identity.system.object-store-manager",
+		map[string]any{"protected": true,
+			"note": "Internal object-store-manager service-actor identity (the v1b GC owner-tombstone-cascade, §22). Root-equivalent via holdsRole to the operator role."})
+	if err := add(ObjmgrIdentityKey, objmgrIDVal, objmgrIDErr); err != nil {
+		return nil, err
+	}
 
 	// 3. Meta-meta root DDL meta-vertex — the kernel's sole DDL.
 	rootVal, rootErr := MakeVertexEnvelope(MetaRootKey, "meta.ddl.vertexType",
@@ -671,6 +677,14 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		"vtx.role."+RoleOperatorID,
 		"holdsRole", "holdsRole", map[string]any{})
 	if err := add(BridgeHoldsRoleLinkKey, bridgeHoldsVal, bridgeHoldsErr); err != nil {
+		return nil, err
+	}
+	objmgrHoldsVal, objmgrHoldsErr := MakeLinkEnvelope(
+		ObjmgrHoldsRoleLinkKey,
+		"vtx.identity."+ObjmgrIdentityID,
+		"vtx.role."+RoleOperatorID,
+		"holdsRole", "holdsRole", map[string]any{})
+	if err := add(ObjmgrHoldsRoleLinkKey, objmgrHoldsVal, objmgrHoldsErr); err != nil {
 		return nil, err
 	}
 
@@ -1056,6 +1070,7 @@ func WaitForBootstrapComplete(ctx context.Context, nc *nats.Conn, logger *slog.L
 		{"loom", capabilityKeyForIdentity(LoomIdentityID)},
 		{"weaver", capabilityKeyForIdentity(WeaverIdentityID)},
 		{"bridge", capabilityKeyForIdentity(BridgeIdentityID)},
+		{"object-store-manager", capabilityKeyForIdentity(ObjmgrIdentityID)},
 	}
 
 	// checkAll classifies each key's Get error into three outcomes. A genuine

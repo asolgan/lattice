@@ -203,6 +203,37 @@ func (c *Conn) KVListKeys(ctx context.Context, bucket string) ([]string, error) 
 	return keys, nil
 }
 
+// KVListKeysPrefix returns every key under the given key prefix at the
+// JetStream level — a server-side subject-filtered list (`prefix>` over the
+// KV stream), far lighter than KVListKeys for a bucket whose full key set is
+// large but whose prefixed sub-set is bounded (e.g. `lnk.object.` — the object
+// link space, bounded by the count of attached objects). prefix MUST end at a
+// key-token boundary (a trailing "."), so the filter `prefix + ">"` selects all
+// keys nested under it. The order is unspecified.
+//
+// Like KVListKeys, this does NOT filter logically-deleted envelopes: a
+// SOFT-tombstoned entity (in-body "isDeleted": true, written via the Processor
+// commit path) is still a live JetStream entry and IS returned — callers that
+// want only live entities must KVGet each and inspect isDeleted. (The underlying
+// ListKeysFiltered's IgnoreDeletes drops only NATS hard-delete markers, which
+// the Processor never writes.)
+func (c *Conn) KVListKeysPrefix(ctx context.Context, bucket, prefix string) ([]string, error) {
+	kv, err := c.bucket(ctx, bucket)
+	if err != nil {
+		return nil, err
+	}
+	lister, err := kv.ListKeysFiltered(ctx, prefix+">")
+	if err != nil {
+		return nil, fmt.Errorf("substrate: KV list %s prefix %q: %w", bucket, prefix, err)
+	}
+	defer lister.Stop()
+	var keys []string
+	for k := range lister.Keys() {
+		keys = append(keys, k)
+	}
+	return keys, nil
+}
+
 // KVPutWithTTL writes value to key with a per-message TTL. The bucket must
 // have been provisioned with AllowMsgTTL (LimitMarkerTTL) enabled; otherwise
 // the NATS server ignores the TTL header.

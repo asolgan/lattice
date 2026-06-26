@@ -3,15 +3,21 @@
 //
 // Connects to NATS and runs the object-store-manager: a durable consumer on
 // events.object.tombstoned that reclaims a tombstoned object's bytes (after an
-// authoritative core-kv re-check), plus a low-cadence never-attached reconcile.
-// It submits NO ops (the graph tombstone is Weaver's directOp) — it only deletes
-// bytes — so it needs no actor key. Shares only internal/substrate with the rest
-// of the platform.
+// authoritative core-kv re-check), a low-cadence never-attached reconcile, and
+// the owner-tombstone-cascade (§22) — a second durable consumer over the
+// core-kv KV stream that, on an owner-vertex tombstone, submits DetachObject for
+// the owner's dangling object-links (so the existing Loop A+B reclaims the now-
+// orphaned object). The cascade submits ops under the primordial
+// object-store-manager service actor (bootstrap.ObjmgrIdentityKey, holdsRole →
+// operator); byte reclamation itself submits no ops. Shares only
+// internal/substrate + internal/bootstrap with the rest of the platform.
 //
 // Environment:
 //
 //	NATS_URL              NATS server URL (default: nats://localhost:4222)
+//	BOOTSTRAP_JSON_PATH   primordial-ID file (default: ./lattice.bootstrap.json)
 //	OBJMGR_INSTANCE       instance id (default: auto-generated objmgr-<NanoID>)
+//	OBJMGR_LANE           ops lane for the cascade's DetachObject (default: system)
 //	OBJMGR_RECONCILE_EVERY  reconcile cadence as a Go duration (default: 1h)
 //	OBJMGR_RECONCILE_GRACE  spare bytes younger than this Go duration (default: 25h, > the 24h tracker TTL)
 //
@@ -45,6 +51,8 @@ func main() {
 
 func run(logger *slog.Logger) error {
 	natsURL := envOrDefault("NATS_URL", nats.DefaultURL)
+	bootstrapJSONPath := envOrDefault("BOOTSTRAP_JSON_PATH", "./lattice.bootstrap.json")
+	lane := envOrDefault("OBJMGR_LANE", objectmanager.DefaultOpLane)
 
 	instance := os.Getenv("OBJMGR_INSTANCE")
 	if instance == "" {
@@ -55,7 +63,15 @@ func run(logger *slog.Logger) error {
 		instance = "objmgr-" + id
 	}
 
-	logger.Info("object-store-manager starting", "natsURL", natsURL, "instance", instance)
+	// Resolve the primordial object-store-manager service-actor key for the
+	// owner-tombstone-cascade (§22). Strict loader: an absent/invalid bootstrap
+	// file is a fatal startup error, never a freshly-minted (unrecognized) actor.
+	if err := bootstrap.Load(bootstrapJSONPath); err != nil {
+		return fmt.Errorf("load primordial IDs from %s: %w", bootstrapJSONPath, err)
+	}
+	actorKey := bootstrap.ObjmgrIdentityKey
+
+	logger.Info("object-store-manager starting", "natsURL", natsURL, "instance", instance, "actor", actorKey, "lane", lane)
 
 	conn, err := substrate.Connect(context.Background(), substrate.ConnectOpts{
 		URL:           natsURL,
@@ -74,6 +90,8 @@ func run(logger *slog.Logger) error {
 		ObjectsBucket:     bootstrap.CoreObjectsBucket,
 		EventsStream:      bootstrap.CoreEventsStreamName,
 		Durable:           objectmanager.DefaultDurable,
+		ActorKey:          actorKey,
+		OpLane:            lane,
 		ReconcileInterval: envDuration("OBJMGR_RECONCILE_EVERY", time.Hour, logger),
 		ReconcileGrace:    envDuration("OBJMGR_RECONCILE_GRACE", 25*time.Hour, logger),
 		HealthKVBucket:    bootstrap.HealthKVBucket,

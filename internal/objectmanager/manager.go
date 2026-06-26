@@ -59,6 +59,15 @@ type Config struct {
 	EventsStream  string
 	Durable       string
 
+	// Owner-tombstone-cascade (§22). ActorKey is the object-store-manager
+	// service-actor identity key (bootstrap.ObjmgrIdentityKey) the cascade
+	// submits DetachObject under; empty disables the cascade (byte-janitor-only
+	// mode). OpLane is the ops.<lane> to publish on (default "system");
+	// CascadeDurable overrides the cascade consumer's durable name.
+	ActorKey       string
+	OpLane         string
+	CascadeDurable string
+
 	ReconcileInterval time.Duration
 	ReconcileGrace    time.Duration
 
@@ -89,6 +98,12 @@ func New(cfg Config) *Manager {
 	if cfg.ReconcileGrace <= 0 {
 		cfg.ReconcileGrace = defaultReconcileGrace
 	}
+	if cfg.OpLane == "" {
+		cfg.OpLane = DefaultOpLane
+	}
+	if cfg.CascadeDurable == "" {
+		cfg.CascadeDurable = CascadeDurable
+	}
 	if cfg.now == nil {
 		cfg.now = time.Now
 	}
@@ -104,12 +119,20 @@ type tombstonedEvent struct {
 	} `json:"payload"`
 }
 
-// Run starts the heartbeat + the reconcile ticker, then drives the byte-janitor
-// consumer (Loop B), blocking until ctx is cancelled.
+// Run starts the heartbeat + the reconcile ticker + the owner-tombstone-cascade
+// (§22, when an ActorKey is configured), then drives the byte-janitor consumer
+// (Loop B), blocking until ctx is cancelled.
 func (m *Manager) Run(ctx context.Context) error {
 	go m.reconcileLoop(ctx)
 	if m.cfg.HealthKVBucket != "" {
 		go m.heartbeatLoop(ctx)
+	}
+	if m.cfg.ActorKey != "" {
+		go func() {
+			if err := m.runCascade(ctx); err != nil && ctx.Err() == nil {
+				m.cfg.Logger.Error("object-store-manager: owner-tombstone-cascade exited", "error", err)
+			}
+		}()
 	}
 	return m.cfg.Conn.RunDurableConsumer(ctx, substrate.DurableConsumerConfig{
 		Stream:          m.cfg.EventsStream,

@@ -409,3 +409,52 @@ func indexOf(s, sub string) int {
 
 // fmt.Println sentinel — keeps unused import gone if fmt is dropped.
 var _ = fmt.Println
+
+func TestKVListKeysPrefix(t *testing.T) {
+	c, ctx := newTestConn(t)
+	bucket := "core-kv"
+	provisionCoreBucket(ctx, t, c, bucket)
+
+	// Two live links + one SOFT-tombstoned link under lnk.object., plus an
+	// unrelated vertex key under a different prefix.
+	live1 := "lnk.object." + testNanoID1 + ".photoOf.identity." + testNanoID2
+	live2 := "lnk.object." + testNanoID2 + ".signedLeaseOf.leaseapp." + testNanoID1
+	soft := "lnk.object." + testNanoID2 + ".photoOf.identity." + testNanoID1
+	other := VertexKey("identity", testNanoID1)
+
+	if _, err := c.KVPut(ctx, bucket, live1, []byte(`{"isDeleted":false}`)); err != nil {
+		t.Fatalf("put live1: %v", err)
+	}
+	if _, err := c.KVPut(ctx, bucket, live2, []byte(`{"isDeleted":false}`)); err != nil {
+		t.Fatalf("put live2: %v", err)
+	}
+	// Soft tombstone = a normal KV entry whose body carries isDeleted:true (the
+	// Processor commit shape). It must STILL be listed (the prefix list is a
+	// JetStream-level enumeration; the caller filters on body isDeleted).
+	if _, err := c.KVPut(ctx, bucket, soft, []byte(`{"isDeleted":true}`)); err != nil {
+		t.Fatalf("put soft: %v", err)
+	}
+	if _, err := c.KVPut(ctx, bucket, other, []byte(`{"isDeleted":false}`)); err != nil {
+		t.Fatalf("put other: %v", err)
+	}
+
+	keys, err := c.KVListKeysPrefix(ctx, bucket, "lnk.object.")
+	if err != nil {
+		t.Fatalf("KVListKeysPrefix: %v", err)
+	}
+	got := map[string]bool{}
+	for _, k := range keys {
+		got[k] = true
+	}
+	for _, want := range []string{live1, live2, soft} {
+		if !got[want] {
+			t.Errorf("KVListKeysPrefix missing %q; got %v", want, keys)
+		}
+	}
+	if got[other] {
+		t.Errorf("KVListKeysPrefix returned out-of-prefix key %q", other)
+	}
+	if len(keys) != 3 {
+		t.Errorf("KVListKeysPrefix returned %d keys, want 3: %v", len(keys), keys)
+	}
+}

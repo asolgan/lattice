@@ -63,6 +63,7 @@ func TestServiceActorIdentities_Seeded(t *testing.T) {
 		{LoomIdentityKey, "identity.system.loom"},
 		{WeaverIdentityKey, "identity.system.weaver"},
 		{BridgeIdentityKey, "identity.system.bridge"},
+		{ObjmgrIdentityKey, "identity.system.object-store-manager"},
 	}
 	for _, tc := range cases {
 		raw, ok := idx[tc.key]
@@ -104,6 +105,7 @@ func TestServiceActorHoldsRoleLinks_Seeded(t *testing.T) {
 		{LoomHoldsRoleLinkKey, "vtx.identity." + LoomIdentityID},
 		{WeaverHoldsRoleLinkKey, "vtx.identity." + WeaverIdentityID},
 		{BridgeHoldsRoleLinkKey, "vtx.identity." + BridgeIdentityID},
+		{ObjmgrHoldsRoleLinkKey, "vtx.identity." + ObjmgrIdentityID},
 	}
 	for _, tc := range cases {
 		raw, ok := idx[tc.key]
@@ -128,7 +130,7 @@ func TestServiceActorHoldsRoleLinks_Seeded(t *testing.T) {
 
 // TestServiceActors_ReuseOperatorRole proves the AC #2 invariant: the service
 // actors add NO new role/permission/grantedBy entries. The only new keys
-// beyond the admin baseline are exactly the 3 identity vertices + 3 holdsRole
+// beyond the admin baseline are exactly the 4 identity vertices + 4 holdsRole
 // links; root-equivalence is established by reusing the existing operator
 // topology.
 func TestServiceActors_ReuseOperatorRole(t *testing.T) {
@@ -136,8 +138,8 @@ func TestServiceActors_ReuseOperatorRole(t *testing.T) {
 	idx := entriesByKey(t)
 
 	newKeys := []string{
-		LoomIdentityKey, WeaverIdentityKey, BridgeIdentityKey,
-		LoomHoldsRoleLinkKey, WeaverHoldsRoleLinkKey, BridgeHoldsRoleLinkKey,
+		LoomIdentityKey, WeaverIdentityKey, BridgeIdentityKey, ObjmgrIdentityKey,
+		LoomHoldsRoleLinkKey, WeaverHoldsRoleLinkKey, BridgeHoldsRoleLinkKey, ObjmgrHoldsRoleLinkKey,
 	}
 	for _, k := range newKeys {
 		if _, ok := idx[k]; !ok {
@@ -148,7 +150,7 @@ func TestServiceActors_ReuseOperatorRole(t *testing.T) {
 	// All links must target the SAME pre-existing operator role the admin
 	// holds — not a fresh "systemRoot"-style role.
 	roleTarget := "vtx.role." + RoleOperatorID
-	for _, k := range []string{LoomHoldsRoleLinkKey, WeaverHoldsRoleLinkKey, BridgeHoldsRoleLinkKey} {
+	for _, k := range []string{LoomHoldsRoleLinkKey, WeaverHoldsRoleLinkKey, BridgeHoldsRoleLinkKey, ObjmgrHoldsRoleLinkKey} {
 		var l linkEnvelope
 		if err := json.Unmarshal(idx[k], &l); err != nil {
 			t.Fatalf("unmarshal %q: %v", k, err)
@@ -160,7 +162,7 @@ func TestServiceActors_ReuseOperatorRole(t *testing.T) {
 }
 
 // TestPrimordialVertexKeys_IncludesServiceActors asserts the kernel-
-// verification enumeration covers all six service-actor keys (so verify-kernel
+// verification enumeration covers all eight service-actor keys (so verify-kernel
 // checks them).
 func TestPrimordialVertexKeys_IncludesServiceActors(t *testing.T) {
 	populateForTest(t)
@@ -168,9 +170,11 @@ func TestPrimordialVertexKeys_IncludesServiceActors(t *testing.T) {
 		LoomIdentityKey:        false,
 		WeaverIdentityKey:      false,
 		BridgeIdentityKey:      false,
+		ObjmgrIdentityKey:      false,
 		LoomHoldsRoleLinkKey:   false,
 		WeaverHoldsRoleLinkKey: false,
 		BridgeHoldsRoleLinkKey: false,
+		ObjmgrHoldsRoleLinkKey: false,
 	}
 	for _, k := range PrimordialVertexKeys() {
 		if _, ok := want[k]; ok {
@@ -185,7 +189,7 @@ func TestPrimordialVertexKeys_IncludesServiceActors(t *testing.T) {
 }
 
 // TestServiceActors_KeyCountDelta asserts the primordial batch grew by exactly
-// 6 entries (3 vertices + 3 links) relative to a baseline computed by removing
+// 8 entries (4 vertices + 4 links) relative to a baseline computed by removing
 // the service-actor keys — guarding the verify-kernel count delta.
 func TestServiceActors_KeyCountDelta(t *testing.T) {
 	populateForTest(t)
@@ -195,9 +199,11 @@ func TestServiceActors_KeyCountDelta(t *testing.T) {
 		LoomIdentityKey:        true,
 		WeaverIdentityKey:      true,
 		BridgeIdentityKey:      true,
+		ObjmgrIdentityKey:      true,
 		LoomHoldsRoleLinkKey:   true,
 		WeaverHoldsRoleLinkKey: true,
 		BridgeHoldsRoleLinkKey: true,
+		ObjmgrHoldsRoleLinkKey: true,
 	}
 	count := 0
 	for k := range idx {
@@ -205,16 +211,17 @@ func TestServiceActors_KeyCountDelta(t *testing.T) {
 			count++
 		}
 	}
-	if count != 6 {
-		t.Fatalf("expected exactly 6 service-actor entries in batch, got %d", count)
+	if count != 8 {
+		t.Fatalf("expected exactly 8 service-actor entries in batch, got %d", count)
 	}
 }
 
 // TestPrimordialVertexKeyCount_AgreesWithEnumeration asserts the declared
-// count constant matches the enumerated slice length and is the expected 29
-// after the Bridge identity vertex + holdsRole link were added. This is the
-// pure-Go mirror of the scripts/verify-kernel.go len()==Count agreement check
-// (the kernel-topology lockstep guard).
+// count constant matches the enumerated slice length and is the expected 31
+// after the object-store-manager identity vertex + holdsRole link were added
+// (the §22 GC cascade). This is the pure-Go mirror of the
+// scripts/verify-kernel.go len()==Count agreement check (the kernel-topology
+// lockstep guard).
 func TestPrimordialVertexKeyCount_AgreesWithEnumeration(t *testing.T) {
 	populateForTest(t)
 	keys := PrimordialVertexKeys()
@@ -222,8 +229,8 @@ func TestPrimordialVertexKeyCount_AgreesWithEnumeration(t *testing.T) {
 		t.Fatalf("PrimordialVertexKeys() enumerates %d but PrimordialVertexKeyCount is %d",
 			len(keys), PrimordialVertexKeyCount)
 	}
-	if PrimordialVertexKeyCount != 29 {
-		t.Fatalf("PrimordialVertexKeyCount = %d, want 29", PrimordialVertexKeyCount)
+	if PrimordialVertexKeyCount != 31 {
+		t.Fatalf("PrimordialVertexKeyCount = %d, want 31", PrimordialVertexKeyCount)
 	}
 }
 
@@ -282,16 +289,16 @@ func TestGeneratePopulateRoundTrip_Bridge(t *testing.T) {
 	}
 }
 
-// TestCheckVersion_RejectsStaleAcceptsCurrent proves the version-10 gate: a
-// version-10 file passes, and any other version (notably "9", which predates
-// the core-objects Object Store) is hard-rejected with the make-down/make-up
-// guidance so a stale file can never silently run against a mismatched kernel
-// topology (AC #2).
+// TestCheckVersion_RejectsStaleAcceptsCurrent proves the version-11 gate: a
+// version-11 file passes, and any other version (notably "10", which predates
+// the object-store-manager service actor) is hard-rejected with the
+// make-down/make-up guidance so a stale file can never silently run against a
+// mismatched kernel topology (AC #2).
 func TestCheckVersion_RejectsStaleAcceptsCurrent(t *testing.T) {
-	if err := checkVersion(BootstrapFile{Version: "10"}); err != nil {
-		t.Errorf("checkVersion(version=10): unexpected error %v", err)
+	if err := checkVersion(BootstrapFile{Version: "11"}); err != nil {
+		t.Errorf("checkVersion(version=11): unexpected error %v", err)
 	}
-	for _, v := range []string{"9", "8", "7", "6", "5", ""} {
+	for _, v := range []string{"10", "9", "8", "7", "6", "5", ""} {
 		err := checkVersion(BootstrapFile{Version: v})
 		if err == nil {
 			t.Errorf("checkVersion(version=%q): expected rejection, got nil", v)

@@ -73,9 +73,11 @@ func TestSeedPrimordial_ServiceActorsIdempotent(t *testing.T) {
 		bootstrap.LoomIdentityKey,
 		bootstrap.WeaverIdentityKey,
 		bootstrap.BridgeIdentityKey,
+		bootstrap.ObjmgrIdentityKey,
 		bootstrap.LoomHoldsRoleLinkKey,
 		bootstrap.WeaverHoldsRoleLinkKey,
 		bootstrap.BridgeHoldsRoleLinkKey,
+		bootstrap.ObjmgrHoldsRoleLinkKey,
 	}
 	revBefore := map[string]uint64{}
 	for _, k := range serviceKeys {
@@ -97,9 +99,9 @@ func TestSeedPrimordial_ServiceActorsIdempotent(t *testing.T) {
 
 // TestWaitForBootstrapComplete_BlocksOnServiceActorCapProjections proves the
 // AC #4 readiness gate: WaitForBootstrapComplete does NOT return ready until
-// the admin, Loom, Weaver, AND Bridge cap.* projections all exist — and that a
-// missing projection times out cleanly within the caller's bound rather than
-// hanging.
+// the admin, Loom, Weaver, Bridge, AND object-store-manager cap.* projections
+// all exist — and that a missing projection times out cleanly within the
+// caller's bound rather than hanging.
 func TestWaitForBootstrapComplete_BlocksOnServiceActorCapProjections(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")
@@ -127,6 +129,7 @@ func TestWaitForBootstrapComplete_BlocksOnServiceActorCapProjections(t *testing.
 	loomID := bootstrap.LoomIdentityID
 	weaverID := bootstrap.WeaverIdentityID
 	bridgeID := bootstrap.BridgeIdentityID
+	objmgrID := bootstrap.ObjmgrIdentityID
 
 	// With the health marker present but NO cap.* projections, the gate must
 	// time out cleanly (never hang past the bound).
@@ -149,10 +152,18 @@ func TestWaitForBootstrapComplete_BlocksOnServiceActorCapProjections(t *testing.
 	require.Error(t, err, "gate must NOT be ready while bridge cap.* is missing")
 	require.Contains(t, err.Error(), "bridge")
 
-	// Land bridge — all four present → ready.
+	// Land bridge — object-store-manager still missing → still not ready.
 	put(bridgeID)
+	shortCtx3, shortCancel3 := context.WithTimeout(ctx, 10*time.Second)
+	err = bootstrap.WaitForBootstrapComplete(shortCtx3, nc, logger)
+	shortCancel3()
+	require.Error(t, err, "gate must NOT be ready while object-store-manager cap.* is missing")
+	require.Contains(t, err.Error(), "object-store-manager")
+
+	// Land object-store-manager — all five present → ready.
+	put(objmgrID)
 	readyCtx, readyCancel := context.WithTimeout(ctx, 5*time.Second)
 	err = bootstrap.WaitForBootstrapComplete(readyCtx, nc, logger)
 	readyCancel()
-	require.NoError(t, err, "gate must be ready once admin + loom + weaver + bridge cap.* all exist")
+	require.NoError(t, err, "gate must be ready once admin + loom + weaver + bridge + object-store-manager cap.* all exist")
 }

@@ -147,8 +147,10 @@ func newHarness(t *testing.T) *harness {
 		}).Start(ctx)
 	}()
 
-	// The object-store-manager: Loop B byte-janitor (reconcile interval long so
-	// only the event path runs in the test window).
+	// The object-store-manager: Loop B byte-janitor + the §22 owner-tombstone-
+	// cascade (ActorKey set → the cascade consumer runs and submits DetachObject
+	// on owner death). Reconcile interval long so only the event paths run in the
+	// test window.
 	go func() {
 		_ = objectmanager.New(objectmanager.Config{
 			Conn:              conn,
@@ -156,6 +158,8 @@ func newHarness(t *testing.T) *harness {
 			ObjectsBucket:     bootstrap.CoreObjectsBucket,
 			EventsStream:      bootstrap.CoreEventsStreamName,
 			HealthKVBucket:    bootstrap.HealthKVBucket,
+			ActorKey:          bootstrap.ObjmgrIdentityKey,
+			OpLane:            "system",
 			Instance:          "og-manager",
 			ReconcileInterval: time.Hour,
 			Logger:            logger,
@@ -370,6 +374,55 @@ func TestObjectGC_AttachDetachReclaims(t *testing.T) {
 		return doc.IsDeleted
 	})
 	h.eventually("object bytes reclaimed by the manager", 20*time.Second, func() bool {
+		return h.bytesGone(storeName)
+	})
+}
+
+// softDeleteOwner rewrites an owner vertex root with isDeleted=true — the
+// authoritative post-tombstone core-kv state, which fires the KV-stream CDC the
+// §22 cascade consumer reacts to. (The cascade keys off the owner's core-kv
+// isDeleted state, independent of which op produced it; the unit tests prove the
+// handler logic, this e2e proves the live wiring.)
+func (h *harness) softDeleteOwner(ownerKey string) {
+	h.t.Helper()
+	entry, err := h.conn.KVGet(h.ctx, bootstrap.CoreKVBucket, ownerKey)
+	require.NoError(h.t, err)
+	var doc map[string]any
+	require.NoError(h.t, json.Unmarshal(entry.Value, &doc))
+	doc["isDeleted"] = true
+	b, _ := json.Marshal(doc)
+	_, err = h.conn.KVUpdate(h.ctx, bootstrap.CoreKVBucket, ownerKey, b, entry.Revision)
+	require.NoError(h.t, err)
+}
+
+// TestObjectGC_OwnerTombstoneCascadeReclaims is the §22 owner-tombstone-cascade
+// convergence proof: attach an object to an identity, then tombstone the OWNER
+// (not the object, and with no explicit detach). The cascade consumer must react
+// to the owner's core-kv tombstone, submit DetachObject for the now-dangling
+// link, and thereby drive the SAME Loop A+B that reclaims the orphan — closing
+// the §21.2 dead-target byte LEAK. Without the cascade the object's liveLinks
+// would stay stale ≥1 and the bytes would leak forever.
+func TestObjectGC_OwnerTombstoneCascadeReclaims(t *testing.T) {
+	h := newHarness(t)
+	idKey := h.seedIdentity()
+
+	oid, storeName := h.attach(idKey, "cascade-bytes", []string{idKey})
+
+	// The lens projects the object as NOT orphaned while the owner is alive.
+	h.eventually("objectLiveness row projects (not orphaned)", 20*time.Second, func() bool {
+		row := h.readRow(oid)
+		return row != nil && row["missing_owner"] == false
+	})
+
+	// Tombstone the OWNER — no explicit DetachObject. The cascade must do the rest.
+	h.softDeleteOwner(idKey)
+
+	// The cascade detaches the dangling link → liveLinks 0 → Loop A dispatches
+	// TombstoneObject → the object is soft-deleted → Loop B reclaims the bytes.
+	h.eventually("object vertex soft-deleted via the owner-tombstone-cascade", 40*time.Second, func() bool {
+		return h.objectIsDeleted(oid)
+	})
+	h.eventually("object bytes reclaimed after the cascade", 20*time.Second, func() bool {
 		return h.bytesGone(storeName)
 	})
 }
