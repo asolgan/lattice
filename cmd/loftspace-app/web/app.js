@@ -655,17 +655,46 @@ async function submitComplete(ev) {
       toast("Could not complete — " + msg, "err");
       return;
     }
+    // The bound op closed the gap; now retire the task. This app submits as the
+    // trusted admin actor (a standing permission), NOT via the task's ephemeral
+    // grant, so the Processor's task-path auto-complete (Contract #10 §10.7) does
+    // not fire — we close the task ourselves through the contract's retained
+    // out-of-band CompleteTask path. A benign rejection (the task already closed,
+    // e.g. a double-submit) is non-fatal: the bound op already committed.
+    await completeTask(task.taskKey);
     closeComplete();
     toast(desc.title + " — done.", "ok");
-    // Reload the inbox (the gap closes; a Loom-managed userTask closes its own
-    // task, an assignTask SignLease may linger until its gap-closer lands — a
-    // separate platform follow-up) and re-scope the application tracker.
     loadTasks();
     loadApplications();
   } catch (e) {
     toast("Could not complete: " + e.message, "err");
   } finally {
     submit.disabled = false;
+  }
+}
+
+// completeTask submits an explicit CompleteTask(taskKey) — the Contract #10 §10.7
+// out-of-band completion path — to retire the task whose bound op just committed.
+// Best-effort: a rejection (the task already closed) or a transport error is logged,
+// never surfaced, because the gap-closing op has already succeeded.
+async function completeTask(taskKey) {
+  if (!taskKey) return;
+  try {
+    const reply = await api("/api/op", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operationType: "CompleteTask",
+        class: "task",
+        reads: [taskKey],
+        payload: { taskKey },
+      }),
+    });
+    if (reply && reply.status === "rejected" && reply.error) {
+      console.warn("CompleteTask not applied:", reply.error.code, reply.error.message);
+    }
+  } catch (e) {
+    console.warn("CompleteTask request failed:", e.message);
   }
 }
 
