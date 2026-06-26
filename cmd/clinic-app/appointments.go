@@ -24,6 +24,10 @@ type appointmentRow struct {
 	ProviderKey       string `json:"providerKey"`
 	ProviderName      string `json:"providerName,omitempty"`
 	ProviderSpecialty string `json:"providerSpecialty,omitempty"`
+	// ReminderSentAt is the RFC3339 instant the ~24h appointment reminder fired
+	// (the clinic-reminders convergence, surfaced via the clinicAppointments lens).
+	// Empty until the reminder is sent (or when clinic-reminders is not installed).
+	ReminderSentAt string `json:"reminderSentAt,omitempty"`
 }
 
 // computeAppointments assembles appointment rows from the `clinicAppointments`

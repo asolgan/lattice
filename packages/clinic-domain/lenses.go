@@ -73,7 +73,11 @@ func Lenses() []pkgmgr.LensSpec {
 // providerKey repeat the joined endpoints in the body so a reader can scope to
 // "my appointments" (by patient) or a "provider schedule" (by provider).
 // Neighbour columns (patientName / providerName / providerSpecialty) are null when
-// a link is absent (the reader treats them as absent).
+// a link is absent (the reader treats them as absent). reminderSentAt is a null-safe
+// read of the appointment's .reminder aspect (written by the clinic-reminders package
+// when the @at reminder fires): it is null until a reminder is sent, and null whenever
+// clinic-reminders is not installed — a soft read-model surfacing, never a build
+// dependency (the engine reads the aspect by key-shape; clinic-domain installs alone).
 const clinicAppointmentsSpec = `MATCH (a:appointment)
 OPTIONAL MATCH (a)-[:forPatient]->(p:patient)
 OPTIONAL MATCH (a)-[:withProvider]->(pr:provider)
@@ -88,7 +92,8 @@ RETURN
   p.demographics.data.fullName AS patientName,
   pr.key AS providerKey,
   pr.profile.data.fullName AS providerName,
-  pr.profile.data.specialty AS providerSpecialty`
+  pr.profile.data.specialty AS providerSpecialty,
+  a.reminder.data.sentAt AS reminderSentAt`
 
 // clinicProvidersSpec projects one row per NAMED provider — the human-readable
 // roster the booking UI renders so a patient picks a provider by name + specialty

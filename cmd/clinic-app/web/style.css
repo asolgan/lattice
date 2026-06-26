@@ -131,6 +131,7 @@ button.ghost:hover { background: var(--bg-input); color: var(--text); }
 .card .when { font-size: 16px; font-weight: 600; color: var(--text); }
 .card .when span { font-size: 13px; font-weight: 400; color: var(--text-dim); }
 .card .meta { color: var(--text-dim); font-size: 12px; }
+.card .meta.reminder-sent { color: var(--green); }
 .card.past { opacity: 0.6; }
 .card-actions { margin-top: auto; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 

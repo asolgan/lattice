@@ -470,6 +470,16 @@ function renderApptCard(a, opts) {
   reason.className = "meta";
   reason.textContent = a.reason || "";
 
+  // The ~24h reminder, once the clinic-reminders orchestration has fired it
+  // (surfaced via the clinicAppointments lens's reminderSentAt column). Absent
+  // until sent.
+  const reminder = document.createElement("div");
+  reminder.className = "meta reminder-sent";
+  if (a.reminderSentAt) {
+    const r = new Date(a.reminderSentAt);
+    reminder.textContent = "🔔 Reminder sent" + (isNaN(r) ? "" : " · " + r.toLocaleString());
+  }
+
   const actions = document.createElement("div");
   actions.className = "card-actions";
   const badge = document.createElement("span");
@@ -489,6 +499,7 @@ function renderApptCard(a, opts) {
   if (sub.textContent) card.append(sub);
   card.append(when);
   if (reason.textContent) card.append(reason);
+  if (reminder.textContent) card.append(reminder);
   card.append(actions);
   return card;
 }
