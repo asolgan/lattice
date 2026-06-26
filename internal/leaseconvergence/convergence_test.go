@@ -122,7 +122,7 @@ func TestLeaseConvergence_DrainThenAssert_SteadyState(t *testing.T) {
 
 	// Drain: violating flips false once all four gaps close (the bridge round-trips
 	// the bgcheck + payment, the two ops close onboarding + signature).
-	h.drainUntilConverged(appID, 45*time.Second)
+	h.drainUntilConverged(appID, 30*time.Second)
 
 	// Assert steady: it stays converged (no oscillation).
 	h.assertSteadyState(appID, 5*time.Second)
@@ -144,7 +144,7 @@ func TestLeaseConvergence_D5_OutcomeInAspect_RootMinimal(t *testing.T) {
 	h := newHarness(t)
 	appKey, appID, applicantKey := h.seedApplicant()
 	h.driveApplicantSteps(appKey, applicantKey)
-	h.drainUntilConverged(appID, 45*time.Second)
+	h.drainUntilConverged(appID, 30*time.Second)
 
 	applicantID := applicantKey[len("vtx.identity."):]
 	svcKeys := h.serviceOutcomes(applicantID)
@@ -184,7 +184,7 @@ func TestLeaseConvergence_FR58_RetriedExternalCall_AtMostOnce(t *testing.T) {
 	h := newHarness(t)
 	appKey, appID, applicantKey := h.seedApplicant()
 	h.driveApplicantSteps(appKey, applicantKey)
-	h.drainUntilConverged(appID, 45*time.Second)
+	h.drainUntilConverged(appID, 30*time.Second)
 
 	applicantID := applicantKey[len("vtx.identity."):]
 	before := h.countOutcomeAspects(applicantID)
@@ -261,7 +261,7 @@ func TestLeaseConvergence_BgcheckFreshness_EagerReopen(t *testing.T) {
 	marks := h.startMarkExpiredCounter(appKey)
 
 	h.driveApplicantSteps(appKey, applicantKey)
-	h.drainUntilConverged(appID, 45*time.Second)
+	h.drainUntilConverged(appID, 30*time.Second)
 
 	// The converged row carries freshUntil (the bgcheck's validUntil) — the column
 	// Weaver's temporal lane schedules the @at from. Distinguishes eager from lazy:
@@ -359,5 +359,5 @@ func (h *harness) assertEagerReopenCycle(appKey, appID, applicantID string, cycl
 		"cycle %d: exactly one NEW bgcheck external call this cycle (no double-dispatch)", cycle)
 
 	// And it settles back to converged (no residual violation after the re-converge).
-	h.drainUntilConverged(appID, 45*time.Second)
+	h.drainUntilConverged(appID, 30*time.Second)
 }

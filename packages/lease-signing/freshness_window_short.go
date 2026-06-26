@@ -11,14 +11,16 @@ package leasesigning
 //     "missing_bgcheck stays false" assertion flakes. The bgcheck completes
 //     early in converge and validUntil = its completedAt + window, so the window
 //     must comfortably exceed (worst-case drain deadline + settle hold). The
-//     convergence tests cap their drain at 45s and settle at 5s, so 75s leaves a
-//     ~25s margin at that ceiling (and a far larger one in practice — converge
-//     runs in single-digit seconds in-process).
+//     convergence tests cap their drain at 30s and settle at 5s, so 40s clears
+//     that 35s ceiling (and far more in practice — converge runs in ~1s
+//     in-process).
 //   - the eager-freshness test must still WATCH two lapses within bounded waits,
 //     so the window cannot be arbitrarily large; each cycle's @at fires one
 //     window after the prior converge, and the per-cycle wait budget is the
-//     window plus a generous margin (well under the 10m gate timeout).
+//     window plus a generous margin (well under the 10m gate timeout). It is the
+//     dominant cost of the gate (~2*window of pure lapse), so the window is kept
+//     to the steady-state floor, not above it.
 //
 // The production default (5m) lives in freshness_window.go; this value is never
 // compiled into a shipped binary.
-const bgcheckFreshnessWindow = "75s"
+const bgcheckFreshnessWindow = "40s"

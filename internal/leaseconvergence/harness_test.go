@@ -145,13 +145,12 @@ func newHarness(t *testing.T, opts ...harnessOpt) *harness {
 	// test (TestLeaseConvergence_BgcheckFreshness_EagerReopen) runs TWO real
 	// freshness windows back-to-back (~2*freshnessWindow of pure lapse), plus boot
 	// + install + the initial converge, plus a re-dispatch + re-converge after each
-	// lapse. A flat 180s was a razor-thin margin against just the two 150s of
-	// windows — the per-cycle 240s Eventually budgets were unreachable. Derive the
-	// deadline from the window so it tracks the lens (boot/converge slack +
-	// 2*window + generous per-cycle re-converge slack), landing ~8-9m: comfortably
-	// above the eager worst case yet safely under the 10m make test-lease-convergence
-	// gate. The steady-state / single-cycle tests finish in well under a minute, so
-	// the larger ceiling never affects them — it is a deadline, not a sleep.
+	// lapse. Derive the deadline from the window so it tracks the lens (boot/converge
+	// slack + 2*window + generous per-cycle re-converge slack) rather than a flat
+	// magic number a window change could silently make too tight. It lands well
+	// under the 10m make test-lease-convergence gate. The steady-state / single-cycle
+	// tests finish in well under a minute, so the larger ceiling never affects them —
+	// it is a deadline, not a sleep.
 	harnessTimeout := 90*time.Second + 2*freshnessWindow + 4*60*time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), harnessTimeout)
 	t.Cleanup(cancel)
