@@ -835,6 +835,20 @@ function selectSchedAppt(a) {
     rem.textContent = "🔔 Reminder sent" + (isNaN(r) ? "" : " · " + r.toLocaleString());
     d.append(rem);
   }
+  // Day-of-visit transitions on the desk view (the front-desk / provider operational
+  // surface the PO flagged). loadSchedule re-fetches + closes this panel (it calls
+  // hideSchedDetail first), and the block re-colours to the new status.
+  if (ACTIVE_STATUSES.includes(a.status)) {
+    const acts = document.createElement("div");
+    acts.className = "sd-actions";
+    acts.append(lifecycleButtons(a, loadSchedule));
+    const cancel = document.createElement("button");
+    cancel.className = "ghost danger";
+    cancel.textContent = "Cancel";
+    cancel.addEventListener("click", () => setStatus(a, "cancelled", loadSchedule));
+    acts.append(cancel);
+    d.append(acts);
+  }
   d.hidden = false;
   renderSchedule();
 }
@@ -940,6 +954,8 @@ function renderApptCard(a, opts) {
     const btns = document.createElement("span");
     btns.className = "card-btns";
 
+    btns.append(lifecycleButtons(a, loadAppts));
+
     const reschedule = document.createElement("button");
     reschedule.className = "ghost";
     reschedule.textContent = "Reschedule";
@@ -949,7 +965,7 @@ function renderApptCard(a, opts) {
     const cancel = document.createElement("button");
     cancel.className = "ghost danger";
     cancel.textContent = "Cancel";
-    cancel.addEventListener("click", () => cancelAppt(a));
+    cancel.addEventListener("click", () => setStatus(a, "cancelled", loadAppts));
     btns.append(cancel);
 
     actions.append(btns);
@@ -968,25 +984,63 @@ function statusClass(status) {
   return (status || "").toLowerCase() === "noshow" ? "noshow" : (status || "").toLowerCase();
 }
 
-async function cancelAppt(a) {
-  if (!confirm("Cancel this appointment?")) return;
+// ---- Appointment lifecycle (the day-of-visit transitions) ----
+//
+// SetAppointmentStatus is unconditioned (re-runnable), so the transitions below are
+// UI affordances, not server gates: a scheduled appointment can be confirmed /
+// completed / no-showed; a confirmed one completed / no-showed; completed · cancelled
+// · noShow are terminal. Cancel and the no-show transition prompt for confirmation;
+// forward progress (confirm / complete) proceeds directly.
+
+const TERMINAL_STATUSES = ["completed", "cancelled", "noshow"];
+const STATUS_LABEL = { confirmed: "Confirm", completed: "Complete", noShow: "No-show", cancelled: "Cancel" };
+const STATUS_PAST = { confirmed: "confirmed", completed: "completed", noShow: "marked no-show", cancelled: "cancelled" };
+
+// lifecycleTransitions returns the SetAppointmentStatus targets reachable from the
+// current status (excluding Cancel, which renders as its own button alongside).
+function lifecycleTransitions(status) {
+  const s = (status || "").toLowerCase();
+  if (s === "scheduled") return ["confirmed", "completed", "noShow"];
+  if (s === "confirmed") return ["completed", "noShow"];
+  return []; // completed / cancelled / noShow are terminal
+}
+
+// setStatus drives SetAppointmentStatus to the given status and reloads via onDone.
+// noShow / cancelled prompt first (they end the appointment).
+async function setStatus(a, status, onDone) {
+  if (status === "noShow" && !confirm("Mark this appointment as a no-show?")) return;
+  if (status === "cancelled" && !confirm("Cancel this appointment?")) return;
   try {
     const reply = await submitOp(
       "SetAppointmentStatus",
       "appointment",
-      { appointmentKey: a.appointmentKey, status: "cancelled" },
+      { appointmentKey: a.appointmentKey, status },
       [a.appointmentKey],
     );
     const msg = rejectionMessage(reply);
     if (msg) {
-      toast("Could not cancel — " + msg, "err");
+      toast("Could not update status — " + msg, "err");
       return;
     }
-    toast("Appointment cancelled.", "ok");
-    loadAppts();
+    toast("Appointment " + (STATUS_PAST[status] || status) + ".", "ok");
+    if (onDone) onDone();
   } catch (e) {
-    toast("Could not cancel: " + e.message, "err");
+    toast("Could not update status: " + e.message, "err");
   }
+}
+
+// lifecycleButtons builds the status-transition buttons for an appointment, wired to
+// reload via onDone. Returns a fragment (empty for a terminal appointment).
+function lifecycleButtons(a, onDone) {
+  const frag = document.createDocumentFragment();
+  for (const st of lifecycleTransitions(a.status)) {
+    const b = document.createElement("button");
+    b.className = st === "noShow" ? "ghost danger" : "ghost";
+    b.textContent = STATUS_LABEL[st];
+    b.addEventListener("click", () => setStatus(a, st, onDone));
+    frag.append(b);
+  }
+  return frag;
 }
 
 // ---- Reschedule (move an appointment to a new time) ----
