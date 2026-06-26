@@ -65,6 +65,15 @@ jobs:
       - name: Install + verify clinic-reminders package (co-installs orchestration-base + clinic-domain)
         run: make verify-package-clinic-reminders
 
+      - name: Install + verify location-domain package
+        run: make verify-package-location-domain
+
+      - name: Install + verify loftspace-domain package (co-installs location-domain)
+        run: make verify-package-loftspace-domain
+
+      - name: Install + verify service-location package (co-installs location-domain)
+        run: make verify-package-service-location
+
       - name: Run Gate 2 bypass suite (Phase 1 Gate 2)
         # Runs the 4-category bypass suite; exits non-zero if any category
         # is not BLOCKED. Writes gate2-report.txt + Health KV marker.
