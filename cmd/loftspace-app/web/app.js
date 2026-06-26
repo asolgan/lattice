@@ -556,11 +556,15 @@ function renderApplicationCard(row, highlight) {
 
   // Decision banner. Declined takes precedence over the in-review state: a
   // standing rejection is a terminal disposition, not a step still to complete.
+  // "Complete" keys off applicantApproved (all four APPLICANT steps done), NOT
+  // !violating: violating now also covers the internal listing-leased flip, so an
+  // applicant who has finished everything would otherwise read "in review" for the
+  // brief window while the unit is marked leased.
   const banner = document.createElement("div");
   if (row.declined) {
     banner.className = "decision declined";
     banner.textContent = "Application declined — a verification check did not pass.";
-  } else if (!row.violating) {
+  } else if (row.applicantApproved) {
     banner.className = "decision ok";
     banner.textContent = "Application complete — all steps done.";
   } else {

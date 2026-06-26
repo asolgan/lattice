@@ -20,14 +20,20 @@ const applicationKeyPrefix = "leaseApplicationComplete."
 // inflight_ companion distinguishes "in progress" from "to do"; the declined_
 // companion marks a standing business rejection (a failed check that no retry has
 // superseded) so the FE shows "Declined" instead of a silent forever-"in review";
-// the unit columns are the informational "what am I leasing" header. maxretries_<g> is the lens's
-// CONSTANT integer retry-budget cap baked onto every row (a count, not a flag —
-// it is an int, not a bool: typing it bool drops every row on decode). unitRent
-// is a pointer so an absent listing rent stays absent rather than 0.
+// the unit columns are the informational "what am I leasing" header. applicantApproved
+// is true once the four APPLICANT gaps are all closed — the FE keys its "complete"
+// banner off it (NOT off !violating), because violating now also covers the
+// internal listing-leased flip, so an applicant who has finished every step would
+// otherwise briefly read "in review" while the unit is being marked leased.
+// maxretries_<g> is the lens's CONSTANT integer retry-budget cap baked onto every
+// row (a count, not a flag — it is an int, not a bool: typing it bool drops every
+// row on decode). unitRent is a pointer so an absent listing rent stays absent
+// rather than 0.
 type applicationRow struct {
 	EntityKey         string   `json:"entityKey"`
 	Applicant         string   `json:"applicant"`
 	Violating         bool     `json:"violating"`
+	ApplicantApproved bool     `json:"applicantApproved"`
 	MissingOnboarding bool     `json:"missing_onboarding"`
 	MissingBgcheck    bool     `json:"missing_bgcheck"`
 	MissingPayment    bool     `json:"missing_payment"`
@@ -42,6 +48,7 @@ type applicationRow struct {
 	UnitKey           string   `json:"unitKey"`
 	UnitAddress       string   `json:"unitAddress"`
 	UnitRent          *float64 `json:"unitRent"`
+	UnitStatus        string   `json:"unitStatus"`
 	FreshUntil        string   `json:"freshUntil"`
 }
 
