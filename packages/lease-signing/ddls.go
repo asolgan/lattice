@@ -39,11 +39,60 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 func DDLs() []pkgmgr.DDLSpec {
 	return []pkgmgr.DDLSpec{
 		leaseAppDDL(),
+		unitLeaseApplicationsAspectTypeDDL(),
 		leaseServiceInstanceDDL(),
 		leaseServiceReplyDDL(),
 		leaseServiceDispatchDDL(),
 	}
 }
+
+// unitLeaseApplicationsAspectTypeDDL declares the .leaseApplications aspect-type
+// DDL — the step-6 write gate for CreateLeaseApplication's per-unit
+// live-application index. The index is an aspect on the location-domain
+// vtx.unit.<NanoID> (a cross-package aspect, mirroring loftspace-domain's
+// .listing / .address), so this DDL exists only so step-6 — which keys
+// permittedCommands on the mutation document's class (unitLeaseApplications) —
+// admits the CreateLeaseApplication-written index. Declaration-only: the
+// leaseapp vertexType DDL owns the CreateLeaseApplication script; this aspect
+// DDL carries no op handler and fails closed if dispatched. NON-sensitive (it
+// attaches to a unit, not an identity).
+func unitLeaseApplicationsAspectTypeDDL() pkgmgr.DDLSpec {
+	return pkgmgr.DDLSpec{
+		CanonicalName:     "unitLeaseApplications",
+		Class:             "meta.ddl.aspectType",
+		PermittedCommands: []string{"CreateLeaseApplication"},
+		Description: "Per-unit live-application index aspect (LoftSpace). Stored as vtx.unit.<NanoID>.leaseApplications " +
+			"= {applications: [{leaseApp: vtx.leaseapp.<id>, applicant: vtx.identity.<id>}, ...]}. Non-sensitive; " +
+			"attaches to a location unit, not an identity. Maintained ONLY by CreateLeaseApplication (whose leaseapp " +
+			"vertexType DDL owns the script): it reads the index on demand (kv.Read, §2.5 — NOT a declared read, since " +
+			"the unit may have no index yet), prunes tombstoned applications, REJECTS a second live application by the " +
+			"same applicant (DuplicateApplication; a unit accepts many different applicants), and rewrites the index " +
+			"OCC-guarded so concurrent applications fail closed. This aspect-type DDL exists so step-6's " +
+			"permittedCommands check, keyed on the mutation's class, admits the write. Declaration-only: no op handler.",
+		Script:       aspectDeclarationOnlyScript,
+		InputSchema:  `{"type":"object","properties":{"applications":{"type":"array","items":{"type":"object","properties":{"leaseApp":{"type":"string"},"applicant":{"type":"string"}}}}}}`,
+		OutputSchema: `{"type":"object"}`,
+		FieldDescription: map[string]string{
+			"applications": "List of {leaseApp, applicant} entries — the live (non-tombstoned) applications for this unit. Tombstoned entries are pruned on the next CreateLeaseApplication.",
+		},
+		Examples: []pkgmgr.ExampleSpec{
+			{
+				Name:            "leaseApplications index aspect",
+				Payload:         map[string]any{"applications": []any{map[string]any{"leaseApp": "vtx.leaseapp.abc123", "applicant": "vtx.identity.def456"}}},
+				ExpectedOutcome: "Stored as vtx.unit.<NanoID>.leaseApplications; created on the first application, OCC-upserted thereafter by CreateLeaseApplication.",
+			},
+		},
+	}
+}
+
+// aspectDeclarationOnlyScript is the declaration-only Starlark for the
+// unitLeaseApplications aspect-type DDL. The aspect is written by the leaseapp
+// vertexType DDL's CreateLeaseApplication op; this aspect-type DDL is a step-6
+// write gate only, never an op handler — it fails closed if dispatched.
+const aspectDeclarationOnlyScript = `
+def execute(state, op):
+    fail("aspect-type DDL: not an operation handler: " + op.operationType)
+`
 
 func leaseAppDDL() pkgmgr.DDLSpec {
 	return pkgmgr.DDLSpec{

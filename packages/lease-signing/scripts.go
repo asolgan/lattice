@@ -30,6 +30,22 @@ def required_string(p, name):
         fail("InvalidArgument: " + name + ": required non-empty string")
     return v.strip()
 
+def make_aspect_upsert(vtx_key, local_name, cls, data):
+    return {"op": "update", "key": vtx_key + "." + local_name,
+            "document": {"class": cls, "isDeleted": False,
+                         "vertexKey": vtx_key, "localName": local_name, "data": data}}
+
+def make_aspect_upsert_occ(vtx_key, local_name, cls, data, expected_revision):
+    # Like make_aspect_upsert but carries an explicit expectedRevision so the
+    # commit applies an OCC condition (an update with no expectedRevision commits
+    # UNCONDITIONED — step8_commit.go). The per-unit application-index
+    # serialization point: two concurrent applications for one unit snapshot the
+    # index at the same revision, both rewrite it, and the second commit
+    # RevisionConflicts (fail closed, never a silent duplicate).
+    m = make_aspect_upsert(vtx_key, local_name, cls, data)
+    m["expectedRevision"] = expected_revision
+    return m
+
 def bare_nanoid_or_mint(p, name):
     if not hasattr(p, name):
         return nanoid.new()
@@ -132,12 +148,58 @@ def execute(state, op):
         # "this application applies to this unit." The convergence lens walks it.
         applies_to_lnk = "lnk.leaseapp." + app_id + ".appliesToUnit.unit." + unit_id
 
+        # Per-unit live-application guard (Capability-KV §06 — the operation's own
+        # Starlark logic; no platform scan, no frozen contract). The unit carries a
+        # .leaseApplications index aspect listing its live applications as
+        # {leaseApp, applicant} entries. Read it ON DEMAND (kv.Read, §2.5) — NOT a
+        # declared contextHint.reads key: the unit is a location-domain vertex and
+        # the index does not exist until the FIRST application, so a declared read
+        # would HydrationMiss on a never-applied unit. Absent → unconstrained (the
+        # index is created on the first application). For each existing entry,
+        # kv.Read the application: a tombstoned / absent leaseapp is pruned (does
+        # not block); a still-live application by the SAME applicant is a
+        # DuplicateApplication — a unit accepts many DIFFERENT applicants (normal
+        # leasing: the landlord chooses) but not the same applicant twice. The index
+        # is rewritten OCC-guarded on its read revision (present) or CreateOnly
+        # (absent), so two concurrent applications for one unit fail closed (the
+        # second conflicts), never a silent duplicate.
+        idx_key = unit + ".leaseApplications"
+        idx = kv.Read(idx_key)
+        idx_present = idx != None and not idx.isDeleted
+        kept = []
+        if idx_present:
+            apps_val = idx.data.get("applications")
+            if apps_val != None and type(apps_val) == type([]):
+                for entry in apps_val:
+                    if type(entry) != type({}):
+                        continue
+                    cand_key = entry.get("leaseApp")
+                    cand_applicant = entry.get("applicant")
+                    if cand_key == None:
+                        continue
+                    cand = kv.Read(cand_key)
+                    if cand == None or cand.isDeleted:
+                        continue
+                    # Still live: keep it in the rebuilt index, and block a repeat
+                    # by the same applicant.
+                    kept.append({"leaseApp": cand_key, "applicant": cand_applicant})
+                    if cand_applicant == applicant:
+                        fail("DuplicateApplication: applicant " + applicant + " already has a live application " + cand_key + " for unit " + unit)
+        kept.append({"leaseApp": app_key, "applicant": applicant})
+        if idx_present:
+            index_mut = make_aspect_upsert_occ(unit, "leaseApplications", "unitLeaseApplications", {"applications": kept}, idx.revision)
+        else:
+            index_mut = make_aspect(unit, "leaseApplications", "unitLeaseApplications", {"applications": kept})
+
         # Root data minimal (D5): {} on root. The applicant + unit are links; the
         # status/gaps are lens-computed, never stored.
         mutations = [
             make_vtx(app_key, "leaseapp", {}),
             make_link(app_for_lnk, app_key, applicant, "applicationFor", "applicationFor", {}),
             make_link(applies_to_lnk, app_key, unit, "appliesToUnit", "appliesToUnit", {}),
+            # The rebuilt per-unit application index (pruned + appended), OCC-guarded
+            # on the snapshot revision — see the duplicate-application guard above.
+            index_mut,
         ]
 
         # .terms (D3): the applicant's requested lease terms — additive

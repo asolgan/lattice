@@ -19,6 +19,8 @@ declares:
   ddls:
     - canonicalName: leaseapp
       class: meta.ddl.vertexType
+    - canonicalName: unitLeaseApplications
+      class: meta.ddl.aspectType
     - canonicalName: leaseServiceInstance
       class: meta.ddl.vertexType
     - canonicalName: leaseServiceReply

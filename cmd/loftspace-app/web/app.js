@@ -419,6 +419,13 @@ async function submitApply(ev) {
       }),
     });
     if (reply && reply.status === "rejected") {
+      const errMsg = (reply.error && reply.error.message) || "";
+      // The guard rejects a repeat application by the same applicant for the same
+      // unit (script fail "DuplicateApplication: ..."); surface it plainly.
+      if (errMsg.includes("DuplicateApplication")) {
+        toast("You already have an active application for this unit.", "err");
+        return;
+      }
       const msg = reply.error ? `${reply.error.code}: ${reply.error.message}` : "rejected";
       toast("Application rejected — " + msg, "err");
       return;

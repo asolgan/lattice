@@ -900,6 +900,148 @@ func TestCreateLeaseApplication_UnknownUnit_Rejected(t *testing.T) {
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
 }
 
+// applyToUnit submits CreateLeaseApplication for applicantKey against a
+// caller-supplied unitKey (so multiple applications can target the SAME unit —
+// the per-unit duplicate-guard surface) and drives it to want. On
+// OutcomeAccepted it returns the new app key; otherwise "". label must be
+// unique per call (the request id — and so the minted app id — is deterministic
+// from it).
+func applyToUnit(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, applicantKey, unitKey string, want processor.MessageOutcome) string {
+	t.Helper()
+	reqID := testutil.GenReqID(label)
+	appID := nanoIDFromRequestID(reqID)
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateLeaseApplication",
+		Actor:         lsActorKey,
+		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		Class:         "leaseapp",
+		Payload:       json.RawMessage(`{"applicant":"` + applicantKey + `","unit":"` + unitKey + `"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{applicantKey, unitKey}},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, want)
+	if want == processor.OutcomeAccepted {
+		return "vtx.leaseapp." + appID
+	}
+	return ""
+}
+
+// TestCreateLeaseApplication_DuplicateSameApplicantSameUnit_Rejected: the
+// reported bug — one applicant applying twice to the SAME unit must be rejected
+// (DuplicateApplication), so a unit never accumulates duplicate live
+// applications for one applicant (the bare-shell that pinned Weaver red).
+func TestCreateLeaseApplication_DuplicateSameApplicantSameUnit_Rejected(t *testing.T) {
+	ctx, conn := setupLeaseEnv(t)
+	cp, cons := newLeasePipeline(t, ctx, conn, "dup-same-applicant")
+
+	applicant := seedApplicant(t, ctx, conn, "BBDUPAAAHJKMNPQRSTUV")
+	unit := seedUnit(t, ctx, conn, "BBDUPUUUHJKMNPQRSTUV")
+
+	first := applyToUnit(t, ctx, conn, cp, cons, "dupFirstAAAA", applicant, unit, processor.OutcomeAccepted)
+	if first == "" {
+		t.Fatalf("first application should commit")
+	}
+	// The unit's index now holds the first application.
+	idxDoc := readDoc(t, ctx, conn, unit+".leaseApplications")
+	idxData, _ := idxDoc["data"].(map[string]any)
+	if apps, _ := idxData["applications"].([]any); len(apps) != 1 {
+		t.Fatalf("index should hold 1 application after first apply, got %v", idxData["applications"])
+	}
+	// Same applicant, same unit, second time → rejected.
+	applyToUnit(t, ctx, conn, cp, cons, "dupSecondBBB", applicant, unit, processor.OutcomeRejected)
+}
+
+// TestCreateLeaseApplication_DifferentApplicantsSameUnit_Allowed: two DIFFERENT
+// applicants applying to one unit both commit — normal leasing (the landlord
+// chooses among applicants); the guard is per-applicant, not a unit lock.
+func TestCreateLeaseApplication_DifferentApplicantsSameUnit_Allowed(t *testing.T) {
+	ctx, conn := setupLeaseEnv(t)
+	cp, cons := newLeasePipeline(t, ctx, conn, "diff-applicants")
+
+	alice := seedApplicant(t, ctx, conn, "BBDFAAAAHJKMNPQRSTUV")
+	bob := seedApplicant(t, ctx, conn, "BBDFBBBBHJKMNPQRSTUV")
+	unit := seedUnit(t, ctx, conn, "BBDFUUUUHJKMNPQRSTUV")
+
+	a := applyToUnit(t, ctx, conn, cp, cons, "diffAliceAAA", alice, unit, processor.OutcomeAccepted)
+	b := applyToUnit(t, ctx, conn, cp, cons, "diffBobBBBBB", bob, unit, processor.OutcomeAccepted)
+	if a == "" || b == "" || a == b {
+		t.Fatalf("both distinct-applicant applications should commit to distinct keys; got a=%q b=%q", a, b)
+	}
+	// The unit's index now holds BOTH applications.
+	idxDoc := readDoc(t, ctx, conn, unit+".leaseApplications")
+	idxData, _ := idxDoc["data"].(map[string]any)
+	apps, _ := idxData["applications"].([]any)
+	if len(apps) != 2 {
+		t.Fatalf("index should hold 2 applications (alice + bob), got %v", apps)
+	}
+	seen := map[string]bool{}
+	for _, e := range apps {
+		em, _ := e.(map[string]any)
+		seen[em["applicant"].(string)] = true
+	}
+	if !seen[alice] || !seen[bob] {
+		t.Fatalf("index should carry both applicants; got %v", seen)
+	}
+}
+
+// TestCreateLeaseApplication_SameApplicantDifferentUnits_Allowed: one applicant
+// may apply to two DIFFERENT units (the index is per-unit).
+func TestCreateLeaseApplication_SameApplicantDifferentUnits_Allowed(t *testing.T) {
+	ctx, conn := setupLeaseEnv(t)
+	cp, cons := newLeasePipeline(t, ctx, conn, "same-app-diff-unit")
+
+	applicant := seedApplicant(t, ctx, conn, "BBMUAPPAHJKMNPQRSTUV")
+	unit1 := seedUnit(t, ctx, conn, "BBMUUNNAHJKMNPQRSTUV")
+	unit2 := seedUnit(t, ctx, conn, "BBMUUNNBHJKMNPQRSTUV")
+
+	a := applyToUnit(t, ctx, conn, cp, cons, "multiUnit1AA", applicant, unit1, processor.OutcomeAccepted)
+	b := applyToUnit(t, ctx, conn, cp, cons, "multiUnit2BB", applicant, unit2, processor.OutcomeAccepted)
+	if a == "" || b == "" {
+		t.Fatalf("same applicant applying to two different units should both commit; got a=%q b=%q", a, b)
+	}
+}
+
+// TestCreateLeaseApplication_TombstonedPriorApplication_AllowsReapply: a
+// withdrawn (tombstoned) application is pruned from the index and does NOT block
+// the same applicant re-applying to the same unit.
+func TestCreateLeaseApplication_TombstonedPriorApplication_AllowsReapply(t *testing.T) {
+	ctx, conn := setupLeaseEnv(t)
+	cp, cons := newLeasePipeline(t, ctx, conn, "tombstone-reapply")
+
+	applicant := seedApplicant(t, ctx, conn, "BBTMAPPAHJKMNPQRSTUV")
+	unit := seedUnit(t, ctx, conn, "BBTMUUUUHJKMNPQRSTUV")
+
+	first := applyToUnit(t, ctx, conn, cp, cons, "tombFirstAAA", applicant, unit, processor.OutcomeAccepted)
+	if first == "" {
+		t.Fatalf("first application should commit")
+	}
+	// Logically tombstone the first application (a withdrawal): overwrite its
+	// vertex envelope with isDeleted=true (the guard prunes on the vertex flag).
+	tomb := map[string]any{"class": "leaseapp", "isDeleted": true, "data": map[string]any{}}
+	tb, _ := json.Marshal(tomb)
+	if _, err := conn.KVPut(ctx, testutil.HarnessCoreBucket, first, tb); err != nil {
+		t.Fatalf("tombstone first application: %v", err)
+	}
+	// Re-apply: the dead first application is pruned, so this is allowed.
+	second := applyToUnit(t, ctx, conn, cp, cons, "tombSecondBB", applicant, unit, processor.OutcomeAccepted)
+	if second == "" {
+		t.Fatalf("re-application after withdrawal should commit")
+	}
+	// The rebuilt index holds only the live re-application (the dead one pruned).
+	idxDoc := readDoc(t, ctx, conn, unit+".leaseApplications")
+	idxData, _ := idxDoc["data"].(map[string]any)
+	apps, _ := idxData["applications"].([]any)
+	if len(apps) != 1 {
+		t.Fatalf("index should hold exactly the live re-application (dead pruned), got %v", apps)
+	}
+	em, _ := apps[0].(map[string]any)
+	if em["leaseApp"].(string) != second {
+		t.Fatalf("index entry = %v, want the live re-application %q", em, second)
+	}
+}
+
 // TestSignLease_WritesSignatureAspect (test 8 — the assignTask gap closure; D5).
 // SignLease writes the .signature aspect (root stays {}); a second SignLease is
 // rejected (once-only).
