@@ -1,10 +1,11 @@
 # Design — userTask dispatch idempotency (stop duplicate human tasks)
 
-**Status:** 📐 Proposal — awaiting Andrew ratification on the §10.3 amendment; the rest is
-Winston-ratified and build-ready once the amendment lands.
-**Author:** Winston (Steward, 2026-06-25). **Owner area:** Weaver core (reconciler/strategist) + the
-`CreateTask` / `StartLoomPattern` ops. **Frozen-contract touch:** Contract #10 §10.3 (amendment text in
-§7 below — Andrew's call).
+**Status:** 📐 Proposal — awaiting Andrew ratification; deferred to a **fresh Steward run** (Andrew,
+2026-06-25). Enforcement is **consumer-side** (Processor/Starlark), not a producer-side GET — see §4.3.
+**Author:** Winston (Steward, 2026-06-25). **Owner area:** Weaver (claimId mint/derive) + the Processor
+(a new idempotent-create affordance, §4.4) + the `CreateTask` / `StartLoomPattern` ops.
+**Frozen-contract touches:** Contract #10 §10.3 (§7) **and** Contract #2 §2.5 *or* #3 §3.2 (the §4.4
+affordance) — Andrew's call. The interim `maxretries=1` cap (10a5d7a) holds the line until this lands.
 
 ---
 
@@ -111,38 +112,67 @@ Two gap actions produce human tasks; both switch from `markRevision`- to `claimI
   the existing `instance.<instanceId>` (CreateOnly) → no new Loom instance → no new task. This dedups the
   whole pattern, not just its task — the correct altitude for `triggerLoom`.
 
-### 4.3 The act — a reconciler check-before-act probe (this *is* §10.3's "check-before-act")
+### 4.3 The act — enforce idempotency on the CONSUMER (Processor), not a producer-side GET
 
-Deterministic identity tells us *which* task a re-dispatch would (re)create; the reclaim then **checks
-before acting**. In the reconciler `reclaim`, for a userTask action, Weaver derives the deterministic key
-and **GETs it from Core KV before re-dispatching**:
+A producer-side "GET the task; skip if present" probe (in Weaver's reconciler) is **race-prone, and the
+race is structural**: a dispatch is *published to `core-operations` and committed to Core KV
+asynchronously*, so between Weaver publishing `CreateTask` and the task appearing in Core KV there is a
+propagation window. A second reclaim (or the lane-1 path) that GETs Core KV inside that window sees
+**absent** and re-publishes — two `CreateTask`s now race in the queue. The producer GET does not *prevent*
+the double-publish; only the **consumer** (the Processor, committing against actual Core-KV state) can
+decide create-vs-collapse atomically. So enforcement belongs at the Processor.
 
-- **present-and-open** → the task still exists (the human simply hasn't acted) → **renew the mark and
-  skip the dispatch** — no op submitted.
-- **absent / tombstoned** → the task was completed-and-the-gap-reopened, or lost out-of-band → **re-dispatch**.
+**This is exactly how Loom already survives the same lag** (§10.6): Loom never relies on a producer GET
+to gate re-publishing. It (a) keys the task on a **deterministic** `(instanceId, cursor)` id, (b) writes
+the op **write-ahead to its outbox** and relays it once, (c) guards on the **pendingToken** (a redelivered
+trigger *"finds the cursor present"* and drops, [engine.go:398](../../internal/loom/engine.go)), and (d)
+its creation-deadline probe only ever **disarms-on-present** — *"once onDeadline's probe confirms the task
+vertex exists, it disarms"* ([engine.go:903](../../internal/loom/engine.go)); it **never blindly
+re-publishes on absent**. The net effect: any re-publish **collapses** on the deterministic id at the
+Processor (the Contract #4 tracker / `CreateOnly`), never duplicates. Loom doesn't duplicate because it
+**never re-episodes** — Weaver's reconciler intentionally does (a fresh `markRevision` per reclaim), which
+is right for *external* retries but wrong for human tasks.
 
-This is the literal §10.3 *"robust check-before-act variant"*, and it has direct precedent: Loom's
-own §10.6 userTask creation-deadline already *"GETs the task vertex `vtx.task.<taskId>` from Core KV …
-present → disarm … the legitimate unbounded human wait."* Weaver's reconciler doing the same for its
-re-dispatch is consistent (and Weaver is a platform component, so the Core-KV read is sanctioned).
+So the fix moves Weaver's userTask dispatch onto the same footing: **deterministic `claimId`-derived
+identity (§3) + the Processor as the single idempotency authority.** With a deterministic `taskId`, a
+re-published `CreateTask` is decided at commit against real Core-KV state. The remaining question is only
+*how the Processor expresses "already there → fine"* without noise:
 
-**Why the probe, not an "idempotent op via reads":** the obvious alternative — have `CreateTask` declare
-`vtx.task.<taskId>` in its reads and no-op if present — is **blocked by the reads-miss-is-fatal rule**: on
-the *first* dispatch the task key is absent, and a declared read of an absent key is a fatal
-HydrationMiss (the same constraint the identity-domain create-or-skip / large-file CC5 pattern works
-around by *pre-reading and conditionally declaring*). The reconciler probe sidesteps it cleanly: when the
-task is present we **never submit the op at all**, so there is no absent-key read and no rejected-op noise.
-The `CreateTask`/`StartLoomPattern` `CreateOnly` on the deterministic key **stays** as a belt-and-suspenders
-guard against a lane-1/reclaim race, but it is never the steady-state path.
+- **`create` today is `CreateOnly`** ([step8_commit.go:154](../../internal/processor/step8_commit.go)) —
+  a re-publish **rejects** (no duplicate, but a rejected op per lease = operator-noise).
+- A declared **read** of the maybe-absent task key is a **fatal HydrationMiss**
+  ([step4_hydrate.go:152](../../internal/processor/step4_hydrate.go)) — so the Starlark **cannot** simply
+  read-before-create without the caller pre-reading + conditionally declaring (the identity-domain /
+  large-file CC5 pattern) — which is the producer GET we are rejecting.
 
-The per-episode `requestId` **stays `markRevision`-derived** so *within*-episode redelivery still
-collapses at the Contract #4 tracker (unchanged §10.6 crash-safety); the reconciler probe handles
-*across*-episode reclaim. Two clean, independent layers.
+So a clean (noise-free, durable) consumer-side create-or-skip needs **one new Processor affordance**
+(§4.4). The producer-side probe is explicitly **rejected** for the structural-race reason above.
 
-> **Scope of the probe:** only the reconciler **reclaim** path re-dispatches an open gap (the lane-1 CDC
-> path is gated by the mark's CAS-create anti-storm guard — while the mark exists, lane-1 never
-> re-dispatches; §10.8). So the probe lives in `reclaim` alone; lane-1's *first* dispatch is unchanged
-> except that it now mints `claimId` and derives the deterministic id.
+### 4.4 What it takes — the Processor affordance (pick one)
+
+Both are consumer-side, lag-free, and noise-free; both compose with the `claimId`-derived `taskId`. **Recommend (a).**
+
+- **(a) Optional/lenient `contextHint` read** — add `ContextHint.OptionalReads` (or a per-key lenient
+  flag): a declared optional read that **hydrates as absent (`key not in state`)** instead of
+  HydrationMiss. Then `CreateTask` declares the deterministic `vtx.task.<taskId>` as optional, and the
+  Starlark is **create-or-skip**: `present-and-alive → no-op success (return the existing key); else
+  create`. The commit-time `CreateOnly` remains the atomic backstop for a hydrate→commit race. *Touch:*
+  Contract #2 §2.5 (`contextHint` shape) + `step4_hydrate.go`. *Why preferred:* broadly useful — every
+  idempotent-create op (identity-index, object-attach, this) currently hand-rolls the pre-read+conditional-declare
+  dance; a first-class optional read retires that platform-wide.
+- **(b) `createIfAbsent` mutation** — a new mutation op (alongside `create`/`update`/`tombstone`) that is
+  **create-or-noop** at commit (no-op if the key exists alive, create if absent). `CreateTask` emits
+  `createIfAbsent(vtx.task.<taskId>, …)`; no read needed. *Touch:* Contract #3 §3.2 (mutation vocabulary)
+  + `starlark_runner.go` + `step8_commit.go` (+ the substrate atomic-batch, which today is strict
+  `CreateOnly` — a per-op skip-if-exists needs either a hydrate-time existence read or a substrate
+  primitive). More surgical in spirit but it pushes a read/skip decision into the atomic-batch layer.
+
+> **The deterministic `requestId` alone is not enough.** Deriving the dispatch `requestId` from `claimId`
+> would collapse a re-publish at the Contract #4 tracker — but the tracker is `CreateOnly` with a **24h
+> TTL** ([step8_commit.go:173](../../internal/processor/step8_commit.go)); a human routinely exceeds 24h,
+> after which the tracker is gone and the re-publish runs, falling back to the `CreateOnly`-reject noise.
+> So the durable, noise-free guard must live at the **`taskId`** level (the affordance above), not only the
+> requestId/tracker.
 
 ---
 
@@ -161,12 +191,13 @@ collapses at the Contract #4 tracker (unchanged §10.6 crash-safety); the reconc
 
 ## 6. Correctness properties
 
-| Property | `maxretries=1` (interim cap) | blind `(t,e,g)` id, no probe | **`claimId` id + reconciler probe (this design)** |
+| Property | `maxretries=1` (interim cap) | producer-side GET probe | **`claimId` id + consumer-side create-or-skip (this design)** |
 |---|---|---|---|
-| No duplicate while task open | ✅ | ✅ | ✅ |
-| Re-create after legit close→reopen | ✅ (count resets) | ❌ collapses on stale task | ✅ fresh `claimId` ⇒ fresh task |
-| Self-heal a task lost out-of-band | ❌ never re-creates | ⚠️ depends | ✅ absent on probe ⇒ re-dispatch |
-| No rejected-op noise per lease | ✅ (suppressed) | ❌ CreateOnly reject | ✅ present ⇒ op never submitted |
+| No duplicate while task open | ✅ | ⚠️ races the publish→commit lag | ✅ decided atomically at commit |
+| Race-free under propagation lag | ✅ | ❌ GET sees absent mid-lag → double-publish | ✅ Processor is the single authority |
+| Re-create after legit close→reopen | ✅ (count resets) | ⚠️ | ✅ fresh `claimId` ⇒ fresh task |
+| Self-heal a task lost out-of-band | ❌ never re-creates | ⚠️ | ✅ absent ⇒ create |
+| No rejected-op noise per lease | ✅ (suppressed) | ⚠️ | ✅ create-or-skip no-ops (with §4.4) |
 | General (all packages) | ❌ per-package columns | ✅ | ✅ |
 
 The interim cap is create-once-*forever* (never recovers a lost task) and is per-package; this design is
@@ -180,24 +211,26 @@ fix** (the `maxretries_onboarding`/`maxretries_signature` columns + the `retry_b
 Proposed replacement for the §10.3 *"Re-fire after lease expiry — idempotency by action"* bullet (do
 **not** edit the frozen file until ratified):
 
-> **Re-fire after lease expiry — check-before-act by deterministic episode identity.** A userTask
-> reclaim is keyed by the **open-episode identity**: the mark's `claimId` (minted at the mark's CAS-create,
-> **preserved** across reclaims) seeds the dispatched artifact's id — `assignTask`'s `taskId` and
-> `triggerLoom`'s Loom `instanceId`. Before re-dispatching, the reconciler **GETs that artifact** from Core
-> KV (as Loom's §10.6 deadline already does): **present-and-open → renew the mark and skip** (no op
-> submitted); **absent/tombstoned → re-dispatch**. A legitimate close→reopen mints a new mark ⇒ new
-> `claimId` ⇒ a fresh artifact; an out-of-band deletion self-heals (absent ⇒ re-dispatch). The dispatched
-> op's `CreateOnly` on the deterministic key remains a belt-and-suspenders race guard. The within-episode
-> `requestId` stays revision-derived (Contract #4 tracker collapse for redelivery, §10.6). This
-> **supersedes** the prior "accepted rare double / check-before-act = Phase-3 hardening" disposition for the
-> two human userTask actions; external gaps retain episode-scoped (per-reclaim) dispatch, bounded by
-> `inflight_<g>` + `maxretries_<g>`.
+> **Re-fire after lease expiry — consumer-enforced idempotency by deterministic episode identity.** A
+> userTask reclaim is keyed by the **open-episode identity**: the mark's `claimId` (minted at the mark's
+> CAS-create, **preserved** across reclaims) seeds the dispatched artifact's id — `assignTask`'s `taskId`
+> and `triggerLoom`'s Loom `instanceId`. Weaver re-publishes the dispatch **without** a producer-side
+> existence check (which would race the publish→commit propagation lag); the **Processor** is the single
+> idempotency authority — the `CreateTask` / `StartLoomPattern` op is **create-or-skip** on the
+> deterministic key (present-and-alive → no-op success, absent → create), decided atomically at commit
+> against real Core-KV state. A legitimate close→reopen mints a new mark ⇒ new `claimId` ⇒ a fresh
+> artifact; an out-of-band deletion self-heals (absent ⇒ create). This **supersedes** the "accepted rare
+> double / check-before-act = Phase-3 hardening" disposition for the two human userTask actions; external
+> gaps retain episode-scoped (per-reclaim) dispatch, bounded by `inflight_<g>` + `maxretries_<g>`.
 
-Also: §10.3 mark value-shape note — `claimId` regains a **producer** (CAS-create) and a **consumer** (id
+Plus the §4.4 affordance contract (one of): **Contract #2 §2.5** gains an optional/lenient `contextHint`
+read (absent → not-in-state, no HydrationMiss); **or Contract #3 §3.2** gains a `createIfAbsent`
+mutation. And the §10.3 mark value-shape note — `claimId` regains a producer (CAS-create) + consumer (id
 derivation); strike *"left optional … no remaining producer."*
 
-This is the only frozen-contract change. Everything in §4–§6 is Winston-ratified and build-ready the
-moment the amendment lands.
+The frozen-contract touches are: §10.3 (above) and the §4.4 affordance (#2 §2.5 *or* #3 §3.2). The
+mechanism, scope, and identity design (§3–§6) are Winston-ratified; the affordance choice + both
+amendments are Andrew's to ratify on the fresh run.
 
 ---
 
@@ -212,15 +245,19 @@ moment the amendment lands.
    `assignTask` and `triggerLoom` plan branches ([strategist.go:104](../../internal/weaver/strategist.go),
    [strategist.go:152](../../internal/weaver/strategist.go)). Thread `claimId` into the plan `payload`
    closure (it already takes the mark context).
-3. **`StartLoomPattern` honours `instanceId`** — accept an optional caller-supplied `instanceId` (verbatim
-   if present, minted if absent), mirroring `CreateTask`'s `taskId` seam, so the reconciler can probe a
-   predictable `instance.<instanceId>` and a stray re-trigger still `CreateOnly`-collapses.
-4. **Reconciler check-before-act probe** — in `reclaim` ([reconciler.go:231](../../internal/weaver/reconciler.go)),
-   for `assignTask`/`triggerLoom`, GET the deterministic `vtx.task.<taskId>` / `instance.<instanceId>` from
-   Core KV before re-dispatching: **present-and-open → re-arm the mark and return (no op)**; **absent →
-   proceed to dispatch**. No Starlark/op `reads` change (sidesteps reads-miss-is-fatal); the ops' existing
-   `CreateOnly` stays as the race backstop. (Lane-1's first dispatch is untouched beyond minting `claimId`
-   + the deterministic id — the mark CAS-create already blocks lane-1 re-dispatch, §10.8.)
+3. **Processor affordance (§4.4)** — implement the chosen one. **(a, recommended):** add
+   `ContextHint.OptionalReads` (Contract #2 §2.5) and the lenient hydrate leg in
+   [step4_hydrate.go:143](../../internal/processor/step4_hydrate.go) (absent → skip, not HydrationMiss).
+   **(b):** add the `createIfAbsent` mutation to `starlark_runner.go` (parse) + `step6_validate.go` +
+   `step8_commit.go` (commit).
+4. **Idempotent `CreateTask` + `StartLoomPattern`** — consumer-side create-or-skip on the deterministic key.
+   With (a): declare `vtx.task.<taskId>` / `instance.<instanceId>` in `OptionalReads`; Starlark branches
+   `present-and-alive → no-op success; else create` (keep `TestCreateTaskReads_MatchDDLScript` /
+   drift-guards in lock-step). With (b): emit `createIfAbsent(...)`. `StartLoomPattern` also gains an
+   optional caller-supplied `instanceId` (verbatim if present), mirroring `CreateTask`'s `taskId` seam.
+   **No producer-side GET** in Weaver — it simply re-publishes the deterministic-id dispatch and the
+   Processor decides create-vs-skip at commit. (Lane-1's first dispatch is unchanged beyond minting
+   `claimId` + the deterministic id; the mark CAS-create already throttles lane-1 re-dispatch, §10.8.)
 5. **Revert the interim cap** — drop `maxretries_onboarding`/`maxretries_signature` from
    `packages/lease-signing/{lenses.go,retry_budget.go}` and the `UserTaskDispatchCaps` test.
 
@@ -230,9 +267,12 @@ moment the amendment lands.
   (vs `markRevision` deriving a different one today); the reclaim op is idempotent (present → no-op).
 - **`claimId` lifecycle:** minted on CAS-create, preserved across `replace`, gone on gap-close
   (`clearClosedMarks`); a fresh mark after reopen mints a **new** `claimId` (fresh task id).
-- **Reconciler probe:** a reclaim whose deterministic task/instance key is **present-and-open** re-arms
-  the mark and submits **no** op; one whose key is **absent/tombstoned** re-dispatches. (Pure unit test
-  with a stubbed Core-KV GET — no wall-clock.)
+- **Consumer-side idempotency:** `CreateTask` / `StartLoomPattern` given a deterministic key whose vertex
+  already exists-and-is-alive returns a **no-op success** (no second vertex, no rejection); absent → creates;
+  tombstoned → re-creates. Drive it at the Processor (commit-path) level, not via a producer GET.
+- **Lag race (the load-bearing case):** two `CreateTask`s with the **same** deterministic `taskId` arriving
+  back-to-back (the publish→commit window) commit to **one** task — the second no-ops/collapses. This is the
+  scenario a producer GET cannot cover.
 - **Integration / heavy e2e:** drive a lease application, leave the userTasks open across ≥1 mark lease
   (a shortened `MarkLease` test config — see §10), assert **exactly one** `RecordIdentityPII` + one
   `SignLease` persist; then complete one and confirm reopen behaviour where applicable.
@@ -246,11 +286,16 @@ moment the amendment lands.
   but `cmd/weaver` exposes no env for them. *Resolution:* the **engine config already carries them** — the
   test harness sets them directly; no `cmd/weaver` env needed for the test (a separate, optional
   operability nicety, not part of this fix).
-- **Probe altitude (reconciler, not op).** Forced by the reads-miss-is-fatal rule (§4.3): an op cannot
-  unconditionally declare a maybe-absent task key in its `reads`. The reconciler probe avoids it and is the
-  §10.3-named "check-before-act"; Loom's §10.6 deadline is the precedent for a platform component GETting
-  the task vertex. It costs one Core-KV GET per *open-userTask* reclaim (rare — only after a 30-min lease,
-  only while a human hasn't acted), well within the sweep's existing read budget.
+- **Enforcement altitude (consumer, not producer) — Andrew's call, 2026-06-25.** A producer-side GET is
+  rejected because it races the publish→commit propagation lag (§4.3): inside the window the GET sees
+  absent and re-publishes, so it never *prevents* a double-publish — only the Processor, committing against
+  real Core-KV state, can. Cost: one new Processor affordance (§4.4); benefit: it generalizes (every
+  idempotent-create op stops hand-rolling the pre-read dance). The reads-miss-is-fatal rule
+  ([step4_hydrate.go:152](../../internal/processor/step4_hydrate.go)) is *why* an op cannot just
+  read-before-create today — the affordance is what removes that wall.
+- **Affordance choice (a vs b).** (a) optional read is broader and lower-risk (one hydrate leg, no
+  atomic-batch change); (b) `createIfAbsent` is conceptually tidy but pushes a skip-if-exists decision into
+  the strict-`CreateOnly` atomic batch. Recommend (a); final call on the fresh run.
 - **`StartLoomPattern` idempotency interaction with Loom's own deterministic `taskId`.** Once the Loom
   *instance* id is stable, Loom's `(instanceId, cursor)` task id is automatically stable too — the two
   compose; no separate Loom-task change needed.
@@ -263,11 +308,16 @@ moment the amendment lands.
 
 ---
 
-## 11. Sequencing
+## 11. Sequencing — a fresh Steward run (Andrew, 2026-06-25)
 
-1. Andrew ratifies the §7 §10.3 amendment (or redirects the approach).
-2. Apply the amendment to `docs/contracts/10-orchestration-surfaces.md` (Andrew's edit / on his nod).
-3. Build §8 in Weaver core + the two ops; party + 3-layer adversarial review; gates green.
+1. Andrew ratifies (a) the §4.4 affordance choice (recommend the optional read) and (b) the §7 §10.3
+   amendment — or redirects.
+2. Apply the contract edits (§10.3 + the affordance's §2.5/§3.2) to `docs/contracts/*` (Andrew's edit / on
+   his nod).
+3. Build §8: the Processor affordance first (it is the keystone + reusable), then the Weaver `claimId`
+   mint/derive, then the idempotent `CreateTask`/`StartLoomPattern`. Party + 3-layer adversarial review
+   (Processor + Weaver core + two frozen contracts = clearly L+); gates green incl. `make verify-package-*`
+   for any touched op DDL.
 4. Revert the interim cap (§8.5) in the same change.
 5. Commit direct to main, CI green.
 
