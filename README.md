@@ -245,7 +245,7 @@ This is the one place that distinguishes what's built from what's designed.
 | **Phase 1** | Trustworthy core: substrate, Processor write path, Refractor lens projections, identity/RBAC packages, Capability-Lens authorization, the Hello Lattice reference slice | ✅ Implemented + tested (CI-gated) |
 | **Phase 1.5** | Hardening: kernel minimization, package installs routed through the Processor, contract conformance suite, transactional event outbox | ✅ Complete |
 | **Phase 2** | Orchestration: Loom (procedures) + Weaver (convergence) + the external-I/O bridge + the Loftspace lease-application reference vertical | ✅ Complete (CI-gated) |
-| **Phase 3** | Now driven by the autonomous **agentic flywheel** (see *Built by AI agents*). **Building now:** the experience layer — Loupe operator surfaces + vertical-app front-ends (LoftSpace). **Designed, fork-gated** — the *same* flywheel builds these as their architectural forks are ratified by Andrew: Gateway (read-path auth, JWT), Vault (PII crypto-shredding), AI-authored capabilities, Semantic Contracts, Edge Lattice + Personal Lenses, multi-cell sharding | 🏗️ In progress |
+| **Phase 3** | Now driven by the autonomous **agentic flywheel** (see *Built by AI agents*). **Building now:** the experience layer — Loupe operator surfaces + vertical-app front-ends (LoftSpace + Clinic). **Designed, fork-gated** — the *same* flywheel builds these as their architectural forks are ratified by Andrew: Gateway (read-path auth, JWT), Vault (PII crypto-shredding), AI-authored capabilities, Semantic Contracts, Edge Lattice + Personal Lenses, multi-cell sharding | 🏗️ In progress |
 
 ---
 
