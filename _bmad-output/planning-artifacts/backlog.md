@@ -120,19 +120,19 @@ only · whether to add a thin read/query convenience surface (direct KV + lens r
 
 ---
 
-## Now — the experience layer (UX + FE)
+## Now — balanced prioritization (experience layer no longer forced)
 
-Prior near-term picks (Loom control plane, large-file/binary, Refractor substrate migration) all shipped; the
-ride-along cleanups are parked (see **Parking lot**). **Active focus: the vertical-app front-ends — built
-ambitiously by the UX Designer (Sally) + the FE Engineer.** Flow: **PO scopes → Sally designs the UX → FE
-Engineer builds + verifies in-browser → Winston admits.** M/L is fine (risk-bounded L2 + multi-fire).
+The initial experience-layer push has largely landed: the vertical apps now **exist** (`cmd/loftspace-app`
+`:7788`, `cmd/clinic-app` `:7799`) with real flows, and the Loupe live system-map shipped. So the experience
+layer is **no longer a forced top priority** (Andrew, 2026-06-25) — the Steward picks by
+**importance × readiness**, balancing the experience layer against reliability / observability, component
+coverage, and the **PO-filed demand backlog** (the Vertical PO discovery loop is now live and feeds fresh,
+exercised items — see *Vertical demand backlog*). Flow for any UI/app pick: **PO scopes → Sally designs the UX
+→ FE Engineer builds + verifies in-browser → Winston admits.** M/L is fine (risk-bounded L2 + multi-fire).
 
-- **Vertical app front-ends (★★★) — the top experience priority.** Whatever the Vertical POs (LoftSpace,
-  Clinic) decide their apps should do. Greenfield per app: the PO defines the capability, Sally designs, the FE
-  Engineer builds (Loupe's vanilla HTML/CSS/JS stack as the default). LoftSpace is exercisable live with a
-  build-ready path — the `loftspace-domain` package (property / unit / listing; design build-ready) → the
-  applicant app FE (intake → status tracker → task inbox → document upload). Be ambitious — new app
-  capabilities welcome.
+- **Vertical app front-ends (★★★)** — whatever the Vertical POs (LoftSpace, Clinic) decide their apps should
+  do; the apps exist and are exercisable live, so this is now **PO-demand-driven** rather than greenfield. Be
+  ambitious — new app capabilities welcome.
 - **Loupe operator surfaces** — the live "system map" landing page is ✅ shipped. The **agent-activity console
   is ⏸️ shelved** (Andrew, 2026-06-25 — read-seam options rejected; revisit later). Not an active pick.
 

@@ -54,6 +54,9 @@ you are building*:
    `preview_click` / `preview_fill` to exercise interactions, then `preview_screenshot` for proof. Fix issues
    from source and re-check. *(If preview tooling isn't available in this run, build + run the server + curl
    the endpoints as a fallback and note that visual verification is pending — don't claim it works unseen.)*
+   **Shared stack:** if you bring up a stack to verify (`make up-loftspace` / `up-clinic` / `up-full`), it
+   shares the single machine with the PO loop + other fires — **reuse a running stack** (don't re-`up`; ports
+   collide) and **never `make down` one you didn't start**.
 4. **Gates:** `go build ./...`, `make vet`, `golangci-lint run ./...`,
    `STRICT=1 go run ./scripts/lint-conventions.go`, and `go test ./cmd/loupe/...`.
 5. **Hand up** to Winston with a screenshot / proof + the gate results.

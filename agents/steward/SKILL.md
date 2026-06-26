@@ -106,11 +106,14 @@ isolated worktree** (isolation rule); a contract change is the sole exception �
 uncommitted, for Andrew. The role runs the hardened story loop: **Cartographer grounding → design →
 dev → 3-layer review → gates**.
 
-**The experience layer is a standing priority — be ambitious** (Andrew, 2026-06-24): the **Loupe operator
-surfaces** (live system-map + agent-activity console) and **vertical-app front-ends** (whatever the Vertical
-POs want). UI/app work runs **UX-then-FE**: the **UX Designer (Sally, `bmad-agent-ux-designer`)** designs the
-experience → the **FE Engineer (`agents/fe-engineer`)** builds it and **verifies in-browser (preview)**. New
-app capabilities the POs propose are welcome — design → build, M/L fine.
+**UI / app work runs UX-then-FE.** It is **no longer a forced top priority** — pick it by importance × readiness
+like any item, balanced against reliability / observability, component coverage, and the PO-filed demand. The
+**UX Designer (Sally, `bmad-agent-ux-designer`)** designs the experience → the **FE Engineer
+(`agents/fe-engineer`)** builds it and **verifies in-browser (preview)**. The vertical apps now exist
+(`cmd/loftspace-app` → `:7788`, `cmd/clinic-app` → `:7799`); new app capabilities the POs propose are welcome.
+**Shared stack:** in-browser verification shares the single-machine stack with the PO loop and other fires —
+**reuse a running stack** (don't re-`up`, ports collide) and **never `make down` a stack you didn't start** (it
+kills everything, including a PO fire's stack + apps).
 
 ## 4. Admit
 

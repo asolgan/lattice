@@ -15,16 +15,26 @@ proposals/candidates to the board; **never** commit code or contracts, never bui
 forcing-function vertical). Pick the **least-recently-exercised** (check the board's dated PO notes). One
 vertical per run.
 
-## 2. Exercise it
+## 2. Exercise it (against a SHARED stack — don't clobber the Steward)
 
-- Prefer a running stack; else bring one up **time-boxed** (`make up-full`). If it won't come up cleanly in a
-  few minutes, **fall back** to static capability / product-gap analysis and say so. Tear down anything you
-  start.
-- Drive the vertical's real flows as a user/operator would: submit ops via the `lattice` CLI or Loupe; run
-  the **lease-application** flow (LoftSpace) or the **appointments + scheduling** domain (Clinic); exercise
-  the packages it leans on (`orchestration-base`, `lease-signing`, identity, location / service-location, …).
-- *Greenfield note:* vertical app **front-ends** don't exist yet — until the FE Engineer builds them,
-  "exercise the app" = exercise the **packages + domain + the Loupe view** of them; it grows as the FE lands.
+The Steward loop shares this single-machine stack and may be running **concurrently** (it fires every ~2h and
+can run long). `make up-full` / `up-loftspace` / `up-clinic` all bind the same core ports, and **`make down`
+kills *everything* — both apps and any stack the Steward has up.** So coordinate by detection, not timing:
+
+- **First, detect a running stack** — is NATS up on `:4222` / Loupe on `:7777`, or does `lattice health
+  summary` succeed?
+- **If a stack is already up → REUSE it.** Do **not** run `up-full` / `up-loftspace` / `up-clinic` (port
+  collision). Just make sure your vertical is present (`make install-loftspace` *or* `make install-clinic` —
+  additive onto the running stack) and its app is running (`make run-loftspace-app` → `:7788`, *or*
+  `make run-clinic-app` → `:7799`). **Never `make down`** — it isn't your stack.
+- **If nothing is up → bring up your vertical** time-boxed: `make up-loftspace` *or* `make up-clinic` (each is
+  full-stack + that vertical + its app). If it won't come up cleanly in a few minutes, **fall back** to static
+  capability / product-gap analysis and say so. **Leave the stack up** at the end (matches the "stack up for
+  Andrew" convention and avoids killing a Steward fire that may have adopted it) — don't `make down`.
+- Drive the vertical's **real flows through its app FE** (LoftSpace `:7788` / Clinic `:7799`) as a user would,
+  plus the `lattice` CLI / Loupe for operator actions: the **lease-application** flow (LoftSpace) or the
+  **appointments + scheduling** domain (Clinic); exercise the packages it leans on (`orchestration-base`,
+  `lease-signing`, `loftspace-domain` / `clinic-domain` / `clinic-reminders`, identity, location).
 
 ## 3. Think as the product owner
 
