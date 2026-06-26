@@ -244,6 +244,87 @@ func TestHandleRow_UnresolvedReference(t *testing.T) {
 	}
 }
 
+// issueSeverity returns the severity of the issue with the given code, or "" if
+// no such issue is active.
+func issueSeverity(issues []healthIssue, code string) string {
+	for _, i := range issues {
+		if i.Code == code {
+			return i.Severity
+		}
+	}
+	return ""
+}
+
+// TestHandleRow_MalformedAnchorDegradesNotErrors pins the Contract #5 §5.2
+// severity of a single malformed/incomplete anchor row: a per-row DATA error
+// (a template reference that resolves null, or a violating row missing its
+// entityKey echo) is surfaced as a `warning` (degraded) and the row is skipped
+// (Ack, no op) — it must NOT raise an `error` (unhealthy) and pin the whole
+// Weaver component red while every other row still remediates.
+func TestHandleRow_MalformedAnchorDegradesNotErrors(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	t.Run("template reference resolves null", func(t *testing.T) {
+		h := newHandlerHarness(t, ctx)
+		const targetID = "fixtureNullSubject"
+		// The pattern IS installed, so the only failure is the null subject —
+		// isolating the TemplateDataError path from UnresolvedReference.
+		h.seedPattern("onboardFlow", testNanoID(t))
+		h.seedTarget(&Target{
+			TargetID: targetID,
+			Gaps: map[string]GapAction{
+				"missing_onboarding": {Action: actionTriggerLoom, Pattern: "onboardFlow", Subject: "row.applicant"},
+			},
+		})
+		entityID := testNanoID(t)
+		row := map[string]any{
+			"entityKey":          "vtx.leaseapp." + entityID,
+			"violating":          true,
+			"missing_onboarding": true,
+			// no "applicant" column — the malformed/bare anchor case
+		}
+
+		dec := h.engine.handleRow(ctx, h.rowMessage(t, targetID, entityID, row, 5, 1))
+		if dec != substrate.Ack {
+			t.Fatalf("a malformed-row data error must Ack (skip), got %v", dec)
+		}
+		h.requireNoOp(t)
+		if sev := issueSeverity(h.engine.issues.snapshot(), "TemplateDataError"); sev != "warning" {
+			t.Fatalf("a null template reference must surface a `warning` (degraded) TemplateDataError, got %q", sev)
+		}
+	})
+
+	t.Run("violating row missing entityKey", func(t *testing.T) {
+		h := newHandlerHarness(t, ctx)
+		const targetID = "fixtureNoEntityKey"
+		h.seedTarget(&Target{
+			TargetID: targetID,
+			Gaps: map[string]GapAction{
+				"missing_y": {Action: actionTriggerLoom, Pattern: "ghostFlow", Subject: "row.entityKey"},
+			},
+		})
+		entityID := testNanoID(t)
+		row := map[string]any{
+			"violating": true,
+			"missing_y": true,
+			// no "entityKey" — the candidate is unidentifiable
+		}
+
+		dec := h.engine.handleRow(ctx, h.rowMessage(t, targetID, entityID, row, 5, 1))
+		if dec != substrate.Ack {
+			t.Fatalf("a row missing entityKey must Ack (skip), got %v", dec)
+		}
+		h.requireNoOp(t)
+		if sev := issueSeverity(h.engine.issues.snapshot(), "RowDataError"); sev != "warning" {
+			t.Fatalf("a violating row missing entityKey must surface a `warning` (degraded) RowDataError, got %q", sev)
+		}
+	})
+}
+
 // TestGapSuppressed_Companions unit-tests the dispatch-suppression gate's
 // inflight (row) term and its budget term over the row's maxretries_<g> with a
 // dispatch-count of zero: a gap is suppressed iff inflight_<g> reads true, while

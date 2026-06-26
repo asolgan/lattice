@@ -86,10 +86,15 @@ func (e *Engine) handleRow(ctx context.Context, msg substrate.Message) substrate
 	entityKey, _ := row["entityKey"].(string)
 	if entityKey == "" {
 		// §10.2 requires the entityKey echo; without it the mark and the
-		// remediation cannot name the candidate. Data error — surface, do not
-		// fire (redelivery cannot fix the projected row).
-		e.alert(issueKeyData(targetID, "entityKey"), "error", "RowDataError",
-			"weaver-targets row "+key+" is violating but carries no entityKey")
+		// remediation cannot name the candidate. A single malformed anchor row is
+		// a per-row DATA error: surface it and skip the row, but keep remediating
+		// every other row — Weaver still fulfils its primary responsibility, so
+		// this is a Contract #5 §5.2 `warning` (degraded), never an `error`
+		// (unhealthy = cannot fulfil the responsibility). Redelivery cannot fix
+		// the projected row.
+		msg := "weaver-targets row " + key + " is violating but carries no entityKey"
+		e.logger.Warn("weaver: " + msg)
+		e.issues.set(issueKeyData(targetID, "entityKey"), "warning", "RowDataError", msg)
 		return substrate.Ack
 	}
 
@@ -176,9 +181,15 @@ func (e *Engine) dispatchGap(ctx context.Context, target *Target, targetID, enti
 
 // planGap resolves one gap's plan (Evaluator L2 + Strategist), routing a
 // failure by its class: an unresolved reference defers on the bounded
-// redelivery cadence; a config/data error is alerted and the gap skipped
-// (retrying cannot fix it). pl == nil means do not dispatch — the returned
-// Decision is the caller's disposition for this gap.
+// redelivery cadence; a config or data error is surfaced and the gap skipped
+// (retrying cannot fix it). The two carry different Contract #5 §5.2
+// severities: a per-row DATA error (a malformed/incomplete anchor row whose
+// template references resolve null) is a `warning` (degraded) — one bad row,
+// every other row still remediates, so Weaver fulfils its responsibility; a
+// CONFIG error (a package playbook missing a gaps entry, an un-dispatchable
+// action) is an `error` (unhealthy) — it affects every row of the target and
+// only a package re-author can fix it. pl == nil means do not dispatch — the
+// returned Decision is the caller's disposition for this gap.
 func (e *Engine) planGap(targetID, entityID, col string, ga GapAction, row map[string]any,
 	rowRevision uint64) (*plan, substrate.Decision) {
 
@@ -197,8 +208,9 @@ func (e *Engine) planGap(targetID, entityID, col string, ga GapAction, row map[s
 				"target "+targetID+" gap "+col+": "+perr.msg)
 			return nil, substrate.NakWithDelay
 		case errData:
-			e.alert(issueKeyData(targetID, col), "error", "TemplateDataError",
-				"target "+targetID+" gap "+col+": "+perr.msg)
+			msg := "target " + targetID + " gap " + col + ": " + perr.msg
+			e.logger.Warn("weaver: " + msg)
+			e.issues.set(issueKeyData(targetID, col), "warning", "TemplateDataError", msg)
 			return nil, substrate.Ack
 		default:
 			e.alert(issueKeyGap(targetID, col), "error", "PlaybookConfigError",
