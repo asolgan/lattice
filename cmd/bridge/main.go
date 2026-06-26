@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -90,9 +91,27 @@ func run(logger *slog.Logger) error {
 	// Stripe / background-check integrations are Phase 3). A package's
 	// external.<adapter> events name these by the same strings. MUST run before
 	// Start: the registry has no lock-step with the dispatch path.
+	//
+	// BRIDGE_FAKE_DECLINE is a demo affordance: a comma-separated set of adapter
+	// names (or "all") whose fake returns a terminal decline for EVERY subject,
+	// so an operator can drive the declined-application experience live (e.g.
+	// `BRIDGE_FAKE_DECLINE=backgroundCheck make up-loftspace`). Empty = the normal
+	// clearing fakes. It only affects these reference fakes, never real adapters.
+	decline := parseDeclineSet(os.Getenv("BRIDGE_FAKE_DECLINE"))
+	stripe := bridge.NewFakeStripe()
+	bgCheck := bridge.NewFakeBackgroundCheck()
+	if decline["all"] || decline["stripe"] {
+		stripe.SetDeclineAll(true)
+	}
+	if decline["all"] || decline["backgroundCheck"] {
+		bgCheck.SetDeclineAll(true)
+	}
+	if len(decline) > 0 {
+		logger.Warn("bridge: fake-adapter DECLINE mode active (demo affordance)", "decline", os.Getenv("BRIDGE_FAKE_DECLINE"))
+	}
 	for name, adapter := range map[string]bridge.Adapter{
-		"stripe":          bridge.NewFakeStripe(),
-		"backgroundCheck": bridge.NewFakeBackgroundCheck(),
+		"stripe":          stripe,
+		"backgroundCheck": bgCheck,
 	} {
 		if err := engine.RegisterAdapter(name, adapter); err != nil {
 			return fmt.Errorf("register adapter %q: %w", name, err)
@@ -123,4 +142,17 @@ func envOrDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// parseDeclineSet parses BRIDGE_FAKE_DECLINE — a comma-separated set of adapter
+// names (or "all") — into a lookup set, trimming blanks and lowercasing nothing
+// (adapter names are case-sensitive: "backgroundCheck", "stripe", "all").
+func parseDeclineSet(v string) map[string]bool {
+	set := map[string]bool{}
+	for _, part := range strings.Split(v, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			set[p] = true
+		}
+	}
+	return set
 }

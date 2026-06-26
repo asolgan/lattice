@@ -28,6 +28,12 @@ type FakeBackgroundCheck struct {
 	// calls counts the side-effects actually performed per idempotencyKey — the
 	// idempotency assertion: a repeat key must leave its count at 1.
 	calls map[string]int
+	// declineAll, when set, makes EVERY subject decline (terminal OutcomeFailed),
+	// not only BackgroundCheckDeclineSubject — the operator-driven demo affordance
+	// (SetDeclineAll, wired to the bridge's BRIDGE_FAKE_DECLINE env) for exercising
+	// the declined-application experience live, where the instanceKey-based subject
+	// trigger is not reachable from the applicant flow.
+	declineAll bool
 }
 
 // NewFakeBackgroundCheck returns a fresh in-memory reference adapter.
@@ -54,11 +60,23 @@ func (f *FakeBackgroundCheck) Execute(_ context.Context, req Request) (Dispatch,
 	}
 	f.calls[req.IdempotencyKey]++
 	res := Result{Status: OutcomeCompleted, Detail: "background-check cleared for " + req.Subject}
-	if req.Subject == BackgroundCheckDeclineSubject {
+	if f.declineAll || req.Subject == BackgroundCheckDeclineSubject {
 		res = Result{Status: OutcomeFailed, Detail: "background-check declined for " + req.Subject}
 	}
 	f.results[req.IdempotencyKey] = res
 	return Dispatch{Disposition: Resolved, Result: res}, nil
+}
+
+// SetDeclineAll arms (or disarms) blanket-decline mode: every subject yields a
+// terminal OutcomeFailed instead of clearing. It is the demo affordance the bridge
+// wires from BRIDGE_FAKE_DECLINE so an operator can drive the declined-application
+// experience end-to-end (the per-subject BackgroundCheckDeclineSubject trigger is
+// test-only — the live subject is the minted instanceKey handle, not applicant
+// data). Set once at construction, before Start.
+func (f *FakeBackgroundCheck) SetDeclineAll(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.declineAll = v
 }
 
 // Poll is unreachable for this synchronous adapter (Execute never returns

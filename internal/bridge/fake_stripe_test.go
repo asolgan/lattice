@@ -7,6 +7,34 @@ import (
 	"github.com/asolgan/lattice/internal/bridge"
 )
 
+// TestFakeStripe_DeclineAll_FailsWithNoCharge: blanket-decline mode (the
+// BRIDGE_FAKE_DECLINE demo affordance) makes a NORMAL subject return a terminal
+// OutcomeFailed with NO charge (SideEffects stays 0), so an operator can drive the
+// declined-application experience live. A transient FailUntil error still takes
+// precedence over the decline (it is checked first).
+func TestFakeStripe_DeclineAll_FailsWithNoCharge(t *testing.T) {
+	a := bridge.NewFakeStripe()
+	a.SetDeclineAll(true)
+	res, err := a.Execute(context.Background(), bridge.Request{IdempotencyKey: "st-all", Subject: "vtx.identity.normal"})
+	if err != nil {
+		t.Fatalf("a decline is a terminal verdict, not a transient error: %v", err)
+	}
+	if res.Result.Status != bridge.OutcomeFailed {
+		t.Fatalf("under declineAll a normal subject must fail: Status = %q, want %q", res.Result.Status, bridge.OutcomeFailed)
+	}
+	if got := a.SideEffects("st-all"); got != 0 {
+		t.Fatalf("a declined charge performs no side-effect: side effects = %d, want 0", got)
+	}
+
+	// FailUntil (transient) is checked before the decline branch.
+	b := bridge.NewFakeStripe()
+	b.SetDeclineAll(true)
+	b.FailNext()
+	if _, err := b.Execute(context.Background(), bridge.Request{IdempotencyKey: "st-fail", Subject: "vtx.identity.normal"}); err == nil {
+		t.Fatalf("a transient FailUntil error must take precedence over the decline verdict")
+	}
+}
+
 // TestFakeStripe_IdempotentOnRepeatedKey is the literal proof of external
 // idempotency: a repeat idempotencyKey returns the SAME Result and performs NO
 // second side-effect (the FR58 charge that must never double-bill).

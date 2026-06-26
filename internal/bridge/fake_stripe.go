@@ -39,6 +39,13 @@ type FakeStripe struct {
 	// before any side-effect; FailUntil sets it, each failed attempt decrements
 	// it. A failed attempt records no side-effect and no memoized Result.
 	failRemaining int
+	// declineAll, when set, makes EVERY subject decline (terminal OutcomeFailed,
+	// no charge), not only StripeDeclineSubject — the operator-driven demo
+	// affordance (SetDeclineAll, wired to the bridge's BRIDGE_FAKE_DECLINE env) for
+	// exercising the declined-application experience live, where the instanceKey-
+	// based subject trigger is not reachable from the applicant flow. A transient
+	// FailUntil error still takes precedence (it is checked first).
+	declineAll bool
 }
 
 // StripeDeclineSubject is the designated trigger that makes FakeStripe return a
@@ -72,6 +79,19 @@ func (f *FakeStripe) FailUntil(n int) {
 // FailNext arms the adapter to hard-fail exactly the next Execute call.
 func (f *FakeStripe) FailNext() { f.FailUntil(1) }
 
+// SetDeclineAll arms (or disarms) blanket-decline mode: every subject yields a
+// terminal OutcomeFailed (no charge) instead of confirming. It is the demo
+// affordance the bridge wires from BRIDGE_FAKE_DECLINE so an operator can drive
+// the declined-application experience end-to-end (the per-subject
+// StripeDeclineSubject trigger is test-only — the live subject is the minted
+// instanceKey handle, not applicant data). A transient FailUntil error still
+// takes precedence. Set once at construction, before Start.
+func (f *FakeStripe) SetDeclineAll(v bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.declineAll = v
+}
+
 // Execute performs the (mocked) charge exactly once per idempotencyKey. It is
 // synchronous: a successful or declined call returns a Resolved Dispatch (a
 // terminal Result inline, never Pending). While the failure mode is armed it
@@ -91,7 +111,7 @@ func (f *FakeStripe) Execute(_ context.Context, req Request) (Dispatch, error) {
 	if res, seen := f.results[req.IdempotencyKey]; seen {
 		return Dispatch{Disposition: Resolved, Result: res}, nil
 	}
-	if req.Subject == StripeDeclineSubject {
+	if f.declineAll || req.Subject == StripeDeclineSubject {
 		// A decline is a terminal verdict, not a charge: no side-effect, memoized
 		// so a redelivery replays the same Failed outcome.
 		res := Result{Status: OutcomeFailed, Detail: "charge declined for " + req.Subject}

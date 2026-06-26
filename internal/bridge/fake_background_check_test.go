@@ -27,6 +27,22 @@ func TestFakeBackgroundCheck_ClearedStatusCompleted(t *testing.T) {
 // the decline trigger returns a terminal OutcomeFailed with err == nil (a
 // definitive rejection, not a transient error), memoized so a repeat key replays
 // the same verdict.
+// TestFakeBackgroundCheck_DeclineAll_EverySubjectFails: blanket-decline mode (the
+// BRIDGE_FAKE_DECLINE demo affordance) makes a NORMAL subject — not the per-subject
+// trigger — return a terminal OutcomeFailed, so an operator can drive the
+// declined-application experience live.
+func TestFakeBackgroundCheck_DeclineAll_EverySubjectFails(t *testing.T) {
+	a := bridge.NewFakeBackgroundCheck()
+	a.SetDeclineAll(true)
+	res, err := a.Execute(context.Background(), bridge.Request{IdempotencyKey: "bg-all", Subject: "vtx.identity.normal"})
+	if err != nil {
+		t.Fatalf("a decline is a terminal verdict, not a transient error: %v", err)
+	}
+	if res.Result.Status != bridge.OutcomeFailed {
+		t.Fatalf("under declineAll a normal subject must fail: Status = %q, want %q", res.Result.Status, bridge.OutcomeFailed)
+	}
+}
+
 func TestFakeBackgroundCheck_DeclineIsTerminalFailure(t *testing.T) {
 	a := bridge.NewFakeBackgroundCheck()
 	req := bridge.Request{IdempotencyKey: "bg-declined", Subject: bridge.BackgroundCheckDeclineSubject}
