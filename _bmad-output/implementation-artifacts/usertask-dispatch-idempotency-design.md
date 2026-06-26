@@ -3,9 +3,10 @@
 **Status:** 📐 Proposal — awaiting Andrew ratification; deferred to a **fresh Steward run** (Andrew,
 2026-06-25). Enforcement is **consumer-side** (Processor/Starlark), not a producer-side GET — see §4.3.
 **Author:** Winston (Steward, 2026-06-25). **Owner area:** Weaver (claimId mint/derive) + the Processor
-(a new idempotent-create affordance, §4.4) + the `CreateTask` / `StartLoomPattern` ops.
-**Frozen-contract touches:** Contract #10 §10.3 (§7) **and** Contract #2 §2.5 *or* #3 §3.2 (the §4.4
-affordance) — Andrew's call. The interim `maxretries=1` cap (10a5d7a) holds the line until this lands.
+(§2.5 lazy `kv.Read()` implementation, §4.4) + the `CreateTask` / `StartLoomPattern` ops.
+**Frozen-contract touches:** Contract #10 §10.3 (§7) only. Contract #2 §2.5 (lazy `kv.Read()`) is
+**already specified** — implementing it is a conformance fill, not a new contract surface. The interim
+`maxretries=1` cap (10a5d7a) holds the line until this lands.
 
 ---
 
@@ -140,39 +141,72 @@ re-published `CreateTask` is decided at commit against real Core-KV state. The r
 
 - **`create` today is `CreateOnly`** ([step8_commit.go:154](../../internal/processor/step8_commit.go)) —
   a re-publish **rejects** (no duplicate, but a rejected op per lease = operator-noise).
-- A declared **read** of the maybe-absent task key is a **fatal HydrationMiss**
-  ([step4_hydrate.go:152](../../internal/processor/step4_hydrate.go)) — so the Starlark **cannot** simply
-  read-before-create without the caller pre-reading + conditionally declaring (the identity-domain /
-  large-file CC5 pattern) — which is the producer GET we are rejecting.
+- A `contextHint.reads` declaration of the maybe-absent task key causes a fatal `HydrationMiss`
+  ([step4_hydrate.go:152](../../internal/processor/step4_hydrate.go)) if the key is absent — the hint
+  path cannot express "read this key, tolerate absence."
 
-So a clean (noise-free, durable) consumer-side create-or-skip needs **one new Processor affordance**
-(§4.4). The producer-side probe is explicitly **rejected** for the structural-race reason above.
+Contract §2.5 resolves this cleanly. It specifies that `contextHint.reads` is a **pre-fetch
+optimisation, not a gate**: *"When absent: Processor uses lazy on-demand reads during Starlark
+execution; Each `kv.Read()` call from Starlark performs a Core KV fetch."* Absent returns `None`
+gracefully, not a fatal error. This lets the **script itself decide coherently**: present → return
+`{"mutations": [], "events": []}` (silent no-op, mutations and events suppressed together); absent →
+emit `create` (CreateOnly) mutations + events as normal. Events are under script control so the outbox
+is always consistent — this is the problem a `createIfAbsent` mutation cannot solve (mutations may
+no-op at commit but events are already in the outbox, firing a phantom `taskCreated` for a task that
+was not created). The `CreateOnly` backstop remains the concurrent-race guard for the narrow window of
+two dispatch ops arriving in the same commit frame. **No new mutation type needed.** The "one new
+Processor affordance" is **implementing the §2.5 lazy `kv.Read()` builtin** (§4.4) — specified but
+absent from the current code.
 
-### 4.4 What it takes — the Processor affordance (pick one)
+### 4.4 The affordance — implement §2.5 lazy `kv.Read()` (contract/code gap)
 
-Both are consumer-side, lag-free, and noise-free; both compose with the `claimId`-derived `taskId`. **Recommend (a).**
+Contract §2.5 (*"Context Hint Semantics"*) already specifies this mechanism:
 
-- **(a) Optional/lenient `contextHint` read** — add `ContextHint.OptionalReads` (or a per-key lenient
-  flag): a declared optional read that **hydrates as absent (`key not in state`)** instead of
-  HydrationMiss. Then `CreateTask` declares the deterministic `vtx.task.<taskId>` as optional, and the
-  Starlark is **create-or-skip**: `present-and-alive → no-op success (return the existing key); else
-  create`. The commit-time `CreateOnly` remains the atomic backstop for a hydrate→commit race. *Touch:*
-  Contract #2 §2.5 (`contextHint` shape) + `step4_hydrate.go`. *Why preferred:* broadly useful — every
-  idempotent-create op (identity-index, object-attach, this) currently hand-rolls the pre-read+conditional-declare
-  dance; a first-class optional read retires that platform-wide.
-- **(b) `createIfAbsent` mutation** — a new mutation op (alongside `create`/`update`/`tombstone`) that is
-  **create-or-noop** at commit (no-op if the key exists alive, create if absent). `CreateTask` emits
-  `createIfAbsent(vtx.task.<taskId>, …)`; no read needed. *Touch:* Contract #3 §3.2 (mutation vocabulary)
-  + `starlark_runner.go` + `step8_commit.go` (+ the substrate atomic-batch, which today is strict
-  `CreateOnly` — a per-op skip-if-exists needs either a hydrate-time existence read or a substrate
-  primitive). More surgical in spirit but it pushes a read/skip decision into the atomic-batch layer.
+> **When absent [from `contextHint.reads`]:** Processor uses lazy on-demand reads during Starlark
+> execution; Each `kv.Read()` call from Starlark performs a Core KV fetch; Per-operation latency
+> increases proportional to read count.
 
-> **The deterministic `requestId` alone is not enough.** Deriving the dispatch `requestId` from `claimId`
-> would collapse a re-publish at the Contract #4 tracker — but the tracker is `CreateOnly` with a **24h
-> TTL** ([step8_commit.go:173](../../internal/processor/step8_commit.go)); a human routinely exceeds 24h,
-> after which the tracker is gone and the re-publish runs, falling back to the `CreateOnly`-reject noise.
-> So the durable, noise-free guard must live at the **`taskId`** level (the affordance above), not only the
-> requestId/tracker.
+The current implementation does **not** wire this up. `starlark_runner.go` exposes only the
+pre-hydrated `state` map, `op`, `ddl`, `nanoid`, `crypto`, `time`, and `json` — no `kv` module.
+`step5_execute.go`'s `Execute` receives `HydratedState` but no `Conn`. This is a **contract/code gap**:
+`kv.Read()` is specified but absent from the implementation.
+
+**The fix:** thread a live Core-KV connection into `ScriptContext` (or `StarlarkRunner`) and expose a
+`kv` module: `kv.Read(key)` performs a single Core-KV GET and returns the value dict, or `None` if
+absent/tombstoned. With this, the `CreateTask` Starlark script branches before emitting anything:
+
+    task = kv.Read("vtx.task." + taskId)
+    if task != None:
+        return {"mutations": [], "events": []}   # already exists — silent no-op
+    # ... normal create path: vertex + links + grant + taskCreated event
+
+This is a **conformance fill**, not a new surface: §2.5 already authorises `kv.Read()`; the Processor
+needs to implement it. No `createIfAbsent` mutation type. No Contract #3 §3.2 amendment.
+
+**Why kv.Read() beats createIfAbsent here:**
+
+- **Event coherence.** Mutations and events are committed in the same atomic batch
+  ([step8_commit.go:177](../../internal/processor/step8_commit.go)). `createIfAbsent` lets the Processor
+  skip mutations at commit — but the script has already emitted `taskCreated` events, which land in the
+  outbox unconditionally (there is no post-hoc event filter). With `kv.Read()` the script decides both
+  mutations AND events in one branch: absent → create + event; present → empty return, no event.
+- **No new mutation vocabulary.** `create` / `update` / `tombstone` suffice; no Contract #3 §3.2
+  amendment needed.
+- **Spec alignment.** §2.5 already blesses this pattern; implementing it closes an existing gap rather
+  than opening new contract surface.
+
+**Tombstoned tasks self-heal.** NATS KV reports deleted/tombstoned keys as not-found; `kv.Read()` returns
+`None` → script creates. If a task was explicitly tombstoned but its gap is still open, Weaver's
+re-dispatch re-creates it — the correct outcome (the work still needs doing; a cancellation that resolves
+the gap closes it and stops re-dispatch).
+
+**Op name stays `CreateTask`.** The caller's intent and DDL surface are unchanged. Idempotency is a
+safety property, not a different operation.
+
+> **The deterministic `requestId` alone is not enough.** The Contract #4 tracker has a **24h TTL**
+> ([step8_commit.go:173](../../internal/processor/step8_commit.go)); a human routinely exceeds 24h, after
+> which the tracker is gone and the re-dispatch runs. The durable guard must live at the **`taskId`**
+> level (the `kv.Read()` script branch), not only the requestId/tracker.
 
 ---
 
@@ -191,13 +225,14 @@ Both are consumer-side, lag-free, and noise-free; both compose with the `claimId
 
 ## 6. Correctness properties
 
-| Property | `maxretries=1` (interim cap) | producer-side GET probe | **`claimId` id + consumer-side create-or-skip (this design)** |
+| Property | `maxretries=1` (interim cap) | producer-side GET probe | **`claimId` id + §2.5 `kv.Read()` script branch (this design)** |
 |---|---|---|---|
-| No duplicate while task open | ✅ | ⚠️ races the publish→commit lag | ✅ decided atomically at commit |
-| Race-free under propagation lag | ✅ | ❌ GET sees absent mid-lag → double-publish | ✅ Processor is the single authority |
+| No duplicate while task open | ✅ | ⚠️ races the publish→commit lag | ✅ script sees present → empty return |
+| Race-free under propagation lag | ✅ | ❌ GET sees absent mid-lag → double-publish | ✅ script reads at execution, CreateOnly backstop at commit |
 | Re-create after legit close→reopen | ✅ (count resets) | ⚠️ | ✅ fresh `claimId` ⇒ fresh task |
-| Self-heal a task lost out-of-band | ❌ never re-creates | ⚠️ | ✅ absent ⇒ create |
-| No rejected-op noise per lease | ✅ (suppressed) | ⚠️ | ✅ create-or-skip no-ops (with §4.4) |
+| Self-heal a task lost out-of-band | ❌ never re-creates | ⚠️ | ✅ absent/tombstoned ⇒ create |
+| No rejected-op noise per lease | ✅ (suppressed) | ⚠️ | ✅ script returns empty mutations+events |
+| Events coherent with mutations | ✅ (never fires) | ⚠️ | ✅ script branches both together |
 | General (all packages) | ❌ per-package columns | ✅ | ✅ |
 
 The interim cap is create-once-*forever* (never recovers a lost task) and is per-package; this design is
@@ -216,21 +251,21 @@ Proposed replacement for the §10.3 *"Re-fire after lease expiry — idempotency
 > CAS-create, **preserved** across reclaims) seeds the dispatched artifact's id — `assignTask`'s `taskId`
 > and `triggerLoom`'s Loom `instanceId`. Weaver re-publishes the dispatch **without** a producer-side
 > existence check (which would race the publish→commit propagation lag); the **Processor** is the single
-> idempotency authority — the `CreateTask` / `StartLoomPattern` op is **create-or-skip** on the
-> deterministic key (present-and-alive → no-op success, absent → create), decided atomically at commit
-> against real Core-KV state. A legitimate close→reopen mints a new mark ⇒ new `claimId` ⇒ a fresh
-> artifact; an out-of-band deletion self-heals (absent ⇒ create). This **supersedes** the "accepted rare
-> double / check-before-act = Phase-3 hardening" disposition for the two human userTask actions; external
-> gaps retain episode-scoped (per-reclaim) dispatch, bounded by `inflight_<g>` + `maxretries_<g>`.
+> idempotency authority — the `CreateTask` / `StartLoomPattern` Starlark script reads the task key via
+> `kv.Read()` (§2.5 lazy on-demand read, conformance fill) and branches on present-and-alive → empty
+> mutations + empty events (silent no-op); absent/tombstoned → create as normal; the existing `CreateOnly`
+> backstop handles the narrow concurrent-dispatch race. A legitimate close→reopen mints a new mark ⇒ new
+> `claimId` ⇒ a fresh artifact; an out-of-band deletion self-heals (tombstoned ⇒ `kv.Read()` returns
+> `None` ⇒ create). This **supersedes** the "accepted rare double / check-before-act = Phase-3 hardening"
+> disposition for the two human userTask actions; external gaps retain episode-scoped (per-reclaim)
+> dispatch, bounded by `inflight_<g>` + `maxretries_<g>`.
 
-Plus the §4.4 affordance contract (one of): **Contract #2 §2.5** gains an optional/lenient `contextHint`
-read (absent → not-in-state, no HydrationMiss); **or Contract #3 §3.2** gains a `createIfAbsent`
-mutation. And the §10.3 mark value-shape note — `claimId` regains a producer (CAS-create) + consumer (id
-derivation); strike *"left optional … no remaining producer."*
+The §10.3 mark value-shape note — `claimId` regains a producer (CAS-create) + consumer (id derivation);
+strike *"left optional … no remaining producer."*
 
-The frozen-contract touches are: §10.3 (above) and the §4.4 affordance (#2 §2.5 *or* #3 §3.2). The
-mechanism, scope, and identity design (§3–§6) are Winston-ratified; the affordance choice + both
-amendments are Andrew's to ratify on the fresh run.
+The only frozen-contract touch is **Contract #10 §10.3** (above). Contract #2 §2.5 already specifies
+`kv.Read()` — implementing it is a code-gap fill, not a new amendment. The mechanism, scope, and identity
+design (§3–§6) are Winston-ratified; the §10.3 amendment is Andrew's to ratify on the fresh run.
 
 ---
 
@@ -245,19 +280,19 @@ amendments are Andrew's to ratify on the fresh run.
    `assignTask` and `triggerLoom` plan branches ([strategist.go:104](../../internal/weaver/strategist.go),
    [strategist.go:152](../../internal/weaver/strategist.go)). Thread `claimId` into the plan `payload`
    closure (it already takes the mark context).
-3. **Processor affordance (§4.4)** — implement the chosen one. **(a, recommended):** add
-   `ContextHint.OptionalReads` (Contract #2 §2.5) and the lenient hydrate leg in
-   [step4_hydrate.go:143](../../internal/processor/step4_hydrate.go) (absent → skip, not HydrationMiss).
-   **(b):** add the `createIfAbsent` mutation to `starlark_runner.go` (parse) + `step6_validate.go` +
-   `step8_commit.go` (commit).
-4. **Idempotent `CreateTask` + `StartLoomPattern`** — consumer-side create-or-skip on the deterministic key.
-   With (a): declare `vtx.task.<taskId>` / `instance.<instanceId>` in `OptionalReads`; Starlark branches
-   `present-and-alive → no-op success; else create` (keep `TestCreateTaskReads_MatchDDLScript` /
-   drift-guards in lock-step). With (b): emit `createIfAbsent(...)`. `StartLoomPattern` also gains an
-   optional caller-supplied `instanceId` (verbatim if present), mirroring `CreateTask`'s `taskId` seam.
-   **No producer-side GET** in Weaver — it simply re-publishes the deterministic-id dispatch and the
-   Processor decides create-vs-skip at commit. (Lane-1's first dispatch is unchanged beyond minting
-   `claimId` + the deterministic id; the mark CAS-create already throttles lane-1 re-dispatch, §10.8.)
+3. **Implement §2.5 lazy `kv.Read()` (§4.4)** — add a `kv` module to `StarlarkRunner`'s globals backed
+   by a live Core-KV connection threaded into `ScriptContext` (or `StarlarkRunner`). `kv.Read(key)` →
+   value dict or `None` if absent/tombstoned. Update `CreateTask`'s Starlark script to call
+   `kv.Read("vtx.task." + taskId)`: if non-`None` return `{"mutations":[],"events":[]}` (present →
+   silent no-op); if `None` proceed with the normal create path. `StartLoomPattern` likewise checks its
+   `instance.<instanceId>` key. `CreateOnly` remains the concurrent-race backstop. Keep
+   `TestCreateTaskReads_MatchDDLScript` / DDL drift-guards in lock-step.
+4. **`StartLoomPattern` gains an optional caller-supplied `instanceId`** (verbatim if present, minted if
+   absent — mirrors `CreateTask`'s `taskId` seam). The strategist threads the `claimId`-derived
+   `instanceId` through the `triggerLoom` plan payload. **No producer-side GET in Weaver** — it
+   re-publishes the deterministic-id dispatch; the script's `kv.Read()` at the Processor decides
+   create-vs-no-op. (Lane-1's first dispatch is unchanged beyond minting `claimId` + the deterministic
+   id; the mark CAS-create already throttles lane-1 re-dispatch, §10.8.)
 5. **Revert the interim cap** — drop `maxretries_onboarding`/`maxretries_signature` from
    `packages/lease-signing/{lenses.go,retry_budget.go}` and the `UserTaskDispatchCaps` test.
 
@@ -268,8 +303,9 @@ amendments are Andrew's to ratify on the fresh run.
 - **`claimId` lifecycle:** minted on CAS-create, preserved across `replace`, gone on gap-close
   (`clearClosedMarks`); a fresh mark after reopen mints a **new** `claimId` (fresh task id).
 - **Consumer-side idempotency:** `CreateTask` / `StartLoomPattern` given a deterministic key whose vertex
-  already exists-and-is-alive returns a **no-op success** (no second vertex, no rejection); absent → creates;
-  tombstoned → re-creates. Drive it at the Processor (commit-path) level, not via a producer GET.
+  already exists-and-is-alive: script's `kv.Read()` returns the value → script returns empty mutations +
+  empty events (no second vertex, no event, no rejection); absent/tombstoned → `kv.Read()` returns `None`
+  → creates normally. Drive at the Processor (script-execution) level via the `kv.Read()` branch.
 - **Lag race (the load-bearing case):** two `CreateTask`s with the **same** deterministic `taskId` arriving
   back-to-back (the publish→commit window) commit to **one** task — the second no-ops/collapses. This is the
   scenario a producer GET cannot cover.
@@ -293,9 +329,13 @@ amendments are Andrew's to ratify on the fresh run.
   idempotent-create op stops hand-rolling the pre-read dance). The reads-miss-is-fatal rule
   ([step4_hydrate.go:152](../../internal/processor/step4_hydrate.go)) is *why* an op cannot just
   read-before-create today — the affordance is what removes that wall.
-- **Affordance choice (a vs b).** (a) optional read is broader and lower-risk (one hydrate leg, no
-  atomic-batch change); (b) `createIfAbsent` is conceptually tidy but pushes a skip-if-exists decision into
-  the strict-`CreateOnly` atomic batch. Recommend (a); final call on the fresh run.
+- **§2.5 `kv.Read()` implementation scope.** Threading a live Core-KV connection into `ScriptContext` /
+  `Execute` is modest but non-trivial: the `Execute` signature currently takes only `HydratedState`, no
+  `Conn` (see [step5_execute.go:29](../../internal/processor/step5_execute.go)). `kv.Read()` in a script
+  is a per-call NATS round-trip; document it as an intentional opt-in for the idempotency-read pattern,
+  not a general KV scan hook (prevent script authors from treating it as a read model). The empty-mutations
+  return path already succeeds (step8_commit.go:183 writes no outbox for zero events; an empty mutation
+  batch is not a special case). `CreateOnly` remains the concurrent-race backstop.
 - **`StartLoomPattern` idempotency interaction with Loom's own deterministic `taskId`.** Once the Loom
   *instance* id is stable, Loom's `(instanceId, cursor)` task id is automatically stable too — the two
   compose; no separate Loom-task change needed.
@@ -310,14 +350,13 @@ amendments are Andrew's to ratify on the fresh run.
 
 ## 11. Sequencing — a fresh Steward run (Andrew, 2026-06-25)
 
-1. Andrew ratifies (a) the §4.4 affordance choice (recommend the optional read) and (b) the §7 §10.3
-   amendment — or redirects.
-2. Apply the contract edits (§10.3 + the affordance's §2.5/§3.2) to `docs/contracts/*` (Andrew's edit / on
-   his nod).
-3. Build §8: the Processor affordance first (it is the keystone + reusable), then the Weaver `claimId`
-   mint/derive, then the idempotent `CreateTask`/`StartLoomPattern`. Party + 3-layer adversarial review
-   (Processor + Weaver core + two frozen contracts = clearly L+); gates green incl. `make verify-package-*`
-   for any touched op DDL.
+1. Andrew ratifies the §7 §10.3 amendment — or redirects. The §2.5 lazy `kv.Read()` mechanism is a
+   conformance fill (§2.5 already authorises it); no amendment needed beyond §10.3.
+2. Apply the §10.3 contract edit to `docs/contracts/10-orchestration-surfaces.md` (Andrew's edit / on his nod).
+3. Build §8: implement §2.5 `kv.Read()` first (the keystone — threads the Conn into ScriptContext and
+   wires the kv module), then the Weaver `claimId` mint/derive, then `CreateTask`/`StartLoomPattern`
+   using it. Party + 3-layer adversarial review (Processor execution path + Weaver core + one frozen
+   contract = clearly L+); gates green incl. `make verify-package-*` for any touched op DDL.
 4. Revert the interim cap (§8.5) in the same change.
 5. Commit direct to main, CI green.
 
