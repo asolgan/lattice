@@ -48,7 +48,7 @@ func Lenses() []pkgmgr.LensSpec {
 			Output: &pkgmgr.OutputDescriptorSpec{
 				AnchorType:       "leaseapp",
 				OutputKeyPattern: "leaseApplicationComplete.{actorSuffix}",
-				BodyColumns:      []string{"violating", "missing_onboarding", "missing_bgcheck", "missing_payment", "missing_signature", "applicant", "entityKey", "freshUntil", "inflight_bgcheck", "inflight_payment", "declined_bgcheck", "declined_payment", "declined", "maxretries_bgcheck", "maxretries_payment", "unitKey", "unitAddress", "unitRent"},
+				BodyColumns:      []string{"violating", "missing_onboarding", "missing_bgcheck", "missing_payment", "missing_signature", "applicant", "entityKey", "freshUntil", "inflight_bgcheck", "inflight_payment", "declined_bgcheck", "declined_payment", "declined", "maxretries_bgcheck", "maxretries_payment", "maxretries_onboarding", "maxretries_signature", "unitKey", "unitAddress", "unitRent"},
 				EmptyBehavior:    "delete",
 				KeyColumn:        "entityId",
 				Freshness:        "auto",
@@ -168,6 +168,16 @@ func Lenses() []pkgmgr.LensSpec {
 //	  count is deleted when the gap closes, so a later renewal starts a fresh budget.
 //	  Keeping the cap a package-owned column (like freshUntil) leaves the policy in
 //	  the package with no contract change.
+//	- maxretries_onboarding / maxretries_signature — the SAME cap term applied to
+//	  the two HUMAN userTask gaps, set to 1 (create-once). These gaps have no
+//	  inflight_<g> companion (there is no in-flight external call to detect), so
+//	  without a cap the §10.3 reconciler mark-lease reclaim presumes the userTask
+//	  dead every 30m (the mark lease) and re-dispatches it — spawning a DUPLICATE
+//	  task each pass for any application a human has not completed within 30m. The
+//	  cap = 1 makes gapSuppressed stop re-dispatch after the single CreateTask, so
+//	  exactly one task is created and it persists until the human completes it
+//	  (which closes the gap and resets the count). Re-creating a userTask that is
+//	  genuinely lost is the deferred FR28 escalation concern, not auto-recreation.
 //
 // DECLINED DISPOSITION — the per-family declined_<g> column + the top-level declined.
 //
@@ -241,5 +251,7 @@ RETURN
   (((bgFailed > 0) AND (freshBgComplete = 0)) OR ((payFailed > 0) AND (payComplete = 0))) AS declined,
   %d                     AS maxretries_bgcheck,
   %d                     AS maxretries_payment,
+  %d                     AS maxretries_onboarding,
+  %d                     AS maxretries_signature,
   ((ssnVal = null) OR (freshBgComplete = 0) OR (payComplete = 0) OR (signedAt = null)) AS violating
-`, maxBgcheckRetries, maxPaymentRetries)
+`, maxBgcheckRetries, maxPaymentRetries, maxOnboardingDispatches, maxSignatureDispatches)
