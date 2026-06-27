@@ -1,6 +1,6 @@
 # LoftSpace — landlord / property-manager surface
 
-**Status:** 🏗️ **Data layer ✅ shipped (e6d4499); decision-op + FE ✅ Winston-ratified — build-ready.**
+**Status:** ✅ **DONE — Inc 1 data layer (e6d4499) + Inc 2 decision op (6c30a10) + Inc 3 landlord FE (db4073a) all shipped, CI green.** The landlord surface is feature-complete; the vertical is two-sided.
 No frozen-contract change, no Andrew gate — all package-owned mechanisms (Capability-KV §06 op-logic +
 package-owned lens BodyColumns), the same envelope as the just-shipped listing-status-on-approval and
 duplicate-application-guard work. The decision-op revises the heavily-reviewed `leaseApplicationComplete`
