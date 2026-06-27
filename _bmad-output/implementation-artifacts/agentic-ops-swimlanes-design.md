@@ -31,11 +31,25 @@
 
 ## 3. Streams & roles
 
-| Stream | Code area (disjoint) | Advancer | Hydrator(s) |
+| Stream | Code area (disjoint) | Advancer | Demand / readiness (file-only) |
 |---|---|---|---|
 | **1 — App Verticals** | `packages/<vertical>-*` (loftspace-domain, lease-signing, clinic-*), `cmd/<vertical>-app`, vertical lenses | **Vertical Steward** (`steward-verticals`) | **Vertical PO** (`vertical-po-discovery`) |
-| **2 — Lattice** (features + component maintenance) | `internal/*` (processor, weaver, loom, refractor, substrate, bootstrap), `cmd/loupe`, core/base packages | **Lattice Steward** (`steward-autonomous`, repurposed) — **round-robin across components** | **Surveyor** (`platform-surveyor`, new) **+ PO-routed platform gaps** |
+| **2 — Lattice** (features + component maintenance) | `internal/*` (processor, weaver, loom, refractor, substrate, bootstrap), `cmd/loupe`, core/base packages | **Lattice Steward** (`steward-autonomous`) — **round-robin across components** | **Surveyor** (`platform-surveyor`) hydrates raw demand → **Designer** (`lattice-designer`) deepens it into build-ready designs **+ PO-routed platform gaps** |
 
+- **Stream 2 is a three-stage pipeline:** **Surveyor** (files + scores raw demand) → **Designer** (turns the
+  items — almost all need design — into design docs, each **flagged for Andrew to ratify**) → **Lattice
+  Steward** (builds the ratified ones). The Designer is the **readiness** stage — Winston wearing the
+  `bmad-agent-architect` hat, grounding hard in `lattice-architecture.md` + the component docs + the
+  brainstorming inventory + the Obsidian-vault vision before designing an item. It **resolves every design
+  question itself** (decide-don't-defer) but **does not self-ratify** — every finished design goes to Andrew
+  (forks are designed-through + explained; frozen-contract changes prepared uncommitted). Only the **one shelved
+  item** (🚧 Andrew-gated) is off-limits. File/design-only (L0/L1) — never builds. Skill: `agents/designer/`.
+- **The Whetstone (`ci-whetstone`) is a cross-cutting CI-speed-and-reliability loop** in the Lattice stream (CI
+  is platform infra, not one component): make CI faster **and eliminate flaky tests**, **without weakening any
+  gate** — parallelize the serial GH-Actions job into a matrix, add Go caching, raise safe test-parallelism,
+  and root-cause flakes (never retry-mask them) — proving each change with a measured wall-clock drop, every
+  gate still green, flakiness only down. A builder (L1→L2, worktree → commit → watch CI); runs on its own
+  cadence, parallel to the Stewards. Skill: `agents/whetstone/`.
 - Stream 1 is **mostly package + FE**: the PO defines the capability → Sally (UX) → FE Engineer builds → package/lens work via the owner pattern.
 - Stream 2 **round-robins across components** (Core / Weaver / Loom / Refractor / Loupe + cross-cutting
   features) by component freshness × importance×readiness — the existing component-coverage rotation, now the
@@ -137,9 +151,11 @@ targets.) A *stale running binary serves the OLD assets* — restarting your own
 
 ## 9. The fleet (scheduled tasks)
 
-| Task | Role | Cadence (initial) |
+| Task | Role | Cadence |
 |---|---|---|
-| `steward-autonomous` *(repurposed)* | **Lattice Steward** (advance Stream 2) | dense (~hourly) |
-| `steward-verticals` *(new)* | **Vertical Steward** (advance Stream 1) | dense (~hourly), offset from Lattice |
-| `platform-surveyor` *(new)* | **Surveyor** (hydrate `lattice.md`) | a few ×/day |
-| `vertical-po-discovery` *(updated)* | **Vertical PO** (hydrate `verticals.md` + route Lattice gaps) | a few ×/day |
+| `steward-autonomous` | **Lattice Steward** (advance Stream 2) | even hours (`0 */2`) |
+| `steward-verticals` | **Vertical Steward** (advance Stream 1) | odd hours (`0 1-23/2`), offset from Lattice |
+| `lattice-designer` | **Designer** (build-ready designs ahead of the Lattice Steward) | odd hours :30 (`30 1-23/2`) — pipelines before the even-hour Lattice advancer |
+| `platform-surveyor` | **Surveyor** (hydrate `lattice.md`) | 3×/day (`0 7,15,23`) |
+| `vertical-po-discovery` | **Vertical PO** (hydrate `verticals.md` + route Lattice gaps) | 3×/day (`0 5,13,21`) |
+| `ci-whetstone` | **Whetstone** (make CI faster, no weaker gate) | 2×/day (`30 6,18`) |

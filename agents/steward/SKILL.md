@@ -106,7 +106,12 @@ Pre-emption order (within your stream):
    simplification / refactor, observability build-out, and **doc sweeps** — incl. the cross-cutting docs no
    single story owns (`README.md`, `docs/architecture-overview.md`, the contracts index): the dedicated
    **Scribe** isn't running, so refresh them when the system's model shifts (a new phase / driver / component).
-5. **Design** the next item — *if nothing is build-ready, make progress by designing, not stopping.* Ground →
+5. **Design** the next item — *if nothing is build-ready, make progress by designing, not stopping.* **Lattice
+   stream:** a dedicated **Designer** (`lattice-designer`) keeps designs stocked, each ratified by Andrew —
+   **prefer picking up an `✅ Andrew-ratified` design** (build it per its doc) and design here yourself only as
+   the *fallback* when no ratified design covers the item you need (your own in-line design for a *small* build
+   decision still follows decide-don't-defer; a *substantial* new design is the Designer's lane → Andrew
+   ratifies). Ground →
    write a reviewable design doc in `implementation-artifacts/` → adversarial / party review → **then resolve
    its open questions yourself (§0): if they are all implementation / design calls (the normal case), ratify
    them as Winston in the same fire, mark the doc `✅ Winston-ratified — build-ready`, and build it** (batch

@@ -18,8 +18,8 @@ Rotate so nothing goes un-surveyed. Choose the **least-recently-surveyed / stale
 - **Components** — Core (`internal/processor` + `internal/bootstrap` + `internal/substrate`), **Weaver**
   (`internal/weaver`), **Loom** (`internal/loom`), **Refractor** (`internal/refractor`), **Loupe**
   (`cmd/loupe`). Freshness via `git log -1 --format=%ct -- <path>`.
-- **Cross-cutting features** — the deferred-capabilities backlog (`lattice.md` "Deferred backlog" +
-  `_bmad-output/planning-artifacts/lattice-architecture.md` "Deferred Architectural Capabilities").
+- **Cross-cutting features** — the Lattice **feature backlog** (`lattice.md` "Lattice feature backlog — the
+  Phase-3 build queue"), grounded against `_bmad-output/planning-artifacts/lattice-architecture.md`.
 
 One focus per run. Note what you surveyed (a dated line) so the next run rotates.
 
@@ -49,5 +49,8 @@ uncommitted) or is a genuine architectural fork (Andrew's call). Keep a short **
 
 Never build, commit code, write a full design, or touch frozen contracts — your **only** commit is the
 docs-only `lattice.md` filing. Don't flood the board: a handful of high-value, ready items per run, not dozens.
-If the focus is healthy and well-covered, say so and rotate — don't manufacture noise or an empty commit. The
-**Lattice Steward** (separate loop) builds what you file; design-heavy items it designs itself.
+If the focus is healthy and well-covered, say so and rotate — don't manufacture noise or an empty commit. You
+are the **first** stage of the Lattice pipeline (Surveyor → **Designer** → Lattice Steward): you file *raw,
+scored* demand; the **Designer** (`lattice-designer`) turns it into design docs flagged for **Andrew** to
+ratify, and the **Lattice Steward** builds the ratified ones. (Almost everything you file needs design — no need
+to tag it; the Designer works the highest-value un-designed items in turn.)
