@@ -425,6 +425,59 @@ func TestBuildDeleteSQL_ColumnNamesQuoted(t *testing.T) {
 	assert.Contains(t, sql, `"order"`)
 }
 
+// ── buildTruncateSQL unit tests (no real Postgres needed) ────────────────────
+
+func TestBuildTruncateSQL_PlainTable(t *testing.T) {
+	a := newTestAdapter(t, "occupancy_view", []string{"agreement_id"})
+
+	assert.Equal(t, `TRUNCATE TABLE "occupancy_view"`, a.buildTruncateSQL())
+}
+
+func TestBuildTruncateSQL_TableNameDoubleQuoted(t *testing.T) {
+	// Reserved-word table name "order" must be double-quoted in the statement.
+	a := newTestAdapter(t, "order", []string{"id"})
+
+	assert.Equal(t, `TRUNCATE TABLE "order"`, a.buildTruncateSQL())
+}
+
+func TestPostgresAdapter_SatisfiesTruncater(t *testing.T) {
+	a := newTestAdapter(t, "t", []string{"id"})
+
+	_, ok := interface{}(a).(Truncater)
+	assert.True(t, ok, "PostgresAdapter must implement adapter.Truncater")
+}
+
+// ── Truncate integration test (requires real Postgres) ───────────────────────
+
+func TestPostgresAdapter_Truncate_Integration(t *testing.T) {
+	dsn := skipIfNoPostgres(t)
+
+	pool, err := pgxpool.New(context.Background(), dsn)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	ctx := context.Background()
+
+	_, err = pool.Exec(ctx, `CREATE TEMP TABLE truncate_test (id TEXT PRIMARY KEY, name TEXT)`)
+	require.NoError(t, err)
+
+	_, err = pool.Exec(ctx, `INSERT INTO truncate_test VALUES ('a', 'Acme'), ('b', 'Beta')`)
+	require.NoError(t, err)
+
+	a, err := NewPostgresAdapter(pool, "truncate_test", []string{"id"}, 5*time.Second, DeleteModeHard)
+	require.NoError(t, err)
+
+	require.NoError(t, a.Truncate(ctx))
+
+	var count int
+	err = pool.QueryRow(ctx, `SELECT COUNT(*) FROM truncate_test`).Scan(&count)
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "all rows must be gone after Truncate")
+
+	// Truncate on an already-empty table is a no-op, not an error.
+	assert.NoError(t, a.Truncate(ctx), "truncating an empty table must succeed")
+}
+
 // ── Delete integration tests (require real Postgres) ─────────────────────────
 
 func TestPostgresAdapter_Delete_Integration(t *testing.T) {

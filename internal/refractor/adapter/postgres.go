@@ -11,8 +11,9 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Compile-time check that PostgresAdapter satisfies Adapter.
+// Compile-time check that PostgresAdapter satisfies Adapter and Truncater.
 var _ Adapter = (*PostgresAdapter)(nil)
+var _ Truncater = (*PostgresAdapter)(nil)
 
 // PostgresAdapter writes materialized rows to a Postgres table.
 // It uses a shared pgxpool.Pool (owned by PoolManager) so connection count
@@ -218,6 +219,30 @@ func (a *PostgresAdapter) Upsert(ctx context.Context, keys map[string]any, row m
 	}
 
 	_, err = a.pool.Exec(ctx, sqlStr, args...)
+	return err
+}
+
+// buildTruncateSQL constructs the truncate statement. The target table name is
+// double-quoted via quoteIdent so a reserved word or mixed-case identifier is
+// honored exactly; the constructor already rejects an embedded double-quote, so
+// the name cannot break out of the quoting.
+func (a *PostgresAdapter) buildTruncateSQL() string {
+	return fmt.Sprintf(`TRUNCATE TABLE %s`, quoteIdent(a.table))
+}
+
+// Truncate clears every row from the target table so a rebuild's stream replay
+// re-populates it from empty (Pipeline.Rebuild with truncate=true, FR29).
+// TRUNCATE drops all rows in one statement (no per-row tombstone scan) and
+// leaves the table schema intact, mirroring the NATS-KV adapter's purge-every-key
+// Truncate. Postgres targets carry no projection-write guard — writes are
+// unconditional last-writer-wins (Contract #6 §6.2) — so unlike the guarded
+// KV path there is no watermark to reset; the replay simply re-inserts from a
+// clean table. The per-rule queryTimeout is applied via withTimeout.
+func (a *PostgresAdapter) Truncate(ctx context.Context) error {
+	ctx, cancel := a.withTimeout(ctx)
+	defer cancel()
+
+	_, err := a.pool.Exec(ctx, a.buildTruncateSQL())
 	return err
 }
 
