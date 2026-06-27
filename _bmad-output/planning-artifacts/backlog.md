@@ -1,17 +1,61 @@
-# Lattice Backlog & Roadmap (Phase 3+)
+# Lattice Backlog & Roadmap (Phase 3+) — index
 
 **Owner:** Andrew (architect / planning lead). **Status:** living document.
 
-This is the single consolidated backlog for everything deferred past the Phase 2 orchestration core,
-plus the active next initiative. It supersedes the scattered deferral lists —
-`lattice-architecture.md` "Open Items (Phase 3+)", `epics/index.md` "Deferred Architectural
-Capabilities", and the per-component *Implementation status / Deferred* sections in
-`docs/components/*` — which now point here. Frozen architecture *decisions* (e.g. the D1 read-path-auth
-rubric) stay in `lattice-architecture.md`; this doc tracks *what to build next*, not *how it is designed*.
+Work is tracked in **two swim-lane files**, advanced by **two parallel streams** (split along the
+no-collision seam: app-vertical code vs platform code). Design + rationale:
+`implementation-artifacts/agentic-ops-swimlanes-design.md`.
 
-**Scales.** Importance: ★ low · ★★ medium · ★★★ high. Size: XS · S · M · L · XL (relative epic/story effort).
+- **[backlog/verticals.md](backlog/verticals.md)** — App Verticals (LoftSpace/Clinic packages + FE). Stream:
+  **Vertical Steward** + **Vertical PO**.
+- **[backlog/lattice.md](backlog/lattice.md)** — Lattice features + component maintenance. Stream: **Lattice
+  Steward** (round-robin across components) + **Surveyor**.
+
+This index keeps the **scales**, the **cross-lane rules**, and the **shipped history** (the Progress board
+below). Per-lane *ready / in-flight / done* lives in the two lane files (each stream writes only its own file →
+the single-file board-collision races go away).
+
+**Scales.** Importance: ★ low · ★★ medium · ★★★ high. Size: XS · S · M · L · XL.
+**Status vocabulary.** 📋 ready · 🏗️ in-flight (worktree) · ✅ done (commit) · 📐 design-proposed · 🚧 blocked
+(Andrew-gated, or `blocked-on:` another item).
+
+## Cross-lane rules
+
+- **No-paper-over (Andrew, 2026-06-26).** The App-Verticals stream **never** substitutes a workaround for a
+  missing Lattice capability and calls the item done. A discovered platform gap is filed to **lattice.md** as
+  demand (tagged with the requesting vertical + why) and the vertical item is **`🚧 blocked-on:`** it — or
+  ships only its non-gap part. A vertical builds *on* real Lattice capabilities; faking one hides the gap and
+  stalls Lattice. (Generalizes **P5**: a view the app can't render is usually a missing lens → platform/owner
+  work, FE as a follow-on.)
+- **The PO drives Lattice demand too.** Exercising the verticals is the primary, grounded source of "what the
+  platform actually lacks" — those gaps land in lattice.md, not worked around in verticals.
+- **Prioritization.** Each stream picks by **importance × readiness**; the Lattice stream **round-robins across
+  components** so none stalls. Reliability/observability **red pre-empts** either stream. The experience layer
+  is **not** a forced priority (the apps largely exist).
+- **Frozen contracts are prepare-not-skip.** A needed `docs/contracts/*` change is never a reason to skip an
+  item: make the edit in `main` **uncommitted** + flag it; Andrew ratifies (commits). Only a *standing* Andrew
+  block/shelve is a true leave-it.
 
 ---
+
+## Now — balanced prioritization (experience layer no longer forced)
+
+The initial experience-layer push has largely landed: the vertical apps now **exist** (`cmd/loftspace-app`
+`:7788`, `cmd/clinic-app` `:7799`) with real flows, and the Loupe live system-map shipped. So the experience
+layer is **no longer a forced top priority** (Andrew, 2026-06-25) — the Steward picks by
+**importance × readiness**, balancing the experience layer against reliability / observability, component
+coverage, and the **PO-filed demand backlog** (the Vertical PO discovery loop is now live and feeds fresh,
+exercised items — see *Vertical demand backlog*). Flow for any UI/app pick: **PO scopes → Sally designs the UX
+→ FE Engineer builds + verifies in-browser → Winston admits.** M/L is fine (risk-bounded L2 + multi-fire).
+
+- **Vertical app front-ends (★★★)** — whatever the Vertical POs (LoftSpace, Clinic) decide their apps should
+  do; the apps exist and are exercisable live, so this is now **PO-demand-driven** rather than greenfield. Be
+  ambitious — new app capabilities welcome.
+- **Loupe operator surfaces** — the live "system map" landing page is ✅ shipped. The **agent-activity console
+  is ⏸️ shelved** (Andrew, 2026-06-25 — read-seam options rejected; revisit later). Not an active pick.
+
+---
+
 
 ## Progress board
 
@@ -78,266 +122,6 @@ per-item detail lives in design / story docs + git history, never in agent memor
 
 ---
 
-## Active initiative — Loupe: the View & Control app *(first Edge Lattice prototype)*
-
-> **Name:** *Loupe* (tentative). A jeweler's loupe is the tool you inspect a crystal through — apt for
-> a window onto the lattice.
-
-**What it is.** An internal **view-and-control client** for a running Lattice deployment: browse Core
-KV (vertices / aspects / links), submit operations, install / uninstall capability packages, drive each
-component's control plane (Refractor / Weaver / Loom), and observe Health KV. The first concrete UI on
-top of the platform.
-
-**Framing (the "a-ha").** Loupe is an **internal, trusted-operator tool**, but built *around the
-Edge-node local-first machinery* — the same substrate + VAL mirror + reconcile-by-revision a real Edge
-Lattice node would use — so it doubles as the **first prototype of Edge Lattice** without taking on the
-Edge security layer. It is a stepping stone: prove the local-first view/control loop now; grow into the
-per-user sovereign node later, once the deferred security pieces land.
-
-**Non-goals (explicitly OUT — these stay Phase 3+).** Loupe runs as a **single trusted / privileged
-identity** (like the CLI / admin), so this initiative does **not** build:
-
-- per-user **authN / authZ**,
-- the **Gateway**,
-- **read-path authorization** (D1),
-- **Personal Lens** / per-user filtering.
-
-Loupe reads the **full** graph directly as a trusted client; per-user scoping is a later Edge evolution.
-
-**Capabilities (v1).** Read Core KV + lens projections · submit ops (forms driven by DDL
-self-description: `inputSchema` / `fieldDescription` / `examples`) · install / uninstall packages ·
-Refractor / Weaver / Loom control ops · Health KV dashboard · view + upload large binaries (photos,
-lease PDFs).
-
-**Enabling work (the picked "Now" set) — ✅ all shipped (see the Progress board).**
-
-| Enabling item | Why Loupe needs it | Imp | Size |
-|---|---|---|---|
-| **Loom control plane** | *Hard blocker.* Refractor + Weaver expose `lattice.ctrl.*` responders; Loom has none. Build `internal/loom/control` + `cmd/lattice/loom` + a `lattice.ctrl.loom.*` responder (list running instances, pause/resume consumers, inspect/fail an instance), mirroring `internal/weaver/control`. | ★★★ | M |
-| **Large-file / binary handling** | Loupe shows + uploads profile photos and lease PDFs. NATS Object Store (chunked, content-addressed); the graph holds a pointer-aspect, the store holds the bytes; blobs never flow through the Refractor. *Authorization simplifies under the trusted-tool model* (binds to the trusted identity, not per-user). | ★★ | M–L |
-| **Refractor substrate inner-package migration** | Hygiene + directly supports "around Edge machinery": ~30 `internal/refractor` files still hold raw `nats.go` / `jetstream` handles; a clean substrate boundary is what makes a local / embeddable node tractable. Needs substrate Watch / UpdatesOnly / NumPending / durable-consumer helpers first. | ★★ | M |
-
-**Supporting / not blocking.** `UI Form Schema aspect` (brainstorming #52) would standardize form
-rendering (DDL self-description already suffices for v1) · NATS **WebSocket** transport if Loupe is
-browser-based (desktop / TUI / Electron use the native client) · Processor + Bridge have **no** control
-plane — Loupe reads their Health instead (a minimal admin endpoint is optional, later).
-
-**Open design questions for the epic.** Transport + host (desktop / TUI / Electron / browser-WS) ·
-does Loupe embed a **local VAL mirror** via reconcile-by-revision (the Edge machinery) or read live
-only · whether to add a thin read/query convenience surface (direct KV + lens reads work for v1).
-
----
-
-## Now — balanced prioritization (experience layer no longer forced)
-
-The initial experience-layer push has largely landed: the vertical apps now **exist** (`cmd/loftspace-app`
-`:7788`, `cmd/clinic-app` `:7799`) with real flows, and the Loupe live system-map shipped. So the experience
-layer is **no longer a forced top priority** (Andrew, 2026-06-25) — the Steward picks by
-**importance × readiness**, balancing the experience layer against reliability / observability, component
-coverage, and the **PO-filed demand backlog** (the Vertical PO discovery loop is now live and feeds fresh,
-exercised items — see *Vertical demand backlog*). Flow for any UI/app pick: **PO scopes → Sally designs the UX
-→ FE Engineer builds + verifies in-browser → Winston admits.** M/L is fine (risk-bounded L2 + multi-fire).
-
-- **Vertical app front-ends (★★★)** — whatever the Vertical POs (LoftSpace, Clinic) decide their apps should
-  do; the apps exist and are exercisable live, so this is now **PO-demand-driven** rather than greenfield. Be
-  ambitious — new app capabilities welcome.
-- **Loupe operator surfaces** — the live "system map" landing page is ✅ shipped. The **agent-activity console
-  is ⏸️ shelved** (Andrew, 2026-06-25 — read-seam options rejected; revisit later). Not an active pick.
-
----
-
-## Vertical demand backlog (PO discovery)
-
-Filed by the Vertical PO discovery loop (demand side). Each item is tagged with the **vertical** and
-the **owner** (FE = Sally + FE Engineer · pkg = Package Designer · platform = component owner). Scored
-Imp ★ / Size. The Steward + FE Engineer pick these up; the PO only files.
-
-| Item | What it is (PO view) | Vertical | Owner | Imp | Size |
-|---|---|---|---|---|---|
-| Property / Unit / Listing domain + richer application | ✅ **Design build-ready** (`implementation-artifacts/loftspace-property-domain-design.md` — decisions resolved by PO+Winston, adversarially reviewed + hardened, no contract change / no Andrew gate; new `loftspace-domain` pkg owning `vtx.unit`, `unit` required at create, convergence-lens walks to it for display). ✅ Increment 1 (the `loftspace-domain` package — `.listing`/`.address` aspects + `SetListing`/`SetUnitAddress`) **DONE + live-verified**; ✅ Increment 2 (lease-signing integration: required `unit` at create + `appliesToUnit` link + `.terms` aspect + convergence-lens walk projecting `unitKey`/`unitAddress`/`unitRent`) **DONE (047a67e), cross-package e2e green**; 🏗️ Increment 3 (applicant FE) next — now unblocked. The biggest *product* gap: `vtx.leaseapp.<id>` is a bare shell (root `{}` + one `applicationFor` link). The vertical models the *workflow* but not the *thing being leased* — there is no property/unit/listing, no rent, lease term, move-in date, applicant income/employment, co-applicants or guarantor. "What am I even applying to lease?" is unanswerable today. Needs a `loftspace-domain` (or similar) package: a unit/listing vertex type + application-detail aspects, with the convergence lens able to walk to the unit. Foundation for a real applicant app. | LoftSpace | pkg + FE | ★★★ | L |
-| Decline / manual-review application outcome | **Re-scoped 2026-06-25 (Steward) — part (1)+(3) the disposition SURFACE is now ✅ Done (3cff020, Progress board above); the residual is part (2), the live decline TRIGGER.** The auto-approve correctness defect was already fixed (828f24d: `RecordLeaseServiceOutcome` validates `status ∈ {completed,failed}`, the lens counts only `completed`, a failed check stays violating — pinned by `lens_cypher_test.go`). ✅ **(1) terminal disposition + (3) lens/FE surface DONE:** the lens projects `declined_*` and the My Applications FE renders a red "Application declined" banner / Declined step (no longer "blocked-forever-invisible"). ✅ **(2) drive a decline LIVE — Done (global demo toggle)**, see the Progress board row "drive a decline LIVE (demo affordance)": `BRIDGE_FAKE_DECLINE` makes the fakes decline every check, so an operator drives the declined experience end-to-end (live-verified: app row `declined=true`, FE red banner). **Residual — a *per-applicant selective* decline (★, the harder seam):** so different applicants get different verdicts on one running bridge. Needs an applicant-controlled signal (e.g. the applicant's `.name`) threaded from the `CreateLeaseServiceInstance` instanceOp → externalTask `params` → `Request.Params` → the fake — which requires Loom to hydrate the subject's `.name` aspect into the dispatch (today `reads=[subjectKey]` only, `engine.go:1009`, contract-guarded; root is `{}` per D5). A Loom dispatch-reads / §10.5-adjacent change — its own fire. | LoftSpace | platform (Loom) | ★ | S–M |
-| Human-readable task content on userTasks / assignTasks | **Re-scoped 2026-06-25 (Winston) — NOT a platform/package gap; the content is reachable today.** Task *relationships are links* by design (Contract #10 §10.1): the `my-tasks` lens already projects `forOperation: vtx.meta.<id>`, and that op meta-vertex carries `.canonicalName` + the DDL self-description (inputSchema / fieldDescription / examples) Loupe **already reads to render op-submit forms**. So a task-inbox renders {op canonicalName = title, op description = instructions, op inputSchema = the form} by resolving the `forOperation` meta — the same Core-KV meta-read pattern Loupe's `resolveLens` already ships. Decision: **project the op's human label from the `forOperation` meta, do NOT stamp a `.prompt` aspect** (single source of truth; no dual-write; preserves the task root's deliberate `{status,expiresAt}`-only / NO-aspects invariant; no §10.8 dispatch-`reads` / contract touch). ✅ **Platform fix DONE (corrected 2026-06-25)** — the `my-tasks` lens projects `operationName ← op.data.operationType` (the field every op DDL carries) and `operationDescription ← op.description.data.value` (best-effort), so the per-identity read-model row is self-describing for **every** consumer. *(The earlier `op.canonicalName.data.value` hop projected null in the real flow — a dispatched userTask's `forOperation` points at the op DDL meta whose name is the root `operationType`, NOT a `.canonicalName` aspect; the old e2e masked it by manufacturing the aspect. Fixed + guarded by a realistic e2e.)* ✅ **Loupe operator task-inbox data layer done** (`GET /api/tasks`: all tasks across identities, link-sources assignee/op/target, resolves the op label from root `operationType` with a `.canonicalName` fallback; unit-tested). Residual: the optional op-`description` authoring nicety (ensure each userTask op DDL carries a human `description` aspect, not just the machine `operationType`). | LoftSpace (all) | FE | ★★ | S |
-| LoftSpace applicant app — scoped FE | ✅ **Done — Increments A–E all SHIPPED (in-browser verified). The greenfield applicant FE is complete: Browse&Apply, My Applications, Tasks, Documents, + `make up-loftspace` local-stack wiring.** ✅ **UX design build-ready** + ✅ **Increment A** (scaffold + Browse&Apply) + ✅ **Increment B** (My Applications status tracker: `/api/applications` lens read + journey stepper, 32ffcca) + ✅ **Increment C** (task inbox over the `my-tasks` lens + `RecordIdentityPII`/`SignLease` completion verified through the real Processor, ced082d). Remaining: D (documents, objects-base) · E (up-full wiring). Prerequisites met: property-domain (Increments 1+2) shipped + task-content self-describing. **Verified live: the vertical is headless** — every step (apply, run checks, complete PII, sign) had to be driven via `lattice op submit` as the system actor; an applicant has no way in. Scoping the greenfield FE the *Now* section flags generically: (1) application-intake form (driven by DDL self-description), (2) "my application status" tracker (submitted → checks → sign → decision), (3) task inbox to complete `RecordIdentityPII` + `SignLease`, (4) document upload (ID / lease PDF, via objects-base). Default to Loupe's vanilla HTML/CSS/JS stack. **Next pick: FE Increment A (scaffold + intake).** | LoftSpace | FE | ★★★ | L |
-| Close assignTask tasks when their gap is satisfied | ✅ **Resolved (Steward + Andrew, 2026-06-25) — small app-level fix; the proposed Weaver core-orchestration change RETRACTED as over-built.** Andrew flagged that the Processor *already* auto-completes the task on the §10.7 **task path** (an op authorized via the task's ephemeral grant → commit injects `status→complete` + `taskCompleted`, atomic, CAS-on-open; `internal/processor/autocomplete.go`). The lingering task is the **no-hint case**: the `loftspace-app` submits every op as the **primordial admin actor** (standing permission), never the task grant, so auto-complete never fires. In the proper per-identity flow (deferred read-path-auth) it closes for free. **Fix:** the Tasks-tab completion now submits an explicit **`CompleteTask(taskKey)`** (the §10.7 retained out-of-band path) right after the bound op commits — `cmd/loftspace-app/web/app.js`, best-effort (benign already-closed rejection logged, not surfaced). No Weaver change, no §10.8 contract question, no frozen-contract touch. The Weaver-reconciliation design is retained as RETRACTED in the doc for the record. Ref: `implementation-artifacts/task-closure-on-gap-satisfaction-design.md`. | LoftSpace (all) | FE | ★★ | XS |
-| `clinic-domain` package — patient / provider / appointment / visit model | ✅ **Increment 1 DONE (Steward, 2026-06-25)** — the self-contained `packages/clinic-domain` ships `vtx.patient`/`vtx.provider`/`vtx.appointment` + their aspects/links + 7 ops + 2 P5 projection lenses (`clinicAppointments` joins patient↔appointment↔provider, `clinicProviders` roster); 3-layer-reviewed, all gates green, `make install-clinic`. See the Progress board row + `implementation-artifacts/clinic-domain-design.md`. The **convergence-lens** the PO asked for ships as a **projection** (Increment 1 has no orchestrated workflow yet — a Weaver convergence lens follows the scheduling/`@every` work). **Remaining (later increments):** scheduling/availability aspects + double-book + `@every` (the platform gaps below) and the clinic FE (UX→FE). *Original gap (resolved by Inc 1): the forcing-function vertical had zero domain — nothing bookable.* | Clinic | pkg + FE | ★★★ | L |
-| Recurring `@every` schedules — the clinic forcing function | **Static, verified by grep: `@every` has NO consumer.** The `core-schedules` stream is bootstrapped with `AllowMsgSchedules` (primordial.go:198 advertises `@at/@every`), but every component — bridge poll/timeout, the Weaver temporal lane — uses **`@at` one-shot only** (contract §10.4: "Phase 2 uses @at one-shot"). Clinic is the demand that pulls `@every` into existence: appointment reminders ("remind 24h before"), recurring provider availability ("Dr.X Mon/Wed 9–5"), recurring follow-ups. This is the deferred platform work the clinic vertical exists to force (agentic-ops-design §5/§11). Build the recurring-schedule emit + re-arm path on the temporal lane and a vertical that uses it. **Scope sharpened (Steward, 2026-06-25, grounded for the next design fire):** (1) **`@every` is frozen-contract-adjacent** — §10.4 (FROZEN) already names the `@every` header shape ("or @every for recurring — Phase 2 uses @at one-shot"), so the *header* needs no change, but the **re-arm / dedup / drift semantics** of a recurring fire (does the scheduler republish the next occurrence? dedup key per occurrence?) are unspecified → that specific part is a **§10.4 amendment = Andrew gate** (design it, flag that part 📐, build the rest). (2) **Appointment *reminders* ("remind 24h before") are `@at` ONE-SHOT, NOT `@every`** — schedule a single timer at `startsAt − 24h`; that slice is **build-ready on the existing temporal lane** (no contract change), needing only a Weaver convergence lens ("appointment scheduled, reminder not yet sent") + a dispatch path. **Only recurring availability / recurring follow-ups genuinely need `@every`.** ✅ **Part (2) — the `@at` one-shot appointment-reminder slice — SHIPPED (Steward, 2026-06-26): the `clinic-reminders` package** (see the Progress board row). **Remaining = part (1) only:** the recurring `@every` re-arm/dedup/drift semantics (the §10.4-amendment Andrew gate) + a recurring use (provider availability / recurring follow-ups). The reminder pattern (freshUntil → @at → MarkExpired → reproject → directOp) is now a proven in-vertical template for the recurring design to build on. | Clinic | platform (orchestration / Weaver) | ★★★ | M |
-| Appointment scheduling — conflict + temporal availability | ✅ **DONE — Increment 1 (CreateAppointment double-book) + 2a (reschedule-into-conflict) + 2b (provider availability windows) ALL shipped (Steward, 2026-06-26)** — see the Progress board rows. `CreateAppointment` + `RescheduleAppointment` reject an overlapping slot (`SlotConflict`, via the provider `.bookings` OCC index + `kv.Read` liveness) AND an out-of-business-hours booking (`OutsideHours`, via the opt-in `.hours` windows — enforced with the new pure `time.weekday`/`time.seconds_of_day` Starlark builtins). No platform scan seam, no frozen contract (Capability-KV §06's "operation's own Starlark logic"). The §06 conflict+availability gap is **closed**. Remaining clinic-scheduling work is the separate recurring-`@every` item + available-**slot** picking (a later FE increment over this enforcement). **Static, contract-grounded.** Capability-KV §06 (L354–359) **explicitly defers** temporal availability (recurring schedules, availability windows, double-book rejection) out of Phase-1 scope to "a Phase 2 mechanism / the operation's own Starlark logic." A clinic `BookAppointment` op must reject a slot that's already taken or outside provider hours — there is no slot-uniqueness or availability-window enforcement primitive today. Clinic forces this gap concrete: provider-hours + slot-uniqueness enforcement at op time (and surfacing "why was this rejected" to the booker). **Scope sharpened (Steward, 2026-06-25, grounded):** op-time conflict detection must read **"the provider's other appointments"** — but package Starlark is **known-key-reads only** (no prefix scans; `TestPackage_NoScans` enforces it across every domain pkg), and §06 (FROZEN) explicitly defers this to "a Phase 2 mechanism or the operation's own Starlark logic." So the missing primitive is a **platform read seam in the op path** (e.g. an adjacency/lens query the op can call to enumerate a provider's appointments in a window) — that is the "platform" half of `pkg + platform`, and the design's load-bearing decision. The clinic-app FE already records a *requested* time and says so ("availability isn't enforced yet"), so the FE is ready to surface a rejection once the op can produce one. | Clinic | pkg + platform | ★★★ | M |
-| Clinic FE — patient booking + provider schedule | 🏗️ **Increment A SHIPPED (Steward, 2026-06-25)** — `cmd/clinic-app` on :7799 (UX→FE→in-browser-verified): (1) patient self-booking (provider picker + datetime → `CreateAppointment`; + inline add-provider / new-patient affordances), (2) "my appointments" tracker (patient-scoped cards + Cancel), (3) provider schedule (provider-scoped read-only). All P5-clean lens reads (added the `clinicPatients` roster lens). `make up-clinic`. See the Progress board row + `implementation-artifacts/clinic-app-ux.md`. ✅ **Reschedule (move an appointment) SHIPPED (Steward, 2026-06-26)** — new `RescheduleAppointment` op + a Reschedule modal on active cards; re-arms the `@at` reminder for the new time (see the Progress board row). ✅ **Provider day/week calendar grid SHIPPED (Steward, 2026-06-26, daecf5a)** — the Schedule tab is now a positioned Week/Day calendar (lanes for double-books, period nav, click-to-detail; in-browser verified). See the Progress board row. **Remaining (later increments):** available-**slot** picking (vs. free datetime) + clinic-admin slot & availability management (these depend on the scheduling/`@every` items above). Default stays Loupe's vanilla HTML/CSS/JS stack. | Clinic | FE | ★★★ | L |
-| LoftSpace landlord / property-manager surface | 🏗️ **Data layer started — `GET /api/unit-applications` (the "see who applied to a unit" half) ✅ Done (Steward, 2026-06-26, e6d4499); the FE + decision op remain.** Filed 2026-06-26 (PO discovery, live). The vertical is **one-sided** — `loftspace-app` is entirely applicant-facing. There is **no landlord/property-manager surface**: no way to (1) **post or manage a listing** — I had to mint the unit + listing via the raw op API (`CreateLocation` → `SetListing` → `SetUnitAddress`); (2) ✅ **see who applied to a unit** — **DONE**: the new P5-clean `GET /api/unit-applications` groups the existing `leaseApplicationComplete` rows by `unitKey` (+ applicant names from `applicantRoster`, + zero-app units from `availableListings`), so the by-unit applicant view exists at the data layer with **no new lens needed** (the convergence lens already carries unitKey/applicant/approval/declined — the "by-unit projection lens" the original filing guessed at was unnecessary); (3) **make a leasing decision** — convergence == auto-approval, the only "decline" path is the `BRIDGE_FAKE_DECLINE` env toggle, not a human review. **Remaining:** a landlord/operator **FE** (list-my-units over `/api/unit-applications`, a post-a-listing form over the existing `CreateLocation`/`SetListing`/`SetUnitAddress` ops, applicants-per-unit cards, approve/decline) — a **UX→FE** increment — **and** an explicit landlord-**decision op** (the harder half: an approve/decline that overrides auto-converge). The single biggest *product* gap now that the applicant FE is complete. | LoftSpace | FE + pkg/platform | ★★★ | L |
-| LoftSpace — in-app applicant onboarding (no way to add an applicant) | ✅ **Done (Steward, 2026-06-26)** — a **"＋ New applicant"** modal (name/email/phone) now creates an applicant in-app via `CreateUnclaimedIdentity`, minting + hashing the claim secret client-side (`crypto.subtle`); the new applicant becomes active and projects into the `applicantRoster` lens. In-browser verified end-to-end (created "Dana Tester" → switcher + Apply enabled). See the Progress board row. **Original filing:** A fresh LoftSpace stack has **zero applicants and no in-app way to create one** — the top-right control is only a **switcher** over already-existing named identities (`applicantRoster` lens). To exercise the flow I had to mint Priya via a raw `CreateUnclaimedIdentity` requiring `email`/`phone` **plus a 64-char lowercase-hex sha256 `claimKeyHash`** — an identity-domain ceremony no applicant could perform from the app. Contrast: **`clinic-app` already ships a "New patient" modal** (`CreatePatient`) so a fresh stack is self-contained; loftspace-app has no equivalent. Needs an in-app "Start an application / new applicant" affordance (a thin modal mirroring clinic's New-patient) that handles the identity ceremony app-side (name/email + a generated claimKeyHash). Makes the app demoable on a clean stack without the CLI. | LoftSpace | FE | ★★ | S–M |
-| LoftSpace — unit/listing lifecycle: status transition on lease + concurrent-application guard | 🏗️ **Part (b) the concurrent/duplicate-application guard ✅ Done (Steward, 2026-06-26)** — `CreateLeaseApplication` now rejects a same-applicant repeat for the same unit (`DuplicateApplication`) via a per-unit `unitLeaseApplications` `kv.Read`+OCC index (clinic-double-book precedent, no frozen contract, fail-closed; cross-applicant still allowed); also closes the folded Weaver-red-on-bare-shell robustness symptom. See the Progress board row. **Part (a) listing-status-on-approval still 📋** (the directOp follow-up: convergence → `directOp(SetListing status=leased)`). **Filed 2026-06-26 (PO discovery, live — two related gaps on one converged application).** (a) **Listing status never transitions on approval:** after Priya's application **fully converged** (`violating:false`, all gaps closed = approved), the unit's listing stayed `status:"available"` and kept showing in Browse&Apply — nothing flips a leased unit to `pending`/`leased`. (b) **No concurrent/duplicate-application guard:** the *same* applicant applied to the *same* unit a **second time and it committed** (two live `vtx.leaseapp` for one applicant+unit); nothing limits concurrent applications per unit or reflects a unit being spoken-for. Clinic has the precedent for the platform half — op-time conflict rejection via `kv.Read` on a provider's `.bookings` index (no frozen-contract touch, Capability-KV §06 "operation's own Starlark logic"); LoftSpace has **no analog** for a unit's applications. Needs: a listing-status transition tied to approval (convergence → `directOp(SetListing status=leased)`, the `objectLiveness→TombstoneObject` / `appointmentReminders` precedent — OR a landlord action from the surface above) **and** an op-time guard on `CreateLeaseApplication` (reject/limit live applications per unit via a `kv.Read` on a unit→applications adjacency aspect, mirroring clinic's double-book). | LoftSpace | pkg + platform | ★★ | M |
-| Clinic — appointment lifecycle / day-of-visit actions (confirm · check-in · complete · no-show) | ✅ **DONE — FE transitions (2026-06-26) + the `checkedIn` status & cancel/no-show audit note (2026-06-26) both shipped.** confirm/complete/no-show reachable from the My Appointments cards + the Schedule detail popover (wiring the existing `SetAppointmentStatus`); in-browser verified scheduled→confirmed→completed through the real Processor. ✅ **The ★ pkg follow-on is now also DONE** (see the Progress board row "Clinic app — `checkedIn` status + audit note"): the status enum gained `checkedIn` (active, non-terminal — scheduled→confirmed→checkedIn→completed), `SetAppointmentStatus` gained an optional `note` on `.status` (cancel/no-show reason, surfaced via a new `statusNote` lens column + rendered 📝 on cards/popover), with a Processor-driven test. No remaining day-of-visit gap. **Original filing:** The booking side is well-built, but the **day-of-visit operational core is absent from the FE.** `clinic-app` exposes only **Cancel** and **Reschedule** on an appointment — there is **no way to mark it `confirmed`, `completed`, or `noShow`** (no check-in either). Yet every piece is already in place: `SetAppointmentStatus` accepts all five statuses `{scheduled, confirmed, completed, cancelled, noShow}` (verified live: confirmed an appointment via `/api/op` → projected `confirmed`), the `clinicAppointments` lens already projects the `status` column, and the FE already *renders* per-status badges + calendar colors (`statusClass` handles `confirmed`/`completed`/`noshow`). So the FE renders states it gives no way to reach — a clinic where you can't confirm a patient, check them in, complete a visit, or record a no-show. **Pure FE**: add status-transition controls to the My Appointments cards and the Schedule-grid detail popover (the natural home is a front-desk/provider "today" operational view), wiring the existing `SetAppointmentStatus` op. **Small package follow-on (pkg, ★):** `SetAppointmentStatus` writes only `{value}` — a cancellation / no-show captures **no reason or note** (a real clinic needs cancel/no-show reasons for audit + billing); add an optional `reason` field to the status aspect. Distinct from the existing "Clinic FE — patient booking + provider schedule" row (whose remaining items are available-*slot* picking + admin availability mgmt — not lifecycle transitions). | Clinic | FE + small pkg | ★★★ | S–M |
-| LoftSpace — no way to withdraw / cancel a lease application | ✅ **Done (Steward, 2026-06-26)** — new lease-signing **`WithdrawLeaseApplication{leaseAppKey, unit}`** op (granted `operator`): soft-deletes the leaseapp (the convergence lens filters isDeleted → the row drops from My Applications) AND prunes its entry from the unit's `unitLeaseApplications` index (OCC-guarded, mirroring the duplicate guard) so the applicant can re-apply to the same unit. Verifies the unit is the application's actual unit via the `appliesToUnit` link (kv.Read, the clinic `withProvider` precedent → `UnitMismatch` reject, no tombstone). Non-cascading tombstone; the Processor permits the index-aspect write regardless of unit liveness (no dead-parent gate in step6/step8 — verified). **FE:** a red "Withdraw application" button on each in-review My Applications card (hidden once `applicantApproved`), with a confirm → `/api/op` → reload. Processor-driven `TestWithdrawLeaseApplication` (wrong-unit→UnitMismatch+no-tombstone · correct→tombstone+prune · re-apply→accepted · double-withdraw→UnknownLeaseApplication). lease-signing 0.2.0→0.3.0 (manifest+Package synced; install round-trips through the `test-lease-convergence` e2e). No frozen contract (Capability-KV §06). Thorough lead review (destructive paths walked adversarially; mirrors the 3-layer-reviewed duplicate-guard + clinic mechanisms); all gates green. In-browser verify deferred to a fresh stack (F-004). **Original filing:** An applicant can **apply but cannot withdraw/cancel** an application. There is **no `WithdrawLeaseApplication` op** in lease-signing (grep: only `CreateLeaseApplication`/`SignLease`) and **no FE affordance** (the only DELETE in `app.js` is document-detach). This is now sharper because of the just-shipped **duplicate-application guard**: `CreateLeaseApplication` rejects a same-applicant repeat for a live unit, so an applicant who applied to the wrong unit — or wants to back out — is **stuck**: can't withdraw, and (if they want to re-apply to the same unit) can't re-apply either. The guard's own design already anticipates this — its `TombstonedPriorApplication_AllowsReapply` test tombstones the prior application via the **generic core `DeleteVertex`** to prove the unit-index prunes it and unblocks re-apply — but there is **no user-facing path** to that tombstone. Needs: a package **`WithdrawLeaseApplication(leaseAppKey)`** op (tombstone the `vtx.leaseapp` + prune the `unitLeaseApplications` index entry, mirroring the duplicate guard's OCC index rewrite — Capability-KV §06, no frozen contract) and a "Withdraw" button on the My Applications card. The missing complement to the duplicate guard; basic lifecycle. | LoftSpace | pkg + FE | ★★ | S–M |
-| LoftSpace — the signed lease is content-free (no lease document to review or produce) | 📋 **Filed 2026-06-26 (PO discovery, live).** The applicant **"signs a lease" they never see, and no signed artifact is produced.** `SignLease` writes only a `.signature` aspect `{signedAt}` (verified: `packages/lease-signing/ddls.go`) — it renders no lease agreement to review **before** signing and attaches no signed document **after**. Yet the Documents tab offers a **"Signed lease (PDF)" upload slot** that is a pure manual orphan, disconnected from the workflow — the system never generates the thing that slot is for. For a leasing product this is a core gap: there is no lease the applicant can read (terms, rent, dates), and after approval the My Applications card just says "Application complete — all steps done" with no downloadable lease. The plumbing already exists: the unit `.listing` (rent/term) + the leaseapp `.terms` (moveInDate/leaseTermMonths/requestedRent) project today, and the app already does `AttachObject` against objects-base in the Documents tab. Needs: (FE) a **lease-terms review panel** on the Sign-lease task (renders the projected terms the applicant is agreeing to), and (FE/pkg) **produce + attach a signed-lease artifact** on SignLease (app-side `AttachObject` of a generated lease summary/PDF, or a pkg directOp) so both parties have the executed document. Distinct from the storage-substrate "Large-file/binary handling" row (that shipped objects-base; this is wiring a *generated lease doc* into the sign workflow). | LoftSpace | FE + pkg | ★★ | M |
-
-**Refractor stale-stack non-projection — ✅ investigated, NOT a code bug (Steward, 2026-06-25, while live-verifying Increment C).** On a *long-lived accumulated* `up-full` stack a freshly-created application never projected into `leaseApplicationComplete` and the `my-tasks` bucket stayed empty (despite 18 live task vertices) — the Refractor's CDC consumer wasn't advancing. **Decisive clean-stack repro** (`make down` → fresh `make up-full` → `install-loftspace` → one `CreateLeaseApplication`): the application **projected immediately** (`/api/applications`=1, refractor actively logging) and Weaver scheduled the gap-dispatch timers. So the read-path is healthy on a clean deployment; the staleness was an **environmental artifact of the accumulated/many-times-restarted dev stack** (consumer-position / orphaned-state), not a Refractor reliability bug. No action — flag cleared. (Operational note for future live-verify: prefer a fresh `make down`+`up-full` over a re-used long-lived stack.)
-
-**Observations (low priority — folded, not filed as rows):**
-- **LoftSpace Documents tab has no aggregated "all my documents" view (LoftSpace run, 2026-06-26).** `GET /api/objects?applicant=<key>` matches `ownerKey` **exactly** (verified live: a doc attached to `vtx.leaseapp.<id>` returns under `?applicant=<that leaseapp>` but `count:0` under `?applicant=<the owning identity>`). So a document lives only under the precise record scope it was attached to; there is no roll-up across an applicant's identity + all their leaseapps. The FE's `doc-scope` dropdown mitigates (you switch scope per record), so it's a UX nit, not a blocker — folded, not filed. A pure-FE fix would union the applicant's known owner keys (identity + their leaseapps, which the FE already lists) into one view. (Also confirmed live during this run: object upload → `objectAttachments` lens projection has a ~1–2s lag — the first `?applicant=` read after upload returned `count:0`, the retry returned the doc; expected Refractor projection latency, not a bug.)
-- **Clinic = PHI → it's the demand driver for the deferred Vault / crypto-shred plane.** Patient records (DOB, SSN, diagnoses, medical history) are exactly the sensitive-aspect + right-to-be-forgotten case the *Vault + crypto-shredding* item (Deferred → Privacy/Vault) was specified for. Not refiling the enabler — flagging that the clinic vertical is its forcing function (per agentic-ops-design §5: demand pulls deferred platform work into existence). Whoever schedules the Vault work should treat clinic patient-record deletion as the validating flow.
-- **No vertical (LoftSpace *or* clinic) is installed by `make up-full`** — already noted for LoftSpace below; clinic isn't even packaged yet (the `clinic-domain` row above is the prerequisite). A per-vertical opt-in install (`make up-clinic`) would unblock this PO loop ever exercising clinic *live* rather than statically.
-- **Operator can't see *open* gaps per anchor.** `lattice weaver list` (and Loupe by extension) shows the target's *declared* gap set, not which gaps are actually open right now — after signing, it still listed all four. "What is this application blocked on?" is unanswerable from the operator surface. Largely subsumed by the planned *Loupe system-map / agent-activity console* (★★★, Refinements & ops) — flagging the per-anchor live-gap-state requirement for whoever builds it.
-- **`make up-full` does not install the LoftSpace vertical** (only rbac / identity / objects-base). ✅ **Resolved** (32bb340): `make install-loftspace` installs orchestration-base → service-domain → lease-signing onto a running `up-full`, in dependency order (verified live). `up-full` stays core-only by design; the vertical is opt-in.
-- **A malformed anchor vertex pins a Weaver target into permanent `error` health (Clinic run, 2026-06-26).** On the shared stack, `health.weaver` was red with two repeating `TemplateDataError`s: `target leaseApplicationComplete gap missing_onboarding / missing_payment: param "subject" references row.applicant, which is null/absent in the row`. Root cause is **LoftSpace**, not clinic — a bare/partial `vtx.leaseapp` shell (root `{}`, no `applicant`) projects a convergence-lens row with `applicant=null`, and the gap's dispatch template can't resolve `subject` → Weaver re-errors every reconcile and never clears. This is the downstream *symptom* of the already-filed **LoftSpace concurrent/duplicate-application guard** gap (a second bare application committed). Worth noting as a small **platform robustness** seam for whoever takes that item: Weaver should **skip + surface a single bad row** (degraded, not a red-forever target) rather than re-emitting an error per reconcile on an un-dispatchable row. No new row — folded into the existing LoftSpace lifecycle/guard item.
-
-### PO notes (dated — drives rotation)
-
-- **2026-06-24 — LoftSpace (first PO run).** Brought up `make up-full` (clean), but it omits the vertical
-  → manually installed orchestration-base + service-domain + lease-signing on top. Drove the real
-  lease-application flow end-to-end via the `lattice` CLI: created an applicant identity →
-  `CreateLeaseApplication` → watched convergence auto-dispatch via Weaver + Loom. Confirmed the
-  background-check + payment externalTasks ran through the bridge (fake adapters) and wrote `completed`
-  outcomes (with `validUntil` freshness), and two human userTasks opened (`RecordIdentityPII`,
-  `SignLease`). Drove `SignLease` to close `missing_signature`. Findings above are all **verified against
-  the live stack**, not static analysis. Stack torn down (`make down`). **Next run rotates to Clinic**
-  (forcing-function vertical — currently exists only in design docs, so expect a static
-  capability/product-gap pass: what a non-leasing domain needs that the platform/packages don't yet
-  provide).
-- **2026-06-24 — Clinic (first PO run, static).** As predicted, **no clinic package exists** (`ls
-  packages/` → identity/lease/location/objects/orchestration/rbac/service; none clinic), so this was a
-  static capability/product-gap pass — did **not** bring up a stack (`make up-full` carries no clinic
-  vertical to drive). Grounded every finding in code/contracts, not speculation: confirmed (a) `@every`
-  recurring scheduling has **no consumer** — substrate enables it (`AllowMsgSchedules`, primordial.go:198)
-  but bridge + Weaver temporal lane are all `@at` one-shot (§10.4); (b) temporal availability / double-book
-  rejection is **explicitly deferred** by Capability-KV §06 (L354–359) to a "Phase 2 mechanism"; (c) PHI =
-  the demand driver for the deferred Vault/crypto-shred plane. Filed 4 clinic rows (domain pkg, `@every`
-  forcing function, scheduling-conflict, FE) + 2 observations. The clinic is doing its job as the
-  flywheel-validation vertical (agentic-ops-design §5): it pulls `@every` / Vault / temporal-availability
-  out of "deferred" and into "demanded." **Next run rotates back to LoftSpace** (now exercisable live —
-  re-drive the lease flow and check whether the Steward has burned down any of the 2026-06-24 LoftSpace
-  rows, e.g. the decline/manual-review outcome or task-content items).
-- **2026-06-26 — LoftSpace (2nd PO run, LIVE).** Layered the LoftSpace vertical onto the already-running
-  `up-full` stack (`make install-loftspace` — orchestration-base→location-domain→loftspace-domain→
-  service-domain→lease-signing all committed) and started `loftspace-app` on :7788 alongside the running
-  clinic-app (:7799) + Loupe (:7777); fresh installs, so the loftspace lenses loaded (no F-004 skip). Drove
-  the **full lease-application lifecycle end-to-end through the real Processor** via `/api/op`: minted a unit
-  (`CreateLocation`) → `SetListing`/`SetUnitAddress` → created applicant *Priya* (`CreateUnclaimedIdentity`)
-  → `CreateLeaseApplication` → watched Weaver/Loom/bridge converge (bgcheck + payment auto-completed by the
-  fakes; two human userTasks `RecordIdentityPII` + `SignLease` opened) → completed both bound ops + closed
-  both tasks (`CompleteTask` with `reads:[taskKey]`+`class:task`) → application **fully converged**
-  (`violating:false`) and the inbox emptied (open tasks 2→0). **Confirmed healthy:** listings/identities/
-  applications/tasks read paths all project P5-cleanly; the userTask-dedup fix holds (exactly 2 tasks, no
-  duplicates). **Note for future PO runs:** `CompleteTask` (and the read-dependent ops) require the target
-  key in `reads`/`contextHint.reads` — a manual curl that omits them returns `UnknownTask`; the FE gets this
-  right. **Filed 3 NEW grounded gaps** (all verified live, none on the board): the missing **landlord/
-  property-manager surface** (★★★ — the vertical is applicant-only; no post-listing, no per-unit applicant
-  view, no human decision), **in-app applicant onboarding** (★★ — no "new applicant" affordance; clinic-app
-  has "New patient", loftspace-app doesn't), and **unit/listing lifecycle** (★★ — an approved unit stays
-  `available` + accepts duplicate concurrent applications; no analog to clinic's op-time double-book guard).
-  The meta-insight: the applicant FE is complete and solid, but LoftSpace is still a **one-sided demo** —
-  the landlord side + the unit/listing lifecycle are the next product frontier. Stack left **up** for Andrew
-  (Loupe :7777 · loftspace-app :7788 · clinic-app :7799). **Next run rotates to Clinic.**
-- **2026-06-26 — Clinic (1st PO run, LIVE — first time clinic exists as real code).** Reused the already-up
-  shared stack (NATS :4222 · Loupe :7777 · clinic-app :7799 · loftspace-app :7788) — no `up-full`, no
-  `make down`. Clinic was already installed (Dr. Live Hours w/ Mon/Wed 09–17 hours · Pat Live · one
-  appointment). Drove the **scheduling domain end-to-end through `clinic-app`'s `/api/op` + read APIs**, all
-  against the real Processor: (a) **double-book** overlap 10:15–10:45 onto an existing 10:00–10:30 →
-  `SlotConflict` ✓; (b) **out-of-hours** Mon 20:00 → `OutsideHours (weekday 1, 72000–73800s)` ✓; (c)
-  **out-of-day** Sun 10:00 → `OutsideHours (weekday 0)` ✓; (d) valid adjacent 10:30–11:00 → **committed** ✓;
-  (e) `SetAppointmentStatus → confirmed` → projected `confirmed` via the lens ✓. **The package/platform half
-  (conflict + availability enforcement) is solid and the FE surfaces friendly rejections** (`friendlyBookingRejection`
-  maps SlotConflict/OutsideHours). **Filed 1 NEW grounded gap:** the **appointment-lifecycle FE gap** (★★★) —
-  the day-of-visit core (confirm · check-in · complete · no-show) is unreachable from the FE (only Cancel +
-  Reschedule), though the op, the lens `status` column, and the status badges all already support the full
-  set; pure FE + a small `reason`-on-status package follow-on. Also folded a **platform-robustness observation**:
-  a malformed LoftSpace `leaseapp` anchor (null `applicant`) had pinned `health.weaver` red with repeating
-  `TemplateDataError`s — the symptom of the already-filed LoftSpace duplicate-application gap; Weaver should
-  skip+surface a bad row, not error-forever. Did **not** refile already-tracked clinic items (slot-picking,
-  `@every` recurring, Vault/PHI). Stack left **up** for Andrew. **Next run rotates back to LoftSpace.**
-- **2026-06-26 — LoftSpace (3rd PO run, LIVE).** Reused the already-up shared stack (NATS :4222 · Loupe
-  :7777 · loftspace-app :7788 · clinic-app :7799) — no `up-full`, no `make down`. The Steward was mid-flight
-  on listing-status-on-approval (uncommitted `cmd/loftspace-app/applications.go` + `app.js`), so I steered
-  clear of that seam. Drove the applicant flows through `loftspace-app`'s read + `/api/*` paths: browse (1
-  unit, `available`) · 2 applicants (Dana, Priya) · Priya's applications (one fully converged `violating:false`,
-  one still `missing_signature`) · the **Documents tab end-to-end** (uploaded a proofOfIncome → `AttachObject`
-  committed, oid returned → projected into the `objectAttachments` lens after ~1–2s). Confirmed read paths
-  project P5-cleanly. **Verified live, then grounded in source:** `SignLease` writes only a `.signature`
-  aspect — no lease document is rendered or produced; lease-signing has **no withdraw/cancel op** and the FE
-  has no withdraw affordance (only doc-detach). **Filed 2 NEW grounded gaps** (both verified live + in source,
-  neither on the board): **no way to withdraw/cancel a lease application** (★★ — the missing complement to the
-  just-shipped duplicate-application guard; an applicant who applied wrong is stuck) and **the signed lease is
-  content-free** (★★ — no lease to review before signing, no signed artifact produced after; the Documents
-  "Signed lease PDF" slot is an orphaned manual upload). Folded one low-priority observation (Documents tab has
-  no aggregated per-applicant view; `?applicant=` is exact-ownerKey-match). Did **not** refile the open
-  landlord/property-manager surface (★★★) or the in-flight listing-status work. Stack left **up** for Andrew.
-  **Next run rotates to Clinic.**
-
----
-
-## Deferred backlog (Phase 3+)
-
-### Security & trust boundary
-| Item | What it is | Imp | Size |
-|---|---|---|---|
-| Read-path authorization (D1) | Reads from lens targets (Postgres / KV) bypass the write-path Capability boundary. Rubric in `lattice-architecture.md` D1: Postgres RLS + a Capability-Read Lens; Gateway sets `lattice.actor_id`. Subsumes `cap.svc` serviceAccess read-auth. | ★★★ | L |
-| Gateway | Edge trust boundary: JWT auth, `Lattice-Actor` stamping, read-path enforcement. Gates external actors + the real Edge node. | ★★★ | L |
-| NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate level (today defended only by overwrite-by-reprojection). | ★★ | M |
-
-### Privacy / Vault
-| Item | What it is | Imp | Size |
-|---|---|---|---|
-| Vault + crypto-shredding | Per-identity keys for sensitive aspects (SSN / DOB); right-to-be-forgotten = destroy the key; transient-session-key decryption for the Edge node; + the privacy failure tier (`KeyShredded` listener). | ★★★ | L |
-
-### External-I/O maturity (bridge follow-ons)
-| Item | What it is | Imp | Size |
-|---|---|---|---|
-| Real adapters + async result-return | Replace the `Fake*` adapters with real vendors and design the **asynchronous** result path. Today the bridge's `Adapter.Execute` is synchronous and must return a final `Result`; real checks / payments submit → pending ref → webhook/poll callback hours–days later. Needs (a) an inbound-result mechanism (webhook receiver, or poll via the `core-schedules` temporal lane), (b) an `Execute` contract that expresses "submitted, resolve later" (the bridge claim vertex stays open until the inbound result drives the replyOp), (c) a re-tuned wedged-claim horizon for legitimately-pending async claims. | ★★ | M–L |
-| Structured adapter result | The bridge posts `{externalRef, result}` and the replyOp hard-codes `status="completed"` — there is no `failed` producer. Thread a structured pass/fail/detail status onto the reply; lens `missing_*` predicates key off the real status. | ★★ | S–M |
-| Adapter read-seam / richer params | Adapters can only use what the target-lens row projects; a vendor needing extra subject fields (SSN / DOB) has no fetch path. Decide: richer projection columns vs. an adapter read seam. | ★★ | S–M |
-
-### Scale-out
-| Item | What it is | Imp | Size |
-|---|---|---|---|
-| Multi-cell / sharding | Graph scales by **cells** (root + subgraph co-located for atomic writes); global adjacency index + bridge links for cross-cell traversal; live migration as a dual-write shadow; multi-cell routing in Processor + Refractor. Keys already embed no cell identity (validated Phase 1). | ★ now / ★★★ at scale | XL |
-| HA NATS clustering | Single-server today; clustering + multi-instance engine fan-out (several components note single-instance as a Phase-3 concern). | ★ now / ★★ prod | M–L |
-
-### Edge & personal lenses *(the path Loupe grows into)*
-| Item | What it is | Imp | Size |
-|---|---|---|---|
-| Personal / Secure Lens | Refractor projects a per-identity **security-filtered** subgraph stream; the "Interest Set" watchlist; RLS-style link filtering. Gates the real Edge node; intersects read-path auth. | ★★ | L |
-| NATS-subject publish-events adapter | A Refractor target adapter that publishes projection deltas to `lattice.sync.user.<id>` subjects — required for Personal Lens fan-out (only NATS-KV + Postgres adapters ship today). | ★★ | S–M |
-| Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite / IndexedDB), local Starlark, offline-first, reconcile-by-revision, transient-key decryption of vaulted aspects. Loupe is its trusted-tool precursor. | ★★ | XL |
-
-### AI-native
-| Item | What it is | Imp | Size |
-|---|---|---|---|
-| AI-authored capabilities | A Lattice-aware agent proposes DDL / Starlark / lenses / workflows through human review + deterministic validation + rollback-friendly contracts. Marquee AI vision. | ★★–★★★ | L |
-| L3 evaluator | Weaver's AI-assisted reasoning tier for ambiguous / novel convergence gaps (L1 / L2 ship today). | ★★ | M–L |
-| Starlark guards (Loom) | The reserved `{reads, starlark}` guard escape hatch needs a verified-pure sandbox (the declarative grammar covers current flows). | ★ | M |
-
-### Read-model / projection maturity
-| Item | What it is | Imp | Size |
-|---|---|---|---|
-| Historical state query (FR51) | Operators query operational state across a configurable time range. | ★★ | M |
-| Elasticsearch target adapter | A third lens target adapter (only NATS-KV + Postgres ship; no consumer yet). | ★ | M |
-| Negative / filter-retraction projection | True "emit-only-when-violating" (Weaver targets currently project one row per candidate with a `violating` flag, avoiding retraction work). | ★ | M |
-| Link-tombstone re-projection · cross-instance latency rollup | Two projection edge-cases / observability gaps (current approaches work). | ★ | S each |
-
-### Refinements & ops
-| Item | What it is | Imp | Size |
-|---|---|---|---|
-| Loom / Weaver control-API surfacing (beyond Loupe's needs) | Operator pause/resume + a durable `loom.*` read model beyond what the Loupe blocker covers. | ★ | M |
-| Package version upgrade (F-004) | In-place re-install over an existing version + DDL migration semantics (install / uninstall exist; upgrade does not). | ★ | M |
-| FR28 — role-queue + fallback | Assign tasks to a role queue with fallback (the demo uses direct identity assignment). | ★ | M |
-| op-vertex pruner + `@every` schedules | GC of op-tracker vertices (#47 / #49) + recurring schedules (Phase 2 ships one-shot `@at` only). | ★ | M |
-| Loupe live "system map" landing page *(Loupe)* | Landing view renders the running component + data-flow topology (the `architecture-overview` shape, deployed subset) as a **live** diagram — per-component/lens Health indicators, edge/link status, drill-in to vertices and control planes. Self-truthing: generated from Health KV + Core KV, not a static image. Base layer for the planned agent-activity operator console (`implementation-artifacts/agentic-ops-design.md`). **✅ Shipped** — data layer (`GET /api/systemmap` / `computeSystemMap`) + the FE landing view (5-tier `getBoundingClientRect` SVG topology, status→token node language, drill-ins, auto-refresh, all states; in-browser-verified healthy + degraded). The agent-activity console attaches at the reserved `#sysmap-console` slot (`implementation-artifacts/loupe-system-map-ux.md` §6). | ★★★ | M |
-| Loupe agent-activity console *(Loupe)* | The ops layer atop the live system map: the Steward's queue + work in flight, the **L3 contract-review queue** (Andrew's touchpoint — structured what / why / affected-consumers, not raw uncommitted diffs), per-agent Health, and board state. The agents emit Health KV like components, so Loupe watching the platform watches the agents (dogfoods the dependency-watch). Operator surface for `implementation-artifacts/agentic-ops-design.md`. | ★★★ | M |
-| Conventions-linter — edit-time hook *(agentic-ops)* | ✅ Done. The 24 pre-existing `// Story N …` history-comments are swept and `STRICT=1 go run ./scripts/lint-conventions.go` is wired as a CI gate (`.github/workflows/ci.yml`); `go run ./scripts/lint-conventions.go --hook` now reads a `PostToolUse` stdin payload, scans the one edited `.go` file, and feeds advisory findings back via `hookSpecificOutput.additionalContext` (never blocks). Registration is a per-machine `.claude/settings.json` matcher (gitignored) — snippet in the script's doc comment. | ★ | XS |
-| Version-control the agentic-ops role-skills *(agentic-ops)* | ✅ Done — canonical defs live in tracked **`agents/`** (`lamplighter`, `steward` + README); **`make install-skills`** copies them into the gitignored `.claude/skills/`. Edit in `agents/`, re-install. bmad tooling skills stay local. Owner skills land here as they're authored. | ★★ | S |
-
-### Parking lot — very low priority (far, far back)
-
-Real but low-value; the Steward should **not** spend design or build effort here unless Andrew explicitly
-greenlights one (Steward triage 2026-06-24 — these were the "ride-along" cleanups that turned out not to be
-clean small wins).
-
-| Item | Why it's parked | Imp | Size |
-|---|---|---|---|
-| multi-aspect atomic OCC for `UpdateMetaVertex` | `meta_ddl.go` applies `expectedRevision` to the first changed aspect by design (each aspect has an independent NATS revision sequence); true atomic multi-key OCC needs a substrate per-key-revision primitive — M+, contract-adjacent — for marginal value. | ★ | M+ |
-| freshnessExpiry marker tombstone-on-convergence | Per `packages/orchestration-base/mark_expired.go`, a converged marker is read by nothing and harmless; tombstoning buys cleanup not correctness + adds a convergence-edge write — near-zero value, Contract #10 §10.4-adjacent. | ★ | S |
-| production freshness-window tuning | A staleness-tolerance vs. timer-churn value judgment — Andrew's call if/when it matters; not worth proactive effort. | ★ | XS |
-
----
 
 ## Done / moot — *not backlog*
 
