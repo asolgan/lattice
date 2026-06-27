@@ -148,11 +148,11 @@ _The Surveyor notes each run here so the next run rotates to the least-recently-
 | Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite / IndexedDB), local Starlark, offline-first, reconcile-by-revision, transient-key decryption of vaulted aspects. Loupe is its trusted-tool precursor. | ★★ | XL |
 
 ### AI-native
-| Item | What it is | Imp | Size |
-|---|---|---|---|
-| AI-authored capabilities | A Lattice-aware agent proposes DDL / Starlark / lenses / workflows through human review + deterministic validation + rollback-friendly contracts. Marquee AI vision. | ★★–★★★ | L |
-| L3 evaluator | Weaver's AI-assisted reasoning tier for ambiguous / novel convergence gaps (L1 / L2 ship today). | ★★ | M–L |
-| Starlark guards (Loom) | The reserved `{reads, starlark}` guard escape hatch needs a verified-pure sandbox (the declarative grammar covers current flows). | ★ | M |
+| Item | What it is | Imp | Size | Status |
+|---|---|---|---|---|
+| AI-authored capabilities | A Lattice-aware agent proposes DDL / Starlark / lenses / workflows through human review + deterministic validation + rollback-friendly contracts. Marquee AI vision. | ★★–★★★ | L | 📋 (the **L3 evaluator** row below is its bounded, de-risking first step) |
+| L3 evaluator | Weaver's AI-assisted reasoning tier for ambiguous / novel convergence gaps (L1 / L2 ship today). | ★★ | M–L | 📐 **awaiting-Andrew** — design: [`weaver-l3-evaluator-design.md`](../../implementation-artifacts/weaver-l3-evaluator-design.md). Turns a stuck Weaver gap (unplannable / retry-exhausted) into an AI-reasoned, human-reviewable **proposal**: Weaver escalates over the existing `triggerLoom→externalTask→bridge` path (a new `llmReasoning` adapter — Weaver never calls the model directly), the model proposes within the installed action catalog, the `replyOp` records a `vtx.weaverProposal` pending human approval; deterministic validator + human gate govern, Processor stays sole writer (P2). **One fork for Andrew:** the autonomy boundary — human-in-the-loop always (Fires 1–2, rec: ship now) vs. confidence-gated auto-apply (Fire 3, designed but gated). Uncommitted **Contract #10 §10.8** additive `l3` block staged in `main` as the proposal. → ✅ Andrew-ratified once he signs off. |
+| Starlark guards (Loom) | The reserved `{reads, starlark}` guard escape hatch needs a verified-pure sandbox (the declarative grammar covers current flows). | ★ | M | 📋 |
 
 ### Read-model / projection maturity
 | Item | What it is | Imp | Size | Status |
