@@ -96,6 +96,42 @@ def optional_number(p, name):
         return None
     return v
 
+def optional_bool(p, name):
+    # An optional boolean flag (hasCoApplicant / hasGuarantor). Absent / null /
+    # non-bool degrades to False — a flag the applicant did not set is "no".
+    if not hasattr(p, name):
+        return False
+    v = getattr(p, name)
+    if v == None or type(v) != type(True):
+        return False
+    return v
+
+def string_list(p, name):
+    # An optional list of non-empty trimmed strings (references). Absent / null /
+    # non-list → []. Non-string / blank entries are dropped (a clean list, never
+    # a fail — the count is what the landlord reads).
+    if not hasattr(p, name):
+        return []
+    v = getattr(p, name)
+    if v == None or type(v) != type([]):
+        return []
+    out = []
+    for item in v:
+        if type(item) == type("") and len(item.strip()) > 0:
+            out.append(item.strip())
+    return out
+
+# Standard rental qualification: gross MONTHLY income must be at least this
+# multiple of the monthly rent (the conventional 3x-rent rule). The op computes
+# the derived incomeToRentMet boolean here (the lens engine has no arithmetic),
+# so only the boolean — never the raw income — reaches the read model.
+INCOME_TO_RENT_RATIO = 3.0
+
+# The employmentStatus enum SetApplicantProfile admits. employed / self-employed
+# are the active-income states that derive employmentVerified=True; the rest are
+# captured honestly but read as unverified income.
+EMPLOYMENT_STATUSES = ["employed", "self-employed", "unemployed", "student", "retired"]
+
 def parts_of(key, name, want_type):
     parts = key.split(".")
     if len(parts) != 3 or parts[0] != "vtx":
@@ -347,6 +383,85 @@ def execute(state, op):
 
         events = [{"class": "leaseapp.applicationWithdrawn",
                    "data": {"leaseAppKey": app_key, "unit": unit}}]
+        return {"mutations": mutations, "events": events,
+                "response": {"primaryKey": app_key}}
+
+    if ot == "SetApplicantProfile":
+        # The applicant's qualification profile — the data a landlord decides on.
+        # It captures income / employment / references / co-applicant / guarantor
+        # on the application as a .profile aspect, and derives the landlord-facing
+        # qualification SIGNALS the lens projects. The RAW financials (annualIncome,
+        # employerName) live in the Core-KV aspect plaintext-for-now (the same
+        # discipline as identity .ssn / .demographics — the deferred Vault plane owns
+        # their encryption + a raw-financial display later) and are NEVER projected;
+        # only the DERIVED booleans/counts reach the read model, so the landlord sees
+        # "income meets 3x rent / employed / N references" without the raw figures.
+        # Re-submittable: an UNCONDITIONED upsert overwrites the prior profile.
+        app_key = required_string(p, "leaseAppKey")
+        _, app_id = parts_of(app_key, "leaseAppKey", "leaseapp")
+        if not vertex_alive(state, app_key):
+            fail("UnknownLeaseApplication: " + app_key)
+
+        # The unit the application applies to — needed to read its listing rent for
+        # the income-to-rent derivation. Verify it is genuinely THIS application's
+        # unit via the deterministic appliesToUnit link (kv.Read, the Withdraw /
+        # clinic withProvider precedent) so a wrong / fabricated unit can't be used.
+        unit = required_string(p, "unit")
+        _, unit_id = parts_of(unit, "unit", "unit")
+        applies_to_lnk = "lnk.leaseapp." + app_id + ".appliesToUnit.unit." + unit_id
+        link = kv.Read(applies_to_lnk)
+        if link == None or link.isDeleted:
+            fail("UnitMismatch: " + unit + " is not the unit application " + app_key + " applies to")
+
+        annual_income = require_number(p, "annualIncome")
+        if annual_income <= 0:
+            fail("InvalidArgument: annualIncome: required positive number")
+        employment = required_string(p, "employmentStatus")
+        if employment not in EMPLOYMENT_STATUSES:
+            fail("InvalidArgument: employmentStatus: must be one of employed, self-employed, unemployed, student, retired; got " + employment)
+        employer = optional_string(p, "employerName")
+        refs = string_list(p, "references")
+        has_co = optional_bool(p, "hasCoApplicant")
+        has_guarantor = optional_bool(p, "hasGuarantor")
+
+        # Derived qualification signals (the lens has no arithmetic / len, so they
+        # are computed here). employmentVerified = an active income source;
+        # referenceCount = how many references were supplied.
+        employment_verified = employment == "employed" or employment == "self-employed"
+        ref_count = len(refs)
+
+        # income-to-rent: read the unit's listing rent ON DEMAND (kv.Read §2.5,
+        # non-OCC config read — mirroring clinic's enforce_hours). None when the unit
+        # has no listing / no positive rent (the signal is genuinely unknown, not
+        # false). Computed at submit time against the rent then-current; a later
+        # rent change is reflected on the next SetApplicantProfile (re-submittable).
+        income_to_rent_met = None
+        listing = kv.Read(unit + ".listing")
+        if listing != None and not listing.isDeleted:
+            rent = listing.data.get("rentAmount")
+            if rent != None and (type(rent) == type(0) or type(rent) == type(0.0)) and rent > 0:
+                monthly = (annual_income * 1.0) / 12.0
+                income_to_rent_met = monthly >= INCOME_TO_RENT_RATIO * rent
+
+        # .profile (D3): raw fields (NOT projected) + derived signals (projected).
+        profile_data = {
+            "annualIncome":       annual_income,
+            "employmentStatus":   employment,
+            "references":         refs,
+            "hasCoApplicant":     has_co,
+            "hasGuarantor":       has_guarantor,
+            "employmentVerified": employment_verified,
+            "referenceCount":     ref_count,
+            "submittedAt":        time.rfc3339_utc(op.submittedAt),
+        }
+        if employer != None:
+            profile_data["employerName"] = employer
+        if income_to_rent_met != None:
+            profile_data["incomeToRentMet"] = income_to_rent_met
+
+        mutations = [make_aspect_upsert(app_key, "profile", "profile", profile_data)]
+        events = [{"class": "leaseapp.profileSubmitted",
+                   "data": {"leaseAppKey": app_key}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": app_key}}
 

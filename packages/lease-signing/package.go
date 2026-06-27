@@ -60,13 +60,14 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
 	Name:    "lease-signing",
-	Version: "0.7.0",
+	Version: "0.8.0",
 	Description: "Loftspace lease-application convergence vertical: the leaseapp vertex type + CreateLeaseApplication/SignLease, " +
 		"the leaseApplicationComplete actorAggregate convergence lens (§10.2 keyColumn), the §10.8 playbook " +
 		"(triggerLoom externalTask for bgcheck/payment, assignTask SignLease, triggerLoom onboarding, directOp " +
 		"SetListingStatus to mark the unit leased on approval), the externalTask " +
-		"instanceOp/replyOp wrapper DDLs, and the bgcheck/payment/onboarding loomPatterns. " +
-		"Depends identity-domain + service-domain + orchestration-base.",
+		"instanceOp/replyOp wrapper DDLs, the bgcheck/payment/onboarding loomPatterns, and SetApplicantProfile " +
+		"(the applicant's qualification profile — raw financials captured in Core KV, only derived landlord-facing " +
+		"signals projected). Depends identity-domain + service-domain + orchestration-base.",
 	Depends:       []string{"identity-domain", "service-domain", "orchestration-base"},
 	DDLs:          DDLs(),
 	Lenses:        Lenses(),

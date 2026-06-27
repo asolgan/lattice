@@ -64,6 +64,12 @@ func Permissions() []pkgmgr.PermissionSpec {
 			Note:          "Grants the operator the right to submit DecideLeaseApplication (the landlord approves / declines an application via the trusted-tool app — the human gate the listing-flip waits behind; same operator model as SignLease).",
 			GrantsTo:      []string{"operator"},
 		},
+		{
+			OperationType: "SetApplicantProfile",
+			Scope:         "any",
+			Note:          "Grants the operator the right to submit SetApplicantProfile (the applicant records their qualification profile via the trusted-tool app — income / employment / references / co-applicant / guarantor; same operator model as SignLease).",
+			GrantsTo:      []string{"operator"},
+		},
 	}
 }
 
@@ -89,5 +95,6 @@ func OpMetas() []pkgmgr.OpMetaSpec {
 		{OperationType: "CreateLeaseServiceInstance"},
 		{OperationType: "RecordLeaseServiceOutcome"},
 		{OperationType: "RecordServiceDispatch"},
+		{OperationType: "SetApplicantProfile"},
 	}
 }

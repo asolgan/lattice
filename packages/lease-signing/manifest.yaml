@@ -1,5 +1,5 @@
 name: lease-signing
-version: 0.7.0
+version: 0.8.0
 description: |
   Loftspace lease-application convergence vertical: the leaseapp vertex type
   (CreateLeaseApplication + SignLease), the leaseApplicationComplete
@@ -54,6 +54,9 @@ declares:
     - operationType: DecideLeaseApplication
       scope: any
       grantsTo: [operator]
+    - operationType: SetApplicantProfile
+      scope: any
+      grantsTo: [operator]
   weaverTargets:
     - targetId: leaseApplicationComplete
       lensRef: leaseApplicationComplete
@@ -70,3 +73,4 @@ declares:
     - operationType: CreateLeaseServiceInstance
     - operationType: RecordLeaseServiceOutcome
     - operationType: RecordServiceDispatch
+    - operationType: SetApplicantProfile

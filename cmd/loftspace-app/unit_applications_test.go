@@ -136,6 +136,46 @@ func TestGroupByUnit_Empty(t *testing.T) {
 	}
 }
 
+func bptr(v bool) *bool { return &v }
+func iptr(v int) *int   { return &v }
+
+// TestGroupByUnit_CarriesQualificationProfile proves the derived qualification
+// signals (never the raw financials) flow from the convergence row to the landlord
+// applicantSummary, and that an application with no profile leaves them null /
+// profileSubmitted=false (the FE renders "no profile yet" rather than a false 0).
+func TestGroupByUnit_CarriesQualificationProfile(t *testing.T) {
+	apps := []applicationRow{
+		// alice: profile submitted, income meets 3x, employed, 2 refs, guarantor.
+		{EntityKey: "vtx.leaseapp.a1", Applicant: "vtx.identity.alice", ApplicantApproved: true,
+			MissingDecision: true, Violating: true, UnitKey: "vtx.unit.u1", UnitStatus: "available",
+			ProfileSubmitted: true, IncomeToRentMet: bptr(true), EmploymentVerified: bptr(true),
+			ReferenceCount: iptr(2), HasCoApplicant: bptr(false), HasGuarantor: bptr(true)},
+		// bob: no profile yet → null signals, profileSubmitted false.
+		{EntityKey: "vtx.leaseapp.a2", Applicant: "vtx.identity.bob", MissingSignature: true,
+			UnitKey: "vtx.unit.u1", UnitStatus: "available"},
+	}
+	listings := []listingProjection{{UnitKey: "vtx.unit.u1", Status: "available", RentAmount: f64(2000), AddrLine1: "1 Market St"}}
+	units := groupByUnit(apps, nil, listings)
+	if len(units) != 1 {
+		t.Fatalf("want 1 unit, got %d", len(units))
+	}
+	byKey := map[string]applicantSummary{}
+	for _, a := range units[0].Applications {
+		byKey[a.LeaseAppKey] = a
+	}
+	alice := byKey["vtx.leaseapp.a1"]
+	if !alice.ProfileSubmitted || alice.IncomeToRentMet == nil || !*alice.IncomeToRentMet {
+		t.Errorf("alice income signal must carry through, got %+v", alice)
+	}
+	if alice.ReferenceCount == nil || *alice.ReferenceCount != 2 || alice.HasGuarantor == nil || !*alice.HasGuarantor {
+		t.Errorf("alice refs/guarantor must carry through, got %+v", alice)
+	}
+	bob := byKey["vtx.leaseapp.a2"]
+	if bob.ProfileSubmitted || bob.IncomeToRentMet != nil || bob.ReferenceCount != nil {
+		t.Errorf("bob has no profile → null signals, got %+v", bob)
+	}
+}
+
 // TestDecodeListingProjections_SkipsBadRows decodes the availableListings bucket
 // into flat projections, skipping unreadable keys and tombstoned (no-unitKey) rows.
 func TestDecodeListingProjections_SkipsBadRows(t *testing.T) {

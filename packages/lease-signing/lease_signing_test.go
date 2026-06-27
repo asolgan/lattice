@@ -55,6 +55,7 @@ func lsCapDoc() *processor.CapabilityDoc {
 			{OperationType: "RecordLeaseServiceOutcome", Scope: "any"},
 			{OperationType: "RecordServiceDispatch", Scope: "any"},
 			{OperationType: "DecideLeaseApplication", Scope: "any"},
+			{OperationType: "SetApplicantProfile", Scope: "any"},
 		},
 		ServiceAccess:   []processor.ServiceAccessEntry{},
 		EphemeralGrants: []processor.EphemeralGrant{},
@@ -1310,4 +1311,99 @@ func TestDecideLeaseApplication_Reason(t *testing.T) {
 	if _, present := ddata["reason"]; present {
 		t.Fatalf("a reasonless decline must not write a reason key, got %v", ddata["reason"])
 	}
+}
+
+// setProfile submits SetApplicantProfile (reads=[leaseAppKey]) merging the
+// leaseAppKey + unit into the supplied payload, and asserts the outcome.
+func setProfile(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, leaseAppKey, unit string, payload map[string]any, want processor.MessageOutcome) {
+	t.Helper()
+	payload["leaseAppKey"] = leaseAppKey
+	payload["unit"] = unit
+	b, _ := json.Marshal(payload)
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID(label),
+		Lane:          processor.LaneDefault,
+		OperationType: "SetApplicantProfile",
+		Actor:         lsActorKey,
+		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		Class:         "leaseapp",
+		Payload:       json.RawMessage(b),
+		ContextHint:   &processor.ContextHint{Reads: []string{leaseAppKey}},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, want)
+}
+
+// TestSetApplicantProfile drives the qualification-profile op through the real
+// Processor: the .profile aspect stores the raw fields + the op-derived signals,
+// incomeToRentMet is computed against the unit's listing rent, an unconditioned
+// re-submit overwrites, and a wrong unit is rejected (UnitMismatch).
+func TestSetApplicantProfile(t *testing.T) {
+	ctx, conn := setupLeaseEnv(t)
+	cp, cons := newLeasePipeline(t, ctx, conn, "setprofile")
+
+	applicantKey := seedApplicant(t, ctx, conn, "BBsetprof1cntHJKMNPQ")
+	appKey := createApplication(t, ctx, conn, cp, cons, applicantKey)
+	unitKey := "vtx.unit." + applicantKey[len("vtx.identity."):]
+	// Seed a listing rent on the application's unit so incomeToRentMet derives
+	// (the op kv.Reads unit.listing.data.rentAmount on demand).
+	seedVertex(t, ctx, conn, unitKey+".listing", "listing", map[string]any{"rentAmount": 2000})
+
+	// 96000/12 = 8000 monthly ≥ 3×2000 = 6000 → incomeToRentMet true.
+	setProfile(t, ctx, conn, cp, cons, "prof1", appKey, unitKey, map[string]any{
+		"annualIncome":     96000,
+		"employmentStatus": "employed",
+		"employerName":     "Acme Corp",
+		"references":       []any{"Prior landlord", "Manager"},
+		"hasGuarantor":     true,
+	}, processor.OutcomeAccepted)
+	pdata, _ := readDoc(t, ctx, conn, appKey+".profile")["data"].(map[string]any)
+	if got, _ := pdata["annualIncome"].(float64); got != 96000 {
+		t.Fatalf("profile.annualIncome (raw, stored) = %v, want 96000", pdata["annualIncome"])
+	}
+	if got, _ := pdata["employerName"].(string); got != "Acme Corp" {
+		t.Fatalf("profile.employerName = %q, want Acme Corp", got)
+	}
+	if got, _ := pdata["employmentVerified"].(bool); !got {
+		t.Fatalf("employed ⇒ employmentVerified=true, got %v", pdata["employmentVerified"])
+	}
+	if got, _ := pdata["referenceCount"].(float64); got != 2 {
+		t.Fatalf("referenceCount = %v, want 2", pdata["referenceCount"])
+	}
+	if got, _ := pdata["incomeToRentMet"].(bool); !got {
+		t.Fatalf("8000 ≥ 3×2000 ⇒ incomeToRentMet=true, got %v", pdata["incomeToRentMet"])
+	}
+	if got, _ := pdata["hasGuarantor"].(bool); !got {
+		t.Fatalf("hasGuarantor=true expected, got %v", pdata["hasGuarantor"])
+	}
+	if got, _ := pdata["hasCoApplicant"].(bool); got {
+		t.Fatalf("hasCoApplicant defaults false, got %v", pdata["hasCoApplicant"])
+	}
+
+	// Re-submit (unconditioned upsert): lower income, student, no employer →
+	// overwrites the whole aspect. 60000/12 = 5000 < 6000 → incomeToRentMet false.
+	setProfile(t, ctx, conn, cp, cons, "prof2", appKey, unitKey, map[string]any{
+		"annualIncome":     60000,
+		"employmentStatus": "student",
+	}, processor.OutcomeAccepted)
+	pdata, _ = readDoc(t, ctx, conn, appKey+".profile")["data"].(map[string]any)
+	if got, _ := pdata["incomeToRentMet"].(bool); got {
+		t.Fatalf("5000 < 6000 ⇒ incomeToRentMet=false, got %v", pdata["incomeToRentMet"])
+	}
+	if got, _ := pdata["employmentVerified"].(bool); got {
+		t.Fatalf("student ⇒ employmentVerified=false, got %v", pdata["employmentVerified"])
+	}
+	if _, present := pdata["employerName"]; present {
+		t.Fatalf("a re-submit without employerName must overwrite (clear) it, got %v", pdata["employerName"])
+	}
+	if got, _ := pdata["referenceCount"].(float64); got != 0 {
+		t.Fatalf("no references ⇒ referenceCount=0, got %v", pdata["referenceCount"])
+	}
+
+	// Wrong unit (alive, but not this application's appliesToUnit target) → reject.
+	wrongUnit := seedUnit(t, ctx, conn, "BBwrongunitHJKMNPQRS")
+	setProfile(t, ctx, conn, cp, cons, "prof3", appKey, wrongUnit, map[string]any{
+		"annualIncome":     50000,
+		"employmentStatus": "employed",
+	}, processor.OutcomeRejected)
 }

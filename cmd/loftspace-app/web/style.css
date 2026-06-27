@@ -379,3 +379,44 @@ button.ghost.danger:hover { background: var(--red); color: #fff; }
 .modal-wide { max-width: 540px; }
 .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
 .row3 .field { margin-bottom: 14px; }
+
+/* Qualification signals — the derived landlord-facing chips (income vs 3x rent,
+   employment, references, co-applicant, guarantor). Raw financials never appear. */
+.qualification { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0; }
+.qualification.none { color: var(--text-dim); font-size: 13px; }
+.qual-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+.qual-chip.ok { color: var(--green); border-color: var(--green); }
+.qual-chip.bad { color: var(--red); border-color: var(--red); }
+.qual-chip.muted { color: var(--text-dim); border-color: var(--border); }
+
+/* Applicant qualification-profile panel + form */
+.profile-panel {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.profile-head { font-weight: 600; font-size: 13px; margin-bottom: 6px; }
+.profile-status { margin-bottom: 8px; }
+.profile-form { margin-top: 10px; display: flex; flex-direction: column; gap: 10px; }
+.profile-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-dim); }
+.profile-form label.check { flex-direction: row; align-items: center; gap: 8px; }
+.profile-form input[type="number"],
+.profile-form input[type="text"],
+.profile-form select,
+.profile-form textarea {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font: inherit;
+}
+.profile-form textarea { resize: vertical; }
+.profile-form-actions { display: flex; justify-content: flex-end; }

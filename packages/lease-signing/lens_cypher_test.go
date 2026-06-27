@@ -343,6 +343,60 @@ func TestLeaseApplicationComplete_ProjectsLeaseTerms(t *testing.T) {
 	require.Nil(t, rows2[0].Values["termsRequestedRent"])
 }
 
+// TestLeaseApplicationComplete_ProjectsQualificationProfile proves the .profile
+// aspect's DERIVED qualification signals project as read-only scalar columns the
+// landlord surface reads, while the RAW financials (annualIncome / employerName /
+// the reference strings) stay UNprojected. The signals feed no gap (the row stays
+// violating for the unrelated applicant gaps), and an application with no .profile
+// degrades to null signal columns + profileSubmitted=false.
+func TestLeaseApplicationComplete_ProjectsQualificationProfile(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	f.vtx(t, "app", "leaseapp")
+	f.vtx(t, "alice", "identity")
+	f.edge(t, "applicationFor", "app", "alice")
+	// The .profile aspect as SetApplicantProfile writes it: raw fields + derived
+	// signals in one aspect. The lens reads ONLY the derived keys.
+	f.aspect(t, "app", "profile", "profile", map[string]any{
+		"annualIncome":       96000, // raw — must NOT appear in any projected column
+		"employmentStatus":   "employed",
+		"employerName":       "Acme Corp", // raw — must NOT appear
+		"references":         []any{"Prior landlord", "Manager"},
+		"incomeToRentMet":    true,
+		"employmentVerified": true,
+		"referenceCount":     2,
+		"hasCoApplicant":     false,
+		"hasGuarantor":       true,
+		"submittedAt":        "2026-06-27T10:00:00Z",
+	})
+
+	rows := f.project(t, "app")
+	require.Len(t, rows, 1, "the .profile walk keeps one row per anchor")
+	v := rows[0].Values
+	require.Equal(t, true, v["profileSubmitted"], "profileSubmitted derives from .profile.submittedAt <> null")
+	require.Equal(t, true, v["incomeToRentMet"], "the stored derived bool projects verbatim")
+	require.Equal(t, true, v["employmentVerified"])
+	require.EqualValues(t, 2, v["referenceCount"], "referenceCount projects the op-derived count")
+	require.Equal(t, false, v["hasCoApplicant"])
+	require.Equal(t, true, v["hasGuarantor"])
+	// The RAW financials must never reach the read model (the Vault discipline).
+	require.NotContains(t, v, "annualIncome", "raw income must not be projected")
+	require.NotContains(t, v, "employerName", "raw employer must not be projected")
+	require.NotContains(t, v, "references", "raw reference strings must not be projected")
+
+	// Graceful degrade: no .profile → null signals + profileSubmitted=false.
+	f.vtx(t, "app2", "leaseapp")
+	f.edge(t, "applicationFor", "app2", "alice")
+	rows2 := f.project(t, "app2")
+	require.Len(t, rows2, 1)
+	require.Equal(t, false, rows2[0].Values["profileSubmitted"], "no .profile → profileSubmitted false")
+	require.Nil(t, rows2[0].Values["incomeToRentMet"], "no .profile → null income signal")
+	require.Nil(t, rows2[0].Values["referenceCount"])
+	require.Nil(t, rows2[0].Values["hasGuarantor"])
+}
+
 // landlordDecision writes the leaseapp's .decision aspect {value, decidedAt} — the
 // fact DecideLeaseApplication commits. decision is approved | declined.
 func (f *lensFixture) landlordDecision(t *testing.T, appName, decision string) {

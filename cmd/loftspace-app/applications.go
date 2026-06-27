@@ -34,26 +34,26 @@ const applicationKeyPrefix = "leaseApplicationComplete."
 // row on decode). unitRent is a pointer so an absent listing rent stays absent
 // rather than 0.
 type applicationRow struct {
-	EntityKey         string   `json:"entityKey"`
-	Applicant         string   `json:"applicant"`
-	Violating         bool     `json:"violating"`
-	ApplicantApproved bool     `json:"applicantApproved"`
-	LandlordDecision  string   `json:"landlordDecision"`
-	LandlordApproved  bool     `json:"landlordApproved"`
-	LandlordDeclined  bool     `json:"landlordDeclined"`
-	DeclineReason     string   `json:"declineReason"`
-	MissingDecision   bool     `json:"missing_decision"`
-	MissingOnboarding bool     `json:"missing_onboarding"`
-	MissingBgcheck    bool     `json:"missing_bgcheck"`
-	MissingPayment    bool     `json:"missing_payment"`
-	MissingSignature  bool     `json:"missing_signature"`
-	InflightBgcheck   bool     `json:"inflight_bgcheck"`
-	InflightPayment   bool     `json:"inflight_payment"`
-	DeclinedBgcheck   bool     `json:"declined_bgcheck"`
-	DeclinedPayment   bool     `json:"declined_payment"`
-	Declined          bool     `json:"declined"`
-	MaxretriesBgcheck int      `json:"maxretries_bgcheck"`
-	MaxretriesPayment int      `json:"maxretries_payment"`
+	EntityKey          string   `json:"entityKey"`
+	Applicant          string   `json:"applicant"`
+	Violating          bool     `json:"violating"`
+	ApplicantApproved  bool     `json:"applicantApproved"`
+	LandlordDecision   string   `json:"landlordDecision"`
+	LandlordApproved   bool     `json:"landlordApproved"`
+	LandlordDeclined   bool     `json:"landlordDeclined"`
+	DeclineReason      string   `json:"declineReason"`
+	MissingDecision    bool     `json:"missing_decision"`
+	MissingOnboarding  bool     `json:"missing_onboarding"`
+	MissingBgcheck     bool     `json:"missing_bgcheck"`
+	MissingPayment     bool     `json:"missing_payment"`
+	MissingSignature   bool     `json:"missing_signature"`
+	InflightBgcheck    bool     `json:"inflight_bgcheck"`
+	InflightPayment    bool     `json:"inflight_payment"`
+	DeclinedBgcheck    bool     `json:"declined_bgcheck"`
+	DeclinedPayment    bool     `json:"declined_payment"`
+	Declined           bool     `json:"declined"`
+	MaxretriesBgcheck  int      `json:"maxretries_bgcheck"`
+	MaxretriesPayment  int      `json:"maxretries_payment"`
 	UnitKey            string   `json:"unitKey"`
 	UnitAddress        string   `json:"unitAddress"`
 	UnitCity           string   `json:"unitCity"`
@@ -70,6 +70,16 @@ type applicationRow struct {
 	TermsRequestedRent *float64 `json:"termsRequestedRent"`
 	SignedAt           string   `json:"signedAt"`
 	FreshUntil         string   `json:"freshUntil"`
+	// Applicant qualification profile — the DERIVED signals the landlord decides
+	// on (SetApplicantProfile; the raw financials are never projected). All
+	// pointers so an application with no .profile yet stays absent rather than
+	// rendering a misleading false/0.
+	ProfileSubmitted   bool  `json:"profileSubmitted"`
+	IncomeToRentMet    *bool `json:"incomeToRentMet"`
+	EmploymentVerified *bool `json:"employmentVerified"`
+	ReferenceCount     *int  `json:"referenceCount"`
+	HasCoApplicant     *bool `json:"hasCoApplicant"`
+	HasGuarantor       *bool `json:"hasGuarantor"`
 }
 
 // computeApplications assembles the My Applications rows from the

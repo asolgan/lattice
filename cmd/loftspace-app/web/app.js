@@ -648,6 +648,15 @@ function renderApplicationCard(row, highlight) {
   const terms = renderLeaseTermsPanel(row);
   if (terms) card.append(terms);
 
+  // Qualification profile — the applicant records income / employment / references /
+  // co-applicant / guarantor so the landlord has something to decide on. Available
+  // while the application is live (hidden once the landlord has approved + the lease
+  // is being finalized). The raw figures go to the package; only the derived signals
+  // the landlord reads are projected back.
+  if (!row.landlordApproved && row.unitKey) {
+    card.append(renderProfilePanel(row));
+  }
+
   const actions = document.createElement("div");
   actions.className = "card-actions";
 
@@ -743,6 +752,121 @@ function renderLeaseTermsPanel(row) {
   }
   panel.append(dl);
   return panel;
+}
+
+// EMPLOYMENT_OPTIONS mirrors the SetApplicantProfile employmentStatus enum.
+const EMPLOYMENT_OPTIONS = ["employed", "self-employed", "unemployed", "student", "retired"];
+
+// renderProfilePanel builds the applicant's qualification-profile section: a short
+// status line of the derived signals already recorded (so the applicant sees what
+// the landlord sees) plus a collapsible form to add / update the profile. The raw
+// income / employer / references go to SetApplicantProfile; only the derived signals
+// come back projected.
+function renderProfilePanel(row) {
+  const panel = document.createElement("div");
+  panel.className = "profile-panel";
+  const h = document.createElement("div");
+  h.className = "profile-head";
+  h.textContent = "Qualification profile";
+  panel.append(h);
+
+  const status = document.createElement("div");
+  status.className = "profile-status";
+  if (row.profileSubmitted) {
+    // Reuse the same derived chips the landlord reads.
+    status.append(renderQualification(row));
+  } else {
+    const muted = document.createElement("div");
+    muted.className = "qualification none";
+    muted.textContent = "Not submitted yet — add your income, employment and references so the landlord can review.";
+    status.append(muted);
+  }
+  panel.append(status);
+
+  const toggle = document.createElement("button");
+  toggle.className = "ghost";
+  toggle.textContent = row.profileSubmitted ? "Update qualification profile" : "Add qualification profile";
+  panel.append(toggle);
+
+  const form = document.createElement("form");
+  form.className = "profile-form";
+  form.hidden = true;
+  form.innerHTML = `
+    <label>Gross annual income ($)
+      <input type="number" name="annualIncome" min="1" step="1" required />
+    </label>
+    <label>Employment status
+      <select name="employmentStatus" required>
+        ${EMPLOYMENT_OPTIONS.map((o) => `<option value="${o}">${o}</option>`).join("")}
+      </select>
+    </label>
+    <label>Employer (optional)
+      <input type="text" name="employerName" />
+    </label>
+    <label>References (optional, one per line)
+      <textarea name="references" rows="2" placeholder="Prior landlord — Jane Doe&#10;Manager — John Roe"></textarea>
+    </label>
+    <label class="check"><input type="checkbox" name="hasCoApplicant" /> Has a co-applicant</label>
+    <label class="check"><input type="checkbox" name="hasGuarantor" /> Has a guarantor</label>
+    <div class="profile-form-actions">
+      <button type="submit">Save profile</button>
+    </div>
+  `;
+  toggle.addEventListener("click", () => {
+    form.hidden = !form.hidden;
+  });
+  form.addEventListener("submit", (ev) => submitProfile(ev, row));
+  panel.append(form);
+  return panel;
+}
+
+// submitProfile sends SetApplicantProfile with the raw profile fields (the package
+// derives + projects the landlord-facing signals). reads=[leaseAppKey] (the op
+// validates the application + reads the unit's listing rent on demand).
+async function submitProfile(ev, row) {
+  ev.preventDefault();
+  const f = ev.target;
+  const income = Number(f.annualIncome.value);
+  if (!Number.isFinite(income) || income <= 0) {
+    toast("Enter a positive annual income.", "err");
+    return;
+  }
+  const references = f.references.value
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const payload = {
+    leaseAppKey: row.entityKey,
+    unit: row.unitKey,
+    annualIncome: income,
+    employmentStatus: f.employmentStatus.value,
+    hasCoApplicant: f.hasCoApplicant.checked,
+    hasGuarantor: f.hasGuarantor.checked,
+  };
+  const employer = f.employerName.value.trim();
+  if (employer) payload.employerName = employer;
+  if (references.length) payload.references = references;
+  try {
+    const reply = await api("/api/op", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operationType: "SetApplicantProfile",
+        class: "leaseapp",
+        reads: [row.entityKey],
+        payload,
+      }),
+    });
+    if (reply && reply.status === "rejected") {
+      const msg = reply.error ? `${reply.error.code}: ${reply.error.message}` : "rejected";
+      toast("Profile rejected — " + msg, "err");
+      return;
+    }
+    toast("Qualification profile saved.", "ok");
+    setTimeout(loadApplications, 600);
+  } catch (e) {
+    toast("Profile failed — " + e.message, "err");
+  }
 }
 
 // withdrawApplication submits WithdrawLeaseApplication (tombstones the leaseapp +
@@ -1336,6 +1460,10 @@ function renderApplicantRow(a, unit) {
   }
   row.append(info);
 
+  // The qualification profile the landlord decides on — derived signals only
+  // (never the raw financials). Absent until the applicant submits a profile.
+  row.append(renderQualification(a));
+
   const unitLeased = unit.unitStatus === "leased";
   if (a.qualified && !unitLeased) {
     const actions = document.createElement("div");
@@ -1364,6 +1492,41 @@ function renderApplicantRow(a, unit) {
     row.append(reason);
   }
   return row;
+}
+
+// renderQualification builds the compact qualification line the landlord reads to
+// decide. It renders only the DERIVED signals the lens projects (income meets 3×
+// rent, employment verified, reference count, co-applicant, guarantor) — never the
+// raw financials. Until the applicant submits a profile it shows a muted "no
+// qualification profile yet" so the landlord knows the decision is blind.
+function renderQualification(a) {
+  const wrap = document.createElement("div");
+  wrap.className = "qualification";
+  if (!a.profileSubmitted) {
+    wrap.classList.add("none");
+    wrap.textContent = "No qualification profile submitted yet";
+    return wrap;
+  }
+  const chip = (text, cls) => {
+    const c = document.createElement("span");
+    c.className = "qual-chip " + cls;
+    c.textContent = text;
+    return c;
+  };
+  // Income vs 3× rent. null = unknown (no listing rent at submit time).
+  if (a.incomeToRentMet === true) wrap.append(chip("✓ Income ≥ 3× rent", "ok"));
+  else if (a.incomeToRentMet === false) wrap.append(chip("✗ Income < 3× rent", "bad"));
+  else wrap.append(chip("Income/rent unknown", "muted"));
+  // Employment.
+  if (a.employmentVerified === true) wrap.append(chip("✓ Employed", "ok"));
+  else if (a.employmentVerified === false) wrap.append(chip("Unverified income", "muted"));
+  // References.
+  if (typeof a.referenceCount === "number") {
+    wrap.append(chip(a.referenceCount === 1 ? "1 reference" : `${a.referenceCount} references`, a.referenceCount > 0 ? "ok" : "muted"));
+  }
+  if (a.hasCoApplicant === true) wrap.append(chip("+ Co-applicant", "ok"));
+  if (a.hasGuarantor === true) wrap.append(chip("+ Guarantor", "ok"));
+  return wrap;
 }
 
 // decideApplication records the landlord's approve/decline (DecideLeaseApplication)

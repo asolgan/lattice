@@ -48,7 +48,7 @@ func Lenses() []pkgmgr.LensSpec {
 			Output: &pkgmgr.OutputDescriptorSpec{
 				AnchorType:       "leaseapp",
 				OutputKeyPattern: "leaseApplicationComplete.{actorSuffix}",
-				BodyColumns:      []string{"violating", "missing_onboarding", "missing_bgcheck", "missing_payment", "missing_signature", "missing_listingLeased", "missing_decision", "applicantApproved", "landlordDecision", "landlordApproved", "landlordDeclined", "declineReason", "applicant", "entityKey", "freshUntil", "signedAt", "inflight_bgcheck", "inflight_payment", "declined_bgcheck", "declined_payment", "declined", "maxretries_bgcheck", "maxretries_payment", "unitKey", "unitAddress", "unitCity", "unitRegion", "unitRent", "unitCurrency", "unitBedrooms", "unitBathrooms", "unitLeaseTermMonths", "unitAvailableFrom", "unitStatus", "termsMoveInDate", "termsLeaseTermMonths", "termsRequestedRent"},
+				BodyColumns:      []string{"violating", "missing_onboarding", "missing_bgcheck", "missing_payment", "missing_signature", "missing_listingLeased", "missing_decision", "applicantApproved", "landlordDecision", "landlordApproved", "landlordDeclined", "declineReason", "applicant", "entityKey", "freshUntil", "signedAt", "inflight_bgcheck", "inflight_payment", "declined_bgcheck", "declined_payment", "declined", "maxretries_bgcheck", "maxretries_payment", "unitKey", "unitAddress", "unitCity", "unitRegion", "unitRent", "unitCurrency", "unitBedrooms", "unitBathrooms", "unitLeaseTermMonths", "unitAvailableFrom", "unitStatus", "termsMoveInDate", "termsLeaseTermMonths", "termsRequestedRent", "profileSubmitted", "incomeToRentMet", "employmentVerified", "referenceCount", "hasCoApplicant", "hasGuarantor"},
 				EmptyBehavior:    "delete",
 				KeyColumn:        "entityId",
 				Freshness:        "auto",
@@ -117,6 +117,21 @@ func Lenses() []pkgmgr.LensSpec {
 // attached executed-lease document) and renders as "Signed on <date>". Like the
 // terms columns it feeds no gap predicate (missing_signature already derives from
 // signedAt = null) — a null projects null.
+//
+// APPLICANT QUALIFICATION PROFILE — the derived signals the landlord decides on.
+//
+//   - profileSubmitted (bool) — whether the applicant has recorded a .profile aspect
+//     (submittedAt <> null). incomeToRentMet / employmentVerified / referenceCount /
+//     hasCoApplicant / hasGuarantor are the DERIVED qualification signals
+//     SetApplicantProfile computes (the engine has no arithmetic / len, so the op
+//     derives them) and stores; the lens projects them verbatim. The RAW financials
+//     (annualIncome, employerName, the reference strings) are deliberately NOT
+//     projected — they live in the Core-KV .profile aspect plaintext-for-now (the
+//     .ssn / .demographics discipline) and the deferred Vault plane owns their
+//     encryption + a raw-financial display. So a landlord reads "income meets 3×
+//     rent / employed / N references" without the raw figures. All feed no gap
+//     predicate (Increment 1 is capture + surface, not a convergence gate) — a null
+//     .profile projects null signal columns, leaving convergence untouched.
 //
 // LANDLORD-GATED LISTING-LEASED CONVERGENCE — the human decision gates the lease.
 //
@@ -322,6 +337,12 @@ WITH
   app.terms.data.moveInDate AS termsMoveInDate,
   app.terms.data.leaseTermMonths AS termsLeaseTermMonths,
   app.terms.data.requestedRent AS termsRequestedRent,
+  app.profile.data.submittedAt AS profileSubmittedAt,
+  app.profile.data.incomeToRentMet AS incomeToRentMet,
+  app.profile.data.employmentVerified AS employmentVerified,
+  app.profile.data.referenceCount AS referenceCount,
+  app.profile.data.hasCoApplicant AS hasCoApplicant,
+  app.profile.data.hasGuarantor AS hasGuarantor,
   count(DISTINCT CASE WHEN inst.family.data.value = 'backgroundCheck' AND inst.outcome.data.status = 'completed' AND inst.outcome.data.validUntil > $now THEN inst.key ELSE null END) AS freshBgComplete,
   count(DISTINCT CASE WHEN inst.family.data.value = 'payment' AND inst.outcome.data.status = 'completed' THEN inst.key ELSE null END) AS payComplete,
   count(DISTINCT CASE WHEN inst.family.data.value = 'backgroundCheck' AND inst.dispatch.data.vendorRef <> null AND inst.outcome.data.status = null THEN inst.key ELSE null END) AS bgInflight,
@@ -347,6 +368,12 @@ RETURN
   termsMoveInDate,
   termsLeaseTermMonths,
   termsRequestedRent,
+  incomeToRentMet,
+  employmentVerified,
+  referenceCount,
+  hasCoApplicant,
+  hasGuarantor,
+  (profileSubmittedAt <> null) AS profileSubmitted,
   freshUntil,
   signedAt,
   landlordDecision,
