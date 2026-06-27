@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -203,13 +204,14 @@ func (h *heartbeater) emit(ctx context.Context, status string) {
 			})
 		}
 	}
+	sort.Slice(issues, func(i, j int) bool { return issues[i].Message < issues[j].Message })
 
 	doc := loomHealthDoc{
 		Key:         h.key(),
 		Component:   "loom",
 		Instance:    h.instance,
 		Version:     healthVersion,
-		Status:      status,
+		Status:      aggregateStatus(status, issues),
 		HeartbeatAt: substrate.FormatTimestamp(now),
 		StartedAt:   substrate.FormatTimestamp(h.startedAt),
 		Uptime:      formatISODuration(now.Sub(h.startedAt)),
@@ -228,6 +230,28 @@ func (h *heartbeater) emit(ctx context.Context, status string) {
 
 func (h *heartbeater) key() string {
 	return "health.loom." + h.instance
+}
+
+// aggregateStatus reconciles the reported lifecycle phase with the open issue
+// set per Contract #5 §5.2/§5.3: issues are empty iff healthy, "warning" ⇒
+// "degraded", "error" ⇒ "unhealthy". The "starting" and "shutdown" phases are
+// returned unchanged — an initializing or draining Loom reports its lifecycle
+// phase, not a steady-state health grade. Mirrors the Processor/Weaver/Refractor
+// heartbeaters so a heartbeat carrying issues can never self-report "healthy".
+func aggregateStatus(lifecycle string, issues []healthIssue) string {
+	if lifecycle == "starting" || lifecycle == "shutdown" {
+		return lifecycle
+	}
+	worst := lifecycle
+	for _, is := range issues {
+		switch is.Severity {
+		case "error":
+			return "unhealthy"
+		case "warning":
+			worst = "degraded"
+		}
+	}
+	return worst
 }
 
 // formatISODuration renders a duration as an ISO 8601 duration (e.g. "PT2M30S").
