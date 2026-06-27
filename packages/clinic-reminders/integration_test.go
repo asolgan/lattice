@@ -98,6 +98,13 @@ func crReadDoc(t *testing.T, ctx context.Context, conn *substrate.Conn, key stri
 	return doc
 }
 
+// crSubmittedAnchor pins the op envelope's submittedAt to a fixed instant so the
+// appointment booked below stays valid under CreateAppointment's past-time guard
+// (a startsAt at or before submittedAt is rejected ScheduleInPast). The fixed
+// 2026-07-01 booking is strictly after this anchor, so the test is deterministic
+// regardless of the wall clock.
+const crSubmittedAnchor = "2026-01-01T00:00:00Z"
+
 func crSubmit(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, op, class, payload string, reads []string, want processor.MessageOutcome) string {
 	t.Helper()
 	reqID := testutil.GenReqID(label)
@@ -106,7 +113,7 @@ func crSubmit(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *proce
 		Lane:          processor.LaneDefault,
 		OperationType: op,
 		Actor:         crStaffActorKey,
-		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		SubmittedAt:   crSubmittedAnchor,
 		Class:         class,
 		Payload:       json.RawMessage(payload),
 	}

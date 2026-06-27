@@ -82,15 +82,19 @@ function rejectionMessage(reply) {
 }
 
 // friendlyBookingRejection maps an op rejection message to operator-readable text
-// for the booking / reschedule paths: a double-book (SlotConflict) and an
-// out-of-availability-window booking (OutsideHours) are the two domain rejections
-// CreateAppointment / RescheduleAppointment raise. Anything else passes through.
+// for the booking / reschedule paths: a double-book (SlotConflict), an
+// out-of-availability-window booking (OutsideHours), and a past-dated booking
+// (ScheduleInPast) are the domain rejections CreateAppointment /
+// RescheduleAppointment raise. Anything else passes through.
 function friendlyBookingRejection(msg) {
   if (msg.indexOf("SlotConflict") !== -1) {
     return "That time overlaps another appointment for this provider. Pick another slot.";
   }
   if (msg.indexOf("OutsideHours") !== -1) {
     return "That time is outside the provider's availability (UTC). Set hours under “Manage availability” or pick a time inside them.";
+  }
+  if (msg.indexOf("ScheduleInPast") !== -1) {
+    return "That time is in the past. Pick a future date and time.";
   }
   return msg;
 }
@@ -430,6 +434,14 @@ function toLocalInputValue(rfc3339) {
   if (isNaN(d)) return "";
   const pad = (n) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// nowLocalInputValue returns the current local wall time as the
+// "YYYY-MM-DDTHH:MM" a <input type=datetime-local min=...> expects. Used as a
+// first line of defence so the browser's own picker discourages a past time; the
+// CreateAppointment / RescheduleAppointment op is the authority (ScheduleInPast).
+function nowLocalInputValue() {
+  return toLocalInputValue(new Date().toISOString());
 }
 
 // durationMinutes derives the appointment length (minutes) from its start/end so
@@ -1080,6 +1092,7 @@ function openReschedule(a) {
   const who = a.providerName || shortKey(a.providerKey);
   $("#reschedule-context").textContent = `${who} · currently ${fmtWhen(a.startsAt, a.endsAt)}`;
   $("#rs-startsAt").value = toLocalInputValue(a.startsAt);
+  $("#rs-startsAt").min = nowLocalInputValue();
   const dur = durationMinutes(a.startsAt, a.endsAt);
   const sel = $("#rs-duration");
   sel.value = String(dur);
@@ -1161,6 +1174,13 @@ function init() {
   restorePatient();
   loadPatients();
   loadProviders();
+
+  // Discourage a past booking from the picker itself; refresh on focus so a
+  // long-open session never carries a stale floor. The op stays the authority.
+  $("#startsAt").min = nowLocalInputValue();
+  $("#startsAt").addEventListener("focus", () => {
+    $("#startsAt").min = nowLocalInputValue();
+  });
 
   $("#patient").addEventListener("change", (e) => setPatient(e.target.value));
   $("#new-patient").addEventListener("click", openNewPatient);

@@ -196,7 +196,9 @@ func appointmentVertexTypeDDL() pkgmgr.DDLSpec {
 			"moved) (Capability-KV §06 — enforced via the op's own Starlark logic). RescheduleAppointment therefore " +
 			"requires the provider key. Both also enforce the provider's opt-in availability windows (the .hours aspect, " +
 			"set by SetProviderHours): a booking outside a provider's business hours is rejected (OutsideHours); a provider " +
-			"with no .hours is unconstrained.",
+			"with no .hours is unconstrained. Both also reject a startsAt at or before op.submittedAt " +
+				"(ScheduleInPast) — a soft past-time guard (submittedAt is caller-supplied; the host clock is " +
+				"not exposed to Starlark).",
 		Script: appointmentDDLScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"patient":{"type":"string","description":"vtx.patient.<NanoID> the appointment is for (CreateAppointment; required, validated alive + class=patient)."},` +
@@ -214,7 +216,7 @@ func appointmentVertexTypeDDL() pkgmgr.DDLSpec {
 		FieldDescription: map[string]string{
 			"patient":        "Full vtx.patient.<NanoID> key the appointment is for. CreateAppointment validates it is alive + class=patient and writes the forPatient link (appointment→patient). The caller MUST list this key in ContextHint.Reads.",
 			"provider":       "Full vtx.provider.<NanoID> key the appointment is with. CreateAppointment validates it is alive + class=provider and writes the withProvider link (appointment→provider). RescheduleAppointment also requires it (the appointment's actual provider, validated via the withProvider link) to conflict-check the new time. The caller MUST list this key — and, for reschedule, provider+'.bookings' — in ContextHint.Reads.",
-			"startsAt":       "Appointment start (RFC3339, canonical UTC). Stored on the .schedule aspect (CreateAppointment / RescheduleAppointment; required).",
+			"startsAt":       "Appointment start (RFC3339, canonical UTC). Stored on the .schedule aspect (CreateAppointment / RescheduleAppointment; required). Must be in the future relative to op.submittedAt — a past / now startsAt is rejected (ScheduleInPast).",
 			"endsAt":         "Appointment end (RFC3339, canonical UTC). Stored on the .schedule aspect (CreateAppointment / RescheduleAppointment; required).",
 			"reason":         "Optional visit reason / chief complaint. Stored on the .schedule aspect when present (CreateAppointment / RescheduleAppointment; on RescheduleAppointment an omitted reason clears it).",
 			"appointmentId":  "Optional bare NanoID (no dots / key segments) for the new appointment vertex. Absent → minted with nanoid.new().",
@@ -902,6 +904,21 @@ def enforce_hours(provider, starts_at, ends_at):
             return
     fail("OutsideHours: provider " + provider + " is not available at the requested time (UTC weekday " + str(sw) + ", " + str(ss) + "s-" + str(es) + "s of day); no matching availability window")
 
+def enforce_future(starts_at, submitted_at):
+    # Soft past-time guard (Capability-KV §06 — the op's own Starlark logic). The
+    # booking MUST start strictly after op.submittedAt: a past / now booking is
+    # almost always a mistake AND its remindAt = startsAt − 24h would also be past,
+    # so the clinic-reminders @at lane would silently never fire a useful reminder.
+    # submittedAt is caller-supplied (the host clock is intentionally NOT exposed to
+    # Starlark, starlark_runner.go), so this is a SOFT guard appropriate to the
+    # trusted single-identity model — not a hard temporal authority. Normalize it to
+    # canonical whole-second UTC (time.rfc3339_utc — pure, no clock read) so the
+    # compare is sound for any offset; canonical-UTC RFC3339 compares lexically ==
+    # chronologically.
+    submitted = time.rfc3339_utc(submitted_at)
+    if not (submitted < starts_at):
+        fail("ScheduleInPast: startsAt " + starts_at + " is not in the future (submitted " + submitted + ")")
+
 APPOINTMENT_STATUSES = ["scheduled", "confirmed", "checkedIn", "completed", "cancelled", "noShow"]
 
 def required_status(p):
@@ -937,6 +954,10 @@ def execute(state, op):
         # compare lexically == chronologically.
         if not (starts_at < ends_at):
             fail("InvalidArgument: endsAt: must be strictly after startsAt; got startsAt=" + starts_at + " endsAt=" + ends_at)
+
+        # The booking must start in the future (relative to op.submittedAt) — a soft
+        # past-time guard; see enforce_future.
+        enforce_future(starts_at, op.submittedAt)
 
         # Provider availability windows (opt-in; OutsideHours if the booking falls
         # outside the provider's .hours). Checked before the double-book fan-out.
@@ -1074,6 +1095,11 @@ def execute(state, op):
         # original reschedule lacked this guard).
         if not (starts_at < ends_at):
             fail("InvalidArgument: endsAt: must be strictly after startsAt; got startsAt=" + starts_at + " endsAt=" + ends_at)
+
+        # The new time must start in the future (relative to op.submittedAt) — a soft
+        # past-time guard; see enforce_future. A reschedule into the past is rejected
+        # exactly as a create is.
+        enforce_future(starts_at, op.submittedAt)
 
         # Provider availability windows (opt-in; OutsideHours if the new time falls
         # outside the provider's .hours) — the move must land inside business hours too.

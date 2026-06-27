@@ -146,6 +146,14 @@ func clMissing(t *testing.T, ctx context.Context, conn *substrate.Conn, key stri
 	return err != nil
 }
 
+// clSubmittedAnchor pins the op envelope's submittedAt to a fixed instant so the
+// suite is deterministic under the appointment ops' past-time guard (a startsAt at
+// or before submittedAt is rejected ScheduleInPast). Every appointment in these
+// tests uses a fixed 2026-07/08/09 startsAt — all strictly after this anchor — so
+// they stay valid forever regardless of the wall clock; the ScheduleInPast path is
+// exercised explicitly with pre-anchor dates in TestClinic_PastTimeRejected.
+const clSubmittedAnchor = "2026-01-01T00:00:00Z"
+
 // submit publishes an op and drives it to the expected outcome, returning the
 // minted primary key (the requestID-derived NanoID, for the create ops).
 func clSubmit(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, op, class, payload string, reads []string, want processor.MessageOutcome) string {
@@ -156,7 +164,7 @@ func clSubmit(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *proce
 		Lane:          processor.LaneDefault,
 		OperationType: op,
 		Actor:         clStaffActorKey,
-		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		SubmittedAt:   clSubmittedAnchor,
 		Class:         class,
 		Payload:       json.RawMessage(payload),
 	}
@@ -585,6 +593,46 @@ func TestClinic_ProviderHoursEnforced(t *testing.T) {
 	clSubmit(t, ctx, conn, cp, cons, "phbad0002", "SetProviderHours", "provider",
 		`{"providerKey":"`+providerKey+`","windows":[{"day":1,"openSec":61200,"closeSec":32400}]}`,
 		[]string{providerKey}, processor.OutcomeRejected)
+}
+
+// TestClinic_PastTimeRejected proves the soft past-time guard: CreateAppointment
+// and RescheduleAppointment reject a startsAt at or before op.submittedAt
+// (ScheduleInPast). The suite pins submittedAt to clSubmittedAnchor, so a startsAt
+// before / equal to that anchor is "in the past"; a clearly-future startsAt is
+// accepted (the guard never blocks a valid booking).
+func TestClinic_PastTimeRejected(t *testing.T) {
+	ctx, conn := setupClinicEnv(t)
+	cp, cons := newClinicPipeline(t, ctx, conn, "past-time")
+
+	patientKey := createPatient(t, ctx, conn, cp, cons, "ptpat0001", "Petra Past")
+	providerKey := createProvider(t, ctx, conn, cp, cons, "ptprv0001", "Dr. Future", "GeneralPractice")
+	bk := providerKey + ".bookings"
+
+	mkAppt := func(label, start, end string, want processor.MessageOutcome) string {
+		return clSubmit(t, ctx, conn, cp, cons, label, "CreateAppointment", "appointment",
+			`{"patient":"`+patientKey+`","provider":"`+providerKey+`","startsAt":"`+start+`","endsAt":"`+end+`"}`,
+			[]string{patientKey, providerKey, bk}, want)
+	}
+
+	// startsAt strictly before submittedAt (the anchor) → ScheduleInPast rejected.
+	mkAppt("ptappt0001", "2025-12-31T23:00:00Z", "2025-12-31T23:30:00Z", processor.OutcomeRejected)
+	// startsAt EXACTLY at submittedAt → rejected (the guard requires submitted < startsAt).
+	mkAppt("ptappt0002", "2026-01-01T00:00:00Z", "2026-01-01T00:30:00Z", processor.OutcomeRejected)
+	// A clearly-future startsAt → accepted (the guard does not block valid bookings).
+	apptKey := "vtx.appointment." + mkAppt("ptappt0003", "2026-07-01T10:00:00Z", "2026-07-01T10:30:00Z", processor.OutcomeAccepted)
+
+	// RescheduleAppointment into the past is rejected exactly as a create is.
+	clSubmit(t, ctx, conn, cp, cons, "ptres0001", "RescheduleAppointment", "appointment",
+		`{"appointmentKey":"`+apptKey+`","provider":"`+providerKey+`","startsAt":"2025-06-01T10:00:00Z","endsAt":"2025-06-01T10:30:00Z"}`,
+		[]string{apptKey, bk}, processor.OutcomeRejected)
+	// A reschedule to a future time still works (and re-derives remindAt).
+	clSubmit(t, ctx, conn, cp, cons, "ptres0002", "RescheduleAppointment", "appointment",
+		`{"appointmentKey":"`+apptKey+`","provider":"`+providerKey+`","startsAt":"2026-08-01T10:00:00Z","endsAt":"2026-08-01T10:30:00Z"}`,
+		[]string{apptKey, bk}, processor.OutcomeAccepted)
+	sched := clReadDoc(t, ctx, conn, apptKey+".schedule")
+	if sd, _ := sched["data"].(map[string]any); sd["startsAt"] != "2026-08-01T10:00:00Z" {
+		t.Fatalf("after future reschedule, startsAt = %v, want 2026-08-01T10:00:00Z", sched["data"])
+	}
 }
 
 // TestClinic_RejectsBadStatus proves the status enum guard.
