@@ -5,6 +5,9 @@ description: "Generic component-owner routine for the Agentic Operating Model �
 
 # Component Owner — advance one component by one unit of work
 
+**This is a SKILL the Steward follows inline (or is invoked via the Skill tool) — NOT a spawnable sub-agent
+type;** when the Steward runs it, *it* is Winston (build, then admit — no separate hand-up).
+
 **Target component:** named by the caller (the Steward) — one of Core / Weaver / Loom / Refractor / Loupe.
 Code map: **Core** → `internal/{processor,bootstrap,substrate}` + the core-operations/-events/-schedules
 streams; **Weaver** → `internal/weaver`; **Loom** → `internal/loom`; **Refractor** → `internal/refractor`;

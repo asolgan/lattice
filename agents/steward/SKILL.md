@@ -131,29 +131,42 @@ dead end: build the non-contract parts (L2), **make the actual contract-doc edit
 on the board — Andrew ratifies a *ready* proposal, he doesn't author it. "Touches a contract" is never a
 reason to leave an item undone; only a *standing* Andrew block/shelve is.
 
-## 3. Activate (L1)
+## 3. Activate (L1) — follow the role inline; do not spawn it
 
-Invoke the owning role's skill — **Verticals**: package work via the **owner** pattern + **UX-then-FE** (below);
-**Lattice**: the **owner** skill (named component) or **Lamplighter** (observability) — **and for Loupe
-operator-surface FE (`cmd/loupe/web`), UX-then-FE too** (Loupe is a Lattice component: owner for its
-backend/handlers, UX-then-FE for its FE; the **FE Engineer serves both Loupe and the vertical apps** — FE is a
-*mechanism*, not a Verticals-only lane). The role runs the hardened story loop: **Cartographer grounding →
-design → dev → review → gates**.
+**The owning roles are SKILLS / playbooks, NOT spawnable sub-agent types.** Invoke a role via the **Skill tool**
+(`/owner`, `/fe-engineer`, `/lamplighter`) or **read + follow `agents/<role>/SKILL.md` inline as Winston** —
+**never** call the **Agent** tool with `subagent_type: owner | fe-engineer | …` (those aren't registered agent
+types; only generic types exist, and a cold generic agent would just re-derive what you already have loaded).
+You are Winston throughout: follow the playbook, build, and **admit (§4) yourself** — there is no separate
+hand-up.
 
-**Isolation — code in a worktree, docs in `main`** (Andrew, 2026-06-26): **CODE** changes build in an
-**isolated git worktree** (commit + push to `main`, no PR). **DOCUMENTS — your lane file, design docs, and
-contracts — are edited DIRECTLY in `main`**, never siloed in a worktree (the board must be visible to the other
-stream; design proposals must be reviewable; **contract** edits stay **uncommitted** in `main` for Andrew).
-Per-lane files keep the two streams from colliding in main.
+Pick the role: **Verticals** → package work via the **owner** playbook + **UX-then-FE**; **Lattice** → the
+**owner** playbook (named component) or **Lamplighter** (observability) — **and Loupe operator-surface FE
+(`cmd/loupe/web`) is UX-then-FE too** (Loupe is a Lattice component: owner for its backend/handlers, UX-then-FE
+for its FE; the **FE Engineer serves both Loupe and the vertical apps**). UX-then-FE = the **UX Designer (Sally,
+`bmad-agent-ux-designer`)** designs → the **FE Engineer (`agents/fe-engineer`)** playbook builds + verifies
+in-browser. Run the hardened story loop: **Cartographer grounding → design → dev → review → gates**.
 
-**UI / app work runs UX-then-FE.** It is **no longer a forced top priority** — pick it by importance × readiness
-like any item, balanced against reliability / observability, component coverage, and the PO-filed demand. The
-**UX Designer (Sally, `bmad-agent-ux-designer`)** designs the experience → the **FE Engineer
-(`agents/fe-engineer`)** builds it and **verifies in-browser (preview)**. The vertical apps now exist
-(`cmd/loftspace-app` → `:7788`, `cmd/clinic-app` → `:7799`); new app capabilities the POs propose are welcome.
-**Shared stack:** in-browser verification shares the single-machine stack with the PO loop and other fires —
-**reuse a running stack** (don't re-`up`, ports collide) and **never `make down` a stack you didn't start** (it
-kills everything, including a PO fire's stack + apps).
+**Isolation — code in a worktree, docs in `main`:** **CODE** builds in an **isolated git worktree** *you*
+create (`git worktree add`) and merge to `main` when green — **not the main checkout**: the streams are disjoint
+for *commits* (scoped `git add`), but `go build ./...` / `golangci-lint` / `go test` in a *shared* checkout
+would compile the **other** stream's uncommitted in-progress code and fail spuriously. **DOCUMENTS — your lane
+file, design docs, and contracts — are edited DIRECTLY in `main`** (never a worktree; contracts stay
+**uncommitted** for Andrew). Per-lane files keep the two streams from colliding in `main`.
+
+**Shared core stack vs. your own app binary** (the rule that bit a prior fire): **"never `make down` a stack
+you didn't start" means the CORE STACK** — NATS + processor / refractor / weaver / loom / bridge / objmgr /
+Loupe — shared by every fire + Andrew; tearing it down kills their work. **But the single binary you just
+rebuilt — the per-vertical app (`bin/<vertical>-app` on :7788 / :7799), or `bin/loupe` for a Loupe FE change —
+is YOURS to cycle** against the still-running core stack; that is *not* `make down`, and you MUST cycle it to
+serve + verify your new assets. Unattended: reuse the running core stack → `pkill -f "bin/<that-binary>"` →
+rebuild (`go build -o bin/<x> ./cmd/<x>`) → **relaunch it in the BACKGROUND** (with `NATS_URL` /
+`BOOTSTRAP_JSON_PATH`; assets are `go:embed`'d, so the rebuilt binary serves the new ones — `make
+run-<vertical>-app` is *foreground / human-only*, don't use it unattended) → verify in-browser → **leave the new
+binary running** so Andrew sees the latest. *(A changed lens / DDL is different: a same-version reinstall won't
+reload under a live stack — the **F-004** upgrade gap — so verify lens/package changes via unit tests + the
+ephemeral-stack e2e targets (`make verify-package-*`, `make test-*-convergence`, `make test-object-gc`), which
+spin their own stack and never touch the shared one.)*
 
 ## 4. Admit
 

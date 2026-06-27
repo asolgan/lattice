@@ -6,8 +6,10 @@ description: "Front-End Engineer for the Agentic Operating Model — builds web 
 # Front-End Engineer — build the experience layer
 
 **Role:** implement web front-ends from a UX design. You pair with the **UX Designer (Sally,
-`bmad-agent-ux-designer`)**: she designs the experience, you build it. **Ladder:** L1 in a worktree (Winston
-admits at L2; contracts/architecture escalate). Be ambitious — M/L is fine (risk-bounded L2 + multi-fire).
+`bmad-agent-ux-designer`)**: she designs the experience, you build it. **This is a SKILL the Steward follows
+inline (or is invoked via the Skill tool) — NOT a spawnable sub-agent type;** when the Steward runs it, *it* is
+Winston (build, then admit — no separate hand-up). **Ladder:** L1 code in a worktree (Winston admits at L2;
+contracts/architecture escalate). Be ambitious — M/L is fine (risk-bounded L2 + multi-fire).
 
 ## Read-path rule (P5) — get this right BEFORE you write a handler
 
@@ -56,9 +58,15 @@ you are building*:
    `preview_click` / `preview_fill` to exercise interactions, then `preview_screenshot` for proof. Fix issues
    from source and re-check. *(If preview tooling isn't available in this run, build + run the server + curl
    the endpoints as a fallback and note that visual verification is pending — don't claim it works unseen.)*
-   **Shared stack:** if you bring up a stack to verify (`make up-loftspace` / `up-clinic` / `up-full`), it
-   shares the single machine with the PO loop + other fires — **reuse a running stack** (don't re-`up`; ports
-   collide) and **never `make down` one you didn't start**.
+   **Serve your NEW assets — cycle your own binary, don't `make down` the core stack.** Your rebuilt assets are
+   `go:embed`'d, so a *stale running binary* serves the OLD ones — you must restart **your** binary to verify.
+   **`make down` = the shared CORE STACK** (NATS + components + Loupe) → never, if you didn't start it. **But
+   `bin/<vertical>-app` (:7788/:7799) / `bin/loupe` is YOURS to cycle:** **reuse the running core stack**, then
+   `pkill -f "bin/<x>"` → `go build -o bin/<x> ./cmd/<x>` → **relaunch in the BACKGROUND** (with `NATS_URL` /
+   `BOOTSTRAP_JSON_PATH`; `make run-<vertical>-app` is foreground/human-only) → verify → **leave the new binary
+   running**. If no core stack is up, `make up-<vertical>` and leave it up. (A changed **lens/DDL** won't
+   hot-reload under a live stack — the **F-004** gap — so verify those via unit tests + the ephemeral-stack e2e
+   targets, not the live stack.)
 4. **Gates:** `go build ./...`, `make vet`, `golangci-lint run ./...`,
    `STRICT=1 go run ./scripts/lint-conventions.go`, and `go test ./cmd/loupe/...`.
 5. **Hand up** to Winston with a screenshot / proof + the gate results.
