@@ -17,10 +17,13 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //     leased unit (row.unitKey). A cross-package directOp into loftspace-domain
 //     (the op is granted to operator, which Weaver's service actor holds) — the
 //     objectLiveness→TombstoneObject / appointmentReminders→RecordAppointmentReminder
-//     precedent. Opens once an application is approved (all four applicant gaps
-//     closed) and its unit is not yet leased; closes when SetListingStatus flips
-//     the unit's .listing.status to leased and the lens reprojects (the unit is an
-//     appliesToUnit neighbor, so its aspect change reprojects this anchor).
+//     precedent. Opens once a landlord APPROVES a qualified application
+//     (DecideLeaseApplication decision=approved) and its unit is not yet leased;
+//     closes when SetListingStatus flips the unit's .listing.status to leased and the
+//     lens reprojects (the unit is an appliesToUnit neighbor, so its aspect change
+//     reprojects this anchor). A qualified-but-undecided application sits in the
+//     lens's missing_decision state (violating, but NO playbook entry — nothing
+//     dispatches); the landlord decision is the human gate the flip waits behind.
 //
 // External remediation is triggerLoom of an externalTask pattern (the retired
 // nudge action is never used). Every gap key is a column the lens projects, and

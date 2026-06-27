@@ -21,10 +21,14 @@ const applicationKeyPrefix = "leaseApplicationComplete."
 // companion marks a standing business rejection (a failed check that no retry has
 // superseded) so the FE shows "Declined" instead of a silent forever-"in review";
 // the unit columns are the informational "what am I leasing" header. applicantApproved
-// is true once the four APPLICANT gaps are all closed — the FE keys its "complete"
-// banner off it (NOT off !violating), because violating now also covers the
-// internal listing-leased flip, so an applicant who has finished every step would
-// otherwise briefly read "in review" while the unit is being marked leased.
+// is true once the four APPLICANT gaps are all closed — but that means "qualified,
+// pending the landlord decision," not "done." The landlord decision is the human gate
+// the lease waits behind: landlordDecision carries the raw .decision value
+// (approved|declined|""), landlordApproved/landlordDeclined are its booleans, and
+// missing_decision marks a qualified application still awaiting that decision. The FE
+// reads landlordApproved (+ unitStatus leased) for "complete," missing_decision for
+// "awaiting landlord review," and declined (which now also covers a landlord decline)
+// for the terminal rejection banner.
 // maxretries_<g> is the lens's CONSTANT integer retry-budget cap baked onto every
 // row (a count, not a flag — it is an int, not a bool: typing it bool drops every
 // row on decode). unitRent is a pointer so an absent listing rent stays absent
@@ -34,6 +38,10 @@ type applicationRow struct {
 	Applicant         string   `json:"applicant"`
 	Violating         bool     `json:"violating"`
 	ApplicantApproved bool     `json:"applicantApproved"`
+	LandlordDecision  string   `json:"landlordDecision"`
+	LandlordApproved  bool     `json:"landlordApproved"`
+	LandlordDeclined  bool     `json:"landlordDeclined"`
+	MissingDecision   bool     `json:"missing_decision"`
 	MissingOnboarding bool     `json:"missing_onboarding"`
 	MissingBgcheck    bool     `json:"missing_bgcheck"`
 	MissingPayment    bool     `json:"missing_payment"`

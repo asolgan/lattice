@@ -58,6 +58,12 @@ func Permissions() []pkgmgr.PermissionSpec {
 			Note:          "Grants the operator the right to submit WithdrawLeaseApplication (the applicant cancels / backs out of an application via the trusted-tool app).",
 			GrantsTo:      []string{"operator"},
 		},
+		{
+			OperationType: "DecideLeaseApplication",
+			Scope:         "any",
+			Note:          "Grants the operator the right to submit DecideLeaseApplication (the landlord approves / declines an application via the trusted-tool app — the human gate the listing-flip waits behind; same operator model as SignLease).",
+			GrantsTo:      []string{"operator"},
+		},
 	}
 }
 

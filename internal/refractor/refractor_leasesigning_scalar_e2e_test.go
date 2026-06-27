@@ -303,7 +303,8 @@ func TestRefractor_LeaseSigningConvergence_ProjectsScalarColumns(t *testing.T) {
 
 	// --- ROUND-TRIP THE OTHER DIRECTION: close every gap → violating flips to the
 	// Go bool false (not [], not absent). Writing .ssn (onboarding), both .outcome
-	// aspects (bgcheck + payment), and .signature closes all four gaps. ---
+	// aspects (bgcheck + payment), .signature, and the landlord .decision closes all
+	// gaps (the four applicant gaps + the landlord-decision gate). ---
 	writeAspect(idKey, "ssn", "ssn", map[string]any{"value": "123456789"})
 	// The bgcheck closes its gap only when completed AND fresh: validUntil must be
 	// in the future relative to the projection-supplied $now (time.Now() on the
@@ -312,6 +313,10 @@ func TestRefractor_LeaseSigningConvergence_ProjectsScalarColumns(t *testing.T) {
 	writeAspect(substrate.VertexKey("service", bgID), "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-01T00:00:00Z", "validUntil": "2099-01-01T00:00:00Z"})
 	writeAspect(substrate.VertexKey("service", payID), "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-02T00:00:00Z"})
 	writeAspect(appKey, "signature", "signature", map[string]any{"signedAt": "2026-06-10T00:00:00Z"})
+	// The landlord's decision is the human gate the convergence waits behind: a
+	// qualified application without it stays violating (missing_decision). There is no
+	// unit here, so an approval closes missing_decision and leaves no listing flip.
+	writeAspect(appKey, "decision", "decision", map[string]any{"value": "approved", "decidedAt": "2026-06-26T10:00:00Z"})
 
 	require.Eventually(t, func() bool {
 		entry, gErr := convKV.Get(ctx, convKey)

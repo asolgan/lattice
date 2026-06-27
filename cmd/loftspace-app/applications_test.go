@@ -63,15 +63,15 @@ func TestComputeApplications_FiltersPrefixAndApplicant(t *testing.T) {
 	}
 }
 
-// TestComputeApplications_ApprovedDuringListingFlip pins the banner-decoupling
-// data the FE relies on: during the brief window after an applicant finishes every
-// step but before the unit is marked leased, the row is STILL violating (the
-// listing-leased gap is open) yet applicantApproved is true. The FE keys its
-// "complete" banner off applicantApproved, so this row must surface
-// applicantApproved=true independently of violating=true.
-func TestComputeApplications_ApprovedDuringListingFlip(t *testing.T) {
+// TestComputeApplications_LandlordApprovedDuringListingFlip pins the banner data
+// the FE relies on during the brief window after the landlord approves but before
+// the unit is marked leased: the row is STILL violating (the listing-leased gap is
+// open) with landlordApproved=true and unitStatus not yet leased. The FE keys its
+// "complete" banner off landlordApproved && unitStatus==='leased', so this row must
+// surface landlordApproved=true and unitStatus available independently of violating.
+func TestComputeApplications_LandlordApprovedDuringListingFlip(t *testing.T) {
 	entries := map[string]string{
-		"leaseApplicationComplete.app9": `{"entityKey":"vtx.leaseapp.app9","applicant":"vtx.identity.alice","violating":true,"applicantApproved":true,"missing_onboarding":false,"missing_bgcheck":false,"missing_payment":false,"missing_signature":false,"missing_listingLeased":true,"unitKey":"vtx.unit.u9","unitStatus":"available"}`,
+		"leaseApplicationComplete.app9": `{"entityKey":"vtx.leaseapp.app9","applicant":"vtx.identity.alice","violating":true,"applicantApproved":true,"landlordDecision":"approved","landlordApproved":true,"missing_decision":false,"missing_onboarding":false,"missing_bgcheck":false,"missing_payment":false,"missing_signature":false,"missing_listingLeased":true,"unitKey":"vtx.unit.u9","unitStatus":"available"}`,
 	}
 	got := computeApplications(keysOf(entries), fakeKV(entries), "vtx.identity.alice")
 	if len(got) != 1 {
@@ -80,11 +80,49 @@ func TestComputeApplications_ApprovedDuringListingFlip(t *testing.T) {
 	if !got[0].Violating {
 		t.Errorf("the listing-flip window is still violating, got %+v", got[0])
 	}
-	if !got[0].ApplicantApproved {
-		t.Errorf("applicantApproved must be true even while violating (the banner reads this, not !violating), got %+v", got[0])
+	if !got[0].LandlordApproved || got[0].LandlordDecision != "approved" {
+		t.Errorf("landlordApproved/landlordDecision must round-trip true/approved, got %+v", got[0])
 	}
 	if got[0].UnitStatus != "available" {
 		t.Errorf("unitStatus should be available (not yet leased), got %q", got[0].UnitStatus)
+	}
+}
+
+// TestComputeApplications_LandlordDecisionColumnsRoundTrip is the FIX-1 regression
+// guard: the four landlord-decision columns the FE banner + Withdraw guard read
+// (landlordDecision / landlordApproved / landlordDeclined / missing_decision) MUST
+// survive the handler's decode→re-serialize round-trip. Before they were added to
+// applicationRow the handler silently dropped them, so the FE saw them undefined and
+// every app read "In review." Three rows exercise the three decision states.
+func TestComputeApplications_LandlordDecisionColumnsRoundTrip(t *testing.T) {
+	entries := map[string]string{
+		// qualified, awaiting the landlord decision (the Approve/Decline state).
+		"leaseApplicationComplete.aw": `{"entityKey":"vtx.leaseapp.aw","applicant":"vtx.identity.alice","violating":true,"applicantApproved":true,"missing_decision":true,"unitKey":"vtx.unit.uaw","unitStatus":"available"}`,
+		// landlord-approved and leased — the terminal done state.
+		"leaseApplicationComplete.ok": `{"entityKey":"vtx.leaseapp.ok","applicant":"vtx.identity.alice","violating":false,"applicantApproved":true,"landlordDecision":"approved","landlordApproved":true,"missing_decision":false,"unitKey":"vtx.unit.uok","unitStatus":"leased"}`,
+		// landlord-declined — terminal rejection.
+		"leaseApplicationComplete.no": `{"entityKey":"vtx.leaseapp.no","applicant":"vtx.identity.alice","violating":false,"applicantApproved":true,"landlordDecision":"declined","landlordDeclined":true,"declined":true,"missing_decision":false,"unitKey":"vtx.unit.uno","unitStatus":"available"}`,
+	}
+	got := computeApplications(keysOf(entries), fakeKV(entries), "vtx.identity.alice")
+	if len(got) != 3 {
+		t.Fatalf("want 3 rows, got %d (%+v)", len(got), got)
+	}
+	byKey := map[string]applicationRow{}
+	for _, r := range got {
+		byKey[r.EntityKey] = r
+	}
+
+	aw := byKey["vtx.leaseapp.aw"]
+	if !aw.MissingDecision || aw.LandlordApproved || aw.LandlordDeclined || aw.LandlordDecision != "" {
+		t.Errorf("awaiting-decision row: want missing_decision true + no landlord decision, got %+v", aw)
+	}
+	ok := byKey["vtx.leaseapp.ok"]
+	if !ok.LandlordApproved || ok.LandlordDecision != "approved" || ok.MissingDecision {
+		t.Errorf("approved row: want landlordApproved + landlordDecision=approved + missing_decision false, got %+v", ok)
+	}
+	no := byKey["vtx.leaseapp.no"]
+	if !no.LandlordDeclined || no.LandlordDecision != "declined" || !no.Declined {
+		t.Errorf("declined row: want landlordDeclined + landlordDecision=declined + declined, got %+v", no)
 	}
 }
 

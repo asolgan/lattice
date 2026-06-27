@@ -54,6 +54,7 @@ func lsCapDoc() *processor.CapabilityDoc {
 			{OperationType: "CreateLeaseServiceInstance", Scope: "any"},
 			{OperationType: "RecordLeaseServiceOutcome", Scope: "any"},
 			{OperationType: "RecordServiceDispatch", Scope: "any"},
+			{OperationType: "DecideLeaseApplication", Scope: "any"},
 		},
 		ServiceAccess:   []processor.ServiceAccessEntry{},
 		EphemeralGrants: []processor.EphemeralGrant{},
@@ -1173,4 +1174,81 @@ func TestSignLease_WritesSignatureAspect(t *testing.T) {
 
 	// keep the identity-domain dependency reference resolved.
 	_ = identitydomain.Package
+}
+
+// decide submits DecideLeaseApplication{leaseAppKey, decision} (class leaseapp,
+// reads=[leaseAppKey]) at the given submittedAt and asserts the outcome.
+func decide(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, leaseAppKey, decision, submittedAt string, want processor.MessageOutcome) {
+	t.Helper()
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID(label),
+		Lane:          processor.LaneDefault,
+		OperationType: "DecideLeaseApplication",
+		Actor:         lsActorKey,
+		SubmittedAt:   submittedAt,
+		Class:         "leaseapp",
+		Payload:       json.RawMessage(`{"leaseAppKey":"` + leaseAppKey + `","decision":"` + decision + `"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{leaseAppKey}},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, want)
+}
+
+// TestDecideLeaseApplication drives the landlord decision op: approved writes the
+// .decision{value:approved} aspect; declined writes {value:declined}; a second
+// decision OVERRIDES the first (decline → approve is reversible, unconditioned
+// upsert); a bad enum is rejected (BadDecision); a tombstoned application is
+// rejected (UnknownLeaseApplication). Root data stays {} throughout (D5).
+func TestDecideLeaseApplication(t *testing.T) {
+	ctx, conn := setupLeaseEnv(t)
+	cp, cons := newLeasePipeline(t, ctx, conn, "decide")
+
+	applicantKey := seedApplicant(t, ctx, conn, "BBdecapp1cantHJKMNPQ")
+	appKey := createApplication(t, ctx, conn, cp, cons, applicantKey)
+
+	// Approve → .decision{value:approved, decidedAt} on the application; root {} (D5).
+	decide(t, ctx, conn, cp, cons, "decideApprov1", appKey, "approved", "2026-06-26T10:00:00Z", processor.OutcomeAccepted)
+	ddoc := readDoc(t, ctx, conn, appKey+".decision")
+	ddata, _ := ddoc["data"].(map[string]any)
+	if got, _ := ddata["value"].(string); got != "approved" {
+		t.Fatalf("decision.value = %q, want approved", got)
+	}
+	if got, _ := ddata["decidedAt"].(string); got != "2026-06-26T10:00:00Z" {
+		t.Fatalf("decision.decidedAt = %q, want canonical 2026-06-26T10:00:00Z", got)
+	}
+	if d, _ := readDoc(t, ctx, conn, appKey)["data"].(map[string]any); len(d) != 0 {
+		t.Fatalf("application root data must stay minimal ({}) after decide, got %v", d)
+	}
+
+	// Reverse: approve → decline overrides (unconditioned upsert; a landlord can
+	// change their mind). The .decision aspect now reads declined.
+	decide(t, ctx, conn, cp, cons, "decideRevers1", appKey, "declined", "2026-06-26T11:00:00Z", processor.OutcomeAccepted)
+	ddoc = readDoc(t, ctx, conn, appKey+".decision")
+	ddata, _ = ddoc["data"].(map[string]any)
+	if got, _ := ddata["value"].(string); got != "declined" {
+		t.Fatalf("decision.value after reverse = %q, want declined (override)", got)
+	}
+	if got, _ := ddata["decidedAt"].(string); got != "2026-06-26T11:00:00Z" {
+		t.Fatalf("decision.decidedAt after reverse = %q, want 2026-06-26T11:00:00Z", got)
+	}
+
+	// And back again: decline → approve (the decline→approve reversal the doc names).
+	decide(t, ctx, conn, cp, cons, "decideReappr1", appKey, "approved", "2026-06-26T12:00:00Z", processor.OutcomeAccepted)
+	ddoc = readDoc(t, ctx, conn, appKey+".decision")
+	ddata, _ = ddoc["data"].(map[string]any)
+	if got, _ := ddata["value"].(string); got != "approved" {
+		t.Fatalf("decision.value after second reverse = %q, want approved", got)
+	}
+
+	// Bad enum → BadDecision (rejected).
+	decide(t, ctx, conn, cp, cons, "decideBadEnum", appKey, "maybe", "2026-06-26T13:00:00Z", processor.OutcomeRejected)
+
+	// Tombstoned application → UnknownLeaseApplication (rejected). Logically
+	// tombstone the application, then a decision is rejected (the vertex_alive guard).
+	tomb := map[string]any{"class": "leaseapp", "isDeleted": true, "data": map[string]any{}}
+	tb, _ := json.Marshal(tomb)
+	if _, err := conn.KVPut(ctx, testutil.HarnessCoreBucket, appKey, tb); err != nil {
+		t.Fatalf("tombstone application: %v", err)
+	}
+	decide(t, ctx, conn, cp, cons, "decideTombsto", appKey, "approved", "2026-06-26T14:00:00Z", processor.OutcomeRejected)
 }

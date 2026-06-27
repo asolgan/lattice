@@ -48,7 +48,7 @@ func Lenses() []pkgmgr.LensSpec {
 			Output: &pkgmgr.OutputDescriptorSpec{
 				AnchorType:       "leaseapp",
 				OutputKeyPattern: "leaseApplicationComplete.{actorSuffix}",
-				BodyColumns:      []string{"violating", "missing_onboarding", "missing_bgcheck", "missing_payment", "missing_signature", "missing_listingLeased", "applicantApproved", "applicant", "entityKey", "freshUntil", "inflight_bgcheck", "inflight_payment", "declined_bgcheck", "declined_payment", "declined", "maxretries_bgcheck", "maxretries_payment", "unitKey", "unitAddress", "unitRent", "unitStatus"},
+				BodyColumns:      []string{"violating", "missing_onboarding", "missing_bgcheck", "missing_payment", "missing_signature", "missing_listingLeased", "missing_decision", "applicantApproved", "landlordDecision", "landlordApproved", "landlordDeclined", "applicant", "entityKey", "freshUntil", "inflight_bgcheck", "inflight_payment", "declined_bgcheck", "declined_payment", "declined", "maxretries_bgcheck", "maxretries_payment", "unitKey", "unitAddress", "unitRent", "unitStatus"},
 				EmptyBehavior:    "delete",
 				KeyColumn:        "entityId",
 				Freshness:        "auto",
@@ -77,13 +77,21 @@ func Lenses() []pkgmgr.LensSpec {
 //   - missing_signature — the application has no .signature aspect. SignLease
 //     writes it, flipping this false.
 //
-// violating is the explicit OR of the four applicant gaps PLUS missing_listingLeased
-// (Contract #10 §10.2: violating is lens-projected, not an implicit OR; for this
-// target the rule is "any applicant gap OR an approved-but-unleased unit →
+// violating is the explicit OR of the four applicant gaps PLUS missing_decision
+// PLUS missing_listingLeased (Contract #10 §10.2: violating is lens-projected, not
+// an implicit OR; for this target the rule is "any applicant gap OR a
+// qualified-but-undecided application OR a landlord-approved-but-unleased unit →
 // violating"). Folding missing_listingLeased into violating is load-bearing:
 // Weaver skips all dispatch when violating=false, so the listing-flip directOp
-// only fires while the row is violating (and the application's work is not fully
-// done until the unit it is for is marked leased).
+// only fires while the row is violating. missing_decision keeps a
+// qualified-but-undecided application explicitly open (its work is not done until
+// the landlord decides) WITHOUT dispatching anything — it maps to no playbook
+// entry, so the row stays violating while no remediation fires. A landlord-DECLINED
+// application is terminal-not-violating: every violating term is false (the
+// applicant gaps are closed, missing_decision is false because the decision is
+// non-null, and missing_listingLeased is false because the decision is not
+// 'approved'), so Weaver stops reconciling it — there is no work left to do (the
+// FE reads the declined column for the terminal disposition).
 //
 // unitKey / unitAddress / unitRent / unitStatus are columns carried from the
 // appliesToUnit walk (the unit's key, its .address.line1, its .listing.rentAmount
@@ -94,27 +102,49 @@ func Lenses() []pkgmgr.LensSpec {
 // so there is no missing_unit gap (§3 D5). appliesToUnit is 0..1, so these stay
 // scalar and one-row-per-anchor holds.
 //
-// LISTING-LEASED CONVERGENCE — applicantApproved + missing_listingLeased.
+// LANDLORD-GATED LISTING-LEASED CONVERGENCE — the human decision gates the lease.
 //
+//   - landlordDecision (string, informational) — the raw .decision aspect value
+//     DecideLeaseApplication writes ('approved' | 'declined' | null). landlordApproved
+//     ≡ (landlordDecision = 'approved'), landlordDeclined ≡ (landlordDecision =
+//     'declined'). The FE renders the disposition off these.
 //   - applicantApproved (informational bool) is true once all four APPLICANT gaps
 //     are closed (ssn recorded, a fresh bgcheck, a completed payment, a signature)
 //     — De Morgan of the four missing_* (the engine has no RETURN-alias
-//     cross-reference, so it re-derives from the WITH values, like violating). The
-//     applicant FE keys its "approved" banner off THIS column, decoupling the
-//     applicant-facing read from violating (which now also covers the listing
-//     flip) so the brief violating-true window between applicant-approval and the
-//     listing-flip does not read as "still in review."
-//   - missing_listingLeased opens when an approved application's unit exists, has a
-//     listing, and is not yet leased ((unitKey <> null) AND applicantApproved AND
-//     (unitStatus <> null) AND (unitStatus <> 'leased')). The (unitStatus <> null)
-//     term requires a listing to exist (a unit with none is not transitionable —
-//     SetListingStatus would reject NoListing), closing the dispatch-thrash hazard.
-//     Weaver dispatches directOp(SetListingStatus status=leased) (§10.8 playbook);
-//     the op flips the unit's .listing.status, the unit (an appliesToUnit neighbor)
-//     reprojects this anchor, unitStatus becomes 'leased', and the gap closes. A
-//     multi-applicant race self-resolves: the first to converge leases the unit,
-//     then every other application's (unitStatus <> 'leased') is false → no
-//     re-dispatch, no double-transition.
+//     cross-reference, so it re-derives from the WITH values, like violating). Its
+//     meaning is "qualified, pending the landlord decision" — readiness, not the
+//     leasing decision. The applicant FE moves its "complete" signal to
+//     landlordApproved (+ leased), reading "qualified — awaiting landlord review"
+//     while applicantApproved holds with no decision yet.
+//   - missing_decision opens when an application is qualified (all four applicant
+//     gaps closed) AND the landlord has not decided (landlordDecision = null). It is
+//     the explicit "qualified, awaiting landlord decision" state. It maps to NO
+//     playbook entry (no externalTask/userTask/directOp), so it keeps the row
+//     violating without dispatching anything, and closes the moment the landlord
+//     decides (approve or decline). It closes the race the auto-flip-on-readiness
+//     had: nothing leases until a human approves.
+//   - missing_listingLeased requires BOTH applicant-readiness AND the landlord's
+//     approval — a unit leases only when the applicant is qualified (all four
+//     applicant gaps closed) AND the landlord has approved. It opens when a qualified,
+//     landlord-APPROVED application's unit exists, has a listing, and is not yet leased
+//     ((unitKey <> null) AND (the four applicant conjuncts) AND (landlordDecision =
+//     'approved') AND (unitStatus <> null) AND (unitStatus <> 'leased')). Keeping the
+//     four applicant conjuncts is load-bearing safety: a landlord who approves before
+//     the applicant qualifies — OR a bgcheck that goes STALE after approval but before
+//     the flip fires — must NOT lease the unit to an unqualified applicant. The
+//     freshness predicate re-opens missing_bgcheck on a stale check, which drops
+//     freshBgComplete to 0 and so closes missing_listingLeased until a fresh bgcheck
+//     restores readiness. The (unitStatus <> null) term requires a listing to exist (a
+//     unit with none is not transitionable — SetListingStatus would reject NoListing),
+//     closing the dispatch-thrash hazard. Weaver dispatches directOp(SetListingStatus
+//     status=leased) (§10.8 playbook); the op flips the unit's .listing.status, the
+//     unit (an appliesToUnit neighbor) reprojects this anchor, unitStatus becomes
+//     'leased', and the gap closes. A landlord-declined, undecided, or
+//     not-yet-qualified application never opens this gap. A multi-applicant race
+//     self-resolves: the first qualified+landlord-approved application to converge
+//     leases the unit, then every other application's (unitStatus <> 'leased') is
+//     false → no re-dispatch, no double-transition (a landlord approving two
+//     applicants for one unit is absorbed by the unit-lease idempotency).
 //
 // applicant + entityKey are the param columns the §10.8 playbook templates name
 // (row.applicant, row.entityKey). They stay non-null even when gaps are open
@@ -222,13 +252,19 @@ func Lenses() []pkgmgr.LensSpec {
 //	  tracks the CURRENT verdict, not a historical one.
 //	- declined_payment — symmetric on the payment family ((payFailed > 0) AND
 //	  (payComplete = 0)); payment is ever-completed so no freshness term.
-//	- declined — the OR of the two: the application carries at least one standing
-//	  rejection. It is NOT in the violating clause (declined ⊂ violating already —
-//	  a declined gap is still a missing gap); it is a presentation column, like
-//	  freshUntil / unitAddress. The lens cannot see Weaver's per-gap dispatch count,
-//	  so declined is "a rejection stands right now," not "retries are terminally
-//	  exhausted"; while a retry is in flight inflight_<g> is true and the FE prefers
-//	  that ("re-checking") over the standing-rejection read.
+//	- declined — the OR of declined_bgcheck, declined_payment, AND a landlord
+//	  decline (landlordDecision = 'declined'): the application carries at least one
+//	  standing rejection — a failed verification OR a landlord's explicit decline. It
+//	  is a presentation column the FE renders the terminal "declined" banner from,
+//	  like freshUntil / unitAddress. A verification-declined application keeps an
+//	  applicant gap open so it is also violating (Weaver keeps reconciling — a retry
+//	  may clear); a LANDLORD-declined application is terminal-not-violating (its
+//	  applicant gaps are closed and the decision is non-null, so missing_decision and
+//	  missing_listingLeased are both false) — declined here means "done, terminally
+//	  rejected," no work remains. The lens cannot see Weaver's per-gap dispatch count,
+//	  so a verification declined is "a rejection stands right now," not "retries are
+//	  terminally exhausted"; while a retry is in flight inflight_<g> is true and the
+//	  FE prefers that ("re-checking") over the standing-rejection read.
 //
 // '= null' (not IS NULL) is the full engine's null test (ruleengine/full
 // executor.go equalsAny treats null = null as true and any value = null as
@@ -248,6 +284,7 @@ WITH
   app.key AS entityKey,
   id.key  AS applicant,
   app.signature.data.signedAt AS signedAt,
+  app.decision.data.value AS landlordDecision,
   id.ssn.data.value AS ssnVal,
   u.key                     AS unitKey,
   u.address.data.line1      AS unitAddress,
@@ -269,6 +306,7 @@ RETURN
   unitRent,
   unitStatus,
   freshUntil,
+  landlordDecision,
   (ssnVal = null)        AS missing_onboarding,
   (freshBgComplete = 0)  AS missing_bgcheck,
   (payComplete = 0)      AS missing_payment,
@@ -277,10 +315,13 @@ RETURN
   (payInflight > 0)      AS inflight_payment,
   ((bgFailed > 0) AND (freshBgComplete = 0))  AS declined_bgcheck,
   ((payFailed > 0) AND (payComplete = 0))     AS declined_payment,
-  (((bgFailed > 0) AND (freshBgComplete = 0)) OR ((payFailed > 0) AND (payComplete = 0))) AS declined,
+  (((bgFailed > 0) AND (freshBgComplete = 0)) OR ((payFailed > 0) AND (payComplete = 0)) OR (landlordDecision = 'declined')) AS declined,
+  (landlordDecision = 'approved') AS landlordApproved,
+  (landlordDecision = 'declined') AS landlordDeclined,
   ((ssnVal <> null) AND (freshBgComplete > 0) AND (payComplete > 0) AND (signedAt <> null)) AS applicantApproved,
-  ((unitKey <> null) AND (ssnVal <> null) AND (freshBgComplete > 0) AND (payComplete > 0) AND (signedAt <> null) AND (unitStatus <> null) AND (unitStatus <> 'leased')) AS missing_listingLeased,
+  ((ssnVal <> null) AND (freshBgComplete > 0) AND (payComplete > 0) AND (signedAt <> null) AND (landlordDecision = null)) AS missing_decision,
+  ((unitKey <> null) AND (ssnVal <> null) AND (freshBgComplete > 0) AND (payComplete > 0) AND (signedAt <> null) AND (landlordDecision = 'approved') AND (unitStatus <> null) AND (unitStatus <> 'leased')) AS missing_listingLeased,
   %d                     AS maxretries_bgcheck,
   %d                     AS maxretries_payment,
-  ((ssnVal = null) OR (freshBgComplete = 0) OR (payComplete = 0) OR (signedAt = null) OR ((unitKey <> null) AND (ssnVal <> null) AND (freshBgComplete > 0) AND (payComplete > 0) AND (signedAt <> null) AND (unitStatus <> null) AND (unitStatus <> 'leased'))) AS violating
+  ((ssnVal = null) OR (freshBgComplete = 0) OR (payComplete = 0) OR (signedAt = null) OR ((ssnVal <> null) AND (freshBgComplete > 0) AND (payComplete > 0) AND (signedAt <> null) AND (landlordDecision = null)) OR ((unitKey <> null) AND (ssnVal <> null) AND (freshBgComplete > 0) AND (payComplete > 0) AND (signedAt <> null) AND (landlordDecision = 'approved') AND (unitStatus <> null) AND (unitStatus <> 'leased'))) AS violating
 `, maxBgcheckRetries, maxPaymentRetries)

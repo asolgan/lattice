@@ -36,6 +36,19 @@ func (h *harness) driveApplicantSteps(appKey, applicantKey string) {
 	require.Equalf(h.t, processor.ReplyStatusAccepted, signReply.Status, "SignLease: %+v", signReply.Error)
 }
 
+// decideLandlord submits the landlord's DecideLeaseApplication decision (the human
+// gate the listing-flip waits behind). decision is approved | declined. A qualified
+// application does NOT lease its unit until the landlord approves — convergence
+// (violating=false) requires this step after applicant readiness.
+func (h *harness) decideLandlord(appKey, decision string) {
+	h.t.Helper()
+	reply := h.submitOp("DecideLeaseApplication", "leaseapp", "default", bootstrap.BootstrapIdentityKey, map[string]any{
+		"leaseAppKey": appKey,
+		"decision":    decision,
+	}, &processor.ContextHint{Reads: []string{appKey}})
+	require.Equalf(h.t, processor.ReplyStatusAccepted, reply.Status, "DecideLeaseApplication(%s): %+v", decision, reply.Error)
+}
+
 // drainUntilConverged polls the convergence row until violating flips false within
 // the deadline, dumping the last row + Health issues on timeout (the loud-failure
 // diagnostic). Returns once converged.
@@ -120,8 +133,13 @@ func TestLeaseConvergence_DrainThenAssert_SteadyState(t *testing.T) {
 	// The applicant records PII and signs; bgcheck/payment complete via the bridge.
 	h.driveApplicantSteps(appKey, applicantKey)
 
-	// Drain: violating flips false once all four gaps close (the bridge round-trips
-	// the bgcheck + payment, the two ops close onboarding + signature).
+	// The landlord approves the now-qualified application — the human gate the
+	// listing-flip waits behind (nothing auto-leases on applicant-readiness alone).
+	h.decideLandlord(appKey, "approved")
+
+	// Drain: violating flips false once all four gaps close AND the landlord-approved
+	// unit leases (the bridge round-trips the bgcheck + payment, the two ops close
+	// onboarding + signature, and the directOp flips the listing to leased).
 	h.drainUntilConverged(appID, 30*time.Second)
 
 	// Assert steady: it stays converged (no oscillation).
@@ -157,6 +175,9 @@ func TestLeaseConvergence_ListingLeasedOnApproval(t *testing.T) {
 
 	h.driveApplicantSteps(appKey, applicantKey)
 
+	// The landlord approves — the gate the listing-flip waits behind.
+	h.decideLandlord(appKey, "approved")
+
 	// Convergence REQUIRES the listing flip (violating includes missing_listingLeased),
 	// so draining to violating=false already proves the directOp fired + reprojected.
 	h.drainUntilConverged(appID, 30*time.Second)
@@ -181,6 +202,98 @@ func TestLeaseConvergence_ListingLeasedOnApproval(t *testing.T) {
 	h.assertSteadyState(appID, 3*time.Second)
 }
 
+// TestLeaseConvergence_NoLeaseUntilLandlordApproves is the crux of Increment 2: a
+// QUALIFIED application (all four applicant gaps closed) does NOT lease its unit
+// until the landlord approves. The lens holds it in the missing_decision state —
+// violating (work not done) but dispatching NO listing flip — so the unit stays
+// 'available'. Only after DecideLeaseApplication(approved) does the listing flip and
+// the row converge. This closes the auto-lease race the old applicantApproved-gated
+// flip had.
+func TestLeaseConvergence_NoLeaseUntilLandlordApproves(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping the all-engines lease convergence e2e in -short mode")
+	}
+	h := newHarness(t)
+	appKey, appID, applicantKey := h.seedApplicant()
+
+	require.Equal(t, "available", h.unitListingStatus(h.lastUnitKey), "the unit starts available")
+
+	// Drive the applicant to fully qualified (PII + sign; bgcheck/payment via the bridge).
+	h.driveApplicantSteps(appKey, applicantKey)
+
+	// The row becomes qualified-awaiting-decision: applicantApproved true,
+	// missing_decision true, NO listing flip. Assert it reaches this state and HOLDS
+	// — the unit must NOT lease without a landlord decision.
+	require.Eventually(t, func() bool {
+		row := h.readRow(appID)
+		return row != nil && rowBool(row, "applicantApproved") && rowBool(row, "missing_decision")
+	}, 30*time.Second, 150*time.Millisecond, "the qualified application must reach the awaiting-landlord-decision state")
+
+	// Hold: the unit stays available, the row stays missing_decision + violating, and
+	// missing_listingLeased never opens (nothing dispatches a flip without approval).
+	cut := time.Now().Add(3 * time.Second)
+	for time.Now().Before(cut) {
+		require.Equal(t, "available", h.unitListingStatus(h.lastUnitKey), "the unit must NOT lease before the landlord approves")
+		row := h.readRow(appID)
+		require.NotNil(t, row)
+		require.Truef(t, rowBool(row, "missing_decision"), "stays awaiting decision; row=%v", row)
+		require.Falsef(t, rowBool(row, "missing_listingLeased"), "no listing flip dispatched without approval; row=%v", row)
+		require.Truef(t, rowBool(row, "violating"), "qualified-awaiting-decision is still violating; row=%v", row)
+		time.Sleep(150 * time.Millisecond)
+	}
+
+	// The landlord approves → the listing flips and the row converges.
+	h.decideLandlord(appKey, "approved")
+	h.drainUntilConverged(appID, 30*time.Second)
+	require.Equal(t, "leased", h.unitListingStatus(h.lastUnitKey), "the landlord-approved unit leases")
+	row := h.readRow(appID)
+	require.Truef(t, rowBool(row, "landlordApproved"), "the row reflects the landlord approval; row=%v", row)
+	require.Falsef(t, rowBool(row, "missing_decision"), "the decision closed the awaiting-decision gap; row=%v", row)
+}
+
+// TestLeaseConvergence_LandlordDeclineIsTerminal: a landlord DECLINE of a qualified
+// application is terminal — the unit never leases, the row reads declined, and
+// violating settles to false (no work remains; Weaver stops reconciling). The
+// decline is a definitive disposition, not a transient gap.
+func TestLeaseConvergence_LandlordDeclineIsTerminal(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping the all-engines lease convergence e2e in -short mode")
+	}
+	h := newHarness(t)
+	appKey, appID, applicantKey := h.seedApplicant()
+
+	require.Equal(t, "available", h.unitListingStatus(h.lastUnitKey), "the unit starts available")
+	h.driveApplicantSteps(appKey, applicantKey)
+
+	// Wait until qualified-awaiting-decision, then DECLINE.
+	require.Eventually(t, func() bool {
+		row := h.readRow(appID)
+		return row != nil && rowBool(row, "applicantApproved") && rowBool(row, "missing_decision")
+	}, 30*time.Second, 150*time.Millisecond, "the application must reach the awaiting-decision state")
+	h.decideLandlord(appKey, "declined")
+
+	// A declined application is terminal-not-violating: declined true, the unit stays
+	// available (never leased), and violating settles false (no work remains).
+	require.Eventually(t, func() bool {
+		row := h.readRow(appID)
+		return row != nil && rowBool(row, "declined") && !rowBool(row, "violating")
+	}, 30*time.Second, 150*time.Millisecond, "a landlord-declined application must read declined + non-violating (terminal)")
+
+	// Hold: the unit must NOT lease, and the terminal state is stable.
+	cut := time.Now().Add(3 * time.Second)
+	for time.Now().Before(cut) {
+		require.Equal(t, "available", h.unitListingStatus(h.lastUnitKey), "a declined application must NEVER lease its unit")
+		row := h.readRow(appID)
+		require.NotNil(t, row)
+		require.Truef(t, rowBool(row, "declined"), "stays declined; row=%v", row)
+		require.Truef(t, rowBool(row, "landlordDeclined"), "the decline is the landlord's; row=%v", row)
+		require.Falsef(t, rowBool(row, "missing_decision"), "a recorded decision closes the awaiting-decision gap; row=%v", row)
+		require.Falsef(t, rowBool(row, "missing_listingLeased"), "declined ≠ approved → no listing flip; row=%v", row)
+		require.Falsef(t, rowBool(row, "violating"), "terminal — no work remains; row=%v", row)
+		time.Sleep(150 * time.Millisecond)
+	}
+}
+
 // TestLeaseConvergence_D5_OutcomeInAspect_RootMinimal is AC #3, gate-asserted (not
 // review-asserted): after the bridge round-trip, the service instance's external
 // outcome lives in the .outcome ASPECT, and the service + leaseapp vertex ROOT data
@@ -192,6 +305,7 @@ func TestLeaseConvergence_D5_OutcomeInAspect_RootMinimal(t *testing.T) {
 	h := newHarness(t)
 	appKey, appID, applicantKey := h.seedApplicant()
 	h.driveApplicantSteps(appKey, applicantKey)
+	h.decideLandlord(appKey, "approved")
 	h.drainUntilConverged(appID, 30*time.Second)
 
 	applicantID := applicantKey[len("vtx.identity."):]
@@ -232,6 +346,7 @@ func TestLeaseConvergence_FR58_RetriedExternalCall_AtMostOnce(t *testing.T) {
 	h := newHarness(t)
 	appKey, appID, applicantKey := h.seedApplicant()
 	h.driveApplicantSteps(appKey, applicantKey)
+	h.decideLandlord(appKey, "approved")
 	h.drainUntilConverged(appID, 30*time.Second)
 
 	applicantID := applicantKey[len("vtx.identity."):]
@@ -309,6 +424,7 @@ func TestLeaseConvergence_BgcheckFreshness_EagerReopen(t *testing.T) {
 	marks := h.startMarkExpiredCounter(appKey)
 
 	h.driveApplicantSteps(appKey, applicantKey)
+	h.decideLandlord(appKey, "approved")
 	h.drainUntilConverged(appID, 30*time.Second)
 
 	// The converged row carries freshUntil (the bgcheck's validUntil) — the column

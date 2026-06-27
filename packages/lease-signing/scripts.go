@@ -258,6 +258,35 @@ def execute(state, op):
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": app_key}}
 
+    if ot == "DecideLeaseApplication":
+        # The landlord's leasing decision — the human gate the listing-flip waits
+        # behind. Validates the application is a live leaseapp, validates the
+        # decision enum, and writes a .decision aspect {value, decidedAt} on the
+        # leaseapp. The write is an UNCONDITIONED upsert: a later decision overrides
+        # an earlier one, so a landlord can reverse a decline to an approve (no
+        # kv.Read of the prior decision needed). The convergence lens reads
+        # app.decision.data.value: approved opens missing_listingLeased (→ the unit
+        # leases); declined is a terminal disposition (declined OR'd in the lens).
+        app_key = required_string(p, "leaseAppKey")
+        parts_of(app_key, "leaseAppKey", "leaseapp")
+        if not vertex_alive(state, app_key):
+            fail("UnknownLeaseApplication: " + app_key)
+
+        decision = required_string(p, "decision")
+        if decision != "approved" and decision != "declined":
+            fail("BadDecision: " + decision)
+
+        # decidedAt is the op's own timestamp, normalized to canonical UTC (read-free,
+        # mirroring SignLease's signedAt) so a downstream lexical compare is sound.
+        decided_at = time.rfc3339_utc(op.submittedAt)
+        mutations = [
+            make_aspect_upsert(app_key, "decision", "decision", {"value": decision, "decidedAt": decided_at}),
+        ]
+        events = [{"class": "leaseapp.applicationDecided",
+                   "data": {"leaseAppKey": app_key, "decision": decision}}]
+        return {"mutations": mutations, "events": events,
+                "response": {"primaryKey": app_key}}
+
     if ot == "WithdrawLeaseApplication":
         # Withdraw / cancel an application: soft-delete the leaseapp so it drops
         # from My Applications (the convergence lens anchors on it + filters

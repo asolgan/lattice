@@ -12,17 +12,24 @@ import (
 // applicantSummary is one applicant's standing against a unit, as the landlord
 // surface renders it: the application key, the applicant identity + its human
 // name, and a coarse disposition derived from the convergence row. status is
-// "approved" (every applicant gap closed), "declined" (a standing business
-// rejection no retry has superseded), or "in_review" (still converging). signed
-// reflects whether the applicant has executed the lease (the .signature aspect).
+// "leased" (landlord-approved AND the unit leased — the terminal done state),
+// "approved" (the landlord approved, lease in flight), "qualified" (every applicant
+// gap closed but the landlord has not decided — the Approve/Decline action state),
+// "declined" (a standing business rejection OR a landlord decline), or "in_review"
+// (still converging). signed reflects whether the applicant has executed the lease
+// (the .signature aspect). qualified/landlordApproved/landlordDeclined are the raw
+// decision columns the landlord FE drives the Approve/Decline buttons + badges off.
 type applicantSummary struct {
-	LeaseAppKey   string `json:"leaseAppKey"`
-	Applicant     string `json:"applicant"`
-	ApplicantName string `json:"applicantName"`
-	Status        string `json:"status"`
-	Signed        bool   `json:"signed"`
-	Approved      bool   `json:"approved"`
-	Declined      bool   `json:"declined"`
+	LeaseAppKey      string `json:"leaseAppKey"`
+	Applicant        string `json:"applicant"`
+	ApplicantName    string `json:"applicantName"`
+	Status           string `json:"status"`
+	Signed           bool   `json:"signed"`
+	Approved         bool   `json:"approved"`
+	Declined         bool   `json:"declined"`
+	Qualified        bool   `json:"qualified"`
+	LandlordApproved bool   `json:"landlordApproved"`
+	LandlordDeclined bool   `json:"landlordDeclined"`
 }
 
 // unitApplicationsRow is the landlord's per-unit aggregate: the listed unit's
@@ -41,16 +48,22 @@ type unitApplicationsRow struct {
 }
 
 // applicationStatus reduces a convergence row to the landlord's coarse
-// disposition. declined wins over approved (they are mutually exclusive in
-// practice — approval requires a completed-fresh check, a decline requires a
-// standing failed one — but a decline is the safer signal to surface if both
-// were ever true).
+// disposition. declined wins (a standing verification rejection OR a landlord
+// decline — the safest signal to surface). Then the landlord-decision states:
+// landlord-approved + unit leased is the terminal "leased"; landlord-approved with
+// the lease still in flight is "approved"; a qualified-but-undecided application
+// (applicantApproved, no decision) is "qualified" — the state the landlord acts on
+// (Approve/Decline). Everything else is still converging ("in_review").
 func applicationStatus(a applicationRow) string {
 	switch {
 	case a.Declined:
 		return "declined"
-	case a.ApplicantApproved:
+	case a.LandlordApproved && a.UnitStatus == "leased":
+		return "leased"
+	case a.LandlordApproved:
 		return "approved"
+	case a.ApplicantApproved:
+		return "qualified"
 	default:
 		return "in_review"
 	}
@@ -107,13 +120,16 @@ func groupByUnit(apps []applicationRow, identities []identityView, listings []li
 			u.UnitStatus = a.UnitStatus
 		}
 		u.Applications = append(u.Applications, applicantSummary{
-			LeaseAppKey:   a.EntityKey,
-			Applicant:     a.Applicant,
-			ApplicantName: names[a.Applicant],
-			Status:        applicationStatus(a),
-			Signed:        !a.MissingSignature,
-			Approved:      a.ApplicantApproved,
-			Declined:      a.Declined,
+			LeaseAppKey:      a.EntityKey,
+			Applicant:        a.Applicant,
+			ApplicantName:    names[a.Applicant],
+			Status:           applicationStatus(a),
+			Signed:           !a.MissingSignature,
+			Approved:         a.ApplicantApproved,
+			Declined:         a.Declined,
+			Qualified:        a.ApplicantApproved && !a.LandlordApproved && !a.LandlordDeclined,
+			LandlordApproved: a.LandlordApproved,
+			LandlordDeclined: a.LandlordDeclined,
 		})
 	}
 

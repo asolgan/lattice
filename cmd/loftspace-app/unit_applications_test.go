@@ -11,8 +11,10 @@ func f64(v float64) *float64 { return &v }
 // (longer a) listing.
 func TestGroupByUnit_GroupsAndJoins(t *testing.T) {
 	apps := []applicationRow{
-		// u1 — alice: every gap closed → approved + signed.
+		// u1 — alice: qualified, landlord-approved, and the unit leased → the terminal
+		// "leased" disposition (signed; all applicant gaps closed).
 		{EntityKey: "vtx.leaseapp.a2", Applicant: "vtx.identity.alice", ApplicantApproved: true,
+			LandlordDecision: "approved", LandlordApproved: true,
 			UnitKey: "vtx.unit.u1", UnitAddress: "1 Market St", UnitRent: f64(2400), UnitStatus: "leased"},
 		// u1 — bob: a standing decline.
 		{EntityKey: "vtx.leaseapp.a1", Applicant: "vtx.identity.bob", Declined: true, DeclinedBgcheck: true,
@@ -20,6 +22,11 @@ func TestGroupByUnit_GroupsAndJoins(t *testing.T) {
 		// u2 — carol: still converging, not signed.
 		{EntityKey: "vtx.leaseapp.a3", Applicant: "vtx.identity.carol", MissingBgcheck: true, MissingSignature: true,
 			Violating: true, UnitKey: "vtx.unit.u2", UnitRent: f64(1800), UnitStatus: "available"},
+		// u2 — dave: QUALIFIED but the landlord has NOT decided → the "qualified"
+		// disposition (the Approve/Decline action state the landlord acts on).
+		{EntityKey: "vtx.leaseapp.a5", Applicant: "vtx.identity.dave", ApplicantApproved: true,
+			MissingDecision: true, Violating: true,
+			UnitKey: "vtx.unit.u2", UnitRent: f64(1800), UnitStatus: "available"},
 		// u3 — a unit with applications but NO listing (lost its listing): the
 		// row's own unit facets must surface it.
 		{EntityKey: "vtx.leaseapp.a4", Applicant: "vtx.identity.alice", MissingSignature: true,
@@ -30,6 +37,7 @@ func TestGroupByUnit_GroupsAndJoins(t *testing.T) {
 	identities := []identityView{
 		{Key: "vtx.identity.alice", Name: "Alice Renter"},
 		{Key: "vtx.identity.bob", Name: "Bob Tenant"},
+		{Key: "vtx.identity.dave", Name: "Dave Applicant"},
 		// carol is intentionally absent from the roster → her name resolves empty.
 	}
 	listings := []listingProjection{
@@ -71,23 +79,31 @@ func TestGroupByUnit_GroupsAndJoins(t *testing.T) {
 		t.Errorf("u1 bob: want Bob Tenant/declined/!signed, got %+v", bob)
 	}
 	alice := u1.Applications[1]
-	if alice.ApplicantName != "Alice Renter" || alice.Status != "approved" || !alice.Approved || !alice.Signed {
-		t.Errorf("u1 alice: want Alice Renter/approved/signed, got %+v", alice)
+	if alice.ApplicantName != "Alice Renter" || alice.Status != "leased" || !alice.Approved || !alice.Signed || !alice.LandlordApproved {
+		t.Errorf("u1 alice: want Alice Renter/leased/signed/landlordApproved, got %+v", alice)
 	}
 	if u1.UnitRent == nil || *u1.UnitRent != 2400 || u1.UnitAddress != "1 Market St" || u1.UnitStatus != "leased" {
 		t.Errorf("u1 facets: want 1 Market St/2400/leased, got addr=%q rent=%v status=%q",
 			u1.UnitAddress, u1.UnitRent, u1.UnitStatus)
 	}
 
-	// u2: carol in review; her name is empty (not on the roster) but the row stands.
+	// u2: carol in review + dave qualified-awaiting-decision (sorted a3 before a5).
 	u2 := got["vtx.unit.u2"]
-	if u2.ApplicationCount != 1 || u2.Applications[0].Status != "in_review" {
-		t.Errorf("u2 want 1 in_review application, got %+v", u2.Applications)
+	if u2.ApplicationCount != 2 || len(u2.Applications) != 2 {
+		t.Fatalf("u2 want 2 applications (carol + dave), got %d: %+v", u2.ApplicationCount, u2.Applications)
 	}
-	if u2.Applications[0].ApplicantName != "" {
-		t.Errorf("u2 carol (off-roster): name should resolve empty, got %q", u2.Applications[0].ApplicantName)
+	carol := u2.Applications[0]
+	if carol.LeaseAppKey != "vtx.leaseapp.a3" || carol.Status != "in_review" {
+		t.Errorf("u2 carol: want a3/in_review, got %+v", carol)
 	}
-	// the listing seeds u2's address even though the convergence row carries none.
+	if carol.ApplicantName != "" {
+		t.Errorf("u2 carol (off-roster): name should resolve empty, got %q", carol.ApplicantName)
+	}
+	dave := u2.Applications[1]
+	if dave.LeaseAppKey != "vtx.leaseapp.a5" || dave.Status != "qualified" || !dave.Qualified || dave.LandlordApproved || dave.LandlordDeclined {
+		t.Errorf("u2 dave: want a5/qualified (awaiting landlord decision), got %+v", dave)
+	}
+	// the listing seeds u2's address even though the convergence rows carry none.
 	if u2.UnitAddress != "2 Mission St" {
 		t.Errorf("u2 address should seed from the listing, got %q", u2.UnitAddress)
 	}

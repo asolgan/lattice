@@ -554,19 +554,29 @@ function renderApplicationCard(row, highlight) {
   ref.textContent = shortKey(row.entityKey);
   head.append(ref);
 
-  // Decision banner. Declined takes precedence over the in-review state: a
-  // standing rejection is a terminal disposition, not a step still to complete.
-  // "Complete" keys off applicantApproved (all four APPLICANT steps done), NOT
-  // !violating: violating now also covers the internal listing-leased flip, so an
-  // applicant who has finished everything would otherwise read "in review" for the
-  // brief window while the unit is marked leased.
+  // Decision banner. Declined takes precedence: a standing rejection (a failed
+  // verification OR an explicit landlord decline — both fold into row.declined) is a
+  // terminal disposition, not a step still to complete. Finishing the four applicant
+  // steps no longer means the application is done — the landlord still has to decide.
+  // So "complete" requires BOTH the landlord approval AND the unit actually leased
+  // (the genuine done state — an early approval on a not-yet-qualified application
+  // does not read "complete"). Between the approval and the listing flip the lease
+  // is being finalized (row.landlordApproved, unit not yet leased) — a short window
+  // the directOp closes. A qualified-but-undecided application (row.missing_decision)
+  // reads "awaiting landlord review."
   const banner = document.createElement("div");
   if (row.declined) {
     banner.className = "decision declined";
-    banner.textContent = "Application declined — a verification check did not pass.";
-  } else if (row.applicantApproved) {
+    banner.textContent = "Application declined.";
+  } else if (row.landlordApproved && row.unitStatus === "leased") {
     banner.className = "decision ok";
     banner.textContent = "Application complete — all steps done.";
+  } else if (row.landlordApproved) {
+    banner.className = "decision ok";
+    banner.textContent = "Approved — finalizing lease.";
+  } else if (row.missing_decision) {
+    banner.className = "decision pending";
+    banner.textContent = "Qualified — awaiting landlord review.";
   } else {
     banner.className = "decision pending";
     banner.textContent = "In review — complete the open steps below.";
@@ -584,9 +594,11 @@ function renderApplicationCard(row, highlight) {
 
   card.append(head, banner, steps);
 
-  // Withdraw: back out of an application before approval (frees the applicant to
-  // re-apply to the same unit). Hidden once approved — the unit is being leased.
-  if (!row.applicantApproved && row.unitKey) {
+  // Withdraw: back out of an application before the landlord approves (frees the
+  // applicant to re-apply to the same unit). Stays available while the application is
+  // qualified-but-undecided (awaiting landlord review) — the applicant may still
+  // change their mind. Hidden once the landlord approves — the unit is being leased.
+  if (!row.landlordApproved && row.unitKey) {
     const actions = document.createElement("div");
     actions.className = "card-actions";
     const wd = document.createElement("button");
