@@ -122,9 +122,9 @@ _The Surveyor notes each run here so the next run rotates to the least-recently-
 | NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate level (today defended only by overwrite-by-reprojection). | ★★ | M | 📋 |
 
 ### Privacy / Vault
-| Item | What it is | Imp | Size |
-|---|---|---|---|
-| Vault + crypto-shredding | Per-identity keys for sensitive aspects (SSN / DOB); right-to-be-forgotten = destroy the key; transient-session-key decryption for the Edge node; + the privacy failure tier (`KeyShredded` listener). | ★★★ | L |
+| Item | What it is | Imp | Size | Status |
+|---|---|---|---|---|
+| Vault + crypto-shredding | Per-identity keys for sensitive aspects (SSN / DOB); right-to-be-forgotten = destroy the key; transient-session-key decryption for the Edge node; + the privacy failure tier (`KeyShredded` listener). | ★★★ | L | 📐 **awaiting-Andrew** — design: [`vault-crypto-shredding-design.md`](../../implementation-artifacts/vault-crypto-shredding-design.md). Crypto layer on the already-shipping sensitivity boundary: aspect-level `sensitive:true` ⇒ ciphertext-at-rest, `ShredIdentityKey` destroys the per-identity key. **Phase A (Fires 1–4) ships now** (ciphertext-safe everywhere — no D1/Edge needed); **Phase B Secure Lens (Fire 5) gated on D1**. Two forks for Andrew: **(1)** Vault backend (rec: pluggable iface + local envelope backend first, KMS adapters later); **(2)** Phase A now vs. hold for D1 (rec: ship A now). Uncommitted **Contract #3 §3.10** (sensitive-aspect encryption at rest) staged in `main` as the proposal. → ✅ Andrew-ratified once he signs off. |
 
 ### External-I/O maturity (bridge follow-ons)
 | Item | What it is | Imp | Size |
