@@ -412,43 +412,43 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 	if err := add(MetaRootKey, rootVal, rootErr); err != nil {
 		return nil, err
 	}
-	rootCanonicalAspectKey := MetaRootKey + ".canonicalName"
+	rootCanonicalAspectKey := substrate.AspectKey(MetaRootKey, "canonicalName")
 	rca, rcaErr := MakeAspectEnvelope(rootCanonicalAspectKey, MetaRootKey, "canonicalName", "canonicalName",
 		map[string]any{"value": "root"})
 	if err := add(rootCanonicalAspectKey, rca, rcaErr); err != nil {
 		return nil, err
 	}
-	rootPCKey := MetaRootKey + ".permittedCommands"
+	rootPCKey := substrate.AspectKey(MetaRootKey, "permittedCommands")
 	rpc, rpcErr := MakeAspectEnvelope(rootPCKey, MetaRootKey, "permittedCommands", "permittedCommands",
 		map[string]any{"commands": []string{"CreateMetaVertex", "UpdateMetaVertex", "TombstoneMetaVertex"}})
 	if err := add(rootPCKey, rpc, rpcErr); err != nil {
 		return nil, err
 	}
-	rootDescAspectKey := MetaRootKey + ".description"
+	rootDescAspectKey := substrate.AspectKey(MetaRootKey, "description")
 	rda, rdaErr := MakeAspectEnvelope(rootDescAspectKey, MetaRootKey, "description", "description",
 		map[string]any{"text": "Meta-meta-DDL governing all vtx.meta.* mutations. Dispatches on op.payload.targetClass."})
 	if err := add(rootDescAspectKey, rda, rdaErr); err != nil {
 		return nil, err
 	}
-	rootScriptKey := MetaRootKey + ".script"
+	rootScriptKey := substrate.AspectKey(MetaRootKey, "script")
 	rsv, rsErr := MakeAspectEnvelope(rootScriptKey, MetaRootKey, "script", "script",
 		map[string]any{"source": MetaRootDDLScript})
 	if err := add(rootScriptKey, rsv, rsErr); err != nil {
 		return nil, err
 	}
-	rootInputSchemaKey := MetaRootKey + ".inputSchema"
+	rootInputSchemaKey := substrate.AspectKey(MetaRootKey, "inputSchema")
 	risa, risaErr := MakeAspectEnvelope(rootInputSchemaKey, MetaRootKey, "inputSchema", "inputSchema",
 		map[string]any{"schema": `{"type":"object","required":["targetClass","canonicalName"],"properties":{"targetClass":{"type":"string","description":"One of meta.ddl.vertexType|linkType|aspectType|eventType|meta.lens"},"canonicalName":{"type":"string"},"permittedCommands":{"type":"array","items":{"type":"string"}},"description":{"type":"string"},"script":{"type":"string"},"inputSchema":{"type":"string"},"outputSchema":{"type":"string"},"fieldDescription":{"type":"object"},"examples":{"type":"array"},"spec":{"type":"string"}}}`})
 	if err := add(rootInputSchemaKey, risa, risaErr); err != nil {
 		return nil, err
 	}
-	rootOutputSchemaKey := MetaRootKey + ".outputSchema"
+	rootOutputSchemaKey := substrate.AspectKey(MetaRootKey, "outputSchema")
 	rosa, rosaErr := MakeAspectEnvelope(rootOutputSchemaKey, MetaRootKey, "outputSchema", "outputSchema",
 		map[string]any{"schema": `{"type":"object","properties":{"metaKey":{"type":"string"}},"required":["metaKey"]}`})
 	if err := add(rootOutputSchemaKey, rosa, rosaErr); err != nil {
 		return nil, err
 	}
-	rootFDKey := MetaRootKey + ".fieldDescription"
+	rootFDKey := substrate.AspectKey(MetaRootKey, "fieldDescription")
 	rfd, rfdErr := MakeAspectEnvelope(rootFDKey, MetaRootKey, "fieldDescription", "fieldDescription",
 		map[string]any{"fieldDescriptions": map[string]any{
 			"targetClass":       "The meta-vertex class to create. DDL classes: meta.ddl.vertexType, meta.ddl.linkType, meta.ddl.aspectType, meta.ddl.eventType. Lens class: meta.lens.",
@@ -464,7 +464,7 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 	if err := add(rootFDKey, rfd, rfdErr); err != nil {
 		return nil, err
 	}
-	rootExamplesKey := MetaRootKey + ".examples"
+	rootExamplesKey := substrate.AspectKey(MetaRootKey, "examples")
 	rex, rexErr := MakeAspectEnvelope(rootExamplesKey, MetaRootKey, "examples", "examples",
 		map[string]any{"examples": []any{
 			map[string]any{
@@ -492,7 +492,7 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 	// tombstone the created meta-vertex. The Processor reads NO compensation
 	// aspects (Guardrail 2); this entry is for client-side traversal only
 	// (aiagent.Traverser.ReadCompensation).
-	rootCompKey := MetaRootKey + "." + CompensationAspectClass
+	rootCompKey := substrate.AspectKey(MetaRootKey, CompensationAspectClass)
 	rootComp, rootCompErr := MakeAspectEnvelope(rootCompKey, MetaRootKey, CompensationAspectClass, CompensationAspectClass,
 		map[string]any{
 			"inverseOperationType": "TombstoneMetaVertex",
@@ -550,13 +550,13 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		if err := add(RoleOperatorKey, roleVal, roleErr); err != nil {
 			return nil, err
 		}
-		cnKey := RoleOperatorKey + ".canonicalName"
+		cnKey := substrate.AspectKey(RoleOperatorKey, "canonicalName")
 		cnVal, cnErr := MakeAspectEnvelope(cnKey, RoleOperatorKey, "canonicalName", "canonicalName",
 			map[string]any{"value": "operator"})
 		if err := add(cnKey, cnVal, cnErr); err != nil {
 			return nil, err
 		}
-		descKey := RoleOperatorKey + ".description"
+		descKey := substrate.AspectKey(RoleOperatorKey, "description")
 		descVal, descErr := MakeAspectEnvelope(descKey, RoleOperatorKey, "description", "description",
 			map[string]any{"text": "Platform operator role with kernel-meta privileges. " +
 				"Receives CreateMetaVertex/UpdateMetaVertex/TombstoneMetaVertex grants from the kernel " +
@@ -612,7 +612,7 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 
 	// 9. grantedBy links: each meta- + install-permission → operator role.
 	for _, mp := range metaPerms {
-		linkKey := "lnk.permission." + mp.id + ".grantedBy.role." + RoleOperatorID
+		linkKey := substrate.LinkKey("permission", mp.id, "grantedBy", "role", RoleOperatorID)
 		linkVal, linkErr := MakeLinkEnvelope(
 			linkKey,
 			"vtx.permission."+mp.id,
@@ -623,7 +623,7 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		}
 	}
 	for _, mp := range installPerms {
-		linkKey := "lnk.permission." + mp.id + ".grantedBy.role." + RoleOperatorID
+		linkKey := substrate.LinkKey("permission", mp.id, "grantedBy", "role", RoleOperatorID)
 		linkVal, linkErr := MakeLinkEnvelope(
 			linkKey,
 			"vtx.permission."+mp.id,
@@ -730,7 +730,7 @@ func seedPackageInstallDDL(
 		}},
 	}
 	for _, a := range aspects {
-		key := ddlKey + "." + a.name
+		key := substrate.AspectKey(ddlKey, a.name)
 		val, err := MakeAspectEnvelope(key, ddlKey, a.name, a.class, a.data)
 		if err := add(key, val, err); err != nil {
 			return err
@@ -859,34 +859,40 @@ func seedAspectTypeMeta(entries *[]kvEntry, add func(string, []byte, error) erro
 		if err := add(d.key, vtxVal, vtxErr); err != nil {
 			return err
 		}
-		cnVal, cnErr := MakeAspectEnvelope(d.key+".canonicalName", d.key, "canonicalName", "canonicalName",
+		cnKey := substrate.AspectKey(d.key, "canonicalName")
+		cnVal, cnErr := MakeAspectEnvelope(cnKey, d.key, "canonicalName", "canonicalName",
 			map[string]any{"value": d.name})
-		if err := add(d.key+".canonicalName", cnVal, cnErr); err != nil {
+		if err := add(cnKey, cnVal, cnErr); err != nil {
 			return err
 		}
-		descVal, descErr := MakeAspectEnvelope(d.key+".description", d.key, "description", "description",
+		descKey := substrate.AspectKey(d.key, "description")
+		descVal, descErr := MakeAspectEnvelope(descKey, d.key, "description", "description",
 			map[string]any{"text": d.description})
-		if err := add(d.key+".description", descVal, descErr); err != nil {
+		if err := add(descKey, descVal, descErr); err != nil {
 			return err
 		}
-		isVal, isErr := MakeAspectEnvelope(d.key+".inputSchema", d.key, "inputSchema", "inputSchema",
+		isKey := substrate.AspectKey(d.key, "inputSchema")
+		isVal, isErr := MakeAspectEnvelope(isKey, d.key, "inputSchema", "inputSchema",
 			map[string]any{"schema": d.inputSchema})
-		if err := add(d.key+".inputSchema", isVal, isErr); err != nil {
+		if err := add(isKey, isVal, isErr); err != nil {
 			return err
 		}
-		osVal, osErr := MakeAspectEnvelope(d.key+".outputSchema", d.key, "outputSchema", "outputSchema",
+		osKey := substrate.AspectKey(d.key, "outputSchema")
+		osVal, osErr := MakeAspectEnvelope(osKey, d.key, "outputSchema", "outputSchema",
 			map[string]any{"schema": d.outputSchema})
-		if err := add(d.key+".outputSchema", osVal, osErr); err != nil {
+		if err := add(osKey, osVal, osErr); err != nil {
 			return err
 		}
-		fdVal, fdErr := MakeAspectEnvelope(d.key+".fieldDescription", d.key, "fieldDescription", "fieldDescription",
+		fdKey := substrate.AspectKey(d.key, "fieldDescription")
+		fdVal, fdErr := MakeAspectEnvelope(fdKey, d.key, "fieldDescription", "fieldDescription",
 			map[string]any{"fieldDescriptions": d.fieldDescriptions})
-		if err := add(d.key+".fieldDescription", fdVal, fdErr); err != nil {
+		if err := add(fdKey, fdVal, fdErr); err != nil {
 			return err
 		}
-		exVal, exErr := MakeAspectEnvelope(d.key+".examples", d.key, "examples", "examples",
+		exKey := substrate.AspectKey(d.key, "examples")
+		exVal, exErr := MakeAspectEnvelope(exKey, d.key, "examples", "examples",
 			map[string]any{"examples": d.examples})
-		if err := add(d.key+".examples", exVal, exErr); err != nil {
+		if err := add(exKey, exVal, exErr); err != nil {
 			return err
 		}
 	}
@@ -932,7 +938,7 @@ func addLensAspects(entries *[]kvEntry, lensKey string, def LensDefinition) erro
 			}{"output", "output", map[string]any{"descriptor": def.Output}})
 	}
 	for _, a := range aspects {
-		key := lensKey + "." + a.localName
+		key := substrate.AspectKey(lensKey, a.localName)
 		val, err := MakeAspectEnvelope(key, lensKey, a.localName, a.class, a.data)
 		if err != nil {
 			return fmt.Errorf("build lens aspect %q: %w", key, err)
@@ -951,7 +957,7 @@ func addLensAspects(entries *[]kvEntry, lensKey string, def LensDefinition) erro
 	if err != nil {
 		return fmt.Errorf("build lens spec body for %q: %w", lensKey, err)
 	}
-	specKey := lensKey + ".spec"
+	specKey := substrate.AspectKey(lensKey, "spec")
 	specVal, err := MakeAspectEnvelope(specKey, lensKey, "spec", "lensSpec", specBody)
 	if err != nil {
 		return fmt.Errorf("build lens spec aspect %q: %w", specKey, err)

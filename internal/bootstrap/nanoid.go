@@ -434,51 +434,51 @@ func populate(raw PrimordialIDsRaw) error {
 	RoleOperatorID = raw.RoleOperator
 
 	PermCreateMetaVertexID = raw.PermCreateMetaVertex
-	PermCreateMetaVertexKey = "vtx.permission." + PermCreateMetaVertexID
+	PermCreateMetaVertexKey = substrate.VertexKey("permission", PermCreateMetaVertexID)
 	PermUpdateMetaVertexID = raw.PermUpdateMetaVertex
-	PermUpdateMetaVertexKey = "vtx.permission." + PermUpdateMetaVertexID
+	PermUpdateMetaVertexKey = substrate.VertexKey("permission", PermUpdateMetaVertexID)
 	PermTombstoneMetaVertexID = raw.PermTombstoneMetaVertex
-	PermTombstoneMetaVertexKey = "vtx.permission." + PermTombstoneMetaVertexID
+	PermTombstoneMetaVertexKey = substrate.VertexKey("permission", PermTombstoneMetaVertexID)
 
 	InstallPackageDDLID = raw.InstallPackageDDL
-	InstallPackageDDLKey = "vtx.meta." + InstallPackageDDLID
+	InstallPackageDDLKey = substrate.VertexKey("meta", InstallPackageDDLID)
 	UninstallPackageDDLID = raw.UninstallPackageDDL
-	UninstallPackageDDLKey = "vtx.meta." + UninstallPackageDDLID
+	UninstallPackageDDLKey = substrate.VertexKey("meta", UninstallPackageDDLID)
 	PermInstallPackageID = raw.PermInstallPackage
-	PermInstallPackageKey = "vtx.permission." + PermInstallPackageID
+	PermInstallPackageKey = substrate.VertexKey("permission", PermInstallPackageID)
 	PermUninstallPackageID = raw.PermUninstallPackage
-	PermUninstallPackageKey = "vtx.permission." + PermUninstallPackageID
+	PermUninstallPackageKey = substrate.VertexKey("permission", PermUninstallPackageID)
 
 	AspectTypeDescriptionID = raw.AspectTypeDescription
-	AspectTypeDescriptionKey = "vtx.meta." + AspectTypeDescriptionID
+	AspectTypeDescriptionKey = substrate.VertexKey("meta", AspectTypeDescriptionID)
 	AspectTypeInputSchemaID = raw.AspectTypeInputSchema
-	AspectTypeInputSchemaKey = "vtx.meta." + AspectTypeInputSchemaID
+	AspectTypeInputSchemaKey = substrate.VertexKey("meta", AspectTypeInputSchemaID)
 	AspectTypeOutputSchemaID = raw.AspectTypeOutputSchema
-	AspectTypeOutputSchemaKey = "vtx.meta." + AspectTypeOutputSchemaID
+	AspectTypeOutputSchemaKey = substrate.VertexKey("meta", AspectTypeOutputSchemaID)
 	AspectTypeFieldDescriptionID = raw.AspectTypeFieldDescription
-	AspectTypeFieldDescriptionKey = "vtx.meta." + AspectTypeFieldDescriptionID
+	AspectTypeFieldDescriptionKey = substrate.VertexKey("meta", AspectTypeFieldDescriptionID)
 	AspectTypeExamplesID = raw.AspectTypeExamples
-	AspectTypeExamplesKey = "vtx.meta." + AspectTypeExamplesID
+	AspectTypeExamplesKey = substrate.VertexKey("meta", AspectTypeExamplesID)
 
 	// Derive keys.
-	BootstrapOpKey = "vtx.op." + BootstrapOpID
-	BootstrapIdentityKey = "vtx.identity." + BootstrapIdentityID
-	LoomIdentityKey = "vtx.identity." + LoomIdentityID
-	WeaverIdentityKey = "vtx.identity." + WeaverIdentityID
-	BridgeIdentityKey = "vtx.identity." + BridgeIdentityID
-	ObjmgrIdentityKey = "vtx.identity." + ObjmgrIdentityID
-	MetaRootKey = "vtx.meta." + MetaRootID
-	CapabilityLensKey = "vtx.meta." + CapabilityLensID
-	RoleOperatorKey = "vtx.role." + RoleOperatorID
+	BootstrapOpKey = substrate.VertexKey("op", BootstrapOpID)
+	BootstrapIdentityKey = substrate.VertexKey("identity", BootstrapIdentityID)
+	LoomIdentityKey = substrate.VertexKey("identity", LoomIdentityID)
+	WeaverIdentityKey = substrate.VertexKey("identity", WeaverIdentityID)
+	BridgeIdentityKey = substrate.VertexKey("identity", BridgeIdentityID)
+	ObjmgrIdentityKey = substrate.VertexKey("identity", ObjmgrIdentityID)
+	MetaRootKey = substrate.VertexKey("meta", MetaRootID)
+	CapabilityLensKey = substrate.VertexKey("meta", CapabilityLensID)
+	RoleOperatorKey = substrate.VertexKey("role", RoleOperatorID)
 
 	// Admin + service-actor primordial holdsRole links target the operator
 	// role. Identity is the link source (later-arriving vertex per Contract
 	// #1 §1.1); the role pre-exists as the target.
-	BootstrapHoldsRoleLinkKey = "lnk.identity." + BootstrapIdentityID + ".holdsRole.role." + RoleOperatorID
-	LoomHoldsRoleLinkKey = "lnk.identity." + LoomIdentityID + ".holdsRole.role." + RoleOperatorID
-	WeaverHoldsRoleLinkKey = "lnk.identity." + WeaverIdentityID + ".holdsRole.role." + RoleOperatorID
-	BridgeHoldsRoleLinkKey = "lnk.identity." + BridgeIdentityID + ".holdsRole.role." + RoleOperatorID
-	ObjmgrHoldsRoleLinkKey = "lnk.identity." + ObjmgrIdentityID + ".holdsRole.role." + RoleOperatorID
+	BootstrapHoldsRoleLinkKey = substrate.LinkKey("identity", BootstrapIdentityID, "holdsRole", "role", RoleOperatorID)
+	LoomHoldsRoleLinkKey = substrate.LinkKey("identity", LoomIdentityID, "holdsRole", "role", RoleOperatorID)
+	WeaverHoldsRoleLinkKey = substrate.LinkKey("identity", WeaverIdentityID, "holdsRole", "role", RoleOperatorID)
+	BridgeHoldsRoleLinkKey = substrate.LinkKey("identity", BridgeIdentityID, "holdsRole", "role", RoleOperatorID)
+	ObjmgrHoldsRoleLinkKey = substrate.LinkKey("identity", ObjmgrIdentityID, "holdsRole", "role", RoleOperatorID)
 
 	return nil
 }
