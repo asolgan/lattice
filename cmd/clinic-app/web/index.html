@@ -86,12 +86,37 @@
               </div>
               <button type="button" id="hours-save">Save availability</button>
             </details>
+            <details class="inline-add" id="manage-timeoff">
+              <summary>🌴 Manage time-off</summary>
+              <p class="hint">Block the selected provider's date ranges (vacation, holidays, out sick). A booking that overlaps a blackout is rejected, even inside their availability hours. Whole-day ranges, in UTC.</p>
+              <div id="timeoff-list" class="hours-list" aria-live="polite"></div>
+              <div class="field-row">
+                <div class="field">
+                  <label for="timeoff-from">From</label>
+                  <input type="date" id="timeoff-from" />
+                </div>
+                <div class="field">
+                  <label for="timeoff-to">To <span class="opt">(inclusive)</span></label>
+                  <input type="date" id="timeoff-to" />
+                </div>
+                <div class="field">
+                  <label for="timeoff-reason">Reason <span class="opt">(optional)</span></label>
+                  <input type="text" id="timeoff-reason" placeholder="Vacation" />
+                </div>
+                <div class="field hours-add-field">
+                  <label>&nbsp;</label>
+                  <button type="button" id="timeoff-add" class="ghost">＋ Add range</button>
+                </div>
+              </div>
+              <button type="button" id="timeoff-save">Save time-off</button>
+            </details>
           </div>
           <div class="field-row">
             <div class="field">
               <label for="startsAt">Date &amp; time</label>
               <input type="datetime-local" id="startsAt" />
               <p class="hint">Double-booking this provider is rejected, and bookings outside the provider's availability hours (if set, in UTC) are rejected.</p>
+              <p class="hint warn" id="timeoff-warning" hidden></p>
             </div>
             <div class="field">
               <label for="duration">Duration</label>

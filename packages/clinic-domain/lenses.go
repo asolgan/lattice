@@ -102,6 +102,15 @@ RETURN
 // a `.profile` aspect (the `<> null` aspect-presence idiom availableListings
 // uses). The per-row key is the provider key (the IntoKey default); `providerKey`
 // repeats it in the body.
+//
+// timeOff projects the provider's opt-in .timeOff aspect's `ranges` array verbatim
+// (a list of {from, to, reason?} canonical-UTC RFC3339 ranges written by
+// SetProviderTimeOff), null when the provider has declared no blackouts. It is a
+// non-scalar projection — the engine returns the array value, which the read model
+// stores as JSON — so the time-off MANAGER UI can read-modify-write the current
+// ranges (SetProviderTimeOff replaces the whole list) and the booking picker can
+// warn about a blocked date. The op (CreateAppointment / RescheduleAppointment,
+// enforce_time_off) stays the authority; this is the display surface only.
 const clinicProvidersSpec = `MATCH (pr:provider)
 WHERE pr.profile.data.fullName <> null
 RETURN
@@ -109,7 +118,8 @@ RETURN
   pr.key AS providerKey,
   pr.profile.data.fullName AS name,
   pr.profile.data.specialty AS specialty,
-  pr.profile.data.credentials AS credentials`
+  pr.profile.data.credentials AS credentials,
+  pr.timeOff.data.ranges AS timeOff`
 
 // clinicPatientsSpec projects one row per NAMED patient — the roster the clinic FE
 // renders so a person picks who they are (the patient-context switcher) and scopes

@@ -13,14 +13,27 @@ import (
 // unit-tested over.
 type kvGetter func(key string) ([]byte, bool)
 
+// timeOffRange is one date-specific blackout window on a provider's .timeOff
+// aspect (projected verbatim by the clinicProviders lens). From / To are
+// canonical-UTC RFC3339 instants with From < To (the op normalizes them); the
+// time-off manager UI read-modify-writes this list via SetProviderTimeOff.
+type timeOffRange struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Reason string `json:"reason,omitempty"`
+}
+
 // providerRow is one row of the clinic-domain `clinicProviders` lens read model
 // (P5: an application reads the lens projection, never Core KV). The booking UI
-// renders these as the provider picker.
+// renders these as the provider picker; TimeOff carries the provider's declared
+// blackout ranges (null/empty when none) so the manager UI can edit them and the
+// booking picker can warn about a blocked date.
 type providerRow struct {
-	ProviderKey string `json:"providerKey"`
-	Name        string `json:"name"`
-	Specialty   string `json:"specialty"`
-	Credentials string `json:"credentials,omitempty"`
+	ProviderKey string         `json:"providerKey"`
+	Name        string         `json:"name"`
+	Specialty   string         `json:"specialty"`
+	Credentials string         `json:"credentials,omitempty"`
+	TimeOff     []timeOffRange `json:"timeOff,omitempty"`
 }
 
 // computeProviders assembles the provider roster from the `clinicProviders` lens

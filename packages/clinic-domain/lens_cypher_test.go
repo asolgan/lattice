@@ -259,4 +259,35 @@ func TestClinicProviders_RostersNamedProviders(t *testing.T) {
 	require.Equal(t, "Dr. Sam Okafor", v["name"])
 	require.Equal(t, "Cardiology", v["specialty"])
 	require.Equal(t, "MD", v["credentials"])
+	// A provider with no .timeOff aspect projects a null timeOff column.
+	require.Nil(t, v["timeOff"], "timeOff is null when the provider has declared no blackouts")
+}
+
+// TestClinicProviders_ProjectsTimeOffRanges proves the non-scalar timeOff column:
+// the provider's .timeOff aspect's `ranges` array (a list of {from, to, reason})
+// projects verbatim into the read model, so the time-off manager UI can
+// read-modify-write the current blackouts.
+func TestClinicProviders_ProjectsTimeOffRanges(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	prKey := f.vtx(t, "drlee", "provider")
+	f.aspect(t, "drlee", "profile", "providerProfile", map[string]any{"fullName": "Dr. Lee", "specialty": "Dermatology"})
+	f.aspect(t, "drlee", "timeOff", "providerTimeOff", map[string]any{"ranges": []any{
+		map[string]any{"from": "2026-07-01T00:00:00Z", "to": "2026-07-06T00:00:00Z", "reason": "Vacation"},
+		map[string]any{"from": "2026-08-15T00:00:00Z", "to": "2026-08-16T00:00:00Z"},
+	}})
+
+	rows := f.project(t, clinicProvidersSpec)
+	v := rowByKey(rows, prKey)
+	require.NotNil(t, v)
+	ranges, ok := v["timeOff"].([]any)
+	require.True(t, ok, "timeOff projects as an array, got %T", v["timeOff"])
+	require.Len(t, ranges, 2)
+	first, ok := ranges[0].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "2026-07-01T00:00:00Z", first["from"])
+	require.Equal(t, "2026-07-06T00:00:00Z", first["to"])
+	require.Equal(t, "Vacation", first["reason"])
 }

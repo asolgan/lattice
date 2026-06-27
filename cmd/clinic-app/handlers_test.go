@@ -25,7 +25,8 @@ func fakeKV(entries map[string]any) (keys []string, get kvGetter) {
 
 func TestComputeProviders_SortsAndSkips(t *testing.T) {
 	keys, get := fakeKV(map[string]any{
-		"vtx.provider.B": map[string]any{"providerKey": "vtx.provider.B", "name": "Dr. Sam Okafor", "specialty": "Cardiology", "credentials": "MD"},
+		"vtx.provider.B": map[string]any{"providerKey": "vtx.provider.B", "name": "Dr. Sam Okafor", "specialty": "Cardiology", "credentials": "MD",
+			"timeOff": []any{map[string]any{"from": "2026-07-01T00:00:00Z", "to": "2026-07-06T00:00:00Z", "reason": "Vacation"}}},
 		"vtx.provider.A": map[string]any{"providerKey": "vtx.provider.A", "name": "Dr. Lee", "specialty": "Dermatology"},
 		// A tombstoned projection row with no providerKey must be skipped.
 		"vtx.provider.X": map[string]any{"name": "Ghost"},
@@ -39,6 +40,14 @@ func TestComputeProviders_SortsAndSkips(t *testing.T) {
 	}
 	if rows[1].Credentials != "MD" {
 		t.Fatalf("credentials lost: %+v", rows[1])
+	}
+	// The provider with no timeOff projects an empty slice; the other round-trips
+	// its blackout range (the time-off manager reads this to seed its draft).
+	if len(rows[0].TimeOff) != 0 {
+		t.Fatalf("expected no time-off for Dr. Lee, got %+v", rows[0].TimeOff)
+	}
+	if len(rows[1].TimeOff) != 1 || rows[1].TimeOff[0].Reason != "Vacation" || rows[1].TimeOff[0].From != "2026-07-01T00:00:00Z" {
+		t.Fatalf("time-off range lost: %+v", rows[1].TimeOff)
 	}
 }
 

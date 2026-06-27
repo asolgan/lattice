@@ -21,6 +21,8 @@ const state = {
   schedSelected: null, // appointmentKey shown in the Schedule detail panel
   hoursDraft: [], // SetProviderHours windows being composed for the selected provider
   hoursProvider: null, // the provider key the draft is scoped to (reset on change)
+  timeOffDraft: [], // SetProviderTimeOff ranges being edited (seeded from the provider's current ranges)
+  timeOffProvider: null, // the provider key the time-off draft is scoped to (re-seeded on change)
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -402,6 +404,180 @@ async function saveProviderHours() {
     toast("Could not set hours: " + e.message, "err");
   } finally {
     btn.disabled = false;
+  }
+}
+
+// ---- Provider time-off (SetProviderTimeOff) ----
+//
+// Date-specific blackout ranges on top of the recurring .hours. Unlike the hours
+// editor, this is READ-MODIFY-WRITE: the draft is SEEDED from the provider's
+// currently-projected .timeOff ranges (the clinicProviders lens now carries them),
+// so Add / Remove edits the live set and Save replaces the whole list via
+// SetProviderTimeOff. Ranges are whole-day, UTC, half-open [from, to): a single
+// blocked day D is stored {from: D 00:00Z, to: (D+1) 00:00Z}.
+
+function providerByKey(key) {
+  return state.providers.find((p) => p.providerKey === key) || null;
+}
+
+// dayStartUTC turns a "YYYY-MM-DD" date input into the canonical UTC RFC3339
+// instant at that day's start (00:00:00Z).
+function dayStartUTC(dateStr) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr || "")) return "";
+  return dateStr + "T00:00:00Z";
+}
+
+// nextDayStartUTC turns a "YYYY-MM-DD" into the start of the FOLLOWING day in UTC —
+// the exclusive end of a whole-day block (so a To of D blocks all of day D).
+function nextDayStartUTC(dateStr) {
+  const start = dayStartUTC(dateStr);
+  if (!start) return "";
+  const d = new Date(start);
+  if (isNaN(d)) return "";
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+// timeOffRangeLabel renders a stored {from, to} (to is the exclusive next-day start)
+// as an inclusive human range: "Jul 1" for a single day, "Jul 1 – Jul 5" for a span.
+function timeOffRangeLabel(r) {
+  const from = new Date(r.from);
+  const toExcl = new Date(r.to);
+  if (isNaN(from) || isNaN(toExcl)) return `${r.from} → ${r.to}`;
+  const incl = new Date(toExcl.getTime() - 86400000); // exclusive end − 1 day = inclusive last day
+  const opts = { timeZone: "UTC", month: "short", day: "numeric", year: "numeric" };
+  const f = from.toLocaleDateString(undefined, opts);
+  const t = incl.toLocaleDateString(undefined, opts);
+  return f === t ? f : `${f} – ${t}`;
+}
+
+// timeOffDraftForSelectedProvider returns the Book form's selected provider key,
+// re-seeding the draft from that provider's currently-projected ranges whenever the
+// selection changed (so one provider's edits can't be saved onto another).
+function timeOffDraftForSelectedProvider() {
+  const prov = $("#provider").value;
+  if (prov !== state.timeOffProvider) {
+    state.timeOffProvider = prov;
+    const p = providerByKey(prov);
+    // Clone so editing the draft doesn't mutate the loaded provider row.
+    state.timeOffDraft = p && Array.isArray(p.timeOff)
+      ? p.timeOff.map((r) => ({ from: r.from, to: r.to, reason: r.reason }))
+      : [];
+  }
+  return prov;
+}
+
+function renderTimeOffDraft() {
+  const list = $("#timeoff-list");
+  if (!list) return;
+  list.innerHTML = "";
+  if (!state.timeOffDraft.length) {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "No time-off — this provider has no blocked dates.";
+    list.appendChild(p);
+    return;
+  }
+  state.timeOffDraft.forEach((r, i) => {
+    const row = document.createElement("div");
+    row.className = "hours-row";
+    const label = document.createElement("span");
+    label.textContent = timeOffRangeLabel(r) + (r.reason ? ` · ${r.reason}` : "");
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "ghost danger";
+    rm.textContent = "Remove";
+    rm.addEventListener("click", () => {
+      state.timeOffDraft.splice(i, 1);
+      renderTimeOffDraft();
+    });
+    row.appendChild(label);
+    row.appendChild(rm);
+    list.appendChild(row);
+  });
+}
+
+function addTimeOffRange() {
+  if (!timeOffDraftForSelectedProvider()) {
+    toast("Select a provider first.", "err");
+    return;
+  }
+  const fromStr = $("#timeoff-from").value;
+  const toStr = $("#timeoff-to").value;
+  if (!fromStr || !toStr) {
+    toast("Pick a From and To date.", "err");
+    return;
+  }
+  if (toStr < fromStr) {
+    toast("The To date must be on or after the From date.", "err");
+    return;
+  }
+  const from = dayStartUTC(fromStr);
+  const to = nextDayStartUTC(toStr);
+  if (!from || !to) {
+    toast("Those dates are not valid.", "err");
+    return;
+  }
+  const range = { from, to };
+  const reason = $("#timeoff-reason").value.trim();
+  if (reason) range.reason = reason;
+  state.timeOffDraft.push(range);
+  $("#timeoff-reason").value = "";
+  renderTimeOffDraft();
+}
+
+async function saveProviderTimeOff() {
+  const provider = timeOffDraftForSelectedProvider();
+  if (!provider) {
+    toast("Select a provider first.", "err");
+    return;
+  }
+  const btn = $("#timeoff-save");
+  btn.disabled = true;
+  try {
+    // SetProviderTimeOff replaces the whole .timeOff aspect; ranges=[] clears it.
+    // The op re-normalizes from/to to canonical UTC and validates from < to.
+    const reply = await submitOp("SetProviderTimeOff", "provider",
+      { providerKey: provider, ranges: state.timeOffDraft }, [provider]);
+    const msg = rejectionMessage(reply);
+    if (msg) {
+      toast("Could not set time-off — " + msg, "err");
+      return;
+    }
+    const n = state.timeOffDraft.length;
+    toast(n ? `Time-off saved (${n} range${n === 1 ? "" : "s"}).` : "Time-off cleared (no blocked dates).", "ok");
+    $("#manage-timeoff").open = false;
+    // Refresh the roster so the persisted ranges back the booking warning + a
+    // re-open (the lens may take a moment to project; selection is preserved).
+    loadProviders();
+  } catch (e) {
+    toast("Could not set time-off: " + e.message, "err");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// refreshTimeOffWarning shows a soft heads-up under the Date & time field when the
+// chosen start falls inside the selected provider's projected time-off. The op
+// (ProviderUnavailable) is the authority; this just warns before submit.
+function refreshTimeOffWarning() {
+  const el = $("#timeoff-warning");
+  if (!el) return;
+  el.hidden = true;
+  el.textContent = "";
+  const p = providerByKey($("#provider").value);
+  const when = $("#startsAt").value;
+  if (!p || !Array.isArray(p.timeOff) || !p.timeOff.length || !when) return;
+  const start = new Date(toRFC3339(when));
+  if (isNaN(start)) return;
+  const hit = p.timeOff.find((r) => {
+    const from = new Date(r.from);
+    const to = new Date(r.to);
+    return !isNaN(from) && !isNaN(to) && start >= from && start < to;
+  });
+  if (hit) {
+    el.textContent = `Heads up: ${p.name} is on time-off then (${timeOffRangeLabel(hit)}). The booking will be rejected.`;
+    el.hidden = false;
   }
 }
 
@@ -1185,6 +1361,7 @@ function init() {
   $("#startsAt").addEventListener("focus", () => {
     $("#startsAt").min = nowLocalInputValue();
   });
+  $("#startsAt").addEventListener("change", refreshTimeOffWarning);
 
   $("#patient").addEventListener("change", (e) => setPatient(e.target.value));
   $("#new-patient").addEventListener("click", openNewPatient);
@@ -1202,12 +1379,17 @@ function init() {
 
   $("#provider").addEventListener("change", () => {
     refreshBookEnabled();
-    // A provider change invalidates the availability draft (it is scoped per
-    // provider); re-render so an open editor reflects the new provider's empty draft.
+    // A provider change invalidates the availability + time-off drafts (each is
+    // scoped per provider); re-render so an open editor reflects the new provider.
     if ($("#manage-hours").open) {
       hoursDraftForSelectedProvider();
       renderHoursDraft();
     }
+    if ($("#manage-timeoff").open) {
+      timeOffDraftForSelectedProvider();
+      renderTimeOffDraft();
+    }
+    refreshTimeOffWarning();
   });
   $("#add-provider-submit").addEventListener("click", submitAddProvider);
   $("#manage-hours").addEventListener("toggle", () => {
@@ -1218,6 +1400,14 @@ function init() {
   });
   $("#hours-add").addEventListener("click", addHoursWindow);
   $("#hours-save").addEventListener("click", saveProviderHours);
+  $("#manage-timeoff").addEventListener("toggle", () => {
+    if ($("#manage-timeoff").open) {
+      timeOffDraftForSelectedProvider();
+      renderTimeOffDraft();
+    }
+  });
+  $("#timeoff-add").addEventListener("click", addTimeOffRange);
+  $("#timeoff-save").addEventListener("click", saveProviderTimeOff);
   $("#book-form").addEventListener("submit", submitBook);
 
   $("#tab-book").addEventListener("click", () => showView("book"));
