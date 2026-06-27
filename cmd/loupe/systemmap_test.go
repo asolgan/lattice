@@ -107,6 +107,38 @@ func TestComputeSystemMapAllPresentGreen(t *testing.T) {
 	}
 }
 
+// A component self-reporting unhealthy (Contract #5 §5.4) drives the map node to
+// "unhealthy" with its issues, and rolls the overall up to red.
+func TestComputeSystemMapUnhealthyComponentRed(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	docs := map[string]map[string]any{}
+	for _, dc := range declaredComponents {
+		docs["health."+dc.id+".inst"] = map[string]any{"component": dc.id, "instance": "inst", "heartbeatAt": now}
+	}
+	docs["health."+refractorID+".inst"] = map[string]any{
+		"component": refractorID, "instance": "inst", "heartbeatAt": now,
+		"status": "unhealthy",
+		"issues": []any{map[string]any{"severity": "error", "code": "CapabilityLensPaused", "message": "auth lens paused"}},
+	}
+	keys := make([]string, 0, len(docs))
+	for k := range docs {
+		keys = append(keys, k)
+	}
+	read := func(k string) (map[string]any, bool) { d, ok := docs[k]; return d, ok }
+
+	m := computeSystemMap(keys, read, nil, time.Minute)
+	if m.Overall != "red" {
+		t.Errorf("overall = %q, want red (unhealthy component)", m.Overall)
+	}
+	refr := nodesByID(m)[refractorID]
+	if refr.Status != "unhealthy" {
+		t.Errorf("refractor status = %q, want unhealthy", refr.Status)
+	}
+	if len(refr.Issues) != 1 || refr.Issues[0] != "[error] CapabilityLensPaused: auth lens paused" {
+		t.Errorf("refractor issues = %v, want the §5.5 line", refr.Issues)
+	}
+}
+
 func TestComputeSystemMapStaleLensYellow(t *testing.T) {
 	docs := map[string]map[string]any{"LensId00000000000000": {"status": "paused"}}
 	// All declared components present + fresh so only the lens can move the rollup.

@@ -94,6 +94,120 @@ func componentHeartbeat(doc map[string]any) (time.Time, bool) {
 	return time.Time{}, false
 }
 
+// Severity levels shared by computeHealth and computeSystemMap: a component's
+// rendered status maps to one of these so the two rollups agree.
+const (
+	sevGreen  = 0
+	sevYellow = 1
+	sevRed    = 2
+)
+
+// componentIssues flattens a Contract #5 §5.5 issues[] array (objects with
+// code/severity/message/since) into readable "[severity] code: message" lines,
+// in document order, and reports the worst severity seen (sevGreen if none,
+// sevYellow for a "warning", sevRed for an "error" — matching §5.3, where an
+// error issue means the component cannot fulfill its primary responsibility).
+// Malformed or empty entries are skipped.
+func componentIssues(doc map[string]any) (lines []string, sev int) {
+	raw, ok := doc["issues"].([]any)
+	if !ok {
+		return nil, sevGreen
+	}
+	lines = make([]string, 0, len(raw))
+	for _, e := range raw {
+		m, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		code, _ := m["code"].(string)
+		severity, _ := m["severity"].(string)
+		message, _ := m["message"].(string)
+		switch severity {
+		case "error":
+			if sev < sevRed {
+				sev = sevRed
+			}
+		case "warning":
+			if sev < sevYellow {
+				sev = sevYellow
+			}
+		}
+		var b strings.Builder
+		if severity != "" {
+			b.WriteString("[" + severity + "] ")
+		}
+		b.WriteString(code)
+		if message != "" {
+			if code != "" {
+				b.WriteString(": ")
+			}
+			b.WriteString(message)
+		}
+		if s := b.String(); s != "" {
+			lines = append(lines, s)
+		}
+	}
+	return lines, sev
+}
+
+// componentLiveness derives a component card/node's rendered status, freshness
+// string, issue lines, and severity level (sevGreen/sevYellow/sevRed) from a
+// Contract #5 heartbeat doc. It fuses three signals, taking the worst:
+//   - heartbeat freshness Loupe computes itself (a component that died without
+//     shutting down shows "stale" even if it last self-reported healthy);
+//   - the self-reported §5.4 status ("degraded" → yellow, "unhealthy" → red);
+//   - the worst §5.5 issue severity (an "error" issue → red, "warning" → yellow)
+//     — so a component that emits error issues but a stale/lagging status field
+//     is still surfaced honestly rather than rendered falsely green.
+//
+// A missing/unrecognized status on a fresh heartbeat with no issues stays
+// "green" (backward-compatible with components that don't yet emit the anomaly
+// channel). The status label tracks the final level: red → "unhealthy",
+// otherwise stale → "stale", otherwise yellow → "degraded", else "green".
+func componentLiveness(doc map[string]any, staleThreshold time.Duration) (status, fresh string, issues []string, level int) {
+	var issueSev int
+	issues, issueSev = componentIssues(doc)
+
+	ts, ok := componentHeartbeat(doc)
+	if !ok {
+		level = sevYellow
+		if issueSev > level {
+			level = issueSev
+		}
+		return "unknown", "-", issues, level
+	}
+	fresh = freshness(ts)
+	stale := time.Since(ts) > staleThreshold
+
+	switch reported, _ := doc["status"].(string); reported {
+	case "unhealthy":
+		level = sevRed
+	case "degraded":
+		level = sevYellow
+	}
+	if stale {
+		issues = append([]string{"heartbeat older than " + staleThreshold.String()}, issues...)
+		if level < sevYellow {
+			level = sevYellow
+		}
+	}
+	if issueSev > level {
+		level = issueSev
+	}
+
+	switch {
+	case level == sevRed:
+		status = "unhealthy"
+	case stale:
+		status = "stale"
+	case level == sevYellow:
+		status = "degraded"
+	default:
+		status = "green"
+	}
+	return status, fresh, issues, level
+}
+
 // computeHealth evaluates every Health KV entry into component cards plus an
 // overall rollup (green/yellow/red). readEntry returns the decoded JSON doc for
 // a key (and false to skip). resolveLens maps a lens reporter id to its
@@ -137,20 +251,9 @@ func computeHealth(
 			if inst, ok := doc["instance"].(string); ok && inst != "" {
 				c.Detail = inst
 			}
-			if ts, ok := componentHeartbeat(doc); ok {
-				c.Freshness = freshness(ts)
-				if time.Since(ts) > staleThreshold {
-					c.Status = "stale"
-					c.Issues = append(c.Issues, "heartbeat older than "+staleThreshold.String())
-					worse(yellow)
-				} else {
-					c.Status = "green"
-				}
-			} else {
-				c.Status = "unknown"
-				c.Freshness = "-"
-				worse(yellow)
-			}
+			var level int
+			c.Status, c.Freshness, c.Issues, level = componentLiveness(doc, staleThreshold)
+			worse(level)
 			components = append(components, c)
 
 		case kindLens:

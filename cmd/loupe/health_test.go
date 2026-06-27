@@ -111,3 +111,131 @@ func TestComputeHealthMissingBootstrapIsRed(t *testing.T) {
 		t.Errorf("overall = %q, want red (no bootstrap marker)", got.Overall)
 	}
 }
+
+// componentLiveness fuses Loupe-computed heartbeat freshness with the
+// Contract #5 §5.4 status + §5.5 issues[] anomaly channel.
+func TestComponentLiveness(t *testing.T) {
+	fresh := time.Now().UTC().Format(time.RFC3339)
+	old := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	issue := func(sev, code, msg string) map[string]any {
+		return map[string]any{"severity": sev, "code": code, "message": msg, "since": old}
+	}
+
+	cases := []struct {
+		name       string
+		doc        map[string]any
+		wantStatus string
+		wantLevel  int
+		wantIssues []string
+	}{
+		{
+			name:       "fresh healthy → green, no issues",
+			doc:        map[string]any{"heartbeatAt": fresh, "status": "healthy", "issues": []any{}},
+			wantStatus: "green", wantLevel: sevGreen, wantIssues: nil,
+		},
+		{
+			name:       "missing status on fresh heartbeat stays green (back-compat)",
+			doc:        map[string]any{"heartbeatAt": fresh},
+			wantStatus: "green", wantLevel: sevGreen, wantIssues: nil,
+		},
+		{
+			name:       "degraded → yellow, warning issue surfaced",
+			doc:        map[string]any{"heartbeatAt": fresh, "status": "degraded", "issues": []any{issue("warning", "CapabilityLensLagging", "lag over threshold")}},
+			wantStatus: "degraded", wantLevel: sevYellow,
+			wantIssues: []string{"[warning] CapabilityLensLagging: lag over threshold"},
+		},
+		{
+			name:       "unhealthy → red, error issue surfaced",
+			doc:        map[string]any{"heartbeatAt": fresh, "status": "unhealthy", "issues": []any{issue("error", "CapabilityLensPaused", "auth lens paused")}},
+			wantStatus: "unhealthy", wantLevel: sevRed,
+			wantIssues: []string{"[error] CapabilityLensPaused: auth lens paused"},
+		},
+		{
+			name:       "reported healthy but error issue escalates to unhealthy (Weaver self-report inconsistency)",
+			doc:        map[string]any{"heartbeatAt": fresh, "status": "healthy", "issues": []any{issue("error", "TemplateDataError", "missing subject")}},
+			wantStatus: "unhealthy", wantLevel: sevRed,
+			wantIssues: []string{"[error] TemplateDataError: missing subject"},
+		},
+		{
+			name:       "reported healthy but warning issue escalates to degraded",
+			doc:        map[string]any{"heartbeatAt": fresh, "status": "healthy", "issues": []any{issue("warning", "SlowProjection", "lag rising")}},
+			wantStatus: "degraded", wantLevel: sevYellow,
+			wantIssues: []string{"[warning] SlowProjection: lag rising"},
+		},
+		{
+			name:       "stale heartbeat overrides reported healthy, still surfaces last-known issues",
+			doc:        map[string]any{"heartbeatAt": old, "status": "healthy", "issues": []any{}},
+			wantStatus: "stale", wantLevel: sevYellow,
+			wantIssues: []string{"heartbeat older than 1m0s"},
+		},
+		{
+			name:       "stale + reported unhealthy keeps red label and notes staleness",
+			doc:        map[string]any{"heartbeatAt": old, "status": "unhealthy", "issues": []any{issue("error", "X", "boom")}},
+			wantStatus: "unhealthy", wantLevel: sevRed,
+			wantIssues: []string{"heartbeat older than 1m0s", "[error] X: boom"},
+		},
+		{
+			name:       "no heartbeat → unknown",
+			doc:        map[string]any{"status": "healthy"},
+			wantStatus: "unknown", wantLevel: sevYellow, wantIssues: nil,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status, _, issues, level := componentLiveness(tc.doc, time.Minute)
+			if status != tc.wantStatus {
+				t.Errorf("status = %q, want %q", status, tc.wantStatus)
+			}
+			if level != tc.wantLevel {
+				t.Errorf("level = %d, want %d", level, tc.wantLevel)
+			}
+			if len(issues) != len(tc.wantIssues) {
+				t.Fatalf("issues = %v, want %v", issues, tc.wantIssues)
+			}
+			for i := range issues {
+				if issues[i] != tc.wantIssues[i] {
+					t.Errorf("issues[%d] = %q, want %q", i, issues[i], tc.wantIssues[i])
+				}
+			}
+		})
+	}
+}
+
+// computeHealth must roll the overall up to red when a component self-reports
+// unhealthy (previously it only ever reached yellow on staleness).
+func TestComputeHealthUnhealthyComponentRollsToRed(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	docs := map[string]map[string]any{
+		"health.bootstrap.complete": {},
+		"health.refractor.refr-1": {
+			"component": "refractor", "instance": "refr-1", "heartbeatAt": now,
+			"status": "unhealthy",
+			"issues": []any{map[string]any{"severity": "error", "code": "CapabilityLensPaused", "message": "auth lens paused"}},
+		},
+	}
+	keys := make([]string, 0, len(docs))
+	for k := range docs {
+		keys = append(keys, k)
+	}
+	read := func(k string) (map[string]any, bool) { d, ok := docs[k]; return d, ok }
+	got := computeHealth(keys, read, nil, time.Minute)
+	if got.Overall != "red" {
+		t.Errorf("overall = %q, want red (unhealthy component)", got.Overall)
+	}
+	var refr *healthComponent
+	for i := range got.Components {
+		if got.Components[i].Name == "refractor" {
+			refr = &got.Components[i]
+		}
+	}
+	if refr == nil {
+		t.Fatalf("refractor card missing: %+v", got.Components)
+	}
+	if refr.Status != "unhealthy" {
+		t.Errorf("refractor status = %q, want unhealthy", refr.Status)
+	}
+	if len(refr.Issues) != 1 || refr.Issues[0] != "[error] CapabilityLensPaused: auth lens paused" {
+		t.Errorf("refractor issues = %v, want the §5.5 line", refr.Issues)
+	}
+}

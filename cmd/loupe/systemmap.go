@@ -126,6 +126,7 @@ func computeSystemMap(
 		freshness string
 		status    string
 		issues    []string
+		level     int
 	}
 	beats := make(map[string]beat)
 	lensNodes := make([]mapNode, 0)
@@ -142,18 +143,7 @@ func computeSystemMap(
 			if inst, ok := doc["instance"].(string); ok {
 				b.instance = inst
 			}
-			if ts, ok := componentHeartbeat(doc); ok {
-				b.freshness = freshness(ts)
-				if time.Since(ts) > staleThreshold {
-					b.status = "stale"
-					b.issues = append(b.issues, "heartbeat older than "+staleThreshold.String())
-				} else {
-					b.status = "green"
-				}
-			} else {
-				b.status = "unknown"
-				b.freshness = "-"
-			}
+			b.status, b.freshness, b.issues, b.level = componentLiveness(doc, staleThreshold)
 			beats[group] = b
 
 		case kindLens:
@@ -188,9 +178,7 @@ func computeSystemMap(
 			node.Detail = b.instance
 			node.Freshness = b.freshness
 			node.Issues = b.issues
-			if b.status != "green" {
-				worse(yellow)
-			}
+			worse(b.level)
 		} else {
 			node.Status = "absent"
 			node.Freshness = "-"

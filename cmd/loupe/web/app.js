@@ -213,7 +213,7 @@ async function loadHealth() {
     card.appendChild(meta);
     if (c.issues && c.issues.length) {
       const box = el("div", "card-issues");
-      c.issues.forEach((i) => box.appendChild(el("div", "card-issue", i)));
+      c.issues.forEach((i) => box.appendChild(el("div", issueClass(i), i)));
       card.appendChild(box);
     }
     cards.appendChild(card);
@@ -583,7 +583,14 @@ const refractorId = "refractor"; // the sole lens parent (see systemmap.go)
 // class that drives its color. Unknown statuses fall back to a neutral dot.
 const componentStatusClass = {
   green: "green", stale: "stale", absent: "absent", unknown: "unknown",
+  degraded: "yellow", unhealthy: "red",
 };
+
+// issueClass colors a flattened "[severity] code: message" issue line: an
+// [error] line is red, everything else (warnings, stale notes) stays yellow.
+function issueClass(text) {
+  return /^\[error\]/.test(text) ? "card-issue bad" : "card-issue";
+}
 const lensDotClass = {
   active: "green", yellow: "yellow", paused: "yellow", rebuilding: "yellow", unknown: "dim",
 };
@@ -681,7 +688,11 @@ function setSysmapRollup(data) {
   const healthy = new Set(["green", "active", "present"]);
   if (overall === "red") {
     const absent = nodes.filter((n) => n.status === "absent").length;
-    summary.textContent = absent + " component(s) absent.";
+    const unhealthy = nodes.filter((n) => n.status === "unhealthy").length;
+    const parts = [];
+    if (absent) parts.push(absent + " absent");
+    if (unhealthy) parts.push(unhealthy + " unhealthy");
+    summary.textContent = (parts.length ? parts.join(", ") : "issues detected") + ".";
     if (stage) stage.classList.add("sysmap-red");
   } else if (overall === "yellow") {
     const degraded = nodes.filter((n) => !healthy.has(n.status)).length;
@@ -783,10 +794,14 @@ function buildSysmapNode(n) {
     const cls = componentStatusClass[n.status] || "unknown";
     if (cls === "absent") node.classList.add("absent");
     if (cls === "stale") node.classList.add("stale");
+    if (n.status === "degraded") node.classList.add("degraded");
+    if (n.status === "unhealthy") node.classList.add("unhealthy");
     const head = el("div", "sysmap-node-head");
     head.appendChild(el("span", "sysmap-dot " + cls));
     head.appendChild(el("span", "sysmap-label", n.label));
     if (n.status === "stale") head.appendChild(el("span", "sysmap-tag", "stale"));
+    if (n.status === "degraded") head.appendChild(el("span", "sysmap-tag warn", "degraded"));
+    if (n.status === "unhealthy") head.appendChild(el("span", "sysmap-tag bad", "unhealthy"));
     if (n.issues && n.issues.length) head.appendChild(el("span", "sysmap-tag warn", "⚠ " + n.issues.length));
     node.appendChild(head);
     if (n.detail) {
@@ -848,7 +863,7 @@ function showSysmapTip(n, evt) {
   line("status", n.status);
   if (n.detail) line("detail", n.detail);
   if (n.freshness) line("freshness", n.freshness);
-  (n.issues || []).forEach((i) => tip.appendChild(el("div", "sysmap-issue", i)));
+  (n.issues || []).forEach((i) => tip.appendChild(el("div", /^\[error\]/.test(i) ? "sysmap-issue bad" : "sysmap-issue", i)));
   if (n.kind === "lens") {
     const kv = el("a", "sysmap-tip-kv", "view in Core KV");
     kv.addEventListener("click", (e) => {

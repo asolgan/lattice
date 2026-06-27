@@ -219,7 +219,8 @@ pre {
 .card.yellow { border-left-color: var(--yellow); }
 .card.red { border-left-color: var(--red); }
 .card.active { border-left-color: var(--green); }
-.card.stale, .card.unknown, .card.paused, .card.rebuilding { border-left-color: var(--yellow); }
+.card.stale, .card.unknown, .card.paused, .card.rebuilding, .card.degraded { border-left-color: var(--yellow); }
+.card.unhealthy { border-left-color: var(--red); }
 .card-key { font-size: 13px; font-weight: 600; word-break: break-word; margin-bottom: 2px; display: flex; align-items: center; gap: 8px; }
 .card-group { font-size: 10px; font-weight: 400; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; }
 .card-sub { font-family: var(--mono); font-size: 11px; color: var(--text-dim); word-break: break-all; margin-bottom: 6px; }
@@ -227,6 +228,7 @@ pre {
 .card-status { font-weight: 600; }
 .card-issues { margin-top: 8px; }
 .card-issue { color: var(--yellow); font-size: 12px; font-family: var(--mono); }
+.card-issue.bad { color: var(--red); }
 
 .rollup { font-weight: 600; padding: 2px 10px; border-radius: 10px; font-size: 12px; text-transform: uppercase; }
 .rollup.green { background: rgba(76,195,138,0.15); color: var(--green); }
@@ -430,7 +432,9 @@ table.grid td { font-family: var(--mono); }
   width: 180px;
   cursor: pointer;
 }
-.sysmap-node.component.stale { border: 1px solid var(--yellow); border-left-width: 3px; border-left-color: var(--yellow); }
+.sysmap-node.component.stale,
+.sysmap-node.component.degraded { border: 1px solid var(--yellow); border-left-width: 3px; border-left-color: var(--yellow); }
+.sysmap-node.component.unhealthy { border: 1px solid var(--red); border-left-width: 3px; border-left-color: var(--red); }
 .sysmap-node.component.absent {
   border: 1px dashed var(--red);
   opacity: 0.55;
@@ -469,6 +473,7 @@ table.grid td { font-family: var(--mono); }
 
 .sysmap-tag { font-size: 10px; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--text-dim); flex-shrink: 0; }
 .sysmap-tag.warn { color: var(--yellow); border-color: var(--yellow); }
+.sysmap-tag.bad { color: var(--red); border-color: var(--red); }
 
 .sysmap-shelf {
   position: absolute;
@@ -502,6 +507,7 @@ table.grid td { font-family: var(--mono); }
 .sysmap-tip-line { display: flex; gap: 8px; }
 .sysmap-tip-k { color: var(--text-dim); min-width: 64px; }
 .sysmap-issue { color: var(--yellow); margin-top: 2px; word-break: break-word; }
+.sysmap-issue.bad { color: var(--red); }
 .sysmap-tip-kv { display: inline-block; margin-top: 6px; color: var(--accent); cursor: pointer; }
 
 /* Tasks inbox — reuses the .card family; just spacing + the complete action. */
