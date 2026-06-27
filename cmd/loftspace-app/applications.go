@@ -67,6 +67,7 @@ type applicationRow struct {
 	TermsMoveInDate    string   `json:"termsMoveInDate"`
 	TermsLeaseTerm     *float64 `json:"termsLeaseTermMonths"`
 	TermsRequestedRent *float64 `json:"termsRequestedRent"`
+	SignedAt           string   `json:"signedAt"`
 	FreshUntil         string   `json:"freshUntil"`
 }
 

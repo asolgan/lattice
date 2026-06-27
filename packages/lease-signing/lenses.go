@@ -48,7 +48,7 @@ func Lenses() []pkgmgr.LensSpec {
 			Output: &pkgmgr.OutputDescriptorSpec{
 				AnchorType:       "leaseapp",
 				OutputKeyPattern: "leaseApplicationComplete.{actorSuffix}",
-				BodyColumns:      []string{"violating", "missing_onboarding", "missing_bgcheck", "missing_payment", "missing_signature", "missing_listingLeased", "missing_decision", "applicantApproved", "landlordDecision", "landlordApproved", "landlordDeclined", "applicant", "entityKey", "freshUntil", "inflight_bgcheck", "inflight_payment", "declined_bgcheck", "declined_payment", "declined", "maxretries_bgcheck", "maxretries_payment", "unitKey", "unitAddress", "unitCity", "unitRegion", "unitRent", "unitCurrency", "unitBedrooms", "unitBathrooms", "unitLeaseTermMonths", "unitAvailableFrom", "unitStatus", "termsMoveInDate", "termsLeaseTermMonths", "termsRequestedRent"},
+				BodyColumns:      []string{"violating", "missing_onboarding", "missing_bgcheck", "missing_payment", "missing_signature", "missing_listingLeased", "missing_decision", "applicantApproved", "landlordDecision", "landlordApproved", "landlordDeclined", "applicant", "entityKey", "freshUntil", "signedAt", "inflight_bgcheck", "inflight_payment", "declined_bgcheck", "declined_payment", "declined", "maxretries_bgcheck", "maxretries_payment", "unitKey", "unitAddress", "unitCity", "unitRegion", "unitRent", "unitCurrency", "unitBedrooms", "unitBathrooms", "unitLeaseTermMonths", "unitAvailableFrom", "unitStatus", "termsMoveInDate", "termsLeaseTermMonths", "termsRequestedRent"},
 				EmptyBehavior:    "delete",
 				KeyColumn:        "entityId",
 				Freshness:        "auto",
@@ -110,6 +110,13 @@ func Lenses() []pkgmgr.LensSpec {
 // columns). `unit` is required at CreateLeaseApplication, so there is no
 // missing_unit gap (§3 D5). appliesToUnit is 0..1, so these stay scalar and
 // one-row-per-anchor holds.
+//
+// signedAt (the .signature aspect's signedAt) is projected as a read-only scalar
+// alongside missing_signature: it carries the execution date the applicant FE
+// stamps onto the produced signed-lease artifact (the deterministic, idempotently
+// attached executed-lease document) and renders as "Signed on <date>". Like the
+// terms columns it feeds no gap predicate (missing_signature already derives from
+// signedAt = null) — a null projects null.
 //
 // LANDLORD-GATED LISTING-LEASED CONVERGENCE — the human decision gates the lease.
 //
@@ -335,6 +342,7 @@ RETURN
   termsLeaseTermMonths,
   termsRequestedRent,
   freshUntil,
+  signedAt,
   landlordDecision,
   (ssnVal = null)        AS missing_onboarding,
   (freshBgComplete = 0)  AS missing_bgcheck,

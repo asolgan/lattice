@@ -642,20 +642,37 @@ function renderApplicationCard(row, highlight) {
   const terms = renderLeaseTermsPanel(row);
   if (terms) card.append(terms);
 
+  const actions = document.createElement("div");
+  actions.className = "card-actions";
+
+  // Signed-lease download: once the lease is signed, the executed lease is a
+  // produced artifact (a deterministic summary of the agreed terms, stamped with
+  // the signature date). The GET streams it on demand so the link never waits on
+  // object-store projection lag; the durable attach is produced on signing.
+  if (!row.missing_signature) {
+    const lease = document.createElement("a");
+    lease.className = "ghost btn-link";
+    lease.textContent = "📄 Signed lease";
+    lease.href = "/api/lease-document?leaseAppKey=" + encodeURIComponent(row.entityKey);
+    lease.target = "_blank";
+    lease.rel = "noopener";
+    if (row.signedAt) lease.title = "Signed on " + fmtDate(row.signedAt);
+    actions.append(lease);
+  }
+
   // Withdraw: back out of an application before the landlord approves (frees the
   // applicant to re-apply to the same unit). Stays available while the application is
   // qualified-but-undecided (awaiting landlord review) — the applicant may still
   // change their mind. Hidden once the landlord approves — the unit is being leased.
   if (!row.landlordApproved && row.unitKey) {
-    const actions = document.createElement("div");
-    actions.className = "card-actions";
     const wd = document.createElement("button");
     wd.className = "ghost danger";
     wd.textContent = "Withdraw application";
     wd.addEventListener("click", () => withdrawApplication(row));
     actions.append(wd);
-    card.append(actions);
   }
+
+  if (actions.childElementCount > 0) card.append(actions);
   return card;
 }
 
@@ -927,6 +944,10 @@ async function submitComplete(ev) {
     // out-of-band CompleteTask path. A benign rejection (the task already closed,
     // e.g. a double-submit) is non-fatal: the bound op already committed.
     await completeTask(task.taskKey);
+    // Signing the lease produces the executed-lease artifact: durably attach it to
+    // the application so both parties have the document on file (best-effort — the
+    // download path regenerates the same bytes on demand if this misses).
+    if (task.operationName === "SignLease" && target) ensureLeaseDocument(target);
     closeComplete();
     toast(desc.title + " — done.", "ok");
     loadTasks();
@@ -960,6 +981,23 @@ async function completeTask(taskKey) {
     }
   } catch (e) {
     console.warn("CompleteTask request failed:", e.message);
+  }
+}
+
+// ensureLeaseDocument produces + durably attaches the executed-lease artifact for
+// a just-signed application. Best-effort: a failure (the convergence row not yet
+// projecting the signature) is logged, not surfaced — the download path
+// regenerates the same deterministic bytes on demand regardless.
+async function ensureLeaseDocument(leaseAppKey) {
+  if (!leaseAppKey) return;
+  try {
+    await api("/api/lease-document", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ leaseAppKey }),
+    });
+  } catch (e) {
+    console.warn("lease document not attached (will regenerate on download):", e.message);
   }
 }
 

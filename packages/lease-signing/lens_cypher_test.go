@@ -254,6 +254,7 @@ func TestLeaseApplicationComplete_SignatureFlipsGap(t *testing.T) {
 	require.Len(t, rows, 1)
 	v := rows[0].Values
 	require.Equal(t, false, v["missing_signature"], "signature present → not missing")
+	require.Equal(t, "2026-06-10T00:00:00Z", v["signedAt"], "signedAt projects the .signature execution date for the produced lease artifact")
 	require.Equal(t, false, v["missing_onboarding"])
 	require.Equal(t, false, v["missing_bgcheck"])
 	require.Equal(t, false, v["missing_payment"], "completed payment with no validUntil → not missing (ever-completed)")
