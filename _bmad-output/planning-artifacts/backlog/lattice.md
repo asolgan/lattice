@@ -165,7 +165,7 @@ _The Surveyor notes each run here so the next run rotates to the least-recently-
 ### Refinements & ops
 | Item | What it is | Imp | Size |
 |---|---|---|---|
-| **CI pipeline speed (continuous)** *(agentic-ops / CI)* | Make CI **faster without weakening any gate** — owned continuously by the **Whetstone** (`ci-whetstone`): the single serial `ci.yml` job (~20 min: build→vet→lint→`make up`→verify-kernel→8×verify-package→Gate2/3→hello-lattice→lease-convergence→object-gc→full `go test -p 4`) → a **parallel job matrix**; Go build/module **caching**; safe test-parallelism raises; redundant stack spin-ups pruned; slow/flaky tests fixed. **Every gate still runs; flakiness never rises; proof = measured CI wall-clock ↓.** | ★★ | M (ongoing) |
+| **CI pipeline speed (continuous)** *(agentic-ops / CI)* | Make CI **faster without weakening any gate** — owned continuously by the **Whetstone** (`ci-whetstone`). **Matrix split DONE (1443109): single serial job (5m57s) → 4 parallel jobs (lint-build · stack-gates · convergence · unit), 2m31s, all gates intact.** Default `setup-go` Go caching already on. Remaining levers: the **`unit` job is now the long pole (147s)** — slow-package profiling + safe `t.Parallel()`/`-p` raises; the **convergence job (127s)** — lease-convergence's 80s eager-reopen freshness wait; redundant stack spin-ups; flake-hunting (history clean — 1 real failure in last 60, no re-run flakes). **Every gate still runs; flakiness never rises; proof = measured CI wall-clock ↓.** | ★★ | M (ongoing) |
 | Loom / Weaver control-API surfacing (beyond Loupe's needs) | Operator pause/resume + a durable `loom.*` read model beyond what the Loupe blocker covers. | ★ | M |
 | Package version upgrade (F-004) | In-place re-install over an existing version + DDL migration semantics (install / uninstall exist; upgrade does not). | ★ | M |
 | FR28 — role-queue + fallback | Assign tasks to a role queue with fallback (the demo uses direct identity assignment). | ★ | M |
@@ -190,6 +190,8 @@ clean small wins).
 ---
 
 ## Done log — lattice (newest first)
+
+- **2026-06-27 — [CI] Serial pipeline → 4-job parallel matrix** (1443109) — the single serial `build-and-test` job ran every gate back-to-back; its two long poles (`go test ./...` ~138s + `lease-convergence` ~118s) ran *after* ~90s of Docker-stack gates that don't depend on them, so wall-clock was sum-of-stages. Fanned out into four concurrently-running jobs (wall-clock = slowest job): **lint-build** (build/vet/golangci/conventions — no Docker), **stack-gates** (`make up` → verify-kernel → 8× verify-package → Gate 2 → Gate 3 → hello-lattice → `if:always()` teardown — Docker), **convergence** (lease-convergence + object-gc — embedded NATS), **unit** (`go test ./... -p 4` — embedded NATS). **Every gate from the serial job still runs, each in exactly one job** — none dropped, no `-short`, no loosened timeout, no retry. Re-derived gate-coverage by hand. The convergence/unit jobs need no Docker stack (each fixture binds a random port + private `jsstore.Dir(t)` StoreDir); verified locally that the Gate 2/Gate 3 roll-ups pass without a live stack (their Health-KV marker write is best-effort) and both convergence suites pass embedded. **Measured CI wall-clock: 5m57s → 2m31s (~58% / ~3m26s faster)**, all gates green (run 28290842810). New long pole = `unit` (147s) for a future fire. Default `setup-go@v6` Go build/module caching already on.
 
 _Append shipped Stream-2 items here (this lane only — keeps the board collision-safe)._
 
