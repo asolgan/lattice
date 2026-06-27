@@ -25,8 +25,9 @@ the single-file board-collision races go away).
   missing Lattice capability and calls the item done. A discovered platform gap is filed to **lattice.md** as
   demand (tagged with the requesting vertical + why) and the vertical item is **`🚧 blocked-on:`** it — or
   ships only its non-gap part. A vertical builds *on* real Lattice capabilities; faking one hides the gap and
-  stalls Lattice. (Generalizes **P5**: a view the app can't render is usually a missing lens → platform/owner
-  work, FE as a follow-on.)
+  stalls Lattice. (Boundary vs **P5**: a missing **lens** is *not* a Lattice gap — adding it is **package
+  work** the vertical does itself; only a missing platform **primitive** — engine / op / substrate /
+  orchestration — routes to lattice.md.)
 - **The PO drives Lattice demand too.** Exercising the verticals is the primary, grounded source of "what the
   platform actually lacks" — those gaps land in lattice.md, not worked around in verticals.
 - **Prioritization.** Each stream picks by **importance × readiness**; the Lattice stream **round-robins across
@@ -35,6 +36,9 @@ the single-file board-collision races go away).
 - **Frozen contracts are prepare-not-skip.** A needed `docs/contracts/*` change is never a reason to skip an
   item: make the edit in `main` **uncommitted** + flag it; Andrew ratifies (commits). Only a *standing* Andrew
   block/shelve is a true leave-it.
+- **Code in worktrees; docs in `main`.** Code changes build in an isolated git **worktree** (commit + push to
+  main, no PR). The **backlog / lane files, design docs, and contracts** are edited **directly in `main`**
+  (contracts uncommitted). Always scoped `git add <paths>`, `git pull --rebase`, detect-reuse stack.
 
 ---
 
@@ -45,7 +49,7 @@ The initial experience-layer push has largely landed: the vertical apps now **ex
 layer is **no longer a forced top priority** (Andrew, 2026-06-25) — the Steward picks by
 **importance × readiness**, balancing the experience layer against reliability / observability, component
 coverage, and the **PO-filed demand backlog** (the Vertical PO discovery loop is now live and feeds fresh,
-exercised items — see *Vertical demand backlog*). Flow for any UI/app pick: **PO scopes → Sally designs the UX
+exercised items — see [backlog/verticals.md](backlog/verticals.md)). Flow for any UI/app pick: **PO scopes → Sally designs the UX
 → FE Engineer builds + verifies in-browser → Winston admits.** M/L is fine (risk-bounded L2 + multi-fire).
 
 - **Vertical app front-ends (★★★)** — whatever the Vertical POs (LoftSpace, Clinic) decide their apps should

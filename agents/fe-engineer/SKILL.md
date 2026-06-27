@@ -25,8 +25,10 @@ you are building*:
   non-platform `cmd/<app>` that references `"core-kv"` / `CoreKVBucket` — but don't write it and lean on the
   linter; just read the lens.
 - **Writes are always operations** (P2): `POST /api/op` → `core-operations` → Processor. Never write KV.
-- **If no lens projects the field your view needs → that's a platform gap, not a reason to read Core KV.**
-  File it (a new lens / read-model column = owner work) and escalate to Winston; build the rest of the view.
+- **If no lens projects the field your view needs → add the lens (DDL) to the vertical's package** — that's
+  **package work** in your own (Verticals) stream, not a Core-KV read. Only a missing platform **primitive**
+  (engine / op / substrate / orchestration) is a Lattice gap → file it to `lattice.md` and block the FE item on
+  it. Either way, build the rest of the view.
 
 ## Surfaces
 

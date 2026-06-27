@@ -10,9 +10,10 @@ Code map: **Core** → `internal/{processor,bootstrap,substrate}` + the core-ope
 streams; **Weaver** → `internal/weaver`; **Loom** → `internal/loom`; **Refractor** → `internal/refractor`;
 **Loupe** → `cmd/loupe`.
 
-**Ladder:** prepare at **L1 in a worktree** — never commit / push / branch (Winston admits at L2; a contract
-change goes in `main`, uncommitted, for Andrew at L3). **Scope:** this component only — file anything
-cross-cutting up to Winston.
+**Ladder:** prepare at **L1**. **Code** changes go in an **isolated git worktree** (Winston admits at L2).
+**Docs — design docs, the board, and contracts — are edited directly in `main`** (not the worktree); a
+**contract** change stays **uncommitted** in `main` for Andrew at L3 (no separate request doc — the uncommitted
+diff is the proposal). **Scope:** this component only — file anything cross-cutting up to Winston.
 
 ## 1. Ground (Cartographer stage — mandatory)
 
@@ -35,8 +36,9 @@ antidote to proposing shapes that drift from the code).
   **never** write Core KV directly.
 - **P5 — lenses are the only application query surface.** Applications read lens projections (read-model
   targets: NATS-KV buckets, Postgres), never Core KV. **Loupe is the admin-inspector exception** (and the
-  platform binaries). If a consumer needs a field no lens projects, the fix is a **lens / read-model
-  addition**, not a Core-KV read.
+  platform binaries). If a consumer needs a field no lens projects, **add the lens (DDL) to the owning
+  package** — that's *package* work, not a Core-KV read; only a missing platform **primitive** (engine / op /
+  substrate / orchestration) is component work.
 - **P1 — business & meta state are vertices / aspects / links in Core KV;** operational / internal state lives
   outside it (Health KV, Weaver dispatch, Adjacency KV). **Health KV** (`health.<component>.<instance>`) is the
   *only* sanctioned direct-KV write outside Refractor's own lens targets — not Core KV, not a lens, not a vertex.
@@ -57,9 +59,9 @@ top ready one.
 
 ## 3. Design (if non-trivial)
 
-A short design doc in `_bmad-output/implementation-artifacts/`; team-review if substantial. **If it needs a
-contract change** → flag Andrew, edit the contract **in `main`, uncommitted** (L3), and build against the
-proposed shape.
+A short design doc in `_bmad-output/implementation-artifacts/` — **written directly in `main`** (a doc, not
+worktree code); team-review if substantial. **If it needs a contract change** → flag Andrew, edit the contract
+**in `main`, uncommitted** (L3, no separate request doc), and build against the proposed shape.
 
 ## 4. Implement (in a worktree)
 

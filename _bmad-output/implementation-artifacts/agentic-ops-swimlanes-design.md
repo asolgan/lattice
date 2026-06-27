@@ -47,8 +47,11 @@
 ## 4. The no-paper-over rule (Andrew, 2026-06-26)
 
 **The app-vertical stream must never substitute a workaround for a missing Lattice capability and call the
-item done.** When vertical work hits a gap that is really a missing platform feature (no lens projects the
-field, no op exists, a primitive is absent):
+item done.** First, know what is *not* a Lattice gap: a missing **lens / read-model (DDL)** is **package work**
+the vertical stream builds itself (Stream 1 is mostly package + FE) — add the lens to the owning package, never
+read Core KV. A real **Lattice gap** is a missing **platform primitive** the package cannot provide: a cypher
+**engine** capability (e.g. a new aggregator), a missing **op / kernel** mechanism, a **substrate** feature, an
+**orchestration** capability (e.g. `@every`). When vertical work hits one of *those*:
 
 1. **File it as Lattice-lane demand** in `lattice.md` (tagged with the requesting vertical + why), so the
    Surveyor/Lattice Steward picks it up as a real feature.
@@ -58,8 +61,9 @@ field, no op exists, a primitive is absent):
    Lattice capabilities; faking one hides the platform gap and stalls Lattice further.
 
 The **Vertical PO** is the primary driver of this demand: exercising the app surfaces what the platform
-actually lacks (grounded, not speculative). This generalizes the existing P5 rule ("a view the app can't
-render is usually a missing lens → platform/owner work, with the FE as a follow-on").
+actually lacks (grounded, not speculative). (Boundary vs **P5**: "no lens projects this field" is *not* a
+Lattice gap — adding the lens is **package work** the vertical does itself; only a missing platform *primitive*
+routes to the Lattice lane.)
 
 ## 5. Backlog tracking — per-lane files
 
@@ -94,9 +98,12 @@ limiter occasionally trips — that trip is the signal the window is fully used.
 
 ## 7. Isolation (parallel-safe)
 
-Per-fire **git worktree**; **scoped `git add <paths>`** (never `-A`/`commit -a`); **`git pull --rebase`**
-before push; **detect-reuse stack** (never `make down` a stack you didn't start). The two streams edit
-**disjoint code + disjoint lane files**, so concurrent commits to `main` rebase cleanly almost always.
+**Code** changes run in an isolated **git worktree** (commit + push to `main`, no PR). **Documents — the
+backlog / lane files, design docs, and contracts — are edited directly in `main`** (never siloed in a
+worktree); **contract** edits are left **uncommitted** for Andrew to ratify (as we do today). Always: **scoped
+`git add <paths>`** (never `-A` / `commit -a`), **`git pull --rebase`** before push, **detect-reuse stack**
+(never `make down` a stack you didn't start). The two streams edit **disjoint code** (worktrees) and
+**disjoint lane files** (in main), so concurrent commits rebase cleanly almost always.
 
 ## 8. Rollout
 

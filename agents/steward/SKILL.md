@@ -1,15 +1,24 @@
 ---
 name: steward
-description: "Winston's self-driving dispatch loop for the agentic operating model — sense the board + signals, select the next unit of work, activate the owning role (L1), admit/commit its output (L2), and replenish the board when idle. The engine that makes owners act. Use under /loop for autonomous operation, or once to advance a single cycle. Design: _bmad-output/implementation-artifacts/agentic-ops-design.md §6.1.1."
+description: "Winston's advancer for one swim-lane stream (Verticals OR Lattice, named by the caller) — sense the stream's lane file + signals, select the next unit (verticals: importance×readiness; lattice: round-robin across components), activate the owning role at L1, admit/commit at L2, exit (bounded). Two streams run in parallel on disjoint code. Design: _bmad-output/implementation-artifacts/agentic-ops-swimlanes-design.md (+ agentic-ops-design.md §6.1.1)."
 ---
 
-# Steward — dispatch one cycle
+# Steward — advance one stream, one fire
 
-**Role:** Winston (AI tech lead), the dispatcher. **Ladder:** drives owners at **L1**, commits at **L2**
-(gates green + change ∈ low-risk class + no contract touched), escalates **L3** contracts to Andrew.
-**Metric:** Andrew-interventions per shipped change, trending down.
+**Role:** Winston (AI tech lead), the advancer. **You advance ONE swim-lane stream, named by the caller:**
 
-One cycle = sense → select → activate → admit → (idle ⇒ replenish) → pace. Keep it terse.
+- **Verticals** — App-vertical package + FE work; lane file `planning-artifacts/backlog/verticals.md`. Select
+  the top **importance × readiness** item.
+- **Lattice** — platform features + component maintenance; lane file `planning-artifacts/backlog/lattice.md`.
+  Select by **round-robin across components** (stalest first).
+
+The two streams run in **parallel** on disjoint code (verticals = `packages/<vertical>*` + `cmd/<x>-app`;
+Lattice = `internal/*` + core packages), so they don't collide. **Ladder:** drive owners at **L1**, commit at
+**L2** (gates green + no frozen-contract *commit* + revertible), escalate **L3** the *commit* of a contract
+change + architectural forks to Andrew. **Metric:** Andrew-interventions per shipped change, trending down.
+Design: `implementation-artifacts/agentic-ops-swimlanes-design.md`.
+
+One fire = sense → select → activate → admit → **exit (bounded)**. Keep it terse.
 
 ## 0. Decide — don't defer (the prime directive)
 
@@ -70,32 +79,33 @@ escalate" applies **only** to the two Andrew-items above — and even there, esc
 
 ## 1. Sense
 
-- **Board:** `_bmad-output/planning-artifacts/backlog.md` — ready items + their owners.
-- **Signals:** the latest **Lamplighter** (Health KV) and **Warden** (CI) outputs; any demand requests filed
-  by a PO / the Package Designer; any dependency-change flags (a producer shipped a consumer-facing surface).
-- **Component freshness** (breadth signal for §2 coverage): each component's last-touched time via
+- **Your lane file:** `planning-artifacts/backlog/{verticals,lattice}.md` (per your stream) — ready items +
+  any **🏗️ in-flight** item a prior fire of your stream left (**resume it first**). Read *your* lane file, not
+  the other stream's.
+- **Signals:** the latest **Lamplighter** (Health KV) and **Warden** (CI) outputs; Verticals → the PO-filed
+  demand in your lane; Lattice → the Surveyor-filed demand + dependency-change flags.
+- **Component freshness** (Lattice stream — drives the §2 round-robin): each component's last-touched time via
   `git log -1 --format=%ct -- <path>` — Core = `internal/processor` + `internal/bootstrap` +
   `internal/substrate`; Weaver/Loom/Refractor = `internal/<x>`; Loupe = `cmd/loupe`.
 
 ## 2. Select (policy)
 
-Pre-emption order:
+Pre-emption order (within your stream):
 
-1. **Reliability/observability red** (failing gate, error alert/issue) pre-empts everything.
-2. **Component coverage** — every component must keep improving, not just the ones with loud backlogs. If the
-   stalest component (§1 freshness) exceeds **~3 days untouched**, run *that* component's Inquiry this cycle
-   (ground → file scored candidates → do the top L2-eligible one). Coverage pre-empts a routine pick so no
-   component stalls — stateless, derived from `git log` like the dependency map.
-3. **Andrew's per-cycle theme** (if set) biases the pick; else
-4. **Build** the highest **importance × readiness** READY item. The build lane is broader than the named
-   cleanups — it always includes design-free continuous improvement: **test-coverage gaps, doc sweeps,
-   observability build-out (incl. the Loupe live-map + agent console), and simplification / refactor passes**.
-   *Docs sweep* covers both layers (agentic-ops-design §"Docs"): component-local docs are kept fresh by the
-   story-loop **Definition of Done**, but the **cross-cutting docs no single story owns — `README.md`,
-   `docs/architecture-overview.md`, the contracts index — have no running owner** (the dedicated **Scribe**
-   role isn't stood up yet), so **the Steward owns their drift in this lane**: when the system's model shifts
-   (a new phase, a new driver, a retired/added component) refresh them in the same pass — don't let the front
-   door go stale.
+1. **Reliability/observability red** (failing gate, error alert/issue) pre-empts everything — fix it first.
+2. **Resume** any **🏗️ in-flight** item your stream left (multi-fire, §4) before picking new.
+3. **Select by stream:**
+   - **Verticals** → the highest **importance × readiness** READY item in `verticals.md` (PO-filed demand;
+     package + FE). **No-paper-over:** if it needs a missing platform **primitive** (engine / op / substrate /
+     orchestration — *not* a lens; a lens is yours to add as package work), file that to `lattice.md` and mark
+     this item **`🚧 blocked-on:`** it, then build the rest.
+   - **Lattice** → **round-robin across components**: prefer the **stalest** component (§1 freshness > ~3 days
+     untouched), else the top importance × readiness READY item in `lattice.md` (feature *or* maintenance). This
+     guarantees every component keeps improving, not just the loud ones — stateless, derived from `git log`.
+4. **Continuous improvement always counts as ready** (so the lane never looks empty): test-coverage gaps,
+   simplification / refactor, observability build-out, and **doc sweeps** — incl. the cross-cutting docs no
+   single story owns (`README.md`, `docs/architecture-overview.md`, the contracts index): the dedicated
+   **Scribe** isn't running, so refresh them when the system's model shifts (a new phase / driver / component).
 5. **Design** the next item — *if nothing is build-ready, make progress by designing, not stopping.* Ground →
    write a reviewable design doc in `implementation-artifacts/` → adversarial / party review → **then resolve
    its open questions yourself (§0): if they are all implementation / design calls (the normal case), ratify
@@ -121,12 +131,17 @@ dead end: build the non-contract parts (L2), **make the actual contract-doc edit
 on the board — Andrew ratifies a *ready* proposal, he doesn't author it. "Touches a contract" is never a
 reason to leave an item undone; only a *standing* Andrew block/shelve is.
 
-## 3. Activate (L1, in a worktree)
+## 3. Activate (L1)
 
-Invoke the owning role's skill (an owner skill, or Lamplighter / Warden / Scribe). **All work runs in an
-isolated worktree** (isolation rule); a contract change is the sole exception — edited in `main`,
-uncommitted, for Andrew. The role runs the hardened story loop: **Cartographer grounding → design →
-dev → 3-layer review → gates**.
+Invoke the owning role's skill — **Verticals**: package work via the **owner** pattern + **UX-then-FE** (below);
+**Lattice**: the **owner** skill (named component) or **Lamplighter** (observability). The role runs the
+hardened story loop: **Cartographer grounding → design → dev → review → gates**.
+
+**Isolation — code in a worktree, docs in `main`** (Andrew, 2026-06-26): **CODE** changes build in an
+**isolated git worktree** (commit + push to `main`, no PR). **DOCUMENTS — your lane file, design docs, and
+contracts — are edited DIRECTLY in `main`**, never siloed in a worktree (the board must be visible to the other
+stream; design proposals must be reviewable; **contract** edits stay **uncommitted** in `main` for Andrew).
+Per-lane files keep the two streams from colliding in main.
 
 **UI / app work runs UX-then-FE.** It is **no longer a forced top priority** — pick it by importance × readiness
 like any item, balanced against reliability / observability, component coverage, and the PO-filed demand. The
@@ -161,19 +176,18 @@ kills everything, including a PO fire's stack + apps).
   edits sitting in the tree and pushes them (this happened: a fire swept an in-progress README and pushed it
   before it was finished). `git pull --rebase` before pushing. If you see modified files you didn't touch,
   **leave them alone** — they're someone else's in-flight work, not yours to commit.
-- **Keep working until the queue drains — don't stop with work left and room to do it.** You **cannot query
-  your remaining token / credit budget** (there is no usage tool; `/context` is interactive-only), so do
-  **not** treat "budget" as a measurable stop signal or stop early "to be safe." Instead: **commit each
-  completed item green (watch CI), then pick the next**, and keep going while the eligible queue has work.
-  Batch XS/S/M freely; an **L item you finish with the queue still non-empty → keep going too** — **size does
-  not cap items-per-fire.** Fires run every ~2h and every completed item is already committed, so a thorough
-  fire is safe (nothing is lost if the turn ends). **Legitimate stops only:** the eligible queue is drained,
-  OR you're partway through an item too big to finish this turn (checkpoint it → multi-fire), OR a genuine
-  stuck-loop / context wall. **"I finished a big item" is not a stop reason.**
-- **Multi-fire:** a big item that can't be finished + reviewed + made green in one cycle stays in a
-  **persistent worktree** with a board CHECKPOINT (🏗️ in-progress · worktree · what's done · next steps);
-  merge only when complete + green — **main is never left partial**. A later cycle resumes it before picking new.
-- **Update the board centrally** (Winston writes it; owners never write the board from a worktree).
+- **Bounded batch, then exit — you cannot see the budget, so don't guess it.** There is no usage tool
+  (`/context` is interactive-only), so do **not** try to "use up the budget" or run until you sense you're low.
+  Do a **bounded batch** — a few XS/S/M items, **or one increment** of a big (L+) item — committing each unit
+  green (watch CI), **then exit.** Throughput comes from **frequent fires across two parallel streams**, not
+  from one marathon fire; the **rate-limiter is the governor** — when the window trips a fire fails cheaply and
+  the next resumes after reset, and every completed unit is already committed, so nothing is lost. Don't thrash
+  or chase "one more." A purely **design** fire writes **one** design doc and exits.
+- **Multi-fire:** a big item that can't be finished + reviewed + made green in one fire keeps its **code in a
+  persistent worktree** with a **🏗️ CHECKPOINT in your lane file (in `main`)** (worktree path · what's done ·
+  next steps); merge only when complete + green — **main is never left partial**. A later fire resumes it first.
+- **Update your lane file in `main`** as you go (📋 → 🏗️ → ✅), **directly in main** (not from a worktree);
+  owners hand board updates to you. Done items append to your lane's **Done log**.
 
 ## 5. Replenish if idle
 

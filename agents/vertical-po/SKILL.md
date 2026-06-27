@@ -42,24 +42,35 @@ What should this app *do* that it can't yet? What's missing, awkward, or broken 
 FE/UX would make it usable (feed the FE Engineer)? Where does a package fall short → a platform feature
 request (route via the Package Designer / Winston)?
 
-**File architecture-aware (lattice-architecture.md P5 / P2)** so the Steward + FE Engineer don't go the wrong
-way: a vertical app reads **lens projections, never Core KV** (only Loupe, the console, reads Core KV) and
-writes via **operations** (never direct KV). So when a view the app needs can't be rendered, the gap is
-usually a **missing lens / read-model field** — file it as **platform / owner** work (the component or package
-owner adds the lens column), with the **FE** item that consumes it as a follow-on. Don't file "have the app
-read Core KV" — that violates P5.
+**File architecture-aware (lattice-architecture.md P5 / P2)** so the streams don't go the wrong way: a vertical
+app reads **lens projections, never Core KV** (only Loupe, the console, reads Core KV) and writes via
+**operations** (never direct KV). When a view the app needs can't be rendered:
 
-## 4. File scored backlog items
+- **A missing lens / read-model field is NOT a Lattice gap — it's PACKAGE work** the App-Verticals stream
+  builds itself (add the lens/DDL to the vertical's package). File it in **verticals.md** as a package+FE item.
+  Never file "have the app read Core KV" (violates P5).
+- **A missing platform PRIMITIVE the package can't provide** — a cypher-**engine** capability, an **op/kernel**
+  mechanism, a **substrate** feature, an **orchestration** capability (e.g. `@every`) — **is** a Lattice gap.
+  File it in **lattice.md** (Lattice lane), tagged with the requesting vertical + why, and mark the dependent
+  vertical item **`🚧 blocked-on:`** it. **No-paper-over:** never hack the missing primitive into the
+  package/FE and call the vertical item done — a vertical builds *on* real Lattice capabilities. You (the PO)
+  are the primary, grounded driver of Lattice demand.
 
-Append to the board (`_bmad-output/planning-artifacts/backlog.md`): features / gaps / bugs, **scored**
-(Imp ★ / Size), **deduped** against existing items (don't refile). Tag each with the vertical and whether
-it's **FE** (Sally + FE Engineer), **package** (Package Designer), or **platform** (component owner) work.
-Keep a short **dated PO note** of what you exercised and found (so the next run rotates). Then **commit the
-board** (docs-only) so it's durable and the Steward reads committed state: `git pull --rebase` → `git add`
-the backlog → commit (`docs(backlog): PO discovery — <vertical>`) → `git push`.
+## 4. File scored items into the right lane
+
+- **Vertical items** (features / gaps / bugs — package + FE) → **`planning-artifacts/backlog/verticals.md`**.
+- **Discovered platform-primitive gaps** → **`planning-artifacts/backlog/lattice.md`** (tagged with the
+  vertical; block the dependent vertical item on it).
+
+Each item **scored** (Imp ★ / Size), **deduped** (don't refile), tagged FE (Sally + FE Engineer) / package
+(Package Designer) / platform (Surveyor + Lattice Steward). Keep a short **dated PO note** in `verticals.md` (so
+the next run rotates). **Docs in `main`, not a worktree** (isolation rule) — edit the lane files directly in
+`main`; commit **docs-only, scoped** (never `git add -A`): `git pull --rebase` → `git add` the lane file(s) you
+touched → commit (`docs(backlog): PO discovery — <vertical>`; end with `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`)
+→ `git push`. If you see modified files you didn't touch, leave them.
 
 ## 5. Bounds
 
-Never build, commit code, design, or touch frozen contracts — your **only** commit is the docs-only board
-filing (§4). Don't flood the board: a handful of high-value items per run, not dozens. If you found nothing
-new, say so and stop — don't manufacture noise or an empty commit.
+Never build, commit code, design, or touch frozen contracts — your **only** commit is the docs-only lane-file
+filing (§4). Don't flood the board: a handful of high-value items per run, not dozens. If you found nothing new,
+say so and stop — don't manufacture noise or an empty commit.
