@@ -29,6 +29,8 @@ const (
 	bookingsAspectDDL     = "providerBookings"
 	hoursAspectDDL        = "providerHours"
 	timeOffAspectDDL      = "providerTimeOff"
+
+	patientBookingsAspectDDL = "patientBookings"
 )
 
 // DDLs returns the package's seven DDL meta-vertex declarations:
@@ -70,6 +72,7 @@ func DDLs() []pkgmgr.DDLSpec {
 		bookingsAspectTypeDDL(),
 		hoursAspectTypeDDL(),
 		timeOffAspectTypeDDL(),
+		patientBookingsAspectTypeDDL(),
 	}
 }
 
@@ -214,8 +217,12 @@ func appointmentVertexTypeDDL() pkgmgr.DDLSpec {
 			"RescheduleAppointment REJECT a double-book (SlotConflict): each reads the provider's .bookings index (a " +
 			"declared, OCC-snapshotted contextHint.reads key) and kv.Reads every live candidate's schedule + status, " +
 			"failing on an overlap with a still scheduled / confirmed appointment (reschedule skips the appointment being " +
-			"moved) (Capability-KV §06 — enforced via the op's own Starlark logic). RescheduleAppointment therefore " +
-			"requires the provider key. Both also enforce the provider's opt-in availability windows (the .hours aspect, " +
+			"moved) (Capability-KV §06 — enforced via the op's own Starlark logic). Both ALSO reject a PATIENT-side " +
+			"double-book (PatientDoubleBook) the same way via the patient's .bookings index — catching a patient booked " +
+			"with two DIFFERENT providers at the same instant (the per-provider index cannot see across providers). " +
+			"RescheduleAppointment therefore requires BOTH the provider and the patient key (each validated to be this " +
+			"appointment's actual provider / patient via its withProvider / forPatient link), with provider+'.bookings' " +
+			"AND patient+'.bookings' in contextHint.reads. Both also enforce the provider's opt-in availability windows (the .hours aspect, " +
 			"set by SetProviderHours): a booking outside a provider's business hours is rejected (OutsideHours); a provider " +
 			"with no .hours is unconstrained. Both also enforce the provider's opt-in date-specific time-off (the .timeOff " +
 			"aspect, set by SetProviderTimeOff): a booking overlapping any blackout range is rejected (ProviderUnavailable), " +
@@ -225,7 +232,7 @@ func appointmentVertexTypeDDL() pkgmgr.DDLSpec {
 				"not exposed to Starlark).",
 		Script: appointmentDDLScript,
 		InputSchema: `{"type":"object","properties":` +
-			`{"patient":{"type":"string","description":"vtx.patient.<NanoID> the appointment is for (CreateAppointment; required, validated alive + class=patient)."},` +
+			`{"patient":{"type":"string","description":"vtx.patient.<NanoID> the appointment is for (CreateAppointment / RescheduleAppointment; required; on create validated alive + class=patient, on reschedule it must be the appointment's actual patient — list patient+'.bookings' in contextHint.reads for the patient-side double-book check)."},` +
 			`"provider":{"type":"string","description":"vtx.provider.<NanoID> the appointment is with (CreateAppointment / RescheduleAppointment; required, validated alive + class=provider; on reschedule it must be the appointment's actual provider — list provider+'.bookings' in contextHint.reads for the conflict check)."},` +
 			`"startsAt":{"type":"string","description":"Appointment start, RFC3339 (CreateAppointment / RescheduleAppointment; required). Caller supplies canonical UTC."},` +
 			`"endsAt":{"type":"string","description":"Appointment end, RFC3339 (CreateAppointment / RescheduleAppointment; required). Caller supplies canonical UTC."},` +
@@ -238,7 +245,7 @@ func appointmentVertexTypeDDL() pkgmgr.DDLSpec {
 		OutputSchema: `{"type":"object","properties":` +
 			`{"primaryKey":{"type":"string","description":"vtx.appointment.<NanoID> the operation wrote."}}}`,
 		FieldDescription: map[string]string{
-			"patient":        "Full vtx.patient.<NanoID> key the appointment is for. CreateAppointment validates it is alive + class=patient and writes the forPatient link (appointment→patient). The caller MUST list this key in ContextHint.Reads.",
+			"patient":        "Full vtx.patient.<NanoID> key the appointment is for. CreateAppointment validates it is alive + class=patient and writes the forPatient link (appointment→patient). RescheduleAppointment also requires it (the appointment's actual patient, validated via the forPatient link) to conflict-check the new time against the patient's other bookings (PatientDoubleBook). The caller MUST list this key — and, for reschedule, patient+'.bookings' — in ContextHint.Reads.",
 			"provider":       "Full vtx.provider.<NanoID> key the appointment is with. CreateAppointment validates it is alive + class=provider and writes the withProvider link (appointment→provider). RescheduleAppointment also requires it (the appointment's actual provider, validated via the withProvider link) to conflict-check the new time. The caller MUST list this key — and, for reschedule, provider+'.bookings' — in ContextHint.Reads.",
 			"startsAt":       "Appointment start (RFC3339, canonical UTC). Stored on the .schedule aspect (CreateAppointment / RescheduleAppointment; required). Must be in the future relative to op.submittedAt — a past / now startsAt is rejected (ScheduleInPast).",
 			"endsAt":         "Appointment end (RFC3339, canonical UTC). Stored on the .schedule aspect (CreateAppointment / RescheduleAppointment; required).",
@@ -262,22 +269,28 @@ func appointmentVertexTypeDDL() pkgmgr.DDLSpec {
 					"commits vtx.appointment.<NanoID> (root {}) + .schedule {startsAt, endsAt, remindAt, reason} (remindAt = " +
 					"startsAt − 24h, derived) + .status {value: " +
 					"scheduled} + the forPatient + withProvider links. Returns primaryKey (the appointment key). Rejects with " +
-					"ScriptError if the patient or provider is absent / dead / the wrong class. Does NOT check for slot " +
-					"conflicts (D6 — deferred).",
+					"ScriptError if the patient or provider is absent / dead / the wrong class, and rejects a provider " +
+					"double-book (SlotConflict) or a patient double-book across providers (PatientDoubleBook). List the " +
+					"patient, provider, provider+'.bookings' AND patient+'.bookings' in contextHint.reads.",
 			},
 			{
 				Name: "RescheduleAppointment — move an appointment to a new time",
 				Payload: map[string]any{
 					"appointmentKey": "vtx.appointment.<NanoID>",
+					"provider":       "vtx.provider.<providerNanoID>",
+					"patient":        "vtx.patient.<patientNanoID>",
 					"startsAt":       "2026-07-02T16:00:00Z",
 					"endsAt":         "2026-07-02T16:30:00Z",
 					"reason":         "Annual checkup",
 				},
-				ExpectedOutcome: "Validates the appointment is alive + class=appointment, then rewrites the .schedule " +
-					"aspect {startsAt, endsAt, remindAt, reason?} with the new times — re-deriving remindAt = startsAt − 24h " +
-					"(canonical UTC) so the clinic-reminders @at re-arms for a not-yet-sent reminder. The forPatient / " +
-					"withProvider links + the .status aspect are untouched. An omitted reason clears it (the caller carries " +
-					"the existing reason). Returns primaryKey. Does NOT check slot conflicts (D6 — deferred).",
+				ExpectedOutcome: "Validates the appointment is alive + class=appointment and that the passed provider / " +
+					"patient are its actual provider / patient (via the withProvider / forPatient links), then rewrites the " +
+					".schedule aspect {startsAt, endsAt, remindAt, reason?} with the new times — re-deriving remindAt = " +
+					"startsAt − 24h (canonical UTC) so the clinic-reminders @at re-arms for a not-yet-sent reminder. The new " +
+					"time is conflict-checked against both the provider's book (SlotConflict) and the patient's book " +
+					"(PatientDoubleBook); list provider+'.bookings' and patient+'.bookings' in contextHint.reads. The " +
+					"forPatient / withProvider links + the .status aspect are untouched. An omitted reason clears it (the " +
+					"caller carries the existing reason). Returns primaryKey.",
 			},
 			{
 				Name:    "SetAppointmentStatus — confirm an appointment",
@@ -538,6 +551,49 @@ func timeOffAspectTypeDDL() pkgmgr.DDLSpec {
 	}
 }
 
+// patientBookingsAspectTypeDDL declares the .bookings aspect on a PATIENT (class
+// patientBookings) — the per-patient appointment index op-time patient-side
+// double-book detection reads, the symmetric analog of providerBookings. The
+// step-6 write gate for CreatePatient (inits it empty) AND CreateAppointment /
+// RescheduleAppointment (append / rebuild). Declaration-only; NON-sensitive. Like
+// the provider index it is a plain list of appointment keys, not inline intervals —
+// CreateAppointment / RescheduleAppointment validate each candidate's LIVE schedule
+// + status via kv.Read (§2.5), so a reschedule / cancel that does not maintain the
+// index can never make it block a freed slot. The patient analog catches a patient
+// booked with TWO DIFFERENT providers at the same instant (the per-provider index
+// alone cannot see across providers).
+func patientBookingsAspectTypeDDL() pkgmgr.DDLSpec {
+	return pkgmgr.DDLSpec{
+		CanonicalName:     patientBookingsAspectDDL,
+		Class:             "meta.ddl.aspectType",
+		PermittedCommands: []string{"CreatePatient", "CreateAppointment", "RescheduleAppointment"},
+		Description: "Patient bookings index aspect (clinic). Stored as vtx.patient.<NanoID>.bookings (class " +
+			"patientBookings) = {appts: [vtx.appointment.<id>, ...]}. Non-sensitive. The per-patient appointment " +
+			"adjacency CreateAppointment + RescheduleAppointment read (as a declared, OCC-snapshotted contextHint.reads " +
+			"key) to detect a patient-side double-book before committing: each kv.Reads every candidate's live .schedule " +
+			"+ .status, rejects on an overlap with a still-scheduled/confirmed appointment (PatientDoubleBook; reschedule " +
+			"skips the appointment being moved) — even when the conflicting appointment is with a DIFFERENT provider (the " +
+			"per-provider .bookings index cannot see across providers), and rewrites the pruned index (tombstoned / " +
+			"terminal entries dropped to bound it). Initialized empty by CreatePatient so the key is always present (a " +
+			"declared read of an absent key is a fatal HydrationMiss). The OCC check on this aspect is a second " +
+			"concurrency serialization point alongside the provider index (two simultaneous bookings for one patient fail " +
+			"closed: the second commit RevisionConflicts, never a silent double-book). Declaration-only: no op handler.",
+		Script:       aspectDeclarationOnlyScript,
+		InputSchema:  `{"type":"object","properties":{"appts":{"type":"array","items":{"type":"string"}}}}`,
+		OutputSchema: `{"type":"object"}`,
+		FieldDescription: map[string]string{
+			"appts": "List of vtx.appointment.<NanoID> keys booked for this patient (the live, non-terminal book; terminal / tombstoned entries are pruned on the next CreateAppointment / RescheduleAppointment).",
+		},
+		Examples: []pkgmgr.ExampleSpec{
+			{
+				Name:            "patient bookings index aspect",
+				Payload:         map[string]any{"appts": []any{"vtx.appointment.abc123"}},
+				ExpectedOutcome: "Stored as vtx.patient.<NanoID>.bookings; initialized empty by CreatePatient, appended by CreateAppointment.",
+			},
+		},
+	}
+}
+
 // patientDDLScript handles CreatePatient + TombstonePatient. Known-key reads only.
 // CreatePatient mints the patient vertex + the .demographics aspect atomically
 // (CreateOnly, so a crash-retry with the same patientId collapses on the Contract
@@ -627,9 +683,15 @@ def execute(state, op):
         phone = optional_string(p, "phone")
         if phone != None:
             demo["phone"] = phone
+        # .bookings: the per-patient appointment index, initialized EMPTY so the key
+        # is always present — CreateAppointment / RescheduleAppointment declare it in
+        # contextHint.reads for an OCC-snapshotted patient-side double-book check, and
+        # a declared read of an absent key is a fatal HydrationMiss. Mirrors the
+        # provider .bookings index (catches a patient booked across two providers).
         mutations = [
             make_vtx(pkey, "patient", {}),
             make_aspect(pkey, "demographics", "patientDemographics", demo),
+            make_aspect(pkey, "bookings", "patientBookings", {"appts": []}),
         ]
         events = [{"class": "clinic.patientCreated", "data": {"patientKey": pkey}}]
         return {"mutations": mutations, "events": events,
@@ -1162,6 +1224,47 @@ def execute(state, op):
                 fail("SlotConflict: provider " + provider + " is already booked " + c_starts + "/" + c_ends + " (appointment " + cand_key + "); requested " + starts_at + "/" + ends_at)
         kept.append(appt_key)
 
+        # Patient-side double-book detection — the symmetric analog of the provider
+        # block above (Capability-KV §06 — the op's own Starlark logic). The provider
+        # index alone cannot catch a patient booked with TWO DIFFERENT providers at
+        # the same instant (each provider's book is independent); the patient's own
+        # .bookings index closes that. Same shape: OCC-snapshotted declared read,
+        # per-candidate kv.Read liveness + status, prune terminal/tombstoned, reject a
+        # PatientDoubleBook on overlap with a still scheduled/confirmed appointment,
+        # rewrite the pruned + appended index OCC-guarded. CreatePatient inits it empty.
+        patient_bookings_key = patient + ".bookings"
+        if patient_bookings_key not in state:
+            fail("HydrationMiss: " + patient_bookings_key + ": the patient .bookings index must be declared in contextHint.reads (it is created empty by CreatePatient; a patient created before this capability was installed must be re-created on a fresh stack)")
+        patient_booked = state[patient_bookings_key]
+        patient_existing = []
+        pappts_val = patient_booked.data.get("appts")
+        if pappts_val != None and type(pappts_val) == type([]):
+            patient_existing = pappts_val
+        patient_kept = []
+        for cand_key in patient_existing:
+            if cand_key == appt_key:
+                continue
+            cand = kv.Read(cand_key)
+            if cand == None or cand.isDeleted:
+                continue
+            cstatus = kv.Read(cand_key + ".status")
+            status_val = None
+            if cstatus != None and not cstatus.isDeleted:
+                status_val = cstatus.data.get("value")
+            if status_val in terminal_statuses:
+                continue
+            patient_kept.append(cand_key)
+            csched = kv.Read(cand_key + ".schedule")
+            if csched == None or csched.isDeleted:
+                continue
+            c_starts = csched.data.get("startsAt")
+            c_ends = csched.data.get("endsAt")
+            if c_starts == None or c_ends == None:
+                continue
+            if starts_at < c_ends and c_starts < ends_at:
+                fail("PatientDoubleBook: patient " + patient + " is already booked " + c_starts + "/" + c_ends + " (appointment " + cand_key + "); requested " + starts_at + "/" + ends_at)
+        patient_kept.append(appt_key)
+
         # forPatient / withProvider: the appointment (later-arriving) is the
         # source, the pre-existing patient / provider is the target (Contract #1
         # §1.1). Sentences: "appointment forPatient patient", "appointment
@@ -1192,6 +1295,9 @@ def execute(state, op):
             # The rebuilt (pruned + appended) provider bookings index, OCC-guarded on
             # the snapshot revision — see the double-book block above.
             make_aspect_upsert_occ(provider, "bookings", "providerBookings", {"appts": kept}, booked.revision),
+            # The rebuilt patient bookings index, OCC-guarded — the patient-side
+            # serialization point (catches a patient double-book across providers).
+            make_aspect_upsert_occ(patient, "bookings", "patientBookings", {"appts": patient_kept}, patient_booked.revision),
         ]
         events = [{"class": "clinic.appointmentCreated",
                    "data": {"appointmentKey": appt_key, "patient": patient, "provider": provider}}]
@@ -1225,6 +1331,21 @@ def execute(state, op):
         wp = kv.Read(with_provider_lnk)
         if wp == None or wp.isDeleted:
             fail("WrongProvider: provider " + provider + " is not the provider of appointment " + appt_key)
+
+        # The appointment's patient — required so the move is conflict-checked against
+        # that patient's book exactly as the provider side is (without it a reschedule
+        # could silently move an appointment into a slot where the patient is already
+        # booked with ANOTHER provider, bypassing the patient double-book defense). The
+        # passed patient is validated to be THIS appointment's actual patient by reading
+        # the deterministic forPatient link (kv.Read, §2.5) — a live link proves the
+        # relationship. The caller MUST also list patient + ".bookings" in
+        # contextHint.reads — the patient-side OCC serialization point.
+        patient = required_string(p, "patient")
+        _, patient_id = parts_of(patient, "patient", "patient")
+        for_patient_lnk = "lnk.appointment." + appt_id + ".forPatient.patient." + patient_id
+        fp = kv.Read(for_patient_lnk)
+        if fp == None or fp.isDeleted:
+            fail("WrongPatient: patient " + patient + " is not the patient of appointment " + appt_key)
 
         # New times: normalize to canonical whole-second UTC (parse-validates the
         # instants AND makes the convergence lens's lexical RFC3339 compares sound
@@ -1295,6 +1416,44 @@ def execute(state, op):
             if starts_at < c_ends and c_starts < ends_at:
                 fail("SlotConflict: provider " + provider + " is already booked " + c_starts + "/" + c_ends + " (appointment " + cand_key + "); requested " + starts_at + "/" + ends_at)
 
+        # Patient-side double-book detection for the MOVE — the symmetric analog of the
+        # provider block above (catches the patient booked across providers). The moved
+        # appointment is skipped (never conflict with your own current slot). The
+        # patient's .bookings index is the OCC-snapshotted serialization point: rewrite
+        # it (pruned to the live, non-terminal book) under expectedRevision so a
+        # concurrent create / reschedule for the same patient fails closed.
+        patient_bookings_key = patient + ".bookings"
+        if patient_bookings_key not in state:
+            fail("HydrationMiss: " + patient_bookings_key + ": the patient .bookings index must be declared in contextHint.reads (it is created empty by CreatePatient)")
+        patient_booked = state[patient_bookings_key]
+        patient_existing = []
+        pappts_val = patient_booked.data.get("appts")
+        if pappts_val != None and type(pappts_val) == type([]):
+            patient_existing = pappts_val
+        patient_kept = []
+        for cand_key in patient_existing:
+            cand = kv.Read(cand_key)
+            if cand == None or cand.isDeleted:
+                continue
+            cstatus = kv.Read(cand_key + ".status")
+            status_val = None
+            if cstatus != None and not cstatus.isDeleted:
+                status_val = cstatus.data.get("value")
+            if status_val in terminal_statuses:
+                continue
+            patient_kept.append(cand_key)
+            if cand_key == appt_key:
+                continue
+            csched = kv.Read(cand_key + ".schedule")
+            if csched == None or csched.isDeleted:
+                continue
+            c_starts = csched.data.get("startsAt")
+            c_ends = csched.data.get("endsAt")
+            if c_starts == None or c_ends == None:
+                continue
+            if starts_at < c_ends and c_starts < ends_at:
+                fail("PatientDoubleBook: patient " + patient + " is already booked " + c_starts + "/" + c_ends + " (appointment " + cand_key + "); requested " + starts_at + "/" + ends_at)
+
         # Re-derive remindAt = startsAt − 24h so the clinic-reminders convergence
         # lens re-projects a fresh freshUntil and the @at temporal lane re-arms for
         # the NEW time (for a not-yet-sent reminder; the remindedFor term re-arms an
@@ -1311,6 +1470,7 @@ def execute(state, op):
         mutations = [
             make_aspect_upsert(appt_key, "schedule", "appointmentSchedule", sched),
             make_aspect_upsert_occ(provider, "bookings", "providerBookings", {"appts": kept}, booked.revision),
+            make_aspect_upsert_occ(patient, "bookings", "patientBookings", {"appts": patient_kept}, patient_booked.revision),
         ]
         events = [{"class": "clinic.appointmentRescheduled",
                    "data": {"appointmentKey": appt_key, "startsAt": starts_at, "endsAt": ends_at}}]

@@ -85,7 +85,8 @@ function rejectionMessage(reply) {
 }
 
 // friendlyBookingRejection maps an op rejection message to operator-readable text
-// for the booking / reschedule paths: a double-book (SlotConflict), an
+// for the booking / reschedule paths: a provider double-book (SlotConflict), a
+// patient double-book across providers (PatientDoubleBook), an
 // out-of-availability-window booking (OutsideHours), a date-specific time-off
 // overlap (ProviderUnavailable), and a past-dated booking (ScheduleInPast) are the
 // domain rejections CreateAppointment / RescheduleAppointment raise. Anything else
@@ -93,6 +94,9 @@ function rejectionMessage(reply) {
 function friendlyBookingRejection(msg) {
   if (msg.indexOf("SlotConflict") !== -1) {
     return "That time overlaps another appointment for this provider. Pick another slot.";
+  }
+  if (msg.indexOf("PatientDoubleBook") !== -1) {
+    return "This patient already has another appointment at that time. Pick a slot that does not overlap.";
   }
   if (msg.indexOf("ProviderUnavailable") !== -1) {
     return "The provider is on time-off (vacation / holiday / out) during that time. Pick a date outside their time-off.";
@@ -823,10 +827,12 @@ async function submitBook(ev) {
   const submit = $("#book-submit");
   submit.disabled = true;
   try {
-    // The provider's .bookings index is a declared read so the op can detect a
-    // double-book (and so its OCC check serializes concurrent bookings).
+    // The provider's AND the patient's .bookings indexes are declared reads so the
+    // op can detect a provider double-book (SlotConflict) AND a patient double-book
+    // across providers (PatientDoubleBook), and so the OCC checks serialize
+    // concurrent bookings on both sides.
     const reply = await submitOp("CreateAppointment", "appointment", payload,
-      [state.patient, provider, provider + ".bookings"]);
+      [state.patient, provider, provider + ".bookings", state.patient + ".bookings"]);
     const msg = rejectionMessage(reply);
     if (msg) {
       toast("Booking rejected — " + friendlyBookingRejection(msg), "err");
@@ -1468,16 +1474,18 @@ async function submitReschedule(ev) {
     return;
   }
 
-  const payload = { appointmentKey: a.appointmentKey, provider: a.providerKey, startsAt, endsAt };
+  const payload = { appointmentKey: a.appointmentKey, provider: a.providerKey, patient: a.patientKey, startsAt, endsAt };
   if (a.reason) payload.reason = a.reason; // round-trip the existing reason (omitted → cleared)
 
   const submit = $("#reschedule-submit");
   submit.disabled = true;
   try {
-    // The provider's .bookings index is a declared read so the op detects a
-    // double-book against the new time (RescheduleAppointment skips this appointment).
+    // The provider's AND the patient's .bookings indexes are declared reads so the
+    // op detects a provider double-book (SlotConflict) and a patient double-book
+    // across providers (PatientDoubleBook) against the new time (RescheduleAppointment
+    // skips this appointment on both sides).
     const reply = await submitOp("RescheduleAppointment", "appointment", payload,
-      [a.appointmentKey, a.providerKey + ".bookings"]);
+      [a.appointmentKey, a.providerKey + ".bookings", a.patientKey + ".bookings"]);
     const msg = rejectionMessage(reply);
     if (msg) {
       toast("Could not reschedule — " + friendlyBookingRejection(msg), "err");

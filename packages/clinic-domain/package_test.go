@@ -23,14 +23,14 @@ func TestPackage_ManifestMatchesDefinition(t *testing.T) {
 	}
 }
 
-// TestPackage_DDLs pins the nine DDLs: three vertexType owners (patient,
-// provider, appointment) and six aspectType step-6 gates. The aspect DDLs MUST
+// TestPackage_DDLs pins the eleven DDLs: three vertexType owners (patient,
+// provider, appointment) and eight aspectType step-6 gates. The aspect DDLs MUST
 // be NON-sensitive (they attach to patient/provider/appointment vertices, not an
 // identity — a sensitive aspect there would trip step-6's sensitiveAspectScope),
 // and each names ONLY its writer op(s) in permittedCommands.
 func TestPackage_DDLs(t *testing.T) {
-	if got := len(Package.DDLs); got != 10 {
-		t.Fatalf("expected 10 DDLs, got %d", got)
+	if got := len(Package.DDLs); got != 11 {
+		t.Fatalf("expected 11 DDLs, got %d", got)
 	}
 
 	byName := map[string]pkgmgr.DDLSpec{}
@@ -76,6 +76,7 @@ func TestPackage_DDLs(t *testing.T) {
 		"providerBookings":    {"CreateProvider", "CreateAppointment", "RescheduleAppointment"},
 		"providerHours":       {"SetProviderHours"},
 		"providerTimeOff":     {"SetProviderTimeOff"},
+		"patientBookings":     {"CreatePatient", "CreateAppointment", "RescheduleAppointment"},
 	}
 	for name, wantCmds := range aspectWriters {
 		asp, ok := byName[name]
@@ -221,10 +222,20 @@ func TestPackage_ScriptGuards(t *testing.T) {
 		`time.seconds_of_day(starts_at)`,                 // time-of-day membership
 		`enforce_time_off(provider, starts_at, ends_at)`, // both ops enforce provider time-off
 		`ProviderUnavailable`,                            // the time-off-overlap rejection
+		`PatientDoubleBook`,                              // patient-side double-book rejection (across providers)
+		`patient_bookings_key = patient + ".bookings"`,  // patient .bookings index read
+		`make_aspect_upsert_occ(patient, "bookings"`,    // OCC-guarded patient index rewrite
+		`WrongPatient`,                                   // reschedule validates the passed patient via the forPatient link
 	} {
 		if !strings.Contains(appointmentDDLScript, want) {
 			t.Errorf("appointment script must reference %q", want)
 		}
+	}
+
+	// CreatePatient initializes the per-patient .bookings index empty (so the
+	// declared read key is always present for the double-book check).
+	if !strings.Contains(patientDDLScript, `make_aspect(pkey, "bookings", "patientBookings"`) {
+		t.Errorf("patient script must initialize the .bookings index on CreatePatient")
 	}
 
 	// The provider script owns SetProviderHours (the .hours writer) + its validation.

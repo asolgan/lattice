@@ -10,9 +10,9 @@
 //	  (CreateProvider + TombstoneProvider + SetProviderHours + SetProviderTimeOff),
 //	  appointment (CreateAppointment + RescheduleAppointment + SetAppointmentStatus +
 //	  TombstoneAppointment), each with its self-description.
-//	7 aspectType DDLs: patientDemographics, providerProfile, appointmentSchedule,
-//	  appointmentStatus, providerBookings, providerHours, providerTimeOff — their
-//	  step-6 write gates.
+//	8 aspectType DDLs: patientDemographics, providerProfile, appointmentSchedule,
+//	  appointmentStatus, providerBookings, providerHours, providerTimeOff,
+//	  patientBookings — their step-6 write gates.
 //	10 permission vertices (one per op), scope any, granted to operator.
 //	1 package vertex + manifest aspect (name=clinic-domain).
 //
@@ -114,6 +114,7 @@ func main() {
 		{canonical: "providerBookings", class: "meta.ddl.aspectType", ops: []string{"CreateProvider", "CreateAppointment", "RescheduleAppointment"}},
 		{canonical: "providerHours", class: "meta.ddl.aspectType", ops: []string{"SetProviderHours"}},
 		{canonical: "providerTimeOff", class: "meta.ddl.aspectType", ops: []string{"SetProviderTimeOff"}},
+		{canonical: "patientBookings", class: "meta.ddl.aspectType", ops: []string{"CreatePatient", "CreateAppointment", "RescheduleAppointment"}},
 	}
 
 	for _, dc := range ddlChecks {
