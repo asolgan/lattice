@@ -38,8 +38,18 @@ async function api(path, opts) {
   } catch (_) {
     /* empty/non-JSON body */
   }
+  // A structured op reply carries `status` (accepted | rejected) and is returned
+  // even on rejection — a rejected op is a domain outcome the caller branches on
+  // via rejectionMessage()/friendlyBookingRejection(), not a transport error. Its
+  // .error is an object {code, message}, which must NOT be thrown as-is (that
+  // surfaces "[object Object]"). Only a real transport failure (!res.ok) or a
+  // non-op error body throws — with a string message.
+  if (body && typeof body.status === "string") {
+    return body;
+  }
   if (!res.ok || (body && body.error)) {
-    throw new Error((body && body.error) || `HTTP ${res.status}`);
+    const e = body && body.error;
+    throw new Error((typeof e === "string" ? e : e && e.message) || `HTTP ${res.status}`);
   }
   return body;
 }
