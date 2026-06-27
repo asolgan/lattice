@@ -5,11 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync/atomic"
 	"time"
 
 	"github.com/asolgan/lattice/internal/substrate"
+	"github.com/nats-io/nats.go/jetstream"
 )
+
+// defaultLaneLagThreshold is the consumer-backlog count above which the
+// heartbeat raises a ProcessorLaneLagging warning (status ⇒ degraded). Mirrors
+// the Refractor capability-lens lag default; overridable via SetLagThreshold.
+const defaultLaneLagThreshold = 100
 
 // Metrics holds the running counters surfaced through the heartbeat per
 // Contract #5 §5.4 (recommended Phase 1 Processor baseline). Counters are
@@ -23,6 +30,15 @@ type Metrics struct {
 	OpsMalformed  atomic.Uint64
 }
 
+// healthIssue is one Contract #5 §5.5 issue record. since persists across
+// heartbeats while the issue stays open and is dropped when it resolves.
+type healthIssue struct {
+	Code     string `json:"code"`
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+	Since    string `json:"since"`
+}
+
 // HealthDoc mirrors the Contract #5 §5.2 shape for a heartbeat write.
 type HealthDoc struct {
 	Key         string         `json:"key"`
@@ -34,7 +50,7 @@ type HealthDoc struct {
 	StartedAt   string         `json:"startedAt"`
 	Uptime      string         `json:"uptime"`
 	Metrics     map[string]any `json:"metrics"`
-	Issues      []any          `json:"issues"`
+	Issues      []healthIssue  `json:"issues"`
 }
 
 // HealthHeartbeater periodically writes the Processor instance's health
@@ -53,6 +69,19 @@ type HealthHeartbeater struct {
 	// wired by MakePipeline when AuthMode resolves to capability. step3-latency
 	// always emits.
 	capAuthorizer *CapabilityAuthorizer
+
+	// Durable consumer handle for real backlog (lane_lag) reporting. Attached
+	// by the cmd wiring once EnsureConsumer returns, before Run starts (so no
+	// concurrent access with the emit loop). nil ⇒ backlog reported as null,
+	// never a fabricated zero.
+	consumer jetstream.Consumer
+
+	// lagThreshold is the backlog count above which ProcessorLaneLagging fires.
+	lagThreshold uint64
+
+	// openIssues tracks code → since-timestamp for currently-open issues so the
+	// §5.5 since field persists across heartbeats and drops on resolve.
+	openIssues map[string]string
 }
 
 // NewHealthHeartbeater wires the heartbeater. instance must be a stable
@@ -62,13 +91,15 @@ func NewHealthHeartbeater(conn *substrate.Conn, bucket, instance string, interva
 		interval = 10 * time.Second
 	}
 	return &HealthHeartbeater{
-		conn:      conn,
-		bucket:    bucket,
-		instance:  instance,
-		startedAt: time.Now(),
-		interval:  interval,
-		metrics:   metrics,
-		logger:    logger,
+		conn:         conn,
+		bucket:       bucket,
+		instance:     instance,
+		startedAt:    time.Now(),
+		interval:     interval,
+		metrics:      metrics,
+		logger:       logger,
+		lagThreshold: defaultLaneLagThreshold,
+		openIssues:   map[string]string{},
 	}
 }
 
@@ -111,6 +142,22 @@ func (h *HealthHeartbeater) AttachCapabilityAuthorizer(ca *CapabilityAuthorizer)
 	h.capAuthorizer = ca
 }
 
+// AttachConsumer wires the durable JetStream consumer so each heartbeat reports
+// its real backlog (lane_lag). Must be called before Run starts — the emit loop
+// reads the handle without synchronization.
+func (h *HealthHeartbeater) AttachConsumer(cons jetstream.Consumer) {
+	h.consumer = cons
+}
+
+// SetLagThreshold overrides the backlog count above which ProcessorLaneLagging
+// fires. Must be called before Run starts. A zero value is ignored (keeps the
+// default) — a 0 threshold would flag every non-empty backlog as degraded.
+func (h *HealthHeartbeater) SetLagThreshold(n uint64) {
+	if n > 0 {
+		h.lagThreshold = n
+	}
+}
+
 // EmitMalformedOperation writes the per-malformed-envelope marker into
 // Health KV. Key form: `health.processor.<instance>.malformed-operation.<requestId>`.
 // Called inline from step 1 when an envelope fails to parse but a
@@ -121,13 +168,13 @@ func (h *HealthHeartbeater) EmitMalformedOperation(ctx context.Context, requestI
 	}
 	key := fmt.Sprintf("health.processor.%s.malformed-operation.%s", h.instance, requestID)
 	doc := map[string]any{
-		"key":          key,
-		"component":    "processor",
-		"instance":     h.instance,
-		"event":        "MalformedOperation",
-		"requestId":    requestID,
-		"reason":       reason,
-		"observedAt":   substrate.FormatTimestamp(time.Now()),
+		"key":        key,
+		"component":  "processor",
+		"instance":   h.instance,
+		"event":      "MalformedOperation",
+		"requestId":  requestID,
+		"reason":     reason,
+		"observedAt": substrate.FormatTimestamp(time.Now()),
 	}
 	b, _ := json.Marshal(doc)
 	if _, err := h.conn.KVPut(ctx, h.bucket, key, b); err != nil {
@@ -136,27 +183,8 @@ func (h *HealthHeartbeater) EmitMalformedOperation(ctx context.Context, requestI
 	}
 }
 
-func (h *HealthHeartbeater) emit(ctx context.Context, status string) {
-	now := time.Now()
-	doc := HealthDoc{
-		Key:         h.healthKey(),
-		Component:   "processor",
-		Instance:    h.instance,
-		Version:     "1.0",
-		Status:      status,
-		HeartbeatAt: substrate.FormatTimestamp(now),
-		StartedAt:   substrate.FormatTimestamp(h.startedAt),
-		Uptime:      formatISODuration(now.Sub(h.startedAt)),
-		Metrics: map[string]any{
-			"ops_consumed_total":   h.metrics.OpsConsumed.Load(),
-			"ops_committed_total":  h.metrics.OpsCommitted.Load(),
-			"ops_rejected_total":   h.metrics.OpsRejected.Load(),
-			"ops_duplicates_total": h.metrics.OpsDuplicates.Load(),
-			"ops_malformed_total":  h.metrics.OpsMalformed.Load(),
-			"lane_lag":             map[string]int{"default": 0, "meta": 0, "urgent": 0, "system": 0},
-		},
-		Issues: []any{},
-	}
+func (h *HealthHeartbeater) emit(ctx context.Context, lifecycle string) {
+	doc := h.buildHealthDoc(ctx, lifecycle, time.Now())
 	b, err := json.Marshal(doc)
 	if err != nil {
 		h.logger.Warn("health: marshal heartbeat", "error", err)
@@ -168,6 +196,121 @@ func (h *HealthHeartbeater) emit(ctx context.Context, status string) {
 
 	// Per-tick capability-auth signals.
 	h.emitCapabilityAuthSignals(ctx)
+}
+
+// buildHealthDoc assembles the §5.2 heartbeat document for the given lifecycle
+// phase: snapshots the counters, reads the real consumer backlog into lane_lag,
+// derives the open issue set, and reconciles the lifecycle status against it.
+// Pure with respect to KV (no writes) so it is unit-testable with a fake
+// consumer; emit handles marshalling and the KV put.
+func (h *HealthHeartbeater) buildHealthDoc(ctx context.Context, lifecycle string, now time.Time) HealthDoc {
+	metrics := map[string]any{
+		"ops_consumed_total":   h.metrics.OpsConsumed.Load(),
+		"ops_committed_total":  h.metrics.OpsCommitted.Load(),
+		"ops_rejected_total":   h.metrics.OpsRejected.Load(),
+		"ops_duplicates_total": h.metrics.OpsDuplicates.Load(),
+		"ops_malformed_total":  h.metrics.OpsMalformed.Load(),
+	}
+
+	// Real consumer backlog (Contract #5 §5.4 lane_lag). The Processor runs a
+	// single durable consumer (processor-main) over all ops.* lanes, so a true
+	// per-lane breakdown is not separable from one consumer: the per-lane keys
+	// are reported null ("not measured per-lane") and the genuine aggregate
+	// backlog is surfaced as lane_lag_total. A null total means the backlog
+	// could not be read this tick (no consumer attached, or a transient Info
+	// error) — never a fabricated zero, which a watcher would trust as healthy.
+	pending, havePending := h.consumerPending(ctx)
+	metrics["lane_lag"] = map[string]any{"default": nil, "meta": nil, "urgent": nil, "system": nil}
+	if havePending {
+		metrics["lane_lag_total"] = pending
+	} else {
+		metrics["lane_lag_total"] = nil
+	}
+
+	active := map[string]activeIssue{}
+	if havePending && pending > h.lagThreshold {
+		active["ProcessorLaneLagging"] = activeIssue{
+			severity: "warning",
+			message:  fmt.Sprintf("operation backlog %d exceeds threshold %d on consumer processor-main", pending, h.lagThreshold),
+		}
+	}
+	issues := h.reconcileIssues(active, now)
+	status := aggregateStatus(lifecycle, issues)
+
+	return HealthDoc{
+		Key:         h.healthKey(),
+		Component:   "processor",
+		Instance:    h.instance,
+		Version:     "1.0",
+		Status:      status,
+		HeartbeatAt: substrate.FormatTimestamp(now),
+		StartedAt:   substrate.FormatTimestamp(h.startedAt),
+		Uptime:      formatISODuration(now.Sub(h.startedAt)),
+		Metrics:     metrics,
+		Issues:      issues,
+	}
+}
+
+// consumerPending returns the durable consumer's current backlog (NumPending)
+// and whether it could be read. A nil consumer or a transient Info error
+// yields (0, false) so the caller reports null rather than a fabricated zero.
+func (h *HealthHeartbeater) consumerPending(ctx context.Context) (uint64, bool) {
+	if h.consumer == nil {
+		return 0, false
+	}
+	info, err := h.consumer.Info(ctx)
+	if err != nil {
+		h.logger.Debug("health: consumer info unavailable", "error", err)
+		return 0, false
+	}
+	return info.NumPending, true
+}
+
+// activeIssue is a transient (severity, message) for an issue open this tick,
+// keyed by code; reconcileIssues stamps it with a persisted since timestamp.
+type activeIssue struct {
+	severity string
+	message  string
+}
+
+// reconcileIssues converts the codes open this tick into §5.5 issue records,
+// carrying each code's since timestamp across heartbeats (first-seen → now) and
+// dropping codes that resolved. Output is sorted by code for stable heartbeats.
+func (h *HealthHeartbeater) reconcileIssues(active map[string]activeIssue, now time.Time) []healthIssue {
+	out := make([]healthIssue, 0, len(active))
+	next := make(map[string]string, len(active))
+	for code, ai := range active {
+		since, ok := h.openIssues[code]
+		if !ok {
+			since = substrate.FormatTimestamp(now)
+		}
+		next[code] = since
+		out = append(out, healthIssue{Code: code, Severity: ai.severity, Message: ai.message, Since: since})
+	}
+	h.openIssues = next
+	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
+	return out
+}
+
+// aggregateStatus reconciles the lifecycle phase with the open issue set per
+// Contract #5 §5.3: any "error" ⇒ "unhealthy", else any "warning" ⇒ "degraded",
+// else the lifecycle status is kept. The "starting" and "shuttingDown" phases
+// are returned unchanged — an initializing or draining Processor reports its
+// lifecycle phase, not a steady-state health grade.
+func aggregateStatus(lifecycle string, issues []healthIssue) string {
+	if lifecycle == "starting" || lifecycle == "shuttingDown" {
+		return lifecycle
+	}
+	worst := lifecycle
+	for _, is := range issues {
+		switch is.Severity {
+		case "error":
+			return "unhealthy"
+		case "warning":
+			worst = "degraded"
+		}
+	}
+	return worst
 }
 
 // emitCapabilityAuthSignals writes the step3-latency signal derived from the

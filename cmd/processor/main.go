@@ -135,14 +135,9 @@ func run(logger *slog.Logger) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start heartbeater.
-	hbDone := make(chan struct{})
-	go func() {
-		defer close(hbDone)
-		hb.Run(ctx)
-	}()
-
-	// Ensure consumer.
+	// Ensure consumer before starting the heartbeater so it can report the
+	// consumer's real backlog (lane_lag). Attaching here — before Run — keeps
+	// the heartbeat emit loop's read of the handle race-free.
 	cons, err := processor.EnsureConsumer(ctx, conn.JetStream(), processor.ConsumerConfig{
 		StreamName:     stream,
 		Durable:        durable,
@@ -150,9 +145,16 @@ func run(logger *slog.Logger) error {
 	}, logger)
 	if err != nil {
 		cancel()
-		<-hbDone
 		return err
 	}
+	hb.AttachConsumer(cons)
+
+	// Start heartbeater.
+	hbDone := make(chan struct{})
+	go func() {
+		defer close(hbDone)
+		hb.Run(ctx)
+	}()
 
 	// Wire signal handling so SIGINT/SIGTERM cancel ctx and trigger
 	// graceful heartbeater shutdown.
