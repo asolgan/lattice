@@ -41,6 +41,20 @@ var inlineImageTypes = map[string]bool{
 // deriveID idiom (CC6) so disjoint field tuples never collide for a requestId.
 func join0(parts ...string) string { return strings.Join(parts, "\x00") }
 
+// objectDisposition decides how an object's bytes are served back through the
+// admin UI. Only the raster-image allow-list keeps its declared content type and
+// renders inline; every other type (svg / html / pdf / unknown) is forced to a
+// neutral octet-stream attachment so an uploaded active document can never
+// execute as same-origin script. Returns the content type to serve and the
+// Content-Disposition value — the anti-XSS boundary, paired with the
+// nosniff + sandbox CSP belt in handleObjectGet.
+func objectDisposition(contentType string) (servedType, disposition string) {
+	if inlineImageTypes[contentType] {
+		return contentType, "inline"
+	}
+	return "application/octet-stream", "attachment"
+}
+
 // objectLinkKey reconstructs lnk.object.<oid>.<linkName>.<tgtType>.<tgtId> from
 // the object id and the full vtx.<type>.<id> target — deterministic, no scan.
 func objectLinkKey(oid, targetKey, linkName string) (string, error) {
@@ -300,18 +314,9 @@ func (s *server) handleObjectGet(w http.ResponseWriter, r *http.Request, oid str
 	}
 	defer rc.Close()
 
-	// Only the raster-image allow-list is served with its declared type +
-	// inline; every other type (svg / html / pdf / unknown) is forced to a
-	// neutral octet-stream attachment so an uploaded active document can never
-	// execute as same-origin script in the admin UI. The CSP is the belt: even
-	// if a byte stream is loaded as a sub-resource, nothing may run from it.
-	ct := doc.Data.ContentType
-	disposition := "attachment"
-	if inlineImageTypes[ct] {
-		disposition = "inline"
-	} else {
-		ct = "application/octet-stream"
-	}
+	// The CSP is the belt to objectDisposition's braces: even if a byte stream
+	// is loaded as a sub-resource, nothing may run from it.
+	ct, disposition := objectDisposition(doc.Data.ContentType)
 	w.Header().Set("Content-Type", ct)
 	w.Header().Set("Content-Length", strconv.FormatUint(info.Size, 10))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
