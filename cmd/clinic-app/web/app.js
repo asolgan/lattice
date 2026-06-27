@@ -23,6 +23,7 @@ const state = {
   hoursProvider: null, // the provider key the draft is scoped to (reset on change)
   timeOffDraft: [], // SetProviderTimeOff ranges being edited (seeded from the provider's current ranges)
   timeOffProvider: null, // the provider key the time-off draft is scoped to (re-seeded on change)
+  slotApptCache: {}, // providerKey -> existing appointments, for the booking slot picker (invalidated on book)
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -581,6 +582,136 @@ function refreshTimeOffWarning() {
   }
 }
 
+// ---- Available-slot picker ----
+// Suggests the provider's open appointment starts for a chosen date, computed from
+// the same inputs the op enforces — the .hours availability windows (enforce_hours),
+// the .timeOff blackouts (enforce_time_off), the provider's existing appointments
+// (the double-book check), and the past-time guard (ScheduleInPast). A suggested
+// slot is built so it passes those checks; the op stays the authority.
+
+// providerAppointments fetches (and caches per provider) the provider's existing
+// appointments. The cache is invalidated on a successful booking so a just-booked
+// slot stops being offered.
+async function providerAppointments(provider) {
+  if (state.slotApptCache[provider]) return state.slotApptCache[provider];
+  try {
+    const data = await api("/api/appointments?provider=" + encodeURIComponent(provider));
+    state.slotApptCache[provider] = data.appointments || [];
+  } catch (e) {
+    state.slotApptCache[provider] = [];
+  }
+  return state.slotApptCache[provider];
+}
+
+// apptBlocks reports whether an appointment still occupies its slot. A cancelled /
+// no-show appointment is removed from the provider's .bookings conflict index, so
+// the op would allow rebooking that time — exclude it from the picker's block set.
+function apptBlocks(a) {
+  return a.status !== "cancelled" && a.status !== "noShow";
+}
+
+// computeOpenSlots derives the provider's open appointment starts (UTC ms) for a
+// calendar date (interpreted as a UTC day, matching how .hours windows are keyed by
+// UTC weekday + seconds-of-day). durationMin is both the slot length and the step,
+// so suggested slots are back-to-back at the appointment length. A slot is dropped
+// when it is in the past, overlaps any time-off range, or overlaps a live
+// appointment — the same conditions the op rejects.
+function computeOpenSlots(p, dateStr, durationMin, appts, nowMs) {
+  if (!p || !Array.isArray(p.hours) || !p.hours.length || !dateStr) return [];
+  const dayStart = Date.parse(dateStr + "T00:00:00Z");
+  if (isNaN(dayStart)) return [];
+  const weekday = new Date(dayStart).getUTCDay();
+  const durMs = durationMin * 60000;
+  const stepSec = Math.max(durationMin, 15) * 60;
+  const timeOff = Array.isArray(p.timeOff) ? p.timeOff : [];
+  const blocking = (appts || [])
+    .filter(apptBlocks)
+    .map((a) => ({ s: Date.parse(a.startsAt), e: Date.parse(a.endsAt) }))
+    .filter((x) => !isNaN(x.s) && !isNaN(x.e));
+  const slots = [];
+  const seen = new Set();
+  for (const w of p.hours) {
+    if (w.day !== weekday) continue;
+    for (let sec = w.openSec; sec + durationMin * 60 <= w.closeSec; sec += stepSec) {
+      const s = dayStart + sec * 1000;
+      const e = s + durMs;
+      if (s <= nowMs) continue; // past — matches ScheduleInPast (start <= submittedAt)
+      const offHit = timeOff.some((r) => {
+        const rf = Date.parse(r.from), rt = Date.parse(r.to);
+        return !isNaN(rf) && !isNaN(rt) && s < rt && e > rf;
+      });
+      if (offHit) continue;
+      if (blocking.some((b) => s < b.e && e > b.s)) continue;
+      if (seen.has(s)) continue;
+      seen.add(s);
+      slots.push(s);
+    }
+  }
+  slots.sort((a, b) => a - b);
+  return slots;
+}
+
+// slotTimeLabel renders a slot's UTC instant as the local clock time the button
+// shows; the click fills #startsAt (a local datetime-local value) with the same
+// instant, which round-trips back to this UTC start on submit.
+function slotTimeLabel(ms) {
+  const d = new Date(ms);
+  const pad = (n) => String(n).padStart(2, "0");
+  let h = d.getHours();
+  const m = pad(d.getMinutes());
+  const ap = h < 12 ? "AM" : "PM";
+  h = h % 12;
+  if (h === 0) h = 12;
+  return `${h}:${m} ${ap}`;
+}
+
+// refreshSlots re-renders the open-slot buttons for the selected provider + date +
+// duration. Idempotent and safe to call on any of those changing.
+async function refreshSlots() {
+  const box = $("#slots");
+  if (!box) return;
+  box.innerHTML = "";
+  const provider = $("#provider").value;
+  const dateStr = $("#slot-date").value;
+  if (!provider || !dateStr) return;
+  const p = providerByKey(provider);
+  if (!p) return;
+  if (!Array.isArray(p.hours) || !p.hours.length) {
+    const m = document.createElement("p");
+    m.className = "muted";
+    m.textContent = "This provider has set no availability hours — enter a date & time above directly.";
+    box.appendChild(m);
+    return;
+  }
+  const durationMin = Number($("#duration").value || 30);
+  const appts = await providerAppointments(provider);
+  // The provider/date may have changed while awaiting the fetch — bail if so.
+  if ($("#provider").value !== provider || $("#slot-date").value !== dateStr) return;
+  const slots = computeOpenSlots(p, dateStr, durationMin, appts, Date.now());
+  if (!slots.length) {
+    const m = document.createElement("p");
+    m.className = "muted";
+    m.textContent = "No open slots that day — try another date or a shorter duration.";
+    box.appendChild(m);
+    return;
+  }
+  const chosen = $("#startsAt").value ? toRFC3339($("#startsAt").value) : "";
+  for (const ms of slots) {
+    const iso = new Date(ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "slot-btn";
+    btn.textContent = slotTimeLabel(ms);
+    if (chosen && chosen === iso) btn.classList.add("selected");
+    btn.addEventListener("click", () => {
+      $("#startsAt").value = toLocalInputValue(iso);
+      refreshTimeOffWarning();
+      refreshSlots();
+    });
+    box.appendChild(btn);
+  }
+}
+
 // ---- Book ----
 
 function refreshBookEnabled() {
@@ -673,7 +804,10 @@ async function submitBook(ev) {
       return;
     }
     const key = reply && reply.primaryKey ? reply.primaryKey : "";
+    // The new appointment invalidates this provider's cached slot set.
+    delete state.slotApptCache[provider];
     $("#book-form").reset();
+    refreshSlots();
     toast("Appointment booked.", "ok", key);
     // Route to My Appointments with the new appointment highlighted (the lens may
     // take a moment to project; a Refresh shows it once projected).
@@ -1361,7 +1495,15 @@ function init() {
   $("#startsAt").addEventListener("focus", () => {
     $("#startsAt").min = nowLocalInputValue();
   });
-  $("#startsAt").addEventListener("change", refreshTimeOffWarning);
+  $("#startsAt").addEventListener("change", () => {
+    refreshTimeOffWarning();
+    refreshSlots(); // keep the slot highlight in sync with a typed time
+  });
+  // The slot picker suggests today onward; the per-slot past check is the floor.
+  $("#slot-date").min = nowLocalInputValue().slice(0, 10);
+  $("#slot-date").addEventListener("focus", () => {
+    $("#slot-date").min = nowLocalInputValue().slice(0, 10);
+  });
 
   $("#patient").addEventListener("change", (e) => setPatient(e.target.value));
   $("#new-patient").addEventListener("click", openNewPatient);
@@ -1390,7 +1532,10 @@ function init() {
       renderTimeOffDraft();
     }
     refreshTimeOffWarning();
+    refreshSlots();
   });
+  $("#slot-date").addEventListener("change", refreshSlots);
+  $("#duration").addEventListener("change", refreshSlots);
   $("#add-provider-submit").addEventListener("click", submitAddProvider);
   $("#manage-hours").addEventListener("toggle", () => {
     if ($("#manage-hours").open) {

@@ -23,17 +23,29 @@ type timeOffRange struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// hoursWindow is one recurring-weekly availability window on a provider's .hours
+// aspect (projected verbatim by the clinicProviders lens). Day is the UTC weekday
+// (0=Sun..6=Sat); OpenSec / CloseSec are UTC seconds-of-day (0..86400) with
+// OpenSec < CloseSec. The booking slot picker reads these to compute the
+// provider's open slots for a chosen date.
+type hoursWindow struct {
+	Day      int `json:"day"`
+	OpenSec  int `json:"openSec"`
+	CloseSec int `json:"closeSec"`
+}
+
 // providerRow is one row of the clinic-domain `clinicProviders` lens read model
 // (P5: an application reads the lens projection, never Core KV). The booking UI
 // renders these as the provider picker; TimeOff carries the provider's declared
-// blackout ranges (null/empty when none) so the manager UI can edit them and the
-// booking picker can warn about a blocked date.
+// blackout ranges and Hours its availability windows (null/empty when none) so the
+// manager UI can edit them and the booking slot picker can suggest open slots.
 type providerRow struct {
 	ProviderKey string         `json:"providerKey"`
 	Name        string         `json:"name"`
 	Specialty   string         `json:"specialty"`
 	Credentials string         `json:"credentials,omitempty"`
 	TimeOff     []timeOffRange `json:"timeOff,omitempty"`
+	Hours       []hoursWindow  `json:"hours,omitempty"`
 }
 
 // computeProviders assembles the provider roster from the `clinicProviders` lens

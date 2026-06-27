@@ -111,6 +111,14 @@ RETURN
 // ranges (SetProviderTimeOff replaces the whole list) and the booking picker can
 // warn about a blocked date. The op (CreateAppointment / RescheduleAppointment,
 // enforce_time_off) stays the authority; this is the display surface only.
+//
+// hours projects the provider's opt-in .hours aspect's `windows` array verbatim
+// (a list of {day 0-6, openSec, closeSec} UTC seconds-of-day written by
+// SetProviderHours), null when the provider has set no availability windows. Like
+// timeOff it is a non-scalar projection — the booking picker reads it (together
+// with timeOff and the provider's existing appointments) to compute and suggest
+// the open slots for a chosen date. The op (enforce_hours) stays the authority;
+// this is the display surface only.
 const clinicProvidersSpec = `MATCH (pr:provider)
 WHERE pr.profile.data.fullName <> null
 RETURN
@@ -119,7 +127,8 @@ RETURN
   pr.profile.data.fullName AS name,
   pr.profile.data.specialty AS specialty,
   pr.profile.data.credentials AS credentials,
-  pr.timeOff.data.ranges AS timeOff`
+  pr.timeOff.data.ranges AS timeOff,
+  pr.hours.data.windows AS hours`
 
 // clinicPatientsSpec projects one row per NAMED patient — the roster the clinic FE
 // renders so a person picks who they are (the patient-context switcher) and scopes

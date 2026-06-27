@@ -26,7 +26,8 @@ func fakeKV(entries map[string]any) (keys []string, get kvGetter) {
 func TestComputeProviders_SortsAndSkips(t *testing.T) {
 	keys, get := fakeKV(map[string]any{
 		"vtx.provider.B": map[string]any{"providerKey": "vtx.provider.B", "name": "Dr. Sam Okafor", "specialty": "Cardiology", "credentials": "MD",
-			"timeOff": []any{map[string]any{"from": "2026-07-01T00:00:00Z", "to": "2026-07-06T00:00:00Z", "reason": "Vacation"}}},
+			"timeOff": []any{map[string]any{"from": "2026-07-01T00:00:00Z", "to": "2026-07-06T00:00:00Z", "reason": "Vacation"}},
+			"hours":   []any{map[string]any{"day": 1, "openSec": 32400, "closeSec": 61200}}},
 		"vtx.provider.A": map[string]any{"providerKey": "vtx.provider.A", "name": "Dr. Lee", "specialty": "Dermatology"},
 		// A tombstoned projection row with no providerKey must be skipped.
 		"vtx.provider.X": map[string]any{"name": "Ghost"},
@@ -48,6 +49,14 @@ func TestComputeProviders_SortsAndSkips(t *testing.T) {
 	}
 	if len(rows[1].TimeOff) != 1 || rows[1].TimeOff[0].Reason != "Vacation" || rows[1].TimeOff[0].From != "2026-07-01T00:00:00Z" {
 		t.Fatalf("time-off range lost: %+v", rows[1].TimeOff)
+	}
+	// The provider with no hours projects an empty slice; the other round-trips its
+	// availability window (the booking slot picker reads this to compute open slots).
+	if len(rows[0].Hours) != 0 {
+		t.Fatalf("expected no hours for Dr. Lee, got %+v", rows[0].Hours)
+	}
+	if len(rows[1].Hours) != 1 || rows[1].Hours[0].Day != 1 || rows[1].Hours[0].OpenSec != 32400 || rows[1].Hours[0].CloseSec != 61200 {
+		t.Fatalf("hours window lost: %+v", rows[1].Hours)
 	}
 }
 

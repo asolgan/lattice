@@ -261,6 +261,37 @@ func TestClinicProviders_RostersNamedProviders(t *testing.T) {
 	require.Equal(t, "MD", v["credentials"])
 	// A provider with no .timeOff aspect projects a null timeOff column.
 	require.Nil(t, v["timeOff"], "timeOff is null when the provider has declared no blackouts")
+	// Likewise no .hours aspect → a null hours column.
+	require.Nil(t, v["hours"], "hours is null when the provider has set no availability windows")
+}
+
+// TestClinicProviders_ProjectsHoursWindows proves the non-scalar hours column:
+// the provider's .hours aspect's `windows` array (a list of {day, openSec,
+// closeSec} UTC seconds-of-day) projects verbatim into the read model, so the
+// booking slot picker can compute the provider's open slots for a date.
+func TestClinicProviders_ProjectsHoursWindows(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	prKey := f.vtx(t, "drhour", "provider")
+	f.aspect(t, "drhour", "profile", "providerProfile", map[string]any{"fullName": "Dr. Hours", "specialty": "Family"})
+	f.aspect(t, "drhour", "hours", "providerHours", map[string]any{"windows": []any{
+		map[string]any{"day": 1, "openSec": 32400, "closeSec": 61200},
+		map[string]any{"day": 3, "openSec": 32400, "closeSec": 61200},
+	}})
+
+	rows := f.project(t, clinicProvidersSpec)
+	v := rowByKey(rows, prKey)
+	require.NotNil(t, v)
+	windows, ok := v["hours"].([]any)
+	require.True(t, ok, "hours projects as an array, got %T", v["hours"])
+	require.Len(t, windows, 2)
+	first, ok := windows[0].(map[string]any)
+	require.True(t, ok)
+	require.EqualValues(t, 1, first["day"])
+	require.EqualValues(t, 32400, first["openSec"])
+	require.EqualValues(t, 61200, first["closeSec"])
 }
 
 // TestClinicProviders_ProjectsTimeOffRanges proves the non-scalar timeOff column:
