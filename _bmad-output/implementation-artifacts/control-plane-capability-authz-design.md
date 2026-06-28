@@ -1,6 +1,23 @@
 # Control-plane Capability authorization (FR30) — design
 
-**Status: 📐 awaiting-Andrew (ratification).** Author: Winston (Designer fire, 2026-06-27).
+**Status: ✅ Andrew-ratified (2026-06-27).** Author: Winston (Designer fire, 2026-06-27).
+
+> **Ratification decisions (Andrew, 2026-06-27) — these supersede the three-option fork below:**
+> 1. **Sequencing: deferred behind D1.** D1 (read-path auth) is higher priority (a larger surface) and
+>    builds the shared `internal/gateway/auth` JWT seam. The control plane stays at its current posture
+>    in the interim — **acceptable because #1 (NATS account write restriction, ratified) already restricts
+>    `lattice.ctrl.>` publish to trusted operator/component connections**, so the residual is "allow-all
+>    *among already-trusted operators*," not a bus-open hole.
+> 2. **Build = Path A *end-to-end*, not the phased two-Fire split.** Ship the capability gate **+
+>    verified-JWT actor in one shipment**, reusing D1's `internal/gateway/auth` seam. The original
+>    "self-asserted-header-now (Fire 1) / verified-JWT-later (Fire 2)" phasing is **dropped** — we never
+>    ship the forgeable-self-asserted-header interim. The JWT seam is a **shared primitive** (D1 builds it
+>    first by priority; this work reuses it — no added wait, and it's interchangeable if D1 ever slips).
+>    Fire 1c (the `lattice.ctrl.>` subject restriction) is already delivered by #1.
+> 3. **`operationType` naming: dotted `ctrl.<comp>.<verb>`** (mirrors the control subject taxonomy) +
+>    **Contract #6 §6.4 touched up** to relax the "PascalCase" prescription (it was unenforced — the
+>    matcher is exact string-equality — and Andrew judged it silly) and reserve the `ctrl.*` namespace.
+>    The §6.4 edit is staged **uncommitted** in `main` alongside the D1 §6.14 edit.
 Backlog row: `planning-artifacts/backlog/lattice.md` → *Security & trust boundary → Control-plane
 Capability authorization (FR30)* (★★, M). Surveyor-filed (2026-06-27 Weaver survey). An adversarial
 review ran as part of this fire; its findings (the scope-enum reality, the class-aware key routing,
