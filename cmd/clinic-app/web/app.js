@@ -335,10 +335,12 @@ async function submitAddProvider() {
 //
 // The editor composes a UTC weekly-availability window list for the provider
 // selected in the Book form and submits SetProviderHours (which REPLACES the
-// provider's .hours aspect). Write-mostly: the currently-persisted windows are not
-// shown here (that needs a clinicProviders lens projection of .hours — a follow-up);
-// the draft list shows exactly what "Save availability" will set. Times are UTC to
-// match the op's UTC weekday / seconds-of-day enforcement.
+// provider's .hours aspect). Like the time-off manager this is READ-MODIFY-WRITE:
+// the draft is SEEDED from the provider's currently-projected .hours windows (the
+// clinicProviders lens carries them), so Add / Remove edits the live set and Save
+// replaces the whole list — adding one window no longer silently wipes a provider's
+// existing hours. Times are UTC to match the op's UTC weekday / seconds-of-day
+// enforcement.
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -358,13 +360,18 @@ function secondsToHMS(sec) {
 }
 
 // hoursDraftForSelectedProvider returns the Book form's selected provider key,
-// resetting the draft when the selection changed (so one provider's draft can't
-// be saved onto another).
+// re-seeding the draft from that provider's currently-projected .hours windows
+// whenever the selection changed (so one provider's edits can't be saved onto
+// another, and so an Add/Remove edits the live set rather than starting blank).
 function hoursDraftForSelectedProvider() {
   const prov = $("#provider").value;
   if (prov !== state.hoursProvider) {
     state.hoursProvider = prov;
-    state.hoursDraft = [];
+    const p = providerByKey(prov);
+    // Clone so editing the draft doesn't mutate the loaded provider row.
+    state.hoursDraft = p && Array.isArray(p.hours)
+      ? p.hours.map((w) => ({ day: w.day, openSec: w.openSec, closeSec: w.closeSec }))
+      : [];
   }
   return prov;
 }
@@ -438,6 +445,10 @@ async function saveProviderHours() {
     const n = state.hoursDraft.length;
     toast(n ? `Availability saved (${n} window${n === 1 ? "" : "s"}).` : "Availability cleared (always available).", "ok");
     $("#manage-hours").open = false;
+    // Refresh the roster so the persisted windows back the booking slot picker + a
+    // re-open of this editor (the lens may take a moment to project; selection is
+    // preserved). Mirrors saveProviderTimeOff.
+    loadProviders();
   } catch (e) {
     toast("Could not set hours: " + e.message, "err");
   } finally {
