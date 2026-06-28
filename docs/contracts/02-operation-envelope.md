@@ -44,6 +44,8 @@ Story 1.6 introduced an optional top-level `class` field on the operation envelo
 
 `class` is therefore **engine-optional**: engine-dispatched ops (Loom/Weaver) and clients MAY omit it and rely on operationType→class derivation; an explicit `class` (or `payload.class`) still takes precedence when supplied.
 
+**Discriminator class vs. script-authority DDL (the `instanceOf` type model).** The envelope `class` selects the operation's **script DDL** (which Starlark runs) — resolved here from `operationType`. The **resulting vertex's** stored `class` is its **type/subtype discriminator** (P7), which may be a fine-grained dotted string (`service.backgroundCheck.instance`) that is *not* itself a registered DDL. These are legitimately distinct: an op may write a vertex whose class differs from the op's resolved script-DDL canonical name. The **write-gate** (`permittedCommands`, commit step 6) resolves *that vertex's* governing DDL by its own class — by exact lookup, falling back to its `instanceOf` type authority per Contract #1 §1.5 step 5. Authorization (step 3) keys on `operationType` + actor + `authContext` and is unaffected by either class, so the discriminator never enters the auth path.
+
 | Field | Required | Type | Mutability | Purpose |
 |-------|----------|------|------------|---------|
 | `class` | optional | string (DDL canonical name, e.g., `"identity"`) | immutable | Tells the Hydrator/Validator which DDL meta-vertex applies to this operation. Precedence: top-level `class` → `payload.class` → derived from `operationType` via the DDL cache's operationType→class reverse index (the single vertexType DDL that admits it; ambiguous/unindexed ops still require an explicit `class`). The field is `omitempty` in the wire format. |
