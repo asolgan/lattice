@@ -1616,6 +1616,8 @@ async function submitPostListing(ev) {
   const rent = Number($("#li-rent").value);
   const currency = $("#li-currency").value.trim() || "USD";
   const bedrooms = $("#li-bedrooms").value;
+  const availFrom = $("#li-availfrom").value; // "YYYY-MM-DD" from a date input
+  const leaseTerm = $("#li-leaseterm").value;
   const bathrooms = $("#li-bathrooms").value;
   const sqft = $("#li-sqft").value;
 
@@ -1629,6 +1631,14 @@ async function submitPostListing(ev) {
   }
   if (bedrooms === "") {
     toast("Enter the number of bedrooms.", "err");
+    return;
+  }
+  if (!availFrom) {
+    toast("Pick the date the unit is available from.", "err");
+    return;
+  }
+  if (!(Number(leaseTerm) > 0)) {
+    toast("Enter a lease term in months.", "err");
     return;
   }
 
@@ -1652,7 +1662,15 @@ async function submitPostListing(ev) {
       "set the address",
     );
 
-    const listing = { unit: unitKey, rentAmount: rent, rentCurrency: currency, bedrooms: Number(bedrooms), status: "available" };
+    const listing = {
+      unit: unitKey,
+      rentAmount: rent,
+      rentCurrency: currency,
+      bedrooms: Number(bedrooms),
+      availableFrom: availFrom + "T00:00:00Z", // SetListing wants RFC3339
+      leaseTermMonths: Number(leaseTerm),
+      status: "available",
+    };
     if (bathrooms !== "") listing.bathrooms = Number(bathrooms);
     if (sqft !== "") listing.sqft = Number(sqft);
     await opOrThrow(
