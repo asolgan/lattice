@@ -150,12 +150,55 @@ func (i *Installer) Install(ctx context.Context, def Definition) (*InstallResult
 		return nil, err
 	}
 
-	// Step 2.5 — mint deterministic NanoIDs for any roles this package
-	// declares, and register them in RoleIDs so this package's own
-	// GrantsTo entries (and the grant links built below) resolve to the
-	// role's in-batch NanoID. The role vertices/aspects/index are created
-	// in the SAME install batch (Story 1.5.5 — no substrate-direct
-	// PreInstall) and captured in declaredKeys (closes F-001).
+	// Step 3 — build the mutation manifest (role NanoIDs, grant resolution,
+	// version-independent entity keys, the full create batch). Shared with
+	// Upgrade, which needs the identical new key set + bodies.
+	ops, declared, pkgKey, err := i.buildManifestBatch(def)
+	if err != nil {
+		return nil, err
+	}
+	res.PackageKey = pkgKey
+
+	// Step 4 — submit the InstallPackage op to the Processor. The op
+	// carries the pre-built manifest; the kernel script enforces
+	// guardrails and emits the mutations; the Processor commits them in
+	// one atomic batch and invalidates the vtx.meta.* DDL cache in-commit.
+	payload := map[string]any{
+		"name":      def.Name,
+		"version":   def.Version,
+		"mutations": ops,
+	}
+	// Deterministic requestId from name+version so a re-submit dedup-
+	// short-circuits at step 2 (idempotent install).
+	requestID := deterministicNanoID(def.Name, def.Version, "install-op")
+	reply, err := i.submitOp(ctx, "InstallPackage", "InstallPackage", requestID, payload)
+	if err != nil {
+		return nil, fmt.Errorf("pkgmgr: submit InstallPackage: %w", err)
+	}
+	switch reply.Status {
+	case processor.ReplyStatusAccepted, processor.ReplyStatusDuplicate:
+		res.DeclaredKeys = declared
+		return res, nil
+	default:
+		return nil, fmt.Errorf("pkgmgr: InstallPackage rejected: %s", replyError(reply))
+	}
+}
+
+// buildManifestBatch mints version-independent entity keys for def, resolves
+// its grants, validates them, and builds the full create-batch manifest as
+// LOGICAL documents (Contract #8 §8.1). Returns the create mutations, the flat
+// declared-key list, and the package vertex key. Shared by Install (the fresh
+// create) and Upgrade (the new side of the diff): both need the identical
+// version-independent key set + bodies, so deriving them in one place keeps the
+// upgrade diff aligned with what a fresh install would write. Field-level
+// validation (validateLensBuckets etc.) and the install-specific idempotency /
+// canonicalName-collision checks remain with the callers.
+func (i *Installer) buildManifestBatch(def Definition) ([]installMutation, []string, string, error) {
+	// Mint deterministic NanoIDs for any roles this package declares, and
+	// register them in RoleIDs so this package's own GrantsTo entries (and the
+	// grant links built below) resolve to the role's in-batch NanoID. The role
+	// vertices/aspects/index are created in the SAME batch (Story 1.5.5 — no
+	// substrate-direct PreInstall) and captured in declaredKeys (closes F-001).
 	roleNanoIDs := make([]string, len(def.Roles))
 	if len(def.Roles) > 0 && i.RoleIDs == nil {
 		i.RoleIDs = map[string]string{}
@@ -169,27 +212,23 @@ func (i *Installer) Install(ctx context.Context, def Definition) (*InstallResult
 	// Resolve any unresolved canonical names in GrantsTo via i.RoleIDs.
 	def = i.resolveGrants(def)
 
-	// Validate all GrantsTo entries resolved to valid NanoIDs. Any
-	// remaining canonical name (non-NanoID) means the bootstrap JSON is
-	// missing the role's primordialID or the package did not declare the
-	// role in Definition.Roles. A dangling grant link would be written
-	// silently and cause PermissionDenied at runtime with no helpful
-	// diagnostic.
+	// Validate all GrantsTo entries resolved to valid NanoIDs. A remaining
+	// canonical name (non-NanoID) means the bootstrap JSON is missing the
+	// role's primordialID or the package did not declare the role in
+	// Definition.Roles. A dangling grant link would be written silently and
+	// cause PermissionDenied at runtime with no helpful diagnostic.
 	for idx, p := range def.Permissions {
 		for _, g := range p.GrantsTo {
 			if !substrate.IsValidNanoID(g) {
-				return nil, fmt.Errorf("pkgmgr: Permission[%d] %q: GrantsTo entry %q is not a valid NanoID — role may not be installed or bootstrap JSON is missing the role ID", idx, p.OperationType, g)
+				return nil, nil, "", fmt.Errorf("pkgmgr: Permission[%d] %q: GrantsTo entry %q is not a valid NanoID — role may not be installed or bootstrap JSON is missing the role ID", idx, p.OperationType, g)
 			}
 		}
 	}
 
-	// Step 3 — build the mutation manifest with DETERMINISTIC,
-	// version-independent NanoIDs (derived from package name + entity tag,
-	// Contract #8 §8.1) so a re-install produces identical keys and the
-	// create-only batch is idempotent, and so the same logical entity keeps
-	// its key across versions (the in-place upgrade in §8.6).
+	// Version-independent NanoIDs (derived from package name + entity tag,
+	// Contract #8 §8.1) so a re-install produces identical keys and the same
+	// logical entity keeps its key across versions (the in-place upgrade §8.6).
 	pkgKey := PackageVertexPrefix + entityNanoID(def.Name, "package")
-	res.PackageKey = pkgKey
 
 	ddlNanoIDs := make([]string, len(def.DDLs))
 	lensNanoIDs := make([]string, len(def.Lenses))
@@ -219,32 +258,9 @@ func (i *Installer) Install(ctx context.Context, def Definition) (*InstallResult
 	ops, declared, err := i.buildInstallBatch(def, pkgKey, ddlNanoIDs, lensNanoIDs, permNanoIDs, roleNanoIDs,
 		weaverTargetNanoIDs, loomPatternNanoIDs, opMetaNanoIDs)
 	if err != nil {
-		return nil, err
+		return nil, nil, "", err
 	}
-
-	// Step 4 — submit the InstallPackage op to the Processor. The op
-	// carries the pre-built manifest; the kernel script enforces
-	// guardrails and emits the mutations; the Processor commits them in
-	// one atomic batch and invalidates the vtx.meta.* DDL cache in-commit.
-	payload := map[string]any{
-		"name":      def.Name,
-		"version":   def.Version,
-		"mutations": ops,
-	}
-	// Deterministic requestId from name+version so a re-submit dedup-
-	// short-circuits at step 2 (idempotent install).
-	requestID := deterministicNanoID(def.Name, def.Version, "install-op")
-	reply, err := i.submitOp(ctx, "InstallPackage", "InstallPackage", requestID, payload)
-	if err != nil {
-		return nil, fmt.Errorf("pkgmgr: submit InstallPackage: %w", err)
-	}
-	switch reply.Status {
-	case processor.ReplyStatusAccepted, processor.ReplyStatusDuplicate:
-		res.DeclaredKeys = declared
-		return res, nil
-	default:
-		return nil, fmt.Errorf("pkgmgr: InstallPackage rejected: %s", replyError(reply))
-	}
+	return ops, declared, pkgKey, nil
 }
 
 // deterministicNanoID derives a stable Contract #1 NanoID from the

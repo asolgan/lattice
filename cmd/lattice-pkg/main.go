@@ -87,6 +87,21 @@ func main() {
 			}
 			os.Exit(1)
 		}
+	case "upgrade":
+		if len(args) != 1 {
+			fmt.Fprintln(os.Stderr, "upgrade requires <path-to-package-dir>")
+			os.Exit(2)
+		}
+		if err := runUpgrade(args[0], natsURL, bootstrapPath, logger); err != nil {
+			if errors.Is(err, pkgmgr.ErrBootstrapRequired) {
+				fmt.Fprintln(os.Stderr, "upgrade failed: core-kv bucket not found — run `lattice-pkg bootstrap` (or `make up`) before upgrading packages.")
+			} else if errors.Is(err, pkgmgr.ErrNotInstalled) {
+				fmt.Fprintf(os.Stderr, "upgrade failed: %v — run `lattice-pkg install` first.\n", err)
+			} else {
+				fmt.Fprintf(os.Stderr, "upgrade failed: %v\n", err)
+			}
+			os.Exit(1)
+		}
 	case "uninstall":
 		if len(args) != 1 {
 			fmt.Fprintln(os.Stderr, "uninstall requires <package-canonical-name>")
@@ -112,6 +127,7 @@ func usage() {
 
 Usage:
   lattice-pkg install <path-to-package-dir>
+  lattice-pkg upgrade <path-to-package-dir>
   lattice-pkg uninstall <package-canonical-name>
   lattice-pkg list
 
@@ -167,6 +183,51 @@ func runInstall(pkgPath, natsURL, bootstrapPath string, logger *slog.Logger) err
 		"version", res.PackageVersion,
 		"packageKey", res.PackageKey,
 		"writeCount", len(res.DeclaredKeys),
+	)
+	return nil
+}
+
+func runUpgrade(pkgPath, natsURL, bootstrapPath string, logger *slog.Logger) error {
+	manifestPath := filepath.Join(pkgPath, "manifest.yaml")
+	manifest, err := pkgmgr.ParseManifest(manifestPath)
+	if err != nil {
+		return err
+	}
+	def, ok := packageRegistry[manifest.Name]
+	if !ok {
+		return fmt.Errorf("package %q not in compiled registry; rebuild lattice-pkg with the package's Go code imported", manifest.Name)
+	}
+	if err := manifest.VerifyAgainstDefinition(def); err != nil {
+		return err
+	}
+	bs, adminActor, err := loadBootstrap(bootstrapPath)
+	if err != nil {
+		return err
+	}
+
+	conn, err := substrate.Connect(context.Background(), substrate.ConnectOpts{URL: natsURL, Name: "lattice-pkg"})
+	if err != nil {
+		return fmt.Errorf("substrate open: %w", err)
+	}
+	defer conn.Close()
+
+	inst := pkgmgr.NewInstaller(conn, adminActor)
+	inst.RoleIDs = roleIDsFromBootstrap(bs)
+	res, err := inst.Upgrade(context.Background(), def)
+	if err != nil {
+		return err
+	}
+	if res.Skipped {
+		logger.Info("upgrade skipped", "reason", res.Reason, "package", res.PackageName)
+		return nil
+	}
+	logger.Info("upgrade committed",
+		"package", res.PackageName,
+		"fromVersion", res.FromVersion,
+		"toVersion", res.ToVersion,
+		"created", res.Created,
+		"updated", res.Updated,
+		"tombstoned", res.Tombstoned,
 	)
 	return nil
 }
