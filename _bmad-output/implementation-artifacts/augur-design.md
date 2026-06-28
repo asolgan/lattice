@@ -1,9 +1,35 @@
-# Weaver L3 Evaluator — AI-assisted reasoning for unplannable convergence gaps — design
+# The Augur — Weaver's AI-assisted reasoning tier for unplannable convergence gaps — design
 
-**Status: 📐 awaiting-Andrew (ratification)**
+**Status: ✅ Andrew-ratified (2026-06-27) — build now.**
 **Component:** Weaver (convergence engine) · reuses the **bridge** external-I/O path + the Processor's op core
-**Backlog row:** Lattice lane → *AI-native → L3 evaluator*
+**Backlog row:** Lattice lane → *AI-native → the Augur (L3 evaluator)*
 **Author:** Winston (Designer fire, 2026-06-27)
+
+> **Naming (Andrew, 2026-06-27):** the feature is the **Augur** — it interprets an ambiguous/novel
+> convergence gap and *proposes* a remediation for a human to approve (an augur counsels; the human
+> decides). **"L3" stays the internal *evaluator-tier* label** (weaver.md L1/L2/L3 taxonomy); the Augur is
+> the feature that *implements* the L3 tier. The marquee AI-native flagship is not called "L3."
+>
+> **Ratification decisions (Andrew, 2026-06-27):**
+> 1. **Build now** — ratified as a strategic investment in the AI-authored-capabilities loop (AI proposes →
+>    deterministic validate → human gate → Processor writes), de-risked at the smallest safe surface. (The
+>    near-term *utility* in the current verticals is thin — most gaps are deterministically handle-able and a
+>    known failure mode should be a deterministic fallback; the Augur is the catch-all for the *un*-enumerable
+>    and the proving ground for the AI loop.)
+> 2. **Autonomy fork — Option A now, Option B designed-not-built.** Ship human-in-the-loop always (Fires 1–2);
+>    the `autoApply` auto-dispatch (Fire 3) is **designed but NOT built** until Andrew ratifies the autonomy
+>    boundary. (Don't build disabled auto-apply code — dead scaffolding.)
+> 3. **Default model `claude-opus-4-8`** (not sonnet-for-cost — don't downgrade for cost; the Augur is
+>    intelligence-sensitive + low-frequency, so reasoning quality dominates). Sonnet is an explicit opt-in.
+> 4. **Contract #10 §10.8 (the `augur` block) — ratified + committed** (2917e0f).
+>
+> **Claude-API grounding corrections folded in** (re-review against the `claude-api` reference): the
+> proposal is constrained via **structured outputs** (`output_config.format`, `messages.parse()`) or strict
+> tool use (`strict:true` + `additionalProperties:false` + `required`), honoring the JSON-schema limits (no
+> recursive/numeric/length constraints); the reasoning call uses **adaptive thinking + `effort: high`/`xhigh`**,
+> streams internally, and **handles `stop_reason:"refusal"`** → store the proposal `invalid`/escalate, never
+> crash. And the tier framing below is reconciled to **weaver.md's actual tiers** (L1 = re-confirm/dedup,
+> L2 = hydrate/classify/select-playbook, L3 = AI reasoning) — *not* the brainstorm "L1-cypher/L2-Starlark" gloss.
 
 ---
 
@@ -16,18 +42,21 @@ gap just sits there. L3 turns that dead-end into a **reasoned, human-reviewable 
 escalates the stuck gap to a Claude reasoning call (carried over the *existing* `triggerLoom →
 externalTask → bridge` external-I/O path — Weaver never calls an LLM directly), the model proposes a
 remediation **constrained to the platform's real action catalog**, and the proposal is recorded as a
-`vtx.weaverProposal` vertex pending **human approval** before anything dispatches. AI **proposes**;
+`vtx.augurProposal` vertex pending **human approval** before anything dispatches. AI **proposes**;
 a deterministic validator + a human gate **govern**; the Processor stays the sole writer (P2 intact).
 This is the bounded, safe first step of the marquee "AI-authored capabilities" vision (brainstorm
-#592 "AI Handshake protocol"; the L1-cypher / L2-Starlark / **L3-AI** tier from #375).
+#592 "AI Handshake protocol"). It implements Weaver's **L3 evaluator tier** — the third, escalating tier
+of the evaluator per `docs/components/weaver.md`: **L1** re-confirms the row is still violating + dedups
+in-flight; **L2** hydrates context, classifies the gap, and selects the playbook action; **L3** (the Augur)
+is AI reasoning for the ambiguous/novel gaps L1/L2 can't classify or map to a playbook.
 
 **Frozen-contract change: ONE — Contract #10 §10.8 (staged UNCOMMITTED in `main`).** L3 adds an
-**additive, opt-in** `l3` policy block to the `meta.weaverTarget` package shape (which stuck-gap
+**additive, opt-in** `augur` policy block to the `meta.weaverTarget` package shape (which stuck-gap
 triggers escalate; the reasoning pattern to call; the autonomy posture). The frozen `gaps`/templating
-shapes are **untouched**; a target with no `l3` block behaves exactly as today (fail-closed). The diff
+shapes are **untouched**; a target with no `augur` block behaves exactly as today (fail-closed). The diff
 in `docs/contracts/10-orchestration-surfaces.md` **is** the proposal — affected consumers: the Weaver
-engine (new escalation branch) and the `lease-signing`/new `weaver-reasoning` package data. No other
-contract changes: the `external.llmReasoning` adapter + envelope are **package/bridge data** (§10.5
+engine (new escalation branch) and the `lease-signing`/new `augur` package data. No other
+contract changes: the `external.augur` adapter + envelope are **package/bridge data** (§10.5
 "the `external` domain is ordinary"), the proposal vertex + its ops are **package DDL**, and the new
 Health metrics are **author-discretion** under §5.4.
 
@@ -37,7 +66,7 @@ Health metrics are **author-discretion** under §5.4.
   before Weaver dispatches it. Simple, maximally safe, fully auditable; the cost is operator latency on
   every novel gap.
 - **Option B — Confidence-gated auto-apply, opt-in per target (RECOMMENDED as the *design*, gated on
-  your ratification to *enable*).** A per-target `l3.autoApply` allow-list (specific low-risk action
+  your ratification to *enable*).** A per-target `augur.autoApply` allow-list (specific low-risk action
   classes) + a model-confidence floor + **mandatory deterministic validation** lets a proposal
   auto-approve and dispatch with **no human gate** — still recorded, audited, and reversible. Default
   **off**; a target ships human-in-the-loop until an operator opts a specific gap class in.
@@ -109,47 +138,47 @@ of shipped primitives**:
 
 | L3 needs | Already shipped | Reused how |
 |---|---|---|
-| An outbound call to an external system (the LLM) | **The bridge** — the one component that makes outbound calls, with durable claim / idempotency / recovery (`docs/components/bridge.md`) | A new `external.llmReasoning` **adapter** (package/bridge data — the `external` domain is ordinary, §10.5). Weaver dispatches it via `triggerLoom` of an `externalTask` pattern, exactly like `backgroundCheck`/`collectPayment`. |
-| To dispatch that call from a convergence gap | **`triggerLoom` of an `externalTask`** (§10.8 + §10.5/§10.6) — the post-13.1 external-remediation path | The stuck gap's L3 escalation **is** a `triggerLoom` of a `weaver-reasoning` pattern. Anti-storm mark, OCC, lease, reconciler-sweep recovery all apply unchanged — the gap is just another dispatch. |
-| To record the model's answer as durable state | **The op core + transactional outbox** (Processor, P2) | The bridge's `replyOp` (`RecordProposal`) DDL creates a `vtx.weaverProposal` vertex — an op through the Processor, never a direct write. |
-| Operators to review proposals | **Lens read-models (P5) + Loupe (inspector)** | A `weaver-proposals` review lens (package DDL) projects pending proposals; Loupe renders + acts on them. A missing read-model is **package work**, not a platform gap. |
+| An outbound call to an external system (the LLM) | **The bridge** — the one component that makes outbound calls, with durable claim / idempotency / recovery (`docs/components/bridge.md`) | A new `external.augur` **adapter** (package/bridge data — the `external` domain is ordinary, §10.5). Weaver dispatches it via `triggerLoom` of an `externalTask` pattern, exactly like `backgroundCheck`/`collectPayment`. |
+| To dispatch that call from a convergence gap | **`triggerLoom` of an `externalTask`** (§10.8 + §10.5/§10.6) — the post-13.1 external-remediation path | The stuck gap's L3 escalation **is** a `triggerLoom` of a `augur` pattern. Anti-storm mark, OCC, lease, reconciler-sweep recovery all apply unchanged — the gap is just another dispatch. |
+| To record the model's answer as durable state | **The op core + transactional outbox** (Processor, P2) | The bridge's `replyOp` (`RecordProposal`) DDL creates a `vtx.augurProposal` vertex — an op through the Processor, never a direct write. |
+| Operators to review proposals | **Lens read-models (P5) + Loupe (inspector)** | A `augur-proposals` review lens (package DDL) projects pending proposals; Loupe renders + acts on them. A missing read-model is **package work**, not a platform gap. |
 | To dispatch an *approved* proposal | **Weaver's existing Strategist/Actuator + mark machinery** | An approved proposal projects as a synthesized dispatch row; Weaver fires it through the same `buildPlan → fireEpisode → act.submit` path, re-validated. |
-| Structured, schema-constrained model output | **Claude structured output / tool-use** (latest models) | The `llmReasoning` adapter forces the model to return `{action, params, rationale, confidence}` conforming to a JSON schema built from the action catalog. |
+| Structured, schema-constrained model output | **Claude structured output / tool-use** (latest models) | The `augur` adapter forces the model to return `{action, params, rationale, confidence}` conforming to a JSON schema built from the action catalog. |
 
-The **only** genuinely new platform surface is the **`l3` policy block on `meta.weaverTarget`** (the
+The **only** genuinely new platform surface is the **`augur` policy block on `meta.weaverTarget`** (the
 one frozen-contract touch, §6) and the small **escalation branch** in the Weaver engine. Everything
-else is a new *package* (`weaver-reasoning`: the adapter, the pattern, the proposal vertex type + ops,
+else is a new *package* (`augur`: the adapter, the pattern, the proposal vertex type + ops,
 the review lens) — the design honors the "new capability = a package" rule (architectural decision:
 minimal-core + everything-is-a-package).
 
 **Invariants honored (checked explicitly):**
 - **P2** — every mutation (proposal create, review flip, approved dispatch) is an op via the
   Processor. Weaver's only direct write stays `weaver-state` (the escalation's anti-storm mark).
-- **P5** — operators read proposals via the `weaver-proposals` lens read-model; Loupe (the sole
+- **P5** — operators read proposals via the `augur-proposals` lens read-model; Loupe (the sole
   inspector exception) may read Core KV directly. No vertical app scans Core KV.
 - **P1** — a proposal is **business/meta state → a Core KV vertex**. The in-flight reasoning *call*
   is **operational** → the bridge claim + the `weaver-state` escalation mark (outside Core KV).
 - **"Weaver never reaches an external system itself"** (weaver.md) — the LLM call lives in the bridge.
-- **Contract #1 key-shapes** — proposal vertex `vtx.weaverProposal.<NanoID>`; 4-seg aspects; 6-seg
+- **Contract #1 key-shapes** — proposal vertex `vtx.augurProposal.<NanoID>`; 4-seg aspects; 6-seg
   links reading "source relation target" with the later-arriving proposal as source (§3.1).
 
 ---
 
 ## 3. The shape
 
-### 3.1 Data model — the proposal vertex (package DDL, `weaver-reasoning`)
+### 3.1 Data model — the proposal vertex (package DDL, `augur`)
 
 A proposal is a first-class, auditable, queryable artifact → a Core KV vertex (P1). Key shape per
 Contract #1:
 
 ```
-vtx.weaverProposal.<NanoID>                              # the proposal (later-arriving = source)
-  vtx.weaverProposal.<id>.gap          { targetId, entityId, gapColumn, trigger }   # what was stuck
-  vtx.weaverProposal.<id>.proposed     { action, params }      # the model's remediation (constrained)
-  vtx.weaverProposal.<id>.rationale    { text }                # the model's reasoning (audit)
-  vtx.weaverProposal.<id>.confidence   { score }               # 0..1 self-reported confidence
-  vtx.weaverProposal.<id>.provenance   { model, promptHash, catalogHash, reasonedAt }
-  vtx.weaverProposal.<id>.review       { state, reviewedAt, dispatchedAt }
+vtx.augurProposal.<NanoID>                              # the proposal (later-arriving = source)
+  vtx.augurProposal.<id>.gap          { targetId, entityId, gapColumn, trigger }   # what was stuck
+  vtx.augurProposal.<id>.proposed     { action, params }      # the model's remediation (constrained)
+  vtx.augurProposal.<id>.rationale    { text }                # the model's reasoning (audit)
+  vtx.augurProposal.<id>.confidence   { score }               # 0..1 self-reported confidence
+  vtx.augurProposal.<id>.provenance   { model, promptHash, catalogHash, reasonedAt }
+  vtx.augurProposal.<id>.review       { state, reviewedAt, dispatchedAt }
                                        # state ∈ {pending, approved, rejected, auto_approved,
                                        #          dispatched, invalid, superseded}
 
@@ -178,7 +207,7 @@ pending ────┤
 
 | Op | Submitted by | Effect (Starlark DDL) |
 |---|---|---|
-| `RecordProposal` | the bridge's `replyOp` (the `llmReasoning` externalTask result) | **Deterministic validation gate** (§5), then create `vtx.weaverProposal.<id>` (`review.state = pending`, or `invalid` if validation fails) + its `forCandidate`/`forTarget` links. `id` is **deterministic** from `(targetId, entityId, gapColumn, escalation episode)` so a redelivered reply collapses on the existing vertex (Contract #4 tracker + `CreateOnly` backstop), never duplicating a proposal. |
+| `RecordProposal` | the bridge's `replyOp` (the `augur` externalTask result) | **Deterministic validation gate** (§5), then create `vtx.augurProposal.<id>` (`review.state = pending`, or `invalid` if validation fails) + its `forCandidate`/`forTarget` links. `id` is **deterministic** from `(targetId, entityId, gapColumn, escalation episode)` so a redelivered reply collapses on the existing vertex (Contract #4 tracker + `CreateOnly` backstop), never duplicating a proposal. |
 | `ReviewProposal` | a human operator (via Loupe / `lattice weaver` CLI), authorized by capability | Flip `review.state` `pending → approved \| rejected`; write `reviewedBy` + `reviewedAt`. Re-runs the deterministic validator on approve (a catalog can change between propose and approve) → `invalid` if it no longer validates. |
 | `DispatchProposal` *(internal, optional)* | Weaver's actuator on an approved proposal | Flip `review.state` `approved → dispatched`; stamps `dispatchedAt`. (Or fold the flip into the proposed op's own commit — see §3.4.) |
 
@@ -188,22 +217,22 @@ contract change (architectural decision: ops are package data).
 ### 3.3 The escalation — `triggerLoom → externalTask → bridge` (the read/dispatch path)
 
 When the lane-1 handler hits an **unplannable** gap (today's `GapWithoutPlaybook` at evaluator.go:148)
-**and** the target's `l3` policy escalates that trigger, instead of (only) alerting, Weaver dispatches
+**and** the target's `augur` policy escalates that trigger, instead of (only) alerting, Weaver dispatches
 an L3 escalation — which is *just another gap dispatch*, so it inherits the anti-storm mark, OCC, lease,
 and reconciler-sweep recovery unchanged:
 
 ```
-unplannable gap on a violating row, target.l3 enabled
+unplannable gap on a violating row, target.augur enabled
   → Weaver CAS-creates the weaver-state mark <targetId>.<entityId>.<gapColumn>  (anti-storm; one
        reasoning call per stuck gap per anti-storm window — the model is not re-asked on every CDC tick)
-  → Weaver fires triggerLoom of the target.l3.pattern (default: a primordial `weaver-reasoning`
+  → Weaver fires triggerLoom of the target.augur.pattern (default: a primordial `augur`
        pattern) whose body is an externalTask:
-         { kind: externalTask, adapter: "llmReasoning",
+         { kind: externalTask, adapter: "augur",
            params: { targetId, entityId, gapColumn, row, contextRef },   # resolved from the row
            replyOp: "RecordProposal", instanceOp: "CreateReasoningClaim" }
   → the instanceOp commits the claim vertex (FR58 "visible claim before the call"), emits
-       external.llmReasoning, the engine PARKS  (all standard externalTask machinery, §10.6)
-  → the bridge's llmReasoning adapter:
+       external.augur, the engine PARKS  (all standard externalTask machinery, §10.6)
+  → the bridge's augur adapter:
        (a) reads the ACTION CATALOG from a read-model lens (op/pattern self-description:
            inputSchema / fieldDescription / examples — the same DDL self-description Loupe renders
            op-forms from), filtered to what Weaver's service-actor may submit;
@@ -212,7 +241,7 @@ unplannable gap on a violating row, target.l3 enabled
            that action's schema, rationale, confidence};
        (d) returns {action, params, rationale, confidence} as the externalTask Result.
   → the bridge posts replyOp RecordProposal → the Processor validates (§5) + creates the
-       vtx.weaverProposal vertex (pending) → orchestration.externalTaskCompleted closes the Loom
+       vtx.augurProposal vertex (pending) → orchestration.externalTaskCompleted closes the Loom
        instance and the gap's reasoning episode.
 ```
 
@@ -228,7 +257,7 @@ synchronous `Adapter.Execute` path suffices — no async-result lane needed.
 ### 3.4 Dispatching an approved proposal (the loop closes — Fire 2)
 
 An approved proposal must become a real remediation. The clean, Weaver-consistent path: the
-`weaver-proposals` lens projects an **approved** proposal as a synthesized §10.2-shaped dispatch row
+`augur-proposals` lens projects an **approved** proposal as a synthesized §10.2-shaped dispatch row
 keyed `<targetId>.<entityId>` carrying the proposed `{action, params}` as if it were a one-off playbook
 entry. Weaver's lane-1 handler picks it up and fires it through the **existing**
 `buildPlan → fireEpisode → act.submit` path — same OCC, same mark, same idempotency by derived id —
@@ -244,9 +273,9 @@ playbook entry — exactly the safety property we want.
 
 ### 3.5 The reasoning model
 
-The `llmReasoning` adapter is **model-pluggable** (adapter config, not a contract). Recommended
+The `augur` adapter is **model-pluggable** (adapter config, not a contract). Recommended
 default **`claude-sonnet-4-6`** for cost on routine novel gaps, with **`claude-opus-4-8`** selectable
-per target for the hardest reasoning (`l3.model` override). Structured output is enforced via the
+per target for the hardest reasoning (`augur.model` override). Structured output is enforced via the
 Messages API tool-use / structured-output schema so the model **cannot** return an action outside the
 catalog or params outside the action's schema — the schema is the first line of the deterministic
 boundary (§5), not the only one. The prompt is deterministic given `(row, catalog, contextRef)`;
@@ -305,14 +334,14 @@ action allow-list, fully audited and reversible.
 ## 6. Contract surface
 
 **One frozen-contract change — Contract #10 §10.8 — staged UNCOMMITTED in `main` (the diff is the
-proposal).** Additive, opt-in `l3` block on `meta.weaverTarget`:
+proposal).** Additive, opt-in `augur` block on `meta.weaverTarget`:
 
 ```
 meta.weaverTarget {
   "targetId": "...", "lensRef": "...", "gaps": { ... },          # UNCHANGED, frozen
-  "l3": {                                                         # NEW — additive, optional
+  "augur": {                                                         # NEW — additive, optional
     "escalate": ["unplannable", "exhausted"],   # which stuck-gap triggers escalate to L3
-    "pattern":  "weaverReasoning",              # the triggerLoom reasoning pattern (default primordial)
+    "pattern":  "augurReasoning",              # the triggerLoom reasoning pattern (default primordial)
     "model":    "claude-sonnet-4-6",            # optional adapter model override
     "autoApply": {                              # Fire 3 ONLY — gated on Andrew; default ABSENT (= off)
       "actions": ["assignTask"],                # the low-risk action allow-list that may skip the human gate
@@ -322,43 +351,43 @@ meta.weaverTarget {
 }
 ```
 
-A target with **no `l3` block** behaves **exactly as today** (an unplannable gap fails closed). This
+A target with **no `augur` block** behaves **exactly as today** (an unplannable gap fails closed). This
 is the same additive-extension class as the 13.1 amendments to §10.2/§10.8. **Affected consumers:** the
-Weaver engine (the new escalation branch + install-time validation of the `l3` block); package authors
-(the `weaver-reasoning` package; opting a target in). The §10.8 templating rule, the `gaps` shape, and
+Weaver engine (the new escalation branch + install-time validation of the `augur` block); package authors
+(the `augur` package; opting a target in). The §10.8 templating rule, the `gaps` shape, and
 the action table are **untouched**.
 
 **No other contract change:**
-- The `external.llmReasoning` adapter + its event envelope are **package/bridge data** — §10.5 states
+- The `external.augur` adapter + its event envelope are **package/bridge data** — §10.5 states
   the `external` domain is ordinary (open `<domain>.<eventName>`, no Processor allowlist, no Contract
   #3 amendment). A new adapter is bridge-registry config, exactly like `backgroundCheck`.
-- `vtx.weaverProposal` + `RecordProposal`/`ReviewProposal`/`DispatchProposal` are **package DDL** —
+- `vtx.augurProposal` + `RecordProposal`/`ReviewProposal`/`DispatchProposal` are **package DDL** —
   Contract #1 governs the *key shapes* (honored), but a specific vertex type / op is package data.
-- The `weaver-proposals` review lens is **package DDL** (a Refractor target).
-- New Weaver Health metrics (`l3Escalations`, `proposalsPending`, `proposalsApproved`,
+- The `augur-proposals` review lens is **package DDL** (a Refractor target).
+- New Weaver Health metrics (`augurEscalations`, `proposalsPending`, `proposalsApproved`,
   `proposalsDispatched`, `proposalsInvalid`) are **author-discretion** under Contract #5 §5.4.
 
 ---
 
 ## 7. Migration / compatibility & test strategy
 
-**Migration.** Purely additive. Bootstrap gains one primordial package (`weaver-reasoning`) on the
-install list (the proposal type + ops + review lens + reasoning pattern + the `llmReasoning` adapter
+**Migration.** Purely additive. Bootstrap gains one primordial package (`augur`) on the
+install list (the proposal type + ops + review lens + reasoning pattern + the `augur` adapter
 registration), bumping the bootstrap version like every prior package add. Existing targets are
-untouched and keep failing-closed until a package author adds an `l3` block. The bridge gains one
-adapter. No data migration; no behavior change for any non-`l3` target.
+untouched and keep failing-closed until a package author adds an `augur` block. The bridge gains one
+adapter. No data migration; no behavior change for any non-`augur` target.
 
 **Test strategy** (each fire ships green; mirrors the existing Weaver e2e style):
 - **Unit** — the deterministic validator (§5) table: every reject class (unknown action, unresolved
   pattern/op, scope-escape to a different entity, unauthorized op type, param-resolution failure) →
   `invalid`; every accept class → `pending`. Confidence-gate arithmetic (Fire 3). Proposal-id
   determinism (redelivered reply collapses, no duplicate).
-- **A faked `llmReasoning` adapter** (test-only, deterministic — the same pattern as the existing
+- **A faked `augur` adapter** (test-only, deterministic — the same pattern as the existing
   `Fake*` bridge adapters): returns a canned `{action, params, confidence}` so the whole escalation →
   record → review → dispatch loop is exercised against the **real** Processor + bridge + Weaver on the
   ephemeral stack, with **no real model call in CI** (no network, no spend, deterministic).
-- **E2e (ephemeral stack)** — a target with an unplannable gap + an `l3` block escalates → a `pending`
-  proposal lands in the `weaver-proposals` lens → `ReviewProposal{approve}` → Weaver dispatches the
+- **E2e (ephemeral stack)** — a target with an unplannable gap + an `augur` block escalates → a `pending`
+  proposal lands in the `augur-proposals` lens → `ReviewProposal{approve}` → Weaver dispatches the
   proposed action → the gap closes and the proposal flips `dispatched`. A second e2e for the reject and
   the `invalid` (validator-fail) paths. Fire 3: an `autoApply`-opted low-risk gap auto-approves +
   dispatches with no human op; an action **outside** the allow-list still waits for a human.
@@ -377,9 +406,9 @@ boundary (§5) and the autonomy gate (Fire 3).
 
 ## 8. Decomposition for the Steward (fire-by-fire, each independently shippable + green)
 
-- **Fire 1 — Reasoning capture (no dispatch).** The `weaver-reasoning` package (proposal type +
-  `RecordProposal` op + `weaver-proposals` review lens + the `weaverReasoning` externalTask pattern) +
-  the `llmReasoning` bridge adapter (with a faked adapter for CI) + the §10.8 `l3` block + the Weaver
+- **Fire 1 — Reasoning capture (no dispatch).** The `augur` package (proposal type +
+  `RecordProposal` op + `augur-proposals` review lens + the `augurReasoning` externalTask pattern) +
+  the `augur` bridge adapter (with a faked adapter for CI) + the §10.8 `augur` block + the Weaver
   escalation branch (on `unplannable`, dispatch the reasoning `triggerLoom` instead of dead-ending) +
   the §5 record-time validator. **Ships value alone:** a stuck gap becomes a reasoned, human-reviewable
   `pending` proposal surfaced in Loupe. Zero autonomous mutation. *(This is the bulk; M.)*
@@ -387,7 +416,7 @@ boundary (§5) and the autonomy gate (Fire 3).
   review lens + Weaver's dispatch-on-approval (re-validated) + the `dispatched` flip + a Loupe/CLI
   review affordance. **Closes the loop:** AI proposes → human approves → deterministic dispatch closes
   the gap. *(S–M.)*
-- **Fire 3 — Autonomy dial (gated on Andrew).** The `l3.autoApply` allow-list + confidence floor +
+- **Fire 3 — Autonomy dial (gated on Andrew).** The `augur.autoApply` allow-list + confidence floor +
   auto-approve-and-dispatch (full validation + audit + reversibility), default off. **Ships dark until
   the autonomy boundary is ratified.** *(S–M.)*
 - **Optional follow-on — `exhausted`-trigger escalation.** Extend the escalation branch to also fire
@@ -401,7 +430,7 @@ boundary (§5) and the autonomy gate (Fire 3).
 | Risk | Mitigation |
 |---|---|
 | **The model proposes a harmful / out-of-scope action.** | The §5 three-point deterministic validator + the Processor capability backstop. Under Fires 1–2 a proposal **cannot** dispatch without a human; the model gains **no new authority** (only Weaver's existing service-actor authority, arranged differently). Adversarial test proves DEFENDED. |
-| **Cost / runaway escalation storm.** | The escalation is dispatched as a **gap** → the anti-storm mark means **one reasoning call per stuck gap per anti-storm window**, not per CDC tick; the bridge `idempotencyKey` dedups redelivery → **at most one billed call per escalation episode**. `l3.escalate` is opt-in per target; a target with no `l3` block never escalates. Health metric `l3Escalations` makes spend operator-visible. |
+| **Cost / runaway escalation storm.** | The escalation is dispatched as a **gap** → the anti-storm mark means **one reasoning call per stuck gap per anti-storm window**, not per CDC tick; the bridge `idempotencyKey` dedups redelivery → **at most one billed call per escalation episode**. `augur.escalate` is opt-in per target; a target with no `augur` block never escalates. Health metric `augurEscalations` makes spend operator-visible. |
 | **Stale proposal (catalog drifts between propose → approve → dispatch).** | `provenance.catalogHash` records what was reasoned over; **re-validation at approve and at dispatch** fails-closed to `invalid` if the proposed action no longer resolves. A newer proposal for the same `(target,entity,gap)` **supersedes** the older. |
 | **Non-determinism / replay.** | The model call lives behind the bridge's deterministic `requestId` + `idempotencyKey`, and `RecordProposal` collapses on a deterministic proposal id, so redelivery never duplicates. The *content* of a proposal is non-deterministic (it's an LLM) — but it is **inert until validated + approved**, so non-determinism never reaches state unreviewed. |
 | **L3 becomes a crutch (package authors stop writing real playbooks).** | L3 is the **fallback**, not the path: a recurring `unplannable` escalation for the same gap is a Health-visible signal that the package needs a real playbook entry. A future surveyor/Lamplighter rule can flag "gap X escalated to L3 N times — author a playbook." (Noted as a follow-on, not in scope.) |
@@ -421,12 +450,12 @@ boundary (§5) and the autonomy gate (Fire 3).
 
 ## 10. Open questions — resolved
 
-- **Where does the LLM call live?** → The **bridge** (a new `llmReasoning` adapter), dispatched via
+- **Where does the LLM call live?** → The **bridge** (a new `augur` adapter), dispatched via
   `triggerLoom → externalTask`. Not in-process. (§3.3)
-- **Is the proposal Core-KV or operational?** → **Core-KV vertex** `vtx.weaverProposal.<NanoID>` (P1);
+- **Is the proposal Core-KV or operational?** → **Core-KV vertex** `vtx.augurProposal.<NanoID>` (P1);
   the in-flight call is operational (bridge claim + escalation mark). (§3.1)
 - **What triggers L3?** → The two real dead-ends — `unplannable` (no playbook entry) and `exhausted`
-  (retry budget spent) — selected per target via `l3.escalate`. Fire 1 ships `unplannable`. (§1, §8)
+  (retry budget spent) — selected per target via `augur.escalate`. Fire 1 ships `unplannable`. (§1, §8)
 - **How is the AI prevented from doing harm?** → The §5 three-point deterministic validator + the
   Processor capability backstop; AI **proposes**, never directly mutates. (§5)
 - **Does an approved proposal need a new dispatch path?** → No — it projects as a synthesized §10.2
@@ -444,11 +473,11 @@ boundary (§5) and the autonomy gate (Fire 3).
 
 | Path | Change |
 |---|---|
-| `docs/contracts/10-orchestration-surfaces.md` §10.8 | **(UNCOMMITTED)** additive `l3` policy block on `meta.weaverTarget` + install-validation note |
-| `packages/weaver-reasoning/` *(new package)* | proposal vertex type DDL; `RecordProposal`/`ReviewProposal`/`DispatchProposal` ops; `weaver-proposals` review lens; `weaverReasoning` externalTask pattern; the action-catalog lens; capability grants (operator → `ReviewProposal`; Weaver service-actor → the dispatch ops) |
-| `internal/bridge/` (+ registry) | the `llmReasoning` adapter (real Claude client) + a deterministic `FakeLLMReasoning` adapter for CI |
-| `internal/weaver/` (`evaluator.go`, registry, `strategist.go`) | the escalation branch (unplannable/exhausted → dispatch the reasoning `triggerLoom`); approved-proposal dispatch (Fire 2); auto-apply gate (Fire 3); §10.8 `l3` install validation; new Health metrics |
-| `cmd/loupe/` + `cmd/lattice/weaver/` | proposal review surface (list/approve/reject) — reads the `weaver-proposals` lens |
+| `docs/contracts/10-orchestration-surfaces.md` §10.8 | **(UNCOMMITTED)** additive `augur` policy block on `meta.weaverTarget` + install-validation note |
+| `packages/augur/` *(new package)* | proposal vertex type DDL; `RecordProposal`/`ReviewProposal`/`DispatchProposal` ops; `augur-proposals` review lens; `augurReasoning` externalTask pattern; the action-catalog lens; capability grants (operator → `ReviewProposal`; Weaver service-actor → the dispatch ops) |
+| `internal/bridge/` (+ registry) | the `augur` adapter (real Claude client) + a deterministic `FakeAugur` adapter for CI |
+| `internal/weaver/` (`evaluator.go`, registry, `strategist.go`) | the escalation branch (unplannable/exhausted → dispatch the reasoning `triggerLoom`); approved-proposal dispatch (Fire 2); auto-apply gate (Fire 3); §10.8 `augur` install validation; new Health metrics |
+| `cmd/loupe/` + `cmd/lattice/weaver/` | proposal review surface (list/approve/reject) — reads the `augur-proposals` lens |
 | tests | validator unit table; faked-adapter e2e (escalate→record→review→dispatch); adversarial malicious-proposal DEFENDED; Fire-3 auto-apply gating |
 
 ---
