@@ -110,14 +110,18 @@ var (
 	InstallPackageDDLKey   string
 	UninstallPackageDDLID  string
 	UninstallPackageDDLKey string
+	UpgradePackageDDLID    string
+	UpgradePackageDDLKey   string
 
-	// Two meta-permission NanoIDs authorizing the operator to submit the
-	// InstallPackage / UninstallPackage ops. Granted to the operator role,
-	// which the primordial admin holds.
+	// Meta-permission NanoIDs authorizing the operator to submit the
+	// InstallPackage / UninstallPackage / UpgradePackage ops. Granted to the
+	// operator role, which the primordial admin holds.
 	PermInstallPackageID      string
 	PermInstallPackageKey     string
 	PermUninstallPackageID    string
 	PermUninstallPackageKey   string
+	PermUpgradePackageID      string
+	PermUpgradePackageKey     string
 
 	// Five aspect-type meta-vertex NanoIDs — the primordial DDLs for the
 	// self-description aspect classes (description, inputSchema,
@@ -164,8 +168,10 @@ type PrimordialIDsRaw struct {
 	// InstallPackage / UninstallPackage DDL + permission NanoIDs (Story 1.5.5).
 	InstallPackageDDL    string `json:"installPackageDDL"`
 	UninstallPackageDDL  string `json:"uninstallPackageDDL"`
+	UpgradePackageDDL    string `json:"upgradePackageDDL"`
 	PermInstallPackage   string `json:"permInstallPackage"`
 	PermUninstallPackage string `json:"permUninstallPackage"`
+	PermUpgradePackage   string `json:"permUpgradePackage"`
 
 	// Aspect-type meta-vertex NanoIDs.
 	AspectTypeDescription       string `json:"aspectTypeDescription"`
@@ -207,6 +213,12 @@ type PrimordialIDsRaw struct {
 //     so the byte-janitor gains a root-equivalent actor via holdsRole→operator,
 //     mirroring Loom/Weaver/Bridge). Adds 2 Core-KV keys (the identity vertex +
 //     its holdsRole link), so PrimordialVertexKeyCount moves 29 → 31.
+//   - "12": UpgradePackage primordial DDL + its operator permission added
+//     (Contract #8 §8.6 — in-place package upgrade). Adds 3 top-level Core-KV
+//     keys (the UpgradePackage DDL meta-vertex, the UpgradePackage permission,
+//     and the permission→operator grant link), so PrimordialVertexKeyCount
+//     moves 31 → 34. A stale file lacks the two new NanoID fields, so the
+//     version bump forces regeneration.
 type BootstrapFile struct {
 	Version       string           `json:"version"`
 	GeneratedAt   string           `json:"generatedAt"`
@@ -309,8 +321,10 @@ func currentRaw() PrimordialIDsRaw {
 		PermTombstoneMetaVertex:    PermTombstoneMetaVertexID,
 		InstallPackageDDL:          InstallPackageDDLID,
 		UninstallPackageDDL:        UninstallPackageDDLID,
+		UpgradePackageDDL:          UpgradePackageDDLID,
 		PermInstallPackage:         PermInstallPackageID,
 		PermUninstallPackage:       PermUninstallPackageID,
+		PermUpgradePackage:         PermUpgradePackageID,
 		AspectTypeDescription:      AspectTypeDescriptionID,
 		AspectTypeInputSchema:      AspectTypeInputSchemaID,
 		AspectTypeOutputSchema:     AspectTypeOutputSchemaID,
@@ -339,16 +353,17 @@ func Load(path string) error {
 // checkVersion returns a clear error when the bootstrap file's version is
 // not one of the supported versions. This surfaces a meaningful message
 // instead of a confusing NanoID validation failure when an operator
-// upgrades Lattice without running `make down` first. Version 11 adds the
-// object-store-manager service actor (the §22 GC cascade); older files predate
-// it and must be regenerated so the kernel actor topology matches.
+// upgrades Lattice without running `make down` first. Version 12 adds the
+// UpgradePackage primordial DDL + its operator permission (Contract #8 §8.6);
+// older files lack the two new NanoID fields and must be regenerated so the
+// kernel topology matches.
 func checkVersion(f BootstrapFile) error {
 	switch f.Version {
-	case "11":
+	case "12":
 		return nil
 	default:
 		return fmt.Errorf(
-			"bootstrap file version mismatch: got %q, want \"11\" — run `make down && make up`",
+			"bootstrap file version mismatch: got %q, want \"12\" — run `make down && make up`",
 			f.Version,
 		)
 	}
@@ -371,8 +386,10 @@ func generate() (PrimordialIDsRaw, error) {
 		&raw.PermTombstoneMetaVertex,
 		&raw.InstallPackageDDL,
 		&raw.UninstallPackageDDL,
+		&raw.UpgradePackageDDL,
 		&raw.PermInstallPackage,
 		&raw.PermUninstallPackage,
+		&raw.PermUpgradePackage,
 		&raw.AspectTypeDescription,
 		&raw.AspectTypeInputSchema,
 		&raw.AspectTypeOutputSchema,
@@ -409,8 +426,10 @@ func populate(raw PrimordialIDsRaw) error {
 		{"permTombstoneMetaVertex", raw.PermTombstoneMetaVertex},
 		{"installPackageDDL", raw.InstallPackageDDL},
 		{"uninstallPackageDDL", raw.UninstallPackageDDL},
+		{"upgradePackageDDL", raw.UpgradePackageDDL},
 		{"permInstallPackage", raw.PermInstallPackage},
 		{"permUninstallPackage", raw.PermUninstallPackage},
+		{"permUpgradePackage", raw.PermUpgradePackage},
 		{"aspectTypeDescription", raw.AspectTypeDescription},
 		{"aspectTypeInputSchema", raw.AspectTypeInputSchema},
 		{"aspectTypeOutputSchema", raw.AspectTypeOutputSchema},
@@ -444,10 +463,14 @@ func populate(raw PrimordialIDsRaw) error {
 	InstallPackageDDLKey = substrate.VertexKey("meta", InstallPackageDDLID)
 	UninstallPackageDDLID = raw.UninstallPackageDDL
 	UninstallPackageDDLKey = substrate.VertexKey("meta", UninstallPackageDDLID)
+	UpgradePackageDDLID = raw.UpgradePackageDDL
+	UpgradePackageDDLKey = substrate.VertexKey("meta", UpgradePackageDDLID)
 	PermInstallPackageID = raw.PermInstallPackage
 	PermInstallPackageKey = substrate.VertexKey("permission", PermInstallPackageID)
 	PermUninstallPackageID = raw.PermUninstallPackage
 	PermUninstallPackageKey = substrate.VertexKey("permission", PermUninstallPackageID)
+	PermUpgradePackageID = raw.PermUpgradePackage
+	PermUpgradePackageKey = substrate.VertexKey("permission", PermUpgradePackageID)
 
 	AspectTypeDescriptionID = raw.AspectTypeDescription
 	AspectTypeDescriptionKey = substrate.VertexKey("meta", AspectTypeDescriptionID)
@@ -485,7 +508,7 @@ func populate(raw PrimordialIDsRaw) error {
 
 func persistWithStatus(path string, raw PrimordialIDsRaw, status string) error {
 	f := BootstrapFile{
-		Version:       "11",
+		Version:       "12",
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339Nano),
 		Status:        status,
 		PrimordialIDs: raw,
@@ -516,25 +539,28 @@ func PrimordialVertexKeys() []string {
 		ObjmgrIdentityKey,
 		// meta-meta DDL
 		MetaRootKey,
-		// InstallPackage / UninstallPackage primordial DDLs (Story 1.5.5)
+		// InstallPackage / UninstallPackage / UpgradePackage primordial DDLs
 		InstallPackageDDLKey,
 		UninstallPackageDDLKey,
+		UpgradePackageDDLKey,
 		// Capability Lens definition (primordial-identity anchor)
 		CapabilityLensKey,
 		// operator role
 		RoleOperatorKey,
-		// 3 kernel meta-permissions + 2 package-install permissions
+		// 3 kernel meta-permissions + 3 package-install/upgrade permissions
 		PermCreateMetaVertexKey,
 		PermUpdateMetaVertexKey,
 		PermTombstoneMetaVertexKey,
 		PermInstallPackageKey,
 		PermUninstallPackageKey,
-		// 5 grantedBy links (meta-perm + install perms → operator) + admin holdsRole link
+		PermUpgradePackageKey,
+		// 6 grantedBy links (meta-perm + install/upgrade perms → operator) + admin holdsRole link
 		"lnk.permission." + PermCreateMetaVertexID + ".grantedBy.role." + RoleOperatorID,
 		"lnk.permission." + PermUpdateMetaVertexID + ".grantedBy.role." + RoleOperatorID,
 		"lnk.permission." + PermTombstoneMetaVertexID + ".grantedBy.role." + RoleOperatorID,
 		"lnk.permission." + PermInstallPackageID + ".grantedBy.role." + RoleOperatorID,
 		"lnk.permission." + PermUninstallPackageID + ".grantedBy.role." + RoleOperatorID,
+		"lnk.permission." + PermUpgradePackageID + ".grantedBy.role." + RoleOperatorID,
 		BootstrapHoldsRoleLinkKey,
 		// service-actor holdsRole links (Loom + Weaver + Bridge + objmgr → operator)
 		LoomHoldsRoleLinkKey,
@@ -553,9 +579,9 @@ func PrimordialVertexKeys() []string {
 // PrimordialVertexKeyCount is the count of TOP-LEVEL kernel keys (the
 // ones in PrimordialVertexKeys()). Used as a count-only readiness gate
 // where loading lattice.bootstrap.json would race startup. Current count
-// is 31 entries: 1 op + 1 admin + 4 service actors (Loom + Weaver +
-// Bridge + object-store-manager) + 1 meta-DDL + 2 install/uninstall DDLs +
-// 1 lens (the capability primordial-identity anchor) + 1 role + 5 perms
-// (3 meta + 2 install) + 10 links (5 grantedBy + 5 holdsRole) + 5 aspect-type
-// meta-vertices.
-const PrimordialVertexKeyCount = 31
+// is 34 entries: 1 op + 1 admin + 4 service actors (Loom + Weaver +
+// Bridge + object-store-manager) + 1 meta-DDL + 3 install/uninstall/upgrade
+// DDLs + 1 lens (the capability primordial-identity anchor) + 1 role + 6 perms
+// (3 meta + 3 install/uninstall/upgrade) + 11 links (6 grantedBy + 5 holdsRole)
+// + 5 aspect-type meta-vertices.
+const PrimordialVertexKeyCount = 34

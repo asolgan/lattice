@@ -86,7 +86,8 @@ RETURN
     {operationType: 'UpdateMetaVertex', scope: 'any'},
     {operationType: 'TombstoneMetaVertex', scope: 'any'},
     {operationType: 'InstallPackage', scope: 'any'},
-    {operationType: 'UninstallPackage', scope: 'any'}
+    {operationType: 'UninstallPackage', scope: 'any'},
+    {operationType: 'UpgradePackage', scope: 'any'}
   ] AS platformPermissions
 `,
 		// outputSchema: JSON Schema for the Capability KV document per Contract #6 §6.2.

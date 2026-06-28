@@ -85,7 +85,7 @@ func TestCapabilityLens_PrimordialAnchor_ProtectedGrantsRoot(t *testing.T) {
 	pp, _ := loomRows[0].Values["platformPermissions"].([]any)
 	wantOps := map[string]bool{
 		"CreateMetaVertex": false, "UpdateMetaVertex": false, "TombstoneMetaVertex": false,
-		"InstallPackage": false, "UninstallPackage": false,
+		"InstallPackage": false, "UninstallPackage": false, "UpgradePackage": false,
 	}
 	for _, e := range pp {
 		m, ok := e.(map[string]any)

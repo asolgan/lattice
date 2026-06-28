@@ -281,7 +281,7 @@ func TestCapabilityLens_ContractConformance(t *testing.T) {
 	require.NotEmpty(t, pp, "platformPermissions must include the root grant set")
 	wantOps := map[string]bool{
 		"CreateMetaVertex": false, "UpdateMetaVertex": false, "TombstoneMetaVertex": false,
-		"InstallPackage": false, "UninstallPackage": false,
+		"InstallPackage": false, "UninstallPackage": false, "UpgradePackage": false,
 	}
 	for _, e := range pp {
 		m, ok := e.(map[string]any)

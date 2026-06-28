@@ -217,9 +217,9 @@ func TestServiceActors_KeyCountDelta(t *testing.T) {
 }
 
 // TestPrimordialVertexKeyCount_AgreesWithEnumeration asserts the declared
-// count constant matches the enumerated slice length and is the expected 31
-// after the object-store-manager identity vertex + holdsRole link were added
-// (the §22 GC cascade). This is the pure-Go mirror of the
+// count constant matches the enumerated slice length and is the expected 34
+// after the UpgradePackage DDL meta-vertex + its permission + grant link were
+// added (Contract #8 §8.6). This is the pure-Go mirror of the
 // scripts/verify-kernel.go len()==Count agreement check (the kernel-topology
 // lockstep guard).
 func TestPrimordialVertexKeyCount_AgreesWithEnumeration(t *testing.T) {
@@ -229,8 +229,8 @@ func TestPrimordialVertexKeyCount_AgreesWithEnumeration(t *testing.T) {
 		t.Fatalf("PrimordialVertexKeys() enumerates %d but PrimordialVertexKeyCount is %d",
 			len(keys), PrimordialVertexKeyCount)
 	}
-	if PrimordialVertexKeyCount != 31 {
-		t.Fatalf("PrimordialVertexKeyCount = %d, want 31", PrimordialVertexKeyCount)
+	if PrimordialVertexKeyCount != 34 {
+		t.Fatalf("PrimordialVertexKeyCount = %d, want 34", PrimordialVertexKeyCount)
 	}
 }
 
@@ -289,16 +289,16 @@ func TestGeneratePopulateRoundTrip_Bridge(t *testing.T) {
 	}
 }
 
-// TestCheckVersion_RejectsStaleAcceptsCurrent proves the version-11 gate: a
-// version-11 file passes, and any other version (notably "10", which predates
-// the object-store-manager service actor) is hard-rejected with the
+// TestCheckVersion_RejectsStaleAcceptsCurrent proves the version-12 gate: a
+// version-12 file passes, and any other version (notably "11", which predates
+// the UpgradePackage primordial DDL) is hard-rejected with the
 // make-down/make-up guidance so a stale file can never silently run against a
 // mismatched kernel topology (AC #2).
 func TestCheckVersion_RejectsStaleAcceptsCurrent(t *testing.T) {
-	if err := checkVersion(BootstrapFile{Version: "11"}); err != nil {
-		t.Errorf("checkVersion(version=11): unexpected error %v", err)
+	if err := checkVersion(BootstrapFile{Version: "12"}); err != nil {
+		t.Errorf("checkVersion(version=12): unexpected error %v", err)
 	}
-	for _, v := range []string{"10", "9", "8", "7", "6", "5", ""} {
+	for _, v := range []string{"11", "10", "9", "8", "7", "6", "5", ""} {
 		err := checkVersion(BootstrapFile{Version: v})
 		if err == nil {
 			t.Errorf("checkVersion(version=%q): expected rejection, got nil", v)

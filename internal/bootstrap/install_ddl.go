@@ -177,7 +177,80 @@ def execute(state, op):
     return {"mutations": out, "events": events}
 `
 
-// --- Self-description constants for the two package-install DDLs. ---
+// UpgradePackageDDLScript applies a Capability-Package in-place upgrade by
+// emitting a mixed create/update/tombstone mutation batch (Contract #8 §8.6).
+// The client (internal/pkgmgr) reads the installed package's old declaredKeys,
+// rebuilds the new manifest on version-independent keys (§8.1), diffs by key,
+// and ships the delta in op.payload.mutations. Payload shape:
+// {name, fromVersion, toVersion, mutations: [{op, key, document}, ...]}.
+//
+// Unlike InstallPackage this is NOT create-only — it carries update/tombstone
+// ops, so it is not safe-by-construction. Protected kernel/auth roots are
+// guarded authoritatively by the Processor commit-time guard (step 8
+// rejectProtectedMutations), which KVGets each update/tombstone's root and
+// rejects the whole op when data.protected == true — path-independent, the
+// same backstop install/uninstall rely on. The script enforces the same
+// key-shape + underscore-aspect guardrails as install (shared helpers) plus
+// the op-vocabulary check (create/update/tombstone only).
+const UpgradePackageDDLScript = installGuardrailHelpers + `
+def execute(state, op):
+    p = op.payload
+    if not hasattr(p, "name") or type(p.name) != type("") or len(p.name) == 0:
+        fail("InvalidArgument: name: required non-empty string")
+    if not hasattr(p, "fromVersion") or type(p.fromVersion) != type("") or len(p.fromVersion) == 0:
+        fail("InvalidArgument: fromVersion: required non-empty string")
+    if not hasattr(p, "toVersion") or type(p.toVersion) != type("") or len(p.toVersion) == 0:
+        fail("InvalidArgument: toVersion: required non-empty string")
+    if not hasattr(p, "mutations") or type(p.mutations) != type([]):
+        fail("InvalidArgument: mutations: required list")
+    name = p.name
+
+    out = []
+    created = 0
+    updated = 0
+    tombstoned = 0
+    for m in p.mutations:
+        if type(m) != type({}):
+            fail("InvalidArgument: each mutation must be a dict")
+        if "op" not in m or "key" not in m:
+            fail("InvalidArgument: mutation requires op and key")
+        mop = m["op"]
+        key = m["key"]
+        if mop != "create" and mop != "update" and mop != "tombstone":
+            fail("InvalidArgument: upgrade mutations must be create/update/tombstone, got " + str(mop))
+        if type(key) != type("") or not _is_valid_key_shape(key):
+            fail("InvalidArgument: illegal key shape: " + str(key))
+        # NOTE: protected-key (kernel/auth) protection is enforced
+        # authoritatively by the Processor commit-time guard (step 8
+        # rejectProtectedMutations) for every update/tombstone, not here —
+        # the upgrade script runs with empty hydrated state.
+        if _is_aspect_key(key):
+            local = _aspect_local_name(key)
+            if len(local) > 0 and local[0] == "_":
+                fail("InvalidArgument: underscore-prefixed aspect not allowed: " + key)
+        if "document" not in m or type(m["document"]) != type({}):
+            fail("InvalidArgument: mutation requires a document dict: " + key)
+        out.append({"op": mop, "key": key, "document": m["document"]})
+        if mop == "create":
+            created = created + 1
+        elif mop == "update":
+            updated = updated + 1
+        else:
+            tombstoned = tombstoned + 1
+
+    if len(out) == 0:
+        fail("InvalidArgument: upgrade produced no mutations")
+
+    events = [{"class": "package.upgraded",
+               "data": {"name": name, "fromVersion": p.fromVersion, "toVersion": p.toVersion,
+                        "createdCount": created, "updatedCount": updated, "tombstonedCount": tombstoned}}]
+    # UpgradePackage is multi-key with no single principal entity; it omits
+    # primaryKey. Clients read the committed key set from OperationReply.Revisions
+    # and the counts from the PackageUpgraded event.
+    return {"mutations": out, "events": events}
+`
+
+// --- Self-description constants for the three package-install DDLs. ---
 
 const installPackageInputSchema = `{"type":"object","required":["name","version","mutations"],"properties":{"name":{"type":"string"},"version":{"type":"string"},"mutations":{"type":"array","items":{"type":"object","required":["op","key","document"],"properties":{"op":{"type":"string","enum":["create"]},"key":{"type":"string"},"document":{"type":"object"}}}}}}`
 
@@ -232,5 +305,42 @@ var uninstallPackageExamples = []any{
 			"declaredKeys": []any{"vtx.meta.AbCdEfGhJkLmNpQrStUv"},
 		},
 		"expectedOutcome": "Tombstones every declared key in one atomic batch.",
+	},
+}
+
+const upgradePackageInputSchema = `{"type":"object","required":["name","fromVersion","toVersion","mutations"],"properties":{"name":{"type":"string"},"fromVersion":{"type":"string"},"toVersion":{"type":"string"},"mutations":{"type":"array","items":{"type":"object","required":["op","key","document"],"properties":{"op":{"type":"string","enum":["create","update","tombstone"]},"key":{"type":"string"},"document":{"type":"object"}}}}}}`
+
+// UpgradePackage is multi-key with no single principal entity, so the reply
+// carries no primaryKey. The committed key set is the key set of
+// OperationReply.Revisions; name/versions/counts ride the PackageUpgraded event.
+const upgradePackageOutputSchema = `{"type":"object","properties":{}}`
+
+var upgradePackageFieldDescription = map[string]any{
+	"name":                 "The Capability Package canonical name to upgrade in place.",
+	"fromVersion":          "The currently-installed version. Combined with name+toVersion to derive a deterministic op requestId so a re-submitted upgrade dedup-short-circuits.",
+	"toVersion":            "The target version. Equal to fromVersion for a dev-mode same-version re-apply (update-only).",
+	"mutations":            "The pre-computed diff delta: create new entities, update changed bodies, tombstone removed entities — applied in one atomic batch.",
+	"mutations[].op":       "One of 'create' / 'update' / 'tombstone'.",
+	"mutations[].key":      "The version-independent Contract #1 key the mutation targets (vtx.* or lnk.*).",
+	"mutations[].document": "The logical document body. Provenance is stamped by the Processor; protected kernel/auth roots are rejected at commit time.",
+}
+
+var upgradePackageExamples = []any{
+	map[string]any{
+		"name": "Upgrade a package with one new + one changed + one removed entity",
+		"payload": map[string]any{
+			"name":        "demo-domain",
+			"fromVersion": "0.1.0",
+			"toVersion":   "0.2.0",
+			"mutations": []any{
+				map[string]any{"op": "update", "key": "vtx.meta.AbCdEfGhJkLmNpQrStUv",
+					"document": map[string]any{"class": "meta.lens", "isDeleted": false, "data": map[string]any{}}},
+				map[string]any{"op": "create", "key": "vtx.meta.WxYz123456789AbCdEfG",
+					"document": map[string]any{"class": "meta.ddl.vertexType", "isDeleted": false, "data": map[string]any{}}},
+				map[string]any{"op": "tombstone", "key": "vtx.permission.MnPqRsTuVwXyZ1234567",
+					"document": map[string]any{"isDeleted": true, "data": map[string]any{}}},
+			},
+		},
+		"expectedOutcome": "Commits the mixed delta in one atomic batch; changed lens/DDL meta-vertices are re-projected and the DDL cache is invalidated in-commit (no restart).",
 	},
 }

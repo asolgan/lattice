@@ -503,8 +503,8 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		return nil, err
 	}
 
-	// 4b. InstallPackage / UninstallPackage primordial DDLs (Story 1.5.5).
-	// Two privileged kernel DDLs that route package install/uninstall
+	// 4b. InstallPackage / UninstallPackage / UpgradePackage primordial DDLs.
+	// Privileged kernel DDLs that route package install/uninstall/upgrade
 	// through the Processor. Each is protected (§3.4) so it cannot be
 	// tombstoned/updated or overwritten by an install.
 	if err := seedPackageInstallDDL(add, InstallPackageDDLKey, "InstallPackage",
@@ -512,7 +512,7 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		"Installs a Capability Package by applying its pre-built mutation manifest as one atomic commit. "+
 			"Privileged: enforces key-shape, protected-key, system-aspect, and create-only guardrails.",
 		InstallPackageDDLScript, installPackageInputSchema, installPackageOutputSchema,
-		installPackageFieldDescription, installPackageExamples); err != nil {
+		installPackageFieldDescription, installPackageExamples, "UninstallPackage"); err != nil {
 		return nil, err
 	}
 	if err := seedPackageInstallDDL(add, UninstallPackageDDLKey, "UninstallPackage",
@@ -520,7 +520,21 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		"Uninstalls a Capability Package by tombstoning its declared keys as one atomic commit. "+
 			"Carries optional per-key expectedRevision (OCC) and rejects protected kernel keys.",
 		UninstallPackageDDLScript, uninstallPackageInputSchema, uninstallPackageOutputSchema,
-		uninstallPackageFieldDescription, uninstallPackageExamples); err != nil {
+		uninstallPackageFieldDescription, uninstallPackageExamples, "UninstallPackage"); err != nil {
+		return nil, err
+	}
+	// UpgradePackage (Contract #8 §8.6) applies a mixed create/update/tombstone
+	// diff in place. It is NOT create-only, so its safety rests on the step-8
+	// protected-key guard. Its compensation inverse is itself — an upgrade is
+	// rolled back by upgrading to the prior version (the prior manifest is not
+	// templatable, so the saga hint names the inverse op, not a payload).
+	if err := seedPackageInstallDDL(add, UpgradePackageDDLKey, "UpgradePackage",
+		[]string{"UpgradePackage"},
+		"Upgrades a Capability Package in place by applying a pre-computed create/update/tombstone "+
+			"diff as one atomic commit. Privileged: enforces key-shape + system-aspect guardrails; "+
+			"protected kernel/auth roots are rejected by the Processor commit-time guard.",
+		UpgradePackageDDLScript, upgradePackageInputSchema, upgradePackageOutputSchema,
+		upgradePackageFieldDescription, upgradePackageExamples, "UpgradePackage"); err != nil {
 		return nil, err
 	}
 
@@ -577,13 +591,14 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		{PermTombstoneMetaVertexKey, PermTombstoneMetaVertexID, "TombstoneMetaVertex"},
 	}
 	// Package-install permissions authorizing the operator to submit the
-	// InstallPackage / UninstallPackage ops (Story 1.5.5). Projected into
+	// InstallPackage / UninstallPackage / UpgradePackage ops. Projected into
 	// the admin's Capability doc via the holdsRole → grantedBy chain.
 	installPerms := []struct {
 		key, id, op string
 	}{
 		{PermInstallPackageKey, PermInstallPackageID, "InstallPackage"},
 		{PermUninstallPackageKey, PermUninstallPackageID, "UninstallPackage"},
+		{PermUpgradePackageKey, PermUpgradePackageID, "UpgradePackage"},
 	}
 	for _, mp := range metaPerms {
 		data := map[string]any{
@@ -703,6 +718,7 @@ func seedPackageInstallDDL(
 	description, script, inputSchema, outputSchema string,
 	fieldDescriptions map[string]any,
 	examples []any,
+	inverseOperationType string,
 ) error {
 	vtxVal, vtxErr := MakeVertexEnvelope(ddlKey, "meta.ddl.vertexType",
 		map[string]any{"protected": true,
@@ -724,7 +740,7 @@ func seedPackageInstallDDL(
 		{"fieldDescription", "fieldDescription", map[string]any{"fieldDescriptions": fieldDescriptions}},
 		{"examples", "examples", map[string]any{"examples": examples}},
 		{CompensationAspectClass, CompensationAspectClass, map[string]any{
-			"inverseOperationType": "UninstallPackage",
+			"inverseOperationType": inverseOperationType,
 			"payloadTemplate":      map[string]any{"name": "{{payload.name}}"},
 			"revisionTemplate":     map[string]any{},
 		}},
