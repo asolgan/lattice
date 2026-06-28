@@ -73,7 +73,7 @@ func objectLinkKey(oid, targetKey, linkName string) (string, error) {
 // handleObjects routes /api/objects:
 //
 //	POST   /api/objects                              → upload bytes + AttachObject
-//	GET    /api/objects?applicant=                   → list the applicant's documents
+//	GET    /api/objects?owner=     (or ?applicant=)  → list objects scoped to an owner key
 //	GET    /api/objects/<oid>                        → stream the bytes back
 //	DELETE /api/objects/<oid>?targetKey=&linkName=   → DetachObject
 func (s *server) handleObjects(w http.ResponseWriter, r *http.Request) {
@@ -135,10 +135,13 @@ func computeDocuments(keys []string, get kvGetter, owner string) []documentView 
 	return out
 }
 
-// handleObjectList implements GET /api/objects?applicant= — the applicant's
-// documents, served from the `objectAttachments` lens rows in the shared
-// weaver-targets read model (NOT Core KV; P5). applicant scopes the rows to one
-// applicant's owner keys; omit it to list every document.
+// handleObjectList implements GET /api/objects?owner= — the objects attached to
+// one owner key, served from the `objectAttachments` lens rows in the shared
+// weaver-targets read model (NOT Core KV; P5). The owner key is generic: an
+// applicant's leaseapp / identity (the Documents tab) OR a unit (listing photos).
+// `applicant` is accepted as a backward-compatible alias for `owner`; omit both
+// to list every object. The lens projects objects by ownerKey, so the same
+// list-and-filter path serves any owner type.
 func (s *server) handleObjectList(w http.ResponseWriter, r *http.Request) {
 	conn, ok := s.requireConn(w)
 	if !ok {
@@ -161,7 +164,10 @@ func (s *server) handleObjectList(w http.ResponseWriter, r *http.Request) {
 		}
 		return entry.Value, true
 	}
-	owner := strings.TrimSpace(r.URL.Query().Get("applicant"))
+	owner := strings.TrimSpace(r.URL.Query().Get("owner"))
+	if owner == "" {
+		owner = strings.TrimSpace(r.URL.Query().Get("applicant"))
+	}
 	docs := computeDocuments(keys, get, owner)
 	s.writeJSON(w, http.StatusOK, map[string]any{"documents": docs, "count": len(docs)})
 }

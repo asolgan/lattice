@@ -432,3 +432,78 @@ button.ghost.danger:hover { background: var(--red); color: #fff; }
 .profile-form textarea { resize: vertical; }
 .profile-sub { display: flex; flex-direction: column; gap: 10px; margin-left: 22px; padding-left: 10px; border-left: 2px solid var(--border); }
 .profile-form-actions { display: flex; justify-content: flex-end; }
+
+/* ---- Listing photos ---- */
+/* Full-bleed cover at the top of a Browse card (the card has 16px padding; the
+   negative margins bleed the photo to the card edges + round the top corners). */
+.card-photo {
+  position: relative;
+  margin: -16px -16px 0;
+  height: 168px;
+  border-radius: 10px 10px 0 0;
+  overflow: hidden;
+  cursor: pointer;
+  background: var(--bg-input);
+}
+.card-photo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.card-photo.placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  cursor: default;
+  color: var(--text-dim);
+}
+.card-photo-icon { font-size: 30px; opacity: 0.6; }
+.card-photo-none { font-size: 12px; }
+.card-photo-count {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+
+.unit-meta-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.unit-meta-row .unit-count { margin: 0; }
+
+/* Manage-photos modal grid (landlord) */
+.mp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 12px; margin: 8px 0 16px; }
+.mp-cell { display: flex; flex-direction: column; gap: 6px; }
+.mp-cell img { width: 100%; height: 96px; object-fit: cover; border-radius: 8px; border: 1px solid var(--border); }
+
+/* Lightbox (applicant gallery) */
+.overlay.lightbox { background: rgba(0, 0, 0, 0.86); }
+.lightbox-inner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  max-width: 90vw;
+  max-height: 90vh;
+}
+.lb-img { max-width: 86vw; max-height: 70vh; object-fit: contain; border-radius: 8px; background: var(--bg-input); }
+.lb-caption { color: var(--text-dim); font-size: 13px; }
+.lb-close { position: absolute; top: -38px; right: 0; padding: 4px 10px; }
+.lb-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 28px;
+  line-height: 1;
+  padding: 4px 14px;
+}
+.lb-prev { left: -56px; }
+.lb-next { right: -56px; }
+.lb-strip { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; max-width: 86vw; }
+.lb-thumb { width: 56px; height: 42px; object-fit: cover; border-radius: 4px; border: 2px solid transparent; cursor: pointer; opacity: 0.6; }
+.lb-thumb.active { border-color: var(--accent); opacity: 1; }
+@media (max-width: 640px) {
+  .lb-prev { left: 4px; }
+  .lb-next { right: 4px; }
+}

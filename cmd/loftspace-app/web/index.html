@@ -242,11 +242,45 @@
           <div class="field"><label for="li-sqft">Sqft <span class="opt">(opt)</span></label><input type="number" id="li-sqft" min="0" step="1" /></div>
           <div class="field"></div>
         </div>
+        <div class="field">
+          <label for="li-photos">Photos <span class="opt">(optional)</span></label>
+          <input type="file" id="li-photos" accept="image/*" multiple />
+          <p class="hint">Add one or more photos applicants will see on the listing. You can add or remove photos later from the unit's 📷 Photos button.</p>
+        </div>
         <div class="modal-actions">
           <button type="button" id="listing-cancel" class="ghost">Cancel</button>
           <button type="submit" id="listing-submit">Post listing</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Manage photos modal (landlord) -->
+  <div id="photos-overlay" class="overlay" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="mp-title">
+      <h2 id="mp-title">Listing photos</h2>
+      <div id="mp-unit" class="apply-unit"></div>
+      <div id="mp-grid" class="mp-grid" aria-live="polite"></div>
+      <div class="field">
+        <label for="mp-files">Add photos</label>
+        <input type="file" id="mp-files" accept="image/*" multiple />
+      </div>
+      <div class="modal-actions">
+        <button type="button" id="mp-close" class="ghost">Close</button>
+        <button type="button" id="mp-add">Add photos</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Photo lightbox (applicant) -->
+  <div id="photo-overlay" class="overlay lightbox" hidden>
+    <div class="lightbox-inner" role="dialog" aria-modal="true" aria-label="Listing photos">
+      <button id="lb-close" class="lb-close ghost" aria-label="Close">✕</button>
+      <button id="lb-prev" class="lb-nav lb-prev ghost" aria-label="Previous">‹</button>
+      <img id="lb-img" class="lb-img" alt="Listing photo" />
+      <button id="lb-next" class="lb-nav lb-next ghost" aria-label="Next">›</button>
+      <div id="lb-caption" class="lb-caption"></div>
+      <div id="lb-strip" class="lb-strip"></div>
     </div>
   </div>
 

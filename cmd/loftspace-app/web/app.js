@@ -16,6 +16,14 @@ const state = {
   // linkName in the read model (the lens cannot project type(r)), so detach of
   // those is a documented follow-up.
   sessionUploads: {},
+  // unitPhotos maps a unitKey → its listing photos ([{oid, contentType}]), cached
+  // so the Browse filter/sort re-render reads photos without refetching. Loaded
+  // lazily after the listings land (see loadListingPhotos).
+  unitPhotos: {},
+  // lightbox holds the open gallery's photo set + current index.
+  lightbox: null,
+  // photoUnitKey is the unit whose manage-photos modal (landlord) is open.
+  photoUnitKey: null,
 };
 
 // DOC_SLOTS labels the upload "slot" (the link name) for display.
@@ -24,6 +32,28 @@ const DOC_SLOTS = {
   proofOfIncome: "Proof of income",
   signedLeasePdf: "Signed lease (PDF)",
 };
+
+// PHOTO_LINK is the link name every listing photo is attached under (owner =
+// vtx.unit.<id>). It's deterministic (unlike the per-document slot), so a unit
+// photo from any session can be detached — the manage-photos modal relies on it.
+const PHOTO_LINK = "listingPhoto";
+
+// isImage keeps a gallery to renderable raster images; the object GET streams only
+// the image/* allow-list inline (everything else is forced to octet-stream), so a
+// non-image attached to a unit would not render as an <img>.
+function isImage(contentType) {
+  return typeof contentType === "string" && contentType.indexOf("image/") === 0;
+}
+
+// photosFor returns the cached image photos for a unit (empty until loaded).
+function photosFor(unitKey) {
+  return (state.unitPhotos[unitKey] || []).filter((p) => isImage(p.contentType));
+}
+
+// photoSrc is the streaming URL for an object id (served inline for image types).
+function photoSrc(oid) {
+  return "/api/objects/" + encodeURIComponent(oid);
+}
 
 // COMPLETIONS maps a userTask op to how the applicant completes it in-app. target
 // is the op's primary key field, filled from the task's scopedTo — for a userTask
@@ -257,6 +287,9 @@ function showView(view) {
     tab.classList.toggle("active", isV);
     tab.setAttribute("aria-selected", String(isV));
   }
+  // Re-render Browse on show so cards pick up any photo covers cached since they
+  // were first rendered (e.g. while the user was in another view / landlord mode).
+  if (view === "browse") renderListings();
   if (view === "apps") loadApplications();
   if (view === "tasks") loadTasks();
   if (view === "docs") loadDocsView();
@@ -318,6 +351,30 @@ async function loadListings() {
     return;
   }
   renderListings();
+  loadListingPhotos();
+}
+
+// loadListingPhotos lazily fetches each listed unit's photos from the
+// objectAttachments read model (P5: /api/objects?owner=<unitKey>, the lens
+// projection — never Core KV), caching by unitKey so the filter/sort re-render
+// never refetches. It re-renders once the (parallel) fetches settle so covers
+// fill in. Best-effort: a unit whose photos fail to load just shows the
+// no-photo placeholder.
+async function loadListingPhotos() {
+  const want = state.listings.map((l) => l.unitKey).filter((k) => k && !(k in state.unitPhotos));
+  if (want.length === 0) return;
+  await Promise.allSettled(
+    want.map(async (unitKey) => {
+      try {
+        const data = await api("/api/objects?owner=" + encodeURIComponent(unitKey));
+        state.unitPhotos[unitKey] = (data.documents || []).map((d) => ({ oid: d.oid, contentType: d.contentType }));
+      } catch (e) {
+        state.unitPhotos[unitKey] = []; // negative-cache so we don't loop on a dead unit
+      }
+    }),
+  );
+  // Only re-render if Browse is the active view (avoid clobbering another panel).
+  if (state.view === "browse" && state.mode === "applicant") renderListings();
 }
 
 // visibleListings applies the Browse filter/sort bar over the already-loaded
@@ -399,11 +456,42 @@ function fmtDate(s) {
   return isNaN(d) ? s : d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
+// renderCardPhoto builds the Browse card's cover image. With photos it shows the
+// first as a cover with an "n photos" count and opens the lightbox on click;
+// with none it shows a neutral placeholder so a listing nobody photographed still
+// reads as a card (and a real leasing product's "no photos yet" state is honest).
+function renderCardPhoto(row) {
+  const photos = photosFor(row.unitKey);
+  const wrap = document.createElement("div");
+  wrap.className = "card-photo";
+  if (photos.length === 0) {
+    wrap.classList.add("placeholder");
+    wrap.innerHTML = '<span class="card-photo-icon">🏠</span><span class="card-photo-none">No photos</span>';
+    return wrap;
+  }
+  const img = document.createElement("img");
+  img.src = photoSrc(photos[0].oid);
+  img.alt = "Listing photo";
+  img.loading = "lazy";
+  wrap.append(img);
+  if (photos.length > 1) {
+    const count = document.createElement("span");
+    count.className = "card-photo-count";
+    count.textContent = "📷 " + photos.length;
+    wrap.append(count);
+  }
+  wrap.title = "View photos";
+  wrap.addEventListener("click", () => openLightbox(row.unitKey, 0));
+  return wrap;
+}
+
 function renderCard(row) {
   const L = row.listing || {};
   const A = row.address || {};
   const card = document.createElement("div");
   card.className = "card";
+
+  card.append(renderCardPhoto(row));
 
   const addr = document.createElement("div");
   addr.className = "addr";
@@ -1559,7 +1647,16 @@ function renderUnitCard(u) {
   count.className = "unit-count";
   count.textContent = u.applicationCount === 1 ? "1 application" : `${u.applicationCount} applications`;
 
-  card.append(head, count);
+  const photoBtn = document.createElement("button");
+  photoBtn.className = "ghost";
+  photoBtn.textContent = "📷 Photos";
+  photoBtn.title = "Add or remove listing photos";
+  photoBtn.addEventListener("click", () => openManagePhotos(u.unitKey, u.unitAddress || shortKey(u.unitKey)));
+  const meta = document.createElement("div");
+  meta.className = "unit-meta-row";
+  meta.append(count, photoBtn);
+
+  card.append(head, meta);
 
   const list = document.createElement("div");
   list.className = "applicants";
@@ -1828,14 +1925,202 @@ async function submitPostListing(ev) {
       "create the listing",
     );
 
+    // Photos are best-effort: the listing is already posted, so a failed photo
+    // upload warns but never unwinds the unit. The new unit invalidates its (empty)
+    // photo cache so Browse refetches.
+    const files = Array.from(($("#li-photos").files) || []);
+    let uploaded = 0;
+    for (const f of files) {
+      try {
+        await uploadUnitPhoto(unitKey, f);
+        uploaded++;
+      } catch (e) {
+        toast("A photo did not upload: " + e.message, "err");
+      }
+    }
+    delete state.unitPhotos[unitKey];
+
     closePostListing();
-    toast("Listing posted.", "ok", unitKey);
+    toast(files.length ? `Listing posted with ${uploaded} photo${uploaded === 1 ? "" : "s"}.` : "Listing posted.", "ok", unitKey);
     setTimeout(loadLandlord, 800);
   } catch (e) {
     toast(e.message, "err");
   } finally {
     submit.disabled = false;
   }
+}
+
+// ---- Listing photos (landlord upload + applicant gallery) ----
+
+// uploadUnitPhoto attaches one image to a unit as a listing photo: POST the bytes
+// + AttachObject under linkName=listingPhoto, ownerKey=vtx.unit.<id> — the same
+// generic objects-base plumbing the Documents tab uses, just a different owner.
+// Rejects throw so the caller can count/report.
+async function uploadUnitPhoto(unitKey, file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("targetKey", unitKey);
+  fd.append("linkName", PHOTO_LINK);
+  const reply = await api("/api/objects", { method: "POST", body: fd });
+  if (reply && reply.status === "rejected") {
+    const msg = reply.error ? `${reply.error.code}: ${reply.error.message}` : "rejected";
+    throw new Error(msg);
+  }
+  return reply;
+}
+
+// openLightbox shows a unit's photos full-size with prev/next + a thumbnail strip.
+function openLightbox(unitKey, index) {
+  const photos = photosFor(unitKey);
+  if (photos.length === 0) return;
+  state.lightbox = { photos, index: Math.max(0, Math.min(index, photos.length - 1)) };
+  renderLightbox();
+  $("#photo-overlay").hidden = false;
+}
+
+function closeLightbox() {
+  $("#photo-overlay").hidden = true;
+  state.lightbox = null;
+}
+
+function stepLightbox(delta) {
+  if (!state.lightbox) return;
+  const n = state.lightbox.photos.length;
+  state.lightbox.index = (state.lightbox.index + delta + n) % n;
+  renderLightbox();
+}
+
+function renderLightbox() {
+  const lb = state.lightbox;
+  if (!lb) return;
+  const photos = lb.photos;
+  $("#lb-img").src = photoSrc(photos[lb.index].oid);
+  $("#lb-caption").textContent = `${lb.index + 1} of ${photos.length}`;
+  const multi = photos.length > 1;
+  $("#lb-prev").hidden = !multi;
+  $("#lb-next").hidden = !multi;
+  const strip = $("#lb-strip");
+  strip.innerHTML = "";
+  if (multi) {
+    photos.forEach((p, i) => {
+      const t = document.createElement("img");
+      t.src = photoSrc(p.oid);
+      t.className = "lb-thumb" + (i === lb.index ? " active" : "");
+      t.loading = "lazy";
+      t.addEventListener("click", () => {
+        lb.index = i;
+        renderLightbox();
+      });
+      strip.append(t);
+    });
+  }
+}
+
+// ---- Manage photos (landlord) ----
+
+// openManagePhotos loads a unit's current photos into the manage modal and lets
+// the landlord add or remove. Photos are read fresh (not the Browse cache) so the
+// modal reflects the latest projection.
+async function openManagePhotos(unitKey, label) {
+  state.photoUnitKey = unitKey;
+  $("#mp-unit").textContent = label || shortKey(unitKey);
+  $("#mp-files").value = "";
+  $("#photos-overlay").hidden = false;
+  await reloadManagePhotos();
+}
+
+function closeManagePhotos() {
+  $("#photos-overlay").hidden = true;
+  state.photoUnitKey = null;
+}
+
+async function reloadManagePhotos() {
+  const unitKey = state.photoUnitKey;
+  if (!unitKey) return;
+  const grid = $("#mp-grid");
+  grid.innerHTML = "loading…";
+  let photos = [];
+  try {
+    const data = await api("/api/objects?owner=" + encodeURIComponent(unitKey));
+    photos = (data.documents || []).filter((d) => isImage(d.contentType));
+  } catch (e) {
+    grid.innerHTML = "";
+    toast("Could not load photos: " + e.message, "err");
+    return;
+  }
+  grid.innerHTML = "";
+  if (photos.length === 0) {
+    const none = document.createElement("div");
+    none.className = "applicant-none";
+    none.textContent = "No photos yet. Add some below.";
+    grid.append(none);
+    return;
+  }
+  for (const p of photos) {
+    const cell = document.createElement("div");
+    cell.className = "mp-cell";
+    const img = document.createElement("img");
+    img.src = photoSrc(p.oid);
+    img.loading = "lazy";
+    const rm = document.createElement("button");
+    rm.className = "ghost danger";
+    rm.textContent = "Remove";
+    rm.addEventListener("click", () => removeUnitPhoto(p.oid));
+    cell.append(img, rm);
+    grid.append(cell);
+  }
+}
+
+// removeUnitPhoto detaches a listing photo. The link name is deterministic
+// (PHOTO_LINK) so even a photo uploaded in a prior session can be detached —
+// unlike the Documents tab whose slot is ambiguous across sessions.
+async function removeUnitPhoto(oid) {
+  const unitKey = state.photoUnitKey;
+  if (!unitKey) return;
+  if (!confirm("Remove this photo from the listing?")) return;
+  try {
+    const q = "?targetKey=" + encodeURIComponent(unitKey) + "&linkName=" + encodeURIComponent(PHOTO_LINK);
+    const reply = await api("/api/objects/" + encodeURIComponent(oid) + q, { method: "DELETE" });
+    if (reply && reply.status === "rejected") {
+      const msg = reply.error ? `${reply.error.code}: ${reply.error.message}` : "rejected";
+      toast("Could not remove — " + msg, "err");
+      return;
+    }
+    delete state.unitPhotos[unitKey];
+    toast("Photo removed.", "ok");
+    reloadManagePhotos();
+  } catch (e) {
+    toast("Could not remove: " + e.message, "err");
+  }
+}
+
+async function submitAddPhotos() {
+  const unitKey = state.photoUnitKey;
+  if (!unitKey) return;
+  const input = $("#mp-files");
+  const files = Array.from(input.files || []);
+  if (files.length === 0) {
+    toast("Choose one or more photos to add.", "err");
+    return;
+  }
+  const btn = $("#mp-add");
+  btn.disabled = true;
+  let uploaded = 0;
+  for (const f of files) {
+    try {
+      await uploadUnitPhoto(unitKey, f);
+      uploaded++;
+    } catch (e) {
+      toast("A photo did not upload: " + e.message, "err");
+    }
+  }
+  input.value = "";
+  delete state.unitPhotos[unitKey];
+  btn.disabled = false;
+  if (uploaded) toast(`Added ${uploaded} photo${uploaded === 1 ? "" : "s"}.`, "ok");
+  // The lens takes a beat to project; reload after a short delay so the new
+  // photos appear.
+  setTimeout(reloadManagePhotos, 800);
 }
 
 // ---- wire up ----
@@ -1898,6 +2183,25 @@ function init() {
     if (e.target === $("#listing-overlay")) closePostListing();
   });
   $("#listing-form").addEventListener("submit", submitPostListing);
+
+  // Listing-photo lightbox (applicant) + manage-photos modal (landlord).
+  $("#lb-close").addEventListener("click", closeLightbox);
+  $("#lb-prev").addEventListener("click", () => stepLightbox(-1));
+  $("#lb-next").addEventListener("click", () => stepLightbox(1));
+  $("#photo-overlay").addEventListener("click", (e) => {
+    if (e.target === $("#photo-overlay")) closeLightbox();
+  });
+  document.addEventListener("keydown", (e) => {
+    if ($("#photo-overlay").hidden) return;
+    if (e.key === "Escape") closeLightbox();
+    else if (e.key === "ArrowLeft") stepLightbox(-1);
+    else if (e.key === "ArrowRight") stepLightbox(1);
+  });
+  $("#mp-close").addEventListener("click", closeManagePhotos);
+  $("#mp-add").addEventListener("click", submitAddPhotos);
+  $("#photos-overlay").addEventListener("click", (e) => {
+    if (e.target === $("#photos-overlay")) closeManagePhotos();
+  });
 
   loadListings();
   applyMode();
