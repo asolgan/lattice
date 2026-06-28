@@ -77,6 +77,9 @@ main { padding: 18px; max-width: 1180px; margin: 0 auto; }
 }
 .panel-controls label { color: var(--text-dim); font-size: 13px; }
 .summary { color: var(--text-dim); font-size: 13px; margin-left: auto; }
+.filter-bar { margin-top: -6px; }
+.filter-bar #q-search { min-width: 200px; }
+.filter-bar #q-maxrent { width: 100px; }
 
 input, select, button { font-family: inherit; }
 

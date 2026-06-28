@@ -40,6 +40,28 @@
         <span id="summary" class="summary"></span>
       </div>
 
+      <div class="panel-controls filter-bar">
+        <input id="q-search" type="search" placeholder="Search city or address" aria-label="Search listings by city or address" />
+        <label for="q-beds">Beds</label>
+        <select id="q-beds" aria-label="Minimum bedrooms">
+          <option value="0" selected>Any</option>
+          <option value="1">1+</option>
+          <option value="2">2+</option>
+          <option value="3">3+</option>
+          <option value="4">4+</option>
+        </select>
+        <label for="q-maxrent">Max rent</label>
+        <input id="q-maxrent" type="number" min="0" step="50" placeholder="no max" aria-label="Maximum monthly rent" />
+        <label for="q-sort">Sort</label>
+        <select id="q-sort" aria-label="Sort listings">
+          <option value="rent-asc" selected>Rent: low to high</option>
+          <option value="rent-desc">Rent: high to low</option>
+          <option value="beds-desc">Most bedrooms</option>
+          <option value="avail-asc">Soonest available</option>
+        </select>
+        <button id="clear-filters" class="ghost">Clear</button>
+      </div>
+
       <div id="listings" class="grid" aria-live="polite"></div>
       <div id="empty" class="empty" hidden></div>
     </section>

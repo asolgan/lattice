@@ -320,19 +320,69 @@ async function loadListings() {
   renderListings();
 }
 
+// visibleListings applies the Browse filter/sort bar over the already-loaded
+// state.listings (no server round-trip — the availableListings projection carries
+// rent/beds/city/availableFrom). Returns a filtered, sorted copy.
+function visibleListings() {
+  const q = ($("#q-search").value || "").trim().toLowerCase();
+  const minBeds = parseInt($("#q-beds").value, 10) || 0;
+  const maxRentRaw = ($("#q-maxrent").value || "").trim();
+  const maxRent = maxRentRaw === "" ? null : Number(maxRentRaw);
+  const sort = $("#q-sort").value;
+
+  const rows = state.listings.filter((row) => {
+    const L = row.listing || {};
+    const A = row.address || {};
+    if (q) {
+      const hay = [A.line1, A.line2, A.city, A.region, A.postal].filter(Boolean).join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    if (minBeds && !(typeof L.bedrooms === "number" && L.bedrooms >= minBeds)) return false;
+    // A max-rent filter excludes only listings with a known rent above it; a listing
+    // missing a rent figure is left in rather than silently dropped.
+    if (maxRent !== null && !Number.isNaN(maxRent) && typeof L.rentAmount === "number" && L.rentAmount > maxRent) return false;
+    return true;
+  });
+
+  const rent = (r) => (r.listing && typeof r.listing.rentAmount === "number" ? r.listing.rentAmount : Infinity);
+  const beds = (r) => (r.listing && typeof r.listing.bedrooms === "number" ? r.listing.bedrooms : -1);
+  const avail = (r) => {
+    const v = r.listing && r.listing.availableFrom ? Date.parse(r.listing.availableFrom) : NaN;
+    return Number.isNaN(v) ? Infinity : v;
+  };
+  const cmp = {
+    "rent-asc": (a, b) => rent(a) - rent(b),
+    "rent-desc": (a, b) => rent(b) - rent(a),
+    "beds-desc": (a, b) => beds(b) - beds(a),
+    "avail-asc": (a, b) => avail(a) - avail(b),
+  }[sort];
+  return cmp ? rows.sort(cmp) : rows;
+}
+
 function renderListings() {
   const grid = $("#listings");
   const empty = $("#empty");
   grid.innerHTML = "";
-  if (state.listings.length === 0) {
+  const total = state.listings.length;
+  if (total === 0) {
     empty.hidden = false;
     empty.textContent = "No units are listed for lease right now.";
     $("#summary").textContent = "";
     return;
   }
+  const rows = visibleListings();
+  if (rows.length === 0) {
+    empty.hidden = false;
+    empty.textContent = "No listings match your filters.";
+    $("#summary").textContent = `0 of ${total} listing${total === 1 ? "" : "s"}`;
+    return;
+  }
   empty.hidden = true;
-  for (const row of state.listings) grid.append(renderCard(row));
-  $("#summary").textContent = `${state.listings.length} listing${state.listings.length === 1 ? "" : "s"}`;
+  for (const row of rows) grid.append(renderCard(row));
+  $("#summary").textContent =
+    rows.length === total
+      ? `${total} listing${total === 1 ? "" : "s"}`
+      : `${rows.length} of ${total} listings`;
 }
 
 function money(listing) {
@@ -1703,6 +1753,18 @@ function init() {
   $("#applicant-form").addEventListener("submit", submitNewApplicant);
   $("#status").addEventListener("change", loadListings);
   $("#reload-listings").addEventListener("click", loadListings);
+  // The filter/sort bar re-renders the already-loaded listings client-side — no fetch.
+  $("#q-search").addEventListener("input", renderListings);
+  $("#q-beds").addEventListener("change", renderListings);
+  $("#q-maxrent").addEventListener("input", renderListings);
+  $("#q-sort").addEventListener("change", renderListings);
+  $("#clear-filters").addEventListener("click", () => {
+    $("#q-search").value = "";
+    $("#q-beds").value = "0";
+    $("#q-maxrent").value = "";
+    $("#q-sort").value = "rent-asc";
+    renderListings();
+  });
   $("#apply-cancel").addEventListener("click", closeApply);
   $("#apply-overlay").addEventListener("click", (e) => {
     if (e.target === $("#apply-overlay")) closeApply();
