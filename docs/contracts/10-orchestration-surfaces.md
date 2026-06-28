@@ -30,11 +30,14 @@ anti-pattern, corrected here). Only scalar attributes live on root `data`:
 ```
 vtx.task.<id>            (root data — scalar attributes only)
   { status, expiresAt }
-lnk.task.<id>.assignedTo.identity.<assigneeId>   # who performs it (existing §6.9 convention)
 lnk.task.<id>.forOperation.meta.<opId>           # the operation this task grants (relationship → link)
 lnk.task.<id>.scopedTo.<type>.<targetId>         # the target the grant is scoped to (often ≠ assignee)
+
+# EXACTLY ONE assignment link is present on an open task (FR28):
+lnk.task.<id>.assignedTo.identity.<assigneeId>   # direct/push: a named identity performs it (§6.9 convention)
+lnk.task.<id>.queuedFor.role.<roleId>            # role-queue/pull (FR28): any holder of the role may ClaimTask it
 ```
-(All three links: task = later-arriving **source**, the other vertex pre-exists = **target**, per Contract #1 §1.1.)
+(All links: task = later-arriving **source**, the other vertex pre-exists = **target**, per Contract #1 §1.1.)
 
 - `status ∈ {open, complete, cancelled}` — root, scalar; an expired/closed task must not grant.
 - **The ephemeral-grant *field shape* is UNCHANGED** (Contract #6 §6.6 still emits flattened
@@ -58,16 +61,35 @@ lnk.task.<id>.scopedTo.<type>.<targetId>         # the target the grant is scope
   `actorRoles` (the denial builder returns early for that code), so **no `cap.<actor>` second read is
   needed**. Subject-scoping intrinsic. Full shape + migration notes: Contract #6 §6.6 (Phase 2 amendment).
 - UI finds the bound op's schema by walking `forOperation` to the operation meta-vertex.
-- **No-orphan invariant (FR29 by construction):** `CreateTask` **requires** an `assignee` and
-  commits the `task --assignedTo--> identity` link atomically with the vertex; `CreateTask` and
-  `ReAssignTask` Starlark **validate the assignee identity and reject** (structured `ScriptError`)
-  if invalid — a task pointing at a non-existent identity is never committed. (Link direction per
-  Contract #1 §1.1: the task is the later-arriving source side, the pre-existing identity is the
-  target — the `assignedTo` name reads from the source side.) Tombstoning/merging
-  an identity that holds open tasks is rejected (operator reassigns/cancels first). So a task
-  always has a valid assignee; there is no unassigned/orphaned state to monitor.
-- **Phase 3:** FR28 (role-queue + fallback) is deferred; when it lands, a role-queue with no
-  eligible actor *is* unroutable and the FR29 Health-KV monitor returns for that case.
+- **No-orphan invariant (FR29 by construction):** an open task carries **exactly one** assignment link.
+  `CreateTask` **requires a routable endpoint** — either an `assignee` identity (committing
+  `task --assignedTo--> identity`) **or** a `queue` role (committing `task --queuedFor--> role`) — and
+  **rejects** (structured `ScriptError`, `RoutingFailed`/`UnknownAssignee`) if neither resolves to a
+  live vertex: a task pointing at a non-existent endpoint is never committed. `CreateTask` /
+  `ReAssignTask` validate the endpoint by a **known-key read** (the named identity/role); they do **not**
+  enumerate a role's members (the write-path no-scans invariant), so an empty/unstaffed role-queue is
+  *not* a creation-time error — see the FR28 paragraph below. (Link direction per Contract #1 §1.1: the
+  task is the later-arriving source; the assignment-link name reads from the source side.)
+  Tombstoning/merging an identity (or role) that holds open tasks is rejected (operator
+  reassigns/cancels first).
+- **FR28 (role-queue + routing fallback) — landed.** A task may be assigned to a **role-queue**
+  (`queuedFor role`) instead of a named identity. `CreateTask` **routes**: a named `assignee` that is
+  alive and available → `assignedTo` (the direct/push path, unchanged); else a `queue` role that is alive
+  → `queuedFor` (the pull path); else → reject `RoutingFailed`. **`ClaimTask(taskKey)`** lets any holder
+  of the queued role claim the task — it validates the claimant↔role `holdsRole` link (known-key) and
+  atomically swaps `queuedFor → assignedTo claimant`. **Grant fan-out:** while queued, the package-owned
+  `capabilityEphemeral` lens projects the task's ephemeral grant (and `my-tasks` its inbox row) to
+  **every identity holding the role** — the role-queue's "anyone in the team may perform it" semantics,
+  via the same actor-aggregate fan-out the `reportsTo` delegation already uses; on `ClaimTask` the grant
+  **narrows** to the claimant through ordinary reprojection. **The §6.6 grant *field shape* and the
+  step-3 matching logic are UNCHANGED** — a role-queued grant is just another per-actor `ephemeralGrants[]`
+  entry, matched identically; the fan-out is a lens (package) detail, not a §6.6 change.
+- **FR29 (unrouted tasks surface; never silently dropped).** A role-queue with **no eligible actor** is
+  knowable only post-hoc (membership is a scan the write path may not run), so it is surfaced — not
+  rejected — by an `orchestration-base` **`unroutedTasks` Weaver convergence target**: an open `queuedFor`
+  task left unclaimed past a staleness threshold projects a `violating` row (visible in Loupe's
+  convergence view) and rolls a `UnroutedTasks` entry into Weaver's Contract #5 §5.5 `issues[]` channel
+  (severity warning ⇒ degraded). Surface-only (manual intervention); auto-escalation is a follow-on.
 
 **`my-tasks` projection + tombstone obligation (Phase 2, Story 12.1a).** The `orchestration-base`
 package ships a `my-tasks` actor-aggregate lens projecting, per identity, that identity's **open**

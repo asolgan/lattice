@@ -1,8 +1,7 @@
 # FR28 — Role-queue task assignment + routing fallback (+ FR29 unrouted-task surfacing)
 
-**Status: 📐 awaiting-Andrew (ratification)**
-Designer fire (Winston / `lattice-designer`), 2026-06-28. One Lattice-lane backlog item → ratify-ready design.
-The **Lattice Steward** builds this **only after** Andrew ratifies.
+**Status: ✅ Andrew-ratified (2026-06-28)** — ready for the Lattice Steward.
+Designer fire (Winston / `lattice-designer`), 2026-06-28. **Decision (Andrew): ratify the phasing as written** — boolean availability is the Fire-2 MVP; numeric capacity is the flagged Fire-2b follow-on (§7). The Contract #10 §10.1 edit is **committed** with this ratification.
 
 ---
 
