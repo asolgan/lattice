@@ -19,9 +19,18 @@ import (
 // defaultCapabilityLensLagThreshold is the consumer-lag (pending message count)
 // above which an active capability lens is flagged CapabilityLensLagging
 // (severity warning ⇒ degraded). Deployment-overridable via the heartbeater's
-// CapabilityLensLagThreshold field. A warning, not a halt: it self-resolves on
-// the next heartbeat once the projector drains its backlog.
+// CapabilityLensLagThreshold field. A warning, not a halt: it self-resolves once
+// the projector drains its backlog (see the hysteresis below).
 const defaultCapabilityLensLagThreshold = 100
+
+// defaultCapabilityLensLagRaiseCycles is how many consecutive over-threshold
+// heartbeats a lens must show before CapabilityLensLagging is raised. At the 10s
+// NFR-O1 floor, 3 cycles ≈ 30s of sustained backlog — enough that a one-cycle
+// spike (a momentary projector stall that drains on the next beat) no longer
+// flaps the heartbeat degraded→healthy. Deployment-overridable via
+// CapabilityLensLagRaiseCycles. The paused-lens path is a hard error and is
+// never debounced.
+const defaultCapabilityLensLagRaiseCycles = 3
 
 // Issue codes for capability-lens anomalies (Contract #5 §5.5; component-defined,
 // PascalCase).
@@ -107,12 +116,41 @@ type LatticeHeartbeater struct {
 	// Zero selects defaultCapabilityLensLagThreshold.
 	CapabilityLensLagThreshold uint64
 
+	// CapabilityLensLagRaiseCycles is how many consecutive over-threshold
+	// heartbeats a lens must show before CapabilityLensLagging is raised — the
+	// debounce that keeps a one-cycle spike from flapping the heartbeat. Zero
+	// selects defaultCapabilityLensLagRaiseCycles; one disables the debounce
+	// (raise on the first over-threshold cycle).
+	CapabilityLensLagRaiseCycles uint
+
+	// CapabilityLensLagClearThreshold is the consumer-lag at or below which an
+	// already-raised CapabilityLensLagging clears — the lower edge of a hysteresis
+	// band that keeps lag hovering around the raise threshold from flapping the
+	// issue on/off. Zero (the default) sets it equal to the raise threshold (clear
+	// as soon as the lens is no longer over). A value above the raise threshold is
+	// clamped down to it (a band cannot invert).
+	CapabilityLensLagClearThreshold uint64
+
 	// issuesMu guards openCapIssues.
 	issuesMu sync.Mutex
 	// openCapIssues tracks the `since` timestamp of each currently-open
 	// capability-lens issue code (Contract #5 §5.5: components hold open issues in
 	// memory so `since` persists across heartbeats; a resolved issue is dropped).
 	openCapIssues map[string]string
+
+	// lagMu guards lagState.
+	lagMu sync.Mutex
+	// lagState holds the per-lens lag-hysteresis state (over-threshold streak +
+	// raised flag) keyed by capLensName, so the raise-after-N / clear-band debounce
+	// persists across heartbeats. Pruned each cycle to the lenses currently
+	// reported, mirroring openCapIssues.
+	lagState map[string]*lagHysteresis
+}
+
+// lagHysteresis is one capability lens's lag-debounce state across heartbeats.
+type lagHysteresis struct {
+	overStreak int  // consecutive cycles strictly over the raise threshold
+	raised     bool // CapabilityLensLagging currently raised for this lens
 }
 
 // LensLatencySnapshot is the per-Lens summary the heartbeater emits
@@ -258,30 +296,51 @@ func (h *LatticeHeartbeater) evalCapabilityLenses(now time.Time) (map[string]map
 	if threshold == 0 {
 		threshold = defaultCapabilityLensLagThreshold
 	}
+	raiseCycles := h.CapabilityLensLagRaiseCycles
+	if raiseCycles == 0 {
+		raiseCycles = defaultCapabilityLensLagRaiseCycles
+	}
+	clearThreshold := h.CapabilityLensLagClearThreshold
+	if clearThreshold == 0 || clearThreshold > threshold {
+		clearThreshold = threshold
+	}
 
 	snaps := h.CapabilityLensProvider()
 	metric := make(map[string]map[string]any, len(snaps))
 	var paused, lagging []string
+	seen := make(map[string]struct{}, len(snaps))
 	for _, s := range snaps {
+		name := capLensName(s)
+		seen[name] = struct{}{}
 		alert := "ok"
-		switch {
-		case s.Status == "paused":
+		switch s.Status {
+		case "paused":
 			alert = "paused"
 			reason := s.PauseReason
 			if reason == "" {
 				reason = "unknown"
 			}
-			paused = append(paused, fmt.Sprintf("%s (%s)", capLensName(s), reason))
-		case s.Status == "active" && s.ConsumerLag > threshold:
-			alert = "lagging"
-			lagging = append(lagging, fmt.Sprintf("%s (lag %d)", capLensName(s), s.ConsumerLag))
+			paused = append(paused, fmt.Sprintf("%s (%s)", name, reason))
+			// A paused lens is a hard error; its lag debounce is irrelevant and
+			// must not carry a stale streak into the next active cycle.
+			h.resetLagState(name)
+		case "active":
+			if h.evalLagHysteresis(name, s.ConsumerLag, threshold, clearThreshold, int(raiseCycles)) {
+				alert = "lagging"
+				lagging = append(lagging, fmt.Sprintf("%s (lag %d)", name, s.ConsumerLag))
+			}
+		default:
+			// rebuilding (or any non-active, non-paused state): not lagging; clear
+			// any pending streak.
+			h.resetLagState(name)
 		}
-		metric[capLensName(s)] = map[string]any{
+		metric[name] = map[string]any{
 			"status":      s.Status,
 			"consumerLag": s.ConsumerLag,
 			"alert":       alert,
 		}
 	}
+	h.pruneLagState(seen)
 
 	active := map[string]capIssue{}
 	if len(paused) > 0 {
@@ -327,6 +386,60 @@ func (h *LatticeHeartbeater) reconcileCapIssues(active map[string]capIssue, now 
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
 	return out
+}
+
+// evalLagHysteresis advances one active lens's lag-debounce state and reports
+// whether it counts as lagging this cycle. A lens must stay strictly over the
+// raise threshold for raiseCycles consecutive heartbeats before it is raised
+// (killing the one-cycle spike), and once raised it stays raised until its lag
+// falls to or below clearThreshold (the lower edge of the hysteresis band).
+func (h *LatticeHeartbeater) evalLagHysteresis(name string, lag, threshold, clearThreshold uint64, raiseCycles int) bool {
+	h.lagMu.Lock()
+	defer h.lagMu.Unlock()
+	if h.lagState == nil {
+		h.lagState = map[string]*lagHysteresis{}
+	}
+	st := h.lagState[name]
+	if st == nil {
+		st = &lagHysteresis{}
+		h.lagState[name] = st
+	}
+	if st.raised {
+		if lag <= clearThreshold {
+			st.raised = false
+			st.overStreak = 0
+		}
+		return st.raised
+	}
+	if lag > threshold {
+		st.overStreak++
+		if st.overStreak >= raiseCycles {
+			st.raised = true
+		}
+	} else {
+		st.overStreak = 0
+	}
+	return st.raised
+}
+
+// resetLagState clears one lens's lag-debounce state — used when a lens leaves
+// the active state (paused/rebuilding), where lag is not a meaningful signal.
+func (h *LatticeHeartbeater) resetLagState(name string) {
+	h.lagMu.Lock()
+	defer h.lagMu.Unlock()
+	delete(h.lagState, name)
+}
+
+// pruneLagState drops debounce state for lenses no longer reported this cycle,
+// keeping the map bounded to live lenses (mirrors reconcileCapIssues).
+func (h *LatticeHeartbeater) pruneLagState(seen map[string]struct{}) {
+	h.lagMu.Lock()
+	defer h.lagMu.Unlock()
+	for name := range h.lagState {
+		if _, ok := seen[name]; !ok {
+			delete(h.lagState, name)
+		}
+	}
 }
 
 // aggregateStatus maps the open issues to a Contract #5 §5.4 status: any error ⇒
