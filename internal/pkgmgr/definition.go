@@ -14,6 +14,27 @@ package pkgmgr
 
 import "fmt"
 
+// validateAll runs every field-level package validator in a fixed order. It is
+// the shared pre-flight for Install / Upgrade / Apply so all three reject a
+// malformed Definition identically, before any KV operation. Pure (no I/O):
+// each constituent validator is a pure function over the Definition.
+func (def Definition) validateAll() error {
+	for _, check := range []func() error{
+		def.validateLensBuckets,
+		def.validateLensAdapters,
+		def.validateWeaverTargets,
+		def.validateLoomPatterns,
+		def.validateOpMetas,
+		def.validateCanonicalNameUniqueness,
+		def.validatePermissionIdentityUniqueness,
+	} {
+		if err := check(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // validateCanonicalNameUniqueness rejects a package that declares the same
 // meta-vertex canonicalName twice across the union of its DDLs, Lenses, and
 // op-metas — the exact namespace the Processor's DDL cache indexes in one

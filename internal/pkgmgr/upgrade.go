@@ -58,44 +58,15 @@ var preservedProvenanceFields = []string{"createdAt", "createdBy", "createdByOp"
 // kernel/auth roots cannot be touched — the Processor's step-8 guard rejects
 // any update/tombstone of a protected root, path-independently.
 func (i *Installer) Upgrade(ctx context.Context, def Definition) (*UpgradeResult, error) {
-	if def.Name == "" {
-		return nil, fmt.Errorf("pkgmgr: Definition.Name is required")
-	}
-	if def.Version == "" {
-		return nil, fmt.Errorf("pkgmgr: Definition.Version is required")
-	}
-	if i.AdminActor == "" {
-		return nil, fmt.Errorf("pkgmgr: AdminActor is required")
-	}
-
-	// Fail closed before any KV operation (same field-level checks as Install).
-	if err := def.validateLensBuckets(); err != nil {
+	if err := i.preflight(def); err != nil {
 		return nil, err
 	}
-	if err := def.validateLensAdapters(); err != nil {
-		return nil, err
-	}
-	if err := def.validateWeaverTargets(); err != nil {
-		return nil, err
-	}
-	if err := def.validateLoomPatterns(); err != nil {
-		return nil, err
-	}
-	if err := def.validateOpMetas(); err != nil {
-		return nil, err
-	}
-	if err := def.validateCanonicalNameUniqueness(); err != nil {
-		return nil, err
-	}
-	if err := def.validatePermissionIdentityUniqueness(); err != nil {
-		return nil, err
-	}
-
 	if err := i.checkCoreBucketExists(ctx); err != nil {
 		return nil, err
 	}
 
-	// Step 2 — the installed base + its old declared key set.
+	// Step 2 — the installed base. Upgrade requires one (unlike Apply, which
+	// falls back to a fresh install when the package is absent).
 	existing, err := i.findInstalledPackage(ctx, def.Name)
 	if err != nil {
 		return nil, err
@@ -103,19 +74,10 @@ func (i *Installer) Upgrade(ctx context.Context, def Definition) (*UpgradeResult
 	if existing == nil {
 		return nil, fmt.Errorf("%w: %q", ErrNotInstalled, def.Name)
 	}
-	oldKeys, err := i.readDeclaredKeys(ctx, existing.Key)
-	if err != nil {
-		return nil, err
-	}
 
-	// Step 3 — rebuild the new manifest (version-independent keys + bodies).
-	newOps, _, _, err := i.buildManifestBatch(def)
-	if err != nil {
-		return nil, err
-	}
-
-	// Step 4 — diff into the create/update/tombstone delta.
-	mutations, sum, err := i.diffManifest(ctx, oldKeys, newOps)
+	// Steps 3–4 — rebuild the new manifest + diff into the create/update/
+	// tombstone delta.
+	mutations, sum, err := i.computeDeltaAgainst(ctx, existing, def)
 	if err != nil {
 		return nil, err
 	}
@@ -134,25 +96,65 @@ func (i *Installer) Upgrade(ctx context.Context, def Definition) (*UpgradeResult
 		return res, nil
 	}
 
-	// Step 5 — submit one UpgradePackage op. Deterministic requestId from
-	// name+from+to so a re-submit dedup-short-circuits while distinct
-	// (from,to) pairs stay independent (Contract #8 §8.2 pattern).
+	// Step 5 — submit one UpgradePackage op.
+	if err := i.submitUpgradeOp(ctx, def, existing.Version, mutations); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// preflight runs the required-field + field-level validation shared by Install,
+// Upgrade, and Apply before any KV operation.
+func (i *Installer) preflight(def Definition) error {
+	if def.Name == "" {
+		return fmt.Errorf("pkgmgr: Definition.Name is required")
+	}
+	if def.Version == "" {
+		return fmt.Errorf("pkgmgr: Definition.Version is required")
+	}
+	if i.AdminActor == "" {
+		return fmt.Errorf("pkgmgr: AdminActor is required")
+	}
+	return def.validateAll()
+}
+
+// computeDeltaAgainst rebuilds def's manifest on version-independent keys and
+// diffs it against an installed base's recorded declared-key set, returning the
+// create/update/tombstone mutation batch and its partition counts. Shared by
+// Upgrade and Apply's in-place path; the caller already holds the installed
+// base, so it is not re-resolved here.
+func (i *Installer) computeDeltaAgainst(ctx context.Context, existing *installedPackage, def Definition) ([]installMutation, diffSummary, error) {
+	oldKeys, err := i.readDeclaredKeys(ctx, existing.Key)
+	if err != nil {
+		return nil, diffSummary{}, err
+	}
+	newOps, _, _, err := i.buildManifestBatch(def)
+	if err != nil {
+		return nil, diffSummary{}, err
+	}
+	return i.diffManifest(ctx, oldKeys, newOps)
+}
+
+// submitUpgradeOp submits one UpgradePackage op carrying the upgrade delta.
+// Deterministic requestId from name+from+to so a re-submit dedup-short-circuits
+// while distinct (from,to) pairs stay independent (Contract #8 §8.2 pattern).
+func (i *Installer) submitUpgradeOp(ctx context.Context, def Definition, fromVersion string, mutations []installMutation) error {
 	payload := map[string]any{
 		"name":        def.Name,
-		"fromVersion": existing.Version,
+		"fromVersion": fromVersion,
 		"toVersion":   def.Version,
 		"mutations":   mutations,
 	}
-	requestID := deterministicNanoID(def.Name, existing.Version+"->"+def.Version, "upgrade-op")
+	requestID := deterministicNanoID(def.Name, fromVersion+"->"+def.Version, "upgrade-op")
 	reply, err := i.submitOp(ctx, "UpgradePackage", "UpgradePackage", requestID, payload)
 	if err != nil {
-		return nil, fmt.Errorf("pkgmgr: submit UpgradePackage: %w", err)
+		return fmt.Errorf("pkgmgr: submit UpgradePackage: %w", err)
 	}
 	switch reply.Status {
 	case processor.ReplyStatusAccepted, processor.ReplyStatusDuplicate:
-		return res, nil
+		return nil
 	default:
-		return nil, fmt.Errorf("pkgmgr: UpgradePackage rejected: %s", replyError(reply))
+		return fmt.Errorf("pkgmgr: UpgradePackage rejected: %s", replyError(reply))
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -75,11 +76,17 @@ func main() {
 
 	switch cmd {
 	case "install":
-		if len(args) != 1 {
-			fmt.Fprintln(os.Stderr, "install requires <path-to-package-dir>")
+		fs := flag.NewFlagSet("install", flag.ExitOnError)
+		force := fs.Bool("force", false, "same-version: re-apply changed entity bodies in place (dev refresh)")
+		dryRun := fs.Bool("dry-run", false, "preview the create/update/tombstone delta without submitting")
+		_ = fs.Parse(args)
+		rest := fs.Args()
+		if len(rest) != 1 {
+			fmt.Fprintln(os.Stderr, "install requires [--force] [--dry-run] <path-to-package-dir>")
 			os.Exit(2)
 		}
-		if err := runInstall(args[0], natsURL, bootstrapPath, logger); err != nil {
+		opts := pkgmgr.ApplyOptions{Force: *force, DryRun: *dryRun}
+		if err := runApply("install", rest[0], natsURL, bootstrapPath, opts, logger); err != nil {
 			if errors.Is(err, pkgmgr.ErrBootstrapRequired) {
 				fmt.Fprintln(os.Stderr, "install failed: core-kv bucket not found — run `lattice-pkg bootstrap` (or `make up`) before installing packages.")
 			} else {
@@ -88,11 +95,16 @@ func main() {
 			os.Exit(1)
 		}
 	case "upgrade":
-		if len(args) != 1 {
-			fmt.Fprintln(os.Stderr, "upgrade requires <path-to-package-dir>")
+		fs := flag.NewFlagSet("upgrade", flag.ExitOnError)
+		dryRun := fs.Bool("dry-run", false, "preview the create/update/tombstone delta without submitting")
+		_ = fs.Parse(args)
+		rest := fs.Args()
+		if len(rest) != 1 {
+			fmt.Fprintln(os.Stderr, "upgrade requires [--dry-run] <path-to-package-dir>")
 			os.Exit(2)
 		}
-		if err := runUpgrade(args[0], natsURL, bootstrapPath, logger); err != nil {
+		opts := pkgmgr.ApplyOptions{DryRun: *dryRun, RequireInstalled: true}
+		if err := runApply("upgrade", rest[0], natsURL, bootstrapPath, opts, logger); err != nil {
 			if errors.Is(err, pkgmgr.ErrBootstrapRequired) {
 				fmt.Fprintln(os.Stderr, "upgrade failed: core-kv bucket not found — run `lattice-pkg bootstrap` (or `make up`) before upgrading packages.")
 			} else if errors.Is(err, pkgmgr.ErrNotInstalled) {
@@ -126,17 +138,27 @@ func usage() {
 	fmt.Fprintln(os.Stderr, `lattice-pkg — Capability Package CLI
 
 Usage:
-  lattice-pkg install <path-to-package-dir>
-  lattice-pkg upgrade <path-to-package-dir>
+  lattice-pkg install [--force] [--dry-run] <path-to-package-dir>
+  lattice-pkg upgrade [--dry-run] <path-to-package-dir>
   lattice-pkg uninstall <package-canonical-name>
   lattice-pkg list
+
+install dispatches on installed state:
+  not installed        → fresh install
+  same version         → skip (use --force to re-apply changed bodies)
+  different version    → in-place upgrade (diff-apply)
+upgrade is the explicit in-place diff-apply (errors if not installed).
+--dry-run previews the create/update/tombstone delta without submitting.
 
 Environment:
   NATS_URL              default nats://localhost:4222
   BOOTSTRAP_JSON_PATH   default ./lattice.bootstrap.json`)
 }
 
-func runInstall(pkgPath, natsURL, bootstrapPath string, logger *slog.Logger) error {
+// runApply drives both the `install` and `upgrade` commands through the
+// upgrade-aware pkgmgr.Apply dispatcher. cmd is "install" or "upgrade" (it only
+// shapes the log/error wording; the actual dispatch is governed by opts).
+func runApply(cmd, pkgPath, natsURL, bootstrapPath string, opts pkgmgr.ApplyOptions, logger *slog.Logger) error {
 	manifestPath := filepath.Join(pkgPath, "manifest.yaml")
 	manifest, err := pkgmgr.ParseManifest(manifestPath)
 	if err != nil {
@@ -167,69 +189,64 @@ func runInstall(pkgPath, natsURL, bootstrapPath string, logger *slog.Logger) err
 
 	inst := pkgmgr.NewInstaller(conn, adminActor)
 	inst.RoleIDs = roleIDsFromBootstrap(bs)
-	res, err := inst.Install(context.Background(), def)
+	res, err := inst.Apply(context.Background(), def, opts)
 	if err != nil {
 		return err
 	}
-	for _, w := range res.DependencyWarnings {
-		logger.Warn(w)
-	}
-	if res.Skipped {
-		logger.Info("install skipped", "reason", res.Reason, "package", res.PackageName)
-		return nil
-	}
-	logger.Info("install committed",
-		"package", res.PackageName,
-		"version", res.PackageVersion,
-		"packageKey", res.PackageKey,
-		"writeCount", len(res.DeclaredKeys),
-	)
+	logApplyResult(cmd, res, logger)
 	return nil
 }
 
-func runUpgrade(pkgPath, natsURL, bootstrapPath string, logger *slog.Logger) error {
-	manifestPath := filepath.Join(pkgPath, "manifest.yaml")
-	manifest, err := pkgmgr.ParseManifest(manifestPath)
-	if err != nil {
-		return err
+// logApplyResult renders an ApplyResult: a dry-run prints the previewed delta +
+// affected keys; a real run logs the action that landed (install / upgrade /
+// skip).
+func logApplyResult(cmd string, res *pkgmgr.ApplyResult, logger *slog.Logger) {
+	for _, w := range res.DependencyWarnings {
+		logger.Warn(w)
 	}
-	def, ok := packageRegistry[manifest.Name]
-	if !ok {
-		return fmt.Errorf("package %q not in compiled registry; rebuild lattice-pkg with the package's Go code imported", manifest.Name)
-	}
-	if err := manifest.VerifyAgainstDefinition(def); err != nil {
-		return err
-	}
-	bs, adminActor, err := loadBootstrap(bootstrapPath)
-	if err != nil {
-		return err
-	}
-
-	conn, err := substrate.Connect(context.Background(), substrate.ConnectOpts{URL: natsURL, Name: "lattice-pkg"})
-	if err != nil {
-		return fmt.Errorf("substrate open: %w", err)
-	}
-	defer conn.Close()
-
-	inst := pkgmgr.NewInstaller(conn, adminActor)
-	inst.RoleIDs = roleIDsFromBootstrap(bs)
-	res, err := inst.Upgrade(context.Background(), def)
-	if err != nil {
-		return err
+	if res.DryRun {
+		logger.Info("dry-run — no changes submitted",
+			"package", res.PackageName,
+			"action", res.Action,
+			"from", res.FromVersion,
+			"to", res.ToVersion,
+			"created", res.Created,
+			"updated", res.Updated,
+			"tombstoned", res.Tombstoned,
+		)
+		logKeys(logger, "create", res.CreatedKeys)
+		logKeys(logger, "update", res.UpdatedKeys)
+		logKeys(logger, "tombstone", res.TombstonedKeys)
+		return
 	}
 	if res.Skipped {
-		logger.Info("upgrade skipped", "reason", res.Reason, "package", res.PackageName)
-		return nil
+		logger.Info(cmd+" skipped", "reason", res.Reason, "package", res.PackageName)
+		return
 	}
-	logger.Info("upgrade committed",
-		"package", res.PackageName,
-		"fromVersion", res.FromVersion,
-		"toVersion", res.ToVersion,
-		"created", res.Created,
-		"updated", res.Updated,
-		"tombstoned", res.Tombstoned,
-	)
-	return nil
+	switch res.Action {
+	case "upgrade":
+		logger.Info("upgrade committed",
+			"package", res.PackageName,
+			"fromVersion", res.FromVersion,
+			"toVersion", res.ToVersion,
+			"created", res.Created,
+			"updated", res.Updated,
+			"tombstoned", res.Tombstoned,
+		)
+	default:
+		logger.Info("install committed",
+			"package", res.PackageName,
+			"version", res.ToVersion,
+			"packageKey", res.PackageKey,
+			"writeCount", res.Created,
+		)
+	}
+}
+
+func logKeys(logger *slog.Logger, op string, keys []string) {
+	for _, k := range keys {
+		logger.Info("dry-run delta", "op", op, "key", k)
+	}
 }
 
 func runUninstall(packageName, natsURL, bootstrapPath string, logger *slog.Logger) error {
