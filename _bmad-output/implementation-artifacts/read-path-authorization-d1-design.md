@@ -1,6 +1,31 @@
 # Read-path authorization (D1) — design
 
-**Status: 📐 awaiting-Andrew (ratification).** Author: Winston (Designer fire, 2026-06-26).
+**Status: ✅ Andrew-ratified (2026-06-27).** Author: Winston (Designer fire, 2026-06-26).
+
+> **Ratification decisions (Andrew, 2026-06-27) — these supersede the "two forks" framing below:**
+> 1. **Fork 1 (enforcement) — Path A (Postgres-RLS) is *the* boundary for protected data.** The NATS-KV
+>    read-gateway filter (Path B) is **transitional scaffold only**; once RLS ships, a `protected: true` read
+>    model served from NATS-KV is a **lint-failable** state (the `protected:true` gate extends from
+>    "must project `authzAnchor`" to "must target Postgres"). Public/operational read models stay NATS-KV.
+> 2. **Fork 2 (auth seam) — yes:** ship the minimal JWT read-actor seam as D1 increment 1; defer the full
+>    Gateway to ops.
+> 3. **The Capability-Read lens is *decomposed*, not a single god-cypher** (Andrew's question, 2026-06-27).
+>    It mirrors §6.1's contract-contribution model exactly: core owns only a **base** `cap-read.<actor>` lens
+>    (self + primordial), and **each package ships its own `cap-read.<domain>` read-grant `actorAggregate`
+>    lens** (rbac-domain → `cap-read.roles`, loftspace → `cap-read.residence`, clinic → `cap-read.<domain>`,
+>    …). Unlike the write side — where step-3 dispatches to *one* key per op (single GET) — read auth needs
+>    the **union** of every package's grants, so the merge is pushed into the **Postgres `actor_read_grants`
+>    table keyed `(actor_id, anchor_type, anchor_id, grant_source)`**: `grant_source` keeps producers disjoint
+>    (each lens owns/retracts its own rows) and RLS `JOIN`s union them natively. This union requirement is an
+>    additional structural reason Path A is the destination and Path B cannot persist. §3.1/§3.3 + Contract
+>    §6.14 are revised to this model. The original single-merged-`readableAnchors[]`-doc shape below is
+>    **superseded** by the decomposition.
+
+Verified facts grounding the forks (Designer re-check, 2026-06-27): apps read NATS-KV exclusively
+(`KVGet`/`KVListKeys`; no `pgx`/`database/sql`); the Postgres adapter **is** exercised (the hello-lattice
+`lens.bootstrap-contract-view` demo + tests) so Path A's adapter path is proven, though no *business* read
+model is on Postgres yet (the migration cost is real); `internal/gateway` is absent (the auth seam is
+greenfield); Contract #10 §10.2 already says a protected lens "carries the D1 authz anchor there [Postgres]."
 Backlog row: `planning-artifacts/backlog/lattice.md` → *Security & trust boundary → Read-path
 authorization (D1)* (★★★, L). Grounds in `lattice-architecture.md` D1 (pre-written rubric),
 Contract #6 (Capability KV), Contract #10 §10.2, brainstorming #38/#61/#118, and the vault
@@ -135,12 +160,24 @@ at the read boundary. (b) is common to all paths; (a) and (c) are the forks.
 
 ## 3. The shape
 
-### 3.1 The Capability-Read Lens (common to every path — the heart of D1)
+### 3.1 The Capability-Read Lenses — decomposed, package-contributed (the heart of D1)
 
-A new **auth-plane lens**, `capabilityRead`, projecting per-actor **read** grants — the symmetric twin
-of the write-path `capability` lens. It is an **`actorAggregate`** lens (Contract #6 §6.13), so it
-inherits the narrow reverse-traversal invalidation, the `projectionSeq` guard, the soft-tombstone, and
-fail-closed activation.
+> **As ratified (2026-06-27):** this is **not one lens** but a **family**, mirroring §6.1's
+> contract-contribution model. **Core** owns a **base** `cap-read.<actor>` lens carrying only self +
+> primordial read scope (no package vocabulary). **Each package** ships its own `cap-read.<domain>`
+> read-grant `actorAggregate` lens for the relationships it owns: `rbac-domain` → `cap-read.roles`,
+> `loftspace` → `cap-read.residence` (`residesIn`/`leases`/`containedIn`), `clinic` → its provider→patient
+> scope, etc. — the same package→core direction as the Epic-12 write-side decomposition (`cap.roles`/
+> `cap.svc`/`cap.ephemeral`). The actor's effective readable set is the **union** of all `cap-read.*`
+> slices. **The merge happens in the Postgres `actor_read_grants(actor_id, anchor_type, anchor_id,
+> grant_source)` table** — `grant_source` keeps producers disjoint (each lens owns/retracts its own rows),
+> and the RLS `JOIN` unions them natively. (The single-merged-`readableAnchors[]`-doc and single-cypher
+> framing in the rest of this section is the **pre-decomposition draft, superseded** — read it as "each
+> domain lens projects *its* slice in this shape"; the source-path list below is illustrative of *one*
+> domain lens, not a single core cypher walking every domain.) Contract §6.14 carries the ratified shape.
+
+Each producer is an **auth-plane `actorAggregate`** lens (Contract #6 §6.13), so it inherits the narrow
+reverse-traversal invalidation, the `projectionSeq` guard, the soft-tombstone, and fail-closed activation.
 
 - **Source paths (walk Core KV topology, same vocabulary as the write path):** for each actor, resolve
   the set of **resource anchors** the actor may read. The first delivery reuses the read-relevant subset
@@ -193,9 +230,16 @@ a row and `readableAnchors[]`. The convention (formalized in the §6.14 contract
 - This is exactly Contract #10 §10.2's "carries the D1 authz anchor there" promise, generalized from
   the Postgres-only phrasing to **any** protected target.
 
-### 3.3 The read-authorization boundary (the fork — both paths designed)
+### 3.3 The read-authorization boundary (fork resolved — Path A is the boundary)
 
-**Path A — Postgres-RLS (recommended destination).**
+> **As ratified (2026-06-27):** **Path A (Postgres-RLS) is *the* enforcement boundary for protected data.**
+> Path B below is **transitional scaffold only** (use during a migration); once RLS ships, a `protected:
+> true` read model served from NATS-KV is **forbidden / lint-failable** — the `protected:true` conventions
+> gate extends from "must project `authzAnchor`" to "must target Postgres." Public/operational read models
+> stay NATS-KV. (The "both paths co-equal" framing below is the pre-ratification design; read Path B as the
+> *interim*, not an end-state.)
+
+**Path A — Postgres-RLS (the ratified enforcement boundary).**
 - The `capabilityRead` lens projects a second target: a Postgres table
   `actor_read_grants(actor_id, anchor_type, anchor_id)` (the NATS-KV adapter enforces `projectionSeq`;
   the Postgres adapter is guard-exempt per §6.2 — RLS reads current rows, and CDC-ordered upserts
