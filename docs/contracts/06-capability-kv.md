@@ -194,8 +194,8 @@ Each entry describes a system-level operation not scoped to any service.
 
 | Field | Required | Purpose |
 |-------|----------|---------|
-| `operationType` | yes | Operation type (PascalCase). |
-| `scope` | yes | One of `any`, `self`, `owned`, `specific`. See §6.7. |
+| `operationType` | yes | Operation-type identifier, matched by **exact string equality** (no casing constraint is enforced). **Business** operations are conventionally PascalCase verb-noun (Contract #2 §2.1 — `CreateIdentity`, `ClaimIdentity`). **Platform control** operations use the reserved **`ctrl.<comp>.<verb>`** namespace (e.g. `ctrl.weaver.disable`, `ctrl.refractor.rebuild`, `ctrl.loom.pause`) — mirroring the `lattice.ctrl.<comp>.<verb>` control subject taxonomy and keeping control grants unmistakably distinct from business ops. |
+| `scope` | yes | One of `any`, `self`, `owned`, `specific`. See §6.7. (Platform control ops use `any` — blanket per-verb grants; platform-path `specific` is a deny-stub, §6.7, so per-target control scoping is deferred to when `specific` is implemented.) |
 
 Processor dispatch (when `authContext.service` is null AND `authContext.task` is null):
 1. Scan `platformPermissions[]` for matching `operationType`
@@ -471,3 +471,102 @@ actor-disappearance delete at `BuildKey(actorKey)`; a lens that designates a **s
 column (e.g. `entityKey` non-null = anchor alive) still drives the `emptyBehavior` retract when that scalar
 is absent. Landed in Refractor's Epic-12 Output-descriptor machinery
 (`internal/refractor/projection/driver.go` `EnvelopeFn`); no frozen-contract widening.
+
+### 6.14 Read-path authorization (D1) — `cap-read.*` + authz-anchor
+
+> **Status: ✅ Andrew-ratified (2026-06-27).** Read-path mirror of the write-path Capability KV.
+> Design: `_bmad-output/implementation-artifacts/read-path-authorization-d1-design.md`
+> (`lattice-architecture.md` D1; Contract #10 §10.2; brainstorming #38/#61/#118). **Forks resolved by
+> Andrew:** **(1) enforcement = Postgres-RLS (Path A) is *the* boundary for protected data**; the NATS-KV
+> read-gateway filter (Path B) is **transitional scaffold only** — once RLS ships, a `protected: true` read
+> model served from NATS-KV is a **lint-failable** state (see "Enforcement" below). **(2)** the minimal
+> JWT read-actor auth seam ships as **D1 increment 1**; the full internet-facing Gateway is deferred to ops.
+
+Contract #6 above is the **write-path** authorization surface (the Processor reads it at commit step 3).
+**Reads** have no such boundary — a lens target can be read directly, bypassing the Capability boundary
+(NFR-S2 / D1). This section adds the **read-path mirror**, following the **same contract-contribution model
+as §6.1** (core owns the bucket + the read boundary + the key conventions; **packages project the read
+grants they own** into disjoint key spaces) — *not* a single god-cypher.
+
+**The read mirror is decomposed exactly like the write side (§6.1).** Read auth differs from write auth in
+one structural way: write auth asks "may I do op X?" and the step-3 reader **dispatches to the one** grant
+key for that op (single GET, boolean). Read auth asks "which rows may I see?" and needs the **union** of
+*every* package's read grants for the actor — so it cannot be dispatched away; it must merge. The merge is
+therefore pushed into the **Postgres `actor_read_grants` table** (below), where RLS unions it natively.
+
+**Producer key space (disjoint, same Capability KV bucket — mirrors `cap.roles`/`cap.svc`/`cap.ephemeral`).**
+```
+cap-read.<actor-vertex-key-suffix>            # core base lens: self + primordial read scope only
+cap-read.roles.<actor-vertex-key-suffix>      # rbac-domain package: role-derived read scope
+cap-read.residence.<actor-vertex-key-suffix>  # loftspace package: residesIn/leases/containedIn → readable units/leases
+cap-read.<domain>.<actor-vertex-key-suffix>   # each package projects its own domain's readable anchors (e.g. clinic provider→patient)
+```
+Core owns only the **base** `cap-read.<actor>` lens (self-anchor + primordial root scope — references no
+package vocabulary). Every domain read-grant is a **separate `actorAggregate` lens shipped by the package
+that owns the relationship** — the same package→core dependency direction the Epic-12 write-side
+decomposition established. Each such lens is auth-plane and inherits the **`projectionSeq` write-ordering
+guard** (§6.2), the **soft-tombstone on delete** (§6.8), and **fail-closed activation** (§6.13) — verbatim.
+
+**Per-lens NATS-KV document shape (`cap-read.<source>.<actor>`).** Each producer projects the slice it
+owns; the union across slices is the actor's full readable set.
+```json
+{
+  "key":           "cap-read.residence.identity.Hj4kPmRtw9nbCxz5vQ2y",
+  "actor":         "vtx.identity.Hj4kPmRtw9nbCxz5vQ2y",
+  "version":       "1.0",
+  "projectedAt":   "2026-06-26T14:32:18.142Z",
+  "projectionSeq": 10481,
+  "readableAnchors": [
+    { "anchorType": "unit",  "anchorId": "Lk2Pn6mQrtwzKbcXvP3T", "via": ["residesIn"] },
+    { "anchorType": "lease", "anchorId": "Op4Nb2mPq6rTwzKxVyP7", "via": ["leases"] }
+  ]
+}
+```
+
+| Field | Required | Purpose |
+|-------|----------|---------|
+| `readableAnchors` | yes (may be empty `[]`) | The resource anchors **this lens** grants. Each entry: `anchorType` (vertex type), `anchorId` (bare NanoID), `via` (justifying link path — the read analog of §6.5 `resolvedVia`, for auditability). The actor's effective set is the **union over all `cap-read.*.<actor>` slices**. |
+| `key`/`actor`/`version`/`projectedAt`/`projectionSeq` | yes | As §6.3 (read-path mirror). |
+
+**The merge point — the Postgres `actor_read_grants` table (Path A).** Every read-grant lens **also**
+projects to a shared table whose primary key carries the **contributing lens** so producers stay disjoint:
+```
+actor_read_grants(actor_id, anchor_type, anchor_id, grant_source)   PRIMARY KEY (actor_id, anchor_type, anchor_id, grant_source)
+```
+`grant_source` (the lens canonical name, e.g. `cap-read.residence`) makes each lens **own its rows** — a
+revoke from one package deletes only that package's rows, never another's, exactly like the write-side
+disjoint key prefixes. RLS then **unions across all sources natively**: a business-table policy is
+`USING (authz_anchor IN (SELECT DISTINCT anchor_type||'.'||anchor_id FROM actor_read_grants WHERE actor_id =
+current_setting('lattice.actor_id')))`. No app-side multi-key union; the table *is* the merge.
+
+**Authz-anchor column convention (protected read-model lenses).** Every **protected** business read-model
+lens projects an **`authzAnchor`** column, value `<anchorType>.<anchorId>` (e.g.
+`unit.Lk2Pn6mQrtwzKbcXvP3T`) — the join key between a row and the actor's granted anchors. A lens with **no
+`authzAnchor`** is **public-read** (explicit opt-out). A lens whose target is declared `protected: true`
+but projects no `authzAnchor` **fails closed** (activation/lint error) — absence must never silently serve
+everything. This generalizes Contract #10 §10.2's "carries the D1 authz anchor **there** [the Postgres
+read-path]" to **any** protected target.
+
+**Enforcement (Andrew-ratified Fork 1 — Path A is the boundary; Path B is transitional only).** The read
+boundary authenticates the reader (D1 increment 1: a signed JWT keyed to the Identity vertex → verified
+`actor_id`; checked against the token-revocation KV — brainstorm #118/#111), then:
+- **Protected data → Postgres-RLS (the enforcement boundary).** The business read model lives in a Postgres
+  table with an `authz_anchor` column + the RLS policy above; the boundary sets `SET LOCAL lattice.actor_id`
+  per session; the union/JOIN is DB-native and **unbypassable by app code**. This is the destination for
+  **all** protected read models.
+- **NATS-KV read-gateway filter (Path B) — transitional scaffold only.** During a migration a boundary MAY
+  GET the `cap-read.*.<actor>` slices, union them, and filter NATS-KV rows whose `authzAnchor` ∉ that union.
+  **This is not a sanctioned end-state:** once Postgres-RLS ships, **a `protected: true` read model served
+  from NATS-KV is a forbidden, lint-failable state** — the `protected: true` conventions-lint gate is
+  extended from "must project `authzAnchor`" to "must target Postgres (RLS-enforced)." Public/operational
+  read models stay on NATS-KV (they declare no `authzAnchor`).
+
+**No entry = no read.** Absence of any `cap-read.*` grant for the actor (or an `authzAnchor` matched by no
+granted anchor) denies the read — mirroring §6.8. There is **no anonymous/public-read fallback**; a public
+read model opts out explicitly by projecting no `authzAnchor`.
+
+**Affected consumers:** Refractor (the core base `capabilityRead` lens + the Postgres `actor_read_grants`
+multi-target); each **package** (ships its own `cap-read.<domain>` read-grant lens — `rbac-domain`,
+`loftspace`, `clinic`, …); the read boundary (Postgres RLS; the transitional NATS-KV filter); every
+protected business read-model lens (must project `authzAnchor`, and — post-RLS — must target Postgres). No
+change to the write-path §6.2–§6.13.
