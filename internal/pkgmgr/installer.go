@@ -101,6 +101,9 @@ func (i *Installer) Install(ctx context.Context, def Definition) (*InstallResult
 	if err := def.validateCanonicalNameUniqueness(); err != nil {
 		return nil, err
 	}
+	if err := def.validatePermissionIdentityUniqueness(); err != nil {
+		return nil, err
+	}
 
 	res := &InstallResult{PackageName: def.Name, PackageVersion: def.Version}
 
@@ -158,7 +161,7 @@ func (i *Installer) Install(ctx context.Context, def Definition) (*InstallResult
 		i.RoleIDs = map[string]string{}
 	}
 	for idx, r := range def.Roles {
-		id := deterministicNanoID(def.Name, def.Version, "role:"+r.CanonicalName)
+		id := entityNanoID(def.Name, "role:"+r.CanonicalName)
 		roleNanoIDs[idx] = id
 		i.RoleIDs[r.CanonicalName] = id
 	}
@@ -180,10 +183,12 @@ func (i *Installer) Install(ctx context.Context, def Definition) (*InstallResult
 		}
 	}
 
-	// Step 3 — build the mutation manifest with DETERMINISTIC NanoIDs
-	// (derived from package name+version+entity tag) so a re-install
-	// produces identical keys and the create-only batch is idempotent.
-	pkgKey := PackageVertexPrefix + deterministicNanoID(def.Name, def.Version, "package")
+	// Step 3 — build the mutation manifest with DETERMINISTIC,
+	// version-independent NanoIDs (derived from package name + entity tag,
+	// Contract #8 §8.1) so a re-install produces identical keys and the
+	// create-only batch is idempotent, and so the same logical entity keeps
+	// its key across versions (the in-place upgrade in §8.6).
+	pkgKey := PackageVertexPrefix + entityNanoID(def.Name, "package")
 	res.PackageKey = pkgKey
 
 	ddlNanoIDs := make([]string, len(def.DDLs))
@@ -193,23 +198,22 @@ func (i *Installer) Install(ctx context.Context, def Definition) (*InstallResult
 	loomPatternNanoIDs := make([]string, len(def.LoomPatterns))
 	opMetaNanoIDs := make([]string, len(def.OpMetas))
 	for idx, d := range def.DDLs {
-		ddlNanoIDs[idx] = deterministicNanoID(def.Name, def.Version, "ddl:"+d.CanonicalName)
+		ddlNanoIDs[idx] = entityNanoID(def.Name, "ddl:"+d.CanonicalName)
 	}
 	for idx, l := range def.Lenses {
-		lensNanoIDs[idx] = deterministicNanoID(def.Name, def.Version, "lens:"+l.CanonicalName)
+		lensNanoIDs[idx] = entityNanoID(def.Name, "lens:"+l.CanonicalName)
 	}
 	for idx, p := range def.Permissions {
-		permNanoIDs[idx] = deterministicNanoID(def.Name, def.Version,
-			fmt.Sprintf("perm:%d:%s", idx, p.OperationType))
+		permNanoIDs[idx] = entityNanoID(def.Name, permTag(p.OperationType, p.Scope))
 	}
 	for idx, t := range def.WeaverTargets {
-		weaverTargetNanoIDs[idx] = deterministicNanoID(def.Name, def.Version, "weaverTarget:"+t.TargetID)
+		weaverTargetNanoIDs[idx] = entityNanoID(def.Name, "weaverTarget:"+t.TargetID)
 	}
 	for idx, p := range def.LoomPatterns {
-		loomPatternNanoIDs[idx] = deterministicNanoID(def.Name, def.Version, "loomPattern:"+p.PatternID)
+		loomPatternNanoIDs[idx] = entityNanoID(def.Name, "loomPattern:"+p.PatternID)
 	}
 	for idx, o := range def.OpMetas {
-		opMetaNanoIDs[idx] = deterministicNanoID(def.Name, def.Version, "opMeta:"+o.OperationType)
+		opMetaNanoIDs[idx] = entityNanoID(def.Name, "opMeta:"+o.OperationType)
 	}
 
 	ops, declared, err := i.buildInstallBatch(def, pkgKey, ddlNanoIDs, lensNanoIDs, permNanoIDs, roleNanoIDs,
@@ -244,10 +248,40 @@ func (i *Installer) Install(ctx context.Context, def Definition) (*InstallResult
 }
 
 // deterministicNanoID derives a stable Contract #1 NanoID from the
-// package name+version+entity tag. Same inputs → same ID on every run,
-// so re-install is idempotent and produces identical keys.
+// package name+version+tag. Same inputs → same ID on every run. It is used
+// for the version-scoped op requestId (so re-submitting the same install/
+// upgrade dedup-short-circuits while distinct versions stay independent);
+// entity keys use entityNanoID, which omits the version (Contract #8 §8.1).
 func deterministicNanoID(name, version, tag string) string {
-	sum := sha256.Sum256([]byte("lattice-pkg:" + name + ":" + version + ":" + tag))
+	return nanoIDFromSalt("lattice-pkg:" + name + ":" + version + ":" + tag)
+}
+
+// entityNanoID derives a stable, version-independent Contract #1 NanoID for
+// an installed entity (a DDL, lens, permission, role, op-meta, …) from the
+// package name + entity tag — NOT the version (Contract #8 §8.1). The same
+// logical entity therefore keeps the same vtx.meta.<id> / vtx.<type>.<id>
+// key across versions, so a version upgrade is an in-place update of stable
+// keys (§8.6) instead of a re-mint that would orphan vertices and break
+// every NanoID cross-reference (a WeaverTarget's lensRef, a grant link).
+func entityNanoID(name, tag string) string {
+	return nanoIDFromSalt("lattice-pkg:" + name + ":" + tag)
+}
+
+// permTag is the version-independent identity tag for a permission entity:
+// its operationType + scope (the logical identity per Contract #6), not its
+// position in the package's Permissions slice — so reordering the slice does
+// not churn the permission's key. A package declaring two permissions with
+// the same (operationType, scope) is a degenerate duplicate, rejected by
+// validatePermissionIdentityUniqueness before any key is minted.
+func permTag(operationType, scope string) string {
+	return "perm:" + operationType + ":" + scope
+}
+
+// nanoIDFromSalt hashes a salt string into a Contract #1 NanoID-alphabet id
+// of substrate.NanoIDLength characters. Shared by the version-scoped and
+// version-independent derivations above.
+func nanoIDFromSalt(salt string) string {
+	sum := sha256.Sum256([]byte(salt))
 	out := make([]byte, substrate.NanoIDLength)
 	for i := 0; i < substrate.NanoIDLength; i++ {
 		hi := sum[(i*2)%len(sum)]

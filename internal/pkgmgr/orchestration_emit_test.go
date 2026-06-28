@@ -72,7 +72,7 @@ func TestEmit_WeaverTarget_RoundTripsThroughEngineParse(t *testing.T) {
 		t.Fatalf("BuildInstallBatchForTest: %v", err)
 	}
 
-	targetID := pkgmgr.DeterministicNanoIDForTest(def.Name, def.Version, "weaverTarget:leaseSigning")
+	targetID := pkgmgr.EntityNanoIDForTest(def.Name, "weaverTarget:leaseSigning")
 	vtxKey := "vtx.meta." + targetID
 	vtx := findDoc(ops, vtxKey)
 	if vtx == nil {
@@ -132,9 +132,9 @@ func TestEmit_WeaverTarget_LensRefResolvesToDeclaredLensNanoID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildInstallBatchForTest: %v", err)
 	}
-	wantLensID := pkgmgr.DeterministicNanoIDForTest(def.Name, def.Version, "lens:leaseSigningCandidates")
+	wantLensID := pkgmgr.EntityNanoIDForTest(def.Name, "lens:leaseSigningCandidates")
 
-	targetID := pkgmgr.DeterministicNanoIDForTest(def.Name, def.Version, "weaverTarget:leaseSigning")
+	targetID := pkgmgr.EntityNanoIDForTest(def.Name, "weaverTarget:leaseSigning")
 	specDoc := findDoc(ops, "vtx.meta."+targetID+".spec")
 	body := specDoc["data"].(map[string]any)
 	if body["lensRef"] != wantLensID {
@@ -146,7 +146,7 @@ func TestEmit_WeaverTarget_LensRefResolvesToDeclaredLensNanoID(t *testing.T) {
 // already shaped as a valid NanoID (a lens in an already-installed package) is
 // shipped verbatim.
 func TestEmit_WeaverTarget_LensRefLiteralNanoIDPassesThrough(t *testing.T) {
-	literal := pkgmgr.DeterministicNanoIDForTest("other-pkg", "1.0", "lens:someLens")
+	literal := pkgmgr.EntityNanoIDForTest("other-pkg", "lens:someLens")
 	def := pkgmgr.Definition{
 		Name:    "lease-signing",
 		Version: "0.1.0",
@@ -159,7 +159,7 @@ func TestEmit_WeaverTarget_LensRefLiteralNanoIDPassesThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildInstallBatchForTest: %v", err)
 	}
-	targetID := pkgmgr.DeterministicNanoIDForTest(def.Name, def.Version, "weaverTarget:leaseSigning")
+	targetID := pkgmgr.EntityNanoIDForTest(def.Name, "weaverTarget:leaseSigning")
 	body := findDoc(ops, "vtx.meta."+targetID+".spec")["data"].(map[string]any)
 	if body["lensRef"] != literal {
 		t.Errorf("lensRef = %v, want literal NanoID %q passed through", body["lensRef"], literal)
@@ -191,7 +191,7 @@ func TestEmit_LoomPattern_RoundTripsThroughEngineParse(t *testing.T) {
 		t.Fatalf("BuildInstallBatchForTest: %v", err)
 	}
 
-	patternID := pkgmgr.DeterministicNanoIDForTest(def.Name, def.Version, "loomPattern:leaseSigning")
+	patternID := pkgmgr.EntityNanoIDForTest(def.Name, "loomPattern:leaseSigning")
 	vtxKey := "vtx.meta." + patternID
 	vtx := findDoc(ops, vtxKey)
 	if vtx == nil {
@@ -269,7 +269,7 @@ func TestEmit_LoomPattern_ExternalTaskRoundTripsThroughEngineParse(t *testing.T)
 		t.Fatalf("BuildInstallBatchForTest: %v", err)
 	}
 
-	patternID := pkgmgr.DeterministicNanoIDForTest(def.Name, def.Version, "loomPattern:leaseSigning")
+	patternID := pkgmgr.EntityNanoIDForTest(def.Name, "loomPattern:leaseSigning")
 	specDoc := findDoc(ops, "vtx.meta."+patternID+".spec")
 	if specDoc == nil {
 		t.Fatalf("no loom-pattern spec aspect emitted for externalTask pattern")
@@ -321,7 +321,7 @@ func TestEmit_OpMeta_ShapeMatchesEngineIndex(t *testing.T) {
 		t.Fatalf("BuildInstallBatchForTest: %v", err)
 	}
 
-	opMetaID := pkgmgr.DeterministicNanoIDForTest(def.Name, def.Version, "opMeta:SignLease")
+	opMetaID := pkgmgr.EntityNanoIDForTest(def.Name, "opMeta:SignLease")
 	vtxKey := "vtx.meta." + opMetaID
 	vtx := findDoc(ops, vtxKey)
 	if vtx == nil {
@@ -353,9 +353,9 @@ func TestEmit_DeclaredKeysIncludeAllOrchestrationKeys(t *testing.T) {
 		declaredSet[k] = struct{}{}
 	}
 
-	targetID := pkgmgr.DeterministicNanoIDForTest(def.Name, def.Version, "weaverTarget:leaseSigning")
-	patternID := pkgmgr.DeterministicNanoIDForTest(def.Name, def.Version, "loomPattern:leaseSigning")
-	opMetaID := pkgmgr.DeterministicNanoIDForTest(def.Name, def.Version, "opMeta:SignLease")
+	targetID := pkgmgr.EntityNanoIDForTest(def.Name, "weaverTarget:leaseSigning")
+	patternID := pkgmgr.EntityNanoIDForTest(def.Name, "loomPattern:leaseSigning")
+	opMetaID := pkgmgr.EntityNanoIDForTest(def.Name, "opMeta:SignLease")
 	want := []string{
 		"vtx.meta." + targetID,
 		"vtx.meta." + targetID + ".spec",

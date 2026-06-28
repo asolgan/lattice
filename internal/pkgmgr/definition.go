@@ -58,6 +58,28 @@ func (def Definition) validateCanonicalNameUniqueness() error {
 	return nil
 }
 
+// validatePermissionIdentityUniqueness rejects a package that declares two
+// permissions with the same (operationType, scope). A permission's entity key
+// is derived from its operationType + scope (Contract #8 §8.1, permTag) — its
+// logical identity, not its position in the Permissions slice — so two
+// permissions sharing both would collapse onto one vtx.permission.<id> key,
+// silently dropping one of the grants. It is a pure function (no I/O) so it
+// runs before any KV operation and is unit-testable without a live substrate.
+func (def Definition) validatePermissionIdentityUniqueness() error {
+	seen := make(map[string]struct{}, len(def.Permissions))
+	for idx, p := range def.Permissions {
+		id := p.OperationType + ":" + p.Scope
+		if _, dup := seen[id]; dup {
+			return fmt.Errorf(
+				"pkgmgr: Permission[%d]: duplicate (operationType=%q, scope=%q) — "+
+					"permission identity must be unique within a package",
+				idx, p.OperationType, p.Scope)
+		}
+		seen[id] = struct{}{}
+	}
+	return nil
+}
+
 // Definition is the static, install-time bundle for one package. Package
 // authors construct one of these in their package's top-level Go file and
 // export it as `var Package = pkgmgr.Definition{...}`.

@@ -1,7 +1,5 @@
 package pkgmgr
 
-import "fmt"
-
 // BuildInstallBatchForTest exposes the internal install-batch builder to the
 // external pkgmgr_test package so a test can round-trip the emitted
 // orchestration bodies through the engine parse structs (weaver.Target /
@@ -9,7 +7,7 @@ import "fmt"
 // engines load, with no engine change. Test-only; not part of the public API.
 func BuildInstallBatchForTest(def Definition) ([]InstallMutationForTest, []string, error) {
 	inst := &Installer{}
-	pkgKey := PackageVertexPrefix + deterministicNanoID(def.Name, def.Version, "package")
+	pkgKey := PackageVertexPrefix + entityNanoID(def.Name, "package")
 
 	ddlIDs := make([]string, len(def.DDLs))
 	lensIDs := make([]string, len(def.Lenses))
@@ -19,26 +17,25 @@ func BuildInstallBatchForTest(def Definition) ([]InstallMutationForTest, []strin
 	loomPatternIDs := make([]string, len(def.LoomPatterns))
 	opMetaIDs := make([]string, len(def.OpMetas))
 	for idx, d := range def.DDLs {
-		ddlIDs[idx] = deterministicNanoID(def.Name, def.Version, "ddl:"+d.CanonicalName)
+		ddlIDs[idx] = entityNanoID(def.Name, "ddl:"+d.CanonicalName)
 	}
 	for idx, l := range def.Lenses {
-		lensIDs[idx] = deterministicNanoID(def.Name, def.Version, "lens:"+l.CanonicalName)
+		lensIDs[idx] = entityNanoID(def.Name, "lens:"+l.CanonicalName)
 	}
 	for idx, p := range def.Permissions {
-		permIDs[idx] = deterministicNanoID(def.Name, def.Version,
-			fmt.Sprintf("perm:%d:%s", idx, p.OperationType))
+		permIDs[idx] = entityNanoID(def.Name, permTag(p.OperationType, p.Scope))
 	}
 	for idx, r := range def.Roles {
-		roleIDs[idx] = deterministicNanoID(def.Name, def.Version, "role:"+r.CanonicalName)
+		roleIDs[idx] = entityNanoID(def.Name, "role:"+r.CanonicalName)
 	}
 	for idx, t := range def.WeaverTargets {
-		weaverTargetIDs[idx] = deterministicNanoID(def.Name, def.Version, "weaverTarget:"+t.TargetID)
+		weaverTargetIDs[idx] = entityNanoID(def.Name, "weaverTarget:"+t.TargetID)
 	}
 	for idx, p := range def.LoomPatterns {
-		loomPatternIDs[idx] = deterministicNanoID(def.Name, def.Version, "loomPattern:"+p.PatternID)
+		loomPatternIDs[idx] = entityNanoID(def.Name, "loomPattern:"+p.PatternID)
 	}
 	for idx, o := range def.OpMetas {
-		opMetaIDs[idx] = deterministicNanoID(def.Name, def.Version, "opMeta:"+o.OperationType)
+		opMetaIDs[idx] = entityNanoID(def.Name, "opMeta:"+o.OperationType)
 	}
 
 	ops, declared, err := inst.buildInstallBatch(def, pkgKey, ddlIDs, lensIDs, permIDs, roleIDs,
@@ -61,8 +58,16 @@ type InstallMutationForTest struct {
 	Document map[string]any
 }
 
-// DeterministicNanoIDForTest exposes the installer's deterministic NanoID
-// minting so tests can recompute the id a given entity will be keyed under.
-func DeterministicNanoIDForTest(name, version, tag string) string {
-	return deterministicNanoID(name, version, tag)
+// EntityNanoIDForTest exposes the installer's version-independent entity
+// NanoID minting so tests can recompute the id a given entity will be keyed
+// under (Contract #8 §8.1 — derived from package name + entity tag, no
+// version).
+func EntityNanoIDForTest(name, tag string) string {
+	return entityNanoID(name, tag)
+}
+
+// PermTagForTest exposes the version-independent permission identity tag so
+// tests can recompute a permission's entity key from its operationType+scope.
+func PermTagForTest(operationType, scope string) string {
+	return permTag(operationType, scope)
 }

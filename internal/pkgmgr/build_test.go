@@ -154,10 +154,10 @@ func TestBuildInstallBatch_SensitiveAspectEmittedOnlyWhenTrue(t *testing.T) {
 	}
 
 	inst := &Installer{}
-	pkgKey := PackageVertexPrefix + DeterministicNanoIDForTest(def.Name, def.Version, "package")
+	pkgKey := PackageVertexPrefix + EntityNanoIDForTest(def.Name, "package")
 	ddlIDs := []string{
-		DeterministicNanoIDForTest(def.Name, def.Version, "ddl:plainType"),
-		DeterministicNanoIDForTest(def.Name, def.Version, "ddl:secretType"),
+		EntityNanoIDForTest(def.Name, "ddl:plainType"),
+		EntityNanoIDForTest(def.Name, "ddl:secretType"),
 	}
 	ops, _, err := inst.buildInstallBatch(def, pkgKey, ddlIDs, nil, nil, nil, nil, nil, nil)
 	if err != nil {
