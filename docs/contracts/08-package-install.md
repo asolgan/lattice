@@ -28,9 +28,17 @@ mutation computation stays client-side.
   `localName`) — but **no provenance**. The Processor stamps `createdAt`,
   `createdBy`, `createdByOp` at step 8 from the install actor, so installed
   entities carry real provenance authored by the actor that ran the install.
-- **Deterministic NanoIDs.** Every entity's NanoID is derived from
-  `package name + version + entity tag` (`sha256` → Contract #1 alphabet), so a
-  re-install produces identical keys and the create-only batch is idempotent.
+- **Deterministic, version-independent NanoIDs.** Every entity's NanoID is derived
+  from `package name + entity tag` (`sha256` → Contract #1 alphabet) — **not** the
+  version. The same logical entity (a lens, DDL, role, op-meta — identified by its
+  canonicalName / identity tag) therefore keeps the **same** `vtx.meta.<id>` /
+  `vtx.<type>.<id>` key across versions, so a version upgrade is an **in-place
+  update** of stable keys (§8.6) rather than a re-mint that would orphan the old
+  vertices and break every NanoID cross-reference (a WeaverTarget's `lensRef`, a
+  permission's `grantedBy` link). A same-version re-install still produces identical
+  keys, so the create-only batch stays idempotent. The permission tag keys on
+  `operationType + scope` (logical identity), not the list index, so reordering a
+  package's permissions does not churn keys.
 - **Deterministic `requestId`.** The op `requestId` is derived from
   `name + version` (install) so a re-submit dedup-short-circuits at step 2.
 
@@ -160,8 +168,81 @@ it.
 
 ---
 
-## 8.5 Out of scope
+## 8.6 `UpgradePackage` op
 
-- **Version upgrade** (re-install at a new version): a hard "already installed"
-  error is returned. The upgrade path is a later story.
-- **Per-key uninstall OCC** (§8.3 window): deferred follow-up.
+In-place version upgrade (and dev-mode same-version re-apply). The client reads the
+installed package's `.manifest.declaredKeys` (the **old** key set), rebuilds the
+**new** manifest with the same logical-document machinery as install (§8.1, on the
+now version-independent keys), **diffs by key**, and ships the delta as a single
+mixed-mutation op:
+
+- a key in **new \ old** → `create`
+- a key in **new ∩ old** whose body **changed** → `update` (a byte-equal body is
+  omitted — no needless re-stamp / re-rebuild)
+- a key in **old \ new** → `tombstone`
+
+Because keys are version-independent (§8.1), a surviving entity keeps its key, so the
+upgrade is a true in-place update; every NanoID cross-reference stays valid.
+
+**Envelope:** `lane: "meta"`, `operationType: "UpgradePackage"`,
+`class: "UpgradePackage"`, `actor: <admin/operator identity>`.
+
+**Payload:**
+
+```json
+{
+  "name": "clinic-domain",
+  "fromVersion": "0.1.0",
+  "toVersion": "0.2.0",
+  "mutations": [
+    { "op": "update",    "key": "vtx.meta.AbCd…", "document": { "class": "meta.lens", "data": {} } },
+    { "op": "create",    "key": "vtx.meta.WxYz…", "document": { "class": "meta.ddl.vertexType", "data": {} } },
+    { "op": "tombstone", "key": "vtx.permission.MnPq…", "document": { "isDeleted": true, "data": {} } }
+  ]
+}
+```
+
+`fromVersion == toVersion` is a legal **dev-mode re-apply** (force same-version),
+producing only `update` mutations for changed bodies. The op `requestId` is derived
+from `name + fromVersion + toVersion`, so distinct upgrades dedup independently while
+a re-submit of the same upgrade short-circuits.
+
+**Response detail:** `{ name, fromVersion, toVersion, created: [<key>…], updated: [<key>…], tombstoned: [<key>…] }`.
+**Event:** `PackageUpgraded { name, fromVersion, toVersion, createdCount, updatedCount, tombstonedCount }`.
+
+### Guardrails (enforced by the kernel script)
+
+Same key-shape + underscore-aspect rejection as install (shared `installGuardrailHelpers`).
+`op` must be one of `create` / `update` / `tombstone`. **Unlike install, `UpgradePackage`
+is not create-only**, so it is not safe-by-construction; it relies on the **authoritative
+Processor commit-time protected-key guard** (§8.4, `rejectProtectedMutations`), which already
+covers every `update` / `tombstone` "regardless of … the originating script" — an upgrade
+therefore cannot rewrite or tombstone a protected kernel / auth root.
+
+### Atomicity + cache coherence
+
+All create/update/tombstone mutations land in **one** step-8 atomic batch (all-or-nothing —
+no half-migrated package), and the step-8 `vtx.meta.*` invalidation fires in-commit for every
+touched DDL/lens meta-vertex, so the new definitions are usable immediately (no restart).
+Downstream reaction is the **existing** CDC machinery: Refractor's `CoreKVSource` observes a
+changed lens `.spec` and `ClassifyUpdate` selects a hot-swap (INTO-only) or a **full rebuild**
+(MATCH change — which **evicts** rows the new cypher no longer matches, discharging the Epic-12
+"anchor no longer matches WHERE → tombstone on in-place upgrade" obligation); the Weaver /
+Loom registries reload changed targets / patterns from their CDC sources.
+
+### OCC
+
+`update` / `tombstone` are **unconditional** (no per-key `expectedRevision`), for the same
+reason §8.3 defers uninstall OCC: the canonical per-subject revision is exposed only in the
+committing op's `OperationReply.Revisions`, not via `KVGet`. The batch is atomic, so no
+partial/mixed state results; the only relaxed guarantee is lost-update on a key being upgraded
+concurrently with another Processor write — acceptable for an admin-driven upgrade.
+
+---
+
+## 8.7 Out of scope
+
+- **Per-key uninstall / upgrade OCC** (§8.3 / §8.6 window): deferred follow-up.
+- **In-flight-instance DDL-version pinning** (a breaking DDL change during an upgrade while a
+  Loom instance is mid-pattern or a Weaver gap is open): warned/blocked by a future migration
+  guard (brainstorm G6). The upgrade is atomic but does not today fence in-flight orchestration.
