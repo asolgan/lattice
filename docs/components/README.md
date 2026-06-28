@@ -45,6 +45,13 @@ choices live HERE. Per-package capability definitions live under
 - [Refractor failure tiers](./refractor-failure-tiers.md) — the four-tier failure
   model and the designed-but-not-built privacy / security supersession tiers.
 
+**Experience layer**
+
+- [Loupe](./loupe.md) — the internal view-and-control console: browse Core KV, drive
+  the component control planes, submit DDL-driven ops, install packages, upload blobs;
+  a trusted single-identity, loopback-bound, auth-less inspector (the one application
+  allowed to read Core KV directly — the P5 exception).
+
 ## How to use these pages
 
 When authoring a story handoff brief that touches a component, read that
@@ -62,6 +69,7 @@ between page and code is treated as a documentation bug.
 |-----------|--------|
 | Processor, Refractor, Substrate, Capability Lens, Capability Packages | ✅ Built (Phase 1 / 1.5) |
 | Loom, Weaver, Bridge, service actors, platform scheduling | ✅ Built (Phase 2) |
+| Loupe — operator view-and-control console (trusted single-identity, loopback, no auth) | ✅ Built (Phase 3) |
 | Gateway — JWT auth, `Lattice-Actor` stamping, read-path auth enforcement | 🔭 Designed — Phase 3 |
 | Vault — per-identity keys, crypto-shredding | 🔭 Designed — Phase 3 |
 
