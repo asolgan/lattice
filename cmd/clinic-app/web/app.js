@@ -25,6 +25,7 @@ const state = {
   timeOffProvider: null, // the provider key the time-off draft is scoped to (re-seeded on change)
   slotApptCache: {}, // providerKey -> existing appointments, for the booking slot picker (invalidated on book)
   slotPatientApptCache: {}, // patientKey -> the patient's appointments across all providers (cross-provider double-book exclusion; invalidated on book)
+  slotCalAnchor: null, // UTC-midnight Date for the 1st of the month shown in the booking calendar (null → current UTC month)
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -253,6 +254,7 @@ async function loadProviders() {
   populateProviderSelect("#provider");
   populateProviderSelect("#sched-provider");
   refreshBookEnabled();
+  renderSlotCalendar();
 }
 
 function providerLabel(p) {
@@ -324,6 +326,7 @@ async function submitAddProvider() {
 // match the op's UTC weekday / seconds-of-day enforcement.
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 
 function hmsToSeconds(hhmm) {
   const m = /^(\d{2}):(\d{2})$/.exec(hhmm || "");
@@ -729,6 +732,142 @@ function noSlotsReason(p, dateStr) {
     return `${p.name} doesn't see patients on ${DAY_NAMES[weekday]}s — available ${list}.`;
   }
   return "";
+}
+
+// ---- Booking date calendar ----
+// A custom month grid for choosing the booking date, so days the provider can't be
+// booked on are greyed out — the native <input type=date> can't exclude arbitrary
+// dates. A date is interpreted as a UTC day (matching how .hours, .timeOff, and
+// computeOpenSlots are keyed), so the grid is built in UTC: columns are UTC weekdays
+// and each cell is a UTC calendar day. Blocking mirrors the op's rejections at the
+// whole-day grain — a working day that happens to be fully booked stays enabled (the
+// slots area then explains it). The op stays the booking authority.
+
+// ymdUTC formats a UTC year/month/day as the "YYYY-MM-DD" string the slot picker and
+// computeOpenSlots consume (parsed back as <date>T00:00:00Z).
+function ymdUTC(y, m, d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${y}-${pad(m + 1)}-${pad(d)}`;
+}
+
+// dayBlockedReason reports why a whole UTC calendar day is unbookable for a provider,
+// or "" when at least part of the day could be booked. Past days, a weekday the
+// provider doesn't work, and a whole-day time-off range are blocked.
+function dayBlockedReason(p, y, m, d, nowMs) {
+  const dayStart = Date.UTC(y, m, d);
+  const dayEnd = dayStart + 86400000;
+  if (dayEnd <= nowMs) return "Past date.";
+  const weekday = new Date(dayStart).getUTCDay();
+  const days = [...new Set((p.hours || []).map((w) => w.day))];
+  if (!days.includes(weekday)) return `${p.name} doesn't see patients on ${DAY_NAMES[weekday]}s.`;
+  const timeOff = Array.isArray(p.timeOff) ? p.timeOff : [];
+  const cover = timeOff.find((r) => {
+    const rf = Date.parse(r.from), rt = Date.parse(r.to);
+    return !isNaN(rf) && !isNaN(rt) && rf <= dayStart && dayEnd <= rt;
+  });
+  if (cover) return `Time off${cover.reason ? ` (${cover.reason})` : ""}.`;
+  return "";
+}
+
+// renderSlotCalendar draws the month grid for the selected provider. Picking an
+// enabled day sets #slot-date and refreshes the open-slot list below.
+function renderSlotCalendar() {
+  const box = $("#slot-calendar");
+  if (!box) return;
+  box.innerHTML = "";
+  const p = providerByKey($("#provider").value);
+  if (!p) {
+    const m = document.createElement("p");
+    m.className = "cal-empty";
+    m.textContent = "Select a provider to see available dates.";
+    box.appendChild(m);
+    return;
+  }
+  if (!Array.isArray(p.hours) || !p.hours.length) {
+    const m = document.createElement("p");
+    m.className = "cal-empty";
+    m.textContent = "This provider has set no availability hours — enter a date & time above directly.";
+    box.appendChild(m);
+    return;
+  }
+
+  const now = new Date();
+  const nowMs = Date.now();
+  const curMonthStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+  if (!state.slotCalAnchor || state.slotCalAnchor.getTime() < curMonthStart) {
+    state.slotCalAnchor = new Date(curMonthStart);
+  }
+  const anchor = state.slotCalAnchor;
+  const y = anchor.getUTCFullYear();
+  const m = anchor.getUTCMonth();
+  const selected = $("#slot-date").value;
+  const todayStr = ymdUTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+
+  const head = document.createElement("div");
+  head.className = "cal-head";
+  const prev = document.createElement("button");
+  prev.type = "button";
+  prev.className = "cal-step";
+  prev.textContent = "‹";
+  prev.setAttribute("aria-label", "Previous month");
+  prev.disabled = Date.UTC(y, m, 1) <= curMonthStart; // no fully-past months
+  prev.addEventListener("click", () => {
+    state.slotCalAnchor = new Date(Date.UTC(y, m - 1, 1));
+    renderSlotCalendar();
+  });
+  const title = document.createElement("span");
+  title.className = "cal-title";
+  title.textContent = `${MONTH_NAMES[m]} ${y}`;
+  const next = document.createElement("button");
+  next.type = "button";
+  next.className = "cal-step";
+  next.textContent = "›";
+  next.setAttribute("aria-label", "Next month");
+  next.addEventListener("click", () => {
+    state.slotCalAnchor = new Date(Date.UTC(y, m + 1, 1));
+    renderSlotCalendar();
+  });
+  head.append(prev, title, next);
+  box.appendChild(head);
+
+  const grid = document.createElement("div");
+  grid.className = "cal-grid";
+  for (const dow of ["S", "M", "T", "W", "T", "F", "S"]) {
+    const c = document.createElement("div");
+    c.className = "cal-dow";
+    c.textContent = dow;
+    grid.appendChild(c);
+  }
+  const firstDow = new Date(Date.UTC(y, m, 1)).getUTCDay();
+  const daysInMonth = new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
+  for (let i = 0; i < firstDow; i++) {
+    const c = document.createElement("div");
+    c.className = "cal-day empty";
+    grid.appendChild(c);
+  }
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = ymdUTC(y, m, d);
+    const reason = dayBlockedReason(p, y, m, d, nowMs);
+    const cell = document.createElement("button");
+    cell.type = "button";
+    cell.className = "cal-day";
+    cell.textContent = String(d);
+    if (dateStr === todayStr) cell.classList.add("today");
+    if (reason) {
+      cell.classList.add("disabled");
+      cell.disabled = true;
+      cell.title = reason;
+    } else {
+      if (dateStr === selected) cell.classList.add("selected");
+      cell.addEventListener("click", () => {
+        $("#slot-date").value = dateStr;
+        renderSlotCalendar();
+        refreshSlots();
+      });
+    }
+    grid.appendChild(cell);
+  }
+  box.appendChild(grid);
 }
 
 // refreshSlots re-renders the open-slot buttons for the selected provider + date +
@@ -1579,11 +1718,9 @@ function init() {
     refreshTimeOffWarning();
     refreshSlots(); // keep the slot highlight in sync with a typed time
   });
-  // The slot picker suggests today onward; the per-slot past check is the floor.
-  $("#slot-date").min = nowLocalInputValue().slice(0, 10);
-  $("#slot-date").addEventListener("focus", () => {
-    $("#slot-date").min = nowLocalInputValue().slice(0, 10);
-  });
+  // #slot-date is a hidden value driven by the custom booking calendar
+  // (renderSlotCalendar), which greys out unbookable days; the per-slot past check
+  // remains the floor and the op stays the authority.
 
   $("#patient").addEventListener("change", (e) => setPatient(e.target.value));
   $("#new-patient").addEventListener("click", openNewPatient);
@@ -1612,9 +1749,12 @@ function init() {
       renderTimeOffDraft();
     }
     refreshTimeOffWarning();
+    // A new provider has different availability — clear the chosen date and rebuild
+    // the calendar so the user re-picks against the new provider's open days.
+    $("#slot-date").value = "";
+    renderSlotCalendar();
     refreshSlots();
   });
-  $("#slot-date").addEventListener("change", refreshSlots);
   $("#duration").addEventListener("change", refreshSlots);
   $("#add-provider-submit").addEventListener("click", submitAddProvider);
   $("#manage-hours").addEventListener("toggle", () => {

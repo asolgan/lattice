@@ -129,9 +129,10 @@
             </div>
           </div>
           <div class="field slot-picker">
-            <label for="slot-date">Find available times <span class="opt">(optional)</span></label>
-            <input type="date" id="slot-date" />
-            <p class="hint">Pick a provider, a date, and a duration to see the provider's open slots — their availability hours minus time-off and existing appointments, shown in your local time. Click a slot to fill the date &amp; time above.</p>
+            <label id="slot-date-label">Find available times <span class="opt">(optional)</span></label>
+            <input type="hidden" id="slot-date" />
+            <div id="slot-calendar" class="cal-mini" role="group" aria-labelledby="slot-date-label"></div>
+            <p class="hint">Pick a provider, then a date — days the provider doesn't work, time-off, and past dates are greyed out. The chosen date's open slots (availability hours minus time-off and existing appointments) show below in your local time. Click a slot to fill the date &amp; time above.</p>
             <div id="slots" class="slots" aria-live="polite"></div>
           </div>
           <div class="field">

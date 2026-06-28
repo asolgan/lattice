@@ -403,3 +403,68 @@ button.ghost.danger:hover { background: var(--red, #d9534f); color: #fff; }
   color: var(--text);
 }
 .slots .muted { color: var(--text-dim); font-size: 13px; margin: 4px 0 0; }
+
+/* Booking date calendar — a custom month grid so unbookable days (past, a weekday
+   the provider doesn't work, whole-day time-off) can be greyed out; the native
+   <input type=date> can't exclude arbitrary dates. */
+.cal-mini {
+  margin-top: 8px;
+  max-width: 280px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px 10px;
+}
+.cal-mini .cal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.cal-mini .cal-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.cal-mini .cal-step {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 2px 9px;
+  font-size: 14px;
+  line-height: 1;
+  border-radius: 6px;
+}
+.cal-mini .cal-step:hover:not(:disabled) { background: var(--bg-raised); color: var(--text); border-color: var(--accent-dim); }
+.cal-mini .cal-step:disabled { opacity: 0.35; cursor: default; }
+.cal-mini .cal-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 2px;
+}
+.cal-mini .cal-dow {
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 2px 0;
+}
+.cal-mini .cal-day {
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 0;
+  border-radius: 6px;
+  text-align: center;
+}
+.cal-mini .cal-day.empty { background: transparent; border: none; cursor: default; }
+.cal-mini .cal-day:not(.disabled):not(.empty):hover { background: var(--bg-raised); border-color: var(--accent-dim); }
+.cal-mini .cal-day.disabled {
+  color: var(--text-dim);
+  opacity: 0.4;
+  text-decoration: line-through;
+  cursor: not-allowed;
+}
+.cal-mini .cal-day.today { border-color: var(--accent-dim); }
+.cal-mini .cal-day.selected {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--text);
+}
+.cal-mini .cal-empty { color: var(--text-dim); font-size: 13px; margin: 2px 0 0; }
