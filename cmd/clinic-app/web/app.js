@@ -24,6 +24,7 @@ const state = {
   timeOffDraft: [], // SetProviderTimeOff ranges being edited (seeded from the provider's current ranges)
   timeOffProvider: null, // the provider key the time-off draft is scoped to (re-seeded on change)
   slotApptCache: {}, // providerKey -> existing appointments, for the booking slot picker (invalidated on book)
+  slotPatientApptCache: {}, // patientKey -> the patient's appointments across all providers (cross-provider double-book exclusion; invalidated on book)
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -171,6 +172,10 @@ function setPatient(value) {
   if (v) localStorage.setItem(PATIENT_KEY, v);
   else localStorage.removeItem(PATIENT_KEY);
   syncBookPatient();
+  // Re-render the slot picker so it excludes the newly-selected patient's existing
+  // appointments (cross-provider double-book exclusion). Idempotent; bails if the
+  // Book form has no provider/date yet.
+  refreshSlots();
   if (state.view === "appts") loadAppts();
 }
 
@@ -617,6 +622,21 @@ async function providerAppointments(provider) {
   return state.slotApptCache[provider];
 }
 
+// patientAppointments fetches (and caches per patient) the selected patient's
+// appointments across ALL providers — so the slot picker can exclude a time the
+// patient is already booked elsewhere, which the op rejects as a PatientDoubleBook.
+// Invalidated on a successful booking alongside the provider cache.
+async function patientAppointments(patient) {
+  if (state.slotPatientApptCache[patient]) return state.slotPatientApptCache[patient];
+  try {
+    const data = await api("/api/appointments?patient=" + encodeURIComponent(patient));
+    state.slotPatientApptCache[patient] = data.appointments || [];
+  } catch (e) {
+    state.slotPatientApptCache[patient] = [];
+  }
+  return state.slotPatientApptCache[patient];
+}
+
 // apptBlocks reports whether an appointment still occupies its slot. A cancelled /
 // no-show appointment is removed from the provider's .bookings conflict index, so
 // the op would allow rebooking that time — exclude it from the picker's block set.
@@ -629,7 +649,10 @@ function apptBlocks(a) {
 // UTC weekday + seconds-of-day). durationMin is both the slot length and the step,
 // so suggested slots are back-to-back at the appointment length. A slot is dropped
 // when it is in the past, overlaps any time-off range, or overlaps a live
-// appointment — the same conditions the op rejects.
+// appointment — the same conditions the op rejects. `appts` carries both the
+// provider's appointments (the provider double-book / SlotConflict check) and the
+// selected patient's appointments across all providers (the cross-provider
+// PatientDoubleBook check), so the picker never offers a slot the op would reject.
 function computeOpenSlots(p, dateStr, durationMin, appts, nowMs) {
   if (!p || !Array.isArray(p.hours) || !p.hours.length || !dateStr) return [];
   const dayStart = Date.parse(dateStr + "T00:00:00Z");
@@ -727,10 +750,14 @@ async function refreshSlots() {
     return;
   }
   const durationMin = Number($("#duration").value || 30);
-  const appts = await providerAppointments(provider);
-  // The provider/date may have changed while awaiting the fetch — bail if so.
+  const provAppts = await providerAppointments(provider);
+  // The provider's appointments AND the selected patient's appointments (across all
+  // providers) both block a slot — the latter so the picker doesn't offer a time the
+  // op rejects as a cross-provider PatientDoubleBook.
+  const patAppts = state.patient ? await patientAppointments(state.patient) : [];
+  // The provider/date/patient may have changed while awaiting the fetches — bail if so.
   if ($("#provider").value !== provider || $("#slot-date").value !== dateStr) return;
-  const slots = computeOpenSlots(p, dateStr, durationMin, appts, Date.now());
+  const slots = computeOpenSlots(p, dateStr, durationMin, provAppts.concat(patAppts), Date.now());
   if (!slots.length) {
     const m = document.createElement("p");
     m.className = "muted";
@@ -849,8 +876,10 @@ async function submitBook(ev) {
       return;
     }
     const key = reply && reply.primaryKey ? reply.primaryKey : "";
-    // The new appointment invalidates this provider's cached slot set.
+    // The new appointment invalidates this provider's AND this patient's cached
+    // slot sets (the patient now has one more appointment to exclude elsewhere).
     delete state.slotApptCache[provider];
+    delete state.slotPatientApptCache[state.patient];
     $("#book-form").reset();
     refreshSlots();
     toast("Appointment booked.", "ok", key);
@@ -1502,6 +1531,10 @@ async function submitReschedule(ev) {
       return;
     }
     state.highlight = a.appointmentKey;
+    // The moved appointment invalidates both providers' and the patient's cached
+    // slot sets so the picker reflects the new time.
+    delete state.slotApptCache[a.providerKey];
+    delete state.slotPatientApptCache[a.patientKey];
     closeReschedule();
     toast("Appointment rescheduled.", "ok");
     loadAppts();
