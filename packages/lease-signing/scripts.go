@@ -430,18 +430,23 @@ def execute(state, op):
         employment_verified = employment == "employed" or employment == "self-employed"
         ref_count = len(refs)
 
-        # income-to-rent: read the unit's listing rent ON DEMAND (kv.Read §2.5,
-        # non-OCC config read — mirroring clinic's enforce_hours). None when the unit
-        # has no listing / no positive rent (the signal is genuinely unknown, not
-        # false). Computed at submit time against the rent then-current; a later
-        # rent change is reflected on the next SetApplicantProfile (re-submittable).
-        income_to_rent_met = None
+        # The unit's monthly listing rent, read ON DEMAND (kv.Read §2.5, non-OCC
+        # config read — mirroring clinic's enforce_hours). None when the unit has no
+        # listing / no positive rent (an income-to-rent signal is then genuinely
+        # unknown, not false). Read at submit time against the rent then-current; a
+        # later rent change is reflected on the next SetApplicantProfile. The applicant
+        # AND the guarantor income-to-rent checks both derive from it.
+        rent = None
         listing = kv.Read(unit + ".listing")
         if listing != None and not listing.isDeleted:
-            rent = listing.data.get("rentAmount")
-            if rent != None and (type(rent) == type(0) or type(rent) == type(0.0)) and rent > 0:
-                monthly = (annual_income * 1.0) / 12.0
-                income_to_rent_met = monthly >= INCOME_TO_RENT_RATIO * rent
+            r = listing.data.get("rentAmount")
+            if r != None and (type(r) == type(0) or type(r) == type(0.0)) and r > 0:
+                rent = r
+
+        # income-to-rent: gross MONTHLY income ≥ 3× rent (the conventional rule).
+        income_to_rent_met = None
+        if rent != None:
+            income_to_rent_met = (annual_income * 1.0) / 12.0 >= INCOME_TO_RENT_RATIO * rent
 
         # .profile (D3): raw fields (NOT projected) + derived signals (projected).
         profile_data = {
@@ -458,6 +463,38 @@ def execute(state, op):
             profile_data["employerName"] = employer
         if income_to_rent_met != None:
             profile_data["incomeToRentMet"] = income_to_rent_met
+
+        # Guarantor / co-applicant DETAIL (RAW — like the applicant's own financials,
+        # stored plaintext-for-now and NEVER projected; the deferred Vault plane owns
+        # their display). Captured only when the applicant set the corresponding flag,
+        # so clearing the flag drops the detail on the next (unconditioned) re-submit.
+        # The ONE derived, projectable signal is guarantorIncomeToRentMet — does the
+        # guarantor's OWN income cover 3× the rent (the standard reason a guarantor
+        # backs a thin-income application), derived from the same rent read above so a
+        # landlord can lean on "guarantor covers 3× rent" rather than a bare ✓ on a
+        # below-income applicant. None when no guarantor income / no listing rent.
+        guarantor_income_to_rent_met = None
+        if has_guarantor:
+            g_name = optional_string(p, "guarantorName")
+            g_rel = optional_string(p, "guarantorRelationship")
+            g_income = optional_number(p, "guarantorAnnualIncome")
+            if g_name != None:
+                profile_data["guarantorName"] = g_name
+            if g_rel != None:
+                profile_data["guarantorRelationship"] = g_rel
+            if g_income != None and g_income > 0:
+                profile_data["guarantorAnnualIncome"] = g_income
+                if rent != None:
+                    guarantor_income_to_rent_met = (g_income * 1.0) / 12.0 >= INCOME_TO_RENT_RATIO * rent
+        if has_co:
+            c_name = optional_string(p, "coApplicantName")
+            c_contact = optional_string(p, "coApplicantContact")
+            if c_name != None:
+                profile_data["coApplicantName"] = c_name
+            if c_contact != None:
+                profile_data["coApplicantContact"] = c_contact
+        if guarantor_income_to_rent_met != None:
+            profile_data["guarantorIncomeToRentMet"] = guarantor_income_to_rent_met
 
         mutations = [make_aspect_upsert(app_key, "profile", "profile", profile_data)]
         events = [{"class": "leaseapp.profileSubmitted",

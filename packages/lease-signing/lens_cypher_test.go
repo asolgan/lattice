@@ -369,7 +369,10 @@ func TestLeaseApplicationComplete_ProjectsQualificationProfile(t *testing.T) {
 		"referenceCount":     2,
 		"hasCoApplicant":     false,
 		"hasGuarantor":       true,
-		"submittedAt":        "2026-06-27T10:00:00Z",
+		"guarantorName":      "Pat Guarantor", // raw — must NOT appear
+		"guarantorAnnualIncome":    120000,    // raw — must NOT appear
+		"guarantorIncomeToRentMet": true,      // derived — projects
+		"submittedAt":              "2026-06-27T10:00:00Z",
 	})
 
 	rows := f.project(t, "app")
@@ -381,10 +384,13 @@ func TestLeaseApplicationComplete_ProjectsQualificationProfile(t *testing.T) {
 	require.EqualValues(t, 2, v["referenceCount"], "referenceCount projects the op-derived count")
 	require.Equal(t, false, v["hasCoApplicant"])
 	require.Equal(t, true, v["hasGuarantor"])
+	require.Equal(t, true, v["guarantorIncomeToRentMet"], "the derived guarantor income signal projects verbatim")
 	// The RAW financials must never reach the read model (the Vault discipline).
 	require.NotContains(t, v, "annualIncome", "raw income must not be projected")
 	require.NotContains(t, v, "employerName", "raw employer must not be projected")
 	require.NotContains(t, v, "references", "raw reference strings must not be projected")
+	require.NotContains(t, v, "guarantorName", "raw guarantor name must not be projected")
+	require.NotContains(t, v, "guarantorAnnualIncome", "raw guarantor income must not be projected")
 
 	// Graceful degrade: no .profile → null signals + profileSubmitted=false.
 	f.vtx(t, "app2", "leaseapp")
@@ -395,6 +401,7 @@ func TestLeaseApplicationComplete_ProjectsQualificationProfile(t *testing.T) {
 	require.Nil(t, rows2[0].Values["incomeToRentMet"], "no .profile → null income signal")
 	require.Nil(t, rows2[0].Values["referenceCount"])
 	require.Nil(t, rows2[0].Values["hasGuarantor"])
+	require.Nil(t, rows2[0].Values["guarantorIncomeToRentMet"], "no .profile → null guarantor signal")
 }
 
 // landlordDecision writes the leaseapp's .decision aspect {value, decidedAt} — the

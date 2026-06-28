@@ -149,7 +149,8 @@ func TestGroupByUnit_CarriesQualificationProfile(t *testing.T) {
 		{EntityKey: "vtx.leaseapp.a1", Applicant: "vtx.identity.alice", ApplicantApproved: true,
 			MissingDecision: true, Violating: true, UnitKey: "vtx.unit.u1", UnitStatus: "available",
 			ProfileSubmitted: true, IncomeToRentMet: bptr(true), EmploymentVerified: bptr(true),
-			ReferenceCount: iptr(2), HasCoApplicant: bptr(false), HasGuarantor: bptr(true)},
+			ReferenceCount: iptr(2), HasCoApplicant: bptr(false), HasGuarantor: bptr(true),
+			GuarantorIncomeToRentMet: bptr(true)},
 		// bob: no profile yet → null signals, profileSubmitted false.
 		{EntityKey: "vtx.leaseapp.a2", Applicant: "vtx.identity.bob", MissingSignature: true,
 			UnitKey: "vtx.unit.u1", UnitStatus: "available"},
@@ -170,8 +171,11 @@ func TestGroupByUnit_CarriesQualificationProfile(t *testing.T) {
 	if alice.ReferenceCount == nil || *alice.ReferenceCount != 2 || alice.HasGuarantor == nil || !*alice.HasGuarantor {
 		t.Errorf("alice refs/guarantor must carry through, got %+v", alice)
 	}
+	if alice.GuarantorIncomeToRentMet == nil || !*alice.GuarantorIncomeToRentMet {
+		t.Errorf("alice guarantor income signal must carry through, got %+v", alice)
+	}
 	bob := byKey["vtx.leaseapp.a2"]
-	if bob.ProfileSubmitted || bob.IncomeToRentMet != nil || bob.ReferenceCount != nil {
+	if bob.ProfileSubmitted || bob.IncomeToRentMet != nil || bob.ReferenceCount != nil || bob.GuarantorIncomeToRentMet != nil {
 		t.Errorf("bob has no profile → null signals, got %+v", bob)
 	}
 }

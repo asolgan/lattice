@@ -1351,11 +1351,14 @@ func TestSetApplicantProfile(t *testing.T) {
 
 	// 96000/12 = 8000 monthly ≥ 3×2000 = 6000 → incomeToRentMet true.
 	setProfile(t, ctx, conn, cp, cons, "prof1", appKey, unitKey, map[string]any{
-		"annualIncome":     96000,
-		"employmentStatus": "employed",
-		"employerName":     "Acme Corp",
-		"references":       []any{"Prior landlord", "Manager"},
-		"hasGuarantor":     true,
+		"annualIncome":          96000,
+		"employmentStatus":      "employed",
+		"employerName":          "Acme Corp",
+		"references":            []any{"Prior landlord", "Manager"},
+		"hasGuarantor":          true,
+		"guarantorName":         "Pat Guarantor",
+		"guarantorRelationship": "parent",
+		"guarantorAnnualIncome": 120000,
 	}, processor.OutcomeAccepted)
 	pdata, _ := readDoc(t, ctx, conn, appKey+".profile")["data"].(map[string]any)
 	if got, _ := pdata["annualIncome"].(float64); got != 96000 {
@@ -1379,6 +1382,17 @@ func TestSetApplicantProfile(t *testing.T) {
 	if got, _ := pdata["hasCoApplicant"].(bool); got {
 		t.Fatalf("hasCoApplicant defaults false, got %v", pdata["hasCoApplicant"])
 	}
+	// Guarantor detail is stored RAW (never projected), and the op derives
+	// guarantorIncomeToRentMet from the guarantor's income vs the same rent.
+	if got, _ := pdata["guarantorName"].(string); got != "Pat Guarantor" {
+		t.Fatalf("profile.guarantorName (raw, stored) = %q, want Pat Guarantor", got)
+	}
+	if got, _ := pdata["guarantorAnnualIncome"].(float64); got != 120000 {
+		t.Fatalf("profile.guarantorAnnualIncome (raw, stored) = %v, want 120000", pdata["guarantorAnnualIncome"])
+	}
+	if got, _ := pdata["guarantorIncomeToRentMet"].(bool); !got {
+		t.Fatalf("120000/12 = 10000 ≥ 3×2000 ⇒ guarantorIncomeToRentMet=true, got %v", pdata["guarantorIncomeToRentMet"])
+	}
 
 	// Re-submit (unconditioned upsert): lower income, student, no employer →
 	// overwrites the whole aspect. 60000/12 = 5000 < 6000 → incomeToRentMet false.
@@ -1398,6 +1412,28 @@ func TestSetApplicantProfile(t *testing.T) {
 	}
 	if got, _ := pdata["referenceCount"].(float64); got != 0 {
 		t.Fatalf("no references ⇒ referenceCount=0, got %v", pdata["referenceCount"])
+	}
+	// The re-submit had no guarantor → the prior guarantor detail + derived signal
+	// are overwritten away (the unconditioned upsert replaces the whole aspect).
+	if _, present := pdata["guarantorName"]; present {
+		t.Fatalf("a re-submit without a guarantor must clear guarantorName, got %v", pdata["guarantorName"])
+	}
+	if _, present := pdata["guarantorIncomeToRentMet"]; present {
+		t.Fatalf("no guarantor ⇒ guarantorIncomeToRentMet absent, got %v", pdata["guarantorIncomeToRentMet"])
+	}
+
+	// A guarantor whose own income is below 3× rent → guarantorIncomeToRentMet=false
+	// (the signal separates a strong guarantor from a weak one — 50000/12 = 4166 < 6000).
+	setProfile(t, ctx, conn, cp, cons, "prof3g", appKey, unitKey, map[string]any{
+		"annualIncome":          60000,
+		"employmentStatus":      "employed",
+		"hasGuarantor":          true,
+		"guarantorAnnualIncome": 50000,
+	}, processor.OutcomeAccepted)
+	pdata, _ = readDoc(t, ctx, conn, appKey+".profile")["data"].(map[string]any)
+	gv, present := pdata["guarantorIncomeToRentMet"].(bool)
+	if !present || gv {
+		t.Fatalf("50000/12 = 4166 < 6000 ⇒ guarantorIncomeToRentMet=false (present), got present=%v val=%v", present, pdata["guarantorIncomeToRentMet"])
 	}
 
 	// Wrong unit (alive, but not this application's appliesToUnit target) → reject.

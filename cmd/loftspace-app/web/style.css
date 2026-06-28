@@ -430,4 +430,5 @@ button.ghost.danger:hover { background: var(--red); color: #fff; }
   font: inherit;
 }
 .profile-form textarea { resize: vertical; }
+.profile-sub { display: flex; flex-direction: column; gap: 10px; margin-left: 22px; padding-left: 10px; border-left: 2px solid var(--border); }
 .profile-form-actions { display: flex; justify-content: flex-end; }

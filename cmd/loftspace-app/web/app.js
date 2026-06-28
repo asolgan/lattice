@@ -866,11 +866,38 @@ function renderProfilePanel(row) {
       <textarea name="references" rows="2" placeholder="Prior landlord — Jane Doe&#10;Manager — John Roe"></textarea>
     </label>
     <label class="check"><input type="checkbox" name="hasCoApplicant" /> Has a co-applicant</label>
+    <div class="profile-sub" data-for="hasCoApplicant" hidden>
+      <label>Co-applicant name
+        <input type="text" name="coApplicantName" />
+      </label>
+      <label>Co-applicant contact (email / phone)
+        <input type="text" name="coApplicantContact" />
+      </label>
+    </div>
     <label class="check"><input type="checkbox" name="hasGuarantor" /> Has a guarantor</label>
+    <div class="profile-sub" data-for="hasGuarantor" hidden>
+      <label>Guarantor name
+        <input type="text" name="guarantorName" />
+      </label>
+      <label>Guarantor relationship
+        <input type="text" name="guarantorRelationship" placeholder="e.g. parent" />
+      </label>
+      <label>Guarantor gross annual income ($)
+        <input type="number" name="guarantorAnnualIncome" min="1" step="1" />
+      </label>
+    </div>
     <div class="profile-form-actions">
       <button type="submit">Save profile</button>
     </div>
   `;
+  // A guarantor / co-applicant's detail sub-fields are revealed only when its flag
+  // is checked (and the op captures them only then), so the form stays compact.
+  form.querySelectorAll('input[name="hasCoApplicant"], input[name="hasGuarantor"]').forEach((cb) => {
+    const sub = form.querySelector(`.profile-sub[data-for="${cb.name}"]`);
+    cb.addEventListener("change", () => {
+      if (sub) sub.hidden = !cb.checked;
+    });
+  });
   toggle.addEventListener("click", () => {
     form.hidden = !form.hidden;
   });
@@ -905,6 +932,23 @@ async function submitProfile(ev, row) {
   const employer = f.employerName.value.trim();
   if (employer) payload.employerName = employer;
   if (references.length) payload.references = references;
+  // Guarantor / co-applicant detail is sent (raw — the op stores it, never projects
+  // it) only when its flag is set; the one derived signal the landlord sees is
+  // guarantorIncomeToRentMet (guarantor income ≥ 3× rent), computed by the op.
+  if (f.hasGuarantor.checked) {
+    const gName = f.guarantorName.value.trim();
+    const gRel = f.guarantorRelationship.value.trim();
+    const gIncome = Number(f.guarantorAnnualIncome.value);
+    if (gName) payload.guarantorName = gName;
+    if (gRel) payload.guarantorRelationship = gRel;
+    if (Number.isFinite(gIncome) && gIncome > 0) payload.guarantorAnnualIncome = gIncome;
+  }
+  if (f.hasCoApplicant.checked) {
+    const cName = f.coApplicantName.value.trim();
+    const cContact = f.coApplicantContact.value.trim();
+    if (cName) payload.coApplicantName = cName;
+    if (cContact) payload.coApplicantContact = cContact;
+  }
   try {
     const reply = await api("/api/op", {
       method: "POST",
@@ -1631,7 +1675,14 @@ function renderQualification(a) {
     wrap.append(chip(a.referenceCount === 1 ? "1 reference" : `${a.referenceCount} references`, a.referenceCount > 0 ? "ok" : "muted"));
   }
   if (a.hasCoApplicant === true) wrap.append(chip("+ Co-applicant", "ok"));
-  if (a.hasGuarantor === true) wrap.append(chip("+ Guarantor", "ok"));
+  // A guarantor's whole point is covering a thin-income applicant, so when the
+  // guarantor's own income is known, say whether it meets 3× rent rather than a
+  // bare "+ Guarantor". null = no guarantor income provided.
+  if (a.hasGuarantor === true) {
+    if (a.guarantorIncomeToRentMet === true) wrap.append(chip("✓ Guarantor covers 3× rent", "ok"));
+    else if (a.guarantorIncomeToRentMet === false) wrap.append(chip("Guarantor income < 3× rent", "muted"));
+    else wrap.append(chip("+ Guarantor", "ok"));
+  }
   return wrap;
 }
 

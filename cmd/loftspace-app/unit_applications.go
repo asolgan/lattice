@@ -41,6 +41,10 @@ type applicantSummary struct {
 	ReferenceCount     *int  `json:"referenceCount"`
 	HasCoApplicant     *bool `json:"hasCoApplicant"`
 	HasGuarantor       *bool `json:"hasGuarantor"`
+	// guarantorIncomeToRentMet — does the guarantor's own income cover 3× rent.
+	// Null until a guarantor income is supplied; lets the landlord lean on a
+	// guarantor for a below-income applicant rather than a bare "+ Guarantor".
+	GuarantorIncomeToRentMet *bool `json:"guarantorIncomeToRentMet"`
 }
 
 // unitApplicationsRow is the landlord's per-unit aggregate: the listed unit's
@@ -131,23 +135,24 @@ func groupByUnit(apps []applicationRow, identities []identityView, listings []li
 			u.UnitStatus = a.UnitStatus
 		}
 		u.Applications = append(u.Applications, applicantSummary{
-			LeaseAppKey:        a.EntityKey,
-			Applicant:          a.Applicant,
-			ApplicantName:      names[a.Applicant],
-			Status:             applicationStatus(a),
-			Signed:             !a.MissingSignature,
-			Approved:           a.ApplicantApproved,
-			Declined:           a.Declined,
-			Qualified:          a.ApplicantApproved && !a.LandlordApproved && !a.LandlordDeclined,
-			LandlordApproved:   a.LandlordApproved,
-			LandlordDeclined:   a.LandlordDeclined,
-			DeclineReason:      a.DeclineReason,
-			ProfileSubmitted:   a.ProfileSubmitted,
-			IncomeToRentMet:    a.IncomeToRentMet,
-			EmploymentVerified: a.EmploymentVerified,
-			ReferenceCount:     a.ReferenceCount,
-			HasCoApplicant:     a.HasCoApplicant,
-			HasGuarantor:       a.HasGuarantor,
+			LeaseAppKey:              a.EntityKey,
+			Applicant:                a.Applicant,
+			ApplicantName:            names[a.Applicant],
+			Status:                   applicationStatus(a),
+			Signed:                   !a.MissingSignature,
+			Approved:                 a.ApplicantApproved,
+			Declined:                 a.Declined,
+			Qualified:                a.ApplicantApproved && !a.LandlordApproved && !a.LandlordDeclined,
+			LandlordApproved:         a.LandlordApproved,
+			LandlordDeclined:         a.LandlordDeclined,
+			DeclineReason:            a.DeclineReason,
+			ProfileSubmitted:         a.ProfileSubmitted,
+			IncomeToRentMet:          a.IncomeToRentMet,
+			EmploymentVerified:       a.EmploymentVerified,
+			ReferenceCount:           a.ReferenceCount,
+			HasCoApplicant:           a.HasCoApplicant,
+			HasGuarantor:             a.HasGuarantor,
+			GuarantorIncomeToRentMet: a.GuarantorIncomeToRentMet,
 		})
 	}
 

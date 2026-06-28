@@ -121,12 +121,14 @@ func leaseAppDDL() pkgmgr.DDLSpec {
 			"listing-flip waits behind: the convergence lens reads .decision.value so an approval opens missing_listingLeased " +
 			"(the unit leases) while a decline is a terminal disposition — nothing auto-leases on applicant-readiness alone. " +
 			"SetApplicantProfile{leaseAppKey, unit, annualIncome, employmentStatus, employerName?, references?, hasCoApplicant?, " +
-			"hasGuarantor?} captures the applicant's qualification profile as a .profile aspect so the landlord has something to " +
-			"decide on. The RAW financials (annualIncome, employerName) live in the Core-KV aspect plaintext-for-now (the .ssn / " +
-			".demographics discipline — the deferred Vault plane owns their encryption + a raw-financial display later) and are " +
-			"NEVER projected; the op DERIVES the landlord-facing signals (incomeToRentMet — gross monthly income ≥ 3× the unit's " +
-			"listing rent, read on demand; employmentVerified; referenceCount; hasCoApplicant; hasGuarantor) which the lens projects " +
-			"so a landlord sees qualification without the raw figures. UNCONDITIONED upsert (re-submittable). It verifies unit is the " +
+			"hasGuarantor?, guarantorName?, guarantorRelationship?, guarantorAnnualIncome?, coApplicantName?, coApplicantContact?} " +
+			"captures the applicant's qualification profile as a .profile aspect so the landlord has something to " +
+			"decide on. The RAW financials (annualIncome, employerName, the guarantor / co-applicant detail) live in the Core-KV " +
+			"aspect plaintext-for-now (the .ssn / .demographics discipline — the deferred Vault plane owns their encryption + a " +
+			"raw display later) and are NEVER projected; the op DERIVES the landlord-facing signals (incomeToRentMet — gross monthly " +
+			"income ≥ 3× the unit's listing rent, read on demand; employmentVerified; referenceCount; hasCoApplicant; hasGuarantor; " +
+			"guarantorIncomeToRentMet — the guarantor's own income ≥ 3× rent) which the lens projects so a landlord sees qualification " +
+			"without the raw figures. UNCONDITIONED upsert (re-submittable). It verifies unit is the " +
 			"application's appliesToUnit target (the Withdraw precedent) and feeds no gap — capture + surface, not a convergence gate.",
 		Script: leaseAppDDLScript,
 		InputSchema: `{"type":"object","properties":` +
@@ -144,26 +146,36 @@ func leaseAppDDL() pkgmgr.DDLSpec {
 			`"employerName":{"type":"string","description":"The applicant's employer (SetApplicantProfile; optional). RAW — stored, never projected."},` +
 			`"references":{"type":"array","items":{"type":"string"},"description":"The applicant's references, free-text (SetApplicantProfile; optional). Only the derived referenceCount is projected, never the entries."},` +
 			`"hasCoApplicant":{"type":"boolean","description":"Whether the application has a co-applicant (SetApplicantProfile; optional, default false). Projected as a derived signal."},` +
-			`"hasGuarantor":{"type":"boolean","description":"Whether the application has a guarantor (SetApplicantProfile; optional, default false). Projected as a derived signal."}},` +
+			`"hasGuarantor":{"type":"boolean","description":"Whether the application has a guarantor (SetApplicantProfile; optional, default false). Projected as a derived signal."},` +
+			`"guarantorName":{"type":"string","description":"The guarantor's name (SetApplicantProfile; optional, only with hasGuarantor). RAW — stored, never projected."},` +
+			`"guarantorRelationship":{"type":"string","description":"The guarantor's relationship to the applicant, e.g. parent (SetApplicantProfile; optional, only with hasGuarantor). RAW — stored, never projected."},` +
+			`"guarantorAnnualIncome":{"type":"number","description":"The guarantor's gross annual income (SetApplicantProfile; optional, only with hasGuarantor, > 0). RAW — stored, NEVER projected; only the derived guarantorIncomeToRentMet boolean reaches the read model."},` +
+			`"coApplicantName":{"type":"string","description":"The co-applicant's name (SetApplicantProfile; optional, only with hasCoApplicant). RAW — stored, never projected."},` +
+			`"coApplicantContact":{"type":"string","description":"The co-applicant's contact (email / phone) (SetApplicantProfile; optional, only with hasCoApplicant). RAW — stored, never projected."}},` +
 			`"required":[]}`,
 		OutputSchema: `{"type":"object","properties":` +
 			`{"primaryKey":{"type":"string","description":"vtx.leaseapp.<NanoID> of the created or signed application (the operation's principal key)."}}}`,
 		FieldDescription: map[string]string{
-			"applicant":        "Full vtx.identity.<NanoID> key of the applicant this application is for. CreateLeaseApplication requires it, validates the identity is alive, and writes the applicationFor link (the convergence link the lens walks).",
-			"unit":             "Full vtx.unit.<NanoID> key of the location-domain unit being applied for. CreateLeaseApplication requires it, validates it is alive, and writes the appliesToUnit link (leaseapp→unit). The convergence lens walks it and projects the unit's address / rent as informational columns. Required (no unit-less application). WithdrawLeaseApplication also requires it (verified via the appliesToUnit link) to prune the per-unit index.",
-			"moveInDate":       "Optional requested move-in date (RFC3339). When supplied, CreateLeaseApplication writes the .terms aspect {moveInDate, leaseTermMonths, requestedRent?} and requires leaseTermMonths. Informational application detail (not read by the convergence lens).",
-			"leaseTermMonths":  "Requested lease term in months. Required when moveInDate is supplied; written to the .terms aspect.",
-			"requestedRent":    "Optional monthly rent the applicant offers. Written to the .terms aspect when supplied (only meaningful alongside moveInDate).",
-			"leaseAppId":       "Optional bare NanoID (no dots / key segments) for the application vertex (vtx.leaseapp.<leaseAppId>) created by CreateLeaseApplication. Supplied by a caller that must know the key before commit (the write-ahead seam). Absent → minted with nanoid.new().",
-			"leaseAppKey":      "Full vtx.leaseapp.<NanoID> key of the application to act on. SignLease validates it is alive and writes the .signature aspect (flipping missing_signature false); WithdrawLeaseApplication validates it is alive and soft-deletes it; DecideLeaseApplication validates it is alive and writes the .decision aspect; SetApplicantProfile validates it is alive and writes the .profile aspect. The caller lists it in ContextHint.Reads.",
-			"annualIncome":     "The applicant's gross annual income (SetApplicantProfile; required, > 0). RAW sensitive financial data: stored in the .profile aspect plaintext-for-now (the .ssn / .demographics discipline — the deferred Vault plane owns encryption + a raw-financial display) and NEVER projected. The op derives incomeToRentMet (gross monthly income ≥ 3× the unit's listing rent) from it, and only that boolean reaches the read model.",
-			"employmentStatus": "The applicant's employment status (SetApplicantProfile; required): employed | self-employed | unemployed | student | retired. employed / self-employed derive the projected employmentVerified=true (an active income source); the rest are captured honestly and read as unverified.",
-			"employerName":     "The applicant's employer name (SetApplicantProfile; optional). RAW — stored in the .profile aspect, never projected.",
-			"references":       "The applicant's references as free-text strings (SetApplicantProfile; optional). Blank entries are dropped; only the derived referenceCount (the list length) is projected, never the entries themselves.",
-			"hasCoApplicant":   "Whether the application includes a co-applicant (SetApplicantProfile; optional, default false). Projected verbatim as a derived qualification signal.",
-			"hasGuarantor":     "Whether the application is backed by a guarantor (SetApplicantProfile; optional, default false). Projected verbatim as a derived qualification signal.",
-			"decision":         "The landlord's leasing decision (DecideLeaseApplication; required): approved or declined. Written to the .decision aspect {value, decidedAt} (UNCONDITIONED upsert — a later decision overrides an earlier one). The convergence lens reads it: approved opens missing_listingLeased (the unit leases); declined folds into the lens's declined disposition (a terminal rejection).",
-			"reason":           "Optional free-text rationale the landlord supplies with a DecideLeaseApplication decline — applicant feedback plus a fair-housing record. Stored on the .decision aspect ({value, decidedAt, reason?}) only when supplied and projected as the declineReason lens column the applicant FE renders on the declined banner. A later decision's unconditioned upsert overwrites it (re-approving clears a prior decline reason); ignored on an approve.",
+			"applicant":             "Full vtx.identity.<NanoID> key of the applicant this application is for. CreateLeaseApplication requires it, validates the identity is alive, and writes the applicationFor link (the convergence link the lens walks).",
+			"unit":                  "Full vtx.unit.<NanoID> key of the location-domain unit being applied for. CreateLeaseApplication requires it, validates it is alive, and writes the appliesToUnit link (leaseapp→unit). The convergence lens walks it and projects the unit's address / rent as informational columns. Required (no unit-less application). WithdrawLeaseApplication also requires it (verified via the appliesToUnit link) to prune the per-unit index.",
+			"moveInDate":            "Optional requested move-in date (RFC3339). When supplied, CreateLeaseApplication writes the .terms aspect {moveInDate, leaseTermMonths, requestedRent?} and requires leaseTermMonths. Informational application detail (not read by the convergence lens).",
+			"leaseTermMonths":       "Requested lease term in months. Required when moveInDate is supplied; written to the .terms aspect.",
+			"requestedRent":         "Optional monthly rent the applicant offers. Written to the .terms aspect when supplied (only meaningful alongside moveInDate).",
+			"leaseAppId":            "Optional bare NanoID (no dots / key segments) for the application vertex (vtx.leaseapp.<leaseAppId>) created by CreateLeaseApplication. Supplied by a caller that must know the key before commit (the write-ahead seam). Absent → minted with nanoid.new().",
+			"leaseAppKey":           "Full vtx.leaseapp.<NanoID> key of the application to act on. SignLease validates it is alive and writes the .signature aspect (flipping missing_signature false); WithdrawLeaseApplication validates it is alive and soft-deletes it; DecideLeaseApplication validates it is alive and writes the .decision aspect; SetApplicantProfile validates it is alive and writes the .profile aspect. The caller lists it in ContextHint.Reads.",
+			"annualIncome":          "The applicant's gross annual income (SetApplicantProfile; required, > 0). RAW sensitive financial data: stored in the .profile aspect plaintext-for-now (the .ssn / .demographics discipline — the deferred Vault plane owns encryption + a raw-financial display) and NEVER projected. The op derives incomeToRentMet (gross monthly income ≥ 3× the unit's listing rent) from it, and only that boolean reaches the read model.",
+			"employmentStatus":      "The applicant's employment status (SetApplicantProfile; required): employed | self-employed | unemployed | student | retired. employed / self-employed derive the projected employmentVerified=true (an active income source); the rest are captured honestly and read as unverified.",
+			"employerName":          "The applicant's employer name (SetApplicantProfile; optional). RAW — stored in the .profile aspect, never projected.",
+			"references":            "The applicant's references as free-text strings (SetApplicantProfile; optional). Blank entries are dropped; only the derived referenceCount (the list length) is projected, never the entries themselves.",
+			"hasCoApplicant":        "Whether the application includes a co-applicant (SetApplicantProfile; optional, default false). Projected verbatim as a derived qualification signal.",
+			"hasGuarantor":          "Whether the application is backed by a guarantor (SetApplicantProfile; optional, default false). Projected verbatim as a derived qualification signal.",
+			"guarantorName":         "The guarantor's name (SetApplicantProfile; optional, captured only when hasGuarantor). RAW — stored in the .profile aspect plaintext-for-now (the .ssn / .demographics discipline — the deferred Vault plane owns its display) and NEVER projected.",
+			"guarantorRelationship": "The guarantor's relationship to the applicant, e.g. parent / employer (SetApplicantProfile; optional, captured only when hasGuarantor). RAW — stored, never projected.",
+			"guarantorAnnualIncome": "The guarantor's gross annual income (SetApplicantProfile; optional, captured only when hasGuarantor, > 0). RAW sensitive financial data — stored, NEVER projected. The op derives guarantorIncomeToRentMet (guarantor gross monthly ≥ 3× the unit's listing rent — the standard reason a guarantor backs a thin-income application) from it, and only that boolean reaches the read model.",
+			"coApplicantName":       "The co-applicant's name (SetApplicantProfile; optional, captured only when hasCoApplicant). RAW — stored, never projected (the Vault plane owns its display).",
+			"coApplicantContact":    "The co-applicant's contact — email or phone (SetApplicantProfile; optional, captured only when hasCoApplicant). RAW — stored, never projected.",
+			"decision":              "The landlord's leasing decision (DecideLeaseApplication; required): approved or declined. Written to the .decision aspect {value, decidedAt} (UNCONDITIONED upsert — a later decision overrides an earlier one). The convergence lens reads it: approved opens missing_listingLeased (the unit leases); declined folds into the lens's declined disposition (a terminal rejection).",
+			"reason":                "Optional free-text rationale the landlord supplies with a DecideLeaseApplication decline — applicant feedback plus a fair-housing record. Stored on the .decision aspect ({value, decidedAt, reason?}) only when supplied and projected as the declineReason lens column the applicant FE renders on the declined banner. A later decision's unconditioned upsert overwrites it (re-approving clears a prior decline reason); ignored on an approve.",
 		},
 		Examples: []pkgmgr.ExampleSpec{
 			{
@@ -210,21 +222,25 @@ func leaseAppDDL() pkgmgr.DDLSpec {
 			{
 				Name: "SetApplicantProfile — applicant records their qualification profile",
 				Payload: map[string]any{
-					"leaseAppKey":      "vtx.leaseapp.<NanoID>",
-					"unit":             "vtx.unit.<unitNanoID>",
-					"annualIncome":     96000,
-					"employmentStatus": "employed",
-					"employerName":     "Acme Corp",
-					"references":       []any{"Prior landlord — Jane Doe", "Manager — John Roe"},
-					"hasGuarantor":     true,
+					"leaseAppKey":           "vtx.leaseapp.<NanoID>",
+					"unit":                  "vtx.unit.<unitNanoID>",
+					"annualIncome":          96000,
+					"employmentStatus":      "employed",
+					"employerName":          "Acme Corp",
+					"references":            []any{"Prior landlord — Jane Doe", "Manager — John Roe"},
+					"hasGuarantor":          true,
+					"guarantorName":         "Pat Guarantor",
+					"guarantorRelationship": "parent",
+					"guarantorAnnualIncome": 120000,
 				},
 				ExpectedOutcome: "Validates the application is alive and that unit is its appliesToUnit target (via the link). Reads the unit's " +
-					".listing rent on demand to derive incomeToRentMet (96000/12 = 8000 ≥ 3× rent?). Writes the .profile aspect with the RAW " +
-					"fields (annualIncome, employmentStatus, employerName, references) — never projected — plus the DERIVED signals " +
-					"(incomeToRentMet, employmentVerified=true, referenceCount=2, hasCoApplicant=false, hasGuarantor=true, submittedAt) that the " +
-					"lens projects. UNCONDITIONED upsert (re-submittable). Emits leaseapp.profileSubmitted{leaseAppKey}. Returns primaryKey. " +
-					"Rejects a non-existent application, a unit that is not the application's unit (UnitMismatch), a non-positive annualIncome, " +
-					"or an out-of-enum employmentStatus.",
+					".listing rent on demand to derive incomeToRentMet (96000/12 = 8000 ≥ 3× rent?) and, because hasGuarantor, " +
+					"guarantorIncomeToRentMet (120000/12 = 10000 ≥ 3× rent?). Writes the .profile aspect with the RAW fields (annualIncome, " +
+					"employmentStatus, employerName, references, guarantorName, guarantorRelationship, guarantorAnnualIncome) — never projected — " +
+					"plus the DERIVED signals (incomeToRentMet, employmentVerified=true, referenceCount=2, hasCoApplicant=false, hasGuarantor=true, " +
+					"guarantorIncomeToRentMet, submittedAt) that the lens projects. UNCONDITIONED upsert (re-submittable). Emits " +
+					"leaseapp.profileSubmitted{leaseAppKey}. Returns primaryKey. Rejects a non-existent application, a unit that is not the " +
+					"application's unit (UnitMismatch), a non-positive annualIncome, or an out-of-enum employmentStatus.",
 			},
 		},
 	}

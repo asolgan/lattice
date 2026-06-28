@@ -80,6 +80,10 @@ type applicationRow struct {
 	ReferenceCount     *int  `json:"referenceCount"`
 	HasCoApplicant     *bool `json:"hasCoApplicant"`
 	HasGuarantor       *bool `json:"hasGuarantor"`
+	// guarantorIncomeToRentMet — does the guarantor's own income cover 3× rent (the
+	// standard reason a guarantor backs a thin-income applicant). Null until a
+	// guarantor income is supplied against a unit with a known listing rent.
+	GuarantorIncomeToRentMet *bool `json:"guarantorIncomeToRentMet"`
 }
 
 // computeApplications assembles the My Applications rows from the
