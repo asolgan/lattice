@@ -67,7 +67,7 @@ Each lane exists because the others structurally cannot see its violations:
 |------|-----|--------|
 | **L1** | re-confirm row is still violating; drop if already in-flight (`weaver-state` mark) | ✅ |
 | **L2** | hydrate context, classify the specific gap, select playbook input | ✅ |
-| **L3** | AI-assisted reasoning for ambiguous/novel discrepancies | **deferred → Phase 3** |
+| **L3** | AI-assisted reasoning for ambiguous/novel discrepancies — the **Augur** | 🔭 Designed (ratified 2026-06-27), build-pending |
 
 ### Strategist — playbook registry (package data)
 
@@ -336,8 +336,10 @@ its Lens (out of this story's scope — an op-path/Refractor concern).
 ### Capability authorization
 
 `internal/weaver/control` ships a `StubCapabilityChecker` (allow-all, logs every call) — mirroring
-`internal/refractor/control`'s stub posture. Full Capability-KV integration of the control plane is
-deferred (Phase 3).
+`internal/refractor/control`'s stub posture. Full Capability-KV integration of the control plane
+(FR30) is 🔭 Designed (ratified 2026-06-27), build-pending — a shared checker across all three control
+planes (Weaver / Refractor / Loom), sequenced behind read-path auth (D1) whose JWT actor-identity seam
+it reuses.
 
 ---
 
@@ -412,6 +414,6 @@ What ships today in `internal/weaver` + `cmd/weaver`, and what is deliberately d
 
 - Refractor negative/filter-retraction projection (true emit-only-when-violating).
 - Lane-2 on-demand evaluation (built, unexercised in demo).
-- L3 evaluator (AI-assisted).
+- L3 evaluator (AI-assisted) — the **Augur**; 🔭 Designed (ratified 2026-06-27), build-pending.
 - Full temporal scheduler / op-vertex pruner (#47/#49).
 - Real external adapters (Stripe/background-check) — Phase 3 integration.

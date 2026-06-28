@@ -94,4 +94,7 @@ or `make up-full` (full stack + Loupe at http://127.0.0.1:7777).
 
 **Deferred (Phase 3+ — the Edge evolution).** Per-user authN / authZ, the Gateway, read-path
 authorization (D1), and the Personal Lens. These are the pieces that turn the trusted inspector into a
-per-user sovereign Edge node; until they land, Loupe stays a single-identity loopback tool.
+per-user sovereign Edge node; until they land, Loupe stays a single-identity loopback tool. All four are
+now 🔭 Designed (ratified 2026-06-27, build-pending): read-path auth (D1) is the foundation (Postgres-RLS
++ a JWT read-actor seam), the Gateway's read-actor seam is D1 increment 1, and the Personal Lens (the
+Edge fan-out path) is sequenced behind D1 + a concrete Edge consumer.

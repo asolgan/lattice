@@ -468,7 +468,7 @@ degradation signals in Health KV dashboards.
 
 ## What's deferred
 
-- **Read-path authorization** (Phase 3): the write path is capability-checked at step 3 (Refractor lenses produce Capability KV; the Processor reads it). Authorizing read-side queries directly — e.g. CLI / Gateway reads and the `cap.svc` service-access path — is Phase 3.
+- **Read-path authorization** (🔭 Designed — ratified 2026-06-27, build-pending): the write path is capability-checked at step 3 (Refractor lenses produce Capability KV; the Processor reads it). Authorizing read-side queries directly — e.g. CLI / Gateway reads and the `cap.svc` service-access path — is the **D1** design: Postgres-RLS as the enforcement boundary, a minimal JWT read-actor seam, and a decomposed Capability-Read lens (core base + per-package read-grant lenses unioned via `actor_read_grants`).
 - **Multi-cell routing** (Phase 3): the current pipeline is single-cell; operation routing across cells is Phase 3.
-- **NATS account-level auth** (Phase 3): the current connection uses no NATS account-level auth. NATS account-level write restriction on Capability KV — substrate-level enforcement beneath the overwrite-by-reprojection guarantee — is a Phase 3 hardening.
+- **NATS account-level auth** (🔭 Designed — ratified 2026-06-27): the current connection uses no NATS account-level auth. NATS account-level write restriction on Capability KV — substrate-level enforcement beneath the overwrite-by-reprojection guarantee — is the **NATS account write-restriction** design (per-component NKey users; only the Processor's connection may write `$KV.core-kv.>`); **Fire 1 shipped** (the dark, no-op credential seam, `75e9acc`), the enforcement turn-on (Fire 2) is pending.
 - **Multi-aspect atomic OCC** for `UpdateMetaVertex`: `expectedRevision` is asserted on a single aspect; atomic OCC across several changed aspects in one update is deferred.

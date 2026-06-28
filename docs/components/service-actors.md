@@ -64,7 +64,9 @@ graph material**:
 - The "signing key" is therefore the **engine process's NATS transport credential** (the
   account / nkey / creds it uses to publish to `ops.system.>`), an arch-explicitly-deferred-to-
   Stream-3 deployment concern (arch lines 285 / 325) — provisioned at deployment time, not as graph
-material.
+material. The per-component NKey/creds seam this requires is now 🔭 Designed (the ratified NATS account
+write-restriction hardening) — `substrate.Connect`'s `NKeySeedFile`/`CredsFile` credential seam shipped
+(`75e9acc`), dark by default; the per-component permission matrix + enforcement turn-on is pending.
 
 This story seeds **no key material** on the identity vertices (unused load-bearing-looking crypto
 would be a smell). **When envelope-signature verification is ever added, these actors receive key
@@ -82,6 +84,11 @@ lane** (so the engines can submit to `ops.system.>`). This applies equally to Lo
 Bridge — the Bridge posts its result-ops on the `system` lane, so its capability projection must
 carry the `system` lane once enforcement is live. This is out of scope for the bootstrap topology
 and is tracked here so it is not lost.
+
+A **lane authorization enforcement** design is now proposed (📐 awaiting Andrew's ratification) — a
+step-3 gate checking `env.Lane ∈ doc.lanes` + emitting `LaneUnauthorized`. It is **order-dependent**:
+the service-actor `system` grant converges *first* (dark), *then* enforcement turns on — so flipping
+the gate cannot break the engines.
 
 ## Readiness gate (Contract #7 §7.5)
 

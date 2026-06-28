@@ -328,7 +328,7 @@ future work.
 
 - **Lenses are the read path**: reads never go through the write path. The operation reply carries only commit-trace identifiers (`primaryKey`, `revisions`) — it is never a query channel (there is no arbitrary `detail` map, and the constraint is enforced in code).
 - **Every Core KV mutation must be observable** via at least one lens projection (NFR-P3 ≤500ms end-to-end latency target). The `LatencyRingBuffer` p99 is the primary instrument.
-- **Lens output is overwrite-by-reprojection**: fabricated or stale KV writes in a lens target are corrected on the next reprojection event. This is the fabricated-KV-write defense. Substrate-level write restriction on the lens target buckets is a Phase 3 hardening.
+- **Lens output is overwrite-by-reprojection**: fabricated or stale KV writes in a lens target are corrected on the next reprojection event. This is the fabricated-KV-write defense. Substrate-level write restriction on the lens target buckets (per-component NKey publish permissions) is 🔭 Designed — the ratified NATS account write-restriction hardening (credential seam shipped, enforcement pending).
 - **Lens definitions live in Core KV vertices**, not in source code. The platform discovers them via the `vtx.meta.>` CDC stream. Seeding a new lens requires a `CreateMetaVertex` operation through the Processor write path.
 - **openCypher full engine is canonical for new lenses**; the simple engine is legacy-fixture support only. Do not write new lens definitions targeting the simple engine.
 
@@ -338,8 +338,8 @@ future work.
 
 | Feature | Phase | Notes |
 |---------|-------|-------|
-| Personal Lens / Secure Lens | Phase 3 | Requires per-identity lens scoping |
+| Personal Lens / Secure Lens | 🔭 Designed (ratified 2026-06-27), build-pending | Per-identity security-filtered projection — a new `nats_subject` target adapter publishing per-authorized-identity delta streams, an Interest Set, and Hydration; security *is* read-path auth (D1), so the build is sequenced behind D1 + a concrete Edge consumer |
 | Multi-cell lens routing | Phase 3 | Current pipeline is single-cell |
 | Cross-instance latency aggregation | Phase 3 | Current `LatencyRingBuffer` is per-instance; no cluster-level rollup |
 | Link-envelope tombstone re-projection | Phase 3 | Currently adjacency entries are left in place on tombstone; re-projection on tombstone is not triggered |
-| Substrate-level write restriction on lens target buckets | Phase 3 | Today the defense against fabricated lens-target writes is overwrite-by-reprojection only |
+| Substrate-level write restriction on lens target buckets | 🔭 Designed (ratified 2026-06-27) | Today the defense against fabricated lens-target writes is overwrite-by-reprojection only; the **NATS account write-restriction** design scopes per-component NKey publish permissions so only Refractor writes the lens/auth buckets (Fire 1 — credential seam — shipped `75e9acc`; enforcement pending) |

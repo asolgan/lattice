@@ -261,7 +261,7 @@ write is needed.
 
 - **No dependency-resolution graph** — a missing dependency warns rather than refuses.
 - **No in-place upgrade** — a different version on an already-installed package fails closed.
-- **No NATS account-level auth** — the install actor is the filesystem-bound admin credential; substrate-level write enforcement is a Phase 3 hardening.
+- **No NATS account-level auth** — the install actor is the filesystem-bound admin credential; substrate-level write enforcement is 🔭 Designed (the ratified NATS account write-restriction hardening — credential seam shipped, enforcement pending).
 
 ## CLI
 

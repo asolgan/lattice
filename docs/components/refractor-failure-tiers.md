@@ -65,7 +65,10 @@ re-project) through a `CapabilityChecker` interface
 (`internal/refractor/control/capability.go`). The default implementation is
 `StubCapabilityChecker` (allow-all + log). Real control-plane authorization —
 checking the actor's Capability KV entry before honoring a control op — is
-deferred; the data-plane Capability **Lens** that feeds Processor write-path
+🔭 Designed (FR30, ratified 2026-06-27, build-pending): a shared checker across all
+three control planes (Refractor / Weaver / Loom), the control op modeled as a §6.4
+platform permission, sequenced behind read-path auth (D1) whose JWT actor-identity
+seam it reuses. The data-plane Capability **Lens** that feeds Processor write-path
 auth is unrelated and is live.
 
 ## Designed-but-not-built: privacy / security supersession tiers
@@ -83,8 +86,9 @@ dependencies land.
   in [refractor.md](./refractor.md#capability-lens-health-operational-backstop)).
 
 - **Privacy-critical — crypto-shred failure.** When Vault key-shred handling
-  exists (Phase 3), a row whose encryption key has been shredded but whose
+  exists, a row whose encryption key has been shredded but whose
   projection still surfaces decrypted values is a confidentiality breach: the
   affected lens must halt with no automatic retry and page on-call. Vault /
-  privacy is Phase 3, so neither the `KeyShredded` listener nor this tier is
-  built.
+  crypto-shredding is 🔭 Designed (ratified 2026-06-27, build-pending — sequenced
+  behind read-path auth, D1), so neither the `KeyShredded` listener nor this tier is
+  built yet.
