@@ -1,6 +1,32 @@
 # Vault + crypto-shredding — design
 
-**Status: 📐 awaiting-Andrew (ratification).** Author: Winston (Designer fire, 2026-06-27).
+**Status: ✅ Andrew-ratified (2026-06-27).** Author: Winston (Designer fire, 2026-06-27).
+
+> **Ratification decisions (Andrew, 2026-06-27):**
+> 1. **Fork 1 (backend) — Path A:** pluggable `internal/vault.Vault` interface + a **local
+>    envelope-encryption backend first**; production KMS adapters (HashiCorp Transit / AWS·GCP KMS) are
+>    later pluggable backends (the Refractor adapter pattern). Same interface either way.
+> 2. **Fork 2 (phasing) — REVISED: deliver Phase A + Phase B *together*, behind D1 (no Phase-A-now split).**
+>    The original "Phase A now / Phase B behind D1" is **dropped.** Reasoning (Andrew, confirmed):
+>    Phase A in isolation only serves PII consumed *solely* by the Processor's business logic; the moment
+>    any **non-Processor** consumer needs plaintext — a **vertical app displaying** PII, or a **bridge
+>    adapter sending** PII to a vendor — it needs the Secure Lens (Phase B → RLS-Postgres), which needs D1.
+>    Pre-B you'd hack a per-app decrypt RPC (violates P5) or leave the field unencrypted (defeats the point).
+>    Phase A is technically dormant/additive (nothing declares `sensitive:true` today), so it *realizes no
+>    value* until real PII exists — and the first real PII use needs B + D1 anyway. With **no production
+>    PII-at-rest exposure pressure** (single-user experiment, AI POs) there is no reason to ship a half-done
+>    interim. So: **sequence the whole feature behind D1; build A+B as one coherent delivery.** (Phase-A-now
+>    would only win under production at-rest-exposure pressure, which does not exist here.)
+>
+> **Two findings folded in from a renewed-skill re-review (2026-06-27):**
+> - **GCM nonce-uniqueness grounding (§2.5):** the design relied on "random GCM nonce" without stating the
+>   per-key message bound or citing primary guidance — the #1 GCM footgun. Now grounded (NIST SP 800-38D;
+>   per-identity DEK keeps the message count far below the 96-bit-random birthday bound) + a DEK-rotation
+>   posture.
+> - **Sensitive-blob scope (§2.6, NEW):** Phase A/B encrypt sensitive *aspects* (Core KV) — **not** PII-bearing
+>   *blobs* (lease PDFs, ID scans) in the Object Store, where document-PII often lives. Crypto-shred would
+>   leave those recoverable. **Scoped OUT** of this feature; a follow-on **"crypto-shred for object-store
+>   blobs"** item is filed on the Lattice board so the right-to-erasure claim is honest, not silently partial.
 Backlog row: `planning-artifacts/backlog/lattice.md` → *Privacy / Vault → Vault + crypto-shredding*
 (★★★, L). Grounds in `lattice-architecture.md` Items 5 & 6 (the pre-written PII rubric) + the Vault
 SPOF / KMS decisions, Contracts #1/#2/#3/#5/#7 (the sensitivity hooks already wired), the Obsidian
@@ -47,7 +73,11 @@ behind D1, and **Phase A delivers the full crypto-shred guarantee on its own.**
    - **My recommendation: Path A.** Same interface either way; the backend is swappable; the *fork* is only
      *which production KMS and when*, not the architecture.
 
-2. **Phasing vs. D1 — Phase A now, Phase B behind D1 (my recommendation).** Phase A (crypto layer +
+2. **Phasing vs. D1 — [SUPERSEDED by the ratification block above: deliver A+B together, behind D1.]**
+   *The original recommendation below ("Phase A now, Phase B behind D1") was **not** adopted — Andrew's
+   reasoning (a Phase-A-only world strands every non-Processor PII reader, and there's no production
+   exposure pressure to ship a half-done interim) is recorded at the top. Retained for context only.*
+   ~~Phase A now, Phase B behind D1 (my recommendation).~~ Phase A (crypto layer +
    shred, ciphertext-safe everywhere) is independently valuable and **unblocked today**. Phase B (the
    Refractor **Secure Lens** that decrypts sensitive aspects into RLS-protected, *queryable* read models —
    the architecture's decision-of-record) needs read-path authorization to protect those plaintext rows,
@@ -223,12 +253,38 @@ internal/vault (the interface + the local backend)
   encrypt/decrypt make **zero** external calls; only `CreateIdentityKey` / `ShredKey` touch the KEK
   custody. This collapses the "Vault SPOF in the write path" risk (architecture line 88 / brainstorm
   #120) to "KEK reachable at key-create / cold-cache time."
+- **AEAD parameters + nonce uniqueness (grounded — NIST SP 800-38D).** AES-256-GCM is the AEAD; the
+  **single security-critical invariant is that a (DEK, nonce) pair is never reused** — GCM authentication
+  collapses catastrophically on nonce reuse. Strategy: a fresh **96-bit random nonce per encryption**,
+  stored alongside the ciphertext (`{ct, nonce, keyId}`). NIST SP 800-38D permits random 96-bit nonces up
+  to ~2³² invocations **per key**; because a DEK is **per-identity** and encrypts only that one identity's
+  handful of sensitive aspects (re-nonced on each update), the per-key message count is microscopic —
+  many orders of magnitude below the birthday bound — so random nonces are sound here with margin. (A
+  deterministic per-key counter is the alternative if a future backend wants zero birthday-risk; not
+  needed at this scale.) **DEK rotation:** v1 uses one DEK per identity for its lifetime (rotation =
+  re-encrypt under a new DEK); deferred — the message-count bound makes it unnecessary now, and shred
+  (destroy the DEK) is the only key-lifecycle event this feature requires. The party-mode crypto pass at
+  build time (Fire 2) re-checks the nonce source + the bound.
 - **Local backend (dev + trusted-tool deployment):** the master KEK is sealed in config (env var / file,
   `make`-provisioned), matching Loupe's 127.0.0.1 trusted-tool posture. Shred = delete the wrapped DEK +
   evict caches (the wrapped DEK is the only opener; destroying it shreds).
 - **Production KMS adapters (later, Andrew's backend choice):** HashiCorp Vault *Transit* or AWS/GCP KMS
   implement the same interface; the DEK is wrapped/unwrapped by the KMS, `ShredKey` destroys the KMS key
   version. Pluggable like Refractor's target adapters — no change above the interface.
+
+### 2.6 Scope boundary — sensitive *aspects*, not sensitive *blobs* (Object Store)
+
+This feature encrypts/​shreds sensitive **aspects** in Core KV. It does **not** cover PII-bearing **blobs**
+in the Object Store (`objects-base`) — lease PDFs, ID scans, signature images — which are stored
+content-addressed and **unencrypted**, referenced by a pointer-aspect on the graph. Shredding an
+identity's DEK destroys its sensitive *aspects* but leaves any such *document* recoverable, so the
+right-to-erasure guarantee is **complete for aspect-PII and explicitly partial for document-PII**.
+
+This is **out of scope** here (deliberately, to keep the feature coherent), and a follow-on Lattice item —
+**"crypto-shred for object-store blobs"** — is filed on the board: encrypt a sensitive object under the
+owning identity's DEK (or a per-object key wrapped by it) at upload, so the *same* `ShredIdentityKey`
+destroys both planes. Until that ships, a deployment handling document-PII must treat object-store blobs
+as non-shreddable — stated here so the GDPR-completeness claim is honest rather than silently partial.
 
 ## 3. Component & package layout
 
@@ -317,6 +373,12 @@ identities are unaffected until they receive PII. Backward compatible across the
 
 ## 9. Decomposition for the Steward (fire-by-fire, each independently shippable + green)
 
+> **Sequencing (ratified):** the **whole feature is gated behind D1 ✅** and ships **Phase A + Phase B
+> together** — not a Phase-A-now split. Fires 1–4 (Phase A: crypto + shred) and Fire 5 (Phase B: Secure
+> Lens) are one coherent delivery once D1 has landed (D1 provides the RLS-Postgres surface Fire 5 + the
+> vertical-app/​adapter PII readers require). The Fire breakdown below stands; only the *start gate* moves
+> (after D1, not now).
+
 1. **Fire 1 — `internal/vault` + local envelope backend.** The `Vault` interface, envelope encryption
    (DEK wrap/unwrap under a sealed master KEK), `CreateIdentityKey/Encrypt/Decrypt/ShredKey`, the
    `lattice.vault.decrypt` responder, unit tests. No commit-path wiring. Ships green standalone.
@@ -338,5 +400,7 @@ backend choice (Fork 1).
 
 ---
 
-*Designer fire, 2026-06-27. Phase A (Fires 1–4) is the ratify-and-build target now; Phase B (Fire 5)
-composes on D1. The §3.10 contract edit is staged uncommitted in `main` as the proposal.*
+*Designer fire, 2026-06-27. **Ratified — sequenced behind D1; build Phase A + Phase B together** (Fires
+1–5 as one delivery after D1 ✅, not a Phase-A-now split). The §3.10 contract edit stays staged
+**uncommitted** in `main` (commit it when the Vault build starts, so the contract doesn't claim
+ciphertext-at-rest ahead of the code). Follow-on filed: crypto-shred for object-store blobs (§2.6).*
