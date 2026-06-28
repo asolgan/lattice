@@ -37,25 +37,7 @@
           <div class="field">
             <label for="provider">Provider</label>
             <select id="provider" aria-label="Choose a provider"></select>
-            <details class="inline-add" id="add-provider">
-              <summary>＋ Add a provider</summary>
-              <div class="field">
-                <label for="np-prov-name">Full name</label>
-                <input type="text" id="np-prov-name" placeholder="Dr. Sam Okafor" />
-              </div>
-              <div class="field-row">
-                <div class="field">
-                  <label for="np-prov-specialty">Specialty</label>
-                  <input type="text" id="np-prov-specialty" placeholder="Cardiology" />
-                </div>
-                <div class="field">
-                  <label for="np-prov-credentials">Credentials <span class="opt">(optional)</span></label>
-                  <input type="text" id="np-prov-credentials" placeholder="MD" />
-                </div>
-              </div>
-              <button type="button" id="add-provider-submit">Add provider</button>
-            </details>
-            <p class="hint">Manage this provider's bookable hours &amp; time-off in the <a href="#" id="go-availability">Availability</a> tab.</p>
+            <p class="hint">Add, edit, and manage providers' bookable hours &amp; time-off in the <a href="#" id="go-availability">Availability</a> tab.</p>
           </div>
           <div class="field-row">
             <div class="field">
@@ -137,7 +119,25 @@
     <section id="view-availability" role="tabpanel" aria-labelledby="tab-availability" hidden>
       <div class="book">
         <h2>Provider availability</h2>
-        <p class="lead">Manage a provider's recurring bookable hours and date-specific time-off. Add providers from the Book tab.</p>
+        <p class="lead">Add or edit a provider, and manage their recurring bookable hours and date-specific time-off.</p>
+        <details class="inline-add" id="add-provider">
+          <summary>＋ Add a provider</summary>
+          <div class="field">
+            <label for="np-prov-name">Full name</label>
+            <input type="text" id="np-prov-name" placeholder="Dr. Sam Okafor" />
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="np-prov-specialty">Specialty</label>
+              <input type="text" id="np-prov-specialty" placeholder="Cardiology" />
+            </div>
+            <div class="field">
+              <label for="np-prov-credentials">Credentials <span class="opt">(optional)</span></label>
+              <input type="text" id="np-prov-credentials" placeholder="MD" />
+            </div>
+          </div>
+          <button type="button" id="add-provider-submit">Add provider</button>
+        </details>
         <div class="field">
           <label for="avail-provider">Provider</label>
           <select id="avail-provider" aria-label="Choose a provider to manage availability"></select>

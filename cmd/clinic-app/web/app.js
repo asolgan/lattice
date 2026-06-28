@@ -285,7 +285,7 @@ function populateProviderSelect(sel, opts) {
   el.innerHTML = "";
   const placeholder = document.createElement("option");
   placeholder.value = "";
-  placeholder.textContent = state.providers.length ? "Select provider…" : "No providers — add one below";
+  placeholder.textContent = state.providers.length ? "Select provider…" : "No providers — add one in the Availability tab";
   el.append(placeholder);
   if (opts && opts.includeAll && state.providers.length) {
     const all = document.createElement("option");
@@ -334,8 +334,12 @@ async function submitAddProvider() {
     $("#add-provider").open = false;
     toast("Provider added.", "ok", key);
     await loadProviders();
-    // Pre-select the new provider in the booking form once projected.
-    if (key) $("#provider").value = key;
+    // The add affordance lives in the Availability tab — select the new provider
+    // there so the user can set its hours / time-off next.
+    if (key) {
+      $("#avail-provider").value = key;
+      renderAvailEditors();
+    }
   } catch (e) {
     toast("Could not add provider: " + e.message, "err");
   } finally {
