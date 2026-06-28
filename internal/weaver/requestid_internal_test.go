@@ -12,6 +12,7 @@ import (
 // on the Contract #4 tracker — while a legitimately re-opened gap (new
 // CAS-create → new revision) yields a NEW requestId.
 func TestDeriveEpisodeRequestID_Deterministic(t *testing.T) {
+	t.Parallel()
 	a := deriveEpisodeRequestID("targetA", "Lk2Pn6mQrtwzKbcXvP3T", "missing_onboarding", 7)
 	b := deriveEpisodeRequestID("targetA", "Lk2Pn6mQrtwzKbcXvP3T", "missing_onboarding", 7)
 	if a != b {
@@ -44,6 +45,7 @@ func TestDeriveEpisodeRequestID_Deterministic(t *testing.T) {
 // taskId). The Loom instanceId derivation shares these properties and is disjoint
 // from the task id.
 func TestDeriveStableTaskID_StableAndDisjoint(t *testing.T) {
+	t.Parallel()
 	const claimA = "Lk2Pn6mQrtwzKbcXvP3T"
 	req := deriveEpisodeRequestID("targetA", "Lk2Pn6mQrtwzKbcXvP3T", "missing_signature", 3)
 	task := deriveStableTaskID("targetA", "Lk2Pn6mQrtwzKbcXvP3T", "missing_signature", claimA)

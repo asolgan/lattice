@@ -141,6 +141,7 @@ func (h *controlHarness) consumerState(name string) (string, bool) {
 // TestListTargets_ActiveByDefault verifies ListTargets reports a freshly
 // registered target as "active" with its lensRef and sorted gaps (AC #1, #6).
 func TestListTargets_ActiveByDefault(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := newControlHarness(t, ctx)
 	h.seedTarget(&Target{
@@ -177,6 +178,7 @@ func TestListTargets_ActiveByDefault(t *testing.T) {
 // marker (markStore.isDisabled true), and (d) ListTargets now reports
 // "disabled" (AC #2, #3, #6).
 func TestDisable_PausesConsumerAndMarksDisabled(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := newControlHarness(t, ctx)
 	h.seedTarget(&Target{TargetID: "t1", LensRef: "lens-1", Gaps: map[string]GapAction{}})
@@ -215,6 +217,7 @@ func TestDisable_PausesConsumerAndMarksDisabled(t *testing.T) {
 // TestDisable_NotRegistered verifies Disable returns an error mentioning the
 // targetID for an unregistered target, and does not write a __control marker.
 func TestDisable_NotRegistered(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := newControlHarness(t, ctx)
 
@@ -236,6 +239,7 @@ func TestDisable_NotRegistered(t *testing.T) {
 // (consumerStateCache reflects "running"), clears the __control marker, and
 // ListTargets reports "active" again (AC #2, #3, #6, #7).
 func TestEnable_ReversesDisable(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := newControlHarness(t, ctx)
 	h.seedTarget(&Target{TargetID: "t1", LensRef: "lens-1", Gaps: map[string]GapAction{}})
@@ -277,6 +281,7 @@ func TestEnable_ReversesDisable(t *testing.T) {
 // TestEnable_NotRegistered verifies Enable returns an error mentioning the
 // targetID for an unregistered target.
 func TestEnable_NotRegistered(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := newControlHarness(t, ctx)
 
@@ -292,6 +297,7 @@ func TestEnable_NotRegistered(t *testing.T) {
 // (d) re-writes the __control marker afterward so the in-memory disabled-set
 // still reports t1 as disabled (AC #4, strict superset of Disable).
 func TestRevoke_RemovesDurableMarksAndStaysDisabled(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := newControlHarness(t, ctx)
 	h.seedTarget(&Target{
@@ -348,6 +354,7 @@ func TestRevoke_RemovesDurableMarksAndStaysDisabled(t *testing.T) {
 // target is NOT an error (idempotent, mirrors ConsumerSupervisor.Remove's
 // no-op-if-unmanaged posture) and still writes the __control marker.
 func TestRevoke_NotRegistered_NoError(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := newControlHarness(t, ctx)
 
@@ -368,6 +375,7 @@ func TestRevoke_NotRegistered_NoError(t *testing.T) {
 // scans weaver-state for `<targetId>.__control` markers and populates the
 // in-memory disabled-set (AC #6 — durable truth survives restart).
 func TestSeedDisabledTargets_RestoresInMemorySet(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := newControlHarness(t, ctx)
 
@@ -398,6 +406,7 @@ func TestSeedDisabledTargets_RestoresInMemorySet(t *testing.T) {
 // before the disabled-skip guard, which now gates ONLY the remediation loop
 // (mark-create + Strategist/Actuator dispatch), not the bookkeeping legs.
 func TestHandleRow_DisabledSkipsDispatchButClearsMarks(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := newControlHarness(t, ctx)
 
@@ -476,6 +485,7 @@ func TestHandleRow_DisabledSkipsDispatchButClearsMarks(t *testing.T) {
 // clears the in-memory disabled-set and the SAME row delivered again
 // dispatches normally (creates a mark, fires an op).
 func TestHandleRow_EnableResumesDispatch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := newControlHarness(t, ctx)
 
@@ -538,6 +548,7 @@ func TestHandleRow_EnableResumesDispatch(t *testing.T) {
 // ListTargets continues to list it as "disabled" (AC #4's documented bound:
 // Revoke does not unregister the target).
 func TestHandleRow_RevokeRemovesDurableAndConsumerGone(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := newControlHarness(t, ctx)
 
@@ -596,6 +607,7 @@ func TestHandleRow_RevokeRemovesDurableAndConsumerGone(t *testing.T) {
 // and remediation pumps live again. Proves the BH-1 fix: a revoked→enabled
 // target is restored rather than dead-until-restart.
 func TestRevokeEnable_ReAddsConsumerViaReconcile(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := newControlHarness(t, ctx)
 	// reconcileConsumers needs e.ctx set (Start is not run in the harness).
@@ -665,6 +677,7 @@ func TestRevokeEnable_ReAddsConsumerViaReconcile(t *testing.T) {
 // does not silently come up disabled and no orphan marker leaks in
 // weaver-state.
 func TestReconcileRemove_DeletesControlMarker(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	h := newControlHarness(t, ctx)
 	h.engine.ctx = ctx

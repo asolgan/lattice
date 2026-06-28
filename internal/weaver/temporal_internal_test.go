@@ -58,6 +58,7 @@ func firedMessage(targetID, entityID string, payload map[string]any) substrate.M
 // redelivered firing collapses on the Contract #4 tracker), while a new fire
 // instant (a re-armed timer) or another timer subject derives a new one.
 func TestDeriveTimerRequestID_Deterministic(t *testing.T) {
+	t.Parallel()
 	subj := scheduleSubjectPrefix + "targetA.Lk2Pn6mQrtwzKbcXvP3T"
 	fireAt := "2026-06-12T10:00:00Z"
 
@@ -83,6 +84,7 @@ func TestDeriveTimerRequestID_Deterministic(t *testing.T) {
 // duplicate — and the op carries the {entityKey, targetId, expiredAt} payload
 // with no authContext and no weaver-state mark.
 func TestHandleFiredTimer_RedeliveryDedup(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -163,6 +165,7 @@ func TestHandleFiredTimer_RedeliveryDedup(t *testing.T) {
 // Acks (redelivery cannot fix a stored payload), submits no op, and raises a
 // keyed timer: Health issue — never silent (FR29).
 func TestHandleFiredTimer_Edges(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -208,6 +211,7 @@ func TestHandleFiredTimer_Edges(t *testing.T) {
 // immediate-expiry); a non-string or unparseable value and a missing entityKey
 // surface a RowDataError and skip; a tombstone row never schedules.
 func TestHandleRow_SchedulingLeg(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -335,6 +339,7 @@ func TestHandleRow_SchedulingLeg(t *testing.T) {
 // schedule subject land inside the temporal consumer's fired filter, so the
 // scheduling leg refuses it loudly (ScheduleConfigError) and never publishes.
 func TestScheduleFreshness_ReservedFiredToken(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -364,6 +369,7 @@ func TestScheduleFreshness_ReservedFiredToken(t *testing.T) {
 // scheduling leg returns false (handleRow → NakWithDelay) and raises a
 // SchedulePublishError Health issue — never a hot loop, never silent.
 func TestScheduleFreshness_PublishFailure(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -393,6 +399,7 @@ func TestScheduleFreshness_PublishFailure(t *testing.T) {
 // remediation dispatches for whatever is still violating — without re-touching
 // the row.
 func TestDisabled_FreshnessExpiryRecordedNoRemediation(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -492,6 +499,7 @@ func putTargetRow(t *testing.T, ctx context.Context, h *handlerHarness, targetID
 // disagreeing with the subject is dropped; a present, not-renewed registered
 // row submits exactly one op.
 func TestHandleFiredTimer_ReadBeforeAct(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -583,6 +591,7 @@ func TestHandleFiredTimer_ReadBeforeAct(t *testing.T) {
 // "now", so a re-projected/republished past deadline collapses on the
 // Contract #4 tracker rather than minting a new op per firing.
 func TestHandleFiredTimer_PastDeadlineRequestIDCollapse(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}

@@ -116,6 +116,7 @@ func (h *handlerHarness) requireNoOp(t *testing.T) {
 // episode requestId; missing metadata (NumDelivered/Sequence 0) takes the
 // conservative side — never the drop, never an expectedRevision of 0.
 func TestHandleRow_NumDeliveredBranches(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -193,6 +194,7 @@ func TestHandleRow_NumDeliveredBranches(t *testing.T) {
 // an UnresolvedReference Health issue, no mark is claimed, and a later-
 // installed pattern recovers on redelivery (issue cleared, episode fired).
 func TestHandleRow_UnresolvedReference(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -262,6 +264,7 @@ func issueSeverity(issues []healthIssue, code string) string {
 // (Ack, no op) — it must NOT raise an `error` (unhealthy) and pin the whole
 // Weaver component red while every other row still remediates.
 func TestHandleRow_MalformedAnchorDegradesNotErrors(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -333,6 +336,7 @@ func TestHandleRow_MalformedAnchorDegradesNotErrors(t *testing.T) {
 // safe default). The cap term firing on a non-zero count is covered by
 // TestGapSuppressed_BudgetCap.
 func TestGapSuppressed_Companions(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -370,6 +374,7 @@ func TestGapSuppressed_Companions(t *testing.T) {
 // reset (deleteDispatchCount) drops it back below the cap → dispatchable again
 // (the reset that B exists for, at the gate level).
 func TestGapSuppressed_BudgetCap(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -416,6 +421,7 @@ func TestGapSuppressed_BudgetCap(t *testing.T) {
 // A row whose companion clears (the call resolved or timed out) then dispatches
 // normally.
 func TestHandleRow_InflightSuppressesDispatch(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -471,6 +477,7 @@ func TestHandleRow_InflightSuppressesDispatch(t *testing.T) {
 // (as the sweep would after a lease lapse) so each fresh delivery re-dispatches
 // and re-increments, the way a real retry chain advances the count.
 func TestHandleRow_BudgetIncrementsThenSuppresses(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -531,6 +538,7 @@ func TestHandleRow_BudgetIncrementsThenSuppresses(t *testing.T) {
 // check) → clearClosedMarks deletes the dispatch-count → a subsequent REOPEN of
 // the gap is dispatchable again from a fresh budget.
 func TestHandleRow_BudgetResetsOnGapClose(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}

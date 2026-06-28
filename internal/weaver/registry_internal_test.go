@@ -71,6 +71,7 @@ func hasIssueCode(issues []healthIssue, code string) bool {
 // entry (the vertex still exists), so a re-created spec registers immediately
 // instead of buffering forever.
 func TestRegistry_SpecAspectDeleteThenRecreate(t *testing.T) {
+	t.Parallel()
 	s := newTestSource(t)
 	id := testNanoID(t)
 	const targetID = "fixtureLifecycle"
@@ -115,6 +116,7 @@ func TestRegistry_SpecAspectDeleteThenRecreate(t *testing.T) {
 // non-routed, a spec for a known non-routed class is never buffered, and a
 // vertex delete evicts the buffer.
 func TestRegistry_PendingSpecBounds(t *testing.T) {
+	t.Parallel()
 	s := newTestSource(t)
 
 	// Spec arrives before its vertex → buffered.
@@ -161,6 +163,7 @@ func TestRegistry_PendingSpecBounds(t *testing.T) {
 // bound surfaces as a Health issue (never silent) and that the issue clears
 // once the parent vertex's class arrives.
 func TestRegistry_OrphanedSpecHealthIssue(t *testing.T) {
+	t.Parallel()
 	s := newTestSource(t)
 	id := testNanoID(t)
 	s.handle(specEvent(t, id, targetSpecFixture("fixtureOrphan")))
@@ -196,6 +199,7 @@ func TestRegistry_OrphanedSpecHealthIssue(t *testing.T) {
 // expectedRevision (the engine-owned payload field) is rejected instead of
 // silently clobbered at dispatch.
 func TestValidateTarget_GapColumnCharsetAndReservedParam(t *testing.T) {
+	t.Parallel()
 	valid := &Target{
 		TargetID: "fixtureValid",
 		Gaps: map[string]GapAction{

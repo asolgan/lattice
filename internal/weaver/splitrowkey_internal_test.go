@@ -10,6 +10,7 @@ import "testing"
 // projection.OutputDescriptor.BuildKey emits with / without a keyColumn — proving
 // the round-trip without any Weaver change.
 func TestSplitRowKey_AcceptsKeyColumnProjectedKey(t *testing.T) {
+	t.Parallel()
 	// The keyColumn-projected key: <targetId>.<bareNanoID> (one dot).
 	targetID, entityID, ok := splitRowKey("leaseApplicationComplete.Lk2Pn6mQrtwzKbcXvP3T")
 	if !ok {
@@ -24,6 +25,7 @@ func TestSplitRowKey_AcceptsKeyColumnProjectedKey(t *testing.T) {
 }
 
 func TestSplitRowKey_RejectsDefaultTypeIDKey(t *testing.T) {
+	t.Parallel()
 	// The actorAggregate default suffix: <targetId>.<type>.<id> (two dots after
 	// the targetId). entityID becomes "leaseapp.Lk2Pn6mQrtwzKbcXvP3T", which is
 	// not a bare NanoID, so the key is dropped — the M2 defect Option (b) fixes.

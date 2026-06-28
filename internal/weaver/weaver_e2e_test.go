@@ -319,6 +319,7 @@ func waitMarkGone(t *testing.T, ctx context.Context, conn *substrate.Conn, key s
 // payload-carried expectedRevision); flipping the row to violating:false
 // level-reconciles the mark away with no further ops.
 func TestWeaverE2E_HappyPath(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -404,6 +405,7 @@ func TestWeaverE2E_HappyPath(t *testing.T) {
 // index, the templated assignee/target substituted from the row, and the
 // episode-deterministic taskId supplied in the payload.
 func TestWeaverE2E_AssignTask(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -464,6 +466,7 @@ func TestWeaverE2E_AssignTask(t *testing.T) {
 // SAME violating row (a fresh CDC delivery) finds the in-flight mark and
 // fires no second op.
 func TestWeaverE2E_AntiStorm(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -520,6 +523,7 @@ func TestWeaverE2E_AntiStorm(t *testing.T) {
 // deletes its JetStream durable; a re-install brings up a fresh consumer that
 // replays existing rows via DeliverLastPerSubject.
 func TestWeaverE2E_ReconcileTeardownAndReinstall(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -584,6 +588,7 @@ func TestWeaverE2E_ReconcileTeardownAndReinstall(t *testing.T) {
 // rejects the later registration; a true missing_* column with no playbook
 // entry alerts via Health KV and dispatches nothing.
 func TestWeaverE2E_InstallValidations(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -728,6 +733,7 @@ func putDeadMark(t *testing.T, ctx context.Context, conn *substrate.Conn,
 // re-dispatches a fresh episode. Exactly one op lands and the mark is
 // re-created under this instance with a live lease.
 func TestWeaverE2E_MidFlightKill(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -809,6 +815,7 @@ func TestWeaverE2E_MidFlightKill(t *testing.T) {
 // once the window elapses, with no dispatch; re-installing the same targetId
 // replays the row via DeliverLastPerSubject and dispatches fresh, unshadowed.
 func TestWeaverE2E_SweepOrphanedTargetMarks(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -918,6 +925,7 @@ func freshInstant(d time.Duration) string {
 // authContext; the fixture then re-projects the row violating (the CDC leg —
 // Refractor wiring is Epic 11) and lane-1 dispatches the remediation.
 func TestWeaverE2E_TemporalHappyLoop(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -996,6 +1004,7 @@ func TestWeaverE2E_TemporalHappyLoop(t *testing.T) {
 // the observation window, so a broken replace fails this test with the
 // first-instant firing.)
 func TestWeaverE2E_TemporalReplace(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -1056,6 +1065,7 @@ func TestWeaverE2E_TemporalReplace(t *testing.T) {
 // FRESH engine (same server, fixed weaver-temporal durable) converts the
 // firing into exactly one op.
 func TestWeaverE2E_TemporalRestartDurability(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -1109,6 +1119,7 @@ func TestWeaverE2E_TemporalRestartDurability(t *testing.T) {
 // core-schedules; the restarted engine's weaver-temporal durable picks it up
 // and converts it — exactly one op.
 func TestWeaverE2E_TemporalMissedWhileDown(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}

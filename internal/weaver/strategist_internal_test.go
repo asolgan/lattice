@@ -8,6 +8,7 @@ import "testing"
 // op that must read its candidate vertex (TombstoneObject) is hydrated. The
 // candidate id is already in the lens row (entityKey) — this just routes it.
 func TestBuildPlan_DirectOp_ResolvesReads(t *testing.T) {
+	t.Parallel()
 	ga := GapAction{
 		Action:    "directOp",
 		Operation: "TombstoneObject",
@@ -45,6 +46,7 @@ func TestBuildPlan_DirectOp_ResolvesReads(t *testing.T) {
 // TestBuildPlan_DirectOp_MissingReadColumn errors when a row-templated read
 // references an absent column (a malformed playbook must not fire a read-less op).
 func TestBuildPlan_DirectOp_MissingReadColumn(t *testing.T) {
+	t.Parallel()
 	ga := GapAction{
 		Action:    "directOp",
 		Operation: "TombstoneObject",

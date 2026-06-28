@@ -14,6 +14,7 @@ import (
 // the Processor rejects off-stream with no signal). Instance/Lane are set to valid
 // tokens so Start reaches the ActorKey guard (it runs after the token checks).
 func TestStart_EmptyActorKeyFails(t *testing.T) {
+	t.Parallel()
 	eng := weaver.NewEngine(nil, weaver.Config{ActorKey: "", Instance: "test", Lane: "system"})
 	err := eng.Start(context.Background())
 	if err == nil {
@@ -31,6 +32,7 @@ func TestStart_EmptyActorKeyFails(t *testing.T) {
 // Loom's externalTask + the bridge, with no dependency back into Weaver. The
 // check uses `go list -deps` (transitive).
 func TestModuleBoundary_OnlySubstrate(t *testing.T) {
+	t.Parallel()
 	out, err := exec.Command("go", "list", "-deps", "github.com/asolgan/lattice/internal/weaver").Output()
 	if err != nil {
 		t.Fatalf("go list -deps: %v", err)
@@ -59,6 +61,7 @@ func TestModuleBoundary_OnlySubstrate(t *testing.T) {
 // imports only: substrate itself legitimately depends on nats.go transitively,
 // so a transitive (`-deps`) check would false-positive.
 func TestModuleBoundary_NoRawNATS(t *testing.T) {
+	t.Parallel()
 	out, err := exec.Command("go", "list", "-f", "{{ join .Imports \"\\n\" }}",
 		"github.com/asolgan/lattice/internal/weaver").Output()
 	if err != nil {

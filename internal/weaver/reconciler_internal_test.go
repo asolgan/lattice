@@ -161,6 +161,7 @@ func fixtureMark(targetID, entityID, col, action, lease string) mark {
 // and no dispatch, while an unparseable row never clears a mark (unreadable
 // evidence).
 func TestSweep_LevelClear(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -229,6 +230,7 @@ func TestSweep_LevelClear(t *testing.T) {
 // re-armed per-key TTL, this instance as holder — and the sweepReclaims
 // counter records it.
 func TestSweep_ReclaimExpired(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -300,6 +302,7 @@ func TestSweep_ReclaimExpired(t *testing.T) {
 // shape: no leaseExpiresAt, no TTL) reads as expired — reclaimed on the first
 // sweep, never immortal.
 func TestSweep_LegacyMarkReclaimed(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -333,6 +336,7 @@ func TestSweep_LegacyMarkReclaimed(t *testing.T) {
 // TestSweep_LeaseUnexpired proves a live lease is respected: the episode is in
 // flight, the sweep leaves the mark and dispatches nothing.
 func TestSweep_LeaseUnexpired(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -368,6 +372,7 @@ func TestSweep_LeaseUnexpired(t *testing.T) {
 // expired-lease reclaim of an installed target runs ungated; once the window
 // elapses both orphans are deleted without dispatch.
 func TestSweep_WarmUpGuardAndOrphanTarget(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -444,6 +449,7 @@ func TestSweep_WarmUpGuardAndOrphanTarget(t *testing.T) {
 // names is an orphan — deleted without dispatch — and a spec that later
 // re-adds the column dispatches fresh, unshadowed.
 func TestSweep_OrphanColumn(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -500,6 +506,7 @@ func TestSweep_OrphanColumn(t *testing.T) {
 // deletion), and the issue is retired by the next pass that no longer lists
 // the key.
 func TestSweep_CorruptMark(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -559,6 +566,7 @@ func TestSweep_CorruptMark(t *testing.T) {
 // mark in place for the next sweep — deleting first would orphan the gap until
 // the next row delivery — and surfaces the failure to Health.
 func TestSweep_PlanFailureLeavesMark(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -610,6 +618,7 @@ func TestSweep_PlanFailureLeavesMark(t *testing.T) {
 // The preserved claimId is the load-bearing invariant; the instanceId is what
 // Loom dedups on.
 func TestReclaim_StableUserTaskIdentity(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -680,6 +689,7 @@ func TestReclaim_StableUserTaskIdentity(t *testing.T) {
 // re-dispatches CreateTask with the SAME claimId-derived taskId both times, so
 // the CreateTask kv.Read branch collapses the second on the existing task.
 func TestReclaim_StableTaskId_AssignTask(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -740,6 +750,7 @@ func TestReclaim_StableTaskId_AssignTask(t *testing.T) {
 // read and its delete wins the race — the delete is skipped and the fresh mark
 // stays intact.
 func TestSweep_DeleteRevisionRace(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -779,6 +790,7 @@ func TestSweep_DeleteRevisionRace(t *testing.T) {
 // no counter — and the key is never absent at any point (the crash window of
 // a delete-then-recreate reclaim does not exist).
 func TestSweep_ReclaimConflictSkips(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -826,6 +838,7 @@ func TestSweep_ReclaimConflictSkips(t *testing.T) {
 // and no delete (level clearing or the next CDC delivery owns the mark; the
 // TTL backstop bounds a stale one).
 func TestSweep_NonViolatingRowNotReclaimed(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -863,6 +876,7 @@ func TestSweep_NonViolatingRowNotReclaimed(t *testing.T) {
 // instead of re-alerting forever over an unreclaimable mark, and the issue
 // key is per-mark, so two bad entities under one target alert independently.
 func TestSweep_MissingEntityKeyMarks(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -921,6 +935,7 @@ func TestSweep_MissingEntityKeyMarks(t *testing.T) {
 // reject it as corrupt) — the sweep must skip it entirely, never enumerating
 // it as corrupt and never deleting it, across both warm-up states.
 func TestSweep_ControlMarkerSurvives(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -963,6 +978,7 @@ func TestSweep_ControlMarkerSurvives(t *testing.T) {
 // SweepOrphanWarmup is clamped up to SweepInterval (a warm-up shorter than
 // one tick gates nothing), defaulting to 5m.
 func TestConfigClamps(t *testing.T) {
+	t.Parallel()
 	cfg := Config{
 		MarkLease:         5 * time.Second,
 		SweepInterval:     time.Minute,
@@ -992,6 +1008,7 @@ func TestConfigClamps(t *testing.T) {
 // and mirrors the lease in leaseExpiresAt — the "dead reconciler" guarantee is
 // this header plus the substrate-level expiry test.
 func TestMarkCreate_TTLBackstop(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -1054,6 +1071,7 @@ func TestMarkCreate_TTLBackstop(t *testing.T) {
 // mark over a violating row whose gap carries inflight_<g>=true must be LEFT
 // untouched, with NO re-dispatch op — exactly as the in-flight call requires.
 func TestSweep_InflightGapNotReclaimed(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -1092,6 +1110,7 @@ func TestSweep_InflightGapNotReclaimed(t *testing.T) {
 // is left and no op fires (the terminal is "stop and escalate," the gap stays
 // violating).
 func TestSweep_ExhaustedBudgetGapNotReclaimed(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -1138,6 +1157,7 @@ func TestSweep_ExhaustedBudgetGapNotReclaimed(t *testing.T) {
 // of a count-0 gap whose row cap is above 1 reclaims AND bumps the count to 1; a
 // second reclaim would take it to 2, etc.
 func TestSweep_ReclaimIncrementsBudget(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -1176,6 +1196,7 @@ func TestSweep_ReclaimIncrementsBudget(t *testing.T) {
 // never enumerating it as corrupt and never deleting it, across both warm-up
 // states.
 func TestSweep_CountKeySurvives(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}

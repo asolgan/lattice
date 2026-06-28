@@ -43,6 +43,7 @@ func newStateTestStore(t *testing.T, ctx context.Context) *markStore {
 // claimId; a reclaim-replace PRESERVES it verbatim (only the lease refreshes); a
 // re-create after a delete (a close→reopen) mints a NEW one.
 func TestMarkClaimID_MintedThenPreserved(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m := newStateTestStore(t, ctx)
 	const tID, eID, gap = "t1", "entityAAAAAAAAAAAAAA", "missing_onboarding"
@@ -84,6 +85,7 @@ func TestMarkClaimID_MintedThenPreserved(t *testing.T) {
 // TestSetDisabled_RoundTrip verifies setDisabled(true)/isDisabled and
 // setDisabled(false)/isDisabled round-trip (AC #3).
 func TestSetDisabled_RoundTrip(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m := newStateTestStore(t, ctx)
 
@@ -122,6 +124,7 @@ func TestSetDisabled_RoundTrip(t *testing.T) {
 // target that was never disabled is a no-op success (missing-key-is-success,
 // mirroring delete's posture).
 func TestSetDisabled_IdempotentClear(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m := newStateTestStore(t, ctx)
 
@@ -146,6 +149,7 @@ func TestSetDisabled_IdempotentClear(t *testing.T) {
 // gapColumn) always has TWO dots — so the two key shapes can never collide,
 // regardless of entityID/gapColumn values.
 func TestControlKey_NoCollisionWithMark(t *testing.T) {
+	t.Parallel()
 	ck := controlKey("t1")
 	if got, want := strings.Count(ck, "."), 1; got != want {
 		t.Fatalf("controlKey(%q) = %q has %d dots, want %d", "t1", ck, got, want)
@@ -172,6 +176,7 @@ func TestControlKey_NoCollisionWithMark(t *testing.T) {
 // so a colliding entityID would itself be a pathological Lens bug
 // independent of this story.
 func TestControlKeySuffix_NotProducibleByNanoID(t *testing.T) {
+	t.Parallel()
 	if strings.Contains(substrate.Alphabet, "_") {
 		t.Fatalf("substrate.Alphabet contains '_' — __control marker keys may now collide with NanoID-derived entityIDs; escalate as a structural finding")
 	}
@@ -186,6 +191,7 @@ func TestControlKeySuffix_NotProducibleByNanoID(t *testing.T) {
 // match for "t10." (the trailing "." in the prefix makes this safe by
 // construction; this test confirms it).
 func TestDeleteByTargetPrefix_OnlyMatchesOwnTarget(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m := newStateTestStore(t, ctx)
 
@@ -241,6 +247,7 @@ func TestDeleteByTargetPrefix_OnlyMatchesOwnTarget(t *testing.T) {
 // TestDeleteByTargetPrefix_NoKeys verifies deleteByTargetPrefix on a target
 // with no weaver-state keys returns (0, nil) — not an error.
 func TestDeleteByTargetPrefix_NoKeys(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m := newStateTestStore(t, ctx)
 
@@ -257,6 +264,7 @@ func TestDeleteByTargetPrefix_NoKeys(t *testing.T) {
 // reads 0; increment creates at 1 and then monotonically advances; delete (the
 // gap-close reset) drops it back to 0 and a later increment restarts at 1.
 func TestDispatchCount_RoundTrip(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -300,6 +308,7 @@ func TestDispatchCount_RoundTrip(t *testing.T) {
 // gapColumn (no underscore in the alphabet; the dot is forbidden in a gap column),
 // so the three weaver-state key families never collide.
 func TestCountKey_Shape(t *testing.T) {
+	t.Parallel()
 	ck := countKey("t1", "someEntityID12345678", "missing_x")
 	if got, want := strings.Count(ck, "."), 3; got != want {
 		t.Fatalf("countKey(...) = %q has %d dots, want %d", ck, got, want)
@@ -324,6 +333,7 @@ func TestCountKey_Shape(t *testing.T) {
 // orphaned count whose gap-close was never observed. The factor is far larger than
 // the mark's, so the count never expires mid-chain.
 func TestDispatchCount_TTLBackstop(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}

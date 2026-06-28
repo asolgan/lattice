@@ -8,6 +8,7 @@ import "testing"
 // "starting" / "shutdown" lifecycle phases are reported verbatim regardless of
 // transient issues.
 func TestAggregateStatus(t *testing.T) {
+	t.Parallel()
 	warn := healthIssue{Severity: "warning", Code: "TemplateDataError"}
 	err := healthIssue{Severity: "error", Code: "TargetRejected"}
 
