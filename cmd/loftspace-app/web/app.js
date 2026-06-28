@@ -1418,6 +1418,38 @@ const DISPOSITION = {
   in_review: { label: "In review", cls: "review" },
 };
 
+// Ranking for the landlord by-unit view: a unit's competing applicants are ordered
+// best-first so the landlord can compare at a glance rather than reading an arbitrary
+// NanoID order. Pure FE over the already-projected disposition + qualification signals
+// (no new lens/data). Tier by status (the resolved winner up top, declined to the
+// bottom), then by a qualification score, then leaseAppKey for a stable order.
+const STATUS_RANK = { leased: 0, approved: 1, qualified: 2, in_review: 3, declined: 4 };
+
+function qualScore(a) {
+  let s = 0;
+  if (a.qualified) s += 100;
+  if (a.signed) s += 40;
+  if (a.incomeToRentMet === true) s += 30;
+  if (a.employmentVerified === true) s += 15;
+  if (typeof a.referenceCount === "number") s += Math.min(a.referenceCount, 5) * 3;
+  if (a.hasGuarantor === true) s += 5;
+  if (a.hasCoApplicant === true) s += 3;
+  if (a.profileSubmitted) s += 2;
+  return s;
+}
+
+function rankApplications(apps) {
+  return apps.slice().sort((x, y) => {
+    const tx = STATUS_RANK[x.status] ?? 9;
+    const ty = STATUS_RANK[y.status] ?? 9;
+    if (tx !== ty) return tx - ty;
+    const sx = qualScore(x);
+    const sy = qualScore(y);
+    if (sx !== sy) return sy - sx;
+    return (x.leaseAppKey || "").localeCompare(y.leaseAppKey || "");
+  });
+}
+
 // moneyAmount formats a bare rent number (the by-unit row carries no currency) as a
 // USD-style figure; the listings in this demo are USD.
 function moneyAmount(n) {
@@ -1491,13 +1523,21 @@ function renderUnitCard(u) {
     none.textContent = "No applications yet.";
     list.append(none);
   } else {
-    for (const a of u.applications) list.append(renderApplicantRow(a, u));
+    const ranked = rankApplications(u.applications);
+    // When more than one applicant competes for a unit, flag the top-ranked one that
+    // is still awaiting the landlord's decision so the strongest live candidate stands
+    // out — the decision-support the ranking exists for.
+    const topMatchKey =
+      ranked.length > 1 ? (ranked.find((a) => a.status === "qualified") || {}).leaseAppKey : undefined;
+    for (const a of ranked) {
+      list.append(renderApplicantRow(a, u, !!a.leaseAppKey && a.leaseAppKey === topMatchKey));
+    }
   }
   card.append(list);
   return card;
 }
 
-function renderApplicantRow(a, unit) {
+function renderApplicantRow(a, unit, isTopMatch) {
   const row = document.createElement("div");
   row.className = "applicant";
 
@@ -1516,6 +1556,13 @@ function renderApplicantRow(a, unit) {
     signed.className = "signed";
     signed.textContent = "✓ signed";
     info.append(signed);
+  }
+  if (isTopMatch) {
+    const top = document.createElement("span");
+    top.className = "top-match";
+    top.textContent = "★ Best match";
+    top.title = "Highest-ranked applicant awaiting your decision";
+    info.append(top);
   }
   row.append(info);
 

@@ -362,6 +362,14 @@ button.ghost.danger:hover { background: var(--red); color: #fff; }
 .applicant-actions { display: flex; gap: 8px; }
 .applicant-actions button { padding: 5px 12px; font-size: 12px; }
 .signed { color: var(--green); font-size: 12px; }
+.top-match {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  border: 1px solid var(--accent-dim);
+  border-radius: 4px;
+  padding: 1px 6px;
+}
 
 /* Disposition badges */
 .disp {
