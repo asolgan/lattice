@@ -145,11 +145,17 @@ func futureLease() string { return substrate.FormatTimestamp(time.Now().Add(time
 
 func fixtureMark(targetID, entityID, col, action, lease string) mark {
 	return mark{
-		TargetID:       targetID,
-		EntityKey:      "vtx.leaseApp." + entityID,
-		Gap:            col,
-		Action:         action,
-		ClaimedAt:      substrate.FormatTimestamp(time.Now().Add(-2 * time.Minute)),
+		TargetID:  targetID,
+		EntityKey: "vtx.leaseApp." + entityID,
+		Gap:       col,
+		Action:    action,
+		// ClaimedAt is aged well past the default MarkLease (30m): a real mark
+		// stamps ClaimedAt and LeaseExpiresAt = ClaimedAt + lease together, so an
+		// expired-lease mark always has elapsed-since-ClaimedAt > the lease. The
+		// userTask reclaim-backoff guard keys off that gap (first reclaim fires at
+		// lease-expiry); a too-recent fixture ClaimedAt would falsely read as
+		// "dispatched moments ago" and suppress the very reclaim under test.
+		ClaimedAt:      substrate.FormatTimestamp(time.Now().Add(-2 * time.Hour)),
 		LeaseExpiresAt: lease,
 		HeldBy:         "dead-instance",
 	}
@@ -292,7 +298,7 @@ func TestSweep_ReclaimExpired(t *testing.T) {
 	if op["requestId"] != wantRequestID {
 		t.Fatalf("reclaim requestId = %v, want the fresh episode %v", op["requestId"], wantRequestID)
 	}
-	if reclaims, _, _, _ := h.engine.sweep.metrics(); reclaims != 1 {
+	if reclaims, _, _, _, _ := h.engine.sweep.metrics(); reclaims != 1 {
 		t.Fatalf("sweepReclaims = %d, want 1", reclaims)
 	}
 	h.requireNoOp(t)
@@ -426,7 +432,7 @@ func TestSweep_WarmUpGuardAndOrphanTarget(t *testing.T) {
 	}
 	h.nextOp(t)
 	h.requireNoOp(t)
-	if reclaims, orphans, _, _ := h.engine.sweep.metrics(); reclaims != 1 || orphans != 0 {
+	if reclaims, _, orphans, _, _ := h.engine.sweep.metrics(); reclaims != 1 || orphans != 0 {
 		t.Fatalf("during warm-up: sweepReclaims = %d, sweepOrphansDeleted = %d; want 1, 0", reclaims, orphans)
 	}
 
@@ -439,7 +445,7 @@ func TestSweep_WarmUpGuardAndOrphanTarget(t *testing.T) {
 		t.Fatalf("after the warm-up window an orphan-column mark must be deleted")
 	}
 	h.requireNoOp(t)
-	if _, orphans, _, _ := h.engine.sweep.metrics(); orphans != 2 {
+	if _, _, orphans, _, _ := h.engine.sweep.metrics(); orphans != 2 {
 		t.Fatalf("sweepOrphansDeleted = %d, want 2", orphans)
 	}
 }
@@ -477,7 +483,7 @@ func TestSweep_OrphanColumn(t *testing.T) {
 		t.Fatalf("a mark at a column absent from the current playbook must be deleted")
 	}
 	h.requireNoOp(t)
-	if _, orphans, _, _ := h.engine.sweep.metrics(); orphans != 1 {
+	if _, _, orphans, _, _ := h.engine.sweep.metrics(); orphans != 1 {
 		t.Fatalf("sweepOrphansDeleted = %d, want 1", orphans)
 	}
 
@@ -548,7 +554,7 @@ func TestSweep_CorruptMark(t *testing.T) {
 	if !hasIssueCode(h.engine.issues.snapshot(), "CorruptMark") {
 		t.Fatalf("a deleted corrupt mark must surface a CorruptMark Health issue")
 	}
-	if _, _, corrupt, _ := h.engine.sweep.metrics(); corrupt != 2 {
+	if _, _, _, corrupt, _ := h.engine.sweep.metrics(); corrupt != 2 {
 		t.Fatalf("sweepCorrupt = %d, want 2", corrupt)
 	}
 	h.requireNoOp(t)
@@ -605,7 +611,7 @@ func TestSweep_PlanFailureLeavesMark(t *testing.T) {
 	h.engine.source.mu.Unlock()
 	h.pass(ctx)
 	h.nextOp(t)
-	if reclaims, _, _, _ := h.engine.sweep.metrics(); reclaims != 1 {
+	if reclaims, _, _, _, _ := h.engine.sweep.metrics(); reclaims != 1 {
 		t.Fatalf("sweepReclaims = %d, want 1", reclaims)
 	}
 }
@@ -826,7 +832,7 @@ func TestSweep_ReclaimConflictSkips(t *testing.T) {
 	if err != nil || entry.Revision != freshRev {
 		t.Fatalf("the fresh episode's mark must stay intact and present (err=%v)", err)
 	}
-	if reclaims, _, _, _ := h.engine.sweep.metrics(); reclaims != 0 {
+	if reclaims, _, _, _, _ := h.engine.sweep.metrics(); reclaims != 0 {
 		t.Fatalf("sweepReclaims = %d, want 0 (a conflicted reclaim is a skip)", reclaims)
 	}
 	h.requireNoOp(t)
@@ -865,7 +871,7 @@ func TestSweep_NonViolatingRowNotReclaimed(t *testing.T) {
 	if err != nil || entry.Revision != rev {
 		t.Fatalf("a non-violating row's expired mark must be left untouched (err=%v)", err)
 	}
-	if reclaims, _, _, _ := h.engine.sweep.metrics(); reclaims != 0 {
+	if reclaims, _, _, _, _ := h.engine.sweep.metrics(); reclaims != 0 {
 		t.Fatalf("sweepReclaims = %d, want 0", reclaims)
 	}
 	h.requireNoOp(t)
@@ -917,7 +923,7 @@ func TestSweep_MissingEntityKeyMarks(t *testing.T) {
 	if count != 2 {
 		t.Fatalf("CorruptMark issues = %d, want 2 (one per entity, no key collision)", count)
 	}
-	if _, _, corrupt, _ := h.engine.sweep.metrics(); corrupt != 2 {
+	if _, _, _, corrupt, _ := h.engine.sweep.metrics(); corrupt != 2 {
 		t.Fatalf("sweepCorrupt = %d, want 2", corrupt)
 	}
 	h.requireNoOp(t)
@@ -966,7 +972,7 @@ func TestSweep_ControlMarkerSurvives(t *testing.T) {
 	if hasIssueCode(h.engine.issues.snapshot(), "CorruptMark") {
 		t.Fatalf("the __control marker must never be enumerated as a CorruptMark")
 	}
-	if _, _, corrupt, _ := h.engine.sweep.metrics(); corrupt != 0 {
+	if _, _, _, corrupt, _ := h.engine.sweep.metrics(); corrupt != 0 {
 		t.Fatalf("sweepCorrupt = %d, want 0 (the __control marker is not a mark)", corrupt)
 	}
 	h.requireNoOp(t)
@@ -1098,7 +1104,7 @@ func TestSweep_InflightGapNotReclaimed(t *testing.T) {
 	if err != nil || entry.Revision != rev {
 		t.Fatalf("an in-flight gap's expired mark must be left untouched by the sweep (err=%v)", err)
 	}
-	if reclaims, _, _, _ := h.engine.sweep.metrics(); reclaims != 0 {
+	if reclaims, _, _, _, _ := h.engine.sweep.metrics(); reclaims != 0 {
 		t.Fatalf("sweepReclaims = %d, want 0 (in-flight suppression)", reclaims)
 	}
 	h.requireNoOp(t)
@@ -1145,7 +1151,7 @@ func TestSweep_ExhaustedBudgetGapNotReclaimed(t *testing.T) {
 	if err != nil || entry.Revision != rev {
 		t.Fatalf("an exhausted-budget gap's expired mark must be left untouched by the sweep (err=%v)", err)
 	}
-	if reclaims, _, _, _ := h.engine.sweep.metrics(); reclaims != 0 {
+	if reclaims, _, _, _, _ := h.engine.sweep.metrics(); reclaims != 0 {
 		t.Fatalf("sweepReclaims = %d, want 0 (budget-cap suppression)", reclaims)
 	}
 	h.requireNoOp(t)
@@ -1185,7 +1191,7 @@ func TestSweep_ReclaimIncrementsBudget(t *testing.T) {
 	if got, err := h.engine.marks.getDispatchCount(ctx, targetID, entityID, "missing_x"); err != nil || got != 1 {
 		t.Fatalf("a reclaim must increment the dispatch-count: got %d (err=%v), want 1", got, err)
 	}
-	if reclaims, _, _, _ := h.engine.sweep.metrics(); reclaims != 1 {
+	if reclaims, _, _, _, _ := h.engine.sweep.metrics(); reclaims != 1 {
 		t.Fatalf("sweepReclaims = %d, want 1", reclaims)
 	}
 }
@@ -1220,7 +1226,7 @@ func TestSweep_CountKeySurvives(t *testing.T) {
 	if hasIssueCode(h.engine.issues.snapshot(), "CorruptMark") {
 		t.Fatalf("a dispatch-count must never be enumerated as a CorruptMark")
 	}
-	if _, _, corrupt, _ := h.engine.sweep.metrics(); corrupt != 0 {
+	if _, _, _, corrupt, _ := h.engine.sweep.metrics(); corrupt != 0 {
 		t.Fatalf("sweepCorrupt = %d, want 0 (the __count key is not a mark)", corrupt)
 	}
 	h.requireNoOp(t)

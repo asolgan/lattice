@@ -24,6 +24,11 @@ const defaultSweepInterval = time.Minute
 // legs stay gated — a registry-replay-readiness proxy (see sweeper.warmup).
 const defaultSweepOrphanWarmup = 5 * time.Minute
 
+// defaultReclaimBackoffCap caps the collapse-only-action reclaim backoff. It is
+// the Contract #4 §4.3 op-tracker TTL horizon: past 24h a duplicate re-dispatch
+// would no longer collapse on the tracker, so there is no point pacing slower.
+const defaultReclaimBackoffCap = 24 * time.Hour
+
 // Sweep dispositions logged on every mark the sweep deletes or reclaims.
 const (
 	sweepReasonLeaseExpired  = "leaseExpired"
@@ -58,26 +63,58 @@ type sweeper struct {
 	// startedAt anchors the warm-up window. Set at construction (engine
 	// start); tests may rewind it before any pass runs.
 	startedAt time.Time
+	// backoffBase and backoffCap pace repeat reclaims of a still-open
+	// collapse-only userTask episode (assignTask/triggerLoom): the n-th repeat
+	// waits backoffBase × 2^(count-1), capped at backoffCap. The first reclaim
+	// (count 0→1) fires at lease-expiry unchanged; directOp/external gaps never
+	// back off (see reclaim). See backoffInterval.
+	backoffBase time.Duration
+	backoffCap  time.Duration
 
-	mu             sync.Mutex
-	reclaims       int64
-	orphansDeleted int64
-	corrupt        int64
-	lastRunAt      time.Time
+	mu                 sync.Mutex
+	reclaims           int64
+	reclaimsSuppressed int64
+	orphansDeleted     int64
+	corrupt            int64
+	lastRunAt          time.Time
 	// corruptAlerted tracks mark keys carrying a standing CorruptMark issue;
 	// the issue is retired by the first completed pass that no longer lists
 	// the key (the delete held).
 	corruptAlerted map[string]struct{}
 }
 
-func newSweeper(e *Engine, interval, warmup time.Duration) *sweeper {
+func newSweeper(e *Engine, interval, warmup, backoffBase, backoffCap time.Duration) *sweeper {
 	return &sweeper{
 		engine:         e,
 		interval:       interval,
 		warmup:         warmup,
+		backoffBase:    backoffBase,
+		backoffCap:     backoffCap,
 		startedAt:      time.Now(),
 		corruptAlerted: make(map[string]struct{}),
 	}
+}
+
+// backoffInterval returns how long a repeat reclaim of the same open episode
+// must wait, given the episode's current dispatch-count: backoffBase × 2^(count-1),
+// capped at backoffCap. count 0 or 1 (the first reclaim) returns the base, so the
+// first reclaim fires at lease-expiry as today; each subsequent real reclaim bumps
+// the count, lengthening the next interval up to the cap.
+func (s *sweeper) backoffInterval(count int) time.Duration {
+	if count < 1 {
+		return s.backoffBase
+	}
+	interval := s.backoffBase
+	for i := 1; i < count; i++ {
+		interval *= 2
+		if interval >= s.backoffCap {
+			return s.backoffCap
+		}
+	}
+	if interval > s.backoffCap {
+		return s.backoffCap
+	}
+	return interval
 }
 
 // run blocks until ctx is cancelled, sweeping once immediately and then on
@@ -226,8 +263,18 @@ func (s *sweeper) sweepMark(ctx context.Context, key string) {
 // old expired mark (re-swept next pass) or the fresh mark (its lease bounds
 // the retry) — never a markless open gap. Orphaned marks (target removed,
 // column gone from the playbook) are deleted without dispatch, gated by the
-// registry warm-up. A re-fired triggerLoom/assignTask is the §10.3 documented
-// rare-double — the Warn log and counters ARE the operator visibility.
+// registry warm-up.
+//
+// A re-fired triggerLoom/assignTask collapses on the existing task/instance
+// (the §10.3 claimId-preservation makes the re-dispatch idempotent at the
+// consumer), so it never duplicates the artifact — but every repeat still
+// commits a no-op op, writes a fresh Contract #4 tracker, and bumps the count.
+// To stop that phantom churn for an episode held open for days, repeat reclaims
+// of these two collapse-only userTask actions are PACED by an exponential
+// backoff keyed on the mark's own ClaimedAt + dispatch-count (the first reclaim
+// still fires at lease-expiry; see the backoff guard below). directOp/external
+// gaps, where a reclaim re-dispatch IS the intended bounded retry, are never
+// backed off.
 func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *mark,
 	targetID, entityID, gapColumn string, row map[string]any, rowRevision uint64) {
 
@@ -279,6 +326,43 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 		return
 	}
 
+	// Default per-key TTL backstop for the re-armed mark; widened below for a
+	// paced userTask reclaim.
+	markTTL := markTTLBackstopFactor * e.marks.lease
+	if rec.Action == actionAssignTask || rec.Action == actionTriggerLoom {
+		// Collapse-only userTask reclaim (assignTask/triggerLoom): pace repeat
+		// reclaims with an exponential backoff keyed on the mark's own ClaimedAt +
+		// dispatch-count — the consumer collapses any repeat re-dispatch anyway
+		// (§10.3), so re-firing every sweep is pure phantom churn (a no-op op + a
+		// fresh Contract #4 tracker). directOp/external never reaches here gated
+		// (action check). Best-effort: a count read or ClaimedAt parse failure
+		// falls through to a normal (unpaced) reclaim.
+		if count, err := e.marks.getDispatchCount(ctx, targetID, entityID, gapColumn); err != nil {
+			e.logger.Debug("weaver sweep: reclaim backoff dispatch-count read failed; not pacing",
+				"targetId", targetID, "entityId", entityID, "gap", gapColumn, "err", err)
+		} else if claimedAt, perr := time.Parse(time.RFC3339Nano, rec.ClaimedAt); perr == nil {
+			if elapsed := time.Since(claimedAt); elapsed < s.backoffInterval(count) {
+				// Dispatched within the backoff window: leave the mark untouched —
+				// no replace/fire/bumpDispatchCount. The mark survives on its
+				// backoff-sized TTL (set by the prior reclaim below); the next sweep
+				// re-enters this cheap compare until ClaimedAt ages past the interval.
+				e.logger.Debug("weaver sweep: reclaim backed off; episode dispatched recently",
+					"targetId", targetID, "entityId", entityID, "gap", gapColumn,
+					"action", rec.Action, "dispatchCount", count, "elapsed", elapsed)
+				s.bump(&s.reclaimsSuppressed)
+				return
+			}
+			// Proceeding: size the re-armed mark's TTL to outlast the NEXT backoff
+			// window (the count bumps after fire) plus a sweep-cadence margin, so the
+			// mark is always reclaimed before it can TTL-expire into a markless open
+			// gap — which a CDC redelivery would otherwise re-dispatch with a fresh
+			// claimId, minting a DUPLICATE task. Never below the default backstop.
+			if want := s.backoffInterval(count+1) + 2*s.interval; want > markTTL {
+				markTTL = want
+			}
+		}
+	}
+
 	entityKey, _ := row["entityKey"].(string)
 	if entityKey == "" {
 		// Without the §10.2 entityKey echo the remediation cannot name its
@@ -310,7 +394,7 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 	// Preserve the mark's per-open-episode claimId across the reclaim (§10.3): a
 	// reclaim is the SAME open episode, so the userTask identity it seeds stays
 	// stable and the re-dispatch collapses on the existing task/instance.
-	newRev, conflict, err := e.marks.replace(ctx, targetID, entityID, gapColumn, entityKey, ga.Action, rec.ClaimID, markRev)
+	newRev, conflict, err := e.marks.replace(ctx, targetID, entityID, gapColumn, entityKey, ga.Action, rec.ClaimID, markRev, markTTL)
 	if err != nil {
 		e.logger.Warn("weaver sweep: reclaim re-arm failed; leaving expired mark for the next sweep",
 			"targetId", targetID, "entityId", entityID, "gap", gapColumn, "err", err)
@@ -409,10 +493,10 @@ func (s *sweeper) bump(counter *int64) {
 }
 
 // metrics snapshots the since-start sweep counters for the heartbeat.
-func (s *sweeper) metrics() (reclaims, orphansDeleted, corrupt int64, lastRunAt time.Time) {
+func (s *sweeper) metrics() (reclaims, reclaimsSuppressed, orphansDeleted, corrupt int64, lastRunAt time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.reclaims, s.orphansDeleted, s.corrupt, s.lastRunAt
+	return s.reclaims, s.reclaimsSuppressed, s.orphansDeleted, s.corrupt, s.lastRunAt
 }
 
 // leaseLive reports whether leaseExpiresAt is set and in the future. An absent

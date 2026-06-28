@@ -72,6 +72,19 @@ type Config struct {
 	// below SweepInterval are clamped up to it (a warm-up shorter than one
 	// tick gates nothing).
 	SweepOrphanWarmup time.Duration
+	// ReclaimBackoffBase is the base interval for the reclaim backoff applied to
+	// collapse-only userTask actions (assignTask/triggerLoom): the sweep paces
+	// repeat reclaims of the SAME still-open episode at base × 2^(count-1),
+	// capped at ReclaimBackoffCap, instead of re-firing every pass. The FIRST
+	// reclaim still fires at lease-expiry (count 0→1 ⇒ base), so lost-dispatch
+	// recovery is unchanged; directOp/external gaps are never backed off (their
+	// reclaim re-dispatch is the intended bounded retry). Values <= 0 default to
+	// MarkLease (the first repeat then paces at the same cadence as the lease).
+	ReclaimBackoffBase time.Duration
+	// ReclaimBackoffCap caps the reclaim backoff interval. Defaults to 24h — the
+	// Contract #4 §4.3 op-tracker TTL horizon, beyond which a duplicate re-dispatch
+	// would no longer collapse on the tracker anyway. Values <= 0 take the default.
+	ReclaimBackoffCap time.Duration
 	// Instance distinguishes this engine process; it suffixes the per-boot
 	// registry-source durable so each boot replays the installed target set,
 	// and it is the key segment for this process's Contract #5 heartbeat
@@ -164,6 +177,17 @@ func (c *Config) withDefaults() {
 	}
 	if c.SweepOrphanWarmup < c.SweepInterval {
 		c.SweepOrphanWarmup = c.SweepInterval
+	}
+	if c.ReclaimBackoffBase <= 0 {
+		c.ReclaimBackoffBase = c.MarkLease
+	}
+	if c.ReclaimBackoffCap <= 0 {
+		c.ReclaimBackoffCap = defaultReclaimBackoffCap
+	}
+	if c.ReclaimBackoffCap < c.ReclaimBackoffBase {
+		// A cap below the base would invert the backoff (the first repeat would be
+		// clamped below the lease). Clamp the cap up so the floor is always >= base.
+		c.ReclaimBackoffCap = c.ReclaimBackoffBase
 	}
 	if c.Instance == "" {
 		c.Instance = defaultInstance()
@@ -282,7 +306,7 @@ func NewEngine(conn *substrate.Conn, cfg Config) *Engine {
 		targets:          make(map[string]specFingerprint),
 	}
 	e.source = newTargetSource(conn, cfg.CoreKVBucket, cfg.Instance, issues, cfg.Logger)
-	e.sweep = newSweeper(e, cfg.SweepInterval, cfg.SweepOrphanWarmup)
+	e.sweep = newSweeper(e, cfg.SweepInterval, cfg.SweepOrphanWarmup, cfg.ReclaimBackoffBase, cfg.ReclaimBackoffCap)
 	return e
 }
 

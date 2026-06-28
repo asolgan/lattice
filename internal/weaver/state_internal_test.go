@@ -58,7 +58,7 @@ func TestMarkClaimID_MintedThenPreserved(t *testing.T) {
 	}
 
 	// Reclaim-replace preserves the claimId verbatim.
-	if _, conflict, err := m.replace(ctx, tID, eID, gap, eKey, "triggerLoom", claim1, rev); err != nil || conflict {
+	if _, conflict, err := m.replace(ctx, tID, eID, gap, eKey, "triggerLoom", claim1, rev, markTTLBackstopFactor*m.lease); err != nil || conflict {
 		t.Fatalf("replace: err=%v conflict=%v", err, conflict)
 	}
 	rec, _, found, err := m.get(ctx, tID, eID, gap)

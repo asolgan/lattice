@@ -774,6 +774,12 @@ func TestWeaverE2E_MidFlightKill(t *testing.T) {
 	instance := "e2e-kill-" + mustNanoID(t)
 	engine := newEngine(conn, instance, func(c *weaver.Config) {
 		c.SweepInterval = 300 * time.Millisecond
+		// Match the dead mark's 4s lease: a real crash-recovery engine reclaims
+		// marks it issued under its own MarkLease, so base == lease and the first
+		// reclaim fires at lease-expiry (the userTask reclaim-backoff floor equals
+		// the lease-expiry threshold). The default 30m would set the backoff base
+		// far above this fixture's deliberately-short 4s lease.
+		c.MarkLease = 4 * time.Second
 	})
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()

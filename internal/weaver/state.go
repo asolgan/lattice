@@ -183,8 +183,15 @@ func (m *markStore) get(ctx context.Context, targetID, entityID, gapColumn strin
 // reclaim is the SAME open episode (only the lease/claimedAt/heldBy refresh), so
 // the userTask identity it seeds stays stable and the re-dispatch collapses on
 // the existing task/instance rather than duplicating it (§10.3).
+//
+// ttl is the re-armed per-key TTL — the backstop that bounds the mark's life if
+// no reconciler ever sweeps it. The caller sizes it: the default backstop
+// (markTTLBackstopFactor × lease) for a normal reclaim, or wider for a
+// collapse-only userTask reclaim that the sweep will deliberately pace with a
+// backoff longer than the default backstop (so the mark survives until the next
+// scheduled reclaim instead of TTL-expiring into a markless open gap).
 func (m *markStore) replace(ctx context.Context, targetID, entityID, gapColumn, entityKey, action, claimID string,
-	expectedRevision uint64) (revision uint64, conflict bool, err error) {
+	expectedRevision uint64, ttl time.Duration) (revision uint64, conflict bool, err error) {
 
 	now := time.Now()
 	rec := mark{
@@ -202,7 +209,7 @@ func (m *markStore) replace(ctx context.Context, targetID, entityID, gapColumn, 
 		return 0, false, fmt.Errorf("weaver: marshal mark: %w", err)
 	}
 	rev, err := m.conn.KVUpdateWithTTL(ctx, m.bucket, markKey(targetID, entityID, gapColumn), body,
-		expectedRevision, markTTLBackstopFactor*m.lease)
+		expectedRevision, ttl)
 	if err != nil {
 		if errors.Is(err, substrate.ErrRevisionConflict) {
 			return 0, true, nil
