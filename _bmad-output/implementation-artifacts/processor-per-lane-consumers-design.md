@@ -1,6 +1,6 @@
 # Processor per-lane consumers (ConsumerSupervisor adoption) — design
 
-**Status: 📐 awaiting-Andrew (ratification)**
+**Status: ✅ Andrew-ratified (2026-06-28)** — ready for the Lattice Steward. Pre-build §5.2 adversarial pass on the meta-lane/DDL-cache boundary should **prove the latent today-race** (single concurrent consumer ⇒ meta-DDL not serial) so Fire 2/3 demonstrably closes it.
 **Component:** Core (Processor) · **Imp:** ★★ · **Size:** M · **Owner role:** Lattice Steward (builds once ratified)
 **Backlog row:** `planning-artifacts/backlog/lattice.md` → Component maintenance → *[Core] Processor per-lane consumers*
 
@@ -19,7 +19,8 @@ writer finally uses the same supervised-pump pattern as Loom/Weaver/Refractor.
 instance subscribes to one or more lane subjects"; "`meta` lane consumer is configured with `MaxAckPending=1`"),
 and Contract #5 §5.4 *already* reserves the per-lane `lane_lag` keys for exactly this adoption. We build **to**
 the contracts; we change none of them. (`docs/contracts/02-operation-envelope.md` is currently shown modified in
-the working tree — that is a **prior fire's** instanceOf-lift edit, unrelated to this design; I did not touch it.)
+the working tree — that is a **different fire's** `kv.Links` §2.5.1 edit (op-time bounded link enumeration),
+unrelated to this design; I did not touch it.)
 
 **No architectural fork.** Two design decisions are surfaced for your awareness, neither a fork:
 
@@ -61,10 +62,28 @@ the backlog, the architecture, and two contracts all name: per-lane consumers.
   (composable pause state machine, NakWithDelay backoff floor, HealthSink) instead of a hand-rolled
   `EnsureConsumer` + `cons.Consume` loop.
 
-**Intent, not just hygiene.** The `meta` lane's *serialization* — "DDL cache invalidation synchronous with
-commit; serialization prevents concurrent DDL races" (Contract #2 §2.3) — is a **correctness** property that the
-single-consumer model satisfies only incidentally (everything is serial). Making `meta` its own single-pump
-consumer makes that guarantee *explicit and structural* rather than a side effect of the simplification.
+**Intent, not just hygiene — and a latent correctness gap (verified 2026-06-28).** The `meta` lane's
+*serialization* — "DDL cache invalidation synchronous with commit; serialization prevents concurrent DDL races"
+(Contract #2 §2.3) — is a **correctness** property. It would be tempting to say the single-consumer model satisfies
+it incidentally ("everything is serial"), **but that is not true today**: the production `processor-main` binary
+sets **no `MaxAckPending`** and drives `cons.Consume(callback)` with **no serialization guarantee**
+(`commit_path.go:599`; this is *why* the DDL cache is `sync.RWMutex`-guarded and step 8 is OCC). So **`meta` DDL
+mutations are not actually serial today** — two DDL ops can be dispatched concurrently, and §2.3's meta-serial
+guarantee is unenforced. Pinning `meta` to its own single pump (Fire 2/3) therefore **closes a latent correctness
+gap**, not merely "makes an incidental property explicit." Business-op correctness is still held by step-8 OCC
+(concurrent processing won't corrupt business state), so the live exposure is narrow — concurrent DDL-mutate vs.
+DDL-cache reads — but it is real, and the §5.2 pre-build adversarial pass should **prove whether it triggers
+today** so Fire 2/3 demonstrably closes it.
+
+**Publish-side: verified correct — the gap is consume-side, not publish-side (do not "fix publishing").** A
+ground-truth check (2026-06-28) confirmed every publisher already routes by lane (`"ops." + env.Lane`) and tags
+the right lane: **`meta`** ← pkgmgr installer (`installer.go:311` `LaneMeta`), lens CLI (`lens.go:145,217`),
+bootstrap meta-DDL (`meta_ddl.go:21`); **`system`** ← loom/weaver/bridge/objmgr engines (all default `*_LANE=system`);
+**`default`** ← ordinary client ops. So DDL ops already land on `ops.meta` — **no publish change is needed**. The
+single gap is that one `processor-main` consumer eats all four lane subjects with no per-lane isolation or
+meta-serial pinning; this design fixes that on the **consume** side. *(`urgent` is currently **unused** — nothing
+sets it except an explicit `--lane urgent` flag; splitting a consumer for it is correct-by-contract but it has no
+producer yet.)*
 
 ---
 
@@ -400,7 +419,7 @@ design across the control plane.
 | `docs/components/processor.md`, `substrate.md` | **Update** (each fire) | Reflect the per-lane supervised pump (a doc fix, direct to main) |
 
 **No uncommitted contract edit is staged by this design.** (The unrelated `docs/contracts/02-*.md` modification in
-the working tree belongs to a prior fire and is left untouched.)
+the working tree is a different fire's `kv.Links` §2.5.1 edit and is left untouched.)
 
 ---
 
