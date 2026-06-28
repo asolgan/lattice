@@ -116,6 +116,16 @@ button.ghost:hover { background: var(--bg-input); color: var(--text); }
   gap: 14px;
 }
 
+.appts-section-head {
+  grid-column: 1 / -1;
+  margin: 4px 0 -2px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
 .card {
   background: var(--bg-raised);
   border: 1px solid var(--border);

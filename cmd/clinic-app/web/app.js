@@ -1075,6 +1075,14 @@ async function loadAppts() {
   renderAppts();
 }
 
+// apptMatchesFilter applies the My Appointments status filter ("all" | "active" |
+// a single status). "active" keeps the non-terminal lifecycle states.
+function apptMatchesFilter(a, filter) {
+  if (filter === "all") return true;
+  if (filter === "active") return ACTIVE_STATUSES.includes(a.status);
+  return a.status === filter;
+}
+
 function renderAppts() {
   const grid = $("#appts");
   const empty = $("#appts-empty");
@@ -1085,10 +1093,38 @@ function renderAppts() {
     $("#appts-summary").textContent = "";
     return;
   }
+
+  const filter = ($("#appts-filter") && $("#appts-filter").value) || "all";
+  const matched = state.appts.filter((a) => apptMatchesFilter(a, filter));
+
+  // Split upcoming vs past so the patient's next appointment leads (the API sorts
+  // ascending, which otherwise buries it under accumulated history). Upcoming reads
+  // soonest-first; Past reads most-recent-first.
+  const upcoming = matched.filter((a) => !isPast(a.startsAt));
+  const past = matched.filter((a) => isPast(a.startsAt)).reverse();
+
+  if (matched.length === 0) {
+    empty.hidden = false;
+    empty.textContent = "No appointments match this filter.";
+    $("#appts-summary").textContent = `0 of ${state.appts.length}`;
+    return;
+  }
   empty.hidden = true;
-  for (const a of state.appts) grid.append(renderApptCard(a, { showProvider: true, cancelable: true }));
-  const n = state.appts.length;
-  $("#appts-summary").textContent = `${n} appointment${n === 1 ? "" : "s"}`;
+
+  const section = (label, rows) => {
+    if (rows.length === 0) return;
+    const head = document.createElement("div");
+    head.className = "appts-section-head";
+    head.textContent = `${label} · ${rows.length}`;
+    grid.append(head);
+    for (const a of rows) grid.append(renderApptCard(a, { showProvider: true, cancelable: true }));
+  };
+  section("Upcoming", upcoming);
+  section("Past", past);
+
+  const n = matched.length;
+  const suffix = filter === "all" ? "" : ` of ${state.appts.length}`;
+  $("#appts-summary").textContent = `${n} appointment${n === 1 ? "" : "s"}${suffix}`;
 }
 
 // ---- Provider Schedule (read-only day/week calendar desk view) ----
@@ -1821,6 +1857,7 @@ function init() {
   $("#tab-appts").addEventListener("click", () => showView("appts"));
   $("#tab-schedule").addEventListener("click", () => showView("schedule"));
   $("#reload-appts").addEventListener("click", loadAppts);
+  $("#appts-filter").addEventListener("change", renderAppts);
   $("#reload-schedule").addEventListener("click", loadSchedule);
   $("#sched-provider").addEventListener("change", loadSchedule);
   $("#sched-week").addEventListener("click", () => setSchedView("week"));

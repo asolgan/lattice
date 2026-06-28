@@ -150,6 +150,14 @@
     <section id="view-appts" role="tabpanel" aria-labelledby="tab-appts" hidden>
       <div class="panel-controls">
         <button id="reload-appts" class="ghost">Refresh</button>
+        <label for="appts-filter">Show</label>
+        <select id="appts-filter" aria-label="Filter appointments by status">
+          <option value="all">All</option>
+          <option value="active">Active (scheduled / confirmed / checked-in)</option>
+          <option value="completed">Completed</option>
+          <option value="cancelled">Cancelled</option>
+          <option value="noShow">No-show</option>
+        </select>
         <span id="appts-summary" class="summary"></span>
       </div>
       <div id="appts" class="grid" aria-live="polite"></div>
