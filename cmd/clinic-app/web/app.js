@@ -252,7 +252,7 @@ async function loadProviders() {
     state.providers = [];
   }
   populateProviderSelect("#provider");
-  populateProviderSelect("#sched-provider");
+  populateProviderSelect("#sched-provider", { includeAll: true });
   refreshBookEnabled();
   renderSlotCalendar();
 }
@@ -261,7 +261,12 @@ function providerLabel(p) {
   return p.specialty ? `${p.name} · ${p.specialty}` : p.name;
 }
 
-function populateProviderSelect(sel) {
+// SCHED_ALL is the sentinel select value for the clinic-wide "All providers"
+// schedule view (every provider's appointments on one grid). It is offered only on
+// the Schedule picker (includeAll), never the booking picker — you book one provider.
+const SCHED_ALL = "__all__";
+
+function populateProviderSelect(sel, opts) {
   const el = $(sel);
   if (!el) return;
   const prev = el.value;
@@ -270,6 +275,12 @@ function populateProviderSelect(sel) {
   placeholder.value = "";
   placeholder.textContent = state.providers.length ? "Select provider…" : "No providers — add one below";
   el.append(placeholder);
+  if (opts && opts.includeAll && state.providers.length) {
+    const all = document.createElement("option");
+    all.value = SCHED_ALL;
+    all.textContent = "All providers (clinic-wide)";
+    el.append(all);
+  }
   for (const p of state.providers) {
     const o = document.createElement("option");
     o.value = p.providerKey;
@@ -277,7 +288,11 @@ function populateProviderSelect(sel) {
     el.append(o);
   }
   const values = state.providers.map((p) => p.providerKey);
-  el.value = values.includes(prev) ? prev : "";
+  if (prev === SCHED_ALL && opts && opts.includeAll) {
+    el.value = SCHED_ALL;
+  } else {
+    el.value = values.includes(prev) ? prev : "";
+  }
 }
 
 async function submitAddProvider() {
@@ -1087,6 +1102,12 @@ function renderAppts() {
 
 const PX_PER_HOUR = 44;
 
+// schedIsAll reports whether the Schedule tab is in clinic-wide "All providers"
+// mode (every provider on one grid), vs scoped to a single provider.
+function schedIsAll() {
+  return $("#sched-provider").value === SCHED_ALL;
+}
+
 async function loadSchedule() {
   const provider = $("#sched-provider").value;
   const empty = $("#schedule-empty");
@@ -1095,14 +1116,18 @@ async function loadSchedule() {
     $("#schedule").innerHTML = "";
     state.schedule = [];
     empty.hidden = false;
-    empty.textContent = "Choose a provider to see their schedule.";
+    empty.textContent = "Choose a provider — or All providers — to see the schedule.";
     $("#schedule-summary").textContent = "";
     $("#sched-range").textContent = "";
     return;
   }
   $("#schedule-summary").textContent = "loading…";
   try {
-    const data = await api("/api/appointments?provider=" + encodeURIComponent(provider));
+    // All-providers mode fetches the unfiltered read model (every appointment);
+    // a single provider scopes server-side. Either way the grid filters to the
+    // visible period client-side.
+    const q = provider === SCHED_ALL ? "" : "?provider=" + encodeURIComponent(provider);
+    const data = await api("/api/appointments" + q);
     state.schedule = data.appointments || [];
   } catch (e) {
     $("#schedule").innerHTML = "";
@@ -1172,7 +1197,7 @@ function renderSchedule() {
   cal.innerHTML = "";
   if (!$("#sched-provider").value) {
     empty.hidden = false;
-    empty.textContent = "Choose a provider to see their schedule.";
+    empty.textContent = "Choose a provider — or All providers — to see the schedule.";
     $("#schedule-summary").textContent = "";
     $("#sched-range").textContent = "";
     return;
@@ -1327,8 +1352,18 @@ function apptBlock(a, dayStart, startH, endH, lane, lanes) {
   who.className = "cal-appt-who";
   who.textContent = a.patientName || shortKey(a.patientKey);
   block.append(t, who);
+  // Clinic-wide view: the block's title is the patient, so name the provider too
+  // (which provider's slot this is) — the one thing the single-provider grid implies
+  // but the all-providers grid can't.
+  if (schedIsAll()) {
+    const prov = document.createElement("span");
+    prov.className = "cal-appt-prov";
+    prov.textContent = a.providerName || shortKey(a.providerKey);
+    block.append(prov);
+  }
   block.title =
     `${a.patientName || shortKey(a.patientKey)} · ${fmtWhen(a.startsAt, a.endsAt)}` +
+    (schedIsAll() ? " · " + (a.providerName || shortKey(a.providerKey)) : "") +
     (a.reason ? " · " + a.reason : "") + ` · ${a.status}`;
   block.addEventListener("click", () => selectSchedAppt(a));
   return block;
@@ -1361,6 +1396,13 @@ function selectSchedAppt(a) {
   badge.textContent = a.status || "—";
 
   d.append(close, who, when, badge);
+  if (schedIsAll()) {
+    const prov = document.createElement("div");
+    prov.className = "sd-meta";
+    prov.textContent = "with " + (a.providerName || shortKey(a.providerKey)) +
+      (a.providerSpecialty ? " · " + a.providerSpecialty : "");
+    d.append(prov);
+  }
   if (a.reason) {
     const meta = document.createElement("div");
     meta.className = "sd-meta";

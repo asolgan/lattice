@@ -312,6 +312,14 @@ button.ghost.danger:hover { background: var(--red, #d9534f); color: #fff; }
   text-overflow: ellipsis;
   overflow: hidden;
 }
+.cal-appt .cal-appt-prov {
+  color: var(--text-dim);
+  font-size: 10px;
+  font-style: italic;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow: hidden;
+}
 .cal-appt.past { opacity: 0.55; }
 .cal-appt.confirmed { border-color: var(--green); background: rgba(76, 195, 138, 0.16); }
 .cal-appt.confirmed:hover { background: rgba(76, 195, 138, 0.28); }
