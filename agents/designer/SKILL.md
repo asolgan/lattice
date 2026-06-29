@@ -129,6 +129,17 @@ tombstones. **Capability KV is a lens projection** (projection correctness = aut
   violation.) Corollaries from the same fire: prefer **paging** (cursor/limit) over a fail-closed hard cap for
   any enumeration (a cap rejects a legitimately high-degree hub), and **lazy** call-time reads over
   pre-hydration when the read-set has no exact-key form.
+- **Ground a reported failure MECHANISM in code before designing around it — a vendor/substrate error string
+  implies the wrong layer.** When the demand is "X is failing with <error>", read the ~one file that implements
+  the mechanism and confirm the exact primitive (per-key vs whole-stream, sync vs async, conditioned vs
+  unconditioned, retry vs surface) *before* it becomes your premise. A confidently-stated-but-ungrounded
+  mechanism propagates — into the question, the design, and the principal's mental model. (Trialed 2026-06-29: a
+  `RevisionConflict` was reported as the Processor's *whole-stream* `ExpectedLastSequence` CAS losing to
+  concurrent lane consumers; `substrate/batch.go` proved it **per-subject** (`Nats-Expected-Last-Subject-Sequence`)
+  — different-key writes never serialise, so the "continuous lane contention" premise was false. The NATS
+  "wrong last sequence" string read like a stream lock but was a per-key create-once collision; grounding it
+  also surfaced the *real* bug — §3.2 update-conditioning deferred → silent lost-updates — which the misread
+  symptom had hidden.) Treat an error string as a clue to investigate, never a statement of mechanism.
 - **Check the DEFAULT direction of every security/authz boundary — omission must FAIL CLOSED.** When a design
   introduces an authorization surface, ask: *what happens when the author forgets the marker?* If absence/
   omission **grants** access, it is **default-open** — a forgotten field silently exposes data, and nothing
