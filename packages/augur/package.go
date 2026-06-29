@@ -3,21 +3,23 @@
 //
 // The Augur turns a Weaver convergence gap the package playbook cannot plan
 // (an unplannable / retry-exhausted gap) into an AI-reasoned, human-reviewable
-// PROPOSAL: Weaver escalates over the existing triggerLoom → externalTask →
-// bridge path (a dedicated `augur` bridge adapter — Weaver never calls the
-// model directly), the model proposes a remediation within the installed action
-// catalog, and the bridge's replyOp records a `vtx.augurproposal` vertex pending
-// human approval. The AI proposes; the human decides; the Processor stays the
-// sole writer (P2).
+// PROPOSAL: Weaver dispatches CreateAugurReasoningClaim as a directOp (Option F
+// — no Loom wrapper) that mints the claim vertex and emits external.augur off
+// its transactional outbox; the bridge's `augur` adapter calls the model (Weaver
+// never calls the model directly), which proposes a remediation within the
+// installed action catalog, and the bridge's replyOp records a `vtx.augurproposal`
+// vertex pending human approval. The AI proposes; the human decides; the Processor
+// stays the sole writer (P2).
 //
 // This package declares:
 //
-//   - The `augurproposal` DDL — the proposal vertex type + the externalTask
-//     matched pair that drives one reasoning episode against the bridge's
-//     standard {externalRef, status, result} reply contract:
+//   - The `augurproposal` DDL — the proposal vertex type + the matched op pair
+//     that drives one reasoning episode against the bridge's standard
+//     {externalRef, status, result} reply contract:
 //
-//       - CreateAugurReasoningClaim (the Loom instanceOp) mints the claim vertex
-//         write-ahead with the TRUSTED gap context + the links.
+//       - CreateAugurReasoningClaim (Weaver's directOp) mints the claim vertex
+//         write-ahead with the TRUSTED gap context + the links, and emits
+//         external.augur off its transactional outbox for the bridge to pick up.
 //       - RecordProposal (the bridge replyOp) reads that trusted context back,
 //         decodes the model's structured proposal from the opaque result, and
 //         records the verdict.
@@ -52,7 +54,8 @@
 //     never name the entity it acts on.
 //
 //   - Permissions granting CreateAugurReasoningClaim + RecordProposal to
-//     `operator` (the Loom relay + bridge service actors are operator-equivalent).
+//     `operator` (Weaver — the directOp dispatcher — and the bridge service
+//     actor are both operator-equivalent via holdsRole → operator).
 //
 // Install via the InstallPackage kernel op. See docs/components/_packages.md and
 // _bmad-output/implementation-artifacts/augur-design.md.
