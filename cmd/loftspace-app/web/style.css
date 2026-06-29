@@ -508,3 +508,16 @@ button.ghost.danger:hover { background: var(--red); color: #fff; }
   .lb-prev { left: 4px; }
   .lb-next { right: 4px; }
 }
+
+/* The D1.3 landlord RLS read-boundary banner: a quiet, accent-bordered note that
+   makes the per-landlord enforced scope visible alongside the operator console. */
+.rls-banner {
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--accent-dim);
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  font-size: 0.85rem;
+}

@@ -1808,6 +1808,39 @@ async function loadLandlord() {
     return;
   }
   renderUnits();
+  loadLandlordRLS();
+}
+
+// loadLandlordRLS exercises the D1.3 Increment-3 PROTECTED read boundary: the
+// signed-in identity reads /api/landlord/applications as an AUTHENTICATED actor, and
+// Postgres RLS returns ONLY the applications to units that identity manages. Unlike
+// the operator console above (/api/unit-applications, the trusted-tool view that
+// sees every unit), this is the per-landlord enforced scope — a banner reports it so
+// the boundary is visible in the browser. Best-effort: a missing read boundary
+// (no Postgres / protected lens) or a non-landlord identity degrades to an
+// informational note, never blocking the operator console.
+async function loadLandlordRLS() {
+  const el = $("#landlord-rls");
+  if (!el) return;
+  if (!state.applicant) {
+    el.hidden = true;
+    return;
+  }
+  try {
+    const data = await authedGet("/api/landlord/applications");
+    const units = data.units || [];
+    const apps = data.applicationCount || 0;
+    el.hidden = false;
+    if (units.length === 0) {
+      el.textContent = "🔒 RLS read boundary: signed in as this identity, Postgres scopes you to 0 units — you manage none. (The list above is the trusted operator console.)";
+      return;
+    }
+    el.textContent = `🔒 RLS read boundary: Postgres scopes you to ${units.length} unit${units.length === 1 ? "" : "s"} you manage (${apps} application${apps === 1 ? "" : "s"}). The operator console above sees all units; this is your enforced per-landlord scope.`;
+  } catch (e) {
+    // The boundary is not provisioned in every dev posture; do not break the view.
+    el.hidden = false;
+    el.textContent = "🔒 RLS read boundary unavailable (" + e.message + ")";
+  }
 }
 
 function renderUnits() {
