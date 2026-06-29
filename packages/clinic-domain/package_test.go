@@ -23,14 +23,14 @@ func TestPackage_ManifestMatchesDefinition(t *testing.T) {
 	}
 }
 
-// TestPackage_DDLs pins the eleven DDLs: three vertexType owners (patient,
-// provider, appointment) and eight aspectType step-6 gates. The aspect DDLs MUST
+// TestPackage_DDLs pins the twelve DDLs: three vertexType owners (patient,
+// provider, appointment) and nine aspectType step-6 gates. The aspect DDLs MUST
 // be NON-sensitive (they attach to patient/provider/appointment vertices, not an
 // identity — a sensitive aspect there would trip step-6's sensitiveAspectScope),
 // and each names ONLY its writer op(s) in permittedCommands.
 func TestPackage_DDLs(t *testing.T) {
-	if got := len(Package.DDLs); got != 11 {
-		t.Fatalf("expected 11 DDLs, got %d", got)
+	if got := len(Package.DDLs); got != 12 {
+		t.Fatalf("expected 12 DDLs, got %d", got)
 	}
 
 	byName := map[string]pkgmgr.DDLSpec{}
@@ -41,7 +41,7 @@ func TestPackage_DDLs(t *testing.T) {
 	vertexCmds := map[string][]string{
 		"patient":     {"CreatePatient", "TombstonePatient"},
 		"provider":    {"CreateProvider", "TombstoneProvider", "SetProviderProfile", "SetProviderHours", "SetProviderTimeOff"},
-		"appointment": {"CreateAppointment", "RescheduleAppointment", "SetAppointmentStatus", "TombstoneAppointment"},
+		"appointment": {"CreateAppointment", "RescheduleAppointment", "SetAppointmentStatus", "RecordEncounter", "TombstoneAppointment"},
 	}
 	for name, wantCmds := range vertexCmds {
 		vertex, ok := byName[name]
@@ -69,14 +69,15 @@ func TestPackage_DDLs(t *testing.T) {
 	}
 
 	aspectWriters := map[string][]string{
-		"patientDemographics": {"CreatePatient"},
-		"providerProfile":     {"CreateProvider", "SetProviderProfile"},
-		"appointmentSchedule": {"CreateAppointment", "RescheduleAppointment"},
-		"appointmentStatus":   {"CreateAppointment", "SetAppointmentStatus"},
-		"providerBookings":    {"CreateProvider", "CreateAppointment", "RescheduleAppointment"},
-		"providerHours":       {"SetProviderHours"},
-		"providerTimeOff":     {"SetProviderTimeOff"},
-		"patientBookings":     {"CreatePatient", "CreateAppointment", "RescheduleAppointment"},
+		"patientDemographics":  {"CreatePatient"},
+		"providerProfile":      {"CreateProvider", "SetProviderProfile"},
+		"appointmentSchedule":  {"CreateAppointment", "RescheduleAppointment"},
+		"appointmentStatus":    {"CreateAppointment", "SetAppointmentStatus"},
+		"providerBookings":     {"CreateProvider", "CreateAppointment", "RescheduleAppointment"},
+		"providerHours":        {"SetProviderHours"},
+		"providerTimeOff":      {"SetProviderTimeOff"},
+		"patientBookings":      {"CreatePatient", "CreateAppointment", "RescheduleAppointment"},
+		"appointmentEncounter": {"RecordEncounter"},
 	}
 	for name, wantCmds := range aspectWriters {
 		asp, ok := byName[name]
@@ -137,7 +138,7 @@ func TestPackage_Permissions(t *testing.T) {
 		"CreateProvider": false, "TombstoneProvider": false,
 		"SetProviderProfile": false, "SetProviderHours": false, "SetProviderTimeOff": false,
 		"CreateAppointment": false, "RescheduleAppointment": false,
-		"SetAppointmentStatus": false, "TombstoneAppointment": false,
+		"SetAppointmentStatus": false, "RecordEncounter": false, "TombstoneAppointment": false,
 	}
 	if got := len(Package.Permissions); got != len(wantPerms) {
 		t.Fatalf("expected %d permissions, got %d", len(wantPerms), got)
@@ -211,25 +212,44 @@ func TestPackage_ScriptGuards(t *testing.T) {
 		`require_live_typed`, // endpoint alive + class
 		`WrongClass`,         // endpoint-class guard
 		"scheduled, confirmed, checkedIn, completed, cancelled, noShow", // status enum
-		`lnk.appointment.`,                               // link direction (appointment is source)
-		`.forPatient.patient.`,                           // forPatient link shape
-		`.withProvider.provider.`,                        // withProvider link shape
-		`make_aspect_upsert(appt_key, "status"`,          // SetAppointmentStatus upsert
-		`make_aspect_upsert(appt_key, "schedule"`,        // RescheduleAppointment rewrites .schedule
-		`clinic.appointmentRescheduled`,                  // RescheduleAppointment event
-		`enforce_hours(provider, starts_at, ends_at)`,    // both ops enforce provider hours
-		`OutsideHours`,                                   // the availability-window rejection
-		`time.weekday(starts_at)`,                        // weekday membership
-		`time.seconds_of_day(starts_at)`,                 // time-of-day membership
-		`enforce_time_off(provider, starts_at, ends_at)`, // both ops enforce provider time-off
-		`ProviderUnavailable`,                            // the time-off-overlap rejection
-		`PatientDoubleBook`,                              // patient-side double-book rejection (across providers)
-		`patient_bookings_key = patient + ".bookings"`,   // patient .bookings index read
-		`make_aspect_upsert_occ(patient, "bookings"`,     // OCC-guarded patient index rewrite
-		`WrongPatient`,                                   // reschedule validates the passed patient via the forPatient link
+		`lnk.appointment.`,                                                 // link direction (appointment is source)
+		`.forPatient.patient.`,                                             // forPatient link shape
+		`.withProvider.provider.`,                                          // withProvider link shape
+		`make_aspect_upsert(appt_key, "status"`,                            // SetAppointmentStatus upsert
+		`make_aspect_upsert(appt_key, "schedule"`,                          // RescheduleAppointment rewrites .schedule
+		`clinic.appointmentRescheduled`,                                    // RescheduleAppointment event
+		`enforce_hours(provider, starts_at, ends_at)`,                      // both ops enforce provider hours
+		`OutsideHours`,                                                     // the availability-window rejection
+		`time.weekday(starts_at)`,                                          // weekday membership
+		`time.seconds_of_day(starts_at)`,                                   // time-of-day membership
+		`enforce_time_off(provider, starts_at, ends_at)`,                   // both ops enforce provider time-off
+		`ProviderUnavailable`,                                              // the time-off-overlap rejection
+		`PatientDoubleBook`,                                                // patient-side double-book rejection (across providers)
+		`patient_bookings_key = patient + ".bookings"`,                     // patient .bookings index read
+		`make_aspect_upsert_occ(patient, "bookings"`,                       // OCC-guarded patient index rewrite
+		`WrongPatient`,                                                     // reschedule validates the passed patient via the forPatient link
+		`ot == "RecordEncounter"`,                                          // the clinical-record op handler
+		`make_aspect_upsert(appt_key, "encounter", "appointmentEncounter"`, // RecordEncounter upserts .encounter
+		`clinic.appointmentEncounterRecorded`,                              // RecordEncounter event
+		`"documentedAt": time.rfc3339_utc(op.submittedAt)`,                 // operational documentedAt derived from submittedAt
 	} {
 		if !strings.Contains(appointmentDDLScript, want) {
 			t.Errorf("appointment script must reference %q", want)
+		}
+	}
+
+	// The clinical-record PHI discipline: the clinicAppointments lens projects the
+	// OPERATIONAL encounter signals but NEVER the raw clinical content. summary /
+	// assessment / plan must not appear in any RETURN projection (the .demographics
+	// name-only precedent applied to .encounter; the Vault plane owns display).
+	for _, projected := range []string{"a.encounter.data.documentedAt", "a.encounter.data.followUpRequested", "a.encounter.data.followUpDate"} {
+		if !strings.Contains(clinicAppointmentsSpec, projected) {
+			t.Errorf("clinicAppointments must project the operational encounter signal %q", projected)
+		}
+	}
+	for _, phi := range []string{"encounter.data.summary", "encounter.data.assessment", "encounter.data.plan"} {
+		if strings.Contains(clinicAppointmentsSpec, phi) {
+			t.Errorf("clinicAppointments must NOT project the raw clinical PHI field %q (Vault-plane deferred)", phi)
 		}
 	}
 

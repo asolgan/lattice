@@ -1,11 +1,15 @@
 name: clinic-domain
-version: 0.6.0
+version: 0.7.0
 description: |
   Clinic bookable domain. Self-contained package owning three vertex types —
   patient, provider, appointment — with their aspects (.demographics, .profile,
-  .schedule, .status, provider .bookings, patient .bookings) and links (forPatient,
-  withProvider), written by the Create*/Reschedule/SetAppointmentStatus/Tombstone*
-  ops. Three projection lenses (clinicAppointments, clinicProviders, clinicPatients)
+  .schedule, .status, .encounter, provider .bookings, patient .bookings) and links
+  (forPatient, withProvider), written by the
+  Create*/Reschedule/SetAppointmentStatus/RecordEncounter/Tombstone* ops.
+  RecordEncounter captures the post-visit clinical record (.encounter — RAW PHI
+  {summary, assessment, plan} never projected, plus operational documentation /
+  follow-up signals the lens does project). Three projection lenses
+  (clinicAppointments, clinicProviders, clinicPatients)
   are the P5 read models a clinic FE reads. CreateAppointment + RescheduleAppointment
   reject a provider double-book (SlotConflict) via the provider's OCC-snapshotted
   .bookings index AND a patient double-book across providers (PatientDoubleBook) via
@@ -36,6 +40,8 @@ declares:
     - canonicalName: providerTimeOff
       class: meta.ddl.aspectType
     - canonicalName: patientBookings
+      class: meta.ddl.aspectType
+    - canonicalName: appointmentEncounter
       class: meta.ddl.aspectType
   lenses:
     - canonicalName: clinicAppointments
@@ -79,6 +85,9 @@ declares:
       scope: any
       grantsTo: [operator]
     - operationType: SetAppointmentStatus
+      scope: any
+      grantsTo: [operator]
+    - operationType: RecordEncounter
       scope: any
       grantsTo: [operator]
     - operationType: TombstoneAppointment

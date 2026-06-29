@@ -49,7 +49,7 @@ const (
 var clinicOps = []string{
 	"CreatePatient", "TombstonePatient",
 	"CreateProvider", "TombstoneProvider", "SetProviderProfile", "SetProviderHours", "SetProviderTimeOff",
-	"CreateAppointment", "RescheduleAppointment", "SetAppointmentStatus", "TombstoneAppointment",
+	"CreateAppointment", "RescheduleAppointment", "SetAppointmentStatus", "RecordEncounter", "TombstoneAppointment",
 }
 
 func clStaffCapDoc() *processor.CapabilityDoc {
@@ -509,6 +509,81 @@ func TestClinic_StatusCheckedInAndNote(t *testing.T) {
 	if _, hasNote := st["note"]; hasNote {
 		t.Fatalf("a noteless transition must clear the prior note; got %v", st["note"])
 	}
+}
+
+// TestClinic_RecordEncounter proves the post-visit clinical-record path: a
+// RecordEncounter upserts the .encounter aspect carrying the RAW clinical content
+// (summary / assessment / plan — captured plaintext-for-now, the .demographics PHI
+// discipline) PLUS the operational signals (documentedAt = canonical-UTC
+// op.submittedAt, followUpRequested, followUpDate). A correction (re-run with
+// followUpRequested=false) overwrites the whole aspect and drops followUpDate
+// (unconditioned upsert). A non-appointment target is rejected (WrongClass).
+func TestClinic_RecordEncounter(t *testing.T) {
+	ctx, conn := setupClinicEnv(t)
+	cp, cons := newClinicPipeline(t, ctx, conn, "encounter")
+
+	patientKey := createPatient(t, ctx, conn, cp, cons, "mkpat0010", "Pat Visit")
+	providerKey := createProvider(t, ctx, conn, cp, cons, "mkprv0010", "Dr. Visit", "Family")
+	apptID := clSubmit(t, ctx, conn, cp, cons, "mkappt0010", "CreateAppointment", "appointment",
+		`{"patient":"`+patientKey+`","provider":"`+providerKey+`","startsAt":"2026-07-10T09:00:00Z","endsAt":"2026-07-10T09:30:00Z"}`,
+		[]string{patientKey, providerKey, providerKey + ".bookings", patientKey + ".bookings"}, processor.OutcomeAccepted)
+	apptKey := "vtx.appointment." + apptID
+
+	// Document the visit: raw clinical content + operational follow-up.
+	clSubmit(t, ctx, conn, cp, cons, "enc0001", "RecordEncounter", "appointment",
+		`{"appointmentKey":"`+apptKey+`","summary":"Annual checkup, vitals normal.","assessment":"Essential hypertension, well-controlled.","plan":"Continue medication; recheck in 6 months.","followUpRequested":true,"followUpDate":"2027-01-15T15:00:00Z"}`,
+		[]string{apptKey}, processor.OutcomeAccepted)
+
+	enc := clReadDoc(t, ctx, conn, apptKey+".encounter")
+	if cls, _ := enc["class"].(string); cls != "appointmentEncounter" {
+		t.Fatalf("encounter class = %q, want appointmentEncounter", cls)
+	}
+	data, _ := enc["data"].(map[string]any)
+	// Raw clinical content is captured.
+	if data["summary"] != "Annual checkup, vitals normal." {
+		t.Fatalf("encounter summary = %v", data["summary"])
+	}
+	if data["assessment"] != "Essential hypertension, well-controlled." {
+		t.Fatalf("encounter assessment = %v", data["assessment"])
+	}
+	if data["plan"] != "Continue medication; recheck in 6 months." {
+		t.Fatalf("encounter plan = %v", data["plan"])
+	}
+	// Operational signals: documentedAt is the canonical-UTC op.submittedAt anchor.
+	if data["documentedAt"] != clSubmittedAnchor {
+		t.Fatalf("encounter documentedAt = %v, want %s (= op.submittedAt)", data["documentedAt"], clSubmittedAnchor)
+	}
+	if data["followUpRequested"] != true {
+		t.Fatalf("encounter followUpRequested = %v, want true", data["followUpRequested"])
+	}
+	if data["followUpDate"] != "2027-01-15T15:00:00Z" {
+		t.Fatalf("encounter followUpDate = %v", data["followUpDate"])
+	}
+
+	// A correction (unconditioned upsert): no follow-up this time → followUpDate
+	// dropped, followUpRequested false. Whole aspect is replaced.
+	clSubmit(t, ctx, conn, cp, cons, "enc0002", "RecordEncounter", "appointment",
+		`{"appointmentKey":"`+apptKey+`","summary":"Corrected note.","followUpRequested":false,"followUpDate":"2027-01-15T15:00:00Z"}`,
+		[]string{apptKey}, processor.OutcomeAccepted)
+	enc = clReadDoc(t, ctx, conn, apptKey+".encounter")
+	data, _ = enc["data"].(map[string]any)
+	if data["summary"] != "Corrected note." {
+		t.Fatalf("after correction summary = %v", data["summary"])
+	}
+	if _, hasAssessment := data["assessment"]; hasAssessment {
+		t.Fatalf("correction must replace the whole aspect; stale assessment present: %v", data["assessment"])
+	}
+	if data["followUpRequested"] != false {
+		t.Fatalf("after correction followUpRequested = %v, want false", data["followUpRequested"])
+	}
+	if _, hasDate := data["followUpDate"]; hasDate {
+		t.Fatalf("followUpDate must be dropped when followUpRequested is false; got %v", data["followUpDate"])
+	}
+
+	// A non-appointment target key is rejected (the vtx.appointment.<id> key-shape
+	// guard fails closed before any write).
+	clSubmit(t, ctx, conn, cp, cons, "enc0003", "RecordEncounter", "appointment",
+		`{"appointmentKey":"`+patientKey+`","summary":"x"}`, []string{patientKey}, processor.OutcomeRejected)
 }
 
 // TestClinic_RescheduleAppointment proves the move-an-appointment path: a

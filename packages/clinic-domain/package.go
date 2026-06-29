@@ -7,8 +7,10 @@
 //
 //	vtx.patient.<id>      class=patient      root {}   .demographics {fullName, dob?, email?, phone?}
 //	vtx.provider.<id>     class=provider     root {}   .profile {fullName, specialty, credentials?, bio?}
-//	vtx.appointment.<id>  class=appointment  root {}   .schedule {startsAt, endsAt, remindAt, reason?}
-//	                                                    .status   {value ∈ scheduled|confirmed|checkedIn|completed|cancelled|noShow, note?}
+//	vtx.appointment.<id>  class=appointment  root {}   .schedule  {startsAt, endsAt, remindAt, reason?}
+//	                                                    .status    {value ∈ scheduled|confirmed|checkedIn|completed|cancelled|noShow, note?}
+//	                                                    .encounter {summary, assessment?, plan? (RAW PHI, never projected);
+//	                                                                documentedAt, followUpRequested, followUpDate? (operational, projected)}
 //	lnk.appointment.<id>.forPatient.patient.<id>       (appointment → patient, later-arriving source)
 //	lnk.appointment.<id>.withProvider.provider.<id>    (appointment → provider, later-arriving source)
 //
@@ -16,7 +18,7 @@
 // per-(patient|provider) appointment-key list), the OCC serialization point the
 // double-book guards snapshot.
 //
-// Eleven ops (all known-key-reads + on-demand kv.Read, no prefix scans):
+// Twelve ops (all known-key-reads + on-demand kv.Read, no prefix scans):
 //
 //	CreatePatient / TombstonePatient
 //	CreateProvider / TombstoneProvider / SetProviderProfile (full-replace upsert of .profile) /
@@ -27,7 +29,10 @@
 //	                   time-off / provider-double-book / patient-double-book) / RescheduleAppointment
 //	                   (rewrite .schedule with new times — same guard chain — re-deriving remindAt so the
 //	                   @at reminder re-arms) / SetAppointmentStatus (upsert .status{value, note?}) /
-//	                   TombstoneAppointment
+//	                   RecordEncounter (upsert .encounter — the post-visit clinical record: RAW PHI
+//	                   {summary, assessment?, plan?} captured plaintext-for-now and NEVER projected, plus
+//	                   the operational {documentedAt, followUpRequested, followUpDate?} the lens DOES
+//	                   project) / TombstoneAppointment
 //
 // Three PROJECTION lenses are the P5 query surface a clinic FE reads (never Core
 // KV): clinicAppointments (one row per appointment, joined to patient + provider),
@@ -36,11 +41,16 @@
 //
 // OUT of scope (the separate deferred items this vertical FORCES, not implements):
 //   - PHI / sensitive aspects + Vault / crypto-shred. All aspects here are
-//     NON-sensitive (patient is not an identity vertex, so step-6's
-//     sensitiveAspectScope forbids a sensitive aspect on it anyway). DOB / contact
-//     are stored plain under the trusted-tool posture; real PHI handling +
-//     right-to-be-forgotten is the deferred Vault plane (clinic is its forcing
-//     function — patient-record deletion is its validating flow).
+//     NON-sensitive in the step-6 sense (patient/appointment are not identity
+//     vertices, so step-6's sensitiveAspectScope forbids a sensitive aspect on them
+//     anyway). DOB / contact (.demographics) AND the post-visit clinical record
+//     (.encounter — summary / assessment / plan) are stored plain under the
+//     trusted-tool posture and DELIBERATELY NOT projected into any read model; real
+//     PHI handling + right-to-be-forgotten + clinical-content DISPLAY is the deferred
+//     Vault plane (clinic is its forcing function — patient-record deletion and
+//     clinical-note display are its validating flows). RecordEncounter captures the
+//     record now and projects ONLY the operational, non-PHI signals (documentation
+//     presence + follow-up scheduling) so the clinical display stays Vault-gated.
 //   - Recurring-availability / @every scheduling (Capability-KV §06 defers the
 //     recurring case). Op-time double-book rejection (CreateAppointment +
 //     RescheduleAppointment, via the provider .bookings OCC index) and provider
@@ -70,8 +80,8 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
 	Name:        "clinic-domain",
-	Version:     "0.6.0",
-	Description: "Clinic bookable domain: patient / provider / appointment vertex types + their aspects and links, written by Create*/SetAppointmentStatus/Tombstone* ops. Two projection lenses (clinicAppointments, clinicProviders) are the P5 read models a clinic FE reads. Self-contained — no package dependency.",
+	Version:     "0.7.0",
+	Description: "Clinic bookable domain: patient / provider / appointment vertex types + their aspects and links, written by Create*/SetAppointmentStatus/RecordEncounter/Tombstone* ops. RecordEncounter captures the post-visit clinical record (.encounter — RAW PHI never projected, plus operational documentation/follow-up signals the lens does project). Three projection lenses (clinicAppointments, clinicProviders, clinicPatients) are the P5 read models a clinic FE reads. Self-contained — no package dependency.",
 	DDLs:        DDLs(),
 	Lenses:      Lenses(),
 	Permissions: Permissions(),

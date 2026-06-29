@@ -9,11 +9,12 @@
 //	3 vertexType DDLs: patient (CreatePatient + TombstonePatient), provider
 //	  (CreateProvider + TombstoneProvider + SetProviderProfile + SetProviderHours +
 //	  SetProviderTimeOff), appointment (CreateAppointment + RescheduleAppointment +
-//	  SetAppointmentStatus + TombstoneAppointment), each with its self-description.
-//	8 aspectType DDLs: patientDemographics, providerProfile, appointmentSchedule,
+//	  SetAppointmentStatus + RecordEncounter + TombstoneAppointment), each with its
+//	  self-description.
+//	9 aspectType DDLs: patientDemographics, providerProfile, appointmentSchedule,
 //	  appointmentStatus, providerBookings, providerHours, providerTimeOff,
-//	  patientBookings — their step-6 write gates.
-//	11 permission vertices (one per op), scope any, granted to operator.
+//	  patientBookings, appointmentEncounter — their step-6 write gates.
+//	12 permission vertices (one per op), scope any, granted to operator.
 //	1 package vertex + manifest aspect (name=clinic-domain).
 //
 // Run via: go run ./scripts/verify-package-clinic-domain.go
@@ -41,7 +42,7 @@ const (
 var clinicExpectedOps = []string{
 	"CreatePatient", "TombstonePatient",
 	"CreateProvider", "TombstoneProvider", "SetProviderProfile", "SetProviderHours", "SetProviderTimeOff",
-	"CreateAppointment", "RescheduleAppointment", "SetAppointmentStatus", "TombstoneAppointment",
+	"CreateAppointment", "RescheduleAppointment", "SetAppointmentStatus", "RecordEncounter", "TombstoneAppointment",
 }
 
 // ddlCheck describes one DDL to verify: its canonical name, its expected meta
@@ -106,7 +107,7 @@ func main() {
 	ddlChecks := []ddlCheck{
 		{canonical: "patient", class: "meta.ddl.vertexType", ops: []string{"CreatePatient", "TombstonePatient"}},
 		{canonical: "provider", class: "meta.ddl.vertexType", ops: []string{"CreateProvider", "TombstoneProvider", "SetProviderProfile", "SetProviderHours", "SetProviderTimeOff"}},
-		{canonical: "appointment", class: "meta.ddl.vertexType", ops: []string{"CreateAppointment", "RescheduleAppointment", "SetAppointmentStatus", "TombstoneAppointment"}},
+		{canonical: "appointment", class: "meta.ddl.vertexType", ops: []string{"CreateAppointment", "RescheduleAppointment", "SetAppointmentStatus", "RecordEncounter", "TombstoneAppointment"}},
 		{canonical: "patientDemographics", class: "meta.ddl.aspectType", ops: []string{"CreatePatient"}},
 		{canonical: "providerProfile", class: "meta.ddl.aspectType", ops: []string{"CreateProvider", "SetProviderProfile"}},
 		{canonical: "appointmentSchedule", class: "meta.ddl.aspectType", ops: []string{"CreateAppointment", "RescheduleAppointment"}},
@@ -115,6 +116,7 @@ func main() {
 		{canonical: "providerHours", class: "meta.ddl.aspectType", ops: []string{"SetProviderHours"}},
 		{canonical: "providerTimeOff", class: "meta.ddl.aspectType", ops: []string{"SetProviderTimeOff"}},
 		{canonical: "patientBookings", class: "meta.ddl.aspectType", ops: []string{"CreatePatient", "CreateAppointment", "RescheduleAppointment"}},
+		{canonical: "appointmentEncounter", class: "meta.ddl.aspectType", ops: []string{"RecordEncounter"}},
 	}
 
 	for _, dc := range ddlChecks {

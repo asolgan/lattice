@@ -78,6 +78,15 @@ func Lenses() []pkgmgr.LensSpec {
 // when the @at reminder fires): it is null until a reminder is sent, and null whenever
 // clinic-reminders is not installed — a soft read-model surfacing, never a build
 // dependency (the engine reads the aspect by key-shape; clinic-domain installs alone).
+//
+// documentedAt / followUpRequested / followUpDate are the OPERATIONAL, non-PHI
+// signals of the appointment's .encounter aspect (the post-visit clinical record
+// written by RecordEncounter). The RAW clinical content (summary / assessment /
+// plan) is DELIBERATELY NOT projected — it is PHI the deferred Vault plane owns, the
+// same name-only discipline clinicPatients applies to .demographics. A non-null
+// documentedAt IS the "visit documented" presence signal (mirrors reminderSentAt);
+// followUpDate is null unless a follow-up was requested. All null until a visit is
+// documented (and whenever no .encounter aspect exists), null-safe by key-shape.
 const clinicAppointmentsSpec = `MATCH (a:appointment)
 OPTIONAL MATCH (a)-[:forPatient]->(p:patient)
 OPTIONAL MATCH (a)-[:withProvider]->(pr:provider)
@@ -94,7 +103,10 @@ RETURN
   pr.key AS providerKey,
   pr.profile.data.fullName AS providerName,
   pr.profile.data.specialty AS providerSpecialty,
-  a.reminder.data.sentAt AS reminderSentAt`
+  a.reminder.data.sentAt AS reminderSentAt,
+  a.encounter.data.documentedAt AS documentedAt,
+  a.encounter.data.followUpRequested AS followUpRequested,
+  a.encounter.data.followUpDate AS followUpDate`
 
 // clinicProvidersSpec projects one row per NAMED provider — the human-readable
 // roster the booking UI renders so a patient picks a provider by name + specialty

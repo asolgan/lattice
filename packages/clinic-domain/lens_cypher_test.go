@@ -212,6 +212,83 @@ func TestClinicAppointments_StatusTransitionProjects(t *testing.T) {
 	require.Nil(t, rows[0].Values["reminderSentAt"], "no .reminder aspect → null reminderSentAt (null-safe)")
 }
 
+// TestClinicAppointments_ProjectsEncounterOperationalSignalsOnly proves the
+// clinical-record PHI discipline at the projection layer: an appointment with a
+// documented visit (.encounter carrying RAW clinical content AND operational
+// signals) projects ONLY the operational, non-PHI signals (documentedAt /
+// followUpRequested / followUpDate) — and NEVER the raw clinical content (summary /
+// assessment / plan), the deferred Vault plane's domain. This is the .demographics
+// name-only discipline applied to .encounter.
+func TestClinicAppointments_ProjectsEncounterOperationalSignalsOnly(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	apptKey := f.vtx(t, "appt", "appointment")
+	f.vtx(t, "alice", "patient")
+	f.vtx(t, "drsam", "provider")
+	f.aspect(t, "alice", "demographics", "patientDemographics", map[string]any{"fullName": "Alice Rivera"})
+	f.aspect(t, "drsam", "profile", "providerProfile", map[string]any{"fullName": "Dr. Sam Okafor", "specialty": "Cardiology"})
+	f.aspect(t, "appt", "schedule", "appointmentSchedule", map[string]any{"startsAt": "2026-07-01T15:00:00Z", "endsAt": "2026-07-01T15:30:00Z"})
+	f.aspect(t, "appt", "status", "appointmentStatus", map[string]any{"value": "completed"})
+	// A documented visit: RAW clinical PHI alongside the operational signals.
+	f.aspect(t, "appt", "encounter", "appointmentEncounter", map[string]any{
+		"summary":           "Patient seen for annual checkup; vitals normal.",
+		"assessment":        "Essential hypertension, well-controlled.",
+		"plan":              "Continue medication; recheck in 6 months.",
+		"documentedAt":      "2026-07-01T15:30:00Z",
+		"followUpRequested": true,
+		"followUpDate":      "2027-01-15T15:00:00Z",
+	})
+	f.edge(t, "forPatient", "appt", "alice")
+	f.edge(t, "withProvider", "appt", "drsam")
+
+	rows := f.project(t, clinicAppointmentsSpec)
+	require.Len(t, rows, 1)
+	v := rows[0].Values
+	require.Equal(t, apptKey, v["key"])
+	// Operational signals project.
+	require.Equal(t, "2026-07-01T15:30:00Z", v["documentedAt"], "operational documentedAt presence signal projects")
+	require.Equal(t, true, v["followUpRequested"], "operational followUpRequested projects")
+	require.Equal(t, "2027-01-15T15:00:00Z", v["followUpDate"], "operational followUpDate projects")
+	// RAW clinical PHI must NEVER appear in the read model (Vault-plane deferred).
+	for _, col := range []string{"summary", "assessment", "plan"} {
+		_, present := v[col]
+		require.False(t, present, "clinicAppointments must NOT project the raw clinical PHI field %q", col)
+	}
+	// And no value in the row may equal the clinical content (defends against a
+	// future column accidentally carrying it through).
+	for k, val := range v {
+		require.NotEqual(t, "Essential hypertension, well-controlled.", val, "clinical assessment leaked via column %q", k)
+		require.NotEqual(t, "Patient seen for annual checkup; vitals normal.", val, "clinical summary leaked via column %q", k)
+	}
+}
+
+// TestClinicAppointments_UndocumentedVisitNullEncounter proves an appointment with
+// no .encounter aspect projects null operational columns (null-safe by key-shape) —
+// the undocumented-visit baseline.
+func TestClinicAppointments_UndocumentedVisitNullEncounter(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	f.vtx(t, "appt", "appointment")
+	f.vtx(t, "alice", "patient")
+	f.vtx(t, "drsam", "provider")
+	f.aspect(t, "alice", "demographics", "patientDemographics", map[string]any{"fullName": "Alice Rivera"})
+	f.aspect(t, "drsam", "profile", "providerProfile", map[string]any{"fullName": "Dr. Sam Okafor", "specialty": "Cardiology"})
+	f.aspect(t, "appt", "schedule", "appointmentSchedule", map[string]any{"startsAt": "2026-07-01T15:00:00Z", "endsAt": "2026-07-01T15:30:00Z"})
+	f.aspect(t, "appt", "status", "appointmentStatus", map[string]any{"value": "scheduled"})
+	f.edge(t, "forPatient", "appt", "alice")
+	f.edge(t, "withProvider", "appt", "drsam")
+
+	rows := f.project(t, clinicAppointmentsSpec)
+	require.Len(t, rows, 1)
+	require.Nil(t, rows[0].Values["documentedAt"], "no .encounter aspect → null documentedAt (null-safe)")
+	require.Nil(t, rows[0].Values["followUpRequested"], "no .encounter aspect → null followUpRequested")
+	require.Nil(t, rows[0].Values["followUpDate"], "no .encounter aspect → null followUpDate")
+}
+
 // TestClinicPatients_RostersNamedPatients proves the patient roster projects one
 // row per NAMED patient (name only — no PHI), excluding a patient with no
 // .demographics aspect (the WHERE presence filter), mirroring clinicProviders.

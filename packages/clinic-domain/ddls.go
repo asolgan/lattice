@@ -29,6 +29,7 @@ const (
 	bookingsAspectDDL     = "providerBookings"
 	hoursAspectDDL        = "providerHours"
 	timeOffAspectDDL      = "providerTimeOff"
+	encounterAspectDDL    = "appointmentEncounter"
 
 	patientBookingsAspectDDL = "patientBookings"
 )
@@ -73,6 +74,7 @@ func DDLs() []pkgmgr.DDLSpec {
 		hoursAspectTypeDDL(),
 		timeOffAspectTypeDDL(),
 		patientBookingsAspectTypeDDL(),
+		encounterAspectTypeDDL(),
 	}
 }
 
@@ -218,7 +220,7 @@ func appointmentVertexTypeDDL() pkgmgr.DDLSpec {
 	return pkgmgr.DDLSpec{
 		CanonicalName:     appointmentVertexDDL,
 		Class:             "meta.ddl.vertexType",
-		PermittedCommands: []string{"CreateAppointment", "RescheduleAppointment", "SetAppointmentStatus", "TombstoneAppointment"},
+		PermittedCommands: []string{"CreateAppointment", "RescheduleAppointment", "SetAppointmentStatus", "RecordEncounter", "TombstoneAppointment"},
 		Description: "Clinic appointment DDL. Vertex shape: vtx.appointment.<NanoID>, class=appointment, root data = " +
 			"{} (minimal, D5). CreateAppointment validates the patient (class=patient) + provider (class=provider) " +
 			"are alive, then atomically mints the appointment + the .schedule aspect {startsAt, endsAt, remindAt, reason?} + " +
@@ -229,7 +231,12 @@ func appointmentVertexTypeDDL() pkgmgr.DDLSpec {
 			"links + status untouched; an omitted reason clears it (the caller carries the existing reason). " +
 			"SetAppointmentStatus upserts the .status aspect to one of {scheduled, confirmed, checkedIn, completed, " +
 			"cancelled, noShow}, with an optional audit note (a cancel / no-show reason, stored on .status distinct " +
-			"from the .schedule visit reason). TombstoneAppointment soft-deletes the appointment. CreateAppointment AND " +
+			"from the .schedule visit reason). RecordEncounter upserts the .encounter aspect — the post-visit clinical " +
+			"record {summary, assessment?, plan?} (raw clinical content, captured plaintext-for-now under the trusted-tool " +
+			"posture, the .demographics discipline — the deferred Vault plane owns its at-rest encryption + display; NEVER " +
+			"projected into a read model) plus the OPERATIONAL, non-PHI signals {documentedAt (derived from op.submittedAt), " +
+			"followUpRequested, followUpDate?} that the clinicAppointments lens DOES project (presence-of-documentation + " +
+			"follow-up scheduling, never the clinical content). TombstoneAppointment soft-deletes the appointment. CreateAppointment AND " +
 			"RescheduleAppointment REJECT a double-book (SlotConflict): each reads the provider's .bookings index (a " +
 			"declared, OCC-snapshotted contextHint.reads key) and kv.Reads every live candidate's schedule + status, " +
 			"failing on an overlap with a still scheduled / confirmed appointment (reschedule skips the appointment being " +
@@ -256,20 +263,30 @@ func appointmentVertexTypeDDL() pkgmgr.DDLSpec {
 			`"appointmentId":{"type":"string","description":"Optional bare NanoID for the new appointment vertex (CreateAppointment); absent → minted."},` +
 			`"appointmentKey":{"type":"string","description":"vtx.appointment.<NanoID> of an existing appointment (RescheduleAppointment / SetAppointmentStatus / TombstoneAppointment; required, validated alive)."},` +
 			`"status":{"type":"string","enum":["scheduled","confirmed","checkedIn","completed","cancelled","noShow"],"description":"New status (SetAppointmentStatus; required)."},` +
-			`"note":{"type":"string","description":"Optional audit note for the transition, e.g. a cancel / no-show reason (SetAppointmentStatus; optional). Stored on .status, distinct from the .schedule visit reason; an omitted note carries none."}},` +
+			`"note":{"type":"string","description":"Optional audit note for the transition, e.g. a cancel / no-show reason (SetAppointmentStatus; optional). Stored on .status, distinct from the .schedule visit reason; an omitted note carries none."},` +
+			`"summary":{"type":"string","description":"Visit summary / clinical note (RecordEncounter; required). RAW clinical content — captured plaintext-for-now (the .demographics PHI discipline), NEVER projected into a read model (the deferred Vault plane owns display)."},` +
+			`"assessment":{"type":"string","description":"Clinical assessment / diagnosis (RecordEncounter; optional). RAW PHI — captured, never projected."},` +
+			`"plan":{"type":"string","description":"Treatment plan / orders (RecordEncounter; optional). RAW PHI — captured, never projected. The clinical reason for any follow-up belongs here, not in the operational followUp fields."},` +
+			`"followUpRequested":{"type":"boolean","description":"Whether the visit calls for a follow-up (RecordEncounter; optional, default false). OPERATIONAL, non-PHI — projected (the existence of a follow-up, like an appointment time)."},` +
+			`"followUpDate":{"type":"string","description":"Suggested follow-up date, RFC3339 / date (RecordEncounter; optional). OPERATIONAL, non-PHI — projected only when followUpRequested is true."}},` +
 			`"required":[]}`,
 		OutputSchema: `{"type":"object","properties":` +
 			`{"primaryKey":{"type":"string","description":"vtx.appointment.<NanoID> the operation wrote."}}}`,
 		FieldDescription: map[string]string{
-			"patient":        "Full vtx.patient.<NanoID> key the appointment is for. CreateAppointment validates it is alive + class=patient and writes the forPatient link (appointment→patient). RescheduleAppointment also requires it (the appointment's actual patient, validated via the forPatient link) to conflict-check the new time against the patient's other bookings (PatientDoubleBook). The caller MUST list this key — and, for reschedule, patient+'.bookings' — in ContextHint.Reads.",
-			"provider":       "Full vtx.provider.<NanoID> key the appointment is with. CreateAppointment validates it is alive + class=provider and writes the withProvider link (appointment→provider). RescheduleAppointment also requires it (the appointment's actual provider, validated via the withProvider link) to conflict-check the new time. The caller MUST list this key — and, for reschedule, provider+'.bookings' — in ContextHint.Reads.",
-			"startsAt":       "Appointment start (RFC3339, canonical UTC). Stored on the .schedule aspect (CreateAppointment / RescheduleAppointment; required). Must be in the future relative to op.submittedAt — a past / now startsAt is rejected (ScheduleInPast).",
-			"endsAt":         "Appointment end (RFC3339, canonical UTC). Stored on the .schedule aspect (CreateAppointment / RescheduleAppointment; required).",
-			"reason":         "Optional visit reason / chief complaint. Stored on the .schedule aspect when present (CreateAppointment / RescheduleAppointment; on RescheduleAppointment an omitted reason clears it).",
-			"appointmentId":  "Optional bare NanoID (no dots / key segments) for the new appointment vertex. Absent → minted with nanoid.new().",
-			"appointmentKey": "Full vtx.appointment.<NanoID> key of an existing appointment (RescheduleAppointment rewrites its .schedule; SetAppointmentStatus validates it alive + class=appointment; TombstoneAppointment validates it alive).",
-			"status":         "New appointment status, one of {scheduled, confirmed, checkedIn, completed, cancelled, noShow} (SetAppointmentStatus; required).",
-			"note":           "Optional audit note recorded with a SetAppointmentStatus transition (e.g. a cancel / no-show reason). Stored on the .status aspect, distinct from the .schedule visit reason; omitted → no note.",
+			"patient":           "Full vtx.patient.<NanoID> key the appointment is for. CreateAppointment validates it is alive + class=patient and writes the forPatient link (appointment→patient). RescheduleAppointment also requires it (the appointment's actual patient, validated via the forPatient link) to conflict-check the new time against the patient's other bookings (PatientDoubleBook). The caller MUST list this key — and, for reschedule, patient+'.bookings' — in ContextHint.Reads.",
+			"provider":          "Full vtx.provider.<NanoID> key the appointment is with. CreateAppointment validates it is alive + class=provider and writes the withProvider link (appointment→provider). RescheduleAppointment also requires it (the appointment's actual provider, validated via the withProvider link) to conflict-check the new time. The caller MUST list this key — and, for reschedule, provider+'.bookings' — in ContextHint.Reads.",
+			"startsAt":          "Appointment start (RFC3339, canonical UTC). Stored on the .schedule aspect (CreateAppointment / RescheduleAppointment; required). Must be in the future relative to op.submittedAt — a past / now startsAt is rejected (ScheduleInPast).",
+			"endsAt":            "Appointment end (RFC3339, canonical UTC). Stored on the .schedule aspect (CreateAppointment / RescheduleAppointment; required).",
+			"reason":            "Optional visit reason / chief complaint. Stored on the .schedule aspect when present (CreateAppointment / RescheduleAppointment; on RescheduleAppointment an omitted reason clears it).",
+			"appointmentId":     "Optional bare NanoID (no dots / key segments) for the new appointment vertex. Absent → minted with nanoid.new().",
+			"appointmentKey":    "Full vtx.appointment.<NanoID> key of an existing appointment (RescheduleAppointment rewrites its .schedule; SetAppointmentStatus validates it alive + class=appointment; TombstoneAppointment validates it alive).",
+			"status":            "New appointment status, one of {scheduled, confirmed, checkedIn, completed, cancelled, noShow} (SetAppointmentStatus; required).",
+			"note":              "Optional audit note recorded with a SetAppointmentStatus transition (e.g. a cancel / no-show reason). Stored on the .status aspect, distinct from the .schedule visit reason; omitted → no note.",
+			"summary":           "Required visit summary / clinical note (RecordEncounter). RAW clinical content — captured plaintext-for-now under the trusted-tool posture (the .demographics PHI discipline) and NEVER projected into a read model; the deferred Vault plane owns its at-rest encryption + display.",
+			"assessment":        "Optional clinical assessment / diagnosis (RecordEncounter). RAW PHI — captured, never projected.",
+			"plan":              "Optional treatment plan / orders (RecordEncounter). RAW PHI — captured, never projected. The clinical reason for a follow-up lives here, not in the operational followUp fields.",
+			"followUpRequested": "Optional boolean (default false): does this visit need a follow-up (RecordEncounter)? OPERATIONAL, non-PHI — projected into clinicAppointments (the existence of a follow-up, like an appointment time, is not clinical content).",
+			"followUpDate":      "Optional suggested follow-up date (RFC3339 / date) (RecordEncounter). OPERATIONAL, non-PHI — projected only when followUpRequested is true.",
 		},
 		Examples: []pkgmgr.ExampleSpec{
 			{
@@ -313,6 +330,22 @@ func appointmentVertexTypeDDL() pkgmgr.DDLSpec {
 				Payload: map[string]any{"appointmentKey": "vtx.appointment.<NanoID>", "status": "confirmed"},
 				ExpectedOutcome: "Validates the appointment is alive + class=appointment, then upserts the .status aspect " +
 					"{value: confirmed} (unconditioned — re-runnable). Returns primaryKey. Rejects a status outside the enum.",
+			},
+			{
+				Name: "RecordEncounter — document a completed visit",
+				Payload: map[string]any{
+					"appointmentKey":    "vtx.appointment.<NanoID>",
+					"summary":           "Patient seen for annual checkup; vitals normal.",
+					"assessment":        "Essential hypertension, well-controlled.",
+					"plan":              "Continue current medication; recheck in 6 months.",
+					"followUpRequested": true,
+					"followUpDate":      "2027-01-15T15:00:00Z",
+				},
+				ExpectedOutcome: "Validates the appointment is alive + class=appointment, then upserts the .encounter aspect — the " +
+					"RAW clinical record {summary, assessment?, plan?} captured plaintext-for-now (NEVER projected, the .demographics " +
+					"PHI discipline) plus the OPERATIONAL signals {documentedAt (= op.submittedAt, canonical UTC), followUpRequested, " +
+					"followUpDate?} that the clinicAppointments lens DOES project. Unconditioned upsert (re-runnable — a provider can " +
+					"correct the note). Returns primaryKey.",
 			},
 		},
 	}
@@ -606,6 +639,56 @@ func patientBookingsAspectTypeDDL() pkgmgr.DDLSpec {
 				Name:            "patient bookings index aspect",
 				Payload:         map[string]any{"appts": []any{"vtx.appointment.abc123"}},
 				ExpectedOutcome: "Stored as vtx.patient.<NanoID>.bookings; initialized empty by CreatePatient, appended by CreateAppointment.",
+			},
+		},
+	}
+}
+
+// encounterAspectTypeDDL declares the .encounter aspect (class appointmentEncounter)
+// — the post-visit clinical record, the step-6 write gate for RecordEncounter
+// (whose appointment vertexType DDL owns the script). Declaration-only.
+//
+// NON-sensitive in the step-6 sense (it attaches to a vtx.appointment, not an
+// identity — sensitiveAspectScope forbids a sensitive aspect on a non-identity
+// vertex anyway), BUT it carries RAW CLINICAL PHI (summary / assessment / plan) and
+// is therefore stored plaintext-for-now ONLY under the trusted-tool posture, the
+// SAME discipline as patient .demographics: the deferred Vault plane owns its
+// at-rest encryption + right-to-be-forgotten + display. The clinic vertical is the
+// Vault forcing function — clinical-record display is the validating flow that
+// pulls Vault into existence. The clinicAppointments lens DELIBERATELY projects
+// ONLY the operational, non-PHI fields (documentedAt / followUpRequested /
+// followUpDate) and NEVER the clinical content — the .demographics name-only
+// precedent applied to the encounter.
+func encounterAspectTypeDDL() pkgmgr.DDLSpec {
+	return pkgmgr.DDLSpec{
+		CanonicalName:     encounterAspectDDL,
+		Class:             "meta.ddl.aspectType",
+		PermittedCommands: []string{"RecordEncounter"},
+		Description: "Appointment encounter aspect (clinic). Stored as vtx.appointment.<NanoID>.encounter (class " +
+			"appointmentEncounter) = {summary, assessment?, plan?, documentedAt, followUpRequested, followUpDate?}. The " +
+			"post-visit clinical record, written by RecordEncounter (whose appointment vertexType DDL owns the script). " +
+			"summary / assessment / plan are RAW clinical PHI — captured plaintext-for-now under the trusted-tool posture " +
+			"(the .demographics discipline) and NEVER projected into a read model (the deferred Vault plane owns display). " +
+			"documentedAt / followUpRequested / followUpDate are OPERATIONAL, non-PHI signals the clinicAppointments lens " +
+			"DOES project (documentation-presence + follow-up scheduling). Declaration-only: no op handler.",
+		Script: aspectDeclarationOnlyScript,
+		InputSchema: `{"type":"object","properties":` +
+			`{"summary":{"type":"string"},"assessment":{"type":"string"},"plan":{"type":"string"},` +
+			`"documentedAt":{"type":"string"},"followUpRequested":{"type":"boolean"},"followUpDate":{"type":"string"}}}`,
+		OutputSchema: `{"type":"object"}`,
+		FieldDescription: map[string]string{
+			"summary":           "Visit summary / clinical note (RAW PHI — never projected).",
+			"assessment":        "Clinical assessment / diagnosis (RAW PHI — never projected).",
+			"plan":              "Treatment plan / orders (RAW PHI — never projected).",
+			"documentedAt":      "When the visit was documented (RFC3339, = op.submittedAt). Operational — projected.",
+			"followUpRequested": "Whether a follow-up is needed. Operational — projected.",
+			"followUpDate":      "Suggested follow-up date (RFC3339 / date). Operational — projected when followUpRequested.",
+		},
+		Examples: []pkgmgr.ExampleSpec{
+			{
+				Name:            "appointment encounter aspect",
+				Payload:         map[string]any{"summary": "Annual checkup, vitals normal.", "documentedAt": "2026-07-01T15:30:00Z", "followUpRequested": false},
+				ExpectedOutcome: "Stored as vtx.appointment.<NanoID>.encounter; written by RecordEncounter. Clinical fields never projected.",
 			},
 		},
 	}
@@ -1164,6 +1247,15 @@ def enforce_future(starts_at, submitted_at):
     if not (submitted < starts_at):
         fail("ScheduleInPast: startsAt " + starts_at + " is not in the future (submitted " + submitted + ")")
 
+def optional_bool(p, name):
+    # Default False (absent / null / non-bool → False).
+    if not hasattr(p, name):
+        return False
+    v = getattr(p, name)
+    if v == None or type(v) != type(True):
+        return False
+    return v
+
 APPOINTMENT_STATUSES = ["scheduled", "confirmed", "checkedIn", "completed", "cancelled", "noShow"]
 
 def required_status(p):
@@ -1543,6 +1635,47 @@ def execute(state, op):
         mutations = [make_aspect_upsert(appt_key, "status", "appointmentStatus", status_data)]
         events = [{"class": "clinic.appointmentStatusSet",
                    "data": {"appointmentKey": appt_key, "status": status}}]
+        return {"mutations": mutations, "events": events,
+                "response": {"primaryKey": appt_key}}
+
+    if ot == "RecordEncounter":
+        appt_key = required_string(p, "appointmentKey")
+        parts_of(appt_key, "appointmentKey", "appointment")
+        if not vertex_alive(state, appt_key):
+            fail("UnknownAppointment: " + appt_key)
+        cls = class_of(state, appt_key)
+        if cls != "appointment":
+            fail("WrongClass: appointmentKey: " + appt_key + " has class " + str(cls) + ", required appointment")
+        # RAW clinical record — PHI, captured plaintext-for-now (the .demographics
+        # discipline), NEVER projected (the lens projects only the operational fields
+        # below; the deferred Vault plane owns clinical-content display). summary is
+        # the required visit note; assessment (diagnosis) + plan (orders) optional.
+        summary = required_string(p, "summary")
+        enc = {"summary": summary,
+               # documentedAt is OPERATIONAL (when the visit was documented) — derived
+               # from op.submittedAt, normalized to canonical whole-second UTC
+               # (time.rfc3339_utc — pure, no clock read). A non-null documentedAt IS
+               # the "visit documented" presence signal the lens surfaces.
+               "documentedAt": time.rfc3339_utc(op.submittedAt),
+               # followUpRequested is OPERATIONAL, non-PHI (the existence of a
+               # follow-up, like an appointment time — projected). The clinical REASON
+               # for a follow-up lives in the plan field and is never projected.
+               "followUpRequested": optional_bool(p, "followUpRequested")}
+        assessment = optional_string(p, "assessment")
+        if assessment != None:
+            enc["assessment"] = assessment
+        plan = optional_string(p, "plan")
+        if plan != None:
+            enc["plan"] = plan
+        follow_date = optional_string(p, "followUpDate")
+        if enc["followUpRequested"] and follow_date != None:
+            enc["followUpDate"] = follow_date
+        # Unconditioned upsert of the whole .encounter aspect (re-runnable — a
+        # provider can correct the note). The .schedule / .status aspects + the
+        # forPatient / withProvider links are untouched.
+        mutations = [make_aspect_upsert(appt_key, "encounter", "appointmentEncounter", enc)]
+        events = [{"class": "clinic.appointmentEncounterRecorded",
+                   "data": {"appointmentKey": appt_key}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": appt_key}}
 
