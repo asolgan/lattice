@@ -12,35 +12,47 @@
 //
 // This package declares:
 //
-//   - The `augurproposal` DDL — the proposal vertex type + the RecordProposal op
-//     (the bridge's replyOp). Proposal shape (D5 — minimal root, business data
-//     in aspects; Contract #1 key shapes):
+//   - The `augurproposal` DDL — the proposal vertex type + the externalTask
+//     matched pair that drives one reasoning episode against the bridge's
+//     standard {externalRef, status, result} reply contract:
 //
-//	vtx.augurproposal.<NanoID>   root data = {}
-//	  .gap         { targetId, entityId, gapColumn, trigger }   what was stuck
-//	  .proposed    { action, params }                           the remediation
-//	  .rationale   { text }                                     the reasoning (audit)
-//	  .confidence  { score }                                    0..1 self-reported
-//	  .provenance  { model, promptHash, catalogHash, reasonedAt }
-//	  .review      { state, reviewedAt, dispatchedAt }
+//       - CreateAugurReasoningClaim (the Loom instanceOp) mints the claim vertex
+//         write-ahead with the TRUSTED gap context + the links.
+//       - RecordProposal (the bridge replyOp) reads that trusted context back,
+//         decodes the model's structured proposal from the opaque result, and
+//         records the verdict.
+//
+//     Proposal shape (D5 — minimal root, business data in aspects; Contract #1
+//     key shapes; handle = the escalation episode's instanceKey):
+//
+//	vtx.augurproposal.<handle>   root data = {}
+//	  .gap         { targetId, entityId, gapColumn, trigger }   instanceOp — TRUSTED, what was stuck
+//	  .proposed    { action, params }                           replyOp — the remediation
+//	  .rationale   { text }                                     replyOp — the reasoning (audit)
+//	  .confidence  { score }                                    replyOp — 0..1 self-reported
+//	  .provenance  { model, promptHash, catalogHash, reasonedAt }  replyOp
+//	  .review      { state, invalidReason, reviewedAt, dispatchedAt }  replyOp — verdict
 //	               state ∈ {pending, approved, rejected, dispatched, invalid, superseded}
-//	lnk.augurproposal.<id>.forCandidate.<type>.<entityId>   proposal forCandidate candidate
-//	lnk.augurproposal.<id>.forTarget.meta.<weaverTargetId>  proposal forTarget target
+//	lnk.augurproposal.<handle>.forCandidate.<type>.<entityId>   proposal forCandidate candidate
+//	lnk.augurproposal.<handle>.forTarget.meta.<weaverTargetId>  proposal forTarget target
 //
 //     Both links: the proposal is the later-arriving SOURCE, the candidate and
 //     the weaver target pre-exist = the TARGETs (Contract #1 §1.1); the names
 //     pass the sentence test.
 //
 //   - RecordProposal carries the deterministic-validation safety boundary
-//     (design §5, record-time leg): a proposal is stored `pending` ONLY when its
-//     proposed action is in the allowed escalation vocabulary, its confidence is
-//     a real 0..1 score, and it does not escape the escalated candidate's scope.
-//     A proposal that fails any of these is stored `invalid` with an auditable
-//     reason — never `pending`, never dispatchable. The AI never produces a side
-//     effect that was not deterministically validated.
+//     (design §5, record-time leg): the entity/target identity is read from the
+//     instanceOp-minted claim — NEVER the model's reply (the load-bearing safety
+//     split). A proposal is stored `pending` ONLY when its proposed action is in
+//     the allowed escalation vocabulary, its confidence is a real 0..1 score, and
+//     it does not escape the escalated candidate's scope. A proposal that fails
+//     any of these — and a modeled refusal (status=failed) — is stored `invalid`
+//     with an auditable reason, never `pending`, never dispatchable. The AI never
+//     produces a side effect that was not deterministically validated, and can
+//     never name the entity it acts on.
 //
-//   - Permissions granting RecordProposal to `operator` (Weaver's service actor
-//     is operator-equivalent — it submits the replyOp).
+//   - Permissions granting CreateAugurReasoningClaim + RecordProposal to
+//     `operator` (the Loom relay + bridge service actors are operator-equivalent).
 //
 // Install via the InstallPackage kernel op. See docs/components/_packages.md and
 // _bmad-output/implementation-artifacts/augur-design.md.

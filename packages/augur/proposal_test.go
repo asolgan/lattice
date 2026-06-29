@@ -1,17 +1,26 @@
-// RecordProposal integration tests — the design §5 record-time
+// Augur externalTask matched-pair integration tests — the design §5 record-time
 // deterministic-validation boundary (the safety core), exercised end-to-end
-// through the real Processor.
+// through the real Processor across the instanceOp → replyOp flow.
+//
+// CreateAugurReasoningClaim mints the claim vertex write-ahead with the TRUSTED
+// gap context; RecordProposal (the bridge replyOp, payload {externalRef, status,
+// result}) reads that trusted context back, decodes the model's structured
+// proposal from the opaque result string, and records the verdict. The model
+// NEVER supplies the entity it acts on — that identity comes from the claim. The
+// tests prove: valid → pending; bad-action / scope-escape / out-of-range
+// confidence / refusal → invalid (auditable, never dispatchable); an absent
+// candidate is rejected at claim time; a reply with no prior claim is rejected
+// (a model reply can never fabricate a proposal).
 //
 // These tests live in an external test package (augur_test) so they exercise the
 // public Lattice surface a real Capability Package sees: seed the kernel, install
 // the dependency chain + orchestration-base + augur through the Processor, then
-// submit RecordProposal ops and assert outcomes (pending vs invalid vs rejected).
+// submit the ops and assert outcomes.
 package augur_test
 
 import (
 	"context"
 	"encoding/json"
-	"math/rand/v2"
 	"testing"
 	"time"
 
@@ -32,8 +41,9 @@ const (
 	apStaffCapKey   = "cap.identity." + apStaffActorID
 )
 
-// staffCapDoc grants the staff actor RecordProposal (scope any) — the bridge
-// replyOp's authority, modeled here as an operator-equivalent staff actor.
+// staffCapDoc grants the staff actor the Augur externalTask matched pair
+// (CreateAugurReasoningClaim + RecordProposal, scope any) — the Loom relay +
+// bridge replyOp authority, modeled here as an operator-equivalent staff actor.
 func staffCapDoc() *processor.CapabilityDoc {
 	now := time.Now().UTC()
 	return &processor.CapabilityDoc{
@@ -44,6 +54,7 @@ func staffCapDoc() *processor.CapabilityDoc {
 		ProjectedFromRevisions: map[string]uint64{apStaffActorKey: 1},
 		Lanes:                  []string{"default"},
 		PlatformPermissions: []processor.PlatformPermission{
+			{OperationType: "CreateAugurReasoningClaim", Scope: "any"},
 			{OperationType: "RecordProposal", Scope: "any"},
 		},
 		ServiceAccess:   []processor.ServiceAccessEntry{},
@@ -80,14 +91,6 @@ func newProposalPipeline(t *testing.T, ctx context.Context, conn *substrate.Conn
 	})
 }
 
-// proposalIDFromRequestID predicts the proposal NanoID the DDL's first
-// nanoid.new() mints (deterministic from the requestId, same as the task DDL).
-func proposalIDFromRequestID(requestID string) string {
-	seed := processor.SeedFromRequestID(requestID)
-	pcg := rand.NewPCG(seed[0], seed[1])
-	return processor.DeterministicNanoID(pcg, substrate.NanoIDLength)
-}
-
 func seedVertex(t *testing.T, ctx context.Context, conn *substrate.Conn, key, class string, data map[string]any) {
 	t.Helper()
 	if data == nil {
@@ -113,8 +116,8 @@ func readDoc(t *testing.T, ctx context.Context, conn *substrate.Conn, key string
 	return doc
 }
 
-// seedEscalation seeds the two RecordProposal link endpoints (the weaver target
-// meta + the candidate entity) and returns their keys.
+// seedEscalation seeds the two link endpoints (the weaver target meta + the
+// candidate entity) and returns their keys.
 func seedEscalation(t *testing.T, ctx context.Context, conn *substrate.Conn) (targetKey, entityKey string) {
 	t.Helper()
 	targetKey = "vtx.meta.BBtargetMtHJKMNPQRST"
@@ -124,17 +127,40 @@ func seedEscalation(t *testing.T, ctx context.Context, conn *substrate.Conn) (ta
 	return targetKey, entityKey
 }
 
-func recordProposalEnv(reqID, targetKey, entityKey, action string, confidence float64, params map[string]any) *processor.OperationEnvelope {
+// createClaimEnv builds the Loom externalTask instanceOp that mints the claim
+// vertex write-ahead with the trusted gap context. The instanceOp validates its
+// link endpoints via kv.Read, so no ContextHint.Reads is needed.
+func createClaimEnv(reqID, handle, targetKey, entityKey string) *processor.OperationEnvelope {
 	payload := map[string]any{
-		"targetId":   targetKey,
-		"entityId":   entityKey,
-		"gapColumn":  "missing_approval",
-		"trigger":    "unplannable",
-		"action":     action,
-		"confidence": confidence,
+		"instanceKey": handle,
+		"adapter":     "augur",
+		"replyOp":     "RecordProposal",
+		"params": map[string]any{
+			"targetId":  targetKey,
+			"entityId":  entityKey,
+			"gapColumn": "missing_approval",
+			"trigger":   "unplannable",
+		},
 	}
-	if params != nil {
-		payload["params"] = params
+	b, _ := json.Marshal(payload)
+	return &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateAugurReasoningClaim",
+		Actor:         apStaffActorKey,
+		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		Class:         "augurproposal",
+		Payload:       json.RawMessage(b),
+	}
+}
+
+// recordReplyEnv builds the bridge replyOp — the {externalRef, status, result}
+// shape the bridge actually posts (no ContextHint.Reads; the op reads the claim's
+// .gap aspect via kv.Read).
+func recordReplyEnv(reqID, handle, status, result string) *processor.OperationEnvelope {
+	payload := map[string]any{"externalRef": handle, "status": status}
+	if result != "" {
+		payload["result"] = result
 	}
 	b, _ := json.Marshal(payload)
 	return &processor.OperationEnvelope{
@@ -145,8 +171,25 @@ func recordProposalEnv(reqID, targetKey, entityKey, action string, confidence fl
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "augurproposal",
 		Payload:       json.RawMessage(b),
-		ContextHint:   &processor.ContextHint{Reads: []string{targetKey, entityKey}},
 	}
+}
+
+// proposalResult marshals a model proposal into the JSON string the bridge
+// carries verbatim in the replyOp's `result` (the FakeAugur codec produces the
+// same shape).
+func proposalResult(action string, confidence float64, params map[string]any) string {
+	m := map[string]any{
+		"action":     action,
+		"confidence": confidence,
+		"rationale":  "reasoned remediation for the stuck gap",
+		"model":      "claude-opus-4-8",
+		"reasonedAt": "2026-06-29T00:00:00Z",
+	}
+	if params != nil {
+		m["params"] = params
+	}
+	b, _ := json.Marshal(m)
+	return string(b)
 }
 
 // reviewState reads vtx.augurproposal.<id>.review.data.state.
@@ -158,21 +201,48 @@ func reviewState(t *testing.T, ctx context.Context, conn *substrate.Conn, propos
 	return s
 }
 
-// TestRecordProposal_ValidPending: a well-formed in-vocabulary proposal whose
-// proposed scope matches the escalated candidate is stored review.state=pending
-// (dispatchable), with the proposal vertex, the .gap/.proposed/.review aspects,
-// and the forCandidate/forTarget links committed atomically.
-func TestRecordProposal_ValidPending(t *testing.T) {
+// Per-scenario reasoning-episode handles. Each is a valid 20-char NanoID (the
+// shape Loom mints for an externalTask instanceKey; Contract #1 keyPattern
+// rejects anything else — no 0/O/I/l, exactly 20 chars).
+const (
+	hPending = "BBaugurPendHJKMNPQRS"
+	hBadAct  = "BBaugurBactHJKMNPQRS"
+	hEscape  = "BBaugurEscpHJKMNPQRS"
+	hConf    = "BBaugurConfHJKMNPQRS"
+	hRefusal = "BBaugurRefuHJKMNPQRS"
+	hAbsent  = "BBaugurAbsnHJKMNPQRS"
+	hNoClaim = "BBaugurNoclHJKMNPQRS"
+)
+
+// driveClaimThenReply runs the full instanceOp → replyOp flow on one pipeline and
+// returns the proposal vertex key (vtx.augurproposal.<handle>).
+func driveClaimThenReply(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, tag, handle, targetKey, entityKey, status, result string) string {
+	t.Helper()
+	claim := createClaimEnv(testutil.GenReqID("APClaim"+tag), handle, targetKey, entityKey)
+	testutil.PublishOp(t, conn, claim)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	reply := recordReplyEnv(testutil.GenReqID("APReply"+tag), handle, status, result)
+	testutil.PublishOp(t, conn, reply)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	return "vtx.augurproposal." + handle
+}
+
+// TestAugur_ValidPending: a well-formed in-vocabulary proposal whose proposed
+// scope matches the escalated candidate is stored review.state=pending
+// (dispatchable). The instanceOp commits the .gap aspect + the
+// forCandidate/forTarget links (trusted context); the replyOp commits the
+// model-derived .proposed/.review aspects.
+func TestAugur_ValidPending(t *testing.T) {
 	ctx, conn := setupAugurEnv(t)
 	cp, cons := newProposalPipeline(t, ctx, conn, "ap-pending")
 	targetKey, entityKey := seedEscalation(t, ctx, conn)
 
-	reqID := testutil.GenReqID("APPending0001")
-	proposalKey := "vtx.augurproposal." + proposalIDFromRequestID(reqID)
-	env := recordProposalEnv(reqID, targetKey, entityKey, "assignTask", 0.82,
+	handle := hPending
+	result := proposalResult("assignTask", 0.82,
 		map[string]any{"scopedTo": entityKey, "forOperation": "ApproveLeaseApplication"})
-	testutil.PublishOp(t, conn, env)
-	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+	proposalKey := driveClaimThenReply(t, ctx, conn, cp, cons, "pend", handle, targetKey, entityKey, "completed", result)
 
 	if got := reviewState(t, ctx, conn, proposalKey); got != "pending" {
 		t.Fatalf("review.state = %q, want pending", got)
@@ -182,16 +252,24 @@ func TestRecordProposal_ValidPending(t *testing.T) {
 	if data, _ := root["data"].(map[string]any); len(data) != 0 {
 		t.Fatalf("proposal root data must be {} (D5); got %v", data)
 	}
-	// The .gap aspect carries the escalation context.
+	// The .gap aspect carries the TRUSTED escalation context (instanceOp).
 	gap := readDoc(t, ctx, conn, proposalKey+".gap")
 	gd, _ := gap["data"].(map[string]any)
 	if got, _ := gd["gapColumn"].(string); got != "missing_approval" {
 		t.Fatalf(".gap.gapColumn = %q, want missing_approval", got)
 	}
+	if got, _ := gd["entityId"].(string); got != entityKey {
+		t.Fatalf(".gap.entityId = %q, want %q", got, entityKey)
+	}
+	// The .proposed aspect carries the model's remediation (replyOp).
+	proposed := readDoc(t, ctx, conn, proposalKey+".proposed")
+	pd, _ := proposed["data"].(map[string]any)
+	if got, _ := pd["action"].(string); got != "assignTask" {
+		t.Fatalf(".proposed.action = %q, want assignTask", got)
+	}
 	// Both links: proposal is the source.
-	pid := proposalIDFromRequestID(reqID)
-	forCand := "lnk.augurproposal." + pid + ".forCandidate.leaseapp.BBcandidateHJKMNPQRS"
-	forTarget := "lnk.augurproposal." + pid + ".forTarget.meta.BBtargetMtHJKMNPQRST"
+	forCand := "lnk.augurproposal." + handle + ".forCandidate.leaseapp.BBcandidateHJKMNPQRS"
+	forTarget := "lnk.augurproposal." + handle + ".forTarget.meta.BBtargetMtHJKMNPQRST"
 	for name, lnk := range map[string]string{"forCandidate": forCand, "forTarget": forTarget} {
 		doc := readDoc(t, ctx, conn, lnk)
 		if got, _ := doc["sourceVertex"].(string); got != proposalKey {
@@ -200,78 +278,102 @@ func TestRecordProposal_ValidPending(t *testing.T) {
 	}
 }
 
-// TestRecordProposal_BadAction_Invalid: an action outside the allowed escalation
+// TestAugur_BadAction_Invalid: an action outside the allowed escalation
 // vocabulary stores the proposal review.state=invalid (auditable, never
-// dispatchable) — the op still ACCEPTS (the proposal is recorded), but the
+// dispatchable) — the replyOp still ACCEPTS (the proposal is recorded), but the
 // verdict is invalid.
-func TestRecordProposal_BadAction_Invalid(t *testing.T) {
+func TestAugur_BadAction_Invalid(t *testing.T) {
 	ctx, conn := setupAugurEnv(t)
 	cp, cons := newProposalPipeline(t, ctx, conn, "ap-badaction")
 	targetKey, entityKey := seedEscalation(t, ctx, conn)
 
-	reqID := testutil.GenReqID("APBadAct00001")
-	proposalKey := "vtx.augurproposal." + proposalIDFromRequestID(reqID)
-	env := recordProposalEnv(reqID, targetKey, entityKey, "DROP TABLE", 0.99, nil)
-	testutil.PublishOp(t, conn, env)
-	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+	handle := hBadAct
+	result := proposalResult("DROP TABLE", 0.99, nil)
+	proposalKey := driveClaimThenReply(t, ctx, conn, cp, cons, "bact", handle, targetKey, entityKey, "completed", result)
 
 	if got := reviewState(t, ctx, conn, proposalKey); got != "invalid" {
 		t.Fatalf("review.state = %q, want invalid", got)
 	}
 }
 
-// TestRecordProposal_ScopeEscape_Invalid: a proposed action whose entity-naming
-// param references a candidate OTHER than the escalated one is stored invalid
-// (the §5 scope-escape check — the model cannot propose acting on a different
-// entity than the gap it reasoned about).
-func TestRecordProposal_ScopeEscape_Invalid(t *testing.T) {
+// TestAugur_ScopeEscape_Invalid: a proposed action whose entity-naming param
+// references a candidate OTHER than the escalated one (read from the TRUSTED
+// claim, not the reply) is stored invalid — the model cannot propose acting on a
+// different entity than the gap it reasoned about.
+func TestAugur_ScopeEscape_Invalid(t *testing.T) {
 	ctx, conn := setupAugurEnv(t)
 	cp, cons := newProposalPipeline(t, ctx, conn, "ap-escape")
 	targetKey, entityKey := seedEscalation(t, ctx, conn)
 
-	reqID := testutil.GenReqID("APEscape00001")
-	proposalKey := "vtx.augurproposal." + proposalIDFromRequestID(reqID)
-	env := recordProposalEnv(reqID, targetKey, entityKey, "directOp", 0.95,
+	handle := hEscape
+	result := proposalResult("directOp", 0.95,
 		map[string]any{"scopedTo": "vtx.leaseapp.BBotherEntyHJKMNPQRS"})
-	testutil.PublishOp(t, conn, env)
-	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+	proposalKey := driveClaimThenReply(t, ctx, conn, cp, cons, "escp", handle, targetKey, entityKey, "completed", result)
 
 	if got := reviewState(t, ctx, conn, proposalKey); got != "invalid" {
 		t.Fatalf("review.state = %q, want invalid (scope escape)", got)
 	}
 }
 
-// TestRecordProposal_ConfidenceOutOfRange_Invalid: a confidence outside [0,1]
-// stores the proposal invalid.
-func TestRecordProposal_ConfidenceOutOfRange_Invalid(t *testing.T) {
+// TestAugur_ConfidenceOutOfRange_Invalid: a confidence outside [0,1] stores the
+// proposal invalid.
+func TestAugur_ConfidenceOutOfRange_Invalid(t *testing.T) {
 	ctx, conn := setupAugurEnv(t)
 	cp, cons := newProposalPipeline(t, ctx, conn, "ap-conf")
 	targetKey, entityKey := seedEscalation(t, ctx, conn)
 
-	reqID := testutil.GenReqID("APConf000001")
-	proposalKey := "vtx.augurproposal." + proposalIDFromRequestID(reqID)
-	env := recordProposalEnv(reqID, targetKey, entityKey, "assignTask", 1.5,
-		map[string]any{"scopedTo": entityKey})
-	testutil.PublishOp(t, conn, env)
-	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+	handle := hConf
+	result := proposalResult("assignTask", 1.5, map[string]any{"scopedTo": entityKey})
+	proposalKey := driveClaimThenReply(t, ctx, conn, cp, cons, "conf", handle, targetKey, entityKey, "completed", result)
 
 	if got := reviewState(t, ctx, conn, proposalKey); got != "invalid" {
 		t.Fatalf("review.state = %q, want invalid (confidence out of range)", got)
 	}
 }
 
-// TestRecordProposal_AbsentCandidate_Rejected: the no-orphan invariant — a
-// proposal pointing at a non-existent candidate is never committed (the op is
-// rejected with a structured ScriptError, distinct from the invalid verdict).
-func TestRecordProposal_AbsentCandidate_Rejected(t *testing.T) {
+// TestAugur_Refusal_Invalid: a modeled refusal (status=failed, no proposal) is a
+// definitive verdict — stored invalid (auditable, never dispatchable), NOT a
+// crash. The completion event still fires so the Loom token unparks.
+func TestAugur_Refusal_Invalid(t *testing.T) {
+	ctx, conn := setupAugurEnv(t)
+	cp, cons := newProposalPipeline(t, ctx, conn, "ap-refusal")
+	targetKey, entityKey := seedEscalation(t, ctx, conn)
+
+	handle := hRefusal
+	proposalKey := driveClaimThenReply(t, ctx, conn, cp, cons, "refu", handle, targetKey, entityKey,
+		"failed", "augur: model declined to propose (refusal)")
+
+	if got := reviewState(t, ctx, conn, proposalKey); got != "invalid" {
+		t.Fatalf("review.state = %q, want invalid (refusal)", got)
+	}
+}
+
+// TestAugur_AbsentCandidate_Rejected: the no-orphan invariant — a claim pointing
+// at a non-existent candidate is never minted (the instanceOp is rejected with a
+// structured ScriptError, so no proposal vertex exists at all).
+func TestAugur_AbsentCandidate_Rejected(t *testing.T) {
 	ctx, conn := setupAugurEnv(t)
 	cp, cons := newProposalPipeline(t, ctx, conn, "ap-absent")
 	targetKey, _ := seedEscalation(t, ctx, conn)
 	missingEntity := "vtx.leaseapp.BBmissingEnHJKMNPQRS"
 
-	reqID := testutil.GenReqID("APAbsent00001")
-	env := recordProposalEnv(reqID, targetKey, missingEntity, "assignTask", 0.8,
-		map[string]any{"scopedTo": missingEntity})
-	testutil.PublishOp(t, conn, env)
+	handle := hAbsent
+	claim := createClaimEnv(testutil.GenReqID("APAbsent00001"), handle, targetKey, missingEntity)
+	testutil.PublishOp(t, conn, claim)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+}
+
+// TestAugur_ReplyWithoutClaim_Rejected: the load-bearing safety property — a
+// reply for which no claim vertex was minted is REJECTED (a model reply can never
+// fabricate a proposal; the trusted gap context must exist write-ahead).
+func TestAugur_ReplyWithoutClaim_Rejected(t *testing.T) {
+	ctx, conn := setupAugurEnv(t)
+	cp, cons := newProposalPipeline(t, ctx, conn, "ap-noclaim")
+	seedEscalation(t, ctx, conn)
+
+	handle := hNoClaim
+	result := proposalResult("assignTask", 0.8, map[string]any{"scopedTo": "vtx.leaseapp.BBcandidateHJKMNPQRS"})
+	reply := recordReplyEnv(testutil.GenReqID("APNoClaim0001"), handle, "completed", result)
+	testutil.PublishOp(t, conn, reply)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
 }

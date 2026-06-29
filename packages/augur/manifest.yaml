@@ -15,6 +15,9 @@ declares:
     - canonicalName: augurproposal
       class: meta.ddl.vertexType
   permissions:
+    - operationType: CreateAugurReasoningClaim
+      scope: any
+      grantsTo: [operator]
     - operationType: RecordProposal
       scope: any
       grantsTo: [operator]

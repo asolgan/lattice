@@ -4,48 +4,70 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 
 // DDLs returns the package's DDL meta-vertex declarations.
 //
-// Single DDL `augurproposal` (vertex-type class) handles the RecordProposal
-// operation — the bridge replyOp that records an AI-reasoned remediation
-// proposal as an auditable Core-KV vertex.
+// A single `augurproposal` vertex-type DDL owns the externalTask matched pair
+// that drives one Augur reasoning episode against the bridge's standard
+// `{externalRef, status, result}` reply contract:
+//
+//   - CreateAugurReasoningClaim (the instanceOp) mints the claim vertex
+//     vtx.augurproposal.<handle> write-ahead of the reasoning call, recording the
+//     TRUSTED gap context (.gap aspect) + the forCandidate / forTarget links, and
+//     emits external.<adapter> off its own transactional outbox.
+//   - RecordProposal (the replyOp the bridge posts on a terminal outcome) reads
+//     the trusted gap context back from that claim vertex, decodes the model's
+//     structured proposal from the opaque `result` string, applies the design §5
+//     record-time deterministic-validation boundary, and writes the proposal's
+//     model-derived aspects (.proposed / .rationale / .confidence / .provenance /
+//     .review) create-only, then emits orchestration.externalTaskCompleted.
+//
+// The load-bearing safety split (design §5): the entity/target IDENTITY the
+// proposal acts on is read from the instanceOp-minted claim vertex — NEVER from
+// the model's reply. The model supplies only {action, params, confidence,
+// rationale, provenance}; it can propose arranging an action but can never name
+// the entity it acts on. A redelivered reply collapses on the bridge's
+// deterministic reply requestId and, as the final backstop, conflicts on the
+// create-only .review aspect (FR58 at the DDL layer).
 //
 // Architectural rules (binding — same known-key discipline as orchestration-base
-// / rbac-domain):
+// / lease-signing):
 //
-//   - The script reads ONLY by known key. RecordProposal validates its two link
-//     endpoints (the escalated weaver target meta + the candidate vertex) by
-//     reading each by its known key — exactly the keys the caller lists in
-//     ContextHint.Reads. No prefix scans, no adjacency lookups, no lens reads.
-//   - No-orphan invariant (FR29 / P4): RecordProposal REQUIRES the candidate and
-//     the weaver target to be alive (the forCandidate / forTarget links need live
-//     targets) and rejects (structured ScriptError) if either is absent.
+//   - Both ops read ONLY by known key. The instanceOp validates its two link
+//     endpoints by kv.Read of each (Contract #2 §2.5 lazy known-key read,
+//     read-path-independent of how the op is dispatched). The replyOp reads the
+//     claim's .gap aspect by kv.Read — the bridge posts the reply with no
+//     ContextHint.Reads, so the op hydrates nothing from `state`. No prefix scans,
+//     no adjacency lookups, no lens reads.
+//   - No-orphan invariant (FR29 / P4): CreateAugurReasoningClaim REQUIRES the
+//     candidate and the weaver target to be alive (the forCandidate / forTarget
+//     links need live targets) and rejects (structured ScriptError) if either is
+//     absent. RecordProposal REQUIRES the claim vertex to be live (its .gap
+//     aspect) and rejects if absent — the instanceOp must have committed first.
 //   - The deterministic-validation boundary (design §5, record-time leg) is the
-//     safety core: the proposal is stored `pending` (dispatchable) only when the
-//     proposed action is in the allowed escalation vocabulary, the confidence is
-//     a real 0..1 score, and the proposal does not escape the escalated
-//     candidate's scope. Any failure stores the proposal `invalid` with an
-//     auditable reason — never `pending`, never dispatchable. The proposal is
-//     ALWAYS stored (auditability); the verdict decides only pending vs invalid.
+//     safety core: the proposal is stored review.state=pending (dispatchable) only
+//     when the proposed action is in the allowed escalation vocabulary, the
+//     confidence is a real 0..1 score, and the proposal does not escape the
+//     escalated candidate's scope. Any failure — and a modeled refusal
+//     (status=failed) — stores the proposal review.state=invalid with an auditable
+//     invalidReason, never pending, never dispatchable. The proposal vertex is
+//     ALWAYS recorded (auditability); the verdict decides only pending vs invalid.
 //
 // Proposal shape (Contract #1 key shapes; D5 — minimal root, business data in
 // aspects):
 //
-//	vtx.augurproposal.<id>   root data = {}
-//	  .gap         { targetId, entityId, gapColumn, trigger }
-//	  .proposed    { action, params }
-//	  .rationale   { text }
-//	  .confidence  { score }
-//	  .provenance  { model, promptHash, catalogHash, reasonedAt }
-//	  .review      { state, invalidReason, reviewedAt, dispatchedAt }
-//	lnk.augurproposal.<id>.forCandidate.<type>.<entityId>   # proposal forCandidate candidate
-//	lnk.augurproposal.<id>.forTarget.meta.<weaverTargetId>  # proposal forTarget target
+//	vtx.augurproposal.<handle>   root data = {}            (handle = the escalation episode's instanceKey)
+//	  .gap         { targetId, entityId, gapColumn, trigger }   # instanceOp — TRUSTED escalation context
+//	  .proposed    { action, params }                           # replyOp — the model's remediation
+//	  .rationale   { text }                                     # replyOp — the model's reasoning (audit)
+//	  .confidence  { score }                                    # replyOp — 0..1 self-reported
+//	  .provenance  { model, promptHash, catalogHash, reasonedAt }  # replyOp
+//	  .review      { state, invalidReason, reviewedAt, dispatchedAt }  # replyOp — verdict
+//	lnk.augurproposal.<handle>.forCandidate.<type>.<entityId>   # proposal forCandidate candidate
+//	lnk.augurproposal.<handle>.forTarget.meta.<weaverTargetId>  # proposal forTarget target
 //
 // Both links: augurproposal = the later-arriving SOURCE, the other vertex
 // pre-exists = the TARGET (Contract #1 §1.1). The names pass the sentence test
-// ("proposal forCandidate candidate", "proposal forTarget target").
-//
-// Caller's ContextHint.Reads MUST include, for RecordProposal:
-//   - targetId  (vtx.meta.<weaverTargetId>)
-//   - entityId  (vtx.<type>.<id>)
+// ("proposal forCandidate candidate", "proposal forTarget target"). Absence of
+// .review / .proposed on a claim vertex = the reasoning call is still in flight
+// (mirrors lease-signing's outcome-absence = not-yet-complete).
 func DDLs() []pkgmgr.DDLSpec {
 	return []pkgmgr.DDLSpec{
 		augurproposalDDL(),
@@ -56,97 +78,91 @@ func augurproposalDDL() pkgmgr.DDLSpec {
 	return pkgmgr.DDLSpec{
 		CanonicalName:     "augurproposal",
 		Class:             "meta.ddl.vertexType",
-		PermittedCommands: []string{"RecordProposal"},
-		Description: "Augur proposal DDL. Vertex shape: vtx.augurproposal.<NanoID>, class=augurproposal, " +
-			"root data = {} (D5); business data in aspects: .gap {targetId, entityId, gapColumn, trigger}, " +
-			".proposed {action, params}, .rationale {text}, .confidence {score}, .provenance {model, " +
-			"promptHash, catalogHash, reasonedAt}, .review {state, invalidReason, reviewedAt, dispatchedAt}. " +
-			"Relationships are LINKS: forCandidate (proposal→candidate: the escalated entity), forTarget " +
-			"(proposal→weaverTarget meta: the target whose gap was stuck). Both links: proposal is the " +
-			"later-arriving source, the other vertex is the pre-existing target (Contract #1 §1.1). " +
-			"RecordProposal is the bridge replyOp; it requires + validates the candidate and weaver target " +
-			"(no-orphan, FR29/P4) and applies the design §5 record-time deterministic-validation boundary: a " +
-			"proposal is stored review.state=pending (dispatchable) only when its action is in the allowed " +
-			"escalation vocabulary (triggerLoom|assignTask|directOp), its confidence is a real 0..1 score, and " +
-			"it does not escape the escalated candidate's scope; otherwise it is stored review.state=invalid " +
-			"with an auditable invalidReason (never pending, never dispatchable). The proposal is always " +
-			"stored. Idempotent on a redelivered reply via the caller-supplied deterministic proposalId.",
+		PermittedCommands: []string{"CreateAugurReasoningClaim", "RecordProposal"},
+		Description: "Augur proposal DDL — the externalTask matched pair for one reasoning episode. " +
+			"Vertex shape: vtx.augurproposal.<handle>, class=augurproposal, root data = {} (D5); business " +
+			"data in aspects: .gap {targetId, entityId, gapColumn, trigger} (the instanceOp's TRUSTED " +
+			"escalation context), .proposed {action, params}, .rationale {text}, .confidence {score}, " +
+			".provenance {model, promptHash, catalogHash, reasonedAt}, .review {state, invalidReason, " +
+			"reviewedAt, dispatchedAt} (the replyOp's model-derived data + verdict). Relationships are LINKS: " +
+			"forCandidate (proposal→candidate: the escalated entity), forTarget (proposal→weaverTarget meta: " +
+			"the target whose gap was stuck). Both links: proposal is the later-arriving source (Contract #1 " +
+			"§1.1). CreateAugurReasoningClaim is the Loom externalTask instanceOp: it mints the claim vertex " +
+			"write-ahead with the .gap aspect + links (no-orphan, FR29/P4) and emits external.<adapter>. " +
+			"RecordProposal is the bridge replyOp (payload {externalRef, status, result}): it reads the " +
+			"trusted gap context back from the claim, decodes the model proposal from the opaque result " +
+			"string, and applies the design §5 record-time deterministic-validation boundary — a proposal is " +
+			"stored review.state=pending (dispatchable) only when its action is in the allowed escalation " +
+			"vocabulary (triggerLoom|assignTask|directOp), its confidence is a real 0..1 score, and it does " +
+			"not escape the escalated candidate's scope; otherwise (and on a model refusal, status=failed) it " +
+			"is stored review.state=invalid with an auditable invalidReason. The proposal is always stored. " +
+			"The model NEVER supplies the entity it acts on (read from the claim); idempotent on a redelivered " +
+			"reply via the create-only .review aspect atop the bridge's deterministic reply requestId.",
 		Script: augurproposalDDLScript,
-		InputSchema: `{"type":"object","properties":` +
-			`{"targetId":{"type":"string","description":"vtx.meta.<NanoID> — the weaver target whose unplannable gap was escalated."},` +
-			`"entityId":{"type":"string","description":"vtx.<type>.<NanoID> — the candidate (violating row's entity) the gap was reasoned about."},` +
-			`"gapColumn":{"type":"string","description":"The missing_<g> gap column that was stuck."},` +
-			`"trigger":{"type":"string","description":"The escalation trigger: unplannable | exhausted."},` +
-			`"action":{"type":"string","description":"The model's proposed remediation action; must be one of triggerLoom, assignTask, directOp or the proposal is stored invalid."},` +
-			`"params":{"type":"object","description":"The proposed action's params. A param naming an entity other than the escalated candidate stores the proposal invalid (scope escape)."},` +
-			`"rationale":{"type":"string","description":"The model's free-form reasoning, stored on the .rationale aspect for audit."},` +
-			`"confidence":{"type":"number","description":"The model's 0..1 self-reported confidence. Out of range stores the proposal invalid."},` +
-			`"model":{"type":"string","description":"Provenance: the model id that reasoned (e.g. claude-opus-4-8)."},` +
-			`"promptHash":{"type":"string","description":"Provenance: hash of the exact prompt reasoned over."},` +
-			`"catalogHash":{"type":"string","description":"Provenance: hash of the action catalog reasoned over (detects a stale proposal when the catalog later changes)."},` +
-			`"reasonedAt":{"type":"string","description":"Provenance: RFC3339 timestamp of the reasoning call."},` +
-			`"proposalId":{"type":"string","description":"Optional bare NanoID for the proposal vertex; the bridge replyOp supplies one derived deterministically from the escalation episode so a redelivered reply collapses on the existing vertex. Absent → minted internally."}},` +
-			`"required":["targetId","entityId","gapColumn","trigger","action","confidence"]}`,
+		InputSchema: `{"type":"object","description":"RecordProposal — the bridge replyOp. The bridge posts {externalRef, status, result}; gap context is reconstructed from the claim vertex, never this payload.","properties":` +
+			`{"externalRef":{"type":"string","description":"The bare instanceKey handle of the reasoning episode; the claim vertex is vtx.augurproposal.<externalRef>."},` +
+			`"status":{"type":"string","description":"The adapter's terminal outcome: completed (the model proposed) or failed (a modeled refusal — stored invalid, never dispatchable)."},` +
+			`"result":{"type":"string","description":"The model's structured-output proposal as a JSON string {action, params, confidence, rationale, model, promptHash, catalogHash, reasonedAt} — the opaque adapter Detail. Required when status=completed; carried as the rationale on a refusal."}},` +
+			`"required":["externalRef","status"]}`,
 		OutputSchema: `{"type":"object","properties":` +
-			`{"primaryKey":{"type":"string","description":"vtx.augurproposal.<NanoID> of the recorded proposal (the operation's principal key). The recorded review.state (pending | invalid) is read from the proposal's .review aspect, not the op response."}}}`,
+			`{"primaryKey":{"type":"string","description":"vtx.augurproposal.<handle> of the recorded proposal. The recorded review.state (pending | invalid) is read from the proposal's .review aspect, not the op response."}}}`,
 		FieldDescription: map[string]string{
-			"targetId":   "Full vtx.meta.<NanoID> key of the escalated weaver target. Required; RecordProposal rejects if absent/invalid (the forTarget link needs a live target).",
-			"entityId":   "Full vtx.<type>.<NanoID> key of the escalated candidate entity. Required; RecordProposal rejects if absent/invalid (the forCandidate link needs a live target).",
-			"gapColumn":  "The missing_<g> gap column the target projected as violating. Stored on the .gap aspect.",
-			"trigger":    "The escalation trigger that fired the reasoning call: unplannable (no playbook entry) or exhausted (retry budget spent). Stored on the .gap aspect.",
-			"action":     "The model's proposed remediation action. Validated at record time against the allowed escalation vocabulary {triggerLoom, assignTask, directOp}; an out-of-vocabulary action stores the proposal invalid.",
-			"params":     "The proposed action's params object. A param naming an entity other than the escalated candidate (scope escape) stores the proposal invalid — the model cannot propose acting on a different entity than the gap it reasoned about.",
-			"rationale":  "The model's free-form reasoning text, stored on the .rationale aspect for the audit trail. Optional.",
-			"confidence": "The model's 0..1 self-reported confidence. A value outside [0,1] stores the proposal invalid. Stored on the .confidence aspect.",
-			"model":      "Provenance: the model id that produced the proposal (e.g. claude-opus-4-8). Stored on the .provenance aspect.",
-			"promptHash": "Provenance: a hash of the exact prompt reasoned over, for audit + stale-proposal detection. Stored on the .provenance aspect.",
-			"catalogHash": "Provenance: a hash of the action catalog reasoned over; lets a reviewer detect a proposal that reasoned over a since-changed catalog. Stored on the .provenance aspect.",
-			"reasonedAt": "Provenance: RFC3339 timestamp of the reasoning call. Stored on the .provenance aspect.",
-			"proposalId": "Optional bare NanoID (no dots / key segments) for the proposal vertex (vtx.augurproposal.<proposalId>). The bridge replyOp supplies one derived deterministically from the escalation episode so a redelivered reply collapses on the existing vertex (CreateOnly + the existing-key read). Absent → minted with nanoid.new().",
+			"externalRef": "The bare instanceKey handle the Loom externalTask minted (no dots / key segments / whitespace); the claim vertex key is vtx.augurproposal.<externalRef>. RecordProposal rejects if no live claim vertex exists for it (the CreateAugurReasoningClaim instanceOp must commit write-ahead).",
+			"status":      "The adapter's terminal outcome verbatim: completed (the model returned a structured proposal in result) or failed (a modeled refusal — the proposal is stored invalid with the refusal as its rationale, never dispatchable). Any other value rejects the op.",
+			"result":      "The model's structured-output proposal as a JSON string {action, params, confidence, rationale, model, promptHash, catalogHash, reasonedAt}. The §5 validator decodes it and validates action ∈ {triggerLoom, assignTask, directOp}, confidence ∈ [0,1], and no scope escape (a params entity-key other than the escalated candidate, read from the trusted claim). Required when status=completed.",
 		},
 		Examples: []pkgmgr.ExampleSpec{
 			{
-				Name: "RecordProposal — a valid assignTask proposal for an unplannable approval gap",
+				Name: "CreateAugurReasoningClaim — mint the claim vertex write-ahead of the reasoning call (the Loom instanceOp)",
 				Payload: map[string]any{
-					"targetId":   "vtx.meta.<weaverTargetNanoID>",
-					"entityId":   "vtx.leaseapp.<applicantNanoID>",
-					"gapColumn":  "missing_approval",
-					"trigger":    "unplannable",
-					"action":     "assignTask",
-					"params":     map[string]any{"scopedTo": "vtx.leaseapp.<applicantNanoID>", "forOperation": "ApproveLeaseApplication"},
-					"rationale":  "No playbook entry; the closest catalog action is a human approval task scoped to the applicant.",
-					"confidence": 0.82,
-					"model":      "claude-opus-4-8",
-					"reasonedAt": "2026-06-29T15:00:00Z",
+					"instanceKey": "augurEpisodeHJKMNPQRST",
+					"adapter":     "augur",
+					"replyOp":     "RecordProposal",
+					"params": map[string]any{
+						"targetId":  "vtx.meta.<weaverTargetNanoID>",
+						"entityId":  "vtx.leaseapp.<applicantNanoID>",
+						"gapColumn": "missing_approval",
+						"trigger":   "unplannable",
+					},
 				},
-				ExpectedOutcome: "Validates the weaver target + candidate exist. The action is in the allowed vocabulary, " +
-					"confidence is in [0,1], and the proposed scopedTo matches the escalated candidate, so the proposal is " +
-					"stored vtx.augurproposal.<id> with review.state=pending (dispatchable) + its forCandidate/forTarget links. " +
-					"Returns {primaryKey}; the .review aspect carries state=pending.",
+				ExpectedOutcome: "Validates the weaver target + candidate are alive (no-orphan). Mints vtx.augurproposal." +
+					"augurEpisodeHJKMNPQRST with root {} (D5), the .gap aspect carrying the TRUSTED escalation context, and " +
+					"the forCandidate / forTarget links (proposal is the source). No .review / .proposed yet (the reasoning " +
+					"call is in flight). Emits external.augur off the transactional outbox for the bridge to pick up.",
+			},
+			{
+				Name: "RecordProposal — a valid assignTask proposal for an unplannable approval gap (the bridge replyOp)",
+				Payload: map[string]any{
+					"externalRef": "augurEpisodeHJKMNPQRST",
+					"status":      "completed",
+					"result":      `{"action":"assignTask","params":{"scopedTo":"vtx.leaseapp.<applicantNanoID>","forOperation":"ApproveLeaseApplication"},"rationale":"No playbook entry; the closest catalog action is a human approval task scoped to the applicant.","confidence":0.82,"model":"claude-opus-4-8","reasonedAt":"2026-06-29T15:00:00Z"}`,
+				},
+				ExpectedOutcome: "Reads the trusted entity (vtx.leaseapp.<applicantNanoID>) from the claim's .gap aspect, " +
+					"decodes the proposal from result. The action is in the allowed vocabulary, confidence is in [0,1], and the " +
+					"proposed scopedTo matches the escalated candidate, so the proposal is stored review.state=pending " +
+					"(dispatchable) + its model-derived aspects. Emits orchestration.externalTaskCompleted so Loom unparks.",
 			},
 			{
 				Name: "RecordProposal — a scope-escaping proposal is stored invalid (auditable, never dispatchable)",
 				Payload: map[string]any{
-					"targetId":   "vtx.meta.<weaverTargetNanoID>",
-					"entityId":   "vtx.leaseapp.<applicantNanoID>",
-					"gapColumn":  "missing_approval",
-					"trigger":    "unplannable",
-					"action":     "directOp",
-					"params":     map[string]any{"scopedTo": "vtx.leaseapp.<aDifferentApplicantNanoID>"},
-					"confidence": 0.95,
+					"externalRef": "augurEpisodeHJKMNPQRST",
+					"status":      "completed",
+					"result":      `{"action":"directOp","params":{"scopedTo":"vtx.leaseapp.<aDifferentApplicantNanoID>"},"confidence":0.95}`,
 				},
-				ExpectedOutcome: "The proposed scopedTo names a DIFFERENT entity than the escalated candidate, so the §5 " +
-					"scope-escape check fails: the proposal is still stored (auditability) but with review.state=invalid + an " +
-					"invalidReason, never pending, never dispatchable. Returns {primaryKey}; the .review aspect carries state=invalid.",
+				ExpectedOutcome: "The proposed scopedTo names a DIFFERENT entity than the escalated candidate (read from the " +
+					"trusted claim, not the reply), so the §5 scope-escape check fails: the proposal is still stored " +
+					"(auditability) but with review.state=invalid + an invalidReason, never pending, never dispatchable.",
 			},
 		},
 	}
 }
 
-// augurproposalDDLScript handles RecordProposal. Known-key reads only (validates
-// the two link endpoints by the keys the caller listed in ContextHint.Reads).
-// The §5 record-time deterministic-validation boundary decides pending vs invalid;
-// the proposal is always stored (auditability). No-orphan by construction.
+// augurproposalDDLScript handles the externalTask matched pair
+// CreateAugurReasoningClaim (instanceOp) + RecordProposal (replyOp). Known-key
+// reads only (kv.Read of the link endpoints / the claim's .gap aspect — the
+// bridge posts the reply with no ContextHint.Reads). The §5 record-time
+// deterministic-validation boundary decides pending vs invalid on the reply; the
+// proposal is always stored (auditability). No-orphan by construction.
 const augurproposalDDLScript = `
 def make_vtx(key, cls, data):
     return {"op": "create", "key": key,
@@ -171,35 +187,67 @@ def required_string(p, name):
         fail("InvalidArgument: " + name + ": required non-empty string")
     return v.strip()
 
-def required_number(p, name):
-    if not hasattr(p, name):
-        fail("InvalidArgument: " + name + ": required")
-    v = getattr(p, name)
-    if v == None or (type(v) != type(0) and type(v) != type(0.0)):
-        fail("InvalidArgument: " + name + ": required number")
-    return v
-
-def optional_string(p, name):
+def optional_string_attr(p, name):
     if not hasattr(p, name):
         return ""
     v = getattr(p, name)
     if v == None or type(v) != type(""):
         return ""
+    return v
+
+def required_bare_handle(p, name):
+    # The bare instance handle Loom minted: type-free, must carry no key
+    # delimiters so "vtx.augurproposal." + handle is a single well-formed key.
+    v = required_string(p, name)
+    for bad in [".", "*", ">", " ", "\t", "\n"]:
+        if bad in v:
+            fail("InvalidArgument: " + name + ": must carry no dots / key segments, wildcards, or whitespace; got " + v)
+    return v
+
+def required_params(p):
+    if not hasattr(p, "params") or p.params == None:
+        fail("InvalidArgument: params: required object (the resolved externalTask gap context)")
+    v = p.params
+    if type(v) != type({}):
+        fail("InvalidArgument: params: required object")
+    return v
+
+def dict_required_string(d, name):
+    if name not in d:
+        fail("InvalidArgument: params." + name + ": required non-empty string")
+    v = d[name]
+    if v == None or type(v) != type("") or len(v.strip()) == 0:
+        fail("InvalidArgument: params." + name + ": required non-empty string")
     return v.strip()
 
-def optional_dict(p, name):
-    if not hasattr(p, name):
+def proposal_string(d, name):
+    # A field of the decoded model proposal; absent / wrong-typed => "".
+    if name not in d:
+        return ""
+    v = d[name]
+    if v == None or type(v) != type(""):
+        return ""
+    return v
+
+def proposal_dict(d, name):
+    if name not in d:
         return {}
-    v = getattr(p, name)
+    v = d[name]
     if v == None or type(v) != type({}):
         return {}
     return v
 
-def split_key(k):
-    return k.split(".")
+def proposal_number(d, name):
+    # confidence: absent / non-numeric => -1.0 (out of range => invalid verdict).
+    if name not in d:
+        return -1.0
+    v = d[name]
+    if v == None or (type(v) != type(0) and type(v) != type(0.0)):
+        return -1.0
+    return v
 
 def parts_of(key, name, want_type):
-    parts = split_key(key)
+    parts = key.split(".")
     if len(parts) != 3 or parts[0] != "vtx":
         fail("InvalidArgument: " + name + ": required vtx.<type>.<NanoID> (exactly 3 segments); got " + key)
     if parts[1] == "":
@@ -208,32 +256,12 @@ def parts_of(key, name, want_type):
         fail("InvalidArgument: " + name + ": required vtx." + want_type + ".<NanoID>; got " + key)
     return parts[1], parts[2]
 
-def vertex_alive(state, key):
-    if key not in state:
-        return False
-    doc = state[key]
+def alive(doc):
     if doc == None:
         return False
     if hasattr(doc, "isDeleted") and doc.isDeleted:
         return False
     return True
-
-def bare_nanoid_or_mint(p):
-    # The bridge replyOp supplies a deterministic proposalId so a redelivered
-    # reply collapses on the existing vertex. A bare NanoID carries no dots / key
-    # segments so "vtx.augurproposal." + id is a single well-formed vertex key.
-    if not hasattr(p, "proposalId"):
-        return nanoid.new()
-    v = getattr(p, "proposalId")
-    if v == None:
-        return nanoid.new()
-    if type(v) != type("") or len(v.strip()) == 0:
-        fail("InvalidArgument: proposalId: must be a non-empty bare NanoID string")
-    v = v.strip()
-    for bad in [".", "*", ">", " ", "\t", "\n"]:
-        if bad in v:
-            fail("InvalidArgument: proposalId: must be a bare NanoID (no dots / key segments, wildcards, or whitespace); got " + v)
-    return v
 
 # The allowed escalation action vocabulary (design §5). A proposal naming any
 # other action is stored invalid — the model gains NO new authority, only the
@@ -243,8 +271,9 @@ ALLOWED_ACTIONS = ["triggerLoom", "assignTask", "directOp"]
 # The param keys that name an entity. A proposed action whose entity-naming param
 # references a candidate OTHER than the escalated one is a scope escape (design
 # §5): the model cannot propose acting on a different entity than the gap it was
-# asked to reason about. The check compares against both the full vertex key and
-# the bare NanoID, since a param may carry either form.
+# asked to reason about. The escalated candidate is read from the TRUSTED claim
+# vertex, never the model's reply. The check compares against both the full vertex
+# key and the bare NanoID, since a param may carry either form.
 ENTITY_PARAM_KEYS = ["scopedTo", "subject", "subjectKey", "entity", "entityKey", "candidate"]
 
 def scope_escape(params, entity_key, entity_id):
@@ -264,71 +293,143 @@ def execute(state, op):
     ot = op.operationType
     p = op.payload
 
-    if ot == "RecordProposal":
-        # --- envelope (structural preconditions; a malformed op is rejected) ---
-        target_key = required_string(p, "targetId")
-        entity_key = required_string(p, "entityId")
-        gap_column = required_string(p, "gapColumn")
-        trigger = required_string(p, "trigger")
-        action = required_string(p, "action")
-        confidence = required_number(p, "confidence")
-        rationale = optional_string(p, "rationale")
-        params = optional_dict(p, "params")
-        model = optional_string(p, "model")
-        prompt_hash = optional_string(p, "promptHash")
-        catalog_hash = optional_string(p, "catalogHash")
-        reasoned_at = optional_string(p, "reasonedAt")
+    if ot == "CreateAugurReasoningClaim":
+        # The Loom externalTask instanceOp: mint the claim vertex write-ahead of
+        # the reasoning call, recording the TRUSTED escalation context.
+        handle = required_bare_handle(p, "instanceKey")
+        adapter = required_string(p, "adapter")
+        reply_op = required_string(p, "replyOp")
+        gp = required_params(p)
+        target_key = dict_required_string(gp, "targetId")
+        entity_key = dict_required_string(gp, "entityId")
+        gap_column = dict_required_string(gp, "gapColumn")
+        trigger = dict_required_string(gp, "trigger")
 
-        # Validate endpoint key shapes.
-        parts_of(target_key, "targetId", "meta")
-        entity_type, entity_id = parts_of(entity_key, "entityId", "")
+        parts_of(target_key, "params.targetId", "meta")
+        entity_type, entity_id = parts_of(entity_key, "params.entityId", "")
+        target_id = target_key.split(".")[2]
 
-        # No-orphan invariant (FR29 / P4): both link endpoints MUST be alive, or
-        # no proposal is committed (a proposal pointing at a dead target / candidate
-        # is never recorded). The caller lists both in ContextHint.Reads.
-        if not vertex_alive(state, target_key):
+        # No-orphan (FR29 / P4): both link endpoints MUST be alive. The instanceOp
+        # is dispatched by Loom's actuator (its hydrated read-set varies by wiring),
+        # so the alive checks use kv.Read (Contract #2 §2.5 known-key lazy read) —
+        # read-path-independent, matched to the bridge reply leg's no-Reads posture.
+        if not alive(kv.Read(target_key)):
             fail("UnknownTarget: " + target_key)
-        if not vertex_alive(state, entity_key):
+        if not alive(kv.Read(entity_key)):
             fail("UnknownCandidate: " + entity_key)
 
-        # --- deterministic id + idempotency (Contract #10 §10.3 / §2.5) ---
-        # A redelivered reply supplies the SAME deterministic proposalId, so the
-        # key is stable; a present, ALIVE proposal means a duplicate reply — a
-        # coherent no-op (the CreateOnly mutation below also guards the same-commit
-        # concurrent race). kv.Read, NOT a contextHint read: the key may
-        # legitimately not exist yet, and a declared-but-absent read faults.
-        proposal_id = bare_nanoid_or_mint(p)
-        proposal_key = "vtx.augurproposal." + proposal_id
-        existing = kv.Read(proposal_key)
-        if existing != None and not existing.isDeleted:
-            return {"mutations": [], "events": []}
+        proposal_key = "vtx.augurproposal." + handle
+        forcand_lnk = "lnk.augurproposal." + handle + ".forCandidate." + entity_type + "." + entity_id
+        fortarget_lnk = "lnk.augurproposal." + handle + ".forTarget.meta." + target_id
 
-        # --- §5 record-time deterministic validation (the safety core) ---
-        # The proposal is ALWAYS stored (auditability); the verdict decides only
-        # whether it is pending (dispatchable) or invalid (never dispatchable).
-        review_state = "pending"
-        invalid_reason = ""
-        if action not in ALLOWED_ACTIONS:
-            review_state = "invalid"
-            invalid_reason = "action not in allowed escalation vocabulary (triggerLoom|assignTask|directOp): " + action
-        elif confidence < 0.0 or confidence > 1.0:
-            review_state = "invalid"
-            invalid_reason = "confidence out of range [0,1]: " + str(confidence)
-        else:
-            offending = scope_escape(params, entity_key, entity_id)
-            if offending != "":
-                review_state = "invalid"
-                invalid_reason = "scope escape: proposed param '" + offending + "' references an entity other than the escalated candidate " + entity_key
-
-        forcand_lnk = "lnk.augurproposal." + proposal_id + ".forCandidate." + entity_type + "." + entity_id
-        target_id = split_key(target_key)[2]
-        fortarget_lnk = "lnk.augurproposal." + proposal_id + ".forTarget.meta." + target_id
-
+        # Mint the claim vertex write-ahead with the TRUSTED gap context. The .gap
+        # aspect is the model-independent record of what was escalated; the replyOp
+        # reads entity/target identity from HERE, never from the model's reply (the
+        # load-bearing safety split, design §5). No .review / .proposed yet =
+        # reasoning in flight (mirrors lease-signing's outcome-absence). A redelivered
+        # instanceOp conflicts create-only on the root vertex and is rejected.
         mutations = [
             make_vtx(proposal_key, "augurproposal", {}),
             make_aspect(proposal_key, "gap", "augur.gap",
                         {"targetId": target_key, "entityId": entity_key,
                          "gapColumn": gap_column, "trigger": trigger}),
+            make_link(forcand_lnk, proposal_key, entity_key, "forCandidate", "forCandidate", {}),
+            make_link(fortarget_lnk, proposal_key, target_key, "forTarget", "forTarget", {}),
+        ]
+        # Emit external.<adapter> off this op's transactional outbox — the bridge's
+        # externalEvent shape. The bare handle is the correlation token (instanceKey
+        # == externalRef == idempotencyKey). params carries the gap context so the
+        # adapter (and FakeAugur) can scope its proposal to the escalated candidate.
+        event_data = {
+            "instanceKey":    handle,
+            "adapter":        adapter,
+            "replyOp":        reply_op,
+            "externalRef":    handle,
+            "idempotencyKey": handle,
+            "params":         {"entityId": entity_key, "targetId": target_key,
+                               "gapColumn": gap_column, "trigger": trigger},
+        }
+        events = [{"class": "external." + adapter, "data": event_data}]
+        return {"mutations": mutations, "events": events,
+                "response": {"primaryKey": proposal_key}}
+
+    if ot == "RecordProposal":
+        # The bridge replyOp: payload {externalRef, status, result}. Reconstruct the
+        # claim-vertex key from the bare handle; the bridge submits this with no
+        # ContextHint.Reads, so every read is a kv.Read of a known key.
+        handle = required_bare_handle(p, "externalRef")
+        proposal_key = "vtx.augurproposal." + handle
+
+        # Reconstruct the TRUSTED gap context from the claim vertex the instanceOp
+        # minted write-ahead (design §5 safety split: entity identity comes from
+        # HERE, never the model's reply). The claim MUST be live — its absence is a
+        # wiring fault (the instanceOp must commit first).
+        gap_doc = kv.Read(proposal_key + ".gap")
+        if not alive(gap_doc):
+            fail("UnknownAugurClaim: no live claim vertex for " + proposal_key + " (the CreateAugurReasoningClaim instanceOp must commit write-ahead of the reply)")
+        gd = gap_doc.data
+        if "entityId" not in gd:
+            fail("InvalidState: claim .gap missing entityId for " + proposal_key)
+        entity_key = gd["entityId"]
+        _, entity_id = parts_of(entity_key, "claim.gap.entityId", "")
+
+        status = required_string(p, "status")
+
+        review_state = "pending"
+        invalid_reason = ""
+        action = ""
+        params = {}
+        rationale = ""
+        confidence = 0.0
+        model = ""
+        prompt_hash = ""
+        catalog_hash = ""
+        reasoned_at = ""
+
+        if status == "failed":
+            # A modeled refusal (stop_reason "refusal") is a definitive verdict, NOT
+            # a crash: store the proposal invalid (auditable, never dispatchable) and
+            # ride the adapter's detail on the rationale for the reviewer.
+            review_state = "invalid"
+            invalid_reason = "model declined to propose (refusal)"
+            rationale = optional_string_attr(p, "result")
+        elif status == "completed":
+            result_str = required_string(p, "result")
+            proposal = json.decode(result_str)
+            if type(proposal) != type({}):
+                fail("InvalidArgument: result: reasoning result is not a JSON object")
+            action = proposal_string(proposal, "action")
+            params = proposal_dict(proposal, "params")
+            rationale = proposal_string(proposal, "rationale")
+            confidence = proposal_number(proposal, "confidence")
+            model = proposal_string(proposal, "model")
+            prompt_hash = proposal_string(proposal, "promptHash")
+            catalog_hash = proposal_string(proposal, "catalogHash")
+            reasoned_at = proposal_string(proposal, "reasonedAt")
+
+            # --- §5 record-time deterministic validation (the safety core) ---
+            # The proposal is ALWAYS stored (auditability); the verdict decides only
+            # pending (dispatchable) vs invalid (never dispatchable). The scope check
+            # compares the model's params against the TRUSTED entity_key from the claim.
+            if action not in ALLOWED_ACTIONS:
+                review_state = "invalid"
+                invalid_reason = "action not in allowed escalation vocabulary (triggerLoom|assignTask|directOp): " + action
+            elif confidence < 0.0 or confidence > 1.0:
+                review_state = "invalid"
+                invalid_reason = "confidence out of range [0,1]: " + str(confidence)
+            else:
+                offending = scope_escape(params, entity_key, entity_id)
+                if offending != "":
+                    review_state = "invalid"
+                    invalid_reason = "scope escape: proposed param '" + offending + "' references an entity other than the escalated candidate " + entity_key
+        else:
+            fail("InvalidArgument: status: must be one of completed, failed; got " + status)
+
+        # Write the model-derived aspects create-only — the once-only guarantee (a
+        # redelivered reply conflicts on .review and the batch is rejected, atop the
+        # bridge's deterministic reply requestId collapse). The .gap aspect + links
+        # the instanceOp committed are left untouched (D5).
+        mutations = [
             make_aspect(proposal_key, "proposed", "augur.proposed",
                         {"action": action, "params": params}),
             make_aspect(proposal_key, "rationale", "augur.rationale", {"text": rationale}),
@@ -339,13 +440,17 @@ def execute(state, op):
             make_aspect(proposal_key, "review", "augur.review",
                         {"state": review_state, "invalidReason": invalid_reason,
                          "reviewedAt": "", "dispatchedAt": ""}),
-            make_link(forcand_lnk, proposal_key, entity_key, "forCandidate", "forCandidate", {}),
-            make_link(fortarget_lnk, proposal_key, target_key, "forTarget", "forTarget", {}),
         ]
-        events = [{"class": "augur.proposalRecorded",
-                   "data": {"proposalKey": proposal_key, "targetId": target_key,
-                            "entityId": entity_key, "gapColumn": gap_column,
-                            "action": action, "reviewState": review_state}}]
+        # ALWAYS emit the completion signal Loom correlates on (the BARE handle as
+        # externalRef — Loom parks on token.<handle>): without it the externalTask
+        # never completes, even on an invalid verdict / refusal.
+        events = [
+            {"class": "orchestration.externalTaskCompleted",
+             "data": {"externalRef": handle}},
+            {"class": "augur.proposalRecorded",
+             "data": {"proposalKey": proposal_key, "entityId": entity_key,
+                      "action": action, "reviewState": review_state}},
+        ]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": proposal_key}}
 
