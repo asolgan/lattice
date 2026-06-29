@@ -1,6 +1,16 @@
 # Design — First Postgres read-model + the read boundary (the D1.3 enabler)
 
-**Status: 📐 awaiting-Andrew (ratification)** · Author: Winston (Designer fire, 2026-06-29).
+**Status: ✅ Andrew-ratified (2026-06-29)** · Author: Winston (Designer fire, 2026-06-29). Decisions confirmed: **Option A** (app-as-authenticated-reader; pool + per-request `SET LOCAL` txn, §3.3); **Refractor generates the RLS table+policy** from the protected lens spec; **first model = lease applications**; sequence after D1.1b.
+
+> **Lane assignment (Andrew, 2026-06-29) — SPLIT across both Steward streams (keeps disjoint code):**
+> **Fire 1 (Refractor RLS-provisioning) → Lattice Steward** — it is a reusable *platform* primitive
+> (`internal/refractor`; serves clinic + every future protected model, not just loftspace). **Fires 2–3
+> (the loftspace lease-app protected lens + residence grants + the read boundary in `cmd/loftspace-app`)
+> → Verticals Steward.** The only coordination is the natural ordering **Fire 1 → Fires 2–3** (Fire 1 is
+> self-contained + independently provable, so the handoff is light). This split avoids the Verticals stream
+> editing core `internal/refractor` (which would collide with a concurrent Lattice fire — the exact thing
+> the two-stream disjoint-code model prevents). Both rows are queued (lattice.md Fire 1 / verticals.md
+> Fires 2–3).
 **Backlog row:** `planning-artifacts/backlog/lattice.md` → *Read-model / projection maturity* → "First Postgres read-model + read boundary (D1.3 enabler)".
 **Parent:** Read-path authorization (D1) — this resolves the one open design question D1.3 (RLS enforcement) waits on. D1.1 (base `cap-read` lens, `43a476a`) + D1.2 (JWT auth seam, `136f49c`) have shipped; this is the bridge to D1.3.
 
@@ -91,21 +101,34 @@ Deriving the DDL+policy from the spec (the columns, the `authz_anchors` conventi
 
 ### 3.3 The read boundary (the fork — Option A: app-as-authenticated-reader)
 
-`loftspace-app` becomes an **authenticated reader** of the protected model:
+`loftspace-app` becomes an **authenticated reader** of the protected model.
+
+> **Connection model — a POOL, with a per-request transaction (NOT a single shared connection).** This is the
+> easiest thing to implement wrong, so it is normative. The app holds a `pgxpool` of **N** connections (not
+> one — one would serialize every request *and* is unsafe). RLS reads the actor from a **session variable**
+> (`current_setting('lattice.actor_id')`), and a pooled connection **carries session state across requests**,
+> so the actor identity MUST be scoped to the request or request B inherits request A's actor → cross-actor
+> leak. The mechanism that makes pooling safe is **`SET LOCAL` inside a per-request transaction**: `SET LOCAL`
+> is **transaction-scoped** and is **discarded at `COMMIT`**, so the connection returns to the pool with **no**
+> `actor_id` → the next request's queries match nothing (deny) until it sets its own. Never use a plain `SET`
+> (session-scoped — it leaks across the pool). The query carries **no auth `WHERE`** — the RLS policy injects it.
 
 ```
 handleApplications:
-  actor, err := s.authenticator.Authenticate(r)        // D1.2: verify JWT → actor; revocation-checked; fail closed
+  actor, err := s.authenticator.Authenticate(r)         // D1.2: verify JWT → actor; revocation-checked; fail closed
   if err != nil { 401 }
-  conn := pgPool.Acquire(ctx)                            // a pgx session
-  conn.Exec(ctx, "SET LOCAL lattice.actor_id = $1", actor)   // the RLS principal, from the VERIFIED actor only
-  rows := conn.Query(ctx, "SELECT ... FROM read_lease_applications")   // RLS returns only the actor's rows
+  tx, _ := pgPool.Begin(ctx)                             // acquire a POOLED conn + a per-request transaction
+  defer tx.Rollback(ctx)
+  tx.Exec(ctx, "SET LOCAL lattice.actor_id = $1", actor) // LOCAL = txn-scoped; the RLS principal, from the VERIFIED actor ONLY
+  rows := tx.Query(ctx, "SELECT ... FROM read_lease_applications")  // RLS auto-filters to this actor; NO auth WHERE
+  tx.Commit(ctx)                                          // SET LOCAL discarded here → connection returns to the pool CLEAN
   // NO client-supplied `applicant` filter — RLS is the scope
 ```
 
-- The `actor` comes **only** from the verified JWT (`internal/gateway/auth`), never a query param or header the client controls. `SET LOCAL` is transaction-scoped (per-request), so sessions can't bleed actor identity across requests (use an explicit transaction or a per-request connection).
-- The shared `internal/gateway/auth` means the *authentication* is resolved once (one library), and **RLS** resolves the *authorization* once (the DB). Neither is re-implemented per app — this is **not** the rejected "auth in each app."
-- **Trust assumption (flagged):** the app process is trusted to set `lattice.actor_id` honestly. For a first-party app (like Loupe's loopback-bind posture) that is the accepted D1.3 trust boundary; an untrusted/external reader is what Option C (the Gateway translator, deferred) later interposes. The app's Postgres role holds only `SELECT` on protected read tables (no direct grant-table write), so a compromised app can mis-set `actor_id` to *another* actor but cannot forge grants — bounded blast radius, and the forged-actor read is still attributable to the app's DB role in logs.
+- The `actor` comes **only** from the verified JWT (`internal/gateway/auth`), never a query param or header the client controls (so `?applicant=B` does nothing — RLS keys off the session var, not the param).
+- **The app's Postgres role is a normal (non-superuser, non-`BYPASSRLS`) role** with **`SELECT`-only** on protected read tables. Superusers/`BYPASSRLS` roles skip RLS entirely, and `FORCE ROW LEVEL SECURITY` (H3) makes the policy apply even to the table owner — so the app *cannot* be a role that bypasses. `SELECT`-only means a compromised app can mis-set `actor_id` to *another* actor but **cannot forge a grant row** — bounded blast radius, and the read is attributable to the app's DB role in logs.
+- The shared `internal/gateway/auth` means *authentication* is resolved once (one library); **RLS** resolves *authorization* once (the DB). Neither is re-implemented per app — this is **not** the rejected "auth in each app."
+- **Trust assumption (flagged):** the app process is trusted to set `lattice.actor_id` honestly (from the verified JWT). For a first-party app (Loupe's loopback-bind posture) that is the accepted D1.3 trust boundary; an untrusted/external reader is what Option C (the Gateway translator, deferred) later interposes.
 
 ### 3.4 Read path (P5) / write path (P2)
 
