@@ -259,16 +259,15 @@ func seedVertexTypeDDLAs(t *testing.T, ctx context.Context, conn substrateConn, 
 	}
 }
 
-// E1 — a vertex with TWO live instanceOf links resolves deterministically (lowest
-// link key wins) across repeated evaluations, instead of map-iteration-random.
-// widget admits CreateWidgetInstance; gadget does not — so a stable PASS proves
-// widget (the lower link key) is chosen every time.
-func TestResolveGoverningDDL_MultipleLiveLinksDeterministic(t *testing.T) {
+// E1 — multiple live instanceOf links are AMBIGUOUS → the permissive default
+// (design §9 F1, mirroring the ClassForCommand ambiguity guard: never pick a
+// type authority when it is ambiguous, so an extra link cannot steer the gate).
+// A single strict link rejects a non-admitted op; adding a second live link
+// disables enforcement (the op now passes) — proving ambiguity is not a guessed
+// pick. Run repeatedly so a map-iteration-random pick would flake.
+func TestResolveGoverningDDL_MultipleLiveLinksAreAmbiguous(t *testing.T) {
 	ctx, conn, _, _, _ := setupTestPipeline(t)
-	seedWidgetTypeDDL(t, ctx, conn) // widget (svcTypeID) admits CreateWidgetInstance
-	// gadget (gadgetTypeID) is a real vertexType DDL that does NOT admit it, and
-	// its link key sorts AFTER widget's — so if selection were map-random, ~half
-	// the iterations would pick gadget and REJECT.
+	seedWidgetTypeDDL(t, ctx, conn) // widget (svcTypeID) admits CreateWidgetInstance, not Delete
 	seedVertexTypeDDLAs(t, ctx, conn, gadgetTypeID, "gadget", `["CreateGadget"]`)
 	cache := NewDDLCache(conn, testCoreBucket, testLogger())
 	if err := cache.Refresh(ctx); err != nil {
@@ -278,16 +277,26 @@ func TestResolveGoverningDDL_MultipleLiveLinksDeterministic(t *testing.T) {
 
 	lkWidget := fmt.Sprintf("lnk.widget.%s.instanceOf.meta.%s", instID, svcTypeID)
 	lkGadget := fmt.Sprintf("lnk.widget.%s.instanceOf.meta.%s", instID, gadgetTypeID)
-	state := HydratedState{Context: ScriptContext{Hydrated: map[string]VertexDoc{
+	env := newTestEnvelope(testNanoID1)
+	env.OperationType = "DeleteWidgetInstance" // admitted by NEITHER widget nor gadget
+	result := ScriptResult{Mutations: []MutationOp{instanceVertexMut("update", instID)}}
+
+	// One live link → widget governs → DeleteWidgetInstance is REJECTED.
+	single := HydratedState{Context: ScriptContext{Hydrated: map[string]VertexDoc{
+		lkWidget: {Key: lkWidget, Class: "instanceOf"},
+	}}}
+	if err := v.Validate(ctx, env, result, single); err == nil {
+		t.Fatalf("a single strict instanceOf must reject the non-admitted op")
+	}
+
+	// Two live links → ambiguous → permissive default → the op PASSES, every time.
+	both := HydratedState{Context: ScriptContext{Hydrated: map[string]VertexDoc{
 		lkWidget: {Key: lkWidget, Class: "instanceOf"},
 		lkGadget: {Key: lkGadget, Class: "instanceOf"},
 	}}}
-	env := newTestEnvelope(testNanoID1)
-	env.OperationType = "CreateWidgetInstance"
-	result := ScriptResult{Mutations: []MutationOp{instanceVertexMut("update", instID)}}
 	for i := 0; i < 50; i++ {
-		if err := v.Validate(ctx, env, result, state); err != nil {
-			t.Fatalf("iter %d: expected stable PASS (widget = lowest link key) but got: %v", i, err)
+		if err := v.Validate(ctx, env, result, both); err != nil {
+			t.Fatalf("iter %d: ambiguous (2 live links) must resolve permissive, got: %v", i, err)
 		}
 	}
 }

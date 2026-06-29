@@ -21,10 +21,10 @@ const maxInstanceOfHops = 4
 const instanceOfRelation = "instanceOf"
 
 // instanceOfEdge is one resolved instanceOf link: its 6-segment link key and the
-// 3-segment vertex key it points at. The link key is the determinism handle — a
-// vertex is expected to carry at most one live instanceOf (Contract #1 §1.5
-// design assumption), but if more than one exists the resolver selects the
-// lowest link key so the gate decision is identical across retries/redeliveries.
+// 3-segment vertex key it points at. A vertex is expected to carry at most one
+// live instanceOf (Contract #1 §1.5 design assumption); more than one is
+// ambiguous and resolves to the permissive default (design §9 F1), never a
+// guessed pick. Edges are kept link-key-sorted for stable, retry-identical logs.
 type instanceOfEdge struct {
 	linkKey string
 	target  string
@@ -149,21 +149,23 @@ func (v *ValidatorImpl) resolveGoverningDDL(ctx context.Context, class, key stri
 	return MetaVertexRef{}, false
 }
 
-// instanceOfTargetOf returns the live instanceOf target of vtxRoot, deterministic
-// across retries. The in-flight batch is the authoritative truth (last op per
-// link key wins; a tombstone in the batch suppresses the same link committed
-// below). If the batch carries a live instanceOf it wins; otherwise the hydrated
-// working set, then a single bounded on-demand Core KV read — each excluding any
-// link the batch tombstoned. Within any layer, multiple live links resolve to
-// the lowest link key (the ≤1-live-instanceOf design assumption made
-// retry-stable rather than map-iteration-random).
+// instanceOfTargetOf returns the live instanceOf target of vtxRoot. A vertex is
+// expected to carry exactly one live instanceOf (Contract #1 §1.5 design
+// assumption); the resolving layer therefore resolves only when it holds
+// **exactly one** live edge. Multiple live edges are **ambiguous → no
+// resolution** (the caller applies the permissive default) — mirroring the
+// `ClassForCommand` ambiguity guard (design §9 F1: never pick the admitting DDL
+// when the type authority is ambiguous, so an extra instanceOf link cannot steer
+// the gate). The in-flight batch is the authoritative layer (last op per link
+// key wins; a tombstone in the batch suppresses the same link committed below);
+// then the hydrated working set, then a single bounded on-demand Core KV read.
 func (v *ValidatorImpl) instanceOfTargetOf(ctx context.Context, vtxRoot string, result ScriptResult, state HydratedState) (string, bool) {
 	batchLive, batchDead := reconcileBatchInstanceOf(vtxRoot, result.Mutations)
 	if len(batchLive) > 0 {
-		return pickEdge(batchLive), true
+		return soleTarget(batchLive)
 	}
 	if edges := workingSetInstanceOfEdges(vtxRoot, state.Context.Hydrated, batchDead); len(edges) > 0 {
-		return pickEdge(edges), true
+		return soleTarget(edges)
 	}
 	if v.linkReader != nil {
 		edges, err := v.linkReader.LiveInstanceOfTargets(ctx, vtxRoot)
@@ -174,10 +176,19 @@ func (v *ValidatorImpl) instanceOfTargetOf(ctx context.Context, vtxRoot string, 
 				"vtxRoot", vtxRoot, "error", err)
 			return "", false
 		}
-		edges = excludeDead(edges, batchDead)
-		if len(edges) > 0 {
-			return pickEdge(edges), true
+		if edges = excludeDead(edges, batchDead); len(edges) > 0 {
+			return soleTarget(edges)
 		}
+	}
+	return "", false
+}
+
+// soleTarget returns the single edge's target, or no resolution when the layer
+// carries more than one live instanceOf (ambiguous type authority → permissive
+// default per design §9 F1).
+func soleTarget(edges []instanceOfEdge) (string, bool) {
+	if len(edges) == 1 {
+		return edges[0].target, true
 	}
 	return "", false
 }
@@ -234,12 +245,6 @@ func workingSetInstanceOfEdges(vtxRoot string, hydrated map[string]VertexDoc, de
 	sortEdges(edges)
 	return edges
 }
-
-// pickEdge returns the target of the lowest-link-key edge — the deterministic
-// selection when (against the design's ≤1-live-instanceOf assumption) more than
-// one live link exists. Callers pass an already-sorted slice; this asserts the
-// invariant by indexing the head.
-func pickEdge(edges []instanceOfEdge) string { return edges[0].target }
 
 // excludeDead drops edges whose link key the batch tombstoned.
 func excludeDead(edges []instanceOfEdge, dead map[string]bool) []instanceOfEdge {
