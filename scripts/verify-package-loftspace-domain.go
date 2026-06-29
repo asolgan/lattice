@@ -10,7 +10,10 @@
 //	  SetListing + SetUnitAddress + SetListingStatus, with its self-description aspects.
 //	1 listing  aspect-type DDL (class=meta.ddl.aspectType) admitting SetListing + SetListingStatus.
 //	1 address  aspect-type DDL (class=meta.ddl.aspectType) admitting SetUnitAddress.
-//	3 permission vertices (SetListing, SetUnitAddress, SetListingStatus), scope any, granted to operator.
+//	1 loftspaceOwnership DDL meta-vertex (class=meta.ddl.vertexType) admitting
+//	  AssignUnitOwner + RemoveUnitOwner, with its self-description aspects.
+//	5 permission vertices (SetListing, SetUnitAddress, SetListingStatus,
+//	  AssignUnitOwner, RemoveUnitOwner), scope any, granted to operator.
 //	1 package vertex + manifest aspect (name=loftspace-domain).
 //
 // Run via: go run ./scripts/verify-package-loftspace-domain.go
@@ -33,10 +36,18 @@ import (
 const (
 	loftspacePackageName  = "loftspace-domain"
 	loftspaceListingDDL   = "loftspaceListing"
+	loftspaceOwnershipDDL = "loftspaceOwnership"
 	loftspaceCoreKVBucket = "core-kv"
 )
 
-var loftspaceExpectedOps = []string{"SetListing", "SetUnitAddress", "SetListingStatus"}
+// loftspaceListingOps are the loftspaceListing vertexType DDL's commands;
+// loftspaceOwnershipOps the loftspaceOwnership vertexType DDL's. loftspaceExpectedOps
+// is every op that gets a permission vertex (the union).
+var (
+	loftspaceListingOps   = []string{"SetListing", "SetUnitAddress", "SetListingStatus"}
+	loftspaceOwnershipOps = []string{"AssignUnitOwner", "RemoveUnitOwner"}
+	loftspaceExpectedOps  = append(append([]string{}, loftspaceListingOps...), loftspaceOwnershipOps...)
+)
 
 // ddlCheck describes one DDL to verify: its canonical name, its expected meta
 // class, and the ops its permittedCommands must contain.
@@ -98,9 +109,10 @@ func main() {
 	fmt.Printf("verify-package-loftspace-domain: scanning %d Core KV keys...\n", len(allKeys))
 
 	ddlChecks := []ddlCheck{
-		{canonical: loftspaceListingDDL, class: "meta.ddl.vertexType", ops: loftspaceExpectedOps},
+		{canonical: loftspaceListingDDL, class: "meta.ddl.vertexType", ops: loftspaceListingOps},
 		{canonical: "listing", class: "meta.ddl.aspectType", ops: []string{"SetListing", "SetListingStatus"}},
 		{canonical: "address", class: "meta.ddl.aspectType", ops: []string{"SetUnitAddress"}},
+		{canonical: loftspaceOwnershipDDL, class: "meta.ddl.vertexType", ops: loftspaceOwnershipOps},
 	}
 
 	for _, dc := range ddlChecks {

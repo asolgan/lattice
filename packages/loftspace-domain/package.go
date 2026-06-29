@@ -27,6 +27,14 @@
 // sensitiveAspectScope does not fire. Applicant income / employment (the
 // sensitive data) lives on the identity, not here.
 //
+// A second vertexType DDL (loftspaceOwnership) owns AssignUnitOwner /
+// RemoveUnitOwner — the landlord→unit management LINK
+// (lnk.identity.<landlordID>.manages.unit.<unitID>, class "manages"). It models
+// who manages a unit so the cap-read.residence grant lens can scope a landlord's
+// reads to their own units' applications (D1.3). Like the aspects, it
+// contributes the link on top of identity-domain's identity and location-domain's
+// unit without owning a vertex type.
+//
 // This is the foundation an applicant FE renders: "what am I applying to lease"
 // becomes answerable. lease-signing's CreateLeaseApplication walks an
 // appliesToUnit link to this unit (a later increment).
@@ -40,8 +48,8 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
 	Name:        "loftspace-domain",
-	Version:     "0.3.0",
-	Description: "LoftSpace listing economics: the .listing + .address aspects on a location unit, written by SetListing / SetUnitAddress / SetListingStatus. Depends on location-domain; introduces no vertex type.",
+	Version:     "0.4.0",
+	Description: "LoftSpace listing economics: the .listing + .address aspects on a location unit (SetListing / SetUnitAddress / SetListingStatus) + the landlord→unit management link (AssignUnitOwner / RemoveUnitOwner). Depends on location-domain; introduces no vertex type.",
 	Depends:     []string{"location-domain"},
 	DDLs:        DDLs(),
 	Lenses:      Lenses(),

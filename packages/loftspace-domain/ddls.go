@@ -12,11 +12,13 @@ const (
 	addressAspectDDL    = "address"
 )
 
-// DDLs returns the package's three DDL meta-vertex declarations:
+// DDLs returns the package's four DDL meta-vertex declarations:
 //
 //   - loftspaceListing (vertexType) — owns SetListing + SetUnitAddress.
 //   - listing (aspectType) — declares the .listing aspect shape, admits SetListing.
 //   - address (aspectType) — declares the .address aspect shape, admits SetUnitAddress.
+//   - loftspaceOwnership (vertexType) — owns AssignUnitOwner + RemoveUnitOwner,
+//     which write / tombstone the landlord→unit management link (D1.3).
 //
 // Architectural rules (binding — the same known-key discipline as
 // location-domain / service-domain):
@@ -40,7 +42,7 @@ const (
 // vertices) must NOT fire. Applicant income / employment is the sensitive data;
 // it lives on the identity (identity-domain), not here.
 func DDLs() []pkgmgr.DDLSpec {
-	return []pkgmgr.DDLSpec{loftspaceListingVertexDDL(), listingAspectTypeDDL(), addressAspectTypeDDL()}
+	return []pkgmgr.DDLSpec{loftspaceListingVertexDDL(), listingAspectTypeDDL(), addressAspectTypeDDL(), loftspaceOwnershipVertexDDL()}
 }
 
 func loftspaceListingVertexDDL() pkgmgr.DDLSpec {

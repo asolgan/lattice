@@ -47,7 +47,7 @@ const (
 
 // loftspaceOps are the ops the staff actor needs: CreateLocation (to mint the
 // unit it operates on) + the loftspace ops.
-var loftspaceOps = []string{"CreateLocation", "SetListing", "SetUnitAddress", "SetListingStatus"}
+var loftspaceOps = []string{"CreateLocation", "SetListing", "SetUnitAddress", "SetListingStatus", "AssignUnitOwner", "RemoveUnitOwner"}
 
 func lsStaffCapDoc() *processor.CapabilityDoc {
 	now := time.Now().UTC()

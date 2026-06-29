@@ -23,13 +23,14 @@ func TestPackage_ManifestMatchesDefinition(t *testing.T) {
 	}
 }
 
-// TestPackage_DDLs pins the three DDLs: one vertexType (loftspaceListing) owning
-// the two ops, and two aspectType step-6 gates (listing, address). The aspect
-// DDLs MUST be NON-sensitive (they attach to a unit, not an identity — a
-// sensitive aspect there would trip step-6's sensitiveAspectScope).
+// TestPackage_DDLs pins the four DDLs: two vertexType DDLs (loftspaceListing
+// owning the listing/address ops, loftspaceOwnership owning the management-link
+// ops) and two aspectType step-6 gates (listing, address). The aspect DDLs MUST
+// be NON-sensitive (they attach to a unit, not an identity — a sensitive aspect
+// there would trip step-6's sensitiveAspectScope).
 func TestPackage_DDLs(t *testing.T) {
-	if got := len(Package.DDLs); got != 3 {
-		t.Fatalf("expected 3 DDLs, got %d", got)
+	if got := len(Package.DDLs); got != 4 {
+		t.Fatalf("expected 4 DDLs, got %d", got)
 	}
 
 	byName := map[string]pkgmgr.DDLSpec{}
@@ -54,6 +55,30 @@ func TestPackage_DDLs(t *testing.T) {
 	for c, seen := range wantCmds {
 		if !seen {
 			t.Fatalf("loftspaceListing missing command %q (have %v)", c, vertex.PermittedCommands)
+		}
+	}
+
+	// loftspaceOwnership (vertexType) owns the two management-link ops.
+	ownership, ok := byName["loftspaceOwnership"]
+	if !ok {
+		t.Fatal("missing loftspaceOwnership vertexType DDL")
+	}
+	if ownership.Class != "meta.ddl.vertexType" {
+		t.Fatalf("loftspaceOwnership class = %q, want meta.ddl.vertexType", ownership.Class)
+	}
+	wantOwnerCmds := map[string]bool{"AssignUnitOwner": false, "RemoveUnitOwner": false}
+	if len(ownership.PermittedCommands) != len(wantOwnerCmds) {
+		t.Fatalf("loftspaceOwnership permittedCommands = %v, want %v", ownership.PermittedCommands, []string{"AssignUnitOwner", "RemoveUnitOwner"})
+	}
+	for _, c := range ownership.PermittedCommands {
+		if _, ok := wantOwnerCmds[c]; !ok {
+			t.Fatalf("unexpected loftspaceOwnership command %q", c)
+		}
+		wantOwnerCmds[c] = true
+	}
+	for c, seen := range wantOwnerCmds {
+		if !seen {
+			t.Fatalf("loftspaceOwnership missing command %q (have %v)", c, ownership.PermittedCommands)
 		}
 	}
 
@@ -91,10 +116,10 @@ func TestPackage_DDLs(t *testing.T) {
 	}
 }
 
-// TestPackage_Permissions pins both ops granted to operator (scope any) and
+// TestPackage_Permissions pins every op granted to operator (scope any) and
 // nothing else, and the location-domain dependency.
 func TestPackage_Permissions(t *testing.T) {
-	wantPerms := map[string]bool{"SetListing": false, "SetUnitAddress": false, "SetListingStatus": false}
+	wantPerms := map[string]bool{"SetListing": false, "SetUnitAddress": false, "SetListingStatus": false, "AssignUnitOwner": false, "RemoveUnitOwner": false}
 	if got := len(Package.Permissions); got != len(wantPerms) {
 		t.Fatalf("expected %d permissions, got %d", len(wantPerms), got)
 	}
@@ -146,13 +171,39 @@ func TestPackage_Permissions(t *testing.T) {
 	}
 }
 
-// TestPackage_NoScans mirrors the known-key discipline guard: the script must
+// TestPackage_NoScans mirrors the known-key discipline guard: every script must
 // read only by known key, never a prefix scan.
 func TestPackage_NoScans(t *testing.T) {
-	src := loftspaceListingDDLScript
-	for _, forbidden := range []string{"KVListKeys", "list_keys", "scan(", "keys_with_prefix"} {
-		if strings.Contains(src, forbidden) {
-			t.Errorf("loftspaceListing script must not reference prefix-scan helper %q", forbidden)
+	for name, src := range map[string]string{
+		"loftspaceListing":   loftspaceListingDDLScript,
+		"loftspaceOwnership": loftspaceOwnershipDDLScript,
+	} {
+		for _, forbidden := range []string{"KVListKeys", "list_keys", "scan(", "keys_with_prefix"} {
+			if strings.Contains(src, forbidden) {
+				t.Errorf("%s script must not reference prefix-scan helper %q", name, forbidden)
+			}
+		}
+	}
+}
+
+// TestPackage_OwnershipScriptGuards pins the ownership script's load-bearing
+// invariants: the landlord must be a vtx.identity, the unit a class=location
+// vtx.unit, the link the management relation, and the per-pair link read on
+// demand (kv.Read) so a re-assign / revive / no-op is deterministic.
+func TestPackage_OwnershipScriptGuards(t *testing.T) {
+	src := loftspaceOwnershipDDLScript
+	for _, want := range []string{
+		`vertex_parts(landlord, "landlord", "identity")`, // landlord must be vtx.identity
+		`vertex_parts(unit, "unit", "unit")`,             // unit must be vtx.unit
+		"UnknownLandlord",                                // alive-identity guard
+		"NotAUnit",                                       // class=location guard
+		".manages.unit.",                                 // the management link key shape
+		"kv.Read(link_key)",                              // on-demand per-pair read
+		"make_link_revive_occ",                           // revive-after-remove (CAS)
+		"make_link_tombstone",                            // RemoveUnitOwner
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("loftspaceOwnership script must reference %q", want)
 		}
 	}
 }
