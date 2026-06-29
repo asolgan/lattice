@@ -316,6 +316,9 @@ func (s *ConsumerSupervisor) createConsumer(ctx context.Context, spec ConsumerSp
 	if spec.AckWait > 0 {
 		cfg.AckWait = spec.AckWait
 	}
+	if spec.MaxAckPending > 0 {
+		cfg.MaxAckPending = spec.MaxAckPending
+	}
 	cons, err := s.conn.js.CreateOrUpdateConsumer(ctx, spec.Stream, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("substrate: ConsumerSupervisor: create consumer %q on %q: %w",

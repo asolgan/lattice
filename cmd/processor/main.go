@@ -1,7 +1,10 @@
 // cmd/processor — Lattice Processor binary.
 //
-// Connects to NATS, ensures the durable JetStream consumer exists, and drives
-// the full 9-step commit path on each delivered operation envelope.
+// Connects to NATS, registers one durable JetStream consumer per operation lane
+// (default / urgent / system / meta) on a substrate ConsumerSupervisor, and
+// drives the full 9-step commit path on each delivered operation envelope. The
+// meta lane is serialized (MaxAckPending=1, Contract #2 §3.7); the legacy
+// single processor-main durable is retired on startup (one-time migration).
 //
 // Environment:
 //
@@ -9,9 +12,7 @@
 //	LATTICE_AUTH_MODE                 capability (default) | stub (test/dev — emits stub-auth-active alert)
 //	LATTICE_AUTH_TRACE_ALLOW_DECISIONS  "true" to also trace ALLOWED decisions (default: "false" — denial-only per FR23)
 //	PROCESSOR_INSTANCE                instance id (default: auto-generated proc-<NanoID>)
-//	PROCESSOR_DURABLE                 JetStream durable consumer name (default: processor-main)
 //	PROCESSOR_STREAM                  JetStream stream name (default: core-operations)
-//	PROCESSOR_FILTER                  comma-separated subject filters (default: ops.default,ops.urgent,ops.system,ops.meta)
 //	HEALTH_INTERVAL_SEC               heartbeat interval in seconds (default: 10, minimum: 10 per NFR-O1)
 //
 // Logs to stderr in slog text format. Exits non-zero on any startup
@@ -27,7 +28,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -66,10 +66,7 @@ func run(logger *slog.Logger) error {
 		instance = "proc-" + id
 	}
 
-	durable := envOrDefault("PROCESSOR_DURABLE", "processor-main")
 	stream := envOrDefault("PROCESSOR_STREAM", "core-operations")
-	filterCSV := envOrDefault("PROCESSOR_FILTER", "ops.default,ops.urgent,ops.system,ops.meta")
-	filter := splitCSV(filterCSV)
 	hbSec := envIntOrDefault("HEALTH_INTERVAL_SEC", 10)
 	if hbSec < 10 {
 		logger.Warn("HEALTH_INTERVAL_SEC below NFR-O1 minimum (10s); clamping",
@@ -81,9 +78,8 @@ func run(logger *slog.Logger) error {
 		"natsURL", natsURL,
 		"authMode", string(authMode),
 		"instance", instance,
-		"durable", durable,
 		"stream", stream,
-		"filter", filter,
+		"lanes", "default,urgent,system,meta",
 	)
 
 	conn, err := substrate.Connect(context.Background(), substrate.ConnectOpts{
@@ -135,29 +131,39 @@ func run(logger *slog.Logger) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Register the operation consumer on a substrate ConsumerSupervisor (the same
-	// supervised pump Loom/Weaver/Refractor use). Add both creates the durable and
-	// starts its pump goroutine, so the supervisor must be ready before the
-	// heartbeater so the heartbeat can read the consumer's real backlog (lane_lag)
-	// via the supervisor. A single all-lanes spec preserves the existing
-	// processor-main durable (byte-identical config: the same four lane filters,
-	// 30s AckWait, DeliverAll) — no lane split, no durable migration.
-	sup := substrate.NewConsumerSupervisor(conn)
-	spec := substrate.ConsumerSpec{
-		Name:           durable,
-		Stream:         stream,
-		FilterSubjects: filter,
-		DeliverPolicy:  substrate.DeliverAll,
-		AckWait:        30 * time.Second,
-		Handler:        cp.SupervisedHandler(),
-		Logger:         logger,
+	// One-time durable migration: retire the legacy single all-lanes
+	// processor-main consumer (the Fire-1 model) before registering the per-lane
+	// durables. The new lane durables start DeliverAll, so the retained stream
+	// re-delivers to them; already-committed ops short-circuit at the step-2 dedup
+	// tracker (durable — the op-vertex tracker is not pruned), so the migration is
+	// idempotent with no double-commit and no data loss. Assumes the MVP
+	// single-instance / sequential-restart deploy model. Best-effort: a failed
+	// cleanup (e.g. a transient NATS blip, or a peer instance mid-deploy still
+	// using the durable) only leaves an orphaned, pumpless processor-main parked on
+	// the stream — harmless — so it must NOT block the Processor from serving; log
+	// and continue rather than abort startup.
+	if err := conn.DeleteStreamConsumer(ctx, stream, processor.LegacyDurable); err != nil {
+		logger.Warn("legacy durable retirement failed; continuing (orphaned consumer is harmless)",
+			"durable", processor.LegacyDurable, "error", err)
 	}
-	if err := sup.Add(ctx, spec); err != nil {
-		cancel()
-		return fmt.Errorf("register operation consumer: %w", err)
+
+	// Register one operation consumer per lane on a substrate ConsumerSupervisor
+	// (the same supervised pump Loom/Weaver/Refractor use). Each Add creates the
+	// lane's durable and starts its pump goroutine, so the supervisor must be
+	// ready before the heartbeater so the heartbeat can read each lane's real
+	// backlog (lane_lag) via the supervisor. The meta lane is pinned to
+	// MaxAckPending=1 (Contract #2 §3.7) inside LaneSpecs; lanes drain on
+	// independent pumps (priority isolation — urgent no longer queues behind
+	// default).
+	sup := substrate.NewConsumerSupervisor(conn)
+	for _, spec := range processor.LaneSpecs(stream, cp.SupervisedHandler(), 30*time.Second, logger) {
+		if err := sup.Add(ctx, spec); err != nil {
+			cancel()
+			return fmt.Errorf("register %q lane consumer: %w", spec.Name, err)
+		}
 	}
 	defer sup.Stop()
-	hb.AttachBacklogReader(sup, durable)
+	hb.AttachBacklogReader(sup, processor.LaneDurables())
 
 	// Start heartbeater.
 	hbDone := make(chan struct{})
@@ -221,16 +227,4 @@ func envIntOrDefault(key string, def int) int {
 		}
 	}
 	return def
-}
-
-func splitCSV(s string) []string {
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
 }

@@ -190,6 +190,22 @@ func (c *Conn) DeleteDurable(ctx context.Context, bucket, durableName string) er
 	return nil
 }
 
+// DeleteStreamConsumer removes a single named durable consumer from an event
+// stream (not a KV bucket — use DeleteDurable for those). It is the seam for a
+// one-time durable migration: retiring a superseded consumer whose un-acked
+// messages then redeliver to the replacement durables. Idempotent — a
+// consumer-not-found error is treated as success (already gone / never existed),
+// so it is safe to call unconditionally on every startup.
+func (c *Conn) DeleteStreamConsumer(ctx context.Context, stream, durableName string) error {
+	if err := c.js.DeleteConsumer(ctx, stream, durableName); err != nil {
+		if errors.Is(err, jetstream.ErrConsumerNotFound) {
+			return nil
+		}
+		return fmt.Errorf("substrate: DeleteStreamConsumer: delete %q on %q: %w", durableName, stream, err)
+	}
+	return nil
+}
+
 // normalizePrefix ensures the prefix ends in a wildcard token so that the
 // resulting FilterSubject is a legal NATS subject pattern. Callers may
 // pass any of: "", "vtx.meta.", "vtx.meta.>", "vtx.*".

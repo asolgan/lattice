@@ -153,6 +153,12 @@ type ConsumerSpec struct {
 	// un-acked message that triggered an infra pause redeliver promptly once the
 	// pump resumes.
 	AckWait time.Duration
+	// MaxAckPending caps the number of un-acked messages JetStream keeps in
+	// flight to this consumer. Zero leaves the JetStream default. Setting it to
+	// 1 forces server-side serialization independent of how the pump drains —
+	// the Processor's `meta` lane uses this to satisfy Contract #2 §3.7 ("`meta`
+	// lane consumer is configured with `MaxAckPending=1`").
+	MaxAckPending int
 
 	// Handler is the message-processing policy (required).
 	Handler SupervisedHandler

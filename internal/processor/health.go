@@ -78,19 +78,22 @@ type HealthHeartbeater struct {
 	// always emits.
 	capAuthorizer *CapabilityAuthorizer
 
-	// Lane-backlog reader for real lane_lag reporting, plus the durable name to
-	// query. Attached by the cmd wiring once the ConsumerSupervisor has the
-	// Processor consumer registered, before Run starts (so no concurrent access
-	// with the emit loop). A nil reader ⇒ backlog reported as null, never a
+	// Lane-backlog reader for real per-lane lane_lag reporting, plus the
+	// lane→durable map it queries. Attached by the cmd wiring once the
+	// ConsumerSupervisor has all four lane consumers registered, before Run
+	// starts (so no concurrent access with the emit loop). A nil reader — or a
+	// lane absent from the map — ⇒ that lane reported as null, never a
 	// fabricated zero.
-	backlog        LaneBacklogReader
-	backlogDurable string
+	backlog      LaneBacklogReader
+	laneDurables map[string]string
 
 	// lagThreshold is the backlog count above which ProcessorLaneLagging fires.
 	lagThreshold uint64
 
-	// openIssues tracks code → since-timestamp for currently-open issues so the
-	// §5.5 since field persists across heartbeats and drops on resolve.
+	// openIssues tracks an internal issue key → since-timestamp for currently-open
+	// issues so the §5.5 since field persists across heartbeats and drops on
+	// resolve. The key is per-lane (ProcessorLaneLagging:<lane>) so two lanes
+	// lagging at once track their since independently.
 	openIssues map[string]string
 }
 
@@ -153,12 +156,12 @@ func (h *HealthHeartbeater) AttachCapabilityAuthorizer(ca *CapabilityAuthorizer)
 }
 
 // AttachBacklogReader wires the lane-backlog reader (the ConsumerSupervisor) and
-// the durable name to query so each heartbeat reports its real backlog
-// (lane_lag). Must be called before Run starts — the emit loop reads the handle
-// without synchronization.
-func (h *HealthHeartbeater) AttachBacklogReader(r LaneBacklogReader, durable string) {
+// the lane→durable map to query so each heartbeat reports the real per-lane
+// backlog (lane_lag). Must be called before Run starts — the emit loop reads the
+// handle without synchronization.
+func (h *HealthHeartbeater) AttachBacklogReader(r LaneBacklogReader, laneDurables map[string]string) {
 	h.backlog = r
-	h.backlogDurable = durable
+	h.laneDurables = laneDurables
 }
 
 // SetLagThreshold overrides the backlog count above which ProcessorLaneLagging
@@ -224,28 +227,41 @@ func (h *HealthHeartbeater) buildHealthDoc(ctx context.Context, lifecycle string
 		"ops_malformed_total":  h.metrics.OpsMalformed.Load(),
 	}
 
-	// Real consumer backlog (Contract #5 §5.4 lane_lag). The Processor runs a
-	// single durable consumer (processor-main) over all ops.* lanes, so a true
-	// per-lane breakdown is not separable from one consumer: the per-lane keys
-	// are reported null ("not measured per-lane") and the genuine aggregate
-	// backlog is surfaced as lane_lag_total. A null total means the backlog
-	// could not be read this tick (no consumer attached, or a transient Info
-	// error) — never a fabricated zero, which a watcher would trust as healthy.
-	pending, havePending := h.consumerPending(ctx)
-	metrics["lane_lag"] = map[string]any{"default": nil, "meta": nil, "urgent": nil, "system": nil}
-	if havePending {
-		metrics["lane_lag_total"] = pending
+	// Real per-lane consumer backlog (Contract #5 §5.4 lane_lag). Each lane has
+	// its own durable consumer, so each lane's NumPending is read independently:
+	// lane_lag.<lane> carries that lane's real backlog, and lane_lag_total sums
+	// the readable lanes. A lane whose consumer can't be read this tick (no
+	// reader attached, or a transient Info error) is reported null — never a
+	// fabricated zero, which a watcher would trust as healthy; lane_lag_total is
+	// null only when NO lane is readable.
+	laneLag := make(map[string]any, len(laneOrder))
+	var total uint64
+	anyReadable := false
+	active := map[string]activeIssue{}
+	for _, lane := range laneOrder {
+		n, ok := h.lanePending(ctx, h.laneDurables[lane])
+		if !ok {
+			laneLag[lane] = nil
+			continue
+		}
+		laneLag[lane] = n
+		total += n
+		anyReadable = true
+		if n > h.lagThreshold {
+			active["ProcessorLaneLagging:"+lane] = activeIssue{
+				code:     "ProcessorLaneLagging",
+				severity: "warning",
+				message:  fmt.Sprintf("lane %q backlog %d exceeds threshold %d (consumer %s)", lane, n, h.lagThreshold, h.laneDurables[lane]),
+			}
+		}
+	}
+	metrics["lane_lag"] = laneLag
+	if anyReadable {
+		metrics["lane_lag_total"] = total
 	} else {
 		metrics["lane_lag_total"] = nil
 	}
 
-	active := map[string]activeIssue{}
-	if havePending && pending > h.lagThreshold {
-		active["ProcessorLaneLagging"] = activeIssue{
-			severity: "warning",
-			message:  fmt.Sprintf("operation backlog %d exceeds threshold %d on consumer %s", pending, h.lagThreshold, h.backlogDurable),
-		}
-	}
 	issues := h.reconcileIssues(active, now)
 	status := aggregateStatus(lifecycle, issues)
 
@@ -263,44 +279,55 @@ func (h *HealthHeartbeater) buildHealthDoc(ctx context.Context, lifecycle string
 	}
 }
 
-// consumerPending returns the durable consumer's current backlog (NumPending)
-// and whether it could be read. A nil reader or a transient read error yields
-// (0, false) so the caller reports null rather than a fabricated zero.
-func (h *HealthHeartbeater) consumerPending(ctx context.Context) (uint64, bool) {
-	if h.backlog == nil {
+// lanePending returns one lane durable's current backlog (NumPending) and
+// whether it could be read. A nil reader, an empty durable name (lane absent
+// from the map), or a transient read error yields (0, false) so the caller
+// reports null rather than a fabricated zero.
+func (h *HealthHeartbeater) lanePending(ctx context.Context, durable string) (uint64, bool) {
+	if h.backlog == nil || durable == "" {
 		return 0, false
 	}
-	pending, err := h.backlog.PendingForConsumer(ctx, h.backlogDurable)
+	pending, err := h.backlog.PendingForConsumer(ctx, durable)
 	if err != nil {
-		h.logger.Debug("health: consumer backlog unavailable", "error", err)
+		h.logger.Debug("health: lane backlog unavailable", "durable", durable, "error", err)
 		return 0, false
 	}
 	return pending, true
 }
 
-// activeIssue is a transient (severity, message) for an issue open this tick,
-// keyed by code; reconcileIssues stamps it with a persisted since timestamp.
+// activeIssue is a transient issue open this tick: the emitted §5.5 code plus
+// its severity and message. The map key under which it is tracked may differ
+// from code (e.g. ProcessorLaneLagging:<lane>) so per-lane issues sharing one
+// code track their since independently. reconcileIssues stamps it with a
+// persisted since timestamp.
 type activeIssue struct {
+	code     string
 	severity string
 	message  string
 }
 
-// reconcileIssues converts the codes open this tick into §5.5 issue records,
-// carrying each code's since timestamp across heartbeats (first-seen → now) and
-// dropping codes that resolved. Output is sorted by code for stable heartbeats.
+// reconcileIssues converts the issue keys open this tick into §5.5 issue
+// records, carrying each key's since timestamp across heartbeats (first-seen →
+// now) and dropping keys that resolved. Output is sorted by (code, message) for
+// stable heartbeats across per-lane issues that share a code.
 func (h *HealthHeartbeater) reconcileIssues(active map[string]activeIssue, now time.Time) []healthIssue {
 	out := make([]healthIssue, 0, len(active))
 	next := make(map[string]string, len(active))
-	for code, ai := range active {
-		since, ok := h.openIssues[code]
+	for key, ai := range active {
+		since, ok := h.openIssues[key]
 		if !ok {
 			since = substrate.FormatTimestamp(now)
 		}
-		next[code] = since
-		out = append(out, healthIssue{Code: code, Severity: ai.severity, Message: ai.message, Since: since})
+		next[key] = since
+		out = append(out, healthIssue{Code: ai.code, Severity: ai.severity, Message: ai.message, Since: since})
 	}
 	h.openIssues = next
-	sort.Slice(out, func(i, j int) bool { return out[i].Code < out[j].Code })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Code != out[j].Code {
+			return out[i].Code < out[j].Code
+		}
+		return out[i].Message < out[j].Message
+	})
 	return out
 }
 
