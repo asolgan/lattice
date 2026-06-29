@@ -531,29 +531,51 @@ owns; the union across slices is the actor's full readable set.
 **The merge point — the Postgres `actor_read_grants` table (Path A).** Every read-grant lens **also**
 projects to a shared table whose primary key carries the **contributing lens** so producers stay disjoint:
 ```
-actor_read_grants(actor_id, anchor_type, anchor_id, grant_source)   PRIMARY KEY (actor_id, anchor_type, anchor_id, grant_source)
+actor_read_grants(actor_id, anchor_type, anchor_id, grant_source, projection_seq)   PRIMARY KEY (actor_id, anchor_type, anchor_id, grant_source)
 ```
 `grant_source` (the lens canonical name, e.g. `cap-read.residence`) makes each lens **own its rows** — a
 revoke from one package deletes only that package's rows, never another's, exactly like the write-side
-disjoint key prefixes. RLS then **unions across all sources natively**: a business-table policy is
-`USING (authz_anchor IN (SELECT DISTINCT anchor_type||'.'||anchor_id FROM actor_read_grants WHERE actor_id =
-current_setting('lattice.actor_id')))`. No app-side multi-key union; the table *is* the merge.
+disjoint key prefixes. `projection_seq` carries the §6.2/§6.8 monotonic guard (upsert/delete applies only
+when incoming seq > stored, per row key) so a stale CDC replay cannot resurrect a revoked grant. RLS then
+**unions across all sources natively** via the set-membership policy (a row visible if **any** of its
+`authz_anchors` is granted): `USING (EXISTS (SELECT 1 FROM unnest(authz_anchors) a WHERE a IN (SELECT
+anchor_type||'.'||anchor_id FROM actor_read_grants WHERE actor_id = current_setting('lattice.actor_id'))))`.
+No app-side multi-key union; the table *is* the merge.
 
-**Authz-anchor column convention (protected read-model lenses).** Every **protected** business read-model
-lens projects an **`authzAnchor`** column, value `<anchorType>.<anchorId>` (e.g.
-`unit.Lk2Pn6mQrtwzKbcXvP3T`) — the join key between a row and the actor's granted anchors. A lens with **no
-`authzAnchor`** is **public-read** (explicit opt-out). A lens whose target is declared `protected: true`
-but projects no `authzAnchor` **fails closed** (activation/lint error) — absence must never silently serve
-everything. This generalizes Contract #10 §10.2's "carries the D1 authz anchor **there** [the Postgres
-read-path]" to **any** protected target.
+**Authz-anchor convention (protected-by-default; `authzAnchors` is a set).** A business read-model target
+is **protected by default** — readable only through the authz boundary — **unless it explicitly declares
+`public: true`** (an auditable opt-out for genuinely public/operational models, e.g. a public listings
+index). A protected target projects an **`authzAnchors`** column: a **set** of `<anchorType>.<anchorId>`
+values (e.g. `["unit.Lk2Pn6mQrtwzKbcXvP3T", "building.Qz7Rp2mN…"]`). **A row is readable if the actor holds
+a grant for ANY anchor in its set.** The set admits **coarse / hierarchical** grants without per-leaf
+materialization: a building manager holds one `building.<id>` grant, and each unit-scoped row carries both
+its leaf anchor (`unit.<id>`) **and** its container anchors (`building.<id>`); a provider holds the
+`patient.<id>` anchors they cover, and each appointment row carries `patient.<id>`. A target that is
+**neither** `public: true` **nor** projects a resolvable `authzAnchors` **fails closed** (activation/lint
+error; on Postgres, deny-all — see Enforcement) — **omission denies, never silently serves**, mirroring
+§6.8. The conventions-lint audits only the small explicit-`public: true` set; it deliberately cannot infer
+intent for an un-declared target — which is exactly why the default is *protect*, not *publish*. Generalizes
+Contract #10 §10.2's "carries the D1 authz anchor **there** [the Postgres read-path]" to **any** protected
+target.
 
 **Enforcement (Andrew-ratified Fork 1 — Path A is the boundary; Path B is transitional only).** The read
 boundary authenticates the reader (D1 increment 1: a signed JWT keyed to the Identity vertex → verified
 `actor_id`; checked against the token-revocation KV — brainstorm #118/#111), then:
 - **Protected data → Postgres-RLS (the enforcement boundary).** The business read model lives in a Postgres
-  table with an `authz_anchor` column + the RLS policy above; the boundary sets `SET LOCAL lattice.actor_id`
-  per session; the union/JOIN is DB-native and **unbypassable by app code**. This is the destination for
-  **all** protected read models.
+  table with an `authz_anchors` column (a set — e.g. `text[]`) + a **set-membership** RLS policy:
+  `USING (EXISTS (SELECT 1 FROM unnest(authz_anchors) a WHERE a IN (SELECT anchor_type||'.'||anchor_id FROM
+  actor_read_grants WHERE actor_id = current_setting('lattice.actor_id'))))` (a row is visible if **any** of
+  its anchors is granted). The boundary sets `SET LOCAL lattice.actor_id` per session; enforcement is
+  DB-native and **unbypassable by app code**. **Every protected table is created with `ENABLE ROW LEVEL
+  SECURITY` AND `FORCE ROW LEVEL SECURITY`**, so a table whose policy was never generated **denies all rows**
+  (a fail-closed outage, never a silent leak). This is the destination for **all** protected read models.
+- **`actor_read_grants` is `projectionSeq`-guarded (the read-auth source of truth).** Unlike business
+  read-model tables (which may be last-writer-wins — the Postgres adapter is guard-exempt there), the grant
+  table inherits the §6.2/§6.8 **monotonic-seq guarantee**: an upsert/delete applies only when its incoming
+  `projectionSeq` exceeds the stored one (per `(actor_id, anchor_type, anchor_id, grant_source)`), so a stale
+  CDC replay **cannot resurrect a revoked grant**. Each lens's projection upserts/tombstones **only its own
+  `grant_source` rows** (so revoking one source never wipes another's coexisting grant), and a package
+  uninstall retracts its `grant_source` rows via the standard lens-eviction.
 - **NATS-KV read-gateway filter (Path B) — transitional scaffold only.** During a migration a boundary MAY
   GET the `cap-read.*.<actor>` slices, union them, and filter NATS-KV rows whose `authzAnchor` ∉ that union.
   **This is not a sanctioned end-state:** once Postgres-RLS ships, **a `protected: true` read model served
@@ -561,9 +583,12 @@ boundary authenticates the reader (D1 increment 1: a signed JWT keyed to the Ide
   extended from "must project `authzAnchor`" to "must target Postgres (RLS-enforced)." Public/operational
   read models stay on NATS-KV (they declare no `authzAnchor`).
 
-**No entry = no read.** Absence of any `cap-read.*` grant for the actor (or an `authzAnchor` matched by no
-granted anchor) denies the read — mirroring §6.8. There is **no anonymous/public-read fallback**; a public
-read model opts out explicitly by projecting no `authzAnchor`.
+**No entry = no read; no public-by-omission.** Absence of any `cap-read.*` grant for the actor — or a row
+none of whose `authzAnchors` is a granted anchor — denies the read, mirroring §6.8. There is **no
+anonymous/public-read fallback by omission**: a read model is public **only** by an explicit `public: true`
+declaration, **never** by forgetting an anchor. (The earlier "no `authzAnchor` ⇒ public-read" rule was
+default-open — a forgotten column silently world-published a protected model; the read path now denies on
+absence, exactly as the write path does.)
 
 **Affected consumers:** Refractor (the core base `capabilityRead` lens + the Postgres `actor_read_grants`
 multi-target); each **package** (ships its own `cap-read.<domain>` read-grant lens — `rbac-domain`,
