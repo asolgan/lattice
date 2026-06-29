@@ -8,22 +8,31 @@
 //	vtx.patient.<id>      class=patient      root {}   .demographics {fullName, dob?, email?, phone?}
 //	vtx.provider.<id>     class=provider     root {}   .profile {fullName, specialty, credentials?, bio?}
 //	vtx.appointment.<id>  class=appointment  root {}   .schedule {startsAt, endsAt, remindAt, reason?}
-//	                                                    .status   {value ∈ scheduled|confirmed|completed|cancelled|noShow}
+//	                                                    .status   {value ∈ scheduled|confirmed|checkedIn|completed|cancelled|noShow, note?}
 //	lnk.appointment.<id>.forPatient.patient.<id>       (appointment → patient, later-arriving source)
 //	lnk.appointment.<id>.withProvider.provider.<id>    (appointment → provider, later-arriving source)
 //
-// Nine ops (all known-key-reads + on-demand kv.Read, no prefix scans):
+// Both patient and provider carry an empty-initialized .bookings index (the
+// per-(patient|provider) appointment-key list), the OCC serialization point the
+// double-book guards snapshot.
+//
+// Eleven ops (all known-key-reads + on-demand kv.Read, no prefix scans):
 //
 //	CreatePatient / TombstonePatient
-//	CreateProvider / TombstoneProvider / SetProviderHours (upsert the opt-in .hours availability windows)
+//	CreateProvider / TombstoneProvider / SetProviderProfile (full-replace upsert of .profile) /
+//	  SetProviderHours (upsert the opt-in .hours weekly windows) /
+//	  SetProviderTimeOff (upsert the opt-in .timeOff blackout ranges)
 //	CreateAppointment (mints the appointment + .schedule + .status{scheduled} + both links, validating
-//	                   patient + provider alive + class) / RescheduleAppointment (rewrite .schedule with new
-//	                   times, re-deriving remindAt so the @at reminder re-arms) / SetAppointmentStatus
-//	                   (upsert .status) / TombstoneAppointment
+//	                   patient + provider alive + class, and rejecting a past time / out-of-hours /
+//	                   time-off / provider-double-book / patient-double-book) / RescheduleAppointment
+//	                   (rewrite .schedule with new times — same guard chain — re-deriving remindAt so the
+//	                   @at reminder re-arms) / SetAppointmentStatus (upsert .status{value, note?}) /
+//	                   TombstoneAppointment
 //
-// Two PROJECTION lenses are the P5 query surface a clinic FE reads (never Core
-// KV): clinicAppointments (one row per appointment, joined to patient + provider)
-// and clinicProviders (the provider roster / booking picker).
+// Three PROJECTION lenses are the P5 query surface a clinic FE reads (never Core
+// KV): clinicAppointments (one row per appointment, joined to patient + provider),
+// clinicProviders (the provider roster / booking picker), and clinicPatients (the
+// patient-context switcher — NAME only, no PHI).
 //
 // OUT of scope (the separate deferred items this vertical FORCES, not implements):
 //   - PHI / sensitive aspects + Vault / crypto-shred. All aspects here are
