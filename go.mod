@@ -4,6 +4,7 @@ go 1.26.1
 
 require (
 	github.com/antlr4-go/antlr/v4 v4.13.1
+	github.com/golang-jwt/jwt/v5 v5.2.1
 	github.com/jackc/pgx/v5 v5.9.2
 	github.com/nats-io/nats-server/v2 v2.14.0
 	github.com/nats-io/nats.go v1.52.0
