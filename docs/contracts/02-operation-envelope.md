@@ -178,6 +178,32 @@ The `contextHint.reads` array declares Core KV keys the Starlark script will rea
 
 **Future evolution (post-Phase 1):** Static analysis of Starlark scripts may auto-derive read sets, eliminating the need for callers to populate `contextHint` explicitly. Not in scope for Phase 1.
 
+### 2.5.1 Bounded Link Enumeration (`kv.Links`)
+
+`contextHint.reads` + `kv.Read` cover only **known-key** reads (a single named key, single-key GET). A guard that enforces a **set** or **range** constraint needs the *set* of a vertex's neighbors — an enumeration whose membership is not known at submission time, so it cannot be pre-declared in `contextHint.reads`. The Starlark `kv` module exposes exactly one such primitive:
+
+```
+kv.Links(hubKey, relation, direction, cursor=None, limit=N) -> (page, nextCursor)
+#   direction: "out" (hub is the link SOURCE) | "in" (hub is the link TARGET)
+#   page:      list[linkDoc] (this page's links); nextCursor: opaque token or None when exhausted
+```
+
+It returns the Core KV canonical links incident to `hubKey` under `relation` in the requested `direction`. Each `linkDoc` carries the standard link envelope projection (`key`, `class`, `isDeleted`, `data`, `revision`, `sourceVertex`, `targetVertex`); logically-deleted (tombstoned) links are **returned** carrying `isDeleted` (the script decides), as with `kv.Read`. Order within a page is unspecified.
+
+This is the **one sanctioned relaxation** of the otherwise known-key-reads-only write path. It is bounded, paged, lazy, and scoped:
+
+- **Bound to the hub's vertex id in BOTH directions — a server-side subject-filtered list.** The canonical link key is `lnk.<sourceType>.<sourceId>.<relation>.<targetType>.<targetId>` (Contract #1 §1.1; source first). The hub's vertex id is a **fixed token** in either direction, so the read is bounded by the hub's degree *in that direction*, never the link space:
+  - `direction:"out"` (hub is the source) → key filter `lnk.<hubType>.<hubId>.<relation>.>` (hub id in the prefix; `>` matches `<targetType>.<targetId>`).
+  - `direction:"in"` (hub is the target) → key filter `lnk.*.*.<relation>.<hubType>.<hubId>` (hub id in the suffix; the two `*` wildcard `<sourceType>.<sourceId>`, one token each; `<relation>` fixed).
+  Both are evaluated by NATS as a server-side subject filter (`$KV.<core-kv>.<keyFilter>`) — the server returns only matching keys, so **neither direction scans the keyspace**. The link keeps its natural §1.1 direction; the guard chooses the `direction` matching where the hub sits in that link (the inbound filter relies on NATS subject `*` wildcards being valid at any token position).
+- **Paged, not fail-closed-capped.** A high-degree hub (e.g. a service template with many `instanceOf` instances pointing back) is enumerated **page by page** via the opaque `cursor`/`nextCursor` — the call **never silently truncates** and **never fail-closes a legitimately high-degree hub**. `limit` bounds each page; the guard pages until `nextCursor` is `None`. (A guard that must page a very-high-degree hub bears that cost explicitly — a visible authoring choice, not a hidden cap.)
+- **Lazy.** The enumeration + per-key reads happen **only when the script calls `kv.Links`**, and only for the pages it pulls — never eagerly pre-hydrated (a wildcard/prefix filter has no exact-key form to pre-declare in `contextHint.reads`). Reads run under the per-invocation wall-budget context and count against the script timeout (NFR-P4).
+- **Core KV links only.** `kv.Links` reads **only** the Core KV canonical link keyspace. It never reads the Refractor Adjacency KV (which remains Refractor-private — `lattice-architecture.md`) and never a lens/read-model (P5: applications read lenses; the write path reads its own Core KV). `hubKey` must be a 3-segment vertex key; the constructed filter is always under `lnk.` — no `vtx.`/aspect prefixes, no other bucket.
+- **Not a serialization point.** `kv.Links` returns the **currently-committed** matching links; it is **not** snapshot-isolated and does **not** itself serialize concurrent writers, and a paged enumeration may observe an add/remove between pages. A guard enforcing a constraint over the returned set **MUST** additionally contend a shared OCC-guarded key (a per-hub scalar epoch both concurrent writers bump) for correctness: a concurrent mutation bumps the epoch, the step-8 OCC CAS fails, and the op re-hydrates and re-enumerates. The enumeration recovers the *set*; the OCC-guarded scalar recovers the *lock*.
+- **Live read, not replay-stable.** Like `kv.Read`, `kv.Links` reads live Core KV — two runs of the same `requestId` may observe different sets. The deterministic id + the step-8 OCC commit are the idempotency authority, not replay determinism.
+
+`kv.Links` is the bounded write-path complement to graph adjacency (the read-side/fan-out role the Refractor Adjacency KV serves). It exists so vertex→vertex relationships live in **links** (§1.1, decision #2), never denormalized as key-lists in aspect `data`. It reads links **in their natural §1.1 direction** — it does **not** require authoring a relation against the growth-order convention.
+
 ### 2.6 Error Code Enumeration (Initial Set)
 
 The reply envelope's `error.code` is one of a closed enumeration. Phase 1 codes:

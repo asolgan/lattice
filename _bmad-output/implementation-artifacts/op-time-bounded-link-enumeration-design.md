@@ -1,8 +1,43 @@
 # Design — Op-time bounded link enumeration (`kv.Links`) — retire the key-list-in-aspect guard indexes
 
-**Status: 📐 awaiting-Andrew (ratification)**
+**Status: ✅ Andrew-ratified (2026-06-28) — with a ratification revision (banner below).**
 **Author: Winston (Designer fire, 2026-06-28)**
 **Backlog row:** `planning-artifacts/backlog/lattice.md` → *Refinements & ops* → "Op-time bounded reverse-link / adjacency read".
+
+---
+
+> ## ⚠️ RATIFICATION REVISION (Andrew, 2026-06-28) — supersedes the source-side-only body where they differ
+>
+> The original draft enumerated **only outbound (source-side) prefixes** and therefore proposed an
+> **inverted `hasBooking` (provider→appointment) link** to make the provider the prefix. Andrew corrected
+> four things; the **revised shape below is authoritative** (the §2.5.1 contract edit is rewritten to match;
+> body sections §2.1/§2.4/§3.3/§4.1/§6/§8/§9 that still say "source-side only", "`hasBooking`",
+> "two-links-per-edge", or "fail-closed cap" are **superseded** by this banner):
+>
+> 1. **Both directions, bound to the hub's id.** `kv.Links(hubKey, relation, direction, cursor, limit)`.
+>    The canonical key is `lnk.<srcType>.<srcId>.<rel>.<tgtType>.<tgtId>`. Server-side NATS subject filter,
+>    bounded by the hub's degree in that direction (NATS `*` wildcards are valid at any token position):
+>    - `"out"` (hub = source): `lnk.<hubType>.<hubId>.<rel>.>`
+>    - `"in"`  (hub = target): `lnk.*.*.<rel>.<hubType>.<hubId>`
+>    The draft's "target-side = unbounded whole-type scan" claim was **wrong** (it ignored mid-subject `*`).
+> 2. **Drop `hasBooking`; keep the existing §1.1-correct links.** The clinic's shipped
+>    `appointment withProvider provider` / `appointment forPatient patient` links are already correct
+>    (appointment = later-arriving = source). The guards enumerate them **inbound**:
+>    `kv.Links("vtx.provider.<p>", "withProvider", "in")` / `kv.Links("vtx.patient.<pt>", "forPatient", "in")`.
+>    **No inverted link, no two-links-per-edge, no §1.1 violation** — there was no committed violation; the
+>    violation existed only in the draft's proposed `hasBooking`. The §8 "author source-side" convention and
+>    the §1.1 note are **withdrawn** (not needed).
+> 3. **Paged, not fail-closed-capped.** A high-degree hub (a `service.template` ← many `instanceOf`
+>    instances) **pages** via `cursor`/`nextCursor` instead of fail-closing at `MAX_LINK_ENUMERATION`.
+>    Per-page `limit`; the OCC epoch catches any add/remove between pages on commit.
+> 4. **Lazy.** Reads happen only when the script calls `kv.Links`, page by page — never pre-hydrated via
+>    `contextHint.reads` (a wildcard filter has no exact-key form to declare). Fire 2 must NOT add the link
+>    set to `contextHint.reads`.
+>
+> **Substrate seam (revised):** Fire 1 adds `Conn.KVListKeysFilter(bucket, filter)` (an arbitrary
+> wildcard subject filter over `ListKeysFiltered`, with a cursor/limit for paging) — a generalization of the
+> existing prefix-only `KVListKeysPrefix` (`internal/substrate/kv.go:220`, which already calls
+> `ListKeysFiltered(prefix+">")`). The serialization **`bookingGuard.epoch`** token is unchanged (Andrew OK'd).
 
 ---
 
