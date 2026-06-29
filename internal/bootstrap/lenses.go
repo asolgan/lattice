@@ -118,3 +118,80 @@ RETURN
 	}
 }
 
+// CapabilityReadLensDefinition returns the base read-path authorization lens —
+// the core slice of the §6.14 cap-read.* family (D1). Contract #7 §7.2 item 5
+// (vtx.meta.<NanoID> with class "meta.lens"); Contract #6 §6.14.
+//
+// Read auth mirrors write auth (§6.1's contract-contribution model): core owns
+// the bucket + the key conventions and projects only the BASE read scope every
+// actor carries independent of any package — its **self** anchor (an actor may
+// always read its own vertex). Each package ships its own cap-read.<domain>
+// actor-aggregate lens for the relationships it owns (rbac-domain →
+// cap-read.roles, loftspace → cap-read.residence, …); the actor's effective
+// readable set is the union over all cap-read.*.<actor> slices (§6.14). This
+// base lens references no package vocabulary, exactly as the write-path base
+// capability lens does.
+//
+// Scope note (D1.1): this increment projects the self anchor for every actor.
+// The primordial root-read scope for kernel-seeded identities (the read analog
+// of the write base's scope:"any" grant — the privileged all-access anchor)
+// lands with the D1 enforcement seam, which defines the wildcard-anchor
+// representation the RLS/read boundary matches against (design §3.3, M5).
+//
+// readableAnchors carries each entry as {anchorType, anchorId, via} (§6.14). The
+// anchorId is the full vertex key (vtx.<type>.<id>) — the covered-cypher
+// representation, consistent with §6.5 serviceAccess.service; the §6.14 example's
+// bare-NanoID rendering is illustrative (see the staged §6.14 representation
+// clarification). emptyBehavior:delete is the actor-disappearance tombstone — the
+// self anchor is always present, so the key drops only when the identity vertex
+// itself disappears.
+func CapabilityReadLensDefinition() LensDefinition {
+	return LensDefinition{
+		CanonicalName:  "capabilityRead",
+		TargetBucket:   "capability",
+		ProjectionKind: "actorAggregate",
+		Output: &OutputDescriptorSpec{
+			AnchorType:       "identity",
+			OutputKeyPattern: "cap-read.{actorSuffix}",
+			BodyColumns:      []string{"readableAnchors"},
+			EmptyBehavior:    "delete",
+			Freshness:        "auto",
+			Lanes:            []string{"default"},
+		},
+		CypherRule: `
+MATCH (identity:identity {key: $actorKey})
+RETURN
+  identity.key AS actorKey,
+  [
+    {anchorType: 'identity', anchorId: identity.key, via: ['self']}
+  ] AS readableAnchors
+`,
+		// outputSchema: JSON Schema for the cap-read.<actor> document per
+		// Contract #6 §6.14 (read-path mirror of the §6.2 envelope; the body
+		// carries readableAnchors instead of the write-path grant columns).
+		OutputSchema: `{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["key","actor","version","projectedAt","projectedFromRevisions","lanes",
+               "readableAnchors"],
+  "properties": {
+    "key":                   {"type": "string"},
+    "actor":                 {"type": "string"},
+    "version":               {"type": "string"},
+    "projectedAt":           {"type": "string", "format": "date-time"},
+    "projectedFromRevisions":{"type": "object", "additionalProperties": {"type": "integer"}},
+    "lanes":                 {"type": "array",  "items": {"type": "string"}},
+    "readableAnchors":       {"type": "array",  "items": {
+      "type": "object",
+      "required": ["anchorType","anchorId","via"],
+      "properties": {
+        "anchorType": {"type": "string"},
+        "anchorId":   {"type": "string"},
+        "via":        {"type": "array", "items": {"type": "string"}}
+      }
+    }}
+  }
+}`,
+	}
+}
+

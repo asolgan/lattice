@@ -88,8 +88,14 @@ var (
 	MetaRootKey       string
 	CapabilityLensID  string
 	CapabilityLensKey string
-	RoleOperatorID    string
-	RoleOperatorKey   string
+	// CapabilityReadLens is the base read-path authorization lens (Contract #6
+	// §6.14, D1). It projects each actor's self + primordial readable anchors
+	// to cap-read.<actor> in the Capability KV bucket; package lenses contribute
+	// the rest of the read-grant union (cap-read.roles, cap-read.residence, …).
+	CapabilityReadLensID  string
+	CapabilityReadLensKey string
+	RoleOperatorID        string
+	RoleOperatorKey       string
 
 	// Three kernel-seeded meta-permission NanoIDs authorizing the operator
 	// to mutate vtx.meta.* vertices (CreateMetaVertex, UpdateMetaVertex,
@@ -156,9 +162,10 @@ type PrimordialIDsRaw struct {
 	WeaverIdentity          string `json:"weaverIdentity"`
 	BridgeIdentity          string `json:"bridgeIdentity"`
 	ObjmgrIdentity          string `json:"objmgrIdentity"`
-	MetaRoot       string `json:"metaRoot"`
-	CapabilityLens string `json:"capabilityLens"`
-	RoleOperator   string `json:"roleOperator"`
+	MetaRoot           string `json:"metaRoot"`
+	CapabilityLens     string `json:"capabilityLens"`
+	CapabilityReadLens string `json:"capabilityReadLens"`
+	RoleOperator       string `json:"roleOperator"`
 
 	// Meta-permission NanoIDs.
 	PermCreateMetaVertex    string `json:"permCreateMetaVertex"`
@@ -315,6 +322,7 @@ func currentRaw() PrimordialIDsRaw {
 		ObjmgrIdentity:             ObjmgrIdentityID,
 		MetaRoot:                   MetaRootID,
 		CapabilityLens:             CapabilityLensID,
+		CapabilityReadLens:         CapabilityReadLensID,
 		RoleOperator:               RoleOperatorID,
 		PermCreateMetaVertex:       PermCreateMetaVertexID,
 		PermUpdateMetaVertex:       PermUpdateMetaVertexID,
@@ -380,6 +388,7 @@ func generate() (PrimordialIDsRaw, error) {
 		&raw.ObjmgrIdentity,
 		&raw.MetaRoot,
 		&raw.CapabilityLens,
+		&raw.CapabilityReadLens,
 		&raw.RoleOperator,
 		&raw.PermCreateMetaVertex,
 		&raw.PermUpdateMetaVertex,
@@ -420,6 +429,7 @@ func populate(raw PrimordialIDsRaw) error {
 		{"objmgrIdentity", raw.ObjmgrIdentity},
 		{"metaRoot", raw.MetaRoot},
 		{"capabilityLens", raw.CapabilityLens},
+		{"capabilityReadLens", raw.CapabilityReadLens},
 		{"roleOperator", raw.RoleOperator},
 		{"permCreateMetaVertex", raw.PermCreateMetaVertex},
 		{"permUpdateMetaVertex", raw.PermUpdateMetaVertex},
@@ -450,6 +460,7 @@ func populate(raw PrimordialIDsRaw) error {
 	ObjmgrIdentityID = raw.ObjmgrIdentity
 	MetaRootID = raw.MetaRoot
 	CapabilityLensID = raw.CapabilityLens
+	CapabilityReadLensID = raw.CapabilityReadLens
 	RoleOperatorID = raw.RoleOperator
 
 	PermCreateMetaVertexID = raw.PermCreateMetaVertex
@@ -492,6 +503,7 @@ func populate(raw PrimordialIDsRaw) error {
 	ObjmgrIdentityKey = substrate.VertexKey("identity", ObjmgrIdentityID)
 	MetaRootKey = substrate.VertexKey("meta", MetaRootID)
 	CapabilityLensKey = substrate.VertexKey("meta", CapabilityLensID)
+	CapabilityReadLensKey = substrate.VertexKey("meta", CapabilityReadLensID)
 	RoleOperatorKey = substrate.VertexKey("role", RoleOperatorID)
 
 	// Admin + service-actor primordial holdsRole links target the operator

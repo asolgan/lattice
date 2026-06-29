@@ -548,6 +548,19 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		return nil, err
 	}
 
+	// 5b. Capability-Read Lens definition — the base read-path authorization
+	// lens (Contract #6 §6.14, D1). Projects each actor's self anchor to
+	// cap-read.<actor> in the same Capability KV bucket (disjoint key space);
+	// package lenses contribute the rest of the read-grant union.
+	capReadLens := CapabilityReadLensDefinition()
+	capReadLensVal, capReadLensErr := MakeVertexEnvelope(CapabilityReadLensKey, "meta.lens", map[string]any{"protected": true})
+	if err := add(CapabilityReadLensKey, capReadLensVal, capReadLensErr); err != nil {
+		return nil, err
+	}
+	if err := addLensAspects(&entries, CapabilityReadLensKey, capReadLens); err != nil {
+		return nil, err
+	}
+
 	// 6. Five aspect-type meta-vertices — the DDLs for the self-description
 	// aspect classes. Each has class=meta.ddl.aspectType and carries all 5
 	// descriptive aspects itself (bootstrapped primordially to avoid a

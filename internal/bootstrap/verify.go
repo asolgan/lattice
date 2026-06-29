@@ -150,6 +150,14 @@ func VerifyKernel(ctx context.Context, conn *substrate.Conn) []string {
 		checkAspect(CapabilityLensKey+"."+a.name, CapabilityLensKey, a.class)
 	}
 
+	// 4b. Capability-Read Lens aspects (the base read-path authorization lens,
+	// Contract #6 §6.14, D1). Also an actor-aggregate lens, same aspect set.
+	// Package read-grant lenses (cap-read.roles, cap-read.residence, …) are
+	// verified by their owning verify-package targets, not here.
+	for _, a := range lensAspects {
+		checkAspect(CapabilityReadLensKey+"."+a.name, CapabilityReadLensKey, a.class)
+	}
+
 	// 5. Health KV readiness signal.
 	if _, err := healthKV.Get(ctx, HealthBootstrapCompleteKey); err != nil {
 		failures = append(failures, fmt.Sprintf("MISSING Health KV readiness signal: %s (%v)", HealthBootstrapCompleteKey, err))
