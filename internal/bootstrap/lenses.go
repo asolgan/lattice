@@ -147,12 +147,13 @@ RETURN
 // representation the RLS/read boundary matches against (design §3.3, M5).
 //
 // readableAnchors carries each entry as {anchorType, anchorId, via} (§6.14). The
-// anchorId is the full vertex key (vtx.<type>.<id>) — the covered-cypher
-// representation, consistent with §6.5 serviceAccess.service; the §6.14 example's
-// bare-NanoID rendering is illustrative (see the staged §6.14 representation
-// clarification). emptyBehavior:delete is the actor-disappearance tombstone — the
-// self anchor is always present, so the key drops only when the identity vertex
-// itself disappears.
+// anchorId is the resource's bare NanoID — the §6.14 opaque-match-token
+// representation (Andrew, 2026-06-29) — extracted from the vertex key by the
+// auth-plane engine's fail-closed nanoIdFromKey function; this is distinct from
+// §6.5 serviceAccess.service, which keeps the full key because there it is a
+// dereferenceable read-hint address. emptyBehavior:delete is the
+// actor-disappearance tombstone — the self anchor is always present, so the key
+// drops only when the identity vertex itself disappears.
 func CapabilityReadLensDefinition() LensDefinition {
 	return LensDefinition{
 		CanonicalName:  "capabilityRead",
@@ -171,7 +172,7 @@ MATCH (identity:identity {key: $actorKey})
 RETURN
   identity.key AS actorKey,
   [
-    {anchorType: 'identity', anchorId: identity.key, via: ['self']}
+    {anchorType: 'identity', anchorId: nanoIdFromKey(identity.key), via: ['self']}
   ] AS readableAnchors
 `,
 		// outputSchema: JSON Schema for the cap-read.<actor> document per

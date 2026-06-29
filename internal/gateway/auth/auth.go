@@ -39,8 +39,10 @@ import (
 // IdentityKeyPrefix is the canonical prefix of an identity vertex key
 // (Contract #1 §1.1 — `vtx.identity.<id>`). The verified `sub` claim carries the
 // bare identity id; the actor id surfaced to the read boundary is the full key,
-// consistent with §6.14's `readableAnchors[].anchorId` representation and the
-// write-path actor (`vtx.identity.<id>`).
+// consistent with the cap-read doc's `actor` field (§6.14) and the write-path
+// actor (`vtx.identity.<id>`). This is distinct from §6.14's
+// `readableAnchors[].anchorId`, which is the resource's bare NanoID (the opaque
+// match token via `nanoIdFromKey`), not a full key.
 const IdentityKeyPrefix = "vtx.identity."
 
 // allowedMethods is the closed set of accepted signing algorithms. Asymmetric

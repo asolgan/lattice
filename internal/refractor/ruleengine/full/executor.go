@@ -1245,8 +1245,50 @@ func (ex *executor) evalFunctionCall(b binding, fc *FunctionCall) (any, error) {
 		}
 		dist := levenshteinDistance(as, bs)
 		return 1.0 - float64(dist)/float64(maxLen), nil
+	case "nanoidfromkey":
+		// nanoIdFromKey(vertexKey) → the bare NanoID (the <id> segment of a
+		// vtx.<type>.<id> vertex key) — the §6.14 opaque-match-token anchor
+		// representation for read-path authorization (D1).
+		//
+		// Fail-closed: only a well-formed vertex key (exactly three
+		// dot-segments, leading "vtx", non-empty type + id) yields a NanoID;
+		// an aspect key (vtx.<type>.<id>.<localName>), a link key (lnk.…), or
+		// any malformed input ERRORS rather than emitting a wrong anchor — an
+		// auth-plane lens must never project a token that could match the wrong
+		// resource, so a bad shape fails the projection (deny) instead of
+		// silently degrading. A nil arg returns nil (mirrors levenshtein).
+		if len(fc.Args) != 1 {
+			return nil, fmt.Errorf("full engine: nanoIdFromKey takes exactly 1 argument, got %d", len(fc.Args))
+		}
+		v, err := ex.evalExpr(b, fc.Args[0])
+		if err != nil {
+			return nil, err
+		}
+		if v == nil {
+			return nil, nil
+		}
+		s, ok := v.(string)
+		if !ok {
+			return nil, fmt.Errorf("full engine: nanoIdFromKey argument must be a string, got %T", v)
+		}
+		return nanoIDFromVertexKey(s)
 	}
 	return nil, fmt.Errorf("full engine: unsupported function %q", fc.Name)
+}
+
+// nanoIDFromVertexKey extracts the bare NanoID (the <id> segment) from a
+// vtx.<type>.<id> vertex key, fail-closed: only a well-formed vertex key —
+// exactly three dot-segments with a leading "vtx" and non-empty type + id —
+// yields a NanoID. An aspect key (vtx.<type>.<id>.<localName>, four segments),
+// a link key (lnk.…, six segments), or any malformed string ERRORS rather than
+// returning a wrong token, so an auth-plane lens can never project an anchor
+// that matches the wrong resource. (Contract #1 §1.1 vertex key shape.)
+func nanoIDFromVertexKey(s string) (string, error) {
+	parts := strings.Split(s, ".")
+	if len(parts) != 3 || parts[0] != "vtx" || parts[1] == "" || parts[2] == "" {
+		return "", fmt.Errorf("full engine: nanoIdFromKey requires a vtx.<type>.<id> vertex key, got %q", s)
+	}
+	return parts[2], nil
 }
 
 // levenshteinDistance computes the classical Wagner-Fischer edit distance

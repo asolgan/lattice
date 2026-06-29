@@ -17,6 +17,7 @@ package full_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -135,7 +136,9 @@ func TestCapabilityReadLens_ContractConformance(t *testing.T) {
 	}
 
 	// `readableAnchors`: exactly the self anchor for this actor —
-	// {anchorType:'identity', anchorId:<actor full key>, via:['self']} (§6.14).
+	// {anchorType:'identity', anchorId:<actor bare NanoID>, via:['self']} (§6.14).
+	// anchorId is the §6.14 opaque-match-token rep: the bare NanoID extracted from
+	// the actor's vertex key by the auth-plane engine's nanoIdFromKey function.
 	anchorsRaw := envRow["readableAnchors"]
 	anchors, ok := anchorsRaw.([]any)
 	require.Truef(t, ok, "envelope.readableAnchors must be a list; got %T", anchorsRaw)
@@ -144,8 +147,10 @@ func TestCapabilityReadLens_ContractConformance(t *testing.T) {
 	anchor, ok := anchors[0].(map[string]any)
 	require.True(t, ok, "readableAnchors entry must be an object")
 	require.Equal(t, "identity", anchor["anchorType"], "self anchor anchorType must be 'identity'")
-	require.Equalf(t, aliceKey, anchor["anchorId"],
-		"self anchor anchorId must be the actor's full vertex key; got %v", anchor["anchorId"])
+	aliceNanoID := strings.TrimPrefix(aliceKey, "vtx.identity.")
+	require.NotEqual(t, aliceKey, aliceNanoID, "fixture sanity: actor key must carry the vtx.identity. prefix")
+	require.Equalf(t, aliceNanoID, anchor["anchorId"],
+		"self anchor anchorId must be the actor's bare NanoID (nanoIdFromKey); got %v", anchor["anchorId"])
 
 	via, ok := anchor["via"].([]any)
 	require.Truef(t, ok, "self anchor via must be a list; got %T", anchor["via"])
