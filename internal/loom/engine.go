@@ -1002,11 +1002,18 @@ func (e *Engine) submitExternalTask(ctx context.Context, inst *Instance, pattern
 
 	target := "vtx.meta." + pattern.PatternID
 	// The externalTask instanceOp validates the subject identity with vertex_alive
-	// (its DDL's no-orphan check), so the caller hydrates the BARE subjectKey. No
-	// `.state` (the DDL reads none). The instanceOp is the pattern's step string —
-	// the engine names no concrete op or type. The read-set is cross-checked
-	// against the owning package's DDL script by the package's drift-guard test.
-	reads := []string{inst.SubjectKey}
+	// (its DDL's no-orphan check), so the caller always hydrates the BARE
+	// subjectKey. Each subject.<aspect>.data.<field> params template additionally
+	// contributes the known aspect key subjectKey.<aspect> (§10.5 / Mechanism 2:
+	// Loom DECLARES the read-set by pure string parsing and reads NO Core KV; the
+	// instanceOp DDL resolves the templates Processor-side from the hydrated state).
+	// The instanceOp is the pattern's step string — the engine names no concrete op
+	// or type. The read-set is cross-checked against the owning package's DDL script
+	// by the package's drift-guard test.
+	reads, err := inferExternalTaskReads(inst.SubjectKey, step.Params)
+	if err != nil {
+		return err
+	}
 	ob, err := buildOutbox(opRequestID, step.InstanceOp, payload, target, e.cfg.Lane, e.cfg.ActorKey, reads)
 	if err != nil {
 		return err
