@@ -1364,8 +1364,30 @@ async function loadDocsView() {
   loadDocuments();
 }
 
-// populateDocScope rebuilds the scope <select>: the applicant's identity first,
-// then one option per application (value = the owner key the documents link to).
+// DOC_SCOPE_ALL is the sentinel scope value for the aggregated "All my documents"
+// view — a union of the applicant's identity + every one of their applications.
+const DOC_SCOPE_ALL = "__all__";
+
+// docScopeOwners returns the owner keys a scope reads: the union (identity + every
+// application) for DOC_SCOPE_ALL, or just the one key for a single-record scope.
+function docScopeOwners(scope) {
+  if (scope !== DOC_SCOPE_ALL) return [scope];
+  return [state.applicant, ...state.applications.map((a) => a.entityKey)];
+}
+
+// docScopeLabel names an owner key for a card in the aggregated view: the
+// applicant's identity, or the application's unit address.
+function docScopeLabel(ownerKey) {
+  if (ownerKey === state.applicant) return "Your identity";
+  const a = state.applications.find((x) => x.entityKey === ownerKey);
+  if (a) return "Application · " + (a.unitAddress || (a.unitKey ? shortKey(a.unitKey) : shortKey(a.entityKey)));
+  return shortKey(ownerKey);
+}
+
+// populateDocScope rebuilds the scope <select>: an aggregated "All my documents"
+// view first (only when the applicant has applications, so it adds something
+// beyond identity-only), then the applicant's identity, then one option per
+// application (value = the owner key the documents link to).
 function populateDocScope() {
   const sel = $("#doc-scope");
   const prev = state.docScope;
@@ -1376,6 +1398,7 @@ function populateDocScope() {
     o.textContent = label;
     sel.append(o);
   };
+  if (state.applications.length > 0) opt(DOC_SCOPE_ALL, "All my documents");
   opt(state.applicant, "Your identity (" + nameFor(state.applicant) + ")");
   for (const a of state.applications) {
     const label = a.unitAddress || (a.unitKey ? shortKey(a.unitKey) : shortKey(a.entityKey));
@@ -1385,6 +1408,18 @@ function populateDocScope() {
   const values = Array.from(sel.options).map((o) => o.value);
   state.docScope = prev && values.includes(prev) ? prev : state.applicant;
   sel.value = state.docScope;
+  syncUploadAvailability();
+}
+
+// syncUploadAvailability disables the upload form for the aggregated view — a
+// document attaches to one specific record, not to the union — and explains why.
+function syncUploadAvailability() {
+  const all = state.docScope === DOC_SCOPE_ALL;
+  const submit = $("#upload-submit");
+  if (submit) {
+    submit.disabled = all;
+    submit.title = all ? "Pick a specific record (identity or an application) to attach a document to" : "";
+  }
 }
 
 async function loadDocuments() {
@@ -1397,8 +1432,12 @@ async function loadDocuments() {
     return;
   }
   $("#docs-summary").textContent = "loading…";
+  const query = docScopeOwners(scope)
+    .filter(Boolean)
+    .map((o) => "owner=" + encodeURIComponent(o))
+    .join("&");
   try {
-    const data = await api("/api/objects?applicant=" + encodeURIComponent(scope));
+    const data = await api("/api/objects?" + query);
     state.docs = data.documents || [];
   } catch (e) {
     grid.innerHTML = "";
@@ -1446,6 +1485,14 @@ function renderDocCard(d) {
   meta.className = "addr-sub";
   meta.textContent = [d.contentType || "file", fmtSize(d.size)].filter(Boolean).join("  ·  ");
 
+  // In the aggregated "All my documents" view, name the record each doc belongs to.
+  let scopeLine = null;
+  if (state.docScope === DOC_SCOPE_ALL) {
+    scopeLine = document.createElement("div");
+    scopeLine.className = "addr-sub";
+    scopeLine.textContent = "📁 " + docScopeLabel(d.ownerKey);
+  }
+
   const ref = document.createElement("div");
   ref.className = "addr-sub mono";
   ref.textContent = d.oid;
@@ -1471,7 +1518,9 @@ function renderDocCard(d) {
     actions.append(detach);
   }
 
-  card.append(title, meta, ref, actions);
+  card.append(title, meta);
+  if (scopeLine) card.append(scopeLine);
+  card.append(ref, actions);
   return card;
 }
 
@@ -1484,6 +1533,10 @@ async function submitUpload(ev) {
   const scope = state.docScope;
   if (!scope) {
     toast("Choose what to attach the document to.", "err");
+    return;
+  }
+  if (scope === DOC_SCOPE_ALL) {
+    toast("Pick a specific record (identity or an application) to attach a document to.", "err");
     return;
   }
   const slot = $("#doc-slot").value;
@@ -2283,6 +2336,7 @@ function init() {
   $("#reload-docs").addEventListener("click", loadDocsView);
   $("#doc-scope").addEventListener("change", (e) => {
     state.docScope = e.target.value;
+    syncUploadAvailability();
     loadDocuments();
   });
   $("#upload-form").addEventListener("submit", submitUpload);

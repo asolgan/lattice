@@ -95,11 +95,18 @@ func (s *server) handleObjects(w http.ResponseWriter, r *http.Request) {
 }
 
 // computeDocuments assembles the Documents rows from the `objectAttachments` lens
-// read model: it keeps the lens-prefixed keys, decodes each row, and — when owner
-// is non-empty — keeps only objects linked to that owner (the applicant's
-// leaseapp or identity; the trusted-tool view scope). Rows sort by oid for a
-// stable view.
-func computeDocuments(keys []string, get kvGetter, owner string) []documentView {
+// read model: it keeps the lens-prefixed keys, decodes each row, and — when owners
+// is non-empty — keeps only objects linked to one of those owner keys (the
+// applicant's identity + each of their applications; the trusted-tool view scope).
+// An empty owners set lists every owned object (the operator-style view). Rows
+// sort by oid for a stable view.
+func computeDocuments(keys []string, get kvGetter, owners []string) []documentView {
+	scope := make(map[string]bool, len(owners))
+	for _, o := range owners {
+		if o != "" {
+			scope[o] = true
+		}
+	}
 	out := make([]documentView, 0)
 	for _, k := range keys {
 		if !strings.HasPrefix(k, attachmentsKeyPrefix) {
@@ -119,7 +126,7 @@ func computeDocuments(keys []string, get kvGetter, owner string) []documentView 
 			if o.OwnerKey == "" {
 				continue // the degenerate {ownerKey:null} artifact of a zero-link object
 			}
-			if owner == "" || o.OwnerKey == owner {
+			if len(scope) == 0 || scope[o.OwnerKey] {
 				matched = o.OwnerKey
 				break
 			}
@@ -136,12 +143,13 @@ func computeDocuments(keys []string, get kvGetter, owner string) []documentView 
 }
 
 // handleObjectList implements GET /api/objects?owner= — the objects attached to
-// one owner key, served from the `objectAttachments` lens rows in the shared
-// weaver-targets read model (NOT Core KV; P5). The owner key is generic: an
+// one or more owner keys, served from the `objectAttachments` lens rows in the
+// shared weaver-targets read model (NOT Core KV; P5). The owner key is generic: an
 // applicant's leaseapp / identity (the Documents tab) OR a unit (listing photos).
-// `applicant` is accepted as a backward-compatible alias for `owner`; omit both
-// to list every object. The lens projects objects by ownerKey, so the same
-// list-and-filter path serves any owner type.
+// `owner` may repeat (`?owner=a&owner=b`) to union an applicant's identity + every
+// application into one "all my documents" view. `applicant` is accepted as a
+// backward-compatible single-owner alias; omit both to list every object. The lens
+// projects objects by ownerKey, so the same list-and-filter path serves any owner.
 func (s *server) handleObjectList(w http.ResponseWriter, r *http.Request) {
 	conn, ok := s.requireConn(w)
 	if !ok {
@@ -164,11 +172,18 @@ func (s *server) handleObjectList(w http.ResponseWriter, r *http.Request) {
 		}
 		return entry.Value, true
 	}
-	owner := strings.TrimSpace(r.URL.Query().Get("owner"))
-	if owner == "" {
-		owner = strings.TrimSpace(r.URL.Query().Get("applicant"))
+	var owners []string
+	for _, o := range r.URL.Query()["owner"] {
+		if o = strings.TrimSpace(o); o != "" {
+			owners = append(owners, o)
+		}
 	}
-	docs := computeDocuments(keys, get, owner)
+	if len(owners) == 0 {
+		if a := strings.TrimSpace(r.URL.Query().Get("applicant")); a != "" {
+			owners = append(owners, a)
+		}
+	}
+	docs := computeDocuments(keys, get, owners)
 	s.writeJSON(w, http.StatusOK, map[string]any{"documents": docs, "count": len(docs)})
 }
 

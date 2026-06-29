@@ -21,7 +21,7 @@ func TestComputeDocuments_ScopesToOwnerAndReshapes(t *testing.T) {
 		"objectAttachments.ddd": `{`,
 	}
 
-	docs := computeDocuments(keysOf(entries), fakeKV(entries), leaseapp)
+	docs := computeDocuments(keysOf(entries), fakeKV(entries), []string{leaseapp})
 	if len(docs) != 1 {
 		t.Fatalf("want exactly my 1 document, got %d: %+v", len(docs), docs)
 	}
@@ -46,12 +46,41 @@ func TestComputeDocuments_UnscopedListsAll(t *testing.T) {
 		// no real owner — excluded even when unscoped
 		"objectAttachments.ccc": `{"entityKey":"vtx.object.ccc","storeName":"s3","owners":[{"ownerKey":null}]}`,
 	}
-	docs := computeDocuments(keysOf(entries), fakeKV(entries), "")
+	docs := computeDocuments(keysOf(entries), fakeKV(entries), nil)
 	if len(docs) != 2 {
 		t.Fatalf("want 2 owned documents, got %d: %+v", len(docs), docs)
 	}
 	// sorted by oid for a stable view
 	if docs[0].OID != "aaa" || docs[1].OID != "bbb" {
 		t.Errorf("want oid-sorted [aaa bbb], got [%s %s]", docs[0].OID, docs[1].OID)
+	}
+}
+
+// TestComputeDocuments_UnionsMultipleOwners proves the "all my documents" view:
+// a set of owner keys (the applicant's identity + each application) unions every
+// document linked to any of them, while documents owned only by an out-of-scope
+// key stay excluded — and each surviving row reports the in-scope owner it matched.
+func TestComputeDocuments_UnionsMultipleOwners(t *testing.T) {
+	const identity = "vtx.identity.me"
+	const app1 = "vtx.leaseapp.app1"
+	const app2 = "vtx.leaseapp.app2"
+	entries := map[string]string{
+		// mine — one on my identity, one on each of my two applications
+		"objectAttachments.aaa": `{"entityKey":"vtx.object.aaa","storeName":"s1","contentType":"image/png","size":1,"owners":[{"ownerKey":"vtx.identity.me"}]}`,
+		"objectAttachments.bbb": `{"entityKey":"vtx.object.bbb","storeName":"s2","contentType":"application/pdf","size":2,"owners":[{"ownerKey":"vtx.leaseapp.app1"}]}`,
+		"objectAttachments.ccc": `{"entityKey":"vtx.object.ccc","storeName":"s3","contentType":"application/pdf","size":3,"owners":[{"ownerKey":"vtx.leaseapp.app2"}]}`,
+		// someone else's application — excluded from my union
+		"objectAttachments.ddd": `{"entityKey":"vtx.object.ddd","storeName":"s4","contentType":"image/png","size":4,"owners":[{"ownerKey":"vtx.leaseapp.other"}]}`,
+	}
+
+	docs := computeDocuments(keysOf(entries), fakeKV(entries), []string{identity, app1, app2})
+	if len(docs) != 3 {
+		t.Fatalf("want my 3 documents unioned across identity + 2 apps, got %d: %+v", len(docs), docs)
+	}
+	want := map[string]string{"aaa": identity, "bbb": app1, "ccc": app2}
+	for _, d := range docs {
+		if want[d.OID] != d.OwnerKey {
+			t.Errorf("doc %s: want owner %q, got %q", d.OID, want[d.OID], d.OwnerKey)
+		}
 	}
 }
