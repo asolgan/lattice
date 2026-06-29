@@ -105,13 +105,41 @@ Pre-emption order (within your stream):
      neighbors (a reverse-link/set read the known-key-reads op path lacks), **file the primitive + block + WAIT**
      — do not ship the key-list workaround. (Pure existence-uniqueness needs no set: a deterministic guard LINK
      + `CreateOnly`.)
-   - **Lattice** → **round-robin across components**: prefer the **stalest** component (§1 freshness > ~3 days
-     untouched), else the top importance × readiness READY item in `lattice.md` (feature *or* maintenance). This
-     guarantees every component keeps improving, not just the loud ones — stateless, derived from `git log`.
+   - **Lattice** → **importance-first, NOT freshness-first.** Order of preference, top to bottom:
+     **(a)** a **`✅ Andrew-ratified, build-ready` design** — the flywheel's whole point is *Designer stocks →
+     Steward builds*; a ratified, unbuilt design (the standing queue: **read-path auth D1**, lane-authorization,
+     Augur, adapter-read-seam, anchor-tombstone Fire 2, NATS write-restriction Fire 2, …) is the
+     **highest-intent, highest-readiness work on the board** and is **preferred over routine maintenance**, even
+     when it is L+ and spans fires (§4 multi-fire). **(b)** the top **importance × readiness READY feature** in
+     `lattice.md`. **(c)** maintenance / continuous-improvement (§2.4) as **filler when (a)+(b) are exhausted —
+     never as the default pick.** **Round-robin / stalest-component is a *starvation guard + tie-breaker among
+     comparable-importance items*, NOT the primary axis** — it keeps quiet components improving, but a ★★★ ready
+     item beats a ★ stale-component pin every time. (Reliability red still pre-empts all of this — step 1.)
+
+     **Take what's important, not what's easy (anti-timidity — selection).** Picking a smaller / easier item
+     while a higher-importance ready *or* ratified item exists is a **defect**, not caution — the mirror of the
+     §0 contract-timidity bug, on the selection axis. Refuse these three excuses by name:
+     - **"Too big for one fire"** → that is exactly what the **🏗️ multi-fire checkpoint** is for (§4). *Start*
+       the big item, ship its first increment as a green commit, leave a 🏗️ checkpoint — do **not** substitute a
+       smaller item to avoid starting it.
+     - **"Might collide with the parallel (verticals) stream"** → disjointness is **by construction**
+       (`internal/*` + core packages vs. `packages/<vertical>*` + `cmd/<x>-app`). Build the **`internal/*`
+       increment** of the important item; if a *later* increment genuinely touches a vertical package, that
+       increment is a separate fire — not a reason to downgrade the whole item now.
+     - **"Continuous improvement always counts as ready"** → §2.4 keeps the lane from looking empty; it does
+       **not** license a maintenance pin when a higher-importance ready / ratified item is sitting there.
+
+     Each fire, if you pick item X over a higher-importance ready / ratified item Y, **record on the board *why Y
+     is genuinely not eligible*** (standing Andrew-block, not-yet-ratified, gates can't go green, blocked-on a
+     filed primitive) — **never** why X was convenient. "I chose the easy one" is the exact bug this rule exists
+     to kill.
 4. **Continuous improvement always counts as ready** (so the lane never looks empty): test-coverage gaps,
    simplification / refactor, observability build-out, and **doc sweeps** — incl. the cross-cutting docs no
    single story owns (`README.md`, `docs/architecture-overview.md`, the contracts index): the dedicated
    **Scribe** isn't running, so refresh them when the system's model shifts (a new phase / driver / component).
+   **But this is filler, not the default** (§2.3 anti-timidity): when a `✅ Andrew-ratified` design or a
+   higher-importance ready feature exists, *that* is the pick — reach for continuous-improvement only once the
+   important queue is genuinely exhausted, never to avoid starting the harder, more valuable item.
 5. **Design** the next item — *if nothing is build-ready, make progress by designing, not stopping.* **Lattice
    stream:** a dedicated **Designer** (`lattice-designer`) keeps designs stocked, each ratified by Andrew —
    **prefer picking up an `✅ Andrew-ratified` design** (build it per its doc) and design here yourself only as
