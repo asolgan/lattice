@@ -1,24 +1,67 @@
 # lease-signing
 
-The Loftspace lease-application convergence vertical (Epic 14 centerpiece). It
-wires the prior bricks — the `leaseapp` vertex type, the actorAggregate
-convergence lens, the §10.8 playbook, the Loom `externalTask` patterns + their
-`instanceOp`/`replyOp` DDLs, and `SignLease` — into one installable package.
+The Loftspace lease-application convergence vertical (Epic 14 centerpiece),
+grown into the full two-sided lease lifecycle: the **applicant** side
+(apply → qualification profile → onboarding/bgcheck/payment convergence →
+review terms → sign → withdraw) and the **landlord** side (approve/decline a
+qualified application with an optional reason). It wires the prior bricks — the
+`leaseapp` vertex type, the actorAggregate convergence lens, the §10.8 playbook,
+the Loom `externalTask` patterns + their `instanceOp`/`replyOp`/`dispatchOp`
+DDLs, and `SignLease` — into one installable package (currently **v0.10.0**).
 
 ## Inventory
 
 | Kind | Name | Purpose |
 |------|------|---------|
-| DDL (vertex type) | `leaseapp` | `CreateLeaseApplication` (mints `vtx.leaseapp.<id>`, root `{}`, `applicationFor` link to the applicant) + `SignLease` (writes the `.signature` aspect). |
+| DDL (vertex type) | `leaseapp` | The application vertex `vtx.leaseapp.<id>` (root `{}` — D5). Permitted commands: `CreateLeaseApplication`, `SignLease`, `WithdrawLeaseApplication`, `DecideLeaseApplication`, `SetApplicantProfile` (see **Operations**). |
 | DDL (externalTask instanceOp) | `leaseServiceInstance` | `CreateLeaseServiceInstance` — mints the claim vertex `vtx.service.<handle>` (`.class` + `.family` aspects, `providedTo` link), emits `external.<adapter>`. |
 | DDL (externalTask replyOp) | `leaseServiceReply` | `RecordLeaseServiceOutcome` — records the `.outcome` aspect from `{externalRef, result}`, emits `orchestration.externalTaskCompleted{externalRef}`. |
-| Lens (actorAggregate) | `leaseApplicationComplete` | One-row-per-anchor convergence lens → `weaver-targets` bucket, bare-NanoID key (§10.2). |
+| DDL (externalTask dispatchOp) | `leaseServiceDispatch` | `RecordServiceDispatch` — records the pending (async) call in the `.dispatch` aspect (D5). |
+| Lens (actorAggregate) | `leaseApplicationComplete` | One-row-per-anchor convergence lens → `weaver-targets` bucket, bare-NanoID key (§10.2). Projects the `missing_*`/`inflight_*`/`declined_*` gap state, the unit `.listing`/`.address` and applicant `.terms` (read-only review columns), the landlord `.decision` (`landlordDecision`/`declineReason`), `signedAt`, and the derived qualification signals (`incomeToRentMet`, `employmentVerified`, `referenceCount`, `hasCoApplicant`/`hasGuarantor`, `guarantorIncomeToRentMet`). |
 | WeaverTarget (playbook) | `leaseApplicationComplete` | gap → remediation (§10.8). |
 | LoomPattern | `backgroundCheck`, `collectPayment` | single `externalTask` step each, `completionDomains: ["orchestration"]`. |
 | LoomPattern | `onboarding` | single `userTask` step (`RecordIdentityPII`), `completionDomains: ["orchestration"]`. |
-| OpMetas | `SignLease`, `RecordIdentityPII`, `CreateLeaseServiceInstance`, `RecordLeaseServiceOutcome` | `forOperation` resolution + discoverability. |
+| OpMetas | `SignLease`, `RecordIdentityPII`, `CreateLeaseServiceInstance`, `RecordLeaseServiceOutcome`, `RecordServiceDispatch` | `forOperation` resolution + discoverability. |
 
 Depends: `identity-domain`, `service-domain`, `orchestration-base`.
+
+## Operations (the `leaseapp` vertex type)
+
+All `leaseapp` commands are granted to `operator` (the trusted single-identity
+model — read-path auth is deferred to D1). All relationships are **links**, no
+keys-in-data (Contract #1); aspects hold business data (D5).
+
+- **`CreateLeaseApplication{applicant, unit, [leaseAppId], [moveInDate, leaseTermMonths, requestedRent]}`** —
+  mints the application + the `applicationFor` link (→ applicant) and the
+  `appliesToUnit` link (→ unit), and a per-(applicant, unit) **guard LINK**
+  `lnk.identity.<a>.appliedToUnit.unit.<u>` (`CreateOnly` = the duplicate guard;
+  a second concurrent application for the same pair RevisionConflicts;
+  revive-on-re-apply after withdrawal). Optional `.terms` aspect
+  (`moveInDate`/`leaseTermMonths`/`requestedRent`). Replaces the former
+  `unit.leaseApplications` key-list index aspect (a Contract #1 violation) with
+  the guard link.
+- **`SetApplicantProfile{leaseAppKey, unit, annualIncome, employmentStatus, …, hasCoApplicant?, hasGuarantor?, guarantor*?, coApplicant*?}`** —
+  writes the `.profile` aspect (UNCONDITIONED upsert). **Raw financials**
+  (income, employer, guarantor/co-applicant detail) are stored plaintext-for-now
+  and **NEVER projected** (the `.ssn`/`.demographics` Vault discipline — the
+  deferred Vault plane owns raw-financial display). The op **derives** the
+  landlord signals the lens projects (`incomeToRentMet` = gross monthly ≥ 3× the
+  unit's listing rent, read on demand via `kv.Read`; `guarantorIncomeToRentMet`;
+  `employmentVerified`; `referenceCount`; the co-applicant/guarantor booleans).
+- **`SignLease{leaseAppKey}`** — writes the `.signature` aspect `{signedAt}`
+  (`CreateOnly` — rejects an already-signed application), closing
+  `missing_signature`.
+- **`DecideLeaseApplication{leaseAppKey, decision, [reason]}`** — the **landlord**
+  decision: writes the `.decision` aspect `{value (approved|declined), decidedAt,
+  reason?}` (UNCONDITIONED upsert — a later decision overrides). `approved` opens
+  `missing_listingLeased` (the unit leases via `directOp(SetListingStatus)`);
+  `declined` is a terminal rejection (`declineReason` is projected for the
+  applicant's declined banner + a fair-housing record).
+- **`WithdrawLeaseApplication{leaseAppKey, unit, applicant}`** — soft-deletes the
+  application (the convergence row drops from My Applications) and FREES the
+  guard link so the applicant can re-apply to the same unit. Validates `unit`
+  and `applicant` are the application's actual link targets (UnitMismatch /
+  ApplicantMismatch).
 
 ## The externalTask seam (Contract #10 §10.5/§10.6)
 
