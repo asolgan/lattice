@@ -1,0 +1,298 @@
+// Command gen-dev-nkeys mints the per-component NATS NKey seeds and renders the
+// Lattice transport-authorization config (deploy/nats-server.conf) that enforces
+// the NATS account-level write restriction (Path A: static config + per-component
+// NKey users).
+//
+// It is the single source of truth for the permission matrix: the Go `matrix`
+// below defines each component's publish allow/deny set, and this tool renders
+// both the seed files (deploy/nkeys/<component>.nk) and the server config that
+// references their public keys. Run it to rotate the dev credentials:
+//
+//	go run ./deploy/gen-dev-nkeys
+//
+// The seeds it writes are DEV-ONLY, committed like POSTGRES_PASSWORD: lattice_dev;
+// production injects real seeds via mounted secrets / Vault and never commits them.
+//
+// The rendered config + committed seeds are exercised end-to-end by
+// internal/natsperm (the offline conformance proof of the matrix).
+package main
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/nats-io/nkeys"
+)
+
+// protectedStream lists the JetStream stream-admin verbs a non-owner connection
+// must be denied on a protected KV stream. Denying the KV publish subject
+// ($KV.<bucket>.>) blocks ordinary writes, but a holder of the broad $JS.API.>
+// grant could otherwise mutate or destroy the backing stream directly via the
+// JetStream API (the backing-stream side-channel). These are the write-shaped
+// verbs; reads (MSG.GET, DIRECT.GET, INFO) and consumer ops stay allowed so CDC
+// readers are unaffected.
+func protectedStreamDenies(stream string) []string {
+	return []string{
+		"$JS.API.STREAM.CREATE." + stream,
+		"$JS.API.STREAM.UPDATE." + stream,
+		"$JS.API.STREAM.DELETE." + stream,
+		"$JS.API.STREAM.PURGE." + stream,
+		"$JS.API.STREAM.MSG.DELETE." + stream,
+	}
+}
+
+// The protected KV streams whose integrity is load-bearing.
+const (
+	coreKVStream       = "KV_core-kv"
+	capabilityKVStream = "KV_capability-kv"
+)
+
+// component is one NATS user — a Lattice binary's scoped connection.
+type component struct {
+	// name is both the seed filename (deploy/nkeys/<name>.nk) and the NATS
+	// connection identity. It maps to a cmd/<name> binary.
+	name string
+	// desc documents the component's role in the rendered config.
+	desc string
+	// pubAllow is the publish allow-list. With an allow-list present, NATS
+	// denies any publish that does not match an entry, so the allow-list is the
+	// primary boundary; pubDeny removes destructive verbs the broad $JS.API.>
+	// grant would otherwise admit.
+	pubAllow []string
+	// pubDeny removes subjects from the allow-list (deny wins over allow).
+	pubDeny []string
+	// allowResponses grants a request-reply responder a one-time publish to the
+	// reply subject of each received request (control planes, micro.Service
+	// discovery). Without it, a responder goes silent under enforcement.
+	allowResponses bool
+}
+
+// denyProtected returns the publish denies for a non-owner of the named
+// protected streams: the explicit KV publish subject plus the stream-admin
+// verbs (belt-and-suspenders; the KV publish is already excluded by the
+// allow-list, but the stream-admin verbs are reachable via $JS.API.>).
+func denyProtected(kvSubjects []string, streams ...string) []string {
+	denies := append([]string{}, kvSubjects...)
+	for _, s := range streams {
+		denies = append(denies, protectedStreamDenies(s)...)
+	}
+	return denies
+}
+
+// matrix is the permission matrix (design §3.2 — NATS account write restriction).
+// The load-bearing invariant: only `processor` may publish $KV.core-kv.> and only
+// `refractor` may publish $KV.capability-kv.> / the lens-target buckets; the
+// `bootstrap` provisioner is the sanctioned pre-Processor kernel seeder.
+//
+// Health is written to the `health-kv` KV bucket (keys health.<component>.<inst>),
+// so the publish subject is $KV.health-kv.> — not the bare `health.>` the design
+// prose abbreviated. Operational-bucket subjects (schedule / bridge / object
+// store) are the binaries' own state and are verified against the live stack when
+// enforcement turns on (Fire 2); getting them slightly off is a non-security
+// refinement (a missing operational grant surfaces in the full-stack battery),
+// whereas the core-kv / capability-kv protection proved here is airtight.
+var matrix = []component{
+	{
+		name:     "processor",
+		desc:     "the sole Core-KV writer; runs the atomic-batch commit + event outbox",
+		pubAllow: []string{"$KV.core-kv.>", "core-events", "$KV.health-kv.>", "$JS.API.>"},
+		// Owns core-kv; denied the destructive verbs on the capability stream it
+		// does not own (Refractor is the sole capability-kv writer).
+		pubDeny: denyProtected([]string{"$KV.capability-kv.>"}, capabilityKVStream),
+	},
+	{
+		name: "refractor",
+		desc: "the sole lens projector — writes every KV target EXCEPT Core KV (CDC-read-only on Core)",
+		// $KV.> covers capability-kv, every lens read-model target (including
+		// dynamically-named package buckets) and health-kv without enumeration.
+		pubAllow:       []string{"$KV.>", "$JS.API.>"},
+		pubDeny:        denyProtected([]string{"$KV.core-kv.>"}, coreKVStream),
+		allowResponses: true, // control responder (lattice.ctrl.refractor.>)
+	},
+	{
+		name:           "loom",
+		desc:           "pattern engine; mutates Core state only by submitting ops (P2); owns loom-state",
+		pubAllow:       []string{"core-operations", "$KV.loom-state.>", "lattice.ctrl.loom.>", "$KV.health-kv.>", "$JS.API.>"},
+		pubDeny:        denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
+		allowResponses: true, // control responder (lattice.ctrl.loom.>)
+	},
+	{
+		name:           "weaver",
+		desc:           "reconciliation engine; owns weaver-state; targets are Refractor-written, Weaver-read",
+		pubAllow:       []string{"core-operations", "$KV.weaver-state.>", "lattice.ctrl.weaver.>", "core-schedules", "$KV.health-kv.>", "$JS.API.>"},
+		pubDeny:        denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
+		allowResponses: true, // control responder (lattice.ctrl.weaver.>)
+	},
+	{
+		name:           "bridge",
+		desc:           "external-I/O egress; replies via ops; owns its claim/schedule buckets",
+		pubAllow:       []string{"core-operations", "$KV.bridge-external.>", "$KV.bridge-schedule.>", "core-schedules", "$KV.health-kv.>", "$JS.API.>"},
+		pubDeny:        denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
+		allowResponses: true, // may respond to requests
+	},
+	{
+		name:     "object-store-manager",
+		desc:     "object GC actor; writes the object store, mutates Core state via ops",
+		pubAllow: []string{"core-operations", "$OBJ.objects-base.>", "$KV.health-kv.>", "$JS.API.>"},
+		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
+	},
+	{
+		name: "bootstrap",
+		desc: "provisioning-time privileged user — the sanctioned non-Processor direct Core-KV writer; seeds the kernel before the Processor exists and creates streams/buckets",
+		// No denies: the provisioner seeds core-kv/capability-kv and creates
+		// every stream/bucket before any component connects.
+		pubAllow: []string{"$KV.>", "$OBJ.>", "$JS.API.>", "core-events", "core-operations"},
+	},
+	{
+		name:     "lattice-pkg",
+		desc:     "package installer — InstallPackage / UninstallPackage kernel ops",
+		pubAllow: []string{"core-operations", "$KV.health-kv.>", "$JS.API.>"},
+		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
+	},
+	{
+		name:     "loupe",
+		desc:     "trusted inspector — reads all KV (subscribe/get); writes state only via ops, even it gets no direct Core-KV write",
+		pubAllow: []string{"core-operations", "$KV.health-kv.>", "$JS.API.>"},
+		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
+	},
+	{
+		name:     "lattice",
+		desc:     "operator CLI + verify tools — submits ops, reads",
+		pubAllow: []string{"core-operations", "$KV.health-kv.>", "$JS.API.>"},
+		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
+	},
+	{
+		name:     "loftspace-app",
+		desc:     "vertical app (P5 reader); writes via ops",
+		pubAllow: []string{"core-operations", "$KV.health-kv.>", "$JS.API.>"},
+		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
+	},
+	{
+		name:     "clinic-app",
+		desc:     "vertical app (P5 reader); writes via ops",
+		pubAllow: []string{"core-operations", "$KV.health-kv.>", "$JS.API.>"},
+		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
+	},
+}
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "gen-dev-nkeys:", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	deployDir, err := deployRoot()
+	if err != nil {
+		return err
+	}
+	nkeysDir := filepath.Join(deployDir, "nkeys")
+	if err := os.MkdirAll(nkeysDir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", nkeysDir, err)
+	}
+
+	pubKeys := make(map[string]string, len(matrix))
+	for _, c := range matrix {
+		kp, err := nkeys.CreateUser()
+		if err != nil {
+			return fmt.Errorf("create nkey for %s: %w", c.name, err)
+		}
+		seed, err := kp.Seed()
+		if err != nil {
+			return fmt.Errorf("seed for %s: %w", c.name, err)
+		}
+		pub, err := kp.PublicKey()
+		if err != nil {
+			return fmt.Errorf("public key for %s: %w", c.name, err)
+		}
+		seedPath := filepath.Join(nkeysDir, c.name+".nk")
+		if err := os.WriteFile(seedPath, append(seed, '\n'), 0o600); err != nil {
+			return fmt.Errorf("write seed %s: %w", seedPath, err)
+		}
+		pubKeys[c.name] = pub
+	}
+
+	conf := renderConf(pubKeys)
+	confPath := filepath.Join(deployDir, "nats-server.conf")
+	if err := os.WriteFile(confPath, []byte(conf), 0o644); err != nil {
+		return fmt.Errorf("write conf %s: %w", confPath, err)
+	}
+	fmt.Printf("wrote %d seeds to %s and %s\n", len(matrix), nkeysDir, confPath)
+	return nil
+}
+
+// deployRoot locates the deploy/ directory relative to this source file so the
+// tool works regardless of the caller's working directory.
+func deployRoot() (string, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	// Walk up to the repo root (the dir containing go.mod), then into deploy/.
+	dir := wd
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return filepath.Join(dir, "deploy"), nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", fmt.Errorf("could not find go.mod above %s", wd)
+		}
+		dir = parent
+	}
+}
+
+func renderConf(pubKeys map[string]string) string {
+	var b strings.Builder
+	b.WriteString(`# Lattice NATS transport-authorization config (NATS account-level write restriction).
+#
+# GENERATED by deploy/gen-dev-nkeys — do not hand-edit; change the matrix in
+# deploy/gen-dev-nkeys/main.go and regenerate (go run ./deploy/gen-dev-nkeys).
+#
+# Path A (static config + per-component NKey users). Each Lattice binary connects
+# with its own scoped NKey seed (deploy/nkeys/<component>.nk, DEV-ONLY). The
+# load-bearing invariant: only the processor may publish $KV.core-kv.> and only
+# refractor may publish $KV.capability-kv.> / the lens-target buckets; bootstrap is
+# the sanctioned provisioning-time writer. The seeds here are dev credentials
+# (like POSTGRES_PASSWORD: lattice_dev); production injects real seeds via mounted
+# secrets and never commits them.
+
+jetstream {
+  store_dir: "/data/jetstream"
+}
+
+authorization {
+  users = [
+`)
+	for _, c := range matrix {
+		b.WriteString("    {\n")
+		fmt.Fprintf(&b, "      # %s — %s\n", c.name, c.desc)
+		fmt.Fprintf(&b, "      nkey: %q\n", pubKeys[c.name])
+		b.WriteString("      permissions {\n")
+		b.WriteString("        publish {\n")
+		b.WriteString("          allow: [" + quoteList(c.pubAllow) + "]\n")
+		if len(c.pubDeny) > 0 {
+			b.WriteString("          deny: [" + quoteList(c.pubDeny) + "]\n")
+		}
+		b.WriteString("        }\n")
+		b.WriteString("        subscribe { allow: [\">\"] }\n")
+		if c.allowResponses {
+			b.WriteString("        allow_responses: true\n")
+		}
+		b.WriteString("      }\n")
+		b.WriteString("    }\n")
+	}
+	b.WriteString("  ]\n}\n")
+	return b.String()
+}
+
+func quoteList(items []string) string {
+	quoted := make([]string, len(items))
+	for i, s := range items {
+		quoted[i] = fmt.Sprintf("%q", s)
+	}
+	return strings.Join(quoted, ", ")
+}
