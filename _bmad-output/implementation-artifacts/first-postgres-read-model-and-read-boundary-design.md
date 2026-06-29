@@ -63,7 +63,7 @@ Any caller lists all applications and filters client-side; the `applicant` scope
 | **Postgres in the stack** | **Exists.** `postgres:16-alpine`, `make up` starts it; DSN `postgres://lattice:…@localhost:5432/lattice`. | `docker-compose.yml:21`, `Makefile:25` |
 | **The read-auth source of truth** | **Shipped (D1.1).** `cap-read.<actor>` base lens projects the self-anchor for every identity; auth-plane by bucket; §6.13 fail-closed + §6.2 seq-guard inherited. | `bootstrap.CapabilityReadLensDefinition` (`43a476a`) |
 | **Authenticated actor seam** | **Shipped (D1.2), dark.** `internal/gateway/auth` (verify IdP JWT → `actor` full vertex key) + `internal/gateway/revocation` (per-request kill-switch) + `Authenticator` (fails closed). Asymmetric-only, `none`/HS\* refused, `exp` required. | `internal/gateway/{auth,revocation}` (`136f49c`) |
-| **The read-path contract** | **Committed (§6.14).** protected-by-default; `authzAnchors[]` set; set-membership RLS policy; `FORCE RLS`; `actor_read_grants(actor_id,anchor_type,anchor_id,grant_source,projection_seq)` seq-guarded; source-scoped retraction. | `docs/contracts/06-capability-kv.md` §6.14 |
+| **The read-path contract** | **Committed (§6.14).** protected-by-default; `authzAnchors[]` set of **bare NanoIDs**; NanoID-to-NanoID set-membership RLS policy; `FORCE RLS`; `actor_read_grants(actor_id,anchor_id,grant_source,projection_seq)` seq-guarded; source-scoped retraction. *(The bare-NanoID anchor rep + the `nanoIdFromKey` cypher prerequisite are an uncommitted §6.14 refinement awaiting Andrew, 2026-06-29.)* | `docs/contracts/06-capability-kv.md` §6.14 |
 | **The residence grant slice** | **D1.1b (pending) — package work.** `cap-read.residence` (loftspace) projects `actor → residesIn/leases → {unit, lease}` anchors to `actor_read_grants`. This design **depends on** it. | D1 board row, D1.1b |
 
 **Net:** the *adapter* and *target-declaration* exist; the *missing* pieces are (a) **protected-table provisioning** (CREATE TABLE + FORCE RLS + the policy — nothing creates a table today), (b) the **read boundary** (apps read NATS-KV via `KVGet`; no Postgres-read-as-actor path exists), and (c) the **first protected lens** wired to all of it. Honoring P2 (writes via ops — unchanged; this is read-path), P5 (apps read a *projection*, now a protected one), P1 (the grant table + read model are read-models, not Core KV).
@@ -77,7 +77,7 @@ Any caller lists all applications and filters client-side; the `applicant` scope
 A dedicated `loftspace`-package read-model lens (replacing the `weaver-targets` expedient for this view), `TargetType: "postgres"`:
 
 - **Projects** one row per lease application: the application's business columns (unit, applicant, status, submittedAt, …) **plus** an `authz_anchors text[]` column.
-- **`authz_anchors`** carries the resource scope (§6.14, H5 set): `["unit.<unitKey>", "identity.<applicantKey>"]` — the application is readable by an actor granted **either** the unit (a landlord/manager via residence/ownership) **or** the applicant identity (the applicant reading their own). Multi-anchor = the H5 win: no separate lens per audience.
+- **`authz_anchors`** carries the resource scope (§6.14, H5 set) as **bare NanoIDs** (extracted via `nanoIdFromKey`): `[<unit-NanoID>, <applicant-NanoID>]` — the application is readable by an actor granted **either** the unit (a landlord/manager via residence/ownership) **or** the applicant identity (the applicant reading their own). Multi-anchor = the H5 win: no separate lens per audience. (Anchors are opaque match tokens, §6.14 representation note — NanoIDs, type-irrelevant; `nanoIdFromKey` is the Lattice-lane cypher-engine prerequisite.)
 - **`protected: true`** in the lens spec (the §6.14 default is protected, but the lens declares it explicitly for the provisioning step to key on; a `public: true` lens would be the opposite).
 - **Table:** `read_lease_applications(... , authz_anchors text[], projection_seq bigint)`; `Key` = the application id.
 
@@ -92,8 +92,8 @@ CREATE TABLE IF NOT EXISTS read_lease_applications ( ... , authz_anchors text[] 
 ALTER TABLE read_lease_applications ENABLE ROW LEVEL SECURITY;
 ALTER TABLE read_lease_applications FORCE ROW LEVEL SECURITY;            -- H3: missing policy ⇒ deny-all
 CREATE POLICY rls_read_lease_applications ON read_lease_applications USING (
-  EXISTS (SELECT 1 FROM unnest(authz_anchors) a
-          WHERE a IN (SELECT anchor_type||'.'||anchor_id FROM actor_read_grants
+  EXISTS (SELECT 1 FROM unnest(authz_anchors) a       -- authz_anchors + anchor_id are bare NanoIDs (§6.14)
+          WHERE a IN (SELECT anchor_id FROM actor_read_grants
                       WHERE actor_id = current_setting('lattice.actor_id', true))) );
 ```
 
