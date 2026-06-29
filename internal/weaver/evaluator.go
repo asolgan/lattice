@@ -147,11 +147,23 @@ func (e *Engine) dispatchGap(ctx context.Context, target *Target, targetID, enti
 
 	ga, ok := target.Gaps[col]
 	if !ok {
-		// A true missing_* column with no playbook entry is a config error →
-		// alert, never silently skipped (FR29 discipline).
-		e.alert(issueKeyGap(targetID, col), "error", "GapWithoutPlaybook",
-			"target "+targetID+": row column "+col+" is true but the playbook defines no gaps entry for it")
-		return substrate.Ack
+		// No playbook entry for this gap. If the target's augur policy escalates
+		// `unplannable` (Contract #10 §10.8 "Augur escalation"), redirect the
+		// dead-end to the AI reasoning tier: dispatch the reasoning op directly
+		// as a directOp → bridge (Option F — single-step episode, no Loom
+		// wrapper). Otherwise it is a config error: alert, never silently
+		// skipped (FR29 discipline).
+		esc, escalated := augurEscalation(e.source, target, escalateUnplannable, targetID, entityID, entityKey, col)
+		if !escalated {
+			e.alert(issueKeyGap(targetID, col), "error", "GapWithoutPlaybook",
+				"target "+targetID+": row column "+col+" is true but the playbook defines no gaps entry for it")
+			return substrate.Ack
+		}
+		// The augur policy now covers this gap — clear any GapWithoutPlaybook
+		// alert raised before the policy was added, and dispatch the reasoning
+		// episode through the normal lane-1 path (anti-storm mark + OCC + reclaim).
+		e.issues.clear(issueKeyGap(targetID, col))
+		ga = esc
 	}
 
 	// The row's substrate per-key revision arrives free on the CDC message

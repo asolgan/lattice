@@ -158,6 +158,21 @@ func deriveStableInstanceID(targetID, entityID, gapColumn, claimID string) strin
 	return deriveID("instance:", targetID+"\x00"+entityID+"\x00"+gapColumn+"\x00"+claimID, 0)
 }
 
+// deriveAugurHandle returns the stable bare-handle instanceKey for an Augur
+// reasoning episode, keyed on (targetID, entityID, gapColumn). Unlike the
+// triggerLoom/assignTask stable ids it is NOT claimId-seeded — Weaver dispatches
+// the reasoning op as a generic directOp, whose payload carries no claimId — so
+// the handle is stable across redeliveries AND the reconciler reclaim: the
+// CreateAugurReasoningClaim claim vertex collapses create-only and the bridge
+// dedups on idempotencyKey == this handle, giving ≤1 claim / ≤1 billed model
+// call per stuck gap. A genuine close→reopen of the same gap therefore reuses
+// the existing proposal rather than re-reasoning — the cost-bounded choice for
+// the human-gated reasoning tier. Namespaced disjoint from the task/instance
+// and requestId derivations.
+func deriveAugurHandle(targetID, entityID, gapColumn string) string {
+	return deriveID("augur:", targetID+"\x00"+entityID+"\x00"+gapColumn, 0)
+}
+
 // deriveTimerRequestID returns the deterministic requestId for one fired-timer
 // conversion (Contract #10 §10.4): derived from the schedule subject + the
 // fire instant, so an at-least-once redelivery of the SAME firing reuses the

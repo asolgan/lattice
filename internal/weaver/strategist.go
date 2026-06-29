@@ -217,6 +217,89 @@ func buildPlan(source *targetSource, targetID, entityID, gapColumn string,
 	}
 }
 
+// defaultAugur* are the reasoning-tier dispatch defaults a target's augur block
+// inherits when it omits the explicit override (Contract #10 §10.8). The
+// reasoning episode is single-step, so Weaver dispatches the reasoning op
+// DIRECTLY as a directOp (Option F — no Loom wrapper): CreateAugurReasoningClaim
+// mints the claim vertex write-ahead + emits external.<adapter>; the bridge
+// calls the model and posts RecordProposal as the replyOp.
+const (
+	defaultAugurOp      = "CreateAugurReasoningClaim"
+	defaultAugurAdapter = "augur"
+	defaultAugurReplyOp = "RecordProposal"
+)
+
+// augurEscalation builds the reasoning-tier GapAction for a stuck gap whose
+// target escalates `trigger` to the Augur AI tier (Contract #10 §10.8 "Augur
+// escalation"). It is a plain directOp straight to the bridge (Option F): the
+// reasoning op carries the TRUSTED gap context as flat literal params
+// (targetId/entityId are the live meta + candidate vertex keys, gapColumn +
+// trigger the stuck-gap coordinates), so CreateAugurReasoningClaim mints the
+// claim vertex + emits external.<adapter> without any Loom orchestration. The
+// dispatch then runs through the normal lane-1 path (buildPlan(actionDirectOp) →
+// fireEpisode), inheriting the anti-storm mark, OCC, and reconciler reclaim
+// wholesale.
+//
+// ok=false means no augur policy escalates this trigger (the caller fails closed
+// per the frozen contract) — or the target's meta vertex is unresolved (it
+// always resolves for a registered target whose row we are processing).
+func augurEscalation(source *targetSource, target *Target, trigger, targetID, entityID, entityKey, gapColumn string) (GapAction, bool) {
+	if target.Augur == nil {
+		return GapAction{}, false
+	}
+	escalates := false
+	for _, t := range target.Augur.Escalate {
+		if t == trigger {
+			escalates = true
+			break
+		}
+	}
+	if !escalates {
+		return GapAction{}, false
+	}
+	// The targetId param + the forTarget no-orphan endpoint need the FULL meta
+	// key (vtx.meta.<id>); the row-key targetID is the canonicalName prefix.
+	targetMetaKey, ok := source.targetMetaKey(targetID)
+	if !ok {
+		return GapAction{}, false
+	}
+	op := target.Augur.Op
+	if op == "" {
+		op = defaultAugurOp
+	}
+	adapter := target.Augur.Adapter
+	if adapter == "" {
+		adapter = defaultAugurAdapter
+	}
+	replyOp := target.Augur.ReplyOp
+	if replyOp == "" {
+		replyOp = defaultAugurReplyOp
+	}
+	return GapAction{
+		Action:    actionDirectOp,
+		Operation: op,
+		// authTarget anchors the capability check on the weaver target meta
+		// vertex (parallels triggerLoom's pattern-as-target); Weaver's
+		// service-actor holds the op at scope: any (augur permissions, Fire-1 (4)).
+		Target: targetMetaKey,
+		Params: map[string]string{
+			"instanceKey": deriveAugurHandle(targetID, entityID, gapColumn),
+			"adapter":     adapter,
+			"replyOp":     replyOp,
+			"targetId":    targetMetaKey,
+			"entityId":    entityKey,
+			"gapColumn":   gapColumn,
+			"trigger":     trigger,
+		},
+		// The no-orphan alive endpoints routed into ContextHint.Reads — the
+		// candidate (forCandidate) and the weaver target (forTarget). The op's
+		// own alive checks use kv.Read (read-path-independent), so these are
+		// belt-and-suspenders matching the as-built op's Weaver-routes-the-keys
+		// posture (packages/augur/ddls.go).
+		Reads: []string{entityKey, targetMetaKey},
+	}, true
+}
+
 // resolveParam resolves one playbook param value: either a literal or the
 // token row.<column> substituted from the violation row. A row.<column> that
 // resolves null/absent is a data error — surface, do not fire a malformed

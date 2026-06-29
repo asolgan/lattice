@@ -665,6 +665,21 @@ func (s *targetSource) target(targetID string) (*Target, bool) {
 	return t, ok
 }
 
+// targetMetaKey resolves a registered targetId to its owning meta.weaverTarget
+// vertex key (vtx.meta.<id>). The targetId is the row-key prefix / canonicalName,
+// not the vertex NanoID, so the full key comes from the owner index. An Augur
+// escalation needs it as the reasoning op's targetId param + the forTarget
+// no-orphan endpoint. Present for any loaded target.
+func (s *targetSource) targetMetaKey(targetID string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, ok := s.targetOwner[targetID]
+	if !ok {
+		return "", false
+	}
+	return "vtx.meta." + id, true
+}
+
 // ownerVertexID returns the vtx.meta.<id> vertex id that registered targetId,
 // the same id the "target:"+id issue-cache key is keyed by (registry.go's
 // rejectTarget/load path). Used by Revoke to clear that target's standing
