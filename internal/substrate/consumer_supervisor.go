@@ -31,13 +31,32 @@ type ConsumerSupervisor struct {
 	stopped bool
 }
 
-// managedConsumer holds the per-consumer runtime: the desired spec, its pump
-// goroutine cancel + done, and the live pause state machine.
+// managedConsumer holds the per-consumer runtime: the desired spec and one
+// pumpWorker per concurrent pump goroutine binding the durable. A single-worker
+// consumer (the default, and every Loom/Weaver/Refractor consumer) has exactly
+// one element; a fan-out lane (Workers > 1) has N, all sharing the one durable.
 type managedConsumer struct {
-	spec   ConsumerSpec
+	spec    ConsumerSpec
+	workers []*pumpWorker
+}
+
+// pumpWorker is one supervised pump goroutine: its context cancel, a done
+// channel closed when the goroutine exits, and its own pause state machine.
+// Workers of the same consumer share only the durable (the server load-balances
+// delivery); they hold no shared mutable state, so no worker can race another.
+type pumpWorker struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	state  *pumpState
+}
+
+// workerCount resolves spec.Workers to the number of pump goroutines: at least
+// one, even when Workers is left at its zero value.
+func workerCount(spec ConsumerSpec) int {
+	if spec.Workers > 1 {
+		return spec.Workers
+	}
+	return 1
 }
 
 // NewConsumerSupervisor constructs a supervisor over conn. The supervisor uses
@@ -74,30 +93,49 @@ func (s *ConsumerSupervisor) Add(ctx context.Context, spec ConsumerSpec) error {
 		return err
 	}
 
-	pumpCtx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	st := newPumpState()
-	mc := &managedConsumer{spec: spec, cancel: cancel, done: done, state: st}
+	// Build the workers (one per Workers, at least one) before taking the lock.
+	// Each binds the single durable just created; the server load-balances the
+	// pull consumer across them.
+	n := workerCount(spec)
+	workers := make([]*pumpWorker, 0, n)
+	pumpCtxs := make([]context.Context, 0, n)
+	for i := 0; i < n; i++ {
+		pumpCtx, cancel := context.WithCancel(context.Background())
+		workers = append(workers, &pumpWorker{cancel: cancel, done: make(chan struct{}), state: newPumpState()})
+		pumpCtxs = append(pumpCtxs, pumpCtx)
+	}
+	mc := &managedConsumer{spec: spec, workers: workers}
 
 	s.mu.Lock()
 	if s.stopped {
 		s.mu.Unlock()
-		cancel()
+		cancelAll(workers)
 		return fmt.Errorf("substrate: ConsumerSupervisor: Add after Stop")
 	}
 	if _, exists := s.managed[spec.Name]; exists {
 		s.mu.Unlock()
-		cancel()
+		cancelAll(workers)
 		return nil
 	}
 	s.managed[spec.Name] = mc
 	s.mu.Unlock()
 
-	go func() {
-		defer close(done)
-		s.runPump(pumpCtx, spec, st)
-	}()
+	for i, w := range workers {
+		w := w
+		pumpCtx := pumpCtxs[i]
+		go func() {
+			defer close(w.done)
+			s.runPump(pumpCtx, spec, w.state)
+		}()
+	}
 	return nil
+}
+
+// cancelAll cancels every worker's pump context (used to unwind a race-lost Add).
+func cancelAll(workers []*pumpWorker) {
+	for _, w := range workers {
+		w.cancel()
+	}
 }
 
 // Remove stops the pump for name and deletes its server-side durable. If name is
@@ -114,14 +152,24 @@ func (s *ConsumerSupervisor) Remove(ctx context.Context, name string) error {
 	delete(s.managed, name)
 	s.mu.Unlock()
 
-	mc.cancel()
-	<-mc.done
+	stopWorkers(mc.workers)
 
 	if err := s.conn.js.DeleteConsumer(ctx, mc.spec.Stream, name); err != nil &&
 		!errors.Is(err, jetstream.ErrConsumerNotFound) {
 		return fmt.Errorf("substrate: ConsumerSupervisor: remove %q: %w", name, err)
 	}
 	return nil
+}
+
+// stopWorkers cancels every worker's pump context, then waits for each goroutine
+// to exit — the shared shutdown sequence for Remove and Stop.
+func stopWorkers(workers []*pumpWorker) {
+	for _, w := range workers {
+		w.cancel()
+	}
+	for _, w := range workers {
+		<-w.done
+	}
 }
 
 // Reset deletes and recreates the durable for name (preserving the spec's
@@ -151,8 +199,10 @@ func (s *ConsumerSupervisor) Reset(ctx context.Context, name string) error {
 		return fmt.Errorf("substrate: ConsumerSupervisor: reset %q: create: %w", name, err)
 	}
 
-	// Signal the pump to re-open its iterator against the recreated durable.
-	mc.state.requestReopen()
+	// Signal every pump to re-open its iterator against the recreated durable.
+	for _, w := range mc.workers {
+		w.state.requestReopen()
+	}
 	return nil
 }
 
@@ -170,8 +220,11 @@ func (s *ConsumerSupervisor) UpdateSpec(name string, mutate func(*ConsumerSpec))
 	}
 	mutate(&mc.spec)
 	updated := mc.spec
+	workers := mc.workers
 	s.mu.Unlock()
-	mc.state.updateSpec(updated)
+	for _, w := range workers {
+		w.state.updateSpec(updated)
+	}
 	return nil
 }
 
@@ -193,11 +246,17 @@ func (s *ConsumerSupervisor) Stop() {
 	s.managed = make(map[string]*managedConsumer)
 	s.mu.Unlock()
 
+	// Cancel every worker across every consumer first, then wait — so all pumps
+	// tear down concurrently rather than serially per consumer.
 	for _, mc := range managed {
-		mc.cancel()
+		for _, w := range mc.workers {
+			w.cancel()
+		}
 	}
 	for _, mc := range managed {
-		<-mc.done
+		for _, w := range mc.workers {
+			<-w.done
+		}
 	}
 }
 
@@ -214,7 +273,11 @@ func (s *ConsumerSupervisor) Pause(ctx context.Context, name string) bool {
 	if !exists {
 		return false
 	}
-	mc.state.addReason(PauseManual)
+	// An operator pause is lane-wide: fan out to every worker, then persist once
+	// (the workers share one durable / one health key).
+	for _, w := range mc.workers {
+		w.state.addReason(PauseManual)
+	}
 	s.persistPaused(ctx, mc.spec, PauseManual, "")
 	return true
 }
@@ -239,7 +302,11 @@ func (s *ConsumerSupervisor) Resume(ctx context.Context, name string) bool {
 	if !exists {
 		return false
 	}
-	mc.state.operatorResume()
+	// Lane-wide resume: clear manual + structural on every worker, then persist
+	// once.
+	for _, w := range mc.workers {
+		w.state.operatorResume()
+	}
 	s.persistActive(context.WithoutCancel(ctx), mc.spec)
 	return true
 }

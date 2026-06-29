@@ -12,6 +12,28 @@ import (
 // transient open failure (e.g. the brief window of an in-flight Reset).
 const reopenBackoff = 100 * time.Millisecond
 
+// fanOutPullMaxMessages bounds how many messages a single worker's pull iterator
+// buffers when a consumer runs more than one worker (Workers > 1). The
+// JetStream default (DefaultMaxMessages = 500) lets the first iterator to issue a
+// pull request grab a whole finite burst, starving the other workers — so an
+// N-worker lane would process a bounded backlog effectively serially. A small
+// per-worker buffer lets the server fairly distribute pending messages across all
+// the bound iterators (the pull-consumer equivalent of a queue group). The
+// single-worker default path keeps the JetStream default untouched, so every
+// existing Loom/Weaver/Refractor consumer is byte-identical.
+const fanOutPullMaxMessages = 8
+
+// messagesOpts builds the pull-iterator options for a worker. Every worker sets a
+// heartbeat; a fan-out worker (Workers > 1) additionally bounds its prefetch so
+// the server can balance delivery across the lane's workers.
+func messagesOpts(spec ConsumerSpec) []jetstream.PullMessagesOpt {
+	opts := []jetstream.PullMessagesOpt{jetstream.PullHeartbeat(5 * time.Second)}
+	if spec.Workers > 1 {
+		opts = append(opts, jetstream.PullMaxMessages(fanOutPullMaxMessages))
+	}
+	return opts
+}
+
 // pumpState is the live pause/probe/reopen machinery for one supervised
 // consumer. Pause reasons are tracked as a composable SET: probe-success clears
 // ONLY the infra reason; an operator Resume clears manual + structural and
@@ -178,7 +200,7 @@ func (s *ConsumerSupervisor) runPump(ctx context.Context, spec ConsumerSpec, st 
 			continue
 		}
 
-		mc, err := cons.Messages(jetstream.PullHeartbeat(5 * time.Second))
+		mc, err := cons.Messages(messagesOpts(spec)...)
 		if err != nil {
 			if ctx.Err() != nil {
 				return

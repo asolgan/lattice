@@ -2,6 +2,8 @@ package processor
 
 import (
 	"log/slog"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/asolgan/lattice/internal/substrate"
@@ -40,6 +42,44 @@ func LaneDurables() map[string]string {
 	return out
 }
 
+// LaneConsumerDefaults is the per-lane worker count when no override is set,
+// mirroring the architecture config example (lattice-architecture.md): bulk
+// `default` and priority `urgent` get the most pumps, `system` a pair, and
+// `meta` exactly one (serial by contract). It is the canonical baseline
+// LaneConsumers falls back to.
+var LaneConsumerDefaults = map[string]int{
+	"default": 2,
+	"urgent":  4,
+	"system":  2,
+	"meta":    1,
+}
+
+// LaneConsumers resolves the per-lane pump-worker counts from the
+// LATTICE_PROCESSOR_LANES_<LANE>_CONSUMERS override convention
+// (lattice-architecture.md:568), falling back to LaneConsumerDefaults. getenv is
+// the environment accessor (os.Getenv in production; a fake in tests). A value
+// that is absent, empty, non-numeric, or below 1 keeps the default for that lane
+// (a malformed override never silently disables a lane). The `meta` lane is
+// always clamped to 1 regardless of any override — a meta fan-out would break the
+// §2.3 serialization guarantee (fail-closed).
+func LaneConsumers(getenv func(string) string) map[string]int {
+	out := make(map[string]int, len(laneOrder))
+	for _, lane := range laneOrder {
+		n := LaneConsumerDefaults[lane]
+		key := "LATTICE_PROCESSOR_LANES_" + strings.ToUpper(lane) + "_CONSUMERS"
+		if v := strings.TrimSpace(getenv(key)); v != "" {
+			if parsed, err := strconv.Atoi(v); err == nil && parsed >= 1 {
+				n = parsed
+			}
+		}
+		if lane == "meta" {
+			n = 1 // fail-closed: meta is serial by contract (§2.3), never fanned out.
+		}
+		out[lane] = n
+	}
+	return out
+}
+
 // LaneSpecs builds the four per-lane ConsumerSupervisor specs for the Processor
 // commit path, one durable per lane bound to its `ops.<lane>` subject. All four
 // share the single supervised handler (the commit path is concurrency-correct —
@@ -49,10 +89,11 @@ func LaneDurables() map[string]string {
 //
 // FilterSubject is the exact two-segment `ops.<lane>` subject every publisher
 // emits (submit.go / candidates.go), matching the legacy processor-main filter
-// list. Per-lane intra-concurrency (a queue-group fan-out from
-// LATTICE_PROCESSOR_LANES_<LANE>_CONSUMERS) is the next increment; meta stays
-// clamped to one regardless.
-func LaneSpecs(stream string, handler substrate.SupervisedHandler, ackWait time.Duration, logger *slog.Logger) []substrate.ConsumerSpec {
+// list. consumers maps a lane to its pump-worker count (from LaneConsumers); a
+// nil map or a missing/<1 entry means one pump for that lane (Fire-2 parity).
+// The `meta` lane is forced to one worker regardless of the map — belt-and-braces
+// with LaneConsumers' own clamp — so its serialization can never be widened.
+func LaneSpecs(stream string, handler substrate.SupervisedHandler, ackWait time.Duration, consumers map[string]int, logger *slog.Logger) []substrate.ConsumerSpec {
 	specs := make([]substrate.ConsumerSpec, 0, len(laneOrder))
 	for _, lane := range laneOrder {
 		spec := substrate.ConsumerSpec{
@@ -61,13 +102,17 @@ func LaneSpecs(stream string, handler substrate.SupervisedHandler, ackWait time.
 			FilterSubject: "ops." + lane,
 			DeliverPolicy: substrate.DeliverAll,
 			AckWait:       ackWait,
+			Workers:       consumers[lane],
 			Handler:       handler,
 			Logger:        logger,
 		}
 		if lane == "meta" {
 			// Serial by contract (§2.3 / §3.7): one in-flight DDL mutation at a
 			// time, so a meta-vertex commit + its synchronous DDL-cache
-			// invalidation never races a second concurrent DDL mutation.
+			// invalidation never races a second concurrent DDL mutation. Pin both
+			// the worker count and MaxAckPending so neither a config override nor a
+			// future caller can widen it.
+			spec.Workers = 1
 			spec.MaxAckPending = 1
 		}
 		specs = append(specs, spec)

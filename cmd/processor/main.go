@@ -14,6 +14,8 @@
 //	PROCESSOR_INSTANCE                instance id (default: auto-generated proc-<NanoID>)
 //	PROCESSOR_STREAM                  JetStream stream name (default: core-operations)
 //	HEALTH_INTERVAL_SEC               heartbeat interval in seconds (default: 10, minimum: 10 per NFR-O1)
+//	LATTICE_PROCESSOR_LANES_<LANE>_CONSUMERS  per-lane pump concurrency (LANE = DEFAULT|URGENT|SYSTEM|META;
+//	                                  defaults default=2/urgent=4/system=2/meta=1; meta is always clamped to 1)
 //
 // Logs to stderr in slog text format. Exits non-zero on any startup
 // failure; on graceful shutdown (SIGINT/SIGTERM) the heartbeater emits a
@@ -155,8 +157,12 @@ func run(logger *slog.Logger) error {
 	// MaxAckPending=1 (Contract #2 §3.7) inside LaneSpecs; lanes drain on
 	// independent pumps (priority isolation — urgent no longer queues behind
 	// default).
+	laneConsumers := processor.LaneConsumers(os.Getenv)
+	logger.Info("per-lane pump concurrency resolved",
+		"default", laneConsumers["default"], "urgent", laneConsumers["urgent"],
+		"system", laneConsumers["system"], "meta", laneConsumers["meta"])
 	sup := substrate.NewConsumerSupervisor(conn)
-	for _, spec := range processor.LaneSpecs(stream, cp.SupervisedHandler(), 30*time.Second, logger) {
+	for _, spec := range processor.LaneSpecs(stream, cp.SupervisedHandler(), 30*time.Second, laneConsumers, logger) {
 		if err := sup.Add(ctx, spec); err != nil {
 			cancel()
 			return fmt.Errorf("register %q lane consumer: %w", spec.Name, err)

@@ -159,6 +159,18 @@ type ConsumerSpec struct {
 	// the Processor's `meta` lane uses this to satisfy Contract #2 §3.7 ("`meta`
 	// lane consumer is configured with `MaxAckPending=1`").
 	MaxAckPending int
+	// Workers is the number of concurrent pump goroutines that bind the same
+	// durable. JetStream load-balances a pull consumer across all bound clients,
+	// so each message is delivered to exactly one worker (MaxAckPending caps the
+	// total un-acked across all of them). Zero or one means a single pump — the
+	// default and the only shape Loom/Weaver/Refractor use. Values above one give
+	// a lane intra-consumer horizontal concurrency (the Processor's per-lane
+	// fan-out from LATTICE_PROCESSOR_LANES_<LANE>_CONSUMERS); pin a lane that must
+	// stay serial (e.g. the Processor's `meta`) to one regardless. Each worker is
+	// an independent pump with its own pause state machine — an infra/structural
+	// pause is per-worker (self-healing per worker), while an operator
+	// Pause/Resume fans out to every worker (a lane-wide control).
+	Workers int
 
 	// Handler is the message-processing policy (required).
 	Handler SupervisedHandler

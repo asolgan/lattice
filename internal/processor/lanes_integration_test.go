@@ -39,7 +39,7 @@ func TestLaneSpecs_PerLaneBacklogIsolation(t *testing.T) {
 	// Provision each lane durable from its LaneSpecs entry (FilterSubject +
 	// MaxAckPending exactly as the production supervisor would create it).
 	specsByDurable := map[string]substrate.ConsumerSpec{}
-	for _, spec := range LaneSpecs(testStream, noop, 30*time.Second, nil) {
+	for _, spec := range LaneSpecs(testStream, noop, 30*time.Second, nil, nil) {
 		specsByDurable[spec.Name] = spec
 		if _, cerr := js.CreateOrUpdateConsumer(ctx, testStream, jetstream.ConsumerConfig{
 			Durable:       spec.Name,
