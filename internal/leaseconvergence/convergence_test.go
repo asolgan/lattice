@@ -141,7 +141,12 @@ func TestLeaseConvergence_DrainThenAssert_SteadyState(t *testing.T) {
 	// Drain: violating flips false once all four gaps close AND the landlord-approved
 	// unit leases (the bridge round-trips the bgcheck + payment, the two ops close
 	// onboarding + signature, and the directOp flips the listing to leased).
-	h.drainUntilConverged(appID, 30*time.Second)
+	//
+	// The drain cap (15s) + the settle hold (5s) below is the ceiling the
+	// `leaseshortwindow` freshness window (25s) must clear so the bgcheck does not
+	// lapse mid-assertion; converge runs in ~1s in-process, so 15s is far above the
+	// real drain while keeping that ceiling under the window with a 5s margin.
+	h.drainUntilConverged(appID, 15*time.Second)
 
 	// Assert steady: it stays converged (no oscillation).
 	h.assertSteadyState(appID, 5*time.Second)

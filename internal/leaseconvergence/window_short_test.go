@@ -15,4 +15,4 @@ const shortFreshnessWindow = true
 // bgcheck takes to lapse after each converge. The harness derives its context
 // deadline from this so the value stays in lock-step with the lens window rather
 // than a drifting magic number.
-const freshnessWindow = 40 * time.Second
+const freshnessWindow = 25 * time.Second
