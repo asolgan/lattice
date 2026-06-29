@@ -17,7 +17,7 @@ on:
 # the sum. Every gate that ran in the old single serial job still runs, each in
 # exactly one job:
 #   lint-build  — build, vet, golangci, conventions-lint            (no Docker)
-#   stack-gates — make up → verify-kernel → 8× verify-package →
+#   stack-gates — make up → verify-kernel → 10× verify-package →
 #                 Gate 2 → Gate 3 → hello-lattice                   (Docker)
 #   convergence — lease-convergence, object-gc                      (no Docker, embedded NATS)
 #   unit        — go test ./... -p 4                                (no Docker, embedded NATS)
@@ -92,6 +92,9 @@ jobs:
 
       - name: Install + verify service-location package (co-installs location-domain)
         run: make verify-package-service-location
+
+      - name: Install + verify augur package (co-installs orchestration-base)
+        run: make verify-package-augur
 
       - name: Run Gate 2 bypass suite (Phase 1 Gate 2)
         # Runs the 4-category bypass suite; exits non-zero if any category

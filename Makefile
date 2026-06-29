@@ -24,7 +24,7 @@ LOFTSPACE_APP_PG_DSN ?= postgres://loftspace_app:loftspace_app_dev@localhost:543
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up up-full up-loftspace orchestration install-packages install-loftspace run-loupe run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role reinstall-package verify-package-service-location verify-conformance build vet lint-conventions install-skills test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
+.PHONY: up up-full up-loftspace orchestration install-packages install-loftspace run-loupe run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role reinstall-package verify-package-service-location verify-package-augur verify-conformance build vet lint-conventions install-skills test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 up:
@@ -177,6 +177,19 @@ verify-package-service-location:
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/service-location
 	@echo "==> Running service-location package assertions..."
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) go run ./scripts/verify-package-service-location.go
+
+## verify-package-augur — Co-install orchestration-base → augur (the opt-in AI
+## reasoning tier; NOT primordial — matches its non-primordial dependency) and
+## assert augur's KV state (the augurproposal DDL with its 2 ops, the 2 operator
+## grants, the package manifest).
+verify-package-augur:
+	@echo "==> Building lattice-pkg..."
+	go build -o bin/lattice-pkg ./cmd/lattice-pkg
+	@echo "==> Installing orchestration-base + augur..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/orchestration-base
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/augur
+	@echo "==> Running augur package assertions..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) go run ./scripts/verify-package-augur.go
 
 ## verify-conformance — Run the contract-conformance freeze suite: the frozen
 ## OperationReply / envelope / contextHint shapes, Core KV key shapes, the DDL
