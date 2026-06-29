@@ -69,19 +69,32 @@ Key files:
 ## The 9-step write path
 
 The operation consumer runs on a `substrate.ConsumerSupervisor` — the same
-supervised pump Loom/Weaver/Refractor use. A single `processor-main` durable
-filtered to the four lane subjects (`ops.{default,urgent,system,meta}`) delivers
-each operation to `CommitPath.dispatch`, which runs the steps below, publishes any
-client reply, and returns an ack `Decision` the supervisor applies — the supervisor
-owns disposition, the commit path owns the reply. Each message exits with one of
-five outcomes: `accepted`, `duplicate`, `rejected`, `malformed`, or `retryable`
+supervised pump Loom/Weaver/Refractor use. One durable **per lane**
+(`processor-{default,urgent,system,meta}`, each filtered to its `ops.<lane>`
+subject; built by `processor.LaneSpecs`) delivers each operation to
+`CommitPath.dispatch`, which runs the steps below, publishes any client reply, and
+returns an ack `Decision` the supervisor applies — the supervisor owns
+disposition, the commit path owns the reply. Each message exits with one of five
+outcomes: `accepted`, `duplicate`, `rejected`, `malformed`, or `retryable`
 (`NakWithDelay` — redelivered on a bounded backoff floor, never a hot-loop). The
 in-process test harness drives the same `dispatch` through `HandleMessage`,
 applying the returned `Decision` to the JetStream message itself (`Ack` via the
-explicit step-9 Acker boundary). *(A single all-lanes consumer is a Phase-1
-simplification; per-lane consumers — real per-lane `lane_lag`, independent
-draining, `meta` serialized — are the design-of-record adoption tracked in the
-Lattice backlog.)*
+explicit step-9 Acker boundary).
+
+Lanes drain on independent pumps, so an `urgent` op never queues behind a
+`default` backlog (priority isolation), and each lane's durable carries its own
+backlog so Contract #5 §5.4 `lane_lag.{default,urgent,system,meta}` is per-lane
+real (`lane_lag_total` is their sum). The `meta` lane — DDL mutations — is pinned
+to a single pump **and** `MaxAckPending=1` (Contract #2 §3.7), so a meta-vertex
+commit and its synchronous DDL-cache invalidation never race a second concurrent
+DDL mutation; non-`meta` lanes run concurrently with `meta` and stay safe via the
+RWMutex-guarded value-copy DDL-cache snapshot + step-8 OCC. On startup the
+Processor retires the legacy single `processor-main` durable
+(`substrate.DeleteStreamConsumer`, idempotent); its un-acked messages redeliver to
+the per-lane durables, idempotent via the step-2 dedup tracker. *(Per-lane
+intra-concurrency — a queue-group fan-out from
+`LATTICE_PROCESSOR_LANES_<LANE>_CONSUMERS`, `meta` clamped to one — is the next
+scaling increment.)*
 
 | Step | Name | What happens |
 |------|------|-------------|

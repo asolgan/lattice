@@ -257,15 +257,17 @@ and Weaver, like Refractor, import only `substrate/*`.
 
 Each `ConsumerSpec` is a full, caller-supplied description of one supervised
 consumer — stream, `FilterSubject` (or `FilterSubjects`, the multi-filter set for
-a durable that must cover several discrete subjects — e.g. the Processor's
-`processor-main` over the four `ops.<lane>` subjects; mutually exclusive with
-`FilterSubject`), durable name (`Name`, also the registry key), `DeliverPolicy` (`DeliverAll` or `DeliverLastPerSubject` — a
+a durable that must cover several discrete subjects that no single wildcard
+captures; mutually exclusive with `FilterSubject`), durable name (`Name`, also the
+registry key), `DeliverPolicy` (`DeliverAll` or `DeliverLastPerSubject` — a
 substrate-owned enum, never `jetstream.DeliverPolicy`), `DeliverGroup` (queue
 group, NFR12 fan-out across instances), `RedeliveryDelay`, `ProbeInterval`,
-`AckWait`, plus the `Handler`/`Classify`/`Probe`/`Health`/`Logger` hooks. The
-supervisor hard-codes nothing about stream shape — it is agnostic between
-event-stream durables (`events.<domain>.>`) and KV-CDC durables
-(`$KV.<bucket>.>`).
+`AckWait`, `MaxAckPending` (caps un-acked in-flight messages; `1` forces
+server-side serialization — the Processor's `meta` lane uses it for the Contract
+#2 §3.7 DDL-serialization guarantee; `0` leaves the JetStream default), plus the
+`Handler`/`Classify`/`Probe`/`Health`/`Logger` hooks. The supervisor hard-codes
+nothing about stream shape — it is agnostic between event-stream durables
+(`events.<domain>.>`) and KV-CDC durables (`$KV.<bucket>.>`).
 
 | Method | Behaviour |
 |--------|-----------|
