@@ -73,22 +73,22 @@ would be a smell). **When envelope-signature verification is ever added, these a
 material at that time** — the "signing keys" requirement is satisfied as transport-level creds, not
 dropped.
 
-## `system` lane — deferred (Contract #2 §2.3)
+## `system` lane authorization (Contract #2 §2.3)
 
-Contract #2 §2.3 reserves the `system` lane for internal service actors, but the live capability
-projection hardcodes `lanes: ["default"]` for every actor and `LaneUnauthorized` is unenforced in
-the live commit path. All three service actors' projections therefore say `["default"]` today.
+Contract #2 §2.3 reserves the `system` lane for internal service actors, and the commit path enforces
+it: step 3's `CapabilityAuthorizer` checks the envelope's declared `env.Lane` against the actor's
+granted lanes and rejects a mismatch with `LaneUnauthorized` (§2.6) before the operationType matcher.
 
-**When lane enforcement lands, the service-actor capability projection must include the `system`
-lane** (so the engines can submit to `ops.system.>`). This applies equally to Loom, Weaver, and the
-Bridge — the Bridge posts its result-ops on the `system` lane, so its capability projection must
-carry the `system` lane once enforcement is live. This is out of scope for the bootstrap topology
-and is tracked here so it is not lost.
+The protected kernel actors — admin, Loom, Weaver, the Bridge, and the object-store-manager — carry
+`lanes: ["default", "meta", "urgent", "system"]` in their core `cap.<actor>` projection (the uniform
+root grant), so the engines can submit their result/dispatch ops on `ops.system.>` and the admin can
+install on `ops.meta.>`. Ordinary actors carry `lanes: ["default"]` (rbac's `cap.roles.<actor>`
+projection) — most actors hold the `default` lane only. The scoped service-access and ephemeral-task
+paths confer the `default` lane only (a non-default lane on those paths is rejected before any read).
 
-A **lane authorization enforcement** design is now proposed (📐 awaiting Andrew's ratification) — a
-step-3 gate checking `env.Lane ∈ doc.lanes` + emitting `LaneUnauthorized`. It is **order-dependent**:
-the service-actor `system` grant converges *first* (dark), *then* enforcement turns on — so flipping
-the gate cannot break the engines.
+Migration was **order-dependent**: the lane grants converged *first* (dark, no behavior change), *then*
+enforcement turned on — so flipping the gate could not break the engines. See the
+`lane-authorization-enforcement-design.md` design and `internal/processor/step3_auth_capability.go`.
 
 ## Readiness gate (Contract #7 §7.5)
 

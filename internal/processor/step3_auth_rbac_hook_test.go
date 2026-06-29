@@ -57,7 +57,10 @@ func rbacAuthorizer(t *testing.T, systemActorKeys []string, docs ...*CapabilityD
 }
 
 func platformEnv(actor, op string) *OperationEnvelope {
-	return &OperationEnvelope{RequestID: "r-" + actor, Actor: actor, OperationType: op}
+	// Lane is parse-validated at step 1, so a real envelope always carries a
+	// valid lane; default is the universal grant (the rolesDoc/anchorDoc fixtures
+	// grant it).
+	return &OperationEnvelope{RequestID: "r-" + actor, Actor: actor, OperationType: op, Lane: LaneDefault}
 }
 
 // TestRbacHook_OrdinaryActorReadsRolesKey proves an ordinary actor's platform

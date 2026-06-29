@@ -199,6 +199,21 @@ func (a *CapabilityAuthorizer) Authorize(ctx context.Context, env *OperationEnve
 		}, nil
 	}
 
+	// Lane gate (Contract #2 §2.3) — a non-default lane is a standing-identity
+	// privilege. Only the platform path carries a doc-projected lane grant
+	// (`doc.Lanes`, checked after the doc is parsed, below); EVERY other path is
+	// a scoped, business-level grant that confers the `default` lane only. So any
+	// non-platform path is rejected here BEFORE the read on a non-default lane
+	// (no extra KV GET). Deny-by-default on the path kind — a future non-platform
+	// path inherits default-only fail-closed, never an unchecked lane.
+	if entry.coverage.kind != pathPlatform && env.Lane != LaneDefault {
+		return Decision{
+			Authorized: false,
+			Code:       ErrCodeLaneUnauthorized,
+			Reason:     "lane " + string(env.Lane) + ": " + entry.name + "-path grants the default lane only",
+		}, nil
+	}
+
 	key, derr := entry.keyDerivation(env.Actor)
 	if derr != nil {
 		// Malformed actor key would have been rejected at step 1, but keep the
@@ -237,6 +252,19 @@ func (a *CapabilityAuthorizer) Authorize(ctx context.Context, env *OperationEnve
 		// caught by conformance tests long before runtime. Surface as internal
 		// error rather than denial so operators see the real problem.
 		return Decision{}, fmt.Errorf("capability kv parse %q: %w", key, err)
+	}
+
+	// Platform-path lane gate (Contract #2 §2.3) — the actor's standing
+	// capability doc is the lane authority. Checked AFTER parse and BEFORE the
+	// operationType matcher ("before any further processing"), reading
+	// doc.Lanes from the doc the platform read already fetched (no extra GET).
+	// Fail-closed: an absent/empty doc.Lanes grants NO lane, including default.
+	if entry.coverage.kind == pathPlatform && !laneGranted(env.Lane, doc.Lanes) {
+		return Decision{
+			Authorized: false,
+			Code:       ErrCodeLaneUnauthorized,
+			Reason:     "lane " + string(env.Lane) + ": not in the actor's granted lanes",
+		}, nil
 	}
 
 	// doc.ProjectedAt is recorded as provenance for the auth-trace; it is no
@@ -426,6 +454,19 @@ func (a *CapabilityAuthorizer) matchPlatformPermission(env *OperationEnvelope, d
 // emitted (Decision #5 — zero-sample emission is itself a live signal).
 func (a *CapabilityAuthorizer) LatencyStats() LatencyStats {
 	return a.latency.snapshot()
+}
+
+// laneGranted reports whether `lane` is in the actor's granted lane set
+// (Contract #2 §2.3). It is the platform-path lane authority: a lane the
+// standing capability doc does not list is denied. An empty/nil granted set
+// grants nothing — fail-closed (auth correctness = projection correctness).
+func laneGranted(lane Lane, granted []string) bool {
+	for _, g := range granted {
+		if g == string(lane) {
+			return true
+		}
+	}
+	return false
 }
 
 // capabilityKeyFromActor converts `vtx.identity.<NanoID>` →

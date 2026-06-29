@@ -51,6 +51,14 @@ Key files:
 | **DDL meta-vertices** (Contract #1) | Core KV `vtx.meta.>` | Read into `DDLCache` at startup; cache is invalidated on any `vtx.meta.*` mutation to keep the pipeline current |
 | **Capability KV** (Contract #6) | Capability KV bucket | Read at step 3 by `CapabilityAuthorizer`; key pattern `cap.identity.<actorId>`. A missing entry denies (`NoCapabilityEntry`, fail-safe). There is **no per-operation projection-freshness gate** — `projectedAt` is deterministic provenance, not a TTL; the bounded staleness window is an accepted risk backstopped operationally (see Refractor Capability-Lens health) and, in future, by Gateway token revocation. |
 
+**Lane authorization (Contract #2 §2.3).** Step 3 also enforces per-lane submission rights: the
+declared `env.Lane` must be in the actor's granted lanes (`doc.lanes` on the platform path; the scoped
+service/task paths grant the `default` lane only) — a mismatch is rejected `LaneUnauthorized` (§2.6)
+before the operationType matcher, with **no extra KV read** (the lane authority is the doc the platform
+path already fetched, or an implicit `default` for service/task). An empty granted set denies every
+lane (fail-closed). The protected kernel actors hold all four lanes; ordinary actors hold `default`
+only. See `step3_auth_capability.go`.
+
 ---
 
 ## Out-contracts (what it produces)

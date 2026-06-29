@@ -50,7 +50,7 @@ func TestGate3_Report(t *testing.T) {
 	timestamp := now.Format(time.RFC3339)
 
 	// The adversarial vectors and their enforcement layers. Vectors #1, #3, #4,
-	// #5, #6, #7 are DEFENDED; vector #2 (projection lag) is ACCEPTED-WINDOW.
+	// #5, #6, #7, #8 are DEFENDED; vector #2 (projection lag) is ACCEPTED-WINDOW.
 	// If any sub-test fails, the Go test framework exits non-zero
 	// BEFORE this roll-up fires — so reaching here with passing sub-tests is
 	// sufficient proof.
@@ -103,6 +103,12 @@ func TestGate3_Report(t *testing.T) {
 			Vector:      "Cross-service access bleed",
 			Result:      "DEFENDED",
 			Enforcement: "CapabilityAuthorizer matchServiceAccess (§6.5/§6.8): a cap.svc.<actor> grant authorizes only its projected service+allowedOperations; cross-service → AuthContextMismatch, op-not-allowed → AuthDenied, missing cap.svc → deny-by-absence (NoCapabilityEntry); the cap.svc plane is guarded against stale-replay resurrection by the Vector #5 projection-write guard (service-location SL.2)",
+		},
+		{
+			Num:         8,
+			Vector:      "Lane authorization bypass",
+			Result:      "DEFENDED",
+			Enforcement: "CapabilityAuthorizer step-3 lane gate (§2.3): the platform path checks env.Lane ∈ doc.Lanes before the operationType matcher (service/task paths grant `default` only, pre-read reject); a default-only actor declaring a privileged lane (system/meta/urgent) → LaneUnauthorized; fail-closed on empty doc.Lanes (lane-authorization Fire 2)",
 		},
 	}
 

@@ -708,6 +708,9 @@ func TestAuthRegistry_ExtensionPoint_RoutesNewPath(t *testing.T) {
 		Actor:       capTestActorKey,
 		Version:     "1.0",
 		ProjectedAt: now.Format(time.RFC3339Nano),
+		// A platform-path read-model doc (incl. a scoped package extra) is subject
+		// to the step-3 lane gate, so it must carry its own lane grant.
+		Lanes: []string{"default"},
 		PlatformPermissions: []PlatformPermission{
 			{OperationType: "ExtRoutedOp", Scope: "any"},
 		},
@@ -768,5 +771,111 @@ func TestStubAuthorizer_EmitsAlertOnFirstCall(t *testing.T) {
 	}
 	if len(emitter.calls) == 0 || emitter.calls[0].code != "stub-auth-active" {
 		t.Fatalf("expected stub-auth-active alert on first call; got %+v", emitter.calls)
+	}
+}
+
+// --- Fire 2: lane authorization gate (Contract #2 §2.3) --------------------
+//
+// The step-3 lane gate: the platform path's lane authority is the actor's
+// standing doc.Lanes (post-parse, pre-matcher, fail-closed); the service and
+// task paths confer the `default` lane only (pre-read reject on non-default).
+
+// envForLane is envFor with an explicit lane (envFor hardcodes LaneDefault).
+func envForLane(opType, actor string, lane Lane, ac *AuthContext) *OperationEnvelope {
+	e := envFor(opType, actor, ac)
+	e.Lane = lane
+	return e
+}
+
+func TestCapabilityAuthorizer_LaneGate_PlatformLaneGranted(t *testing.T) {
+	now := time.Now().UTC()
+	doc := freshDoc(now)
+	doc.Lanes = []string{"default", "meta", "urgent", "system"}
+	a, _, _ := newCapAuthForTest(t, doc, now)
+	// A granted non-default lane passes the gate and falls through to the matcher.
+	env := envForLane("PingPlatform", capTestActorKey, LaneSystem, nil)
+	dec, err := a.Authorize(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if !dec.Authorized {
+		t.Fatalf("expected a granted lane to pass the gate and authorize; got %+v", dec)
+	}
+}
+
+func TestCapabilityAuthorizer_LaneGate_PlatformLaneUngranted(t *testing.T) {
+	now := time.Now().UTC()
+	a, _, _ := newCapAuthForTest(t, freshDoc(now), now) // doc.Lanes = ["default"]
+	env := envForLane("PingPlatform", capTestActorKey, LaneSystem, nil)
+	dec, _ := a.Authorize(context.Background(), env)
+	if dec.Authorized || dec.Code != ErrCodeLaneUnauthorized {
+		t.Fatalf("expected LaneUnauthorized for an ungranted lane; got %+v", dec)
+	}
+}
+
+func TestCapabilityAuthorizer_LaneGate_PlatformEmptyLanesFailClosed(t *testing.T) {
+	now := time.Now().UTC()
+	doc := freshDoc(now)
+	doc.Lanes = nil
+	a, _, _ := newCapAuthForTest(t, doc, now)
+	// Fail-closed: an empty granted set denies even the default lane.
+	env := envForLane("PingPlatform", capTestActorKey, LaneDefault, nil)
+	dec, _ := a.Authorize(context.Background(), env)
+	if dec.Authorized || dec.Code != ErrCodeLaneUnauthorized {
+		t.Fatalf("expected fail-closed LaneUnauthorized on empty doc.Lanes; got %+v", dec)
+	}
+}
+
+func TestCapabilityAuthorizer_LaneGate_ServiceNonDefaultRejectedNoRead(t *testing.T) {
+	now := time.Now().UTC()
+	a, _, reader := newCapAuthForTest(t, freshDoc(now), now)
+	env := envForLane("BookExecutiveCleaning", capTestActorKey, LaneSystem, &AuthContext{Service: capTestServiceKey})
+	dec, _ := a.Authorize(context.Background(), env)
+	if dec.Authorized || dec.Code != ErrCodeLaneUnauthorized {
+		t.Fatalf("expected LaneUnauthorized for a service-path non-default lane; got %+v", dec)
+	}
+	if len(reader.gets) != 0 {
+		t.Fatalf("the service-path lane reject must precede the read (no GET); got %v", reader.gets)
+	}
+}
+
+func TestCapabilityAuthorizer_LaneGate_TaskNonDefaultRejectedNoRead(t *testing.T) {
+	now := time.Now().UTC()
+	a, _, reader := newCapAuthForTest(t, freshDoc(now), now)
+	env := envForLane("ApproveLeaseApplication", capTestActorKey, LaneMeta,
+		&AuthContext{Task: capTestTaskKey, Target: capTestTargetKey})
+	dec, _ := a.Authorize(context.Background(), env)
+	if dec.Authorized || dec.Code != ErrCodeLaneUnauthorized {
+		t.Fatalf("expected LaneUnauthorized for a task-path non-default lane; got %+v", dec)
+	}
+	if len(reader.gets) != 0 {
+		t.Fatalf("the task-path lane reject must precede the read (no GET); got %v", reader.gets)
+	}
+}
+
+func TestCapabilityAuthorizer_LaneGate_ServiceDefaultPasses(t *testing.T) {
+	now := time.Now().UTC()
+	a, _, _ := newCapAuthForTest(t, freshDoc(now), now)
+	// Default lane on the service path is unaffected by the gate.
+	env := envForLane("BookExecutiveCleaning", capTestActorKey, LaneDefault, &AuthContext{Service: capTestServiceKey})
+	dec, err := a.Authorize(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if !dec.Authorized {
+		t.Fatalf("expected service-path default lane to pass the gate and authorize; got %+v", dec)
+	}
+}
+
+func TestStubAuthorizer_BypassesLaneGate(t *testing.T) {
+	stub := NewStubAuthorizerWithEmitter(capTestLogger(), &recordingEmitter{})
+	// The degraded stub mode bypasses all auth, including the lane gate.
+	env := envForLane("X", capTestActorKey, LaneSystem, nil)
+	dec, err := stub.Authorize(context.Background(), env)
+	if err != nil {
+		t.Fatalf("stub Authorize: %v", err)
+	}
+	if !dec.Authorized {
+		t.Fatalf("stub must bypass the lane gate (allow-all degraded mode); got %+v", dec)
 	}
 }
