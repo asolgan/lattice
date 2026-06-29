@@ -1,8 +1,22 @@
 # Design — Adapter read-seam: subject-templated externalTask params
 
-**Status: 📐 awaiting-Andrew (ratification)** · Author: Winston (Designer fire) · 2026-06-28
+**Status: ✅ Andrew-ratified (2026-06-28)** · Author: Winston (Designer fire) · 2026-06-28
 Backlog row: *External-I/O maturity → Adapter read-seam / richer params* (★★, S–M),
 `_bmad-output/planning-artifacts/backlog/lattice.md`.
+
+> **RATIFICATION DECISION (Andrew, 2026-06-28) — flipped to Mechanism 2 (flavor 2a).** The original draft
+> chose **Mechanism 1** (Loom engine-side point-reads — Loom reads Core KV to resolve the templates). Andrew
+> directed **Mechanism 2**: **Loom performs NO Core KV reads.** It *infers* the aspect read-set from the
+> `subject.*` templates (pure string parsing — Context Hinting) and declares those keys in the instanceOp's
+> `ContextHint.Reads`; the **Processor JIT-hydrates** them; the **instanceOp DDL resolves** the templates
+> from hydrated `state` via §2.5 `kv.Read` — **the same Processor-side read mechanism §8 uses for two-hop
+> reads.** Rationale: keep Core-KV reads inside the Processor; **Loom's guard-evaluation stays the lone
+> Core-KV-read exception.** Bonus: the param fields come from the instanceOp's **OCC-hydrated commit
+> snapshot** (strictly stronger than Mechanism 1's submit-time point-reads). **Flavor 2a** = resolution via
+> a **shared `orchestration-base` Starlark resolver helper** (write once, call per adapter), *not* a new
+> Processor-generic surface (2b, rejected as over-built for one consumer). The §10.5 narrowing + the PII
+> handling (Fire 3 / Vault) are **unchanged**. Sections 2.2–2.4, 3, 9, 11 below are written to Mechanism 2;
+> the Mechanism-1 prose is retained only where it explains *why* the flip is sound.
 
 ---
 
@@ -28,7 +42,7 @@ booleans/counts reach the read model"*, `scripts.go:389`), needs a **frozen `tri
 and only works on the Weaver-originated path. The read-seam stays on the write path (P2), uses §2.5
 known-key reads (no scans, no new primitive), and reuses the already-frozen guard-path grammar.
 
-**Frozen-contract change — staged UNCOMMITTED in `main`, NOT in this fire's commit.**
+**Frozen-contract change — ✅ ratified (Andrew, 2026-06-28) and committed with this ratification.**
 `docs/contracts/10-orchestration-surfaces.md` §10.5 (lines 549–550): the externalTask `params`
 description is narrowed from *"row/subject templates"* to **"subject templates"** because the
 `row.<column>` half is **unimplementable on the Loom write path** (the violation row is a read-model
@@ -135,44 +149,63 @@ resolves to (what the adapter receives):
 { "family": "backgroundCheck", "fullName": "Dana Lopez", "dob": "1991-04-02" }
 ```
 
-### 2.2 Where resolution happens — the engine, reusing the guard resolver
+### 2.2 Where resolution happens — the instanceOp DDL, from Loom-declared hydrated reads (Mechanism 2 / 2a)
 
-Resolution happens **in the Loom engine at externalTask submit time**, reusing the existing
-`parseGuardPath` (`internal/loom/guard.go:357`) + `guardResolver.resolve` (`internal/loom/guard_eval.go:112`)
-machinery — the same point-read path the guard evaluator already runs against the subject. A new
-`resolveParams(ctx, conn, coreKVBucket, subjectKey, rawParams) (map[string]any, error)` walks the params
-map; for each `subject.*` value it `parseGuardPath` + `resolve`s and substitutes the concrete value; a
-template that resolves **null/absent is a data error** (surface, do not dispatch a malformed call — the
-exact §10.8 discipline). The resolved concrete map replaces the opaque pass-through in
-`submitExternalTask` (`engine.go:989–1001`).
+Resolution happens **inside the instanceOp DDL on the Processor side**, from the op's JIT-hydrated working
+set — **not** in the Loom engine. The split of responsibilities:
 
-**Why engine-side point-reads, not OCC-hydrated DDL reads (Mechanism 1 vs 2).** The alternative is to add
-the inferred aspect keys to the instanceOp's `reads[]` (`engine.go:1009`) and resolve the templates inside
-each instanceOp DDL from hydrated `state`. Rejected for v1 because:
+1. **Loom — declare, don't read (Context Hinting).** At externalTask submit time Loom walks the `params`
+   map and, for each `subject.<aspect>.data.<field>` value, `parseGuardPath`s the token to extract the
+   **known aspect key** `subjectKey + "." + <aspect>` (and `subjectKey` itself for `subject.data.*`). This
+   is **pure string parsing — Loom performs no Core KV read.** The extracted keys are added to the
+   instanceOp's `ContextHint.Reads` (today just `[]string{inst.SubjectKey}`, `engine.go:1009`); the
+   **unresolved** templates are passed through as the op `params` (the existing opaque pass-through at
+   `engine.go:997` is preserved verbatim — Loom never substitutes a value).
+2. **Processor — JIT-hydrate.** The Processor hydrates the declared `reads[]` into the op's working-set
+   `state` exactly as it does for every op (arch line 44, JIT Hydration). No new Processor surface.
+3. **instanceOp DDL — resolve from `state` (flavor 2a).** A **shared `orchestration-base` Starlark resolver
+   helper** (write once, called by each externalTask instanceOp DDL where it already assembles the event
+   `params`, `scripts.go:636`) walks the template map and substitutes each `subject.*` token with the value
+   read from hydrated `state` via §2.5 `kv.Read` — **the same Processor-side `kv.Read` mechanism §8 uses for
+   two-hop/linked-vertex reads.** A template resolving **null/absent is a data error** (surface, fail the
+   dispatch loudly — the §10.8 discipline + the FR29 never-silently-drop posture), enforced in the helper.
 
-- **Snapshot semantics are correct here** and match the guard model. An external call sends *"what was
-  true when we dispatched"*; the subject's identity fields (name/DOB) are stable. Guards already accept
-  submit-time point-read semantics; params should too. OCC on the *subject root* (which the instanceOp
-  already takes for its no-orphan check) still protects the claim-creation invariant; the param fields
-  need no independent revision guard.
-- **Zero DDL churn.** Every instanceOp DDL stays unchanged (`params` is still opaque to the DDL — it
-  re-emits the now-concrete map). Mechanism 2 would force a resolution helper into every instanceOp
-  script.
-- **Reuses proven code** — the guard resolver is already tested against this exact grammar
-  (`guard_test.go`).
+**Why Mechanism 2 (Andrew's directive, 2026-06-28).**
 
-The cost (a few extra point-reads per externalTask submission, bounded by the number of `subject.*`
-templates the step declares) is identical in shape to what the guard evaluator already pays per step.
+- **Core-KV reads stay inside the Processor.** Loom does not read Core KV for this feature — it only
+  *declares* the read-set. **Loom's guard evaluation remains the lone sanctioned Core-KV-read exception**
+  outside the Processor; this seam does not widen that surface. (This is the architectural reason; it
+  overrides the original draft's "zero DDL churn / reuse the Go resolver" convenience case.)
+- **Strictly stronger consistency.** The param fields are read from the instanceOp's **OCC-hydrated commit
+  snapshot** — the same revisions the op commits against — not a separate, marginally-stale submit-time
+  point-read. (Mechanism 1's snapshot was *acceptable*; Mechanism 2's is *strictly better*, and removes the
+  §8 "stale snapshot" caveat entirely.)
+- **One read mechanism.** Direct-subject params and the §8 two-hop linked-vertex reads both resolve via the
+  instanceOp DDL's `kv.Read` over hydrated, known keys — a single Processor-side path, not two.
+
+**The cost (accepted).** Template resolution moves from Loom's tested Go resolver into the instanceOp DDL
+Starlark. Mitigated by **flavor 2a** — a single shared `orchestration-base` Starlark resolver helper, tested
+once, called per adapter — so it is *not* per-DDL boilerplate, and it lands exactly where the instanceOp DDL
+already builds the event `params`. (Flavor **2b**, a Processor-generic `subject.*` param resolver, was
+rejected: zero DDL churn but a new platform surface for a single consumer today — over-built.) The keys
+hydrated per externalTask are bounded by the number of `subject.*` templates the step declares — the same
+working-set cost the op already pays for `subjectKey`.
 
 ### 2.3 Read path / write path / invariants
 
-- **P2 (write path).** The resolution rides the **write path**: Loom submits the instanceOp (an op
-  through the Processor); the param values are read from **Core KV** (the subject's aspects), never from a
-  lens read-model. The Processor stays the sole writer; no direct KV writes.
-- **P5 (read path) is *not* used and *not* violated.** The subject aspects are read as **Core-KV
-  point-reads on the write/orchestration path** (the same plane guards read on), not as an application
-  query of a lens projection. Loom is a platform binary, not a `cmd/<app>` vertical — the P5 lens-only
-  rule governs vertical apps' query surface, not the orchestration engine's write-ahead reads.
+- **P2 (write path).** The resolution rides the **write path** and reads happen **inside the Processor**:
+  Loom submits the instanceOp declaring the aspect keys in `ContextHint.Reads`; the **Processor** hydrates
+  them from **Core KV** (the subject's aspects, never a lens read-model) and the instanceOp **DDL** reads
+  them via §2.5 `kv.Read`. **Loom itself reads no Core KV** (it only declares the read-set). The Processor
+  stays the sole writer; no direct KV writes.
+- **Core-KV reads stay in the Processor (Andrew's invariant, 2026-06-28).** This seam adds **no** Core-KV
+  read outside the Processor. Loom's **guard evaluation** remains the single sanctioned exception (a
+  platform binary reading Core KV on the write path); param resolution does **not** join it — it is a
+  Processor-side hydrated read, like every other DDL `kv.Read`.
+- **P5 (read path) is *not* used and *not* violated.** The subject aspects are read on the
+  **write/orchestration path** (Processor JIT hydration + DDL `kv.Read`), not as an application query of a
+  lens projection. The P5 lens-only rule governs vertical apps' query surface, not the engine's write-ahead
+  reads.
 - **No-scans invariant preserved.** Every read is a **known-key point-read** — the subject key is in
   hand, and `subjectKey + "." + <aspect>` is a derivable known key. No prefix scan, no read-model read,
   no new primitive. (Contrast the separate *op-time bounded link-enumeration* design, which deliberately
@@ -187,10 +220,11 @@ templates the step declares) is identical in shape to what the guard evaluator a
 
 | Surface | Change |
 |---|---|
-| **Loom `Step`** (`internal/loom/pattern.go:28`) | **No new field.** `Params json.RawMessage` already exists; reads are *inferred* from the `subject.*` tokens in it. |
-| **Loom engine** (`submitExternalTask`, `engine.go:983`) | Resolve `step.Params` via the new `resolveParams` before building the event payload. |
-| **Guard resolver** (`guard.go` / `guard_eval.go`) | Reused as-is (`parseGuardPath`, `guardResolver.resolve`); possibly a tiny refactor to share the resolver constructor. No grammar change. |
-| **instanceOp / replyOp DDLs** | **Unchanged** — params stays opaque to the DDL; it re-emits the now-concrete map. |
+| **Loom `Step`** (`internal/loom/pattern.go:28`) | **No new field.** `Params json.RawMessage` already exists; the aspect read-set is *inferred* from the `subject.*` tokens in it. |
+| **Loom engine** (`submitExternalTask`, `engine.go:983`/`:1009`) | **Declare, don't read.** `parseGuardPath` each `subject.*` param token → add the known aspect key to the instanceOp's `ContextHint.Reads` (today just `subjectKey`). **No Core KV read in Loom**; the opaque `params` pass-through (`engine.go:997`) is preserved — templates flow through unresolved. |
+| **`orchestration-base` shared resolver helper** (Starlark, NEW — flavor 2a) | A `resolve_subject_params(params, state)` helper that substitutes each `subject.*` token from the op's JIT-hydrated `state` via §2.5 `kv.Read`; null/absent ⇒ loud data error. Written once, called by each externalTask instanceOp DDL. |
+| **instanceOp DDL** (e.g. `lease-signing/scripts.go:636`) | Call the shared helper to resolve `params` from hydrated `state` **before** emitting the `external.<adapter>` event. The replyOp DDL is unchanged. |
+| **Guard grammar** (`guard.go` `parseGuardPath`) | Reused for the token grammar (Loom-side inference); no grammar change. |
 | **Lenses / read-models** | **None.** Deliberately — the whole point is to keep PII off the read path. |
 | **`vtx.*` / `lnk.*` / new ops** | **None.** No new vertices, links, or operations. |
 
@@ -203,13 +237,17 @@ Weaver detects gap → triggerLoom(pattern, subject=identity)        [unchanged]
   Loom pattern step: externalTask{ adapter:"backgroundCheck",
       params:{family:"backgroundCheck", fullName:"subject.demographics.data.fullName", ...},
       instanceOp:"CreateLeaseServiceInstance", replyOp:"RecordLeaseServiceOutcome" }
-  Loom.submitExternalTask:
-    resolveParams(subjectKey, step.Params):                        [NEW — Fire 1]
+  Loom.submitExternalTask:                                         [Mechanism 2 — Loom reads NO Core KV]
+    inferReads(step.Params): parse subject.* tokens (string-only)  [NEW — Fire 1]
+       → ContextHint.Reads = [subjectKey, subjectKey.demographics]
+    submit instanceOp { params: {family, fullName:"subject.demographics.data.fullName"} UNRESOLVED,
+                        reads: [...] }                             [params pass through opaque]
+  PROCESSOR: JIT-hydrate reads[] into state; run instanceOp DDL:
+    resolve_subject_params(params, state):  (shared orch-base helper) [NEW — Fire 1]
        "family"   → literal "backgroundCheck"
-       "fullName" → point-read vtx.identity.<id>.demographics → .data.fullName → "Dana Lopez"
-       (null/absent ⇒ data error: do not dispatch)
-    → event payload params = {family, fullName, dob}  (concrete)
-    submit instanceOp (mints claim vertex + emits external.backgroundCheck{params})  [unchanged]
+       "fullName" → state[vtx.identity.<id>.demographics].data.fullName → "Dana Lopez"  (§2.5 kv.Read)
+       (null/absent ⇒ data error: fail dispatch loudly)
+    → emit external.backgroundCheck{ params={family, fullName, dob} concrete } (mints claim vertex)
   BRIDGE: consume external.backgroundCheck → Request.Params = {family, fullName, dob}
     → FakeBackgroundCheck.Execute reads req.Params["fullName"]     [Fire 2 asserts receipt]
     → replyOp → outcome aspect → orchestration.externalTaskCompleted → Loom advances  [unchanged]
@@ -225,7 +263,7 @@ completion correlation are all untouched.
 
 | Contract § | Build-to or change? | Detail |
 |---|---|---|
-| **#10 §10.5 — externalTask `params`** (line 549–550) | **CHANGE — staged UNCOMMITTED** | Narrow *"row/subject templates resolved per the §10.5/§10.8 templating rule"* → *"**subject** templates (the §10.5 guard-path grammar), resolved at instanceOp-submit time"*, with a note that `row.<column>` templating is the **Weaver actuator's** (§10.8) and is not reachable on the Loom write path. See §6.3 for why. |
+| **#10 §10.5 — externalTask `params`** (line 549–550) | **CHANGE — ✅ ratified + committed (2026-06-28)** | Narrow *"row/subject templates resolved per the §10.5/§10.8 templating rule"* → *"**subject** templates (the §10.5 guard-path grammar), resolved at instanceOp-submit time"*, with a note that `row.<column>` templating is the **Weaver actuator's** (§10.8) and is not reachable on the Loom write path. See §6.3 for why. |
 | **#10 §10.5 — guard-path grammar** (line 586–588) | **build-to** | The param grammar **is** the guard grammar; no change. |
 | **#10 §10.8 — templating** (line 954–960) | **build-to** | The literal-vs-token model is reused verbatim; the `row.<column>` token stays the Weaver actuator's. Untouched. |
 | **#10 §10.6 — externalTask completion / async** | **build-to** | Untouched — resolution is upstream of the event; completion/async unchanged. |
@@ -251,19 +289,24 @@ No bootstrap version bump, no kernel-count change, no re-install.
 
 ### 5.2 Tests
 
-- **Fire 1 (engine):** unit table on `resolveParams` — literal pass-through; root-path resolution
-  (`subject.data.<field>`); aspect-path resolution (`subject.<aspect>.data.<field>`); null/absent ⇒ data
-  error (not a malformed dispatch); mixed literal+template map; a non-`subject.` string left untouched; a
-  numeric/bool literal untouched. Reuse the embedded-NATS fixture the guard tests use (`jsstore.Dir(t)`
-  per the CI-parallelism rule).
+- **Fire 1a (Loom read-set inference):** unit table — `subject.data.<field>` → declares `subjectKey`;
+  `subject.<aspect>.data.<field>` → declares `subjectKey.<aspect>`; a literal/non-`subject.` value declares
+  nothing; mixed map → the de-duplicated union of keys; the declared `ContextHint.Reads` is exactly the keys
+  the templates need (no over/under-declaration). **Assert Loom issues no Core KV read** on this path.
+- **Fire 1b (the shared `orchestration-base` resolver helper):** Starlark unit test — literal pass-through;
+  root-path + aspect-path resolution from a hydrated `state`; null/absent ⇒ loud data error (not a
+  malformed dispatch); a numeric/bool literal untouched. Reuse the meta-pipeline harness the DDL tests use
+  (`jsstore.Dir(t)` per the CI-parallelism rule).
 - **Fire 2 (consumer, end-to-end):** the lease-signing backgroundCheck externalTask declares
   `subject.demographics.data.*` templates; an ephemeral-stack convergence test asserts the
   `FakeBackgroundCheck` adapter **received** the resolved fields (extend the adapter to record its last
   `Request.Params` for the assertion) and the loop still converges green. This is the **today-consumer** —
   Fire 2 is not dead scaffolding.
-- **Drift guard:** the lease-signing package's existing read-set drift-guard test (`engine.go:1008`
-  references it) continues to pass — the instanceOp `reads[]` is unchanged (resolution is engine-side
-  point-reads, not op reads), so no drift-guard update is needed.
+- **Drift guard:** the lease-signing read-set drift-guard test (`engine.go:1008`) **must be updated** — the
+  instanceOp `reads[]` now legitimately **grows** by the inferred aspect keys (Mechanism 2). Update the
+  guard's expected read-set to the subject root **plus** the aspects the step's templates declare; a
+  mismatch is then a real drift (a template added without its read, or vice-versa) — which is exactly the
+  fail-closed property worth pinning.
 
 ### 5.3 Verification gates
 
@@ -326,8 +369,8 @@ the ratified Vault feature encrypts at rest (`vault-crypto-shredding-design.md` 
 the design must honor:
 
 1. **Once Vault lands, a sensitive aspect is ciphertext at rest.** A naive `subject.ssn.data.value`
-   point-read (Fire 1's mechanism) would resolve to **ciphertext** — useless to the vendor.
-2. **Baking plaintext SSN into the event/claim plane is itself an exposure.** Fire 1 resolves params
+   resolution (the DDL's hydrated `kv.Read`) would resolve to **ciphertext** — useless to the vendor.
+2. **Baking plaintext SSN into the event/claim plane is itself an exposure.** Fires 1–2 resolve params
    into the `external.<adapter>` **event** (which lands in the durable `events.external.>` stream) — fine
    for plaintext-for-now fields, **not** fine for SSN once we have a Vault to protect it.
 
@@ -360,15 +403,16 @@ does not stage it now (Vault's §3.10 is the governing contract and is already s
 
 - **Single-hop only (subject + its aspects).** A param needing a field on a *linked* vertex (a payment
   needing the unit's listing address, not the applicant's) is not directly templatable by `subject.*`.
-  **Mitigation / delineation:** that is genuinely separate work and **already has homes** — (a) the
-  instanceOp DDL can do an on-demand §2.5 `kv.Read` of a known linked key (the lease-signing
-  CreateLeaseApplication script already does exactly this for the unit's rent, `scripts.go:425`), and (b)
-  enumerating a *set* of neighbors is the **op-time bounded link-enumeration** design (already
-  📐 awaiting-Andrew). This design deliberately scopes to the **subject + its aspects** — the common case
-  (the subject of an externalTask *is* the entity being checked/charged) and the no-scans-clean case.
-- **Stale snapshot.** Submit-time point-reads can be marginally stale vs the instanceOp commit. Immaterial
-  for identity PII (stable); consistent with the guard model. If a future field needs OCC-strong
-  consistency, Mechanism 2 (DDL-side hydrated reads) is the upgrade — but no current need.
+  **Mitigation / delineation — now unified under Mechanism 2:** the linked-vertex case uses the **same
+  instanceOp-DDL `kv.Read`** this design uses for the direct subject params — (a) a known linked key is
+  read on-demand by the DDL (the lease-signing CreateLeaseApplication script already does exactly this for
+  the unit's rent, `scripts.go:425`), and (b) enumerating a *set* of neighbors is the **op-time bounded
+  link-enumeration** design (already 📐 awaiting-Andrew). This design scopes to the **subject + its
+  aspects** — the common case (the subject of an externalTask *is* the entity being checked/charged) and
+  the no-scans-clean case — but shares one read mechanism with the two-hop work, not a separate one.
+- **Stale snapshot — dissolved.** Under Mechanism 2 the param fields are read from the instanceOp's
+  **OCC-hydrated commit snapshot** (the revisions the op commits against), so there is no submit-time
+  staleness gap. (This was Mechanism 1's only consistency caveat; choosing Mechanism 2 removes it.)
 - **Data-error loudness.** A `subject.*` template resolving null/absent must **fail the dispatch loudly**
   (a config/data error surfaced via the externalTask deadline backstop + a log), never silently send a
   call with a missing field — the §10.8 *"null reference = data error"* discipline, and the FR29
@@ -385,22 +429,27 @@ Each fire is independently shippable + green.
 
 | Fire | Scope | Review depth | Contract |
 |---|---|---|---|
-| **Fire 1 — the templating engine** | `resolveParams` in `internal/loom` (reuse `parseGuardPath` + `guardResolver`); wire it into `submitExternalTask`; unit table (§5.2). Backward-compatible (literals untouched). | **Full review** — it touches the write/orchestration path and a frozen-contract-prose narrowing; not security-plane but param-resolution correctness + the data-error loudness matter. (Lead may scale to thorough-lead if Fire 1 lands literal-only-safe and the resolver is a pure reuse — state it explicitly.) | Build-to §10.5 grammar; the §10.5 prose narrowing is **staged uncommitted** for Andrew — do **not** build Fire 1 until ratified (it implements the narrowed semantics). |
+| **Fire 1 — the templating engine (Mechanism 2 / 2a)** | (i) Loom-side **read-set inference**: `parseGuardPath` each `subject.*` param token → add the known aspect key to the instanceOp's `ContextHint.Reads` (`engine.go:1009`); **no Core KV read in Loom**, `params` stays opaque pass-through. (ii) The shared **`orchestration-base` Starlark resolver helper** (`resolve_subject_params(params, state)`) substituting tokens from JIT-hydrated `state` via §2.5 `kv.Read`; null/absent ⇒ loud data error. Unit table (§5.2) on both the inference and the helper. Backward-compatible (literals untouched). | **Full review** — write/orchestration path + a frozen-contract-prose narrowing; param-resolution correctness + data-error loudness matter, and the read happens in the DDL/Processor (verify Loom takes no Core KV read for this path). | Build-to §10.5 grammar + §2.5 known-key reads; the §10.5 prose narrowing is **committed with this ratification**. |
 | **Fire 2 — the lease-signing consumer (today-consumer)** | Add `subject.demographics.data.*` templates to the backgroundCheck externalTask step (`patterns.go`); extend `FakeBackgroundCheck` to record its received `Request.Params`; an ephemeral-stack convergence e2e asserts receipt + green convergence. | Thorough lead — package data + a test-only adapter change over a Fire-1 mechanism already reviewed. | None. |
 | **Fire 3 — sensitive-PII via Vault (designed, NOT built now)** | Sensitive-ref param envelope + bridge-side Vault-unwrap (§7). | Full 3-layer (PII-egress, security-plane). | Composes on Vault §3.10 (already staged); a Phase-B consumer note added uncommitted **only when greenlit**. **Build behind the ratified Vault feature.** |
 
 **Recommended pre-build pass:** a short adversarial/party (`bmad-party-mode`) check on Fire 1's
-**data-error boundary** (a null `subject.*` must hard-fail, never send a blank field to a vendor) and the
-**snapshot-consistency** claim, before Fire 1 builds. Folded-in self-review below.
+**data-error boundary** (a null/absent `subject.*` must hard-fail in the shared helper, never send a blank
+field to a vendor) and the **read-set inference** (Loom must declare *exactly* the aspect keys the templates
+need, so the Processor hydrates them — an under-declared read makes the DDL resolution fail closed, which is
+the safe direction but should be tested). Under Mechanism 2 the snapshot is OCC-strong, so the
+submit-time-staleness concern is dissolved. Folded-in self-review below.
 
 ---
 
 ## 10. Self-adversarial pass (folded in)
 
-- **"Isn't this just letting the DDL `kv.Read` the aspect?"** It could — but `kv.Read` in the instanceOp
-  DDL would (a) require editing every instanceOp script, (b) put the resolution grammar in Starlark
-  instead of the typed engine, and (c) still bake plaintext into the event. Engine-side resolution is
-  fewer moving parts and is the single chokepoint where Fire 3 later swaps plaintext for a sensitive-ref.
+- **"Why the instanceOp DDL `kv.Read`, not engine-side resolution?"** *(Resolved by Andrew → Mechanism 2.)*
+  Engine-side resolution (the original draft) would have Loom read Core KV — widening Loom's read surface
+  beyond guard evaluation. The chosen approach keeps Core-KV reads **in the Processor** (Loom only declares
+  `ContextHint.Reads`), so guard-eval stays the lone exception, and the param fields come from the op's
+  OCC-hydrated snapshot. The DDL-churn cost is absorbed by a **shared `orchestration-base` helper** (not
+  per-script). The single chokepoint where Fire 3 swaps plaintext for a sensitive-ref is now that helper.
 - **"Does this break the bridge's type-agnosticism?"** No. The bridge still treats `Params` as an opaque
   free-form map; only its *contents* are richer. The bridge never parses the claim vertex type.
 - **"Is the §10.5 edit really necessary, or can I implement subject-only silently?"** Implementing
@@ -418,10 +467,12 @@ Each fire is independently shippable + green.
 
 ## 11. Open ratification items (Andrew's call)
 
-1. **The §10.5 narrowing** — `row/subject` → `subject` for externalTask params (§4, §6.3). Staged
-   uncommitted; ratify or adjust.
-2. **Mechanism 1 vs 2** — engine-side submit-time point-reads (recommended) vs OCC-hydrated DDL reads
-   (§2.2). Recommendation: Mechanism 1.
+1. **The §10.5 narrowing** — `row/subject` → `subject` for externalTask params (§4, §6.3). ✅ **Ratified
+   (Andrew, 2026-06-28) — committed with this ratification.**
+2. **Mechanism 1 vs 2** — ✅ **Resolved (Andrew, 2026-06-28): Mechanism 2, flavor 2a** (Loom declares
+   `ContextHint.Reads`, the instanceOp DDL resolves from JIT-hydrated `state` via §2.5 `kv.Read`; Loom reads
+   no Core KV; guard-eval stays the lone Core-KV-read exception; OCC-strong snapshot). See §2.2 + the
+   header decision banner.
 3. **Fire 3 sequencing** — confirm Fire 3 (sensitive-PII) builds **behind** the ratified Vault feature,
    and that the bridge is the correct unwrap point (vs routing through a Phase-B Secure Lens). The Vault
    design names the bridge as a PII-egress consumer but frames its access via the Secure Lens (read

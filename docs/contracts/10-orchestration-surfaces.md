@@ -546,8 +546,19 @@ then park; the completer is a human for userTask, the bridge for externalTask). 
 - The engine **then PARKS** on `token.<instanceKey>` (§10.6) — the instance key it **mints write-ahead**
   and passes to `instanceOp` as a caller-supplied id (exactly as it supplies `CreateTask`'s
   deterministic `taskId` write-ahead, §10.6 invariant 1).
-- `adapter` is the external adapter name; `params` are row/subject templates resolved per the
-  §10.5/§10.8 templating rule; `replyOp` is the result-op type the bridge posts back (carrying
+- `adapter` is the external adapter name; `params` are **subject** templates — each value is either a
+  literal or a `subject.<aspect>.data.<field>` / `subject.data.<field>` path (the §10.5 guard-path
+  grammar), **resolved against the subject's current Core-KV state when the instanceOp runs** (a
+  null/absent resolution is a data error — surface, do not dispatch). Resolution is a **write-path read**:
+  the submitter (Loom) declares the subject's aspect keys in the instanceOp's `contextHint.reads`, and the
+  instanceOp resolves the templates from that JIT-hydrated state as it emits the `external.<adapter>`
+  event — so an adapter receives the real subject fields it needs (a vendor's legal-name / DOB / address)
+  without any reader touching a lens read-model. The **`row.<column>`** half of §10.8 templating is the **Weaver actuator's**
+  resolution (`subject`/`assignee`/`target` selection from a violation row) and is **not** reachable on
+  the Loom write path: by the time the instanceOp runs the violation row is gone, the write path must not
+  read the lagging `weaver-targets` read-model, and `triggerLoom{pattern, subject}` carries no row. (A
+  field on a *linked* vertex is reached by the instanceOp DDL's own §2.5 `kv.Read`, not a `params`
+  template.) `replyOp` is the result-op type the bridge posts back (carrying
   `payload.externalRef = instanceKey`, §10.6) — **its DDL records the external outcome as aspect(s) on
   the claim vertex** (**D5**: business data lives in aspects; the vertex root `data` stays minimal — at
   most a justified lifecycle scalar such as `status`), **not** as fat root `data`; `instanceOp` is the
