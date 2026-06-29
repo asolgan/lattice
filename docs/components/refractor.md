@@ -65,6 +65,47 @@ Key sub-packages:
 | **Metrics subjects** | `lattice.refractor.metrics.<lensId>` | Consumer lag on `LagPoller` interval. |
 | **Control plane** | `micro.Service` endpoints at `lattice.ctrl.refractor.<lensId>.<op>` | Handles JSON control requests (list lenses, force re-project, etc.) via the NATS Services framework. |
 
+### Protected read-model provisioning (read-path authorization, D1.3)
+
+Ordinary SQL-target lenses (above) project into a table **provisioned out-of-band** — the
+adapter issues no DDL. A **protected** read model is different: it lives in Postgres under
+**row-level security** so a reader sees only the rows it is authorized for (Contract #6 §6.14).
+Refractor owns the provisioning so schema and policy cannot drift from the projection, and
+**FORCE RLS is structural** rather than a checklist item.
+
+The RLS-provisioning primitive lives in `adapter/rls.go`:
+
+- **`BuildProtectedTableDDL(table, keyCols, body)`** generates `CREATE TABLE IF NOT EXISTS`
+  with the caller's key + body columns plus two platform columns — `authz_anchors text[]`
+  (the §6.14 set of bare-NanoID match tokens) and `projection_seq bigint` — then
+  `ENABLE` **and** `FORCE ROW LEVEL SECURITY` and the **set-membership policy**: a row is
+  visible iff the current actor (`current_setting('lattice.actor_id', true)`, NULL-safe →
+  deny when unset) holds a **live** grant for **any** of the row's `authz_anchors`. Because
+  the table is FORCE-RLS'd, a table whose policy was never generated **denies all rows**
+  (a fail-closed outage, never a silent leak — §6.14 H3).
+- **`PostgresGrantWriter`** provisions and maintains the shared **`actor_read_grants`** table
+  (the read-auth source of truth that every `cap-read.*` grant lens projects into). Its
+  `UpsertGrant` / `RevokeGrant` enforce the §6.14 **monotonic-seq guard** (a write takes
+  effect only when `projectionSeq` strictly exceeds the stored one, per
+  `(actor_id, anchor_id, grant_source)`), so a stale CDC replay can neither downgrade a fresh
+  grant nor **resurrect a revoked one** (H4). `grant_source` (the contributing lens's
+  canonical name) keeps producers disjoint — a revoke from one package never wipes another's
+  coexisting grant. RLS then unions across all sources natively via the policy.
+
+> **Tombstone column (staged §6.14 clarification).** The grant table carries an `is_deleted`
+> boolean the contract's illustrative four-column schema omits. It is **required**: §6.14
+> mandates that a delete "applies only when its incoming `projectionSeq` exceeds the stored
+> one" and that a stale replay "cannot resurrect a revoked grant" — both need the revoked
+> row's seq **retained**, which a hard `DELETE` discards. Revocation is therefore a
+> seq-guarded **soft tombstone**; the RLS policy and the membership lookup filter
+> `NOT is_deleted`. This reuses the existing Postgres soft-delete convention.
+
+**Status:** the provisioning primitive + grant writer ship as a tested library (the H3
+deny-all and H4 no-resurrect proofs run against a real Postgres under `POSTGRES_TEST_DSN`).
+The activation wiring (a protected lens declares `protected: true` + its columns, and
+`startPipeline` provisions on activation) and the first protected business read model
+(lease applications) + the read boundary land in the following D1.3 increments.
+
 ---
 
 ## Rule engine
