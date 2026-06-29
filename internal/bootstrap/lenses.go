@@ -270,18 +270,17 @@ RETURN
 // anchor representation) — a malformed key yields no grant (deny), never a wrong
 // one.
 //
-// RETRACTION (the honest scope). The grant table currently accumulates
-// MONOTONICALLY: a tombstoned identity's self-grant is NOT auto-revoked. The
-// full-engine anchor-tombstone path (AnchorDeleteResult) cannot retract it —
-// it resolves only a `<anchor>.key`/root-field key into a SINGLE column, but a
-// GrantTable delete needs the (actor_id, anchor_id, grant_source) composite, and
-// this lens's key is a nanoIdFromKey(...) function call (not a property access)
-// it can't resolve at all. A lingering self-grant is INERT, not a leak: it is
-// self-only (actor == anchor, so it can never read another actor's rows), and a
-// deactivated/revoked identity is denied at the JWT boundary (D1.2 auth +
-// revocation) before RLS is ever consulted — so the boundary, not the grant row,
-// is the deactivation gate. Composite-keyed grant retraction on anchor tombstone
-// is a filed follow-up (lattice.md, the GrantTable delete-path increment).
+// RETRACTION. On an identity tombstone the self-grant is auto-revoked: the
+// full-engine anchor-tombstone path (AnchorDeleteResult) resolves every key
+// column read-free against the tombstoned anchor — including this lens's
+// nanoIdFromKey(identity.key) function-call columns — and emits the
+// (actor_id, anchor_id, grant_source) composite Delete the GrantWriterAdapter
+// maps to RevokeGrant (the §6.14 seq-guarded soft-tombstone, stamped at the
+// tombstone CDC message's stream seq so a stale lower-seq re-upsert cannot
+// resurrect it). A lingering self-grant would be INERT even without this —
+// self-only (actor == anchor), and a deactivated identity is denied at the JWT
+// boundary (D1.2 auth + revocation) before RLS — but retracting it keeps the
+// grant table bounded and forecloses a re-activated-NanoID collision.
 //
 // DSN is resolved from REFRACTOR_PG_DSN at activation (Adapter:"postgres" with
 // no DSN → the bootstrap seeder leaves it empty and Refractor's translateSpec

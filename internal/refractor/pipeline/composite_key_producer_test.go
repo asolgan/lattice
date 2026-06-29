@@ -84,3 +84,49 @@ func TestEvaluateForEntry_CompositeKeyProducer_DeliversAllKeyColumns(t *testing.
 	require.Len(t, legacy[0].Keys, 1, "the un-threaded fallback keys on the first item only")
 	require.NotContains(t, legacy[0].Keys, "anchor_id", "anchor_id absent — what broke the producer")
 }
+
+// TestEvaluateForEntry_CompositeKeyGrant_RetractsOnTombstone is the Fire-2
+// pipeline proof: when the identity anchor is soft-deleted, the plain
+// full-engine grant lens emits a composite-keyed Delete (every key column the
+// GrantWriterAdapter needs to RevokeGrant), instead of the upsert-only re-scan
+// that left the self-grant lingering in actor_read_grants.
+func TestEvaluateForEntry_CompositeKeyGrant_RetractsOnTombstone(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping NATS-backed test in short mode")
+	}
+	coreKV, adjKV, _ := newCollisionKVs(t)
+	ctx := context.Background()
+
+	const identityID = "identityAAAAAAAAAAAA"
+	identityKey := "vtx.identity." + identityID
+
+	eng := full.New()
+	cr, err := eng.Parse(grantLensSpec)
+	require.NoError(t, err)
+	cr.(*full.CompiledRule).KeyColumns = []string{"actor_id", "anchor_id", "grant_source"}
+	p := &Pipeline{
+		ruleID:     "rule-grants",
+		coreKV:     coreKV,
+		adjKV:      adjKV,
+		engineKind: ruleengine.EngineFull,
+		fullEngine: eng,
+		fullCR:     cr,
+	}
+
+	tombstone := simple.NodeEntry{
+		CoreKVKey:  identityKey,
+		NodeLabel:  "identity",
+		IsDeleted:  true,
+		Properties: map[string]any{"isDeleted": true},
+	}
+	results, err := p.evaluateForEntry(ctx, tombstone)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.True(t, results[0].Delete, "a tombstoned identity must retract its self-grant")
+	require.Nil(t, results[0].Row, "a Delete carries no row")
+	require.Equal(t, map[string]any{
+		"actor_id":     identityID,
+		"anchor_id":    identityID,
+		"grant_source": "cap-read",
+	}, results[0].Keys, "the Delete carries the full composite key GrantWriterAdapter.RevokeGrant needs")
+}

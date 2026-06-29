@@ -173,8 +173,12 @@ vertex, so a tombstoned **anchor** yields **zero rows** — but the engine never
 *Delete*, so the row the anchor previously projected would linger in the lens target
 forever. The pipeline closes this: when a CDC event is a **root tombstone of the lens's
 anchor** (`isDeleted` true, event vertex type == the first `MATCH` node's label), it emits
-a Delete keyed by the anchor's output column (`full.Engine.AnchorDeleteResult` derives the
-key from the AST — robustly `<anchor>.key` for every shipped single-key lens).
+a Delete keyed by the anchor's output columns (`full.Engine.AnchorDeleteResult` derives the
+key from the AST). It resolves **every** declared key column **read-free** against the
+tombstoned anchor — `<anchor>.key`, a root-body field, or a pure function over them (e.g.
+`nanoIdFromKey(identity.key)`) — so a **composite-key** lens retracts the exact row it
+projected; a column that would need a Core-KV read (an aspect access on a now-deleted vertex)
+is unresolvable and the event falls through to a re-execute (never a wrong or partial Delete).
 This mirrors the **simple engine's `deleteResult`** and the **actor-aware capability path's**
 tombstone shortcut, which already retract; it is the non-actor twin of those two
 retraction paths.
@@ -186,10 +190,12 @@ lens such as the D1 `capabilityReadGrants` **GrantTable** producer (keyed on
 `actor_id, anchor_id, grant_source`) hands the `GrantWriterAdapter` every key column it
 requires and actually populates `actor_read_grants`. Each declared key column must be a
 `RETURN` alias, validated **fail-closed at activation** (a mis-declared key fails the lens,
-not silently drops a column at write time). A single-key lens is unchanged (one column = the
-sole `RETURN` key). **Envelope lenses** (actor-aggregate `cap.<actor>` / the operation-role
-index) are *not* threaded: their projection key is synthesized by the envelope at write
-time, not taken from the `RETURN` columns.
+not silently drops a column at write time). The **same** complete key is built on the
+anchor-tombstone Delete path above, so the grant lens's self-grant is `RevokeGrant`'d when its
+identity is tombstoned (the §6.14 seq-guarded soft-tombstone). A single-key lens is unchanged
+(one column = the sole `RETURN` key). **Envelope lenses** (actor-aggregate `cap.<actor>` / the
+operation-role index) are *not* threaded: their projection key is synthesized by the envelope
+at write time, not taken from the `RETURN` columns.
 
 A tombstone of a **secondary** (non-anchor) node — e.g. a deleted patient on an
 appointment lens — is *not* a retraction: it re-executes so dependent fields refresh (the

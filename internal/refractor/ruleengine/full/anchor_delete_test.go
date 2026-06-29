@@ -93,6 +93,73 @@ func TestAnchorDeleteResult(t *testing.T) {
 	}
 }
 
+// TestAnchorDeleteResult_CompositeGrantKey pins the Fire-2 retraction: a
+// GrantTable lens keyed on the (actor_id, anchor_id, grant_source) composite —
+// whose key columns are function calls + a literal, NOT simple property
+// accesses — retracts its self-grant on an identity tombstone, resolving every
+// key column read-free against the tombstoned anchor exactly as the upsert path
+// does. The single-column path is covered by TestAnchorDeleteResult above.
+func TestAnchorDeleteResult_CompositeGrantKey(t *testing.T) {
+	const idKey = "vtx.identity.abc123"
+	const grantRule = `
+MATCH (identity:identity)
+RETURN
+  nanoIdFromKey(identity.key) AS actor_id,
+  nanoIdFromKey(identity.key) AS anchor_id,
+  'cap-read'                  AS grant_source
+`
+	eng := New()
+	parse := func(body string, cols []string) *CompiledRule {
+		cr, err := eng.Parse(body)
+		require.NoError(t, err)
+		fcr, ok := cr.(*CompiledRule)
+		require.True(t, ok)
+		fcr.KeyColumns = cols
+		return fcr
+	}
+
+	t.Run("identity tombstone retracts the composite self-grant", func(t *testing.T) {
+		cr := parse(grantRule, []string{"actor_id", "anchor_id", "grant_source"})
+		keys, ok := eng.AnchorDeleteResult(cr, idKey, "identity", map[string]any{"isDeleted": true})
+		require.True(t, ok)
+		require.Equal(t, map[string]any{
+			"actor_id":     "abc123", // nanoIdFromKey(identity.key), read-free
+			"anchor_id":    "abc123", // the column the single-key path could never produce
+			"grant_source": "cap-read",
+		}, keys)
+	})
+
+	t.Run("secondary-type tombstone falls through (re-execute)", func(t *testing.T) {
+		cr := parse(grantRule, []string{"actor_id", "anchor_id", "grant_source"})
+		keys, ok := eng.AnchorDeleteResult(cr, "vtx.role.r1", "role", map[string]any{"isDeleted": true})
+		require.False(t, ok)
+		require.Nil(t, keys)
+	})
+
+	t.Run("a composite column needing an aspect read falls through", func(t *testing.T) {
+		// actor_id keys on an aspect field — a Core-KV point-read the read-free
+		// delete path cannot satisfy from a root-tombstone payload, so no Delete
+		// is emitted (never a wrong or partial key).
+		const rule = `
+MATCH (identity:identity)
+RETURN
+  identity.profile.data.handle AS actor_id,
+  'cap-read'                   AS grant_source
+`
+		cr := parse(rule, []string{"actor_id", "grant_source"})
+		keys, ok := eng.AnchorDeleteResult(cr, idKey, "identity", map[string]any{"isDeleted": true})
+		require.False(t, ok)
+		require.Nil(t, keys)
+	})
+
+	t.Run("a key column absent from RETURN falls through", func(t *testing.T) {
+		cr := parse(grantRule, []string{"actor_id", "anchor_id", "grant_source", "phantom"})
+		keys, ok := eng.AnchorDeleteResult(cr, idKey, "identity", map[string]any{"isDeleted": true})
+		require.False(t, ok)
+		require.Nil(t, keys)
+	})
+}
+
 // TestAnchorDeleteResult_NilGuards covers the defensive fall-throughs: a nil or
 // wrong-engine CompiledRule never panics and never emits a Delete.
 func TestAnchorDeleteResult_NilGuards(t *testing.T) {

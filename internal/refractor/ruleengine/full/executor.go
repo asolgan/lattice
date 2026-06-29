@@ -28,6 +28,12 @@ import (
 // graph could trigger pathological BFS.
 const maxVarLengthHops = 10
 
+// errCoreKVReadDisabled signals that an expression needs a Core-KV read while
+// the executor is in read-free mode (coreKV == nil — the anchor-tombstone
+// delete key resolution). The caller treats it as "key column unresolvable" and
+// falls through to a re-execute, never a wrong Delete.
+var errCoreKVReadDisabled = errors.New("full engine: Core KV read disabled (read-free key resolution)")
+
 // nodeRef is the executor's in-memory handle to a Core KV vertex.
 // A nil nodeRef represents an OPTIONAL MATCH null binding.
 type nodeRef struct {
@@ -1419,6 +1425,12 @@ func (ex *executor) resolveProperty(target any, key string) (any, error) {
 		return nr.key, nil
 	}
 	// Absent from the root body → aspect reference: point-read <nodeKey>.<key>.
+	// A nil coreKV is the read-free key-resolution mode (the anchor-tombstone
+	// delete path): an aspect that would require a Core-KV read is reported
+	// unresolvable rather than panicking on a re-scan of the now-deleted vertex.
+	if ex.coreKV == nil {
+		return nil, errCoreKVReadDisabled
+	}
 	aref, err := ex.fetchNode(nr.key + "." + key)
 	if err != nil {
 		return nil, err

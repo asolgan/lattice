@@ -1,6 +1,10 @@
 package full
 
-import "github.com/asolgan/lattice/internal/refractor/ruleengine"
+import (
+	"context"
+
+	"github.com/asolgan/lattice/internal/refractor/ruleengine"
+)
 
 // AnchorDeleteResult reports the projection (delete) key that a now-tombstoned
 // event vertex previously projected to, for a root-tombstone CDC event on a
@@ -14,14 +18,24 @@ import "github.com/asolgan/lattice/internal/refractor/ruleengine"
 // eventKey is its Core KV key, eventType its Contract #1 vertex type, eventProps
 // its stored root body.
 //
+// The delete key is resolved over EVERY key column (the rule's threaded
+// Into.Key, mirroring the upsert path; the legacy single first-RETURN-item key
+// when no columns are threaded), evaluated against a read-free binding of the
+// tombstoned anchor — so a composite-key lens (e.g. a GrantTable lens keyed on
+// (actor_id, anchor_id, grant_source)) retracts the exact row it projected, and
+// a function-call key like nanoIdFromKey(identity.key) resolves identically to
+// the upsert path with no re-scan of the now-deleted vertex.
+//
 //	ok == false → the event vertex is NOT this rule's anchor label (a
 //	              secondary-node tombstone — the caller must re-execute so
 //	              dependent rows refresh), the rule lacks a resolvable
-//	              anchor/RETURN, or the lens keys its output on an aspect field
-//	              absent from a root-tombstone payload (an anti-pattern). No
-//	              Delete is emitted; the caller falls through to a re-execute.
-//	ok == true  → keys is the Keys map to hand to a Delete EvalResult; it mirrors
-//	              the upsert key map (the first RETURN item's alias → its value).
+//	              anchor/RETURN, or some key column cannot be resolved without a
+//	              Core-KV read (e.g. an aspect field absent from a root-tombstone
+//	              payload — an anti-pattern) or resolves to a node rather than a
+//	              scalar. No Delete is emitted; the caller falls through to a
+//	              re-execute.
+//	ok == true  → keys is the complete Keys map to hand to a Delete EvalResult,
+//	              mirroring the upsert key map (every key column → its value).
 func (*Engine) AnchorDeleteResult(
 	cr ruleengine.CompiledRule, eventKey, eventType string, eventProps map[string]any,
 ) (keys map[string]any, ok bool) {
@@ -40,22 +54,54 @@ func (*Engine) AnchorDeleteResult(
 		return nil, false
 	}
 
-	// Key column = the first RETURN item (the full engine's "first projection
-	// item is the key" convention; see executor.applyReturn).
-	first, found := firstReturnItem(q)
-	if !found {
-		return nil, false
-	}
-	alias := first.Alias
-	if alias == "" {
-		alias = projectionAutoAlias(first.Expr, 0)
+	// Key columns: the threaded Into.Key (multi-column composite), else the
+	// legacy first-RETURN-item alias (single-key behaviour, unchanged for any
+	// un-threaded caller). Mirrors applyReturn's key construction.
+	cols := compiled.KeyColumns
+	if len(cols) == 0 {
+		first, ok := firstReturnItem(q)
+		if !ok {
+			return nil, false
+		}
+		alias := first.Alias
+		if alias == "" {
+			alias = projectionAutoAlias(first.Expr, 0)
+		}
+		cols = []string{alias}
 	}
 
-	val, resolved := resolveAnchorKeyValue(first.Expr, anchorVar, eventKey, eventProps)
-	if !resolved {
-		return nil, false
+	exprByAlias := returnExprByAlias(q)
+
+	// A read-free executor binding the anchor var to its tombstoned vertex. A nil
+	// coreKV makes any key expression that needs an aspect point-read report
+	// unresolvable (errCoreKVReadDisabled) instead of re-scanning the now-deleted
+	// vertex; every other shape (literal, anchor .key / root field, pure function
+	// over them — e.g. nanoIdFromKey) resolves exactly as the upsert path does.
+	ex := &executor{ctx: context.Background()}
+	b := binding{anchorVar: &nodeRef{key: eventKey, props: eventProps}}
+
+	out := make(map[string]any, len(cols))
+	for _, col := range cols {
+		expr, present := exprByAlias[col]
+		if !present {
+			// A key column that is not a RETURN alias is an anti-pattern caught at
+			// activation; defensively fall through rather than emit a partial key.
+			return nil, false
+		}
+		v, err := ex.evalExpr(b, expr)
+		if err != nil {
+			// Needs a Core-KV read (aspect access) or otherwise unresolvable —
+			// conservative fall-through to a re-execute, never a wrong Delete.
+			return nil, false
+		}
+		if _, isNode := v.(*nodeRef); isNode {
+			// A bare node variable is not a scalar key value (the upsert path would
+			// project a degenerate key) — fall through.
+			return nil, false
+		}
+		out[col] = v
 	}
-	return map[string]any{alias: val}, true
+	return out, true
 }
 
 // anchorNode returns the variable + label of the first MATCH clause's first
@@ -77,7 +123,8 @@ func anchorNode(q *Query) (variable, label string, ok bool) {
 }
 
 // firstReturnItem returns the first projection item of the RETURN clause — the
-// item the executor treats as the output key column.
+// item the executor treats as the output key column when no key columns are
+// threaded.
 func firstReturnItem(q *Query) (ProjectionItem, bool) {
 	for _, c := range q.Clauses {
 		r, isReturn := c.(*Return)
@@ -92,37 +139,25 @@ func firstReturnItem(q *Query) (ProjectionItem, bool) {
 	return ProjectionItem{}, false
 }
 
-// resolveAnchorKeyValue resolves the projected key value of a root-tombstone
-// anchor without re-scanning Core KV. Supported shapes:
-//
-//   - <anchorVar>.key     → the vertex key (eventKey). Robust and
-//     payload-independent — the IntoKey default and the shape of every shipped
-//     plain lens (fetchNode injects props["key"] = <vertex key>).
-//   - <anchorVar>.<field> → a root-body field, read from eventProps.
-//
-// Any other shape — an aspect access (<anchorVar>.<aspect>.data.<f>, whose
-// Target is itself a PropertyAccess, not the anchor variable), a different
-// variable, or a non-property expression — is unresolvable from a
-// root-tombstone payload and yields ok=false so the caller falls through to a
-// re-execute. Keying a read model on a mutable aspect field is already an
-// anti-pattern (the key churns on every aspect edit), so that fall-through is
-// correctness-preserving, not a functional loss.
-func resolveAnchorKeyValue(expr Expr, anchorVar, eventKey string, eventProps map[string]any) (any, bool) {
-	pa, isProp := expr.(*PropertyAccess)
-	if !isProp {
-		return nil, false
-	}
-	vr, isVar := pa.Target.(*VariableRef)
-	if !isVar || vr.Name != anchorVar {
-		return nil, false
-	}
-	if pa.Key == "key" {
-		return eventKey, true
-	}
-	if eventProps != nil {
-		if v, present := eventProps[pa.Key]; present {
-			return v, true
+// returnExprByAlias maps each RETURN item's effective output alias (the explicit
+// alias, else the auto-alias — matching applyReturn/projectItems) to its
+// expression, so a key column named in Into.Key can be resolved to the
+// expression that produces it.
+func returnExprByAlias(q *Query) map[string]Expr {
+	for _, c := range q.Clauses {
+		r, isReturn := c.(*Return)
+		if !isReturn {
+			continue
 		}
+		out := make(map[string]Expr, len(r.Items))
+		for i, item := range r.Items {
+			alias := item.Alias
+			if alias == "" {
+				alias = projectionAutoAlias(item.Expr, i)
+			}
+			out[alias] = item.Expr
+		}
+		return out
 	}
-	return nil, false
+	return map[string]Expr{}
 }
