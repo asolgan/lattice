@@ -322,6 +322,23 @@ func main() {
 				logger.Error("full engine selected but CompiledRule is nil", "lensId", r.ID)
 				return
 			}
+			// Thread the output key columns so the engine builds the complete
+			// multi-column projection key (a composite-key lens — e.g. a
+			// GrantTable lens — needs every key column the adapter requires).
+			// Fail closed if a key column is not a RETURN alias. Only PLAIN
+			// projection lenses are threaded: an envelope lens (actor-aggregate /
+			// operation-role-index) derives its projection key from the envelope
+			// at write time, so its Into.Key (e.g. ["key"]) is not a RETURN alias
+			// and its applyReturn key map is discarded — threading/validating it
+			// would wrongly fail activation.
+			if cr, ok := r.CompiledRule.(*full.CompiledRule); ok &&
+				!projection.IsActorAggregate(r) && !isOperationRoleIndexLens(r) {
+				cr.KeyColumns = []string(r.Into.Key)
+				if err := cr.ValidateKeyColumns(); err != nil {
+					logger.Error("full engine key-column validation", "lensId", r.ID, "err", err)
+					return
+				}
+			}
 			p.UseFullEngine(fullEngine, r.CompiledRule)
 		}
 
@@ -438,6 +455,15 @@ func main() {
 					logger.Error("full engine MATCH update missing CompiledRule",
 						"lensId", newLens.ID)
 					return
+				}
+				if cr, ok := newLens.CompiledRule.(*full.CompiledRule); ok &&
+					!projection.IsActorAggregate(newLens) && !isOperationRoleIndexLens(newLens) {
+					cr.KeyColumns = []string(newLens.Into.Key)
+					if err := cr.ValidateKeyColumns(); err != nil {
+						logger.Error("full engine key-column validation (MATCH update)",
+							"lensId", newLens.ID, "err", err)
+						return
+					}
 				}
 				entry.pipeline.UseFullEngine(fullEngine, newLens.CompiledRule)
 				logger.Info("lens MATCH hot-reloaded (full engine)", "lensId", newLens.ID)

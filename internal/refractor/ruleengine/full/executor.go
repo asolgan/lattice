@@ -42,10 +42,11 @@ type binding map[string]any
 
 // executor carries per-call mutable state for one Execute invocation.
 type executor struct {
-	ctx    context.Context
-	adjKV  *substrate.KV
-	coreKV *substrate.KV
-	params map[string]any
+	ctx        context.Context
+	adjKV      *substrate.KV
+	coreKV     *substrate.KV
+	params     map[string]any
+	keyColumns []string
 }
 
 // ExecuteWith runs cr against the given Core and Adjacency KVs, binding
@@ -68,10 +69,11 @@ func (e *Engine) ExecuteWith(
 	}
 
 	ex := &executor{
-		ctx:    ctx,
-		adjKV:  adjKV,
-		coreKV: coreKV,
-		params: ec.Parameters,
+		ctx:        ctx,
+		adjKV:      adjKV,
+		coreKV:     coreKV,
+		params:     ec.Parameters,
+		keyColumns: compiled.KeyColumns,
 	}
 
 	bindings := []binding{{}}
@@ -1009,10 +1011,20 @@ func (ex *executor) applyReturn(bindings []binding, r *Return) ([]ruleengine.Pro
 		for k, v := range row {
 			values[k] = v
 		}
-		// Use the first projection item as the key when present, mirroring
-		// the simple engine's "alias becomes the key column" convention.
+		// Build the projection key. When the rule's key columns are threaded
+		// (from Rule.Into.Key at activation), build the complete multi-column
+		// key — every key column is a RETURN alias, so its value is in the
+		// projected row. This mirrors the simple engine and lets a composite-key
+		// lens (e.g. a GrantTable lens keyed on actor_id/anchor_id/grant_source)
+		// hand the adapter every key column it requires. With no key columns
+		// threaded, fall back to the first RETURN item — byte-identical to the
+		// single-key lenses that have always used this path.
 		keyMap := map[string]any{}
-		if len(r.Items) > 0 {
+		if len(ex.keyColumns) > 0 {
+			for _, col := range ex.keyColumns {
+				keyMap[col] = values[col]
+			}
+		} else if len(r.Items) > 0 {
 			alias := r.Items[0].Alias
 			if alias == "" {
 				alias = projectionAutoAlias(r.Items[0].Expr, 0)

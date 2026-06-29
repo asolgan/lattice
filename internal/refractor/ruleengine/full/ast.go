@@ -7,6 +7,11 @@
 // projections.
 package full
 
+import (
+	"errors"
+	"fmt"
+)
+
 // Direction names the orientation of a RelPattern.
 type Direction int
 
@@ -241,7 +246,68 @@ func (*CaseExpr) isExpr() {}
 // full.Engine.Parse returns; full.Engine.Execute (3.1b-ii) will consume it.
 type CompiledRule struct {
 	Query *Query
+
+	// KeyColumns are the RETURN aliases designated as the projection's output
+	// key, threaded from Rule.Into.Key at activation. When set, the executor
+	// builds the complete multi-column key map (mirroring the simple engine) so
+	// a composite-key lens — e.g. a GrantTable lens keyed on
+	// (actor_id, anchor_id, grant_source) — projects every key column the
+	// adapter requires. Empty/unset keeps the legacy first-RETURN-item key, so
+	// single-key lenses and directly-constructed test rules are unchanged.
+	KeyColumns []string
 }
 
 // EngineName implements ruleengine.CompiledRule.
 func (*CompiledRule) EngineName() string { return "full" }
+
+// returnAliases returns the effective output aliases of the rule's RETURN
+// clause (the explicit alias, else the auto-alias) in declaration order, and
+// whether a RETURN clause was found.
+func (cr *CompiledRule) returnAliases() ([]string, bool) {
+	if cr == nil || cr.Query == nil {
+		return nil, false
+	}
+	for _, c := range cr.Query.Clauses {
+		r, isReturn := c.(*Return)
+		if !isReturn {
+			continue
+		}
+		aliases := make([]string, 0, len(r.Items))
+		for i, it := range r.Items {
+			a := it.Alias
+			if a == "" {
+				a = projectionAutoAlias(it.Expr, i)
+			}
+			aliases = append(aliases, a)
+		}
+		return aliases, true
+	}
+	return nil, false
+}
+
+// ValidateKeyColumns fails closed when a declared key column is not a RETURN
+// alias of the compiled query — the column's value would otherwise be silently
+// absent from the projection key map at write time. This mirrors the simple
+// engine's compile-time key-field validation, keeping the §6.13 fail-closed
+// activation posture for composite-key full-engine lenses (e.g. GrantTable).
+// With no key columns declared the engine keeps its first-RETURN-item key, so
+// there is nothing to validate.
+func (cr *CompiledRule) ValidateKeyColumns() error {
+	if cr == nil || len(cr.KeyColumns) == 0 {
+		return nil
+	}
+	aliases, ok := cr.returnAliases()
+	if !ok {
+		return errors.New("full engine: compiled rule has no RETURN clause")
+	}
+	have := make(map[string]struct{}, len(aliases))
+	for _, a := range aliases {
+		have[a] = struct{}{}
+	}
+	for _, col := range cr.KeyColumns {
+		if _, present := have[col]; !present {
+			return fmt.Errorf("full engine: key column %q is not a RETURN alias", col)
+		}
+	}
+	return nil
+}

@@ -174,10 +174,22 @@ vertex, so a tombstoned **anchor** yields **zero rows** — but the engine never
 forever. The pipeline closes this: when a CDC event is a **root tombstone of the lens's
 anchor** (`isDeleted` true, event vertex type == the first `MATCH` node's label), it emits
 a Delete keyed by the anchor's output column (`full.Engine.AnchorDeleteResult` derives the
-key from the AST — the first `RETURN` item, robustly `<anchor>.key` for every shipped lens).
+key from the AST — robustly `<anchor>.key` for every shipped single-key lens).
 This mirrors the **simple engine's `deleteResult`** and the **actor-aware capability path's**
 tombstone shortcut, which already retract; it is the non-actor twin of those two
 retraction paths.
+
+**Multi-column projection keys.** For a **plain** projection lens the full engine builds the
+**complete** key map from the lens's declared key columns (`Rule.Into.Key`, threaded onto
+`full.CompiledRule.KeyColumns` at activation), matching the simple engine — so a composite-key
+lens such as the D1 `capabilityReadGrants` **GrantTable** producer (keyed on
+`actor_id, anchor_id, grant_source`) hands the `GrantWriterAdapter` every key column it
+requires and actually populates `actor_read_grants`. Each declared key column must be a
+`RETURN` alias, validated **fail-closed at activation** (a mis-declared key fails the lens,
+not silently drops a column at write time). A single-key lens is unchanged (one column = the
+sole `RETURN` key). **Envelope lenses** (actor-aggregate `cap.<actor>` / the operation-role
+index) are *not* threaded: their projection key is synthesized by the envelope at write
+time, not taken from the `RETURN` columns.
 
 A tombstone of a **secondary** (non-anchor) node — e.g. a deleted patient on an
 appointment lens — is *not* a retraction: it re-executes so dependent fields refresh (the
