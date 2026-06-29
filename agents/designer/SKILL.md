@@ -110,7 +110,7 @@ vertices/aspects/links in Core KV; operational state lives outside (Health KV, W
 meta-vertices `vtx.meta.<NanoID>`. Relationships are **links**, not `data` refs; every reader filters
 tombstones. **Capability KV is a lens projection** (projection correctness = auth correctness).
 
-**Two design reflexes Andrew enforced (2026-06-28) — apply them before proposing a shape:**
+**Three design reflexes Andrew enforced (2026-06-28) — apply them before proposing a shape:**
 
 - **Core-KV reads default to *Processor-side*.** A write-path read belongs **inside the Processor** — the op
   declares its keys in `contextHint.reads`, the Processor JIT-hydrates them, and a DDL `kv.Read` resolves
@@ -129,6 +129,24 @@ tombstones. **Capability KV is a lens projection** (projection correctness = aut
   violation.) Corollaries from the same fire: prefer **paging** (cursor/limit) over a fail-closed hard cap for
   any enumeration (a cap rejects a legitimately high-degree hub), and **lazy** call-time reads over
   pre-hydration when the read-set has no exact-key form.
+- **Check the DEFAULT direction of every security/authz boundary — omission must FAIL CLOSED.** When a design
+  introduces an authorization surface, ask: *what happens when the author forgets the marker?* If absence/
+  omission **grants** access, it is **default-open** — a forgotten field silently exposes data, and nothing
+  errors. The default must **deny**, and it must **mirror the established plane** (if the write path denies on
+  absence — "no entry = no access" §6.8 — the read path must too). (Trialed the hard way: my *own* ratified D1
+  read-path design had `no authzAnchor ⇒ public-read` — default-OPEN — while the write-path mirror denied on
+  absence; the §8 party-mode pass caught it. Fix: protected-by-default, `public:true` is the explicit opt-out.)
+  Two corollaries: prefer a **structural** fail-closed (e.g. Postgres `FORCE ROW LEVEL SECURITY` ⇒ missing
+  policy = deny-all) over a *lint* that only catches it later; and a "source of truth" projection (a grant
+  table) inherits the monotonic-seq guard — never guard-exempt it, or a stale replay resurrects a revoked grant.
+
+**Run the pre-build gates you write into your own designs — "ratified" ≠ "build-ready."** If a design
+self-flags a pre-build adversarial / `bmad-party-mode` pass (a deferred gate), that pass is a **Designer-lane
+obligation**: run it and **record it as run** before the design is build-ready. Do not leave it dangling for
+the Steward to trip over — the Steward correctly refuses to cold-start a design whose own gate is open
+(that would override a standing design-author decision). And the pass is not ceremony: run on *my own* D1
+design it caught a default-open security bug I didn't see while writing it. Flagging a gate creates the
+obligation to discharge it.
 
 ## 3. Write the design doc
 
