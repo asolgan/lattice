@@ -130,12 +130,18 @@ RETURN nanoIdFromKey(id.key) AS actor_id,
   in the seq-guarded `GrantWriterAdapter`. The lens need only `RETURN actor_id/anchor_id/grant_source`.
 - `grant_source = 'cap-read'` is the base slice's source id (the §6.14 convention — the lens owns/retracts only
   its own rows; package slices use `cap-read.residence` etc., so they never collide with the base).
-- **Tombstone retraction is already handled:** a soft-deleted identity is the *anchor* of this plain projection,
-  so the **anchor-tombstone retraction just shipped** (`full.Engine.AnchorDeleteResult`, `679fe25`) emits a
-  `Delete` keyed by `(actor_id, anchor_id, grant_source)` → `GrantWriterAdapter.Delete` → `RevokeGrant`
-  (`is_deleted=true`, seq-guarded). So a deactivated actor loses its read grant the moment its vertex tombstones,
-  with no resurrection on a stale replay (H4). *(This is a clean reuse — the retraction primitive landed for the
-  clinic tombstone item and serves this for free.)*
+- **Tombstone retraction — CORRECTED in Increment-1 self-review (this claim was wrong as drafted).** I assumed
+  `full.Engine.AnchorDeleteResult` (`679fe25`) would retract a tombstoned identity's grant for free. It does
+  **not**: that path resolves only a `<anchor>.key`/root-field key into a **single** column, but this lens's
+  first RETURN is a `nanoIdFromKey(...)` **function call** (not a property access) it cannot resolve at all —
+  and a `GrantTable` delete needs the **3-column composite** `(actor_id, anchor_id, grant_source)`, not one
+  column. So the grant table accumulates **monotonically**: a tombstoned identity's self-grant is not
+  auto-revoked. This is **inert, not a leak** — the grant is self-only (actor == anchor, can never read
+  another's rows), and a deactivated/revoked identity is denied at the **D1.2 JWT boundary** (auth + revocation)
+  *before* RLS is consulted, so the boundary is the deactivation gate. Composite-keyed grant retraction on
+  anchor tombstone is filed as a **follow-up Lattice gap** (the `GrantTable` delete-path increment), not part of
+  the milestone. *(Lesson logged: "reuses X for free" is a chain-grounding claim — verify the composition, don't
+  assert it.)*
 - It is a **separate lens** from the existing NATS-KV `capabilityRead` (the multi-Lens note, L45) — same anchor,
   one RETURN each.
 
