@@ -158,6 +158,21 @@ func VerifyKernel(ctx context.Context, conn *substrate.Conn) []string {
 		checkAspect(CapabilityReadLensKey+"."+a.name, CapabilityReadLensKey, a.class)
 	}
 
+	// 4c. Capability-Read GRANTS Lens aspects (the base read-grant producer,
+	// Contract #6 §6.14, D1.3). A plain postgres GrantTable lens — no
+	// projectionKind/output/outputSchema, and a targetTable doc-aspect instead
+	// of targetBucket. The load-bearing spec aspect carries the postgres
+	// targetConfig Refractor activates.
+	grantsLensAspects := []struct{ name, class string }{
+		{"canonicalName", "canonicalName"},
+		{"cypherRule", "cypherRule"},
+		{"targetTable", "targetTable"},
+		{"spec", "lensSpec"},
+	}
+	for _, a := range grantsLensAspects {
+		checkAspect(CapabilityReadGrantsLensKey+"."+a.name, CapabilityReadGrantsLensKey, a.class)
+	}
+
 	// 5. Health KV readiness signal.
 	if _, err := healthKV.Get(ctx, HealthBootstrapCompleteKey); err != nil {
 		failures = append(failures, fmt.Sprintf("MISSING Health KV readiness signal: %s (%v)", HealthBootstrapCompleteKey, err))

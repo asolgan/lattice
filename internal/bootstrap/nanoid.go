@@ -94,8 +94,16 @@ var (
 	// the rest of the read-grant union (cap-read.roles, cap-read.residence, …).
 	CapabilityReadLensID  string
 	CapabilityReadLensKey string
-	RoleOperatorID        string
-	RoleOperatorKey       string
+	// CapabilityReadGrantsLens is the base read-grant PRODUCER (Contract #6
+	// §6.14, D1.3) — the Postgres GrantTable twin of CapabilityReadLens. It
+	// projects each actor's self-anchor as an (actor_id, anchor_id, grant_source)
+	// row into the shared actor_read_grants table, the source of truth the
+	// Postgres-RLS enforcement boundary reads. Without it the grant table is
+	// empty and RLS denies every protected read.
+	CapabilityReadGrantsLensID  string
+	CapabilityReadGrantsLensKey string
+	RoleOperatorID              string
+	RoleOperatorKey             string
 
 	// Three kernel-seeded meta-permission NanoIDs authorizing the operator
 	// to mutate vtx.meta.* vertices (CreateMetaVertex, UpdateMetaVertex,
@@ -163,9 +171,10 @@ type PrimordialIDsRaw struct {
 	BridgeIdentity          string `json:"bridgeIdentity"`
 	ObjmgrIdentity          string `json:"objmgrIdentity"`
 	MetaRoot           string `json:"metaRoot"`
-	CapabilityLens     string `json:"capabilityLens"`
-	CapabilityReadLens string `json:"capabilityReadLens"`
-	RoleOperator       string `json:"roleOperator"`
+	CapabilityLens       string `json:"capabilityLens"`
+	CapabilityReadLens   string `json:"capabilityReadLens"`
+	CapabilityReadGrants string `json:"capabilityReadGrants"`
+	RoleOperator         string `json:"roleOperator"`
 
 	// Meta-permission NanoIDs.
 	PermCreateMetaVertex    string `json:"permCreateMetaVertex"`
@@ -226,6 +235,13 @@ type PrimordialIDsRaw struct {
 //     and the permission→operator grant link), so PrimordialVertexKeyCount
 //     moves 31 → 34. A stale file lacks the two new NanoID fields, so the
 //     version bump forces regeneration.
+//   - "13": capabilityReadGrants primordial lens added — the base read-grant
+//     PRODUCER (Contract #6 §6.14, D1.3) that projects each actor's self-anchor
+//     into the Postgres actor_read_grants table for RLS enforcement. Like its
+//     NATS-KV twin capabilityReadLens it is seeded + aspect-verified but kept
+//     OUT of the PrimordialVertexKeys() count-only readiness list, so
+//     PrimordialVertexKeyCount is unchanged (34). A stale file lacks the new
+//     NanoID field, so the version bump forces regeneration.
 type BootstrapFile struct {
 	Version       string           `json:"version"`
 	GeneratedAt   string           `json:"generatedAt"`
@@ -323,6 +339,7 @@ func currentRaw() PrimordialIDsRaw {
 		MetaRoot:                   MetaRootID,
 		CapabilityLens:             CapabilityLensID,
 		CapabilityReadLens:         CapabilityReadLensID,
+		CapabilityReadGrants:       CapabilityReadGrantsLensID,
 		RoleOperator:               RoleOperatorID,
 		PermCreateMetaVertex:       PermCreateMetaVertexID,
 		PermUpdateMetaVertex:       PermUpdateMetaVertexID,
@@ -361,17 +378,18 @@ func Load(path string) error {
 // checkVersion returns a clear error when the bootstrap file's version is
 // not one of the supported versions. This surfaces a meaningful message
 // instead of a confusing NanoID validation failure when an operator
-// upgrades Lattice without running `make down` first. Version 12 adds the
-// UpgradePackage primordial DDL + its operator permission (Contract #8 §8.6);
-// older files lack the two new NanoID fields and must be regenerated so the
+// upgrades Lattice without running `make down` first. Version 13 adds the
+// capabilityReadGrants primordial lens — the base read-grant PRODUCER that
+// populates the Postgres actor_read_grants table for RLS (Contract #6 §6.14,
+// D1.3); older files lack its NanoID field and must be regenerated so the
 // kernel topology matches.
 func checkVersion(f BootstrapFile) error {
 	switch f.Version {
-	case "12":
+	case "13":
 		return nil
 	default:
 		return fmt.Errorf(
-			"bootstrap file version mismatch: got %q, want \"12\" — run `make down && make up`",
+			"bootstrap file version mismatch: got %q, want \"13\" — run `make down && make up`",
 			f.Version,
 		)
 	}
@@ -389,6 +407,7 @@ func generate() (PrimordialIDsRaw, error) {
 		&raw.MetaRoot,
 		&raw.CapabilityLens,
 		&raw.CapabilityReadLens,
+		&raw.CapabilityReadGrants,
 		&raw.RoleOperator,
 		&raw.PermCreateMetaVertex,
 		&raw.PermUpdateMetaVertex,
@@ -430,6 +449,7 @@ func populate(raw PrimordialIDsRaw) error {
 		{"metaRoot", raw.MetaRoot},
 		{"capabilityLens", raw.CapabilityLens},
 		{"capabilityReadLens", raw.CapabilityReadLens},
+		{"capabilityReadGrants", raw.CapabilityReadGrants},
 		{"roleOperator", raw.RoleOperator},
 		{"permCreateMetaVertex", raw.PermCreateMetaVertex},
 		{"permUpdateMetaVertex", raw.PermUpdateMetaVertex},
@@ -461,6 +481,7 @@ func populate(raw PrimordialIDsRaw) error {
 	MetaRootID = raw.MetaRoot
 	CapabilityLensID = raw.CapabilityLens
 	CapabilityReadLensID = raw.CapabilityReadLens
+	CapabilityReadGrantsLensID = raw.CapabilityReadGrants
 	RoleOperatorID = raw.RoleOperator
 
 	PermCreateMetaVertexID = raw.PermCreateMetaVertex
@@ -504,6 +525,7 @@ func populate(raw PrimordialIDsRaw) error {
 	MetaRootKey = substrate.VertexKey("meta", MetaRootID)
 	CapabilityLensKey = substrate.VertexKey("meta", CapabilityLensID)
 	CapabilityReadLensKey = substrate.VertexKey("meta", CapabilityReadLensID)
+	CapabilityReadGrantsLensKey = substrate.VertexKey("meta", CapabilityReadGrantsLensID)
 	RoleOperatorKey = substrate.VertexKey("role", RoleOperatorID)
 
 	// Admin + service-actor primordial holdsRole links target the operator
@@ -520,7 +542,7 @@ func populate(raw PrimordialIDsRaw) error {
 
 func persistWithStatus(path string, raw PrimordialIDsRaw, status string) error {
 	f := BootstrapFile{
-		Version:       "12",
+		Version:       "13",
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339Nano),
 		Status:        status,
 		PrimordialIDs: raw,

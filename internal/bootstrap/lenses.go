@@ -17,6 +17,41 @@ type LensDefinition struct {
 	// Output is the §6.13 Output descriptor for an actor-aggregate lens; nil
 	// otherwise.
 	Output *OutputDescriptorSpec
+
+	// Adapter is the projection-output adapter — "nats-kv" (the default, empty)
+	// or "postgres". A postgres primordial lens carries the read-path posture
+	// below; the bootstrap seeder resolves an empty DSN from REFRACTOR_PG_DSN at
+	// activation, exactly as the package declaration surface does (Contract #6
+	// §6.14, D1; the pkgmgr.LensSpec analog).
+	Adapter string
+
+	// Table is the Postgres table (postgres adapter only). A GrantTable lens
+	// leaves it empty (Refractor defaults to actor_read_grants); a Protected
+	// lens names its provisioned table.
+	Table string
+
+	// GrantTable marks a postgres lens as a cap-read.* grant projector: its rows
+	// are written to the shared actor_read_grants table through the seq-guarded
+	// grant writer (Table defaults to actor_read_grants, key to the platform
+	// composite actor_id/anchor_id/grant_source). The base read-auth producer.
+	GrantTable bool
+
+	// Protected marks a postgres lens as a read-path-authorized business read
+	// model (RLS table provisioned from Columns). Mutually exclusive with
+	// GrantTable. Unused by the primordial lenses today (the base grant lens is
+	// a GrantTable); reserved for symmetry with pkgmgr.LensSpec.
+	Protected bool
+
+	// Columns declares the business columns of a Protected postgres table
+	// (name + verbatim Postgres type). Ignored for a GrantTable / nats-kv lens.
+	Columns []PostgresColumn
+}
+
+// PostgresColumn declares one provisioned column of a Protected read-model
+// table. Mirrors pkgmgr.PostgresColumn / the Refractor-side on-wire shape.
+type PostgresColumn struct {
+	Name string
+	Type string
 }
 
 // OutputDescriptorSpec mirrors the on-wire §6.13 Output descriptor a primordial
@@ -201,6 +236,69 @@ RETURN
     }}
   }
 }`,
+	}
+}
+
+// CapabilityReadGrantsLensDefinition returns the base read-grant PRODUCER —
+// the Postgres GrantTable projection of the cap-read self-anchor (Contract #6
+// §6.14, D1.3). It is the Postgres twin of CapabilityReadLensDefinition: that
+// lens projects the readableAnchors[] document to the NATS-KV capability bucket
+// (the Path-B transitional/audit shape, §6.14), while THIS lens projects the
+// same self-anchor as a flat (actor_id, anchor_id, grant_source) grant row into
+// the shared Postgres actor_read_grants table — the source of truth the
+// Postgres-RLS enforcement boundary (Path A, the ratified end-state) reads.
+//
+// Without this producer the actor_read_grants table (provisioned by any
+// protected lens's activation) is created EMPTY, so RLS matches nothing and
+// every protected read is denied — the gap that stalled D1.3. With it, each
+// actor holds its self-grant (an actor may always read its own vertex), which
+// is exactly what the applicant-self milestone's RLS matches (A sees only A's
+// applications).
+//
+// The two projections are SEPARATE lenses (Contract #6 §6.14 architectural
+// note: one RETURN per lens; a second output shape is a second lens — the same
+// rule the §6.1 write-path decomposition follows, and the precedent every
+// package cap-read.<domain> grant lens will mirror).
+//
+// Shape: a PLAIN one-row-per-identity projection (not actorAggregate — a grant
+// row is flat, no readableAnchors aggregate). GrantTable:true makes Refractor
+// default the table to actor_read_grants and the key to the platform composite
+// (actor_id, anchor_id, grant_source); the lens need only RETURN those three.
+// grant_source = 'cap-read' is the base slice's source id (each lens owns and
+// retracts only its own grant_source rows; package slices use cap-read.<domain>
+// so they never collide). nanoIdFromKey is fail-closed (the §6.14 bare-NanoID
+// anchor representation) — a malformed key yields no grant (deny), never a wrong
+// one.
+//
+// RETRACTION (the honest scope). The grant table currently accumulates
+// MONOTONICALLY: a tombstoned identity's self-grant is NOT auto-revoked. The
+// full-engine anchor-tombstone path (AnchorDeleteResult) cannot retract it —
+// it resolves only a `<anchor>.key`/root-field key into a SINGLE column, but a
+// GrantTable delete needs the (actor_id, anchor_id, grant_source) composite, and
+// this lens's key is a nanoIdFromKey(...) function call (not a property access)
+// it can't resolve at all. A lingering self-grant is INERT, not a leak: it is
+// self-only (actor == anchor, so it can never read another actor's rows), and a
+// deactivated/revoked identity is denied at the JWT boundary (D1.2 auth +
+// revocation) before RLS is ever consulted — so the boundary, not the grant row,
+// is the deactivation gate. Composite-keyed grant retraction on anchor tombstone
+// is a filed follow-up (lattice.md, the GrantTable delete-path increment).
+//
+// DSN is resolved from REFRACTOR_PG_DSN at activation (Adapter:"postgres" with
+// no DSN → the bootstrap seeder leaves it empty and Refractor's translateSpec
+// fills it from the env), so the kernel declares posture, not a connection
+// string — mirroring the package declaration surface.
+func CapabilityReadGrantsLensDefinition() LensDefinition {
+	return LensDefinition{
+		CanonicalName: "capabilityReadGrants",
+		Adapter:       "postgres",
+		GrantTable:    true,
+		CypherRule: `
+MATCH (identity:identity)
+RETURN
+  nanoIdFromKey(identity.key) AS actor_id,
+  nanoIdFromKey(identity.key) AS anchor_id,
+  'cap-read'                  AS grant_source
+`,
 	}
 }
 

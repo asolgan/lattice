@@ -289,16 +289,16 @@ func TestGeneratePopulateRoundTrip_Bridge(t *testing.T) {
 	}
 }
 
-// TestCheckVersion_RejectsStaleAcceptsCurrent proves the version-12 gate: a
-// version-12 file passes, and any other version (notably "11", which predates
-// the UpgradePackage primordial DDL) is hard-rejected with the
+// TestCheckVersion_RejectsStaleAcceptsCurrent proves the version-13 gate: a
+// version-13 file passes, and any other version (notably "12", which predates
+// the capabilityReadGrants primordial lens) is hard-rejected with the
 // make-down/make-up guidance so a stale file can never silently run against a
 // mismatched kernel topology (AC #2).
 func TestCheckVersion_RejectsStaleAcceptsCurrent(t *testing.T) {
-	if err := checkVersion(BootstrapFile{Version: "12"}); err != nil {
-		t.Errorf("checkVersion(version=12): unexpected error %v", err)
+	if err := checkVersion(BootstrapFile{Version: "13"}); err != nil {
+		t.Errorf("checkVersion(version=13): unexpected error %v", err)
 	}
-	for _, v := range []string{"11", "10", "9", "8", "7", "6", "5", ""} {
+	for _, v := range []string{"12", "11", "10", "9", "8", "7", "6", "5", ""} {
 		err := checkVersion(BootstrapFile{Version: v})
 		if err == nil {
 			t.Errorf("checkVersion(version=%q): expected rejection, got nil", v)

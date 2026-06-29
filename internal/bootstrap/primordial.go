@@ -561,6 +561,22 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		return nil, err
 	}
 
+	// 5c. Capability-Read GRANTS Lens — the base read-grant PRODUCER (Contract
+	// #6 §6.14, D1.3). The Postgres twin of 5b: it projects each actor's
+	// self-anchor as a flat (actor_id, anchor_id, grant_source) grant row into
+	// the shared actor_read_grants table — the source of truth Postgres-RLS
+	// (the ratified Path-A enforcement boundary) reads. Without it the grant
+	// table is empty and RLS denies every protected read. Adapter:postgres;
+	// the DSN resolves from REFRACTOR_PG_DSN at activation.
+	capReadGrantsLens := CapabilityReadGrantsLensDefinition()
+	capReadGrantsLensVal, capReadGrantsLensErr := MakeVertexEnvelope(CapabilityReadGrantsLensKey, "meta.lens", map[string]any{"protected": true})
+	if err := add(CapabilityReadGrantsLensKey, capReadGrantsLensVal, capReadGrantsLensErr); err != nil {
+		return nil, err
+	}
+	if err := addLensAspects(&entries, CapabilityReadGrantsLensKey, capReadGrantsLens); err != nil {
+		return nil, err
+	}
+
 	// 6. Five aspect-type meta-vertices — the DDLs for the self-description
 	// aspect classes. Each has class=meta.ddl.aspectType and carries all 5
 	// descriptive aspects itself (bootstrapped primordially to avoid a
@@ -935,36 +951,42 @@ func seedAspectTypeMeta(entries *[]kvEntry, add func(string, []byte, error) erro
 // aspects are documentation surface for operators and for the
 // verify-bootstrap regression gate.
 //
-// Bootstrap-primordial lenses are always nats-kv; postgres is not supported
-// here. Package lenses (pkgmgr.LensSpec) support both adapters.
+// nats-kv primordial lenses carry the {targetBucket, outputSchema} doc-aspects;
+// a postgres lens (the base read-grant producer, D1.3) carries a {targetTable}
+// doc-aspect instead and no outputSchema (a grant lens declares none). The
+// load-bearing `spec` aspect (consumed by Refractor) is emitted for both via
+// makeLensSpecBody. Package lenses (pkgmgr.LensSpec) seed their own meta-vertex.
 func addLensAspects(entries *[]kvEntry, lensKey string, def LensDefinition) error {
-	aspects := []struct {
+	type lensAspect struct {
 		localName string
 		class     string
 		data      any
-	}{
+	}
+	aspects := []lensAspect{
 		{"canonicalName", "canonicalName", map[string]any{"value": def.CanonicalName}},
-		{"targetBucket", "targetBucket", map[string]any{"value": def.TargetBucket, "adapter": "nats-kv"}},
 		{"cypherRule", "cypherRule", map[string]any{"rule": strings.TrimSpace(def.CypherRule)}},
-		{"outputSchema", "outputSchema", map[string]any{"jsonSchema": json.RawMessage(def.OutputSchema)}},
+	}
+	if def.Adapter == "postgres" {
+		table := def.Table
+		if def.GrantTable && table == "" {
+			table = "actor_read_grants"
+		}
+		aspects = append(aspects,
+			lensAspect{"targetTable", "targetTable", map[string]any{"value": table, "adapter": "postgres"}})
+	} else {
+		aspects = append(aspects,
+			lensAspect{"targetBucket", "targetBucket", map[string]any{"value": def.TargetBucket, "adapter": "nats-kv"}},
+			lensAspect{"outputSchema", "outputSchema", map[string]any{"jsonSchema": json.RawMessage(def.OutputSchema)}})
 	}
 	// Actor-aggregate lenses carry the projectionKind + §6.13 Output descriptor
 	// aspects; the operation-aggregate role-index lens carries neither.
 	if def.ProjectionKind != "" {
 		aspects = append(aspects,
-			struct {
-				localName string
-				class     string
-				data      any
-			}{"projectionKind", "projectionKind", map[string]any{"value": def.ProjectionKind}})
+			lensAspect{"projectionKind", "projectionKind", map[string]any{"value": def.ProjectionKind}})
 	}
 	if def.Output != nil {
 		aspects = append(aspects,
-			struct {
-				localName string
-				class     string
-				data      any
-			}{"output", "output", map[string]any{"descriptor": def.Output}})
+			lensAspect{"output", "output", map[string]any{"descriptor": def.Output}})
 	}
 	for _, a := range aspects {
 		key := substrate.AspectKey(lensKey, a.localName)
@@ -998,7 +1020,17 @@ func addLensAspects(entries *[]kvEntry, lensKey string, def LensDefinition) erro
 // makeLensSpecBody constructs the on-wire LensSpec JSON body for a
 // primordial Capability Lens. The Refractor CoreKVSource consumes
 // exactly this shape (LensSpec in internal/refractor/lens/corekv_source.go).
+//
+// A postgres lens (Adapter:"postgres", e.g. the base read-grant producer) emits
+// a postgres targetType + targetConfig carrying the read-path posture
+// (grantTable/protected/columns), mirroring pkgmgr.lensSpecBody. The DSN is left
+// empty — Refractor's translateSpec resolves it from REFRACTOR_PG_DSN at
+// activation, so the kernel declares posture, not a connection string. The
+// nats-kv path (every other primordial lens) is unchanged.
 func makeLensSpecBody(lensID string, def LensDefinition) (map[string]any, error) {
+	if def.Adapter == "postgres" {
+		return makePostgresLensSpecBody(lensID, def)
+	}
 	target := def.TargetBucket
 	if target == "" {
 		target = CapabilityKVBucket
@@ -1043,6 +1075,49 @@ func makeLensSpecBody(lensID string, def LensDefinition) (map[string]any, error)
 		spec["output"] = def.Output
 	}
 	return spec, nil
+}
+
+// makePostgresLensSpecBody builds the on-wire LensSpec body for a postgres
+// primordial lens (the read-path posture), mirroring pkgmgr.lensSpecBody so the
+// kernel-seeded shape is byte-identical to a package-declared one. The DSN is
+// emitted empty — Refractor resolves REFRACTOR_PG_DSN at activation. A
+// GrantTable lens omits the key so Refractor applies the platform grant
+// composite (actor_id, anchor_id, grant_source); a protected lens carries its
+// columns. No projectionKind/Output — a postgres read-path lens is a plain
+// projection.
+func makePostgresLensSpecBody(lensID string, def LensDefinition) (map[string]any, error) {
+	targetConfig := map[string]any{
+		"dsn":   "",
+		"table": def.Table,
+	}
+	if !def.GrantTable {
+		targetConfig["key"] = []string{"key"}
+	}
+	if def.Protected {
+		targetConfig["protected"] = true
+	}
+	if def.GrantTable {
+		targetConfig["grantTable"] = true
+	}
+	if len(def.Columns) > 0 {
+		cols := make([]map[string]any, len(def.Columns))
+		for i, c := range def.Columns {
+			cols[i] = map[string]any{"name": c.Name, "type": c.Type}
+		}
+		targetConfig["columns"] = cols
+	}
+	cfgJSON, err := json.Marshal(targetConfig)
+	if err != nil {
+		return nil, fmt.Errorf("marshal postgres targetConfig: %w", err)
+	}
+	return map[string]any{
+		"id":            lensID,
+		"canonicalName": def.CanonicalName,
+		"targetType":    "postgres",
+		"targetConfig":  json.RawMessage(cfgJSON),
+		"cypherRule":    strings.TrimSpace(def.CypherRule),
+		"engine":        "full",
+	}, nil
 }
 
 // MarkBootstrapComplete writes the `health.bootstrap.complete` marker
