@@ -28,7 +28,7 @@ type Executor interface {
 // Validator (step 6+7) — DDL JSON Schema validation, write-scope check,
 // sensitivity rule, event-schema validation. Stories 1.7 + 1.9.
 type Validator interface {
-	Validate(ctx context.Context, env *OperationEnvelope, result ScriptResult) error
+	Validate(ctx context.Context, env *OperationEnvelope, result ScriptResult, state HydratedState) error
 }
 
 // Committer (step 8) — assembles the atomic batch (tracker + mutations)
@@ -83,7 +83,7 @@ func DefaultAckerFactory(msg jetstream.Msg, logger *slog.Logger) Acker {
 
 type StubValidator struct{ logger *slog.Logger }
 
-func (s *StubValidator) Validate(_ context.Context, env *OperationEnvelope, _ ScriptResult) error {
+func (s *StubValidator) Validate(_ context.Context, env *OperationEnvelope, _ ScriptResult, _ HydratedState) error {
 	s.logger.Info("step 6+7: stubbed", "step", "validate", "requestId", env.RequestID)
 	return nil
 }

@@ -53,7 +53,7 @@ func sharedCachePipeline(
 		Authorizer:  processor.NewStubAuthorizer(logger),
 		Hydrator:    processor.NewHydratorWithCache(conn, testutil.HarnessCoreBucket, cache, logger),
 		Executor:    processor.NewExecutor(processor.NewStarlarkRunner(0, 0), logger),
-		Validator:   processor.NewValidator(cache, logger),
+		Validator:   processor.NewValidator(cache, conn, testutil.HarnessCoreBucket, logger),
 		Committer:   committer,
 		Metrics:     metrics,
 		Heartbeater: hb,

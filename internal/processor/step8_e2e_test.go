@@ -105,7 +105,7 @@ func newRealPipeline(t *testing.T, ctx context.Context, conn *substrate.Conn) (*
 		Authorizer:  authz,
 		Hydrator:    NewHydratorWithCache(conn, testCoreBucket, cache, logger),
 		Executor:    NewExecutor(NewStarlarkRunner(0, 0), logger),
-		Validator:   NewValidator(cache, logger),
+		Validator:   NewValidator(cache, conn, testCoreBucket, logger),
 		Committer:   committer,
 		Metrics:     metrics,
 		Heartbeater: hb,

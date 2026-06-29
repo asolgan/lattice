@@ -79,7 +79,7 @@ func buildWriteScopeValidator(t *testing.T) (*ValidatorImpl, *DDLCache, context.
 	if err := cache.Refresh(ctx); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	return NewValidator(cache, testLogger()), cache, ctx
+	return NewValidator(cache, conn, testCoreBucket, testLogger()), cache, ctx
 }
 
 // --- FR57 Acceptance Criteria Tests ---
@@ -101,7 +101,7 @@ func TestWriteScope_PermittedOpAccepted(t *testing.T) {
 			},
 		}},
 	}
-	if err := v.Validate(ctx, env, result); err != nil {
+	if err := v.Validate(ctx, env, result, HydratedState{}); err != nil {
 		t.Fatalf("expected ACCEPTED, got error: %v", err)
 	}
 }
@@ -126,7 +126,7 @@ func TestWriteScope_ForbiddenOpRejected(t *testing.T) {
 		}},
 	}
 
-	err := v.Validate(ctx, env, result)
+	err := v.Validate(ctx, env, result, HydratedState{})
 	var ddlErr *DDLViolation
 	if !errors.As(err, &ddlErr) {
 		t.Fatalf("expected *DDLViolation, got %T: %v", err, err)
@@ -181,7 +181,7 @@ func TestWriteScope_MissingPermittedCommandsIsPermissive(t *testing.T) {
 					},
 				}},
 			}
-			if err := v.Validate(ctx, env, result); err != nil {
+			if err := v.Validate(ctx, env, result, HydratedState{}); err != nil {
 				t.Fatalf("opType=%q: expected ACCEPTED (permissive default), got: %v", opType, err)
 			}
 		})
@@ -208,7 +208,7 @@ func TestWriteScope_EmptyPermittedCommandsIsPermissive(t *testing.T) {
 					},
 				}},
 			}
-			if err := v.Validate(ctx, env, result); err != nil {
+			if err := v.Validate(ctx, env, result, HydratedState{}); err != nil {
 				t.Fatalf("opType=%q: expected ACCEPTED (empty=permissive), got: %v", opType, err)
 			}
 		})
@@ -233,7 +233,7 @@ func TestWriteScope_SensitiveAspectOnIdentityAccepted(t *testing.T) {
 			},
 		}},
 	}
-	if err := v.Validate(ctx, env, result); err != nil {
+	if err := v.Validate(ctx, env, result, HydratedState{}); err != nil {
 		t.Fatalf("expected ACCEPTED (sensitive on identity), got: %v", err)
 	}
 }
@@ -256,7 +256,7 @@ func TestWriteScope_SensitiveAspectOnNonIdentityRejected(t *testing.T) {
 			},
 		}},
 	}
-	err := v.Validate(ctx, env, result)
+	err := v.Validate(ctx, env, result, HydratedState{})
 	var ddlErr *DDLViolation
 	if !errors.As(err, &ddlErr) {
 		t.Fatalf("expected *DDLViolation, got %T: %v", err, err)
@@ -324,7 +324,7 @@ func TestWriteScope_FR57_Summary(t *testing.T) {
 			},
 		}},
 	}
-	err := v.Validate(ctx, env, result)
+	err := v.Validate(ctx, env, result, HydratedState{})
 	if err == nil {
 		t.Fatalf("FR57 summary: expected DDLViolation, got nil")
 	}

@@ -358,7 +358,7 @@ func TestRecordPII_RejectsBadTarget(t *testing.T) {
 func TestRecordPII_SensitiveSSNOnNonIdentityRejected(t *testing.T) {
 	ctx, conn := setupTestEnv(t)
 	cache := freshDDLCache(t, ctx, conn)
-	validator := processor.NewValidator(cache, testutil.TestLogger())
+	validator := processor.NewValidator(cache, conn, testutil.HarnessCoreBucket, testutil.TestLogger())
 
 	env := &processor.OperationEnvelope{
 		RequestID:     testutil.GenReqID("PIIAnchorNeg"),
@@ -382,7 +382,7 @@ func TestRecordPII_SensitiveSSNOnNonIdentityRejected(t *testing.T) {
 			},
 		}},
 	}
-	err := validator.Validate(ctx, env, reject)
+	err := validator.Validate(ctx, env, reject, processor.HydratedState{})
 	var ddlErr *processor.DDLViolation
 	if !errors.As(err, &ddlErr) {
 		t.Fatalf("sensitive ssn on lease: expected *DDLViolation, got %T: %v", err, err)
@@ -405,7 +405,7 @@ func TestRecordPII_SensitiveSSNOnNonIdentityRejected(t *testing.T) {
 			},
 		}},
 	}
-	if err := validator.Validate(ctx, env, rejectDob); !errors.As(err, &ddlErr) || ddlErr.ViolatedConstraint != "sensitiveAspectScope" {
+	if err := validator.Validate(ctx, env, rejectDob, processor.HydratedState{}); !errors.As(err, &ddlErr) || ddlErr.ViolatedConstraint != "sensitiveAspectScope" {
 		t.Fatalf("sensitive dob on lease: want sensitiveAspectScope, got %v", err)
 	}
 
@@ -424,7 +424,7 @@ func TestRecordPII_SensitiveSSNOnNonIdentityRejected(t *testing.T) {
 			},
 		}},
 	}
-	if err := validator.Validate(ctx, env, accept); err != nil {
+	if err := validator.Validate(ctx, env, accept, processor.HydratedState{}); err != nil {
 		t.Fatalf("sensitive ssn on identity: want pass, got %v", err)
 	}
 }
@@ -493,7 +493,7 @@ func TestRecordPII_PIIClassesAreSensitive_AfterInstall(t *testing.T) {
 func TestRecordPII_SensitivePIIOnNonIdentityRejected(t *testing.T) {
 	ctx, conn := setupTestEnv(t)
 	cache := freshDDLCache(t, ctx, conn)
-	validator := processor.NewValidator(cache, testutil.TestLogger())
+	validator := processor.NewValidator(cache, conn, testutil.HarnessCoreBucket, testutil.TestLogger())
 
 	env := &processor.OperationEnvelope{
 		RequestID:     testutil.GenReqID("PIIBackfillAnchor"),
@@ -519,7 +519,7 @@ func TestRecordPII_SensitivePIIOnNonIdentityRejected(t *testing.T) {
 				},
 			}},
 		}
-		err := validator.Validate(ctx, env, reject)
+		err := validator.Validate(ctx, env, reject, processor.HydratedState{})
 		var ddlErr *processor.DDLViolation
 		if !errors.As(err, &ddlErr) {
 			t.Fatalf("sensitive %q on widget: expected *DDLViolation, got %T: %v", class, err, err)
@@ -544,7 +544,7 @@ func TestRecordPII_SensitivePIIOnNonIdentityRejected(t *testing.T) {
 				},
 			}},
 		}
-		if err := validator.Validate(ctx, env, accept); err != nil {
+		if err := validator.Validate(ctx, env, accept, processor.HydratedState{}); err != nil {
 			t.Fatalf("sensitive %q on identity: want pass, got %v", class, err)
 		}
 	}

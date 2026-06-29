@@ -39,26 +39,40 @@ func (e *DDLViolation) Error() string {
 type ValidatorImpl struct {
 	DDLs   *DDLCache
 	Logger *slog.Logger
+	// linkReader is the on-demand fallback for resolving a vertex's instanceOf
+	// target from committed Core KV (Contract #1 §1.5 governing-DDL walk). Nil
+	// ⇒ on-demand discovery is skipped (the batch + working-set paths still
+	// resolve); the production constructor wires a conn-backed reader.
+	linkReader instanceOfTargetReader
 }
 
-// NewValidator wires a real Validator backed by the DDL cache.
-func NewValidator(cache *DDLCache, logger *slog.Logger) *ValidatorImpl {
+// NewValidator wires a real Validator backed by the DDL cache. conn/coreBucket
+// back the on-demand instanceOf reader used by the step-6 governing-DDL walk; a
+// nil conn (test affordance) leaves on-demand discovery disabled.
+func NewValidator(cache *DDLCache, conn *substrate.Conn, coreBucket string, logger *slog.Logger) *ValidatorImpl {
 	if cache == nil {
 		panic("processor: NewValidator requires DDLCache")
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &ValidatorImpl{DDLs: cache, Logger: logger}
+	v := &ValidatorImpl{DDLs: cache, Logger: logger}
+	if conn != nil && coreBucket != "" {
+		v.linkReader = &connInstanceOfReader{conn: conn, coreBucket: coreBucket}
+	}
+	return v
 }
 
 // Validate implements Validator. Walks each mutation in result and
 // returns the first DDLViolation encountered (commit path semantics:
-// "any DDL violation terminates the commit path").
-func (v *ValidatorImpl) Validate(_ context.Context, env *OperationEnvelope, result ScriptResult) error {
+// "any DDL violation terminates the commit path"). state carries the hydrated
+// working set + on-demand KV reader so the step-6 governing-DDL walk
+// (Contract #1 §1.5) can resolve a fine-grained-class vertex's type authority
+// via its instanceOf chain.
+func (v *ValidatorImpl) Validate(ctx context.Context, env *OperationEnvelope, result ScriptResult, state HydratedState) error {
 	rid := env.RequestID
 	for _, m := range result.Mutations {
-		if err := v.validateOne(env, m, rid); err != nil {
+		if err := v.validateOne(ctx, env, m, result, state, rid); err != nil {
 			return err
 		}
 	}
@@ -70,7 +84,7 @@ func (v *ValidatorImpl) Validate(_ context.Context, env *OperationEnvelope, resu
 
 // validateOne enforces the per-mutation rules. Public-shape returned
 // error is always *DDLViolation when violation; nil on success.
-func (v *ValidatorImpl) validateOne(env *OperationEnvelope, m MutationOp, rid string) error {
+func (v *ValidatorImpl) validateOne(ctx context.Context, env *OperationEnvelope, m MutationOp, result ScriptResult, state HydratedState, rid string) error {
 	// 1. op enum.
 	switch m.Op {
 	case "create", "update", "tombstone":
@@ -103,10 +117,12 @@ func (v *ValidatorImpl) validateOne(env *OperationEnvelope, m MutationOp, rid st
 		}
 	}
 
-	// 4. DDL-driven checks (only when DDL is present — permissive
-	// default per Contract #1 §1.5/§1.6).
+	// 4. DDL-driven checks (only when a governing DDL resolves — permissive
+	// default per Contract #1 §1.5/§1.6). Resolution is exact class→DDL first
+	// (today's fast path), then the bounded instanceOf-chain walk to the type
+	// authority for a fine-grained discriminator class that has no direct DDL.
 	if class != "" {
-		if ref, ok := v.DDLs.Lookup(class); ok {
+		if ref, ok := v.resolveGoverningDDL(ctx, class, m.Key, kind, result, state); ok {
 			// permittedCommands enforcement: when the DDL declares a
 			// non-empty list, the operation envelope's operationType
 			// must appear in it.

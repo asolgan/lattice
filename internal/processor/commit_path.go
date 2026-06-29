@@ -239,7 +239,7 @@ func (cp *CommitPath) dispatch(ctx context.Context, msg substrate.Message) (Mess
 		}
 	}
 	if cp.deps.Validator != nil {
-		if err := cp.deps.Validator.Validate(ctx, env, result); err != nil {
+		if err := cp.deps.Validator.Validate(ctx, env, result, state); err != nil {
 			// DDL violations terminate the commit path (no redelivery).
 			var ddlErr *DDLViolation
 			if errors.As(err, &ddlErr) {
@@ -742,7 +742,7 @@ func MakePipeline(conn *substrate.Conn, coreBucket, healthBucket, capabilityBuck
 		Authorizer:    authz,
 		Hydrator:      NewHydratorWithCache(conn, coreBucket, ddls, logger),
 		Executor:      NewExecutor(NewStarlarkRunner(0, 0), logger),
-		Validator:     NewValidator(ddls, logger),
+		Validator:     NewValidator(ddls, conn, coreBucket, logger),
 		Committer:     committer,
 		Metrics:       metrics,
 		Heartbeater:   hb,

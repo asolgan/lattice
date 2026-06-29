@@ -156,11 +156,11 @@ type FaultyValidator struct {
 	Trip  func() error
 }
 
-func (f *FaultyValidator) Validate(ctx context.Context, env *processor.OperationEnvelope, result processor.ScriptResult) error {
+func (f *FaultyValidator) Validate(ctx context.Context, env *processor.OperationEnvelope, result processor.ScriptResult, state processor.HydratedState) error {
 	if err := f.Trip(); err != nil {
 		return err
 	}
-	return f.Inner.Validate(ctx, env, result)
+	return f.Inner.Validate(ctx, env, result, state)
 }
 
 // FailValidatorAfterN returns a Validator that fails on its Nth call.

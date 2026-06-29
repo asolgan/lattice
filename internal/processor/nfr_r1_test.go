@@ -164,7 +164,7 @@ func runNFRWithDeps(t *testing.T, label string, buildDeps func(d Deps) Deps, fir
 		Authorizer:  authz,
 		Hydrator:    NewHydratorWithCache(conn, testCoreBucket, cache, logger),
 		Executor:    NewExecutor(NewStarlarkRunner(0, 0), logger),
-		Validator:   NewValidator(cache, logger),
+		Validator:   NewValidator(cache, conn, testCoreBucket, logger),
 		Committer:   committer,
 		Metrics:     metrics,
 		Heartbeater: hb,
@@ -242,7 +242,7 @@ func TestNFR_R1_FaultAtStep1(t *testing.T) {
 		Authorizer:  authz,
 		Hydrator:    NewHydratorWithCache(conn, testCoreBucket, cache, logger),
 		Executor:    NewExecutor(NewStarlarkRunner(0, 0), logger),
-		Validator:   NewValidator(cache, logger),
+		Validator:   NewValidator(cache, conn, testCoreBucket, logger),
 		Committer:   NewCommitter(conn, testCoreBucket, cache, logger, time.Now),
 		Metrics:     metrics,
 		Heartbeater: hb,
@@ -464,7 +464,7 @@ func TestNFR_R1_FaultAtStep9(t *testing.T) {
 		Authorizer: authz,
 		Hydrator:   NewHydratorWithCache(conn, testCoreBucket, cache, logger),
 		Executor:   NewExecutor(NewStarlarkRunner(0, 0), logger),
-		Validator:  NewValidator(cache, logger),
+		Validator:  NewValidator(cache, conn, testCoreBucket, logger),
 		Committer:  committer,
 		AckerFactory: func(m jetstream.Msg, lg *slog.Logger) Acker {
 			return &nfrAcker{inner: NewAcker(m, lg), trip: trip}
@@ -551,11 +551,11 @@ type nfrValidator struct {
 	trip  func() error
 }
 
-func (n *nfrValidator) Validate(ctx context.Context, env *OperationEnvelope, result ScriptResult) error {
+func (n *nfrValidator) Validate(ctx context.Context, env *OperationEnvelope, result ScriptResult, state HydratedState) error {
 	if err := n.trip(); err != nil {
 		return err
 	}
-	return n.inner.Validate(ctx, env, result)
+	return n.inner.Validate(ctx, env, result, state)
 }
 
 type nfrCommitter struct {

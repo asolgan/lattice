@@ -33,7 +33,7 @@ func buildValidatorWithCache(t *testing.T) (*ValidatorImpl, *DDLCache, context.C
 	if err := cache.Refresh(ctx); err != nil {
 		t.Fatalf("Refresh: %v", err)
 	}
-	return NewValidator(cache, testLogger()), cache, ctx
+	return NewValidator(cache, conn, testCoreBucket, testLogger()), cache, ctx
 }
 
 func TestValidate_CleanPass(t *testing.T) {
@@ -50,7 +50,7 @@ func TestValidate_CleanPass(t *testing.T) {
 			},
 		}},
 	}
-	if err := v.Validate(ctx, env, result); err != nil {
+	if err := v.Validate(ctx, env, result, HydratedState{}); err != nil {
 		t.Fatalf("Validate: %v", err)
 	}
 }
@@ -69,7 +69,7 @@ func TestValidate_PermittedCommandsViolation(t *testing.T) {
 			},
 		}},
 	}
-	err := v.Validate(ctx, env, result)
+	err := v.Validate(ctx, env, result, HydratedState{})
 	var ddlErr *DDLViolation
 	if !errors.As(err, &ddlErr) {
 		t.Fatalf("expected *DDLViolation, got %T: %v", err, err)
@@ -95,7 +95,7 @@ func TestValidate_SensitiveAspectOnNonIdentityRejected(t *testing.T) {
 			},
 		}},
 	}
-	err := v.Validate(ctx, env, result)
+	err := v.Validate(ctx, env, result, HydratedState{})
 	var ddlErr *DDLViolation
 	if !errors.As(err, &ddlErr) {
 		t.Fatalf("expected *DDLViolation, got %T: %v", err, err)
@@ -120,7 +120,7 @@ func TestValidate_SensitiveAspectOnIdentityAllowed(t *testing.T) {
 			},
 		}},
 	}
-	if err := v.Validate(ctx, env, result); err != nil {
+	if err := v.Validate(ctx, env, result, HydratedState{}); err != nil {
 		t.Fatalf("Validate (allowed): %v", err)
 	}
 }
@@ -137,7 +137,7 @@ func TestValidate_KeyPatternViolation(t *testing.T) {
 			},
 		}},
 	}
-	err := v.Validate(ctx, env, result)
+	err := v.Validate(ctx, env, result, HydratedState{})
 	var ddlErr *DDLViolation
 	if !errors.As(err, &ddlErr) {
 		t.Fatalf("expected *DDLViolation, got %T: %v", err, err)
@@ -159,7 +159,7 @@ func TestValidate_UnknownOpRejected(t *testing.T) {
 			},
 		}},
 	}
-	err := v.Validate(ctx, env, result)
+	err := v.Validate(ctx, env, result, HydratedState{})
 	var ddlErr *DDLViolation
 	if !errors.As(err, &ddlErr) {
 		t.Fatalf("expected *DDLViolation, got %T: %v", err, err)
@@ -186,7 +186,7 @@ func TestValidate_UndeclaredClassIsPermissive(t *testing.T) {
 			},
 		}},
 	}
-	if err := v.Validate(ctx, env, result); err != nil {
+	if err := v.Validate(ctx, env, result, HydratedState{}); err != nil {
 		t.Fatalf("Validate (permissive): %v", err)
 	}
 }

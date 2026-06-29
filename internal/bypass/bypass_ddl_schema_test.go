@@ -68,7 +68,7 @@ func TestBypass4_ForbiddenOperationType(t *testing.T) {
 		}},
 	}
 
-	err := validator.Validate(ctx, env, result)
+	err := validator.Validate(ctx, env, result, processor.HydratedState{})
 
 	// ASSERTION: must be *DDLViolation with ViolatedConstraint="permittedCommands".
 	var ddlErr *processor.DDLViolation
@@ -125,7 +125,7 @@ func TestBypass4_SensitiveAspectOnNonIdentity(t *testing.T) {
 		}},
 	}
 
-	err := validator.Validate(ctx, env, result)
+	err := validator.Validate(ctx, env, result, processor.HydratedState{})
 
 	// ASSERTION: must be *DDLViolation with ViolatedConstraint="sensitiveAspectScope".
 	var ddlErr *processor.DDLViolation
@@ -178,7 +178,7 @@ func TestBypass4_DDLViolation_StepOrdering(t *testing.T) {
 		}},
 	}
 
-	err := validator.Validate(ctx, env, result)
+	err := validator.Validate(ctx, env, result, processor.HydratedState{})
 	if err == nil {
 		t.Fatalf("bypass4 ordering: expected DDLViolation, got nil")
 	}
@@ -226,5 +226,5 @@ func buildValidator4(t *testing.T, ctx context.Context, conn *substrate.Conn) (*
 	if err := cache.Refresh(ctx); err != nil {
 		t.Fatalf("bypass4: DDLCache.Refresh: %v", err)
 	}
-	return cache, processor.NewValidator(cache, bypassLogger())
+	return cache, processor.NewValidator(cache, conn, bypassCoreBucket, bypassLogger())
 }
