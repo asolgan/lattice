@@ -1,11 +1,13 @@
 name: lease-signing
-version: 0.11.0
+version: 0.12.0
 description: |
   Loftspace lease-application convergence vertical: the leaseapp vertex type
   (CreateLeaseApplication + SignLease), the leaseApplicationComplete
   actorAggregate convergence lens (§10.2 keyColumn), the leaseApplicationsRead
   protected Postgres read model (Contract #6 §6.14 RLS — the applicant-self
-  read boundary, D1.3 Fire 2), the §10.8 playbook
+  read boundary, D1.3 Fire 2) plus its landlordLeaseApplicationsRead sibling
+  (the landlord/residence audience anchored on the managing landlord via the
+  loftspace-domain manages link, D1.3 Increment 2), the §10.8 playbook
   (triggerLoom externalTask for bgcheck/payment, assignTask SignLease,
   triggerLoom onboarding), the externalTask instanceOp/replyOp/dispatchOp wrapper
   DDLs (CreateLeaseServiceInstance / RecordLeaseServiceOutcome /
@@ -33,6 +35,9 @@ declares:
       bucket: weaver-targets
       engine: full
     - canonicalName: leaseApplicationsRead
+      adapter: postgres
+      engine: full
+    - canonicalName: landlordLeaseApplicationsRead
       adapter: postgres
       engine: full
   permissions:

@@ -117,6 +117,74 @@ func Lenses() []pkgmgr.LensSpec {
 				{Name: "terms_requested_rent", Type: "double precision"},
 			},
 		},
+		{
+			// landlordLeaseApplicationsRead — the protected Postgres read model for
+			// the LANDLORD-facing "applications to my units" view (D1.3 Increment 2,
+			// the landlord/residence audience). The sibling of leaseApplicationsRead
+			// above: same protected-by-default §6.14 posture, but anchored to the
+			// managing LANDLORD instead of the applicant.
+			//
+			// THE RESIDENCE AUDIENCE NEEDS NO `cap-read.residence` GRANT LENS. The
+			// row carries the managing landlord's bare NanoID as its authz_anchor,
+			// and the primordial cap-read self-grant (bootstrap.capabilityReadGrants)
+			// already grants every identity — a landlord is a vtx.identity — its OWN
+			// NanoID. The §6.14 set-membership RLS policy makes a row visible iff the
+			// reading actor holds a grant for ANY of its authz_anchors, so a landlord
+			// L's session (lattice.actor_id = L's NanoID) sees exactly the rows
+			// anchored to L = the applications to units L manages, and nobody else's.
+			// No relationship-grant producer, and so no link-triggered reprojection
+			// primitive (which the plain pipeline does not provide today).
+			//
+			// The lens is anchored on the LEASEAPP (a plain projection, like
+			// leaseApplicationsRead), so it reprojects on the leaseapp's own vertex
+			// CDC — which the plain pipeline already handles. It resolves the
+			// managing landlord at projection time by walking the unit's `manages`
+			// link (loftspace-domain's AssignUnitOwner mints
+			// lnk.identity.<landlordID>.manages.unit.<unitID>, class "manages").
+			//
+			// Every MATCH is REQUIRED (not OPTIONAL): a leaseapp projects a
+			// landlord-row only if it has an applicant, applies to a unit, AND that
+			// unit has a managing landlord. A unit with no manager projects no row —
+			// fail-closed (never a null/empty authz_anchor the array adapter would
+			// choke on; never a row no landlord can read). A co-managed unit (more
+			// than one `manages` link) fans the leaseapp out to one row PER landlord,
+			// so the key is the composite (app_id, landlord_id): each (application,
+			// landlord) pair is its own row, anchored to that one landlord — the
+			// natural multi-owner shape, no collision.
+			//
+			// CAVEAT (documented; the low-priority eager-reprojection follow-up in
+			// lattice.md): the landlord anchor is baked at leaseapp projection time,
+			// so an ownership TRANSFER on a unit with live applications goes stale
+			// until each leaseapp's next CDC touch (it self-heals on any subsequent
+			// change to the application). This is the same staleness class the
+			// applicant lens's unit display columns already accept.
+			CanonicalName: "landlordLeaseApplicationsRead",
+			Class:         "meta.lens",
+			Adapter:       "postgres",
+			Table:         "read_landlord_lease_applications",
+			Engine:        "full",
+			Spec:          landlordLeaseApplicationsReadSpec,
+			Protected:     true,
+			IntoKey:       []string{"app_id", "landlord_id"},
+			Columns: []pkgmgr.PostgresColumn{
+				{Name: "entity_key", Type: "text"},
+				{Name: "applicant", Type: "text"},
+				{Name: "landlord_key", Type: "text"},
+				{Name: "unit_key", Type: "text"},
+				{Name: "unit_address", Type: "text"},
+				{Name: "unit_city", Type: "text"},
+				{Name: "unit_region", Type: "text"},
+				{Name: "unit_rent", Type: "double precision"},
+				{Name: "unit_currency", Type: "text"},
+				{Name: "unit_status", Type: "text"},
+				{Name: "signed_at", Type: "text"},
+				{Name: "landlord_decision", Type: "text"},
+				{Name: "decline_reason", Type: "text"},
+				{Name: "terms_move_in_date", Type: "text"},
+				{Name: "terms_lease_term_months", Type: "double precision"},
+				{Name: "terms_requested_rent", Type: "double precision"},
+			},
+		},
 	}
 }
 
@@ -516,4 +584,54 @@ RETURN
   app.terms.data.leaseTermMonths AS terms_lease_term_months,
   app.terms.data.requestedRent   AS terms_requested_rent,
   [nanoIdFromKey(id.key)]        AS authz_anchors
+`
+
+// landlordLeaseApplicationsReadSpec is the LANDLORD-facing protected Postgres
+// read model's cypher (D1.3 Increment 2). Identical display surface to
+// leaseApplicationsReadSpec, but anchored on the managing landlord rather than
+// the applicant — every MATCH is REQUIRED so a row exists only for a well-formed
+// application whose unit has a manager.
+//
+//   - It anchors on every leaseapp, requires the applicationFor walk to the
+//     applicant identity (display) AND the appliesToUnit walk to the unit AND the
+//     INBOUND `manages` walk from the unit to its managing landlord
+//     ((u)<-[:manages]-(landlord:identity), the inbound-traversal form the
+//     convergence lens already uses for providedTo). A leaseapp whose unit has no
+//     manager projects NO row — fail-closed, no null anchor.
+//   - app_id (the first IntoKey column) is the application's bare NanoID;
+//     landlord_id (the second) is the managing landlord's bare NanoID. The
+//     composite (app_id, landlord_id) keys the row so a co-managed unit's
+//     leaseapp fans out to one row per landlord with no key collision.
+//   - authz_anchors = [nanoIdFromKey(landlord.key)] — the managing-landlord
+//     anchor. The primordial cap-read self-grant grants the landlord their own
+//     NanoID, so the §6.14 set-membership RLS policy returns this row to the
+//     managing landlord and to nobody else. landlord_key keeps the full
+//     vtx.identity.<id> key as a display/scope body column.
+//
+// '= null' / list literals + nanoIdFromKey in RETURN mirror leaseApplicationsRead.
+const landlordLeaseApplicationsReadSpec = `
+MATCH (app:leaseapp)
+MATCH (app)-[:applicationFor]->(id:identity)
+MATCH (app)-[:appliesToUnit]->(u:unit)
+MATCH (u)<-[:manages]-(landlord:identity)
+RETURN
+  nanoIdFromKey(app.key)         AS app_id,
+  nanoIdFromKey(landlord.key)    AS landlord_id,
+  app.key                        AS entity_key,
+  id.key                         AS applicant,
+  landlord.key                   AS landlord_key,
+  u.key                          AS unit_key,
+  u.address.data.line1           AS unit_address,
+  u.address.data.city            AS unit_city,
+  u.address.data.region          AS unit_region,
+  u.listing.data.rentAmount      AS unit_rent,
+  u.listing.data.rentCurrency    AS unit_currency,
+  u.listing.data.status          AS unit_status,
+  app.signature.data.signedAt    AS signed_at,
+  app.decision.data.value        AS landlord_decision,
+  app.decision.data.reason       AS decline_reason,
+  app.terms.data.moveInDate      AS terms_move_in_date,
+  app.terms.data.leaseTermMonths AS terms_lease_term_months,
+  app.terms.data.requestedRent   AS terms_requested_rent,
+  [nanoIdFromKey(landlord.key)]  AS authz_anchors
 `
