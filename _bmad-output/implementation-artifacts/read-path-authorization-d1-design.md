@@ -1,6 +1,6 @@
 # Read-path authorization (D1) — design
 
-**Status: ✅ Andrew-ratified (2026-06-27).** Author: Winston (Designer fire, 2026-06-26).
+**Status: ✅ Andrew-ratified (2026-06-27). §8 pre-build adversarial pass ✅ RUN (2026-06-28, `bmad-party-mode`) — gate discharged; 5 HIGH findings (incl. a *default-open* bug) + 2 Andrew-decisions to fold before D1.1 builds. See §8 RESULTS.** Author: Winston (Designer fire, 2026-06-26).
 
 > **Ratification decisions (Andrew, 2026-06-27) — these supersede the "two forks" framing below:**
 > 1. **Fork 1 (enforcement) — Path A (Postgres-RLS) is *the* boundary for protected data.** The NATS-KV
@@ -405,13 +405,91 @@ fan-out (Path C, the Edge step that builds on D1); ES-target read auth (no ES co
 
 ---
 
-## 8. Adversarial review note
+## 8. Adversarial pass — RESULTS (✅ gate RUN 2026-06-28, `bmad-party-mode`; Winston + adversarial-security + Quinn + Mary)
 
-This is a security-plane, cross-cutting L/XL design — it warrants a `bmad-party-mode` / adversarial pass
-before the Steward builds. The highest-leverage things to attack in that review: **(a)** the
-fail-closed-vs-silent-public boundary in §3.2 (the #1 leak shape — a protected lens with no anchor);
-**(b)** the staleness window on revocation (R2) vs. the write path's matching window — is the
-token-revocation kill-switch sufficient interim; **(c)** whether the `readableAnchors` *anchor model*
-(coarse resource-scope) is expressive enough for operation-level read distinctions, or whether reads
-need a richer grant than "can see this anchor's rows" (it likely does not — reads are row-visibility,
-not op-authorization — but worth a skeptic). Fold findings in before D1.1.
+The pre-build gate has been **run**. Findings below, prioritized; each names the concrete change and the
+section it touches. **The gate is discharged**, but five HIGH findings must be folded into the design (and
+two carry a Contract #6 §6.14 edit) **before D1.1 builds** — the Steward builds D1.1 once the design author
+applies H1–H5 and stages the §6.14 edit for Andrew. Two items are **Andrew decisions** (M3, M5).
+
+### HIGH — fold before D1.1 (two require a §6.14 contract edit)
+
+- **H1 — Invert the default: protected-by-default, not public-by-default (§3.2). [§6.14 contract edit]**
+  §3.2's "a lens with no `authzAnchor` = public-read" **inverts the write-path mirror** (write path: *absence
+  denies*, §6.8; read path as written: *absence grants*). It is **default-open on the keystone boundary** — a
+  forgotten anchor silently world-publishes a protected model, and nothing errors. **Change:** a read-model
+  target is **protected by default**; `public: true` is an **explicit, auditable opt-out**. Forgetting the
+  marker fails *closed* in both directions (a public lens returns nothing; a protected lens returns nothing).
+  This also makes H2's lint tractable (it only audits the small explicit-`public` set, instead of trying to
+  infer "should have been protected"). Mirror the write path: **absence ⇒ deny.**
+- **H2 — Move the conventions gate INTO D1.3, not D1.4 (§7).** The `protected ⇒ has-anchor` lint currently
+  lands **after** enforcement turns on (D1.4), leaving a live window where a *second* protected model ships
+  mis-declared and leaks. **Change:** the conventions gate (now, post-H1: "`public:true` is justified;
+  everything else is protected and must resolve an anchor") is a **prerequisite of D1.3**, shipped with the
+  first enforcement, not a follow-on.
+- **H3 — Postgres `ENABLE` + `FORCE ROW LEVEL SECURITY` on every protected table (§3.3).** A DB-native
+  fail-closed backstop independent of the lint: a table with RLS enabled and **no policy denies all rows**, so
+  "author forgot to generate the policy" becomes an **outage, not a leak.** **Change:** mandate
+  `ENABLE`+`FORCE` RLS at protected-table creation; never rely on the lint alone.
+- **H4 — Seq-guard the `actor_read_grants` projection; the §3.3 Postgres guard-exemption resurrects revoked
+  grants.** The KV adapter enforces `projectionSeq` *specifically* so a stale replay can't resurrect a revoked
+  grant; the read-grant Postgres table drops it ("CDC-ordered upserts converge"). A **delete-then-stale-upsert**
+  for the same `(actor, anchor)` does **not** converge to "revoked" without a seq guard → **the revoked read
+  grant comes back.** **Change:** `actor_read_grants` carries `projection_seq`; upsert/delete apply only when
+  incoming seq > stored. Guard-exemption is acceptable for *business* read models (RLS reads current rows), but
+  **NOT for the grant table** — it is the read-auth source of truth.
+- **H5 — `authzAnchors` is a SET, not a single column; support coarse/hierarchical anchors (§3.2).
+  [§6.14 contract edit]** The single-`authzAnchor` convention is **under-expressive** for the
+  manager/landlord/provider case (Mary: a building manager reading *all units in a building*; a provider
+  reading *all their patients' appointments*). Flat single-anchor forces the lens to materialize every leaf
+  into a grant row (200 unit rows, churning on every add). **Change:** a row carries **`authzAnchors[]`** (a
+  row is readable via **any** of its anchors), and a grant may be a **coarse** anchor: the unit-application row
+  carries `unit.<id>` **and** `building.<id>`; the manager holds **one** `building.<id>` grant. RLS
+  `authz_anchor IN (...)` already supports the set; the convention must.
+
+### MEDIUM
+
+- **M1 — `grant_source`-scoped retraction (§3.1).** Two lenses may grant the same `(actor, anchor)` via
+  different sources (rbac-role + loftspace-residence) — coexisting rows are correct defense-in-depth, but each
+  lens's tombstone **MUST** be scoped to its own `grant_source`, or one lens's retraction nukes the other's
+  grant. Combine with H4: retraction is **source-scoped AND seq-guarded.**
+- **M2 — Package uninstall retracts its grant rows.** Removing `loftspace` must retract its
+  `grant_source='loftspace'` `actor_read_grants` rows via the existing lens-eviction machinery (F-004 /
+  Epic-12), or a stale grant outlives the package. Confirm the eviction covers the read-grant table.
+- **M3 — Per-resource revocation rides CDC lag (R2) — ANDREW DECISION.** The token-revocation KV is a
+  *whole-actor* kill-switch only. The common case (tenant moves out, employee loses a role) is per-*resource*
+  and has **no kill-switch** — it waits for `cap-read` reprojection. Same window as the write path, **but a
+  read leak is qualitatively worse (data can't be un-seen).** Decision for Andrew: accept CDC-lag per-resource
+  read revocation as the D1 posture (state the Refractor-lag SLO bound; vector-clock fence stays deferred v2),
+  or require a per-resource fence in D1. *Recommendation: accept + document the bound; the fence is a real v2.*
+- **M4 — Column-level reads are OUT of scope → Vault plane.** RLS is row-level; a grant exposing *some
+  columns* (tenant sees the lease but not its internal `riskScore`) is **not** expressible. The "reads are
+  row-visibility" claim holds for **rows**, not **columns.** State that column-sensitivity is the
+  **Vault/§3.11** plane and a protected read model must not project a sensitive column in plaintext — so no one
+  assumes D1 protects column-level PII.
+- **M5 — Loupe all-access stays INSIDE the boundary (D1.5) — ANDREW DECISION (posture).** Don't punch an RLS
+  *bypass* for Loupe; give it a **wildcard grant** so even the admin's reads go *through* RLS and remain
+  **attributable/loggable.** An un-instrumented superuser read-actor is one compromise from total exposure.
+  *Recommendation: wildcard-grant, not bypass.*
+- **M6 — Per-request token-revocation check + short JWT TTL (§3.4).** The revocation KV is the synchronous
+  gate (checked every read, not cached); JWT expiry (with a skew allowance) is the backstop. Mandate both.
+- **M7 — Write-restriction Fire 2 IS a genuine D1 prerequisite — sharper reason (§7).** Not for read
+  transport (orthogonal planes), but because the read-grant **source of truth is the Core-KV topology** the
+  `cap-read` lens walks: without write-restriction an attacker writes themselves a `residesIn` link and the
+  lens grants them read access. **An unforgeable grant-source is a precondition for trusting RLS.** Confirms
+  the Steward's sequencing for a sharper reason; record it.
+
+### LOW
+
+- **L1 — Additive-only union; no deny grants.** State explicitly (matches RBAC; a deny requirement is a
+  separate mechanism, out of D1 scope).
+- **L2 — New-actor no-read window.** Fail-closed-on-projection-failure is correct (a `cap-read` activation
+  failure ⇒ zero grant rows ⇒ RLS denies all). Benign corollary: a brand-new actor has a short no-read window
+  until `cap-read` converges — safe direction; just document it.
+
+### Disposition
+
+Gate **RUN + discharged.** Next: the design author folds **H1–H5** into §3.2/§3.3/§7 (H1 + H5 also stage a
+**Contract #6 §6.14** edit — protected-by-default + `authzAnchors[]` set — UNCOMMITTED for Andrew), records
+**M1–M2, M4, M6–M7** as build requirements, and surfaces **M3 + M5** for Andrew's call. Then the Steward
+builds D1.1 → D1.2 (in parallel with write-restriction Fire 2), with D1.3 RLS gated on a Postgres read-model.
