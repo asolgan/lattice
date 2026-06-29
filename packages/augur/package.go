@@ -53,6 +53,13 @@
 //     produces a side effect that was not deterministically validated, and can
 //     never name the entity it acts on.
 //
+//   - The `augurProposals` read-model lens — the P5 query surface (nats-kv
+//     bucket `augur-proposals`) Loupe reads to render the human-in-the-loop
+//     review surface: one flat row per proposal carrying the trusted gap
+//     context, the model's proposed action + rationale + confidence, and the
+//     review verdict. Read-model only (trusted-tool posture) — not protected,
+//     not a weaver-target convergence lens.
+//
 //   - Permissions granting CreateAugurReasoningClaim + RecordProposal to
 //     `operator` (Weaver — the directOp dispatcher — and the bridge service
 //     actor are both operator-equivalent via holdsRole → operator).
@@ -70,5 +77,6 @@ var Package = pkgmgr.Definition{
 	Description: "Augur (Weaver L3 reasoning tier) data + safety foundation: the augurproposal vertex type + RecordProposal op with the record-time deterministic-validation boundary.",
 	Depends:     []string{"orchestration-base"},
 	DDLs:        DDLs(),
+	Lenses:      Lenses(),
 	Permissions: Permissions(),
 }

@@ -16,10 +16,8 @@
 //	2 permission vertices: CreateAugurReasoningClaim + RecordProposal, each
 //	  scope=any, grantedBy operator (Weaver + the bridge service actor are both
 //	  operator-equivalent — design §3.2 / escalation-dispatch addendum §7).
+//	1 meta.lens: augurProposals (the P5 read-model review surface Loupe reads).
 //	1 package vertex + manifest aspect (name=augur).
-//
-// (The augur-proposals review lens + the reasoning externalTask pattern are a
-// later fire — this foundation package declares the DDL + ops only.)
 //
 // Run via: go run ./scripts/verify-package-augur.go
 package main
@@ -215,6 +213,36 @@ func main() {
 		} else {
 			ok(fmt.Sprintf("lnk.permission.%s.grantedBy.role.<operator> exists (%s)", permID, wantOp))
 		}
+	}
+
+	// The augurProposals read-model meta.lens (the P5 review surface). A
+	// meta.lens carries its name in a .canonicalName aspect (per
+	// internal/pkgmgr/build.go); classify by class, then read the identifier.
+	foundLens := false
+	for key := range allKeys {
+		if !strings.HasPrefix(key, "vtx.meta.") || strings.Count(key, ".") != 2 {
+			continue
+		}
+		env, err := pkgverify.GetEnvelope(ctx, coreKV, key)
+		if err != nil {
+			continue
+		}
+		if cls, _ := env["class"].(string); cls != "meta.lens" {
+			continue
+		}
+		nameEnv, err := pkgverify.GetEnvelope(ctx, coreKV, key+".canonicalName")
+		if err != nil {
+			continue
+		}
+		nd, _ := nameEnv["data"].(map[string]any)
+		if cn, _ := nd["value"].(string); cn != "augurProposals" {
+			continue
+		}
+		foundLens = true
+		ok("augurProposals meta.lens exists: " + key)
+	}
+	if !foundLens {
+		fail("augurProposals meta.lens", "no meta.lens with canonicalName=augurProposals found")
 	}
 
 	// Package manifest.
