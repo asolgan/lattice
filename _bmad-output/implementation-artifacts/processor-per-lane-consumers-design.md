@@ -1,6 +1,6 @@
 # Processor per-lane consumers (ConsumerSupervisor adoption) — design
 
-**Status: ✅ Andrew-ratified (2026-06-28)** — ready for the Lattice Steward. Pre-build §5.2 adversarial pass on the meta-lane/DDL-cache boundary should **prove the latent today-race** (single concurrent consumer ⇒ meta-DDL not serial) so Fire 2/3 demonstrably closes it.
+**Status: ✅ Andrew-ratified (2026-06-28). 🏗️ Fire 1 SHIPPED (c16f739, CI green).** Fire 1 = the substrate reply seam + commit-path disposition refactor onto a `ConsumerSupervisor` at behavior parity (single all-lanes spec, no lane split, no migration). One sound scoping deviation from §4.2: no `Classify`/`Probe`/infra-pause in Fire 1 (mirrors Loom/Weaver; infra-pause without a Probe would be a permanent-stall regression — deferred to the lane split). **Remaining: Fire 2** (four-spec lane split + real per-lane `lane_lag` + `meta` serial pin + `processor-main` migration R4) — run the pre-build §5.2 adversarial pass on the meta-lane/DDL-cache boundary to **prove the latent today-race** (single concurrent consumer ⇒ meta-DDL not serial) so Fire 2/3 demonstrably closes it — **→ Fire 3** (per-lane concurrency from config) **→ Fire 4** (control plane, its own row).
 **Component:** Core (Processor) · **Imp:** ★★ · **Size:** M · **Owner role:** Lattice Steward (builds once ratified)
 **Backlog row:** `planning-artifacts/backlog/lattice.md` → Component maintenance → *[Core] Processor per-lane consumers*
 
