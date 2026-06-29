@@ -1,0 +1,20 @@
+name: augur
+version: 0.1.0
+description: |
+  Augur (Weaver L3 reasoning tier) data + safety foundation: the augurproposal
+  vertex type + the RecordProposal op (the bridge replyOp). RecordProposal carries
+  the record-time deterministic-validation boundary (design §5) — a proposal is
+  stored pending only when its proposed action is in the allowed escalation
+  vocabulary, its confidence is a real 0..1 score, and it does not escape the
+  escalated candidate's scope; otherwise it is stored invalid (auditable), never
+  dispatchable. The AI proposes; the human decides; the Processor stays sole writer.
+depends:
+  - orchestration-base
+declares:
+  ddls:
+    - canonicalName: augurproposal
+      class: meta.ddl.vertexType
+  permissions:
+    - operationType: RecordProposal
+      scope: any
+      grantsTo: [operator]
