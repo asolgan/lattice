@@ -1,6 +1,6 @@
 # Loom Starlark guards — the verified-pure predicate sandbox
 
-**Status: 📐 awaiting-Andrew (ratification)** · Designer (Winston), 2026-06-29 · Lattice lane (Stream 2)
+**Status: ✅ Andrew-ratified (SPLIT, 2026-06-29).** Piece 1 (shared `internal/starlarksandbox` leaf) = **ratified, built WITH its first consumer (⑦ AI-authored Fire 4), not speculatively.** Piece 2 (Loom-side Starlark guard evaluation) = **⏸️ HELD, gated on the guard-evaluation-location decision** (#3's "better architectural approach for guards"). See the *Ratified* block. · Designer (Winston), 2026-06-29 · Lattice lane (Stream 2)
 Backlog row: *"Starlark guards (Loom)"* — `_bmad-output/planning-artifacts/backlog/lattice.md` → Lattice feature
 backlog → AI-native.
 
@@ -41,6 +41,20 @@ already specifies the escape-hatch shape; this *builds to* it. **No architectura
 Loom pattern that needs a non-declarative guard (today's flows don't — so this can ship "the mechanism + a golden
 fixture" without a vertical, like the contract anticipates). It *unblocks* AI-authored-capabilities Fire 4. Ratify →
 the Lattice Steward builds (Fire 1 = the shared sandbox extraction, full 3-layer security review).
+
+**Ratified (Andrew, 2026-06-29) — SPLIT.** The design splits into two pieces on opposite sides of the
+guard-architecture concern (see #3 / [[feedback_no_new_engine_corekv_reads]]):
+- **Piece 1 — the shared `internal/starlarksandbox` leaf: ✅ ratified, but built WITH its first real consumer,
+  not speculatively.** Today the Processor is its only user, so there is no duplication to remove *yet*; extract
+  the leaf when the **second** consumer is built — most likely **⑦ AI-authored-capabilities Fire 4** (which names
+  this leaf as its prerequisite). Architecture-neutral + forward-compatible: if guard evaluation later moves
+  Processor-side, the Processor evaluates Starlark guards with this same leaf.
+- **Piece 2 — lighting up Loom-side Starlark guard evaluation: ⏸️ HELD, gated on the guard-evaluation-location
+  decision** (#3's "better architectural approach for guards"). It enriches *Loom's* guard machinery — exactly
+  what would be reworked if guards move Processor-side — so it waits on that call. The module-boundary fork
+  (Option A vs B) is **moot until then** (if guards go Processor-side, Loom never imports the sandbox).
+- **No frozen-contract change** either way (§10.5 already reserves the hatch). Restraint confirmed: don't extract
+  a shared abstraction before its 2nd consumer exists; don't enrich a mechanism that may move.
 
 ---
 
@@ -273,6 +287,10 @@ MUST stay green through the refactor).
 ## 6. Fire-by-fire decomposition (for the Lattice Steward)
 
 Each fire is independently shippable and green. **Build only after ✅ Andrew-ratified** (and after he picks A vs B).
+**Ratified sequencing (Andrew, 2026-06-29):** Fire 1 (the shared sandbox) builds **WITH its first consumer
+(⑦ AI-authored Fire 4)**, not standalone/speculatively (the Processor is its only user today — no duplication to
+remove yet); **Fire 2 (Loom-side Starlark guard) is HELD**, gated on the guard-evaluation-location decision
+(#3's "better approach for guards"); the A-vs-B module-boundary fork is **moot until then**.
 
 - **Fire 1 — extract the shared sandbox leaf (Option A) / or the Loom-local wrapper (Option B).** Create
   `internal/starlarksandbox` (`Execute` harness + pure modules + pure converters); refactor
