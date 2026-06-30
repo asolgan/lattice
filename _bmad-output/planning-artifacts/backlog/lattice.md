@@ -64,9 +64,10 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 > 🎯 **Build-ready now** (✅ ratified / 📋 ready, no upstream gate): **`kv.Links`** (top priority) ·
 > **FR28 role-queue** · **`@every` schedules** · **protected-lens out-of-band provisioning** ·
 > **full-engine tombstone retraction** · the **instanceOf P7 lint gate** (residual).
-> *Dependency-sequenced ratified items* (Gateway, Vault, control-plane-authz, Personal Lens behind D1; Object
-> crypto-shred behind Vault) build when their gate clears. **Augur** Fire 1 + Fire 2a are merged; Fire 2b+
-> is the next AI-native increment (per its design doc §8).
+> *Dependency-sequenced ratified items*: **Vault** + **Personal Lens** behind D1; **Gateway** behind
+> NATS-write-restriction F2; **Object crypto-shred** behind Vault — build when their gate clears.
+> (**Control-plane-authz** rides D1.2, now shipped → buildable, deprioritized behind D1 rollout.)
+> **Augur** Fire 1 + 2a merged; Fire 2b+ is the next AI-native increment (§8).
 
 ### Security & trust boundary
 | Item | What it is | Imp | Size | State |
@@ -76,7 +77,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Gateway | Edge trust boundary: JWT auth, `Lattice-Actor` stamping, read-path enforcement. Gates external actors + the real Edge node. | ★★★ | L | ✅ ratified · [design](../../implementation-artifacts/gateway-external-trust-boundary-design.md) · 🚧 seq behind NATS-write-restriction F2b |
 | NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) · F1 (credential seam) shipped; F2 = live enforcement |
 | **Lane authorization enforcement (Contract #2 §2.3)** | Submitting to a lane is itself capability-controlled: `LaneUnauthorized` + the service-actor `system`-lane grant. | ★★ | M | 🏗️ building · ✅ ratified 2026-06-28 · [design](../../implementation-artifacts/lane-authorization-enforcement-design.md) · F1 (grants converge, dark) shipped; next = enforcement |
-| Control-plane Capability authorization (FR30) | Both control planes (Weaver/Refractor `…/control`) should be capability-gated, not open responders. | ★★ | M | ✅ ratified · [design](../../implementation-artifacts/control-plane-capability-authz-design.md) · 🚧 seq behind D1 |
+| Control-plane Capability authorization (FR30) | Both control planes (Weaver/Refractor `…/control`) should be capability-gated, not open responders. | ★★ | M | ✅ ratified · [design](../../implementation-artifacts/control-plane-capability-authz-design.md) · rides D1.2 (shipped) → buildable; deprioritized behind D1 rollout |
 
 ### Privacy / Vault
 | Item | What it is | Imp | Size | State |
