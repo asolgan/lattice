@@ -265,6 +265,17 @@ running; the **browser tab** you do not.
   no-changelog rule). When you ship an item, **move it out of the feature table to a one-line Done-log entry**
   (`date · SHA · title`); past ~25 Done-log lines, roll the oldest to `backlog/archive/`. Owners hand you a
   one-line status + SHA, not a paragraph.
+- **Your fire's narrative is the COMMIT MESSAGE — never the board, and NEVER the survey log.** The survey log
+  is the **Surveyor's round-robin rotation memory, not a Steward activity log**: do **not** append
+  `Steward fire 2026-…(what I did, why I picked it, what I reviewed)` entries to it — that was the **#1 way
+  the board re-bloated (≈70 lines of fire-journals in one day)**. Your *entire* board output per fire is two
+  things: the **row state-flip** (📋→🏗️→✅, capped) and, on ship, a **one-line Done-log entry**. A cell never
+  holds your *reasoning* either — not the fork-resolution, not "why I chose this shape", not the review
+  verdict (✗ `🏗️ building · steward impl-ratified the package-vs-lattice fork → rolling-@at, @every stays
+  reserved … Build: Inc 1→2`; ✓ `🏗️ building · [design](…) · next: Inc 1 series lens`). All of that lives in
+  the **commit message + the design doc**. **Hard budget:** a row aims ≤300 chars (cap 600); the survey-log /
+  Done-log are capped one-liners. `scripts/lint-board.go` fails a board commit that exceeds these — **run it
+  before you push any board change.**
 - **On ship, reconcile the item's neighbors (write-time consistency — do this, not a per-pick re-verify).**
   Staleness is *written* when an item ships: the shipped item gets a clean Done entry, but its **neighbors
   silently drift** (their states still reference the old world). So the moment you mark an item ✅ done, check

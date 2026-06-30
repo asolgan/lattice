@@ -40,9 +40,13 @@ tagged with the **component** it touches, and **📋 ready** — a one-line what
 (files/contracts) so the Lattice Steward can pick it up without re-discovering. **The board is an index, not
 a journal** (§5 of the swimlanes design / the CLAUDE.md no-changelog rule): keep the row to that one line —
 deeper grounding goes in the linked refs, not the cell. Flag any item that will need a frozen-contract change
-(the Steward prepares it uncommitted) or is a genuine architectural fork (Andrew's call). Keep your **survey
-note compact** — a dated rotation pointer (what you surveyed, what's next), not a prose run-log; your
-*findings* are the filed rows.
+(the Steward prepares it uncommitted) or is a genuine architectural fork (Andrew's call). Your **survey note is ONE
+dated line** (≤~25 words) — what you surveyed + what you filed + what's next, e.g.
+`2026-06-30 Refractor — healthy; filed simple-engine-retire + fan-out-cov; next Core`. **Not a findings
+essay** (the findings ARE the filed rows — don't restate them) and **not a multi-line run-log** (a "what I
+observed / measured" narrative is exactly the bloat that ballooned the survey log to ~70 lines). Survey
+*narrative*, if any, goes in the commit message. `scripts/lint-board.go` caps the survey-log section and
+fails an over-budget board commit — **run it before you push.**
 
 **Docs in `main`, not a worktree** (isolation rule): `lattice.md` is a board doc — edit it **directly in
 `main`**. Commit **docs-only**, scoped: `git pull --rebase` → `git add _bmad-output/planning-artifacts/backlog/lattice.md`
