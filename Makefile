@@ -497,7 +497,7 @@ test-capability-adversarial:
 	@$(MAKE) down
 	@$(MAKE) up
 	@$(MAKE) verify-kernel
-	go test ./internal/bypass/... -v -run TestCapAdv -count=1
+	POSTGRES_TEST_DSN=$(POSTGRES_URL) go test ./internal/bypass/... -v -run TestCapAdv -count=1
 	go test ./internal/bypass/... -v -run TestGate3_Report -count=1
 
 ## test-hello-lattice — Run the Phase 1 Gate 5 Hello Lattice integration test suite.

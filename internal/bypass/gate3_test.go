@@ -49,8 +49,11 @@ func TestGate3_Report(t *testing.T) {
 	now := time.Now().UTC()
 	timestamp := now.Format(time.RFC3339)
 
-	// The adversarial vectors and their enforcement layers. Vectors #1, #3, #4,
-	// #5, #6, #7, #8 are DEFENDED; vector #2 (projection lag) is ACCEPTED-WINDOW.
+	// The adversarial vectors and their enforcement layers. The write-path
+	// vectors (#1, #3–#8) and the read-path vectors (#9–#13, D1.4) are DEFENDED;
+	// vector #2 (projection lag) is ACCEPTED-WINDOW. The read-path RLS vectors
+	// (#10, #12, #13) require Postgres and run only when POSTGRES_TEST_DSN is set
+	// (the make test-capability-adversarial gate sets it); off-gate they skip.
 	// If any sub-test fails, the Go test framework exits non-zero
 	// BEFORE this roll-up fires — so reaching here with passing sub-tests is
 	// sufficient proof.
@@ -109,6 +112,42 @@ func TestGate3_Report(t *testing.T) {
 			Vector:      "Lane authorization bypass",
 			Result:      "DEFENDED",
 			Enforcement: "CapabilityAuthorizer step-3 lane gate (§2.3): the platform path checks env.Lane ∈ doc.Lanes before the operationType matcher (service/task paths grant `default` only, pre-read reject); a default-only actor declaring a privileged lane (system/meta/urgent) → LaneUnauthorized; fail-closed on empty doc.Lanes (lane-authorization Fire 2)",
+		},
+		// Read-path authorization vectors (D1.4) — the symmetric READ boundary
+		// (Contract #6 §6.14). Vectors 9 & 11 are the JWT actor-authentication
+		// seam (internal/gateway/auth, pure-Go); 10, 12, 13 are the generated
+		// Postgres RLS policy (internal/refractor/adapter) and require a live
+		// Postgres (the make target sets POSTGRES_TEST_DSN). See
+		// capadv_read_bypass_test.go (TestCapAdv_ReadV1..V5).
+		{
+			Num:         9,
+			Vector:      "Read without a valid JWT",
+			Result:      "DEFENDED",
+			Enforcement: "auth.Authenticator (§3.4): an empty/malformed/untrusted-signed/expired/none-alg token never yields an actor → the read boundary 401s and never sets lattice.actor_id, so RLS sees a NULL actor and denies all (ReadV1)",
+		},
+		{
+			Num:         10,
+			Vector:      "Cross-actor anchor read",
+			Result:      "DEFENDED",
+			Enforcement: "Postgres RLS set-membership over actor_read_grants (§6.14): an actor sees only rows anchored to a grant it holds; an actor granted anchor A cannot read another actor's anchor-B rows; an ungranted/NULL actor sees nothing (ReadV2)",
+		},
+		{
+			Num:         11,
+			Vector:      "Revoked read token (kill-switch)",
+			Result:      "DEFENDED",
+			Enforcement: "auth.Authenticator revocation check (§3.4/M6): a structurally-valid, unexpired, correctly-signed token whose actor is on the revocation KV → ErrTokenRevoked; a revocation-store error fails closed (ReadV3)",
+		},
+		{
+			Num:         12,
+			Vector:      "Cross-anchor bleed (holds X, reads Y)",
+			Result:      "DEFENDED",
+			Enforcement: "Postgres RLS set-membership (§6.14 H5): a unit.X grant-holder cannot read a unit.Y-only row; a coarse building.B grant covers every row tagged building.B but not a unit-only orphan — hierarchical anchors match by set membership, no bleed (ReadV4)",
+		},
+		{
+			Num:         13,
+			Vector:      "Protected store shipped without RLS policy",
+			Result:      "DEFENDED",
+			Enforcement: "ENABLE + FORCE ROW LEVEL SECURITY (§6.14 H3): a protected table whose policy was never generated denies ALL rows even for a granted actor — a fail-closed outage, never a silent world-publish; a correctly-policied table serves the granted row (ReadV5)",
 		},
 	}
 
