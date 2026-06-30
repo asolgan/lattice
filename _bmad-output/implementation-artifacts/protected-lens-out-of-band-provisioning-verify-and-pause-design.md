@@ -1,8 +1,9 @@
 # Protected-lens provisioning: out-of-band + verify-and-pause (retire the RLS DDL-ownership exception) — design
 
-**Status: 📐 awaiting-Andrew (ratification)** · Designer fire 2026-06-29 (Winston) · Lattice lane, Refractor
-read-path (D1.3) · originated from Andrew's question "the out-of-band DDL decision was paired with Refractor
-*pausing* a lens on adapter error — can we use the same approach for protected lenses?"
+**Status: ✅ Andrew-ratified (2026-06-29)** · Contract #6 §6.14 edit **ratified + committed** · Designer fire
+2026-06-29 (Winston) · Lattice lane, Refractor read-path (D1.3) · originated from Andrew's question "the
+out-of-band DDL decision was paired with Refractor *pausing* a lens on adapter error — can we use the same
+approach for protected lenses?" · **Ready for the Lattice Steward** (Fire 1 verifier+gate = full 3-layer).
 
 ---
 
