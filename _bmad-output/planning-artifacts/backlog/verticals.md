@@ -22,16 +22,19 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 | Clinic — retire the `.bookings` key-list aspect (`kv.Links` consumer) | The appointment double-book guard denormalizes each provider's/patient's bookings into a `.bookings` key-list aspect (relationships-in-data, a Contract #1 violation). Re-author onto `hasBooking` links read via the shipped `kv.Links` primitive + a scalar `bookingGuard` epoch for serialization; drop `.bookings` + its two aspectType DDLs. | Clinic | pkg | ★★ | S–M | ✅ ratified · 📋 ready · [design](../../implementation-artifacts/op-time-bounded-link-enumeration-design.md) §4.1 (Fire 2); consumes lattice [`kv.Links`](lattice.md) Fire 1 (shipped) |
 | LoftSpace — per-landlord RLS view as the rich decision surface (D1.5 landlord cutover) | The protected `/api/landlord/applications` RLS read renders only a scope-count banner; the rich decision view (signals + Approve/Decline) is still the trusted-all-units operator console reading `weaver-targets` (§10.2 old pattern). Project the qualification signals into `landlordLeaseApplicationsRead` + render rich RLS-scoped rows, retiring the console — mirrors the applicant-side D1.3 Fire 3 cutover. | LoftSpace | pkg + FE | ★★ | M | 📋 ready (scoped: add 6 signal cols to the landlord protected lens + wire `renderUnitCard` to the RLS rows) |
 | Clinic — tombstoned provider/patient/appointment LINGER in the FE | A soft-deleted clinic entity stays pickable/visible because the full-engine lens re-projects it while its keyed aspect survives. | Clinic | platform (Refractor) + FE | ★★ | S | 🚧 blocked-on lattice [full-engine tombstone retraction](lattice.md) (Read-model section) |
+| Clinic — follow-ups captured but not actionable (the forcing function) | A recorded encounter's `followUpRequested`/`followUpDate` only render as an inert card label — no "due follow-ups" worklist for staff and no follow-up reminder, so a requested follow-up silently falls through. | Clinic | pkg + FE | ★★★ | M | 📋 ready (FE worklist over the existing `followUp*` lens cols + a `@at` follow-up reminder on the clinic-reminders pattern — uses `@at`, NOT blocked on `@every`) |
+| Clinic — appointment status has no lifecycle guard | `SetAppointmentStatus` upserts any enum value over any current status (verified live: `completed→scheduled`, `cancelled→completed` both commit) — no state machine, so a finished/cancelled visit silently reverts. | Clinic | pkg | ★★ | S | 📋 ready (clinic-domain `SetAppointmentStatus`: validate from→to; treat `cancelled`/`completed`/`noShow` as terminal) |
+| Clinic — patient contact (email/phone) captured but never projected | `CreatePatient` stores `.demographics.{email,phone}` but the `clinicPatients` lens projects only `name` — staff can't see contact info, and a real reminder channel has no address to send to. | Clinic | pkg + FE | ★★ | S | 📋 ready (add email/phone to the `clinicPatients` lens for the operator view; prereq for the reminder notification channel) |
 
 ## PO notes (dated — drives rotation)
 
 Compact rotation memory only — PO *findings* are filed as demand rows above + the Done log; the verbose
 dated run-logs live in git history. Rotate LoftSpace ↔ Clinic, staggered from the Steward.
 
-- **Rotation to date:** LoftSpace ×6, Clinic ×3 (last: LoftSpace 6th run + Clinic 3rd run, both 2026-06-28).
+- **Rotation to date:** LoftSpace ×6, Clinic ×4 (last: Clinic 4th run 2026-06-30, full booking→status→encounter flow).
 - **Method:** reuse the already-up shared stack (`make up-full` + `install-<vertical>`), exercise the live
   app as the product owner, file scored items. Both apps exist + are exercisable live (`:7788` / `:7799`).
-- **Next:** the staler of the two by run-date (Clinic).
+- **Next:** the staler of the two by run-date (LoftSpace).
 
 ## Done log — verticals (newest first)
 
