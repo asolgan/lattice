@@ -50,7 +50,7 @@ func TestGrantKeyFields(t *testing.T) {
 // ── ProtectedAdapter array-encoding unit (no database) ───────────────────────
 
 func TestNewProtectedAdapter_NilInner(t *testing.T) {
-	_, err := NewProtectedAdapter(nil, []string{"authz_anchors"})
+	_, err := NewProtectedAdapter(nil, []string{"authz_anchors"}, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "inner must not be nil")
 }
@@ -144,7 +144,7 @@ func TestReadPathSeam_Integration(t *testing.T) {
 	// engine's native []any list — it must land as text[].
 	base, err := NewPostgresAdapter(pool, tbl, []string{"id"}, 10*time.Second, DeleteModeHard)
 	require.NoError(t, err)
-	pa, err := NewProtectedAdapter(base, []string{AuthzAnchorsColumn})
+	pa, err := NewProtectedAdapter(base, []string{AuthzAnchorsColumn}, []ColumnDef{{Name: "status", Type: "text"}})
 	require.NoError(t, err)
 	require.NoError(t, pa.Upsert(ctx,
 		map[string]any{"id": "row1"},

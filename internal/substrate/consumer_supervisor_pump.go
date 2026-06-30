@@ -170,6 +170,16 @@ func (s *ConsumerSupervisor) runPump(ctx context.Context, spec ConsumerSpec, st 
 		return
 	}
 
+	// A fresh start (no persisted paused state) with a non-empty InitialPause
+	// seeds the pause set before the first drain, so an InitialPause: PauseInfra
+	// pump enters the probe loop and projects nothing until Probe passes — the
+	// fail-closed precondition gate. restoreState ran first, so a persisted pause
+	// (a restart) already populated the reason set and takes precedence here.
+	if spec.InitialPause != "" && !st.anyReason() {
+		st.addReason(spec.InitialPause)
+		s.persistDominant(context.WithoutCancel(ctx), spec, st, "")
+	}
+
 	for {
 		if ctx.Err() != nil {
 			return

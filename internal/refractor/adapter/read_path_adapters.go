@@ -75,8 +75,11 @@ func (g *GrantWriterAdapter) Delete(ctx context.Context, keys map[string]any, pr
 	return g.w.RevokeGrant(ctx, actor, anchor, source, projectionSeq)
 }
 
-// Probe delegates to the writer's pool ping.
-func (g *GrantWriterAdapter) Probe(ctx context.Context) error { return g.w.Probe(ctx) }
+// Probe verifies the actor_read_grants table's out-of-band posture (it exists
+// with the §6.14 shape) before the grant lens projects, and re-verifies on the
+// infra-pause probe loop so the lens auto-resumes once the operator provisions
+// the table. Refractor issues no DDL.
+func (g *GrantWriterAdapter) Probe(ctx context.Context) error { return g.w.VerifyGrantTable(ctx) }
 
 // Close is a no-op — the pool lifecycle is owned by PoolManager.
 func (g *GrantWriterAdapter) Close() error { return nil }
@@ -95,6 +98,9 @@ func (g *GrantWriterAdapter) Close() error { return nil }
 type ProtectedAdapter struct {
 	inner     *PostgresAdapter
 	arrayCols map[string]struct{}
+	// body is the lens-declared body columns, retained so Probe can verify the
+	// out-of-band table carries them (the key columns come from inner.keyOrder).
+	body []ColumnDef
 }
 
 var (
@@ -104,8 +110,9 @@ var (
 
 // NewProtectedAdapter wraps a non-nil PostgresAdapter. arrayCols names the row
 // columns to encode as Postgres arrays (text[]); a nil/empty set behaves like
-// the base adapter.
-func NewProtectedAdapter(inner *PostgresAdapter, arrayCols []string) (*ProtectedAdapter, error) {
+// the base adapter. body is the lens-declared body columns, used by Probe to
+// verify the out-of-band table's shape.
+func NewProtectedAdapter(inner *PostgresAdapter, arrayCols []string, body []ColumnDef) (*ProtectedAdapter, error) {
 	if inner == nil {
 		return nil, fmt.Errorf("protected adapter: inner must not be nil")
 	}
@@ -113,7 +120,7 @@ func NewProtectedAdapter(inner *PostgresAdapter, arrayCols []string) (*Protected
 	for _, c := range arrayCols {
 		set[c] = struct{}{}
 	}
-	return &ProtectedAdapter{inner: inner, arrayCols: set}, nil
+	return &ProtectedAdapter{inner: inner, arrayCols: set, body: body}, nil
 }
 
 // toStringSlice converts a list value to []string for a text[] column. A nil
@@ -176,8 +183,15 @@ func (p *ProtectedAdapter) Delete(ctx context.Context, keys map[string]any, proj
 	return p.inner.Delete(ctx, keys, projectionSeq)
 }
 
-// Probe delegates to the base adapter.
-func (p *ProtectedAdapter) Probe(ctx context.Context) error { return p.inner.Probe(ctx) }
+// Probe verifies the protected table's out-of-band security posture (FORCE ROW
+// LEVEL SECURITY on, the §6.14 columns, a SELECT policy) before the lens
+// projects, and re-verifies on the infra-pause probe loop so the lens stays dark
+// fail-closed until the operator provisions the table out-of-band, then
+// auto-resumes. Refractor issues no DDL; this is the active replacement for the
+// retired runtime ProvisionProtectedTable.
+func (p *ProtectedAdapter) Probe(ctx context.Context) error {
+	return VerifyProtectedTable(ctx, p.inner.pool, p.inner.table, p.inner.keyOrder, p.body, p.inner.queryTimeout)
+}
 
 // Close delegates to the base adapter (a no-op — the pool is pool-managed).
 func (p *ProtectedAdapter) Close() error { return p.inner.Close() }

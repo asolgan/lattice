@@ -180,6 +180,16 @@ type ConsumerSpec struct {
 	// Probe checks infra-recovery during a probe loop (optional; nil = no
 	// automatic recovery from an infra pause).
 	Probe ProbeFunc
+	// InitialPause, when non-empty, seeds the pump's pause set at activation
+	// (before its first drain) on a fresh start — i.e. when restoreState found no
+	// persisted paused state. The zero value (unpaused) is every existing
+	// consumer's behaviour: the pump drains immediately. Set it to PauseInfra for
+	// a consumer that must verify a downstream precondition BEFORE it projects:
+	// the pump enters the probe loop and drains only once Probe passes, so a Probe
+	// that checks the precondition gates the first write fail-closed (and
+	// auto-resumes when the precondition is met). A persisted paused state (a
+	// restart) takes precedence — restoreState runs first.
+	InitialPause PauseReason
 	// Health persists and restores lifecycle state (optional; nil = no health
 	// I/O).
 	Health HealthSink

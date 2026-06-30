@@ -228,22 +228,24 @@ func main() {
 				return nil, err
 			}
 			// A grant lens projects to the shared actor_read_grants table through
-			// the seq-guarded grant writer (Contract #6 §6.14), provisioned here.
+			// the seq-guarded grant writer (Contract #6 §6.14). The table is
+			// provisioned out-of-band; the adapter's Probe verifies its posture and
+			// the lens starts infra-paused until the verify passes (verify-and-
+			// pause). Refractor issues no runtime DDL.
 			if r.Into.GrantTable {
 				gw, err := adapter.NewPostgresGrantWriter(pool, r.Into.QueryTimeout)
 				if err != nil {
 					return nil, err
 				}
-				if err := gw.Provision(ctx); err != nil {
-					return nil, fmt.Errorf("lens %q: provision grant table: %w", r.ID, err)
-				}
 				return adapter.NewGrantWriterAdapter(gw)
 			}
-			// A protected read model: provision the actor_read_grants table the
-			// RLS policy references, then the RLS-locked business table (FORCE ROW
-			// LEVEL SECURITY + the §6.14 set-membership policy) from the lens spec
-			// (read-path authorization, D1.3). A non-protected table stays
-			// provisioned out-of-band (the adapter issues no DDL).
+			// A protected read model (read-path authorization, D1.3): the RLS-locked
+			// business table (FORCE ROW LEVEL SECURITY + the §6.14 set-membership
+			// policy) and the actor_read_grants table its policy references are both
+			// provisioned out-of-band. The adapter's Probe verifies the posture and
+			// the lens starts infra-paused until it passes — Refractor projects
+			// nothing into a table that is not locked down, and issues no DDL. A
+			// non-protected table is also provisioned out-of-band.
 			base, err := adapter.NewPostgresAdapter(pool, r.Into.Table, r.Into.Key, r.Into.QueryTimeout, deleteMode)
 			if err != nil {
 				return nil, err
@@ -251,17 +253,7 @@ func main() {
 			if !r.Into.Protected {
 				return base, nil
 			}
-			gw, err := adapter.NewPostgresGrantWriter(pool, r.Into.QueryTimeout)
-			if err != nil {
-				return nil, err
-			}
-			if err := gw.Provision(ctx); err != nil {
-				return nil, fmt.Errorf("lens %q: provision grant table: %w", r.ID, err)
-			}
-			if err := adapter.ProvisionProtectedTable(ctx, pool, r.Into.Table, r.Into.Key, r.Into.Columns, r.Into.QueryTimeout); err != nil {
-				return nil, fmt.Errorf("lens %q: provision protected table: %w", r.ID, err)
-			}
-			return adapter.NewProtectedAdapter(base, r.Into.ArrayColumns)
+			return adapter.NewProtectedAdapter(base, r.Into.ArrayColumns, r.Into.Columns)
 		default:
 			return nil, fmt.Errorf("unknown adapter target %q", r.Into.Target)
 		}
@@ -374,12 +366,21 @@ func main() {
 		// KV stream + filter. The supervisor creates the durable idempotently when
 		// Run registers it (CreateOrUpdateConsumer). ruleID must not be "adjacency"
 		// (collides with the bootstrapper's refractor-adjacency consumer).
+		// A protected/grant Postgres lens starts infra-paused so its Probe verifies
+		// the out-of-band RLS posture BEFORE the first projection — fail-closed
+		// (Contract #6 §6.14, verify-and-pause). Every other lens drains
+		// immediately (zero-value InitialPause).
+		var initialPause substrate.PauseReason
+		if r.Into.Protected || r.Into.GrantTable {
+			initialPause = substrate.PauseInfra
+		}
 		p.RunOn(conn, substrate.ConsumerSpec{
 			Name:          "refractor-" + r.ID,
 			Stream:        subjects.CoreKVStream(coreKVBucket),
 			FilterSubject: subjects.CoreKVFilter(coreKVBucket),
 			DeliverPolicy: substrate.DeliverLastPerSubject,
 			DeliverGroup:  "refractor-" + r.ID,
+			InitialPause:  initialPause,
 		})
 
 		// Per-lens lag metrics: read pending from the supervised consumer by

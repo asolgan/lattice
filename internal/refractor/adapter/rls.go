@@ -2,10 +2,12 @@ package adapter
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -293,4 +295,198 @@ func ProvisionProtectedTable(ctx context.Context, pool *pgxpool.Pool, table stri
 		}
 	}
 	return nil
+}
+
+// VerifyProtectedTable performs the read-only posture verification a protected
+// read-model table must pass before its lens projects (Contract #6 §6.14,
+// out-of-band provisioning verify-and-pause). It issues NO DDL and NO writes —
+// only system-catalog reads — so the operator owns provisioning while Refractor
+// refuses to project into a table that is not locked down. It is the Probe a
+// protected lens runs while infra-paused at activation, so a failure keeps the
+// lens dark and the probe loop re-verifies until the operator provisions the
+// table out-of-band.
+//
+// It gates, in priority order:
+//
+//   - The table exists, is an ordinary table (relkind 'r'), and has row-level
+//     security BOTH enabled (relrowsecurity) AND forced (relforcerowsecurity) —
+//     the SECURITY-critical bit. RLS is inactive unless ENABLE is set (FORCE
+//     alone, without ENABLE, leaves the table world-readable), and FORCE is what
+//     also subjects the table owner. With both on, a missing or wrong policy
+//     denies all rows (a fail-closed outage, never a leak — §6.14 H3); with
+//     either off, the table is readable. An absent table fails here.
+//   - the expected columns present with the platform types (authz_anchors is
+//     exactly text[], projection_seq is bigint, every key + body column present) —
+//     a missing/mistyped column would fail the write anyway; verifying up front
+//     turns a per-row write error into a clean activation pause with a named
+//     column.
+//   - the §6.14 set-membership SELECT policy present and intact — not merely that
+//     SOME SELECT policy exists (a permissive USING(true) policy would over-share
+//     under FORCE RLS), but that the deterministically-named policy exists and its
+//     USING expression references the authz-anchors column and the grant table. A
+//     trusted operator adding a SECOND permissive policy alongside is outside the
+//     threat model (same class as deliberately disabling FORCE); this gate catches
+//     the realistic mistake of a missing or hand-wrong membership policy.
+//
+// Every failure is a plain (untagged) error so failure.Classify treats it as
+// recoverable (the default transient tier), not a structural pg error that would
+// escalate the pump to an operator-Resume pause. The lookups use to_regclass
+// (NULL when absent) for the same reason — an absent table surfaces as this
+// descriptive error, not a structural 42P01.
+func VerifyProtectedTable(ctx context.Context, pool *pgxpool.Pool, table string, keyCols []string, body []ColumnDef, timeout time.Duration) error {
+	if pool == nil {
+		return fmt.Errorf("rls: verify: pool must not be nil")
+	}
+	if err := validateIdent("table", table); err != nil {
+		return err
+	}
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	// 1. SECURITY-critical: the table exists, is an ordinary table, and RLS is
+	// both ENABLED and FORCED. ENABLE (relrowsecurity) is what makes policies
+	// apply at all — FORCE without ENABLE leaves the table world-readable — and
+	// FORCE (relforcerowsecurity) extends enforcement to the table owner.
+	var relkind string
+	var rowSec, forceRowSec bool
+	err := pool.QueryRow(ctx,
+		`SELECT relkind::text, relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid = to_regclass($1)`,
+		table,
+	).Scan(&relkind, &rowSec, &forceRowSec)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("rls: verify %q: table is absent — provision it out-of-band", table)
+	}
+	if err != nil {
+		return fmt.Errorf("rls: verify %q: read pg_class: %w", table, err)
+	}
+	if relkind != "r" {
+		return fmt.Errorf("rls: verify %q: not an ordinary table (relkind %q) — row-level security does not apply", table, relkind)
+	}
+	if !rowSec {
+		return fmt.Errorf("rls: verify %q: ROW LEVEL SECURITY is not ENABLED — refusing to project (the table would be world-readable)", table)
+	}
+	if !forceRowSec {
+		return fmt.Errorf("rls: verify %q: FORCE ROW LEVEL SECURITY is not enabled — refusing to project (the table owner would bypass RLS)", table)
+	}
+
+	// 2. Functional: the expected columns are present with the platform types
+	// (exact Postgres type names via pg_attribute/format_type, resolved against
+	// the same relation to_regclass found).
+	cols, err := tableColumns(ctx, pool, table)
+	if err != nil {
+		return fmt.Errorf("rls: verify %q: %w", table, err)
+	}
+	for _, k := range keyCols {
+		if _, ok := cols[k]; !ok {
+			return fmt.Errorf("rls: verify %q: missing key column %q", table, k)
+		}
+	}
+	for _, c := range body {
+		if _, ok := cols[c.Name]; !ok {
+			return fmt.Errorf("rls: verify %q: missing body column %q", table, c.Name)
+		}
+	}
+	if dt, ok := cols[AuthzAnchorsColumn]; !ok {
+		return fmt.Errorf("rls: verify %q: missing %s column", table, AuthzAnchorsColumn)
+	} else if dt != "text[]" {
+		return fmt.Errorf("rls: verify %q: %s must be text[], found %q", table, AuthzAnchorsColumn, dt)
+	}
+	if dt, ok := cols["projection_seq"]; !ok {
+		return fmt.Errorf("rls: verify %q: missing projection_seq column", table)
+	} else if dt != "bigint" {
+		return fmt.Errorf("rls: verify %q: projection_seq must be bigint, found %q", table, dt)
+	}
+
+	// 3. The §6.14 membership policy is present and intact: the deterministically
+	// named SELECT policy exists (polcmd 'r' = SELECT, '*' = ALL) and its USING
+	// expression filters on the authz-anchors column against the grant table — so
+	// a missing, mis-named, or USING(true) policy is rejected, not silently served.
+	var qual string
+	err = pool.QueryRow(ctx,
+		`SELECT pg_get_expr(polqual, polrelid) FROM pg_policy
+		 WHERE polrelid = to_regclass($1) AND polname = $2 AND polcmd IN ('r', '*')`,
+		table, policyName(table),
+	).Scan(&qual)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("rls: verify %q: no SELECT policy %q — the read model is dark or mis-provisioned", table, policyName(table))
+	}
+	if err != nil {
+		return fmt.Errorf("rls: verify %q: read pg_policy: %w", table, err)
+	}
+	if !strings.Contains(qual, AuthzAnchorsColumn) || !strings.Contains(qual, GrantTable) {
+		return fmt.Errorf("rls: verify %q: SELECT policy %q does not enforce §6.14 set-membership (USING must filter %s against %s) — refusing to project", table, policyName(table), AuthzAnchorsColumn, GrantTable)
+	}
+	return nil
+}
+
+// VerifyGrantTable performs the read-only posture verification for the shared
+// actor_read_grants table (Contract #6 §6.14). It issues no DDL: it asserts the
+// table exists with the expected columns and types, so the seq-guarded
+// Upsert/RevokeGrant writes and every protected policy's membership subquery have
+// the shape they depend on. Like VerifyProtectedTable it returns plain
+// (recoverable) errors so a grant lens auto-resumes once the operator provisions
+// the table out-of-band. The grant table is the read-auth source of truth, not a
+// protected business table, so it is not itself RLS-locked — only its shape is
+// verified.
+func (w *PostgresGrantWriter) VerifyGrantTable(ctx context.Context) error {
+	ctx, cancel := w.withTimeout(ctx)
+	defer cancel()
+	want := map[string]string{
+		"actor_id":       "text",
+		"anchor_id":      "text",
+		"grant_source":   "text",
+		"projection_seq": "bigint",
+		"is_deleted":     "boolean",
+	}
+	got, err := tableColumns(ctx, w.pool, GrantTable)
+	if err != nil {
+		return fmt.Errorf("grant writer: verify: %w", err)
+	}
+	if len(got) == 0 {
+		return fmt.Errorf("grant writer: verify: table %q is absent — provision it out-of-band", GrantTable)
+	}
+	for col, typ := range want {
+		dt, ok := got[col]
+		if !ok {
+			return fmt.Errorf("grant writer: verify: %q missing column %q", GrantTable, col)
+		}
+		if dt != typ {
+			return fmt.Errorf("grant writer: verify: %q column %q must be %s, found %q", GrantTable, col, typ, dt)
+		}
+	}
+	return nil
+}
+
+// tableColumns reads a table's column-name → exact-Postgres-type map via
+// pg_attribute/format_type ("text", "bigint", "text[]", "boolean", …), resolved
+// against the relation to_regclass finds — so it is consistent with the pg_class
+// and pg_policy lookups (no search_path divergence) and distinguishes text[] from
+// any other array type. An absent table (or one with no live columns) yields an
+// empty map (no error), so the caller distinguishes "absent" from "wrong shape".
+func tableColumns(ctx context.Context, pool *pgxpool.Pool, table string) (map[string]string, error) {
+	rows, err := pool.Query(ctx,
+		`SELECT a.attname, format_type(a.atttypid, a.atttypmod)
+		 FROM pg_attribute a
+		 WHERE a.attrelid = to_regclass($1) AND a.attnum > 0 AND NOT a.attisdropped`,
+		table,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("read columns: %w", err)
+	}
+	defer rows.Close()
+	cols := make(map[string]string)
+	for rows.Next() {
+		var name, dtype string
+		if err := rows.Scan(&name, &dtype); err != nil {
+			return nil, fmt.Errorf("scan column: %w", err)
+		}
+		cols[name] = dtype
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate columns: %w", err)
+	}
+	return cols, nil
 }
