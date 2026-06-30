@@ -13,12 +13,16 @@
 //	                                                                documentedAt, followUpRequested, followUpDate? (operational, projected)}
 //	lnk.appointment.<id>.forPatient.patient.<id>       (appointment → patient, later-arriving source)
 //	lnk.appointment.<id>.withProvider.provider.<id>    (appointment → provider, later-arriving source)
+//	lnk.provider.<id>.hasBooking.appointment.<id>      (provider → appointment, hub-sourced; the enumeration prefix)
+//	lnk.patient.<id>.hasBooking.appointment.<id>       (patient → appointment, hub-sourced)
 //
-// Both patient and provider carry an empty-initialized .bookings index (the
-// per-(patient|provider) appointment-key list), the OCC serialization point the
-// double-book guards snapshot.
+// The booking TOPOLOGY lives in the hub-sourced hasBooking links (enumerated at
+// write time via kv.Links, Contract #2 §2.5.1 — a bounded prefix). Both patient and
+// provider also carry a {epoch:0}-initialized .bookingGuard scalar, the OCC
+// serialization point the double-book guards bump (topology→links, lock→epoch).
 //
-// Twelve ops (all known-key-reads + on-demand kv.Read, no prefix scans):
+// Twelve ops (known-key kv.Read + the one sanctioned bounded kv.Links enumeration,
+// no raw prefix scans):
 //
 //	CreatePatient / TombstonePatient
 //	CreateProvider / TombstoneProvider / SetProviderProfile (full-replace upsert of .profile) /
@@ -53,8 +57,9 @@
 //     presence + follow-up scheduling) so the clinical display stays Vault-gated.
 //   - Recurring-availability / @every scheduling (Capability-KV §06 defers the
 //     recurring case). Op-time double-book rejection (CreateAppointment +
-//     RescheduleAppointment, via the provider .bookings OCC index) and provider
-//     business-hours rejection (the opt-in .hours windows) ARE enforced here, via
+//     RescheduleAppointment, by enumerating the hasBooking links serialized on the
+//     .bookingGuard epoch) and provider business-hours rejection (the opt-in .hours
+//     windows) ARE enforced here, via
 //     "the operation's own Starlark logic" (§06's sanctioned path).
 //   - Recurring @every reminders / availability (@every has no consumer; §10.4
 //     ships @at one-shot). One-shot @at appointment reminders ("remind 24h before")
@@ -80,7 +85,7 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
 	Name:        "clinic-domain",
-	Version:     "0.7.0",
+	Version:     "0.8.0",
 	Description: "Clinic bookable domain: patient / provider / appointment vertex types + their aspects and links, written by Create*/SetAppointmentStatus/RecordEncounter/Tombstone* ops. RecordEncounter captures the post-visit clinical record (.encounter — RAW PHI never projected, plus operational documentation/follow-up signals the lens does project). Three projection lenses (clinicAppointments, clinicProviders, clinicPatients) are the P5 read models a clinic FE reads. Self-contained — no package dependency.",
 	DDLs:        DDLs(),
 	Lenses:      Lenses(),

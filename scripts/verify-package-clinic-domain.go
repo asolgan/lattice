@@ -12,8 +12,8 @@
 //	  SetAppointmentStatus + RecordEncounter + TombstoneAppointment), each with its
 //	  self-description.
 //	9 aspectType DDLs: patientDemographics, providerProfile, appointmentSchedule,
-//	  appointmentStatus, providerBookings, providerHours, providerTimeOff,
-//	  patientBookings, appointmentEncounter — their step-6 write gates.
+//	  appointmentStatus, providerBookingGuard, providerHours, providerTimeOff,
+//	  patientBookingGuard, appointmentEncounter — their step-6 write gates.
 //	12 permission vertices (one per op), scope any, granted to operator.
 //	1 package vertex + manifest aspect (name=clinic-domain).
 //
@@ -112,10 +112,10 @@ func main() {
 		{canonical: "providerProfile", class: "meta.ddl.aspectType", ops: []string{"CreateProvider", "SetProviderProfile"}},
 		{canonical: "appointmentSchedule", class: "meta.ddl.aspectType", ops: []string{"CreateAppointment", "RescheduleAppointment"}},
 		{canonical: "appointmentStatus", class: "meta.ddl.aspectType", ops: []string{"CreateAppointment", "SetAppointmentStatus"}},
-		{canonical: "providerBookings", class: "meta.ddl.aspectType", ops: []string{"CreateProvider", "CreateAppointment", "RescheduleAppointment"}},
+		{canonical: "providerBookingGuard", class: "meta.ddl.aspectType", ops: []string{"CreateProvider", "CreateAppointment", "RescheduleAppointment"}},
 		{canonical: "providerHours", class: "meta.ddl.aspectType", ops: []string{"SetProviderHours"}},
 		{canonical: "providerTimeOff", class: "meta.ddl.aspectType", ops: []string{"SetProviderTimeOff"}},
-		{canonical: "patientBookings", class: "meta.ddl.aspectType", ops: []string{"CreatePatient", "CreateAppointment", "RescheduleAppointment"}},
+		{canonical: "patientBookingGuard", class: "meta.ddl.aspectType", ops: []string{"CreatePatient", "CreateAppointment", "RescheduleAppointment"}},
 		{canonical: "appointmentEncounter", class: "meta.ddl.aspectType", ops: []string{"RecordEncounter"}},
 	}
 

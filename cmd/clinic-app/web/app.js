@@ -746,8 +746,9 @@ async function patientAppointments(patient) {
 }
 
 // apptBlocks reports whether an appointment still occupies its slot. A cancelled /
-// no-show appointment is removed from the provider's .bookings conflict index, so
-// the op would allow rebooking that time — exclude it from the picker's block set.
+// no-show appointment has its hasBooking link tombstoned and is skipped by the
+// double-book guard, so the op would allow rebooking that time — exclude it from the
+// picker's block set.
 function apptBlocks(a) {
   return a.status !== "cancelled" && a.status !== "noShow";
 }
@@ -1108,12 +1109,12 @@ async function submitBook(ev) {
   const submit = $("#book-submit");
   submit.disabled = true;
   try {
-    // The provider's AND the patient's .bookings indexes are declared reads so the
+    // The provider's AND the patient's .bookingGuard epochs are declared reads so the
     // op can detect a provider double-book (SlotConflict) AND a patient double-book
-    // across providers (PatientDoubleBook), and so the OCC checks serialize
-    // concurrent bookings on both sides.
+    // across providers (PatientDoubleBook) — the guard enumerates the hasBooking links
+    // (kv.Links) and serializes concurrent bookings on these OCC epochs on both sides.
     const reply = await submitOp("CreateAppointment", "appointment", payload,
-      [state.patient, provider, provider + ".bookings", state.patient + ".bookings"]);
+      [state.patient, provider, provider + ".bookingGuard", state.patient + ".bookingGuard"]);
     const msg = rejectionMessage(reply);
     if (msg) {
       toast("Booking rejected — " + friendlyBookingRejection(msg), "err");
@@ -1830,9 +1831,10 @@ function lifecycleButtons(a, onDone) {
 // RescheduleAppointment rewrites the .schedule aspect with new times; the op
 // re-derives remindAt = startsAt − 24h so the ~24h reminder re-arms for a
 // not-yet-sent reminder, and rejects a move into a slot already booked for the
-// provider (SlotConflict — the provider .bookings index is a declared read). The
-// existing reason is round-tripped (the op clears it if omitted), and the
-// provider / patient links + status are untouched server-side.
+// provider (SlotConflict — the guard enumerates the provider's hasBooking links,
+// serialized on the provider .bookingGuard epoch declared read). The existing reason
+// is round-tripped (the op clears it if omitted), and the provider / patient links +
+// status are untouched server-side.
 
 function openReschedule(a) {
   state.rescheduling = a;
@@ -1878,12 +1880,12 @@ async function submitReschedule(ev) {
   const submit = $("#reschedule-submit");
   submit.disabled = true;
   try {
-    // The provider's AND the patient's .bookings indexes are declared reads so the
+    // The provider's AND the patient's .bookingGuard epochs are declared reads so the
     // op detects a provider double-book (SlotConflict) and a patient double-book
     // across providers (PatientDoubleBook) against the new time (RescheduleAppointment
-    // skips this appointment on both sides).
+    // skips this appointment on both sides; the guard enumerates the hasBooking links).
     const reply = await submitOp("RescheduleAppointment", "appointment", payload,
-      [a.appointmentKey, a.providerKey + ".bookings", a.patientKey + ".bookings"]);
+      [a.appointmentKey, a.providerKey + ".bookingGuard", a.patientKey + ".bookingGuard"]);
     const msg = rejectionMessage(reply);
     if (msg) {
       toast("Could not reschedule — " + friendlyBookingRejection(msg), "err");

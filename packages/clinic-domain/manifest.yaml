@@ -1,22 +1,22 @@
 name: clinic-domain
-version: 0.7.0
+version: 0.8.0
 description: |
   Clinic bookable domain. Self-contained package owning three vertex types —
   patient, provider, appointment — with their aspects (.demographics, .profile,
-  .schedule, .status, .encounter, provider .bookings, patient .bookings) and links
-  (forPatient, withProvider), written by the
+  .schedule, .status, .encounter, provider/patient .bookingGuard) and links
+  (forPatient, withProvider, provider/patient-sourced hasBooking), written by the
   Create*/Reschedule/SetAppointmentStatus/RecordEncounter/Tombstone* ops.
   RecordEncounter captures the post-visit clinical record (.encounter — RAW PHI
   {summary, assessment, plan} never projected, plus operational documentation /
   follow-up signals the lens does project). Three projection lenses
   (clinicAppointments, clinicProviders, clinicPatients)
   are the P5 read models a clinic FE reads. CreateAppointment + RescheduleAppointment
-  reject a provider double-book (SlotConflict) via the provider's OCC-snapshotted
-  .bookings index AND a patient double-book across providers (PatientDoubleBook) via
-  the patient's .bookings index, and an out-of-hours booking (OutsideHours) via the
-  provider's opt-in .hours availability windows (SetProviderHours). No package
-  dependency. PHI/Vault and @every recurring schedules are the separate deferred
-  items this vertical forces — out of scope here.
+  reject a provider double-book (SlotConflict) AND a patient double-book across
+  providers (PatientDoubleBook) by ENUMERATING the provider's / patient's hasBooking
+  links (kv.Links, Contract #2 §2.5.1) serialized on a scalar .bookingGuard epoch, and
+  an out-of-hours booking (OutsideHours) via the provider's opt-in .hours availability
+  windows (SetProviderHours). No package dependency. PHI/Vault and @every recurring
+  schedules are the separate deferred items this vertical forces — out of scope here.
 declares:
   ddls:
     - canonicalName: patient
@@ -33,13 +33,13 @@ declares:
       class: meta.ddl.aspectType
     - canonicalName: appointmentStatus
       class: meta.ddl.aspectType
-    - canonicalName: providerBookings
+    - canonicalName: providerBookingGuard
       class: meta.ddl.aspectType
     - canonicalName: providerHours
       class: meta.ddl.aspectType
     - canonicalName: providerTimeOff
       class: meta.ddl.aspectType
-    - canonicalName: patientBookings
+    - canonicalName: patientBookingGuard
       class: meta.ddl.aspectType
     - canonicalName: appointmentEncounter
       class: meta.ddl.aspectType

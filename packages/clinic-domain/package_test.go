@@ -73,10 +73,10 @@ func TestPackage_DDLs(t *testing.T) {
 		"providerProfile":      {"CreateProvider", "SetProviderProfile"},
 		"appointmentSchedule":  {"CreateAppointment", "RescheduleAppointment"},
 		"appointmentStatus":    {"CreateAppointment", "SetAppointmentStatus"},
-		"providerBookings":     {"CreateProvider", "CreateAppointment", "RescheduleAppointment"},
+		"providerBookingGuard": {"CreateProvider", "CreateAppointment", "RescheduleAppointment"},
 		"providerHours":        {"SetProviderHours"},
 		"providerTimeOff":      {"SetProviderTimeOff"},
-		"patientBookings":      {"CreatePatient", "CreateAppointment", "RescheduleAppointment"},
+		"patientBookingGuard":  {"CreatePatient", "CreateAppointment", "RescheduleAppointment"},
 		"appointmentEncounter": {"RecordEncounter"},
 	}
 	for name, wantCmds := range aspectWriters {
@@ -225,8 +225,13 @@ func TestPackage_ScriptGuards(t *testing.T) {
 		`enforce_time_off(provider, starts_at, ends_at)`,                   // both ops enforce provider time-off
 		`ProviderUnavailable`,                                              // the time-off-overlap rejection
 		`PatientDoubleBook`,                                                // patient-side double-book rejection (across providers)
-		`patient_bookings_key = patient + ".bookings"`,                     // patient .bookings index read
-		`make_aspect_upsert_occ(patient, "bookings"`,                       // OCC-guarded patient index rewrite
+		`kv.Links(hub, "hasBooking", "out"`,                                // bounded op-time link enumeration (Contract #2 §2.5.1)
+		`assert_no_overlap(patient, appt_key`,                              // patient-side double-book via hasBooking enumeration
+		`bump_guard(state, patient, "patientBookingGuard")`,                // OCC-guarded patient serialization-epoch bump
+		`bump_guard(state, provider, "providerBookingGuard")`,             // OCC-guarded provider serialization-epoch bump
+		`lnk.provider." + provider_id + ".hasBooking.appointment.`,         // provider-sourced hasBooking link (hub = source, bounded prefix)
+		`lnk.patient." + patient_id + ".hasBooking.appointment.`,           // patient-sourced hasBooking link
+		`tombstone_booking_links(appt_key)`,                                // eager bound-maintenance on terminal transition / tombstone
 		`WrongPatient`,                                                     // reschedule validates the passed patient via the forPatient link
 		`ot == "RecordEncounter"`,                                          // the clinical-record op handler
 		`make_aspect_upsert(appt_key, "encounter", "appointmentEncounter"`, // RecordEncounter upserts .encounter
@@ -253,10 +258,10 @@ func TestPackage_ScriptGuards(t *testing.T) {
 		}
 	}
 
-	// CreatePatient initializes the per-patient .bookings index empty (so the
-	// declared read key is always present for the double-book check).
-	if !strings.Contains(patientDDLScript, `make_aspect(pkey, "bookings", "patientBookings"`) {
-		t.Errorf("patient script must initialize the .bookings index on CreatePatient")
+	// CreatePatient initializes the per-patient .bookingGuard epoch (so the declared
+	// read key is always present for the double-book serialization point).
+	if !strings.Contains(patientDDLScript, `make_aspect(pkey, "bookingGuard", "patientBookingGuard"`) {
+		t.Errorf("patient script must initialize the .bookingGuard epoch on CreatePatient")
 	}
 
 	// The provider script owns SetProviderHours (the .hours writer) + its validation.
