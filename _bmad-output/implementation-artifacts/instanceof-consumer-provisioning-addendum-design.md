@@ -1,6 +1,6 @@
 # Design addendum — provisioning the `instanceOf → type-DDL` link (the consumer's missing enabler)
 
-**Status: 📐 awaiting-Andrew (ratification)** · Winston (Designer fire, 2026-06-29) · addendum to
+**Status: ✅ Andrew-ratified (2026-06-29) — Mechanism A** · Winston (Designer fire, 2026-06-29) · addendum to
 [`instanceof-template-op-discovery-design.md`](instanceof-template-op-discovery-design.md)
 
 ## For Andrew (ratify in one look)
