@@ -254,7 +254,34 @@ The §2.4 authoring rule — *an enumeration hub is authored as the link **sourc
 > partial set on context-cancel (the keyLister has no error channel; now returns `ctx.Err()`) and a
 > missing de-dup against the pinned-NATS "may report duplicate keys under concurrent writes" warning
 > (a boundary duplicate would skip a distinct key across pages) — both fixed + unit-tested
-> (`pageFilteredKeys`, `TestKVListKeysFilter_CancelledContext`). **Next = Fire 2 (clinic consumer).**
+> (`pageFilteredKeys`, `TestKVListKeysFilter_CancelledContext`). **Fire 2 SHIPPED — next = Fire 3 (optional).**
+>
+> **Checkpoint — Fire 2 SHIPPED (clinic consumer, 2026-06-30).** Re-authored the appointment double-book
+> guard onto `hasBooking` links + a scalar `bookingGuard` epoch: dropped the `providerBookings`/
+> `patientBookings` key-list aspects + their two DDLs; added `providerBookingGuard`/`patientBookingGuard`
+> aspect DDLs ({epoch:int}); CreateProvider/CreatePatient init `{epoch:0}`; the guard enumerates
+> `kv.Links(hub, "hasBooking", "out", cursor, 256)` paged (fail-closed `BookingFanoutTooLarge` if it
+> can't drain in `MAX_BOOKING_PAGES`), serialized on the `bookingGuard` epoch OCC bump (a RevisionConflict
+> re-hydrates → re-enumerates the now-committed link → catches the overlap); `contextHint.reads` now lists
+> the `.bookingGuard` keys; CreateAppointment writes the two hub-sourced `hasBooking` links; terminal
+> transitions (SetAppointmentStatus→terminal, TombstoneAppointment) eagerly tombstone the appointment's
+> inbound `hasBooking` links. Updated `package_test.go`/`integration_test.go` (incl. the concurrency
+> assertion + new link-tombstone assertions), `manifest.yaml`+`package.go` Version `0.7.0`→`0.8.0`,
+> `scripts/verify-package-clinic-domain.go`, the clinic FE read-sets (`cmd/clinic-app/web/app.js`), and
+> `packages/clinic-reminders` (sibling test). All clinic suites green (14+ runs), `go build`/`vet`/
+> `golangci-lint`/`lint-conventions` clean.
+>
+> **Bound-maintenance reality (corrects §2.4 step 4 / §3.3 / §9 where they imply "tombstone bounds the
+> set").** Soft-tombstone (the only delete the Starlark mutation vocabulary has — `create`/`update`/
+> `tombstone`, all PUTs; no hard-delete verb) does **not** remove a link from `kv.Links` enumeration: a
+> tombstoned link's key persists and is still listed (`kv.Links` returns it with `isDeleted=true` per
+> §3.1). So eager tombstone bounds the **per-op `kv.Read` GET fan-out** (the guard's `if link.isDeleted:
+> continue` fast-skip avoids reading the dead booking's vertex/status/schedule) — it does **not** bound the
+> **keyspace LIST** cost, which grows monotonically with a hub's lifetime booking count. True keyspace
+> reclaim needs a **hard-delete mutation verb** (substrate purge + a 4th Starlark op + Contract #2 + step-8
+> commit support) — a separable platform primitive, **filed as a follow-on** in `backlog/lattice.md`. Live
+> correctness never depends on it (the guard's live-status skip is the backstop); it is a per-op-cost
+> optimization for long-lived hubs only.
 >
 > **Lane ownership (Andrew, 2026-06-30):** ALL THREE fires are owned in the **Lattice lane** (the
 > Lattice Steward builds them), even though Fire 2/3 touch `packages/clinic-domain` — kept on one lane
