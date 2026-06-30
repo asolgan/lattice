@@ -183,6 +183,9 @@ func (h *HydratorImpl) Hydrate(ctx context.Context, env *OperationEnvelope) (Hyd
 			// over the same Conn + Core bucket used for hydration. A read of a
 			// key not pre-fetched via contextHint falls through to this.
 			KVReader: connKVReader{conn: h.Conn, bucket: h.CoreBucket},
+			// Back the script's kv.Links() (§2.5.1) with a bounded link lister
+			// over the same Conn + Core bucket — the op-time set-valued enumeration.
+			LinkLister: connLinkLister{conn: h.Conn, bucket: h.CoreBucket},
 		},
 	}, nil
 }

@@ -357,3 +357,461 @@ func TestConnKVReader_AgainstCoreKV(t *testing.T) {
 		t.Fatalf("logically-deleted: isDeleted = false, want true (must surface, not nil)")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// kv.Links (Contract #2 §2.5.1) — the bounded, paged op-time link enumeration.
+// ---------------------------------------------------------------------------
+
+// Valid 20-char NanoIDs for link-key construction in these tests.
+const (
+	linkProvID  = "Pv4kPmRtw9nbCxz5vQ2y"
+	linkApptID1 = "Aa6mP3qBn4rT8wYxK7Vc"
+	linkApptID2 = "Ab2Pn6mQrtwzKbcXvP3T"
+	linkApptID3 = "Ac8Qm5rDp2sV7uXyL4Wt"
+	linkApptID4 = "Ad3Nk7tFq9wZ6bcMv1Pr"
+)
+
+// fakeLinkLister is an in-memory ScriptLinkLister. It records the (filter,
+// cursor, limit) of every call so a test can assert the builtin constructed the
+// right server-side subject filter, and returns a canned page + nextCursor.
+type fakeLinkLister struct {
+	links      []LinkDoc
+	nextCursor string
+	err        error
+	calls      []linkCall
+}
+
+type linkCall struct {
+	filter string
+	cursor string
+	limit  int
+}
+
+func (f *fakeLinkLister) ListLinks(_ context.Context, filter, cursor string, limit int) ([]LinkDoc, string, error) {
+	f.calls = append(f.calls, linkCall{filter, cursor, limit})
+	if f.err != nil {
+		return nil, "", f.err
+	}
+	return f.links, f.nextCursor, nil
+}
+
+// TestKVLinks_OutFilterConstruction — direction "out" puts the hub id in the
+// prefix: lnk.<hubType>.<hubId>.<relation>.> — bounded by the hub's out-degree.
+func TestKVLinks_OutFilterConstruction(t *testing.T) {
+	lister := &fakeLinkLister{}
+	sc := ScriptContext{LinkLister: lister}
+	_, err := runKVScript(t, sc, `
+def execute(state, op):
+    page, nxt = kv.Links("vtx.provider.`+linkProvID+`", "hasBooking", "out")
+    return {"mutations": [], "events": [{"class": "ok", "data": {"n": len(page)}}]}
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "lnk.provider." + linkProvID + ".hasBooking.>"
+	if len(lister.calls) != 1 || lister.calls[0].filter != want {
+		t.Fatalf("filter = %+v, want %q", lister.calls, want)
+	}
+	if lister.calls[0].cursor != "" || lister.calls[0].limit != defaultLinkPageLimit {
+		t.Fatalf("cursor/limit = %q/%d, want \"\"/%d", lister.calls[0].cursor, lister.calls[0].limit, defaultLinkPageLimit)
+	}
+}
+
+// TestKVLinks_InFilterConstruction — direction "in" puts the hub id in the
+// suffix and wildcards the source: lnk.*.*.<relation>.<hubType>.<hubId> —
+// bounded by the hub's in-degree. This is the load-bearing mid-subject-wildcard
+// case the ratification revision corrected the original draft on.
+func TestKVLinks_InFilterConstruction(t *testing.T) {
+	lister := &fakeLinkLister{}
+	sc := ScriptContext{LinkLister: lister}
+	_, err := runKVScript(t, sc, `
+def execute(state, op):
+    page, nxt = kv.Links("vtx.provider.`+linkProvID+`", "withProvider", "in")
+    return {"mutations": [], "events": [{"class": "ok", "data": {"n": len(page)}}]}
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "lnk.*.*.withProvider.provider." + linkProvID
+	if len(lister.calls) != 1 || lister.calls[0].filter != want {
+		t.Fatalf("filter = %+v, want %q", lister.calls, want)
+	}
+}
+
+// TestKVLinks_ReturnsProjectedLinkDocs — a page surfaces each link as a struct
+// with the full link envelope projection: .key/.class/.isDeleted/.data/.revision
+// plus the link-only .sourceVertex/.targetVertex.
+func TestKVLinks_ReturnsProjectedLinkDocs(t *testing.T) {
+	lister := &fakeLinkLister{links: []LinkDoc{{
+		Key:          "lnk.provider." + linkProvID + ".hasBooking.appointment." + linkApptID1,
+		Class:        "hasBooking",
+		IsDeleted:    false,
+		Revision:     11,
+		Data:         map[string]interface{}{"note": "first"},
+		SourceVertex: "vtx.provider." + linkProvID,
+		TargetVertex: "vtx.appointment." + linkApptID1,
+	}}}
+	sc := ScriptContext{LinkLister: lister}
+	res, err := runKVScript(t, sc, `
+def execute(state, op):
+    page, nxt = kv.Links("vtx.provider.`+linkProvID+`", "hasBooking", "out")
+    l = page[0]
+    return {"mutations": [], "events": [{"class": "links", "data": {
+        "n": len(page), "cls": getattr(l, "class"), "del": l.isDeleted, "rev": l.revision,
+        "src": l.sourceVertex, "tgt": l.targetVertex, "note": l.data["note"], "more": nxt != None,
+    }}]}
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	d := res.Events[0].Data
+	if d["n"] != int64(1) {
+		t.Errorf("len(page) = %v, want 1", d["n"])
+	}
+	if d["cls"] != "hasBooking" {
+		t.Errorf("class = %v, want hasBooking", d["cls"])
+	}
+	if d["del"] != false {
+		t.Errorf("isDeleted = %v, want false", d["del"])
+	}
+	if d["rev"] != int64(11) {
+		t.Errorf("revision = %v, want 11", d["rev"])
+	}
+	if d["src"] != "vtx.provider."+linkProvID {
+		t.Errorf("sourceVertex = %v", d["src"])
+	}
+	if d["tgt"] != "vtx.appointment."+linkApptID1 {
+		t.Errorf("targetVertex = %v", d["tgt"])
+	}
+	if d["note"] != "first" {
+		t.Errorf("data.note = %v, want first", d["note"])
+	}
+	if d["more"] != false {
+		t.Errorf("more = %v, want false (no nextCursor)", d["more"])
+	}
+}
+
+// TestKVLinks_TombstonedReturned — a logically-deleted link is RETURNED carrying
+// isDeleted (the guard decides), mirroring kv.Read — never silently dropped.
+func TestKVLinks_TombstonedReturned(t *testing.T) {
+	lister := &fakeLinkLister{links: []LinkDoc{{
+		Key:          "lnk.provider." + linkProvID + ".hasBooking.appointment." + linkApptID1,
+		Class:        "hasBooking",
+		IsDeleted:    true,
+		SourceVertex: "vtx.provider." + linkProvID,
+		TargetVertex: "vtx.appointment." + linkApptID1,
+	}}}
+	sc := ScriptContext{LinkLister: lister}
+	res, err := runKVScript(t, sc, `
+def execute(state, op):
+    page, nxt = kv.Links("vtx.provider.`+linkProvID+`", "hasBooking", "out")
+    return {"mutations": [], "events": [{"class": "links", "data": {"n": len(page), "del": page[0].isDeleted}}]}
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Events[0].Data["n"] != int64(1) || res.Events[0].Data["del"] != true {
+		t.Fatalf("tombstoned link must be returned with isDeleted=true, got %+v", res.Events[0].Data)
+	}
+}
+
+// TestKVLinks_Paging — nextCursor surfaces as a string when more remains and as
+// None when exhausted; a caller-supplied cursor + limit thread through to the
+// lister verbatim.
+func TestKVLinks_Paging(t *testing.T) {
+	// Page 1: a non-empty nextCursor surfaces as a string the script pages on.
+	l1 := &fakeLinkLister{
+		links:      []LinkDoc{{Key: "lnk.provider." + linkProvID + ".hasBooking.appointment." + linkApptID1, SourceVertex: "vtx.provider." + linkProvID, TargetVertex: "vtx.appointment." + linkApptID1}},
+		nextCursor: "lnk.provider." + linkProvID + ".hasBooking.appointment." + linkApptID1,
+	}
+	sc := ScriptContext{LinkLister: l1}
+	res, err := runKVScript(t, sc, `
+def execute(state, op):
+    page, nxt = kv.Links("vtx.provider.`+linkProvID+`", "hasBooking", "out", limit=1)
+    return {"mutations": [], "events": [{"class": "p", "data": {"more": nxt != None, "nxt": nxt}}]}
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Events[0].Data["more"] != true || res.Events[0].Data["nxt"] != l1.nextCursor {
+		t.Fatalf("page1: got %+v, want more=true nxt=%q", res.Events[0].Data, l1.nextCursor)
+	}
+	if l1.calls[0].limit != 1 {
+		t.Errorf("limit passthrough = %d, want 1", l1.calls[0].limit)
+	}
+
+	// Page 2: the caller passes the cursor back; an empty nextCursor → None.
+	l2 := &fakeLinkLister{links: []LinkDoc{{Key: "lnk.provider." + linkProvID + ".hasBooking.appointment." + linkApptID2, SourceVertex: "vtx.provider." + linkProvID, TargetVertex: "vtx.appointment." + linkApptID2}}}
+	sc2 := ScriptContext{LinkLister: l2}
+	res2, err := runKVScript(t, sc2, `
+def execute(state, op):
+    page, nxt = kv.Links("vtx.provider.`+linkProvID+`", "hasBooking", "out", cursor="`+l1.nextCursor+`", limit=1)
+    return {"mutations": [], "events": [{"class": "p", "data": {"more": nxt != None}}]}
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res2.Events[0].Data["more"] != false {
+		t.Errorf("page2: more = %v, want false (exhausted → None)", res2.Events[0].Data["more"])
+	}
+	if l2.calls[0].cursor != l1.nextCursor {
+		t.Errorf("cursor passthrough = %q, want %q", l2.calls[0].cursor, l1.nextCursor)
+	}
+}
+
+// TestKVLinks_LimitClamp — a non-positive limit defaults; an over-large limit is
+// capped at maxLinkPageLimit so one page is never unbounded.
+func TestKVLinks_LimitClamp(t *testing.T) {
+	cases := []struct {
+		name string
+		arg  string
+		want int
+	}{
+		{"zero defaults", "limit=0", defaultLinkPageLimit},
+		{"negative defaults", "limit=-5", defaultLinkPageLimit},
+		{"over-large capped", "limit=999999", maxLinkPageLimit},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			lister := &fakeLinkLister{}
+			sc := ScriptContext{LinkLister: lister}
+			_, err := runKVScript(t, sc, `
+def execute(state, op):
+    page, nxt = kv.Links("vtx.provider.`+linkProvID+`", "hasBooking", "out", `+tc.arg+`)
+    return {"mutations": [], "events": []}
+`)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if lister.calls[0].limit != tc.want {
+				t.Fatalf("limit = %d, want %d", lister.calls[0].limit, tc.want)
+			}
+		})
+	}
+}
+
+// TestKVLinks_ArgValidation — arity/type/grammar misuse fails fast, before the
+// lister is touched. A fake lister is supplied so failures are argument
+// validation, not a missing lister.
+func TestKVLinks_ArgValidation(t *testing.T) {
+	cases := []struct{ name, body string }{
+		{"no args", `kv.Links()`},
+		{"missing direction", `kv.Links("vtx.provider.` + linkProvID + `", "hasBooking")`},
+		{"hubKey not a vertex key", `kv.Links("lnk.provider.` + linkProvID + `", "hasBooking", "out")`},
+		{"hubKey aspect key", `kv.Links("vtx.provider.` + linkProvID + `.bookings", "hasBooking", "out")`},
+		{"relation uppercase first", `kv.Links("vtx.provider.` + linkProvID + `", "HasBooking", "out")`},
+		{"relation with dot", `kv.Links("vtx.provider.` + linkProvID + `", "has.booking", "out")`},
+		{"relation empty", `kv.Links("vtx.provider.` + linkProvID + `", "", "out")`},
+		{"bad direction", `kv.Links("vtx.provider.` + linkProvID + `", "hasBooking", "sideways")`},
+		{"cursor wrong type", `kv.Links("vtx.provider.` + linkProvID + `", "hasBooking", "out", cursor=42)`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := ScriptContext{LinkLister: &fakeLinkLister{}}
+			_, err := runKVScript(t, sc, "def execute(state, op):\n    "+tc.body+"\n    return {\"mutations\": [], \"events\": []}")
+			if err == nil {
+				t.Fatalf("%s: expected an error", tc.name)
+			}
+		})
+	}
+}
+
+// TestKVLinks_NoListerWiredErrors — an enumeration with no lister wired is a
+// script error, not a silent empty page (which would make a set guard pass a
+// constraint it never actually checked).
+func TestKVLinks_NoListerWiredErrors(t *testing.T) {
+	sc := ScriptContext{} // no LinkLister
+	_, err := runKVScript(t, sc, `
+def execute(state, op):
+    page, nxt = kv.Links("vtx.provider.`+linkProvID+`", "hasBooking", "out")
+    return {"mutations": [], "events": []}
+`)
+	if err == nil {
+		t.Fatalf("expected error for enumeration with no lister wired")
+	}
+	se, ok := err.(*ScriptError)
+	if !ok {
+		t.Fatalf("want *ScriptError, got %T: %v", err, err)
+	}
+	if !strings.Contains(se.Message, "no Core KV link lister") {
+		t.Fatalf("error message = %q, want it to mention the missing lister", se.Message)
+	}
+}
+
+// TestKVLinks_ListerErrorPropagates — a substrate-level enumeration failure
+// surfaces as a ScriptError rather than being swallowed as an empty page.
+func TestKVLinks_ListerErrorPropagates(t *testing.T) {
+	sc := ScriptContext{LinkLister: &fakeLinkLister{err: errors.New("boom-list")}}
+	_, err := runKVScript(t, sc, `
+def execute(state, op):
+    page, nxt = kv.Links("vtx.provider.`+linkProvID+`", "hasBooking", "out")
+    return {"mutations": [], "events": []}
+`)
+	if err == nil {
+		t.Fatalf("expected the lister error to propagate")
+	}
+	if !strings.Contains(err.Error(), "boom-list") {
+		t.Fatalf("error = %q, want it to carry the underlying cause", err.Error())
+	}
+}
+
+// blockingLinkLister blocks until its context is cancelled — a stand-in for a
+// hung Core KV enumeration.
+type blockingLinkLister struct{}
+
+func (blockingLinkLister) ListLinks(ctx context.Context, _, _ string, _ int) ([]LinkDoc, string, error) {
+	<-ctx.Done()
+	return nil, "", ctx.Err()
+}
+
+// TestKVLinks_SlowListHitsWallBudget — a hung enumeration is bounded by the
+// script wall budget and classified as ScriptTimeout. The elapsed-time guard
+// proves the wall-budget context is threaded into kv.Links (not the longer
+// parent ctx), mirroring the kv.Read budget test.
+func TestKVLinks_SlowListHitsWallBudget(t *testing.T) {
+	sc := ScriptContext{LinkLister: blockingLinkLister{}}
+	sc.ScriptSource = `
+def execute(state, op):
+    page, nxt = kv.Links("vtx.provider.` + linkProvID + `", "hasBooking", "out")
+    return {"mutations": [], "events": []}
+`
+	sc.Operation = &OperationEnvelope{
+		RequestID: "req-slow-links", Lane: LaneDefault, OperationType: "X",
+		Actor: "a", SubmittedAt: "t", Payload: []byte("{}"),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	start := time.Now()
+	_, err := NewStarlarkRunner(50*time.Millisecond, 0).Run(ctx, sc)
+	elapsed := time.Since(start)
+
+	se, ok := err.(*ScriptError)
+	if !ok {
+		t.Fatalf("want *ScriptError, got %T: %v", err, err)
+	}
+	if se.Code != "ScriptTimeout" {
+		t.Fatalf("Code = %q, want ScriptTimeout", se.Code)
+	}
+	if elapsed > 1500*time.Millisecond {
+		t.Fatalf("kv.Links took %s — the 50ms wall-budget ctx is not threaded into the enumeration", elapsed)
+	}
+}
+
+// TestConnLinkLister_AgainstCoreKV exercises the production connLinkLister +
+// substrate KVListKeysFilter against a real embedded Core KV: it proves the
+// server-side subject filter works in BOTH directions (incl. the mid-subject
+// wildcard the "in" filter relies on), returns tombstoned links, respects the
+// key-token boundary (hasBooking ≠ hasBookingExtra), and pages deterministically.
+func TestConnLinkLister_AgainstCoreKV(t *testing.T) {
+	url := startEmbeddedNATS(t)
+	ctx, conn := acConnect(t, url)
+	lister := connLinkLister{conn: conn, bucket: testCoreBucket}
+
+	provV := "vtx.provider." + linkProvID
+	seed := func(key, body string) {
+		t.Helper()
+		if _, err := conn.KVCreate(ctx, testCoreBucket, key, []byte(body)); err != nil {
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
+	// Outbound: provider hasBooking appointment (provider is the source).
+	seed("lnk.provider."+linkProvID+".hasBooking.appointment."+linkApptID1, `{"class":"hasBooking","isDeleted":false,"data":{"slot":"a"}}`)
+	seed("lnk.provider."+linkProvID+".hasBooking.appointment."+linkApptID2, `{"class":"hasBooking","isDeleted":false,"data":{"slot":"b"}}`)
+	// A tombstoned outbound link — must be RETURNED carrying isDeleted.
+	seed("lnk.provider."+linkProvID+".hasBooking.appointment."+linkApptID3, `{"class":"hasBooking","isDeleted":true,"data":{}}`)
+	// A different relation sharing the hasBooking prefix — must NOT match the
+	// hasBooking filter (the trailing-dot token boundary).
+	seed("lnk.provider."+linkProvID+".hasBookingExtra.appointment."+linkApptID4, `{"class":"hasBookingExtra","isDeleted":false,"data":{}}`)
+	// Inbound: appointment withProvider provider (appointment is the source) —
+	// the provider sits in the suffix, enumerated via the mid-subject wildcard.
+	seed("lnk.appointment."+linkApptID1+".withProvider.provider."+linkProvID, `{"class":"withProvider","isDeleted":false,"data":{}}`)
+	seed("lnk.appointment."+linkApptID2+".withProvider.provider."+linkProvID, `{"class":"withProvider","isDeleted":false,"data":{}}`)
+
+	// --- Outbound enumeration ---
+	outFilter := "lnk.provider." + linkProvID + ".hasBooking.>"
+	links, next, err := lister.ListLinks(ctx, outFilter, "", 10)
+	if err != nil {
+		t.Fatalf("out list: %v", err)
+	}
+	if next != "" {
+		t.Errorf("out: nextCursor = %q, want \"\" (all in one page)", next)
+	}
+	gotOut := map[string]bool{}
+	var sawTombstone bool
+	for _, l := range links {
+		gotOut[l.TargetVertex] = true
+		if l.SourceVertex != provV {
+			t.Errorf("out: sourceVertex = %q, want %q", l.SourceVertex, provV)
+		}
+		if l.Class != "hasBooking" {
+			t.Errorf("out: class = %q, want hasBooking (Extra leaked past the token boundary?)", l.Class)
+		}
+		if l.TargetVertex == "vtx.appointment."+linkApptID3 {
+			sawTombstone = l.IsDeleted
+		}
+	}
+	if len(links) != 3 {
+		t.Fatalf("out: %d links, want 3 (2 live + 1 tombstoned, NOT hasBookingExtra)", len(links))
+	}
+	for _, id := range []string{linkApptID1, linkApptID2, linkApptID3} {
+		if !gotOut["vtx.appointment."+id] {
+			t.Errorf("out: missing target appointment.%s", id)
+		}
+	}
+	if gotOut["vtx.appointment."+linkApptID4] {
+		t.Errorf("out: hasBookingExtra link leaked past the hasBooking token boundary")
+	}
+	if !sawTombstone {
+		t.Errorf("out: tombstoned link not returned with isDeleted=true")
+	}
+
+	// --- Inbound enumeration (mid-subject wildcard) ---
+	inFilter := "lnk.*.*.withProvider.provider." + linkProvID
+	inLinks, _, err := lister.ListLinks(ctx, inFilter, "", 10)
+	if err != nil {
+		t.Fatalf("in list (mid-subject wildcard): %v", err)
+	}
+	if len(inLinks) != 2 {
+		t.Fatalf("in: %d links, want 2", len(inLinks))
+	}
+	gotIn := map[string]bool{}
+	for _, l := range inLinks {
+		gotIn[l.SourceVertex] = true
+		if l.TargetVertex != provV {
+			t.Errorf("in: targetVertex = %q, want %q", l.TargetVertex, provV)
+		}
+	}
+	for _, id := range []string{linkApptID1, linkApptID2} {
+		if !gotIn["vtx.appointment."+id] {
+			t.Errorf("in: missing source appointment.%s", id)
+		}
+	}
+
+	// --- Deterministic paging across the 3 outbound links (limit 2) ---
+	p1, c1, err := lister.ListLinks(ctx, outFilter, "", 2)
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if len(p1) != 2 || c1 == "" {
+		t.Fatalf("page1: %d links, cursor=%q, want 2 links + a non-empty cursor", len(p1), c1)
+	}
+	p2, c2, err := lister.ListLinks(ctx, outFilter, c1, 2)
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	if len(p2) != 1 || c2 != "" {
+		t.Fatalf("page2: %d links, cursor=%q, want 1 link + exhausted cursor", len(p2), c2)
+	}
+	// The two pages must partition the set with no overlap and no gap.
+	seen := map[string]bool{}
+	for _, l := range append(append([]LinkDoc{}, p1...), p2...) {
+		if seen[l.Key] {
+			t.Errorf("paging returned %q twice", l.Key)
+		}
+		seen[l.Key] = true
+	}
+	if len(seen) != 3 {
+		t.Fatalf("paging covered %d distinct links, want 3", len(seen))
+	}
+}

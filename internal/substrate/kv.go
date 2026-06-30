@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -232,6 +233,89 @@ func (c *Conn) KVListKeysPrefix(ctx context.Context, bucket, prefix string) ([]s
 		keys = append(keys, k)
 	}
 	return keys, nil
+}
+
+// KVListKeysFilter returns a page of keys matching an arbitrary NATS subject
+// filter at the JetStream level — the general form of KVListKeysPrefix, which
+// can only express a trailing `prefix>`. The filter is a key pattern over the
+// KV keyspace (the substrate prepends the `$KV.<bucket>.` subject prefix), so
+// `*` matches exactly one key token and `>` matches one-or-more trailing
+// tokens. This lets a caller select a hub's links in EITHER direction of a
+// 6-segment link key `lnk.<srcType>.<srcId>.<rel>.<tgtType>.<tgtId>`:
+//   - source-bounded: `lnk.<t>.<id>.<rel>.>`        (hub id in the prefix)
+//   - target-bounded: `lnk.*.*.<rel>.<t>.<id>`      (hub id in the suffix)
+// Both are server-side subject filters, so the read is bounded by the hub's
+// degree in that direction — never the keyspace.
+//
+// Paging. The matching keys are sorted lexicographically and the page is the
+// keys strictly greater than cursor (empty cursor = from the start), up to
+// limit keys. nextCursor is the page's last key when more keys remain, or ""
+// when the filter is exhausted — the caller re-invokes with cursor=nextCursor
+// until it comes back "". A non-positive limit returns every matching key in
+// one page (nextCursor=""). The key list (keys only, no values) is cheap; the
+// caller pages to bound the per-key value reads it does downstream.
+//
+// Like KVListKeysPrefix, this does NOT filter logically-deleted envelopes: a
+// soft-tombstoned entity (in-body "isDeleted": true) is still a live JetStream
+// entry and IS returned. Only NATS hard-delete markers are dropped (the
+// underlying ListKeysFiltered's IgnoreDeletes, which the Processor never
+// writes). Callers wanting only live entities KVGet each and inspect isDeleted.
+func (c *Conn) KVListKeysFilter(ctx context.Context, bucket, filter, cursor string, limit int) (keys []string, nextCursor string, err error) {
+	kv, err := c.bucket(ctx, bucket)
+	if err != nil {
+		return nil, "", err
+	}
+	lister, err := kv.ListKeysFiltered(ctx, filter)
+	if err != nil {
+		return nil, "", fmt.Errorf("substrate: KV list %s filter %q: %w", bucket, filter, err)
+	}
+	defer lister.Stop()
+	var collected []string
+	for k := range lister.Keys() {
+		collected = append(collected, k)
+	}
+	// The keyLister has no error channel: on a context cancellation (e.g. the
+	// op's wall budget firing mid-enumeration) its goroutine simply closes the
+	// keys channel, so the range above ends NORMALLY with a partial set. Return
+	// the context error rather than a silently-truncated page — a set guard
+	// reading a partial neighbor set would pass a constraint it never checked.
+	if err := ctx.Err(); err != nil {
+		return nil, "", fmt.Errorf("substrate: KV list %s filter %q: %w", bucket, filter, err)
+	}
+	page, next := pageFilteredKeys(collected, cursor, limit)
+	return page, next, nil
+}
+
+// pageFilteredKeys sorts, de-duplicates, cursor-filters, and pages a set of
+// matched keys. It is the pure core of KVListKeysFilter, factored out so the
+// paging invariants are unit-testable without a live KV.
+//
+// De-dup is load-bearing: the pinned NATS KV ListKeysFiltered "may report
+// duplicate keys" on a bucket with frequent concurrent writes, and a duplicate
+// at the page boundary would otherwise advance nextCursor past — and so skip — a
+// distinct key on the next page (membership loss, not just a repeat). Keys are
+// unique in the store, so de-dup of the sorted enumeration is exact.
+//
+// cursor exclusion is strict-greater-than, so the boundary key (which is itself
+// returned as nextCursor) is excluded from the next page — no overlap, no gap.
+// limit<=0 returns every matching key in one page (nextCursor="").
+func pageFilteredKeys(keys []string, cursor string, limit int) (page []string, nextCursor string) {
+	sort.Strings(keys)
+	var matched []string
+	for i, k := range keys {
+		if i > 0 && k == keys[i-1] {
+			continue // adjacent duplicate from the lister
+		}
+		if cursor != "" && k <= cursor {
+			continue // already returned on an earlier page
+		}
+		matched = append(matched, k)
+	}
+	if limit > 0 && len(matched) > limit {
+		nextCursor = matched[limit-1]
+		matched = matched[:limit]
+	}
+	return matched, nextCursor
 }
 
 // KVPutWithTTL writes value to key with a per-message TTL. The bucket must

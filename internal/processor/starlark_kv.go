@@ -93,9 +93,197 @@ func kvModule(getExecCtx func() context.Context, sc ScriptContext) *starlarkstru
 		return vertexDocToStarlark(*doc), nil
 	})
 
-	return starlarkstruct.FromStringDict(starlarkstruct.Default, starlarklib.StringDict{
-		"Read": readFn,
+	// kv.Links(hubKey, relation, direction, cursor=None, limit=N) -> (page, nextCursor)
+	//
+	// The ONE sanctioned relaxation of the otherwise known-key-reads-only write
+	// path (Contract #2 §2.5.1): a bounded, paged, lazy enumeration of a hub
+	// vertex's canonical Core KV links under `relation`, in the direction the hub
+	// sits in the link. It exists so set/range guards read a vertex's neighbors
+	// from links (Contract #1 §1.1) instead of denormalizing them into a key-list
+	// aspect. It is NOT a serialization point — see §2.5.1: a guard enforcing a
+	// constraint over the returned set must also contend a shared OCC-guarded key.
+	// Like kv.Read it reads LIVE Core KV (not replay-stable, §3.5).
+	linksFn := starlarklib.NewBuiltin("Links", func(_ *starlarklib.Thread, _ *starlarklib.Builtin, args starlarklib.Tuple, kwargs []starlarklib.Tuple) (starlarklib.Value, error) {
+		var (
+			hubKey, relation, direction string
+			cursorVal                   starlarklib.Value = starlarklib.None
+			limit                                         = defaultLinkPageLimit
+		)
+		if err := starlarklib.UnpackArgs("kv.Links", args, kwargs,
+			"hubKey", &hubKey, "relation", &relation, "direction", &direction,
+			"cursor?", &cursorVal, "limit?", &limit); err != nil {
+			return nil, errBuiltin("kv.Links: " + err.Error())
+		}
+
+		hubType, hubID, ok := substrate.ParseVertexKey(hubKey)
+		if !ok {
+			return nil, errBuiltin("kv.Links: hubKey must be a 3-segment vertex key (vtx.<type>.<id>), got " + hubKey)
+		}
+		if !isValidLinkRelation(relation) {
+			return nil, errBuiltin("kv.Links: relation must match [a-z][a-zA-Z0-9]*, got " + relation)
+		}
+
+		// Construct the server-side subject filter scoped to the hub's id in the
+		// requested direction. The hub id is a fixed token either way, so the read
+		// is bounded by the hub's degree in that direction, never the keyspace.
+		var keyFilter string
+		switch direction {
+		case "out": // hub is the link SOURCE: lnk.<hubType>.<hubId>.<rel>.>
+			keyFilter = substrate.LinkPrefix + "." + hubType + "." + hubID + "." + relation + ".>"
+		case "in": // hub is the link TARGET: lnk.*.*.<rel>.<hubType>.<hubId>
+			keyFilter = substrate.LinkPrefix + ".*.*." + relation + "." + hubType + "." + hubID
+		default:
+			return nil, errBuiltin(`kv.Links: direction must be "out" or "in", got ` + direction)
+		}
+
+		// cursor is optional and may be None (first page) or a non-empty string.
+		cursor := ""
+		switch c := cursorVal.(type) {
+		case starlarklib.NoneType:
+		case starlarklib.String:
+			cursor = string(c)
+		default:
+			return nil, errBuiltin("kv.Links: cursor must be a string or None, got " + cursorVal.Type())
+		}
+
+		// Clamp the page limit: a non-positive value means "use the default"; an
+		// over-large value is capped so one page can never be unbounded.
+		if limit <= 0 {
+			limit = defaultLinkPageLimit
+		}
+		if limit > maxLinkPageLimit {
+			limit = maxLinkPageLimit
+		}
+
+		if sc.LinkLister == nil {
+			return nil, errBuiltin("kv.Links: no Core KV link lister wired for enumeration of " + keyFilter)
+		}
+		links, nextCursor, err := sc.LinkLister.ListLinks(getExecCtx(), keyFilter, cursor, limit)
+		if err != nil {
+			return nil, errBuiltin("kv.Links: " + err.Error())
+		}
+
+		page := starlarklib.NewList(nil)
+		for _, l := range links {
+			_ = page.Append(linkDocToStarlark(l))
+		}
+		var nextCursorValue starlarklib.Value = starlarklib.None
+		if nextCursor != "" {
+			nextCursorValue = starlarklib.String(nextCursor)
+		}
+		return starlarklib.Tuple{page, nextCursorValue}, nil
 	})
+
+	return starlarkstruct.FromStringDict(starlarkstruct.Default, starlarklib.StringDict{
+		"Read":  readFn,
+		"Links": linksFn,
+	})
+}
+
+// defaultLinkPageLimit / maxLinkPageLimit bound a single kv.Links page. The
+// default applies when the caller omits limit (or passes a non-positive value);
+// the max caps any caller-supplied limit so one page is never unbounded. A hub
+// with more matching links than the page size is enumerated across pages via
+// the opaque cursor (Contract #2 §2.5.1 — paged, never silently truncated).
+const (
+	defaultLinkPageLimit = 256
+	maxLinkPageLimit     = 1024
+)
+
+// isValidLinkRelation reports whether s is a valid link localName per Contract
+// #1 §1.1 (`[a-z][a-zA-Z0-9]*`, no leading underscore/digit). Used to fail a
+// kv.Links call fast before constructing a subject filter from a bad relation.
+func isValidLinkRelation(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		if i == 0 {
+			if r < 'a' || r > 'z' {
+				return false
+			}
+			continue
+		}
+		if !((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
+// linkDocToStarlark projects a LinkDoc into the Starlark struct a script reads
+// from a kv.Links page: .key, .class, .isDeleted, .data, .revision, plus the
+// link-only .sourceVertex / .targetVertex (Contract #1 §1.3). The vertex-shaped
+// fields mirror vertexDocToStarlark so a guard reads a link like a vertex.
+func linkDocToStarlark(l LinkDoc) starlarklib.Value {
+	return starlarkstruct.FromStringDict(starlarkstruct.Default, starlarklib.StringDict{
+		"key":          starlarklib.String(l.Key),
+		"class":        starlarklib.String(l.Class),
+		"isDeleted":    starlarklib.Bool(l.IsDeleted),
+		"data":         goMapToStarlarkDict(l.Data),
+		"revision":     starlarklib.MakeUint64(l.Revision),
+		"sourceVertex": starlarklib.String(l.SourceVertex),
+		"targetVertex": starlarklib.String(l.TargetVertex),
+	})
+}
+
+// connLinkLister adapts a substrate.Conn + Core bucket to ScriptLinkLister — the
+// production backing for kv.Links, wired by the Hydrator (step 4). It lists the
+// hub's link keys via the server-side subject-filtered KVListKeysFilter (paged),
+// then single-key-GETs each to load its envelope. SourceVertex/TargetVertex are
+// derived from the link KEY (Contract #1 §1.1, source first), never trusted from
+// the body. A key that races a hard-delete between list and GET is skipped
+// (it left the set). Never reads the Refractor Adjacency KV or a lens — Core KV
+// canonical links only (P5 / §2.5.1).
+type connLinkLister struct {
+	conn   *substrate.Conn
+	bucket string
+}
+
+// ListLinks implements ScriptLinkLister.
+func (r connLinkLister) ListLinks(ctx context.Context, keyFilter, cursor string, limit int) ([]LinkDoc, string, error) {
+	keys, nextCursor, err := r.conn.KVListKeysFilter(ctx, r.bucket, keyFilter, cursor, limit)
+	if err != nil {
+		return nil, "", err
+	}
+	links := make([]LinkDoc, 0, len(keys))
+	for _, key := range keys {
+		srcType, srcID, _, tgtType, tgtID, ok := substrate.ParseLinkKey(key)
+		if !ok {
+			// The lnk.-anchored filter should never match a non-link key; skip
+			// rather than mis-parse if the keyspace ever surprises us.
+			continue
+		}
+		entry, err := r.conn.KVGet(ctx, r.bucket, key)
+		if err != nil {
+			if errors.Is(err, substrate.ErrKeyNotFound) {
+				// Raced a concurrent hard-delete between the key-list and the
+				// value-read — treat as absent (it is no longer in the set).
+				continue
+			}
+			return nil, "", err
+		}
+		doc, err := parseLinkDoc(entry.Value, key)
+		if err != nil {
+			return nil, "", err
+		}
+		doc.Revision = entry.Revision
+		doc.SourceVertex = substrate.VertexPrefix + "." + srcType + "." + srcID
+		doc.TargetVertex = substrate.VertexPrefix + "." + tgtType + "." + tgtID
+		links = append(links, doc)
+	}
+	return links, nextCursor, nil
+}
+
+// parseLinkDoc parses a Core KV link envelope into a LinkDoc. It reuses the
+// vertex-envelope parser for the shared class/isDeleted/data fields; the
+// caller fills SourceVertex/TargetVertex/Revision from the key + entry.
+func parseLinkDoc(data []byte, key string) (LinkDoc, error) {
+	vd, err := parseVertexDoc(data, key)
+	if err != nil {
+		return LinkDoc{}, err
+	}
+	return LinkDoc{Key: key, Class: vd.Class, IsDeleted: vd.IsDeleted, Data: vd.Data}, nil
 }
 
 // connKVReader adapts a substrate.Conn + Core bucket to ScriptKVReader. It is

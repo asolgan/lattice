@@ -458,3 +458,156 @@ func TestKVListKeysPrefix(t *testing.T) {
 		t.Errorf("KVListKeysPrefix returned %d keys, want 3: %v", len(keys), keys)
 	}
 }
+
+// TestKVListKeysFilter exercises the generalized, paged subject-filter seam that
+// backs kv.Links: a source-bounded prefix filter, a TARGET-bounded mid-subject
+// wildcard filter (the load-bearing "in"-direction case), the token boundary,
+// and deterministic cursor paging.
+func TestKVListKeysFilter(t *testing.T) {
+	c, ctx := newTestConn(t)
+	bucket := "core-kv"
+	provisionCoreBucket(ctx, t, c, bucket)
+
+	hub := testNanoID1 // the provider id, fixed in both directions
+	// Outbound: provider hasBooking appointment (hub is the source).
+	out1 := "lnk.provider." + hub + ".hasBooking.appointment." + testNanoID2
+	out2 := "lnk.provider." + hub + ".hasBooking.appointment." + testNanoID3
+	// A sibling relation sharing the hasBooking prefix — must NOT match (the
+	// trailing-dot token boundary distinguishes hasBooking from hasBookingExtra).
+	sibling := "lnk.provider." + hub + ".hasBookingExtra.appointment." + testNanoID2
+	// Inbound: appointment withProvider provider (hub is the suffix).
+	in1 := "lnk.appointment." + testNanoID2 + ".withProvider.provider." + hub
+	in2 := "lnk.appointment." + testNanoID3 + ".withProvider.provider." + hub
+
+	for _, k := range []string{out1, out2, sibling, in1, in2} {
+		if _, err := c.KVPut(ctx, bucket, k, []byte(`{"isDeleted":false}`)); err != nil {
+			t.Fatalf("put %s: %v", k, err)
+		}
+	}
+
+	// Source-bounded filter: token boundary excludes hasBookingExtra.
+	outKeys, next, err := c.KVListKeysFilter(ctx, bucket, "lnk.provider."+hub+".hasBooking.>", "", 10)
+	if err != nil {
+		t.Fatalf("filter out: %v", err)
+	}
+	if next != "" {
+		t.Errorf("out: nextCursor = %q, want empty", next)
+	}
+	gotOut := map[string]bool{}
+	for _, k := range outKeys {
+		gotOut[k] = true
+	}
+	if !gotOut[out1] || !gotOut[out2] {
+		t.Errorf("out filter missing a hasBooking key; got %v", outKeys)
+	}
+	if gotOut[sibling] {
+		t.Errorf("out filter leaked hasBookingExtra past the token boundary; got %v", outKeys)
+	}
+	if len(outKeys) != 2 {
+		t.Errorf("out filter returned %d keys, want 2: %v", len(outKeys), outKeys)
+	}
+
+	// Target-bounded mid-subject wildcard filter (the "in" direction).
+	inKeys, _, err := c.KVListKeysFilter(ctx, bucket, "lnk.*.*.withProvider.provider."+hub, "", 10)
+	if err != nil {
+		t.Fatalf("filter in (mid-subject wildcard): %v", err)
+	}
+	gotIn := map[string]bool{}
+	for _, k := range inKeys {
+		gotIn[k] = true
+	}
+	if !gotIn[in1] || !gotIn[in2] || len(inKeys) != 2 {
+		t.Errorf("in filter wrong set; got %v, want %q + %q", inKeys, in1, in2)
+	}
+
+	// Deterministic paging over the 2 outbound keys, one per page.
+	p1, c1, err := c.KVListKeysFilter(ctx, bucket, "lnk.provider."+hub+".hasBooking.>", "", 1)
+	if err != nil {
+		t.Fatalf("page1: %v", err)
+	}
+	if len(p1) != 1 || c1 == "" {
+		t.Fatalf("page1: %d keys, cursor=%q, want 1 + non-empty cursor", len(p1), c1)
+	}
+	p2, c2, err := c.KVListKeysFilter(ctx, bucket, "lnk.provider."+hub+".hasBooking.>", c1, 1)
+	if err != nil {
+		t.Fatalf("page2: %v", err)
+	}
+	if len(p2) != 1 || c2 != "" {
+		t.Fatalf("page2: %d keys, cursor=%q, want 1 + exhausted", len(p2), c2)
+	}
+	if p1[0] == p2[0] {
+		t.Errorf("paging returned the same key twice: %q", p1[0])
+	}
+	// The cursor is the first page's last (and only) key.
+	if c1 != p1[0] {
+		t.Errorf("nextCursor = %q, want the page's last key %q", c1, p1[0])
+	}
+}
+
+// TestPageFilteredKeys exercises the pure paging core directly — the de-dup,
+// strict-cursor, and page-boundary invariants KVListKeysFilter depends on,
+// without a live KV. The de-dup + boundary-duplicate cases guard the
+// membership-loss bug a duplicate-reporting lister would otherwise cause.
+func TestPageFilteredKeys(t *testing.T) {
+	cases := []struct {
+		name    string
+		keys    []string
+		cursor  string
+		limit   int
+		want    []string
+		wantNxt string
+	}{
+		{"empty", nil, "", 10, nil, ""},
+		{"sorts and returns all under limit", []string{"c", "a", "b"}, "", 10, []string{"a", "b", "c"}, ""},
+		{"exactly limit yields no spurious next", []string{"a", "b"}, "", 2, []string{"a", "b"}, ""},
+		{"limit+1 pages with boundary cursor", []string{"a", "b", "c"}, "", 2, []string{"a", "b"}, "b"},
+		{"cursor exclusion is strict-greater", []string{"a", "b", "c", "d"}, "b", 10, []string{"c", "d"}, ""},
+		{"adjacent duplicates collapse", []string{"a", "a", "b", "b", "c"}, "", 10, []string{"a", "b", "c"}, ""},
+		{"boundary duplicate does not skip a distinct key", []string{"a", "a", "b", "c"}, "", 2, []string{"a", "b"}, "b"},
+		{"non-positive limit returns all in one page", []string{"a", "b", "c"}, "", 0, []string{"a", "b", "c"}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, nxt := pageFilteredKeys(append([]string(nil), tc.keys...), tc.cursor, tc.limit)
+			if nxt != tc.wantNxt {
+				t.Errorf("nextCursor = %q, want %q", nxt, tc.wantNxt)
+			}
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Errorf("page = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	// Paging across a boundary duplicate must cover {a,b,c} with no loss — the
+	// exact membership-loss the de-dup guards (a naive impl would set the cursor
+	// to a duplicate 'a' and skip 'b' on the next page).
+	p1, c1 := pageFilteredKeys([]string{"a", "a", "b", "c"}, "", 2)
+	p2, c2 := pageFilteredKeys([]string{"a", "a", "b", "c"}, c1, 2)
+	all := append(append([]string{}, p1...), p2...)
+	if c2 != "" || fmt.Sprint(all) != fmt.Sprint([]string{"a", "b", "c"}) {
+		t.Fatalf("paged sequence = %v (c2=%q), want [a b c] exhausted", all, c2)
+	}
+}
+
+// TestKVListKeysFilter_CancelledContext proves a cancelled context yields an
+// ERROR, never a silently-truncated page. The keyLister has no error channel:
+// on cancellation it just closes the keys channel, so without the post-range
+// ctx.Err() check a timed-out enumeration would return a partial set as
+// success — and a set guard would evaluate a constraint over an incomplete
+// neighbor set.
+func TestKVListKeysFilter_CancelledContext(t *testing.T) {
+	c, ctx := newTestConn(t)
+	bucket := "core-kv"
+	provisionCoreBucket(ctx, t, c, bucket)
+	key := "lnk.provider." + testNanoID1 + ".hasBooking.appointment." + testNanoID2
+	if _, err := c.KVPut(ctx, bucket, key, []byte(`{"isDeleted":false}`)); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	cctx, cancel := context.WithCancel(ctx)
+	cancel() // cancelled before the call
+	_, _, err := c.KVListKeysFilter(cctx, bucket, "lnk.provider."+testNanoID1+".hasBooking.>", "", 10)
+	if err == nil {
+		t.Fatal("cancelled context must yield an error, not a silent (possibly partial) success")
+	}
+}

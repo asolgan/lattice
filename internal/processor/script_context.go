@@ -33,6 +33,12 @@ type ScriptContext struct {
 	ScriptSource string
 	ScriptClass  string
 	KVReader     ScriptKVReader
+	// LinkLister backs the script's `kv.Links()` builtin (Contract #2 §2.5.1) —
+	// the bounded, paged op-time enumeration of a hub vertex's canonical links.
+	// Populated by step 4 (Hydrate) with a live Core-KV-backed lister. Optional:
+	// when nil, a `kv.Links()` call raises a script error (tests that do not
+	// exercise enumeration may leave it unset).
+	LinkLister ScriptLinkLister
 }
 
 // ScriptKVReader performs a single on-demand Core KV read for a Starlark
@@ -51,6 +57,45 @@ type ScriptContext struct {
 // idempotency-read seam, not a read-model surface (read models are lenses, P5).
 type ScriptKVReader interface {
 	ReadVertex(ctx context.Context, key string) (*VertexDoc, error)
+}
+
+// ScriptLinkLister performs one bounded, paged enumeration of a hub vertex's
+// canonical Core KV links for a Starlark `kv.Links()` call (Contract #2
+// §2.5.1). keyFilter is the server-side subject filter the builtin constructs
+// from (hubKey, relation, direction); cursor/limit page the result.
+//
+// Semantics:
+//   - returns the currently-committed links matching keyFilter — live AND
+//     logically-deleted (each LinkDoc carries isDeleted; the script decides),
+//     mirroring kv.Read. Hard-deleted/absent keys simply do not appear.
+//   - nextCursor is the opaque token to pass as cursor for the next page, or
+//     "" when the filter is exhausted.
+//   - it is NOT snapshot-isolated and NOT a serialization point: a constraint
+//     over the returned set must additionally contend a shared OCC-guarded key
+//     (Contract #2 §2.5.1). A single-key read that races a hard-delete between
+//     the key-list and the value-read is skipped (treated as absent).
+//   - any substrate error other than a per-key not-found propagates as a
+//     ScriptError.
+//
+// Implementations read ONLY the Core KV canonical link keyspace — never the
+// Refractor Adjacency KV, never a lens/read-model (P5).
+type ScriptLinkLister interface {
+	ListLinks(ctx context.Context, keyFilter, cursor string, limit int) (links []LinkDoc, nextCursor string, err error)
+}
+
+// LinkDoc is the hydrated form of a Core KV link envelope (Contract #1 §1.3),
+// the set-valued sibling of VertexDoc. SourceVertex/TargetVertex are derived
+// from the 6-segment link key (Contract #1 §1.1: source first), so they are
+// always well-formed regardless of envelope-body drift. The script consumes a
+// Starlark struct projection of this type (see starlark_runner.go).
+type LinkDoc struct {
+	Key          string
+	Class        string
+	IsDeleted    bool
+	Data         map[string]interface{}
+	Revision     uint64
+	SourceVertex string
+	TargetVertex string
 }
 
 // VertexDoc is the hydrated form of a Core KV vertex or aspect document.
