@@ -1,6 +1,6 @@
 # Processor commit OCC: implement the deferred update-revision condition + internal bounded retry
 
-📐 **awaiting-Andrew (ratification)**
+✅ **Andrew-ratified (2026-06-29).** Ratified with refinements: ship **A+B as a single fire** (not two); make the same-key update conflict a **Health-visible lane-misassignment signal**; note the forward **Weaver/Loom lane-routing improvement loop** it seeds. See the *Ratified* block below.
 
 ## For Andrew (one-look)
 
@@ -19,8 +19,17 @@ will be a continuous issue."* The investigation **corrects the premise** and sur
 silently violates it); part (B) is transparent Processor behavior (the surfaced error code is unchanged on
 retry-exhaustion). **No architectural fork.** One decision for Andrew: **must (A) and (B) ship together** (my
 strong recommendation — (A) alone converts silent lost-updates into the very client-facing `RevisionConflict`
-storm Andrew fears; (B) alone is inert because nothing conflicts today). I sequence them as one feature, two
-increments, (B) landing in the same fire as or immediately before (A)'s enforcement flips on.
+storm Andrew fears; (B) alone is inert because nothing conflicts today). They **ship together in a single fire**
+— (B) built first *within* the fire so the absorber is in place before (A)'s conditioning flips on.
+
+**Ratified (Andrew, 2026-06-29).** A+B approved, **as a single fire** (not two). Plus a refinement to the
+signal: a **same-key update conflict is a warning flag that the op was published on the wrong lane** — fine
+*occasionally* (e.g. a deliberate urgent-lane write), but generally a lane-misassignment to investigate. So the
+retry signal is **surfaced in Health KV** with enough context to act on (the conflicting key + the racing
+lanes/op-kinds), and is the **seed of an investigation → improvement loop in Weaver/Loom** — the lane-assigning
+engines should learn to co-route or serialise ops that write the same key so the conflict stops recurring rather
+than merely being absorbed. That loop is **forward-looking** (a separate Weaver/Loom item), not in this fire's
+scope; this fire lands the Health-visible signal that feeds it.
 
 ---
 
@@ -146,8 +155,16 @@ hot key is the honest terminal, and the metric below makes it visible). This **g
 retry** the commit path *already* does for the §10.7 auto-complete injection (`commit_path.go:488` — "retry the
 injection once with the newer revision"): same instinct, made general and bounded.
 
-**Observability:** a `commitRetries` / `commitRetryExhausted` heartbeat counter (Contract #5 §5.4, mirroring
-Weaver's `sweepReclaimsSuppressed`) so sustained hot-key contention is operator-visible rather than silent.
+**Observability — a lane-misassignment signal, not just a counter (Andrew, 2026-06-29).** A same-key update
+conflict means two writers raced the *same* key, which normally indicates the conflicting op was published on the
+**wrong lane** (legitimate only occasionally, e.g. a deliberate urgent-lane write). So beyond the `commitRetries`
+/ `commitRetryExhausted` heartbeat counters (Contract #5 §5.4, mirroring Weaver's `sweepReclaimsSuppressed`), the
+Processor surfaces each retried/exhausted conflict to **Health KV** with enough context to investigate — the
+conflicting **key** and the **lanes / op-kinds** of the racing writers — so the condition is visible, not silent.
+This Health signal is the **seed of an investigation → improvement loop**: the lane-assigning engines
+(**Weaver / Loom**) should learn to co-route or serialise ops that write the same key, so a benign-but-repeated
+conflict is engineered out rather than merely absorbed. That loop is **forward-looking** (a separate Weaver/Loom
+item); this fire lands the Health-visible signal that feeds it.
 
 ---
 
@@ -223,10 +240,10 @@ code-grounded: once (A) conditions updates per §3.2, genuine concurrent same-ke
 - **Compatibility:** `create` and explicit-`expectedRevision` paths byte-identical. The only behavior change is
   that an unconditioned `update` becomes conditioned — which is the frozen-contract behavior, and which no
   correct caller depends on *not* having (depending on last-write-wins is the lost-update bug).
-- **Sequencing:** land **(B) internal retry first (dark — nothing conflicts yet, so it's a no-op)**, then **(A)
-  flip update-conditioning on** in the next fire — so the moment updates start conditioning, the absorber is
-  already there. (This is the dead-scaffolding-safe order: (B) is inert-but-correct until (A); (A) without (B)
-  is the storm. Ship (A) only once (B) is in `main`.)
+- **Sequencing — single fire (Andrew, 2026-06-29).** Both parts land in **one fire**, with (B) the
+  internal-retry absorber built **first within the fire** and (A) update-conditioning flipped on after it — so
+  (A) is never in `main` without (B) (the storm), and (B) is inert-but-correct until (A) makes it bite. The
+  earlier two-fire split is collapsed: the coupling is tight enough that one fire is the right unit.
 - **Tests:** (unit) committer emits `Nats-Expected-Last-Subject-Sequence=<hydratedRev>` for a default update,
   `0` for a create, explicit override still wins; (unit) retry loop — retryable update-conflict re-hydrates and
   succeeds on attempt 2, create-once collision surfaces without retry, tracker-replay dedups, exhaustion surfaces
@@ -239,16 +256,23 @@ code-grounded: once (A) conditions updates per §3.2, genuine concurrent same-ke
 
 ---
 
-## 7. Decomposition for the Steward
+## 7. Decomposition for the Steward — one fire (Andrew, 2026-06-29)
 
-- **Increment 1 — internal bounded retry (B), dark.** The retry loop + conflict discrimination + the metric,
-  around the existing steps 4-8. Inert today (updates unconditioned ⇒ nothing retryable), so zero behavior change
-  — proven by the retry unit tests against a fake conflicting committer. Generalises the auto-complete one-shot.
-- **Increment 2 — implement §3.2 update-conditioning (A).** Thread the hydrated revision onto default
-  update/tombstone commits; the lost-update e2e flips from "one lost" to "both apply". Full review (correctness
-  plane). Ships only with Increment 1 already in `main`.
-- **(Follow-on, not now)** same-key in-process coalescing *iff* the `commitRetries` metric shows real
-  self-contention.
+Ship as a **single fire**, built in this internal order so the tree is correct at every step:
+
+1. **(B) internal bounded retry, first.** The retry loop + conflict discrimination + the Health signal, around
+   the existing steps 4-8. Inert until (A) (updates unconditioned ⇒ nothing retryable) — proven by retry unit
+   tests against a fake conflicting committer. Generalises the §10.7 auto-complete one-shot (`commit_path.go:488`).
+2. **(A) implement §3.2 update-conditioning, second.** Thread the hydrated revision onto default
+   update/tombstone commits; the lost-update e2e flips from "one lost" to "both apply". With (B) already in the
+   same working tree, conditioning flips on with the absorber in place.
+3. **The Health-visible lane-misassignment signal** ships in the same fire — the conflicting key + racing
+   lanes/op-kinds to Health KV is how the conflict becomes operator-visible.
+
+Full review (correctness + the Gate-3 re-execution checks in §6; pre-build self-adversarial pass on
+re-execution idempotency). **(Follow-on, not now)** same-key in-process coalescing *iff* the Health signal shows
+real self-contention; and the **Weaver/Loom lane-routing improvement loop** the signal seeds (a separate,
+forward item — the engines learn to co-route same-key writers).
 
 ---
 
