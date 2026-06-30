@@ -189,16 +189,26 @@ Weaver's `sweepReclaimsSuppressed`) so sustained hot-key contention is operator-
 
 ---
 
-## 5. Why my live-test setup hit it so persistently (for the record)
+## 5. Why my live-test setup hit it (honest, with what's unverified)
 
-Two compounding causes, neither whole-stream: (1) **uniqueness-index create-once** — the setup script reused one
-phone + deterministic emails, so each new identity's email/phone **index vertex** `create` collided with the
-prior one (the constant `584` = that index key's existing sequence); (2) **warm-up churn** — running ops while
-the ~10-package install + the orchestration convergence backlog were still draining added concurrent writes to
-shared keys, so even a large 8-mutation op (`CreateUnclaimedIdentity`) intermittently lost a conditioned/create
-race. The fix that *worked* was unique index values (eliminates cause 1) + quiescing orchestration during setup
-(eliminates cause 2's churn). **Cause 2 is exactly what (B) would absorb** in production — a transient concurrent
-conflict that a re-hydrate-and-retry resolves without bouncing the caller.
+The conflict was a **per-subject `create`-once collision**, never whole-stream. `CreateUnclaimedIdentity` mints
+deterministic email/phone **uniqueness-index** vertices, and the setup script **reused one phone + deterministic
+emails** across identities → the index `create` collided. **The determining fix was unique index values**:
+verified by falsification — with the orchestration tier **running**, a `CreateUnclaimedIdentity` with unique
+values commits cleanly, so orchestration state is **not** a factor. My earlier characterisation of this incident
+("loses the whole-stream `ExpectedLastSequence` CAS to continuous Weaver/Loom convergence ops, worked around by
+quiescing orchestration") was **wrong on all three counts** — wrong mechanism (per-subject), wrong cause
+(uniqueness collision, not convergence contention), wrong fix (unique values, not quiescing; the script still
+failed *after* I quiesced).
+
+**Unverified residual (stated as such):** the very first attempt on a freshly-`make down`-ed stack (no persisted
+volume) failed with a slightly-shifting sequence (`586`→`584`) before any of the script's identities committed — so
+*something* real conflicted during warm-up, but I have **not** pinned the colliding key, and I am deliberately
+not substituting another unverified mechanism for it. **This incident is therefore NOT cited as evidence for (B)**
+— (B)'s justification stands on its own: once (A) conditions updates per §3.2, genuine concurrent same-key
+updates (a `directOp`/`replyOp` and a user op on the same aspect, across the concurrent lane pumps) **will**
+conflict, and (B) absorbs the benign ones. That is the real, code-grounded motivation, independent of this
+test-setup anecdote.
 
 ---
 
