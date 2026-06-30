@@ -114,7 +114,6 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Read-model / projection maturity
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **[Core/bootstrap] Populate Postgres `actor_read_grants`** | The cap-read self-anchor GrantTable projection (D1.3 Fire-3 prerequisite). | ★★★ | S–M | 🏗️ building · [design](../../implementation-artifacts/d1-grant-population-and-sequencing-design.md) · Increment 1 shipped |
 | **[Refractor] Link-triggered reprojection (plain/GrantTable lenses)** | Eager relationship-grant freshness. **Downgraded ★, de-blocked — NOT a D1.3 blocker.** | ★ | M | ✅ ratified · [design](../../implementation-artifacts/link-aspect-triggered-reprojection-plain-lenses-design.md) · ⚠️ consolidate-decision vs Negative/filter-retraction (Andrew) |
 | Negative / filter-retraction projection | True "emit-only-when-violating" (targets currently project one row per candidate with a `violating` flag). | ★→★★ | M | 📐 awaiting-Andrew · [design](../../implementation-artifacts/negative-filter-retraction-projection-design.md) · consolidation target for Link-triggered reprojection |
 | **Full-engine lens re-projects a tombstoned vertex when its keyed aspect survives** | A soft-deleted vertex keeps projecting into a full-engine lens when its keyed aspect survives (PO-routed, Clinic). | ★★ | S–M | ✅ ratified · [design](../../implementation-artifacts/refractor-full-engine-anchor-tombstone-retraction-design.md) · 📋 ready |
