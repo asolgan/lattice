@@ -39,6 +39,14 @@
 //     allowlist (Loupe-the-inspector et al.) that references the core-kv bucket
 //     must instead read a lens projection. The signal is the bucket, not the
 //     call: an app may read a lens TARGET bucket via KVGet/KVListKeys.
+//   - P7 — a discriminator-shaped aspect. Architecture P7: "a vertex's
+//     type/subtype discriminator is the envelope `class`, never a `.class`/shadow
+//     aspect." A package script emitting an aspect whose localName is `class` /
+//     `family` / `kind` shadows the envelope class — the type belongs on the
+//     vertex `class` field, discovered behind a fine-grained class by the step-6
+//     instanceOf-chain resolver (Contract #1 §1.5). The signal is anchored on the
+//     Starlark aspect-emit helper, so a discriminator word used as a CLI flag, a
+//     string-slice element, or an aspect's `cls` arg is not flagged.
 //
 // Markdown/docs are intentionally out of scope: they discuss the conventions
 // (e.g. "never an asp.* prefix") and would false-positive. The 6-segment link
@@ -62,6 +70,15 @@ var (
 	historyComment = regexp.MustCompile(`//[ \t]*(Story [0-9]|Previously\b|Was:|Replaces\b|renamed from|moved from|formerly\b)`)
 	aspPrefix      = regexp.MustCompile(`"asp\.`)
 	coreKVRead     = regexp.MustCompile(`\bCoreKVBucket\b|"core-kv"`)
+	// p7Discriminator — a package script emitting a discriminator-shaped aspect (a
+	// `.class` / `.family` / `.kind` localName that shadows the envelope `class`).
+	// Anchored on the Starlark aspect-emit helper so a discriminator word used
+	// elsewhere (a CLI flag, a string-slice element, an aspect's `cls` arg) is not
+	// flagged: it matches only when the discriminator is the *localName* — the
+	// helper's localName arg is always immediately followed by the `cls` string
+	// literal, regardless of whether the helper takes the vertex key as one arg or
+	// two (make_aspect, make_aspect_upsert(_occ), make_update_aspect).
+	p7Discriminator = regexp.MustCompile(`make_(aspect|update_aspect|aspect_upsert|aspect_upsert_occ)\(.*"(class|family|kind)",\s*"`)
 )
 
 // platformCmds are the platform / admin / debug-inspector binaries that
@@ -196,6 +213,7 @@ func scanFile(path string) []finding {
 	}
 	var out []finding
 	app := verticalAppCmd(path)
+	isTest := strings.HasSuffix(path, "_test.go")
 	sc := bufio.NewScanner(strings.NewReader(string(data)))
 	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
 	ln := 0
@@ -210,6 +228,9 @@ func scanFile(path string) []finding {
 		}
 		if app != "" && coreKVRead.MatchString(line) {
 			out = append(out, finding{path, ln, "P5 violation — application cmd/" + app + " reads Core KV directly; an application reads lens projections, never Core KV (lattice-architecture.md P5)"})
+		}
+		if !isTest && p7Discriminator.MatchString(line) {
+			out = append(out, finding{path, ln, "P7 violation — discriminator aspect (.class/.family/.kind) shadows the envelope class; the type belongs on the vertex class field, resolved behind a fine-grained class by the step-6 instanceOf chain (lattice-architecture.md P7, Contract #1 §1.5)"})
 		}
 	}
 	return out
