@@ -123,11 +123,10 @@ Components: Core · Weaver · Loom · Refractor · Loupe (+ the cross-cutting fe
   the root → `isDeleted` CDC → `evaluate.go:105` emits the Delete; a secondary-node tombstone falls through to
   re-execute (`evaluate.go:101-104`) so dependent rows refresh. The Verticals 🚧 `blocked-on-lattice` label is
   **stale** (verify + close verticals-side). Filed nothing (no filler).
-- **Last surveyed:** 2026-06-30 Loom (`internal/loom` + control). Healthy — 81.5% / 76.6% cov, no 0%
-  funcs, no TODO/FIXME; both deferred items (Starlark guards, durable `loom.*` read model) already filed.
-  Filed one maintenance gap: HealthSink pause-restore coverage (mirrors the Weaver row).
-  Prior rotation: Core → Weaver → Loupe → Loom → feature-backlog.
-- **Next:** Refractor (`internal/refractor`), then Core.
+- **Last surveyed:** 2026-06-30 Refractor (`internal/refractor` + `cmd/refractor`). Healthy; filed 2
+  Component-maintenance rows (retire `simple` engine; fan-out error-path coverage).
+  Prior rotation: Core → Weaver → Loupe → Loom → feature-backlog → Refractor.
+- **Next:** Core (`internal/processor` + `bootstrap` + `substrate`), then Weaver.
 
 ## Lattice feature backlog — the Phase-3 build queue
 
