@@ -165,6 +165,14 @@ button.ghost:hover { background: var(--bg-input); color: var(--text); }
 .badge.cancelled { color: var(--red); border-color: var(--red); }
 .badge.noshow { color: var(--yellow); border-color: var(--yellow); }
 
+.badge.followup-overdue { color: var(--red); border-color: var(--red); }
+.badge.followup-soon { color: var(--yellow); border-color: var(--yellow); }
+.badge.followup-later { color: var(--accent); border-color: var(--accent); }
+.badge.followup-nodate { color: var(--text-dim); border-color: var(--border); }
+.badge.followup-addressed { color: var(--green); border-color: var(--green); }
+
+.followups-lead { margin: 0 0 14px; }
+
 .empty {
   color: var(--text-dim);
   text-align: center;

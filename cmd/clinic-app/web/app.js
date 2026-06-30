@@ -12,6 +12,7 @@ const state = {
   providers: [],
   appts: [],
   schedule: [],
+  followups: [], // every appointment whose documented visit requested a follow-up (clinic-wide worklist)
   patient: null, // the selected patient key (the trusted-tool context)
   view: "book",
   highlight: null,
@@ -1218,6 +1219,198 @@ function renderAppts() {
   $("#appts-summary").textContent = `${n} appointment${n === 1 ? "" : "s"}${suffix}`;
 }
 
+// ---- Follow-ups worklist (clinic-wide staff queue) ----
+//
+// A documented visit (RecordEncounter) can flag followUpRequested + an optional
+// followUpDate — operational, non-PHI signals the clinicAppointments lens projects
+// (P5: read the lens read model, never Core KV). This tab is the clinic-wide queue of
+// those requests so one does not silently fall through: it reads EVERY appointment
+// (not the patient-scoped My Appointments view) and keeps the flagged ones. A
+// follow-up reads as "addressed" once a later non-cancelled appointment sits on the
+// same patient's record (the natural close-the-loop signal); the default filter hides
+// those so the list behaves as a worklist that empties.
+
+async function loadFollowups() {
+  const grid = $("#followups");
+  const empty = $("#followups-empty");
+  $("#followups-summary").textContent = "loading…";
+  let all;
+  try {
+    const data = await api("/api/appointments");
+    all = data.appointments || [];
+  } catch (e) {
+    grid.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = "Could not load follow-ups: " + e.message;
+    $("#followups-summary").textContent = "";
+    return;
+  }
+  const requested = all.filter((a) => a.followUpRequested);
+  for (const f of requested) f._addressed = hasLaterVisit(f, all);
+  state.followups = requested;
+  renderFollowups();
+}
+
+// hasLaterVisit reports whether the patient has another non-cancelled appointment
+// after this one — the heuristic that a requested follow-up has since been booked.
+function hasLaterVisit(f, all) {
+  return all.some(
+    (g) =>
+      g.appointmentKey !== f.appointmentKey &&
+      g.patientKey === f.patientKey &&
+      (g.status || "").toLowerCase() !== "cancelled" &&
+      g.startsAt > f.startsAt,
+  );
+}
+
+// followupUrgency buckets a follow-up by its target date relative to today (local):
+// overdue (date passed), soon (within 14 days), later, or nodate.
+function followupUrgency(f) {
+  const date = (f.followUpDate || "").slice(0, 10);
+  if (!date) return "nodate";
+  if (date < localDateStr(0)) return "overdue";
+  if (date <= localDateStr(14)) return "soon";
+  return "later";
+}
+
+// localDateStr returns today + offsetDays as a YYYY-MM-DD string in local time, for
+// lexical comparison against a follow-up's YYYY-MM-DD target date.
+function localDateStr(offsetDays) {
+  const d = new Date();
+  d.setDate(d.getDate() + offsetDays);
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${d.getFullYear()}-${m}-${day}`;
+}
+
+const FOLLOWUP_GROUPS = [
+  { key: "overdue", label: "Overdue" },
+  { key: "soon", label: "Due soon (next 14 days)" },
+  { key: "later", label: "Upcoming" },
+  { key: "nodate", label: "No target date" },
+];
+
+const FOLLOWUP_BADGE = { overdue: "Overdue", soon: "Due soon", later: "Upcoming", nodate: "No date" };
+
+function renderFollowups() {
+  const grid = $("#followups");
+  const empty = $("#followups-empty");
+  grid.innerHTML = "";
+
+  if (state.followups.length === 0) {
+    empty.hidden = false;
+    empty.textContent = "No follow-ups requested yet. Document a completed visit and tick “Follow-up needed”.";
+    $("#followups-summary").textContent = "";
+    return;
+  }
+
+  const filter = ($("#followups-filter") && $("#followups-filter").value) || "outstanding";
+  const rows = state.followups.filter((f) => filter === "all" || !f._addressed);
+  if (rows.length === 0) {
+    empty.hidden = false;
+    empty.textContent = "No outstanding follow-ups — every requested follow-up has a later visit booked.";
+    $("#followups-summary").textContent = `0 of ${state.followups.length}`;
+    return;
+  }
+  empty.hidden = true;
+
+  // Sort by target date (no-date last), then patient — overdue floats to the top.
+  const sorted = rows.slice().sort((a, b) => {
+    const da = (a.followUpDate || "9999").slice(0, 10);
+    const db = (b.followUpDate || "9999").slice(0, 10);
+    if (da !== db) return da < db ? -1 : 1;
+    return (a.patientName || a.patientKey) < (b.patientName || b.patientKey) ? -1 : 1;
+  });
+
+  for (const g of FOLLOWUP_GROUPS) {
+    const inGroup = sorted.filter((f) => followupUrgency(f) === g.key);
+    if (inGroup.length === 0) continue;
+    const head = document.createElement("div");
+    head.className = "appts-section-head";
+    head.textContent = `${g.label} · ${inGroup.length}`;
+    grid.append(head);
+    for (const f of inGroup) grid.append(renderFollowupCard(f));
+  }
+
+  const n = rows.length;
+  const suffix = filter === "all" ? "" : ` of ${state.followups.length}`;
+  $("#followups-summary").textContent = `${n} follow-up${n === 1 ? "" : "s"}${suffix}`;
+}
+
+function renderFollowupCard(f) {
+  const card = document.createElement("div");
+  card.className = "card";
+
+  const title = document.createElement("div");
+  title.className = "addr";
+  title.textContent = f.patientName || shortKey(f.patientKey);
+
+  const sub = document.createElement("div");
+  sub.className = "addr-sub";
+  if (f.providerName) {
+    sub.textContent = "with " + f.providerName + (f.providerSpecialty ? " · " + f.providerSpecialty : "");
+  }
+
+  const visit = document.createElement("div");
+  visit.className = "meta";
+  const vd = new Date(f.documentedAt || f.startsAt);
+  visit.textContent = "Visit " + (isNaN(vd) ? "" : vd.toLocaleDateString()) + (f.reason ? " · " + f.reason : "");
+
+  const target = document.createElement("div");
+  target.className = "when";
+  target.textContent = f.followUpDate ? "Follow up by " + f.followUpDate.slice(0, 10) : "Follow-up requested (no date)";
+
+  const actions = document.createElement("div");
+  actions.className = "card-actions";
+
+  const badges = document.createElement("span");
+  badges.className = "card-btns";
+  const urg = followupUrgency(f);
+  const badge = document.createElement("span");
+  badge.className = "badge followup-" + urg;
+  badge.textContent = FOLLOWUP_BADGE[urg];
+  badges.append(badge);
+  if (f._addressed) {
+    const ad = document.createElement("span");
+    ad.className = "badge followup-addressed";
+    ad.textContent = "Later visit booked";
+    badges.append(ad);
+  }
+  actions.append(badges);
+
+  const btns = document.createElement("span");
+  btns.className = "card-btns";
+  const book = document.createElement("button");
+  book.className = "ghost";
+  book.textContent = "Book follow-up";
+  book.addEventListener("click", () => bookFollowup(f));
+  btns.append(book);
+  actions.append(btns);
+
+  card.append(title);
+  if (sub.textContent) card.append(sub);
+  card.append(visit);
+  card.append(target);
+  card.append(actions);
+  return card;
+}
+
+// bookFollowup drops the user into the Book tab pre-filled with the follow-up's
+// patient (the global patient context) and provider, so a requested follow-up is one
+// click from being scheduled.
+function bookFollowup(f) {
+  const sel = $("#patient");
+  if (sel && [...sel.options].some((o) => o.value === f.patientKey)) sel.value = f.patientKey;
+  setPatient(f.patientKey);
+  const prov = $("#provider");
+  if (prov && [...prov.options].some((o) => o.value === f.providerKey)) {
+    prov.value = f.providerKey;
+    prov.dispatchEvent(new Event("change"));
+  }
+  showView("book");
+  toast("Booking a follow-up for " + (f.patientName || shortKey(f.patientKey)) + ". Pick a date & time.", "ok");
+}
+
 // ---- Provider Schedule (read-only day/week calendar desk view) ----
 //
 // The Schedule tab is a positioned calendar grid: a time axis down the left, one
@@ -1990,7 +2183,7 @@ async function submitEncounter(ev) {
 
 // ---- Tabs ----
 
-const VIEWS = ["book", "appts", "schedule", "availability"];
+const VIEWS = ["book", "appts", "schedule", "followups", "availability"];
 
 function showView(view) {
   state.view = view;
@@ -2003,6 +2196,7 @@ function showView(view) {
   }
   if (view === "appts") loadAppts();
   if (view === "schedule") loadSchedule();
+  if (view === "followups") loadFollowups();
   if (view === "availability") renderAvailEditors();
 }
 
@@ -2072,6 +2266,7 @@ function init() {
   $("#tab-book").addEventListener("click", () => showView("book"));
   $("#tab-appts").addEventListener("click", () => showView("appts"));
   $("#tab-schedule").addEventListener("click", () => showView("schedule"));
+  $("#tab-followups").addEventListener("click", () => showView("followups"));
   $("#tab-availability").addEventListener("click", () => showView("availability"));
   // The Book form's pointer link jumps to the Availability tab, carrying the
   // provider the user was about to book so the editor opens on that provider.
@@ -2083,6 +2278,8 @@ function init() {
   });
   $("#reload-appts").addEventListener("click", loadAppts);
   $("#appts-filter").addEventListener("change", renderAppts);
+  $("#reload-followups").addEventListener("click", loadFollowups);
+  $("#followups-filter").addEventListener("change", renderFollowups);
   $("#reload-schedule").addEventListener("click", loadSchedule);
   $("#sched-provider").addEventListener("change", loadSchedule);
   $("#sched-week").addEventListener("click", () => setSchedView("week"));

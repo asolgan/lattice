@@ -20,6 +20,7 @@
     <button id="tab-book" class="tab active" role="tab" aria-selected="true" aria-controls="view-book">Book</button>
     <button id="tab-appts" class="tab" role="tab" aria-selected="false" aria-controls="view-appts">My Appointments</button>
     <button id="tab-schedule" class="tab" role="tab" aria-selected="false" aria-controls="view-schedule">Schedule</button>
+    <button id="tab-followups" class="tab" role="tab" aria-selected="false" aria-controls="view-followups">Follow-ups</button>
     <button id="tab-availability" class="tab" role="tab" aria-selected="false" aria-controls="view-availability">Availability</button>
   </nav>
 
@@ -113,6 +114,22 @@
       <div id="sched-detail" class="sched-detail" hidden></div>
       <div id="schedule" class="calendar" aria-live="polite"></div>
       <div id="schedule-empty" class="empty" hidden></div>
+    </section>
+
+    <!-- Follow-ups worklist (clinic-wide staff queue) -->
+    <section id="view-followups" role="tabpanel" aria-labelledby="tab-followups" hidden>
+      <div class="panel-controls">
+        <button id="reload-followups" class="ghost">Refresh</button>
+        <label for="followups-filter">Show</label>
+        <select id="followups-filter" aria-label="Filter follow-ups">
+          <option value="outstanding">Outstanding (no later visit booked)</option>
+          <option value="all">All requested follow-ups</option>
+        </select>
+        <span id="followups-summary" class="summary"></span>
+      </div>
+      <p class="hint followups-lead">Every documented visit that requested a follow-up, clinic-wide. Overdue leads. “Book follow-up” drops you into the Book tab pre-filled with the patient and provider.</p>
+      <div id="followups" class="grid" aria-live="polite"></div>
+      <div id="followups-empty" class="empty" hidden></div>
     </section>
 
     <!-- Provider Availability (admin) -->
