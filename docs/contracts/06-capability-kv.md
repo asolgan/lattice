@@ -591,9 +591,19 @@ boundary authenticates the reader (D1 increment 1: a signed JWT keyed to the Ide
   actor_read_grants WHERE actor_id = current_setting('lattice.actor_id', true) AND NOT is_deleted)))` (a row is
   visible if **any** of its anchors — bare NanoIDs — is granted by a **live** grant). The boundary sets
   `SET LOCAL lattice.actor_id` per session; enforcement is
-  DB-native and **unbypassable by app code**. **Every protected table is created with `ENABLE ROW LEVEL
+  DB-native and **unbypassable by app code**. **Every protected table carries `ENABLE ROW LEVEL
   SECURITY` AND `FORCE ROW LEVEL SECURITY`**, so a table whose policy was never generated **denies all rows**
-  (a fail-closed outage, never a silent leak). This is the destination for **all** protected read models.
+  (a fail-closed outage, never a silent leak). The table is **provisioned out-of-band** (a migration), like
+  every other Postgres lens target — Refractor issues **no DDL**. Instead Refractor **verifies the security
+  posture at lens activation** — `FORCE ROW LEVEL SECURITY` is enabled, the required columns
+  (`authz_anchors text[]`, `projection_seq bigint`, key + body) exist, and a `FOR SELECT` policy is present —
+  and if any is absent it **pauses the lens fail-closed** (`PauseInfra` → never projects a protected row into
+  an unverified table; raises `CapabilityLensPaused`), **auto-resuming** once a re-probe confirms the posture
+  (no Refractor restart). The check re-runs on the periodic heartbeat, so a post-activation
+  `FORCE ROW LEVEL SECURITY` removal re-pauses. The **security-load-bearing assertion is
+  `FORCE ROW LEVEL SECURITY = on`**: with it enabled, *any* policy/column mistake fails closed (the table
+  over-denies — a visible outage), so an out-of-band provisioning error can never over-share. This is the
+  destination for **all** protected read models.
 - **`actor_read_grants` is `projectionSeq`-guarded (the read-auth source of truth).** Unlike business
   read-model tables (which may be last-writer-wins — the Postgres adapter is guard-exempt there), the grant
   table inherits the §6.2/§6.8 **monotonic-seq guarantee**: an upsert/delete applies only when its incoming
