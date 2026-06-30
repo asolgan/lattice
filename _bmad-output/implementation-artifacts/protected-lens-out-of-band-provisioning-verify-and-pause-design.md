@@ -92,25 +92,47 @@ The verification gates three things, but they are not equal:
 So the posture Probe is *fail-closed on the one bit that matters* and *fail-functional on the rest* — and
 crucially **no operator mistake can produce over-sharing**, only over-denial.
 
-### 2.3 The mechanism — reuse the supervisor's probe-before-drain path (no new pump logic)
+### 2.3 The mechanism — reuse the supervisor's probe-before-drain path
 
-The `ConsumerSpec.Probe` seam already feeds the supervisor's pause/recovery loop
-([pipeline.go:331](internal/refractor/pipeline/pipeline.go)). Two existing primitives give the fail-closed
-**activation** gate for free:
+> **⚠️ GROUNDING CORRECTION (Steward, 2026-06-30 — folded by Winston, impl-ratified).** The original
+> "**no new pump logic** / start the lens infra-paused with the primitives that exist" framing below is
+> **wrong on one load-bearing point**, found by grounding the pump in code before building it:
+> **`ConsumerSpec` has no initial-pause field, and the pump cannot start paused at first activation.**
+> `newPumpState()` ([consumer_supervisor_pump.go:59](internal/substrate/consumer_supervisor_pump.go))
+> begins with an **empty** reason set; the **only** pre-first-drain seeding is `restoreState` →
+> `Health.Load` ([pump.go:373-380](internal/substrate/consumer_supervisor_pump.go)), which restores a
+> *persisted* paused state on a **restart** — there is none at a fresh activation. So a newly-activated
+> protected lens has **zero pause reasons → drains and projects the first batch BEFORE any posture
+> verification → fail-OPEN**, the exact leak this design exists to prevent. The `waitWhilePaused →
+> runProbeLoop` "probe-before-drain" path at :226-228 only runs when the pump is *already* infra-paused;
+> nothing puts it there at activation. **Therefore the fail-closed activation gate requires a NEW substrate
+> seam**, not just adapter Probe rewiring — see the corrected mechanism + re-decomposition (Fire 0) below.
+> (This is an impl-level mechanism correction — no contract/fork change; Contract #6 §6.14, already
+> committed, is untouched.)
 
-1. **Start protected/grant lenses with an initial `PauseInfra`.** An infra-paused pump runs
-   `waitWhilePaused → runProbeLoop` ([consumer_supervisor_pump.go:226-228](internal/substrate/consumer_supervisor_pump.go))
-   — i.e. it **probes BEFORE the first drain** and only proceeds to project once the Probe passes. This is the
-   load-bearing detail: the pump normally drains-then-probes, so a probe only in the recovery path would let
-   the first batch project fail-open. Starting infra-paused inverts that for these lenses → **no projection
-   until the posture is verified.**
+**The corrected mechanism.** The fail-closed activation gate needs the pump to be **infra-paused before its
+first drain**. Add a minimal substrate seam: a `ConsumerSpec.InitialPause PauseReason` field (zero-value =
+unpaused, today's behaviour for every existing consumer), seeded into `st.reasons` in `runPump` **after**
+`restoreState` finds no persisted state and **before** the first drain. With `InitialPause: PauseInfra`, the
+pump enters `waitWhilePaused → runProbeLoop` and **probes before draining** — exactly the inversion §2.3
+relied on, now actually wired. Persisted health state (a restart) still wins (restore runs first), so this
+only governs the *first, never-yet-activated* run. This is additive and backward-compatible (every current
+spec leaves `InitialPause` zero → unchanged).
+
+Then the two existing primitives compose as the design intended:
+
+1. **Probe-before-drain when infra-paused.** `waitWhilePaused → runProbeLoop`
+   ([consumer_supervisor_pump.go:226-228](internal/substrate/consumer_supervisor_pump.go)) probes BEFORE the
+   first drain and only proceeds to project once the Probe passes — but **only because `InitialPause` now puts
+   the pump there at activation** (the correction above).
 2. **`PauseInfra` auto-clears on a passing Probe** ([spec.go:50-51](internal/substrate/consumer_supervisor_spec.go))
    — so the UX is exactly Andrew's: posture absent → lens paused (Health `CapabilityLensPaused`, error) →
    operator provisions the table out-of-band → next Probe passes → **auto-resume, no operator Resume, no
    Refractor restart.** (Infra, not `PauseStructural`, precisely because it self-heals on operator action.)
 
-So the per-message path is unchanged; we only (a) make the protected/grant adapters' `Probe` do posture
-verification instead of `pool.Ping`, and (b) register those lenses initially infra-paused.
+So the per-message path is unchanged; we (a) add the `ConsumerSpec.InitialPause` substrate seam (Fire 0),
+(b) make the protected/grant adapters' `Probe` do posture verification instead of `pool.Ping`, and
+(c) register those lenses with `InitialPause: PauseInfra`.
 
 ### 2.4 What runs (read-only catalog queries)
 
@@ -252,12 +274,32 @@ shipped/in-flight). This is a **swap, not a rebuild**:
 
 ## 8. Fire-by-fire decomposition (for the Lattice Steward)
 
+> **Re-decomposed 2026-06-30** after the §2.3 grounding correction: the fail-closed activation gate needs a
+> substrate seam that does not exist today, split out as **Fire 0**. Fire 0 + Fire 1 are the security-plane
+> core and **must land together** (Fire 0 alone is dead scaffolding — an unused `InitialPause` field — and
+> Fire 1 without it fail-opens); ship them as **one fire with an internal build order**, under one **full
+> 3-layer review**. The grant/protected adapters + `rls.go` already exist (D1.1–D1.4), so this is still a
+> swap, not a rebuild — just with the substrate seam added first.
+
+**Fire 0 — substrate `ConsumerSpec.InitialPause` seam (the missing fail-closed primitive).** Add
+`InitialPause PauseReason` to `ConsumerSpec` (zero-value = unpaused, every existing spec unchanged); in
+`runPump`, after `restoreState` finds no persisted state, seed `st.addReason(spec.InitialPause)` before the
+first drain so an `InitialPause: PauseInfra` pump enters `waitWhilePaused → runProbeLoop` and **probes
+before draining**. Substrate unit test: a spec with `InitialPause: PauseInfra` + a Probe that fails-then-
+passes projects **zero** until the Probe passes, then drains; a spec with the zero value drains immediately
+(regression guard for Loom/Weaver/Processor). Additive, backward-compatible, no security surface on its own —
+but it has **no standalone value**, so it ships *inside* this fire ahead of Fire 1, never alone.
+
 **Fire 1 — the verifier + the fail-closed activation gate (the core).** Add `Verify{Protected,Grant}Table`
 (read-only catalog checks, §2.4); switch the protected/grant adapters' `Probe` to posture-verify; register
-protected/grant lenses **infra-paused** so the probe gates the first write; remove the `pool.Exec` from
-`Provision`/`ProvisionProtectedTable` (keep `Build*DDL`). Unit + pipeline pause tests (§6). **Full 3-layer
-review** (security plane — this *is* the read-auth boundary). Independently shippable; D1.3 protected models
-aren't live, so there's no consumer regression.
+protected/grant lenses with **`InitialPause: PauseInfra`** (the Fire-0 seam) so the probe gates the first
+write; remove the `pool.Exec` from `Provision`/`ProvisionProtectedTable` (keep `Build*DDL`), relocating the
+fixture provisioning the existing tests rely on (`capadv_read_bypass_test.go:209`,
+`read_path_adapters_test.go:136-198`, `rls_test.go:113`) to a shared out-of-band test helper that runs
+`Build*DDL` — so the just-shipped D1.4 Gate-3 read-path suite stays green. Unit + pipeline pause tests (§6).
+**Full 3-layer review** (security plane — this *is* the read-auth boundary). Independently shippable once
+Fire 0 lands with it; D1.3 protected models aren't live in prod, so there's no production regression — but
+the test-fixture relocation is real coupled work, not zero.
 
 **Fire 2 — operator runbook + dev ergonomics + F2 seq-guard.** The `lattice refractor emit-ddl` CLI + the
 `make provision-readpath` target (dev parity); and **seq-guard `ProtectedAdapter`** (now that the verifier

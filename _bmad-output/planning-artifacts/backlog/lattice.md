@@ -51,6 +51,14 @@ Compact rotation memory only (survey *findings* become filed rows above + in the
 Components: Core · Weaver · Loom · Refractor · Loupe (+ the cross-cutting feature backlog). Freshness via
 `git log -1 --format=%ct -- <path>`; survey the stalest, note a dated line, rotate.
 
+- **Steward fire 2026-06-30 (Refractor read-path):** reconciled a stale board row (full-engine
+  anchor-tombstone retraction said 📋 ready but Fire 1 shipped `679fe25` — moved to Done log) and
+  grounding-corrected the protected-lens out-of-band design before building: its §2.3 "no new pump
+  logic / start infra-paused" premise is **ungrounded** (`ConsumerSpec` has no initial-pause field;
+  a fresh protected lens drains+projects before posture verify → fail-OPEN). Folded the correction
+  (new `ConsumerSpec.InitialPause` substrate seam = Fire 0; Fire 0+1 land together under full 3-layer)
+  + flagged the board row. No code committed (security-plane build deferred to a dedicated fire with
+  budget for the 3-layer review + the D1.4 Gate-3 fixture relocation).
 - **Last surveyed:** 2026-06-30 Loom (`internal/loom` + control). Healthy — 81.5% / 76.6% cov, no 0%
   funcs, no TODO/FIXME; both deferred items (Starlark guards, durable `loom.*` read model) already filed.
   Filed one maintenance gap: HealthSink pause-restore coverage (mirrors the Weaver row).
@@ -66,7 +74,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
 > 🎯 **Build-ready now** (✅ ratified / 📋 ready, no upstream gate): **FR28 role-queue** ·
 > **`@every` schedules** · **protected-lens out-of-band provisioning** ·
-> **full-engine tombstone retraction** · the **instanceOf P7 lint gate** (residual).
+> the **instanceOf P7 lint gate** (residual).
 > *Dependency-sequenced ratified items*: **Vault** + **Personal Lens** behind D1; **Gateway** behind
 > NATS-write-restriction F2; **Object crypto-shred** behind Vault — build when their gate clears.
 > (**Control-plane-authz** rides D1.2, now shipped → buildable, deprioritized behind D1 rollout.)
@@ -77,7 +85,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | Read-path authorization (D1) | Reads from lens targets (Postgres/KV) bypass the write-path Capability boundary. Postgres RLS + a decomposed Capability-Read Lens; Gateway sets `lattice.actor_id`. Subsumes `cap.svc` read-auth. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/read-path-authorization-d1-design.md) · D1.1–D1.4 shipped (base lens · JWT seam · protected-Postgres RLS · §5 Gate-3 read-bypass vectors + lint); next = D1.5 roll remaining read models onto the enforcement seam |
-| **Protected-lens provisioning: out-of-band + verify-and-pause** | Refractor runs the protected/grant Postgres table DDL today; move provisioning out-of-band + verify-and-pause fail-closed (retire the RLS DDL-ownership exception). | ★★ | M | ✅ ratified · [design](../../implementation-artifacts/protected-lens-out-of-band-provisioning-verify-and-pause-design.md) · 📋 ready |
+| **Protected-lens provisioning: out-of-band + verify-and-pause** | Refractor runs the protected/grant Postgres table DDL today; move provisioning out-of-band + verify-and-pause fail-closed (retire the RLS DDL-ownership exception). | ★★ | M→L | ✅ ratified · [design](../../implementation-artifacts/protected-lens-out-of-band-provisioning-verify-and-pause-design.md) · 📋 ready · ⚠️ §2.3 grounding-corrected 2026-06-30: needs a NEW substrate `ConsumerSpec.InitialPause` seam (Fire 0) — pump can't start infra-paused at first activation today → naive build fail-OPENs; Fire 0+1 land together (1 fire, full 3-layer), + relocate D1.4 Gate-3 fixture provisioning to an out-of-band test helper |
 | Gateway | Edge trust boundary: JWT auth, `Lattice-Actor` stamping, read-path enforcement. Gates external actors + the real Edge node. | ★★★ | L | ✅ ratified · [design](../../implementation-artifacts/gateway-external-trust-boundary-design.md) · 🚧 seq behind NATS-write-restriction F2b |
 | NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) · F1 (credential seam) shipped; F2 = live enforcement |
 | **Lane authorization enforcement (Contract #2 §2.3)** | Submitting to a lane is itself capability-controlled: `LaneUnauthorized` + the service-actor `system`-lane grant. | ★★ | M | 🏗️ building · ✅ ratified 2026-06-28 · [design](../../implementation-artifacts/lane-authorization-enforcement-design.md) · F1 (grants converge, dark) shipped; next = enforcement |
@@ -121,7 +129,6 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 |---|---|---|---|---|
 | **[Refractor] Link-triggered reprojection (plain/GrantTable lenses)** | Eager relationship-grant freshness. **Downgraded ★, de-blocked — NOT a D1.3 blocker.** | ★ | M | ✅ ratified · [design](../../implementation-artifacts/link-aspect-triggered-reprojection-plain-lenses-design.md) · ⚠️ consolidate-decision vs Negative/filter-retraction (Andrew) |
 | Negative / filter-retraction projection | True "emit-only-when-violating" (targets currently project one row per candidate with a `violating` flag). | ★→★★ | M | 📐 awaiting-Andrew · [design](../../implementation-artifacts/negative-filter-retraction-projection-design.md) · consolidation target for Link-triggered reprojection |
-| **Full-engine lens re-projects a tombstoned vertex when its keyed aspect survives** | A soft-deleted vertex keeps projecting into a full-engine lens when its keyed aspect survives (PO-routed, Clinic). | ★★ | S–M | ✅ ratified · [design](../../implementation-artifacts/refractor-full-engine-anchor-tombstone-retraction-design.md) · 📋 ready |
 | Elasticsearch target adapter | A third lens target adapter (only NATS-KV + Postgres ship; no consumer yet). | ★ | M | 📋 (no consumer yet) |
 | Link-tombstone re-projection · cross-instance latency rollup | Two projection edge-cases / observability gaps (current approaches work). | ★ | S each | 📋 |
 
@@ -155,6 +162,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-06-27 · `679fe25` (+`faa3aec` GrantTable composite variant) · [Refractor] Full-engine plain-projection anchor-tombstone retraction — `Engine.AnchorDeleteResult` (AST-only) + the non-actor pipeline twin emit a Delete on a root-tombstone of the lens anchor; fixes every full-engine plain lens (clinic/loftspace/lease/objects-base); doc note in refractor.md. (Reconciled stale board row 2026-06-30: design banner said 📋 ready but Fire 1 had shipped; clinic ephemeral-stack e2e is verticals-lane convergence-suite work.)
 - 2026-06-30 · `44049ed` · [Core/bypass] D1.4 — Gate-3 read-path authorization adversarial vectors (§5.1–5.5: no-JWT · cross-actor · revoked · cross-anchor bleed · no-RLS-policy); Gate 3 now 13/13, gate sets `POSTGRES_TEST_DSN`
 - 2026-06-30 · `<pending>` · [clinic-domain] kv.Links Fire 2 — re-author the appointment double-book guard onto `hasBooking` links + scalar `bookingGuard` epoch (drop the `.bookings` key-list aspects + DDLs); pkg 0.8.0
 - 2026-06-30 · `cc2613f` · [Core/substrate] kv.Links Fire 1 — bounded op-time link enumeration primitive (+ `KVListKeysFilter` paged subject-filter seam)
