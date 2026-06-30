@@ -284,9 +284,13 @@ ratification state*:
   trade-off), and any **frozen-contract** change (which §, why, affected consumers — with the actual edit staged
   **uncommitted** in `main`). Make ratification a one-look decision: a finished design, the fork called out, the
   contract diff ready.
-- **The board row** (`lattice.md`, in `main`) carries — the **status** (🏗️ designing → **📐 awaiting-Andrew**),
-  a **link to the design doc**, and the **ratification state** (📐 awaiting-Andrew → **✅ Andrew-ratified** once
-  he signs off). **Only after ✅ Andrew-ratified does the Lattice Steward build it.** Keep it one row, current.
+- **The board row** (`lattice.md`, in `main`) is **one capped line** — `Item · What (one line) · Imp · Size ·
+  State`, where **State = a token + a link to your design doc + nothing else** (🏗️ designing →
+  **📐 awaiting-Andrew** → **✅ Andrew-ratified** once he signs off). **Only after ✅ Andrew-ratified does the
+  Lattice Steward build it.** **All of your design detail — the shape, alternatives, the adversarial /
+  party-mode findings, the contract surface — lives in the design DOC, never in the board cell** (the board
+  is an index, not a journal — §5 of the swimlanes design / the CLAUDE.md no-changelog rule). Keep it one
+  row, current.
 
 You do **not** stamp a design "build-ready" yourself — every finished design goes to Andrew. (Decide-don't-defer
 binds the *design*, not the *ratification*: resolve the design's questions; flag the finished design.)

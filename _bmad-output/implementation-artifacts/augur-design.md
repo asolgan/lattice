@@ -33,6 +33,25 @@
 
 ---
 
+## Build status — in-flight checkpoint (resume here)
+
+**Fire 1 lives in an unmerged worktree** — branch `augur-fire1` (worktree `../lattice-augur*`), **NOT merged
+to `main`**. Latest HEAD **`fcc4e29`**. Resume by `cd`-ing into that worktree; merge to `main` only when the
+whole of Fire 1 is green + reviewed.
+
+Steps complete in the worktree (each its own commit on `augur-fire1`):
+- foundation + adapter layer + reply-path reconciliation + target-policy parse/validate
+- (3b′) the augur op + policy reshape — `2a5f3a2`
+- (3b″) the Weaver escalation dispatch (`evaluator.go` `dispatchGap` `!ok` → `augurEscalation`) — `86a912b`
+- step 4a — rebase current onto `main` + Option-F doc reconciliation + auth grounding — `fb30c3d`
+- step 4b — `scripts/verify-package-augur.go` gate + CI wiring — `153d586`
+- step 5 — the `augurProposals` flat nats-kv read-model review lens (P5 human-in-the-loop surface) — `803c092`
+- step 6 — `make test-augur-convergence` ephemeral-stack e2e + adversarial gate — `fcc4e29`
+
+**Fire 2a** — the `ReviewProposal` human-verdict op — **SHIPPED to `main`** (`3dbd049`).
+
+**Next:** merge the `augur-fire1` worktree to `main` (Fire 1), then continue Fire 2b+ per §8.
+
 ## For Andrew (ratify in one look)
 
 **What it does, in two lines.** Today a Weaver target that projects a `violating` gap the package

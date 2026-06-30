@@ -253,10 +253,18 @@ running; the **browser tab** you do not.
   the next resumes after reset, and every completed unit is already committed, so nothing is lost. Don't thrash
   or chase "one more." A purely **design** fire writes **one** design doc and exits.
 - **Multi-fire:** a big item that can't be finished + reviewed + made green in one fire keeps its **code in a
-  persistent worktree** with a **🏗️ CHECKPOINT in your lane file (in `main`)** (worktree path · what's done ·
-  next steps); merge only when complete + green — **main is never left partial**. A later fire resumes it first.
-- **Update your lane file in `main`** as you go (📋 → 🏗️ → ✅), **directly in main** (not from a worktree);
-  owners hand board updates to you. Done items append to your lane's **Done log**.
+  persistent worktree**; the **detailed CHECKPOINT (worktree path · what's done fire-by-fire · next steps)
+  goes in the item's design doc**, and your lane row carries a **one-line 🏗️ pointer** to it. Merge only when
+  complete + green — **main is never left partial**. A later fire reads the design-doc checkpoint and resumes.
+- **You are the board's editor — keep it an INDEX, not a journal (the row discipline, §5 of the swimlanes
+  design; load-bearing — the lane files once hit 250–300 KB of in-cell journals and no role could `Read`
+  one).** Update your lane file in `main` as you go (📋 → 🏗️ → ✅), **directly in main** (not a worktree).
+  Every row is `Item · What (one line) · Imp · Size · State`, where **State = a token + a link to the design
+  doc/commit + (if 🏗️) a one-line next step — nothing else.** Put the build narrative (fires shipped, SHAs,
+  findings, coverage) in the **design doc + commit message**, never in the cell (the CLAUDE.md
+  no-changelog rule). When you ship an item, **move it out of the feature table to a one-line Done-log entry**
+  (`date · SHA · title`); past ~25 Done-log lines, roll the oldest to `backlog/archive/`. Owners hand you a
+  one-line status + SHA, not a paragraph.
 
 ## 5. Replenish if idle
 

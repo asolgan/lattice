@@ -94,4 +94,7 @@ keys were touched. Update `docs/components/<component>.md` (docs-in-Definition-o
 
 Report to Winston: what changed, gate results, the review verdict, and any escalation (contract touch /
 cross-component interface / needs another component). Winston merges to `main` (L2) or routes to Andrew (L3).
-Owners **file and prepare**; they never self-prioritize above Winston or commit directly.
+Owners **file and prepare**; they never self-prioritize above Winston or commit directly. **Any board update
+you hand up is a ONE-LINE status + SHA** (the board is an index, not a journal — §5 of the swimlanes design):
+the detail — what you built, the findings, coverage — lives in the **commit message + the design doc**, never
+narrated into the board cell.

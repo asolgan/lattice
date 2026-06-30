@@ -69,9 +69,12 @@ app reads **lens projections, never Core KV** (only Loupe, the console, reads Co
 - **Discovered platform-primitive gaps** → **`planning-artifacts/backlog/lattice.md`** (tagged with the
   vertical; block the dependent vertical item on it).
 
-Each item **scored** (Imp ★ / Size), **deduped** (don't refile), tagged FE (Sally + FE Engineer) / package
-(Package Designer) / platform (Surveyor + Lattice Steward). Keep a short **dated PO note** in `verticals.md` (so
-the next run rotates). **Docs in `main`, not a worktree** (isolation rule) — edit the lane files directly in
+Each item is **one capped row** — `Item · What (one line) · Vertical · Owner · Imp · Size · State` —
+**scored** (Imp ★ / Size), **deduped** (don't refile), tagged FE (Sally + FE Engineer) / package
+(Package Designer) / platform (Surveyor + Lattice Steward). **The board is an index, not a journal** (§5 of
+the swimlanes design / the CLAUDE.md no-changelog rule): keep the What to one line — grounding goes in the
+linked refs, never narrated into the cell. Keep a **compact dated PO note** in `verticals.md` (a rotation
+pointer — what you exercised, what's next — not a prose run-log; your *findings* are the filed rows). **Docs in `main`, not a worktree** (isolation rule) — edit the lane files directly in
 `main`; commit **docs-only, scoped** (never `git add -A`): `git pull --rebase` → `git add` the lane file(s) you
 touched → commit (`docs(backlog): PO discovery — <vertical>`; end with `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`)
 → `git push`. If you see modified files you didn't touch, leave them.

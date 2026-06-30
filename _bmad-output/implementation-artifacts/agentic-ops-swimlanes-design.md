@@ -88,21 +88,45 @@ routes to the Lattice lane.)
 
 ## 5. Backlog tracking — per-lane files
 
-`_bmad-output/planning-artifacts/backlog/`:
+`_bmad-output/planning-artifacts/`:
 
-- **`README.md`** — index + scales legend + the cross-lane rules (§4, prioritization) + the **Done/shipped
-  history** (the prior Progress board, retained). Light, rarely written.
-- **`verticals.md`** — Stream 1: ready / in-flight / done-log + the PO discovery notes. Written by the
-  Vertical Steward + the PO only.
-- **`lattice.md`** — Stream 2: **Lattice features** (cross-cutting platform capabilities — the deferred
-  backlog) + **Component maintenance** (grouped by component) + ready / in-flight / done-log. Written by the
-  Lattice Steward + the Surveyor only (+ PO-routed gaps).
+- **`backlog.md`** — index + scales legend + the cross-lane rules (§4, prioritization) + the row discipline
+  + **shipped milestones** (the big landmarks; per-item history lives in the lane Done logs). Light, rarely
+  written.
+- **`backlog/verticals.md`** — Stream 1: ready / in-flight / done-log + the PO discovery rotation notes.
+  Written by the Vertical Steward + the PO only.
+- **`backlog/lattice.md`** — Stream 2: **Lattice features** (cross-cutting platform capabilities — the
+  deferred backlog) + **Component maintenance** (grouped by component) + ready / in-flight / done-log + the
+  Surveyor rotation notes. Written by the Lattice Steward + the Surveyor (+ Whetstone CI rows, + PO-routed
+  gaps) only.
 
 Each advancer + its hydrator write **only their lane file** → the single-file board-collision git races
-disappear. Item status vocabulary: **📋 ready · 🏗️ in-flight (worktree) · ✅ done (commit) · 📐
-design-proposed · 🚧 blocked (Andrew-gated, or blocked-on another item)**. A lane is **starving** when its
-ready-count → 0 (its hydrator runs). *North-star (deferred): model the backlog in the graph so Loupe shows it
-self-truthing — big lift; per-lane markdown now.*
+disappear. Item status vocabulary: **📋 ready · 🏗️ building (worktree) · ✅ ratified (designed, not built) ·
+📐 awaiting-Andrew (ratification) · 🚧 blocked (Andrew-gated, or `seq:`/`blocked-on:` another item)** ·
+🎯 top-priority · 🗄️ shelved-backup · 🔭 flag-for-Andrew. A lane is **starving** when its ready-count → 0
+(its hydrator runs).
+
+**The board is an INDEX, not a journal (the row discipline — load-bearing, learned the hard way 2026-06-29
+when the lane files hit 250–300 KB and no role could `Read` one).** One item = **one row**:
+`Item · What it is (one line) · Imp · Size · State`. The **State** cell is a **state token** + a **link to
+the design doc / commit** + (only if 🏗️) a **one-line next step** — *nothing else*. The detail — design
+shape, ratification record, adversarial findings, the **fire-by-fire build journal**, commit SHAs, coverage,
+review-depth notes — lives in the **linked design doc + git**, never narrated in the row (this is the
+CLAUDE.md no-changelog-comments rule, applied to the board). A multi-fire item's checkpoint (worktree path ·
+what's done · next) lives in its **design doc**; the row carries a one-line pointer. **Shipped (✅ built)
+items leave the feature tables** and become a one-line **Done-log** entry (`date · SHA · title`); past ~25
+the oldest roll to `backlog/archive/`.
+
+- **Who operates it:** the **Steward** is the board's editor (the only role that writes status + in-flight +
+  done) — it keeps rows capped, moves detail to the design doc, and rotates the Done log, every fire. The
+  hydrators (Surveyor, PO) file in the capped format; the Designer's findings go in the design doc, not the
+  row; owners hand a one-line status + SHA up.
+- **What enforces it:** a deterministic **`lint-conventions` gate** (mirrors the P5 gate) fails CI if a board
+  row exceeds the char budget, a lane file exceeds its size ceiling, or a cell carries the SHA+prose journal
+  pattern — so leanness is structural, not diligence-dependent.
+
+*North-star (deferred): model the backlog in the graph so Loupe shows it self-truthing — big lift; per-lane
+markdown now.*
 
 ## 6. Fire shape (budget-blind, bounded)
 

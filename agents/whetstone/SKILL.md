@@ -93,13 +93,15 @@ Prioritize by leverage (wall-clock saved, or flake-rate killed, per unit risk). 
 
 ## 4. Record + exit
 
-Append a terse line to the Lattice **Done log** in `planning-artifacts/backlog/lattice.md` (tagged **[CI]**):
-what you changed + the **measured before→after wall-clock** + that every gate still runs. Update the
-"CI pipeline speed (continuous)" board row. **One improvement per fire, then exit** (bounded; the rate-limiter
-governs). A big single-job→matrix refactor may **span fires** — keep it in a persistent worktree with a 🏗️
-CHECKPOINT in the board (what's split, what's left), and merge only when the whole pipeline is green + proven
-faster. If CI is already lean and nothing has high leverage, say so and stop — no empty commit, no churn for
-churn's sake.
+Append **one terse line** to the Lattice **Done log** in `planning-artifacts/backlog/lattice.md` (tagged
+**[CI]**, `date · SHA · title`). Put the **measured before→after wall-clock + that every gate still runs in
+the COMMIT MESSAGE**, not the board cell (the board is an index, not a journal — §5 of the swimlanes design /
+the CLAUDE.md no-changelog rule). Keep the **"CI pipeline speed (continuous)" row capped** — a state token +
+one-line "next lever," never a running log of past fires. **One improvement per fire, then exit** (bounded;
+the rate-limiter governs). A big single-job→matrix refactor may **span fires** — keep its detailed checkpoint
+(what's split, what's left) in the commit/a design note + a **one-line 🏗️ pointer** in the board row, and
+merge only when the whole pipeline is green + proven faster. If CI is already lean and nothing has high
+leverage, say so and stop — no empty commit, no churn for churn's sake.
 
 ## Bounds
 

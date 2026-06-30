@@ -35,10 +35,14 @@ One focus per run. Note what you surveyed (a dated line) so the next run rotates
 ## 3. File scored, definition-of-ready items
 
 Append to **`planning-artifacts/backlog/lattice.md`** (the **Lattice features** or **Component maintenance**
-section): each item **scored** (Imp ★ / Size XS–XL), **deduped**, tagged with the **component** it touches, and
-**ready** — a one-line what + why + the grounding refs (files/contracts) so the Lattice Steward can pick it up
-without re-discovering. Flag any item that will need a frozen-contract change (the Steward prepares it
-uncommitted) or is a genuine architectural fork (Andrew's call). Keep a short **dated survey note**.
+section) as **one capped row**: `Item · What it is (one line) · Imp ★ · Size XS–XL · State`, **deduped**,
+tagged with the **component** it touches, and **📋 ready** — a one-line what + why + the grounding refs
+(files/contracts) so the Lattice Steward can pick it up without re-discovering. **The board is an index, not
+a journal** (§5 of the swimlanes design / the CLAUDE.md no-changelog rule): keep the row to that one line —
+deeper grounding goes in the linked refs, not the cell. Flag any item that will need a frozen-contract change
+(the Steward prepares it uncommitted) or is a genuine architectural fork (Andrew's call). Keep your **survey
+note compact** — a dated rotation pointer (what you surveyed, what's next), not a prose run-log; your
+*findings* are the filed rows.
 
 **Docs in `main`, not a worktree** (isolation rule): `lattice.md` is a board doc — edit it **directly in
 `main`**. Commit **docs-only**, scoped: `git pull --rebase` → `git add _bmad-output/planning-artifacts/backlog/lattice.md`
