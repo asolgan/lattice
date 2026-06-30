@@ -1,6 +1,6 @@
 # Design — Full-engine multi-column key construction: the GrantTable producer + anchor-tombstone retraction
 
-**Status: 📐 awaiting-Andrew (ratification)** · Author: Winston (Designer fire, 2026-06-29) ·
+**Status: ✅ Andrew-ratified (2026-06-29)** — design confirmed (retroactive: it had no frozen-contract change and no fork). **The build already shipped** — the Lattice Steward built the producer (`d772195`) and the anchor-tombstone retraction (`faa3aec`) under the lead's impl-ratification (Steward rule #2), and the Verticals stream shipped the D1.3 RLS read-enforcement turn-on (`ce57c10`) in parallel. **Only remaining work: the security e2e** (revoked-by-tombstone grant ⇒ RLS denies the read), assigned to the **Verticals lane** as D1.3's own acceptance test — consuming this producer **one-way**, *not* "either lane" (that's ping-pong). · Author: Winston (Designer fire, 2026-06-29) ·
 **Component:** Refractor (`internal/refractor/ruleengine/full` + `internal/refractor/pipeline` + a one-line activation thread in `cmd/refractor` and the bootstrap seeder) ·
 **Backlog row:** `lattice.md` → *Read-model / projection maturity* → "[Refractor] GrantTable lens grant-retraction on anchor tombstone — the composite-keyed delete path" (★★, S–M, filed by the Lattice Steward 2026-06-29 from the D1.3 Increment-1 self-review).
 **Frozen-contract change:** none (build-to Contract #6 §6.14; `docs/components/refractor.md` note only).
@@ -40,6 +40,14 @@ Vault / multi-cell surface. The security-plane sensitivity (it is the grant sour
 retraction** ("a revoke from one package deletes only that package's rows"). This *realizes* that contract on the
 full-engine path; it does not change it. Only `docs/components/refractor.md` (a freely-editable component doc)
 gets a note. Nothing under `docs/contracts/` is touched.
+
+**Ratified (Andrew, 2026-06-29).** Design approved. Two refinements that **carry forward to the remaining work
+and to future decomposition**: (1) **never split a unit of work across the two lanes** — the "security e2e from
+this lane *or* Verticals" phrasing below was the cross-lane ping-pong trap; the remaining e2e is **Verticals-lane**
+(D1.3's own acceptance test), consuming this producer **one-way**. (2) **Fewer, larger fires** — the producer and
+retraction are one root-cause fix and ideally **one fire** (the Steward shipped them as two, `d772195` + `faa3aec`;
+both green — noted for next time, not re-litigated). **Build state:** Fires 1+2 shipped (lead impl-ratified — no
+contract/fork); Verticals shipped the D1.3 RLS turn-on (`ce57c10`); only the security e2e remains (Verticals).
 
 ---
 
@@ -387,31 +395,26 @@ and the relevant package e2e. No bypass/capability-write surface is touched (rea
 
 ---
 
-## 7. Decomposition for the Steward (fire-by-fire)
+## 7. Decomposition — what shipped + what remains (Andrew-ratified 2026-06-29)
 
-Each fire is independently shippable + green. **Sequence Fire 1 first — it is the D1.3 producer the read boundary
-depends on; the filed retraction (Fire 2) is moot until grants are actually written.**
+**Single lane (Lattice / Refractor), no cross-lane split.** Build state:
 
-### Fire 1 — the producer: full-engine composite key construction + live-verify
+1. **Producer (upsert) — SHIPPED `d772195`.** `full.CompiledRule.KeyColumns` threaded from `Rule.Into.Key` at
+   activation + the `applyReturn` multi-column key build (§2.1-2.2) + fail-closed activation validation (§2.5).
+   `actor_read_grants` now populates — the D1.3 producer unblock. (Self-review caught + gated out an envelope-lens
+   activation regression.)
+2. **Retraction (delete) — SHIPPED `faa3aec`.** `AnchorDeleteResult` generalized to resolve every key column
+   read-free against the tombstoned anchor (§2.3); an identity tombstone ⇒ a seq-guarded `RevokeGrant`.
 
-`full.CompiledRule.KeyColumns` + the `cmd/refractor` activation thread (§2.1) + the `applyReturn` multi-column key
-build (§2.2) + activation-time key-column validation (§2.5). **Verify the live populate fails today, then passes
-(§5.1).** Engine unit + the missing pipeline→`GrantWriterAdapter` integration test (§5.2-5.4). This makes the
-live `capabilityReadGrants` lens populate `actor_read_grants` — **the D1.3 Fire-3 unblock.** *Full 3-layer
-(security-plane: the grant source RLS trusts).* Independently shippable.
+These two are **one root-cause fix** (the full engine didn't build a multi-column projection key) and ideally
+would have been **one fire** (Andrew's fewer-larger-fires steer); they shipped as two, both green — noted for next
+time. Verification was **self-contained** in the Lattice lane (engine + pipeline + adapter/Postgres) — no
+cross-lane dependency.
 
-### Fire 2 — the retraction: composite-keyed anchor-tombstone delete (the filed row)
-
-Generalize `AnchorDeleteResult` to resolve every key column read-free against the tombstoned anchor (§2.3) +
-the read-free evaluator seam + engine/pipeline/integration tests (§5.5-5.7) + the `refractor.md` note (§3). On an
-identity tombstone the self-grant is now `RevokeGrant`'d (seq-guarded soft-tombstone). *Full 3-layer.*
-Independently shippable.
-
-### Fire 3 — security e2e (optional but recommended)
-
-The ephemeral-stack proof that a revoked-by-tombstone grant no longer passes RLS for its anchor (§5 Fire 3),
-composed with the D1.3 read boundary. Lands from this lane or Verticals depending on where the live protected
-read model sits when it's written.
+**Remaining — the security e2e, Verticals lane (one-way, NOT "either lane").** The ephemeral-stack proof that a
+revoked-by-tombstone grant no longer passes RLS for its anchor requires the **D1.3 read boundary** (shipped,
+`ce57c10`, Verticals). That proof is **D1.3's own acceptance test** in the **Verticals** lane, consuming this
+producer one-way — it is *not* a "Fire 3 from either lane" (that phrasing was the ping-pong trap Andrew flagged).
 
 ---
 
