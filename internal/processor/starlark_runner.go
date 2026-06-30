@@ -509,7 +509,15 @@ func ddlMapToStarlark(m map[string]MetaVertex) *starlarklib.Dict {
 			_ = perm.Append(starlarklib.String(c))
 		}
 		_ = d.SetKey(starlarklib.String(k), starlarkstruct.FromStringDict(starlarkstruct.Default, starlarklib.StringDict{
-			"canonicalName":     starlarklib.String(v.CanonicalName),
+			"canonicalName": starlarklib.String(v.CanonicalName),
+			// metaKey is the DDL's meta-vertex key (vtx.meta.<NanoID>). A script
+			// uses it to write an instanceOf link to its own type authority
+			// (lnk.<root>.instanceOf.meta.<id>) so the step-6 write-gate resolver
+			// reaches this DDL for a fine-grained-class vertex (Contract #1 §1.5
+			// instanceOf terminal — the producer half of the instanceOf type model,
+			// Contract #2 §2.1). The script context already carries this key; this
+			// only surfaces it to Starlark.
+			"metaKey":           starlarklib.String(v.Key),
 			"permittedCommands": perm,
 		}))
 	}

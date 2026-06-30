@@ -76,6 +76,51 @@ def execute(state, op):
 	}
 }
 
+// TestExecute_DDLMetaKeyExposed_EnablesInstanceOfLink proves the script can read
+// its own type-DDL meta key off the `ddl` global and write an instanceOf link to
+// it — the producer of the Contract #1 §1.5 instanceOf terminal the step-6
+// write-gate resolver consumes (the instanceOf-template lift, Fire E). Before
+// this, ddl entries exposed only canonicalName + permittedCommands, so a
+// fine-grained-class vertex had no way to declare its type authority and fell to
+// the permissive default.
+func TestExecute_DDLMetaKeyExposed_EnablesInstanceOfLink(t *testing.T) {
+	exec := NewExecutor(NewStarlarkRunner(0, 0), testLogger())
+	script := `
+def execute(state, op):
+    meta = ddl["identity"].metaKey          # the script's own type-DDL meta key
+    meta_id = meta.split(".")[2]            # vtx.meta.<id> → <id>
+    new_id = nanoid.new()
+    inst = "vtx.service." + new_id
+    link = "lnk.service." + new_id + ".instanceOf.meta." + meta_id
+    return {
+        "mutations": [
+            {"op": "create", "key": inst, "document": {"class": "service.bgCheck.instance", "isDeleted": False, "data": {}}},
+            {"op": "create", "key": link, "document": {"class": "instanceOf", "isDeleted": False, "data": {}}},
+        ],
+        "events": [],
+    }
+`
+	sc := buildContext(script)
+	res, err := exec.Execute(context.Background(), sc.Operation, HydratedState{Context: sc})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	var linkKey string
+	for _, m := range res.Mutations {
+		if strings.Contains(m.Key, ".instanceOf.meta.") {
+			linkKey = m.Key
+		}
+	}
+	if linkKey == "" {
+		t.Fatalf("no instanceOf→meta link produced (metaKey unreadable?); mutations: %+v", res.Mutations)
+	}
+	// The link must target the DDL's meta-vertex — proving the script obtained
+	// vtx.meta.identity from ddl["identity"].metaKey.
+	if !strings.HasSuffix(linkKey, ".instanceOf.meta.identity") {
+		t.Fatalf("instanceOf link did not target the DDL meta key: %q", linkKey)
+	}
+}
+
 func TestExecute_DeterministicNanoID(t *testing.T) {
 	exec := NewExecutor(NewStarlarkRunner(0, 0), testLogger())
 	script := `
