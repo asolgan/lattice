@@ -24,6 +24,7 @@ import (
 
 	"github.com/asolgan/lattice/internal/pkgmgr"
 	"github.com/asolgan/lattice/internal/substrate"
+	augur "github.com/asolgan/lattice/packages/augur"
 	clinicdomain "github.com/asolgan/lattice/packages/clinic-domain"
 	clinicreminders "github.com/asolgan/lattice/packages/clinic-reminders"
 	identitydomain "github.com/asolgan/lattice/packages/identity-domain"
@@ -59,6 +60,7 @@ var packageRegistry = map[string]pkgmgr.Definition{
 	"service-location":   servicelocation.Package,
 	"lease-signing":      leasesigning.Package,
 	"objects-base":       objectsbase.Package,
+	"augur":              augur.Package,
 }
 
 func main() {

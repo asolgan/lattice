@@ -75,8 +75,9 @@ const (
 	// no proposal, the bridge must not retry it.
 	AugurRefusalSubject = "augur-refusal"
 	// fakeAugurForeignEntity is the foreign entity key the scope-escape proposal
-	// targets — deliberately not the escalated candidate.
-	fakeAugurForeignEntity = "vtx.leaseapp.someOtherApplicant"
+	// targets — deliberately not the escalated candidate. A type-neutral kernel
+	// key (the bridge is type-agnostic platform code — no vertical type leaks in).
+	fakeAugurForeignEntity = "vtx.identity.someForeignActor"
 	// fakeAugurModel is the provenance model id FakeAugur stamps (the design's
 	// default reasoning model).
 	fakeAugurModel = "claude-opus-4-8"
