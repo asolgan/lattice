@@ -65,8 +65,8 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 > **FR28 role-queue** · **`@every` schedules** · **protected-lens out-of-band provisioning** ·
 > **full-engine tombstone retraction** · the **instanceOf P7 lint gate** (residual).
 > *Dependency-sequenced ratified items* (Gateway, Vault, control-plane-authz, Personal Lens behind D1; Object
-> crypto-shred behind Vault) build when their gate clears. **Augur Fire 1** is in an unmerged worktree
-> (`augur-fire1`) — resume per its design doc before picking new AI-native work.
+> crypto-shred behind Vault) build when their gate clears. **Augur** Fire 1 + Fire 2a are merged; Fire 2b+
+> is the next AI-native increment (per its design doc §8).
 
 ### Security & trust boundary
 | Item | What it is | Imp | Size | State |
@@ -108,7 +108,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | AI-authored capabilities | A Lattice-aware agent proposes DDL/Starlark/lenses/workflows through human review + deterministic validation + rollback. | ★★–★★★ | L | ✅ ratified · [design](../../implementation-artifacts/ai-authored-capabilities-design.md) |
-| **The Augur** (AI reasoning tier — L3 evaluator) | Weaver's AI-assisted reasoning tier for ambiguous/novel convergence gaps. The marquee AI-native feature. | ★★ | M–L | 🏗️ Fire 1 in worktree `augur-fire1` (unmerged, HEAD fcc4e29) · [design](../../implementation-artifacts/augur-design.md) (checkpoint there) · Fire 2a done; next: merge F1 to main |
+| **The Augur** (AI reasoning tier — L3 evaluator) | Weaver's AI-assisted reasoning tier for ambiguous/novel convergence gaps. The marquee AI-native feature. | ★★ | M–L | 🏗️ building · [design](../../implementation-artifacts/augur-design.md) · Fire 1 (merged, adaf7be) + Fire 2a (3dbd049) shipped; next = Fire 2b+ per §8 |
 | Starlark guards (Loom) | The reserved `{reads, starlark}` guard escape hatch needs a verified-pure sandbox. | ★ | M | ✅ ratified (split) · [design](../../implementation-artifacts/loom-starlark-guards-design.md) · 🚧 Loom-side held (ships with first consumer) |
 
 ### Read-model / projection maturity
@@ -126,7 +126,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 |---|---|---|---|---|
 | **CI pipeline speed (continuous)** | Make CI faster without weakening any gate — owned continuously by the **Whetstone**. Matrix split done (serial → 4 parallel jobs); convergence + unit parallelized. | ★★ | M (ongoing) | 🏗️ continuous (Whetstone) · next: `loom`/`bridge` `t.Parallel()` |
 | **[CI/Refractor] Hello-Lattice NFR-P3 latency flake** | The `≤500ms` capability-projection probe fails-then-passes on the shared CI runner (~590ms infra floor) — the dominant re-run flake (~50%). Not Whetstone-maskable (loosen/retry both weaken the gate). | ★★ | M | 🔭 owner/Andrew decision (infra-bound; shave CDC lag / bigger runner / re-scope CI conformance) |
-| **Operation/permission discovery via `instanceOf` template** | Resolve a fine-grained-class vertex's governing DDL by walking `instanceOf` → type-authority, so one type DDL governs unbounded subtypes with zero new DDLs. Decouples discriminator class from type-authority DDL. | ★★ | M–L | 🏗️ building · [design](../../implementation-artifacts/instanceof-template-op-discovery-design.md) · Fire 1 + Fire E + Verticals consumer shipped; residual = P7 lint gate (after `.class` outliers retire) |
+| **Operation/permission discovery via `instanceOf` template** | Resolve a fine-grained-class vertex's governing DDL by walking `instanceOf` → type-authority, so one type DDL governs unbounded subtypes with zero new DDLs. Decouples discriminator class from type-authority DDL. | ★★ | M–L | 🏗️ building · [design](../../implementation-artifacts/instanceof-template-op-discovery-design.md) · Fire 1 + Fire E + Verticals consumer shipped; residual = P7 lint gate (outliers retired e1d540f; can turn on) |
 | **Op-time bounded reverse-link / adjacency read (`kv.Links`)** | One sanctioned, bounded, fail-closed, paged op-time link-enumeration builtin (`kv.Links(hub, relation, direction, cursor, limit)`) — retires the key-list-in-aspect guard indexes. Relaxes the write-path no-scans invariant by exactly one primitive. | ★★★ | M–L | 🎯 ✅ ratified · [design](../../implementation-artifacts/op-time-bounded-link-enumeration-design.md) · 📋 **READY — top priority, no dependency, §2.5.1 committed**; also unblocks the Loom effect-guard Fire 2 |
 | **FR28 — role-queue + fallback** (+ FR29 unrouted surfacing) | A `queuedFor.role` link + `ClaimTask` op + `CreateTask` routing (named → role-queue → loud `RoutingFailed`); grant/inbox fan out to role-holders; an empty queue is surfaced post-hoc by a new `unroutedTasks` Weaver target. | ★ | M | ✅ ratified · [design](../../implementation-artifacts/fr28-role-queue-fallback-design.md) · 📋 ready (3 fires; §10.1 committed) |
 | **`@every` recurring schedules** (op-vertex pruner #49 retired) | A `substrate.ScheduleEvery`/`CancelSchedule` seam + migrate the Weaver reconciler sweep (`time.Ticker` → durable `@every`). Op-vertex pruner retired (NATS per-key TTL + outbox tombstone cover it). | ★ | M | ✅ ratified · [design](../../implementation-artifacts/recurring-schedules-and-op-vertex-pruner-design.md) · 📋 ready (3 fires; §10.4 + §4.3 committed) |

@@ -33,24 +33,16 @@
 
 ---
 
-## Build status — in-flight checkpoint (resume here)
+## Build status
 
-**Fire 1 lives in an unmerged worktree** — branch `augur-fire1` (worktree `../lattice-augur*`), **NOT merged
-to `main`**. Latest HEAD **`fcc4e29`**. Resume by `cd`-ing into that worktree; merge to `main` only when the
-whole of Fire 1 is green + reviewed.
+**Fire 1 — COMPLETE, merged to `main`** (`adaf7be` "Augur Fire 1 COMPLETE — 3-layer review folded + merged";
+the work landed rebased as `3fab4ef`/`292dadc`/`09da41f`/… + `17d83d5` register-in-lattice-pkg). The original
+`augur-fire1` worktree SHAs (`fcc4e29`/`803c092`/…) were the pre-rebase versions and are superseded by the
+merged commits — the worktree is no longer in flight.
 
-Steps complete in the worktree (each its own commit on `augur-fire1`):
-- foundation + adapter layer + reply-path reconciliation + target-policy parse/validate
-- (3b′) the augur op + policy reshape — `2a5f3a2`
-- (3b″) the Weaver escalation dispatch (`evaluator.go` `dispatchGap` `!ok` → `augurEscalation`) — `86a912b`
-- step 4a — rebase current onto `main` + Option-F doc reconciliation + auth grounding — `fb30c3d`
-- step 4b — `scripts/verify-package-augur.go` gate + CI wiring — `153d586`
-- step 5 — the `augurProposals` flat nats-kv read-model review lens (P5 human-in-the-loop surface) — `803c092`
-- step 6 — `make test-augur-convergence` ephemeral-stack e2e + adversarial gate — `fcc4e29`
+**Fire 2a** — the `ReviewProposal` human-verdict op — **shipped to `main`** (`3dbd049`).
 
-**Fire 2a** — the `ReviewProposal` human-verdict op — **SHIPPED to `main`** (`3dbd049`).
-
-**Next:** merge the `augur-fire1` worktree to `main` (Fire 1), then continue Fire 2b+ per §8.
+**Next:** Fire 2b+ per §8 (the remaining decomposition).
 
 ## For Andrew (ratify in one look)
 
