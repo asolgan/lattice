@@ -185,6 +185,38 @@ tombstones. **Capability KV is a lens projection** (projection correctness = aut
   is loom-agnostic; a Weaver `directOp` already carries a params map). Removing surface beats amending a frozen
   contract to feed dead ceremony.
 
+- **Check your design against the OTHER in-flight designs, not just shipped patterns — a parallel fire may be
+  solving the same gap, and the SIMPLER of the two should win.** The "reconcile with the existing mental model /
+  does this duplicate an established pattern?" check (§3) looks backward at *shipped* code; it misses a *parallel*
+  design proposed the same day. Before finalizing: **grep the other `📐 awaiting-Andrew` / `🏗️ designing` design
+  docs (and the lane file's nearby rows) for the same code path / mechanism you're touching.** If two designs
+  touch the same seam (e.g. the `actorEnumerator == nil` gate), they will collide or force rework — say so and
+  recommend a consolidation, picking the simpler. (Trialed 2026-06-29: my link-/aspect-triggered-reprojection
+  design and the negative/filter-retraction design — both same-day — proposed the *same* plain-lens fan-out
+  primitive; mine added an `ActorEnumerator` the other didn't need, because the **full engine re-executes by
+  SCANNING all anchors** so the simpler seed-from-endpoint already covers the real consumers. The adversarial gate
+  caught it; the elegant generalization was the redundant, heavier one.) **Corollary — ground which ENGINE the
+  real consumer uses before designing a mechanism whose necessity depends on it.** "The simple engine yields
+  nothing seeded from a non-anchor node, so I need an enumerator" is only load-bearing if a *simple-engine* consumer
+  exists; the security-plane grant/protected lenses are *full-engine* (`nanoIdFromKey`), whose scan-based
+  re-execute needs no enumerator. A mechanism justified by an engine the live consumers don't use is dead
+  scaffolding.
+
+- **A retraction needs a TRANSPORT too — "overwrite-by-reprojection retracts it" is false for a row whose KEY
+  drops out.** The transport reflex above (assumed producer / assumed channel) has a third face: an **assumed
+  retraction**. An upsert-only reprojection that emits *fewer* rows than before does **not** retract the dropped
+  ones — it never sees the old key. So before writing "the stale row drops via overwrite-by-reprojection,"
+  ask: *is the changed projection a SINGLE-ROW overwrite (the row's columns change — retraction is automatic) or a
+  ROW-SET shrink (a composite key disappears — needs an explicit Delete that nothing emits)?* On the **security
+  plane a missing retraction is an OVER-GRANT**, the worst direction. (Trialed 2026-06-29: a design claimed a
+  composite-key GrantTable lens "retracts via the existing composite Delete" on a relationship change — but the
+  only retraction path is the *anchor-vertex tombstone*; a row whose `actor_id` simply stopped being produced
+  stays live = over-grant. Fix: scope eager reprojection to single-row-overwrite lenses until a real
+  negative/retraction primitive lands.) **And name the WRITE GUARD precisely per target** — don't write "inherits
+  the projectionSeq guard verbatim" across adapters: check each (NATS-KV CAS-guarded; a Postgres *grant-writer*
+  seq-guarded; the *plain/protected* `PostgresAdapter` is **unconditional last-writer-wins**, `projectionSeq`
+  ignored). A security column on an unguarded LWW target has a real reorder window.
+
 **Run the pre-build gates you write into your own designs — "ratified" ≠ "build-ready."** If a design
 self-flags a pre-build adversarial / `bmad-party-mode` pass (a deferred gate), that pass is a **Designer-lane
 obligation**: run it and **record it as run** before the design is build-ready. Do not leave it dangling for

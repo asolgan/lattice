@@ -1,8 +1,24 @@
 # Link- & aspect-triggered reprojection for plain / GrantTable lenses — design
 
-**Status: 📐 awaiting-Andrew (ratification)** · Designer fire 2026-06-29 (Winston) · Lattice lane,
-Refractor projection-maturity · Backlog row: *[Refractor] Link-triggered reprojection for plain /
-GrantTable lenses* (planning-artifacts/backlog/lattice.md).
+**Status: ✅ Andrew-ratified (2026-06-29)** · pre-build adversarial gate **✅ RUN 2026-06-29 (§7b)** ·
+Designer fire 2026-06-29 (Winston) · Lattice lane, Refractor projection-maturity · Backlog row:
+*[Refractor] Link-triggered reprojection for plain / GrantTable lenses* (planning-artifacts/backlog/lattice.md).
+
+> **⚠️ Update 2026-06-29 — adversarial gate RUN; it recommends CONSOLIDATING this design into L308.**
+> Andrew ratified, then asked for the §7 pre-build review to be discharged. It is now **§7b (✅ RUN)** and
+> the headline finding (**F5**) is that this design **substantially overlaps the L308 "Negative /
+> filter-retraction projection" design** (also 2026-06-29): L308 Fire 1 is the *same* plain-lens
+> aspect/link reprojection, **minus my `ActorEnumerator`** — and because the **full engine re-executes by
+> scanning** all anchors, L308's simpler seed-from-endpoint approach **already covers the real (full-engine)
+> consumers** (residence / grant / protected lenses). **My enumerator is only needed for a simple-engine
+> multi-hop lens, which has no live consumer = dead scaffolding.** **My recommendation: build L308 Fire 1
+> as the shared primitive and FOLD this design's security findings into L308 — F1** (composite-GrantTable
+> shrink ⇒ over-grant; restrict retraction to single-row-overwrite until L308's own Fire-2 retraction
+> lands), **F2** (protected-array lens is *unguarded* last-writer-wins — route to D1), **F3** (tombstone-
+> race) — then **demote this row to "subsumed by L308."** **Two things need your call: (1) consolidate
+> into L308? (rec: yes); (2) F2** (the unguarded protected-array reorder posture — rec: accept as D1 M3 +
+> file a hardening row). If you prefer to keep this row independent instead, Fire 1 is narrowed to
+> single-row-overwrite lenses with a fail-closed F1-guard (§7b/§8).
 
 ---
 
@@ -34,12 +50,20 @@ the landlord's grant stale until each affected leaseapp's next CDC touch. It **s
 it **immediate**. It also **subsumes the "Link-tombstone re-projection" backlog row** (L309) and serves
 **every** future relationship-/aspect-scoped package lens, not just loftspace.
 
-**Recommendation:** ratify the design; **sequence the build behind a real eager-freshness consumer** (a
-package lens that opts in) — but the **e2e proving harness IS a sufficient first consumer** (mirrors how
-D1.1's base cap-read lens shipped as a Lattice primitive proven by the seeders, ahead of the Verticals
-package lenses). So Fire 1 is **not** dead scaffolding: it ships a verifiable platform primitive with a
-test lens that exercises eager link+aspect reprojection end-to-end. One primary fire; an optional
-precision/perf follow-on (Fire 2) only if measured cost warrants it.
+**One decision for Andrew — F2 (MEDIUM, D1 interplay).** The **protected-array** lens (the residence
+consumer) and plain Postgres read models use the **unguarded** `PostgresAdapter` (last-writer-wins —
+`projectionSeq` ignored); only the grant *table* (`GrantWriter`) and NATS-KV are seq-guarded. Eager
+fan-out widens the reorder window for the security-bearing `authz_anchors` column (stale until the next
+event — bounded, self-healing). This is the **D1 H4/M3 family** (H4 seq-guarded the grant table; the
+protected-array lens was not). **My recommendation: accept it now as the ratified M3 CDC-lag posture** (the
+eager fan-out *shortens* steady-state lag — net positive) **and file "seq-guard `ProtectedAdapter`" as a
+D1 hardening row.** Alternatively, seq-guard the protected-array lens now (a broader D1 change). *Your
+call.*
+
+**Recommendation (build):** Fire 1 is **build-ready** for single-row-overwrite lenses (gate discharged).
+The e2e proving harness is a sufficient first consumer (mirrors D1.1's base cap-read lens, proven by the
+seeders ahead of the Verticals package lenses) — so Fire 1 is **not** dead scaffolding. The real residence
+consumer (protected-array leaseapp lens) follows in the Verticals lane.
 
 ---
 
@@ -222,13 +246,21 @@ the same way (enumerate → reproject), per the "mirror the established internal
   is a *separate* Refractor lens-spec field for non-auth lenses; §6.13's `anchorType` governs the
   auth-plane envelope lens and is left exactly as ratified. (Reconciliation: §6 below argues *against*
   collapsing the two.)
-- **Contract #6 §6.14** (read-path authorization / GrantTable) — **untouched, build-to.** GrantTable
-  lenses gain eager link/aspect freshness with no change to the `actor_read_grants` shape, the protected/
-  grantTable flags, or the RLS policy.
-- **Contract #6 §6.2** (monotonic projection-write guard) — **honored unchanged.** Every fan-out
-  reprojection writes through the same guarded write path; a GrantTable / auth-plane reprojection inherits
-  the `projectionSeq` guard verbatim (no resurrection window opened). The guard is what makes the
-  over-reproject-superset safe under reordering.
+- **Contract #6 §6.14** (read-path authorization / GrantTable) — **untouched, build-to.** Protected-array
+  read models gain eager link/aspect freshness with no change to the `actor_read_grants` shape, the
+  protected/grantTable flags, or the RLS policy. *(Composite-row GrantTable lenses with a shrinking key are
+  scoped out of Fire 1 — §7b F1.)*
+- **Contract #6 §6.2 / §6.14 guards — three distinct mechanisms, named precisely (the §7b gate corrected
+  the earlier "inherits the guard verbatim" hand-wave).** The reprojection write goes through whichever
+  adapter the lens targets, and **only two of three are seq-guarded**: **(1) NATS-KV** auth-plane
+  (`cap-read.<actor>`) — `natskv.go` CAS guard, drops a `≤`-seq write; **(2) the grant *table*** — the
+  `GrantWriterAdapter`/`PostgresGrantWriter` §6.14 monotonic guard on `projection_seq`; **(3) plain &
+  protected-array Postgres** — the `PostgresAdapter`, which **ignores `projectionSeq`** (unconditional
+  last-writer-wins, §6.2). The fan-out **threads the correct seq regardless** (`writeResults` stamps the
+  triggering message's globally-monotonic stream sequence — §7b F4), so (1)/(2) are reorder-safe; (3) is
+  LWW-by-design and self-heals on the next event (§7b F2, flagged for Andrew). **No resurrection window is
+  opened on the seq-guarded targets;** the unguarded targets' reorder posture is unchanged in kind (eager
+  fan-out only widens the rate — F2).
 - **Contract #1 §1.1/§1.5** (key shapes) — build-to; no new keys.
 
 **Doc (not contract):** `docs/components/refractor.md` "Link fan-out on the capability pipeline" (L288)
@@ -270,17 +302,24 @@ stack — a fresh `make up-full` or a version bump for live pickup).
   (relation in/out, aspect localName in/out, default-all); `reprojectAnchors(plain)` over the
   full **and** simple engines (anchor found → reproject; anchor tombstoned → retract via the existing
   delete paths; endpoint reaching no anchor → no-op); the anchor-type validation refusal.
-- **e2e (the proving consumer — ephemeral embedded-NATS stack, `jsstore.Dir`):** a synthetic plain lens
-  (one full-engine GrantTable-shaped + one simple-engine plain) declaring `fanOut.anchorType`:
+- **e2e (the proving consumer — ephemeral embedded-NATS stack, `jsstore.Dir`):** a synthetic
+  **single-row-overwrite** lens pair (one **protected-array** full-engine lens with an `authz_anchors`
+  column + one **plain** simple-engine lens) declaring `fanOut.anchorType` *(NOT a shrinking-key
+  GrantTable — §7b F1)*:
   1. **Eager link-create** — emit *only* a `manages`-shaped link (no vertex/aspect touch); assert the
-     anchor's grant row gains the new anchor **without** any vertex event.
-  2. **Eager link-tombstone** — revoke the link; assert the stale anchor is **retracted** (subsumes L309
-     link-tombstone re-projection).
+     anchor row's `authz_anchors` gains the new anchor **without** any vertex event.
+  2. **Eager link-tombstone** — revoke the link; assert the anchor's `authz_anchors` **drops** the removed
+     grantee via single-row overwrite (subsumes L309 link-tombstone re-projection).
   3. **Eager aspect-only update** — mutate a projected aspect with no vertex root event; assert the
      projected field refreshes.
   4. **Trigger filter** — emit an unrelated link relation; assert **no** reprojection (ack-skip,
      observable via no write + the skip log).
   5. **Backward-compat** — a lens with no `fanOut` block: assert the link/aspect events still ack-skip.
+  6. **F3 — link-tombstone races anchor-tombstone (seq-guarded target):** delete the anchor vertex and
+     tombstone its link near-simultaneously; assert **no resurrection** of the retracted row (higher-seq
+     write wins; the tombstoned-anchor reprojection emits a Delete via `AnchorDeleteResult`, not an upsert).
+  7. **F1-guard (fail-closed activation):** a `grantTable` lens declaring `fanOut` with a non-anchor-derived
+     key column is **refused** registration (logged, no fan-out wired) — assert the refusal.
 - **Regression:** the existing auth-plane fan-out e2e (capability lens) stays green unchanged (proves the
   gate generalization didn't alter the capability path).
 - **Gates:** `go build ./...`, `make vet`, `golangci-lint`, STRICT lint-conventions, `go test`
@@ -318,16 +357,21 @@ stack — a fresh `make up-full` or a version bump for live pickup).
 
 - **Over-reprojection cost.** Broad BFS from a high-degree endpoint can touch many anchors. *Bounded* by
   the same depth-10 / set-10 000 caps (`DefaultActorMaxDepth`/`DefaultActorMaxSet`) and the optional
-  trigger filter; over-reprojection is **idempotent** (overwrite-by-reprojection under the §6.2 guard) —
-  redundant work, never incorrectness. **Quantified bound:** ≤ `maxActors` (10 000) reprojections per
+  trigger filter; over-reprojection is **idempotent for a single-row-overwrite lens** (the anchor's row is
+  rewritten wholesale; seq-guarded on NATS-KV / the grant table, LWW on plain Postgres — §7b) —
+  redundant work, never incorrectness. (Over-reprojection is **not** harmless for a *shrinking-key*
+  composite GrantTable lens — that is exactly §7b F1, and why those are scoped out.) **Quantified bound:** ≤ `maxActors` (10 000) reprojections per
   triggering event, truncated-with-warning above (matching the auth-plane cap exactly). For the residence
   case the real fan is tiny (units a landlord manages × open leaseapps per unit).
-- **Retraction interplay with L305 (GrantTable anchor-tombstone retraction).** Complementary, not
-  overlapping: L305 handles the **anchor vertex** tombstone; this handles the **link** mutation
-  (`manages` revoked → the leaseapp reprojects without the old landlord → the stale anchor drops from
-  `authz_anchors`, an *update* via overwrite-by-reprojection; or, for a link-keyed grant row, a retract
-  via the existing composite Delete). Both run under the §6.2 guard, so monotonic ordering holds. The
-  e2e link-tombstone case pins this.
+- **Retraction interplay with L305 — CORRECTED by the §8 gate (was the design's worst error).** The
+  earlier draft claimed a dropped relationship-grant row "retracts via the existing composite Delete."
+  **That is false** — see §8 finding **F1**. The only composite-Delete path is the **anchor-vertex
+  tombstone** (`AnchorDeleteResult`); **nothing retracts a composite row whose key merely *drops out* of a
+  reprojection** (the upsert-only model never sees the old key). For the **protected-array** lens (the real
+  residence consumer) the relationship change is a **single-row overwrite** (`authz_anchors` recomputed
+  wholesale) — shrink-safe. For a **composite-row GrantTable** lens whose `actor_id` varies with the fanned
+  relationship, the dropped row is **stale = over-grant**. The §8 gate **narrows Fire 1 to single-row-
+  overwrite lenses** and **defers shrinking-key GrantTable fan-out behind L308**.
 - **Adjacency consistency race.** Same race the auth-plane path already solves: the dedicated adjacency
   consumer and the fan-out both react to the link with no ordering guarantee → the fan-out idempotently
   `adjacency.Build`s the link (both directions) **before** enumerating (evaluate.go:336-347), so the
@@ -351,46 +395,151 @@ security-plane backstop).
   path must stay byte-identical. *Folded:* the gate becomes `fanOutEnabled()` which is **true for exactly
   the same lenses** when only capability lenses set the enumerator; the regression e2e (existing
   capability fan-out) pins parity; `fanOutMode` defaults to capability for the auth path.
-- **A3 — "a GrantTable reprojection could open a §6.2 resurrection window."** No — the reprojection writes
-  through the **same guarded path**; the guard is plane-derived (auth-plane bucket / soft-tombstone
-  empty-behavior), not fan-out-derived, so it stays on. *Folded:* §3 + the e2e tombstone case assert the
-  guard holds.
+- **A3 — "a GrantTable reprojection could open a resurrection window."** Sharpened by the §7b gate into
+  **F1/F2/F4.** Resurrection (a stale *higher*-seq write) does **not** occur on the seq-guarded targets
+  (F4 — seq is globally monotonic). The real defect the gate found is **non-resurrection over-grant**: an
+  un-retracted *dropped* composite key (F1), plus the unguarded protected-array reorder window (F2). Both
+  are addressed in §7b (scope + flag); the original A3 framing was too narrow.
 - **A4 — default-direction of the opt-in.** Omitting `fanOut` ⇒ **no eager reprojection** (today's
   behavior), which is the **safe** default for a *freshness* feature (a missing trigger = eventual
   self-heal, never a security exposure — this is read-model freshness, not an authz grant decision). The
   authz *correctness* still rests on the §6.14 RLS membership + the §6.2 guard, which this does not touch.
   So default-off is correct here (unlike a default-open *grant*, which would be a bug). *Confirmed sound.*
 
-**Pre-build gate (Designer-lane obligation, to discharge before Fire 1 is build-ready):** an adversarial
-pass on the **GrantTable-on-the-auth-plane reprojection** specifically — confirm that a relationship-grant
-lens reprojected by link fan-out cannot (a) double-write a stale grant under reorder (guard), or (b)
-under-retract on a link tombstone that races the anchor tombstone (L305 interplay). This is the one
-security-adjacent boundary; everything else is read-model freshness. *(Run on the design before the
-Steward cold-starts Fire 1.)*
+---
+
+## 7b. Pre-build adversarial gate — ✅ RUN 2026-06-29 (Andrew-requested), findings folded in
+
+The §7 gate (an adversarial pass on the GrantTable-on-the-auth-plane reprojection) was **discharged** as a
+grounded code-level pass (Winston, the adapter/guard/retraction paths read in `internal/refractor/adapter`
++ `pipeline`). Four findings; **F1 is a security-plane defect that changes the design's scope.**
+
+- **F1 — HIGH (security plane). Over-grant: a composite-key GrantTable lens reprojected by link/aspect
+  fan-out cannot retract a row whose key *drops out*.** Grounding: the only retraction paths are the
+  **anchor-vertex tombstone** (`AnchorDeleteResult`, `ruleengine/full/anchor_delete.go`; simple
+  `deleteResult`) and an explicit per-source `Delete`. **No path diffs the prior vs. current row-set** —
+  an upsert-only reprojection that now emits *fewer* `(actor_id, anchor_id, grant_source)` rows leaves the
+  dropped rows live (`grep` for shrink/diff/retract finds only the anchor-tombstone path). For a
+  relationship-grant whose **`actor_id` varies with the fanned relationship** (e.g. ownership transfer
+  L1→L2: reprojecting the leaseapp emits `(L2,…)` and silently leaves `(L1,…)` granted), this is an
+  **over-grant on the table RLS trusts**. *This is exactly the failure eager link-triggering makes most
+  reachable* — a `manages` change is precisely a row-set shrink. **Resolution (folded):** scope the eager
+  fan-out to **single-row-overwrite lenses** — **plain lenses** and **protected-array lenses** — where a
+  reprojection **overwrites the anchor's own single row** (the `authz_anchors` array recomputed wholesale,
+  so a removed grantee drops out atomically; the real residence consumer is exactly this). A **composite-
+  row GrantTable lens whose `actor_id` is not the reprojected anchor is REFUSED `fanOut` at activation**
+  (fail-closed — see F1-guard below) until **negative/filter-retraction projection (L308)** lands; that
+  L308 row is now this feature's **hard dependency for the GrantTable-shrink case**. (A GrantTable lens
+  whose composite key is *fully* determined by the reprojected anchor — row-set never shrinks — may opt in;
+  the activation guard checks this.)
+  - **F1-guard (fail-closed activation):** `InstallPlainFanOut` **refuses** (logs + does not register
+    fan-out) a `grantTable` lens declaring `fanOut` unless its key columns are all derivable from the
+    declared `anchorType` vertex (non-shrinking). Mirrors `ValidateKeyColumns` — a shrink-prone grant lens
+    silently over-granting is worse than no eager fan-out. Default-deny on the security plane.
+
+- **F2 — MEDIUM (route to Andrew / D1). The protected-array lens and plain Postgres read models are
+  *unguarded* (last-writer-wins) — eager fan-out widens their reorder surface.** Grounding:
+  `ProtectedAdapter.Upsert/Delete` (`read_path_adapters.go:166-176`) delegate to `PostgresAdapter`, which
+  **ignores `projectionSeq`** (`postgres.go:206-209,287-290` — "unconditional last-writer-wins, Contract
+  #6 §6.2"). Only the **grant table** (`GrantWriterAdapter`→`PostgresGrantWriter`, seq-guarded) and
+  **NATS-KV** (`natskv.go` CAS guard) enforce monotonicity. So a protected-array lens carrying the
+  security-bearing `authz_anchors` column is **not** reorder-protected: under the Fire-3 multi-worker
+  per-lane concurrency two reprojections of the same leaseapp row can land out of order, leaving a stale
+  `authz_anchors` until the next event (a bounded, self-healing over/under-grant window). **Eager
+  link/aspect fan-out increases the event rate → widens this window.** *Decision for Andrew:* this is the
+  **D1 H4 / M3 family** (the grant *table* was seq-guarded by H4; the **protected-array lens was not**).
+  Either (i) accept it as the ratified **M3 "CDC-lag per-resource revocation" posture** (the eager fan-out
+  *shortens* steady-state lag — net positive — and LWW self-heals on the next event), or (ii) **seq-guard
+  the protected-array lens too** (give `ProtectedAdapter` the §6.14 monotonic conditioning, a small D1
+  follow-on). **Recommendation: (i) accept now + file (ii) as a D1 hardening row** — the window is bounded
+  and self-healing, and forcing a guard onto the plain Postgres adapter is a broader D1 change than this
+  freshness feature should carry. Flagged, not silently absorbed.
+
+- **F3 — MEDIUM (implementation-pinning).** The fan-out reprojection of a **tombstoned anchor** must invoke
+  the anchor's own retraction (`AnchorDeleteResult` with the *anchor's* key/type — `eventType ==
+  anchorLabel` ⇒ `ok=true` retracts), **not** the link's key, and **not** an upsert (which on a missing
+  anchor would resurrect). For the **seq-guarded** targets (NATS-KV cap-read, grant table) the
+  link-tombstone-races-anchor-tombstone race is safe (higher-seq wins, `writeResults` stamps `msg.Sequence`
+  — F4); for **unguarded** plain/protected Postgres it is LWW (the last-processed wins, self-heals on next
+  event). **Folded into §5:** the e2e adds an explicit *link-tombstone-races-anchor-tombstone* case
+  asserting **no resurrection** on the guarded target.
+
+- **F4 — POSITIVE (confirms gate question (a)).** `projectionSeq` threading is **sound**: `writeResults`
+  (`pipeline.go:658`) stamps `results[i].ProjectionSeq = msg.Sequence` on **every** result including the
+  fan-out reprojection, and all CDC events share **one** Core-KV JetStream stream, so the seq is **globally
+  monotonic** across vertex/link/aspect kinds. A link-triggered reprojection therefore carries a seq
+  strictly higher than any prior write to the same key → the §6.2/§6.14 monotonic guard on the seq-guarded
+  targets **cannot** be fed a stale-but-higher seq. Gate question (a) "double-write a stale grant under
+  reorder" **does not materialize** for NATS-KV cap-read or the grant table. (It is moot for the unguarded
+  Postgres targets, which are LWW by design — F2.)
+
+- **F5 — HIGH (cross-design reconciliation — the most important finding; needs Andrew's call). This design
+  substantially OVERLAPS the L308 "Negative / filter-retraction projection" design (also 2026-06-29), and
+  L308's approach is simpler and sufficient for the real consumers.** L308 Fire 1 is *"plain-lens
+  aspect/link reprojection (mirror `evalAspectFanOut`/`evalLinkFanOut`) — **minus the actor enumeration**,
+  reproject from owner/endpoint vertices directly"* (L308 design §2.1). The two designs touch the **same
+  code** (the `actorEnumerator == nil` gate in the `KindLink`/`KindAspect` handlers) and would **collide /
+  force rework** if built independently. **Grounding that makes mine the redundant one:** the **full
+  engine re-executes by SCANNING all anchors** regardless of seed (`executor.go:277-345`, `seedNodes`), so
+  L308 Fire 1's seed-from-endpoint + re-execute **already reprojects a full-engine multi-hop lens
+  correctly** (the scan finds the affected leaseapps on a `manages` event). **The real consumers —
+  residence / grant / protected lenses — are FULL-engine** (`nanoIdFromKey`, composite keys), so L308 Fire
+  1 covers them **without** my `ActorEnumerator`. My enumerator is strictly necessary **only** for a
+  **simple-engine multi-hop** lens (anchor not the owner/endpoint), for which there is **no identified live
+  consumer** → by the dead-scaffolding test, my distinct mechanism is **premature**. **Recommendation
+  (mine, for Andrew):** **consolidate — build L308 Fire 1 as the shared plain-lens reprojection primitive**
+  (simpler, cheaper, and it frames freshness as an always-on correctness fix rather than my opt-in, which
+  *defaults a plain lens to silently-stale*); **fold this design's genuinely-additive findings into L308:**
+  **(i) F1** (composite-GrantTable shrink ⇒ over-grant; scope retraction to single-row-overwrite until the
+  L308 Fire-2 retraction lands — L308's own Fire 2 *is* that retraction), **(ii) F2** (protected-array
+  unguarded-reorder, route to D1), **(iii)** the optional trigger-relation filter as a cost knob, **(iv)**
+  the F1-guard. **Then demote this row to "subsumed by L308; the simple-engine-multi-hop enumerator stays
+  designed-on-the-shelf until a consumer appears."** *(This reverses my own pre-gate framing — the
+  enumerator generalization read as elegant but is heavier than the problem the live consumers actually
+  have. The honest output of the gate is "build the simpler L308, not this.")*
+
+**Gate verdict:** **sound but largely redundant.** For the real (full-engine) consumers, **L308 Fire 1 is
+the better primitive** — simpler, cheaper, always-on-correct (F5). This design's lasting value is the
+**security analysis** it forces (F1 composite-shrink over-grant, F2 protected-array reorder, F3
+tombstone-race) — which must travel to L308 regardless of which row builds. **Recommendation to Andrew:
+consolidate into L308 + fold F1–F3; shelve this design's distinct enumerator (no live consumer).** If
+instead kept independent, Fire 1 is narrowed to single-row-overwrite lenses with the F1-guard as written
+above. The §3 guard wording is corrected below.
 
 ---
 
 ## 8. Fire-by-fire decomposition (for the Lattice Steward)
 
-**Fire 1 — the plain-lens fan-out primitive + opt-in + e2e (the whole feature; one fire).**
-Generalize the enumerator gate (`fanOutEnabled`/`fanOutMode`), add `reprojectAnchors(plain)` reusing
-`evaluateForEntry` + the existing plain retraction, the `fanOut.{anchorType,triggerLinks,triggerAspects}`
-lens-spec fields + activation validation, the `InstallPlainFanOut` wire-up, the `KindLink`/`KindAspect`
+**Fire 1 — eager link/aspect fan-out for SINGLE-ROW-OVERWRITE lenses (plain + protected-array).**
+*(Scope narrowed by the §7b gate — F1.)* Generalize the enumerator gate (`fanOutEnabled`/`fanOutMode`),
+add `reprojectAnchors(plain)` reusing `evaluateForEntry` + the existing plain retraction (incl. the F3
+tombstoned-anchor `AnchorDeleteResult` path), the `fanOut.{anchorType,triggerLinks,triggerAspects}`
+lens-spec fields + activation validation **including the F1-guard** (refuse `fanOut` on a `grantTable`
+lens whose key is not fully anchor-derived), the `InstallPlainFanOut` wire-up, the `KindLink`/`KindAspect`
 plain-path routing, and the full unit + e2e suite (§5) with a synthetic full-engine **and** simple-engine
-opt-in lens. Independently shippable + green; the e2e test lens is the proving consumer (not dead
-scaffolding). **Scale of review:** thorough-lead is *insufficient* because a GrantTable variant touches
-the auth plane the RLS trusts — run the **full 3-layer** for Fire 1 (Blind / Edge-Case / Acceptance), per
-the row's "security-plane — the grant source RLS trusts" note, after discharging the §7 pre-build gate.
+opt-in lens **of the protected-array / plain shape** (NOT a shrinking-key GrantTable), plus the F3
+link-tombstone-races-anchor-tombstone case. Independently shippable + green; the e2e test lens is the
+proving consumer (not dead scaffolding). **Review:** thorough-lead is *insufficient* (the protected-array
+`authz_anchors` is the auth plane RLS trusts) — run the **full 3-layer** (Blind / Edge-Case / Acceptance).
+The §7b gate is already discharged.
 
-**Fire 2 (optional follow-on, only if measured cost warrants) — precise invalidation.** Replace broad
-BFS with the compiled invalidation forest for *both* auth and plain lenses (the precise-future the plan
-already carries). Its own row; lands for both planes together. **Do not** build pre-emptively — broad BFS
-is correct and sufficient; this is a perf refinement gated on an actual measured hot lens.
+**Fire 2 (DEFERRED behind L308 — the §7b F1 dependency) — eager fan-out for shrinking-key composite
+GrantTable lenses.** Requires **negative/filter-retraction projection (L308)** so a reprojection that
+emits fewer composite rows **retracts** the dropped ones. Only then is the F1-guard relaxed to admit a
+relationship-grant GrantTable lens whose `actor_id` varies with the fanned relationship. **Do not build
+before L308 lands** — eager add-without-retract is a security regression (over-grant). The real residence
+consumer does **not** need this (it uses the protected-array model — Fire 1).
 
-**Real eager-freshness consumer (Verticals lane, after Fire 1 ratifies + ships).** loftspace's residence
-read-grant lens adds `fanOut: {anchorType: leaseapp, triggerLinks: [manages, appliesToUnit]}` so
-ownership transfers reproject eagerly. This is **package work** (Verticals stream), not part of this
-Lattice-lane primitive — but it is the production consumer the primitive exists for.
+**Fire 3 (optional, only if measured cost warrants) — precise invalidation.** Replace broad BFS with the
+compiled invalidation forest for *both* auth and plain lenses (the precise-future the plan already
+carries). Its own row; lands for both planes together. Not pre-emptive — broad BFS is correct and
+sufficient.
+
+**Real eager-freshness consumer (Verticals lane, after Fire 1 ships).** loftspace's residence read model
+is the **protected-array leaseapp lens** (`authz_anchors=[nanoIdFromKey(landlord)]`, single-row overwrite
+— the shrink-safe shape, per the backlog row's own RESOLUTION) and adds
+`fanOut: {anchorType: leaseapp, triggerLinks: [manages, appliesToUnit]}` so ownership transfers reproject
+eagerly **and** correctly drop the prior landlord. Package work (Verticals stream).
 
 ---
 
