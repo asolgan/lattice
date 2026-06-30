@@ -1,6 +1,6 @@
 # Package version upgrade / DDL hot-reload (F-004) — design
 
-**Status: 📐 awaiting-Andrew (ratification).**
+**Status: ✅ Andrew-ratified + SHIPPED (Fires 1a–3; Contract #8 §8.1 + §8.6 ratified & committed) — F-004 is effectively complete.** This banner was previously stale (`📐 awaiting-Andrew`); the live state is the board row (commits `cd20ce8` / `f0d7980` / `af81120` / `203d2bb` / `7f98d83`). Only an optional Fire-2 live e2e remains; G6 (in-flight-instance DDL pinning) is a deferred follow-on.
 **Component:** Core — `internal/pkgmgr` + the primordial install kernel DDLs (`internal/bootstrap`) + `cmd/lattice-pkg` + the dev-loop Makefile. No change to Refractor / Weaver / Loom / Processor-step8 (they already react).
 **Backlog row:** Lattice lane → *Refinements & ops → Package version upgrade / DDL hot-reload (F-004)* (📐 prioritized for Designer, Andrew 2026-06-27; re-prioritized ★→★★ on grounded dev-loop demand).
 **Author:** Winston (Designer fire, 2026-06-27).
@@ -20,7 +20,7 @@ binary is stale; a DDL change won't hot-reload").
 axes. There is **one frozen-contract change** and **two confirm-able product decisions** (below) — all
 resolved in this doc, none left open.
 
-**Frozen-contract change — Contract #8 (staged UNCOMMITTED in `main`):**
+**Frozen-contract change — Contract #8 (✅ ratified & committed):**
 1. **§8.1 — entity NanoIDs become version-independent** (salt `name + tag`, not `name + version + tag`).
    This is the load-bearing decision: it makes the *same* logical lens/DDL/role keep the *same*
    `vtx.meta.<id>` key across versions, so upgrade is an in-place update of stable keys instead of a re-mint
