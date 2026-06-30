@@ -19,7 +19,7 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 |---|---|---|---|---|---|---|
 | Recurring `@every` schedules — the clinic forcing function | `@every` has no consumer yet (everything uses `@at` one-shot). Clinic pulls it into existence: appointment reminders, recurring availability, follow-ups. | Clinic | platform + pkg | ★★★ | M | 📋 ready · 🚧 build-with lattice [`@every` schedules](lattice.md) (ratified, ready) |
 | Clinic — encounter / visit documentation | `RecordEncounter` captures the post-visit clinical record; raw content stays unprojected (Vault discipline). | Clinic | pkg + FE | ★★★ | M | 🏗️ building · Inc 1 (capture op) + Inc 2 (FE) shipped; raw-content encryption → Vault (deferred) |
-| LoftSpace — applicant qualification profile | `SetApplicantProfile` captures income/employment/references + derives landlord signals (the rule engine has no arithmetic), so a landlord doesn't decide blind. | LoftSpace | pkg + FE | ★★★ | M | 🏗️ building · Inc 1 (capture + derived signals) shipped; residual increments (see git) |
+| LoftSpace — per-landlord RLS view as the rich decision surface (D1.5 landlord cutover) | The protected `/api/landlord/applications` RLS read renders only a scope-count banner; the rich decision view (signals + Approve/Decline) is still the trusted-all-units operator console reading `weaver-targets` (§10.2 old pattern). Project the qualification signals into `landlordLeaseApplicationsRead` + render rich RLS-scoped rows, retiring the console — mirrors the applicant-side D1.3 Fire 3 cutover. | LoftSpace | pkg + FE | ★★ | M | 📋 ready (scoped: add 6 signal cols to the landlord protected lens + wire `renderUnitCard` to the RLS rows) |
 | Clinic — tombstoned provider/patient/appointment LINGER in the FE | A soft-deleted clinic entity stays pickable/visible because the full-engine lens re-projects it while its keyed aspect survives. | Clinic | platform (Refractor) + FE | ★★ | S | 🚧 blocked-on lattice [full-engine tombstone retraction](lattice.md) (Read-model section) |
 
 ## PO notes (dated — drives rotation)
@@ -36,6 +36,7 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic, staggered from 
 
 One line per shipped item (`date · SHA · title`). Oldest roll to `archive/` past ~25.
 
+- 2026-06-30 · `—` · Applicant qualification profile CLOSED — capture op + derived signals shipped; landlord sees signals live (operator console + `renderQualification`)
 - 2026-06-30 · `—` · Property/Unit/Listing domain CLOSED — Inc 1–3 all shipped (applicant FE intake+terms+leasing+tasks+docs all live)
 - 2026-06-29 · `2a02df1` · D1.3 CLOSED — Postgres-RLS read boundary LIVE (revocation-denies proven)
 - 2026-06-29 · `e1d540f` · service-domain + service-location: envelope-class discriminator migration
