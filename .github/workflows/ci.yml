@@ -49,6 +49,12 @@ jobs:
         # history/changelog comments. STRICT=1 fails the build on any finding.
         run: STRICT=1 go run ./scripts/lint-conventions.go
 
+      - name: Board lint (the backlog is an index, not a journal)
+        # Backstop on code commits (board-only commits hit board-lint.yml,
+        # which the main paths-ignore skips): fails on an over-budget row, a
+        # Survey-log/PO-notes fire-journal, or a multi-line Done-log entry.
+        run: STRICT=1 go run ./scripts/lint-board.go
+
   stack-gates:
     runs-on: ubuntu-latest
     timeout-minutes: 20

@@ -55,105 +55,17 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 | **[Loom] Guardless-step recovery check-before-act probe** | On total `loom-state` loss + a re-triggered `StartLoomPattern`, a fresh instance replays guards from cursor 0 (re-runs an already-applied guarded step). | ★ | S–M | 🗄️ shelved-backup (Andrew: no new engine Core-KV reads) |
 | **[Loupe] Static-UI serving (`go:embed web`) untested** | The embedded operator-UI mount has no coverage. | ★ | XS | 📋 |
 | **[Loupe] Operator UI (`app.js`, 1142 LOC) has no automated coverage** | No JS test harness in the repo — standing up one is an architectural call. | ★★ | L | 🔭 flag-for-Andrew |
-| **[Refractor] Retire the legacy `simple` engine (full-engine is universal)** | All 20 lenses (18 package + 2 primordial) declare `engine:"full"`; the `simple` recursive-descent parser (~2.8k LOC) + the registry empty-engine "simple-then-full" fallback + the `startPipeline` simple-compile branch are dead in prod. Catch: `simple` also owns the shared `EvalResult`/`QueryPlan`/`NodeEntry` types the full path + pipeline consume → **decouple-then-delete**, not a clean removal. No frozen-contract change (engine is a non-contract spec hint). | ★★ | M–L | 📋 needs design (type-decouple plan) · refs `ruleengine/simple/`, `ruleengine/ruleengine.go:166-201`, `cmd/refractor/main.go:286-302`, `pipeline.go` (`simple.*` types) |
+| **[Refractor] Retire the legacy `simple` engine (full-engine is universal)** | All 20 lenses are `engine:"full"`; the ~2.8k-LOC `simple` parser + its registry fallback are dead in prod but own the shared `EvalResult`/`QueryPlan` types → decouple-then-delete. | ★★ | M–L | 📋 needs design (type-decouple; no contract change) · `ruleengine/simple/` |
 | **[Refractor/pipeline] Fan-out eval-error disposition + adjacency-watch edge branches uncovered** | `dispositionEvalErr` (0% — link/aspect fan-out eval-error → terminal-DLQ / infra-pause / transient-nak mapping) and `handleAdjUpdate` (13.5% — adjacency-watch reprojection: the not-found / tombstone / bad-key / unmarshal arms). Happy-path fan-out is e2e-covered; the error/edge arms are not. Mirror of the HealthSink coverage rows. | ★★ | XS–S | 📋 · refs `pipeline/pipeline.go:625,921`, `pipeline/evaluate.go` |
 
 ### Survey log (round-robin rotation)
 
-Compact rotation memory only (survey *findings* become filed rows above + in the feature backlog).
-Components: Core · Weaver · Loom · Refractor · Loupe (+ the cross-cutting feature backlog). Freshness via
-`git log -1 --format=%ct -- <path>`; survey the stalest, note a dated line, rotate.
+Rotation memory only — findings are the filed rows; fire narratives live in commits, never here.
+Components: Core · Weaver · Loom · Refractor · Loupe (+ the cross-cutting feature backlog). Survey the
+stalest (`git log -1 --format=%ct -- <path>`), note ONE dated line, rotate.
 
-- **Steward fire 2026-06-30 (protected-lens OOB Fire 2 — out-of-band provisioner, checkpointed):** RESUMED the
-  ★★ 🏗️ protected-lens in-flight item (highest-importance resume; its `steward-protected-lens-oob` worktree was
-  now idle — head unchanged ~7h, no uncommitted changes — so the concurrent fire that owned it at the 17:00
-  stand-down had finished/abandoned it). Rebased the branch clean onto current `main` (no conflicts), then built
-  **Fire 2**: `lens.EmitReadPathDDL` (read-only Core-KV enumeration of installed protected/grant lens specs →
-  ordered `Build*DDL`, grant table first) + `lattice lens emit-ddl` CLI + `make provision-readpath` (idempotent,
-  wired into up-full + up-loftspace) + the soft-delete guard (reject `protected`+`deleteMode:soft` at spec load —
-  no `is_deleted` column, §6.14 policy doesn't filter it → would loop) + the refractor.md verify-and-pause
-  rewrite. **Validated against the LIVE shared stack** (emit-ddl enumerated the real loftspace protected tables,
-  grant table first; DDL == `Build*DDL`; applied DDL → `VerifyProtectedTable` passes on real Postgres; `psql -f -`
-  pipe confirmed). All gates green (build/vet/golangci ./.../STRICT-conventions/go test refractor+substrate+CLI
-  incl. POSTGRES_TEST_DSN). **Checkpointed not merged** (head `8f0cbd4`): the design's pre-merge gate "live-verify
-  up-loftspace serves rows" can't run unattended without disrupting the concurrent fire's shared stack (:7777/:5432);
-  CI doesn't cover the protected-pg read path, so flipping main's provisioning model without that one end-to-end
-  check is the hard-to-reverse action I held back. NEXT = Fire-2 3-layer (security plane) + up-loftspace live-verify
-  on a clean stack + ff-merge Fire 0+1+2.
-- **Surveyor fire 2026-06-30 (Refractor):** healthy overall — pkg coverage 70–100% (pipeline's 49.4% is a
-  measurement artifact: the link/aspect fan-out is 60–87% via the root-package e2e tests; the adapter
-  postgres/rls/read-path 0%s are `POSTGRES_TEST_DSN`-gated, covered out-of-band). Every "What's deferred"
-  item already filed (Personal Lens, multi-cell, cross-instance latency rollup, link-tombstone reproj,
-  NATS write-restriction). **Filed 2** (Component maintenance): (1) **retire the legacy `simple` engine** —
-  all 20 lenses are `engine:"full"`, the ~2.8k-LOC recursive-descent parser + the empty-engine fallback +
-  the `startPipeline` compile branch are dead in prod but entangled (owns the shared `EvalResult`/`QueryPlan`
-  types) → decouple-then-delete, designer-worthy, no contract change; (2) the fan-out eval-error disposition
-  (`dispositionEvalErr` 0%) + adjacency-watch edge-branch (`handleAdjUpdate` 13.5%) coverage gap. cypher_lexer
-  TODOs are generated ANTLR — skipped.
-- **Steward fire 2026-06-30 (@every Fire 2 — sweep cron-kill; protected-lens stand-down):** SELECT first
-  reached for the ★★ protected-lens out-of-band, but its `steward-protected-lens-oob` worktree is owned by a
-  CONCURRENT Lattice fire already further along (checkpoint `59d2f98`, 3-layer-reviewed + a CRITICAL
-  FORCE-without-ENABLE fail-open caught; board row 🏗️ at `629d547`), which had also pre-identified my
-  dev-stack-regression finding (loftspace-app's `read_lease_applications` darks without `make provision-readpath`)
-  — so I stood down (lesson: create a FRESH worktree, never reuse another fire's). Pivoted to the disjoint ★
-  ratified build-ready `@every` **Fire 2** (Weaver sweep cron-kill, `e04498e`, CI-green): durable `@every`
-  replaces the `time.Ticker`; the 3-layer-equivalent concurrency review + MidFlightKill timeline-rescale (1s/8s,
-  matching the @every 1s floor) caught the only real interaction. Grounding-correction folded into the design:
-  the @every floor imposes a min sweep cadence (sub-second is no longer a mode) → arm clamps to 1s. A
-  pre-existing lease-convergence break reproduces on clean `cb2c9b6` locally but is environmental (passed in CI
-  at 3c65b1a; CI green here) — NOT @every-caused; flagged for the convergence-suite owner.
-- **Steward fire 2026-06-30 (@every Fire 1 + board reconciliation):** built `@every` recurring-schedules
-  **Fire 1** — the `substrate.ScheduleEvery`/`CancelSchedule` primitive + the 3 fired-copy header constants
-  (pinned to the nats-server v2.14 `JSScheduler`/`JSScheduleNext`/`JSScheduleTTL`) + `DeriveScheduleOccurrenceRequestID`,
-  all grounded in the pinned NATS source (rollup-replace, `@every` `time.ParseDuration`, >=1s floor all verified)
-  and proven against embedded NATS 2.14. Picked over the ★★ Augur Fire 2b (the only genuinely-unbuilt ★★) because
-  Fire 2b is a coupled autonomous-dispatch-plane loop-closer with **no green sub-increment** and an **under-resolved
-  §3.4 dispatch-pickup mechanism** (flagged for a Designer pass — see the Augur row) — unfit to land green unattended;
-  @every is a clean ratified primitive (kv.Links-Fire-1 precedent). **Reconciled TWO stale board rows** the SENSE pass
-  caught: lane-authorization enforcement (Fire 2 shipped `d6530e9`, row said "next = enforcement") and the Weaver
-  reclaim check-before-act probe (Option D backoff shipped `04c7689`, row said "📋 ready") — both moved to the Done log.
-- **Steward fire 2026-06-30 (protected-lens OOB Fire 0+1 — built+3-layer-reviewed, checkpointed):** picked the
-  highest-importance lattice-clean build-ready item (★★ protected-lens out-of-band, over the ★ @every-Fire-2 /
-  FR28 continuations; the ★★★ D1.5's remaining increments are verticals-lane read-model migrations, not a
-  lattice-clean increment). Built **Fire 0** (`substrate.ConsumerSpec.InitialPause` fail-closed activation seam +
-  the runPump seed + 2 substrate tests) **+ Fire 1** (`VerifyProtectedTable`/`VerifyGrantTable` read-only catalog
-  checks wired as the adapter `Probe`; `cmd/refractor` retires runtime DDL; protected/grant lenses register
-  `InitialPause:PauseInfra`). Kept `Provision*`/`Build*DDL` functional as the out-of-band/test/CLI seam (only the
-  runtime call sites removed) → zero verticals-lane churn (their RLS tests use `Build*DDL` directly). All gates
-  green; Postgres-gated verify tests pass. **Full 3-layer review run** (security plane): Blind Hunter caught a
-  **CRITICAL fail-open** — `relforcerowsecurity` alone is insufficient (FORCE-without-ENABLE = world-readable,
-  verified empirically); now gates `relrowsecurity` AND `relforcerowsecurity` + `relkind='r'` + exact `text[]` +
-  policy **posture** (named §6.14 membership policy, not mere presence); Acceptance Auditor ACCEPT; Edge Case
-  Hunter BLOCK (loftspace-app consumes `read_lease_applications` → Fire 1 alone darks the live vertical → must
-  co-ship the generic `make provision-readpath`). **Checkpointed** (not committed to main — committing alone
-  regresses `up-loftspace`): worktree branch `steward-protected-lens-oob` head `59d2f98`. NEXT FIRE: build the
-  generic provisioner (reuse `lens.CoreKVSource` + `Build*DDL`) + refractor.md + soft-delete guard, live-verify
-  up-loftspace, ff-merge Fire 0+1+2. CI unaffected (no go-test/CI target activates a protected pg lens).
-- **Steward fire 2026-06-30 (P7 lint gate):** shipped the instanceOf design's last DoD item — the
-  `lint-conventions` P7 gate (discriminator-aspect shadowing the envelope class). Picked importance-first
-  (★★ ratified-design residual) over the ★ build-ready FR28/@every; the other ★★ build-ready item
-  (protected-lens out-of-band) is the larger L security-plane fire a prior fire deferred for a dedicated
-  3-layer budget. Whole instanceOf item → Done log. Lead review (XS, build-ignored static lint, zero
-  production-code impact, synthetic-probe-verified). `0cd2695`.
-- **Steward fire 2026-06-30 (Refractor read-path):** reconciled a stale board row (full-engine
-  anchor-tombstone retraction said 📋 ready but Fire 1 shipped `679fe25` — moved to Done log) and
-  grounding-corrected the protected-lens out-of-band design before building: its §2.3 "no new pump
-  logic / start infra-paused" premise is **ungrounded** (`ConsumerSpec` has no initial-pause field;
-  a fresh protected lens drains+projects before posture verify → fail-OPEN). Folded the correction
-  (new `ConsumerSpec.InitialPause` substrate seam = Fire 0; Fire 0+1 land together under full 3-layer)
-  + flagged the board row. No code committed (security-plane build deferred to a dedicated fire with
-  budget for the 3-layer review + the D1.4 Gate-3 fixture relocation).
-- **Surveyor fire 2026-06-30 (feature backlog):** healthy + well-hydrated — ~25 scored items across 8
-  sections, build-ready picks (FR28 role-queue, protected-lens OOB) already flagged. Grounded the one open
-  PO-routed platform gap (Verticals "clinic provider/patient/appointment LINGER" → "full-engine tombstone
-  retraction"): **already served**, no new lattice gap. `AnchorDeleteResult` (`679fe25`) retracts plain
-  full-engine anchor root-tombstones — clinic list lenses anchor on the entity root, `Tombstone*` soft-deletes
-  the root → `isDeleted` CDC → `evaluate.go:105` emits the Delete; a secondary-node tombstone falls through to
-  re-execute (`evaluate.go:101-104`) so dependent rows refresh. The Verticals 🚧 `blocked-on-lattice` label is
-  **stale** (verify + close verticals-side). Filed nothing (no filler).
-- **Last surveyed:** 2026-06-30 Refractor (`internal/refractor` + `cmd/refractor`). Healthy; filed 2
-  Component-maintenance rows (retire `simple` engine; fan-out error-path coverage).
-  Prior rotation: Core → Weaver → Loupe → Loom → feature-backlog → Refractor.
+- **Last surveyed:** 2026-06-30 Refractor (healthy; filed simple-engine-retire + fan-out-coverage) ·
+  feature-backlog (healthy, ~25 scored items).
 - **Next:** Core (`internal/processor` + `bootstrap` + `substrate`), then Weaver.
 
 ## Lattice feature backlog — the Phase-3 build queue
@@ -177,7 +89,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | Read-path authorization (D1) | Reads from lens targets (Postgres/KV) bypass the write-path Capability boundary. Postgres RLS + a decomposed Capability-Read Lens; Gateway sets `lattice.actor_id`. Subsumes `cap.svc` read-auth. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/read-path-authorization-d1-design.md) · D1.1–D1.4 shipped (base lens · JWT seam · protected-Postgres RLS · §5 Gate-3 read-bypass vectors + lint); next = D1.5 roll remaining read models onto the enforcement seam |
-| **Protected-lens provisioning: out-of-band + verify-and-pause** | Refractor runs the protected/grant Postgres table DDL today; move provisioning out-of-band + verify-and-pause fail-closed (retire the RLS DDL-ownership exception). | ★★ | M→L | 🏗️ building · [design](../../implementation-artifacts/protected-lens-out-of-band-provisioning-verify-and-pause-design.md) · Fire 0+1+2 built on worktree `steward-protected-lens-oob` (head `8f0cbd4`, rebased on main), all gates green incl. POSTGRES_TEST_DSN verify suite; Fire 2 = out-of-band provisioner (`lattice lens emit-ddl` + `make provision-readpath` wired into up-full/up-loftspace, validated against the LIVE stack) + soft-delete guard (reject protected+deleteMode:soft) + refractor.md verify-and-pause rewrite. **next = Fire-2 3-layer review (security plane) + live-verify up-loftspace serves rows on a clean stack (shared stack owned by a concurrent fire this fire) + ff-merge Fire 0+1+2 to main** (§8 BUILD CHECKPOINT) |
+| **Protected-lens provisioning: out-of-band + verify-and-pause** | Refractor runs the protected/grant Postgres table DDL today; move provisioning out-of-band + verify-and-pause fail-closed (retire the RLS DDL-ownership exception). | ★★ | M→L | 🏗️ building · [design](../../implementation-artifacts/protected-lens-out-of-band-provisioning-verify-and-pause-design.md) · Fire 0+1+2 on worktree `steward-protected-lens-oob` (`8f0cbd4`); next = Fire-2 3-layer + live-verify up-loftspace + ff-merge |
 | Gateway | Edge trust boundary: JWT auth, `Lattice-Actor` stamping, read-path enforcement. Gates external actors + the real Edge node. | ★★★ | L | ✅ ratified · [design](../../implementation-artifacts/gateway-external-trust-boundary-design.md) · 🚧 seq behind NATS-write-restriction F2b |
 | NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) · F1 (credential seam) shipped; F2 = live enforcement |
 | Control-plane Capability authorization (FR30) | Both control planes (Weaver/Refractor `…/control`) should be capability-gated, not open responders. | ★★ | M | ✅ ratified · [design](../../implementation-artifacts/control-plane-capability-authz-design.md) · rides D1.2 (shipped) → buildable; deprioritized behind D1 rollout |
@@ -212,7 +124,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | AI-authored capabilities | A Lattice-aware agent proposes DDL/Starlark/lenses/workflows through human review + deterministic validation + rollback. | ★★–★★★ | L | ✅ ratified · [design](../../implementation-artifacts/ai-authored-capabilities-design.md) |
-| **The Augur** (AI reasoning tier — L3 evaluator) | Weaver's AI-assisted reasoning tier for ambiguous/novel convergence gaps. The marquee AI-native feature. | ★★ | M–L | 🏗️ building · [design](../../implementation-artifacts/augur-design.md) · Fire 1 (adaf7be) + Fire 2a (3dbd049) shipped; **Fire 2b (approved→dispatch loop-closer) DESIGNED** → 📐 awaiting-Andrew · [dispatch design](../../implementation-artifacts/augur-dispatch-pickup-design.md) · resolves §3.4: a primordial `augurDispatch` convergence target + an opt-in §10.8 `proposedOp` action (row-carried op gated by the dispatch-time §5 validator) + a `RecordProposalDispatch` flip; proposal-scoped deterministic requestId ⇒ re-dispatch is collapse-only; §10.8 action-table edit staged UNCOMMITTED; ONE fire, internal build order |
+| **The Augur** (AI reasoning tier — L3 evaluator) | Weaver's AI-assisted reasoning tier for ambiguous/novel convergence gaps. The marquee AI-native feature. | ★★ | M–L | 🏗️ building · [design](../../implementation-artifacts/augur-design.md) · Fire 1 (adaf7be) + 2a (3dbd049) shipped; Fire 2b (approved→dispatch loop-closer) 📐 awaiting-Andrew · [dispatch design](../../implementation-artifacts/augur-dispatch-pickup-design.md) (§10.8 edit staged uncommitted) |
 | Starlark guards (Loom) | The reserved `{reads, starlark}` guard escape hatch needs a verified-pure sandbox. | ★ | M | ✅ ratified (split) · [design](../../implementation-artifacts/loom-starlark-guards-design.md) · 🚧 Loom-side held (ships with first consumer) |
 
 ### Read-model / projection maturity
@@ -222,20 +134,20 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Negative / filter-retraction projection | True "emit-only-when-violating" (targets currently project one row per candidate with a `violating` flag). | ★→★★ | M | 📐 awaiting-Andrew · [design](../../implementation-artifacts/negative-filter-retraction-projection-design.md) · consolidation target for Link-triggered reprojection |
 | Elasticsearch target adapter | A third lens target adapter (only NATS-KV + Postgres ship; no consumer yet). | ★ | M | 📋 (no consumer yet) |
 | Link-tombstone re-projection · cross-instance latency rollup | Two projection edge-cases / observability gaps (current approaches work). | ★ | S each | 📋 |
-| **[Refractor/Loupe] Silent lens-projection stall is undetectable** | A stalled projection is invisible. Clinic-PO observed on a long-up dev stack: committed ops (Processor `green`, Core KV updated, `core-events` published) stopped reaching *every* clinic read model, while the Refractor self-reported `green` and each lens `active` with `freshness -`. Read models silently diverged from Core KV with no operator/Lamplighter signal. Refractor should emit per-lens projection lag (last-applied `core-events` seq vs head, or last-projected-at) into Health KV; Loupe should populate the lens `freshness` column (today always `-`). | ★★ | M | 📐 awaiting-Andrew · [design](../../implementation-artifacts/lens-projection-liveness-design.md) · generalizes the auth-plane liveness backstop to ALL lenses (sibling `LensProvider` + `LensProjectionLagging`/`Paused` issues) + a per-lens `lastProjectedAt` freshness clock + Loupe freshness column; NO contract change (§5.4/§5.5 are component-discretion), no fork; 3 fires (+1 optional `LensProjectionStalled`, Andrew-gated §5.3) |
+| **[Refractor/Loupe] Silent lens-projection stall is undetectable** | A stalled projection is invisible: Clinic-PO saw committed ops stop reaching every clinic read model while Refractor self-reported `green`/`active`. Emit per-lens projection lag → Health KV; populate Loupe's `freshness` column (today always `-`). | ★★ | M | 📐 awaiting-Andrew · [design](../../implementation-artifacts/lens-projection-liveness-design.md) · per-lens `lastProjectedAt` + lag issues; no contract change; 3 fires |
 
 ### Refinements & ops
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | **CI pipeline speed (continuous)** | Make CI faster without weakening any gate — owned continuously by the **Whetstone**. Matrix split done (serial → 4 parallel jobs); convergence + unit parallelized. | ★★ | M (ongoing) | 🏗️ continuous (Whetstone) · next: `loom`/`bridge` `t.Parallel()` |
 | **[CI/Refractor] Hello-Lattice NFR-P3 latency flake** | The `≤500ms` capability-projection probe fails-then-passes on the shared CI runner (~590ms infra floor) — the dominant re-run flake (~50%). Not Whetstone-maskable (loosen/retry both weaken the gate). | ★★ | M | 🔭 owner/Andrew decision (infra-bound; shave CDC lag / bigger runner / re-scope CI conformance) |
-| **Op-time bounded reverse-link / adjacency read (`kv.Links`)** | One sanctioned, bounded, fail-closed, paged op-time link-enumeration builtin (`kv.Links(hub, relation, direction, cursor, limit)`) — retires the key-list-in-aspect guard indexes. Relaxes the write-path no-scans invariant by exactly one primitive. | ★★★ | M–L | 🏗️ building · [design](../../implementation-artifacts/op-time-bounded-link-enumeration-design.md) · Fire 1 (primitive, cc2613f) + Fire 2 (clinic `hasBooking`+`bookingGuard` consumer) shipped; next = Fire 3 (optional ephemeral e2e + §8 hub-source lint); also unblocks the Loom effect-guard Fire 2 |
-| **Hard-delete mutation verb (true link/aspect keyspace reclaim)** | The Starlark mutation vocab is `create`/`update`/`tombstone` (all soft PUTs); a soft-tombstoned key persists and is still enumerated by `kv.Links`. A 4th `delete` verb (NATS `DEL` marker via the existing `BatchOp.Delete` seam + step-8 + Contract #3) lets terminal `hasBooking` links (and other dead keys) leave the keyspace, bounding `kv.Links` **LIST** cost. Surfaced by kv.Links Fire 2. | ★ now / ★★ at scale | M | 📐 awaiting-Andrew · [design](../../implementation-artifacts/hard-delete-mutation-verb-design.md) · §3 contract edit staged UNCOMMITTED; `DEL`-not-`PURGE` (op-ledger untouched, KV history retained); `ProtectedKey` backstop extended; 2 fires (clinic `hasBooking` reclaim = consumer) |
+| **Op-time bounded reverse-link / adjacency read (`kv.Links`)** | One sanctioned, bounded, fail-closed, paged op-time link-enumeration builtin (`kv.Links(hub, relation, direction, cursor, limit)`) — retires the key-list-in-aspect guard indexes. Relaxes the write-path no-scans invariant by exactly one primitive. | ★★★ | M–L | 🏗️ building · [design](../../implementation-artifacts/op-time-bounded-link-enumeration-design.md) · Fire 1 (cc2613f) + Fire 2 (clinic consumer) shipped; next = optional Fire 3 (e2e + hub-source lint) |
+| **Hard-delete mutation verb (true link/aspect keyspace reclaim)** | Mutation vocab is create/update/tombstone (soft PUTs); a tombstoned key persists + is still enumerated by `kv.Links`. A 4th `delete` verb (NATS `DEL`) lets dead links leave the keyspace, bounding `kv.Links` LIST cost. | ★ now / ★★ at scale | M | 📐 awaiting-Andrew · [design](../../implementation-artifacts/hard-delete-mutation-verb-design.md) · §3 edit staged uncommitted; `DEL`-not-`PURGE`; 2 fires (clinic reclaim = consumer) |
 | **Script-read posture — declared+hydrated vs live `kv.get`/`kv.Links`** | Live Core-KV reads in scripts are the common root of the Loom-guard Processor-side redirect *and* the Edge A′-prediction partiality; declared+hydrated reads the norm, live reads classified (debt vs sanctioned config vs irreducible `kv.Links`), Loom guard read retired Processor-side. | ★★ | L | 📐 awaiting-Andrew · [design](../../implementation-artifacts/script-read-posture-design.md) · §2.5 `optionalReads` edit staged uncommitted; Fire 3 retires Loom `evalGuard` (G1 rec.) |
 | **FR28 — role-queue + fallback** (+ FR29 unrouted surfacing) | A `queuedFor.role` link + `ClaimTask` op + `CreateTask` routing (named → role-queue → loud `RoutingFailed`); grant/inbox fan out to role-holders; an empty queue is surfaced post-hoc by a new `unroutedTasks` Weaver target. | ★ | M | ✅ ratified · [design](../../implementation-artifacts/fr28-role-queue-fallback-design.md) · 📋 ready (3 fires; §10.1 committed) |
 | **`@every` recurring schedules** (op-vertex pruner #49 retired) | A `substrate.ScheduleEvery`/`CancelSchedule` seam + migrate the Weaver reconciler sweep (`time.Ticker` → durable `@every`). Op-vertex pruner retired (NATS per-key TTL + outbox tombstone cover it). | ★ | M | 🏗️ building · [design](../../implementation-artifacts/recurring-schedules-and-op-vertex-pruner-design.md) · Fire 1 (primitive) + Fire 2 (Weaver sweep cron-kill, `e04498e`) shipped; only Fire 3 (§10.4 doc/contract + #49 retirement, Andrew-gated commit) remains |
 | **Package version upgrade / DDL hot-reload (F-004)** | In-place re-install over an existing version + DDL-migration semantics (install/uninstall existed; upgrade did not). Diff-and-apply (create/update/tombstone) in one atomic Processor batch; version-independent entity keys. | ★★ | M | ✅ effectively done · [design](../../implementation-artifacts/package-version-upgrade-design.md) · Fires 1a–3 shipped; only an optional Fire-2 live e2e remains (§8.1 + §8.6 committed) |
-| Loom / Weaver control-API surfacing | Operator pause/resume + a durable `loom.*` read model beyond what the Loupe blocker covers. | ★ | M | 📐 awaiting-Andrew · [design](../../implementation-artifacts/orchestration-history-read-model-design.md) · pause/resume shipped; durable history = new Refractor `eventStream` lens-source primitive projecting `events.loom.>` → `orchestration-history` read model, Loupe reads via P5 (FORK: event-lens primitive **A**, recommended vs. control-plane-history hack **B** — A is §10.9-blessed + NO frozen-contract change); 3 fires + optional Weaver/Postgres follow-on |
+| Loom / Weaver control-API surfacing | Operator pause/resume + a durable `loom.*` read model beyond what the Loupe blocker covers. | ★ | M | 📐 awaiting-Andrew · [design](../../implementation-artifacts/orchestration-history-read-model-design.md) · pause/resume shipped; durable history via new `eventStream` lens-source (FORK A, §10.9-blessed, no contract change); 3 fires |
 
 ### Parking lot — very low priority (far, far back)
 
@@ -253,11 +165,11 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
-- 2026-06-30 · `e04498e` · [Weaver] `@every` Fire 2 — reconciler sweep cron-kill: the in-process `time.Ticker` retired for a durable `@every` schedule (`schedule.weaver.sweep` → `weaver-sweep` durable, `MaxAckPending:1`), armed idempotently at start (rollup) + a startup warm pass; exactly-one-sweep-per-interval across replicas, restart-surviving, operator-visible. Sweep logic (`pass`) byte-identical (full reclaim suite is the safety net); sub-second `SweepInterval` clamped to the @every 1s floor (MidFlightKill 1s/8s rescaled). Concurrency boundaries reviewed (single-fire · self-overlap · warm/fired OCC-safe · subject isolation). Fire 3 (§10.4 doc/contract + #49 retirement) stays Andrew-gated.
-- 2026-06-30 · `44b385a` · [Core/substrate] `@every` Fire 1 — recurring-schedule primitive: `ScheduleEvery`/`CancelSchedule` (idempotent re-arm via the server's per-subject rollup; purge-by-subject cancel, no-op idempotent) + the 3 fired-copy header constants (pinned to nats-server v2.14 `JSScheduler`/`JSScheduleNext`/`JSScheduleTTL`) + `DeriveScheduleOccurrenceRequestID` (the @every analog of @at `deriveTimerRequestID`). Grounded in the pinned NATS 2.14 source, proven against embedded NATS 2.14. No contract change (§4.3); §10.4 spec edit is Fire 3. (Fire 2 = Weaver sweep cron-kill; in the feature backlog.)
-- 2026-06-29 · `d6530e9` (+`cacfb2b` Fire 1 dark grants) · [Core/processor+rbac] Lane authorization enforcement (Contract #2 §2.3) — step-3 lane gate (service/task ⇒ default-only pre-read; platform ⇒ `env.Lane ∈ doc.Lanes`, fail-closed) emitting `LaneUnauthorized` "before any further processing" + Gate-3 Vector #8 (default-only actor on system/meta/urgent → BLOCKED; 8/8) + docs (service-actors.md deferral retired, processor.md note); full 3-layer review. Whole item done (optional Fire 3 role→lane blocks nothing — installs run as primordial admin). Build-to §2.3/§2.6, no contract change.
-- 2026-06-30 · `0cd2695` · [lint/Core] instanceOf-template op-discovery — **DONE** (P7 lint gate, the design's last DoD item): `scripts/lint-conventions.go` P7 check flags a discriminator-shaped aspect (`.class`/`.family`/`.kind` localName) shadowing the envelope class; anchored on the Starlark aspect-emit helper (zero false positives vs CLI flag / string-slice / `cls` arg), skips tests. Green because the outliers were retired in e1d540f. Whole design complete (Fire 1 `cea0c3b` + Fire E `6eaabcc` + Verticals consumer `e1d540f`/`2a5087a` + Contracts #1 §1.5/§1.6 + #2 §2.1 + P7 in lattice-architecture.md).
-- 2026-06-27 · `679fe25` (+`faa3aec` GrantTable composite variant) · [Refractor] Full-engine plain-projection anchor-tombstone retraction — `Engine.AnchorDeleteResult` (AST-only) + the non-actor pipeline twin emit a Delete on a root-tombstone of the lens anchor; fixes every full-engine plain lens (clinic/loftspace/lease/objects-base); doc note in refractor.md. (Reconciled stale board row 2026-06-30: design banner said 📋 ready but Fire 1 had shipped; clinic ephemeral-stack e2e is verticals-lane convergence-suite work.)
+- 2026-06-30 · `e04498e` · [Weaver] `@every` Fire 2 — reconciler sweep cron-kill (durable `@every` replaces the in-process ticker)
+- 2026-06-30 · `44b385a` · [Core/substrate] `@every` Fire 1 — `ScheduleEvery`/`CancelSchedule` recurring-schedule primitive
+- 2026-06-29 · `d6530e9` · [Core/processor+rbac] Lane authorization enforcement (§2.3) — step-3 lane gate + `LaneUnauthorized` + Gate-3 vector #8
+- 2026-06-30 · `0cd2695` · [lint/Core] instanceOf P7 lint gate (whole instanceOf design done)
+- 2026-06-27 · `679fe25` · [Refractor] Full-engine plain-projection anchor-tombstone retraction (`AnchorDeleteResult`)
 - 2026-06-30 · `44049ed` · [Core/bypass] D1.4 — Gate-3 read-path authorization adversarial vectors (§5.1–5.5: no-JWT · cross-actor · revoked · cross-anchor bleed · no-RLS-policy); Gate 3 now 13/13, gate sets `POSTGRES_TEST_DSN`
 - 2026-06-30 · `<pending>` · [clinic-domain] kv.Links Fire 2 — re-author the appointment double-book guard onto `hasBooking` links + scalar `bookingGuard` epoch (drop the `.bookings` key-list aspects + DDLs); pkg 0.8.0
 - 2026-06-30 · `cc2613f` · [Core/substrate] kv.Links Fire 1 — bounded op-time link enumeration primitive (+ `KVListKeysFilter` paged subject-filter seam)
@@ -278,17 +190,4 @@ One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archiv
 - 2026-06-28 · `07f3824` · [CI] Parallelize the weaver test package (t.Parallel)
 - 2026-06-27 · `1443109` · [CI] Serial pipeline → 4-job parallel matrix
 - 2026-06-28 · `7f98d83` · [Core/pkgmgr] F-004 Fire 3 — dev-loop refresh targets + upgrade docs
-- 2026-06-28 · `cd20ce8` · [Core/pkgmgr] F-004 Fire 1a — version-independent entity keys
-- 2026-06-28 · `75e9acc` · [Core/substrate] NATS write-restriction Fire 1 — credential seam (dark)
-- 2026-06-28 · `04c7689` · [Weaver] Pace collapse-only userTask reclaims with a state machine
-- 2026-06-27 · `d8bfa34` · [Loom] Pin the redelivery-dedup + op-meta-deregister paths
-- 2026-06-27 · `4bd32f7` · [Core] Pin the Go↔Starlark value marshalling boundary
-- 2026-06-27 · `8199c11` · [Weaver] Cover the control-plane authorize boundary + subject parsing
-- 2026-06-27 · `a4f87ae` · [Core] Pin the substrate deterministic-id derivation invariant
-- 2026-06-27 · `fd0cacd` · [Loupe] Test the object-serving anti-XSS disposition boundary
-- 2026-06-27 · `f537f6b` · [Refractor] Postgres adapter `Truncater`
-- 2026-06-27 · `c59a39f` · [Loom] Heartbeat status hard-coded to lifecycle string
-- 2026-06-27 · `6998a39` · [Core] Bootstrap key construction → substrate key helpers
-- 2026-06-27 · `f16e625` · [Core] Processor health-honesty — real `lane_lag` + status/issues
-- 2026-06-26 · `4de7677` · [Weaver] Heartbeat status/issue-severity inconsistency
-- 2026-06-26 · `2877a1c` · [Loupe] Surface component `status`/`issues` on health + system-map
+- *(older entries rolled to [archive/lattice-done.md](archive/lattice-done.md))*

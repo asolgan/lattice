@@ -1,0 +1,32 @@
+name: Board lint
+
+# The backlog board is an INDEX, not a journal (backlog/lattice.md "How this
+# board works" + agentic-ops-swimlanes-design.md §5). The main CI workflow
+# paths-ignores `**/*.md` + `_bmad-output/**`, so a board-only commit (the
+# Surveyor / PO / Steward docs commits) never triggers it — this dedicated
+# workflow fires on exactly the board paths so a fire that re-bloats a row,
+# section, or Done-log entry fails here. (The main lint-build job also runs
+# this script, as a backstop on code commits.)
+on:
+  push:
+    branches: [main]
+    paths:
+      - '_bmad-output/planning-artifacts/backlog/**'
+      - 'scripts/lint-board.go'
+  pull_request:
+    paths:
+      - '_bmad-output/planning-artifacts/backlog/**'
+      - 'scripts/lint-board.go'
+
+jobs:
+  board-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          check-latest: true
+      - name: Board discipline lint
+        run: STRICT=1 go run ./scripts/lint-board.go

@@ -24,7 +24,7 @@ LOFTSPACE_APP_PG_DSN ?= postgres://loftspace_app:loftspace_app_dev@localhost:543
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up up-full up-loftspace orchestration install-packages install-loftspace run-loupe run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role reinstall-package verify-package-service-location verify-package-augur verify-conformance build vet lint-conventions install-skills test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-augur-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
+.PHONY: up up-full up-loftspace orchestration install-packages install-loftspace run-loupe run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role reinstall-package verify-package-service-location verify-package-augur verify-conformance build vet lint-conventions lint-board install-skills test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-augur-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 up:
@@ -583,6 +583,12 @@ vet:
 lint-conventions:
 	@echo "==> Linting code conventions..."
 	go run ./scripts/lint-conventions.go
+
+## lint-board — Backlog-board discipline (index-not-journal): row/section/Done-log
+## budgets + journal-pattern + dependency-consistency. Advisory; STRICT=1 exits non-zero.
+lint-board:
+	@echo "==> Linting backlog board..."
+	go run ./scripts/lint-board.go
 
 ## install-skills — Install the canonical agentic-ops role-skills from agents/
 ## into the (gitignored) .claude/skills/ where the harness discovers them.
