@@ -49,43 +49,48 @@ experience, the FE Engineer builds it (UX-then-FE).
 
 ## The scheduled fleet
 
-| Task | Role (stream) | Cadence |
-|---|---|---|
-| `steward-autonomous` | `steward` — **Lattice** advancer | even hours (`6 */2`) |
-| `steward-verticals` | `steward` — **Verticals** advancer | odd hours (`26 1-23/2`), interleaved |
-| `lattice-designer` | `designer` — Lattice design (readiness) | odd hours (`6 1-23/2`), pipelines before the Lattice advancer |
-| `platform-surveyor` | `surveyor` — Lattice hydrator | 3×/day (`56 7,15,23`) |
-| `vertical-po-discovery` | `vertical-po` — Verticals hydrator | 3×/day (`41 5,13,21`) |
-| `ci-whetstone` | `whetstone` — cross-cutting CI-speed | 2×/day (`36 6,18`) |
+| Task | Role (stream) | Cadence | Build-heavy lock? |
+|---|---|---|---|
+| `steward-autonomous` | `steward` — **Lattice** advancer | hourly (`6 */1`) — intentional; the Lattice backlog is big | yes |
+| `steward-verticals` | `steward` — **Verticals** advancer | odd hours (`42 1-23/2`) | yes |
+| `ci-whetstone` | `whetstone` — cross-cutting CI-speed | 2×/day (`48 6,18`) | yes |
+| `lattice-designer` | `designer` — Lattice design (readiness) | odd hours (`6 1-23/2`), pipelines before the Lattice advancer | no |
+| `platform-surveyor` | `surveyor` — Lattice hydrator | 3×/day (`56 7,15,23`) | no |
+| `vertical-po-discovery` | `vertical-po` — Verticals hydrator | 3×/day (`41 5,13,21`) | no |
 
 The Lattice stream is a three-stage pipeline: **Surveyor** (raw demand) → **Designer** (build-ready designs) →
 **Lattice Steward** (builds), with the **Whetstone** as a cross-cutting CI-speed loop. `owner`, `fe-engineer`,
 and `lamplighter` are **invoked by** the advancers (or run directly), not scheduled on their own. The bmad
 tooling skills stay local and are intentionally not tracked here — this directory is only the agentic-ops roles.
 
-**None of these fire on :00/:30.** Two things bit us in practice: `steward-autonomous`'s live cron had drifted
-to `0 */1` (every hour) — silently doubling its frequency and erasing the even/odd interleave with
-`steward-verticals`, so it collided with *every* other task's hour, not just the ones sharing its parity —
-fixed back to `*/2`. Separately, every task's minute was 0 or 30, so on any hour multiple tasks share
-(odd hours run `lattice-designer` + `steward-verticals` together, always; `platform-surveyor` /
-`vertical-po-discovery` add a third some hours; even hours run `steward-autonomous` + `ci-whetstone` on 6/18),
-they used to land within seconds of each other and only the small system-level dispatch jitter separated
-them. Minutes are now spread ~15-20 apart within the hour so a same-hour pair has real separation, not just
-whatever the scheduler's own jitter happens to give them. This doesn't guarantee zero lock contention — a long
-fire can still be running when the next slot arrives — the mutual-exclusion lock's clean no-op-and-retry
-is the actual backstop for that; jitter just makes it the exception instead of the rule.
+**Minutes avoid :00/:30 by design** (every task used to fire on the hour or half-hour, so on any hour multiple
+tasks share, they landed within seconds of each other, separated only by the scheduler's own small dispatch
+jitter) — spread ~15-20 apart within the hour so a same-hour pair has real separation instead of a coin flip.
 
-### Concurrency: at most one fleet fire at a time
+### Concurrency: the lock is scoped to build-heavy roles, not the whole fleet
 
 This runs on a single 16GB dev Mac — Docker + the native service binaries + the Go toolchain + browser
 automation from even two concurrent fires is enough to exhaust memory and get the host to pause Claude/Chrome
-(happened twice). Each of the 6 scheduled prompts above opens with a **mutual-exclusion lock**: `mkdir
-/tmp/lattice-agentic-ops.lock` (atomic; fails if another fire already holds it) before doing anything else, and
-`rm -rf` on that same path as its last action, success or failure alike. A lock older than 90 minutes is treated
-as abandoned (a crashed/killed fire that never released) and reclaimed rather than wedging the fleet. If you add
-a 7th scheduled role, give it the same guard — the lock only protects fires that ask for it, not ad-hoc/generic
-worktree sessions outside this fleet. `make up` / `make orchestration` separately detect an already-healthy
-stack and no-op instead of restarting it, so an ad-hoc `make up` from a stray worktree is now safe too.
+(happened twice). But the actual risk is concentrated in the roles that touch Docker / run `go build`/`go
+test` / hold a worktree — **`steward-autonomous`, `steward-verticals`, `ci-whetstone`**. `lattice-designer`,
+`platform-surveyor`, and `vertical-po-discovery` are file-only (read code, edit a markdown lane file, `git
+commit`) — they were never part of the resource-contention problem, so a fleet-wide lock only cost them
+throughput for no safety benefit (this bit us directly: `steward-autonomous` runs hourly by design — the
+Lattice backlog is big — and a fleet-wide lock meant it was competing with *every* other role's slot, not just
+the two other build-heavy ones).
+
+So: **only the 3 build-heavy roles participate** in the mutual-exclusion lock: `mkdir
+/tmp/lattice-agentic-ops-build.lock` (atomic; fails if another of the 3 already holds it) before doing anything
+else, and `rm -rf` on that same path as its last action, success or failure alike. A lock older than 90 minutes
+is treated as abandoned (a crashed/killed fire that never released) and reclaimed rather than wedging that
+lane. The other 3 roles run whenever their schedule fires, no coordination at all. If you add a 7th scheduled
+role, give it the lock only if it actually builds/touches Docker — the lock protects fires that ask for it, not
+ad-hoc/generic worktree sessions outside this fleet either way. `make up` / `make orchestration` separately
+detect an already-healthy stack and no-op instead of restarting it, so an ad-hoc `make up` from a stray
+worktree (or from a lock-free role like `vertical-po-discovery`, which can bring its own vertical up on a cold
+stack) is safe too. Jitter (above) reduces how often the 3 locked roles collide with each other; it doesn't
+eliminate it — a long fire can still be running when the next locked slot arrives, and that's fine, the clean
+no-op-and-retry is the backstop, not a failure mode.
 
 ### Chips need a push — an unattended fire has no one watching the session
 
