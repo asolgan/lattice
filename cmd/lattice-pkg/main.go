@@ -32,6 +32,7 @@ import (
 	leasesigning "github.com/asolgan/lattice/packages/lease-signing"
 	locationdomain "github.com/asolgan/lattice/packages/location-domain"
 	loftspacedomain "github.com/asolgan/lattice/packages/loftspace-domain"
+	loftspaceledger "github.com/asolgan/lattice/packages/loftspace-ledger"
 	objectsbase "github.com/asolgan/lattice/packages/objects-base"
 	orchestrationbase "github.com/asolgan/lattice/packages/orchestration-base"
 	rbacdomain "github.com/asolgan/lattice/packages/rbac-domain"
@@ -59,6 +60,7 @@ var packageRegistry = map[string]pkgmgr.Definition{
 	"clinic-reminders":   clinicreminders.Package,
 	"service-location":   servicelocation.Package,
 	"lease-signing":      leasesigning.Package,
+	"loftspace-ledger":   loftspaceledger.Package,
 	"objects-base":       objectsbase.Package,
 	"augur":              augur.Package,
 }

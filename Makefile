@@ -428,6 +428,8 @@ install-loftspace:
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/service-domain
 	@echo "==> Installing lease-signing..."
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/lease-signing
+	@echo "==> Installing loftspace-ledger..."
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/loftspace-ledger
 	@echo "==> LoftSpace vertical installed. Drive it via the lattice CLI or Loupe."
 
 ## install-clinic — Install the clinic vertical onto a running up-full stack, in
@@ -500,6 +502,7 @@ refresh-loftspace:
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install --force packages/loftspace-domain
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install --force packages/service-domain
 	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install --force packages/lease-signing
+	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install --force packages/loftspace-ledger
 	@$(MAKE) provision-loftspace-role
 	@echo "==> Rebuilding loftspace-app binary..."
 	go build -o bin/loftspace-app ./cmd/loftspace-app
