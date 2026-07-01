@@ -27,10 +27,10 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 Compact rotation memory only — PO *findings* are filed as demand rows above + the Done log; the verbose
 dated run-logs live in git history. Rotate LoftSpace ↔ Clinic, staggered from the Steward.
 
-- **Rotation to date:** LoftSpace ×7, Clinic ×5 (last: Clinic 5th run 2026-06-30, reused the up shared stack; drove CreateProvider / CreatePatient / CreateAppointment / SetAppointmentStatus via `/api/op`; filed the status-note FE gap + a platform lens-stall observability gap).
+- **Rotation to date:** LoftSpace ×8, Clinic ×5 (last: LoftSpace 8th run 2026-07-01, reused the up shared stack; write-path was blocked stack-wide — see live-stack note; filed the vertical-app Health-KV self-report gap).
 - **Method:** reuse the already-up shared stack (detect NATS :4222 / app :7788/:7799), drive the real flow via `/api/op` + the lens projections as the product owner, file scored items. Both apps exist + are exercisable live (`:7788` / `:7799`).
-- **Live-stack note (2026-06-30):** the shared stack's Refractor lens projection was **stalled** — ops committed to Core KV (Processor `green`, `core-events` published) did not reach *any* clinic read model, though all components self-reported `green`/`active`. Verified via Loupe `/api/vertex` (Core KV updated) vs `/api/appointments` (frozen). Surfaced as the lattice [silent lens-projection stall](lattice.md) item; left for an owner/Lamplighter to remediate (not a PO action). New writes won't project until the Refractor is restarted. Also: Loupe health `overall=yellow` is from un-reaped dead-instance heartbeats (already filed: lattice Health-KV TTL item).
-- **Next:** the staler of the two by run-date (LoftSpace).
+- **Live-stack note (2026-07-01):** loftspace-app's and clinic-app's admin actor is **unloaded** — `lattice.bootstrap.json` is `version:"13"` but `checkVersion` (committed `40f4d25`) requires `"14"`, so every `/api/op` write 400s "admin actor not loaded" on both apps (reads work; KV holds no exercisable data). Needs `make down && make up` to regenerate — not a PO action, left for the Steward. Filed the underlying gap: [no vertical-app Health-KV self-report](lattice.md), so this class of failure stays invisible to Loupe next time.
+- **Next:** Clinic (once the stack is regenerated so writes work again).
 
 ## Done log — verticals (newest first)
 
