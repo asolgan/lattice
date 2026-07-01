@@ -28,8 +28,8 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic, staggered from 
 
 - **Rotation to date:** LoftSpace ×8, Clinic ×5 (last: LoftSpace 8th run 2026-07-01, reused the up shared stack; write-path was blocked stack-wide — see live-stack note; filed the vertical-app Health-KV self-report gap).
 - **Method:** reuse the already-up shared stack (detect NATS :4222 / app :7788/:7799), drive the real flow via `/api/op` + the lens projections as the product owner, file scored items. Both apps exist + are exercisable live (`:7788` / `:7799`).
-- **Live-stack note (2026-07-01):** loftspace-app's and clinic-app's admin actor is **unloaded** — `lattice.bootstrap.json` is `version:"13"` but `checkVersion` (committed `40f4d25`) requires `"14"`, so every `/api/op` write 400s "admin actor not loaded" on both apps (reads work; KV holds no exercisable data). Needs `make down && make up` to regenerate. Filed the underlying gap: [no vertical-app Health-KV self-report](lattice.md), so this class of failure stays invisible to Loupe next time. **Steward attempted the regen same-day (2026-07-01) and was denied** — the unattended sandbox's auto-mode classifier blocks `make down` outright as "interfere with workloads" (tears down the shared core stack), so this needs an attended `make down && make up` from Andrew's own session, or a policy exception for the Steward. Left 🔴 open.
-- **Next:** Clinic (once the stack is regenerated so writes work again).
+- **Live-stack note RESOLVED (2026-07-01):** the version-13→14 bootstrap mismatch (writes 400ing "admin actor not loaded" on both apps) is fixed — Andrew ran an attended `make down && make up-loftspace && make up-clinic` (unattended Steward fires can't: sandboxed `make down` is classifier-denied). Bootstrap regenerated to `version:"14"`; verified live with a real `CreateUnclaimedIdentity` (loftspace) and `CreatePatient` (clinic) write, both `status:"accepted"`/committed. Filed gap stays open: [no vertical-app Health-KV self-report](lattice.md), so this class of failure stays invisible to Loupe next time.
+- **Next:** Clinic (writes confirmed working again).
 
 ## Done log — verticals (newest first)
 
