@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -114,6 +115,9 @@ func TestReadBoundary_RLS_Enforcement(t *testing.T) {
 		{Name: "unit_rent", Type: "double precision"},
 		{Name: "unit_currency", Type: "text"},
 		{Name: "unit_status", Type: "text"},
+		{Name: "unit_bedrooms", Type: "double precision"},
+		{Name: "unit_bathrooms", Type: "double precision"},
+		{Name: "unit_available_from", Type: "text"},
 		{Name: "signed_at", Type: "text"},
 		{Name: "landlord_decision", Type: "text"},
 		{Name: "decline_reason", Type: "text"},
@@ -141,9 +145,10 @@ func TestReadBoundary_RLS_Enforcement(t *testing.T) {
 	exec("GRANT SELECT ON " + rlsTestSchema + ".read_lease_applications TO " + rlsTestRole)
 	exec("GRANT SELECT ON " + rlsTestSchema + ".actor_read_grants TO " + rlsTestRole)
 
-	// Seed: A's application (anchor A) + B's application (anchor B); self-grants.
-	exec(`INSERT INTO read_lease_applications (app_id, entity_key, applicant, landlord_decision, authz_anchors, projection_seq)
-	      VALUES ('app-A', 'vtx.leaseapp.app-A', 'vtx.identity.`+subAlice+`', 'approved', $1, 1)`, []string{subAlice})
+	// Seed: A's application (anchor A, signed — the lease-document tests need a
+	// signed row to render) + B's application (anchor B, unsigned); self-grants.
+	exec(`INSERT INTO read_lease_applications (app_id, entity_key, applicant, landlord_decision, signed_at, authz_anchors, projection_seq)
+	      VALUES ('app-A', 'vtx.leaseapp.app-A', 'vtx.identity.`+subAlice+`', 'approved', '2026-07-15T00:00:00Z', $1, 1)`, []string{subAlice})
 	exec(`INSERT INTO read_lease_applications (app_id, entity_key, applicant, authz_anchors, projection_seq)
 	      VALUES ('app-B', 'vtx.leaseapp.app-B', 'vtx.identity.`+subBob+`', $1, 1)`, []string{subBob})
 	exec(`INSERT INTO actor_read_grants (actor_id, anchor_id, grant_source, projection_seq, is_deleted)
@@ -311,6 +316,52 @@ func TestReadBoundary_RLS_Enforcement(t *testing.T) {
 			if len(rowsB) != 1 || rowsB[0].EntityKey != "vtx.leaseapp.app-B" {
 				t.Fatalf("iter %d: B leaked %+v", i, rowsB)
 			}
+		}
+	})
+
+	// The executed-lease document GET (D1.5): same RLS-scoped model, same
+	// authenticated actor, a different endpoint. s.conn is nil in this harness
+	// (no NATS fixture) — buildLeaseDocumentForActor degrades the applicant name
+	// to the bare key rather than failing, so the RLS/auth assertions below don't
+	// need a NATS connection.
+	getDoc := func(t *testing.T, authz, leaseAppKey string) (int, string) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/lease-document?leaseAppKey="+leaseAppKey, nil)
+		if authz != "" {
+			req.Header.Set("Authorization", authz)
+		}
+		s.handleLeaseDocumentGet(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+
+	t.Run("lease-document: A can download A's signed lease", func(t *testing.T) {
+		code, body := getDoc(t, "Bearer "+mint(subAlice), "vtx.leaseapp.app-A")
+		if code != http.StatusOK {
+			t.Fatalf("status = %d, want 200, body=%s", code, body)
+		}
+		if !strings.Contains(body, "RESIDENTIAL LEASE AGREEMENT") {
+			t.Fatalf("body must render the lease document, got %q", body)
+		}
+	})
+
+	t.Run("lease-document: A requesting B's key is 404, not leaked", func(t *testing.T) {
+		code, _ := getDoc(t, "Bearer "+mint(subAlice), "vtx.leaseapp.app-B")
+		if code != http.StatusNotFound {
+			t.Fatalf("status = %d, want 404 (RLS-hidden, indistinguishable from absent)", code)
+		}
+	})
+
+	t.Run("lease-document: B's application is unsigned, 409", func(t *testing.T) {
+		code, _ := getDoc(t, "Bearer "+mint(subBob), "vtx.leaseapp.app-B")
+		if code != http.StatusConflict {
+			t.Fatalf("status = %d, want 409 (not yet signed)", code)
+		}
+	})
+
+	t.Run("lease-document: unauthenticated is 401", func(t *testing.T) {
+		if code, _ := getDoc(t, "", "vtx.leaseapp.app-A"); code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want 401", code)
 		}
 	})
 }

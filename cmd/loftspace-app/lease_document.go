@@ -35,12 +35,18 @@ const leaseDocStoreNamespace = "loftspace:lease-doc:store:"
 //	POST /api/lease-document {leaseAppKey} → durably attach the artifact, return oid
 //
 // The document is a deterministic function of the application's projected terms
-// (the leaseApplicationComplete convergence row) + the applicant's name (the
-// applicantRoster row) — both read from lens read models, never Core KV (P5). The
-// GET path regenerates and streams the same bytes the POST path attaches, so a
+// + the applicant's name (both lens read models, never Core KV — P5). The GET
+// path regenerates and streams the same bytes the POST path attaches, so a
 // download never waits on object-store projection lag; the POST path produces the
 // durable, GC-protected artifact so both parties have the executed document on
 // file (the on-SignLease "produce the signed lease" requirement).
+//
+// GET reads through the PROTECTED, RLS-scoped read_lease_applications model as
+// an authenticated actor (D1.5 — buildLeaseDocumentForActor); POST still reads
+// the unscoped weaver-targets convergence row via buildLeaseDocument, since it
+// runs as the trusted system actor (s.adminActor) producing the canonical
+// artifact on SignLease, not a user's read (D1 covers reads, not the internal
+// service-actor write path).
 func (s *server) handleLeaseDocument(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -53,13 +59,17 @@ func (s *server) handleLeaseDocument(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleLeaseDocumentGet streams the executed-lease text for download. It builds
-// the document from the projected terms on demand (P5) — no object store, no
-// projection lag — so the applicant can download their lease the instant the
-// signature lands.
+// handleLeaseDocumentGet streams the executed-lease text for download, served
+// as an AUTHENTICATED actor off the PROTECTED, RLS-scoped read_lease_applications
+// model (D1.5 — the same read boundary handleApplications uses, D1.3 Fire 3): a
+// missing/invalid bearer token is 401, and RLS scopes the document to the
+// applicant themself — a leaseAppKey that isn't the caller's returns the same
+// 404 as a genuinely absent one, so the caller cannot tell "not mine" from
+// "not real."
 func (s *server) handleLeaseDocumentGet(w http.ResponseWriter, r *http.Request) {
-	conn, ok := s.requireConn(w)
-	if !ok {
+	actor, err := s.authenticateRead(r)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "authentication required: "+err.Error())
 		return
 	}
 	leaseAppKey := strings.TrimSpace(r.URL.Query().Get("leaseAppKey"))
@@ -67,11 +77,20 @@ func (s *server) handleLeaseDocumentGet(w http.ResponseWriter, r *http.Request) 
 		s.writeError(w, http.StatusBadRequest, "leaseAppKey query param is required")
 		return
 	}
+	if s.pgPool == nil {
+		s.writeError(w, http.StatusBadGateway,
+			"protected read model not configured (set LOFTSPACE_APP_PG_DSN and ensure Postgres + the lease-signing protected lens are up)")
+		return
+	}
 
 	ctx, cancel := s.reqContext(r)
 	defer cancel()
 
-	doc, status, msg := s.buildLeaseDocument(ctx, conn, leaseAppKey)
+	// s.conn (the applicant-name lookup) is nil-safe here: the RLS-scoped read and
+	// the signed-document gate are the security/correctness boundary and need no
+	// NATS read, so a down NATS connection degrades the document to the
+	// applicant's bare key instead of failing the whole download (buildLeaseDocumentForActor).
+	doc, status, msg := s.buildLeaseDocumentForActor(ctx, s.conn, actor.Subject, leaseAppKey)
 	if doc == nil {
 		s.writeError(w, status, msg)
 		return
@@ -198,6 +217,70 @@ func (s *server) buildLeaseDocument(ctx context.Context, conn *substrate.Conn, l
 	}
 	applicantName := s.lookupApplicantName(ctx, conn, row.Applicant)
 	return assembleLeaseDocument(row, applicantName)
+}
+
+// buildLeaseDocumentForActor is buildLeaseDocument's authenticated counterpart
+// (D1.5): it reads the application through the PROTECTED, RLS-scoped
+// read_lease_applications model as actorID rather than the unscoped
+// weaver-targets bucket, so a leaseAppKey RLS does not grant the actor comes
+// back not-found — identical to a genuinely absent key. conn is nil-safe: it
+// resolves only the applicant's display name (a public roster projection, no
+// authz anchor), so a nil conn (NATS unavailable) degrades the rendered
+// document to the applicant's bare key rather than failing the request —
+// the RLS-scoped fetch above is the actual security/correctness boundary.
+func (s *server) buildLeaseDocumentForActor(ctx context.Context, conn *substrate.Conn, actorID, leaseAppKey string) (*leaseDocument, int, string) {
+	protRow, ok, err := queryApplicationByKey(ctx, s.pgPool, actorID, leaseAppKey)
+	if err != nil {
+		s.logger.Error("read protected lease application for document", "error", err)
+		return nil, http.StatusBadGateway, "could not read the protected lease-applications model"
+	}
+	if !ok {
+		return nil, http.StatusNotFound,
+			"no application "+shortKeyServer(leaseAppKey)+" in the read model (is lease-signing installed and projecting, and are you the applicant?)"
+	}
+	row := protectedRowToDocumentRow(protRow)
+	var applicantName string
+	if conn != nil {
+		applicantName = s.lookupApplicantName(ctx, conn, row.Applicant)
+	}
+	return assembleLeaseDocument(row, applicantName)
+}
+
+// protectedRowToDocumentRow adapts the PROTECTED read model's row into the
+// applicationRow shape assembleLeaseDocument/renderLeaseDocument render. The
+// protected model carries no Weaver gap booleans (§10.2 stays Weaver-only), so
+// MissingSignature is derived from an absent signed_at instead; absent optional
+// columns stay nil/empty, the same degrade renderLeaseDocument already applies
+// to a projection missing optional terms.
+func protectedRowToDocumentRow(row protectedApplicationRow) applicationRow {
+	out := applicationRow{
+		EntityKey:          row.EntityKey,
+		Applicant:          row.Applicant,
+		UnitRent:           row.UnitRent,
+		UnitBedrooms:       row.UnitBedrooms,
+		UnitBathrooms:      row.UnitBathrooms,
+		TermsLeaseTerm:     row.TermsLeaseTerm,
+		TermsRequestedRent: row.TermsRequestedRent,
+		UnitKey:            strDeref(row.UnitKey),
+		UnitAddress:        strDeref(row.UnitAddress),
+		UnitCity:           strDeref(row.UnitCity),
+		UnitRegion:         strDeref(row.UnitRegion),
+		UnitCurrency:       strDeref(row.UnitCurrency),
+		UnitStatus:         strDeref(row.UnitStatus),
+		UnitAvailableFrom:  strDeref(row.UnitAvailableFrom),
+		SignedAt:           strDeref(row.SignedAt),
+		TermsMoveInDate:    strDeref(row.TermsMoveInDate),
+	}
+	out.MissingSignature = out.SignedAt == ""
+	return out
+}
+
+// strDeref returns "" for a nil pointer, the pointed-to value otherwise.
+func strDeref(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // assembleLeaseDocument is the pure build step: it gates on the signature and

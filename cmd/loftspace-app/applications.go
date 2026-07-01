@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // protectedApplicationRow is one row of the PROTECTED lease-applications Postgres read
@@ -31,6 +34,9 @@ type protectedApplicationRow struct {
 	UnitRent           *float64 `json:"unitRent"`
 	UnitCurrency       *string  `json:"unitCurrency"`
 	UnitStatus         *string  `json:"unitStatus"`
+	UnitBedrooms       *float64 `json:"unitBedrooms"`
+	UnitBathrooms      *float64 `json:"unitBathrooms"`
+	UnitAvailableFrom  *string  `json:"unitAvailableFrom"`
 	SignedAt           *string  `json:"signedAt"`
 	LandlordDecision   *string  `json:"landlordDecision"`
 	LandlordApproved   bool     `json:"landlordApproved"`
@@ -103,6 +109,55 @@ func queryApplications(ctx context.Context, pool pgxBeginner, actorID string) ([
 		return nil, err
 	}
 	return out, nil
+}
+
+// selectApplicationByKeySQL is selectApplicationsSQL narrowed to one entity_key
+// (D1.5 — the executed-lease document builder needs one application, not the
+// caller's whole list). RLS still governs visibility: a key that exists but
+// isn't among the caller's authz_anchors returns zero rows, identical to a
+// genuinely absent key, so the caller cannot tell "not mine" from "not real."
+const selectApplicationByKeySQL = `
+SELECT entity_key, applicant, unit_key, unit_address, unit_city, unit_region,
+       unit_rent, unit_currency, unit_status, unit_bedrooms, unit_bathrooms,
+       unit_available_from, signed_at, landlord_decision, decline_reason,
+       terms_move_in_date, terms_lease_term_months, terms_requested_rent
+FROM read_lease_applications
+WHERE entity_key = $1`
+
+// queryApplicationByKey is queryApplications narrowed to one application (D1.5).
+// Same txn-local actor + pooling-safety discipline; returns ok=false (no error)
+// when RLS or a genuinely missing key yields no row — the two are
+// indistinguishable by design (see selectApplicationByKeySQL).
+func queryApplicationByKey(ctx context.Context, pool pgxBeginner, actorID, entityKey string) (protectedApplicationRow, bool, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return protectedApplicationRow{}, false, err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, "SELECT set_config('lattice.actor_id', $1, true)", actorID); err != nil {
+		return protectedApplicationRow{}, false, err
+	}
+
+	var row protectedApplicationRow
+	err = tx.QueryRow(ctx, selectApplicationByKeySQL, entityKey).Scan(
+		&row.EntityKey, &row.Applicant, &row.UnitKey, &row.UnitAddress,
+		&row.UnitCity, &row.UnitRegion, &row.UnitRent, &row.UnitCurrency,
+		&row.UnitStatus, &row.UnitBedrooms, &row.UnitBathrooms, &row.UnitAvailableFrom,
+		&row.SignedAt, &row.LandlordDecision, &row.DeclineReason,
+		&row.TermsMoveInDate, &row.TermsLeaseTerm, &row.TermsRequestedRent,
+	)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return protectedApplicationRow{}, false, tx.Commit(ctx)
+		}
+		return protectedApplicationRow{}, false, err
+	}
+	deriveLandlordFlags(&row)
+	if err := tx.Commit(ctx); err != nil {
+		return protectedApplicationRow{}, false, err
+	}
+	return row, true, nil
 }
 
 // deriveLandlordFlags recomputes the landlord-decision booleans the FE keys on

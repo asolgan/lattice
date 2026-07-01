@@ -90,7 +90,11 @@ func Lenses() []pkgmgr.LensSpec {
 			// (Weaver-internal §10.2 orchestration state) — this read model carries
 			// the application's own identity + display scalars (unit, terms,
 			// signature, landlord decision), the hops off the leaseapp and its
-			// applicationFor identity / appliesToUnit unit.
+			// applicationFor identity / appliesToUnit unit. unit_bedrooms /
+			// unit_bathrooms / unit_available_from (D1.5) were added so the
+			// executed-lease document builder (cmd/loftspace-app/lease_document.go)
+			// could move off the unprotected weaver-targets read for its GET path
+			// and source the same display fields from here under RLS.
 			CanonicalName: "leaseApplicationsRead",
 			Class:         "meta.lens",
 			Adapter:       "postgres",
@@ -109,6 +113,9 @@ func Lenses() []pkgmgr.LensSpec {
 				{Name: "unit_rent", Type: "double precision"},
 				{Name: "unit_currency", Type: "text"},
 				{Name: "unit_status", Type: "text"},
+				{Name: "unit_bedrooms", Type: "double precision"},
+				{Name: "unit_bathrooms", Type: "double precision"},
+				{Name: "unit_available_from", Type: "text"},
 				{Name: "signed_at", Type: "text"},
 				{Name: "landlord_decision", Type: "text"},
 				{Name: "decline_reason", Type: "text"},
@@ -158,6 +165,11 @@ func Lenses() []pkgmgr.LensSpec {
 			// until each leaseapp's next CDC touch (it self-heals on any subsequent
 			// change to the application). This is the same staleness class the
 			// applicant lens's unit display columns already accept.
+			//
+			// No unit_bedrooms / unit_bathrooms / unit_available_from here (unlike
+			// leaseApplicationsRead's D1.5 addition above): no landlord-facing view
+			// reads this model for document rendering, so there is nothing pulling
+			// those columns in yet — add them here too if one starts.
 			CanonicalName: "landlordLeaseApplicationsRead",
 			Class:         "meta.lens",
 			Adapter:       "postgres",
@@ -577,6 +589,9 @@ RETURN
   u.listing.data.rentAmount      AS unit_rent,
   u.listing.data.rentCurrency    AS unit_currency,
   u.listing.data.status          AS unit_status,
+  u.listing.data.bedrooms        AS unit_bedrooms,
+  u.listing.data.bathrooms       AS unit_bathrooms,
+  u.listing.data.availableFrom   AS unit_available_from,
   app.signature.data.signedAt    AS signed_at,
   app.decision.data.value        AS landlord_decision,
   app.decision.data.reason       AS decline_reason,
