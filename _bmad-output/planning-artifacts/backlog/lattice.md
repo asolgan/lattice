@@ -86,7 +86,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 > *Dependency-sequenced ratified items*: **Vault** + **Personal Lens** behind D1; **Gateway** behind
 > NATS-write-restriction F2; **Object crypto-shred** behind Vault — build when their gate clears.
 > (**Control-plane-authz** rides D1.2, now shipped → buildable, deprioritized behind D1 rollout.)
-> **Augur** Fire 1 + 2a merged; Fire 2b (dispatch loop-closer) ✅ ratified → build-ready.
+> **Augur** Fires 1+2a+2b all shipped — the full escalate→review→dispatch loop closes; Fire 3 (autoApply) stays Andrew-gated.
 > (**`kv.Links`** Fire 1 + Fire 2 (clinic consumer) shipped; only the optional Fire 3 e2e/lint remains.)
 
 ### Security & trust boundary
@@ -127,7 +127,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | AI-authored capabilities | A Lattice-aware agent proposes DDL/Starlark/lenses/workflows through human review + deterministic validation + rollback. | ★★–★★★ | L | ✅ ratified · [design](../../implementation-artifacts/ai-authored-capabilities-design.md) |
-| **The Augur** (AI reasoning tier — L3 evaluator) | Weaver's AI-assisted reasoning tier for ambiguous/novel convergence gaps. The marquee AI-native feature. | ★★ | M–L | 🏗️ building · [design](../../implementation-artifacts/augur-design.md) · Fire 1 (adaf7be) + 2a (3dbd049) shipped; Fire 2b ✅ ratified · [dispatch design](../../implementation-artifacts/augur-dispatch-pickup-design.md) — build-ready (role-queue-only assignTask) |
+| **The Augur** (AI reasoning tier — L3 evaluator) | Weaver's AI-assisted reasoning tier for ambiguous/novel convergence gaps. The marquee AI-native feature. | ★★ | M–L | ✅ Fires 1+2a+2b shipped (loop closes: escalate→review→dispatch) · [design](../../implementation-artifacts/augur-design.md) + [dispatch design](../../implementation-artifacts/augur-dispatch-pickup-design.md) · 🚧 Fire 3 autoApply Andrew-gated; follow-up: mid-flight-kill + drift-invalid e2e (§6 residual) |
 | Starlark guards (Loom) | The reserved `{reads, starlark}` guard escape hatch needs a verified-pure sandbox. | ★ | M | ✅ ratified (split) · [design](../../implementation-artifacts/loom-starlark-guards-design.md) · 🚧 Loom-side held (ships with first consumer) |
 | **Bespoke contracts / "Executable Paper" — Starlark-backed semantic clauses** | `vtx.clause` vertices (prose + Starlark predicate + formula) linked to the state they govern; Weaver audits satisfaction against a resident/patient ledger, auto-debiting computational clauses + opening a Task for judgment ones. Vault: `Contract as Executable paper/*`. | ★★★ | XL | 📋 ready — PO-flagged; likely 3rd consumer of the held `internal/starlarksandbox` leaf (row above) but Weaver-side continuous eval, not a Loom guard — open design Q; LoftSpace = first vertical |
 
@@ -170,6 +170,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-01 · `4920bc6` · [Augur] Fire 2b — `augurDispatch` closes the loop (approve→dispatch); 3-layer review folded (reconciler backoff pacing + dispatch-time anchor-field pinning)
 - 2026-07-01 · `da8279f` · [loftspace-app] D1.5 — `handleUnitApplications` landlord operator-console unauth read fix (RLS-scoped to `queryLandlordApplications`'s managed-unit set; D1.5 read-model rollout now complete)
 - 2026-07-01 · `6c98748` · [loftspace-app] D1.5 — `handleIdentities` system-wide unauth roster dump fix (new `applicantRosterRead` wildcard-only protected lens; `handleStaffIdentities` replaces it)
 - 2026-07-01 · `40240dd` · [clinic-app] D1.5 — `handlePatients` clinic-wide unauth roster dump fix (new `clinicPatientsRead` wildcard-only protected lens; `handleStaffPatients` replaces it)
