@@ -22,16 +22,17 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 | LoftSpace — applicant contact (email/phone) captured but never projected to the landlord | `CreateUnclaimedIdentity` stores `.email`/`.phone`, but neither the `/api/identities` picker nor the landlord `unit-applications` disposition surfaces them — a landlord deciding on an applicant has no way to contact them. | LoftSpace | pkg + FE | ★★ | S | 🚧 blocked-on Vault — `id.{email,phone}` are `sensitive=true` aspects; same display gate as the Clinic patient-contact row → lattice [Vault](lattice.md); not a vertical-steward call |
 | LoftSpace — tenant payment ledger (rent/fees/deposits) | No financial history exists: `SignLease`/`DecideLeaseApplication` create no payment record — no rent ledger, late-fee tracking, or deposit accounting for landlord or tenant. Add a ledger aspect + Debit/CreditAccount ops + a payment-history lens/FE. | LoftSpace | pkg + FE | ★★★ | L | 📋 ready — PO-flagged; foundation for lattice [bespoke-contracts clause billing](lattice.md) later |
 | Clinic — patient payment ledger (copays/invoices) | No financial history exists: appointments/encounters create no charge or payment record — staff can't see what a patient owes or has paid. Add a ledger aspect + Debit/CreditAccount ops + a billing-history lens/FE. | Clinic | pkg + FE | ★★★ | L | 📋 ready — PO-flagged; mirrors the LoftSpace ledger row above |
+| Clinic — dev-loop never wires the protected read model (all 3 D1.5 audiences 500) | `up-clinic` never sets `CLINIC_APP_PG_DSN` or provisions a Postgres role (unlike `up-loftspace`'s equivalent) — the shipped patient/provider/staff-wildcard protected reads all 500 "not configured" out of the box; verified live. | Clinic | pkg | ★★★ | S | 📋 ready — PO-flagged 2026-07-01; mirror `up-loftspace`'s DSN/role wiring |
 
 ## PO notes (dated — drives rotation)
 
 Compact rotation memory only — PO *findings* are filed as demand rows above + the Done log; the verbose
 dated run-logs live in git history. Rotate LoftSpace ↔ Clinic, staggered from the Steward.
 
-- **Rotation to date:** LoftSpace ×8, Clinic ×5 (last: LoftSpace 8th run 2026-07-01, reused the up shared stack; write-path was blocked stack-wide — see live-stack note; filed the vertical-app Health-KV self-report gap).
+- **Rotation to date:** LoftSpace ×8, Clinic ×6 (last: Clinic 6th run 2026-07-01, installed vertical + started clinic-app onto the shared stack; drove Create/BookAppointment/SetStatus/RecordEncounter live end-to-end; filed the CLINIC_APP_PG_DSN dev-loop wiring gap).
 - **Method:** reuse the already-up shared stack (detect NATS :4222 / app :7788/:7799), drive the real flow via `/api/op` + the lens projections as the product owner, file scored items. Both apps exist + are exercisable live (`:7788` / `:7799`).
-- **Live-stack note RESOLVED (2026-07-01):** the version-13→14 bootstrap mismatch (writes 400ing "admin actor not loaded" on both apps) is fixed — Andrew ran an attended `make down && make up-loftspace && make up-clinic` (unattended Steward fires can't: sandboxed `make down` is classifier-denied). Bootstrap regenerated to `version:"14"`; verified live with a real `CreateUnclaimedIdentity` (loftspace) and `CreatePatient` (clinic) write, both `status:"accepted"`/committed. Filed gap stays open: [no vertical-app Health-KV self-report](lattice.md), so this class of failure stays invisible to Loupe next time.
-- **Next:** Clinic (writes confirmed working again).
+- **Live-stack note RESOLVED (2026-07-01):** the version-13→14 bootstrap mismatch is fixed; writes confirmed working on both apps.
+- **Next:** LoftSpace.
 
 ## Done log — verticals (newest first)
 
