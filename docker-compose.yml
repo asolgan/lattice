@@ -1,5 +1,11 @@
 # Compose Spec — no top-level `version` field (deprecated in Docker Compose v2.x).
 
+# Pinned so `docker compose` / `make up` always resolves to this one project regardless of which
+# directory (worktree) it's invoked from — otherwise Compose defaults the project name to the current
+# directory basename, and a from-worktree `make up` silently mints a new project (new network/volumes)
+# that then fails to start (container_name below is fixed), leaking Docker resources on every collision.
+name: lattice
+
 services:
   nats:
     image: nats:2.14-alpine

@@ -27,31 +27,42 @@ LOFTSPACE_APP_PG_DSN ?= postgres://loftspace_app:loftspace_app_dev@localhost:543
 .PHONY: up up-full up-loftspace orchestration install-packages install-loftspace run-loupe run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role provision-readpath reinstall-package verify-package-service-location verify-package-augur verify-conformance build vet lint-conventions lint-board install-skills test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-augur-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
+## Detects an already-healthy kernel first and reuses it — invoking this against a
+## stack that's already serving other work used to unconditionally kill and
+## restart the live processor/refractor out from under it (and, pre-Compose-
+## project-pin, mint a colliding second stack from a different worktree).
 up:
-	@echo "==> Starting NATS + Postgres..."
-	docker compose up -d --wait
-	@echo "==> Containers healthy."
-	@echo "==> Killing any background refractor processes (avoid warm-up duplicates)..."
-	-pkill -f "bin/refractor" 2>/dev/null || true
-	@echo "==> Killing any background processor processes (avoid warm-up duplicates)..."
-	-pkill -f "bin/processor" 2>/dev/null || true
-	@echo "==> Building bootstrap binary..."
-	go build -o bin/bootstrap ./cmd/bootstrap
-	@echo "==> Building refractor binary (Story 2.1)..."
-	go build -o bin/refractor ./cmd/refractor
-	@echo "==> Building lattice CLI..."
-	go build -o bin/lattice ./cmd/lattice
-	@echo "==> Running bootstrap (seed pass — readiness gate deferred until Refractor is up)..."
-	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/bootstrap -skip-ready-wait
-	@echo "==> Starting refractor in background..."
-	NATS_URL=$(NATS_URL) REFRACTOR_PG_DSN="postgres://lattice:lattice_dev@localhost:5432/lattice?sslmode=disable" ./bin/refractor >refractor.log 2>&1 </dev/null &
-	@echo "==> Running bootstrap (readiness gate — blocks until admin + Loom + Weaver + Bridge cap.* projections land)..."
-	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/bootstrap
-	@echo "==> Building processor binary..."
-	go build -o bin/processor ./cmd/processor
-	@echo "==> Starting processor in background..."
-	NATS_URL=$(NATS_URL) PROCESSOR_FILTER=ops.default,ops.urgent,ops.system,ops.meta LATTICE_AUTH_MODE=stub ./bin/processor >processor.log 2>&1 </dev/null &
-	@echo "==> Lattice ready."
+	@if docker compose ps --status running --services 2>/dev/null | grep -qx nats && \
+	    docker compose ps --status running --services 2>/dev/null | grep -qx postgres && \
+	    pgrep -f "bin/processor" >/dev/null 2>&1 && pgrep -f "bin/refractor" >/dev/null 2>&1; then \
+		echo "==> Kernel already up (NATS + Postgres healthy, processor + refractor running) — reusing. For a clean rebuild, run 'make down' first."; \
+	else \
+		set -e; \
+		echo "==> Starting NATS + Postgres..."; \
+		docker compose up -d --wait; \
+		echo "==> Containers healthy."; \
+		echo "==> Killing any background refractor processes (avoid warm-up duplicates)..."; \
+		pkill -f "bin/refractor" 2>/dev/null || true; \
+		echo "==> Killing any background processor processes (avoid warm-up duplicates)..."; \
+		pkill -f "bin/processor" 2>/dev/null || true; \
+		echo "==> Building bootstrap binary..."; \
+		go build -o bin/bootstrap ./cmd/bootstrap; \
+		echo "==> Building refractor binary (Story 2.1)..."; \
+		go build -o bin/refractor ./cmd/refractor; \
+		echo "==> Building lattice CLI..."; \
+		go build -o bin/lattice ./cmd/lattice; \
+		echo "==> Running bootstrap (seed pass — readiness gate deferred until Refractor is up)..."; \
+		NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/bootstrap -skip-ready-wait; \
+		echo "==> Starting refractor in background..."; \
+		NATS_URL=$(NATS_URL) REFRACTOR_PG_DSN="postgres://lattice:lattice_dev@localhost:5432/lattice?sslmode=disable" ./bin/refractor >refractor.log 2>&1 </dev/null & \
+		echo "==> Running bootstrap (readiness gate — blocks until admin + Loom + Weaver + Bridge cap.* projections land)..."; \
+		NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/bootstrap; \
+		echo "==> Building processor binary..."; \
+		go build -o bin/processor ./cmd/processor; \
+		echo "==> Starting processor in background..."; \
+		NATS_URL=$(NATS_URL) PROCESSOR_FILTER=ops.default,ops.urgent,ops.system,ops.meta LATTICE_AUTH_MODE=stub ./bin/processor >processor.log 2>&1 </dev/null & \
+		echo "==> Lattice ready."; \
+	fi
 
 ## down — Tear down all containers and remove the bootstrap JSON.
 ## Volumes are ephemeral (not named), so container removal clears NATS + Postgres data.
@@ -332,23 +343,31 @@ up-clinic:
 ## object-store-manager) in the background. Requires a running deployment
 ## (make up). object-store-manager needs no actor key; the rest load the admin
 ## actor from the bootstrap JSON. Logs: loom.log weaver.log bridge.log objmgr.log.
+## Detects an already-running tier first and reuses it rather than killing and
+## restarting it out from under whoever else is relying on it.
 orchestration:
-	@echo "==> Killing any prior orchestration processes..."
-	-pkill -f "bin/loom" 2>/dev/null || true
-	-pkill -f "bin/weaver" 2>/dev/null || true
-	-pkill -f "bin/bridge" 2>/dev/null || true
-	-pkill -f "bin/object-store-manager" 2>/dev/null || true
-	@echo "==> Building orchestration binaries..."
-	go build -o bin/loom ./cmd/loom
-	go build -o bin/weaver ./cmd/weaver
-	go build -o bin/bridge ./cmd/bridge
-	go build -o bin/object-store-manager ./cmd/object-store-manager
-	@echo "==> Starting Loom / Weaver / Bridge / object-store-manager in background..."
-	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/loom >loom.log 2>&1 </dev/null &
-	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/weaver >weaver.log 2>&1 </dev/null &
-	NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/bridge >bridge.log 2>&1 </dev/null &
-	NATS_URL=$(NATS_URL) ./bin/object-store-manager >objmgr.log 2>&1 </dev/null &
-	@echo "==> Orchestration tier started."
+	@if pgrep -f "bin/loom" >/dev/null 2>&1 && pgrep -f "bin/weaver" >/dev/null 2>&1 && \
+	    pgrep -f "bin/bridge" >/dev/null 2>&1 && pgrep -f "bin/object-store-manager" >/dev/null 2>&1; then \
+		echo "==> Orchestration tier already running (loom/weaver/bridge/objmgr all up) — reusing."; \
+	else \
+		set -e; \
+		echo "==> Killing any prior orchestration processes..."; \
+		pkill -f "bin/loom" 2>/dev/null || true; \
+		pkill -f "bin/weaver" 2>/dev/null || true; \
+		pkill -f "bin/bridge" 2>/dev/null || true; \
+		pkill -f "bin/object-store-manager" 2>/dev/null || true; \
+		echo "==> Building orchestration binaries..."; \
+		go build -o bin/loom ./cmd/loom; \
+		go build -o bin/weaver ./cmd/weaver; \
+		go build -o bin/bridge ./cmd/bridge; \
+		go build -o bin/object-store-manager ./cmd/object-store-manager; \
+		echo "==> Starting Loom / Weaver / Bridge / object-store-manager in background..."; \
+		NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/loom >loom.log 2>&1 </dev/null & \
+		NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/weaver >weaver.log 2>&1 </dev/null & \
+		NATS_URL=$(NATS_URL) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/bridge >bridge.log 2>&1 </dev/null & \
+		NATS_URL=$(NATS_URL) ./bin/object-store-manager >objmgr.log 2>&1 </dev/null & \
+		echo "==> Orchestration tier started."; \
+	fi
 
 ## install-packages — Install the core Capability Packages into a running
 ## deployment, in dependency order: rbac-domain → identity-domain → objects-base.

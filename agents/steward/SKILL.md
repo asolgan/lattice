@@ -12,8 +12,11 @@ description: "Winston's advancer for one swim-lane stream (Verticals OR Lattice,
 - **Lattice** — platform features + component maintenance; lane file `planning-artifacts/backlog/lattice.md`.
   Select by **round-robin across components** (stalest first).
 
-The two streams run in **parallel** on disjoint code (verticals = `packages/<vertical>*` + `cmd/<x>-app`;
-Lattice = `internal/*` + core packages), so they don't collide. **Ladder:** drive owners at **L1**, commit at
+The two streams run in **parallel** on disjoint code by default (verticals = `packages/<vertical>*` +
+`cmd/<x>-app`; Lattice = `internal/*` + core packages) — this is the organizing split for demand/selection, not
+what prevents collisions: two fires colliding on the same files is prevented by the mutual-exclusion lock the
+unattended fires run under (at most one fleet fire at a time), so *you* finishing a single coupled item across
+the boundary (§2 "wear the other hat") is safe. **Ladder:** drive owners at **L1**, commit at
 **L2** (gates green + no frozen-contract *commit* + revertible), escalate **L3** the *commit* of a contract
 change + architectural forks to Andrew. **Metric:** Andrew-interventions per shipped change, trending down.
 Design: `implementation-artifacts/agentic-ops-swimlanes-design.md`.
@@ -96,15 +99,24 @@ Pre-emption order (within your stream):
 2. **Resume** any **🏗️ in-flight** item your stream left (multi-fire, §4) before picking new.
 3. **Select by stream:**
    - **Verticals** → the highest **importance × readiness** READY item in `verticals.md` (PO-filed demand;
-     package + FE). **No-paper-over:** if it needs a missing platform **primitive** (engine / op / substrate /
-     orchestration — *not* a lens; a lens is yours to add as package work), file that to `lattice.md` and mark
-     this item **`🚧 blocked-on:`** it, then build the rest. **A denormalized key-list/ref index in an aspect is
+     package + FE). **No-paper-over, but verify before you bounce:** if it needs a missing platform
+     **primitive** (engine / op / substrate / orchestration — *not* a lens; a lens is yours to add as package
+     work), first check whether it's **small and mirrors an already-established pattern** (the same test as the
+     Lattice-side "wear the other hat" rule below — e.g. one more `contextHint.reads` entry, a small
+     fail-closed helper alongside an existing one). If so, **just add it yourself** — `internal/*`, scoped,
+     gated exactly like any Lattice change — and keep the item in `verticals.md`; **do not file+wait** for
+     something you could finish in the same fire. A "this needs a primitive" conclusion that turns out false,
+     or turns out to be five mechanical lines, is the false-bounce that stalls an item for nothing — ground the
+     premise before you act on it. Only a genuinely **new** mechanism with no precedent to extend — a real
+     architecture decision nobody's made — file that to `lattice.md` and mark this item **`🚧 blocked-on:`** it,
+     then build the rest. **A denormalized key-list/ref index in an aspect is
      itself a paper-over** (*e.g. `.bookings` / `.leaseApplications` storing `vtx.*` keys for an op-time
      conflict/uniqueness check*): "the operation's own Starlark logic" (Cap-KV §06) licenses the *check*, NOT
      storing **relationships as keys in aspects** (Contract #1). If the clean check must enumerate a vertex's
-     neighbors (a reverse-link/set read the known-key-reads op path lacks), **file the primitive + block + WAIT**
-     — do not ship the key-list workaround. (Pure existence-uniqueness needs no set: a deterministic guard LINK
-     + `CreateOnly`.)
+     neighbors (a reverse-link/set read the known-key-reads op path lacks) and there's no established
+     enumeration primitive to mirror, **file the primitive + block + WAIT**
+     — do not ship the key-list workaround, and don't freelance a new engine-level scan capability inline either.
+     (Pure existence-uniqueness needs no set: a deterministic guard LINK + `CreateOnly`.)
    - **Lattice** → **importance-first, NOT freshness-first.** Order of preference, top to bottom:
      **(a)** a **`✅ Andrew-ratified, build-ready` design** — the flywheel's whole point is *Designer stocks →
      Steward builds*; a ratified, unbuilt design (the standing queue: **read-path auth D1**, lane-authorization,
@@ -116,16 +128,37 @@ Pre-emption order (within your stream):
      comparable-importance items*, NOT the primary axis** — it keeps quiet components improving, but a ★★★ ready
      item beats a ★ stale-component pin every time. (Reliability red still pre-empts all of this — step 1.)
 
+     **"Wear the other hat" — finish coupled work yourself; don't bounce a live item across lanes.** A Lattice
+     item can decompose so its last increment(s) turn out to be genuine **package / FE work**
+     (`packages/<vertical>*` + `cmd/<x>-app`) rather than `internal/*` — e.g. "roll this already-ratified
+     pattern onto each vertical's read models." **Default: build it yourself, in the same item, keeping the row
+     in `lattice.md`** — invoke the `owner` playbook against the vertical's package (or `fe-engineer` for its
+     FE), exactly as you already invoke `owner`/`fe-engineer` for your own lane; neither playbook is
+     Lattice-only. **Do not file it to `verticals.md` and stop.** Filing a live, already-scoped item to the
+     other lane's board and walking away is how items ping-pong and stall — a Steward "detects something's not
+     its lane" and routes away work a fire's worth of effort would just finish; that's the failure mode this
+     rule exists to kill, symmetrically with the Verticals-side rule above. It's also **safe now that it wasn't
+     necessarily before**: the reason the streams were code-path-disjoint in the first place was so two
+     *concurrent* fires wouldn't collide — that's the mutual-exclusion lock's job now (at most one fleet fire at
+     a time), not code-path segregation, so one fire finishing both halves of one item carries no collision risk.
+
+     **When it's real design work, not a bounce:** if finishing the item means inventing a genuinely **new**
+     architectural mechanism — no existing, ratified pattern to extend — that's design work, not execution, the
+     same test §2.5 already applies when *you* discover a substantial new design need: it goes through the
+     Designer, ratified by Andrew. That's routing to work that doesn't exist yet, not relocating a build task
+     that does — don't conflate the two. Applying an established, already-ratified pattern to one more package,
+     adding a lens, building an FE view — all of that is yours to just build, every time.
+
      **Take what's important, not what's easy (anti-timidity — selection).** Picking a smaller / easier item
      while a higher-importance ready *or* ratified item exists is a **defect**, not caution — the mirror of the
      §0 contract-timidity bug, on the selection axis. Refuse these three excuses by name:
      - **"Too big for one fire"** → that is exactly what the **🏗️ multi-fire checkpoint** is for (§4). *Start*
        the big item, ship its first increment as a green commit, leave a 🏗️ checkpoint — do **not** substitute a
        smaller item to avoid starting it.
-     - **"Might collide with the parallel (verticals) stream"** → disjointness is **by construction**
-       (`internal/*` + core packages vs. `packages/<vertical>*` + `cmd/<x>-app`). Build the **`internal/*`
-       increment** of the important item; if a *later* increment genuinely touches a vertical package, that
-       increment is a separate fire — not a reason to downgrade the whole item now.
+     - **"Might collide with the parallel (verticals) stream"** → not a real excuse: the mutual-exclusion lock,
+       not code-path segregation, is what prevents fires colliding now. Build the **whole item** — `internal/*`
+       and any package/FE tail alike, wearing the other hat per the rule above — in your own lane; don't split
+       it across boards or downgrade it to avoid the vertical-package piece.
      - **"Continuous improvement always counts as ready"** → §2.4 keeps the lane from looking empty; it does
        **not** license a maintenance pin when a higher-importance ready / ratified item is sitting there.
 
@@ -184,7 +217,10 @@ Pick the role: **Verticals** → package work via the **owner** playbook + **UX-
 (`cmd/loupe/web`) is UX-then-FE too** (Loupe is a Lattice component: owner for its backend/handlers, UX-then-FE
 for its FE; the **FE Engineer serves both Loupe and the vertical apps**). UX-then-FE = the **UX Designer (Sally,
 `bmad-agent-ux-designer`)** designs → the **FE Engineer (`agents/fe-engineer`)** playbook builds + verifies
-in-browser. Run the hardened story loop: **Cartographer grounding → design → dev → review → gates**.
+in-browser. Run the hardened story loop: **Cartographer grounding → design → dev → review → gates**. **Neither
+playbook is stream-locked** — "wear the other hat" (§2) means the **Lattice** stream invokes `owner` against a
+*vertical's package* (or `fe-engineer` against its FE) exactly the same way, when finishing a package/FE tail of
+an already-ratified Lattice item; the target names the code, not which stream is running.
 
 **Isolation — code in a worktree, docs in `main`:** **CODE** builds in an **isolated git worktree** *you*
 create (`git worktree add`) and merge to `main` when green — **not the main checkout**: the streams are disjoint
@@ -205,9 +241,10 @@ run-<vertical>-app` is *foreground / human-only*, don't use it unattended) → v
 binary running** so Andrew sees the latest. *(A changed lens / DDL is different: **F-004** SHIPPED in-place
 package refresh — `make reinstall-package PKG=…` / `refresh-<vertical>` diff-apply an EDITED package on the
 running stack with no teardown — but a newly-ADDED entity or any primordial/kernel-seed change still needs a
-fresh bootstrap and won't hot-reload, so verify those via unit tests + the ephemeral-stack e2e targets
-(`make verify-package-*`, `make test-*-convergence`, `make test-object-gc`), which spin their own stack and
-never touch the shared one.)*
+fresh bootstrap and won't hot-reload, so verify those via unit tests + the truly self-contained e2e targets
+(`make test-*-convergence`, `make test-object-gc` — embedded in-process NATS, no Docker, never touch the
+shared stack). Note `make verify-package-*` is **not** self-contained — it targets `NATS_URL` (default
+`localhost:4222`), i.e. the shared stack, so it needs one already up.)*
 
 **Verify headless-first; the browser is the OOM risk — one tab, closed when done.** Prove correctness
 **headlessly** (`go test`, `curl` the JSON, `node --check`) — that covers most fires and is what most of this

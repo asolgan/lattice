@@ -62,3 +62,24 @@ The Lattice stream is a three-stage pipeline: **Surveyor** (raw demand) → **De
 **Lattice Steward** (builds), with the **Whetstone** as a cross-cutting CI-speed loop. `owner`, `fe-engineer`,
 and `lamplighter` are **invoked by** the advancers (or run directly), not scheduled on their own. The bmad
 tooling skills stay local and are intentionally not tracked here — this directory is only the agentic-ops roles.
+
+### Concurrency: at most one fleet fire at a time
+
+This runs on a single 16GB dev Mac — Docker + the native service binaries + the Go toolchain + browser
+automation from even two concurrent fires is enough to exhaust memory and get the host to pause Claude/Chrome
+(happened twice). Each of the 6 scheduled prompts above opens with a **mutual-exclusion lock**: `mkdir
+/tmp/lattice-agentic-ops.lock` (atomic; fails if another fire already holds it) before doing anything else, and
+`rm -rf` on that same path as its last action, success or failure alike. A lock older than 90 minutes is treated
+as abandoned (a crashed/killed fire that never released) and reclaimed rather than wedging the fleet. If you add
+a 7th scheduled role, give it the same guard — the lock only protects fires that ask for it, not ad-hoc/generic
+worktree sessions outside this fleet. `make up` / `make orchestration` separately detect an already-healthy
+stack and no-op instead of restarting it, so an ad-hoc `make up` from a stray worktree is now safe too.
+
+### Chips need a push — an unattended fire has no one watching the session
+
+A `spawn_task` chip only surfaces if Andrew happens to open the exact session that filed it; for one of the 6
+scheduled fires, that's easy to miss entirely. Each prompt therefore also sends a `PushNotification` immediately
+after any `spawn_task` call (its own, or one made by an inline sub-role like `owner`/`fe-engineer`/`lamplighter`)
+— terse, one line, leads with what the chip flags. If you add a 7th scheduled role, give it the same instruction.
+First real use may pause on a permission prompt nobody's there to answer since these tasks have never called
+`PushNotification` before — click "Run now" once per task to pre-approve it ahead of that.

@@ -87,7 +87,7 @@ Prioritize by leverage (wall-clock saved, or flake-rate killed, per unit risk). 
   workflow-restructure (a matrix split is high-blast-radius — re-derive that *every* gate still appears in
   exactly one job, nothing silently dropped).
 - **Admit:** merge the worktree to `main` (scoped `git add` of only your files — **never `git add -A`**;
-  `git pull --rebase` first; commit ending with `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`),
+  `git pull --rebase` first; commit with a conventional message),
   push, and **watch CI green** (`gh run watch`). Then **measure**: compare the new run's wall-clock to the
   baseline and confirm the speedup held with all gates green. If it regressed or flaked → revert.
 

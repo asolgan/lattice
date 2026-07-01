@@ -79,7 +79,9 @@ you are building*:
    running**. If no core stack is up, `make up-<vertical>` and leave it up. (**F-004** SHIPPED in-place package refresh —
    `make reinstall-package` / `refresh-<vertical>` diff-apply an EDITED **lens/DDL** on the running stack with no
    teardown — but a newly-ADDED entity or any primordial/kernel-seed change still needs a fresh bootstrap and
-   won't hot-reload, so verify those via unit tests + the ephemeral-stack e2e targets, not the live stack.)
+   won't hot-reload, so verify those via unit tests + the truly self-contained e2e targets (`make
+   test-*-convergence`, `make test-object-gc` — embedded in-process NATS, no Docker), not the live stack.
+   (`make verify-package-*` is not self-contained — it targets the shared stack's `NATS_URL`.))
 4. **Gates:** `go build ./...`, `make vet`, `golangci-lint run ./...`,
    `STRICT=1 go run ./scripts/lint-conventions.go`, and `go test ./cmd/loupe/...`.
 5. **Hand up** to Winston with a screenshot / proof + the gate results.

@@ -78,7 +78,7 @@ what you exercised + what you filed + what's next), **not a multi-line run-log**
 rows; live-stack observations go in the commit message, not the board). `scripts/lint-board.go` caps the
 PO-notes section — **run it before you push.** **Docs in `main`, not a worktree** (isolation rule) — edit the lane files directly in
 `main`; commit **docs-only, scoped** (never `git add -A`): `git pull --rebase` → `git add` the lane file(s) you
-touched → commit (`docs(backlog): PO discovery — <vertical>`; end with `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`)
+touched → commit (`docs(backlog): PO discovery — <vertical>`)
 → `git push`. If you see modified files you didn't touch, leave them.
 
 ## 5. Bounds
