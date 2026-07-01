@@ -75,8 +75,10 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 **forks** (Gateway, read-path auth, Vault, multi-cell, HA-NATS) and **frozen-contract** changes are
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
-> 🎯 **Build-ready now** (✅ ratified / 📋 ready, no upstream gate): **FR28 role-queue**.
-> (**protected-lens out-of-band** ✅ SHIPPED — see Done log. **`@every` schedules** Fire 1 + Fire 2 shipped
+> 🎯 **Build-ready now**: **op-time bounded link enumeration Fire 3** (optional e2e/lint) or the next
+> ★★★-importance ratified item off dependency-gate (D1.5 / write-restriction F2).
+> (**FR28 role-queue** Fire 1 done — see Done log; Fire 2 availability routing next.
+> **protected-lens out-of-band** ✅ SHIPPED — see Done log. **`@every` schedules** Fire 1 + Fire 2 shipped
 > (`e04498e`); only the Andrew-gated Fire 3 §10.4 doc/contract remains.)
 > *Dependency-sequenced ratified items*: **Vault** + **Personal Lens** behind D1; **Gateway** behind
 > NATS-write-restriction F2; **Object crypto-shred** behind Vault — build when their gate clears.
@@ -142,7 +144,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | **Op-time bounded reverse-link / adjacency read (`kv.Links`)** | One sanctioned, bounded, fail-closed, paged op-time link-enumeration builtin (`kv.Links(hub, relation, direction, cursor, limit)`) — retires the key-list-in-aspect guard indexes. Relaxes the write-path no-scans invariant by exactly one primitive. | ★★★ | M–L | 🏗️ building · [design](../../implementation-artifacts/op-time-bounded-link-enumeration-design.md) · Fire 1 (cc2613f) + Fire 2 (clinic consumer) shipped; next = optional Fire 3 (e2e + hub-source lint) |
 | **Hard-delete mutation verb (true link/aspect keyspace reclaim)** | Mutation vocab is create/update/tombstone (soft PUTs); a tombstoned key persists + is still enumerated by `kv.Links`. A 4th `delete` verb (NATS `DEL`) lets dead links leave the keyspace, bounding `kv.Links` LIST cost. | ★ now / ★★ at scale | M | 📐 awaiting-Andrew · [design](../../implementation-artifacts/hard-delete-mutation-verb-design.md) · §3 edit staged uncommitted; `DEL`-not-`PURGE`; 2 fires (clinic reclaim = consumer) |
 | **Script-read posture — declared+hydrated vs live `kv.get`/`kv.Links`** | Live Core-KV reads in scripts are the common root of the Loom-guard Processor-side redirect *and* the Edge A′-prediction partiality; declared+hydrated reads the norm, live reads classified (debt vs sanctioned config vs irreducible `kv.Links`), Loom guard read retired Processor-side. | ★★ | L | 📐 awaiting-Andrew · [design](../../implementation-artifacts/script-read-posture-design.md) · §2.5 `optionalReads` edit staged uncommitted; Fire 3 retires Loom `evalGuard` (G1 rec.) |
-| **FR28 — role-queue + fallback** (+ FR29 unrouted surfacing) | A `queuedFor.role` link + `ClaimTask` op + `CreateTask` routing (named → role-queue → loud `RoutingFailed`); grant/inbox fan out to role-holders; an empty queue is surfaced post-hoc by a new `unroutedTasks` Weaver target. | ★ | M | ✅ ratified · [design](../../implementation-artifacts/fr28-role-queue-fallback-design.md) · 📋 ready (3 fires; §10.1 committed) |
+| **FR28 — role-queue + fallback** (+ FR29 unrouted surfacing) | A `queuedFor.role` link + `ClaimTask` op + `CreateTask` routing (named → role-queue → loud `RoutingFailed`); grant/inbox fan out to role-holders; an empty queue is surfaced post-hoc by a new `unroutedTasks` Weaver target. | ★ | M | 🏗️ building · [design](../../implementation-artifacts/fr28-role-queue-fallback-design.md) (`9495081`) · next: Fire 2 availability routing |
 | **`@every` recurring schedules** (op-vertex pruner #49 retired) | A `substrate.ScheduleEvery`/`CancelSchedule` seam + migrate the Weaver reconciler sweep (`time.Ticker` → durable `@every`). Op-vertex pruner retired (NATS per-key TTL + outbox tombstone cover it). | ★ | M | 🏗️ building · [design](../../implementation-artifacts/recurring-schedules-and-op-vertex-pruner-design.md) · Fire 1 (primitive) + Fire 2 (Weaver sweep cron-kill, `e04498e`) shipped; only Fire 3 (§10.4 doc/contract + #49 retirement, Andrew-gated commit) remains |
 | **Package version upgrade / DDL hot-reload (F-004)** | In-place re-install over an existing version + DDL-migration semantics (install/uninstall existed; upgrade did not). Diff-and-apply (create/update/tombstone) in one atomic Processor batch; version-independent entity keys. | ★★ | M | ✅ effectively done · [design](../../implementation-artifacts/package-version-upgrade-design.md) · Fires 1a–3 shipped; only an optional Fire-2 live e2e remains (§8.1 + §8.6 committed) |
 | Loom / Weaver control-API surfacing | Operator pause/resume + a durable `loom.*` read model beyond what the Loupe blocker covers. | ★ | M | 📐 awaiting-Andrew · [design](../../implementation-artifacts/orchestration-history-read-model-design.md) · pause/resume shipped; durable history via new `eventStream` lens-source (FORK A, §10.9-blessed, no contract change); 3 fires |
@@ -163,6 +165,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-06-30 · `9495081` · [Core/orchestration-base] FR28 Fire 1 — role-queue + claim (`queuedFor` link, `CreateTask` assignee-or-queue routing, `ClaimTask`, capabilityEphemeral/myTasks role fan-out)
 - 2026-07-01 · `ef108b4` · [Refractor] Protected-lens out-of-band provisioning + verify-and-pause — Fire 0+1+2 (fail-closed activation gate, `Verify{Protected,Grant}Table`, `emit-ddl`/`provision-readpath`, seq-guard)
 - 2026-06-30 · `e04498e` · [Weaver] `@every` Fire 2 — reconciler sweep cron-kill (durable `@every` replaces the in-process ticker)
 - 2026-06-30 · `44b385a` · [Core/substrate] `@every` Fire 1 — `ScheduleEvery`/`CancelSchedule` recurring-schedule primitive
