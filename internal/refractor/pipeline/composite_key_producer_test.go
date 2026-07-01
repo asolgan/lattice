@@ -8,7 +8,6 @@ import (
 
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
-	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 )
 
 // grantLensSpec is the shape of the base capabilityReadGrants GrantTable lens: a
@@ -42,7 +41,7 @@ func TestEvaluateForEntry_CompositeKeyProducer_DeliversAllKeyColumns(t *testing.
 	identityKey := "vtx.identity." + identityID
 	writeCollisionVertex(t, coreKV, identityKey, "identity", map[string]any{"name": "alice"})
 
-	liveEntry := simple.NodeEntry{
+	liveEntry := ruleengine.NodeEntry{
 		CoreKVKey:  identityKey,
 		NodeLabel:  "identity",
 		IsDeleted:  false,
@@ -113,7 +112,7 @@ func TestEvaluateForEntry_CompositeKeyGrant_RetractsOnTombstone(t *testing.T) {
 		fullCR:     cr,
 	}
 
-	tombstone := simple.NodeEntry{
+	tombstone := ruleengine.NodeEntry{
 		CoreKVKey:  identityKey,
 		NodeLabel:  "identity",
 		IsDeleted:  true,

@@ -57,7 +57,7 @@ func (e *MissingParameterError) Error() string {
 }
 
 // ProjectionResult is one row produced by Execute. Callers normalise this
-// into simple.EvalResult via pipeline.evaluateForEntry.
+// into EvalResult via pipeline.evaluateForEntry.
 type ProjectionResult struct {
 	Key    map[string]any
 	Values map[string]any

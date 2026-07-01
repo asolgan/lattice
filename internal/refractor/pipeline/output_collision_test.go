@@ -18,36 +18,35 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/health"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
-	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // writeResult builds a non-delete EvalResult carrying the given output key.
-func writeResult(key string) simple.EvalResult {
-	return simple.EvalResult{Keys: map[string]any{"key": key}, Row: map[string]any{"x": 1}}
+func writeResult(key string) ruleengine.EvalResult {
+	return ruleengine.EvalResult{Keys: map[string]any{"key": key}, Row: map[string]any{"x": 1}}
 }
 
 // deleteResult builds a delete EvalResult carrying the given output key.
-func deleteResultFor(key string) simple.EvalResult {
-	return simple.EvalResult{Delete: true, Keys: map[string]any{"key": key}}
+func deleteResultFor(key string) ruleengine.EvalResult {
+	return ruleengine.EvalResult{Delete: true, Keys: map[string]any{"key": key}}
 }
 
 func TestDetectOutputKeyCollision(t *testing.T) {
 	cases := []struct {
 		name      string
-		results   []simple.EvalResult
+		results   []ruleengine.EvalResult
 		wantFound bool
 		wantKey   string
 		wantCount int
 	}{
 		{
 			name:      "single row — the common one-row-per-anchor path",
-			results:   []simple.EvalResult{writeResult("roster.identity.A")},
+			results:   []ruleengine.EvalResult{writeResult("roster.identity.A")},
 			wantFound: false,
 		},
 		{
 			name: "two non-delete rows sharing one anchor key — collision",
-			results: []simple.EvalResult{
+			results: []ruleengine.EvalResult{
 				writeResult("roster.identity.A"),
 				writeResult("roster.identity.A"),
 			},
@@ -57,7 +56,7 @@ func TestDetectOutputKeyCollision(t *testing.T) {
 		},
 		{
 			name: "three non-delete rows sharing one anchor key — count is the full total",
-			results: []simple.EvalResult{
+			results: []ruleengine.EvalResult{
 				writeResult("roster.identity.A"),
 				writeResult("roster.identity.A"),
 				writeResult("roster.identity.A"),
@@ -68,7 +67,7 @@ func TestDetectOutputKeyCollision(t *testing.T) {
 		},
 		{
 			name: "delete + write for the same key — NOT a collision (retract then write)",
-			results: []simple.EvalResult{
+			results: []ruleengine.EvalResult{
 				deleteResultFor("roster.identity.A"),
 				writeResult("roster.identity.A"),
 			},
@@ -76,7 +75,7 @@ func TestDetectOutputKeyCollision(t *testing.T) {
 		},
 		{
 			name: "rows for different actors — NOT a collision",
-			results: []simple.EvalResult{
+			results: []ruleengine.EvalResult{
 				writeResult("roster.identity.A"),
 				writeResult("roster.identity.B"),
 			},
@@ -84,7 +83,7 @@ func TestDetectOutputKeyCollision(t *testing.T) {
 		},
 		{
 			name: "empty output keys are ignored, not treated as colliding",
-			results: []simple.EvalResult{
+			results: []ruleengine.EvalResult{
 				{Keys: map[string]any{}, Row: map[string]any{"x": 1}},
 				{Keys: map[string]any{}, Row: map[string]any{"x": 2}},
 			},
@@ -92,7 +91,7 @@ func TestDetectOutputKeyCollision(t *testing.T) {
 		},
 		{
 			name: "two deletes for the same key — NOT a collision (idempotent retract)",
-			results: []simple.EvalResult{
+			results: []ruleengine.EvalResult{
 				deleteResultFor("roster.identity.A"),
 				deleteResultFor("roster.identity.A"),
 			},
@@ -127,7 +126,7 @@ func TestGuardOutputKeyCollision_RecordsHealthAndFailsClosed(t *testing.T) {
 	const actorKey = "vtx.identity.Tcc1JdentityAaaaaaaa"
 	const collKey = "roster.identity.Tcc1JdentityAaaaaaaa"
 	err := p.guardOutputKeyCollision(context.Background(), actorKey,
-		[]simple.EvalResult{writeResult(collKey), writeResult(collKey)})
+		[]ruleengine.EvalResult{writeResult(collKey), writeResult(collKey)})
 
 	require.Error(t, err)
 	require.Equal(t, failure.CatTerminal, failure.Classify(err),
@@ -148,7 +147,7 @@ func TestGuardOutputKeyCollision_NilReporter_StillFailsClosed(t *testing.T) {
 	p := &Pipeline{ruleID: "rule-collision-noreporter"}
 	const collKey = "roster.identity.Tcc1JdentityAaaaaaaa"
 	err := p.guardOutputKeyCollision(context.Background(), "vtx.identity.Tcc1JdentityAaaaaaaa",
-		[]simple.EvalResult{writeResult(collKey), writeResult(collKey)})
+		[]ruleengine.EvalResult{writeResult(collKey), writeResult(collKey)})
 	require.Error(t, err)
 	require.Equal(t, failure.CatTerminal, failure.Classify(err))
 }
@@ -164,7 +163,7 @@ func TestGuardOutputKeyCollision_OneRow_NoError(t *testing.T) {
 	p := &Pipeline{ruleID: "rule-ok", reporter: reporter}
 
 	err := p.guardOutputKeyCollision(context.Background(), "vtx.identity.Tcc1JdentityAaaaaaaa",
-		[]simple.EvalResult{writeResult("roster.identity.Tcc1JdentityAaaaaaaa")})
+		[]ruleengine.EvalResult{writeResult("roster.identity.Tcc1JdentityAaaaaaaa")})
 	require.NoError(t, err)
 
 	entry, gerr := reporter.GetStatus(context.Background())

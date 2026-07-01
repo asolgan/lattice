@@ -12,7 +12,7 @@ import (
 
 	"github.com/asolgan/lattice/internal/refractor/failure"
 	"github.com/asolgan/lattice/internal/refractor/health"
-	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
+	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -115,7 +115,7 @@ func TestWriteResults_NoRetryEnqueueWhileBatchLeftPending(t *testing.T) {
 
 	ctx := context.Background()
 	msg := substrate.Message{Subject: "$KV.CORE.vtx.agreement.x", Body: []byte(`{"id":"x"}`)}
-	results := []simple.EvalResult{
+	results := []ruleengine.EvalResult{
 		{Keys: map[string]any{"k": "a"}, Row: map[string]any{"k": "a"}},
 		{Keys: map[string]any{"k": "b"}, Row: map[string]any{"k": "b"}},
 	}

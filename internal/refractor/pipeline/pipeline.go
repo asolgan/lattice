@@ -539,7 +539,7 @@ func (p *Pipeline) handle(ctx context.Context, msg substrate.Message) (substrate
 	}
 
 	isDeleted, _ := props["isDeleted"].(bool)
-	entry := simple.NodeEntry{
+	entry := ruleengine.NodeEntry{
 		CoreKVKey:  key,
 		NodeLabel:  label,
 		IsDeleted:  isDeleted,
@@ -550,7 +550,7 @@ func (p *Pipeline) handle(ctx context.Context, msg substrate.Message) (substrate
 	// []EvalResult{Delete,Keys,Row}; the full engine returns
 	// []ProjectionResult{Key,Values,Delete}. evaluateForEntry normalises
 	// and applies the envelope so the downstream write path sees a single
-	// []simple.EvalResult shape.
+	// []ruleengine.EvalResult shape.
 	results, err := p.evaluateForEntry(ctx, entry)
 	if err != nil {
 		slog.Error("pipeline: evaluate",
@@ -646,9 +646,9 @@ func (p *Pipeline) dispositionEvalErr(ctx context.Context, msg substrate.Message
 // leaves the message pending (Nak) makes redelivery re-run every result, so
 // flushing eagerly would enqueue/publish a duplicate for the already-disposed
 // results on every redelivery (e.g. each pause/resume cycle).
-func (p *Pipeline) writeResults(ctx context.Context, msg substrate.Message, key string, results []simple.EvalResult) (substrate.Decision, error) {
+func (p *Pipeline) writeResults(ctx context.Context, msg substrate.Message, key string, results []ruleengine.EvalResult) (substrate.Decision, error) {
 	adpt := p.currentAdapter()
-	var retryResults []simple.EvalResult
+	var retryResults []ruleengine.EvalResult
 	var terminalErrs []error
 	for i := range results {
 		// Stamp the triggering CDC message's stream sequence as the monotonic
@@ -715,7 +715,7 @@ func (p *Pipeline) writeResults(ctx context.Context, msg substrate.Message, key 
 
 // enqueueRetry constructs and enqueues a RetryEntry for a transient write
 // failure, mirroring the inline retry-enqueue path in processMsg.
-func (p *Pipeline) enqueueRetry(key string, rawPayload []byte, result simple.EvalResult) {
+func (p *Pipeline) enqueueRetry(key string, rawPayload []byte, result ruleengine.EvalResult) {
 	capturedResult := result
 	capturedReporter := p.reporter
 	capturedSeq := ""
@@ -848,7 +848,7 @@ func (p *Pipeline) publishTerminalDLQ(ctx context.Context, rawBody []byte, entit
 // writeAudit appends an audit entry after a successful write. It is a no-op when
 // auditWriter is nil (optional feature, AC6). Errors are logged as Warn — a failed
 // audit entry must never interrupt message processing (the write already succeeded).
-func (p *Pipeline) writeAudit(ctx context.Context, entityID string, result simple.EvalResult) {
+func (p *Pipeline) writeAudit(ctx context.Context, entityID string, result ruleengine.EvalResult) {
 	if p.auditWriter == nil {
 		return
 	}
@@ -967,7 +967,7 @@ func (p *Pipeline) handleAdjUpdate(ctx context.Context, adjKey string) {
 	}
 
 	isDeleted, _ := props["isDeleted"].(bool)
-	entry := simple.NodeEntry{
+	entry := ruleengine.NodeEntry{
 		CoreKVKey:  nodeKey,
 		NodeLabel:  label,
 		IsDeleted:  isDeleted,

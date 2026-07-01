@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
+	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -31,25 +32,12 @@ func otherCoreKey(otherType, otherNodeID string) string {
 	return otherNodeID
 }
 
-// NodeEntry describes one Core KV node entry received from a rule consumer.
-type NodeEntry struct {
-	CoreKVKey  string         // full Core KV key, e.g. "node:agreement:abc123"
-	NodeLabel  string         // label of this node, e.g. "agreement"
-	IsDeleted  bool           // true when the "isDeleted" JSON field is true
-	Properties map[string]any // all JSON fields from the payload (including "isDeleted")
-}
+// NodeEntry is the engine-neutral node-entry carrier, defined in ruleengine.
+type NodeEntry = ruleengine.NodeEntry
 
-// EvalResult is the evaluation output for one anchor entity.
-type EvalResult struct {
-	Delete bool           // true = issue a hard delete to the adapter
-	Keys   map[string]any // key column values (always populated)
-	Row    map[string]any // all projected column values; nil when Delete is true
-	// ProjectionSeq is the JetStream stream sequence of the CDC message that
-	// triggered this evaluation. It is the monotonic ordering token a guarded
-	// adapter uses to reject a lower-seq replay. Zero means unguarded/unknown
-	// (no triggering stream message, e.g. the adjacency-watch path).
-	ProjectionSeq uint64
-}
+// EvalResult is the engine-neutral evaluation-output carrier, defined in
+// ruleengine.
+type EvalResult = ruleengine.EvalResult
 
 // evalBinding holds the variable-to-node mapping for one traversal path in progress.
 type evalBinding struct {

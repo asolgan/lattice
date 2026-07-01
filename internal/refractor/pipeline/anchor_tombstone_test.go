@@ -8,7 +8,6 @@ import (
 
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
-	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 )
 
 // providerLensSpec is a plain (non-actor-aware) full-engine projection lens of
@@ -50,7 +49,7 @@ func TestEvaluateForEntry_PlainAnchorTombstone_Retracts(t *testing.T) {
 	}
 
 	// 1. Live anchor → a single upsert keyed on the provider's vertex key.
-	liveEntry := simple.NodeEntry{
+	liveEntry := ruleengine.NodeEntry{
 		CoreKVKey:  providerKey,
 		NodeLabel:  "provider",
 		IsDeleted:  false,
@@ -65,7 +64,7 @@ func TestEvaluateForEntry_PlainAnchorTombstone_Retracts(t *testing.T) {
 	// 2. Root tombstone of the anchor → a Delete against the prior output key.
 	// This is the fix: the upsert-only re-scan path would return zero rows and
 	// leave the row stale; the new branch retracts it.
-	tombstoneEntry := simple.NodeEntry{
+	tombstoneEntry := ruleengine.NodeEntry{
 		CoreKVKey:  providerKey,
 		NodeLabel:  "provider",
 		IsDeleted:  true,
@@ -82,7 +81,7 @@ func TestEvaluateForEntry_PlainAnchorTombstone_Retracts(t *testing.T) {
 	// 3. Secondary-type tombstone (a vertex whose type is NOT the lens anchor) →
 	// falls through to a normal re-execute and emits NO Delete. A patient
 	// tombstone reaching a provider lens must never delete a provider row.
-	secondaryEntry := simple.NodeEntry{
+	secondaryEntry := ruleengine.NodeEntry{
 		CoreKVKey:  "vtx.patient.Tpatient1bbbbbbbbbb",
 		NodeLabel:  "patient",
 		IsDeleted:  true,

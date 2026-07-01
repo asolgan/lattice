@@ -13,7 +13,6 @@ import (
 	"github.com/asolgan/lattice/internal/jsstore"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
-	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -90,7 +89,7 @@ func newDeleteKeyPipeline(t *testing.T, deleteKey func(string) string) *Pipeline
 }
 
 // onlyDelete asserts a single Delete result and returns its target key.
-func onlyDelete(t *testing.T, results []simple.EvalResult) string {
+func onlyDelete(t *testing.T, results []ruleengine.EvalResult) string {
 	t.Helper()
 	require.Len(t, results, 1)
 	require.True(t, results[0].Delete)
@@ -105,7 +104,7 @@ const (
 
 func TestActorTombstone_EphemeralDeleteKey(t *testing.T) {
 	p := newDeleteKeyPipeline(t, ephemeralDeleteKey)
-	results, err := p.evaluateForEntry(context.Background(), simple.NodeEntry{
+	results, err := p.evaluateForEntry(context.Background(), ruleengine.NodeEntry{
 		CoreKVKey: deleteKeyActor,
 		NodeLabel: "identity",
 		IsDeleted: true,
@@ -125,7 +124,7 @@ func TestReprojectActors_MissingActor_EphemeralDeleteKey(t *testing.T) {
 func TestActorTombstone_DefaultDeleteKey_Unchanged(t *testing.T) {
 	// No actorDeleteKey installed → primary capability lens behaviour: cap.<actor>.
 	p := newDeleteKeyPipeline(t, nil)
-	results, err := p.evaluateForEntry(context.Background(), simple.NodeEntry{
+	results, err := p.evaluateForEntry(context.Background(), ruleengine.NodeEntry{
 		CoreKVKey: deleteKeyActor,
 		NodeLabel: "identity",
 		IsDeleted: true,
