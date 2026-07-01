@@ -1,6 +1,6 @@
 // MergeIdentity end-to-end tests for the identity-hygiene Capability Package.
 //
-// All 8 tests exercise the MergeIdentity operation through the real Processor
+// All 10 tests exercise the MergeIdentity operation through the real Processor
 // pipeline (CapabilityAuthorizer → DDLCache → Hydrator → Executor → Committer)
 // using the testutil harness.
 //
@@ -16,6 +16,8 @@
 //  6. TestMerge_RejectsAlreadyMergedSecondary — secondary state=merged → rejected
 //  7. TestMerge_PostMergeRedirect_FR4   — post-merge op on secondary is rejected
 //  8. TestMerge_NonOperatorActor_Denied — consumer actor denied at step 3
+//  9. TestMerge_RejectsSecondaryWithOpenTask — live assignedTo + open task → IdentityHasOpenTasks
+//  10. TestMerge_AllowsSecondaryWithClosedTask — live assignedTo + completed task → allowed
 package identityhygiene_test
 
 import (
@@ -505,5 +507,104 @@ func TestMerge_NonOperatorActor_Denied(t *testing.T) {
 	stateData := readAspectData(t, ctx, conn, secondaryKey+".state")
 	if got, _ := stateData["value"].(string); got != "unclaimed" {
 		t.Fatalf("secondary.state mutated despite auth denial: %q", got)
+	}
+}
+
+// --- 9. TestMerge_RejectsSecondaryWithOpenTask ---
+
+// TestMerge_RejectsSecondaryWithOpenTask seeds an assignedTo link pointing an
+// OPEN task at the secondary identity (deliberately NOT declared in `edges`).
+// MergeIdentity must reject with IdentityHasOpenTasks (Contract #10 §10.1
+// no-orphan tombstone guard) -- proving the guard enumerates secondary's
+// inbound assignedTo links via kv.Links independently of whatever edges the
+// caller happened to declare, rather than silently rekeying the task's
+// assignment onto the primary.
+func TestMerge_RejectsSecondaryWithOpenTask(t *testing.T) {
+	ctx, conn := setupTestEnv(t)
+	cp, cons := newMergePipeline(t, ctx, conn, "mopen")
+
+	primaryID := testutil.GenReqID("PrimOpenTask00")
+	secondaryID := testutil.GenReqID("SecOpenTask000")
+	taskID := testutil.GenReqID("OpenTaskAssgn0")
+
+	primaryKey := "vtx.identity." + primaryID
+	secondaryKey := "vtx.identity." + secondaryID
+	taskKey := "vtx.task." + taskID
+
+	seedIdentityVertex(t, ctx, conn, primaryKey, "unclaimed", "")
+	seedIdentityVertex(t, ctx, conn, secondaryKey, "unclaimed", "")
+	seedTaskVertex(t, ctx, conn, taskKey, "open")
+
+	assignedLnk := "lnk.task." + taskID + ".assignedTo.identity." + secondaryID
+	seedLinkVertex(t, ctx, conn, assignedLnk, false)
+
+	edges := []string{}
+	reqID := testutil.GenReqID("MrgOpenTask000")
+
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "MergeIdentity",
+		Actor:         operatorActorKey,
+		SubmittedAt:   "2026-05-23T10:09:00Z",
+		Class:         "identityHygiene",
+		Payload:       mergePayload(primaryKey, secondaryKey, edges),
+		ContextHint:   &processor.ContextHint{Reads: mergeReads(primaryKey, secondaryKey, edges)},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+
+	// Secondary state must remain unclaimed (no mutation from the blocked op).
+	stateData := readAspectData(t, ctx, conn, secondaryKey+".state")
+	if got, _ := stateData["value"].(string); got != "unclaimed" {
+		t.Fatalf("secondary.state mutated despite rejection: %q", got)
+	}
+}
+
+// --- 10. TestMerge_AllowsSecondaryWithClosedTask ---
+
+// TestMerge_AllowsSecondaryWithClosedTask seeds an assignedTo link pointing a
+// COMPLETED task at the secondary. CompleteTask/CancelTask never tombstone
+// the assignedTo/queuedFor link (orchestration-base leaves it live post
+// terminal transition), so link liveness alone cannot be the guard's signal —
+// it must read the task's own status. The merge must succeed.
+func TestMerge_AllowsSecondaryWithClosedTask(t *testing.T) {
+	ctx, conn := setupTestEnv(t)
+	cp, cons := newMergePipeline(t, ctx, conn, "mclosed")
+
+	primaryID := testutil.GenReqID("PrimClosedTsk0")
+	secondaryID := testutil.GenReqID("SecClosedTask0")
+	taskID := testutil.GenReqID("ClosedTaskAsgn")
+
+	primaryKey := "vtx.identity." + primaryID
+	secondaryKey := "vtx.identity." + secondaryID
+	taskKey := "vtx.task." + taskID
+
+	seedIdentityVertex(t, ctx, conn, primaryKey, "unclaimed", "")
+	seedIdentityVertex(t, ctx, conn, secondaryKey, "unclaimed", "")
+	seedTaskVertex(t, ctx, conn, taskKey, "complete")
+
+	assignedLnk := "lnk.task." + taskID + ".assignedTo.identity." + secondaryID
+	seedLinkVertex(t, ctx, conn, assignedLnk, false)
+
+	edges := []string{}
+	reqID := testutil.GenReqID("MrgClosedTask0")
+
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "MergeIdentity",
+		Actor:         operatorActorKey,
+		SubmittedAt:   "2026-05-23T10:10:00Z",
+		Class:         "identityHygiene",
+		Payload:       mergePayload(primaryKey, secondaryKey, edges),
+		ContextHint:   &processor.ContextHint{Reads: mergeReads(primaryKey, secondaryKey, edges)},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	stateData := readAspectData(t, ctx, conn, secondaryKey+".state")
+	if got, _ := stateData["value"].(string); got != "merged" {
+		t.Fatalf("secondary.state = %q, want merged", got)
 	}
 }

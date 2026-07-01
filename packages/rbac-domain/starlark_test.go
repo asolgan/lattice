@@ -7,6 +7,9 @@
 //   - TestStarlark_Rbac_CreateRole
 //   - TestStarlark_Rbac_UpdateRole
 //   - TestStarlark_Rbac_TombstoneRole
+//   - TestStarlark_Rbac_TombstoneRole_RejectsOpenQueuedTask   (Contract #10 §10.1 no-orphan guard)
+//   - TestStarlark_Rbac_TombstoneRole_AllowsClosedQueuedTask  (live link, terminal task -- must allow)
+//   - TestStarlark_Rbac_TombstoneRole_SkipsTombstonedQueuedLink
 //   - TestStarlark_Rbac_CreatePermission
 //   - TestStarlark_Rbac_AssignRole          (holdsRole link key shape)
 //   - TestStarlark_Rbac_RevokeRole
@@ -43,9 +46,18 @@ func rbacScript() string {
 // Test NanoIDs for Starlark unit tests.
 const (
 	starlarkActorID = "JsktstActHJKMNPQRSTU" // 20 chars
-	starlarkRoleID  = "JsktstRoleHJKMNPQRSV" // 20 chars
+	starlarkRoleID  = "JsktstRozeHJKMNPQRSV" // 20 chars (no 'l' -- must pass substrate.IsValidNanoID for kv.Links)
 	starlarkPermID  = "JsktstPermHJKMNPQRSW" // 20 chars
 )
+
+// emptyLinkLister is a processor.ScriptLinkLister returning no links for any
+// filter — the default kv.Links seam for rbac unit tests that don't exercise
+// TombstoneRole's open-task guard (Contract #10 §10.1).
+type emptyLinkLister struct{}
+
+func (emptyLinkLister) ListLinks(_ context.Context, _, _ string, _ int) ([]processor.LinkDoc, string, error) {
+	return nil, "", nil
+}
 
 // makeRbacScriptContext builds a minimal ScriptContext for an rbac
 // script unit test.
@@ -63,6 +75,7 @@ func makeRbacScriptContext(opType, payloadJSON string, hydrated map[string]proce
 		DDLLookup:    map[string]processor.MetaVertex{},
 		ScriptSource: rbacScript(),
 		ScriptClass:  "rbac",
+		LinkLister:   emptyLinkLister{},
 	}
 }
 
@@ -138,6 +151,112 @@ func TestStarlark_Rbac_TombstoneRole(t *testing.T) {
 	if result.Mutations[0].Op != "tombstone" {
 		t.Fatalf("op = %q", result.Mutations[0].Op)
 	}
+}
+
+// staticLinkLister returns a fixed page of links for every kv.Links call --
+// sufficient for these tests, which enumerate at most one page.
+type staticLinkLister struct {
+	links []processor.LinkDoc
+}
+
+func (s staticLinkLister) ListLinks(_ context.Context, _, _ string, _ int) ([]processor.LinkDoc, string, error) {
+	return s.links, "", nil
+}
+
+// staticKVReader serves a fixed set of vertex docs for kv.Read -- stands in
+// for the task vertex a TombstoneRole open-task-guard candidate link points
+// at (Contract #10 §10.1).
+type staticKVReader struct {
+	docs map[string]processor.VertexDoc
+}
+
+func (s staticKVReader) ReadVertex(_ context.Context, key string) (*processor.VertexDoc, error) {
+	if d, ok := s.docs[key]; ok {
+		return &d, nil
+	}
+	return nil, nil
+}
+
+const starlarkQueuedTaskID = "JsktstTaskHJKMNPQRST" // 20 chars
+
+// TestStarlark_Rbac_TombstoneRole_RejectsOpenQueuedTask: a role holding a
+// live queuedFor link to a still-open task must be rejected
+// (RoleHasOpenTasks), not silently orphaned (Contract #10 §10.1).
+func TestStarlark_Rbac_TombstoneRole_RejectsOpenQueuedTask(t *testing.T) {
+	runner := processor.NewStarlarkRunner(0, 0)
+	roleKey := "vtx.role." + starlarkRoleID
+	taskKey := "vtx.task." + starlarkQueuedTaskID
+	queuedLnk := "lnk.task." + starlarkQueuedTaskID + ".queuedFor.role." + starlarkRoleID
+
+	sc := makeRbacScriptContext("TombstoneRole", `{"roleKey":"`+roleKey+`"}`,
+		map[string]processor.VertexDoc{roleKey: aliveVertex(roleKey, "role")})
+	sc.LinkLister = staticLinkLister{links: []processor.LinkDoc{
+		{Key: queuedLnk, Class: "queuedFor", SourceVertex: taskKey, TargetVertex: roleKey},
+	}}
+	sc.KVReader = staticKVReader{docs: map[string]processor.VertexDoc{
+		taskKey: {Key: taskKey, Class: "task", Data: map[string]any{"status": "open", "expiresAt": "2030-01-01T00:00:00Z"}},
+	}}
+
+	_, err := runner.Run(context.Background(), sc)
+	if err == nil || !strings.Contains(err.Error(), "RoleHasOpenTasks") {
+		t.Fatalf("role with an open queued task: want RoleHasOpenTasks rejection, got %v", err)
+	}
+}
+
+// TestStarlark_Rbac_TombstoneRole_AllowsClosedQueuedTask: CompleteTask /
+// CancelTask never tombstone the queuedFor/assignedTo link (orchestration-base
+// leaves it live post-transition), so link liveness alone must NOT block a
+// tombstone -- only a still-"open" task blocks. A live link to a completed
+// task must allow TombstoneRole to proceed.
+func TestStarlark_Rbac_TombstoneRole_AllowsClosedQueuedTask(t *testing.T) {
+	runner := processor.NewStarlarkRunner(0, 0)
+	roleKey := "vtx.role." + starlarkRoleID
+	taskKey := "vtx.task." + starlarkQueuedTaskID
+	queuedLnk := "lnk.task." + starlarkQueuedTaskID + ".queuedFor.role." + starlarkRoleID
+
+	sc := makeRbacScriptContext("TombstoneRole", `{"roleKey":"`+roleKey+`"}`,
+		map[string]processor.VertexDoc{roleKey: aliveVertex(roleKey, "role")})
+	sc.LinkLister = staticLinkLister{links: []processor.LinkDoc{
+		{Key: queuedLnk, Class: "queuedFor", SourceVertex: taskKey, TargetVertex: roleKey},
+	}}
+	sc.KVReader = staticKVReader{docs: map[string]processor.VertexDoc{
+		taskKey: {Key: taskKey, Class: "task", Data: map[string]any{"status": "complete", "expiresAt": "2030-01-01T00:00:00Z"}},
+	}}
+
+	result, err := runner.Run(context.Background(), sc)
+	if err != nil {
+		t.Fatalf("role with only a completed queued task: unexpected rejection: %v", err)
+	}
+	assertContract3Shape(t, result, true)
+	if result.Mutations[0].Op != "tombstone" {
+		t.Fatalf("op = %q, want tombstone", result.Mutations[0].Op)
+	}
+}
+
+// TestStarlark_Rbac_TombstoneRole_SkipsTombstonedQueuedLink: a tombstoned
+// (isDeleted) queuedFor link is fast-skipped without even a kv.Read of its
+// target -- a role whose only queuedFor link is already gone tombstones
+// cleanly.
+func TestStarlark_Rbac_TombstoneRole_SkipsTombstonedQueuedLink(t *testing.T) {
+	runner := processor.NewStarlarkRunner(0, 0)
+	roleKey := "vtx.role." + starlarkRoleID
+	taskKey := "vtx.task." + starlarkQueuedTaskID
+	queuedLnk := "lnk.task." + starlarkQueuedTaskID + ".queuedFor.role." + starlarkRoleID
+
+	sc := makeRbacScriptContext("TombstoneRole", `{"roleKey":"`+roleKey+`"}`,
+		map[string]processor.VertexDoc{roleKey: aliveVertex(roleKey, "role")})
+	sc.LinkLister = staticLinkLister{links: []processor.LinkDoc{
+		{Key: queuedLnk, Class: "queuedFor", IsDeleted: true, SourceVertex: taskKey, TargetVertex: roleKey},
+	}}
+	// No KVReader wired: if the script tried to kv.Read the tombstoned
+	// link's source it would error (nil reader), so success here proves the
+	// fast-skip.
+
+	result, err := runner.Run(context.Background(), sc)
+	if err != nil {
+		t.Fatalf("role with only a tombstoned queuedFor link: unexpected rejection: %v", err)
+	}
+	assertContract3Shape(t, result, true)
 }
 
 func TestStarlark_Rbac_CreatePermission(t *testing.T) {

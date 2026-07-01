@@ -13,8 +13,14 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //
 // Architectural rules (binding — same as identity-hygiene):
 //
-//   - The script reads ONLY by known key. No prefix scans, no
-//     adjacency lookups, no lens-output reads.
+//   - The script reads ONLY by known key, with one sanctioned exception:
+//     TombstoneRole enumerates the role's inbound `queuedFor` links via
+//     the bounded `kv.Links` primitive (Contract #2 §2.5.1) to enforce
+//     Contract #10 §10.1's no-orphan tombstone guard — a role holding a
+//     live queued task is rejected (`RoleHasOpenTasks`), not silently
+//     orphaned. This is the same enumeration idiom clinic-domain's
+//     assert_no_overlap uses; it is not a keyspace scan (bounded to the
+//     role's own degree, per §2.5.1).
 //   - For AssignRole / GrantPermission and their inverses, the *link*
 //     key is deterministic from the input keys; we read it by known key
 //     to verify pre-existence (idempotent) or absence (so we don't
@@ -57,7 +63,9 @@ func DDLs() []pkgmgr.DDLSpec {
 				"permission -> role (permission is the later-added vertex; reads as " +
 				"'permission granted by role'). The operation verbs GrantPermission / " +
 				"RevokePermission follow operator-action semantics and are distinct from " +
-				"the link's canonical name.",
+				"the link's canonical name. TombstoneRole rejects (RoleHasOpenTasks) a role " +
+				"that still holds a live queuedFor task (Contract #10 §10.1 no-orphan " +
+				"tombstone guard), enumerated via the bounded kv.Links primitive.",
 			Script: rbacDDLScript,
 			InputSchema: `{"type":"object","properties":` +
 				`{"name":{"type":"string","description":"Role canonical name (CreateRole)."},` +
@@ -181,6 +189,34 @@ def vertex_alive(state, key):
         return False
     return True
 
+ROLE_TASK_PAGE_LIMIT = 256
+MAX_ROLE_TASK_PAGES = 64
+
+def role_has_open_tasks(role_key):
+    # Contract #10 §10.1 no-orphan tombstone guard: a role holding a live
+    # queuedFor task is rejected, not silently orphaned (operator
+    # reassigns/cancels the task first). Enumerated via the sanctioned
+    # bounded kv.Links (Contract #2 §2.5.1), direction "in" -- the role is
+    # the queuedFor link's TARGET (task is source, per Contract #1 §1.1).
+    # A live LINK alone does not mean an open task: CompleteTask/CancelTask
+    # never tombstone the assignedTo/queuedFor link (orchestration-base
+    # leaves it live post-transition), so each candidate's source task
+    # vertex is read and only a still-"open" task blocks.
+    cursor = None
+    for _page in range(MAX_ROLE_TASK_PAGES):
+        links, cursor = kv.Links(role_key, "queuedFor", "in", cursor, ROLE_TASK_PAGE_LIMIT)
+        for lk in links:
+            if lk.isDeleted:
+                continue
+            task = kv.Read(lk.sourceVertex)
+            if task == None or task.isDeleted:
+                continue
+            if task.data.get("status") == "open":
+                fail("RoleHasOpenTasks: " + role_key + " still has open task " + lk.sourceVertex + " queued; reassign or cancel it first")
+        if cursor == None:
+            return
+    fail("RoleTaskFanoutTooLarge: " + role_key + " has too many queuedFor links to enumerate at tombstone time; reassign/cancel enough to bring it under the page cap first")
+
 def execute(state, op):
     ot = op.operationType
     p = op.payload
@@ -227,6 +263,7 @@ def execute(state, op):
         _ = role_id_from_key(role_key)
         if not vertex_alive(state, role_key):
             fail("UnknownRole: " + role_key)
+        role_has_open_tasks(role_key)
         mutations = [make_tombstone(role_key)]
         events = [{"class": "rbac.roleTombstoned", "data": {"roleKey": role_key}}]
         return {"mutations": mutations, "events": events,

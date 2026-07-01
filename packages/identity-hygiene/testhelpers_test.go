@@ -151,6 +151,23 @@ func seedLinkVertex(t *testing.T, ctx context.Context, conn *substrate.Conn,
 	}
 }
 
+// seedTaskVertex writes a minimal orchestration-base task vertex directly to
+// Core KV (no op required) -- used by the MergeIdentity open-task-guard tests
+// to seed a task assignedTo the secondary without depending on
+// orchestration-base's package being installed in this pipeline.
+func seedTaskVertex(t *testing.T, ctx context.Context, conn *substrate.Conn, taskKey, status string) {
+	t.Helper()
+	doc := map[string]any{
+		"class":     "task",
+		"isDeleted": false,
+		"data":      map[string]any{"status": status, "expiresAt": "2030-01-01T00:00:00Z"},
+	}
+	b, _ := json.Marshal(doc)
+	if _, err := conn.KVPut(ctx, testutil.HarnessCoreBucket, taskKey, b); err != nil {
+		t.Fatalf("seed task vertex %s: %v", taskKey, err)
+	}
+}
+
 // readAspectData reads a KV aspect envelope and returns its "data" map.
 func readAspectData(t *testing.T, ctx context.Context, conn *substrate.Conn, key string) map[string]any {
 	t.Helper()
@@ -207,9 +224,9 @@ func seedDuplicateCandidateEntry(
 	// Build the bucket key: flagged.identity.<loID>.identity.<hiID>
 	// The lens orders by key; in tests we just use primaryKey < secondaryKey.
 	entry := map[string]any{
-		"primaryKey":            primaryKey,
-		"secondaryKey":          secondaryKey,
-		"secondaryInboundEdges": inboundEdges,
+		"primaryKey":             primaryKey,
+		"secondaryKey":           secondaryKey,
+		"secondaryInboundEdges":  inboundEdges,
 		"secondaryOutboundEdges": outboundEdges,
 	}
 	b, _ := json.Marshal(entry)

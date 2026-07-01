@@ -17,6 +17,12 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //   - primary != secondary; both are vtx.identity.<NanoID>
 //   - both vertices exist and are not tombstoned
 //   - neither is in state `merged`
+//   - secondary holds no live `assignedTo` task in status `open`
+//     (Contract #10 §10.1 no-orphan tombstone guard: `IdentityHasOpenTasks`
+//     — reassign/cancel the task first. Enumerated via the one sanctioned
+//     bounded kv.Links primitive, Contract #2 §2.5.1, direction "in";
+//     mirrors clinic-domain's assert_no_overlap idiom. This is the only
+//     enumeration the script performs — everything else stays known-key.)
 //   - every entry in `edges` validates per the trust gate below
 //   - total mutations <= 999 (`MergeBatchTooLarge` otherwise)
 //
@@ -58,9 +64,11 @@ func DDLs() []pkgmgr.DDLSpec {
 				"operator-explicit merge of two identities. `edges` arrives as a " +
 				"command parameter (discovered by the caller via the " +
 				"duplicateCandidates Lens) and is validated against Core KV by " +
-				"the script. Multi-key op: returns no primaryKey; merge counts " +
-				"ride the IdentityMerged event and the committed key set is in " +
-				"OperationReply.Revisions.",
+				"the script. Rejects (IdentityHasOpenTasks) if secondary still holds " +
+				"a live assignedTo task in status open (Contract #10 §10.1 no-orphan " +
+				"tombstone guard) — reassign/cancel it first. Multi-key op: returns no " +
+				"primaryKey; merge counts ride the IdentityMerged event and the " +
+				"committed key set is in OperationReply.Revisions.",
 			Script: identityHygieneScript,
 			InputSchema: `{"type":"object","required":["primary","secondary","edges"],"properties":` +
 				`{"primary":{"type":"string","description":"vtx.identity.<NanoID> of the surviving identity."},` +
@@ -120,9 +128,41 @@ func DDLs() []pkgmgr.DDLSpec {
 //   - (optional) primary.{name,email,phone} +
 //     secondary.{name,email,phone}  when ACR is requested
 //
-// The script reads only the hydrated map by known key. It never
-// enumerates, never scans, and never reads any lens-output bucket.
+// The script reads the hydrated map by known key, with one sanctioned
+// exception: the secondary-has-open-tasks guard enumerates secondary's
+// inbound assignedTo links via the bounded kv.Links primitive (Contract #2
+// §2.5.1) — the same idiom clinic-domain's assert_no_overlap uses. It never
+// scans, and never reads any lens-output bucket.
 const identityHygieneScript = `
+IDENTITY_TASK_PAGE_LIMIT = 256
+MAX_IDENTITY_TASK_PAGES = 64
+
+def identity_has_open_tasks(identity_key):
+    # Contract #10 §10.1 no-orphan tombstone guard: an identity holding a
+    # live assignedTo task is rejected from MergeIdentity (the merge/tombstone
+    # equivalent for identities), not silently orphaned -- reassign/cancel the
+    # task first. Enumerated via the sanctioned bounded kv.Links (Contract #2
+    # §2.5.1), direction "in" -- the identity is the assignedTo link's TARGET
+    # (task is source, per Contract #1 §1.1). A live LINK alone does not mean
+    # an open task: CompleteTask/CancelTask never tombstone the assignedTo
+    # link (orchestration-base leaves it live post-transition), so each
+    # candidate's source task vertex is read and only a still-"open" task
+    # blocks.
+    cursor = None
+    for _page in range(MAX_IDENTITY_TASK_PAGES):
+        links, cursor = kv.Links(identity_key, "assignedTo", "in", cursor, IDENTITY_TASK_PAGE_LIMIT)
+        for lk in links:
+            if lk.isDeleted:
+                continue
+            task = kv.Read(lk.sourceVertex)
+            if task == None or task.isDeleted:
+                continue
+            if task.data.get("status") == "open":
+                fail("IdentityHasOpenTasks: " + identity_key + " still has open task " + lk.sourceVertex + " assigned; reassign or cancel it first")
+        if cursor == None:
+            return
+    fail("IdentityTaskFanoutTooLarge: " + identity_key + " has too many assignedTo links to enumerate at merge time; reassign/cancel enough to bring it under the page cap first")
+
 def execute(state, op):
     ot = op.operationType
     p = op.payload
@@ -170,6 +210,13 @@ def execute(state, op):
         fail("MergeStateRejected: primary state=merged")
     if s_state == "merged":
         fail("MergeStateRejected: secondary state=merged")
+
+    # --- No-orphan tombstone guard (Contract #10 §10.1): secondary must not
+    # still hold a live open task. Checked ahead of the edges trust gate --
+    # independent of whatever edges the caller declared (an assignedTo link
+    # is never a valid MergeIdentity edge to silently rekey; the operator
+    # reassigns/cancels the task via the task DDL first).
+    identity_has_open_tasks(secondary)
 
     # --- Trust gate: validate every declared edge against Core KV.
     # Actors are not trusted to declare keys honestly; each must
