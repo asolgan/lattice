@@ -1,7 +1,13 @@
 # LoftSpace D1.5 — the per-landlord RLS read as the rich decision surface
 
-**Status:** 📐 awaiting-Andrew on the one architecture decision in §4 (lens-readiness duplication). The
-rest is the lead's to ratify. **Lane:** Verticals. **Continues:** `read-path-authorization-d1-design.md`
+**Status:** ✅ Winston-ratified — build-ready (Recommendation C, §4). The §4 fork is an internal
+engineering tradeoff (duplicate a load-bearing aggregation vs. stay display-only) — not a trust-boundary /
+topology / security-posture fork on the named strategic-fork list (Gateway, read-path auth D1, Vault,
+multi-cell, HA-NATS), so it is Winston's to ratify per the steward's decide-don't-defer rule. C is
+well-grounded (mirrors the applicant protected lens's deliberate display-only choice, avoids duplicating
+`leaseApplicationCompleteSpec`, `$now`-in-protected-path feasibility already verified in §2) and ships real
+value now with zero duplication risk; the readiness clone (option A) stays deferred to Vault, sharing that
+gate with name/contact display (§3). **Lane:** Verticals. **Continues:** `read-path-authorization-d1-design.md`
 §7.5 (which scopes D1.5 generically as "roll the remaining protected read models … pure extension"; the
 *rich-decision* half it defers with "D1.5 may roll the gap state onto a protected model later",
 `lease-signing/lenses.go` ~L549).
