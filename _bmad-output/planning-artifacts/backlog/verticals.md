@@ -22,7 +22,6 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 | Clinic — tombstoned provider/patient/appointment LINGER in the FE | A soft-deleted clinic entity stays pickable/visible because the full-engine lens re-projects it while its keyed aspect survives. | Clinic | platform (Refractor) + FE | ★★ | S | 🚧 blocked-on lattice [full-engine tombstone retraction](lattice.md) (Read-model section) |
 | Clinic — patient contact (email/phone) captured but never projected | `CreatePatient` stores `.demographics.{email,phone}` but the `clinicPatients` lens projects only `name` — staff can't see contact info, and a real reminder channel has no address to send to. | Clinic | pkg + FE | ★★ | S | 🚧 blocked-on Vault — `.demographics.{email,phone}` are PHI; `clinicPatients` is name-only by test-enforced discipline (the display half of lattice [Vault](lattice.md)); not a vertical-steward call |
 | LoftSpace — applicant contact (email/phone) captured but never projected to the landlord | `CreateUnclaimedIdentity` stores `.email`/`.phone`, but neither the `/api/identities` picker nor the landlord `unit-applications` disposition surfaces them — a landlord deciding on an applicant has no way to contact them. | LoftSpace | pkg + FE | ★★ | S | 🚧 blocked-on Vault — `id.{email,phone}` are `sensitive=true` aspects; same display gate as the Clinic patient-contact row → lattice [Vault](lattice.md); not a vertical-steward call |
-| Clinic — capture & show a cancel / no-show reason note | The status-change UI (`setStatus`) submits `{appointmentKey, status}` only, dropping the reason — so staff can't record *why* a visit was cancelled / no-showed, and the projected reason is never displayed. | Clinic | FE | ★★ | XS | 📋 backend-ready: `SetAppointmentStatus` already accepts `note` and the `clinicAppointments` lens already projects it as `statusNote` (verified end-to-end) — add a reason field to the cancel/no-show transition + render `statusNote` on the appointment card (clinic PO 2026-06-30) |
 
 ## PO notes (dated — drives rotation)
 
@@ -39,6 +38,7 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic, staggered from 
 One line per shipped item (`date · SHA · title`). Oldest roll to `archive/` past ~25.
 
 - 2026-07-01 · `9b042f9` · LoftSpace D1.5 Rec C — landlord RLS view gains the rich qualification-signal decision surface
+- 2026-07-01 · `0998f02` · Clinic cancel/no-show reason-note row CLOSED (stale) — verified already shipped 2026-06-26, pre-dating the PO row
 - 2026-07-01 · `30a2ec0` · Clinic recurring visit series CLOSED — Inc 2 FE (Series clinic-wide worklist tab + My Appointments start/pause/resume panel), verified end-to-end live
 - 2026-07-01 · `5cf84e8` · Clinic recurring visit series Inc 1 — visitseries vertex + Start/Pause/Resume/AdvanceVisitSeries + rolling `visitSeriesDue` lens
 - 2026-06-30 · `f8240cd` · Clinic — `SetAppointmentStatus` terminal-status guard (cancelled/completed/noShow final → TerminalStatus; fixes completed→scheduled revert)
