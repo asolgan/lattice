@@ -1,6 +1,6 @@
 # Retire the legacy `simple` rule engine — decouple the shared types, delete the dead parser + its parked invalidation scaffolding
 
-**Status: 📐 awaiting-Andrew (ratification)**
+**Status: ✅ Andrew-ratified (2026-06-30) — D1 = delete the dead invalidation-forest scaffolding, as recommended. Build-ready for the Lattice Steward.**
 **Author:** Winston (Designer fire, 2026-06-30)
 **Backlog:** Stream-2 Component maintenance — *[Refractor] Retire the legacy `simple` engine (full-engine is universal)* (★★, M–L; Surveyor-filed 2026-06-30)
 **Owning components:** `internal/refractor/ruleengine/{simple,,full}`, `internal/refractor/{pipeline,projection,control,lens,fixture}`, `cmd/refractor/main.go`. Docs: `docs/components/refractor.md`.
