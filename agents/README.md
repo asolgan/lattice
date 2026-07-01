@@ -51,17 +51,29 @@ experience, the FE Engineer builds it (UX-then-FE).
 
 | Task | Role (stream) | Cadence |
 |---|---|---|
-| `steward-autonomous` | `steward` — **Lattice** advancer | even hours (`0 */2`) |
-| `steward-verticals` | `steward` — **Verticals** advancer | odd hours (`0 1-23/2`), interleaved |
-| `lattice-designer` | `designer` — Lattice design (readiness) | odd hours :30 (`30 1-23/2`), pipelines before the Lattice advancer |
-| `platform-surveyor` | `surveyor` — Lattice hydrator | 3×/day (`0 7,15,23`) |
-| `vertical-po-discovery` | `vertical-po` — Verticals hydrator | 3×/day (`0 5,13,21`) |
-| `ci-whetstone` | `whetstone` — cross-cutting CI-speed | 2×/day (`30 6,18`) |
+| `steward-autonomous` | `steward` — **Lattice** advancer | even hours (`6 */2`) |
+| `steward-verticals` | `steward` — **Verticals** advancer | odd hours (`26 1-23/2`), interleaved |
+| `lattice-designer` | `designer` — Lattice design (readiness) | odd hours (`6 1-23/2`), pipelines before the Lattice advancer |
+| `platform-surveyor` | `surveyor` — Lattice hydrator | 3×/day (`56 7,15,23`) |
+| `vertical-po-discovery` | `vertical-po` — Verticals hydrator | 3×/day (`41 5,13,21`) |
+| `ci-whetstone` | `whetstone` — cross-cutting CI-speed | 2×/day (`36 6,18`) |
 
 The Lattice stream is a three-stage pipeline: **Surveyor** (raw demand) → **Designer** (build-ready designs) →
 **Lattice Steward** (builds), with the **Whetstone** as a cross-cutting CI-speed loop. `owner`, `fe-engineer`,
 and `lamplighter` are **invoked by** the advancers (or run directly), not scheduled on their own. The bmad
 tooling skills stay local and are intentionally not tracked here — this directory is only the agentic-ops roles.
+
+**None of these fire on :00/:30.** Two things bit us in practice: `steward-autonomous`'s live cron had drifted
+to `0 */1` (every hour) — silently doubling its frequency and erasing the even/odd interleave with
+`steward-verticals`, so it collided with *every* other task's hour, not just the ones sharing its parity —
+fixed back to `*/2`. Separately, every task's minute was 0 or 30, so on any hour multiple tasks share
+(odd hours run `lattice-designer` + `steward-verticals` together, always; `platform-surveyor` /
+`vertical-po-discovery` add a third some hours; even hours run `steward-autonomous` + `ci-whetstone` on 6/18),
+they used to land within seconds of each other and only the small system-level dispatch jitter separated
+them. Minutes are now spread ~15-20 apart within the hour so a same-hour pair has real separation, not just
+whatever the scheduler's own jitter happens to give them. This doesn't guarantee zero lock contention — a long
+fire can still be running when the next slot arrives — the mutual-exclusion lock's clean no-op-and-retry
+is the actual backstop for that; jitter just makes it the exception instead of the rule.
 
 ### Concurrency: at most one fleet fire at a time
 
