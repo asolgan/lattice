@@ -59,6 +59,8 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/appointments", s.handleAppointments)
 	mux.HandleFunc("/api/my-appointments", s.handleMyAppointments)
 	mux.HandleFunc("/api/my-schedule", s.handleMyProviderSchedule)
+	mux.HandleFunc("/api/staff/appointments", s.handleStaffAppointments)
+	mux.HandleFunc("/api/staff/dev-token", s.handleStaffDevToken)
 	mux.HandleFunc("/api/visit-series", s.handleVisitSeries)
 	mux.HandleFunc("/api/op", s.handleOp)
 	mux.HandleFunc("/api/dev-token", s.handleDevToken)

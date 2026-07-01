@@ -48,6 +48,30 @@ func TestBuildProtectedTableDDL_Shape(t *testing.T) {
 	assert.Contains(t, createPol, `anchor_id FROM "actor_read_grants"`)
 	assert.Contains(t, createPol, `current_setting('lattice.actor_id', true)`)
 	assert.Contains(t, createPol, `NOT is_deleted`)
+	// The WildcardAnchor escape hatch (§6.14 M5): an OR'd EXISTS matching a
+	// literal '*' anchor_id grant, independent of the row's own authz_anchors.
+	assert.Contains(t, createPol, `anchor_id = '*'`)
+	assert.Contains(t, createPol, " OR\n")
+}
+
+// TestBuildProtectedTableDDL_WildcardIsSeparateFromRowAnchorClause is a
+// string-shape proof that the wildcard EXISTS is OR'd alongside, not folded
+// into, the per-row authz_anchors match — so a wildcard grant is evaluated
+// independently of a row's own anchors. The real Postgres RLS semantics (a
+// wildcard-granted actor actually seeing every row) are proven by the
+// POSTGRES_TEST_DSN-gated integration test in cmd/clinic-app.
+func TestBuildProtectedTableDDL_WildcardIsSeparateFromRowAnchorClause(t *testing.T) {
+	stmts, err := BuildProtectedTableDDL("read_x", []string{"id"}, nil)
+	require.NoError(t, err)
+	createPol := stmts[len(stmts)-1]
+	// The wildcard EXISTS must be self-contained (actor_id + anchor_id='*' +
+	// NOT is_deleted) and OR'd against — not folded into — the per-row
+	// unnest(authz_anchors) match, so a wildcard grant is evaluated even for a
+	// row whose authz_anchors is empty/unrelated.
+	wildcardIdx := strings.Index(createPol, "anchor_id = '*'")
+	rowMatchIdx := strings.Index(createPol, "unnest(authz_anchors)")
+	require.True(t, wildcardIdx >= 0 && rowMatchIdx >= 0, "policy must contain both clauses: %s", createPol)
+	require.Less(t, wildcardIdx, rowMatchIdx, "the wildcard EXISTS must precede the OR'd row-anchor EXISTS")
 }
 
 func TestBuildProtectedTableDDL_CompositeKey(t *testing.T) {

@@ -577,6 +577,23 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		return nil, err
 	}
 
+	// 5d. Capability-Read WILDCARD Grants Lens — the base ALL-ACCESS read-grant
+	// PRODUCER (Contract #6 §6.14, D1 design §3.4 M5). The wildcard sibling of
+	// 5c: grants the reserved WildcardAnchor ("*") to the same fixed,
+	// kernel-seeded root-equivalent identities the write-path capability lens
+	// (5) special-cases, so an all-access read (e.g. a clinic staff/admin
+	// worklist) still passes through the §6.14 set-membership RLS policy —
+	// never a bypass. `identity.data.protected = true` is a literal predicate,
+	// not a graph walk, so core references no rbac vocabulary.
+	capReadWildcardGrantsLens := CapabilityReadWildcardGrantsLensDefinition()
+	capReadWildcardGrantsLensVal, capReadWildcardGrantsLensErr := MakeVertexEnvelope(CapabilityReadWildcardGrantsLensKey, "meta.lens", map[string]any{"protected": true})
+	if err := add(CapabilityReadWildcardGrantsLensKey, capReadWildcardGrantsLensVal, capReadWildcardGrantsLensErr); err != nil {
+		return nil, err
+	}
+	if err := addLensAspects(&entries, CapabilityReadWildcardGrantsLensKey, capReadWildcardGrantsLens); err != nil {
+		return nil, err
+	}
+
 	// 6. Five aspect-type meta-vertices — the DDLs for the self-description
 	// aspect classes. Each has class=meta.ddl.aspectType and carries all 5
 	// descriptive aspects itself (bootstrapped primordially to avoid a

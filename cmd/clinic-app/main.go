@@ -10,11 +10,11 @@
 // on any write. READS are mixed: most stay on the unauthenticated admin path
 // (the view is patient-centric — the user selects which patient they are and
 // the UI scopes its reads to that patient, but the server does not verify the
-// selection). /api/my-appointments is the one exception (D1.5): it reads the
-// protected clinicAppointmentsRead Postgres model as a JWT-AUTHENTICATED actor
-// (RLS, patient-self anchor only) — the provider/staff audiences remain on the
-// unauthenticated path pending a follow-up increment (flagged, see
-// packages/clinic-domain/lenses.go).
+// selection). /api/my-appointments, /api/my-schedule, and /api/staff/appointments
+// are the exceptions (D1.5): each reads a protected Postgres model as a
+// JWT-AUTHENTICATED actor (RLS) — patient-self, provider-self, and (via the
+// reserved WildcardAnchor grant, D1 design §3.4 M5) the clinic-wide staff view,
+// respectively.
 //
 // SAFETY: this app has NO authentication and acts as admin. It binds 127.0.0.1
 // only by default; a non-loopback CLINIC_APP_ADDR is an explicit opt-in and logs a

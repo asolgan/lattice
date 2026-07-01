@@ -33,6 +33,19 @@ const ProjectionSeqColumn = "projection_seq"
 // table projects exactly these three columns.
 var GrantKeyColumns = []string{"actor_id", "anchor_id", "grant_source"}
 
+// WildcardAnchor is the reserved all-access anchor_id (Contract #6 §6.14, D1
+// design M5): a grant row `(actor_id, '*', grant_source)` makes actor_id able
+// to read EVERY row of EVERY protected table, regardless of that row's
+// authz_anchors. It is never a resource anchor itself — the platform NanoID
+// alphabet (internal/substrate.Alphabet) excludes '*', so no real anchor_id
+// can ever collide with it. This is the read-side mirror of the write path's
+// scope:"any" root grant: a wildcard row still flows through the SAME §6.14
+// set-membership policy (never an RLS bypass), so an all-access read stays
+// attributable via actor_read_grants — revocable and traceable to a grant
+// row exactly like any other read (no separate audit log exists today; this
+// is the same posture every other RLS-scoped read already has).
+const WildcardAnchor = "*"
+
 // ColumnDef declares one column of a generated protected read-model table.
 // Type is the verbatim Postgres column type (e.g. "text", "bigint", "jsonb");
 // the caller (the protected lens) owns the type because the lens RETURN — not
@@ -147,15 +160,27 @@ func BuildProtectedTableDDL(table string, keyCols []string, body []ColumnDef) ([
 	// projector) — so the policy governs reads only; writes stay governed by
 	// table GRANTs + the trusted projector posture (P2). FORCE RLS still
 	// deny-alls reads on a table whose policy was never generated (H3).
+	//
+	// The second EXISTS is the WildcardAnchor escape hatch (§6.14 M5): a grant
+	// row anchored '*' matches every row of THIS table regardless of its
+	// authz_anchors — the read-side mirror of the write path's scope:"any" root
+	// grant. It is still a §6.14 set-membership lookup against actor_read_grants
+	// (seq-guarded, revocable, NOT is_deleted-filtered) — never a bypass of the
+	// policy itself.
 	dropPolicy := fmt.Sprintf("DROP POLICY IF EXISTS %s ON %s", pol, qt)
 	createPolicy := fmt.Sprintf(
 		"CREATE POLICY %s ON %s FOR SELECT USING (\n"+
+			"  EXISTS (SELECT 1 FROM %s\n"+
+			"          WHERE actor_id = current_setting('lattice.actor_id', true)\n"+
+			"            AND anchor_id = '*'\n"+
+			"            AND NOT is_deleted)\n"+
+			"  OR\n"+
 			"  EXISTS (SELECT 1 FROM unnest(authz_anchors) a\n"+
 			"          WHERE a IN (SELECT anchor_id FROM %s\n"+
 			"                      WHERE actor_id = current_setting('lattice.actor_id', true)\n"+
 			"                        AND NOT is_deleted))\n"+
 			")",
-		pol, qt, quoteIdent(GrantTable),
+		pol, qt, quoteIdent(GrantTable), quoteIdent(GrantTable),
 	)
 
 	return []string{createTable, enableRLS, forceRLS, dropPolicy, createPolicy}, nil

@@ -73,15 +73,14 @@ func Lenses() []pkgmgr.LensSpec {
 			// with no authentication at all. handleMyAppointments (D1.5) replaces
 			// that vector for the patient's own view: RLS scopes the read to the
 			// verified JWT subject, so a caller cannot request another patient's
-			// rows. The PROVIDER audience (a provider's own schedule) and the
-			// clinic-wide staff views (follow-ups worklist, the "every provider"
-			// schedule aggregate) are NOT yet migrated — they stay on the
-			// existing unprotected handleAppointments path. Closing them needs
-			// either a provider-self anchor (a straightforward follow-up,
-			// mirroring landlordLeaseApplicationsRead's Increment 2) or a
-			// staff/admin wildcard grant (an Andrew posture call, per the D1
-			// design's M5 Loupe-all-access decision) — flagged on the board, not
-			// freelanced here.
+			// rows. The PROVIDER audience moved to providerAppointmentsRead below
+			// (a provider-self anchor); the clinic-wide STAFF views (follow-ups
+			// worklist, the "All providers" schedule aggregate) moved to
+			// cmd/clinic-app's handleStaffAppointments, reading THIS SAME table
+			// (no per-row anchor needed for staff — the reserved WildcardAnchor
+			// grant, D1 design §3.4 M5, matches every row regardless of its
+			// authz_anchors; see internal/bootstrap.
+			// CapabilityReadWildcardGrantsLensDefinition).
 			//
 			// authz_anchors = [nanoIdFromKey(patient identity key)] — the
 			// patient-self anchor. The shipped base cap-read.<actor> self-anchor
@@ -138,11 +137,10 @@ func Lenses() []pkgmgr.LensSpec {
 			// already grants every identity its own NanoID), just a different
 			// anchor-walk relation (withProvider instead of manages).
 			//
-			// The clinic-wide staff views (follow-ups worklist, the "All providers"
-			// schedule aggregate) still have no per-row anchor to scope by and stay
-			// on the existing unprotected handleAppointments path pending a
-			// staff/admin wildcard-grant posture call (the D1 design's M5
-			// Loupe-all-access decision) — flagged on the board, not freelanced here.
+			// The clinic-wide staff views read clinicAppointmentsRead ABOVE (via
+			// handleStaffAppointments' wildcard grant), not this provider-anchored
+			// table — a staff actor's wildcard grant matches every protected
+			// table, so no separate staff projection is needed here.
 			//
 			// authz_anchors = [nanoIdFromKey(provider identity key)].
 			//

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"strings"
 
 	clinicdomain "github.com/asolgan/lattice/packages/clinic-domain"
 )
@@ -79,11 +80,16 @@ func computeAppointments(keys []string, get kvGetter, patient, provider string) 
 	return rows
 }
 
-// handleAppointments implements GET /api/appointments?provider= — the booking
-// slot-picker's provider-availability check, the clinic-wide follow-ups
-// worklist (unscoped), and the "All providers" schedule aggregate, served from
-// the unprotected `clinicAppointments` lens read model (NOT Core KV, but also
-// not authenticated).
+// handleAppointments implements GET /api/appointments?provider=<key> — the
+// booking slot-picker's provider-availability check ONLY, served from the
+// unprotected `clinicAppointments` lens read model (NOT Core KV, but also not
+// authenticated). `provider` is REQUIRED (D1.5, the staff wildcard
+// increment): any caller (typically a patient mid-booking, not the provider)
+// may check a NAMED provider's busy times to compute open slots, but a blank
+// `?provider=` would return the clinic-wide unscoped dump — the
+// follow-ups-worklist/"All providers" vector this increment closes. That
+// clinic-wide view now lives at handleStaffAppointments, the authenticated,
+// RLS-scoped read.
 //
 // It NO LONGER accepts `?patient=` (D1.5): that vector let ANY caller read any
 // named patient's full appointment history — including the post-visit
@@ -94,15 +100,16 @@ func computeAppointments(keys []string, get kvGetter, patient, provider string) 
 // A single named provider's own "My Schedule" view has similarly moved to
 // handleMyProviderSchedule (D1.5 Increment 2, the provider-self anchor); the FE
 // now calls that authenticated path whenever a specific provider is selected.
-// `?provider=` stays HERE, unauthenticated, only for the slot-picker's
-// availability check (any caller — typically a patient mid-booking, not the
-// provider — checking a provider's busy times to compute open slots). The
-// unscoped reads (follow-ups worklist, "All providers" aggregate) remain open
-// too: neither has a per-actor anchor to scope by yet, and closing them needs a
-// staff/admin wildcard grant (see packages/clinic-domain/lenses.go's
-// providerAppointmentsRead doc, the D1 design's M5 Loupe-all-access posture
-// call) — flagged on the board, not freelanced here.
 func (s *server) handleAppointments(w http.ResponseWriter, r *http.Request) {
+	// TrimSpace so a whitespace-only value (e.g. "?provider=%20") is treated as
+	// blank too — the guard exists to close the clinic-wide dump, so it must
+	// reject anything that isn't a real provider key, not just the empty string.
+	provider := strings.TrimSpace(r.URL.Query().Get("provider"))
+	if provider == "" {
+		s.writeError(w, http.StatusBadRequest,
+			"provider is required (the clinic-wide unscoped view moved to the authenticated /api/staff/appointments)")
+		return
+	}
 	conn, ok := s.requireConn(w)
 	if !ok {
 		return
@@ -124,7 +131,6 @@ func (s *server) handleAppointments(w http.ResponseWriter, r *http.Request) {
 		}
 		return entry.Value, true
 	}
-	provider := r.URL.Query().Get("provider")
 	rows := computeAppointments(keys, get, "", provider)
 	s.writeJSON(w, http.StatusOK, map[string]any{"appointments": rows, "count": len(rows)})
 }
@@ -264,7 +270,7 @@ func (s *server) handleMyAppointments(w http.ResponseWriter, r *http.Request) {
 // model instead of the patient-anchored one. Same column surface
 // (protectedAppointmentRow is shared by both queries — the two tables project
 // identical columns, just anchored on a different actor), but patient_key
-// additionally needs COALESCE(..., ''): forPatient is OPTIONAL in
+// additionally needs COALESCE(..., ”): forPatient is OPTIONAL in
 // providerAppointmentsReadSpec (patient is the display neighbour here, not the
 // anchor — the reverse of clinicAppointmentsRead, where forPatient is
 // REQUIRED and patient_key is never null), so an appointment with no patient
@@ -350,6 +356,41 @@ func (s *server) handleMyProviderSchedule(w http.ResponseWriter, r *http.Request
 		// a generic message — never echo a raw DB error to the client.
 		s.logger.Error("read protected provider schedule", "error", err)
 		s.writeError(w, http.StatusBadGateway, "could not read the protected provider schedule model")
+		return
+	}
+	s.writeJSON(w, http.StatusOK, map[string]any{"appointments": rows, "count": len(rows), "scope": "rls"})
+}
+
+// handleStaffAppointments implements GET /api/staff/appointments — the
+// clinic-wide staff views (the follow-ups worklist, the "All providers"
+// schedule aggregate) that used to read the unprotected, unscoped
+// handleAppointments path (D1.5, the staff wildcard increment closing that
+// vector). It reuses queryMyAppointments verbatim: the query itself carries
+// no auth filter, so the SAME read_clinic_appointments query that scopes an
+// ordinary patient to their own rows returns EVERY row for an actor holding
+// the reserved WildcardAnchor ("*") grant (internal/refractor/adapter.
+// WildcardAnchor) — the bootstrap capabilityReadWildcardGrants lens grants it
+// to the kernel-seeded root-equivalent identities only (D1 design §3.4 M5).
+// This is still RLS, never a bypass: an all-access read is attributable and
+// revocable exactly like any other actor_read_grants row.
+func (s *server) handleStaffAppointments(w http.ResponseWriter, r *http.Request) {
+	actor, err := s.authenticateRead(r)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "authentication required: "+err.Error())
+		return
+	}
+	if s.pgPool == nil {
+		s.writeError(w, http.StatusBadGateway,
+			"protected read model not configured (set CLINIC_APP_PG_DSN and ensure Postgres + the clinic-domain protected lens are up)")
+		return
+	}
+	ctx, cancel := s.reqContext(r)
+	defer cancel()
+
+	rows, err := queryMyAppointments(ctx, s.pgPool, actor.Subject)
+	if err != nil {
+		s.logger.Error("read protected clinic appointments (staff)", "error", err)
+		s.writeError(w, http.StatusBadGateway, "could not read the protected appointments model")
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"appointments": rows, "count": len(rows), "scope": "rls"})

@@ -65,24 +65,24 @@ const CompensationAspectClass = "compensation"
 // are populated at runtime — each Lattice deployment generates its own
 // primordial ID set on first boot.
 var (
-	BootstrapOpID              string
-	BootstrapOpKey             string
-	BootstrapIdentityID        string
-	BootstrapIdentityKey       string
+	BootstrapOpID        string
+	BootstrapOpKey       string
+	BootstrapIdentityID  string
+	BootstrapIdentityKey string
 
 	// Internal service-actor identities (arch §92). Loom, Weaver, the
 	// Bridge, and the object-store-manager operate within the trust boundary
 	// at root-equivalent capability, submitting ops directly to the ledger.
 	// Root-equivalence is established purely by their holdsRole link to the
 	// operator role (Contract #7 §7.7) — the class field never gates capability.
-	LoomIdentityID     string
-	LoomIdentityKey    string
-	WeaverIdentityID   string
-	WeaverIdentityKey  string
-	BridgeIdentityID   string
-	BridgeIdentityKey  string
-	ObjmgrIdentityID   string
-	ObjmgrIdentityKey  string
+	LoomIdentityID    string
+	LoomIdentityKey   string
+	WeaverIdentityID  string
+	WeaverIdentityKey string
+	BridgeIdentityID  string
+	BridgeIdentityKey string
+	ObjmgrIdentityID  string
+	ObjmgrIdentityKey string
 
 	MetaRootID        string
 	MetaRootKey       string
@@ -102,8 +102,17 @@ var (
 	// empty and RLS denies every protected read.
 	CapabilityReadGrantsLensID  string
 	CapabilityReadGrantsLensKey string
-	RoleOperatorID              string
-	RoleOperatorKey             string
+	// CapabilityReadWildcardGrantsLens is the base ALL-ACCESS read-grant
+	// PRODUCER (Contract #6 §6.14, D1 design §3.4 M5) — the wildcard sibling
+	// of CapabilityReadGrantsLens. It grants the reserved WildcardAnchor ("*")
+	// to the same fixed, kernel-seeded root-equivalent identities the
+	// write-path CapabilityLens special-cases, so an all-access read (e.g. a
+	// clinic staff/admin worklist) passes through the §6.14 set-membership
+	// RLS policy rather than bypassing it.
+	CapabilityReadWildcardGrantsLensID  string
+	CapabilityReadWildcardGrantsLensKey string
+	RoleOperatorID                      string
+	RoleOperatorKey                     string
 
 	// Three kernel-seeded meta-permission NanoIDs authorizing the operator
 	// to mutate vtx.meta.* vertices (CreateMetaVertex, UpdateMetaVertex,
@@ -130,12 +139,12 @@ var (
 	// Meta-permission NanoIDs authorizing the operator to submit the
 	// InstallPackage / UninstallPackage / UpgradePackage ops. Granted to the
 	// operator role, which the primordial admin holds.
-	PermInstallPackageID      string
-	PermInstallPackageKey     string
-	PermUninstallPackageID    string
-	PermUninstallPackageKey   string
-	PermUpgradePackageID      string
-	PermUpgradePackageKey     string
+	PermInstallPackageID    string
+	PermInstallPackageKey   string
+	PermUninstallPackageID  string
+	PermUninstallPackageKey string
+	PermUpgradePackageID    string
+	PermUpgradePackageKey   string
 
 	// Five aspect-type meta-vertex NanoIDs — the primordial DDLs for the
 	// self-description aspect classes (description, inputSchema,
@@ -164,17 +173,18 @@ var (
 // struct; encoding/json ignores unknown fields so older files that include
 // extra fields still parse correctly.
 type PrimordialIDsRaw struct {
-	BootstrapOp             string `json:"bootstrapOp"`
-	BootstrapIdentity       string `json:"bootstrapIdentity"`
-	LoomIdentity            string `json:"loomIdentity"`
-	WeaverIdentity          string `json:"weaverIdentity"`
-	BridgeIdentity          string `json:"bridgeIdentity"`
-	ObjmgrIdentity          string `json:"objmgrIdentity"`
-	MetaRoot           string `json:"metaRoot"`
-	CapabilityLens       string `json:"capabilityLens"`
-	CapabilityReadLens   string `json:"capabilityReadLens"`
-	CapabilityReadGrants string `json:"capabilityReadGrants"`
-	RoleOperator         string `json:"roleOperator"`
+	BootstrapOp                  string `json:"bootstrapOp"`
+	BootstrapIdentity            string `json:"bootstrapIdentity"`
+	LoomIdentity                 string `json:"loomIdentity"`
+	WeaverIdentity               string `json:"weaverIdentity"`
+	BridgeIdentity               string `json:"bridgeIdentity"`
+	ObjmgrIdentity               string `json:"objmgrIdentity"`
+	MetaRoot                     string `json:"metaRoot"`
+	CapabilityLens               string `json:"capabilityLens"`
+	CapabilityReadLens           string `json:"capabilityReadLens"`
+	CapabilityReadGrants         string `json:"capabilityReadGrants"`
+	CapabilityReadWildcardGrants string `json:"capabilityReadWildcardGrants"`
+	RoleOperator                 string `json:"roleOperator"`
 
 	// Meta-permission NanoIDs.
 	PermCreateMetaVertex    string `json:"permCreateMetaVertex"`
@@ -190,11 +200,11 @@ type PrimordialIDsRaw struct {
 	PermUpgradePackage   string `json:"permUpgradePackage"`
 
 	// Aspect-type meta-vertex NanoIDs.
-	AspectTypeDescription       string `json:"aspectTypeDescription"`
-	AspectTypeInputSchema        string `json:"aspectTypeInputSchema"`
-	AspectTypeOutputSchema       string `json:"aspectTypeOutputSchema"`
-	AspectTypeFieldDescription   string `json:"aspectTypeFieldDescription"`
-	AspectTypeExamples           string `json:"aspectTypeExamples"`
+	AspectTypeDescription      string `json:"aspectTypeDescription"`
+	AspectTypeInputSchema      string `json:"aspectTypeInputSchema"`
+	AspectTypeOutputSchema     string `json:"aspectTypeOutputSchema"`
+	AspectTypeFieldDescription string `json:"aspectTypeFieldDescription"`
+	AspectTypeExamples         string `json:"aspectTypeExamples"`
 }
 
 // BootstrapFile is the wire format of lattice.bootstrap.json.
@@ -242,6 +252,16 @@ type PrimordialIDsRaw struct {
 //     OUT of the PrimordialVertexKeys() count-only readiness list, so
 //     PrimordialVertexKeyCount is unchanged (34). A stale file lacks the new
 //     NanoID field, so the version bump forces regeneration.
+//   - "14": capabilityReadWildcardGrants primordial lens added — the base
+//     ALL-ACCESS read-grant PRODUCER (Contract #6 §6.14, D1 design §3.4 M5)
+//     that grants the reserved WildcardAnchor ("*") to the fixed,
+//     kernel-seeded root-equivalent identities (admin + Loom/Weaver/Bridge/
+//     object-store-manager), so an all-access read passes through RLS rather
+//     than bypassing it. Like capabilityReadGrants it is seeded +
+//     aspect-verified but kept OUT of the PrimordialVertexKeys() count-only
+//     readiness list, so PrimordialVertexKeyCount is unchanged (34). A stale
+//     file lacks the new NanoID field, so the version bump forces
+//     regeneration.
 type BootstrapFile struct {
 	Version       string           `json:"version"`
 	GeneratedAt   string           `json:"generatedAt"`
@@ -330,31 +350,32 @@ func Persist(path string) error {
 // currentRaw rebuilds a PrimordialIDsRaw from the populated package vars.
 func currentRaw() PrimordialIDsRaw {
 	return PrimordialIDsRaw{
-		BootstrapOp:                BootstrapOpID,
-		BootstrapIdentity:          BootstrapIdentityID,
-		LoomIdentity:               LoomIdentityID,
-		WeaverIdentity:             WeaverIdentityID,
-		BridgeIdentity:             BridgeIdentityID,
-		ObjmgrIdentity:             ObjmgrIdentityID,
-		MetaRoot:                   MetaRootID,
-		CapabilityLens:             CapabilityLensID,
-		CapabilityReadLens:         CapabilityReadLensID,
-		CapabilityReadGrants:       CapabilityReadGrantsLensID,
-		RoleOperator:               RoleOperatorID,
-		PermCreateMetaVertex:       PermCreateMetaVertexID,
-		PermUpdateMetaVertex:       PermUpdateMetaVertexID,
-		PermTombstoneMetaVertex:    PermTombstoneMetaVertexID,
-		InstallPackageDDL:          InstallPackageDDLID,
-		UninstallPackageDDL:        UninstallPackageDDLID,
-		UpgradePackageDDL:          UpgradePackageDDLID,
-		PermInstallPackage:         PermInstallPackageID,
-		PermUninstallPackage:       PermUninstallPackageID,
-		PermUpgradePackage:         PermUpgradePackageID,
-		AspectTypeDescription:      AspectTypeDescriptionID,
-		AspectTypeInputSchema:      AspectTypeInputSchemaID,
-		AspectTypeOutputSchema:     AspectTypeOutputSchemaID,
-		AspectTypeFieldDescription: AspectTypeFieldDescriptionID,
-		AspectTypeExamples:         AspectTypeExamplesID,
+		BootstrapOp:                  BootstrapOpID,
+		BootstrapIdentity:            BootstrapIdentityID,
+		LoomIdentity:                 LoomIdentityID,
+		WeaverIdentity:               WeaverIdentityID,
+		BridgeIdentity:               BridgeIdentityID,
+		ObjmgrIdentity:               ObjmgrIdentityID,
+		MetaRoot:                     MetaRootID,
+		CapabilityLens:               CapabilityLensID,
+		CapabilityReadLens:           CapabilityReadLensID,
+		CapabilityReadGrants:         CapabilityReadGrantsLensID,
+		CapabilityReadWildcardGrants: CapabilityReadWildcardGrantsLensID,
+		RoleOperator:                 RoleOperatorID,
+		PermCreateMetaVertex:         PermCreateMetaVertexID,
+		PermUpdateMetaVertex:         PermUpdateMetaVertexID,
+		PermTombstoneMetaVertex:      PermTombstoneMetaVertexID,
+		InstallPackageDDL:            InstallPackageDDLID,
+		UninstallPackageDDL:          UninstallPackageDDLID,
+		UpgradePackageDDL:            UpgradePackageDDLID,
+		PermInstallPackage:           PermInstallPackageID,
+		PermUninstallPackage:         PermUninstallPackageID,
+		PermUpgradePackage:           PermUpgradePackageID,
+		AspectTypeDescription:        AspectTypeDescriptionID,
+		AspectTypeInputSchema:        AspectTypeInputSchemaID,
+		AspectTypeOutputSchema:       AspectTypeOutputSchemaID,
+		AspectTypeFieldDescription:   AspectTypeFieldDescriptionID,
+		AspectTypeExamples:           AspectTypeExamplesID,
 	}
 }
 
@@ -385,11 +406,11 @@ func Load(path string) error {
 // kernel topology matches.
 func checkVersion(f BootstrapFile) error {
 	switch f.Version {
-	case "13":
+	case "14":
 		return nil
 	default:
 		return fmt.Errorf(
-			"bootstrap file version mismatch: got %q, want \"13\" — run `make down && make up`",
+			"bootstrap file version mismatch: got %q, want \"14\" — run `make down && make up`",
 			f.Version,
 		)
 	}
@@ -408,6 +429,7 @@ func generate() (PrimordialIDsRaw, error) {
 		&raw.CapabilityLens,
 		&raw.CapabilityReadLens,
 		&raw.CapabilityReadGrants,
+		&raw.CapabilityReadWildcardGrants,
 		&raw.RoleOperator,
 		&raw.PermCreateMetaVertex,
 		&raw.PermUpdateMetaVertex,
@@ -450,6 +472,7 @@ func populate(raw PrimordialIDsRaw) error {
 		{"capabilityLens", raw.CapabilityLens},
 		{"capabilityReadLens", raw.CapabilityReadLens},
 		{"capabilityReadGrants", raw.CapabilityReadGrants},
+		{"capabilityReadWildcardGrants", raw.CapabilityReadWildcardGrants},
 		{"roleOperator", raw.RoleOperator},
 		{"permCreateMetaVertex", raw.PermCreateMetaVertex},
 		{"permUpdateMetaVertex", raw.PermUpdateMetaVertex},
@@ -482,6 +505,7 @@ func populate(raw PrimordialIDsRaw) error {
 	CapabilityLensID = raw.CapabilityLens
 	CapabilityReadLensID = raw.CapabilityReadLens
 	CapabilityReadGrantsLensID = raw.CapabilityReadGrants
+	CapabilityReadWildcardGrantsLensID = raw.CapabilityReadWildcardGrants
 	RoleOperatorID = raw.RoleOperator
 
 	PermCreateMetaVertexID = raw.PermCreateMetaVertex
@@ -526,6 +550,7 @@ func populate(raw PrimordialIDsRaw) error {
 	CapabilityLensKey = substrate.VertexKey("meta", CapabilityLensID)
 	CapabilityReadLensKey = substrate.VertexKey("meta", CapabilityReadLensID)
 	CapabilityReadGrantsLensKey = substrate.VertexKey("meta", CapabilityReadGrantsLensID)
+	CapabilityReadWildcardGrantsLensKey = substrate.VertexKey("meta", CapabilityReadWildcardGrantsLensID)
 	RoleOperatorKey = substrate.VertexKey("role", RoleOperatorID)
 
 	// Admin + service-actor primordial holdsRole links target the operator
@@ -542,7 +567,7 @@ func populate(raw PrimordialIDsRaw) error {
 
 func persistWithStatus(path string, raw PrimordialIDsRaw, status string) error {
 	f := BootstrapFile{
-		Version:       "13",
+		Version:       "14",
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339Nano),
 		Status:        status,
 		PrimordialIDs: raw,

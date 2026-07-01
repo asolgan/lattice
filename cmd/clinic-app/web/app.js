@@ -159,6 +159,42 @@ async function authedGetAsProvider(path, providerKey) {
   }
 }
 
+// staffReadToken (D1.5, the staff wildcard increment) mints/caches a demo
+// token for the clinic-wide STAFF view via POST /api/staff/dev-token — unlike
+// readToken/providerReadToken it carries no subject: the server mints for its
+// own fixed admin actor, so the FE never needs to know (or be trusted to
+// name) which identity holds the wildcard grant.
+let staffTokenCache = { token: null, exp: 0 };
+
+async function staffReadToken() {
+  const now = Date.now();
+  if (staffTokenCache.token && now < staffTokenCache.exp - 60000) {
+    return staffTokenCache.token;
+  }
+  const res = await fetch("/api/staff/dev-token", { method: "POST" });
+  if (!res.ok) {
+    throw new Error("sign-in required — the read boundary has no demo token minter (deferred Gateway login)");
+  }
+  const body = await res.json();
+  staffTokenCache = { token: body.token, exp: Date.parse(body.expiresAt) || now + 5 * 60000 };
+  return body.token;
+}
+
+// authedGetAsStaff fetches a protected endpoint with the staff Bearer token,
+// retrying once on a 401 with a freshly minted token — the clinic-wide sibling
+// of authedGet/authedGetAsProvider.
+async function authedGetAsStaff(path) {
+  let token = await staffReadToken();
+  try {
+    return await api(path, { headers: { Authorization: "Bearer " + token } });
+  } catch (e) {
+    if (!/HTTP 401|authentication required/i.test(e.message)) throw e;
+    staffTokenCache = { token: null, exp: 0 };
+    token = await staffReadToken();
+    return api(path, { headers: { Authorization: "Bearer " + token } });
+  }
+}
+
 function toast(msg, kind, extra) {
   const t = $("#toast");
   t.className = "toast " + (kind || "");
@@ -1340,6 +1376,11 @@ function renderAppts() {
 // follow-up reads as "addressed" once a later non-cancelled appointment sits on the
 // same patient's record (the natural close-the-loop signal); the default filter hides
 // those so the list behaves as a worklist that empties.
+//
+// Reads the PROTECTED, RLS-scoped /api/staff/appointments (D1.5, the staff
+// wildcard increment) — a staff actor's WildcardAnchor grant returns every
+// appointment, closing the unauthenticated clinic-wide dump the unprotected
+// /api/appointments used to serve.
 
 async function loadFollowups() {
   const grid = $("#followups");
@@ -1347,7 +1388,7 @@ async function loadFollowups() {
   $("#followups-summary").textContent = "loading…";
   let all;
   try {
-    const data = await api("/api/appointments");
+    const data = await authedGetAsStaff("/api/staff/appointments");
     all = data.appointments || [];
   } catch (e) {
     grid.innerHTML = "";
@@ -1832,11 +1873,11 @@ async function submitStartSeries() {
 // the PROTECTED /api/my-schedule (RLS, provider-self anchor, D1.5 Increment 2) —
 // the dropdown selection IS the "acting as" context, minting a token for that
 // provider, mirroring the patient switcher's minting semantics. "All providers"
-// mode has no per-actor anchor to scope by yet, so it stays on the unprotected
-// /api/appointments (flagged — see handleAppointments' doc comment). Either way
-// the grid filters client-side to the visible period (no date-range query
-// needed). Clicking a block opens a read-only detail panel — the desk view
-// doesn't mutate (Cancel / Reschedule live on My Appointments).
+// mode reads the PROTECTED, RLS-scoped /api/staff/appointments (D1.5, the staff
+// wildcard increment) as the staff actor. Either way the grid filters
+// client-side to the visible period (no date-range query needed). Clicking a
+// block opens a read-only detail panel — the desk view doesn't mutate
+// (Cancel / Reschedule live on My Appointments).
 
 const PX_PER_HOUR = 44;
 
@@ -1861,12 +1902,12 @@ async function loadSchedule() {
   }
   $("#schedule-summary").textContent = "loading…";
   try {
-    // All-providers mode fetches the unfiltered read model (every appointment,
-    // unprotected — flagged, no per-actor anchor to scope by yet); a single
-    // provider reads the PROTECTED, RLS-scoped model as that provider.
+    // All-providers mode reads the PROTECTED, RLS-scoped staff model (the
+    // WildcardAnchor grant); a single provider reads the PROTECTED,
+    // RLS-scoped model as that provider.
     const data =
       provider === SCHED_ALL
-        ? await api("/api/appointments")
+        ? await authedGetAsStaff("/api/staff/appointments")
         : await authedGetAsProvider("/api/my-schedule", provider);
     state.schedule = data.appointments || [];
   } catch (e) {

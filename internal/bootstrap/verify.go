@@ -173,6 +173,13 @@ func VerifyKernel(ctx context.Context, conn *substrate.Conn) []string {
 		checkAspect(CapabilityReadGrantsLensKey+"."+a.name, CapabilityReadGrantsLensKey, a.class)
 	}
 
+	// 4d. Capability-Read WILDCARD Grants Lens aspects (the base all-access
+	// read-grant producer, Contract #6 §6.14, D1 design §3.4 M5). Same shape
+	// as 4c's GrantTable lens.
+	for _, a := range grantsLensAspects {
+		checkAspect(CapabilityReadWildcardGrantsLensKey+"."+a.name, CapabilityReadWildcardGrantsLensKey, a.class)
+	}
+
 	// 5. Health KV readiness signal.
 	if _, err := healthKV.Get(ctx, HealthBootstrapCompleteKey); err != nil {
 		failures = append(failures, fmt.Sprintf("MISSING Health KV readiness signal: %s (%v)", HealthBootstrapCompleteKey, err))
@@ -251,4 +258,3 @@ type KernelEntry struct {
 	Missing bool           `json:"missing,omitempty"`
 	Doc     map[string]any `json:"doc,omitempty"`
 }
-

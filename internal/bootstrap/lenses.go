@@ -96,11 +96,11 @@ func CapabilityLensDefinition() LensDefinition {
 		// the actor-disappearance tombstone.
 		ProjectionKind: "actorAggregate",
 		Output: &OutputDescriptorSpec{
-			AnchorType:         "identity",
-			OutputKeyPattern:   "cap.{actorSuffix}",
-			BodyColumns:        []string{"platformPermissions"},
-			EmptyBehavior:      "delete",
-			Freshness:          "auto",
+			AnchorType:       "identity",
+			OutputKeyPattern: "cap.{actorSuffix}",
+			BodyColumns:      []string{"platformPermissions"},
+			EmptyBehavior:    "delete",
+			Freshness:        "auto",
 			// Per-lane submission grant (Contract #2 §2.3). The protected
 			// kernel-seeded system actors (admin + Loom + Weaver + Bridge +
 			// object-store-manager) carry the full root-grant set: `meta`
@@ -301,3 +301,49 @@ RETURN
 	}
 }
 
+// CapabilityReadWildcardGrantsLensDefinition returns the base ALL-ACCESS
+// read-grant PRODUCER — the read analog of the write path's kernel
+// root-grant set (Contract #6 §6.14, D1 design §3.4 M5). It is
+// CapabilityReadGrantsLensDefinition's wildcard sibling: instead of each
+// actor's self-anchor, it grants the WildcardAnchor ("*",
+// internal/refractor/adapter.WildcardAnchor) to the same fixed set of
+// protected (kernel-seeded, root-equivalent) identities the write-path
+// CapabilityLensDefinition already special-cases — the primordial admin and
+// the Loom/Weaver/Bridge/object-store-manager service actors.
+//
+// Root-equivalence is identified the SAME way the write-side anchor does:
+// `identity.data.protected = true`, a literal predicate over the vertex's own
+// field, NOT a graph walk through rbac vocabulary (holdsRole/role) — core
+// references no package vocabulary, mirroring CapabilityLensDefinition's own
+// note that the grant set is "a literal here, NOT a graph walk." This is a
+// PLAIN (not actorAggregate) full-graph projection, like
+// CapabilityReadGrantsLensDefinition: one row per matching identity, not
+// scoped by an actor key.
+//
+// Without this producer, an all-access read (e.g. a clinic staff/admin
+// worklist spanning every patient) has no anchor to grant against — the
+// per-row authz_anchors convention (a patient/provider/landlord's own
+// NanoID) cannot express "every row," which is exactly the gap the D1 design
+// flagged as deferred to "an Andrew posture call" (M5). M5's answer is a
+// grant, never an RLS bypass: the wildcard row still flows through the same
+// §6.14 set-membership policy (internal/refractor/adapter.rls.go), so an
+// all-access read stays attributable and revocable like any other grant.
+//
+// grant_source = 'cap-read.root' (disjoint from the self-anchor producer's
+// 'cap-read' and from any package's 'cap-read.<domain>' — each producer
+// retracts only its own grant_source rows, §6.14).
+func CapabilityReadWildcardGrantsLensDefinition() LensDefinition {
+	return LensDefinition{
+		CanonicalName: "capabilityReadWildcardGrants",
+		Adapter:       "postgres",
+		GrantTable:    true,
+		CypherRule: `
+MATCH (identity:identity)
+WHERE identity.data.protected = true
+RETURN
+  nanoIdFromKey(identity.key) AS actor_id,
+  '*'                         AS anchor_id,
+  'cap-read.root'             AS grant_source
+`,
+	}
+}
