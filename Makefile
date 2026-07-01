@@ -34,7 +34,7 @@ LOFTSPACE_APP_PG_DSN ?= postgres://loftspace_app:loftspace_app_dev@localhost:543
 up:
 	@if docker compose ps --status running --services 2>/dev/null | grep -qx nats && \
 	    docker compose ps --status running --services 2>/dev/null | grep -qx postgres && \
-	    pgrep -f "bin/processor" >/dev/null 2>&1 && pgrep -f "bin/refractor" >/dev/null 2>&1; then \
+	    pgrep -x processor >/dev/null 2>&1 && pgrep -x refractor >/dev/null 2>&1; then \
 		echo "==> Kernel already up (NATS + Postgres healthy, processor + refractor running) — reusing. For a clean rebuild, run 'make down' first."; \
 	else \
 		set -e; \
@@ -42,9 +42,9 @@ up:
 		docker compose up -d --wait; \
 		echo "==> Containers healthy."; \
 		echo "==> Killing any background refractor processes (avoid warm-up duplicates)..."; \
-		pkill -f "bin/refractor" 2>/dev/null || true; \
+		pkill -x refractor 2>/dev/null || true; \
 		echo "==> Killing any background processor processes (avoid warm-up duplicates)..."; \
-		pkill -f "bin/processor" 2>/dev/null || true; \
+		pkill -x processor 2>/dev/null || true; \
 		echo "==> Building bootstrap binary..."; \
 		go build -o bin/bootstrap ./cmd/bootstrap; \
 		echo "==> Building refractor binary (Story 2.1)..."; \
@@ -346,16 +346,16 @@ up-clinic:
 ## Detects an already-running tier first and reuses it rather than killing and
 ## restarting it out from under whoever else is relying on it.
 orchestration:
-	@if pgrep -f "bin/loom" >/dev/null 2>&1 && pgrep -f "bin/weaver" >/dev/null 2>&1 && \
-	    pgrep -f "bin/bridge" >/dev/null 2>&1 && pgrep -f "bin/object-store-manager" >/dev/null 2>&1; then \
+	@if pgrep -x loom >/dev/null 2>&1 && pgrep -x weaver >/dev/null 2>&1 && \
+	    pgrep -x bridge >/dev/null 2>&1 && pgrep "^object-store" >/dev/null 2>&1; then \
 		echo "==> Orchestration tier already running (loom/weaver/bridge/objmgr all up) — reusing."; \
 	else \
 		set -e; \
 		echo "==> Killing any prior orchestration processes..."; \
-		pkill -f "bin/loom" 2>/dev/null || true; \
-		pkill -f "bin/weaver" 2>/dev/null || true; \
-		pkill -f "bin/bridge" 2>/dev/null || true; \
-		pkill -f "bin/object-store-manager" 2>/dev/null || true; \
+		pkill -x loom 2>/dev/null || true; \
+		pkill -x weaver 2>/dev/null || true; \
+		pkill -x bridge 2>/dev/null || true; \
+		pkill "^object-store" 2>/dev/null || true; \
 		echo "==> Building orchestration binaries..."; \
 		go build -o bin/loom ./cmd/loom; \
 		go build -o bin/weaver ./cmd/weaver; \
