@@ -18,12 +18,33 @@ import (
 // closed (a HydrationMiss) or wastefully over-hydrating (L2).
 var engineCreateTaskReads = []string{"assignee", "forOperation", "scopedTo"}
 
+// optionalCreateTaskFields are CreateTask payload fields the script
+// vertex_alive-checks but that are NOT dispatched by either internal engine
+// today (FR28's `queue`: Weaver's actionAssignTask and Loom's submitUserTask
+// always name a concrete `assignee`, never a role-queue fallback). Exempted
+// from the exact-match below so a genuinely optional, caller-provided
+// alternative endpoint doesn't force a phantom always-declared read onto
+// every engine dispatch. A future engine that DOES dispatch a queue-targeted
+// CreateTask must declare "queue" in its own ContextHint.Reads (the script's
+// vertex_alive(state, queue) check is real — kv.Read's HydrationMiss-if-absent
+// applies exactly as it does for `assignee`); it just isn't proven here until
+// one exists.
+var optionalCreateTaskFields = map[string]struct{}{"queue": {}}
+
 // TestCreateTaskReads_MatchDDLScript asserts the engine-dispatched CreateTask
 // read-set equals exactly the set of payload fields the task DDL's CreateTask
 // branch validates with vertex_alive — no more (the engine would over-hydrate),
-// no fewer (the op would HydrationMiss and fail closed).
+// no fewer (the op would HydrationMiss and fail closed) — modulo
+// optionalCreateTaskFields (§ above).
 func TestCreateTaskReads_MatchDDLScript(t *testing.T) {
-	got := vertexAlivePayloadFields(t, taskDDLScript, "CreateTask")
+	all := vertexAlivePayloadFields(t, taskDDLScript, "CreateTask")
+	got := make([]string, 0, len(all))
+	for _, f := range all {
+		if _, exempt := optionalCreateTaskFields[f]; exempt {
+			continue
+		}
+		got = append(got, f)
+	}
 	assertSameStringSet(t, "CreateTask", engineCreateTaskReads, got)
 }
 

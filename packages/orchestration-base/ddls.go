@@ -9,33 +9,43 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Architectural rules (binding — same known-key discipline as rbac-domain /
 // identity-domain):
 //
-//   - The script reads ONLY by known key. No prefix scans, no adjacency
-//     lookups, no lens-output reads. CreateTask validates its link
-//     endpoints (assignee identity, forOperation op-meta, scopedTo target)
-//     by reading each by its known key — exactly the keys the caller lists
-//     in ContextHint.Reads.
-//   - No-orphan invariant (FR29 / P4): CreateTask REQUIRES an `assignee`
-//     and rejects (structured ScriptError) if the assignee identity is
-//     absent/invalid — a task pointing at a non-existent identity is never
-//     committed. forOperation + scopedTo endpoints are validated likewise.
+//   - The script reads ONLY by known key, or via the one sanctioned bounded
+//     enumeration (kv.Links, Contract #2 §2.5.1 — ClaimTask's queuedFor
+//     lookup, bounded to a single task's at-most-one link). No prefix
+//     scans, no adjacency lookups, no lens-output reads. CreateTask
+//     validates its link endpoints (assignee identity and/or queue role,
+//     forOperation op-meta, scopedTo target) by reading each by its known
+//     key — exactly the keys the caller lists in ContextHint.Reads.
+//   - No-orphan invariant (FR29 / P4): CreateTask REQUIRES a resolved
+//     assignee-or-queue endpoint and rejects (structured ScriptError,
+//     RoutingFailed) if neither resolves to a live vertex — a task pointing
+//     at a non-existent identity/role is never committed. forOperation +
+//     scopedTo endpoints are validated likewise.
 //
 // Task shape (Contract #10 §10.1 — scalars + links only, NO aspects):
 //
 //	vtx.task.<id>   root data = { status, expiresAt }   status ∈ {open, complete, cancelled}
-//	lnk.task.<id>.assignedTo.identity.<assigneeId>   # who performs it
+//	lnk.task.<id>.assignedTo.identity.<assigneeId>   # direct push assignment (who performs it)
+//	lnk.task.<id>.queuedFor.role.<roleId>            # FR28 role-queue pull assignment
 //	lnk.task.<id>.forOperation.meta.<opId>           # the op this task grants
 //	lnk.task.<id>.scopedTo.<type>.<targetId>         # the grant's target (often ≠ assignee)
 //
-// All three links: task = the later-arriving SOURCE, the other vertex
-// pre-exists = the TARGET (Contract #1 §1.1). The operationType the task
-// grants is LINK-sourced via forOperation→op by the capabilityEphemeral
-// lens — it is NOT a task.data.grantedOperationType field (the corrected
-// anti-pattern, Contract #10 §10.1).
+// Exactly ONE of assignedTo/queuedFor is present on an open task (FR28,
+// Contract #10 §10.1). All links: task = the later-arriving SOURCE, the
+// other vertex pre-exists = the TARGET (Contract #1 §1.1). The operationType
+// the task grants is LINK-sourced via forOperation->op by the
+// capabilityEphemeral lens — it is NOT a task.data.grantedOperationType
+// field (the corrected anti-pattern, Contract #10 §10.1).
 //
 // Caller's ContextHint.Reads MUST include, for CreateTask:
-//   - assignee   (vtx.identity.<id>)
+//   - assignee and/or queue (vtx.identity.<id> / vtx.role.<id>)
 //   - forOperation (vtx.meta.<opId>)
 //   - scopedTo   (vtx.<type>.<targetId>)
+//
+// ClaimTask needs only `taskKey` declared: the queuedFor link is resolved
+// via the sanctioned bounded kv.Links enumeration (Contract #2 §2.5.1, an
+// open task carries at most one), and the holdsRole / speculative
+// assignedTo checks are on-demand kv.Read (may legitimately be absent).
 func DDLs() []pkgmgr.DDLSpec {
 	return []pkgmgr.DDLSpec{
 		taskDDL(),
@@ -49,31 +59,41 @@ func taskDDL() pkgmgr.DDLSpec {
 	return pkgmgr.DDLSpec{
 		CanonicalName:     "task",
 		Class:             "meta.ddl.vertexType",
-		PermittedCommands: []string{"CreateTask", "ReAssignTask", "CompleteTask", "CancelTask"},
+		PermittedCommands: []string{"CreateTask", "ReAssignTask", "CompleteTask", "CancelTask", "ClaimTask"},
 		Description: "Orchestration task DDL. Vertex shape: vtx.task.<NanoID>, class=task, " +
 			"root data = scalars only {status (open|complete|cancelled), expiresAt}; NO aspects " +
 			"(the UI renders from the bound op's self-describing DDL via the forOperation link). " +
-			"Relationships are LINKS: assignedTo (task→identity: who performs it), forOperation " +
+			"Relationships are LINKS: queuedFor (task->role: FR28 role-queue pull assignment; any " +
+			"holder of the role may ClaimTask it; exactly one of assignedTo/queuedFor is present on " +
+			"an open task), assignedTo (task→identity: who performs it), forOperation " +
 			"(task→op-meta: the operation this task grants), scopedTo (task→target: the grant's " +
 			"target). All links: task is the later-arriving source, the other vertex is the " +
-			"pre-existing target (Contract #1 §1.1). CreateTask requires + validates the assignee " +
-			"identity (no-orphan invariant, FR29/P4). Lifecycle ops: ReAssignTask validates the " +
+			"pre-existing target (Contract #1 §1.1). CreateTask requires an assignee identity " +
+			"and/or a queue role: assignee given+alive wins (assignedTo, byte-compatible with " +
+			"pre-FR28 behavior); else queue given+alive queues (queuedFor); else rejects " +
+			"RoutingFailed (no-orphan invariant, FR29/P4). ClaimTask lets any holder of a queued " +
+			"task's role atomically swap queuedFor->assignedTo(claimant) -- the claimant is the " +
+			"trusted submitting actor (op.actor), never a payload field; a non-role-holder rejects " +
+			"NotAuthorizedToClaim, a re-claim by the same actor is an idempotent no-op, a claim of " +
+			"an already-claimed task rejects TaskAlreadyClaimed. ReAssignTask validates the " +
 			"new assignee + re-points the assignedTo link atomically (old tombstoned, new created); " +
-			"CompleteTask (open→complete) and CancelTask (open→cancelled) transition the root " +
+			"CompleteTask (open->complete) and CancelTask (open->cancelled) transition the root " +
 			"data.status. All lifecycle ops require the task to be open, assert the task root " +
 			"revision (OCC, Contract #2 §2.6), and reject any other source state (§10.6).",
 		Script: taskDDLScript,
 		InputSchema: `{"type":"object","properties":` +
-			`{"assignee":{"type":"string","description":"vtx.identity.<NanoID> — the identity that will perform the task (required; validated)."},` +
+			`{"assignee":{"type":"string","description":"vtx.identity.<NanoID> — the identity that will perform the task. Required unless queue is given; a given+alive assignee always wins over queue."},` +
+			`"queue":{"type":"string","description":"vtx.role.<NanoID> — the role-queue fallback target (FR28); any holder may later ClaimTask it. Required unless assignee is given."},` +
 			`"forOperation":{"type":"string","description":"vtx.meta.<NanoID> — the operation meta-vertex this task grants the assignee permission to perform."},` +
 			`"scopedTo":{"type":"string","description":"vtx.<type>.<NanoID> — the specific target the granted operation is scoped to (often ≠ the assignee)."},` +
 			`"expiresAt":{"type":"string","description":"RFC3339 expiry timestamp; the grant is valid only while expiresAt > now."},` +
 			`"taskId":{"type":"string","description":"Optional bare NanoID for the task vertex; supplied by a caller that must know the task key before commit (e.g. Loom's write-ahead). Absent → minted internally."}},` +
-			`"required":["assignee","forOperation","scopedTo","expiresAt"]}`,
+			`"required":["forOperation","scopedTo","expiresAt"]}`,
 		OutputSchema: `{"type":"object","properties":` +
 			`{"primaryKey":{"type":"string","description":"vtx.task.<NanoID> of the created task (the operation's principal key)."}}}`,
 		FieldDescription: map[string]string{
-			"assignee":     "Full vtx.identity.<NanoID> key of the identity that will perform this task. Required; CreateTask rejects if absent/invalid.",
+			"assignee":     "Full vtx.identity.<NanoID> key of the identity that will perform this task. A given+alive assignee always wins over queue; CreateTask rejects RoutingFailed if neither assignee nor queue resolves.",
+			"queue":        "Full vtx.role.<NanoID> key of the role-queue fallback target (FR28). Used only when assignee is absent or CreateTask rejects if the role is absent/invalid too. Any holder of the role may later ClaimTask it.",
 			"forOperation": "Full vtx.meta.<NanoID> key of the operation meta-vertex the task grants. The capabilityEphemeral lens link-sources the granted operationType from this op.",
 			"scopedTo":     "Full vtx.<type>.<NanoID> key of the specific entity the granted operation is scoped to (e.g. the lease application to approve).",
 			"expiresAt":    "RFC3339 timestamp after which the task no longer grants. Stored as a scalar on the task root data.",
@@ -96,10 +116,13 @@ func taskDDL() pkgmgr.DDLSpec {
 	}
 }
 
-// taskDDLScript handles CreateTask. Known-key reads only (validates the
-// three link endpoints by the keys the caller listed in ContextHint.Reads).
-// No-orphan by construction: the assignee identity (and the other two
-// endpoints) must be alive or the op is rejected.
+// taskDDLScript handles CreateTask/ClaimTask/ReAssignTask/CompleteTask/
+// CancelTask. CreateTask is known-key reads only (validates its link
+// endpoints by the keys the caller listed in ContextHint.Reads); no-orphan
+// by construction: the resolved assignee-or-queue endpoint (and the other
+// two endpoints) must be alive or the op is rejected. ClaimTask additionally
+// uses the one sanctioned bounded enumeration (kv.Links) plus on-demand
+// kv.Read for checks that may legitimately find nothing.
 const taskDDLScript = `
 def make_vtx(key, cls, data):
     return {"op": "create", "key": key,
@@ -121,6 +144,22 @@ def required_string(p, name):
     if v == None or type(v) != type("") or len(v.strip()) == 0:
         fail("InvalidArgument: " + name + ": required non-empty string")
     return v.strip()
+
+def optional_string(p, name):
+    # Same shape validation as required_string, but an absent/empty value is
+    # not an error -- it returns None so the caller branches on presence
+    # (FR28's assignee-or-queue routing, §10.1).
+    if not hasattr(p, name):
+        return None
+    v = getattr(p, name)
+    if v == None:
+        return None
+    if type(v) != type(""):
+        fail("InvalidArgument: " + name + ": must be a string")
+    v = v.strip()
+    if len(v) == 0:
+        return None
+    return v
 
 def bare_nanoid_or_mint(p):
     # Returns the caller-supplied taskId when present (validated as a bare
@@ -165,7 +204,8 @@ def execute(state, op):
     p = op.payload
 
     if ot == "CreateTask":
-        assignee = required_string(p, "assignee")
+        assignee = optional_string(p, "assignee")
+        queue = optional_string(p, "queue")
         for_op = required_string(p, "forOperation")
         scoped_to = required_string(p, "scopedTo")
         # Validate + normalize expiresAt to canonical UTC whole-second RFC3339
@@ -175,22 +215,36 @@ def execute(state, op):
         # structured ScriptError.
         expires_at = time.rfc3339_utc(required_string(p, "expiresAt"))
 
-        # Validate endpoint key shapes.
-        _, assignee_id = parts_of(assignee, "assignee", "identity")
+        # Validate the two link endpoints common to every CreateTask (match
+        # the package idiom: rbac-domain validates both endpoints of every
+        # link it writes).
         _, op_id = parts_of(for_op, "forOperation", "meta")
         scoped_type, scoped_id = parts_of(scoped_to, "scopedTo", "")
-
-        # No-orphan invariant (FR29 / P4): the assignee identity MUST exist
-        # and be alive. A task pointing at a non-existent identity is never
-        # committed.
-        if not vertex_alive(state, assignee):
-            fail("UnknownAssignee: " + assignee)
-        # Validate the other two link endpoints (match the package idiom:
-        # rbac-domain validates both endpoints of every link it writes).
         if not vertex_alive(state, for_op):
             fail("UnknownOperation: " + for_op)
         if not vertex_alive(state, scoped_to):
             fail("UnknownTarget: " + scoped_to)
+
+        # Routing (FR28, Contract #10 §10.1): an assignee given+alive wins
+        # (assignedTo, byte-identical to pre-FR28 behavior); else a queue
+        # given+alive role-queues the task (queuedFor); else neither endpoint
+        # resolves and the op is rejected -- no silent drop. The
+        # availability-gated fallback (assignee given but unavailable ->
+        # queue) is Fire 2; this is the presence-based routing Fire 1 ships.
+        # No-orphan invariant (FR29 / P4) either way: the resolved endpoint
+        # MUST exist and be alive, or no task is committed.
+        assignee_id = None
+        role_id = None
+        if assignee != None:
+            _, assignee_id = parts_of(assignee, "assignee", "identity")
+            if not vertex_alive(state, assignee):
+                fail("UnknownAssignee: " + assignee)
+        elif queue != None:
+            _, role_id = parts_of(queue, "queue", "role")
+            if not vertex_alive(state, queue):
+                fail("UnknownQueue: " + queue)
+        else:
+            fail("RoutingFailed: CreateTask requires an assignee or a queue")
 
         # taskId is a caller-supplied write-ahead seam (Contract #10 §10.6): a
         # caller that must know the task key before the op commits (e.g. Loom
@@ -224,20 +278,93 @@ def execute(state, op):
         if existing != None and not existing.isDeleted:
             return {"mutations": [], "events": []}
 
-        assigned_lnk = "lnk.task." + task_id + ".assignedTo.identity." + assignee_id
         forop_lnk = "lnk.task." + task_id + ".forOperation.meta." + op_id
         scoped_lnk = "lnk.task." + task_id + ".scopedTo." + scoped_type + "." + scoped_id
 
         mutations = [
             make_vtx(task_key, "task", {"status": "open", "expiresAt": expires_at}),
-            make_link(assigned_lnk, task_key, assignee, "assignedTo", "assignedTo", {}),
             make_link(forop_lnk, task_key, for_op, "forOperation", "forOperation", {}),
             make_link(scoped_lnk, task_key, scoped_to, "scopedTo", "scopedTo", {}),
         ]
-        events = [{"class": "orchestration.taskCreated",
-                   "data": {"taskKey": task_key, "assignee": assignee,
-                            "forOperation": for_op, "scopedTo": scoped_to,
-                            "expiresAt": expires_at}}]
+        event_data = {"taskKey": task_key, "assignee": None, "queue": None,
+                      "forOperation": for_op, "scopedTo": scoped_to,
+                      "expiresAt": expires_at}
+        if assignee_id != None:
+            assigned_lnk = "lnk.task." + task_id + ".assignedTo.identity." + assignee_id
+            mutations.append(make_link(assigned_lnk, task_key, assignee, "assignedTo", "assignedTo", {}))
+            event_data["assignee"] = assignee
+        else:
+            queued_lnk = "lnk.task." + task_id + ".queuedFor.role." + role_id
+            mutations.append(make_link(queued_lnk, task_key, queue, "queuedFor", "queuedFor", {}))
+            event_data["queue"] = queue
+
+        events = [{"class": "orchestration.taskCreated", "data": event_data}]
+        return {"mutations": mutations, "events": events,
+                "response": {"primaryKey": task_key}}
+
+    if ot == "ClaimTask":
+        # FR28: any holder of a queued task's role may claim it, atomically
+        # swapping queuedFor -> assignedTo(claimant). The claimant is the
+        # TRUSTED submitting actor (op.actor), never a payload field -- the
+        # same don't-trust-the-payload-for-identity discipline
+        # ReviewProposal uses (augur/ddls.go).
+        task_key = required_string(p, "taskKey")
+        _, task_id = parts_of(task_key, "taskKey", "task")
+
+        if not vertex_alive(state, task_key):
+            fail("UnknownTask: " + task_key)
+        task_status = root_status(state, task_key)
+        if task_status != "open":
+            fail("TaskNotOpen: cannot claim a " + task_status + " task: " + task_key)
+
+        claimant = op.actor
+        _, claimant_id = parts_of(claimant, "actor", "identity")
+        assigned_lnk = "lnk.task." + task_id + ".assignedTo.identity." + claimant_id
+
+        # Resolve the task's current queuedFor link via the sanctioned
+        # bounded op-time enumeration (Contract #2 §2.5.1) -- an open task
+        # carries AT MOST one outgoing queuedFor link (the §10.1 "exactly
+        # one assignment link" invariant), so this is never a keyspace scan,
+        # and it is NOT a declared contextHint.reads key: the caller cannot
+        # know the role in advance, and the link may legitimately already be
+        # gone (claimed by someone else, or never queued).
+        queued_page, _ = kv.Links(task_key, "queuedFor", "out")
+        queued_link = None
+        for lk in queued_page:
+            if not lk.isDeleted:
+                queued_link = lk
+        if queued_link == None:
+            # Not currently queued: either already claimed, or never queued.
+            # A re-claim by the SAME actor (their own assignedTo already
+            # committed) is an idempotent no-op; anyone else gets
+            # TaskAlreadyClaimed. kv.Read tolerates absence (on-demand, not a
+            # declared read -- the CreateTask idempotency-check idiom).
+            assigned_doc = kv.Read(assigned_lnk)
+            if assigned_doc != None and not assigned_doc.isDeleted:
+                return {"mutations": [], "events": []}
+            fail("TaskAlreadyClaimed: " + task_key)
+
+        role_key = queued_link.targetVertex
+        _, role_id = parts_of(role_key, "role", "role")
+
+        # The claimant must hold the queued role: a single known-key
+        # on-demand read (both the claimant and the role are now known).
+        holds_role_lnk = "lnk.identity." + claimant_id + ".holdsRole.role." + role_id
+        holds_doc = kv.Read(holds_role_lnk)
+        if holds_doc == None or holds_doc.isDeleted:
+            fail("NotAuthorizedToClaim: " + claimant + " does not hold role " + role_key)
+
+        mutations = [
+            {"op": "update", "key": task_key,
+             "expectedRevision": state[task_key].revision,
+             "document": {"class": "task", "isDeleted": False,
+                          "data": {"status": "open",
+                                   "expiresAt": root_expires_at(state, task_key)}}},
+            {"op": "tombstone", "key": queued_link.key},
+            make_link(assigned_lnk, task_key, claimant, "assignedTo", "assignedTo", {}),
+        ]
+        events = [{"class": "orchestration.taskClaimed",
+                   "data": {"taskKey": task_key, "claimant": claimant, "role": role_key}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": task_key}}
 

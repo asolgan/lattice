@@ -10,15 +10,30 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // for its management create ops (CreateRole/CreatePermission → operator);
 // tightening to additional staff roles later is purely additive.
 //
-// CreateTask mints a task; ReAssignTask re-points its assignee; CompleteTask
-// and CancelTask close it out-of-band (the §10.6 auto-complete path needs no
-// permission — it is platform-injected on the commit path, not a submitted op).
+// CreateTask mints a task (assignedTo an identity or queuedFor a role,
+// FR28); ClaimTask lets a role-holder claim a queued task; ReAssignTask
+// re-points its assignee; CompleteTask and CancelTask close it out-of-band
+// (the §10.6 auto-complete path needs no permission — it is
+// platform-injected on the commit path, not a submitted op).
+//
+// ClaimTask is granted to `operator` here as the platform-wide baseline
+// (operators may always claim any queued task); a vertical package that
+// establishes its OWN role-queue (e.g. a "leasing-team" role) must ALSO
+// grant that role ClaimTask, mirroring how the Epic-12 cap.roles
+// decomposition lets each package contribute its own role grants —
+// orchestration-base cannot know a downstream package's role names.
 func Permissions() []pkgmgr.PermissionSpec {
 	perms := []pkgmgr.PermissionSpec{
 		{
 			OperationType: "CreateTask",
 			Scope:         "any",
 			Note:          "Grants the operator the right to submit CreateTask operations.",
+			GrantsTo:      []string{"operator"},
+		},
+		{
+			OperationType: "ClaimTask",
+			Scope:         "any",
+			Note:          "Grants the operator the right to submit ClaimTask operations (FR28 platform-wide baseline; a vertical package's own role-queue role must be granted separately).",
 			GrantsTo:      []string{"operator"},
 		},
 		{

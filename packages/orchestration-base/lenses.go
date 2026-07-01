@@ -75,8 +75,10 @@ const MyTasksBucket = "my-tasks"
 // adjacency from the actor, mirroring capabilityEphemeral.
 //
 // Per identity it walks (identity)<-[:assignedTo]-(task) where the task is
-// OPEN, and for each open task LINK-sources the projected fields (Contract
-// #10 §10.1 — task relationships are links, not fields):
+// OPEN, plus (FR28) (identity)-[:holdsRole]->(role)<-[:queuedFor]-(task) for
+// any task queued to a role the identity holds, and for each open task
+// LINK-sources the projected fields (Contract #10 §10.1 — task
+// relationships are links, not fields):
 //
 //	forOperation ← (task)-[:forOperation]->(op),  op.key
 //	operationName        ← op.data.operationType        (the op's name)
@@ -110,6 +112,16 @@ OPTIONAL MATCH (identity)<-[:assignedTo]-(task:task)
 OPTIONAL MATCH (task)-[:forOperation]->(op)
 OPTIONAL MATCH (task)-[:scopedTo]->(tgt)
 
+// --- role-queue fan-out (FR28): any task queued to a role this identity
+// holds shows up in the inbox too, so a role-holder can see (and ClaimTask)
+// it. queuedRole names the governing role; null for a direct assignment.
+// On ClaimTask the queuedFor link tombstones and this branch stops matching
+// for every non-claimant -- the grant narrows through ordinary reprojection.
+OPTIONAL MATCH (identity)-[:holdsRole]->(role:role)<-[:queuedFor]-(qtask:task)
+  WHERE qtask.data.status = 'open'
+OPTIONAL MATCH (qtask)-[:forOperation]->(qop)
+OPTIONAL MATCH (qtask)-[:scopedTo]->(qtgt)
+
 RETURN
   identity.key AS actorKey,
   collect(DISTINCT {
@@ -119,7 +131,17 @@ RETURN
     operationName: op.data.operationType,
     operationDescription: op.description.data.value,
     scopedTo: tgt.key,
-    expiresAt: task.data.expiresAt
+    expiresAt: task.data.expiresAt,
+    queuedRole: null
+  }) + collect(DISTINCT {
+    taskKey: qtask.key,
+    assignee: null,
+    forOperation: qop.key,
+    operationName: qop.data.operationType,
+    operationDescription: qop.description.data.value,
+    scopedTo: qtgt.key,
+    expiresAt: qtask.data.expiresAt,
+    queuedRole: role.key
   }) AS openTasks
 `
 
@@ -162,6 +184,19 @@ OPTIONAL MATCH (identity)<-[:reportsTo]-(report:identity)<-[:assignedTo]-(task2:
 OPTIONAL MATCH (task2)-[:forOperation]->(op2)
 OPTIONAL MATCH (task2)-[:scopedTo]->(tgt2)
 
+// --- role-queue fan-out (FR28) ---
+// while a task is queued, every holder of the queued role is granted the
+// underlying operation -- the role-queue's "anyone on the team can pick it
+// up" semantics, expressed through the same ephemeralGrants array the
+// direct path uses. On ClaimTask the queuedFor link tombstones, this branch
+// stops matching for every non-claimant, and the claimant picks the grant
+// up via the direct assignedTo branch above -- the grant narrows through
+// ordinary reprojection, no bespoke revocation.
+OPTIONAL MATCH (identity)-[:holdsRole]->(role:role)<-[:queuedFor]-(task3:task)
+  WHERE task3.data.expiresAt > $now
+OPTIONAL MATCH (task3)-[:forOperation]->(op3)
+OPTIONAL MATCH (task3)-[:scopedTo]->(tgt3)
+
 RETURN
   identity.key AS actorKey,
   collect(DISTINCT {
@@ -176,5 +211,11 @@ RETURN
     operationType: op2.data.operationType,
     target: tgt2.key,
     expiresAt: task2.data.expiresAt
+  }) + collect(DISTINCT {
+    source: "task",
+    taskKey: task3.key,
+    operationType: op3.data.operationType,
+    target: tgt3.key,
+    expiresAt: task3.data.expiresAt
   }) AS ephemeralGrants
 `
