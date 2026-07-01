@@ -507,11 +507,12 @@ func TestLoomE2E_RunsToCompletion(t *testing.T) {
 		},
 	})
 
-	engine := newEngine(conn)
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
-	go func() { _ = engine.Start(engCtx) }()
-	time.Sleep(500 * time.Millisecond) // let the pattern source replay history
+	_, engErr := startEngine(t, engCtx, conn)
+	waitForReady(t, 5*time.Second, engErr, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "trigger consumer never registered")
 
 	subjectKey := "vtx.identity." + mustNanoID(t)
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
@@ -573,10 +574,11 @@ func TestLoomE2E_MidRunRestartExactlyOnce(t *testing.T) {
 	subjectKey := "vtx.identity." + mustNanoID(t)
 
 	// --- Engine generation 1: start the instance, then crash it. ---
-	e1 := newEngine(conn)
 	e1Ctx, e1Cancel := context.WithCancel(ctx)
-	go func() { _ = e1.Start(e1Ctx) }()
-	time.Sleep(500 * time.Millisecond)
+	_, e1Err := startEngine(t, e1Ctx, conn)
+	waitForReady(t, 5*time.Second, e1Err, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "gen-1 trigger consumer never registered")
 
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
 
@@ -586,9 +588,13 @@ func TestLoomE2E_MidRunRestartExactlyOnce(t *testing.T) {
 	committedAfterGen1 := atomic.LoadInt64(&fp.submitted)
 	require.GreaterOrEqual(t, committedAfterGen1, int64(1), "step A must have committed")
 
-	// Crash generation 1, THEN release step A's committed event.
+	// Crash generation 1, THEN release step A's committed event. Join the Start
+	// goroutine (deterministic: supervisor.Stop has synchronously drained every
+	// pump by the time it returns) rather than sleeping a fixed guess — gen-1
+	// must be fully stopped before the release, so only gen-2's redelivery can
+	// observe it.
 	e1Cancel()
-	time.Sleep(500 * time.Millisecond)
+	joinEngine(t, e1Err)
 	close(gate)
 
 	// --- Engine generation 2: restart. The durable consumer redelivers step A's
@@ -644,11 +650,12 @@ func TestLoomE2E_RejectedStepFails(t *testing.T) {
 	// A rejected op is invisible on core-events (no tracker, no event), so the
 	// failed terminal is learned off-stream via the per-step deadline + probe
 	// (§10.6). Use a short deadline so the test does not wait the 60s default.
-	engine := newEngine(conn, func(c *loom.Config) { c.StepTimeout = 2 * time.Second })
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
-	go func() { _ = engine.Start(engCtx) }()
-	time.Sleep(500 * time.Millisecond)
+	_, engErr := startEngine(t, engCtx, conn, func(c *loom.Config) { c.StepTimeout = 2 * time.Second })
+	waitForReady(t, 5*time.Second, engErr, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "trigger consumer never registered")
 
 	subjectKey := "vtx.identity." + mustNanoID(t)
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
@@ -685,11 +692,12 @@ func TestLoomE2E_LivePatternInstallNoRestart(t *testing.T) {
 	fp.run(ctx, t)
 
 	// Start the engine BEFORE any pattern exists.
-	engine := newEngine(conn)
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
-	go func() { _ = engine.Start(engCtx) }()
-	time.Sleep(500 * time.Millisecond)
+	_, engErr := startEngine(t, engCtx, conn)
+	waitForReady(t, 5*time.Second, engErr, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "trigger consumer never registered")
 
 	// Install a pattern live over a never-before-seen domain (lease).
 	patternID := mustNanoID(t)
@@ -698,7 +706,9 @@ func TestLoomE2E_LivePatternInstallNoRestart(t *testing.T) {
 		SubjectType: "lease",
 		Steps:       []loom.Step{{Kind: "systemOp", Operation: "StepA"}},
 	})
-	time.Sleep(500 * time.Millisecond) // let the pattern register + reconcile its consumer
+	require.True(t, waitFor(t, 5*time.Second, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-lease")
+	}), "loom-lease consumer never reconciled")
 
 	subjectKey := "vtx.lease." + mustNanoID(t)
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)

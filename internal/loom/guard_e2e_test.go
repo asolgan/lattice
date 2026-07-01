@@ -195,11 +195,12 @@ func TestGuardE2E_FalseGuardSkipsStep(t *testing.T) {
 	// must skip both in a single transition and land on the guardless SetAddress.
 	seedAspect(t, ctx, conn, subjectKey, "profile", map[string]any{"name": "Ada", "phone": "555-1234"})
 
-	engine := newEngine(conn)
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
-	go func() { _ = engine.Start(engCtx) }()
-	time.Sleep(700 * time.Millisecond)
+	_, engErr := startEngine(t, engCtx, conn)
+	waitForReady(t, 5*time.Second, engErr, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "trigger consumer never registered")
 
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
 
@@ -258,11 +259,12 @@ func TestGuardE2E_AllGuardsFalseCompletesOnTrigger(t *testing.T) {
 	subjectKey := "vtx.identity." + mustNanoID(t)
 	seedAspect(t, ctx, conn, subjectKey, "profile", map[string]any{"name": "Ada", "phone": "555-1234"})
 
-	engine := newEngine(conn)
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
-	go func() { _ = engine.Start(engCtx) }()
-	time.Sleep(700 * time.Millisecond)
+	_, engErr := startEngine(t, engCtx, conn)
+	waitForReady(t, 5*time.Second, engErr, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "trigger consumer never registered")
 
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
 
@@ -309,10 +311,11 @@ func TestGuardE2E_DisasterRecoveryCursorRebuild(t *testing.T) {
 
 	// --- Generation 1: start; step 0 (name present) skipped; step 1 (phone
 	// absent) runs and parks on its userTask token. ---
-	e1 := newEngine(conn)
 	e1Ctx, e1Cancel := context.WithCancel(ctx)
-	go func() { _ = e1.Start(e1Ctx) }()
-	time.Sleep(700 * time.Millisecond)
+	_, e1Err := startEngine(t, e1Ctx, conn)
+	waitForReady(t, 5*time.Second, e1Err, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "gen-1 trigger consumer never registered")
 
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
 	taskKey1 := waitTaskKey(t, ctx, conn, instanceID, 1)
@@ -321,18 +324,19 @@ func TestGuardE2E_DisasterRecoveryCursorRebuild(t *testing.T) {
 
 	// --- Disaster: lose loom-state entirely (cursor, token, outbox all gone). ---
 	e1Cancel()
-	time.Sleep(400 * time.Millisecond)
+	joinEngine(t, e1Err)
 	wipeLoomState(t, ctx, conn)
 
 	// --- Generation 2: fresh engine over the same conn/buckets; re-submit the
 	// SAME StartLoomPattern. A fresh instanceId is expected (loom-state was the
 	// lost cursor's key); the test asserts EFFECTIVE resumption position, not
 	// literal instanceId continuity (Winston Q1 ruling). ---
-	e2 := newEngine(conn)
 	e2Ctx, e2Cancel := context.WithCancel(ctx)
 	defer e2Cancel()
-	go func() { _ = e2.Start(e2Ctx) }()
-	time.Sleep(700 * time.Millisecond)
+	_, e2Err := startEngine(t, e2Ctx, conn)
+	waitForReady(t, 5*time.Second, e2Err, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "gen-2 trigger consumer never registered")
 
 	instanceID2 := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
 	require.NotEqual(t, instanceID, instanceID2, "lost loom-state ⇒ a new instance id")
@@ -418,10 +422,11 @@ func TestGuardE2E_DisasterRecoveryGuardlessStepRerun(t *testing.T) {
 
 	// --- Generation 1: step 0 (name present) skipped; step 1 (Sync, guardless,
 	// systemOp) runs to commitment and the pattern completes. ---
-	e1 := newEngine(conn)
 	e1Ctx, e1Cancel := context.WithCancel(ctx)
-	go func() { _ = e1.Start(e1Ctx) }()
-	time.Sleep(700 * time.Millisecond)
+	_, e1Err := startEngine(t, e1Ctx, conn)
+	waitForReady(t, 5*time.Second, e1Err, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "gen-1 trigger consumer never registered")
 
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
 	inst1 := waitInstanceStatus(t, ctx, conn, instanceID, "complete")
@@ -432,7 +437,7 @@ func TestGuardE2E_DisasterRecoveryGuardlessStepRerun(t *testing.T) {
 	// --- Disaster: lose loom-state entirely (cursor, token, outbox, op tracker
 	// pointers — everything). ---
 	e1Cancel()
-	time.Sleep(400 * time.Millisecond)
+	joinEngine(t, e1Err)
 	wipeLoomState(t, ctx, conn)
 
 	// --- Generation 2: fresh engine; re-submit the SAME StartLoomPattern. Guard
@@ -440,11 +445,12 @@ func TestGuardE2E_DisasterRecoveryGuardlessStepRerun(t *testing.T) {
 	// requestId is derived from gen-2's (new) instanceId — a SECOND, distinct
 	// Sync commit (Contract #4 cannot dedup across generations, §10.6 documented
 	// bound). ---
-	e2 := newEngine(conn)
 	e2Ctx, e2Cancel := context.WithCancel(ctx)
 	defer e2Cancel()
-	go func() { _ = e2.Start(e2Ctx) }()
-	time.Sleep(700 * time.Millisecond)
+	_, e2Err := startEngine(t, e2Ctx, conn)
+	waitForReady(t, 5*time.Second, e2Err, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "gen-2 trigger consumer never registered")
 
 	instanceID2 := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
 	require.NotEqual(t, instanceID, instanceID2, "lost loom-state ⇒ a new instance id")

@@ -160,11 +160,12 @@ func TestOnboardingE2E_UserTaskFlow(t *testing.T) {
 	patternID := mustNanoID(t)
 	installPattern(t, ctx, conn, patternID, onboardingPattern(patternID))
 
-	engine := newEngine(conn)
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
-	go func() { _ = engine.Start(engCtx) }()
-	time.Sleep(700 * time.Millisecond) // pattern + op-meta CDC replay
+	_, engErr := startEngine(t, engCtx, conn)
+	waitForReady(t, 5*time.Second, engErr, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "trigger consumer never registered")
 
 	subjectKey := "vtx.identity." + mustNanoID(t)
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
@@ -230,8 +231,12 @@ func TestOnboardingE2E_LongWaitRestartExactlyOnce(t *testing.T) {
 	// Give the CDC pattern source a moment to load the installed pattern before
 	// the trigger arrives so handleTrigger resolves it on first delivery rather
 	// than Nak-ing for redelivery. waitTaskKey below is the real wait for the
-	// userTask park; this is only an optimisation to skip a redelivery cycle.
-	time.Sleep(700 * time.Millisecond)
+	// userTask park; this polls the trigger consumer's actual readiness instead
+	// of guessing a fixed settle time — it is only an optimisation to skip a
+	// redelivery cycle, same as before, just no longer a blind sleep.
+	require.True(t, waitFor(t, 5*time.Second, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}), "trigger consumer never registered")
 
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
 	taskKey0 := waitTaskKey(t, ctx, conn, instanceID, 0)
@@ -328,11 +333,12 @@ func TestOnboardingE2E_RejectedCreateTaskFails(t *testing.T) {
 
 	// A short creation-deadline so the rejected CreateTask is detected off-stream
 	// without waiting the 60s default.
-	engine := newEngine(conn, func(c *loom.Config) { c.CreateTaskTimeout = 2 * time.Second })
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
-	go func() { _ = engine.Start(engCtx) }()
-	time.Sleep(700 * time.Millisecond)
+	_, engErr := startEngine(t, engCtx, conn, func(c *loom.Config) { c.CreateTaskTimeout = 2 * time.Second })
+	waitForReady(t, 5*time.Second, engErr, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "trigger consumer never registered")
 
 	subjectKey := "vtx.identity." + mustNanoID(t)
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
@@ -380,11 +386,12 @@ func TestOnboardingE2E_CreatedTaskDisarmsForUnboundedWait(t *testing.T) {
 	// A short creation-deadline; the human (this test) deliberately waits LONGER
 	// than it before acting, so the deadline fires while the task already exists.
 	createDeadline := 2 * time.Second
-	engine := newEngine(conn, func(c *loom.Config) { c.CreateTaskTimeout = createDeadline })
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
-	go func() { _ = engine.Start(engCtx) }()
-	time.Sleep(700 * time.Millisecond)
+	_, engErr := startEngine(t, engCtx, conn, func(c *loom.Config) { c.CreateTaskTimeout = createDeadline })
+	waitForReady(t, 5*time.Second, engErr, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "trigger consumer never registered")
 
 	subjectKey := "vtx.identity." + mustNanoID(t)
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)

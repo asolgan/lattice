@@ -180,11 +180,12 @@ func TestExternalE2E_RunsToCompletion(t *testing.T) {
 	patternID := mustNanoID(t)
 	installPattern(t, ctx, conn, patternID, externalPattern(patternID))
 
-	engine := newEngine(conn)
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
-	go func() { _ = engine.Start(engCtx) }()
-	time.Sleep(600 * time.Millisecond) // pattern CDC replay
+	_, engErr := startEngine(t, engCtx, conn)
+	waitForReady(t, 5*time.Second, engErr, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "trigger consumer never registered")
 
 	subjectKey := "vtx." + fixtureClaimType + "." + mustNanoID(t)
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
@@ -271,11 +272,12 @@ func TestExternalE2E_RejectedInstanceOpFails(t *testing.T) {
 
 	// A short creation-deadline so the rejected instanceOp is detected off-stream
 	// fast (the externalTask arms CreateTaskTimeout, like a userTask).
-	engine := newEngine(conn, func(c *loom.Config) { c.CreateTaskTimeout = 2 * time.Second })
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
-	go func() { _ = engine.Start(engCtx) }()
-	time.Sleep(600 * time.Millisecond)
+	_, engErr := startEngine(t, engCtx, conn, func(c *loom.Config) { c.CreateTaskTimeout = 2 * time.Second })
+	waitForReady(t, 5*time.Second, engErr, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "trigger consumer never registered")
 
 	subjectKey := "vtx." + fixtureClaimType + "." + mustNanoID(t)
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
@@ -327,11 +329,12 @@ func TestExternalE2E_CommittedNoReply_DisarmsToUnboundedWait(t *testing.T) {
 	installPattern(t, ctx, conn, patternID, externalPattern(patternID))
 
 	// A short creation-deadline so the committed instanceOp is probed fast.
-	engine := newEngine(conn, func(c *loom.Config) { c.CreateTaskTimeout = 2 * time.Second })
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
-	go func() { _ = engine.Start(engCtx) }()
-	time.Sleep(600 * time.Millisecond)
+	_, engErr := startEngine(t, engCtx, conn, func(c *loom.Config) { c.CreateTaskTimeout = 2 * time.Second })
+	waitForReady(t, 5*time.Second, engErr, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "trigger consumer never registered")
 
 	subjectKey := "vtx." + fixtureClaimType + "." + mustNanoID(t)
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
@@ -391,11 +394,12 @@ func TestExternalE2E_NotYetRelayedRearms(t *testing.T) {
 	patternID := mustNanoID(t)
 	installPattern(t, ctx, conn, patternID, externalPattern(patternID))
 
-	engine := newEngine(conn, func(c *loom.Config) { c.CreateTaskTimeout = 2 * time.Second })
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
-	go func() { _ = engine.Start(engCtx) }()
-	time.Sleep(600 * time.Millisecond)
+	engine, engErr := startEngine(t, engCtx, conn, func(c *loom.Config) { c.CreateTaskTimeout = 2 * time.Second })
+	waitForReady(t, 5*time.Second, engErr, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "trigger consumer never registered")
 
 	// Pause the outbox relay so the instanceOp record sits in loom-state
 	// undelivered: the creation-deadline will fire with the outbox present + no

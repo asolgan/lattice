@@ -115,11 +115,12 @@ func TestPinningE2E_MidFlightPatternEditRunsPinnedDefinition(t *testing.T) {
 		},
 	})
 
-	engine := newEngine(conn)
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
-	go func() { _ = engine.Start(engCtx) }()
-	time.Sleep(700 * time.Millisecond)
+	_, engErr := startEngine(t, engCtx, conn)
+	waitForReady(t, 5*time.Second, engErr, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "trigger consumer never registered")
 
 	// --- In-flight instance under the OLD definition, parked on StepA (the gate
 	// holds its completion event). ---
@@ -205,11 +206,12 @@ func TestPinningE2E_UpdatedAwayDomainSurvivesUntilDrain(t *testing.T) {
 		Steps:             []loom.Step{{Kind: "systemOp", Operation: "StepA"}},
 	})
 
-	engine := newEngine(conn)
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
-	go func() { _ = engine.Start(engCtx) }()
-	time.Sleep(700 * time.Millisecond)
+	_, engErr := startEngine(t, engCtx, conn)
+	waitForReady(t, 5*time.Second, engErr, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "trigger consumer never registered")
 
 	subjectKey := "vtx.lease." + mustNanoID(t)
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
@@ -365,11 +367,12 @@ func TestPinningE2E_MissingPinFailsInstance(t *testing.T) {
 		},
 	})
 
-	engine := newEngine(conn)
 	engCtx, engCancel := context.WithCancel(ctx)
 	defer engCancel()
-	go func() { _ = engine.Start(engCtx) }()
-	time.Sleep(700 * time.Millisecond)
+	_, engErr := startEngine(t, engCtx, conn)
+	waitForReady(t, 5*time.Second, engErr, func() bool {
+		return consumerExists(t, ctx, conn, eventsStream, "loom-trigger")
+	}, "trigger consumer never registered")
 
 	subjectKey := "vtx.identity." + mustNanoID(t)
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
