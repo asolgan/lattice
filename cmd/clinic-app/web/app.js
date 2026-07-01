@@ -2,9 +2,9 @@
 
 // Clinic app — book · my appointments · provider schedule (Increment A). Vanilla
 // JS, no build step. The Go server does all NATS I/O; this view reads
-// /api/providers + /api/patients + /api/appointments and submits CreatePatient /
-// CreateProvider / CreateAppointment / RescheduleAppointment / SetAppointmentStatus
-// via /api/op.
+// /api/providers + /api/staff/patients + /api/appointments and submits
+// CreatePatient / CreateProvider / CreateAppointment / RescheduleAppointment /
+// SetAppointmentStatus via /api/op.
 
 const PATIENT_KEY = "clinic.patient";
 const state = {
@@ -278,9 +278,15 @@ function restorePatient() {
   state.patient = saved || null;
 }
 
+// loadPatients reads the clinic-wide patient roster from the PROTECTED,
+// RLS-scoped /api/staff/patients (D1.5, the staff wildcard increment) — the
+// switcher used to read the unprotected /api/patients, letting ANY caller dump
+// every patient's full name with no authentication at all (a membership-
+// disclosure PHI leak). authedGetAsStaff mints its own fixed-subject token, so
+// this still works before a patient has been selected.
 async function loadPatients() {
   try {
-    const data = await api("/api/patients");
+    const data = await authedGetAsStaff("/api/staff/patients");
     state.patients = data.patients || [];
   } catch (_) {
     state.patients = [];

@@ -175,6 +175,42 @@ func Lenses() []pkgmgr.LensSpec {
 				{Name: "follow_up_date", Type: "text"},
 			},
 		},
+			{
+				// clinicPatientsRead — the protected Postgres read model for the
+				// clinic-wide patient-context switcher (D1.5, mirroring the staff
+				// wildcard increment: handleStaffAppointments / providerAppointmentsRead
+				// above). cmd/clinic-app's handlePatients used to list the unprotected
+				// clinicPatients NATS-KV bucket and serve every named patient's full
+				// name to ANY caller with no authentication at all — a clinic-wide
+				// membership-disclosure PHI dump (which patients exist at this clinic).
+				// handleStaffPatients replaces that vector, reading THIS table as a
+				// JWT-authenticated actor.
+				//
+				// Unlike clinicAppointmentsRead / providerAppointmentsRead there is no
+				// per-patient self-anchor to carve out here — "the whole roster" has no
+				// single-row owner, so every row projects an EMPTY authz_anchors set:
+				// only an actor holding the reserved WildcardAnchor grant (D1 design
+				// §3.4 M5, internal/refractor/adapter.WildcardAnchor) ever matches a
+				// row, mirroring handleStaffAppointments' no-separate-staff-projection
+				// note.
+				//
+				// NAME ONLY: DOB / email / phone are the PHI the deferred Vault plane
+				// owns and are intentionally NOT projected, the same discipline the
+				// unprotected clinicPatients lens applies.
+				CanonicalName: "clinicPatientsRead",
+				Class:         "meta.lens",
+				Adapter:       "postgres",
+				Table:         "read_clinic_patients",
+				Engine:        "full",
+				Spec:          clinicPatientsReadSpec,
+				Protected:     true,
+				IntoKey:       []string{"patient_id"},
+				Columns: []pkgmgr.PostgresColumn{
+					{Name: "entity_key", Type: "text"},
+					{Name: "patient_key", Type: "text"},
+					{Name: "name", Type: "text"},
+				},
+			},
 	}
 }
 
@@ -280,6 +316,22 @@ RETURN
   p.key AS key,
   p.key AS patientKey,
   p.demographics.data.fullName AS name`
+
+// clinicPatientsReadSpec is the protected Postgres read model's cypher for the
+// clinic-wide patient roster (D1.5, the staff-wildcard increment). Same
+// WHERE guard as clinicPatientsSpec (only NAMED patients project). authz_anchors
+// is the empty list literal for every row — there is no per-patient self-anchor
+// here (see clinicPatientsRead's doc comment), so only the reserved
+// WildcardAnchor grant ever matches.
+const clinicPatientsReadSpec = `MATCH (p:patient)
+WHERE p.demographics.data.fullName <> null
+RETURN
+  nanoIdFromKey(p.key)         AS patient_id,
+  p.key                        AS entity_key,
+  p.key                        AS patient_key,
+  p.demographics.data.fullName AS name,
+  []                           AS authz_anchors
+`
 
 // clinicAppointmentsReadSpec is the PATIENT-anchored protected Postgres read
 // model's cypher (D1.5). forPatient is REQUIRED (the anchor walk) — an

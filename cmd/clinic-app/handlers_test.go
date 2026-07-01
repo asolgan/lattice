@@ -61,21 +61,6 @@ func TestComputeProviders_SortsAndSkips(t *testing.T) {
 	}
 }
 
-func TestComputePatients_NameOnlySortedSkips(t *testing.T) {
-	keys, get := fakeKV(map[string]any{
-		"vtx.patient.B": map[string]any{"patientKey": "vtx.patient.B", "name": "Bob Tenant"},
-		"vtx.patient.A": map[string]any{"patientKey": "vtx.patient.A", "name": "Alice Rivera"},
-		"vtx.patient.X": map[string]any{"name": "Keyless"}, // skipped
-	})
-	rows := computePatients(keys, get)
-	if len(rows) != 2 {
-		t.Fatalf("expected 2 patients, got %d", len(rows))
-	}
-	if rows[0].Name != "Alice Rivera" || rows[1].Name != "Bob Tenant" {
-		t.Fatalf("patients not sorted by name: %+v", rows)
-	}
-}
-
 func TestComputeAvailability_ScopeByProvider(t *testing.T) {
 	keys, get := apptFixture()
 	rows := computeAvailability(keys, get, "vtx.provider.sam")

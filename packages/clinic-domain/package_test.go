@@ -165,8 +165,8 @@ func TestPackage_Permissions(t *testing.T) {
 		t.Fatalf("expected no Depends (self-contained), got %v", Package.Depends)
 	}
 
-	if got := len(Package.Lenses); got != 5 {
-		t.Fatalf("expected 5 lenses, got %d", got)
+	if got := len(Package.Lenses); got != 6 {
+		t.Fatalf("expected 6 lenses, got %d", got)
 	}
 	lensByName := map[string]pkgmgr.LensSpec{}
 	for _, l := range Package.Lenses {
@@ -191,6 +191,10 @@ func TestPackage_Permissions(t *testing.T) {
 	if l, ok := lensByName["providerAppointmentsRead"]; !ok ||
 		l.Adapter != "postgres" || l.Table != "read_provider_appointments" || !l.Protected {
 		t.Fatalf("unexpected providerAppointmentsRead shape: %+v", lensByName["providerAppointmentsRead"])
+	}
+	if l, ok := lensByName["clinicPatientsRead"]; !ok ||
+		l.Adapter != "postgres" || l.Table != "read_clinic_patients" || !l.Protected {
+		t.Fatalf("unexpected clinicPatientsRead shape: %+v", lensByName["clinicPatientsRead"])
 	}
 	if got := len(Package.WeaverTargets); got != 0 {
 		t.Fatalf("expected 0 weaverTargets, got %d", got)
