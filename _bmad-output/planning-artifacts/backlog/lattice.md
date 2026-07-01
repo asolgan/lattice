@@ -89,7 +89,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Security & trust boundary
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| Read-path authorization (D1) | Reads from lens targets (Postgres/KV) bypass the write-path Capability boundary. Postgres RLS + a decomposed Capability-Read Lens; Gateway sets `lattice.actor_id`. Subsumes `cap.svc` read-auth. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/read-path-authorization-d1-design.md) · D1.1–D1.4 shipped; D1.5 rolling — lease-document GET done (10bd188); next: clinic/loftspace remaining read models |
+| Read-path authorization (D1) | Reads from lens targets (Postgres/KV) bypass the write-path Capability boundary. Postgres RLS + a decomposed Capability-Read Lens; Gateway sets `lattice.actor_id`. Subsumes `cap.svc` read-auth. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/read-path-authorization-d1-design.md) · D1.1–D1.4 shipped; D1.5 rolling — clinic-app patient-self done (c46fbe2); next: provider/staff clinic audiences, loftspace remaining models |
 | Gateway | Edge trust boundary: JWT auth, `Lattice-Actor` stamping, read-path enforcement. Gates external actors + the real Edge node. | ★★★ | L | ✅ ratified · [design](../../implementation-artifacts/gateway-external-trust-boundary-design.md) · 🚧 seq behind NATS-write-restriction F2b |
 | NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) · F1 (credential seam) shipped; F2 = live enforcement |
 | Control-plane Capability authorization (FR30) | Both control planes (Weaver/Refractor `…/control`) should be capability-gated, not open responders. | ★★ | M | ✅ ratified · [design](../../implementation-artifacts/control-plane-capability-authz-design.md) · rides D1.2 (shipped) → buildable; deprioritized behind D1 rollout |
@@ -165,6 +165,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-01 · `c46fbe2` · [clinic-app/clinic-domain] D1.5 — patient-self protected read model (RLS-closed the unauthenticated `?patient=` appointment-history leak; provider/staff audiences flagged follow-up)
 - 2026-07-01 · `ac43891` · [CI/hellolattice] NFR-P3 flake resolved — CI projection deadlines re-scoped to a 1000ms regression guard (runner-floor headroom); reported SLA unchanged (Andrew-ratified)
 - 2026-07-01 · `10bd188` · [loftspace-app/lease-signing] D1.5 — RLS-protect the lease-document GET (closed an unauthenticated PII read of weaver-targets)
 - 2026-07-01 · `12fc79b` · [Core/orchestration-base] FR28 Fire 2 — availability-gated routing (`SetAvailability` op + `availability` aspect; `CreateTask` falls back to queue when the assignee is unavailable)
