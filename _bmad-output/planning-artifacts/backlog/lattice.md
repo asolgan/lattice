@@ -83,8 +83,8 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 **forks** (Gateway, read-path auth, Vault, multi-cell, HA-NATS) and **frozen-contract** changes are
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
-> 🎯 **Build-ready now**: **op-time bounded link enumeration Fire 3** (optional e2e/lint) or the next
-> ★★★-importance ratified item off dependency-gate (D1.5 / write-restriction F2).
+> 🎯 **Build-ready now**: **Gateway** (write-restriction F2 shipped, its seq-block cleared) or
+> **op-time bounded link enumeration Fire 3** (optional e2e/lint).
 > (**FR28 role-queue** Fire 1 + Fire 2 done — see Done log; Fire 3 unrouted surfacing next.
 > **protected-lens out-of-band** ✅ SHIPPED — see Done log. **`@every` schedules** Fire 1 + Fire 2 shipped
 > (`e04498e`); only the Andrew-gated Fire 3 §10.4 doc/contract remains.)
@@ -98,8 +98,8 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | Read-path authorization (D1) | Reads from lens targets (Postgres/KV) bypass the write-path Capability boundary. Postgres RLS + a decomposed Capability-Read Lens; Gateway sets `lattice.actor_id`. Subsumes `cap.svc` read-auth. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/read-path-authorization-d1-design.md) · D1.1–D1.5 shipped (every clinic-app/loftspace-app read model classified protected-or-public and closed); remaining D1 scope = the deferred Gateway/Personal-Lens fork (Andrew) |
-| Gateway | Edge trust boundary: JWT auth, `Lattice-Actor` stamping, read-path enforcement. Gates external actors + the real Edge node. | ★★★ | L | ✅ ratified · [design](../../implementation-artifacts/gateway-external-trust-boundary-design.md) · 🚧 seq behind NATS-write-restriction F2b |
-| NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) · F2b code+wiring done (worktree, gates green); live-stack turn-on needs Andrew present (shared-stack teardown, unattended-blocked) |
+| Gateway | Edge trust boundary: JWT auth, `Lattice-Actor` stamping, read-path enforcement. Gates external actors + the real Edge node. | ★★★ | L | ✅ ratified · [design](../../implementation-artifacts/gateway-external-trust-boundary-design.md) · unblocked — NATS-write-restriction F2 shipped; next build-ready pick |
+| NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) · F1+F2 shipped (live enforcement ON, `1f2f999`+`083b0ad`); next: optional Fire 3 (flip Gate 2/3 bypass tests hard + verify-nats-permissions CI job) |
 | Control-plane Capability authorization (FR30) | Both control planes (Weaver/Refractor `…/control`) should be capability-gated, not open responders. | ★★ | M | ✅ ratified · [design](../../implementation-artifacts/control-plane-capability-authz-design.md) · rides D1.2 (shipped) → buildable; deprioritized behind D1 rollout |
 
 ### Privacy / Vault
@@ -175,6 +175,8 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-01 · `083b0ad` · [CI/bypass] Gate 2/3 live Health KV marker writers threaded with NATS_NKEY (fix-forward on the write-restriction merge)
+- 2026-07-01 · `1f2f999` · [Core/deploy] NATS write-restriction Fire 2 — live enforcement ON; 4 permission-matrix gaps found+fixed against the real stack
 - 2026-07-01 · `970585f` · [Refractor] Retire-simple-engine Fire 1 — lift `EvalResult`/`NodeEntry` into `ruleengine` (pure relocation, simple keeps a type alias)
 - 2026-07-01 · `4920bc6` · [Augur] Fire 2b — `augurDispatch` closes the loop (approve→dispatch); 3-layer review folded (reconciler backoff pacing + dispatch-time anchor-field pinning)
 - 2026-07-01 · `da8279f` · [loftspace-app] D1.5 — `handleUnitApplications` landlord operator-console unauth read fix (RLS-scoped to `queryLandlordApplications`'s managed-unit set; D1.5 read-model rollout now complete)
@@ -197,16 +199,4 @@ One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archiv
 - 2026-06-30 · `44b385a` · [Core/substrate] `@every` Fire 1 — `ScheduleEvery`/`CancelSchedule` recurring-schedule primitive
 - 2026-06-29 · `d6530e9` · [Core/processor+rbac] Lane authorization enforcement (§2.3) — step-3 lane gate + `LaneUnauthorized` + Gate-3 vector #8
 - 2026-06-30 · `0cd2695` · [lint/Core] instanceOf P7 lint gate (whole instanceOf design done)
-- 2026-06-27 · `679fe25` · [Refractor] Full-engine plain-projection anchor-tombstone retraction (`AnchorDeleteResult`)
-- 2026-06-30 · `44049ed` · [Core/bypass] D1.4 — Gate-3 read-path authorization adversarial vectors (§5.1–5.5: no-JWT · cross-actor · revoked · cross-anchor bleed · no-RLS-policy); Gate 3 now 13/13, gate sets `POSTGRES_TEST_DSN`
-- 2026-06-30 · `<pending>` · [clinic-domain] kv.Links Fire 2 — re-author the appointment double-book guard onto `hasBooking` links + scalar `bookingGuard` epoch (drop the `.bookings` key-list aspects + DDLs); pkg 0.8.0
-- 2026-06-30 · `cc2613f` · [Core/substrate] kv.Links Fire 1 — bounded op-time link enumeration primitive (+ `KVListKeysFilter` paged subject-filter seam)
-- 2026-06-30 · `3dbd049` · [Augur] Fire 2a — `ReviewProposal` human-verdict op
-- 2026-06-30 · [CI] Flake-hunt: mined the re-run history (attempt-aware) — found the Hello-Lattice NFR-P3 flake
-- 2026-06-29 · `faa3aec` · [Refractor] GrantTable composite-keyed anchor-tombstone retraction
-- 2026-06-29 · `89a9842` · [CI] Halve the leaseshortwindow freshness window (40s→25s) — convergence −33s
-- 2026-06-29 · `65f4f4d` · [Loom/orchestration-base] Adapter-read-seam Fire 1 — subject-templated params
-- 2026-06-29 · `f04f331` · [Core/bootstrap] D1.3 Increment 1 — base `capabilityRead` self-anchor lens
-- 2026-06-29 · `c1a8901` · [Core/pkgmgr + Refractor] Package-declared protected/grant Postgres lenses
-- 2026-06-29 · `d772195` · [Refractor] Full-engine multi-column projection key (GrantTable producer)
 - *(older entries rolled to [archive/lattice-done.md](archive/lattice-done.md))*
