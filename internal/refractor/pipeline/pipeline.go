@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/asolgan/lattice/internal/refractor/adapter"
+	"github.com/asolgan/lattice/internal/refractor/adjacency"
 	"github.com/asolgan/lattice/internal/refractor/failure"
 	"github.com/asolgan/lattice/internal/refractor/health"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
@@ -492,40 +493,31 @@ func (p *Pipeline) handle(ctx context.Context, msg substrate.Message) (substrate
 	// Classify the key by Lattice Contract #1 §1.5 shape.
 	switch substrate.ClassifyKey(key) {
 	case substrate.KindAspect:
-		// On the actor-aware (capability) pipeline an aspect-only mutation
-		// (e.g. identity .state, role .description) changes a vertex's
-		// projected state with no vertex-root event, so it must drive a
-		// fan-out reprojection seeded from the parent vertex. Other lenses
-		// keep the legacy ack-and-skip behaviour — EXCEPT a Secure Lens on a
-		// piiKey mutation: every crypto-shred commits a piiKey update, and an
-		// already-projected row holds decrypted PLAINTEXT, so the anchor must
-		// reproject now (decrypt returns ErrKeyShredded → the row is
-		// overwritten with null PII). Waiting for an unrelated anchor event
-		// would leave shredded plaintext standing — a right-to-erasure
-		// violation, not an eventual-consistency wrinkle.
+		// An aspect-only mutation (e.g. identity .state, unit .listing, a
+		// piiKey shred) changes a vertex's projected state with no
+		// vertex-root event. On the actor-aware (capability) pipeline it
+		// drives a fan-out reprojection seeded from the parent vertex. On a
+		// plain lens it re-executes seeded from the owner vertex — refreshing
+		// the row's aspect-derived fields (a Secure Lens's piiKey shred
+		// scrubs projected plaintext to null this way) and, when the
+		// mutation drops the owner out of the matched set (a WHERE flip /
+		// keyed-aspect deletion), retracting its row via the evaluate path's
+		// filter-retraction presence check.
 		if p.actorEnumerator != nil {
 			return p.evalAspectFanOut(ctx, msg, key)
 		}
-		if p.secureDecryptor != nil {
-			if _, _, _, localName, ok := substrate.ParseAspectKey(key); ok && localName == "piiKey" {
-				return p.evalSecureShredReprojection(ctx, msg, key)
-			}
-		}
-		slog.Info("pipeline: aspect mutation observed but no handler registered",
-			"ruleId", p.ruleID, "key", key,
-			"parentVertexKey", key[:strings.LastIndex(key, ".")])
-		return substrate.Ack, nil
+		return p.evalPlainAspectReprojection(ctx, msg, key)
 	case substrate.KindLink:
-		// On the actor-aware (capability) pipeline a pure link mutation
-		// (holdsRole/grantedBy/...) changes actors' topology with no vertex
-		// event, so it must drive a fan-out reprojection from both endpoints.
-		// Other lenses keep the legacy ack-and-skip behaviour.
+		// A pure link mutation (holdsRole/manages/appliesToUnit/...) changes
+		// graph topology with no vertex event. On the actor-aware pipeline it
+		// drives a fan-out reprojection from both endpoints; on a plain lens
+		// it re-executes seeded from each endpoint vertex — refreshing
+		// link-derived rows and retracting an endpoint anchor that a
+		// required-link removal drops from the matched set.
 		if p.actorEnumerator != nil {
 			return p.evalLinkFanOut(ctx, msg, key, tombstone)
 		}
-		slog.Info("pipeline: link mutation observed but no handler registered",
-			"ruleId", p.ruleID, "key", key)
-		return substrate.Ack, nil
+		return p.evalPlainLinkReprojection(ctx, msg, key)
 	case substrate.KindUnknown:
 		slog.Warn("pipeline: unknown key shape — defect signal",
 			"ruleId", p.ruleID, "key", key)
@@ -621,39 +613,138 @@ func (p *Pipeline) evalLinkFanOut(ctx context.Context, msg substrate.Message, ke
 	return p.writeResults(ctx, msg, key, results)
 }
 
-// evalSecureShredReprojection handles a piiKey aspect CDC event on a Secure
-// Lens: re-evaluate the parent (anchor) vertex so its projected row reflects
-// the key's current state — after a shred, decrypt fails ErrKeyShredded and
-// the row's secure columns project null, scrubbing previously-projected
-// plaintext. A parent whose type doesn't bind the lens's MATCH evaluates to
-// zero rows (harmless no-op); a missing/tombstoned parent is skipped — row
+// evalPlainAspectReprojection handles a KindAspect CDC event on a plain
+// (non-actor-aware) lens: re-evaluate the owner (parent) vertex so its
+// projected row reflects the aspect's current state — a changed field
+// refreshes, a Secure Lens's piiKey shred scrubs plaintext to null
+// (decrypt fails ErrKeyShredded → secure columns project null), and an
+// aspect mutation that drops the owner out of the matched set retracts its
+// row through the evaluate path's filter-retraction presence check. The
+// aspect body is irrelevant (the re-execute reads current Core KV state),
+// so a tombstone and a value change take the same path. An owner whose type
+// doesn't bind the lens's MATCH evaluates to zero rows with no derivable
+// anchor key (harmless no-op); a missing/tombstoned owner is skipped — row
 // deletion belongs to the anchor-tombstone path.
-func (p *Pipeline) evalSecureShredReprojection(ctx context.Context, msg substrate.Message, key string) (substrate.Decision, error) {
+func (p *Pipeline) evalPlainAspectReprojection(ctx context.Context, msg substrate.Message, key string) (substrate.Decision, error) {
 	parentVtx, parentType, _, _, ok := substrate.ParseAspectKey(key)
 	if !ok {
 		return substrate.Ack, nil
 	}
-	props, err := p.fetchVertexProps(ctx, parentVtx)
+	results, err := p.evaluatePlainFromVertex(ctx, parentVtx, parentType)
 	if err != nil {
-		slog.Error("pipeline: piiKey reprojection: fetch anchor",
-			"ruleId", p.ruleID, "entityId", key, "err", err)
-		return p.dispositionEvalErr(ctx, msg, key, "traversal", err)
-	}
-	if props == nil {
-		return substrate.Ack, nil
-	}
-	entry := ruleengine.NodeEntry{
-		CoreKVKey:  parentVtx,
-		NodeLabel:  parentType,
-		Properties: props,
-	}
-	results, err := p.evaluateForEntry(ctx, entry)
-	if err != nil {
-		slog.Error("pipeline: piiKey reprojection: evaluate",
+		slog.Error("pipeline: plain aspect reprojection: evaluate",
 			"ruleId", p.ruleID, "entityId", key, "stage", "traversal", "err", err)
 		return p.dispositionEvalErr(ctx, msg, key, "traversal", err)
 	}
 	return p.writeResults(ctx, msg, key, results)
+}
+
+// evalPlainLinkReprojection handles a KindLink CDC event on a plain
+// (non-actor-aware) lens: re-evaluate both endpoint vertices so rows derived
+// through the link refresh, and an endpoint anchor that a required-link
+// removal drops from the matched set retracts through the evaluate path's
+// filter-retraction presence check. A link tombstone (empty body, or a body
+// with isDeleted) and a link create take the same evaluate path — the
+// re-execute reads current adjacency either way. Results are deduplicated
+// across the two endpoint evaluations (a whole-type-scan lens re-derives the
+// same row set from each seed).
+//
+// Like the actor-aware link fan-out, the link is first idempotently applied
+// to adjKV (both directional entries, the link key as EdgeID — matching the
+// dedicated adjacency consumer's events exactly): the two consumers observe
+// the same CDC event with no cross-consumer ordering guarantee, and without
+// this a tombstone's re-execute could still see the removed edge and miss the
+// retraction until the adjacency watch heals it.
+func (p *Pipeline) evalPlainLinkReprojection(ctx context.Context, msg substrate.Message, key string) (substrate.Decision, error) {
+	type1, id1, linkName, type2, id2, ok := substrate.ParseLinkKey(key)
+	if !ok {
+		return substrate.Ack, nil
+	}
+	isDeleted := len(msg.Body) == 0
+	if !isDeleted {
+		var linkProps map[string]any
+		if err := json.Unmarshal(msg.Body, &linkProps); err != nil {
+			// A malformed link body can never parse on redelivery — Terminal
+			// (DLQ), matching the dedicated adjacency consumer's disposition
+			// for the identical message. A bare Nak here would poison-loop
+			// every plain pipeline on one bad body.
+			slog.Error("pipeline: plain link reprojection: unmarshal payload",
+				"ruleId", p.ruleID, "entityId", key, "err", err)
+			return p.dispositionEvalErr(ctx, msg, key, "decode",
+				failure.Terminal(fmt.Errorf("pipeline: plain link reprojection: unmarshal %q: %w", key, err)))
+		}
+		isDeleted, _ = linkProps["isDeleted"].(bool)
+	}
+	for _, evt := range []adjacency.CoreKVEvent{
+		{CoreKvKey: key, EdgeID: key, Name: linkName, Direction: "outbound",
+			NodeID: id1, OtherNodeID: id2, OtherType: type2, IsDeleted: isDeleted},
+		{CoreKvKey: key, EdgeID: key, Name: linkName, Direction: "inbound",
+			NodeID: id2, OtherNodeID: id1, OtherType: type1, IsDeleted: isDeleted},
+	} {
+		if err := adjacency.Build(ctx, p.adjKV, evt); err != nil {
+			slog.Error("pipeline: plain link reprojection: adjacency build",
+				"ruleId", p.ruleID, "entityId", key, "err", err)
+			return p.dispositionEvalErr(ctx, msg, key, "traversal", err)
+		}
+	}
+	endpoints := []struct{ vtx, label string }{
+		{"vtx." + type1 + "." + id1, type1},
+		{"vtx." + type2 + "." + id2, type2},
+	}
+	var combined []ruleengine.EvalResult
+	seen := make(map[string]bool)
+	for _, ep := range endpoints {
+		results, err := p.evaluatePlainFromVertex(ctx, ep.vtx, ep.label)
+		if err != nil {
+			slog.Error("pipeline: plain link reprojection: evaluate",
+				"ruleId", p.ruleID, "entityId", key, "endpoint", ep.vtx,
+				"stage", "traversal", "err", err)
+			return p.dispositionEvalErr(ctx, msg, key, "traversal", err)
+		}
+		for _, r := range results {
+			id := dedupeKeyFor(r)
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			combined = append(combined, r)
+		}
+	}
+	return p.writeResults(ctx, msg, key, combined)
+}
+
+// evaluatePlainFromVertex point-reads a vertex and runs the plain evaluate
+// path seeded from it — the shared core of the plain aspect/link reprojection
+// arms. A missing or tombstoned vertex yields (nil, nil): its row lifecycle
+// belongs to the vertex-root event path.
+func (p *Pipeline) evaluatePlainFromVertex(ctx context.Context, vtxKey, vtxType string) ([]ruleengine.EvalResult, error) {
+	props, err := p.fetchVertexProps(ctx, vtxKey)
+	if err != nil {
+		return nil, err
+	}
+	if props == nil {
+		return nil, nil
+	}
+	entry := ruleengine.NodeEntry{
+		CoreKVKey:  vtxKey,
+		NodeLabel:  vtxType,
+		Properties: props,
+	}
+	return p.evaluateForEntry(ctx, entry)
+}
+
+// dedupeKeyFor returns a canonical identity for an EvalResult's target key
+// (encoding/json sorts map keys, so the marshalled form is deterministic).
+// The Delete flag is part of the identity so a Delete and an Upsert for the
+// same key are never conflated.
+func dedupeKeyFor(r ruleengine.EvalResult) string {
+	b, err := json.Marshal(r.Keys)
+	if err != nil {
+		// Un-marshallable key values cannot occur for engine-produced rows
+		// (scalars from JSON); fall back to the fmt rendering.
+		return fmt.Sprintf("%t|%v", r.Delete, r.Keys)
+	}
+	return fmt.Sprintf("%t|%s", r.Delete, b)
 }
 
 // evalAspectFanOut handles a KindAspect CDC event on the actor-aware

@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -143,6 +144,26 @@ func (p *Pipeline) evaluateForEntryRaw(ctx context.Context, entry ruleengine.Nod
 		results, err := p.executeFullForActor(ctx, entry.CoreKVKey, entry.Properties)
 		if err != nil {
 			return nil, err
+		}
+		// Filter-retraction presence check (plain projection lenses): when a
+		// live event anchor no longer appears in the re-derived row set — a
+		// WHERE predicate flipped, a keyed aspect was deleted, a required
+		// link was removed — its previously-projected row must be retracted,
+		// which the upsert-only re-scan never does. The anchor's projection
+		// key is derived read-free (AnchorProjectionKey succeeds only for a
+		// one-row-per-anchor, anchor-keyed lens — see its ok contract), so a
+		// multi-row or neighbor-keyed lens falls through to today's behaviour
+		// and never risks a wrong Delete. A never-matched anchor emits an
+		// idempotent Delete against an absent key — a harmless no-op, pinned
+		// by test. The tombstoned-anchor shortcut above returns before this
+		// check; a tombstone it could not derive keys for cannot derive them
+		// here either (same derivation).
+		if p.actorEnumerator == nil && p.envelopeFn == nil {
+			if keys, ok := p.fullEngine.AnchorProjectionKey(
+				p.fullCR, entry.CoreKVKey, entry.NodeLabel, entry.Properties); ok &&
+				!resultsContainKeys(results, keys) {
+				results = append(results, ruleengine.EvalResult{Delete: true, Keys: keys})
+			}
 		}
 		return results, nil
 
@@ -492,6 +513,30 @@ func (p *Pipeline) reprojectActors(ctx context.Context, actorKeys []string) ([]r
 		all = append(all, res...)
 	}
 	return all, nil
+}
+
+// resultsContainKeys reports whether any non-delete result carries the given
+// target-key map — the filter-retraction presence test: present ⇒ the anchor
+// still projects, absent ⇒ its row must be retracted. Keys compare by their
+// canonical JSON rendering (the identity the adapters key on), so a
+// same-valued key differing only in in-memory numeric type reads as PRESENT —
+// erring toward linger (safe), never toward deleting a row the adapter would
+// address identically.
+func resultsContainKeys(results []ruleengine.EvalResult, keys map[string]any) bool {
+	want, err := json.Marshal(keys)
+	if err != nil {
+		return true // unmarshalable keys: treat as present → no Delete (fail safe)
+	}
+	for i := range results {
+		if results[i].Delete {
+			continue
+		}
+		got, gerr := json.Marshal(results[i].Keys)
+		if gerr == nil && bytes.Equal(got, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // fetchVertexProps point-reads a vertex from Core KV and returns its

@@ -235,10 +235,47 @@ at write time, not taken from the `RETURN` columns.
 
 A tombstone of a **secondary** (non-anchor) node — e.g. a deleted patient on an
 appointment lens — is *not* a retraction: it re-executes so dependent fields refresh (the
-appointment row survives with `patientName` null). Retraction when an anchor drops out of
-the matched set **without** a root tombstone (a keyed-aspect deletion, or a `WHERE`
-predicate that flips) is the broader "negative / filter-retraction projection" problem,
-tracked separately on the Phase-3 backlog — not handled here.
+appointment row survives with `patientName` null).
+
+#### Plain-lens aspect/link reprojection + filter-retraction
+
+A plain (non-actor-aware) lens **reprojects on aspect/link-only mutations**: a
+`KindAspect` CDC event re-executes seeded from the aspect's **owner vertex**
+(`evalPlainAspectReprojection` — the plain analog of the capability path's
+`evalAspectFanOut`; a Secure Lens's piiKey shred scrubs projected plaintext through this
+same arm), and a `KindLink` event re-executes seeded from **both endpoint vertices**
+(`evalPlainLinkReprojection`, results deduplicated across the two seeds). So an edited
+listing price or a renamed provider is promptly fresh in its read model, instead of
+incidentally fresh on the next unrelated vertex-root event.
+
+On top of that freshness transport sits **filter-retraction**: after any plain
+(no actor enumerator, no envelope) full-engine re-execute, a presence check derives
+the event anchor's projection key
+read-free (`full.Engine.AnchorProjectionKey` — the same derivation
+`AnchorDeleteResult` delegates to) and, when the anchor is **absent from the re-derived
+row set** — its `WHERE` predicate flipped, a keyed aspect was tombstoned, a required
+link was removed — emits a Delete on that key. The safety keystone: the derivation
+succeeds **only** for a one-row-per-anchor, anchor-keyed lens (every key column
+resolves read-free from the anchor binding alone; a key column referencing a
+**non-anchor variable is rejected structurally**), so a **neighbor-keyed composite**
+lens (e.g. `read_landlord_lease_applications`, keyed `(app_id, landlord_id)`) falls
+through to the previous linger behaviour — never a wrong or partial Delete. A
+never-matched anchor emits an idempotent Delete against an absent key — a no-op on a
+NATS-KV/Postgres row target (pinned by test); on a **GrantTable** target the
+`RevokeGrant` write deliberately inserts a seq-stamped tombstone row for a
+never-granted key (deny-direction, ≤1 row per actor — it also makes a `protected`
+flag flipping false promptly revoke the wildcard grant, which previously lingered).
+Convergence (`violating`-flag) lenses are unaffected: they anchor-match every
+candidate unconditionally, so the presence check never fires for them — an authoring
+invariant (a future convergence lens with a filtering `WHERE` would retract rows
+Weaver misreads as deletions; keep convergence predicates in the `violating` flag).
+
+**Residual (deferred by design — "Fire 3" of the negative/filter-retraction design):**
+a **neighbor-driven** drop (the anchor stops matching because a *different* vertex
+changed, on a neighbor-keyed/multi-row lens — e.g. a `manages` unassign dropping a
+landlord's application rows) still lingers; retracting it needs a **target-read diff**
+(`ListKeysForAnchor` adapter seam + set-difference Deletes), tracked on the Phase-3
+backlog with the Vault 5b manages-unassign case as its live consumer.
 
 ### Property model (how lens cypher reads a node)
 

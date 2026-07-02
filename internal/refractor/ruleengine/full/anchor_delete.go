@@ -2,6 +2,7 @@ package full
 
 import (
 	"context"
+	"strings"
 
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 )
@@ -36,7 +37,28 @@ import (
 //	              re-execute.
 //	ok == true  → keys is the complete Keys map to hand to a Delete EvalResult,
 //	              mirroring the upsert key map (every key column → its value).
-func (*Engine) AnchorDeleteResult(
+func (e *Engine) AnchorDeleteResult(
+	cr ruleengine.CompiledRule, eventKey, eventType string, eventProps map[string]any,
+) (keys map[string]any, ok bool) {
+	return e.AnchorProjectionKey(cr, eventKey, eventType, eventProps)
+}
+
+// AnchorProjectionKey resolves the projection key an event vertex projects to
+// (or projected to), read-free from the vertex's stored root body alone. It is
+// the key derivation shared by the two plain-lens retraction triggers: the
+// root-tombstone Delete (AnchorDeleteResult) and the filter-retraction
+// presence check (an anchor that stays alive but drops out of the matched set
+// on a WHERE flip / keyed-aspect deletion / required-link removal).
+//
+// The ok contract is the safety keystone: ok == true iff the event vertex is
+// this rule's anchor label AND every key column resolves read-free from the
+// anchor binding to a scalar — which holds exactly when the lens projects at
+// most one row per anchor, keyed by the anchor (the output-collision guard
+// enforces ≤1 non-delete row per anchor-derived key). A neighbor-keyed or
+// multi-row lens (a key column bound to a non-anchor variable, or needing a
+// Core-KV read) returns ok == false, so a caller can never derive — and never
+// delete — a key it cannot prove is the anchor's single row.
+func (*Engine) AnchorProjectionKey(
 	cr ruleengine.CompiledRule, eventKey, eventType string, eventProps map[string]any,
 ) (keys map[string]any, ok bool) {
 	compiled, isFull := cr.(*CompiledRule)
@@ -44,6 +66,17 @@ func (*Engine) AnchorDeleteResult(
 		return nil, false
 	}
 	q := compiled.Query
+
+	// A WITH clause can re-project or re-bind variables (`WITH y AS u`), so a
+	// RETURN expression's variable NAME no longer proves it binds the anchor —
+	// the name-based scope check below would be defeated. No live plain lens
+	// uses WITH (the WITH lenses are actor-aggregates, excluded upstream);
+	// reject wholesale rather than model re-binding.
+	for _, c := range q.Clauses {
+		if _, isWith := c.(*With); isWith {
+			return nil, false
+		}
+	}
 
 	// Anchor = the first MATCH pattern's first node. Its label discriminates an
 	// anchor tombstone (retract) from a secondary-node tombstone (re-execute):
@@ -88,6 +121,15 @@ func (*Engine) AnchorDeleteResult(
 			// activation; defensively fall through rather than emit a partial key.
 			return nil, false
 		}
+		if !exprReferencesOnlyVariable(expr, anchorVar) {
+			// A key column bound to a NON-anchor variable (a neighbor-keyed /
+			// multi-row lens, e.g. landlord_id off a manages walk) is not
+			// derivable from the anchor alone. The evaluator would silently
+			// resolve the unbound variable to nil (the OPTIONAL-MATCH
+			// contract) and yield a WRONG partial key, so reject
+			// structurally before evaluating.
+			return nil, false
+		}
 		v, err := ex.evalExpr(b, expr)
 		if err != nil {
 			// Needs a Core-KV read (aspect access) or otherwise unresolvable —
@@ -99,9 +141,97 @@ func (*Engine) AnchorDeleteResult(
 			// project a degenerate key) — fall through.
 			return nil, false
 		}
+		if v == nil {
+			// A nil key value (e.g. an unset root field) addresses no
+			// derivable row — its upserts were equally degenerate, and a
+			// Delete on a nil-valued key is adapter-rendering-dependent.
+			// Fall through rather than emit an ambiguous key.
+			return nil, false
+		}
 		out[col] = v
 	}
+	if len(out) == 0 {
+		// Defensive: an empty key map must never become a Delete predicate.
+		// Unreachable today (cols always resolves to ≥1 column), but the
+		// blast radius of an unqualified delete warrants the guard.
+		return nil, false
+	}
 	return out, true
+}
+
+// exprReferencesOnlyVariable reports whether every variable an expression
+// references is the given one — the structural precondition for resolving a
+// key column read-free from the anchor binding alone. Pattern forms
+// (existence tests, comprehensions) always require traversal, so they are
+// never anchor-only. Conservative by construction: an unrecognized future
+// node type reports false (fall through to linger, never a wrong Delete).
+func exprReferencesOnlyVariable(e Expr, allowed string) bool {
+	switch x := e.(type) {
+	case nil:
+		return true
+	case *Literal:
+		return true
+	case *ParameterRef:
+		// Parameters resolve from the executor's param map, not a variable
+		// binding; the read-free executor carries none, so evaluation
+		// surfaces MissingParameterError and the caller falls through.
+		return true
+	case *VariableRef:
+		return x.Name == allowed
+	case *PropertyAccess:
+		return exprReferencesOnlyVariable(x.Target, allowed)
+	case *BinaryOp:
+		return exprReferencesOnlyVariable(x.Left, allowed) && exprReferencesOnlyVariable(x.Right, allowed)
+	case *AndOr:
+		for _, op := range x.Operands {
+			if !exprReferencesOnlyVariable(op, allowed) {
+				return false
+			}
+		}
+		return true
+	case *Not:
+		return exprReferencesOnlyVariable(x.Operand, allowed)
+	case *FunctionCall:
+		switch strings.ToLower(x.Name) {
+		case "collect", "count", "max", "min":
+			// An aggregator's value depends on the grouped row set, which the
+			// read-free single-anchor binding fabricates (collect → [v],
+			// count → 1) — the one-row-per-anchor premise cannot hold for an
+			// aggregate key. Never derivable.
+			return false
+		}
+		for _, a := range x.Args {
+			if !exprReferencesOnlyVariable(a, allowed) {
+				return false
+			}
+		}
+		return true
+	case *MapLiteral:
+		for _, v := range x.Values {
+			if !exprReferencesOnlyVariable(v, allowed) {
+				return false
+			}
+		}
+		return true
+	case *ListLiteral:
+		for _, el := range x.Elements {
+			if !exprReferencesOnlyVariable(el, allowed) {
+				return false
+			}
+		}
+		return true
+	case *CaseExpr:
+		for _, alt := range x.Alternatives {
+			if !exprReferencesOnlyVariable(alt.When, allowed) || !exprReferencesOnlyVariable(alt.Then, allowed) {
+				return false
+			}
+		}
+		return exprReferencesOnlyVariable(x.Else, allowed)
+	default:
+		// PatternExpr, PatternComprehension, and any future node: traversal-
+		// dependent or unknown — not derivable from the anchor binding.
+		return false
+	}
 }
 
 // anchorNode returns the variable + label of the first MATCH clause's first

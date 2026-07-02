@@ -438,10 +438,14 @@ func (ex *executor) seedNodes(b binding, n NodePattern) ([]*nodeRef, error) {
 	}
 
 	// Generic path: scan the Core KV bucket. Filters by label first when set.
+	// A list failure MUST surface, not degrade to zero seeds: downstream, the
+	// filter-retraction presence check treats an anchor's absence from the
+	// derived row set as authoritative and emits a Delete, so a swallowed
+	// error here would retract live rows on a transient substrate blip. An
+	// empty bucket returns an empty slice with no error and seeds nothing.
 	keys, err := ex.coreKV.ListKeys(ex.ctx)
 	if err != nil {
-		// An empty bucket (or any list error) yields no seeds.
-		return nil, nil
+		return nil, fmt.Errorf("full engine: seed scan: %w", err)
 	}
 	var refs []*nodeRef
 	for _, k := range keys {
