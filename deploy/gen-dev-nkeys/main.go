@@ -168,15 +168,20 @@ var matrix = []component{
 		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
 	},
 	{
-		name:     "loupe",
-		desc:     "trusted inspector — reads all KV (subscribe/get); writes state only via ops, even it gets no direct Core-KV write",
-		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$JS.API.>", "$JS.ACK.>"},
+		name: "loupe",
+		desc: "trusted inspector — reads all KV (subscribe/get); writes state only via ops, even it gets no direct Core-KV write",
+		// lattice.ctrl.> — the Control surface issues per-name requests to the
+		// Refractor/Weaver/Loom control planes (lattice.ctrl.<comp>.<name>.<op>);
+		// the planes reply via allow_responses on their own users.
+		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$JS.API.>", "$JS.ACK.>", "lattice.ctrl.>"},
 		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
 	},
 	{
-		name:     "lattice",
-		desc:     "operator CLI + verify tools — submits ops, reads",
-		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$JS.API.>", "$JS.ACK.>"},
+		name: "lattice",
+		desc: "operator CLI + verify tools — submits ops, reads",
+		// lattice.ctrl.> — CLI control commands (pause/resume/rebuild/…) request
+		// the component control planes, same operator surface as Loupe's.
+		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$JS.API.>", "$JS.ACK.>", "lattice.ctrl.>"},
 		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
 	},
 	{

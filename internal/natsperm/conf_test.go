@@ -11,6 +11,7 @@ import (
 	"github.com/asolgan/lattice/internal/substrate"
 	"github.com/nats-io/nats-server/v2/server"
 	natsserver "github.com/nats-io/nats-server/v2/test"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 )
 
@@ -187,6 +188,55 @@ func TestLensTargetWriteIsolation(t *testing.T) {
 	}
 
 	assertDeniedPuts(t, url, "weaver-targets", []string{"loom", "loupe", "lattice", "gateway"})
+}
+
+// TestControlPlaneOperatorAccess: the operator surfaces (loupe, the lattice CLI)
+// may request the component control planes (lattice.ctrl.<comp>.<name>.<op>);
+// the responding engine replies through allow_responses. Positive pin: a missing
+// lattice.ctrl.> publish grant silences every operator control action with an
+// opaque request timeout, so this asserts the round trip, not just denials.
+func TestControlPlaneOperatorAccess(t *testing.T) {
+	url := startServerFromConf(t)
+
+	// The refractor user stands in for its own control plane: subscribe allows
+	// ">", and allow_responses grants the reply publish — exactly the live wiring.
+	ref := connectAs(t, url, "refractor")
+	sub, err := ref.NATS().Subscribe("lattice.ctrl.refractor.*.health", func(m *nats.Msg) {
+		_ = m.Respond([]byte(`{"ok":true}`))
+	})
+	if err != nil {
+		t.Fatalf("refractor subscribe control subject: %v", err)
+	}
+	// Cleanup (not defer): parallel subtests resume after this function body
+	// returns, and the responder must outlive them.
+	t.Cleanup(func() { _ = sub.Unsubscribe() })
+	if err := ref.NATS().Flush(); err != nil {
+		t.Fatalf("flush refractor subscription: %v", err)
+	}
+
+	for _, component := range []string{"loupe", "lattice"} {
+		component := component
+		t.Run("allowed/"+component, func(t *testing.T) {
+			t.Parallel()
+			c := connectAs(t, url, component)
+			reply, err := c.NATS().Request("lattice.ctrl.refractor.lens1.health", nil, 3*time.Second)
+			if err != nil {
+				t.Fatalf("%s control request: want reply, got %v", component, err)
+			}
+			if len(reply.Data) == 0 {
+				t.Errorf("%s control request: empty reply", component)
+			}
+		})
+	}
+
+	// A vertical app is NOT an operator surface — its control request stays denied.
+	t.Run("denied/loftspace-app", func(t *testing.T) {
+		t.Parallel()
+		c := connectAs(t, url, "loftspace-app")
+		if _, err := c.NATS().Request("lattice.ctrl.refractor.lens1.health", nil, deniedTimeout); err == nil {
+			t.Error("loftspace-app control request: want denial, got a reply")
+		}
+	})
 }
 
 // TestBackingStreamSideChannel: denying $KV.core-kv.> publish is not enough — a
