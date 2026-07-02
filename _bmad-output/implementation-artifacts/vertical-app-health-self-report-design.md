@@ -1,6 +1,9 @@
 # Vertical-app Health-KV self-report — honest dependency-probing heartbeat
 
-**Status: 📐 awaiting-Andrew (ratification)**
+**Status: ✅ Andrew-ratified (2026-07-02) — §5.6 TTL ON (the one judgment call: apps born
+TTL-conformant).** Loupe-2.0 reconciliation folded (2026-07-02): `cmd/loupe/**` is its own lane and
+F4 "Health absorption" retires the current Health tab, so this design's only interface to Loupe is
+the Contract #5 §5.2 document — the render test case moved out of Fire 1 to the Loupe lane (§7, §9).
 **Author:** Winston (Designer fire, 2026-07-01)
 **Backlog:** Stream-2 feature backlog — *[Verticals] loftspace-app / clinic-app have no Health-KV self-report* (★★, S) — PO-discovered.
 **Owning component:** a new thin reporter in `internal/healthkv` (the platform seam) + two consumers `cmd/loftspace-app` and `cmd/clinic-app`. Docs in `docs/observability/health-kv-schema.md`.
@@ -259,7 +262,7 @@ Unit (no live NATS — the reporter takes a `*substrate.Conn` but the probe/enve
   - TTL: `KVPutWithTTL` is called with `Interval*10` (assert via a fake `Conn` seam or the existing substrate test harness); `TTL:0` falls back to `KVPut`.
   - probe panic → recovered, emitted as `unhealthy` `HealthProbePanicked` (never crashes the app).
 - **per-app `healthProbe`:** table test over the dep matrix (§4.4) — unconfigured actor → unhealthy+`AdminActorUnconfigured`; nil conn → unhealthy; ping-fail pool → degraded; nil authn → degraded; all-good → healthy+empty issues. Uses the same fakes the apps' existing `*_test.go` use (there is already a rich test suite per app).
-- **Loupe render (existing, unchanged):** add one case to `cmd/loupe/health_test.go` asserting a `health.loftspace-app.loft-1` degraded doc renders a yellow card with the issue line — proves the end-to-end reader path with **zero reader code change**.
+- **Loupe render — moved to the Loupe lane (2026-07-02, Loupe 2.0):** no `cmd/loupe` test in these fires. The F4 Health-absorption redesign owns how `health.*` keys render; this design's contract with the reader is the §5.2 document, pinned here by an `internal/healthkv` envelope-conformance assertion (all required §5.2 fields + `heartbeatAt`). The Loupe lane verifies the two new components render on its own surface.
 
 No new integration test is required for Fire 1–2; an optional live check can extend `internal/healthkv/completeness_test.go` (integration-tagged) to assert the two app keys appear when the apps run — deferred, not gating (the apps aren't part of the current completeness stack fixture).
 
@@ -282,7 +285,7 @@ No new integration test is required for Fire 1–2; an optional live check can e
 Each fire is independently shippable and green; each realizes value on its own (an app becomes Loupe-visible).
 
 - **Fire 1 — reporter + loftspace-app (end-to-end proof).**
-  Add `package healthkv` reporter (`internal/healthkv/reporter.go`) + unit tests. Add `cmd/loftspace-app` `healthProbe` (uses the existing `conn.NATS().IsConnected()`) + wire `reporter.Run` in `main.go`. Add the Loupe render test case. Schema-doc row for `loftspace-app`. **Value:** loftspace-app self-reports; the 2026-07-01 failure class is now visible in Loupe. Bundling the package with its first consumer avoids dead scaffolding.
+  Add `package healthkv` reporter (`internal/healthkv/reporter.go`) + unit tests. Add `cmd/loftspace-app` `healthProbe` (uses the existing `conn.NATS().IsConnected()`) + wire `reporter.Run` in `main.go`. **Cross-lane note (2026-07-02, Loupe 2.0):** `cmd/loupe/**` is its own lane now and the F4 "Health absorption" redesign retires the current Health tab — so the Loupe render test case is **dropped from this fire** (a test pinned to the old card rendering is churn). This design's interface to Loupe is the Contract #5 §5.2 document alone; Fire 1 instead adds an `internal/healthkv` envelope-conformance assertion, and the Loupe lane's F4 absorbs the two new `health.<app>.*` keys uniformly like every other component (its verification lives there). Schema-doc row for `loftspace-app`. **Value:** loftspace-app self-reports; the 2026-07-01 failure class is now visible in Loupe (2.0's alert strip/gates panel). Bundling the package with its first consumer avoids dead scaffolding.
 - **Fire 2 — clinic-app (mirror).**
   Add `cmd/clinic-app` `healthProbe` + wire it (identical shape; dep list per that app's `main.go`/`server.go`). Schema-doc row for `clinic-app`. **Value:** clinic-app self-reports. Pure mirror of Fire 1's consumer half.
 - **Fire 3 (optional) — object-store-manager adoption.**
