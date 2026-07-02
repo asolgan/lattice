@@ -681,6 +681,16 @@ fires inside `cmd/loupe/web`). Every fire leaves the console fully usable — no
 tab before its replacement exists (F2 retires Core KV, F3 retires Control, F4 retires Health — each in
 the same fire as its replacement).
 
+**Build checkpoint (for the next fire):** F1 ✅ shipped `e6a8a46` (2026-07-02, 3-layer-reviewed). The
+router grammar, `logic/` tier, goja harness (`cmd/loupe/web_logic_test.go` — its strip transform also
+*enforces* the §2.3 convention), key resolver, provenance chips, and breadcrumbs are live; the eight
+views are 1:1 (`#/map · #/corekv[/<key>] · #/health · #/tasks · #/control · #/packages · #/files ·
+#/op`; `?prefix=`/`?aspect=` are URL-carried on corekv). **F2 notes:** `keyTarget` (`logic/keys.js`)
+currently resolves vertex/meta/link keys to `#/corekv/…` — F2 re-points it to `#/graph/…` (+ the
+`TestKeyHelpersJS` target table), adds `#/corekv` → `#/graph` as the route alias, and keeps the resolver
+the single place keys become links. The resolver is named `keyTarget` (returns the href); `keyLink` in
+§1.2 refers to the same seam. `classifyKey` (Go + JS, shared case table) rejects empty-segment keys.
+
 ---
 
 ## 15. Open questions — ANSWERED (Winston adjudication, 2026-07-02; grounded live where marked)

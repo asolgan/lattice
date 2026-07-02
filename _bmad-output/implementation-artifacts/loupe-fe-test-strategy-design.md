@@ -1,6 +1,7 @@
 # Loupe operator-UI test strategy — a Go-native front-end regression net
 
 **Status: ✅ RATIFIED — Andrew, 2026-07-02 (Fire 1: goja logic tier). Fire 2 (chromedp browser e2e) stays 🗄️ designed-shelved as proposed.**
+**Fire 1 BUILT — shipped with Loupe-2.0-F1 (`e6a8a46`, 2026-07-02): harness `cmd/loupe/web_logic_test.go`, goja in `go.mod` + `docs/vendors.md`, both §9-step-4 doc updates landed. The harness's strip transform additionally enforces the logic-file convention (no imports, exactly one single-line trailing `export { … };`).**
 Ratification amendments are folded into the body below: the Loupe 2.0 program
 ([loupe-2-ux-design.md](loupe-2-ux-design.md) §2.3) supersedes this design's original loading mechanism —
 `app.js` decomposes into ES modules with a pure `logic/` tier, so the goja harness loads `logic/*.js`
