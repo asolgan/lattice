@@ -287,6 +287,17 @@ The §2.4 authoring rule — *an enumeration hub is authored as the link **sourc
 > Lattice Steward builds them), even though Fire 2/3 touch `packages/clinic-domain` — kept on one lane
 > deliberately to avoid the cross-lane ping-pong of splitting a coupled primitive→consumer chain across
 > the parallel streams. Do **not** re-file Fire 2 to the Verticals lane.
+>
+> **Superseded (2026-07-02) — Fire 2 reverted, clinic consumer replaced.** Fire 2's build diverged from
+> this doc's own ratification banner (shipped the inverted, hub-sourced `hasBooking` the banner had
+> explicitly withdrawn — a §1.1 violation). Andrew caught it at the hard-delete-verb design's
+> ratification review; rather than patch the divergence in place, the clinic double-book constraint
+> moves to write-path deterministic per-slot claim keys (15-minute grid, a package-level product
+> decision) — see `clinic-booking-write-path-slot-claims-design.md`. **`kv.Links` (Fire 1) stands** as
+> a shipped, unit-tested platform primitive; it simply has no consumer once the clinic rewrite lands.
+> Fire 3 (clinic e2e + lint-conventions hardening) is moot for clinic specifically. This checkpoint
+> block is left as-written (historical record of what Fire 2 actually built), not rewritten — see the
+> new design's §8/§9.
 
 **Fire 1 — the platform primitive (`kv.Links`).** Add the builtin to `internal/processor/starlark_kv.go` (wrap `KVListKeysPrefix` + per-key `KVGet`, wall-budget context, the `MAX_LINK_ENUMERATION` fail-closed cap, the `lnk`-prefix scope guard, the link-doc struct return). Processor unit tests (§5). The §2.5.1 contract edit is committed by Andrew at ratification (staged uncommitted now). **No consumer yet in this fire, but Fire 2 lands in the same initiative — not dead scaffolding.** A *new write-path read capability that relaxes an invariant* ⇒ **full 3-layer adversarial review** (attack the bound, the fail-closed path, the determinism caveat, the scope guard, the no-snapshot-serialization claim). Green on its own (additive builtin, existing tests pass).
 

@@ -1,6 +1,17 @@
 # Negative / filter-retraction projection — design
 
-**Status: 📐 awaiting-Andrew (ratification)** · Designer: Winston (architect) · 2026-06-29
+**Status: ✅ Andrew-ratified (2026-07-02).** Three-part ratification: (1) Fires 1+2 COLLAPSED to ONE
+fire (same seam, Fire 2 depends on Fire 1, one full 3-layer review) per the fewer-larger rule; Fire 3
+stays shelved-design (no live consumer). (2) This design SUBSUMES the link-/aspect-triggered
+reprojection design (its own §7b gate recommended it — the enumerator-less Fire 1 covers every live
+consumer); that design's security findings fold into this build: **F1** (composite-GrantTable shrink =
+over-grant — covered structurally by Fire 2's `ok=false` fall-through; the build's 3-layer review must
+verify it), **F3** (tombstone-race). (3) **F2 accepted as posture**: the plain/protected Postgres
+adapter is unguarded last-writer-wins — matches the D1 M3 CDC-lag revocation posture; a hardening row
+(seq-guard extension to protected targets) is filed on the board. Importance ★→★★ correction stands.
+Note: hard-delete is shelved, so no DEL markers exist — the DEL/empty-body retraction arm stays out of
+scope; the shelved hard-delete design's revive-condition points here.
+· Designer: Winston (architect) · 2026-06-29
 Backlog row: `planning-artifacts/backlog/lattice.md` → *Read-model / projection maturity* →
 "Negative / filter-retraction projection".
 

@@ -1,6 +1,11 @@
 # Link- & aspect-triggered reprojection for plain / GrantTable lenses — design
 
-**Status: ✅ Andrew-ratified (2026-06-29)** · pre-build adversarial gate **✅ RUN 2026-06-29 (§7b)** ·
+**Status: 🗄️ SUBSUMED (Andrew confirmed 2026-07-02) → the negative/filter-retraction design's Fire 1
+builds the shared reprojection primitive; do not build from this doc.** The §7b gate's recommendation
+was adopted: F1 + F3 fold into that build; **F2 accepted as posture** (unguarded-LWW protected-array
+adapter = the D1 M3 CDC-lag analog) with a seq-guard hardening row filed on the board. The
+`ActorEnumerator` stays unbuilt (no simple-engine consumer — dead scaffolding).
+· originally ✅ Andrew-ratified 2026-06-29 · pre-build adversarial gate **✅ RUN 2026-06-29 (§7b)** ·
 Designer fire 2026-06-29 (Winston) · Lattice lane, Refractor projection-maturity · Backlog row:
 *[Refractor] Link-triggered reprojection for plain / GrantTable lenses* (planning-artifacts/backlog/lattice.md).
 
