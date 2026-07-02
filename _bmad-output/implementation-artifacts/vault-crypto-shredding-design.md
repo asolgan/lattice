@@ -450,6 +450,22 @@ re-provision out-of-band on a fresh stack; no `ALTER TABLE` path needed in dev.)
   `.demographics` keeps only the non-sensitive `fullName`. Display = a Secure-Lens staff-anchored
   protected model at Fire 5. The re-model half is **Vault-independent** and buildable now (Verticals lane).
 
+**Fire 1 CHECKPOINT (2026-07-02, Lattice Steward).** Shipped: `internal/vault` — the `Vault` interface,
+`LocalBackend` (envelope encryption: AES-256-GCM, per-identity DEK wrapped under a sealed master KEK,
+identityKey bound as AEAD associated data), and the `lattice.vault.decrypt` NATS Services responder.
+Interface resolved to `Encrypt(ctx, identityKey, envelope, plaintext)` / `Decrypt(ctx, identityKey,
+envelope, ct)` (envelope passed explicitly by the caller, not held by the backend) — keeps the Vault
+stateless w.r.t. durable key custody, so Core KV's `piiKey` stays the single source of truth for the
+wrapped DEK; resolves the abbreviated §2.5 sketch vs. the more detailed §2.2 mechanics in favor of the
+latter. 3-layer adversarial review found and fixed two real bugs pre-merge: a malformed-nonce-length RPC
+request could panic the process, and a TOCTOU race let an in-flight `Decrypt` succeed against a
+concurrently shredded identity — both fixed, verified with `-race`. `Envelope`/`Ciphertext` field shapes
+match §2.1/§3.10 verbatim; no translation layer needed in Fire 2. No commit-path wiring — that's Fire 2.
+Known Fire-1-scope limitation: the local backend's shredded-set is in-memory only (process-restart loses
+it); harden when Fire 3/4 wires the privacy worker to something that needs shred to survive a restart.
+Next: Fire 2 — Processor step-4 decrypt hook, step-6.5 encrypt hook, lazy `piiKey` creation, DEK cache;
+`privacy-base` ships the `piiKey` DDL; security-plane change, full 3-layer + party-mode at that fire.
+
 **Considered and REJECTED — pre-Vault plaintext contact projection** into `clinicPatientsRead`
 (technically buildable, no test fails, outside M4's *letter* since `.demographics` cannot be
 `sensitive:true` on a non-identity vertex): it ships queryable plaintext PHI into Postgres that
