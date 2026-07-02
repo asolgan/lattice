@@ -448,6 +448,21 @@ feature*.
   real cloud, then port the *same* `internal/edge` engine to a browser host with a SQLite/IndexedDB store + WS
   transport. The engine is host-agnostic by construction (the store + transport are interfaces).
 
+> **Edge Starlark runtime feasibility — VERIFIED (empirically, 2026-07-02).** The A′ edge sandbox runs the same
+> `go.starlark.net` interpreter the Processor uses (pure Go, no cgo, AOT tree-walking — no runtime codegen, so
+> Apple's no-JIT rule is a non-issue). Verified on every host FORK-B contemplates: **Go node** — native execution
+> (trivial, same library). **Browser/PWA (EDGE.5)** — compiles for `js/wasm` *and* `wasip1/wasm`; the `js/wasm`
+> binary **executed correctly under V8** (Android Chrome's engine; iOS WebKit runs the same engine-agnostic
+> `wasm_exec.js` path); interpreter-only module ≈ 4.9 MB raw / 1.3 MB gzipped. **Native apps** —
+> `GOOS=ios GOARCH=arm64` `c-archive` builds with an exported C symbol (the exact artifact `gomobile bind`
+> wraps into an `.xcframework`), and the same-family macOS archive was **called from a C host end-to-end**
+> (embedded interpreter ran a script and returned the right value); `GOOS=android GOARCH=arm64` builds pure-Go
+> with no NDK (the NDK is only the JNI-shim C toolchain for `.aar` packaging — nothing in the interpreter can
+> fail there). **One open item, native-iOS route only:** App Store guideline 2.5.2 (downloaded interpreted code
+> that changes app functionality) scrutinizes exactly the cloud-synced-DDL-script pattern — a store-policy
+> question, not a runtime one; it does not apply to the PWA route or to Android. Resolve it only if a native
+> iOS app is ever proposed.
+
 **FORK-C — offline write + conflict reconciliation protocol.**
 - **A (RECOMMENDED) — intent queue + reconcile-by-revision LWW + re-audit-on-conflict.** Build-to the existing
   OCC (`expectedRevision`) + the `vtx.op` tracker + the architecture's RYOW overlay note. *Pros:* there is
