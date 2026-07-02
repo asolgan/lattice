@@ -69,6 +69,21 @@ of scope here.
 
 ---
 
+## 0a. Front-of-house unified search — the consumer shape (Andrew Q&A, 2026-07-02)
+
+Recorded at ratification for the eventual builder. One staff/landlord search box ("mar" → people AND
+units) works as: **one endpoint, typed fan-out, one RLS session** — the app handler runs per-type
+FTS/trigram queries over the protected read models (identities; units/listings) with
+`SET LOCAL lattice.actor_id`; **enrichment is a keyed join on projections, not a graph walk** — person
+hits join the lease-applications read model on `applicant_id` (the `applicationFor` link is already a
+projected column), ranked active/signed-first, capped per hit. Authorization composes for free: hits
+AND enrichment pass the same RLS, so related agreements are row-filtered to the caller's grants with
+zero search-specific auth code. FE renders grouped typed cards (People / Units) with related-agreement
+sub-rows. Evolution: post-Vault, name search moves onto the Secure-Lens protected table (decrypted
+plaintext under RLS is FTS-indexable; ciphertext is not — a second reason enrichment stays query-time);
+at OpenSearch graduation only hit-finding moves (relevance/typo/facets, public fields), enrichment stays
+query-time against read models — never denormalize volatile lease state into search documents.
+
 ## 1. Problem + intent
 
 Lattice's read side is the **Refractor**: lenses (`vtx.meta.<NanoID>` with `class: meta.lens`) project
