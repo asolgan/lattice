@@ -21,16 +21,17 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 | Clinic — patient contact (email/phone) captured but never projected | `CreatePatient` stores `.demographics.{email,phone}` but the `clinicPatients` lens projects only `name` — staff can't see contact info, and a real reminder channel has no address to send to. | Clinic | pkg + FE | ★★ | S→M | 📋 re-model half ready NOW (patient `identifiedBy` unclaimed identity; contact → sensitive identity aspects) · display half 🚧 seq Vault Fire 5 · [plan](../../implementation-artifacts/vault-crypto-shredding-design.md) |
 | LoftSpace — applicant contact (email/phone) captured but never projected to the landlord | `CreateUnclaimedIdentity` stores `.email`/`.phone`, but neither the `/api/identities` picker nor the landlord `unit-applications` disposition surfaces them — a landlord deciding on an applicant has no way to contact them. | LoftSpace | pkg + FE | ★★ | S | 🚧 seq Vault Fire 5 (Vault 🎯 build-next in [lattice](lattice.md)) — Fire-5 consumer: landlord protected lens gains contact columns ([plan](../../implementation-artifacts/vault-crypto-shredding-design.md)) |
 | Clinic — patient payment ledger (copays/invoices) | No financial history exists: appointments/encounters create no charge or payment record — staff can't see what a patient owes or has paid. Add a ledger aspect + Debit/CreditAccount ops + a billing-history lens/FE. | Clinic | pkg + FE | ★★★ | L | 🏗️ building · Inc 1 shipped (`d4e5af0`, account/transaction ops + ledgerHistory lens) · next: Inc 2 billing-history FE (mirrors loftspace-app/ledger.go) |
+| LoftSpace — Post-Listing never grants `manages`, so the landlord's own new listing is invisible | Live-verified 2026-07-02: post-listing (`CreateLocation→SetUnitAddress→SetListing`, app.js ~2620) never calls `AssignUnitOwner` — both operator views filter to `manages`-linked units, so a freshly posted unit shows 0 applications until an out-of-band grant. Wire the op into the chain. | LoftSpace | FE | ★★★ | S | 📋 ready |
 
 ## PO notes (dated — drives rotation)
 
 Compact rotation memory only — PO *findings* are filed as demand rows above + the Done log; the verbose
 dated run-logs live in git history. Rotate LoftSpace ↔ Clinic, staggered from the Steward.
 
-- **Rotation to date:** LoftSpace ×8, Clinic ×6 (last: Clinic 6th run 2026-07-01, installed vertical + started clinic-app onto the shared stack; drove Create/BookAppointment/SetStatus/RecordEncounter live end-to-end; filed the CLINIC_APP_PG_DSN dev-loop wiring gap).
+- **Rotation to date:** LoftSpace ×9, Clinic ×6 (last: LoftSpace 9th run 2026-07-02, reused the shared stack; drove post-listing→apply→AssignUnitOwner live end-to-end; filed the post-listing missing-`manages`-link bug).
 - **Method:** reuse the already-up shared stack (detect NATS :4222 / app :7788/:7799), drive the real flow via `/api/op` + the lens projections as the product owner, file scored items. Both apps exist + are exercisable live (`:7788` / `:7799`).
 - **Live-stack note RESOLVED (2026-07-01):** the version-13→14 bootstrap mismatch is fixed; writes confirmed working on both apps.
-- **Next:** LoftSpace.
+- **Next:** Clinic.
 
 ## Done log — verticals (newest first)
 
