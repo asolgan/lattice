@@ -85,8 +85,9 @@ up:
 		go build -o bin/lattice ./cmd/lattice; \
 		echo "==> Running bootstrap (seed pass — readiness gate deferred until Refractor is up)..."; \
 		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_BOOTSTRAP) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/bootstrap -skip-ready-wait; \
+		$(MAKE) provision-vault-kek; \
 		echo "==> Starting refractor in background..."; \
-		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_REFRACTOR) REFRACTOR_PG_DSN="postgres://lattice:lattice_dev@localhost:5432/lattice?sslmode=disable" ./bin/refractor >refractor.log 2>&1 </dev/null & \
+		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_REFRACTOR) REFRACTOR_PG_DSN="postgres://lattice:lattice_dev@localhost:5432/lattice?sslmode=disable" LATTICE_VAULT_MASTER_KEK_FILE=$(VAULT_KEK_FILE) ./bin/refractor >refractor.log 2>&1 </dev/null & \
 		echo "==> Running bootstrap (readiness gate — blocks until admin + Loom + Weaver + Bridge + objmgr + privacy cap.* projections land)..."; \
 		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_BOOTSTRAP) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/bootstrap; \
 		echo "==> Building processor binary..."; \

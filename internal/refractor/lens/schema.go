@@ -79,6 +79,11 @@ type IntoConfig struct {
 	GrantTable   bool                `yaml:"-"` // project to actor_read_grants via the seq-guarded writer
 	Columns      []adapter.ColumnDef `yaml:"-"` // declared business columns to provision (protected only)
 	ArrayColumns []string            `yaml:"-"` // columns to encode as Postgres arrays (authz_anchors + text[] body cols)
+
+	// SecureColumns marks this lens as a Secure Lens (Contract #3 §3.10):
+	// decrypt-at-projection columns, validated protected-postgres-only by
+	// translateSpec. Not from YAML.
+	SecureColumns []SecureColumn `yaml:"-"`
 }
 
 // RetryConfig describes retry behaviour for transient write failures.

@@ -318,6 +318,20 @@ func lensSpecBody(lensID string, l LensSpec) map[string]any {
 			}
 			targetConfig["columns"] = cols
 		}
+		if len(l.SecureColumns) > 0 {
+			secure := make([]map[string]any, len(l.SecureColumns))
+			for i, c := range l.SecureColumns {
+				entry := map[string]any{
+					"column":            c.Column,
+					"identityKeyColumn": c.IdentityKeyColumn,
+				}
+				if c.Field != "" {
+					entry["field"] = c.Field
+				}
+				secure[i] = entry
+			}
+			targetConfig["secureColumns"] = secure
+		}
 	default: // "nats-kv" or empty
 		targetType = "nats_kv"
 		keyField := l.IntoKey

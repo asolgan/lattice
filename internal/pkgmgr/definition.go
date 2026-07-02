@@ -453,6 +453,14 @@ type LensSpec struct {
 	// platform always adds authz_anchors text[] and projection_seq; key columns
 	// are provisioned as text. Ignored for a non-protected lens.
 	Columns []PostgresColumn
+
+	// SecureColumns marks this lens as a Secure Lens (Contract #3 §3.10):
+	// each entry names a RETURN column carrying a sensitive aspect's
+	// ciphertext envelope (`node.<aspect>.data`) that Refractor decrypts
+	// under the owning identity's DEK at projection time. Requires Protected
+	// (decrypted PII may only land behind RLS) — Refractor fails any other
+	// posture closed at activation.
+	SecureColumns []SecureColumn
 }
 
 // PostgresColumn declares one provisioned column of a Protected read-model
@@ -461,6 +469,18 @@ type LensSpec struct {
 type PostgresColumn struct {
 	Name string
 	Type string
+}
+
+// SecureColumn declares one decrypt-at-projection column of a Secure Lens:
+// Column is the RETURN alias holding the ciphertext envelope,
+// IdentityKeyColumn the RETURN alias holding the owning identity's vertex key
+// (vtx.identity.<id>), and Field optionally one field of the decrypted
+// plaintext object to project (empty projects the whole object). Mirrors the
+// Refractor-side lens.SecureColumn on-wire shape.
+type SecureColumn struct {
+	Column            string
+	IdentityKeyColumn string
+	Field             string
 }
 
 // OutputDescriptorSpec mirrors the on-wire §6.13 Output descriptor a package

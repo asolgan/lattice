@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -34,6 +35,7 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/refractor/subjects"
 	"github.com/asolgan/lattice/internal/substrate"
+	"github.com/asolgan/lattice/internal/vault"
 )
 
 const (
@@ -50,6 +52,11 @@ type pipelineEntry struct {
 	reporter      *health.Reporter
 	canonicalName string // keyed under lensLatency in heartbeats.
 	authPlane     bool   // projects the capability-kv authorization surface (projection.IsAuthPlane).
+	// secureColumns is the Secure-Lens column set the RUNNING pipeline's
+	// decryptor was built from. Hot-reload guards compare an incoming spec
+	// against this — not against the last-seen spec — so a refused update
+	// cannot poison the baseline and wedge the lens.
+	secureColumns []lens.SecureColumn
 }
 
 func main() {
@@ -137,8 +144,24 @@ func main() {
 		Logger:       logger,
 		ActorKey:     privacyActorKey,
 	})
+	// The Vault backend for Secure-Lens decrypt-at-projection (Contract #3
+	// §3.10; vault-crypto-shredding-design.md §2.3 Phase B). Optional: a
+	// deployment with no Secure Lens needs no KEK; a Secure Lens activating
+	// with no Vault fails closed at startPipeline. A configured-but-invalid
+	// KEK is a hard startup failure — silently proceeding would strand every
+	// secure lens with a confusing per-lens activation error.
+	vaultBackend, vaultErr := loadVault(logger)
+	if vaultErr != nil {
+		logger.Error("load vault backend", "err", vaultErr)
+		os.Exit(1)
+	}
+	// vaultCalls counts Vault.Decrypt invocations across every Secure Lens for
+	// the Contract #5 §5.4 vault_calls_total heartbeat metric. Reports 0 while
+	// no secure lens is active (Refractor then makes no Vault calls).
+	var vaultCalls atomic.Uint64
+
 	hb.KeyShreddedHandledTotalProvider = keyShredded.HandledTotal
-	hb.VaultCallsTotalProvider = func() uint64 { return 0 } // Phase-1 stub — see field doc
+	hb.VaultCallsTotalProvider = vaultCalls.Load
 	go func() {
 		if err := keyShredded.Run(ctx); err != nil && ctx.Err() == nil {
 			logger.Error("keyshredded listener exited with error", "err", err)
@@ -329,6 +352,14 @@ func main() {
 				return
 			}
 		}
+		// A Secure Lens needs the Vault before anything else is built —
+		// refusing here leaves no half-constructed state behind.
+		if len(r.Into.SecureColumns) > 0 && vaultBackend == nil {
+			logger.Error("secure lens requires a Vault backend — set LATTICE_VAULT_MASTER_KEK(_FILE); lens not activated",
+				"lensId", r.ID, "canonicalName", r.CanonicalName)
+			return
+		}
+
 		adpt, err := buildAdapter(r)
 		if err != nil {
 			logger.Error("build adapter", "lensId", r.ID, "err", err)
@@ -367,6 +398,14 @@ func main() {
 					logger.Error("full engine key-column validation", "lensId", r.ID, "err", err)
 					return
 				}
+				// A Secure Lens's secure + identity-key columns must be RETURN
+				// aliases — a typo would otherwise project silent nulls (secure
+				// column) or Terminal-DLQ every row (identity-key column) with
+				// nothing pointing at the misdeclared spec.
+				if err := cr.ValidateReturnAliases(secureAliasNames(r.Into.SecureColumns)...); err != nil {
+					logger.Error("secure-column RETURN-alias validation", "lensId", r.ID, "err", err)
+					return
+				}
 			}
 			p.UseFullEngine(fullEngine, r.CompiledRule)
 		}
@@ -396,6 +435,24 @@ func main() {
 			p.SetEnvelopeFn(capabilityenv.NewRoleIndexWrapper())
 			p.SetLatencyBuffer(pipeline.NewLatencyRingBuffer(pipeline.DefaultLatencyBufferSize))
 			logger.Info("operation-aggregate envelope installed", "lensId", r.ID, "key", r.Into.Key[0])
+		}
+
+		// A Secure Lens (Contract #3 §3.10): install the decrypt-at-projection
+		// transform (the Vault-present check ran before the adapter was built).
+		// translateSpec already guaranteed protected-postgres posture, so the
+		// RLS verify-and-pause below applies.
+		if len(r.Into.SecureColumns) > 0 {
+			cols := make([]pipeline.SecureColumn, len(r.Into.SecureColumns))
+			for i, sc := range r.Into.SecureColumns {
+				cols[i] = pipeline.SecureColumn{Column: sc.Column, IdentityKeyColumn: sc.IdentityKeyColumn, Field: sc.Field}
+			}
+			dec, err := pipeline.NewSecureDecryptor(vaultBackend, coreKV, cols, &vaultCalls)
+			if err != nil {
+				logger.Error("build secure decryptor", "lensId", r.ID, "err", err)
+				return
+			}
+			p.SetSecureDecryptor(dec)
+			logger.Info("secure lens decryptor installed", "lensId", r.ID, "columns", len(cols))
 		}
 
 		// Configure the supervised runtime: durable name refractor-<ruleID>,
@@ -437,6 +494,7 @@ func main() {
 			reporter:      reporter,
 			canonicalName: r.CanonicalName,
 			authPlane:     projection.IsAuthPlane(r),
+			secureColumns: r.Into.SecureColumns,
 		}
 		mu.Unlock()
 
@@ -465,6 +523,26 @@ func main() {
 				logger.Warn("update on unknown lens", "lensId", newLens.ID)
 				return
 			}
+			// A live pipeline's secure decryptor is fixed at activation (installing
+			// one mid-run would race the handler); changing a lens's secureColumns
+			// requires a lens re-create, so refuse the hot-reload loudly rather
+			// than swap the adapter and leave the decrypt set stale. The baseline
+			// is the RUNNING pipeline's activated set (entry.secureColumns), not
+			// the last-seen spec — a refused update must not poison later
+			// comparisons. A secure lens also refuses table/DSN swaps: hot-reload
+			// has no verify-and-pause, so the new target's RLS posture would be
+			// unprobed while the rows carry decrypted PII.
+			if !secureColumnsEqual(entry.secureColumns, newLens.Into.SecureColumns) {
+				logger.Error("lens INTO update changes secureColumns — not hot-reloadable; delete and re-create the lens",
+					"lensId", newLens.ID)
+				return
+			}
+			if len(entry.secureColumns) > 0 &&
+				(old.Into.Table != newLens.Into.Table || old.Into.DSN != newLens.Into.DSN) {
+				logger.Error("secure lens INTO update changes table/dsn — not hot-reloadable (no RLS re-verify on swap); delete and re-create the lens",
+					"lensId", newLens.ID)
+				return
+			}
 			newAdpt, err := buildAdapter(newLens)
 			if err != nil {
 				logger.Error("build new adapter", "lensId", newLens.ID, "err", err)
@@ -487,6 +565,15 @@ func main() {
 				logger.Warn("MATCH update on unknown lens", "lensId", newLens.ID)
 				return
 			}
+			// ClassifyUpdate keys on the Match string alone, so a single update
+			// changing the cypher AND secureColumns lands here — the running
+			// decryptor's column set must still be the activated one, and refused
+			// updates compare against it (never against a refused spec).
+			if !secureColumnsEqual(entry.secureColumns, newLens.Into.SecureColumns) {
+				logger.Error("lens MATCH update changes secureColumns — not hot-reloadable; delete and re-create the lens",
+					"lensId", newLens.ID)
+				return
+			}
 			switch newLens.ResolvedEngine {
 			case ruleengine.EngineFull:
 				// CoreKVSource has already compiled the new rule; reuse it.
@@ -500,6 +587,13 @@ func main() {
 					cr.KeyColumns = []string(newLens.Into.Key)
 					if err := cr.ValidateKeyColumns(); err != nil {
 						logger.Error("full engine key-column validation (MATCH update)",
+							"lensId", newLens.ID, "err", err)
+						return
+					}
+					// The new cypher must still RETURN every alias the running
+					// decryptor consumes.
+					if err := cr.ValidateReturnAliases(secureAliasNames(entry.secureColumns)...); err != nil {
+						logger.Error("secure-column RETURN-alias validation (MATCH update)",
 							"lensId", newLens.ID, "err", err)
 						return
 					}
@@ -595,6 +689,71 @@ func main() {
 // Derived from the lens's Into descriptor, never from a canonical name.
 func isOperationRoleIndexLens(r *lens.Rule) bool {
 	return len(r.Into.Key) == 1 && r.Into.Key[0] == "operationType" && projection.IsAuthPlane(r)
+}
+
+// loadVault wires the optional local envelope-encryption Vault backend for
+// Secure-Lens decrypt-at-projection. The master KEK is read from
+// LATTICE_VAULT_MASTER_KEK (inline base64) if set, else from the file at
+// LATTICE_VAULT_MASTER_KEK_FILE — the same sources cmd/processor uses, so one
+// provisioned KEK (make provision-vault-kek) serves both processes. Unlike
+// the Processor (which refuses to start without a KEK — it would otherwise
+// commit plaintext), neither being set is fine here: (nil, nil), and any
+// Secure Lens fails closed at activation instead.
+func loadVault(logger *slog.Logger) (*vault.LocalBackend, error) {
+	envVar, fileVar := "LATTICE_VAULT_MASTER_KEK", "LATTICE_VAULT_MASTER_KEK_FILE"
+	var kek []byte
+	var err error
+	switch {
+	case os.Getenv(envVar) != "":
+		kek, err = vault.MasterKEKFromEnv(envVar)
+	case os.Getenv(fileVar) != "":
+		kek, err = vault.MasterKEKFromFile(os.Getenv(fileVar))
+	default:
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load vault master KEK: %w", err)
+	}
+	v, err := vault.NewLocalBackend(kek, envOr("LATTICE_VAULT_KEK_VERSION", ""))
+	if err != nil {
+		return nil, fmt.Errorf("construct vault backend: %w", err)
+	}
+	logger.Info("vault wired for secure lenses", "backend", "local")
+	return v, nil
+}
+
+// secureColumnsEqual reports whether two secure-column declarations are
+// identical (order-sensitive — the spec is authored, not computed).
+func secureColumnsEqual(a, b []lens.SecureColumn) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// secureAliasNames collects every RETURN alias a secure-column declaration
+// consumes (the ciphertext column + its identity-key column, deduplicated).
+func secureAliasNames(cols []lens.SecureColumn) []string {
+	if len(cols) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(cols)*2)
+	out := make([]string, 0, len(cols)*2)
+	for _, sc := range cols {
+		for _, n := range []string{sc.Column, sc.IdentityKeyColumn} {
+			if _, dup := seen[n]; dup {
+				continue
+			}
+			seen[n] = struct{}{}
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 func envOr(key, fallback string) string {

@@ -112,11 +112,11 @@ type LatticeHeartbeater struct {
 	CapabilityLensProvider func() []CapabilityLensStatus
 
 	// VaultCallsTotalProvider optionally returns the cumulative count of Vault
-	// decryption calls (Contract #5 §5.4 vaultCallsTotal). Refractor makes no
-	// Vault calls in Phase A (general lenses project ciphertext as-is,
-	// design §2.3) — the metric is reserved for Fire 5's Secure Lens, which
-	// decrypts at projection time. nil omits the field; a wired provider may
-	// legitimately report 0 (the documented Phase-1-stub value).
+	// decryption calls (Contract #5 §5.4 vaultCallsTotal) — the Secure Lenses'
+	// decrypt-at-projection calls, summed across every secure lens in the
+	// process. General lenses project ciphertext as-is (design §2.3) and make
+	// no Vault calls, so a deployment with no Secure Lens legitimately reports
+	// 0. nil omits the field.
 	VaultCallsTotalProvider func() uint64
 
 	// KeyShreddedHandledTotalProvider optionally returns the cumulative count

@@ -62,8 +62,38 @@ func projectedAtFromProvenance(nodeProps map[string]any) (string, error) {
 // The simple engine delegates to simple.Evaluate; the full engine binds
 // `$actorKey`, `$now`, `$projectedAt` from the event/provenance and calls
 // full.Engine.ExecuteWith. When an EnvelopeFn is installed, each row
-// is rewritten before being handed to the adapter.
+// is rewritten before being handed to the adapter. When a SecureDecryptor is
+// installed (a Secure Lens), each row's declared secure columns are decrypted
+// before the results reach any write path — this wrapper is the single choke
+// point both the stream consumer (handle) and the adjacency watch
+// (handleAdjUpdate) flow through, so no plain-lens evaluation path can bypass
+// it.
 func (p *Pipeline) evaluateForEntry(ctx context.Context, entry ruleengine.NodeEntry) ([]ruleengine.EvalResult, error) {
+	results, err := p.evaluateForEntryRaw(ctx, entry)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.applySecureDecrypt(ctx, results); err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// applySecureDecrypt runs the installed SecureDecryptor over results; a no-op
+// when none is installed. Every evaluation path that can reach a write must
+// call this (evaluateForEntry covers the stream consumer + adjacency watch;
+// the actor fan-out handlers call it explicitly) — a validated Secure Lens is
+// always a plain projection lens, so the fan-out coverage is defense in depth
+// against a future wiring that combines an enumerator with a decryptor.
+func (p *Pipeline) applySecureDecrypt(ctx context.Context, results []ruleengine.EvalResult) error {
+	if p.secureDecryptor == nil {
+		return nil
+	}
+	return p.secureDecryptor.Apply(ctx, results)
+}
+
+// evaluateForEntryRaw is evaluateForEntry's per-engine core, pre-decrypt.
+func (p *Pipeline) evaluateForEntryRaw(ctx context.Context, entry ruleengine.NodeEntry) ([]ruleengine.EvalResult, error) {
 	switch p.engineKind {
 	case ruleengine.EngineFull:
 		if p.fullEngine == nil || p.fullCR == nil {

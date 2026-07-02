@@ -162,6 +162,15 @@ type TargetPostgresConfig struct {
 	// writer (not the last-writer-wins business adapter). The table name defaults
 	// to actor_read_grants and the key to (actor_id, anchor_id, grant_source).
 	GrantTable bool `json:"grantTable,omitempty"`
+
+	// SecureColumns opts the lens into Secure-Lens decrypt-at-projection
+	// (Contract #3 §3.10 "the read-path-authorized Secure Lens"): each entry
+	// names a RETURN column carrying a sensitive aspect's ciphertext envelope
+	// (`node.<aspect>.data`) that Refractor decrypts under the owning
+	// identity's DEK before the row lands in the read model. Because the
+	// projected value is PLAINTEXT PII, a secure lens MUST be a protected
+	// (RLS) model — translateSpec fails any other posture closed.
+	SecureColumns []SecureColumn `json:"secureColumns,omitempty"`
 }
 
 // PostgresColumn declares one provisioned column of a protected read-model
@@ -169,6 +178,18 @@ type TargetPostgresConfig struct {
 type PostgresColumn struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
+}
+
+// SecureColumn declares one decrypt-at-projection column of a Secure Lens.
+// Column is the RETURN alias holding the ciphertext envelope;
+// IdentityKeyColumn is the RETURN alias holding the owning identity's vertex
+// key (vtx.identity.<id>); Field optionally selects one field of the
+// decrypted plaintext object (e.g. "value" — empty projects the whole
+// object). On-wire mirror of pipeline.SecureColumn.
+type SecureColumn struct {
+	Column            string `json:"column"`
+	IdentityKeyColumn string `json:"identityKeyColumn"`
+	Field             string `json:"field,omitempty"`
 }
 
 // TargetNATSKVConfig is the expected shape of LensSpec.TargetConfig
@@ -185,9 +206,12 @@ type TargetNATSKVConfig struct {
 	// so a misdirected declaration fails closed at activation (D1 §3.3) rather
 	// than being silently dropped — which would world-publish a model the author
 	// believed was protected, or scatter the read-auth source of truth onto a
-	// regular bucket.
-	Protected  bool `json:"protected,omitempty"`
-	GrantTable bool `json:"grantTable,omitempty"`
+	// regular bucket. SecureColumns (Contract #3 §3.10) is parsed for the same
+	// reason: honoring it here would decrypt PII into a bucket with no
+	// row-level enforcement.
+	Protected     bool           `json:"protected,omitempty"`
+	GrantTable    bool           `json:"grantTable,omitempty"`
+	SecureColumns []SecureColumn `json:"secureColumns,omitempty"`
 }
 
 // NewCoreKVSource constructs a watcher. logger may be nil.
@@ -477,6 +501,9 @@ func translateSpec(spec *LensSpec) (*Rule, error) {
 		if err != nil {
 			return nil, err
 		}
+		if err := validateSecureColumns(spec, cfg); err != nil {
+			return nil, err
+		}
 		dm, err := adapter.ParseDeleteMode(cfg.DeleteMode)
 		if err != nil {
 			return nil, fmt.Errorf("lens %q: targetConfig.deleteMode: %w", spec.ID, err)
@@ -497,6 +524,7 @@ func translateSpec(spec *LensSpec) (*Rule, error) {
 			GrantTable:      cfg.GrantTable,
 			Columns:         cols,
 			ArrayColumns:    arrayCols,
+			SecureColumns:   cfg.SecureColumns,
 		}
 	case "nats_kv":
 		var cfg TargetNATSKVConfig
@@ -517,6 +545,9 @@ func translateSpec(spec *LensSpec) (*Rule, error) {
 		}
 		if cfg.GrantTable {
 			return nil, fmt.Errorf("lens %q: a grant-table lens must target postgres (the shared actor_read_grants table), not nats_kv (Contract #6 §6.14)", spec.ID)
+		}
+		if len(cfg.SecureColumns) > 0 {
+			return nil, fmt.Errorf("lens %q: secureColumns (a Secure Lens, Contract #3 §3.10) must target a protected postgres model, not nats_kv — decrypted PII may only land behind RLS", spec.ID)
 		}
 		dm, err := adapter.ParseDeleteMode(cfg.DeleteMode)
 		if err != nil {
@@ -548,6 +579,71 @@ func translateSpec(spec *LensSpec) (*Rule, error) {
 	r.ResolvedEngine = attempted[len(attempted)-1]
 	r.CompiledRule = compiled
 	return r, nil
+}
+
+// validateSecureColumns enforces the Secure-Lens declaration invariants
+// (Contract #3 §3.10; vault-crypto-shredding-design.md §2.3): decrypted PII
+// may only land in a protected (RLS) postgres business model, every secure
+// column must be a declared, provisioned column so the plaintext's
+// destination is explicit, and no secure column may be a platform RLS column
+// (decrypted user-supplied data as the row's authz_anchors would make read
+// authorization user-controllable) or an output-key column (the decryptor
+// rewrites Row values only — a key would stay ciphertext). Fail-closed at
+// spec-load time — a lens that would decrypt into the wrong posture never
+// activates.
+func validateSecureColumns(spec *LensSpec, cfg TargetPostgresConfig) error {
+	if len(cfg.SecureColumns) == 0 {
+		return nil
+	}
+	if !cfg.Protected {
+		return fmt.Errorf("lens %q: secureColumns require protected: true — a Secure Lens projects plaintext PII and may only target an RLS-protected model (Contract #3 §3.10)", spec.ID)
+	}
+	if cfg.GrantTable {
+		return fmt.Errorf("lens %q: secureColumns cannot be combined with grantTable (the grant table carries no business columns)", spec.ID)
+	}
+	if spec.ProjectionKind != "" {
+		return fmt.Errorf("lens %q: secureColumns are supported on plain projection lenses only, not projectionKind %q", spec.ID, spec.ProjectionKind)
+	}
+	declared := make(map[string]struct{}, len(cfg.Columns))
+	for _, c := range cfg.Columns {
+		declared[c.Name] = struct{}{}
+	}
+	keyCols := make(map[string]struct{}, len(cfg.Key))
+	for _, k := range cfg.Key {
+		keyCols[k] = struct{}{}
+	}
+	reserved := map[string]struct{}{
+		adapter.AuthzAnchorsColumn:  {},
+		adapter.ProjectionSeqColumn: {},
+	}
+	seen := make(map[string]struct{}, len(cfg.SecureColumns))
+	for _, sc := range cfg.SecureColumns {
+		if sc.Column == "" || sc.IdentityKeyColumn == "" {
+			return fmt.Errorf("lens %q: each secureColumns entry needs both column and identityKeyColumn", spec.ID)
+		}
+		if _, dup := seen[sc.Column]; dup {
+			return fmt.Errorf("lens %q: secureColumns declares column %q twice", spec.ID, sc.Column)
+		}
+		seen[sc.Column] = struct{}{}
+		if _, bad := reserved[sc.Column]; bad {
+			return fmt.Errorf("lens %q: secure column %q is a platform RLS column — decrypted data must never drive read authorization or the write guard", spec.ID, sc.Column)
+		}
+		if _, isKey := keyCols[sc.Column]; isKey {
+			return fmt.Errorf("lens %q: secure column %q is an output-key column — the projection key cannot be a ciphertext envelope", spec.ID, sc.Column)
+		}
+		if _, ok := declared[sc.Column]; !ok {
+			return fmt.Errorf("lens %q: secure column %q is not among the declared targetConfig.columns", spec.ID, sc.Column)
+		}
+		if _, bad := reserved[sc.IdentityKeyColumn]; bad {
+			return fmt.Errorf("lens %q: identityKeyColumn %q is a platform RLS column", spec.ID, sc.IdentityKeyColumn)
+		}
+		if _, ok := declared[sc.IdentityKeyColumn]; !ok {
+			if _, isKey := keyCols[sc.IdentityKeyColumn]; !isKey {
+				return fmt.Errorf("lens %q: identityKeyColumn %q is not among the declared targetConfig.columns or key columns — the adapter writes every row field as a table column, so an undeclared column fails at write time", spec.ID, sc.IdentityKeyColumn)
+			}
+		}
+	}
+	return nil
 }
 
 // validateProtectedDeleteMode rejects a protected lens declaring deleteMode

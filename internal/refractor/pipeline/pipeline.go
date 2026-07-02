@@ -64,6 +64,11 @@ type Pipeline struct {
 	// back to capabilityKeyForActor (cap.<actor>), the primary lens's shape.
 	actorDeleteKey func(actorKey string) string
 
+	// secureDecryptor decrypts a Secure Lens's declared secure columns after
+	// evaluation, before any write path (Contract #3 §3.10). Nil for every
+	// non-secure lens — rows pass through untouched.
+	secureDecryptor *SecureDecryptor
+
 	// latencyBuf captures the (CDC → projection-write) latency per event
 	// so the heartbeat can compute mean/p95/p99 per Lens. Nil disables.
 	latencyBuf *LatencyRingBuffer
@@ -185,6 +190,12 @@ func (p *Pipeline) SetActorEnumerator(en *ActorEnumerator) {
 // Must be called before Run.
 func (p *Pipeline) SetActorDeleteKey(fn func(actorKey string) string) {
 	p.actorDeleteKey = fn
+}
+
+// SetSecureDecryptor installs the Secure-Lens decrypt-at-projection transform
+// (Contract #3 §3.10). Pass nil to clear. Must be called before Run.
+func (p *Pipeline) SetSecureDecryptor(d *SecureDecryptor) {
+	p.secureDecryptor = d
 }
 
 // SetLatencyBuffer installs the per-Lens latency ring buffer.
@@ -485,9 +496,20 @@ func (p *Pipeline) handle(ctx context.Context, msg substrate.Message) (substrate
 		// (e.g. identity .state, role .description) changes a vertex's
 		// projected state with no vertex-root event, so it must drive a
 		// fan-out reprojection seeded from the parent vertex. Other lenses
-		// keep the legacy ack-and-skip behaviour.
+		// keep the legacy ack-and-skip behaviour — EXCEPT a Secure Lens on a
+		// piiKey mutation: every crypto-shred commits a piiKey update, and an
+		// already-projected row holds decrypted PLAINTEXT, so the anchor must
+		// reproject now (decrypt returns ErrKeyShredded → the row is
+		// overwritten with null PII). Waiting for an unrelated anchor event
+		// would leave shredded plaintext standing — a right-to-erasure
+		// violation, not an eventual-consistency wrinkle.
 		if p.actorEnumerator != nil {
 			return p.evalAspectFanOut(ctx, msg, key)
+		}
+		if p.secureDecryptor != nil {
+			if _, _, _, localName, ok := substrate.ParseAspectKey(key); ok && localName == "piiKey" {
+				return p.evalSecureShredReprojection(ctx, msg, key)
+			}
 		}
 		slog.Info("pipeline: aspect mutation observed but no handler registered",
 			"ruleId", p.ruleID, "key", key,
@@ -592,7 +614,45 @@ func (p *Pipeline) evalLinkFanOut(ctx context.Context, msg substrate.Message, ke
 			"ruleId", p.ruleID, "entityId", key, "stage", "traversal", "err", err)
 		return p.dispositionEvalErr(ctx, msg, key, "traversal", err)
 	}
+	if err := p.applySecureDecrypt(ctx, results); err != nil {
+		return p.dispositionEvalErr(ctx, msg, key, "traversal", err)
+	}
 
+	return p.writeResults(ctx, msg, key, results)
+}
+
+// evalSecureShredReprojection handles a piiKey aspect CDC event on a Secure
+// Lens: re-evaluate the parent (anchor) vertex so its projected row reflects
+// the key's current state — after a shred, decrypt fails ErrKeyShredded and
+// the row's secure columns project null, scrubbing previously-projected
+// plaintext. A parent whose type doesn't bind the lens's MATCH evaluates to
+// zero rows (harmless no-op); a missing/tombstoned parent is skipped — row
+// deletion belongs to the anchor-tombstone path.
+func (p *Pipeline) evalSecureShredReprojection(ctx context.Context, msg substrate.Message, key string) (substrate.Decision, error) {
+	parentVtx, parentType, _, _, ok := substrate.ParseAspectKey(key)
+	if !ok {
+		return substrate.Ack, nil
+	}
+	props, err := p.fetchVertexProps(ctx, parentVtx)
+	if err != nil {
+		slog.Error("pipeline: piiKey reprojection: fetch anchor",
+			"ruleId", p.ruleID, "entityId", key, "err", err)
+		return p.dispositionEvalErr(ctx, msg, key, "traversal", err)
+	}
+	if props == nil {
+		return substrate.Ack, nil
+	}
+	entry := ruleengine.NodeEntry{
+		CoreKVKey:  parentVtx,
+		NodeLabel:  parentType,
+		Properties: props,
+	}
+	results, err := p.evaluateForEntry(ctx, entry)
+	if err != nil {
+		slog.Error("pipeline: piiKey reprojection: evaluate",
+			"ruleId", p.ruleID, "entityId", key, "stage", "traversal", "err", err)
+		return p.dispositionEvalErr(ctx, msg, key, "traversal", err)
+	}
 	return p.writeResults(ctx, msg, key, results)
 }
 
@@ -611,6 +671,9 @@ func (p *Pipeline) evalAspectFanOut(ctx context.Context, msg substrate.Message, 
 	if err != nil {
 		slog.Error("pipeline: aspect fan-out: evaluate",
 			"ruleId", p.ruleID, "entityId", key, "stage", "traversal", "err", err)
+		return p.dispositionEvalErr(ctx, msg, key, "traversal", err)
+	}
+	if err := p.applySecureDecrypt(ctx, results); err != nil {
 		return p.dispositionEvalErr(ctx, msg, key, "traversal", err)
 	}
 

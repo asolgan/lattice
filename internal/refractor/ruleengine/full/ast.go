@@ -311,3 +311,29 @@ func (cr *CompiledRule) ValidateKeyColumns() error {
 	}
 	return nil
 }
+
+// ValidateReturnAliases fails closed when any of names is not a RETURN alias
+// of the compiled query. Activation-time counterpart of ValidateKeyColumns
+// for columns the caller consumes off the row map (e.g. a Secure Lens's
+// secure + identity-key columns) — a missing alias would otherwise be
+// silently null on every row, indistinguishable from legitimately-absent
+// data.
+func (cr *CompiledRule) ValidateReturnAliases(names ...string) error {
+	if cr == nil || len(names) == 0 {
+		return nil
+	}
+	aliases, ok := cr.returnAliases()
+	if !ok {
+		return errors.New("full engine: compiled rule has no RETURN clause")
+	}
+	have := make(map[string]struct{}, len(aliases))
+	for _, a := range aliases {
+		have[a] = struct{}{}
+	}
+	for _, n := range names {
+		if _, present := have[n]; !present {
+			return fmt.Errorf("full engine: column %q is not a RETURN alias", n)
+		}
+	}
+	return nil
+}

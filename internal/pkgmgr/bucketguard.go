@@ -68,10 +68,10 @@ func (def Definition) validateLensAdapters() error {
 // scatter the read-auth source of truth onto a regular bucket. Pure (no I/O).
 func (def Definition) validateLensReadPath() error {
 	for idx, l := range def.Lenses {
-		hasPosture := l.Protected || l.Public || l.GrantTable || len(l.Columns) > 0
+		hasPosture := l.Protected || l.Public || l.GrantTable || len(l.Columns) > 0 || len(l.SecureColumns) > 0
 		if hasPosture && l.Adapter != "postgres" {
 			return fmt.Errorf(
-				"pkgmgr: Lens[%d] %q declares a read-path posture (protected/public/grantTable/columns) but its Adapter is %q — RLS and the shared actor_read_grants table are Postgres concepts; a NATS-KV target has no row-level enforcement (Contract #6 §6.14)",
+				"pkgmgr: Lens[%d] %q declares a read-path posture (protected/public/grantTable/columns/secureColumns) but its Adapter is %q — RLS and the shared actor_read_grants table are Postgres concepts; a NATS-KV target has no row-level enforcement (Contract #6 §6.14)",
 				idx, l.CanonicalName, l.Adapter)
 		}
 		if l.Protected && l.Public {
@@ -79,6 +79,54 @@ func (def Definition) validateLensReadPath() error {
 		}
 		if l.Protected && l.GrantTable {
 			return fmt.Errorf("pkgmgr: Lens[%d] %q: a GrantTable lens is not a protected business model — set neither Protected nor Public (Contract #6 §6.14)", idx, l.CanonicalName)
+		}
+		if len(l.SecureColumns) > 0 {
+			// Mirror Refractor's validateSecureColumns (Contract #3 §3.10) so a
+			// Secure Lens that could never activate is rejected at install time.
+			// The reserved names are the platform RLS columns (the Refractor-side
+			// adapter.AuthzAnchorsColumn / adapter.ProjectionSeqColumn).
+			if !l.Protected {
+				return fmt.Errorf("pkgmgr: Lens[%d] %q: SecureColumns require Protected — a Secure Lens projects plaintext PII and may only target an RLS-protected model (Contract #3 §3.10)", idx, l.CanonicalName)
+			}
+			if l.ProjectionKind != "" {
+				return fmt.Errorf("pkgmgr: Lens[%d] %q: SecureColumns are supported on plain projection lenses only, not ProjectionKind %q", idx, l.CanonicalName, l.ProjectionKind)
+			}
+			reserved := map[string]struct{}{"authz_anchors": {}, "projection_seq": {}}
+			declared := make(map[string]struct{}, len(l.Columns))
+			for _, c := range l.Columns {
+				declared[c.Name] = struct{}{}
+			}
+			keyCols := make(map[string]struct{}, len(l.IntoKey))
+			for _, k := range l.IntoKey {
+				keyCols[k] = struct{}{}
+			}
+			seen := make(map[string]struct{}, len(l.SecureColumns))
+			for _, sc := range l.SecureColumns {
+				if sc.Column == "" || sc.IdentityKeyColumn == "" {
+					return fmt.Errorf("pkgmgr: Lens[%d] %q: each SecureColumns entry needs both Column and IdentityKeyColumn", idx, l.CanonicalName)
+				}
+				if _, dup := seen[sc.Column]; dup {
+					return fmt.Errorf("pkgmgr: Lens[%d] %q: SecureColumns declares column %q twice", idx, l.CanonicalName, sc.Column)
+				}
+				seen[sc.Column] = struct{}{}
+				if _, bad := reserved[sc.Column]; bad {
+					return fmt.Errorf("pkgmgr: Lens[%d] %q: secure column %q is a platform RLS column — decrypted data must never drive read authorization or the write guard", idx, l.CanonicalName, sc.Column)
+				}
+				if _, isKey := keyCols[sc.Column]; isKey {
+					return fmt.Errorf("pkgmgr: Lens[%d] %q: secure column %q is an IntoKey column — the projection key cannot be a ciphertext envelope", idx, l.CanonicalName, sc.Column)
+				}
+				if _, ok := declared[sc.Column]; !ok {
+					return fmt.Errorf("pkgmgr: Lens[%d] %q: secure column %q is not among the declared Columns", idx, l.CanonicalName, sc.Column)
+				}
+				if _, bad := reserved[sc.IdentityKeyColumn]; bad {
+					return fmt.Errorf("pkgmgr: Lens[%d] %q: IdentityKeyColumn %q is a platform RLS column", idx, l.CanonicalName, sc.IdentityKeyColumn)
+				}
+				if _, ok := declared[sc.IdentityKeyColumn]; !ok {
+					if _, isKey := keyCols[sc.IdentityKeyColumn]; !isKey {
+						return fmt.Errorf("pkgmgr: Lens[%d] %q: IdentityKeyColumn %q is not among the declared Columns or IntoKey — the adapter writes every row field as a table column", idx, l.CanonicalName, sc.IdentityKeyColumn)
+					}
+				}
+			}
 		}
 	}
 	return nil
