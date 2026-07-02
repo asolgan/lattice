@@ -47,6 +47,7 @@ var defaultFiles = []string{
 	"_bmad-output/planning-artifacts/backlog.md",
 	"_bmad-output/planning-artifacts/backlog/lattice.md",
 	"_bmad-output/planning-artifacts/backlog/verticals.md",
+	"_bmad-output/planning-artifacts/backlog/loupe.md",
 }
 
 var (

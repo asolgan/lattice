@@ -34,13 +34,11 @@ A lint gate (`scripts/lint-board.go`, run in CI + before any board commit) enfor
   ✅ ratified (design signed off, not yet built) · 🚧 blocked (Andrew-gated, or `seq:`/`blocked-on:` another
   item) · 🎯 top-priority pick · 🗄️ shelved-backup · 🔭 flag-for-Andrew.
 
-## Active initiative — Loupe (first Edge Lattice prototype)
+## Loupe → its own lane
 
-The view-&-control app built *around* Edge machinery (no authN/Z, Gateway, read-path auth, or Personal Lens —
-trusted single-identity tool). Its three enabling items — **Loom control plane**, **Large-file/binary
-handling**, **Refractor substrate migration** — all ✅ shipped (see Done log + the Progress board in
-[../backlog.md](../backlog.md)). Loupe is now advanced like any Lattice component (owner for backend,
-UX-then-FE for `cmd/loupe/web`).
+Loupe (`cmd/loupe`) is advanced by **Stream 3** on its own board — **[loupe.md](loupe.md)** (the Loupe 2.0
+console program + Loupe component maintenance; runs parallel to this stream, own build lock). Loupe rows no
+longer live here; a platform primitive Loupe needs still files HERE per the cross-lane rules.
 
 ## Component maintenance
 
@@ -54,8 +52,6 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 | **[Weaver] Registry cleanup edge branches uncovered** | `targetSource.removeOwnedTargetLocked` (targetId-rename removal, 33%), `removePatternLocked` + `removeOpMetaLocked` (pattern/op-meta vertex deletion index cleanup, 50%) — untested paths that keep the in-memory dispatch-resolution indices (`patternMeta`, `opMetaByType`) from leaking stale entries when a referenced `meta.loomPattern`/op meta-vertex is deleted or a target's `targetId` is renamed. | ★ | XS–S | 📋 · `internal/weaver/registry.go:372,586,640` |
 | **[Loom] HealthSink pause-restore round-trip uncovered** | `consumerHealthSink.Load` paused branch (`internal/loom/health_sink.go:75-81`) + `pauseReasonFromString` switch arms partly uncovered (pkg 81.5%); restart-pause-restore unexercised end-to-end. Mirror of the Weaver gap above. | ★★ | XS–S | 📐 awaiting-Andrew · [design](../../implementation-artifacts/health-sink-consolidation-design.md) · same consolidation as the Weaver row (one shared tested sink) |
 | **[Loom] Guardless-step recovery check-before-act probe** | On total `loom-state` loss + a re-triggered `StartLoomPattern`, a fresh instance replays guards from cursor 0 (re-runs an already-applied guarded step). | ★ | S–M | 🗄️ shelved-backup (Andrew: no new engine Core-KV reads) |
-| **[Loupe] Static-UI serving (`go:embed web`) untested** | The embedded operator-UI mount has no coverage. | ★ | XS | 📋 |
-| **[Loupe] Operator UI (`app.js`, 1142 LOC) has no automated coverage** | No JS test harness in the repo — standing up one is an architectural call. | ★★ | L | 📐 awaiting-Andrew · [design](../../implementation-artifacts/loupe-fe-test-strategy-design.md) · Go-native (goja logic tier, no Node); dep-fork = adopt goja; browser e2e deferred; 2 fires |
 | **[Refractor] Retire the legacy `simple` engine (full-engine is universal)** | All 20 lenses are `engine:"full"`; the ~2.8k-LOC `simple` parser + its registry fallback are dead in prod but own the shared `EvalResult`/`QueryPlan` types → decouple-then-delete. | ★★ | M–L | 🏗️ building · [design](../../implementation-artifacts/retire-simple-engine-design.md) · Fire 1+2 shipped (carrier move, dead invalidation-forest deleted); next: Fire 3 delete the simple engine |
 | **[Refractor/pipeline] Fan-out eval-error disposition + adjacency-watch edge branches uncovered** | `dispositionEvalErr` (0% — fan-out eval-error → terminal-DLQ/infra-pause/transient-nak) + `handleAdjUpdate` (13.5% — the not-found/tombstone/bad-key/unmarshal/guarded/write arms). Happy-path fan-out is e2e-covered; the error/edge arms are not. | ★★ | XS–S | 📐 awaiting-Andrew · [design](../../implementation-artifacts/refractor-pipeline-failure-disposition-coverage-design.md) · pins FR16–19a disposition contract; no contract change; 1 fire |
 | **[Core] Atomic-batch size ceiling undocumented + unenforced** | A Starlark script's mutation set has no documented/enforced max size; a legitimate op that exceeds NATS's per-batch byte limit surfaces as a raw substrate/NATS error at step 8, not a typed Processor rejection — no bound, no clean failure mode. | ★ | S | ✅ ratified (low-priority maintenance) · [design](../../implementation-artifacts/atomic-batch-size-ceiling-design.md) · contracts committed; 1 fire |
@@ -67,8 +63,8 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 ### Survey log (round-robin rotation)
 
 Rotation memory only — findings are the filed rows; fire narratives live in commits, never here.
-Components: Core · Weaver · Loom · Refractor · Loupe (+ the cross-cutting feature backlog). Survey the
-stalest (`git log -1 --format=%ct -- <path>`), note ONE dated line, rotate.
+Components: Core · Weaver · Loom · Refractor (+ the cross-cutting feature backlog; Loupe moved to its own
+lane, [loupe.md](loupe.md)). Survey the stalest (`git log -1 --format=%ct -- <path>`), note ONE dated line, rotate.
 
 - 2026-07-01 Core (healthy; filed atomic-batch-size-ceiling + uninstall-per-key-OCC).
 - 2026-07-01 Weaver (healthy, 83%/77% cov, no TODOs; filed registry-cleanup-edge-branches-uncovered).
@@ -77,7 +73,7 @@ stalest (`git log -1 --format=%ct -- <path>`), note ONE dated line, rotate.
 - 2026-07-01 Designer — search/ES target adapter (3rd Refractor adapter; OpenSearch rec., FTS interim) (→ 📐).
 - 2026-07-01 Designer — feature queue designed-out (all ~30 rows carry a design); resolved stale L309 (link-tombstone subsumed by link-aspect design, latency-rollup seq behind HA). Remaining 📋 = owner test-coverage.
 - 2026-07-02 Refractor (healthy, clean lint; retraction/rollup already tracked; filed capability-pipeline-link-aspect-fanout-untested + natskv-guard-edge-branches).
-- **Next:** Loupe.
+- **Next:** Core.
 
 ## Lattice feature backlog — the Phase-3 build queue
 
@@ -171,7 +167,6 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 | multi-aspect atomic OCC for `UpdateMetaVertex` | `meta_ddl.go` applies `expectedRevision` to the first changed aspect by design; true multi-key OCC needs a substrate per-key-revision primitive — marginal value. | ★ | M+ | 🗄️ parked |
 | freshnessExpiry marker tombstone-on-convergence | A converged marker is read by nothing and harmless; tombstoning buys cleanup not correctness. | ★ | S | 🗄️ parked |
 | production freshness-window tuning | A staleness-tolerance vs. timer-churn value judgment — Andrew's call if/when it matters. | ★ | XS | 🗄️ parked |
-| Loupe agent-activity console | The ops layer atop the live system map (Steward queue, L3 review queue, per-agent Health). Read-seam options rejected. | ★★★ | M | 🚧 Andrew-gated (shelved 2026-06-25; design retained, do not build) |
 
 ## Done log — lattice (newest first)
 

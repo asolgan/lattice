@@ -10,6 +10,9 @@ no-collision seam: app-vertical code vs platform code). Design + rationale:
   **Vertical Steward** + **Vertical PO**.
 - **[backlog/lattice.md](backlog/lattice.md)** — Lattice features + component maintenance. Stream: **Lattice
   Steward** (round-robin across components) + **Surveyor** + **Whetstone** (CI).
+- **[backlog/loupe.md](backlog/loupe.md)** — the Loupe console (Loupe 2.0 program, `cmd/loupe/**`). Stream:
+  **Loupe Steward** (UX-then-FE) — runs in parallel with BOTH streams above (own build lock, not the shared
+  one; Andrew 2026-07-02).
 
 This index keeps the **scales**, the **cross-lane rules**, and the **shipped milestones**. Per-lane
 *ready / in-flight / done* lives in the two lane files (each stream writes only its own file → the
