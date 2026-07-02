@@ -1,6 +1,13 @@
 # Loupe operator-UI test strategy — a Go-native front-end regression net
 
-**Status: 📐 awaiting-Andrew (ratification).** Design/doc-only; the Lattice Steward builds Fire 1 only after ✅ Andrew-ratified.
+**Status: ✅ RATIFIED — Andrew, 2026-07-02 (Fire 1: goja logic tier). Fire 2 (chromedp browser e2e) stays 🗄️ designed-shelved as proposed.**
+Ratification amendments are folded into the body below: the Loupe 2.0 program
+([loupe-2-ux-design.md](loupe-2-ux-design.md) §2.3) supersedes this design's original loading mechanism —
+`app.js` decomposes into ES modules with a pure `logic/` tier, so the goja harness loads `logic/*.js`
+per-module via the **strip-export transform** (goja has no ES-module support — upstream-verified), not the
+originally-designed `init()`/`module.exports` shim on the monolith. **Fire 1 rides Loupe-2.0-F1** (the
+module split happens there anyway); it is owned by the **Loupe lane** (`backlog/loupe.md`), not the
+Lattice Steward.
 
 > **For Andrew (one-look decision)**
 >
@@ -47,25 +54,31 @@ The intent is not "maximize JS coverage." Loupe is a **trusted, loopback-only, s
 
 **Mirror the established pattern, don't invent one.** Loupe's Go tests already run pure helpers through `go test` in `package main` (`cmd/loupe/server_test.go`). Fire 1 adds a sibling test file in the *same package* that runs the FE's pure helpers through goja — one harness, one `go test ./cmd/loupe/...`, one CI job (the existing `unit` job). No new pipeline, no framework, no build step, honoring the `fe-engineer` skill's "never reframework a vanilla-JS surface."
 
-**3.1 — Make `app.js` load side-effect-free (a small, honest refactor).** Today `app.js` wires DOM listeners at top level (e.g. `$all(".tab").forEach(btn => btn.addEventListener(...))`, line 65), so *loading* the file touches `document` — it would throw under goja. The refactor:
+**3.1 — The testable seam is the Loupe 2.0 `logic/` module tier (supersedes the original shim refactor).**
+Loupe-2.0-F1 decomposes `app.js` into ES modules under `web/js/` with a pure `logic/` tier
+(`loupe-2-ux-design.md` §2.3). The convention that makes that tier goja-loadable:
 
-- Move every top-level DOM-wiring statement into a single `function init() { … }`, invoked only in a browser: `if (typeof document !== "undefined") init();` (or a `DOMContentLoaded` hook — matching how the file already gates panels). Pure function *declarations* stay at top level.
-- At the file bottom, add a test-only export shim, guarded so the browser never sees it:
-  ```js
-  if (typeof module !== "undefined" && module.exports) {
-    module.exports = { deriveReads, schemaTypeLabel, shortId, pretty, sysmapTier,
-                       issueClass, coerceField, componentStatusClass, lensDotClass };
-  }
-  ```
-  goja is `CommonJS`-shaped enough that the harness can define a `module` object, `RunScript(app.js)`, and read `module.exports` back (§3.2). This is **zero framework** — a 3-line vanilla idiom, invisible to the served page.
-- Extract the coercion body of `collectOpForm()` into a pure `coerceField(name, type, raw, isRequired) → {value}|throw`, and have `collectOpForm` call it per field. This turns the highest-value untested logic (typed op-form coercion, the thing that silently mis-submits an op) into a unit-testable function without changing behavior.
+- A `logic/*.js` file contains **only declarations** — no `import`, no DOM / `fetch` / timer / `async`
+  references — and exactly **one trailing `export { … }` statement**.
+- **Syntax stays ES6-conservative** (goja = ES5.1 + "most of ES6", upstream-verified): no optional
+  chaining, no nullish coalescing, no async in `logic/` files; `Object.values`-class ES2017+ built-ins get
+  their trivial ES5 spellings. The harness's parse failure is the loud enforcement — a gap is caught at
+  `go test`, never shipped.
+- The op-form coercion body still extracts to a pure `coerceField(name, type, raw, isRequired) →
+  {value}|throw` (the highest-value untested logic — a silent mis-coercion mis-submits an op), landing in
+  `logic/reads.js` per the 2.0 module map.
 
-This refactor is *itself* the "separate logic from wiring" cleanup that makes the file importable by **any** future runner (goja now, jsdom/browser later) — it is not throwaway scaffolding; it is a durable structural improvement that pays off regardless of which tier(s) exist.
+DOM wiring lives in the view modules and `main.js` — side-effect-free logic loading is a property of the
+module split itself, no `init()` wrapper or `typeof module` shim needed.
 
 **3.2 — The goja harness (`cmd/loupe/web_logic_test.go`, `package main`).** A single Go test file that:
-1. Reads `web/app.js` via the same `embed.FS` the server uses (or `os.ReadFile` at test time — the file is in-tree), so the test asserts the *shipped* asset, never a copy.
-2. Constructs a `goja.Runtime`, defines a minimal `module = {exports:{}}` host object, `RunString`s the source, and `Export()`s the functions.
-3. Table-drives assertions against Go-authored expectations — e.g. `deriveReads({target:"vtx.role.r1", nested:{k:"lnk.a.b.c.d.e"}, n:3})` → `["vtx.role.r1","lnk.a.b.c.d.e"]`; `coerceField("age","integer","x",true)` throws; `schemaTypeLabel({enum:[…]})` == `"enum"`; `sysmapTier({kind:"lens"})` == 4; `issueClass("[error] x")` == `"card-issue bad"`.
+1. Reads each `web/js/logic/*.js` via the same `embed.FS` the server uses, so the test asserts the
+   *shipped* assets, never copies.
+2. Applies the **strip-export transform** — drop the file's single trailing `export { … }` line (a 2-line
+   string transform in the test; goja has no ES-module support) — then constructs one `goja.Runtime` per
+   logic file and `RunString`s the stripped source; the declared functions are read back by name via
+   `runtime.Get`.
+3. Table-drives assertions against Go-authored expectations — e.g. `deriveReads({target:"vtx.role.r1", nested:{k:"lnk.a.b.c.d.e"}, n:3})` → `["vtx.role.r1","lnk.a.b.c.d.e"]`; `coerceField("age","integer","x",true)` throws; `parseRoute("#/graph/vtx.role.abc?view=hood")` → `{view:"graph", arg:"vtx.role.abc", params:{view:"hood"}}`; `isEntityKey` driven by the **same case table as the Go `classifyKey` tests** (the cross-language drift pin); `sysmapTier({kind:"lens"})` == 4; `issueClass("[error] x")` == `"card-issue bad"`.
 
 The harness lives entirely in Go; the assertions are Go test cases; goja is an in-process library call. It runs under `-p 4` with the rest of the unit suite, adds no Docker, no browser, no network.
 
@@ -120,10 +133,14 @@ Four options, judged against the repo's stated values (pure-Go, lean, *no build 
 
 ## 9. Fire-by-fire decomposition (for the Lattice Steward)
 
-**Fire 1 — goja logic tier (the ratifiable, independently-shippable increment).**
-1. Refactor `cmd/loupe/web/app.js`: wrap top-level DOM wiring in `init()` gated on `typeof document`; extract `coerceField` from `collectOpForm`; add the `typeof module`-guarded export shim (§3.1). Behavior-preserving.
+**Fire 1 — goja logic tier (RIDES Loupe-2.0-F1, Loupe lane).**
+1. The `logic/` module tier + strip-export convention land as part of Loupe-2.0-F1's decomposition
+   (§3.1 — no separate refactor fire).
 2. Add `github.com/dop251/goja` (test-only) to `go.mod`; add its `docs/vendors.md` row.
-3. Add `cmd/loupe/web_logic_test.go` (`package main`): load the shipped `app.js` via goja, table-test `deriveReads`, `coerceField`, `schemaTypeLabel`, `shortId`, `pretty`, `sysmapTier`, `issueClass`, and the classifier maps (§3.2).
+3. Add `cmd/loupe/web_logic_test.go` (`package main`): load each shipped `logic/*.js` via the
+   strip-export transform, table-test `deriveReads`, `coerceField`, `parseRoute`, `isEntityKey` (shared
+   case table with the Go `classifyKey` tests), `schemaTypeLabel`, `shortId`, `sysmapTier`, `issueClass`
+   (§3.2); grow the tables as later 2.0 fires add `logic/` modules (`status.js`, `feed.js`, `hood.js`).
 4. Update `docs/components/loupe.md` (testing note) and `agents/fe-engineer/SKILL.md` §3 (the goja-tier line). Gates: `go build`, `make vet`, `golangci-lint`, `lint-conventions`, `go test ./cmd/loupe/...` green; browser smoke per FE skill. Independently green; no CI-topology change.
 
 **Fire 2 — real-browser behavioral e2e (🗄️ designed-shelved; build only after Andrew accepts the CI-browser flake weight + a real driver).**

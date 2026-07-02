@@ -20,7 +20,7 @@ one FE fire at a time; each fire retires a tab only in the same fire as its repl
 
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **F1 — Console shell** | Hash router + route table, ES-module `logic/` split (strip-export convention), `keyLink` resolver seed (link rows far-end-clickable + provenance chips), breadcrumbs. Goja harness rides along only if its 📐 is ratified. | ★★★ | M | 🎯 📋 ready · [design §14](../../implementation-artifacts/loupe-2-ux-design.md) |
+| **F1 — Console shell** | Hash router + route table, ES-module `logic/` split (strip-export convention), goja harness + dep + vendors row, `keyLink` resolver seed (link rows far-end-clickable + provenance chips), breadcrumbs. | ★★★ | M | 🎯 📋 ready · [design §14](../../implementation-artifacts/loupe-2-ux-design.md) |
 | **F2 — Graph explorer** | Faceted/grouped/paged `#/graph` list, linkifying doc renderer, detail re-plumb, ego-graph hood mode; retires Core KV tab. | ★★★ | L | 🚧 seq: F1 |
 | **F3 — Component pages** | `#/component/<id>` ×6, plural instances (fixes LWW collapse), row-level control actions, refractor roster; retires Control tab. | ★★★ | L | 🚧 seq: F1 |
 | **F4 — Health absorption + status vocabulary** | Global alert strip (verbatim `health.alerts.*` incl. stub-auth-active), gates panel + rail (preserves `#sysmap-console` slot), `renderedState` incl. `pending-readpath` (the "7 degraded" fix); retires Health tab. | ★★★ | M | 🚧 seq: F3 |
@@ -35,7 +35,7 @@ one FE fire at a time; each fire retires a tab only in the same fire as its repl
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | **[Loupe] Static-UI serving (`go:embed web`) untested** | The embedded operator-UI mount has no coverage. | ★ | XS | 📋 |
-| **[Loupe] Operator UI (`app.js`, 1142 LOC) has no automated coverage** | No JS test harness in the repo — standing one up is an architectural call; the Loupe 2.0 program multiplies the UI and leans on this landing first. | ★★ | L | 📐 awaiting-Andrew (dep-fork: adopt goja) · [design](../../implementation-artifacts/loupe-fe-test-strategy-design.md) |
+| **[Loupe] Operator UI has no automated coverage** | goja logic-tier harness for the pure `logic/*.js` seam. Fire 2 (chromedp browser e2e) stays 🗄️ designed-shelved. | ★★ | S | ✅ ratified (Andrew 2026-07-02, dep-fork goja) · [design](../../implementation-artifacts/loupe-fe-test-strategy-design.md) · rides F1 |
 
 ## Parked
 

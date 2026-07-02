@@ -168,15 +168,15 @@ web/js/
   pulse.js           EventSource lifecycle + map edge animation hooks
 ```
 
-**Reconciliation with `loupe-fe-test-strategy-design.md` (📐):** that design's Fire 1 assumes a classic
-script + a `module.exports` shim. Under ES modules the equivalent convention is: **`logic/*.js` files
-contain only declarations (no `import`, no DOM/`fetch`/timer references) and exactly one trailing
-`export { … }` statement.** The goja harness loads a logic file by stripping the trailing `export` line
-(a 2-line transform in the Go test) and reading the declared functions — same seam, same zero-toolchain
-property. This is a **small amendment to the test-strategy doc at build time** (flagged in §15); the
-logic/DOM split it depends on is *strengthened* here, not weakened: everything in `logic/` is pure by
-construction and every view module keeps its `shape(json) → viewModel` functions in `logic/` when they
-grow beyond trivial.
+**Reconciliation with `loupe-fe-test-strategy-design.md` (✅ ratified 2026-07-02, amendment folded there):**
+the convention is: **`logic/*.js` files contain only declarations (no `import`, no DOM/`fetch`/timer/
+`async` references) and exactly one trailing `export { … }` statement**, in **ES6-conservative syntax**
+(goja = ES5.1 + most-of-ES6: no optional chaining, no nullish coalescing; ES2017+ built-ins get their ES5
+spellings — the harness's parse failure is the loud gate). The goja harness loads a logic file by
+stripping the trailing `export` line (a 2-line transform in the Go test) and reading the declared
+functions — same seam, same zero-toolchain property. The harness + dep land **with F1**. Everything in
+`logic/` is pure by construction and every view module keeps its `shape(json) → viewModel` functions in
+`logic/` when they grow beyond trivial.
 
 ---
 
@@ -652,10 +652,9 @@ logic tests once the harness lands, a goja-parse syntax check over `web/js/**` �
 no-toolchain rule applies to gates too — and in-browser verify against `make up-full`). The build-lane
 board mirrors this table. Review depth per CLAUDE.md: full 3-layer for L fires and anything touching the
 control/delete surfaces; lead review acceptable for S fires (stated so it can be overridden).
-**F1 + the goja harness:** the FE test-strategy design (📐, dep-fork: adopt goja) is still Andrew's to
-ratify — F1 ships the `logic/` split + strip-export convention regardless (the convention needs no
-dependency); the goja harness + logic tests land with F1 if ratified by then, else as an immediate
-follow-on fire once ratified.
+**F1 + the goja harness:** the FE test-strategy design is **✅ Andrew-ratified (2026-07-02)** — F1 ships
+the `logic/` split, the strip-export convention, the goja dep (+ its `docs/vendors.md` row), and the
+`web_logic_test.go` harness together; later fires extend the harness tables as they add `logic/` modules.
 
 | Fire | Size | Delivers | Depends on |
 |---|---|---|---|
