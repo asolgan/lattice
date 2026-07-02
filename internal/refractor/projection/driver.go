@@ -1,7 +1,6 @@
 package projection
 
 import (
-	"errors"
 	"fmt"
 	"log/slog"
 
@@ -142,13 +141,9 @@ const Version = "1.0"
 // knowledge. Returns false when the lens must NOT be registered (a fail-closed
 // descriptor error), true once the components are installed.
 //
-// Fan-out uses the broad adjacency ActorEnumerator (the sound superset that can
-// never miss an affected anchor). The compiled invalidation forest is the more
-// precise alternative the plan also carries; the live pipeline does not yet
-// consume it, so an auth-plane lens whose MATCH the forest compiler cannot prove
-// subset-safe (e.g. the primary capability cypher's variable-length
-// `containedIn*0..`) is still wired with the BFS enumerator rather than refused —
-// BFS over-reprojects, never under-reprojects, so no anchor is ever missed.
+// Fan-out uses the broad adjacency ActorEnumerator — the sound superset that
+// can never miss an affected anchor, so it over-reprojects rather than under-
+// reprojecting a security-plane lens.
 func InstallActorAggregate(
 	p *pipeline.Pipeline,
 	adpt adapter.Adapter,
@@ -165,20 +160,10 @@ func InstallActorAggregate(
 	}
 
 	authPlane := IsAuthPlane(r)
-	if _, cErr := Compile(r, logger); cErr != nil {
-		var ce *CompileError
-		if errors.As(cErr, &ce) {
-			// Auth-plane lens whose MATCH the forest compiler cannot prove
-			// subset-safe. The live fan-out is the broad BFS enumerator (the
-			// sound superset), so registering with BFS is safe; refusing would
-			// regress the security-plane projection. Log loudly and proceed.
-			logger.Warn("actor-aggregate invalidation forest not subset-safe; using broad BFS fan-out",
-				"lensId", r.ID, "reason", ce.Reason)
-		} else {
-			logger.Error("actor-aggregate plan compile failed — refusing registration",
-				"lensId", r.ID, "err", cErr)
-			return false
-		}
+	if _, err := Compile(r); err != nil {
+		logger.Error("actor-aggregate plan compile failed — refusing registration",
+			"lensId", r.ID, "err", err)
+		return false
 	}
 
 	lensDefKey := "vtx.meta." + r.ID

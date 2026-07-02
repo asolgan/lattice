@@ -1,7 +1,6 @@
 package projection
 
 import (
-	"errors"
 	"strings"
 	"testing"
 
@@ -260,14 +259,11 @@ func TestRequiresGuardedTombstone(t *testing.T) {
 	}
 }
 
-// --- activation policy: auth vs non-auth fail-closed-vs-warn (AC3e, AC6) ---
-
-type capturingLogger struct{ warned int }
-
-func (l *capturingLogger) Warn(string, ...any) { l.warned++ }
+// --- activation: Compile registers an actor-aggregate lens regardless of MATCH
+// shape; fan-out is always the broad BFS enumerator (no forest/coverage gate) ---
 
 // uncoveredAuthRule builds an actorAggregate auth-plane (capability-kv) rule
-// whose MATCH uses an uncovered construct (undirected hop).
+// whose MATCH uses an undirected hop.
 func makeRule(t *testing.T, bucket, match string) *lens.Rule {
 	t.Helper()
 	eng := full.New()
@@ -300,55 +296,27 @@ OPTIONAL MATCH (identity)-[:assignedTo]-(task:task)
 RETURN identity.key AS actorKey, collect(task.key) AS tasks
 `
 
-func TestCompile_AuthPlaneUncovered_FailsActivation(t *testing.T) {
+// TestCompile_AuthPlaneUncoveredMatch_StillRegisters pins the retire-simple-
+// engine Fire 2 invariant: the deleted invalidation-forest coverage analyzer
+// was already inert at the driver level (BFS always wins — see driver.go), so
+// removing it must not start refusing an auth-plane lens whose MATCH the old
+// analyzer would have called "uncovered". Compile has no forest/coverage
+// concept anymore; it only validates the descriptor and classifies auth-plane.
+func TestCompile_AuthPlaneUncoveredMatch_StillRegisters(t *testing.T) {
 	r := makeRule(t, AuthPlaneBucket, uncoveredMatch)
-	log := &capturingLogger{}
-	_, err := Compile(r, log)
-	var ce *CompileError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected *CompileError (fail closed), got %v", err)
-	}
-	if log.warned != 0 {
-		t.Fatalf("auth-plane lens must FAIL, not warn-and-fallback")
-	}
-}
-
-func TestCompile_NonAuthUncovered_WarnsAndFallsBack(t *testing.T) {
-	r := makeRule(t, "my-tasks", uncoveredMatch)
-	log := &capturingLogger{}
-	plan, err := Compile(r, log)
+	plan, err := Compile(r)
 	if err != nil {
-		t.Fatalf("non-auth uncovered must not fail activation: %v", err)
-	}
-	if !plan.Invalidation.FallbackToBFS {
-		t.Fatalf("expected BFS-fallback plan for non-auth uncovered lens")
-	}
-	if log.warned == 0 {
-		t.Fatalf("expected a fallback-to-BFS warning")
-	}
-}
-
-func TestCompile_CoveredAuthPlane_CompilesForest(t *testing.T) {
-	r := makeRule(t, AuthPlaneBucket, coveredMatch)
-	plan, err := Compile(r, &capturingLogger{})
-	if err != nil {
-		t.Fatalf("covered auth-plane lens must compile: %v", err)
+		t.Fatalf("auth-plane lens must still compile (BFS fan-out, no forest gate): %v", err)
 	}
 	if !plan.AuthPlane {
 		t.Fatalf("expected auth-plane classification for capability-kv bucket")
-	}
-	if plan.Invalidation.FallbackToBFS || plan.Invalidation.Forest == nil {
-		t.Fatalf("expected a compiled forest, got fallback")
-	}
-	if len(plan.Invalidation.Forest.Branches) == 0 {
-		t.Fatalf("forest has no branches")
 	}
 }
 
 func TestCompile_NonActorAggregate_Rejected(t *testing.T) {
 	r := makeRule(t, "my-tasks", coveredMatch)
 	r.ProjectionKind = ""
-	if _, err := Compile(r, nil); err == nil {
+	if _, err := Compile(r); err == nil {
 		t.Fatalf("expected Compile to reject a non-actorAggregate lens")
 	}
 }
