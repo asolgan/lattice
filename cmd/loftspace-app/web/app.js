@@ -2571,9 +2571,10 @@ async function opOrThrow(body, what) {
   return reply || {};
 }
 
-// submitPostListing runs the three-op chain that mints + lists a unit: CreateLocation
-// (the reply's primaryKey is the new vtx.unit key) → SetUnitAddress → SetListing. Each
-// step awaits the prior since the address/listing target the unit the first op mints.
+// submitPostListing runs the op chain that mints + lists a unit: CreateLocation
+// (the reply's primaryKey is the new vtx.unit key) → AssignUnitOwner (the signed-in
+// landlord manages it) → SetUnitAddress → SetListing. Each step awaits the prior
+// since the address/listing/ownership target the unit the first op mints.
 async function submitPostListing(ev) {
   ev.preventDefault();
   const line1 = $("#li-line1").value.trim();
@@ -2627,6 +2628,18 @@ async function submitPostListing(ev) {
         toast("The unit was created but returned no key; try Refresh.", "err");
         return;
       }
+      // A freshly minted unit has no manages link yet — without this, the
+      // landlord's own operator/RLS views (scoped to units they manage) never
+      // show the unit they just posted.
+      await opOrThrow(
+        {
+          operationType: "AssignUnitOwner",
+          class: "loftspaceOwnership",
+          reads: [state.applicant, unitKey],
+          payload: { landlord: state.applicant, unit: unitKey },
+        },
+        "assign yourself as the unit's manager",
+      );
     }
 
     const addr = { unit: unitKey, line1, city, region, postal };
