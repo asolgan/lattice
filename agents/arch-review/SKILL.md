@@ -50,10 +50,16 @@ For each component produce, with file:line evidence:
 - **Read/write-path map**: confirm apps read only lens targets (P5 gate), Processor is the only
   Core-KV writer, sanctioned exceptions still bounded (Loom guard read; Health KV; Loupe inspector).
 
-## Output
+## Output — REPORT ONLY by default (boards untouched)
 
 A single report at `docs/reviews/arch-review-<date>.md` (docs live in /docs): executive summary →
-per-component verdicts → cross-cutting findings → a ranked corrections table. File the top findings as
-board rows on the owning lane (maintenance section) — rows, not fixes. Verify every claim against the
-pinned source before it enters the report (vendor claims against `go env GOMODCACHE` + docs/vendors.md).
-Commit the report + rows (docs-only, direct to main); nothing else.
+per-component verdicts → cross-cutting findings → a ranked corrections table → **a "Proposed board
+rows" section**: every finding rendered as a ready-to-paste, lint-conformant board row (`| Item | What |
+Imp | Size | 📋 |`), grouped by owning lane (lattice / verticals / loupe). **Do NOT edit any board** —
+Andrew reviews the report and decides what gets filed. Verify every claim against the pinned source
+before it enters the report (vendor claims against `go env GOMODCACHE` + docs/vendors.md). Commit the
+report alone (docs-only, direct to main); nothing else.
+
+**Opt-in filing (the automated flywheel, later):** only when explicitly invoked with `file` in the args
+("/arch-review file") does the run additionally file the proposed rows onto the owning boards
+(STRICT lint-gated, 600-char cap, no SHA+prose) — never on a default run.
