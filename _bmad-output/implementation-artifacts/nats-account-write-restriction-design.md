@@ -448,6 +448,56 @@ if A, confirm NKey).
   primitive once it exists (it becomes a no-op there — the `lattice.ctrl.>` restriction is already in
   the matrix).*
 
+### 🏗️ CHECKPOINT (Fire 2b, 2026-07-01)
+
+**Worktree:** `/Users/andrewsolgan/Documents/GitHub/lattice-wt-nats-write-restriction-f2b`
+(branch `steward-nats-write-restriction-f2b`, rebased onto `main`@`df8c8e1`).
+
+**Done this fire (code-complete, gates green):**
+- Rebased the worktree onto current `main` (it had drifted 4 commits behind and its stale diff
+  would have deleted the just-shipped `packages/loftspace-ledger` on merge — resolved via rebase +
+  a 2-hunk Makefile conflict, both sides folded in).
+- `docker-compose.yml` now mounts `deploy/nats-server.conf` (`-c` flag); every `cmd/<binary>/main.go`
+  + `cmd/lattice/output/connect.go` threads `NATS_NKEY`/`NATS_CREDS`; every Makefile launch site
+  (`up`, `up-full`, `orchestration`, `install-*`, `up-loftspace`, `up-clinic`, `refresh-*`,
+  `run-*`, `test-hello-lattice`, `test-health-completeness`) passes the right per-component NKey.
+- **Gap found + fixed:** `verify-kernel` and all 9 `go run ./scripts/verify-package-*.go`
+  invocations had **no** `NATS_NKEY` — under enforcement these are anonymous connects, which the
+  auth-enabled server rejects outright (can't even subscribe). Added `NATS_NKEY=$(NKEY_LATTICE_CLI)`
+  to all 10 call sites (Makefile) — the scripts themselves already accepted the env var
+  (`nats.NkeyOptionFromSeed`), only the invocations were missing it.
+- `go build ./...`, `make vet`, `golangci-lint run ./...`, `STRICT=1 go run
+  ./scripts/lint-conventions.go`, `go test -p 4 ./...` all green in the worktree (embedded-harness
+  suite, unaffected by live auth — confirms no regression from the credential-seam changes).
+
+**Blocked — could not complete this fire:** proving the design's own Fire-2 "green" bar
+(`make up-full` + the full gate battery passing **with auth on**) requires tearing down and
+restarting the **shared dev stack** (`make down` — the live `lattice-nats`/`lattice-postgres`
+containers + the 9 native component binaries every fire and Andrew's own Loupe session read/write
+today) so it comes back up under the new auth-enabled `docker-compose.yml`. The sandbox's auto-mode
+classifier **denied** this action outright (tearing down shared infrastructure with no standing
+authorization for an unattended fire) — correctly: an unattended fire restarting the one shared
+stack, with no rollback guarantee if a permission-matrix entry is wrong, is exactly the
+"shared-stack risk" this row already flagged as wanting a dedicated fire, and "dedicated fire"
+still isn't "unattended, no-one-watching fire." This is **not a false block** — it is a real
+standing gate: **live-stack verification of this item needs Andrew present** (or an explicit
+one-time authorization to restart the shared stack unattended).
+
+**Next fire (or Andrew, interactively):**
+1. `cd` to the worktree above (already rebased + gate-clean; re-rebase onto `main` first if it has
+   moved further).
+2. With Andrew's go-ahead / Andrew present: `make down && make up-full && make install-loftspace &&
+   make install-clinic` (+ the two `provision-*-role` calls, already wired into those targets) from
+   the worktree, then run the full gate battery (`verify-kernel`, each `verify-package-*`,
+   `test-bypass`, `test-capability-adversarial`, `test-hello-lattice`, `test-health-completeness`,
+   `test-rollback`, `test-lease-convergence`, `test-object-gc`, `test-augur-convergence`, `test-cli`).
+3. Fix forward any permission-matrix gap the battery surfaces (the likeliest class, per §8.1, is a
+   missing `publish allow` entry for a legitimate writer — add it to `deploy/gen-dev-nkeys/main.go`
+   and regenerate, don't hand-edit the rendered conf).
+4. All green → merge the worktree to `main`, push, watch CI (which itself brings up the auth-enabled
+   stack fresh in the `stack-gates` job, so this is also the first real CI proof). Then Fire 3
+   (flip Gate 2/3 to hard denials + `verify-nats-permissions`) is unblocked.
+
 ---
 
 ## 11. Open questions — resolved
