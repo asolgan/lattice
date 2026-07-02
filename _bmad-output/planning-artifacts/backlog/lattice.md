@@ -99,11 +99,12 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Gateway | Edge trust boundary: JWT auth, `Lattice-Actor` stamping, read-path enforcement. Gates external actors + the real Edge node. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/gateway-external-trust-boundary-design.md) · Fire 1+2 (JWKS live poll/rotation) shipped; Fire 4 (claim-front) needs re-grounding — see [doc](../../../docs/components/gateway.md); next: read-front (behind D1.3) |
 | NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) · F1+F2 shipped (live enforcement ON, `1f2f999`+`083b0ad`); next: optional Fire 3 (flip Gate 2/3 bypass tests hard + verify-nats-permissions CI job) |
 | Control-plane Capability authorization (FR30) | Both control planes (Weaver/Refractor `…/control`) should be capability-gated, not open responders. | ★★ | M | ✅ ratified · [design](../../implementation-artifacts/control-plane-capability-authz-design.md) · rides D1.2 (shipped) → buildable; deprioritized behind D1 rollout |
+| **System-actor package-op grants absent under capability auth** | A kernel system actor's platform read is the fixed 6-op `cap.<actor>` anchor, so every engine-submitted package op (MarkExpired, CreateTask, DetachObject, RecordShredFinalization) authorizes only under the dev stub (`make up` runs `LATTICE_AUTH_MODE=stub`). | ★★ | M | 📋 needs-design (anchor grant set vs cap.roles routing) |
 
 ### Privacy / Vault
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| Vault + crypto-shredding | Per-identity keys for sensitive aspects (SSN/DOB); right-to-be-forgotten = destroy the key; transient-session-key decrypt. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/vault-crypto-shredding-design.md) · next: Fire 4b Weaver convergence lens (observability) |
+| Vault + crypto-shredding | Per-identity keys for sensitive aspects (SSN/DOB); right-to-be-forgotten = destroy the key; transient-session-key decrypt. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/vault-crypto-shredding-design.md) · next: Fire 5 Secure Lens + named consumers |
 | **[Object Store] Crypto-shred for object-store blobs** | Vault covers sensitive **aspects** (Core KV) but not PII-bearing **blobs** (lease PDFs, ID scans, signatures) — extend crypto-shred to the Object Store. | ★★ | M | ✅ ratified · [design](../../implementation-artifacts/object-store-crypto-shred-design.md) · 🚧 behind Vault |
 
 ### External-I/O maturity (bridge follow-ons)

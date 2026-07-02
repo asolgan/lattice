@@ -572,6 +572,41 @@ adds visibility on top, it does not close a correctness gap. Requires `internal/
 privacy-worker only calls `Vault.ShredKey` directly) to record completion durably — a clean, separable
 increment. The re-upsert known-limitation above is a separate, harder problem Fire 4b does not resolve.
 
+**Fire 4b CHECKPOINT (2026-07-02, Lattice Steward, `7d094ac`).** Shipped: durable shred-finalization
+recording + the `shredStatus` observability lens. A new kernel-seeded **`identity.system.privacy` service
+actor** (bootstrap v14→15, `PrimordialVertexKeyCount` 34→36 — vertex + holdsRole→operator link, the
+Contract #7 line-64 "additional service actor" pattern, readiness-gated like Loom/Weaver/Bridge/objmgr;
+graph-discovered by the hosting binaries via `bootstrap.PrivacyActorKey`, since cmd/processor and
+cmd/refractor deliberately never load `lattice.bootstrap.json`). `privacy-base` ships
+**`RecordShredFinalization{identityKey, step: vaultKeyDestroyed|projectionsNullified}`** (admitted by the
+existing `shredIdentityKey` vertexType DDL; flips one boolean + At stamp on the already-shredded `piiKey`,
+fail-closed NotFound/FailedPrecondition otherwise), an operator grant for it (the MarkExpired idiom —
+ShredIdentityKey's own no-default-grant posture is deliberately unchanged), and the **`shredStatus` lens**
+(`privacy-shreds` bucket, flat full-engine row per SHREDDED identity via `WHERE i.piiKey.data.shredded =
+true`; a not-yet-recorded step projects null = "in flight"; booleans only transition false→true so no
+retraction machinery is needed). `ShredIdentityKey` now also stamps `shreddedAt`. Both listeners submit the
+record **publish-then-ack** on `ops.system` with deterministic requestIds
+(`substrate.DeriveNanoID("shredfin:<step>:", identityKey+seq)` — a redelivery of the same event collapses
+on the Contract #4 tracker; the piiKey is declared in `contextHint.reads`, so the record is
+hydrated + OCC-conditioned and the two sibling records racing on the system lane's 2 concurrent pump
+workers collapse to a commit-path retry instead of a lost flag — a 3-layer-review find, fixed pre-merge,
+as was a re-shred inheriting the prior cycle's booleans (ShredIdentityKey now resets them, so re-shred
+doubles as the remediation for a privacy-critical-stuck row)); `internal/refractor/keyshredded` records only when **every** configured target
+nullified cleanly this delivery (a privacy-critical halt or a given-up target skips the record, leaving the
+row visibly stuck — the observability the lens exists for); an empty `ActorKey` (pre-v15 kernel) disables
+recording with a warning without disabling the shred/nullification themselves. The `make test-crypto-shred`
+e2e now drives the full loop through a REAL capability-auth ops.system pipeline and asserts both booleans
+land on the piiKey; the lens spec is proven on the full engine (`lens_cypher_test.go`).
+**Found while grounding (filed on the board, pre-existing, NOT a 4b regression):** under real capability
+auth, a kernel-seeded system actor's platform path reads only its `cap.<actor>` anchor doc — the fixed
+6-op kernel grant set — so EVERY system-actor-submitted package op (Weaver's MarkExpired, Loom's
+CreateTask, objmgr's DetachObject, and now RecordShredFinalization) authorizes only because the dev stack
+runs `LATTICE_AUTH_MODE=stub`; the operator-grant idiom these ops share is aspirational until that gap gets
+a design. Residual: the Fire-4a re-upsert limitation stands (unchanged); Loupe surfacing of
+`privacy-shreds` rides the Loupe lane.
+Next: **Fire 5** — the Secure Lens (decrypt-at-projection into RLS-protected read models) + the named
+Fire-5 consumers above; the ratified one-coherent-delivery posture applies.
+
 **Considered and REJECTED — pre-Vault plaintext contact projection** into `clinicPatientsRead`
 (technically buildable, no test fails, outside M4's *letter* since `.demographics` cannot be
 `sensitive:true` on a non-identity vertex): it ships queryable plaintext PHI into Postgres that
