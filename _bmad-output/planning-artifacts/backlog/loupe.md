@@ -14,18 +14,21 @@ take the shared build lock; Loupe fires serialize among themselves on `/tmp/latt
 
 ## Loupe 2.0 — "the map is the console" (the program)
 
-PO review 2026-07-01 (Andrew session): eight disconnected tabs become one navigable console; System Map
-is home; showcase the graph + lenses + event flow. UX design: Sally, in flight → `loupe-2-ux-design.md`.
+PO review 2026-07-01 (Andrew session); UX design **adjudicated 2026-07-02** (Winston, Andrew-delegated):
+[loupe-2-ux-design.md](../../implementation-artifacts/loupe-2-ux-design.md) — build fires per its §14;
+one FE fire at a time; each fire retires a tab only in the same fire as its replacement.
 
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **L1 — Navigation shell, Health retired** | Hash-router, URL-addressable views; map becomes home and absorbs Health: alert strip (preserves `health.alerts.*` incl. stub-auth-active), bootstrap-absent→red, by-design-paused lenses stop yellowing the rollup. | ★★★ | M | 🚧 blocked-on: UX design (Sally, in flight) |
-| **L2 — Component detail pages** | Click-through from every map node: instances (1..N — fixes the last-write-wins collapse), issues, per-component health events, control surface inline (Loom/Weaver/Refractor); the Control tab dissolves. | ★★★ | M–L | 🚧 blocked-on: UX design |
-| **L3 — Lens detail pages** | Per lens: definition (meta.lens DDL), live state, control (validate/pause/resume/rebuild + delete-behind-confirm), and a CONTENTS browser of the projected read-model (nats_kv targets now; postgres targets via a new Loupe-side read-only seam). | ★★★ | L | 🚧 blocked-on: UX design |
-| **L4 — Graph explorer** | Core KV becomes a navigable graph: link rows jump to the far vertex, every key-shaped string (incl. provenance `createdByOp`) is a link, breadcrumbs, type facets, visual ego-graph mode. | ★★★ | L | 🚧 blocked-on: UX design |
-| **L5 — Live pulse** | core-events live tail (new SSE endpoint) animates map edges + a recent-activity feed (op → commit → events → engine reactions → lens re-projections). Durable history stays with the lattice-lane orchestration-history item. | ★★ | M–L | 🚧 blocked-on: UX design |
-| **L6 — Packages first-class** | Package detail (installed entities/ops/lenses/permissions, linked into the graph explorer) + lifecycle actions install/upgrade/uninstall behind confirms (F-004 mechanics exist). | ★★ | M | 🚧 blocked-on: UX design |
-| **L7 — Submit-Op follow-through** | An accepted op's consequences: committed keys as graph links, emitted events, which lenses re-projected; session op log. | ★★ | S–M | 🚧 blocked-on: UX design |
+| **F1 — Console shell** | Hash router + route table, ES-module `logic/` split (strip-export convention), `keyLink` resolver seed (link rows far-end-clickable + provenance chips), breadcrumbs. Goja harness rides along only if its 📐 is ratified. | ★★★ | M | 🎯 📋 ready · [design §14](../../implementation-artifacts/loupe-2-ux-design.md) |
+| **F2 — Graph explorer** | Faceted/grouped/paged `#/graph` list, linkifying doc renderer, detail re-plumb, ego-graph hood mode; retires Core KV tab. | ★★★ | L | 🚧 seq: F1 |
+| **F3 — Component pages** | `#/component/<id>` ×6, plural instances (fixes LWW collapse), row-level control actions, refractor roster; retires Control tab. | ★★★ | L | 🚧 seq: F1 |
+| **F4 — Health absorption + status vocabulary** | Global alert strip (verbatim `health.alerts.*` incl. stub-auth-active), gates panel + rail (preserves `#sysmap-console` slot), `renderedState` incl. `pending-readpath` (the "7 degraded" fix); retires Health tab. | ★★★ | M | 🚧 seq: F3 |
+| **F5 — Lens page** | Four panels: definition (DDL) · state (+freshness slot) · control (delete behind typed confirm) · contents (nats_kv now, pg-pending state). | ★★★ | L | 🚧 seq: F4 |
+| **F6 — Live pulse** | SSE tail of core-events (deliver-new, bounded), rail feed, map edge pulse animation, topbar LED, degraded modes. | ★★ | M | 🚧 seq: F1 (may float early) |
+| **F7 — Submit-Op follow-through** | Structured accepted panel (committed keys linkified), `#/op?type=` prefill, session op log, ~12s requestId-filtered follow-through. | ★★ | S | 🚧 seq: F1 (full value after F2+F6) |
+| **F8 — Packages first-class** | `#/package/<key>` graph-resolved contents + install/upgrade/uninstall behind typed confirms (F-004 mechanics). | ★★ | M | 🚧 seq: F1, F2 |
+| **F9 — Postgres read seam (lens contents)** | Read-only PG connector (`LOUPE_PG_DSN`, SELECT-only role) lighting up the §6.4 panel for protected lenses + grant tables. Adjudicated in principle (design §15 Q6); role provisioning files to lattice lane if deploy/bootstrap-touching. | ★★ | M | 🚧 seq: F5 |
 
 ## Component maintenance
 
@@ -42,10 +45,11 @@ is home; showcase the graph + lenses + event flow. UX design: Sally, in flight �
 
 ## PO notes (rotation memory — capped, dated one-liners)
 
-- Cross-lane feeds: lens freshness (L3) ← lattice.md "silent lens-projection stall" (📐); durable event
-  history (L5+) ← lattice.md "Loom/Weaver control-API surfacing" (📐).
-- 2026-07-01 PO review (Andrew session) — filed L1–L7; found+fixed the control-plane lockout (see Done log).
-- **Next:** adjudicate Sally's UX design, sequence L1 first, enable the Loupe Steward schedule.
+- Cross-lane feeds: lens freshness (F5's slot) ← lattice.md "silent lens-projection stall" (📐); durable
+  event history (beyond F6's live tail) ← lattice.md "Loom/Weaver control-API surfacing" (📐).
+- 2026-07-01 PO review (Andrew session) — filed the program; found+fixed the control-plane lockout.
+- 2026-07-02 UX design adjudicated (2 premises corrected against live stack — see design §15).
+- **Next:** Loupe Steward builds F1 (scheduled, even hours).
 
 ## Done log — loupe (newest first)
 
