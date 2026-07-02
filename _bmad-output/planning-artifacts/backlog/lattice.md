@@ -83,14 +83,13 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 **forks** (Gateway, read-path auth, Vault, multi-cell, HA-NATS) and **frozen-contract** changes are
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
-> 🎯 **Build-ready now**: **Gateway Fire 2+** (JWKS poll / claim-front, `internal/gateway`) or
-> **op-time bounded link enumeration Fire 3** (optional e2e/lint).
+> 🎯 **Build-ready now**: **op-time bounded link enumeration Fire 3** (optional e2e/lint).
 > (**FR28 role-queue** Fire 1 + Fire 2 done — see Done log; Fire 3 unrouted surfacing next.
 > **protected-lens out-of-band** ✅ SHIPPED — see Done log. **`@every` schedules** Fire 1 + Fire 2 shipped
 > (`e04498e`); only the Andrew-gated Fire 3 §10.4 doc/contract remains.)
 > *Dependency-sequenced ratified items*: **Vault** + **Personal Lens** behind D1; **Object crypto-shred**
-> behind Vault — build when their gate clears. (**Gateway** Fire 1 shipped, unblocked by NATS-write-restriction
-> F2 — its remaining fires are the 🎯 build-ready pick above, not gated.)
+> behind Vault — build when their gate clears. (**Gateway** Fire 1+2 shipped; Fire 3 (read-front) still
+> behind D1.3; Fire 4 (claim-front) needs re-grounding before it's buildable — see the Gateway row.)
 > (**Control-plane-authz** rides D1.2, now shipped → buildable, deprioritized behind D1 rollout.)
 > **Augur** Fires 1+2a+2b all shipped — the full escalate→review→dispatch loop closes; Fire 3 (autoApply) stays Andrew-gated.
 > (**`kv.Links`** Fire 1 + Fire 2 (clinic consumer) shipped; only the optional Fire 3 e2e/lint remains.)
@@ -99,7 +98,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | Read-path authorization (D1) | Reads from lens targets (Postgres/KV) bypass the write-path Capability boundary. Postgres RLS + a decomposed Capability-Read Lens; Gateway sets `lattice.actor_id`. Subsumes `cap.svc` read-auth. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/read-path-authorization-d1-design.md) · D1.1–D1.5 shipped (every clinic-app/loftspace-app read model classified protected-or-public and closed); remaining D1 scope = the deferred Gateway/Personal-Lens fork (Andrew) |
-| Gateway | Edge trust boundary: JWT auth, `Lattice-Actor` stamping, read-path enforcement. Gates external actors + the real Edge node. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/gateway-external-trust-boundary-design.md) · Fire 1 (write-path translator) shipped; next: JWKS poll / claim-front / read-front (behind D1.3) |
+| Gateway | Edge trust boundary: JWT auth, `Lattice-Actor` stamping, read-path enforcement. Gates external actors + the real Edge node. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/gateway-external-trust-boundary-design.md) · Fire 1+2 (JWKS live poll/rotation) shipped; Fire 4 (claim-front) needs re-grounding — see [doc](../../../docs/components/gateway.md); next: read-front (behind D1.3) |
 | NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) · F1+F2 shipped (live enforcement ON, `1f2f999`+`083b0ad`); next: optional Fire 3 (flip Gate 2/3 bypass tests hard + verify-nats-permissions CI job) |
 | Control-plane Capability authorization (FR30) | Both control planes (Weaver/Refractor `…/control`) should be capability-gated, not open responders. | ★★ | M | ✅ ratified · [design](../../implementation-artifacts/control-plane-capability-authz-design.md) · rides D1.2 (shipped) → buildable; deprioritized behind D1 rollout |
 
@@ -176,6 +175,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-02 · `51ba38e` · [Gateway] Fire 2 remainder — live JWKS polling (stdlib RFC7517/7518 parser, hot-swap `Verifier.SetKeys`, https-unless-dev gate, fail-safe last-good-on-poll-failure)
 - 2026-07-02 · `00b098d` · [Gateway] Fire 1 — external write-path translator (`POST /v1/operations` JWT strip-and-stamp, `internal/gateway` + `cmd/gateway`, fail-closed dev key gate, `gateway` NATS user, Gate-3 vector #14)
 - 2026-07-02 · `f8e017d` · [CI] Whetstone — `internal/bridge` require.Never proof windows (2-4s) trimmed to their actual 5-6x margin over the 300ms redelivery floor (package 44.5s→27.6s local; unit job 129s→119s in CI)
 - 2026-07-01 · `083b0ad` · [CI/bypass] Gate 2/3 live Health KV marker writers threaded with NATS_NKEY (fix-forward on the write-restriction merge)
