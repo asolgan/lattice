@@ -689,9 +689,10 @@ retains **decrypted plaintext**, stays RLS-readable by the unassigned landlord, 
 re-scan never overwrites it (the current-cypher rows no longer include it) — a right-to-erasure gap
 reachable via a shipped op, more severe than the display-scalar staleness D1.3 accepted. The fix is the
 ✅-ratified **negative/filter-retraction** fire (its freshness+retraction transport retracts the stale
-row). **Sequencing: the 5b delivery-boundary reset — the moment these columns first go live — is gated
-on that fire shipping first**; until the reset, no running stack serves the new columns (a secure-lens
-spec change refuses hot-reload; the live stack's table predates them), so there is no live exposure.
+row). **Sequencing: 5b close — the completed right-to-erasure claim + the live e2e — is gated on that
+fire shipping first.** (The dev stack may re-bootstrap and serve the columns sooner — single trusted
+user, synthetic data, and the v15 kernel bump independently forces resets — but the claim is not
+complete, and 5b is not closable, until the retraction transport lands.)
 Remaining Rec-C bundle (readiness clone via a shared cypher fragment + console retirement + full RLS
 decisioning) is the next slice — note the readiness clone needs WITH-aggregation while carrying envelope
 columns through grouping, an unverified engine behavior to spike first.
