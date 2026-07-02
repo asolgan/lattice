@@ -174,10 +174,12 @@ func Lenses() []pkgmgr.LensSpec {
 			// The 7 applicant qualification-profile signal columns (D1.5 Rec C,
 			// loftspace-d1.5-landlord-rls-decision-surface-design.md §4/§5) are
 			// pure `app.profile.data.*` scalar hops off the already-anchored
-			// leaseapp, informational only — no `qualified` / readiness column:
-			// that needs the service-instance freshness aggregation
-			// `leaseApplicationCompleteSpec` runs, deliberately NOT cloned here
-			// per §4 (the remaining Rec-C deferral, with console retirement).
+			// leaseapp. `qualified` (D1.5 Rec-C remainder, §4 Option A) clones the
+			// service-instance readiness aggregation via the readinessOptionalMatch
+			// / readinessWithItems fragment shared with `leaseApplicationCompleteSpec`
+			// — see the Spec doc comment below. Console retirement (moving
+			// Approve/Decline itself onto this RLS surface) is a separate,
+			// FE-consolidation follow-up, not required for this column to be correct.
 			//
 			// SECURE LENS (Contract #3 §3.10, Vault Phase B): applicant_name /
 			// applicant_email / applicant_phone are the applicant identity's
@@ -200,6 +202,15 @@ func Lenses() []pkgmgr.LensSpec {
 			// Fire 2's AnchorProjectionKey can never derive this composite key
 			// read-free (exprReferencesOnlyVariable rejects it structurally), so
 			// a manages-unassign (or any other drop) needs the target-diff path.
+			// The `qualified` WITH clause below does not touch this posture:
+			// ValidateUnanchoredForDiffRetraction walks a lens's WITH/RETURN only
+			// for `$actorKey` references (this WITH references `$now`, never
+			// `$actorKey`), and target-diff compares whole fresh-vs-stored
+			// row-sets, not a per-row derivation — it is indifferent to whether
+			// the cypher has a WITH. This lens was never eligible for anchor-self
+			// retraction's WITH exclusion in the first place (that gap is about a
+			// different mechanism); adding a WITH here neither triggers nor
+			// interacts with it.
 			CanonicalName:  "landlordLeaseApplicationsRead",
 			Class:          "meta.lens",
 			Adapter:        "postgres",
@@ -236,6 +247,7 @@ func Lenses() []pkgmgr.LensSpec {
 				{Name: "applicant_name", Type: "text"},
 				{Name: "applicant_email", Type: "text"},
 				{Name: "applicant_phone", Type: "text"},
+				{Name: "qualified", Type: "boolean"},
 			},
 			SecureColumns: []pkgmgr.SecureColumn{
 				{Column: "applicant_name", IdentityKeyColumn: "applicant", Field: "value"},
@@ -497,6 +509,25 @@ func Lenses() []pkgmgr.LensSpec {
 // executor.go equalsAny treats null = null as true and any value = null as
 // false). Do not "correct" it to unsupported IS NULL.
 //
+// readinessOptionalMatch + readinessWithItems are the SHARED cypher pieces
+// deriving applicant readiness — ssn-on-file (a presence test only; the ONE
+// sanctioned sensitive read, never projected as a value), a fresh-completed
+// background check, and a completed payment. Both leaseApplicationCompleteSpec
+// (the trusted convergence lens, source of truth) and
+// landlordLeaseApplicationsReadSpec (the RLS-protected landlord lens, D1.5 Rec-C
+// readiness clone) splice these in verbatim via fmt.Sprintf, so a readiness-rule
+// change lands in ONE place instead of drifting between two hand-copied lenses —
+// the divergence hazard decision-surface-design.md §4 Option A flags. Each
+// consumer supplies its own final `qualified`/`applicantApproved` boolean
+// (`(ssnVal <> null) AND (freshBgComplete > 0) AND (payComplete > 0) AND
+// (<its own signedAt alias> <> null)`) since the signedAt alias name differs
+// per lens; that AND term is intentionally NOT folded into the shared fragment.
+const readinessOptionalMatch = `OPTIONAL MATCH (id)<-[:providedTo]-(inst:service)`
+
+const readinessWithItems = `id.ssn.data.value AS ssnVal,
+  count(DISTINCT CASE WHEN inst.class = 'service.backgroundCheck.instance' AND inst.outcome.data.status = 'completed' AND inst.outcome.data.validUntil > $now THEN inst.key ELSE null END) AS freshBgComplete,
+  count(DISTINCT CASE WHEN inst.class = 'service.payment.instance' AND inst.outcome.data.status = 'completed' THEN inst.key ELSE null END) AS payComplete`
+
 // leaseApplicationCompleteSpec is built once at package init: the retry caps
 // (maxBgcheckRetries / maxPaymentRetries) bake into the constant maxretries_<g>
 // columns Weaver bounds its dispatch-count against, the §10.2 "the policy lives in
@@ -506,14 +537,13 @@ var leaseApplicationCompleteSpec = fmt.Sprintf(`
 MATCH (app:leaseapp {key: $actorKey})
 OPTIONAL MATCH (app)-[:applicationFor]->(id:identity)
 OPTIONAL MATCH (app)-[:appliesToUnit]->(u:unit)
-OPTIONAL MATCH (id)<-[:providedTo]-(inst:service)
+%s
 WITH
   app.key AS entityKey,
   id.key  AS applicant,
   app.signature.data.signedAt AS signedAt,
   app.decision.data.value AS landlordDecision,
   app.decision.data.reason AS declineReason,
-  id.ssn.data.value AS ssnVal,
   u.key                     AS unitKey,
   u.address.data.line1      AS unitAddress,
   u.address.data.city       AS unitCity,
@@ -535,8 +565,7 @@ WITH
   app.profile.data.hasCoApplicant AS hasCoApplicant,
   app.profile.data.hasGuarantor AS hasGuarantor,
   app.profile.data.guarantorIncomeToRentMet AS guarantorIncomeToRentMet,
-  count(DISTINCT CASE WHEN inst.class = 'service.backgroundCheck.instance' AND inst.outcome.data.status = 'completed' AND inst.outcome.data.validUntil > $now THEN inst.key ELSE null END) AS freshBgComplete,
-  count(DISTINCT CASE WHEN inst.class = 'service.payment.instance' AND inst.outcome.data.status = 'completed' THEN inst.key ELSE null END) AS payComplete,
+  %s,
   count(DISTINCT CASE WHEN inst.class = 'service.backgroundCheck.instance' AND inst.dispatch.data.vendorRef <> null AND inst.outcome.data.status = null THEN inst.key ELSE null END) AS bgInflight,
   count(DISTINCT CASE WHEN inst.class = 'service.payment.instance' AND inst.dispatch.data.vendorRef <> null AND inst.outcome.data.status = null THEN inst.key ELSE null END) AS payInflight,
   count(DISTINCT CASE WHEN inst.class = 'service.backgroundCheck.instance' AND inst.outcome.data.status = 'failed' THEN inst.key ELSE null END) AS bgFailed,
@@ -588,7 +617,7 @@ RETURN
   %d                     AS maxretries_bgcheck,
   %d                     AS maxretries_payment,
   ((ssnVal = null) OR (freshBgComplete = 0) OR (payComplete = 0) OR (signedAt = null) OR ((ssnVal <> null) AND (freshBgComplete > 0) AND (payComplete > 0) AND (signedAt <> null) AND (landlordDecision = null)) OR ((unitKey <> null) AND (ssnVal <> null) AND (freshBgComplete > 0) AND (payComplete > 0) AND (signedAt <> null) AND (landlordDecision = 'approved') AND (unitStatus <> null) AND (unitStatus <> 'leased'))) AS violating
-`, maxBgcheckRetries, maxPaymentRetries)
+`, readinessOptionalMatch, readinessWithItems, maxBgcheckRetries, maxPaymentRetries)
 
 // leaseApplicationsReadSpec is the protected Postgres read model's cypher (D1.3
 // Fire 2). A plain one-row-per-leaseapp projection: it anchors on every leaseapp,
@@ -672,15 +701,21 @@ RETURN
 //     reference_count / has_co_applicant / has_guarantor /
 //     guarantor_income_to_rent_met (D1.5 Rec C, decision-surface-design.md
 //     §4/§5) are pure scalar hops off app.profile.data.* — the SAME derived signals
-//     leaseApplicationCompleteSpec projects, minus the service-instance
-//     readiness aggregation (deliberately not cloned here; see the Lenses()
-//     doc comment above). No WITH / aggregation needed: the full engine's
-//     expression evaluator (executor.go applyReturn -> projectItems ->
-//     evalExpr) runs the same evalExpr on RETURN items as it does inside a
-//     WITH, so `(x <> null) AS ...` works directly in RETURN. A leaseapp with
-//     no .profile aspect yet projects profile_submitted=false and every other
-//     signal null (unknown, not false) — the FE's existing profileSubmitted
-//     gate (renderQualification) already treats an absent profile that way.
+//     leaseApplicationCompleteSpec projects.
+//   - qualified (D1.5 Rec-C remainder, decision-surface-design.md §4 Option A —
+//     the readiness clone) is the SAME formula leaseApplicationCompleteSpec's
+//     applicantApproved derives, sharing the readinessOptionalMatch /
+//     readinessWithItems cypher fragment with that lens so the two projections
+//     cannot drift. This introduces the lens's first WITH/aggregation: every
+//     other RETURN column is re-extracted as a WITH-passthrough alias first
+//     (including the three map-valued secure envelope columns below — the full
+//     engine's WITH carries a map value through a non-aggregating passthrough
+//     unmodified, see executor.go applyWith/normalizeForKey, and the
+//     Secure-Lens decryptor resolves a column purely by its RETURN alias name,
+//     so it is indifferent to whether that alias is a direct RETURN hop or a
+//     WITH-carried one). Approve is still gated by the trusted console's own
+//     copy of this same formula (applicantApproved) — this column lets the RLS
+//     surface show the SAME gate without a second, weaver-targets-sourced read.
 //   - applicant_name / applicant_email / applicant_phone are SECURE columns
 //     (see the Lenses() declaration): each RETURNs the applicant identity's
 //     sensitive aspect envelope whole (id.<aspect>.data — ciphertext at rest;
@@ -692,39 +727,69 @@ RETURN
 //     display enrichment, never a row gate.
 //
 // '= null' / list literals + nanoIdFromKey in RETURN mirror leaseApplicationsRead.
-const landlordLeaseApplicationsReadSpec = `
+var landlordLeaseApplicationsReadSpec = fmt.Sprintf(`
 MATCH (app:leaseapp)
 MATCH (app)-[:applicationFor]->(id:identity)
 MATCH (app)-[:appliesToUnit]->(u:unit)
 MATCH (u)<-[:manages]-(landlord:identity)
+%s
+WITH
+  app.key                        AS entityKey,
+  id.key                         AS applicantKey,
+  landlord.key                   AS landlordKey,
+  u.key                          AS unitKey,
+  u.address.data.line1           AS unitAddress,
+  u.address.data.city            AS unitCity,
+  u.address.data.region          AS unitRegion,
+  u.listing.data.rentAmount      AS unitRent,
+  u.listing.data.rentCurrency    AS unitCurrency,
+  u.listing.data.status          AS unitStatus,
+  app.signature.data.signedAt    AS signedAt,
+  app.decision.data.value        AS landlordDecision,
+  app.decision.data.reason       AS declineReason,
+  app.terms.data.moveInDate      AS termsMoveInDate,
+  app.terms.data.leaseTermMonths AS termsLeaseTermMonths,
+  app.terms.data.requestedRent   AS termsRequestedRent,
+  (app.profile.data.submittedAt <> null)      AS profileSubmitted,
+  app.profile.data.incomeToRentMet            AS incomeToRentMet,
+  app.profile.data.employmentVerified         AS employmentVerified,
+  app.profile.data.referenceCount             AS referenceCount,
+  app.profile.data.hasCoApplicant             AS hasCoApplicant,
+  app.profile.data.hasGuarantor               AS hasGuarantor,
+  app.profile.data.guarantorIncomeToRentMet   AS guarantorIncomeToRentMet,
+  id.name.data                   AS applicantNameEnv,
+  id.email.data                  AS applicantEmailEnv,
+  id.phone.data                  AS applicantPhoneEnv,
+  %s
 RETURN
-  nanoIdFromKey(app.key)         AS app_id,
-  nanoIdFromKey(landlord.key)    AS landlord_id,
-  app.key                        AS entity_key,
-  id.key                         AS applicant,
-  landlord.key                   AS landlord_key,
-  u.key                          AS unit_key,
-  u.address.data.line1           AS unit_address,
-  u.address.data.city            AS unit_city,
-  u.address.data.region          AS unit_region,
-  u.listing.data.rentAmount      AS unit_rent,
-  u.listing.data.rentCurrency    AS unit_currency,
-  u.listing.data.status          AS unit_status,
-  app.signature.data.signedAt    AS signed_at,
-  app.decision.data.value        AS landlord_decision,
-  app.decision.data.reason       AS decline_reason,
-  app.terms.data.moveInDate      AS terms_move_in_date,
-  app.terms.data.leaseTermMonths AS terms_lease_term_months,
-  app.terms.data.requestedRent   AS terms_requested_rent,
-  (app.profile.data.submittedAt <> null)      AS profile_submitted,
-  app.profile.data.incomeToRentMet            AS income_to_rent_met,
-  app.profile.data.employmentVerified         AS employment_verified,
-  app.profile.data.referenceCount             AS reference_count,
-  app.profile.data.hasCoApplicant             AS has_co_applicant,
-  app.profile.data.hasGuarantor               AS has_guarantor,
-  app.profile.data.guarantorIncomeToRentMet   AS guarantor_income_to_rent_met,
-  id.name.data                   AS applicant_name,
-  id.email.data                  AS applicant_email,
-  id.phone.data                  AS applicant_phone,
-  [nanoIdFromKey(landlord.key)]  AS authz_anchors
-`
+  nanoIdFromKey(entityKey)       AS app_id,
+  nanoIdFromKey(landlordKey)     AS landlord_id,
+  entityKey                      AS entity_key,
+  applicantKey                   AS applicant,
+  landlordKey                    AS landlord_key,
+  unitKey                        AS unit_key,
+  unitAddress                    AS unit_address,
+  unitCity                       AS unit_city,
+  unitRegion                     AS unit_region,
+  unitRent                       AS unit_rent,
+  unitCurrency                   AS unit_currency,
+  unitStatus                     AS unit_status,
+  signedAt                       AS signed_at,
+  landlordDecision               AS landlord_decision,
+  declineReason                  AS decline_reason,
+  termsMoveInDate                AS terms_move_in_date,
+  termsLeaseTermMonths           AS terms_lease_term_months,
+  termsRequestedRent             AS terms_requested_rent,
+  profileSubmitted               AS profile_submitted,
+  incomeToRentMet                AS income_to_rent_met,
+  employmentVerified              AS employment_verified,
+  referenceCount                  AS reference_count,
+  hasCoApplicant                  AS has_co_applicant,
+  hasGuarantor                    AS has_guarantor,
+  guarantorIncomeToRentMet        AS guarantor_income_to_rent_met,
+  applicantNameEnv                AS applicant_name,
+  applicantEmailEnv               AS applicant_email,
+  applicantPhoneEnv               AS applicant_phone,
+  [nanoIdFromKey(landlordKey)]    AS authz_anchors,
+  ((ssnVal <> null) AND (freshBgComplete > 0) AND (payComplete > 0) AND (signedAt <> null)) AS qualified
+`, readinessOptionalMatch, readinessWithItems)

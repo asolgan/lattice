@@ -44,7 +44,10 @@ import (
 // sensitive contact aspects into this RLS-protected table only, so the managing
 // landlord — and nobody else — reads them here. Null when the applicant never
 // recorded the aspect or has been crypto-shredded; the FE degrades to the bare
-// key it already renders.
+// key it already renders. Qualified (D1.5 Rec-C remainder) is the readiness
+// clone — ssn on file, a fresh completed background check, a completed
+// payment, and a signed lease — a plain bool the lens always projects (never
+// null), mirroring the trusted console's applicantApproved.
 type protectedLandlordRow struct {
 	EntityKey                string   `json:"entityKey"`
 	Applicant                string   `json:"applicant"`
@@ -75,6 +78,7 @@ type protectedLandlordRow struct {
 	HasCoApplicant           *bool    `json:"hasCoApplicant"`
 	HasGuarantor             *bool    `json:"hasGuarantor"`
 	GuarantorIncomeToRentMet *bool    `json:"guarantorIncomeToRentMet"`
+	Qualified                bool     `json:"qualified"`
 }
 
 // landlordUnitGroup is the per-unit grouping the FE renders: a unit the signed-in
@@ -102,7 +106,7 @@ SELECT entity_key, applicant, applicant_name, applicant_email, applicant_phone,
        terms_lease_term_months, terms_requested_rent,
        COALESCE(profile_submitted, false), income_to_rent_met, employment_verified,
        reference_count, has_co_applicant, has_guarantor,
-       guarantor_income_to_rent_met
+       guarantor_income_to_rent_met, COALESCE(qualified, false)
 FROM read_landlord_lease_applications
 ORDER BY unit_key, app_id`
 
@@ -142,7 +146,7 @@ func queryLandlordApplications(ctx context.Context, pool pgxBeginner, actorID st
 			&row.TermsRequestedRent,
 			&row.ProfileSubmitted, &row.IncomeToRentMet, &row.EmploymentVerified,
 			&row.ReferenceCount, &row.HasCoApplicant, &row.HasGuarantor,
-			&row.GuarantorIncomeToRentMet,
+			&row.GuarantorIncomeToRentMet, &row.Qualified,
 		); err != nil {
 			return nil, err
 		}

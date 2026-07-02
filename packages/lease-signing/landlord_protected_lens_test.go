@@ -20,6 +20,7 @@ package leasesigning
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -27,14 +28,20 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
 )
 
-// projectLandlordRead runs the unparameterized landlordLeaseApplicationsRead lens
-// over every leaseapp in the fixture and returns the projected rows.
+// projectLandlordRead runs the landlordLeaseApplicationsRead lens over every
+// leaseapp in the fixture with the real wall-clock $now (the D1.5 Rec-C
+// `qualified` readiness clone's bgcheck-freshness term needs it — the same
+// param the live pipeline supplies, executeFullForActor's
+// params["now"] = time.Now().UTC().Format(time.RFC3339)) and returns the
+// projected rows.
 func (f *lensFixture) projectLandlordRead(t *testing.T) []ruleengine.ProjectionResult {
 	t.Helper()
 	eng := full.New()
 	cr, err := eng.Parse(landlordLeaseApplicationsReadSpec)
 	require.NoError(t, err, "landlordLeaseApplicationsRead cypher must parse on the full engine")
-	out, err := eng.ExecuteWith(context.Background(), cr, ruleengine.EventContext{Parameters: map[string]any{}}, f.adjKV, f.coreKV)
+	out, err := eng.ExecuteWith(context.Background(), cr, ruleengine.EventContext{Parameters: map[string]any{
+		"now": time.Now().UTC().Format(time.RFC3339),
+	}}, f.adjKV, f.coreKV)
 	require.NoError(t, err)
 	return out
 }
@@ -288,4 +295,70 @@ func TestLandlordLeaseApplicationsRead_ContactlessApplicantStillProjects(t *test
 	require.Nil(t, v["applicant_email"])
 	require.Nil(t, v["applicant_phone"])
 	require.Equal(t, []string{f.ids["larry"]}, anchorStrings(t, v["authz_anchors"]))
+}
+
+// TestLandlordLeaseApplicationsRead_ProjectsQualified — D1.5 Rec-C remainder
+// (decision-surface-design.md §4 Option A): `qualified` is the SAME readiness
+// formula leaseApplicationCompleteSpec derives as `applicantApproved` — ssn
+// on file, a fresh completed background check, a completed payment, and a
+// signed lease — now cloned onto the RLS-protected landlord lens via the
+// readinessOptionalMatch/readinessWithItems shared cypher fragment. This also
+// pins the WITH-clause refactor: the three map-valued Secure columns
+// (applicant_name/email/phone) still project their ciphertext envelope whole
+// after being carried through the new WITH as passthrough aliases.
+func TestLandlordLeaseApplicationsRead_ProjectsQualified(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	f.seedManagedApplication(t, "app", "alice", "unit1", "larry")
+	f.aspect(t, "alice", "ssn", "ssn", map[string]any{"value": "123456789"})
+	nameEnv := map[string]any{"ct": "b64-name-ct", "nonce": "b64-nonce-1", "keyId": "alice-key"}
+	f.aspect(t, "alice", "name", "name", nameEnv)
+	f.vtxWithClass(t, "bg1", "service", "service.backgroundCheck.instance")
+	f.aspect(t, "bg1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-01T00:00:00Z", "validUntil": farFutureValidUntil})
+	f.vtxWithClass(t, "pay1", "service", "service.payment.instance")
+	f.aspect(t, "pay1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-02T00:00:00Z"})
+	f.edge(t, "providedTo", "bg1", "alice")
+	f.edge(t, "providedTo", "pay1", "alice")
+	// A second, unqualified application on the same landlord's portfolio: no
+	// ssn, no service instances at all — every readiness signal absent.
+	f.seedManagedApplication(t, "appUnqualified", "bob", "unit2", "larry")
+
+	rows := f.projectLandlordRead(t)
+	byApp := map[string]map[string]any{}
+	for _, r := range rows {
+		byApp[r.Values["app_id"].(string)] = r.Values
+	}
+
+	qualified := byApp[f.ids["app"]]
+	require.Equal(t, true, qualified["qualified"], "ssn + fresh bgcheck + payment + signature -> qualified")
+	require.Equal(t, nameEnv, qualified["applicant_name"], "the WITH refactor must not disturb the Secure-Lens envelope passthrough")
+
+	unqualified := byApp[f.ids["appUnqualified"]]
+	require.Equal(t, false, unqualified["qualified"], "no ssn, no service instances -> not qualified")
+}
+
+// TestLandlordLeaseApplicationsRead_QualifiedRequiresFreshBgcheck — a STALE
+// completed background check (validUntil in the past) does not count toward
+// qualified, mirroring leaseApplicationCompleteSpec's missing_bgcheck freshness
+// predicate (the SAME `inst.outcome.data.validUntil > $now` term, shared via
+// readinessWithItems).
+func TestLandlordLeaseApplicationsRead_QualifiedRequiresFreshBgcheck(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	f.seedManagedApplication(t, "app", "alice", "unit1", "larry")
+	f.aspect(t, "alice", "ssn", "ssn", map[string]any{"value": "123456789"})
+	f.vtxWithClass(t, "bg1", "service", "service.backgroundCheck.instance")
+	f.aspect(t, "bg1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2020-01-01T00:00:00Z", "validUntil": "2020-06-01T00:00:00Z"})
+	f.vtxWithClass(t, "pay1", "service", "service.payment.instance")
+	f.aspect(t, "pay1", "outcome", "outcome", map[string]any{"status": "completed", "completedAt": "2026-06-02T00:00:00Z"})
+	f.edge(t, "providedTo", "bg1", "alice")
+	f.edge(t, "providedTo", "pay1", "alice")
+
+	rows := f.projectLandlordRead(t)
+	require.Len(t, rows, 1)
+	require.Equal(t, false, rows[0].Values["qualified"], "a stale bgcheck must not count toward qualified")
 }

@@ -84,6 +84,7 @@ func TestLandlordReadBoundary_RLS_Enforcement(t *testing.T) {
 		{Name: "applicant_name", Type: "text"},
 		{Name: "applicant_email", Type: "text"},
 		{Name: "applicant_phone", Type: "text"},
+		{Name: "qualified", Type: "boolean"},
 	}
 	// The COMPOSITE key — this is what lets a co-managed unit's application carry one
 	// row per landlord without a primary-key collision.
@@ -120,9 +121,11 @@ func TestLandlordReadBoundary_RLS_Enforcement(t *testing.T) {
 	// app-L carries decrypted Secure-Lens contact values (what the projection
 	// writes post-decrypt); every other row leaves them NULL — an applicant with
 	// no recorded contact aspects or a crypto-shredded one. Both shapes must
-	// scan and serve.
+	// scan and serve. app-L is also QUALIFIED (D1.5 Rec-C remainder); app-CO is
+	// left at the column default (NULL, COALESCEd to false) so the round-trip
+	// proves both a true value and the false default scan/serve correctly.
 	exec(`UPDATE read_landlord_lease_applications
-	      SET applicant_name=$1, applicant_email=$2, applicant_phone=$3
+	      SET applicant_name=$1, applicant_email=$2, applicant_phone=$3, qualified=true
 	      WHERE app_id='app-L'`, "Alice Applicant", "alice@example.com", "+15550001111")
 
 	exec(`INSERT INTO actor_read_grants (actor_id, anchor_id, grant_source, projection_seq, is_deleted)
@@ -277,6 +280,12 @@ func TestLandlordReadBoundary_RLS_Enforcement(t *testing.T) {
 		if nullContact.ApplicantName != nil || nullContact.ApplicantEmail != nil || nullContact.ApplicantPhone != nil {
 			t.Errorf("a contactless/shredded applicant's columns must stay null, got %v/%v/%v",
 				nullContact.ApplicantName, nullContact.ApplicantEmail, nullContact.ApplicantPhone)
+		}
+		if !withContact.Qualified {
+			t.Errorf("app-L's qualified=true must round-trip through the real Postgres scan, got false")
+		}
+		if nullContact.Qualified {
+			t.Errorf("app-CO's qualified column default (NULL -> COALESCE false) must round-trip false, got true")
 		}
 	})
 
