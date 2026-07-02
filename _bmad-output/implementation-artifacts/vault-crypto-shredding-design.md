@@ -635,6 +635,37 @@ secure columns (D1.5 Rec-C bundle), clinic patient-contact display, and the loft
 extend `make test-crypto-shred` to assert a secure-lens row scrubs on shred. Wear-the-other-hat package/FE
 work; stays in this lane.
 
+**Fire 5b-i CHECKPOINT (2026-07-02, Lattice Steward, `603fd1f`).** First 5b slice shipped: the **applicant
+roster migrates onto the Secure Lens**. `loftspace-domain` 0.6.0 retires the unprotected `applicantRoster`
+NATS-KV lens outright (a name roster now has no unprotected surface) and re-authors `applicantRosterRead`
+as a secure lens — WHERE on ciphertext presence (`i.name.data.ct <> null`), RETURN carries the envelope
+whole, `SecureColumns: [{name, identity_key, value}]` — proven on the full engine by a new
+`lens_cypher_test.go` (envelope-whole projection; unnamed AND plaintext-shaped identities excluded, so the
+lens can never self-serve plaintext). `cmd/loftspace-app`'s two server-side name resolutions
+(unit-applications console, lease-document rendering) move onto the protected Postgres model read as the
+app's admin actor (`rosterIdentities`); the durable attach path resolves names STRICTLY (a roster outage
+refuses to persist a nameless rendering — idempotent-digest protection), display paths degrade to bare
+keys. Full 3-layer review (auditor PASS ×6); folded pre-merge: NULL-`state` Scan brick (`COALESCE`),
+attach-path idempotency break, console availability regression, package version bump. The real-Postgres
+RLS suite now proves a NULL-name (shredded) row stays out of the wildcard picker.
+**Grounding correction to the 5b plan — `duplicateCandidates` is NOT secure-lens-migratable:** its WHERE
+does cross-identity equality (`a.email = b.email`) + `levenshteinRatio(a.name, b.name)` — matching runs
+in-engine BEFORE any decrypt-at-projection, and per-identity DEKs make ciphertext equality meaningless, so
+the lens is functionally inert post-Fire-2. Dedup-over-encrypted-PII needs its own design (blind-index /
+HMAC companion aspect at write time, or a sanctioned engine-side mechanism) — **routed to the Designer**;
+do not bodge it into 5b. Residuals otherwise unchanged: a `.name` tombstone/rewrite has no
+reprojection/retraction transport on a plain-projection lens (latent — no shipped op does either; exactly
+the ratified negative/filter-retraction item's scope); the orphaned `loftspace-identities` bucket + any
+legacy plaintext rows die with the Andrew-ratified full-stack reset at the delivery boundary, where the
+live e2e runs (a secure-lens spec change refuses hot-reload by design — delete-and-re-create/fresh
+bootstrap is the path).
+Worktree: `/Users/andrewsolgan/Documents/GitHub/lattice-wt-vault-5b-roster` (branch
+`steward-vault-5b-roster`, merged through `603fd1f`). Next: **Fire 5b-ii** —
+`landlordLeaseApplicationsReadSpec` applicant_name/email/phone secure columns + the D1.5 Rec-C bundle
+(readiness clone via a shared cypher fragment, console retirement, FE tail); then 5b-iii clinic
+patient-contact re-model + display; extend `make test-crypto-shred`; delivery-boundary reset + live e2e
+close 5b.
+
 **Considered and REJECTED — pre-Vault plaintext contact projection** into `clinicPatientsRead`
 (technically buildable, no test fails, outside M4's *letter* since `.demographics` cannot be
 `sensitive:true` on a non-identity vertex): it ships queryable plaintext PHI into Postgres that
