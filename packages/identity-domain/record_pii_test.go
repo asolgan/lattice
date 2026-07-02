@@ -135,7 +135,7 @@ func TestRecordPII_WritesAspects_RootMinimal_D5(t *testing.T) {
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
 
 	// ssn aspect: stored NORMALIZED to 9 digits.
-	ssn := readAspectData(t, ctx, conn, identityKey+".ssn")
+	ssn := readDecryptedAspectData(t, ctx, conn, identityKey, "ssn")
 	if got, _ := ssn["value"].(string); got != "123456789" {
 		t.Fatalf("ssn aspect value = %q, want normalized 123456789", got)
 	}
@@ -144,7 +144,7 @@ func TestRecordPII_WritesAspects_RootMinimal_D5(t *testing.T) {
 		t.Fatalf("ssn aspect class = %q, want ssn", ssnClass)
 	}
 	// dob aspect: stored verbatim.
-	dob := readAspectData(t, ctx, conn, identityKey+".dob")
+	dob := readDecryptedAspectData(t, ctx, conn, identityKey, "dob")
 	if got, _ := dob["value"].(string); got != "1990-01-15" {
 		t.Fatalf("dob aspect value = %q, want 1990-01-15", got)
 	}
@@ -190,7 +190,7 @@ func TestRecordPII_AcceptsLeapDayDOB(t *testing.T) {
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
 
-	dob := readAspectData(t, ctx, conn, identityKey+".dob")
+	dob := readDecryptedAspectData(t, ctx, conn, identityKey, "dob")
 	if got, _ := dob["value"].(string); got != "2000-02-29" {
 		t.Fatalf("leap-day dob aspect value = %q, want 2000-02-29", got)
 	}
@@ -234,11 +234,11 @@ func TestRecordPII_ResubmitRejected(t *testing.T) {
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
 
 	// The original values survive — the second op did not clobber them.
-	ssn := readAspectData(t, ctx, conn, identityKey+".ssn")
+	ssn := readDecryptedAspectData(t, ctx, conn, identityKey, "ssn")
 	if got, _ := ssn["value"].(string); got != "123456789" {
 		t.Fatalf("ssn aspect value = %q after rejected resubmit, want original 123456789", got)
 	}
-	dob := readAspectData(t, ctx, conn, identityKey+".dob")
+	dob := readDecryptedAspectData(t, ctx, conn, identityKey, "dob")
 	if got, _ := dob["value"].(string); got != "1990-01-15" {
 		t.Fatalf("dob aspect value = %q after rejected resubmit, want original 1990-01-15", got)
 	}
@@ -562,7 +562,7 @@ func TestRecordPII_CreateIdentityWritesSensitiveAspects(t *testing.T) {
 	identityKey := createIdentity(t, ctx, conn, cp, cons, "PIIBackfillCreate")
 
 	// name aspect landed (sensitive, identity-anchored).
-	name := readAspectData(t, ctx, conn, identityKey+".name")
+	name := readDecryptedAspectData(t, ctx, conn, identityKey, "name")
 	if got, _ := name["value"].(string); got != "PII Applicant" {
 		t.Fatalf("name aspect value = %q, want PII Applicant", got)
 	}

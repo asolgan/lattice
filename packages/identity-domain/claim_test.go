@@ -124,7 +124,7 @@ func TestClaimIdentity_Success(t *testing.T) {
 	if got, _ := stateAspect["value"].(string); got != "claimed" {
 		t.Fatalf("state = %q, want claimed", got)
 	}
-	bindData := readAspectData(t, ctx, conn, identityKey+".credentialBinding")
+	bindData := readDecryptedAspectData(t, ctx, conn, identityKey, "credentialBinding")
 	if got, _ := bindData["actorKey"].(string); got != consumerActorKey {
 		t.Fatalf("credentialBinding.actorKey = %q", got)
 	}
@@ -444,7 +444,7 @@ func TestClaimIdentity_FR5_GrandfatheredFlow(t *testing.T) {
 	if got, _ := stateAspect["value"].(string); got != "claimed" {
 		t.Fatalf("FR5 GF: state = %q, want claimed", got)
 	}
-	bindData := readAspectData(t, ctx, conn, identityKey+".credentialBinding")
+	bindData := readDecryptedAspectData(t, ctx, conn, identityKey, "credentialBinding")
 	if got, _ := bindData["actorKey"].(string); got != consumerActorKey {
 		t.Fatalf("FR5 GF: credentialBinding.actorKey = %q", got)
 	}

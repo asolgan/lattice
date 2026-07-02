@@ -46,10 +46,17 @@ NKEY_LATTICE_PKG ?= $(NKEY_DIR)/lattice-pkg.nk
 NKEY_LATTICE_CLI ?= $(NKEY_DIR)/lattice.nk
 NKEY_GATEWAY ?= $(NKEY_DIR)/gateway.nk
 
+# VAULT_KEK_FILE — the Processor's sensitive-aspect crypto master KEK
+# (Contract #3 §3.10, internal/vault). UNLIKE the nkey seeds above (transport
+# auth, low-value if leaked), this key can decrypt every PII aspect ever
+# written, so it is generated locally on first `make up` / `run-processor`
+# (see provision-vault-kek below) and gitignored — never committed.
+VAULT_KEK_FILE ?= $(abspath ./deploy/vault/master.kek)
+
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up up-full up-loftspace orchestration install-packages install-loftspace run-loupe run-gateway run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role provision-clinic-role provision-readpath reinstall-package verify-package-service-location verify-package-augur verify-conformance build vet lint-conventions lint-board install-skills test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-augur-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
+.PHONY: up up-full up-loftspace orchestration install-packages install-loftspace run-loupe run-gateway run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role provision-clinic-role provision-readpath provision-vault-kek reinstall-package verify-package-service-location verify-package-augur verify-conformance build vet lint-conventions lint-board install-skills test test-bypass test-capability-adversarial test-rollback test-lease-convergence test-object-gc test-augur-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 ## Detects an already-healthy kernel first and reuses it — invoking this against a
@@ -84,8 +91,9 @@ up:
 		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_BOOTSTRAP) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/bootstrap; \
 		echo "==> Building processor binary..."; \
 		go build -o bin/processor ./cmd/processor; \
+		$(MAKE) provision-vault-kek; \
 		echo "==> Starting processor in background..."; \
-		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_PROCESSOR) PROCESSOR_FILTER=ops.default,ops.urgent,ops.system,ops.meta LATTICE_AUTH_MODE=stub ./bin/processor >processor.log 2>&1 </dev/null & \
+		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_PROCESSOR) PROCESSOR_FILTER=ops.default,ops.urgent,ops.system,ops.meta LATTICE_AUTH_MODE=stub LATTICE_VAULT_MASTER_KEK_FILE=$(VAULT_KEK_FILE) ./bin/processor >processor.log 2>&1 </dev/null & \
 		echo "==> Lattice ready."; \
 	fi
 
@@ -266,9 +274,21 @@ processor:
 
 ## run-processor — Run the Processor against the local make-up harness.
 ## Requires `make up` to have completed (NATS reachable, core-operations stream live).
-run-processor: processor
+run-processor: processor provision-vault-kek
 	@echo "==> Starting processor (Ctrl-C to stop)..."
-	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_PROCESSOR) ./bin/processor
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_PROCESSOR) LATTICE_VAULT_MASTER_KEK_FILE=$(VAULT_KEK_FILE) ./bin/processor
+
+## provision-vault-kek — Generate the local Vault master KEK (Contract #3
+## §3.10, internal/vault) on first use. Idempotent: a no-op once the file
+## exists. NEVER commit this file — it can decrypt every sensitive aspect
+## ever written; deploy/vault/ is gitignored.
+provision-vault-kek:
+	@mkdir -p $(dir $(VAULT_KEK_FILE))
+	@if [ ! -f $(VAULT_KEK_FILE) ]; then \
+		echo "==> Generating local Vault master KEK at $(VAULT_KEK_FILE)..."; \
+		(umask 077; openssl rand -base64 32 > $(VAULT_KEK_FILE)); \
+	fi
+	@chmod 600 $(VAULT_KEK_FILE)
 
 ## up-full — Full local deployment on latest source: kernel (make up) +
 ## orchestration tier (Loom/Weaver/Bridge/object-store-manager) + core packages
@@ -420,13 +440,15 @@ orchestration:
 	fi
 
 ## install-packages — Install the core Capability Packages into a running
-## deployment, in dependency order: rbac-domain → identity-domain → objects-base.
+## deployment, in dependency order: rbac-domain → privacy-base → identity-domain → objects-base.
 ## (lattice-pkg only warns on unmet deps; ordering is the caller's responsibility.)
 install-packages:
 	@echo "==> Building lattice-pkg..."
 	go build -o bin/lattice-pkg ./cmd/lattice-pkg
 	@echo "==> Installing rbac-domain..."
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/rbac-domain
+	@echo "==> Installing privacy-base..."
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/privacy-base
 	@echo "==> Installing identity-domain..."
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/identity-domain
 	@echo "==> Installing objects-base..."

@@ -11,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/asolgan/lattice/internal/substrate"
+	"github.com/asolgan/lattice/internal/vault"
 )
 
 // Deps bundles the dependencies the commit path needs. The fields are
@@ -56,6 +57,15 @@ type Deps struct {
 	// the first retry). Capped well under the lane deadline. Nil → a small
 	// linear default; tests set it to a zero function for determinism.
 	CommitRetryBackoff func(attempt int) time.Duration
+	// Vault performs per-identity crypto for sensitive aspects at commit-path
+	// step 6.5 (Contract #3 §3.10). Nil disables the stage: sensitive
+	// mutations pass through unencrypted — the safe default for a pipeline
+	// that never wires PII (most test harnesses). Production wiring
+	// (MakePipeline) always sets it. Requires DDLs to also be set.
+	Vault vault.Vault
+	// DDLs backs step 6.5's sensitivity lookup — the same cache Hydrator and
+	// Validator use. Nil disables step 6.5 alongside a nil Vault.
+	DDLs *DDLCache
 }
 
 // CommitPath drives steps 1-3 (and stubbed 4-10) for a single envelope.
@@ -349,6 +359,21 @@ func (cp *CommitPath) commitPipeline(ctx context.Context, msg substrate.Message,
 			}
 		}
 
+		// --- Step 6.5: encrypt sensitive mutations (Contract #3 §3.10). ---
+		// Runs after step 6 validated the plaintext shape/anchoring and before
+		// the atomic batch — Core KV never observes plaintext for a sensitive
+		// aspect. Both Vault and DDLs must be wired (production always sets
+		// both); either nil skips the stage.
+		var mintedPiiKey bool
+		if cp.deps.Vault != nil && cp.deps.DDLs != nil {
+			encrypted, minted, err := cp.encryptSensitiveMutations(ctx, result.Mutations)
+			if err != nil {
+				return cp.handleStubFailure(ctx, msg, env, "encrypt", err)
+			}
+			result.Mutations = encrypted
+			mintedPiiKey = minted
+		}
+
 		// Reply-constraint, enforced BEFORE commit: a script-named primaryKey must
 		// lie within the operation's write footprint (a mutation key, or the
 		// 3-segment vertex root of one). The write path is not a read channel — a
@@ -432,11 +457,22 @@ func (cp *CommitPath) commitPipeline(ctx context.Context, msg substrate.Message,
 			// error): a non-empty `moved` means a key WE conditioned by default
 			// (§3.2) actually raced → the retry can fix it. An empty `moved` means a
 			// create-once uniqueness collision or an explicit-CAS — surface it.
+			//
+			// mintedPiiKey extends this to step 6.5's own create-once key: a piiKey
+			// mint is a "create" (never in `defaulted`, since applyHydratedRevisions
+			// only conditions update/tombstone), so two concurrent first-sensitive
+			// -writes for the same identity racing to mint it would otherwise
+			// surface as a hard, non-retried rejection — the one create-once
+			// collision this commit path doesn't already treat as benign. Retrying
+			// is always safe here even if the real conflict was on an unrelated key
+			// (re-hydrate/re-execute/re-commit re-derives everything fresh;
+			// ensureIdentityKey's KVGet-first path simply reuses the now-existing
+			// piiKey on the next attempt instead of re-minting it).
 			var confErr *ConflictError
 			if errors.As(err, &confErr) {
 				moved := cp.movedDefaultedKeys(ctx, defaulted)
 				conflictKey := conflictKeyForSignal(confErr.ConflictingKey, moved)
-				if len(moved) > 0 && attempt+1 < cp.deps.MaxCommitAttempts {
+				if (len(moved) > 0 || mintedPiiKey) && attempt+1 < cp.deps.MaxCommitAttempts {
 					// (B) Absorb the benign same-key race: re-hydrate (fresh
 					// revision) + re-execute against the new state, then re-commit.
 					cp.deps.Metrics.CommitRetries.Add(1)
@@ -444,6 +480,7 @@ func (cp *CommitPath) commitPipeline(ctx context.Context, msg substrate.Message,
 					cp.deps.Logger.Info("step 8: revision conflict; re-hydrating + retrying in-process",
 						"requestId", env.RequestID,
 						"conflictingKey", conflictKey,
+						"mintedPiiKey", mintedPiiKey,
 						"attempt", attempt+1)
 					continue
 				}
@@ -864,7 +901,14 @@ func (cp *CommitPath) maybeReplyMalformed(msg substrate.Message, requestID, reas
 // to stub implementations — all other components (Hydrator, Executor, Validator,
 // Committer, EventPublisher) are production-identical.
 func MakeStubPipeline(conn *substrate.Conn, coreBucket, healthBucket string, authMode AuthMode, logger *slog.Logger, instance string) (*CommitPath, *HealthHeartbeater, error) {
-	return MakePipeline(conn, coreBucket, healthBucket, "", authMode, false, logger, instance, AuthWiring{})
+	// Vault nil: a stub pipeline never wires PII crypto, so step 6.5 is a
+	// no-op and any sensitive aspect it happens to write lands unencrypted.
+	// None of the stub-pipeline callers (Processor-internal step tests,
+	// package-install harnesses, unrelated e2e convergence fixtures) assert
+	// sensitive-aspect plaintext today; the pipelines that do (identity-domain's
+	// own PII/claim tests) go through testutil.CapabilityPipeline instead,
+	// which wires a real Vault.
+	return MakePipeline(conn, coreBucket, healthBucket, "", authMode, false, logger, instance, AuthWiring{}, nil)
 }
 
 // AuthWiring carries the platform-path routing inputs the step-3 authorizer
@@ -893,7 +937,11 @@ type AuthWiring struct {
 // for ALLOWED decisions. Defaults off — volume implications for busy deployments.
 //
 // authWiring carries the rbac-domain platform-path routing (see AuthWiring).
-func MakePipeline(conn *substrate.Conn, coreBucket, healthBucket, capabilityBucket string, authMode AuthMode, traceAllowDecisions bool, logger *slog.Logger, instance string, authWiring AuthWiring) (*CommitPath, *HealthHeartbeater, error) {
+//
+// v is the Vault backing step 6.5's sensitive-aspect encrypt-on-write /
+// decrypt-on-read (Contract #3 §3.10). Nil disables the stage (see
+// MakeStubPipeline); production wiring (cmd/processor) always supplies one.
+func MakePipeline(conn *substrate.Conn, coreBucket, healthBucket, capabilityBucket string, authMode AuthMode, traceAllowDecisions bool, logger *slog.Logger, instance string, authWiring AuthWiring, v vault.Vault) (*CommitPath, *HealthHeartbeater, error) {
 	metrics := &Metrics{}
 	hb := NewHealthHeartbeater(conn, healthBucket, instance, 10*time.Second, metrics, logger)
 	alertEmitter := NewHealthAlertEmitter(conn, healthBucket, logger)
@@ -949,13 +997,16 @@ func MakePipeline(conn *substrate.Conn, coreBucket, healthBucket, capabilityBuck
 	// Wire the commit-conflict emitter (the §3.2-OCC lane-misassignment signal).
 	conflictEmitter := NewCommitConflictEmitter(conn, healthBucket, instance, logger)
 
+	hydrator := NewHydratorWithCache(conn, coreBucket, ddls, logger)
+	hydrator.Vault = v
+
 	committer := NewCommitter(conn, coreBucket, ddls, logger, time.Now)
 	cp := NewCommitPath(Deps{
 		Conn:            conn,
 		CoreBucket:      coreBucket,
 		HealthKV:        healthBucket,
 		Authorizer:      authz,
-		Hydrator:        NewHydratorWithCache(conn, coreBucket, ddls, logger),
+		Hydrator:        hydrator,
 		Executor:        NewExecutor(NewStarlarkRunner(0, 0), logger),
 		Validator:       NewValidator(ddls, conn, coreBucket, logger),
 		Committer:       committer,
@@ -966,6 +1017,8 @@ func MakePipeline(conn *substrate.Conn, coreBucket, healthBucket, capabilityBuck
 		TraceEmitter:    traceEmitter,
 		ClaimEmitter:    claimEmitter,
 		ConflictEmitter: conflictEmitter,
+		Vault:           v,
+		DDLs:            ddls,
 	})
 	return cp, hb, nil
 }

@@ -66,15 +66,15 @@ func TestCreateUnclaimed_Success(t *testing.T) {
 	if _, err := conn.KVGet(ctx, testutil.HarnessCoreBucket, identityKey); err != nil {
 		t.Fatalf("identity vertex not found: %v", err)
 	}
-	name := readAspectData(t, ctx, conn, identityKey+".name")
+	name := readDecryptedAspectData(t, ctx, conn, identityKey, "name")
 	if got, _ := name["value"].(string); got != "Andrew Test" {
 		t.Fatalf("name = %q", got)
 	}
-	email := readAspectData(t, ctx, conn, identityKey+".email")
+	email := readDecryptedAspectData(t, ctx, conn, identityKey, "email")
 	if got, _ := email["value"].(string); got != "andrew@example.com" {
 		t.Fatalf("email = %q", got)
 	}
-	phone := readAspectData(t, ctx, conn, identityKey+".phone")
+	phone := readDecryptedAspectData(t, ctx, conn, identityKey, "phone")
 	if got, _ := phone["value"].(string); got != "+15551234567" {
 		t.Fatalf("phone = %q", got)
 	}
@@ -82,7 +82,7 @@ func TestCreateUnclaimed_Success(t *testing.T) {
 	if got, _ := stateAspect["value"].(string); got != "unclaimed" {
 		t.Fatalf("state = %q, want unclaimed", got)
 	}
-	claim := readAspectData(t, ctx, conn, identityKey+".claimKey")
+	claim := readDecryptedAspectData(t, ctx, conn, identityKey, "claimKey")
 	if h, _ := claim["hash"].(string); len(h) != 64 {
 		t.Fatalf("claimKey hash len = %d", len(h))
 	}
@@ -161,7 +161,7 @@ func TestCreateUnclaimed_NormalizesEmailCase(t *testing.T) {
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
 
-	email := readAspectData(t, ctx, conn, identityKey+".email")
+	email := readDecryptedAspectData(t, ctx, conn, identityKey, "email")
 	if got, _ := email["value"].(string); got != "foo@bar.com" {
 		t.Fatalf("email = %q, want lowercase", got)
 	}
@@ -311,9 +311,7 @@ func TestCreateUnclaimed_ClaimKeyHashOnly(t *testing.T) {
 		t.Fatalf("NFR-S6 violation: plaintext leaked into claimKey aspect: %q in %q", claimKeyPlaintext, rawJSON)
 	}
 
-	var doc map[string]any
-	_ = json.Unmarshal(entry.Value, &doc)
-	data, _ := doc["data"].(map[string]any)
+	data := readDecryptedAspectData(t, ctx, conn, identityKey, "claimKey")
 	hash, _ := data["hash"].(string)
 	if len(hash) != 64 {
 		t.Fatalf("hash len = %d", len(hash))

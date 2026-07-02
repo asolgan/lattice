@@ -18,6 +18,14 @@
 //	HEALTH_INTERVAL_SEC               heartbeat interval in seconds (default: 10, minimum: 10 per NFR-O1)
 //	LATTICE_PROCESSOR_LANES_<LANE>_CONSUMERS  per-lane pump concurrency (LANE = DEFAULT|URGENT|SYSTEM|META;
 //	                                  defaults default=2/urgent=4/system=2/meta=1; meta is always clamped to 1)
+//	LATTICE_VAULT_MASTER_KEK          base64 32-byte master KEK for the local envelope-encryption
+//	                                  Vault backend (Contract #3 §3.10). Exactly one of this or
+//	                                  LATTICE_VAULT_MASTER_KEK_FILE must be set — the process refuses
+//	                                  to start otherwise.
+//	LATTICE_VAULT_MASTER_KEK_FILE     path to a file holding the base64 master KEK (deploy/nkeys/*.nk
+//	                                  seed-file posture). Alternative to LATTICE_VAULT_MASTER_KEK.
+//	LATTICE_VAULT_KEK_VERSION         label for the configured KEK, for future rotation detection
+//	                                  (default: "v1")
 //
 // Logs to stderr in slog text format. Exits non-zero on any startup
 // failure; on graceful shutdown (SIGINT/SIGTERM) the heartbeater emits a
@@ -42,6 +50,7 @@ import (
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/processor/outbox"
 	"github.com/asolgan/lattice/internal/substrate"
+	"github.com/asolgan/lattice/internal/vault"
 )
 
 func main() {
@@ -123,7 +132,12 @@ func run(logger *slog.Logger) error {
 	logger.Info("step-3 platform routing wired",
 		"rbacRolesActive", rbacInstalled, "systemActors", len(systemActorKeys))
 
-	cp, hb, err := processor.MakePipeline(conn, bootstrap.CoreKVBucket, bootstrap.HealthKVBucket, bootstrap.CapabilityKVBucket, authMode, traceAllowDecisions, logger, instance, authWiring)
+	v, err := loadVault(logger)
+	if err != nil {
+		return err
+	}
+
+	cp, hb, err := processor.MakePipeline(conn, bootstrap.CoreKVBucket, bootstrap.HealthKVBucket, bootstrap.CapabilityKVBucket, authMode, traceAllowDecisions, logger, instance, authWiring, v)
 	if err != nil {
 		return err
 	}
@@ -221,6 +235,36 @@ func run(logger *slog.Logger) error {
 	<-outboxDone
 	logger.Info("processor exited cleanly", "instance", instance)
 	return nil
+}
+
+// loadVault wires the local envelope-encryption Vault backend (design §2.5
+// Path A) backing commit-path step 6.5's sensitive-aspect crypto. The master
+// KEK is read from LATTICE_VAULT_MASTER_KEK (inline base64) if set, else
+// from the file at LATTICE_VAULT_MASTER_KEK_FILE (base64, trailing
+// whitespace trimmed) — the same seed-file posture as deploy/nkeys/*.nk.
+// Neither set is a startup failure: sensitive-aspect writes would otherwise
+// silently land as plaintext, which is worse than refusing to start.
+func loadVault(logger *slog.Logger) (*vault.LocalBackend, error) {
+	envVar, fileVar := "LATTICE_VAULT_MASTER_KEK", "LATTICE_VAULT_MASTER_KEK_FILE"
+	var kek []byte
+	var err error
+	switch {
+	case os.Getenv(envVar) != "":
+		kek, err = vault.MasterKEKFromEnv(envVar)
+	case os.Getenv(fileVar) != "":
+		kek, err = vault.MasterKEKFromFile(os.Getenv(fileVar))
+	default:
+		return nil, fmt.Errorf("vault: neither %s nor %s is set; refusing to start without a master KEK (a sensitive-aspect write would otherwise land as plaintext)", envVar, fileVar)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load vault master KEK: %w", err)
+	}
+	v, err := vault.NewLocalBackend(kek, envOrDefault("LATTICE_VAULT_KEK_VERSION", ""))
+	if err != nil {
+		return nil, fmt.Errorf("construct vault backend: %w", err)
+	}
+	logger.Info("vault wired", "backend", "local")
+	return v, nil
 }
 
 func envOrDefault(key, def string) string {

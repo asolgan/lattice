@@ -25,6 +25,7 @@ import (
 	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
+	"github.com/asolgan/lattice/internal/vault"
 )
 
 // Bucket / stream / lane constants used by the test harness. They
@@ -109,6 +110,28 @@ func SeedCapDoc(t *testing.T, ctx context.Context, conn *substrate.Conn, doc *pr
 	}
 }
 
+// testVaultKEK is a fixed, non-secret 32-byte master KEK shared by every
+// TestVault instance. Using one constant (rather than a random KEK per call)
+// lets independently-constructed LocalBackend instances — one per
+// CapabilityPipeline call within a test — decrypt ciphertext minted by any
+// other; there is no cross-test isolation concern since this never protects
+// real key material.
+var testVaultKEK = []byte("lattice-testutil-vault-master-ke")
+
+// TestVault returns a fresh local envelope-encryption Vault backend sealed
+// with the shared test KEK (Contract #3 §3.10). Used to wire
+// CapabilityPipeline's step-6.5 crypto so sensitive-aspect writers
+// (identity-domain's CreateUnclaimedIdentity/RecordIdentityPII/ClaimIdentity)
+// round-trip correctly under test.
+func TestVault(t *testing.T) vault.Vault {
+	t.Helper()
+	v, err := vault.NewLocalBackend(testVaultKEK, "test-v1")
+	if err != nil {
+		t.Fatalf("testutil.TestVault: %v", err)
+	}
+	return v
+}
+
 // PipelineConfig configures a CapabilityPipeline.
 type PipelineConfig struct {
 	Durable      string // consumer durable name; must be unique per test
@@ -149,19 +172,24 @@ func CapabilityPipeline(t *testing.T, ctx context.Context, conn *substrate.Conn,
 	if err != nil {
 		t.Fatalf("SelectAuthorizerArgs: %v", err)
 	}
+	v := TestVault(t)
+	hydrator := processor.NewHydratorWithCache(conn, HarnessCoreBucket, cache, logger)
+	hydrator.Vault = v
 	committer := processor.NewCommitter(conn, HarnessCoreBucket, cache, logger, time.Now)
 	deps := processor.Deps{
 		Conn:        conn,
 		CoreBucket:  HarnessCoreBucket,
 		HealthKV:    HarnessHealthBucket,
 		Authorizer:  authz,
-		Hydrator:    processor.NewHydratorWithCache(conn, HarnessCoreBucket, cache, logger),
+		Hydrator:    hydrator,
 		Executor:    processor.NewExecutor(processor.NewStarlarkRunner(0, 0), logger),
 		Validator:   processor.NewValidator(cache, conn, HarnessCoreBucket, logger),
 		Committer:   committer,
 		Metrics:     metrics,
 		Heartbeater: hb,
 		Logger:      logger,
+		Vault:       v,
+		DDLs:        cache,
 	}
 	if cfg.ClaimEmitter != nil {
 		deps.ClaimEmitter = cfg.ClaimEmitter

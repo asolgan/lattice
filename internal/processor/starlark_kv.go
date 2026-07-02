@@ -8,6 +8,7 @@ import (
 	"go.starlark.net/starlarkstruct"
 
 	"github.com/asolgan/lattice/internal/substrate"
+	"github.com/asolgan/lattice/internal/vault"
 )
 
 // kvModule returns the Starlark `kv` global exposing a single builtin,
@@ -293,9 +294,16 @@ func parseLinkDoc(data []byte, key string) (LinkDoc, error) {
 // None; a logically-deleted vertex (isDeleted=true envelope still live, per
 // Conn.KVGet) returns a non-nil doc carrying isDeleted so the script decides;
 // every other error propagates. Single-key GET only — never a prefix scan.
+//
+// ddls/vault back decrypt-on-read (Contract #3 §3.10) for a sensitive aspect
+// read lazily rather than via contextHint — the same decryption step 4
+// applies to its pre-fetched keys. Both nil-safe: a reader without them
+// (most test harnesses) returns the aspect's ciphertext opaque, unchanged.
 type connKVReader struct {
 	conn   *substrate.Conn
 	bucket string
+	ddls   *DDLCache
+	vault  vault.Vault
 }
 
 // ReadVertex implements ScriptKVReader.
@@ -312,5 +320,8 @@ func (r connKVReader) ReadVertex(ctx context.Context, key string) (*VertexDoc, e
 		return nil, err
 	}
 	doc.Revision = entry.Revision
+	if err := decryptSensitiveDoc(ctx, r.conn, r.bucket, r.ddls, r.vault, &doc); err != nil {
+		return nil, err
+	}
 	return &doc, nil
 }

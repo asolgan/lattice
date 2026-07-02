@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/asolgan/lattice/internal/substrate"
+	"github.com/asolgan/lattice/internal/vault"
 )
 
 // HydratorImpl is the step-4 (JIT Hydrate) implementation. The DDL cache
@@ -30,6 +31,13 @@ type HydratorImpl struct {
 	CoreBucket string
 	DDLs       *DDLCache
 	Logger     *slog.Logger
+	// Vault backs decrypt-on-read for sensitive aspects pulled into the
+	// Starlark context (Contract #3 §3.10, the step-6.5 encrypt hook's read
+	// counterpart). Nil disables decryption: a hydrated sensitive aspect's
+	// data stays opaque ciphertext (the safe default for a pipeline that
+	// never wires PII, e.g. most test harnesses). Production wiring
+	// (MakePipeline) always sets it.
+	Vault vault.Vault
 }
 
 // NewHydrator wires a real Hydrator. The DDL cache parameter is
@@ -161,6 +169,9 @@ func (h *HydratorImpl) Hydrate(ctx context.Context, env *OperationEnvelope) (Hyd
 				return HydratedState{}, fmt.Errorf("step4: parse %s: %w", key, err)
 			}
 			doc.Revision = entry.Revision
+			if err := decryptSensitiveDoc(ctx, h.Conn, h.CoreBucket, h.DDLs, h.Vault, &doc); err != nil {
+				return HydratedState{}, fmt.Errorf("step4: decrypt %s: %w", key, err)
+			}
 			hydrated[key] = doc
 		}
 	}
@@ -182,7 +193,7 @@ func (h *HydratorImpl) Hydrate(ctx context.Context, env *OperationEnvelope) (Hyd
 			// Back the script's lazy kv.Read() (§2.5) with a single-key reader
 			// over the same Conn + Core bucket used for hydration. A read of a
 			// key not pre-fetched via contextHint falls through to this.
-			KVReader: connKVReader{conn: h.Conn, bucket: h.CoreBucket},
+			KVReader: connKVReader{conn: h.Conn, bucket: h.CoreBucket, ddls: h.DDLs, vault: h.Vault},
 			// Back the script's kv.Links() (§2.5.1) with a bounded link lister
 			// over the same Conn + Core bucket — the op-time set-valued enumeration.
 			LinkLister: connLinkLister{conn: h.Conn, bucket: h.CoreBucket},

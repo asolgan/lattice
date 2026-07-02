@@ -1,4 +1,4 @@
-// Package testutil — installs the rbac-domain + identity-domain +
+// Package testutil — installs the rbac-domain + privacy-base + identity-domain +
 // identity-hygiene packages on top of a freshly-seeded kernel, supplying the
 // identity + role DDLs that the kernel itself does not seed.
 //
@@ -35,11 +35,12 @@ import (
 	"github.com/asolgan/lattice/internal/substrate"
 	identitydomain "github.com/asolgan/lattice/packages/identity-domain"
 	identityhygiene "github.com/asolgan/lattice/packages/identity-hygiene"
+	privacybase "github.com/asolgan/lattice/packages/privacy-base"
 	rbacdomain "github.com/asolgan/lattice/packages/rbac-domain"
 )
 
-// InstallPhase1Packages installs rbac-domain, identity-domain, and
-// identity-hygiene in dependency order against the given substrate
+// InstallPhase1Packages installs rbac-domain, privacy-base, identity-domain,
+// and identity-hygiene in dependency order against the given substrate
 // connection by submitting InstallPackage ops through a real meta-lane
 // CommitPath. The caller is responsible for having called
 // bootstrap.LoadOrGenerate + bootstrap.SeedPrimordial first so the
@@ -61,6 +62,7 @@ func InstallPhase1Packages(t *testing.T, ctx context.Context, conn *substrate.Co
 
 	for _, def := range []pkgmgr.Definition{
 		rbacdomain.Package,
+		privacybase.Package,
 		identitydomain.Package,
 		identityhygiene.Package,
 	} {

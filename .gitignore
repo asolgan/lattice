@@ -53,3 +53,8 @@ processor.log
 /lattice-pkg
 /loftspace-app
 /clinic-app
+
+# Vault master KEK (Contract #3 §3.10) — generated locally by
+# `make provision-vault-kek`. NEVER commit: it decrypts every sensitive
+# aspect ever written.
+/deploy/vault/

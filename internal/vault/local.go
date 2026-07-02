@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -88,6 +89,25 @@ func MasterKEKFromEnv(envVar string) ([]byte, error) {
 	}
 	if len(kek) != dekKeySize {
 		return nil, fmt.Errorf("vault: %s decodes to %d bytes, want %d", envVar, len(kek), dekKeySize)
+	}
+	return kek, nil
+}
+
+// MasterKEKFromFile reads and base64-decodes a 32-byte master KEK from a
+// file (trailing whitespace trimmed) — the seed-file convention this
+// codebase uses for every other component credential (deploy/nkeys/*.nk),
+// mirrored here for the master KEK's dev + trusted-tool posture.
+func MasterKEKFromFile(path string) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("vault: read KEK file %s: %w", path, err)
+	}
+	kek, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
+	if err != nil {
+		return nil, fmt.Errorf("vault: KEK file %s is not valid base64: %w", path, err)
+	}
+	if len(kek) != dekKeySize {
+		return nil, fmt.Errorf("vault: KEK file %s decodes to %d bytes, want %d", path, len(kek), dekKeySize)
 	}
 	return kek, nil
 }
