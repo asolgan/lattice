@@ -491,6 +491,29 @@ platform machinery**, with L1 (+ optionally L2) as the only platform touches.
 > already true in code). **Next: Fire V2** (conditioned `pet` fee via `conditionedOn` + the judgment
 > `missing_inspection → assignTask` gap) — a fresh `git worktree add` per the fresh-worktree-per-fire rule.
 
+> **🏗️ CHECKPOINT (Vertical Steward, 2026-07-02) — Fire V2 SHIPPED, `e9408e7`.** Fresh worktree
+> (`steward-bespoke-v2`), merged + deleted. Built both remaining Fire V2 archetypes: CreateClause gains an
+> optional `conditionedOnKey` (any live vertex — generic per the design, not a concrete `pet` type; validated
+> alive, writes a `conditionedOn` link + an explicit `terms.conditioned` flag) and `kind=judgment` (assigns an
+> inspector via a `requiresInspectionBy` link instead of charging an account). A new `InspectPremises` op —
+> routed through the `clause` DDL's own script, mirroring `SignLease` acting on its own `leaseapp` — writes a
+> CreateOnly `.inspection` aspect closing the gap. The `clauseSatisfaction` lens gained `missing_inspection`
+> alongside `missing_charge`; the §10.8 playbook dispatches `assignTask(InspectPremises)`.
+> **Real defect found + fixed building this**: the `full` engine's `IS NULL`/`IS NOT NULL` is an unimplemented
+> no-op (`visitStringListNullOp` passes the suffix through unevaluated) and a bare unmatched OPTIONAL MATCH node
+> variable is a Go typed-nil pointer boxed in an interface, not a clean nil — null-testing it directly silently
+> mis-evaluates. Fixed throughout by null-testing only `.key`/aspect property projections with explicit
+> `= null`/`<> null`. A dedicated adversarial-review agent pass (money-safety focus, since this gates
+> `DebitAccount`) then caught a second, self-inflicted bug pre-merge: the conditioned gate used
+> `conditioned = false`, which silently permanently suppressed the charge for every Fire-V1-shaped legacy clause
+> (no `conditioned` field at all, resolves nil, never equals `false` either) — fixed to `conditioned <> true` +
+> a regression test. Full local gates green (build/vet/golangci-lint/lint-conventions/full `go test
+> ./packages/...`); `verify-kernel`/`test-bypass`/`test-capability-adversarial` not run (same rationale as V1 —
+> no security/capability-plane surface touched; `InspectPremises` is an ordinary operator-granted op, same model
+> as `SignLease`/`DebitAccount`). Not yet verified live in-browser (no FE this fire; proven via the `full`-engine
+> lens unit tests + the real-Processor integration tests). **Next: Fire V3** (recurring `freshUntil` period
+> boundary + a proration clause, computed Processor-side in integer cents) — fresh worktree.
+
 ---
 
 ## 11. Self-adversarial pass (Designer, folded in — the L/XL gate, discharged)
