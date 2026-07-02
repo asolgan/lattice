@@ -2,6 +2,33 @@
 
 Rolled from `lattice.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-02 · `51ba38e` · [Gateway] Fire 2 remainder — live JWKS polling (stdlib RFC7517/7518 parser, hot-swap `Verifier.SetKeys`, https-unless-dev gate, fail-safe last-good-on-poll-failure)
+- 2026-07-02 · `00b098d` · [Gateway] Fire 1 — external write-path translator (`POST /v1/operations` JWT strip-and-stamp, `internal/gateway` + `cmd/gateway`, fail-closed dev key gate, `gateway` NATS user, Gate-3 vector #14)
+- 2026-07-02 · `f8e017d` · [CI] Whetstone — `internal/bridge` require.Never proof windows (2-4s) trimmed to their actual 5-6x margin over the 300ms redelivery floor (package 44.5s→27.6s local; unit job 129s→119s in CI)
+- 2026-07-01 · `083b0ad` · [CI/bypass] Gate 2/3 live Health KV marker writers threaded with NATS_NKEY (fix-forward on the write-restriction merge)
+- 2026-07-01 · `1f2f999` · [Core/deploy] NATS write-restriction Fire 2 — live enforcement ON; 4 permission-matrix gaps found+fixed against the real stack
+- 2026-07-01 · `970585f` · [Refractor] Retire-simple-engine Fire 1 — lift `EvalResult`/`NodeEntry` into `ruleengine` (pure relocation, simple keeps a type alias)
+- 2026-07-01 · `4920bc6` · [Augur] Fire 2b — `augurDispatch` closes the loop (approve→dispatch); 3-layer review folded (reconciler backoff pacing + dispatch-time anchor-field pinning)
+- 2026-07-01 · `da8279f` · [loftspace-app] D1.5 — `handleUnitApplications` landlord operator-console unauth read fix (RLS-scoped to `queryLandlordApplications`'s managed-unit set; D1.5 read-model rollout now complete)
+- 2026-07-01 · `6c98748` · [loftspace-app] D1.5 — `handleIdentities` system-wide unauth roster dump fix (new `applicantRosterRead` wildcard-only protected lens; `handleStaffIdentities` replaces it)
+- 2026-07-01 · `40240dd` · [clinic-app] D1.5 — `handlePatients` clinic-wide unauth roster dump fix (new `clinicPatientsRead` wildcard-only protected lens; `handleStaffPatients` replaces it)
+- 2026-07-01 · `9129005` · [CI] Whetstone — `internal/loom` e2e sleeps → deterministic readiness polls (5 files, ~20 sites; package 55s→41s in CI, 3 restart tests de-flake-hardened via `joinEngine`)
+- 2026-07-01 · `b1c2eeb` · [clinic-app] D1.5 — `handleAppointments` provider-availability PHI over-exposure fix (minimal availabilityRow strips patient/visit fields from the unauthenticated slot-picker endpoint)
+- 2026-07-01 · `f509b84` · [loftspace-app/clinic-app] D1.5 — loftspace tasks (JWT-scoped) + clinic visit-series (new `visitSeriesRead` protected lens) read boundaries
+- 2026-07-01 · `9191eed` · [loftspace-app] D1.5 — objects/documents read boundary (unit photos stay public; identity/leaseapp document bytes now authenticateRead+entitled-scoped; closed the unauthenticated document/PII-byte dump)
+- 2026-07-01 · `40f4d25` · [Core/clinic-app] D1.5 — staff wildcard read grant (WildcardAnchor RLS clause + capabilityReadWildcardGrants kernel lens; closed the unauthenticated clinic-wide appointments dump)
+- 2026-07-01 · `17ccd42` · [clinic-app/clinic-domain] D1.5 Increment 2 — provider-self protected schedule read model (RLS-closed the unauthenticated `?provider=` full-schedule leak; staff wildcard audiences flagged follow-up)
+- 2026-07-01 · `c46fbe2` · [clinic-app/clinic-domain] D1.5 — patient-self protected read model (RLS-closed the unauthenticated `?patient=` appointment-history leak; provider/staff audiences flagged follow-up)
+- 2026-07-01 · `ac43891` · [CI/hellolattice] NFR-P3 flake resolved — CI projection deadlines re-scoped to a 1000ms regression guard (runner-floor headroom); reported SLA unchanged (Andrew-ratified)
+- 2026-07-01 · `10bd188` · [loftspace-app/lease-signing] D1.5 — RLS-protect the lease-document GET (closed an unauthenticated PII read of weaver-targets)
+- 2026-07-01 · `12fc79b` · [Core/orchestration-base] FR28 Fire 2 — availability-gated routing (`SetAvailability` op + `availability` aspect; `CreateTask` falls back to queue when the assignee is unavailable)
+- 2026-07-01 · `4712c46` · [Core/rbac-domain+identity-hygiene] Contract #10 §10.1 no-orphan tombstone guard — `TombstoneRole`/`MergeIdentity` reject a live queuedFor/assignedTo open task (found in FR28 Fire 1 adversarial review)
+- 2026-06-30 · `9495081` · [Core/orchestration-base] FR28 Fire 1 — role-queue + claim (`queuedFor` link, `CreateTask` assignee-or-queue routing, `ClaimTask`, capabilityEphemeral/myTasks role fan-out)
+- 2026-07-01 · `ef108b4` · [Refractor] Protected-lens out-of-band provisioning + verify-and-pause — Fire 0+1+2 (fail-closed activation gate, `Verify{Protected,Grant}Table`, `emit-ddl`/`provision-readpath`, seq-guard)
+- 2026-06-30 · `e04498e` · [Weaver] `@every` Fire 2 — reconciler sweep cron-kill (durable `@every` replaces the in-process ticker)
+- 2026-06-30 · `44b385a` · [Core/substrate] `@every` Fire 1 — `ScheduleEvery`/`CancelSchedule` recurring-schedule primitive
+- 2026-06-29 · `d6530e9` · [Core/processor+rbac] Lane authorization enforcement (§2.3) — step-3 lane gate + `LaneUnauthorized` + Gate-3 vector #8
+- 2026-06-30 · `0cd2695` · [lint/Core] instanceOf P7 lint gate (whole instanceOf design done)
 - 2026-06-27 · `679fe25` · [Refractor] Full-engine plain-projection anchor-tombstone retraction (`AnchorDeleteResult`)
 - 2026-06-30 · `44049ed` · [Core/bypass] D1.4 — Gate-3 read-path authorization adversarial vectors (§5.1–5.5: no-JWT · cross-actor · revoked · cross-anchor bleed · no-RLS-policy); Gate 3 now 13/13, gate sets `POSTGRES_TEST_DSN`
 - 2026-06-30 · `<pending>` · [clinic-domain] kv.Links Fire 2 — re-author the appointment double-book guard onto `hasBooking` links + scalar `bookingGuard` epoch (drop the `.bookings` key-list aspects + DDLs); pkg 0.8.0

@@ -73,7 +73,38 @@ lane, [loupe.md](loupe.md)). Survey the stalest (`git log -1 --format=%ct -- <pa
 - 2026-07-01 Designer — search/ES target adapter (3rd Refractor adapter; OpenSearch rec., FTS interim) (→ 📐).
 - 2026-07-01 Designer — feature queue designed-out (all ~30 rows carry a design); resolved stale L309 (link-tombstone subsumed by link-aspect design, latency-rollup seq behind HA). Remaining 📋 = owner test-coverage.
 - 2026-07-02 Refractor (healthy, clean lint; retraction/rollup already tracked; filed capability-pipeline-link-aspect-fanout-untested + natskv-guard-edge-branches).
+- 2026-07-02 Arch-review, all components — filed the intake section below; Refractor findings held for the post-update re-review; root-identity designation → Designer.
 - **Next:** Core.
+
+## Arch-review intake — platform hardening & doc/contract truth
+
+Open corrections from the [2026-07-02 full-platform review](../../../docs/reviews/arch-review-2026-07-02.md)
+— per-finding `file:line` evidence and per-component verdicts live there; the What-cells here are abridged.
+**Refractor findings are deliberately absent**: that component is mid-update and Andrew re-reviews it after.
+Severity-ordered; same row discipline as component maintenance (shipped rows collapse to the Done log).
+
+| Item | What it is | Imp | Size | State |
+|---|---|---|---|---|
+| **protected-flag-create-guard-vector** | Root capability hinges on `identity.data.protected=true` — an easily-compromisable data bit: step-8 exempts create by design, only identity-domain hardcoding `data:{}` guards it, and nothing pins that a non-root actor can't create a `protected:true` identity. Design a better root-identity designation than the bit; create-guard + Gate-2/3 vector as the interim floor. Epic-12 carried obligation. | ★★★ | S–M | 📋 needs-design (Designer) |
+| **object-plane-nats-permissions** | Object-plane NKey grants mismatch the pinned nats.go: writes publish on `$O.core-objects.C/M.>` but objmgr is granted `$OBJ.objects-base.>` (wrong prefix + bucket) and Loupe/loftspace-app have no `$O.` grant at all — blob upload + GC delete should be transport-denied on the live stack. Fix the grants; add natsperm object vectors (zero today); verify a live upload. | ★★★ | S | 📋 |
+| **gateway-revocation-kill-switch-activation** | The token-revocation kill-switch is dormant: its bucket is provisioned nowhere, no admin surface can revoke an actor, and a failed bucket-open at startup silently disables checking (stderr only). Provision the bucket in bootstrap; add a revoke surface (CLI/Loupe); surface the disabled state in Health KV; keep per-request fail-closed. | ★★ | M | 📋 |
+| **heartbeat-false-green-aggregation** | Bridge, Gateway, and object-store-manager emit status "healthy" unconditionally while carrying (or ignoring) issues — an outage rides a green heartbeat; Loom/Weaver already aggregate issue severity. Port the aggregateStatus rule into all three heartbeaters. | ★★ | S | 📋 |
+| **control-plane-surface-contract** | The `lattice.ctrl.*` plane (pause/resume/disable/revoke/delete on the three engines) has no contract or component-doc of record — Loupe's hardcoded subject+op allow-list is the only written spec. Document the subject grammar, op vocabulary, reply envelope, and auth posture so producers and Loupe can't silently drift. | ★★ | S | 📋 |
+| **contract-10-weaver-text-reconciliation** | Contract #10's Weaver text drifted from as-built in five spots — worst: the §10.8 augur block says `pattern`+triggerLoom while the engine takes op/adapter/replyOp + a directOp, so a package author's field is silently dropped; also the anti-storm cross-ref, two reserved weaver-state key shapes, the §10.2 weaver-targets read-path, revision history. Stage one uncommitted edit for Andrew. | ★★ | S | 📋 |
+| **contract-wire-error-code-reconciliation** | Contract #2 §2.6's error-code table diverged from the wire both ways (7 listed codes never emitted; 6 emitted codes unlisted), plus the §4.1 tracker class and §2.9's unknown-field claim. Reconcile the frozen text to the real closed enum (uncommitted edit for Andrew); pin it with a conformance test that reads the contract's table. | ★★ | S | 📋 |
+| **step6-batch-internal-consistency-decision** | Contract #3 §3.5 + spine steps 6–7 assert validations the Processor doesn't perform (link-endpoint/aspect-host dangling-reference resolution; §3.4/§3.8 event-type DDL check) — unbuilt and untracked. Decide build-vs-amend per layer (both checks are cheap and fail-closed-aligned); build the chosen ones or stage a narrowing amendment. | ★★ | M | 📋 |
+| **chronicler-prebuild-regrounding** | Pre-F1/F2 corrections to the ratified Chronicler design: F2 consumes `events.weaver.>` but Weaver emits no events — fold the lifecycle-event producer into F2; archive segments carry no object vertices, so objmgr's sweep would GC them — needs a GC-fenced bucket; F1's projection example maps data/committedAt vs the published Event doc's payload/timestamp; loom-state terminal cursors persist — re-ground the deletion premise. | ★★ | M | ✅ ratified · [design](../../implementation-artifacts/orchestration-history-read-model-design.md) |
+| **loom-pattern-source-cold-registry** | loom.md advises a stable `Instance`, but the pattern-source durable derives from it and resumes from its ack floor — a crashed stable-Instance Loom reattaches empty, boots with no pattern registry, and new triggers Nak-loop until a meta vertex is rewritten. Un-armed only while nothing sets LOOM_INSTANCE. Per-boot durable nonce; fix source.go's contradictory comments. | ★★ | S | 📋 |
+| **natsperm-matrix-hygiene** | Stale/over-broad transport grants: bridge is allowed `$KV.bridge-external.>`/`$KV.bridge-schedule.>` (consumer names, not buckets — bridge writes only health-kv), and Refractor's `$KV.>` write is broader than its lens-target set. Prune the stale grants, narrow or explicitly-deny, extend the natsperm vectors to pin the tightened matrix. | ★★ | S | 📋 |
+| **objmgr-and-bootstrap-component-pages** | object-store-manager + bootstrap are always-on platform binaries with no docs/components page, no README row, no architecture-overview mention, and no Surveyor-rotation slot; vault + privacyworker are built but page-less too. Write the four pages; add the index/README/overview rows; put objmgr + bootstrap in the survey rotation. | ★★ | M | 📋 |
+| **bridge-and-substrate-doc-refresh** | bridge.md (the envelope spec's home) predates the async SPI, `dispatchOp`, the poll/timeout schedule lane, and Augur; scheduling.md omits the bridge and still calls `@every` deferred; substrate.md shows a wrong AtomicBatch signature (timeout vs ctx), omits six files + the object/publish/schedule surface, and its SubscribeKVChanges godoc contradicts the code. Refresh all three to as-built. | ★★ | S | 📋 |
+| **contract7-and-processor-mandate-refresh** | Contract #7 §7.2/§7.7 describe a superseded kernel (5 meta-meta DDLs, processor identity, topology-walk cypher) — stage the alignment edit for Andrew. processor.md/doc.go omit step-6.5 encryption, the §3.2 OCC retry, task auto-completion, and kv.Links; commit_path.go keeps "stubbed 4-10"/"auth (stub)" comments; a bootstrap comment asserts a capability graph-walk that isn't. | ★ | S | 📋 |
+| **docs-truth-sweep-security-plane** | The components index lists Gateway + Vault as "Designed" (both built); service-actors.md says "there is no Gateway", calls transport enforcement pending (it's live), and omits the seeded objmgr actor; gateway.md cites nonexistent Contract-2 §2.34/§2.39 and overstates the ops-publish matrix; service-location CONCEPT.md keeps the dropped serviceClass. Flag (not edit) the frozen §6.12/§6.5 drift for Andrew. | ★ | S | 📋 |
+| **weaver-exhausted-escalation-and-model** | The ratified augur block accepts `exhausted` as an escalation trigger and parses `augur.model`, but no engine path fires either — a budget-exhausted gap is silently skipped (no escalation, no Health issue) and model is consumed by nothing. Wire the trigger through augurEscalation (threading model), or strike both from the block. | ★ | S | 📋 |
+| **loom-dispatch-authcontext-target** | Loom sets each step op's `authContext.target` to "vtx.meta."+PatternID — a human-readable name, while the real vertex is `vtx.meta.<NanoID>` — so live externalTask ops carry a dangling target in the forbidden canonicalName shape. Inert under scope-any; breaks when scope-specific auth lands. Carry the real meta key through source+pin; fix pattern.go's false comment. | ★ | S | 📋 |
+| **gate3-vector14-in-gate** | Gate 3's gateway-impersonation vector #14 is backed by a test in internal/gateway that the gate target never runs (it only runs internal/bypass) — the gate can report DEFENDED while that test fails. Add the package to the gate's scope or add an in-package bypass test; refresh the stale vector-count comments. | ★ | S | 📋 |
+| **repo-debris-and-stale-narration** | Remove the five resolved CONTRACT-AMENDMENT-REQUEST.md journals (cmd/{loom,processor,refractor,weaver}, internal/substrate — git is the record) and the pre-cascade comment clusters (objmgr package doc; objects-base OpMetas naming a nonexistent reclaim pattern; loom doc.go); decide internal/spike disposition; fix the objmgr Makefile launch missing BOOTSTRAP_JSON_PATH. | ★ | S | 📋 |
+| **contract10-async-deadline-reconcile** | Contract #10's async paragraph says the Loom step deadline is per-adapter-sized and backstops a dead bridge, but its own §10.6 + the code disarm that deadline at instanceOp commit (FailPattern is the out-of-band close; the bridge waits unbounded). Stage a reconciling edit; note the single global CallDeadline as deferred-with-real-adapters. | ★ | XS | 📋 |
 
 ## Lattice feature backlog — the Phase-3 build queue
 
@@ -82,18 +113,12 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 **forks** (Gateway, read-path auth, Vault, multi-cell, HA-NATS) and **frozen-contract** changes are
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
-> 🎯 **Build-ready now**: **Negative/filter-retraction** (★★ ratified, one fire — now GATES Vault 5b close:
-> a manages-unassign leaves a plaintext-bearing stale row a shred can't scrub, see the vault design 5b-ii
-> checkpoint). Then **Vault Fire 5b** (★★★ — Fires 1–5a + 5b-i + 5b-ii shipped; next 5b-ii-b Rec-C remainder,
-> 5b-iii clinic contact + FE tails; unblocks 3 Verticals rows).
-> (**FR28 role-queue** Fire 1 + Fire 2 done — see Done log; Fire 3 unrouted surfacing next.
-> **protected-lens out-of-band** ✅ SHIPPED — see Done log. **`@every` schedules** ✅ CLOSED — see Done log.)
-> *Dependency-sequenced ratified items*: **Personal Lens** D1 gate cleared → buildable, deprioritized
-> behind Vault; **Object crypto-shred** behind Vault. (**Gateway** Fire 1+2 shipped; Fire 3 (read-front) still
-> behind D1.3; Fire 4 (claim-front) needs re-grounding before it's buildable — see the Gateway row.)
-> (**Control-plane-authz** rides D1.2, now shipped → buildable, deprioritized behind D1 rollout.)
-> **Augur** Fires 1+2a+2b all shipped — the full escalate→review→dispatch loop closes; Fire 3 (autoApply) stays Andrew-gated.
-> (**`kv.Links`** Fire 1 + Fire 2 shipped · ⚠️ Fire-2 build diverged from the ratification banner — see the row; Fire 3 e2e/lint parked pending the clinic slot-claims redesign.)
+> 🎯 **Build-ready now**: **Negative/filter-retraction** (★★ ratified, one fire — GATES Vault 5b close: a
+> manages-unassign leaves a plaintext-bearing stale row a shred can't scrub; see the vault design 5b-ii
+> checkpoint). Then **Vault Fire 5b** (★★★ — next 5b-ii-b Rec-C remainder, 5b-iii clinic contact + FE tails;
+> unblocks 3 Verticals rows). *Dependency-sequenced ratified items*: **Personal Lens** (buildable,
+> deprioritized behind Vault) · **Object crypto-shred** (behind Vault). Current fire/park state for
+> Gateway · FR28 · Augur · Control-plane-authz · `kv.Links` lives on their rows below.
 
 ### Security & trust boundary
 | Item | What it is | Imp | Size | State |
@@ -159,7 +184,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | **FR28 — role-queue + fallback** (+ FR29 unrouted surfacing) | A `queuedFor.role` link + `ClaimTask` op + `CreateTask` routing (named → role-queue → loud `RoutingFailed`); grant/inbox fan out to role-holders; an empty queue is surfaced post-hoc by a new `unroutedTasks` Weaver target. | ★ | M | 🏗️ building · [design](../../implementation-artifacts/fr28-role-queue-fallback-design.md) (`9495081`,`12fc79b`) · next: Fire 3 unrouted surfacing |
 | **Package version upgrade / DDL hot-reload (F-004)** | In-place re-install over an existing version + DDL-migration semantics (install/uninstall existed; upgrade did not). Diff-and-apply (create/update/tombstone) in one atomic Processor batch; version-independent entity keys. | ★★ | M | ✅ effectively done · [design](../../implementation-artifacts/package-version-upgrade-design.md) · Fires 1a–3 shipped; only an optional Fire-2 live e2e remains (§8.1 + §8.6 committed) |
 | **[Verticals] loftspace-app / clinic-app have no Health-KV self-report** | Neither app writes health status at all — an admin-actor load failure (hit live 2026-07-01: on-disk `lattice.bootstrap.json` `version:"13"` vs `checkVersion`'s required `"14"`, committed `40f4d25`) or a NATS outage is invisible to Loupe; only surfaces when a user's `/api/op` write 400s. | ★★ | S | ✅ ratified (2026-07-02, TTL on) · [design](../../implementation-artifacts/vertical-app-health-self-report-design.md) · one fire (+opt objmgr tail) |
-| Loom / Weaver control-API surfacing | Operator pause/resume + a durable `loom.*` read model beyond what the Loupe blocker covers. | ★ | M | ✅ ratified (2026-07-02, Fork C: the Chronicler — new event-ledger materializer component) · [design](../../implementation-artifacts/orchestration-history-read-model-design.md) · fires: component+loom history → weaver history → core-ops archive; display rides Loupe F6 |
+| Loom / Weaver control-API surfacing | Operator pause/resume + a durable `loom.*` read model beyond what the Loupe blocker covers. | ★ | M | ✅ ratified (2026-07-02, Fork C: the Chronicler — new event-ledger materializer component) · [design](../../implementation-artifacts/orchestration-history-read-model-design.md) · fires (chronicler-prebuild-regrounding first): component+loom history → weaver history → core-ops archive; display rides Loupe F6 |
 
 ### Parking lot — very low priority (far, far back)
 
@@ -183,31 +208,5 @@ One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archiv
 - 2026-07-02 · `83b7976` · [Core/privacy] Vault Fire 2 — Processor encrypt-on-write/decrypt-on-read for sensitive aspects; `privacy-base` piiKey DDL
 - 2026-07-02 · `e04498e` · [Weaver/substrate] `@every` recurring schedules CLOSED — Fires 1–3 (§10.4+§4.3 ratified `d778b13`; weaver.md close-out; #49 pruner retired-superseded per #4 §4.3)
 - 2026-07-02 · `da8279f` · [Core/apps] Read-path authorization (D1) CLOSED — D1.1–D1.5 all shipped; Gateway read-front + Personal Lens are beyond-D1 rows (design §7)
-- 2026-07-02 · `51ba38e` · [Gateway] Fire 2 remainder — live JWKS polling (stdlib RFC7517/7518 parser, hot-swap `Verifier.SetKeys`, https-unless-dev gate, fail-safe last-good-on-poll-failure)
-- 2026-07-02 · `00b098d` · [Gateway] Fire 1 — external write-path translator (`POST /v1/operations` JWT strip-and-stamp, `internal/gateway` + `cmd/gateway`, fail-closed dev key gate, `gateway` NATS user, Gate-3 vector #14)
-- 2026-07-02 · `f8e017d` · [CI] Whetstone — `internal/bridge` require.Never proof windows (2-4s) trimmed to their actual 5-6x margin over the 300ms redelivery floor (package 44.5s→27.6s local; unit job 129s→119s in CI)
-- 2026-07-01 · `083b0ad` · [CI/bypass] Gate 2/3 live Health KV marker writers threaded with NATS_NKEY (fix-forward on the write-restriction merge)
-- 2026-07-01 · `1f2f999` · [Core/deploy] NATS write-restriction Fire 2 — live enforcement ON; 4 permission-matrix gaps found+fixed against the real stack
-- 2026-07-01 · `970585f` · [Refractor] Retire-simple-engine Fire 1 — lift `EvalResult`/`NodeEntry` into `ruleengine` (pure relocation, simple keeps a type alias)
-- 2026-07-01 · `4920bc6` · [Augur] Fire 2b — `augurDispatch` closes the loop (approve→dispatch); 3-layer review folded (reconciler backoff pacing + dispatch-time anchor-field pinning)
-- 2026-07-01 · `da8279f` · [loftspace-app] D1.5 — `handleUnitApplications` landlord operator-console unauth read fix (RLS-scoped to `queryLandlordApplications`'s managed-unit set; D1.5 read-model rollout now complete)
-- 2026-07-01 · `6c98748` · [loftspace-app] D1.5 — `handleIdentities` system-wide unauth roster dump fix (new `applicantRosterRead` wildcard-only protected lens; `handleStaffIdentities` replaces it)
-- 2026-07-01 · `40240dd` · [clinic-app] D1.5 — `handlePatients` clinic-wide unauth roster dump fix (new `clinicPatientsRead` wildcard-only protected lens; `handleStaffPatients` replaces it)
-- 2026-07-01 · `9129005` · [CI] Whetstone — `internal/loom` e2e sleeps → deterministic readiness polls (5 files, ~20 sites; package 55s→41s in CI, 3 restart tests de-flake-hardened via `joinEngine`)
-- 2026-07-01 · `b1c2eeb` · [clinic-app] D1.5 — `handleAppointments` provider-availability PHI over-exposure fix (minimal availabilityRow strips patient/visit fields from the unauthenticated slot-picker endpoint)
-- 2026-07-01 · `f509b84` · [loftspace-app/clinic-app] D1.5 — loftspace tasks (JWT-scoped) + clinic visit-series (new `visitSeriesRead` protected lens) read boundaries
-- 2026-07-01 · `9191eed` · [loftspace-app] D1.5 — objects/documents read boundary (unit photos stay public; identity/leaseapp document bytes now authenticateRead+entitled-scoped; closed the unauthenticated document/PII-byte dump)
-- 2026-07-01 · `40f4d25` · [Core/clinic-app] D1.5 — staff wildcard read grant (WildcardAnchor RLS clause + capabilityReadWildcardGrants kernel lens; closed the unauthenticated clinic-wide appointments dump)
-- 2026-07-01 · `17ccd42` · [clinic-app/clinic-domain] D1.5 Increment 2 — provider-self protected schedule read model (RLS-closed the unauthenticated `?provider=` full-schedule leak; staff wildcard audiences flagged follow-up)
-- 2026-07-01 · `c46fbe2` · [clinic-app/clinic-domain] D1.5 — patient-self protected read model (RLS-closed the unauthenticated `?patient=` appointment-history leak; provider/staff audiences flagged follow-up)
-- 2026-07-01 · `ac43891` · [CI/hellolattice] NFR-P3 flake resolved — CI projection deadlines re-scoped to a 1000ms regression guard (runner-floor headroom); reported SLA unchanged (Andrew-ratified)
-- 2026-07-01 · `10bd188` · [loftspace-app/lease-signing] D1.5 — RLS-protect the lease-document GET (closed an unauthenticated PII read of weaver-targets)
-- 2026-07-01 · `12fc79b` · [Core/orchestration-base] FR28 Fire 2 — availability-gated routing (`SetAvailability` op + `availability` aspect; `CreateTask` falls back to queue when the assignee is unavailable)
-- 2026-07-01 · `4712c46` · [Core/rbac-domain+identity-hygiene] Contract #10 §10.1 no-orphan tombstone guard — `TombstoneRole`/`MergeIdentity` reject a live queuedFor/assignedTo open task (found in FR28 Fire 1 adversarial review)
-- 2026-06-30 · `9495081` · [Core/orchestration-base] FR28 Fire 1 — role-queue + claim (`queuedFor` link, `CreateTask` assignee-or-queue routing, `ClaimTask`, capabilityEphemeral/myTasks role fan-out)
-- 2026-07-01 · `ef108b4` · [Refractor] Protected-lens out-of-band provisioning + verify-and-pause — Fire 0+1+2 (fail-closed activation gate, `Verify{Protected,Grant}Table`, `emit-ddl`/`provision-readpath`, seq-guard)
-- 2026-06-30 · `e04498e` · [Weaver] `@every` Fire 2 — reconciler sweep cron-kill (durable `@every` replaces the in-process ticker)
-- 2026-06-30 · `44b385a` · [Core/substrate] `@every` Fire 1 — `ScheduleEvery`/`CancelSchedule` recurring-schedule primitive
-- 2026-06-29 · `d6530e9` · [Core/processor+rbac] Lane authorization enforcement (§2.3) — step-3 lane gate + `LaneUnauthorized` + Gate-3 vector #8
-- 2026-06-30 · `0cd2695` · [lint/Core] instanceOf P7 lint gate (whole instanceOf design done)
+- 2026-07-02 · `51ba38e` + `00b098d` · [Gateway] Fires 1+2 — external write-path translator + live JWKS polling
 - *(older entries rolled to [archive/lattice-done.md](archive/lattice-done.md))*
