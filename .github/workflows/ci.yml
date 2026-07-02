@@ -105,7 +105,13 @@ jobs:
       - name: Run Gate 2 bypass suite (Phase 1 Gate 2)
         # Runs the 4-category bypass suite; exits non-zero if any category
         # is not BLOCKED. Writes gate2-report.txt + Health KV marker.
-        # Stack is already up from the bootstrap step above.
+        # Stack is already up from the bootstrap step above. NATS_NKEY is only
+        # used by TestGate2_Report's best-effort live Health KV marker write
+        # (the per-category tests below it use their own embedded anonymous
+        # NATS server, unaffected by the auth-enabled dev stack) — an absolute
+        # path since go test's cwd is the package dir, not the repo root.
+        env:
+          NATS_NKEY: ${{ github.workspace }}/deploy/nkeys/lattice.nk
         run: go test ./internal/bypass/... -v -run "TestBypass|TestGate2" -count=1
 
       - name: Run Capability Lens adversarial test suite (Gate 3)
@@ -114,8 +120,11 @@ jobs:
         # Health KV marker. Placed after Gate 2 so both gates run in series per
         # brief Decision #8. POSTGRES_TEST_DSN points the read-path RLS vectors
         # at the Docker stack's Postgres (already up from the bootstrap step).
+        # NATS_NKEY is only used by TestGate3_Report's live Health KV marker
+        # write (TestCapAdv_* are embedded/anonymous, unaffected).
         env:
           POSTGRES_TEST_DSN: postgres://lattice:lattice_dev@localhost:5432/lattice?sslmode=disable
+          NATS_NKEY: ${{ github.workspace }}/deploy/nkeys/lattice.nk
         run: |
           go test ./internal/bypass/... -v -run TestCapAdv -count=1
           go test ./internal/bypass/... -v -run TestGate3_Report -count=1

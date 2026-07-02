@@ -155,8 +155,10 @@ func writeGate2HealthMarker(t *testing.T, timestamp, commit string) {
 	defer cancel()
 
 	conn, err := substrate.Connect(ctx, substrate.ConnectOpts{
-		URL:  natsURL,
-		Name: "bypass-gate2-marker",
+		URL:          natsURL,
+		Name:         "bypass-gate2-marker",
+		NKeySeedFile: os.Getenv("NATS_NKEY"),
+		CredsFile:    os.Getenv("NATS_CREDS"),
 	})
 	if err != nil {
 		t.Logf("WARNING: Gate 2 Health KV marker: could not connect to NATS at %s: %v", natsURL, err)

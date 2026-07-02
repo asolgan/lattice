@@ -577,7 +577,7 @@ test-bypass:
 	@$(MAKE) down
 	@$(MAKE) up
 	@$(MAKE) verify-kernel
-	go test ./internal/bypass/... -v -count=1
+	NATS_NKEY=$(NKEY_LATTICE_CLI) go test ./internal/bypass/... -v -count=1
 
 ## test-capability-adversarial — Run the Phase 1 Gate 3 Capability Lens
 ## adversarial test suite. Requires a running Docker stack (make up). Exits 0
@@ -592,7 +592,7 @@ test-capability-adversarial:
 	@$(MAKE) up
 	@$(MAKE) verify-kernel
 	POSTGRES_TEST_DSN=$(POSTGRES_URL) go test ./internal/bypass/... -v -run TestCapAdv -count=1
-	go test ./internal/bypass/... -v -run TestGate3_Report -count=1
+	NATS_NKEY=$(NKEY_LATTICE_CLI) go test ./internal/bypass/... -v -run TestGate3_Report -count=1
 
 ## test-hello-lattice — Run the Phase 1 Gate 5 Hello Lattice integration test suite.
 ## Requires a running Docker stack (make up) with Refractor live.
