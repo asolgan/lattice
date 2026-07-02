@@ -36,6 +36,7 @@ import (
 	loftspaceledger "github.com/asolgan/lattice/packages/loftspace-ledger"
 	objectsbase "github.com/asolgan/lattice/packages/objects-base"
 	orchestrationbase "github.com/asolgan/lattice/packages/orchestration-base"
+	privacybase "github.com/asolgan/lattice/packages/privacy-base"
 	rbacdomain "github.com/asolgan/lattice/packages/rbac-domain"
 	servicedomain "github.com/asolgan/lattice/packages/service-domain"
 	servicelocation "github.com/asolgan/lattice/packages/service-location"
@@ -65,6 +66,7 @@ var packageRegistry = map[string]pkgmgr.Definition{
 	"loftspace-ledger":   loftspaceledger.Package,
 	"objects-base":       objectsbase.Package,
 	"augur":              augur.Package,
+	"privacy-base":       privacybase.Package,
 }
 
 func main() {

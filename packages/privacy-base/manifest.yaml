@@ -1,0 +1,17 @@
+name: privacy-base
+version: 0.1.0
+description: |
+  Per-identity PII key-custody envelope (piiKey) backing crypto-shred
+  (vault-crypto-shredding-design.md §2.1/§2.2). ShredIdentityKey marks the
+  envelope shredded=true and emits privacy.keyShredded, consumed by the
+  privacy-worker's async Vault.ShredKey destruction. No dependencies — the
+  DDL attaches to identity vertices by Contract #1 key-shape convention, not
+  an install-order coupling with identity-domain.
+declares:
+  ddls:
+    - canonicalName: piiKey
+      class: meta.ddl.aspectType
+    - canonicalName: shredIdentityKey
+      class: meta.ddl.vertexType
+    - canonicalName: privacy.keyShredded
+      class: meta.ddl.eventType
