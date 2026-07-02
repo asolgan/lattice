@@ -12,9 +12,10 @@ import (
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
-// Compile-time check that NatsKVAdapter satisfies Adapter and Truncater.
+// Compile-time check that NatsKVAdapter satisfies Adapter, Truncater and KeyLister.
 var _ Adapter = (*NatsKVAdapter)(nil)
 var _ Truncater = (*NatsKVAdapter)(nil)
+var _ KeyLister = (*NatsKVAdapter)(nil)
 
 // guardCASMaxAttempts caps the conditional-write retry loop a guarded adapter
 // runs when a concurrent writer (the retry-queue goroutine) collides on the
@@ -272,6 +273,49 @@ func storedProjectionSeq(data []byte) (uint64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// ListKeys returns every live key in the bucket, split back into its
+// keyOrder field-name map (the inverse of buildKey). A single-field keyOrder
+// (the common `IntoKey: ["key"]` capability-envelope shape) maps the whole
+// key string verbatim — a Lattice key is itself "."-segmented
+// (cap.identity.<id>), so splitting would misparse it. A composite keyOrder
+// (2+ fields, e.g. app_id+landlord_id) splits on "." and requires the
+// segment count to match exactly — safe because the platform's NanoID
+// alphabet carries no dots, so no individual composite field value can
+// introduce a spurious segment; a key that doesn't match is skipped (it
+// belongs to a different lens sharing the bucket, or predates a keyOrder
+// change) rather than surfacing a malformed partial map.
+// A soft-delete-mode bucket's tombstone documents remain live NATS-KV keys
+// (unlike a hard delete) and so are still listed here — acceptable because
+// no live DiffRetraction lens targets a soft-delete NATS-KV bucket today.
+func (a *NatsKVAdapter) ListKeys(ctx context.Context) ([]map[string]any, error) {
+	keys, err := a.kv.ListKeys(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("natskv list keys: %w", err)
+	}
+	out := make([]map[string]any, 0, len(keys))
+	if len(a.keyOrder) == 1 {
+		field := a.keyOrder[0]
+		for _, k := range keys {
+			out = append(out, map[string]any{field: k})
+		}
+		return out, nil
+	}
+	for _, k := range keys {
+		parts := strings.Split(k, ".")
+		if len(parts) != len(a.keyOrder) {
+			slog.Warn("natskv list keys: skipping key with unexpected segment count",
+				"key", k, "wantSegments", len(a.keyOrder), "gotSegments", len(parts))
+			continue
+		}
+		m := make(map[string]any, len(parts))
+		for i, field := range a.keyOrder {
+			m[field] = parts[i]
+		}
+		out = append(out, m)
+	}
+	return out, nil
 }
 
 // Truncate clears the bucket by purging every key, so a rebuild's stream replay

@@ -171,6 +171,12 @@ type TargetPostgresConfig struct {
 	// projected value is PLAINTEXT PII, a secure lens MUST be a protected
 	// (RLS) model — translateSpec fails any other posture closed.
 	SecureColumns []SecureColumn `json:"secureColumns,omitempty"`
+
+	// DiffRetraction opts this plain postgres lens into Fire 3's target-diff
+	// retraction (see lens.IntoConfig.DiffRetraction). Postgres only — this
+	// mechanism reads the adapter's live key set (adapter.KeyLister), which the
+	// NATS-KV adapter also implements, but no live lens needs it there.
+	DiffRetraction bool `json:"diffRetraction,omitempty"`
 }
 
 // PostgresColumn declares one provisioned column of a protected read-model
@@ -525,6 +531,7 @@ func translateSpec(spec *LensSpec) (*Rule, error) {
 			Columns:         cols,
 			ArrayColumns:    arrayCols,
 			SecureColumns:   cfg.SecureColumns,
+			DiffRetraction:  cfg.DiffRetraction,
 		}
 	case "nats_kv":
 		var cfg TargetNATSKVConfig

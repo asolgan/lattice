@@ -356,6 +356,45 @@ func TestNatsKVAdapter_Unguarded_IgnoresProjectionSeq(t *testing.T) {
 // force-truncate correctness depends on: after Truncate purges a key, a
 // subsequent Get returns ErrKeyNotFound (so a guarded rebuild takes the
 // absent→Create path and never reads a stale watermark).
+func TestNatsKVAdapter_ListKeys_CompositeKey(t *testing.T) {
+	kv := startKV(t)
+	a := newAdapter(t, kv, []string{"app_id", "landlord_id"})
+	ctx := context.Background()
+
+	require.NoError(t, a.Upsert(ctx, map[string]any{"app_id": "appA", "landlord_id": "lordX"}, map[string]any{"v": 1}, 0))
+	require.NoError(t, a.Upsert(ctx, map[string]any{"app_id": "appB", "landlord_id": "lordY"}, map[string]any{"v": 2}, 0))
+
+	got, err := a.ListKeys(ctx)
+	require.NoError(t, err)
+	want := []map[string]any{
+		{"app_id": "appA", "landlord_id": "lordX"},
+		{"app_id": "appB", "landlord_id": "lordY"},
+	}
+	assert.ElementsMatch(t, want, got)
+}
+
+func TestNatsKVAdapter_ListKeys_ExcludesHardDeleted(t *testing.T) {
+	kv := startKV(t)
+	a := newAdapter(t, kv, []string{"key"})
+	ctx := context.Background()
+
+	require.NoError(t, a.Upsert(ctx, map[string]any{"key": "cap.identity.A"}, map[string]any{"v": 1}, 0))
+	require.NoError(t, a.Upsert(ctx, map[string]any{"key": "cap.identity.B"}, map[string]any{"v": 2}, 0))
+	require.NoError(t, a.Delete(ctx, map[string]any{"key": "cap.identity.A"}, 0))
+
+	got, err := a.ListKeys(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []map[string]any{{"key": "cap.identity.B"}}, got)
+}
+
+func TestNatsKVAdapter_ListKeys_EmptyBucket(t *testing.T) {
+	kv := startKV(t)
+	a := newAdapter(t, kv, []string{"key"})
+	got, err := a.ListKeys(context.Background())
+	require.NoError(t, err)
+	assert.Empty(t, got)
+}
+
 func TestNatsKVAdapter_Truncate_GetReturnsKeyNotFound(t *testing.T) {
 	kv := startKV(t)
 	a := guardedAdapter(t, kv, []string{"key"})

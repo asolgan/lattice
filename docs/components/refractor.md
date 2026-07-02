@@ -280,12 +280,29 @@ candidate unconditionally, so the presence check never fires for them — an aut
 invariant (a future convergence lens with a filtering `WHERE` would retract rows
 Weaver misreads as deletions; keep convergence predicates in the `violating` flag).
 
-**Residual (deferred by design — "Fire 3" of the negative/filter-retraction design):**
-a **neighbor-driven** drop (the anchor stops matching because a *different* vertex
-changed, on a neighbor-keyed/multi-row lens — e.g. a `manages` unassign dropping a
-landlord's application rows) still lingers; retracting it needs a **target-read diff**
-(`ListKeysForAnchor` adapter seam + set-difference Deletes), tracked on the Phase-3
-backlog with the Vault 5b manages-unassign case as its live consumer.
+**Neighbor-driven / multi-row retraction (target-diff, opt-in).** A neighbor-keyed
+composite lens whose presence check structurally falls through (above) can opt into
+`DiffRetraction` (a lens-definition flag, `pkgmgr.LensSpec.DiffRetraction` →
+`lens.IntoConfig.DiffRetraction` → `pipeline.SetDiffRetraction`, threaded like every
+other per-lens component — never canonical-name-keyed): when the presence check's
+`ok` comes back false, the pipeline instead reads the target's **full live key set**
+via `adapter.KeyLister.ListKeys` and diffs it against the re-execute's **full**
+freshly-computed row set, emitting a Delete for every key the target still carries but
+the fresh computation no longer produces. This is exact — not an approximation scoped
+to whichever vertex happened to trigger the event — because a `DiffRetraction` lens's
+query is **unanchored** (no `{key: $actorKey}` anywhere): the re-execute already
+recomputes the complete current truth on every trigger regardless of which vertex fired
+it, so comparing full-target-state to full-fresh-state is correct by construction, and
+sidesteps the ambiguity a per-vertex-scoped diff would hit (an `identity` endpoint can be
+either the applicant or the managing landlord role in `read_landlord_lease_applications`,
+with no single stable id to scope a prefix-list by).
+`(*full.CompiledRule).ValidateUnanchoredForDiffRetraction` is the activation-time
+backstop: a lens that references `$actorKey` anywhere fails to activate rather than
+mass-retracting every other live anchor's rows on its first event — the diff's
+soundness rests entirely on that invariant. `read_landlord_lease_applications`
+(`(app_id, landlord_id)`, D1.3 Increment 2, Vault 5b's manages-unassign consumer) is the
+first and, as of this writing, only live `DiffRetraction` lens; a convergence
+(`violating`-flag) lens never opts in, so its never-retract contract is untouched.
 
 ### Property model (how lens cypher reads a node)
 

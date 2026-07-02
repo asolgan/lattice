@@ -484,6 +484,84 @@ func TestBuildDeleteSQL_CompositeKey_Soft(t *testing.T) {
 	assert.Equal(t, []any{"t1", "abc"}, args)
 }
 
+// ── buildListKeysSQL / ListKeys unit tests (no real Postgres needed) ────────
+
+func TestBuildListKeysSQL_SingleKey_Hard(t *testing.T) {
+	a := newTestAdapterMode(t, "occupancy_view", []string{"agreement_id"}, DeleteModeHard)
+	assert.Equal(t, `SELECT "agreement_id" FROM "occupancy_view"`, a.buildListKeysSQL())
+}
+
+func TestBuildListKeysSQL_CompositeKey_Hard(t *testing.T) {
+	a := newTestAdapterMode(t, "read_landlord_lease_applications", []string{"app_id", "landlord_id"}, DeleteModeHard)
+	assert.Equal(t,
+		`SELECT "app_id", "landlord_id" FROM "read_landlord_lease_applications"`,
+		a.buildListKeysSQL(),
+	)
+}
+
+func TestBuildListKeysSQL_Soft_ExcludesDeleted(t *testing.T) {
+	a := newTestAdapterMode(t, "occupancy_view", []string{"agreement_id"}, DeleteModeSoft)
+	assert.Equal(t,
+		`SELECT "agreement_id" FROM "occupancy_view" WHERE NOT "is_deleted"`,
+		a.buildListKeysSQL(),
+	)
+}
+
+func TestPostgresAdapter_ListKeys_CompositeKey_Integration(t *testing.T) {
+	dsn := skipIfNoPostgres(t)
+
+	pool, err := pgxpool.New(context.Background(), dsn)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	ctx := context.Background()
+	_, err = pool.Exec(ctx, `CREATE TEMP TABLE listkeys_composite (app_id TEXT, landlord_id TEXT, name TEXT, PRIMARY KEY (app_id, landlord_id))`)
+	require.NoError(t, err)
+
+	a, err := NewPostgresAdapter(pool, "listkeys_composite", []string{"app_id", "landlord_id"}, 5*time.Second, DeleteModeHard)
+	require.NoError(t, err)
+
+	require.NoError(t, a.Upsert(ctx, map[string]any{"app_id": "app1", "landlord_id": "lord1"}, map[string]any{"name": "A"}, 0))
+	require.NoError(t, a.Upsert(ctx, map[string]any{"app_id": "app2", "landlord_id": "lord2"}, map[string]any{"name": "B"}, 0))
+
+	got, err := a.ListKeys(ctx)
+	require.NoError(t, err)
+	want := []map[string]any{
+		{"app_id": "app1", "landlord_id": "lord1"},
+		{"app_id": "app2", "landlord_id": "lord2"},
+	}
+	assert.ElementsMatch(t, want, got)
+
+	// Deleting one row must drop it from ListKeys.
+	require.NoError(t, a.Delete(ctx, map[string]any{"app_id": "app1", "landlord_id": "lord1"}, 0))
+	got, err = a.ListKeys(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []map[string]any{{"app_id": "app2", "landlord_id": "lord2"}}, got)
+}
+
+func TestPostgresAdapter_ListKeys_Soft_ExcludesDeleted_Integration(t *testing.T) {
+	dsn := skipIfNoPostgres(t)
+
+	pool, err := pgxpool.New(context.Background(), dsn)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	ctx := context.Background()
+	_, err = pool.Exec(ctx, `CREATE TEMP TABLE listkeys_soft (id TEXT PRIMARY KEY, name TEXT, is_deleted BOOLEAN NOT NULL DEFAULT false, deleted_at TIMESTAMPTZ)`)
+	require.NoError(t, err)
+
+	a, err := NewPostgresAdapter(pool, "listkeys_soft", []string{"id"}, 5*time.Second, DeleteModeSoft)
+	require.NoError(t, err)
+
+	require.NoError(t, a.Upsert(ctx, map[string]any{"id": "keep"}, map[string]any{"name": "K"}, 0))
+	require.NoError(t, a.Upsert(ctx, map[string]any{"id": "gone"}, map[string]any{"name": "G"}, 0))
+	require.NoError(t, a.Delete(ctx, map[string]any{"id": "gone"}, 0))
+
+	got, err := a.ListKeys(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, []map[string]any{{"id": "keep"}}, got)
+}
+
 func TestBuildDeleteSQL_MissingKeyField(t *testing.T) {
 	a := newTestAdapter(t, "t", []string{"id", "tenant"})
 

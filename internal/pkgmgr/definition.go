@@ -461,6 +461,17 @@ type LensSpec struct {
 	// (decrypted PII may only land behind RLS) — Refractor fails any other
 	// posture closed at activation.
 	SecureColumns []SecureColumn
+
+	// DiffRetraction opts a plain (non-actorAggregate) postgres lens into
+	// Refractor's Fire 3 target-diff retraction
+	// (negative-filter-retraction-projection-design.md §2.4): for a lens whose
+	// output key cannot be derived read-free from its own anchor (a composite
+	// key with a column bound to a non-anchor variable — e.g. a landlord_id
+	// resolved by walking a `manages` link off the matched unit, not the
+	// lens's leaseapp anchor), Refractor diffs the target's live key set
+	// against each re-execute instead of relying on the anchor-self presence
+	// check, which structurally cannot reach this shape. Postgres only.
+	DiffRetraction bool
 }
 
 // PostgresColumn declares one provisioned column of a Protected read-model

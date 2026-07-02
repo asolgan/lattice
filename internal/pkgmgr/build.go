@@ -311,6 +311,9 @@ func lensSpecBody(lensID string, l LensSpec) map[string]any {
 		if l.GrantTable {
 			targetConfig["grantTable"] = true
 		}
+		if l.DiffRetraction {
+			targetConfig["diffRetraction"] = true
+		}
 		if len(l.Columns) > 0 {
 			cols := make([]map[string]any, len(l.Columns))
 			for i, c := range l.Columns {

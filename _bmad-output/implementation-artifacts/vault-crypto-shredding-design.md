@@ -704,11 +704,25 @@ Remaining Rec-C bundle (readiness clone via a shared cypher fragment + console r
 decisioning) is the next slice — note the readiness clone needs WITH-aggregation while carrying envelope
 columns through grouping, an unverified engine behavior to spike first (and note a WITH-bearing lens is
 excluded from anchor-self retraction by design — its stale-row posture needs stating at design time).
+**Fire 3 CHECKPOINT (2026-07-02, Lattice Steward).** Retraction Fire 3 (target-diff) shipped —
+`landlordLeaseApplicationsRead` now retracts the manages-unassign row: `DiffRetraction`
+(lens-definition opt-in) + `adapter.KeyLister.ListKeys` (full live-key read) +
+`(*full.CompiledRule).ValidateUnanchoredForDiffRetraction` (activation-time backstop —
+fails closed rather than mass-retracting if a future lens misuses this on an
+`$actorKey`-scoped query). The build realized the design's target-diff *intent* with a
+**lens-wide** diff rather than the sketched per-anchor `ListKeysForAnchor` scoping: since
+`landlordLeaseApplicationsRead`'s cypher is genuinely unanchored (no `{key: $actorKey}`
+anywhere), the re-execute already recomputes the complete global truth on every trigger,
+so a full-target-vs-full-fresh diff is exact — an anchor-scoped variant would have been
+ambiguous anyway (the `identity` endpoint is either the applicant or the managing
+landlord role, with no single stable id to scope by). See `docs/components/refractor.md`
+"Neighbor-driven / multi-row retraction" for the shipped behavior. **5b-close's Fire-3
+gate is now CLEARED.**
 Worktree: `/Users/andrewsolgan/Documents/GitHub/lattice-wt-vault-5b-ii` (branch `steward-vault-5b-ii`,
-merged through `a710c7a`). Next: **retraction Fire 3 (target-diff — the 5b-close gate)**, then
-**5b-ii-b** (Rec-C remainder), then 5b-iii clinic contact; extend `make test-crypto-shred` to drive the
-REAL `landlordLeaseApplicationsReadSpec` through shred-scrub (the composition is currently proven in
-halves); delivery-boundary reset + live e2e close 5b.
+merged through `a710c7a`). Next: **5b-ii-b** (Rec-C remainder), then 5b-iii clinic contact;
+extend `make test-crypto-shred` to drive the REAL `landlordLeaseApplicationsReadSpec` through
+shred-scrub (the composition is currently proven in halves); delivery-boundary reset + live
+e2e close 5b.
 
 **Considered and REJECTED — pre-Vault plaintext contact projection** into `clinicPatientsRead`
 (technically buildable, no test fails, outside M4's *letter* since `.demographics` cannot be

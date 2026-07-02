@@ -80,6 +80,9 @@ func (def Definition) validateLensReadPath() error {
 		if l.Protected && l.GrantTable {
 			return fmt.Errorf("pkgmgr: Lens[%d] %q: a GrantTable lens is not a protected business model — set neither Protected nor Public (Contract #6 §6.14)", idx, l.CanonicalName)
 		}
+		if l.DiffRetraction && l.Adapter != "postgres" {
+			return fmt.Errorf("pkgmgr: Lens[%d] %q: DiffRetraction is postgres-only — Refractor's translateSpec never threads it onto a nats-kv targetConfig, so it would silently no-op", idx, l.CanonicalName)
+		}
 		if len(l.SecureColumns) > 0 {
 			// Mirror Refractor's validateSecureColumns (Contract #3 §3.10) so a
 			// Secure Lens that could never activate is rejected at install time.

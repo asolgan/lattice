@@ -28,3 +28,16 @@ type Adapter interface {
 type Truncater interface {
 	Truncate(ctx context.Context) error
 }
+
+// KeyLister is an optional interface for adapters that support enumerating
+// every key currently live in the target, each rendered as the same
+// field-name-to-value map shape Upsert/Delete accept as `keys`. Implemented
+// by adapters backing a DiffRetraction-enabled lens (the neighbor-driven /
+// multi-row filter-retraction gap Fire 2's anchor-self presence check
+// structurally cannot reach — a composite key with a column bound to a
+// non-anchor variable, e.g. a `manages`-walked landlord_id): the pipeline
+// diffs this list against a fresh re-projection's key set to derive Deletes
+// for rows no single CDC event names directly.
+type KeyLister interface {
+	ListKeys(ctx context.Context) ([]map[string]any, error)
+}

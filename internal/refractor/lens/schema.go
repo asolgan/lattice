@@ -84,6 +84,16 @@ type IntoConfig struct {
 	// decrypt-at-projection columns, validated protected-postgres-only by
 	// translateSpec. Not from YAML.
 	SecureColumns []SecureColumn `yaml:"-"`
+
+	// DiffRetraction opts a plain (non-actor-aware) postgres lens into Fire 3's
+	// neighbor-driven / multi-row target-diff retraction
+	// (negative-filter-retraction-projection-design.md §2.4) — for a lens whose
+	// output key is not derivable read-free from its own anchor (a composite
+	// key with a column bound to a non-anchor variable), the pipeline diffs the
+	// target's live key set against each re-execute instead of relying on the
+	// anchor-self presence check (which structurally cannot reach this shape).
+	// Populated from the LensSpec targetConfig by translateSpec; not from YAML.
+	DiffRetraction bool `yaml:"-"`
 }
 
 // RetryConfig describes retry behaviour for transient write failures.

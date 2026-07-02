@@ -11,9 +11,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Compile-time check that PostgresAdapter satisfies Adapter and Truncater.
+// Compile-time check that PostgresAdapter satisfies Adapter, Truncater and KeyLister.
 var _ Adapter = (*PostgresAdapter)(nil)
 var _ Truncater = (*PostgresAdapter)(nil)
+var _ KeyLister = (*PostgresAdapter)(nil)
 
 // PostgresAdapter writes materialized rows to a Postgres table.
 // It uses a shared pgxpool.Pool (owned by PoolManager) so connection count
@@ -274,6 +275,59 @@ func (a *PostgresAdapter) Upsert(ctx context.Context, keys map[string]any, row m
 
 	_, err = a.pool.Exec(ctx, sqlStr, args...)
 	return err
+}
+
+// buildListKeysSQL constructs the key-only SELECT for ListKeys: the key
+// columns in a.keyOrder order, filtered to live rows only in soft-delete
+// mode (a soft tombstone is an UPDATE, not a row removal, so it must be
+// excluded from the "currently live" set the diff compares against).
+func (a *PostgresAdapter) buildListKeysSQL() string {
+	quotedKeyCols := make([]string, len(a.keyOrder))
+	for i, k := range a.keyOrder {
+		quotedKeyCols[i] = quoteIdent(k)
+	}
+	sqlStr := fmt.Sprintf(`SELECT %s FROM "%s"`, strings.Join(quotedKeyCols, ", "), a.table)
+	if a.deleteMode == DeleteModeSoft {
+		sqlStr += ` WHERE NOT "is_deleted"`
+	}
+	return sqlStr
+}
+
+// ListKeys returns every live row's key fields (a.keyOrder), one map per row.
+// Used by the pipeline's Fire-3 diff retraction (DiffRetraction) to derive
+// Deletes for rows a fresh re-projection no longer produces but no single CDC
+// event names directly — the neighbor-driven / multi-row gap Fire 2's
+// anchor-self presence check cannot reach.
+func (a *PostgresAdapter) ListKeys(ctx context.Context) ([]map[string]any, error) {
+	ctx, cancel := a.withTimeout(ctx)
+	defer cancel()
+
+	rows, err := a.pool.Query(ctx, a.buildListKeysSQL())
+	if err != nil {
+		return nil, fmt.Errorf("postgres list keys: %w", err)
+	}
+	defer rows.Close()
+
+	var out []map[string]any
+	for rows.Next() {
+		vals := make([]any, len(a.keyOrder))
+		ptrs := make([]any, len(vals))
+		for i := range vals {
+			ptrs[i] = &vals[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, fmt.Errorf("postgres list keys: scan: %w", err)
+		}
+		m := make(map[string]any, len(a.keyOrder))
+		for i, k := range a.keyOrder {
+			m[k] = vals[i]
+		}
+		out = append(out, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("postgres list keys: %w", err)
+	}
+	return out, nil
 }
 
 // buildTruncateSQL constructs the truncate statement. The target table name is

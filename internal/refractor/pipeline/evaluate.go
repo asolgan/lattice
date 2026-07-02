@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asolgan/lattice/internal/refractor/adapter"
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
 	"github.com/asolgan/lattice/internal/refractor/failure"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
@@ -163,6 +164,16 @@ func (p *Pipeline) evaluateForEntryRaw(ctx context.Context, entry ruleengine.Nod
 				p.fullCR, entry.CoreKVKey, entry.NodeLabel, entry.Properties); ok &&
 				!resultsContainKeys(results, keys) {
 				results = append(results, ruleengine.EvalResult{Delete: true, Keys: keys})
+			} else if !ok && p.diffRetraction {
+				// Fire 3 (build-deferred in the design until a real consumer
+				// arrived): AnchorProjectionKey could not derive a single
+				// anchor-keyed row, so this lens's own opt-in target-diff picks
+				// up what Fire 2 structurally cannot reach.
+				var derr error
+				results, derr = p.applyDiffRetraction(ctx, results)
+				if derr != nil {
+					return nil, derr
+				}
 			}
 		}
 		return results, nil
@@ -537,6 +548,48 @@ func resultsContainKeys(results []ruleengine.EvalResult, keys map[string]any) bo
 		}
 	}
 	return false
+}
+
+// applyDiffRetraction closes the neighbor-driven / multi-row retraction gap
+// Fire 2's anchor-self presence check cannot reach by construction (a
+// composite output key with a column bound to a non-anchor variable, so
+// AnchorProjectionKey returns ok=false for every event on the lens, not just
+// some). It reads the target's full live key set via adapter.KeyLister,
+// diffs it against this re-execute's freshly-derived row set, and appends a
+// Delete for every key the target still carries but the fresh computation no
+// longer produces.
+//
+// Correctness rests on the lens itself being a genuinely unanchored
+// whole-scan (no `{key: $actorKey}` seed anywhere in its MATCH clauses, the
+// shape every live diffRetraction-opted-in lens has): because the query
+// re-derives the COMPLETE current truth on every re-execute regardless of
+// which vertex seeded it, comparing that complete truth against the target's
+// complete existing key set is exact — not an approximation scoped to
+// "whichever vertex happened to trigger this event," which would risk
+// misattributing an identity vertex's role (e.g. applicant vs. managing
+// landlord) and deriving the wrong scope. Only called when p.diffRetraction
+// is set (SetDiffRetraction) — a convergence (`violating`-flag) lens never
+// opts in, so its deliberate never-retract contract is untouched.
+//
+// An adapter that doesn't implement KeyLister is a configuration defect (a
+// lens opted into DiffRetraction against an adapter that can't list keys);
+// results pass through unchanged rather than failing the whole projection.
+func (p *Pipeline) applyDiffRetraction(ctx context.Context, results []ruleengine.EvalResult) ([]ruleengine.EvalResult, error) {
+	lister, ok := p.currentAdapter().(adapter.KeyLister)
+	if !ok {
+		return results, nil
+	}
+	existing, err := lister.ListKeys(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("pipeline: diff retraction: list keys: %w", err)
+	}
+	for _, exKeys := range existing {
+		if resultsContainKeys(results, exKeys) {
+			continue
+		}
+		results = append(results, ruleengine.EvalResult{Delete: true, Keys: exKeys})
+	}
+	return results, nil
 }
 
 // fetchVertexProps point-reads a vertex from Core KV and returns its

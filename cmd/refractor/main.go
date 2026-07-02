@@ -410,6 +410,30 @@ func main() {
 			p.UseFullEngine(fullEngine, r.CompiledRule)
 		}
 
+		// Fire 3 (negative-filter-retraction-projection-design.md §2.4): a plain
+		// lens whose composite output key isn't derivable read-free from its own
+		// anchor opts into target-diff retraction via the lens-definition flag —
+		// data-driven, not canonical-name-keyed, same as every other per-lens
+		// component below. Fail closed if the query isn't genuinely unanchored:
+		// the diff compares the target's FULL live key set against the
+		// re-execute's FULL freshly-computed row set, which is only exact when
+		// that row set is already the complete global truth — an
+		// $actorKey-scoped query would instead retract every OTHER live
+		// anchor's rows on its first event.
+		if r.Into.DiffRetraction {
+			cr, ok := r.CompiledRule.(*full.CompiledRule)
+			if !ok {
+				logger.Error("diff retraction requires the full engine", "lensId", r.ID)
+				return
+			}
+			if err := cr.ValidateUnanchoredForDiffRetraction(); err != nil {
+				logger.Error("diff retraction validation", "lensId", r.ID, "err", err)
+				return
+			}
+			p.SetDiffRetraction(true)
+			logger.Info("diff retraction installed", "lensId", r.ID)
+		}
+
 		// Install the per-lens projection components via data-driven paths keyed
 		// off lens-definition aspects — never off the canonical name. An
 		// actor-aggregate lens (projectionKind: actorAggregate) is driven by the

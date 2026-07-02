@@ -195,14 +195,20 @@ func Lenses() []pkgmgr.LensSpec {
 			// already-projected plaintext row scrubs to null even though the
 			// identity is not this lens's anchor (pinned by
 			// TestSecureLens_NeighborShredReprojectsAnchoredRows).
-			CanonicalName: "landlordLeaseApplicationsRead",
-			Class:         "meta.lens",
-			Adapter:       "postgres",
-			Table:         "read_landlord_lease_applications",
-			Engine:        "full",
-			Spec:          landlordLeaseApplicationsReadSpec,
-			Protected:     true,
-			IntoKey:       []string{"app_id", "landlord_id"},
+			// DiffRetraction (Fire 3): landlord_id is resolved by walking the
+			// `manages` link off the matched unit, not off the leaseapp anchor —
+			// Fire 2's AnchorProjectionKey can never derive this composite key
+			// read-free (exprReferencesOnlyVariable rejects it structurally), so
+			// a manages-unassign (or any other drop) needs the target-diff path.
+			CanonicalName:  "landlordLeaseApplicationsRead",
+			Class:          "meta.lens",
+			Adapter:        "postgres",
+			Table:          "read_landlord_lease_applications",
+			Engine:         "full",
+			Spec:           landlordLeaseApplicationsReadSpec,
+			Protected:      true,
+			DiffRetraction: true,
+			IntoKey:        []string{"app_id", "landlord_id"},
 			Columns: []pkgmgr.PostgresColumn{
 				{Name: "entity_key", Type: "text"},
 				{Name: "applicant", Type: "text"},

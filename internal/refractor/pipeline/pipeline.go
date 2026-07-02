@@ -61,6 +61,20 @@ type Pipeline struct {
 	plainReprojectLabels map[string]struct{}
 	plainReprojectAll    bool
 
+	// diffRetraction opts a plain lens into Fire 3's neighbor-driven / multi-row
+	// target-diff retraction (negative-filter-retraction-projection-design.md
+	// §2.4): when Fire 2's read-free AnchorProjectionKey check cannot derive a
+	// single anchor-keyed row (a composite key with a column bound to a
+	// non-anchor variable — e.g. landlordLeaseApplicationsRead's landlord_id,
+	// resolved by walking a `manages` link off the unit, not the leaseapp
+	// anchor), the re-execute's fresh row set is instead diffed against the
+	// adapter's full live key set (adapter.KeyLister) and every key the target
+	// still carries but the fresh computation no longer produces is retracted.
+	// False by default — a convergence (`violating`-flag) lens is ALSO a plain,
+	// often multi-row lens, and must never have rows silently retracted; only a
+	// lens that explicitly opts in (SetDiffRetraction) pays this cost.
+	diffRetraction bool
+
 	// actorEnumerator enables cross-vertex fan-out. When non-nil and
 	// engineKind == Full, evaluateForEntry expands every CDC event on a
 	// non-actor vertex into the set of affected actors and re-executes
@@ -212,6 +226,12 @@ func (p *Pipeline) plainReactsTo(vertexType string) bool {
 // Must be called before Run.
 func (p *Pipeline) SetEnvelopeFn(fn EnvelopeFn) {
 	p.envelopeFn = fn
+}
+
+// SetDiffRetraction opts this plain lens into Fire 3's target-diff retraction
+// (see the diffRetraction field doc). Must be called before Run.
+func (p *Pipeline) SetDiffRetraction(enabled bool) {
+	p.diffRetraction = enabled
 }
 
 // SetActorEnumerator installs the cross-vertex fan-out enumerator for the

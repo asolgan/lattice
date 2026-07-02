@@ -300,6 +300,82 @@ func TestPlainLens_NeighborKeyedComposite_FallsThroughToLinger(t *testing.T) {
 	require.Empty(t, results, "the dropped anchor re-derives no rows")
 }
 
+// TestPlainLens_NeighborKeyedComposite_DiffRetractionDeletes proves Fire 3
+// closes exactly the linger the sibling test above pins: the same
+// neighbor-keyed composite shape, but with DiffRetraction opted in
+// (landlordLeaseApplicationsRead's real posture) and driven through the real
+// dispatch (handle) rather than a bare evaluate call. A landlord manages a
+// unit a leaseapp applies to (the row projects); the manages link is then
+// removed (the manages-unassign that gates Vault 5b's close) via a real
+// link-tombstone CDC message — Fire 2 still cannot derive the composite key,
+// but Fire 3's target-diff reads the target's live key set, finds the row
+// Fire 2 could never retract, and deletes it.
+func TestPlainLens_NeighborKeyedComposite_DiffRetractionDeletes(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping NATS-backed test in short mode")
+	}
+	ctx := context.Background()
+	p, coreKV, _, targetKV := newRetractionPipeline(t, landlordShapeSpec, []string{"app_id", "landlord_id"})
+	p.SetDiffRetraction(true)
+
+	const appID = "FRDiffAppAAAAAAAAAAA"
+	const unitID = "FRDiffUnitAAAAAAAAAA"
+	const llID = "FRDiffMgrAAAAAAAAAAA"
+	appKey := "vtx.leaseapp." + appID
+	unitKey := "vtx.unit." + unitID
+	llKey := "vtx.identity." + llID
+	appBody := putBody(t, coreKV, appKey, map[string]any{
+		"key": appKey, "class": "leaseapp", "isDeleted": false,
+		"createdAt": "2026-07-02T10:00:00Z", "lastModifiedAt": "2026-07-02T10:00:00Z",
+		"data": map[string]any{},
+	})
+	putBody(t, coreKV, unitKey, map[string]any{
+		"key": unitKey, "class": "unit", "isDeleted": false,
+		"createdAt": "2026-07-02T10:00:00Z", "lastModifiedAt": "2026-07-02T10:00:00Z",
+		"data": map[string]any{},
+	})
+	putBody(t, coreKV, llKey, map[string]any{
+		"key": llKey, "class": "identity", "isDeleted": false,
+		"createdAt": "2026-07-02T10:00:00Z", "lastModifiedAt": "2026-07-02T10:00:00Z",
+		"data": map[string]any{},
+	})
+	// Both links are established through the real dispatch (handle), not the
+	// buildCollisionEdge test shortcut — evalPlainLinkReprojection idempotently
+	// applies its OWN adjacency.Build keyed by the link's Core KV key as
+	// EdgeID (matching the dedicated adjacency consumer's convention), so the
+	// manages-unassign tombstone below must reference the exact same edge.
+	applyLinkKey := "lnk.leaseapp." + appID + ".appliesToUnit.unit." + unitID
+	manageLinkKey := "lnk.identity." + llID + ".manages.unit." + unitID
+	linkBody := func(class string) []byte {
+		b, err := json.Marshal(map[string]any{"class": class, "isDeleted": false})
+		require.NoError(t, err)
+		return b
+	}
+	_, err := p.handle(ctx, substrate.Message{Subject: "$KV.CORE." + applyLinkKey, Body: linkBody("appliesToUnit"), Sequence: 1})
+	require.NoError(t, err)
+	_, err = p.handle(ctx, substrate.Message{Subject: "$KV.CORE." + manageLinkKey, Body: linkBody("manages"), Sequence: 2})
+	require.NoError(t, err)
+
+	// The leaseapp's own vertex-root event, through the real dispatch —
+	// projects the row into the target.
+	dec, err := p.handle(ctx, substrate.Message{Subject: "$KV.CORE." + appKey, Body: appBody, Sequence: 3})
+	require.NoError(t, err)
+	require.Equal(t, substrate.Ack, dec)
+	targetKey := appID + "." + llID
+	_, err = targetKV.Get(ctx, targetKey)
+	require.NoError(t, err, "row must be live in the target after the initial projection")
+
+	// Manages-unassign: a real link-tombstone CDC event on the manages link
+	// (landlord -[:manages]-> unit) — the plain-lens link-reprojection path.
+	dec, err = p.handle(ctx, substrate.Message{Subject: "$KV.CORE." + manageLinkKey, Body: nil, Sequence: 4})
+	require.NoError(t, err)
+	require.Equal(t, substrate.Ack, dec)
+
+	_, err = targetKV.Get(ctx, targetKey)
+	require.ErrorIs(t, err, substrate.ErrKeyNotFound,
+		"the manages-unassign must retract the row via Fire 3's target-diff — Fire 2 cannot derive this composite key")
+}
+
 // TestPlainLens_NeverMatchedAnchor_IdempotentDelete pins the R2 posture: an
 // event for an anchor that never matched the lens emits a Delete against its
 // derived key — an idempotent no-op on an absent target key, chosen over

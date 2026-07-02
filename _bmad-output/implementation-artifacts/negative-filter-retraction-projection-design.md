@@ -54,6 +54,26 @@ and inherits this fire's review posture (Deletes on the read path → full 3-lay
 the pipeline layer by `filter_retraction_internal_test.go`), and a review carry-out row is filed for an
 activation-time guard pinning the convergence-lens no-filtering-WHERE invariant.
 
+**Fire 3 CHECKPOINT (2026-07-02, Lattice Steward, full 3-layer review).** Shipped as a **lens-wide**
+diff rather than the sketched per-anchor `ListKeysForAnchor(anchorKey)` scoping: `adapter.KeyLister.
+ListKeys(ctx)` returns the target's **entire** live key set (no anchor parameter), and
+`pipeline.applyDiffRetraction` diffs it against the re-execute's **entire** freshly-computed row set on
+every trigger. This is exact, not an approximation, precisely because a `DiffRetraction` lens's query
+is unanchored (no `{key: $actorKey}`): the re-execute already recomputes the complete global truth
+regardless of which vertex fired it, so a per-vertex-scoped diff would have been both unnecessary and
+ambiguous — `landlordLeaseApplicationsRead`'s triggering vertex can be `unit`, `identity` (the
+applicant OR the managing landlord — no single stable id to scope a prefix-list by), or the `leaseapp`
+anchor itself. Fixed pre-merge from the adversarial pass: the design's soundness argument ("the query
+is unanchored") had **no code-level enforcement** — a future or misconfigured `DiffRetraction` lens
+referencing `$actorKey` would have silently mass-retracted every other live anchor's rows on its first
+event. Closed with `(*full.CompiledRule).ValidateUnanchoredForDiffRetraction`, called at activation
+(`cmd/refractor/main.go`) — fails the lens closed (never activates) rather than corrupting its target.
+Opt-in wiring: `pkgmgr.LensSpec.DiffRetraction` → YAML `targetConfig.diffRetraction` (postgres-only,
+`bucketguard.go` rejects it on nats-kv at install time) → `lens.IntoConfig.DiffRetraction` →
+`pipeline.SetDiffRetraction`. `TestPlainLens_NeighborKeyedComposite_DiffRetractionDeletes` proves the
+manages-unassign scenario end-to-end through the real `handle()` dispatch. **5b-close's Fire-3 gate is
+now CLEARED** (see `vault-crypto-shredding-design.md`'s matching checkpoint).
+
 ---
 
 ## For Andrew (the one-look)
