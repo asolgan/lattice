@@ -5,20 +5,35 @@ import (
 	"time"
 )
 
-// mapNode is one vertex of the system map. Kind is "component" (an engine that
-// heartbeats to Health KV), "lens" (a Refractor projection), or "infra" (a core
-// stream / KV store — the spine the components hang off). Status carries the
-// live overlay: a component is "green" / "stale" / "absent"; a lens reuses the
-// Health-tab vocabulary ("active" / "yellow" / "paused" / "rebuilding" /
-// "unknown"); infra is "present" (it exists if Loupe could read Health KV).
+// mapNode is one vertex of the system map. Kind is "component" (a declared
+// engine that heartbeats to Health KV), "client" (an undeclared heartbeat
+// group discovered at runtime — e.g. a vertical app's reporter; rendered as a
+// chip on the clients shelf, no skeleton edges), "lens" (a Refractor
+// projection), or "infra" (a core stream / KV store — the spine the components
+// hang off). Status carries the live overlay: a component/client is "green" /
+// "stale" / "absent"; a lens reuses the Health-tab vocabulary ("active" /
+// "yellow" / "paused" / "rebuilding" / "unknown"); infra is "present" (it
+// exists if Loupe could read Health KV). Component/client nodes carry every
+// live instance in Instances; the node-level Status is the worst instance's,
+// Freshness the freshest, Detail the worst instance's id.
 type mapNode struct {
-	ID        string   `json:"id"`
-	Label     string   `json:"label"`
-	Kind      string   `json:"kind"`
+	ID        string        `json:"id"`
+	Label     string        `json:"label"`
+	Kind      string        `json:"kind"`
+	Status    string        `json:"status"`
+	Detail    string        `json:"detail,omitempty"`
+	Freshness string        `json:"freshness,omitempty"`
+	Parent    string        `json:"parent,omitempty"`
+	Issues    []string      `json:"issues,omitempty"`
+	Instances []mapInstance `json:"instances,omitempty"`
+}
+
+// mapInstance is one heartbeat of a component/client node — the per-instance
+// truth behind the node's worst-of rollup.
+type mapInstance struct {
+	Instance  string   `json:"instance"`
 	Status    string   `json:"status"`
-	Detail    string   `json:"detail,omitempty"`
-	Freshness string   `json:"freshness,omitempty"`
-	Parent    string   `json:"parent,omitempty"`
+	Freshness string   `json:"freshness"`
 	Issues    []string `json:"issues,omitempty"`
 }
 
@@ -43,6 +58,7 @@ type systemMap struct {
 // Node kinds.
 const (
 	nodeComponent = "component"
+	nodeClient    = "client"
 	nodeLens      = "lens"
 	nodeInfra     = "infra"
 )
@@ -120,15 +136,9 @@ func computeSystemMap(
 		}
 	}
 
-	// Index the live component heartbeats and lens reporters by group.
-	type beat struct {
-		instance  string
-		freshness string
-		status    string
-		issues    []string
-		level     int
-	}
-	beats := make(map[string]beat)
+	// Index the live component heartbeats (all of them — a group may run
+	// several instances) and lens reporters by group.
+	beats := make(map[string][]instanceBeat)
 	lensNodes := make([]mapNode, 0)
 
 	for _, k := range keys {
@@ -139,12 +149,13 @@ func computeSystemMap(
 			if !ok {
 				continue
 			}
-			b := beat{}
+			b := instanceBeat{}
 			if inst, ok := doc["instance"].(string); ok {
 				b.instance = inst
 			}
 			b.status, b.freshness, b.issues, b.level = componentLiveness(doc, staleThreshold)
-			beats[group] = b
+			b.ts, b.hasTS = componentHeartbeat(doc)
+			beats[group] = append(beats[group], b)
 
 		case kindLens:
 			doc, ok := readEntry(k)
@@ -171,19 +182,51 @@ func computeSystemMap(
 	nodes := make([]mapNode, 0, len(declaredComponents)+len(infraNodes)+len(lensNodes))
 	nodes = append(nodes, infraNodes...)
 
+	declared := make(map[string]bool, len(declaredComponents))
+	taken := make(map[string]bool, len(declaredComponents)+len(infraNodes)+len(lensNodes))
+	for _, in := range infraNodes {
+		taken[in.ID] = true
+	}
 	for _, dc := range declaredComponents {
+		declared[dc.id] = true
+		taken[dc.id] = true
 		node := mapNode{ID: dc.id, Label: dc.label, Kind: nodeComponent}
-		if b, ok := beats[dc.id]; ok {
-			node.Status = b.status
-			node.Detail = b.instance
-			node.Freshness = b.freshness
-			node.Issues = b.issues
-			worse(b.level)
+		if bs, ok := beats[dc.id]; ok {
+			worse(applyBeats(&node, bs))
 		} else {
 			node.Status = "absent"
 			node.Freshness = "-"
 			worse(red)
 		}
+		nodes = append(nodes, node)
+	}
+
+	// Undeclared heartbeat groups (e.g. a vertical app's reporter) render as
+	// client chips — same per-instance overlay, no skeleton edges. A group
+	// whose name collides with an infra or lens node id is not rendered (a
+	// duplicate node id would corrupt edge measurement), but its severity
+	// still feeds the rollup — a live health signal is never silently
+	// dropped. Clients degrade the rollup like any heartbeat; absence is
+	// impossible by construction (they only exist while a heartbeat does).
+	for _, ln := range lensNodes {
+		taken[ln.ID] = true
+	}
+	clientIDs := make([]string, 0, len(beats))
+	for group := range beats {
+		if declared[group] {
+			continue // already rolled up via its component node above
+		}
+		if taken[group] {
+			var discard mapNode
+			worse(applyBeats(&discard, beats[group]))
+			continue
+		}
+		clientIDs = append(clientIDs, group)
+	}
+	sort.Strings(clientIDs)
+	for _, id := range clientIDs {
+		node := mapNode{ID: id, Label: id, Kind: nodeClient}
+		worse(applyBeats(&node, beats[id]))
 		nodes = append(nodes, node)
 	}
 
@@ -206,6 +249,53 @@ func computeSystemMap(
 		Edges:   edges,
 		Overall: [...]string{"green", "yellow", "red"}[overall],
 	}
+}
+
+// instanceBeat is one component/client heartbeat's derived overlay, kept with
+// its parsed timestamp so freshest-of aggregation compares times, not strings.
+type instanceBeat struct {
+	instance  string
+	freshness string
+	status    string
+	issues    []string
+	level     int
+	ts        time.Time
+	hasTS     bool
+}
+
+// applyBeats fills a node's live overlay from its instance beats: Status /
+// Detail / Issues come from the worst instance (first-seen breaking ties),
+// Freshness from the freshest heartbeat, and Instances lists every beat sorted
+// by instance id. Returns the worst severity level for the overall rollup.
+func applyBeats(node *mapNode, bs []instanceBeat) int {
+	if len(bs) == 0 {
+		return sevGreen
+	}
+	sort.SliceStable(bs, func(i, j int) bool { return bs[i].instance < bs[j].instance })
+	wi := 0
+	fi := 0
+	for i, b := range bs {
+		if b.level > bs[wi].level {
+			wi = i
+		}
+		if b.hasTS && (!bs[fi].hasTS || b.ts.After(bs[fi].ts)) {
+			fi = i
+		}
+	}
+	node.Status = bs[wi].status
+	node.Detail = bs[wi].instance
+	node.Issues = bs[wi].issues
+	node.Freshness = bs[fi].freshness
+	node.Instances = make([]mapInstance, 0, len(bs))
+	for _, b := range bs {
+		node.Instances = append(node.Instances, mapInstance{
+			Instance:  b.instance,
+			Status:    b.status,
+			Freshness: b.freshness,
+			Issues:    b.issues,
+		})
+	}
+	return bs[wi].level
 }
 
 // lensStatus maps a lens reporter's Health KV doc to the map vocabulary,

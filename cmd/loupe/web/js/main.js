@@ -10,22 +10,24 @@ import * as map from "./views/map.js";
 import * as graph from "./views/graph.js";
 import * as health from "./views/health.js";
 import * as tasks from "./views/tasks.js";
-import * as control from "./views/control.js";
+import * as component from "./views/component.js";
 import * as packages from "./views/packages.js";
 import * as files from "./views/files.js";
 import * as op from "./views/op.js";
 
 // The route table: view name (the first hash segment) → panel + module. The
 // nav anchors carry the same hashes, so a tab click is just a hash change.
+// Drill pages (component) highlight their parent section's tab via nav and
+// crumb back to it via crumbHref.
 const routes = {
-  map:      { panel: "systemmap", view: map,      crumb: "System Map" },
-  graph:    { panel: "graph",     view: graph,    crumb: "Graph" },
-  health:   { panel: "health",    view: health,   crumb: "Health" },
-  tasks:    { panel: "tasks",     view: tasks,    crumb: "Tasks" },
-  control:  { panel: "control",   view: control,  crumb: "Control" },
-  packages: { panel: "packages",  view: packages, crumb: "Packages" },
-  files:    { panel: "files",     view: files,    crumb: "Files" },
-  op:       { panel: "op",        view: op,       crumb: "Submit Op" },
+  map:       { panel: "systemmap", view: map,       crumb: "System Map" },
+  graph:     { panel: "graph",     view: graph,     crumb: "Graph" },
+  health:    { panel: "health",    view: health,    crumb: "Health" },
+  tasks:     { panel: "tasks",     view: tasks,     crumb: "Tasks" },
+  component: { panel: "component", view: component, crumb: "System Map", nav: "systemmap", crumbHref: "#/map" },
+  packages:  { panel: "packages",  view: packages,  crumb: "Packages" },
+  files:     { panel: "files",     view: files,     crumb: "Files" },
+  op:        { panel: "op",        view: op,        crumb: "Submit Op" },
 };
 
 let current = null;
@@ -43,6 +45,9 @@ function dispatch(route) {
     replaceRoute("/graph" + (route.arg ? "/" + route.arg : "") + (parts.length ? "?" + parts.join("&") : ""));
     return;
   }
+  // Legacy #/control deep links land on the map — the Control tab dissolved
+  // into the component pages (a map node click drills into its page).
+  if (route.view === "control") { replaceRoute("/map"); return; }
   const entry = routes[route.view];
   if (!entry) {
     toast("unknown route “#/" + route.view + "” — back to the map");
@@ -52,8 +57,9 @@ function dispatch(route) {
 
   if (current && current !== entry && current.view.leave) current.view.leave();
 
-  // Activate the panel + nav link for this view.
-  $all(".tab").forEach((a) => a.classList.toggle("active", a.dataset.tab === entry.panel));
+  // Activate the panel + nav link for this view (drill pages highlight their
+  // parent section's tab).
+  $all(".tab").forEach((a) => a.classList.toggle("active", a.dataset.tab === (entry.nav || entry.panel)));
   $all(".panel").forEach((p) => p.classList.toggle("active", p.id === "panel-" + entry.panel));
 
   renderCrumbs(route, entry);
@@ -71,7 +77,7 @@ function renderCrumbs(route, entry) {
   bar.classList.add("visible");
 
   const section = el("a", "crumb", entry.crumb);
-  section.href = "#/" + route.view;
+  section.href = entry.crumbHref || "#/" + route.view;
   bar.appendChild(section);
   bar.appendChild(el("span", "crumb-sep", "›"));
 
@@ -111,7 +117,7 @@ map.init();
 graph.init();
 health.init();
 tasks.init();
-control.init();
+component.init();
 packages.init();
 files.init();
 op.init();

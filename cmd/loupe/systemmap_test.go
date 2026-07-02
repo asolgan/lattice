@@ -161,3 +161,74 @@ func TestComputeSystemMapStaleLensYellow(t *testing.T) {
 		t.Errorf("lens status = %q, want paused", lens.Status)
 	}
 }
+
+// Two heartbeats of the same component must BOTH survive onto the node (no
+// last-write-wins collapse): worst instance drives status/detail, freshest
+// drives freshness, and Instances itemizes every beat.
+func TestComputeSystemMapPluralInstances(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	stale := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	docs := map[string]map[string]any{}
+	for _, dc := range declaredComponents {
+		docs["health."+dc.id+".inst"] = map[string]any{"component": dc.id, "instance": "inst", "heartbeatAt": now}
+	}
+	docs["health.processor.proc-a"] = map[string]any{"component": "processor", "instance": "proc-a", "heartbeatAt": now}
+	docs["health.processor.proc-b"] = map[string]any{"component": "processor", "instance": "proc-b", "heartbeatAt": stale}
+	delete(docs, "health.processor.inst")
+	keys := make([]string, 0, len(docs))
+	for k := range docs {
+		keys = append(keys, k)
+	}
+	read := func(k string) (map[string]any, bool) { d, ok := docs[k]; return d, ok }
+
+	m := computeSystemMap(keys, read, nil, time.Minute)
+	proc := nodesByID(m)["processor"]
+	if len(proc.Instances) != 2 {
+		t.Fatalf("processor instances = %+v, want 2 (no LWW collapse)", proc.Instances)
+	}
+	if proc.Status != "stale" || proc.Detail != "proc-b" {
+		t.Errorf("processor rollup = %q/%q, want stale/proc-b (worst instance)", proc.Status, proc.Detail)
+	}
+	// Freshness comes from the freshest beat (proc-a, just now — sub-second
+	// truncation in the RFC3339 fixture makes the exact digit wall-clock
+	// dependent, so assert "fresh", not an exact value).
+	if proc.Freshness != "0s ago" && proc.Freshness != "1s ago" {
+		t.Errorf("processor freshness = %q, want the freshest instance's (~0s ago)", proc.Freshness)
+	}
+	if m.Overall != "yellow" {
+		t.Errorf("overall = %q, want yellow (one stale instance)", m.Overall)
+	}
+	if proc.Instances[0].Instance != "proc-a" || proc.Instances[1].Instance != "proc-b" {
+		t.Errorf("instances not sorted by id: %+v", proc.Instances)
+	}
+}
+
+// An undeclared heartbeat group (a vertical app's reporter) becomes a "client"
+// node with the same per-instance overlay and no skeleton edges.
+func TestComputeSystemMapClientNodes(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	docs := map[string]map[string]any{}
+	for _, dc := range declaredComponents {
+		docs["health."+dc.id+".inst"] = map[string]any{"component": dc.id, "instance": "inst", "heartbeatAt": now}
+	}
+	docs["health.loftspace-app.web-1"] = map[string]any{"component": "loftspace-app", "instance": "web-1", "heartbeatAt": now}
+	keys := make([]string, 0, len(docs))
+	for k := range docs {
+		keys = append(keys, k)
+	}
+	read := func(k string) (map[string]any, bool) { d, ok := docs[k]; return d, ok }
+
+	m := computeSystemMap(keys, read, nil, time.Minute)
+	app := nodesByID(m)["loftspace-app"]
+	if app.Kind != nodeClient || app.Status != "green" || len(app.Instances) != 1 {
+		t.Errorf("client node = %+v, want kind=client green with 1 instance", app)
+	}
+	for _, e := range m.Edges {
+		if e.From == "loftspace-app" || e.To == "loftspace-app" {
+			t.Errorf("client node must not gain skeleton edges, got %+v", e)
+		}
+	}
+	if m.Overall != "green" {
+		t.Errorf("overall = %q, want green (client is healthy)", m.Overall)
+	}
+}

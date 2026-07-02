@@ -461,3 +461,78 @@ func TestStaticUIServed(t *testing.T) {
 		}
 	}
 }
+
+// TestComponentLogicJS pins the component-page shaping (logic/component.js):
+// per-engine metrics lines, the events summary, and the control-surface
+// selector.
+func TestComponentLogicJS(t *testing.T) {
+	vm := logicVM(t, "component.js")
+
+	procDoc := map[string]any{"metrics": map[string]any{
+		"ops_consumed_total": 12, "ops_committed_total": 10, "ops_rejected_total": 2, "lane_lag_total": 0,
+	}}
+	if got := call(t, vm, "metricsLine", "processor", procDoc); got != "consumed 12 · committed 10 · rejected 2 · lane lag 0" {
+		t.Errorf("processor metrics line = %q", got)
+	}
+	// A null lane_lag_total (no lane readable) renders "?" — never a fabricated 0.
+	procNull := map[string]any{"metrics": map[string]any{
+		"ops_consumed_total": 1, "ops_committed_total": 1, "ops_rejected_total": 0, "lane_lag_total": nil,
+	}}
+	if got := call(t, vm, "metricsLine", "processor", procNull).(string); !strings.HasSuffix(got, "lane lag ?") {
+		t.Errorf("null lane lag rendered %q, want trailing 'lane lag ?'", got)
+	}
+
+	weaverDoc := map[string]any{"metrics": map[string]any{
+		"targets": 5, "marksInFlight": 1, "timersScheduled": 3, "timersFired": 2, "sweepReclaims": 4,
+	}}
+	if got := call(t, vm, "metricsLine", "weaver", weaverDoc); got != "targets 5 · marks in flight 1 · timers 3 scheduled / 2 fired · sweep reclaims 4" {
+		t.Errorf("weaver metrics line = %q", got)
+	}
+
+	if got := call(t, vm, "metricsLine", "loom", map[string]any{"metrics": map[string]any{"runningInstances": 2}}); got != "running instances 2" {
+		t.Errorf("loom metrics line = %q", got)
+	}
+
+	rfxDoc := map[string]any{"metrics": map[string]any{"lensLags": map[string]any{"a": 0, "b": 3, "c": 0}}}
+	if got := call(t, vm, "metricsLine", "refractor", rfxDoc); got != "1/3 lenses lagging" {
+		t.Errorf("refractor metrics line = %q", got)
+	}
+	// No metrics at all → empty line, not a throw.
+	if got := call(t, vm, "metricsLine", "bridge", map[string]any{}); got != "" {
+		t.Errorf("bridge metrics line = %q, want empty", got)
+	}
+
+	summary, ok := call(t, vm, "eventSummary", []any{
+		map[string]any{"kind": "malformed-operation", "tail": "p1.malformed-operation.r1"},
+		map[string]any{"kind": "claim-attempts", "tail": "p1.claim-attempts.won"},
+		map[string]any{"kind": "claim-attempts", "tail": "p1.claim-attempts.lost"},
+		map[string]any{"kind": "malformed-operation", "tail": "p1.malformed-operation.r2"},
+	}).([]any)
+	if !ok || len(summary) != 3 {
+		t.Fatalf("eventSummary = %v", summary)
+	}
+	first := summary[0].(map[string]any)
+	if first["kind"] != "malformed-operation" || toFloat(first["count"]) != 2 {
+		t.Errorf("eventSummary[0] = %v, want malformed-operation ×2 first", first)
+	}
+	// claim-attempts break down BY OUTCOME (never collapsed into one bucket);
+	// malformed-operation request-id qualifiers do NOT split its count.
+	if second := summary[1].(map[string]any); second["kind"] != "claim-attempts · lost" {
+		t.Errorf("eventSummary[1] = %v, want claim-attempts · lost", second)
+	}
+	// A kind named like an Object.prototype member still counts correctly.
+	proto, _ := call(t, vm, "eventSummary", []any{map[string]any{"kind": "constructor"}}).([]any)
+	if len(proto) != 1 || toFloat(proto[0].(map[string]any)["count"]) != 1 {
+		t.Errorf("prototype-named kind mis-counted: %v", proto)
+	}
+
+	surfaces := map[string]string{
+		"loom": "loom", "weaver": "weaver", "refractor": "refractor",
+		"processor": "events", "bridge": "none", "object-store-manager": "none", "loftspace-app": "none",
+	}
+	for comp, want := range surfaces {
+		if got := call(t, vm, "controlSurface", comp); got != want {
+			t.Errorf("controlSurface(%s) = %v, want %s", comp, got, want)
+		}
+	}
+}

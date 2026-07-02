@@ -15,10 +15,6 @@ var lensDotClass = {
 
 var lensGlyph = { paused: "⏸", rebuilding: "⟳" };
 
-// sysmapControlComponents: components with a Control column a map click
-// drills into (plain object, not Set — logic files stay ES5-friendly).
-var sysmapControlComponents = { refractor: true, weaver: true, loom: true };
-
 // issueClass colors a flattened "[severity] code: message" issue line: an
 // [error] line is red, everything else (warnings, stale notes) stays yellow.
 function issueClass(text) {
@@ -36,4 +32,4 @@ function sysmapTier(node) {
   return node.id === "processor" ? 1 : 3;
 }
 
-export { componentStatusClass, lensDotClass, lensGlyph, sysmapControlComponents, issueClass, sysmapTier };
+export { componentStatusClass, lensDotClass, lensGlyph, issueClass, sysmapTier };

@@ -14,7 +14,6 @@
       <a class="tab" data-tab="graph" href="#/graph">Graph</a>
       <a class="tab" data-tab="health" href="#/health">Health</a>
       <a class="tab" data-tab="tasks" href="#/tasks">Tasks</a>
-      <a class="tab" data-tab="control" href="#/control">Control</a>
       <a class="tab" data-tab="packages" href="#/packages">Packages</a>
       <a class="tab" data-tab="files" href="#/files">Files</a>
       <a class="tab" data-tab="op" href="#/op">Submit Op</a>
@@ -102,52 +101,15 @@
       <div class="cards" id="tasks-cards"></div>
     </section>
 
-    <!-- Control -->
-    <section class="panel" id="panel-control">
+    <!-- Component page (drill-through: #/component/<id>) -->
+    <section class="panel" id="panel-component">
       <div class="panel-controls">
-        <button id="control-load">Refresh all</button>
-        <span class="muted" id="control-status"></span>
+        <div class="comp-head" id="comp-head"></div>
+        <span class="muted" id="comp-status"></span>
       </div>
-      <div class="control-grid">
-        <div class="control-col" data-comp="refractor">
-          <h3>Refractor</h3>
-          <p class="muted small">Per-lens. Inspect a lens by id (health), validate it, or pause/resume/rebuild it. Lens ids come from the Health tab.</p>
-          <div class="control-action">
-            <input type="text" class="control-name" placeholder="lens id">
-            <button data-op="health">inspect</button>
-            <button data-op="validate">validate</button>
-            <button data-op="pause">pause</button>
-            <button data-op="resume">resume</button>
-            <button data-op="rebuild">rebuild</button>
-          </div>
-          <pre class="control-out"></pre>
-        </div>
-        <div class="control-col" data-comp="weaver">
-          <h3>Weaver</h3>
-          <div class="control-list"></div>
-          <div class="control-action">
-            <input type="text" class="control-name" placeholder="target id">
-            <button data-op="disable">disable</button>
-            <button data-op="enable">enable</button>
-            <button data-op="revoke">revoke</button>
-          </div>
-          <pre class="control-out"></pre>
-        </div>
-        <div class="control-col" data-comp="loom">
-          <h3>Loom</h3>
-          <p class="muted small">inspect → a running <em>instance</em> (from list); pause/resume → a managed <em>consumer</em>. Click a row to fill the matching field.</p>
-          <div class="control-list"></div>
-          <div class="control-action">
-            <input type="text" class="control-name" data-fill="instance" placeholder="instance id">
-            <button data-op="inspect">inspect</button>
-          </div>
-          <div class="control-action">
-            <input type="text" class="control-name" data-fill="consumer" placeholder="consumer name">
-            <button data-op="pause">pause</button>
-            <button data-op="resume">resume</button>
-          </div>
-          <pre class="control-out"></pre>
-        </div>
+      <div class="comp-body">
+        <div class="comp-state" id="comp-state"></div>
+        <aside class="comp-control" id="comp-control"></aside>
       </div>
     </section>
 

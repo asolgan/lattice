@@ -5,8 +5,8 @@
 // status lookup tables in logic/status.js) so a future kind:"agent" node is a
 // data change, not new rendering logic.
 
-import { $, el, api, setStatus } from "../api.js";
-import { componentStatusClass, lensDotClass, lensGlyph, sysmapControlComponents, sysmapTier } from "../logic/status.js";
+import { el, api, setStatus } from "../api.js";
+import { componentStatusClass, lensDotClass, lensGlyph, sysmapTier } from "../logic/status.js";
 import { navigate } from "../router.js";
 
 const SYSMAP_TIER_Y = [40, 150, 270, 400, 530];
@@ -135,9 +135,12 @@ function renderSystemMap(data) {
   const width = stage.clientWidth || 1100;
 
   // Tiers 0-3: absolutely positioned, evenly spaced across the stage width.
+  // Lenses and runtime-discovered clients render on shelves, not tiers.
   const tierMembers = [[], [], [], []];
   const lenses = [];
+  const clients = [];
   nodes.forEach((n) => {
+    if (n.kind === "client") { clients.push(n); return; }
     const t = sysmapTier(n);
     if (t === 4) { lenses.push(n); return; }
     tierMembers[t].push(n);
@@ -177,6 +180,19 @@ function renderSystemMap(data) {
   }
   stage.appendChild(shelf);
 
+  // The clients shelf: undeclared heartbeat groups (vertical apps etc.) —
+  // chips only, no skeleton edges; click drills into their component page.
+  if (clients.length) {
+    const cshelf = el("div", "sysmap-shelf sysmap-clients");
+    cshelf.appendChild(el("div", "muted small sysmap-shelf-head", "clients"));
+    clients.forEach((n) => {
+      const chip = buildSysmapNode(n);
+      cshelf.appendChild(chip);
+      sysmap.nodeEls.set(n.id, chip);
+    });
+    stage.appendChild(cshelf);
+  }
+
   // Empty / no-health hint: every component absent and zero lenses.
   const components = nodes.filter((n) => n.kind === "component");
   if (components.length && components.every((n) => n.status === "absent") && !lenses.length) {
@@ -185,12 +201,20 @@ function renderSystemMap(data) {
     stage.appendChild(hint);
   }
 
-  // Size the stage to fit the shelf, then measure + draw edges after layout.
+  // Size the stage to fit the shelves (the clients shelf stacks under the
+  // lens shelf once its height is measurable), then draw edges after layout.
   requestAnimationFrame(() => {
     const stageNow = sysmapStage();
     if (!stageNow) return;
-    const shelfEl = $(".sysmap-shelf", stageNow);
-    const bottom = shelfEl ? shelfEl.offsetTop + shelfEl.offsetHeight : SYSMAP_TIER_Y[4] + SYSMAP_NODE_H;
+    const shelves = stageNow.querySelectorAll(".sysmap-shelf");
+    let bottom = SYSMAP_TIER_Y[4] + SYSMAP_NODE_H;
+    if (shelves.length) {
+      bottom = shelves[0].offsetTop + shelves[0].offsetHeight;
+      if (shelves.length > 1) {
+        shelves[1].style.top = (bottom + 14) + "px";
+        bottom += 14 + shelves[1].offsetHeight;
+      }
+    }
     stageNow.style.minHeight = (bottom + 40) + "px";
     drawSysmapEdges(data);
   });
@@ -216,6 +240,7 @@ function buildSysmapNode(n) {
     if (n.status === "stale") head.appendChild(el("span", "sysmap-tag", "stale"));
     if (n.status === "degraded") head.appendChild(el("span", "sysmap-tag warn", "degraded"));
     if (n.status === "unhealthy") head.appendChild(el("span", "sysmap-tag bad", "unhealthy"));
+    if (n.instances && n.instances.length > 1) head.appendChild(el("span", "sysmap-tag", "×" + n.instances.length));
     if (n.issues && n.issues.length) head.appendChild(el("span", "sysmap-tag warn", "⚠ " + n.issues.length));
     node.appendChild(head);
     if (n.detail) {
@@ -229,11 +254,16 @@ function buildSysmapNode(n) {
     const g = lensGlyph[n.status];
     if (g) node.appendChild(el("span", "sysmap-glyph", g));
     node.appendChild(el("span", "sysmap-label", n.label));
+  } else if (n.kind === "client") {
+    const cls = componentStatusClass[n.status] || "unknown";
+    node.appendChild(el("span", "sysmap-dot " + cls));
+    node.appendChild(el("span", "sysmap-label", n.label));
+    if (n.instances && n.instances.length > 1) node.appendChild(el("span", "sysmap-tag", "×" + n.instances.length));
   } else { // infra
     node.appendChild(el("span", "sysmap-label", n.label));
   }
 
-  if (n.kind === "component" || n.kind === "lens") {
+  if (n.kind === "component" || n.kind === "lens" || n.kind === "client") {
     node.addEventListener("mouseenter", (e) => showSysmapTip(n, e));
     node.addEventListener("mouseleave", hideSysmapTip);
     node.addEventListener("click", () => drillSysmapNode(n));
@@ -241,28 +271,16 @@ function buildSysmapNode(n) {
   return node;
 }
 
-// drillSysmapNode routes a node click to the owning view. Components with a
-// Control column (refractor/weaver/loom) go to Control; the others go to
-// Health (where their heartbeat card lives). A lens goes to Control with the
-// Refractor column prefilled with its id.
+// drillSysmapNode routes a node click to the owning view: a component/client
+// drills into its page; a lens jumps to its meta-vertex in the Graph explorer
+// (the lens page absorbs this in a later fire).
 function drillSysmapNode(n) {
   hideSysmapTip();
   if (n.kind === "lens") {
-    const input = $('.control-col[data-comp="refractor"] .control-name');
-    if (input) input.value = n.id;
-    navigate("#/control");
-    // Focus once the async hashchange dispatch has shown the panel — a hidden
-    // input refuses focus.
-    if (input) setTimeout(() => input.focus(), 0);
+    navigate("#/graph/vtx.meta." + n.id);
     return;
   }
-  if (sysmapControlComponents[n.id]) {
-    navigate("#/control");
-    const col = $('.control-col[data-comp="' + n.id + '"]');
-    if (col && col.scrollIntoView) setTimeout(() => col.scrollIntoView({ block: "nearest" }), 0);
-    return;
-  }
-  navigate("#/health");
+  navigate("#/component/" + n.id);
 }
 
 // showSysmapTip places the shared popover near the hovered node with

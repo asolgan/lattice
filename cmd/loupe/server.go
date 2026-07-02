@@ -55,6 +55,8 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/vertex", s.handleVertex)
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/systemmap", s.handleSystemMap)
+	mux.HandleFunc("/api/component/", s.handleComponent)
+	mux.HandleFunc("/api/lenses", s.handleLenses)
 	mux.HandleFunc("/api/tasks", s.handleTasks)
 	mux.HandleFunc("/api/control/", s.handleControl)
 	mux.HandleFunc("/api/packages", s.handlePackages)
