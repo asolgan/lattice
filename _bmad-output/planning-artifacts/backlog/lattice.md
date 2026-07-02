@@ -113,9 +113,10 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 **forks** (Gateway, read-path auth, Vault, multi-cell, HA-NATS) and **frozen-contract** changes are
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
-> 🎯 **Build-ready now**: **Negative/filter-retraction** (★★ ratified, one fire — GATES Vault 5b close: a
-> manages-unassign leaves a plaintext-bearing stale row a shred can't scrub; see the vault design 5b-ii
-> checkpoint). Then **Vault Fire 5b** (★★★ — next 5b-ii-b Rec-C remainder, 5b-iii clinic contact + FE tails;
+> 🎯 **Build-ready now**: **Negative/filter-retraction Fire 3** (target-diff retraction — F1+F2 shipped
+> `5624392`; the Vault-5b manages-unassign stale row is neighbor-keyed, which F2 falls through on BY
+> DESIGN, so Fire 3 is what GATES 5b close and its build condition — a live consumer — is now met).
+> Then **Vault Fire 5b** (★★★ — next 5b-ii-b Rec-C remainder, 5b-iii clinic contact + FE tails;
 > unblocks 3 Verticals rows). *Dependency-sequenced ratified items*: **Personal Lens** (buildable,
 > deprioritized behind Vault) · **Object crypto-shred** (behind Vault). Current fire/park state for
 > Gateway · FR28 · Augur · Control-plane-authz · `kv.Links` lives on their rows below.
@@ -131,7 +132,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Privacy / Vault
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| Vault + crypto-shredding | Per-identity keys for sensitive aspects (SSN/DOB); right-to-be-forgotten = destroy the key; transient-session-key decrypt. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/vault-crypto-shredding-design.md) · next: retraction fire gates 5b close; then 5b-ii-b Rec-C |
+| Vault + crypto-shredding | Per-identity keys for sensitive aspects (SSN/DOB); right-to-be-forgotten = destroy the key; transient-session-key decrypt. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/vault-crypto-shredding-design.md) · next: retraction Fire 3 (target-diff) gates 5b close; then 5b-ii-b Rec-C |
 | **[identity-hygiene] Dedup over encrypted PII (duplicateCandidates)** | Post-Vault, the lens's WHERE matching (email/phone equality, name Levenshtein) runs on per-identity-DEK ciphertext → functionally inert; a secure lens can't fix in-engine matching. Needs a design: blind-index/HMAC companion aspect vs sanctioned engine mechanism. | ★★ | M | 📋 needs-design (Designer) · context in the [vault design](../../implementation-artifacts/vault-crypto-shredding-design.md) Fire 5b-i checkpoint |
 | **[Object Store] Crypto-shred for object-store blobs** | Vault covers sensitive **aspects** (Core KV) but not PII-bearing **blobs** (lease PDFs, ID scans, signatures) — extend crypto-shred to the Object Store. | ★★ | M | ✅ ratified · [design](../../implementation-artifacts/object-store-crypto-shred-design.md) · 🚧 behind Vault |
 
@@ -166,8 +167,8 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Read-model / projection maturity
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **[Refractor] Link-triggered reprojection (plain/GrantTable lenses)** | Eager relationship-grant freshness. **Downgraded ★, de-blocked — NOT a D1.3 blocker.** | ★ | M | 🗄️ subsumed (2026-07-02) → [negative/filter-retraction](../../implementation-artifacts/negative-filter-retraction-projection-design.md) Fire 1; F1/F3 fold into that build, F2 posture accepted (hardening row below) |
-| Negative / filter-retraction projection | True "emit-only-when-violating" (targets currently project one row per candidate with a `violating` flag) + the plain-lens aspect/link freshness bug underneath it. | ★★ | M | ✅ ratified (2026-07-02) · [design](../../implementation-artifacts/negative-filter-retraction-projection-design.md) · one fire (freshness+retraction); GATES Vault 5b close (plaintext stale-row scrub); Fire 3 shelved-design |
+| Negative / filter-retraction projection | True "emit-only-when-violating" (targets currently project one row per candidate with a `violating` flag) + the plain-lens aspect/link freshness bug underneath it. | ★★ | M | 🏗️ F1+F2 shipped · [design](../../implementation-artifacts/negative-filter-retraction-projection-design.md) · next: Fire 3 target-diff (consumer arrived: Vault 5b manages-unassign; GATES 5b close) |
+| **[Refractor] Convergence-lens filtering-WHERE activation guard** | Filter-retraction relies on convergence (`violating`) lenses never carrying a filtering WHERE (a retracted row reads to Weaver as entity deletion) — true for every live lens but unenforced at activation. | ★ | XS–S | 📋 review carry-out · [design](../../implementation-artifacts/negative-filter-retraction-projection-design.md) §Fires-1+2-checkpoint |
 | **[Refractor] Protected/plain Postgres adapter is unguarded last-writer-wins** | The plain/protected `PostgresAdapter` ignores `projectionSeq` (unconditional LWW) — a stale replay can transiently reorder a security-relevant row. Posture accepted 2026-07-02 (the D1 M3 CDC-lag analog); this row is the follow-up hardening: extend the seq-guard to protected targets. | ★ | S–M | 📋 |
 | Elasticsearch target adapter | A third lens target adapter (only NATS-KV + Postgres ship; no consumer yet). | ★ | M | ✅ ratified (2026-07-02, OpenSearch pin + FTS-first interim) · [design](../../implementation-artifacts/search-target-adapter-design.md) · shelf — first consumer (LoftSpace FTS unified search) filed on verticals; the OpenSearch adapter builds only on search-engine-scale demand |
 | **[Refractor] Cross-instance projection-latency rollup** | Aggregate per-lens projection latency across Refractor instances into one per-component view (single-instance today, so per-instance == per-component). Link-tombstone re-projection half **subsumed** by the link-aspect reprojection design. | ★ | S | 🚧 seq behind HA-NATS multi-instance · [link-aspect design](../../implementation-artifacts/link-aspect-triggered-reprojection-plain-lenses-design.md) subsumes the tombstone half; no multi-instance consumer yet |
@@ -201,6 +202,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-02 · `5624392` · [Refractor] Negative/filter-retraction F1+F2 — plain-lens aspect/link reprojection + anchor-self retraction (3-layer review; Fire 3 target-diff next, gates Vault 5b)
 - 2026-07-02 · `a710c7a` · [lease-signing/loftspace-app] Vault Fire 5b-ii — landlord applicant contact Secure-Lens columns (name/email/phone; retraction fire now gates 5b close)
 - 2026-07-02 · `603fd1f` · [loftspace/vault] Fire 5b-i — applicant roster onto the Secure Lens (applicantRoster retired, applicantRosterRead secure, app reads rewired; duplicateCandidates → Designer)
 - 2026-07-02 · `e8ade0c` · [Core/pkgmgr] privacy-base `manifest.yaml` + missing `lattice-pkg` registry entry — `make up-full`/`up-loftspace`/`up-clinic` verified green end to end

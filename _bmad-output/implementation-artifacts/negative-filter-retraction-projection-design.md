@@ -15,6 +15,45 @@ scope; the shelved hard-delete design's revive-condition points here.
 Backlog row: `planning-artifacts/backlog/lattice.md` → *Read-model / projection maturity* →
 "Negative / filter-retraction projection".
 
+**Fires 1+2 CHECKPOINT (2026-07-02, Lattice Steward, `5624392`).** The collapsed fire shipped with a full
+3-layer review; docs/components/refractor.md carries the landed behavior. Build corrections to this
+design's assumptions (all conservative, none semantic):
+- **The "evaluation errors on an unbound variable" premise was FALSE** — `evalExpr` resolves an unbound
+  `VariableRef` to silent nil (the OPTIONAL MATCH contract), so the shipped tombstone derivation could
+  return `ok=true` with a nil-valued neighbor key column (a wrong partial composite key, latent since
+  `679fe25`). Fixed structurally: `exprReferencesOnlyVariable` rejects any key column referencing a
+  non-anchor variable; WITH-bearing queries (name-rebinding defeats the scope check) and aggregator key
+  columns (read-free mode fabricates single-row values) are also never derivable; nil-valued and empty
+  key maps fall through.
+- **The plain link arm applies the link to adjacency itself** (both directions, link key as EdgeID)
+  before re-executing — §2.1's "adjacency must already be updated (it is)" ignored the cross-consumer
+  ordering race the actor path already defends against; without it a tombstone's re-execute can still
+  see the removed edge and miss the retraction.
+- **`seedNodes` now propagates ListKeys failures** instead of degrading to zero seeds — with retraction,
+  absence is acted on, so a swallowed scan error would have retracted live rows on a substrate blip.
+- **Presence equality is canonical-JSON** (the identity adapters key on), erring toward linger, never a
+  type-mismatch wrong Delete. A malformed link body Terminal-DLQs (the dedicated consumer's disposition)
+  rather than Nak-looping every plain pipeline.
+- **R1 (whole-scan amplification) BIT IN CI and is now structurally bounded** (`9daa253`): unbounded, every
+  aspect/link event ran a whole-bucket re-scan per plain lens, and a meta-DDL write burst delayed the
+  Hello-Lattice book projection past the 1s NFR-P3 guard (twice — not the known runner flake). A plain lens
+  now reprojects only when the event's owner/endpoint vertex type is in its referenced-label set
+  (`full.CompiledRule.ReferencedLabels`; non-exhaustive set → reproject-all, conservative). Simple-engine
+  lenses keep the legacy ack-and-skip.
+- **GrantTable interaction (audited):** both primordial grant lenses derive their full composite
+  (anchor-only + literals) so §6.14 revoke-on-tombstone is preserved; the presence check additionally
+  revokes the wildcard grant promptly on a `protected` flip to false (previously lingered), and a
+  never-matched identity inserts a bounded deny-direction tombstone row (RevokeGrant's documented
+  posture — the R2 "no-op" wording was too strong for GrantTable targets).
+**Fire 3's build condition is now MET**: Vault 5b-ii shipped `landlordLeaseApplicationsRead` — a live
+neighbor-keyed composite `(app_id, landlord_id)` whose manages-unassign drop F2 structurally cannot
+retract (the `ok=false` fall-through, pinned by test) — and the vault design gates 5b close on exactly
+that retraction. **Fire 3 (adapter `ListKeysForAnchor` + set-difference Deletes) is the next increment**
+and inherits this fire's review posture (Deletes on the read path → full 3-layer). Deferred with it: the
+`availableListings` live ephemeral-stack e2e (§4's PO-visible proof; the platform mechanism is pinned at
+the pipeline layer by `filter_retraction_internal_test.go`), and a review carry-out row is filed for an
+activation-time guard pinning the convergence-lens no-filtering-WHERE invariant.
+
 ---
 
 ## For Andrew (the one-look)

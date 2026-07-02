@@ -687,17 +687,25 @@ re-confirms the standing "full engine scans → no enumerator" ruling.
 transport and a zero-row re-evaluation retracts nothing, so the stale `(app_id, old_landlord_id)` row
 retains **decrypted plaintext**, stays RLS-readable by the unassigned landlord, and a later shred's
 re-scan never overwrites it (the current-cypher rows no longer include it) — a right-to-erasure gap
-reachable via a shipped op, more severe than the display-scalar staleness D1.3 accepted. The fix is the
-✅-ratified **negative/filter-retraction** fire (its freshness+retraction transport retracts the stale
-row). **Sequencing: 5b close — the completed right-to-erasure claim + the live e2e — is gated on that
-fire shipping first.** (The dev stack may re-bootstrap and serve the columns sooner — single trusted
-user, synthetic data, and the v15 kernel bump independently forces resets — but the claim is not
-complete, and 5b is not closable, until the retraction transport lands.)
+reachable via a shipped op, more severe than the display-scalar staleness D1.3 accepted.
+**PREMISE CORRECTION (2026-07-02, retraction Fires 1+2 build, `5624392`):** the ratified fire's
+anchor-self transport does **NOT** retract this row — `landlordLeaseApplicationsRead` is keyed
+`(app_id, landlord_id)` where `landlord_id` binds a NEIGHBOR variable, which the read-free key
+derivation rejects structurally (the designed `ok=false` fall-through, pinned by
+`TestPlainLens_NeighborKeyedComposite_FallsThroughToLinger`). The fix is the retraction design's
+**Fire 3 target-diff** (adapter `ListKeysForAnchor` + set-difference Deletes), whose ratified
+build-condition — a live consumer — this very row satisfies. **Sequencing: 5b close — the completed
+right-to-erasure claim + the live e2e — is gated on Fire 3 shipping.** (The dev stack may re-bootstrap
+and serve the columns sooner — single trusted user, synthetic data, and the v15 kernel bump
+independently forces resets — but the claim is not complete, and 5b is not closable, until the Fire-3
+retraction lands. Fires 1+2 DID land the plain-lens aspect/link freshness transport, so the shred-scrub
+and single-key retraction halves are live.)
 Remaining Rec-C bundle (readiness clone via a shared cypher fragment + console retirement + full RLS
 decisioning) is the next slice — note the readiness clone needs WITH-aggregation while carrying envelope
-columns through grouping, an unverified engine behavior to spike first.
+columns through grouping, an unverified engine behavior to spike first (and note a WITH-bearing lens is
+excluded from anchor-self retraction by design — its stale-row posture needs stating at design time).
 Worktree: `/Users/andrewsolgan/Documents/GitHub/lattice-wt-vault-5b-ii` (branch `steward-vault-5b-ii`,
-merged through `a710c7a`). Next: **negative/filter-retraction fire** (now the 5b-close gate), then
+merged through `a710c7a`). Next: **retraction Fire 3 (target-diff — the 5b-close gate)**, then
 **5b-ii-b** (Rec-C remainder), then 5b-iii clinic contact; extend `make test-crypto-shred` to drive the
 REAL `landlordLeaseApplicationsReadSpec` through shred-scrub (the composition is currently proven in
 halves); delivery-boundary reset + live e2e close 5b.
