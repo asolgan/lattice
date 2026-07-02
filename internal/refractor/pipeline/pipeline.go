@@ -52,6 +52,15 @@ type Pipeline struct {
 	fullCR     ruleengine.CompiledRule
 	envelopeFn EnvelopeFn
 
+	// plainReprojectLabels is the exhaustive set of vertex types this lens's
+	// patterns can bind (full.CompiledRule.ReferencedLabels), used by the
+	// plain aspect/link reprojection arms to skip events on types the lens
+	// cannot read. plainReprojectAll disables the skip when the set is not
+	// exhaustive (unlabeled node pattern / var-length relationship) — every
+	// event reprojects.
+	plainReprojectLabels map[string]struct{}
+	plainReprojectAll    bool
+
 	// actorEnumerator enables cross-vertex fan-out. When non-nil and
 	// engineKind == Full, evaluateForEntry expands every CDC event on a
 	// non-actor vertex into the set of affected actors and re-executes
@@ -168,6 +177,35 @@ func (p *Pipeline) UseFullEngine(eng *full.Engine, cr ruleengine.CompiledRule) {
 	p.engineKind = ruleengine.EngineFull
 	p.fullEngine = eng
 	p.fullCR = cr
+	// Pin the vertex types this lens's patterns can bind, so the plain
+	// aspect/link reprojection arms skip events on types the lens cannot
+	// read (an unbounded label set — unlabeled node pattern or var-length
+	// relationship — disables the skip; every event reprojects).
+	p.plainReprojectLabels = nil
+	p.plainReprojectAll = true
+	if fullCR, isFull := cr.(*full.CompiledRule); isFull {
+		if labels, exhaustive := fullCR.ReferencedLabels(); exhaustive {
+			p.plainReprojectLabels = labels
+			p.plainReprojectAll = false
+		}
+	}
+}
+
+// plainReactsTo reports whether the plain aspect/link reprojection arms should
+// re-execute this lens for an event whose owner/endpoint vertex has the given
+// type. Only full-engine lenses reproject (the simple engine keeps its legacy
+// ack-and-skip — no live simple-engine lens needs aspect/link freshness); a
+// full-engine lens with an exhaustive label set reprojects only for types its
+// patterns can bind.
+func (p *Pipeline) plainReactsTo(vertexType string) bool {
+	if p.engineKind != ruleengine.EngineFull {
+		return false
+	}
+	if p.plainReprojectAll {
+		return true
+	}
+	_, ok := p.plainReprojectLabels[vertexType]
+	return ok
 }
 
 // SetEnvelopeFn installs the on-wire envelope wrapper. Pass nil to clear.
@@ -630,6 +668,11 @@ func (p *Pipeline) evalPlainAspectReprojection(ctx context.Context, msg substrat
 	if !ok {
 		return substrate.Ack, nil
 	}
+	if !p.plainReactsTo(parentType) {
+		// The lens's patterns cannot bind this vertex type — the mutation
+		// cannot change its rows; skip the re-execute.
+		return substrate.Ack, nil
+	}
 	results, err := p.evaluatePlainFromVertex(ctx, parentVtx, parentType)
 	if err != nil {
 		slog.Error("pipeline: plain aspect reprojection: evaluate",
@@ -660,6 +703,14 @@ func (p *Pipeline) evalPlainLinkReprojection(ctx context.Context, msg substrate.
 	if !ok {
 		return substrate.Ack, nil
 	}
+	reacts1, reacts2 := p.plainReactsTo(type1), p.plainReactsTo(type2)
+	if !reacts1 && !reacts2 {
+		// Neither endpoint type is bindable by the lens's patterns — the
+		// link cannot appear in its traversals; skip (including the
+		// adjacency self-apply: the dedicated consumer owns the index, this
+		// lens just doesn't need it applied-before-read).
+		return substrate.Ack, nil
+	}
 	isDeleted := len(msg.Body) == 0
 	if !isDeleted {
 		var linkProps map[string]any
@@ -687,13 +738,19 @@ func (p *Pipeline) evalPlainLinkReprojection(ctx context.Context, msg substrate.
 			return p.dispositionEvalErr(ctx, msg, key, "traversal", err)
 		}
 	}
-	endpoints := []struct{ vtx, label string }{
-		{"vtx." + type1 + "." + id1, type1},
-		{"vtx." + type2 + "." + id2, type2},
+	endpoints := []struct {
+		vtx, label string
+		reacts     bool
+	}{
+		{"vtx." + type1 + "." + id1, type1, reacts1},
+		{"vtx." + type2 + "." + id2, type2, reacts2},
 	}
 	var combined []ruleengine.EvalResult
 	seen := make(map[string]bool)
 	for _, ep := range endpoints {
+		if !ep.reacts {
+			continue
+		}
 		results, err := p.evaluatePlainFromVertex(ctx, ep.vtx, ep.label)
 		if err != nil {
 			slog.Error("pipeline: plain link reprojection: evaluate",

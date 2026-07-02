@@ -239,14 +239,24 @@ appointment row survives with `patientName` null).
 
 #### Plain-lens aspect/link reprojection + filter-retraction
 
-A plain (non-actor-aware) lens **reprojects on aspect/link-only mutations**: a
-`KindAspect` CDC event re-executes seeded from the aspect's **owner vertex**
-(`evalPlainAspectReprojection` — the plain analog of the capability path's
+A plain (non-actor-aware) **full-engine** lens **reprojects on aspect/link-only
+mutations**: a `KindAspect` CDC event re-executes seeded from the aspect's **owner
+vertex** (`evalPlainAspectReprojection` — the plain analog of the capability path's
 `evalAspectFanOut`; a Secure Lens's piiKey shred scrubs projected plaintext through this
 same arm), and a `KindLink` event re-executes seeded from **both endpoint vertices**
 (`evalPlainLinkReprojection`, results deduplicated across the two seeds). So an edited
 listing price or a renamed provider is promptly fresh in its read model, instead of
-incidentally fresh on the next unrelated vertex-root event.
+incidentally fresh on the next unrelated vertex-root event. (Simple-engine lenses keep
+the legacy ack-and-skip — no live simple-engine lens needs aspect/link freshness.)
+
+**Type-relevance skip (the amplification bound).** The re-execute runs only when the
+event's owner/endpoint vertex **type** is in the lens's referenced-label set
+(`full.CompiledRule.ReferencedLabels` — every node label its MATCH patterns, pattern
+expressions, and comprehensions can bind): a `meta` aspect mutation cannot change a
+`MATCH (u:unit)` lens's rows, so the lens acks it without scanning. A query whose label
+set is not exhaustive (an unlabeled node pattern, or a variable-length relationship
+whose intermediate hops bind arbitrary types) disables the skip and reprojects on
+every event — conservative, never a missed refresh.
 
 On top of that freshness transport sits **filter-retraction**: after any plain
 (no actor enumerator, no envelope) full-engine re-execute, a presence check derives

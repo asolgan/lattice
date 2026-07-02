@@ -326,6 +326,85 @@ func TestPlainLens_NeverMatchedAnchor_IdempotentDelete(t *testing.T) {
 	require.ErrorIs(t, err, substrate.ErrKeyNotFound)
 }
 
+// TestPlainLens_IrrelevantTypeSkipped pins the type-relevance bound: an
+// aspect or link event whose owner/endpoint types are not in the lens's
+// referenced-label set is acked without a re-execute (a meta-DDL install
+// burst must not trigger whole-bucket scans on every read-model lens), and
+// the projected state is untouched.
+func TestPlainLens_IrrelevantTypeSkipped(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping NATS-backed test in short mode")
+	}
+	ctx := context.Background()
+	p, coreKV, _, targetKV := newRetractionPipeline(t, listedUnitsSpec, []string{"key"})
+	require.False(t, p.plainReprojectAll, "listedUnitsSpec has an exhaustive label set")
+	require.True(t, p.plainReactsTo("unit"))
+	require.False(t, p.plainReactsTo("meta"))
+
+	const unitID = "FRunitDDDDDDDDDDDDDD"
+	unitKey := "vtx.unit." + unitID
+	unitBody := putBody(t, coreKV, unitKey, map[string]any{
+		"key": unitKey, "class": "unit", "isDeleted": false,
+		"createdAt": "2026-07-02T10:00:00Z", "lastModifiedAt": "2026-07-02T10:00:00Z",
+		"data": map[string]any{},
+	})
+	putBody(t, coreKV, unitKey+".listing", aspectBody(unitKey, "listing", map[string]any{"status": "active"}, false))
+	dec, err := p.handle(ctx, substrate.Message{Subject: "$KV.CORE." + unitKey, Body: unitBody, Sequence: 1})
+	require.NoError(t, err)
+	require.Equal(t, substrate.Ack, dec)
+	entry, err := targetKV.Get(ctx, unitKey)
+	require.NoError(t, err)
+	before := entry.Revision
+
+	// A meta-vertex aspect event (the DDL-install shape) and a meta-meta
+	// link event: both ack with no target write.
+	metaAspect := putBody(t, coreKV, "vtx.meta.FRmetaAAAAAAAAAAAAAA.adapter",
+		aspectBody("vtx.meta.FRmetaAAAAAAAAAAAAAA", "adapter", map[string]any{"value": "nats_kv"}, false))
+	dec, err = p.handle(ctx, substrate.Message{
+		Subject: "$KV.CORE.vtx.meta.FRmetaAAAAAAAAAAAAAA.adapter", Body: metaAspect, Sequence: 2})
+	require.NoError(t, err)
+	require.Equal(t, substrate.Ack, dec)
+	dec, err = p.handle(ctx, substrate.Message{
+		Subject: "$KV.CORE.lnk.meta.FRmetaAAAAAAAAAAAAAA.governs.meta.FRmetaBBBBBBBBBBBBBB",
+		Body:    []byte(`{"isDeleted":false}`), Sequence: 3})
+	require.NoError(t, err)
+	require.Equal(t, substrate.Ack, dec)
+
+	entry, err = targetKV.Get(ctx, unitKey)
+	require.NoError(t, err)
+	require.Equal(t, before, entry.Revision, "an irrelevant-type event must not rewrite the target")
+}
+
+// TestReferencedLabels_Contract pins the exhaustiveness rules of the
+// label-set extraction the relevance skip depends on.
+func TestReferencedLabels_Contract(t *testing.T) {
+	eng := full.New()
+	parseFull := func(spec string) *full.CompiledRule {
+		cr, err := eng.Parse(spec)
+		require.NoError(t, err)
+		fullCR, isFull := cr.(*full.CompiledRule)
+		require.True(t, isFull)
+		return fullCR
+	}
+
+	labels, exhaustive := parseFull(landlordShapeSpec).ReferencedLabels()
+	require.True(t, exhaustive)
+	require.Equal(t, map[string]struct{}{
+		"leaseapp": {}, "unit": {}, "identity": {},
+	}, labels)
+
+	_, exhaustive = parseFull(`MATCH (a:unit)-[:x*1..3]->(b:unit) RETURN a.key AS key`).ReferencedLabels()
+	require.False(t, exhaustive, "a variable-length relationship binds arbitrary intermediate types")
+
+	_, exhaustive = parseFull(`MATCH (a)-[:x]->(b:unit) RETURN b.key AS key`).ReferencedLabels()
+	require.False(t, exhaustive, "an unlabeled node pattern binds any type")
+
+	labels, exhaustive = parseFull(
+		`MATCH (svc:service) WHERE NOT (svc)-[:instanceOf]->(tpl:svctemplate) RETURN svc.key AS key`).ReferencedLabels()
+	require.True(t, exhaustive)
+	require.Contains(t, labels, "svctemplate", "labels inside WHERE pattern expressions count")
+}
+
 // TestAnchorProjectionKey_Contract table-tests the shared read-free key
 // derivation directly: ok iff the event vertex is the anchor label and every
 // key column resolves read-free from the anchor to a scalar.
