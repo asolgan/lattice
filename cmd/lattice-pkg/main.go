@@ -26,6 +26,7 @@ import (
 	"github.com/asolgan/lattice/internal/substrate"
 	augur "github.com/asolgan/lattice/packages/augur"
 	clinicdomain "github.com/asolgan/lattice/packages/clinic-domain"
+	clinicledger "github.com/asolgan/lattice/packages/clinic-ledger"
 	clinicreminders "github.com/asolgan/lattice/packages/clinic-reminders"
 	identitydomain "github.com/asolgan/lattice/packages/identity-domain"
 	identityhygiene "github.com/asolgan/lattice/packages/identity-hygiene"
@@ -57,6 +58,7 @@ var packageRegistry = map[string]pkgmgr.Definition{
 	"location-domain":    locationdomain.Package,
 	"loftspace-domain":   loftspacedomain.Package,
 	"clinic-domain":      clinicdomain.Package,
+	"clinic-ledger":      clinicledger.Package,
 	"clinic-reminders":   clinicreminders.Package,
 	"service-location":   servicelocation.Package,
 	"lease-signing":      leasesigning.Package,

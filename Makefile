@@ -454,10 +454,12 @@ install-loftspace:
 	@echo "==> LoftSpace vertical installed. Drive it via the lattice CLI or Loupe."
 
 ## install-clinic — Install the clinic vertical onto a running up-full stack, in
-## dependency order: orchestration-base → clinic-domain → clinic-reminders.
-## clinic-domain is the bookable domain; clinic-reminders adds the @at appointment-
-## reminder orchestration (needs orchestration-base for MarkExpired + the Weaver
-## tier up-full runs). Drive it via the clinic-app, the lattice CLI, or Loupe.
+## dependency order: orchestration-base → clinic-domain → clinic-reminders →
+## clinic-ledger. clinic-domain is the bookable domain; clinic-reminders adds
+## the @at appointment-reminder orchestration (needs orchestration-base for
+## MarkExpired + the Weaver tier up-full runs); clinic-ledger adds the patient
+## payment ledger (depends clinic-domain). Drive it via the clinic-app, the
+## lattice CLI, or Loupe.
 install-clinic:
 	@echo "==> Building lattice-pkg..."
 	go build -o bin/lattice-pkg ./cmd/lattice-pkg
@@ -467,7 +469,9 @@ install-clinic:
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/clinic-domain
 	@echo "==> Installing clinic-reminders..."
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/clinic-reminders
-	@echo "==> Clinic vertical installed (domain + reminders). Drive it via the clinic-app, the lattice CLI, or Loupe."
+	@echo "==> Installing clinic-ledger..."
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/clinic-ledger
+	@echo "==> Clinic vertical installed (domain + reminders + ledger). Drive it via the clinic-app, the lattice CLI, or Loupe."
 
 ## reinstall-package — Dev-loop: diff-apply ONE edited package's DDL/lens onto the
 ## RUNNING stack in place, no `make down` (F-004 upgrade-aware install). PKG=<dir>,
@@ -497,6 +501,7 @@ refresh-clinic:
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install --force packages/orchestration-base
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install --force packages/clinic-domain
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install --force packages/clinic-reminders
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install --force packages/clinic-ledger
 	@$(MAKE) provision-clinic-role
 	@echo "==> Rebuilding clinic-app binary..."
 	go build -o bin/clinic-app ./cmd/clinic-app
