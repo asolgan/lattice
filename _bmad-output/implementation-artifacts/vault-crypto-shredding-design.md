@@ -466,6 +466,36 @@ it); harden when Fire 3/4 wires the privacy worker to something that needs shred
 Next: Fire 2 — Processor step-4 decrypt hook, step-6.5 encrypt hook, lazy `piiKey` creation, DEK cache;
 `privacy-base` ships the `piiKey` DDL; security-plane change, full 3-layer + party-mode at that fire.
 
+**Fire 2 CHECKPOINT (2026-07-02, Lattice Steward, `83b7976`).** Shipped: the commit-path wiring — step 4
+(`internal/processor/step4_hydrate.go` + `sensitive_decrypt.go`) decrypts a sensitive aspect pulled into
+the Starlark context via both `contextHint.reads` and the lazy `kv.Read()` seam (`connKVReader`); step 6.5
+(`step65_encrypt.go`) encrypts every sensitive-DDL mutation post-validate, lazily minting `piiKey` in the
+SAME atomic batch on an identity's first sensitive write. `packages/privacy-base` ships the `piiKey`
+aspect-type DDL (non-sensitive, declaration-only script, no install-order coupling to identity-domain).
+Wired into `MakePipeline` (production; `cmd/processor` requires a master KEK via
+`LATTICE_VAULT_MASTER_KEK`/`_FILE`, refusing to start without one) and `testutil.CapabilityPipeline` (a
+shared `TestVault`) — identity-domain's full `ssn/dob/name/email/phone/claimKey/credentialBinding` suite,
+including `ClaimIdentity`'s hash verification against ciphertext, round-trips correctly with zero
+regressions across the full `go test ./...` sweep. 3-layer adversarial review (Blind Hunter, Edge Case
+Hunter, Acceptance Auditor) found and fixed two real bugs pre-merge: a `piiKey` create-once collision
+wasn't retry-eligible under the commit path's OCC retry loop (two concurrent first-sensitive-writes for
+the same identity would hard-reject the loser instead of transparently retrying — fixed by extending the
+retry condition to a new `mintedPiiKey` signal), and `encryptSensitiveMutations` mutated the caller's
+shared `Document` map in place instead of a fresh copy (fixed). Also hardened the local dev KEK file to
+600 permissions (`chmod` + `umask 077` in `make provision-vault-kek`) and corrected an overclaiming
+"fails closed" comment on the `piiKey` DDL (empty `permittedCommands` blocks `piiKey` being dispatched
+*as an operation*, not a script writing a `.piiKey` mutation directly — the same trust model already
+governing every other aspect type; not new to this fire).
+**Known non-live limitation (documented inline, not fixed this fire):** step 6.5 / decrypt-on-read
+resolve sensitivity by exact DDL class name only (`DDLs.Lookup`), unlike step 6's `resolveGoverningDDL`,
+which additionally walks a bounded `instanceOf` chain to a fine-grained discriminator class's type
+authority. No shipped sensitive DDL today needs that walk (all seven register under their own exact
+canonical name) — but a **future** sensitive DDL resolvable only via the chain would silently commit as
+plaintext (Lookup miss) while step 6 still scope-checks it correctly. Fold the shared resolution path in
+if that pattern is ever used for a sensitive aspect.
+Next: Fire 3 — `ShredIdentityKey` op + `KeyShredded` event + `Vault.ShredKey` + Processor cache eviction;
+`privacy-base` ships the op/event DDL.
+
 **Considered and REJECTED — pre-Vault plaintext contact projection** into `clinicPatientsRead`
 (technically buildable, no test fails, outside M4's *letter* since `.demographics` cannot be
 `sensitive:true` on a non-identity vertex): it ships queryable plaintext PHI into Postgres that
