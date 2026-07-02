@@ -61,6 +61,8 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 | **[Core] Atomic-batch size ceiling undocumented + unenforced** | A Starlark script's mutation set has no documented/enforced max size; a legitimate op that exceeds NATS's per-batch byte limit surfaces as a raw substrate/NATS error at step 8, not a typed Processor rejection — no bound, no clean failure mode. | ★ | S | ✅ ratified (low-priority maintenance) · [design](../../implementation-artifacts/atomic-batch-size-ceiling-design.md) · contracts committed; 1 fire |
 | **[Core] UninstallPackage tombstones unconditionally (F-011 per-key OCC follow-up)** | `Installer.Uninstall`/`Upgrade` submit without per-key `expectedRevision` — a concurrent write to a declared key is silently overwritten. Fix: condition on the read-time `KVGet` revision (already read). | ★ | S–M | ✅ ratified · [design](../../implementation-artifacts/package-install-per-key-occ-design.md) · read-time revision (not install-time); §8.3/§8.6/§8.7 committed; 2 fires (uninstall, upgrade) |
 | **[Loom] Redelivery/deadline-recovery edge branches uncovered** | `engine.go:resumeStepZero` (41.7% — redelivered trigger whose `createInstance` batch committed but step 0 never submitted, incl. the pattern-pin-missing→fail branch) + `state.go:disarmDeadline` (33.3% — KVGet/KVDelete error arms + the already-disarmed no-op that breaks the deadline-watcher re-entry loop) sit untested by any direct unit test. | ★ | XS–S | 📋 · `internal/loom/engine.go:460`, `internal/loom/state.go:451` |
+| **[Refractor] Capability-pipeline link/aspect fan-out dispatch untested** | `evalLinkFanOut`/`evalAspectFanOut` (0%) — the actor-aware pipeline's CDC dispatch for `holdsRole`/`grantedBy` link + aspect events that recompute authz on role grant/revoke — has no test at any level; no test references `evaluateLinkFanOut`/`evaluateAspectFanOut` either. | ★★ | S–M | 📋 · `internal/refractor/pipeline/pipeline.go:577,609`, `evaluate.go:319,348,411` |
+| **[Refractor] NatsKVAdapter guarded-write CAS-contention + malformed-watermark edge branches uncovered** | `guardedWrite`'s revision-conflict retry loop + CAS-exhaustion path (53.8%) and `storedProjectionSeq`'s `json.Number`/malformed-doc branches (46.7%) — the H4 no-resurrect guard's contention/legacy-doc handling — untested. | ★ | XS–S | 📋 · `internal/refractor/adapter/natskv.go:190,250` |
 
 ### Survey log (round-robin rotation)
 
@@ -74,7 +76,8 @@ stalest (`git log -1 --format=%ct -- <path>`), note ONE dated line, rotate.
 - 2026-07-01 Loom (healthy, 81%/77% cov, clean lint, no TODOs; filed redelivery/deadline-recovery-edge-branches-uncovered).
 - 2026-07-01 Designer — search/ES target adapter (3rd Refractor adapter; OpenSearch rec., FTS interim) (→ 📐).
 - 2026-07-01 Designer — feature queue designed-out (all ~30 rows carry a design); resolved stale L309 (link-tombstone subsumed by link-aspect design, latency-rollup seq behind HA). Remaining 📋 = owner test-coverage.
-- **Next:** Refractor, then Loupe.
+- 2026-07-02 Refractor (healthy, clean lint; retraction/rollup already tracked; filed capability-pipeline-link-aspect-fanout-untested + natskv-guard-edge-branches).
+- **Next:** Loupe.
 
 ## Lattice feature backlog — the Phase-3 build queue
 
