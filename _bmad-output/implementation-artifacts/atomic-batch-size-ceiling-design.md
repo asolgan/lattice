@@ -1,6 +1,10 @@
 # Design — Atomic-batch size ceiling (typed `BatchTooLarge` rejection + enforced bound)
 
-**Status: 📐 awaiting-Andrew (ratification).**
+**Status: ✅ Andrew-ratified (2026-07-02).** Ratification note: **priority LOW (★) — a maintenance
+item**, not a feature; the Steward builds it opportunistically (a maintenance pass), never ahead of
+feature work. Contract edits (#2 §2.6 `BatchTooLarge` row + #3 §3.9.1) committed with this ratification;
+the Fable due-diligence corrections (server-configurable `max_batch_size`, the ≥1000 deployment
+invariant, the exact 10199 error string) are folded in below.
 **Author: Winston (Designer fire, 2026-07-01)**
 **Backlog row:** `planning-artifacts/backlog/lattice.md` → *Component maintenance* → "[Core] Atomic-batch size ceiling undocumented + unenforced".
 **Grounded demand:** Surveyor-filed 2026-07-01 (Core survey). Closes the long-standing **P3 deferred-capability obligation** stated verbatim in `lattice-architecture.md:210`, `:300`, `:1028`: *"NATS has byte/op limits per batch. The maximum mutation size a single operation can produce must be determined and documented."* The Story 1.1 batch spike (`internal/spike/nats-batch/README.md`) validated batch *behavior* (TTL-in-batch, revision atomicity, multi-subject, TTL markers) but **explicitly never measured the size/max-keys ceiling** — that dimension is still open, and today an over-limit op surfaces a raw NATS protocol error at step 8, not a typed Processor rejection.
@@ -31,7 +35,7 @@ Every write in Lattice commits through **one** primitive: `substrate.Conn.Atomic
 
 NATS bounds that batch in two independent ways (both confirmed against our pin, **NATS 2.14**, `go.mod` `nats-server/v2 v2.14.0`; see `docs/vendors.md`):
 
-1. **Message-count ceiling — 1000 messages per batch.** ADR-50 (*JetStream Batch Publishing*, tagged `2.12, 2.14`): *"Each batch can have maximum 1000 messages."* Exceeding it → the server **abandons the batch** and returns error **`10199`** ("Batch publish sequence exceeds server limit (default 1000)"). This is not configurable.
+1. **Message-count ceiling — 1000 messages per batch (the server default).** ADR-50 (*JetStream Batch Publishing*, tagged `2.12, 2.14`): *"Each batch can have maximum 1000 messages."* Exceeding it → the server **abandons the batch** and returns error **`10199`** (`JSAtomicPublishTooLargeBatchErrF`, "atomic publish batch is too large: {size}"). **Pinned-source correction (Fable due-diligence, 2026-07-02):** the limit IS server-configurable — `streamDefaultMaxAtomicBatchSize = 1000` (`server/stream.go:451` @ v2.14.0) is overridden by `jetstream_limits.max_batch_size` when set (`stream.go:7187`). Our `deploy/nats-server.conf` sets no `jetstream_limits`, so the effective limit is the 1000 default and `MaxBatchMessages = 1000` matches it exactly. **Deployment invariant (documented in §3.9.1):** a deployment must never set `max_batch_size` *below* 1000 — that would make our client-side guard *looser* than the server and resurface the raw-`10199` bug this design fixes. (A *raised* server limit is safe: the guard is merely stricter — fail-closed.)
 2. **Per-message byte ceiling — `max_payload`.** Each atomic-batch member is an ordinary NATS message, subject to the server's `max_payload` (NATS default **1 MiB = 1,048,576 bytes**). `deploy/nats-server.conf` does **not** override it, so the dev/prod floor is the 1 MiB default. The `nats.go` client rejects an over-`max_payload` publish **client-side** (`nats.ErrMaxPayload`) before it hits the wire.
 
 Neither bound is checked anywhere in Lattice. `AtomicBatch` validates only *bucket uniformity* and *non-empty keys* (`batch.go:97-107`); there is no count check and no per-value size check. So:
@@ -221,7 +225,7 @@ Both contract edits are staged **UNCOMMITTED** in `main` (the diff is the propos
 
 ## 5. Risks + alternatives
 
-**R1 — Is 1000 the right number, and is it stable across NATS versions?** It is the documented NATS 2.14 server limit (ADR-50), matched to our pin; a future NATS bump that changes it would change the constant (one line, cited). The constant is conservative-by-construction: it mirrors the server's own hard limit, so the guard can never be *looser* than NATS — at worst a future NATS raises the limit and our guard rejects a batch the server would now accept, which is a safe (fail-closed) direction and a trivial follow-up. **Accepted.**
+**R1 — Is 1000 the right number, and is it stable across NATS versions/configs?** It is the NATS 2.14 server *default* (`streamDefaultMaxAtomicBatchSize`, ADR-50), matched to our pin and to our conf (which sets no `jetstream_limits` override). A future NATS bump that changes the default would change the constant (one line, cited). Two config directions: a **raised** server `max_batch_size` leaves our guard stricter than the server — safe (fail-closed); a **lowered** one would make the guard looser and resurface the raw-error bug — forbidden by the §3.9.1 deployment invariant (and no deployment of ours sets it). **Accepted with the invariant documented.**
 
 **R2 — Deriving the byte ceiling from `nc.MaxPayload()` vs. a fixed 1 MiB constant.** Deriving from the live negotiated value is strictly more robust: it honors a production `max_payload` override automatically and keeps the embedded-server tests correct. The 4 KiB headroom covers batch/revision/TTL headers + provenance injection; even a 0-headroom off-by-a-little would only make the guard marginally stricter than the server (fail-closed). **Chosen: derive from `MaxPayload()`.**
 

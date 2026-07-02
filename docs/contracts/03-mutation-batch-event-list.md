@@ -190,6 +190,17 @@ revisions[ops[i].Key] = firstSeq + uint64(i)   // for i in 0..N-1
 
 **Reply propagation.** The Processor filters these revisions to the operation's business mutation keys (excluding the idempotency tracker key) and surfaces them on the accepted reply as `OperationReply.Revisions` (per Contract #2 §2.4). Clients use this map for read-your-own-writes polling against Core KV. Events carry no revisions — `PublishBatchAck` has no revisions field because events are not KV entries.
 
+#### 3.9.1 Atomic-batch size ceiling
+
+A single operation's atomic batch is bounded by two independent NATS limits (matched to the platform pin, **NATS 2.14** — `go.mod`, `docs/vendors.md`), enforced fail-closed by the substrate batch helpers before any publish:
+
+- **Message-count ceiling — 1000 messages per batch.** NATS abandons an over-limit atomic batch (ADR-50, *JetStream Batch Publishing*; server `err_code 10199`). 1000 is the NATS 2.14 server **default** (`streamDefaultMaxAtomicBatchSize`), overridable via `jetstream_limits.max_batch_size`; a deployment **must not set it below 1000** (the client-side guard would become looser than the server), and the reference `deploy/nats-server.conf` sets no override. The Processor's batch is `business mutations + the idempotency tracker + (optional) the transactional-outbox aspect`, so a single operation may emit **at most 998 business mutations** (`MaxBatchMessages − 2`). A cascade that would exceed this (e.g. tombstoning a very-high-degree hub and all its links in one op) must be decomposed by the script/pattern author into multiple operations.
+- **Per-value byte ceiling — `max_payload`.** Each batch member is an ordinary NATS message subject to the server's negotiated `max_payload` (NATS default **1 MiB**). The substrate rejects a mutation whose marshaled value (after commit-time provenance injection) exceeds `max_payload` minus a fixed header/provenance headroom. Large binary/document payloads belong in the off-graph Object Store (Contract #7 §7.2), **not** in a Core-KV aspect value.
+
+Both bounds are checked in `AtomicBatch`/`PublishBatch` before the batch is published (`substrate.ErrBatchTooLarge` / `ErrValueTooLarge`). At step 8 the Processor maps either to a **terminal `BatchTooLarge` rejection** (Contract #2 §2.6) — no redelivery, since a redelivery of the same deterministic operation reproduces the identical over-limit batch. The reply's `details` carry `reason` (`mutationCount` | `valueSize`), `limit`, `actual`, and (for `valueSize`) the offending `key`.
+
+A legitimate business operation that genuinely requires more than 998 mutations or a value above `max_payload` needs a saga/compensation decomposition; that pattern is deferred until a concrete consumer requires it.
+
 ### 3.10 Sensitive-aspect encryption at rest
 
 An aspect whose aspect-type DDL declares `sensitive: true` (Contract #1 §sensitivity lookup; Contract #7

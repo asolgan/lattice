@@ -243,6 +243,7 @@ The reply envelope's `error.code` is one of a closed enumeration. Phase 1 codes:
 | `SensitivityViolation` | Sensitive aspect attached to non-identity-anchored vertex | Step 6 |
 | `EventSchemaViolation` | EventList contained event failing event DDL validation | Step 7 |
 | `RevisionConflict` | Atomic batch rejected due to concurrent revision change; retries exhausted | Step 8 |
+| `BatchTooLarge` | A single operation's atomic batch exceeded the message-count ceiling (>998 business mutations) or a mutation value exceeded the payload ceiling (`max_payload`). Terminal — no redelivery. `details`: `reason` (`mutationCount`\|`valueSize`), `limit`, `actual`, `key` (valueSize only). See Contract #3 §3.9.1. | Step 8 |
 | `MetaLaneCollision` | DDL change conflicts with concurrent meta-lane mutation | Step 8 (meta lane only) |
 | `CellMoved` | Multi-cell (Phase 3): the target vertex has been migrated to another cell and this cell has drained it; the write was not applied. `details.newCell` carries the cell the caller must refresh the routing index to and re-route through. The `410 Gone`-equivalent stray-write rejection (no data is lost — the caller re-submits to the correct cell). | Pre-step-1 (cell-router check); migration drain window only |
 | `InternalError` | Unrecoverable Processor failure not covered by above codes | Any step |
