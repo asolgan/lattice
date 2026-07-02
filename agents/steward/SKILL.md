@@ -122,7 +122,14 @@ Pre-emption order (within your stream):
      Steward builds*; a ratified, unbuilt design (the standing queue: **read-path auth D1**, lane-authorization,
      Augur, adapter-read-seam, anchor-tombstone Fire 2, NATS write-restriction Fire 2, …) is the
      **highest-intent, highest-readiness work on the board** and is **preferred over routine maintenance**, even
-     when it is L+ and spans fires (§4 multi-fire). **(b)** the top **importance × readiness READY feature** in
+     when it is L+ and spans fires (§4 multi-fire).
+
+     **Build the ratification BANNER, not the body.** Before building any ratified design, read its
+     ratification-revision / banner block FIRST and treat it as authoritative wherever it and the body
+     differ — a banner often supersedes body sections that were never rewritten. (Trialed 2026-07-02:
+     kv.Links Fire 2 shipped the inverted `hasBooking` links the 2026-06-28 banner had explicitly
+     withdrawn — the builder followed the stale body. If the banner and the body conflict and the banner
+     doesn't resolve it, stop and flag the design author; never pick the body silently.) **(b)** the top **importance × readiness READY feature** in
      `lattice.md`. **(c)** maintenance / continuous-improvement (§2.4) as **filler when (a)+(b) are exhausted —
      never as the default pick.** **Round-robin / stalest-component is a *starvation guard + tie-breaker among
      comparable-importance items*, NOT the primary axis** — it keeps quiet components improving, but a ★★★ ready

@@ -292,6 +292,15 @@ ratification state*:
   is an index, not a journal — §5 of the swimlanes design / the CLAUDE.md no-changelog rule). Keep it one
   row, current.
 
+- **A ratification revision must REWRITE the body sections it supersedes — never leave a banner over a
+  stale body.** A banner-only fold leaves the withdrawn shape fully specified below it, and a later
+  builder or a later design grounding in the doc will build/cite the superseded text. (Trialed
+  2026-07-02: kv.Links Fire 2 shipped the inverted `hasBooking` links two days *after* the 2026-06-28
+  banner withdrew them — the body's "hub-must-be-source" sections were never rewritten; a follow-on
+  design (hard-delete) then grounded its *demand* on the violating shape and nearly ratified a platform
+  verb to patch it.) At fold time: rewrite or strike each superseded section in place with a one-line
+  pointer to the banner, and grep the other in-flight designs for citations of the superseded text.
+
 You do **not** stamp a design "build-ready" yourself — every finished design goes to Andrew. (Decide-don't-defer
 binds the *design*, not the *ratification*: resolve the design's questions; flag the finished design.)
 

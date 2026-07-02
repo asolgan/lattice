@@ -1,6 +1,22 @@
 # Design — Hard-delete mutation verb (`delete`) — true link/aspect keyspace reclaim
 
-**Status: 📐 awaiting-Andrew (ratification).**
+**Status: 🗄️ SHELVED — held at ratification (Andrew, 2026-07-02). Do not build.** The ratification
+review found the grounded demand rests on a shape the kv.Links ratification banner had already
+withdrawn: the shipped `hasBooking` links invert §1.1 (provider/patient as source) against the
+2026-06-28 revision *"Drop `hasBooking`; enumerate the §1.1-correct `withProvider`/`forPatient`
+inbound"* — and under the *correct* topology the enumerated links can never be deleted (lenses/audit
+need them), so the verb cannot solve the LIST growth it was filed for. **Root-cause replacement
+(Andrew-directed): the clinic booking constraint moves to the write path** — create-only per-slot
+claim keys on a **15-minute grid** (a *package-level* constraint, not a platform one), mirroring the
+email/phone-uniqueness + `appliedToUnit` precedents; cancel tombstones claims, rebooking restores
+them. That dissolves the enumeration guard, the `hasBooking` links, the LIST growth, and this verb's
+demand. See the verticals-lane row *"Clinic — booking constraint as write-path slot claims"*.
+Residual demand (`appliedToUnit` guard-key reclaim) is cosmetic — parking-lot grade. **If a real
+reclaim driver ever revives this design, two conditions attach:** (1) `delete` becomes a per-DDL
+structural opt-in (`hardDeletable: true`; omission denies at step 6 — soft-delete stays the default
+by construction, answering the precedent-leak concern), and (2) the v1 projection scope rule (§4.3)
+holds until plain-lens DEL retraction exists. The §3 contract edits were reverted from the tree at
+shelving.
 **Author: Winston (Designer fire, 2026-06-30)**
 **Backlog row:** `planning-artifacts/backlog/lattice.md` → *Refinements & ops* → "Hard-delete mutation verb (true link/aspect keyspace reclaim)".
 **Grounded demand:** surfaced by the **kv.Links Fire 2** checkpoint (`op-time-bounded-link-enumeration-design.md` §10) — soft-tombstone bounds the per-op GET fan-out but **not** the keyspace LIST cost, which grows monotonically with a hub's lifetime booking count. True reclaim was filed as this follow-on.
@@ -85,7 +101,7 @@ The two coexist deliberately: `tombstone` is for entities whose deleted-state mu
 ### 2.2 Read path (P5) / write path (P2) / orchestration
 
 - **Write path (P2) — unchanged in shape.** `delete` is a mutation in the script's `MutationBatch`, committed by the Processor as the sole Core-KV writer via the same `Conn.AtomicBatch`. The `DEL` marker rides the *same atomic batch* as the op's other mutations (so "mark the appointment terminal **and** remove its `hasBooking` links" is one OCC-checked commit). No new write surface, no engine writing KV.
-- **Read path (P5) — untouched.** `delete` is a write verb; applications still read lenses. After a `delete`, the lens-target row for that key is retracted by the Refractor's normal CDC reaction to the `DEL` marker (the materializer already handles delete markers — §4.3).
+- **Read path (P5) — untouched, with one v1 scope rule.** `delete` is a write verb; applications still read lenses. **Retraction reality (Fable due-diligence, 2026-07-02 — supersedes the original claim here):** the Refractor handles a `DEL` marker (an empty-body CDC message) **only on the actor-aware auth-plane path**; a **plain lens acks-and-skips it** (`pipeline.go:514-518` — "an empty body carries no props, so ack and skip"), so a `delete`'d key that a plain lens projects would strand its row. Hence the v1 authoring rule in §2.5: **`delete` only keys no plain lens projects** (write-path topology like guard/`hasBooking` links). Retraction of `delete`'d *projected* keys arrives with the **negative/filter-retraction projection** design (its empty-body/DEL arm is the same seam) — see §4.3.
 - **Orchestration — none.** Synchronous op-time mutation, no Loom pattern / Weaver convergence lens / schedule. It mirrors the *existing* `tombstone` verb exactly, swapping the substrate primitive (PUT→DEL) under the same commit machinery.
 
 ### 2.3 The substrate seam already exists
@@ -132,6 +148,7 @@ A reusable pattern for any domain accumulating dead deterministic keys:
 1. **Soft `tombstone` for entities that stay legible/restorable** (identities, leases, appointments-as-records) — unchanged.
 2. **Hard `delete` for the *dead, terminal* satellite keys** whose only residual cost is enumeration: on the terminal transition, the op `delete`s the dead `hasBooking` links (not the appointment record — that stays a soft tombstone for audit). The op enumerates the links to delete via `kv.Links` (inbound) exactly as it does today to *tombstone* them; it swaps the verb.
 3. **Never `delete` a key you might need to read-as-deleted or restore.** `delete` is irreversible within the live keyspace (§3.4). The authoring rule: *`delete` only a key whose deleted-state no reader needs to observe and no op needs to restore.* A terminal `hasBooking` link qualifies (the guard fast-skips it today anyway); a tombstoned identity does not.
+4. **(v1) Never `delete` a key a plain lens projects.** Plain lenses do not retract on a `DEL` marker today (§4.3) — a deleted projected key would strand its read-model row. Restrict `delete` to unprojected write-path topology (guard links, `hasBooking`-class satellites) until the negative/filter-retraction design lands its empty-body/DEL arm; then this rule relaxes.
 
 ---
 
@@ -193,9 +210,33 @@ The clinic terminal-transition ops (`SetAppointmentStatus`→terminal, `CancelAp
 
 The appointment **vertex/record itself stays a soft `tombstone`** (audit/history/reschedule legibility). Only the dead *`hasBooking` satellite links* are hard-deleted. The `bookingGuard` epoch (the serialization lock) is unaffected. The guard's `if link.isDeleted: continue` fast-skip becomes dead code for `hasBooking` (deleted links no longer appear) but stays as a harmless backstop. Clinic package version bumps (`0.8.0` → `0.9.0`).
 
-### 4.3 Refractor / lens targets
+### 4.3 Refractor / lens targets — CORRECTED (Fable due-diligence, 2026-07-02)
 
-The materializer reacts to Core KV CDC including delete markers; a `delete`'d key produces a lens-target **row retraction** through the existing delete-handling path (the same path a tombstone's `isDeleted:true` reprojection triggers, but now via a genuine delete marker). For the clinic `hasBooking` links — which are **not** projected to any lens target (they're write-path topology, read only via `kv.Links`) — there is no lens consequence at all. Fire 2 verifies no lens regression; the platform Fire 1 needs no Refractor change (the materializer already handles delete markers it receives from any source).
+The original text here claimed "the materializer already handles delete markers … row retraction through
+the existing delete-handling path." **Verified against the pipeline: that is true only for the
+actor-aware (auth-plane) path.** A `DEL` marker arrives as an **empty-body** CDC message; the main
+handler's vertex branch acks-and-skips an empty body for plain lenses ("for other lenses an empty body
+carries no props, so ack and skip" — `internal/refractor/pipeline/pipeline.go:514-518`), the plain-lens
+link branch logs "no handler registered" and acks (`:500-506`), and `handleAdjUpdate` skips empty bodies
+(`:947-950`). **So today: auth-plane lenses retract on DEL; plain lenses do NOT.**
+
+Consequences, resolved:
+- **v1 scope rule (§2.5): `delete` only keys that no plain lens projects.** The grounded consumers
+  (terminal `hasBooking` links, dead guard links) are write-path topology read only via `kv.Links` —
+  unprojected, so no lens consequence. Fire 2 verifies no lens regression. The Fire-3 lint note can
+  enforce the rule mechanically.
+- **Projected-key retraction is an explicit cross-dependency, not silently assumed:** the
+  **negative/filter-retraction projection** design (📐, same board) closes the plain-lens retraction
+  gap for aspect/link/predicate changes — a DEL'd key is the *strongest* instance of that same gap and
+  its empty-body arm is the same seam. When that design lands, the v1 scope rule relaxes. This design
+  does NOT build retraction machinery itself (it would duplicate that in-flight design — the
+  parallel-designs check).
+- **Adjacency-index footnote:** a `DEL`'d link's entry in the Refractor Adjacency KV is not removed by
+  the skip path — a dead adjacency entry may linger and trigger a harmless point-read-and-skip. This
+  does not affect `kv.Links` (which LISTs Core KV directly, not the adjacency index), so the LIST-bound
+  goal is intact; noted for the negative/filter-retraction design to sweep when it adds the DEL arm.
+
+The platform Fire 1 still needs **no Refractor change** — but by scope rule, not by assumed handling.
 
 ### 4.4 Live-stack migration
 
@@ -254,7 +295,7 @@ Per F-004, a same-version reinstall won't hot-migrate; a clinic version bump + f
 - **Kernel-bricking via delete.** The single highest-severity risk; fully mitigated by adding `delete` to the path-independent `ProtectedKeyError` backstop (§3.3) — this is a *required* part of Fire 1, with a dedicated test.
 - **Create-over-delete-marker confusion.** A package author might `delete` a key expecting to re-`create` it. Mitigated by the §3.4 contract language (explicit non-goal) + the authoring rule (`delete` is reclaim, not recycling) + the doc-comment on the verb.
 - **History-retention surprise (the inverse).** An operator might assume `delete` reclaims *storage*. It does not (DEL≠PURGE) — it reclaims the *live keyspace*. Mitigated by §2.4's explicit "no storage regression / no storage reclaim" statement and the For-Andrew sub-fork framing.
-- **Lens-retraction correctness.** A `delete`'d key that *was* projected must retract its lens row. Mitigated by relying on the materializer's existing delete-marker handling + a Fire-1/Fire-2 assertion; the clinic `hasBooking` links are unprojected, so the first consumer carries no lens risk.
+- **Lens-retraction correctness.** A `delete`'d key that *was* projected would strand its plain-lens row (plain lenses ack-and-skip DEL markers today — §4.3 corrected). Mitigated **by scope, not by assumed handling**: the §2.5 rule-4 authoring restriction (unprojected keys only, lint-notable in Fire 3) + the explicit cross-dependency on the negative/filter-retraction design for the projected-key case. The clinic `hasBooking` links are unprojected, so the first consumer carries no lens risk.
 
 ---
 
@@ -276,5 +317,6 @@ Per F-004, a same-version reinstall won't hot-migrate; a clinic version bump + f
 2. **Decide the sub-fork:** do **not** add a history-collapsing `purge` verb now (my recommendation, §B/§2.4) — confirm, or ask me to design `purge` against the crypto-shred boundary.
 3. **Confirm the §3 contract edit** (`03-mutation-batch-event-list.md`, staged uncommitted in `main`) — distinct file from the `optionalReads` edit in `02-…`; the two do not overlap.
 4. **Confirm the kernel backstop extension** (`ProtectedKey` now covers `delete`) and the §3.4 create-over-delete-marker non-goal (delete = reclaim, not key recycling) as specified.
+5. **Confirm the v1 projection scope rule** (§2.5 rule 4 / §4.3 corrected): `delete` restricted to keys no plain lens projects, until the negative/filter-retraction design lands DEL-arm retraction — plain lenses do not retract on a DEL marker today.
 
 Once ✅ Andrew-ratified, the Lattice Steward builds Fire 1 → Fire 2 (→ Fire 3).
