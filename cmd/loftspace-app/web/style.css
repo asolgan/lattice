@@ -387,6 +387,27 @@ button.ghost.danger:hover { background: var(--red); color: #fff; }
 .disp.leased { color: var(--green); border-color: var(--green); background: rgba(76, 195, 138, 0.08); }
 .disp.declined { color: var(--red); border-color: var(--red); }
 
+/* Payment ledger panel */
+.ledger-panel { margin-top: 8px; }
+.ledger-toggle { padding: 5px 12px; font-size: 12px; }
+.ledger-body {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ledger-balance { font-weight: 600; font-size: 13px; }
+.ledger-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.ledger-entry { font-size: 12px; font-family: var(--mono, monospace); }
+.ledger-entry.debit { color: var(--red); }
+.ledger-entry.credit { color: var(--green); }
+.ledger-record-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ledger-record-form input { flex: 1; min-width: 100px; }
+.ledger-record-form button { padding: 5px 12px; font-size: 12px; white-space: nowrap; }
+
 /* Wider modal + 3-up field rows (post-listing form) */
 .modal-wide { max-width: 540px; }
 .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }

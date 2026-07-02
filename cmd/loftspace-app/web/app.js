@@ -908,6 +908,10 @@ function renderProtectedApplicationCard(row, highlight) {
   const terms = renderLeaseTermsPanel(row);
   if (terms) card.append(terms);
 
+  if (row.landlordApproved && row.unitStatus === "leased" && row.entityKey) {
+    card.append(renderLedgerPanel(row.entityKey, false));
+  }
+
   const note = document.createElement("div");
   note.className = "addr-sub";
   note.textContent = "Step-by-step tracking returns when the protected read model carries gap state.";
@@ -1028,6 +1032,12 @@ function renderApplicationCard(row, highlight) {
   // the landlord reads are projected back.
   if (!row.landlordApproved && row.unitKey) {
     card.append(renderProfilePanel(row));
+  }
+
+  // Payment ledger — read-only for the tenant, once the lease is fully executed
+  // (the landlord's console is where charges/payments are recorded).
+  if (row.landlordApproved && row.unitStatus === "leased" && row.entityKey) {
+    card.append(renderLedgerPanel(row.entityKey, false));
   }
 
   const actions = document.createElement("div");
@@ -1548,6 +1558,180 @@ async function ensureLeaseDocument(leaseAppKey) {
   } catch (e) {
     console.warn("lease document not attached (will regenerate on download):", e.message);
   }
+}
+
+// ensureLedgerAccount lazily opens the lease's ledger account (CreateAccount)
+// before the landlord posts its first charge or payment. Idempotent-safe: the
+// account's id is deterministic (one per lease), so a second call rejects
+// AccountAlreadyExists — treated as success, not an error, since the account
+// this call wanted already exists. BOTH leaseAppKey and the (already-derived)
+// accountKey must be in ContextHint.Reads: the account-already-exists check is
+// the script reading its OWN deterministic key, which the Processor only
+// hydrates for keys the caller declares (packages/loftspace-ledger/ledger_test.go
+// reads leaseKey+acctKey for this exact case) — reads:[leaseAppKey] alone
+// leaves the account vertex unhydrated, so the create-only write hits a raw
+// substrate CAS conflict instead of the clean domain rejection.
+async function ensureLedgerAccount(leaseAppKey, accountKey) {
+  if (!leaseAppKey) return;
+  try {
+    const reply = await api("/api/op", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operationType: "CreateAccount",
+        class: "account",
+        reads: [leaseAppKey, accountKey].filter(Boolean),
+        payload: { leaseAppKey },
+      }),
+    });
+    if (reply && reply.status === "rejected" && reply.error) {
+      const msg = reply.error.message || "";
+      if (!msg.includes("AccountAlreadyExists")) {
+        throw new Error(`${reply.error.code}: ${msg}`);
+      }
+    }
+  } catch (e) {
+    console.warn("ledger account not opened:", e.message);
+    throw e;
+  }
+}
+
+// ---- Payment ledger (view + record charges/payments) ----
+//
+// One row of the loftspace-ledger `ledgerHistory` lens per posted transaction,
+// read via GET /api/ledger?leaseAppKey= (P5 — a lens read model, never Core
+// KV). The account key is deterministic (vtx.account.<same NanoID as the
+// lease>) so the server derives it even before any transaction — or the
+// account itself — exists; the FE never guesses it independently.
+
+// renderLedgerPanel builds a collapsible ledger section for a signed/leased
+// application: a toggle reveals the transaction history + running balance.
+// When canRecord is true (the landlord's console) it also offers inline
+// "Record charge"/"Record payment" controls.
+function renderLedgerPanel(leaseAppKey, canRecord) {
+  const wrap = document.createElement("div");
+  wrap.className = "ledger-panel";
+
+  const toggle = document.createElement("button");
+  toggle.className = "ghost ledger-toggle";
+  toggle.textContent = "💳 Ledger";
+  const body = document.createElement("div");
+  body.className = "ledger-body";
+  body.hidden = true;
+
+  toggle.addEventListener("click", () => {
+    body.hidden = !body.hidden;
+    if (body.hidden || body.dataset.loaded) return;
+    body.dataset.loaded = "1";
+    refreshLedgerBody(body, leaseAppKey, canRecord);
+  });
+
+  wrap.append(toggle, body);
+  return wrap;
+}
+
+// refreshLedgerBody (re)loads and renders one ledger panel's contents: the
+// running balance, the transaction list (oldest first), and — for the
+// landlord — the record-charge/record-payment form.
+async function refreshLedgerBody(body, leaseAppKey, canRecord) {
+  body.textContent = "Loading…";
+  let data;
+  try {
+    data = await api("/api/ledger?leaseAppKey=" + encodeURIComponent(leaseAppKey));
+  } catch (e) {
+    body.textContent = "Could not load ledger: " + e.message;
+    return;
+  }
+  body.innerHTML = "";
+
+  const balance = document.createElement("div");
+  balance.className = "ledger-balance";
+  const owed = data.balanceCents || 0;
+  if (owed > 0) balance.textContent = "Balance owed: " + moneyAmount(owed / 100);
+  else if (owed < 0) balance.textContent = "Credit balance: " + moneyAmount(-owed / 100);
+  else balance.textContent = "Balance: $0.00 (paid in full)";
+  body.append(balance);
+
+  const txs = data.transactions || [];
+  if (txs.length === 0) {
+    const none = document.createElement("div");
+    none.className = "applicant-none";
+    none.textContent = "No charges or payments recorded yet.";
+    body.append(none);
+  } else {
+    const list = document.createElement("ul");
+    list.className = "ledger-list";
+    for (const t of txs) {
+      const li = document.createElement("li");
+      li.className = "ledger-entry " + t.type;
+      const sign = t.type === "debit" ? "+" : "−";
+      li.textContent =
+        fmtDate(t.postedAt) + " · " + sign + moneyAmount(t.amountCents / 100) + (t.memo ? " — " + t.memo : "");
+      list.append(li);
+    }
+    body.append(list);
+  }
+
+  if (canRecord) body.append(renderLedgerRecordForm(leaseAppKey, data.accountKey, body, canRecord));
+}
+
+// renderLedgerRecordForm builds the landlord's inline "record a charge or
+// payment" controls: an amount (dollars) + optional memo, posting
+// DebitAccount/CreditAccount against the lease's ledger account. The account
+// is lazily opened (ensureLedgerAccount) on first use so a landlord never has
+// to take a separate "set up the ledger" step.
+function renderLedgerRecordForm(leaseAppKey, accountKey, body, canRecord) {
+  const form = document.createElement("div");
+  form.className = "ledger-record-form";
+
+  const amount = document.createElement("input");
+  amount.type = "number";
+  amount.step = "0.01";
+  amount.min = "0.01";
+  amount.placeholder = "Amount ($)";
+  const memo = document.createElement("input");
+  memo.type = "text";
+  memo.placeholder = "Memo (optional)";
+  const charge = document.createElement("button");
+  charge.className = "ghost";
+  charge.textContent = "+ Record charge";
+  const payment = document.createElement("button");
+  payment.className = "ghost";
+  payment.textContent = "+ Record payment";
+
+  const submit = async (opType, what) => {
+    const dollars = Number(amount.value);
+    if (!(dollars > 0)) {
+      toast("Enter an amount greater than zero.", "err");
+      return;
+    }
+    const cents = Math.round(dollars * 100);
+    charge.disabled = payment.disabled = true;
+    try {
+      await ensureLedgerAccount(leaseAppKey, accountKey);
+      await opOrThrow(
+        {
+          operationType: opType,
+          class: "transaction",
+          reads: [accountKey],
+          payload: { accountKey, amountCents: cents, memo: memo.value.trim() || undefined },
+        },
+        what
+      );
+      toast(what.charAt(0).toUpperCase() + what.slice(1) + " recorded.", "ok");
+      body.dataset.loaded = "";
+      await refreshLedgerBody(body, leaseAppKey, canRecord);
+    } catch (e) {
+      toast(e.message, "err");
+    } finally {
+      charge.disabled = payment.disabled = false;
+    }
+  };
+  charge.addEventListener("click", () => submit("DebitAccount", "record the charge"));
+  payment.addEventListener("click", () => submit("CreditAccount", "record the payment"));
+
+  form.append(amount, memo, charge, payment);
+  return form;
 }
 
 // ---- Documents (upload / view / list) ----
@@ -2195,6 +2379,11 @@ function renderApplicantRow(a, unit, isTopMatch) {
     note.className = "applicant-note";
     note.textContent = "Unit leased to another applicant.";
     row.append(note);
+  }
+  // Payment ledger — recordable once the lease is executed (the tenant is the
+  // one who owes/pays; a not-yet-leased applicant has no ledger account yet).
+  if (unitLeased && a.status === "leased" && a.leaseAppKey) {
+    row.append(renderLedgerPanel(a.leaseAppKey, true));
   }
   // Echo a landlord's decline reason back on the by-unit row so the landlord sees
   // the rationale they recorded (declineReason is set only on a landlord decline).
