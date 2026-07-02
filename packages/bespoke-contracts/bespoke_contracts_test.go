@@ -47,6 +47,7 @@ func bcCapDoc() *processor.CapabilityDoc {
 			{OperationType: "DebitAccount", Scope: "any"},
 			{OperationType: "CreditAccount", Scope: "any"},
 			{OperationType: "CreateClause", Scope: "any"},
+			{OperationType: "InspectPremises", Scope: "any"},
 		},
 		ServiceAccess:   []processor.ServiceAccessEntry{},
 		EphemeralGrants: []processor.EphemeralGrant{},
@@ -139,6 +140,13 @@ func seedLease(t *testing.T, ctx context.Context, conn *substrate.Conn, id strin
 	t.Helper()
 	key := "vtx.leaseapp." + id
 	seedVertex(t, ctx, conn, key, "leaseapp", map[string]any{})
+	return key
+}
+
+func seedIdentity(t *testing.T, ctx context.Context, conn *substrate.Conn, id string) string {
+	t.Helper()
+	key := "vtx.identity." + id
+	seedVertex(t, ctx, conn, key, "identity", map[string]any{})
 	return key
 }
 
@@ -326,6 +334,250 @@ func TestDebitAccount_ClauseRef_WritesAuthorizedByAndCompletesClause(t *testing.
 	if got, _ := entryData["amountCents"].(float64); got != 4500 {
 		t.Fatalf("entry.amountCents = %v, want 4500", got)
 	}
+}
+
+// TestCreateClause_ConditionedFee_WritesConditionedOnLink — CreateClause with
+// a conditionedOnKey writes the conditionedOn link (clause→that vertex) and
+// terms.conditioned=true.
+func TestCreateClause_ConditionedFee_WritesConditionedOnLink(t *testing.T) {
+	ctx, conn := setupBcEnv(t)
+	cp, cons := newBcPipeline(t, ctx, conn, "condfee")
+
+	leaseKey := seedLease(t, ctx, conn, "BBLEASECNDFEEHJKMNPQ")
+	acctKey := createAccount(t, ctx, conn, cp, cons, "createacctcondfee01", leaseKey)
+	petKey := seedIdentity(t, ctx, conn, "BBPETCNDFEEHJKMNPQRS") // any live vertex qualifies
+
+	reqID := testutil.GenReqID("createclausecondfee1")
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateClause",
+		Actor:         bcActorKey,
+		SubmittedAt:   "2026-07-02T12:00:00Z",
+		Class:         "clause",
+		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","accountKey":"` + acctKey +
+			`","prose":"Tenant agrees to a $50 monthly pet fee.","amountCents":5000,"conditionedOnKey":"` + petKey + `"}`),
+		ContextHint: &processor.ContextHint{Reads: []string{leaseKey, acctKey, petKey}},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	clauseKey := "vtx.clause." + nanoIDFromRequestID(reqID)
+	clauseID := clauseKey[len("vtx.clause."):]
+	petID := petKey[len("vtx.identity."):]
+
+	termsDoc := readDoc(t, ctx, conn, clauseKey+".terms")
+	termsData, _ := termsDoc["data"].(map[string]any)
+	if got, _ := termsData["conditioned"].(bool); !got {
+		t.Fatalf("terms.conditioned = %v, want true", termsData["conditioned"])
+	}
+
+	condLnk := "lnk.clause." + clauseID + ".conditionedOn.identity." + petID
+	if !keyExists(t, ctx, conn, condLnk) {
+		t.Fatalf("conditionedOn link must exist: %s", condLnk)
+	}
+}
+
+// TestCreateClause_ConditionedFee_UnknownConditionVertex rejects a
+// conditionedOnKey naming a vertex that doesn't exist.
+func TestCreateClause_ConditionedFee_UnknownConditionVertex(t *testing.T) {
+	ctx, conn := setupBcEnv(t)
+	cp, cons := newBcPipeline(t, ctx, conn, "condfeeunknown")
+
+	leaseKey := seedLease(t, ctx, conn, "BBLEASECNDUNKHJKMNPQ")
+	acctKey := createAccount(t, ctx, conn, cp, cons, "createacctcondunk01", leaseKey)
+	absentPetKey := "vtx.identity.BBABSENTPETHJKMNPQRS"
+
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("createclausecondunk1"),
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateClause",
+		Actor:         bcActorKey,
+		SubmittedAt:   "2026-07-02T12:00:00Z",
+		Class:         "clause",
+		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","accountKey":"` + acctKey +
+			`","prose":"x","amountCents":5000,"conditionedOnKey":"` + absentPetKey + `"}`),
+		ContextHint: &processor.ContextHint{Reads: []string{leaseKey, acctKey, absentPetKey}},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+}
+
+// TestCreateClause_JudgmentClause_WritesInspectorLinkNoCharge — CreateClause
+// with kind=judgment writes the requiresInspectionBy link, no chargesTo link,
+// and terms carries no amountCents.
+func TestCreateClause_JudgmentClause_WritesInspectorLinkNoCharge(t *testing.T) {
+	ctx, conn := setupBcEnv(t)
+	cp, cons := newBcPipeline(t, ctx, conn, "judgment")
+
+	leaseKey := seedLease(t, ctx, conn, "BBLEASEJUDGMENTHJKMN")
+	inspKey := seedIdentity(t, ctx, conn, "BBAGENTJUDGMENTHJKMN")
+
+	reqID := testutil.GenReqID("createclausejudgment1")
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateClause",
+		Actor:         bcActorKey,
+		SubmittedAt:   "2026-07-02T12:00:00Z",
+		Class:         "clause",
+		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","kind":"judgment",` +
+			`"prose":"Landlord will inspect before move-in.","inspectorKey":"` + inspKey + `"}`),
+		ContextHint: &processor.ContextHint{Reads: []string{leaseKey, inspKey}},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	clauseKey := "vtx.clause." + nanoIDFromRequestID(reqID)
+	clauseID := clauseKey[len("vtx.clause."):]
+	inspID := inspKey[len("vtx.identity."):]
+
+	termsDoc := readDoc(t, ctx, conn, clauseKey+".terms")
+	termsData, _ := termsDoc["data"].(map[string]any)
+	if got, _ := termsData["kind"].(string); got != "judgment" {
+		t.Fatalf("terms.kind = %q, want judgment", got)
+	}
+	if _, ok := termsData["amountCents"]; ok {
+		t.Fatalf("a judgment clause must carry no amountCents, got %v", termsData["amountCents"])
+	}
+
+	inspLnk := "lnk.clause." + clauseID + ".requiresInspectionBy.identity." + inspID
+	if !keyExists(t, ctx, conn, inspLnk) {
+		t.Fatalf("requiresInspectionBy link must exist: %s", inspLnk)
+	}
+
+	// No chargesTo link exists for ANY account under a judgment clause — spot
+	// check there's no chargesTo link namespace collision with the inspector.
+	badChargesLnk := "lnk.clause." + clauseID + ".chargesTo.account." + inspID
+	if keyExists(t, ctx, conn, badChargesLnk) {
+		t.Fatalf("a judgment clause must not write a chargesTo link")
+	}
+}
+
+// TestCreateClause_JudgmentClause_UnknownInspector rejects an inspectorKey
+// naming an identity that doesn't exist.
+func TestCreateClause_JudgmentClause_UnknownInspector(t *testing.T) {
+	ctx, conn := setupBcEnv(t)
+	cp, cons := newBcPipeline(t, ctx, conn, "judgmentunknown")
+
+	leaseKey := seedLease(t, ctx, conn, "BBLEASEJUDGUNKHJKMNP")
+	absentInspKey := "vtx.identity.BBABSENTAGNTHJKMNPQR"
+
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("createclausejudgunk1"),
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateClause",
+		Actor:         bcActorKey,
+		SubmittedAt:   "2026-07-02T12:00:00Z",
+		Class:         "clause",
+		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","kind":"judgment",` +
+			`"prose":"x","inspectorKey":"` + absentInspKey + `"}`),
+		ContextHint: &processor.ContextHint{Reads: []string{leaseKey, absentInspKey}},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+}
+
+// TestInspectPremises_WritesInspectionAspect (the design's Fire V2 judgment
+// e2e path). InspectPremises writes the .inspection aspect on the clause the
+// §10.8 playbook's missing_inspection gap templates.
+func TestInspectPremises_WritesInspectionAspect(t *testing.T) {
+	ctx, conn := setupBcEnv(t)
+	cp, cons := newBcPipeline(t, ctx, conn, "inspectpremises")
+
+	leaseKey := seedLease(t, ctx, conn, "BBLEASECHECKHJKMNPQR")
+	inspKey := seedIdentity(t, ctx, conn, "BBAGENTCHECKHJKMNPQR")
+
+	clauseReqID := testutil.GenReqID("createclauseinspect1")
+	clauseEnv := &processor.OperationEnvelope{
+		RequestID:     clauseReqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateClause",
+		Actor:         bcActorKey,
+		SubmittedAt:   "2026-07-02T12:00:00Z",
+		Class:         "clause",
+		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","kind":"judgment",` +
+			`"prose":"Landlord will inspect before move-in.","inspectorKey":"` + inspKey + `"}`),
+		ContextHint: &processor.ContextHint{Reads: []string{leaseKey, inspKey}},
+	}
+	testutil.PublishOp(t, conn, clauseEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+	clauseKey := "vtx.clause." + nanoIDFromRequestID(clauseReqID)
+
+	inspectEnv := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("inspectpremises00001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "InspectPremises",
+		Actor:         bcActorKey,
+		SubmittedAt:   "2026-07-02T13:00:00Z",
+		Class:         "clause",
+		Payload:       json.RawMessage(`{"clauseKey":"` + clauseKey + `"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{clauseKey}},
+	}
+	testutil.PublishOp(t, conn, inspectEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	inspDoc := readDoc(t, ctx, conn, clauseKey+".inspection")
+	inspData, _ := inspDoc["data"].(map[string]any)
+	if got, _ := inspData["completed"].(bool); !got {
+		t.Fatalf("inspection.completed = %v, want true", inspData["completed"])
+	}
+	if _, ok := inspData["completedAt"]; !ok {
+		t.Fatalf("inspection.completedAt must be stamped, got %v", inspData)
+	}
+}
+
+// TestInspectPremises_AlreadyInspected_Rejected — a second InspectPremises
+// against the same clause is rejected (CreateOnly once-only write, mirrors
+// SignLease's AlreadySigned check).
+func TestInspectPremises_AlreadyInspected_Rejected(t *testing.T) {
+	ctx, conn := setupBcEnv(t)
+	cp, cons := newBcPipeline(t, ctx, conn, "inspecttwice")
+
+	leaseKey := seedLease(t, ctx, conn, "BBLEASECHECKTWCEHJKM")
+	inspKey := seedIdentity(t, ctx, conn, "BBAGENTCHECKTWCEHJKM")
+
+	clauseReqID := testutil.GenReqID("createclauseinstwic1")
+	clauseEnv := &processor.OperationEnvelope{
+		RequestID:     clauseReqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateClause",
+		Actor:         bcActorKey,
+		SubmittedAt:   "2026-07-02T12:00:00Z",
+		Class:         "clause",
+		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","kind":"judgment",` +
+			`"prose":"x","inspectorKey":"` + inspKey + `"}`),
+		ContextHint: &processor.ContextHint{Reads: []string{leaseKey, inspKey}},
+	}
+	testutil.PublishOp(t, conn, clauseEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+	clauseKey := "vtx.clause." + nanoIDFromRequestID(clauseReqID)
+
+	firstInspectEnv := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("inspecttwice0000001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "InspectPremises",
+		Actor:         bcActorKey,
+		SubmittedAt:   "2026-07-02T13:00:00Z",
+		Class:         "clause",
+		Payload:       json.RawMessage(`{"clauseKey":"` + clauseKey + `"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{clauseKey}},
+	}
+	testutil.PublishOp(t, conn, firstInspectEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	secondInspectEnv := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("inspecttwice0000002"),
+		Lane:          processor.LaneDefault,
+		OperationType: "InspectPremises",
+		Actor:         bcActorKey,
+		SubmittedAt:   "2026-07-02T14:00:00Z",
+		Class:         "clause",
+		Payload:       json.RawMessage(`{"clauseKey":"` + clauseKey + `"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{clauseKey, clauseKey + ".inspection"}},
+	}
+	testutil.PublishOp(t, conn, secondInspectEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
 }
 
 // TestDebitAccount_NoClauseRef_Unaffected (regression) — a plain DebitAccount

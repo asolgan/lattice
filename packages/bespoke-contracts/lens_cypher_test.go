@@ -11,6 +11,10 @@ package bespokecontracts
 //     missing_charge false (converged; the row lingers non-violating per
 //     the design's R3 v1 constraint, never deleted).
 //   - one row per anchor even with the chargesTo account linked.
+//   - CONDITIONED: a live conditionedOn link gates the charge; an absent one
+//     (never conditioned, or the target vertex tombstoned) suppresses it.
+//   - JUDGMENT: an assigned inspector with no .inspection aspect yet is
+//     violating (missing_inspection); recording the inspection converges it.
 
 import (
 	"context"
@@ -135,12 +139,12 @@ func (f *bcFixture) projectAt(t *testing.T, clauseName string) []ruleengine.Proj
 	return out
 }
 
-// mkClause seeds one clause with .terms{amountCents} + .status{active}, linked
-// to a charged account.
+// mkClause seeds one unconditioned computational clause with .terms{amountCents}
+// + .status{active}, linked to a charged account.
 func (f *bcFixture) mkClause(t *testing.T, name string, amountCents float64) {
 	t.Helper()
 	f.vtx(t, name, "clause")
-	f.aspect(t, name, "terms", "clauseTerms", map[string]any{"kind": "computational", "amountCents": amountCents, "period": "oneTime"})
+	f.aspect(t, name, "terms", "clauseTerms", map[string]any{"kind": "computational", "conditioned": false, "amountCents": amountCents, "period": "oneTime"})
 	f.aspect(t, name, "status", "clauseStatus", map[string]any{"state": "active"})
 	f.vtx(t, name+"_acct", "account")
 	f.edge(t, "chargesTo", name, name+"_acct")
@@ -163,6 +167,29 @@ func TestClauseSatisfaction_Uncharged(t *testing.T) {
 	require.Equal(t, "vtx.account."+f.ids["clause1_acct"], v["accountKey"])
 	require.Equal(t, 4500.0, v["amountCents"])
 	require.Equal(t, true, v["missing_charge"], "no authorizedBy transaction yet — violating")
+	require.Equal(t, true, v["violating"])
+}
+
+// TestClauseSatisfaction_LegacyNoConditionedField — a pre-Fire-V2 clause
+// whose .terms aspect has no `conditioned` key at all (Fire V1's exact
+// shape): missing_charge must still gate purely on chargeCount, the same as
+// an explicitly-unconditioned (conditioned:false) clause. Regression test for
+// a real bug this fire's review caught: `conditioned = false` treats a null
+// `conditioned` as NOT matching (nil never equals false), which silently
+// suppressed the charge for every legacy clause forever; the fix compares
+// `conditioned <> true` instead.
+func TestClauseSatisfaction_LegacyNoConditionedField(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newBcFixture(t)
+	f.vtx(t, "legacyclause", "clause")
+	f.aspect(t, "legacyclause", "terms", "clauseTerms", map[string]any{"kind": "computational", "amountCents": 4500.0, "period": "oneTime"})
+	f.vtx(t, "legacyclause_acct", "account")
+	f.edge(t, "chargesTo", "legacyclause", "legacyclause_acct")
+
+	v := f.projectAt(t, "legacyclause")[0].Values
+	require.Equal(t, true, v["missing_charge"], "a legacy clause with no conditioned field must still charge")
 	require.Equal(t, true, v["violating"])
 }
 
@@ -192,11 +219,11 @@ func TestClauseSatisfaction_TwoClausesSameAccount(t *testing.T) {
 	f.vtx(t, "acct", "account")
 
 	f.vtx(t, "clauseA", "clause")
-	f.aspect(t, "clauseA", "terms", "clauseTerms", map[string]any{"kind": "computational", "amountCents": 1000.0, "period": "oneTime"})
+	f.aspect(t, "clauseA", "terms", "clauseTerms", map[string]any{"kind": "computational", "conditioned": false, "amountCents": 1000.0, "period": "oneTime"})
 	f.edge(t, "chargesTo", "clauseA", "acct")
 
 	f.vtx(t, "clauseB", "clause")
-	f.aspect(t, "clauseB", "terms", "clauseTerms", map[string]any{"kind": "computational", "amountCents": 2000.0, "period": "oneTime"})
+	f.aspect(t, "clauseB", "terms", "clauseTerms", map[string]any{"kind": "computational", "conditioned": false, "amountCents": 2000.0, "period": "oneTime"})
 	f.edge(t, "chargesTo", "clauseB", "acct")
 	f.vtx(t, "txB", "transaction")
 	f.edge(t, "authorizedBy", "txB", "clauseB")
@@ -209,3 +236,88 @@ func TestClauseSatisfaction_TwoClausesSameAccount(t *testing.T) {
 	require.Equal(t, false, vb["missing_charge"], "clauseB's own charge converges it")
 	require.Equal(t, 2000.0, vb["amountCents"])
 }
+
+// TestClauseSatisfaction_ConditionedFee_TargetLive — a conditionedOn link to
+// a live vertex (e.g. a pet record): missing_charge behaves like an
+// unconditioned clause while the condition holds.
+func TestClauseSatisfaction_ConditionedFee_TargetLive(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newBcFixture(t)
+	f.vtx(t, "petclause", "clause")
+	f.aspect(t, "petclause", "terms", "clauseTerms", map[string]any{"kind": "computational", "conditioned": true, "amountCents": 5000.0, "period": "oneTime"})
+	f.vtx(t, "petclause_acct", "account")
+	f.edge(t, "chargesTo", "petclause", "petclause_acct")
+	f.vtx(t, "petclause_pet", "pet")
+	f.edge(t, "conditionedOn", "petclause", "petclause_pet")
+
+	v := f.projectAt(t, "petclause")[0].Values
+	require.Equal(t, true, v["missing_charge"], "condition target is live and no charge yet — violating")
+	require.Equal(t, true, v["violating"])
+}
+
+// TestClauseSatisfaction_ConditionedFee_TargetAbsent — the conditionedOn
+// vertex was never linked (or has since been tombstoned, which the full
+// engine's fetchNode already filters the same as absent — Contract #1):
+// missing_charge stays false, the condition never holds.
+func TestClauseSatisfaction_ConditionedFee_TargetAbsent(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newBcFixture(t)
+	f.vtx(t, "nopetclause", "clause")
+	f.aspect(t, "nopetclause", "terms", "clauseTerms", map[string]any{"kind": "computational", "conditioned": true, "amountCents": 5000.0, "period": "oneTime"})
+	f.vtx(t, "nopetclause_acct", "account")
+	f.edge(t, "chargesTo", "nopetclause", "nopetclause_acct")
+	// Deliberately no conditionedOn edge — the condition was declared
+	// (conditioned=true) but its target vertex is gone, mirroring what a
+	// tombstoned condition target looks like to this lens (fetchNode filters
+	// isDeleted, so a tombstoned target and a never-linked one are
+	// indistinguishable to the OPTIONAL MATCH).
+
+	v := f.projectAt(t, "nopetclause")[0].Values
+	require.Equal(t, false, v["missing_charge"], "conditioned but the target is gone — the fee never opens")
+	require.Equal(t, false, v["violating"])
+}
+
+// TestClauseSatisfaction_JudgmentClause_Uninspected — an assigned inspector,
+// no .inspection aspect yet: missing_inspection true, no amountCents/accountKey
+// (a judgment clause charges nothing).
+func TestClauseSatisfaction_JudgmentClause_Uninspected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newBcFixture(t)
+	f.vtx(t, "judgeclause", "clause")
+	f.aspect(t, "judgeclause", "terms", "clauseTerms", map[string]any{"kind": "judgment", "conditioned": false, "period": "oneTime"})
+	f.vtx(t, "judgeclause_insp", "identity")
+	f.edge(t, "requiresInspectionBy", "judgeclause", "judgeclause_insp")
+
+	v := f.projectAt(t, "judgeclause")[0].Values
+	require.Equal(t, "vtx.identity."+f.ids["judgeclause_insp"], v["inspectorKey"])
+	require.Nil(t, v["accountKey"], "a judgment clause charges no account")
+	require.Nil(t, v["amountCents"])
+	require.Equal(t, false, v["missing_charge"], "no account to charge — never gates on the charge axis")
+	require.Equal(t, true, v["missing_inspection"], "no .inspection aspect yet — violating")
+	require.Equal(t, true, v["violating"])
+}
+
+// TestClauseSatisfaction_JudgmentClause_Inspected — InspectPremises has
+// recorded the .inspection aspect: missing_inspection false, converged.
+func TestClauseSatisfaction_JudgmentClause_Inspected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newBcFixture(t)
+	f.vtx(t, "doneclause", "clause")
+	f.aspect(t, "doneclause", "terms", "clauseTerms", map[string]any{"kind": "judgment", "conditioned": false, "period": "oneTime"})
+	f.vtx(t, "doneclause_insp", "identity")
+	f.edge(t, "requiresInspectionBy", "doneclause", "doneclause_insp")
+	f.aspect(t, "doneclause", "inspection", "clauseInspection", map[string]any{"completed": true, "completedAt": "2026-07-02T12:00:00Z"})
+
+	v := f.projectAt(t, "doneclause")[0].Values
+	require.Equal(t, false, v["missing_inspection"], "the .inspection aspect exists — converged")
+	require.Equal(t, false, v["violating"])
+}
+

@@ -1,12 +1,13 @@
 name: bespoke-contracts
-version: 0.1.0
+version: 0.2.0
 description: |
-  LoftSpace "Executable Paper" reference package (Fire V1 — fixed/one-time
-  computational clause): the clause vertex type (CreateClause, .prose/.terms/
-  .status aspects, governs + chargesTo links) + the clauseSatisfaction
-  actorAggregate convergence lens (§10.2, missing_charge = no authorizedBy
-  transaction yet) + the §10.8 playbook dispatching directOp(DebitAccount) on
-  the gap. Depends lease-signing + loftspace-ledger.
+  LoftSpace "Executable Paper" reference package (Fires V1+V2 — fixed/one-time
+  computational, conditioned, and judgment clauses): the clause vertex type
+  (CreateClause, .prose/.terms/.status/.clauseInspection aspects, governs +
+  chargesTo/requiresInspectionBy/conditionedOn links) + the clauseSatisfaction
+  actorAggregate convergence lens (§10.2, missing_charge/missing_inspection) +
+  the §10.8 playbook dispatching directOp(DebitAccount)/assignTask
+  (InspectPremises) on the gaps. Depends lease-signing + loftspace-ledger.
 depends:
   - lease-signing
   - loftspace-ledger
@@ -20,6 +21,8 @@ declares:
       class: meta.ddl.aspectType
     - canonicalName: clauseStatus
       class: meta.ddl.aspectType
+    - canonicalName: clauseInspection
+      class: meta.ddl.aspectType
   lenses:
     - canonicalName: clauseSatisfaction
       adapter: nats-kv
@@ -29,8 +32,12 @@ declares:
     - operationType: CreateClause
       scope: any
       grantsTo: [operator]
+    - operationType: InspectPremises
+      scope: any
+      grantsTo: [operator]
   weaverTargets:
     - targetId: clauseSatisfaction
       lensRef: clauseSatisfaction
   opMetas:
     - operationType: CreateClause
+    - operationType: InspectPremises

@@ -2,12 +2,18 @@ package bespokecontracts
 
 import "github.com/asolgan/lattice/internal/pkgmgr"
 
-// OpMetas declares CreateClause discoverable as a forOperation target
-// (the lease-signing idiom — functionally optional here since CreateClause
-// is never an assignTask target, but declared for uniform discoverability).
+// OpMetas declares the op-meta vertices that make ops forOperation-resolvable.
+//
+//   - CreateClause — declared for uniform discoverability (functionally
+//     optional; CreateClause is never an assignTask target itself).
+//   - InspectPremises — REQUIRED: the assignTask operation the §10.8
+//     playbook's missing_inspection gap binds; the Weaver Actuator resolves
+//     forOperation to its op-meta when it creates the remediation Task
+//     (the SignLease precedent). Its absence would break the gap.
 func OpMetas() []pkgmgr.OpMetaSpec {
 	return []pkgmgr.OpMetaSpec{
 		{OperationType: "CreateClause"},
+		{OperationType: "InspectPremises"},
 	}
 }
 
@@ -20,7 +26,13 @@ func Permissions() []pkgmgr.PermissionSpec {
 		{
 			OperationType: "CreateClause",
 			Scope:         "any",
-			Note:          "Grants the operator the right to submit CreateClause (installs a bespoke-contract clause governing a lease and charging a ledger account).",
+			Note:          "Grants the operator the right to submit CreateClause (installs a bespoke-contract clause governing a lease and charging a ledger account, or a judgment clause assigning an inspector).",
+			GrantsTo:      []string{"operator"},
+		},
+		{
+			OperationType: "InspectPremises",
+			Scope:         "any",
+			Note:          "Grants the operator the right to submit InspectPremises; the assigned inspector performs it via the ephemeral task grant (§10.7) — same operator model as SignLease.",
 			GrantsTo:      []string{"operator"},
 		},
 	}

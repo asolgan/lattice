@@ -3,7 +3,7 @@ package bespokecontracts
 import "github.com/asolgan/lattice/internal/pkgmgr"
 
 // WeaverTargets returns the package's meta.weaverTarget playbook (Contract
-// #10 §10.8). The single gap → remediation:
+// #10 §10.8). Two independent gaps → remediation:
 //
 //   - missing_charge → directOp(DebitAccount) over the charged account
 //     (row.accountKey). Params route the computed amount (row.amountCents,
@@ -16,6 +16,12 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //     only params/target/reads are row-templated (the objectLiveness →
 //     TombstoneObject / appointmentReminders → RecordAppointmentReminder
 //     precedent, granted to operator, which Weaver's service actor holds).
+//   - missing_inspection → assignTask(InspectPremises) to the assigned
+//     inspector (row.inspectorKey), scoped to the clause (row.clauseKey) —
+//     the same shape as lease-signing's missing_signature → assignTask
+//     SignLease. Opens a stable-id Task; the inspector completes it by
+//     submitting InspectPremises, which the clause DDL's own script handles
+//     (mirrors SignLease acting on its own leaseapp).
 //
 // Every row.<col> template is a clauseSatisfaction BodyColumn — the
 // §10.2↔§10.8 column seam, cross-checked by
@@ -32,6 +38,12 @@ func WeaverTargets() []pkgmgr.WeaverTargetSpec {
 					Target:    "row.accountKey",
 					Params:    map[string]string{"amountCents": "row.amountCents", "clauseRef": "row.clauseKey"},
 					Reads:     []string{"row.accountKey", "row.clauseKey"},
+				},
+				"missing_inspection": {
+					Action:    "assignTask",
+					Operation: "InspectPremises",
+					Assignee:  "row.inspectorKey",
+					Target:    "row.clauseKey",
 				},
 			},
 		},
