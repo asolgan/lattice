@@ -1,6 +1,12 @@
 # Lens projection liveness — per-lens projection lag + freshness, for every lens (not just auth-plane)
 
-**Status: 📐 awaiting-Andrew (ratification)**
+**Status: ✅ Andrew-ratified (2026-07-02) — `LensProjectionStalled` ships OFF (the §5.3 call); fires
+collapsed to ONE in this lane (instrument + backstop) per the fewer-larger rule; the freshness UI
+rides the Loupe lane's F5 (§8).** Ratification condition answered in §5.7: single-instance Refractor
+is the deployed topology (HA multi-instance is a shelved design with no driver); under a future
+fan-out the alert core (NumPending on the lens's durable) is instance-agnostic and stays correct,
+while the per-lens Entry (bare-ruleID key) and the heartbeat `lensLiveness` map need the HA design's
+lens-ownership rule — recorded in §5.6 as an explicit inherited seam.
 **Author:** Winston (Designer fire, 2026-06-30)
 **Backlog:** Stream-2 Read-model / projection maturity — *[Refractor/Loupe] Silent lens-projection stall is undetectable* (★★, M; clinic-PO-filed 2026-06-30)
 **Owning components:** `internal/refractor/{pipeline,health}` (signal production), `cmd/refractor/main.go` (wiring), `cmd/loupe/{health.go,systemmap.go,web/app.js}` (display). Docs: `docs/components/refractor.md` + `docs/observability/health-kv-schema.md`.
@@ -172,7 +178,21 @@ A `rebuilding` lens legitimately has high lag and no recent projection; the `eva
 ### 5.5 `LagPoller`-stall blind spot — **partially closed, honestly bounded**
 If the `LagPoller` goroutine itself dies, the per-lens Entry stops updating — today invisible. The **instance heartbeat** path (§3.3) reads `Progress()` and `Pending()` **live** every beat (independent of the LagPoller), so the *backstop alert* survives a LagPoller death. The per-lens *Entry* freshness would still stale; Fire 1 makes that staleness **visible** in Loupe via the Entry's `lastUpdated` age (a stale lens Entry now renders as stale rather than green). A dedicated LagPoller-liveness watchdog is out of scope (diminishing returns; the heartbeat backstop already covers the operhe-facing alert).
 
-### 5.6 Threshold defaults — **inherit the cap path's, deployment-overridable**
+### 5.6 Multi-instance Refractor (Andrew's ratification question, 2026-07-02) — **not a concern today; one seam inherited by the HA design**
+Single-instance Refractor is the deployed and designed-for topology (the HA-NATS clustering design —
+"clustering + multi-instance engine fan-out" — is ✅ ratified but 🗄️ shelved with no prod driver).
+Under a future multi-instance fan-out: **the alert core is instance-agnostic** — `ProjectionLag` is
+NumPending on the lens's durable consumer, a consumer-level metric that reads identically from any
+instance, so the wedge alert stays correct under any topology. Two **display** seams depend on the HA
+design's lens-ownership rule: (a) the per-lens `health.Entry` is keyed by bare ruleID (deliberately
+lens-scoped, not instance-scoped) — with work-shared durables, two instances' `lastProjectedAt`
+flushes would last-writer-wins each other (each instance only observes its own writes; the clock could
+regress). One-writer-per-lens (the owning instance) resolves it, and is the shape HA's fan-out
+partitioning already implies; a max-merge or per-instance sub-keys are the fallbacks. (b) each
+instance's heartbeat `metrics.lensLiveness` covers only the lenses its registry hosts — correct under
+partitioning by construction. **Inherited seam recorded for the HA design; nothing to build here.**
+
+### 5.7 Threshold defaults — **inherit the cap path's, deployment-overridable**
 Threshold 100 events, raise-cycles 3 (≈30s sustained at the 10s floor), clear-band = raise (overridable). These are the cap path's battle-tested defaults; reusing them avoids a fresh tuning exercise and keeps one mental model. All overridable via the heartbeater fields (mirroring `CapabilityLensLag*`).
 
 ---
@@ -197,7 +217,7 @@ Threshold 100 events, raise-cycles 3 (≈30s sustained at the 10s floor), clear-
 |---|---|
 | **Double-issuing auth-plane lenses** | Avoided by scoping the general path to non-auth-plane lenses (§5.1). The cap path stays canonical for capability lenses. |
 | **Write amplification** if `lastProjectedAt` were written per projection | Avoided — flushed on the existing 5s LagPoller cycle from in-process `Progress()` (§3.2). Zero new writes/goroutines. |
-| **Flapping** on bursty lenses | The same hysteresis (raise-after-N + clear-band) that tamed the cap path; reused verbatim (§5.6). |
+| **Flapping** on bursty lenses | The same hysteresis (raise-after-N + clear-band) that tamed the cap path; reused verbatim (§5.7). |
 | **False positive on quiet lenses** | The auto-alert keys on NumPending (0 for quiet), never `lastProjectedAt` age (§5.2). |
 | **Alt: a separate "projection-stall" Weaver convergence target** (on-platform, not health-plane) | Rejected for now — that's the deferred closed-loop auditor (#96 / FR54). It needs an honest per-lens liveness *signal* to converge on, which is exactly what this design produces. Health-plane first, on-platform remediation later. This design is its prerequisite, not its competitor. |
 | **Alt: implement §5.4's `cdc_lag_p99_ms_ by_lens` literally (a time-lag, not seq-lag)** | A wall-clock CDC-lag (now − event-commit-time) is a strictly *richer* metric but needs the committing op's timestamp threaded through the CDC payload to every lens and is sensitive to clock skew. The seq-lag (NumPending) + `lastProjectedAt` pair answers the operator's question ("behind by how many / how stale") with data already in hand. A true time-lag is a clean follow-on once a need is shown; not required to close this gap. |
@@ -214,12 +234,20 @@ Each fire is independently shippable, independently valuable, and lands green. B
 - **Fire 2 — Generalized liveness backstop (auto-alert the wedge).**
   Add the sibling `LensProvider` (non-auth-plane) in `cmd/refractor/main.go` + `LatticeHeartbeater.evalLenses` reusing `evalLagHysteresis`/issue-reconciliation; emit `LensProjectionLagging` (lag) + `LensProjectionPaused` (paused) → degrade the Refractor heartbeat `status`. refractor.md health-table row added. **Value alone:** a stalled/wedged business lens now degrades the Refractor heartbeat → the Lamplighter classifies it and Loupe's component card/system-map node goes yellow **via the existing `componentLiveness` fusion** (no Loupe change). *Green: heartbeater unit tests mirroring `caplens_alert_test.go`; cap path untouched.*
 
-- **Fire 3 — Loupe lens freshness column + per-lens issue rows.**
-  `cmd/loupe/health.go` (`kindLens`) renders `freshness(lastProjectedAt)` (fallback `lastUpdated` → `-`), prefers `projectionLag`; render the per-lens `metrics.lensLiveness` freshness on lens rows; `app.js` shows the column. **Value alone:** the operator sees the freshness clock per lens — the exact column the clinic PO found stuck at `-`. *Green: Loupe handler + JS + `health_test.go`.*
+- **Fire 3 — MOVED TO THE LOUPE LANE (2026-07-02, Loupe 2.0 reconciliation).** `cmd/loupe/**` is
+  Stream 3's territory and the Loupe 2.0 program already lists this exact feed on its board ("lens
+  freshness (F5's slot) ← lattice.md silent lens-projection stall"): **F5's Lens page owns the
+  freshness rendering.** This design's contract with Loupe is the Health-KV data alone — the per-lens
+  Entry fields + the heartbeat `metrics.lensLiveness` sub-map (and the component-card alert already
+  surfaces with zero Loupe change via the existing `componentLiveness` fusion). No `cmd/loupe` edit
+  ships from this lane.
 
 - **Fire 4 (optional, flagged §5.3) — `LensProjectionStalled` combined rule, defaulted off** behind a `LensStallDetect` config flag. Only build if Andrew opts in (§5.3). *Green: heartbeater unit test for the combined predicate.*
 
-Recommended order: 1 → 2 → 3 (each green). Fire 4 only on Andrew's opt-in.
+**Fire collapse (2026-07-02, Andrew's fewer-larger-fires rule):** Fires 1 + 2 ship as **ONE fire**
+(instrument + backstop — same plane, `internal/refractor` + `cmd/refractor` wiring, and the backstop
+is the instrument's consumer; coupled-ships-together). Net: **one fire in this lane**; the freshness
+column rides the Loupe lane's F5; Fire 4 stays an Andrew-gated option.
 
 ---
 
