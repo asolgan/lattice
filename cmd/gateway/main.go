@@ -9,26 +9,38 @@
 // and docs/components/gateway.md.
 //
 // FAIL-CLOSED KEY LOADING (design §6 / F3): the external write surface
-// refuses to start unless at least one trusted JWT public key is configured.
-// GATEWAY_JWT_KEYS_DIR points at a directory of "<kid>.pem" SubjectPublicKeyInfo
-// files (a static snapshot of the deployment's IdP JWKS — full JWKS HTTP
-// polling with kid-keyed rotation is a follow-up). GATEWAY_DEV_MODE=true
-// ADDITIONALLY trusts the checked-in dev key (deploy/gateway-dev-key/,
-// kid "dev") for local development only — mint a token with
-// `gateway dev-token -sub <identityNanoID>`. A prod deployment never sets
-// GATEWAY_DEV_MODE.
+// refuses to start unless at least one trusted JWT public key is configured
+// — from a static snapshot (GATEWAY_JWT_KEYS_DIR), a live JWKS endpoint
+// (GATEWAY_JWKS_URL), or the dev key (GATEWAY_DEV_MODE), in any combination.
+// GATEWAY_DEV_MODE=true ADDITIONALLY trusts the checked-in dev key
+// (deploy/gateway-dev-key/, kid "dev") for local development only — mint a
+// token with `gateway dev-token -sub <identityNanoID>`. A prod deployment
+// never sets GATEWAY_DEV_MODE.
+//
+// JWKS LIVE ROTATION (design §8 Fire 2 remainder): when GATEWAY_JWKS_URL is
+// set, the Gateway fetches it once at startup (fail-closed: a failed initial
+// fetch with no other keys configured refuses to start) and then polls it in
+// the background (auth.JWKSPoller), hot-swapping the trusted kid→key set on
+// each successful fetch — a rotated IdP signing key is picked up without a
+// restart. A JWKS URL must be https:// unless GATEWAY_DEV_MODE=true (mirrors
+// the dev-key profile gate: a plaintext-HTTP key source is a dev-only
+// posture). Static-dir/dev keys are always merged into every poll — a JWKS
+// response can add/retire IdP keys but can never un-trust an
+// operator-configured key.
 //
 // Environment:
 //
-//	GATEWAY_ADDR           HTTP listen address (default: :8080)
-//	NATS_URL               NATS server URL (default: nats://localhost:4222)
-//	NATS_NKEY / NATS_CREDS Gateway's own NATS credential (the #75 "gateway" user)
-//	GATEWAY_JWT_KEYS_DIR   directory of <kid>.pem trusted public keys (prod IdP snapshot)
-//	GATEWAY_JWT_ISSUER     optional; required `iss` claim value
-//	GATEWAY_JWT_AUDIENCE   optional; required `aud` claim member
-//	GATEWAY_DEV_MODE       "true" to additionally trust the checked-in dev key (dev/CI only)
-//	GATEWAY_DEV_KEY_PATH   override the dev public-key path (default: deploy/gateway-dev-key/dev-public.pem)
-//	HEALTH_KV_BUCKET       Health KV bucket name (default: health-kv)
+//	GATEWAY_ADDR              HTTP listen address (default: :8080)
+//	NATS_URL                  NATS server URL (default: nats://localhost:4222)
+//	NATS_NKEY / NATS_CREDS    Gateway's own NATS credential (the #75 "gateway" user)
+//	GATEWAY_JWT_KEYS_DIR      directory of <kid>.pem trusted public keys (static IdP snapshot)
+//	GATEWAY_JWKS_URL          IdP JWKS endpoint (https://…) — polled for kid-keyed key rotation
+//	GATEWAY_JWKS_POLL_INTERVAL poll interval (default 5m, floor 30s; Go duration syntax e.g. "2m")
+//	GATEWAY_JWT_ISSUER        optional; required `iss` claim value
+//	GATEWAY_JWT_AUDIENCE      optional; required `aud` claim member
+//	GATEWAY_DEV_MODE          "true" to additionally trust the checked-in dev key + allow a non-https JWKS URL (dev/CI only)
+//	GATEWAY_DEV_KEY_PATH      override the dev public-key path (default: deploy/gateway-dev-key/dev-public.pem)
+//	HEALTH_KV_BUCKET          Health KV bucket name (default: health-kv)
 //
 // Logs to stderr in slog text format.
 package main
@@ -43,6 +55,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -65,6 +78,7 @@ const (
 	defaultDevPublicKeyPath  = "deploy/gateway-dev-key/dev-public.pem"
 	defaultDevPrivateKeyPath = "deploy/gateway-dev-key/dev-private.pem"
 	devKeyID                 = "dev"
+	initialJWKSFetchTimeout  = 15 * time.Second
 )
 
 func main() {
@@ -87,14 +101,48 @@ func run(logger *slog.Logger) error {
 	addr := envOrDefault("GATEWAY_ADDR", defaultAddr)
 	natsURL := envOrDefault("NATS_URL", nats.DefaultURL)
 	devMode := envOrDefault("GATEWAY_DEV_MODE", "false") == "true"
+	jwksURL := os.Getenv("GATEWAY_JWKS_URL")
 
-	keys, err := loadTrustedKeys(devMode, logger)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	staticKeys, err := loadTrustedKeys(devMode, logger)
 	if err != nil {
 		return fmt.Errorf("load trusted JWT keys: %w", err)
 	}
+
+	keys := make(map[string]crypto.PublicKey, len(staticKeys))
+	for kid, k := range staticKeys {
+		keys[kid] = k
+	}
+
+	if jwksURL != "" {
+		if err := validateJWKSURL(jwksURL, devMode); err != nil {
+			return err
+		}
+		fetchCtx, cancel := context.WithTimeout(ctx, initialJWKSFetchTimeout)
+		jwksKeys, skipped, ferr := auth.FetchJWKS(fetchCtx, jwksURL, nil)
+		cancel()
+		for _, s := range skipped {
+			logger.Warn("gateway: JWKS entry skipped", "reason", s)
+		}
+		if ferr != nil {
+			if len(staticKeys) == 0 {
+				return fmt.Errorf("initial JWKS fetch from %q failed and no static/dev keys are configured: %w", jwksURL, ferr)
+			}
+			logger.Warn("initial JWKS fetch failed; starting with static/dev keys only, will retry on the poll interval",
+				"url", jwksURL, "error", ferr)
+		} else {
+			for kid, k := range jwksKeys {
+				keys[kid] = k
+			}
+		}
+	}
+
 	if len(keys) == 0 {
 		return errors.New("no trusted JWT keys configured — refusing to start the external write surface " +
-			"(set GATEWAY_JWT_KEYS_DIR to an IdP public-key snapshot, or GATEWAY_DEV_MODE=true for local dev)")
+			"(set GATEWAY_JWT_KEYS_DIR to an IdP public-key snapshot, GATEWAY_JWKS_URL to a live IdP JWKS endpoint, " +
+			"or GATEWAY_DEV_MODE=true for local dev)")
 	}
 
 	verifier, err := auth.NewVerifier(auth.Config{
@@ -104,6 +152,16 @@ func run(logger *slog.Logger) error {
 	})
 	if err != nil {
 		return fmt.Errorf("build JWT verifier: %w", err)
+	}
+
+	if jwksURL != "" {
+		interval, ierr := parsePollInterval(os.Getenv("GATEWAY_JWKS_POLL_INTERVAL"))
+		if ierr != nil {
+			return fmt.Errorf("parse GATEWAY_JWKS_POLL_INTERVAL: %w", ierr)
+		}
+		poller := auth.NewJWKSPoller(jwksURL, verifier, staticKeys, interval, logger)
+		go poller.Run(ctx)
+		logger.Info("JWKS polling enabled", "url", jwksURL, "interval", interval)
 	}
 
 	conn, err := substrate.Connect(context.Background(), substrate.ConnectOpts{
@@ -152,9 +210,6 @@ func run(logger *slog.Logger) error {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
 	hb := gateway.NewHeartbeater(conn, envOrDefault("HEALTH_KV_BUCKET", defaultHealthBucket), instance, metrics, logger)
 	go hb.Run(ctx)
 
@@ -180,6 +235,32 @@ func run(logger *slog.Logger) error {
 	case err := <-errCh:
 		return err
 	}
+}
+
+// validateJWKSURL enforces the JWKS transport profile gate: a live key
+// source must be https:// (an IdP's JWKS is precisely the thing establishing
+// trust — fetching it over plaintext HTTP is a MITM-key-injection surface),
+// unless devMode explicitly opts into a local/plaintext JWKS fixture (mirrors
+// the dev-key profile gate in loadTrustedKeys).
+func validateJWKSURL(rawURL string, devMode bool) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("parse GATEWAY_JWKS_URL %q: %w", rawURL, err)
+	}
+	if u.Scheme != "https" && !devMode {
+		return fmt.Errorf("GATEWAY_JWKS_URL %q must be https:// in prod (set GATEWAY_DEV_MODE=true to allow %q for local dev)",
+			rawURL, u.Scheme)
+	}
+	return nil
+}
+
+// parsePollInterval parses GATEWAY_JWKS_POLL_INTERVAL. An empty string
+// yields 0, which auth.NewJWKSPoller treats as "use the default."
+func parsePollInterval(raw string) (time.Duration, error) {
+	if strings.TrimSpace(raw) == "" {
+		return 0, nil
+	}
+	return time.ParseDuration(raw)
 }
 
 // loadTrustedKeys builds the kid→public-key map the Verifier trusts. See the

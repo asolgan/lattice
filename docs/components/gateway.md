@@ -65,16 +65,25 @@ HTTP POST /v1/operations        1. Bearer-authenticate (auth.Authenticator)
 ## Fail-closed JWT key loading
 
 The external write surface **refuses to start** unless at least one trusted public key is configured —
-"no IdP ⇒ no external writes," never a silent anonymous fallback.
+"no IdP ⇒ no external writes," never a silent anonymous fallback. Any combination of the three sources
+below may be configured; the trusted set is their union.
 
-- `GATEWAY_JWT_KEYS_DIR` — a directory of `<kid>.pem` SubjectPublicKeyInfo files, the prod posture: a
-  static snapshot of the deployment's IdP JWKS. (Full JWKS HTTP polling with live kid-keyed rotation is
-  a follow-up fire; today an operator refreshes the snapshot and restarts.)
+- `GATEWAY_JWT_KEYS_DIR` — a directory of `<kid>.pem` SubjectPublicKeyInfo files: a **static** snapshot
+  of the deployment's IdP JWKS. An operator refreshes the snapshot and restarts to rotate.
+- `GATEWAY_JWKS_URL` — a **live** IdP JWKS endpoint (`https://…`; `http://` is refused unless
+  `GATEWAY_DEV_MODE=true`, the same profile gate the dev key uses). Fetched once at startup — a failed
+  initial fetch with no other key source configured refuses to start (fail-closed) — then polled in the
+  background (`GATEWAY_JWKS_POLL_INTERVAL`, default 5m, floor 30s) and **hot-swapped** into the Verifier
+  (`auth.JWKSPoller`): a rotated IdP signing key is picked up with **no Gateway restart**. A poll
+  failure (network blip, IdP hiccup) logs and **keeps the last-known-good key set** — fail-safe, not
+  fail-closed, once already serving traffic. `GATEWAY_JWT_KEYS_DIR`/dev keys are re-merged into every
+  poll, so a JWKS response can add or retire IdP keys but can never un-trust an operator-configured key.
 - `GATEWAY_DEV_MODE=true` — **additionally** trusts the checked-in dev key
-  (`deploy/gateway-dev-key/`, kid `"dev"`, DEV-ONLY like the NATS dev nkeys). Mint a token:
-  `bin/gateway dev-token -sub <identityNanoID>`. **Never set in production** — the dev key only loads
-  when this flag is explicitly true.
-- Neither configured → `run()` returns an error before the HTTP listener starts.
+  (`deploy/gateway-dev-key/`, kid `"dev"`, DEV-ONLY like the NATS dev nkeys) and allows a plaintext-HTTP
+  `GATEWAY_JWKS_URL`. Mint a token: `bin/gateway dev-token -sub <identityNanoID>`. **Never set in
+  production.**
+- None configured (and the initial JWKS fetch, if attempted, fails) → `run()` returns an error before
+  the HTTP listener starts.
 
 ---
 
@@ -94,12 +103,26 @@ NATS user (`deploy/nkeys/gateway.nk`) grants `ops.>` / `health-kv.>` publish, de
 `capability-kv.>` — the same shape as every other op-submitting actor. Gate-3 adversarial vector #14
 (forged-actor-never-wins) proves the strip-and-stamp defeats impersonation.
 
+**Built (Fire 2 remainder).** `internal/gateway/auth` (`ParseJWKS` — a dependency-free RFC 7517/7518 JWK
+Set parser for RSA/EC keys; `JWKSPoller` — fetch + background poll + hot-swap into the Verifier via the
+new `Verifier.SetKeys`, atomic-pointer-backed for a lock-free hot path) + `cmd/gateway` (`GATEWAY_JWKS_URL`
+/ `GATEWAY_JWKS_POLL_INTERVAL` wiring, the https-unless-dev-mode transport gate, fail-closed initial fetch).
+No new vendor dependency — JWK parsing uses only `crypto`/`encoding` stdlib packages.
+
 **Deferred (follow-up fires, per the design's decomposition):**
-- **Fire 2 remainder** — full JWKS HTTP polling with live kid-keyed rotation (today: a static
-  `GATEWAY_JWT_KEYS_DIR` snapshot, operator-refreshed).
 - **Fire 3** — the read-path front (`GET /v1/<readmodel>`), sequenced behind D1.3's first live
   protected Postgres read-model (chain-grounding — not dead scaffolding).
-- **Fire 4** — the identity-claim front (`POST /v1/claim`, Contract #9's
-  `CreateUnclaimedIdentity`/`ClaimIdentity` allow-list, unauthenticated + rate-limited).
+- **Fire 4 — needs re-grounding, not a straightforward build.** The design assumed an *unauthenticated*
+  `POST /v1/claim` front for `CreateUnclaimedIdentity`/`ClaimIdentity`. The shipped `identity-domain`
+  package's permission grants (`packages/identity-domain/permissions.go`) require an
+  **already-authenticated, role-holding actor** for both: `CreateUnclaimedIdentity` grants to
+  `frontOfHouse`/`backOfHouse`/`operator` (staff), `ClaimIdentity` grants to `consumer` at `scope: self`
+  (the claiming actor must already hold a `consumer`-role identity). Neither op is callable by a truly
+  anonymous caller with no prior Lattice identity — both already route correctly through Fire 1's
+  authenticated `POST /v1/operations`. Before building a separate unauthenticated door, re-derive what
+  actual caller state exists at claim time (does "consumer" get auto-granted on Gateway-mediated
+  first-JWT-use? is Fire 4 solving a real first-touch-signup gap, or is it redundant with Fire 1?) —
+  don't build an unauthenticated bypass for ops that are structurally role-gated without resolving that
+  first.
 - **Fire 5 (ops, not platform code)** — the prod reverse-proxy (`deploy/nginx.conf`: TLS termination,
   rate limiting, CORS, IP allowlisting) per the ratified Gateway Architecture Decision.

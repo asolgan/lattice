@@ -31,6 +31,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -115,9 +116,11 @@ type VerifiedActor struct {
 }
 
 // Verifier verifies IdP-signed JWTs and extracts the actor. It is safe for
-// concurrent use (its key set and config are read-only after construction).
+// concurrent use — the trusted key set is held behind an atomic pointer so a
+// JWKS poller (see jwks.go) can hot-swap it (kid-keyed rotation) without a
+// lock on the hot Verify path.
 type Verifier struct {
-	keys      map[string]crypto.PublicKey
+	keys      atomic.Pointer[map[string]crypto.PublicKey]
 	clockSkew time.Duration
 	issuer    string
 	audience  string
@@ -154,14 +157,29 @@ func NewVerifier(cfg Config) (*Verifier, error) {
 		jwt.WithValidMethods(allowedMethods),
 		jwt.WithoutClaimsValidation(),
 	)
-	return &Verifier{
-		keys:      keys,
+	v := &Verifier{
 		clockSkew: skew,
 		issuer:    cfg.Issuer,
 		audience:  cfg.Audience,
 		now:       nowFn,
 		parser:    parser,
-	}, nil
+	}
+	v.keys.Store(&keys)
+	return v, nil
+}
+
+// SetKeys atomically replaces the trusted kid→public-key set. A concurrent
+// Verify call in flight completes against whichever set it already loaded (no
+// lock, no torn reads) — the standard atomic-pointer swap pattern. Called by
+// a JWKS poller (jwks.go) on each successful refresh; never called with an
+// empty map (a poller keeps the last-known-good set on a failed/empty fetch
+// rather than swapping in nothing — see JWKSPoller.poll).
+func (v *Verifier) SetKeys(keys map[string]crypto.PublicKey) {
+	cp := make(map[string]crypto.PublicKey, len(keys))
+	for kid, k := range keys {
+		cp[kid] = k
+	}
+	v.keys.Store(&cp)
 }
 
 // Verify checks tokenString and returns the authenticated actor, or one of the
@@ -217,7 +235,8 @@ func (v *Verifier) keyfunc(token *jwt.Token) (any, error) {
 	if kid == "" {
 		return nil, ErrUnknownKey
 	}
-	key, ok := v.keys[kid]
+	keys := *v.keys.Load()
+	key, ok := keys[kid]
 	if !ok {
 		return nil, ErrUnknownKey
 	}
