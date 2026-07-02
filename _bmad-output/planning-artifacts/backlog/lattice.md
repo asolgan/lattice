@@ -148,7 +148,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Refinements & ops
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **CI pipeline speed (continuous)** | Make CI faster without weakening any gate — owned continuously by the **Whetstone**. Matrix split done (serial → 4 parallel jobs); convergence + unit parallelized. | ★★ | M (ongoing) | 🏗️ continuous (Whetstone) · `internal/loom` de-flaked+sped (9129005, 55s→41s); next: `internal/bridge` (44s) now the `unit` job's long pole |
+| **CI pipeline speed (continuous)** | Make CI faster without weakening any gate — owned continuously by the **Whetstone**. Matrix split done (serial → 4 parallel jobs); convergence + unit parallelized. | ★★ | M (ongoing) | 🏗️ continuous (Whetstone) · `internal/bridge` require.Never windows trimmed to actual margin (f8e017d, 44.5s→27.6s); next: `internal/loom` (41.6s) now the `unit` job's long pole |
 | **[CI/Refractor] Hello-Lattice NFR-P3 latency flake** | The `≤500ms` capability-projection probe fails-then-passes on the shared CI runner (~590ms infra floor) — the dominant re-run flake (~50%). | ★★ | M | ✅ resolved — NFR-P3 CI projection deadlines re-scoped to a 1000ms regression guard; reported SLA unchanged (Andrew-ratified) |
 | **Op-time bounded reverse-link / adjacency read (`kv.Links`)** | One sanctioned, bounded, fail-closed, paged op-time link-enumeration builtin (`kv.Links(hub, relation, direction, cursor, limit)`) — retires the key-list-in-aspect guard indexes. Relaxes the write-path no-scans invariant by exactly one primitive. | ★★★ | M–L | 🏗️ building · [design](../../implementation-artifacts/op-time-bounded-link-enumeration-design.md) · Fire 1 (cc2613f) + Fire 2 (clinic consumer) shipped; next = optional Fire 3 (e2e + hub-source lint) |
 | **Hard-delete mutation verb (true link/aspect keyspace reclaim)** | Mutation vocab is create/update/tombstone (soft PUTs); a tombstoned key persists + is still enumerated by `kv.Links`. A 4th `delete` verb (NATS `DEL`) lets dead links leave the keyspace, bounding `kv.Links` LIST cost. | ★ now / ★★ at scale | M | 📐 awaiting-Andrew · [design](../../implementation-artifacts/hard-delete-mutation-verb-design.md) · §3 edit staged uncommitted; `DEL`-not-`PURGE`; 2 fires (clinic reclaim = consumer) |
@@ -175,6 +175,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-02 · `f8e017d` · [CI] Whetstone — `internal/bridge` require.Never proof windows (2-4s) trimmed to their actual 5-6x margin over the 300ms redelivery floor (package 44.5s→27.6s local; unit job 129s→119s in CI)
 - 2026-07-01 · `083b0ad` · [CI/bypass] Gate 2/3 live Health KV marker writers threaded with NATS_NKEY (fix-forward on the write-restriction merge)
 - 2026-07-01 · `1f2f999` · [Core/deploy] NATS write-restriction Fire 2 — live enforcement ON; 4 permission-matrix gaps found+fixed against the real stack
 - 2026-07-01 · `970585f` · [Refractor] Retire-simple-engine Fire 1 — lift `EvalResult`/`NodeEntry` into `ruleengine` (pure relocation, simple keeps a type alias)
