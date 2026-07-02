@@ -404,3 +404,48 @@ backend choice (Fork 1).
 1–5 as one delivery after D1 ✅, not a Phase-A-now split). The §3.10 contract edit stays staged
 **uncommitted** in `main` (commit it when the Vault build starts, so the contract doesn't claim
 ciphertext-at-rest ahead of the code). Follow-on filed: crypto-shred for object-store blobs (§2.6).*
+
+---
+
+## Build-start addendum (2026-07-02 — Winston, lead adjudication; PO + FE-engineer review folded)
+
+**The D1 start-gate is CLEARED — this feature is build-next.** Basis: D1.1–D1.5 all shipped (the
+protected-lens/RLS/`actor_read_grants` surface Fire 5 consumes is live, incl. out-of-band provisioning +
+verify-and-pause); the D1 design (§7) lists the full Gateway + Personal Lens as *deferred beyond D1, not
+in scope*, so they do not gate this feature; the M7 prerequisite (NATS account write-restriction live
+enforcement) shipped. Contract #3 **§3.10 and §3.11 are already ratified + committed** (`6d60ed5`,
+blob-shred follow-on included) — the closing note above ("stays uncommitted until build") is superseded;
+no contract work remains at build start.
+
+**Premise refresh — §5 "zero data migration" is STALE.** `identity-domain` now ships **seven**
+`sensitive: true` DDLs (name, email, phone, ssn, dob, claimKey, credentialBinding) and loftspace writes
+real values through them — plaintext in Core KV *and* JetStream history for every pre-Vault identity
+(un-shreddable retroactively; acceptable under the dev posture — a fresh bootstrap resets — but Fire 2
+must decide explicitly: migrate-encrypt existing values or require a fresh bootstrap, and say which).
+
+**Unlisted Fire-5 migration dependency (FE finding).** Fire 2's encrypt-on-write turns three *live*
+name-projecting lenses to ciphertext for post-Fire-2 identities: `applicantRoster`,
+`applicantRosterRead` (loftspace-domain), and `duplicateCandidates` (identity-hygiene). They must
+migrate to the Secure Lens **in the same delivery** (sequence them inside Fire 5, or Fire 2 visibly
+degrades the loftspace picker/roster). Mechanical note: a protected Postgres table gaining columns needs
+an explicit `ALTER TABLE` or fresh bootstrap — the RLS adapter provisions `CREATE TABLE IF NOT EXISTS`
+only.
+
+**Named Fire-5 consumers (the verticals this unblocks — build the last two in parallel with Fires 1–4):**
+- **LoftSpace landlord contact + name display**: `landlordLeaseApplicationsReadSpec` gains
+  `applicant_name` / `applicant_email` / `applicant_phone` as Secure-Lens columns; completes the D1.5
+  Rec-C deferral bundle (readiness clone + console retirement ship here — see the D1.5 design §4–§6).
+- **Clinic patient contact re-model** (pre-blessed by `clinic-domain-design.md` — "`vtx.identity` + an
+  `identifiedBy` link — not a rework"): extend `CreatePatient` with optional `identityKey` +
+  `lnk.patient.<pid>.identifiedBy.identity.<iid>` + a `LinkPatientIdentity` backfill op; the FE does the
+  loftspace two-step (mint unclaimed identity carrying sensitive contact → create patient linked to it);
+  `.demographics` keeps only the non-sensitive `fullName`. Display = a Secure-Lens staff-anchored
+  protected model at Fire 5. The re-model half is **Vault-independent** and buildable now (Verticals lane).
+
+**Considered and REJECTED — pre-Vault plaintext contact projection** into `clinicPatientsRead`
+(technically buildable, no test fails, outside M4's *letter* since `.demographics` cannot be
+`sensitive:true` on a non-identity vertex): it ships queryable plaintext PHI into Postgres that
+crypto-shred can never erase, dissolves clinic's forcing-function role, and relitigates ratification
+decision #2 ("leave the field unencrypted — defeats the point"). Fallback if this build stalls: the D1.5
+readiness clone (non-sensitive boolean, technically pre-Vault-buildable) — a Winston-level re-ratification
+of Rec C, recorded in the D1.5 design.
