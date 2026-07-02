@@ -682,6 +682,18 @@ test-lease-convergence:
 test-object-gc:
 	go test -tags objectgc ./internal/objectgc/... -run TestObjectGC -v -p 1 -count=1 -timeout 3m
 
+## test-crypto-shred — Vault crypto-shredding Fire 4a end-to-end gate.
+## Self-contained: embedded NATS, installs rbac → privacy-base → identity →
+## hygiene, wires the real Processor commit path (Vault encrypt-on-write /
+## decrypt-on-read) plus a Refractor lens + the KeyShredded nullification
+## listener, and drives CreateUnclaimedIdentity -> ShredIdentityKey, proving
+## the async privacy-worker + Refractor keyshredded listener both handle the
+## event (design vault-crypto-shredding-design.md §6). Compiled with
+## -tags cryptoshred.
+.PHONY: test-crypto-shred
+test-crypto-shred:
+	go test -tags cryptoshred ./internal/cryptoshred/... -run TestCryptoShred -v -p 1 -count=1 -timeout 3m
+
 ## test-augur-convergence — the Augur (Weaver L3 reasoning tier) escalation gate.
 ## Self-contained: embedded NATS, boots Processor + outbox + Weaver + the live
 ## bridge (with the deterministic FakeAugur reasoning adapter — no real model

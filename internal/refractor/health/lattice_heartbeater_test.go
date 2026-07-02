@@ -106,6 +106,67 @@ func TestLatticeHeartbeater_EmitsLensLatency(t *testing.T) {
 	require.EqualValues(t, 7, asInt(idx["count"]))
 }
 
+// TestLatticeHeartbeater_EmitsVaultAndKeyShreddedCounters proves Contract #5
+// §5.4's vaultCallsTotal / keyshreddedHandledTotal (vault-crypto-shredding-
+// design.md Fire 4a) land in the heartbeat when a provider is wired,
+// including the documented Phase-1-stub value 0 for vaultCallsTotal.
+func TestLatticeHeartbeater_EmitsVaultAndKeyShreddedCounters(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS JetStream")
+	}
+	opts := &natsserver.Options{Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: jsstore.Dir(t)}
+	s := natstest.RunServer(opts)
+	defer s.Shutdown()
+	nc, err := nats.Connect(s.ClientURL())
+	require.NoError(t, err)
+	defer nc.Close()
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	js := conn.JetStream()
+	_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "health-kv"})
+	require.NoError(t, err)
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	hb := health.NewLatticeHeartbeater(conn, "health-kv", "rfx-counters-test", 10*time.Second, logger)
+	hb.VaultCallsTotalProvider = func() uint64 { return 0 }
+	hb.KeyShreddedHandledTotalProvider = func() uint64 { return 3 }
+
+	hbCtx, hbCancel := context.WithCancel(ctx)
+	defer hbCancel()
+	go hb.Run(hbCtx)
+
+	kv, err := js.KeyValue(ctx, "health-kv")
+	require.NoError(t, err)
+
+	deadline := time.Now().Add(10 * time.Second)
+	var doc map[string]any
+	for time.Now().Before(deadline) {
+		entry, gErr := kv.Get(ctx, "health.refractor.rfx-counters-test")
+		if gErr == nil && entry != nil && len(entry.Value()) > 0 {
+			if jerr := json.Unmarshal(entry.Value(), &doc); jerr == nil {
+				if metrics, _ := doc["metrics"].(map[string]any); metrics != nil {
+					if _, ok := metrics["keyshreddedHandledTotal"]; ok {
+						break
+					}
+				}
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	require.NotNil(t, doc, "no health doc landed")
+
+	metrics, _ := doc["metrics"].(map[string]any)
+	require.NotNil(t, metrics, "metrics map missing")
+	require.EqualValues(t, 0, asInt(metrics["vaultCallsTotal"]))
+	require.EqualValues(t, 3, asInt(metrics["keyshreddedHandledTotal"]))
+}
+
 func TestLatticeHeartbeater_SkipsZeroSampleLenses(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS JetStream")

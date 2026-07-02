@@ -111,6 +111,20 @@ type LatticeHeartbeater struct {
 	// before any capability lens activates.
 	CapabilityLensProvider func() []CapabilityLensStatus
 
+	// VaultCallsTotalProvider optionally returns the cumulative count of Vault
+	// decryption calls (Contract #5 §5.4 vaultCallsTotal). Refractor makes no
+	// Vault calls in Phase A (general lenses project ciphertext as-is,
+	// design §2.3) — the metric is reserved for Fire 5's Secure Lens, which
+	// decrypts at projection time. nil omits the field; a wired provider may
+	// legitimately report 0 (the documented Phase-1-stub value).
+	VaultCallsTotalProvider func() uint64
+
+	// KeyShreddedHandledTotalProvider optionally returns the cumulative count
+	// of privacy.keyShredded events this instance has finished handling
+	// (Contract #5 §5.4 keyshreddedHandledTotal) — internal/refractor/keyshredded's
+	// Manager.HandledTotal. nil before the listener is wired.
+	KeyShreddedHandledTotalProvider func() uint64
+
 	// CapabilityLensLagThreshold is the consumer-lag (pending count) above which
 	// an active capability lens is flagged CapabilityLensLagging (warning).
 	// Zero selects defaultCapabilityLensLagThreshold.
@@ -240,6 +254,15 @@ func (h *LatticeHeartbeater) emit(ctx context.Context, status string) {
 				metrics["lensLatency"] = out
 			}
 		}
+	}
+	// Contract #5 §5.4 vaultCallsTotal / keyshreddedHandledTotal. Emitted whenever
+	// a provider is wired, including a legitimate 0 (the documented Phase-1-stub
+	// value for vaultCallsTotal before Fire 5's Secure Lens calls Vault).
+	if h.VaultCallsTotalProvider != nil {
+		metrics["vaultCallsTotal"] = h.VaultCallsTotalProvider()
+	}
+	if h.KeyShreddedHandledTotalProvider != nil {
+		metrics["keyshreddedHandledTotal"] = h.KeyShreddedHandledTotalProvider()
 	}
 	// Capability-lens liveness backstop: surface a §5.5 issue (and degrade status)
 	// when an auth-plane lens is paused or lagging beyond threshold. The

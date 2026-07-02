@@ -155,6 +155,12 @@ func TestGate3_Report(t *testing.T) {
 			Result:      "DEFENDED",
 			Enforcement: "internal/gateway strip-and-stamp (design §3.1/§6): a POST /v1/operations body carrying a forged `actor` is unconditionally overwritten with the JWT-verified actor before env.Actor is built — the forged value never reaches core-operations; the NATS account-level write restriction (#75 Fire 2, live) makes the Gateway's NATS user the only publisher, so an actor stamped on that subject provably passed through this seam (internal/gateway TestHandleOperations_ForgedActorNeverWins)",
 		},
+		{
+			Num:         15,
+			Vector:      "Read PII after crypto-shred",
+			Result:      "DEFENDED",
+			Enforcement: "vault-crypto-shredding-design.md §2.4: ShredIdentityKey destroys the identity's wrapped DEK (internal/vault/local.go — a shredded/never-created key permanently denies Decrypt, ErrKeyShredded); Vault.Decrypt for that identity's ciphertext fails permanently post-shred (packages/privacy-base TestShredIdentityKey_EndToEnd_VaultDecryptFails); the Refractor KeyShredded listener additionally nullifies configured lens targets' already-projected rows (internal/refractor/keyshredded TestHandleKeyShredded_TargetSucceeds_DeletesAndAcks) — belt-and-suspenders since general lenses only ever hold ciphertext, never plaintext, in Phase A (design §2.3)",
+		},
 	}
 
 	// total is the number of vectors in the report and the gate denominator.

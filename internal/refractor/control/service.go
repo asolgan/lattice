@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -18,6 +19,12 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/substrate"
 )
+
+// ErrRuleNotRegistered is returned by NullifyRow (and other per-ruleID lookups)
+// when ruleID has no live registration. Distinguished from a real Delete failure
+// so callers can tell "the lens hasn't started yet" (retry-eligible) apart from
+// "the row could not be nullified" (privacy-critical, no retry).
+var ErrRuleNotRegistered = errors.New("control: rule not registered")
 
 // validateSampleSize is the maximum number of Core KV entries sampled by the validate op.
 const validateSampleSize = 10
@@ -61,6 +68,17 @@ type Rebuilder interface {
 // Defined here so internal/control does not import internal/pipeline (architecture boundary).
 type Deleter interface {
 	Delete(ctx context.Context) error
+}
+
+// RowNullifier is implemented by any component that can remove ONE projected row
+// (by its Into.Key values) from a rule's target store, independent of the rule's
+// own CDC stream. *pipeline.Pipeline satisfies this via its Delete method (the
+// same adapter.Delete path a vertex tombstone takes). Used by the Refractor
+// KeyShredded nullification listener (vault-crypto-shredding-design.md §2.4) to
+// scrub a shredded identity's row out-of-band.
+// Defined here so internal/control does not import internal/pipeline (architecture boundary).
+type RowNullifier interface {
+	Delete(ctx context.Context, keys map[string]any, projectionSeq uint64) error
 }
 
 // ControlRequest is the JSON payload sent to control endpoints. Op and RuleID
@@ -143,25 +161,27 @@ type FieldReport struct {
 // independent pipelines is non-deterministic. Only rules targeting different tables may safely
 // run in parallel.
 type Service struct {
-	mu                sync.Mutex
-	resumerByRuleID   map[string]Resumer
-	pauserByRuleID    map[string]Pauser
-	rebuilderByRuleID map[string]Rebuilder
-	deleterByRuleID   map[string]Deleter
-	reporters         map[string]*health.Reporter
-	microSvc          micro.Service // set by StartNATSListener; nil until started
-	ruleGetter        RuleGetter    // set via SetRuleGetter; used by validate op
-	coreKV            *substrate.KV // set via SetCoreKV; used by validate op
+	mu                   sync.Mutex
+	resumerByRuleID      map[string]Resumer
+	pauserByRuleID       map[string]Pauser
+	rebuilderByRuleID    map[string]Rebuilder
+	deleterByRuleID      map[string]Deleter
+	rowNullifierByRuleID map[string]RowNullifier
+	reporters            map[string]*health.Reporter
+	microSvc             micro.Service // set by StartNATSListener; nil until started
+	ruleGetter           RuleGetter    // set via SetRuleGetter; used by validate op
+	coreKV               *substrate.KV // set via SetCoreKV; used by validate op
 }
 
 // NewService creates a new Service with empty registries.
 func NewService() *Service {
 	return &Service{
-		resumerByRuleID:   make(map[string]Resumer),
-		pauserByRuleID:    make(map[string]Pauser),
-		rebuilderByRuleID: make(map[string]Rebuilder),
-		deleterByRuleID:   make(map[string]Deleter),
-		reporters:         make(map[string]*health.Reporter),
+		resumerByRuleID:      make(map[string]Resumer),
+		pauserByRuleID:       make(map[string]Pauser),
+		rebuilderByRuleID:    make(map[string]Rebuilder),
+		deleterByRuleID:      make(map[string]Deleter),
+		rowNullifierByRuleID: make(map[string]RowNullifier),
+		reporters:            make(map[string]*health.Reporter),
 	}
 }
 
@@ -196,8 +216,8 @@ func (s *Service) Register(ruleID string, r Resumer, reporter *health.Reporter) 
 	}
 }
 
-// Unregister removes all registry entries (Resumer, Pauser, Rebuilder, Deleter, Reporter) for ruleID.
-// No-op for any map that does not contain ruleID.
+// Unregister removes all registry entries (Resumer, Pauser, Rebuilder, Deleter,
+// RowNullifier, Reporter) for ruleID. No-op for any map that does not contain ruleID.
 func (s *Service) Unregister(ruleID string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -205,6 +225,7 @@ func (s *Service) Unregister(ruleID string) {
 	delete(s.pauserByRuleID, ruleID)
 	delete(s.rebuilderByRuleID, ruleID)
 	delete(s.deleterByRuleID, ruleID)
+	delete(s.rowNullifierByRuleID, ruleID)
 	delete(s.reporters, ruleID)
 }
 
@@ -268,6 +289,26 @@ func (s *Service) UnregisterDeleter(ruleID string) {
 	delete(s.deleterByRuleID, ruleID)
 }
 
+// RegisterRowNullifier records a RowNullifier for the given ruleID.
+// Overwrites any prior registration (safe for hot-reload).
+// Panics if n is nil.
+func (s *Service) RegisterRowNullifier(ruleID string, n RowNullifier) {
+	if n == nil {
+		panic("control: RegisterRowNullifier: RowNullifier must not be nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rowNullifierByRuleID[ruleID] = n
+}
+
+// UnregisterRowNullifier removes the RowNullifier entry for ruleID.
+// No-op if ruleID is not registered.
+func (s *Service) UnregisterRowNullifier(ruleID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.rowNullifierByRuleID, ruleID)
+}
+
 // ResumeRule unblocks a structural pause for the given ruleID.
 // Returns an error if ruleID is not registered.
 // Pipeline.Resume sets health KV to active internally; this method does not touch health KV directly.
@@ -280,6 +321,38 @@ func (s *Service) ResumeRule(ctx context.Context, ruleID string) error {
 	}
 	r.Resume(ctx)
 	return nil
+}
+
+// PauseRule halts the given ruleID's fetch loop (FR30 control surface), the
+// in-process equivalent of the "pause" control-plane op. Used by the KeyShredded
+// nullification listener to halt a lens on a privacy-critical failure — the
+// pause is unconditional (no automatic resume): an operator must investigate and
+// call ResumeRule/the "resume" op once the row is verified scrubbed.
+// Returns an error if ruleID is not registered. Pipeline.Pause sets health KV to
+// paused/manual internally; this method does not touch health KV directly.
+func (s *Service) PauseRule(ctx context.Context, ruleID string) error {
+	s.mu.Lock()
+	p, ok := s.pauserByRuleID[ruleID]
+	s.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("control: rule %q: %w", ruleID, ErrRuleNotRegistered)
+	}
+	p.Pause(ctx)
+	return nil
+}
+
+// NullifyRow deletes ONE projected row (by its Into.Key values) from ruleID's
+// target store via its registered RowNullifier (*pipeline.Pipeline.Delete — the
+// same adapter.Delete path a vertex tombstone takes). Returns an error if ruleID
+// is not registered as a RowNullifier, or if the underlying Delete fails.
+func (s *Service) NullifyRow(ctx context.Context, ruleID string, keys map[string]any, projectionSeq uint64) error {
+	s.mu.Lock()
+	n, ok := s.rowNullifierByRuleID[ruleID]
+	s.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("control: rule %q: %w", ruleID, ErrRuleNotRegistered)
+	}
+	return n.Delete(ctx, keys, projectionSeq)
 }
 
 // controlSubjectPrefix is the wildcard subject pattern the control

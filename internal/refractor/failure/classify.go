@@ -27,6 +27,12 @@ const (
 	// (bucket/table missing, schema incompatible). The rule is paused immediately;
 	// no DLQ entries accumulate (FR19a, NFR3).
 	CatStructural
+	// CatPrivacyCritical errors indicate a shredded identity's projected row could not
+	// be nullified — a confidentiality-relevant failure (refractor-failure-tiers.md
+	// "Designed-but-not-built: privacy / security supersession tiers"). The rule is
+	// paused immediately, alerted, and never auto-retried: a row that should have been
+	// scrubbed on shred must not be silently left in place while the pipeline keeps running.
+	CatPrivacyCritical
 )
 
 // ── Private wrapper types ─────────────────────────────────────────────────────
@@ -52,6 +58,11 @@ type transientError struct{ cause error }
 
 func (e *transientError) Error() string { return e.cause.Error() }
 func (e *transientError) Unwrap() error { return e.cause }
+
+type privacyCriticalError struct{ cause error }
+
+func (e *privacyCriticalError) Error() string { return e.cause.Error() }
+func (e *privacyCriticalError) Unwrap() error { return e.cause }
 
 // ── Public constructors ───────────────────────────────────────────────────────
 // Use these to explicitly tag an error with its failure category. Classify
@@ -101,6 +112,17 @@ func Transient(err error) error {
 	return &transientError{cause: err}
 }
 
+// PrivacyCritical wraps err to signal a shredded identity's projected row could not be
+// nullified. Classify routes it to the rule-pause path (no DLQ, no retry) — halting the
+// affected lens is the correct response to a possible confidentiality breach, not
+// something an automatic retry can fix. Panics if err is nil.
+func PrivacyCritical(err error) error {
+	if err == nil {
+		panic("failure: PrivacyCritical called with nil error")
+	}
+	return &privacyCriticalError{cause: err}
+}
+
 // ── Classify ──────────────────────────────────────────────────────────────────
 
 // Classify returns the failure category for err.
@@ -123,6 +145,9 @@ func Classify(err error) Category {
 	}
 	if errors.As(err, new(*transientError)) {
 		return CatTransient
+	}
+	if errors.As(err, new(*privacyCriticalError)) {
+		return CatPrivacyCritical
 	}
 
 	// 2. Infrastructure: NATS transport-level failures (server unreachable, connection lost).

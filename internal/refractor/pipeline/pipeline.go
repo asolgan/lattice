@@ -799,6 +799,17 @@ func (p *Pipeline) Resume(ctx context.Context) {
 	p.supervisor.Resume(ctx, p.consumerCfg.Name)
 }
 
+// Delete removes this rule's projected row for keys, via the currently-active
+// adapter (adapter.Delete — the same hard/soft-delete path a vertex tombstone
+// takes, adapter/postgres.go and adapter/natskv.go). Used by the Refractor
+// KeyShredded nullification listener (control.RowNullifier) to scrub a
+// shredded identity's row out-of-band, independent of the rule's own CDC
+// stream. Safe to call from any goroutine; the adapter itself is idempotent
+// (deleting an absent row/key is a no-op).
+func (p *Pipeline) Delete(ctx context.Context, keys map[string]any, projectionSeq uint64) error {
+	return p.currentAdapter().Delete(ctx, keys, projectionSeq)
+}
+
 // publishTerminalDLQ publishes a DLQ message for an entity whose data is permanently
 // unrecoverable (failure.CatTerminal). Uses p.retryConn — the same substrate connection set via
 // SetRetryQueue. If p.retryConn == nil (no connection configured), logs and returns without

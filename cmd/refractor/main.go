@@ -19,11 +19,13 @@ import (
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
+	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/refractor/adapter"
 	"github.com/asolgan/lattice/internal/refractor/capabilityenv"
 	"github.com/asolgan/lattice/internal/refractor/consumer"
 	"github.com/asolgan/lattice/internal/refractor/control"
 	"github.com/asolgan/lattice/internal/refractor/health"
+	"github.com/asolgan/lattice/internal/refractor/keyshredded"
 	"github.com/asolgan/lattice/internal/refractor/lens"
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
 	"github.com/asolgan/lattice/internal/refractor/projection"
@@ -111,6 +113,27 @@ func main() {
 	poolManager := adapter.NewPoolManager()
 	controlSvc := control.NewService()
 	controlSvc.SetCoreKV(coreKV)
+
+	// The KeyShredded nullification listener (vault-crypto-shredding-design.md
+	// §2.4, Fire 4a) — the Refractor half of crypto-shredding's async
+	// finalization; internal/privacyworker (in cmd/processor) is the other,
+	// independent consumer of the same event. Targets is empty until a
+	// vertical's Phase-A lens opts in (see internal/refractor/keyshredded's
+	// package doc) — an empty list is a harmless no-op consumer that still
+	// exercises the event and the counters.
+	keyShredded := keyshredded.New(keyshredded.Config{
+		Conn:         conn,
+		EventsStream: bootstrap.CoreEventsStreamName,
+		Control:      controlSvc,
+		Logger:       logger,
+	})
+	hb.KeyShreddedHandledTotalProvider = keyShredded.HandledTotal
+	hb.VaultCallsTotalProvider = func() uint64 { return 0 } // Phase-1 stub — see field doc
+	go func() {
+		if err := keyShredded.Run(ctx); err != nil && ctx.Err() == nil {
+			logger.Error("keyshredded listener exited with error", "err", err)
+		}
+	}()
 
 	var (
 		mu       sync.Mutex
@@ -417,6 +440,7 @@ func main() {
 		controlSvc.Register(r.ID, p, reporter)
 		controlSvc.RegisterPauser(r.ID, p)
 		controlSvc.RegisterRebuilder(r.ID, p)
+		controlSvc.RegisterRowNullifier(r.ID, p)
 
 		logger.Info("lens pipeline started", "lensId", r.ID, "target", r.Into.Target, "table", r.Into.Table, "bucket", r.Into.Bucket)
 	}
