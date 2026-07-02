@@ -666,6 +666,41 @@ Worktree: `/Users/andrewsolgan/Documents/GitHub/lattice-wt-vault-5b-roster` (bra
 patient-contact re-model + display; extend `make test-crypto-shred`; delivery-boundary reset + live e2e
 close 5b.
 
+**Fire 5b-ii CHECKPOINT (2026-07-02, Lattice Steward, `a710c7a`).** Second 5b slice shipped: **landlord
+applicant contact via Secure-Lens columns** — `landlordLeaseApplicationsRead` gains `applicant_name` /
+`applicant_email` / `applicant_phone` (envelope-whole RETURN, `applicant` as the key-custody column,
+`Field: value` for all three; no WHERE on ciphertext presence — a contactless/shredded applicant's
+application still projects, columns null). `cmd/loftspace-app` threads the nullable columns through the
+landlord handler and the RLS card view renders name + a contact line; the real-Postgres RLS suite proves
+they serve null-safe to the managing landlord only. This ships the "LoftSpace landlord contact + name
+display" named consumer.
+**Mechanism correction (review-driven, replaces a wrong 5b-i/5b-ii assumption):** no per-anchor scrub
+transport was needed for a NEIGHBOR-owned secure column. The lens's anchor MATCH is unanchored (no
+`{key: $actorKey}`), and the full engine ignores the seed vertex for an unanchored MATCH — every piiKey
+reprojection re-scans all leaseapps and re-projects every row with a fresh decrypt, so a shred scrubs the
+landlord rows in ONE evaluation. An adjacency-BFS anchor fan-out built mid-fire was proven redundant by
+the 3-layer review (and strictly worse: N full scans + partial-failure modes) and dropped; the guarantee
+is pinned by `TestSecureLens_NeighborShredReprojectsAnchoredRows` through the real `handle()` path. This
+re-confirms the standing "full engine scans → no enumerator" ruling.
+**UPGRADED RESIDUAL — the manages-retraction plaintext hole (Acceptance-Auditor find; gates 5b close).**
+`UnassignUnitOwner` (shipped) tombstones the `manages` link; the plain pipeline has no link-retraction
+transport and a zero-row re-evaluation retracts nothing, so the stale `(app_id, old_landlord_id)` row
+retains **decrypted plaintext**, stays RLS-readable by the unassigned landlord, and a later shred's
+re-scan never overwrites it (the current-cypher rows no longer include it) — a right-to-erasure gap
+reachable via a shipped op, more severe than the display-scalar staleness D1.3 accepted. The fix is the
+✅-ratified **negative/filter-retraction** fire (its freshness+retraction transport retracts the stale
+row). **Sequencing: the 5b delivery-boundary reset — the moment these columns first go live — is gated
+on that fire shipping first**; until the reset, no running stack serves the new columns (a secure-lens
+spec change refuses hot-reload; the live stack's table predates them), so there is no live exposure.
+Remaining Rec-C bundle (readiness clone via a shared cypher fragment + console retirement + full RLS
+decisioning) is the next slice — note the readiness clone needs WITH-aggregation while carrying envelope
+columns through grouping, an unverified engine behavior to spike first.
+Worktree: `/Users/andrewsolgan/Documents/GitHub/lattice-wt-vault-5b-ii` (branch `steward-vault-5b-ii`,
+merged through `a710c7a`). Next: **negative/filter-retraction fire** (now the 5b-close gate), then
+**5b-ii-b** (Rec-C remainder), then 5b-iii clinic contact; extend `make test-crypto-shred` to drive the
+REAL `landlordLeaseApplicationsReadSpec` through shred-scrub (the composition is currently proven in
+halves); delivery-boundary reset + live e2e close 5b.
+
 **Considered and REJECTED — pre-Vault plaintext contact projection** into `clinicPatientsRead`
 (technically buildable, no test fails, outside M4's *letter* since `.demographics` cannot be
 `sensitive:true` on a non-identity vertex): it ships queryable plaintext PHI into Postgres that
