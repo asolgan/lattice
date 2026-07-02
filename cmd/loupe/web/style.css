@@ -514,3 +514,73 @@ table.grid td { font-family: var(--mono); }
 .task-card .card-sub { white-space: normal; word-break: normal; }
 .task-scoped { margin-top: 6px; }
 .task-complete { margin-top: 10px; }
+
+/* Nav tabs are anchors (hash routes); keep the button look. */
+a.tab { text-decoration: none; display: inline-block; }
+
+/* Breadcrumb bar — drill pages only (route with an arg). */
+#breadcrumbs {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 18px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+#breadcrumbs.visible { display: flex; }
+#breadcrumbs .crumb { color: var(--accent); text-decoration: none; cursor: pointer; }
+#breadcrumbs .crumb:hover { text-decoration: underline; }
+#breadcrumbs .crumb-sep { color: var(--text-dim); }
+#breadcrumbs .crumb-key { font-family: var(--mono); letter-spacing: 0.2px; }
+#breadcrumbs .crumb-dot { color: var(--text-dim); padding: 0 1px; }
+
+/* Toast — small transient notice (unknown routes). */
+#toast {
+  position: fixed;
+  bottom: 22px;
+  left: 50%;
+  transform: translateX(-50%) translateY(8px);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 13px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s, transform 0.2s;
+  z-index: 30;
+}
+#toast.visible { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* Rendered entity keys are links (the shared keyLink resolver). */
+.key-link { color: var(--accent); text-decoration: none; font-family: var(--mono); cursor: pointer; }
+.key-link:hover { text-decoration: underline; }
+
+/* Provenance chips under the detail header. */
+.prov-chips { display: flex; flex-wrap: wrap; gap: 6px 10px; margin: 8px 0 4px; }
+.prov-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 11.5px;
+}
+.prov-chip .prov-k { color: var(--text-dim); }
+
+/* Link rows: the far end is the primary click; ⧉ opens the link document. */
+.expander-label.far-link { color: var(--accent); }
+.expander-head:hover .expander-label.far-link { text-decoration: underline; }
+.expander-doc-toggle {
+  margin-left: auto;
+  color: var(--text-dim);
+  padding: 0 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.expander-doc-toggle:hover { color: var(--text); background: var(--bg-input); }

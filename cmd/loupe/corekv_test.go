@@ -2,31 +2,39 @@ package main
 
 import "testing"
 
+// classifyKeyCases is the Contract #1 key-shape case table, shared by the Go
+// TestClassifyKey and the goja TestClassifyKeyJS (web_logic_test.go) so the
+// server classifier and its FE mirror can never drift apart.
+var classifyKeyCases = []struct {
+	key  string
+	want keyClass
+}{
+	// 3-segment vertex root.
+	{"vtx.identity.abc123", classVertex},
+	{"vtx.role.xyz", classVertex},
+	{"vtx.permission.p1", classVertex},
+	// 4-segment aspect.
+	{"vtx.identity.abc123.profile", classAspect},
+	{"vtx.permission.p1.grantsCapability", classAspect},
+	// meta-vertex root (3-segment) vs its aspect (4-segment).
+	{"vtx.meta.m1", classMeta},
+	{"vtx.meta.m1.canonicalName", classAspect},
+	// 6-segment link.
+	{"lnk.identity.abc123.holdsRole.role.r1", classLink},
+	{"lnk.permission.p1.grantedBy.role.r1", classLink},
+	// malformed shapes.
+	{"lnk.too.short", classUnknown},
+	{"vtx.identity.abc.def.ghi", classUnknown},
+	{"random", classUnknown},
+	{"", classUnknown},
+	// empty segments (trailing/double dot) are never well-formed.
+	{"vtx.identity.a1.", classUnknown},
+	{"vtx..x", classUnknown},
+	{"lnk.identity.a1.holdsRole.role.", classUnknown},
+}
+
 func TestClassifyKey(t *testing.T) {
-	tests := []struct {
-		key  string
-		want keyClass
-	}{
-		// 3-segment vertex root.
-		{"vtx.identity.abc123", classVertex},
-		{"vtx.role.xyz", classVertex},
-		{"vtx.permission.p1", classVertex},
-		// 4-segment aspect.
-		{"vtx.identity.abc123.profile", classAspect},
-		{"vtx.permission.p1.grantsCapability", classAspect},
-		// meta-vertex root (3-segment) vs its aspect (4-segment).
-		{"vtx.meta.m1", classMeta},
-		{"vtx.meta.m1.canonicalName", classAspect},
-		// 6-segment link.
-		{"lnk.identity.abc123.holdsRole.role.r1", classLink},
-		{"lnk.permission.p1.grantedBy.role.r1", classLink},
-		// malformed shapes.
-		{"lnk.too.short", classUnknown},
-		{"vtx.identity.abc.def.ghi", classUnknown},
-		{"random", classUnknown},
-		{"", classUnknown},
-	}
-	for _, tt := range tests {
+	for _, tt := range classifyKeyCases {
 		if got := classifyKey(tt.key); got != tt.want {
 			t.Errorf("classifyKey(%q) = %q, want %q", tt.key, got, tt.want)
 		}

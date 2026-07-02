@@ -55,6 +55,10 @@ you are building*:
    **self-truthing** views — render from live lens projections / Health KV, never a static image.
 3. **Verify — headless first, in-browser only when something *rendered* changed.** Most correctness is provable
    **headlessly**: `go test`, `curl` the endpoints/JSON shape, `node --check` the JS. **Do that first, always.**
+   Loupe's pure JS logic is covered by the **goja tier** (`cmd/loupe/web_logic_test.go`): a change to a
+   `web/js/logic/*.js` helper must extend that table-test, and new pure logic goes in `logic/` (declarations
+   + one trailing `export { … }`, ES6-conservative — goja's parse failure is the gate), keeping
+   `node --check` the syntax floor beneath a real logic net.
    Open a browser **only** when the change is in *rendered* output (layout/markup/interaction) **and** a writable
    stack exists to populate it — otherwise note visual verification is pending (don't claim it works unseen) and
    move on. Reaching for the browser when a curl would do is the habit that OOM'd the machine.

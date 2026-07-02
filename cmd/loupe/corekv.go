@@ -18,9 +18,15 @@ const (
 // lnk.<typeA>.<idA>.<relation>.<typeB>.<idB>; a meta-vertex is the 3-segment
 // vtx.meta.<id>. A 3-segment vtx.<type>.<id> with type != "meta" is a plain
 // vertex root. Meta is checked before the generic vertex/aspect split so a
-// meta-vertex root is not mislabelled a vertex.
+// meta-vertex root is not mislabelled a vertex. A key with an empty segment
+// (leading/trailing/double dot) is never a well-formed entity key.
 func classifyKey(key string) keyClass {
 	segs := strings.Split(key, ".")
+	for _, s := range segs {
+		if s == "" {
+			return classUnknown
+		}
+	}
 	switch {
 	case strings.HasPrefix(key, "lnk."):
 		if len(segs) == 6 {

@@ -92,6 +92,13 @@ uninstall, DDL-driven operation submission, and large-binary upload / view / det
 Object Store. Trusted single-identity, loopback-bound, no auth. Run it with `make run-loupe` (UI alone)
 or `make up-full` (full stack + Loupe at http://127.0.0.1:7777).
 
+**Testing.** The Go server is handler-tested via `httptest` (every `*_test.go` drives the real route
+mux). The browser UI is ES modules under `web/js/` with a pure `logic/` tier covered by the **goja**
+harness (`web_logic_test.go`): each shipped `logic/*.js` is loaded from the same `go:embed` FS the
+server serves and table-tested inside `go test ./cmd/loupe/...` — no Node, no build step. `logic/`
+files are declarations + one trailing `export { … }` line in ES6-conservative syntax (goja parse
+failure is the loud gate); DOM/render code is verified by the fe-engineer's in-browser pass.
+
 **Deferred (Phase 3+ — the Edge evolution).** Per-user authN / authZ, the Gateway, read-path
 authorization (D1), and the Personal Lens. These are the pieces that turn the trusted inspector into a
 per-user sovereign Edge node; until they land, Loupe stays a single-identity loopback tool. All four are
