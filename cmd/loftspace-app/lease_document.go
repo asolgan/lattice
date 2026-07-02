@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -13,7 +14,6 @@ import (
 	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
-	loftspacedomain "github.com/asolgan/lattice/packages/loftspace-domain"
 )
 
 // leaseDocLinkName is the object-attachment slot the produced signed-lease
@@ -86,11 +86,7 @@ func (s *server) handleLeaseDocumentGet(w http.ResponseWriter, r *http.Request) 
 	ctx, cancel := s.reqContext(r)
 	defer cancel()
 
-	// s.conn (the applicant-name lookup) is nil-safe here: the RLS-scoped read and
-	// the signed-document gate are the security/correctness boundary and need no
-	// NATS read, so a down NATS connection degrades the document to the
-	// applicant's bare key instead of failing the whole download (buildLeaseDocumentForActor).
-	doc, status, msg := s.buildLeaseDocumentForActor(ctx, s.conn, actor.Subject, leaseAppKey)
+	doc, status, msg := s.buildLeaseDocumentForActor(ctx, actor.Subject, leaseAppKey)
 	if doc == nil {
 		s.writeError(w, status, msg)
 		return
@@ -208,14 +204,24 @@ type leaseDocument struct {
 // executed-lease text. It returns (nil, status, msg) when the application is
 // absent or not yet signed — an executed lease cannot be produced for an
 // unsigned application. The rendered bytes are a pure function of the projected
-// fields (no clock read), so repeated builds are byte-identical.
+// fields (no clock read), so repeated builds are byte-identical — which is why
+// name resolution here is STRICT (resolveApplicantName): this feeds the
+// durable attach path, and persisting a nameless rendering just because the
+// roster was down would mint a different digest/oid than a healthy re-produce,
+// breaking the idempotent-attach contract. A legitimately unnamed identity
+// still renders by its bare key (deterministic for that identity state).
 func (s *server) buildLeaseDocument(ctx context.Context, conn *substrate.Conn, leaseAppKey string) (*leaseDocument, int, string) {
 	row, ok := s.lookupApplication(ctx, conn, leaseAppKey)
 	if !ok {
 		return nil, http.StatusNotFound,
 			"no application "+shortKeyServer(leaseAppKey)+" in the read model (is lease-signing installed and projecting?)"
 	}
-	applicantName := s.lookupApplicantName(ctx, conn, row.Applicant)
+	applicantName, err := s.resolveApplicantName(ctx, row.Applicant)
+	if err != nil {
+		s.logger.Error("resolve applicant name for the durable lease document", "error", err)
+		return nil, http.StatusBadGateway,
+			"could not resolve the applicant's name (protected roster unavailable); refusing to persist a nameless lease document"
+	}
 	return assembleLeaseDocument(row, applicantName)
 }
 
@@ -223,12 +229,11 @@ func (s *server) buildLeaseDocument(ctx context.Context, conn *substrate.Conn, l
 // (D1.5): it reads the application through the PROTECTED, RLS-scoped
 // read_lease_applications model as actorID rather than the unscoped
 // weaver-targets bucket, so a leaseAppKey RLS does not grant the actor comes
-// back not-found — identical to a genuinely absent key. conn is nil-safe: it
-// resolves only the applicant's display name (a public roster projection, no
-// authz anchor), so a nil conn (NATS unavailable) degrades the rendered
-// document to the applicant's bare key rather than failing the request —
-// the RLS-scoped fetch above is the actual security/correctness boundary.
-func (s *server) buildLeaseDocumentForActor(ctx context.Context, conn *substrate.Conn, actorID, leaseAppKey string) (*leaseDocument, int, string) {
+// back not-found — identical to a genuinely absent key. The applicant's
+// display name resolves best-effort (lookupApplicantName degrades to "" and
+// the document falls back to the bare key) — the RLS-scoped fetch above is
+// the actual security/correctness boundary.
+func (s *server) buildLeaseDocumentForActor(ctx context.Context, actorID, leaseAppKey string) (*leaseDocument, int, string) {
 	protRow, ok, err := queryApplicationByKey(ctx, s.pgPool, actorID, leaseAppKey)
 	if err != nil {
 		s.logger.Error("read protected lease application for document", "error", err)
@@ -239,10 +244,7 @@ func (s *server) buildLeaseDocumentForActor(ctx context.Context, conn *substrate
 			"no application "+shortKeyServer(leaseAppKey)+" in the read model (is lease-signing installed and projecting, and are you the applicant?)"
 	}
 	row := protectedRowToDocumentRow(protRow)
-	var applicantName string
-	if conn != nil {
-		applicantName = s.lookupApplicantName(ctx, conn, row.Applicant)
-	}
+	applicantName := s.lookupApplicantName(ctx, row.Applicant)
 	return assembleLeaseDocument(row, applicantName)
 }
 
@@ -320,32 +322,48 @@ func (s *server) lookupApplication(ctx context.Context, conn *substrate.Conn, le
 	return applicationRow{}, false
 }
 
-// lookupApplicantName resolves an applicant identity key to its human name via the
-// applicantRoster read model (P5). An unresolved key (no roster row) degrades to
-// the empty string — renderLeaseDocument falls back to the key so the document is
-// still well-formed.
-func (s *server) lookupApplicantName(ctx context.Context, conn *substrate.Conn, applicantKey string) string {
+// resolveApplicantName resolves an applicant identity key to its human name
+// via the PROTECTED applicantRosterRead Postgres model (P5) — the only roster
+// surface, read as the app's own admin actor (see rosterIdentities). A key
+// with no roster row resolves to ("", nil): a legitimately unnamed identity,
+// which the caller renders by its bare key. An UNAVAILABLE roster (no pool,
+// no admin actor, query failure) returns an error instead, so a caller with
+// a durability contract can refuse to persist a nondeterministic nameless
+// rendering rather than silently produce different bytes than a healthy
+// deployment would.
+func (s *server) resolveApplicantName(ctx context.Context, applicantKey string) (string, error) {
 	if strings.TrimSpace(applicantKey) == "" {
-		return ""
+		return "", nil
 	}
-	bucket := loftspacedomain.LoftspaceIdentitiesBucket
-	keys, err := conn.KVListKeys(ctx, bucket)
+	if s.pgPool == nil {
+		return "", errors.New("protected read model unavailable (LOFTSPACE_APP_PG_DSN unset)")
+	}
+	adminID, ok := s.adminActorID()
+	if !ok {
+		return "", errors.New("admin actor not loaded (bootstrap file missing or unreadable)")
+	}
+	ids, err := rosterIdentities(ctx, s.pgPool, adminID)
 	if err != nil {
+		return "", err
+	}
+	for _, id := range ids {
+		if id.Key == applicantKey {
+			return id.Name, nil
+		}
+	}
+	return "", nil
+}
+
+// lookupApplicantName is resolveApplicantName's best-effort form for display
+// paths: any roster unavailability degrades to "" (logged) and the rendered
+// document falls back to the applicant's bare key.
+func (s *server) lookupApplicantName(ctx context.Context, applicantKey string) string {
+	name, err := s.resolveApplicantName(ctx, applicantKey)
+	if err != nil {
+		s.logger.Warn("resolve applicant name from the protected roster (degrading to the bare key)", "error", err)
 		return ""
 	}
-	get := func(key string) ([]byte, bool) {
-		entry, err := conn.KVGet(ctx, bucket, key)
-		if err != nil {
-			return nil, false
-		}
-		return entry.Value, true
-	}
-	for _, id := range computeIdentities(keys, get) {
-		if id.Key == applicantKey {
-			return id.Name
-		}
-	}
-	return ""
+	return name
 }
 
 // renderLeaseDocument renders the executed-lease text from a signed application's

@@ -20,9 +20,15 @@
 // compiled cypher, not a declared field), so an explicit, reviewable
 // allowlist is the grounded mechanism — precedented by how targets are
 // configured elsewhere in this codebase, not inferred by parsing queries.
-// Wiring the real Phase-A consumer lenses (applicantRoster and friends) is a
-// deferred follow-up; empty Targets makes this a harmless no-op consumer that
-// still exercises the event, the counters, and the failure-tier path.
+// A SECURE lens (secureColumns) needs no entry here: its piiKey-CDC-triggered
+// reprojection already scrubs a shredded identity's secure columns to NULL in
+// place (pipeline/secure.go), the stronger guarantee. This allowlist is for
+// plain lenses whose rows should be DELETED outright on a shred. A plain lens
+// only ever projects a sensitive aspect as its ciphertext envelope (general
+// lenses never decrypt), so an un-listed plain lens holds garbage ciphertext
+// after a shred — hygiene, not a plaintext leak. No lens opts in today, so
+// empty Targets makes this a harmless no-op consumer that still exercises the
+// event, the counters, and the failure-tier path.
 //
 // On a nullification failure this raises the privacy-critical failure tier
 // (failure.PrivacyCritical): the affected lens is paused via the control

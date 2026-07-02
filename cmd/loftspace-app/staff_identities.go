@@ -5,14 +5,13 @@ import (
 	"net/http"
 )
 
-// The applicant-identity-picker read boundary (D1.5) — cmd/loftspace-app's
-// handleIdentities used to list the unprotected applicantRoster NATS-KV bucket
-// and serve every named identity's full name to ANY caller with no
-// authentication at all: a system-wide membership-disclosure leak (which
-// applicants and landlords exist, by full name). handleStaffIdentities
-// replaces that vector, reading the PROTECTED applicantRosterRead Postgres
-// model as a JWT-authenticated actor — mirroring cmd/clinic-app's
-// handleStaffPatients / clinicPatientsRead exactly.
+// The applicant-identity-picker read boundary (D1.5): handleStaffIdentities
+// serves the picker from the PROTECTED applicantRosterRead Postgres model as
+// a JWT-authenticated actor — mirroring cmd/clinic-app's handleStaffPatients /
+// clinicPatientsRead. That model is the ONLY roster surface: the identity
+// name is a sensitive aspect the Refractor Secure Lens decrypts into this
+// RLS-protected table alone (Contract #3 §3.10), so an unauthenticated
+// full-name roster (a system-wide membership disclosure) cannot exist.
 //
 // Like the clinic patient roster there is no per-identity self-anchor to carve
 // out — "the whole roster" has no single-row owner — so every row projects an
@@ -25,8 +24,7 @@ import (
 
 // protectedIdentityRow is one row of the applicantRosterRead protected
 // Postgres read model, as scanned from the RLS-scoped read. NAME + STATE
-// only — the same columns the unprotected applicantRoster lens projects, no
-// additional PII.
+// only — no additional PII.
 type protectedIdentityRow struct {
 	IdentityKey string `json:"identityKey"`
 	Name        string `json:"name"`
@@ -36,11 +34,17 @@ type protectedIdentityRow struct {
 // selectIdentitiesSQL reads the protected model. It carries NO auth WHERE —
 // the RLS policy (FORCE ROW LEVEL SECURITY + the §6.14 set-membership policy)
 // injects the actor scope from the txn-local lattice.actor_id session
-// variable. Sorted by name for a stable picker, mirroring computeIdentities'
-// sort.
+// variable. `name IS NOT NULL` is a display filter, not authorization: the
+// Secure Lens projects NULL for a crypto-shredded identity's name, which has
+// no place in a picker (and would fail the plain-string Scan below). `state`
+// is COALESCEd because the lens projects it unconditionally — an identity
+// carrying a `.name` but no `.state` aspect projects NULL there, which must
+// degrade to an empty string, not fail the whole roster Scan. Sorted by name
+// for a stable picker.
 const selectIdentitiesSQL = `
-SELECT identity_key, name, state
+SELECT identity_key, name, COALESCE(state, '') AS state
 FROM read_loftspace_identities
+WHERE name IS NOT NULL
 ORDER BY name, identity_key`
 
 // queryIdentities runs the protected read inside a per-request transaction
@@ -83,9 +87,7 @@ func queryIdentities(ctx context.Context, pool pgxBeginner, actorID string) ([]p
 }
 
 // handleStaffIdentities implements GET /api/staff/identities — the applicant
-// picker, PROTECTED and RLS-scoped (D1.5). It replaces the retired
-// handleIdentities, which served the same roster from the unprotected
-// applicantRoster NATS-KV bucket to ANY caller with no authentication at all.
+// picker, PROTECTED and RLS-scoped (D1.5).
 func (s *server) handleStaffIdentities(w http.ResponseWriter, r *http.Request) {
 	actor, err := s.authenticateRead(r)
 	if err != nil {

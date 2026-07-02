@@ -18,7 +18,7 @@ Depends: `location-domain` (install `lattice-pkg install packages/loftspace-doma
 | **Aspect types** (2) | `listing`, `address` (both step-6 write gates, declaration-only — no op handler) |
 | **Links** (1) | `manages` (identity → unit, landlord management) |
 | **Operations** (5) | `SetListing` · `SetUnitAddress` · `SetListingStatus` · `AssignUnitOwner` · `RemoveUnitOwner` |
-| **Projection lenses** (2) | `availableListings` → `loftspace-listings` · `applicantRoster` → `loftspace-identities` (both `nats-kv`, `full` engine) |
+| **Projection lenses** (2) | `availableListings` → `loftspace-listings` (`nats-kv`) · `applicantRosterRead` → `read_loftspace_identities` (protected `postgres`, secure lens; both `full` engine) |
 
 Every op is granted to the `operator` role at `scope: any` (`permissions.go`) — the trusted single-identity
 model, no new capability surface, identical to `clinic-domain`.
@@ -73,7 +73,7 @@ data) lives on the identity side, owned by `lease-signing` / `identity-domain`, 
 
 ## Projection lenses (P5 — the only application query surface)
 
-A LoftSpace FE reads these projected NATS-KV read models, **never Core KV** (lattice-architecture.md P5).
+A LoftSpace FE reads these projected read models, **never Core KV** (lattice-architecture.md P5).
 Both are flat (no `WITH`/aggregation) `full`-engine projections.
 
 - **`availableListings`** → `loftspace-listings`. One row per **listed** unit (`WHERE
@@ -82,11 +82,14 @@ Both are flat (no `WITH`/aggregation) `full`-engine projections.
   query-optimized row keyed by the unit key — the `CreateLeaseApplication` target the applicant FE
   submits. Does **not** filter on `status` itself, so a reader can default to showing `available` units
   while still surfacing `pending` / `leased` / `withdrawn` on request.
-- **`applicantRoster`** → `loftspace-identities`. One row per **named** identity (`WHERE
-  i.name.data.value <> null`) — the human-readable picker so a person selects themselves by name instead
-  of a raw `vtx.identity.<id>` key. Projecting the identity `name` (a sensitive aspect) here is consistent
-  with the trusted single-identity dev-tool posture (no read-path auth yet on this surface) and mirrors
-  identity-hygiene's duplicate-candidates lens already doing the same.
+- **`applicantRosterRead`** → `read_loftspace_identities` (protected Postgres, Contract #6 §6.14 RLS).
+  One row per **named** identity (`WHERE i.name.data.ct <> null` — ciphertext presence, since the
+  sensitive `name` aspect holds only an envelope at rest) — the human-readable picker so a person selects
+  themselves by name instead of a raw `vtx.identity.<id>` key. A **secure lens** (Contract #3 §3.10):
+  Refractor decrypts the name envelope under the owning identity's DEK at projection time, so plaintext
+  exists only in the RLS-protected table; a shredded identity's name projects NULL. Rows carry an EMPTY
+  `authz_anchors` set, so only the reserved WildcardAnchor grant reads them — `cmd/loftspace-app` reads
+  the table as its own admin actor, for the picker and for server-side name resolution alike.
 
 ## Out of scope (owned elsewhere / deferred)
 

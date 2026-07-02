@@ -56,7 +56,9 @@ Installed packages:
   wired into one installable package.
 - `loftspace-domain` — LoftSpace listing economics: the `.listing` + `.address`
   aspects on a `location-domain` unit (`SetListing` / `SetUnitAddress`) + the
-  `availableListings` / `applicantRoster` projection Lenses. Introduces no new
+  `availableListings` / `applicantRosterRead` projection Lenses
+  (`applicantRosterRead` is a protected-Postgres Secure Lens — the identity
+  name decrypts at projection time, Contract #3 §3.10). Introduces no new
   vertex type.
 
 **Clinic vertical** (the 2nd reference vertical / forcing function for PHI +

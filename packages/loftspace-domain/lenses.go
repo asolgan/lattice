@@ -9,24 +9,16 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // application query surface). The Refractor auto-creates the bucket on lens load.
 const LoftspaceListingsBucket = "loftspace-listings"
 
-// LoftspaceIdentitiesBucket is the NATS-KV read model the applicantRoster lens
-// projects into. It is the **P5 query surface** for "who can I act as": the
-// applicant FE reads THIS projected bucket (one entry per named identity, keyed
-// by the identity key) to render a human-readable identity picker, never Core KV.
-// The Refractor auto-creates the bucket on lens load.
-//
-// The identity `name` is a sensitive aspect; projecting it is consistent with the
-// trusted single-identity tool model (no read-path auth yet, Phase-3+) and with
-// identity-hygiene already projecting names into its duplicate-candidates lens.
-const LoftspaceIdentitiesBucket = "loftspace-identities"
-
 // Lenses returns the package's Lens declarations: `availableListings` (the
-// listed-unit projection), `applicantRoster` (the unprotected NATS-KV roster
-// the trusted-tool console reads server-side to resolve a name for display —
-// unit_applications.go, lease_document.go), and `applicantRosterRead` (the
-// protected Postgres roster D1.5's identity picker reads as an authenticated
-// actor). It projects one row per LISTED unit — a location unit carrying a
-// `.listing` aspect — flattening the listing economics + street address into a
+// listed-unit projection) and `applicantRosterRead` (the protected Postgres
+// identity roster — the ONLY roster surface: D1.5's picker reads it as an
+// authenticated actor, and cmd/loftspace-app's server-side name resolution
+// (unit_applications.go, lease_document.go) reads it as the app's own admin
+// actor; there is no unprotected NATS-KV roster, because the identity `name`
+// is a sensitive aspect and a Secure Lens may only decrypt into an
+// RLS-protected Postgres model, Contract #3 §3.10). availableListings
+// projects one row per LISTED unit — a location unit carrying a `.listing`
+// aspect — flattening the listing economics + street address into a
 // query-optimized read-model row. The lens does NOT filter on status (it
 // carries the status column), so a reader can show available units by default
 // and still surface pending / leased on request; the per-row key is the unit
@@ -42,35 +34,29 @@ func Lenses() []pkgmgr.LensSpec {
 			Spec:          availableListingsSpec,
 		},
 		{
-			CanonicalName: "applicantRoster",
-			Class:         "meta.lens",
-			Adapter:       "nats-kv",
-			Bucket:        LoftspaceIdentitiesBucket,
-			Engine:        "full",
-			Spec:          applicantRosterSpec,
-		},
-		{
 			// applicantRosterRead — the protected Postgres read model for the
-			// applicant-identity picker (D1.5). cmd/loftspace-app's handleIdentities
-			// used to list the unprotected applicantRoster NATS-KV bucket and serve
-			// every named identity's full name to ANY caller with no authentication
-			// at all — a system-wide membership-disclosure leak (which applicants and
-			// landlords exist, by full name). handleStaffIdentities replaces that
-			// vector, reading THIS table as a JWT-authenticated actor, mirroring
-			// clinic-domain's clinicPatientsRead exactly.
+			// applicant-identity picker (D1.5) and for the app's server-side
+			// name resolution. Reading it requires an authenticated actor:
+			// every row projects an EMPTY authz_anchors set ("the whole
+			// roster" has no single-row owner), so only an actor holding the
+			// reserved WildcardAnchor grant (D1 design §3.4 M5,
+			// internal/refractor/adapter.WildcardAnchor) ever matches a row —
+			// mirroring clinic-domain's clinicPatientsRead. The picker still
+			// works before any applicant has selected who they are: the app
+			// mints its own fixed-subject staff token (s.adminActor, the same
+			// root-equivalent identity the app already connects to NATS as),
+			// so the client never needs a prior login to bootstrap identity
+			// selection.
 			//
-			// Like clinicPatientsRead there is no per-identity self-anchor to carve
-			// out — "the whole roster" has no single-row owner, so every row
-			// projects an EMPTY authz_anchors set: only an actor holding the reserved
-			// WildcardAnchor grant (D1 design §3.4 M5,
-			// internal/refractor/adapter.WildcardAnchor) ever matches a row. The
-			// picker still works before any applicant has selected who they are —
-			// the app mints its own fixed-subject staff token (s.adminActor, the same
-			// root-equivalent identity the app already connects to NATS as), so the
-			// client never needs a prior login to bootstrap identity selection.
+			// SECURE LENS (Contract #3 §3.10, Vault Phase B): the identity
+			// `name` is a sensitive aspect, so Core KV holds only its
+			// ciphertext envelope. The cypher RETURNs the envelope whole
+			// (i.name.data) and Refractor decrypts it under the owning
+			// identity's DEK at projection time — plaintext exists only in
+			// this RLS-protected table. A shredded identity's name projects
+			// NULL (right-to-erasure at the projection surface).
 			//
-			// NAME + STATE ONLY, the same columns the unprotected applicantRoster
-			// projects — no additional PII.
+			// NAME + STATE ONLY — no additional PII.
 			CanonicalName: "applicantRosterRead",
 			Class:         "meta.lens",
 			Adapter:       "postgres",
@@ -84,6 +70,9 @@ func Lenses() []pkgmgr.LensSpec {
 				{Name: "identity_key", Type: "text"},
 				{Name: "name", Type: "text"},
 				{Name: "state", Type: "text"},
+			},
+			SecureColumns: []pkgmgr.SecureColumn{
+				{Column: "name", IdentityKeyColumn: "identity_key", Field: "value"},
 			},
 		},
 	}
@@ -117,34 +106,26 @@ RETURN
   u.address.data.region AS addrRegion,
   u.address.data.postal AS addrPostal`
 
-// applicantRosterSpec projects one row per NAMED identity — the human-readable
-// roster the applicant FE renders so a person picks themselves by name instead of
-// a raw vtx.identity.<id> key. The WHERE keeps only identities carrying a `.name`
-// aspect (the `<> null` aspect-presence idiom availableListings uses), so service
-// / unnamed actors are excluded and the picker stays a list of real people. The
-// per-row key is the identity key (the IntoKey default), so the read model is
-// keyed by vtx.identity.<id>; `identityKey` repeats it in the body. `name` and
-// `state` are read by the documented node.<aspect>.data.<field> form.
-const applicantRosterSpec = `MATCH (i:identity)
-WHERE i.name.data.value <> null
-RETURN
-  i.key AS key,
-  i.key AS identityKey,
-  i.name.data.value AS name,
-  i.state.data.value AS state`
-
-// applicantRosterReadSpec is the PROTECTED Postgres twin of applicantRosterSpec
-// (D1.5): same WHERE guard (only named identities project), plus the
-// nanoIdFromKey(i.key) IntoKey column and an EMPTY authz_anchors set — the
-// roster has no per-row owner, so only the reserved WildcardAnchor grant ever
-// matches (mirrors clinic-domain's clinicPatientsReadSpec).
+// applicantRosterReadSpec projects one row per NAMED identity — the roster a
+// person picks themselves from by name instead of a raw vtx.identity.<id> key.
+// `name` is a sensitive aspect, so its Core-KV `data` is a ciphertext envelope
+// ({ct, nonce, keyId}): the WHERE keeps only identities carrying a `.name`
+// aspect via ciphertext presence (`i.name.data.ct <> null` — there is no
+// plaintext `value` field at rest), so service / unnamed actors are excluded
+// and the picker stays a list of real people. The RETURN carries the envelope
+// whole (`i.name.data AS name`) for the Secure-Lens decryptor, which projects
+// the decrypted object's `value` field per the SecureColumns declaration;
+// `identity_key` doubles as the decryptor's key-custody column. authz_anchors
+// is EMPTY — the roster has no per-row owner, so only the reserved
+// WildcardAnchor grant ever matches (mirrors clinic-domain's
+// clinicPatientsReadSpec).
 const applicantRosterReadSpec = `MATCH (i:identity)
-WHERE i.name.data.value <> null
+WHERE i.name.data.ct <> null
 RETURN
   nanoIdFromKey(i.key)  AS identity_id,
   i.key                 AS entity_key,
   i.key                 AS identity_key,
-  i.name.data.value     AS name,
+  i.name.data           AS name,
   i.state.data.value    AS state,
   []                    AS authz_anchors
 `

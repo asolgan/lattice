@@ -79,6 +79,12 @@ func TestStaffIdentitiesReadBoundary_WildcardSeesEverything(t *testing.T) {
 	      VALUES ('id-A', 'vtx.identity.`+subAlice+`', 'vtx.identity.`+subAlice+`', 'Alice Renter', 'claimed', '{}', 1)`)
 	exec(`INSERT INTO read_loftspace_identities (identity_id, entity_key, identity_key, name, state, authz_anchors, projection_seq)
 	      VALUES ('id-B', 'vtx.identity.`+subBob+`', 'vtx.identity.`+subBob+`', 'Bob Tenant', 'unclaimed', '{}', 1)`)
+	// A crypto-shredded identity: the Secure Lens projects its name as NULL.
+	// selectIdentitiesSQL's `name IS NOT NULL` filter must keep it out of the
+	// picker even for the wildcard reader (a NULL name would also fail the
+	// plain-string Scan).
+	exec(`INSERT INTO read_loftspace_identities (identity_id, entity_key, identity_key, name, state, authz_anchors, projection_seq)
+	      VALUES ('id-S', 'vtx.identity.shredded', 'vtx.identity.shredded', NULL, 'claimed', '{}', 1)`)
 	exec(`INSERT INTO actor_read_grants (actor_id, anchor_id, grant_source, projection_seq, is_deleted)
 	      VALUES ($1, $1, 'cap-read', 1, false)`, subAlice)
 	exec(`INSERT INTO actor_read_grants (actor_id, anchor_id, grant_source, projection_seq, is_deleted)
@@ -118,13 +124,18 @@ func TestStaffIdentitiesReadBoundary_WildcardSeesEverything(t *testing.T) {
 		return rec.Code, resp.Identities
 	}
 
-	t.Run("staff sees every identity via the wildcard grant", func(t *testing.T) {
+	t.Run("staff sees every NAMED identity via the wildcard grant", func(t *testing.T) {
 		code, rows := get(t, "Bearer "+mint(subStaff))
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", code)
 		}
 		if len(rows) != 2 {
-			t.Fatalf("staff must see BOTH identities, got %+v", rows)
+			t.Fatalf("staff must see both named identities (and NOT the NULL-name shredded row), got %+v", rows)
+		}
+		for _, row := range rows {
+			if row.IdentityKey == "vtx.identity.shredded" {
+				t.Fatalf("the shredded (NULL-name) identity must not appear in the picker: %+v", rows)
+			}
 		}
 	})
 

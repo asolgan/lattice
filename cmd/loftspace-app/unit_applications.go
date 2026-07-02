@@ -93,7 +93,7 @@ func applicationStatus(a applicationRow) string {
 // groupByUnit assembles the landlord by-unit view from the three P5 read models
 // already shipped: the `leaseApplicationComplete` convergence rows (one per live
 // application, carrying unitKey + applicant + the gap/approval/declined state),
-// the `applicantRoster` identities (identity key → human name), and the
+// the roster identities (identity key → human name, rosterIdentities), and the
 // `availableListings` rows (every listed unit, so a unit with zero applications
 // still shows). Units are keyed by unitKey; a listing seeds the unit's facets,
 // and an application overrides them when it carries its own (a unit that has
@@ -246,12 +246,6 @@ func (s *server) handleUnitApplications(w http.ResponseWriter, r *http.Request) 
 			"list "+bootstrap.WeaverTargetsBucket+": "+err.Error()+" (is lease-signing installed and the Refractor projecting?)")
 		return
 	}
-	idGet, idKeys, err := getter(loftspacedomain.LoftspaceIdentitiesBucket)
-	if err != nil {
-		s.writeError(w, http.StatusBadGateway,
-			"list "+loftspacedomain.LoftspaceIdentitiesBucket+": "+err.Error()+" (is loftspace-domain installed and the Refractor projecting?)")
-		return
-	}
 	listGet, listKeys, err := getter(loftspacedomain.LoftspaceListingsBucket)
 	if err != nil {
 		s.writeError(w, http.StatusBadGateway,
@@ -259,8 +253,29 @@ func (s *server) handleUnitApplications(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	// Applicant names come from the PROTECTED applicantRosterRead Postgres
+	// model — the only roster surface (the identity name is a sensitive aspect
+	// the Secure Lens decrypts into that RLS-protected table alone). The read
+	// runs as the app's OWN admin actor (the WildcardAnchor holder), not the
+	// signed-in landlord: name resolution for display is the trusted-tool
+	// server's job, while the response stays scoped to the caller's managed
+	// units via the RLS-authoritative filter below. Names are display
+	// decoration on this surface, so a missing admin actor degrades to bare
+	// keys (logged) rather than failing the console; a QUERY failure against
+	// a configured pool is a real infra fault and surfaces as 502.
+	var identities []identityView
+	if adminID, ok := s.adminActorID(); ok {
+		identities, err = rosterIdentities(ctx, s.pgPool, adminID)
+		if err != nil {
+			s.logger.Error("read protected loftspace identities", "error", err)
+			s.writeError(w, http.StatusBadGateway, "could not read the protected identities model")
+			return
+		}
+	} else {
+		s.logger.Warn("admin actor not loaded (BOOTSTRAP_JSON_PATH); applicant names degrade to bare keys")
+	}
+
 	apps := computeApplications(appKeys, appGet, "")
-	identities := computeIdentities(idKeys, idGet)
 	listings := decodeListingProjections(listKeys, listGet)
 	rows := groupByUnit(apps, identities, listings)
 	scoped := filterUnitsToManaged(rows, managedUnits)

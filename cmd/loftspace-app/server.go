@@ -104,6 +104,19 @@ func (s *server) reqContext(r *http.Request) (context.Context, context.CancelFun
 	return context.WithTimeout(r.Context(), s.natsTimeout)
 }
 
+// adminActorID returns the bare NanoID of the app's admin actor — the RLS
+// session identity (lattice.actor_id) for server-side protected reads the app
+// makes on its own behalf (the WildcardAnchor-holding root-equivalent
+// identity, the same subject handleStaffDevToken mints for). ok is false when
+// the bootstrap file was never loaded or the key is malformed.
+func (s *server) adminActorID() (string, bool) {
+	if s.adminActor == "" {
+		return "", false
+	}
+	_, subject, ok := substrate.ParseVertexKey(s.adminActor)
+	return subject, ok
+}
+
 // requireBody reads up to 1 MiB of the request body, the cap for the small JSON
 // op payloads this app submits.
 func requireBody(r *http.Request) ([]byte, error) {
