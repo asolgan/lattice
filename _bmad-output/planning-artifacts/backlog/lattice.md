@@ -113,9 +113,9 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 **forks** (Gateway, read-path auth, Vault, multi-cell, HA-NATS) and **frozen-contract** changes are
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
-> 🎯 **Build-ready now**: **Vault Fire 5b** (★★★ — Negative/filter-retraction is now CLOSED, `5901bc4`,
-> so 5b's Fire-3 gate is cleared; next 5b-ii-b Rec-C remainder, 5b-iii clinic contact + FE tails;
-> unblocks 3 Verticals rows). *Dependency-sequenced ratified items*: **Personal Lens** (buildable,
+> 🎯 **Build-ready now**: **Vault Fire 5b** (★★★ — readiness clone shipped `13ffb75`; next 5b-ii-c
+> FE wiring + console retirement, then 5b-iii clinic contact + FE tails; unblocks 3 Verticals
+> rows). *Dependency-sequenced ratified items*: **Personal Lens** (buildable,
 > deprioritized behind Vault) · **Object crypto-shred** (behind Vault). Current fire/park state for
 > Gateway · FR28 · Augur · Control-plane-authz · `kv.Links` lives on their rows below.
 
@@ -130,7 +130,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Privacy / Vault
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| Vault + crypto-shredding | Per-identity keys for sensitive aspects (SSN/DOB); right-to-be-forgotten = destroy the key; transient-session-key decrypt. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/vault-crypto-shredding-design.md) · next: retraction Fire 3 (target-diff) gates 5b close; then 5b-ii-b Rec-C |
+| Vault + crypto-shredding | Per-identity keys for sensitive aspects (SSN/DOB); right-to-be-forgotten = destroy the key; transient-session-key decrypt. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/vault-crypto-shredding-design.md) · next: 5b-ii-c FE wiring + console retirement, then 5b-iii clinic contact |
 | **[identity-hygiene] Dedup over encrypted PII (duplicateCandidates)** | Post-Vault, the lens's WHERE matching (email/phone equality, name Levenshtein) runs on per-identity-DEK ciphertext → functionally inert; a secure lens can't fix in-engine matching. Needs a design: blind-index/HMAC companion aspect vs sanctioned engine mechanism. | ★★ | M | 📋 needs-design (Designer) · context in the [vault design](../../implementation-artifacts/vault-crypto-shredding-design.md) Fire 5b-i checkpoint |
 | **[Object Store] Crypto-shred for object-store blobs** | Vault covers sensitive **aspects** (Core KV) but not PII-bearing **blobs** (lease PDFs, ID scans, signatures) — extend crypto-shred to the Object Store. | ★★ | M | ✅ ratified · [design](../../implementation-artifacts/object-store-crypto-shred-design.md) · 🚧 behind Vault |
 
@@ -199,6 +199,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-02 · `13ffb75` · [lease-signing/loftspace-app] Vault Fire 5b-ii-b — landlord readiness clone (`qualified`) via a shared cypher fragment with the convergence lens; 3-layer review (security-plane)
 - 2026-07-02 · `5901bc4` · [Refractor] Negative/filter-retraction Fire 3 — target-diff retraction (DiffRetraction opt-in + activation-time unanchored-query guard; 3-layer review; CLOSES the epic, unblocks Vault 5b close)
 - 2026-07-02 · `5624392` · [Refractor] Negative/filter-retraction F1+F2 — plain-lens aspect/link reprojection + anchor-self retraction (3-layer review; Fire 3 target-diff next, gates Vault 5b)
 - 2026-07-02 · `a710c7a` · [lease-signing/loftspace-app] Vault Fire 5b-ii — landlord applicant contact Secure-Lens columns (name/email/phone; retraction fire now gates 5b close)

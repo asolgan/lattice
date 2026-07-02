@@ -724,6 +724,28 @@ extend `make test-crypto-shred` to drive the REAL `landlordLeaseApplicationsRead
 shred-scrub (the composition is currently proven in halves); delivery-boundary reset + live
 e2e close 5b.
 
+**Fire 5b-ii-b CHECKPOINT (2026-07-02, Lattice Steward, `13ffb75`).** Readiness clone shipped:
+`landlordLeaseApplicationsRead` gains `qualified` (ssn/fresh-bgcheck/payment/signature — the same
+formula `leaseApplicationComplete` derives as `applicantApproved`), via a shared cypher fragment
+(`readinessOptionalMatch`/`readinessWithItems`, two Go constants spliced into BOTH lenses) so the
+readiness rule can't drift between hand-copies (§4 Option A). This is the lens's first `WITH`
+clause; spiked first and confirmed safe — the full engine carries the map-valued Secure columns
+(the ciphertext envelopes) through a non-aggregating WITH passthrough unmodified, and the
+Secure-Lens decryptor resolves a column by RETURN alias only, indifferent to whether that alias
+came from a direct hop or a WITH passthrough. `qualified` is wired through the Go handler
+(`protectedLandlordRow`, SQL, Scan) but **not yet consumed by any FE** — moving Approve/Decline
+onto the RLS-scoped view and retiring the trusted console is a UX-consolidation decision, not just
+wiring, and is deferred to the next slice. Full 3-layer adversarial review (security-plane
+change): no confirmed bugs; noted residual — `qualified` (this lens) and `applicantApproved` (the
+convergence lens) are independently materialized and could transiently disagree, dormant until an
+FE reads the new field (the same cross-lens materialization-timing class already accepted for
+other display scalars, not a new hazard).
+Worktree: `/Users/andrewsolgan/Documents/GitHub/lattice-wt-vault-5b-ii-b` (branch
+`steward-vault-5b-ii-b`, merged through `13ffb75`). Next: **5b-ii-c** — wire `qualified` into the
+RLS-scoped FE card list + move Approve/Decline there, retire the trusted console's action surface
+(a UX-consolidation call, not pure plumbing); then 5b-iii clinic contact; extend
+`make test-crypto-shred` per the note above; delivery-boundary reset + live e2e close 5b.
+
 **Considered and REJECTED — pre-Vault plaintext contact projection** into `clinicPatientsRead`
 (technically buildable, no test fails, outside M4's *letter* since `.demographics` cannot be
 `sensitive:true` on a non-identity vertex): it ships queryable plaintext PHI into Postgres that
