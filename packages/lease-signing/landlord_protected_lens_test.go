@@ -239,3 +239,53 @@ func TestLandlordLeaseApplicationsRead_CoManagedUnitFansToOneRowPerLandlord(t *t
 	require.Equal(t, []string{f.ids["larry"]}, anchorStrings(t, byLandlord[f.ids["larry"]]["authz_anchors"]))
 	require.Equal(t, []string{f.ids["linda"]}, anchorStrings(t, byLandlord[f.ids["linda"]]["authz_anchors"]))
 }
+
+// TestLandlordLeaseApplicationsRead_ProjectsContactEnvelopesWhole — the Secure-Lens
+// contract at the engine layer (Contract #3 §3.10): applicant_name /
+// applicant_email / applicant_phone RETURN the applicant's sensitive aspect
+// envelope WHOLE (id.<aspect>.data — the {ct, nonce, keyId} map the Processor
+// commits), never a plaintext hop, so the pipeline's SecureDecryptor is the only
+// place plaintext appears. An applicant missing an aspect projects that column
+// null while the ROW still projects — the contact columns are display enrichment,
+// never a row gate (no WHERE on ciphertext presence, unlike applicantRosterRead).
+func TestLandlordLeaseApplicationsRead_ProjectsContactEnvelopesWhole(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	f.seedManagedApplication(t, "app", "alice", "unit1", "larry")
+	nameEnv := map[string]any{"ct": "b64-name-ct", "nonce": "b64-nonce-1", "keyId": "alice-key"}
+	emailEnv := map[string]any{"ct": "b64-email-ct", "nonce": "b64-nonce-2", "keyId": "alice-key"}
+	f.aspect(t, "alice", "name", "name", nameEnv)
+	f.aspect(t, "alice", "email", "email", emailEnv)
+	// No phone aspect: the column must project null, the row must survive.
+
+	rows := f.projectLandlordRead(t)
+	require.Len(t, rows, 1)
+	v := rows[0].Values
+
+	require.Equal(t, nameEnv, v["applicant_name"], "applicant_name carries the ciphertext envelope whole")
+	require.Equal(t, emailEnv, v["applicant_email"], "applicant_email carries the ciphertext envelope whole")
+	require.Nil(t, v["applicant_phone"], "a missing sensitive aspect projects null, not a dropped row")
+}
+
+// TestLandlordLeaseApplicationsRead_ContactlessApplicantStillProjects — an
+// application whose applicant has NO sensitive contact aspects at all still
+// projects its landlord row (all three contact columns null). Guards against a
+// future WHERE that would silently drop applications from the landlord's
+// decision surface.
+func TestLandlordLeaseApplicationsRead_ContactlessApplicantStillProjects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	f.seedManagedApplication(t, "app", "alice", "unit1", "larry")
+
+	rows := f.projectLandlordRead(t)
+	require.Len(t, rows, 1, "a contactless applicant's application still reaches the landlord surface")
+	v := rows[0].Values
+	require.Nil(t, v["applicant_name"])
+	require.Nil(t, v["applicant_email"])
+	require.Nil(t, v["applicant_phone"])
+	require.Equal(t, []string{f.ids["larry"]}, anchorStrings(t, v["authz_anchors"]))
+}

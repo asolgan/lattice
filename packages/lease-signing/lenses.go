@@ -171,13 +171,30 @@ func Lenses() []pkgmgr.LensSpec {
 			// reads this model for document rendering, so there is nothing pulling
 			// those columns in yet — add them here too if one starts.
 			//
-			// D1.5 Rec C (lease-signing/lenses.go loftspace-d1.5-landlord-rls-decision-
-			// surface-design.md §4/§5) added the 7 applicant qualification-profile
-			// signal columns below — pure `app.profile.data.*` scalar hops off the
-			// already-anchored leaseapp, informational only (no `qualified` /
-			// readiness column: that needs the service-instance freshness aggregation
-			// `leaseApplicationCompleteSpec` runs, deliberately NOT cloned here per §4
-			// — deferred to the Vault milestone alongside name/contact display).
+			// The 7 applicant qualification-profile signal columns (D1.5 Rec C,
+			// loftspace-d1.5-landlord-rls-decision-surface-design.md §4/§5) are
+			// pure `app.profile.data.*` scalar hops off the already-anchored
+			// leaseapp, informational only — no `qualified` / readiness column:
+			// that needs the service-instance freshness aggregation
+			// `leaseApplicationCompleteSpec` runs, deliberately NOT cloned here
+			// per §4 (the remaining Rec-C deferral, with console retirement).
+			//
+			// SECURE LENS (Contract #3 §3.10, Vault Phase B): applicant_name /
+			// applicant_email / applicant_phone are the applicant identity's
+			// sensitive contact aspects, decrypted at projection into this
+			// RLS-protected table only — the landlord who manages the unit is the
+			// authorized reader of the applicant's contact details. The cypher
+			// RETURNs each aspect's ciphertext envelope whole (id.<aspect>.data);
+			// the `applicant` column doubles as the decryptor's key-custody column
+			// (the OWNING identity is the applicant, not the landlord anchor). A
+			// missing aspect projects null; a shredded applicant's columns project
+			// null (right-to-erasure). The shred's piiKey CDC event triggers
+			// re-evaluation of this lens, and because the anchor MATCH is
+			// UNANCHORED (no {key: $actorKey}) the full engine re-scans every
+			// leaseapp and re-projects every row with a fresh decrypt — so an
+			// already-projected plaintext row scrubs to null even though the
+			// identity is not this lens's anchor (pinned by
+			// TestSecureLens_NeighborShredReprojectsAnchoredRows).
 			CanonicalName: "landlordLeaseApplicationsRead",
 			Class:         "meta.lens",
 			Adapter:       "postgres",
@@ -210,6 +227,14 @@ func Lenses() []pkgmgr.LensSpec {
 				{Name: "has_co_applicant", Type: "boolean"},
 				{Name: "has_guarantor", Type: "boolean"},
 				{Name: "guarantor_income_to_rent_met", Type: "boolean"},
+				{Name: "applicant_name", Type: "text"},
+				{Name: "applicant_email", Type: "text"},
+				{Name: "applicant_phone", Type: "text"},
+			},
+			SecureColumns: []pkgmgr.SecureColumn{
+				{Column: "applicant_name", IdentityKeyColumn: "applicant", Field: "value"},
+				{Column: "applicant_email", IdentityKeyColumn: "applicant", Field: "value"},
+				{Column: "applicant_phone", IdentityKeyColumn: "applicant", Field: "value"},
 			},
 		},
 	}
@@ -639,8 +664,8 @@ RETURN
 //     vtx.identity.<id> key as a display/scope body column.
 //   - profile_submitted / income_to_rent_met / employment_verified /
 //     reference_count / has_co_applicant / has_guarantor /
-//     guarantor_income_to_rent_met (D1.5 Rec C, decision-surface-design.md §4/§5)
-//     are pure scalar hops off app.profile.data.* — the SAME derived signals
+//     guarantor_income_to_rent_met (D1.5 Rec C, decision-surface-design.md
+//     §4/§5) are pure scalar hops off app.profile.data.* — the SAME derived signals
 //     leaseApplicationCompleteSpec projects, minus the service-instance
 //     readiness aggregation (deliberately not cloned here; see the Lenses()
 //     doc comment above). No WITH / aggregation needed: the full engine's
@@ -650,6 +675,15 @@ RETURN
 //     no .profile aspect yet projects profile_submitted=false and every other
 //     signal null (unknown, not false) — the FE's existing profileSubmitted
 //     gate (renderQualification) already treats an absent profile that way.
+//   - applicant_name / applicant_email / applicant_phone are SECURE columns
+//     (see the Lenses() declaration): each RETURNs the applicant identity's
+//     sensitive aspect envelope whole (id.<aspect>.data — ciphertext at rest;
+//     there is no plaintext `value` field to hop into), and the Secure-Lens
+//     decryptor rewrites it to the decrypted `value` before the row reaches
+//     the RLS-protected adapter. Unlike applicantRosterRead, NO WHERE keys on
+//     ciphertext presence: an application from an identity missing an aspect
+//     (or shredded) must still project a row — the contact columns are
+//     display enrichment, never a row gate.
 //
 // '= null' / list literals + nanoIdFromKey in RETURN mirror leaseApplicationsRead.
 const landlordLeaseApplicationsReadSpec = `
@@ -683,5 +717,8 @@ RETURN
   app.profile.data.hasCoApplicant             AS has_co_applicant,
   app.profile.data.hasGuarantor               AS has_guarantor,
   app.profile.data.guarantorIncomeToRentMet   AS guarantor_income_to_rent_met,
+  id.name.data                   AS applicant_name,
+  id.email.data                  AS applicant_email,
+  id.phone.data                  AS applicant_phone,
   [nanoIdFromKey(landlord.key)]  AS authz_anchors
 `

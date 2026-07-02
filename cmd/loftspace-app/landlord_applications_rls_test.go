@@ -81,6 +81,9 @@ func TestLandlordReadBoundary_RLS_Enforcement(t *testing.T) {
 		{Name: "has_co_applicant", Type: "boolean"},
 		{Name: "has_guarantor", Type: "boolean"},
 		{Name: "guarantor_income_to_rent_met", Type: "boolean"},
+		{Name: "applicant_name", Type: "text"},
+		{Name: "applicant_email", Type: "text"},
+		{Name: "applicant_phone", Type: "text"},
 	}
 	// The COMPOSITE key — this is what lets a co-managed unit's application carry one
 	// row per landlord without a primary-key collision.
@@ -113,6 +116,14 @@ func TestLandlordReadBoundary_RLS_Enforcement(t *testing.T) {
 	insRow("app-N", subLinda, "vtx.leaseapp.app-N", "vtx.identity."+subBob, "vtx.identity."+subLinda, "vtx.unit.unit-N", subLinda)
 	insRow("app-CO", subLarry, "vtx.leaseapp.app-CO", "vtx.identity."+subAlice, "vtx.identity."+subLarry, "vtx.unit.unit-CO", subLarry)
 	insRow("app-CO", subLinda, "vtx.leaseapp.app-CO", "vtx.identity."+subAlice, "vtx.identity."+subLinda, "vtx.unit.unit-CO", subLinda)
+
+	// app-L carries decrypted Secure-Lens contact values (what the projection
+	// writes post-decrypt); every other row leaves them NULL — an applicant with
+	// no recorded contact aspects or a crypto-shredded one. Both shapes must
+	// scan and serve.
+	exec(`UPDATE read_landlord_lease_applications
+	      SET applicant_name=$1, applicant_email=$2, applicant_phone=$3
+	      WHERE app_id='app-L'`, "Alice Applicant", "alice@example.com", "+15550001111")
 
 	exec(`INSERT INTO actor_read_grants (actor_id, anchor_id, grant_source, projection_seq, is_deleted)
 	      VALUES ($1, $1, 'cap-read', 1, false)`, subLarry)
@@ -231,6 +242,41 @@ func TestLandlordReadBoundary_RLS_Enforcement(t *testing.T) {
 		}
 		if appCount != 2 {
 			t.Errorf("Larry must see exactly 2 applications (app-L + app-CO), got %d", appCount)
+		}
+	})
+
+	t.Run("secure contact columns serve to the managing landlord, null-safe", func(t *testing.T) {
+		code, units, _ := get(t, "Bearer "+mint(subLarry), "")
+		if code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", code)
+		}
+		var withContact, nullContact *protectedLandlordRow
+		for i := range units {
+			for j := range units[i].Applications {
+				a := &units[i].Applications[j]
+				switch a.EntityKey {
+				case "vtx.leaseapp.app-L":
+					withContact = a
+				case "vtx.leaseapp.app-CO":
+					nullContact = a
+				}
+			}
+		}
+		if withContact == nil || nullContact == nil {
+			t.Fatalf("expected both app-L and app-CO in Larry's scope")
+		}
+		if withContact.ApplicantName == nil || *withContact.ApplicantName != "Alice Applicant" {
+			t.Errorf("applicantName = %v, want Alice Applicant", withContact.ApplicantName)
+		}
+		if withContact.ApplicantEmail == nil || *withContact.ApplicantEmail != "alice@example.com" {
+			t.Errorf("applicantEmail = %v, want alice@example.com", withContact.ApplicantEmail)
+		}
+		if withContact.ApplicantPhone == nil || *withContact.ApplicantPhone != "+15550001111" {
+			t.Errorf("applicantPhone = %v, want +15550001111", withContact.ApplicantPhone)
+		}
+		if nullContact.ApplicantName != nil || nullContact.ApplicantEmail != nil || nullContact.ApplicantPhone != nil {
+			t.Errorf("a contactless/shredded applicant's columns must stay null, got %v/%v/%v",
+				nullContact.ApplicantName, nullContact.ApplicantEmail, nullContact.ApplicantPhone)
 		}
 	})
 

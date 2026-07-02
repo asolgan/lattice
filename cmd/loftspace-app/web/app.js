@@ -2175,13 +2175,16 @@ function renderRLSUnitCard(u) {
   return card;
 }
 
-// renderRLSApplicantRow renders one RLS-scoped application: name falls back to a
-// short key (the applicant's name is a Vault-gated sensitive field this protected
-// lens does not carry, §3 of the design doc), the landlord's disposition, and the
-// SAME qualification-profile chips the trusted console shows (renderQualification —
+// renderRLSApplicantRow renders one RLS-scoped application: the applicant's
+// NAME and CONTACT come from the protected model's Secure-Lens columns
+// (applicantName/applicantEmail/applicantPhone — decrypted at projection into
+// the RLS table, so only the managing landlord reads them; null for an
+// applicant who never recorded the aspect or was crypto-shredded, falling back
+// to the short key), the landlord's disposition, and the SAME
+// qualification-profile chips the trusted console shows (renderQualification —
 // D1.5 Rec C, informational, no aggregation/readiness gate). No Approve/Decline
-// here; that stays on the trusted console (unitLeased / a.qualified gating out of
-// scope for this informational read).
+// here; that stays on the trusted console (unitLeased / a.qualified gating out
+// of scope for this informational read).
 function renderRLSApplicantRow(a) {
   const row = document.createElement("div");
   row.className = "applicant";
@@ -2190,7 +2193,7 @@ function renderRLSApplicantRow(a) {
   info.className = "applicant-info";
   const name = document.createElement("span");
   name.className = "applicant-name";
-  name.textContent = shortKey(a.applicant);
+  name.textContent = a.applicantName || shortKey(a.applicant);
   info.append(name);
   if (a.landlordApproved) info.append(dispChip("Approved — leasing", "approved"));
   else if (a.landlordDeclined) info.append(dispChip("Declined", "declined"));
@@ -2202,6 +2205,15 @@ function renderRLSApplicantRow(a) {
     info.append(signed);
   }
   row.append(info);
+
+  // Contact line — the Secure-Lens payoff: the landlord can actually reach
+  // the applicant. Rendered only when at least one contact field decrypted.
+  if (a.applicantEmail || a.applicantPhone) {
+    const contact = document.createElement("div");
+    contact.className = "applicant-contact";
+    contact.textContent = [a.applicantEmail, a.applicantPhone].filter(Boolean).join(" · ");
+    row.append(contact);
+  }
 
   row.append(renderQualification(a));
 

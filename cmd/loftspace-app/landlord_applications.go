@@ -39,9 +39,18 @@ import (
 // protected row too. ProfileSubmitted is a plain bool (the lens always projects it,
 // even false); the rest are pointers because "no profile yet" projects them null
 // (unknown), matching the console's null-vs-false distinction the FE already reads.
+// ApplicantName / ApplicantEmail / ApplicantPhone are the Secure-Lens contact
+// columns (Contract #3 §3.10): the lens decrypts the applicant identity's
+// sensitive contact aspects into this RLS-protected table only, so the managing
+// landlord — and nobody else — reads them here. Null when the applicant never
+// recorded the aspect or has been crypto-shredded; the FE degrades to the bare
+// key it already renders.
 type protectedLandlordRow struct {
 	EntityKey                string   `json:"entityKey"`
 	Applicant                string   `json:"applicant"`
+	ApplicantName            *string  `json:"applicantName"`
+	ApplicantEmail           *string  `json:"applicantEmail"`
+	ApplicantPhone           *string  `json:"applicantPhone"`
 	LandlordKey              string   `json:"landlordKey"`
 	UnitKey                  *string  `json:"unitKey"`
 	UnitAddress              *string  `json:"unitAddress"`
@@ -86,7 +95,8 @@ type landlordUnitGroup struct {
 // policy) injects the landlord scope from the txn-local lattice.actor_id session
 // variable. Rows sort by (unit_key, app_id) for a stable grouped view.
 const selectLandlordApplicationsSQL = `
-SELECT entity_key, applicant, landlord_key, unit_key, unit_address, unit_city,
+SELECT entity_key, applicant, applicant_name, applicant_email, applicant_phone,
+       landlord_key, unit_key, unit_address, unit_city,
        unit_region, unit_rent, unit_currency, unit_status, signed_at,
        landlord_decision, decline_reason, terms_move_in_date,
        terms_lease_term_months, terms_requested_rent,
@@ -123,7 +133,9 @@ func queryLandlordApplications(ctx context.Context, pool pgxBeginner, actorID st
 	for rows.Next() {
 		var row protectedLandlordRow
 		if err := rows.Scan(
-			&row.EntityKey, &row.Applicant, &row.LandlordKey, &row.UnitKey,
+			&row.EntityKey, &row.Applicant,
+			&row.ApplicantName, &row.ApplicantEmail, &row.ApplicantPhone,
+			&row.LandlordKey, &row.UnitKey,
 			&row.UnitAddress, &row.UnitCity, &row.UnitRegion, &row.UnitRent,
 			&row.UnitCurrency, &row.UnitStatus, &row.SignedAt, &row.LandlordDecision,
 			&row.DeclineReason, &row.TermsMoveInDate, &row.TermsLeaseTerm,

@@ -25,6 +25,7 @@ import (
 
 	"github.com/asolgan/lattice/internal/jsstore"
 	"github.com/asolgan/lattice/internal/refractor/adapter"
+	"github.com/asolgan/lattice/internal/refractor/adjacency"
 	"github.com/asolgan/lattice/internal/refractor/failure"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
@@ -467,4 +468,149 @@ func TestSecureLens_FullEngineRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	assert.Nil(t, results[0].Row["name"], "post-shred reprojection self-nullifies the PII column")
+}
+
+// TestSecureLens_NeighborShredReprojectsAnchoredRows proves the
+// right-to-erasure path for a secure lens whose secure columns decrypt a
+// NEIGHBOR identity's PII (the lens anchors on a different vertex type that
+// reaches the identity through its MATCH walk — the landlord
+// lease-applications shape). The shred's piiKey aspect event arrives on the
+// identity, which is NOT this lens's anchor; the scrub still lands because
+// the piiKey reprojection re-executes the lens's UNANCHORED cypher (no
+// {key: $actorKey} on the anchor MATCH), which re-scans every anchor and
+// re-projects every row with a fresh decrypt — no per-anchor enumeration
+// needed. This test pins that load-bearing behavior: if the executor ever
+// starts seeding an unanchored MATCH from the triggering vertex (binding
+// zero rows for a non-anchor identity), the shredded plaintext would
+// survive, and this test fails.
+func TestSecureLens_NeighborShredReprojectsAnchoredRows(t *testing.T) {
+	ctx := context.Background()
+
+	opts := &natsserver.Options{JetStream: true, StoreDir: jsstore.Dir(t), NoLog: true, NoSigs: true, Port: natsserver.RANDOM_PORT}
+	s, err := natsserver.NewServer(opts)
+	require.NoError(t, err)
+	go s.Start()
+	require.True(t, s.ReadyForConnections(5*time.Second))
+	nc, err := nats.Connect(s.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(func() { nc.Close(); s.Shutdown() })
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+	for _, b := range []string{"secn-core", "secn-adj", "secn-target"} {
+		_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: b})
+		require.NoError(t, err)
+	}
+	coreKV, err := conn.OpenKV(ctx, "secn-core")
+	require.NoError(t, err)
+	adjKV, err := conn.OpenKV(ctx, "secn-adj")
+	require.NoError(t, err)
+	targetKV, err := conn.OpenKV(ctx, "secn-target")
+	require.NoError(t, err)
+
+	v := newTestVault(t)
+	const identityID = "SecNbrPersonAAAAAAAA"
+	const appID = "SecNbrLeaseappAAAAAA"
+	identityKey := "vtx.identity." + identityID
+	appKey := "vtx.leaseapp." + appID
+	ctMap, piiKeyDoc := mintIdentityPII(t, v, identityKey, map[string]any{"value": "Alice Applicant"})
+
+	put := func(key string, body map[string]any) []byte {
+		raw, merr := json.Marshal(body)
+		require.NoError(t, merr)
+		_, perr := coreKV.Put(ctx, key, raw)
+		require.NoError(t, perr)
+		return raw
+	}
+	appBody := put(appKey, map[string]any{
+		"key": appKey, "class": "leaseapp", "isDeleted": false,
+		"createdAt": "2026-07-02T10:00:00Z", "lastModifiedAt": "2026-07-02T10:00:00Z",
+		"data": map[string]any{},
+	})
+	put(identityKey, map[string]any{
+		"key": identityKey, "class": "identity", "isDeleted": false,
+		"createdAt": "2026-07-02T10:00:00Z", "lastModifiedAt": "2026-07-02T10:00:00Z",
+		"data": map[string]any{},
+	})
+	put(identityKey+".name", map[string]any{
+		"key": identityKey + ".name", "class": "name", "vertexKey": identityKey,
+		"localName": "name", "isDeleted": false, "data": ctMap,
+	})
+	_, err = coreKV.Put(ctx, identityKey+".piiKey", piiKeyDoc)
+	require.NoError(t, err)
+
+	// The applicationFor link, both adjacency directions, so the engine's
+	// traversal resolves it.
+	linkKey := "lnk.leaseapp." + appID + ".applicationFor.identity." + identityID
+	require.NoError(t, adjacency.Build(ctx, adjKV, adjacency.CoreKVEvent{
+		CoreKvKey: linkKey, EdgeID: linkKey, Name: "applicationFor",
+		Direction: "outbound", NodeID: appID, OtherNodeID: identityID, OtherType: "identity",
+	}))
+	require.NoError(t, adjacency.Build(ctx, adjKV, adjacency.CoreKVEvent{
+		CoreKvKey: linkKey, EdgeID: linkKey, Name: "applicationFor",
+		Direction: "inbound", NodeID: identityID, OtherNodeID: appID, OtherType: "leaseapp",
+	}))
+
+	const cypher = `MATCH (app:leaseapp)
+MATCH (app)-[:applicationFor]->(id:identity)
+RETURN app.key AS key, id.key AS applicant, id.name.data AS applicant_name`
+
+	eng := full.New()
+	cr, err := eng.Parse(cypher)
+	require.NoError(t, err)
+	fullCR, ok := cr.(*full.CompiledRule)
+	require.True(t, ok)
+	fullCR.KeyColumns = []string{"key"}
+	require.NoError(t, fullCR.ValidateKeyColumns())
+	require.NoError(t, fullCR.ValidateReturnAliases("applicant_name", "applicant"))
+
+	adpt, err := adapter.New(targetKV, []string{"key"}, adapter.DeleteModeHard)
+	require.NoError(t, err)
+	p, err := New("secure-neighbor", "nats_kv", nil, "secn-core", adjKV, coreKV, adpt, nil)
+	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
+	decr, err := NewSecureDecryptor(v, coreKV, []SecureColumn{
+		{Column: "applicant_name", IdentityKeyColumn: "applicant", Field: "value"},
+	}, nil)
+	require.NoError(t, err)
+	p.SetSecureDecryptor(decr)
+
+	// 1. The leaseapp anchor event projects the row with the neighbor
+	// identity's decrypted name.
+	dec, err := p.handle(ctx, substrate.Message{
+		Subject: "$KV.secn-core." + appKey, Body: appBody, Sequence: 10,
+	})
+	require.NoError(t, err)
+	require.Equal(t, substrate.Ack, dec)
+	entry, err := targetKV.Get(ctx, appKey)
+	require.NoError(t, err)
+	var row map[string]any
+	require.NoError(t, json.Unmarshal(entry.Value, &row))
+	require.Equal(t, "Alice Applicant", row["applicant_name"], "pre-shred row carries the neighbor identity's plaintext")
+
+	// 2. Shred the identity; its piiKey aspect update arrives as a CDC event
+	// on the IDENTITY — not this lens's anchor.
+	require.NoError(t, v.ShredKey(ctx, identityKey))
+	var piiDoc map[string]any
+	require.NoError(t, json.Unmarshal(piiKeyDoc, &piiDoc))
+	piiDoc["data"].(map[string]any)["shredded"] = true
+	shreddedDoc, err := json.Marshal(piiDoc)
+	require.NoError(t, err)
+	_, err = coreKV.Put(ctx, identityKey+".piiKey", shreddedDoc)
+	require.NoError(t, err)
+
+	dec, err = p.handle(ctx, substrate.Message{
+		Subject: "$KV.secn-core." + identityKey + ".piiKey", Body: shreddedDoc, Sequence: 11,
+	})
+	require.NoError(t, err)
+	require.Equal(t, substrate.Ack, dec)
+
+	// 3. The leaseapp-keyed row's PII is scrubbed; the row itself survives.
+	entry, err = targetKV.Get(ctx, appKey)
+	require.NoError(t, err)
+	row = nil
+	require.NoError(t, json.Unmarshal(entry.Value, &row))
+	assert.Nil(t, row["applicant_name"], "the neighbor identity's shred scrubs the anchored row's plaintext")
+	assert.Equal(t, identityKey, row["applicant"], "non-PII columns survive the scrub")
 }
