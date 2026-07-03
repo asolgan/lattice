@@ -86,7 +86,6 @@ Severity-ordered; same row discipline as component maintenance (shipped rows col
 
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **root-designation-topology-reconverge** | Root is designated two contradictory ways — Contract #7 §7.7 says `holdsRole→operator` topology (self-protecting), but shipped core + Contract #6 §6.1 drifted to the forgeable `data.protected` bit (Epic-12; `*` read wildcard forgeable). Re-converge core on the topology; retire the bit as designator (anti-brick kept). | ★★★ | S–M | ✅ ratified (2026-07-02, Fork A) · [design](../../implementation-artifacts/root-identity-designation-design.md) · one fire; §6.1 committed; create-guard deferred |
 | **object-plane-nats-permissions** | Object-plane NKey grants mismatch the pinned nats.go: writes publish on `$O.core-objects.C/M.>` but objmgr is granted `$OBJ.objects-base.>` (wrong prefix + bucket) and Loupe/loftspace-app have no `$O.` grant at all — blob upload + GC delete should be transport-denied on the live stack. Fix the grants; add natsperm object vectors (zero today); verify a live upload. | ★★★ | S | 📐 awaiting-Andrew · [design](../../implementation-artifacts/object-plane-nats-permissions-design.md) · one fire; no contract change |
 | **gateway-revocation-kill-switch-activation** | Kill-switch dormant — nothing populates a revocation set, no admin surface revokes, a failed bucket-open silently disables checking. Andrew-steered mechanism (`RevokeActor` op → outboxed event → Gateway-owned local KV, fail-closed) in the design doc. | ★★ | M | 📐 awaiting-Andrew · [design](../../implementation-artifacts/gateway-token-revocation-activation-design.md) · no contract change; 2 fires; blocks loupe F11 |
 | **[Gateway] up-full deploy + JWKS heartbeat block (Loupe enablers)** | Gateway isn't started by `make up-full`'s `orchestration` target (`run-gateway` exists) → its map node is a ghost; and its heartbeat carries no trusted-key state. Start it in up-full (dev-mode + dev key); add a `jwks` block `{keys:[{kid,source,alg,addedAt}],lastPoll,swaps}` to `health.gateway.<instance>`. | ★★ | S | 📋 · blocks loupe F10 (truthful node) / F11 (JWKS panel) |
@@ -201,6 +200,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-03 · `c9a8031` · [Core] root-designation-topology-reconverge — Fork A: three capability sites (+ aiagent read routing) re-converged on holdsRole→operator; Gate-3 vector #16 added
 - 2026-07-02 · `eb20923` · [lease-signing] Vault Fire 5b-iii-a — real-Vault shred-undecryptable proof for landlordLeaseApplicationsRead's own committed ciphertext
 - 2026-07-02 · `3ef4830` · [docs] Arch-review: docs-truth-sweep — Gateway/Vault built, gateway.md phantom §refs + ops-publish fix, service-actors no-Gateway/enforcement-live, CONCEPT serviceClass dropped; §6.5/§6.12 flagged
 - 2026-07-02 · `04bcbf0` · [lease-signing] Vault Fire 5b-ii-d — sev-1 fix: ssn presence check always null on real Vault ciphertext, blocking every real applicant from qualifying; regression test added
