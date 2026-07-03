@@ -19,7 +19,6 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 |---|---|---|---|---|---|---|
 | LoftSpace — per-landlord RLS view as the rich decision surface (D1.5 landlord cutover) | The protected `/api/landlord/applications` RLS read shows only a scope-count banner; the rich decision view is still the trusted-all-units console (§10.2). Project signals into `landlordLeaseApplicationsRead`, retiring the console. | LoftSpace | pkg + FE | ★★ | M | 🚧 seq Vault Fire 5 (Vault 🎯 build-next in [lattice](lattice.md)) · Rec C shipped ([design](../../implementation-artifacts/loftspace-d1.5-landlord-rls-decision-surface-design.md)) · readiness clone = fallback if Vault stalls |
 | LoftSpace — applicant contact (email/phone) captured but never projected to the landlord | `CreateUnclaimedIdentity` stores `.email`/`.phone`, but neither the `/api/identities` picker nor the landlord `unit-applications` disposition surfaces them — a landlord deciding on an applicant has no way to contact them. | LoftSpace | pkg + FE | ★★ | S | 🚧 blocked-on Vault 5b attended reset, same as row above ([plan](../../implementation-artifacts/vault-crypto-shredding-design.md) 5b-iv checkpoint) — lens-side columns already built |
-| Clinic — patient/provider self-service reads (My Appointments/Schedule/Visit Series) permanently empty | RLS anchors on the patient/provider's own bare NanoID, but the only self-grant producer matches `class=identity` — patient/provider never are one, so nothing grants it. Verified live (0-of-1 read). | Clinic | pkg | ★★★ | M | 📋 ready — clinic-domain needs its own `cap-read.clinic` GrantTable self-anchor lens, mirroring `internal/bootstrap/lenses.go:174-176`'s unused pattern |
 
 ## PO notes (dated — drives rotation)
 
@@ -35,6 +34,8 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic, staggered from 
 
 One line per shipped item (`date · SHA · title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-03 · `3e05e2f` · Clinic patient/provider self-service reads CLOSED — `cap-read.clinic.{patient,provider}` GrantTable self-anchor lenses; fixes My Appointments + My Schedule + Visit Series
+- 2026-07-03 · `29def5e` · Clinic identity cross-patient claim guard CLOSED — `identityKey` now globally exclusive (`identityPatientClaim` CreateOnly aspect)
 - 2026-07-03 · `ce15916` · Steward continuous-improvement (doc sweep) — loftspace-ledger + clinic-ledger package READMEs, stale defect-comment fix (both demand rows still blocked-on Vault 5b)
 - 2026-07-03 · `7ac8a83` · Clinic patient contact CLOSED — `clinicPatientsRead` Secure-Lens columns ([plan](../../implementation-artifacts/vault-crypto-shredding-design.md))
 - 2026-07-03 · `b105cf5` · LoftSpace front-of-house unified search CLOSED — FE (grouped People/Units cards), backend was `b045497` ([design](../../implementation-artifacts/search-target-adapter-design.md))
@@ -58,14 +59,4 @@ One line per shipped item (`date · SHA · title`). Oldest roll to `archive/` pa
 - 2026-06-30 · `f8240cd` · Clinic — `SetAppointmentStatus` terminal-status guard (cancelled/completed/noShow final → TerminalStatus; fixes completed→scheduled revert)
 - 2026-06-30 · `6674834` · LoftSpace — `DecideLeaseApplication` decision guards (recorded decision terminal → DecisionFinal; approve needs signed → NotReadyToApprove)
 - 2026-06-30 · `f70ab18` · Clinic follow-ups CLOSED — Inc 2 at-the-date `@at` follow-up reminder (`followUpReminders` + `RecordFollowUpReminder` + worklist badge)
-- 2026-06-30 · `b96dd3d` · Clinic follow-ups Inc 1 — clinic-wide "due follow-ups" worklist (urgency groups + addressed filter + one-click Book-follow-up)
-- 2026-06-30 · `—` · Applicant qualification profile CLOSED — capture op + derived signals shipped; landlord sees signals live (operator console + `renderQualification`)
-- 2026-06-30 · `—` · Property/Unit/Listing domain CLOSED — Inc 1–3 all shipped (applicant FE intake+terms+leasing+tasks+docs all live)
-- 2026-06-29 · `2a02df1` · D1.3 CLOSED — Postgres-RLS read boundary LIVE (revocation-denies proven)
-- 2026-06-29 · `e1d540f` · service-domain + service-location: envelope-class discriminator migration
-- 2026-06-29 · `2a5087a` · Service-instance envelope-class migration — lease-signing consumer (Row 112)
-- 2026-06-29 · `2d5aeae` · Clinic encounter FE (Row 104 Increment 2)
-- 2026-06-29 · `2a02df1` · loftspace-app: D1.3 landlord/residence audience — Increment 3 (authenticated RLS reader)
-- 2026-06-29 · `e9a81fc` · lease-signing: D1.3 landlord/residence audience — Increment 2 (protected lens)
-- 2026-06-29 · `5b672b1` · loftspace-domain: D1.3 landlord/residence audience — Increment 1 (ownership link)
 - *(older entries rolled to [archive/verticals-done.md](archive/verticals-done.md))*
