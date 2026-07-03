@@ -19,7 +19,7 @@ Design: [`_bmad-output/implementation-artifacts/clinic-domain-design.md`](../../
 |---|---|
 | **Vertex types** (3) | `patient`, `provider`, `appointment` |
 | **Aspect types** (9) | `patientDemographics`, `patientBookingGuard`, `providerProfile`, `providerBookingGuard`, `providerHours`, `providerTimeOff`, `appointmentSchedule`, `appointmentStatus`, `appointmentEncounter` |
-| **Links** (2) | `forPatient` (appointment → patient), `withProvider` (appointment → provider) |
+| **Links** (3) | `forPatient` (appointment → patient), `withProvider` (appointment → provider), `identifiedBy` (patient → identity, optional — links a pre-minted `vtx.identity` carrying sensitive contact) |
 | **Operations** (12) | `CreatePatient` · `TombstonePatient` · `CreateProvider` · `TombstoneProvider` · `SetProviderProfile` · `SetProviderHours` · `SetProviderTimeOff` · `CreateAppointment` · `RescheduleAppointment` · `SetAppointmentStatus` · `RecordEncounter` · `TombstoneAppointment` |
 | **Projection lenses** (6) | `clinicAppointments` → `clinic-appointments` · `clinicProviders` → `clinic-providers` · `clinicPatients` → `clinic-patients` (all `nats-kv`, `full` engine) · `clinicAppointmentsRead` / `providerAppointmentsRead` / `clinicPatientsRead` (all `postgres`, `full` engine, **Protected** — Contract #6 §6.14 RLS, D1.5: patient-self / provider-self / staff-wildcard-only) |
 
@@ -29,7 +29,7 @@ surface; the trusted-tool operator already holds standing permission, identical 
 ## Key shapes (Contract #1)
 
 ```
-vtx.patient.<id>      class=patient      root {}   .demographics {fullName, dob?, email?, phone?}
+vtx.patient.<id>      class=patient      root {}   .demographics {fullName}   (NO contact PII — see identifiedBy below)
                                                    .bookingGuard  {epoch:int}   (the per-patient OCC serialization scalar)
 vtx.provider.<id>     class=provider     root {}   .profile  {fullName, specialty, credentials?, bio?}
                                                    .bookingGuard {epoch:int}    (the per-provider OCC serialization scalar)
@@ -44,10 +44,11 @@ lnk.appointment.<id>.forPatient.patient.<id>      (appointment → patient — t
 lnk.appointment.<id>.withProvider.provider.<id>   (appointment → provider)
 lnk.provider.<id>.hasBooking.appointment.<id>     (provider → appointment — HUB-sourced, so lnk.provider.<id>.hasBooking.> is a bounded enumeration prefix)
 lnk.patient.<id>.hasBooking.appointment.<id>      (patient → appointment — hub-sourced)
+lnk.patient.<id>.identifiedBy.identity.<id>       (patient → identity — optional, wired by CreatePatient's identityKey)
 ```
 
 Sentences: "appointment forPatient patient", "appointment withProvider provider", "provider hasBooking
-appointment", "patient hasBooking appointment". The forPatient/withProvider link keys are deterministic
+appointment", "patient hasBooking appointment", "patient identifiedBy identity". The forPatient/withProvider link keys are deterministic
 (`CreateOnly`), so the schedule guards and reschedule re-read them by key. The booking **topology** lives
 in the hub-sourced `hasBooking` links (enumerated at write time via `kv.Links`, Contract #2 §2.5.1 — a
 bounded prefix); the `.bookingGuard` scalar is **only** the OCC serialization lock (the Contract #1-clean
@@ -63,9 +64,11 @@ half-open overlap tests and the convergence lens's `remindAt` compare rely on.
 
 ### Patient
 
-- **`CreatePatient`** — `{fullName, dob?, email?, phone?, patientId?}`. Mints `vtx.patient.<id>` +
-  `.demographics` + a **`.bookingGuard {epoch:0}`** (initialized so the declared key is always present —
-  see *Conflict detection* below). Returns `primaryKey`.
+- **`CreatePatient`** — `{fullName, identityKey?, patientId?}`. Mints `vtx.patient.<id>` +
+  `.demographics {fullName}` + a **`.bookingGuard {epoch:0}`** (initialized so the declared key is always
+  present — see *Conflict detection* below). An optional `identityKey` (validated alive + class=identity,
+  via `contextHint.reads`) wires the `identifiedBy` link to a pre-minted `vtx.identity` carrying the
+  patient's sensitive contact — no contact PII lives on `.demographics` itself. Returns `primaryKey`.
 - **`TombstonePatient`** — `{patientKey}`. Soft-deletes the patient **root only** (no cascade — see
   *Tombstone semantics*).
 

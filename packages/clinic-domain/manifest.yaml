@@ -1,11 +1,16 @@
 name: clinic-domain
-version: 0.12.0
+version: 0.13.0
 description: |
   Clinic bookable domain. Self-contained package owning three vertex types —
   patient, provider, appointment — with their aspects (.demographics, .profile,
   .schedule, .status, .encounter, provider/patient .slot<cellcode> claims) and
-  links (forPatient, withProvider), written by the
+  links (forPatient, withProvider, identifiedBy), written by the
   Create*/Reschedule/SetAppointmentStatus/RecordEncounter/Tombstone* ops.
+  CreatePatient's optional identityKey wires identifiedBy to a pre-minted
+  vtx.identity (identity-domain's CreateUnclaimedIdentity) carrying the
+  patient's sensitive contact — .demographics itself stays non-sensitive
+  (fullName only), the Vault plane's contact re-model (display rides a later
+  Secure-Lens protected model).
   RecordEncounter captures the post-visit clinical record (.encounter — RAW PHI
   {summary, assessment, plan} never projected, plus operational documentation /
   follow-up signals the lens does project). Six projection lenses
@@ -25,8 +30,9 @@ description: |
   grid cell — the write-path key collision (CreateOnly/expectedRevision) IS the
   lock, no read-time enumeration — and an out-of-hours booking (OutsideHours) via
   the provider's opt-in .hours availability windows (SetProviderHours). No
-  package dependency. PHI/Vault and @every recurring schedules are the separate
-  deferred items this vertical forces — out of scope here.
+  package dependency. @every recurring schedules are the separate deferred item
+  this vertical forces — out of scope here; the Vault plane it forces is
+  partially wired (the identifiedBy link), full display still deferred.
 declares:
   ddls:
     - canonicalName: patient

@@ -5,7 +5,7 @@
 // clinic-domain is SELF-CONTAINED: it owns three vertex types, mirroring
 // location-domain's "own your domain's vertex types" precedent.
 //
-//	vtx.patient.<id>      class=patient      root {}   .demographics {fullName, dob?, email?, phone?}
+//	vtx.patient.<id>      class=patient      root {}   .demographics {fullName}   (no contact PII — see identifiedBy)
 //	vtx.provider.<id>     class=provider     root {}   .profile {fullName, specialty, credentials?, bio?}
 //	vtx.appointment.<id>  class=appointment  root {}   .schedule  {startsAt, endsAt, remindAt, reason?}
 //	                                                    .status    {value ∈ scheduled|confirmed|checkedIn|completed|cancelled|noShow, note?}
@@ -13,6 +13,7 @@
 //	                                                                documentedAt, followUpRequested, followUpDate? (operational, projected)}
 //	lnk.appointment.<id>.forPatient.patient.<id>       (appointment → patient, later-arriving source)
 //	lnk.appointment.<id>.withProvider.provider.<id>    (appointment → provider, later-arriving source)
+//	lnk.patient.<id>.identifiedBy.identity.<id>        (patient → identity, optional — wired by CreatePatient's identityKey)
 //
 // The clinic's booking grid is a mandatory 15-minute cadence: double-book
 // detection is a WRITE-PATH deterministic-key claim, not read-time link
@@ -45,17 +46,21 @@
 // patient-context switcher — NAME only, no PHI).
 //
 // OUT of scope (the separate deferred items this vertical FORCES, not implements):
-//   - PHI / sensitive aspects + Vault / crypto-shred. All aspects here are
-//     NON-sensitive in the step-6 sense (patient/appointment are not identity
-//     vertices, so step-6's sensitiveAspectScope forbids a sensitive aspect on them
-//     anyway). DOB / contact (.demographics) AND the post-visit clinical record
-//     (.encounter — summary / assessment / plan) are stored plain under the
-//     trusted-tool posture and DELIBERATELY NOT projected into any read model; real
-//     PHI handling + right-to-be-forgotten + clinical-content DISPLAY is the deferred
-//     Vault plane (clinic is its forcing function — patient-record deletion and
-//     clinical-note display are its validating flows). RecordEncounter captures the
-//     record now and projects ONLY the operational, non-PHI signals (documentation
-//     presence + follow-up scheduling) so the clinical display stays Vault-gated.
+//   - PHI / sensitive aspects + Vault / crypto-shred, PARTIALLY wired. All
+//     aspects here stay NON-sensitive in the step-6 sense (patient/appointment
+//     are not identity vertices, so step-6's sensitiveAspectScope forbids a
+//     sensitive aspect on them anyway): .demographics carries only fullName.
+//     Sensitive contact (email/phone) is CreatePatient's optional identityKey
+//     — a pre-minted vtx.identity (identity-domain's CreateUnclaimedIdentity)
+//     linked via identifiedBy, the Vault plane's crypto-shreddable unit. The
+//     post-visit clinical record (.encounter — summary / assessment / plan) is
+//     still stored plain under the trusted-tool posture and DELIBERATELY NOT
+//     projected into any read model; right-to-be-forgotten for it + linked-
+//     contact DISPLAY + clinical-note display are the still-deferred Vault
+//     plane work (clinic remains its forcing function). RecordEncounter
+//     captures the record now and projects ONLY the operational, non-PHI
+//     signals (documentation presence + follow-up scheduling) so the clinical
+//     display stays Vault-gated.
 //   - @every scheduling — genuinely unneeded here. Recurring *availability* (a
 //     provider's weekly hours) is NOT a timer: .hours stores a static weekly
 //     template (windows: [{day, openSec, closeSec}]) enforced at op time
@@ -92,7 +97,7 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
 	Name:        "clinic-domain",
-	Version:     "0.12.0",
+	Version:     "0.13.0",
 	Description: "Clinic bookable domain: patient / provider / appointment vertex types + their aspects and links, written by Create*/SetAppointmentStatus/RecordEncounter/Tombstone* ops. RecordEncounter captures the post-visit clinical record (.encounter — RAW PHI never projected, plus operational documentation/follow-up signals the lens does project). Six projection lenses (clinicAppointments, clinicProviders, clinicPatients, clinicAppointmentsRead, providerAppointmentsRead, clinicPatientsRead) are the P5 read models a clinic FE reads; clinicAppointmentsRead, providerAppointmentsRead, and clinicPatientsRead are PROTECTED Postgres read models (Contract #6 §6.14 RLS, D1.5) — patient-self, provider-self, and staff-wildcard-only respectively. Self-contained — no package dependency.",
 	DDLs:        DDLs(),
 	Lenses:      Lenses(),

@@ -55,12 +55,19 @@ const (
 //     ScriptError) — endpoint-class validation is at the op, not a downstream
 //     untyped cypher match.
 //
-// Every aspect is NON-sensitive: patient demographics (incl. DOB) attach to a
-// vtx.patient — NOT an identity — so step-6's sensitiveAspectScope (which forbids
-// a sensitive aspect on a non-identity vertex) would REJECT a sensitive aspect
-// here anyway. Real PHI handling + right-to-be-forgotten is the deferred Vault
-// plane (clinic is its forcing function); these plain aspects are correct under
-// the trusted-tool posture (no read-path auth yet).
+// Every aspect is NON-sensitive: .demographics carries only the patient's
+// fullName — the display label the roster lenses need — never contact PII.
+// Real contact (email/phone) is Vault-plane PII that belongs on a vtx.identity,
+// never a bare vtx.patient aspect (step-6's sensitiveAspectScope forbids a
+// sensitive aspect on a non-identity vertex anyway). CreatePatient accepts an
+// optional pre-minted identityKey and wires an identifiedBy link to it — the
+// caller (the FE) mints the identity carrying the sensitive contact first via
+// identity-domain's CreateUnclaimedIdentity, mirroring loftspace-app's
+// applicant flow (clinic-domain-design.md: "vtx.identity + an identifiedBy
+// link — not a rework"). No backfill for pre-existing patients (Vault's
+// full-stack-reset delivery boundary covers the migration). Display of the
+// linked contact rides a later Secure-Lens protected model (Fire 5 of the
+// Vault crypto-shredding design); this fire only wires the link.
 func DDLs() []pkgmgr.DDLSpec {
 	return []pkgmgr.DDLSpec{
 		patientVertexTypeDDL(),
@@ -84,35 +91,39 @@ func patientVertexTypeDDL() pkgmgr.DDLSpec {
 		Class:             "meta.ddl.vertexType",
 		PermittedCommands: []string{"CreatePatient", "TombstonePatient"},
 		Description: "Clinic patient DDL. Vertex shape: vtx.patient.<NanoID>, class=patient, root data = {} " +
-			"(minimal, D5 — the data lives in the .demographics aspect). CreatePatient mints the patient + writes " +
-			"the .demographics aspect {fullName (required), dob?, email?, phone?} atomically. TombstonePatient " +
-			"soft-deletes one. The aspect is NON-sensitive (it attaches to a patient, not an identity); real PHI " +
-			"handling is the deferred Vault plane.",
+			"(minimal, D5 — the data lives in the .demographics aspect + the optional identifiedBy link). " +
+			"CreatePatient mints the patient + writes the .demographics aspect {fullName (required)} atomically; " +
+			"an optional identityKey wires lnk.patient.<id>.identifiedBy.identity.<identityId> to a pre-minted " +
+			"vtx.identity (validated alive + class=identity) carrying the patient's sensitive contact. " +
+			"TombstonePatient soft-deletes one. The .demographics aspect is NON-sensitive (it attaches to a " +
+			"patient, not an identity); real contact PII lives on the linked identity, the Vault plane's unit.",
 		Script: patientDDLScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"fullName":{"type":"string","description":"The patient's full name (CreatePatient; required)."},` +
-			`"dob":{"type":"string","description":"Date of birth, RFC3339 date (CreatePatient; optional)."},` +
-			`"email":{"type":"string","description":"Contact email (CreatePatient; optional)."},` +
-			`"phone":{"type":"string","description":"Contact phone (CreatePatient; optional)."},` +
+			`"identityKey":{"type":"string","description":"vtx.identity.<NanoID> of a pre-minted identity carrying the patient's sensitive contact (CreatePatient; optional, validated alive + class=identity; wires the identifiedBy link)."},` +
 			`"patientId":{"type":"string","description":"Optional bare NanoID for the new patient vertex (CreatePatient); absent → minted."},` +
 			`"patientKey":{"type":"string","description":"vtx.patient.<NanoID> of an existing patient (TombstonePatient; required, validated alive)."}},` +
 			`"required":[]}`,
 		OutputSchema: `{"type":"object","properties":` +
 			`{"primaryKey":{"type":"string","description":"vtx.patient.<NanoID> the operation wrote."}}}`,
 		FieldDescription: map[string]string{
-			"fullName":   "The patient's full name. Stored on the .demographics aspect (CreatePatient; required).",
-			"dob":        "Optional date of birth (RFC3339 date). Stored on the .demographics aspect when present.",
-			"email":      "Optional contact email. Stored on the .demographics aspect when present.",
-			"phone":      "Optional contact phone. Stored on the .demographics aspect when present.",
-			"patientId":  "Optional bare NanoID (no dots / key segments) for the new patient vertex (vtx.patient.<patientId>). Absent → minted with nanoid.new().",
-			"patientKey": "Full vtx.patient.<NanoID> key of an existing patient vertex to tombstone (TombstonePatient).",
+			"fullName":    "The patient's full name. Stored on the .demographics aspect (CreatePatient; required).",
+			"identityKey": "Full vtx.identity.<NanoID> key of a pre-minted identity to link (CreatePatient; optional). Must be alive + class=identity; wires the identifiedBy link. Absent → the patient has no linked identity.",
+			"patientId":   "Optional bare NanoID (no dots / key segments) for the new patient vertex (vtx.patient.<patientId>). Absent → minted with nanoid.new().",
+			"patientKey":  "Full vtx.patient.<NanoID> key of an existing patient vertex to tombstone (TombstonePatient).",
 		},
 		Examples: []pkgmgr.ExampleSpec{
 			{
 				Name:    "CreatePatient — register a patient",
-				Payload: map[string]any{"fullName": "Alice Rivera", "dob": "1990-04-12T00:00:00Z", "email": "alice@example.com"},
+				Payload: map[string]any{"fullName": "Alice Rivera"},
 				ExpectedOutcome: "Mints vtx.patient.<NanoID> (class=patient, root {}) + the .demographics aspect " +
-					"{fullName, dob, email}. Accepts an optional bare-NanoID patientId. Returns primaryKey (the patient key).",
+					"{fullName}. Accepts an optional bare-NanoID patientId. Returns primaryKey (the patient key).",
+			},
+			{
+				Name:    "CreatePatient — register a patient with linked contact identity",
+				Payload: map[string]any{"fullName": "Alice Rivera", "identityKey": "vtx.identity.<NanoID>"},
+				ExpectedOutcome: "Mints the patient as above, plus lnk.patient.<id>.identifiedBy.identity.<identityId> " +
+					"to the supplied identity (rejected if that identity is absent, tombstoned, or the wrong class).",
 			},
 			{
 				Name:            "TombstonePatient — remove a patient",
@@ -368,24 +379,22 @@ func demographicsAspectTypeDDL() pkgmgr.DDLSpec {
 		Class:             "meta.ddl.aspectType",
 		PermittedCommands: []string{"CreatePatient"},
 		Description: "Patient demographics aspect (clinic). Stored as vtx.patient.<NanoID>.demographics (class " +
-			"patientDemographics) = {fullName, dob?, email?, phone?}. NON-sensitive (it attaches to a patient, not " +
-			"an identity — real PHI handling is the deferred Vault plane). Written ONLY by CreatePatient (whose " +
+			"patientDemographics) = {fullName}. NON-sensitive (it attaches to a patient, not an identity) and " +
+			"carries no contact PII — that lives on the identity CreatePatient's optional identityKey links via " +
+			"identifiedBy, the deferred Vault plane's unit. Written ONLY by CreatePatient (whose " +
 			"patient vertexType DDL owns the script); this aspect-type DDL is the step-6 write gate. " +
 			"Declaration-only: no op handler.",
 		Script: aspectDeclarationOnlyScript,
 		InputSchema: `{"type":"object","properties":` +
-			`{"fullName":{"type":"string"},"dob":{"type":"string"},"email":{"type":"string"},"phone":{"type":"string"}}}`,
+			`{"fullName":{"type":"string"}}}`,
 		OutputSchema: `{"type":"object"}`,
 		FieldDescription: map[string]string{
 			"fullName": "The patient's full name.",
-			"dob":      "Date of birth (RFC3339 date).",
-			"email":    "Contact email.",
-			"phone":    "Contact phone.",
 		},
 		Examples: []pkgmgr.ExampleSpec{
 			{
 				Name:            "patient demographics aspect",
-				Payload:         map[string]any{"fullName": "Alice Rivera", "dob": "1990-04-12T00:00:00Z"},
+				Payload:         map[string]any{"fullName": "Alice Rivera"},
 				ExpectedOutcome: "Stored as vtx.patient.<NanoID>.demographics; written by CreatePatient.",
 			},
 		},
@@ -709,6 +718,12 @@ def make_aspect(vtx_key, local_name, cls, data):
             "document": {"class": cls, "isDeleted": False,
                          "vertexKey": vtx_key, "localName": local_name, "data": data}}
 
+def make_link(key, source, target, cls, local_name, data):
+    return {"op": "create", "key": key,
+            "document": {"class": cls, "isDeleted": False,
+                         "sourceVertex": source, "targetVertex": target,
+                         "localName": local_name, "data": data}}
+
 def make_tombstone(key):
     return {"op": "tombstone", "key": key,
             "document": {"isDeleted": True, "data": {}}}
@@ -766,6 +781,25 @@ def vertex_alive(state, key):
         return False
     return True
 
+def class_of(state, key):
+    if key not in state:
+        return None
+    doc = state[key]
+    if doc == None:
+        return None
+    if not hasattr(doc, "class"):
+        return None
+    return getattr(doc, "class")
+
+def require_live_typed(state, key, name, want_class):
+    # Endpoint validation: the linked vertex MUST be alive AND the expected
+    # class. A dead or wrong-class identityKey is never wired.
+    if not vertex_alive(state, key):
+        fail("UnknownEndpoint: " + name + ": " + key + " is absent or tombstoned")
+    cls = class_of(state, key)
+    if cls != want_class:
+        fail("WrongClass: " + name + ": " + key + " has class " + str(cls) + ", required " + want_class)
+
 def execute(state, op):
     ot = op.operationType
     p = op.payload
@@ -775,19 +809,20 @@ def execute(state, op):
         pid = bare_nanoid_or_mint(p, "patientId")
         pkey = "vtx.patient." + pid
         demo = {"fullName": full_name}
-        dob = optional_string(p, "dob")
-        if dob != None:
-            demo["dob"] = dob
-        email = optional_string(p, "email")
-        if email != None:
-            demo["email"] = email
-        phone = optional_string(p, "phone")
-        if phone != None:
-            demo["phone"] = phone
         mutations = [
             make_vtx(pkey, "patient", {}),
             make_aspect(pkey, "demographics", "patientDemographics", demo),
         ]
+        # Optional identifiedBy link to a pre-minted identity carrying the
+        # patient's sensitive contact (Vault plane). The patient (later-
+        # arriving) is the source, the pre-existing identity is the target
+        # (Contract #1 §1.1). Sentence: "patient identifiedBy identity".
+        identity_key = optional_string(p, "identityKey")
+        if identity_key != None:
+            _, identity_id = parts_of(identity_key, "identityKey", "identity")
+            require_live_typed(state, identity_key, "identityKey", "identity")
+            identified_by_lnk = "lnk.patient." + pid + ".identifiedBy.identity." + identity_id
+            mutations.append(make_link(identified_by_lnk, pkey, identity_key, "identifiedBy", "identifiedBy", {}))
         events = [{"class": "clinic.patientCreated", "data": {"patientKey": pkey}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": pkey}}

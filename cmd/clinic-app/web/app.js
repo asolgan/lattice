@@ -347,6 +347,15 @@ function syncBookPatient() {
 }
 
 // ---- New patient modal ----
+//
+// Patient contact (email/phone) is Vault-plane PII — it never lands on the
+// bare .demographics aspect (D5, non-sensitive-only). When the operator
+// supplies contact info, the FE does the loftspace-app two-step: mint an
+// unclaimed identity carrying the sensitive contact via identity-domain's
+// CreateUnclaimedIdentity (name + email/phone + a client-minted claimKeyHash
+// — Lattice never holds the plaintext), then CreatePatient with that
+// identityKey so it wires the identifiedBy link. No contact → the patient
+// is created with no linked identity (fullName only).
 
 function openNewPatient() {
   $("#patient-form").reset();
@@ -358,6 +367,22 @@ function closeNewPatient() {
   $("#patient-overlay").hidden = true;
 }
 
+// sha256Hex returns the lowercase hex sha256 of a string — the shape
+// CreateUnclaimedIdentity stores for claimKeyHash.
+async function sha256Hex(s) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+// mintClaimSecret returns a random claim-secret plaintext. It is hashed and only
+// the hash is sent; the plaintext never enters Lattice (and, in this demo, is
+// discarded — no claim ceremony for a clinic-registered patient).
+function mintClaimSecret() {
+  const a = new Uint8Array(32);
+  crypto.getRandomValues(a);
+  return Array.from(a).map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 async function submitNewPatient(ev) {
   ev.preventDefault();
   const name = $("#np-name").value.trim();
@@ -365,19 +390,30 @@ async function submitNewPatient(ev) {
     toast("A patient name is required.", "err");
     return;
   }
-  const payload = { fullName: name };
-  const dob = $("#np-dob").value.trim();
   const email = $("#np-email").value.trim();
   const phone = $("#np-phone").value.trim();
-  // The .demographics aspect stores dob as an RFC3339 instant.
-  if (dob) payload.dob = dob.length === 10 ? dob + "T00:00:00Z" : dob;
-  if (email) payload.email = email;
-  if (phone) payload.phone = phone;
 
   const submit = $("#patient-submit");
   submit.disabled = true;
   try {
-    const reply = await submitOp("CreatePatient", "patient", payload);
+    let identityKey = "";
+    if (email || phone) {
+      const claimKeyHash = await sha256Hex(mintClaimSecret());
+      const idPayload = { name, claimKeyHash };
+      if (email) idPayload.email = email;
+      if (phone) idPayload.phone = phone;
+      const idReply = await submitOp("CreateUnclaimedIdentity", "identity", idPayload);
+      const idMsg = rejectionMessage(idReply);
+      if (idMsg) {
+        toast("Could not create patient — " + idMsg, "err");
+        return;
+      }
+      identityKey = idReply && idReply.primaryKey ? idReply.primaryKey : "";
+    }
+
+    const payload = { fullName: name };
+    if (identityKey) payload.identityKey = identityKey;
+    const reply = await submitOp("CreatePatient", "patient", payload, identityKey ? [identityKey] : undefined);
     const msg = rejectionMessage(reply);
     if (msg) {
       toast("Could not create patient — " + msg, "err");

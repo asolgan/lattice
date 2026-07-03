@@ -306,21 +306,15 @@
   <div id="patient-overlay" class="overlay" hidden>
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="patient-title">
       <h2 id="patient-title">New patient</h2>
-      <p class="lead">Register a patient. Name is required; the rest is optional.</p>
+      <p class="lead">Register a patient. Name is required; contact is optional.</p>
       <form id="patient-form">
         <div class="field">
           <label for="np-name">Full name</label>
           <input type="text" id="np-name" placeholder="Alice Rivera" />
         </div>
-        <div class="field-row">
-          <div class="field">
-            <label for="np-dob">Date of birth <span class="opt">(optional)</span></label>
-            <input type="date" id="np-dob" />
-          </div>
-          <div class="field">
-            <label for="np-phone">Phone <span class="opt">(optional)</span></label>
-            <input type="text" id="np-phone" placeholder="555-0100" />
-          </div>
+        <div class="field">
+          <label for="np-phone">Phone <span class="opt">(optional)</span></label>
+          <input type="text" id="np-phone" placeholder="555-0100" />
         </div>
         <div class="field">
           <label for="np-email">Email <span class="opt">(optional)</span></label>

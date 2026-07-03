@@ -1252,6 +1252,76 @@ func TestClinic_TombstonePatient(t *testing.T) {
 	}
 }
 
+// TestClinic_CreatePatientWithIdentity proves CreatePatient's optional
+// identityKey wires a live identifiedBy link to a pre-minted identity, and
+// that .demographics carries only fullName (no contact PII).
+func TestClinic_CreatePatientWithIdentity(t *testing.T) {
+	ctx, conn := setupClinicEnv(t)
+	cp, cons := newClinicPipeline(t, ctx, conn, "create-with-identity")
+
+	identityKey := "vtx.identity.CLidentwithHJKMNPQRS"
+	clSeedVertex(t, ctx, conn, identityKey, "identity", false)
+
+	id := clSubmit(t, ctx, conn, cp, cons, "mkpatid0001", "CreatePatient", "patient",
+		`{"fullName":"Bea Nakamura","identityKey":"`+identityKey+`"}`,
+		[]string{identityKey}, processor.OutcomeAccepted)
+	patientKey := "vtx.patient." + id
+
+	demo := clReadDoc(t, ctx, conn, patientKey+".demographics")
+	dd, _ := demo["data"].(map[string]any)
+	if dd["fullName"] != "Bea Nakamura" {
+		t.Fatalf("demographics fullName = %v, want Bea Nakamura", dd["fullName"])
+	}
+	if _, hasEmail := dd["email"]; hasEmail {
+		t.Fatalf("demographics carries an email field %v, want none (contact PII lives on the identity)", dd["email"])
+	}
+
+	linkKey := "lnk.patient." + id + ".identifiedBy.identity.CLidentwithHJKMNPQRS"
+	ldoc := clReadDoc(t, ctx, conn, linkKey)
+	if ldoc["class"] != "identifiedBy" {
+		t.Fatalf("identifiedBy link class = %v, want identifiedBy", ldoc["class"])
+	}
+	if ldoc["sourceVertex"] != patientKey || ldoc["targetVertex"] != identityKey {
+		t.Fatalf("identifiedBy link source/target = %v/%v, want %v/%v",
+			ldoc["sourceVertex"], ldoc["targetVertex"], patientKey, identityKey)
+	}
+}
+
+// TestClinic_CreatePatientRejectsDeadIdentity proves an absent identityKey is
+// never wired — no patient is committed against a dead/absent identity.
+func TestClinic_CreatePatientRejectsDeadIdentity(t *testing.T) {
+	ctx, conn := setupClinicEnv(t)
+	cp, cons := newClinicPipeline(t, ctx, conn, "create-dead-identity")
+
+	absentIdentity := "vtx.identity.CLabsentidentHJKMNPQ"
+
+	id := clSubmit(t, ctx, conn, cp, cons, "mkpatid0002", "CreatePatient", "patient",
+		`{"fullName":"Should Not Commit","identityKey":"`+absentIdentity+`"}`,
+		[]string{absentIdentity}, processor.OutcomeRejected)
+
+	if !clMissing(t, ctx, conn, "vtx.patient."+id) {
+		t.Fatalf("a patient was committed against an absent identity")
+	}
+}
+
+// TestClinic_CreatePatientRejectsWrongClassIdentity proves a live but
+// wrong-class identityKey (e.g. another patient's key) is never wired.
+func TestClinic_CreatePatientRejectsWrongClassIdentity(t *testing.T) {
+	ctx, conn := setupClinicEnv(t)
+	cp, cons := newClinicPipeline(t, ctx, conn, "create-wrongclass-identity")
+
+	fakeIdentity := "vtx.identity.CLfakeidentHJKMNPQRS"
+	clSeedVertex(t, ctx, conn, fakeIdentity, "patient", false)
+
+	id := clSubmit(t, ctx, conn, cp, cons, "mkpatid0003", "CreatePatient", "patient",
+		`{"fullName":"Should Not Commit","identityKey":"`+fakeIdentity+`"}`,
+		[]string{fakeIdentity}, processor.OutcomeRejected)
+
+	if !clMissing(t, ctx, conn, "vtx.patient."+id) {
+		t.Fatalf("a patient was committed against a wrong-class identityKey")
+	}
+}
+
 // TestClinic_UnauthorizedDenied proves a consumer with no clinic ops is rejected.
 func TestClinic_UnauthorizedDenied(t *testing.T) {
 	ctx, conn := setupClinicEnv(t)
