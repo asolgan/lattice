@@ -108,11 +108,11 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 **forks** (Gateway, read-path auth, Vault, multi-cell, HA-NATS) and **frozen-contract** changes are
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
-> 🎯 **Build-ready now**: **Vault Fire 5b** (★★★ — readiness clone shipped `13ffb75`; next 5b-ii-c
-> FE wiring + console retirement, then 5b-iii clinic contact + FE tails; unblocks 3 Verticals
-> rows). *Dependency-sequenced ratified items*: **Personal Lens** (buildable,
-> deprioritized behind Vault) · **Object crypto-shred** (behind Vault). Current fire/park state for
-> Gateway · FR28 · Augur · Control-plane-authz · `kv.Links` lives on their rows below.
+> 🎯 **Build-ready now**: **Vault Fire 5b** (★★★ — 5b-ii-c/5b-iii/5b-iii-a/5b-iv all shipped; only
+> the delivery-boundary reset + live e2e remain, and that needs an **attended** fire — destructive to
+> the shared dev stack). *Dependency-sequenced ratified items, unblocked in the meantime*: **Personal
+> Lens** (L, buildable now) · **Object crypto-shred** (behind Vault). Current fire/park state for
+> Gateway · FR28 · Augur · Control-plane-authz lives on their rows below.
 
 ### Security & trust boundary
 | Item | What it is | Imp | Size | State |
@@ -171,7 +171,6 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 |---|---|---|---|---|
 | **CI pipeline speed (continuous)** | Make CI faster without weakening any gate — owned continuously by the **Whetstone**. Matrix split done (serial → 4 parallel jobs); convergence + unit parallelized. | ★★ | M (ongoing) | 🏗️ continuous (Whetstone) · `internal/loom`'s 66 tests given `t.Parallel()` (fa49b78, 40.9s→11.7s); next: `internal/bridge` (28.4s) now the `unit` job's long pole |
 | **[CI/Refractor] Hello-Lattice NFR-P3 latency flake** | The capability-projection probe fails-then-passes on the shared CI runner — re-scoped to a 1000ms regression guard (Andrew-ratified; reported SLA unchanged), but the runner floor has drifted to ~1.1s. | ★★ | M | ✅ fixed 2026-07-03 (`94c8224`, deadline 1000ms→2000ms) — re-examine if it recurs |
-| **Op-time bounded reverse-link / adjacency read (`kv.Links`)** | One sanctioned, bounded, fail-closed, paged op-time link-enumeration builtin (`kv.Links(hub, relation, direction, cursor, limit)`) — retires the key-list-in-aspect guard indexes. Relaxes the write-path no-scans invariant by exactly one primitive. | ★★★ | M–L | 🏗️ building · [design](../../implementation-artifacts/op-time-bounded-link-enumeration-design.md) · ⚠️ build diverged from the ratification banner (inverted `hasBooking`, §1.1) — fix rides the verticals slot-claims redesign · Fire 3 parked |
 | **Hard-delete mutation verb (true link/aspect keyspace reclaim)** | Mutation vocab is create/update/tombstone (soft PUTs); a tombstoned key persists + is still enumerated by `kv.Links`. A 4th `delete` verb (NATS `DEL`) lets dead links leave the keyspace, bounding `kv.Links` LIST cost. | ★ | M | 🗄️ shelved (Andrew 2026-07-02) · [design + hold banner](../../implementation-artifacts/hard-delete-mutation-verb-design.md) · demand dissolved by clinic write-path slot claims; §3 edits reverted; revive only on a real reclaim driver |
 | **Script-read posture — declared+hydrated vs live `kv.get`/`kv.Links`** | Declared+hydrated reads as the write-path norm: `optionalReads` folds read-before-create in; `kv.Links` declared-as-metadata (Edge-gate + best-effort lint, not hydrated); guards become a generic Processor-side operation feature (supersedes Loom's engine read). | ★★ | L | ✅ ratified · [design](../../implementation-artifacts/script-read-posture-design.md) · Fires 1–2 shippable (Contract #2 committed); guard (Fire 3) build + contracts deferred |
 | **FR28 — role-queue + fallback** (+ FR29 unrouted surfacing) | A `queuedFor.role` link + `ClaimTask` op + `CreateTask` routing (named → role-queue → loud `RoutingFailed`); grant/inbox fan out to role-holders; an empty queue is surfaced post-hoc by a new `unroutedTasks` Weaver target. | ★ | M | 🏗️ building · [design](../../implementation-artifacts/fr28-role-queue-fallback-design.md) (`9495081`,`12fc79b`) · next: Fire 3 unrouted surfacing |
@@ -193,6 +192,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-03 · `cc2613f` · [Core] `kv.Links` Fire 1 shipped as a primitive; clinic consumer reverted, superseded by write-path slot-claims (`f37bb82`) — stands unconsumed
 - 2026-07-03 · `fa2b570` · [Health] Bridge/Gateway/objmgr heartbeats aggregate issue severity (arch #8) — no more false-green; objmgr's doc brought to full Contract #5 shape
 - 2026-07-03 · `df75ee9`+`db8beed` · [Security] Retire the Phase-1 destructive security-gate apparatus — gate2/gate3 `make down && up` recipes deleted; 6 vectors promoted, 14 kept as residual
 - 2026-07-03 · `103f878` · [Refractor] Full-engine phantom aggregate row on empty required-MATCH — `projectItems` no longer fabricates a null row; unblocks `landlordLeaseApplicationsRead` and any other unanchored aggregating lens
