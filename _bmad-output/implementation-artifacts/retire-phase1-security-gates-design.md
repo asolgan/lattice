@@ -28,6 +28,13 @@ motion around a Phase-1 scaffold that is being removed. The correct move for any
 **confirm the colocated mechanism test covers it → delete the gate copy; or if uncovered → move the
 assertion into the mechanism's package.**
 
+**Need an adversarial safety net for a capability/bypass-plane change RIGHT NOW?** Run the vectors
+**embedded and non-destructively** — `go test ./internal/bypass/... -run TestCapAdv -count=1` (and
+`-run TestBypass` for gate2) — **never** the `make test-capability-adversarial` / `test-bypass`
+targets. The `make` targets add nothing but a `down && up` that tears the live stack down (that is what
+reddens CI mid-change); the vectors themselves are self-contained embedded tests. The vectors are
+**kept**; only the destructive wrapper dies. This is the retirement's immediate payoff.
+
 ---
 
 ## 1. Problem & intent
@@ -67,7 +74,7 @@ Verified against the tree (2026-07-03):
 | gate2 #4 — DDL schema violation | step-6 validator | `internal/processor/step6_validate_test.go` |
 | gate3 read-path — ReadV2/V4/V5 | generated Postgres RLS policy | `internal/refractor/adapter/rls_test.go`, `rls_verify_test.go` |
 | gate3 read-path — ReadV1/V3 | JWT actor-authentication | `internal/gateway/auth/*_test.go` |
-| gate3 write-path — V1–V8 | CapabilityAuthorizer + Refractor projection-write guard | CapabilityAuthorizer + adapter guard unit tests (colocated) |
+| gate3 write-path — V1–V8 | CapabilityAuthorizer (`internal/processor/step3_auth*`) + Refractor projection-write guard | `step3_auth_capability_test.go`, `step3_auth_rbac_hook_test.go`, `step3_denial_response_test.go`, `service_actor_auth_parity_test.go`, `refractor/ruleengine/full/capability_ephemeral_queued_role_contract_test.go`, `refractor_capability_e2e_test.go` |
 
 **The stale-not-just-redundant case.** gate2 #1 literally lets the rogue write **succeed** and proves
 only that it is *detectable* ([bypass_direct_kv_test.go:60-68](../../internal/bypass/bypass_direct_kv_test.go)) —
@@ -112,6 +119,14 @@ the 54 test functions in `internal/bypass/`:
 3. **Covered →** delete the gate copy. **Uncovered →** KEEP it: move the assertion into the mechanism's
    own package as a colocated test, or retain it in the renamed adversarial-residual home. **Never drop
    an uncovered assertion.**
+
+**Err KEEP on the capability suite.** The `TestCapAdv_*` vectors are the plane a live build session
+reaches for as its adversarial safety net (observed 2026-07-03: a concurrent capability-plane Steward
+run leaned on them). The `ephemeralGrant` / lane / service-access / no-cap-entry assertions ARE covered
+colocated (§2), so most capdv vectors are genuinely redundant — but confirm each at the *assertion*
+level (one prose token, `cross-target`, has no literal colocated hit), and when a capability vector is
+not provably duplicated, **keep it as the outcome-level residual rather than delete it.** A missed
+capability assertion is an over-grant; this suite gets the conservative side of the audit.
 
 The audit's output is a short table in the Fire-1 commit message (vector → covering test → deleted/kept)
 so the deletion is auditable. A green `go test ./...` after the prune, plus a diff review that every
