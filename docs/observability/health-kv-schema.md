@@ -129,6 +129,27 @@ The heartbeat `metrics` carry: `consumers` (map of consumer name → state) and 
 loom-state `instance.<id>` records with status `running`, scanned on the heartbeat cadence). `issues[]` carry
 a `ConsumerPaused` warning for each `pausedStructural` consumer.
 
+### Vertical apps (loftspace-app, clinic-app)
+
+Source package: `internal/healthkv/` (shared `Reporter`), wired from `cmd/loftspace-app/health.go` and
+`cmd/clinic-app/health.go`.
+
+| Key Pattern | Frequency | Source File | Emitter |
+|---|---|---|---|
+| `health.loftspace-app.<instance>` | ≥ 10s heartbeat (`LOFTSPACE_APP_HEARTBEAT_EVERY`) | `cmd/loftspace-app/health.go` | `healthkv.Reporter.Run()` |
+| `health.clinic-app.<instance>` | ≥ 10s heartbeat (`CLINIC_APP_HEARTBEAT_EVERY`) | `cmd/clinic-app/health.go` | `healthkv.Reporter.Run()` |
+
+**`<instance>`** follows `loft-<NanoID>` / `clinic-<NanoID>` (overridable via `LOFTSPACE_APP_INSTANCE` /
+`CLINIC_APP_INSTANCE`). The heartbeat is gated on a live NATS dial at boot (mirrors
+`object-store-manager`); a NATS-down boot never heartbeats until restarted with NATS reachable — an absent
+card is itself an operator signal.
+
+Each app's `healthProbe` re-checks its own dependencies every tick (never a static "healthy" ping):
+admin actor configured, NATS connected, the protected read-model Postgres pool reachable (if configured),
+and a read-auth posture present. `issues[]` codes: `AdminActorUnconfigured` (error), `NatsUnreachable`
+(error), `ReadModelUnreachable` (warning), `NoAuthPosture` (warning). `metrics` is empty at v1 (no counters
+wired yet).
+
 ### Bootstrap
 
 Source package: `internal/bootstrap/`
@@ -330,6 +351,23 @@ the scan failed; `timers*` only when the temporal lane is wired).
     "runningInstances": <int>
   },
   "issues": [{"severity": "warning | error", "code": "<code>", "message": "<string>"}]
+}
+```
+
+### `health.loftspace-app.<instance>` / `health.clinic-app.<instance>` — vertical-app heartbeat
+
+```json
+{
+  "key": "health.loftspace-app.<instance>",
+  "component": "loftspace-app",
+  "instance": "<instance>",
+  "version": "1.0",
+  "status": "starting | healthy | degraded | unhealthy | shuttingDown",
+  "heartbeatAt": "<RFC3339>",
+  "startedAt": "<RFC3339>",
+  "uptime": "<ISO-8601-duration>",
+  "metrics": {},
+  "issues": [{"code": "AdminActorUnconfigured", "severity": "error", "message": "<string>", "since": "<RFC3339>"}]
 }
 ```
 
