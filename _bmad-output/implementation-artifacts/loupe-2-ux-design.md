@@ -687,7 +687,8 @@ the same fire as its replacement).
 
 **Build checkpoint (for the next fire):** F1 ✅ `e6a8a46` · F2 ✅ `976a18f` · F3 ✅ `5865e0e` ·
 F4 ✅ `24768e8` · F5 ✅ `7f724c5` (2026-07-02) · F6 ✅ `0821a36` · F8 ✅ `73a3146`+`e1af145`
-(2026-07-03; all 3-layer-reviewed). Live now: the Graph explorer (`#/graph` faceted/paged list —
+(2026-07-03; all 3-layer-reviewed) · F7 ✅ `f8b09c6` (2026-07-03; S fire, lead-reviewed per §14).
+Remaining: F9 only. Live now: the Graph explorer (`#/graph` faceted/paged list —
 `/api/vertices` carries type/q/offset/includeDeleted + facets/total and sorts keys so offset windows are
 stable), the linkifying renderer (`web/js/render.js`: `renderDoc` + `keyLinkEl` — reuse these for any
 rendered reply), the hood mode (`logic/hood.js` pure model + goja tests), the `#/corekv` → `#/graph` and
@@ -746,6 +747,21 @@ correction note). Terminal stream failures manual-reconnect (streamError 15s / f
 8s — EventSource retries neither natively). Feed rebuilds are rAF-coalesced (also defers hidden-tab
 work) and preserve scroll; the systemmap derive base survives an error poll (`lastNodes`, not the
 nulled `data`). F7 hookup: subscribe via `pulse.subscribe`, filter rows by `opKey`.
+
+**F7 shipped state:** all FE, no new endpoints. `logic/oplog.js` (shapeReply / logEntry / pushLog /
+followMatch, goja-tested) + the reworked `views/op.js`. **Adjudicated deviations from §10:** rejected
+replies now render red + verbatim (the design's wording; previously only transport errors were red);
+`duplicate` replies render the STRUCTURED panel (originalCommittedAt fallback, no keys) — a benign
+short-circuit is not an error; the follow-through's "derived lens re-projection rows" cannot be
+requestId-filtered (poll-derived rows carry no requestId), so ANY derived row arriving in the 12s
+window is shown, "~"-marked; the §10 "requestId link" is the opTrackerKey keyLink (same vertex). The
+window is route-lifecycle-bound (`leave()` stops it). Tasks' "Complete →" carries the op in the URL
+(`#/op?type=`) instead of the old direct `prefillOp` import — the prefill is shareable and op.js no
+longer exports it. Session log: `sessionStorage["loupe.oplog"]`, cap 50, best-effort writes. Files:
+owner rows linkify via the shared `keyLinkEl`; `#/files?target=` pre-fills the attach target; vertex +
+meta detail pages gain "attach file →". In-browser verified against the live stack (accepted CreateRole:
+3 committed keys primary-first, real `rbac.roleCreated` caught in-window; rejected path; prefill;
+log persistence + clear; cleanup via TombstoneRole).
 
 **F8 shipped state:** `cmd/loupe/pkg.go` — `GET /api/package?key=` (pure `computePackage` classifies the
 manifest aspect's `declaredKeys` into entities/aspects/operations/lenses/orchestration/roles/permissions/
