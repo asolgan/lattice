@@ -165,6 +165,9 @@ func computePackage(key string, get kvGetter) map[string]any {
 	var links []string
 	var unknowns []string
 	for _, dk := range declared {
+		if dk == key {
+			continue // the install batch declares the package vertex itself — the page IS that vertex
+		}
 		switch classifyKey(dk) {
 		case classVertex, classMeta:
 			roots = append(roots, dk)
