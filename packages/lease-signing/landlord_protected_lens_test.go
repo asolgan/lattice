@@ -409,3 +409,66 @@ func TestLandlordLeaseApplicationsRead_QualifiedWithRealVaultCiphertext(t *testi
 	require.Len(t, rows, 1)
 	require.Equal(t, true, rows[0].Values["qualified"], "a real Vault-ciphertext ssn + fresh bgcheck + payment must satisfy qualified")
 }
+
+// TestLandlordLeaseApplicationsRead_ShredMakesContactUndecryptable closes the
+// vault-crypto-shredding-design.md Fire 5b close gate: a ShredIdentityKey run
+// against the applicant's Vault key must make Vault.Decrypt fail on the EXACT
+// ciphertext envelope this lens projects as applicant_name — proving the
+// right-to-erasure guarantee for landlordLeaseApplicationsRead's own secure
+// columns specifically, not just the readiness-formula presence check
+// 5b-ii-d fixed (which only proved id.ssn.data resolves non-null, never
+// touched decrypt). The lens itself never decrypts (SecureColumns carry the
+// envelope whole to the Postgres adapter, §6.14) — the row survives the
+// shred with its envelope intact; the guarantee is that the envelope is now
+// permanently useless, proven by attempting the real Vault.Decrypt call a
+// downstream Reveal RPC would make.
+func TestLandlordLeaseApplicationsRead_ShredMakesContactUndecryptable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	f.seedManagedApplication(t, "app", "alice", "unit1", "larry")
+
+	v, err := vault.NewLocalBackend([]byte("0123456789abcdef0123456789abcdef"), "test-v1")
+	require.NoError(t, err)
+	aliceKey := "vtx.identity." + f.ids["alice"]
+	env, err := v.CreateIdentityKey(context.Background(), aliceKey)
+	require.NoError(t, err)
+
+	nameCT, err := v.Encrypt(context.Background(), aliceKey, env, []byte(`"Alice Applicant"`))
+	require.NoError(t, err)
+	nameCTBytes, err := json.Marshal(nameCT)
+	require.NoError(t, err)
+	var nameEnvelope map[string]any
+	require.NoError(t, json.Unmarshal(nameCTBytes, &nameEnvelope))
+	f.aspect(t, "alice", "name", "name", nameEnvelope)
+
+	rows := f.projectLandlordRead(t)
+	require.Len(t, rows, 1)
+	projected, ok := rows[0].Values["applicant_name"].(map[string]any)
+	require.True(t, ok, "applicant_name must project the ciphertext envelope whole")
+	require.Equal(t, nameEnvelope, projected, "the lens must project the SAME envelope committed to Vault")
+
+	projectedBytes, err := json.Marshal(projected)
+	require.NoError(t, err)
+	var roundTripCT vault.Ciphertext
+	require.NoError(t, json.Unmarshal(projectedBytes, &roundTripCT))
+
+	// Sanity: decrypts fine pre-shred, using the exact envelope this lens projects.
+	plaintext, err := v.Decrypt(context.Background(), aliceKey, env, roundTripCT)
+	require.NoError(t, err)
+	require.Equal(t, `"Alice Applicant"`, string(plaintext))
+
+	require.NoError(t, v.ShredKey(context.Background(), aliceKey))
+	_, err = v.Decrypt(context.Background(), aliceKey, env, roundTripCT)
+	require.Error(t, err, "Vault.Decrypt must fail post-shred for landlordLeaseApplicationsRead's own committed ciphertext")
+
+	// The row survives (this lens has no keyshredded nullification listener —
+	// that's the nats_kv-target mechanism internal/cryptoshred's e2e proves;
+	// a Postgres protected lens's Phase-A guarantee is key destruction, not
+	// row removal): applicant_name still projects the same now-undecryptable
+	// envelope.
+	rowsAfterShred := f.projectLandlordRead(t)
+	require.Len(t, rowsAfterShred, 1)
+	require.Equal(t, nameEnvelope, rowsAfterShred[0].Values["applicant_name"], "the row survives with its envelope intact; only decrypt is destroyed")
+}
