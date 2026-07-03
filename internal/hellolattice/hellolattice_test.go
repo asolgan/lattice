@@ -58,10 +58,11 @@ const defaultPostgresURL = "postgres://lattice:lattice_dev@localhost:5432/lattic
 // nfrP3ProjectionCIDeadline bounds the NFR-P3 CDC-to-projection lag assertions in
 // this suite (Postgres general-lens rows + the capability-lens probe). It is a
 // coarse CI regression guard, not the p99 SLA: it is sized to absorb the shared CI
-// runner's infra floor so the checks catch a genuine ~2x projection regression
-// rather than runner noise. The platform's real steady-state projection latency is
-// p95 ~486ms (Health KV NFR-O3); the reported NFR-P3 SLA remains 500ms (PRD).
-const nfrP3ProjectionCIDeadline = 1000 * time.Millisecond
+// runner's infra floor (observed up to ~1.1s under contention) with margin to
+// spare, so the checks catch a genuine multi-x projection regression rather than
+// runner noise. The platform's real steady-state projection latency is p95
+// ~486ms (Health KV NFR-O3); the reported NFR-P3 SLA remains 500ms (PRD).
+const nfrP3ProjectionCIDeadline = 2000 * time.Millisecond
 
 // bookDDLScript is the Starlark source for the tutorial "book" DDL.
 const bookDDLScript = `def execute(state, op):
