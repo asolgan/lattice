@@ -3,8 +3,9 @@
 **Component reference** | Audience: implementers + architects
 
 > Data shapes are frozen in `docs/contracts/10-orchestration-surfaces.md` — §10.5/§10.6 (Loom's
-> `externalTask` step + the `payload.externalRef` correlation key) and §10.3 (the pinned
-> FR58-determinism invariant). The `external.<adapter>` event envelope spec lives **here** (it is
+> `externalTask` step + the `payload.externalRef` correlation key), §10.4 (the `@at` schedule
+> convention the async poll/timeout lane uses), and §10.3 (the pinned FR58-determinism invariant).
+> The `external.<adapter>` event envelope spec lives **here** (it is
 > package + bridge data, not a contract amendment — the `external` domain is ordinary, §10.5). Update
 > this page in the same commit as the code; drift between page and code is a documentation bug.
 
@@ -53,7 +54,8 @@ payload: {
   "instanceKey":    "<handle>",             # opaque correlation token (a bare handle in the reference vertical); Loom minted it write-ahead and the instanceOp's DDL forms the claim-vertex key vtx.<type>.<handle> from it (package-chosen type; demo: vtx.service.<id>). The bridge never parses it.
   "adapter":        "<name>",               # which registered adapter to dispatch to
   "params":         { … },                  # adapter call inputs (resolved from the Loom step's row/subject templates)
-  "replyOp":        "<ResolveOp>",          # the result-op type the bridge posts back
+  "replyOp":        "<ResolveOp>",          # the result-op type the bridge posts on a TERMINAL (Resolved) outcome
+  "dispatchOp":     "<PendingOp>",          # (async only) the op that records the create-only pending marker on a Pending outcome; empty ⇒ the task is sync-only
   "idempotencyKey": "<instanceKey>",        # = instanceKey; handed to the adapter so IT dedups the real external action
   "externalRef":    "<instanceKey>"         # = instanceKey; echoed back on the result op so Loom's correlationKeys resolves
 }
@@ -132,6 +134,64 @@ The FR58 crash/retry idempotency proof runs on a **bridge-only harness**: `FakeS
 
 ---
 
+## Async adapters — submit-then-resolve-later
+
+Not every vendor answers inline. The **Adapter SPI is two-method** — `Execute` (dispatch a call) and
+`Poll` (probe a previously-submitted call) — and an adapter's `Dispatch` reply carries a
+**Disposition**:
+
+- **Resolved** — the call finished; the `Dispatch` carries a terminal `Result{Status, Detail}`
+  (`completed | failed`). The bridge posts the **`replyOp`** and Loom's token advances. This is the
+  synchronous path above; a synchronous adapter (`AdapterFunc`) only ever returns `Resolved`, so its
+  `Poll` is unreachable.
+- **Pending** — the vendor accepted the call and it will resolve **later** (a poll or a webhook); the
+  `Dispatch` carries an opaque vendor `Ref`, no `Result`. The bridge records a **create-only pending
+  marker** (the vendor ref) via the envelope's **`dispatchOp`** and posts **no terminal outcome** —
+  the token stays parked.
+
+`dispatchOp` (the pending-marker op) is distinct from `replyOp` (the terminal-outcome op). An
+envelope with an empty `dispatchOp` is **sync-only**: a `Pending` from its adapter is a config error
+(handled like a missing adapter — Ack + a Health issue), never a hot Nak loop.
+
+### The poll/timeout schedule lane (Contract #10 §10.4)
+
+When a call goes `Pending`, the bridge arms **two `@at` schedules** keyed on the bare claim handle (a
+dot-free NanoID) on the `core-schedules` stream:
+
+```
+schedule.bridge.poll.<handle>      @ nextPollAt  → fires schedule.bridge.poll.fired.<handle>
+schedule.bridge.timeout.<handle>   @ deadline    → fires schedule.bridge.timeout.fired.<handle>
+```
+
+A single **fixed durable** (`bridge-schedule`) consumes `schedule.bridge.*.fired.>` — its ack floor
+is the missed-while-down recovery, exactly like Weaver's lane-3. The fired handler:
+
+- **poll fired** → `Poll` the vendor. `Resolved` → post the `replyOp` (same shape as the sync
+  resolve). Still `Pending` → **re-arm** `schedule.bridge.poll.<handle>` at `now + PollInterval` (a
+  self-rescheduling `@at` chain). Transient probe error → `NakWithDelay`.
+- **timeout fired** → post a **terminal `failed` reply** — the deadline backstop for a call that
+  never resolved.
+
+The routing (`vendorRef` / `adapter` / `replyOp`) rides each **schedule payload**, so the fired
+handler stays **type-agnostic** — it never synthesizes or reads a typed claim-vertex key.
+
+**Resolution stays idempotent.** Every resolution (sync resolve, poll resolve, timeout) posts the
+`replyOp` under the **same** `deriveReplyRequestID(handle)`, so an at-least-once redelivery collapses
+on the Contract #4 op-tracker. A **read-before-act** guard (probe the reply op-tracker) suppresses a
+poll/timeout firing once any resolution has landed, and the result op's **create-only `.outcome`** is
+the first-writer-wins backstop for a timeout racing a late success. Production adapters ship
+synchronous; the async SPI is exercised end-to-end by the reference `FakeAsyncCheck` adapter.
+
+### The Augur dispatch path
+
+The Augur — Weaver's AI reasoning tier (the L3 evaluator) — reaches its model **through the bridge as
+an ordinary adapter**. The `augur` adapter's `Result.Detail` carries an **`AugurProposal`** (the
+model's structured output: the escalation verdict + confidence), which Weaver picks up off the result
+op. The bridge treats it like any other adapter payload — opaque, copied verbatim into the result op,
+no AI knowledge in the bridge itself. See `augur-design.md` + `augur-dispatch-pickup-design.md`.
+
+---
+
 ## Service actor (a third primordial identity)
 
 The bridge posts its result ops under a **bootstrap-provisioned service actor** —
@@ -152,7 +212,7 @@ exactly like Loom and Weaver (`docs/components/service-actors.md`). Consequences
 
 | Path | Role |
 |------|------|
-| `internal/bridge/` | Engine: durable `events.external.>` consumer, adapter registry, idempotent dispatch (deterministic result-op requestId + adapter `idempotencyKey` dedup; optional generic op-tracker skip-on-redelivery), result-op submission to `ops.<lane>`. Also the reference `Fake*` adapters — `FakeBackgroundCheck`, `FakeStripe` (substrate-only, idempotent on `idempotencyKey`); real Stripe / background-check is Phase 3 |
+| `internal/bridge/` | Engine: durable `events.external.>` consumer, adapter registry, the two-method **Adapter SPI** (`Execute` / `Poll`; `Resolved` / `Pending` dispositions), idempotent dispatch (deterministic result-op requestId + adapter `idempotencyKey` dedup; optional generic op-tracker skip-on-redelivery), the **poll/timeout schedule lane** (`bridge-schedule` fixed durable, `schedule.go`/`actuator.go`), and result-op submission to `ops.<lane>`. Also the reference `Fake*` adapters — sync `FakeBackgroundCheck` / `FakeStripe`, async `FakeAsyncCheck`, and `FakeAugur` (`AugurProposal` structured output); real Stripe / background-check is Phase 3 |
 | `cmd/bridge/` | Binary entry point (extractable; shares only `substrate/*`); pins `ActorKey = bootstrap.BridgeIdentityKey` and registers the reference adapters for the demo |
 
 **Engine vs package:** the consumer, registry, dispatch, recovery, and result-op submission are
@@ -167,7 +227,10 @@ exactly like Loom and Weaver (`docs/components/service-actors.md`). Consequences
 |-----------|----------|-------|
 | In | `events.external.>` durable consumer | one fixed durable; the envelope above; domain is ordinary (no allowlist) |
 | In (optional) | the Contract #4 op tracker `vtx.op.<deterministic-reqId>` | generic skip-on-redelivery probe (same key shape for all ops) — **not** a read of the typed claim vertex; the bridge stays type-agnostic |
+| In (async) | `schedule.bridge.*.fired.>` fixed durable (`bridge-schedule`) | the fired poll/timeout lane (§10.4); routing rides the schedule payload so the handler needs no typed read |
 | Out | `replyOp` result op via `core-operations` | `requestId = deterministic(instanceKey)`; `payload.externalRef = instanceKey` + outcome fields; its DDL records the outcome as **aspect(s)** on the claim vertex (D5) **and emits `orchestration.externalTaskCompleted{externalRef}`** (the uniform Loom completion signal, §10.6); submitted under the bridge service actor |
+| Out (async) | `dispatchOp` pending-marker op via `core-operations` | on a `Pending` outcome: records the create-only vendor-`ref` marker, **no** terminal outcome (token stays parked) |
+| Out (async) | `@at` schedules `schedule.bridge.{poll,timeout}.<handle>` on `core-schedules` | arm the poll (self-rescheduling `@at` chain) + timeout (deadline backstop) for a pending call |
 | Out | adapter calls | the actual external I/O — the only component that makes them; `idempotencyKey = instanceKey` |
 | Out | Health (Contract #5) | heartbeat at `health.bridge.<instance>`; an unregistered adapter / unparseable envelope surfaces an issue, never a silent skip |
 
@@ -231,6 +294,12 @@ harness. The bridge holds no durable bucket of its own. The bootstrap-provisione
 External I/O is reached as `triggerLoom` of an `externalTask` executed by this component — `internal/weaver`
 holds no adapter and makes no external call. End-to-end Loom → bridge convergence on a real `externalTask`
 is exercised by the `lease-signing` reference vertical.
+
+The **async result path** (Phase 3) is also built and CI-gated: the two-method Adapter SPI
+(`Execute` / `Poll`, `Resolved` / `Pending`), the `dispatchOp` pending marker, and the poll/timeout
+schedule lane (`bridge-schedule` durable) — proven end-to-end by `FakeAsyncCheck` (`pending_e2e_test.go`
+/ `schedule_e2e_test.go`). The **Augur dispatch path** (the `augur` adapter returning an
+`AugurProposal`) rides the same SPI (`augur_proposal.go`, `fake_augur.go`).
 
 **Deferred (Phase 3+).**
 
