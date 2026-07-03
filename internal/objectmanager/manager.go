@@ -27,6 +27,10 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sort"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/asolgan/lattice/internal/healthkv"
@@ -48,6 +52,13 @@ const (
 	defaultReconcileGrace = 25 * time.Hour
 	redeliveryDelay       = 5 * time.Second
 	heartbeatEvery        = 10 * time.Second
+
+	// healthVersion is the object-store-manager build version reported in the
+	// Contract #5 heartbeat.
+	healthVersion = "0.1.0"
+
+	severityError   = "error"
+	severityWarning = "warning"
 )
 
 // Config configures the manager. CoreKVBucket / ObjectsBucket / EventsStream are
@@ -82,7 +93,10 @@ type Config struct {
 
 // Manager runs Loop B + the reconcile.
 type Manager struct {
-	cfg Config
+	cfg       Config
+	startedAt time.Time
+	issues    *issueCache
+	reclaimed atomic.Int64
 }
 
 // New constructs a Manager, applying defaults for the omitted fields.
@@ -108,7 +122,110 @@ func New(cfg Config) *Manager {
 	if cfg.now == nil {
 		cfg.now = time.Now
 	}
-	return &Manager{cfg: cfg}
+	return &Manager{cfg: cfg, startedAt: cfg.now(), issues: newIssueCache()}
+}
+
+// objmgrHealthDoc is the Contract #5 §5.2 heartbeat document object-store-manager
+// writes to health.object-store-manager.<instance>. Same shape as the
+// Loom/Bridge/Gateway/Processor docs; component is "object-store-manager".
+type objmgrHealthDoc struct {
+	Key         string         `json:"key"`
+	Component   string         `json:"component"`
+	Instance    string         `json:"instance"`
+	Version     string         `json:"version"`
+	Status      string         `json:"status"`
+	HeartbeatAt string         `json:"heartbeatAt"`
+	StartedAt   string         `json:"startedAt"`
+	Uptime      string         `json:"uptime"`
+	Metrics     map[string]any `json:"metrics"`
+	Issues      []healthIssue  `json:"issues"`
+}
+
+// healthIssue is one Contract #5 §5.2 issue entry.
+type healthIssue struct {
+	Severity string `json:"severity"`
+	Code     string `json:"code"`
+	Message  string `json:"message"`
+}
+
+// issueCache holds object-store-manager's active reclaim-failure alerts (a
+// stuck ObjectDelete, an unreadable object vertex) — keyed so a condition that
+// resolves clears its own entry. The heartbeat surfaces the snapshot, feeding
+// aggregateStatus so a heartbeat carrying an issue can never self-report
+// "healthy". Mirrors the bridge/gateway issueCache.
+type issueCache struct {
+	mu     sync.Mutex
+	issues map[string]healthIssue
+}
+
+func newIssueCache() *issueCache {
+	return &issueCache{issues: make(map[string]healthIssue)}
+}
+
+func (c *issueCache) set(key, severity, code, message string) {
+	c.mu.Lock()
+	c.issues[key] = healthIssue{Severity: severity, Code: code, Message: message}
+	c.mu.Unlock()
+}
+
+func (c *issueCache) clear(key string) {
+	c.mu.Lock()
+	delete(c.issues, key)
+	c.mu.Unlock()
+}
+
+func (c *issueCache) snapshot() []healthIssue {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	keys := make([]string, 0, len(c.issues))
+	for k := range c.issues {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]healthIssue, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, c.issues[k])
+	}
+	return out
+}
+
+// aggregateStatus reconciles the reported lifecycle phase with the open issue
+// set per Contract #5 §5.2/§5.3: issues are empty iff healthy, "warning" ⇒
+// "degraded", "error" ⇒ "unhealthy". Mirrors the Loom/Weaver/Bridge/Gateway/
+// Processor heartbeaters so a heartbeat carrying issues can never self-report
+// "healthy".
+func aggregateStatus(lifecycle string, issues []healthIssue) string {
+	if lifecycle == "starting" || lifecycle == "shutdown" {
+		return lifecycle
+	}
+	worst := lifecycle
+	for _, is := range issues {
+		switch is.Severity {
+		case severityError:
+			return "unhealthy"
+		case severityWarning:
+			worst = "degraded"
+		}
+	}
+	return worst
+}
+
+// formatISODuration renders a duration as an ISO 8601 duration (e.g. "PT2M30S").
+func formatISODuration(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	itoa := func(n int64) string { return strconv.FormatInt(n, 10) }
+	seconds := int64(d.Seconds())
+	if seconds < 60 {
+		return "PT" + itoa(seconds) + "S"
+	}
+	if seconds < 3600 {
+		return "PT" + itoa(seconds/60) + "M" + itoa(seconds%60) + "S"
+	}
+	hrs := seconds / 3600
+	rem := seconds % 3600
+	return "PT" + itoa(hrs) + "H" + itoa(rem/60) + "M" + itoa(rem%60) + "S"
 }
 
 // tombstonedEvent is the minimal view of an object.tombstoned core-events
@@ -188,13 +305,18 @@ func (m *Manager) handleTombstoned(ctx context.Context, msg substrate.Message) s
 			"objectKey", ev.Payload.ObjectKey)
 		return substrate.Ack
 	}
+	issueKey := "tombstone-reclaim:" + ev.Payload.StoreName
 	if err := m.cfg.Conn.ObjectDelete(ctx, m.cfg.ObjectsBucket, ev.Payload.StoreName); err != nil {
 		if substrate.IsConnectionError(err) {
 			return substrate.NakWithDelay
 		}
 		m.cfg.Logger.Warn("object-store-manager: ObjectDelete failed; retrying", "storeName", ev.Payload.StoreName, "error", err)
+		m.issues.set(issueKey, severityWarning, "ObjectDeleteFailed",
+			"tombstone reclaim stuck on "+ev.Payload.StoreName+": "+err.Error())
 		return substrate.NakWithDelay
 	}
+	m.issues.clear(issueKey)
+	m.reclaimed.Add(1)
 	m.cfg.Logger.Info("object-store-manager: reclaimed object bytes",
 		"objectKey", ev.Payload.ObjectKey, "storeName", ev.Payload.StoreName)
 	return substrate.Ack
@@ -210,6 +332,9 @@ func (m *Manager) reconcileLoop(ctx context.Context) {
 		case <-t.C:
 			if err := m.Reconcile(ctx); err != nil {
 				m.cfg.Logger.Warn("object-store-manager: reconcile pass failed", "error", err)
+				m.issues.set("reconcile-pass", severityWarning, "ReconcileListFailed", "reconcile ObjectList failed: "+err.Error())
+			} else {
+				m.issues.clear("reconcile-pass")
 			}
 		}
 	}
@@ -232,12 +357,16 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		if m.referencedByLiveVertex(ctx, info) {
 			continue
 		}
+		issueKey := "reconcile-reclaim:" + info.Name
 		if err := m.cfg.Conn.ObjectDelete(ctx, m.cfg.ObjectsBucket, info.Name); err != nil {
 			m.cfg.Logger.Warn("object-store-manager: reconcile ObjectDelete failed", "storeName", info.Name, "error", err)
+			m.issues.set(issueKey, severityWarning, "ObjectDeleteFailed", "reconcile reclaim stuck on "+info.Name+": "+err.Error())
 			continue
 		}
+		m.issues.clear(issueKey)
 		reclaimed++
 	}
+	m.reclaimed.Add(int64(reclaimed))
 	if reclaimed > 0 {
 		m.cfg.Logger.Info("object-store-manager: reconcile reclaimed never-attached bytes",
 			"count", reclaimed, "scanned", len(infos))
@@ -295,13 +424,26 @@ func (m *Manager) heartbeatLoop(ctx context.Context) {
 // healthkv.DefaultTTLMultiplier (§5.6) so a crashed instance's key self-expires
 // instead of orphaning forever.
 func (m *Manager) emitHeartbeat(ctx context.Context) {
+	now := m.cfg.now()
+	issues := m.issues.snapshot()
 	key := "health.object-store-manager." + m.cfg.Instance
-	doc, _ := json.Marshal(map[string]any{
-		"component": "object-store-manager",
-		"instance":  m.cfg.Instance,
-		"status":    "healthy",
-		"updatedAt": m.cfg.now().UTC().Format(time.RFC3339),
-	})
+	body := objmgrHealthDoc{
+		Key:         key,
+		Component:   "object-store-manager",
+		Instance:    m.cfg.Instance,
+		Version:     healthVersion,
+		Status:      aggregateStatus("healthy", issues),
+		HeartbeatAt: substrate.FormatTimestamp(now),
+		StartedAt:   substrate.FormatTimestamp(m.startedAt),
+		Uptime:      formatISODuration(now.Sub(m.startedAt)),
+		Metrics:     map[string]any{"reclaimed_total": m.reclaimed.Load()},
+		Issues:      issues,
+	}
+	doc, err := json.Marshal(body)
+	if err != nil {
+		m.cfg.Logger.Error("object-store-manager: heartbeat marshal", "error", err)
+		return
+	}
 	ttl := heartbeatEvery * healthkv.DefaultTTLMultiplier
 	if _, err := m.cfg.Conn.KVPutWithTTL(ctx, m.cfg.HealthKVBucket, key, doc, ttl); err != nil {
 		m.cfg.Logger.Warn("object-store-manager: heartbeat write failed", "error", err)

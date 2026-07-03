@@ -158,6 +158,57 @@ The heartbeat `metrics` carry: `consumers` (map of consumer name → state) and 
 loom-state `instance.<id>` records with status `running`, scanned on the heartbeat cadence). `issues[]` carry
 a `ConsumerPaused` warning for each `pausedStructural` consumer.
 
+### Bridge
+
+Source package: `internal/bridge/`
+
+| Key Pattern | Frequency | Source File | Emitter | TTL |
+|---|---|---|---|---|
+| `health.bridge.<instance>` | ≥ 10s heartbeat | `internal/bridge/health.go` | `heartbeater.emit()` | Category A — `interval×10`, re-armed |
+
+**`<instance>`** follows the convention `bridge-<NanoID>` (`cmd/bridge/main.go`).
+
+The heartbeat `metrics` carry: `consumers` (map of consumer name → state) and the dispatch counters
+(`dispatched`, `pending`, `skipped`, `adapterErrors`, `timedOut`). `issues[]` carry a `ConsumerPaused`
+warning for each `pausedStructural` consumer plus the dispatch-path alerts (`BridgeAdapterMissing`,
+`BridgeAdapterFailed`, `BridgeEventUnparseable`, `BridgeReplyPublishFailed`, `BridgeSkipProbeFailed`,
+`BridgeDispatchOpMissing`, `BridgeScheduleSubject`, `BridgeScheduleReadFailed`,
+`BridgeSchedulePublishFailed`, `BridgePollFailed`) — `status` aggregates these per Contract #5 §5.2/§5.3
+(`aggregateStatus`, mirroring Loom/Weaver), so a heartbeat carrying an issue can never self-report
+`healthy`.
+
+### Gateway
+
+Source package: `internal/gateway/`
+
+| Key Pattern | Frequency | Source File | Emitter | TTL |
+|---|---|---|---|---|
+| `health.gateway.<instance>` | ≥ 10s heartbeat | `internal/gateway/health.go` | `Heartbeater.emit()` | none (`KVPut`, not TTL'd) |
+
+**`<instance>`** follows the convention `gw-<NanoID>` (`cmd/gateway/main.go`).
+
+The heartbeat `metrics` carry the cumulative counters (`requests_total`, `auth_failures_total`,
+`ops_submitted_total`). `issues[]` carry `GatewayRevocationDisabled` (warning) when the token-revocation
+bucket failed to open at startup (the kill-switch runs verification-only auth, `cmd/gateway/main.go`) —
+`status` aggregates via `aggregateStatus` (mirroring Loom/Weaver/Bridge) so a dormant kill-switch is never
+hidden behind a green heartbeat.
+
+### Object-store-manager
+
+Source package: `internal/objectmanager/`
+
+| Key Pattern | Frequency | Source File | Emitter | TTL |
+|---|---|---|---|---|
+| `health.object-store-manager.<instance>` | ≥ 10s heartbeat | `internal/objectmanager/manager.go` | `Manager.emitHeartbeat()` | Category A — `interval×10`, re-armed |
+
+**`<instance>`** is passed via `Config.Instance` (`cmd/object-store-manager/main.go`).
+
+The heartbeat `metrics` carry `reclaimed_total` (cumulative bytes-reclaimed count, both the tombstone
+consumer and the never-attached reconcile). `issues[]` carry `ObjectDeleteFailed` (warning) for a stuck
+byte-reclaim (keyed per `storeName`, cleared on the next successful delete) and `ReconcileListFailed`
+(warning) when the reconcile pass's `ObjectList` call errors — `status` aggregates via `aggregateStatus`
+(mirroring Loom/Weaver/Bridge/Gateway).
+
 ### Vertical apps (loftspace-app, clinic-app)
 
 Source package: `internal/healthkv/` (shared `Reporter`), wired from `cmd/loftspace-app/health.go` and
@@ -406,6 +457,70 @@ the scan failed; `timers*` only when the temporal lane is wired).
     "runningInstances": <int>
   },
   "issues": [{"severity": "warning | error", "code": "<code>", "message": "<string>"}]
+}
+```
+
+### `health.bridge.<instance>` — Bridge heartbeat
+
+```json
+{
+  "key": "health.bridge.<instance>",
+  "component": "bridge",
+  "instance": "<instance>",
+  "version": "0.1.0",
+  "status": "starting | healthy | degraded | unhealthy | shutdown",
+  "heartbeatAt": "<RFC3339>",
+  "startedAt": "<RFC3339>",
+  "uptime": "<ISO-8601-duration>",
+  "metrics": {
+    "consumers": {"<consumerName>": "running | pausedManual | pausedStructural | pausedInfra"},
+    "dispatched": <int>,
+    "pending": <int>,
+    "skipped": <int>,
+    "adapterErrors": <int>,
+    "timedOut": <int>
+  },
+  "issues": [{"severity": "warning | error", "code": "<code>", "message": "<string>"}]
+}
+```
+
+### `health.gateway.<instance>` — Gateway heartbeat
+
+```json
+{
+  "key": "health.gateway.<instance>",
+  "component": "gateway",
+  "instance": "<instance>",
+  "version": "0.1.0",
+  "status": "healthy | degraded | unhealthy",
+  "heartbeatAt": "<RFC3339>",
+  "startedAt": "<RFC3339>",
+  "uptime": "<ISO-8601-duration>",
+  "metrics": {
+    "requests_total": <int>,
+    "auth_failures_total": <int>,
+    "ops_submitted_total": <int>
+  },
+  "issues": [{"severity": "warning", "code": "GatewayRevocationDisabled", "message": "<string>"}]
+}
+```
+
+### `health.object-store-manager.<instance>` — Object-store-manager heartbeat
+
+```json
+{
+  "key": "health.object-store-manager.<instance>",
+  "component": "object-store-manager",
+  "instance": "<instance>",
+  "version": "0.1.0",
+  "status": "healthy | degraded | unhealthy",
+  "heartbeatAt": "<RFC3339>",
+  "startedAt": "<RFC3339>",
+  "uptime": "<ISO-8601-duration>",
+  "metrics": {
+    "reclaimed_total": <int>
+  },
+  "issues": [{"severity": "warning", "code": "ObjectDeleteFailed | ReconcileListFailed", "message": "<string>"}]
 }
 ```
 

@@ -5,6 +5,36 @@ import (
 	"time"
 )
 
+// TestAggregateStatus locks the Contract #5 §5.2/§5.3 reconciliation: a heartbeat
+// carrying issues can never self-report "healthy", lifecycle phases pass through,
+// and error wins over warning. Mirrors the Loom/Weaver/Processor/Refractor heartbeaters.
+func TestAggregateStatus(t *testing.T) {
+	t.Parallel()
+	warn := healthIssue{Severity: severityWarning, Code: "ConsumerPaused", Message: "x"}
+	errIssue := healthIssue{Severity: severityError, Code: "BridgeAdapterFailed", Message: "y"}
+
+	cases := []struct {
+		name      string
+		lifecycle string
+		issues    []healthIssue
+		want      string
+	}{
+		{"healthy no issues stays healthy", "healthy", nil, "healthy"},
+		{"healthy with warning degrades", "healthy", []healthIssue{warn}, "degraded"},
+		{"healthy with error is unhealthy", "healthy", []healthIssue{errIssue}, "unhealthy"},
+		{"error wins over warning", "healthy", []healthIssue{warn, errIssue}, "unhealthy"},
+		{"starting passes through despite issues", "starting", []healthIssue{warn, errIssue}, "starting"},
+		{"shutdown passes through despite issues", "shutdown", []healthIssue{errIssue}, "shutdown"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := aggregateStatus(tc.lifecycle, tc.issues); got != tc.want {
+				t.Fatalf("aggregateStatus(%q, %v) = %q, want %q", tc.lifecycle, tc.issues, got, tc.want)
+			}
+		})
+	}
+}
+
 // The heartbeat TTL (Contract #5 §5.6) derives from interval × ttlMultiplier,
 // defaults to healthkv.DefaultTTLMultiplier, and 0 disables it. Real NATS
 // expiry mechanics are proven once at the substrate layer and by the

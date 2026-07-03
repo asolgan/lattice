@@ -211,7 +211,7 @@ func (h *heartbeater) emit(ctx context.Context, status string) {
 		Component:   "bridge",
 		Instance:    h.instance,
 		Version:     healthVersion,
-		Status:      status,
+		Status:      aggregateStatus(status, issues),
 		HeartbeatAt: substrate.FormatTimestamp(now),
 		StartedAt:   substrate.FormatTimestamp(h.startedAt),
 		Uptime:      formatISODuration(now.Sub(h.startedAt)),
@@ -230,6 +230,29 @@ func (h *heartbeater) emit(ctx context.Context, status string) {
 
 func (h *heartbeater) key() string {
 	return "health.bridge." + h.instance
+}
+
+// aggregateStatus reconciles the reported lifecycle phase with the open issue
+// set per Contract #5 §5.2/§5.3: issues are empty iff healthy, "warning" ⇒
+// "degraded", "error" ⇒ "unhealthy". The "starting" and "shutdown" phases are
+// returned unchanged — a starting or draining bridge reports its lifecycle
+// phase, not a steady-state health grade. Mirrors the Loom/Weaver/Processor/
+// Refractor heartbeaters so a heartbeat carrying issues can never self-report
+// "healthy".
+func aggregateStatus(lifecycle string, issues []healthIssue) string {
+	if lifecycle == "starting" || lifecycle == "shutdown" {
+		return lifecycle
+	}
+	worst := lifecycle
+	for _, is := range issues {
+		switch is.Severity {
+		case severityError:
+			return "unhealthy"
+		case severityWarning:
+			worst = "degraded"
+		}
+	}
+	return worst
 }
 
 // dispatchMetrics holds the bridge's per-process dispatch counters surfaced on

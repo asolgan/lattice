@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sort"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,6 +18,11 @@ const healthVersion = "0.1.0"
 
 // DefaultHeartbeatEvery is the Contract #5 §5.6 / NFR-O1 heartbeat cadence floor.
 const DefaultHeartbeatEvery = 10 * time.Second
+
+const (
+	severityError   = "error"
+	severityWarning = "warning"
+)
 
 // healthDoc is the Contract #5 §5.2 heartbeat document the Gateway writes to
 // health.gateway.<instance>. Same shape as the Loom/Bridge/Processor docs;
@@ -38,6 +45,48 @@ type healthIssue struct {
 	Severity string `json:"severity"`
 	Code     string `json:"code"`
 	Message  string `json:"message"`
+}
+
+// issueCache holds the Gateway's active operational alerts (e.g. the
+// revocation kill-switch running disabled because its bucket never opened) —
+// keyed so a condition that resolves clears its own entry. The Heartbeater
+// surfaces the snapshot as Contract #5 issues, feeding aggregateStatus so a
+// heartbeat carrying an issue can never self-report "healthy". Mirrors the
+// bridge's issueCache.
+type issueCache struct {
+	mu     sync.Mutex
+	issues map[string]healthIssue
+}
+
+func newIssueCache() *issueCache {
+	return &issueCache{issues: make(map[string]healthIssue)}
+}
+
+func (c *issueCache) set(key, severity, code, message string) {
+	c.mu.Lock()
+	c.issues[key] = healthIssue{Severity: severity, Code: code, Message: message}
+	c.mu.Unlock()
+}
+
+func (c *issueCache) clear(key string) {
+	c.mu.Lock()
+	delete(c.issues, key)
+	c.mu.Unlock()
+}
+
+func (c *issueCache) snapshot() []healthIssue {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	keys := make([]string, 0, len(c.issues))
+	for k := range c.issues {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]healthIssue, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, c.issues[k])
+	}
+	return out
 }
 
 // Metrics tracks the Gateway's cumulative counters. Safe for concurrent use;
@@ -64,6 +113,7 @@ type Heartbeater struct {
 	bucket    string
 	instance  string
 	metrics   *Metrics
+	issues    *issueCache
 	every     time.Duration
 	startedAt time.Time
 	logger    *slog.Logger
@@ -82,11 +132,23 @@ func NewHeartbeater(conn *substrate.Conn, bucket, instance string, metrics *Metr
 		bucket:    bucket,
 		instance:  instance,
 		metrics:   metrics,
+		issues:    newIssueCache(),
 		every:     DefaultHeartbeatEvery,
 		startedAt: time.Now(),
 		logger:    logger,
 		now:       time.Now,
 	}
+}
+
+// SetIssue records an active Contract #5 issue under key, surfaced on every
+// heartbeat until ClearIssue(key) is called. Safe for concurrent use with Run.
+func (h *Heartbeater) SetIssue(key, severity, code, message string) {
+	h.issues.set(key, severity, code, message)
+}
+
+// ClearIssue removes a previously-set issue; a no-op if key isn't set.
+func (h *Heartbeater) ClearIssue(key string) {
+	h.issues.clear(key)
 }
 
 // Run blocks, emitting a heartbeat immediately and then every h.every, until
@@ -111,17 +173,18 @@ func (h *Heartbeater) key() string {
 
 func (h *Heartbeater) emit(ctx context.Context, status string) {
 	now := h.now()
+	issues := h.issues.snapshot()
 	doc := healthDoc{
 		Key:         h.key(),
 		Component:   "gateway",
 		Instance:    h.instance,
 		Version:     healthVersion,
-		Status:      status,
+		Status:      aggregateStatus(status, issues),
 		HeartbeatAt: now.UTC().Format(time.RFC3339),
 		StartedAt:   h.startedAt.UTC().Format(time.RFC3339),
 		Uptime:      formatUptime(now.Sub(h.startedAt)),
 		Metrics:     h.metrics.snapshot(),
-		Issues:      []healthIssue{},
+		Issues:      issues,
 	}
 	raw, err := json.Marshal(doc)
 	if err != nil {
@@ -131,6 +194,26 @@ func (h *Heartbeater) emit(ctx context.Context, status string) {
 	if _, err := h.conn.KVPut(ctx, h.bucket, doc.Key, raw); err != nil {
 		h.logger.Warn("gateway: heartbeat write failed", "error", err)
 	}
+}
+
+// aggregateStatus reconciles the reported lifecycle phase with the open issue
+// set per Contract #5 §5.2/§5.3: issues are empty iff healthy, "warning" ⇒
+// "degraded", "error" ⇒ "unhealthy". Mirrors the Loom/Weaver/Bridge/Processor
+// heartbeaters so a heartbeat carrying issues can never self-report "healthy".
+func aggregateStatus(lifecycle string, issues []healthIssue) string {
+	if lifecycle == "starting" || lifecycle == "shutdown" {
+		return lifecycle
+	}
+	worst := lifecycle
+	for _, is := range issues {
+		switch is.Severity {
+		case severityError:
+			return "unhealthy"
+		case severityWarning:
+			worst = "degraded"
+		}
+	}
+	return worst
 }
 
 // formatUptime renders d as an ISO 8601 duration (Contract #5 §5.2's `uptime`

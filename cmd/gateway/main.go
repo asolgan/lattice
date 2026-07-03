@@ -183,8 +183,10 @@ func run(logger *slog.Logger) error {
 	// (auth.NewAuthenticator tolerates a nil checker), same posture as D1.2's
 	// read boundary.
 	var revChecker auth.RevocationChecker
+	revocationDisabled := false
 	if revKV, err := conn.OpenKV(context.Background(), revocation.BucketName); err != nil {
 		logger.Warn("token-revocation bucket not available; revocation kill-switch disabled", "error", err)
+		revocationDisabled = true
 	} else {
 		revChecker = revocation.New(revKV)
 	}
@@ -211,6 +213,10 @@ func run(logger *slog.Logger) error {
 	}
 
 	hb := gateway.NewHeartbeater(conn, envOrDefault("HEALTH_KV_BUCKET", defaultHealthBucket), instance, metrics, logger)
+	if revocationDisabled {
+		hb.SetIssue("revocation-kill-switch", "warning", "GatewayRevocationDisabled",
+			"token-revocation bucket unavailable; kill-switch disabled, auth runs verification-only")
+	}
 	go hb.Run(ctx)
 
 	errCh := make(chan error, 1)

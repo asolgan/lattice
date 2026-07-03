@@ -97,6 +97,64 @@ func TestHeartbeater_RunEmitsImmediatelyThenStopsOnCancel(t *testing.T) {
 	}
 }
 
+func TestHeartbeater_SetIssueDegradesStatus(t *testing.T) {
+	conn, ctx := newHealthTestConn(t)
+	hb := NewHeartbeater(conn, "health-kv", "gw-test3", &Metrics{}, nil)
+	hb.SetIssue("revocation-kill-switch", severityWarning, "GatewayRevocationDisabled", "kill-switch disabled")
+	hb.emit(ctx, "healthy")
+
+	entry, err := conn.KVGet(ctx, "health-kv", "health.gateway.gw-test3")
+	require.NoError(t, err)
+	var doc healthDoc
+	require.NoError(t, json.Unmarshal(entry.Value, &doc))
+
+	if doc.Status != "degraded" {
+		t.Errorf("Status = %q, want degraded (an open warning issue must never self-report healthy)", doc.Status)
+	}
+	if len(doc.Issues) != 1 || doc.Issues[0].Code != "GatewayRevocationDisabled" {
+		t.Errorf("Issues = %+v, want one GatewayRevocationDisabled entry", doc.Issues)
+	}
+
+	hb.ClearIssue("revocation-kill-switch")
+	hb.emit(ctx, "healthy")
+	entry, err = conn.KVGet(ctx, "health-kv", "health.gateway.gw-test3")
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(entry.Value, &doc))
+	if doc.Status != "healthy" {
+		t.Errorf("Status after ClearIssue = %q, want healthy", doc.Status)
+	}
+}
+
+// TestAggregateStatus locks the Contract #5 §5.2/§5.3 reconciliation: a heartbeat
+// carrying issues can never self-report "healthy", lifecycle phases pass through,
+// and error wins over warning. Mirrors the Loom/Weaver/Bridge/Processor heartbeaters.
+func TestAggregateStatus(t *testing.T) {
+	t.Parallel()
+	warn := healthIssue{Severity: severityWarning, Code: "GatewayRevocationDisabled", Message: "x"}
+	errIssue := healthIssue{Severity: severityError, Code: "Boom", Message: "y"}
+
+	cases := []struct {
+		name      string
+		lifecycle string
+		issues    []healthIssue
+		want      string
+	}{
+		{"healthy no issues stays healthy", "healthy", nil, "healthy"},
+		{"healthy with warning degrades", "healthy", []healthIssue{warn}, "degraded"},
+		{"healthy with error is unhealthy", "healthy", []healthIssue{errIssue}, "unhealthy"},
+		{"error wins over warning", "healthy", []healthIssue{warn, errIssue}, "unhealthy"},
+		{"starting passes through despite issues", "starting", []healthIssue{warn, errIssue}, "starting"},
+		{"shutdown passes through despite issues", "shutdown", []healthIssue{errIssue}, "shutdown"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := aggregateStatus(tc.lifecycle, tc.issues); got != tc.want {
+				t.Fatalf("aggregateStatus(%q, %v) = %q, want %q", tc.lifecycle, tc.issues, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFormatUptime(t *testing.T) {
 	cases := []struct {
 		d    time.Duration
