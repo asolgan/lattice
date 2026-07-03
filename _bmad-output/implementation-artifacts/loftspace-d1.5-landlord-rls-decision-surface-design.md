@@ -133,8 +133,10 @@ lands and the name display + full RLS-enforced decisioning ship together as the 
 4. **Board.** Done-log the shipped increment; the readiness-clone + name display + console retirement stay
    on the row as **🚧 blocked-on Vault**.
 
-**Deferred to the Vault milestone (recorded, not in scope):** option (A) readiness clone; applicant
-name/email/phone display; full RLS-enforced decisioning; console retirement.
+**Deferred-to-Vault items, now shipped:** applicant name/email/phone display (Vault Fire 5b-ii,
+`a710c7a`); option (A) readiness clone (Vault Fire 5b-ii-b, `13ffb75`); full RLS-enforced
+decisioning + console retirement (Vault Fire 5b-ii-c, `7eb3330`) — see the checkpoints in
+[vault-crypto-shredding-design.md](vault-crypto-shredding-design.md). This design is fully built.
 
 ## 6. Risks
 

@@ -741,10 +741,28 @@ convergence lens) are independently materialized and could transiently disagree,
 FE reads the new field (the same cross-lens materialization-timing class already accepted for
 other display scalars, not a new hazard).
 Worktree: `/Users/andrewsolgan/Documents/GitHub/lattice-wt-vault-5b-ii-b` (branch
-`steward-vault-5b-ii-b`, merged through `13ffb75`). Next: **5b-ii-c** — wire `qualified` into the
-RLS-scoped FE card list + move Approve/Decline there, retire the trusted console's action surface
-(a UX-consolidation call, not pure plumbing); then 5b-iii clinic contact; extend
-`make test-crypto-shred` per the note above; delivery-boundary reset + live e2e close 5b.
+`steward-vault-5b-ii-b`, merged through `13ffb75`).
+
+**Fire 5b-ii-c CHECKPOINT (2026-07-02, Lattice Steward, `7eb3330`).** Console retirement shipped:
+Approve/Decline now render on `renderRLSApplicantRow` (the RLS-scoped card list), gated on the
+protected lens's own `qualified` column, reusing the existing `DecideLeaseApplication` `/api/op`
+POST (`entityKey` → `leaseAppKey`, no new endpoint needed). The trusted operator console
+(`renderApplicantRow`) drops its Approve/Decline block entirely — informational only now, kept for
+unit/listing management (Edit / Unpublish / Relist / Photos). This wakes the dormant
+cross-lens-materialization risk the 5b-ii-b checkpoint flagged (`qualified` vs `applicantApproved`
+independently projected): both still derive the identical readiness formula off the same
+underlying facts, so a landlord sees a transient mismatch only within one lens's reprojection
+lag window, never a wrong final state — accepted, same class as other display-scalar staleness
+(D1.3). Verified in-browser (no seed identities on the current dev stack — synthetic RLS rows
+injected via the console to drive `renderRLSUnitCard`/`renderRLSApplicantRow` directly): a
+qualified+unleased row renders Approve/Decline and posts the correct
+`{operationType:"DecideLeaseApplication", payload:{leaseAppKey, decision}}`; an unqualified or
+leased-to-another row correctly suppresses actions; the console renders zero action buttons.
+Lead review only (FE-only, reuses the established gated-button + generic-`/api/op` pattern;
+`DecideLeaseApplication`'s own authorization is untouched — no new security mechanism).
+**Remaining for 5b close:** extend `make test-crypto-shred` to drive
+`landlordLeaseApplicationsReadSpec` through real shred-scrub (still only proven in halves); then
+**5b-iii** clinic contact; delivery-boundary reset + a live e2e.
 
 **Considered and REJECTED — pre-Vault plaintext contact projection** into `clinicPatientsRead`
 (technically buildable, no test fails, outside M4's *letter* since `.demographics` cannot be
