@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,6 +91,18 @@ func provision(t *testing.T, c *substrate.Conn, bucket string) {
 	defer cancel()
 	if _, err := c.JetStream().CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucket}); err != nil {
 		t.Fatalf("provision bucket %q as bootstrap: %v", bucket, err)
+	}
+}
+
+// provisionObjectStore creates the object store as the bootstrap provisioner
+// (bootstrap holds $O.> + $JS.API.>) — mirroring provision for the object
+// plane (object-plane-nats-permissions-design.md §5).
+func provisionObjectStore(t *testing.T, c *substrate.Conn, bucket string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := c.JetStream().CreateObjectStore(ctx, jetstream.ObjectStoreConfig{Bucket: bucket}); err != nil {
+		t.Fatalf("provision object store %q as bootstrap: %v", bucket, err)
 	}
 }
 
@@ -188,6 +201,65 @@ func TestLensTargetWriteIsolation(t *testing.T) {
 	}
 
 	assertDeniedPuts(t, url, "weaver-targets", []string{"loom", "loupe", "lattice", "gateway"})
+}
+
+// TestObjectStoreWriteAccess: the three legitimate object-plane writers
+// (object-store-manager, loupe, loftspace-app) can actually ObjectPut into
+// core-objects, and object-store-manager can ObjectDelete what it put — the
+// direct regression guard for arch-review correction #2
+// (object-plane-nats-permissions-design.md §5): before this fix, all three
+// were transport-denied (objmgr's grant targeted the wrong prefix/bucket;
+// loupe/loftspace-app had no $O. grant at all).
+func TestObjectStoreWriteAccess(t *testing.T) {
+	url := startServerFromConf(t)
+
+	boot := connectAs(t, url, "bootstrap")
+	provisionObjectStore(t, boot, "core-objects")
+
+	for _, component := range []string{"object-store-manager", "loupe", "loftspace-app"} {
+		component := component
+		t.Run("allowed/"+component, func(t *testing.T) {
+			c := connectAs(t, url, component)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			name := "obj-" + component
+			if _, err := c.ObjectPut(ctx, "core-objects", name, strings.NewReader("blob"), 0); err != nil {
+				t.Fatalf("%s ObjectPut core-objects: want success, got %v", component, err)
+			}
+		})
+	}
+
+	objmgr := connectAs(t, url, "object-store-manager")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := objmgr.ObjectDelete(ctx, "core-objects", "obj-object-store-manager"); err != nil {
+		t.Fatalf("object-store-manager ObjectDelete core-objects: want success, got %v", err)
+	}
+}
+
+// TestObjectStoreWriteIsolation: non-writers stay denied on the object plane —
+// proving the new $O.core-objects.> grant is scoped, not a blanket $O.> leak.
+// clinic-app has no ObjectPut call site (grep-verified) and is the pinned
+// negative: whoever gives clinic blob upload must move it into the positive
+// set (object-plane-nats-permissions-design.md §8).
+func TestObjectStoreWriteIsolation(t *testing.T) {
+	url := startServerFromConf(t)
+
+	boot := connectAs(t, url, "bootstrap")
+	provisionObjectStore(t, boot, "core-objects")
+
+	for _, component := range []string{"clinic-app", "gateway", "weaver"} {
+		component := component
+		t.Run("denied/"+component, func(t *testing.T) {
+			t.Parallel()
+			c := connectAs(t, url, component)
+			ctx, cancel := context.WithTimeout(context.Background(), deniedTimeout)
+			defer cancel()
+			if _, err := c.ObjectPut(ctx, "core-objects", "rogue-"+component, strings.NewReader("forged"), 0); err == nil {
+				t.Errorf("%s ObjectPut core-objects: want transport denial, got success", component)
+			}
+		})
+	}
 }
 
 // TestControlPlaneOperatorAccess: the operator surfaces (loupe, the lattice CLI)

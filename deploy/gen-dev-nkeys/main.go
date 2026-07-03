@@ -97,11 +97,9 @@ func denyProtected(kvSubjects []string, streams ...string) []string {
 //
 // Health is written to the `health-kv` KV bucket (keys health.<component>.<inst>),
 // so the publish subject is $KV.health-kv.> — not the bare `health.>` the design
-// prose abbreviated. Operational-bucket subjects (schedule / bridge / object
-// store) are the binaries' own state and are verified against the live stack when
-// enforcement turns on (Fire 2); getting them slightly off is a non-security
-// refinement (a missing operational grant surfaces in the full-stack battery),
-// whereas the core-kv / capability-kv protection proved here is airtight.
+// prose abbreviated. The object-plane grants (objmgr, loupe, loftspace-app) are
+// vendor-pinned to nats.go's ObjectStore subject shape ($O.<bucket>.{C,M}.>) and
+// conformance-tested by internal/natsperm (object-plane-nats-permissions-design.md).
 var matrix = []component{
 	{
 		name: "processor",
@@ -151,7 +149,7 @@ var matrix = []component{
 	{
 		name:     "object-store-manager",
 		desc:     "object GC actor; writes the object store, mutates Core state via ops",
-		pubAllow: []string{bootstrap.OpsWildcardSubject, "$OBJ.objects-base.>", "$KV.health-kv.>", "$JS.API.>", "$JS.ACK.>"},
+		pubAllow: []string{bootstrap.OpsWildcardSubject, "$O.core-objects.>", "$KV.health-kv.>", "$JS.API.>", "$JS.ACK.>"},
 		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
 	},
 	{
@@ -159,7 +157,7 @@ var matrix = []component{
 		desc: "provisioning-time privileged user — the sanctioned non-Processor direct Core-KV writer; seeds the kernel before the Processor exists and creates streams/buckets",
 		// No denies: the provisioner seeds core-kv/capability-kv and creates
 		// every stream/bucket before any component connects.
-		pubAllow: []string{"$KV.>", "$OBJ.>", "$JS.API.>", "$JS.ACK.>", bootstrap.EventsWildcardSubject, bootstrap.OpsWildcardSubject},
+		pubAllow: []string{"$KV.>", "$O.>", "$JS.API.>", "$JS.ACK.>", bootstrap.EventsWildcardSubject, bootstrap.OpsWildcardSubject},
 	},
 	{
 		name:     "lattice-pkg",
@@ -172,8 +170,9 @@ var matrix = []component{
 		desc: "trusted inspector — reads all KV (subscribe/get); writes state only via ops, even it gets no direct Core-KV write",
 		// lattice.ctrl.> — the Control surface issues per-name requests to the
 		// Refractor/Weaver/Loom control planes (lattice.ctrl.<comp>.<name>.<op>);
-		// the planes reply via allow_responses on their own users.
-		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$JS.API.>", "$JS.ACK.>", "lattice.ctrl.>"},
+		// the planes reply via allow_responses on their own users. $O.core-objects.>
+		// — the admin object-upload surface (cmd/loupe/objects.go ObjectPut).
+		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$O.core-objects.>", "$JS.API.>", "$JS.ACK.>", "lattice.ctrl.>"},
 		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
 	},
 	{
@@ -191,9 +190,11 @@ var matrix = []component{
 		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
 	},
 	{
-		name:     "loftspace-app",
-		desc:     "vertical app (P5 reader); writes via ops",
-		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$JS.API.>", "$JS.ACK.>"},
+		name: "loftspace-app",
+		desc: "vertical app (P5 reader); writes via ops",
+		// $O.core-objects.> — lease-PDF + ID/signature uploads (lease_document.go,
+		// objects.go ObjectPut).
+		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$O.core-objects.>", "$JS.API.>", "$JS.ACK.>"},
 		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
 	},
 	{
