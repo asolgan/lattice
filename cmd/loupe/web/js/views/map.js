@@ -241,10 +241,12 @@ function renderSystemMap(data) {
   });
 
   // Tier 4: the lens shelf — flex-wrap chips, not per-node absolute placement.
-  // Tier-4 infra (the object-store archive sink) chips onto the same shelf,
-  // after the lenses, so the chronicler → object-store edge drops cleanly.
+  // Tier-4 infra (the object-store archive sink) sits in its own column to the
+  // shelf's right — inside the scrollable shelf it would hide below the fold
+  // and the chronicler → object-store edge would point into clipped overflow.
   const shelf = el("div", "sysmap-shelf");
   shelf.style.top = SYSMAP_TIER_Y[4] + "px";
+  if (shelfInfra.length) shelf.style.right = "190px";
   if (!lenses.length) {
     shelf.appendChild(el("div", "muted", "(no lenses projecting)"));
   } else {
@@ -254,12 +256,15 @@ function renderSystemMap(data) {
       sysmap.nodeEls.set(n.id, chip);
     });
   }
-  shelfInfra.forEach((n) => {
-    const chip = buildSysmapNode(n);
-    shelf.appendChild(chip);
-    sysmap.nodeEls.set(n.id, chip);
-  });
   stage.appendChild(shelf);
+  shelfInfra.forEach((n, i) => {
+    const node = buildSysmapNode(n);
+    node.style.left = (width - 100) + "px";
+    node.style.top = (SYSMAP_TIER_Y[4] + i * 48) + "px";
+    node.style.transform = "translateX(-50%)";
+    stage.appendChild(node);
+    sysmap.nodeEls.set(n.id, node);
+  });
 
   // The clients shelf: undeclared heartbeat groups (vertical apps etc.) —
   // chips only, no skeleton edges; click drills into their component page.
