@@ -38,8 +38,8 @@ choices live HERE. Per-package capability definitions live under
 
 - [Capability Packages](./_packages.md) — the install / uninstall model and the
   package-authoring guide (the kernel stays minimal; everything else is a package).
-- [Service actors](./service-actors.md) — the internal Loom / Weaver / Bridge
-  identities seeded at bootstrap and how they hold root-equivalent capability.
+- [Service actors](./service-actors.md) — the internal Loom / Weaver / Bridge /
+  object-store-manager identities seeded at bootstrap and how they hold root-equivalent capability.
 - [Platform message scheduling](./scheduling.md) — the `core-schedules` stream and
   the `@at` scheduled-message convention any component uses to turn time into an op.
 - [Platform control plane](./control-plane.md) — the `lattice.ctrl.*` operator
@@ -50,6 +50,12 @@ choices live HERE. Per-package capability definitions live under
 - [Object-store-manager](./object-store-manager.md) — the always-on byte-janitor of the
   off-graph blob plane: Loop B tombstone reclaim, the never-attached crash-orphan reconcile,
   and the owner-tombstone-cascade.
+
+**Edge & security**
+
+- [Gateway](./gateway.md) — the external write-path trust boundary: verifies an external actor's
+  IdP-signed JWT and stamps the verified identity onto the operation envelope, closing actor
+  impersonation at the edge (read-path enforcement follows D1's read-path authorization).
 
 **Experience layer**
 

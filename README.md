@@ -206,18 +206,18 @@ Lattice is a small set of cooperating components, each with a living reference p
 | [Loom](docs/components/loom.md) | The procedure engine — deterministic, idempotent, linear flows (the "executive") |
 | [Weaver](docs/components/weaver.md) | The convergence engine — drives a declared target state toward convergence (the "visionary") |
 | [Bridge](docs/components/bridge.md) | The external-I/O egress — the one component that makes outbound calls to external systems, idempotently, via a durable `events.external.>` consumer and a pluggable adapter registry |
-| [Gateway](docs/components/gateway.md) | The external write-path translator — verifies an external actor's IdP-signed JWT and stamps the verified identity onto the operation envelope, closing actor impersonation at the edge |
+| [Object-store-manager](docs/components/object-store-manager.md) | The byte-janitor of the off-graph blob plane — reclaims object-store bytes when their vertex is tombstoned or crash-orphaned, and cascades owner-tombstones to detach dangling object links |
+| [Gateway](docs/components/gateway.md) | The external write-path translator — verifies an external actor's IdP-signed JWT and stamps the verified identity onto the operation envelope, closing actor impersonation at the edge (read-path enforcement follows D1) |
+| [Loupe](docs/components/loupe.md) | The internal operator console — browse Core KV, drive the engines' control planes, submit DDL-driven ops, install packages, upload blobs; a trusted single-identity, loopback-bound inspector (the one app allowed to read Core KV directly) |
 
 The exact wire shapes, key patterns, and behavioral rules are pinned in the data contracts under
 [`docs/contracts/`](docs/contracts/README.md).
 
 ### The wider platform
 
-The same primitives extend outward into the rest of the Lattice vision:
+The same primitives extend outward into the rest of the Lattice vision — the pieces that don't yet
+have a component page of their own:
 
-- **Gateway** — the trust boundary at the edge: it authenticates actors (JWT) and stamps identity
-  onto every operation (**shipped**, `cmd/gateway`); the matching read-path enforcement — bounding an
-  agent's view of the world by the same ReBAC links as a human's — follows D1's read-path authorization.
 - **Vault & crypto-shredding** — sensitive aspects are encrypted with per-identity keys, so the
   "right to be forgotten" is *physical*: destroy the key and that identity's data — even in the
   immutable ledger — becomes permanent, unrecoverable gibberish.
