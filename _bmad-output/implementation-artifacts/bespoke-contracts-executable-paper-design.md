@@ -557,6 +557,33 @@ platform machinery**, with L1 (+ optionally L2) as the only platform touches.
 > debit cycle). **All of V1-V4 named in §10 are now: V1/V2/V3 shipped, V4 (self-amendment + FE) is the only
 > remaining increment** — no next-fire pointer needed until V4 is picked up.
 
+> **✅ CHECKPOINT (Vertical Steward, 2026-07-02) — Fire V4 SHIPPED, `cc9c311`.** No persistent worktree
+> (finished in one fire; `steward-bespoke-v4` merged to main and deleted). Built both remaining pieces.
+> **Self-amendment**: `SupersedeClause{clauseKey, <CreateClause's own fields>}` mints a replacement clause via a
+> `mint_clause` helper factored out of `CreateClause`'s body (both ops now call it — no duplicated Starlark),
+> writes the `amends` link (new clause→amended clause — the new clause is later-arriving, so it is the source,
+> Contract #1 §1.1), tombstones the amended clause's root (the shipped anchor-tombstone retraction deletes its
+> `clauseSatisfaction` row — no cypher `isDeleted` filter needed, mirrors lease-signing's withdraw tombstone),
+> and marks its `.status` `{state:superseded, supersededAt, supersededBy}` (audit only — the retraction signal
+> is the tombstone, not this field, matching the design's R3 doctrine). A clause already superseded (or never
+> existing) fails `vertex_alive`, so `SupersedeClause` naming it is rejected — a clause amends at most once at a
+> time; the chain grows forward through `amends`, never branches. **FE**: the `loftspace-ledger` `ledgerHistory`
+> lens gained an `OPTIONAL MATCH (t)-[:authorizedBy]->(c:clause)` projecting `clauseKey`/`clauseProse`
+> (`c.prose.data.text` on a possibly-unmatched node — the exact `clinicAppointmentsSpec`
+> `p.demographics.data.fullName` precedent, confirmed safe by grep before use); `loftspace-app`'s
+> `GET /api/ledger` passes both fields through, and the ledger panel renders a `<details>` "Why was I charged
+> this?" disclosure per transaction when `clauseProse` is present — a plain human-recorded charge carries
+> neither field, so no affordance renders for it. Full local gates green (build/vet/golangci-lint/
+> lint-conventions/full `go test ./...` — the ENTIRE repo, not just this package, since the lens change touches
+> a shared package); `verify-kernel`/`test-bypass`/`test-capability-adversarial` regenerated as part of the full
+> suite (no security/capability-plane surface touched — `SupersedeClause` is an ordinary operator-granted op,
+> same model as `CreateClause`). Verified via new integration tests (tombstone + amends link + audit status +
+> double-supersede rejection) and unit tests (clause fields ride through the JSON projection unchanged); not
+> verified live in-browser this fire (headless coverage was judged sufficient for a straightforward read-model
+> passthrough + a `<details>` disclosure — no new interaction surface beyond the existing ledger panel).
+> **All of V1-V4 are now shipped — the bespoke-contracts reference package is COMPLETE.** No further fires
+> needed against this design.
+
 ---
 
 ## 11. Self-adversarial pass (Designer, folded in — the L/XL gate, discharged)
