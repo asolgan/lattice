@@ -18,9 +18,11 @@
 //
 // Environment:
 //
-//	LOFTSPACE_APP_ADDR   HTTP listen address (default: 127.0.0.1:7788)
-//	NATS_URL             NATS server URL (default: nats://localhost:4222)
-//	BOOTSTRAP_JSON_PATH  path to lattice.bootstrap.json (default: ./lattice.bootstrap.json)
+//	LOFTSPACE_APP_ADDR            HTTP listen address (default: 127.0.0.1:7788)
+//	NATS_URL                      NATS server URL (default: nats://localhost:4222)
+//	BOOTSTRAP_JSON_PATH           path to lattice.bootstrap.json (default: ./lattice.bootstrap.json)
+//	LOFTSPACE_APP_INSTANCE        Health-KV instance id (default: auto-generated loft-<NanoID>)
+//	LOFTSPACE_APP_HEARTBEAT_EVERY Health-KV heartbeat cadence (default: 10s)
 //
 // The server starts even when NATS is unreachable or the bootstrap file is
 // missing: the UI is served and each /api/* call returns a JSON error the UI
@@ -30,6 +32,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -44,6 +47,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/asolgan/lattice/internal/bootstrap"
+	"github.com/asolgan/lattice/internal/healthkv"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -172,6 +176,30 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Contract #5 heartbeat — dependency-probing, not a static liveness ping
+	// (see health.go). Gated on a live NATS dial, mirroring object-store-manager;
+	// an absent card on a NATS-down boot is itself an operator signal.
+	if conn != nil {
+		instance := envOrDefault("LOFTSPACE_APP_INSTANCE", "")
+		if instance == "" {
+			id, err := substrate.NewNanoID()
+			if err != nil {
+				return fmt.Errorf("generate health-kv instance id: %w", err)
+			}
+			instance = "loft-" + id
+		}
+		reporter := healthkv.New(healthkv.Config{
+			Conn:      conn,
+			Bucket:    bootstrap.HealthKVBucket,
+			Component: "loftspace-app",
+			Instance:  instance,
+			Interval:  envDuration("LOFTSPACE_APP_HEARTBEAT_EVERY", 10*time.Second, logger),
+			Probe:     srv.healthProbe,
+			Logger:    logger,
+		})
+		go reporter.Run(ctx)
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("loftspace-app listening", "addr", addr)
@@ -253,4 +281,17 @@ func readModelDSN() string {
 		return v
 	}
 	return strings.TrimSpace(os.Getenv("REFRACTOR_PG_DSN"))
+}
+
+func envDuration(key string, def time.Duration, logger *slog.Logger) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		logger.Warn("ignoring invalid duration env; using default", "key", key, "value", v, "default", def)
+		return def
+	}
+	return d
 }

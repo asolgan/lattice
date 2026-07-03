@@ -38,7 +38,10 @@ func setupHarness(t *testing.T) (context.Context, *substrate.Conn) {
 	}
 	t.Cleanup(conn.Close)
 
-	_, err = conn.JetStream().CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: testHealthBucket})
+	_, err = conn.JetStream().CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket:         testHealthBucket,
+		LimitMarkerTTL: time.Second, // enables AllowMsgTTL so Reporter's KVPutWithTTL works in tests
+	})
 	if err != nil {
 		t.Fatalf("healthkv: create health-kv bucket: %v", err)
 	}
