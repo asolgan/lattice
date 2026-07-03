@@ -514,6 +514,49 @@ platform machinery**, with L1 (+ optionally L2) as the only platform touches.
 > lens unit tests + the real-Processor integration tests). **Next: Fire V3** (recurring `freshUntil` period
 > boundary + a proration clause, computed Processor-side in integer cents) — fresh worktree.
 
+> **✅ CHECKPOINT (Vertical Steward, 2026-07-02) — Fire V3 SHIPPED, `47ba7c6`.** Fresh worktree
+> (`steward-bespoke-v3`), merged + deleted. Built both remaining Fire V3 archetypes, **no platform touch, no
+> rounding UDF** (§7 stays designed-not-built): (1) **recurring `period="monthly"`** — `clauseSatisfaction`'s
+> `missing_charge` gate branches on `period`: non-monthly keeps the exact Fire V1/V2 `chargeCount=0` check;
+> monthly instead reads `.status.data.chargeValidUntil` freshness (`= null OR <= $now`), mirroring lease-signing's
+> bgcheck-freshness `validUntil` pattern verbatim, and projects `freshUntil` (`Freshness: "auto"`) to arm Weaver's
+> `internal/weaver/temporal.go` `@at` lane exactly like `appointmentReminders`/bgcheck already do. `DebitAccount`
+> (loftspace-ledger) gained an optional `period` param, templated as `row.period` by the §10.8 playbook, that
+> re-arms `chargeValidUntil` instead of completing the clause. (2) **proration** — `CreateClause` accepts
+> `rateCents`+`periodDays`+`daysOccupied` instead of a flat `amountCents` and computes the charge **once, at
+> creation**, as `(rateCents*daysOccupied) // periodDays` using explicit Starlark `int(...)` conversions before
+> the multiply/floor-divide — genuine bignum integers, never `float64`, so the design's §7/R2 rounding hazard
+> (e.g. `9000/30` landing on `8999`) cannot occur; the result then flows through the unchanged flat-fee path
+> (no `DebitAccount`/lens change needed for proration at all).
+> **A dedicated adversarial money-safety-review agent pass** (same discipline as Fire V2's) traced the Starlark/
+> cypher semantics from first principles (confirmed JSON integers pre-convert to genuine Starlark `Int`s, `//` is
+> exact bignum floor division, `$now`/`chargeValidUntil` are lexically-sound whole-second UTC RFC3339) and found
+> the arithmetic and lens gates correct, but caught one real gap: `DebitAccount`'s `period` param is
+> caller-supplied and never cross-checked against the clause's own stored `.terms.data.period` (that aspect isn't
+> hydrated — Reads only names the bare clause root); a hand-submitted, non-Weaver `DebitAccount` (an ordinary
+> operator-granted op, not Weaver-exclusive) omitting/misreporting `period` against a genuinely-monthly clause
+> would never stamp `chargeValidUntil`, leaving it permanently violating and Weaver re-dispatching indefinitely.
+> Closing this properly (hydrating the clause's own `.terms` to cross-check) is blocked on a real platform gap —
+> the `full` cypher engine has **no string-concatenation operator**, so a lens cannot project a derived aspect key
+> (`clauseKey + ".terms"`) for the Weaver-driven Reads to name, and the existing Reads-templating grammar only
+> substitutes bare `row.<col>` values, never a `row.<col>` + literal suffix — filed as a small follow-on platform
+> primitive if a future fire wants full closure. **Fixed inline instead** (defense-in-depth, no platform
+> primitive needed): `chargeValidUntil` is now stamped **unconditionally** in both branches — inert for a
+> genuinely one-time clause (that gate never reads it) but closes the dangerous direction of the mismatch for a
+> genuinely-monthly one, regardless of what the caller's `period` said. A regression test
+> (`TestDebitAccount_RecurringClause_MismatchedPeriodOmitted_StillReArms`) proves it. **Noted, not fixed (pre-existing,
+> low severity, orthogonal to this fire):** flat `amountCents` (the non-prorated path, unchanged since Fire V1) is
+> never coerced to an integer the way the new prorated path is — a caller could submit a fractional cents value
+> unrounded; a follow-up guard is a candidate for a future maintenance fire, not scoped here.
+> Full local gates green (build/vet/golangci-lint/lint-conventions/full `go test ./...` — the entire repo, not
+> just this package); `verify-kernel`/`test-bypass`/`test-capability-adversarial` not run (same rationale as V1/V2
+> — no new security/capability-plane surface; the `period` param is an ordinary op field, not a permission/scope
+> change). Not yet verified live in-browser (no FE this fire — the design's Fire V4 "why was I charged this?" FE
+> is the first one; proven via the `full`-engine lens unit tests covering the never-charged/fresh/lapsed
+> lifecycle + real-Processor integration tests covering proration's exact-boundary money case and the recurring
+> debit cycle). **All of V1-V4 named in §10 are now: V1/V2/V3 shipped, V4 (self-amendment + FE) is the only
+> remaining increment** — no next-fire pointer needed until V4 is picked up.
+
 ---
 
 ## 11. Self-adversarial pass (Designer, folded in — the L/XL gate, discharged)
