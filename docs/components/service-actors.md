@@ -58,15 +58,18 @@ Arch §92 says service actors operate "using pre-provisioned signing keys." In P
 graph material**:
 
 - The Processor performs **no signature verification** — the operation envelope
-  (`internal/processor/envelope.go`) has no `signature` field, step-3 does no crypto, and there is
-  no Gateway. Authentication at the commit-path boundary is *being* `identity:<service>` in the
-  `actor` field and *having* a `cap.identity.<id>` projection — identical to a human operator.
+  (`internal/processor/envelope.go`) has no `signature` field and step-3 does no crypto. External
+  actors are authenticated at the edge by the **Gateway** (built — it verifies the IdP JWT and stamps
+  the verified `actor`; see [gateway.md](./gateway.md)); internal service actors need no such edge, so
+  authentication at the commit-path boundary is still *being* `identity:<service>` in the `actor`
+  field and *having* a `cap.identity.<id>` projection — identical to a human operator.
 - The "signing key" is therefore the **engine process's NATS transport credential** (the
   account / nkey / creds it uses to publish to `ops.system.>`), an arch-explicitly-deferred-to-
   Stream-3 deployment concern (arch lines 285 / 325) — provisioned at deployment time, not as graph
-material. The per-component NKey/creds seam this requires is now 🔭 Designed (the ratified NATS account
-write-restriction hardening) — `substrate.Connect`'s `NKeySeedFile`/`CredsFile` credential seam shipped
-(`75e9acc`), dark by default; the per-component permission matrix + enforcement turn-on is pending.
+material. The per-component NKey/creds seam this requires shipped as the NATS account write-restriction
+hardening — `substrate.Connect`'s `NKeySeedFile`/`CredsFile` credential seam (`75e9acc`) plus the
+per-component permission matrix and **live enforcement** (Fire 2, `083b0ad`); an optional Fire 3 (hard
+bypass-test flips + a `verify-nats-permissions` CI job) remains.
 
 This story seeds **no key material** on the identity vertices (unused load-bearing-looking crypto
 would be a smell). **When envelope-signature verification is ever added, these actors receive key

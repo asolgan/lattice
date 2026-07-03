@@ -25,7 +25,8 @@ capability projection.
 
 ### Vertex types
 - **`service`** (`vtx.service.<id>`) — a bookable/invokable service (e.g. executive cleaning, rent
-  payment, laundry). Carries `class` (echoed into `serviceAccess[].serviceClass`, Contract #6 §6.5).
+  payment, laundry). Its bare root `class` is inert here — the residence scheme does **not** project a
+  `serviceClass` (see `lenses.go` + the `package_test.go` guard).
 - **Location types** with containment — Contract #6 examples use `unit` (`vtx.unit.<id>`), with
   `building` / `property` above via `containedIn`. The package decides the concrete location type set;
   containment is transitive.
@@ -67,8 +68,8 @@ god-cypher:
 3. **Operation-level overrides** — per-operation `availableAt`/`unavailableAt` refine service-level
    resolution; the result is `serviceAccess[].allowedOperations[]`.
 
-Output row → `serviceAccess[]` entry shape: `{ service, serviceClass, resolvedVia[], allowedOperations[] }`
-(Contract #6 §6.5).
+Output row → `serviceAccess[]` entry shape: `{ service, resolvedVia[], allowedOperations[] }`
+(Contract #6 §6.5). (`serviceClass` was dropped — the residence scheme does not project it.)
 
 ## How it lands relative to Epic 12
 

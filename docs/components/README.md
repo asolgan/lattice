@@ -73,8 +73,8 @@ between page and code is treated as a documentation bug.
 | Processor, Refractor, Substrate, Capability Lens, Capability Packages | ✅ Built (Phase 1 / 1.5) |
 | Loom, Weaver, Bridge, service actors, platform scheduling | ✅ Built (Phase 2) |
 | Loupe — operator view-and-control console (trusted single-identity, loopback, no auth) | ✅ Built (Phase 3) |
-| Gateway — JWT auth, `Lattice-Actor` stamping, read-path auth enforcement | 🔭 Designed — Phase 3 |
-| Vault — per-identity keys, crypto-shredding | 🔭 Designed — Phase 3 |
+| Gateway — JWT auth, `Lattice-Actor` stamping | ✅ Built (Phase 3) — write-path (Fires 1+2: JWT verify + actor stamping + live JWKS); read-path enforcement in progress |
+| Vault — per-identity keys, crypto-shredding | ✅ Built (Phase 3) — encrypt-on-write/decrypt-on-read + `ShredIdentityKey`; per-vertical fires ongoing |
 
 Each page's own *Implementation status* / *What's deferred* section is the
 authoritative, fine-grained record for that component.

@@ -3,7 +3,7 @@
 **Component reference** | Audience: operators + implementers
 
 > The Gateway is a **platform binary** (`cmd/gateway`) — it has no frozen interface contract of its
-> own; it *builds to* Contract #2 (§2.34 `actor`, §2.39 header→full-key stamping), #6 (Capability KV),
+> own; it *builds to* Contract #2 (the operation envelope's `actor` field), #6 (Capability KV),
 > #9 (Identity Claim Flow), and #5 (Health KV). Its design of record is
 > `_bmad-output/implementation-artifacts/gateway-external-trust-boundary-design.md`. Update this page in
 > the same commit as the code; drift between page and code is a documentation bug.
@@ -19,10 +19,12 @@ request body, and **stamps the verified actor** into the operation envelope befo
 `core-operations`. It never writes Core KV directly — like every other actor, it mutates state only by
 submitting operations (P2: the Processor is the sole writer).
 
-It is the *authentication* seam that closes actor impersonation, the complement to the NATS
-account-level write restriction (transport-authZ — only the Gateway's NATS user may publish
-`core-operations`, live via `#75` Fire 2) and the Capability KV (actor-authZ, step-3 lookup of the now
-unforgeable actor).
+It is the *authentication* seam that closes actor impersonation, working with the NATS account-level
+write restriction (transport-authZ — only the Processor + bootstrap may publish `$KV.core-kv.>`, so no
+actor can fabricate a Core-KV write and bypass the ledger; live via `#75` Fire 2) and the Capability KV
+(actor-authZ, step-3 lookup of the now unforgeable actor). Note the transport restriction is on *direct
+KV writes*, **not** on `core-operations` publish — every sanctioned actor (the engines, the vertical
+apps, the CLI, Loupe) submits ops; the Gateway is the external door, not the sole ops publisher.
 
 **In scope for Fire 1:** the write-path translator only. Internal service actors (Loom / Weaver /
 Bridge / object-store-manager / admin tooling / Loupe) keep their sanctioned direct-submit path — the
