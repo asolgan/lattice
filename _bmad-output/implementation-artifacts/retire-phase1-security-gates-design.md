@@ -173,21 +173,21 @@ a stack-runner. The Warden doc is re-bannered 🗄️ deferred-backup with a poi
 
 ## 7. Fire decomposition
 
-**Fire 1 — the retirement (one coherent fire; internal order).** Coupled work that must land together
-(deleting the targets while leaving CLAUDE.md pointing at them would red every subsequent fire's gate
-list). Internal order: (a) run the §4 coverage audit, emit the vector→covering-test table; (b) delete
-the fully-covered + stale vectors, promote any uncovered assertion to its mechanism package /
-adversarial-residual home; (c) rename `internal/bypass` → the adversarial-residual home (or keep, drop
-"gate" naming) and delete the roll-ups + marker writes; (d) delete the two `make` targets + recipe
-comments; (e) strip the CI stack-gate steps; (f) update `CLAUDE.md`, `health-kv-schema.md`, close the
-`gate3-vector14-in-gate` row. **Green gate:** `go build ./...`, `make vet`, `golangci-lint run ./...`,
-`go test ./...` (the surviving adversarial residual passes embedded), and CI green with the stack-gate
-steps gone. Ships as one reviewable diff with the audit table in the commit.
+**One fire — the whole retirement.** Coupled work that must land together (deleting the targets while
+leaving CLAUDE.md pointing at them would red every subsequent fire's gate list), so it is a single
+reviewable diff, not a sequence. Internal order: (a) run the §4 coverage audit, emit the
+vector→covering-test table; (b) delete the fully-covered + stale vectors, promote any uncovered
+assertion to its mechanism package / adversarial-residual home; (c) rename `internal/bypass` → the
+adversarial-residual home (or keep, drop "gate" naming) and delete the roll-ups + marker writes;
+(d) delete the two `make` targets + recipe comments; (e) strip the CI stack-gate steps; (f) update
+`CLAUDE.md`, `health-kv-schema.md`, close the `gate3-vector14-in-gate` row. **Green gate:**
+`go build ./...`, `make vet`, `golangci-lint run ./...`, `go test ./...` (the surviving adversarial
+residual passes embedded), and CI green with the stack-gate steps gone. Ships as one commit with the
+audit table in the message.
 
-**Fire 2 — Loupe pointer (Loupe lane, optional).** Note the security-proof surface as retired on the
-Loupe map/board. Not this stream.
-
-*(No Fire for Warden — deferred to a real drift driver, §6.)*
+*(The Loupe gate chips are already gone (removed in the Loupe lane ahead of this); nothing to retire
+there. No separate Loupe fire — a one-line "surface retired, not pending-return" note on the Loupe
+board is trivia the Loupe lane folds in whenever, not a step here. No Fire for Warden — deferred, §6.)*
 
 ---
 
