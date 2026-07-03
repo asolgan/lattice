@@ -45,9 +45,11 @@ import (
 )
 
 const (
-	adjBucket    = "refractor-adjacency"
-	targetBucket = "cryptoshred-identity-view"
-	lensRuleID   = "cryptoshred-identity-view"
+	adjBucket          = "refractor-adjacency"
+	targetBucket       = "cryptoshred-identity-view"
+	lensRuleID         = "cryptoshred-identity-view"
+	secureTargetBucket = "cryptoshred-secure-view"
+	secureLensRuleID   = "cryptoshred-secure-view"
 
 	csStaffActorID  = "CSshredStfHJKMNPQRST"
 	csStaffActorKey = "vtx.identity." + csStaffActorID
@@ -112,11 +114,12 @@ type harness struct {
 	urgentCons jetstream.Consumer
 	sysCP      *processor.CommitPath
 	sysCons    jetstream.Consumer
-	targetKV   *substrate.KV
-	keyShred   *keyshredded.Manager
-	v          vault.Vault
-	controlSvc *control.Service
-	lensRuleID string
+	targetKV       *substrate.KV
+	secureTargetKV *substrate.KV
+	keyShred       *keyshredded.Manager
+	v              vault.Vault
+	controlSvc     *control.Service
+	lensRuleID     string
 }
 
 func newHarness(t *testing.T) *harness {
@@ -149,6 +152,7 @@ func newHarness(t *testing.T) *harness {
 	h := &harness{t: t, ctx: ctx, conn: conn, cp: cp, cons: cons,
 		urgentCP: urgentCP, urgentCons: urgentCons, sysCP: sysCP, sysCons: sysCons, v: v}
 	h.startRefractorAndKeyshredded(workerCtx)
+	h.startSecureLens(workerCtx)
 	return h
 }
 
@@ -225,6 +229,80 @@ into:
 		ActorKey:     csPrivacyActorKey,
 	})
 	go func() { _ = h.keyShred.Run(ctx) }()
+}
+
+// startSecureLens wires a second full-engine lens — MATCH (a:identity)
+// RETURN a.key AS key, a.key AS identity_key, a.email.data AS email — with a
+// Secure-Lens decrypt-at-projection transform (pipeline.SecureDecryptor)
+// attached, exactly the Contract #3 §3.10 mechanism a real protected-Postgres
+// lens (e.g. landlordLeaseApplicationsRead) uses, but targeting nats_kv so
+// this stays self-contained (no Postgres — the decryptor itself is
+// target-agnostic, per pipeline.SetSecureDecryptor). This closes the
+// remaining vault-crypto-shredding-design.md §6 5b gap: the design's
+// TestSecureLens_FullEngineRoundTrip (internal/refractor/pipeline) already
+// proves the decrypt-then-null-on-shred mechanism via a direct v.ShredKey()
+// call, but nothing previously proved it through the REAL async chain this
+// e2e drives (ShredIdentityKey op -> piiKey CDC event -> reprojection ->
+// RecordShredFinalization's later piiKey writes, racing the privacy-worker's
+// actual Vault key destruction).
+func (h *harness) startSecureLens(ctx context.Context) {
+	js := h.conn.JetStream()
+	_, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: secureTargetBucket})
+	require.NoError(h.t, err)
+	adjKV, err := h.conn.OpenKV(ctx, adjBucket)
+	require.NoError(h.t, err)
+	coreKV, err := h.conn.OpenKV(ctx, testutil.HarnessCoreBucket)
+	require.NoError(h.t, err)
+	secureTargetKV, err := h.conn.OpenKV(ctx, secureTargetBucket)
+	require.NoError(h.t, err)
+	h.secureTargetKV = secureTargetKV
+
+	eng := full.New()
+	cr, err := eng.Parse(`MATCH (a:identity)
+RETURN a.key AS key, a.key AS identity_key, a.email.data AS email`)
+	require.NoError(h.t, err)
+	fullCR, ok := cr.(*full.CompiledRule)
+	require.True(h.t, ok)
+	fullCR.KeyColumns = []string{"key"}
+	require.NoError(h.t, fullCR.ValidateKeyColumns())
+	require.NoError(h.t, fullCR.ValidateReturnAliases("email", "identity_key"))
+
+	adpt, err := adapter.New(secureTargetKV, []string{"key"}, adapter.DeleteModeHard)
+	require.NoError(h.t, err)
+	p, err := pipeline.New(secureLensRuleID, "nats_kv", nil, testutil.HarnessCoreBucket, adjKV, coreKV, adpt, nil)
+	require.NoError(h.t, err)
+	p.UseFullEngine(eng, cr)
+
+	dec, err := pipeline.NewSecureDecryptor(h.v, coreKV, []pipeline.SecureColumn{
+		{Column: "email", IdentityKeyColumn: "identity_key", Field: "value"},
+	}, nil)
+	require.NoError(h.t, err)
+	p.SetSecureDecryptor(dec)
+
+	p.RunOn(h.conn, substrate.ConsumerSpec{
+		Name:          "refractor-" + secureLensRuleID,
+		Stream:        "KV_" + testutil.HarnessCoreBucket,
+		FilterSubject: "$KV." + testutil.HarnessCoreBucket + ".>",
+		DeliverPolicy: substrate.DeliverLastPerSubject,
+		DeliverGroup:  "refractor-" + secureLensRuleID,
+	})
+	pctx, pcancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); p.Run(pctx) }()
+	h.t.Cleanup(func() { pcancel(); <-done })
+}
+
+func (h *harness) secureRowEmail(identityKey string) (any, bool) {
+	entry, err := h.secureTargetKV.Get(h.ctx, identityKey)
+	if err != nil || entry == nil || len(entry.Value) == 0 {
+		return nil, false
+	}
+	var row map[string]any
+	if err := json.Unmarshal(entry.Value, &row); err != nil {
+		return nil, false
+	}
+	v, present := row["email"]
+	return v, present
 }
 
 func (h *harness) submitOp(cp *processor.CommitPath, cons jetstream.Consumer, env *processor.OperationEnvelope) processor.MessageOutcome {
@@ -314,6 +392,16 @@ func TestCryptoShred_NullifiesProjectedRowAndDestroysKey(t *testing.T) {
 		return h.rowExists(identityKey)
 	})
 
+	// Secure-Lens gate (5b close): the decrypt-at-projection row must carry
+	// real plaintext PII before the shred — confirms the row that later goes
+	// null actually held a decrypted secret, not an absent/never-projected
+	// column.
+	h.eventually("secure lens row projects decrypted PII before shred", 20*time.Second, func() bool {
+		email, present := h.secureRowEmail(identityKey)
+		s, ok := email.(string)
+		return present && ok && s != ""
+	})
+
 	h.submitShred(identityKey, "CsE2EShredOp")
 
 	h.eventually("keyshredded listener counted the event", 20*time.Second, func() bool {
@@ -339,6 +427,21 @@ func TestCryptoShred_NullifiesProjectedRowAndDestroysKey(t *testing.T) {
 	require.Equal(t, true, piiDoc.Data["projectionsNullified"], "piiKey.projectionsNullified (keyshredded record)")
 	require.NotEmpty(t, piiDoc.Data["vaultKeyDestroyedAt"], "vaultKeyDestroyedAt stamp")
 	require.NotEmpty(t, piiDoc.Data["projectionsNullifiedAt"], "projectionsNullifiedAt stamp")
+
+	// Secure-Lens gate (5b close): each piiKey write above (shredded, then
+	// the two RecordShredFinalization finalizations) is a CDC event on the
+	// identity's piiKey aspect, which re-triggers this secure lens's
+	// reprojection (SecureDecryptor doc comment). By the time
+	// vaultKeyDestroyed lands, Vault.Decrypt already fails for this identity
+	// (privacy-worker calls Vault.ShredKey before submitting that record), so
+	// the reprojection this event triggers must self-nullify the PII column —
+	// proving the Secure-Lens right-to-erasure guarantee end to end through
+	// the real op -> event -> async-listener -> reprojection chain, not just
+	// a direct v.ShredKey() call.
+	h.eventually("secure lens row scrubs PII after shred", 20*time.Second, func() bool {
+		email, present := h.secureRowEmail(identityKey)
+		return present && email == nil
+	})
 }
 
 // TestCryptoShred_NoTargetsConfigured_StillHandlesAndCounts proves an empty
