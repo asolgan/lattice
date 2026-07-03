@@ -19,16 +19,17 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 |---|---|---|---|---|---|---|
 | LoftSpace — per-landlord RLS view as the rich decision surface (D1.5 landlord cutover) | The protected `/api/landlord/applications` RLS read shows only a scope-count banner; the rich decision view is still the trusted-all-units console (§10.2). Project signals into `landlordLeaseApplicationsRead`, retiring the console. | LoftSpace | pkg + FE | ★★ | M | 🚧 seq Vault Fire 5 (Vault 🎯 build-next in [lattice](lattice.md)) · Rec C shipped ([design](../../implementation-artifacts/loftspace-d1.5-landlord-rls-decision-surface-design.md)) · readiness clone = fallback if Vault stalls |
 | LoftSpace — applicant contact (email/phone) captured but never projected to the landlord | `CreateUnclaimedIdentity` stores `.email`/`.phone`, but neither the `/api/identities` picker nor the landlord `unit-applications` disposition surfaces them — a landlord deciding on an applicant has no way to contact them. | LoftSpace | pkg + FE | ★★ | S | 🚧 blocked-on Vault 5b attended reset, same as row above ([plan](../../implementation-artifacts/vault-crypto-shredding-design.md) 5b-iv checkpoint) — lens-side columns already built |
+| Clinic — patient/provider self-service reads (My Appointments/Schedule/Visit Series) permanently empty | RLS anchors on the patient/provider's own bare NanoID, but the only self-grant producer matches `class=identity` — patient/provider never are one, so nothing grants it. Verified live (0-of-1 read). | Clinic | pkg | ★★★ | M | 📋 ready — clinic-domain needs its own `cap-read.clinic` GrantTable self-anchor lens, mirroring `internal/bootstrap/lenses.go:174-176`'s unused pattern |
 
 ## PO notes (dated — drives rotation)
 
 Compact rotation memory only — PO *findings* are filed as demand rows above + the Done log; the verbose
 dated run-logs live in git history. Rotate LoftSpace ↔ Clinic, staggered from the Steward.
 
-- **Rotation to date:** LoftSpace ×9, Clinic ×6 (last: LoftSpace 9th run 2026-07-02, reused the shared stack; drove post-listing→apply→AssignUnitOwner live end-to-end; filed the post-listing missing-`manages`-link bug).
+- **Rotation to date:** LoftSpace ×9, Clinic ×7 (last: Clinic 7th run 2026-07-03, reused the shared stack, installed Clinic fresh onto it; drove CreateProvider→CreatePatient→CreateAppointment live; filed the patient/provider self-anchor RLS gap).
 - **Method:** reuse the already-up shared stack (detect NATS :4222 / app :7788/:7799), drive the real flow via `/api/op` + the lens projections as the product owner, file scored items. Both apps exist + are exercisable live (`:7788` / `:7799`).
-- **Live-stack note RESOLVED (2026-07-01):** the version-13→14 bootstrap mismatch is fixed; writes confirmed working on both apps.
-- **Next:** Clinic.
+- **Live-stack note (2026-07-03):** `lattice.bootstrap.json` was stale vs. the live Core KV (recreated ~5h prior) — staff-wildcard reads read empty though writes worked; run `lattice bootstrap verify` before assuming a product bug.
+- **Next:** LoftSpace.
 
 ## Done log — verticals (newest first)
 
