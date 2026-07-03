@@ -42,6 +42,9 @@ choices live HERE. Per-package capability definitions live under
   identities seeded at bootstrap and how they hold root-equivalent capability.
 - [Platform message scheduling](./scheduling.md) — the `core-schedules` stream and
   the `@at` scheduled-message convention any component uses to turn time into an op.
+- [Platform control plane](./control-plane.md) — the `lattice.ctrl.*` operator
+  request/reply surface (pause / resume / inspect / retire) the three engines expose and
+  Loupe + the CLI drive.
 - [Refractor failure tiers](./refractor-failure-tiers.md) — the four-tier failure
   model and the designed-but-not-built privacy / security supersession tiers.
 
