@@ -794,25 +794,20 @@ func (ex *executor) projectItems(bindings []binding, items []ProjectionItem) ([]
 		}
 		out = append(out, g.row)
 	}
-	// If empty (no rows in), still emit one row of nulls when aggregation
-	// is requested — Cypher's RETURN collect() yields [] on empty input.
-	if len(out) == 0 && anyAggregating {
-		row := binding{}
-		for i, it := range items {
-			if itemAggregating[i] {
-				v, err := ex.finalizeAggregator(it.Expr, nil)
-				if err != nil {
-					return nil, err
-				}
-				row[itemAlias(i)] = v
-			} else {
-				// Non-aggregating projection with no rows: NULL.
-				row[itemAlias(i)] = nil
-				_ = it
-			}
-		}
-		out = append(out, row)
-	}
+	// out is empty here iff bindings was empty on entry: every binding that
+	// reaches this point lands in exactly one group (the grouping loop above
+	// unconditionally creates/reuses a group for each b), so a non-empty
+	// bindings always yields a non-empty out. A required MATCH that bound
+	// zero rows (an unanchored scan with no matching vertex) has no anchor to
+	// attach an aggregate to — zero rows in must project zero rows out, never
+	// a synthetic all-null row: a fabricated row's nil-derived key/anchor
+	// columns are unwritable by a protected adapter (an anchor column is
+	// never nil) and would suppress the target-retraction a genuinely empty
+	// result set is supposed to drive. (Cypher's "collect() on empty input
+	// yields []" applies to a per-anchor OPTIONAL MATCH whose neighbor set is
+	// empty; that anchor's binding is preserved by applyMatch's null-binding
+	// fallback and already produced a real group above — see
+	// TestExec_MaxNoMatchIsNull.)
 	return out, nil
 }
 

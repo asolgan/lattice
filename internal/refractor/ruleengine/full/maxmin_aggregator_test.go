@@ -121,3 +121,51 @@ func TestExec_MaxNoMatchIsNull(t *testing.T) {
 	require.Equal(t, vtxKey(reg, "alice"), results[0].Values["who"])
 	require.Nil(t, results[0].Values["latest"])
 }
+
+// TestExec_RequiredMatchZeroRowsWithAggregateProjectsZeroRows confirms that an
+// unanchored REQUIRED MATCH binding zero rows (a class-scan finding no
+// vertex, e.g. a fresh stack with no leaseapp yet) projects zero output rows
+// through an aggregating WITH — not a synthetic all-null row. Unlike
+// TestExec_MaxNoMatchIsNull (an OPTIONAL MATCH neighbor set empty for an
+// anchor that DID match, correctly folding to one row with a null aggregate),
+// here the anchor itself never matched: there is nothing to attach an
+// aggregate to. The fixture only seeds an unrelated identity vertex, so the
+// `unit` class scan is genuinely empty.
+func TestExec_RequiredMatchZeroRowsWithAggregateProjectsZeroRows(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	adjKV, coreKV := startExecKVs(t)
+	reg := newFixtureRegistry()
+	putVertex(t, reg, coreKV, "alice", "identity", nil)
+
+	results := parseExec(t,
+		`MATCH (u:unit)
+		 OPTIONAL MATCH (u)<-[:providedTo]-(s:service)
+		 WITH u.key AS unitKey, max(s.validUntil) AS latest
+		 RETURN unitKey, latest`,
+		ruleengine.EventContext{Parameters: map[string]any{}},
+		adjKV, coreKV,
+	)
+	require.Empty(t, results, "a required MATCH binding zero rows must project zero rows, not a phantom null row")
+}
+
+// TestExec_RequiredMatchZeroRowsWithAggregateInReturnProjectsZeroRows is the
+// applyReturn call site of the same fix: an aggregate directly in RETURN
+// (no intermediate WITH) over a zero-row required MATCH must also project
+// zero rows.
+func TestExec_RequiredMatchZeroRowsWithAggregateInReturnProjectsZeroRows(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	adjKV, coreKV := startExecKVs(t)
+	reg := newFixtureRegistry()
+	putVertex(t, reg, coreKV, "alice", "identity", nil)
+
+	results := parseExec(t,
+		`MATCH (u:unit) RETURN u.key AS unitKey, count(u.key) AS n`,
+		ruleengine.EventContext{Parameters: map[string]any{}},
+		adjKV, coreKV,
+	)
+	require.Empty(t, results, "a required MATCH binding zero rows must project zero rows via RETURN too")
+}
