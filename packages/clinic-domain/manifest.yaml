@@ -1,5 +1,5 @@
 name: clinic-domain
-version: 0.13.0
+version: 0.14.0
 description: |
   Clinic bookable domain. Self-contained package owning three vertex types —
   patient, provider, appointment — with their aspects (.demographics, .profile,
@@ -9,8 +9,10 @@ description: |
   CreatePatient's optional identityKey wires identifiedBy to a pre-minted
   vtx.identity (identity-domain's CreateUnclaimedIdentity) carrying the
   patient's sensitive contact — .demographics itself stays non-sensitive
-  (fullName only), the Vault plane's contact re-model (display rides a later
-  Secure-Lens protected model).
+  (fullName only). Display rides clinicPatientsRead's email/phone Secure-Lens
+  columns (Vault Fire 5): decrypted at projection from the linked identity for
+  the staff-wildcard audience, null for a patient with no identifiedBy link or
+  a shredded identity.
   RecordEncounter captures the post-visit clinical record (.encounter — RAW PHI
   {summary, assessment, plan} never projected, plus operational documentation /
   follow-up signals the lens does project). Six projection lenses
@@ -31,8 +33,10 @@ description: |
   lock, no read-time enumeration — and an out-of-hours booking (OutsideHours) via
   the provider's opt-in .hours availability windows (SetProviderHours). No
   package dependency. @every recurring schedules are the separate deferred item
-  this vertical forces — out of scope here; the Vault plane it forces is
-  partially wired (the identifiedBy link), full display still deferred.
+  this vertical forces — out of scope here. The Vault plane it forces is fully
+  wired for contact (identifiedBy link + Secure-Lens display); the clinical
+  record's (.encounter raw PHI) right-to-be-forgotten + display remain
+  deferred.
 declares:
   ddls:
     - canonicalName: patient

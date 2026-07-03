@@ -281,6 +281,23 @@ function nameForPatient(key) {
   return m && m.name ? m.name : shortKey(key);
 }
 
+// renderPatientContact shows the selected patient's email/phone (Vault Fire 5
+// Secure-Lens columns on /api/staff/patients — decrypted at projection from
+// the patient's identifiedBy identity) next to the switcher, so staff can see
+// contact info without a separate admin view. Null for a patient with no
+// linked identity yet, a linked identity missing that field, or a shredded one.
+function renderPatientContact() {
+  const el = $("#patient-contact");
+  if (!el) return;
+  const m = state.patients.find((p) => p.patientKey === state.patient);
+  if (!m) {
+    el.textContent = "";
+    return;
+  }
+  const parts = [m.email, m.phone].filter(Boolean);
+  el.textContent = parts.length ? parts.join(" · ") : "No contact on file";
+}
+
 function restorePatient() {
   const saved = (localStorage.getItem(PATIENT_KEY) || "").trim();
   state.patient = saved || null;
@@ -300,6 +317,7 @@ async function loadPatients() {
     state.patients = [];
   }
   populatePatientSelect();
+  renderPatientContact();
   syncBookPatient();
 }
 
@@ -326,6 +344,7 @@ function setPatient(value) {
   state.highlight = null;
   if (v) localStorage.setItem(PATIENT_KEY, v);
   else localStorage.removeItem(PATIENT_KEY);
+  renderPatientContact();
   syncBookPatient();
   // Re-render the slot picker so it excludes the newly-selected patient's existing
   // appointments (cross-provider double-book exclusion). Idempotent; bails if the

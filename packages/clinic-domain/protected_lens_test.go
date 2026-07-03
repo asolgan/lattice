@@ -262,6 +262,58 @@ func TestProviderAppointmentsRead_NoPatientLinkStillProjects(t *testing.T) {
 	require.Equal(t, []string{f.ids["drsam"]}, anchorStrings(t, v["authz_anchors"]))
 }
 
+// TestClinicPatientsRead_ProjectsContactEnvelopesWhole — the Secure-Lens
+// contract at the engine layer (Contract #3 §3.10, Vault Fire 5, mirroring
+// TestLandlordLeaseApplicationsRead_ProjectsContactEnvelopesWhole): email /
+// phone RETURN the identifiedBy identity's sensitive aspect envelope WHOLE
+// (id.<aspect>.data — the {ct, nonce, keyId} map the Processor commits),
+// never a plaintext hop, so the pipeline's SecureDecryptor is the only place
+// plaintext appears. A linked identity missing one aspect projects that
+// column null while the row still projects.
+func TestClinicPatientsRead_ProjectsContactEnvelopesWhole(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	f.vtx(t, "alice", "patient")
+	f.vtx(t, "aliceId", "identity")
+	f.aspect(t, "alice", "demographics", "patientDemographics", map[string]any{"fullName": "Alice Rivera"})
+	emailEnv := map[string]any{"ct": "b64-email-ct", "nonce": "b64-nonce-1", "keyId": "alice-key"}
+	f.aspect(t, "aliceId", "email", "email", emailEnv)
+	// No phone aspect: the column must project null, the row must survive.
+	f.edge(t, "identifiedBy", "alice", "aliceId")
+
+	rows := f.project(t, clinicPatientsReadSpec)
+	require.Len(t, rows, 1)
+	v := rows[0].Values
+
+	require.Equal(t, "vtx.identity."+f.ids["aliceId"], v["identity_key"])
+	require.Equal(t, emailEnv, v["email"], "email carries the ciphertext envelope whole")
+	require.Nil(t, v["phone"], "a missing sensitive aspect projects null, not a dropped row")
+}
+
+// TestClinicPatientsRead_NoIdentityLinkStillProjects — a patient with no
+// identifiedBy link (never given contact, or created before Fire 5b-iii's
+// re-model) still projects its roster row: identity_key/email/phone all null,
+// never a dropped row or an engine error (mirrors
+// TestLandlordLeaseApplicationsRead_ContactlessApplicantStillProjects).
+func TestClinicPatientsRead_NoIdentityLinkStillProjects(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	f.vtx(t, "alice", "patient")
+	f.aspect(t, "alice", "demographics", "patientDemographics", map[string]any{"fullName": "Alice Rivera"})
+
+	rows := f.project(t, clinicPatientsReadSpec)
+	require.Len(t, rows, 1, "a patient with no linked identity still projects")
+	v := rows[0].Values
+	require.Equal(t, "Alice Rivera", v["name"])
+	require.Nil(t, v["identity_key"])
+	require.Nil(t, v["email"])
+	require.Nil(t, v["phone"])
+}
+
 func ruleengineFilterByKey(rows []ruleengine.ProjectionResult, col, id string) []ruleengine.ProjectionResult {
 	out := make([]ruleengine.ProjectionResult, 0, 1)
 	for _, r := range rows {

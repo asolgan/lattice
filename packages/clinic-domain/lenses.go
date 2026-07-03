@@ -194,9 +194,20 @@ func Lenses() []pkgmgr.LensSpec {
 				// row, mirroring handleStaffAppointments' no-separate-staff-projection
 				// note.
 				//
-				// NAME ONLY: DOB / email / phone are the PHI the deferred Vault plane
-				// owns and are intentionally NOT projected, the same discipline the
-				// unprotected clinicPatients lens applies.
+				// NAME comes straight off .demographics (non-sensitive). email/phone
+				// are SECURE columns (Contract #3 §3.10, Vault Fire 5 — the
+				// Secure-Lens decrypt-at-projection primitive, mirroring
+				// landlordLeaseApplicationsRead's applicant_email/applicant_phone
+				// exactly): the OPTIONAL-matched identifiedBy identity's sensitive
+				// .email/.phone aspects are RETURNed as ciphertext envelopes whole
+				// (id.<aspect>.data) and decrypted at projection into this
+				// staff-wildcard-anchored table — the only actors who can ever read
+				// a row here already hold the WildcardAnchor grant, so decrypted
+				// contact never reaches an unauthorized reader. A patient with no
+				// identifiedBy link (identityKey null) or a shredded identity
+				// projects null email/phone — never an error (right-to-erasure and
+				// the pre-Vault/no-backfill posture both fall through the same
+				// null path).
 				CanonicalName: "clinicPatientsRead",
 				Class:         "meta.lens",
 				Adapter:       "postgres",
@@ -209,6 +220,13 @@ func Lenses() []pkgmgr.LensSpec {
 					{Name: "entity_key", Type: "text"},
 					{Name: "patient_key", Type: "text"},
 					{Name: "name", Type: "text"},
+					{Name: "identity_key", Type: "text"},
+					{Name: "email", Type: "text"},
+					{Name: "phone", Type: "text"},
+				},
+				SecureColumns: []pkgmgr.SecureColumn{
+					{Column: "email", IdentityKeyColumn: "identity_key", Field: "value"},
+					{Column: "phone", IdentityKeyColumn: "identity_key", Field: "value"},
 				},
 			},
 	}
@@ -318,18 +336,32 @@ RETURN
   p.demographics.data.fullName AS name`
 
 // clinicPatientsReadSpec is the protected Postgres read model's cypher for the
-// clinic-wide patient roster (D1.5, the staff-wildcard increment). Same
-// WHERE guard as clinicPatientsSpec (only NAMED patients project). authz_anchors
-// is the empty list literal for every row — there is no per-patient self-anchor
-// here (see clinicPatientsRead's doc comment), so only the reserved
-// WildcardAnchor grant ever matches.
+// clinic-wide patient roster (D1.5, the staff-wildcard increment; Vault Fire 5
+// added the identifiedBy contact columns). Same WHERE guard as
+// clinicPatientsSpec (only NAMED patients project). authz_anchors is the
+// empty list literal for every row — there is no per-patient self-anchor here
+// (see clinicPatientsRead's doc comment), so only the reserved WildcardAnchor
+// grant ever matches.
+//
+// identifiedBy is OPTIONAL — a patient created before its contact was minted,
+// or one with no contact at all, has no linked identity, so identityKey /
+// emailEnv / phoneEnv all project null together (the Secure-Lens decryptor's
+// null-ciphertext-column path, never the null-identity-key error path — see
+// internal/refractor/pipeline/secure.go decryptColumn). The shred's piiKey CDC
+// event re-scans this UNANCHORED lens the same way it does
+// landlordLeaseApplicationsRead, so a shredded patient's contact scrubs to
+// null on the next projection touch.
 const clinicPatientsReadSpec = `MATCH (p:patient)
 WHERE p.demographics.data.fullName <> null
+OPTIONAL MATCH (p)-[:identifiedBy]->(id:identity)
 RETURN
   nanoIdFromKey(p.key)         AS patient_id,
   p.key                        AS entity_key,
   p.key                        AS patient_key,
   p.demographics.data.fullName AS name,
+  id.key                       AS identity_key,
+  id.email.data                AS email,
+  id.phone.data                AS phone,
   []                           AS authz_anchors
 `
 

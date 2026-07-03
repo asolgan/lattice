@@ -179,8 +179,10 @@ app-layer filter).
 - **`providerAppointmentsRead`** → `read_provider_appointments`. **Provider-self** audience ("My Schedule") —
   `withProvider` is the REQUIRED anchor walk, mirroring `clinicAppointmentsRead`.
 - **`clinicPatientsRead`** → `read_clinic_patients`. Clinic-wide patient-context switcher, **staff-wildcard-only**
-  (no per-patient self-anchor — the whole roster has no single-row owner). NAME ONLY, same PHI discipline as
-  `clinicPatients`.
+  (no per-patient self-anchor — the whole roster has no single-row owner). `email`/`phone` are **Secure-Lens**
+  columns (Contract #3 §3.10, Vault Fire 5, mirroring `landlordLeaseApplicationsRead`): decrypted at projection
+  from the patient's optional `identifiedBy` identity, null for a patient with no linked identity or a
+  shredded one — display enrichment only, never a row gate.
 
 ## Reminders, recurring schedules, and the sibling package
 
@@ -195,14 +197,16 @@ has no consumer; §10.4 ships `@at` one-shot) — that remains a deferred platfo
 
 ## Out of scope (the deferred items this vertical forces, not implements)
 
-- **PHI / Vault / crypto-shred.** All aspects here are non-sensitive and stored plain under the
-  trusted-tool posture (a `patient` is not an identity vertex, so step-6's `sensitiveAspectScope` would
-  forbid a sensitive aspect on it anyway). Real PHI handling + right-to-be-forgotten is the deferred
-  **Vault plane** — clinic is its forcing function (patient-record deletion is its validating flow).
-  This is why the lenses project patient **name only**, and why `RecordEncounter`'s `.encounter` aspect
-  captures the clinical record (summary/assessment/plan) but never projects it into any lens — only the
-  operational documentation/follow-up presence signals are projected; clinical-note **display** stays
-  gated on Vault.
+- **PHI / Vault / crypto-shred.** All aspects directly on `patient`/`provider`/`appointment` are
+  non-sensitive and stored plain under the trusted-tool posture (none of these is an identity vertex, so
+  step-6's `sensitiveAspectScope` would forbid a sensitive aspect there anyway) — this is why
+  `clinicPatients`/`clinicAppointments` project patient **name only**. Sensitive **contact** (email/phone)
+  lives on the linked `identifiedBy` identity instead, and its display + right-to-be-forgotten are fully
+  wired via the Vault plane (Fire 5's Secure-Lens `clinicPatientsRead` columns + the platform's
+  `ShredIdentityKey`) — clinic was that plane's forcing function. What remains deferred is the **clinical
+  record** (`RecordEncounter`'s `.encounter` aspect — summary/assessment/plan): captured now but never
+  projected into any lens — only the operational documentation/follow-up presence signals are — and its
+  own right-to-be-forgotten + display stay gated on a future Vault extension.
 - **Cascade-on-tombstone.** `Tombstone{Patient,Provider,Appointment}` soft-deletes the named vertex
   **root only** — its aspects and incident links are left in place. The projection lenses anchor on the
   live root, so a tombstoned vertex drops from the read model and its orphaned aspects are not surfaced.

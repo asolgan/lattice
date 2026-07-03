@@ -6,13 +6,16 @@ import (
 )
 
 // protectedPatientRow is one row of the clinicPatientsRead protected Postgres
-// read model (D1.5, the staff-wildcard increment) — the clinic-wide patient
-// roster. It carries the patient NAME only: DOB / contact is the PHI the
-// deferred Vault plane owns and is not projected into this read model, the
-// same discipline the retired unprotected clinicPatients bucket applied.
+// read model (D1.5, the staff-wildcard increment). Email/Phone are Vault
+// Fire 5 Secure-Lens columns — decrypted at projection from the patient's
+// optional identifiedBy identity — so they are nil for a patient with no
+// linked identity, a linked identity missing that aspect, or a shredded one;
+// never an error, never a dropped row.
 type protectedPatientRow struct {
-	PatientKey string `json:"patientKey"`
-	Name       string `json:"name"`
+	PatientKey string  `json:"patientKey"`
+	Name       string  `json:"name"`
+	Email      *string `json:"email,omitempty"`
+	Phone      *string `json:"phone,omitempty"`
 }
 
 // selectPatientsSQL reads the protected model. It carries NO auth WHERE — the
@@ -23,7 +26,7 @@ type protectedPatientRow struct {
 // the reserved WildcardAnchor grant ever matches a row. Sorted by name for a
 // stable switcher, mirroring the retired computePatients' sort.
 const selectPatientsSQL = `
-SELECT patient_key, name
+SELECT patient_key, name, email, phone
 FROM read_clinic_patients
 ORDER BY name, patient_key`
 
@@ -52,7 +55,7 @@ func queryPatients(ctx context.Context, pool pgxBeginner, actorID string) ([]pro
 	out := make([]protectedPatientRow, 0)
 	for rows.Next() {
 		var row protectedPatientRow
-		if err := rows.Scan(&row.PatientKey, &row.Name); err != nil {
+		if err := rows.Scan(&row.PatientKey, &row.Name, &row.Email, &row.Phone); err != nil {
 			return nil, err
 		}
 		out = append(out, row)

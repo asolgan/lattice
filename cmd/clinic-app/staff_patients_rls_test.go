@@ -54,6 +54,9 @@ func TestStaffPatientsReadBoundary_WildcardSeesEverything(t *testing.T) {
 		{Name: "entity_key", Type: "text"},
 		{Name: "patient_key", Type: "text"},
 		{Name: "name", Type: "text"},
+		{Name: "identity_key", Type: "text"},
+		{Name: "email", Type: "text"},
+		{Name: "phone", Type: "text"},
 	})
 	if err != nil {
 		t.Fatalf("build protected DDL: %v", err)

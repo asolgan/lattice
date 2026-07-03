@@ -52,12 +52,15 @@
 //     sensitive aspect on them anyway): .demographics carries only fullName.
 //     Sensitive contact (email/phone) is CreatePatient's optional identityKey
 //     — a pre-minted vtx.identity (identity-domain's CreateUnclaimedIdentity)
-//     linked via identifiedBy, the Vault plane's crypto-shreddable unit. The
-//     post-visit clinical record (.encounter — summary / assessment / plan) is
-//     still stored plain under the trusted-tool posture and DELIBERATELY NOT
-//     projected into any read model; right-to-be-forgotten for it + linked-
-//     contact DISPLAY + clinical-note display are the still-deferred Vault
-//     plane work (clinic remains its forcing function). RecordEncounter
+//     linked via identifiedBy, the Vault plane's crypto-shreddable unit.
+//     Contact DISPLAY is wired: clinicPatientsRead's email/phone are
+//     Secure-Lens columns (Vault Fire 5), decrypted at projection from the
+//     linked identity for the staff-wildcard audience only. The post-visit
+//     clinical record (.encounter — summary / assessment / plan) is still
+//     stored plain under the trusted-tool posture and DELIBERATELY NOT
+//     projected into any read model; right-to-be-forgotten for it +
+//     clinical-note display remain the still-deferred Vault plane work
+//     (clinic remains its forcing function for that piece). RecordEncounter
 //     captures the record now and projects ONLY the operational, non-PHI
 //     signals (documentation presence + follow-up scheduling) so the clinical
 //     display stays Vault-gated.
@@ -97,8 +100,8 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
 	Name:        "clinic-domain",
-	Version:     "0.13.0",
-	Description: "Clinic bookable domain: patient / provider / appointment vertex types + their aspects and links, written by Create*/SetAppointmentStatus/RecordEncounter/Tombstone* ops. RecordEncounter captures the post-visit clinical record (.encounter — RAW PHI never projected, plus operational documentation/follow-up signals the lens does project). Six projection lenses (clinicAppointments, clinicProviders, clinicPatients, clinicAppointmentsRead, providerAppointmentsRead, clinicPatientsRead) are the P5 read models a clinic FE reads; clinicAppointmentsRead, providerAppointmentsRead, and clinicPatientsRead are PROTECTED Postgres read models (Contract #6 §6.14 RLS, D1.5) — patient-self, provider-self, and staff-wildcard-only respectively. Self-contained — no package dependency.",
+	Version:     "0.14.0",
+	Description: "Clinic bookable domain: patient / provider / appointment vertex types + their aspects and links, written by Create*/SetAppointmentStatus/RecordEncounter/Tombstone* ops. RecordEncounter captures the post-visit clinical record (.encounter — RAW PHI never projected, plus operational documentation/follow-up signals the lens does project). Six projection lenses (clinicAppointments, clinicProviders, clinicPatients, clinicAppointmentsRead, providerAppointmentsRead, clinicPatientsRead) are the P5 read models a clinic FE reads; clinicAppointmentsRead, providerAppointmentsRead, and clinicPatientsRead are PROTECTED Postgres read models (Contract #6 §6.14 RLS, D1.5) — patient-self, provider-self, and staff-wildcard-only respectively. clinicPatientsRead's email/phone are Secure-Lens columns (Contract #3 §3.10, Vault Fire 5): decrypted at projection from the patient's optional identifiedBy identity, null for a patient with no linked identity or a shredded one. Self-contained — no package dependency.",
 	DDLs:        DDLs(),
 	Lenses:      Lenses(),
 	Permissions: Permissions(),
