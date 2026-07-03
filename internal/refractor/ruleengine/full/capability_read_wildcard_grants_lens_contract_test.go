@@ -2,10 +2,12 @@
 // PRODUCER lens (capabilityReadWildcardGrants, D1 design §3.4 M5) — the
 // wildcard sibling of capabilityReadGrants. It runs the LITERAL bootstrap
 // cypher through the same `full` auth-plane engine selected at activation and
-// asserts the projected grant rows: exactly one per PROTECTED (kernel-seeded,
-// root-equivalent) identity, carrying the reserved WildcardAnchor ("*") —
-// never for an ordinary actor. This is exactly the grant the Postgres-RLS
-// wildcard OR-clause (internal/refractor/adapter.BuildProtectedTableDDL)
+// asserts the projected grant rows: exactly one per identity holding the
+// primordial `operator` role via `holdsRole` (Contract #7 §7.7,
+// root-designation-topology-reconverge 2026-07-03), carrying the reserved
+// WildcardAnchor ("*") — never for an ordinary actor, and never for a stale
+// `data.protected = true` bit alone. This is exactly the grant the
+// Postgres-RLS wildcard OR-clause (internal/refractor/adapter.BuildProtectedTableDDL)
 // matches — a root-equivalent actor reads every row of every protected table.
 package full_test
 
@@ -21,20 +23,22 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
 )
 
-func TestCapabilityReadWildcardGrantsLens_ProjectsOnlyProtectedIdentities(t *testing.T) {
+func TestCapabilityReadWildcardGrantsLens_ProjectsOnlyOperatorHolders(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
 
 	adjKV, coreKV := contractStartKVs(t)
 
-	// TWO protected (root-equivalent, e.g. admin + a service actor) identities
-	// and one ordinary identity — proves the WHERE admits every protected
-	// identity (not just a coincidental single match) while still excluding
-	// the ordinary one.
-	adminKey := contractPutVertex(t, coreKV, "identity", "admin", map[string]any{"protected": true})
-	loomKey := contractPutVertex(t, coreKV, "identity", "loom", map[string]any{"protected": true})
-	_ = contractPutVertex(t, coreKV, "identity", "alice", map[string]any{"name": "alice"})
+	// TWO operator-role-holding (root-equivalent, e.g. admin + a service actor)
+	// identities and one ordinary identity — proves the WHERE admits every
+	// operator-holder (not just a coincidental single match) while still
+	// excluding the ordinary one. The ordinary identity also carries a stale
+	// `protected:true` bit to prove that literal alone confers nothing
+	// (root-designation-topology-reconverge, 2026-07-03).
+	adminKey := contractSeedOperatorHolder(t, coreKV, adjKV, "admin")
+	loomKey := contractSeedOperatorHolder(t, coreKV, adjKV, "loom")
+	_ = contractPutVertex(t, coreKV, "identity", "alice", map[string]any{"name": "alice", "protected": true})
 
 	body := bootstrap.CapabilityReadWildcardGrantsLensDefinition().CypherRule
 	eng := full.New()
@@ -44,7 +48,7 @@ func TestCapabilityReadWildcardGrantsLens_ProjectsOnlyProtectedIdentities(t *tes
 	out, err := eng.ExecuteWith(context.Background(), cr,
 		ruleengine.EventContext{Parameters: map[string]any{}}, adjKV, coreKV)
 	require.NoError(t, err, "literal capabilityReadWildcardGrants cypher must execute")
-	require.Len(t, out, 2, "one wildcard grant row per protected identity — never the ordinary one")
+	require.Len(t, out, 2, "one wildcard grant row per operator-holding identity — never the protected-only ordinary one")
 
 	byActor := map[string]map[string]any{}
 	for _, r := range out {
@@ -57,7 +61,7 @@ func TestCapabilityReadWildcardGrantsLens_ProjectsOnlyProtectedIdentities(t *tes
 		id := nanoFromVertexKey(t, k)
 		row, ok := byActor[id]
 		require.Truef(t, ok, "missing wildcard grant for %s (bare NanoID %s); got actors %v", k, id, byActor)
-		require.Equal(t, id, row["actor_id"], "actor_id is the protected identity's bare NanoID")
+		require.Equal(t, id, row["actor_id"], "actor_id is the operator-holding identity's bare NanoID")
 		require.Equal(t, adapter.WildcardAnchor, row["anchor_id"], "anchor_id is the reserved WildcardAnchor")
 		require.Equal(t, "cap-read.root", row["grant_source"], "grant_source is the wildcard producer's own disjoint slice id")
 	}

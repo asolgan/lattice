@@ -10,10 +10,12 @@
 //     live EventContext.Parameters (`$actorKey`, `$now`, `$projectedAt`).
 //   - The compiled Output descriptor's envelope wraps each projection row into
 //     the Contract #6 §6.2 shape before the adapter writes.
-//   - A single protected fixture identity is seeded directly to Core KV. The
-//     anchor projects the fixed kernel root-grant set for it; serviceAccess +
-//     roles are static empty arrays (their producers are the future service
-//     package + rbac-domain's capabilityRoles lens).
+//   - A single fixture identity holding the primordial `operator` role via a
+//     real holdsRole link (Contract #7 §7.7, root-designation-topology-reconverge)
+//     is seeded directly to Core KV. The anchor projects the fixed kernel
+//     root-grant set for it; serviceAccess + roles are static empty arrays
+//     (their producers are the future service package + rbac-domain's
+//     capabilityRoles lens).
 //   - The expected `cap.identity.<NanoID>` entry must appear in capability-kv
 //     with the §6.2 sections present.
 package refractor_test
@@ -178,11 +180,12 @@ func TestRefractor_CapabilityLens_E2E(t *testing.T) {
 		<-doneCh
 	})
 
-	// --- fixture: a protected (kernel-class) identity ---
+	// --- fixture: an identity holding the primordial operator role ---
 	// The capability lens is the primordial-identity anchor: it projects the
-	// fixed kernel root-grant set for protected identities only, with no rbac /
-	// service graph walk. Ordinary actors read role-derived grants from
-	// rbac-domain's cap.roles.<actor> projection (see the capabilityRoles e2e).
+	// fixed kernel root-grant set for identities holding `operator` via
+	// `holdsRole` only, with no rbac-permission graph walk. Ordinary actors
+	// read role-derived grants from rbac-domain's cap.roles.<actor> projection
+	// (see the capabilityRoles e2e).
 	identityID := stableNanoID("alice")
 	identityKey := substrate.VertexKey("identity", identityID)
 
@@ -207,9 +210,16 @@ func TestRefractor_CapabilityLens_E2E(t *testing.T) {
 		_, perr := coreKV.Put(ctx, key, data)
 		require.NoError(t, perr)
 	}
-	// The identity vertex carries data.protected — the anchor's selection
-	// predicate. This is the CDC event the capability lens projects on.
+	// The identity vertex still carries data.protected (its retained
+	// anti-brick meaning, root-designation-topology-reconverge 2026-07-03) —
+	// but root is now conferred SOLELY by holding the primordial `operator`
+	// role via a real holdsRole link (Contract #7 §7.7), not by this bit.
 	writeVertex(identityKey, "identity", map[string]any{"name": "alice", "protected": true})
+	holdsRoleLinkKey := substrate.LinkKey("identity", identityID, "holdsRole", "role", bootstrap.RoleOperatorID)
+	linkBody, lerr := bootstrap.MakeLinkEnvelope(holdsRoleLinkKey, identityKey, bootstrap.RoleOperatorKey, "holdsRole", "holdsRole", nil)
+	require.NoError(t, lerr)
+	_, lerr = coreKV.Put(ctx, holdsRoleLinkKey, linkBody)
+	require.NoError(t, lerr)
 
 	// --- poll capability-kv for the projection ---
 	expectedKey := "cap.identity." + identityID

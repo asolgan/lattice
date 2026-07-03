@@ -10,6 +10,7 @@ import (
 
 	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // putRawVertex writes a vertex whose KEY type-segment and CLASS field may
@@ -35,29 +36,50 @@ func putRawVertex(t *testing.T, reg *fixtureRegistry, kv interface {
 	return vtxKey
 }
 
-// TestCapabilityLens_PrimordialAnchor_ProtectedGrantsRoot proves the shrunk
-// primordial-identity anchor projects the fixed kernel root-grant set for the
-// protected (kernel-seeded) system identities and NOTHING for ordinary actors —
-// without any rbac graph vocabulary. Both directions:
+// putOperatorRoleHolder wires actorName (already a registered identity) to a
+// freshly-seeded `operator` role via `holdsRole` (Contract #7 §7.7,
+// root-designation-topology-reconverge 2026-07-03). The role's canonicalName
+// is written as a real ASPECT entry, mirroring production, so the cypher's
+// role.canonicalName.data.value chain exercises the actual aspect point-read
+// path (resolveProperty) — not a root-property shortcut.
+func putOperatorRoleHolder(t *testing.T, reg *fixtureRegistry, coreKV, adjKV *substrate.KV, actorName string) {
+	t.Helper()
+	roleKey := putVertex(t, reg, coreKV, actorName+"-operator-role", "role", nil)
+	aspectKey := substrate.AspectKey(roleKey, "canonicalName")
+	body := map[string]any{"key": aspectKey, "class": "canonicalName", "data": map[string]any{"value": "operator"}}
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+	_, err = coreKV.Put(context.Background(), aspectKey, raw)
+	require.NoError(t, err)
+	putEdge(t, reg, adjKV, "holdsRole", actorName, actorName+"-operator-role")
+}
+
+// TestCapabilityLens_PrimordialAnchor_OperatorHolderGrantsRoot proves the
+// shrunk primordial-identity anchor projects the fixed kernel root-grant set
+// for identities holding the primordial `operator` role via `holdsRole`
+// (Contract #7 §7.7) and NOTHING for ordinary actors — without any
+// rbac-permission graph vocabulary. Both directions:
 //
-//   - loom: key vtx.identity.<id>, class identity.system.loom, data.protected
-//     true → projects the operator's scope:any root grants. The non-plain
-//     class does NOT prevent projection (the cypher anchors on the :identity
-//     key segment); the protected flag is what selects it.
-//   - ordinary: a plain identity, protected absent → ZERO rows, so core writes
-//     NO cap.<actor> doc. Ordinary actors read their role-derived grants from
-//     rbac-domain's cap.roles.<actor> projection instead.
-func TestCapabilityLens_PrimordialAnchor_ProtectedGrantsRoot(t *testing.T) {
+//   - loom: key vtx.identity.<id>, class identity.system.loom, holds the
+//     `operator` role → projects the operator's scope:any root grants. The
+//     non-plain class does NOT prevent projection (the cypher anchors on the
+//     :identity key segment); the `holdsRole` topology is what selects it.
+//   - ordinary: a plain identity holding no role at all → ZERO rows, so core
+//     writes NO cap.<actor> doc. Ordinary actors read their role-derived
+//     grants from rbac-domain's cap.roles.<actor> projection instead.
+func TestCapabilityLens_PrimordialAnchor_OperatorHolderGrantsRoot(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
 	adjKV, coreKV := startExecKVs(t)
 	reg := newFixtureRegistry()
 
-	// Protected system actor with the non-plain class but vtx.identity.<id> key.
+	// Operator-holding system actor with the non-plain class but
+	// vtx.identity.<id> key.
 	loomKey := putRawVertex(t, reg, coreKV, "loom", "identity", "identity.system.loom",
-		map[string]any{"name": "loom", "protected": true})
-	// Ordinary actor: plain identity, NOT protected.
+		map[string]any{"name": "loom"})
+	putOperatorRoleHolder(t, reg, coreKV, adjKV, "loom")
+	// Ordinary actor: plain identity, holds no role.
 	ordinaryKey := putRawVertex(t, reg, coreKV, "ordinary", "identity", "identity",
 		map[string]any{"name": "ordinary"})
 
@@ -78,9 +100,9 @@ func TestCapabilityLens_PrimordialAnchor_ProtectedGrantsRoot(t *testing.T) {
 		return out
 	}
 
-	// loom (protected) → exactly one row carrying the fixed root-grant set.
+	// loom (operator-holder) → exactly one row carrying the fixed root-grant set.
 	loomRows := project(loomKey)
-	require.Len(t, loomRows, 1, "a protected system identity must project exactly one row")
+	require.Len(t, loomRows, 1, "an operator-holding system identity must project exactly one row")
 	require.Equal(t, loomKey, loomRows[0].Values["actorKey"])
 	pp, _ := loomRows[0].Values["platformPermissions"].([]any)
 	wantOps := map[string]bool{
@@ -100,11 +122,11 @@ func TestCapabilityLens_PrimordialAnchor_ProtectedGrantsRoot(t *testing.T) {
 		}
 	}
 	for op, seen := range wantOps {
-		require.Truef(t, seen, "protected identity must carry the %q root grant: %v", op, pp)
+		require.Truef(t, seen, "operator-holding identity must carry the %q root grant: %v", op, pp)
 	}
 
-	// ordinary (not protected) → ZERO rows: core writes no cap.<actor> doc.
+	// ordinary (holds no role) → ZERO rows: core writes no cap.<actor> doc.
 	ordinaryRows := project(ordinaryKey)
 	require.Empty(t, ordinaryRows,
-		"an ordinary (non-protected) identity must project no row from the core anchor")
+		"an ordinary identity holding no role must project no row from the core anchor")
 }

@@ -12,11 +12,13 @@ import (
 )
 
 // SystemActorKeys scans core-kv and returns the actor keys of the kernel-seeded
-// system identities — the protected, kernel-fixed actors the Capability Lens
+// system identities — the root-equivalent actors the Capability Lens
 // primordial-identity anchor projects root grants for (the primordial admin +
 // the internal service actors seeded by primordial.go). They are identified by
-// the same predicate the anchor cypher uses: an `identity`-type vertex
-// carrying `data.protected = true`.
+// the same predicate the anchor cypher uses (root-designation-topology-reconverge,
+// 2026-07-03): holding the primordial `operator` role via a `holdsRole` link
+// (Contract #7 §7.7), NOT `data.protected` (retired as a capability designator;
+// it keeps only its anti-brick meaning).
 //
 // The step-3 platform read routes these actors to their core cap.<actor> doc
 // (the primordial anchor) and every other actor to cap.roles.<actor> when
@@ -24,6 +26,12 @@ import (
 // self-contained (it already reads core-kv) and exactly matches the set the
 // anchor projects, rather than depending on the bootstrap-file key space being
 // loaded into the processor process.
+//
+// The `holdsRole → operator` link keys (lnk.identity.<id>.holdsRole.role.<RoleOperatorID>)
+// are matched directly off the key STRING (substrate.ParseLinkKey) — no
+// per-identity KVGet across the whole identity population. Only the (small,
+// fixed) set of candidate holdsRole-to-operator link keys found this way is
+// read once each, to exclude a revoked (tombstoned) grant.
 func SystemActorKeys(ctx context.Context, conn *substrate.Conn) ([]string, error) {
 	keys, err := conn.KVListKeys(ctx, CoreKVBucket)
 	if err != nil {
@@ -31,13 +39,8 @@ func SystemActorKeys(ctx context.Context, conn *substrate.Conn) ([]string, error
 	}
 	var out []string
 	for _, k := range keys {
-		vtxType, _, ok := substrate.ParseVertexKey(k)
-		if !ok || vtxType != "identity" {
-			continue
-		}
-		// Exclude aspect keys (vtx.identity.<id>.<localName>) — only the root
-		// vertex carries the data envelope.
-		if strings.Count(k, ".") != 2 {
+		type1, id1, linkName, type2, id2, ok := substrate.ParseLinkKey(k)
+		if !ok || type1 != "identity" || linkName != "holdsRole" || type2 != "role" || id2 != RoleOperatorID {
 			continue
 		}
 		entry, gErr := conn.KVGet(ctx, CoreKVBucket, k)
@@ -48,8 +51,7 @@ func SystemActorKeys(ctx context.Context, conn *substrate.Conn) ([]string, error
 			return nil, fmt.Errorf("bootstrap: read %s: %w", k, gErr)
 		}
 		var env struct {
-			IsDeleted bool           `json:"isDeleted"`
-			Data      map[string]any `json:"data"`
+			IsDeleted bool `json:"isDeleted"`
 		}
 		if jErr := json.Unmarshal(entry.Value, &env); jErr != nil {
 			continue
@@ -57,9 +59,7 @@ func SystemActorKeys(ctx context.Context, conn *substrate.Conn) ([]string, error
 		if env.IsDeleted {
 			continue
 		}
-		if prot, _ := env.Data["protected"].(bool); prot {
-			out = append(out, k)
-		}
+		out = append(out, substrate.VertexKey("identity", id1))
 	}
 	sort.Strings(out)
 	return out, nil

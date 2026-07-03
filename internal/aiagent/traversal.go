@@ -31,6 +31,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -176,28 +177,32 @@ func (t *Traverser) readCapabilityAt(ctx context.Context, actorID, key string) (
 	return doc, nil
 }
 
-// actorIsSystem reports whether the actor is a kernel-seeded system identity
-// — an `identity` vertex carrying data.protected = true. It uses the same
-// predicate as bootstrap.SystemActorKeys and the Capability-Lens primordial
-// anchor, so the read-side key routing matches where grants project.
+// actorIsSystem reports whether the actor holds the primordial `operator`
+// role via a `holdsRole` link (Contract #7 §7.7). It uses the same
+// root-designation predicate as bootstrap.SystemActorKeys and the
+// Capability-Lens primordial anchor (root-designation-topology-reconverge,
+// 2026-07-03 — NOT `data.protected`, which is retired as a capability
+// designator), so the read-side key routing matches where grants project.
 //
 // On any read or decode failure the actor is treated as ordinary (the common
 // case), routing the capability read to cap.roles.* with a cap.identity.*
 // fallback.
 func (t *Traverser) actorIsSystem(ctx context.Context, actorID string) bool {
-	entry, err := t.conn.KVGet(ctx, t.coreBucket, "vtx.identity."+actorID)
+	if !substrate.IsValidNanoID(actorID) {
+		return false
+	}
+	linkKey := substrate.LinkKey("identity", actorID, "holdsRole", "role", bootstrap.RoleOperatorID)
+	entry, err := t.conn.KVGet(ctx, t.coreBucket, linkKey)
 	if err != nil {
 		return false
 	}
 	var env struct {
-		IsDeleted bool           `json:"isDeleted"`
-		Data      map[string]any `json:"data"`
+		IsDeleted bool `json:"isDeleted"`
 	}
 	if err := json.Unmarshal(entry.Value, &env); err != nil || env.IsDeleted {
 		return false
 	}
-	protected, _ := env.Data["protected"].(bool)
-	return protected
+	return true
 }
 
 // DiscoverDDL resolves an operationType string to the DDL meta-vertex key

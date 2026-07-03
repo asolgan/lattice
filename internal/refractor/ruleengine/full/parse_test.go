@@ -315,11 +315,12 @@ func TestParse_BootstrapCapabilityLens(t *testing.T) {
 			returnCount++
 		}
 	}
-	// The primordial-identity anchor is a single required MATCH whose WHERE
-	// restricts projection to the protected (kernel-seeded) system identities,
-	// and exactly one RETURN. It references no rbac/service graph vocabulary, so
-	// it carries no OPTIONAL MATCH and no anti-pattern (those moved with the
-	// role/permission walk to rbac-domain's capabilityRoles lens).
+	// The primordial-identity anchor is a single required MATCH (with an
+	// inline holdsRole->role hop, Contract #7 §7.7) whose WHERE restricts
+	// projection to identities holding the primordial `operator` role, and
+	// exactly one RETURN. It references no rbac PERMISSION vocabulary, so it
+	// carries no OPTIONAL MATCH and no anti-pattern (the grantedBy/permission
+	// walk lives in rbac-domain's capabilityRoles lens).
 	if matchCount != 1 {
 		t.Fatalf("expected exactly one MATCH, got %d", matchCount)
 	}
@@ -330,7 +331,7 @@ func TestParse_BootstrapCapabilityLens(t *testing.T) {
 		t.Fatalf("expected exactly 1 RETURN, got %d", returnCount)
 	}
 
-	// The anchor MATCH carries a WHERE gating on the protected flag.
+	// The anchor MATCH carries a WHERE gating on the operator role's canonicalName.
 	var anchorWhere Expr
 	for _, c := range q.Clauses {
 		if m, ok := c.(*Match); ok && !m.Optional && m.Where != nil {

@@ -74,17 +74,20 @@ type OutputDescriptorSpec struct {
 // the primordial-identity anchor. Contract #7 §7.2 item 5 — vtx.meta.<NanoID>
 // with class "meta.lens"; Contract #6 §6.1 decomposition note.
 //
-// Core projects root-equivalent platform grants for the kernel-seeded system
-// identities only — the primordial admin and the Loom + Weaver + Bridge service
-// actors (`internal/bootstrap/primordial.go`). These actors ARE core: protected,
-// kernel-seeded, and fixed, so their root-grant set is hard-coded here rather
-// than derived through the rbac role/permission graph. That keeps the
+// Core projects root-equivalent platform grants for identities holding the
+// primordial `operator` role — the primordial admin and the Loom + Weaver +
+// Bridge + object-store-manager + privacy service actors
+// (`internal/bootstrap/primordial.go`) — via a bounded `holdsRole → operator`
+// existence check (Contract #7 §7.7; the topology is seeded primordially, so
+// the check is package-independent). The root-grant set itself is a hard-coded
+// literal, not derived through a `grantedBy`/`permission` walk — that keeps the
 // kernel authorizable even when no rbac package is installed and removes every
-// rbac (role/permission/holdsRole/grantedBy) and service/location
-// (containedIn/availableAt/unavailableAt/permitsOperation) reference from
-// core's bootstrap cypher — those vocabularies are owned by their packages
-// (rbac-domain projects ordinary actors' role-derived grants to the disjoint
-// cap.roles.<actor> key; a future service package projects service access).
+// service/location (containedIn/availableAt/unavailableAt/permitsOperation)
+// reference from core's bootstrap cypher (rbac-domain projects ordinary
+// actors' role-derived grants to the disjoint cap.roles.<actor> key; a future
+// service package projects service access). `data.protected` is retired as a
+// capability designator (root-designation-topology-reconverge, 2026-07-03) —
+// it keeps only its anti-brick meaning (rejectProtectedMutations).
 func CapabilityLensDefinition() LensDefinition {
 	return LensDefinition{
 		CanonicalName: "capability",
@@ -112,16 +115,17 @@ func CapabilityLensDefinition() LensDefinition {
 			Lanes:              []string{"default", "meta", "urgent", "system"},
 			StaticEmptyColumns: []string{"ephemeralGrants", "serviceAccess", "roles"},
 		},
-		// The anchor projects only the protected (kernel-seeded) system
-		// identities; the WHERE filters out every ordinary actor (zero rows →
-		// no cap.<actor> doc for them — they read cap.roles.<actor>). Each
-		// system identity receives the fixed kernel root-grant set: the
-		// scope:"any" meta + package-install permissions the operator role
-		// carries. The grant set is a literal here, NOT a graph walk, so core
-		// references no rbac vocabulary.
+		// The anchor projects only identities holding the primordial `operator`
+		// role via `holdsRole` (a bounded single-link existence check — zero
+		// rows for every ordinary actor, who reads cap.roles.<actor> instead).
+		// Each operator-holder receives the fixed kernel root-grant set: the
+		// scope:"any" meta + package-install permissions. The grant set is a
+		// literal here (not a `grantedBy`/`permission` walk), so core still
+		// references no rbac PERMISSION vocabulary — only the primordial
+		// `operator` role name, which core itself seeds (Contract #7 §7.7).
 		CypherRule: `
-MATCH (identity:identity {key: $actorKey})
-WHERE identity.data.protected = true
+MATCH (identity:identity {key: $actorKey})-[:holdsRole]->(role:role)
+WHERE role.canonicalName.data.value = 'operator'
 RETURN
   identity.key AS actorKey,
   [
@@ -311,14 +315,14 @@ RETURN
 // CapabilityLensDefinition already special-cases — the primordial admin and
 // the Loom/Weaver/Bridge/object-store-manager service actors.
 //
-// Root-equivalence is identified the SAME way the write-side anchor does:
-// `identity.data.protected = true`, a literal predicate over the vertex's own
-// field, NOT a graph walk through rbac vocabulary (holdsRole/role) — core
-// references no package vocabulary, mirroring CapabilityLensDefinition's own
-// note that the grant set is "a literal here, NOT a graph walk." This is a
-// PLAIN (not actorAggregate) full-graph projection, like
-// CapabilityReadGrantsLensDefinition: one row per matching identity, not
-// scoped by an actor key.
+// Root-equivalence is identified the SAME way the write-side anchor does: a
+// bounded `holdsRole → operator` existence check (Contract #7 §7.7) — the
+// primordial topology, not a package-vocabulary walk, mirroring
+// CapabilityLensDefinition's own gate. `data.protected` is retired as a
+// capability designator here too (root-designation-topology-reconverge,
+// 2026-07-03); it keeps only its anti-brick meaning. This is a PLAIN (not
+// actorAggregate) full-graph projection, like CapabilityReadGrantsLensDefinition:
+// one row per matching identity, not scoped by an actor key.
 //
 // Without this producer, an all-access read (e.g. a clinic staff/admin
 // worklist spanning every patient) has no anchor to grant against — the
@@ -338,8 +342,8 @@ func CapabilityReadWildcardGrantsLensDefinition() LensDefinition {
 		Adapter:       "postgres",
 		GrantTable:    true,
 		CypherRule: `
-MATCH (identity:identity)
-WHERE identity.data.protected = true
+MATCH (identity:identity)-[:holdsRole]->(role:role)
+WHERE role.canonicalName.data.value = 'operator'
 RETURN
   nanoIdFromKey(identity.key) AS actor_id,
   '*'                         AS anchor_id,

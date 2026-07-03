@@ -161,6 +161,12 @@ func TestGate3_Report(t *testing.T) {
 			Result:      "DEFENDED",
 			Enforcement: "vault-crypto-shredding-design.md §2.4: ShredIdentityKey destroys the identity's wrapped DEK (internal/vault/local.go — a shredded/never-created key permanently denies Decrypt, ErrKeyShredded); Vault.Decrypt for that identity's ciphertext fails permanently post-shred (packages/privacy-base TestShredIdentityKey_EndToEnd_VaultDecryptFails); the Refractor KeyShredded listener additionally nullifies configured lens targets' already-projected rows (internal/refractor/keyshredded TestHandleKeyShredded_TargetSucceeds_DeletesAndAcks) — belt-and-suspenders since general lenses only ever hold ciphertext, never plaintext, in Phase A (design §2.3)",
 		},
+		{
+			Num:         16,
+			Vector:      "Root-designation forgery (protected bit)",
+			Result:      "DEFENDED",
+			Enforcement: "root-designation-topology-reconverge (Fork A, 2026-07-02): root is designated solely by the primordial holdsRole->operator topology (Contract #7 §7.7), a self-protecting mechanism (grant-role ops are themselves operator-gated); a forged identity.data.protected=true with no holdsRole link projects NO write anchor (CapabilityLensDefinition) and NO wildcard read grant (CapabilityReadWildcardGrantsLensDefinition) — data.protected keeps only its anti-brick meaning (internal/bypass TestCapAdv_V16_*)",
+		},
 	}
 
 	// total is the number of vectors in the report and the gate denominator.

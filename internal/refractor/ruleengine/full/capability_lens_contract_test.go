@@ -179,6 +179,39 @@ func contractPutEdge(t *testing.T, adjKV *substrate.KV, name, fromType, fromName
 	}))
 }
 
+// contractPutAspect writes a single aspect entry (vtx.<type>.<id>.<localName>)
+// so a cypher rule's node.<aspect>.data.<field> chained access (e.g.
+// role.canonicalName.data.value) resolves exactly as it does against a real
+// bootstrap-seeded aspect — the engine's aspect fetch (resolveProperty) reads
+// only class/isDeleted/data off the raw JSON body (mirrors contractPutVertex).
+func contractPutAspect(t *testing.T, kv *substrate.KV, vtxKey, localName string, data map[string]any) {
+	t.Helper()
+	aspectKey := substrate.AspectKey(vtxKey, localName)
+	body := map[string]any{"key": aspectKey, "class": localName, "data": data}
+	raw, err := json.Marshal(body)
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = kv.Put(ctx, aspectKey, raw)
+	require.NoError(t, err)
+}
+
+// contractSeedOperatorHolder seeds an identity holding the primordial
+// `operator` role via `holdsRole` — the root-designation-topology-reconverge
+// (2026-07-03) anchor every root-designation cypher gates on (Contract #7
+// §7.7). The role vertex + its canonicalName aspect are re-created per call
+// (a distinct role NanoID per fixture; the cypher matches by canonicalName
+// value, never by a fixed ID, so this mirrors production without depending on
+// the primordial RoleOperatorID).
+func contractSeedOperatorHolder(t *testing.T, coreKV, adjKV *substrate.KV, identityName string) string {
+	t.Helper()
+	identityKey := contractPutVertex(t, coreKV, "identity", identityName, map[string]any{"name": identityName})
+	roleKey := contractPutVertex(t, coreKV, "role", identityName+":operator-role", map[string]any{})
+	contractPutAspect(t, coreKV, roleKey, "canonicalName", map[string]any{"value": "operator"})
+	contractPutEdge(t, adjKV, "holdsRole", "identity", identityName, "role", identityName+":operator-role")
+	return identityKey
+}
+
 // TestCapabilityLens_ContractConformance asserts the Contract #6 §6.2
 // envelope shape against the LITERAL bootstrap cypher rule.
 func TestCapabilityLens_ContractConformance(t *testing.T) {
@@ -190,12 +223,13 @@ func TestCapabilityLens_ContractConformance(t *testing.T) {
 
 	// --- deterministic graph fixture ---
 	// The capability lens is the primordial-identity anchor: it projects the
-	// fixed kernel root-grant set for protected (kernel-seeded) identities only,
-	// with no rbac/service graph walk. serviceAccess + roles are static empty
-	// arrays (their producers are the future service package + rbac-domain's
-	// capabilityRoles lens). A protected actor is seeded; no role/service graph.
-	aliceKey := contractPutVertex(t, coreKV, "identity", "alice",
-		map[string]any{"name": "alice", "protected": true})
+	// fixed kernel root-grant set for identities holding the primordial
+	// `operator` role via `holdsRole` (Contract #7 §7.7), with no
+	// rbac-permission/service graph walk. serviceAccess + roles are static
+	// empty arrays (their producers are the future service package +
+	// rbac-domain's capabilityRoles lens). An operator-holder is seeded; no
+	// permission/service graph.
+	aliceKey := contractSeedOperatorHolder(t, coreKV, adjKV, "alice")
 
 	// --- run the LITERAL bootstrap cypher ---
 	body := bootstrap.CapabilityLensDefinition().CypherRule
@@ -448,4 +482,33 @@ func TestCapabilityEphemeralLens_ContractConformance(t *testing.T) {
 	}
 	require.True(t, grantFound,
 		"ephemeralGrants must include a real (non-null) link-sourced grant")
+}
+
+// TestCapabilityLens_ProtectedOnly_ProjectsNoRoot is the inverse of the
+// drifted predicate this design retired (root-designation-topology-reconverge,
+// 2026-07-03): a `data.protected = true` identity with NO `holdsRole →
+// operator` link must get ZERO platformPermissions rows — proving root is
+// conferred solely by the topology, never by the `protected` bit (which keeps
+// only its anti-brick meaning).
+func TestCapabilityLens_ProtectedOnly_ProjectsNoRoot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+
+	adjKV, coreKV := contractStartKVs(t)
+	_ = adjKV
+
+	// A `protected:true` identity with no holdsRole link at all.
+	forgedKey := contractPutVertex(t, coreKV, "identity", "forged",
+		map[string]any{"name": "forged", "protected": true})
+
+	body := bootstrap.CapabilityLensDefinition().CypherRule
+	eng := full.New()
+	cr, err := eng.Parse(body)
+	require.NoError(t, err)
+
+	out, err := eng.ExecuteWith(context.Background(), cr,
+		ruleengine.EventContext{Parameters: map[string]any{"actorKey": forgedKey}}, adjKV, coreKV)
+	require.NoError(t, err)
+	require.Empty(t, out, "a protected:true identity with no holdsRole->operator link must project NO root grant")
 }
