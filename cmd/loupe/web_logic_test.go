@@ -634,3 +634,112 @@ func TestLensLogicJS(t *testing.T) {
 		t.Errorf("zero-count latency = %q", got)
 	}
 }
+
+// TestFeedLogicJS pins the pulse feed's pure tier (logic/feed.js): event→row
+// shaping, the capped ring buffer, the poll-diff derivation, the rows/min
+// rate, and the LED vocabulary.
+func TestFeedLogicJS(t *testing.T) {
+	vm := logicVM(t, "feed.js")
+
+	// feedTime: the HH:MM:SS slice of an RFC3339 stamp; malformed → empty.
+	if got := call(t, vm, "feedTime", "2026-07-03T12:04:31Z"); got != "12:04:31" {
+		t.Errorf("feedTime = %v", got)
+	}
+	for _, bad := range []any{"garbage", "2026-07-03T12:0", nil, 42} {
+		if got := call(t, vm, "feedTime", bad); got != "" {
+			t.Errorf("feedTime(%v) = %v, want empty", bad, got)
+		}
+	}
+
+	// shapeEventRow: the SSE envelope → feed row; requestId resolves to the
+	// op tracker key (vtx.op.<requestId>).
+	row, ok := call(t, vm, "shapeEventRow", map[string]any{
+		"eventId": "e1", "requestId": "r1", "eventType": "clinic.appointmentCreated",
+		"domain": "clinic", "targetKey": "vtx.appointment.a1", "timestamp": "2026-07-03T12:04:31Z",
+	}).(map[string]any)
+	if !ok {
+		t.Fatal("shapeEventRow did not return an object")
+	}
+	if row["kind"] != "event" || row["time"] != "12:04:31" ||
+		row["eventType"] != "clinic.appointmentCreated" ||
+		row["targetKey"] != "vtx.appointment.a1" || row["opKey"] != "vtx.op.r1" {
+		t.Errorf("shaped row = %v", row)
+	}
+	// A missing requestId never fabricates an op link; nil input never throws.
+	sparse := call(t, vm, "shapeEventRow", map[string]any{"eventType": "x.y"}).(map[string]any)
+	if sparse["opKey"] != "" || sparse["targetKey"] != "" {
+		t.Errorf("sparse row fabricated links: %v", sparse)
+	}
+	if got := call(t, vm, "shapeEventRow", nil).(map[string]any); got["kind"] != "event" {
+		t.Errorf("nil event row = %v", got)
+	}
+
+	// pushRows: newest first, capped.
+	buf := []any{}
+	for i := 0; i < 5; i++ {
+		buf, _ = call(t, vm, "pushRows", buf, []any{map[string]any{"n": float64(i)}}, 3).([]any)
+	}
+	if len(buf) != 3 || toFloat(buf[0].(map[string]any)["n"]) != 4 || toFloat(buf[2].(map[string]any)["n"]) != 2 {
+		t.Errorf("ring buffer = %v", buf)
+	}
+
+	// deriveTransitions: status changes + lens rule updates; new nodes and
+	// infra derive nothing; an empty previous poll derives nothing.
+	prev := []any{
+		map[string]any{"id": "L1", "kind": "lens", "label": "roster", "status": "projecting", "activeSequence": 41},
+		map[string]any{"id": "weaver", "kind": "component", "label": "Weaver", "status": "green"},
+		map[string]any{"id": "core-kv", "kind": "infra", "status": "present"},
+	}
+	next := []any{
+		map[string]any{"id": "L1", "kind": "lens", "label": "roster", "status": "rebuilding", "activeSequence": 43},
+		map[string]any{"id": "weaver", "kind": "component", "label": "Weaver", "status": "stale"},
+		map[string]any{"id": "core-kv", "kind": "infra", "status": "absent"},
+		map[string]any{"id": "L2", "kind": "lens", "label": "new", "status": "projecting"},
+	}
+	rows, ok := call(t, vm, "deriveTransitions", prev, next).([]any)
+	if !ok || len(rows) != 3 {
+		t.Fatalf("deriveTransitions = %v, want 3 rows (lens status + rule update + weaver)", rows)
+	}
+	texts := make([]string, 0, len(rows))
+	for _, r := range rows {
+		m := r.(map[string]any)
+		texts = append(texts, m["text"].(string))
+		if m["kind"] != "derived" {
+			t.Errorf("derived row kind = %v", m["kind"])
+		}
+	}
+	joined := strings.Join(texts, " | ")
+	for _, want := range []string{
+		"roster projecting → rebuilding",
+		"roster rule updated (seq 41 → 43)",
+		"Weaver green → stale",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("derived rows missing %q: %v", want, texts)
+		}
+	}
+	lensRow := rows[0].(map[string]any)
+	if lensRow["href"] != "#/lens/L1" {
+		t.Errorf("lens derived href = %v", lensRow["href"])
+	}
+	if got, _ := call(t, vm, "deriveTransitions", []any{}, next).([]any); len(got) != 0 {
+		t.Errorf("first poll derived rows: %v", got)
+	}
+
+	// rowsPerMin / pruneTimes: only the trailing minute counts.
+	times := []any{1000, 30000, 70000}
+	if got := call(t, vm, "rowsPerMin", times, 75000); toFloat(got) != 2 {
+		t.Errorf("rowsPerMin = %v, want 2", got)
+	}
+	pruned, _ := call(t, vm, "pruneTimes", times, 75000).([]any)
+	if len(pruned) != 2 {
+		t.Errorf("pruneTimes = %v", pruned)
+	}
+
+	// ledClass: the §8.4 vocabulary.
+	for status, want := range map[string]string{"live": "green", "retry": "yellow", "error": "red", "off": "dim"} {
+		if got := call(t, vm, "ledClass", status); got != want {
+			t.Errorf("ledClass(%s) = %v, want %s", status, got, want)
+		}
+	}
+}

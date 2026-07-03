@@ -21,7 +21,7 @@ func TestComputeSystemMapOverlay(t *testing.T) {
 		"health.refractor.rfx-1":               {"component": "refractor", "instance": "rfx-1", "heartbeatAt": now},
 		"health.loom.loom-1":                   {"component": "loom", "instance": "loom-1", "heartbeatAt": stale},
 		"health.object-store-manager.objmgr-1": {"component": "object-store-manager", "instance": "objmgr-1", "updatedAt": now},
-		"AbcLensId0000000000":                  {"status": "active"},
+		"AbcLensId0000000000":                  {"status": "active", "activeSequence": float64(41)},
 		// weaver + bridge intentionally absent.
 	}
 	keys := make([]string, 0, len(docs))
@@ -65,6 +65,11 @@ func TestComputeSystemMapOverlay(t *testing.T) {
 	lens := byID["AbcLensId0000000000"]
 	if lens.Kind != nodeLens || lens.Parent != refractorID || lens.Label != "objectLiveness" || lens.Status != "projecting" {
 		t.Errorf("lens = %+v, want lens/refractor/objectLiveness/projecting", lens)
+	}
+	// The reporter's activeSequence (rule version) rides the lens node — the
+	// pulse feed diffs it between polls.
+	if lens.ActiveSequence != 41 {
+		t.Errorf("lens activeSequence = %d, want 41", lens.ActiveSequence)
 	}
 
 	// A refractor→lens project edge exists.

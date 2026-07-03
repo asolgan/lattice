@@ -19,6 +19,7 @@
     </nav>
     <div class="topbar-status">
       <a class="rollup" id="topbar-pill" href="#/map"></a>
+      <a class="pulse-led dim" id="topbar-led" href="#/map" title="event stream"></a>
     </div>
   </header>
   <div id="alertstrip"></div>
@@ -43,6 +44,18 @@
                console (loupe-system-map-ux.md §6) mounts here when it ships;
                nothing else may claim it. Rendered empty until then. -->
           <div id="sysmap-console"></div>
+          <section id="pulse-feed">
+            <div class="pulse-head"
+                 title="a live tail of core-events — no replay; a refresh loses the feed (durable history is the platform's job)">
+              <span class="pulse-led dim" id="pulse-led"></span>
+              <span class="pulse-title">live pulse</span>
+              <span class="muted small" id="pulse-rate"></span>
+              <button id="pulse-pause">pause</button>
+              <button id="pulse-clear">clear</button>
+            </div>
+            <div class="muted small" id="pulse-note"></div>
+            <div id="pulse-rows"></div>
+          </section>
         </aside>
       </div>
     </section>

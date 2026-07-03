@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/asolgan/lattice/cmd/lattice/output"
@@ -37,6 +38,9 @@ type server struct {
 	// uploadCap bounds a single object upload (OBJECTS_MAX_UPLOAD_BYTES);
 	// substrate.ObjectPut enforces it at the stream layer.
 	uploadCap int64
+	// eventClients counts live /api/events/stream tails (bounded at
+	// maxEventStreamClients).
+	eventClients atomic.Int32
 }
 
 func (s *server) registerRoutes(mux *http.ServeMux) {
@@ -57,6 +61,7 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/systemmap", s.handleSystemMap)
 	mux.HandleFunc("/api/component/", s.handleComponent)
 	mux.HandleFunc("/api/lenses", s.handleLenses)
+	mux.HandleFunc("/api/events/stream", s.handleEventStream)
 	mux.HandleFunc("/api/lens/", s.handleLens)
 	mux.HandleFunc("/api/tasks", s.handleTasks)
 	mux.HandleFunc("/api/control/", s.handleControl)

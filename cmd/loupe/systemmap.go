@@ -29,6 +29,11 @@ type mapNode struct {
 	Protected bool          `json:"protected,omitempty"`
 	Issues    []string      `json:"issues,omitempty"`
 	Instances []mapInstance `json:"instances,omitempty"`
+	// ActiveSequence is a lens node's reporter activeSequence — the NATS
+	// sequence of the ACTIVE RULE VERSION (it advances on rule
+	// activation/update, not on row projection). The pulse feed diffs it
+	// between polls to surface rule updates.
+	ActiveSequence uint64 `json:"activeSequence,omitempty"`
 }
 
 // mapInstance is one heartbeat of a component/client node — the per-instance
@@ -206,6 +211,9 @@ func computeSystemMap(
 			var level int
 			node.Status, node.Issues, level = lensRenderedState(doc, spec)
 			node.Protected = spec.Protected || spec.GrantTable
+			if seq, ok := doc["activeSequence"].(float64); ok && seq > 0 {
+				node.ActiveSequence = uint64(seq)
+			}
 			worse(level)
 			lensNodes = append(lensNodes, node)
 		}

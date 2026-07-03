@@ -794,7 +794,84 @@ a.tab { text-decoration: none; display: inline-block; }
 /* Map rail: reserved console slot. */
 #sysmap-rail { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 #sysmap-console:empty { display: none; }
-@media (max-width: 900px) { #sysmap-main { grid-template-columns: 1fr; } }
+@media (max-width: 900px) {
+  #sysmap-main { grid-template-columns: 1fr; }
+  #pulse-rows { max-height: 240px; }
+}
+
+/* Live pulse: the stream LED (topbar + feed header), the rail feed, and the
+   map edge flow animation. */
+.pulse-led {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  flex-shrink: 0;
+}
+.pulse-led.green { background: var(--green); }
+.pulse-led.yellow { background: var(--yellow); }
+.pulse-led.red { background: var(--red); }
+.pulse-led.dim { background: var(--text-dim); opacity: 0.5; }
+a.pulse-led { cursor: pointer; }
+
+#pulse-feed {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-height: 0;
+  flex: 1; /* fills the remaining rail height below the console reservation */
+}
+.pulse-head { display: flex; align-items: center; gap: 8px; }
+.pulse-title { font-size: 12px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; }
+.pulse-head button {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 1px 8px;
+  font-size: 11px;
+  border-radius: 10px;
+}
+.pulse-head button:hover { color: var(--text); background: var(--bg-input); }
+.pulse-head #pulse-rate { margin-left: auto; }
+.pulse-note-warn { color: var(--yellow); }
+#pulse-note:empty { display: none; }
+#pulse-rows { overflow-y: auto; max-height: 480px; display: flex; flex-direction: column; }
+.pulse-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  min-width: 0;
+}
+.pulse-row:last-child { border-bottom: none; }
+.pulse-time { font-family: var(--mono); font-size: 11px; color: var(--text-dim); flex-shrink: 0; }
+.pulse-body { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; min-width: 0; }
+.pulse-type { font-family: var(--mono); word-break: break-all; }
+.pulse-key { font-family: var(--mono); font-size: 11px; word-break: break-all; }
+.pulse-drop { color: var(--yellow); font-size: 11px; flex-shrink: 0; }
+.pulse-row.derived { color: var(--text-dim); }
+.pulse-row.derived .pulse-derived-text { font-size: 12px; }
+a.pulse-derived-text { color: var(--text-dim); }
+a.pulse-derived-text:hover { color: var(--text); }
+.pulse-empty { padding: 6px 0; }
+
+.sysmap-edge.pulse {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 8 6;
+  animation: pulse-dash 0.6s linear;
+}
+@keyframes pulse-dash {
+  from { stroke-dashoffset: 28; }
+  to { stroke-dashoffset: 0; }
+}
 
 /* Lens renderedState visuals: pending-readpath is the accent (informational)
    family — by design NOT yellow; fault carries the red left border. */

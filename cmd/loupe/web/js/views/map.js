@@ -7,7 +7,10 @@
 
 import { el, api, setStatus } from "../api.js";
 import { componentStatusClass, lensStateDot, lensStateGlyph, pendingReadpathCopy, sysmapSummary, sysmapTier } from "../logic/status.js";
+import { deriveTransitions, ledClass } from "../logic/feed.js";
+import { keyTarget } from "../logic/keys.js";
 import { navigate } from "../router.js";
+import * as pulse from "../pulse.js";
 
 const SYSMAP_TIER_Y = [40, 150, 270, 400, 530];
 const SYSMAP_NODE_H = 58;
@@ -17,14 +20,25 @@ const refractorId = "refractor"; // the sole lens parent (see systemmap.go)
 // sysmap holds the last-rendered data + transient render state. nodeEls maps a
 // node id to its DOM element for edge measurement; tip is the single shared
 // hover popover.
-const sysmap = { data: null, nodeEls: new Map(), tip: null, autoTimer: null, resizeTimer: null, fetchSeq: 0 };
+const sysmap = { data: null, lastNodes: null, nodeEls: new Map(), tip: null, autoTimer: null, resizeTimer: null, fetchSeq: 0, unsubPulse: null, feedRAF: 0 };
 
-function enter() { refreshSystemMap(); }
+function enter() {
+  refreshSystemMap();
+  renderFeed();
+  if (!sysmap.unsubPulse) {
+    sysmap.unsubPulse = pulse.subscribe((evt) => {
+      scheduleRenderFeed();
+      if (evt.type === "row" && evt.row.kind === "event") pulseFlow();
+    });
+  }
+}
 
-// leave stops the auto-refresh poll so a hidden panel isn't polled.
+// leave stops the auto-refresh poll so a hidden panel isn't polled, and drops
+// the feed subscription (the stream itself stays open — pulse.js is global).
 function leave() {
   stopSystemMapAuto();
   hideSysmapTip();
+  if (sysmap.unsubPulse) { sysmap.unsubPulse(); sysmap.unsubPulse = null; }
 }
 
 // refreshSystemMap is the single clock: re-fetches /api/systemmap and
@@ -50,9 +64,21 @@ async function refreshSystemMap() {
     setSysmapRollup(null);
     return;
   }
+  // Poll-diff derived rows for the pulse feed: state transitions + rule
+  // updates since the previous successful poll ride the feed marked "~"
+  // (poll-derived, ≤ one poll interval of lag — honest about the mechanism).
+  // lastNodes (not sysmap.data, which an error poll nulls) is the diff base,
+  // so a transition spanning one failed poll still derives.
+  if (sysmap.lastNodes) {
+    pulse.addDerived(deriveTransitions(sysmap.lastNodes, body.nodes || []));
+  }
+  sysmap.lastNodes = body.nodes || [];
   sysmap.data = body;
   renderSystemMap(body);
   setStatus("sysmap-status", "updated just now");
+  // The feed header's rows/min rides this same clock (§3.1's one-heartbeat
+  // rule) so the rate decays to 0 after a burst instead of going stale.
+  scheduleRenderFeed();
 }
 
 // sysmapStage returns the stage element, (re)creating its <svg> edge layer.
@@ -428,6 +454,9 @@ function drawSysmapEdges(data) {
     p.setAttribute("d", path);
     p.setAttribute("class", "sysmap-edge" + (secondary ? " secondary" : ""));
     p.setAttribute("marker-end", "url(#sysmap-arrow)");
+    // from/to tags let the pulse animation find the flow path.
+    p.dataset.from = edge.from;
+    p.dataset.to = edge.to;
     svg.appendChild(p);
 
     if (edge.label && !suppressLabel) {
@@ -457,6 +486,132 @@ function drawSysmapEdges(data) {
   });
 }
 
+// ---- Live pulse: the rail feed + edge animation (design §8) ----
+
+// scheduleRenderFeed coalesces feed rebuilds behind one animation frame — a
+// chatty stream renders once per frame instead of once per event, and a
+// hidden tab (where rAF is paused) defers the rebuild until visible.
+function scheduleRenderFeed() {
+  if (sysmap.feedRAF) return;
+  sysmap.feedRAF = requestAnimationFrame(() => {
+    sysmap.feedRAF = 0;
+    renderFeed();
+  });
+}
+
+// renderFeed rebuilds the rail feed from the shared pulse buffer: header
+// (LED · rows/min · pause · clear), the degraded-mode note line, and the
+// capped row list. A full rebuild is cheap at the 200-row cap; the scroll
+// position survives it (an operator reading older rows isn't yanked to the
+// top by every arrival).
+function renderFeed() {
+  const rowsEl = document.getElementById("pulse-rows");
+  if (!rowsEl) return;
+  const led = document.getElementById("pulse-led");
+  if (led) led.className = "pulse-led " + ledClass(pulse.status());
+  const rate = document.getElementById("pulse-rate");
+  if (rate) rate.textContent = pulse.ratePerMin() + "/min";
+  const pauseBtn = document.getElementById("pulse-pause");
+  if (pauseBtn) pauseBtn.textContent = pulse.paused() ? "resume" : "pause";
+
+  const note = document.getElementById("pulse-note");
+  if (note) {
+    if (pulse.status() === "error") {
+      note.textContent = "no event stream available — " + (pulse.reason() || "unknown");
+      note.className = "small error-text";
+    } else if (pulse.status() === "retry") {
+      note.textContent = "live tail disconnected — retrying…";
+      note.className = "small pulse-note-warn";
+    } else {
+      note.textContent = "";
+      note.className = "muted small";
+    }
+  }
+
+  const keepScroll = rowsEl.scrollTop;
+  rowsEl.innerHTML = "";
+  const rows = pulse.rows();
+  if (!rows.length) {
+    if (pulse.status() === "live") {
+      const empty = el("div", "muted small pulse-empty");
+      empty.appendChild(document.createTextNode("listening — no events yet. "));
+      const a = el("a", null, "Submit an op");
+      a.href = "#/op";
+      empty.appendChild(a);
+      empty.appendChild(document.createTextNode(" to see the flow."));
+      rowsEl.appendChild(empty);
+    }
+    return;
+  }
+  rows.forEach((r) => rowsEl.appendChild(feedRowEl(r)));
+  if (keepScroll) rowsEl.scrollTop = keepScroll;
+}
+
+// feedLink renders a compact entity link (shortened display text, full key in
+// the title) via the shared key resolver; a non-entity renders as plain text.
+function feedLink(key, label) {
+  const target = keyTarget(key);
+  const text = label || (key.length > 26 ? key.slice(0, 24) + "…" : key);
+  if (!target) return el("span", "pulse-key", text);
+  const a = el("a", "pulse-key key-link", text);
+  a.href = target;
+  a.title = key;
+  return a;
+}
+
+// feedRowEl renders one feed row. Event rows (push, real-time) carry the
+// eventType + entity links; derived rows (poll-diff) render dim with the "~"
+// honesty prefix. Hovering an event row re-fires the flow highlight.
+function feedRowEl(r) {
+  if (r.kind === "derived") {
+    const row = el("div", "pulse-row derived");
+    row.appendChild(el("span", "pulse-time", r.time || ""));
+    if (r.href) {
+      const a = el("a", "pulse-derived-text", "~ " + r.text);
+      a.href = r.href;
+      row.appendChild(a);
+    } else {
+      row.appendChild(el("span", "pulse-derived-text", "~ " + r.text));
+    }
+    return row;
+  }
+  const row = el("div", "pulse-row");
+  row.appendChild(el("span", "pulse-time", r.time || ""));
+  const body = el("span", "pulse-body");
+  body.appendChild(el("span", "pulse-type", r.eventType));
+  if (r.targetKey) body.appendChild(feedLink(r.targetKey));
+  if (r.opKey) body.appendChild(feedLink(r.opKey, "op " + r.opKey.slice(7, 13) + "…"));
+  row.appendChild(body);
+  if (r.dropped) row.appendChild(el("span", "pulse-drop", "+" + r.dropped + " dropped"));
+  row.addEventListener("mouseenter", pulseFlow);
+  return row;
+}
+
+// pulseFlow animates the flow path on the map (§3.3): core-operations →
+// processor, then processor → core-events, then the fan out of core-events —
+// CSS-only per edge (a .pulse class), staggered by timeout. Runs only while
+// the map is the active view and the document is visible.
+function pulseFlow() {
+  const panel = document.getElementById("panel-systemmap");
+  if (!panel || !panel.classList.contains("active") || document.hidden) return;
+  const svg = document.getElementById("sysmap-edges");
+  if (!svg) return;
+  flashPath(svg.querySelector('path[data-from="core-operations"][data-to="processor"]'), 0);
+  flashPath(svg.querySelector('path[data-from="processor"][data-to="core-events"]'), 180);
+  svg.querySelectorAll('path[data-from="core-events"]').forEach((p) => flashPath(p, 360));
+}
+
+// flashPath restarts the pulse class on one edge after delay ms.
+function flashPath(p, delay) {
+  if (!p) return;
+  setTimeout(() => {
+    p.classList.remove("pulse");
+    void p.getBoundingClientRect(); // reflow so the animation re-fires
+    p.classList.add("pulse");
+    setTimeout(() => p.classList.remove("pulse"), 700);
+  }, delay);
+}
+
 // Auto-refresh: opt-in 10s poll, paused while the tab is backgrounded and
 // stopped when the operator leaves the System Map view.
 function startSystemMapAuto() {
@@ -477,6 +632,11 @@ function init() {
   if (refresh) refresh.addEventListener("click", refreshSystemMap);
   const auto = document.getElementById("sysmap-auto");
   if (auto) auto.addEventListener("change", () => { auto.checked ? startSystemMapAuto() : stopSystemMapAuto(); });
+
+  const pauseBtn = document.getElementById("pulse-pause");
+  if (pauseBtn) pauseBtn.addEventListener("click", () => pulse.setPaused(!pulse.paused()));
+  const clearBtn = document.getElementById("pulse-clear");
+  if (clearBtn) clearBtn.addEventListener("click", () => pulse.clearRows());
 
   // Re-measure + redraw on resize (debounced), only while the map is rendered.
   window.addEventListener("resize", () => {

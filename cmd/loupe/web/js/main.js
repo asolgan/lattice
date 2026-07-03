@@ -7,6 +7,7 @@ import { $, $all, el, toast } from "./api.js";
 import { startRouter, replaceRoute } from "./router.js";
 import { classifyKey } from "./logic/keys.js";
 import * as shell from "./shell.js";
+import * as pulse from "./pulse.js";
 import * as map from "./views/map.js";
 import * as graph from "./views/graph.js";
 import * as tasks from "./views/tasks.js";
@@ -102,9 +103,11 @@ function renderCrumbs(route, entry) {
   bar.appendChild(keyBox);
 }
 
-// Boot: wire the shell (topbar pill + alert strip) and each view's static
-// DOM, then start routing.
+// Boot: wire the shell (topbar pill + alert strip), open the live pulse
+// stream (one console-wide EventSource — the map feed and the op
+// follow-through share it), wire each view's static DOM, then start routing.
 shell.init();
+pulse.init();
 map.init();
 graph.init();
 tasks.init();
