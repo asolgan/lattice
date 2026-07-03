@@ -7,7 +7,6 @@
 import { $, el, api, setStatus } from "../api.js";
 import { navigate } from "../router.js";
 import { keyLinkEl } from "../render.js";
-import { prefillOp } from "./op.js";
 
 const state = { loaded: false };
 
@@ -70,12 +69,12 @@ async function loadTasks() {
   });
 }
 
-// startTaskOp jumps to Submit Op with the task's operation pre-selected (or
-// the operationType override filled when it is not a catalog command), so the
-// assignee completes the task through the existing op form.
+// startTaskOp jumps to Submit Op with the task's operation carried in the URL
+// (#/op?type=…) — the op view pre-selects it (or fills the operationType
+// override when it is not a catalog command), and the prefill link is
+// shareable/bookmarkable like every other route.
 function startTaskOp(opName) {
-  navigate("#/op");
-  prefillOp(opName);
+  navigate("#/op?type=" + encodeURIComponent(opName));
 }
 
 function init() {

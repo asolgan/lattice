@@ -2,10 +2,15 @@
 // grid.
 
 import { $, el, pretty, api, setStatus } from "../api.js";
+import { keyLinkEl } from "../render.js";
 
 const state = { loaded: false, seq: 0 };
 
-function enter() {
+// enter loads once; ?target= pre-fills the attach target key (the vertex
+// page's "attach file" affordance carries the key in the URL).
+function enter(route) {
+  const t = route && route.params && route.params.target;
+  if (t) $("#files-target").value = t;
   if (state.loaded) return;
   state.loaded = true;
   loadFiles();
@@ -88,7 +93,9 @@ async function loadFiles() {
 
     const meta = el("div", "file-meta");
     meta.appendChild(el("div", "file-oid", oid));
-    meta.appendChild(el("div", "muted small", linkName + " → " + targetKey));
+    const owner = el("div", "muted small", linkName + " → ");
+    owner.appendChild(keyLinkEl(targetKey));
+    meta.appendChild(owner);
     const actions = el("div", "file-actions");
     const dl = el("a", "file-link", "download");
     dl.href = "/api/objects/" + encodeURIComponent(oid);

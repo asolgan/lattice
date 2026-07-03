@@ -260,6 +260,13 @@ async function loadVertexDetail(key, openAspect) {
     t.href = "#/tasks";
     actions.appendChild(t);
   }
+  // A vertex can carry off-graph blobs — jump to Files with this key as the
+  // pre-filled attach target.
+  if (classifyKey(key) === "vertex" || classifyKey(key) === "meta") {
+    const af = el("a", "detail-action-link", "attach file →");
+    af.href = "#/files?target=" + encodeURIComponent(key);
+    actions.appendChild(af);
+  }
   if (body.class === "meta.lens") {
     const lp = el("a", "detail-action-link", "lens page →");
     lp.href = "#/lens/" + shortId(key);

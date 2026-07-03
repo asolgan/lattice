@@ -938,3 +938,25 @@ a.pulse-derived-text:hover { color: var(--text); }
 .pkg-delta { display: flex; gap: 6px; align-items: baseline; }
 .pkg-modal-out { max-height: 320px; overflow: auto; }
 .warn-text { color: var(--yellow); }
+
+/* Submit-Op reply panel, follow-through, and session op log (design §10) */
+.opreply { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; background: var(--bg-raised); }
+.opreply-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 4px; }
+.opreply-status { font-weight: 600; }
+.opreply-key { display: flex; align-items: center; gap: 10px; padding: 3px 0; font-family: var(--mono); font-size: 12px; }
+.opreply-key-primary { background: var(--bg); border-left: 2px solid var(--accent); padding-left: 8px; }
+.opreply-meta { margin: 8px 0 4px; }
+.opreply details pre { max-height: 260px; overflow: auto; }
+.op-follow { margin-bottom: 12px; }
+.opfollow-rows { display: flex; flex-direction: column; gap: 2px; }
+.opfollow-row { display: flex; align-items: baseline; gap: 10px; font-size: 12px; }
+.opfollow-type { font-family: var(--mono); color: var(--text); }
+.opfollow-derived { color: var(--text-dim); text-decoration: none; }
+.opfollow-derived:hover { color: var(--text); }
+.oplog-head { display: flex; align-items: center; gap: 10px; }
+.oplog-head button { font-size: 11px; }
+.op-log { display: flex; flex-direction: column; gap: 2px; }
+.oplog-row { display: flex; align-items: baseline; gap: 10px; font-size: 12px; }
+.oplog-type { font-family: var(--mono); color: var(--text); }
+.oplog-ok { color: var(--green); border-color: var(--green); }
+.oplog-err { color: var(--red); border-color: var(--red); }
