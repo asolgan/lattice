@@ -687,8 +687,9 @@ the same fire as its replacement).
 
 **Build checkpoint (for the next fire):** F1 ✅ `e6a8a46` · F2 ✅ `976a18f` · F3 ✅ `5865e0e` ·
 F4 ✅ `24768e8` · F5 ✅ `7f724c5` (2026-07-02) · F6 ✅ `0821a36` · F8 ✅ `73a3146`+`e1af145`
-(2026-07-03; all 3-layer-reviewed) · F7 ✅ `f8b09c6` (2026-07-03; S fire, lead-reviewed per §14).
-Remaining: F9 only. Live now: the Graph explorer (`#/graph` faceted/paged list —
+(2026-07-03; all 3-layer-reviewed) · F7 ✅ `f8b09c6` (2026-07-03; S fire, lead-reviewed per §14) ·
+F9 ✅ `d5617db` (2026-07-03; 3-layer-reviewed — the core program is COMPLETE; platform-edges F10–F13
+continue on the board). Live now: the Graph explorer (`#/graph` faceted/paged list —
 `/api/vertices` carries type/q/offset/includeDeleted + facets/total and sorts keys so offset windows are
 stable), the linkifying renderer (`web/js/render.js`: `renderDoc` + `keyLinkEl` — reuse these for any
 rendered reply), the hood mode (`logic/hood.js` pure model + goja tests), the `#/corekv` → `#/graph` and
@@ -786,6 +787,30 @@ keys linkified in-modal. FE: `logic/pkg.js` (manifest pick / summary lines, goja
 are route-lifecycle-bound in BOTH views — packages.js gained `leave()`), `keyTarget` routes
 `vtx.package.*` roots to `#/package/` (lens owned-by chip re-pointed for free; package aspects stay on
 Graph; goja-pinned). Lifecycle actions disable on a tombstoned or name-less package.
+
+**F9 shipped state:** `cmd/loupe/pg.go` — the read-only connector (`LOUPE_PG_DSN`, pool-level
+`statement_timeout` 5s, per-request context, LIMIT clamped ≤1000) + the `/api/lens/<id>/rows` postgres
+path: `SELECT count(*)` + bounded `SELECT *` ordered by the key columns; identifiers validated+quoted
+(the write-adapter double-quote guard mirrored), `q` an escaped ILIKE bind param over
+`concat_ws('.', keyCols)` (KV-path filter parity); rows shape `{key, doc}` with the FULL row —
+`authz_anchors`/`projection_seq` included. Grant-table lenses fill table/key from
+`adapter.GrantTable`/`GrantKeyColumns`. Response mirrors the KV shape (`table` ↔ `bucket`); the §6.4
+panel needed only a status-line label. No DSN → the F5 `{pgPending:true}` shape verbatim (§6.4's/§13's
+"pending" copy is superseded — the state now means "seam not configured"); a set-but-unparseable DSN and
+a table-less spec ERROR instead of masquerading as pending; non-finite floats normalize to text (a raw
+NaN aborts json.Marshal after the 200 header — a silently blank panel). **Review-adjudicated bounds
+(3-layer):** single-database assumption — `LOUPE_PG_DSN` must point at the DB the lens targets (the
+spec's writer `dsn` is never used or forwarded); the unfiltered `count(*)` is fine at stated magnitudes
+(revisit past ~10⁶ rows); count/rows run as two statements (cosmetic race); exotic pg types (uuid,
+interval, `timestamptz 'infinity'`) render in decoded-Go form, not pg text form. **RLS note:** with the
+SELECT-only role the lattice-lane provisioning ships, protected tables show only rows that role may see
+— "0 of 0" against a live DSN can mean RLS-denied, not empty; the role posture decision (BYPASSRLS
+inspector vs wildcard `actor_read_grants` grant) rides the lattice row. **Same-origin gate (bundled XS
+row):** `crossOriginBlocked` → server.go, now guards `/api/op`, POST `/api/control/*`, POST+DELETE
+`/api/objects` + the package family; review found Origin==Host DNS-rebindable — the gate additionally
+requires a loopback (or configured-bind-host) Origin; `Origin: null` fails closed; a Host-rewriting
+reverse proxy will 403 mutations (out of the loopback console's posture — revisit only if Loupe ever
+fronts a proxy).
 
 ---
 
