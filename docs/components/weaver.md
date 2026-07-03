@@ -119,6 +119,16 @@ The freshness rule lives **in the target cypher**, not the engine: `missing_bgch
 EXISTS(check WHERE date > now − window)`, and the cypher projects the next deadline as the optional
 `freshUntil` column the temporal lane arms a timer from (below).
 
+**A bespoke, package-defined obligation is a sanctioned target shape, not a new mechanism.**
+"Executable Paper" clauses (`vtx.clause` — a prose obligation with a Starlark/cypher predicate and a
+formula, owned by a vertical package) are an ordinary candidate entity: the clause vertex is the row,
+and `missing_charge` / `missing_inspection` are ordinary `missing_<g>` gap columns computed by the
+clause-satisfaction lens exactly like any other target. Weaver never evaluates the clause itself — it
+still only watches `violating` and dispatches the playbook action (`directOp DebitAccount` for a
+computational gap, `assignTask` for a judgment one); the clause's bespoke-ness lives entirely in the
+package's DDL + lens + playbook, never in a Weaver-side runtime. See
+`_bmad-output/implementation-artifacts/bespoke-contracts-executable-paper-design.md`.
+
 ---
 
 ## Temporal lane — NATS scheduled messages (ADR-51, Contract #10 §10.4)
