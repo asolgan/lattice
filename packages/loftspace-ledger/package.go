@@ -25,8 +25,10 @@
 //     entries (the ledgerHistory lens), never stored as a mutable aspect — so
 //     concurrent debits/credits never race a read-modify-write. DebitAccount's
 //     optional clauseRef additionally writes the authorizedBy link (transaction
-//     → clause) and marks the clause completed — the bespoke-contracts
-//     Executable Paper package's canonical directOp consumer.
+//     → clause) and updates the clause's .status — completed for a one-time
+//     clause, or chargeValidUntil re-armed for a period="monthly" clause
+//     (Fire V3) — the bespoke-contracts Executable Paper package's canonical
+//     directOp consumer.
 //
 //   - The `ledgerHistory` lens (§10.2-style read model, one row per
 //     transaction) the payment-history FE reads (P5).
@@ -52,11 +54,12 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
 	Name:    "loftspace-ledger",
-	Version: "0.2.0",
+	Version: "0.3.0",
 	Description: "Loftspace tenant payment ledger: the account vertex type (CreateAccount, independently-minted " +
 		"id, one per lease via a .ledgerAccount guard aspect on the leaseapp) + the transaction vertex type " +
 		"(DebitAccount/CreditAccount, append-only entries linked to the account via postedTo; DebitAccount's " +
-		"optional clauseRef writes the authorizedBy audit link + marks the clause completed) + the ledgerHistory " +
+		"optional clauseRef writes the authorizedBy audit link + updates the clause status: completed one-time, " +
+		"or chargeValidUntil re-armed if period=monthly, Fire V3) + the ledgerHistory " +
 		"read-model lens (one row per transaction) + the leaseAccounts lens (lease -> account key lookup). " +
 		"Depends lease-signing.",
 	Depends:     []string{"lease-signing"},

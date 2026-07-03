@@ -616,3 +616,217 @@ func TestDebitAccount_NoClauseRef_Unaffected(t *testing.T) {
 		t.Fatalf("entry.amountCents = %v, want 15000", got)
 	}
 }
+
+// TestCreateClause_Prorated_ComputesExactAmountCents (Fire V3, the design's
+// §7/§8 money-precision golden test): a proration clause's amountCents =
+// (rateCents*daysOccupied)/periodDays must land on EXACT integer cents via
+// Starlark bignum integer floor division, including at the exact-divides
+// boundary where naive float64 division risks an off-by-one (e.g.
+// 9000/30=300.0 could round to 299.999... and floor wrong).
+func TestCreateClause_Prorated_ComputesExactAmountCents(t *testing.T) {
+	ctx, conn := setupBcEnv(t)
+	cp, cons := newBcPipeline(t, ctx, conn, "prorated")
+
+	leaseKey := seedLease(t, ctx, conn, "BBLEASEPRATEDHJKMNPQ")
+	acctKey := createAccount(t, ctx, conn, cp, cons, "createacctprorated1", leaseKey)
+
+	cases := []struct {
+		name                                                 string
+		rateCents, periodDays, daysOccupied, wantAmountCents int
+	}{
+		{"fractional", 5000, 30, 17, 2833},          // (5000*17)/30 = 2833.33.. -> 2833
+		{"exact-full-period", 9000, 30, 30, 9000},   // daysOccupied==periodDays: must be exact, not 8999
+		{"exact-divides-cleanly", 6000, 3, 1, 2000}, // (6000*1)/3 = 2000.0 exactly
+	}
+	for i, tc := range cases {
+		reqID := testutil.GenReqID("prorated" + itoa(i) + "00000")
+		env := &processor.OperationEnvelope{
+			RequestID:     reqID,
+			Lane:          processor.LaneDefault,
+			OperationType: "CreateClause",
+			Actor:         bcActorKey,
+			SubmittedAt:   "2026-07-02T12:00:00Z",
+			Class:         "clause",
+			Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","accountKey":"` + acctKey +
+				`","prose":"Prorated amenity fee.","rateCents":` + itoa(tc.rateCents) +
+				`,"periodDays":` + itoa(tc.periodDays) + `,"daysOccupied":` + itoa(tc.daysOccupied) + `}`),
+			ContextHint: &processor.ContextHint{Reads: []string{leaseKey, acctKey}},
+		}
+		testutil.PublishOp(t, conn, env)
+		testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+		clauseKey := "vtx.clause." + nanoIDFromRequestID(reqID)
+		termsDoc := readDoc(t, ctx, conn, clauseKey+".terms")
+		termsData, _ := termsDoc["data"].(map[string]any)
+		if got, _ := termsData["amountCents"].(float64); got != float64(tc.wantAmountCents) {
+			t.Fatalf("%s: terms.amountCents = %v, want %d", tc.name, termsData["amountCents"], tc.wantAmountCents)
+		}
+		if got, _ := termsData["basis"].(string); got != "daysOccupied" {
+			t.Fatalf("%s: terms.basis = %q, want daysOccupied", tc.name, got)
+		}
+		if got, _ := termsData["period"].(string); got != "oneTime" {
+			t.Fatalf("%s: terms.period = %q, want oneTime (proration is one-time only)", tc.name, got)
+		}
+	}
+}
+
+// TestCreateClause_Prorated_RejectsMonthlyPeriod — proration
+// (rateCents/periodDays/daysOccupied) combined with period=monthly is
+// rejected; the design scopes proration to one-time only (§10 Fire V3).
+func TestCreateClause_Prorated_RejectsMonthlyPeriod(t *testing.T) {
+	ctx, conn := setupBcEnv(t)
+	cp, cons := newBcPipeline(t, ctx, conn, "proratedmonthly")
+
+	leaseKey := seedLease(t, ctx, conn, "BBLEASEPRATEMTHJKMNP")
+	acctKey := createAccount(t, ctx, conn, cp, cons, "createacctproratemo1", leaseKey)
+
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("proratedmonthly00001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateClause",
+		Actor:         bcActorKey,
+		SubmittedAt:   "2026-07-02T12:00:00Z",
+		Class:         "clause",
+		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","accountKey":"` + acctKey +
+			`","prose":"x","rateCents":5000,"periodDays":30,"daysOccupied":17,"period":"monthly"}`),
+		ContextHint: &processor.ContextHint{Reads: []string{leaseKey, acctKey}},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+}
+
+// TestDebitAccount_RecurringClause_ReArmsChargeValidUntil (Fire V3, the
+// design's canonical recurring e2e path). A DebitAccount dispatched with
+// clauseRef + period="monthly" (the shape Weaver's clauseSatisfaction
+// playbook templates for a period=monthly clause) writes the authorizedBy
+// link AND re-arms .status.chargeValidUntil — state stays active, never
+// completed.
+func TestDebitAccount_RecurringClause_ReArmsChargeValidUntil(t *testing.T) {
+	ctx, conn := setupBcEnv(t)
+	cp, cons := newBcPipeline(t, ctx, conn, "recurdebit")
+
+	leaseKey := seedLease(t, ctx, conn, "BBLEASERECURDEBHJKMN")
+	acctKey := createAccount(t, ctx, conn, cp, cons, "createacctrecurdeb01", leaseKey)
+
+	clauseReqID := testutil.GenReqID("createclauserecurdb1")
+	clauseEnv := &processor.OperationEnvelope{
+		RequestID:     clauseReqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateClause",
+		Actor:         bcActorKey,
+		SubmittedAt:   "2026-07-02T12:00:00Z",
+		Class:         "clause",
+		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","accountKey":"` + acctKey +
+			`","prose":"Monthly smart-home fee.","amountCents":1500,"period":"monthly"}`),
+		ContextHint: &processor.ContextHint{Reads: []string{leaseKey, acctKey}},
+	}
+	testutil.PublishOp(t, conn, clauseEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+	clauseKey := "vtx.clause." + nanoIDFromRequestID(clauseReqID)
+	clauseID := clauseKey[len("vtx.clause."):]
+
+	debitReqID := testutil.GenReqID("debitrecurring00001")
+	debitEnv := &processor.OperationEnvelope{
+		RequestID:     debitReqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "DebitAccount",
+		Actor:         bcActorKey,
+		SubmittedAt:   "2026-07-02T13:00:00Z",
+		Class:         "transaction",
+		Payload:       json.RawMessage(`{"accountKey":"` + acctKey + `","amountCents":1500,"clauseRef":"` + clauseKey + `","period":"monthly"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{acctKey, clauseKey}},
+	}
+	testutil.PublishOp(t, conn, debitEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	txID := nanoIDFromRequestID(debitReqID)
+	authorizedByLnk := "lnk.transaction." + txID + ".authorizedBy.clause." + clauseID
+	if !keyExists(t, ctx, conn, authorizedByLnk) {
+		t.Fatalf("authorizedBy link must exist: %s", authorizedByLnk)
+	}
+
+	statusDoc := readDoc(t, ctx, conn, clauseKey+".status")
+	statusData, _ := statusDoc["data"].(map[string]any)
+	if got, _ := statusData["state"].(string); got != "active" {
+		t.Fatalf("recurring clause status.state = %q, want active (never completed)", got)
+	}
+	if _, ok := statusData["completedAt"]; ok {
+		t.Fatalf("recurring clause must never carry completedAt, got %v", statusData)
+	}
+	cvu, ok := statusData["chargeValidUntil"].(string)
+	if !ok || cvu == "" {
+		t.Fatalf("recurring clause status.chargeValidUntil must be stamped, got %v", statusData)
+	}
+	debitAt, err := time.Parse(time.RFC3339, "2026-07-02T13:00:00Z")
+	if err != nil {
+		t.Fatalf("parse debit time: %v", err)
+	}
+	gotValidUntil, err := time.Parse(time.RFC3339, cvu)
+	if err != nil {
+		t.Fatalf("chargeValidUntil %q is not RFC3339: %v", cvu, err)
+	}
+	if !gotValidUntil.After(debitAt) {
+		t.Fatalf("chargeValidUntil %s must be after the debit instant %s", cvu, debitAt)
+	}
+}
+
+// TestDebitAccount_RecurringClause_MismatchedPeriodOmitted_StillReArms —
+// defense-in-depth regression (adversarial review finding, Fire V3): a
+// clauseRef debit against a GENUINELY period=monthly clause, submitted with
+// NO period param (the shape a hand-submitted, non-Weaver DebitAccount could
+// send since this op has no read of the clause's own .terms.data.period to
+// cross-check the caller's claim), must still stamp chargeValidUntil. If it
+// didn't, the clauseSatisfaction lens's monthly gate (which reads only
+// chargeValidUntil, never .status.state) would find chargeValidUntil
+// permanently null and treat the clause as permanently violating — an
+// uncontrolled repeated-charge loop. state="completed" is expected here too
+// (the caller's period was absent, so the completing branch fires) but is
+// harmless: the monthly gate never reads `state`.
+func TestDebitAccount_RecurringClause_MismatchedPeriodOmitted_StillReArms(t *testing.T) {
+	ctx, conn := setupBcEnv(t)
+	cp, cons := newBcPipeline(t, ctx, conn, "recurmismatch")
+
+	leaseKey := seedLease(t, ctx, conn, "BBLEASERECURMSTHJKMN")
+	acctKey := createAccount(t, ctx, conn, cp, cons, "createacctrecurmis01", leaseKey)
+
+	clauseReqID := testutil.GenReqID("createclauserecurms1")
+	clauseEnv := &processor.OperationEnvelope{
+		RequestID:     clauseReqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateClause",
+		Actor:         bcActorKey,
+		SubmittedAt:   "2026-07-02T12:00:00Z",
+		Class:         "clause",
+		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","accountKey":"` + acctKey +
+			`","prose":"Monthly smart-home fee.","amountCents":1500,"period":"monthly"}`),
+		ContextHint: &processor.ContextHint{Reads: []string{leaseKey, acctKey}},
+	}
+	testutil.PublishOp(t, conn, clauseEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+	clauseKey := "vtx.clause." + nanoIDFromRequestID(clauseReqID)
+
+	// Deliberately NO "period" field — the mismatched/omitted-caller shape.
+	debitReqID := testutil.GenReqID("debitrecurmismatch1")
+	debitEnv := &processor.OperationEnvelope{
+		RequestID:     debitReqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "DebitAccount",
+		Actor:         bcActorKey,
+		SubmittedAt:   "2026-07-02T13:00:00Z",
+		Class:         "transaction",
+		Payload:       json.RawMessage(`{"accountKey":"` + acctKey + `","amountCents":1500,"clauseRef":"` + clauseKey + `"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{acctKey, clauseKey}},
+	}
+	testutil.PublishOp(t, conn, debitEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	statusDoc := readDoc(t, ctx, conn, clauseKey+".status")
+	statusData, _ := statusDoc["data"].(map[string]any)
+	cvu, ok := statusData["chargeValidUntil"].(string)
+	if !ok || cvu == "" {
+		t.Fatalf("chargeValidUntil must be stamped even when the caller omitted period, got %v", statusData)
+	}
+	if _, err := time.Parse(time.RFC3339, cvu); err != nil {
+		t.Fatalf("chargeValidUntil %q is not RFC3339: %v", cvu, err)
+	}
+}

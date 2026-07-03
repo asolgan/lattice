@@ -85,6 +85,17 @@ def execute(state, op):
         if not vertex_alive(state, lease_key):
             fail("UnknownLeaseApplication: " + lease_key)
 
+        # period (Fire V3): computational-only recurrence selector. A
+        # prorated amount (rateCents/periodDays/daysOccupied) is one-time-only
+        # — recurring proration is not a shape this fire builds.
+        period = optional_string(p, "period")
+        if period == None:
+            period = "oneTime"
+        if period != "oneTime" and period != "monthly":
+            fail("InvalidArgument: period: must be oneTime or monthly, got " + period)
+        if period == "monthly" and kind != "computational":
+            fail("InvalidArgument: period: monthly recurrence is computational-only")
+
         cond_key = optional_string(p, "conditionedOnKey")
         cond_type = None
         cond_id = None
@@ -97,7 +108,7 @@ def execute(state, op):
         # liveness: a tombstoned conditionedOn TARGET makes the lens's cond
         # match resolve null exactly like "never conditioned" would, so only
         # this flag lets the lens tell the two apart (see lenses.go).
-        terms_data = {"kind": kind, "period": "oneTime", "conditioned": (cond_key != None)}
+        terms_data = {"kind": kind, "period": period, "conditioned": (cond_key != None)}
         acct_key = None
         acct_id = None
         amount_cents = None
@@ -107,11 +118,39 @@ def execute(state, op):
         if kind == "computational":
             acct_key = required_string(p, "accountKey")
             _, acct_id = parts_of(acct_key, "accountKey", "account")
-            amount_cents = require_number(p, "amountCents")
-            if amount_cents <= 0:
-                fail("InvalidArgument: amountCents: required positive number")
             if not vertex_alive(state, acct_key):
                 fail("UnknownAccount: " + acct_key)
+
+            # Fire V3 proration: rateCents+periodDays+daysOccupied replace a
+            # flat amountCents. int(...) forces genuine Starlark bignum
+            # integers (never floats) before the multiply/floor-divide, so the
+            # result is EXACT — no float64 rounding hazard (the design's §7/R2
+            # money-precision rule; this is the "compute Processor-side"
+            # option, done once here rather than per-debit).
+            has_rate = hasattr(p, "rateCents") and getattr(p, "rateCents") != None
+            if has_rate:
+                if period != "oneTime":
+                    fail("InvalidArgument: rateCents: proration is one-time only; do not combine with a recurring period")
+                rate_cents = int(require_number(p, "rateCents"))
+                period_days = int(require_number(p, "periodDays"))
+                days_occupied = int(require_number(p, "daysOccupied"))
+                if rate_cents <= 0:
+                    fail("InvalidArgument: rateCents: required positive number")
+                if period_days <= 0:
+                    fail("InvalidArgument: periodDays: required positive number")
+                if days_occupied <= 0 or days_occupied > period_days:
+                    fail("InvalidArgument: daysOccupied: required positive number, at most periodDays")
+                amount_cents = (rate_cents * days_occupied) // period_days
+                if amount_cents <= 0:
+                    fail("InvalidArgument: rateCents/periodDays/daysOccupied: computed amountCents must be positive")
+                terms_data["basis"] = "daysOccupied"
+                terms_data["rateCents"] = rate_cents
+                terms_data["periodDays"] = period_days
+                terms_data["daysOccupied"] = days_occupied
+            else:
+                amount_cents = require_number(p, "amountCents")
+                if amount_cents <= 0:
+                    fail("InvalidArgument: amountCents: required positive number")
             terms_data["amountCents"] = amount_cents
         else:
             insp_key = required_string(p, "inspectorKey")

@@ -1,5 +1,16 @@
 package loftspaceledger
 
+import "fmt"
+
+// recurringChargePeriod is the validity span DebitAccount stamps onto a
+// period="monthly" clause's .status.chargeValidUntil as
+// chargeValidUntil = postedAt + recurringChargePeriod (a Go duration string,
+// time.ParseDuration form) — the Fire V3 recurring-clause analog of
+// lease-signing's bgcheckFreshnessWindow (freshness_window.go). Baked into
+// transactionDDLScript at package-init time via fmt.Sprintf, same pattern as
+// leaseServiceReplyDDLScript.
+const recurringChargePeriod = "720h"
+
 // accountDDLScript handles CreateAccount. The account gets its OWN
 // independently-minted NanoID — vertex NanoIDs are unique identifiers across
 // all of Core KV, never reused across vertex types, even deliberately (a
@@ -123,7 +134,11 @@ def execute(state, op):
 // mutated here, so concurrent debits/credits against the same account never
 // race a read-modify-write — the balance is derived by the ledgerHistory lens
 // summing entries.
-const transactionDDLScript = `
+//
+// The clauseValidUntil computation (Fire V3) is pure arithmetic on the op's
+// own posted_at (time.rfc3339_add), so post_entry stays read-free for that
+// leg exactly as before.
+var transactionDDLScript = fmt.Sprintf(`
 def make_vtx(key, cls, data):
     return {"op": "create", "key": key,
             "document": {"class": cls, "isDeleted": False, "data": data}}
@@ -206,12 +221,18 @@ def post_entry(state, op, entry_type, event_class, allow_clause_ref):
     # it entirely (nothing below runs).
     clause_key = None
     clause_id = None
+    clause_period = None
     if allow_clause_ref:
         clause_key = optional_string(p, "clauseRef")
         if clause_key != None:
             _, clause_id = parts_of(clause_key, "clauseRef", "clause")
             if not vertex_alive(state, clause_key):
                 fail("UnknownClause: " + clause_key)
+            # period (Fire V3): the clauseSatisfaction playbook always
+            # templates row.period alongside clauseRef, so a Weaver-dispatched
+            # charge always carries it; a hand-submitted clauseRef with no
+            # period falls through to the Fire V1/V2 one-time-completion path.
+            clause_period = optional_string(p, "period")
 
     tx_id = nanoid.new()
     tx_key = "vtx.transaction." + tx_id
@@ -242,14 +263,48 @@ def post_entry(state, op, entry_type, event_class, allow_clause_ref):
         # I charged this?" chain of custody back to the authorizing clause.
         authorized_by_lnk = "lnk.transaction." + tx_id + ".authorizedBy.clause." + clause_id
         mutations.append(make_link(authorized_by_lnk, tx_key, clause_key, "authorizedBy", "authorizedBy", {}))
-        # Fixed/one-time clause bookkeeping: mark it completed (audit/display
-        # only — the clauseSatisfaction lens's convergence gate is the
-        # authorizedBy link itself, not this status, so this write is
-        # UNCONDITIONED — see the design's R3).
-        mutations.append({"op": "update", "key": clause_key + ".status",
-                           "document": {"class": "clauseStatus", "isDeleted": False,
-                                        "vertexKey": clause_key, "localName": "status",
-                                        "data": {"state": "completed", "completedAt": posted_at}}})
+
+        # clauseValidUntil is stamped UNCONDITIONALLY, regardless of which
+        # branch below fires. This op has no read of the clause's own
+        # .terms.data.period (only its root is hydrated — see
+        # bespoke-contracts' targets.go Reads), so clause_period is a
+        # caller-supplied signal, not a verified one; a hand-submitted
+        # DebitAccount (this is an ordinary operator-granted op, not
+        # Weaver-exclusive) could in principle pass a period that disagrees
+        # with the clause's real archetype. Always stamping chargeValidUntil
+        # closes the dangerous direction of that mismatch for free: the
+        # clauseSatisfaction lens's monthly gate (lenses.go) reads ONLY
+        # chargeValidUntil, never the state field, so a genuinely-monthly
+        # clause re-arms correctly even if clause_period was wrong/omitted
+        # here — the alternative (never stamping it) would leave such a
+        # clause permanently violating and Weaver re-dispatching
+        # indefinitely. The mirror-image mismatch (a genuinely-oneTime
+        # clause stamped as if monthly) is harmless: the oneTime gate is
+        # chargeCount/authorizedBy-link-driven and never reads
+        # chargeValidUntil at all.
+        charge_valid_until = time.rfc3339_add(posted_at, %q)
+        if clause_period == "monthly":
+            # Fire V3 recurring clause: re-arm chargeValidUntil, never
+            # complete. This IS the clauseSatisfaction lens's convergence gate
+            # for a monthly clause (mirrors lease-signing's bgcheck-freshness
+            # validUntil pattern) — unlike the one-time case below, this write
+            # is load-bearing, not just audit.
+            mutations.append({"op": "update", "key": clause_key + ".status",
+                               "document": {"class": "clauseStatus", "isDeleted": False,
+                                            "vertexKey": clause_key, "localName": "status",
+                                            "data": {"state": "active", "chargeValidUntil": charge_valid_until}}})
+        else:
+            # Fixed/one-time clause bookkeeping: mark it completed (audit/display
+            # only — the clauseSatisfaction lens's convergence gate is the
+            # authorizedBy link itself, not this status, so this write is
+            # UNCONDITIONED — see the design's R3). chargeValidUntil rides
+            # along here too (see the note above); the lens never reads it
+            # for a non-monthly clause.
+            mutations.append({"op": "update", "key": clause_key + ".status",
+                               "document": {"class": "clauseStatus", "isDeleted": False,
+                                            "vertexKey": clause_key, "localName": "status",
+                                            "data": {"state": "completed", "completedAt": posted_at,
+                                                     "chargeValidUntil": charge_valid_until}}})
 
     return {"mutations": mutations, "events": events,
             "response": {"primaryKey": tx_key}}
@@ -264,4 +319,4 @@ def execute(state, op):
         return post_entry(state, op, "credit", "account.credited", False)
 
     fail("transaction DDL: unknown operationType: " + ot)
-`
+`, recurringChargePeriod)

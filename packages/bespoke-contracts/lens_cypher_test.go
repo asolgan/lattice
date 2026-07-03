@@ -321,3 +321,83 @@ func TestClauseSatisfaction_JudgmentClause_Inspected(t *testing.T) {
 	require.Equal(t, false, v["violating"])
 }
 
+// TestClauseSatisfaction_Recurring_NeverCharged — a period=monthly clause
+// with no .status.chargeValidUntil yet (never charged): missing_charge true
+// (due immediately, same as a fresh oneTime clause), freshUntil null (no
+// deadline to arm — Weaver's gap-dispatch owns it, not the temporal lane).
+func TestClauseSatisfaction_Recurring_NeverCharged(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newBcFixture(t)
+	f.vtx(t, "recurnew", "clause")
+	f.aspect(t, "recurnew", "terms", "clauseTerms", map[string]any{"kind": "computational", "conditioned": false, "amountCents": 1500.0, "period": "monthly"})
+	f.aspect(t, "recurnew", "status", "clauseStatus", map[string]any{"state": "active"})
+	f.vtx(t, "recurnew_acct", "account")
+	f.edge(t, "chargesTo", "recurnew", "recurnew_acct")
+
+	v := f.projectAt(t, "recurnew")[0].Values
+	require.Equal(t, true, v["missing_charge"], "never charged — due immediately")
+	require.Equal(t, true, v["violating"])
+	require.Nil(t, v["freshUntil"], "no chargeValidUntil yet — nothing to arm")
+}
+
+// TestClauseSatisfaction_Recurring_Fresh — a period=monthly clause whose
+// chargeValidUntil is still in the future: missing_charge false (converged
+// for this period), freshUntil projects the same deadline to arm Weaver's
+// temporal lane for the next re-open.
+func TestClauseSatisfaction_Recurring_Fresh(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newBcFixture(t)
+	future := time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339)
+	f.vtx(t, "recurfresh", "clause")
+	f.aspect(t, "recurfresh", "terms", "clauseTerms", map[string]any{"kind": "computational", "conditioned": false, "amountCents": 1500.0, "period": "monthly"})
+	f.aspect(t, "recurfresh", "status", "clauseStatus", map[string]any{"state": "active", "chargeValidUntil": future})
+	f.vtx(t, "recurfresh_acct", "account")
+	f.edge(t, "chargesTo", "recurfresh", "recurfresh_acct")
+
+	v := f.projectAt(t, "recurfresh")[0].Values
+	require.Equal(t, false, v["missing_charge"], "chargeValidUntil is future — converged for this period")
+	require.Equal(t, false, v["violating"])
+	require.Equal(t, future, v["freshUntil"], "freshUntil must arm the same deadline")
+}
+
+// TestClauseSatisfaction_Recurring_Lapsed — a period=monthly clause whose
+// chargeValidUntil is in the past: missing_charge re-opens, freshUntil goes
+// null (the deadline already passed — gap-dispatch owns it now, not a timer).
+func TestClauseSatisfaction_Recurring_Lapsed(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newBcFixture(t)
+	past := time.Now().UTC().Add(-24 * time.Hour).Format(time.RFC3339)
+	f.vtx(t, "recurlapsed", "clause")
+	f.aspect(t, "recurlapsed", "terms", "clauseTerms", map[string]any{"kind": "computational", "conditioned": false, "amountCents": 1500.0, "period": "monthly"})
+	f.aspect(t, "recurlapsed", "status", "clauseStatus", map[string]any{"state": "active", "chargeValidUntil": past})
+	f.vtx(t, "recurlapsed_acct", "account")
+	f.edge(t, "chargesTo", "recurlapsed", "recurlapsed_acct")
+
+	v := f.projectAt(t, "recurlapsed")[0].Values
+	require.Equal(t, true, v["missing_charge"], "chargeValidUntil lapsed — due again")
+	require.Equal(t, true, v["violating"])
+	require.Nil(t, v["freshUntil"], "a lapsed deadline is not re-armed")
+}
+
+// TestClauseSatisfaction_OneTime_FreshUntilAlwaysNull — a converged oneTime
+// clause (Fire V1 shape, no period=monthly) never projects a freshUntil —
+// the temporal lane is exclusively a monthly-clause behavior.
+func TestClauseSatisfaction_OneTime_FreshUntilAlwaysNull(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newBcFixture(t)
+	f.mkClause(t, "onetimefresh", 4500)
+	f.vtx(t, "onetimefresh_tx", "transaction")
+	f.edge(t, "authorizedBy", "onetimefresh_tx", "onetimefresh")
+
+	v := f.projectAt(t, "onetimefresh")[0].Values
+	require.Equal(t, false, v["missing_charge"])
+	require.Nil(t, v["freshUntil"], "oneTime clauses never arm the temporal lane")
+}

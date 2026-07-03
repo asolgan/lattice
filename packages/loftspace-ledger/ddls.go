@@ -95,22 +95,33 @@ func transactionDDL() pkgmgr.DDLSpec {
 		Class:             "meta.ddl.vertexType",
 		PermittedCommands: []string{"DebitAccount", "CreditAccount"},
 		Description: "Ledger transaction DDL. Vertex shape: vtx.transaction.<NanoID>, class=transaction, root data = {} " +
-			"(minimal, D5 — the entry detail is a .entry aspect). DebitAccount{accountKey, amountCents, memo?, clauseRef?} " +
-			"records a charge (rent, a late fee, a deposit); CreditAccount{accountKey, amountCents, memo?} records a payment " +
-			"received. Each mints a fresh vtx.transaction.<NanoID> + a .entry aspect {type (debit|credit), amountCents, memo?, " +
-			"postedAt} + the postedTo link (transaction→account, the transaction is the later-arriving vertex so it is the " +
-			"source — Contract #1 §1.1). The ledger is APPEND-ONLY — no balance is stored or mutated on the account; the " +
-			"ledgerHistory lens derives a balance by summing entries, so concurrent debits/credits never race a " +
-			"read-modify-write. Requires the accountKey be a live account and amountCents be a positive number. " +
-			"DebitAccount's optional clauseRef (the bespoke-contracts Executable Paper consumer, Contract #10 §10.8's " +
-			"canonical directOp target) additionally validates the clause is live, writes the authorizedBy link " +
-			"(transaction→clause, the audit chain of custody) and marks the clause's .status completed.",
+			"(minimal, D5 — the entry detail is a .entry aspect). DebitAccount{accountKey, amountCents, memo?, clauseRef?, " +
+			"period?} records a charge (rent, a late fee, a deposit); CreditAccount{accountKey, amountCents, memo?} " +
+			"records a payment received. Each mints a fresh vtx.transaction.<NanoID> + a .entry aspect {type " +
+			"(debit|credit), amountCents, memo?, postedAt} + the postedTo link (transaction→account, the transaction " +
+			"is the later-arriving vertex so it is the source — Contract #1 §1.1). The ledger is APPEND-ONLY — no " +
+			"balance is stored or mutated on the account; the ledgerHistory lens derives a balance by summing " +
+			"entries, so concurrent debits/credits never race a read-modify-write. Requires the accountKey be a " +
+			"live account and amountCents be a positive number. DebitAccount's optional clauseRef (the " +
+			"bespoke-contracts Executable Paper consumer, Contract #10 §10.8's canonical directOp target) " +
+			"additionally validates the clause is live and writes the authorizedBy link (transaction→clause, the " +
+			"audit chain of custody). What it does to the clause's .status next depends on the accompanying " +
+			"`period` param (Fire V3, bespoke-contracts' clauseSatisfaction playbook always supplies it alongside " +
+			"clauseRef): period=\"monthly\" keeps state active (a recurring clause never completes); any other " +
+			"value (or clauseRef with no period, the Fire V1/V2 shape) marks .status completed as before. " +
+			"chargeValidUntil (~30 days out) is stamped UNCONDITIONALLY either way — this op has no read of the " +
+			"clause's own .terms.data.period to cross-check `period` against, so it is a defense-in-depth measure " +
+			"(not just the monthly branch's convergence signal): the clauseSatisfaction lens's monthly gate reads " +
+			"only chargeValidUntil, never `state`, so a genuinely-monthly clause still re-arms correctly even if a " +
+			"caller passed the wrong/no period; the reverse mismatch is harmless (a oneTime clause's gate never " +
+			"reads chargeValidUntil).",
 		Script: transactionDDLScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"accountKey":{"type":"string","description":"vtx.account.<NanoID> the transaction posts to (DebitAccount/CreditAccount; required, validated alive)."},` +
 			`"amountCents":{"type":"number","description":"The transaction amount in integer cents; required, must be > 0. A debit is a charge (increases what the tenant owes); a credit is a payment (decreases it)."},` +
 			`"memo":{"type":"string","description":"Optional free-text description of the charge or payment (e.g. \"June rent\", \"Late fee\"). Optional."},` +
-			`"clauseRef":{"type":"string","description":"DebitAccount only: vtx.clause.<NanoID> of the bespoke-contract clause authorizing this charge (optional, validated alive when supplied). Writes the authorizedBy audit link and marks the clause completed."}},` +
+			`"clauseRef":{"type":"string","description":"DebitAccount only: vtx.clause.<NanoID> of the bespoke-contract clause authorizing this charge (optional, validated alive when supplied). Writes the authorizedBy audit link and updates the clause's .status."},` +
+			`"period":{"type":"string","description":"DebitAccount only, alongside clauseRef (Fire V3): \"monthly\" keeps the clause active instead of completing it; any other value (or omitted) marks the clause completed, the Fire V1/V2 behavior. chargeValidUntil is stamped unconditionally either way (defense-in-depth — see the DDL description)."}},` +
 			`"required":["accountKey","amountCents"]}`,
 		OutputSchema: `{"type":"object","properties":` +
 			`{"primaryKey":{"type":"string","description":"vtx.transaction.<NanoID> of the minted transaction (the operation's principal key)."}}}`,
@@ -118,7 +129,8 @@ func transactionDDL() pkgmgr.DDLSpec {
 			"accountKey":  "Full vtx.account.<NanoID> key the transaction posts to. DebitAccount/CreditAccount validate it is alive and write the postedTo link (transaction→account) the ledgerHistory lens walks.",
 			"amountCents": "The transaction amount in integer cents; required, must be a positive number. Stored on the .entry aspect and projected verbatim by the ledgerHistory lens.",
 			"memo":        "Optional free-text description of the charge or payment (e.g. \"June rent\", \"Late fee — 5 days\"). Stored on the .entry aspect when supplied; projected by the ledgerHistory lens.",
-			"clauseRef":   "DebitAccount only. Full vtx.clause.<NanoID> key of the bespoke-contract clause authorizing this charge. When supplied, validates the clause is alive, writes the authorizedBy link (transaction→clause), and marks the clause's .status completed.",
+			"clauseRef":   "DebitAccount only. Full vtx.clause.<NanoID> key of the bespoke-contract clause authorizing this charge. When supplied, validates the clause is alive, writes the authorizedBy link (transaction→clause), and updates the clause's .status per the period param.",
+			"period":      "DebitAccount only, alongside clauseRef (Fire V3). \"monthly\" keeps the clause active (recurring); anything else marks .status completed (one-time, Fire V1/V2 default). chargeValidUntil is stamped either way, unconditionally.",
 		},
 		Examples: []pkgmgr.ExampleSpec{
 			{
@@ -137,11 +149,19 @@ func transactionDDL() pkgmgr.DDLSpec {
 					"(the ledgerHistory-derived balance = sum(debits) − sum(credits)).",
 			},
 			{
-				Name:    "DebitAccount — clause-authorized charge (bespoke-contracts Weaver dispatch)",
+				Name:    "DebitAccount — clause-authorized one-time charge (bespoke-contracts Weaver dispatch)",
 				Payload: map[string]any{"accountKey": "vtx.account.<NanoID>", "amountCents": 4500, "clauseRef": "vtx.clause.<NanoID>"},
 				ExpectedOutcome: "Same as a plain DebitAccount, plus: validates the clause is alive, writes the authorizedBy " +
 					"link (transaction→clause) and marks the clause's .status {state: completed, completedAt}. Dispatched by " +
 					"Weaver's clauseSatisfaction playbook (missing_charge gap), never submitted directly by a human caller.",
+			},
+			{
+				Name:    "DebitAccount — clause-authorized recurring charge (Fire V3, monthly)",
+				Payload: map[string]any{"accountKey": "vtx.account.<NanoID>", "amountCents": 1500, "clauseRef": "vtx.clause.<NanoID>", "period": "monthly"},
+				ExpectedOutcome: "Same as the one-time clause-authorized charge, but with period=\"monthly\": .status stays " +
+					"{state: active}, gaining chargeValidUntil ~30 days out instead of completing. The clauseSatisfaction " +
+					"lens goes non-violating (freshUntil=chargeValidUntil arms Weaver's temporal lane) until chargeValidUntil " +
+					"lapses, at which point missing_charge re-opens and the next period's DebitAccount fires.",
 			},
 		},
 	}

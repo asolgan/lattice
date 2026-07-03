@@ -7,15 +7,17 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //
 //   - missing_charge → directOp(DebitAccount) over the charged account
 //     (row.accountKey). Params route the computed amount (row.amountCents,
-//     type-preserved — resolveParam returns the row value verbatim) and the
-//     authorizing clause (row.clauseKey, the new clauseRef param
-//     loftspace-ledger's DebitAccount reads this fire) into the op's
-//     payload; Reads routes both keys into ContextHint.Reads so the
-//     Processor hydrates the account + the clause. The `directOp`-must-be-
-//     literal guard is satisfied — DebitAccount is a literal operation name,
-//     only params/target/reads are row-templated (the objectLiveness →
-//     TombstoneObject / appointmentReminders → RecordAppointmentReminder
-//     precedent, granted to operator, which Weaver's service actor holds).
+//     type-preserved — resolveParam returns the row value verbatim), the
+//     authorizing clause (row.clauseKey, the clauseRef param loftspace-
+//     ledger's DebitAccount reads), and (Fire V3) row.period — DebitAccount
+//     branches on period="monthly" to re-arm the clause's chargeValidUntil
+//     instead of completing it — into the op's payload; Reads routes the
+//     account + clause keys into ContextHint.Reads so the Processor
+//     hydrates them. The `directOp`-must-be-literal guard is satisfied —
+//     DebitAccount is a literal operation name, only params/target/reads are
+//     row-templated (the objectLiveness → TombstoneObject / appointment
+//     Reminders → RecordAppointmentReminder precedent, granted to operator,
+//     which Weaver's service actor holds).
 //   - missing_inspection → assignTask(InspectPremises) to the assigned
 //     inspector (row.inspectorKey), scoped to the clause (row.clauseKey) —
 //     the same shape as lease-signing's missing_signature → assignTask
@@ -36,7 +38,7 @@ func WeaverTargets() []pkgmgr.WeaverTargetSpec {
 					Action:    "directOp",
 					Operation: "DebitAccount",
 					Target:    "row.accountKey",
-					Params:    map[string]string{"amountCents": "row.amountCents", "clauseRef": "row.clauseKey"},
+					Params:    map[string]string{"amountCents": "row.amountCents", "clauseRef": "row.clauseKey", "period": "row.period"},
 					Reads:     []string{"row.accountKey", "row.clauseKey"},
 				},
 				"missing_inspection": {
