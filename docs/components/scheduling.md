@@ -40,7 +40,7 @@ Set two headers on your `nats.Msg` before publishing to `schedule.<domain>.<kind
 
 | Header constant | Wire value | Meaning |
 |-----------------|-----------|---------|
-| `server.JSSchedulePattern` | `"Nats-Schedule"` | Schedule spec — `@at <RFC3339>` (one-shot absolute time). Example: `@at 2026-06-06T14:00:00Z` |
+| `server.JSSchedulePattern` | `"Nats-Schedule"` | Schedule spec — `@at <RFC3339>` (one-shot absolute time; e.g. `@at 2026-06-06T14:00:00Z`) **or** `@every <duration>` (recurring; interval a whole `>= 1s`) |
 | `server.JSScheduleTarget` | `"Nats-Schedule-Target"` | The subject the NATS scheduler republishes the payload to when the schedule fires — **must lie within `schedule.>`** (the server rejects an out-of-stream target at publish time) |
 
 Use the constants from `github.com/nats-io/nats-server/v2/server` — do not hardcode the raw strings. In-repo components use `substrate.ScheduleHeader` / `substrate.ScheduleTargetHeader` (`internal/substrate/publish.go`), which are test-pinned to the server constants, and publish through `Conn.Publish` (a JetStream publish) rather than holding a raw NATS handle.
@@ -70,6 +70,7 @@ To cancel a pending schedule, publish to the same subject with `Nats-Schedule-Ne
 The target subject is **publisher-chosen but MUST lie within `schedule.>`**: the NATS scheduler fires by storing the payload **back into the `core-schedules` stream** at the target subject and validates that target against the stream's own subjects, rejecting an out-of-stream target at publish time (`JSMessageSchedulesTargetInvalidError`). Each component namespaces its own fired subjects and consumes them via a **JetStream consumer filtered on its target-subject prefix** (a plain NATS subscribe never sees them):
 
 - Weaver schedules at `schedule.weaver.timer.<targetId>.<entityId>` with target `schedule.weaver.timer.fired.<targetId>.<entityId>`, and consumes via the durable `weaver-temporal` filtered on `schedule.weaver.timer.fired.>`.
+- The **bridge** (its async poll/timeout lane — see [bridge.md](./bridge.md)) schedules at `schedule.bridge.{poll,timeout}.<handle>` with targets `schedule.bridge.{poll,timeout}.fired.<handle>`, and consumes both via the single fixed durable `bridge-schedule` filtered on `schedule.bridge.*.fired.>`. A pending poll is a **self-rescheduling `@at` chain** (each fired poll re-arms the next), not an `@every`.
 - No cross-component fan-out occurs — each component's filtered consumer receives only its own fired messages.
 
 The fired message is then processed by the consuming component (e.g. Weaver converts it to a normal op via the Processor). The transactional outbox (Contract #3) remains the sole event producer — the `core-schedules` stream does not route to `core-events`.
@@ -78,7 +79,12 @@ The fired message is then processed by the consuming component (e.g. Weaver conv
 
 ## Scope
 
-The platform supports `@at <RFC3339>` (one-shot absolute schedules). `@every` recurring schedules are deferred (Phase 3).
+The platform supports **both** schedule forms:
+
+- **`@at <RFC3339>`** — a one-shot absolute schedule. Published via the generic `Conn.Publish` with the `Nats-Schedule: @at …` header (the example above). Fires once.
+- **`@every <duration>`** — a recurring schedule. Armed via `Conn.ScheduleEvery` (`internal/substrate/publish.go`). `interval` must be a whole, `>= 1s` duration — the NATS server's own `@every` floor, mirrored by `minScheduleInterval`; a per-message TTL is available but opt-in (off by default).
+
+Both are stored in `core-schedules`, fire to a `schedule.>` target, and honor replace-by-subject semantics.
 
 ---
 

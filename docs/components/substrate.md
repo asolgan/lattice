@@ -11,11 +11,13 @@ component (Processor, Refractor, bootstrap, identity ops, CLI tooling) depends
 on it. Substrate has no upstream Lattice dependencies — only the NATS Go
 client (`nats-io/nats.go`). Its job is to expose typed, contract-aware
 operations: key shape construction + parsing, atomic batch publish, KV CRUD,
-NanoID generation, and the typed sentinel errors the rest of the platform
-branches on. It is **not** a general NATS wrapper — only the operations
-Lattice components share architecturally live here. Component-specific helpers
-(JetStream consumer management, watch helpers, NATS Services) belong in the
-component, not in substrate.
+the off-graph object (blob) store, message publish + `@at`/`@every` scheduling,
+durable + supervised consumers and the KV-CDC watch, NanoID generation (incl.
+deterministic derivation), and the typed sentinel errors the rest of the
+platform branches on. It is **not** a general NATS wrapper — only the operations
+Lattice components share architecturally live here. Component-specific responders
+(the NATS Services / `micro` control planes) belong in the component, not in
+substrate.
 
 ---
 
@@ -31,11 +33,17 @@ Key files:
 |------|---------|
 | `doc.go` | Package godoc; design-principles summary |
 | `nanoid.go` | `NewNanoID`, `NewShortCode`, `IsValidNanoID`, `IsValidShortCode`, `Alphabet`, `NanoIDLength`, `ShortCodeLength` |
+| `derive.go` | `DeriveNanoID`, `SHA256NanoID`, `NanoIDFromPCG` — **deterministic** id derivation (a fixed namespace+input → a stable NanoID; the basis of deterministic requestIds) |
 | `keys.go` | `VertexKey`, `AspectKey`, `LinkKey`, `ClassifyKey`, `ParseVertexKey`, `ParseAspectKey`, `ParseLinkKey`; segment validators |
 | `envelope.go` | `NewDocumentEnvelopeAt`, `AspectEnvelope`, `LinkEnvelope` — document wire shapes |
 | `conn.go` | `Connect`, `Wrap`, `*Conn`; `NATS()` and `JetStream()` escape hatches; lazy `buckets` cache |
 | `kv.go` | `KVGet`, `KVPut`, `KVCreate`, `KVUpdate`, `KVListKeys`, `KVPutWithTTL`, `KVDelete` |
+| `kvhandle.go` | `KV` (an opened bucket handle) + `(*Conn).OpenKV` — used where a caller holds one bucket handle across many reads (e.g. Refractor control's validate sampler) |
 | `batch.go` | `AtomicBatch`, `PublishBatch`, `BatchOp`, `PublishOp`, `BatchAck`, `PublishBatchAck`; raw-protocol implementation |
+| `publish.go` | `Publish`, `PublishCore`, `ScheduleEvery`, `CancelSchedule`, `DeriveScheduleOccurrenceRequestID` — the publish + `@every` schedule surface (see [scheduling.md](./scheduling.md)) |
+| `object.go` | `ObjectPut`, `ObjectGet`, `ObjectGetInfo`, `ObjectDelete`, `ObjectList`, `ObjectStoreExists`, `ObjectInfo` — the off-graph blob plane (Contract #7 §7.2 / #10 §10.8) |
+| `stream.go` | `EnsureStream`, `StreamSpec` — idempotent JetStream stream provisioning (the sanctioned counterpart to the **rejected** `EnsureKV`; bucket provisioning stays in bootstrap) |
+| `subscribe.go` | `SubscribeKVChanges`, `WatchKVUpdates`, `KVEvent`, `SubscribeKVOptions`, plus durable management (`PruneStaleDurables`, `DeleteDurable`, `DeleteStreamConsumer`) — the CDC watch surface |
 | `errors.go` | `ErrKeyNotFound`, `ErrRevisionConflict`, `ErrAtomicBatchRejected` |
 | `consumer.go` | `Decision` (`Ack`/`Nak`/`Term`/`NakWithDelay`), `DefaultRedeliveryDelay`, `Message`, `HandlerFunc`, `DurableConsumerConfig`, `RunDurableConsumer`, `applyDecision` |
 | `consumer_supervisor.go` | `ConsumerSupervisor`, `NewConsumerSupervisor`, `Add`/`Remove`/`Reset`/`Stop`/`UpdateSpec`/`Pause`/`Resume`/`PendingForConsumer` |
@@ -116,7 +124,7 @@ are wrapped with operation context for log correlation.
 
 ### Atomic batch
 
-`(*Conn).AtomicBatch(ops []BatchOp, timeout time.Duration) (*BatchAck, error)`
+`(*Conn).AtomicBatch(ctx context.Context, ops []BatchOp) (*BatchAck, error)`
 
 Publishes a slice of `BatchOp` as a single NATS JetStream atomic batch. All
 ops commit or none do. Implements the raw-NATS protocol (Nats-Batch-Id,
@@ -139,7 +147,7 @@ On failure, error wraps `ErrAtomicBatchRejected`.
 
 ### Publish batch
 
-`(*Conn).PublishBatch(ops []PublishOp, timeout time.Duration) (*PublishBatchAck, error)`
+`(*Conn).PublishBatch(ctx context.Context, ops []PublishOp) (*PublishBatchAck, error)`
 
 Publishes a slice of `PublishOp` as a single unconditional JetStream atomic
 batch to arbitrary subjects (no revision conditions, no per-key TTL). Used by
@@ -150,6 +158,35 @@ subjects on the `core-events` stream. All-or-nothing; order preserved via
 All subjects must belong to the same JetStream stream.
 
 `PublishOp` fields: `Subject`, `Data`, `Header` (optional extra headers).
+
+### Publish & schedule
+
+The plain-message surface (not the atomic-batch path) — used by schedulers and by components that emit to a stream or core subject.
+
+| Function | Description |
+|----------|-------------|
+| `Publish(ctx, subject, data, header) error` | A JetStream publish with optional headers. The `@at` schedule path sets `Nats-Schedule` / `Nats-Schedule-Target` here (see [scheduling.md](./scheduling.md)). |
+| `PublishCore(ctx, subject, data) error` | A plain **core-NATS** publish — no JetStream, no persistence (request/reply, control-plane-style fire-and-forget). |
+| `ScheduleEvery(ctx, subject, target, interval, payload) error` | Arm a recurring `@every` schedule. `interval` must be a whole `>= 1s` duration (`minScheduleInterval`, the server's own floor). |
+| `CancelSchedule(ctx, subject) error` | Cancel a pending schedule for `subject` (publishes the purge sentinel). |
+| `DeriveScheduleOccurrenceRequestID(scheduleSubject, occurrence) string` | Deterministic requestId for one firing of a recurring schedule, so a redelivered firing dedups on the Contract #4 tracker. |
+
+### Object store (off-graph blob plane)
+
+The large-file / blob surface — bytes live in a JetStream **Object Store**, off the vertex graph, addressed by `vtx.object.*` vertices minted by the Processor (Contract #7 §7.2, #10 §10.8). Writers publish on `$O.<bucket>.>`; the object-store-manager runs the owner-cascade GC.
+
+| Function | Description |
+|----------|-------------|
+| `ObjectPut(ctx, bucket, name, r, maxBytes) (ObjectInfo, error)` | Stream bytes into `bucket` under `name`, capped at `maxBytes`. Returns `ObjectInfo` (size, digest, …). |
+| `ObjectGet(ctx, bucket, name) (io.ReadCloser, ObjectInfo, error)` | Open a blob for reading. |
+| `ObjectGetInfo(ctx, bucket, name) (ObjectInfo, error)` | Metadata only (no bytes). |
+| `ObjectDelete(ctx, bucket, name) error` | Remove a blob (the GC delete path). |
+| `ObjectList(ctx, bucket) ([]ObjectInfo, error)` | Enumerate a bucket's objects. |
+| `ObjectStoreExists(ctx, bucket) error` | Readiness probe for the object bucket. |
+
+### Stream provisioning
+
+`(*Conn).EnsureStream(ctx, spec StreamSpec) error` idempotently creates-or-updates a JetStream stream. This is the **sanctioned** provisioning helper (asymmetric with the deliberately-**rejected** `EnsureKV` — KV-bucket provisioning stays in bootstrap, not an ad-hoc substrate primitive). `StreamSpec` describes the stream name, subjects, and flags.
 
 ### Durable KV change consumer
 

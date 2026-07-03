@@ -63,8 +63,12 @@ type SubscribeKVOptions struct {
 //     callers must be explicit: append "." for prefix matching or ">" for
 //     all descendants
 //
-// On ctx.Done the consumer is deleted from the JetStream catalog and the
-// returned channel is closed. Unrecoverable subscription errors
+// On ctx.Done the returned channel is closed, but the durable consumer is
+// PRESERVED in the JetStream catalog — its acked position is the point of
+// durability, so re-invoking with the same durableName resumes from it (the
+// runKVSubscription loop only closes the channel; it never deletes the durable).
+// Deleting the durable is an explicit, separate call (DeleteDurable /
+// PruneStaleDurables / DeleteStreamConsumer). Unrecoverable subscription errors
 // (iterator stops, decode failures that exhaust MaxDeliver) also close
 // the channel — callers should treat channel close as the signal that
 // the subscription is gone.
