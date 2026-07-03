@@ -1,6 +1,16 @@
 # Gateway token-revocation kill-switch — activation design
 
-**Status: 📐 awaiting-Andrew (ratification).** Designer fire (Winston, bmad-architect), 2026-07-02.
+**Status: ✅ Ratified 2026-07-03 (Andrew).** Designer fire (Winston, bmad-architect), 2026-07-02.
+
+**Ratification (2026-07-03, Andrew).** Ratified as designed — the mechanism is Andrew's own steer of
+2026-07-02 (op → outboxed event → Gateway-owned local KV; Loupe write-free), no fork was open, **no
+frozen-contract change**. Ratification DD verified every gap claim in code and folded one staleness:
+the failed-bucket-open downgrade is no longer *silent* (a `GatewayRevocationDisabled` warning issue
+ships in the heartbeat, `cmd/gateway/main.go:216`) but remains **default-open** — §2.4's
+refuse-to-start stands as the fix. **2 fires stand as decomposed** (§6): Fire 1 the whole enforcement
+loop (ops + DDLs + grants + provisioning + materializer + fail-closed startup + NKey + e2e + Gate-3
+revoked-actor vector); Fire 2 the rich heartbeat `revocation` block. Unblocks **Loupe F11** after
+Fire 2. Op placement: identity-domain (Steward may relocate if its schema grows awkward).
 Owning lane: **Lattice**. Owning component: **Gateway** (`internal/gateway`, `cmd/gateway`) +
 **identity-domain** package (the ops) + **bootstrap** (the bucket). Backlog row:
 `gateway-revocation-kill-switch-activation` (arch-review intake, `lattice.md`).
