@@ -682,7 +682,7 @@ tab before its replacement exists (F2 retires Core KV, F3 retires Control, F4 re
 the same fire as its replacement).
 
 **Build checkpoint (for the next fire):** F1 ✅ `e6a8a46` · F2 ✅ `976a18f` · F3 ✅ `5865e0e` ·
-F4 ✅ `24768e8` (2026-07-02, all 3-layer-reviewed). Live now: the Graph explorer (`#/graph` faceted/paged list —
+F4 ✅ `24768e8` · F5 ✅ `7f724c5` (2026-07-02, all 3-layer-reviewed). Live now: the Graph explorer (`#/graph` faceted/paged list —
 `/api/vertices` carries type/q/offset/includeDeleted + facets/total and sorts keys so offset windows are
 stable), the linkifying renderer (`web/js/render.js`: `renderDoc` + `keyLinkEl` — reuse these for any
 rendered reply), the hood mode (`logic/hood.js` pure model + goja tests), the `#/corekv` → `#/graph` and
@@ -696,7 +696,8 @@ render as client chips on a clients shelf (kind `"client"`, no skeleton edges, c
 LWW overwrite. Drill routes carry `nav`/`crumbHref` route-table fields (component pages highlight the Map
 tab). **Deferred, still owed:** hood neighbor chips don't dim tombstones — `/api/vertex` link rows carry
 no far-end `isDeleted` (add the field when a fire next touches that handler); the §7.2 "package page →"
-action ships with F8; the lens-page affordances (§1.2 aliases) ship with F5; `keyTarget` gains its
+action ships with F8, which also re-points the lens page's "owned by" link (it lands on the package
+vertex in Graph until `#/package` exists — a spec'd-destination-would-404 interim); `keyTarget` gains its
 component-id row when feed rows need it (F6). **F4 shipped state:** `cmd/loupe/renderedstate.go` holds
 `lensRenderedState` (the §4.2 derivation — F5's lens page reuses it via `/api/lenses`) + `computeGates`;
 all three health-derived endpoints share one `healthReaders` path. Derivation decisions grounded during
@@ -712,6 +713,19 @@ polls /api/systemmap; the shell polls /api/health at 30s on ALL views instead). 
 `timestamp` OR `completedAt` (gate4/5 stamp the latter); join is sorted/first-wins. An undeclared
 client reporter going stale DOES degrade the rollup (adjudicated with F3; only pending-readpath lenses
 are exempt).
+
+**F5 shipped state:** `cmd/loupe/lens.go` — `GET /api/lens/<id>` (definition/reporter/overlay/package
+join; 404 only when neither meta-vertex nor reporter exists; tombstoned meta surfaces `isDeleted`) +
+`GET /api/lens/<id>/rows` (nats_kv browse, limit clamped ≤1000; postgres answers `{pgPending:true}` —
+**F9 binds to that shape**, not §11's `unavailable` string; blank/unknown targetType errors instead of
+masquerading as the F9 wait state). Owner resolution matches `vtx.meta.<id>` membership in package
+manifest `declaredKeys` (collision-proof vs §6.1's canonicalName wording — spec touch-up, not a bug).
+The heartbeat overlay merges lensLags/lensLatency per metric from the freshest instance reporting each.
+FE: `logic/lens.js` (enablement table + delete-confirm + latency format, goja-tested) + `views/lens.js`
+(control replies survive the post-mutation re-render via reply-box re-parenting; the delete modal is
+route-lifecycle-bound with ESC + focus trap + in-flight guard; page DOM clears before fetch). `toast`
+moved to `api.js` as the shared cross-view notice. Enablement rules now live in two places — rosterRow
+(component.js) and `logic/lens.js` — consolidate when a fire next touches the roster.
 
 ---
 

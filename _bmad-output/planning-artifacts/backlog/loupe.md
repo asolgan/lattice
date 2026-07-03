@@ -28,11 +28,11 @@ the Chronicler Time Machine) — brief:
 | **F2 — Graph explorer** | Faceted/grouped/paged `#/graph` list, linkifying doc renderer, detail re-plumb, ego-graph hood mode; retires Core KV tab. | ★★★ | L | ✅ shipped · checkpoint in [design §14](../../implementation-artifacts/loupe-2-ux-design.md) |
 | **F3 — Component pages** | `#/component/<id>` ×6, plural instances (fixes LWW collapse), row-level control actions, refractor roster; retires Control tab. | ★★★ | L | ✅ shipped · checkpoint in [design §14](../../implementation-artifacts/loupe-2-ux-design.md) |
 | **F4 — Health absorption + status vocabulary** | Global alert strip (verbatim `health.alerts.*` incl. stub-auth-active), gates panel + rail (preserves `#sysmap-console` slot), `renderedState` incl. `pending-readpath` (the "7 degraded" fix); retires Health tab. | ★★★ | M | ✅ shipped · checkpoint in [design §14](../../implementation-artifacts/loupe-2-ux-design.md) |
-| **F5 — Lens page** | Four panels: definition (DDL) · state (+freshness slot) · control (delete behind typed confirm) · contents (nats_kv now, pg-pending state). | ★★★ | L | 🎯 📋 ready · [design §14](../../implementation-artifacts/loupe-2-ux-design.md) |
+| **F5 — Lens page** | Four panels: definition (DDL) · state (+freshness slot) · control (delete behind typed confirm) · contents (nats_kv now, pg-pending state). | ★★★ | L | ✅ shipped · checkpoint in [design §14](../../implementation-artifacts/loupe-2-ux-design.md) |
 | **F6 — Live pulse** | SSE tail of core-events (deliver-new, bounded), rail feed, map edge pulse animation, topbar LED, degraded modes. | ★★ | M | 📋 ready (may float early; sequence prefers F2) |
 | **F7 — Submit-Op follow-through** | Structured accepted panel (committed keys linkified), `#/op?type=` prefill, session op log, ~12s requestId-filtered follow-through. | ★★ | S | 📋 ready (full value after F2+F6) |
-| **F8 — Packages first-class** | `#/package/<key>` graph-resolved contents + install/upgrade/uninstall behind typed confirms (F-004 mechanics). | ★★ | M | 🚧 seq: F1, F2 |
-| **F9 — Postgres read seam (lens contents)** | Read-only PG connector (`LOUPE_PG_DSN`, SELECT-only role) lighting up the §6.4 panel for protected lenses + grant tables. Adjudicated in principle (design §15 Q6); role provisioning files to lattice lane if deploy/bootstrap-touching. | ★★ | M | 🚧 seq: F5 |
+| **F8 — Packages first-class** | `#/package/<key>` graph-resolved contents + install/upgrade/uninstall behind typed confirms (F-004 mechanics). | ★★ | M | 📋 ready |
+| **F9 — Postgres read seam (lens contents)** | Read-only PG connector (`LOUPE_PG_DSN`, SELECT-only role) lighting up the §6.4 panel for protected lenses + grant tables. Adjudicated in principle (design §15 Q6); role provisioning files to lattice lane if deploy/bootstrap-touching. | ★★ | M | 📋 ready |
 | **F10 — Curated topology + Gateway node** | `declaredComponents`/`skeletonEdges`/`sysmapTier` for all three (Gateway top-of-map external door · Vault side of Core-KV · Chronicler mirror of Refractor); Vault/Chronicler render honest absent/pending until live. | ★★★ | M | 📋 ready · needs Gateway→`up-full` (lattice) |
 | **F11 — Gateway security console** | `#/component/gateway` page (auth metrics + JWKS key set) + the token-revoke surface (arch-review gap). | ★★ | M | 🚧 seq: F10 |
 | **F12 — Vault surface + crypto-shred proof** | Node + page + Reveal (decrypt RPC on `sensitive` aspects) + `ShredIdentityKey` before/after proof. | ★★★ | L | 🚧 blocked-on: D1 + Vault build (lattice) |
@@ -58,12 +58,13 @@ the Chronicler Time Machine) — brief:
 - 2026-07-01 PO review (Andrew session) — filed the program; found+fixed the control-plane lockout.
 - 2026-07-02 UX design adjudicated (2 premises corrected against live stack — see design §15).
 - 2026-07-02 PO review (Andrew session) — **extended 2.0** with platform-edges fires F10–F13 (Gateway/Vault/Chronicler onto the curated map + the Time Machine); map stays curated, agent-console stays shelved, design-ahead all three.
-- **Next:** Steward builds F5 (lens page); Sally extends the UX design (§14+) for F10–F13 (start F10/F11, buildable-first).
+- **Next:** Steward builds F6 ∥ F8 (then F7, F9); Sally extends the UX design (§14+) for F10–F13 (start F10/F11, buildable-first).
 
 ## Done log — loupe (newest first)
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-02 · `7f724c5` · [Loupe/F5] Lens page — `#/lens/<id>` four panels + `/api/lens` detail/rows (pg-pending state); typed-confirm delete; map/roster/graph lens links re-pointed
 - 2026-07-02 · `24768e8` · [Loupe/F4] Health absorption + status vocabulary — renderedState + pending-readpath rollup exclusion, shell pill+alert strip, map rail gates panel; Health tab retired
 - 2026-07-02 · `5865e0e` · [Loupe/F3] Component pages + Control dissolution — `#/component/<id>` plural instances + row-level control + lens roster; Control tab retired
 - 2026-07-02 · `976a18f` · [Loupe/F2] Graph explorer — faceted/paged list + linkifying renderer + ego-graph hood mode; Core KV tab retired
