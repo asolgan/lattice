@@ -52,6 +52,7 @@ func newLoomStateStore(ctx context.Context, t *testing.T) *stateStore {
 // it to the (now past) instance, and a SECOND clear of the same token — the
 // shape redelivery actually produces — is a no-op, never an error.
 func TestDeleteToken_ClearsAdvancedPointerIdempotently(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -88,6 +89,7 @@ func TestDeleteToken_ClearsAdvancedPointerIdempotently(t *testing.T) {
 // never written returns nil — the guard runs unconditionally on the redelivery
 // path and must not fail when the pointer is already absent.
 func TestDeleteToken_MissingPointerIsNoError(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -103,6 +105,7 @@ func TestDeleteToken_MissingPointerIsNoError(t *testing.T) {
 // redelivery guard tolerates a missing pointer but must surface an actual KV
 // error so the completion is redelivered rather than silently dropped.
 func TestDeleteToken_PropagatesGenuineFailure(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -118,6 +121,7 @@ func TestDeleteToken_PropagatesGenuineFailure(t *testing.T) {
 // operationType → vtx.meta.<id> mapping built by indexOpMeta must be dropped so
 // a stale operationType no longer resolves to a deleted op meta-vertex.
 func TestRemoveOpMeta_DeregistersTombstonedOpMeta(t *testing.T) {
+	t.Parallel()
 	src := newPatternSource(nil, "core-kv", "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	// Index two distinct op metas via the same CDC path the source uses live.
@@ -145,6 +149,7 @@ func TestRemoveOpMeta_DeregistersTombstonedOpMeta(t *testing.T) {
 // keys on the target key, not a single operationType, so a meta-vertex reachable
 // under more than one operationType is fully deregistered.
 func TestRemoveOpMeta_DropsEveryTypePointingAtID(t *testing.T) {
+	t.Parallel()
 	src := newPatternSource(nil, "core-kv", "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	src.opMetaByType["typeOne"] = "vtx.meta.shared"
 	src.opMetaByType["typeTwo"] = "vtx.meta.shared"
@@ -167,6 +172,7 @@ func TestRemoveOpMeta_DropsEveryTypePointingAtID(t *testing.T) {
 // operationType leaves the index intact (CDC can redeliver a tombstone for a
 // meta-vertex this source never indexed).
 func TestRemoveOpMeta_UnknownIDIsNoOp(t *testing.T) {
+	t.Parallel()
 	src := newPatternSource(nil, "core-kv", "test", slog.New(slog.NewTextHandler(io.Discard, nil)))
 	src.indexOpMeta("vtx.meta.opA", opMetaEnvelope(t, "createLease"))
 

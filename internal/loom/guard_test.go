@@ -10,6 +10,7 @@ import (
 // valid atoms/composites parse, malformed shapes reject with errMalformedGuard,
 // and the reserved Starlark pair rejects with errStarlarkReserved (distinct).
 func TestParseGuard_GrammarShapes(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		raw     string
@@ -88,6 +89,7 @@ func TestParseGuard_GrammarShapes(t *testing.T) {
 // TestParseGuardPath_Shapes pins the two legal path shapes and their (aspect,
 // field) decomposition.
 func TestParseGuardPath_Shapes(t *testing.T) {
+	t.Parallel()
 	root, err := parseGuardPath("subject.data.name")
 	if err != nil || root.aspect != "" || root.field != "name" {
 		t.Fatalf("root path = %+v, err=%v; want {aspect:\"\", field:\"name\"}", root, err)

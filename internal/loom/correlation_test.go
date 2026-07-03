@@ -10,6 +10,7 @@ import (
 // fields are skipped — the property that lets Loom try each against the durable
 // token store with at most one live pointer resolving (Contract #10 §10.6).
 func TestCorrelationKeys(t *testing.T) {
+	t.Parallel()
 	mk := func(requestID, taskKey, externalRef string) eventBody {
 		var ev eventBody
 		ev.RequestID = requestID

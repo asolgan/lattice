@@ -6,6 +6,7 @@ import "testing"
 // carrying issues can never self-report "healthy", lifecycle phases pass through,
 // and error wins over warning. Mirrors the Processor/Weaver/Refractor heartbeaters.
 func TestAggregateStatus(t *testing.T) {
+	t.Parallel()
 	warn := healthIssue{Severity: "warning", Code: "ConsumerPaused", Message: "x"}
 	errIssue := healthIssue{Severity: "error", Code: "Boom", Message: "y"}
 

@@ -160,6 +160,7 @@ func readVertexData(t *testing.T, ctx context.Context, conn *substrate.Conn, key
 // gate-asserted: the outcome lives in an aspect, the claim-vertex root data is
 // minimal. Idempotency: a redelivered completion does not re-advance.
 func TestExternalE2E_RunsToCompletion(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -249,6 +250,7 @@ func republishEvent(t *testing.T, ctx context.Context, conn *substrate.Conn, cla
 // instanceOp's OWN requestId) finds no tracker + no outbox → the instance fails
 // (and announces loom.patternFailed). Never a silent wedge.
 func TestExternalE2E_RejectedInstanceOpFails(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -300,6 +302,7 @@ func TestExternalE2E_RejectedInstanceOpFails(t *testing.T) {
 // instanceOp would skip the external result — and NOT failed); the cursor moves
 // only when orchestration.externalTaskCompleted arrives.
 func TestExternalE2E_CommittedNoReply_DisarmsToUnboundedWait(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -377,6 +380,7 @@ func TestExternalE2E_CommittedNoReply_DisarmsToUnboundedWait(t *testing.T) {
 // RE-ARMS (does not fail). When the relay resumes, the instanceOp commits and
 // the flow runs to completion.
 func TestExternalE2E_NotYetRelayedRearms(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}

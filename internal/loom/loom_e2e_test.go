@@ -474,6 +474,7 @@ func newEngine(conn *substrate.Conn, opts ...func(*loom.Config)) *loom.Engine {
 // committed exactly once, and events.loom.patternStarted → patternCompleted is
 // the lifecycle.
 func TestLoomE2E_RunsToCompletion(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -541,6 +542,7 @@ func TestLoomE2E_RunsToCompletion(t *testing.T) {
 // step A still pending; the durable consumer redelivers it from its ack floor
 // and the durable pointer carries the run to completion.
 func TestLoomE2E_MidRunRestartExactlyOnce(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -619,6 +621,7 @@ func TestLoomE2E_MidRunRestartExactlyOnce(t *testing.T) {
 // terminal via the submit reply) marks the instance failed rather than waiting
 // forever for a committed event that can never arrive.
 func TestLoomE2E_RejectedStepFails(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -673,6 +676,7 @@ func TestLoomE2E_RejectedStepFails(t *testing.T) {
 // AFTER the engine is already running registers via the CDC source's callback
 // and reconciles its per-domain consumer — no engine restart.
 func TestLoomE2E_LivePatternInstallNoRestart(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}

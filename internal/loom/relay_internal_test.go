@@ -24,6 +24,7 @@ import (
 // not arrive before the DefaultRedeliveryDelay floor (5s) — it does not hot-loop
 // at zero delay. The relay durable is driven through a real ConsumerSupervisor.
 func TestRelay_NakWithDelayDoesNotHotLoop(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}

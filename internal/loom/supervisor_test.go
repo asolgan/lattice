@@ -100,6 +100,7 @@ func joinEngine(t *testing.T, startErr <-chan error) {
 // last pattern referencing a domain is removed, its loom-<domain> consumer is
 // torn down AND its JetStream durable is deleted (no leaked consumer).
 func TestSupervisor_RemovedPatternTearsDownDurable(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -140,6 +141,7 @@ func TestSupervisor_RemovedPatternTearsDownDurable(t *testing.T) {
 // production filter is name-derived and stable, so this exercises the generic
 // diff through the exported reconcile seam on a config change.
 func TestSupervisor_FilterChangeResets(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -185,6 +187,7 @@ func TestSupervisor_FilterChangeResets(t *testing.T) {
 // TestSupervisor_HealthHeartbeatWellFormed proves AC #4/#5: a Contract #5 §5.2
 // health.loom.<instance> document is written with all required fields.
 func TestSupervisor_HealthHeartbeatWellFormed(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -254,6 +257,7 @@ func TestSupervisor_HealthHeartbeatWellFormed(t *testing.T) {
 // pause-state persists to health-kv and restores across an engine restart
 // (supervisor Add-time restore), without an explicit Resume.
 func TestSupervisor_PauseStateSurvivesRestart(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -359,6 +363,7 @@ func heartbeatConsumers(t *testing.T, ctx context.Context, conn *substrate.Conn,
 // metrics.consumers on the next heartbeat — it does not linger as a phantom
 // "running" (or stuck pausedStructural) consumer.
 func TestSupervisor_RemovedDomainDisappearsFromHeartbeat(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -412,6 +417,7 @@ func TestSupervisor_RemovedDomainDisappearsFromHeartbeat(t *testing.T) {
 // the same domain comes up RUNNING — not restored into the stale pause an
 // operator never set for the new consumer.
 func TestSupervisor_RemovedDomainPauseDoesNotResurrectOnReAdd(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}

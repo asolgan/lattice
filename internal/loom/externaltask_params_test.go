@@ -8,6 +8,7 @@ import (
 )
 
 func TestInferExternalTaskReads(t *testing.T) {
+	t.Parallel()
 	const subj = "vtx.identity.BBsubjectHJKMNPQRS"
 
 	cases := []struct {

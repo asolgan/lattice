@@ -81,6 +81,7 @@ func (r *opRecorder) waitStepOps(t *testing.T, want []string) {
 // executes — while a NEW instance triggered after the update runs the NEW
 // definition (including the changed guard's skip).
 func TestPinningE2E_MidFlightPatternEditRunsPinnedDefinition(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -178,6 +179,7 @@ func TestPinningE2E_MidFlightPatternEditRunsPinnedDefinition(t *testing.T) {
 // completes (pin deleted) the terminal-triggered reconcile tears the drained
 // domain consumer down.
 func TestPinningE2E_UpdatedAwayDomainSurvivesUntilDrain(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -254,6 +256,7 @@ func TestPinningE2E_UpdatedAwayDomainSurvivesUntilDrain(t *testing.T) {
 // reconcile attaches the pinned domain's consumer with zero loaded patterns and
 // (b) the resume resolves steps from the pin, never the live source.
 func TestPinningE2E_RedeliveredTriggerResumesStepZero(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -337,6 +340,7 @@ func TestPinningE2E_RedeliveredTriggerResumesStepZero(t *testing.T) {
 // retry can repair) is failed — an operator-visible terminal — instead of
 // Nak-looping its completion forever.
 func TestPinningE2E_MissingPinFailsInstance(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}

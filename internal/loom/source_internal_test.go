@@ -25,6 +25,7 @@ import (
 // turn once its context is cancelled (clean shutdown), so it does not become
 // the next boot's stale entry.
 func TestPatternSource_StartPrunesStalePriorBootDurable(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}

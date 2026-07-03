@@ -10,6 +10,7 @@ import (
 // valid Contract #1 NanoID and is stable for a given (instanceId, cursor) —
 // the property that makes systemOp re-attempt idempotent (AC #6).
 func TestDeriveRequestID_DeterministicAndValid(t *testing.T) {
+	t.Parallel()
 	id, err := substrate.NewNanoID()
 	if err != nil {
 		t.Fatal(err)
@@ -38,6 +39,7 @@ func TestDeriveRequestID_DeterministicAndValid(t *testing.T) {
 // — the two derivations are the completion-correlation handle and the submission
 // idempotency handle respectively, and must never collide.
 func TestDeriveTaskID_DeterministicValidAndDisjoint(t *testing.T) {
+	t.Parallel()
 	id, err := substrate.NewNanoID()
 	if err != nil {
 		t.Fatal(err)
@@ -65,6 +67,7 @@ func TestDeriveTaskID_DeterministicValidAndDisjoint(t *testing.T) {
 // is dot-free so it is NOT a userTask token (it routes to the systemOp-style
 // deadline probe, never the userTask creation-probe).
 func TestDeriveInstanceID_DeterministicValidAndDisjoint(t *testing.T) {
+	t.Parallel()
 	id, err := substrate.NewNanoID()
 	if err != nil {
 		t.Fatal(err)

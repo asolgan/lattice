@@ -8,6 +8,7 @@ import (
 )
 
 func TestPatternValidate_AcceptsSystemOpAndUserTask_RejectsGuardsAndUnknownKinds(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		pattern Pattern
@@ -149,6 +150,7 @@ func TestPatternValidate_AcceptsSystemOpAndUserTask_RejectsGuardsAndUnknownKinds
 // NOT a generic malformed-guard error (§10.5: the Starlark evaluator is reserved
 // until the first such guard is authored).
 func TestPatternValidate_StarlarkGuardRejectedAsReserved(t *testing.T) {
+	t.Parallel()
 	p := Pattern{PatternID: "ps", SubjectType: "identity", Steps: []Step{
 		{Kind: "systemOp", Operation: "X", Guard: json.RawMessage(`{"reads":["profile"],"starlark":"def guard(subject): return True"}`)},
 	}}
@@ -165,6 +167,7 @@ func TestPatternValidate_StarlarkGuardRejectedAsReserved(t *testing.T) {
 }
 
 func TestPatternDomains_DefaultsToSubjectTypeWhenOmitted(t *testing.T) {
+	t.Parallel()
 	p := Pattern{SubjectType: "identity"}
 	got := p.Domains()
 	if len(got) != 1 || got[0] != "identity" {
@@ -173,6 +176,7 @@ func TestPatternDomains_DefaultsToSubjectTypeWhenOmitted(t *testing.T) {
 }
 
 func TestPatternDomains_UsesDeclaredSetVerbatim(t *testing.T) {
+	t.Parallel()
 	// When completionDomains is present it is used as-is (NOT unioned with
 	// subjectType): a cross-domain flow lists exactly the domains it completes on.
 	p := Pattern{SubjectType: "identity", CompletionDomains: []string{"org", "org", " "}}
@@ -183,6 +187,7 @@ func TestPatternDomains_UsesDeclaredSetVerbatim(t *testing.T) {
 }
 
 func TestBindingRegistry_DedupesDomainsAcrossPatterns(t *testing.T) {
+	t.Parallel()
 	patterns := []*Pattern{
 		{SubjectType: "identity", Steps: []Step{{Kind: "systemOp", Operation: "A"}}},
 		{SubjectType: "identity", CompletionDomains: []string{"org"}},
@@ -200,6 +205,7 @@ func TestBindingRegistry_DedupesDomainsAcrossPatterns(t *testing.T) {
 }
 
 func TestUserTaskCompletionUnobservable(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		p    Pattern
@@ -240,6 +246,7 @@ func TestUserTaskCompletionUnobservable(t *testing.T) {
 }
 
 func TestHasExternalTaskStep(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		p    Pattern
@@ -280,6 +287,7 @@ func TestHasExternalTaskStep(t *testing.T) {
 }
 
 func TestExternalTaskCompletionUnobservable(t *testing.T) {
+	t.Parallel()
 	ext := Step{Kind: StepKindExternalTask, Adapter: "a", InstanceOp: "Create", ReplyOp: "Resolve"}
 	cases := []struct {
 		name string
@@ -318,6 +326,7 @@ func TestExternalTaskCompletionUnobservable(t *testing.T) {
 }
 
 func TestPatternIDFromRef(t *testing.T) {
+	t.Parallel()
 	if got := patternIDFromRef("vtx.meta.abc"); got != "abc" {
 		t.Fatalf("patternIDFromRef(vtx.meta.abc)=%q, want abc", got)
 	}

@@ -134,6 +134,7 @@ func newOnboardingProcessor(conn *substrate.Conn, boundOps map[string]struct{}) 
 // real StartLoomPattern + simulated user bound ops, proving AC#1-9 (ordered
 // CreateTask per step, the wait, taskKey correlation, exhaustion terminal).
 func TestOnboardingE2E_UserTaskFlow(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -198,6 +199,7 @@ func TestOnboardingE2E_UserTaskFlow(t *testing.T) {
 // (no double CreateTask, no double advance), correlated on the durable
 // token.<taskKey> pointer.
 func TestOnboardingE2E_LongWaitRestartExactlyOnce(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -301,6 +303,7 @@ func TestOnboardingE2E_LongWaitRestartExactlyOnce(t *testing.T) {
 // the instance ends status=failed (and announces loom.patternFailed). It does NOT
 // hang. This is the load-bearing new assertion.
 func TestOnboardingE2E_RejectedCreateTaskFails(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -361,6 +364,7 @@ func TestOnboardingE2E_RejectedCreateTaskFails(t *testing.T) {
 // after the creation-deadline — the cursor still advances exactly once. This
 // proves the unbounded human wait survives the bounded creation-deadline.
 func TestOnboardingE2E_CreatedTaskDisarmsForUnboundedWait(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}

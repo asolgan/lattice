@@ -68,6 +68,7 @@ func guardedOnboardingPattern(patternID string) loom.Pattern {
 // "0"/false/0 are PRESENT — never "falsy"; equals is type-aware and an absent
 // path never equals anything.
 func TestGuardEval_PinnedAbsenceSemantics(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -169,6 +170,7 @@ func TestGuardEval_PinnedAbsenceSemantics(t *testing.T) {
 // skips multiple steps in one transition. An all-false pattern completes on the
 // trigger with NO task at all.
 func TestGuardE2E_FalseGuardSkipsStep(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -225,6 +227,7 @@ func TestGuardE2E_FalseGuardSkipsStep(t *testing.T) {
 // guarded step is skipped and there is no guardless tail, the pattern completes
 // immediately on the trigger with NO task or op submitted.
 func TestGuardE2E_AllGuardsFalseCompletesOnTrigger(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -284,6 +287,7 @@ func TestGuardE2E_AllGuardsFalseCompletesOnTrigger(t *testing.T) {
 // instance would, never re-runs the already-skipped step 0, and honors the
 // guardless final step via the token rule.
 func TestGuardE2E_DisasterRecoveryCursorRebuild(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -384,6 +388,7 @@ func TestGuardE2E_DisasterRecoveryCursorRebuild(t *testing.T) {
 // commits across the two generations, both instances complete, SetName is
 // never created in either generation.
 func TestGuardE2E_DisasterRecoveryGuardlessStepRerun(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}

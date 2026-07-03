@@ -14,6 +14,7 @@ import (
 // equal even if their hooks (Handler/Logger) differ — hooks are refreshed via
 // UpdateSpec without a recreate.
 func TestFingerprintOf_DiffersOnRecreateRelevantFields(t *testing.T) {
+	t.Parallel()
 	base := substrate.ConsumerSpec{
 		Name:          "loom-widget",
 		Stream:        "core-events",

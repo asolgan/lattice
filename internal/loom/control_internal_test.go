@@ -89,6 +89,7 @@ func putPin(t *testing.T, ctx context.Context, conn *substrate.Conn, instanceID 
 // and retained terminals, filters out the .pattern pin sub-keys, and sorts by
 // instanceId.
 func TestListInstances_SeededState(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -122,6 +123,7 @@ func TestListInstances_SeededState(t *testing.T) {
 // TestListInstances_Empty proves an empty loom-state yields an empty list, not an
 // error.
 func TestListInstances_Empty(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -135,6 +137,7 @@ func TestListInstances_Empty(t *testing.T) {
 // TestInspectInstance_Running proves a running instance resolves its current step
 // from the pinned pattern at the cursor.
 func TestInspectInstance_Running(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -161,6 +164,7 @@ func TestInspectInstance_Running(t *testing.T) {
 // with a nil current step and does NOT require a pin (the pin is deleted at
 // terminal).
 func TestInspectInstance_Terminal(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -182,6 +186,7 @@ func TestInspectInstance_Terminal(t *testing.T) {
 // genuinely absent (and stays running on re-read) surfaces the invariant-break
 // error rather than panicking.
 func TestInspectInstance_MissingPinOnRunning(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -203,6 +208,7 @@ func TestInspectInstance_MissingPinOnRunning(t *testing.T) {
 // and the EXACT boundary (cursor == len, the terminal-cursor position a running
 // record must never sit at) are corrupt and must be reported, not panicked.
 func TestInspectInstance_CursorOutOfRange(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -243,6 +249,7 @@ func TestInspectInstance_CursorOutOfRange(t *testing.T) {
 // instanceId that is absent from the store: no pin (errPatternPinMissing) and the
 // re-read returns nil.
 func TestInspectResolved_RereadDeletedClearsStatus(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -265,6 +272,7 @@ func TestInspectResolved_RereadDeletedClearsStatus(t *testing.T) {
 
 // TestInspectInstance_NotFound proves a missing instance is a not-found error.
 func TestInspectInstance_NotFound(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -281,6 +289,7 @@ func TestInspectInstance_NotFound(t *testing.T) {
 // pause but resume is unrestricted, and a managed completion/trigger consumer
 // pauses and resumes. The three fixed consumers register at engine Start.
 func TestPauseResumeConsumer_ValidateThenToggle(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}

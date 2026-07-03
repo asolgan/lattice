@@ -19,6 +19,7 @@ import (
 // other than the subject without updating userTaskReads, the coverage assertion
 // fails here rather than silently failing closed in production.
 func TestUserTaskReads_CoverEndpoints(t *testing.T) {
+	t.Parallel()
 	const subjectKey = "vtx.identity.BBsubjectHJKMNPQRST"
 	const forOperation = "vtx.meta.BBforOpJKMNPQRSTUVW"
 
