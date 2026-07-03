@@ -20,14 +20,15 @@ import (
 func TestPipeline_Progress_TracksAppliedSeqAndProjectedAt(t *testing.T) {
 	env := startPipelineEnv(t)
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	targetKV, adpt := newTargetKV(t, env, "target-progress", []string{"agreement_id"})
 
-	p, err := pipeline.New("rule-progress", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, adpt, nil)
+	p, err := pipeline.New("rule-progress", "nats_kv", coreKVBucket, env.adjKV, env.coreKV, adpt, nil)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 	startPipeline(t, env, p, "rule-progress")
 
 	initial := p.Progress()
@@ -66,13 +67,14 @@ func TestPipeline_Progress_TracksAppliedSeqAndProjectedAt(t *testing.T) {
 func TestPipeline_Progress_FrozenOnWriteError(t *testing.T) {
 	env := startPipelineEnv(t)
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	ea := &errAdapter{}
-	p, err := pipeline.New("rule-progress-err", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, ea, nil)
+	p, err := pipeline.New("rule-progress-err", "nats_kv", coreKVBucket, env.adjKV, env.coreKV, ea, nil)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 	startPipeline(t, env, p, "rule-progress-err")
 
 	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementErr1, map[string]any{"id": "err1", "isDeleted": false})

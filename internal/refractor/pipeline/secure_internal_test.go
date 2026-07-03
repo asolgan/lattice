@@ -423,7 +423,7 @@ RETURN i.key AS key, i.key AS identity_key, i.name.data AS name`
 
 	adpt, err := adapter.New(targetKV, []string{"key"}, adapter.DeleteModeHard)
 	require.NoError(t, err)
-	p, err := New("secure-rt", "nats_kv", nil, "sec-core", adjKV, coreKV, adpt, nil)
+	p, err := New("secure-rt", "nats_kv", "sec-core", adjKV, coreKV, adpt, nil)
 	require.NoError(t, err)
 	p.UseFullEngine(eng, cr)
 
@@ -567,7 +567,7 @@ RETURN app.key AS key, id.key AS applicant, id.name.data AS applicant_name`
 
 	adpt, err := adapter.New(targetKV, []string{"key"}, adapter.DeleteModeHard)
 	require.NoError(t, err)
-	p, err := New("secure-neighbor", "nats_kv", nil, "secn-core", adjKV, coreKV, adpt, nil)
+	p, err := New("secure-neighbor", "nats_kv", "secn-core", adjKV, coreKV, adpt, nil)
 	require.NoError(t, err)
 	p.UseFullEngine(eng, cr)
 	decr, err := NewSecureDecryptor(v, coreKV, []SecureColumn{

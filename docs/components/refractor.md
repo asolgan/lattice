@@ -34,10 +34,9 @@ Key sub-packages:
 | `consumer/` | `Bootstrapper` (builds the adjacency index from link CDC events). Per-lens durable JetStream consumers are owned by each `pipeline.Pipeline` via `substrate.ConsumerSupervisor` (see Lens lifecycle step 5). |
 | `control/` | `Service` — control plane on the NATS `micro.Service` framework; endpoints at `lattice.ctrl.refractor.<lensId>.<op>` |
 | `health/` | `LatticeHeartbeater`; `Reporter`; `AuditWriter` (subjects `lattice.refractor.audit.<lensId>`); `LagPoller` (subjects `lattice.refractor.metrics.<lensId>`) |
-| `ruleengine/` | Registry + engine interfaces; `simple/` (v1 legacy parser); `full/` (openCypher via ANTLR4) + `full/cypher/` (generated lexer/parser) |
+| `ruleengine/` | Registry + engine interface; `full/` (openCypher via ANTLR4) + `full/cypher/` (generated lexer/parser) |
 | `failure/` | Failure-tier classification; retry / DLQ routing |
 | `subjects/` | Centralizes all subject name construction (`lattice.refractor.*`, `lattice.ctrl.refractor.*`) |
-| `fixture/` | Test fixtures and primordial bootstrap data |
 | `config/` | Configuration types |
 | `capabilityenv/` | Wraps executor RETURN rows into Contract #6 §6.2 Capability KV envelopes |
 
@@ -48,7 +47,7 @@ Key sub-packages:
 | Contract | Source | Notes |
 |----------|--------|-------|
 | **Core KV CDC events** | Durable JetStream consumer (`substrate.SubscribeKVChanges`) on the `KV_core-kv` backing stream | Both the all-mutations stream and the `vtx.meta.>` lens-def watch run on the same durable-consumer pattern; ack position persists across restarts so a restarted Refractor resumes rather than replaying from the start. |
-| **Lens meta-vertices** | Core KV `vtx.meta.<NanoID>` with `class: meta.lens` and a `.spec` aspect | The `spec` aspect carries: `id`, `canonicalName`, `targetType`, `targetConfig`, `cypherRule`, `outputSchema`, `engine` (optional). Engine absent = `simple`-then-`full` fallback; `"full"` = full engine; `"simple"` = simple engine. |
+| **Lens meta-vertices** | Core KV `vtx.meta.<NanoID>` with `class: meta.lens` and a `.spec` aspect | The `spec` aspect carries: `id`, `canonicalName`, `targetType`, `targetConfig`, `cypherRule`, `outputSchema`, `engine` (optional). `engine` must be `"full"` (or absent → full); any other value fails lens validation. |
 | **Adjacency KV** | `refractor-adjacency` bucket | Refractor's internal inbound-link index, built by `consumer/bootstrap.go` from every `lnk.*` CDC event; two directional entries per edge. EdgeID == link key. The adjacency is the inbound-link lookup index for the cypher executor. |
 
 ---
@@ -167,16 +166,13 @@ real Postgres under `POSTGRES_TEST_DSN`.
 
 ## Rule engine
 
-Refractor has two engine implementations. The engine is selected per lens via
-the `engine` field in the `LensSpec`. Selection logic lives in
-`internal/refractor/ruleengine/` (`Registry.SelectForLens`).
-
-### Simple engine (`ruleengine/simple/`)
-
-- v1 Materializer-derived parser; custom recursive-descent implementation
-- Production-stable for legacy fixtures that predate the full engine
-- Use only for legacy fixtures; do not write new lenses targeting the simple engine
-- Does not support Levenshtein UDFs (those exist in the full engine only)
+Refractor has one engine implementation, the full openCypher engine.
+Selection logic lives in `internal/refractor/ruleengine/`
+(`Registry.SelectForLens`) — every lens declares `engine: "full"` (or leaves
+it absent, which resolves to `"full"`); any other value fails lens
+validation. The legacy v1 Materializer-derived "simple" recursive-descent
+engine was retired once every lens had migrated to the full engine (git
+history: `retire-simple-engine-design.md`).
 
 ### Full engine (`ruleengine/full/`)
 
@@ -215,13 +211,12 @@ tombstoned anchor — `<anchor>.key`, a root-body field, or a pure function over
 `nanoIdFromKey(identity.key)`) — so a **composite-key** lens retracts the exact row it
 projected; a column that would need a Core-KV read (an aspect access on a now-deleted vertex)
 is unresolvable and the event falls through to a re-execute (never a wrong or partial Delete).
-This mirrors the **simple engine's `deleteResult`** and the **actor-aware capability path's**
-tombstone shortcut, which already retract; it is the non-actor twin of those two
-retraction paths.
+This mirrors the **actor-aware capability path's** tombstone shortcut, which already
+retracts; it is the non-actor twin of that retraction path.
 
 **Multi-column projection keys.** For a **plain** projection lens the full engine builds the
 **complete** key map from the lens's declared key columns (`Rule.Into.Key`, threaded onto
-`full.CompiledRule.KeyColumns` at activation), matching the simple engine — so a composite-key
+`full.CompiledRule.KeyColumns` at activation) — so a composite-key
 lens such as the D1 `capabilityReadGrants` **GrantTable** producer (keyed on
 `actor_id, anchor_id, grant_source`) hands the `GrantWriterAdapter` every key column it
 requires and actually populates `actor_read_grants`. Each declared key column must be a
@@ -246,8 +241,7 @@ vertex** (`evalPlainAspectReprojection` — the plain analog of the capability p
 same arm), and a `KindLink` event re-executes seeded from **both endpoint vertices**
 (`evalPlainLinkReprojection`, results deduplicated across the two seeds). So an edited
 listing price or a renamed provider is promptly fresh in its read model, instead of
-incidentally fresh on the next unrelated vertex-root event. (Simple-engine lenses keep
-the legacy ack-and-skip — no live simple-engine lens needs aspect/link freshness.)
+incidentally fresh on the next unrelated vertex-root event.
 
 **Type-relevance skip (the amplification bound).** The re-execute runs only when the
 event's owner/endpoint vertex **type** is in the lens's referenced-label set
@@ -334,11 +328,10 @@ write the path the data actually lives at — `perm.data.operationType` (root),
 
 1. `LensSpec.engine` field is inspected at spec load time (in `translateSpec`)
 2. `ruleengine.Registry.SelectForLens` is called with the spec's `RuleEngine` string:
-   - `"full"` → full engine
-   - `"simple"` → simple engine
-   - `""` (absent) → try simple first; if simple parse fails, try full; `AttemptedEngines` records the trial sequence
-3. `Rule.ResolvedEngine` is set to the winning engine name; `Rule.CompiledRule` holds the compiled AST
-4. At runtime, `startPipeline` checks `r.ResolvedEngine` to decide which evaluate path to use
+   - `"full"` or `""` (absent) → full engine
+   - any other value → `SelectionError` ("unknown engine")
+3. `Rule.ResolvedEngine` is set to `"full"`; `Rule.CompiledRule` holds the compiled AST
+4. At runtime, `startPipeline` calls `UseFullEngine` to wire the pipeline's evaluate path
 
 ### Levenshtein UDFs (full engine)
 
@@ -348,8 +341,7 @@ pure, deterministic, side-effect-free string UDFs:
 - `levenshteinDist(a, b) -> int` — classical Wagner-Fischer edit distance, O(N²)
 - `levenshteinRatio(a, b) -> float` — normalized similarity in [0, 1]
 
-They are available only in the full engine; the simple engine does not support
-UDFs. The identity-hygiene Duplicate Candidates Lens uses them to score
+The identity-hygiene Duplicate Candidates Lens uses them to score
 near-duplicate identities.
 
 ---
@@ -514,7 +506,7 @@ one-cycle spike no longer flaps the heartbeat degraded→healthy.
 - **Every Core KV mutation must be observable** via at least one lens projection (NFR-P3 ≤500ms end-to-end latency target). The `LatencyRingBuffer` p99 is the primary instrument.
 - **Lens output is overwrite-by-reprojection**: fabricated or stale KV writes in a lens target are corrected on the next reprojection event. This is the fabricated-KV-write defense. Substrate-level write restriction on the lens target buckets (per-component NKey publish permissions) is 🔭 Designed — the ratified NATS account write-restriction hardening (credential seam shipped, enforcement pending).
 - **Lens definitions live in Core KV vertices**, not in source code. The platform discovers them via the `vtx.meta.>` CDC stream. Seeding a new lens requires a `CreateMetaVertex` operation through the Processor write path.
-- **openCypher full engine is canonical for new lenses**; the simple engine is legacy-fixture support only. Do not write new lens definitions targeting the simple engine.
+- **openCypher full engine is canonical**; it is the only rule engine Refractor runs.
 
 ---
 

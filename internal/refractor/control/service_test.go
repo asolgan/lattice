@@ -243,118 +243,39 @@ func validateTestLens(id, match string) *lens.Rule {
 	}
 }
 
-// TestControl_Validate_FieldsPresent verifies that when Core KV entries contain
-// the referenced fields, all FieldReports have present=true and no warnings (AC1, AC2).
-func TestControl_Validate_FieldsPresent(t *testing.T) {
-	nc, js := startControlTestServerConn(t)
+// TestControl_Validate_ReturnsNotAvailable verifies that a validate request
+// for a loaded rule always reports field-level validation as unavailable
+// (the openCypher full engine has no sampling-based field-presence check).
+func TestControl_Validate_ReturnsNotAvailable(t *testing.T) {
+	nc, _ := startControlTestServerConn(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-
-	coreKV := makeKV(t, nc, js, "core-validate-present")
-	_, err := coreKV.Put(ctx, "entity-1", []byte(`{"id": "1", "name": "Foo"}`))
-	require.NoError(t, err)
-	_, err = coreKV.Put(ctx, "entity-2", []byte(`{"id": "2", "name": "Bar"}`))
-	require.NoError(t, err)
 
 	testRule := validateTestLens("validate-rule-present", `MATCH (a:agreement) RETURN a.id AS id, a.name AS name`)
 	svc := control.NewService()
 	svc.SetRuleGetter(&mockRuleGetter{rules: map[string]*lens.Rule{"validate-rule-present": testRule}})
-	svc.SetCoreKV(coreKV)
 	require.NoError(t, svc.StartNATSListener(ctx, nc))
 
 	resp := sendControlRequest(t, nc, control.ControlRequest{Op: "validate", RuleID: "validate-rule-present"})
 
 	require.Empty(t, resp.Error, "error field must be empty on validate success")
 	require.NotNil(t, resp.Validate, "Validate must be non-nil on validate success")
-	assert.GreaterOrEqual(t, resp.Validate.SampleSize, 1)
-	assert.Len(t, resp.Validate.FieldReports, 2)
-	for _, fr := range resp.Validate.FieldReports {
-		assert.True(t, fr.Present, "field %q should be present", fr.Field)
-		assert.Greater(t, fr.FoundIn, 0)
-	}
-	assert.Empty(t, resp.Validate.Warnings, "no warnings expected when all fields are present")
-}
-
-// TestControl_Validate_FieldAbsent verifies that missing fields are flagged as
-// warnings with present=false (AC2, AC3).
-func TestControl_Validate_FieldAbsent(t *testing.T) {
-	nc, js := startControlTestServerConn(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	// Entries contain "id" but NOT "email"
-	coreKV := makeKV(t, nc, js, "core-validate-absent")
-	_, err := coreKV.Put(ctx, "entity-1", []byte(`{"id": "1"}`))
-	require.NoError(t, err)
-
-	testRule := validateTestLens("validate-rule-absent", `MATCH (a:agreement) RETURN a.id AS id, a.email AS email`)
-	svc := control.NewService()
-	svc.SetRuleGetter(&mockRuleGetter{rules: map[string]*lens.Rule{"validate-rule-absent": testRule}})
-	svc.SetCoreKV(coreKV)
-	require.NoError(t, svc.StartNATSListener(ctx, nc))
-
-	resp := sendControlRequest(t, nc, control.ControlRequest{Op: "validate", RuleID: "validate-rule-absent"})
-
-	require.Empty(t, resp.Error)
-	require.NotNil(t, resp.Validate)
-	assert.Equal(t, 1, resp.Validate.SampleSize)
-
-	byField := make(map[string]control.FieldReport)
-	for _, fr := range resp.Validate.FieldReports {
-		byField[fr.Field] = fr
-	}
-	idReport, ok := byField["a.id"]
-	require.True(t, ok, "a.id report expected")
-	assert.True(t, idReport.Present)
-
-	emailReport, ok := byField["a.email"]
-	require.True(t, ok, "a.email report expected")
-	assert.False(t, emailReport.Present, "a.email should be absent")
-	assert.Equal(t, 0, emailReport.FoundIn)
-
-	require.NotEmpty(t, resp.Validate.Warnings, "warnings expected for absent field")
-	assert.Contains(t, resp.Validate.Warnings[0], "a.email")
-}
-
-// TestControl_Validate_EmptyBucket verifies that an empty Core KV bucket returns
-// sampleSize=0 and all fields absent — not an error (AC1, AC3).
-func TestControl_Validate_EmptyBucket(t *testing.T) {
-	nc, js := startControlTestServerConn(t)
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	// Empty bucket — no entries published
-	coreKV := makeKV(t, nc, js, "core-validate-empty")
-
-	testRule := validateTestLens("validate-rule-empty", `MATCH (a:agreement) RETURN a.id AS id`)
-	svc := control.NewService()
-	svc.SetRuleGetter(&mockRuleGetter{rules: map[string]*lens.Rule{"validate-rule-empty": testRule}})
-	svc.SetCoreKV(coreKV)
-	require.NoError(t, svc.StartNATSListener(ctx, nc))
-
-	resp := sendControlRequest(t, nc, control.ControlRequest{Op: "validate", RuleID: "validate-rule-empty"})
-
-	require.Empty(t, resp.Error, "empty bucket must not return an error")
-	require.NotNil(t, resp.Validate)
 	assert.Equal(t, 0, resp.Validate.SampleSize)
-	require.Len(t, resp.Validate.FieldReports, 1)
-	assert.False(t, resp.Validate.FieldReports[0].Present)
-	assert.NotEmpty(t, resp.Validate.Warnings)
+	assert.Empty(t, resp.Validate.FieldReports)
+	require.Len(t, resp.Validate.Warnings, 1)
+	assert.Contains(t, resp.Validate.Warnings[0], "not available")
 }
 
 // TestControl_Validate_RuleNotLoaded verifies that a validate request for an
 // unregistered ruleId returns an error (AC1 error path).
 func TestControl_Validate_RuleNotLoaded(t *testing.T) {
-	nc, js := startControlTestServerConn(t)
+	nc, _ := startControlTestServerConn(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-
-	coreKV := makeKV(t, nc, js, "core-validate-norule")
 
 	svc := control.NewService()
 	// SetRuleGetter with empty map — rule not found
 	svc.SetRuleGetter(&mockRuleGetter{rules: map[string]*lens.Rule{}})
-	svc.SetCoreKV(coreKV)
 	require.NoError(t, svc.StartNATSListener(ctx, nc))
 
 	resp := sendControlRequest(t, nc, control.ControlRequest{Op: "validate", RuleID: "ghost-rule"})

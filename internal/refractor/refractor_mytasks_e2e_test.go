@@ -109,7 +109,7 @@ func TestRefractor_MyTasksLens_E2E(t *testing.T) {
 	adpt.SetGuarded(true)
 
 	const lensID = "MyTasksLensId0000001"
-	p, err := pipeline.New(lensID, "nats_kv", nil, bootstrap.CoreKVBucket, adjKV, coreKV, adpt, nil)
+	p, err := pipeline.New(lensID, "nats_kv", bootstrap.CoreKVBucket, adjKV, coreKV, adpt, nil)
 	require.NoError(t, err)
 	p.UseFullEngine(fullEngine, cr)
 	projectionRevision := func(k string) uint64 {

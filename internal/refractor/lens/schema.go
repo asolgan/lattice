@@ -11,15 +11,13 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/adapter"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
-	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 )
 
 // defaultRegistry is the package-level engine registry used by Parse() to
 // resolve the engine that owns a given Rule's body.
 //
-// Tests may override via SetRegistry to inject alternative engines (e.g.
-// always-failing simple to exercise the absent-fallback path).
-var defaultRegistry ruleengine.Registry = ruleengine.NewRegistry(simple.New(), full.New())
+// Tests may override via SetRegistry to inject an alternative engine.
+var defaultRegistry ruleengine.Registry = ruleengine.NewRegistry(full.New())
 
 // SetRegistry replaces the package-level engine registry used by Parse().
 // It returns the previous registry so tests can restore it. Test-only.
@@ -117,9 +115,8 @@ type Rule struct {
 	CanonicalName string `yaml:"-"`
 
 	// RuleEngine is the explicit engine selector. Valid values:
-	//   "simple"  — v1 Materializer-derived parser.
-	//   "full"    — v2 openCypher engine.
-	//   ""        — absent; selection falls back simple-then-full.
+	//   "full" — v2 openCypher engine.
+	//   ""     — absent; resolves to "full".
 	RuleEngine string `yaml:"ruleEngine"`
 
 	// ProjectionKind mirrors LensSpec.ProjectionKind. "actorAggregate" routes
@@ -140,11 +137,8 @@ type Rule struct {
 	ResolvedEngine string `yaml:"-"`
 
 	// CompiledRule is the engine-specific compiled artifact produced by
-	// Parse() via the registry's SelectForLens. Callers route on ResolvedEngine
-	// and pass this back to the matching engine's Execute path. May be nil
-	// for the simple engine (which re-compiles via simple.Compile against
-	// the Into.Key list) — see startPipeline in cmd/refractor for the
-	// per-engine routing.
+	// Parse() via the registry's SelectForLens. Passed to the full engine's
+	// Execute path — see startPipeline in cmd/refractor.
 	CompiledRule ruleengine.CompiledRule `yaml:"-"`
 
 	// AttemptedEngines is the ordered list of engines consulted during
@@ -175,15 +169,15 @@ func Parse(data []byte) (*Rule, error) {
 	// values via SelectionError, but we catch obviously-bogus inputs here
 	// so callers see a stable error message).
 	switch r.RuleEngine {
-	case "", ruleengine.EngineSimple, ruleengine.EngineFull:
+	case "", ruleengine.EngineFull:
 		// ok
 	default:
-		return nil, fmt.Errorf("rule validation: ruleEngine must be %q, %q, or empty; got %q",
-			ruleengine.EngineSimple, ruleengine.EngineFull, r.RuleEngine)
+		return nil, fmt.Errorf("rule validation: ruleEngine must be %q or empty; got %q",
+			ruleengine.EngineFull, r.RuleEngine)
 	}
 
-	// Resolve the engine per Decision #3 (explicit-simple, explicit-full,
-	// absent-fallback). Selection failure is surfaced as InvalidRule.
+	// Resolve the engine ("full" or absent → full; anything else already
+	// rejected above). Selection failure is surfaced as InvalidRule.
 	_, compiled, attempted, selErr := defaultRegistry.SelectForLens(ruleengine.LensDefinition{
 		ID:         r.ID,
 		RuleBody:   r.Match,
@@ -197,24 +191,8 @@ func Parse(data []byte) (*Rule, error) {
 		}
 		return nil, fmt.Errorf("rule validation: invalid match query: %w", selErr)
 	}
-	// On success the resolved engine is the LAST attempted name (simple if
-	// it succeeded directly; full if simple failed and full succeeded).
 	r.ResolvedEngine = attempted[len(attempted)-1]
 	r.CompiledRule = compiled
-
-	// Engine-specific post-parse validation. We reuse the *simple.CompiledRule's
-	// parsed AST returned from the registry instead of re-parsing — eliminating
-	// the duplicate parse call. The Compile step still runs because it needs the
-	// key fields, which the engine-neutral SelectForLens contract doesn't carry.
-	if r.ResolvedEngine == ruleengine.EngineSimple {
-		sc, ok := compiled.(*simple.CompiledRule)
-		if !ok {
-			return nil, fmt.Errorf("rule validation: simple engine returned unexpected compiled type %T", compiled)
-		}
-		if _, err := simple.Compile(sc.Query, r.Into.Key); err != nil {
-			return nil, fmt.Errorf("rule validation: invalid query plan: %w", err)
-		}
-	}
 
 	if len(r.Into.Key) == 0 {
 		return nil, fmt.Errorf("rule validation: into.key is required")

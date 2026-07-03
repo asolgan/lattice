@@ -65,7 +65,7 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/consumer"
 	"github.com/asolgan/lattice/internal/refractor/lens"
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
-	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
+	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -153,16 +153,20 @@ func TestRefractor_E2E_P99(t *testing.T) {
 
 	// --- pipeline + lens setup ---
 	// Build the projection plan: MATCH (c:contract) RETURN c.id, c.name
-	q, err := simple.Parse("MATCH (c:contract) RETURN c.id AS contract_id, c.name AS name")
+	eng := full.New()
+	cr, err := eng.Parse("MATCH (c:contract {key: $actorKey}) RETURN c.id AS contract_id, c.name AS name")
 	require.NoError(t, err)
-	plan, err := simple.Compile(q, []string{"contract_id"})
-	require.NoError(t, err)
+	fullCR, ok := cr.(*full.CompiledRule)
+	require.True(t, ok)
+	fullCR.KeyColumns = []string{"contract_id"}
+	require.NoError(t, fullCR.ValidateKeyColumns())
 
 	adpt, err := adapter.New(targetKV, []string{"contract_id"}, adapter.DeleteModeHard)
 	require.NoError(t, err)
 
-	p, err := pipeline.New(lensID, "nats_kv", plan, coreBucket, adjKV, coreKV, adpt, nil)
+	p, err := pipeline.New(lensID, "nats_kv", coreBucket, adjKV, coreKV, adpt, nil)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 
 	p.RunOn(conn, e2eSpec(lensID, coreBucket))
 
@@ -207,7 +211,7 @@ func TestRefractor_E2E_P99(t *testing.T) {
 		ID:            lensID,
 		CanonicalName: "lens.e2e-p99-contract-view",
 		TargetType:    "nats_kv",
-		CypherRule:    "MATCH (c:contract) RETURN c.id AS contract_id, c.name AS name",
+		CypherRule:    "MATCH (c:contract {key: $actorKey}) RETURN c.id AS contract_id, c.name AS name",
 		TargetConfig:  json.RawMessage(`{"bucket":"` + targetBucket + `","key":["contract_id"]}`),
 	}
 	specJSON, _ := json.Marshal(spec)
@@ -235,10 +239,13 @@ func TestRefractor_E2E_P99(t *testing.T) {
 		// NanoID is deterministic: prefix "E2eContract" (11 chars) + 9-char base-58 index.
 		nanoID := e2eContractNanoID(i)
 		key := "vtx.contract." + nanoID
+		now := time.Now().UTC().Format(time.RFC3339)
 		body := map[string]any{
-			"id":        id,
-			"name":      fmt.Sprintf("Contract %d", i),
-			"isDeleted": false,
+			"id":             id,
+			"name":           fmt.Sprintf("Contract %d", i),
+			"isDeleted":      false,
+			"createdAt":      now,
+			"lastModifiedAt": now,
 		}
 		bodyJSON, _ := json.Marshal(body)
 

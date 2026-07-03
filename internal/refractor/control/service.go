@@ -15,9 +15,6 @@ import (
 
 	"github.com/asolgan/lattice/internal/refractor/health"
 	"github.com/asolgan/lattice/internal/refractor/lens"
-	"github.com/asolgan/lattice/internal/refractor/ruleengine"
-	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
-	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // ErrRuleNotRegistered is returned by NullifyRow (and other per-ruleID lookups)
@@ -25,9 +22,6 @@ import (
 // so callers can tell "the lens hasn't started yet" (retry-eligible) apart from
 // "the row could not be nullified" (privacy-critical, no retry).
 var ErrRuleNotRegistered = errors.New("control: rule not registered")
-
-// validateSampleSize is the maximum number of Core KV entries sampled by the validate op.
-const validateSampleSize = 10
 
 // validateTimeout bounds the total time allowed for the validate op (NFR10 — CI-practical latency).
 const validateTimeout = 5 * time.Second
@@ -170,7 +164,6 @@ type Service struct {
 	reporters            map[string]*health.Reporter
 	microSvc             micro.Service // set by StartNATSListener; nil until started
 	ruleGetter           RuleGetter    // set via SetRuleGetter; used by validate op
-	coreKV               *substrate.KV // set via SetCoreKV; used by validate op
 }
 
 // NewService creates a new Service with empty registries.
@@ -190,14 +183,6 @@ func NewService() *Service {
 func (s *Service) SetRuleGetter(rg RuleGetter) {
 	s.mu.Lock()
 	s.ruleGetter = rg
-	s.mu.Unlock()
-}
-
-// SetCoreKV registers the Core KV handle used by the validate op to sample entries.
-// Thread-safe; may be called at any time.
-func (s *Service) SetCoreKV(kv *substrate.KV) {
-	s.mu.Lock()
-	s.coreKV = kv
 	s.mu.Unlock()
 }
 
@@ -584,125 +569,27 @@ func (s *Service) deleteRule(ctx context.Context, ruleID string) ControlResponse
 	return ControlResponse{Delete: &DeleteResult{Deleted: true}}
 }
 
-// validateRule samples Core KV entries and checks whether the MATCH/RETURN clause
-// fields are present in the sample. Returns a best-effort field-presence report.
+// validateRule reports that field-level validation is not available. It
+// existed to sample Core KV against the now-retired simple engine's parsed
+// column list; every lens uses the full openCypher engine, which this
+// best-effort sampling approach cannot parse.
 func (s *Service) validateRule(ctx context.Context, ruleID string) ControlResponse {
 	s.mu.Lock()
 	rg := s.ruleGetter
-	coreKV := s.coreKV
 	s.mu.Unlock()
 
 	if rg == nil {
 		return ControlResponse{Error: "validate: rule getter not configured"}
 	}
-	if coreKV == nil {
-		return ControlResponse{Error: "validate: Core KV not configured"}
-	}
-
-	r, ok := rg.Get(ruleID)
-	if !ok {
+	if _, ok := rg.Get(ruleID); !ok {
 		return ControlResponse{Error: fmt.Sprintf("rule %q not loaded", ruleID)}
 	}
 
-	// Full-engine lenses use openCypher syntax that the simple parser cannot handle.
-	// Return a best-effort note rather than a misleading parse error.
-	if r.ResolvedEngine == ruleengine.EngineFull {
-		return ControlResponse{Validate: &ValidateResult{
-			SampleSize:   0,
-			FieldReports: nil,
-			Warnings:     []string{"field-level validation is only available for simple-engine lenses; this lens uses the full openCypher engine"},
-		}}
-	}
-
-	query, err := simple.Parse(r.Match)
-	if err != nil {
-		return ControlResponse{Error: fmt.Sprintf("validate: parse match: %s", err)}
-	}
-	plan, err := simple.Compile(query, r.Into.Key)
-	if err != nil {
-		return ControlResponse{Error: fmt.Sprintf("validate: compile plan: %s", err)}
-	}
-
-	// Sample keys from Core KV; cap at validateSampleSize for a fast CI response.
-	// ListKeys materializes the key set; validate is an infrequent operator
-	// diagnostic over a bounded bucket, so the sampling cap stays the cost bound.
-	allKeys, err := coreKV.ListKeys(ctx)
-	if err != nil {
-		// Empty bucket or context error — not a hard failure; return all-absent report.
-		return ControlResponse{Validate: buildEmptyValidateResult(plan.Columns)}
-	}
-
-	var sampledKeys []string
-	for _, key := range allKeys {
-		sampledKeys = append(sampledKeys, key)
-		if len(sampledKeys) >= validateSampleSize {
-			break
-		}
-	}
-
-	// For each sampled key, decode the JSON value and count property hits.
-	propertyHits := make(map[string]int) // property name → count of entries containing it
-	sampleSize := 0
-	for _, key := range sampledKeys {
-		entry, err := coreKV.Get(ctx, key)
-		if err != nil {
-			continue
-		}
-		var doc map[string]any
-		if err := json.Unmarshal(entry.Value, &doc); err != nil {
-			continue // skip non-JSON entries (e.g. deleted markers)
-		}
-		sampleSize++
-		for _, col := range plan.Columns {
-			if _, exists := doc[col.Property]; exists {
-				propertyHits[col.Property]++
-			}
-		}
-	}
-
-	// Build one FieldReport per unique Expression; warn on absent fields.
-	reports := make([]FieldReport, 0, len(plan.Columns))
-	warnings := make([]string, 0)
-	seen := make(map[string]bool)
-	for _, col := range plan.Columns {
-		if seen[col.Expression] {
-			continue
-		}
-		seen[col.Expression] = true
-		foundIn := propertyHits[col.Property]
-		present := foundIn > 0
-		reports = append(reports, FieldReport{
-			Field:   col.Expression,
-			FoundIn: foundIn,
-			Present: present,
-		})
-		if !present {
-			warnings = append(warnings, fmt.Sprintf("field %q not found in any sampled Core KV entry", col.Expression))
-		}
-	}
-
 	return ControlResponse{Validate: &ValidateResult{
-		SampleSize:   sampleSize,
-		FieldReports: reports,
-		Warnings:     warnings,
+		SampleSize:   0,
+		FieldReports: nil,
+		Warnings:     []string{"field-level validation is not available for the openCypher engine"},
 	}}
-}
-
-// buildEmptyValidateResult returns a ValidateResult with all fields absent (sampleSize=0).
-// Used when Core KV is unreachable or empty.
-func buildEmptyValidateResult(columns []simple.Column) *ValidateResult {
-	reports := make([]FieldReport, 0, len(columns))
-	warnings := make([]string, 0)
-	seen := make(map[string]bool)
-	for _, col := range columns {
-		if seen[col.Expression] {
-			continue
-		}
-		seen[col.Expression] = true
-		reports = append(reports, FieldReport{Field: col.Expression, FoundIn: 0, Present: false})
-		warnings = append(warnings, fmt.Sprintf("field %q not found in any sampled Core KV entry", col.Expression))
-	}
-	return &ValidateResult{SampleSize: 0, FieldReports: reports, Warnings: warnings}
 }
 
 // respondMicro marshals v to JSON and sends it as the micro reply.

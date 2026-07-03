@@ -151,7 +151,7 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	require.NoError(t, err)
 	const rolesLensID = "RolesLensId000000001" // synthetic 20-char id for the consumer
 	capP, err := pipeline.New(rolesLensID, "nats_kv",
-		nil, bootstrap.CoreKVBucket, adjKV, coreKV, capAdpt, nil)
+		bootstrap.CoreKVBucket, adjKV, coreKV, capAdpt, nil)
 	require.NoError(t, err)
 	capP.UseFullEngine(fullEngine, rolesCR)
 	capP.SetEnvelopeFn(rolesDesc.EnvelopeFn("vtx.meta."+rolesLensID, projectionRevision))
@@ -173,7 +173,7 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	require.NoError(t, err)
 	const roleIndexLensID = "RoleIdxLensId0000001" // synthetic 20-char id for the consumer
 	idxP, err := pipeline.New(roleIndexLensID, "nats_kv",
-		nil, bootstrap.CoreKVBucket, adjKV, coreKV, idxAdpt, nil)
+		bootstrap.CoreKVBucket, adjKV, coreKV, idxAdpt, nil)
 	require.NoError(t, err)
 	idxP.UseFullEngine(fullEngine, idxCR)
 	idxP.SetEnvelopeFn(capabilityenv.NewRoleIndexWrapper())
@@ -205,7 +205,7 @@ func TestRefractor_CapabilityLens_MultiIdentity_E2E(t *testing.T) {
 	require.NoError(t, err)
 	const ephLensID = "EphLensId00000000001" // synthetic 20-char id for the consumer
 	ephP, err := pipeline.New(ephLensID, "nats_kv",
-		nil, bootstrap.CoreKVBucket, adjKV, coreKV, ephAdpt, nil)
+		bootstrap.CoreKVBucket, adjKV, coreKV, ephAdpt, nil)
 	require.NoError(t, err)
 	ephP.UseFullEngine(fullEngine, ephCR)
 	ephDesc := descFromPkgSpec(t, ephLensSpec)

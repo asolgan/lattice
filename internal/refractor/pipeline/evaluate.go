@@ -14,7 +14,6 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/adjacency"
 	"github.com/asolgan/lattice/internal/refractor/failure"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
-	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -59,11 +58,10 @@ func projectedAtFromProvenance(nodeProps map[string]any) (string, error) {
 	return "", ErrNoProvenanceTimestamp
 }
 
-// evaluateForEntry runs the per-engine evaluate path against entry and
+// evaluateForEntry runs the full-engine evaluate path against entry and
 // returns the normalised []ruleengine.EvalResult shape the write loop expects.
-// The simple engine delegates to simple.Evaluate; the full engine binds
-// `$actorKey`, `$now`, `$projectedAt` from the event/provenance and calls
-// full.Engine.ExecuteWith. When an EnvelopeFn is installed, each row
+// It binds `$actorKey`, `$now`, `$projectedAt` from the event/provenance and
+// calls full.Engine.ExecuteWith. When an EnvelopeFn is installed, each row
 // is rewritten before being handed to the adapter. When a SecureDecryptor is
 // installed (a Secure Lens), each row's declared secure columns are decrypted
 // before the results reach any write path — this wrapper is the single choke
@@ -94,146 +92,87 @@ func (p *Pipeline) applySecureDecrypt(ctx context.Context, results []ruleengine.
 	return p.secureDecryptor.Apply(ctx, results)
 }
 
-// evaluateForEntryRaw is evaluateForEntry's per-engine core, pre-decrypt.
+// evaluateForEntryRaw is evaluateForEntry's core, pre-decrypt.
 func (p *Pipeline) evaluateForEntryRaw(ctx context.Context, entry ruleengine.NodeEntry) ([]ruleengine.EvalResult, error) {
-	switch p.engineKind {
-	case ruleengine.EngineFull:
-		if p.fullEngine == nil || p.fullCR == nil {
-			return nil, fmt.Errorf("pipeline: full engine selected but engine/compiled rule unset for rule %q", p.ruleID)
-		}
-
-		// Cross-vertex fan-out: on a non-actor event with an ActorEnumerator
-		// installed, expand the event into the set of affected actors and
-		// re-execute the cypher per actor so their capability set is
-		// re-projected with the updated topology.
-		if p.actorEnumerator != nil {
-			eventType, _, _ := substrate.ParseVertexKey(entry.CoreKVKey)
-			if eventType != p.actorEnumerator.actorType {
-				return p.evaluateFanOut(ctx, entry)
-			}
-		}
-
-		// Actor tombstone shortcut: emit a Delete against the Capability KV
-		// target key so the cap entry is removed when an identity vertex is
-		// soft-deleted. Only the actor-aware pipeline (ActorEnumerator installed)
-		// takes this path — other lenses let the cypher re-execute normally.
-		if entry.IsDeleted && p.actorEnumerator != nil {
-			delKey := p.actorDeleteKeyFor(entry.CoreKVKey)
-			return []ruleengine.EvalResult{{
-				Delete: true,
-				Keys:   map[string]any{"key": delKey},
-				Row:    nil,
-			}}, nil
-		}
-
-		// Plain-projection anchor tombstone: retract the row the deleted anchor
-		// projected. The non-actor twin of the actor-aware shortcut above; mirrors
-		// the simple engine's deleteResult. The upsert-only re-scan path returns
-		// zero rows for a tombstoned anchor but never a Delete, so the prior row
-		// would linger forever. A secondary-node tombstone (event type != the
-		// anchor label) returns ok=false and falls through to a normal re-execute
-		// so dependent rows refresh (e.g. a deleted patient nulls an appointment's
-		// patientName without deleting the appointment row).
-		if entry.IsDeleted && p.actorEnumerator == nil {
-			eventType, _, _ := substrate.ParseVertexKey(entry.CoreKVKey)
-			if keys, ok := p.fullEngine.AnchorDeleteResult(
-				p.fullCR, entry.CoreKVKey, eventType, entry.Properties); ok {
-				return []ruleengine.EvalResult{{Delete: true, Keys: keys, Row: nil}}, nil
-			}
-		}
-
-		results, err := p.executeFullForActor(ctx, entry.CoreKVKey, entry.Properties)
-		if err != nil {
-			return nil, err
-		}
-		// Filter-retraction presence check (plain projection lenses): when a
-		// live event anchor no longer appears in the re-derived row set — a
-		// WHERE predicate flipped, a keyed aspect was deleted, a required
-		// link was removed — its previously-projected row must be retracted,
-		// which the upsert-only re-scan never does. The anchor's projection
-		// key is derived read-free (AnchorProjectionKey succeeds only for a
-		// one-row-per-anchor, anchor-keyed lens — see its ok contract), so a
-		// multi-row or neighbor-keyed lens falls through to today's behaviour
-		// and never risks a wrong Delete. A never-matched anchor emits an
-		// idempotent Delete against an absent key — a harmless no-op, pinned
-		// by test. The tombstoned-anchor shortcut above returns before this
-		// check; a tombstone it could not derive keys for cannot derive them
-		// here either (same derivation).
-		if p.actorEnumerator == nil && p.envelopeFn == nil {
-			if keys, ok := p.fullEngine.AnchorProjectionKey(
-				p.fullCR, entry.CoreKVKey, entry.NodeLabel, entry.Properties); ok &&
-				!resultsContainKeys(results, keys) {
-				results = append(results, ruleengine.EvalResult{Delete: true, Keys: keys})
-			} else if !ok && p.diffRetraction {
-				// Fire 3 (build-deferred in the design until a real consumer
-				// arrived): AnchorProjectionKey could not derive a single
-				// anchor-keyed row, so this lens's own opt-in target-diff picks
-				// up what Fire 2 structurally cannot reach.
-				var derr error
-				results, derr = p.applyDiffRetraction(ctx, results)
-				if derr != nil {
-					return nil, derr
-				}
-			}
-		}
-		return results, nil
-
-	default:
-		// Simple engine — unchanged behaviour modulo optional envelope
-		// wrap (Phase C may install one for capability lenses authored
-		// against the simple engine; in practice the seeded capability
-		// lenses use the full engine, so this path stays a no-op for
-		// 3.2a).
-		results, err := simple.Evaluate(ctx, p.currentPlan(), entry, p.adjKV, p.coreKV)
-		if err != nil {
-			return nil, err
-		}
-		if p.envelopeFn == nil {
-			return results, nil
-		}
-		projectedAt, perr := projectedAtFromProvenance(entry.Properties)
-		if perr != nil {
-			return nil, fmt.Errorf("pipeline: projectedAt for %q: %w", entry.CoreKVKey, perr)
-		}
-		params := map[string]any{
-			"actorKey":    entry.CoreKVKey,
-			"projectedAt": projectedAt,
-		}
-		filtered := results[:0]
-		for i := range results {
-			if results[i].Delete {
-				filtered = append(filtered, results[i])
-				continue
-			}
-			newRow, newKeys, envErr := p.envelopeFn(results[i].Row, results[i].Keys, params)
-			if errors.Is(envErr, ErrSkipProjection) {
-				continue
-			}
-			if errors.Is(envErr, ErrDeleteProjection) {
-				results[i].Delete = true
-				results[i].Keys = newKeys
-				results[i].Row = nil
-				filtered = append(filtered, results[i])
-				continue
-			}
-			if envErr != nil {
-				return nil, fmt.Errorf("pipeline: envelope: %w", envErr)
-			}
-			results[i].Row = newRow
-			results[i].Keys = newKeys
-			filtered = append(filtered, results[i])
-		}
-		// Same anchor-derived-key collision guard as the full-engine path: an
-		// envelope makes the output key anchor-derived, so 2+ non-delete rows for
-		// one actor would collide and silently overwrite (FR29). In practice the
-		// seeded actor-aggregate lenses use the full engine, so this rarely fires,
-		// but the simple path wraps through the identical envelope and must not
-		// silently drop either.
-		if err := p.guardOutputKeyCollision(ctx, entry.CoreKVKey, filtered); err != nil {
-			return nil, err
-		}
-		return filtered, nil
+	if p.fullEngine == nil || p.fullCR == nil {
+		return nil, fmt.Errorf("pipeline: full engine/compiled rule unset for rule %q", p.ruleID)
 	}
+
+	// Cross-vertex fan-out: on a non-actor event with an ActorEnumerator
+	// installed, expand the event into the set of affected actors and
+	// re-execute the cypher per actor so their capability set is
+	// re-projected with the updated topology.
+	if p.actorEnumerator != nil {
+		eventType, _, _ := substrate.ParseVertexKey(entry.CoreKVKey)
+		if eventType != p.actorEnumerator.actorType {
+			return p.evaluateFanOut(ctx, entry)
+		}
+	}
+
+	// Actor tombstone shortcut: emit a Delete against the Capability KV
+	// target key so the cap entry is removed when an identity vertex is
+	// soft-deleted. Only the actor-aware pipeline (ActorEnumerator installed)
+	// takes this path — other lenses let the cypher re-execute normally.
+	if entry.IsDeleted && p.actorEnumerator != nil {
+		delKey := p.actorDeleteKeyFor(entry.CoreKVKey)
+		return []ruleengine.EvalResult{{
+			Delete: true,
+			Keys:   map[string]any{"key": delKey},
+			Row:    nil,
+		}}, nil
+	}
+
+	// Plain-projection anchor tombstone: retract the row the deleted anchor
+	// projected. The non-actor twin of the actor-aware shortcut above. The
+	// upsert-only re-scan path returns zero rows for a tombstoned anchor but
+	// never a Delete, so the prior row would linger forever. A secondary-node
+	// tombstone (event type != the anchor label) returns ok=false and falls
+	// through to a normal re-execute so dependent rows refresh (e.g. a
+	// deleted patient nulls an appointment's patientName without deleting
+	// the appointment row).
+	if entry.IsDeleted && p.actorEnumerator == nil {
+		eventType, _, _ := substrate.ParseVertexKey(entry.CoreKVKey)
+		if keys, ok := p.fullEngine.AnchorDeleteResult(
+			p.fullCR, entry.CoreKVKey, eventType, entry.Properties); ok {
+			return []ruleengine.EvalResult{{Delete: true, Keys: keys, Row: nil}}, nil
+		}
+	}
+
+	results, err := p.executeFullForActor(ctx, entry.CoreKVKey, entry.Properties)
+	if err != nil {
+		return nil, err
+	}
+	// Filter-retraction presence check (plain projection lenses): when a
+	// live event anchor no longer appears in the re-derived row set — a
+	// WHERE predicate flipped, a keyed aspect was deleted, a required
+	// link was removed — its previously-projected row must be retracted,
+	// which the upsert-only re-scan never does. The anchor's projection
+	// key is derived read-free (AnchorProjectionKey succeeds only for a
+	// one-row-per-anchor, anchor-keyed lens — see its ok contract), so a
+	// multi-row or neighbor-keyed lens falls through to today's behaviour
+	// and never risks a wrong Delete. A never-matched anchor emits an
+	// idempotent Delete against an absent key — a harmless no-op, pinned
+	// by test. The tombstoned-anchor shortcut above returns before this
+	// check; a tombstone it could not derive keys for cannot derive them
+	// here either (same derivation).
+	if p.actorEnumerator == nil && p.envelopeFn == nil {
+		if keys, ok := p.fullEngine.AnchorProjectionKey(
+			p.fullCR, entry.CoreKVKey, entry.NodeLabel, entry.Properties); ok &&
+			!resultsContainKeys(results, keys) {
+			results = append(results, ruleengine.EvalResult{Delete: true, Keys: keys})
+		} else if !ok && p.diffRetraction {
+			// Fire 3 (build-deferred in the design until a real consumer
+			// arrived): AnchorProjectionKey could not derive a single
+			// anchor-keyed row, so this lens's own opt-in target-diff picks
+			// up what Fire 2 structurally cannot reach.
+			var derr error
+			results, derr = p.applyDiffRetraction(ctx, results)
+			if derr != nil {
+				return nil, derr
+			}
+		}
+	}
+	return results, nil
 }
 
 // executeFullForActor runs the full-engine cypher against a single

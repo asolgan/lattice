@@ -75,7 +75,10 @@ into:
 `)
 	_, err := lens.Parse(y)
 	require.Error(t, err)
-	assert.Contains(t, strings.ToUpper(err.Error()), "RETURN")
+	// The full engine's grammar requires RETURN structurally, so an omitted
+	// RETURN surfaces as a syntax error (not a dedicated "missing RETURN"
+	// message) — assert the stable "invalid match query" wrapping instead.
+	assert.Contains(t, err.Error(), "invalid match query")
 }
 
 func TestParse_InvalidMatchSyntax(t *testing.T) {

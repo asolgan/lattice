@@ -201,7 +201,7 @@ func TestRefractor_PackageActorAggregateLens_ProjectsWithZeroCoreEdits(t *testin
 
 	rosterAdpt, err := adapter.New(rosterKV, rosterRule.Into.Key, adapter.DeleteModeHard)
 	require.NoError(t, err)
-	p, err := pipeline.New(rosterRule.ID, "nats_kv", nil, bootstrap.CoreKVBucket, adjKV, coreKV, rosterAdpt, nil)
+	p, err := pipeline.New(rosterRule.ID, "nats_kv", bootstrap.CoreKVBucket, adjKV, coreKV, rosterAdpt, nil)
 	require.NoError(t, err)
 	require.NotNil(t, rosterRule.CompiledRule, "actor-aggregate lens must resolve a compiled rule")
 	p.UseFullEngine(fullEngine, rosterRule.CompiledRule)

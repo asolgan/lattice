@@ -56,7 +56,7 @@ func newRetractionPipeline(t *testing.T, spec string, keyCols []string) (*Pipeli
 
 	adpt, err := adapter.New(targetKV, keyColsOrDefault(keyCols), adapter.DeleteModeHard)
 	require.NoError(t, err)
-	p, err := New("filter-retraction", "nats_kv", nil, "CORE", adjKV, coreKV, adpt, nil)
+	p, err := New("filter-retraction", "nats_kv", "CORE", adjKV, coreKV, adpt, nil)
 	require.NoError(t, err)
 	p.UseFullEngine(eng, cr)
 	return p, coreKV, adjKV, targetKV

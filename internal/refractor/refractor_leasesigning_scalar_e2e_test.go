@@ -187,7 +187,7 @@ func TestRefractor_LeaseSigningConvergence_ProjectsScalarColumns(t *testing.T) {
 
 	convAdpt, err := adapter.New(convKV, convRule.Into.Key, adapter.DeleteModeHard)
 	require.NoError(t, err)
-	p, err := pipeline.New(convRule.ID, "nats_kv", nil, bootstrap.CoreKVBucket, adjKV, coreKV, convAdpt, nil)
+	p, err := pipeline.New(convRule.ID, "nats_kv", bootstrap.CoreKVBucket, adjKV, coreKV, convAdpt, nil)
 	require.NoError(t, err)
 	require.NotNil(t, convRule.CompiledRule, "actor-aggregate lens must resolve a compiled rule")
 	p.UseFullEngine(fullEngine, convRule.CompiledRule)

@@ -17,7 +17,6 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/health"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
-	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -37,16 +36,15 @@ var RebuildPollInterval = 500 * time.Millisecond
 type Pipeline struct {
 	ruleID       string
 	adapterName  string // "nats_kv" or "postgres" — used for logging only
-	plan         *simple.QueryPlan
 	coreKVBucket string // Core KV bucket name; used to strip the $KV prefix from subjects
 	adjKV        *substrate.KV
 	coreKV       *substrate.KV
 
-	// engineKind selects the evaluate code path; "simple" (default) drives
-	// the plan-based simple.Evaluate; "full" drives full.Engine.ExecuteWith
-	// against fullCR and the live event context. envelopeFn (when non-nil)
-	// rewrites each projection row into the on-wire envelope expected by
-	// the adapter target (e.g. Contract #6 §6.2 Capability KV shape).
+	// engineKind is set to ruleengine.EngineFull by UseFullEngine (called for
+	// every activated lens). fullCR is the compiled rule UseFullEngine
+	// installed; envelopeFn (when non-nil) rewrites each projection row into
+	// the on-wire envelope expected by the adapter target (e.g. Contract #6
+	// §6.2 Capability KV shape).
 	engineKind string
 	fullEngine *full.Engine
 	fullCR     ruleengine.CompiledRule
@@ -98,7 +96,6 @@ type Pipeline struct {
 	latencyBuf *LatencyRingBuffer
 	adapterMu  sync.RWMutex    // protects adpt for concurrent hot-reload
 	adpt       adapter.Adapter // access via currentAdapter(); swap via HotReloadInto
-	planMu     sync.RWMutex    // protects plan for concurrent hot-reload
 
 	reporter *health.Reporter // nil → skip health KV operations (optional)
 
@@ -200,7 +197,6 @@ type EnvelopeFn func(row map[string]any, keys map[string]any, params map[string]
 // Returns an error if adpt is nil.
 func New(
 	ruleID, adapterName string,
-	plan *simple.QueryPlan,
 	coreKVBucket string,
 	adjKV, coreKV *substrate.KV,
 	adpt adapter.Adapter,
@@ -216,13 +212,11 @@ func New(
 	p := &Pipeline{
 		ruleID:              ruleID,
 		adapterName:         adapterName,
-		plan:                plan,
 		coreKVBucket:        coreKVBucket,
 		adjKV:               adjKV,
 		coreKV:              coreKV,
 		reporter:            reporter,
 		rebuildPollInterval: iv,
-		engineKind:          ruleengine.EngineSimple,
 		started:             make(chan struct{}),
 	}
 	p.adpt = adpt
@@ -252,9 +246,7 @@ func (p *Pipeline) UseFullEngine(eng *full.Engine, cr ruleengine.CompiledRule) {
 
 // plainReactsTo reports whether the plain aspect/link reprojection arms should
 // re-execute this lens for an event whose owner/endpoint vertex has the given
-// type. Only full-engine lenses reproject (the simple engine keeps its legacy
-// ack-and-skip — no live simple-engine lens needs aspect/link freshness); a
-// full-engine lens with an exhaustive label set reprojects only for types its
+// type. A lens with an exhaustive label set reprojects only for types its
 // patterns can bind.
 func (p *Pipeline) plainReactsTo(vertexType string) bool {
 	if p.engineKind != ruleengine.EngineFull {
@@ -320,27 +312,6 @@ func (p *Pipeline) currentAdapter() adapter.Adapter {
 	p.adapterMu.RLock()
 	defer p.adapterMu.RUnlock()
 	return p.adpt
-}
-
-func (p *Pipeline) currentPlan() *simple.QueryPlan {
-	p.planMu.RLock()
-	defer p.planMu.RUnlock()
-	return p.plan
-}
-
-// HotReloadPlan atomically replaces the compiled query plan. Any message already in
-// processMsg continues with the plan it captured at the start of that call; the next
-// message will use newPlan. Returns an error if newPlan is nil.
-// Used by the orchestrator when a MATCH change is detected, so that the subsequent
-// operator-triggered rebuild re-scans Core KV with the updated query.
-func (p *Pipeline) HotReloadPlan(newPlan *simple.QueryPlan) error {
-	if newPlan == nil {
-		return errors.New("pipeline: HotReloadPlan: newPlan must not be nil")
-	}
-	p.planMu.Lock()
-	p.plan = newPlan
-	p.planMu.Unlock()
-	return nil
 }
 
 // SetRetryQueue configures the pipeline to use q for transient write failure retry.
@@ -674,11 +645,9 @@ func (p *Pipeline) handle(ctx context.Context, msg substrate.Message) (substrate
 		Properties: props,
 	}
 
-	// Route to the appropriate engine. The simple engine returns
-	// []EvalResult{Delete,Keys,Row}; the full engine returns
-	// []ProjectionResult{Key,Values,Delete}. evaluateForEntry normalises
-	// and applies the envelope so the downstream write path sees a single
-	// []ruleengine.EvalResult shape.
+	// Evaluate against the full engine ([]ProjectionResult{Key,Values,Delete}).
+	// evaluateForEntry normalises and applies the envelope so the downstream
+	// write path sees a single []ruleengine.EvalResult shape.
 	results, err := p.evaluateForEntry(ctx, entry)
 	if err != nil {
 		slog.Error("pipeline: evaluate",

@@ -32,7 +32,6 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/projection"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine"
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
-	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
 	"github.com/asolgan/lattice/internal/refractor/subjects"
 	"github.com/asolgan/lattice/internal/substrate"
 	"github.com/asolgan/lattice/internal/vault"
@@ -119,7 +118,6 @@ func main() {
 
 	poolManager := adapter.NewPoolManager()
 	controlSvc := control.NewService()
-	controlSvc.SetCoreKV(coreKV)
 
 	// The KeyShredded nullification listener (vault-crypto-shredding-design.md
 	// §2.4, Fire 4a) — the Refractor half of crypto-shredding's async
@@ -378,22 +376,6 @@ func main() {
 	}
 
 	startPipeline := func(r *lens.Rule) {
-		// For the simple engine we still compile the plan (legacy path).
-		// For the full engine we only need a placeholder — evaluateForEntry
-		// switches on engineKind and never touches the plan.
-		var plan *simple.QueryPlan
-		if r.ResolvedEngine == ruleengine.EngineSimple || r.ResolvedEngine == "" {
-			q, err := simple.Parse(r.Match)
-			if err != nil {
-				logger.Error("parse lens cypher", "lensId", r.ID, "err", err)
-				return
-			}
-			plan, err = simple.Compile(q, r.Into.Key)
-			if err != nil {
-				logger.Error("compile lens query plan", "lensId", r.ID, "err", err)
-				return
-			}
-		}
 		// A Secure Lens needs the Vault before anything else is built —
 		// refusing here leaves no half-constructed state behind.
 		if len(r.Into.SecureColumns) > 0 && vaultBackend == nil {
@@ -412,7 +394,7 @@ func main() {
 		reporter.SetRuleSequence(r.Sequence)
 		reporter.SetRuleEngine(r.ResolvedEngine)
 
-		p, err := pipeline.New(r.ID, r.Into.Target, plan, coreKVBucket, adjKV, coreKV, adpt, reporter)
+		p, err := pipeline.New(r.ID, r.Into.Target, coreKVBucket, adjKV, coreKV, adpt, reporter)
 		if err != nil {
 			logger.Error("create pipeline", "lensId", r.ID, "err", err)
 			return
@@ -623,8 +605,6 @@ func main() {
 			entry.reporter.SetRuleEngine(newLens.ResolvedEngine)
 			logger.Info("lens INTO hot-reloaded", "lensId", newLens.ID)
 		case lens.MatchChange:
-			// Mirror startPipeline's per-engine routing for hot-reload so both
-			// simple- and full-engine lenses are updated when MATCH changes.
 			mu.Lock()
 			entry, ok := registry[newLens.ID]
 			mu.Unlock()
@@ -641,49 +621,30 @@ func main() {
 					"lensId", newLens.ID)
 				return
 			}
-			switch newLens.ResolvedEngine {
-			case ruleengine.EngineFull:
-				// CoreKVSource has already compiled the new rule; reuse it.
-				if newLens.CompiledRule == nil {
-					logger.Error("full engine MATCH update missing CompiledRule",
-						"lensId", newLens.ID)
+			// CoreKVSource has already compiled the new rule; reuse it.
+			if newLens.CompiledRule == nil {
+				logger.Error("MATCH update missing CompiledRule",
+					"lensId", newLens.ID)
+				return
+			}
+			if cr, ok := newLens.CompiledRule.(*full.CompiledRule); ok &&
+				!projection.IsActorAggregate(newLens) && !isOperationRoleIndexLens(newLens) {
+				cr.KeyColumns = []string(newLens.Into.Key)
+				if err := cr.ValidateKeyColumns(); err != nil {
+					logger.Error("full engine key-column validation (MATCH update)",
+						"lensId", newLens.ID, "err", err)
 					return
 				}
-				if cr, ok := newLens.CompiledRule.(*full.CompiledRule); ok &&
-					!projection.IsActorAggregate(newLens) && !isOperationRoleIndexLens(newLens) {
-					cr.KeyColumns = []string(newLens.Into.Key)
-					if err := cr.ValidateKeyColumns(); err != nil {
-						logger.Error("full engine key-column validation (MATCH update)",
-							"lensId", newLens.ID, "err", err)
-						return
-					}
-					// The new cypher must still RETURN every alias the running
-					// decryptor consumes.
-					if err := cr.ValidateReturnAliases(secureAliasNames(entry.secureColumns)...); err != nil {
-						logger.Error("secure-column RETURN-alias validation (MATCH update)",
-							"lensId", newLens.ID, "err", err)
-						return
-					}
-				}
-				entry.pipeline.UseFullEngine(fullEngine, newLens.CompiledRule)
-				logger.Info("lens MATCH hot-reloaded (full engine)", "lensId", newLens.ID)
-			default:
-				q, err := simple.Parse(newLens.Match)
-				if err != nil {
-					logger.Error("parse updated match", "lensId", newLens.ID, "err", err)
+				// The new cypher must still RETURN every alias the running
+				// decryptor consumes.
+				if err := cr.ValidateReturnAliases(secureAliasNames(entry.secureColumns)...); err != nil {
+					logger.Error("secure-column RETURN-alias validation (MATCH update)",
+						"lensId", newLens.ID, "err", err)
 					return
-				}
-				newPlan, err := simple.Compile(q, newLens.Into.Key)
-				if err != nil {
-					logger.Error("compile updated plan", "lensId", newLens.ID, "err", err)
-					return
-				}
-				if err := entry.pipeline.HotReloadPlan(newPlan); err != nil {
-					logger.Error("hot-reload plan", "lensId", newLens.ID, "err", err)
-				} else {
-					logger.Info("lens MATCH hot-reloaded (simple engine)", "lensId", newLens.ID)
 				}
 			}
+			entry.pipeline.UseFullEngine(fullEngine, newLens.CompiledRule)
+			logger.Info("lens MATCH hot-reloaded", "lensId", newLens.ID)
 			entry.reporter.SetRuleSequence(newLens.Sequence)
 			entry.reporter.SetRuleEngine(newLens.ResolvedEngine)
 		}

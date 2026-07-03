@@ -1,13 +1,12 @@
 // Package ruleengine defines the engine-neutral interface, registry, and
-// supporting types shared by the v1 "simple" engine (Materializer-derived)
-// and the v2 "full" engine (ANTLR-vendored openCypher). ANTLR types stay
-// isolated inside internal/refractor/ruleengine/full/cypher and MUST NOT
-// leak through this package.
+// supporting types the v2 "full" engine (ANTLR-vendored openCypher)
+// implements. ANTLR types stay isolated inside
+// internal/refractor/ruleengine/full/cypher and MUST NOT leak through this
+// package.
 package ruleengine
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -15,15 +14,14 @@ import (
 
 // Engine names. Add new constants here when more engines land.
 const (
-	EngineSimple = "simple"
-	EngineFull   = "full"
+	EngineFull = "full"
 )
 
 // CompiledRule is the engine-specific compiled representation of a rule body.
 // It is an opaque marker interface: callers pass it back to the same engine
-// that produced it via Execute. 3.1a's selection-logic does not need to peek
+// that produced it via Execute. The selection-logic does not need to peek
 // inside this value, so the engine-neutral interface intentionally hides the
-// concrete type (simple.QueryPlan today; full's executor plan in 3.1b).
+// concrete type (full's executor plan).
 type CompiledRule interface {
 	// EngineName returns the engine that produced this compiled rule. Useful
 	// for debugging mis-routed Execute calls.
@@ -78,7 +76,7 @@ func (e *ParseError) Error() string {
 	return fmt.Sprintf("[%s] %s", e.Engine, e.Message)
 }
 
-// RuleEngine is the common interface both the simple and full engines satisfy.
+// RuleEngine is the interface the full engine satisfies.
 type RuleEngine interface {
 	Name() string
 	Parse(ruleBody string) (CompiledRule, error)
@@ -93,14 +91,13 @@ type LensDefinition struct {
 	ID string
 	// RuleBody is the raw match/rule text passed to Engine.Parse.
 	RuleBody string
-	// RuleEngine is the explicit engine selector. "" (absent) triggers
-	// simple-then-full fallback per Decision #3 of the 3.1 brief.
+	// RuleEngine is the explicit engine selector. Must be "full" or absent
+	// (absent resolves to "full"); any other value is a SelectionError.
 	RuleEngine string
 }
 
 // SelectionError carries one or more ParseErrors collected during engine
-// resolution. The Errors slice is ordered by attempt: for the absent-fallback
-// path it is [simple, full].
+// resolution.
 type SelectionError struct {
 	LensID string
 	Errors []*ParseError
@@ -161,53 +158,21 @@ func (r *staticRegistry) List() []string {
 	return names
 }
 
-// SelectForLens implements Decision #3 of the 3.1 handoff brief:
-//
-//   - explicit "simple": try simple only; failure → SelectionError.
-//   - explicit "full":   try full only;   failure → SelectionError.
-//   - absent ("" ):      try simple; on failure try full; both failing →
-//     SelectionError carrying both ParseErrors in [simple, full] order.
+// SelectForLens resolves a lens's engine: "full" or absent (which resolves
+// to "full") try the full engine; any other value is a SelectionError.
 //
 // On success the resolved engine and its CompiledRule are returned along
 // with the list of engine names attempted (caller logs as `attemptedEngines`).
 func (r *staticRegistry) SelectForLens(lens LensDefinition) (RuleEngine, CompiledRule, []string, error) {
 	switch lens.RuleEngine {
-	case EngineSimple:
-		return r.tryOne(lens, EngineSimple)
-	case EngineFull:
+	case EngineFull, "":
 		return r.tryOne(lens, EngineFull)
-	case "":
-		// fallback: simple, then full
-		eng, cr, attempted, err := r.tryOne(lens, EngineSimple)
-		if err == nil {
-			return eng, cr, attempted, nil
-		}
-		eng2, cr2, attempted2, err2 := r.tryOne(lens, EngineFull)
-		merged := append(attempted, attempted2...)
-		if err2 == nil {
-			return eng2, cr2, merged, nil
-		}
-		// Both failed — merge the parse errors in [simple, full] order.
-		var simpleErrs, fullErrs *SelectionError
-		if errors.As(err, &simpleErrs) && errors.As(err2, &fullErrs) {
-			return nil, nil, merged, &SelectionError{
-				LensID: lens.ID,
-				Errors: append(simpleErrs.Errors, fullErrs.Errors...),
-			}
-		}
-		return nil, nil, merged, &SelectionError{
-			LensID: lens.ID,
-			Errors: []*ParseError{
-				{Engine: EngineSimple, Message: err.Error()},
-				{Engine: EngineFull, Message: err2.Error()},
-			},
-		}
 	default:
 		return nil, nil, nil, &SelectionError{
 			LensID: lens.ID,
 			Errors: []*ParseError{{
 				Engine:  lens.RuleEngine,
-				Message: fmt.Sprintf("unknown ruleEngine %q (valid: simple, full, or empty)", lens.RuleEngine),
+				Message: fmt.Sprintf("unknown ruleEngine %q (valid: full or empty)", lens.RuleEngine),
 			}},
 		}
 	}

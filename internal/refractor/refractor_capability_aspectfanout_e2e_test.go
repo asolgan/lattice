@@ -132,7 +132,7 @@ func TestRefractor_CapabilityLens_AspectFanOut_E2E(t *testing.T) {
 
 	const rolesLensID = "AspFanRolesLens00001"
 	capP, err := pipeline.New(rolesLensID, "nats_kv",
-		nil, bootstrap.CoreKVBucket, adjKV, coreKV, capAdpt, nil)
+		bootstrap.CoreKVBucket, adjKV, coreKV, capAdpt, nil)
 	require.NoError(t, err)
 	capP.UseFullEngine(fullEngine, rolesCR)
 	capP.SetEnvelopeFn(rolesDesc.EnvelopeFn("vtx.meta."+rolesLensID, projectionRevision))

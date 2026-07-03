@@ -34,7 +34,7 @@ func (a *guardedTruncAdapter) Truncate(context.Context) error {
 // inspects. Returns whether Truncate was invoked.
 func rebuildTruncates(t *testing.T, ad *guardedTruncAdapter, truncate bool) bool {
 	t.Helper()
-	p, err := New("rule-force-trunc", "nats_kv", nil, "CORE", nil, nil, ad, nil)
+	p, err := New("rule-force-trunc", "nats_kv", "CORE", nil, nil, ad, nil)
 	require.NoError(t, err)
 	// No supervisor configured: Rebuild errors after the truncate branch.
 	require.Error(t, p.Rebuild(context.Background(), truncate))

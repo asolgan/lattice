@@ -109,7 +109,7 @@ func TestWriteResults_NoRetryEnqueueWhileBatchLeftPending(t *testing.T) {
 	}}
 	rq := failure.NewRetryQueue()
 
-	p, err := New("rule-dedup", "nats_kv", nil, "CORE", nil, nil, ad, nil)
+	p, err := New("rule-dedup", "nats_kv", "CORE", nil, nil, ad, nil)
 	require.NoError(t, err)
 	p.SetRetryQueue(rq, nil, 3, time.Millisecond)
 

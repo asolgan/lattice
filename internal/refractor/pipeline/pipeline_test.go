@@ -21,7 +21,7 @@ import (
 	"github.com/asolgan/lattice/internal/refractor/failure"
 	"github.com/asolgan/lattice/internal/refractor/health"
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
-	"github.com/asolgan/lattice/internal/refractor/ruleengine/simple"
+	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
 	"github.com/asolgan/lattice/internal/refractor/subjects"
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -44,8 +44,6 @@ const (
 	sentinelAgreementRes2   = "TsntBagreementRes222" // was node_agreement_res2
 	sentinelAgreementHr1    = "TsntCagreementHr1111" // was node_agreement_hr1
 	sentinelAgreementHr2    = "TsntDagreementHr2222" // was node_agreement_hr2
-	sentinelAgreementHp1    = "TsntEagreementHp1111" // was node_agreement_hp1
-	sentinelAgreementHp2    = "TsntFagreementHp2222" // was node_agreement_hp2
 	sentinelAgreementRetry1 = "TsntGagreementRetry1" // was node_agreement_retry1
 	sentinelAgreementTerm1  = "TsntHagreementTerm11" // was node_agreement_term1
 	sentinelAgreementTerm2  = "TsntJagreementTerm22" // was node_agreement_term2
@@ -129,9 +127,19 @@ func startPipelineEnv(t *testing.T) *pipelineEnv {
 	return &pipelineEnv{nc: nc, js: js, conn: conn, coreKV: coreKV, adjKV: adjKV}
 }
 
-// putNode writes a node entry to Core KV.
+// putNode writes a node entry to Core KV. createdAt/lastModifiedAt default to
+// a fixed provenance timestamp when the caller doesn't supply one — the full
+// engine's executeFullForActor derives $projectedAt from commit provenance
+// (Contract #1 §1.3's universal envelope) unconditionally, unlike the retired
+// simple engine.
 func putNode(t *testing.T, kv *substrate.KV, key string, props map[string]any) {
 	t.Helper()
+	if _, ok := props["createdAt"]; !ok {
+		props["createdAt"] = "2026-01-01T00:00:00Z"
+	}
+	if _, ok := props["lastModifiedAt"]; !ok {
+		props["lastModifiedAt"] = "2026-01-01T00:00:00Z"
+	}
 	data, err := json.Marshal(props)
 	require.NoError(t, err)
 	_, err = kv.Put(context.Background(), key, data)
@@ -151,14 +159,21 @@ func pollUntil(t *testing.T, timeout time.Duration, check func() bool) {
 	t.Fatal("condition not met within timeout")
 }
 
-// compileSimplePlan compiles a single-node MATCH plan (no edges, no traversal).
-func compileSimplePlan(t *testing.T, query string, keyFields []string) *simple.QueryPlan {
+// compileFullRule parses and compiles a single-node MATCH query against the
+// full engine, threading keyFields as the projection key columns — the
+// full-engine equivalent of the retired simple-engine plan compile, used to
+// wire a Pipeline via UseFullEngine in tests that exercise generic
+// (engine-agnostic) write-path behaviour.
+func compileFullRule(t *testing.T, query string, keyFields []string) (*full.Engine, *full.CompiledRule) {
 	t.Helper()
-	ast, err := simple.Parse(query)
+	eng := full.New()
+	cr, err := eng.Parse(query)
 	require.NoError(t, err)
-	plan, err := simple.Compile(ast, keyFields)
-	require.NoError(t, err)
-	return plan
+	fullCR, ok := cr.(*full.CompiledRule)
+	require.True(t, ok)
+	fullCR.KeyColumns = keyFields
+	require.NoError(t, fullCR.ValidateKeyColumns())
+	return eng, fullCR
 }
 
 // newTargetKV creates a fresh target NATS KV bucket and wraps it with a
@@ -261,12 +276,7 @@ func (a *structuralAdapter) Close() error                                       
 
 // TestPipeline_New_NilAdapter verifies that New returns an error when adapter is nil.
 func TestPipeline_New_NilAdapter(t *testing.T) {
-	ast, err := simple.Parse("MATCH (a:agreement) RETURN a.id AS agreement_id")
-	require.NoError(t, err)
-	plan, err := simple.Compile(ast, []string{"agreement_id"})
-	require.NoError(t, err)
-
-	_, err = pipeline.New("rule-1", "nats_kv", plan, "CORE", nil, nil, nil, nil)
+	_, err := pipeline.New("rule-1", "nats_kv", "CORE", nil, nil, nil, nil)
 	assert.Error(t, err, "expected error when adapter is nil")
 }
 
@@ -274,14 +284,15 @@ func TestPipeline_New_NilAdapter(t *testing.T) {
 func TestPipeline_Upsert(t *testing.T) {
 	env := startPipelineEnv(t)
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	targetKV, adpt := newTargetKV(t, env, "target-upsert", []string{"agreement_id"})
 
-	p, err := pipeline.New("rule-1", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, adpt, nil)
+	p, err := pipeline.New("rule-1", "nats_kv", coreKVBucket, env.adjKV, env.coreKV, adpt, nil)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 	startPipeline(t, env, p, "rule-1")
 
 	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementA1, map[string]any{"id": "a1", "isDeleted": false})
@@ -303,14 +314,15 @@ func TestPipeline_Upsert(t *testing.T) {
 func TestPipeline_Delete(t *testing.T) {
 	env := startPipelineEnv(t)
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	targetKV, adpt := newTargetKV(t, env, "target-delete", []string{"agreement_id"})
 
-	p, err := pipeline.New("rule-2", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, adpt, nil)
+	p, err := pipeline.New("rule-2", "nats_kv", coreKVBucket, env.adjKV, env.coreKV, adpt, nil)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 	startPipeline(t, env, p, "rule-2")
 
 	// Upsert first.
@@ -335,14 +347,15 @@ func TestPipeline_Delete(t *testing.T) {
 func TestPipeline_Delete_SoftMode(t *testing.T) {
 	env := startPipelineEnv(t)
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	targetKV, adpt := newTargetKVMode(t, env, "target-delete-soft", []string{"agreement_id"}, adapter.DeleteModeSoft)
 
-	p, err := pipeline.New("rule-2-soft", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, adpt, nil)
+	p, err := pipeline.New("rule-2-soft", "nats_kv", coreKVBucket, env.adjKV, env.coreKV, adpt, nil)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 	startPipeline(t, env, p, "rule-2-soft")
 
 	// Upsert first.
@@ -369,13 +382,14 @@ func TestPipeline_Delete_SoftMode(t *testing.T) {
 func TestPipeline_ErrorNak(t *testing.T) {
 	env := startPipelineEnv(t)
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	ea := &errAdapter{}
-	p, err := pipeline.New("rule-err", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, ea, nil)
+	p, err := pipeline.New("rule-err", "nats_kv", coreKVBucket, env.adjKV, env.coreKV, ea, nil)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 	startPipeline(t, env, p, "rule-err")
 
 	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementErr1, map[string]any{"id": "err1", "isDeleted": false})
@@ -392,13 +406,14 @@ func TestPipeline_ErrorNak(t *testing.T) {
 func TestPipeline_GracefulShutdown(t *testing.T) {
 	env := startPipelineEnv(t)
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	_, adpt := newTargetKV(t, env, "target-shutdown", []string{"agreement_id"})
-	p, err := pipeline.New("rule-sd", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, adpt, nil)
+	p, err := pipeline.New("rule-sd", "nats_kv", coreKVBucket, env.adjKV, env.coreKV, adpt, nil)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	p.RunOn(env.conn, specFor("rule-sd"))
@@ -426,21 +441,23 @@ func TestPipeline_MultiRule_Independent(t *testing.T) {
 	env := startPipelineEnv(t)
 
 	// Rule A: agreements.
-	planA := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	engA, crA := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 	targetA, adptA := newTargetKV(t, env, "target-rule-a", []string{"agreement_id"})
 
 	// Rule B: identities.
-	planB := compileSimplePlan(t,
-		"MATCH (i:identity) RETURN i.name AS identity_name",
+	engB, crB := compileFullRule(t,
+		"MATCH (i:identity {key: $actorKey}) RETURN i.name AS identity_name",
 		[]string{"identity_name"})
 	targetB, adptB := newTargetKV(t, env, "target-rule-b", []string{"identity_name"})
 
-	pA, err := pipeline.New("rule-a", "nats_kv", planA, coreKVBucket, env.adjKV, env.coreKV, adptA, nil)
+	pA, err := pipeline.New("rule-a", "nats_kv", coreKVBucket, env.adjKV, env.coreKV, adptA, nil)
 	require.NoError(t, err)
-	pB, err := pipeline.New("rule-b", "nats_kv", planB, coreKVBucket, env.adjKV, env.coreKV, adptB, nil)
+	pA.UseFullEngine(engA, crA)
+	pB, err := pipeline.New("rule-b", "nats_kv", coreKVBucket, env.adjKV, env.coreKV, adptB, nil)
 	require.NoError(t, err)
+	pB.UseFullEngine(engB, crB)
 
 	startPipeline(t, env, pA, "rule-a")
 	startPipeline(t, env, pB, "rule-b")
@@ -475,16 +492,17 @@ func TestPipeline_InfrastructurePause(t *testing.T) {
 	pipeline.ProbeInterval = 50 * time.Millisecond
 	t.Cleanup(func() { pipeline.ProbeInterval = origInterval })
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	// infraAdapter: Upsert always fails (infra error); Probe recovers after 2 calls.
 	ia := &infraAdapter{recoverAt: 2}
 
 	reporter := newHealthReporter(t, env, "rule-infra")
-	p, err := pipeline.New("rule-infra", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, ia, reporter)
+	p, err := pipeline.New("rule-infra", "nats_kv", coreKVBucket, env.adjKV, env.coreKV, ia, reporter)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 
 	// The supervised consumer uses a short AckWait (specFor) so the unacked infra
 	// message is redelivered quickly after recovery.
@@ -526,14 +544,15 @@ func TestPipeline_InfrastructurePause(t *testing.T) {
 func TestPipeline_StructuralPause(t *testing.T) {
 	env := startPipelineEnv(t)
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	sa := &structuralAdapter{}
 	reporter := newHealthReporter(t, env, "rule-structural")
-	p, err := pipeline.New("rule-structural", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, sa, reporter)
+	p, err := pipeline.New("rule-structural", "nats_kv", coreKVBucket, env.adjKV, env.coreKV, sa, reporter)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 
 	startPipeline(t, env, p, "rule-structural")
 
@@ -564,8 +583,8 @@ func TestPipeline_HealthKV_StartupRestore_Infra(t *testing.T) {
 	pipeline.ProbeInterval = 50 * time.Millisecond
 	t.Cleanup(func() { pipeline.ProbeInterval = origInterval })
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	_, targetAdpt := newTargetKV(t, env, "target-restore", []string{"agreement_id"})
@@ -582,8 +601,9 @@ func TestPipeline_HealthKV_StartupRestore_Infra(t *testing.T) {
 	// Override with a real adapter that writes to targetKV so we can verify processing resumes.
 	// For this test we just check that the pipeline transitions from paused→active.
 
-	p, err := pipeline.New("rule-restore", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, targetAdpt, reporter)
+	p, err := pipeline.New("rule-restore", "nats_kv", coreKVBucket, env.adjKV, env.coreKV, targetAdpt, reporter)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 	// Swap adapter for probe — use a wrapper that delegates probe to ia but writes to targetAdpt.
 	_ = ia // referenced above; probe logic tested separately
 
@@ -628,8 +648,8 @@ func (a *structuralOnceAdapter) Close() error                  { return nil }
 func TestPipeline_HealthKV_StartupRestore_Structural(t *testing.T) {
 	env := startPipelineEnv(t) // guards with testing.Short()
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	// Use a recorder so we can verify no writes happen while blocked.
@@ -639,8 +659,9 @@ func TestPipeline_HealthKV_StartupRestore_Structural(t *testing.T) {
 	reporter := newHealthReporter(t, env, "rule-restore-structural")
 	require.NoError(t, reporter.SetPaused(context.Background(), health.PauseReasonStructural, "simulated structural restart"))
 
-	p, err := pipeline.New("rule-restore-structural", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, rec, reporter)
+	p, err := pipeline.New("rule-restore-structural", "nats_kv", coreKVBucket, env.adjKV, env.coreKV, rec, reporter)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 
 	startPipeline(t, env, p, "rule-restore-structural")
 
@@ -668,14 +689,15 @@ func TestPipeline_HealthKV_StartupRestore_Structural(t *testing.T) {
 func TestPipeline_StructuralPauseResumes(t *testing.T) {
 	env := startPipelineEnv(t) // guards with testing.Short()
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	sa := &structuralOnceAdapter{}
 	reporter := newHealthReporter(t, env, "rule-resume")
-	p, err := pipeline.New("rule-resume", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, sa, reporter)
+	p, err := pipeline.New("rule-resume", "nats_kv", coreKVBucket, env.adjKV, env.coreKV, sa, reporter)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 
 	startPipeline(t, env, p, "rule-resume")
 
@@ -757,15 +779,16 @@ func (r *recorderAdapter) KeyAt(i int) map[string]any {
 func TestPipeline_HotReloadInto_NextMessageUsesNewAdapter(t *testing.T) {
 	env := startPipelineEnv(t)
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	adptA := &recorderAdapter{}
 	adptB := &recorderAdapter{}
 
-	p, err := pipeline.New("rule-hotreload", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, adptA, nil)
+	p, err := pipeline.New("rule-hotreload", "nats_kv", coreKVBucket, env.adjKV, env.coreKV, adptA, nil)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 	startPipeline(t, env, p, "rule-hotreload")
 
 	// First message → goes to adapter A.
@@ -788,65 +811,15 @@ func TestPipeline_HotReloadInto_NextMessageUsesNewAdapter(t *testing.T) {
 // TestPipeline_HotReloadInto_NilAdapterReturnsError verifies that passing nil
 // to HotReloadInto returns an error rather than panicking.
 func TestPipeline_HotReloadInto_NilAdapterReturnsError(t *testing.T) {
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 	// Use a pool with fake DSN — no real NATS needed for this unit check.
 	adpt := &recorderAdapter{}
-	p, err := pipeline.New("rule-nil", "nats_kv", plan, "CORE", nil, nil, adpt, nil)
+	p, err := pipeline.New("rule-nil", "nats_kv", "CORE", nil, nil, adpt, nil)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 	assert.Error(t, p.HotReloadInto(nil), "HotReloadInto(nil) must return an error")
-}
-
-// TestPipeline_HotReloadPlan_NextMessageUsesNewPlan verifies that after
-// HotReloadPlan the pipeline evaluates subsequent messages with the new plan,
-// projecting different key columns, while leaving the durable consumer running.
-func TestPipeline_HotReloadPlan_NextMessageUsesNewPlan(t *testing.T) {
-	env := startPipelineEnv(t)
-
-	// Plan A projects agreement_id; plan B projects agreement_name.
-	planA := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
-		[]string{"agreement_id"})
-	planB := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.name AS agreement_name",
-		[]string{"agreement_name"})
-
-	ra := &recorderAdapter{}
-	p, err := pipeline.New("rule-hotreload-plan", "nats_kv", planA, coreKVBucket, env.adjKV, env.coreKV, ra, nil)
-	require.NoError(t, err)
-	startPipeline(t, env, p, "rule-hotreload-plan")
-
-	// First message → plan A → keys must contain agreement_id.
-	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementHp1, map[string]any{"id": "hp1", "name": "name1", "isDeleted": false})
-	pollUntil(t, 2*time.Second, func() bool { return ra.Count() >= 1 })
-
-	firstKeys := ra.KeyAt(0)
-	assert.Contains(t, firstKeys, "agreement_id", "plan A must project agreement_id")
-	assert.NotContains(t, firstKeys, "agreement_name", "plan A must not project agreement_name")
-
-	// Hot-reload to plan B.
-	require.NoError(t, p.HotReloadPlan(planB))
-
-	// Second message → plan B → keys must contain agreement_name.
-	putNode(t, env.coreKV, "vtx.agreement."+sentinelAgreementHp2, map[string]any{"id": "hp2", "name": "name2", "isDeleted": false})
-	pollUntil(t, 2*time.Second, func() bool { return ra.Count() >= 2 })
-
-	secondKeys := ra.KeyAt(1)
-	assert.Contains(t, secondKeys, "agreement_name", "plan B must project agreement_name")
-	assert.NotContains(t, secondKeys, "agreement_id", "plan B must not project agreement_id")
-}
-
-// TestPipeline_HotReloadPlan_NilPlanReturnsError verifies that passing nil
-// to HotReloadPlan returns an error rather than panicking.
-func TestPipeline_HotReloadPlan_NilPlanReturnsError(t *testing.T) {
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
-		[]string{"agreement_id"})
-	adpt := &recorderAdapter{}
-	p, err := pipeline.New("rule-nil-plan", "nats_kv", plan, "CORE", nil, nil, adpt, nil)
-	require.NoError(t, err)
-	assert.Error(t, p.HotReloadPlan(nil), "HotReloadPlan(nil) must return an error")
 }
 
 // ── Retry queue tests ─────────────────────────────────────────────────────────
@@ -859,8 +832,8 @@ func TestPipeline_HotReloadPlan_NilPlanReturnsError(t *testing.T) {
 func TestPipeline_TransientWriteEnqueuesRetry(t *testing.T) {
 	env := startPipelineEnv(t) // guards with testing.Short()
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	// errAdapter always returns a generic error — classified as Transient.
@@ -868,8 +841,9 @@ func TestPipeline_TransientWriteEnqueuesRetry(t *testing.T) {
 
 	rq := failure.NewRetryQueue()
 
-	p, err := pipeline.New("rule-retry", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, ea, nil)
+	p, err := pipeline.New("rule-retry", "nats_kv", coreKVBucket, env.adjKV, env.coreKV, ea, nil)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 	p.SetRetryQueue(rq, nil, 3, time.Millisecond)
 
 	startPipeline(t, env, p, "rule-retry")
@@ -920,16 +894,17 @@ func (a *terminalOnceAdapter) Close() error                                     
 func TestPipeline_TerminalWritePublishesDLQAndContinues(t *testing.T) {
 	env := startPipelineEnv(t) // guards with testing.Short()
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	ta := &terminalOnceAdapter{}
 	rq := failure.NewRetryQueue()
 
 	const ruleID = "rule-terminal"
-	p, err := pipeline.New(ruleID, "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, ta, nil)
+	p, err := pipeline.New(ruleID, "nats_kv", coreKVBucket, env.adjKV, env.coreKV, ta, nil)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 	// SetRetryQueue provides the substrate connection used for Terminal DLQ publish.
 	p.SetRetryQueue(rq, env.conn, 3, time.Millisecond)
 
@@ -995,12 +970,13 @@ func TestPipeline_NilAuditWriter_NoOp(t *testing.T) {
 	env := startPipelineEnv(t)
 
 	const ruleID = "audit-nil-rule"
-	plan := compileSimplePlan(t, "MATCH (n:agreement) RETURN n.id AS agreement_id", []string{"agreement_id"})
+	eng, cr := compileFullRule(t, "MATCH (n:agreement {key: $actorKey}) RETURN n.id AS agreement_id", []string{"agreement_id"})
 	targetKV, adpt := newTargetKV(t, env, "TARGET-AUDIT-NIL", []string{"agreement_id"})
 
-	p, err := pipeline.New(ruleID, "nats_kv", plan, coreKVBucket,
+	p, err := pipeline.New(ruleID, "nats_kv", coreKVBucket,
 		env.adjKV, env.coreKV, adpt, nil)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 	// Deliberately do NOT call p.SetAuditWriter — auditWriter remains nil.
 
 	startPipeline(t, env, p, ruleID)
@@ -1024,12 +1000,13 @@ func TestPipeline_AuditEntry_WrittenOnSuccess(t *testing.T) {
 	env := startPipelineEnv(t)
 
 	const ruleID = "audit-success-rule"
-	plan := compileSimplePlan(t, "MATCH (n:agreement) RETURN n.id AS agreement_id", []string{"agreement_id"})
+	eng, cr := compileFullRule(t, "MATCH (n:agreement {key: $actorKey}) RETURN n.id AS agreement_id", []string{"agreement_id"})
 	_, adpt := newTargetKV(t, env, "TARGET-AUDIT-SUCCESS", []string{"agreement_id"})
 
-	p, err := pipeline.New(ruleID, "nats_kv", plan, coreKVBucket,
+	p, err := pipeline.New(ruleID, "nats_kv", coreKVBucket,
 		env.adjKV, env.coreKV, adpt, nil)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 
 	// Create the audit stream and attach the writer.
 	aw := health.NewAuditWriter(env.conn, ruleID)
@@ -1070,12 +1047,13 @@ func TestPipeline_NoAuditEntry_OnWriteFailure(t *testing.T) {
 	env := startPipelineEnv(t)
 
 	const ruleID = "audit-failure-rule"
-	plan := compileSimplePlan(t, "MATCH (n:agreement) RETURN n.id AS agreement_id", []string{"agreement_id"})
+	eng, cr := compileFullRule(t, "MATCH (n:agreement {key: $actorKey}) RETURN n.id AS agreement_id", []string{"agreement_id"})
 
 	// Use an adapter that always fails — no successful writes possible.
-	p, err := pipeline.New(ruleID, "nats_kv", plan, coreKVBucket,
+	p, err := pipeline.New(ruleID, "nats_kv", coreKVBucket,
 		env.adjKV, env.coreKV, &errAdapter{}, nil)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 
 	// Create the audit stream and attach the writer.
 	aw := health.NewAuditWriter(env.conn, ruleID)
@@ -1112,12 +1090,13 @@ func TestPipeline_SetLagPoller_StartsMetricsPublishing(t *testing.T) {
 	defer func() { health.MetricsInterval = orig }()
 
 	const ruleID = "lag-wire-rule"
-	plan := compileSimplePlan(t, "MATCH (n:agreement) RETURN n.id AS agreement_id", []string{"agreement_id"})
+	eng, cr := compileFullRule(t, "MATCH (n:agreement {key: $actorKey}) RETURN n.id AS agreement_id", []string{"agreement_id"})
 	_, adpt := newTargetKV(t, env, "TARGET-LAG-WIRE", []string{"agreement_id"})
 
-	p, err := pipeline.New(ruleID, "nats_kv", plan, coreKVBucket,
+	p, err := pipeline.New(ruleID, "nats_kv", coreKVBucket,
 		env.adjKV, env.coreKV, adpt, nil)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 
 	// Subscribe to metrics subject before starting the pipeline.
 	msgCh := make(chan *nats.Msg, 10)
@@ -1152,15 +1131,16 @@ func TestPipeline_SetLagPoller_StartsMetricsPublishing(t *testing.T) {
 func TestPipeline_ManualPause_HaltsAndResumes(t *testing.T) {
 	env := startPipelineEnv(t)
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	ra := &recorderAdapter{}
 	reporter := newHealthReporter(t, env, "rule-manual-pause")
-	p, err := pipeline.New("rule-manual-pause", "nats_kv", plan, coreKVBucket,
+	p, err := pipeline.New("rule-manual-pause", "nats_kv", coreKVBucket,
 		env.adjKV, env.coreKV, ra, reporter)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 
 	startPipeline(t, env, p, "rule-manual-pause")
 
@@ -1211,15 +1191,16 @@ func TestPipeline_ManualPause_HaltsAndResumes(t *testing.T) {
 func TestPipeline_Pause_SetsHealthManual(t *testing.T) {
 	env := startPipelineEnv(t)
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	ra := &recorderAdapter{}
 	reporter := newHealthReporter(t, env, "rule-pause-health")
-	p, err := pipeline.New("rule-pause-health", "nats_kv", plan, coreKVBucket,
+	p, err := pipeline.New("rule-pause-health", "nats_kv", coreKVBucket,
 		env.adjKV, env.coreKV, ra, reporter)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 
 	startPipeline(t, env, p, "rule-pause-health")
 
@@ -1251,8 +1232,8 @@ func TestPipeline_Resume_OverridesInfraPause(t *testing.T) {
 	pipeline.ProbeInterval = 60 * time.Second
 	t.Cleanup(func() { pipeline.ProbeInterval = origInterval })
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	// infraAdapter: Upsert always fails (infra error); Probe never recovers (recoverAt > test lifetime).
@@ -1262,9 +1243,10 @@ func TestPipeline_Resume_OverridesInfraPause(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	p, err := pipeline.New("rule-resume-infra", "nats_kv", plan, coreKVBucket,
+	p, err := pipeline.New("rule-resume-infra", "nats_kv", coreKVBucket,
 		env.adjKV, env.coreKV, ia, reporter)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 	p.RunOn(env.conn, specFor("rule-resume-infra"))
 
 	var wg sync.WaitGroup
@@ -1336,8 +1318,8 @@ func TestPipeline_Rebuild_ProbeRecoveryKeepsRebuildingStatus(t *testing.T) {
 	pipeline.RebuildPollInterval = 100 * time.Millisecond
 	t.Cleanup(func() { pipeline.RebuildPollInterval = origPoll })
 
-	plan := compileSimplePlan(t,
-		"MATCH (a:agreement) RETURN a.id AS agreement_id",
+	eng, cr := compileFullRule(t,
+		"MATCH (a:agreement {key: $actorKey}) RETURN a.id AS agreement_id",
 		[]string{"agreement_id"})
 
 	ga := &gateAdapter{}
@@ -1355,8 +1337,9 @@ func TestPipeline_Rebuild_ProbeRecoveryKeepsRebuildingStatus(t *testing.T) {
 	require.NoError(t, err)
 	reporter := health.New(healthKVH, "rule-rbp")
 
-	p, err := pipeline.New("rule-rbp", "nats_kv", plan, coreKVBucket, env.adjKV, env.coreKV, ga, reporter)
+	p, err := pipeline.New("rule-rbp", "nats_kv", coreKVBucket, env.adjKV, env.coreKV, ga, reporter)
 	require.NoError(t, err)
+	p.UseFullEngine(eng, cr)
 	startPipeline(t, env, p, "rule-rbp")
 
 	rebuildCtx, rebuildCancel := context.WithCancel(context.Background())
