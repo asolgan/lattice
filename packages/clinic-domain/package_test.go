@@ -23,14 +23,14 @@ func TestPackage_ManifestMatchesDefinition(t *testing.T) {
 	}
 }
 
-// TestPackage_DDLs pins the twelve DDLs: three vertexType owners (patient,
-// provider, appointment) and nine aspectType step-6 gates. The aspect DDLs MUST
-// be NON-sensitive (they attach to patient/provider/appointment vertices, not an
-// identity — a sensitive aspect there would trip step-6's sensitiveAspectScope),
-// and each names ONLY its writer op(s) in permittedCommands.
+// TestPackage_DDLs pins the thirteen DDLs: three vertexType owners (patient,
+// provider, appointment) and ten aspectType step-6 gates (nine attach to
+// patient/provider/appointment vertices; identityPatientClaim attaches onto an
+// identity-domain vertex, the clinic-reminders idiom). All ten aspect DDLs MUST
+// be NON-sensitive, and each names ONLY its writer op(s) in permittedCommands.
 func TestPackage_DDLs(t *testing.T) {
-	if got := len(Package.DDLs); got != 12 {
-		t.Fatalf("expected 12 DDLs, got %d", got)
+	if got := len(Package.DDLs); got != 13 {
+		t.Fatalf("expected 13 DDLs, got %d", got)
 	}
 
 	byName := map[string]pkgmgr.DDLSpec{}
@@ -78,6 +78,7 @@ func TestPackage_DDLs(t *testing.T) {
 		"providerSlotClaim":    {"CreateAppointment", "RescheduleAppointment", "SetAppointmentStatus", "TombstoneAppointment"},
 		"patientSlotClaim":     {"CreateAppointment", "RescheduleAppointment", "SetAppointmentStatus", "TombstoneAppointment"},
 		"appointmentEncounter": {"RecordEncounter"},
+		"identityPatientClaim": {"CreatePatient"},
 	}
 	for name, wantCmds := range aspectWriters {
 		asp, ok := byName[name]
@@ -88,7 +89,7 @@ func TestPackage_DDLs(t *testing.T) {
 			t.Fatalf("%s class = %q, want meta.ddl.aspectType", name, asp.Class)
 		}
 		if asp.Sensitive {
-			t.Fatalf("%s must NOT be sensitive (it attaches to a non-identity vertex; step-6 sensitiveAspectScope would reject it)", name)
+			t.Fatalf("%s must NOT be sensitive", name)
 		}
 		if len(asp.PermittedCommands) != len(wantCmds) {
 			t.Fatalf("%s permittedCommands = %v, want %v", name, asp.PermittedCommands, wantCmds)

@@ -1287,6 +1287,39 @@ func TestClinic_CreatePatientWithIdentity(t *testing.T) {
 	}
 }
 
+// TestClinic_CreatePatientRejectsDuplicateIdentityClaim proves the global
+// identityPatientClaim guard: two DIFFERENT patients can never both wire the same
+// identityKey. Without the guard, two roster rows would decrypt and display the
+// same person's email/phone as if each patient individually owned that contact.
+func TestClinic_CreatePatientRejectsDuplicateIdentityClaim(t *testing.T) {
+	ctx, conn := setupClinicEnv(t)
+	cp, cons := newClinicPipeline(t, ctx, conn, "dup-identity-claim")
+
+	identityKey := "vtx.identity.CLdupePatientHJKMNPQ"
+	clSeedVertex(t, ctx, conn, identityKey, "identity", false)
+
+	clSubmit(t, ctx, conn, cp, cons, "mkpatdup001", "CreatePatient", "patient",
+		`{"fullName":"First Claimant","identityKey":"`+identityKey+`"}`,
+		[]string{identityKey}, processor.OutcomeAccepted)
+
+	secondID := clSubmit(t, ctx, conn, cp, cons, "mkpatdup002", "CreatePatient", "patient",
+		`{"fullName":"Second Claimant","identityKey":"`+identityKey+`"}`,
+		[]string{identityKey}, processor.OutcomeRejected)
+
+	if !clMissing(t, ctx, conn, "vtx.patient."+secondID) {
+		t.Fatalf("a second patient was committed against an already-claimed identity")
+	}
+	linkKey := "lnk.patient." + secondID + ".identifiedBy.identity.CLdupePatientHJKMNPQ"
+	if !clMissing(t, ctx, conn, linkKey) {
+		t.Fatalf("a second identifiedBy link was committed against an already-claimed identity")
+	}
+
+	claimDoc := clReadDoc(t, ctx, conn, identityKey+".patientClaim")
+	if claimDoc["class"] != "identityPatientClaim" {
+		t.Fatalf("patientClaim aspect class = %v, want identityPatientClaim", claimDoc["class"])
+	}
+}
+
 // TestClinic_CreatePatientRejectsDeadIdentity proves an absent identityKey is
 // never wired — no patient is committed against a dead/absent identity.
 func TestClinic_CreatePatientRejectsDeadIdentity(t *testing.T) {

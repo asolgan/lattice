@@ -32,6 +32,8 @@ const (
 
 	providerSlotClaimAspectDDL = "providerSlotClaim"
 	patientSlotClaimAspectDDL  = "patientSlotClaim"
+
+	identityPatientClaimAspectDDL = "identityPatientClaim"
 )
 
 // DDLs returns the package's seven DDL meta-vertex declarations:
@@ -64,10 +66,15 @@ const (
 // caller (the FE) mints the identity carrying the sensitive contact first via
 // identity-domain's CreateUnclaimedIdentity, mirroring loftspace-app's
 // applicant flow (clinic-domain-design.md: "vtx.identity + an identifiedBy
-// link — not a rework"). No backfill for pre-existing patients (Vault's
-// full-stack-reset delivery boundary covers the migration). Display of the
-// linked contact rides a later Secure-Lens protected model (Fire 5 of the
-// Vault crypto-shredding design); this fire only wires the link.
+// link — not a rework"). A CreateOnly identityPatientClaim aspect on the
+// identity globally guards it: the identifiedBy link key alone is
+// (patient, identity)-composite, so it cannot stop two DIFFERENT patients
+// both wiring the same identityKey; the claim aspect, keyed solely on the
+// identity, is what makes the second claim collide. No backfill for
+// pre-existing patients (Vault's full-stack-reset delivery boundary covers
+// the migration). Display of the linked contact rides a later Secure-Lens
+// protected model (Fire 5 of the Vault crypto-shredding design); this fire
+// only wires the link.
 func DDLs() []pkgmgr.DDLSpec {
 	return []pkgmgr.DDLSpec{
 		patientVertexTypeDDL(),
@@ -82,6 +89,7 @@ func DDLs() []pkgmgr.DDLSpec {
 		providerSlotClaimAspectTypeDDL(),
 		patientSlotClaimAspectTypeDDL(),
 		encounterAspectTypeDDL(),
+		identityPatientClaimAspectTypeDDL(),
 	}
 }
 
@@ -94,9 +102,11 @@ func patientVertexTypeDDL() pkgmgr.DDLSpec {
 			"(minimal, D5 — the data lives in the .demographics aspect + the optional identifiedBy link). " +
 			"CreatePatient mints the patient + writes the .demographics aspect {fullName (required)} atomically; " +
 			"an optional identityKey wires lnk.patient.<id>.identifiedBy.identity.<identityId> to a pre-minted " +
-			"vtx.identity (validated alive + class=identity) carrying the patient's sensitive contact. " +
-			"TombstonePatient soft-deletes one. The .demographics aspect is NON-sensitive (it attaches to a " +
-			"patient, not an identity); real contact PII lives on the linked identity, the Vault plane's unit.",
+			"vtx.identity (validated alive + class=identity) carrying the patient's sensitive contact, and claims " +
+			"a CreateOnly vtx.identity.<identityId>.patientClaim guard aspect — a second, DIFFERENT patient passing " +
+			"the same identityKey is rejected (IdentityAlreadyClaimed). TombstonePatient soft-deletes one. The " +
+			".demographics aspect is NON-sensitive (it attaches to a patient, not an identity); real contact PII " +
+			"lives on the linked identity, the Vault plane's unit.",
 		Script: patientDDLScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"fullName":{"type":"string","description":"The patient's full name (CreatePatient; required)."},` +
@@ -108,7 +118,7 @@ func patientVertexTypeDDL() pkgmgr.DDLSpec {
 			`{"primaryKey":{"type":"string","description":"vtx.patient.<NanoID> the operation wrote."}}}`,
 		FieldDescription: map[string]string{
 			"fullName":    "The patient's full name. Stored on the .demographics aspect (CreatePatient; required).",
-			"identityKey": "Full vtx.identity.<NanoID> key of a pre-minted identity to link (CreatePatient; optional). Must be alive + class=identity; wires the identifiedBy link. Absent → the patient has no linked identity.",
+			"identityKey": "Full vtx.identity.<NanoID> key of a pre-minted identity to link (CreatePatient; optional). Must be alive + class=identity; wires the identifiedBy link and claims a CreateOnly patientClaim guard aspect on the identity (rejected if another patient already claimed it). Absent → the patient has no linked identity.",
 			"patientId":   "Optional bare NanoID (no dots / key segments) for the new patient vertex (vtx.patient.<patientId>). Absent → minted with nanoid.new().",
 			"patientKey":  "Full vtx.patient.<NanoID> key of an existing patient vertex to tombstone (TombstonePatient).",
 		},
@@ -123,12 +133,53 @@ func patientVertexTypeDDL() pkgmgr.DDLSpec {
 				Name:    "CreatePatient — register a patient with linked contact identity",
 				Payload: map[string]any{"fullName": "Alice Rivera", "identityKey": "vtx.identity.<NanoID>"},
 				ExpectedOutcome: "Mints the patient as above, plus lnk.patient.<id>.identifiedBy.identity.<identityId> " +
-					"to the supplied identity (rejected if that identity is absent, tombstoned, or the wrong class).",
+					"to the supplied identity (rejected if that identity is absent, tombstoned, or the wrong class) " +
+					"and a CreateOnly patientClaim guard aspect on the identity (rejected if a DIFFERENT patient " +
+					"already claimed it).",
 			},
 			{
 				Name:            "TombstonePatient — remove a patient",
 				Payload:         map[string]any{"patientKey": "vtx.patient.<NanoID>"},
 				ExpectedOutcome: "Soft-deletes the patient vertex. Returns primaryKey. Rejects an absent / already-dead patient.",
+			},
+		},
+	}
+}
+
+// identityPatientClaimAspectTypeDDL declares the .patientClaim aspect ATTACHED
+// onto an identity-domain vtx.identity (the clinic-reminders idiom of a package
+// adding an aspect onto another package's vertex type — clinic-reminders/ddls.go's
+// .reminder marker on clinic-domain's own appointment vertex). It is the global
+// exclusivity guard for CreatePatient's optional identityKey: the .demographics
+// aspect + identifiedBy link alone let two DIFFERENT patients both pass the same
+// identityKey (the identifiedBy link key is (patient, identity)-composite, never
+// identity-only), so two roster rows would decrypt and display the same person's
+// contact. A CreateOnly aspect keyed SOLELY on the identity closes that gap —
+// mirroring providerSlotClaim/patientSlotClaim's per-cell existence-marker lock,
+// just with one claimant instead of one cell. Declaration-only; NON-sensitive (no
+// data, so step-6's sensitiveAspectScope never fires on it either way).
+func identityPatientClaimAspectTypeDDL() pkgmgr.DDLSpec {
+	return pkgmgr.DDLSpec{
+		CanonicalName:     identityPatientClaimAspectDDL,
+		Class:             "meta.ddl.aspectType",
+		PermittedCommands: []string{"CreatePatient"},
+		Description: "Identity patient-claim guard aspect (clinic-domain, attached onto an identity-domain vertex). " +
+			"Stored as vtx.identity.<NanoID>.patientClaim (class identityPatientClaim) = {} — a pure existence marker, " +
+			"no relationship field. CreatePatient writes ONE per claimed identityKey, CreateOnly: the key ITSELF " +
+			"(identical regardless of WHICH patient is claiming) is the lock — a second, different patient passing the " +
+			"same identityKey collides at commit (RevisionConflict), never a silent double-claim. Declaration-only: no " +
+			"op handler (CreatePatient's script, owned by the patient vertexType DDL, writes it).",
+		Script:       aspectDeclarationOnlyScript,
+		InputSchema:  `{"type":"object","properties":{}}`,
+		OutputSchema: `{"type":"object"}`,
+		FieldDescription: map[string]string{
+			"data": "Always {} — a pure existence marker. Exclusivity is enforced by the KEY (the identity), never by a field in data.",
+		},
+		Examples: []pkgmgr.ExampleSpec{
+			{
+				Name:            "identity patient-claim guard aspect",
+				Payload:         map[string]any{},
+				ExpectedOutcome: "Stored as vtx.identity.<NanoID>.patientClaim; claimed once by CreatePatient's identityKey wiring. A second, different patient claiming the same identity is rejected.",
 			},
 		},
 	}
@@ -800,6 +851,21 @@ def require_live_typed(state, key, name, want_class):
     if cls != want_class:
         fail("WrongClass: " + name + ": " + key + " has class " + str(cls) + ", required " + want_class)
 
+def claim_identity(identity_key):
+    # Global exclusivity guard (Capability-KV §06 — pure existence-uniqueness, no
+    # list needed): at most one patient may ever claim a given identity (nothing
+    # releases the claim, so it is never tombstoned). kv.Read here is LAZY (§2.5
+    # idiom, same as the appointment DDL's claim_cell) — it only picks the error
+    # message; the safety property is the atomic batch's CreateOnly conditioning at
+    # commit: two DIFFERENT patients passing the same identityKey both read it
+    # absent and both emit op:create for the IDENTICAL key, but CreateOnly on a key
+    # at revision 0 commits exactly once — the loser's whole batch RevisionConflicts
+    # (fail closed, never a silent double-claim).
+    existing = kv.Read(identity_key + ".patientClaim")
+    if existing != None:
+        fail("IdentityAlreadyClaimed: " + identity_key + " is already linked to another patient")
+    return make_aspect(identity_key, "patientClaim", "identityPatientClaim", {})
+
 def execute(state, op):
     ot = op.operationType
     p = op.payload
@@ -823,6 +889,10 @@ def execute(state, op):
             require_live_typed(state, identity_key, "identityKey", "identity")
             identified_by_lnk = "lnk.patient." + pid + ".identifiedBy.identity." + identity_id
             mutations.append(make_link(identified_by_lnk, pkey, identity_key, "identifiedBy", "identifiedBy", {}))
+            # Global claim guard: at most one patient may ever wire the SAME
+            # identity (else two roster rows would decrypt/display the same
+            # person's contact). See claim_identity.
+            mutations.append(claim_identity(identity_key))
         events = [{"class": "clinic.patientCreated", "data": {"patientKey": pkey}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": pkey}}
