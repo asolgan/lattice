@@ -323,10 +323,12 @@ function buildSysmapNode(n) {
     if (n.status === "stale") head.appendChild(el("span", "sysmap-tag", "stale"));
     if (n.status === "degraded") head.appendChild(el("span", "sysmap-tag warn", "degraded"));
     if (n.status === "unhealthy") head.appendChild(el("span", "sysmap-tag bad", "unhealthy"));
-    if (n.status === "design-ahead") head.appendChild(el("span", "sysmap-tag ahead", "◇ design-ahead"));
     if (n.instances && n.instances.length > 1) head.appendChild(el("span", "sysmap-tag", "×" + n.instances.length));
     if (n.issues && n.issues.length) head.appendChild(el("span", "sysmap-tag warn", "⚠ " + n.issues.length));
     node.appendChild(head);
+    // The ◇ tag rides its own line (a span between the head/detail divs) so
+    // it never steals head-row width from the node label.
+    if (n.status === "design-ahead") node.appendChild(el("span", "sysmap-tag ahead", "◇ design-ahead"));
     if (n.detail) {
       const d = el("div", "sysmap-detail", n.detail);
       node.appendChild(d);
