@@ -16,6 +16,35 @@ fresh document. There is no append log. For audit history, use the event stream 
 
 ---
 
+## TTL / Lifecycle
+
+Contract #5 §5.6 mandates a per-key TTL on heartbeat writes so a crashed/redeployed instance's
+key **self-expires** rather than orphaning forever (`<instance>` is per-process — a restart
+mints a fresh NanoID, Contract #5 §5.1 — so the old instance's key is otherwise never revisited).
+Three lifecycle classes:
+
+- **Category A — cadence-rewritten heartbeats** (`health.<component>.<instance>` and the
+  per-tick `.step3-latency` sub-key): TTL = `interval × ttlMultiplier`, default multiplier
+  **10** (100s at the 10s NFR-O1 floor). Every heartbeat re-arms the TTL clock, so a live,
+  continuously-heartbeating instance's key never disappears; a dead instance's key expires
+  within the TTL window. Wired for Processor, Refractor, Weaver, Loom, bridge, and
+  object-store-manager (each via `KVPutWithTTL`; `SetTTLMultiplier(0)` disables TTL as an
+  operator escape hatch). The vertical-app `healthkv.Reporter` (loftspace-app, clinic-app) is
+  born TTL-on with the same default.
+- **Category B — sparse per-instance diagnostic keys** (e.g.
+  `health.processor.<instance>.malformed-operation.<requestId>`, `.claim-attempts.<outcome>`,
+  `.commit-conflicts`): a fixed, non-re-armed diagnostic TTL (not yet wired — tracked as the
+  next fire of the [Health-KV TTL design](../../_bmad-output/implementation-artifacts/health-kv-ttl-orphan-expiry-design.md)).
+- **Category C — durable consumer pause-state** (`health.<component>.<instance>.consumer.<name>`,
+  written by the shared `internal/healthkv.ConsumerSink`): **no TTL** — this is durable
+  operator/structural pause state, not a liveness signal; a death-tied TTL would risk silently
+  resuming a paused consumer after a long downtime (fail-open). Re-keying this to a stable,
+  consumer-scoped (non-instance) key is a follow-up fire of the same design.
+
+See the design doc for the full orphan taxonomy and fire-by-fire decomposition.
+
+---
+
 ## Bucket and Connection
 
 | Property   | Value                |
@@ -33,14 +62,14 @@ fresh document. There is no append log. For audit history, use the event stream 
 
 Source package: `internal/processor/`
 
-| Key Pattern | Frequency | Source File | Emitter |
-|---|---|---|---|
-| `health.processor.<instance>` | ≥ 10s heartbeat | `internal/processor/health.go` | `HealthHeartbeater.emit()` |
-| `health.processor.<instance>.step3-latency` | per heartbeat tick | `internal/processor/health.go` | `HealthHeartbeater.emitCapabilityAuthSignals()` |
-| `health.processor.<instance>.malformed-operation.<requestId>` | per malformed envelope | `internal/processor/health.go` | `HealthHeartbeater.EmitMalformedOperation()` |
-| `health.processor.<instance>.claim-attempts.<outcome>` | per `ClaimIdentity` call | `internal/processor/health_alerts.go` | `HealthAlertEmitter.RecordClaimAttempt()` |
-| `health.alerts.security.<alertCode>` | on security event | `internal/processor/health_alerts.go` | `HealthAlertEmitter.EmitAlert()` |
-| `health.processor.<instance>.auth-trace.<requestId>` | per auth denial | `internal/processor/step3_auth_trace.go` | `AuthTraceEmitter.Emit()` |
+| Key Pattern | Frequency | Source File | Emitter | TTL |
+|---|---|---|---|---|
+| `health.processor.<instance>` | ≥ 10s heartbeat | `internal/processor/health.go` | `HealthHeartbeater.emit()` | Category A — `interval×10`, re-armed |
+| `health.processor.<instance>.step3-latency` | per heartbeat tick | `internal/processor/health.go` | `HealthHeartbeater.emitCapabilityAuthSignals()` | Category A — same TTL, lock-step with the heartbeat |
+| `health.processor.<instance>.malformed-operation.<requestId>` | per malformed envelope | `internal/processor/health.go` | `HealthHeartbeater.EmitMalformedOperation()` | Category B — none yet (next fire) |
+| `health.processor.<instance>.claim-attempts.<outcome>` | per `ClaimIdentity` call | `internal/processor/health_alerts.go` | `HealthAlertEmitter.RecordClaimAttempt()` | Category B — none yet (next fire) |
+| `health.alerts.security.<alertCode>` | on security event | `internal/processor/health_alerts.go` | `HealthAlertEmitter.EmitAlert()` | Category D — alert-code-scoped, out of scope (§ TTL / Lifecycle) |
+| `health.processor.<instance>.auth-trace.<requestId>` | per auth denial | `internal/processor/step3_auth_trace.go` | `AuthTraceEmitter.Emit()` | fixed 1h |
 
 **`<instance>`** follows the convention `proc-<NanoID>` (Contract #5 §5.1).
 
@@ -60,9 +89,9 @@ completeness test):
 
 Source package: `internal/refractor/health/`
 
-| Key Pattern | Frequency | Source File | Emitter |
-|---|---|---|---|
-| `health.refractor.<instance>` | ≥ 10s heartbeat | `internal/refractor/health/lattice_heartbeater.go` | `LatticeHeartbeater.emit()` |
+| Key Pattern | Frequency | Source File | Emitter | TTL |
+|---|---|---|---|---|
+| `health.refractor.<instance>` | ≥ 10s heartbeat | `internal/refractor/health/lattice_heartbeater.go` | `LatticeHeartbeater.emit()` | Category A — `interval×10`, re-armed |
 
 **`<instance>`** follows the convention `rfx-<NanoID>` (Contract #5 §5.1).
 
@@ -101,9 +130,9 @@ inventory.
 
 Source package: `internal/weaver/`
 
-| Key Pattern | Frequency | Source File | Emitter |
-|---|---|---|---|
-| `health.weaver.<instance>` | ≥ 10s heartbeat | `internal/weaver/health.go` | `heartbeater.emit()` |
+| Key Pattern | Frequency | Source File | Emitter | TTL |
+|---|---|---|---|---|
+| `health.weaver.<instance>` | ≥ 10s heartbeat | `internal/weaver/health.go` | `heartbeater.emit()` | Category A — `interval×10`, re-armed |
 
 **`<instance>`** follows the convention `weaver-<NanoID>` (`cmd/weaver/main.go`; overridable via
 `WEAVER_INSTANCE`).
@@ -119,9 +148,9 @@ gap columns, template data errors) — the FR29 "never silently drop" surface.
 
 Source package: `internal/loom/`
 
-| Key Pattern | Frequency | Source File | Emitter |
-|---|---|---|---|
-| `health.loom.<instance>` | ≥ 10s heartbeat | `internal/loom/health.go` | `heartbeater.emit()` |
+| Key Pattern | Frequency | Source File | Emitter | TTL |
+|---|---|---|---|---|
+| `health.loom.<instance>` | ≥ 10s heartbeat | `internal/loom/health.go` | `heartbeater.emit()` | Category A — `interval×10`, re-armed |
 
 **`<instance>`** follows the convention `loom-<NanoID>` (`cmd/loom/main.go`; overridable via `LOOM_INSTANCE`).
 
@@ -134,10 +163,10 @@ a `ConsumerPaused` warning for each `pausedStructural` consumer.
 Source package: `internal/healthkv/` (shared `Reporter`), wired from `cmd/loftspace-app/health.go` and
 `cmd/clinic-app/health.go`.
 
-| Key Pattern | Frequency | Source File | Emitter |
-|---|---|---|---|
-| `health.loftspace-app.<instance>` | ≥ 10s heartbeat (`LOFTSPACE_APP_HEARTBEAT_EVERY`) | `cmd/loftspace-app/health.go` | `healthkv.Reporter.Run()` |
-| `health.clinic-app.<instance>` | ≥ 10s heartbeat (`CLINIC_APP_HEARTBEAT_EVERY`) | `cmd/clinic-app/health.go` | `healthkv.Reporter.Run()` |
+| Key Pattern | Frequency | Source File | Emitter | TTL |
+|---|---|---|---|---|
+| `health.loftspace-app.<instance>` | ≥ 10s heartbeat (`LOFTSPACE_APP_HEARTBEAT_EVERY`) | `cmd/loftspace-app/health.go` | `healthkv.Reporter.Run()` | Category A — `interval×10`, re-armed |
+| `health.clinic-app.<instance>` | ≥ 10s heartbeat (`CLINIC_APP_HEARTBEAT_EVERY`) | `cmd/clinic-app/health.go` | `healthkv.Reporter.Run()` | Category A — `interval×10`, re-armed |
 
 **`<instance>`** follows `loft-<NanoID>` / `clinic-<NanoID>` (overridable via `LOFTSPACE_APP_INSTANCE` /
 `CLINIC_APP_INSTANCE`). The heartbeat is gated on a live NATS dial at boot (mirrors
