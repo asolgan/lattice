@@ -60,8 +60,11 @@ func (f *lensFixture) seedAppointment(t *testing.T, apptName, patientName, provi
 // TestClinicAppointmentsRead_ProjectsPatientSelfAnchor — the protected read model
 // projects one row per appointment carrying the display scalars and an
 // authz_anchors set of exactly the patient's bare NanoID (§6.14). This is the
-// grant RLS matches: the base cap-read.<actor> self-anchor grants the patient
-// their own NanoID, so the row is readable by the patient and nobody else.
+// grant clinicPatientReadGrants (this package's own cap-read.clinic.patient
+// producer, lenses.go) matches: it self-grants the patient's own NanoID, so
+// the row is readable by the patient and nobody else. (The platform's base
+// cap-read self-anchor does NOT cover this — it only ever matches
+// class=identity, and a patient is class=patient.)
 func TestClinicAppointmentsRead_ProjectsPatientSelfAnchor(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")
@@ -312,6 +315,54 @@ func TestClinicPatientsRead_NoIdentityLinkStillProjects(t *testing.T) {
 	require.Nil(t, v["identity_key"])
 	require.Nil(t, v["email"])
 	require.Nil(t, v["phone"])
+}
+
+// TestClinicPatientReadGrants_SelfAnchorsEachPatient — the cap-read.clinic.patient
+// GrantTable producer's cypher proof: one grant row per patient, actor_id ==
+// anchor_id == the patient's own bare NanoID, grant_source ==
+// 'cap-read.clinic.patient'. This is the grant clinicAppointmentsRead's
+// authz_anchors matches (see TestClinicAppointmentsRead_ProjectsPatientSelfAnchor)
+// — without it, RLS has nothing granting a patient its own row.
+func TestClinicPatientReadGrants_SelfAnchorsEachPatient(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	f.vtx(t, "alice", "patient")
+	f.aspect(t, "alice", "demographics", "patientDemographics", map[string]any{"fullName": "Alice Rivera"})
+	f.vtx(t, "bob", "patient")
+	f.aspect(t, "bob", "demographics", "patientDemographics", map[string]any{"fullName": "Bob Nakamura"})
+
+	rows := f.project(t, clinicPatientReadGrantsSpec)
+	require.Len(t, rows, 2)
+	byActor := map[string]ruleengine.ProjectionResult{}
+	for _, r := range rows {
+		byActor[r.Values["actor_id"].(string)] = r
+	}
+	for _, id := range []string{f.ids["alice"], f.ids["bob"]} {
+		r, ok := byActor[id]
+		require.Truef(t, ok, "expected a self-grant row for patient %s", id)
+		require.Equal(t, id, r.Values["anchor_id"], "a patient's grant anchors on ITS OWN NanoID")
+		require.Equal(t, "cap-read.clinic.patient", r.Values["grant_source"])
+	}
+}
+
+// TestClinicProviderReadGrants_SelfAnchorsEachProvider is
+// TestClinicPatientReadGrants_SelfAnchorsEachPatient's provider sibling.
+func TestClinicProviderReadGrants_SelfAnchorsEachProvider(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newLensFixture(t)
+	f.vtx(t, "drsam", "provider")
+	f.aspect(t, "drsam", "profile", "providerProfile", map[string]any{"fullName": "Dr. Sam Okafor", "specialty": "Cardiology"})
+
+	rows := f.project(t, clinicProviderReadGrantsSpec)
+	require.Len(t, rows, 1)
+	v := rows[0].Values
+	require.Equal(t, f.ids["drsam"], v["actor_id"])
+	require.Equal(t, f.ids["drsam"], v["anchor_id"], "a provider's grant anchors on ITS OWN NanoID")
+	require.Equal(t, "cap-read.clinic.provider", v["grant_source"])
 }
 
 func ruleengineFilterByKey(rows []ruleengine.ProjectionResult, col, id string) []ruleengine.ProjectionResult {

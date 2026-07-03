@@ -1,5 +1,5 @@
 name: clinic-domain
-version: 0.14.0
+version: 0.15.0
 description: |
   Clinic bookable domain. Self-contained package owning three vertex types —
   patient, provider, appointment — with their aspects (.demographics, .profile,
@@ -29,6 +29,14 @@ description: |
   (follow-ups worklist, "All providers" aggregate, the patient-context switcher
   roster) all read them as an authenticated actor instead of the unprotected
   NATS-KV buckets; the staff audiences use the reserved WildcardAnchor grant.
+  clinicPatientReadGrants / clinicProviderReadGrants are the package's own
+  cap-read.clinic.patient / cap-read.clinic.provider GrantTable producers
+  (self-anchoring class=patient / class=provider onto their own bare NanoID,
+  mirroring the platform's identity self-anchor): the platform base cap-read
+  self-anchor only ever matches class=identity, so without these a patient's
+  My Appointments / a provider's My Schedule were permanently empty (0-of-1
+  read) — a JWT subject minted for a patient/provider's own NanoID had no
+  grant to match its own anchor.
   The clinic's booking grid is a mandatory 15-minute cadence: CreateAppointment +
   RescheduleAppointment reject a provider double-book (SlotConflict) AND a
   patient double-book across providers (PatientDoubleBook) by CLAIMING a
@@ -89,6 +97,12 @@ declares:
       adapter: postgres
       engine: full
     - canonicalName: clinicPatientsRead
+      adapter: postgres
+      engine: full
+    - canonicalName: clinicPatientReadGrants
+      adapter: postgres
+      engine: full
+    - canonicalName: clinicProviderReadGrants
       adapter: postgres
       engine: full
   permissions:

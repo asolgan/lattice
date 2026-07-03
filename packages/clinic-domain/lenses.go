@@ -82,10 +82,15 @@ func Lenses() []pkgmgr.LensSpec {
 			// authz_anchors; see internal/bootstrap.
 			// CapabilityReadWildcardGrantsLensDefinition).
 			//
-			// authz_anchors = [nanoIdFromKey(patient identity key)] — the
-			// patient-self anchor. The shipped base cap-read.<actor> self-anchor
-			// (D1.1) grants each patient their own NanoID, so RLS matches
-			// patient=P's rows for P's session and nobody else's.
+			// authz_anchors = [nanoIdFromKey(p.key)] — the patient's OWN
+			// NanoID (never a linked contact identity's — cmd/clinic-app mints
+			// the JWT subject as the patient's own bare NanoID, app.js's
+			// bareId(state.patient)). The platform's base cap-read self-anchor
+			// (D1.1) only ever matches class=identity, so it does NOT grant a
+			// patient (class=patient) its own anchor — clinicPatientReadGrants
+			// below is clinic-domain's own cap-read.clinic.patient producer that
+			// closes that gap; without it this table's rows are unreadable by
+			// anyone but a WildcardAnchor holder.
 			//
 			// Adapter postgres + Protected: Refractor provisions the RLS table
 			// (FORCE ROW LEVEL SECURITY + the policy) from Columns at activation,
@@ -131,18 +136,18 @@ func Lenses() []pkgmgr.LensSpec {
 			// let ANY caller read a named provider's full schedule — including
 			// every patient's name and the post-visit documentedAt/followUpRequested
 			// signals — with no authentication at all). Mirrors
-			// landlordLeaseApplicationsRead's Increment 2 exactly: the same
-			// self-anchor trick (no extra cap-read grant lens needed — a provider is
-			// an identity, and the shipped base cap-read.<actor> self-anchor (D1.1)
-			// already grants every identity its own NanoID), just a different
-			// anchor-walk relation (withProvider instead of manages).
+			// landlordLeaseApplicationsRead's Increment 2 shape (a self-anchor
+			// table), but — unlike the loftspace/lease-signing landlord case —
+			// a provider is NOT an identity (class=provider), so it needs its
+			// own grant producer, same as clinicAppointmentsRead's patient
+			// anchor: clinicProviderReadGrants below.
 			//
 			// The clinic-wide staff views read clinicAppointmentsRead ABOVE (via
 			// handleStaffAppointments' wildcard grant), not this provider-anchored
 			// table — a staff actor's wildcard grant matches every protected
 			// table, so no separate staff projection is needed here.
 			//
-			// authz_anchors = [nanoIdFromKey(provider identity key)].
+			// authz_anchors = [nanoIdFromKey(pr.key)] — the provider's own NanoID.
 			//
 			// withProvider is a REQUIRED match (the anchor walk) so an appointment
 			// with no provider link projects NO row — fail-closed, mirroring
@@ -175,60 +180,112 @@ func Lenses() []pkgmgr.LensSpec {
 				{Name: "follow_up_date", Type: "text"},
 			},
 		},
-			{
-				// clinicPatientsRead — the protected Postgres read model for the
-				// clinic-wide patient-context switcher (D1.5, mirroring the staff
-				// wildcard increment: handleStaffAppointments / providerAppointmentsRead
-				// above). cmd/clinic-app's handlePatients used to list the unprotected
-				// clinicPatients NATS-KV bucket and serve every named patient's full
-				// name to ANY caller with no authentication at all — a clinic-wide
-				// membership-disclosure PHI dump (which patients exist at this clinic).
-				// handleStaffPatients replaces that vector, reading THIS table as a
-				// JWT-authenticated actor.
-				//
-				// Unlike clinicAppointmentsRead / providerAppointmentsRead there is no
-				// per-patient self-anchor to carve out here — "the whole roster" has no
-				// single-row owner, so every row projects an EMPTY authz_anchors set:
-				// only an actor holding the reserved WildcardAnchor grant (D1 design
-				// §3.4 M5, internal/refractor/adapter.WildcardAnchor) ever matches a
-				// row, mirroring handleStaffAppointments' no-separate-staff-projection
-				// note.
-				//
-				// NAME comes straight off .demographics (non-sensitive). email/phone
-				// are SECURE columns (Contract #3 §3.10, Vault Fire 5 — the
-				// Secure-Lens decrypt-at-projection primitive, mirroring
-				// landlordLeaseApplicationsRead's applicant_email/applicant_phone
-				// exactly): the OPTIONAL-matched identifiedBy identity's sensitive
-				// .email/.phone aspects are RETURNed as ciphertext envelopes whole
-				// (id.<aspect>.data) and decrypted at projection into this
-				// staff-wildcard-anchored table — the only actors who can ever read
-				// a row here already hold the WildcardAnchor grant, so decrypted
-				// contact never reaches an unauthorized reader. A patient with no
-				// identifiedBy link (identityKey null) or a shredded identity
-				// projects null email/phone — never an error (right-to-erasure and
-				// the pre-Vault/no-backfill posture both fall through the same
-				// null path).
-				CanonicalName: "clinicPatientsRead",
-				Class:         "meta.lens",
-				Adapter:       "postgres",
-				Table:         "read_clinic_patients",
-				Engine:        "full",
-				Spec:          clinicPatientsReadSpec,
-				Protected:     true,
-				IntoKey:       []string{"patient_id"},
-				Columns: []pkgmgr.PostgresColumn{
-					{Name: "entity_key", Type: "text"},
-					{Name: "patient_key", Type: "text"},
-					{Name: "name", Type: "text"},
-					{Name: "identity_key", Type: "text"},
-					{Name: "email", Type: "text"},
-					{Name: "phone", Type: "text"},
-				},
-				SecureColumns: []pkgmgr.SecureColumn{
-					{Column: "email", IdentityKeyColumn: "identity_key", Field: "value"},
-					{Column: "phone", IdentityKeyColumn: "identity_key", Field: "value"},
-				},
+		{
+			// clinicPatientsRead — the protected Postgres read model for the
+			// clinic-wide patient-context switcher (D1.5, mirroring the staff
+			// wildcard increment: handleStaffAppointments / providerAppointmentsRead
+			// above). cmd/clinic-app's handlePatients used to list the unprotected
+			// clinicPatients NATS-KV bucket and serve every named patient's full
+			// name to ANY caller with no authentication at all — a clinic-wide
+			// membership-disclosure PHI dump (which patients exist at this clinic).
+			// handleStaffPatients replaces that vector, reading THIS table as a
+			// JWT-authenticated actor.
+			//
+			// Unlike clinicAppointmentsRead / providerAppointmentsRead there is no
+			// per-patient self-anchor to carve out here — "the whole roster" has no
+			// single-row owner, so every row projects an EMPTY authz_anchors set:
+			// only an actor holding the reserved WildcardAnchor grant (D1 design
+			// §3.4 M5, internal/refractor/adapter.WildcardAnchor) ever matches a
+			// row, mirroring handleStaffAppointments' no-separate-staff-projection
+			// note.
+			//
+			// NAME comes straight off .demographics (non-sensitive). email/phone
+			// are SECURE columns (Contract #3 §3.10, Vault Fire 5 — the
+			// Secure-Lens decrypt-at-projection primitive, mirroring
+			// landlordLeaseApplicationsRead's applicant_email/applicant_phone
+			// exactly): the OPTIONAL-matched identifiedBy identity's sensitive
+			// .email/.phone aspects are RETURNed as ciphertext envelopes whole
+			// (id.<aspect>.data) and decrypted at projection into this
+			// staff-wildcard-anchored table — the only actors who can ever read
+			// a row here already hold the WildcardAnchor grant, so decrypted
+			// contact never reaches an unauthorized reader. A patient with no
+			// identifiedBy link (identityKey null) or a shredded identity
+			// projects null email/phone — never an error (right-to-erasure and
+			// the pre-Vault/no-backfill posture both fall through the same
+			// null path).
+			CanonicalName: "clinicPatientsRead",
+			Class:         "meta.lens",
+			Adapter:       "postgres",
+			Table:         "read_clinic_patients",
+			Engine:        "full",
+			Spec:          clinicPatientsReadSpec,
+			Protected:     true,
+			IntoKey:       []string{"patient_id"},
+			Columns: []pkgmgr.PostgresColumn{
+				{Name: "entity_key", Type: "text"},
+				{Name: "patient_key", Type: "text"},
+				{Name: "name", Type: "text"},
+				{Name: "identity_key", Type: "text"},
+				{Name: "email", Type: "text"},
+				{Name: "phone", Type: "text"},
 			},
+			SecureColumns: []pkgmgr.SecureColumn{
+				{Column: "email", IdentityKeyColumn: "identity_key", Field: "value"},
+				{Column: "phone", IdentityKeyColumn: "identity_key", Field: "value"},
+			},
+		},
+		{
+			// clinicPatientReadGrants — the cap-read.clinic.patient GrantTable
+			// producer that closes the gap flagged live (0-of-1 read):
+			// clinicAppointmentsRead's authz_anchors anchors on the PATIENT
+			// vertex's own bare NanoID (nanoIdFromKey(patient.key)), and
+			// cmd/clinic-app mints the JWT subject as that SAME patient NanoID
+			// (app.js's bareId(state.patient) — the patient is its own RLS
+			// actor, never a linked contact identity). The platform's base
+			// cap-read self-anchor producer (internal/bootstrap.
+			// CapabilityReadGrantsLensDefinition) only MATCHes class=identity,
+			// so a patient — a DIFFERENT vertex class — never receives a grant:
+			// My Appointments was permanently empty for every patient.
+			//
+			// This is the package-level cap-read.<domain> producer the base
+			// lens's doc comment anticipates (internal/bootstrap/lenses.go
+			// "Each package ships its own cap-read.<domain> ... lens for the
+			// relationships it owns") — clinic-domain is the first package to
+			// ship one. Mirrors CapabilityReadGrantsLensDefinition's shape
+			// exactly (a plain, non-actorAggregate GrantTable projection), just
+			// self-anchored on class=patient instead of class=identity.
+			//
+			// grant_source = 'cap-read.clinic.patient', disjoint from the core
+			// producer's 'cap-read.root' 'cap-read' and from
+			// clinicProviderReadGrants' 'cap-read.clinic.provider' below — each
+			// producer retracts only its own grant_source rows (§6.14).
+			// RETRACTION is automatic: TombstonePatient's anchor-tombstone
+			// resolves nanoIdFromKey(p.key) read-free, so the self-grant is
+			// revoked the same way the base identity self-grant is.
+			CanonicalName: "clinicPatientReadGrants",
+			Class:         "meta.lens",
+			Adapter:       "postgres",
+			GrantTable:    true,
+			Engine:        "full",
+			Spec:          clinicPatientReadGrantsSpec,
+		},
+		{
+			// clinicProviderReadGrants — providerAppointmentsRead's sibling
+			// producer, self-anchoring class=provider the same way
+			// clinicPatientReadGrants self-anchors class=patient (see its doc
+			// comment for the full gap analysis: providerAppointmentsRead's
+			// authz_anchors is the provider's own NanoID, and cmd/clinic-app
+			// mints a provider's JWT subject the same way — bareId(providerKey)
+			// — so "My Schedule" was equally permanently empty).
+			//
+			// grant_source = 'cap-read.clinic.provider'.
+			CanonicalName: "clinicProviderReadGrants",
+			Class:         "meta.lens",
+			Adapter:       "postgres",
+			GrantTable:    true,
+			Engine:        "full",
+			Spec:          clinicProviderReadGrantsSpec,
+		},
 	}
 }
 
@@ -425,4 +482,28 @@ RETURN
   a.encounter.data.followUpRequested AS follow_up_requested,
   a.encounter.data.followUpDate      AS follow_up_date,
   [nanoIdFromKey(pr.key)]            AS authz_anchors
+`
+
+// clinicPatientReadGrantsSpec is the cap-read.clinic.patient GrantTable
+// producer's cypher — a plain, non-actorAggregate self-anchor projection
+// mirroring internal/bootstrap.CapabilityReadGrantsLensDefinition exactly
+// (MATCH the vertex, RETURN its own bare NanoID as both actor_id and
+// anchor_id), just scoped to class=patient instead of class=identity. See
+// clinicPatientReadGrants' doc comment (lenses.go) for why patient/provider
+// need their own producer: the platform base self-anchor only ever matches
+// class=identity.
+const clinicPatientReadGrantsSpec = `MATCH (p:patient)
+RETURN
+  nanoIdFromKey(p.key)        AS actor_id,
+  nanoIdFromKey(p.key)        AS anchor_id,
+  'cap-read.clinic.patient'   AS grant_source
+`
+
+// clinicProviderReadGrantsSpec is clinicPatientReadGrantsSpec's provider
+// sibling — self-anchors class=provider instead of class=patient.
+const clinicProviderReadGrantsSpec = `MATCH (pr:provider)
+RETURN
+  nanoIdFromKey(pr.key)       AS actor_id,
+  nanoIdFromKey(pr.key)       AS anchor_id,
+  'cap-read.clinic.provider'  AS grant_source
 `
