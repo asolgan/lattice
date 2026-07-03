@@ -66,6 +66,10 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/tasks", s.handleTasks)
 	mux.HandleFunc("/api/control/", s.handleControl)
 	mux.HandleFunc("/api/packages", s.handlePackages)
+	mux.HandleFunc("/api/package", s.handlePackage)
+	mux.HandleFunc("/api/packages/install", s.handlePackagesInstall)
+	mux.HandleFunc("/api/packages/upgrade", s.handlePackagesUpgrade)
+	mux.HandleFunc("/api/packages/uninstall", s.handlePackagesUninstall)
 	mux.HandleFunc("/api/ops", s.handleOps)
 	mux.HandleFunc("/api/op", s.handleOp)
 	// Objects: POST /api/objects (upload), GET/DELETE /api/objects/<oid>. Both
@@ -372,11 +376,22 @@ func (s *server) handlePackages(w http.ResponseWriter, r *http.Request) {
 	}
 	rows := make([]map[string]string, 0, len(pkgs))
 	for _, p := range pkgs {
-		rows = append(rows, map[string]string{
+		row := map[string]string{
 			"name":    p.PackageName(),
 			"version": p.PackageVersion(),
 			"key":     p.PackageKey(),
-		})
+		}
+		// installedAt is the package vertex's createdAt (§9.1 column); a
+		// failed read leaves the cell empty rather than failing the list.
+		if entry, err := conn.KVGet(ctx, bootstrap.CoreKVBucket, p.PackageKey()); err == nil {
+			var env struct {
+				CreatedAt string `json:"createdAt"`
+			}
+			if json.Unmarshal(entry.Value, &env) == nil {
+				row["installedAt"] = env.CreatedAt
+			}
+		}
+		rows = append(rows, row)
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{"packages": rows, "count": len(rows)})
 }

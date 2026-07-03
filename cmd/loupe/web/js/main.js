@@ -13,6 +13,7 @@ import * as graph from "./views/graph.js";
 import * as tasks from "./views/tasks.js";
 import * as component from "./views/component.js";
 import * as packages from "./views/packages.js";
+import * as pkg from "./views/package.js";
 import * as files from "./views/files.js";
 import * as op from "./views/op.js";
 import * as lens from "./views/lens.js";
@@ -28,6 +29,7 @@ const routes = {
   component: { panel: "component", view: component, crumb: "System Map", nav: "systemmap", crumbHref: "#/map" },
   lens:      { panel: "lens",      view: lens,      crumb: "Refractor", nav: "systemmap", crumbHref: "#/component/refractor" },
   packages:  { panel: "packages",  view: packages,  crumb: "Packages" },
+  package:   { panel: "package",   view: pkg,       crumb: "Packages", nav: "packages", crumbHref: "#/packages" },
   files:     { panel: "files",     view: files,     crumb: "Files" },
   op:        { panel: "op",        view: op,        crumb: "Submit Op" },
 };
@@ -114,6 +116,7 @@ tasks.init();
 component.init();
 lens.init();
 packages.init();
+pkg.init();
 files.init();
 op.init();
 startRouter(dispatch);

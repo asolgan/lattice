@@ -40,12 +40,16 @@ function shortId(key) {
 }
 
 // keyTarget resolves an entity key to its console route — the one shared
-// resolver behind every rendered key (design §1.2). Vertex/meta/link keys land
-// on the Graph explorer detail; an aspect lands on its parent vertex with the
-// ?aspect= param so the detail view can open that row. Non-entity strings
-// resolve to null (render as plain text).
+// resolver behind every rendered key (design §1.2). A package vertex lands on
+// its #/package page (which links back to the raw envelope in Graph); every
+// other vertex/meta/link key lands on the Graph explorer detail; an aspect
+// lands on its parent vertex with the ?aspect= param so the detail view can
+// open that row. Non-entity strings resolve to null (render as plain text).
 function keyTarget(key) {
   var cls = classifyKey(key);
+  if (cls === "vertex" && key.indexOf("vtx.package.") === 0) {
+    return "#/package/" + key;
+  }
   if (cls === "vertex" || cls === "meta" || cls === "link") {
     return "#/graph/" + key;
   }

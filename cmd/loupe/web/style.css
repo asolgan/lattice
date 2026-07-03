@@ -928,3 +928,13 @@ a.pulse-derived-text:hover { color: var(--text); }
 .modal h3 { margin: 0; }
 .modal input { width: 100%; }
 .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+/* Package detail page (#/package/<key>): contents sections + lifecycle modal. */
+.pkg-sechead { margin: 10px 0 4px; font-size: 0.85rem; color: var(--fg-dim, #9ca3af); }
+.pkg-items { display: flex; flex-direction: column; gap: 3px; }
+.pkg-item { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.pkg-item-deleted { opacity: 0.55; }
+.pkg-item-name { min-width: 160px; }
+.pkg-delta { display: flex; gap: 6px; align-items: baseline; }
+.pkg-modal-out { max-height: 320px; overflow: auto; }
+.warn-text { color: var(--yellow); }

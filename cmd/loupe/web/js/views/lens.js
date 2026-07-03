@@ -152,8 +152,8 @@ function definitionPanel(lens) {
     box.appendChild(schema);
   }
 
-  // Owning package: the graph detail carries the full envelope; the #/package
-  // page takes this link over when F8 ships it.
+  // Owning package: the chip resolves through keyTarget, so a package vertex
+  // lands on its #/package page (raw envelope reachable from there).
   const owned = el("span", "lens-target");
   if (lens.package) {
     owned.appendChild(el("span", null, (lens.package.name || lens.package.key) +

@@ -265,6 +265,11 @@ async function loadVertexDetail(key, openAspect) {
     lp.href = "#/lens/" + shortId(key);
     actions.appendChild(lp);
   }
+  if (key.indexOf("vtx.package.") === 0 && classifyKey(key) === "vertex") {
+    const pp = el("a", "detail-action-link", "package page →");
+    pp.href = "#/package/" + key;
+    actions.appendChild(pp);
+  }
   detail.appendChild(actions);
 
   // Provenance chips: who/what created + last modified this entity, every id

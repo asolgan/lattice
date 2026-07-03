@@ -196,6 +196,9 @@ func TestKeyHelpersJS(t *testing.T) {
 		{"lnk.identity.a1.holdsRole.role.r1", "#/graph/lnk.identity.a1.holdsRole.role.r1"},
 		{"vtx.identity.a1.profile", "#/graph/vtx.identity.a1?aspect=profile"},
 		{"vtx.meta.m1.canonicalName", "#/graph/vtx.meta.m1?aspect=canonicalName"},
+		// A package vertex owns its detail page; its aspects stay on Graph.
+		{"vtx.package.p1", "#/package/vtx.package.p1"},
+		{"vtx.package.p1.manifest", "#/graph/vtx.package.p1?aspect=manifest"},
 		{"lnk.too.short", nil},
 		{"random", nil},
 	}
@@ -741,5 +744,63 @@ func TestFeedLogicJS(t *testing.T) {
 		if got := call(t, vm, "ledClass", status); got != want {
 			t.Errorf("ledClass(%s) = %v, want %s", status, got, want)
 		}
+	}
+}
+
+// TestPkgLogicJS pins the package-view logic (logic/pkg.js): the manifest
+// pick (the JS twin of the Go manifestFromUpload rule), the apply-reply
+// summary line, and the uninstall-confirm summary.
+func TestPkgLogicJS(t *testing.T) {
+	vm := logicVM(t, "pkg.js")
+
+	// manifestCandidate mirrors manifestFromUpload: named manifest wins
+	// case-insensitively; single file accepted; multi-file ambiguity → null.
+	if got := call(t, vm, "manifestCandidate", []any{"README.md", "Manifest.YAML"}); got != "Manifest.YAML" {
+		t.Errorf("manifestCandidate named = %v", got)
+	}
+	if got := call(t, vm, "manifestCandidate", []any{"whatever.yaml"}); got != "whatever.yaml" {
+		t.Errorf("manifestCandidate single = %v", got)
+	}
+	if got := call(t, vm, "manifestCandidate", []any{"a.yaml", "b.yaml"}); got != nil {
+		t.Errorf("manifestCandidate ambiguous = %v, want null", got)
+	}
+	if got := call(t, vm, "manifestCandidate", []any{}); got != nil {
+		t.Errorf("manifestCandidate empty = %v, want null", got)
+	}
+
+	for _, tc := range []struct {
+		res  map[string]any
+		want string
+	}{
+		{map[string]any{"action": "install", "toVersion": "1.0.0", "created": 12},
+			"install v1.0.0 — 12 created"},
+		{map[string]any{"action": "upgrade", "fromVersion": "1.0.0", "toVersion": "1.1.0", "created": 2, "updated": 1, "dryRun": true},
+			"preview — upgrade 1.0.0 → 1.1.0 — 2 created · 1 updated"},
+		{map[string]any{"action": "skip", "skipped": true, "reason": "same version"},
+			"skipped — same version"},
+		{map[string]any{"action": "upgrade", "fromVersion": "1.0.0", "toVersion": "1.0.0"},
+			"upgrade 1.0.0 → 1.0.0 — no changes"},
+	} {
+		if got := call(t, vm, "applySummaryLine", tc.res); got != tc.want {
+			t.Errorf("applySummaryLine(%v) = %q, want %q", tc.res, got, tc.want)
+		}
+	}
+
+	// The tombstone scope = declared − unresolved + the manifest aspect + the
+	// package vertex; the breakdown counts declared items per kind.
+	pkg := map[string]any{
+		"declaredCount": 170,
+		"unresolved":    3,
+		"sections": []any{
+			map[string]any{"kind": "entities", "count": 3},
+			map[string]any{"kind": "lenses", "count": 2},
+			map[string]any{"kind": "grants", "count": 0},
+		},
+	}
+	if got := call(t, vm, "uninstallSummary", pkg); got != "tombstones up to 169 key(s) incl. the manifest + package vertex — 3 entities · 2 lenses; 3 unresolved skipped" {
+		t.Errorf("uninstallSummary = %q", got)
+	}
+	if got := call(t, vm, "uninstallSummary", map[string]any{}); got != "tombstones up to 2 key(s) incl. the manifest + package vertex" {
+		t.Errorf("uninstallSummary empty = %q", got)
 	}
 }

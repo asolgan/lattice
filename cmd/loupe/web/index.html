@@ -136,12 +136,22 @@
     <section class="panel" id="panel-packages">
       <div class="panel-controls">
         <button id="packages-load">Refresh</button>
+        <button id="packages-install">Install from file…</button>
         <span class="muted" id="packages-status"></span>
       </div>
       <table class="grid" id="packages-table">
-        <thead><tr><th>Name</th><th>Version</th><th>Key</th></tr></thead>
+        <thead><tr><th>Name</th><th>Version</th><th>Installed</th><th>Key</th><th></th></tr></thead>
         <tbody></tbody>
       </table>
+    </section>
+
+    <!-- Package detail page (drill-through: #/package/<key>) -->
+    <section class="panel" id="panel-package">
+      <div class="panel-controls">
+        <div class="comp-head" id="package-head"></div>
+        <span class="muted" id="package-status"></span>
+      </div>
+      <div class="lens-panels" id="package-panels"></div>
     </section>
 
     <!-- Files -->
