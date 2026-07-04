@@ -36,6 +36,20 @@ same conventions; the program's §14 fire table gains F10–F13 (see §7 below).
 > (up-full) lands.** Residual accepted: event keys without a heartbeat can contradict the design-ahead
 > label (rare; narrows once ever-live marks the group).
 
+> **Build checkpoint — F11 SHIPPED 2026-07-04** (`1b19838`; full 3-layer review, findings fixed forward in
+> the same commit). Ships the whole §2 surface with the op model that landed on the lattice lane (revoke =
+> `RevokeActor`/`UnrevokeActor` via `/api/op`; reads = new `GET /api/gateway/revocations` off the
+> `token-revocation` bucket — no Loupe write endpoint). Deviations from §2's letter: existing CSS classes
+> instead of the §8 `.gw-*` family (everything renders styled; no new tokens); `ops_submitted_total` rides
+> the stat row's suffix line rather than a third stat cell. Beyond-spec hardening from review: the revoke
+> input gate is NanoID-charset-strict — a looser key passes the DDL and COMMITS, and the Gateway
+> materializer's KVPut then refuses it and redelivers forever (filed to lattice.md as
+> "[Gateway] revocation materializer poison-pill"); heartbeat-block shapers reject arrays/missing counters
+> (no fabricated 0%-failing or false disconnected-warns); list refreshes are sequence-guarded + cancelled on
+> re-render; a failed typed confirm stays armed. **Waiting on lattice asks:** JWKS panel renders its empty
+> state until ask B (heartbeat `jwks` block); live e2e (list + un-revoke rows) needs a post-kill-switch
+> bootstrap + ask A (Gateway in up-full) — this stack's bucket-missing 502 renders honestly in the panel.
+
 **Why a companion doc, not an append.** The program doc is already ~740 lines and its §14 explicitly
 anticipates cross-linked follow-on fires ("the flagged Loupe-side PG seam ships in F9"). F10–F13 add a new
 *topology dimension* (three components at the edges) and a whole new *leg* (history / the Time Machine),
