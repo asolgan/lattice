@@ -92,10 +92,45 @@ type GapAction struct {
 	// Fire 6's engine work.
 	Goal json.RawMessage `json:"goal,omitempty"`
 
+	// GoalColumns resolves the Fire-6 State-schema gap (design
+	// weaver-planner-mandate-design.md §Fire-6-checkpoint): Goal may address
+	// an ASPECT path (e.g. `subject.signature.data.signedAt`, matching a real
+	// op's declared Effect), but a §10.2 lens row flattens every projected
+	// column onto a bare name with no aspect tag, and rowState's default
+	// mapping (Path{Field: col}) always addresses the ROOT. Without a bridge,
+	// Goal would key into planner.State under a different Path than the
+	// Effects populate, so Synthesize could never find those Effects
+	// satisfying it. GoalColumns declares, for the columns Goal needs, which
+	// aspect-qualified path a row column actually represents — map key = the
+	// lens BodyColumn name, value = its guard-grammar path string
+	// ("subject.<aspect>.data.<field>"). Scoped to THIS gap, not the whole
+	// target: two gaps in one target may reuse the same column name for
+	// unrelated facts, and a shared target-wide map would silently rebase
+	// both onto whichever gap declared it. A column absent from this map is
+	// unaffected: it keeps addressing subject.data.<column> (root), exactly
+	// today's behavior. Pure row-keying — no new Weaver Core-KV read,
+	// consistent with §10.8's "pure function of (row, catalog, __effect
+	// window)" framing. Install-validated: every path must be well-formed and
+	// aspect-qualified (a root-shaped entry is redundant), values must be
+	// unique (two columns mapping to the same path make rowState's result
+	// depend on Go's nondeterministic map-iteration order over row), and
+	// every declared path must actually be referenced somewhere in Goal — an
+	// entry Goal never asks about is exactly as inert as a typo'd column name
+	// (there is no lens schema here to check the column name against, so
+	// this is the catchable half of that mistake).
+	GoalColumns map[string]string `json:"goalColumns,omitempty"`
+
 	// goalGuard is Goal parsed once at install-validation time (nil unless Goal
 	// is set — a valid goal always parses, validateTarget rejects the target
 	// otherwise). Unexported: no engine path reads it yet.
 	goalGuard *guardgrammar.Guard `json:"-"`
+
+	// goalColumnPaths is GoalColumns parsed once at install-validation time
+	// (nil unless GoalColumns is set). Unexported: no dispatch path consumes
+	// it yet (Fire 6 goal-regression dispatch is a later increment) —
+	// Increment 2 resolves the schema and proves it via rowState + a unit
+	// test.
+	goalColumnPaths map[string]guardgrammar.Path `json:"-"`
 }
 
 // GapCandidate is one playbook-authored alternative in a gap's `candidates`
@@ -512,14 +547,99 @@ func validateTarget(t *Target) error {
 	return nil
 }
 
+// guardPaths collects every subject-path an install-validated guard tree
+// references — every KindPresent/KindAbsent/KindEquals atom's Path, recursing
+// through KindAllOf/KindAnyOf/KindNot children — deduplicated. Install-time
+// use only (validation), never the dispatch hot path.
+func guardPaths(g *guardgrammar.Guard) map[guardgrammar.Path]bool {
+	paths := make(map[guardgrammar.Path]bool)
+	collectGuardPaths(g, paths)
+	return paths
+}
+
+func collectGuardPaths(g *guardgrammar.Guard, out map[guardgrammar.Path]bool) {
+	if g == nil {
+		return
+	}
+	switch g.Kind {
+	case guardgrammar.KindPresent, guardgrammar.KindAbsent, guardgrammar.KindEquals:
+		out[g.Path] = true
+	case guardgrammar.KindAllOf, guardgrammar.KindAnyOf, guardgrammar.KindNot:
+		for _, c := range g.Children {
+			collectGuardPaths(c, out)
+		}
+	}
+}
+
+// formatPath renders a guardgrammar.Path back into its §10.5 subject-path
+// string, for error messages only.
+func formatPath(p guardgrammar.Path) string {
+	if p.Aspect == "" {
+		return "subject.data." + p.Field
+	}
+	return "subject." + p.Aspect + ".data." + p.Field
+}
+
+// parseGoalColumns install-validates one gap's GoalColumns (Fire-6
+// Increment-2 State-schema bridge): each value must parse as a well-formed
+// §10.5 guard-grammar path AND must be aspect-qualified (Aspect != "") — a
+// root-shaped entry is redundant (rowState already addresses every column at
+// subject.data.<column> by default) and almost certainly a package-author
+// mistake. Values must be unique: two columns mapping to the same path would
+// make rowState's result depend on Go's nondeterministic map-iteration order
+// over the row whenever both source columns are present in it. Every parsed
+// path must also appear somewhere in goal — an entry goal never references is
+// exactly as inert as a typo'd column name would be (there is no lens schema
+// here to check the column name itself against; this is the catchable half
+// of that mistake). A malformed gap rejects the whole target — same
+// fail-wholesale doctrine as goal/candidates/effects.
+func parseGoalColumns(col string, cols map[string]string, goal *guardgrammar.Guard) (map[string]guardgrammar.Path, error) {
+	if len(cols) == 0 {
+		return nil, nil
+	}
+	if goal == nil {
+		return nil, fmt.Errorf("gaps key %q: goalColumns is set but goal is empty — nothing references the declared aspect paths", col)
+	}
+	paths := make(map[string]guardgrammar.Path, len(cols))
+	seen := make(map[guardgrammar.Path]string, len(cols))
+	for column, raw := range cols {
+		p, err := guardgrammar.ParsePath(raw)
+		if err != nil {
+			return nil, fmt.Errorf("gaps key %q: goalColumns[%q]: %w", col, column, err)
+		}
+		if p.Aspect == "" {
+			return nil, fmt.Errorf("gaps key %q: goalColumns[%q]: path %q is root-shaped (subject.data.<field>) — goalColumns is only for aspect-qualified paths; a root column already addresses itself by default", col, column, raw)
+		}
+		if other, dup := seen[p]; dup {
+			return nil, fmt.Errorf("gaps key %q: goalColumns[%q] and [%q] both map to path %q — rowState's result would depend on Go's map-iteration order over the row", col, column, other, raw)
+		}
+		seen[p] = column
+		paths[column] = p
+	}
+	referenced := guardPaths(goal)
+	for column, p := range paths {
+		if !referenced[p] {
+			return nil, fmt.Errorf("gaps key %q: goalColumns[%q] (%s) is never referenced by goal — remove it or fix the path", col, column, formatPath(p))
+		}
+	}
+	return paths, nil
+}
+
 // validateGapPlannerFields runs the §10.8 Planner-extension install-time
-// validations on one gap's optional `candidates`/`goal` (Fire 4): each
-// candidate's `pre`, and the gap's `goal`, must parse as a well-formed §10.5
-// guard (guardgrammar.Parse); a Cost must be non-negative. Parsed guards are
-// cached on the returned copy (preGuard/goalGuard) so the Fire-4 shadow
-// comparison never re-parses per dispatch. A malformed guard rejects the
-// WHOLE target — same fail-wholesale doctrine as op-DDL effects and pattern
-// load.
+// validations on one gap's optional `candidates`/`goal`/`goalColumns` (Fires
+// 4/6): each candidate's `pre`, and the gap's `goal`, must parse as a
+// well-formed §10.5 guard (guardgrammar.Parse); a Cost must be non-negative.
+// `pre` must additionally be root-shaped (Aspect == "") — rankCandidates
+// (planner_shadow.go) evaluates it against rowState(row, nil), which never
+// bridges an aspect path, so an aspect-shaped `pre` could never be satisfied
+// by a real row and would silently make that candidate permanently
+// ineligible (the same failure class GoalColumns exists to prevent for
+// `goal`, but `candidates` has no analogous bridge — root-only is the
+// documented convention, so an aspect-shaped `pre` is a config error, not a
+// case to support). Parsed guards are cached on the returned copy
+// (preGuard/goalGuard/goalColumnPaths) so the Fire-4 shadow comparison never
+// re-parses per dispatch. A malformed guard rejects the WHOLE target — same
+// fail-wholesale doctrine as op-DDL effects and pattern load.
 func validateGapPlannerFields(col string, ga GapAction) (GapAction, error) {
 	for i, cand := range ga.Candidates {
 		if cand.Action == "" {
@@ -533,6 +653,11 @@ func validateGapPlannerFields(col string, ga GapAction) (GapAction, error) {
 			if err != nil {
 				return ga, fmt.Errorf("gaps key %q: candidates[%d].pre: %w", col, i, err)
 			}
+			for p := range guardPaths(g) {
+				if p.Aspect != "" {
+					return ga, fmt.Errorf("gaps key %q: candidates[%d].pre: path %q is aspect-shaped — rankCandidates evaluates pre against the row's root columns only and can never see an aspect fact; author it against a root column the lens projects instead", col, i, formatPath(p))
+				}
+			}
 			cand.preGuard = g
 			ga.Candidates[i] = cand
 		}
@@ -543,6 +668,13 @@ func validateGapPlannerFields(col string, ga GapAction) (GapAction, error) {
 			return ga, fmt.Errorf("gaps key %q: goal: %w", col, err)
 		}
 		ga.goalGuard = g
+	}
+	if len(ga.GoalColumns) > 0 {
+		paths, err := parseGoalColumns(col, ga.GoalColumns, ga.goalGuard)
+		if err != nil {
+			return ga, err
+		}
+		ga.goalColumnPaths = paths
 	}
 	return ga, nil
 }

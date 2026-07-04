@@ -176,7 +176,7 @@ func lessCandidateRank(a, b candidateRank) bool {
 // planner has no pick to compare this episode, same as Fire 5's "no eligible
 // candidate" outcome will be.
 func (e *Engine) rankCandidates(ctx context.Context, targetID, gapColumn string, candidates []GapCandidate, row map[string]any) (string, bool) {
-	state := rowState(row)
+	state := rowState(row, nil)
 	ranks := make([]candidateRank, 0, len(candidates))
 	for _, c := range candidates {
 		eligible := c.preGuard == nil || planner.EvalGuard(c.preGuard, state)
@@ -198,13 +198,23 @@ func (e *Engine) rankCandidates(ctx context.Context, targetID, gapColumn string,
 	return ranks[0].ref, true
 }
 
-// rowState maps a §10.2 lens row onto a planner.State: each column addresses
-// as a root path (subject.data.<column>) — the convention
+// rowState maps a §10.2 lens row onto a planner.State: by default each column
+// addresses a root path (subject.data.<column>) — the convention
 // internal/weaver/planner.State documents ("stands in for whatever a real
-// dispatch would read — a lens row today").
-func rowState(row map[string]any) planner.State {
+// dispatch would read — a lens row today"). aspectCols (a target's parsed
+// GoalColumns, nil for Fire 4/5's root-only candidate ranking) overrides that
+// default for the columns it names, addressing them at their real
+// aspect-qualified path instead — the Fire-6 State-schema bridge (design
+// weaver-planner-mandate-design.md §Fire-6-checkpoint): a goal or an op Effect
+// asserting subject.<aspect>.data.<field> must land on the same Path key a
+// plain root mapping could never produce.
+func rowState(row map[string]any, aspectCols map[string]guardgrammar.Path) planner.State {
 	s := make(planner.State, len(row))
 	for col, v := range row {
+		if p, ok := aspectCols[col]; ok {
+			s[p] = v
+			continue
+		}
 		s[guardgrammar.Path{Field: col}] = v
 	}
 	return s
