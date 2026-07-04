@@ -60,6 +60,11 @@ func RevocationDDL() pkgmgr.DDLSpec {
 // actorRevocationScript handles the two event-only kill-switch ops. Each
 // branch returns an empty mutations list and a single event.
 const actorRevocationScript = `
+# NANOID_ALPHABET mirrors internal/substrate/nanoid.go's Alphabet constant —
+# Starlark has no cross-language import, so the 58-char set (A-Z, a-z, 0-9
+# minus the visually ambiguous I, l, O, 0) is duplicated here deliberately.
+NANOID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz123456789"
+
 def required_actor(p):
     if not hasattr(p, "actor"):
         fail("InvalidArgument: actor: required")
@@ -69,6 +74,12 @@ def required_actor(p):
     v = v.strip()
     if not v.startswith("vtx.identity."):
         fail("InvalidArgument: actor: must be a vtx.identity.<NanoID> key")
+    id_part = v[len("vtx.identity."):]
+    if len(id_part) != 20:
+        fail("InvalidArgument: actor: must be a vtx.identity.<NanoID> key (20-char id)")
+    for ch in id_part.elems():
+        if ch not in NANOID_ALPHABET:
+            fail("InvalidArgument: actor: must be a vtx.identity.<NanoID> key (invalid character in id)")
     return v
 
 def optional_reason(p):

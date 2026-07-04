@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 )
 
 // Sentinel errors returned by KV and AtomicBatch operations.
@@ -41,4 +42,14 @@ func IsConnectionError(err error) bool {
 		errors.Is(err, nats.ErrConnectionDraining) ||
 		errors.Is(err, nats.ErrDisconnected) ||
 		errors.Is(err, nats.ErrNoServers)
+}
+
+// IsInvalidKeyError reports whether err is (or wraps) a NATS KV rejection of
+// a malformed key (outside the allowed key charset) from KVPut/KVCreate/
+// KVUpdate/KVDelete. Unlike a transient infra fault, this can never succeed
+// on retry — the key itself is unwritable — so callers classify it as
+// permanently-undeliverable (e.g. Term a poison message) rather than
+// redelivering forever. Named without requiring callers to import jetstream.
+func IsInvalidKeyError(err error) bool {
+	return errors.Is(err, jetstream.ErrInvalidKey)
 }

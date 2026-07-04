@@ -32,6 +32,15 @@ const revocationCatchUpTimeout = 15 * time.Second
 // state is surfaced under (health.go's issueCache).
 const revocationIssueKey = "revocation-consumer"
 
+// revocationPoisonIssueKey is the Contract #5 issue key any dropped,
+// never-redelivered revocation event is surfaced under — an unputtable actor
+// key, an unparseable event body, or an event missing its actor. Single fixed
+// key (last-offender reporting, mirroring the Weaver planner's last-N-
+// divergence heartbeat convention) — a dropped message is gone, not an
+// ongoing state, so there is no natural per-event clear trigger; the issue
+// stays until an operator investigates and clears it.
+const revocationPoisonIssueKey = "revocation-poison-key"
+
 // revocationEventBody is the shape the outbox publishes for
 // gateway.actorRevoked / gateway.actorUnrevoked (internal/processor's Event
 // envelope — step7_events.go); the business fields ride `payload`.
@@ -69,7 +78,7 @@ func StartRevocationMaterializer(ctx context.Context, conn *substrate.Conn, hb *
 		FilterSubject: revocationFilterSubject,
 		DeliverPolicy: substrate.DeliverAll,
 		Handler:       revocationHandler(conn, hb, logger),
-		Classify:      func(error) substrate.FailureClass { return substrate.ClassInfra },
+		Classify:      classifyRevocationError,
 		Probe:         func(ctx context.Context) error { return conn.KVStatus(ctx, revocation.BucketName) },
 		Health:        &heartbeatIssueSink{hb: hb},
 		Logger:        logger,
@@ -109,11 +118,15 @@ func revocationHandler(conn *substrate.Conn, hb *Heartbeater, logger *slog.Logge
 		var eb revocationEventBody
 		if err := json.Unmarshal(msg.Body, &eb); err != nil {
 			logger.Warn("gateway: revocation event body unparseable; dropping", "error", err)
+			hb.SetIssue(revocationPoisonIssueKey, severityError, "revocation.malformedEvent",
+				"revocation event body unparseable, dropped: "+err.Error())
 			return substrate.Ack, nil
 		}
 		actor := eb.Payload.Actor
 		if actor == "" {
 			logger.Warn("gateway: revocation event missing actor; dropping", "eventType", eb.EventType)
+			hb.SetIssue(revocationPoisonIssueKey, severityError, "revocation.missingActor",
+				"revocation event missing actor, dropped: eventType="+eb.EventType)
 			return substrate.Ack, nil
 		}
 
@@ -128,13 +141,13 @@ func revocationHandler(conn *substrate.Conn, hb *Heartbeater, logger *slog.Logge
 				return substrate.Ack, nil // unreachable (map[string]any always marshals)
 			}
 			if _, err := conn.KVPut(ctx, revocation.BucketName, actor, doc); err != nil {
-				return substrate.Nak, fmt.Errorf("gateway: revoke %s: %w", actor, err)
+				return revocationWriteFailed(hb, logger, "revoke", actor, err)
 			}
 			hb.RecordRevocationSync(msg.Sequence, time.Now())
 			return substrate.Ack, nil
 		case "gateway.actorUnrevoked":
 			if err := conn.KVDelete(ctx, revocation.BucketName, actor); err != nil && !errors.Is(err, substrate.ErrKeyNotFound) {
-				return substrate.Nak, fmt.Errorf("gateway: unrevoke %s: %w", actor, err)
+				return revocationWriteFailed(hb, logger, "unrevoke", actor, err)
 			}
 			hb.RecordRevocationSync(msg.Sequence, time.Now())
 			return substrate.Ack, nil
@@ -145,6 +158,46 @@ func revocationHandler(conn *substrate.Conn, hb *Heartbeater, logger *slog.Logge
 			return substrate.Ack, nil
 		}
 	}
+}
+
+// revocationWriteFailed classifies a KVPut/KVDelete failure on the
+// token-revocation bucket. An invalid-key error can never succeed on
+// redelivery (the actor id itself is unwritable) — dropping it loudly (Term)
+// with a Health issue is the fix for the poison-pill hazard that otherwise
+// stalls kill-switch sync forever (the consumer has no MaxDeliver). Any other
+// failure is treated as transient (Nak, at-least-once redelivery preserved).
+func revocationWriteFailed(hb *Heartbeater, logger *slog.Logger, verb, actor string, err error) (substrate.Decision, error) {
+	if substrate.IsInvalidKeyError(err) {
+		logger.Error("gateway: revocation event dropped — unputtable actor key", "verb", verb, "actor", actor, "error", err)
+		hb.SetIssue(revocationPoisonIssueKey, severityError, "revocation.unputtableKey",
+			"revocation "+verb+" dropped for unputtable actor key "+actor+": "+err.Error())
+		return substrate.Term, fmt.Errorf("gateway: %s %s: unputtable key, dropping: %w", verb, actor, err)
+	}
+	return substrate.Nak, fmt.Errorf("gateway: %s %s: %w", verb, actor, err)
+}
+
+// classifyRevocationError is the consumer spec's Classify hook. It is the
+// load-bearing half of the poison-pill fix: ConsumerSupervisor.processMsg
+// only calls applyDecision (which is what actually invokes msg.Term() for a
+// Term decision) when the handler's error classifies as ClassTransient or
+// ClassTerminal — ClassInfra/ClassStructural bypass the returned Decision
+// entirely and instead pause the whole consumer with the message left
+// un-acked (substrate/consumer_supervisor_spec.go's documented "the framework
+// does NOT ack/nak on infra/structural" contract). An invalid-key error is
+// permanently-bad data on ONE message, not a dependency outage — classifying
+// it ClassInfra (the prior blanket behavior) would pause the entire
+// materializer and leave the poison message pending, so on resume/probe it
+// redelivers and re-triggers the same pause: an infinite pause/probe/
+// redeliver spin functionally equivalent to the bug this fix closes.
+// ClassTerminal lets the Term decision actually apply, disposing the one bad
+// message while every other event keeps flowing. Any other error (e.g. the
+// bucket unreachable) still classifies ClassInfra, preserving the existing
+// pause+probe behavior for genuine infra faults.
+func classifyRevocationError(err error) substrate.FailureClass {
+	if substrate.IsInvalidKeyError(err) {
+		return substrate.ClassTerminal
+	}
+	return substrate.ClassInfra
 }
 
 // heartbeatIssueSink bridges the ConsumerSupervisor's pause lifecycle to the

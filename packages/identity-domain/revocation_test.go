@@ -55,7 +55,7 @@ func TestRevokeActor_Success(t *testing.T) {
 	cp, cons := newRevocationPipeline(t, ctx, conn, "rev-revoke-success")
 
 	reqID := testutil.GenReqID("RevokeSuccess")
-	targetActor := "vtx.identity.CompromisedActorNPQRSTU"
+	targetActor := "vtx.identity.CompromisedActorNPQR"
 	env := &processor.OperationEnvelope{
 		RequestID:     reqID,
 		Lane:          processor.LaneDefault,
@@ -95,7 +95,7 @@ func TestRevokeActor_ReasonOptional(t *testing.T) {
 	cp, cons := newRevocationPipeline(t, ctx, conn, "rev-revoke-noreason")
 
 	reqID := testutil.GenReqID("RevokeNoReason")
-	targetActor := "vtx.identity.NoReasonActorNPQRSTUV"
+	targetActor := "vtx.identity.NoReasonActorNPQRSTU"
 	env := &processor.OperationEnvelope{
 		RequestID:     reqID,
 		Lane:          processor.LaneDefault,
@@ -119,7 +119,7 @@ func TestUnrevokeActor_Success(t *testing.T) {
 	cp, cons := newRevocationPipeline(t, ctx, conn, "rev-unrevoke-success")
 
 	reqID := testutil.GenReqID("UnrevokeSuccess")
-	targetActor := "vtx.identity.ReinstatedActorNPQRST"
+	targetActor := "vtx.identity.ReinstatedActorNPQRS"
 	env := &processor.OperationEnvelope{
 		RequestID:     reqID,
 		Lane:          processor.LaneDefault,
@@ -195,6 +195,29 @@ func TestRevokeActor_NonIdentityActorRejected(t *testing.T) {
 		SubmittedAt:   "2026-07-03T10:00:00Z",
 		Class:         "actorRevocation",
 		Payload:       []byte(`{"actor":"vtx.role.notAnIdentity"}`),
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+}
+
+// TestRevokeActor_BadCharsetActorRejected: a correctly-prefixed actor whose id
+// segment is outside the NanoID charset (or wrong length) must be rejected at
+// the script — the gateway revocation materializer poison-pill fix: an actor
+// id this loose would commit + publish, then permanently fail the
+// materializer's KVPut, so the script is the fail-closed gate that keeps a
+// poison key from ever reaching the outbox.
+func TestRevokeActor_BadCharsetActorRejected(t *testing.T) {
+	ctx, conn := setupTestEnv(t)
+	cp, cons := newRevocationPipeline(t, ctx, conn, "rev-revoke-badcharset")
+
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("RevokeBadCharset"),
+		Lane:          processor.LaneDefault,
+		OperationType: "RevokeActor",
+		Actor:         staffActorKey,
+		SubmittedAt:   "2026-07-03T10:00:00Z",
+		Class:         "actorRevocation",
+		Payload:       []byte(`{"actor":"vtx.identity.not_a_real_NanoID!!"}`),
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)

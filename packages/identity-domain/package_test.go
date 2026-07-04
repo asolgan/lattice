@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/asolgan/lattice/internal/pkgmgr"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 func TestPackage_ManifestMatchesDefinition(t *testing.T) {
@@ -116,6 +117,20 @@ func ddlByCanonicalName(t *testing.T, name string) pkgmgr.DDLSpec {
 	}
 	t.Fatalf("no DDL with canonicalName %q", name)
 	return pkgmgr.DDLSpec{}
+}
+
+// TestActorRevocationScript_NanoIDAlphabetMatchesSubstrate pins the Starlark
+// NANOID_ALPHABET literal in actorRevocationScript (required_actor's charset
+// guard, the gateway-revocation-poison-pill fix) to internal/substrate/
+// nanoid.go's canonical Alphabet — Starlark has no cross-language import, so
+// the two are hand-duplicated; without this test a future alphabet change
+// (e.g. rotating out another ambiguous character) would silently desync them,
+// either rejecting live NanoIDs or admitting an id shape the real generator
+// never produces.
+func TestActorRevocationScript_NanoIDAlphabetMatchesSubstrate(t *testing.T) {
+	if !strings.Contains(actorRevocationScript, `NANOID_ALPHABET = "`+substrate.Alphabet+`"`) {
+		t.Errorf("actorRevocationScript's NANOID_ALPHABET literal does not match substrate.Alphabet (%q) verbatim", substrate.Alphabet)
+	}
 }
 
 func TestPackage_DependsOnRbacDomain(t *testing.T) {

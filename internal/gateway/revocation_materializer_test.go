@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"testing"
 	"time"
 
@@ -105,6 +107,37 @@ func TestStartRevocationMaterializer_ColdStartDrainsPriorHistory(t *testing.T) {
 	}
 }
 
+// TestRevocationWriteFailed_InvalidKeyTerminatesAndReportsIssue proves the
+// poison-pill fix: a KVPut/KVDelete failure classified as an invalid-key
+// error must Term (never redeliver) and surface a Health issue, instead of
+// Nak-ing forever (the original bug — no MaxDeliver on this consumer, so an
+// unputtable key would have stalled kill-switch sync indefinitely).
+func TestRevocationWriteFailed_InvalidKeyTerminatesAndReportsIssue(t *testing.T) {
+	hb := NewHeartbeater(nil, "health-kv", "gw-test", &Metrics{}, nil)
+
+	decision, err := revocationWriteFailed(hb, slog.Default(), "revoke", "vtx.identity.bad key!", fmt.Errorf("kv put: %w", jetstream.ErrInvalidKey))
+	require.Equal(t, substrate.Term, decision)
+	require.Error(t, err)
+
+	issues := hb.issues.snapshot()
+	require.Len(t, issues, 1)
+	require.Equal(t, "revocation.unputtableKey", issues[0].Code)
+	require.Equal(t, severityError, issues[0].Severity)
+}
+
+// TestRevocationWriteFailed_TransientErrorRetries proves the fix is scoped:
+// an ordinary transient failure (e.g. the server briefly unreachable) still
+// Naks for at-least-once redelivery — only a genuinely unwritable key is
+// terminated.
+func TestRevocationWriteFailed_TransientErrorRetries(t *testing.T) {
+	hb := NewHeartbeater(nil, "health-kv", "gw-test", &Metrics{}, nil)
+
+	decision, err := revocationWriteFailed(hb, slog.Default(), "revoke", "vtx.identity.SomeValidActorNPQRSTU", errors.New("kv put: deadline exceeded"))
+	require.Equal(t, substrate.Nak, decision)
+	require.Error(t, err)
+	require.Empty(t, hb.issues.snapshot())
+}
+
 func TestRevocationMaterializer_LiveRevokeThenUnrevoke(t *testing.T) {
 	conn, ctx := newRevocationTestConn(t)
 	createRevocationBucket(t, ctx, conn)
@@ -138,4 +171,57 @@ func TestRevocationMaterializer_LiveRevokeThenUnrevoke(t *testing.T) {
 		_, err := conn.KVGet(ctx, revocation.BucketName, targetActor)
 		return errors.Is(err, substrate.ErrKeyNotFound)
 	}, 5*time.Second, 20*time.Millisecond, "unrevoked key never cleared")
+}
+
+// TestRevocationMaterializer_PoisonKeyDroppedNotStuck proves the poison-pill
+// fix through the real materializer + a real embedded NATS server (not just
+// the revocationWriteFailed unit test): an actor key NATS-KV genuinely
+// refuses (a space, outside its `^[-/_=.a-zA-Z0-9]+$` key charset) must be
+// dropped — never written, and critically never blocking the consumer from
+// processing the next, valid event. Before this fix the same failure Nak'd
+// forever with no MaxDeliver, permanently stalling kill-switch sync.
+func TestRevocationMaterializer_PoisonKeyDroppedNotStuck(t *testing.T) {
+	conn, ctx := newRevocationTestConn(t)
+	createRevocationBucket(t, ctx, conn)
+
+	hb := NewHeartbeater(conn, "health-kv", "gw-test", &Metrics{}, nil)
+	sup, err := StartRevocationMaterializer(ctx, conn, hb, nil)
+	require.NoError(t, err)
+	t.Cleanup(sup.Stop)
+
+	poisonActor := "vtx.identity.bad actor key"
+	publishRevocationEvent(t, ctx, conn, "gateway.actorRevoked", map[string]any{
+		"actor": poisonActor, "at": "2026-07-03T03:00:00Z", "by": "vtx.identity.operator",
+	})
+
+	require.Eventually(t, func() bool {
+		issues := hb.issues.snapshot()
+		for _, is := range issues {
+			if is.Code == "revocation.unputtableKey" {
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond, "poison-key Health issue never surfaced")
+
+	// The poison key must never have been written (Term drops it before any
+	// retry could succeed against a still-refusing key). KVGet on an
+	// invalid-charset key itself errors (not ErrKeyNotFound — NATS rejects the
+	// lookup, not just the value), so absence is checked via the bucket's key
+	// listing instead.
+	keys, err := conn.KVListKeys(ctx, revocation.BucketName)
+	require.NoError(t, err)
+	require.NotContains(t, keys, poisonActor, "poison key must never be written")
+
+	// The consumer must still be live and processing — a subsequent, valid
+	// event folds normally rather than the pump being stuck behind the
+	// poisoned one.
+	validActor := "vtx.identity.NextValidActorNPQRSTU"
+	publishRevocationEvent(t, ctx, conn, "gateway.actorRevoked", map[string]any{
+		"actor": validActor, "at": "2026-07-03T03:00:01Z", "by": "vtx.identity.operator",
+	})
+	require.Eventually(t, func() bool {
+		_, err := conn.KVGet(ctx, revocation.BucketName, validActor)
+		return err == nil
+	}, 5*time.Second, 20*time.Millisecond, "consumer stuck behind the poison key — next valid event never folded")
 }
