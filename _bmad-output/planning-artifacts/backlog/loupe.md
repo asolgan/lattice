@@ -38,6 +38,7 @@ buildable-first; F11–F13 gated on lattice cross-lane asks (§6 there).
 | **F11 — Gateway security console** | `#/component/gateway` page (auth metrics + JWKS key set) + the token-revoke surface (arch-review gap). | ★★ | M | ✅ shipped · checkpoint in [UX doc](../../implementation-artifacts/loupe-platform-edges-ux.md) · JWKS panel lights up on the heartbeat `jwks` block; live e2e needs Gateway up-full + fresh bootstrap (lattice) |
 | **F12 — Vault surface + crypto-shred proof** | Node + page + Reveal (decrypt RPC on `sensitive` aspects) + `ShredIdentityKey` before/after proof. | ★★★ | L | 🚧 blocked-on: Vault→Loupe enablers (lattice) · [UX §3](../../implementation-artifacts/loupe-platform-edges-ux.md) |
 | **F13 — Chronicler Time Machine** | Flow-history browser + map scrubber + ledger browser (platform-edges brief §4 L1–L3); overrides the Chronicler design's "rides F6" display note (Loupe scope). | ★★★ | L | 🚧 blocked-on: Chronicler build (lattice) · [UX §4](../../implementation-artifacts/loupe-platform-edges-ux.md) |
+| **F14 — Map scale: lens clusters + door band** | Lens shelf → package-grouped cluster cards (manifest-resolved, kernel fallback): exception-first density, filter box, one project edge per cluster (per-lens edge/label spam retired). Verticals become curated `app` door-band nodes beside the Gateway — parallel doors, NOT routed through it (gateway.md) — with on-behalf-of submit edges; offline≠red; clients discovery shelf stays. | ★★★ | M | ☑ build-ready · [UX doc](../../implementation-artifacts/loupe-map-scale-ux.md) (adjudicated, Winston-delegated) |
 
 ## Component maintenance
 
@@ -64,7 +65,8 @@ buildable-first; F11–F13 gated on lattice cross-lane asks (§6 there).
 - 2026-07-02 — removed the phase-gates chips from the map (Andrew): the security proofs (bypass g2 / capability g3) become a new Lattice component (human-named, periodic + "check now", isolated runner) — [security-proof-watchdog](../../implementation-artifacts/security-proof-watchdog-brief.md), filed Designer on lattice.
 - 2026-07-03 — **Loupe 2.0 core COMPLETE** (F1–F9 all shipped). F9's full value (protected-table rows) needs the read role — filed to lattice ("[Refractor/deploy] Loupe read-only PG role").
 - 2026-07-04 — F11 built against the shipped op model (revocation kill-switch Fires 1+2, lattice); review found the materializer poison-pill (invalid actor key → forever-redelivery) — filed to lattice.md.
-- **Next:** F12/F13 stay gated on Vault/Chronicler. On the Gateway up-full ship: flip its `designAhead` flag off + verify the F11 revoke loop live (XS).
+- 2026-07-03 — PO+Sally session (Andrew, screenshot-driven): filed **F14** — lens shelf crowding at ~24 lenses (label spam, truncation, hidden below-fold chips) + the verticals' map home. Ruling: apps are parallel doors BESIDE the Gateway, never behind it (gateway.md: sanctioned direct submitters); UX adjudicated same session (delegated).
+- **Next:** **F14 is build-ready** (Steward). F12/F13 stay gated on Vault/Chronicler. On the Gateway up-full ship: flip its `designAhead` flag off + verify the F11 revoke loop live (XS).
 
 ## Done log — loupe (newest first)
 
