@@ -356,36 +356,38 @@ domain.
   through the sink but exposes no read-back, so Loom caches each transition. `issues` is empty unless a
   consumer sits in `pausedStructural` (one `warning` / `ConsumerPaused` entry).
 - **Per-consumer pause-state** — each managed consumer also implements `substrate.HealthSink`, persisting
-  a small `{status, pauseReason, lastError}` document to `health.loom.<instance>.consumer.<name>` (a
-  SEPARATE key from the heartbeat). Pause-state persists and restores across an engine restart via the
-  supervisor's `Add`-time restore semantics (manual > structural > infra precedence): a consumer paused
-  before a restart comes back paused without an explicit `Resume`. The supervisor's `Pause`/`Resume`
-  is surfaced externally through the `lattice.ctrl.loom.*` control plane (`lattice loom pause` /
-  `resume`). When a per-domain consumer is torn down (Remove, above),
-  both its `consumerStateCache` entry and its `health.loom.<instance>.consumer.loom-<domain>` pause entry
-  are deleted, so a future re-add of the same domain starts clean (active, not resurrected into a stale
-  pause) and the heartbeat does not keep reporting a phantom consumer.
+  a small `{status, pauseReason, lastError}` document to `health.loom.consumer-state.<name>` (a
+  SEPARATE key from the heartbeat, and deliberately **not** instance-scoped — pause-state is a fact
+  about the consumer/lane, not the process hosting it). Pause-state persists and restores across an
+  engine restart via the supervisor's `Add`-time restore semantics (manual > structural > infra
+  precedence): a consumer paused before a restart comes back paused without an explicit `Resume`,
+  regardless of the restarted process's `Instance` (a fresh instance ID revisits the same
+  consumer-scoped key). The supervisor's `Pause`/`Resume` is surfaced externally through the
+  `lattice.ctrl.loom.*` control plane (`lattice loom pause` / `resume`). When a per-domain consumer is
+  torn down (Remove, above), both its `consumerStateCache` entry and its
+  `health.loom.consumer-state.loom-<domain>` pause entry are deleted, so a future re-add of the same
+  domain starts clean (active, not resurrected into a stale pause) and the heartbeat does not keep
+  reporting a phantom consumer.
 
 ### `Instance` uniqueness (Contract #5 precondition)
 
-`Config.Instance` is the key segment for this process's heartbeat (`health.loom.<instance>`) and every
-per-consumer pause entry (`health.loom.<instance>.consumer.<name>`) in the shared `health-kv` bucket. **It
-MUST be unique per Loom process sharing that bucket.** When empty it defaults to
-`<hostname>-<pid>-<NanoID>` (sanitized for KV key segments) — the hostname+pid prefix makes an
-auto-generated heartbeat attributable to the process that wrote it, and the NanoID suffix keeps each
-`Engine` construction unique (the pattern-source durable name is also derived from `Instance` and depends
-on per-boot uniqueness, even across multiple `Engine`s in one process). The default is therefore unique per
-construction, not just per host/pid — operators running multiple Loom replicas who want a *stable*,
-human-recognizable `Instance` across restarts (for dashboards/alerting) should set it explicitly to
-something cluster-unique.
+`Config.Instance` is the key segment for this process's heartbeat (`health.loom.<instance>`) only —
+per-consumer pause entries (`health.loom.consumer-state.<name>`) are consumer-scoped, not
+instance-scoped, so `Instance` does not enter that key. `Instance` **MUST be unique per Loom process
+sharing the `health-kv` bucket.** When empty it defaults to `<hostname>-<pid>-<NanoID>` (sanitized for
+KV key segments) — the hostname+pid prefix makes an auto-generated heartbeat attributable to the
+process that wrote it, and the NanoID suffix keeps each `Engine` construction unique (the pattern-source
+durable name is also derived from `Instance` and depends on per-boot uniqueness, even across multiple
+`Engine`s in one process). The default is therefore unique per construction, not just per host/pid —
+operators running multiple Loom replicas who want a *stable*, human-recognizable `Instance` across
+restarts (for dashboards/alerting) should set it explicitly to something cluster-unique.
 
-If two processes ever do run with the same `Instance` against the same `health-kv` bucket:
-
-- their `health.loom.<instance>` heartbeats last-write-wins each other — an operator sees one flapping
-  liveness/uptime document for two processes, not two;
-- their per-consumer pause entries (`health.loom.<instance>.consumer.<name>`) are the same key — one
-  process's manual pause can be silently restored onto the other process's consumer of the same name at
-  its next restart (cross-process pause restore).
+If two processes ever do run with the same `Instance` against the same `health-kv` bucket, their
+`health.loom.<instance>` heartbeats last-write-wins each other — an operator sees one flapping
+liveness/uptime document for two processes, not two. Per-consumer pause-state is unaffected by
+`Instance` collisions (it was never keyed on `Instance`): two processes managing a consumer of the
+*same name* share one pause decision — the intended, HA-forward behavior, since a consumer's
+pause/resume is a fact about the lane, not about which process happens to run it.
 
 ## Principles that apply
 

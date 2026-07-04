@@ -1,11 +1,11 @@
 # Health-KV TTL — dead-instance key expiry (orphan reclaim)
 
-**Status: ✅ Andrew-ratified (2026-07-02) — Fire 3 = the consumer-state RE-KEY (the recommended
-depth), sequenced after the ratified HealthSink consolidation (one-place change in the shared
-`ConsumerSink`).** Fire decomposition COLLAPSED per Andrew's fewer-larger-fires rule: **Fire 1 =
-Categories A + B together** (all TTL wiring — heartbeats + diagnostic keys — one mechanical plane,
-one fire, incl. the optional `gc-stale` tail) · **Fire 2 = the Category-C re-key** (after the
-consolidation build). §8's three-fire split is superseded accordingly.
+**Status: ✅ DONE — all fires shipped 2026-07-04.** Fire 1 (Categories A+B TTL, `f68df4e`+`9727cd4`)
+and Fire 3 (Category C consumer-state re-key, the recommended depth) both shipped; the item is closed.
+Fire decomposition COLLAPSED per Andrew's fewer-larger-fires rule: **Fire 1 = Categories A + B
+together** (all TTL wiring — heartbeats + diagnostic keys — one mechanical plane, one fire, incl. the
+optional `gc-stale` tail) · **Fire 2 = the Category-C re-key** (after the consolidation build). §8's
+three-fire split is superseded accordingly.
 **Author:** Winston (Designer fire, 2026-06-30)
 **Backlog:** Stream-2 Component maintenance — *[Health-KV] Orphaned dead-instance heartbeat keys never expire* (★★, S–M)
 **Owning component:** all heartbeat writers (Processor, Refractor, Weaver, Loom, bridge, object-store-manager) via the substrate; docs in `docs/observability/health-kv-schema.md`.
@@ -194,10 +194,13 @@ Each fire is independently shippable + green; Fire 1 carries the contract-mandat
 - **Fire 2 — Category B diagnostic TTL.**
   Give `malformed-operation.<requestId>`, `claim-attempts.<outcome>`, and `commit-conflicts` a fixed `diagnosticTTL` (default 1h, configurable), mirroring the shipped auth-trace constant. Bounds the unbounded `malformed-operation` keyspace; clears dead-instance breadcrumbs. Tests per §6 Category B.
 
-- **Fire 3 — Category C consumer-state re-key (durable, the subtle one).**
-  Re-key the consumer-state sink from `health.<comp>.<instance>.consumer.<name>` →
-  `health.<comp>.consumer-state.<name>`. No TTL. Tests per §6 Category C (incl. the
-  restore-across-restart bug fix). **Reconciled 2026-07-02 (ratification session):** the *HealthSink
+- **✅ Fire 3 (2026-07-04) shipped — Category C consumer-state re-key (durable, the subtle one).**
+  Re-keyed the shared `internal/healthkv.ConsumerSink` from `health.<comp>.<instance>.consumer.<name>` →
+  `health.<comp>.consumer-state.<name>` (dropped the `instance` parameter from `NewConsumerSink`
+  entirely — a fresh signature is a stronger guarantee than a convention). No TTL. Tests per §6
+  Category C, incl. a dedicated `TestConsumerSink_RestoreAcrossInstanceRestart` proving the bug fix,
+  plus the pre-existing `internal/loom` supervisor restart/re-add tests updated to the new key shape.
+  **Reconciled 2026-07-02 (ratification session):** the *HealthSink
   consolidation* design (✅ ratified same day) lifts the three sinks into one shared
   `internal/healthkv.ConsumerSink` — so this fire **sequences after that consolidation** and becomes a
   **one-place** key change in the shared sink + its test suite (not three parallel edits); the bridge

@@ -40,12 +40,13 @@ Three lifecycle classes:
   `diagnosticTTL` *after the instance's last write*, the same "dead instance's key eventually
   clears" property Category A gets from its heartbeat, applied here to a non-heartbeat breadcrumb.
   See the [Health-KV TTL design](../../_bmad-output/implementation-artifacts/health-kv-ttl-orphan-expiry-design.md)
-  for the full orphan taxonomy (Category C, the durable consumer-state re-key, remains open).
-- **Category C — durable consumer pause-state** (`health.<component>.<instance>.consumer.<name>`,
+  for the full orphan taxonomy.
+- **Category C — durable consumer pause-state** (`health.<component>.consumer-state.<name>`,
   written by the shared `internal/healthkv.ConsumerSink`): **no TTL** — this is durable
   operator/structural pause state, not a liveness signal; a death-tied TTL would risk silently
-  resuming a paused consumer after a long downtime (fail-open). Re-keying this to a stable,
-  consumer-scoped (non-instance) key is a follow-up fire of the same design.
+  resuming a paused consumer after a long downtime (fail-open). The key is deliberately
+  **consumer-scoped, not instance-scoped**, so pause-state restores across a restart under a
+  fresh instance ID instead of orphaning on every restart.
 
 See the design doc for the full orphan taxonomy and fire-by-fire decomposition.
 

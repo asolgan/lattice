@@ -2,6 +2,8 @@
 
 Rolled from `lattice.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-03 · `0377938` · [natsperm] bridge phantom KV-bucket grants pruned (arch #19, bridge half) — TestBridgeNoPhantomKVGrants added
+- 2026-07-03 · `9972fec` · [natsperm] object-plane-nats-permissions — arch #2 fixed (Winston self-ratified, no fork/contract); first object-plane natsperm vectors
 - 2026-07-03 · `103f878` · [Refractor] Full-engine phantom aggregate row on empty required-MATCH — `projectItems` no longer fabricates a null row; unblocks `landlordLeaseApplicationsRead` and any other unanchored aggregating lens
 - 2026-07-03 · `cb9d38d`+`727ddd4` · [Refractor] Lens projection liveness — Fires 1+2 shipped as one (lastProjectedAt/projectionLag + heartbeat lensLiveness backstop); freshness UI rides Loupe F5
 - 2026-07-03 · `aa92c89` · [Weaver] Bespoke contracts Fire L1 — weaver.md sanctioned-pattern note; design realized except the on-demand rounding UDF
