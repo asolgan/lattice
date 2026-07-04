@@ -19,16 +19,17 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 |---|---|---|---|---|---|---|
 | LoftSpace — per-landlord RLS view as the rich decision surface (D1.5 landlord cutover) | The protected `/api/landlord/applications` RLS read shows only a scope-count banner; the rich decision view is still the trusted-all-units console (§10.2). Project signals into `landlordLeaseApplicationsRead`, retiring the console. | LoftSpace | pkg + FE | ★★ | M | 🚧 seq Vault Fire 5 (Vault 🎯 build-next in [lattice](lattice.md)) · Rec C shipped ([design](../../implementation-artifacts/loftspace-d1.5-landlord-rls-decision-surface-design.md)) · readiness clone = fallback if Vault stalls |
 | LoftSpace — applicant contact (email/phone) captured but never projected to the landlord | `CreateUnclaimedIdentity` stores `.email`/`.phone`, but neither the `/api/identities` picker nor the landlord `unit-applications` disposition surfaces them — a landlord deciding on an applicant has no way to contact them. | LoftSpace | pkg + FE | ★★ | S | 🚧 blocked-on Vault 5b attended reset, same as row above ([plan](../../implementation-artifacts/vault-crypto-shredding-design.md) 5b-iv checkpoint) — lens-side columns already built |
+| Clinic — Book UI's patient picker always empty, blocking booking end-to-end | `/api/staff/patients` (the FE's patient switcher source) returns `count:0` even right after creating a patient — live-verified: patient vertex + demographics + link all exist in Core KV, write path is fine, only the staff-wildcard RLS read is empty. Self-anchored `/api/my-appointments` / `/api/my-schedule` work correctly. | Clinic | platform | ★★★ | — | 🚧 blocked-on [bootstrap staleness](lattice.md) (stale admin-actor identity holds no live WildcardAnchor grant) — no vertical code change needed, self-heals once the platform fix lands |
 
 ## PO notes (dated — drives rotation)
 
 Compact rotation memory only — PO *findings* are filed as demand rows above + the Done log; the verbose
 dated run-logs live in git history. Rotate LoftSpace ↔ Clinic, staggered from the Steward.
 
-- **Rotation to date:** LoftSpace ×10, Clinic ×7 (last: LoftSpace 10th run 2026-07-04, stack up but `lattice.bootstrap.json` stale again vs. live Core KV — reads empty, no live exercise possible; filed the recurring staleness as a dev-loop item to [lattice.md](lattice.md), no new vertical demand this run).
+- **Rotation to date:** LoftSpace ×10, Clinic ×8 (last: Clinic 2026-07-04, created a patient + booked live — write path fine, but staff roster reads stayed empty; traced to the stale-bootstrap admin identity, filed as a live product-blocking row + bumped its lattice.md severity).
 - **Method:** reuse the already-up shared stack (detect NATS :4222 / app :7788/:7799), drive the real flow via `/api/op` + the lens projections as the product owner, file scored items. Both apps exist + are exercisable live (`:7788` / `:7799`).
 - **Live-stack note:** before assuming a product bug on empty reads, run `lattice bootstrap verify` — a stale bootstrap JSON vs. a recreated Core KV is a known recurring dev-loop trap (2026-07-03, 2026-07-04), tracked in [lattice.md](lattice.md).
-- **Next:** Clinic.
+- **Next:** LoftSpace.
 
 ## Done log — verticals (newest first)
 
