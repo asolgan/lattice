@@ -7,8 +7,9 @@ Surveyor-filed row) · **Builds on:** Contract #10 §10.2/§10.3/§10.8, the §1
 (`internal/weaver/state.go`, `reconciler.go`), the Strategist seam (`internal/weaver/strategist.go`), the
 Augur (escalation + dispatch, `augur-design.md` / `augur-dispatch-pickup-design.md`), Loom definition
 pinning (§10.5, `docs/components/loom.md`).
-**Contract change:** **YES — Contract #10 §10.3 + §10.8** (additive, opt-in). The actual edit is staged
-**uncommitted in `main`** — the diff is the proposal. Affected consumers: Weaver engine (Strategist/
+**Contract change:** **YES — Contract #10 §10.3 + §10.8** (additive, opt-in). The actual edit is the
+**proposal commit `ad76e21` on `claude/fable-model-qb9o6s`** (branch = `main` + this one commit; the
+branch-vs-main diff is the proposal — ratify by merging it, reject by deleting the branch). Affected consumers: Weaver engine (Strategist/
 Evaluator), `pkgmgr` install validation, package authors (`lease-signing` reference), the Augur package.
 
 ---
@@ -37,7 +38,7 @@ fencing problem on the shared `weaver-targets`/`weaver-state` buckets. **Recomme
 **shadow mode** (Fire 4: planner decisions logged beside table decisions on live traffic, never dispatched)
 and **per-target cutover** via a `mode` field — reversible through the existing control plane. (§6, Alt B.)
 
-**Frozen-contract change (staged uncommitted).** §10.8 gains a "Planner extension" subsection (target-level
+**Frozen-contract change (proposal commit `ad76e21`, branch `claude/fable-model-qb9o6s`).** §10.8 gains a "Planner extension" subsection (target-level
 `mode`, per-gap `candidates`/`goal`, op-DDL `effects`, plan-vertex convention, precedence: explicit
 `action` > `candidates` > `goal`); §10.3 gains the reserved `<targetId>.__effect.<gapColumn>.<actionRef>`
 key shape — and, riding along, documents the two **as-built** reserved shapes (`__control`, `__count`) the
@@ -171,7 +172,9 @@ compounds under review. `augur.autoApply` stays Andrew-gated, untouched.
 
 ## 4. Contract surface
 
-Staged **uncommitted in `main`** (this diff = the proposal): **§10.8** new "Planner extension" subsection
+Staged as **proposal commit `ad76e21`** on `claude/fable-model-qb9o6s` — one commit ahead of `main`;
+the branch-vs-main diff = the proposal (remote-session adaptation of the uncommitted-in-main protocol,
+which assumes a shared filesystem): **§10.8** new "Planner extension" subsection
 (3.2 above, normative); **§10.3** reserved-key-shapes block (documents as-built `__control` + `__count`,
 adds proposed `__effect`); revision-history row marked 📐 proposed. NOT amended now (land with their
 fires, additive): the §10.2 priority-column convention (Fire 8), plan-vertex GC detail (Fire 6 may refine
