@@ -1,6 +1,7 @@
 package pkgmgr
 
 import (
+	"encoding/json"
 	"testing"
 )
 
@@ -359,5 +360,57 @@ func TestBuildInstallBatch_SensitiveAspectEmittedOnlyWhenTrue(t *testing.T) {
 	// Non-sensitive DDL: NO `.sensitive` aspect (the opt-in regression pin).
 	if _, ok := findOp(ops, plainKey+".sensitive"); ok {
 		t.Errorf("non-sensitive DDL emitted a %s aspect; want none (opt-in)", plainKey+".sensitive")
+	}
+}
+
+// TestBuildInstallBatch_EffectsAspectEmittedOnlyWhenDeclared pins the Fire-6
+// catalog-materialization seam: an op-meta vertex whose operationType carries
+// a DDL Effects declaration gets a sibling `.effects` aspect carrying those
+// guards verbatim; an op-meta vertex for an operationType with no Effects
+// entry emits no such aspect (opt-in, byte-identical to every install before
+// this fire).
+func TestBuildInstallBatch_EffectsAspectEmittedOnlyWhenDeclared(t *testing.T) {
+	ddl := minimalDDL("leaseapp", "meta.ddl.vertexType", false)
+	ddl.PermittedCommands = []string{"SignLease", "CreateLeaseApplication"}
+	ddl.Effects = map[string][]json.RawMessage{
+		"SignLease": {json.RawMessage(`{"present":"subject.signature.data.signedAt"}`)},
+	}
+	def := Definition{
+		Name:    "effects-test-pkg",
+		Version: "0.0.1",
+		DDLs:    []DDLSpec{ddl},
+		OpMetas: []OpMetaSpec{{OperationType: "SignLease"}, {OperationType: "CreateLeaseApplication"}},
+	}
+
+	inst := &Installer{}
+	pkgKey := PackageVertexPrefix + EntityNanoIDForTest(def.Name, "package")
+	ddlIDs := []string{EntityNanoIDForTest(def.Name, "ddl:leaseapp")}
+	opMetaIDs := []string{
+		EntityNanoIDForTest(def.Name, "opMeta:SignLease"),
+		EntityNanoIDForTest(def.Name, "opMeta:CreateLeaseApplication"),
+	}
+	ops, _, err := inst.buildInstallBatch(def, pkgKey, ddlIDs, nil, nil, nil, nil, nil, opMetaIDs)
+	if err != nil {
+		t.Fatalf("buildInstallBatch: %v", err)
+	}
+
+	signKey := metaVertexPrefix + opMetaIDs[0]
+	createKey := metaVertexPrefix + opMetaIDs[1]
+
+	op, ok := findOp(ops, signKey+".effects")
+	if !ok {
+		t.Fatalf("SignLease op-meta: no %s aspect emitted", signKey+".effects")
+	}
+	if got := op.Document["class"]; got != "effects" {
+		t.Errorf("effects aspect class = %v, want \"effects\"", got)
+	}
+	data, _ := op.Document["data"].(map[string]any)
+	guards, _ := data["guards"].([]json.RawMessage)
+	if len(guards) != 1 {
+		t.Fatalf("effects aspect guards = %v, want exactly 1 entry", data["guards"])
+	}
+
+	if _, ok := findOp(ops, createKey+".effects"); ok {
+		t.Errorf("CreateLeaseApplication declares no Effects; want no %s aspect", createKey+".effects")
 	}
 }
