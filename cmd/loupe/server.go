@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -54,6 +55,11 @@ type server struct {
 	// bindHost is the host part of the listen address; the same-origin gate
 	// accepts it alongside loopback hosts (the non-loopback opt-in).
 	bindHost string
+	// everLive remembers which components this process has seen heartbeating
+	// (snapshotEverLive / noteEverLive) so a design-ahead component that was
+	// deployed and then crashed reads absent-red, not "not yet deployed".
+	everLiveMu sync.Mutex
+	everLive   map[string]bool
 }
 
 func (s *server) registerRoutes(mux *http.ServeMux) {
@@ -311,8 +317,39 @@ func (s *server) handleSystemMap(w http.ResponseWriter, r *http.Request) {
 		s.writeError(w, http.StatusBadGateway, "list health-kv: "+err.Error())
 		return
 	}
-	m := computeSystemMap(keys, readEntry, resolveLens, resolveSpec, staleThreshold)
+	m := computeSystemMap(keys, readEntry, resolveLens, resolveSpec, staleThreshold, s.snapshotEverLive())
+	for _, n := range m.Nodes {
+		if n.Kind == nodeComponent && len(n.Instances) > 0 {
+			s.noteEverLive(n.ID)
+		}
+	}
 	s.writeJSON(w, http.StatusOK, m)
+}
+
+// snapshotEverLive copies the set of components this process has observed
+// with live heartbeats. It gates the design-ahead rendering: heartbeats TTL
+// out of Health KV, so "no heartbeat key" alone cannot distinguish
+// never-deployed from deployed-then-crashed.
+func (s *server) snapshotEverLive() map[string]bool {
+	s.everLiveMu.Lock()
+	defer s.everLiveMu.Unlock()
+	out := make(map[string]bool, len(s.everLive))
+	for id := range s.everLive {
+		out[id] = true
+	}
+	return out
+}
+
+// noteEverLive records components observed with at least one live instance.
+func (s *server) noteEverLive(ids ...string) {
+	s.everLiveMu.Lock()
+	defer s.everLiveMu.Unlock()
+	if s.everLive == nil {
+		s.everLive = make(map[string]bool)
+	}
+	for _, id := range ids {
+		s.everLive[id] = true
+	}
 }
 
 // handleControl implements both:

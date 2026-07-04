@@ -167,16 +167,20 @@ var skeletonEdges = []mapEdge{
 // computeHealth so the assembler is unit-testable without NATS. A declared
 // component with no Health KV heartbeat renders "absent" (red) — or
 // "design-ahead" (informational, no rollup contribution) when it is declared
-// designAhead; a stale heartbeat renders "stale" (yellow); each live lens
-// becomes a node parented to Refractor carrying its renderedState — a
-// pending-readpath lens contributes nothing to the rollup (it is expected
-// fail-closed state, not degradation).
+// designAhead AND has never been seen alive by this process (everLive):
+// heartbeat keys TTL out of Health KV, so without that memory a
+// deployed-then-crashed design-ahead component would silently revert to a
+// false "not yet deployed" instead of an honest absent-red. A stale heartbeat
+// renders "stale" (yellow); each live lens becomes a node parented to
+// Refractor carrying its renderedState — a pending-readpath lens contributes
+// nothing to the rollup (it is expected fail-closed state, not degradation).
 func computeSystemMap(
 	keys []string,
 	readEntry func(string) (map[string]any, bool),
 	resolveLens func(id string) (name, desc string),
 	resolveSpec func(id string) lensSpecInfo,
 	staleThreshold time.Duration,
+	everLive map[string]bool,
 ) systemMap {
 	const (
 		green  = 0
@@ -277,7 +281,7 @@ func computeSystemMap(
 		node := mapNode{ID: dc.id, Label: dc.label, Kind: nodeComponent, Lateral: dc.id == "vault"}
 		if bs, ok := beats[dc.id]; ok {
 			worse(applyBeats(&node, bs))
-		} else if dc.designAhead {
+		} else if dc.designAhead && !everLive[dc.id] {
 			node.Status = "design-ahead"
 			node.Detail = "not yet deployed"
 			node.Freshness = "-"

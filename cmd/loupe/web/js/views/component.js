@@ -7,7 +7,7 @@
 
 import { $, el, api, setStatus } from "../api.js";
 import { replaceRoute } from "../router.js";
-import { issueClass, lensStateDot, lensStateGlyph, pendingReadpathCopy } from "../logic/status.js";
+import { designAheadCopy, designAheadPointer, issueClass, lensStateDot, lensStateGlyph, pendingReadpathCopy } from "../logic/status.js";
 import { metricsLine, eventSummary, controlSurface } from "../logic/component.js";
 import { renderDoc, keyLinkEl } from "../render.js";
 
@@ -63,8 +63,17 @@ function renderHead(head, page) {
 function renderState(col, page) {
   col.appendChild(el("h3", "comp-section", "Instances"));
   if (!page.instances.length) {
-    col.appendChild(el("div", "muted",
-      "No live heartbeats — the component is absent from Health KV. Is it running? (make up-full)"));
+    // A design-ahead component is EXPECTED to be heartbeatless — teach the
+    // roadmap instead of alarming (the same §1.4 rule as its map node).
+    if (page.status === "design-ahead") {
+      col.appendChild(el("div", "muted", designAheadCopy + "."));
+      if (designAheadPointer[page.component]) {
+        col.appendChild(el("div", "muted", designAheadPointer[page.component]));
+      }
+    } else {
+      col.appendChild(el("div", "muted",
+        "No live heartbeats — the component is absent from Health KV. Is it running? (make up-full)"));
+    }
   }
   page.instances.forEach((inst) => {
     const card = el("div", "card " + inst.status);

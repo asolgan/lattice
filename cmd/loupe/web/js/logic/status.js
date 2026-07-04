@@ -94,14 +94,16 @@ function sysmapSummary(nodes) {
 // read-models.
 function sysmapTier(node) {
   if (node.kind === "ingress") return -1;
-  if (node.id === "gateway") return -1;
   if (node.kind === "lens") return 4;
   if (node.kind === "infra") {
     if (node.id === "object-store") return 4;
     return node.id === "core-operations" ? 0 : 2; // core-kv / core-events = spine
   }
-  // component (vault falls through to 3 by dependency depth — its lateral
-  // beside-Core-KV placement is a render-layer concern, not a tier)
+  // component — the id checks are kind-scoped so a stray non-component node
+  // that happens to carry a component's id can never claim its placement.
+  // (vault falls through to 3 by dependency depth — its lateral beside-Core-KV
+  // placement is a render-layer concern, not a tier)
+  if (node.id === "gateway") return -1; // the door, above the spine
   return node.id === "processor" ? 1 : 3;
 }
 

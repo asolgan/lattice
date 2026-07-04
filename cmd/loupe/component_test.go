@@ -28,7 +28,7 @@ func TestComputeComponentPluralInstancesAndEvents(t *testing.T) {
 	}
 	read := func(k string) (map[string]any, bool) { d, ok := docs[k]; return d, ok }
 
-	page := computeComponent("processor", keys, read, time.Minute)
+	page := computeComponent("processor", keys, read, time.Minute, nil)
 	if !page.Declared || page.Label != "Processor" {
 		t.Errorf("page identity = %+v, want declared Processor", page)
 	}
@@ -61,7 +61,7 @@ func TestComputeComponentPluralInstancesAndEvents(t *testing.T) {
 }
 
 func TestComputeComponentAbsentAndUndeclared(t *testing.T) {
-	page := computeComponent("weaver", nil, func(string) (map[string]any, bool) { return nil, false }, time.Minute)
+	page := computeComponent("weaver", nil, func(string) (map[string]any, bool) { return nil, false }, time.Minute, nil)
 	if !page.Declared || page.Status != "absent" || len(page.Instances) != 0 {
 		t.Errorf("absent declared component = %+v, want declared/absent/no instances", page)
 	}
@@ -71,7 +71,7 @@ func TestComputeComponentAbsentAndUndeclared(t *testing.T) {
 		"health.clinic-app.c1": {"component": "clinic-app", "instance": "c1", "heartbeatAt": now},
 	}
 	read := func(k string) (map[string]any, bool) { d, ok := docs[k]; return d, ok }
-	page = computeComponent("clinic-app", []string{"health.clinic-app.c1"}, read, time.Minute)
+	page = computeComponent("clinic-app", []string{"health.clinic-app.c1"}, read, time.Minute, nil)
 	if page.Declared || page.Label != "clinic-app" || page.Status != "green" || len(page.Instances) != 1 {
 		t.Errorf("undeclared client page = %+v, want undeclared green with 1 instance", page)
 	}
@@ -81,7 +81,7 @@ func TestComputeComponentAbsentAndUndeclared(t *testing.T) {
 // heartbeat the header pill reads "design-ahead" (informational), and a live
 // instance overwrites it with the normal worst-of status.
 func TestComputeComponentDesignAhead(t *testing.T) {
-	page := computeComponent("vault", nil, func(string) (map[string]any, bool) { return nil, false }, time.Minute)
+	page := computeComponent("vault", nil, func(string) (map[string]any, bool) { return nil, false }, time.Minute, nil)
 	if !page.Declared || page.Status != "design-ahead" {
 		t.Errorf("vault page = declared=%v status=%q, want declared/design-ahead", page.Declared, page.Status)
 	}
@@ -93,8 +93,18 @@ func TestComputeComponentDesignAhead(t *testing.T) {
 		}
 		return nil, false
 	}
-	page = computeComponent("vault", []string{"health.vault.v1"}, read, time.Minute)
+	page = computeComponent("vault", []string{"health.vault.v1"}, read, time.Minute, nil)
 	if page.Status != "green" {
 		t.Errorf("heartbeating vault page status = %q, want green (designAhead moot once live)", page.Status)
+	}
+}
+
+// The component page applies the same ever-live gate as the map: a designAhead
+// component seen alive earlier this process reports absent, not design-ahead.
+func TestComputeComponentDesignAheadEverLive(t *testing.T) {
+	page := computeComponent("vault", nil, func(string) (map[string]any, bool) { return nil, false },
+		time.Minute, map[string]bool{"vault": true})
+	if page.Status != "absent" {
+		t.Errorf("ever-live vault page status = %q, want absent", page.Status)
 	}
 }

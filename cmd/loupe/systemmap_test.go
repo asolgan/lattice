@@ -36,7 +36,7 @@ func TestComputeSystemMapOverlay(t *testing.T) {
 		return "", ""
 	}
 
-	m := computeSystemMap(keys, read, resolve, nil, 60*time.Second)
+	m := computeSystemMap(keys, read, resolve, nil, 60*time.Second, nil)
 	byID := nodesByID(m)
 
 	// Infra spine is always present.
@@ -102,7 +102,7 @@ func TestComputeSystemMapAllPresentGreen(t *testing.T) {
 	}
 	read := func(k string) (map[string]any, bool) { d, ok := docs[k]; return d, ok }
 
-	m := computeSystemMap(keys, read, nil, nil, 60*time.Second)
+	m := computeSystemMap(keys, read, nil, nil, 60*time.Second, nil)
 	if m.Overall != "green" {
 		t.Errorf("overall = %q, want green (every component fresh)", m.Overall)
 	}
@@ -133,7 +133,7 @@ func TestComputeSystemMapUnhealthyComponentRed(t *testing.T) {
 	}
 	read := func(k string) (map[string]any, bool) { d, ok := docs[k]; return d, ok }
 
-	m := computeSystemMap(keys, read, nil, nil, time.Minute)
+	m := computeSystemMap(keys, read, nil, nil, time.Minute, nil)
 	if m.Overall != "red" {
 		t.Errorf("overall = %q, want red (unhealthy component)", m.Overall)
 	}
@@ -160,7 +160,7 @@ func TestComputeSystemMapStaleLensYellow(t *testing.T) {
 	}
 	read := func(k string) (map[string]any, bool) { d, ok := docs[k]; return d, ok }
 
-	m := computeSystemMap(keys, read, func(string) (string, string) { return "", "" }, nil, time.Minute)
+	m := computeSystemMap(keys, read, func(string) (string, string) { return "", "" }, nil, time.Minute, nil)
 	if m.Overall != "yellow" {
 		t.Errorf("overall = %q, want yellow (paused lens)", m.Overall)
 	}
@@ -190,7 +190,7 @@ func TestComputeSystemMapPluralInstances(t *testing.T) {
 	}
 	read := func(k string) (map[string]any, bool) { d, ok := docs[k]; return d, ok }
 
-	m := computeSystemMap(keys, read, nil, nil, time.Minute)
+	m := computeSystemMap(keys, read, nil, nil, time.Minute, nil)
 	proc := nodesByID(m)["processor"]
 	if len(proc.Instances) != 2 {
 		t.Fatalf("processor instances = %+v, want 2 (no LWW collapse)", proc.Instances)
@@ -228,7 +228,7 @@ func TestComputeSystemMapClientNodes(t *testing.T) {
 	}
 	read := func(k string) (map[string]any, bool) { d, ok := docs[k]; return d, ok }
 
-	m := computeSystemMap(keys, read, nil, nil, time.Minute)
+	m := computeSystemMap(keys, read, nil, nil, time.Minute, nil)
 	app := nodesByID(m)["loftspace-app"]
 	if app.Kind != nodeClient || app.Status != "green" || len(app.Instances) != 1 {
 		t.Errorf("client node = %+v, want kind=client green with 1 instance", app)
@@ -263,7 +263,7 @@ func TestComputeSystemMapDesignAhead(t *testing.T) {
 	}
 	read := func(k string) (map[string]any, bool) { d, ok := docs[k]; return d, ok }
 
-	m := computeSystemMap(keys, read, nil, nil, time.Minute)
+	m := computeSystemMap(keys, read, nil, nil, time.Minute, nil)
 	byID := nodesByID(m)
 
 	if m.Overall != "green" {
@@ -288,31 +288,62 @@ func TestComputeSystemMapDesignAhead(t *testing.T) {
 		t.Errorf("object-store plane = %+v, want kind=infra status=present", n)
 	}
 	wantEdges := []mapEdge{
-		{From: "external", To: "gateway"},
-		{From: "gateway", To: "core-operations"},
-		{From: "processor", To: "vault"},
-		{From: "core-operations", To: "chronicler"},
-		{From: "core-events", To: "chronicler"},
-		{From: "core-kv", To: "chronicler"},
-		{From: "chronicler", To: "object-store"},
+		{From: "external", To: "gateway", Label: ""},
+		{From: "gateway", To: "core-operations", Label: "stamp + publish"},
+		{From: "processor", To: "vault", Label: "encrypt / decrypt"},
+		{From: "core-operations", To: "chronicler", Label: "archive"},
+		{From: "core-events", To: "chronicler", Label: "history"},
+		{From: "core-kv", To: "chronicler", Label: "CDC"},
+		{From: "chronicler", To: "object-store", Label: "archive segments"},
 	}
 	for _, want := range wantEdges {
 		found := false
 		for _, e := range m.Edges {
-			if e.From == want.From && e.To == want.To {
+			if e == want {
 				found = true
 			}
 		}
 		if !found {
-			t.Errorf("missing skeleton edge %s → %s", want.From, want.To)
+			t.Errorf("missing skeleton edge %s → %s (%q)", want.From, want.To, want.Label)
 		}
 	}
 
 	// First heartbeat moots the flag — the component goes live normally.
 	docs["health.gateway.gw-1"] = map[string]any{"component": "gateway", "instance": "gw-1", "heartbeatAt": now}
 	keys = append(keys, "health.gateway.gw-1")
-	m = computeSystemMap(keys, read, nil, nil, time.Minute)
+	m = computeSystemMap(keys, read, nil, nil, time.Minute, nil)
 	if gw := nodesByID(m)["gateway"]; gw.Status != "green" || gw.Detail != "gw-1" {
 		t.Errorf("heartbeating gateway = %+v, want green/gw-1 (designAhead moot once live)", gw)
+	}
+}
+
+// A design-ahead component this process HAS seen alive must not revert to
+// "not yet deployed" once its heartbeats TTL out of Health KV — that is a
+// deployed-then-crashed component, and it reads honest absent-red.
+func TestComputeSystemMapDesignAheadEverLive(t *testing.T) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	docs := map[string]map[string]any{"health.bootstrap.complete": {}}
+	for _, dc := range declaredComponents {
+		if dc.designAhead {
+			continue
+		}
+		docs["health."+dc.id+".inst"] = map[string]any{"component": dc.id, "instance": "inst", "heartbeatAt": now}
+	}
+	keys := make([]string, 0, len(docs))
+	for k := range docs {
+		keys = append(keys, k)
+	}
+	read := func(k string) (map[string]any, bool) { d, ok := docs[k]; return d, ok }
+
+	m := computeSystemMap(keys, read, nil, nil, time.Minute, map[string]bool{"gateway": true})
+	if gw := nodesByID(m)["gateway"]; gw.Status != "absent" {
+		t.Errorf("ever-live gateway with no heartbeat = %q, want absent (deployed-then-crashed)", gw.Status)
+	}
+	if m.Overall != "red" {
+		t.Errorf("overall = %q, want red (a crashed ever-live component degrades the rollup)", m.Overall)
+	}
+	// Vault was never seen alive — it stays design-ahead.
+	if v := nodesByID(m)["vault"]; v.Status != "design-ahead" {
+		t.Errorf("never-live vault = %q, want design-ahead", v.Status)
 	}
 }

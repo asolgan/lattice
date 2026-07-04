@@ -69,6 +69,7 @@ func computeComponent(
 	keys []string,
 	readEntry func(string) (map[string]any, bool),
 	staleThreshold time.Duration,
+	everLive map[string]bool,
 ) componentPage {
 	page := componentPage{
 		Component: id,
@@ -83,8 +84,10 @@ func computeComponent(
 			page.Declared = true
 			// A designAhead component with no heartbeat is "design-ahead"
 			// (surface built, backend not yet deployed), matching its map
-			// node; any live instance overwrites this with the worst-of.
-			if dc.designAhead {
+			// node; any live instance overwrites this with the worst-of, and
+			// one seen alive earlier this process (everLive) reports an
+			// honest "absent" once its heartbeats TTL away.
+			if dc.designAhead && !everLive[id] {
 				page.Status = "design-ahead"
 			}
 		}
@@ -204,7 +207,10 @@ func (s *server) handleComponent(w http.ResponseWriter, r *http.Request) {
 		return doc, true
 	}
 
-	page := computeComponent(id, keys, readEntry, staleThreshold)
+	page := computeComponent(id, keys, readEntry, staleThreshold, s.snapshotEverLive())
+	if len(page.Instances) > 0 {
+		s.noteEverLive(id)
+	}
 
 	// Attach the component's control-plane reads (same subjects controlRead
 	// serves) so the page needs one fetch. A per-subject failure degrades to

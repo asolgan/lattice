@@ -227,14 +227,15 @@ function renderSystemMap(data) {
   lateralMembers.forEach((n) => {
     const node = buildSysmapNode(n);
     const anchor = sysmap.nodeEls.get("core-kv");
-    if (anchor) {
-      node.style.left = (anchor.offsetLeft + anchor.offsetWidth / 2 + 28) + "px";
+    // Clamped to the stage's right edge (fixed 180px component width, no
+    // translate); a hidden panel measures the anchor at 0 wide, which falls
+    // through to the fallback rather than laying out at the stage's left end.
+    if (anchor && anchor.offsetWidth) {
+      node.style.left = Math.min(anchor.offsetLeft + anchor.offsetWidth / 2 + 28, width - 188) + "px";
       node.style.top = SYSMAP_TIER_Y[2] + "px";
     } else {
-      // No anchor (empty stack) — fall back to the tier-3 row's right edge.
-      node.style.left = (width - 60) + "px";
+      node.style.left = Math.max(0, width - 188) + "px";
       node.style.top = SYSMAP_TIER_Y[3] + "px";
-      node.style.transform = "translateX(-50%)";
     }
     stage.appendChild(node);
     sysmap.nodeEls.set(n.id, node);
@@ -260,7 +261,7 @@ function renderSystemMap(data) {
   shelfInfra.forEach((n, i) => {
     const node = buildSysmapNode(n);
     node.style.left = (width - 100) + "px";
-    node.style.top = (SYSMAP_TIER_Y[4] + i * 48) + "px";
+    node.style.top = (SYSMAP_TIER_Y[4] + i * (SYSMAP_NODE_H + 6)) + "px";
     node.style.transform = "translateX(-50%)";
     stage.appendChild(node);
     sysmap.nodeEls.set(n.id, node);
@@ -668,7 +669,13 @@ function pulseFlow() {
   if (!svg) return;
   flashPath(svg.querySelector('path[data-from="core-operations"][data-to="processor"]'), 0);
   flashPath(svg.querySelector('path[data-from="processor"][data-to="core-events"]'), 180);
-  svg.querySelectorAll('path[data-from="core-events"]').forEach((p) => flashPath(p, 360));
+  // A design-ahead consumer isn't consuming — animating live flow into it
+  // would claim data movement its own node says can't be happening yet.
+  const ahead = new Set(((sysmap.data && sysmap.data.nodes) || [])
+    .filter((n) => n.status === "design-ahead").map((n) => n.id));
+  svg.querySelectorAll('path[data-from="core-events"]').forEach((p) => {
+    if (!ahead.has(p.dataset.to)) flashPath(p, 360);
+  });
 }
 
 // flashPath restarts the pulse class on one edge after delay ms.
