@@ -111,7 +111,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 > 🎯 **Build-ready now**: **Vault Fire 5b** (★★★ — 5b-ii-c/5b-iii/5b-iii-a/5b-iv all shipped; only
 > the delivery-boundary reset + live e2e remain, and that needs an **attended** fire — destructive to
 > the shared dev stack). *Dependency-sequenced ratified items, unblocked in the meantime*: **Personal
-> Lens** (L, 🏗️ building — PL.1 shipped) · **Object crypto-shred** (behind Vault). Current fire/park state for
+> Lens** (L, 🏗️ building — PL.2 shipped, PL.3 gated on D1) · **Object crypto-shred** (behind Vault). Current fire/park state for
 > Gateway · FR28 · Augur · Control-plane-authz lives on their rows below.
 
 ### Security & trust boundary
@@ -145,7 +145,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Edge & personal lenses (the path Loupe grows into)
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| Personal / Secure Lens | Refractor projects a per-identity security-filtered subgraph stream; the Interest-Set watchlist; RLS-style link filtering. | ★★ | L | 🏗️ building · [design](../../implementation-artifacts/personal-secure-lens-design.md) · PL.1 (nats_subject transport) shipped `4b5976a`; next: PL.2 per-actor fan-out + Interest Set |
+| Personal / Secure Lens | Refractor projects a per-identity security-filtered subgraph stream; the Interest-Set watchlist; RLS-style link filtering. | ★★ | L | 🏗️ building · [design](../../implementation-artifacts/personal-secure-lens-design.md) · PL.2 (fan-out + Interest Set) shipped `e3053cf`; next: PL.3 D1 readableAnchors 🚧 gated on D1 |
 | NATS-subject publish-events adapter | A Refractor target adapter publishing projection deltas to `lattice.sync.user.<id>` — required for Personal Lens. | ★★ | S–M | 📐 subsumed → Personal Lens Fire 1 |
 | Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. | ★★ | XL | ✅ ratified · [design](../../implementation-artifacts/edge-lattice-full-design.md) · 🚧 seq (far) |
 
@@ -192,6 +192,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-04 · `e3053cf` · [Refractor] Personal Lens Fire 2 (PL.2) — ActorEnumerator fan-out + Interest Set (personalinterest, personal.register/.deregister control RPCs); PL.3 (D1 readableAnchors) remains, gated
 - 2026-07-04 · `7fbc962` · [Gateway] Token-revocation kill-switch Fire 2 — rich `revocation` heartbeat block (consumerConnected/revokedCount/lastEventSeq/lastSyncAt); item CLOSED, unblocks Loupe F11
 - 2026-07-04 · `967234d` · [Gateway] Token-revocation kill-switch Fire 1 — RevokeActor/UnrevokeActor event-only ops + the Gateway's own events.gateway.> materializer arm the kill-switch fail-closed; Fire 2 (rich heartbeat) remains
 - 2026-07-03 · `80daa9b` · [Core] System-actor package-op grants Fire 2 — stub-off e2e over the 4 engine paths (Weaver/Loom/objmgr/privacy), all authorize under real capability auth; `LATTICE_PROCESSOR_AUTH_MODE` opt-in added; item CLOSED

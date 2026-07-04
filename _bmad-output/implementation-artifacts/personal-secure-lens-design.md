@@ -439,8 +439,19 @@ fire (the one D1-gated step), and confidentiality + hydration extend it. **Depen
 > precedent) is the sanctioned alternative; the trivial test lens is a **plain single-vertex-anchored
 > lens** (no `personal: true` flag) — that flag installs the Fire-2 `ActorEnumerator` fan-out, which PL.1
 > doesn't need (its cypher RETURN supplies `__actor` directly). `docs/components/refractor.md` got its
-> promised DOC ADD. **Next: PL.2** — the per-actor fan-out (install `ActorEnumerator` on this target) +
-> the `personal-lens-interest` Interest Set + `personal.register`/`.deregister` control RPCs.
+> promised DOC ADD. **PL.2 shipped** — `IntoConfig.Personal`/`TargetNATSSubjectConfig.Personal`
+> (the `personal: true` flag) route a `nats_subject` lens through
+> `projection.IsPersonalLens`/`InstallPersonalLens`: installs `ActorEnumerator(actorType: "identity")`
+> + a personal envelope that injects the enumerated recipient into `keys["__actor"]` (a
+> $actorKey-scoped traversal matching no neighbor yields one degenerate all-null row, skipped via an
+> empty `anchor` alias — the same realness-check shape actor-aggregate lenses need). The
+> `personal-lens-interest` KV bucket (`bootstrap.PersonalLensInterestKV`) + the
+> `personal.register`/`.deregister` control RPCs (`internal/refractor/personalinterest`,
+> `internal/refractor/control`) back the Interest Set relevance filter (absent/empty-filter
+> admits everything — bandwidth-only, never security). e2e-proven through the real CDC pipeline
+> (vertex mutation on a non-actor "lease" → fan-out to a linked identity; a mismatched Interest Set
+> filter suppresses, then deregistering restores delivery). `docs/components/refractor.md` updated.
+> **Next: PL.3** — wire D1's `readableAnchors` (🚧 gated on D1 ratification).
 
 1. **PL.1 — the `nats_subject` adapter + SYNC stream (the "brand-new adapter").** Implement
    `adapter/natssubject.go` (4-method SPI + ciphertext-passthrough), `TargetNATSSubjectConfig` +

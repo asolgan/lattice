@@ -65,18 +65,28 @@ Key sub-packages:
 | **Control plane** | `micro.Service` endpoints at `lattice.ctrl.refractor.<lensId>.<op>` | Handles JSON control requests (list lenses, force re-project, etc.) via the NATS Services framework. |
 | **Personal Lens delta envelopes** | Per-recipient NATS subject `<targetConfig.subjectPrefix>.<actor>` (e.g. `lattice.sync.user.<identityId>`) on the backing JetStream stream `targetConfig.stream` | Produced by a `targetType: "nats_subject"` lens (`adapter/natssubject.go`). See below. |
 
-### Personal Lens transport (`nats_subject` target — Fire 1: PL.1)
+### Personal Lens transport (`nats_subject` target — Fires 1–2: PL.1, PL.2)
 
 The **Personal Lens** turns Refractor from a shared read-model warehouse into a per-identity
 *filtered delta stream* — the cloud-side half of the Edge Lattice
-(`personal-secure-lens-design.md`). Fire 1 ships the transport only, under a **trusted-single-
-identity posture**: no security filter, no Interest Set, no per-actor fan-out enumerator (those
-are later fires) — a lens's own cypher RETURN supplies the recipient directly.
+(`personal-secure-lens-design.md`). Fire 1 ships the transport under a **trusted-single-identity
+posture** (no security filter — that's Fire PL.3, gated on D1). Fire 2 adds the cross-vertex
+fan-out and the Interest Set; the recipient is either RETURNed directly by the lens's own cypher
+(PL.1 shape) or injected by the fan-out envelope (PL.2 shape) — never both.
 
 - **`TargetNATSSubjectConfig`** (`lens/corekv_source.go`): `{ "subjectPrefix": "lattice.sync.user",
-  "stream": "SYNC", "key": ["__actor", ...businessKeys] }`. `key` must include
-  `adapter.PersonalActorKeyField` (`"__actor"`) exactly once — the lens's RETURN aliases that
-  column to the recipient identity's key.
+  "stream": "SYNC", "personal": false, "key": ["__actor", ...businessKeys] }`. `key` must include
+  `adapter.PersonalActorKeyField` (`"__actor"`) exactly once. When `personal` is absent/false
+  (PL.1 shape), the lens's own RETURN aliases `__actor` to the recipient identity's key directly —
+  no fan-out. When `personal: true` (PL.2 shape,
+  `projection.IsPersonalLens`/`projection.InstallPersonalLens`), `__actor` is **not** a RETURN
+  alias: the pipeline installs an `ActorEnumerator` (`actorType: "identity"`) and re-executes the
+  cypher once per enumerated recipient with `$actorKey` bound, injecting that recipient into
+  `keys["__actor"]` — `key` still declares only the lens's own **business** columns (identical to
+  `IntoConfig.Key` minus `"__actor"`); a personal cypher's neighbor-anchor column must always alias
+  to `anchor` (a $actorKey-scoped traversal that matches no neighbor yields one degenerate
+  all-null row, recognized and skipped by an empty `anchor`, same as the actor-aggregate
+  envelope's realness check).
 - **Subject resolution.** The adapter is driven per row, not per bucket: `keys["__actor"]`
   resolves the delivery subject (`subjects.PersonalSync(subjectPrefix, actor)` →
   `<subjectPrefix>.<actor>`); the remaining key fields build the envelope's `key` (mirrors
@@ -86,7 +96,7 @@ are later fires) — a lens's own cypher RETURN supplies the recipient directly.
   `op` is `"upsert"` or `"delete"`; `anchor`/`kind`/`class` are optional envelope metadata a lens's
   RETURN clause supplies as reserved row-column names (promoted out of `data`, so they never appear
   twice); `data` is the remaining projected row (nil/omitted for a delete or an all-metadata row).
-  `encrypted` is always `false` in Fire 1 — Vault ciphertext passthrough is Fire 5.
+  `encrypted` is always `false` through PL.2 — Vault ciphertext passthrough is Fire 5.
 - **Stream provisioning.** The adapter JIT-provisions the backing stream via `substrate.EnsureStream`
   (mirrors the `nats_kv` case's JIT bucket creation) rather than a bootstrap pre-provision, and
   **unions** the lens's `subjectPrefix` wildcard into the stream's existing `Subjects` rather than
@@ -95,9 +105,20 @@ are later fires) — a lens's own cypher RETURN supplies the recipient directly.
 - **Guard posture: unguarded.** A subject publish is a fire-and-forget-shaped append (though the
   underlying JetStream publish is a confirmed round-trip, not a literal fire-and-forget); ordering
   is the stream's per-subject sequence, and the recipient dedups/reorders by envelope `revision`.
-- **Deferred to later PL fires** (`personal-secure-lens-design.md` §7): per-actor fan-out +
-  Interest Set (PL.2), D1 `readableAnchors` security gate (PL.3, 🚧 gated on D1), the Hydration Hook
-  (PL.4), and Vault-ciphertext + transient-key composition (PL.5, 🚧 gated on Vault Phase A).
+- **Interest Set (Fire PL.2, `internal/refractor/personalinterest`).** A per-device relevance
+  filter — a **bandwidth optimization, never a security control**: no registered device for a
+  recipient (or a device that declares no `types`/`anchors`) admits everything; a declared filter
+  admits a delta whose `kind` is in `types` or whose `anchor` is in `anchors`; any one of an
+  identity's devices matching admits it (they share one subject). Stored in the Refractor-owned
+  `personal-lens-interest` KV bucket (`bootstrap.PersonalLensInterestKV`), keyed
+  `<identityId>.<deviceId>`, body `{types, anchors, registeredAt, revisionCursor}`. Managed by the
+  control-plane RPCs `lattice.ctrl.refractor.personal.register` /
+  `lattice.ctrl.refractor.personal.deregister` (`"personal"` is a fixed pseudo-lensId, not a real
+  lens) — request body `{identityId, deviceId, types?, anchors?}`, response
+  `{personalRegister: {registered: true}}` / `{personalDeregister: {deregistered: true}}`.
+- **Deferred to later PL fires** (`personal-secure-lens-design.md` §7): the D1 `readableAnchors`
+  security gate (PL.3, 🚧 gated on D1 ratification), the Hydration Hook (PL.4), and
+  Vault-ciphertext + transient-key composition (PL.5, 🚧 gated on Vault Phase A).
 
 ### Protected read-model provisioning (read-path authorization, D1.3)
 
@@ -549,7 +570,7 @@ one-cycle spike no longer flaps the heartbeat degraded→healthy.
 
 | Feature | Phase | Notes |
 |---------|-------|-------|
-| Personal Lens / Secure Lens | Fire 1 (PL.1, transport) shipped; PL.2–PL.5 pending | Per-identity security-filtered projection. PL.1's `nats_subject` target adapter (above) ships dark under a trusted-single-identity posture; per-actor fan-out (PL.2), the D1 security gate (PL.3), Hydration (PL.4), and Vault ciphertext (PL.5) remain — security *is* read-path auth (D1), so PL.3 is sequenced behind D1 |
+| Personal Lens / Secure Lens | Fires 1–2 (PL.1 transport, PL.2 fan-out + Interest Set) shipped; PL.3–PL.5 pending | Per-identity security-filtered projection. PL.1's `nats_subject` target adapter + PL.2's `ActorEnumerator` fan-out and Interest Set (above) ship dark under a trusted-single-identity posture; the D1 security gate (PL.3), Hydration (PL.4), and Vault ciphertext (PL.5) remain — security *is* read-path auth (D1), so PL.3 is sequenced behind D1 |
 | Multi-cell lens routing | Phase 3 | Current pipeline is single-cell |
 | Cross-instance latency aggregation | Phase 3 | Current `LatencyRingBuffer` is per-instance; no cluster-level rollup |
 | Link-envelope tombstone re-projection | Phase 3 | Currently adjacency entries are left in place on tombstone; re-projection on tombstone is not triggered |
