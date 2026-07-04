@@ -10,6 +10,7 @@ import (
 // TestFakeBackgroundCheck_ClearedStatusCompleted: a normal check clears with the
 // terminal OutcomeCompleted verdict.
 func TestFakeBackgroundCheck_ClearedStatusCompleted(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeBackgroundCheck()
 	res, err := a.Execute(context.Background(), bridge.Request{IdempotencyKey: "bg-ok", Subject: "vtx.identity.normal"})
 	if err != nil {
@@ -32,6 +33,7 @@ func TestFakeBackgroundCheck_ClearedStatusCompleted(t *testing.T) {
 // trigger — return a terminal OutcomeFailed, so an operator can drive the
 // declined-application experience live.
 func TestFakeBackgroundCheck_DeclineAll_EverySubjectFails(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeBackgroundCheck()
 	a.SetDeclineAll(true)
 	res, err := a.Execute(context.Background(), bridge.Request{IdempotencyKey: "bg-all", Subject: "vtx.identity.normal"})
@@ -44,6 +46,7 @@ func TestFakeBackgroundCheck_DeclineAll_EverySubjectFails(t *testing.T) {
 }
 
 func TestFakeBackgroundCheck_DeclineIsTerminalFailure(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeBackgroundCheck()
 	req := bridge.Request{IdempotencyKey: "bg-declined", Subject: bridge.BackgroundCheckDeclineSubject}
 

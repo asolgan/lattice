@@ -8,6 +8,7 @@ import (
 )
 
 func TestRegistry_RegisterAndLookup(t *testing.T) {
+	t.Parallel()
 	r := bridge.NewRegistry()
 	a := bridge.NewFakeBackgroundCheck()
 	if err := r.Register("backgroundCheck", a); err != nil {
@@ -23,6 +24,7 @@ func TestRegistry_RegisterAndLookup(t *testing.T) {
 }
 
 func TestRegistry_LookupMissingIsConfigError(t *testing.T) {
+	t.Parallel()
 	r := bridge.NewRegistry()
 	if _, ok := r.Lookup("nope"); ok {
 		t.Fatal("Lookup: want ok=false for an unregistered adapter (surfaced as a config error, never silent)")
@@ -30,6 +32,7 @@ func TestRegistry_LookupMissingIsConfigError(t *testing.T) {
 }
 
 func TestRegistry_RejectsBlankNameNilAndDuplicate(t *testing.T) {
+	t.Parallel()
 	r := bridge.NewRegistry()
 	if err := r.Register("", bridge.NewFakeBackgroundCheck()); err == nil {
 		t.Error("Register: want error for a blank name")
@@ -49,6 +52,7 @@ func TestRegistry_RejectsBlankNameNilAndDuplicate(t *testing.T) {
 // external idempotency: a repeat idempotencyKey returns the SAME Result and
 // performs NO second side-effect.
 func TestFakeBackgroundCheck_IdempotentOnRepeatedKey(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeBackgroundCheck()
 	req := bridge.Request{IdempotencyKey: "claim-1", Subject: "vtx.identity.abc"}
 
@@ -76,6 +80,7 @@ func TestFakeBackgroundCheck_IdempotentOnRepeatedKey(t *testing.T) {
 }
 
 func TestFakeBackgroundCheck_DistinctKeysEachActOnce(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeBackgroundCheck()
 	if _, err := a.Execute(context.Background(), bridge.Request{IdempotencyKey: "k1"}); err != nil {
 		t.Fatal(err)

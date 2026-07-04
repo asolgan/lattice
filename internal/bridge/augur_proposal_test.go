@@ -10,6 +10,7 @@ import (
 // string decodes back to an equal proposal — the contract between the augur
 // adapter (producer) and the RecordProposal reply leg (consumer).
 func TestAugurProposal_CodecRoundTrip(t *testing.T) {
+	t.Parallel()
 	in := bridge.AugurProposal{
 		Action:      "assignTask",
 		Params:      map[string]any{"scopedTo": "vtx.leaseapp.abc", "forOperation": "ApproveLeaseApplication"},
@@ -45,6 +46,7 @@ func TestAugurProposal_CodecRoundTrip(t *testing.T) {
 // is a LOUD error, never a silently-empty proposal (which would mask a real
 // reasoning failure as a benign invalid-action proposal).
 func TestDecodeAugurProposal_RejectsBlankAndMalformed(t *testing.T) {
+	t.Parallel()
 	if _, err := bridge.DecodeAugurProposal(""); err == nil {
 		t.Fatalf("blank detail must be a loud error")
 	}

@@ -31,6 +31,7 @@ func serviceHandle(t *testing.T) string { return mustNanoID(t) }
 // replyOp under the deterministic reply requestId; the .outcome lands and the
 // reply carries the adapter's terminal status. Exactly one reply.
 func TestBridgeSchedule_PollResolves_PostsReplyOp(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -87,6 +88,7 @@ func TestBridgeSchedule_PollResolves_PostsReplyOp(t *testing.T) {
 // the adapter is polled at least twice (the chain advanced) before it resolves on
 // the third.
 func TestBridgeSchedule_StillPending_ReArms(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -126,6 +128,7 @@ func TestBridgeSchedule_StillPending_ReArms(t *testing.T) {
 // .outcome lands, exactly one reply. CallDeadline is short and PollInterval is
 // long, so the timeout fires before any poll resolves.
 func TestBridgeSchedule_Timeout_PostsFailedOutcome(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}

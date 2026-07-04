@@ -17,6 +17,7 @@ import (
 // successful Execute). The dispatch op lands under the deterministic dispatch
 // requestId. The instanceKey is a NON-service token (invariant a).
 func TestBridge_PendingOutcome_PostsDispatchOpNotReply(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -64,6 +65,7 @@ func TestBridge_PendingOutcome_PostsDispatchOpNotReply(t *testing.T) {
 // and OFF (the skip probes the REPLY tracker, which a Pending call never writes,
 // so it must NOT short-circuit the Pending path).
 func TestBridge_PendingRedelivery_NoSecondDispatchOp(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -107,6 +109,7 @@ func TestBridge_PendingRedelivery_NoSecondDispatchOp(t *testing.T) {
 // Health issue, posts NO dispatch op and NO replyOp — mirroring the
 // unregistered-adapter handling (errConfig, never a hot Nak loop).
 func TestBridge_PendingWithNoDispatchOp_AckAndHealth(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}

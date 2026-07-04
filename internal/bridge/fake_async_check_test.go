@@ -12,6 +12,7 @@ import (
 // idempotencyKey (so a redelivery yields the same Ref), and is idempotent — a
 // repeat Execute on the same key returns the same Ref with NO second side-effect.
 func TestFakeAsyncCheck_ExecuteIsPendingWithDeterministicRef(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeAsyncCheck(1)
 	req := bridge.Request{IdempotencyKey: "claim-async-1", Subject: "vtx.identity.abc"}
 
@@ -45,6 +46,7 @@ func TestFakeAsyncCheck_ExecuteIsPendingWithDeterministicRef(t *testing.T) {
 // PollsUntilResolved calls on a ref, then a Resolved Dispatch with a terminal
 // OutcomeCompleted Result; once resolved it stays resolved on every later Poll.
 func TestFakeAsyncCheck_PollPendingThenResolved(t *testing.T) {
+	t.Parallel()
 	const pollsUntilResolved = 2
 	a := bridge.NewFakeAsyncCheck(pollsUntilResolved)
 
@@ -88,6 +90,7 @@ func TestFakeAsyncCheck_PollPendingThenResolved(t *testing.T) {
 // TestFakeAsyncCheck_ResolvesOnFirstPollWhenZero: pollsUntilResolved == 0 means
 // the first Poll already resolves (the default-fast configuration).
 func TestFakeAsyncCheck_ResolvesOnFirstPollWhenZero(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeAsyncCheck(0)
 	exec, err := a.Execute(context.Background(), bridge.Request{IdempotencyKey: "claim-async-3"})
 	if err != nil {

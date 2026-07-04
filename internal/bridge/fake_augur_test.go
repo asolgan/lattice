@@ -12,6 +12,7 @@ import (
 // candidate (read from Params["entityId"]). The reasoning side-effect is recorded
 // exactly once.
 func TestFakeAugur_HappyPath(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeAugur()
 	entity := "vtx.leaseapp.applicant1"
 	disp, err := a.Execute(context.Background(), bridge.Request{
@@ -50,6 +51,7 @@ func TestFakeAugur_HappyPath(t *testing.T) {
 // idempotencyKey returns the SAME proposal and performs NO second reasoning call
 // (at most one billed model call per escalation episode, even under redelivery).
 func TestFakeAugur_IdempotentOnRepeatedKey(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeAugur()
 	req := bridge.Request{IdempotencyKey: "aug-rep", Subject: "aug-rep", Params: map[string]string{"entityId": "vtx.leaseapp.x"}}
 	first, err := a.Execute(context.Background(), req)
@@ -75,6 +77,7 @@ func TestFakeAugur_IdempotentOnRepeatedKey(t *testing.T) {
 // only PRODUCES these proposals — catching them is RecordProposal's job; this test
 // pins that the fixtures the e2e/adversarial tests rely on are well-formed.
 func TestFakeAugur_AdversarialTriggers(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeAugur()
 	entity := "vtx.leaseapp.candidate"
 
@@ -118,6 +121,7 @@ func TestFakeAugur_AdversarialTriggers(t *testing.T) {
 // (err == nil — a definitive verdict the bridge must not retry), carries no
 // proposal, and performs no reasoning side-effect.
 func TestFakeAugur_Refusal(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeAugur()
 	disp, err := a.Execute(context.Background(), bridge.Request{IdempotencyKey: "ref", Subject: bridge.AugurRefusalSubject})
 	if err != nil {
@@ -134,6 +138,7 @@ func TestFakeAugur_Refusal(t *testing.T) {
 // TestFakeAugur_SetProposalOverride: the injection seam returns an arbitrary
 // proposal for a non-trigger Subject, while a trigger Subject still wins.
 func TestFakeAugur_SetProposalOverride(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeAugur()
 	a.SetProposal(bridge.AugurProposal{Action: "triggerLoom", Confidence: 0.5, Params: map[string]any{"pattern": "p"}})
 	disp, err := a.Execute(context.Background(), bridge.Request{IdempotencyKey: "ov", Subject: "ov"})
@@ -159,6 +164,7 @@ func TestFakeAugur_SetProposalOverride(t *testing.T) {
 // TestFakeAugur_PollUnsupported: the synchronous adapter never returns Pending,
 // so a routed Poll is a wiring bug — a clear error, not a silent zero Dispatch.
 func TestFakeAugur_PollUnsupported(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeAugur()
 	if _, err := a.Poll(context.Background(), "ref"); err == nil {
 		t.Fatalf("Poll on a synchronous adapter must error")

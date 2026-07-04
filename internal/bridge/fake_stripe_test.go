@@ -13,6 +13,7 @@ import (
 // declined-application experience live. A transient FailUntil error still takes
 // precedence over the decline (it is checked first).
 func TestFakeStripe_DeclineAll_FailsWithNoCharge(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeStripe()
 	a.SetDeclineAll(true)
 	res, err := a.Execute(context.Background(), bridge.Request{IdempotencyKey: "st-all", Subject: "vtx.identity.normal"})
@@ -39,6 +40,7 @@ func TestFakeStripe_DeclineAll_FailsWithNoCharge(t *testing.T) {
 // idempotency: a repeat idempotencyKey returns the SAME Result and performs NO
 // second side-effect (the FR58 charge that must never double-bill).
 func TestFakeStripe_IdempotentOnRepeatedKey(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeStripe()
 	req := bridge.Request{IdempotencyKey: "claim-1", Subject: "vtx.leaseApp.abc"}
 
@@ -66,6 +68,7 @@ func TestFakeStripe_IdempotentOnRepeatedKey(t *testing.T) {
 }
 
 func TestFakeStripe_DistinctKeysEachChargeOnce(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeStripe()
 	if _, err := a.Execute(context.Background(), bridge.Request{IdempotencyKey: "k1"}); err != nil {
 		t.Fatal(err)
@@ -84,6 +87,7 @@ func TestFakeStripe_DistinctKeysEachChargeOnce(t *testing.T) {
 // exactly one side-effect — the failed attempt did not bill, so the eventual
 // single success is the only charge.
 func TestFakeStripe_FailNextChargesNothingThenRetrySucceedsOnce(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeStripe()
 	a.FailNext()
 	req := bridge.Request{IdempotencyKey: "claim-x", Subject: "vtx.leaseApp.xyz"}
@@ -111,6 +115,7 @@ func TestFakeStripe_FailNextChargesNothingThenRetrySucceedsOnce(t *testing.T) {
 // OutcomeCompleted verdict (the {completed,failed} vocabulary the replyOp acts
 // on, distinct from the free-form Detail).
 func TestFakeStripe_HappyPathStatusCompleted(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeStripe()
 	res, err := a.Execute(context.Background(), bridge.Request{IdempotencyKey: "k-ok", Subject: "vtx.identity.normal"})
 	if err != nil {
@@ -127,6 +132,7 @@ func TestFakeStripe_HappyPathStatusCompleted(t *testing.T) {
 // decline is memoized, so a repeat key replays the same Failed verdict — never a
 // retry into a charge.
 func TestFakeStripe_DeclineIsTerminalFailureNoCharge(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeStripe()
 	req := bridge.Request{IdempotencyKey: "k-declined", Subject: bridge.StripeDeclineSubject}
 
@@ -157,6 +163,7 @@ func TestFakeStripe_DeclineIsTerminalFailureNoCharge(t *testing.T) {
 // TestFakeStripe_FailUntilFailsNThenSucceeds proves the fail-n toggle spans
 // multiple attempts before the real charge lands.
 func TestFakeStripe_FailUntilFailsNThenSucceeds(t *testing.T) {
+	t.Parallel()
 	a := bridge.NewFakeStripe()
 	a.FailUntil(2)
 	req := bridge.Request{IdempotencyKey: "claim-n"}

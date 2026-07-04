@@ -47,6 +47,7 @@ func newServiceHarness(t *testing.T, ctx context.Context) (*substrate.Conn, *fak
 // and payload.externalRef == instanceKey, and exactly one result mutation. The
 // instanceKey is a NON-service token (invariant a).
 func TestBridge_HappyPath_PostsDeterministicReplyOp(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -77,6 +78,7 @@ func TestBridge_HappyPath_PostsDeterministicReplyOp(t *testing.T) {
 // charge posts status:"completed". The bridge does NOT branch on status — it is
 // an opaque field forwarded to the adapter's paired replyOp.
 func TestBridge_HappyPath_PostsStatusCompleted(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -104,6 +106,7 @@ func TestBridge_HappyPath_PostsStatusCompleted(t *testing.T) {
 // one such reply, with NO charge (a decline bills nothing). This is the gap the
 // change closes: a terminal external FAILURE can now exist.
 func TestBridge_FailedOutcome_PostsStatusFailed(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -122,10 +125,14 @@ func TestBridge_FailedOutcome_PostsStatusFailed(t *testing.T) {
 	publishExternalEvent(t, ctx, conn, fixtureAdapter, instanceKey, fixtureReplyOp, nil)
 
 	// The replyOp is posted with status:"failed" (a failed Execute is a successful
-	// dispatch — the bridge ACKs and posts the reply, it does NOT Nak).
-	require.Eventually(t, func() bool { return fp.sawStatus(wantReqID) == "failed" },
-		15*time.Second, 60*time.Millisecond, "a terminal failed outcome must post status:\"failed\" on the replyOp")
-	require.Equal(t, 1, fp.mutations(), "exactly one result mutation for the failed outcome")
+	// dispatch — the bridge ACKs and posts the reply, it does NOT Nak). Wait on
+	// mutations() (the last field fakeProcessor.handle sets, after its own
+	// tracker KV roundtrip) before asserting the earlier-set status — the
+	// reverse order is racy under load, since lastStatus is visible before
+	// resultMutations increments.
+	require.Eventually(t, func() bool { return fp.mutations() == 1 },
+		15*time.Second, 60*time.Millisecond, "exactly one result mutation for the failed outcome")
+	require.Equal(t, "failed", fp.sawStatus(wantReqID), "a terminal failed outcome must post status:\"failed\" on the replyOp")
 
 	// A decline charges nothing (the failure is a verdict, not a transient error
 	// that retries into a charge).
@@ -145,6 +152,7 @@ func TestBridge_FailedOutcome_PostsStatusFailed(t *testing.T) {
 // proving correctness holds via mechanisms #1 (deterministic requestId) + #2
 // (adapter dedup) WITHOUT mechanism #3 (the skip is only an optimization).
 func TestBridge_EventRedelivery_AtMostOneSideEffect(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -196,6 +204,7 @@ func TestBridge_EventRedelivery_AtMostOneSideEffect(t *testing.T) {
 // warning issue, NOT errConfig). This is the literal FR58 mid-flight-recovery
 // proof.
 func TestBridge_FailUntilThenRecovers_ExactlyOneSideEffect(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -230,6 +239,7 @@ func TestBridge_FailUntilThenRecovers_ExactlyOneSideEffect(t *testing.T) {
 // Health issue (errConfig — Lookup miss), and the registered adapter's
 // SideEffects stays 0 (never a silent dispatch, never a hot Nak loop).
 func TestBridge_UnregisteredAdapter_AckAndHealth(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -257,6 +267,7 @@ func TestBridge_UnregisteredAdapter_AckAndHealth(t *testing.T) {
 // body. The bridge ACKs it (redelivery can never fix malformed JSON) and raises
 // a Health issue (never Term-and-forget-silently).
 func TestBridge_UnparseableEnvelope_AckAndHealth(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -281,6 +292,7 @@ func TestBridge_UnparseableEnvelope_AckAndHealth(t *testing.T) {
 // dispatch (SideEffects == 1): per Contract #4 §4.3 a tombstone is NOT a landed
 // result.
 func TestBridge_SkipOnRedelivery_TrackerPresent(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -340,6 +352,7 @@ func TestBridge_SkipOnRedelivery_TrackerPresent(t *testing.T) {
 // no mutation landed because the publish kept failing — the bridge held the
 // event un-acked / re-driving).
 func TestBridge_PublishFailure_Nak(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}

@@ -15,6 +15,7 @@ import (
 // before any consumer attaches, so a nil conn never gets dereferenced; there is
 // no fabricated default identity.
 func TestStart_EmptyActorKeyFails(t *testing.T) {
+	t.Parallel()
 	eng := bridge.NewEngine(nil, bridge.Config{ActorKey: ""})
 	err := eng.Start(context.Background())
 	if err == nil {
@@ -33,6 +34,7 @@ func TestStart_EmptyActorKeyFails(t *testing.T) {
 // contract with no dependency on any orchestration engine. All cross-component
 // interaction is over NATS.
 func TestModuleBoundary_OnlySubstrate(t *testing.T) {
+	t.Parallel()
 	out, err := exec.Command("go", "list", "-deps", "github.com/asolgan/lattice/internal/bridge").Output()
 	if err != nil {
 		t.Fatalf("go list -deps: %v", err)
@@ -59,6 +61,7 @@ func TestModuleBoundary_OnlySubstrate(t *testing.T) {
 // substrate primitive. DIRECT imports only: substrate itself legitimately
 // depends on nats.go transitively, so a transitive check would false-positive.
 func TestModuleBoundary_NoRawNATS(t *testing.T) {
+	t.Parallel()
 	out, err := exec.Command("go", "list", "-f", "{{ join .Imports \"\\n\" }}",
 		"github.com/asolgan/lattice/internal/bridge").Output()
 	if err != nil {
