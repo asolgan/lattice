@@ -71,34 +71,49 @@ behind a click — undoing F4's absorption of Health into the map. Exception chi
 on the stage; grouping gives locality (a sick clinic lens surfaces inside `clinic-domain`, one pixel
 from its package drill-in).
 
-## §2 — The verticals join the door band (beside the Gateway, not behind it)
+## §2 — The verticals join the door band (today's direct edge + the end-state via-Gateway edge)
 
-**Architecture grounding.** The vertical apps *are* ingress: they terminate real users (JWT-verified
-RLS reads, D1.5 `authenticateRead`) and publish operations to `core-operations` on behalf of those
-users (`cmd/clinic-app/op.go` — today stamping the bootstrap admin actor; the filed stale-bootstrap
-wart). They are **not** routed through the Gateway, and per the design of record they never will be:
-`docs/components/gateway.md` — *"every sanctioned actor (the engines, the vertical apps, the CLI,
-Loupe) submits ops; the Gateway is the external door, not a re-route for internal traffic."* The
-Gateway is the external **API** door (Bearer JWT); the verticals are **product** doors and sanctioned
-direct submitters. An `app → gateway` edge would assert a route that neither exists nor is designed.
+**Architecture grounding (corrected in-session — Andrew caught the over-read).** The vertical apps
+*are* ingress: they terminate real users (JWT-verified RLS reads, D1.5 `authenticateRead`) and today
+publish operations straight to `core-operations`, self-asserting the bootstrap admin actor
+(`cmd/clinic-app/op.go` — the filed stale-bootstrap wart). But the **end-state routes their
+user-attributed writes through the Gateway**: the ratified
+`gateway-external-trust-boundary-design.md` F5 — the write translator *"gives the verticals' apps a
+real op-submission front instead of self-asserting an actor"* — and its §3.4 bypass list (the
+sanctioned direct-submit path) names **service actors only** (Loom / Weaver / Bridge /
+object-store-manager / admin tooling / Loupe), deliberately excluding the verticals' user traffic. In
+the public deployment the reverse-proxy (design Fire 5 nginx) fronts both backends side by side:
+`browser → proxy → app` for UI + RLS reads, and the op submission carries the user's Bearer JWT to
+the Gateway (app-forwarded or browser-direct — either way the Gateway is the only place `env.Actor`
+is minted for external users, and the token-revocation kill-switch applies uniformly). The Gateway
+sits *beside* the app behind the proxy, fronting the operation stream — it does not front the app
+controller itself. An app may additionally keep a per-service direct-submit lane for its own
+app-as-service automation (the §3.4 category), distinct from user writes.
 
 **Placement.** A curated `declaredApps` list (`clinic-app`, `loftspace-app`) renders a new node kind
 **`app`** in the ingress band — the map stays curated (Andrew's standing ruling); adding a vertical is
 a one-line edit, the F10 `declaredComponents` precedent. The band splits into two lines: the
 `external actors · Bearer JWT` marker centered on top, the doors row under it —
-`clinic-app · Gateway · loftspace-app`. Curated edges:
+`clinic-app · Gateway · loftspace-app`. Curated edges tell the migration story in the map's existing
+design-ahead vocabulary:
 
 - `external → clinic-app`, `external → loftspace-app` (unlabelled, like `external → gateway`);
-- `clinic-app → core-operations` and `loftspace-app → core-operations`, labelled
-  **`submit ops · on behalf of users`** once across the pair (label-once).
+- **solid** `clinic-app → core-operations` / `loftspace-app → core-operations`, labelled
+  **`submit ops · direct (today)`** once across the pair (label-once) — the current truth, admin-actor
+  wart and all;
+- **dashed design-ahead** `clinic-app → gateway` / `loftspace-app → gateway`, labelled
+  **`user writes · end-state`** once — the ratified route, rendered in the same dashed vocabulary as
+  the Gateway node itself. When the verticals adopt the Gateway front, the dashed pair goes solid and
+  the direct pair retires (or narrows to an app-as-service lane if one genuinely exists then).
 
 **Status semantics.** Declared apps overlay heartbeats exactly like components (both groups already
 heartbeat). A declared app with **no** heartbeat renders **`offline`** — dim dot + `offline` tag,
 zero rollup contribution — never absent-red: verticals are optional workloads and kernel-only
 `make up` must stay green. A heartbeating-but-sick app degrades the rollup normally. Hover tip carries
-the curated pointer copy: *"product front-end — verifies user JWTs for reads (RLS); submits ops on
-behalf of its users directly to core-operations (sanctioned direct submitter — the Gateway is the
-external API door, not a re-route)."* Click drills to `#/component/<id>` as today.
+the curated pointer copy: *"product front-end — verifies user JWTs for reads (RLS); today submits ops
+directly to core-operations (self-asserted actor — known wart); end-state routes user writes through
+the Gateway's strip-and-stamp front (gateway design F5)."* Click drills to `#/component/<id>` as
+today.
 
 **The discovery net stays.** The bottom `clients` shelf remains for **undeclared** heartbeat groups —
 an unknown reporter still surfaces honestly; promotion into the door band is a curation decision, not
@@ -112,7 +127,9 @@ right-gutter submit-ops bus. Defer freely; the tooltip copy already tells the re
 
 - **Server** (`systemmap.go` + `systemmap_test.go`): lens nodes gain `pkg` (manifest reverse index,
   `kernel` fallback); per-lens `refractor → lens` edges dropped; `declaredApps` + kind `app` +
-  `offline` status + the door-band edges; `handleSystemMap` wiring passes the package resolver.
+  `offline` status + the door-band edges (solid direct pair + dashed design-ahead via-Gateway pair —
+  edges carry a `designAhead` flag the renderer draws dashed); `handleSystemMap` wiring passes the
+  package resolver.
 - **Logic tier** (`logic/status.js` + goja tests): `sysmapTier` places `app` at the doors line;
   `componentStatusClass` gains `offline` (dim family); `sysmapSummary` ignores `offline`; new pure
   helper `groupLenses(nodes)` returns the cluster model (group → {worst, count, protected, chips}) so
