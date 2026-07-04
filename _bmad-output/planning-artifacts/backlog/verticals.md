@@ -25,10 +25,10 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 Compact rotation memory only — PO *findings* are filed as demand rows above + the Done log; the verbose
 dated run-logs live in git history. Rotate LoftSpace ↔ Clinic, staggered from the Steward.
 
-- **Rotation to date:** LoftSpace ×9, Clinic ×7 (last: Clinic 7th run 2026-07-03, reused the shared stack, installed Clinic fresh onto it; drove CreateProvider→CreatePatient→CreateAppointment live; filed the patient/provider self-anchor RLS gap).
+- **Rotation to date:** LoftSpace ×10, Clinic ×7 (last: LoftSpace 10th run 2026-07-04, stack up but `lattice.bootstrap.json` stale again vs. live Core KV — reads empty, no live exercise possible; filed the recurring staleness as a dev-loop item to [lattice.md](lattice.md), no new vertical demand this run).
 - **Method:** reuse the already-up shared stack (detect NATS :4222 / app :7788/:7799), drive the real flow via `/api/op` + the lens projections as the product owner, file scored items. Both apps exist + are exercisable live (`:7788` / `:7799`).
-- **Live-stack note (2026-07-03):** `lattice.bootstrap.json` was stale vs. the live Core KV (recreated ~5h prior) — staff-wildcard reads read empty though writes worked; run `lattice bootstrap verify` before assuming a product bug.
-- **Next:** LoftSpace.
+- **Live-stack note:** before assuming a product bug on empty reads, run `lattice bootstrap verify` — a stale bootstrap JSON vs. a recreated Core KV is a known recurring dev-loop trap (2026-07-03, 2026-07-04), tracked in [lattice.md](lattice.md).
+- **Next:** Clinic.
 
 ## Done log — verticals (newest first)
 
