@@ -5,13 +5,37 @@
 // box (loom inspect's reply IS the deliverable); a successful mutation
 // re-renders only the rows, never the reply.
 
-import { $, el, api, setStatus } from "../api.js";
+import { $, el, api, setStatus, toast } from "../api.js";
 import { replaceRoute } from "../router.js";
 import { designAheadCopy, designAheadPointer, issueClass, lensStateDot, lensStateGlyph, pendingReadpathCopy } from "../logic/status.js";
 import { metricsLine, eventSummary, controlSurface } from "../logic/component.js";
+import { authFailureRate, pctLabel, jwksRows, revocationStatus, revokeActorValid, revokeConfirmReady } from "../logic/gateway.js";
 import { renderDoc, keyLinkEl } from "../render.js";
 
-const state = { id: null };
+const state = { id: null, modal: null, revokeTimers: [] };
+
+// statusTextClass maps a logic-tier status class (ok/warn/muted) to the
+// console's text-color classes.
+const statusTextClass = { ok: "ok-text", warn: "warn-text", muted: "muted" };
+
+function closeModal() {
+  if (state.modal) { state.modal.close(); state.modal = null; }
+}
+
+// clearRevokeTimers cancels any pending revocation-list refreshes — they
+// close over the render that scheduled them, so they must never outlive it.
+function clearRevokeTimers() {
+  state.revokeTimers.forEach(clearTimeout);
+  state.revokeTimers = [];
+}
+
+// leave closes a dangling revoke modal and its refresh timers so a route
+// change can never leave a live destructive confirm floating over an
+// unrelated view or fire fetches into a detached list.
+function leave() {
+  closeModal();
+  clearRevokeTimers();
+}
 
 function enter(route) {
   if (!route.arg) { replaceRoute("/map"); return; }
@@ -20,6 +44,11 @@ function enter(route) {
 }
 
 async function loadComponent(id) {
+  // A full re-render invalidates everything a previous render captured: an
+  // open confirm modal and any pending list refreshes point at nodes this
+  // wipe is about to detach.
+  closeModal();
+  clearRevokeTimers();
   setStatus("comp-status", "loading…");
   const body = await api("/api/component/" + encodeURIComponent(id));
   if (id !== state.id) return; // navigated away while loading
@@ -99,6 +128,10 @@ function renderState(col, page) {
     col.appendChild(card);
   });
 
+  if (page.component === "gateway" && page.instances.length) {
+    renderGatewaySecurity(col, page);
+  }
+
   if (page.events && page.events.length) {
     col.appendChild(el("h3", "comp-section", "Events"));
     col.appendChild(el("p", "muted small",
@@ -127,6 +160,61 @@ function renderState(col, page) {
         col.appendChild(row);
       });
     });
+  }
+}
+
+// renderGatewaySecurity fills the Gateway page's left-column security panels:
+// the auth-failure ratio (the security headline) and the trusted JWKS key
+// set. Both read the first instance's heartbeat — the dev deployment runs one
+// Gateway; with several, the panel names the instance it reflects.
+// liveInstance picks the heartbeat the Gateway security surfaces reflect: the
+// first green instance, falling back to the first by sort order — a dead
+// alphabetically-first instance must not present its stale state as the
+// page's security headline while a healthy sibling serves traffic.
+function liveInstance(page) {
+  return page.instances.find((i) => i.status === "green") || page.instances[0];
+}
+
+function renderGatewaySecurity(col, page) {
+  const inst = liveInstance(page);
+  const doc = inst.doc || {};
+  const m = doc.metrics || {};
+  const suffix = page.instances.length > 1 ? " — instance " + inst.instance : "";
+
+  col.appendChild(el("h3", "comp-section", "Auth failures" + suffix));
+  const rate = authFailureRate(m);
+  const line = el("div", "comp-metrics");
+  line.appendChild(el("span", statusTextClass[rate.cls] || "muted", pctLabel(rate) + " failing"));
+  line.appendChild(el("span", "muted", " · lifetime: " +
+    (typeof m.auth_failures_total === "number" ? m.auth_failures_total : "?") + " of " +
+    (typeof m.requests_total === "number" ? m.requests_total : "?") + " requests · " +
+    (typeof m.ops_submitted_total === "number" ? m.ops_submitted_total : "?") + " ops submitted"));
+  col.appendChild(line);
+
+  col.appendChild(el("h3", "comp-section", "Trusted keys (JWKS)" + suffix));
+  const jwks = jwksRows(doc);
+  if (!jwks) {
+    col.appendChild(el("div", "muted small",
+      "JWKS state not reported by this Gateway build — the trusted key set appears when the heartbeat carries it."));
+    return;
+  }
+  if (!jwks.keys.length) {
+    col.appendChild(el("div", "warn-text small", "No trusted keys — every JWT fails verification."));
+  }
+  jwks.keys.forEach((k) => {
+    const row = el("div", "control-item");
+    row.appendChild(el("span", "cid", k.kid));
+    row.appendChild(el("span", "state-tag", k.source));
+    row.appendChild(el("span", "state-tag", k.alg));
+    if (k.addedAt) row.appendChild(el("span", "muted small", "added " + k.addedAt));
+    col.appendChild(row);
+  });
+  col.appendChild(el("div", (statusTextClass[jwks.poll.cls] || "muted") + " small", jwks.poll.line));
+  if (jwks.swaps.length) {
+    const hist = el("details", "comp-raw");
+    hist.appendChild(el("summary", "muted small", "key-set changes (" + jwks.swaps.length + ")"));
+    jwks.swaps.forEach((s) => hist.appendChild(el("div", "muted small", s)));
+    col.appendChild(hist);
   }
 }
 
@@ -182,6 +270,10 @@ function renderControl(col, page) {
       "The lens roster — every live lens. Names link to the lens page."), rowsBox);
     const refresh = () => loadRoster(rowsBox, out);
     refresh();
+    return;
+  }
+  if (surface === "gateway") {
+    renderRevokeSurface(col, rowsBox, page, out);
     return;
   }
   const pageId = page.component;
@@ -269,6 +361,210 @@ async function runControlOp(comp, id, op, line, out, refresh) {
   if (!body.error && !isRead && refresh) refresh();
 }
 
+// renderRevokeSurface fills the Gateway page's right column: the
+// token-revocation kill-switch. Revoking submits the RevokeActor op via the
+// standard op path (P2 — Loupe never writes the bucket); the Gateway's own
+// materializer folds the resulting event into the token-revocation set, so
+// the list refreshes on a short delay to ride out that hop.
+function renderRevokeSurface(col, rowsBox, page, out) {
+  const inst = liveInstance(page);
+  // No live instance ≠ an old build: the op still commits durably and the
+  // materializer folds it when a Gateway starts — say exactly that.
+  const status = inst ? revocationStatus(inst.doc) : {
+    line: "no live Gateway instance — a revocation commits durably and takes effect when a Gateway starts",
+    cls: "warn",
+  };
+  col.insertBefore(el("p", (statusTextClass[status.cls] || "muted") + " small", status.line), rowsBox);
+
+  const listBox = el("div");
+  const refresh = () => loadRevocations(listBox, out, refreshLater);
+  // The revoke path is async (op → event → materializer → bucket): one quick
+  // refresh catches the common case, a second catches a slow fold. Timers
+  // register on the view state so navigation/re-render cancels them.
+  const refreshLater = () => {
+    clearRevokeTimers();
+    state.revokeTimers = [setTimeout(refresh, 700), setTimeout(refresh, 2500)];
+  };
+
+  rowsBox.appendChild(el("h4", "comp-subsection", "Revoke an actor"));
+  const form = el("div", "control-item");
+  const input = el("input");
+  input.type = "text";
+  input.placeholder = "vtx.identity.<id>";
+  const reason = el("input");
+  reason.type = "text";
+  reason.placeholder = "reason (optional)";
+  const btn = el("button", "danger-btn", "Revoke…");
+  btn.disabled = true;
+  input.addEventListener("input", () => { btn.disabled = !revokeActorValid(input.value); });
+  btn.addEventListener("click", () => {
+    openRevokeModal(input.value.trim(), reason.value.trim(), out, () => {
+      input.value = "";
+      reason.value = "";
+      btn.disabled = true;
+      refreshLater();
+    });
+  });
+  form.appendChild(input);
+  form.appendChild(reason);
+  form.appendChild(btn);
+  rowsBox.appendChild(form);
+  rowsBox.appendChild(el("p", "muted small",
+    "Revoked actors are refused at the Gateway (403) before any op is published. " +
+    "Mint a test token (bin/gateway dev-token -sub <id>), revoke it here, and the next " +
+    "POST /v1/operations returns 403."));
+
+  rowsBox.appendChild(el("h4", "comp-subsection", "Currently revoked"));
+  rowsBox.appendChild(listBox);
+  refresh();
+}
+
+// loadRevocations fetches + renders the revoked-actor list: each actor key
+// links into the Graph explorer, the audit fields (by/at/reason) ride along,
+// and every row carries an Un-revoke (armed on first click — reversal is not
+// destructive enough for a typed confirm).
+async function loadRevocations(listBox, out, refreshLater) {
+  // Stamp a sequence on the box so a slow response can never overwrite a
+  // newer one (the 700ms/2500ms refreshes may resolve out of order), and a
+  // response for a detached box (the page re-rendered mid-flight) is dropped.
+  const seq = (listBox.revocationsSeq || 0) + 1;
+  listBox.revocationsSeq = seq;
+  const body = await api("/api/gateway/revocations");
+  if (!listBox.isConnected || listBox.revocationsSeq !== seq) return;
+  listBox.innerHTML = "";
+  if (body.error) { listBox.appendChild(el("div", "error-text small", body.error)); return; }
+  const rows = body.revocations || [];
+  if (!rows.length) { listBox.appendChild(el("div", "muted small", "(no revoked actors)")); return; }
+  rows.forEach((row) => {
+    const line = el("div", "control-item");
+    line.appendChild(keyLinkEl(row.actor, "cid"));
+    const audit = [];
+    if (row.revokedAt) audit.push(row.revokedAt);
+    if (row.by) audit.push("by " + row.by);
+    if (row.reason) audit.push(row.reason);
+    if (audit.length) line.appendChild(el("span", "muted small", audit.join(" · ")));
+    const un = el("button", "comp-ctlbtn", "un-revoke");
+    un.addEventListener("click", async () => {
+      if (un.dataset.armed !== "1") {
+        un.dataset.armed = "1";
+        un.textContent = "un-revoke — sure?";
+        setTimeout(() => { un.dataset.armed = ""; un.textContent = "un-revoke"; }, 4000);
+        return;
+      }
+      un.disabled = true;
+      const reply = await submitRevocationOp("UnrevokeActor", { actor: row.actor }, out);
+      un.disabled = false;
+      if (!reply.error && reply.status !== "rejected") refreshLater();
+    });
+    line.appendChild(un);
+    listBox.appendChild(line);
+  });
+}
+
+// submitRevocationOp POSTs the event-only kill-switch op through the standard
+// op path and renders the reply into the column's persistent reply box.
+async function submitRevocationOp(operationType, payload, out) {
+  showReply(out, el("div", "muted small", operationType + " " + payload.actor + " …"));
+  const body = await api("/api/op", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ operationType, payload }),
+  });
+  const reply = el("div");
+  reply.appendChild(el("div", "muted small", operationType + " " + payload.actor + ":"));
+  reply.appendChild(renderDoc(body));
+  showReply(out, reply);
+  return body;
+}
+
+// openRevokeModal is the typed confirm on the kill-switch: the destructive
+// button stays disabled until the input exactly matches the actor key. On a
+// committed op the modal closes and onDone schedules the list refreshes.
+function openRevokeModal(actor, reasonText, out, onDone) {
+  closeModal(); // never stack two confirms
+  let inFlight = false;
+  const overlay = el("div", "modal-overlay");
+  const modal = el("div", "modal");
+  modal.appendChild(el("h3", null, "Revoke actor"));
+  modal.appendChild(el("p", "muted",
+    "This revokes the actor at the Gateway — every future request bearing its token is refused with 403 " +
+    "until un-revoked. Type the identity key to confirm:"));
+  modal.appendChild(el("div", "cid", actor));
+  const input = el("input");
+  input.type = "text";
+  input.placeholder = actor;
+  modal.appendChild(input);
+  const actions = el("div", "modal-actions");
+  const cancel = el("button", null, "Cancel");
+  const confirm = el("button", "danger-btn", "Revoke");
+  confirm.disabled = true;
+  actions.appendChild(cancel);
+  actions.appendChild(confirm);
+  modal.appendChild(actions);
+  const msg = el("div", "small");
+  modal.appendChild(msg);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  input.focus();
+
+  const close = () => {
+    document.removeEventListener("keydown", onKey);
+    overlay.remove();
+    if (state.modal && state.modal.el === overlay) state.modal = null;
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape" && !inFlight) { close(); return; }
+    if (e.key === "Tab") {
+      const focusables = [input, cancel, confirm].filter((f) => !f.disabled);
+      if (!focusables.length) { e.preventDefault(); return; }
+      const i = focusables.indexOf(document.activeElement);
+      let next = i + (e.shiftKey ? -1 : 1);
+      if (i === -1) next = 0;
+      if (next < 0) next = focusables.length - 1;
+      if (next >= focusables.length) next = 0;
+      focusables[next].focus();
+      e.preventDefault();
+    }
+  };
+  document.addEventListener("keydown", onKey);
+  state.modal = { el: overlay, close };
+
+  cancel.addEventListener("click", () => { if (!inFlight) close(); });
+  overlay.addEventListener("click", (e) => { if (e.target === overlay && !inFlight) close(); });
+  input.addEventListener("input", () => {
+    confirm.disabled = !revokeConfirmReady(input.value, actor);
+  });
+  confirm.addEventListener("click", async () => {
+    inFlight = true;
+    confirm.disabled = true;
+    cancel.disabled = true;
+    input.disabled = true;
+    msg.className = "muted small";
+    msg.textContent = "revoking…";
+    const payload = { actor };
+    if (reasonText) payload.reason = reasonText;
+    const body = await submitRevocationOp("RevokeActor", payload, out);
+    inFlight = false;
+    if (body.error || body.status === "rejected") {
+      // A transport failure carries a string error; a Processor rejection
+      // carries the structured ReplyError object.
+      const detail = typeof body.error === "string" ? body.error
+        : (body.error && body.error.message) || "rejected";
+      msg.className = "error-text small";
+      msg.textContent = "revoke failed: " + detail;
+      cancel.disabled = false;
+      input.disabled = false;
+      // The typed confirmation still matches — a transient failure must not
+      // force the operator to retype the key to retry.
+      confirm.disabled = !revokeConfirmReady(input.value, actor);
+      return;
+    }
+    close();
+    toast("revoked " + actor);
+    if (onDone) onDone();
+  });
+}
+
 // loadRoster fetches + renders the refractor lens roster into rowsBox — the
 // directory of every live lens with quick per-row control actions; each name
 // links to the lens page (#/lens/<id>), the full four-panel surface.
@@ -327,4 +623,4 @@ function rosterRow(lens, out, refresh) {
 
 function init() {}
 
-export { init, enter };
+export { init, enter, leave };

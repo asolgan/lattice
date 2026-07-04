@@ -31,6 +31,11 @@ function metricsLine(comp, doc) {
   if (comp === "loom") {
     return "running instances " + num(m.runningInstances);
   }
+  if (comp === "gateway") {
+    return "requests " + num(m.requests_total) +
+      " · ops submitted " + num(m.ops_submitted_total) +
+      " · auth failures " + num(m.auth_failures_total);
+  }
   if (comp === "refractor") {
     var lags = m.lensLags;
     if (!lags || typeof lags !== "object") return "";
@@ -83,11 +88,13 @@ function eventSummary(events) {
 
 // controlSurface selects the right-column widget set for a component page:
 // the engines with a control plane get their row-level surfaces, the
-// processor's panel hosts its events summary, everything else (bridge,
+// processor's panel hosts its events summary, the gateway's hosts the
+// token-revocation kill-switch, everything else (bridge,
 // object-store-manager, runtime-discovered clients) is read-only.
 function controlSurface(comp) {
   if (comp === "loom" || comp === "weaver" || comp === "refractor") return comp;
   if (comp === "processor") return "events";
+  if (comp === "gateway") return "gateway";
   return "none";
 }
 
