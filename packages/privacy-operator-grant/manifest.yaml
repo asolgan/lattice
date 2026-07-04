@@ -1,0 +1,16 @@
+name: privacy-operator-grant
+version: 0.1.0
+description: |
+  Grants the ShredIdentityKey right-to-erasure operation to the operator role.
+  privacy-base deliberately ships no grant for ShredIdentityKey (a deployment
+  decision, not a platform default); this package IS that decision, installable
+  and revertible on its own. Traced through graph topology per Contract #7 §7.7.
+  Andrew 2026-07-04 (loupe-platform-edges-ux.md §6 ask F — [Vault→Loupe] enablers).
+depends:
+  - rbac-domain
+  - privacy-base
+declares:
+  permissions:
+    - operationType: ShredIdentityKey
+      scope: any
+      grantsTo: [operator]

@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -43,6 +44,59 @@ type LocalBackend struct {
 	mu       sync.Mutex
 	dekCache map[string]cachedDEK // identityKey -> unwrapped DEK
 	shredded map[string]time.Time // identityKey -> ShredKey call time
+
+	// Operational counters for the Vault's own Health-KV heartbeat group
+	// (health.vault.<instance>, emitted by the Processor that hosts this
+	// backend). Atomic so the hot Encrypt/Decrypt path bumps a metric without
+	// contending on b.mu.
+	encryptCalls atomic.Uint64
+	decryptCalls atomic.Uint64
+	shredCalls   atomic.Uint64
+}
+
+// LocalBackendName identifies this backend in the health.vault heartbeat's
+// `backend` field (Contract #5 §5.4 Vault baseline). An operator reads it to
+// know a shred's guarantee strength: on this local envelope backend ShredKey is
+// a deny-list *refusal* (the shared master KEK cannot be per-identity
+// destroyed — see ShredKey), whereas a production KMS backend destroys the
+// per-identity key version, which is true cryptographic erasure.
+const LocalBackendName = "local-envelope"
+
+// Stats is a point-in-time snapshot of a LocalBackend's operational counters,
+// surfaced by the Processor's health.vault heartbeat. Call counts are
+// cumulative since process start; DEKCacheSize/ShreddedCount are current
+// gauges.
+//
+// DEKCacheSize is the count of *unwrapped* DEKs currently held in the TTL cache
+// (the active decrypt/encrypt working set) — deliberately NOT a custody-set
+// total: this backend holds no durable list of per-identity keys (each wrapped
+// DEK lives in Core KV as the identity's piiKey aspect, not in the Vault), so
+// there is no cheap, honest "total keys held" for it to report.
+type Stats struct {
+	Backend       string // LocalBackendName
+	EncryptCalls  uint64 // cumulative Encrypt calls
+	DecryptCalls  uint64 // cumulative Decrypt calls (Contract #5 §5.4 vault_calls_total)
+	ShredCalls    uint64 // cumulative ShredKey calls (keyshredded_handled_total, Vault side)
+	DEKCacheSize  int    // unwrapped DEKs currently cached (gauge; TTL-bounded working set)
+	ShreddedCount int    // identities on the in-memory shred deny-list (gauge)
+}
+
+// Stats returns a snapshot of this backend's operational counters for the
+// health.vault heartbeat. Cheap: the call counters are atomic reads; the lock
+// is held only for the two map-length reads.
+func (b *LocalBackend) Stats() Stats {
+	b.mu.Lock()
+	cacheSize := len(b.dekCache)
+	shredCount := len(b.shredded)
+	b.mu.Unlock()
+	return Stats{
+		Backend:       LocalBackendName,
+		EncryptCalls:  b.encryptCalls.Load(),
+		DecryptCalls:  b.decryptCalls.Load(),
+		ShredCalls:    b.shredCalls.Load(),
+		DEKCacheSize:  cacheSize,
+		ShreddedCount: shredCount,
+	}
 }
 
 type cachedDEK struct {
@@ -167,6 +221,7 @@ func (b *LocalBackend) CreateIdentityKey(_ context.Context, identityKey string) 
 
 // Encrypt implements Vault.
 func (b *LocalBackend) Encrypt(_ context.Context, identityKey string, envelope Envelope, plaintext []byte) (Ciphertext, error) {
+	b.encryptCalls.Add(1)
 	dek, err := b.checkAndDeriveDEK(identityKey, envelope)
 	if err != nil {
 		return Ciphertext{}, err
@@ -180,6 +235,7 @@ func (b *LocalBackend) Encrypt(_ context.Context, identityKey string, envelope E
 
 // Decrypt implements Vault.
 func (b *LocalBackend) Decrypt(_ context.Context, identityKey string, envelope Envelope, ct Ciphertext) ([]byte, error) {
+	b.decryptCalls.Add(1)
 	dek, err := b.checkAndDeriveDEK(identityKey, envelope)
 	if err != nil {
 		return nil, err
@@ -198,6 +254,7 @@ func (b *LocalBackend) Decrypt(_ context.Context, identityKey string, envelope E
 // call can never interleave inside an in-flight Encrypt/Decrypt (no TOCTOU
 // window where a decrypt "wins the race" against a concurrent shred).
 func (b *LocalBackend) ShredKey(_ context.Context, identityKey string) error {
+	b.shredCalls.Add(1)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.shredded[identityKey] = time.Now().UTC()

@@ -172,7 +172,12 @@ var matrix = []component{
 		// Refractor/Weaver/Loom control planes (lattice.ctrl.<comp>.<name>.<op>);
 		// the planes reply via allow_responses on their own users. $O.core-objects.>
 		// — the admin object-upload surface (cmd/loupe/objects.go ObjectPut).
-		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$O.core-objects.>", "$JS.API.>", "$JS.ACK.>", "lattice.ctrl.>"},
+		// lattice.vault.decrypt — the trusted-tool PII decrypt RPC (the Processor
+		// responds; vault-crypto-shredding-design.md §2.3, Loupe F12 Reveal).
+		// Loupe is a named trusted plaintext consumer; this is the transport
+		// gate authorizing it to reach the responder (only Loupe + the Processor
+		// carry it).
+		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$O.core-objects.>", "$JS.API.>", "$JS.ACK.>", "lattice.ctrl.>", "lattice.vault.decrypt"},
 		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
 	},
 	{

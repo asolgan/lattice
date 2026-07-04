@@ -46,6 +46,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/asolgan/lattice/internal/bootstrap"
+	"github.com/asolgan/lattice/internal/healthkv"
 	"github.com/asolgan/lattice/internal/pkgmgr"
 	"github.com/asolgan/lattice/internal/privacyworker"
 	"github.com/asolgan/lattice/internal/processor"
@@ -245,9 +246,62 @@ func run(logger *slog.Logger) error {
 		}
 	}()
 
+	// Host the Vault decrypt RPC (lattice.vault.decrypt) on the Processor's
+	// authoritative Vault instance — the trusted-tool plaintext read path
+	// (vault-crypto-shredding-design.md §2.3): Loupe already holds an
+	// identity's piiKey Envelope + a sensitive aspect's Ciphertext from its
+	// Core-KV inspector reads, and calls this responder for plaintext rather
+	// than holding the master KEK itself. It MUST run here, not in Refractor's
+	// separate KEK-only Vault: only this instance carries the live shredded-set,
+	// and reads of the durable piiKey.shredded flag return ErrKeyShredded either
+	// way. Caller authorization is at the NATS transport (only Loupe + the
+	// Processor may publish lattice.vault.decrypt — deploy/gen-dev-nkeys,
+	// proven by internal/natsperm); the responder self-stops on ctx cancel.
+	vaultSvc := vault.NewService(v, logger)
+	if err := vaultSvc.StartNATSListener(ctx, conn.NATS()); err != nil {
+		cancel()
+		return fmt.Errorf("start vault decrypt responder: %w", err)
+	}
+
+	// Emit the Vault's own Health-KV heartbeat group (health.vault.<instance>,
+	// Contract #5 §5.4 Vault baseline) so it renders as a distinct map node with
+	// its own custody/shred metrics, rather than riding the Refractor
+	// heartbeat. Co-hosted with the Processor, so the instance id is shared; the
+	// probe reports live counters off the same Vault instance the commit path,
+	// the decrypt responder, and the privacy-worker all use.
+	vaultHealth := healthkv.New(healthkv.Config{
+		Conn:      conn,
+		Bucket:    bootstrap.HealthKVBucket,
+		Component: "vault",
+		Instance:  instance,
+		Interval:  time.Duration(hbSec) * time.Second,
+		Logger:    logger,
+		Probe: func(context.Context) healthkv.Snapshot {
+			s := v.Stats()
+			return healthkv.Snapshot{
+				Status: healthkv.StatusHealthy,
+				Metrics: map[string]any{
+					"backend":                   s.Backend,
+					"vault_calls_total":         s.DecryptCalls,
+					"encrypt_calls_total":       s.EncryptCalls,
+					"keyshredded_handled_total": s.ShredCalls,
+					"dek_cache_size":            s.DEKCacheSize,
+					"keys_shredded":             s.ShreddedCount,
+				},
+			}
+		},
+	})
+	vaultHealthDone := make(chan struct{})
+	go func() {
+		defer close(vaultHealthDone)
+		vaultHealth.Run(ctx)
+	}()
+
 	logger.Info("processor ready",
 		"instance", instance,
 		"healthKey", "health.processor."+instance,
+		"vaultDecryptSubject", vault.DecryptSubject,
+		"vaultHealthKey", "health.vault."+instance,
 	)
 
 	// The supervised pump reconnects internally on transient consume errors, so
@@ -265,6 +319,7 @@ func run(logger *slog.Logger) error {
 	<-hbDone
 	<-outboxDone
 	<-privacyWorkerDone
+	<-vaultHealthDone
 	logger.Info("processor exited cleanly", "instance", instance)
 	return nil
 }
