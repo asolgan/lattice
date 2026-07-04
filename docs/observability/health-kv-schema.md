@@ -193,6 +193,14 @@ bucket failed to open at startup (the kill-switch runs verification-only auth, `
 `status` aggregates via `aggregateStatus` (mirroring Loom/Weaver/Bridge) so a dormant kill-switch is never
 hidden behind a green heartbeat.
 
+The heartbeat also carries a `revocation` block (`gateway-token-revocation-activation-design.md` §2.6,
+Fire 2) — the token-revocation kill-switch's live-state summary, read by Loupe's F11 revoke panel:
+`consumerConnected` (the materializer's `events.gateway.>` consumer; assumed `true` until a
+`revocation.consumerDisconnected` pause), `revokedCount` (scanned live off the `token-revocation` bucket
+each heartbeat), `lastEventSeq` / `lastSyncAt` (the backing-stream sequence and wall-clock of the last
+successful revoke/unrevoke fold; `lastSyncAt` is `""` until the first fold). A paused consumer surfaces
+`revocation.consumerDisconnected` (error) in `issues[]` alongside `consumerConnected: false`.
+
 ### Object-store-manager
 
 Source package: `internal/objectmanager/`
@@ -501,7 +509,13 @@ the scan failed; `timers*` only when the temporal lane is wired).
     "auth_failures_total": <int>,
     "ops_submitted_total": <int>
   },
-  "issues": [{"severity": "warning", "code": "GatewayRevocationDisabled", "message": "<string>"}]
+  "issues": [{"severity": "warning", "code": "GatewayRevocationDisabled", "message": "<string>"}],
+  "revocation": {
+    "consumerConnected": <bool>,
+    "revokedCount": <int>,
+    "lastEventSeq": <int>,
+    "lastSyncAt": "<RFC3339 | \"\">"
+  }
 }
 ```
 

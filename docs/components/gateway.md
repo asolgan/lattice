@@ -122,7 +122,9 @@ token expires. The kill-switch (`internal/gateway/revocation.Checker`, consulted
 
 The Gateway writes a Contract #5 §5.2 heartbeat to `health.gateway.<instance>` every 10s
 (`internal/gateway.Heartbeater`) with `requests_total` / `auth_failures_total` / `ops_submitted_total`
-metrics — Loupe's system-map / health dashboard picks it up like every other component.
+metrics, plus a `revocation` block (`consumerConnected`, `revokedCount`, `lastEventSeq`, `lastSyncAt` —
+the token-revocation kill-switch's live state, `health-kv-schema.md`) — Loupe's system-map / health
+dashboard picks it up like every other component.
 
 ---
 
@@ -147,8 +149,14 @@ event-only ops + the `gateway.actorRevoked`/`actorUnrevoked` event-type DDLs
 `internal/gateway.StartRevocationMaterializer` (the events.gateway.> consumer + cold-start catch-up +
 fail-closed startup, replacing the old best-effort nil-checker path); the Gateway NKey's
 `$KV.token-revocation.>` write grant (`deploy/gen-dev-nkeys`, pinned by
-`natsperm.TestGatewayRevocationBucketWriteIsolation`). Unblocks Loupe F11 once Fire 2 (the rich
-`revocation` heartbeat block) ships.
+`natsperm.TestGatewayRevocationBucketWriteIsolation`).
+
+**Built (token-revocation kill-switch, Fire 2 of
+`gateway-token-revocation-activation-design.md`).** The rich `revocation` heartbeat block
+(`consumerConnected`/`revokedCount`/`lastEventSeq`/`lastSyncAt`) — `revokedCount` is scanned live off the
+`token-revocation` bucket each heartbeat; the other three fields are set by the materializer's handler
+(`RecordRevocationSync`) and health sink (`SetRevocationConnected`). Unblocks Loupe F11 (the revoke
+console) — done.
 
 **Deferred (follow-up fires, per the design's decomposition):**
 - **Fire 3** — the read-path front (`GET /v1/<readmodel>`), sequenced behind D1.3's first live
