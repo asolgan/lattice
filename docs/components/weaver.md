@@ -291,9 +291,34 @@ observed closes** — the loud surface for "dispatches commit but closes never a
 guard, a lens projecting the wrong column, or a remediation that silently no-ops), clearing once a
 close lands or the window ages back below K. `metrics.effectMismatches` carries the live count.
 
-Fires 3–9 (`internal/weaver/planner`, `mode`/`candidates`/`goal` parsing, selection, goal regression,
+Fires 4–9 (`mode`/`candidates`/`goal` parsing, shadow compare, selection, goal regression,
 diagnostics, admission control, the Augur floor) remain — see
 `weaver-planner-mandate-design.md` §8. Fire 2 changes **no** dispatch decision.
+
+---
+
+## Planner goal-regression library — `internal/weaver/planner` (Contract #10 §10.8, Fire 3)
+
+A new, pure standalone package (`internal/weaver/planner`; imported by nothing yet — Fires 5/6 wire it
+into the Strategist) implementing the §3.1 bounded goal-regression search: `Synthesize(goal, start,
+catalog, maxDepth)` performs uniform-cost STRIPS/GOAP-class search over a closed `[]Action` catalog
+(each an `actionRef` + `Cost` + optional `Precondition` guard + `Effects` — the §10.5 guards a commit
+entails), returning the cheapest-total-cost sequence that makes `goal` hold, or the sentinel `ErrNoPlan`
+— a normal return value, not a panic, exactly Fire 6's future `unplannable` routing needs.
+
+The package reuses `internal/guardgrammar`'s AST verbatim (no new grammar) via a pure in-memory
+`State` (`map[guardgrammar.Path]any`) and an `EvalGuard`/`ApplyEffects` pair that mirror
+`internal/loom/guard_eval.go`'s absent/present/equals/allOf/anyOf/not semantics node-for-node but read
+a snapshot instead of Core KV — no I/O, no engine dependency, so `pkgmgr` or a future test harness can
+run it standalone. `ApplyEffects` only accepts concrete assertions (present/absent/equals, or an allOf
+of those); an anyOf/not effect is rejected (`ErrUnsupportedEffect`) since it cannot be turned into a
+definite fact.
+
+Determinism is enforced, not assumed: the catalog is copied and canonically sorted (cost ascending,
+then `actionRef` lexicographically) before every search, so the caller's slice order never affects the
+result; ties between equal-cost plans break on the lexicographic join of their action-ref sequence.
+`maxDepth` bounds search depth as a backstop against oscillating effects. No dispatch wiring yet — the
+Strategist does not call this package (Fire 5 candidate selection, Fire 6 full synthesis).
 
 ---
 
@@ -470,7 +495,7 @@ What ships today in `internal/weaver` + `cmd/weaver`, and what is deliberately d
 | **Control API/CLI (Pause/Resume surface)** | ✅ Shipped (FR30). `internal/weaver/control` exposes `list`/`disable`/`enable`/`revoke` over a `nats-io/nats.go/micro` Services responder; `lattice weaver` CLI group. See "Control plane" above. |
 | **Lane 2 (event-targeted-audit) + `weaver-work`** | ⏳ Phase 3 (§10.3: no durable bucket today). |
 | **Real target Lens via Refractor + playbook package data** | ✅ Shipped — the `lease-signing` reference vertical provides a real convergence target + §10.8 playbook; the engine also runs against test-written §10.2 fixture rows. |
-| **Planner mandate (dispatcher → solver)** | 🏗️ Building (Contract #10 §10.8 "Planner extension", ratified 2026-07-04). Fire 1 ✅: op-DDL `Effects` (`internal/pkgmgr` `DDLSpec.Effects`, §10.5 guard-grammar predicates a commit entails, parsed by the new standalone `internal/guardgrammar` package) + install-time validation (`validateEffects`); the `lease-signing` package declares `SignLease`→`.signature present` and `RecordLeaseServiceOutcome`→`.outcome present`. Zero engine behavior change — the Strategist does not read `Effects` yet. Fires 2–9 (bookkeeping, the planner library, shadow mode, selection, synthesis, diagnostics, admission control, Augur floor) remain: `_bmad-output/implementation-artifacts/weaver-planner-mandate-design.md` §8. |
+| **Planner mandate (dispatcher → solver)** | 🏗️ Building (Contract #10 §10.8 "Planner extension", ratified 2026-07-04). Fire 1 ✅: op-DDL `Effects` (`internal/pkgmgr` `DDLSpec.Effects`, §10.5 guard-grammar predicates a commit entails, parsed by the new standalone `internal/guardgrammar` package) + install-time validation (`validateEffects`); the `lease-signing` package declares `SignLease`→`.signature present` and `RecordLeaseServiceOutcome`→`.outcome present`. Fire 2 ✅: the `__effect` confidence window (see above). Fire 3 ✅: the pure `internal/weaver/planner` goal-regression library (see above) — table-tested, catalog-permutation-stable, not yet wired to any dispatch decision. Zero engine behavior change through Fire 3 — the Strategist does not read `Effects` or call `planner` yet. Fires 4–9 (shadow mode, selection, synthesis, diagnostics, admission control, Augur floor) remain: `_bmad-output/implementation-artifacts/weaver-planner-mandate-design.md` §8. |
 
 ---
 
