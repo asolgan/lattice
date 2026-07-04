@@ -94,6 +94,16 @@ These metrics are recommended (not enforced) at MVP. Stream 7 may harden them in
 - `vault_calls_total` — Vault decryption calls count (cumulative; Phase 1 stub may report 0)
 - `keyshredded_handled_total` — `KeyShredded` events processed (cumulative)
 
+**Vault** (`health.vault.<instance>` — its own component group, emitted by the Processor that hosts the authoritative Vault; the Vault is an embedded backend with no standalone binary, so its heartbeat shares the Processor's instance id):
+- `backend` — the active Vault backend: `local-envelope` (the dev envelope-encryption backend) or a KMS adapter id. An operator reads this to know a shred's guarantee strength — the local backend's `ShredKey` is a deny-list *refusal* (the shared master KEK cannot be per-identity destroyed), whereas a KMS backend destroys the per-identity key version (true cryptographic erasure).
+- `vault_calls_total` — cumulative `Decrypt` calls through this Vault (commit-path decrypt-on-read + the trusted-tool `lattice.vault.decrypt` RPC).
+- `encrypt_calls_total` — cumulative `Encrypt` calls (commit-path step-6.5 encrypt-on-write).
+- `keyshredded_handled_total` — cumulative `ShredKey` calls (the privacy-worker's async key destruction).
+- `dek_cache_size` — unwrapped DEKs currently held in the TTL working-set cache. A gauge, **not** a custody-set total: per-identity wrapped DEKs live in Core KV as `piiKey` aspects, not in the Vault, so the backend has no cheap, honest "total keys held" to report.
+- `keys_shredded` — identities on the in-memory shred deny-list (gauge).
+
+(This is the Vault's own group. The identically-named `vault_calls_total` / `keyshredded_handled_total` under **Refractor** above count Refractor's *separate* Secure-Lens Vault instance and are unaffected.)
+
 **Loom / Weaver / Gateway:** TBD in Phase 2; conventions will follow this pattern.
 
 ### 5.5 Issue Records
