@@ -1,268 +1,260 @@
-# Weaver planner mandate — from dispatcher to solver
+# Weaver planner mandate — dispatcher → solver — design
 
-**Status:** 🔭 Proposed (exploration with Andrew, 2026-07-04). Nothing here is ratified; Contract #10
-amendments are drafted below but NOT staged. `docs/components/weaver.md` is untouched until Fire 1
-lands code.
-
-**Audience:** architects + the session-per-fire implementers. Each fire below is scoped so a fresh
-session can author its own handoff brief from this doc + the referenced contracts alone — no
-conversation history required (token-budget doctrine: this doc is the durable context).
+**Status:** 📐 **awaiting-Andrew (ratification).**
+**Component:** Weaver (`internal/weaver`) · **Stream:** Lattice (Stream 2) · **Size:** XL (9 build fires)
+**Designer fire:** Winston, 2026-07-04 (commissioned directly by Andrew — exploration session, not a
+Surveyor-filed row) · **Builds on:** Contract #10 §10.2/§10.3/§10.8, the §10.3 mark/lease/budget machinery
+(`internal/weaver/state.go`, `reconciler.go`), the Strategist seam (`internal/weaver/strategist.go`), the
+Augur (escalation + dispatch, `augur-design.md` / `augur-dispatch-pickup-design.md`), Loom definition
+pinning (§10.5, `docs/components/loom.md`).
+**Contract change:** **YES — Contract #10 §10.3 + §10.8** (additive, opt-in). The actual edit is staged
+**uncommitted in `main`** — the diff is the proposal. Affected consumers: Weaver engine (Strategist/
+Evaluator), `pkgmgr` install validation, package authors (`lease-signing` reference), the Augur package.
 
 ---
 
-## Motivation — the dispatcher critique
+## For Andrew
 
-Weaver's charter says *declarative convergence*, but today only **detection** is declarative
-(targets are Lenses). **Remediation** is a hand-authored static table: §10.8 maps each
-`missing_<g>` gap to exactly one fixed action (`packages/lease-signing/targets.go` — five gaps,
-five hardcoded actions). Sequencing lives in the lens predicates (e.g. `missing_listingLeased`
-opens only when the applicant gaps are closed AND the landlord approved). Semantically that is a
-guarded linear procedure: each gap column is a guard, each playbook entry is a step — i.e. a Loom
-pattern with guards, plus a standing CDC trigger and a retry budget. The Strategist is a table
-lookup, not a strategist: Weaver decides *whether/when* to act (marks, leases, budgets, timers)
-but never *what* to do.
+**What it does, in two lines.** Weaver's remediation stops being a static gap→action table lookup and
+becomes a deterministic planner: per-gap *selection* among declared candidates by precondition + observed
+close-rate + cost (Fire 5), then multi-step *synthesis* by goal regression over op-declared effects,
+executed as content-addressed pinned Loom patterns (Fire 6) — plus contraction/oscillation diagnostics and
+fleet admission control. All additive and per-target opt-in; a target without the new fields behaves
+byte-identically to the frozen contract.
 
-What Loom-with-guards genuinely cannot replicate today — and what we keep — is the standing,
-fleet-wide, level-triggered nature: a target covers every candidate entity present and future;
-freshness re-*opens* closed gaps; a Loom instance is one-shot per subject. That is the actuation
-substrate. The mandate change adds the missing brain.
+**Fork 1 — posture: this consciously re-expands a 13.1 decision.** The 2026-06-18 `nudge` retirement
+ratified *"Weaver's job collapses to detect → `triggerLoom`"* (§10.8). This design re-expands Weaver's
+**selection** altitude (choosing *what* to dispatch) while leaving the 13.1 **execution** placement fully
+intact (external I/O stays Loom + bridge; Weaver still never reaches an external system, never holds an
+adapter). My reading: 13.1 was an *I/O-placement* decision, not a *selection-intelligence* decision — the
+two axes are independent, and the collapse language overshot the ratified mechanism. **Recommendation:
+ratify the re-expansion**; the alternative (planning lives outside Weaver) puts convergence decisions in a
+second engine with the same inputs — a parallel Weaver by another name (§6, Alt A).
 
-## The mandate
+**Fork 2 — build strategy: evolve in place, never a parallel Weaver 2.0.** A parallel engine re-ports the
+healthiest machinery we have (arch-review 2026-07-02: Weaver best-conformed) and creates a double-dispatch
+fencing problem on the shared `weaver-targets`/`weaver-state` buckets. **Recommendation: in-place**, with
+**shadow mode** (Fire 4: planner decisions logged beside table decisions on live traffic, never dispatched)
+and **per-target cutover** via a `mode` field — reversible through the existing control plane. (§6, Alt B.)
 
-> Given a goal predicate and the graph's own catalog of operations, **synthesize, verify, and
-> continuously re-plan** the path that closes a gap — and **prove the system is actually
-> converging**.
+**Frozen-contract change (staged uncommitted).** §10.8 gains a "Planner extension" subsection (target-level
+`mode`, per-gap `candidates`/`goal`, op-DDL `effects`, plan-vertex convention, precedence: explicit
+`action` > `candidates` > `goal`); §10.3 gains the reserved `<targetId>.__effect.<gapColumn>.<actionRef>`
+key shape — and, riding along, documents the two **as-built** reserved shapes (`__control`, `__count`) the
+arch review flagged as drift (partial fold of `contract-10-weaver-text-reconciliation`; the other three
+drift spots stay on that row). One open placement call: `effects` is specified in §10.8 because Weaver is
+its consumer — relocate to a DDL self-description contract at ratification if you prefer.
 
-Three new powers, none expressible as playbook entries or Loom guards:
+---
 
-1. **Derive *what* to do** from declared (and observationally verified) operation effects —
-   selection and plan synthesis instead of table lookup.
-2. **See across rows and targets** — contraction monitoring, oscillation detection between
-   targets, fleet-level admission control.
-3. **Close the loop** — observe whether a dispatched action actually flipped its gap; demote
-   actions whose declared effects stop matching reality; escalate to the Augur only when the
-   declared model runs out.
+## 1. Problem + intent
 
-## Planner decisions of record (PD1–PD8)
+Detection is declarative (targets are Lenses, D4); **remediation is not** — it is a hand-authored static
+table. `packages/lease-signing/targets.go:38-44`: five gaps, five hardcoded actions; the *sequencing* lives
+in the lens cypher (`missing_listingLeased` opens only when the applicant gaps closed AND the landlord
+approved). Semantically that is a guarded linear procedure — each gap column a guard, each playbook entry
+a step — i.e. exactly what a Loom pattern with guards expresses, plus a standing CDC trigger and a retry
+budget. The Strategist (`strategist.go`) is a lookup, not a strategist: Weaver decides *whether/when*
+(marks, leases, budgets, timers) but never *what*.
 
-### PD1 — In-place evolution, NOT a parallel Weaver 2.0 engine
+What the table can never express, and this design adds:
 
-The 2026-07-02 arch review rates Weaver the healthiest, best-conformed engine; its machinery
-(marks/leases/OCC, reclaim backoff, temporal lane, sweep, control plane, Augur dispatch
-validation) is exactly the actuation substrate the planner needs beneath it. A parallel engine
-would re-port all of that AND create a double-dispatch fencing problem on the shared
-`weaver-targets` / `weaver-state` buckets. The confidence-before-cutover goal is met instead by
-**shadow mode** (PD5, Fire 4): the planner runs beside the playbook lookup on real traffic,
-logging what it *would* have chosen, never dispatching, until a target is explicitly flipped.
-Cutover is **per-target** (a §10.8 mode field), reversible via the existing control plane —
-never a big-bang engine swap. The seam is `internal/weaver/strategist.go`: detection (lanes,
-lenses) and actuation (marks, actuator, budgets) do not change.
+1. **Per-entity paths** — two violating rows in different states need different remediation chains; today
+   every row of a gap fires the identical action.
+2. **Selection under feedback** — multiple ways to close a gap (charge saved card / email flow / concierge
+   task), chosen by precondition + observed close-rate + cost, falling through as candidates fail. Today:
+   one action, then a spent budget parks at "needs human."
+3. **Cross-row / cross-target sight** — contraction ("is the violation set shrinking?"), oscillation (two
+   targets fighting over one aspect — today the only damper is both retry budgets silently exhausting),
+   admission control (3k-row backfill = thundering herd into the bridge).
+4. **A deterministic tier below the Augur** — today L3 jumps straight from "no playbook entry" to an AI
+   proposal; most stuck gaps are plannable from declared effects without a model call.
 
-### PD2 — The planner core is deterministic Go; determinism is load-bearing, not aesthetic
+The mandate, one line: *given a goal predicate and the graph's own catalog of operations, synthesize,
+verify, and continuously re-plan the path that closes a gap — and prove the system is converging.*
 
-Plan synthesis is classical goal regression (STRIPS/GOAP-class) over a small closed catalog —
-package data, dozens of actions — with bounded depth and **canonical tie-breaking** (sort
-candidates by cost, then lexicographic action ref). The plan MUST be a pure function of
-`(row snapshot, catalog snapshot, confidence stats snapshot)` because Weaver's idempotency
-machinery assumes re-deciding reproduces the decision: deterministic `requestId`s derived from
-mark revisions, Contract #4 dedup collapsing re-fires, sweep reclaims re-dispatching the *same*
-episode. A nondeterministic planner breaks replay — a reclaim could synthesize a different plan
-and double-act. No LLM, no wall-clock, no map-iteration order anywhere in the decision path.
+## 2. Grounding — the existing pattern this extends (and must not disturb)
 
-### PD3 — Effect vocabulary = the Loom guard grammar atoms, nothing more
+- **The dispatch seam is one function.** Lane-1 delivery → L1/L2 evaluate → `strategist.go` maps
+  `gaps[col]` → `buildPlan` → Actuator fire-and-forget with episode-deterministic `requestId`. The planner
+  replaces only the *mapping*; everything downstream (mark CAS-create, lease, sweep reclaim, dispatch-count
+  budget, `inflight_<g>`) is untouched.
+- **Episode identity is mark-anchored and MUST stay decision-stable.** A sweep reclaim re-dispatches the
+  *same* episode (`claimId` preserved across reclaims; requestId from mark revision — §10.3). Therefore
+  **the mark pins the planner's choice for the episode's lifetime**: the mark value already carries
+  `action`; in planner mode it carries the chosen actionRef / plan hash, and a reclaim re-dispatches the
+  **pinned** choice — it never replans mid-episode. Replanning happens only at episode boundaries
+  (close→reopen), where a fresh mark is minted anyway. This keeps the plan a pure function without racing
+  the confidence stats: stats feed *new* episodes only.
+- **The guard grammar is the only predicate vocabulary** (§10.5: `absent`/`present`/`equals` +
+  `allOf`/`anyOf`/`not`, two path shapes, pinned absence semantics). Effects and planner preconditions
+  reuse it verbatim — one grammar, one evaluator lineage. The Starlark escape hatch stays RESERVED.
+- **Core-KV reads stay Processor-side** (Andrew reflex, 2026-06-28): the planner evaluates preconditions
+  against the **lens row** (§10.2 columns) — the lens already projects what the playbook needs; a
+  precondition needing a column the lens doesn't project is an install-time validation error, exactly the
+  §10.2↔§10.8 column-seam rule. **No new Weaver Core-KV reads.** (Loom's guard eval remains the only
+  sanctioned non-Processor reader; we do not widen it.)
+- **Loom pinning executes synthesized plans with zero Loom changes.** A plan compiles to an ordinary
+  linear pattern; Weaver submits it as a `meta.loomPattern` vertex **via the Processor** (P2, auditable),
+  keyed by content hash (`plan-<hash>`), then `triggerLoom` as today. The instance pins at start (§10.5)
+  and drains under its definition regardless of later GC. Re-derivation of the same plan hits the same
+  vertex — re-fires collapse instead of multiplying patterns.
+- **The Augur is already the AI boundary with a human gate** (§10.8, ratified 2026-06-27): `unplannable`
+  escalation → structured-output proposal → `vtx.augurProposal` → human review → `proposedOp` dispatch
+  with deterministic re-validation. The planner slots **below** it as the deterministic tier;
+  `unplannable`'s meaning extends naturally to "no playbook entry **and no derivable plan**." The dormant
+  `exhausted` trigger (backlog `weaver-exhausted-escalation-and-model`) gets its engine path in Fire 9.
 
-Declared effects (and planner-checked preconditions) use exactly the §10.5 guard grammar:
-`absent` / `present` / `equals` atoms over the two path shapes (`subject.data.<field>`,
-`subject.<aspect>.data.<field>`), composed with `allOf`/`anyOf`/`not`, with the pinned absence
-semantics. Rationale: (a) plan-time entailment over this vocabulary is trivially decidable and
-fast; arbitrary Starlark effects make it undecidable — those cases fall back to
-dispatch-and-verify or the Augur; (b) one grammar, one evaluator lineage, one set of absence
-semantics across Loom guards, planner preconditions, and declared effects. The Starlark escape
-hatch stays RESERVED here exactly as it is in Loom.
+## 3. The shape
 
-### PD4 — Multi-step plans execute as content-addressed `meta.loomPattern` vertices; zero Loom engine change
+### 3.1 Determinism is load-bearing (why no LLM in the decision path)
 
-A synthesized plan compiles to an ordinary Loom pattern definition. Weaver submits it as a
-`meta.loomPattern` vertex **through the Processor** (auditable, reviewed write path — P2), keyed
-by content hash: `plan-<hash(canonical plan JSON)>` — so the same (state, catalog) re-decision
-maps to the same vertex and re-fires collapse instead of duplicating patterns. `triggerLoom`
-then proceeds exactly as today; **Loom's definition pinning does the rest** (the instance pins
-at start and drains under its definition even if the plan vertex is later retired). Plan
-vertices are GC'd when no live instance pins them and no violating row would re-derive them
-(Fire 6 defines the sweep). Semantic versioning falls out for free: a changed world produces a
-different plan hash, a new vertex — the loom.md "new pattern id for a semantic redefinition"
-doctrine, automated.
+The plan is a **pure function of (row snapshot, catalog snapshot, confidence snapshot)** with canonical
+tie-breaking (cost asc, then actionRef lexicographic; bounded regression depth; no wall-clock, no map-order
+dependence). Required, not stylistic: reclaim/replay machinery assumes re-deciding reproduces the decision
+(§2, mark-pinning). Plan synthesis is classical goal regression over a closed catalog of dozens of actions
+— STRIPS/GOAP-class search, a few hundred lines of exhaustively table-testable Go. AI never plans;
+uncertainty is handled by **level-triggered replanning** (a failed candidate leaves the gap violating →
+next episode replans from the new state with updated confidence — the escalation ladder emerges, unauthored).
 
-### PD5 — Playbooks remain the fast path and the override; planner engagement is additive, opt-in, per-target
+### 3.2 The declared surface (the §10.8 extension — full text in the staged contract edit)
 
-§10.8 today is not "targeting Weaver 1.0" — it is pure data with no engine assumption beyond
-lookup, so it extends additively (draft below). Precedence per gap: an explicit single `Action`
-(today's shape) always wins — the operator override. A gap may instead declare `candidates`
-(Fire 5: planner selects one step among declared candidates) or `goal` (Fire 6: planner
-synthesizes multi-step plans from the catalog). A target-level `mode: shadow | planned` field
-gates dispatch; absent mode = today's behavior, bit-for-bit. Existing targets keep working
-untouched forever.
+- **Op DDL `effects`** (additive): guard-grammar predicates the op's commit entails on its target subject.
+  Install-validated (parseable, legal paths, reject-wholesale — same doctrine as pattern load). Fire 1
+  declares them for the lease-signing ops (`SignLease` → `.signature` present, etc.).
+- **`meta.weaverTarget` additions** (all additive, install-validated):
+  - `mode: "shadow" | "planned"` (target-level; **absent = frozen behavior, byte-identical**),
+  - per-gap `candidates: [{action…}, …]` — Fire 5 selection among an explicit, package-authored set,
+  - per-gap `goal: <guard>` — Fire 6 synthesis when no candidate list is given.
+  - **Precedence per gap: explicit single `action` > `candidates` > `goal`** — the operator override is
+    always the authored action, and today's targets never change behavior.
+- **Effect bookkeeping** (`weaver-state`, new reserved shape `<targetId>.__effect.<gapColumn>.<actionRef>`,
+  disjoint from marks by the same reserved-underscore argument as `__control`): per-pair dispatch/close
+  counters over a **sliding window of the last K=20 episodes** (ring in the value; K config-tunable like
+  `MarkLease`). Updated on the two real dispatch legs (lane-1 fire + sweep reclaim) and on the gap-close
+  path (`clearClosedMarks`) — the same seams the dispatch-count uses. Event-keyed, never clock-sampled;
+  deterministic. GC'd by the sweep's existing orphan legs.
+- **Plan vertices**: `meta.loomPattern` named `plan-<hash(canonical plan JSON)>`, submitted via Processor,
+  GC'd when no live instance pins them and no current (state, catalog) re-derives them.
 
-### PD6 — Closed-loop effect verification with deterministic confidence bookkeeping
+### 3.3 Selection and synthesis (Fires 5–6, the engine change)
 
-Weaver already observes both legs: the dispatch (its own act) and the outcome (the lens
-re-projection of the row). Fire 2 records, per `(targetId, gapColumn, actionRef)`, dispatch and
-gap-close counters in `weaver-state` (new reserved key shape — must be added to Contract #10
-§10.3's reserved-shape list; the arch review already flagged undocumented reserved shapes as
-drift). "Confidence" is these counters + a deterministic decay rule keyed on observed events
-(never wall-clock sampling). Consumers: Health issues on chronic non-closure ("actions commit
-but the goal never flips — suspect lens/effect mismatch", today's silent
-`violation-never-flips` failure mode made loud), and the Fire 5 ranking term.
+Fire 5 (`candidates`): the Strategist asks the planner to pick ONE candidate — preconditions evaluated
+against the row, ranked by (satisfied-preconditions, close-rate window, declared cost, canonical
+tie-break). Downstream unchanged: same mark (pinning the pick), same `maxretries_<g>` budget now bounding
+the *gap across candidates*, same actuator. Fire 6 (`goal`): full goal regression over the installed
+catalog (ops with `effects` + Loom patterns as macro-actions); the resulting chain compiles to a plan
+vertex + `triggerLoom`. Dispatch-time re-validation mirrors the `proposedOp` precedent (action vocabulary,
+live-registry resolution, Weaver-authority) — the planner gets no scope the table didn't have.
 
-### PD7 — Uncertainty is handled by level-triggered replanning, never contingent planning
+### 3.4 Diagnostics and arbitration (Fires 7–8, cross-row sight)
 
-No branch trees, no probabilistic planning. Plan for the current state; dispatch; if the world
-diverges (a payment declines, a check fails), the gap is still violating, the row re-projects,
-and the next tick replans from the *new* state — possibly choosing a different candidate
-(PD6's confidence demotes the failed one). Weaver's existing level-triggered nature IS the
-feedback loop; the planner just makes each tick's decision state-dependent.
+- **Contraction monitor:** per-target violating-row trajectory over a sweep-cadence window →
+  `shrinking | steady | diverging` heartbeat state; "dispatches commit but closes never arrive" (readable
+  from `__effect`) raises the *lens/effect-mismatch* Health issue — today's documented silent failure
+  ("a Lens that only projects past deadlines … surfaces as violation never flips", weaver.md) made loud.
+- **Oscillation detector:** two targets whose dispatched ops alternately rewrite the same aspect within a
+  window → freeze both via the existing `__control` disable seam + one Health issue naming the causal
+  pair. Freeze-and-alert only; never a new dispatch.
+- **Admission control:** a dispatch scheduler between evaluator and actuator — declared budgets
+  (per-adapter rate / global concurrency; config + optional package data) and an optional §10.2 priority
+  column (prefix-convention class, like `freshUntil`). Default: no budget declared = today's behavior.
 
-### PD8 — AI appears only at the model's boundary, behind the existing Augur human gate
+### 3.5 The AI boundary (Fire 9 — unchanged posture, new floor)
 
-The deterministic planner's honest failure is "no plan exists in the declared model" (novel
-gap, or declared effects proven wrong by PD6). That failure **escalates to the Augur** — which
-also finally wires the ratified-but-dormant `exhausted` escalation trigger the arch review
-flagged (backlog `weaver-exhausted-escalation-and-model`), joined by a new `noPlan` trigger.
-The Augur proposes; humans review; approved plans dispatch through the existing
-proposal-scoped machinery. The compounding move: a synthesized plan that repeatedly succeeds
-(deterministic counter threshold) generates a **playbook-promotion proposal** through the same
-reviewed write path — operational knowledge becomes platform capability under review. The
-autonomy boundary (`augur.autoApply`) stays Andrew-gated, unchanged.
+Planner failure ("no plan derivable") flows into the **existing** `unplannable` escalation; `exhausted`
+finally gets wired (threading `augur.model` — closes the arch-review finding). Augur proposals may carry
+plan-shaped sequences, dispatched via the Fire-6 plan-vertex path under the existing proposal-scoped
+requestId + human gate. A synthesized plan crossing a deterministic success threshold (window-complete,
+zero failures) emits a **playbook-promotion proposal** into the same review queue — remediation knowledge
+compounds under review. `augur.autoApply` stays Andrew-gated, untouched.
 
-## What does NOT change
+## 4. Contract surface
 
-- Targets are Lenses; Weaver is never a cypher runtime (D4).
-- Marks/leases/OCC, dispatch-count budgets, `inflight_<g>`, the temporal lane, the sweep, the
-  control plane — all carried forward as-is beneath the planner.
-- The Bridge stays the sole egress; external work is still `triggerLoom` of an `externalTask`.
-- No branching added to playbooks (that would re-invent Loom inside a table).
-- Loom engine: zero changes (PD4).
-- P1/P2 boundaries; `weaver` imports only `substrate/*`.
+Staged **uncommitted in `main`** (this diff = the proposal): **§10.8** new "Planner extension" subsection
+(3.2 above, normative); **§10.3** reserved-key-shapes block (documents as-built `__control` + `__count`,
+adds proposed `__effect`); revision-history row marked 📐 proposed. NOT amended now (land with their
+fires, additive): the §10.2 priority-column convention (Fire 8), plan-vertex GC detail (Fire 6 may refine
+constants). Deliberately NOT touched: §10.5/§10.6 (zero Loom changes), the action table, augur block
+semantics, §10.4.
 
-## Contract touchpoints (drafts to stage at each fire, not before)
+## 5. Reconciliation with the existing mental model
 
-| Surface | Amendment | Fire |
-|---------|-----------|------|
-| Op DDL (Contract #8 / DDL shape) | optional `effects: [<guard>…]` block, guard-grammar atoms only; pkgmgr validates grammar + paths | 1 |
-| Contract #10 §10.3 | new reserved `weaver-state` key shapes: effect counters (`<targetId>.<gapColumn>.<actionRef>.__effect`), planner shadow marks if any | 2, 4 |
-| Contract #10 §10.8 | additive per-gap `candidates` / `goal` fields; target-level `mode: shadow\|planned`; precedence rule (explicit Action > candidates > goal) | 4–6 |
-| Contract #10 (new §) | plan-vertex convention: `meta.loomPattern` content-hash naming, GC rules | 6 |
-| Contract #10 §10.2 | optional priority/urgency column convention for arbitration (prefix-swap-class, like `freshUntil`) | 8 |
+- *Didn't the Augur already make Weaver smart?* The Augur is the **AI** tier for gaps with **no playbook
+  entry**, behind a human gate, one action per proposal. The planner is the **deterministic** tier below
+  it: most stuck gaps are derivable from declared effects without a model call, a review queue, or a
+  human. The Augur keeps exactly the residue it was designed for.
+- *Don't budgets/`inflight_<g>`/backoff already govern dispatch?* They govern **whether/when**; nothing
+  governs **what** — selection is still a 1:1 table. All of that machinery carries forward unchanged
+  beneath the planner (and the budget's meaning sharpens: bounding a gap across candidates).
+- *Is this the 13.1 collapse reversed?* Execution placement: no — bridge/Loom placement byte-identical.
+  Selection altitude: yes, deliberately — Fork 1, flagged above.
+- *New state?* One new `weaver-state` shape (`__effect`); everything else reuses marks, `__control`,
+  `meta.loomPattern`, the §10.8 vertex. No new buckets, no new event families, no Weaver events.
+- *Does a parallel in-flight design touch this seam?* Grepped the 📐/🏗️ set 2026-07-04: no other design
+  touches `strategist.go`/`buildPlan` or §10.8. Closest neighbors — `contract-10-weaver-text-reconciliation`
+  (this design folds only the reserved-shapes spot; the row stays open for the other four) and the
+  Chronicler's weaver-lifecycle-events pre-build note (orthogonal; this design adds no events).
 
-## The fire ladder
+## 6. Alternatives considered
 
-Ordering doctrine: value early, dispatch-behavior risk late. Fires 1–4 change no dispatch
-decision and are safe in any session. Every fire updates `docs/components/weaver.md` (+ contract
-text it touches) in the same commit as its code — drift is a documentation bug. Each fire's
-detailed handoff brief is authored just-in-time by its implementing session from this section
-(BMAD session-per-story; do NOT pre-author all briefs — earlier fires will move the ground).
+- **A. Planning outside Weaver (new component, or Loom growing branches).** Rejected: a planner needs
+  Weaver's exact inputs (rows, marks, budgets, close observations) — outside Weaver it's a second
+  convergence engine with a coordination seam; inside Loom it breaks "linear only, conditional paths →
+  Weaver" (D2/D3) and re-invents Weaver inside Loom. Could a variant beat in-place? Only if Weaver were
+  unhealthy — it's the best-conformed engine audited.
+- **B. Parallel Weaver 2.0 + switchover** (the tempting one). Rejected: re-ports hardened machinery,
+  double-dispatch fencing on shared buckets, big-bang cutover risk. Shadow mode + per-target `mode` flag
+  delivers the same confidence-before-cutover reversibly. A variant — v2 engine on a *separate* targets
+  bucket — still forks every §10.2 producer (Refractor routing) for no capability gain.
+- **C. LLM-as-planner.** Rejected: breaks replay determinism (§3.1) and puts a model call on the hot
+  dispatch path; the closed-catalog problem doesn't need it. The AI stays at the Augur boundary.
+- **D. Richer playbooks (branching/conditionals in §10.8).** Rejected: re-invents Loom inside a table and
+  still can't do per-entity synthesis, feedback selection, or cross-target sight.
+- **E. Starlark effects.** Rejected for now: plan-time entailment becomes undecidable; atom-vocabulary
+  covers the known verticals. Revisit only with a concrete op whose effect is inexpressible (then prefer
+  adding the missing *atom* — the identifier-representation reflex: extend the primitive, don't contort).
 
-### Fire 1 — Declared effects on op DDLs (data only)
+## 7. Resolved questions (decide-don't-defer)
 
-Op DDL gains optional `effects` (PD3 grammar). `pkgmgr` validates: parseable guards, legal path
-shapes, reject-wholesale on malformed (same doctrine as Loom pattern load). Consumed by nothing.
-Reference data: author effects for the lease-signing ops (`SignLease` → `.signature` present,
-`SetListingStatus` → `.listing.status equals leased`, `RecordIdentityPII` → `.ssn` present).
-**Acceptance:** install-time validation tests; malformed-effect rejection is loud (Health/install
-error); zero engine behavior change. **Risk: none.**
+1. **Effect inference from op Starlark?** Declared-only now; static-analysis *suggestion* is a Surveyor
+   backlog line, not this design.
+2. **Shadow-divergence surface?** Heartbeat counters (`plannerShadowAgree`/`Diverge`) + a per-target
+   Health doc carrying the last N divergences. NOT a lens/event stream — Weaver emits no events (arch
+   review), and shadow is diagnostic, not business truth.
+3. **Speculative validation (Processor validate-only lane)?** **Deferred — dead-scaffolding test failed:**
+   its only consumer is Fire 6, replan-on-level + dispatch-time re-validation (the `proposedOp` precedent)
+   already bound the damage, and a validate-only lane is a Processor feature with no second consumer.
+   Design shelved as a named follow-up, not built dark.
+4. **Confidence constants?** Sliding window K=20 episodes per (target, gap, actionRef), config-tunable;
+   no decay clock (event-keyed window IS the decay). Fire 5's brief may tune K; the mechanism is fixed.
 
-### Fire 2 — Effect-verification loop (observability)
+## 8. Decomposition for the Steward (the fire ladder)
 
-On each actual dispatch (lane-1 CAS-create-and-fire AND sweep reclaim — both legs, mirroring the
-dispatch-count seam), increment the `__effect` dispatch counter; on gap-close observation
-(`clearClosedMarks` path — the same level-reconciled close seam that resets the retry budget),
-increment the close counter attributing to the last-dispatched actionRef. New heartbeat metrics;
-a Health issue when a `(target, gap, action)` crosses a chronic non-closure threshold — making
-the documented "violation never flips" package-bug class operator-visible. Contract #10 §10.3
-reserved-shape amendment staged. **Acceptance:** counters survive restart; sweep GC of orphaned
-counters (gap gone, target revoked — join the existing orphan legs); e2e proving a
-never-closing fixture raises the issue. **Risk: none** (no dispatch decision touched).
+Value early, dispatch-risk late: Fires 1–4 change **no** dispatch decision. Every fire updates
+`docs/components/weaver.md` (+ touched contract text) in the same commit. Handoff briefs are authored
+just-in-time per fire from this doc.
 
-### Fire 3 — Planner core as a pure library
+| Fire | Scope | Acceptance (proves) | Risk |
+|---|---|---|---|
+| 1 | Op-DDL `effects` + pkgmgr validation; lease-signing ops declared | malformed-effect install rejection loud; zero engine change | none |
+| 2 | `__effect` bookkeeping on both dispatch legs + close path; heartbeat metrics; lens/effect-mismatch Health issue | counters survive restart; sweep GC; never-closing fixture raises issue | none |
+| 3 | `internal/weaver/planner` pure library (goal regression, canonical determinism, no-plan as value) | table tests + catalog-permutation stability property | none |
+| 4 | §10.8 parse/validation of `mode`/`candidates`/`goal`; shadow compare + divergence surface | shadow target dispatches byte-identically; divergence visible | none |
+| 5 | `mode: planned` single-step selection among `candidates`; mark pins the pick | decline-twice fixture falls A→B unaided; mode-absent targets byte-identical; revert = control-plane flag | low |
+| 6 | Goal regression → `plan-<hash>` vertices → `triggerLoom`; plan GC; dispatch-time re-validation | different states → different plans; same state → same vertex; GC proven; zero Loom diffs | medium |
+| 7 | Contraction monitor + oscillation detector (freeze via `__control` + Health) | fighting-targets fixture frozen + one causal-pair issue | low |
+| 8 | Admission control: dispatch scheduler, budgets, §10.2 priority column (contract rider lands here) | 3k-row fixture paced + priority-ordered; no-budget = unchanged | medium |
+| 9 | `unplannable`(extended)/`exhausted` → Augur; plan-shaped proposals via Fire-6 path; promotion proposals | no-plan fixture → proposal; approved plan dispatches once; promotion at threshold | medium |
 
-`internal/weaver/planner`: `ActionSpec{Ref, Kind, Pre, Effects, Cost}`, catalog snapshot type,
-goal-regression search with bounded depth, canonical tie-breaking (PD2), entailment over PD3
-atoms. Pure functions; no engine wiring, no I/O; imports at most `substrate` types. Exhaustive
-table tests including determinism proofs (permuted catalog input → identical plan) and
-no-plan-found results as first-class returns. **Acceptance:** table tests green; a fuzz/property
-test asserting plan(state,catalog) is stable under catalog reordering. **Risk: none** (unwired).
+**Pre-build gate (self-imposed, per the ratified-≠-build-ready rule):** before Fire 5 (first behavioral
+fire), an adversarial pass over Fires 5–6 focused on episode-stability under reclaim and plan-vertex GC
+races — run it in the Fire-5 session and record it in this doc.
 
-### Fire 4 — Shadow mode
+## 9. Test strategy / migration
 
-§10.8 gains `mode: shadow` + per-gap `candidates`/`goal` (parsed, validated at install like the
-rest of §10.8 — reject-and-alert). In shadow, the evaluator runs the planner beside the playbook
-lookup and records the divergence (chosen-by-table vs would-be-chosen-by-planner) — heartbeat
-metrics + a queryable log surface (Health doc or lens-friendly op — implementer's brief
-decides), **never dispatching from the planner**. This is the parallel-run: per-target
-confidence on real traffic before any cutover. **Acceptance:** shadow target dispatches
-bit-identically to today; divergence stats visible; zero shadow writes outside weaver-state.
-**Risk: none.**
-
-### Fire 5 — Single-step selection live (per-target cutover begins)
-
-`mode: planned` + per-gap `candidates`: the Strategist asks the planner to pick ONE candidate
-by (precondition satisfaction against the row/graph snapshot, PD6 confidence, declared cost;
-canonical tie-break). Everything downstream is unchanged — same mark, same budget
-(`maxretries_<g>` now bounds the *gap*, spanning candidates), same actuator. The emergent
-behavior: a failing candidate's confidence drops and the next tick's replan (PD7) falls through
-to the next candidate — an unauthored escalation ladder. **Acceptance:** e2e — candidate A
-declines twice (fixture), engine falls to candidate B without human action; explicit-Action
-gaps and mode-less targets bit-identical to today; revert = flip mode back via control plane.
-**Risk: low** (dispatch selection changes only for opted-in targets).
-
-### Fire 6 — Multi-step plans as content-addressed Loom patterns
-
-Per-gap `goal` with no candidates: full goal regression over the installed op/pattern catalog
-(ops with declared effects + Loom patterns as macro-actions). Compile plan → canonical JSON →
-`meta.loomPattern` vertex `plan-<hash>` via Processor (PD4) → `triggerLoom`. Plan-vertex GC
-sweep. Speculative validation of the plan's first op (dry-run against the Processor's
-validation path) gates dispatch if a validate-only lane exists by then; otherwise deferred to
-its own follow-up fire — the brief must check what the Processor exposes. **Acceptance:** e2e —
-two entities in different states derive different plans for the same goal; same state derives
-the same vertex (hash-stable); GC proven; no Loom code touched. **Risk: medium** (new vertex
-class + GC; mitigated by content addressing and pinning).
-
-### Fire 7 — Convergence diagnostics (contraction + oscillation)
-
-Per-target violation-set trajectory (contraction monitor: shrinking / steady / diverging over a
-window) and cross-target oscillation detection (same aspect alternately written by two targets'
-dispatches — provenance from dispatch bookkeeping). On detection: freeze both targets' dispatch
-(the existing `__control` disable seam), one Health issue naming the causal pair. Orthogonal to
-Fires 3–6; may run any time after Fire 2. **Acceptance:** fixture with two fighting targets is
-frozen + alerted within N sweep passes; contraction metrics on heartbeat. **Risk: low**
-(freeze + alert only — never a new dispatch).
-
-### Fire 8 — Fleet arbitration / admission control
-
-A dispatch scheduler between evaluator and actuator: declared budgets (per-adapter rate, global
-concurrency) + per-row priority (an optional §10.2 priority column, lens-projected like
-`freshUntil`) → token-bucket paced dispatch with a legible plan surface ("N violations, M/hr,
-ETA"). Default: unlimited budget = today's behavior. **Acceptance:** 3k-row backfill fixture
-dispatches paced and priority-ordered; mode-less behavior unchanged. **Risk: medium**
-(touches the shared dispatch path; default-off).
-
-### Fire 9 — Augur integration: no-plan escalation + playbook promotion
-
-Wire `noPlan` and the dormant `exhausted` triggers through `augurEscalation` (threading
-`augur.model` — closes the arch-review finding). Augur proposals may carry plan-shaped
-`proposedAction` sequences (dispatch via the Fire 6 plan-vertex path under the existing
-proposal-scoped requestId + human gate). Promotion: a plan crossing the deterministic success
-threshold emits a playbook-amendment proposal into the same review queue. `augur.autoApply`
-remains Andrew-gated. **Acceptance:** e2e — planner failure raises a proposal; approved
-plan-proposal dispatches once (collapse-proven); promotion proposal materializes after the
-threshold fixture. **Risk: medium** (all behind the human gate).
-
-## Open questions for Andrew (decide by the fire that needs them)
-
-1. **Effect inference vs declaration** (Fire 1): effects are hand-declared. Static analysis of
-   op Starlark to *suggest* effects is possible later — worth a backlog line, not a blocker.
-2. **Shadow-divergence surface** (Fire 4): Health doc vs a small lens — implementer proposes.
-3. **Speculative validation** (Fire 6): does the Processor grow a validate-only lane, or does
-   Fire 6 ship dispatch-and-verify only? Depends on Processor appetite — separate decision.
-4. **Confidence decay constants** (Fire 5): deterministic decay rule parameters — propose in
-   the Fire 5 brief, tune via config like `MarkLease`/`SweepInterval`.
+Unit: planner table tests (incl. determinism property), guard-entailment cases, `__effect` window math.
+E2E (ephemeral stack): the per-fire fixtures above, plus the standing invariant "every mode-absent target
+byte-identical to pre-change dispatch" asserted across the suite. Migration: none — every surface is
+additive + opt-in; no data migration; `__effect` keys appear lazily; a rollback is `mode` removal (the
+next episode uses the table; in-flight episodes are mark-pinned and drain unchanged).
