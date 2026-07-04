@@ -78,7 +78,7 @@ func (e *Engine) temporalSpec() substrate.ConsumerSpec {
 		FilterSubject: firedSubjectPrefix + ">",
 		DeliverPolicy: substrate.DeliverAll,
 		Handler:       supervisedHandler(e.handleFiredTimer),
-		Health:        healthkv.NewConsumerSink(e.conn, e.cfg.HealthKVBucket, "weaver", e.cfg.Instance, temporalConsumerName, e.states),
+		Health:        healthkv.NewConsumerSink(e.conn, e.cfg.HealthKVBucket, "weaver", temporalConsumerName, e.states),
 		Logger:        e.logger,
 	}
 }

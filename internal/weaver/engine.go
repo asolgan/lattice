@@ -89,21 +89,21 @@ type Config struct {
 	// Instance distinguishes this engine process; it suffixes the per-boot
 	// registry-source durable so each boot replays the installed target set,
 	// and it is the key segment for this process's Contract #5 heartbeat
-	// (health.weaver.<instance>) and per-consumer pause-state entries
-	// (health.weaver.<instance>.consumer.<name>). MUST be unique per Weaver
-	// process sharing a health-kv bucket, and MUST be a single dot-free token
-	// (validated at Start — a dot would fragment the health key space and break
-	// the durable name). Defaults to "<hostname>-<pid>-<NanoID>" (sanitized)
-	// when empty.
+	// (health.weaver.<instance>). Per-consumer pause-state entries
+	// (health.weaver.consumer-state.<name>) are consumer-scoped, not
+	// instance-scoped, so they survive a restart under a new Instance. MUST
+	// be unique per Weaver process sharing a health-kv bucket, and MUST be a
+	// single dot-free token (validated at Start — a dot would fragment the
+	// health key space and break the durable name). Defaults to
+	// "<hostname>-<pid>-<NanoID>" (sanitized) when empty.
 	Instance string
 	// Logger is the diagnostics sink. Defaults to slog.Default().
 	Logger *slog.Logger
 }
 
 // instanceSegmentReplacer sanitizes a hostname for use as a KV key segment
-// (Contract #5 health.weaver.<instance> /
-// health.weaver.<instance>.consumer.<name>): '.' would be read as a
-// key-segment separator and is replaced with '-'.
+// (Contract #5 health.weaver.<instance>): '.' would be read as a key-segment
+// separator and is replaced with '-'.
 var instanceSegmentReplacer = strings.NewReplacer(".", "-")
 
 // defaultInstance returns a host/pid-attributable, per-construction-unique
@@ -404,7 +404,7 @@ func (e *Engine) targetSpec(targetID string) substrate.ConsumerSpec {
 		FilterSubject: e.rowSubjectPrefix + targetID + ".>",
 		DeliverPolicy: substrate.DeliverLastPerSubject,
 		Handler:       supervisedHandler(e.handleRow),
-		Health:        healthkv.NewConsumerSink(e.conn, e.cfg.HealthKVBucket, "weaver", e.cfg.Instance, name, e.states),
+		Health:        healthkv.NewConsumerSink(e.conn, e.cfg.HealthKVBucket, "weaver", name, e.states),
 		Logger:        e.logger,
 	}
 }
@@ -488,7 +488,7 @@ func (e *Engine) reconcileConsumers() {
 		}
 		e.issues.clear(issueKeyConsumer(id))
 		delete(e.targets, id)
-		sink := healthkv.NewConsumerSink(e.conn, e.cfg.HealthKVBucket, "weaver", e.cfg.Instance, name, e.states)
+		sink := healthkv.NewConsumerSink(e.conn, e.cfg.HealthKVBucket, "weaver", name, e.states)
 		if err := sink.Delete(e.ctx); err != nil {
 			e.logger.Error("weaver target consumer health-state cleanup failed", "targetId", id, "durable", name, "err", err)
 		}

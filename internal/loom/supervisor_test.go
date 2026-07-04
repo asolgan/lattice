@@ -296,7 +296,7 @@ func TestSupervisor_PauseStateSurvivesRestart(t *testing.T) {
 	// races: a pause issued in that window is silently dropped and never reaches
 	// the sink. Pause is idempotent, so we re-issue it each poll until the sink
 	// reflects it, closing the race deterministically.
-	sinkKey := "health.loom." + instance + ".consumer.loom-trigger"
+	sinkKey := "health.loom.consumer-state.loom-trigger"
 	waitForReady(t, 10*time.Second, e1Err, func() bool {
 		e1.PauseForTest(ctx, "loom-trigger")
 		entry, err := conn.KVGet(ctx, healthKVBucket, sinkKey)
@@ -458,7 +458,7 @@ func TestSupervisor_RemovedDomainPauseDoesNotResurrectOnReAdd(t *testing.T) {
 	// Manually pause the domain consumer.
 	engine.PauseForTest(ctx, "loom-alpha")
 
-	sinkKey := "health.loom." + instance + ".consumer.loom-alpha"
+	sinkKey := "health.loom.consumer-state.loom-alpha"
 	require.True(t, waitFor(t, 10*time.Second, func() bool {
 		entry, err := conn.KVGet(ctx, healthKVBucket, sinkKey)
 		if err != nil {

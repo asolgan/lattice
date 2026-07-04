@@ -267,5 +267,5 @@ func supervisedHandler(h func(context.Context, substrate.Message) substrate.Deci
 // healthSinkFor builds a per-consumer HealthSink that persists pause-state to
 // health-kv and feeds the engine's consumer-state cache.
 func (e *Engine) healthSinkFor(name string) substrate.HealthSink {
-	return healthkv.NewConsumerSink(e.conn, e.cfg.HealthKVBucket, "bridge", e.cfg.Instance, name, e.states)
+	return healthkv.NewConsumerSink(e.conn, e.cfg.HealthKVBucket, "bridge", name, e.states)
 }

@@ -452,9 +452,9 @@ func waitHealthIssue(t *testing.T, ctx context.Context, conn *substrate.Conn, co
 
 // isBridgeHeartbeatKey reports whether k is a bridge heartbeat doc
 // (health.bridge.<instance>) and NOT a per-consumer pause-state entry
-// (health.bridge.<instance>.consumer.<name>). The instance is a dot-free token,
-// so exactly three dot-separated segments after "health.bridge." identifies the
-// heartbeat; a consumer entry has more.
+// (health.bridge.consumer-state.<name>). The instance is a dot-free token,
+// so exactly one dot-separated segment after "health.bridge." identifies the
+// heartbeat; a consumer-state entry has more.
 func isBridgeHeartbeatKey(k string) bool {
 	const prefix = "health.bridge."
 	if len(k) <= len(prefix) || k[:len(prefix)] != prefix {
@@ -463,7 +463,7 @@ func isBridgeHeartbeatKey(k string) bool {
 	rest := k[len(prefix):]
 	for i := 0; i < len(rest); i++ {
 		if rest[i] == '.' {
-			return false // a sub-key (…​.consumer.<name>), not the heartbeat
+			return false // a sub-key (…​consumer-state.<name>), not the heartbeat
 		}
 	}
 	return true

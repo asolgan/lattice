@@ -53,14 +53,14 @@ func TestConsumerSink_PauseRestoreRoundTrip(t *testing.T) {
 		t.Run(string(reason), func(t *testing.T) {
 			ctx, conn := setupHarness(t)
 			states := NewConsumerStateCache()
-			sink := NewConsumerSink(conn, testHealthBucket, "loom", "inst-1", "tgt-x", states)
+			sink := NewConsumerSink(conn, testHealthBucket, "loom", "tgt-x", states)
 
 			if err := sink.SetPaused(ctx, reason, "boom"); err != nil {
 				t.Fatalf("SetPaused: %v", err)
 			}
 
 			// A fresh sink instance (simulating a restart) restores from KV.
-			fresh := NewConsumerSink(conn, testHealthBucket, "loom", "inst-1", "tgt-x", NewConsumerStateCache())
+			fresh := NewConsumerSink(conn, testHealthBucket, "loom", "tgt-x", NewConsumerStateCache())
 			status, gotReason, err := fresh.Load(ctx)
 			if err != nil {
 				t.Fatalf("Load: %v", err)
@@ -87,13 +87,13 @@ func TestConsumerSink_PauseRestoreRoundTrip(t *testing.T) {
 func TestConsumerSink_ActiveRoundTrip(t *testing.T) {
 	ctx, conn := setupHarness(t)
 	states := NewConsumerStateCache()
-	sink := NewConsumerSink(conn, testHealthBucket, "weaver", "inst-1", "tgt-y", states)
+	sink := NewConsumerSink(conn, testHealthBucket, "weaver", "tgt-y", states)
 
 	if err := sink.SetActive(ctx); err != nil {
 		t.Fatalf("SetActive: %v", err)
 	}
 
-	fresh := NewConsumerSink(conn, testHealthBucket, "weaver", "inst-1", "tgt-y", NewConsumerStateCache())
+	fresh := NewConsumerSink(conn, testHealthBucket, "weaver", "tgt-y", NewConsumerStateCache())
 	status, reason, err := fresh.Load(ctx)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -112,7 +112,7 @@ func TestConsumerSink_ActiveRoundTrip(t *testing.T) {
 func TestConsumerSink_Load_MissingEntry(t *testing.T) {
 	ctx, conn := setupHarness(t)
 	states := NewConsumerStateCache()
-	sink := NewConsumerSink(conn, testHealthBucket, "bridge", "inst-1", "never-written", states)
+	sink := NewConsumerSink(conn, testHealthBucket, "bridge", "never-written", states)
 
 	status, reason, err := sink.Load(ctx)
 	if err != nil {
@@ -129,7 +129,7 @@ func TestConsumerSink_Load_MissingEntry(t *testing.T) {
 func TestConsumerSink_Load_MalformedEntry(t *testing.T) {
 	ctx, conn := setupHarness(t)
 	states := NewConsumerStateCache()
-	sink := NewConsumerSink(conn, testHealthBucket, "loom", "inst-1", "bad-doc", states)
+	sink := NewConsumerSink(conn, testHealthBucket, "loom", "bad-doc", states)
 
 	if _, err := conn.KVPut(ctx, testHealthBucket, sink.key, []byte("not json")); err != nil {
 		t.Fatalf("seed malformed entry: %v", err)
@@ -181,7 +181,7 @@ func TestConsumerState(t *testing.T) {
 func TestConsumerSink_Delete(t *testing.T) {
 	ctx, conn := setupHarness(t)
 	states := NewConsumerStateCache()
-	sink := NewConsumerSink(conn, testHealthBucket, "loom", "inst-1", "tgt-z", states)
+	sink := NewConsumerSink(conn, testHealthBucket, "loom", "tgt-z", states)
 
 	if err := sink.SetPaused(ctx, substrate.PauseManual, "boom"); err != nil {
 		t.Fatalf("SetPaused: %v", err)
@@ -199,7 +199,7 @@ func TestConsumerSink_Delete(t *testing.T) {
 	}
 
 	// A re-add after Delete restores active (no stale pause).
-	fresh := NewConsumerSink(conn, testHealthBucket, "loom", "inst-1", "tgt-z", NewConsumerStateCache())
+	fresh := NewConsumerSink(conn, testHealthBucket, "loom", "tgt-z", NewConsumerStateCache())
 	status, _, err := fresh.Load(ctx)
 	if err != nil {
 		t.Fatalf("Load after Delete: %v", err)
@@ -238,12 +238,43 @@ func TestConsumerStateCache_SnapshotIsACopy(t *testing.T) {
 
 func TestConsumerSink_KeyNamespacing(t *testing.T) {
 	ctx, conn := setupHarness(t)
-	sink := NewConsumerSink(conn, testHealthBucket, "weaver", "inst-1", "tgt-x", NewConsumerStateCache())
+	sink := NewConsumerSink(conn, testHealthBucket, "weaver", "tgt-x", NewConsumerStateCache())
 	if err := sink.SetActive(ctx); err != nil {
 		t.Fatalf("SetActive: %v", err)
 	}
-	const wantKey = "health.weaver.inst-1.consumer.tgt-x"
+	const wantKey = "health.weaver.consumer-state.tgt-x"
 	if _, err := conn.KVGet(ctx, testHealthBucket, wantKey); err != nil {
 		t.Fatalf("expected key %q to be written, KVGet: %v", wantKey, err)
+	}
+}
+
+// TestConsumerSink_RestoreAcrossInstanceRestart proves the bug fix this key
+// re-key was for: pause-state is keyed by consumer name alone (no instance
+// segment), so a restart under a brand-new instance ID still finds the same
+// key and restores the pause — unlike the old instance-scoped key, which a
+// fresh instance ID would never revisit.
+func TestConsumerSink_RestoreAcrossInstanceRestart(t *testing.T) {
+	ctx, conn := setupHarness(t)
+
+	// "Before restart": an instance pauses a consumer.
+	before := NewConsumerSink(conn, testHealthBucket, "bridge", "poison-lane", NewConsumerStateCache())
+	if err := before.SetPaused(ctx, substrate.PauseStructural, "poison message"); err != nil {
+		t.Fatalf("SetPaused: %v", err)
+	}
+
+	// "After restart": a fresh process, necessarily a fresh instance ID
+	// (Contract #5 §5.1 — instance IDs are per-process, never reused), but
+	// NewConsumerSink takes no instance argument at all — the same
+	// consumer-scoped key is addressed regardless.
+	after := NewConsumerSink(conn, testHealthBucket, "bridge", "poison-lane", NewConsumerStateCache())
+	status, reason, err := after.Load(ctx)
+	if err != nil {
+		t.Fatalf("Load after restart: %v", err)
+	}
+	if status != substrate.StatusPaused {
+		t.Fatalf("status after restart = %v, want StatusPaused (restore-across-restart must survive an instance-ID change)", status)
+	}
+	if reason != substrate.PauseStructural {
+		t.Fatalf("reason after restart = %q, want %q", reason, substrate.PauseStructural)
 	}
 }

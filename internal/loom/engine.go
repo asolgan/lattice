@@ -85,19 +85,20 @@ type Config struct {
 	// Instance distinguishes this engine process; it suffixes the per-boot
 	// pattern-source durable so each boot replays the installed pattern set,
 	// and it is the key segment for this process's Contract #5 heartbeat
-	// (health.loom.<instance>) and per-consumer pause-state entries
-	// (health.loom.<instance>.consumer.<name>). MUST be unique per Loom
-	// process sharing a health-kv bucket — see docs/components/loom.md for the
-	// shared-bucket collision consequences. Defaults to
-	// "<hostname>-<pid>-<NanoID>" (sanitized) when empty.
+	// (health.loom.<instance>). Per-consumer pause-state entries
+	// (health.loom.consumer-state.<name>) are consumer-scoped, not
+	// instance-scoped, so they survive a restart under a new Instance. MUST
+	// be unique per Loom process sharing a health-kv bucket — see
+	// docs/components/loom.md for the shared-bucket collision consequences.
+	// Defaults to "<hostname>-<pid>-<NanoID>" (sanitized) when empty.
 	Instance string
 	// Logger is the diagnostics sink. Defaults to slog.Default().
 	Logger *slog.Logger
 }
 
 // instanceSegmentReplacer sanitizes a hostname for use as a KV key segment
-// (Contract #5 health.loom.<instance> / health.loom.<instance>.consumer.<name>):
-// '.' would be read as a key-segment separator and is replaced with '-'.
+// (Contract #5 health.loom.<instance>): '.' would be read as a key-segment
+// separator and is replaced with '-'.
 var instanceSegmentReplacer = strings.NewReplacer(".", "-")
 
 // defaultInstance returns a host/pid-attributable, per-construction-unique
@@ -291,7 +292,7 @@ func supervisedHandler(h func(context.Context, substrate.Message) substrate.Deci
 // healthSinkFor builds a per-consumer HealthSink that persists pause-state to
 // health-kv and feeds the engine's consumer-state cache.
 func (e *Engine) healthSinkFor(name string) substrate.HealthSink {
-	return healthkv.NewConsumerSink(e.conn, e.cfg.HealthKVBucket, "loom", e.cfg.Instance, name, e.states)
+	return healthkv.NewConsumerSink(e.conn, e.cfg.HealthKVBucket, "loom", name, e.states)
 }
 
 // triggerSpec describes the fixed trigger consumer (loom-trigger) on
@@ -618,7 +619,7 @@ func (e *Engine) reconcileConsumers() {
 			continue
 		}
 		delete(e.domains, d)
-		sink := healthkv.NewConsumerSink(e.conn, e.cfg.HealthKVBucket, "loom", e.cfg.Instance, name, e.states)
+		sink := healthkv.NewConsumerSink(e.conn, e.cfg.HealthKVBucket, "loom", name, e.states)
 		if err := sink.Delete(e.ctx); err != nil {
 			e.logger.Error("loom domain consumer health-state cleanup failed", "domain", d, "durable", name, "err", err)
 		}

@@ -10,7 +10,7 @@ import (
 )
 
 // consumerHealthEntry is an engine's minimal per-consumer pause-state
-// document, stored under health.<component>.<instance>.consumer.<name> in
+// document, stored under health.<component>.consumer-state.<name> in
 // the health-kv bucket — a SEPARATE, smaller shape from the Contract #5
 // heartbeat document. It carries only the fields ConsumerSink.Load needs to
 // restore pause state across a restart.
@@ -35,12 +35,16 @@ type ConsumerSink struct {
 
 // NewConsumerSink builds a ConsumerSink for one named consumer of the given
 // component (e.g. "loom", "weaver", "bridge"), keyed
-// health.<component>.<instance>.consumer.<name>.
-func NewConsumerSink(conn *substrate.Conn, bucket, component, instance, name string, states *ConsumerStateCache) *ConsumerSink {
+// health.<component>.consumer-state.<name>. The key is deliberately
+// process-independent: a consumer's pause-state is a fact about the
+// consumer/lane (a poison message, an operator pause), not about the
+// instance that happens to host it — so it survives a restart under a fresh
+// instance ID instead of orphaning and silently failing to restore.
+func NewConsumerSink(conn *substrate.Conn, bucket, component, name string, states *ConsumerStateCache) *ConsumerSink {
 	return &ConsumerSink{
 		conn:   conn,
 		bucket: bucket,
-		key:    "health." + component + "." + instance + ".consumer." + name,
+		key:    "health." + component + ".consumer-state." + name,
 		name:   name,
 		states: states,
 	}

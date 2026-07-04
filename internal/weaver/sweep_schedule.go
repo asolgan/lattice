@@ -48,7 +48,7 @@ func (e *Engine) sweepSpec() substrate.ConsumerSpec {
 		DeliverPolicy: substrate.DeliverAll,
 		MaxAckPending: 1,
 		Handler:       supervisedHandler(e.handleSweepFired),
-		Health:        healthkv.NewConsumerSink(e.conn, e.cfg.HealthKVBucket, "weaver", e.cfg.Instance, sweepConsumerName, e.states),
+		Health:        healthkv.NewConsumerSink(e.conn, e.cfg.HealthKVBucket, "weaver", sweepConsumerName, e.states),
 		Logger:        e.logger,
 	}
 }
