@@ -460,8 +460,12 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 	// Plan BEFORE touching the expired mark: a failed plan (unresolved
 	// reference, template data error) alerts through the shared planGap issue
 	// keys and leaves the mark in place — the next sweep retries. Bounded,
-	// loud, never a hot loop.
-	pl, _ := e.planGap(targetID, entityID, gapColumn, ga, row, rowRevision)
+	// loud, never a hot loop. rec.Action is passed as the pinned action (Fire
+	// 5): the sweep is ALWAYS reclaiming an existing, already-dispatched
+	// episode, never a fresh one, so a planned-mode candidates gap must reuse
+	// the mark's recorded pick rather than re-ranking it (design §2 — a
+	// reclaim never replans mid-episode).
+	pl, resolvedAction, _ := e.planGap(ctx, target, targetID, entityID, gapColumn, ga, row, rowRevision, rec.Action)
 	if pl == nil {
 		e.logger.Warn("weaver sweep: reclaim plan failed; leaving expired mark for the next sweep",
 			"targetId", targetID, "entityId", entityID, "gap", gapColumn)
@@ -475,7 +479,11 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 	// Preserve the mark's per-open-episode claimId across the reclaim (§10.3): a
 	// reclaim is the SAME open episode, so the userTask identity it seeds stays
 	// stable and the re-dispatch collapses on the existing task/instance.
-	newRev, conflict, err := e.marks.replace(ctx, targetID, entityID, gapColumn, entityKey, ga.Action, rec.ClaimID, markRev, markTTL)
+	// resolvedAction is written back unchanged for every non-candidates gap
+	// (== ga.Action) and re-pins the SAME candidate for a planned-mode one
+	// (== rec.Action, by construction of resolvePlannedAction's pinned-lookup
+	// branch) — the mark's Action never drifts across a reclaim.
+	newRev, conflict, err := e.marks.replace(ctx, targetID, entityID, gapColumn, entityKey, resolvedAction, rec.ClaimID, markRev, markTTL)
 	if err != nil {
 		e.logger.Warn("weaver sweep: reclaim re-arm failed; leaving expired mark for the next sweep",
 			"targetId", targetID, "entityId", entityID, "gap", gapColumn, "err", err)
@@ -494,7 +502,7 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 	// CAS-create path — this is how a multi-attempt chain driven by sweep
 	// re-dispatches (not just CDC touches) accumulates toward maxretries_<g>.
 	e.bumpDispatchCount(ctx, targetID, entityID, gapColumn)
-	e.bumpEffectDispatch(ctx, targetID, gapColumn, ga.Action)
+	e.bumpEffectDispatch(ctx, targetID, gapColumn, resolvedAction)
 	// Fresh episode: the requestId derives from the replace revision (a real new
 	// dispatch attempt). The preserved claimId keeps the userTask identity stable,
 	// so the new attempt collapses on the existing task/instance. A publish failure

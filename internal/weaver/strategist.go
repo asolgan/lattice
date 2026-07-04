@@ -1,6 +1,7 @@
 package weaver
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -248,6 +249,81 @@ func buildPlan(source *targetSource, targetID, entityID, gapColumn string,
 
 	default:
 		return nil, &planError{kind: errConfig, msg: fmt.Sprintf("unknown action %q", ga.Action)}
+	}
+}
+
+// resolvePlannedAction resolves one gap's playbook entry to a concrete,
+// dispatchable GapAction (design weaver-planner-mandate-design.md §3.3, Fire
+// 5): the ONLY gaps this touches are candidates-only ("" Action, non-empty
+// Candidates) on a target in mode:"planned" — every other shape (an explicit
+// Action, a non-planned/absent/shadow mode, or a goal-only gap Fire 6 has not
+// wired yet) returns ga UNCHANGED, so those targets' dispatch stays
+// byte-identical to every fire before this one.
+//
+// pinnedAction is the mark's currently-recorded Action ("" for a genuinely
+// fresh episode with no mark yet). This is the load-bearing branch (design
+// §2): a fresh episode RANKS candidates and picks the winner; an episode that
+// already has a mark (an in-flight redelivery, or the sweep reclaiming an
+// expired lease) MUST reuse that exact pin rather than re-ranking — ranking
+// depends on live, time-varying inputs (the §10.3 `__effect` close-rate
+// window), so re-ranking mid-episode could silently swap which action a
+// retry fires under the SAME requestId/claimId, corrupting the Contract #4
+// idempotency the mark exists to guarantee. Replanning only ever happens at a
+// fresh episode (a mark absent because the gap just opened, or because the
+// previous episode closed and cleared it) — exactly the design's "replanning
+// happens only at episode boundaries."
+func (e *Engine) resolvePlannedAction(ctx context.Context, target *Target, targetID, gapColumn string,
+	ga GapAction, row map[string]any, pinnedAction string) (GapAction, *planError) {
+
+	if target.Mode != targetModePlanned || ga.Action != "" || len(ga.Candidates) == 0 {
+		return ga, nil
+	}
+	if pinnedAction != "" {
+		for _, c := range ga.Candidates {
+			if c.Action == pinnedAction {
+				return candidateGapAction(c), nil
+			}
+		}
+		// The playbook changed since this episode was dispatched (the pinned
+		// candidate was removed) — a config error, not a data error: only a
+		// package re-author can fix it, and retrying the same row changes
+		// nothing.
+		return GapAction{}, &planError{kind: errConfig, msg: fmt.Sprintf(
+			"gap %q: pinned action %q no longer exists among the playbook's candidates", gapColumn, pinnedAction)}
+	}
+	picked, ok := e.rankCandidates(ctx, targetID, gapColumn, ga.Candidates, row)
+	if !ok {
+		// No candidate's precondition currently holds against this row — a
+		// per-row data condition (this row's fields don't satisfy anything
+		// eligible right now), not a systemic config error; bounded, alerted,
+		// never a hot loop (mirrors an ordinary template-data error).
+		return GapAction{}, &planError{kind: errData, msg: fmt.Sprintf(
+			"gap %q: no candidate is currently eligible (every candidate's precondition evaluated false)", gapColumn)}
+	}
+	for _, c := range ga.Candidates {
+		if c.Action == picked {
+			return candidateGapAction(c), nil
+		}
+	}
+	return GapAction{}, &planError{kind: errConfig, msg: fmt.Sprintf(
+		"gap %q: internal — ranked candidate %q not found in its own candidate list", gapColumn, picked)}
+}
+
+// candidateGapAction materializes a chosen GapCandidate into the GapAction
+// shape buildPlan consumes (registry.go's GapCandidate doc: "the same
+// action-contract shape as GapAction ... dispatches exactly like an explicit
+// GapAction").
+func candidateGapAction(c GapCandidate) GapAction {
+	return GapAction{
+		Action:    c.Action,
+		Pattern:   c.Pattern,
+		Subject:   c.Subject,
+		Adapter:   c.Adapter,
+		Operation: c.Operation,
+		Assignee:  c.Assignee,
+		Target:    c.Target,
+		Params:    c.Params,
+		Reads:     c.Reads,
 	}
 }
 

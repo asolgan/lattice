@@ -355,6 +355,38 @@ Augur floor) remain — see `weaver-planner-mandate-design.md` §8. Fire 4 chang
 
 ---
 
+## `mode:"planned"` candidate selection dispatch (Contract #10 §10.8, Fire 5)
+
+The first fire that changes a real dispatch decision: on a target in `mode:"planned"`, a gap whose
+playbook entry has no explicit `action` (candidates-only) now actually dispatches — the explicit-`action`
+precedence and every other mode (absent, `shadow`) are untouched, so every target installed before this
+fire, and every gap that still names an explicit `action`, is byte-identical.
+
+`Engine.resolvePlannedAction` (`strategist.go`) is the single choke point both the lane-1 evaluator
+(`evaluator.go: dispatchGap`/`planGap`) and the reconciler sweep (`reconciler.go: reclaim`) route through
+before `buildPlan`. It reuses Fire 4's `rankCandidates` verbatim (eligible-first, then windowed
+close-rate, then cost, then lexicographic `actionRef`) — but only for a **genuinely fresh episode** (no
+mark yet). The load-bearing branch is the other one: **an episode that already has a mark reuses that
+mark's recorded `Action` verbatim, never re-ranking** — a reclaim/redelivery of an open episode must fire
+the *same* choice it was dispatched with, even if a fresh rank over current confidence stats would now
+prefer a different candidate (design §2: "the mark pins the planner's choice for the episode's
+lifetime"). Both callers read the mark **once**, up front, and thread that single snapshot through both
+the resolution and the fire decision — a double read could let the two disagree across a legitimate
+close→reopen. A pin whose candidate the playbook no longer declares (edited out mid-episode) is a
+`PlaybookConfigError`, alerted and left for the next sweep — never silently re-ranked. A fresh episode
+with every candidate's precondition false is a bounded per-row `TemplateDataError`, not a systemic one.
+
+Proven in `planned_dispatch_internal_test.go`: a fresh dispatch picks the ranked winner unaided (no
+human, no Augur); a mode-absent/`shadow` candidates-only gap still hits the pre-Fire-5 config-error path
+byte-identically; a reclaim re-dispatches the **pinned** candidate even when the cheaper one would win a
+fresh rank (the pre-build-gate's episode-stability risk, closed); a vanished pin alerts and leaves the
+mark standing.
+
+Fires 6–9 (goal-regression synthesis + dispatch, diagnostics, admission control, the Augur floor) remain
+— see `weaver-planner-mandate-design.md` §8.
+
+---
+
 ## Control plane (FR30)
 
 Operators manage Weaver's currently-registered convergence targets via a `nats-io/nats.go/micro`
@@ -528,7 +560,7 @@ What ships today in `internal/weaver` + `cmd/weaver`, and what is deliberately d
 | **Control API/CLI (Pause/Resume surface)** | ✅ Shipped (FR30). `internal/weaver/control` exposes `list`/`disable`/`enable`/`revoke` over a `nats-io/nats.go/micro` Services responder; `lattice weaver` CLI group. See "Control plane" above. |
 | **Lane 2 (event-targeted-audit) + `weaver-work`** | ⏳ Phase 3 (§10.3: no durable bucket today). |
 | **Real target Lens via Refractor + playbook package data** | ✅ Shipped — the `lease-signing` reference vertical provides a real convergence target + §10.8 playbook; the engine also runs against test-written §10.2 fixture rows. |
-| **Planner mandate (dispatcher → solver)** | 🏗️ Building (Contract #10 §10.8 "Planner extension", ratified 2026-07-04). Fire 1 ✅: op-DDL `Effects` (`internal/pkgmgr` `DDLSpec.Effects`, §10.5 guard-grammar predicates a commit entails, parsed by the new standalone `internal/guardgrammar` package) + install-time validation (`validateEffects`); the `lease-signing` package declares `SignLease`→`.signature present` and `RecordLeaseServiceOutcome`→`.outcome present`. Fire 2 ✅: the `__effect` confidence window (see above). Fire 3 ✅: the pure `internal/weaver/planner` goal-regression library (see above) — table-tested, catalog-permutation-stable, not yet wired to any dispatch decision. Fire 4 ✅: `mode`/`candidates`/`goal` install-validated parsing + the shadow-compare diagnostic (see above) — still zero dispatch-decision change; the Strategist's real dispatch reads only `ga.Action`. Fires 5–9 (selection dispatch, synthesis dispatch, diagnostics, admission control, Augur floor) remain: `_bmad-output/implementation-artifacts/weaver-planner-mandate-design.md` §8. |
+| **Planner mandate (dispatcher → solver)** | 🏗️ Building (Contract #10 §10.8 "Planner extension", ratified 2026-07-04). Fire 1 ✅: op-DDL `Effects` (`internal/pkgmgr` `DDLSpec.Effects`, §10.5 guard-grammar predicates a commit entails, parsed by the new standalone `internal/guardgrammar` package) + install-time validation (`validateEffects`); the `lease-signing` package declares `SignLease`→`.signature present` and `RecordLeaseServiceOutcome`→`.outcome present`. Fire 2 ✅: the `__effect` confidence window (see above). Fire 3 ✅: the pure `internal/weaver/planner` goal-regression library (see above) — table-tested, catalog-permutation-stable, not yet wired to any dispatch decision. Fire 4 ✅: `mode`/`candidates`/`goal` install-validated parsing + the shadow-compare diagnostic (see above) — still zero dispatch-decision change; the Strategist's real dispatch reads only `ga.Action`. Fire 5 ✅: `mode:"planned"` candidate selection actually dispatches (see above) — the first fire that changes a real decision; mark-pinned across reclaim, byte-identical for every other mode/explicit-action gap. Fires 6–9 (goal-regression synthesis dispatch, diagnostics, admission control, Augur floor) remain: `_bmad-output/implementation-artifacts/weaver-planner-mandate-design.md` §8. |
 
 ---
 

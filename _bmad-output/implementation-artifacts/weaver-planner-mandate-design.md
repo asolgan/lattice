@@ -33,10 +33,29 @@ surface merged to `main`:
   the §10.8 Planner-extension subsection are **frozen on `main`**. The other four
   `contract-10-weaver-text-reconciliation` drift spots remain on that backlog row.
 
-**Next:** Fires 1–4 shipped (op-DDL `effects`; `__effect` confidence window; the pure `planner` library;
-`mode`/`candidates`/`goal` parsing + shadow compare). The Lattice Steward builds **Fire 5** (`candidates`
-selection dispatch) next from §8. The pre-Fire-5 adversarial gate (§8) is a standing Steward obligation —
-still pending, since Fire 5 is next.
+**Next:** Fires 1–5 shipped (op-DDL `effects`; `__effect` confidence window; the pure `planner` library;
+`mode`/`candidates`/`goal` parsing + shadow compare; `mode:"planned"` candidate-selection dispatch). The
+Lattice Steward builds **Fire 6** (goal-regression synthesis dispatch) next from §8.
+
+**Pre-build gate (run 2026-07-04, in the Fire 5 session):** the self-imposed adversarial pass over
+episode-stability under reclaim, focused specifically on the hazard the existing dispatch pipeline
+structurally invited — `dispatchGap`/`planGap` resolve a plan from the target's playbook *before*
+`fireEpisode` ever reads the mark, and the reconciler's `reclaim` re-derives its dispatch from the
+*current* `target.Gaps[col]` on every sweep. For the frozen table this is harmless (`ga.Action` is a
+static config value). For `mode:"planned"` candidates, it is not: `rankCandidates`' inputs (`__effect`
+close-rate) are live and time-varying, so re-ranking on a redelivery or a sweep reclaim could silently
+pick a DIFFERENT candidate than the one the open episode's `requestId`/`claimId` was derived against — a
+config/data-shaped bug, not a crash, so it would have shipped quietly. Fixed load-bearing in the
+implementation (not just tested around): `resolvePlannedAction` is the single choke point both callers
+route through, and it takes the mark's *current* recorded `Action` as an explicit `pinnedAction` input —
+non-empty means reuse verbatim (no re-rank), empty means a genuinely fresh episode. Both `dispatchGap` and
+`reclaim` read the mark exactly once and thread that one snapshot through both the resolution and the
+fire decision, closing the double-read race a naive port of Fire 4's `shadowCompare` call site would have
+reintroduced. Proven in `planned_dispatch_internal_test.go`'s `TestReclaim_ReusesPinnedCandidate_NotFreshRank`
+(a reclaim fires the pinned candidate even though a fresh rank over the current candidate list would
+prefer the cheaper one) and `TestResolvePlannedAction_PinnedEpisodeReusesChoice`. Plan-vertex GC races are
+Fire 6's concern (Fire 5 dispatches no plan vertices — only single-step candidate selection); revisit this
+gate's plan-vertex-GC half when Fire 6 lands.
 
 ---
 

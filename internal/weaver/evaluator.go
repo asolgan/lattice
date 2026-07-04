@@ -181,7 +181,25 @@ func (e *Engine) dispatchGap(ctx context.Context, target *Target, targetID, enti
 			"targetId", targetID, "entityId", entityID, "gap", col)
 		return substrate.NakWithDelay
 	}
-	pl, dec := e.planGap(targetID, entityID, col, ga, row, msg.Sequence)
+
+	// Read the mark ONCE, up front: both the Fire 5 planned-mode candidate
+	// resolution (reuse an existing pin, never re-rank one) and the fire
+	// decision below must see the exact same snapshot — reading it twice
+	// could let it change in between (e.g. a legitimate close→reopen) and
+	// plan against a pin that no longer describes the episode actually being
+	// fired.
+	rec, markRev, found, err := e.marks.get(ctx, targetID, entityID, col)
+	if err != nil {
+		e.logger.Error("weaver: mark read failed; nak with delay",
+			"targetId", targetID, "entityId", entityID, "gap", col, "err", err)
+		return substrate.NakWithDelay
+	}
+	pinnedAction := ""
+	if found {
+		pinnedAction = rec.Action
+	}
+
+	pl, action, dec := e.planGap(ctx, target, targetID, entityID, col, ga, row, msg.Sequence, pinnedAction)
 	if pl == nil {
 		return dec
 	}
@@ -193,7 +211,7 @@ func (e *Engine) dispatchGap(ctx context.Context, target *Target, targetID, enti
 	// re-firing is the safe side (the same episode requestId collapses on the
 	// Contract #4 tracker; a drop could wedge a lost publish behind its own
 	// mark).
-	return e.fireEpisode(ctx, targetID, entityID, entityKey, col, ga.Action, pl, msg.NumDelivered != 1)
+	return e.fireEpisode(ctx, targetID, entityID, entityKey, col, action, pl, msg.NumDelivered != 1, rec, markRev, found)
 }
 
 // planGap resolves one gap's plan (Evaluator L2 + Strategist), routing a
@@ -207,55 +225,64 @@ func (e *Engine) dispatchGap(ctx context.Context, target *Target, targetID, enti
 // action) is an `error` (unhealthy) — it affects every row of the target and
 // only a package re-author can fix it. pl == nil means do not dispatch — the
 // returned Decision is the caller's disposition for this gap.
-func (e *Engine) planGap(targetID, entityID, col string, ga GapAction, row map[string]any,
-	rowRevision uint64) (*plan, substrate.Decision) {
+//
+// pinnedAction (Fire 5) is the mark's currently-recorded Action, or "" for a
+// genuinely fresh episode — the sole input resolvePlannedAction needs to tell
+// "pick fresh" from "reuse the pin" apart for a planned-mode candidates-only
+// gap; every other gap shape ignores it. The returned string is the resolved
+// actionRef (== ga.Action unchanged for every non-candidates gap) the caller
+// threads into the mark/effect-bookkeeping so a fresh candidate pick gets
+// recorded, and a reused pin gets re-recorded identically.
+func (e *Engine) planGap(ctx context.Context, target *Target, targetID, entityID, col string, ga GapAction, row map[string]any,
+	rowRevision uint64, pinnedAction string) (*plan, string, substrate.Decision) {
 
-	pl, perr := buildPlan(e.source, targetID, entityID, col, ga, row, rowRevision)
-	if perr != nil {
-		switch perr.kind {
-		case errTransient:
-			// An unresolved reference may be replay lag or a permanent config
-			// error (a typo'd pattern, an uninstalled package) — retry on the
-			// bounded redelivery cadence (never a hot loop) and surface to
-			// Health until it resolves; the issue clears on the first
-			// successful plan.
-			e.logger.Warn("weaver: gap dispatch deferred; nak with delay for redelivery",
-				"targetId", targetID, "entityId", entityID, "gap", col, "reason", perr.msg)
-			e.issues.set(issueKeyGap(targetID, col), "warning", "UnresolvedReference",
-				"target "+targetID+" gap "+col+": "+perr.msg)
-			return nil, substrate.NakWithDelay
-		case errData:
-			msg := "target " + targetID + " gap " + col + ": " + perr.msg
-			e.logger.Warn("weaver: " + msg)
-			e.issues.set(issueKeyData(targetID, col), "warning", "TemplateDataError", msg)
-			return nil, substrate.Ack
-		default:
-			e.alert(issueKeyGap(targetID, col), "error", "PlaybookConfigError",
-				"target "+targetID+" gap "+col+": "+perr.msg)
-			return nil, substrate.Ack
+	resolved, perr := e.resolvePlannedAction(ctx, target, targetID, col, ga, row, pinnedAction)
+	if perr == nil {
+		var pl *plan
+		if pl, perr = buildPlan(e.source, targetID, entityID, col, resolved, row, rowRevision); perr == nil {
+			e.issues.clear(issueKeyGap(targetID, col))
+			e.issues.clear(issueKeyData(targetID, col))
+			return pl, resolved.Action, substrate.Ack
 		}
 	}
-	e.issues.clear(issueKeyGap(targetID, col))
-	e.issues.clear(issueKeyData(targetID, col))
-	return pl, substrate.Ack
+	switch perr.kind {
+	case errTransient:
+		// An unresolved reference may be replay lag or a permanent config
+		// error (a typo'd pattern, an uninstalled package) — retry on the
+		// bounded redelivery cadence (never a hot loop) and surface to
+		// Health until it resolves; the issue clears on the first
+		// successful plan.
+		e.logger.Warn("weaver: gap dispatch deferred; nak with delay for redelivery",
+			"targetId", targetID, "entityId", entityID, "gap", col, "reason", perr.msg)
+		e.issues.set(issueKeyGap(targetID, col), "warning", "UnresolvedReference",
+			"target "+targetID+" gap "+col+": "+perr.msg)
+		return nil, "", substrate.NakWithDelay
+	case errData:
+		msg := "target " + targetID + " gap " + col + ": " + perr.msg
+		e.logger.Warn("weaver: " + msg)
+		e.issues.set(issueKeyData(targetID, col), "warning", "TemplateDataError", msg)
+		return nil, "", substrate.Ack
+	default:
+		e.alert(issueKeyGap(targetID, col), "error", "PlaybookConfigError",
+			"target "+targetID+" gap "+col+": "+perr.msg)
+		return nil, "", substrate.Ack
+	}
 }
 
-// fireEpisode is the lane-1 dispatch core: resolve the in-flight mark,
-// CAS-create on absence (the dispatch OCC), and fire the episode op.
-// redelivered selects the in-flight disposition — false drops (the anti-storm
-// gate: another episode is in flight), true re-publishes the SAME episode
-// requestId (idempotent at the Contract #4 tracker). The reconciler sweep
-// does not pass through here: its reclaim replaces the expired mark in place
-// under a revision condition and fires directly. action is recorded on the
-// mark (the §10.3 value shape) so the sweep can re-dispatch the right episode.
+// fireEpisode is the lane-1 dispatch core: CAS-create the mark on absence
+// (the dispatch OCC) and fire the episode op. rec/markRev/inFlight are the
+// caller's own already-read mark snapshot (dispatchGap reads it once, up
+// front, so the Fire 5 candidate-pin resolution and this fire decision never
+// see two different mark states). redelivered selects the in-flight
+// disposition — false drops (the anti-storm gate: another episode is in
+// flight), true re-publishes the SAME episode requestId (idempotent at the
+// Contract #4 tracker). The reconciler sweep does not pass through here: its
+// reclaim replaces the expired mark in place under a revision condition and
+// fires directly. action is recorded on the mark (the §10.3 value shape) so
+// the sweep can re-dispatch the right episode.
 func (e *Engine) fireEpisode(ctx context.Context, targetID, entityID, entityKey, col, action string,
-	pl *plan, redelivered bool) substrate.Decision {
+	pl *plan, redelivered bool, rec *mark, markRev uint64, inFlight bool) substrate.Decision {
 
-	rec, markRev, inFlight, err := e.marks.get(ctx, targetID, entityID, col)
-	if err != nil {
-		e.logger.Error("weaver: mark read failed; nak with delay", "targetId", targetID, "entityId", entityID, "gap", col, "err", err)
-		return substrate.NakWithDelay
-	}
 	if inFlight {
 		if !redelivered {
 			// A fresh delivery while the episode is in flight — the anti-storm
