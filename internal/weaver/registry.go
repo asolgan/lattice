@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/asolgan/lattice/internal/guardgrammar"
 	"github.com/asolgan/lattice/internal/substrate"
+	"github.com/asolgan/lattice/internal/weaver/planner"
 )
 
 // targetSourceDurablePrefix is the JetStream durable-consumer name prefix for
@@ -215,6 +218,7 @@ type targetSource struct {
 	patternMeta   map[string]string    // patternId (and vertex id) → vtx.meta.<id>
 	patternOwner  map[string][]string
 	opMetaByType  map[string]string // operationType → vtx.meta.<opId>
+	opEffects     map[string][]*guardgrammar.Guard // op-meta vertex id → its parsed .effects guards
 }
 
 // pendingSpecWarnAfter bounds how long a spec aspect may wait for its parent
@@ -242,6 +246,7 @@ func newTargetSource(conn *substrate.Conn, bucket, instance string, issues *issu
 		patternMeta:   make(map[string]string),
 		patternOwner:  make(map[string][]string),
 		opMetaByType:  make(map[string]string),
+		opEffects:     make(map[string][]*guardgrammar.Guard),
 	}
 }
 
@@ -355,7 +360,14 @@ func (s *targetSource) handle(evt substrate.KVEvent) {
 
 	case substrate.KindAspect:
 		_, _, id, localName, ok := substrate.ParseAspectKey(evt.Key)
-		if !ok || localName != "spec" {
+		if !ok {
+			return
+		}
+		if localName == "effects" {
+			s.indexOpEffects(id, evt)
+			return
+		}
+		if localName != "spec" {
 			return
 		}
 		if evt.IsDeleted {
@@ -750,7 +762,7 @@ func (s *targetSource) indexOpMeta(vertexKey string, body []byte) {
 }
 
 // removeOpMetaLocked drops any operationType entry pointing at the deleted op
-// meta-vertex id. Caller holds s.mu.
+// meta-vertex id, plus its effects catalog entry. Caller holds s.mu.
 func (s *targetSource) removeOpMetaLocked(id string) {
 	key := "vtx.meta." + id
 	for ot, k := range s.opMetaByType {
@@ -758,6 +770,7 @@ func (s *targetSource) removeOpMetaLocked(id string) {
 			delete(s.opMetaByType, ot)
 		}
 	}
+	delete(s.opEffects, id)
 }
 
 // opMetaKey returns the vtx.meta.<opId> for an operationType, or ("", false)
@@ -767,6 +780,84 @@ func (s *targetSource) opMetaKey(operationType string) (string, bool) {
 	defer s.mu.Unlock()
 	k, ok := s.opMetaByType[operationType]
 	return k, ok
+}
+
+// opEffectsProbe reads an op-meta vertex's `.effects` aspect body: a flat list
+// of §10.5 guard-grammar predicates (Contract #10 §10.8 Planner extension,
+// pkgmgr's buildInstallBatch) the bound operationType's commit entails.
+type opEffectsProbe struct {
+	Guards []json.RawMessage `json:"guards"`
+}
+
+// indexOpEffects records the parsed effect guards for an op-meta vertex's
+// (bare) id, independently of indexOpMeta's operationType index: the vertex
+// envelope and its `.effects` aspect are separate CDC keys and may arrive in
+// either order, so effectsCatalog joins them by id at read time rather than
+// requiring a buffered arrival order (unlike a weaverTarget/loomPattern spec,
+// an op-meta vertex is never "routed" — it has no class-dependent parse that
+// needs the envelope first). A malformed `.effects` body is logged and
+// dropped; pkgmgr's validateEffects already rejects this shape at install
+// time, so this is defense-in-depth, never a live path.
+func (s *targetSource) indexOpEffects(id string, evt substrate.KVEvent) {
+	if evt.IsDeleted {
+		s.mu.Lock()
+		delete(s.opEffects, id)
+		s.mu.Unlock()
+		return
+	}
+	body, err := unwrapSpecBody(evt.Value, "guards")
+	if err != nil {
+		s.logger.Debug("weaver: op-meta effects aspect unwrap failed", "metaVertex", "vtx.meta."+id, "err", err)
+		return
+	}
+	var probe opEffectsProbe
+	if err := json.Unmarshal(body, &probe); err != nil {
+		s.logger.Debug("weaver: op-meta effects aspect unmarshal failed", "metaVertex", "vtx.meta."+id, "err", err)
+		return
+	}
+	guards := make([]*guardgrammar.Guard, 0, len(probe.Guards))
+	for i, raw := range probe.Guards {
+		g, err := guardgrammar.Parse(raw)
+		if err != nil {
+			s.logger.Debug("weaver: op-meta effects guard parse failed",
+				"metaVertex", "vtx.meta."+id, "index", i, "err", err)
+			return
+		}
+		guards = append(guards, g)
+	}
+	s.mu.Lock()
+	s.opEffects[id] = guards
+	s.mu.Unlock()
+}
+
+// effectsCatalog builds the Fire-6 goal-regression catalog (design
+// weaver-planner-mandate-design.md §3.3) from every op-meta vertex currently
+// carrying both an operationType (indexOpMeta) and a parsed `.effects` aspect
+// (indexOpEffects): one planner.Action per operationType, deterministically
+// sorted by Ref. Cost is uniformly 1 — no declared per-op cost surface exists
+// yet, so cheapest-total-cost degenerates to fewest-steps — and Precondition
+// is left nil (always available): dispatch-time re-validation, mirroring the
+// proposedOp precedent, is what actually gates whether an op may fire; the
+// planner gets no scope the frozen table didn't have (design §3.3). An
+// operationType with no Effects entry never enters the catalog — it can never
+// close a goal, so it would only slow the search.
+func (s *targetSource) effectsCatalog() []planner.Action {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	catalog := make([]planner.Action, 0, len(s.opMetaByType))
+	for op, key := range s.opMetaByType {
+		id, ok := strings.CutPrefix(key, "vtx.meta.")
+		if !ok {
+			continue
+		}
+		effects := s.opEffects[id]
+		if len(effects) == 0 {
+			continue
+		}
+		catalog = append(catalog, planner.Action{Ref: op, Cost: 1, Effects: effects})
+	}
+	sort.Slice(catalog, func(i, j int) bool { return catalog[i].Ref < catalog[j].Ref })
+	return catalog
 }
 
 // --- registry reads ----------------------------------------------------------

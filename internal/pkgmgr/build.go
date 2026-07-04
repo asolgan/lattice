@@ -2,6 +2,7 @@ package pkgmgr
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"sort"
 
@@ -199,13 +200,33 @@ func (i *Installer) buildInstallBatch(
 			loomPatternSpecBody(p)))
 	}
 
+	// effectsByOp flattens every DDL's Effects map (keyed by operationType) so
+	// the op-meta loop below can attach each op's declared guards regardless of
+	// which DDL happens to implement it. validateEffects already enforces one
+	// declaration per operationType per package (an Effects key must be exactly
+	// one DDL's PermittedCommands entry), so no entry is ever overwritten here.
+	effectsByOp := make(map[string][]json.RawMessage)
+	for _, d := range def.DDLs {
+		for op, guards := range d.Effects {
+			effectsByOp[op] = guards
+		}
+	}
+
 	// Op-meta vertices: a non-routed meta-vertex carrying operationType on its
 	// own `data`, indexed by both engines so a forOperation reference resolves.
-	// No spec aspect — operationType lives on the vertex envelope.
+	// No spec aspect — operationType lives on the vertex envelope. An op whose
+	// operationType carries declared Effects (§10.8 Planner extension) gets a
+	// sibling `.effects` aspect — the runtime catalog the Weaver planner's goal
+	// regression (Fire 6) reads at dispatch time; an op with no Effects emits
+	// nothing extra (byte-identical to every install before this fire).
 	for idx, o := range def.OpMetas {
 		opMetaKey := metaVertexPrefix + opMetaIDs[idx]
 		addCreate(opMetaKey, docVertex(opMetaClass,
 			map[string]any{"operationType": o.OperationType}))
+		if guards := effectsByOp[o.OperationType]; len(guards) > 0 {
+			addCreate(opMetaKey+".effects", docAspect(opMetaKey, "effects", "effects",
+				map[string]any{"guards": guards}))
+		}
 	}
 
 	// Permissions + grant links.
