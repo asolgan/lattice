@@ -42,6 +42,7 @@ import (
 	objectsbase "github.com/asolgan/lattice/packages/objects-base"
 	orchestrationbase "github.com/asolgan/lattice/packages/orchestration-base"
 	privacybase "github.com/asolgan/lattice/packages/privacy-base"
+	privacyoperatorgrant "github.com/asolgan/lattice/packages/privacy-operator-grant"
 	rbacdomain "github.com/asolgan/lattice/packages/rbac-domain"
 	servicedomain "github.com/asolgan/lattice/packages/service-domain"
 	servicelocation "github.com/asolgan/lattice/packages/service-location"
@@ -51,24 +52,25 @@ import (
 // sync with cmd/lattice-pkg/main.go's packageRegistry — both binaries carry
 // the same static import map until package discovery exists.
 var packageRegistry = map[string]pkgmgr.Definition{
-	"rbac-domain":        rbacdomain.Package,
-	"identity-domain":    identitydomain.Package,
-	"identity-hygiene":   identityhygiene.Package,
-	"orchestration-base": orchestrationbase.Package,
-	"service-domain":     servicedomain.Package,
-	"location-domain":    locationdomain.Package,
-	"loftspace-domain":   loftspacedomain.Package,
-	"clinic-domain":      clinicdomain.Package,
-	"clinic-ledger":      clinicledger.Package,
-	"clinic-reminders":   clinicreminders.Package,
-	"service-location":   servicelocation.Package,
-	"lease-signing":      leasesigning.Package,
-	"loftspace-ledger":   loftspaceledger.Package,
-	"objects-base":       objectsbase.Package,
-	"augur":              augur.Package,
-	"capability-author":  capabilityauthor.Package,
-	"privacy-base":       privacybase.Package,
-	"bespoke-contracts":  bespokecontracts.Package,
+	"rbac-domain":            rbacdomain.Package,
+	"identity-domain":        identitydomain.Package,
+	"identity-hygiene":       identityhygiene.Package,
+	"orchestration-base":     orchestrationbase.Package,
+	"service-domain":         servicedomain.Package,
+	"location-domain":        locationdomain.Package,
+	"loftspace-domain":       loftspacedomain.Package,
+	"clinic-domain":          clinicdomain.Package,
+	"clinic-ledger":          clinicledger.Package,
+	"clinic-reminders":       clinicreminders.Package,
+	"service-location":       servicelocation.Package,
+	"lease-signing":          leasesigning.Package,
+	"loftspace-ledger":       loftspaceledger.Package,
+	"objects-base":           objectsbase.Package,
+	"augur":                  augur.Package,
+	"capability-author":      capabilityauthor.Package,
+	"privacy-base":           privacybase.Package,
+	"privacy-operator-grant": privacyoperatorgrant.Package,
+	"bespoke-contracts":      bespokecontracts.Package,
 }
 
 // pkgApplyTimeout bounds an install/upgrade/uninstall round-trip. The
