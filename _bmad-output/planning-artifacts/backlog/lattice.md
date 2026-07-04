@@ -192,6 +192,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-04 · `ff25188` · [AI-native] AI-authored capabilities Fire 1 Increment 1 — capabilityproposal DDL capture pair (lens kind) + the pkgmgr §5 materializer; bridge adapter/Loom dispatch + review/apply remain
 - 2026-07-04 · `e3053cf` · [Refractor] Personal Lens Fire 2 (PL.2) — ActorEnumerator fan-out + Interest Set (personalinterest, personal.register/.deregister control RPCs); PL.3 (D1 readableAnchors) remains, gated
 - 2026-07-04 · `7fbc962` · [Gateway] Token-revocation kill-switch Fire 2 — rich `revocation` heartbeat block (consumerConnected/revokedCount/lastEventSeq/lastSyncAt); item CLOSED, unblocks Loupe F11
 - 2026-07-04 · `967234d` · [Gateway] Token-revocation kill-switch Fire 1 — RevokeActor/UnrevokeActor event-only ops + the Gateway's own events.gateway.> materializer arm the kill-switch fail-closed; Fire 2 (rich heartbeat) remains
