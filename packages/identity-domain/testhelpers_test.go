@@ -53,6 +53,8 @@ func staffCapDoc() *processor.CapabilityDoc {
 			{OperationType: "CreateUnclaimedIdentity", Scope: "any"},
 			{OperationType: "UpdateIdentityState", Scope: "any"},
 			{OperationType: "RecordIdentityPII", Scope: "any"},
+			{OperationType: "RevokeActor", Scope: "any"},
+			{OperationType: "UnrevokeActor", Scope: "any"},
 		},
 		ServiceAccess:   []processor.ServiceAccessEntry{},
 		EphemeralGrants: []processor.EphemeralGrant{},

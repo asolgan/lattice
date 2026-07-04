@@ -28,6 +28,14 @@
 // response can add/retire IdP keys but can never un-trust an
 // operator-configured key.
 //
+// TOKEN-REVOCATION KILL-SWITCH (gateway-token-revocation-activation-design.md
+// Fire 1): the Gateway requires the token-revocation bucket to open AND its
+// own events.gateway.> materializer consumer to attach before the HTTP
+// listener binds — a failure at either refuses to start (no more silent
+// verification-only downgrade). RevokeActor/UnrevokeActor ops (identity-domain)
+// outbox gateway.actorRevoked/actorUnrevoked, which the materializer folds
+// into the local bucket revocation.Checker reads per request.
+//
 // Environment:
 //
 //	GATEWAY_ADDR              HTTP listen address (default: :8080)
@@ -178,19 +186,14 @@ func run(logger *slog.Logger) error {
 	defer conn.Close()
 	logger.Info("connected to NATS", "natsURL", natsURL)
 
-	// The revocation kill-switch is best-effort: a deployment that has not yet
-	// provisioned the token-revocation bucket runs with verification-only auth
-	// (auth.NewAuthenticator tolerates a nil checker), same posture as D1.2's
-	// read boundary.
-	var revChecker auth.RevocationChecker
-	revocationDisabled := false
-	if revKV, err := conn.OpenKV(context.Background(), revocation.BucketName); err != nil {
-		logger.Warn("token-revocation bucket not available; revocation kill-switch disabled", "error", err)
-		revocationDisabled = true
-	} else {
-		revChecker = revocation.New(revKV)
+	// The revocation kill-switch is now REQUIRED, fail-closed bring-up (design
+	// §2.4): a deployment that cannot open its own read handle on the bucket
+	// refuses to start rather than silently downgrading to verification-only.
+	revKV, err := conn.OpenKV(context.Background(), revocation.BucketName)
+	if err != nil {
+		return fmt.Errorf("open token-revocation bucket: %w", err)
 	}
-	authn := auth.NewAuthenticator(verifier, revChecker)
+	authn := auth.NewAuthenticator(verifier, revocation.New(revKV))
 
 	rawInstance, err := substrate.NewNanoID()
 	if err != nil {
@@ -213,10 +216,16 @@ func run(logger *slog.Logger) error {
 	}
 
 	hb := gateway.NewHeartbeater(conn, envOrDefault("HEALTH_KV_BUCKET", defaultHealthBucket), instance, metrics, logger)
-	if revocationDisabled {
-		hb.SetIssue("revocation-kill-switch", "warning", "GatewayRevocationDisabled",
-			"token-revocation bucket unavailable; kill-switch disabled, auth runs verification-only")
+
+	// Attach the revocation materializer before the HTTP listener binds — a
+	// failure here refuses to start (design §2.4); it never leaves the
+	// checker running against an unpopulated/unbuilt bucket.
+	revSup, err := gateway.StartRevocationMaterializer(ctx, conn, hb, logger)
+	if err != nil {
+		return fmt.Errorf("start revocation materializer: %w", err)
 	}
+	defer revSup.Stop()
+
 	go hb.Run(ctx)
 
 	errCh := make(chan error, 1)

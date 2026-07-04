@@ -89,6 +89,35 @@ below may be configured; the trusted set is their union.
 
 ---
 
+## Token-revocation kill-switch
+
+A JWT verifies on signature + expiry alone, so a *compromised* actor keeps access until its short
+token expires. The kill-switch (`internal/gateway/revocation.Checker`, consulted per request by
+`auth.Authenticator`) is the out-of-band cutoff — design of record:
+`gateway-token-revocation-activation-design.md`.
+
+- **Write path.** `RevokeActor{actor, reason?}` / `UnrevokeActor{actor}` (identity-domain, `operator`
+  scope:any) are **event-only ops** — no Core-KV mutation. Each outboxes `gateway.actorRevoked` /
+  `gateway.actorUnrevoked` onto `core-events` through the standard Processor commit (P2); revocation is
+  operational security state, not graph state.
+- **Materializer.** The Gateway runs its **own** durable `events.gateway.>` consumer
+  (`internal/gateway.StartRevocationMaterializer`) that folds those events into its local
+  `token-revocation` KV bucket (put on revoke, delete on unrevoke) — the exact bucket
+  `revocation.Checker` reads. This is the same event-only-op → outbox → component-materializes-its-own-
+  state loop the Loom lifecycle ops run; the Gateway's kill-switch deliberately does **not** ride a
+  Refractor lens, so revocation propagates even if Refractor is degraded.
+- **Fail-closed bring-up.** Before the HTTP listener binds, the Gateway opens the `token-revocation`
+  bucket, attaches the materializer consumer, and drains its cold-start backlog. Either the bucket
+  failing to open or the consumer failing to attach **refuses to start** — there is no more silent
+  downgrade to verification-only auth. Once serving, a per-request KV read error still denies
+  (fail-closed); a consumer disconnect after startup serves off the last-known-good local set (the short
+  JWT TTL is the backstop for that lag window) and surfaces a `revocation.consumerDisconnected` Health
+  issue.
+- **Auditable.** Each revoke/unrevoke is a committed op (intent-ledger) **and** a durable `core-events`
+  event (7d) — `by` (`op.actor`) + `at` (commit timestamp) make it who-revoked-whom-when.
+
+---
+
 ## Health
 
 The Gateway writes a Contract #5 §5.2 heartbeat to `health.gateway.<instance>` every 10s
@@ -110,6 +139,16 @@ Set parser for RSA/EC keys; `JWKSPoller` — fetch + background poll + hot-swap 
 new `Verifier.SetKeys`, atomic-pointer-backed for a lock-free hot path) + `cmd/gateway` (`GATEWAY_JWKS_URL`
 / `GATEWAY_JWKS_POLL_INTERVAL` wiring, the https-unless-dev-mode transport gate, fail-closed initial fetch).
 No new vendor dependency — JWK parsing uses only `crypto`/`encoding` stdlib packages.
+
+**Built (token-revocation kill-switch, Fire 1 of
+`gateway-token-revocation-activation-design.md`).** identity-domain's `RevokeActor`/`UnrevokeActor`
+event-only ops + the `gateway.actorRevoked`/`actorUnrevoked` event-type DDLs
+(`packages/identity-domain/revocation.go`); the `token-revocation` bucket (bootstrap primordial);
+`internal/gateway.StartRevocationMaterializer` (the events.gateway.> consumer + cold-start catch-up +
+fail-closed startup, replacing the old best-effort nil-checker path); the Gateway NKey's
+`$KV.token-revocation.>` write grant (`deploy/gen-dev-nkeys`, pinned by
+`natsperm.TestGatewayRevocationBucketWriteIsolation`). Unblocks Loupe F11 once Fire 2 (the rich
+`revocation` heartbeat block) ships.
 
 **Deferred (follow-up fires, per the design's decomposition):**
 - **Fire 3** — the read-path front (`GET /v1/<readmodel>`), sequenced behind D1.3's first live

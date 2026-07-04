@@ -15,7 +15,7 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // exact-operationType only; scope enforcement happens in the Starlark
 // `ClaimIdentity` branch (one-credential-one-identity via credentialindex).
 func Permissions() []pkgmgr.PermissionSpec {
-	return []pkgmgr.PermissionSpec{
+	perms := []pkgmgr.PermissionSpec{
 		{
 			OperationType: "CreateUnclaimedIdentity",
 			Scope:         "any",
@@ -41,4 +41,5 @@ func Permissions() []pkgmgr.PermissionSpec {
 			GrantsTo:      []string{"frontOfHouse", "backOfHouse", "operator"},
 		},
 	}
+	return append(perms, RevocationPermissions()...)
 }

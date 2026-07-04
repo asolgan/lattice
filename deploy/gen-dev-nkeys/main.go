@@ -184,9 +184,10 @@ var matrix = []component{
 		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
 	},
 	{
-		name:     "gateway",
-		desc:     "external write-path translator — verifies JWTs, stamps the verified actor, submits ops; mutates Core state only via ops (P2)",
-		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$JS.API.>", "$JS.ACK.>"},
+		name: "gateway",
+		desc: "external write-path translator — verifies JWTs, stamps the verified actor, submits ops; mutates Core state only via ops (P2); " +
+			"owns token-revocation (materialized from its own events.gateway.> consumer, gateway-token-revocation-activation-design.md)",
+		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$KV.token-revocation.>", "$JS.API.>", "$JS.ACK.>"},
 		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
 	},
 	{

@@ -27,6 +27,11 @@ const (
 	LoomStateBucket      = "loom-state"          // Loom's per-instance cursor store (Contract #10 §10.3)
 	WeaverTargetsBucket  = "weaver-targets"      // shared target-Lens projection bucket (Contract #10 §10.2)
 	RefractorAdjacencyKV = "refractor-adjacency" // Refractor's internal adjacency store (private, not a Lens target)
+	// GatewayRevocationBucket is the Gateway's token-revocation kill-switch set
+	// (must match internal/gateway/revocation.BucketName by value — bootstrap
+	// does not import the gateway package). Materialized by the Gateway's own
+	// events.gateway.> consumer, not a Lens target.
+	GatewayRevocationBucket = "token-revocation"
 
 	// CoreObjectsBucket is the off-graph binary blob store — a JetStream Object
 	// Store (backed by stream OBJ_core-objects), NOT a KV bucket. It is the
@@ -90,6 +95,11 @@ func (s *Seeder) ProvisionBuckets(ctx context.Context) error {
 		// default 1, which is what DeliverLastPerSubject CDC consumers expect.
 		{WeaverTargetsBucket, "Lattice Weaver Targets KV — shared target-Lens projection bucket", false},
 		{RefractorAdjacencyKV, "Refractor internal adjacency store (private)", false},
+		// token-revocation is a compacting latest-per-actor set (put on revoke,
+		// del on unrevoke) materialized by the Gateway from events.gateway.>; no
+		// per-key TTL, durable (rebuildable from the event stream on cold start,
+		// but must not silently disappear between rebuilds).
+		{GatewayRevocationBucket, "Lattice Gateway Token-Revocation KV — actor kill-switch set", false},
 	}
 
 	for _, b := range buckets {

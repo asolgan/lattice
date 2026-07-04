@@ -279,6 +279,30 @@ func TestBridgeNoPhantomKVGrants(t *testing.T) {
 	assertDeniedPuts(t, url, "bridge-schedule", []string{"bridge"})
 }
 
+// TestGatewayRevocationBucketWriteIsolation: only the gateway (its own
+// events.gateway.> materializer) may write the token-revocation kill-switch
+// set — pins the gateway-token-revocation-activation-design.md §2.8 grant as
+// scoped, not a blanket leak. refractor is excluded from the denied set like
+// every other lens-target bucket (TestLensTargetWriteIsolation): its broad
+// $KV.> grant is pre-existing, tracked debt (natsperm-matrix-hygiene), not
+// something this fire narrows.
+func TestGatewayRevocationBucketWriteIsolation(t *testing.T) {
+	url := startServerFromConf(t)
+
+	boot := connectAs(t, url, "bootstrap")
+	provision(t, boot, "token-revocation")
+
+	gw := connectAs(t, url, "gateway")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := gw.KVPut(ctx, "token-revocation", "vtx.identity.test", []byte("v")); err != nil {
+		t.Fatalf("gateway KVPut token-revocation: want success, got %v", err)
+	}
+
+	assertDeniedPuts(t, url, "token-revocation", []string{"processor", "loom", "weaver", "bridge",
+		"loupe", "lattice", "loftspace-app", "clinic-app", "object-store-manager"})
+}
+
 // TestControlPlaneOperatorAccess: the operator surfaces (loupe, the lattice CLI)
 // may request the component control planes (lattice.ctrl.<comp>.<name>.<op>);
 // the responding engine replies through allow_responses. Positive pin: a missing

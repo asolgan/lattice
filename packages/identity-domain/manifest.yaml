@@ -26,6 +26,12 @@ declares:
       class: meta.ddl.aspectType
     - canonicalName: credentialBinding
       class: meta.ddl.aspectType
+    - canonicalName: actorRevocation
+      class: meta.ddl.vertexType
+    - canonicalName: gateway.actorRevoked
+      class: meta.ddl.eventType
+    - canonicalName: gateway.actorUnrevoked
+      class: meta.ddl.eventType
   permissions:
     - operationType: CreateUnclaimedIdentity
       scope: any
@@ -39,3 +45,9 @@ declares:
     - operationType: RecordIdentityPII
       scope: any
       grantsTo: [frontOfHouse, backOfHouse, operator]
+    - operationType: RevokeActor
+      scope: any
+      grantsTo: [operator]
+    - operationType: UnrevokeActor
+      scope: any
+      grantsTo: [operator]
