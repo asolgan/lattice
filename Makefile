@@ -79,12 +79,32 @@ LATTICE_PROCESSOR_AUTH_MODE ?= stub
 ## stack that's already serving other work used to unconditionally kill and
 ## restart the live processor/refractor out from under it (and, pre-Compose-
 ## project-pin, mint a colliding second stack from a different worktree).
+## The reuse branch also verifies $(BOOTSTRAP_JSON) still matches live Core KV
+## (`lattice bootstrap verify`) before trusting it — a stack whose containers
+## were recreated out-of-band (bypassing `make down`) looks process-healthy but
+## seeds against a stale primordial ID set, so reads silently return empty
+## while writes still succeed. A mismatch forces the fresh re-bootstrap below.
 up:
-	@if docker compose ps --status running --services 2>/dev/null | grep -qx nats && \
+	@PROC_HEALTHY=0; \
+	if docker compose ps --status running --services 2>/dev/null | grep -qx nats && \
 	    docker compose ps --status running --services 2>/dev/null | grep -qx postgres && \
 	    pgrep -x processor >/dev/null 2>&1 && pgrep -x refractor >/dev/null 2>&1; then \
-		echo "==> Kernel already up (NATS + Postgres healthy, processor + refractor running) — reusing. For a clean rebuild, run 'make down' first."; \
+		PROC_HEALTHY=1; \
+	fi; \
+	FRESH=0; \
+	if [ "$$PROC_HEALTHY" = "1" ] && [ -f "$(BOOTSTRAP_JSON)" ]; then \
+		go build -o bin/lattice ./cmd/lattice 2>/dev/null; \
+		if NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_CLI) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice bootstrap verify >/dev/null 2>&1; then \
+			FRESH=1; \
+		fi; \
+	fi; \
+	if [ "$$FRESH" = "1" ]; then \
+		echo "==> Kernel already up (NATS + Postgres healthy, processor + refractor running, bootstrap fresh) — reusing. For a clean rebuild, run 'make down' first."; \
 	else \
+		if [ "$$PROC_HEALTHY" = "1" ]; then \
+			echo "==> Kernel processes look up but $(BOOTSTRAP_JSON) is stale/mismatched against Core KV (reads would silently return empty) — forcing a fresh re-bootstrap."; \
+			rm -f $(BOOTSTRAP_JSON); \
+		fi; \
 		set -e; \
 		echo "==> Starting NATS + Postgres..."; \
 		docker compose up -d --wait; \
