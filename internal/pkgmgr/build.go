@@ -508,6 +508,12 @@ func gapActionBody(ga GapActionSpec) map[string]any {
 		}
 		body["reads"] = reads
 	}
+	if ga.IssueCode != "" {
+		body["issueCode"] = ga.IssueCode
+	}
+	if ga.IssueSeverity != "" {
+		body["issueSeverity"] = ga.IssueSeverity
+	}
 	return body
 }
 

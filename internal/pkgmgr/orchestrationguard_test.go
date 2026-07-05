@@ -159,11 +159,34 @@ func TestValidateWeaverTargets_DirectOpMissingOperation(t *testing.T) {
 	}
 }
 
+func TestValidateWeaverTargets_SurfaceMissingIssueCode(t *testing.T) {
+	def := Definition{WeaverTargets: []WeaverTargetSpec{{
+		TargetID: "unroutedTasks",
+		Gaps:     map[string]GapActionSpec{"missing_claim": {Action: "surface"}},
+	}}}
+	err := def.validateWeaverTargets()
+	if err == nil || !strings.Contains(err.Error(), "IssueCode") {
+		t.Fatalf("expected surface missing-IssueCode error, got %v", err)
+	}
+}
+
+func TestValidateWeaverTargets_SurfaceBadIssueSeverityRejected(t *testing.T) {
+	def := Definition{WeaverTargets: []WeaverTargetSpec{{
+		TargetID: "unroutedTasks",
+		Gaps:     map[string]GapActionSpec{"missing_claim": {Action: "surface", IssueCode: "UnroutedTasks", IssueSeverity: "critical"}},
+	}}}
+	err := def.validateWeaverTargets()
+	if err == nil || !strings.Contains(err.Error(), "issueSeverity") {
+		t.Fatalf("expected surface bad-issueSeverity error, got %v", err)
+	}
+}
+
 func TestValidateWeaverTargets_EachActionWellFormedAccepted(t *testing.T) {
 	cases := map[string]GapActionSpec{
 		"missing_a": {Action: "triggerLoom", Pattern: "leaseSigning", Subject: "row.lease"},
 		"missing_c": {Action: "assignTask", Operation: "SignLease", Assignee: "row.tenant", Target: "row.lease"},
 		"missing_d": {Action: "directOp", Operation: "MarkExpired"},
+		"missing_e": {Action: "surface", IssueCode: "UnroutedTasks", IssueSeverity: "warning"},
 	}
 	for col, ga := range cases {
 		def := Definition{WeaverTargets: []WeaverTargetSpec{{

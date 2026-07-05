@@ -58,8 +58,61 @@ func Lenses() []pkgmgr.LensSpec {
 				ActorField:       "assignee",
 			},
 		},
+		{
+			CanonicalName:  "unroutedTasks",
+			Class:          "meta.lens",
+			Adapter:        "nats-kv",
+			Bucket:         "weaver-targets",
+			Engine:         "full",
+			Spec:           unroutedTasksSpec,
+			ProjectionKind: "actorAggregate",
+			Output: &pkgmgr.OutputDescriptorSpec{
+				AnchorType:       "task",
+				OutputKeyPattern: "unroutedTasks.{actorSuffix}",
+				BodyColumns:      []string{"violating", "missing_claim", "entityKey", "queuedRole", "expiresAt", "freshUntil"},
+				EmptyBehavior:    "delete",
+				KeyColumn:        "entityId",
+			},
+		},
 	}
 }
+
+// unroutedTasksSpec is FR29's convergence target (Contract #10 §10.1 "unrouted
+// tasks surface; never silently dropped"): an open task still queued to a
+// role — never claimed — whose grant has lapsed (`expiresAt` passed) without
+// anyone claiming it. The required `-[:queuedFor]->` match (not OPTIONAL) is
+// the scoping gate: a direct-assigned task never matches at all, so it never
+// gets a weaver-targets row; once ClaimTask swaps queuedFor→assignedTo (or
+// CancelTask/CompleteTask closes the task), the match stops firing on the
+// next reprojection and the envelope's EmptyBehavior:"delete" removes the row
+// — the same "match fails → delete" idiom capabilityEphemeral/augurDispatch
+// already use, so closing needs no explicit negative branch.
+//
+// There is no queuedAt timestamp to measure elapsed queue time against — the
+// task DDL's root data is scalars-only {status, expiresAt} by design (no
+// aspects; D5), and Starlark DDL scripts are pure (no wall-clock access), so
+// nothing could stamp one. expiresAt is the grant's own clock and already
+// answers the FR29 question in the form that matters operationally: "will
+// this lapse unrouted?" — so the staleness threshold IS expiresAt itself
+// (not an arbitrary elapsed-since-creation window), reusing existing state
+// rather than adding a new one. freshUntil re-arms Weaver's @at one-shot
+// timer for exactly that instant (RFC3339 UTC string comparison against
+// $now, the same lexical-compare idiom capabilityEphemeral/myTasks use); it
+// goes null once violating (the row's own CDC delivery drives re-evaluation
+// from there, like every other target).
+const unroutedTasksSpec = `
+MATCH (t:task {key: $actorKey})-[:queuedFor]->(role:role)
+WHERE t.data.status = 'open'
+RETURN
+  t.key AS actorKey,
+  t.key AS entityKey,
+  nanoIdFromKey(t.key) AS entityId,
+  role.key AS queuedRole,
+  t.data.expiresAt AS expiresAt,
+  ($now > t.data.expiresAt) AS missing_claim,
+  ($now > t.data.expiresAt) AS violating,
+  (CASE WHEN ($now > t.data.expiresAt) THEN null ELSE t.data.expiresAt END) AS freshUntil
+`
 
 // MyTasksBucket is the package-owned output bucket for the my-tasks lens.
 // Provisioned at package-install time (NOT primordial), mirroring

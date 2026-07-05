@@ -53,6 +53,11 @@ const (
 	// authoring bug the engine's dispatch-time §5 re-validation does not exist
 	// to catch (that check trusts the row came from a §5-validated proposal).
 	actionProposedOp = "proposedOp"
+	// actionSurface is FR29's "surface, never dispatch" gap (Contract #10
+	// §10.8): raises/clears a named Health-KV issue while the gap is
+	// open/closed, dispatching no op and creating no mark. Requires IssueCode;
+	// IssueSeverity is optional (engine default: "warning").
+	actionSurface = "surface"
 )
 
 // Augur escalation triggers (Contract #10 §10.8 "Augur escalation"). Re-stated
@@ -192,8 +197,16 @@ func validateGapAction(targetIdx int, targetID, col string, ga GapActionSpec) er
 		// Sourced entirely from the row (an approved Augur proposal) — no static
 		// field is required or meaningful; a package setting one anyway is
 		// harmless (buildProposedOpPlan never reads it) but not validated here.
+	case actionSurface:
+		if ga.IssueCode == "" {
+			return missing("IssueCode")
+		}
+		if ga.IssueSeverity != "" && ga.IssueSeverity != "warning" && ga.IssueSeverity != "error" {
+			return fmt.Errorf("pkgmgr: WeaverTarget[%d] %q: gaps key %q action %q issueSeverity %q must be \"warning\" or \"error\" (omit for the \"warning\" default)",
+				targetIdx, targetID, col, ga.Action, ga.IssueSeverity)
+		}
 	default:
-		return fmt.Errorf("pkgmgr: WeaverTarget[%d] %q: gaps key %q action %q is not a known action (triggerLoom | assignTask | directOp | proposedOp)",
+		return fmt.Errorf("pkgmgr: WeaverTarget[%d] %q: gaps key %q action %q is not a known action (triggerLoom | assignTask | directOp | proposedOp | surface)",
 			targetIdx, targetID, col, ga.Action)
 	}
 	return nil

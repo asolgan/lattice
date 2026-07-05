@@ -93,15 +93,17 @@ type GrantArtifactContent struct {
 // never carry a shape the engine wouldn't already accept from a hand-authored
 // package.
 type GapActionArtifact struct {
-	Action    string            `json:"action"`
-	Pattern   string            `json:"pattern,omitempty"`
-	Subject   string            `json:"subject,omitempty"`
-	Adapter   string            `json:"adapter,omitempty"`
-	Operation string            `json:"operation,omitempty"`
-	Assignee  string            `json:"assignee,omitempty"`
-	Target    string            `json:"target,omitempty"`
-	Params    map[string]string `json:"params,omitempty"`
-	Reads     []string          `json:"reads,omitempty"`
+	Action        string            `json:"action"`
+	Pattern       string            `json:"pattern,omitempty"`
+	Subject       string            `json:"subject,omitempty"`
+	Adapter       string            `json:"adapter,omitempty"`
+	Operation     string            `json:"operation,omitempty"`
+	Assignee      string            `json:"assignee,omitempty"`
+	Target        string            `json:"target,omitempty"`
+	Params        map[string]string `json:"params,omitempty"`
+	Reads         []string          `json:"reads,omitempty"`
+	IssueCode     string            `json:"issueCode,omitempty"`
+	IssueSeverity string            `json:"issueSeverity,omitempty"`
 }
 
 // WeaverTargetArtifactContent is the JSON shape of a "weaverTarget"-kind

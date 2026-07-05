@@ -72,7 +72,7 @@ LATTICE_PROCESSOR_AUTH_MODE ?= stub
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up up-full up-loftspace orchestration install-packages install-loftspace run-loupe run-gateway run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role provision-clinic-role provision-readpath provision-vault-kek reinstall-package verify-package-service-location verify-package-augur verify-conformance build vet lint-conventions lint-board install-skills test test-rollback test-lease-convergence test-object-gc test-crypto-shred test-system-actor-capability test-augur-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
+.PHONY: up up-full up-loftspace orchestration install-packages install-loftspace run-loupe run-gateway run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role provision-clinic-role provision-readpath provision-vault-kek reinstall-package verify-package-service-location verify-package-augur verify-conformance build vet lint-conventions lint-board install-skills test test-rollback test-lease-convergence test-object-gc test-crypto-shred test-system-actor-capability test-augur-convergence test-unrouted-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 ## Detects an already-healthy kernel first and reuses it — invoking this against a
@@ -723,6 +723,22 @@ test-system-actor-capability:
 .PHONY: test-augur-convergence
 test-augur-convergence:
 	go test -tags augurconvergence ./internal/augurconvergence/... -run TestAugurConvergence -v -p 1 -count=1 -timeout 5m
+
+## test-unrouted-convergence — FR28/FR29's unroutedTasks Weaver target gate.
+## Self-contained: embedded NATS, boots Processor + Weaver, installs rbac →
+## identity → orchestration-base via the real InstallPackage op path
+## (registering the real unroutedTasks meta.weaverTarget + its missing_claim
+## gap materialised to the new §10.8 `surface` action), hand-writes the row the
+## real unroutedTasks lens projects (proven correct at the cypher level by
+## orchestration-base's lens_cypher_test.go — this harness runs no live
+## Refractor), and proves the `surface` action round-trips through the real
+## install path end to end: a violating row raises a named Health-KV issue
+## (Contract #5 §5.5 issues[]) at the declared severity with NO remediation
+## ever dispatched, and the issue clears once the row closes. Compiled with
+## -tags unroutedconvergence.
+.PHONY: test-unrouted-convergence
+test-unrouted-convergence:
+	go test -tags unroutedconvergence ./internal/unroutedconvergence/... -run TestUnroutedConvergence -v -p 1 -count=1 -timeout 3m
 
 ## vet — Run go vet on all packages except vendored ANTLR-generated parsers
 ## (which contain expected unreachable-code patterns from the generator).

@@ -646,3 +646,54 @@ func TestHandleRow_EffectDispatchAndClose(t *testing.T) {
 		t.Fatalf("window after close = %v, want [true]", stats.Window)
 	}
 }
+
+// TestHandleRow_SurfaceGap proves FR29's "surface, never dispatch" gap
+// (actionSurface): a violating row raises the named Health issue at the
+// declared severity and dispatches NO op and creates NO mark; when the row
+// stops naming the gap, the issue clears via clearClosedMarks — with no mark
+// ever having existed to clean up.
+func TestHandleRow_SurfaceGap(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newHandlerHarness(t, ctx)
+
+	const targetID = "unroutedTasks"
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps: map[string]GapAction{
+			"missing_claim": {Action: actionSurface, IssueCode: "UnroutedTasks", IssueSeverity: "warning"},
+		},
+	})
+	entityID := testNanoID(t)
+	open := map[string]any{
+		"entityKey": "vtx.task." + entityID, "violating": true, "missing_claim": true,
+	}
+	if dec := h.engine.handleRow(ctx, h.rowMessage(t, targetID, entityID, open, 1, 1)); dec != substrate.Ack {
+		t.Fatalf("surface gap dispatch must Ack, got %v", dec)
+	}
+	h.requireNoOp(t)
+	issues := h.engine.issues.snapshot()
+	if !hasIssueCode(issues, "UnroutedTasks") {
+		t.Fatalf("expected an UnroutedTasks issue, got %v", issues)
+	}
+	if sev := issueSeverity(issues, "UnroutedTasks"); sev != "warning" {
+		t.Fatalf("UnroutedTasks severity = %q, want warning", sev)
+	}
+	if _, _, inFlight, err := h.engine.marks.get(ctx, targetID, entityID, "missing_claim"); err != nil || inFlight {
+		t.Fatalf("surface gap must never create a mark (err=%v, inFlight=%v)", err, inFlight)
+	}
+
+	closed := map[string]any{
+		"entityKey": "vtx.task." + entityID, "violating": false, "missing_claim": false,
+	}
+	if dec := h.engine.handleRow(ctx, h.rowMessage(t, targetID, entityID, closed, 2, 1)); dec != substrate.Ack {
+		t.Fatalf("gap-close row must Ack, got %v", dec)
+	}
+	if hasIssueCode(h.engine.issues.snapshot(), "UnroutedTasks") {
+		t.Fatal("expected UnroutedTasks issue to clear once the gap closes")
+	}
+}

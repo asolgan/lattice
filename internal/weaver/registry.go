@@ -71,6 +71,13 @@ type GapAction struct {
 	Assignee  string            `json:"assignee,omitempty"`
 	Target    string            `json:"target,omitempty"`
 	Params    map[string]string `json:"params,omitempty"`
+	// IssueCode/IssueSeverity are consulted only when Action == actionSurface
+	// (FR29's "surface, never dispatch" gap): the Health-KV issue code/severity
+	// raised while the gap stays open, cleared on close. IssueSeverity defaults
+	// to "warning" (degraded, never "unhealthy" — a stuck monitor is not
+	// Weaver's own failure to fulfil its responsibility) when omitted.
+	IssueCode     string `json:"issueCode,omitempty"`
+	IssueSeverity string `json:"issueSeverity,omitempty"`
 	// Reads are the dispatched op's ContextHint.Reads — bare vertex keys, each a
 	// literal or a row.<column> template resolved from the violation row. A
 	// directOp that must read its candidate vertex (e.g. TombstoneObject) routes
@@ -252,7 +259,7 @@ type targetSource struct {
 	ownerTargetID map[string]string    // vertex id → targetId it registered
 	patternMeta   map[string]string    // patternId (and vertex id) → vtx.meta.<id>
 	patternOwner  map[string][]string
-	opMetaByType  map[string]string // operationType → vtx.meta.<opId>
+	opMetaByType  map[string]string                // operationType → vtx.meta.<opId>
 	opEffects     map[string][]*guardgrammar.Guard // op-meta vertex id → its parsed .effects guards
 }
 

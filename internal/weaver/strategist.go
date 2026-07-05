@@ -21,6 +21,12 @@ const (
 	// after a dispatch-time re-validation (buildProposedOpPlan). Reserved for the
 	// augur package's primordial augurDispatch target.
 	actionProposedOp = "proposedOp"
+	// actionSurface is FR29's "surface, never dispatch" gap (Contract #10
+	// §10.8): raises/clears a named Health-KV issue while the gap stays
+	// open/closes, dispatching no op, creating no mark. Handled entirely in
+	// evaluator.go's dispatchGap/clearClosedMarks, upstream of buildPlan — this
+	// switch never sees it.
+	actionSurface = "surface"
 )
 
 // Operation types the Actuator submits.

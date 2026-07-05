@@ -75,10 +75,10 @@ func TestVerifyAgainstDefinition_HappyPath(t *testing.T) {
 		},
 	}
 	def := Definition{
-		Name:    "x",
-		Version: "1.0",
-		DDLs:    []DDLSpec{{CanonicalName: "A"}},
-		Lenses:  []LensSpec{{CanonicalName: "L"}},
+		Name:        "x",
+		Version:     "1.0",
+		DDLs:        []DDLSpec{{CanonicalName: "A"}},
+		Lenses:      []LensSpec{{CanonicalName: "L"}},
 		Permissions: []PermissionSpec{{OperationType: "Op"}},
 	}
 	if err := m.VerifyAgainstDefinition(def); err != nil {

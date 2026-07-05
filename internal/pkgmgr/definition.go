@@ -241,6 +241,13 @@ type GapActionSpec struct {
 	// the candidate vertex it must read). Used by directOp; the candidate id is
 	// already in the target lens row, so this just routes it into the op's reads.
 	Reads []string
+	// IssueCode/IssueSeverity are consulted only when Action == "surface" (FR29's
+	// "surface, never dispatch" gap, Contract #10 §10.8) — the Health-KV issue
+	// code/severity raised while the gap is open, cleared on close. No op is
+	// ever dispatched for this action. IssueSeverity defaults to "warning" when
+	// omitted.
+	IssueCode     string
+	IssueSeverity string
 }
 
 // LoomPatternSpec is one meta.loomPattern meta-vertex a package declares

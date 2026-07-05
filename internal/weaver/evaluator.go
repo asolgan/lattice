@@ -166,6 +166,23 @@ func (e *Engine) dispatchGap(ctx context.Context, target *Target, targetID, enti
 		ga = esc
 	}
 
+	if ga.Action == actionSurface {
+		// FR29: surface-only, never dispatch. No mark, no OCC, no episode —
+		// just a Health-KV issue for as long as the gap stays open (cleared by
+		// clearClosedMarks below when the row stops naming this column).
+		sev := ga.IssueSeverity
+		if sev == "" {
+			sev = "warning"
+		}
+		code := ga.IssueCode
+		if code == "" {
+			code = "Surface"
+		}
+		e.issues.set(issueKeyGap(targetID, col), sev, code,
+			"target "+targetID+": row column "+col+" is true")
+		return substrate.Ack
+	}
+
 	// Fire 4 shadow comparison (Contract #10 §10.8 Planner extension):
 	// diagnostic-only, never alters what fires below. A no-op unless the
 	// target is mode:"shadow" and this gap declares candidates.
@@ -404,6 +421,14 @@ func (e *Engine) clearClosedMarks(ctx context.Context, target *Target, targetID,
 	ok := true
 	for _, col := range markCandidateColumns(target, row) {
 		if row != nil && e.boolColumn(targetID, row, col) {
+			continue
+		}
+		if ga, isSurface := target.Gaps[col]; isSurface && ga.Action == actionSurface {
+			// A surface gap never creates a mark (dispatchGap returns before
+			// e.marks.get) — clear its issue directly and skip the mark/
+			// dispatch-count/effect-close bookkeeping below, which has nothing
+			// to clear for this column.
+			e.issues.clear(issueKeyGap(targetID, col))
 			continue
 		}
 		rec, _, found, gErr := e.marks.get(ctx, targetID, entityID, col)

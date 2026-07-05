@@ -39,14 +39,14 @@ func TestPackage_DDLsLensesPermissions(t *testing.T) {
 	if got := Package.DDLs[0].CanonicalName; got != "task" {
 		t.Fatalf("DDL[0] canonicalName = %q, want task", got)
 	}
-	if got := len(Package.Lenses); got != 2 {
-		t.Fatalf("expected 2 lenses, got %d", got)
+	if got := len(Package.Lenses); got != 3 {
+		t.Fatalf("expected 3 lenses, got %d", got)
 	}
 	lensNames := map[string]bool{}
 	for _, l := range Package.Lenses {
 		lensNames[l.CanonicalName] = true
 	}
-	for _, want := range []string{"capabilityEphemeral", "myTasks"} {
+	for _, want := range []string{"capabilityEphemeral", "myTasks", "unroutedTasks"} {
 		if !lensNames[want] {
 			t.Fatalf("missing lens %q (have %v)", want, lensNames)
 		}
