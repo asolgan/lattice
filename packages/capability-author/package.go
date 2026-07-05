@@ -54,12 +54,20 @@
 //     relay actor / the trusted bridge-equivalent submitter — the same
 //     operator-equivalent idiom augur's + lease-signing's capture pairs use).
 //
+//   - Two P5 read-model lenses (the operator/reasoning-model query surface,
+//     lattice-architecture.md P5): `capabilityProposals` (flat, one row per
+//     proposal — the review surface Loupe renders) and
+//     `capabilityAuthorContext` (a flat scan of every installed
+//     `vtx.meta.*` DDL/lens/target/pattern, the same installed-DDL
+//     self-description catalog `cmd/loupe/ops.go`'s buildOpGroups computes by
+//     scanning Core KV directly — this lens is the non-Loupe equivalent so
+//     the bridge/reasoning adapter never needs Core KV access).
+//
 // Deliberately NOT yet built (the fire's remaining checkpoints, see the design
 // doc): the real claude-opus-4-8-backed `capabilityAuthor` bridge adapter (only
 // the deterministic `FakeCapabilityAuthor` ships — the same posture Augur's own
-// adapter is still in); the `capability-proposals` review lens +
-// `capability-author-context` catalog lens; ReviewCapabilityProposal + the
-// F-004 apply path; the `grant`/`weaverTarget`/`loomPattern`/Starlark kinds.
+// adapter is still in); ReviewCapabilityProposal + the F-004 apply path; the
+// `grant`/`weaverTarget`/`loomPattern`/Starlark kinds.
 //
 // Install via the InstallPackage kernel op. See docs/components/_packages.md
 // and _bmad-output/implementation-artifacts/ai-authored-capabilities-design.md.
@@ -70,8 +78,8 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
 	Name:          "capability-author",
-	Version:       "0.2.0",
-	Description:   "AI-authored capabilities — Fire 1 capture + escalation dispatch: the capabilityproposal + capabilityauthorclaim vertex types, the RequestCapabilityAuthoring/CreateAuthoringClaim/RecordCapabilityProposal ops (§5 record-time deterministic-validation boundary for the lens kind), the capabilityAuthorPending weaver-target lens, and the capabilityAuthor Loom pattern. The review/apply ops and catalog/review lenses land in later increments.",
+	Version:       "0.3.0",
+	Description:   "AI-authored capabilities — Fire 1 capture + escalation dispatch + P5 read models: the capabilityproposal + capabilityauthorclaim vertex types, the RequestCapabilityAuthoring/CreateAuthoringClaim/RecordCapabilityProposal ops (§5 record-time deterministic-validation boundary for the lens kind), the capabilityAuthorPending weaver-target lens, the capabilityAuthor Loom pattern, and the capabilityProposals/capabilityAuthorContext review + catalog lenses. The review/apply ops and the grant/weaverTarget/loomPattern/Starlark kinds land in later increments.",
 	Depends:       []string{"orchestration-base"},
 	DDLs:          DDLs(),
 	Permissions:   Permissions(),

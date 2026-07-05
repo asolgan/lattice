@@ -1,23 +1,55 @@
 name: capability-author
-version: 0.1.0
+version: 0.3.0
 description: |
-  AI-authored capabilities — Increment 1 of Fire 1 (ai-authored-capabilities-design.md).
-  The capabilityproposal vertex type + the RequestCapabilityAuthoring/RecordCapabilityProposal
-  capture pair: a request mints the proposal vertex write-ahead; a record carries a proposed
-  artifact + its already-computed §5 deterministic-validation verdict (parsed cypher +
-  validateAll for the lens kind, via the internal/pkgmgr materializer) and stores
-  review.state = pending | invalid. The AI proposes; a human will decide (the review/apply
-  ops land in a later increment); the Processor stays sole writer.
+  AI-authored capabilities — Fire 1 capture + escalation dispatch + review lenses
+  (ai-authored-capabilities-design.md). The capabilityproposal + capabilityauthorclaim
+  vertex types; the RequestCapabilityAuthoring/CreateAuthoringClaim/RecordCapabilityProposal
+  capture pair (a request mints the proposal vertex write-ahead; the escalation dispatch
+  triggers the reasoning call; a record carries a proposed artifact + its already-computed
+  §5 deterministic-validation verdict and stores review.state = pending | invalid); the
+  capabilityAuthorPending weaver-target lens + capabilityAuthor Loom pattern that drive the
+  dispatch; and the capabilityProposals / capabilityAuthorContext P5 read-model lenses (the
+  operator review surface + the installed-DDL self-description catalog). The AI proposes; a
+  human will decide (the review/apply ops land in a later increment); the Processor stays
+  sole writer.
 depends:
   - orchestration-base
 declares:
   ddls:
     - canonicalName: capabilityproposal
       class: meta.ddl.vertexType
+    - canonicalName: capabilityauthorclaim
+      class: meta.ddl.vertexType
+  lenses:
+    - canonicalName: capabilityAuthorPending
+      adapter: nats-kv
+      bucket: weaver-targets
+      engine: full
+    - canonicalName: capabilityProposals
+      adapter: nats-kv
+      bucket: capability-proposals
+      engine: full
+    - canonicalName: capabilityAuthorContext
+      adapter: nats-kv
+      bucket: capability-author-context
+      engine: full
   permissions:
     - operationType: RequestCapabilityAuthoring
+      scope: any
+      grantsTo: [operator]
+    - operationType: CreateAuthoringClaim
       scope: any
       grantsTo: [operator]
     - operationType: RecordCapabilityProposal
       scope: any
       grantsTo: [operator]
+  weaverTargets:
+    - targetId: capabilityAuthorDispatch
+      lensRef: capabilityAuthorPending
+  loomPatterns:
+    - patternId: capabilityAuthor
+      subjectType: capabilityproposal
+  opMetas:
+    - operationType: RequestCapabilityAuthoring
+    - operationType: CreateAuthoringClaim
+    - operationType: RecordCapabilityProposal

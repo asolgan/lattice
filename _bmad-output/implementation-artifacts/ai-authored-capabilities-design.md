@@ -105,10 +105,21 @@ note below didn't fully resolve, closed during this build). Full 3-layer adversa
 shape-validates `subjectKey` is a `capabilityproposal` vertex key before writing to it) plus a cosmetic
 aspect-class casing inconsistency. All tests green (`packages/capability-author`, `internal/bridge`).
 
-**Next (remaining Fire 1 increments, in order):** (a) the `capability-proposals` review lens +
-`capability-author-context` catalog lens (P5 read models); (b) `ReviewCapabilityProposal` + the
-operator-submitted F-004 apply + the `applied` flip (closes the loop); (c) the **grant** kind in the
-materializer (§5 scope-check) — Fire 1's fast-follow per the ratified collapse.
+**Done (P5 read models).** The two remaining Fire-1 read models: `capabilityProposals` (flat, one row
+per `capabilityproposal` vertex — every capture-pair aspect, null-safe; mirrors `packages/augur`'s
+`augurProposals`) and `capabilityAuthorContext` (a flat `MATCH (m:meta)` scan of every installed DDL /
+lens / weaverTarget / loomPattern meta-vertex — the engine's label match is by the key TYPE segment, not
+the root `class` field, so one unfiltered query returns every meta kind; DDL rows carry the five
+self-description aspects, non-DDL rows project those columns null — the same shape `cmd/loupe/ops.go`'s
+`buildOpGroups` computes by scanning Core KV directly, so this lens is the non-Loupe P5 equivalent the
+bridge/reasoning adapter reads instead). Manifest brought into lockstep with the Go `Definition` (it had
+drifted since the escalation-dispatch increment — missing the `capabilityauthorclaim` DDL and all
+lens/weaverTarget/loomPattern/opMeta declares, which would have failed `VerifyAgainstDefinition` at
+install); added the `TestPackage_ManifestMatchesDefinition` drift test `packages/augur` already carries.
+
+**Next (remaining Fire 1 increments, in order):** (a) `ReviewCapabilityProposal` + the operator-submitted
+F-004 apply + the `applied` flip (closes the loop); (b) the **grant** kind in the materializer (§5
+scope-check) — Fire 1's fast-follow per the ratified collapse.
 
 ---
 
