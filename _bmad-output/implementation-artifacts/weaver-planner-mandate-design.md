@@ -85,6 +85,50 @@ is **chaining ≥2 ops**; no installed package has a gap that needs it yet. **Ho
 plan-vertex compilation, runtime `meta.loomPattern` authoring, plan GC, and dispatch-time re-validation
 stay unbuilt until a real multi-op gap surfaces (Surveyor/vertical-PO signal, not manufactured). Re-check
 this gate whenever a new package/gap is filed with ≥2 ops that could close one gap.
+*(2026-07-05: the re-check trigger is superseded — see the verification pass below: under the §10.8
+decomposition doctrine a ≥2-op gap cannot arise on its own; the unblock is the goal-authored renewal
+demand, filed.)*
+
+**🔎 Verification pass (2026-07-05, Andrew-commissioned, Winston):** Fires 1–5 + 6 Inc1–2 verified
+against the design's load-bearing invariants — planner determinism (canonical ordering, no wall-clock,
+catalog-permutation stability), mark-pinned episode stability including the single-mark-read threading
+through `resolvePlannedAction` (the pre-build gate's fix, re-confirmed in code at `evaluator.go:214` /
+`reconciler.go:484`), the no-new-Core-KV-reads doctrine (Inc2's bridge over the rejected fresh-read),
+shadow inert-by-construction (`shadowCompare` has no path to `fireEpisode`); `./internal/weaver/...`
+green. **Verdict: matches the design's letter and spirit; Inc1/Inc2 corrected real gaps in the design's
+own text in the right direction.** Three findings:
+
+1. **`goalColumns` contract amendment — pending Andrew's LOCAL review, not drifted.** The §10.8 edit
+   sits as an uncommitted diff on Andrew's machine (the uncommitted-in-main protocol working as
+   intended), alongside other pending changes to the contract file he reviews before committing.
+   Cross-checked the staged text against `goal_state_internal_test.go`: all five validation clauses
+   (per-gap scope, aspect-qualified-only, root-shaped rejected, unique values, goal-referenced-only,
+   plus the aspect-shaped `candidates[].pre` rejection) match the shipped engine exactly — commit-ready
+   from the engine's side. *Lesson for remote verification passes: a remote container cannot see
+   Andrew's local staged proposals — absence-from-`main` is NOT evidence of loss; ask before filing
+   drift.*
+2. **Adoption blind spot — the planner has no production consumer at all.** No installed target
+   declares `mode`/`candidates`/`goal` (grep across `packages/*/targets.go`); every production dispatch
+   still runs the frozen table. Fires 4–5 are engine-complete, fixture-exercised only. The spirit of
+   the mandate ("remediation stops being a static lookup") is built but not yet *lived* anywhere.
+3. **The Inc3 hold is structural, not temporal — its re-check trigger could never fire on its own.**
+   Andrew's hypothesis, confirmed in refined form: not "one violation true at a time" (the four
+   applicant gaps are concurrently true) but **one closer per gap**, mandated by §10.8's own
+   dependency-gating doctrine ("a dependent gap simply isn't `true` until its prerequisite closes") —
+   lens authors are *required* to pre-decompose every chain into single-op gaps, so a ≥2-op gap
+   structurally cannot arise under the current authoring convention. The human does the goal
+   regression at authoring time.
+
+**Unblock (Andrew, 2026-07-05):** (a) **renewal demand filed** on `verticals.md` — LoftSpace lease
+renewal as the **first goal-authored target** (per-tenant variable chain: conditional fresh bgcheck /
+guarantor re-verify / rent-adjustment approval / renewal signature); its design must include the small
+§10.8 doctrine rider blessing goal-first authoring as the sanctioned *alternative* to gating-cypher
+decomposition. (b) **Inc3's machinery lands with its first real consumer** — the renewal target or
+Fire 9's plan-shaped Augur proposals (novel gaps have no pre-authored decomposition by definition),
+whichever arrives first. (c) **Fires 7–8 are unblocked now** — orthogonal to synthesis since Fire 2.
+(d) When lease-signing is next touched, give Fire 5 a production consumer: `missing_payment`
+`candidates` = [collectPayment flow (cheap), operator `assignTask` fallback] — the existing
+"budget-spent → needs-human" terminal, made dispatchable.
 
 **Pre-build gate (run 2026-07-04, in the Fire 5 session):** the self-imposed adversarial pass over
 episode-stability under reclaim, focused specifically on the hazard the existing dispatch pipeline
