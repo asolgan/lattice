@@ -147,7 +147,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### AI-native
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| AI-authored capabilities | A Lattice-aware agent proposes DDL/Starlark/lenses/workflows through human review + deterministic validation + rollback. | ★★–★★★ | L | 🏗️ building · [design](../../implementation-artifacts/ai-authored-capabilities-design.md) · grant kind shipped (`99f7255`); next: Loupe/CLI review-and-apply affordance, then Fire 3 (weaverTarget/loomPattern) |
+| AI-authored capabilities | A Lattice-aware agent proposes DDL/Starlark/lenses/workflows through human review + deterministic validation + rollback. | ★★–★★★ | L | 🏗️ building · [design](../../implementation-artifacts/ai-authored-capabilities-design.md) · Fire 2 CLOSED (`c58ba1c` CLI affordance); next: Fire 3 (weaverTarget/loomPattern) · Loupe UI affordance is Stream 3's lane |
 | **The Augur** (AI reasoning tier — L3 evaluator) | Weaver's AI-assisted reasoning tier for ambiguous/novel convergence gaps. The marquee AI-native feature. | ★★ | M–L | ✅ Fires 1+2a+2b shipped (loop closes: escalate→review→dispatch) · [design](../../implementation-artifacts/augur-design.md) + [dispatch design](../../implementation-artifacts/augur-dispatch-pickup-design.md) · 🚧 Fire 3 autoApply Andrew-gated; follow-up: mid-flight-kill + drift-invalid e2e (§6 residual) |
 | Starlark guards (Loom) | The reserved `{reads, starlark}` guard escape hatch needs a verified-pure sandbox. | ★ | M | ✅ ratified (split) · [design](../../implementation-artifacts/loom-starlark-guards-design.md) · 🚧 Loom-side held (ships with first consumer) |
 | **Weaver planner mandate (dispatcher → solver)** | Remediation stops being a static gap→action lookup: deterministic planner (per-gap candidate selection, then goal-regression synthesis over op-declared effects) executed as content-addressed pinned Loom patterns, plus contraction/oscillation diagnostics and fleet admission control; shadow mode + per-target cutover; the Augur stays the AI boundary. | ★★★ | XL | 🏗️ building · [design](../../implementation-artifacts/weaver-planner-mandate-design.md) · Fires 1-5+6 Inc1-2 done; Inc3 HELD (no real multi-op gap) |
@@ -187,6 +187,8 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 ## Done log — lattice (newest first)
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
+
+- 2026-07-05 · `c58ba1c` · [AI-native] AI-authored capabilities Fire 2 CLOSED — `lattice capability list/review` + `lattice-pkg apply-proposal`, 3-layer reviewed
 
 - 2026-07-05 · `99f7255` · [AI-native] AI-authored capabilities Fire 2 fast-follow — grant kind in the materializer (scope check + e2e); Loupe/CLI affordance remains
 - 2026-07-05 · `99d3aa9` · [AI-native] AI-authored capabilities Fire 2 — F-004 apply loop + applied flip; lens-kind loop CLOSED; grant kind + Loupe/CLI affordance remain
