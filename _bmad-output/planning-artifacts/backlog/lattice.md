@@ -101,15 +101,14 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
 > 🎯 **Build-ready now**: **Object crypto-shred** (Vault shipped 2026-07-05, its gate cleared) ·
-> **Gateway Fire 3** (read-front, D1 closed 2026-07-02) · **Personal Lens PL.3** (readableAnchors, D1 +
-> NATS-account-auth both done) · **Control-plane-authz Fire 2** (verified-actor, D1.2 done) — all four
-> unblocked, none yet picked up. *Still genuinely gated*: **AI-caps Fire 4** (Andrew sign-off on
-> AI-code-execution, not the sandbox).
+> **Personal Lens PL.3** (readableAnchors, D1 + NATS-account-auth both done) · **Control-plane-authz
+> Fire 2** (verified-actor, D1.2 done) — unblocked, none yet picked up. *Still genuinely gated*:
+> **AI-caps Fire 4** (Andrew sign-off on AI-code-execution, not the sandbox).
 
 ### Security & trust boundary
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| Gateway | Edge trust boundary: JWT auth, `Lattice-Actor` stamping, read-path enforcement. Gates external actors + the real Edge node. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/gateway-external-trust-boundary-design.md) · Fire 1+2 shipped, Fire 4 retired ([re-grounded](../../implementation-artifacts/gateway-claim-flow-identity-provisioning-design.md)); D1 closed — next: Fire 3 read-front, unblocked |
+| Gateway | Edge trust boundary: JWT auth, `Lattice-Actor` stamping, read-path enforcement. Gates external actors + the real Edge node. | ★★★ | L | ✅ effectively done · [design](../../implementation-artifacts/gateway-external-trust-boundary-design.md) · Fire 1+2+3 shipped (write path, JWKS, RLS read-front); Fire 4 retired ([re-grounded](../../implementation-artifacts/gateway-claim-flow-identity-provisioning-design.md)); Fire 5 is ops (reverse-proxy), not a Steward fire |
 | NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | ✅ effectively done · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) §Fire-3-status · only deferred Fire 4 (prod mTLS) remains |
 | Control-plane Capability authorization (FR30) | Both control planes (Weaver/Refractor `…/control`) should be capability-gated, not open responders. | ★★ | M | ✅ effectively done · [design](../../implementation-artifacts/control-plane-capability-authz-design.md) · Fire 1a+1b+1c shipped (capability-enforced behind the NATS trust floor); D1.2 shipped — Fire 2 (verified-actor) unblocked, not yet picked up |
 
@@ -180,6 +179,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-05 · `c99770f` · [Security/Gateway] Fire 3 — RLS-enforced read-path front (`GET /v1/<name>`, config-only read-model registry); Gateway CLOSED (Fire 5 is ops), 3-layer reviewed
 - 2026-07-05 · `—` · [Privacy/Vault] Vault + crypto-shredding CLOSED — live delivery-boundary reset + e2e (attended session): real ciphertext at rest, real decrypt for the authorized landlord, real shred nulls contact cols row-intact
 - 2026-07-05 · `cfc65fe` · [Loupe] Chronicler Fire 3 CLOSED — Flows tab (durable Loom-flow history, P5 read + live/orphaned badge), lead-reviewed
 - 2026-07-05 · `1e35cc9` · [Refractor/orchestration-base] Chronicler Fire 2 — `loomFlowHistory` event-sourced lens, first eventStream consumer, 3-layer reviewed

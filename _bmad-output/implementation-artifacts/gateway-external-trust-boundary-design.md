@@ -344,9 +344,10 @@ Each fire is independently shippable + green. **Build only after ✅ Andrew-rati
 (Andrew, 2026-06-29, fewer-larger-fires):** Fires 1+2 below shipped as **one fire** (the buildable-now write
 surface — translator + dev signer + JWKS + health + doc); **Fire 4 (claim-front) was correctly held back**
 once its own premise was found self-contradictory at build time and is now **retired** (§3.3, §8 item 4 —
-re-grounded 2026-07-04, not built in any form). Fire 3 (read-front) is the **next** fire, behind D1.3,
-**one-way** (Lattice consumes the Verticals D1.3 read-model); Fire 5 (reverse-proxy) is **ops**, not a
-Steward fire. **Hard gate: the write-surface fire lands with/after #75 Fire 2b (enforcement, not yet live).**
+re-grounded 2026-07-04, not built in any form). **Fire 3 (read-front) SHIPPED 2026-07-05** (`c99770f`,
+one-way — Lattice consumes the Verticals D1.3 read-model, config-only read-model registry); Fire 5
+(reverse-proxy) is **ops**, not a Steward fire — the Gateway epic is now closed for the Steward's build
+queue. **Hard gate: the write-surface fire lands with/after #75 Fire 2b (enforcement, not yet live).**
 
 1. **Fire 1 — write-path translator (the keystone; buildable now; full 3-layer security review).**
    `internal/gateway/gateway.go` + a `cmd/gateway` binary: HTTP `POST /v1/operations`, Bearer auth via the
