@@ -2,6 +2,17 @@
 
 Rolled from `lattice.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-04 · `4be8066` · [AI-native] AI-authored capabilities Fire 1 — escalation dispatch (capabilityauthorclaim DDL, capabilityAuthor Loom pattern, self-anchored weaver-target lens, FakeCapabilityAuthor); review/apply remains
+- 2026-07-04 · `25b85a9` · [Health-KV] Fire 3 — consumer pause-state re-keyed off instance (`NewConsumerSink` drops the instance param); item CLOSED
+- 2026-07-04 · `244ebfa` · [AI-native] AI-authored capabilities — RecordCapabilityProposal revised to the standard bridge {externalRef,status,result} shape (was flat/caller-supplied); unblocks Loom-pattern wiring
+- 2026-07-04 · `9727cd4` · [Health-KV] Category B diagnostic-key TTL — malformed-op/claim-attempts/commit-conflicts now KVPutWithTTL; Fire 3 (consumer-state re-key) remains
+- 2026-07-04 · `c16f739`+`c5e1fc2`+`fb8fa5a` · [Core] Processor per-lane consumers — CLOSED (board row was stale); Fire 4 (control-plane responder) unfiled follow-on
+- 2026-07-04 · `37b54b2` · [Gateway] Revocation materializer poison-pill fixed — NanoID-charset `required_actor` gate + Term-on-invalid-key (Classify hook fix closes a pause-spin found in review)
+- 2026-07-04 · `c8bc5a6` · [Weaver] Planner mandate Fire 6 Increment 2 — goal-regression State-schema bridge (`goalColumns` lens-column→aspect-path map, zero new Core-KV reads)
+- 2026-07-04 · `1cda5d3` · [Weaver] Planner mandate Fire 6 Increment 1 — runtime op-effects catalog (pkgmgr `.effects` aspect + registry `effectsCatalog()`); zero dispatch change; Increment 2 gated on a State-schema decision
+- 2026-07-04 · `b472c91` · [Weaver] Planner mandate Fire 5 — `mode:"planned"` candidate-selection dispatch, mark-pinned across reclaim (first real dispatch-decision change); pre-build gate closed; Fire 6 next
+- 2026-07-04 · `9f6a1f2` · [Vault→Loupe] Surface enablers — health.vault heartbeat + vault.decrypt reachability + privacy-operator-grant package; unblocks loupe F12
+- 2026-07-04 · `6c134d9` · [Weaver] Planner mandate Fire 4 — `mode`/`candidates`/`goal` install-parsing + shadow-compare diagnostic (agree/diverge heartbeat metrics); zero dispatch-decision change; Fire 5 next
 - 2026-07-04 · `4d6df0a` · [Weaver] Planner mandate Fire 3 — pure `internal/weaver/planner` goal-regression library (STRIPS/GOAP UCS, canonical determinism, `ErrNoPlan`); not yet wired to any dispatch decision; Fire 4 next
 - 2026-07-04 · `7b9191b` · [Weaver] Planner mandate Fire 2 — `__effect` confidence-window bookkeeping (both dispatch legs + gap-close path) + heartbeat `LensEffectMismatch` issue; Fire 3 (planner library) next
 - 2026-07-04 · `a673d23` · [Weaver] Planner mandate Fire 1 — op-DDL `Effects` (`internal/guardgrammar` + pkgmgr install validation) + lease-signing declarations; zero engine change; Fires 2-9 remain

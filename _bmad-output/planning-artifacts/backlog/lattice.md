@@ -100,10 +100,10 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 **forks** (Gateway, read-path auth, Vault, multi-cell, HA-NATS) and **frozen-contract** changes are
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
-> 🎯 **Build-ready now**: **Object crypto-shred** (Vault shipped 2026-07-05, its gate cleared) ·
-> **Personal Lens PL.3** (readableAnchors, D1 + NATS-account-auth both done) — unblocked, not yet
-> picked up. *Still genuinely gated*: **AI-caps Fire 4** (Andrew sign-off on AI-code-execution, not
-> the sandbox).
+> 🎯 **Build-ready now**: **Object crypto-shred Fire 2** (Fire 1 platform seam shipped `93d6f88`;
+> Loupe client-side encrypt/decrypt path next) · **Personal Lens PL.3** (readableAnchors, D1 +
+> NATS-account-auth both done) — unblocked, not yet picked up. *Still genuinely gated*: **AI-caps
+> Fire 4** (Andrew sign-off on AI-code-execution, not the sandbox).
 
 ### Security & trust boundary
 | Item | What it is | Imp | Size | State |
@@ -116,7 +116,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | **[identity-hygiene] Dedup over encrypted PII (duplicateCandidates)** | Post-Vault, the lens's WHERE matching (email/phone equality, name Levenshtein) runs on per-identity-DEK ciphertext → functionally inert; a secure lens can't fix in-engine matching. Needs a design: blind-index/HMAC companion aspect vs sanctioned engine mechanism. | ★★ | M | 📋 needs-design (Designer) · context in the [vault design](../../implementation-artifacts/vault-crypto-shredding-design.md) Fire 5b-i checkpoint |
-| **[Object Store] Crypto-shred for object-store blobs** | Vault covers sensitive **aspects** (Core KV) but not PII-bearing **blobs** (lease PDFs, ID scans, signatures) — extend crypto-shred to the Object Store. | ★★ | M | ✅ ratified · [design](../../implementation-artifacts/object-store-crypto-shred-design.md) · Vault shipped — unblocked, build-ready |
+| **[Object Store] Crypto-shred for object-store blobs** | Vault covers sensitive **aspects** (Core KV) but not PII-bearing **blobs** (lease PDFs, ID scans, signatures) — extend crypto-shred to the Object Store. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/object-store-crypto-shred-design.md) §8 checkpoint · Fire 1 (platform seam) shipped `93d6f88`; next: Fire 2 (Loupe client-side encrypt/decrypt) |
 
 ### External-I/O maturity (bridge follow-ons)
 | Item | What it is | Imp | Size | State |
@@ -179,6 +179,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-05 · `93d6f88` · [Privacy/Object Store] Crypto-shred Fire 1 — Vault WrapKey/UnwrapKey + AttachObject sensitive/governingIdentity/encryption, identity-salted oid; dormant, 3-layer reviewed; Fire 2 next
 - 2026-07-05 · `a2208a6` · [Security] Control-plane capability authz Fire 2 — verified-actor JWT (reuses D1's gateway/auth), nil-verifier = Fire 1 unchanged; item CLOSED, 3-layer reviewed
 - 2026-07-05 · `0307450` · [Weaver] Planner mandate Fire 7 — contraction monitor + oscillation detector (heartbeat-surfaced diagnostics, freeze via `__control`); zero dispatch-decision change; Fire 8 next
 
@@ -204,15 +205,4 @@ One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archiv
 - 2026-07-05 · `0e8a3b9` · [AI-native] AI-authored capabilities Fire 2 Increment 1 — ReviewCapabilityProposal human-verdict op (approve/reject, fresh-verdict re-validation); F-004 apply + applied flip remains
 - 2026-07-05 · `95a743a` · [Refractor/pipeline] Fan-out eval-error disposition + adj-watch edge arms pinned (`dispositionEvalErr` 100%, `handleAdjNode` extracted + covered); item CLOSED
 - 2026-07-05 · `fc4094e` · [AI-native] AI-authored capabilities — capabilityProposals + capabilityAuthorContext P5 read models; manifest drift fix + drift test; ReviewCapabilityProposal/apply remains
-- 2026-07-04 · `4be8066` · [AI-native] AI-authored capabilities Fire 1 — escalation dispatch (capabilityauthorclaim DDL, capabilityAuthor Loom pattern, self-anchored weaver-target lens, FakeCapabilityAuthor); review/apply remains
-- 2026-07-04 · `25b85a9` · [Health-KV] Fire 3 — consumer pause-state re-keyed off instance (`NewConsumerSink` drops the instance param); item CLOSED
-- 2026-07-04 · `244ebfa` · [AI-native] AI-authored capabilities — RecordCapabilityProposal revised to the standard bridge {externalRef,status,result} shape (was flat/caller-supplied); unblocks Loom-pattern wiring
-- 2026-07-04 · `9727cd4` · [Health-KV] Category B diagnostic-key TTL — malformed-op/claim-attempts/commit-conflicts now KVPutWithTTL; Fire 3 (consumer-state re-key) remains
-- 2026-07-04 · `c16f739`+`c5e1fc2`+`fb8fa5a` · [Core] Processor per-lane consumers — CLOSED (board row was stale); Fire 4 (control-plane responder) unfiled follow-on
-- 2026-07-04 · `37b54b2` · [Gateway] Revocation materializer poison-pill fixed — NanoID-charset `required_actor` gate + Term-on-invalid-key (Classify hook fix closes a pause-spin found in review)
-- 2026-07-04 · `c8bc5a6` · [Weaver] Planner mandate Fire 6 Increment 2 — goal-regression State-schema bridge (`goalColumns` lens-column→aspect-path map, zero new Core-KV reads)
-- 2026-07-04 · `1cda5d3` · [Weaver] Planner mandate Fire 6 Increment 1 — runtime op-effects catalog (pkgmgr `.effects` aspect + registry `effectsCatalog()`); zero dispatch change; Increment 2 gated on a State-schema decision
-- 2026-07-04 · `b472c91` · [Weaver] Planner mandate Fire 5 — `mode:"planned"` candidate-selection dispatch, mark-pinned across reclaim (first real dispatch-decision change); pre-build gate closed; Fire 6 next
-- 2026-07-04 · `9f6a1f2` · [Vault→Loupe] Surface enablers — health.vault heartbeat + vault.decrypt reachability + privacy-operator-grant package; unblocks loupe F12
-- 2026-07-04 · `6c134d9` · [Weaver] Planner mandate Fire 4 — `mode`/`candidates`/`goal` install-parsing + shadow-compare diagnostic (agree/diverge heartbeat metrics); zero dispatch-decision change; Fire 5 next
 - *(older entries rolled to [archive/lattice-done.md](archive/lattice-done.md))*

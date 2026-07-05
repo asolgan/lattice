@@ -365,6 +365,28 @@ this design needs §3.10's per-identity DEK + the `internal/vault` SPI. Build or
 > **Sequencing on the board:** behind D1 → behind Vault (A+B) → this. The design is ratifiable now and sits
 > on the shelf; the Steward picks Fire 1 once Vault has shipped.
 
+> **🏗️ CHECKPOINT (2026-07-05).** Fire 1 shipped `93d6f88` (main, no worktree left open — merged
+> fast-forward). Built: `internal/vault` `WrapKey`/`UnwrapKey` (thin delegations to `Encrypt`/`Decrypt`,
+> same identity-binding/shred semantics); `objects-base`'s `AttachObject` gains `sensitive` +
+> `governingIdentity` + `encryption{algo,nonce,wrappedCEK,keyId}`, identity-salting the oid when sensitive
+> (`sha256NanoID("object:"+keyId+":"+digest)`); package version 0.1.0 → 0.2.0. Hardened beyond the
+> contract-literal text during 3-layer review (Blind Hunter, Edge Case Hunter, Acceptance Auditor, all
+> corroborating): `sensitive` fails closed on a non-bool value (was silently coercing to `false` —
+> a security-classification flag must never silently downgrade); `governingIdentity` rejects a
+> `vtx.meta.*` vertex, mirroring the existing `targetKey` CC7 guard. New tests: identity-salted oid
+> (incl. one hardcoded golden-value assertion), cross-identity no-dedup, keyId/governingIdentity mismatch
+> rejected, missing-encryption rejected, dedup-keeps-first-envelope (the live→dedup branch's existing
+> behavior — unchanged by this fire — correctly leaves an already-live sensitive object's `.content`
+> pinned to its first envelope, exactly like it already does for `storeName`). `make
+> verify-package-objects-base` NOT run (needs a live NATS_URL against the shared stack; not available
+> to this unattended fire) — run it once, ahead of Fire 2, against the shared dev stack. **Not fixed here
+> (filed separately, pre-existing and unrelated to sensitivity):** an idempotent re-attach to an
+> already-alive link (same target+linkName re-submitted) is rejected by a "response.primaryKey is not
+> within the write footprint" check, contradicting the DDL's own documented CC5-layer-2 no-op contract —
+> discovered while writing the dedup-envelope test, chip filed, not a Fire 1 regression. **Next: Fire 2**
+> (`cmd/loupe/objects.go` trusted-client encrypt/decrypt path) — no behavior is visible from Fire 1 alone
+> (no uploader sets `sensitive` yet).
+
 ---
 
 ## 9. Open ratification items (for Andrew)
