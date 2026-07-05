@@ -90,19 +90,20 @@ func (c *issueCache) snapshot() []healthIssue {
 // counters. Issues carry pausedStructural consumers plus the active
 // config/data-error alerts.
 type heartbeater struct {
-	conn      *substrate.Conn
-	bucket    string
-	instance  string
-	startedAt time.Time
-	interval  time.Duration
-	states    *healthkv.ConsumerStateCache
-	issues    *issueCache
-	source    *targetSource
-	marks     *markStore
-	sweep     *sweeper
-	temporal  *temporalStats
-	shadow    *shadowStats
-	logger    *slog.Logger
+	conn        *substrate.Conn
+	bucket      string
+	instance    string
+	startedAt   time.Time
+	interval    time.Duration
+	states      *healthkv.ConsumerStateCache
+	issues      *issueCache
+	source      *targetSource
+	marks       *markStore
+	sweep       *sweeper
+	temporal    *temporalStats
+	shadow      *shadowStats
+	contraction *contractionStats
+	logger      *slog.Logger
 
 	// ttlMultiplier derives the heartbeat's Health-KV TTL (interval ×
 	// ttlMultiplier, Contract #5 §5.6). Zero disables TTL.
@@ -119,7 +120,8 @@ type heartbeater struct {
 
 func newHeartbeater(conn *substrate.Conn, healthBucket, instance string, every time.Duration,
 	states *healthkv.ConsumerStateCache, issues *issueCache, source *targetSource, marks *markStore,
-	sweep *sweeper, temporal *temporalStats, shadow *shadowStats, logger *slog.Logger) *heartbeater {
+	sweep *sweeper, temporal *temporalStats, shadow *shadowStats, contraction *contractionStats,
+	logger *slog.Logger) *heartbeater {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -139,6 +141,7 @@ func newHeartbeater(conn *substrate.Conn, healthBucket, instance string, every t
 		sweep:                 sweep,
 		temporal:              temporal,
 		shadow:                shadow,
+		contraction:           contraction,
 		logger:                logger,
 		ttlMultiplier:         healthkv.DefaultTTLMultiplier,
 		effectMismatchAlerted: make(map[string]struct{}),
@@ -216,6 +219,11 @@ func (h *heartbeater) emit(ctx context.Context, status string) {
 	if h.shadow != nil {
 		if snap := h.shadow.snapshot(); len(snap) > 0 {
 			metrics["plannerShadow"] = snap
+		}
+	}
+	if h.contraction != nil {
+		if snap := h.contraction.snapshot(); len(snap) > 0 {
+			metrics["contractionTrajectory"] = snap
 		}
 	}
 

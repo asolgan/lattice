@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/asolgan/lattice/internal/guardgrammar"
 	"github.com/asolgan/lattice/internal/healthkv"
 )
 
@@ -223,4 +224,43 @@ func (e *Engine) Revoke(ctx context.Context, targetID string) error {
 
 	e.logger.Info("weaver: target revoked", "targetId", targetID)
 	return nil
+}
+
+// freezeOscillatingPair disables both fighting targets (Engine.Disable — the
+// same operator-facing `__control` seam a manual freeze uses) and raises ONE
+// standing Health issue naming the causal pair and the contested aspect
+// path (design weaver-planner-mandate-design.md §3.4). Freeze-and-alert
+// only: neither target is un-registered and no new dispatch is made — an
+// operator investigates and re-Enables once the authoring conflict is
+// fixed. A Disable failure (e.g. the target was removed between its last
+// dispatch and this call) is logged, not fatal — the issue still names the
+// pair for the operator.
+func (e *Engine) freezeOscillatingPair(ctx context.Context, targetA, targetB string, path guardgrammar.Path) {
+	for _, id := range []string{targetA, targetB} {
+		if err := e.Disable(ctx, id); err != nil {
+			e.logger.Error("weaver: oscillation freeze failed", "targetId", id, "err", err)
+		}
+	}
+	e.alert(issueKeyOscillation(targetA, targetB, path), "error", "TargetOscillation",
+		"targets "+targetA+" and "+targetB+" are alternately dispatching against "+pathString(path)+
+			"; both frozen pending operator review")
+}
+
+// pathString renders a guard-grammar Path in its §10.5 dotted form, for a
+// human-readable oscillation alert.
+func pathString(p guardgrammar.Path) string {
+	if p.Aspect == "" {
+		return "subject.data." + p.Field
+	}
+	return "subject." + p.Aspect + ".data." + p.Field
+}
+
+// issueKeyOscillation is deterministic regardless of which target the
+// alternation started on (A,B,A,B and B,A,B,A name the same fight) — sorting
+// the pair means the same fight always collapses to the same issue key.
+func issueKeyOscillation(targetA, targetB string, path guardgrammar.Path) string {
+	if targetB < targetA {
+		targetA, targetB = targetB, targetA
+	}
+	return "oscillation:" + targetA + "." + targetB + "." + pathString(path)
 }

@@ -1016,6 +1016,53 @@ func (s *targetSource) effectsCatalog() []planner.Action {
 	return catalog
 }
 
+// effectPathsFor returns the aspect paths that operationType's declared
+// `.effects` guards concretely touch (present/absent/equals leaves, walking
+// allOf; anyOf/not cannot name a definite written path and are skipped) —
+// the oscillation detector's join from a dispatched actionRef to "what did
+// this write" (design weaver-planner-mandate-design.md §3.4). Empty when
+// operationType has no effects (or is unknown): a fresh dispatch of an
+// undeclared-effects op can never be judged fighting anything.
+func (s *targetSource) effectPathsFor(operationType string) []guardgrammar.Path {
+	s.mu.Lock()
+	key, ok := s.opMetaByType[operationType]
+	if !ok {
+		s.mu.Unlock()
+		return nil
+	}
+	id, ok := strings.CutPrefix(key, "vtx.meta.")
+	if !ok {
+		s.mu.Unlock()
+		return nil
+	}
+	guards := s.opEffects[id]
+	s.mu.Unlock()
+	var paths []guardgrammar.Path
+	for _, g := range guards {
+		paths = append(paths, effectLeafPaths(g)...)
+	}
+	return paths
+}
+
+// effectLeafPaths walks a parsed effect guard collecting the concrete paths
+// it asserts — present/absent/equals leaves, recursing into allOf; anyOf/not
+// cannot name a definite written path (mirrors planner.ApplyEffects's
+// concrete-assertion-only stance) and contribute nothing.
+func effectLeafPaths(g *guardgrammar.Guard) []guardgrammar.Path {
+	switch g.Kind {
+	case guardgrammar.KindPresent, guardgrammar.KindAbsent, guardgrammar.KindEquals:
+		return []guardgrammar.Path{g.Path}
+	case guardgrammar.KindAllOf:
+		var out []guardgrammar.Path
+		for _, c := range g.Children {
+			out = append(out, effectLeafPaths(c)...)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 // --- registry reads ----------------------------------------------------------
 
 // target returns the registered target for targetId.

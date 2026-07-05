@@ -180,6 +180,12 @@ func (s *sweeper) pass(ctx context.Context) {
 	}
 	s.lastRunAt = time.Now()
 	s.mu.Unlock()
+	// Contraction monitor's sweep-cadence sample (design
+	// weaver-planner-mandate-design.md §3.4): appends each registered
+	// target's current violating-row count (lane-1's incremental tracker) to
+	// its trajectory ring. Runs every pass regardless of whether any mark
+	// exists this pass.
+	e.contraction.sample(e.source.targetIDs())
 }
 
 // sweepMark level-reconciles one mark against its current row and lease:
@@ -503,6 +509,7 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 	// re-dispatches (not just CDC touches) accumulates toward maxretries_<g>.
 	e.bumpDispatchCount(ctx, targetID, entityID, gapColumn)
 	e.bumpEffectDispatch(ctx, targetID, gapColumn, resolvedAction)
+	e.bumpOscillation(ctx, targetID, resolvedAction)
 	// Fresh episode: the requestId derives from the replace revision (a real new
 	// dispatch attempt). The preserved claimId keeps the userTask identity stable,
 	// so the new attempt collapses on the existing task/instance. A publish failure

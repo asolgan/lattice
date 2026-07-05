@@ -467,6 +467,42 @@ describes.
 
 ---
 
+## Contraction monitor + oscillation detector (Fire 7)
+
+Cross-row / cross-target diagnostics (Contract #10 §10.8 Planner extension design §3.4) — purely
+in-memory, heartbeat-surfaced, and **never** alter what dispatches. Both mirror the existing
+`shadowStats` pattern (Fire 4): a process restart resets them, and lane-1's `DeliverLastPerSubject`
+replay of every current row re-derives true state from scratch.
+
+**Contraction monitor** (`contraction.go`) tracks, per target, the CURRENT count of rows this engine
+instance has observed violating — incremental, updated on every lane-1 delivery from the same
+"violating or not" cadence mark-clearing already runs at (`handleRow`), never a KV scan. The reconciler
+sweep (`sweeper.pass`) appends each registered target's current count to a bounded 5-sample trajectory
+ring on its own cadence; the heartbeat classifies the ring as `shrinking` / `steady` / `diverging`
+(`metrics.contractionTrajectory`) — a target whose violating-row count never stops climbing is loudly
+visible without waiting for `__effect`'s zero-closes signal (Fire 2) to also fire. The already-shipped
+`LensEffectMismatch` issue ("dispatches commit but closes never arrive") remains `__effect`'s job; the
+trajectory here is a metric, not an alert.
+
+**Oscillation detector** (`oscillation.go`) joins a dispatched `actionRef` to the aspect path(s) its
+declared `.effects` concretely assert (`targetSource.effectPathsFor` — present/absent/equals leaves,
+walking `allOf`; an `anyOf`/`not` effect names no definite written path and is skipped), at the exact
+two fresh-dispatch seams `bumpEffectDispatch` already uses (the CAS-create-won lane-1 path and the
+sweep's reclaim — never a redelivery re-fire). Per aspect path, a bounded 8-event ring records the
+dispatching `targetID`; once the trailing 4 events show a strict two-target alternation (`A,B,A,B` — one
+ordinary back-and-forth is normal cross-owner remediation, only a REPEATING pattern is a fight), both
+targets are frozen via the existing `Engine.Disable` `__control` seam and ONE `TargetOscillation` Health
+issue names the causal pair + the contested path — freeze-and-alert only, never a new dispatch. The
+path's ring is cleared on detection so the same fight reports once, not once per subsequent dispatch.
+
+Proven end to end in `oscillation_internal_test.go`'s fighting-targets fixture: two targets dispatching
+different ops that both assert `subject.foo.data.x` are both disabled and one issue names the pair after
+the confirmed alternation.
+
+Fires 8–9 (admission control, the Augur floor) remain: `weaver-planner-mandate-design.md` §8.
+
+---
+
 ## Control plane (FR30)
 
 Operators manage Weaver's currently-registered convergence targets via a `nats-io/nats.go/micro`
@@ -640,7 +676,7 @@ What ships today in `internal/weaver` + `cmd/weaver`, and what is deliberately d
 | **Control API/CLI (Pause/Resume surface)** | ✅ Shipped (FR30). `internal/weaver/control` exposes `list`/`disable`/`enable`/`revoke` over a `nats-io/nats.go/micro` Services responder; `lattice weaver` CLI group. See "Control plane" above. |
 | **Lane 2 (event-targeted-audit) + `weaver-work`** | ⏳ Phase 3 (§10.3: no durable bucket today). |
 | **Real target Lens via Refractor + playbook package data** | ✅ Shipped — the `lease-signing` reference vertical provides a real convergence target + §10.8 playbook; the engine also runs against test-written §10.2 fixture rows. |
-| **Planner mandate (dispatcher → solver)** | 🏗️ Building (Contract #10 §10.8 "Planner extension", ratified 2026-07-04). Fire 1 ✅: op-DDL `Effects` (`internal/pkgmgr` `DDLSpec.Effects`, §10.5 guard-grammar predicates a commit entails, parsed by the new standalone `internal/guardgrammar` package) + install-time validation (`validateEffects`); the `lease-signing` package declares `SignLease`→`.signature present` and `RecordLeaseServiceOutcome`→`.outcome present`. Fire 2 ✅: the `__effect` confidence window (see above). Fire 3 ✅: the pure `internal/weaver/planner` goal-regression library (see above) — table-tested, catalog-permutation-stable, not yet wired to any dispatch decision. Fire 4 ✅: `mode`/`candidates`/`goal` install-validated parsing + the shadow-compare diagnostic (see above) — still zero dispatch-decision change; the Strategist's real dispatch reads only `ga.Action`. Fire 5 ✅: `mode:"planned"` candidate selection actually dispatches (see above) — the first fire that changes a real decision; mark-pinned across reclaim, byte-identical for every other mode/explicit-action gap. Fire 6 Increment 1 ✅: the runtime op-effects catalog (see above) — `pkgmgr` materializes declared Effects onto an op-meta `.effects` aspect, the registry indexes + joins it into `effectsCatalog()`; zero dispatch-decision change. Fire 6's remaining goal-regression dispatch is checkpointed on the row-vs-aspect `State`-schema question (see above); Fires 7–9 (diagnostics, admission control, Augur floor) remain: `_bmad-output/implementation-artifacts/weaver-planner-mandate-design.md` §8. |
+| **Planner mandate (dispatcher → solver)** | 🏗️ Building (Contract #10 §10.8 "Planner extension", ratified 2026-07-04). Fire 1 ✅: op-DDL `Effects` (`internal/pkgmgr` `DDLSpec.Effects`, §10.5 guard-grammar predicates a commit entails, parsed by the new standalone `internal/guardgrammar` package) + install-time validation (`validateEffects`); the `lease-signing` package declares `SignLease`→`.signature present` and `RecordLeaseServiceOutcome`→`.outcome present`. Fire 2 ✅: the `__effect` confidence window (see above). Fire 3 ✅: the pure `internal/weaver/planner` goal-regression library (see above) — table-tested, catalog-permutation-stable, not yet wired to any dispatch decision. Fire 4 ✅: `mode`/`candidates`/`goal` install-validated parsing + the shadow-compare diagnostic (see above) — still zero dispatch-decision change; the Strategist's real dispatch reads only `ga.Action`. Fire 5 ✅: `mode:"planned"` candidate selection actually dispatches (see above) — the first fire that changes a real decision; mark-pinned across reclaim, byte-identical for every other mode/explicit-action gap. Fire 6 Increment 1 ✅: the runtime op-effects catalog (see above) — `pkgmgr` materializes declared Effects onto an op-meta `.effects` aspect, the registry indexes + joins it into `effectsCatalog()`; zero dispatch-decision change. Fire 6's remaining goal-regression dispatch is checkpointed on the row-vs-aspect `State`-schema question (see above). Fire 7 ✅: the contraction monitor + oscillation detector (see above) — heartbeat-surfaced diagnostics only, zero dispatch-decision change. Fires 8–9 (admission control, Augur floor) remain: `_bmad-output/implementation-artifacts/weaver-planner-mandate-design.md` §8. |
 
 ---
 
