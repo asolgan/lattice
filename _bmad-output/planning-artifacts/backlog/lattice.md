@@ -101,9 +101,8 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
 > 🎯 **Build-ready now**: **Object crypto-shred Fire 2** (Fire 1 platform seam shipped `93d6f88`;
-> Loupe client-side encrypt/decrypt path next) · **Personal Lens PL.3** (readableAnchors, D1 +
-> NATS-account-auth both done) — unblocked, not yet picked up. *Still genuinely gated*: **AI-caps
-> Fire 4** (Andrew sign-off on AI-code-execution, not the sandbox).
+> Loupe client-side encrypt/decrypt path next) — unblocked, not yet picked up. *Still genuinely
+> gated*: **AI-caps Fire 4** (Andrew sign-off on AI-code-execution, not the sandbox).
 
 ### Security & trust boundary
 | Item | What it is | Imp | Size | State |
@@ -134,7 +133,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Edge & personal lenses (the path Loupe grows into)
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| Personal / Secure Lens | Refractor projects a per-identity security-filtered subgraph stream; the Interest-Set watchlist; RLS-style link filtering. | ★★ | L | 🏗️ building · [design](../../implementation-artifacts/personal-secure-lens-design.md) · PL.2 (fan-out + Interest Set) shipped; D1 + NATS-account-auth both done — next: PL.3 readableAnchors, unblocked |
+| Personal / Secure Lens | Refractor projects a per-identity security-filtered subgraph stream; the Interest-Set watchlist; RLS-style link filtering. | ★★ | L | 🏗️ building · [design](../../implementation-artifacts/personal-secure-lens-design.md) · PL.3 (D1 readableAnchors gate) shipped — next: PL.4 Hydration Hook |
 | NATS-subject publish-events adapter | A Refractor target adapter publishing projection deltas to `lattice.sync.user.<id>` — required for Personal Lens. | ★★ | S–M | 📐 subsumed → Personal Lens Fire 1 |
 | Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. | ★★ | XL | ✅ ratified · [design](../../implementation-artifacts/edge-lattice-full-design.md) · 🚧 seq (far) |
 
@@ -179,6 +178,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-05 · `33b75e8` · [Refractor] Personal Lens Fire PL.3 — D1 readableAnchors security gate (capabilityread pkg), security-wins-over-relevance; Gate-3 vectors 1-3 e2e, 3-layer reviewed; PL.4 next
 - 2026-07-05 · `93d6f88` · [Privacy/Object Store] Crypto-shred Fire 1 — Vault WrapKey/UnwrapKey + AttachObject sensitive/governingIdentity/encryption, identity-salted oid; dormant, 3-layer reviewed; Fire 2 next
 - 2026-07-05 · `a2208a6` · [Security] Control-plane capability authz Fire 2 — verified-actor JWT (reuses D1's gateway/auth), nil-verifier = Fire 1 unchanged; item CLOSED, 3-layer reviewed
 - 2026-07-05 · `0307450` · [Weaver] Planner mandate Fire 7 — contraction monitor + oscillation detector (heartbeat-surfaced diagnostics, freeze via `__control`); zero dispatch-decision change; Fire 8 next
