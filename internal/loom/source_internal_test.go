@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,9 +69,11 @@ func TestPatternSource_StartPrunesStalePriorBootDurable(t *testing.T) {
 	src := newPatternSource(conn, bucket, "new-instance", logger)
 	require.NoError(t, src.start(subCtx))
 
-	newDurable := patternSourceDurablePrefix + "-new-instance"
+	newDurablePrefix := patternSourceDurablePrefix + "-new-instance-"
+	var newDurable string
 	require.Eventually(t, func() bool {
-		return consumerExists(ctx, t, js, "KV_"+bucket, newDurable)
+		newDurable = durableWithPrefix(ctx, t, js, "KV_"+bucket, newDurablePrefix)
+		return newDurable != ""
 	}, 5*time.Second, 50*time.Millisecond, "new instance durable should be created")
 
 	require.False(t, consumerExists(ctx, t, js, "KV_"+bucket, staleDurable),
@@ -84,6 +87,75 @@ func TestPatternSource_StartPrunesStalePriorBootDurable(t *testing.T) {
 	}, 5*time.Second, 50*time.Millisecond, "own durable should be deleted on clean shutdown")
 }
 
+// TestPatternSource_StableInstanceGetsFreshDurableEachBoot proves the fix for
+// the cold-registry bug: a Loom operator following docs/components/loom.md's
+// guidance to set a STABLE Instance across restarts (for dashboard/alerting
+// attributability) must still get a never-before-seen durable name on every
+// boot, because JetStream only honors DeliverPolicy at consumer creation — an
+// existing durable of the identical name resumes from its persisted ack
+// floor regardless of the DeliverAllPolicy requested, leaving a
+// crash-restarted engine's in-memory pattern registry cold. The second
+// "boot" below never cancels the first boot's context (simulating a crash,
+// not a clean shutdown), so the first boot's durable is never
+// self-deleted — the second boot's start must not reuse its name anyway.
+func TestPatternSource_StableInstanceGetsFreshDurableEachBoot(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	opts := &natsserver.Options{Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: jsstore.Dir(t)}
+	srv := natstest.RunServer(opts)
+	t.Cleanup(srv.Shutdown)
+	nc, err := nats.Connect(srv.ClientURL())
+	require.NoError(t, err)
+	t.Cleanup(nc.Close)
+
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+
+	const bucket = "core-kv"
+	js := conn.JetStream()
+	_, err = js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucket, LimitMarkerTTL: time.Second})
+	require.NoError(t, err)
+	stream, err := js.Stream(ctx, "KV_"+bucket)
+	require.NoError(t, err)
+	cfg := stream.CachedInfo().Config
+	cfg.AllowAtomicPublish = true
+	_, err = js.UpdateStream(ctx, cfg)
+	require.NoError(t, err)
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	durablePrefix := patternSourceDurablePrefix + "-stable-instance-"
+
+	firstCtx, firstCancel := context.WithCancel(ctx)
+	defer firstCancel()
+	first := newPatternSource(conn, bucket, "stable-instance", logger)
+	require.NoError(t, first.start(firstCtx))
+
+	var durable1 string
+	require.Eventually(t, func() bool {
+		durable1 = durableWithPrefix(ctx, t, js, "KV_"+bucket, durablePrefix)
+		return durable1 != ""
+	}, 5*time.Second, 50*time.Millisecond, "first boot should create its durable")
+
+	secondCtx, secondCancel := context.WithCancel(ctx)
+	defer secondCancel()
+	second := newPatternSource(conn, bucket, "stable-instance", logger)
+	require.NoError(t, second.start(secondCtx))
+
+	var durable2 string
+	require.Eventually(t, func() bool {
+		durable2 = durableWithPrefix(ctx, t, js, "KV_"+bucket, durablePrefix)
+		return durable2 != "" && durable2 != durable1
+	}, 5*time.Second, 50*time.Millisecond, "second boot should create a durable distinct from the first")
+
+	require.NotEqual(t, durable1, durable2,
+		"the same stable Instance across two boots must not reuse the prior durable name")
+}
+
 func consumerExists(ctx context.Context, t *testing.T, js jetstream.JetStream, stream, name string) bool {
 	t.Helper()
 	_, err := js.Consumer(ctx, stream, name)
@@ -95,4 +167,22 @@ func consumerExists(ctx context.Context, t *testing.T, js jetstream.JetStream, s
 	}
 	t.Fatalf("Consumer(%s, %s): %v", stream, name, err)
 	return false
+}
+
+// durableWithPrefix returns the name of the (at most one expected) JetStream
+// durable consumer on stream whose name starts with prefix, or "" if none
+// exists yet.
+func durableWithPrefix(ctx context.Context, t *testing.T, js jetstream.JetStream, stream, prefix string) string {
+	t.Helper()
+	st, err := js.Stream(ctx, stream)
+	require.NoError(t, err)
+	lister := st.ConsumerNames(ctx)
+	found := ""
+	for name := range lister.Name() {
+		if strings.HasPrefix(name, prefix) {
+			found = name
+		}
+	}
+	require.NoError(t, lister.Err())
+	return found
 }

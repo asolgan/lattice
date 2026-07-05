@@ -82,15 +82,17 @@ type Config struct {
 	// heartbeat-driven state without waiting out production timing. Values <= 0
 	// take the default.
 	HeartbeatEvery time.Duration
-	// Instance distinguishes this engine process; it suffixes the per-boot
-	// pattern-source durable so each boot replays the installed pattern set,
-	// and it is the key segment for this process's Contract #5 heartbeat
-	// (health.loom.<instance>). Per-consumer pause-state entries
-	// (health.loom.consumer-state.<name>) are consumer-scoped, not
-	// instance-scoped, so they survive a restart under a new Instance. MUST
-	// be unique per Loom process sharing a health-kv bucket — see
-	// docs/components/loom.md for the shared-bucket collision consequences.
-	// Defaults to "<hostname>-<pid>-<NanoID>" (sanitized) when empty.
+	// Instance distinguishes this engine process; it is one segment of the
+	// per-boot pattern-source durable name (a separate per-boot nonce is what
+	// actually guarantees full-replay uniqueness — see source.go — so
+	// Instance MAY be stable across restarts), and it is the key segment for
+	// this process's Contract #5 heartbeat (health.loom.<instance>).
+	// Per-consumer pause-state entries (health.loom.consumer-state.<name>)
+	// are consumer-scoped, not instance-scoped, so they survive a restart
+	// under a new Instance. MUST be unique per Loom process sharing a
+	// health-kv bucket — see docs/components/loom.md for the shared-bucket
+	// collision consequences. Defaults to "<hostname>-<pid>-<NanoID>"
+	// (sanitized) when empty.
 	Instance string
 	// Logger is the diagnostics sink. Defaults to slog.Default().
 	Logger *slog.Logger
@@ -105,10 +107,9 @@ var instanceSegmentReplacer = strings.NewReplacer(".", "-")
 // instance id ("<hostname>-<pid>-<NanoID>", sanitized for KV key segments) used
 // when Config.Instance is empty. The hostname+pid prefix makes an
 // auto-generated health.loom.<instance> document attributable to the process
-// that wrote it (Contract #5); the NanoID suffix preserves the existing
-// per-boot uniqueness the pattern-source durable relies on (multiple Engine
-// constructions in one process — e.g. a restart in the same test/host process —
-// must not collide on the same patternSourceDurable name, see source.go). See
+// that wrote it (Contract #5); the pattern-source durable's own per-boot
+// uniqueness comes from a separate nonce (see source.go), not from this
+// value, so an operator-set stable Instance is equally safe. See
 // docs/components/loom.md for why an explicit, cluster-unique Instance is
 // preferred for production multi-replica deployments.
 func defaultInstance() string {

@@ -17,10 +17,21 @@ import (
 )
 
 // targetSourceDurablePrefix is the JetStream durable-consumer name prefix for
-// the meta.weaverTarget registry source. A per-engine instance suffix is
-// appended so each boot replays the full installed target set via
-// IncludeHistory: the registry is derived in-memory state rebuilt by CDC
-// replay, exactly the one class of in-memory cache the engine sanctions.
+// the meta.weaverTarget registry source. A per-engine instance segment plus a
+// per-boot nonce (see start) are appended so each boot replays the full
+// installed target set via IncludeHistory: the registry is derived in-memory
+// state rebuilt by CDC replay, exactly the one class of in-memory cache the
+// engine sanctions.
+//
+// The nonce is load-bearing, not just the instance segment: JetStream only
+// honors DeliverPolicy when a durable is first created — CreateOrUpdateConsumer
+// against an EXISTING durable of the same name resumes from its persisted ack
+// floor regardless of the DeliverPolicy requested, so a stable, operator-set
+// Instance (recommended for dashboards/alerting across restarts) would
+// silently defeat full-replay-on-every-connect and leave a crash-restarted
+// engine's registry cold. Appending a fresh nonce each boot guarantees the
+// durable has never existed before, independent of whether Instance is
+// stable or auto-generated.
 const targetSourceDurablePrefix = "weaver-target-source"
 
 // Canonical envelope classes the registry source routes. Other meta classes
@@ -296,18 +307,24 @@ func (s *targetSource) setLoadCallback(fn func(*Target))            { s.loadCB =
 func (s *targetSource) setUpdateCallback(fn func(old, new *Target)) { s.updateCB = fn }
 
 // start establishes the durable subscription and launches the dispatch
-// goroutine. IncludeHistory replays the entire installed meta set on each
-// boot (the durable name carries the per-boot instance suffix).
+// goroutine. IncludeHistory replays the entire installed meta set on every
+// boot — fresh deployment or restart alike (the durable name carries the
+// instance segment plus a fresh per-boot nonce, see targetSourceDurablePrefix,
+// so it is guaranteed never to have existed before).
 //
-// Each boot's durable name carries a unique instance suffix (full-replay
-// semantics), so a prior boot's durable is never reused and would otherwise
-// linger forever as a parked consumer on KV_<bucket>. Before creating its own
-// durable, start prunes any stale "<prefix>-*" durables left behind by
-// no-longer-running instances; the durable created below is then deleted on
-// clean shutdown (consume's ctx.Done branch) so it never becomes next boot's
-// stale entry.
+// Each boot's durable name carries the instance segment (attributability) plus
+// a fresh per-boot nonce (uniqueness), so a prior boot's durable is never
+// reused and would otherwise linger forever as a parked consumer on
+// KV_<bucket>. Before creating its own durable, start prunes any stale
+// "<prefix>-*" durables left behind by no-longer-running instances; the
+// durable created below is then deleted on clean shutdown (consume's
+// ctx.Done branch) so it never becomes next boot's stale entry.
 func (s *targetSource) start(ctx context.Context) error {
-	durable := targetSourceDurablePrefix + "-" + s.instance
+	bootNonce, err := substrate.NewNanoID()
+	if err != nil {
+		return fmt.Errorf("weaver: target source boot nonce: %w", err)
+	}
+	durable := targetSourceDurablePrefix + "-" + s.instance + "-" + bootNonce
 	if err := s.conn.PruneStaleDurables(ctx, s.bucket, targetSourceDurablePrefix+"-", durable, s.logger); err != nil {
 		s.logger.Warn("weaver: prune stale target-source durables failed", "err", err)
 	}

@@ -13,8 +13,9 @@ import (
 
 // patternSourceDurablePrefix is the JetStream durable-consumer name prefix for
 // the single pattern source (1 of the 1+N durables). A per-engine instance
-// suffix is appended (patternSourceDurable) so each boot replays the full
-// installed pattern set via IncludeHistory.
+// segment plus a per-boot nonce are appended (see start) so each boot gets a
+// never-before-seen durable name and replays the full installed pattern set
+// via IncludeHistory.
 //
 // Why a per-boot durable rather than one ack-floor-resuming name: the pattern
 // registry is DERIVED in-memory state (the binding registry + step defs an
@@ -25,7 +26,17 @@ import (
 // on every connect is the correct semantics. It remains a durable JetStream
 // consumer (not an ephemeral kv.Watch, not a one-shot point-read), and a
 // pattern installed after startup still registers live via the same callback.
-// Multi-cell deployments (Phase 3) will include a cell-id segment.
+//
+// The nonce (not just Instance) is load-bearing: JetStream only honors
+// DeliverPolicy when a durable is first created — CreateOrUpdateConsumer
+// against an EXISTING durable of the same name resumes from its persisted ack
+// floor regardless of the DeliverPolicy requested, so a stable, operator-set
+// Instance (recommended by docs/components/loom.md for dashboards/alerting
+// across restarts) would silently defeat full-replay-on-every-connect and
+// leave a crash-restarted engine's registry cold. Appending a fresh nonce each
+// boot guarantees the durable has never existed before, independent of
+// whether Instance is stable or auto-generated. Multi-cell deployments (Phase
+// 3) will include a cell-id segment.
 const patternSourceDurablePrefix = "loom-pattern-source"
 
 // loomPatternClass is the canonical envelope class for loom-pattern
@@ -81,18 +92,23 @@ func (s *patternSource) setUpdateCallback(fn func(old, new *Pattern)) { s.update
 
 // start establishes the durable subscription and launches the dispatch
 // goroutine. Returns once the subscription is established. IncludeHistory is
-// set so a fresh deployment replays the entire installed pattern set; restarts
-// resume from the ack floor.
+// set so every boot — fresh deployment or restart alike — replays the entire
+// installed pattern set (see patternSourceDurablePrefix for why a genuinely
+// never-before-seen durable name is required to make that true).
 //
-// Each boot's durable name carries a unique instance suffix (full-replay
-// semantics, above), so a prior boot's durable is never reused and would
-// otherwise linger forever as a parked consumer on KV_<bucket>. Before
-// creating its own durable, start prunes any stale "<prefix>-*" durables left
-// behind by no-longer-running instances; the durable created below is then
-// deleted on clean shutdown (consume's ctx.Done branch) so it never becomes
-// next boot's stale entry.
+// Each boot's durable name carries the instance segment (attributability) plus
+// a fresh per-boot nonce (uniqueness — see patternSourceDurablePrefix), so a
+// prior boot's durable is never reused and would otherwise linger forever as a
+// parked consumer on KV_<bucket>. Before creating its own durable, start
+// prunes any stale "<prefix>-*" durables left behind by no-longer-running
+// instances; the durable created below is then deleted on clean shutdown
+// (consume's ctx.Done branch) so it never becomes next boot's stale entry.
 func (s *patternSource) start(ctx context.Context) error {
-	durable := patternSourceDurablePrefix + "-" + s.instance
+	bootNonce, err := substrate.NewNanoID()
+	if err != nil {
+		return fmt.Errorf("loom: pattern source boot nonce: %w", err)
+	}
+	durable := patternSourceDurablePrefix + "-" + s.instance + "-" + bootNonce
 	if err := s.conn.PruneStaleDurables(ctx, s.bucket, patternSourceDurablePrefix+"-", durable, s.logger); err != nil {
 		s.logger.Warn("loom: prune stale pattern-source durables failed", "err", err)
 	}

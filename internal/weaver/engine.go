@@ -86,16 +86,18 @@ type Config struct {
 	// Contract #4 §4.3 op-tracker TTL horizon, beyond which a duplicate re-dispatch
 	// would no longer collapse on the tracker anyway. Values <= 0 take the default.
 	ReclaimBackoffCap time.Duration
-	// Instance distinguishes this engine process; it suffixes the per-boot
-	// registry-source durable so each boot replays the installed target set,
-	// and it is the key segment for this process's Contract #5 heartbeat
-	// (health.weaver.<instance>). Per-consumer pause-state entries
-	// (health.weaver.consumer-state.<name>) are consumer-scoped, not
-	// instance-scoped, so they survive a restart under a new Instance. MUST
-	// be unique per Weaver process sharing a health-kv bucket, and MUST be a
-	// single dot-free token (validated at Start — a dot would fragment the
-	// health key space and break the durable name). Defaults to
-	// "<hostname>-<pid>-<NanoID>" (sanitized) when empty.
+	// Instance distinguishes this engine process; it is one segment of the
+	// per-boot registry-source durable name (a separate per-boot nonce is
+	// what actually guarantees full-replay uniqueness — see registry.go — so
+	// Instance MAY be stable across restarts), and it is the key segment for
+	// this process's Contract #5 heartbeat (health.weaver.<instance>).
+	// Per-consumer pause-state entries (health.weaver.consumer-state.<name>)
+	// are consumer-scoped, not instance-scoped, so they survive a restart
+	// under a new Instance. MUST be unique per Weaver process sharing a
+	// health-kv bucket, and MUST be a single dot-free token (validated at
+	// Start — a dot would fragment the health key space and break the
+	// durable name). Defaults to "<hostname>-<pid>-<NanoID>" (sanitized) when
+	// empty.
 	Instance string
 	// Logger is the diagnostics sink. Defaults to slog.Default().
 	Logger *slog.Logger
@@ -110,9 +112,9 @@ var instanceSegmentReplacer = strings.NewReplacer(".", "-")
 // instance id ("<hostname>-<pid>-<NanoID>", sanitized for KV key segments)
 // used when Config.Instance is empty. The hostname+pid prefix makes an
 // auto-generated health.weaver.<instance> document attributable to the
-// process that wrote it (Contract #5); the NanoID suffix preserves per-boot
-// uniqueness for the registry-source durable (multiple Engine constructions in
-// one process must not collide on the same durable name).
+// process that wrote it (Contract #5); the registry-source durable's own
+// per-boot uniqueness comes from a separate nonce (see registry.go), not from
+// this value, so an operator-set stable Instance is equally safe.
 func defaultInstance() string {
 	host, err := os.Hostname()
 	if err != nil || host == "" {

@@ -376,11 +376,12 @@ per-consumer pause entries (`health.loom.consumer-state.<name>`) are consumer-sc
 instance-scoped, so `Instance` does not enter that key. `Instance` **MUST be unique per Loom process
 sharing the `health-kv` bucket.** When empty it defaults to `<hostname>-<pid>-<NanoID>` (sanitized for
 KV key segments) — the hostname+pid prefix makes an auto-generated heartbeat attributable to the
-process that wrote it, and the NanoID suffix keeps each `Engine` construction unique (the pattern-source
-durable name is also derived from `Instance` and depends on per-boot uniqueness, even across multiple
-`Engine`s in one process). The default is therefore unique per construction, not just per host/pid —
-operators running multiple Loom replicas who want a *stable*, human-recognizable `Instance` across
-restarts (for dashboards/alerting) should set it explicitly to something cluster-unique.
+process that wrote it. The pattern-source durable name carries `Instance` too, but its own per-boot
+uniqueness comes from a separate nonce generated fresh on every `start` (`internal/loom/source.go`),
+independent of `Instance` — so a *stable*, human-recognizable `Instance` across restarts (what operators
+running multiple Loom replicas want for dashboards/alerting) is safe: it never risks a crash-restarted
+engine reusing a prior boot's durable name and silently resuming from its ack floor instead of replaying
+the full installed pattern set.
 
 If two processes ever do run with the same `Instance` against the same `health-kv` bucket, their
 `health.loom.<instance>` heartbeats last-write-wins each other — an operator sees one flapping
