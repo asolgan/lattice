@@ -148,10 +148,14 @@ Source package: `internal/weaver/`
 
 The heartbeat `metrics` carry: `consumers` (map of consumer name → state — `running` / `pausedManual` /
 `pausedStructural` / `pausedInfra`), `targets` (registered convergence-target count), `marksInFlight`, the
-reconciler sweep counters (`sweepReclaims`, `sweepOrphansDeleted`, `sweepCorrupt`, `sweepLastRunAt`), and the
-lane-3 temporal counters (`timersScheduled`, `timersFired`). `issues[]` carry a `ConsumerPaused` warning for
-each `pausedStructural` consumer plus the engine's active config/data-error alerts (rejected targets, unknown
-gap columns, template data errors) — the FR29 "never silently drop" surface.
+reconciler sweep counters (`sweepReclaims`, `sweepOrphansDeleted`, `sweepCorrupt`, `sweepLastRunAt`), the
+lane-3 temporal counters (`timersScheduled`, `timersFired`), and `contractionTrajectory` (map of targetId →
+`shrinking` / `steady` / `diverging` — the planner-mandate design §3.4 contraction monitor: a bounded,
+sweep-cadence-sampled ring of each target's current violating-row count, present only once a target has ≥ 2
+samples). `issues[]` carry a `ConsumerPaused` warning for each `pausedStructural` consumer, the engine's
+active config/data-error alerts (rejected targets, unknown gap columns, template data errors — the FR29
+"never silently drop" surface), and a `TargetOscillation` error naming a fighting target pair + contested
+aspect path (planner-mandate design §3.4 oscillation detector — both named targets are also disabled).
 
 ### Loom
 
