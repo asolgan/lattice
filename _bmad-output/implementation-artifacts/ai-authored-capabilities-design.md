@@ -511,6 +511,22 @@ kinds) and 4 (Starlark, gated on ⑥'s sandbox + a separate ratification) unchan
   §5 scope check) + a Loupe/CLI review-and-apply affordance. **Closes the loop:** AI proposes → human
   approves → operator applies → the capability is live + F-004-revertible. *(M.)* — **full 3-layer review
   (auth/capability plane); party-mode on the scope-check boundary first.**
+
+  **✅ grant kind shipped (`99f7255`, 2026-07-05).** `GrantArtifactContent` mirrors `PermissionSpec`
+  (operationType/scope/grantsTo/note); validated via the shared `validateAll`/
+  `validatePermissionIdentityUniqueness` pre-flight plus the scope check (`HeldPermission`/`requesterHolds` —
+  the artifact's (operationType, scope) must be a subset of what the requester already holds). 3-layer
+  adversarial review run (capability-plane); fixed whitespace-only/duplicate `grantsTo` entries. E2e proves a
+  live permission + genuine `grantedBy` link, plus an adversarial e2e proving a scope-exceeding grant never
+  reaches pending. **Two things this fire deliberately did NOT solve** (structural to the whole
+  approve→apply model, shared with lens, not grant-specific — flag for whoever wires the real caller):
+  (1) `ReviewCapabilityProposal`'s Starlark script trusts an already-computed `validation.state` at approve
+  time — nothing re-runs `requesterHolds` against a live read; the entire scope-check defense currently rests
+  on whatever un-reviewed code (the bridge / Loupe-CLI, neither built yet) computes that verdict, and
+  `HeldPermission` carries no actor-identity binding to enforce it reads the right actor's authority freshly.
+  (2) `DefinitionForCapabilityArtifact` (apply-time materializer) never re-checks scope — a TOCTOU window
+  between approval and apply if the requester's authority is revoked in between. **Loupe/CLI review-and-apply
+  affordance remains** (next).
 - **Fire 3 — Declarative orchestration kinds.** The **weaverTarget** + **loomPattern** kinds in the
   materializer (`validateWeaverTargets`/`validateGapAction`/`validateLoomPatterns`). **Ships:** an AI can
   author convergence targets + orchestration patterns over already-installed ops. *(M.)* — full 3-layer.
