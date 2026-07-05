@@ -15,6 +15,9 @@ choices live HERE. Per-package capability definitions live under
 
 **Core write / read spine**
 
+- [Bootstrap](./bootstrap.md) — the one-shot provisioning binary: seeds every KV bucket / stream /
+  object store plus the ~75-entry primordial Core-KV batch (meta-meta DDL, Capability Lens anchor,
+  service-actor identities), then exits; the sole sanctioned non-Processor Core-KV writer.
 - [Processor](./processor.md) — the sole authorized writer: the 9-step commit
   pipeline, the Starlark sandbox, the DDL cache, capability authorization, and the
   transactional event outbox.
@@ -56,6 +59,12 @@ choices live HERE. Per-package capability definitions live under
 - [Gateway](./gateway.md) — the edge trust boundary: verifies an external actor's IdP-signed JWT,
   stamps the verified identity onto every operation, and bounds each actor's read view to the
   sub-graph its ReBAC links permit — closing actor impersonation at the edge.
+- [Vault](./vault.md) — per-identity key custody + crypto-shredding: encrypt-on-write / decrypt-on-read
+  for sensitive aspects, and the irreversible `ShredKey` right-to-be-forgotten primitive. A library
+  embedded in the Processor + Refractor, not a standalone binary.
+- [Privacy-worker](./privacyworker.md) — the asynchronous half of crypto-shredding: consumes a
+  recorded shred intent and calls `Vault.ShredKey`, then records the finalization. Co-located in the
+  Processor process.
 
 **Experience layer**
 
@@ -79,11 +88,12 @@ between page and code is treated as a documentation bug.
 
 | Component | Status |
 |-----------|--------|
+| Bootstrap — one-shot primordial provisioning | ✅ Built (Phase 1) |
 | Processor, Refractor, Substrate, Capability Lens, Capability Packages | ✅ Built (Phase 1 / 1.5) |
 | Loom, Weaver, Bridge, object-store-manager, service actors, platform scheduling | ✅ Built (Phase 2) |
 | Loupe — operator view-and-control console (trusted single-identity, loopback, no auth) | ✅ Built (Phase 3) |
 | Gateway — JWT auth, `Lattice-Actor` stamping | ✅ Built (Phase 3) — write-path (Fires 1+2: JWT verify + actor stamping + live JWKS); read-path enforcement in progress |
-| Vault — per-identity keys, crypto-shredding | ✅ Built (Phase 3) — encrypt-on-write/decrypt-on-read + `ShredIdentityKey`; per-vertical fires ongoing |
+| Vault, Privacy-worker — per-identity keys, crypto-shredding | ✅ Built (Phase 3) — encrypt-on-write/decrypt-on-read + `ShredIdentityKey`; per-vertical fires ongoing |
 
 Each page's own *Implementation status* / *What's deferred* section is the
 authoritative, fine-grained record for that component.
