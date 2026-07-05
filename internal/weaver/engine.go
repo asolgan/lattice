@@ -219,6 +219,8 @@ type Engine struct {
 	rowSubjectPrefix string
 	disabled         *disabledTargetSet
 	shadow           *shadowStats
+	contraction      *contractionStats
+	oscillation      *oscillationStats
 
 	mu sync.Mutex
 	// targets is the last-applied desired lane-1 consumer set (targetId →
@@ -308,6 +310,8 @@ func NewEngine(conn *substrate.Conn, cfg Config) *Engine {
 		rowSubjectPrefix: "$KV." + cfg.WeaverTargetsBucket + ".",
 		disabled:         newDisabledTargetSet(),
 		shadow:           newShadowStats(),
+		contraction:      newContractionStats(),
+		oscillation:      newOscillationStats(),
 		targets:          make(map[string]specFingerprint),
 	}
 	e.source = newTargetSource(conn, cfg.CoreKVBucket, cfg.Instance, issues, cfg.Logger)
@@ -351,7 +355,7 @@ func (e *Engine) Start(ctx context.Context) (err error) {
 	}
 
 	hb := newHeartbeater(e.conn, e.cfg.HealthKVBucket, e.cfg.Instance, e.cfg.HeartbeatEvery,
-		e.states, e.issues, e.source, e.marks, e.sweep, e.temporal, e.shadow, e.logger)
+		e.states, e.issues, e.source, e.marks, e.sweep, e.temporal, e.shadow, e.contraction, e.logger)
 	go hb.run(ctx)
 	// A startup warm sweep runs once so a cold start does not wait a full
 	// interval; the recurring cadence is the durable @every sweep schedule

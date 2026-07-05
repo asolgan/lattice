@@ -130,6 +130,18 @@ whichever arrives first. (c) **Fires 7–8 are unblocked now** — orthogonal to
 `candidates` = [collectPayment flow (cheap), operator `assignTask` fallback] — the existing
 "budget-spent → needs-human" terminal, made dispatchable.
 
+**Fire 7 SHIPPED (2026-07-05):** the contraction monitor + oscillation detector (§3.4), both purely
+in-memory and heartbeat-surfaced — zero dispatch-decision change. Contraction: `contraction.go`'s
+`contractionStats` tracks each target's current violating-row count incrementally from lane-1 delivery,
+samples it into a bounded ring on the sweep's own cadence, and the heartbeat classifies the ring
+shrinking/steady/diverging (`metrics.contractionTrajectory`). Oscillation: `oscillation.go` joins a
+dispatched actionRef to the aspect path(s) its declared `.effects` assert (`targetSource.effectPathsFor`,
+`registry.go`) at the same two fresh-dispatch seams `bumpEffectDispatch` already uses; a trailing 4-event
+strict two-target alternation on one path freezes both targets via the existing `Engine.Disable`
+`__control` seam and raises one `TargetOscillation` issue naming the pair — proven end to end in
+`oscillation_internal_test.go`'s fighting-targets fixture (design table's Fire 7 acceptance). Fire 8
+(admission control) is next.
+
 **Pre-build gate (run 2026-07-04, in the Fire 5 session):** the self-imposed adversarial pass over
 episode-stability under reclaim, focused specifically on the hazard the existing dispatch pipeline
 structurally invited — `dispatchGap`/`planGap` resolve a plan from the target's playbook *before*

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -53,6 +54,15 @@ func (e *Engine) handleRow(ctx context.Context, msg substrate.Message) substrate
 		return substrate.NakWithDelay
 	}
 
+	// Contraction monitor (design weaver-planner-mandate-design.md §3.4):
+	// records this row's current violating state on EVERY delivery, violating
+	// or not, including the tombstone case (row == nil reads as boolColumn's
+	// safe nil-map false) — the heartbeat-cadence trajectory input. Purely
+	// in-memory bookkeeping; runs even for a disabled target, mirroring
+	// mark-clearing above.
+	violating := row != nil && e.boolColumn(targetID, row, "violating")
+	e.contraction.observe(targetID, entityID, violating)
+
 	if row == nil {
 		return substrate.Ack
 	}
@@ -78,7 +88,7 @@ func (e *Engine) handleRow(ctx context.Context, msg substrate.Message) substrate
 		return substrate.Ack
 	}
 
-	if !e.boolColumn(targetID, row, "violating") {
+	if !violating {
 		// L1: not violating — clearing already ran; nothing to dispatch.
 		return substrate.Ack
 	}
@@ -332,6 +342,7 @@ func (e *Engine) fireEpisode(ctx context.Context, targetID, entityID, entityKey,
 	// allows one extra attempt — far safer than wedging a live dispatch.
 	e.bumpDispatchCount(ctx, targetID, entityID, col)
 	e.bumpEffectDispatch(ctx, targetID, col, action)
+	e.bumpOscillation(ctx, targetID, action)
 	return e.fire(ctx, targetID, entityID, col, rev, claimID, pl)
 }
 
@@ -357,6 +368,27 @@ func (e *Engine) bumpEffectDispatch(ctx context.Context, targetID, gapColumn, ac
 	if err := e.marks.recordEffectDispatch(ctx, targetID, gapColumn, actionRef); err != nil {
 		e.logger.Warn("weaver: effect dispatch record failed",
 			"targetId", targetID, "gap", gapColumn, "action", actionRef, "err", err)
+	}
+}
+
+// bumpOscillation records this fresh-dispatch episode's touched aspect paths
+// (from actionRef's declared op-DDL `.effects`, Fire 1) against the
+// oscillation detector, at the SAME two fresh-dispatch seams
+// bumpEffectDispatch uses — the CAS-create-won lane-1 path and the sweep's
+// reclaim, never a redelivery re-fire. A confirmed fight (two targets
+// alternately dispatching against the same aspect path) freezes both via the
+// existing `__control` disable seam and raises ONE Health issue naming the
+// pair (design weaver-planner-mandate-design.md §3.4) — diagnostic action
+// only, never a new dispatch. An actionRef with no declared effects touches
+// nothing and is a no-op.
+func (e *Engine) bumpOscillation(ctx context.Context, targetID, actionRef string) {
+	now := time.Now()
+	for _, path := range e.source.effectPathsFor(actionRef) {
+		a, b, ok := e.oscillation.record(path, targetID, now)
+		if !ok {
+			continue
+		}
+		e.freezeOscillatingPair(ctx, a, b, path)
 	}
 }
 
