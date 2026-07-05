@@ -476,19 +476,24 @@ the missing bridge between them is exactly this flow.*
 4. **Self-signup at the IdP.** At home, the prospect downloads the resident app → "Create account" →
    the deployment's IdP (Auth0/Keycloak — architecture's integration dependency; Lattice is not
    involved). They come back with a JWT, `sub = S`.
-5. **First touch → provision A.** Their first request hits the Gateway. Verify JWT → A
+5. **First touch → provision A — BARE.** Their first request hits the Gateway. Verify JWT → A
    (`vtx.identity.<S>`). No binding for A, no vertex A → the Gateway submits
    `ProvisionConsumerIdentity{targetActorKey: A}` under its own system identity (§3.3,
-   `identityProvisioner` role): creates vertex A + `holdsRole(A → consumer)`. Idempotent; cached.
-   *Without this step the person is a dead end — no capability doc exists for A, and §6.8 has no
-   anonymous fallback (the entire §2 contradiction).*
-6. **Claim.** The app reads the QR: submits `ClaimIdentity{targetIdentityKey: U, claimKey: s}` with
-   `authContext.target = A`, through the same authenticated `/v1/operations`. Step-3: A holds `consumer`
-   (step 5), `scope self`: target == actor ✓. Script: U unclaimed ✓, no existing binding for A ✓,
-   `sha256(s)` matches constant-time ✓ → binds `credentialBinding{actorKey: A}` on U, `state → claimed`,
-   tombstones `.claimKey`, writes the credentialindex entry, **grants `holdsRole(U → consumer)`**
-   (refinement R2, §11.5 — U is about to become the acting identity and needs the role). The
-   `identity.claimed` event flows to the Gateway's binding materializer.
+   `identityProvisioner` role): creates vertex A (root `data: {}`) + `holdsRole(A → consumer)` — **and
+   nothing else. A carries no name/email/phone aspects.** The step-4 signup profile lives at the IdP
+   (the account), not in Lattice; the Gateway only ever sees a JWT and must not write business PII from
+   token claims. Post-claim there is exactly **one PII-bearing identity per human (U)** — no A-vs-U
+   aspect divergence to own, and **crypto-shred covers U alone** in this scenario (A has no sensitive
+   aspects to shred; "forget me" = shred U's DEK + delete the IdP account, an IdP-side concern +
+   optionally tombstone A). Idempotent; cached. *Without this step the person is a dead end — no
+   capability doc exists for A, and §6.8 has no anonymous fallback (the entire §2 contradiction).*
+6. **Claim.** The app reads the claim link (§11.1a): submits `ClaimIdentity{targetIdentityKey: U,
+   claimKey: s}` with `authContext.target = A`, through the same authenticated `/v1/operations`. Step-3:
+   A holds `consumer` (step 5), `scope self`: target == actor ✓. Script: U unclaimed ✓, no existing
+   binding for A ✓, `sha256(s)` matches constant-time ✓ → binds `credentialBinding{actorKey: A}` on U,
+   `state → claimed`, tombstones `.claimKey`, writes the credentialindex entry, **grants
+   `holdsRole(U → consumer)`** (refinement R2, §11.5 — U is about to become the acting identity and
+   needs the role). The `identity.claimed` event flows to the Gateway's binding materializer.
 7. **From now on: the person IS U.** Every subsequent request: JWT → A → binding → `env.Actor = U`.
    Maya's concierge journey (PRD Journey 1) now works verbatim: the AI traverses *U's* identity →
    lease → entitlements; `RenewLease` submits as U; the countersignature task `assignedTo` Sam; the
@@ -496,6 +501,30 @@ the missing bridge between them is exactly this flow.*
    Reads: `GET /v1/<readmodel>` sets `lattice.actor_id = U`; `cap-read.residence.U` (D1.3) anchors
    their unit/lease rows through RLS. Revocation still targets A — the kill-switch cuts the credential,
    not the business history.
+
+#### 11.1a The claim handoff — out-of-band by design (Andrew's step-6 question, 2026-07-05)
+
+The app learns `{U, s}` from a channel that never transits Lattice — this is Contract #9 §9.2's design,
+not an accident: *"The client retains the plaintext it minted; it is the single copy and the single
+delivery channel (e.g. shown once to an operator, or handed to the end user out of band)."* Lattice
+stores only the hash and structurally **cannot** deliver the secret. Concretely:
+
+- At step 2 the staff app (client-side) composes a **claim link** after the create reply returns U:
+  `https://resident.<deployment>/claim#k=<U's-NanoID>&s=<claimSecret>` — the **URL fragment** (`#`, not
+  `?`) never leaves the browser in HTTP requests, so the secret cannot land in server/proxy logs.
+- **Delivery**: a printed QR on the tour brochure / welcome letter (the walk-in handoff), or the staff
+  FE sends the link by email/SMS **directly from the front-end** via the deployment's messaging service.
+  U's NanoID is an address, not a secret — `s` alone gates the claim, and every failure collapses to
+  `ClaimKeyInvalid` (NFR-S6 anti-enumeration), so a leaked link without `s` reveals nothing. No lookup
+  endpoint exists or should: "find my unclaimed identity by email" would be an enumeration oracle.
+- **The delivery channel must bypass Lattice's write path entirely.** Sending the claim email through a
+  Lattice-orchestrated bridge/externalTask would put the plaintext `s` in an op payload on
+  `core-operations` — violating Contract #9's core invariant (*"not in the core-operations stream"*).
+  The FE → messaging-service hop carries it; **never build a "send claim email" Loom pattern.**
+- **Lost brochure = re-issue, not recovery.** Staff cannot recover `s` (hash-only storage, single copy
+  was client-side). Refinement R4 (§11.5): a staff-gated `RotateClaimKey{identityKey, claimKeyHash}` op
+  — new client-minted secret, new hash overwriting `.claimKey`, valid only while `state == "unclaimed"`,
+  same grant roles as `CreateUnclaimedIdentity`. Fails closed on a claimed/merged/tombstoned identity.
 
 ### 11.2 Scenario B — Clinic goes real: self-signup-first (no staff pre-creation)
 
@@ -517,6 +546,15 @@ the missing bridge between them is exactly this flow.*
    — the merge machinery exists precisely because multiple identity vertices per human are inevitable.
    (That lens is currently inert over Vault-encrypted PII — the known `[identity-hygiene]` board item —
    but that's its own tracked gap, not new debt this flow creates.)
+
+**Crypto-shred coverage across the scenarios (Andrew's step-5 question, 2026-07-05).** The invariant is
+*"shred the discoverable identity-set of the human,"* not *"shred one vertex"*: Scenario A — U alone
+(A is bare, §11.1 step 5; nothing sensitive to shred). Scenario B — A alone (it accreted the PII; the
+`name`/`email`/`phone` aspect DDLs deliberately carry empty `permittedCommands`, so vertical ops are
+sanctioned writers). The duplicate case above — **both**, until/after merge: a merged-loser vertex may
+still carry PII aspects, so a forget-request walks the set via `mergedInto` + the credentialindex and
+shreds each member's DEK. The set is always discoverable from any member; the forget flow must
+enumerate it rather than assume a singleton.
 
 ### 11.3 What must change for demo → real (the honest delta list)
 
@@ -564,6 +602,10 @@ shapes; **recommendation: (a)**:
   `permittedCommands` on the link class is empty so no step-6 conflict; called out so ratification sees it.
 - **R3 — the `sub` mapping** per §11.4(a), landing in `internal/gateway/auth` (the ActorID construction)
   so write path, read path, and revocation all derive identically.
+- **R4 — `RotateClaimKey` (lost-secret re-issue).** Staff-gated (same grant roles as
+  `CreateUnclaimedIdentity`), payload `{identityKey, claimKeyHash}` — overwrites `.claimKey` with a new
+  client-minted hash, valid only while `state == "unclaimed"`, fails closed otherwise (§11.1a). Without
+  it a lost brochure permanently strands an unclaimed identity (the hash is unrecoverable by design).
 
 The dead-scaffolding verdict (§9) is **unchanged** — these refine what gets built when the driver files;
 they do not create a reason to build sooner. The E2E in §7 gains one scenario: the full §11.1 walk-in
