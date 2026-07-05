@@ -102,16 +102,17 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
 > 🎯 **Build-ready now**: **Vault Fire 5b** (★★★ — 5b-ii-c/5b-iii/5b-iii-a/5b-iv all shipped; only
 > the delivery-boundary reset + live e2e remain, and that needs an **attended** fire — destructive to
-> the shared dev stack). *Dependency-sequenced ratified items, unblocked in the meantime*: **Personal
-> Lens** (L, 🏗️ building — PL.2 shipped, PL.3 gated on D1) · **Object crypto-shred** (behind Vault). Current fire/park state for
-> Gateway · Augur · Control-plane-authz lives on their rows below.
+> the shared dev stack). D1 (D1.1–D1.5) closed 2026-07-02, clearing three downstream gates: **Gateway
+> Fire 3** (read-front) · **Personal Lens PL.3** (readableAnchors) · **Control-plane-authz Fire 2**
+> (verified-actor) are all now build-ready, not blocked. *Still genuinely gated*: **AI-caps Fire 4**
+> (Andrew sign-off on AI-code-execution, not the sandbox) · **Object crypto-shred** (behind Vault).
 
 ### Security & trust boundary
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| Gateway | Edge trust boundary: JWT auth, `Lattice-Actor` stamping, read-path enforcement. Gates external actors + the real Edge node. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/gateway-external-trust-boundary-design.md) · Fire 1+2 shipped; Fire 4 (claim-front) retired as re-grounded — see [design](../../implementation-artifacts/gateway-claim-flow-identity-provisioning-design.md); next: read-front (behind D1.3) |
+| Gateway | Edge trust boundary: JWT auth, `Lattice-Actor` stamping, read-path enforcement. Gates external actors + the real Edge node. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/gateway-external-trust-boundary-design.md) · Fire 1+2 shipped, Fire 4 retired ([re-grounded](../../implementation-artifacts/gateway-claim-flow-identity-provisioning-design.md)); D1 closed — next: Fire 3 read-front, unblocked |
 | NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | ✅ effectively done · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) §Fire-3-status · only deferred Fire 4 (prod mTLS) remains |
-| Control-plane Capability authorization (FR30) | Both control planes (Weaver/Refractor `…/control`) should be capability-gated, not open responders. | ★★ | M | ✅ effectively done · [design](../../implementation-artifacts/control-plane-capability-authz-design.md) · Fire 1a+1b+1c shipped (capability-enforced behind the NATS trust floor); only Fire 2 (verified-actor, gated on D1.2) remains |
+| Control-plane Capability authorization (FR30) | Both control planes (Weaver/Refractor `…/control`) should be capability-gated, not open responders. | ★★ | M | ✅ effectively done · [design](../../implementation-artifacts/control-plane-capability-authz-design.md) · Fire 1a+1b+1c shipped (capability-enforced behind the NATS trust floor); D1.2 shipped — Fire 2 (verified-actor) unblocked, not yet picked up |
 
 ### Privacy / Vault
 | Item | What it is | Imp | Size | State |
@@ -136,14 +137,14 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Edge & personal lenses (the path Loupe grows into)
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| Personal / Secure Lens | Refractor projects a per-identity security-filtered subgraph stream; the Interest-Set watchlist; RLS-style link filtering. | ★★ | L | 🏗️ building · [design](../../implementation-artifacts/personal-secure-lens-design.md) · PL.2 (fan-out + Interest Set) shipped `e3053cf`; next: PL.3 D1 readableAnchors 🚧 gated on D1 |
+| Personal / Secure Lens | Refractor projects a per-identity security-filtered subgraph stream; the Interest-Set watchlist; RLS-style link filtering. | ★★ | L | 🏗️ building · [design](../../implementation-artifacts/personal-secure-lens-design.md) · PL.2 (fan-out + Interest Set) shipped; D1 + NATS-account-auth both done — next: PL.3 readableAnchors, unblocked |
 | NATS-subject publish-events adapter | A Refractor target adapter publishing projection deltas to `lattice.sync.user.<id>` — required for Personal Lens. | ★★ | S–M | 📐 subsumed → Personal Lens Fire 1 |
 | Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. | ★★ | XL | ✅ ratified · [design](../../implementation-artifacts/edge-lattice-full-design.md) · 🚧 seq (far) |
 
 ### AI-native
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| AI-authored capabilities | A Lattice-aware agent proposes DDL/Starlark/lenses/workflows through human review + deterministic validation + rollback. | ★★–★★★ | L | 🏗️ building · [design](../../implementation-artifacts/ai-authored-capabilities-design.md) · Fire 3 CLOSED (weaverTarget/loomPattern kinds); next: Fire 4 (Starlark, gated on the sandbox) · Loupe UI affordance is Stream 3's lane |
+| AI-authored capabilities | A Lattice-aware agent proposes DDL/Starlark/lenses/workflows through human review + deterministic validation + rollback. | ★★–★★★ | L | 🏗️ building · [design](../../implementation-artifacts/ai-authored-capabilities-design.md) · Fire 3 CLOSED; next: Fire 4 (Starlark) 📐 awaiting-Andrew sign-off on AI-code-execution — sandbox builds WITH it, not before · Loupe UI is Stream 3's lane |
 | **The Augur** (AI reasoning tier — L3 evaluator) | Weaver's AI-assisted reasoning tier for ambiguous/novel convergence gaps. The marquee AI-native feature. | ★★ | M–L | ✅ Fires 1+2a+2b shipped (loop closes: escalate→review→dispatch) · [design](../../implementation-artifacts/augur-design.md) + [dispatch design](../../implementation-artifacts/augur-dispatch-pickup-design.md) · 🚧 Fire 3 autoApply Andrew-gated; follow-up: mid-flight-kill + drift-invalid e2e (§6 residual) |
 | Starlark guards (Loom) | The reserved `{reads, starlark}` guard escape hatch needs a verified-pure sandbox. | ★ | M | ✅ ratified (split) · [design](../../implementation-artifacts/loom-starlark-guards-design.md) · 🚧 Loom-side held (ships with first consumer) |
 | **Weaver planner mandate (dispatcher → solver)** | Remediation stops being a static gap→action lookup: deterministic planner (per-gap candidate selection, then goal-regression synthesis over op-declared effects) executed as content-addressed pinned Loom patterns, plus contraction/oscillation diagnostics and fleet admission control; shadow mode + per-target cutover; the Augur stays the AI boundary. | ★★★ | XL | 🏗️ building · [design](../../implementation-artifacts/weaver-planner-mandate-design.md) · Fires 1-5+6 Inc1-2 done; Inc3 HELD (no real multi-op gap) |
