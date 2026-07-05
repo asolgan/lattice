@@ -17,7 +17,6 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 
 | Item | What it is (PO view) | Vertical | Owner | Imp | Size | State |
 |---|---|---|---|---|---|---|
-| LoftSpace — My Applications card always blank for bedrooms/bathrooms/move-in | `read_lease_applications` has `unit_bedrooms`/`unit_bathrooms`/`unit_available_from` populated (live-verified via Postgres); `selectApplicationsSQL` in `cmd/loftspace-app/applications.go` omits all three from its SELECT, so `/api/applications` always returns them null and the FE's beds/baths/move-in line renders blank. | LoftSpace | FE | ★★ | XS | 📋 ready — add the 3 columns to `selectApplicationsSQL` + `queryApplications` Scan (mirrors `selectApplicationByKeySQL`, which already selects them) |
 | LoftSpace — lease renewal (first goal-authored Weaver target) | No renewal surface exists; trigger derivable (`.listing` availableFrom+leaseTermMonths; freshUntil precedent). Per-tenant chain — fresh bgcheck if stale, guarantor re-verify if present, rent adjustment (new op), signature — author goal-first (`goal` + op `effects` + the §10.8 doctrine rider). | LoftSpace | pkg + FE | ★★★ | L | 📋 needs-design (Designer; Andrew-routed 2026-07-05) · builds WITH [lattice](lattice.md) Fire 6 Inc3 · [planner design](../../implementation-artifacts/weaver-planner-mandate-design.md) |
 
 ## PO notes (dated — drives rotation)
@@ -34,6 +33,7 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic, staggered from 
 
 One line per shipped item (`date · SHA · title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-05 · `b663c1c` · LoftSpace My Applications beds/baths/move-in CLOSED — `selectApplicationsSQL` now selects the 3 columns `selectApplicationByKeySQL` already did
 - 2026-07-05 · `7eb3330` · LoftSpace D1.5 landlord RLS decision surface CLOSED — stale block label; already fully built (5b-ii/-ii-b/-ii-c) — [design](../../implementation-artifacts/loftspace-d1.5-landlord-rls-decision-surface-design.md)
 - 2026-07-05 · `a710c7a` · LoftSpace applicant email/phone to landlord CLOSED — stale block (was `blocked-on Vault 5b`); subsumed by the same Secure-Lens columns, live-verified in the RLS card's contact line
 - 2026-07-05 · `109f59a` · Clinic patient picker empty CLOSED — stale block (was `blocked-on bootstrap staleness`); fix shipped Lattice-side, live re-verified: fresh install + CreatePatient + staff-wildcard read now returns it
