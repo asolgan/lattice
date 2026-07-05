@@ -113,7 +113,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 |---|---|---|---|---|
 | Gateway | Edge trust boundary: JWT auth, `Lattice-Actor` stamping, read-path enforcement. Gates external actors + the real Edge node. | ★★★ | L | 🏗️ building · [design](../../implementation-artifacts/gateway-external-trust-boundary-design.md) · Fire 1+2 shipped; Fire 4 (claim-front) retired as re-grounded — see [design](../../implementation-artifacts/gateway-claim-flow-identity-provisioning-design.md); next: read-front (behind D1.3) |
 | NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | ✅ effectively done · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) §Fire-3-status · only deferred Fire 4 (prod mTLS) remains |
-| Control-plane Capability authorization (FR30) | Both control planes (Weaver/Refractor `…/control`) should be capability-gated, not open responders. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/control-plane-capability-authz-design.md) · Fire 1a shipped (actor-on-wire, zero enforcement); next: Fire 1b (checker+grants, bundled w/ Fire 1c) |
+| Control-plane Capability authorization (FR30) | Both control planes (Weaver/Refractor `…/control`) should be capability-gated, not open responders. | ★★ | M | ✅ effectively done · [design](../../implementation-artifacts/control-plane-capability-authz-design.md) · Fire 1a+1b+1c shipped (capability-enforced behind the NATS trust floor); only Fire 2 (verified-actor, gated on D1.2) remains |
 
 ### Privacy / Vault
 | Item | What it is | Imp | Size | State |
@@ -184,6 +184,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-05 · `a3f6a23` · [Security] Control-plane capability authz (FR30) Fire 1b — CapabilityKVChecker + control-authz grants, enforcement now default-on behind the shipped NATS trust floor; 3-layer reviewed
 - 2026-07-05 · `03976c2` · [Security] Control-plane capability authz (FR30) Fire 1a — Lattice-Actor header threaded through Weaver/Loom/Refractor control + CLI/Loupe, zero enforcement change; 3-layer reviewed
 - 2026-07-05 · `f30b80e` · [Refractor/adapter] Fixed pool.Close/DROP TABLE cleanup order in rls_test.go + rls_verify_test.go — `t.Cleanup(pool.Close)` so LIFO runs the drop first, no more leaked tables on rerun
 - 2026-07-05 · `109f59a` · [bootstrap] `make up` reuse-branch freshness check — gates reuse on `lattice bootstrap verify`; stale/mismatched JSON forces re-bootstrap instead of silently reading empty
