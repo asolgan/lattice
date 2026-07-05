@@ -147,10 +147,12 @@ func TestReadBoundary_RLS_Enforcement(t *testing.T) {
 
 	// Seed: A's application (anchor A, signed — the lease-document tests need a
 	// signed row to render) + B's application (anchor B, unsigned); self-grants.
-	exec(`INSERT INTO read_lease_applications (app_id, entity_key, applicant, landlord_decision, signed_at, authz_anchors, projection_seq)
-	      VALUES ('app-A', 'vtx.leaseapp.app-A', 'vtx.identity.`+subAlice+`', 'approved', '2026-07-15T00:00:00Z', $1, 1)`, []string{subAlice})
-	exec(`INSERT INTO read_lease_applications (app_id, entity_key, applicant, authz_anchors, projection_seq)
-	      VALUES ('app-B', 'vtx.leaseapp.app-B', 'vtx.identity.`+subBob+`', $1, 1)`, []string{subBob})
+	// Both rows carry unit_bedrooms/unit_bathrooms/unit_available_from so the
+	// round-trip assertions below guard against the SELECT/Scan silently dropping them.
+	exec(`INSERT INTO read_lease_applications (app_id, entity_key, applicant, landlord_decision, signed_at, unit_bedrooms, unit_bathrooms, unit_available_from, authz_anchors, projection_seq)
+	      VALUES ('app-A', 'vtx.leaseapp.app-A', 'vtx.identity.`+subAlice+`', 'approved', '2026-07-15T00:00:00Z', 2, 1, '2026-08-01', $1, 1)`, []string{subAlice})
+	exec(`INSERT INTO read_lease_applications (app_id, entity_key, applicant, unit_bedrooms, unit_bathrooms, unit_available_from, authz_anchors, projection_seq)
+	      VALUES ('app-B', 'vtx.leaseapp.app-B', 'vtx.identity.`+subBob+`', 3, 2, '2026-09-15', $1, 1)`, []string{subBob})
 	exec(`INSERT INTO actor_read_grants (actor_id, anchor_id, grant_source, projection_seq, is_deleted)
 	      VALUES ($1, $1, 'cap-read', 1, false)`, subAlice)
 	exec(`INSERT INTO actor_read_grants (actor_id, anchor_id, grant_source, projection_seq, is_deleted)
@@ -251,6 +253,15 @@ func TestReadBoundary_RLS_Enforcement(t *testing.T) {
 		}
 		if !rows[0].LandlordApproved {
 			t.Errorf("app-A landlord_decision=approved must derive landlordApproved=true")
+		}
+		if rows[0].UnitBedrooms == nil || *rows[0].UnitBedrooms != 2 {
+			t.Errorf("app-A unitBedrooms = %v, want 2", rows[0].UnitBedrooms)
+		}
+		if rows[0].UnitBathrooms == nil || *rows[0].UnitBathrooms != 1 {
+			t.Errorf("app-A unitBathrooms = %v, want 1", rows[0].UnitBathrooms)
+		}
+		if rows[0].UnitAvailableFrom == nil || *rows[0].UnitAvailableFrom != "2026-08-01" {
+			t.Errorf("app-A unitAvailableFrom = %v, want 2026-08-01", rows[0].UnitAvailableFrom)
 		}
 	})
 
