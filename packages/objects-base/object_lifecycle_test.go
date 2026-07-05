@@ -170,6 +170,61 @@ func TestObject_DuplicateRequestCollapses(t *testing.T) {
 	}
 }
 
+// TestObject_ReattachAlreadyAlive_IsAcceptedNoOp proves the CC5 layer-2
+// graph idempotency contract: re-attaching the SAME target+linkName+digest
+// under a FRESH requestId (the >24h-past-the-requestId-tracker case the
+// module doc calls "a harmless no-op") is accepted, not rejected.
+// link_ensure_alive returns None when the link is already alive, so no
+// mutation ever touches the link key — attach_object must not name it as
+// response.primaryKey in that branch, or the Processor's write-footprint
+// reply-constraint rejects the exact no-op this DDL documents as harmless.
+func TestObject_ReattachAlreadyAlive_IsAcceptedNoOp(t *testing.T) {
+	ctx, conn := setupObjectsEnv(t)
+	cp, cons := testutil.CapabilityPipeline(t, ctx, conn, testutil.PipelineConfig{Durable: "objrealive", Instance: "objrealive-1"})
+
+	id := "vtx.identity.AAuserHJKMNPQRSTUVW4"
+	seedIdentity(t, ctx, conn, id, false)
+	digest := "SHA-256=realiveTESTdigestExampleAA"
+	oid := substrate.SHA256NanoID("object:" + digest)
+	objKey := "vtx.object." + oid
+	contentKey := objKey + ".content"
+	link := "lnk.object." + oid + ".photoOf.identity.AAuserHJKMNPQRSTUVW4"
+	payload := map[string]any{"digest": digest, "size": 10, "contentType": "image/png",
+		"storeName": "s-realive", "targetKey": id, "linkName": "photoOf"}
+
+	submitObj(t, ctx, conn, cp, cons, testutil.GenReqID("realive1"), "AttachObject", payload, []string{id}, processor.OutcomeAccepted)
+	if !liveExists(ctx, conn, link) {
+		t.Fatalf("first attach did not create %s", link)
+	}
+	_, linkRev1 := readDoc(t, ctx, conn, link)
+	_, objRev1 := readDoc(t, ctx, conn, objKey)
+	if ll := liveLinksOf(t, ctx, conn, objKey); ll != 1 {
+		t.Fatalf("liveLinks after first attach = %d want 1", ll)
+	}
+
+	// A DIFFERENT requestId re-attaching the same target+linkName+digest: the
+	// requestId tracker (Contract #4) keys on requestId, not payload, so this
+	// does NOT collapse as a duplicate — it reaches the DDL, which must treat
+	// the already-alive link as a no-op.
+	submitObj(t, ctx, conn, cp, cons, testutil.GenReqID("realive2"), "AttachObject", payload,
+		[]string{id, objKey, contentKey, link}, processor.OutcomeAccepted)
+
+	// Genuinely a no-op at the link/graph layer: no mutation touched the link.
+	_, linkRev2 := readDoc(t, ctx, conn, link)
+	if linkRev2 != linkRev1 {
+		t.Fatalf("re-attach to an already-alive link must not touch the link (rev %d -> %d)", linkRev1, linkRev2)
+	}
+	// The object vertex is still OCC-touched (write_vertex runs unconditionally
+	// in the live branch), but liveLinks must stay unchanged (link_delta=0).
+	_, objRev2 := readDoc(t, ctx, conn, objKey)
+	if objRev2 <= objRev1 {
+		t.Fatalf("object vertex must still be OCC-touched on re-attach (rev %d -> %d)", objRev1, objRev2)
+	}
+	if ll := liveLinksOf(t, ctx, conn, objKey); ll != 1 {
+		t.Fatalf("liveLinks after a no-op re-attach = %d want 1 (unchanged)", ll)
+	}
+}
+
 // TestObject_LiveObjectRequiresContentInReads proves the m1 guard: digest
 // collision detection is script-enforced, so an attach to a live object that
 // omits the .content aspect from contextHint.reads is rejected (rather than

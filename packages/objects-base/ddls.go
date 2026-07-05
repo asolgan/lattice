@@ -153,8 +153,11 @@ func objectDDL() pkgmgr.DDLSpec {
 					"(root {}) + a .content aspect {digest,size,contentType,storeName} + the link " +
 					"lnk.object.<oid>.photoOf.identity.<applicantNanoID> {filename: me.jpg}. If the identical bytes " +
 					"already have a live object, adds only the link (dedup) and OCC-touches the object vertex. Emits " +
-					"object.attached. Returns primaryKey = the link key. Rejects an absent/protected target or a digest " +
-					"mismatch under an existing oid (DigestCollision).",
+					"object.attached. Returns primaryKey = the link key — except a re-attach to an already-alive " +
+					"(same target+linkName) link, a harmless CC5 no-op that mutates nothing under the link key, which " +
+					"omits primaryKey (the caller derives the deterministic link key itself, same as a collapsed " +
+					"duplicate). Rejects an absent/protected target or a digest mismatch under an existing oid " +
+					"(DigestCollision).",
 			},
 			{
 				Name: "AttachObject — attach a sensitive (crypto-shreddable) document",
@@ -556,8 +559,18 @@ def attach_object(state, p):
             events.append({"class": "object.detached",
                            "data": {"objectKey": old_obj_key, "linkKey": old_link}})
 
-    return {"mutations": mutations, "events": events,
-            "response": {"primaryKey": link_key}}
+    # The reply-constraint (Processor commit_path.go, "response.primaryKey is
+    # not within the write footprint") rejects a script-named key the batch
+    # never mutated. When the link was already alive, link_mut is None and no
+    # mutation touches link_key — so primaryKey must be omitted here, exactly
+    # like a same-requestId duplicate collapse. The caller already has to
+    # handle that (derive the deterministic link key itself); this is the
+    # same fallback for the >24h-past-the-tracker re-attach case.
+    response = {}
+    if link_mut != None:
+        response["primaryKey"] = link_key
+
+    return {"mutations": mutations, "events": events, "response": response}
 
 def detach_object(state, p):
     oid = required_bare_id(p, "oid")
