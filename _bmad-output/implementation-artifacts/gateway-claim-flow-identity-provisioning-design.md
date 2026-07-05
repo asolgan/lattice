@@ -397,3 +397,174 @@ edits in §10); §3 is fully specified and ready, not built.
   table row for #9 corrected to drop the retired `/v1/claim` reference.
 - `_bmad-output/planning-artifacts/backlog/lattice.md` — this row and the Gateway epic row updated to
   `📐 awaiting-Andrew` with links here.
+
+---
+
+## 11. The real-app end-to-end scenario (added 2026-07-05, Andrew's ratification question)
+
+*"How does consumer identity provisioning / creating / claiming work when Clinic and LoftSpace become
+real apps, not demos?"* This section walks it end to end, grounded in the PRD's personas and journeys,
+the brainstorm inventory, and the architecture's IdP decision. Working it through surfaced **three
+refinements** to §3 (folded in at §11.5) — the shelved mechanism's shape survives, but the full picture
+sharpens what `ProvisionConsumerIdentity` is *for* and adds the two missing pieces a real app needs.
+
+### 11.0 The structural insight: two identity vertices per walked-in human — and who you act as
+
+The claim flow, read closely, creates **two** identity vertices for one human in the staff-first path:
+
+- **U — the business identity.** Staff-created (`CreateUnclaimedIdentity`), carries the name/email/phone
+  aspects, the PII (`RecordIdentityPII` ssn/dob → Vault-encrypted, crypto-shreddable per PRD §358), and
+  every business link — the lease application points at U, the patient record points at U, tasks are
+  `assignedTo` U. This is the "own identity vertex, own lease, own service history" of the PRD's consumer
+  persona (PRD L494).
+- **A — the credential identity.** Born from the deployment's IdP (brainstorm #118: *"actor claim as a
+  signed JWT keyed by Identity vertex"*; architecture: *"External IdP for actor signing keys — integration
+  dependency"*, Auth0/Keycloak/etc., Lattice never owns the keys — the ratified F3). `auth.go` maps the
+  verified JWT `sub` → `vtx.identity.<sub>` = A. Revocation (the kill-switch) targets A.
+
+`ClaimIdentity` **binds** them: `credentialBinding{actorKey: A}` written on U, plus the
+`vtx.credentialindex.<sha256NanoID(A)>` → `{identityKey: U}` lookup vertex (`ddls.go:497-511`). The
+package's own comment says the quiet part: *"scope enforcement… one-credential-one-identity via
+credentialindex"* — the index is a **credential → business-identity resolution table**, keyed by a
+deterministic hash of the credential key for O(1) lookup. That only has a purpose if something *resolves*
+through it per request. The design of record for a real app is therefore:
+
+> **After claim, the person acts AS U.** The Gateway resolves credential → identity: verify JWT → A →
+> look up the binding → stamp `env.Actor = U` (write path) / `lattice.actor_id = U` (read path). No
+> binding → act as your own key (A). One seam, one component.
+
+The alternative — the person acts as A forever and every downstream mechanism walks the binding — fails
+concretely on shipped machinery: the ephemeral task-grant lens projects `cap.ephemeral.<assignee>`
+(Contract #6 §6.6) off the `assignedTo` link, which points at **U** (that's where the lease application
+lives). A person acting as A would never match a task grant projected for U; every package lens
+(`cap-read.residence`, my-tasks, the SignLease §10.7 grant) would need binding-awareness bolted on — and
+the binding is aspect *data* on U, not a link, so lenses can't even traverse to it from A. Resolving once
+at the Gateway keeps the credential plane (A: JWT, revocation) cleanly separate from the business plane
+(U: links, grants, PII) with exactly one component aware of the seam.
+
+**Mechanism for the lookup (P5-clean, precedent-mirrored):** the Gateway already runs a durable
+`events.gateway.>` materializer folding revocation events into its local `token-revocation` bucket. The
+claim emits `identity.claimed{identityKey, actorKey}` (`ddls.go:514-517`) — a second materializer arm on
+`events.identity.>` folds bindings into a local `credential-bindings` bucket the same way (works even when
+Refractor is degraded, the same argument the revocation design made). CDC-lag posture identical to the
+accepted M3 window: a claim on device 1 is visible to device 2's requests within the materializer lag;
+until then the person acts as A and sees self-only data — deny-safe, self-healing.
+
+**One carve-out:** `ClaimIdentity` itself always acts as the **raw credential identity** (no resolution) —
+the one-credential-one-identity dedup keys off `hash(op.actor)` and must see the credential, and a
+resolved actor would let an already-bound person chain-claim a second identity. Op-type-scoped skip at the
+Gateway; one line, one test.
+
+### 11.1 Scenario A — LoftSpace goes real: the walk-in applicant (staff-first; the Contract #9 flow)
+
+*This is PRD Journey 3 (Sam processing the 12A application) meeting PRD Journey 1 (Maya's concierge) —
+the missing bridge between them is exactly this flow.*
+
+1. **Walk-in.** A prospect tours the building. Front-desk staff F (logged in through the same Gateway —
+   F's IdP JWT → F's identity holds `frontOfHouse`) takes their name/email/phone.
+2. **Staff creates U.** The staff app mints the claim secret `s` **client-side**, computes `sha256(s)`,
+   and submits `CreateUnclaimedIdentity{name, email, phone, claimKeyHash}` through `POST /v1/operations`.
+   Step-3: F holds `frontOfHouse` ✓ (the staff grant — never a gap, §2.1). U is created
+   (`state=unclaimed`, `.claimKey` stores the hash). Lattice never sees `s` (Contract #9 Option C — the
+   whole point of the client-side mint). The app hands `s` to the prospect out of band — a QR on the
+   tour brochure encoding `{identityKey: U, claimSecret: s}` (U's key is an address, not a secret; `s`
+   alone gates the claim).
+3. **Business accrues on U.** F records the application: `RecordIdentityPII{ssn, dob}` (sensitive
+   aspects on U → Vault), `CreateLeaseApplication{applicant: U, unit 12A}`. The Loom pattern runs
+   (background check via the bridge, credit check), Sam approves — all of PRD Journey 3, unchanged, all
+   anchored on U. The person has no login yet and doesn't need one.
+4. **Self-signup at the IdP.** At home, the prospect downloads the resident app → "Create account" →
+   the deployment's IdP (Auth0/Keycloak — architecture's integration dependency; Lattice is not
+   involved). They come back with a JWT, `sub = S`.
+5. **First touch → provision A.** Their first request hits the Gateway. Verify JWT → A
+   (`vtx.identity.<S>`). No binding for A, no vertex A → the Gateway submits
+   `ProvisionConsumerIdentity{targetActorKey: A}` under its own system identity (§3.3,
+   `identityProvisioner` role): creates vertex A + `holdsRole(A → consumer)`. Idempotent; cached.
+   *Without this step the person is a dead end — no capability doc exists for A, and §6.8 has no
+   anonymous fallback (the entire §2 contradiction).*
+6. **Claim.** The app reads the QR: submits `ClaimIdentity{targetIdentityKey: U, claimKey: s}` with
+   `authContext.target = A`, through the same authenticated `/v1/operations`. Step-3: A holds `consumer`
+   (step 5), `scope self`: target == actor ✓. Script: U unclaimed ✓, no existing binding for A ✓,
+   `sha256(s)` matches constant-time ✓ → binds `credentialBinding{actorKey: A}` on U, `state → claimed`,
+   tombstones `.claimKey`, writes the credentialindex entry, **grants `holdsRole(U → consumer)`**
+   (refinement R2, §11.5 — U is about to become the acting identity and needs the role). The
+   `identity.claimed` event flows to the Gateway's binding materializer.
+7. **From now on: the person IS U.** Every subsequent request: JWT → A → binding → `env.Actor = U`.
+   Maya's concierge journey (PRD Journey 1) now works verbatim: the AI traverses *U's* identity →
+   lease → entitlements; `RenewLease` submits as U; the countersignature task `assignedTo` Sam; the
+   §10.7 ephemeral SignLease grant projects `cap.ephemeral.U` and **matches**, because the actor is U.
+   Reads: `GET /v1/<readmodel>` sets `lattice.actor_id = U`; `cap-read.residence.U` (D1.3) anchors
+   their unit/lease rows through RLS. Revocation still targets A — the kill-switch cuts the credential,
+   not the business history.
+
+### 11.2 Scenario B — Clinic goes real: self-signup-first (no staff pre-creation)
+
+1. A new patient finds the clinic online, creates an IdP account, opens the patient app. First touch →
+   step 5 above: A is provisioned + `consumer`. **There is no U and no claim** — nothing pre-exists to
+   claim. A *is* the business identity from day one.
+2. The patient books: `CreateAppointment{patient: …}` — in a real Clinic this means the vertical adds
+   consumer-scope grants for the self-service subset of its ops (today every clinic-domain op is
+   `operator`-only — the §2.5 demo posture; the real-app delta is package `permissions.go` work, e.g.
+   `CreateAppointment → consumer` with the Starlark script enforcing patient-self semantics, FR24's
+   "operators define and assign role-scoped access for all actor types" made real).
+3. Front desk later links the walk-in world in: `CreatePatient{identityKey: A}` — clinic-domain's
+   `identifiedBy` link already takes a pre-existing identity key; it doesn't care whether that identity
+   was staff-created or self-provisioned. The two onboarding paths converge on the same graph shape.
+4. **When both paths happen for one human** (they self-signed-up *and* a receptionist created an
+   unclaimed record at the front desk), the platform's existing answer applies: the two identities are
+   duplicates, `identity-hygiene`'s `duplicateCandidates` lens surfaces them (email/phone match) and
+   `MergeIdentity` folds one into the other (`state=merged`, `mergedInto`, aspect conflict resolution)
+   — the merge machinery exists precisely because multiple identity vertices per human are inevitable.
+   (That lens is currently inert over Vault-encrypted PII — the known `[identity-hygiene]` board item —
+   but that's its own tracked gap, not new debt this flow creates.)
+
+### 11.3 What must change for demo → real (the honest delta list)
+
+| # | Delta | Where | Status |
+|---|---|---|---|
+| 1 | Vertical FEs stop self-asserting `bootstrap.BootstrapIdentityKey` and submit through the Gateway with per-user JWTs | `cmd/loftspace-app`, `cmd/clinic-app` (`main.go` adminActor) | The demo posture; the Gateway write path (Fire 1) is built and waiting |
+| 2 | Verticals grant consumer-scope ops (the self-service subset) | package `permissions.go` + scripts | The §2.5 finding — today everything is operator-only; this is ordinary package work, per-vertical product decisions |
+| 3 | `ProvisionConsumerIdentity` + `identityProvisioner` + Gateway system identity | §3 of this design | Designed, shelved, ready |
+| 4 | Claim-time `consumer` grant on U | `ClaimIdentity` script (refinement R2) | Folded into §3's build scope, §11.5 |
+| 5 | Gateway credential→identity resolution (binding materializer + stamp-resolved-actor + claim-plane carve-out) | `internal/gateway` (refinement R1) | Folded into §3's build scope, §11.5 |
+| 6 | Real-IdP `sub` → NanoID mapping | `internal/gateway/auth` (refinement R3) | Folded into §3's build scope, §11.5 |
+| 7 | Prod reverse-proxy, real IdP JWKS config | `deploy/` | The Gateway design's Fire 5 (ops), unchanged |
+
+Deltas 1–2 are vertical-lane product work regardless of this design; 3–6 are this design's build scope
+when the driver files; 7 is already tracked. Nothing new is platform-blocked.
+
+### 11.4 Refinement R3 spelled out: the `sub` → NanoID mapping
+
+Real IdP subjects are not NanoIDs (`auth0|507f1f77…`, `google-oauth2|1234…`), and Contract #1 §1.1 keys
+must stay NanoID-shaped — §3.1 already refuses malformed keys but deferred the mapping. Two candidate
+shapes; **recommendation: (a)**:
+
+- **(a) Deterministic derivation at the Gateway:** `ActorID = vtx.identity.<sha256NanoID(iss + "|" + sub)>`.
+  Zero IdP-vendor coupling, zero enrollment state, restart-safe, collision-resistant, and it mirrors the
+  codebase's own idiom for exactly this job — the credentialindex key *is* `sha256NanoID(actorKey)`, and
+  the dedup index keys are `sha256NanoID("email:"+email)`. The identity vertex stores the raw `iss`/`sub`
+  as an aspect for audit. `iss` is included so two IdPs can't collide subjects.
+- **(b) IdP-side enrollment:** a post-registration IdP action calls Lattice to mint the identity and
+  writes the NanoID back into the token as a custom claim. Rejected as the default: per-IdP-vendor
+  configuration, a stateful enrollment step that can fail out-of-band, and it makes token issuance depend
+  on a Lattice round-trip — all to avoid a pure function. (a) degrades to (b)-compatible if a deployment
+  insists (a custom claim, when present, wins).
+
+### 11.5 Refinements folded into the shelved build scope (the design's §3, amended)
+
+- **R1 — Gateway credential→identity resolution.** The `credential-bindings` materializer
+  (`events.identity.>` → local bucket, mirroring the shipped revocation materializer), the
+  resolve-then-stamp step on both write and read paths, and the `ClaimIdentity` raw-credential carve-out
+  (§11.0). This is the piece that makes "the person acts as their business identity" real; without it the
+  claim binds a credential nothing ever resolves through.
+- **R2 — `ClaimIdentity` grants `consumer` to U atomically.** One `holdsRole` link mutation added to the
+  claim script — the claim is the moment U becomes an acting identity, so the role rides the same commit
+  (no window where the person acts as a role-less U). Note this makes the claim script emit a
+  `holdsRole` link that rbac-domain's `AssignRole` normally owns — same-shape link, package-declared,
+  `permittedCommands` on the link class is empty so no step-6 conflict; called out so ratification sees it.
+- **R3 — the `sub` mapping** per §11.4(a), landing in `internal/gateway/auth` (the ActorID construction)
+  so write path, read path, and revocation all derive identically.
+
+The dead-scaffolding verdict (§9) is **unchanged** — these refine what gets built when the driver files;
+they do not create a reason to build sooner. The E2E in §7 gains one scenario: the full §11.1 walk-in
+arc (staff-create → provision → claim → act-as-U task grant match).
