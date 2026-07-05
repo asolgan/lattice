@@ -80,59 +80,35 @@ validate → human-approve → operator-applies (F-004) → live + F-004-reverti
 **grant** kind is the fast-follow. **⑥ linkage:** the gated Starlark fire is ⑥'s shared-sandbox **first
 consumer**, so the `internal/starlarksandbox` extraction lands *with* that fire.
 
-**🏗️ Fire 1 checkpoint (Steward, 2026-07-04).** Worktree: `../lattice-wt-ai-authored-caps-fire1` (branch
-`steward-ai-authored-capabilities-fire1`). **Done (Increment 1 of Fire 1 — the capture half, lens kind only):**
-the `packages/capability-author` package (`capabilityproposal` DDL — `RequestCapabilityAuthoring` mints the
-proposal vertex write-ahead; `RecordCapabilityProposal` records a proposed artifact + its verdict,
-review.state = pending|invalid; no-orphan + create-only idempotency proven); the Go-side §5 materializer
-(`internal/pkgmgr.ValidateCapabilityArtifact` + `CypherParser` — parses the lens cypher via the real engine
-and reuses `validateAll` verbatim, unit-tested against the accept/reject table incl. the P5 core-kv-adapter
-and reserved-bucket-alias guards); registered in `cmd/lattice-pkg` + `cmd/loupe`'s package registries;
-full e2e suite through the real Processor (`packages/capability-author/proposal_test.go`) green.
-**Interim scope note:** `RecordCapabilityProposal`'s validation verdict is CALLER-SUPPLIED in this increment
-(the bridge doesn't exist yet) — the script trusts it, exactly as F-004 trusts a client-computed dry-run; this
-is safe because no apply path exists yet for anything to act on a fabricated verdict (§5 point 4's kernel
-step-8 guard remains the authoritative backstop once apply lands). `RequestCapabilityAuthoring` is granted to
-`operator` (not yet a dedicated `identity.ai.*` grant — Item 4's narrower posture arrives with the escalation
-increment). **Next (remaining Fire 1 increments, in order):** (a) the `capabilityAuthor` bridge adapter +
-`FakeCapabilityAuthor` + the `capabilityAuthor` Loom pattern + the Weaver-target gap wiring that auto-dispatches
-a request (mirrors `packages/lease-signing`'s `backgroundCheck`/`onboarding` triggerLoom pattern — the concrete
-model to copy); (b) the `capability-proposals` review lens + `capability-author-context` catalog lens (P5 read
-models); (c) `ReviewCapabilityProposal` + the operator-submitted F-004 apply + the `applied` flip (closes the
-loop); (d) the **grant** kind in the materializer (§5 scope-check) — Fire 1's fast-follow per the ratified
-collapse. Full 3-layer adversarial review is still owed before Fire 1 is considered complete (this increment
-got a self-review only, matching the Designer's own §7 recommendation for the build-time review depth).
+**🏗️ Fire 1 checkpoint (Steward, 2026-07-04).** **Done (capture, Increment 1):** the `packages/capability-author`
+package (`capabilityproposal` DDL — `RequestCapabilityAuthoring` mints the proposal vertex write-ahead;
+`RecordCapabilityProposal` records a proposed artifact + its verdict, review.state = pending|invalid; no-orphan
++ create-only idempotency proven); the Go-side §5 materializer (`internal/pkgmgr.ValidateCapabilityArtifact` +
+`CypherParser`); registered in `cmd/lattice-pkg` + `cmd/loupe`'s package registries.
 
-**Grounding pass for the escalation-dispatch increment (Steward, 2026-07-04) — two concrete findings for
-whoever builds it next, so this re-derivation isn't repeated:**
-1. **Dispatch mechanism = the standard `triggerLoom` gap-action, self-anchored — NOT Augur's Option F.**
-   Traced both paths: Augur dispatches `CreateAugurReasoningClaim` as a **directOp** straight from Weaver's
-   evaluator (`internal/weaver/strategist.go` `augurEscalation`, "Option F — no Loom wrapper"; no Loom
-   instance ever exists for that leg) — that mechanism is Augur-specific and must NOT be mirrored here. This
-   design's own §3.4 wants the **ordinary** `triggerLoom → externalTask` path (`lease-signing`'s
-   `backgroundCheck`/`onboarding` is the correct model, confirmed). Concretely: a new lens anchored on
-   `capabilityproposal` itself (one row per proposal) with a `missing_authoring` gap column (true while
-   `.request` is live and no `.claim` aspect exists yet); a `meta.weaverTarget` mapping
-   `missing_authoring → {Action:"triggerLoom", Pattern:"capabilityAuthor", Subject:"row.entityKey"}` — **self-anchored
-   dispatch is the ordinary case** (every `weaver-targets` row already echoes its own anchor key as
-   `entityKey`, §10.2 frozen convention), not a novel shape; `lease-signing`'s `row.applicant` is actually the
-   special (neighbor-projected) case, not the default. `CreateAuthoringClaim` (the Loom step's `InstanceOp`)
-   writes a create-only `.claim` aspect onto the **same, already-existing** `vtx.capabilityproposal.<id>` (no
-   new vertex to mint — unlike Augur, this design already has a separate upfront `RequestCapabilityAuthoring`
-   op, so the claim is just the write-ahead-before-the-call marker that closes the lens gap immediately).
-2. **✅ DONE — `RecordCapabilityProposal` payload shape revised to fit the standard bridge translator
-   (Steward, 2026-07-04).** `RecordCapabilityProposal` now accepts the standard bridge replyOp shape
-   `{externalRef, status, result}` exactly like augur's `RecordProposal`: `proposalId` is derived from the
-   bare `externalRef` handle (no longer a separate payload field); on `status=completed` the script decodes
-   a single `result` JSON blob for `kind/content/target{mode,packageName,baseVersion,newVersion}/rationale/
-   confidence/validation{state,report,deltaPreview}/provenance{model,promptHash,catalogHash,reasonedAt}`
-   (mirroring `packages/augur/ddls.go`'s `proposal_string`/`proposal_dict`/`proposal_number` decode helpers
-   verbatim); `status=failed` (a modeled refusal) and an undecodable/non-object `result` both store the
-   proposal `review.state=invalid` rather than `fail()`ing the op — the bridge has already Ack'd the
-   external event, so a reject would wedge the episode with no record (same posture as augur). The §5
-   kind/confidence/validation boundary check now runs only when the decode itself didn't already produce a
-   verdict. `proposal_test.go`'s `recordEnv` helper updated to build the new shape; all 6 tests green.
-   **Ready for the next fire's Loom-pattern wiring** against the now-correct shape.
+**Done (escalation dispatch):** the `capabilityauthorclaim` DDL (`CreateAuthoringClaim`, the externalTask
+instanceOp) mints a correlation-claim vertex `vtx.capabilityauthorclaim.<handle>` keyed by Loom's opaque
+`instanceKey` (independent of the proposal's own id, Contract #10 §10.3/§10.5), records a `.target` aspect
+pointing back at the real proposal, writes a create-only `.claim` aspect onto the **already-existing**
+`vtx.capabilityproposal.<id>` (closing the `capabilityAuthorPending` lens's `missing_authoring` gap
+immediately), and emits `external.capabilityAuthor`; the `capabilityAuthor` Loom pattern (subject type
+`capabilityproposal` — genuinely first-of-kind, the pattern's own subject is the vertex a prior op minted);
+the `capabilityAuthorPending` weaver-target lens, self-anchored (`Subject: row.entityKey`, not a
+neighbor-projected column — `lease-signing`'s `row.applicant` is that package's own special case, not the
+default to mirror); `FakeCapabilityAuthor`, the deterministic reference bridge adapter (mirrors `FakeAugur`;
+the real `claude-opus-4-8` adapter is a follow-on increment, the same posture Augur's own adapter is still
+in). `RecordCapabilityProposal` resolves the real proposal vertex via the claim's `.target` aspect (a single
+known-key read) — `externalRef` is the Loom-minted handle, never the proposal's own id (the two are
+independent by construction; treating them as interchangeable was the one gap the escalation-dispatch design
+note below didn't fully resolve, closed during this build). Full 3-layer adversarial review run (Blind Hunter
++ Edge Case Hunter + Acceptance Auditor); fixed a defense-in-depth gap (`CreateAuthoringClaim` now
+shape-validates `subjectKey` is a `capabilityproposal` vertex key before writing to it) plus a cosmetic
+aspect-class casing inconsistency. All tests green (`packages/capability-author`, `internal/bridge`).
+
+**Next (remaining Fire 1 increments, in order):** (a) the `capability-proposals` review lens +
+`capability-author-context` catalog lens (P5 read models); (b) `ReviewCapabilityProposal` + the
+operator-submitted F-004 apply + the `applied` flip (closes the loop); (c) the **grant** kind in the
+materializer (§5 scope-check) — Fire 1's fast-follow per the ratified collapse.
 
 ---
 
