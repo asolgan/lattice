@@ -486,14 +486,27 @@ func (s *Service) StartNATSListener(ctx context.Context, nc *nats.Conn) error {
 
 // dispatchEndpoint is the single entry point for every per-op endpoint.
 // It extracts the lens ID from the subject (the second-to-last token),
-// decodes the request body (legacy ControlRequest shape for Truncate
-// support), dispatches by op, and writes the JSON response via
-// micro.Request.Respond.
+// authorizes the operation, decodes the request body (legacy ControlRequest
+// shape for Truncate support), dispatches by op, and writes the JSON
+// response via micro.Request.Respond. Authorization runs BEFORE the body is
+// decoded, so an unauthorized caller learns nothing about a malformed body.
 func (s *Service) dispatchEndpoint(op string, req micro.Request) {
 	subject := req.Subject()
 	lensID, ok := lensIDFromSubject(subject)
 	if !ok {
 		s.respondMicro(req, ControlResponse{Error: fmt.Sprintf("invalid control subject %q", subject)})
+		return
+	}
+
+	s.mu.Lock()
+	capability := s.capability
+	s.mu.Unlock()
+
+	authCtx, authCancel := context.WithTimeout(context.Background(), authorizeTimeout)
+	authErr := capability.Authorize(authCtx, controlauth.ActorFromRequest(req), op, lensID)
+	authCancel()
+	if authErr != nil {
+		s.respondMicro(req, ControlResponse{Error: authErr.Error()})
 		return
 	}
 
@@ -505,14 +518,6 @@ func (s *Service) dispatchEndpoint(op string, req micro.Request) {
 			s.respondMicro(req, ControlResponse{Error: fmt.Sprintf("invalid request: %s", err.Error())})
 			return
 		}
-	}
-
-	authCtx, authCancel := context.WithTimeout(context.Background(), authorizeTimeout)
-	authErr := s.capability.Authorize(authCtx, controlauth.ActorFromRequest(req), op, lensID)
-	authCancel()
-	if authErr != nil {
-		s.respondMicro(req, ControlResponse{Error: authErr.Error()})
-		return
 	}
 
 	switch op {

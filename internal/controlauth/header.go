@@ -32,7 +32,8 @@ func ActorFromRequest(req micro.Request) string {
 func NewActorRequestMsg(subject, actor string) *nats.Msg {
 	msg := &nats.Msg{Subject: subject}
 	if actor != "" {
-		msg.Header = nats.Header{HeaderActor: {actor}}
+		msg.Header = nats.Header{}
+		msg.Header.Set(HeaderActor, actor)
 	}
 	return msg
 }

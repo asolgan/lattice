@@ -136,6 +136,9 @@ func run(logger *slog.Logger) error {
 	// seeds a dedicated ordinary `operator` identity — the fallback carries no
 	// enforcement risk yet since Fire 1a ships no capability decision.
 	operatorActorKey := envOrDefault("LOUPE_OPERATOR_ACTOR_KEY", adminActor)
+	if operatorActorKey == "" {
+		logger.Warn("no operator actor configured (LOUPE_OPERATOR_ACTOR_KEY unset and no bootstrap admin actor loaded); control-plane requests will carry no Lattice-Actor header")
+	}
 
 	srv := &server{
 		conn:             conn,
