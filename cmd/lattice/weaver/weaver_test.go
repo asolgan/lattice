@@ -62,6 +62,71 @@ func startWeaverControlTest(t *testing.T, eng *fakeEngine) string {
 	return url
 }
 
+// recordingCapability records the actor argument of the last Authorize call
+// and always allows — used to prove the CLI's --actor flag (and its
+// credential-file default) reach the wire as the Lattice-Actor header.
+type recordingCapability struct{ last string }
+
+func (r *recordingCapability) Authorize(_ context.Context, actor, _, _ string) error {
+	r.last = actor
+	return nil
+}
+
+// startWeaverControlTestWithCapability is startWeaverControlTest but wired to
+// a caller-supplied CapabilityChecker instead of the default stub.
+func startWeaverControlTestWithCapability(t *testing.T, eng *fakeEngine, cap control.CapabilityChecker) string {
+	t.Helper()
+	url := testutil.StartEmbeddedNATS(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	conn, err := connectRaw(t, url)
+	require.NoError(t, err)
+
+	svc := control.NewService(eng, cap, testutil.TestLogger())
+	require.NoError(t, svc.StartNATSListener(ctx, conn))
+	require.NoError(t, conn.Flush())
+
+	return url
+}
+
+// TestWeaverDisable_ActorFlagReachesWire verifies --actor is stamped as the
+// Lattice-Actor header on the control request (control-plane-capability-authz
+// -design.md Fire 1a).
+func TestWeaverDisable_ActorFlagReachesWire(t *testing.T) {
+	eng := &fakeEngine{errOn: map[string]error{}}
+	rec := &recordingCapability{}
+	url := startWeaverControlTestWithCapability(t, eng, rec)
+
+	natsURL := url
+	outputFmt := ""
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
+
+	_, err := runCmd(t, cmd, []string{"disable", "t1", "--actor", "vtx.identity.OPERATOR"})
+	require.NoError(t, err)
+	assert.Equal(t, "vtx.identity.OPERATOR", rec.last)
+}
+
+// TestWeaverList_DefaultActorFallsBackToCredentialFile verifies the
+// credential-file default (op.NewCommand's third arg) is used when --actor is
+// not passed.
+func TestWeaverList_DefaultActorFallsBackToCredentialFile(t *testing.T) {
+	eng := &fakeEngine{errOn: map[string]error{}}
+	rec := &recordingCapability{}
+	url := startWeaverControlTestWithCapability(t, eng, rec)
+
+	natsURL := url
+	outputFmt := ""
+	actorKey := "vtx.identity.CREDFILE"
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
+
+	_, err := runCmd(t, cmd, []string{"list"})
+	require.NoError(t, err)
+	assert.Equal(t, "vtx.identity.CREDFILE", rec.last)
+}
+
 // connectRaw opens a plain *nats.Conn for the control service under test.
 func connectRaw(t *testing.T, url string) (*nats.Conn, error) {
 	t.Helper()
@@ -101,7 +166,8 @@ func TestWeaverList_HappyPath(t *testing.T) {
 
 	natsURL := url
 	outputFmt := "json"
-	cmd := NewCommand(&natsURL, &outputFmt)
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
 
 	out, err := runCmd(t, cmd, []string{"list"})
 	require.NoError(t, err)
@@ -117,7 +183,8 @@ func TestWeaverList_Empty(t *testing.T) {
 
 	natsURL := url
 	outputFmt := ""
-	cmd := NewCommand(&natsURL, &outputFmt)
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
 
 	out, err := runCmd(t, cmd, []string{"list"})
 	require.NoError(t, err)
@@ -130,7 +197,8 @@ func TestWeaverDisable_HappyPath(t *testing.T) {
 
 	natsURL := url
 	outputFmt := ""
-	cmd := NewCommand(&natsURL, &outputFmt)
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
 
 	out, err := runCmd(t, cmd, []string{"disable", "t1"})
 	require.NoError(t, err)
@@ -143,7 +211,8 @@ func TestWeaverEnable_HappyPath(t *testing.T) {
 
 	natsURL := url
 	outputFmt := ""
-	cmd := NewCommand(&natsURL, &outputFmt)
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
 
 	out, err := runCmd(t, cmd, []string{"enable", "t1"})
 	require.NoError(t, err)
@@ -156,7 +225,8 @@ func TestWeaverRevoke_HappyPath(t *testing.T) {
 
 	natsURL := url
 	outputFmt := ""
-	cmd := NewCommand(&natsURL, &outputFmt)
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
 
 	out, err := runCmd(t, cmd, []string{"revoke", "t1"})
 	require.NoError(t, err)
@@ -171,7 +241,8 @@ func TestWeaverDisable_NotRegistered_JSON(t *testing.T) {
 
 	natsURL := url
 	outputFmt := "json"
-	cmd := NewCommand(&natsURL, &outputFmt)
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
 
 	out, err := runCmd(t, cmd, []string{"disable", "ghost"})
 	require.Error(t, err)

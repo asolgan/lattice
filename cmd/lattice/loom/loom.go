@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/asolgan/lattice/cmd/lattice/output"
+	"github.com/asolgan/lattice/internal/controlauth"
 	"github.com/asolgan/lattice/internal/loom/control"
 )
 
@@ -33,24 +34,36 @@ func validateName(kind, name string) error {
 }
 
 // NewCommand returns the cobra.Command for the loom command group.
-func NewCommand(natsURL, outputFmt *string) *cobra.Command {
+// defaultActor is the credential-file actor key (op.NewCommand's third arg);
+// each subcommand also accepts its own --actor override.
+func NewCommand(natsURL, outputFmt, defaultActor *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "loom",
 		Short: "Operate the Loom engine (list/consumers/inspect/pause/resume)",
 	}
-	cmd.AddCommand(newListCommand(natsURL, outputFmt))
-	cmd.AddCommand(newConsumersCommand(natsURL, outputFmt))
-	cmd.AddCommand(newInspectCommand(natsURL, outputFmt))
-	cmd.AddCommand(newPauseCommand(natsURL, outputFmt))
-	cmd.AddCommand(newResumeCommand(natsURL, outputFmt))
+	cmd.AddCommand(newListCommand(natsURL, outputFmt, defaultActor))
+	cmd.AddCommand(newConsumersCommand(natsURL, outputFmt, defaultActor))
+	cmd.AddCommand(newInspectCommand(natsURL, outputFmt, defaultActor))
+	cmd.AddCommand(newPauseCommand(natsURL, outputFmt, defaultActor))
+	cmd.AddCommand(newResumeCommand(natsURL, outputFmt, defaultActor))
 	return cmd
 }
 
-// request sends a control-plane request to subject and decodes the
-// control.ControlResponse. Connection is via output.Connect's raw *nats.Conn
-// (conn.NATS()) since the loom-control endpoints are plain NATS Services
-// responders, not JetStream.
-func request(natsURL, subject string) (control.ControlResponse, error) {
+// addActorFlag registers the --actor flag shared by every subcommand,
+// defaulting at RunE time to *defaultActor (the credential file's actorKey)
+// when unset. A resolved-empty actor is NOT an error here (unlike the
+// write-path `op submit`): the control plane's capability gate is not yet
+// enforced (control-plane-capability-authz-design.md Fire 1a — actor on the
+// wire, no enforcement change), so an anonymous request must keep working.
+func addActorFlag(cmd *cobra.Command, actor *string) {
+	cmd.Flags().StringVar(actor, "actor", "", "actor key stamped on the control request (defaults to credential file actorKey)")
+}
+
+// request sends a control-plane request to subject, stamping actor as the
+// Lattice-Actor header when non-empty, and decodes the control.ControlResponse.
+// Connection is via output.Connect's raw *nats.Conn (conn.NATS()) since the
+// loom-control endpoints are plain NATS Services responders, not JetStream.
+func request(natsURL, subject, actor string) (control.ControlResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), output.DefaultTimeout)
 	defer cancel()
 
@@ -60,7 +73,7 @@ func request(natsURL, subject string) (control.ControlResponse, error) {
 	}
 	defer conn.Close()
 
-	reply, err := conn.NATS().RequestWithContext(ctx, subject, nil)
+	reply, err := conn.NATS().RequestMsgWithContext(ctx, controlauth.NewActorRequestMsg(subject, actor))
 	if err != nil {
 		return control.ControlResponse{}, fmt.Errorf("request %s: %w", subject, err)
 	}
@@ -75,12 +88,16 @@ func request(natsURL, subject string) (control.ControlResponse, error) {
 	return resp, nil
 }
 
-func newListCommand(natsURL, outputFmt *string) *cobra.Command {
-	return &cobra.Command{
+func newListCommand(natsURL, outputFmt, defaultActor *string) *cobra.Command {
+	var actor string
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List Loom instances (running + retained terminals)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := request(*natsURL, control.ListSubject())
+			if actor == "" {
+				actor = *defaultActor
+			}
+			resp, err := request(*natsURL, control.ListSubject(), actor)
 			if err != nil {
 				if *outputFmt == "json" {
 					return output.PrintJSONError("ControlError", err.Error())
@@ -104,14 +121,20 @@ func newListCommand(natsURL, outputFmt *string) *cobra.Command {
 			return nil
 		},
 	}
+	addActorFlag(cmd, &actor)
+	return cmd
 }
 
-func newConsumersCommand(natsURL, outputFmt *string) *cobra.Command {
-	return &cobra.Command{
+func newConsumersCommand(natsURL, outputFmt, defaultActor *string) *cobra.Command {
+	var actor string
+	cmd := &cobra.Command{
 		Use:   "consumers",
 		Short: "List the engine's managed consumers and their pause state",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := request(*natsURL, control.ConsumersSubject())
+			if actor == "" {
+				actor = *defaultActor
+			}
+			resp, err := request(*natsURL, control.ConsumersSubject(), actor)
 			if err != nil {
 				if *outputFmt == "json" {
 					return output.PrintJSONError("ControlError", err.Error())
@@ -133,14 +156,20 @@ func newConsumersCommand(natsURL, outputFmt *string) *cobra.Command {
 			return nil
 		},
 	}
+	addActorFlag(cmd, &actor)
+	return cmd
 }
 
-func newInspectCommand(natsURL, outputFmt *string) *cobra.Command {
-	return &cobra.Command{
+func newInspectCommand(natsURL, outputFmt, defaultActor *string) *cobra.Command {
+	var actor string
+	cmd := &cobra.Command{
 		Use:   "inspect <instanceId>",
 		Short: "Inspect one Loom instance and its current step",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if actor == "" {
+				actor = *defaultActor
+			}
 			instanceID := args[0]
 			if err := validateName("instanceId", instanceID); err != nil {
 				if *outputFmt == "json" {
@@ -148,7 +177,7 @@ func newInspectCommand(natsURL, outputFmt *string) *cobra.Command {
 				}
 				return err
 			}
-			resp, err := request(*natsURL, control.NameSubject(instanceID, "inspect"))
+			resp, err := request(*natsURL, control.NameSubject(instanceID, "inspect"), actor)
 			if err != nil {
 				if *outputFmt == "json" {
 					return output.PrintJSONError("ControlError", err.Error())
@@ -192,14 +221,20 @@ func newInspectCommand(natsURL, outputFmt *string) *cobra.Command {
 			return nil
 		},
 	}
+	addActorFlag(cmd, &actor)
+	return cmd
 }
 
-func newPauseCommand(natsURL, outputFmt *string) *cobra.Command {
-	return &cobra.Command{
+func newPauseCommand(natsURL, outputFmt, defaultActor *string) *cobra.Command {
+	var actor string
+	cmd := &cobra.Command{
 		Use:   "pause <consumerName>",
 		Short: "Pause a managed Loom consumer (persists across restart until resume)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if actor == "" {
+				actor = *defaultActor
+			}
 			name := args[0]
 			if err := validateName("consumerName", name); err != nil {
 				if *outputFmt == "json" {
@@ -207,7 +242,7 @@ func newPauseCommand(natsURL, outputFmt *string) *cobra.Command {
 				}
 				return err
 			}
-			resp, err := request(*natsURL, control.NameSubject(name, "pause"))
+			resp, err := request(*natsURL, control.NameSubject(name, "pause"), actor)
 			if err != nil {
 				if *outputFmt == "json" {
 					return output.PrintJSONError("ControlError", err.Error())
@@ -226,14 +261,20 @@ func newPauseCommand(natsURL, outputFmt *string) *cobra.Command {
 			return nil
 		},
 	}
+	addActorFlag(cmd, &actor)
+	return cmd
 }
 
-func newResumeCommand(natsURL, outputFmt *string) *cobra.Command {
-	return &cobra.Command{
+func newResumeCommand(natsURL, outputFmt, defaultActor *string) *cobra.Command {
+	var actor string
+	cmd := &cobra.Command{
 		Use:   "resume <consumerName>",
 		Short: "Resume a paused Loom consumer",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if actor == "" {
+				actor = *defaultActor
+			}
 			name := args[0]
 			if err := validateName("consumerName", name); err != nil {
 				if *outputFmt == "json" {
@@ -241,7 +282,7 @@ func newResumeCommand(natsURL, outputFmt *string) *cobra.Command {
 				}
 				return err
 			}
-			resp, err := request(*natsURL, control.NameSubject(name, "resume"))
+			resp, err := request(*natsURL, control.NameSubject(name, "resume"), actor)
 			if err != nil {
 				if *outputFmt == "json" {
 					return output.PrintJSONError("ControlError", err.Error())
@@ -256,4 +297,6 @@ func newResumeCommand(natsURL, outputFmt *string) *cobra.Command {
 			return nil
 		},
 	}
+	addActorFlag(cmd, &actor)
+	return cmd
 }

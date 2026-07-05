@@ -128,15 +128,25 @@ func run(logger *slog.Logger) error {
 		bindHost = ""
 	}
 
+	// operatorActorKey is stamped as the Lattice-Actor header on every outbound
+	// control-plane request (control-plane-capability-authz-design.md §3.6 —
+	// "Loupe is the trusted single-identity console; its identity is now
+	// explicit on the wire and granted, instead of anonymous"). Falls back to
+	// adminActor (today's only configured identity) until the design's Fire 1b
+	// seeds a dedicated ordinary `operator` identity — the fallback carries no
+	// enforcement risk yet since Fire 1a ships no capability decision.
+	operatorActorKey := envOrDefault("LOUPE_OPERATOR_ACTOR_KEY", adminActor)
+
 	srv := &server{
-		conn:         conn,
-		adminActor:   adminActor,
-		logger:       logger,
-		natsTimeout:  natsRequestLimit,
-		uploadCap:    uploadCap,
-		pg:           pgPool,
-		pgDSNInvalid: pgDSNInvalid,
-		bindHost:     bindHost,
+		conn:             conn,
+		adminActor:       adminActor,
+		operatorActorKey: operatorActorKey,
+		logger:           logger,
+		natsTimeout:      natsRequestLimit,
+		uploadCap:        uploadCap,
+		pg:               pgPool,
+		pgDSNInvalid:     pgDSNInvalid,
+		bindHost:         bindHost,
 	}
 
 	mux := http.NewServeMux()

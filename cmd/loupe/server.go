@@ -18,6 +18,7 @@ import (
 
 	"github.com/asolgan/lattice/cmd/lattice/output"
 	"github.com/asolgan/lattice/internal/bootstrap"
+	"github.com/asolgan/lattice/internal/controlauth"
 	"github.com/asolgan/lattice/internal/pkgmgr"
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
@@ -35,10 +36,15 @@ const (
 // NATS was unreachable at startup; every handler checks requireConn first and
 // returns a JSON error rather than dereferencing a nil connection.
 type server struct {
-	conn        *substrate.Conn
-	adminActor  string
-	logger      *slog.Logger
-	natsTimeout time.Duration
+	conn       *substrate.Conn
+	adminActor string
+	// operatorActorKey is stamped as the Lattice-Actor header on every
+	// outbound control-plane request (control-plane-capability-authz
+	// -design.md §3.6). Defaults to adminActor when LOUPE_OPERATOR_ACTOR_KEY
+	// is unset.
+	operatorActorKey string
+	logger           *slog.Logger
+	natsTimeout      time.Duration
 	// uploadCap bounds a single object upload (OBJECTS_MAX_UPLOAD_BYTES);
 	// substrate.ObjectPut enforces it at the stream layer.
 	uploadCap int64
@@ -449,9 +455,12 @@ func (s *server) controlMutate(w http.ResponseWriter, r *http.Request, comp, nam
 
 // controlRequest issues a PLAIN NATS request (not JetStream) to subject and
 // returns the raw reply bytes. Control planes are micro-services over core
-// NATS; a nil request body matches what the CLI sends.
+// NATS. The request carries s.operatorActorKey as the Lattice-Actor header
+// (control-plane-capability-authz-design.md §3.6) — empty when neither
+// LOUPE_OPERATOR_ACTOR_KEY nor the bootstrap admin actor is configured, which
+// the CLI's own unset --actor default also tolerates.
 func (s *server) controlRequest(ctx context.Context, conn *substrate.Conn, subject string) (json.RawMessage, error) {
-	reply, err := conn.NATS().RequestWithContext(ctx, subject, nil)
+	reply, err := conn.NATS().RequestMsgWithContext(ctx, controlauth.NewActorRequestMsg(subject, s.operatorActorKey))
 	if err != nil {
 		return nil, err
 	}

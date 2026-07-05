@@ -13,6 +13,7 @@ import (
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/micro"
 
+	"github.com/asolgan/lattice/internal/controlauth"
 	"github.com/asolgan/lattice/internal/refractor/health"
 	"github.com/asolgan/lattice/internal/refractor/lens"
 	"github.com/asolgan/lattice/internal/refractor/personalinterest"
@@ -27,6 +28,11 @@ var ErrRuleNotRegistered = errors.New("control: rule not registered")
 
 // validateTimeout bounds the total time allowed for the validate op (NFR10 — CI-practical latency).
 const validateTimeout = 5 * time.Second
+
+// authorizeTimeout bounds the capability check every dispatchEndpoint op runs
+// before dispatch (a single Capability KV GET, mirrors Weaver/Loom control's
+// handlerTimeout).
+const authorizeTimeout = 5 * time.Second
 
 // Resumer is implemented by any component that can be unblocked from a structural or manual pause.
 // *pipeline.Pipeline satisfies this interface via its Resume method.
@@ -194,9 +200,16 @@ type Service struct {
 	// Interest Set, personal-secure-lens-design.md §3.3). nil until
 	// SetPersonalInterestKV is called; those two ops fail closed until then.
 	personalInterestKV *substrate.KV
+	// capability authorizes every dispatchEndpoint op (FR30,
+	// control-plane-capability-authz-design.md). Defaults to a
+	// StubCapabilityChecker (allow-all + log); SetCapabilityChecker swaps in a
+	// real checker without touching handler bodies.
+	capability CapabilityChecker
 }
 
-// NewService creates a new Service with empty registries.
+// NewService creates a new Service with empty registries. The control plane
+// starts with a StubCapabilityChecker (allow-all); call SetCapabilityChecker
+// to wire real Capability KV enforcement.
 func NewService() *Service {
 	return &Service{
 		resumerByRuleID:      make(map[string]Resumer),
@@ -205,7 +218,21 @@ func NewService() *Service {
 		deleterByRuleID:      make(map[string]Deleter),
 		rowNullifierByRuleID: make(map[string]RowNullifier),
 		reporters:            make(map[string]*health.Reporter),
+		capability:           NewStubCapabilityChecker(nil),
 	}
+}
+
+// SetCapabilityChecker registers the capability checker every control op is
+// authorized against. Thread-safe; may be called at any time. A nil checker
+// resets to the default StubCapabilityChecker rather than leaving the field
+// nil (dispatchEndpoint calls it unconditionally).
+func (s *Service) SetCapabilityChecker(c CapabilityChecker) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if c == nil {
+		c = NewStubCapabilityChecker(nil)
+	}
+	s.capability = c
 }
 
 // SetRuleGetter registers the rule lookup interface used by the validate op.
@@ -478,6 +505,14 @@ func (s *Service) dispatchEndpoint(op string, req micro.Request) {
 			s.respondMicro(req, ControlResponse{Error: fmt.Sprintf("invalid request: %s", err.Error())})
 			return
 		}
+	}
+
+	authCtx, authCancel := context.WithTimeout(context.Background(), authorizeTimeout)
+	authErr := s.capability.Authorize(authCtx, controlauth.ActorFromRequest(req), op, lensID)
+	authCancel()
+	if authErr != nil {
+		s.respondMicro(req, ControlResponse{Error: authErr.Error()})
+		return
 	}
 
 	switch op {

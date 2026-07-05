@@ -19,6 +19,7 @@ import (
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/micro"
 
+	"github.com/asolgan/lattice/internal/controlauth"
 	"github.com/asolgan/lattice/internal/weaver"
 )
 
@@ -183,7 +184,7 @@ func (s *Service) StartNATSListener(ctx context.Context, nc *nats.Conn) error {
 func (s *Service) handleList(req micro.Request) {
 	ctx, cancel := context.WithTimeout(context.Background(), handlerTimeout)
 	defer cancel()
-	if err := s.capability.Authorize(ctx, "", opList, ""); err != nil {
+	if err := s.capability.Authorize(ctx, controlauth.ActorFromRequest(req), opList, ""); err != nil {
 		s.respondMicro(req, ControlResponse{Error: err.Error()})
 		return
 	}
@@ -208,7 +209,7 @@ func (s *Service) dispatchEndpoint(op string, req micro.Request) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), handlerTimeout)
 	defer cancel()
-	if err := s.capability.Authorize(ctx, "", op, targetID); err != nil {
+	if err := s.capability.Authorize(ctx, controlauth.ActorFromRequest(req), op, targetID); err != nil {
 		s.respondMicro(req, ControlResponse{Error: err.Error()})
 		return
 	}

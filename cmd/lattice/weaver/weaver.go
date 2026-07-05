@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/asolgan/lattice/cmd/lattice/output"
+	"github.com/asolgan/lattice/internal/controlauth"
 	"github.com/asolgan/lattice/internal/weaver/control"
 )
 
@@ -34,23 +35,35 @@ func validateTargetID(targetID string) error {
 }
 
 // NewCommand returns the cobra.Command for the weaver command group.
-func NewCommand(natsURL, outputFmt *string) *cobra.Command {
+// defaultActor is the credential-file actor key (op.NewCommand's third arg);
+// each subcommand also accepts its own --actor override.
+func NewCommand(natsURL, outputFmt, defaultActor *string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "weaver",
 		Short: "Operate Weaver convergence targets (list/disable/enable/revoke)",
 	}
-	cmd.AddCommand(newListCommand(natsURL, outputFmt))
-	cmd.AddCommand(newDisableCommand(natsURL, outputFmt))
-	cmd.AddCommand(newEnableCommand(natsURL, outputFmt))
-	cmd.AddCommand(newRevokeCommand(natsURL, outputFmt))
+	cmd.AddCommand(newListCommand(natsURL, outputFmt, defaultActor))
+	cmd.AddCommand(newDisableCommand(natsURL, outputFmt, defaultActor))
+	cmd.AddCommand(newEnableCommand(natsURL, outputFmt, defaultActor))
+	cmd.AddCommand(newRevokeCommand(natsURL, outputFmt, defaultActor))
 	return cmd
 }
 
-// request sends a control-plane request to subject and decodes the
-// control.ControlResponse. Connection is via output.Connect's raw *nats.Conn
-// (conn.NATS()) since the weaver-control endpoints are plain NATS Services
-// responders, not JetStream.
-func request(natsURL, subject string) (control.ControlResponse, error) {
+// addActorFlag registers the --actor flag shared by every subcommand,
+// defaulting at RunE time to *defaultActor (the credential file's actorKey)
+// when unset. A resolved-empty actor is NOT an error here (unlike the
+// write-path `op submit`): the control plane's capability gate is not yet
+// enforced (control-plane-capability-authz-design.md Fire 1a — actor on the
+// wire, no enforcement change), so an anonymous request must keep working.
+func addActorFlag(cmd *cobra.Command, actor *string) {
+	cmd.Flags().StringVar(actor, "actor", "", "actor key stamped on the control request (defaults to credential file actorKey)")
+}
+
+// request sends a control-plane request to subject, stamping actor as the
+// Lattice-Actor header when non-empty, and decodes the control.ControlResponse.
+// Connection is via output.Connect's raw *nats.Conn (conn.NATS()) since the
+// weaver-control endpoints are plain NATS Services responders, not JetStream.
+func request(natsURL, subject, actor string) (control.ControlResponse, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), output.DefaultTimeout)
 	defer cancel()
 
@@ -60,7 +73,7 @@ func request(natsURL, subject string) (control.ControlResponse, error) {
 	}
 	defer conn.Close()
 
-	reply, err := conn.NATS().RequestWithContext(ctx, subject, nil)
+	reply, err := conn.NATS().RequestMsgWithContext(ctx, controlauth.NewActorRequestMsg(subject, actor))
 	if err != nil {
 		return control.ControlResponse{}, fmt.Errorf("request %s: %w", subject, err)
 	}
@@ -75,12 +88,16 @@ func request(natsURL, subject string) (control.ControlResponse, error) {
 	return resp, nil
 }
 
-func newListCommand(natsURL, outputFmt *string) *cobra.Command {
-	return &cobra.Command{
+func newListCommand(natsURL, outputFmt, defaultActor *string) *cobra.Command {
+	var actor string
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List registered Weaver convergence targets",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			resp, err := request(*natsURL, control.ListSubject())
+			if actor == "" {
+				actor = *defaultActor
+			}
+			resp, err := request(*natsURL, control.ListSubject(), actor)
 			if err != nil {
 				if *outputFmt == "json" {
 					return output.PrintJSONError("ControlError", err.Error())
@@ -102,14 +119,20 @@ func newListCommand(natsURL, outputFmt *string) *cobra.Command {
 			return nil
 		},
 	}
+	addActorFlag(cmd, &actor)
+	return cmd
 }
 
-func newDisableCommand(natsURL, outputFmt *string) *cobra.Command {
-	return &cobra.Command{
+func newDisableCommand(natsURL, outputFmt, defaultActor *string) *cobra.Command {
+	var actor string
+	cmd := &cobra.Command{
 		Use:   "disable <targetId>",
 		Short: "Disable a Weaver convergence target (pause dispatch)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if actor == "" {
+				actor = *defaultActor
+			}
 			targetID := args[0]
 			if err := validateTargetID(targetID); err != nil {
 				if *outputFmt == "json" {
@@ -117,7 +140,7 @@ func newDisableCommand(natsURL, outputFmt *string) *cobra.Command {
 				}
 				return err
 			}
-			resp, err := request(*natsURL, control.TargetSubject(targetID, "disable"))
+			resp, err := request(*natsURL, control.TargetSubject(targetID, "disable"), actor)
 			if err != nil {
 				if *outputFmt == "json" {
 					return output.PrintJSONError("ControlError", err.Error())
@@ -132,14 +155,20 @@ func newDisableCommand(natsURL, outputFmt *string) *cobra.Command {
 			return nil
 		},
 	}
+	addActorFlag(cmd, &actor)
+	return cmd
 }
 
-func newEnableCommand(natsURL, outputFmt *string) *cobra.Command {
-	return &cobra.Command{
+func newEnableCommand(natsURL, outputFmt, defaultActor *string) *cobra.Command {
+	var actor string
+	cmd := &cobra.Command{
 		Use:   "enable <targetId>",
 		Short: "Enable a Weaver convergence target (resume dispatch)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if actor == "" {
+				actor = *defaultActor
+			}
 			targetID := args[0]
 			if err := validateTargetID(targetID); err != nil {
 				if *outputFmt == "json" {
@@ -147,7 +176,7 @@ func newEnableCommand(natsURL, outputFmt *string) *cobra.Command {
 				}
 				return err
 			}
-			resp, err := request(*natsURL, control.TargetSubject(targetID, "enable"))
+			resp, err := request(*natsURL, control.TargetSubject(targetID, "enable"), actor)
 			if err != nil {
 				if *outputFmt == "json" {
 					return output.PrintJSONError("ControlError", err.Error())
@@ -162,14 +191,20 @@ func newEnableCommand(natsURL, outputFmt *string) *cobra.Command {
 			return nil
 		},
 	}
+	addActorFlag(cmd, &actor)
+	return cmd
 }
 
-func newRevokeCommand(natsURL, outputFmt *string) *cobra.Command {
-	return &cobra.Command{
+func newRevokeCommand(natsURL, outputFmt, defaultActor *string) *cobra.Command {
+	var actor string
+	cmd := &cobra.Command{
 		Use:   "revoke <targetId>",
 		Short: "Revoke a Weaver convergence target (remove durable + in-flight marks; stays disabled)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if actor == "" {
+				actor = *defaultActor
+			}
 			targetID := args[0]
 			if err := validateTargetID(targetID); err != nil {
 				if *outputFmt == "json" {
@@ -177,7 +212,7 @@ func newRevokeCommand(natsURL, outputFmt *string) *cobra.Command {
 				}
 				return err
 			}
-			resp, err := request(*natsURL, control.TargetSubject(targetID, "revoke"))
+			resp, err := request(*natsURL, control.TargetSubject(targetID, "revoke"), actor)
 			if err != nil {
 				if *outputFmt == "json" {
 					return output.PrintJSONError("ControlError", err.Error())
@@ -192,4 +227,6 @@ func newRevokeCommand(natsURL, outputFmt *string) *cobra.Command {
 			return nil
 		},
 	}
+	addActorFlag(cmd, &actor)
+	return cmd
 }

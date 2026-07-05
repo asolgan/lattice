@@ -14,7 +14,11 @@
 // matcher code.
 package processor
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/asolgan/lattice/internal/capabilitykv"
+)
 
 // pathKind classifies the authContext slice an authEntry handles. The three
 // kinds partition the authContext space: a task-set context, a service-set
@@ -189,28 +193,10 @@ func singleKeyList(derive func(string) (string, error)) func(string) ([]string, 
 // one-key-per-path, scoped to the fixed kernel-seeded actor set.
 // systemActorKeys are the full vtx.identity.<id> actor keys of the primordial
 // admin + the kernel-seeded service actors (graph-discovered by
-// bootstrap.SystemActorKeys).
+// bootstrap.SystemActorKeys). Delegates to internal/capabilitykv (shared with
+// the control-plane capability checker).
 func classAwarePlatformKey(systemActorKeys []string) func(string) ([]string, error) {
-	system := make(map[string]struct{}, len(systemActorKeys))
-	for _, k := range systemActorKeys {
-		if k != "" {
-			system[k] = struct{}{}
-		}
-	}
-	return func(actor string) ([]string, error) {
-		rolesKey, err := rolesKeyFromActor(actor)
-		if err != nil {
-			return nil, err
-		}
-		if _, isSystem := system[actor]; !isSystem {
-			return []string{rolesKey}, nil
-		}
-		anchorKey, err := capabilityKeyFromActor(actor)
-		if err != nil {
-			return nil, err
-		}
-		return []string{anchorKey, rolesKey}, nil
-	}
+	return capabilitykv.ClassAwarePlatformKey(systemActorKeys)
 }
 
 // buildAuthRegistry assembles the dispatch registry in precedence order: core

@@ -79,8 +79,8 @@ func init() {
 	rootCmd.AddCommand(capability.NewCommand(&flagNATSURL, &flagOutput, &flagActorKey))
 	rootCmd.AddCommand(authtrace.NewCommand(&flagNATSURL, &flagOutput))
 	rootCmd.AddCommand(bootstrap.NewCommand(&flagNATSURL, &flagOutput))
-	rootCmd.AddCommand(weaver.NewCommand(&flagNATSURL, &flagOutput))
-	rootCmd.AddCommand(loom.NewCommand(&flagNATSURL, &flagOutput))
+	rootCmd.AddCommand(weaver.NewCommand(&flagNATSURL, &flagOutput, &flagActorKey))
+	rootCmd.AddCommand(loom.NewCommand(&flagNATSURL, &flagOutput, &flagActorKey))
 }
 
 // initCredentials loads the credential file and populates the default

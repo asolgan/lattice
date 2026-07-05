@@ -75,6 +75,36 @@ func startLoomControlTest(t *testing.T, eng *fakeEngine) string {
 	return url
 }
 
+// recordingCapability records the actor argument of the last Authorize call
+// and always allows — used to prove the CLI's --actor flag (and its
+// credential-file default) reach the wire as the Lattice-Actor header.
+type recordingCapability struct{ last string }
+
+func (r *recordingCapability) Authorize(_ context.Context, actor, _, _ string) error {
+	r.last = actor
+	return nil
+}
+
+// startLoomControlTestWithCapability is startLoomControlTest but wired to a
+// caller-supplied CapabilityChecker instead of the default stub.
+func startLoomControlTestWithCapability(t *testing.T, eng *fakeEngine, cap control.CapabilityChecker) string {
+	t.Helper()
+	url := testutil.StartEmbeddedNATS(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	conn, err := nats.Connect(url)
+	require.NoError(t, err)
+	t.Cleanup(conn.Close)
+
+	svc := control.NewService(eng, cap, testutil.TestLogger())
+	require.NoError(t, svc.StartNATSListener(ctx, conn))
+	require.NoError(t, conn.Flush())
+
+	return url
+}
+
 // runCmd executes cmd with args, capturing stdout. Returns stdout and the
 // command error.
 func runCmd(t *testing.T, cmd *cobra.Command, args []string) (string, error) {
@@ -110,7 +140,8 @@ func TestLoomList_HappyPath_JSON(t *testing.T) {
 
 	natsURL := url
 	outputFmt := "json"
-	cmd := NewCommand(&natsURL, &outputFmt)
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
 
 	out, err := runCmd(t, cmd, []string{"list"})
 	require.NoError(t, err)
@@ -126,7 +157,8 @@ func TestLoomList_Empty_Table(t *testing.T) {
 
 	natsURL := url
 	outputFmt := ""
-	cmd := NewCommand(&natsURL, &outputFmt)
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
 
 	out, err := runCmd(t, cmd, []string{"list"})
 	require.NoError(t, err)
@@ -143,7 +175,8 @@ func TestLoomConsumers_HappyPath_Table(t *testing.T) {
 
 	natsURL := url
 	outputFmt := ""
-	cmd := NewCommand(&natsURL, &outputFmt)
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
 
 	out, err := runCmd(t, cmd, []string{"consumers"})
 	require.NoError(t, err)
@@ -163,7 +196,8 @@ func TestLoomInspect_Running_Table(t *testing.T) {
 
 	natsURL := url
 	outputFmt := ""
-	cmd := NewCommand(&natsURL, &outputFmt)
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
 
 	out, err := runCmd(t, cmd, []string{"inspect", "i1"})
 	require.NoError(t, err)
@@ -184,7 +218,8 @@ func TestLoomInspect_Terminal_Table(t *testing.T) {
 
 	natsURL := url
 	outputFmt := ""
-	cmd := NewCommand(&natsURL, &outputFmt)
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
 
 	out, err := runCmd(t, cmd, []string{"inspect", "done1"})
 	require.NoError(t, err)
@@ -201,7 +236,8 @@ func TestLoomPause_HappyPath_Table(t *testing.T) {
 
 	natsURL := url
 	outputFmt := ""
-	cmd := NewCommand(&natsURL, &outputFmt)
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
 
 	out, err := runCmd(t, cmd, []string{"pause", "loom-widget"})
 	require.NoError(t, err)
@@ -218,7 +254,8 @@ func TestLoomResume_HappyPath_Table(t *testing.T) {
 
 	natsURL := url
 	outputFmt := ""
-	cmd := NewCommand(&natsURL, &outputFmt)
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
 
 	out, err := runCmd(t, cmd, []string{"resume", "loom-widget"})
 	require.NoError(t, err)
@@ -232,7 +269,8 @@ func TestLoomPause_NotManaged_JSON(t *testing.T) {
 
 	natsURL := url
 	outputFmt := "json"
-	cmd := NewCommand(&natsURL, &outputFmt)
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
 
 	out, err := runCmd(t, cmd, []string{"pause", "ghost"})
 	require.Error(t, err)
@@ -246,7 +284,8 @@ func TestLoomPause_DottedName_Rejected(t *testing.T) {
 
 	natsURL := url
 	outputFmt := ""
-	cmd := NewCommand(&natsURL, &outputFmt)
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
 
 	// A dotted name is rejected client-side before any request (it would build a
 	// subject no endpoint matches).
@@ -262,10 +301,47 @@ func TestLoomInspect_TypedError_JSON(t *testing.T) {
 
 	natsURL := url
 	outputFmt := "json"
-	cmd := NewCommand(&natsURL, &outputFmt)
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
 
 	out, err := runCmd(t, cmd, []string{"inspect", "nopin"})
 	require.Error(t, err)
 	assert.Contains(t, out, `"ok":false`)
 	assert.Contains(t, out, "pattern pin missing")
+}
+
+// TestLoomPause_ActorFlagReachesWire verifies --actor is stamped as the
+// Lattice-Actor header on the control request (control-plane-capability-authz
+// -design.md Fire 1a).
+func TestLoomPause_ActorFlagReachesWire(t *testing.T) {
+	eng := newFakeEngine()
+	rec := &recordingCapability{}
+	url := startLoomControlTestWithCapability(t, eng, rec)
+
+	natsURL := url
+	outputFmt := ""
+	actorKey := ""
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
+
+	_, err := runCmd(t, cmd, []string{"pause", "cons1", "--actor", "vtx.identity.OPERATOR"})
+	require.NoError(t, err)
+	assert.Equal(t, "vtx.identity.OPERATOR", rec.last)
+}
+
+// TestLoomList_DefaultActorFallsBackToCredentialFile verifies the
+// credential-file default (op.NewCommand's third arg) is used when --actor is
+// not passed.
+func TestLoomList_DefaultActorFallsBackToCredentialFile(t *testing.T) {
+	eng := newFakeEngine()
+	rec := &recordingCapability{}
+	url := startLoomControlTestWithCapability(t, eng, rec)
+
+	natsURL := url
+	outputFmt := ""
+	actorKey := "vtx.identity.CREDFILE"
+	cmd := NewCommand(&natsURL, &outputFmt, &actorKey)
+
+	_, err := runCmd(t, cmd, []string{"list"})
+	require.NoError(t, err)
+	assert.Equal(t, "vtx.identity.CREDFILE", rec.last)
 }

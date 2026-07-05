@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/asolgan/lattice/internal/capabilitykv"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -568,32 +569,20 @@ func laneGranted(lane Lane, granted []string) bool {
 
 // capabilityKeyFromActor converts `vtx.identity.<NanoID>` →
 // `cap.identity.<NanoID>` per Contract #6 §6.1 + producer logic in
-// `internal/refractor/capabilityenv/envelope.go:capabilityKey`.
+// `internal/refractor/capabilityenv/envelope.go:capabilityKey`. Delegates to
+// internal/capabilitykv (shared with the control-plane capability checker).
 func capabilityKeyFromActor(actor string) (string, error) {
-	if actor == "" {
-		return "", errors.New("empty actor")
-	}
-	rest, ok := strings.CutPrefix(actor, substrate.VertexPrefix+".")
-	if !ok {
-		return "", fmt.Errorf("actor %q lacks %q prefix", actor, substrate.VertexPrefix+".")
-	}
-	return "cap." + rest, nil
+	return capabilitykv.CapabilityKeyFromActor(actor)
 }
 
 // rolesKeyFromActor converts `vtx.identity.<NanoID>` →
 // `cap.roles.identity.<NanoID>` — the disjoint key rbac-domain's
 // capabilityRoles lens projects an ordinary actor's role-derived grants into
 // (Contract #6 §6.1). It is the platform path's key for ordinary actors when
-// rbac-domain is installed.
+// rbac-domain is installed. Delegates to internal/capabilitykv (shared with
+// the control-plane capability checker).
 func rolesKeyFromActor(actor string) (string, error) {
-	if actor == "" {
-		return "", errors.New("empty actor")
-	}
-	rest, ok := strings.CutPrefix(actor, substrate.VertexPrefix+".")
-	if !ok {
-		return "", fmt.Errorf("actor %q lacks %q prefix", actor, substrate.VertexPrefix+".")
-	}
-	return "cap.roles." + rest, nil
+	return capabilitykv.RolesKeyFromActor(actor)
 }
 
 // ephemeralKeyFromActor converts `vtx.identity.<NanoID>` →

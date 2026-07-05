@@ -20,6 +20,7 @@ import (
 	nats "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/micro"
 
+	"github.com/asolgan/lattice/internal/controlauth"
 	"github.com/asolgan/lattice/internal/loom"
 )
 
@@ -196,7 +197,7 @@ func (s *Service) handleExact(op string, req micro.Request) {
 	defer s.recoverHandler(op, req)
 	ctx, cancel := context.WithTimeout(context.Background(), handlerTimeout)
 	defer cancel()
-	if err := s.capability.Authorize(ctx, "", op, ""); err != nil {
+	if err := s.capability.Authorize(ctx, controlauth.ActorFromRequest(req), op, ""); err != nil {
 		s.respondMicro(req, ControlResponse{Error: err.Error()})
 		return
 	}
@@ -235,7 +236,7 @@ func (s *Service) dispatchEndpoint(op string, req micro.Request) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), handlerTimeout)
 	defer cancel()
-	if err := s.capability.Authorize(ctx, "", op, name); err != nil {
+	if err := s.capability.Authorize(ctx, controlauth.ActorFromRequest(req), op, name); err != nil {
 		s.respondMicro(req, ControlResponse{Error: err.Error()})
 		return
 	}
