@@ -39,9 +39,10 @@ func grantContent(t *testing.T, gc GrantArtifactContent) json.RawMessage {
 }
 
 func TestValidateCapabilityArtifact_DisabledKind(t *testing.T) {
-	// weaverTarget is not enabled until Fire 3 — lens and grant are the two
-	// kinds this increment enables, so a still-disabled kind is needed here.
-	report, err := ValidateCapabilityArtifact("weaverTarget", json.RawMessage(`{}`), fullCypherParser{}, nil)
+	// vertexTypeDDL is gated behind Fire 4 (Starlark) — lens/grant/weaverTarget/
+	// loomPattern are the four kinds this increment enables, so a still-disabled
+	// kind is needed here.
+	report, err := ValidateCapabilityArtifact("vertexTypeDDL", json.RawMessage(`{}`), fullCypherParser{}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -399,5 +400,354 @@ func TestDefinitionForCapabilityArtifact_Grant(t *testing.T) {
 	}
 	if len(p.GrantsTo) != 1 || p.GrantsTo[0] != "front-desk" {
 		t.Fatalf("materialized Permission.GrantsTo = %v, want [front-desk]", p.GrantsTo)
+	}
+}
+
+func weaverTargetContent(t *testing.T, wc WeaverTargetArtifactContent) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(wc)
+	if err != nil {
+		t.Fatalf("marshal weaverTarget content: %v", err)
+	}
+	return b
+}
+
+func loomPatternContent(t *testing.T, lp LoomPatternArtifactContent) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(lp)
+	if err != nil {
+		t.Fatalf("marshal loomPattern content: %v", err)
+	}
+	return b
+}
+
+func TestValidateCapabilityArtifact_ValidWeaverTarget(t *testing.T) {
+	content := weaverTargetContent(t, WeaverTargetArtifactContent{
+		TargetID: "aiTargetDispatch",
+		LensRef:  "someExistingLens",
+		Gaps: map[string]GapActionArtifact{
+			"missing_followUp": {Action: "directOp", Operation: "SendReminder"},
+		},
+	})
+	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("expected a valid report, got errors: %v", report.Errors)
+	}
+}
+
+func TestValidateCapabilityArtifact_WeaverTargetMissingTargetID_Rejected(t *testing.T) {
+	content := weaverTargetContent(t, WeaverTargetArtifactContent{
+		LensRef: "someExistingLens",
+		Gaps: map[string]GapActionArtifact{
+			"missing_followUp": {Action: "directOp", Operation: "SendReminder"},
+		},
+	})
+	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a missing targetId")
+	}
+}
+
+func TestValidateCapabilityArtifact_WeaverTargetBadGapColumn_Rejected(t *testing.T) {
+	// The missing_<gap> column convention (validateWeaverTargets, reused, not
+	// duplicated) must reject an AI-authored target exactly like a hand-authored
+	// one.
+	content := weaverTargetContent(t, WeaverTargetArtifactContent{
+		TargetID: "aiTargetDispatch",
+		LensRef:  "someExistingLens",
+		Gaps: map[string]GapActionArtifact{
+			"followUp": {Action: "directOp", Operation: "SendReminder"},
+		},
+	})
+	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a gaps key not matching missing_<gap>")
+	}
+}
+
+func TestValidateCapabilityArtifact_WeaverTargetReservedGapParam_Rejected(t *testing.T) {
+	content := weaverTargetContent(t, WeaverTargetArtifactContent{
+		TargetID: "aiTargetDispatch",
+		LensRef:  "someExistingLens",
+		Gaps: map[string]GapActionArtifact{
+			"missing_followUp": {Action: "directOp", Operation: "SendReminder", Params: map[string]string{"expectedRevision": "5"}},
+		},
+	})
+	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a gap action setting the engine-reserved expectedRevision param")
+	}
+}
+
+func TestValidateCapabilityArtifact_WeaverTargetUnknownActionRejected(t *testing.T) {
+	content := weaverTargetContent(t, WeaverTargetArtifactContent{
+		TargetID: "aiTargetDispatch",
+		LensRef:  "someExistingLens",
+		Gaps: map[string]GapActionArtifact{
+			"missing_followUp": {Action: "deleteEverything"},
+		},
+	})
+	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a gap action outside the §10.8 action table")
+	}
+}
+
+func TestValidateCapabilityArtifact_WeaverTargetAugurFieldRejected(t *testing.T) {
+	// The `augur` escalation-policy block is deliberately out of scope for an
+	// AI-authored weaverTarget artifact (§For-Andrew #1's autonomy posture) —
+	// a raw payload smuggling it must be caught, not silently dropped by
+	// json.Unmarshal and downgraded to a plain (augur-less) target.
+	content := json.RawMessage(`{"targetId":"aiTargetDispatch","lensRef":"someExistingLens","gaps":{"missing_followUp":{"action":"directOp","operation":"SendReminder"}},"augur":{"escalate":["unplannable"]}}`)
+	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for an out-of-scope 'augur' field")
+	}
+}
+
+func TestDefinitionForCapabilityArtifact_WeaverTarget(t *testing.T) {
+	content := weaverTargetContent(t, WeaverTargetArtifactContent{
+		TargetID: "aiTargetDispatch",
+		LensRef:  "someExistingLens",
+		Gaps: map[string]GapActionArtifact{
+			"missing_followUp": {Action: "directOp", Operation: "SendReminder", Reads: []string{"row.entityKey"}},
+		},
+	})
+	def, err := DefinitionForCapabilityArtifact("weaverTarget", content, "ai-target-pkg", "1.0.0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(def.WeaverTargets) != 1 {
+		t.Fatalf("expected exactly one WeaverTarget, got %d", len(def.WeaverTargets))
+	}
+	wt := def.WeaverTargets[0]
+	if wt.TargetID != "aiTargetDispatch" || wt.LensRef != "someExistingLens" {
+		t.Fatalf("materialized WeaverTarget = %+v, want targetId=aiTargetDispatch lensRef=someExistingLens", wt)
+	}
+	ga, ok := wt.Gaps["missing_followUp"]
+	if !ok {
+		t.Fatalf("expected gaps[missing_followUp], got %v", wt.Gaps)
+	}
+	if ga.Action != "directOp" || ga.Operation != "SendReminder" || len(ga.Reads) != 1 || ga.Reads[0] != "row.entityKey" {
+		t.Fatalf("materialized GapAction = %+v, want action=directOp operation=SendReminder reads=[row.entityKey]", ga)
+	}
+}
+
+func TestValidateCapabilityArtifact_ValidLoomPattern(t *testing.T) {
+	content := loomPatternContent(t, LoomPatternArtifactContent{
+		PatternID:   "aiPattern",
+		SubjectType: "capabilityproposal",
+		Steps: []StepArtifact{{
+			Kind:      "systemOp",
+			Operation: "SendReminder",
+		}},
+	})
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("expected a valid report, got errors: %v", report.Errors)
+	}
+}
+
+func TestValidateCapabilityArtifact_LoomPatternExternalTask_Valid(t *testing.T) {
+	content := loomPatternContent(t, LoomPatternArtifactContent{
+		PatternID:   "aiExternalPattern",
+		SubjectType: "capabilityproposal",
+		Steps: []StepArtifact{{
+			Kind:       "externalTask",
+			Adapter:    "someAdapter",
+			InstanceOp: "CreateSomeClaim",
+			ReplyOp:    "RecordSomeResult",
+			Params:     map[string]any{"foo": "bar"},
+		}},
+	})
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("expected a valid report, got errors: %v", report.Errors)
+	}
+}
+
+func TestValidateCapabilityArtifact_LoomPatternNoSteps_Rejected(t *testing.T) {
+	content := loomPatternContent(t, LoomPatternArtifactContent{
+		PatternID:   "aiPattern",
+		SubjectType: "capabilityproposal",
+	})
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a pattern with no steps")
+	}
+}
+
+func TestValidateCapabilityArtifact_LoomPatternSystemOpForbidsAdapter_Rejected(t *testing.T) {
+	// The §10.5 shape enforcement (validateLoomPatterns, reused, not
+	// duplicated): a systemOp step may not carry externalTask-only fields.
+	content := loomPatternContent(t, LoomPatternArtifactContent{
+		PatternID:   "aiPattern",
+		SubjectType: "capabilityproposal",
+		Steps: []StepArtifact{{
+			Kind:      "systemOp",
+			Operation: "SendReminder",
+			Adapter:   "someAdapter",
+		}},
+	})
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a systemOp step carrying an externalTask-only field")
+	}
+}
+
+func TestValidateCapabilityArtifact_LoomPatternUnknownKind_Rejected(t *testing.T) {
+	content := loomPatternContent(t, LoomPatternArtifactContent{
+		PatternID:   "aiPattern",
+		SubjectType: "capabilityproposal",
+		Steps: []StepArtifact{{
+			Kind:      "arbitraryCode",
+			Operation: "SendReminder",
+		}},
+	})
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a step kind outside {systemOp, userTask, externalTask}")
+	}
+}
+
+func TestValidateCapabilityArtifact_LoomPatternUnknownFieldRejected(t *testing.T) {
+	// A raw payload smuggling a top-level field LoomPatternArtifactContent
+	// doesn't expose must be caught, not silently dropped by json.Unmarshal —
+	// mirrors the lens/grant/weaverTarget out-of-scope-field defense even
+	// though no LoomPatternSpec field is excluded today (future-proofing
+	// against schema drift, not a currently-live posture).
+	content := json.RawMessage(`{"patternId":"aiPattern","subjectType":"capabilityproposal","steps":[{"kind":"systemOp","operation":"SendReminder"}],"futureField":"sneaky"}`)
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for an out-of-scope 'futureField' field")
+	}
+}
+
+func TestValidateCapabilityArtifact_LoomPatternDeclarativeGuard_Valid(t *testing.T) {
+	// A well-formed §10.5 declarative guard (not the reserved Starlark escape
+	// hatch) must validate normally — the Starlark rejection below must not
+	// over-reject ordinary declarative guards.
+	content := loomPatternContent(t, LoomPatternArtifactContent{
+		PatternID:   "aiPattern",
+		SubjectType: "capabilityproposal",
+		Steps: []StepArtifact{{
+			Kind:      "systemOp",
+			Operation: "SendReminder",
+			Guard:     map[string]any{"present": "subject.someAspect.data.someField"},
+		}},
+	})
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("expected a valid report for a declarative guard, got errors: %v", report.Errors)
+	}
+}
+
+func TestValidateCapabilityArtifact_LoomPatternStarlarkGuardRejected(t *testing.T) {
+	// The reserved Starlark escape hatch ({reads, starlark}, Contract #10
+	// §10.5) is well-formed JSON that validateLoomPatterns' shape checks alone
+	// would accept — this is the record-time boundary that must catch it
+	// instead, since AI-authored Starlark is Fire-4-gated (§3.2 "no Starlark").
+	content := loomPatternContent(t, LoomPatternArtifactContent{
+		PatternID:   "aiPattern",
+		SubjectType: "capabilityproposal",
+		Steps: []StepArtifact{{
+			Kind:      "systemOp",
+			Operation: "SendReminder",
+			Guard:     map[string]any{"reads": []any{"subject"}, "starlark": "return True"},
+		}},
+	})
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a step guard using the reserved Starlark escape hatch")
+	}
+}
+
+func TestValidateCapabilityArtifact_LoomPatternMalformedGuardRejected(t *testing.T) {
+	content := loomPatternContent(t, LoomPatternArtifactContent{
+		PatternID:   "aiPattern",
+		SubjectType: "capabilityproposal",
+		Steps: []StepArtifact{{
+			Kind:      "systemOp",
+			Operation: "SendReminder",
+			Guard:     map[string]any{"present": "subject.x", "absent": "subject.y"},
+		}},
+	})
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a guard declaring more than one top-level grammar key")
+	}
+}
+
+func TestDefinitionForCapabilityArtifact_LoomPattern(t *testing.T) {
+	content := loomPatternContent(t, LoomPatternArtifactContent{
+		PatternID:         "aiPattern",
+		SubjectType:       "capabilityproposal",
+		CompletionDomains: []string{"orchestration"},
+		Steps: []StepArtifact{{
+			Kind:      "systemOp",
+			Operation: "SendReminder",
+		}},
+	})
+	def, err := DefinitionForCapabilityArtifact("loomPattern", content, "ai-pattern-pkg", "1.0.0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(def.LoomPatterns) != 1 {
+		t.Fatalf("expected exactly one LoomPattern, got %d", len(def.LoomPatterns))
+	}
+	lp := def.LoomPatterns[0]
+	if lp.PatternID != "aiPattern" || lp.SubjectType != "capabilityproposal" {
+		t.Fatalf("materialized LoomPattern = %+v, want patternId=aiPattern subjectType=capabilityproposal", lp)
+	}
+	if len(lp.CompletionDomains) != 1 || lp.CompletionDomains[0] != "orchestration" {
+		t.Fatalf("materialized LoomPattern.CompletionDomains = %v, want [orchestration]", lp.CompletionDomains)
+	}
+	if len(lp.Steps) != 1 || lp.Steps[0].Kind != "systemOp" || lp.Steps[0].Operation != "SendReminder" {
+		t.Fatalf("materialized LoomPattern.Steps = %+v, want one systemOp/SendReminder step", lp.Steps)
 	}
 }

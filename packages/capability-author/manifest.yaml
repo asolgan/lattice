@@ -1,21 +1,22 @@
 name: capability-author
-version: 0.5.0
+version: 0.6.0
 description: |
-  AI-authored capabilities — Fire 1 capture + escalation dispatch + review lenses, plus
-  Fire 2 review + apply (ai-authored-capabilities-design.md). The capabilityproposal +
+  AI-authored capabilities — Fire 1 capture + escalation dispatch + review lenses, Fire 2
+  review + apply + a CLI review-and-apply affordance, and Fire 3 weaverTarget/loomPattern
+  artifact kinds (ai-authored-capabilities-design.md). The capabilityproposal +
   capabilityauthorclaim vertex types; the RequestCapabilityAuthoring/CreateAuthoringClaim/
   RecordCapabilityProposal capture pair (a request mints the proposal vertex write-ahead;
   the escalation dispatch triggers the reasoning call; a record carries a proposed artifact
   + its already-computed §5 deterministic-validation verdict and stores review.state =
-  pending | invalid); ReviewCapabilityProposal (a human operator flips a pending proposal
-  to approved | rejected, re-running the §5 boundary against the live catalog on approve);
-  MarkCapabilityProposalApplied (the operator records the applied-flip after separately
-  applying an approved proposal through the existing, unmodified F-004 InstallPackage/
-  UpgradePackage op); the capabilityAuthorPending weaver-target lens + capabilityAuthor
-  Loom pattern that drive the dispatch; and the capabilityProposals / capabilityAuthorContext
-  P5 read-model lenses (the operator review surface + the installed-DDL self-description
-  catalog). The AI proposes; a human decides; the operator applies via F-004; the
-  Processor stays sole writer.
+  pending | invalid — kind ∈ {lens, grant, weaverTarget, loomPattern}); ReviewCapabilityProposal
+  (a human operator flips a pending proposal to approved | rejected, re-running the §5
+  boundary against the live catalog on approve); MarkCapabilityProposalApplied (the operator
+  records the applied-flip after separately applying an approved proposal through the
+  existing, unmodified F-004 InstallPackage/UpgradePackage op); the capabilityAuthorPending
+  weaver-target lens + capabilityAuthor Loom pattern that drive the dispatch; and the
+  capabilityProposals / capabilityAuthorContext P5 read-model lenses (the operator review
+  surface + the installed-DDL self-description catalog). The AI proposes; a human decides;
+  the operator applies via F-004; the Processor stays sole writer.
 depends:
   - orchestration-base
 declares:

@@ -5,18 +5,22 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/asolgan/lattice/internal/guardgrammar"
 )
 
 // EnabledArtifactKinds is the artifact-kind allow-list for the capability-author
 // package (ai-authored-capabilities-design.md §3.2). The kinds are ordered by the
-// deterministic-validatability spine: "lens" (Fire 1) and "grant" (Fire 2 fast-
-// follow) are enabled here — weaverTarget/loomPattern land with Fire 3, and
+// deterministic-validatability spine: "lens" (Fire 1), "grant" (Fire 2 fast-
+// follow), and "weaverTarget"/"loomPattern" (Fire 3) are enabled here —
 // vertexTypeDDL/opMeta (Starlark-bearing) are gated behind the separate verified-
 // pure Starlark sandbox + ratification (§3.2 Fire 4). A kind outside this set is
 // never valid, regardless of content.
 var EnabledArtifactKinds = map[string]bool{
-	"lens":  true,
-	"grant": true,
+	"lens":         true,
+	"grant":        true,
+	"weaverTarget": true,
+	"loomPattern":  true,
 }
 
 // enabledArtifactKindsList returns EnabledArtifactKinds' keys sorted, for a
@@ -81,6 +85,64 @@ type GrantArtifactContent struct {
 	Scope         string   `json:"scope"`
 	GrantsTo      []string `json:"grantsTo"`
 	Note          string   `json:"note"`
+}
+
+// GapActionArtifact is the JSON shape of one entry in a "weaverTarget"-kind
+// artifact's `gaps` map — a field-for-field mirror of pkgmgr.GapActionSpec
+// (§10.8's action table), reused verbatim so an AI-authored gap action can
+// never carry a shape the engine wouldn't already accept from a hand-authored
+// package.
+type GapActionArtifact struct {
+	Action    string            `json:"action"`
+	Pattern   string            `json:"pattern,omitempty"`
+	Subject   string            `json:"subject,omitempty"`
+	Adapter   string            `json:"adapter,omitempty"`
+	Operation string            `json:"operation,omitempty"`
+	Assignee  string            `json:"assignee,omitempty"`
+	Target    string            `json:"target,omitempty"`
+	Params    map[string]string `json:"params,omitempty"`
+	Reads     []string          `json:"reads,omitempty"`
+}
+
+// WeaverTargetArtifactContent is the JSON shape of a "weaverTarget"-kind
+// proposal's artifact.content (design §3.2, Fire 3) — the constrained subset
+// of pkgmgr.WeaverTargetSpec an AI-authored target proposal may carry: the
+// base `{targetId, lensRef, gaps}` §10.8 shape. The `augur` escalation-policy
+// block is deliberately NOT exposed here — it configures AI-reasoning
+// escalation (and, via autoApply, the one standing autonomy boundary Andrew
+// has not ratified for even hand-authored packages, design §For-Andrew #1) —
+// so an AI proposing its OWN escalation policy is out of scope for this
+// increment, same posture as the lens kind's excluded protected/secure
+// postures (§3.2).
+type WeaverTargetArtifactContent struct {
+	TargetID string                       `json:"targetId"`
+	LensRef  string                       `json:"lensRef"`
+	Gaps     map[string]GapActionArtifact `json:"gaps"`
+}
+
+// StepArtifact is the JSON shape of one entry in a "loomPattern"-kind
+// artifact's `steps` list — a field-for-field mirror of pkgmgr.StepSpec
+// (§10.5), reused verbatim so an AI-authored step can never carry a shape the
+// engine wouldn't already accept from a hand-authored package.
+type StepArtifact struct {
+	Kind       string         `json:"kind"`
+	Operation  string         `json:"operation,omitempty"`
+	Guard      map[string]any `json:"guard,omitempty"`
+	Adapter    string         `json:"adapter,omitempty"`
+	Params     map[string]any `json:"params,omitempty"`
+	ReplyOp    string         `json:"replyOp,omitempty"`
+	InstanceOp string         `json:"instanceOp,omitempty"`
+}
+
+// LoomPatternArtifactContent is the JSON shape of a "loomPattern"-kind
+// proposal's artifact.content (design §3.2, Fire 3) — the full
+// pkgmgr.LoomPatternSpec §10.5 shape: `{patternId, subjectType,
+// completionDomains?, steps}`.
+type LoomPatternArtifactContent struct {
+	PatternID         string         `json:"patternId"`
+	SubjectType       string         `json:"subjectType"`
+	CompletionDomains []string       `json:"completionDomains,omitempty"`
+	Steps             []StepArtifact `json:"steps"`
 }
 
 // HeldPermission is one permission the requesting operator currently holds
@@ -201,9 +263,231 @@ func ValidateCapabilityArtifact(kind string, content json.RawMessage, parser Cyp
 			}, nil
 		}
 		return validateGrantArtifact(gc, requesterHeld), nil
+	case "weaverTarget":
+		var wc WeaverTargetArtifactContent
+		if err := json.Unmarshal(content, &wc); err != nil {
+			return ArtifactValidationReport{}, fmt.Errorf("pkgmgr: capability materializer: malformed weaverTarget artifact content: %w", err)
+		}
+		// Same scope-widening defense as the lens kind's unknownLensFields: a
+		// field this increment's WeaverTargetArtifactContent doesn't expose
+		// (namely "augur") would otherwise be silently dropped by
+		// json.Unmarshal rather than rejected.
+		if extra := unknownWeaverTargetFields(content); len(extra) > 0 {
+			return ArtifactValidationReport{
+				Valid: false,
+				Errors: []string{fmt.Sprintf(
+					"weaverTarget artifact content declares out-of-scope field(s) %v — this increment enables only targetId/lensRef/gaps (no augur escalation policy)",
+					extra)},
+			}, nil
+		}
+		return validateWeaverTargetArtifact(wc), nil
+	case "loomPattern":
+		var lp LoomPatternArtifactContent
+		if err := json.Unmarshal(content, &lp); err != nil {
+			return ArtifactValidationReport{}, fmt.Errorf("pkgmgr: capability materializer: malformed loomPattern artifact content: %w", err)
+		}
+		// Same scope-widening defense as the lens/weaverTarget kinds: every
+		// pkgmgr.LoomPatternSpec top-level field is already exposed by
+		// LoomPatternArtifactContent today, so there is no CURRENTLY live
+		// out-of-scope posture to smuggle — but the check is kept anyway (not
+		// merely asserted in a comment) so a future LoomPatternSpec field added
+		// without a matching LoomPatternArtifactContent field fails loudly
+		// instead of being silently dropped by json.Unmarshal.
+		if extra := unknownLoomPatternFields(content); len(extra) > 0 {
+			return ArtifactValidationReport{
+				Valid: false,
+				Errors: []string{fmt.Sprintf(
+					"loomPattern artifact content declares out-of-scope field(s) %v — this increment enables only patternId/subjectType/completionDomains/steps",
+					extra)},
+			}, nil
+		}
+		return validateLoomPatternArtifact(lp), nil
 	default:
 		// Unreachable: EnabledArtifactKinds gates every case above.
 		return ArtifactValidationReport{Valid: false, Errors: []string{"unhandled enabled kind " + kind}}, nil
+	}
+}
+
+// knownWeaverTargetFields are the JSON keys WeaverTargetArtifactContent
+// exposes for the "weaverTarget" kind. Mirrors knownLensFields' explicit-
+// allow-list rationale.
+var knownWeaverTargetFields = map[string]bool{
+	"targetId": true,
+	"lensRef":  true,
+	"gaps":     true,
+}
+
+// unknownWeaverTargetFields decodes content as a generic JSON object and
+// returns any top-level key outside knownWeaverTargetFields, sorted for a
+// deterministic report. Mirrors unknownLensFields.
+func unknownWeaverTargetFields(content json.RawMessage) []string {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(content, &raw); err != nil {
+		return nil
+	}
+	var extra []string
+	for k := range raw {
+		if !knownWeaverTargetFields[k] {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	return extra
+}
+
+// knownLoomPatternFields are the JSON keys LoomPatternArtifactContent exposes
+// for the "loomPattern" kind. Mirrors knownLensFields' explicit-allow-list
+// rationale.
+var knownLoomPatternFields = map[string]bool{
+	"patternId":         true,
+	"subjectType":       true,
+	"completionDomains": true,
+	"steps":             true,
+}
+
+// unknownLoomPatternFields decodes content as a generic JSON object and
+// returns any top-level key outside knownLoomPatternFields, sorted for a
+// deterministic report. Mirrors unknownLensFields.
+func unknownLoomPatternFields(content json.RawMessage) []string {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(content, &raw); err != nil {
+		return nil
+	}
+	var extra []string
+	for k := range raw {
+		if !knownLoomPatternFields[k] {
+			extra = append(extra, k)
+		}
+	}
+	sort.Strings(extra)
+	return extra
+}
+
+// validateWeaverTargetArtifact is the "weaverTarget" kind's deterministic
+// check (design §3.2, §5, Fire 3): materialize the single-target Definition
+// and run it through the same validateAll the human package-authoring path
+// runs (validateWeaverTargets — TargetID shape/uniqueness, the missing_<gap>
+// column convention, the reserved expectedRevision param, and
+// validateGapAction's per-action required-field check) — reused, not
+// duplicated, so an AI-authored target can never pass a check a hand-authored
+// one would fail. LensRef resolution (must name an already-installed lens) is
+// a build-time concern (build.go's resolveLensRef), not checked here — same
+// posture as a hand-authored package referencing a sibling package's lens by
+// NanoID.
+func validateWeaverTargetArtifact(wc WeaverTargetArtifactContent) ArtifactValidationReport {
+	var errs []string
+
+	if wc.TargetID == "" {
+		errs = append(errs, "targetId is required")
+	}
+	if wc.LensRef == "" {
+		errs = append(errs, "lensRef is required")
+	}
+
+	def := weaverTargetArtifactDefinition(wc, "", "")
+	if err := def.validateAll(); err != nil {
+		errs = append(errs, err.Error())
+	}
+
+	return ArtifactValidationReport{Valid: len(errs) == 0, Errors: errs}
+}
+
+// weaverTargetArtifactDefinition is the single shape both record-time
+// validation (validateWeaverTargetArtifact, a throwaway unnamed Definition)
+// and apply-time materialization (DefinitionForCapabilityArtifact) build from
+// a WeaverTargetArtifactContent — mirrors lensArtifactDefinition's
+// byte-for-byte validated-equals-materialized guarantee.
+func weaverTargetArtifactDefinition(wc WeaverTargetArtifactContent, name, version string) Definition {
+	gaps := make(map[string]GapActionSpec, len(wc.Gaps))
+	for col, ga := range wc.Gaps {
+		gaps[col] = GapActionSpec(ga)
+	}
+	return Definition{
+		Name:    name,
+		Version: version,
+		WeaverTargets: []WeaverTargetSpec{{
+			TargetID: wc.TargetID,
+			LensRef:  wc.LensRef,
+			Gaps:     gaps,
+		}},
+	}
+}
+
+// validateLoomPatternArtifact is the "loomPattern" kind's deterministic check
+// (design §3.2, §5, Fire 3): materialize the single-pattern Definition and run
+// it through the same validateAll the human package-authoring path runs
+// (validateLoomPatterns — patternId/subjectType presence + uniqueness, ≥1
+// step, and each step kind's exact §10.5 shape) — reused, not duplicated, so
+// an AI-authored pattern can never pass a check a hand-authored one would
+// fail — PLUS one check stronger than the hand-authored path: every step's
+// optional Guard is run through the shared §10.5 grammar parser
+// (guardStarlarkFree, below). validateLoomPatterns' own doc comment disclaims
+// interpreting Guard bodies at all (deferred to the engine at CDC load, same
+// as a hand-authored package) — but §3.2's taxonomy table states this KIND's
+// validation guarantee as "no Starlark", and the reserved Starlark escape
+// hatch ({reads, starlark}, Contract #10 §10.5) is otherwise well-formed JSON
+// that would sail through validateLoomPatterns unnoticed and record as
+// pending/valid. Failing closed at record time (never weaker than the human
+// path, and here deliberately stronger for the higher-scrutiny AI path) beats
+// deferring the rejection to CDC load or dispatch-time guard evaluation.
+func validateLoomPatternArtifact(lp LoomPatternArtifactContent) ArtifactValidationReport {
+	var errs []string
+
+	def := loomPatternArtifactDefinition(lp, "", "")
+	if err := def.validateAll(); err != nil {
+		errs = append(errs, err.Error())
+	}
+	for i, s := range lp.Steps {
+		if err := guardStarlarkFree(s.Guard); err != nil {
+			errs = append(errs, fmt.Sprintf("step %d: guard: %v", i, err))
+		}
+	}
+
+	return ArtifactValidationReport{Valid: len(errs) == 0, Errors: errs}
+}
+
+// guardStarlarkFree parses a step's optional Guard under the shared §10.5
+// guardgrammar (the same parser Loom step guards and op-DDL Effects guards
+// use — internal/guardgrammar, already imported by this package's
+// validateEffects) and rejects anything that fails to parse, INCLUDING the
+// well-formed-but-reserved Starlark escape hatch ({reads, starlark}) —
+// AI-authored Starlark is Fire-4-gated (§3.2), so a guard using that shape is
+// rejected here rather than left to fail later at CDC load or guard
+// evaluation. A nil Guard (the common case — most steps carry none) is
+// always valid.
+func guardStarlarkFree(guard map[string]any) error {
+	if guard == nil {
+		return nil
+	}
+	raw, err := json.Marshal(guard)
+	if err != nil {
+		return fmt.Errorf("guard is not JSON-marshalable: %w", err)
+	}
+	if _, err := guardgrammar.Parse(raw); err != nil {
+		return err
+	}
+	return nil
+}
+
+// loomPatternArtifactDefinition is the single shape both record-time
+// validation (validateLoomPatternArtifact, a throwaway unnamed Definition)
+// and apply-time materialization (DefinitionForCapabilityArtifact) build from
+// a LoomPatternArtifactContent — mirrors lensArtifactDefinition's
+// byte-for-byte validated-equals-materialized guarantee.
+func loomPatternArtifactDefinition(lp LoomPatternArtifactContent, name, version string) Definition {
+	steps := make([]StepSpec, len(lp.Steps))
+	for i, s := range lp.Steps {
+		steps[i] = StepSpec(s)
+	}
+	return Definition{
+		Name:    name,
+		Version: version,
+		LoomPatterns: []LoomPatternSpec{{
+			PatternID:         lp.PatternID,
+			SubjectType:       lp.SubjectType,
+			CompletionDomains: lp.CompletionDomains,
+			Steps:             steps,
+		}},
 	}
 }
 
@@ -412,6 +696,18 @@ func DefinitionForCapabilityArtifact(kind string, content json.RawMessage, name,
 			return Definition{}, fmt.Errorf("pkgmgr: capability apply: malformed grant artifact content: %w", err)
 		}
 		return grantArtifactDefinition(gc, name, version), nil
+	case "weaverTarget":
+		var wc WeaverTargetArtifactContent
+		if err := json.Unmarshal(content, &wc); err != nil {
+			return Definition{}, fmt.Errorf("pkgmgr: capability apply: malformed weaverTarget artifact content: %w", err)
+		}
+		return weaverTargetArtifactDefinition(wc, name, version), nil
+	case "loomPattern":
+		var lp LoomPatternArtifactContent
+		if err := json.Unmarshal(content, &lp); err != nil {
+			return Definition{}, fmt.Errorf("pkgmgr: capability apply: malformed loomPattern artifact content: %w", err)
+		}
+		return loomPatternArtifactDefinition(lp, name, version), nil
 	default:
 		// Unreachable: EnabledArtifactKinds gates every case above.
 		return Definition{}, fmt.Errorf("pkgmgr: capability apply: unhandled enabled kind %q", kind)
