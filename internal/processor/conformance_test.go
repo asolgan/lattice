@@ -106,6 +106,7 @@ func TestConformance_ErrorCode_ClosedEnum(t *testing.T) {
 		ErrCodeScriptFailed: true, ErrCodeDDLViolation: true,
 		ErrCodeRevisionConflict: true, ErrCodeProtectedKey: true,
 		ErrCodeAuthInfrastructureFailure: true, ErrCodeClaimKeyInvalid: true,
+		ErrCodeBatchTooLarge: true,
 	}
 	r := BuildRejectedReply(testNanoID1, ErrCodeDDLViolation, "x", nil)
 	if r.Error == nil || !closed[r.Error.Code] {

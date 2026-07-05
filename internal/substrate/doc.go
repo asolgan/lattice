@@ -23,5 +23,5 @@
 //
 //   - Operational failures return typed sentinel errors so callers can
 //     branch on them: ErrKeyNotFound, ErrRevisionConflict,
-//     ErrAtomicBatchRejected.
+//     ErrAtomicBatchRejected, ErrBatchTooLarge, ErrValueTooLarge.
 package substrate

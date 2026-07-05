@@ -85,6 +85,11 @@ const (
 	// meta-root, or any future DDL). It is the kernel/auth bricking guard —
 	// the script-level checks are best-effort defense-in-depth only.
 	ErrCodeProtectedKey ErrorCode = "ProtectedKey"
+	// ErrCodeBatchTooLarge is the step-8 rejection when a single operation's
+	// atomic batch exceeds the message-count ceiling (>998 business mutations)
+	// or a value exceeds the payload ceiling (Contract #2 §2.6 / #3 §3.9.1).
+	// Terminal — a redelivery reproduces the identical over-limit batch.
+	ErrCodeBatchTooLarge ErrorCode = "BatchTooLarge"
 	// Step-3 Capability KV auth codes.
 	// ErrCodeAuthInfrastructureFailure surfaces a NATS / Capability KV outage
 	// to the reply path. The CapabilityAuthorizer returns an error (not a

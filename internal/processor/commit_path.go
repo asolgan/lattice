@@ -441,6 +441,29 @@ func (cp *CommitPath) commitPipeline(ctx context.Context, msg substrate.Message,
 			return OutcomeRejected, substrate.Term
 		}
 
+		// Batch-size guard (Contract #3 §3.9.1): a deterministic op that exceeds
+		// the message-count or per-value payload ceiling. Terminate — a
+		// redelivery reproduces the identical over-limit batch and can never
+		// succeed (the anti-hot-loop guarantee this design closes).
+		var btlErr *BatchTooLargeError
+		if errors.As(err, &btlErr) {
+			cp.deps.Metrics.OpsRejected.Add(1)
+			cp.deps.Logger.Info("step 8: batch-too-large rejection",
+				"requestId", env.RequestID,
+				"reason", btlErr.Reason,
+				"limit", btlErr.Limit,
+				"actual", btlErr.Actual,
+				"key", btlErr.Key)
+			cp.replyTo(msg, BuildRejectedReply(env.RequestID, ErrCodeBatchTooLarge,
+				btlErr.Error(), map[string]any{
+					"reason": btlErr.Reason,
+					"limit":  btlErr.Limit,
+					"actual": btlErr.Actual,
+					"key":    btlErr.Key,
+				}))
+			return OutcomeRejected, substrate.Term
+		}
+
 		if errors.Is(err, substrate.ErrAtomicBatchRejected) {
 			// If the commit failed because the tracker already exists, a previous
 			// redelivery committed and we're racing with our own idempotency: ack

@@ -26,11 +26,21 @@ import (
 // backing stream) does not exist. It is the substrate-typed equivalent of
 // jetstream.ErrBucketNotFound / ErrStreamNotFound, letting callers classify a
 // missing target as a structural fault without importing jetstream.
+//
+// ErrBatchTooLarge is returned by AtomicBatch/PublishBatch when the op count
+// exceeds MaxBatchMessages. NOT wrapped in ErrAtomicBatchRejected — it is a
+// pre-flight guard (Contract #3 §3.9.1), never a NATS-reported rejection.
+//
+// ErrValueTooLarge is returned by AtomicBatch/PublishBatch when a single op's
+// value exceeds the per-message payload ceiling (the connection's negotiated
+// max_payload, less ValueHeadroomBytes).
 var (
 	ErrKeyNotFound         = errors.New("substrate: key not found")
 	ErrRevisionConflict    = errors.New("substrate: revision conflict")
 	ErrAtomicBatchRejected = errors.New("substrate: atomic batch rejected")
 	ErrBucketNotFound      = errors.New("substrate: bucket not found")
+	ErrBatchTooLarge       = errors.New("substrate: atomic batch exceeds message-count ceiling")
+	ErrValueTooLarge       = errors.New("substrate: batch op value exceeds payload ceiling")
 )
 
 // IsConnectionError reports whether err is (or wraps) a NATS transport-level

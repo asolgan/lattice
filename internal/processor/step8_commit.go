@@ -48,6 +48,34 @@ func (e *ProtectedKeyError) Error() string {
 	return fmt.Sprintf("ProtectedKey: %s on %s targets protected kernel root %s", e.Op, e.Key, e.Root)
 }
 
+// BatchTooLargeError is the typed step-8 failure surfaced when the substrate
+// pre-flight guard rejects the atomic batch (Contract #3 §3.9.1): the batch
+// exceeds MaxBatchMessages, or a single mutation's value exceeds the
+// negotiated payload ceiling. Reason distinguishes the two:
+// "mutationCount" | "valueSize" (Key is only set for the latter). The commit
+// path maps this onto a terminal `rejected` reply with code `BatchTooLarge` —
+// a redelivery reproduces the identical over-limit batch and can never
+// succeed, so it must never be retried.
+type BatchTooLargeError struct {
+	Reason             string // "mutationCount" | "valueSize"
+	Limit              int
+	Actual             int
+	Key                string // valueSize only
+	OperationRequestID string
+	Cause              error
+}
+
+func (e *BatchTooLargeError) Error() string {
+	if e.Key != "" {
+		return fmt.Sprintf("BatchTooLargeError: requestId=%s reason=%s key=%s limit=%d actual=%d: %v",
+			e.OperationRequestID, e.Reason, e.Key, e.Limit, e.Actual, e.Cause)
+	}
+	return fmt.Sprintf("BatchTooLargeError: requestId=%s reason=%s limit=%d actual=%d: %v",
+		e.OperationRequestID, e.Reason, e.Limit, e.Actual, e.Cause)
+}
+
+func (e *BatchTooLargeError) Unwrap() error { return e.Cause }
+
 // CommitterImpl is the step-8 implementation. Behavior:
 //  1. Build a single substrate.AtomicBatch op list:
 //     - one BatchOp per mutation (revision condition derived from
@@ -201,6 +229,29 @@ func (c *CommitterImpl) Commit(ctx context.Context, env *OperationEnvelope, resu
 	defer cancel()
 	ack, batchErr := c.Conn.AtomicBatch(bctx, ops)
 	if batchErr != nil {
+		// The substrate's pre-flight size guard (Contract #3 §3.9.1) — un-wrapped,
+		// never an ErrAtomicBatchRejected, so it must be checked first.
+		if errors.Is(batchErr, substrate.ErrBatchTooLarge) {
+			return CommitAck{}, &BatchTooLargeError{
+				Reason:             "mutationCount",
+				Limit:              substrate.MaxBatchMessages,
+				Actual:             len(ops),
+				OperationRequestID: rid,
+				Cause:              batchErr,
+			}
+		}
+		if errors.Is(batchErr, substrate.ErrValueTooLarge) {
+			limit := int(c.Conn.NATS().MaxPayload()) - substrate.ValueHeadroomBytes
+			key, actual := offendingValueOp(ops, limit)
+			return CommitAck{}, &BatchTooLargeError{
+				Reason:             "valueSize",
+				Limit:              limit,
+				Actual:             actual,
+				Key:                key,
+				OperationRequestID: rid,
+				Cause:              batchErr,
+			}
+		}
 		// Wrap in ConflictError if the underlying cause looks like a
 		// revision conflict.
 		if errors.Is(batchErr, substrate.ErrAtomicBatchRejected) {
@@ -410,4 +461,16 @@ func guessConflictingKey(err error, ops []substrate.BatchOp) string {
 		}
 	}
 	return ""
+}
+
+// offendingValueOp finds the first non-delete op whose value exceeds limit,
+// mirroring the substrate's own pre-flight value-size guard so the typed
+// BatchTooLargeError can report the specific key and actual size.
+func offendingValueOp(ops []substrate.BatchOp, limit int) (key string, actual int) {
+	for _, op := range ops {
+		if !op.Delete && len(op.Value) > limit {
+			return op.Key, len(op.Value)
+		}
+	}
+	return "", 0
 }

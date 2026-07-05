@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,6 +92,90 @@ func TestCommit_RevisionConflictSurfacesConflictError(t *testing.T) {
 	var confErr *ConflictError
 	if !errors.As(err, &confErr) {
 		t.Fatalf("expected *ConflictError, got %T: %v", err, err)
+	}
+}
+
+// TestCommit_BatchTooLarge_MutationCount proves an operation whose mutation
+// count pushes the batch (mutations + tracker) over substrate.MaxBatchMessages
+// surfaces as a typed *BatchTooLargeError{Reason:"mutationCount"}, not a raw
+// substrate rejection (Contract #3 §3.9.1).
+func TestCommit_BatchTooLarge_MutationCount(t *testing.T) {
+	ctx, c, _ := buildCommitterPipeline(t)
+	env := newTestEnvelope(testNanoID1)
+
+	mutations := make([]MutationOp, substrate.MaxBatchMessages) // + tracker = MaxBatchMessages+1
+	for i := range mutations {
+		id, err := substrate.NewNanoID()
+		if err != nil {
+			t.Fatalf("NewNanoID: %v", err)
+		}
+		mutations[i] = MutationOp{
+			Op:       "create",
+			Key:      "vtx.identity." + id,
+			Document: map[string]interface{}{"class": "identity"},
+		}
+	}
+	result := ScriptResult{Mutations: mutations}
+	tracker := NewTracker(env, time.Now())
+	_, err := c.Commit(ctx, env, result, tracker)
+	if err == nil {
+		t.Fatalf("expected error from an over-limit batch")
+	}
+	var btlErr *BatchTooLargeError
+	if !errors.As(err, &btlErr) {
+		t.Fatalf("expected *BatchTooLargeError, got %T: %v", err, err)
+	}
+	if btlErr.Reason != "mutationCount" {
+		t.Fatalf("Reason = %q, want mutationCount", btlErr.Reason)
+	}
+	if btlErr.Limit != substrate.MaxBatchMessages {
+		t.Fatalf("Limit = %d, want %d", btlErr.Limit, substrate.MaxBatchMessages)
+	}
+	if btlErr.Actual != substrate.MaxBatchMessages+1 {
+		t.Fatalf("Actual = %d, want %d", btlErr.Actual, substrate.MaxBatchMessages+1)
+	}
+	// Nothing must have landed — the tracker must not exist.
+	if _, gerr := c.Conn.KVGet(ctx, testCoreBucket, tracker.Key); !errors.Is(gerr, substrate.ErrKeyNotFound) {
+		t.Fatalf("tracker must not exist after a rejected over-limit batch: %v", gerr)
+	}
+}
+
+// TestCommit_BatchTooLarge_ValueSize proves a single mutation whose marshaled
+// value exceeds the negotiated payload ceiling surfaces as a typed
+// *BatchTooLargeError{Reason:"valueSize"} naming the offending key.
+func TestCommit_BatchTooLarge_ValueSize(t *testing.T) {
+	ctx, c, _ := buildCommitterPipeline(t)
+	env := newTestEnvelope(testNanoID1)
+	key := "vtx.identity." + testNanoID2
+
+	limit := int(c.Conn.NATS().MaxPayload()) - substrate.ValueHeadroomBytes
+	result := ScriptResult{
+		Mutations: []MutationOp{{
+			Op:  "create",
+			Key: key,
+			Document: map[string]interface{}{
+				"class": "identity",
+				"data":  map[string]interface{}{"blob": strings.Repeat("x", limit+1000)},
+			},
+		}},
+	}
+	tracker := NewTracker(env, time.Now())
+	_, err := c.Commit(ctx, env, result, tracker)
+	if err == nil {
+		t.Fatalf("expected error from an oversized value")
+	}
+	var btlErr *BatchTooLargeError
+	if !errors.As(err, &btlErr) {
+		t.Fatalf("expected *BatchTooLargeError, got %T: %v", err, err)
+	}
+	if btlErr.Reason != "valueSize" {
+		t.Fatalf("Reason = %q, want valueSize", btlErr.Reason)
+	}
+	if btlErr.Key != key {
+		t.Fatalf("Key = %q, want %q", btlErr.Key, key)
+	}
+	if _, gerr := c.Conn.KVGet(ctx, testCoreBucket, key); !errors.Is(gerr, substrate.ErrKeyNotFound) {
+		t.Fatalf("mutation key must not exist after a rejected oversized batch: %v", gerr)
 	}
 }
 

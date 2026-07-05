@@ -10,6 +10,24 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
+// MaxBatchMessages is the maximum number of messages a single JetStream
+// atomic batch may contain, per NATS 2.14 (ADR-50: "Each batch can have
+// maximum 1000 messages"; the server abandons an over-limit batch with
+// err_code 10199). Not server-configurable downward without resurfacing the
+// raw error this guard prevents (Contract #3 §3.9.1 deployment invariant).
+// The Processor's batch = business mutations + the idempotency tracker +
+// (optional) the outbox aspect, so a single operation's business-mutation
+// budget is MaxBatchMessages - 2 = 998.
+const MaxBatchMessages = 1000
+
+// ValueHeadroomBytes is reserved below the connection's negotiated
+// max_payload for the message's batch/revision/TTL headers and the
+// Processor's commit-time provenance injection (createdAt/By/ByOp,
+// lastModified*). Deriving the per-value ceiling from the live negotiated
+// max_payload (rather than a hardcoded 1 MiB) honors a production override
+// automatically.
+const ValueHeadroomBytes = 4 * 1024
+
 // BatchOp describes a single write inside an atomic batch. Callers
 // construct one BatchOp per Core KV mutation and pass the slice to
 // AtomicBatch. The helper drives the raw NATS batch headers internally —
@@ -93,6 +111,9 @@ func (c *Conn) AtomicBatch(ctx context.Context, ops []BatchOp) (*BatchAck, error
 	if len(ops) == 0 {
 		return nil, fmt.Errorf("substrate: AtomicBatch: empty op list")
 	}
+	if err := c.checkBatchSize(ops); err != nil {
+		return nil, err
+	}
 
 	bucket := ops[0].Bucket
 	for i, op := range ops {
@@ -171,6 +192,32 @@ func deriveRevisions(ops []BatchOp, lastSeq, batchSize uint64) map[string]uint64
 	return revisions
 }
 
+// checkBatchSize enforces the two NATS 2.14 atomic-batch bounds (Contract #3
+// §3.9.1) before any message is built or published: the message-count
+// ceiling and, per op, the per-value payload ceiling derived from the live
+// negotiated max_payload. Delete ops carry no body and are exempt from the
+// value check. Returns ErrBatchTooLarge / ErrValueTooLarge un-wrapped — this
+// is a pre-flight guard, never a NATS-reported rejection.
+func (c *Conn) checkBatchSize(ops []BatchOp) error {
+	if len(ops) > MaxBatchMessages {
+		return fmt.Errorf("%w: %d messages > %d", ErrBatchTooLarge, len(ops), MaxBatchMessages)
+	}
+	limit := c.valueSizeLimit()
+	for i, op := range ops {
+		if !op.Delete && len(op.Value) > limit {
+			return fmt.Errorf("%w: op[%d] key=%q value=%d bytes > %d",
+				ErrValueTooLarge, i, op.Key, len(op.Value), limit)
+		}
+	}
+	return nil
+}
+
+// valueSizeLimit derives the per-message payload ceiling from the
+// connection's server-negotiated max_payload, less ValueHeadroomBytes.
+func (c *Conn) valueSizeLimit() int {
+	return int(c.nc.MaxPayload()) - ValueHeadroomBytes
+}
+
 // kvBucketSubject returns the JetStream publish subject for a Core KV key.
 // KV publish subjects follow the pattern: $KV.<bucket>.<key>
 func kvBucketSubject(bucket, key string) string {
@@ -230,6 +277,16 @@ type PublishBatchAck struct {
 func (c *Conn) PublishBatch(ctx context.Context, ops []PublishOp) (*PublishBatchAck, error) {
 	if len(ops) == 0 {
 		return nil, fmt.Errorf("substrate: PublishBatch: empty op list")
+	}
+	if len(ops) > MaxBatchMessages {
+		return nil, fmt.Errorf("%w: %d messages > %d", ErrBatchTooLarge, len(ops), MaxBatchMessages)
+	}
+	limit := c.valueSizeLimit()
+	for i, op := range ops {
+		if len(op.Data) > limit {
+			return nil, fmt.Errorf("%w: op[%d] subject=%q value=%d bytes > %d",
+				ErrValueTooLarge, i, op.Subject, len(op.Data), limit)
+		}
 	}
 	for i, op := range ops {
 		if op.Subject == "" {
