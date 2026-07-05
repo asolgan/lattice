@@ -17,7 +17,7 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 
 | Item | What it is (PO view) | Vertical | Owner | Imp | Size | State |
 |---|---|---|---|---|---|---|
-| LoftSpace — lease renewal (first goal-authored Weaver target) | No renewal surface exists; trigger derivable (`.listing` availableFrom+leaseTermMonths; freshUntil precedent). Per-tenant chain — fresh bgcheck if stale, guarantor re-verify if present, rent adjustment (new op), signature — author goal-first (`goal` + op `effects` + the §10.8 doctrine rider). | LoftSpace | pkg + FE | ★★★ | L | 📋 needs-design (Designer; Andrew-routed 2026-07-05) · builds WITH [lattice](lattice.md) Fire 6 Inc3 · [planner design](../../implementation-artifacts/weaver-planner-mandate-design.md) |
+| LoftSpace — lease renewal (first goal-authored Weaver target) | No renewal surface exists. Per-tenant chain (bgcheck if stale, guarantor if present, rent adjustment, signature) authored as ONE `goal` gap + `actions` catalog — un-holds planner Inc3. | LoftSpace | pkg + FE | ★★★ | L | 📐 awaiting-Andrew · [design](../../implementation-artifacts/loftspace-lease-renewal-goal-authored-target-design.md) (§10.8+§10.3 edits staged uncommitted) · builds WITH [lattice](lattice.md) Fire 6 Inc3: R1→R2→R3 |
 
 ## PO notes (dated — drives rotation)
 
