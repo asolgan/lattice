@@ -32,6 +32,55 @@
 > - **No contract change** (§10.9 is permissive — "remains an option"; components are not
 >   contract-enumerated — the objmgr/gateway precedent).
 
+> ## PRE-BUILD REGROUNDING (2026-07-05, Steward) — four corrections before Fire 1
+>
+> Grounded against current code (not assumed) ahead of building. All four affect the shape below —
+> read this before the body.
+>
+> 1. **Problem statement (§1.1) overstates the gap.** `internal/loom/control.go` (`ListInstances` /
+>    `InspectInstance`) and `internal/loom/state.go`'s `transition` show the terminal batch deletes
+>    **only the pattern pin** (`instance.<id>.pattern`) — the **instance cursor
+>    (`instance.<id>`) persists** with `Status` flipped in place, and the control plane's `list`/`inspect`
+>    **already surfaces retained terminals today**. "The moment a flow completes or fails it is gone" is
+>    **false**. The real, narrower gap: `InstanceSummary`/`Instance` carry no failure **reason** (the
+>    `loom.patternFailed{reason}` event's `reason` is never persisted to the cursor) and no
+>    **timestamps** (`started_at`/`ended_at`) — so "why did it fail" and "throughput over a window" are
+>    still unanswerable — plus `loom-state` is an **operational RPC bucket, not a P5 lens target**, so
+>    Loupe has no read-model path to it (Loupe's Core-KV exception doesn't reach `loom-state` either — it
+>    isn't Core KV). The Chronicler's value is real, just narrower: reason + timestamps + a queryable P5
+>    read model + a bound on `loom-state`'s unbounded terminal-record growth — not "resurrecting vanished
+>    flows."
+> 2. **§2.2's projection example uses the wrong field names.** `internal/processor/step7_events.go`'s
+>    `Event` struct publishes `{eventId, requestId, eventType, domain, targetKey, payload, timestamp}` —
+>    the DDL script's `data` dict (`packages/orchestration-base/loom_lifecycle.go`) becomes the **`payload`**
+>    field, not `data`. So `"data.instanceId"` below must read **`"payload.instanceId"`**, and
+>    `"envelope.committedAt"` must read **`"timestamp"`** (a top-level `Event` field — there is no
+>    `committedAt` or nested `payload.timestamp`). **`last_event_seq` is not a JSON envelope
+>    field at all** — it comes from the JetStream delivery metadata the pipeline's consumer handler
+>    already receives (`substrate.Message.Sequence`, populated from `msg.Metadata().Sequence.Stream` —
+>    `internal/substrate/consumer.go:newMessage`), the same value Refractor's coreKv pipeline already
+>    reads off the wire. The mapper config should name it `"message.sequence"` (or similar transport-level
+>    key), not `"envelope.streamSeq"` — it is plumbed in by the pipeline runtime, never parsed out of the
+>    event body.
+> 3. **F2 (Weaver history, per the ratification-rework banner below) names a producer that doesn't
+>    exist.** Grep confirms **no `.go` file publishes to `events.weaver.*`** or any `core-events` subject
+>    from `internal/weaver` — Weaver's only outbound publish today is `ops.<lane>` (op submission to the
+>    Processor; `internal/weaver/actuator.go`). §7 below already scopes Weaver parity as a **contingent
+>    follow-on** ("hand a consumer an unbuilt producer" — memory `feedback_designer_chain_grounding`); the
+>    banner's F2 ordering must be read through that lens: F2 is **blocked on Weaver first emitting a
+>    lifecycle event stream** (a separate, unscoped design/build), not a same-fire deliverable. Treat the
+>    banner's "F2 Weaver history" as **F2 (contingent, unscoped producer)** until that producer exists;
+>    F1's `eventStream` primitive + `loomFlowHistory` consumer (Loom, which already emits `loom.*` events)
+>    is the buildable core.
+> 4. **F3 (archive mode) needs a dedicated Object Store bucket, not a new GC exemption mechanism.**
+>    `internal/objectmanager/manager.go`'s reconcile sweep is scoped to exactly one configured bucket —
+>    `m.cfg.ObjectsBucket`, bound to `bootstrap.CoreObjectsBucket = "core-objects"`
+>    (`cmd/object-store-manager/main.go`) — it never scans the whole Object Store namespace. So archive
+>    segments are GC-safe **by construction** as long as they land in a **separate, dedicated bucket**
+>    (e.g. a new primordial `chronicler-archive` Object Store, provisioned in `internal/bootstrap/primordial.go`
+>    exactly like `core-objects` is) rather than sharing `core-objects` — no new exemption/fencing code in
+>    objmgr is needed. Note this for F3's design when that fire is scoped; it does not affect F1/F2.
+
 · Designer fire 2026-06-30 (Winston); reworked at ratification 2026-07-02 · Lattice lane
 **Backlog row:** "Loom / Weaver control-API surfacing" (`backlog/lattice.md` → Refinements & ops) — ★ · M
 
@@ -86,25 +135,38 @@ touched). The Steward builds this **only after ✅ Andrew-ratified**.
 
 ## 1. Problem & intent
 
-### 1.1 The gap (grounded)
+### 1.1 The gap (grounded — corrected 2026-07-05, see the regrounding banner above)
 
 Loom is the deterministic procedure engine. A flow ("instance") is **operational-only**: per the frozen
 Contract #10 §10.9 and P1, it has **no Core-KV vertex** — its sole durable home is the `loom-state` cursor
 (`instance.<instanceId>` + the pinned `instance.<instanceId>.pattern`). The terminal batch
-(`CompletePattern`/`FailPattern`) **deletes the pin and cursor** (loom.md "Definition binding" + §10.3) so
-that `instance.*.pattern` listing yields exactly the *live* set (it drives the §10.9 per-domain consumer
-reconcile).
+(`CompletePattern`/`FailPattern`) **deletes only the pattern pin** (`internal/loom/state.go`'s
+`transition`) — the **instance cursor persists**, its `Status` flipped in place — so that
+`instance.*.pattern` listing yields exactly the *live* set (it drives the §10.9 per-domain consumer
+reconcile) while `instance.<id>` listing (`ListInstances`) yields running instances **and retained
+terminals alike**.
 
-The consequence: the control plane (`internal/loom/control`, `lattice.ctrl.loom.list/consumers/inspect`),
-which reads `loom-state`, can only ever show **running** flows. The moment a flow completes or fails it is
-**gone** — there is no answer to:
+So the control plane (`internal/loom/control`, `lattice.ctrl.loom.list/consumers/inspect`) does **not**
+lose terminal flows — `ListInstances`/`InspectInstance` already return them with their final `Status`. The
+real, narrower gap is what the retained cursor **doesn't carry** and **who can read it**:
 
-- *Which flows completed in the last day?* (operational throughput)
-- *Why did this onboarding flow fail?* (`loom.patternFailed{reason}` is emitted, then forgotten)
-- *Is this flow stuck?* (a `running` cursor with no recent progress — needs a durable baseline to compare)
+- *Why did this onboarding flow fail?* — `Instance` has no `Reason` field; `loom.patternFailed{reason}` is
+  emitted onto `core-events` and then **never persisted anywhere queryable** — the reason exists for one
+  event's lifetime only.
+- *Which flows completed in the last day? How long did they take?* — `Instance` has no `started_at`/
+  `ended_at`; there is no timestamp on the cursor at all, so throughput/duration queries are unanswerable
+  even though the record survives.
+- *Can Loupe show this?* — `loom-state` is Loom's private **operational RPC** bucket (P2 — only Loom
+  writes it, read via the control-plane micro-service), not a **P5 lens read-model target**. Loupe has no
+  path to it (its Core-KV exception doesn't extend to `loom-state`, which isn't Core KV either) —
+  filtering/sorting/paging over flow history needs a real read model, not an RPC round-trip.
+- *Is `loom-state` growing without bound?* — retained terminal cursors are **never pruned**; the
+  operational bucket accretes forever. Splitting history into a dedicated, purpose-built read model is
+  also how `loom-state` itself stays bounded to live + recent instances (a follow-on, not scoped here).
 
 The shipped control plane already covers **operator pause/resume** (the other half of the backlog row);
-this design covers the remaining half: **a durable `loom.*` read model**.
+this design covers the remaining half: **a durable, P5-readable `loom.*` history read model carrying
+reason + timestamps** — not resurrecting flows that were never actually deleted.
 
 ### 1.2 Intent & vision lineage
 
@@ -162,19 +224,21 @@ only as a sequence of events. The event payload *is* the only data. So a durable
   "kind": "eventStream",
   "subjects": ["events.loom.>"],          // the durable JetStream subjects to consume (core-events)
   "project": {                             // declarative event-body → row mapping (NO cypher)
-    "key":   "data.instanceId",            // the target row key (one row per instance)
+    "key":   "payload.instanceId",         // the target row key (one row per instance)
     "columns": {
-      "instance_id":    "data.instanceId",
-      "pattern_ref":    "data.patternRef",
-      "subject_key":    "data.subjectKey",
-      "status":         { "from": "class", "map": {                 // class → status enum
+      "instance_id":    "payload.instanceId",
+      "pattern_ref":    "payload.patternRef",
+      "subject_key":    "payload.subjectKey",
+      "status":         { "from": "eventType", "map": {              // eventType → status enum
                           "loom.patternStarted": "running",
                           "loom.patternCompleted": "complete",
                           "loom.patternFailed":  "failed" } },
-      "failure_reason": "data.reason",
-      "started_at":     { "when": "loom.patternStarted", "value": "envelope.committedAt" },
-      "ended_at":       { "when": ["loom.patternCompleted","loom.patternFailed"], "value": "envelope.committedAt" },
-      "last_event_seq": "envelope.streamSeq"  // monotonic convergence guard (see §2.4)
+      "failure_reason": "payload.reason",
+      "started_at":     { "when": "loom.patternStarted", "value": "timestamp" },   // top-level Event field, NOT payload.timestamp
+      "ended_at":       { "when": ["loom.patternCompleted","loom.patternFailed"], "value": "timestamp" },
+      "last_event_seq": "message.sequence"  // JetStream delivery metadata, NOT an event-body field —
+                                             // plumbed in by the pipeline runtime (substrate.Message.Sequence);
+                                             // monotonic convergence guard (see §2.4)
     }
   }
 }
