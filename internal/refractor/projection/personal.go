@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/asolgan/lattice/internal/refractor/adapter"
+	"github.com/asolgan/lattice/internal/refractor/capabilityread"
 	"github.com/asolgan/lattice/internal/refractor/lens"
 	"github.com/asolgan/lattice/internal/refractor/personalinterest"
 	"github.com/asolgan/lattice/internal/refractor/pipeline"
@@ -34,9 +35,15 @@ func IsPersonalLens(r *lens.Rule) bool {
 //
 // interestKV is the personal-lens-interest bucket handle; nil disables the
 // Interest Set relevance filter (every delta streams — the fail-open default
-// the design specifies for "no registration yet"). Returns false when the
-// lens must not be registered (a fail-closed descriptor/engine error).
-func InstallPersonalLens(p *pipeline.Pipeline, r *lens.Rule, adjKV, coreKV, interestKV *substrate.KV, logger *slog.Logger) bool {
+// the design specifies for "no registration yet"). capKV is the Capability KV
+// bucket handle (Contract #6 §6.14); nil disables the D1 read-grant security
+// gate — the design's Fires 1-2 trusted-single-identity posture, so tests
+// exercising only fan-out/relevance may still pass nil, but a production
+// caller MUST thread a real handle (personal-secure-lens-design.md §3.4, Fire
+// PL.3: "the security door is the only thing that needs D1; it is the
+// explicit gate, not a silent default"). Returns false when the lens must not
+// be registered (a fail-closed descriptor/engine error).
+func InstallPersonalLens(p *pipeline.Pipeline, r *lens.Rule, adjKV, coreKV, interestKV, capKV *substrate.KV, logger *slog.Logger) bool {
 	cr, ok := r.CompiledRule.(*full.CompiledRule)
 	if !ok {
 		logger.Error("personal lens requires the full engine", "lensId", r.ID)
@@ -56,11 +63,15 @@ func InstallPersonalLens(p *pipeline.Pipeline, r *lens.Rule, adjKV, coreKV, inte
 		return false
 	}
 
-	p.SetEnvelopeFn(personalEnvelopeFn(interestKV, logger))
+	p.SetEnvelopeFn(personalEnvelopeFn(interestKV, capKV, logger))
 	p.SetActorEnumerator(pipeline.NewActorEnumerator(adjKV, coreKV, PersonalActorType))
 
+	if capKV == nil {
+		logger.Warn("personal lens installed WITHOUT the D1 read-grant security gate — trusted/test-only posture, never production",
+			"lensId", r.ID)
+	}
 	logger.Info("personal lens fan-out + envelope installed",
-		"lensId", r.ID, "businessKeys", businessKeys, "interestSetFilter", interestKV != nil)
+		"lensId", r.ID, "businessKeys", businessKeys, "interestSetFilter", interestKV != nil, "readGrantGate", capKV != nil)
 	return true
 }
 
@@ -78,24 +89,44 @@ func InstallPersonalLens(p *pipeline.Pipeline, r *lens.Rule, adjKV, coreKV, inte
 // EnvelopeFn doc) — recognized here by an empty "anchor" alias and declined
 // (ErrSkipProjection) rather than published as a hollow delta. A personal
 // lens's cypher must therefore always alias its neighbor's key to "anchor".
-func personalEnvelopeFn(interestKV *substrate.KV, logger *slog.Logger) pipeline.EnvelopeFn {
+//
+// The D1 read-grant check (capKV) runs before the Interest Set relevance
+// filter and wins over it — a delta an actor has no capability to read is
+// denied even if some device's Interest Set declares it relevant
+// (personal-secure-lens-design.md §3.4: "security filter wins over
+// relevance").
+func personalEnvelopeFn(interestKV, capKV *substrate.KV, logger *slog.Logger) pipeline.EnvelopeFn {
 	return func(row map[string]any, keys map[string]any, params map[string]any) (map[string]any, map[string]any, error) {
 		actorKey, _ := params["actorKey"].(string)
 		if actorKey == "" {
 			return nil, nil, pipeline.ErrSkipProjection
 		}
-		_, actorID, ok := substrate.ParseVertexKey(actorKey)
+		actorType, actorID, ok := substrate.ParseVertexKey(actorKey)
 		if !ok {
 			return nil, nil, fmt.Errorf("projection: personal lens actorKey %q is not a Contract #1 vertex key", actorKey)
 		}
-		anchorID, _ := row["anchor"].(string)
-		if anchorID == "" {
+		anchorRaw, _ := row["anchor"].(string)
+		if anchorRaw == "" {
 			return nil, nil, pipeline.ErrSkipProjection
+		}
+
+		if capKV != nil {
+			_, anchorNanoID, ok := substrate.ParseVertexKey(anchorRaw)
+			if !ok {
+				return nil, nil, fmt.Errorf("projection: personal lens anchor %q is not a Contract #1 vertex key", anchorRaw)
+			}
+			readable, err := capabilityread.IsReadable(context.Background(), capKV, actorType, actorID, anchorNanoID)
+			if err != nil {
+				return nil, nil, fmt.Errorf("projection: personal lens read-grant check for %q: %w", actorID, err)
+			}
+			if !readable {
+				return nil, nil, pipeline.ErrSkipProjection
+			}
 		}
 
 		if interestKV != nil {
 			anchorType, _ := row["kind"].(string)
-			relevant, err := personalinterest.IsRelevant(context.Background(), interestKV, actorID, anchorType, anchorID)
+			relevant, err := personalinterest.IsRelevant(context.Background(), interestKV, actorID, anchorType, anchorRaw)
 			if err != nil {
 				return nil, nil, fmt.Errorf("projection: personal lens interest-set check for %q: %w", actorID, err)
 			}

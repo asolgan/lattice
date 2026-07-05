@@ -72,6 +72,12 @@ func (k *KV) ListKeysPrefix(ctx context.Context, prefix string) ([]string, error
 	return k.conn.KVListKeysPrefix(ctx, k.bucket, prefix)
 }
 
+// ListKeysFilter returns a page of keys matching an arbitrary NATS subject
+// filter. See Conn.KVListKeysFilter.
+func (k *KV) ListKeysFilter(ctx context.Context, filter, cursor string, limit int) ([]string, string, error) {
+	return k.conn.KVListKeysFilter(ctx, k.bucket, filter, cursor, limit)
+}
+
 // Purge removes key and its history, leaving a purge marker. Purging an absent
 // key is a no-op (idempotent). See Conn.KVPurge.
 func (k *KV) Purge(ctx context.Context, key string) error {

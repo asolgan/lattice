@@ -119,6 +119,13 @@ func main() {
 		logger.Error("open personal-lens-interest KV", "bucket", personalInterestKVBucket, "err", err)
 		os.Exit(1)
 	}
+	// D1's read-path Capability KV (Contract #6 §6.14) — the Personal Lens's
+	// security gate (personal-secure-lens-design.md §3.4, Fire PL.3).
+	capabilityKV, err := conn.OpenKV(ctx, bootstrap.CapabilityKVBucket)
+	if err != nil {
+		logger.Error("open capability KV", "bucket", bootstrap.CapabilityKVBucket, "err", err)
+		os.Exit(1)
+	}
 
 	bootstrapper := consumer.NewBootstrapper(conn, coreKVBucket, adjKV)
 	go func() {
@@ -584,10 +591,11 @@ func main() {
 			p.SetLatencyBuffer(pipeline.NewLatencyRingBuffer(pipeline.DefaultLatencyBufferSize))
 			logger.Info("operation-aggregate envelope installed", "lensId", r.ID, "key", r.Into.Key[0])
 		case projection.IsPersonalLens(r):
-			// Personal Lens fan-out (personal-secure-lens-design.md §3.3, Fire
-			// PL.2): installs the ActorEnumerator + the "__actor"-injecting
-			// envelope, filtered through the Interest Set registry.
-			if !projection.InstallPersonalLens(p, r, adjKV, coreKV, personalInterestKV, logger) {
+			// Personal Lens fan-out (personal-secure-lens-design.md §3.3-3.4,
+			// Fires PL.2-PL.3): installs the ActorEnumerator + the
+			// "__actor"-injecting envelope, gated by D1's read-grant check
+			// (capabilityKV) and filtered through the Interest Set registry.
+			if !projection.InstallPersonalLens(p, r, adjKV, coreKV, personalInterestKV, capabilityKV, logger) {
 				return
 			}
 		}

@@ -34,7 +34,9 @@ import (
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
-// pl2Harness bundles the embedded-NATS fixtures shared by both PL.2 tests.
+// pl2Harness bundles the embedded-NATS fixtures shared by the PL.2 tests
+// (and, via capKV, reused by the PL.3 security-gate suite in
+// personal_lens_pl3_e2e_test.go — same package, same fixtures).
 type pl2Harness struct {
 	ctx        context.Context
 	conn       *substrate.Conn
@@ -42,6 +44,7 @@ type pl2Harness struct {
 	coreKV     *substrate.KV
 	adjKV      *substrate.KV
 	interestKV *substrate.KV
+	capKV      *substrate.KV
 	logger     *slog.Logger
 }
 
@@ -63,7 +66,7 @@ func newPL2Harness(t *testing.T) *pl2Harness {
 	t.Cleanup(cancel)
 
 	js := conn.JetStream()
-	for _, bucket := range []string{"core-kv", "refractor-adjacency", "personal-lens-interest"} {
+	for _, bucket := range []string{"core-kv", "refractor-adjacency", "personal-lens-interest", "capability-kv"} {
 		_, err = js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: bucket})
 		require.NoError(t, err)
 	}
@@ -72,6 +75,8 @@ func newPL2Harness(t *testing.T) *pl2Harness {
 	adjKV, err := conn.OpenKV(ctx, "refractor-adjacency")
 	require.NoError(t, err)
 	interestKV, err := conn.OpenKV(ctx, "personal-lens-interest")
+	require.NoError(t, err)
+	capKV, err := conn.OpenKV(ctx, "capability-kv")
 	require.NoError(t, err)
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
@@ -84,14 +89,17 @@ func newPL2Harness(t *testing.T) *pl2Harness {
 		t.Fatal("adjacency bootstrapper did not reach Ready within 10s")
 	}
 
-	return &pl2Harness{ctx: ctx, conn: conn, js: js, coreKV: coreKV, adjKV: adjKV, interestKV: interestKV, logger: logger}
+	return &pl2Harness{ctx: ctx, conn: conn, js: js, coreKV: coreKV, adjKV: adjKV, interestKV: interestKV, capKV: capKV, logger: logger}
 }
 
 // activatePersonalLens writes a "personal: true" nats_subject lens spec and
 // wires the real Refractor pipeline through the same path cmd/refractor's
 // startPipeline uses: CoreKVSource → translateSpec → projection.IsPersonalLens
-// → projection.InstallPersonalLens.
-func activatePersonalLens(t *testing.T, h *pl2Harness, lensID, cypher string, businessKeys []string) *adapter.NatsSubjectAdapter {
+// → projection.InstallPersonalLens. capKV is threaded straight to
+// InstallPersonalLens — nil from the PL.2 tests below (fan-out/Interest Set
+// only, D1 gate disabled); the PL.3 suite passes h.capKV seeded with real
+// grants (personal_lens_pl3_e2e_test.go).
+func activatePersonalLens(t *testing.T, h *pl2Harness, lensID, cypher string, businessKeys []string, capKV *substrate.KV) *adapter.NatsSubjectAdapter {
 	t.Helper()
 	const subjectPrefix = "lattice.sync.user"
 	const syncStream = "SYNC"
@@ -144,7 +152,7 @@ func activatePersonalLens(t *testing.T, h *pl2Harness, lensID, cypher string, bu
 	require.True(t, projection.IsPersonalLens(r), "lens must be recognized as a Fire-2 personal lens")
 	require.True(t, ruleUsesFullEngine(t, r))
 	p.UseFullEngine(fullEngineSingleton, r.CompiledRule)
-	require.True(t, projection.InstallPersonalLens(p, r, h.adjKV, h.coreKV, h.interestKV, h.logger))
+	require.True(t, projection.InstallPersonalLens(p, r, h.adjKV, h.coreKV, h.interestKV, capKV, h.logger))
 
 	p.RunOn(h.conn, e2eSpec(lensID, "core-kv"))
 	pipelineCtx, pipelineCancel := context.WithCancel(h.ctx)
@@ -235,7 +243,7 @@ func TestPersonalLens_PL2_E2E_VertexFanOutReachesLinkedIdentity(t *testing.T) {
 
 	cypher := `MATCH (identity {key: $actorKey})-[:holds]->(l:lease) ` +
 		`RETURN l.key AS anchor, "lease" AS kind, l.id AS entityId, l.monthlyRent AS monthlyRent`
-	adpt := activatePersonalLens(t, h, pl2NanoID("vertexfan-lens"), cypher, []string{"entityId"})
+	adpt := activatePersonalLens(t, h, pl2NanoID("vertexfan-lens"), cypher, []string{"entityId"}, nil)
 
 	writePL2Vertex(t, h, identityKey, "identity", map[string]any{"name": "recipient"})
 	writePL2Vertex(t, h, leaseKey, "lease", map[string]any{"id": "lease-pl2-1", "monthlyRent": 2000})
@@ -298,7 +306,7 @@ func TestPersonalLens_PL2_E2E_InterestSetFiltersThenAdmits(t *testing.T) {
 
 	cypher := `MATCH (identity {key: $actorKey})-[:holds]->(l:lease) ` +
 		`RETURN l.key AS anchor, "lease" AS kind, l.id AS entityId, l.monthlyRent AS monthlyRent`
-	activatePersonalLens(t, h, pl2NanoID("interest-lens"), cypher, []string{"entityId"})
+	activatePersonalLens(t, h, pl2NanoID("interest-lens"), cypher, []string{"entityId"}, nil)
 
 	// Register a device interested ONLY in "payment" — a "lease" delta must
 	// be suppressed. Drive this through the real control-plane RPC.
