@@ -185,7 +185,7 @@ func TestCapAuthor_Review_NonPending_Rejected(t *testing.T) {
 	cp, cons := newCapAuthorPipeline(t, ctx, conn, "ca-rv-nonpend")
 
 	proposalKey := "vtx.capabilityproposal." + capIDRvNonPend
-	req := requestEnv(testutil.GenReqID("CAReq"), capIDRvNonPend, "grant RescheduleAppointment to front-desk")
+	req := requestEnv(testutil.GenReqID("CAReq"), capIDRvNonPend, "a convergence target over active leases")
 	testutil.PublishOp(t, conn, req)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
 
@@ -194,7 +194,7 @@ func TestCapAuthor_Review_NonPending_Rejected(t *testing.T) {
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
 
 	// A disabled-kind reply lands review.state=invalid.
-	rec := recordEnv(t, testutil.GenReqID("CARec"), capHandleRvNonPend, "grant", json.RawMessage(`{}`), 0.9)
+	rec := recordEnv(t, testutil.GenReqID("CARec"), capHandleRvNonPend, "weaverTarget", json.RawMessage(`{}`), 0.9)
 	testutil.PublishOp(t, conn, rec)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
 	if got := reviewState(t, ctx, conn, proposalKey); got != "invalid" {

@@ -45,9 +45,13 @@
 //
 //   - The Go-side deterministic materializer (internal/pkgmgr,
 //     ValidateCapabilityArtifact) — the §5 record-time validation boundary for
-//     the "lens" kind: parses the proposed cypher with the real openCypher
+//     the "lens" kind (parses the proposed cypher with the real openCypher
 //     parser and runs the artifact through the same validateAll the human
-//     package-authoring path uses (reused, not duplicated).
+//     package-authoring path uses, reused not duplicated) and the "grant" kind
+//     (full Contract #6 permission-identity validation plus the scope check:
+//     the artifact's operationType+scope must be a subset of what the
+//     requesting operator already holds — the property that makes it safe to
+//     let an AI author authority-widening artifacts at all).
 //
 //   - Permissions granting RequestCapabilityAuthoring + CreateAuthoringClaim +
 //     RecordCapabilityProposal + ReviewCapabilityProposal to `operator` (the
@@ -86,7 +90,7 @@
 // doc): the real claude-opus-4-8-backed `capabilityAuthor` bridge adapter (only
 // the deterministic `FakeCapabilityAuthor` ships — the same posture Augur's own
 // adapter is still in); a Loupe/CLI review-and-apply affordance; the
-// `grant`/`weaverTarget`/`loomPattern`/Starlark kinds.
+// `weaverTarget`/`loomPattern`/Starlark kinds.
 //
 // Install via the InstallPackage kernel op. See docs/components/_packages.md
 // and _bmad-output/implementation-artifacts/ai-authored-capabilities-design.md.
@@ -98,7 +102,7 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 var Package = pkgmgr.Definition{
 	Name:          "capability-author",
 	Version:       "0.5.0",
-	Description:   "AI-authored capabilities — Fire 1 capture + escalation dispatch + P5 read models, plus Fire 2 review + apply: the capabilityproposal + capabilityauthorclaim vertex types, the RequestCapabilityAuthoring/CreateAuthoringClaim/RecordCapabilityProposal/ReviewCapabilityProposal/MarkCapabilityProposalApplied ops (§5 record-time + approve-time deterministic-validation boundary for the lens kind, plus the F-004-apply-then-mark-applied loop closer), the capabilityAuthorPending weaver-target lens, the capabilityAuthor Loom pattern, and the capabilityProposals/capabilityAuthorContext review + catalog lenses. The grant/weaverTarget/loomPattern/Starlark kinds and a Loupe/CLI review-and-apply affordance land in later increments.",
+	Description:   "AI-authored capabilities — Fire 1 capture + escalation dispatch + P5 read models, plus Fire 2 review + apply: the capabilityproposal + capabilityauthorclaim vertex types, the RequestCapabilityAuthoring/CreateAuthoringClaim/RecordCapabilityProposal/ReviewCapabilityProposal/MarkCapabilityProposalApplied ops (§5 record-time + approve-time deterministic-validation boundary for the lens + grant kinds, plus the F-004-apply-then-mark-applied loop closer), the capabilityAuthorPending weaver-target lens, the capabilityAuthor Loom pattern, and the capabilityProposals/capabilityAuthorContext review + catalog lenses. The weaverTarget/loomPattern/Starlark kinds and a Loupe/CLI review-and-apply affordance land in later increments.",
 	Depends:       []string{"orchestration-base"},
 	DDLs:          DDLs(),
 	Permissions:   Permissions(),

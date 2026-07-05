@@ -12,9 +12,9 @@ import (
 // (ai-authored-capabilities-design.md §3.1, §3.3, §3.5); the
 // `capabilityauthorclaim` vertex-type DDL owns the escalation-dispatch
 // instanceOp (§3.4). Together they carry Fire 1 (capture + dispatch) and Fire
-// 2 (review + apply); the grant/weaverTarget/loomPattern kinds and a
-// Loupe/CLI review-and-apply affordance remain (see the design doc's
-// checkpoint).
+// 2 (review + apply, lens + grant kinds); the weaverTarget/loomPattern kinds
+// (Fire 3) and a Loupe/CLI review-and-apply affordance remain (see the design
+// doc's checkpoint).
 //
 //   - RequestCapabilityAuthoring mints the proposal vertex write-ahead of the
 //     reasoning call (mirrors augur's CreateAugurReasoningClaim), recording the
@@ -176,7 +176,7 @@ func capabilityProposalDDL() pkgmgr.DDLSpec {
 			`"contextRef":{"type":"string","description":"RequestCapabilityAuthoring only — an optional pointer to bounded context the reasoning call hydrates (opaque to this DDL)."},` +
 			`"externalRef":{"type":"string","description":"RecordCapabilityProposal only — the bare Loom instanceKey handle CreateAuthoringClaim minted; the op resolves the real proposal vertex via vtx.capabilityauthorclaim.<externalRef>.target (never treated as the proposal's own id)."},` +
 			`"status":{"type":"string","description":"RecordCapabilityProposal only — the adapter's terminal outcome: completed (the model proposed an artifact) or failed (a modeled refusal — stored invalid, never dispatchable)."},` +
-			`"result":{"type":"string","description":"RecordCapabilityProposal only — the model's structured-output proposal as a JSON string {kind, content, target:{mode,packageName,baseVersion?,newVersion?}, rationale, confidence, validation:{state,report?,deltaPreview?}, provenance:{model?,promptHash?,catalogHash?,reasonedAt?}} — the opaque adapter Detail. Required when status=completed; carried verbatim as the rationale on a refusal. validation.state is the ALREADY-COMPUTED §5 verdict (pkgmgr.ValidateCapabilityArtifact, run by the trusted caller before submission — the script does not itself re-run the parser/validateAll). kind enables only 'lens' in this increment; any other value, or a validation.state other than 'valid', or an out-of-range confidence, or an undecodable result stores the proposal review.state=invalid (auditable, never a hard reject)."},` +
+			`"result":{"type":"string","description":"RecordCapabilityProposal only — the model's structured-output proposal as a JSON string {kind, content, target:{mode,packageName,baseVersion?,newVersion?}, rationale, confidence, validation:{state,report?,deltaPreview?}, provenance:{model?,promptHash?,catalogHash?,reasonedAt?}} — the opaque adapter Detail. Required when status=completed; carried verbatim as the rationale on a refusal. validation.state is the ALREADY-COMPUTED §5 verdict (pkgmgr.ValidateCapabilityArtifact, run by the trusted caller before submission — the script does not itself re-run the parser/validateAll). kind enables 'lens' or 'grant' in this increment; any other value, or a validation.state other than 'valid', or an out-of-range confidence, or an undecodable result stores the proposal review.state=invalid (auditable, never a hard reject)."},` +
 			`"verdict":{"type":"string","description":"ReviewCapabilityProposal only — the operator's verdict on a pending proposal: 'approve' (re-validated against the §5 boundary via the fresh validation payload field, fail-closing to invalid if it no longer validates) or 'reject'. The reviewer is the trusted submitting actor (op.actor) and the stamp is the envelope submit time; neither is a payload field."},` +
 			`"validation":{"type":"object","description":"ReviewCapabilityProposal, approve verdict only — the FRESH §5 verdict {state,report?} the caller computed by re-running pkgmgr.ValidateCapabilityArtifact against the CURRENT catalog/registry immediately before submitting (record-time and approve-time can drift). state must be exactly 'valid' or the approve fail-closes to invalid; ignored on a reject verdict."},` +
 			`"packageKey":{"type":"string","description":"MarkCapabilityProposalApplied only — the vtx.package.<id> the caller's separate F-004 Installer.Apply produced (pkgmgr.ApplyResult.PackageKey). Verified live (a .manifest aspect must exist) and its recorded name must match this proposal's own target.packageName before it is recorded as the appliedAs link target."},` +
@@ -344,7 +344,7 @@ def proposal_number(d, name):
         return -1.0
     return v
 
-ENABLED_KINDS = ["lens"]
+ENABLED_KINDS = ["lens", "grant"]
 
 def execute(state, op):
     ot = op.operationType

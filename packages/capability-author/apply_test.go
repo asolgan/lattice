@@ -14,6 +14,7 @@ package capabilityauthor_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -40,6 +41,8 @@ const (
 	capIDApplyMismatchB  = "CAApprvMismBHJKMNPQR"
 	capHandleApplyMismB  = "CAHNDApMismBHJKMNPQR"
 	capFakePackageKey    = "vtx.package.fakePkgHJKMNPQRSTUVW"
+	capIDApplyGrant      = "CAApprvGrantHJKMNPQR"
+	capHandleApplyGrant  = "CAHNDApGrantHJKMNPQR"
 )
 
 // applyEnv builds the MarkCapabilityProposalApplied op the operator submits
@@ -68,7 +71,7 @@ func applyEnv(reqID, proposalID, packageKey, installRequestID string) *processor
 // rather than widening every existing recordEnv call site.
 func recordEnvForApply(t *testing.T, reqID, handle, packageName string, content json.RawMessage, confidence float64) *processor.OperationEnvelope {
 	t.Helper()
-	report, err := pkgmgr.ValidateCapabilityArtifact("lens", content, fullCypherParser{})
+	report, err := pkgmgr.ValidateCapabilityArtifact("lens", content, fullCypherParser{}, nil)
 	if err != nil {
 		t.Fatalf("materializer error: %v", err)
 	}
@@ -98,6 +101,136 @@ func recordEnvForApply(t *testing.T, reqID, handle, packageName string, content 
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "capabilityproposal",
 		Payload:       json.RawMessage(b),
+	}
+}
+
+// recordEnvForGrant mirrors recordEnvForApply but for the "grant" kind: it
+// attaches the requester's held permissions (simulating the trusted caller's
+// fresh Contract #6 capability-projection read) so ValidateCapabilityArtifact
+// runs the scope check exactly as production will.
+func recordEnvForGrant(t *testing.T, reqID, handle, packageName string, content json.RawMessage, held []pkgmgr.HeldPermission, confidence float64) *processor.OperationEnvelope {
+	t.Helper()
+	report, err := pkgmgr.ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held)
+	if err != nil {
+		t.Fatalf("materializer error: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("expected a valid grant artifact, got errors: %v", report.Errors)
+	}
+	result := map[string]any{
+		"kind":       "grant",
+		"content":    string(content),
+		"target":     map[string]any{"mode": "newPackage", "packageName": packageName},
+		"rationale":  "reasoned capability authoring proposal",
+		"confidence": confidence,
+		"validation": map[string]any{"state": "valid"},
+	}
+	resultBytes, _ := json.Marshal(result)
+	payload := map[string]any{
+		"externalRef": handle,
+		"status":      "completed",
+		"result":      string(resultBytes),
+	}
+	b, _ := json.Marshal(payload)
+	return &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "RecordCapabilityProposal",
+		Actor:         capStaffActorKey,
+		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		Class:         "capabilityproposal",
+		Payload:       json.RawMessage(b),
+	}
+}
+
+// readInstalledGrantPermission resolves the installed package's manifest
+// declaredKeys for its one permission vertex (vtx.permission.<id> — 3 dot
+// segments, no aspect suffix, unlike a lens's vtx.meta.<id>.canonicalName) and
+// returns its key + scope, proof the grant actually landed live.
+func readInstalledGrantPermission(t *testing.T, ctx context.Context, conn *substrate.Conn, packageKey string) (permKey, scope string) {
+	t.Helper()
+	manifest := readDoc(t, ctx, conn, packageKey+".manifest")
+	data, _ := manifest["data"].(map[string]any)
+	declared, _ := data["declaredKeys"].([]any)
+	const prefix = "vtx.permission."
+	for _, raw := range declared {
+		key, _ := raw.(string)
+		if len(key) > len(prefix) && key[:len(prefix)] == prefix && !strings.Contains(key[len(prefix):], ".") {
+			doc := readDoc(t, ctx, conn, key)
+			d, _ := doc["data"].(map[string]any)
+			s, _ := d["scope"].(string)
+			return key, s
+		}
+	}
+	t.Fatalf("no permission vertex found among declaredKeys for %s", packageKey)
+	return "", ""
+}
+
+// TestCapAuthor_Apply_GrantKind_ClosesLoop: the full loop for the "grant"
+// kind (design §8 Fire 2 fast-follow) — request → claim → record a valid
+// grant (the requester holds the operationType at scope "any", covering the
+// artifact's requested "self") → approve → apply the real package → mark
+// applied. Proves an AI-authored grant becomes a live, queryable permission
+// with a genuine grantedBy link to the named role — not merely that the ops
+// replied success.
+func TestCapAuthor_Apply_GrantKind_ClosesLoop(t *testing.T) {
+	ctx, conn := setupCapAuthorEnv(t)
+	cp, cons := newCapAuthorPipeline(t, ctx, conn, "ca-apply-grant")
+
+	proposalKey := "vtx.capabilityproposal." + capIDApplyGrant
+	req := requestEnv(testutil.GenReqID("CAReqGrant"), capIDApplyGrant, "grant AIGrantedRescheduleDemo to operator")
+	testutil.PublishOp(t, conn, req)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	claim := claimEnv(testutil.GenReqID("CAClmGrant"), capHandleApplyGrant, proposalKey)
+	testutil.PublishOp(t, conn, claim)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	content, err := json.Marshal(pkgmgr.GrantArtifactContent{
+		OperationType: "AIGrantedRescheduleDemo",
+		Scope:         "self",
+		GrantsTo:      []string{"operator"},
+	})
+	if err != nil {
+		t.Fatalf("marshal grant content: %v", err)
+	}
+	held := []pkgmgr.HeldPermission{{OperationType: "AIGrantedRescheduleDemo", Scope: "any"}}
+	rec := recordEnvForGrant(t, testutil.GenReqID("CARecGrant"), capHandleApplyGrant, "ai-grant-loop", content, held, 0.9)
+	testutil.PublishOp(t, conn, rec)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	if got := reviewState(t, ctx, conn, proposalKey); got != "pending" {
+		t.Fatalf("precondition: review.state = %q, want pending", got)
+	}
+
+	driveReview(t, ctx, conn, cp, cons, "grantapply", capIDApplyGrant, "approve", map[string]any{"state": "valid"}, processor.OutcomeAccepted)
+	if got := reviewState(t, ctx, conn, proposalKey); got != "approved" {
+		t.Fatalf("precondition: review.state = %q, want approved", got)
+	}
+
+	applyResult := applyRealPackage(t, ctx, conn, proposalKey)
+	if applyResult.Action != "install" {
+		t.Fatalf("ApplyResult.Action = %q, want install (fresh target)", applyResult.Action)
+	}
+
+	installRequestID := "install:" + applyResult.PackageName + "@" + applyResult.ToVersion
+	driveApply(t, ctx, conn, cp, cons, "grant", capIDApplyGrant, applyResult.PackageKey, installRequestID, processor.OutcomeAccepted)
+
+	if got := reviewState(t, ctx, conn, proposalKey); got != "applied" {
+		t.Fatalf("review.state = %q, want applied", got)
+	}
+
+	permKey, scope := readInstalledGrantPermission(t, ctx, conn, applyResult.PackageKey)
+	if scope != "self" {
+		t.Fatalf("installed permission scope = %q, want self", scope)
+	}
+	lnk := "lnk." + permKey[len("vtx."):] + ".grantedBy.role." + bootstrap.RoleOperatorID
+	link := readDoc(t, ctx, conn, lnk)
+	if got, _ := link["sourceVertex"].(string); got != permKey {
+		t.Fatalf("grantedBy sourceVertex = %q, want %q (permission is source)", got, permKey)
+	}
+	if got, _ := link["targetVertex"].(string); got != bootstrap.RoleOperatorKey {
+		t.Fatalf("grantedBy targetVertex = %q, want %q", got, bootstrap.RoleOperatorKey)
 	}
 }
 

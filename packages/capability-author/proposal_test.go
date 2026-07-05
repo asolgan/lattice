@@ -176,7 +176,7 @@ func claimEnv(reqID, handle, proposalKey string) *processor.OperationEnvelope {
 // exactly as a real completed adapter reply would.
 func recordEnv(t *testing.T, reqID, handle, kind string, content json.RawMessage, confidence float64) *processor.OperationEnvelope {
 	t.Helper()
-	report, err := pkgmgr.ValidateCapabilityArtifact(kind, content, fullCypherParser{})
+	report, err := pkgmgr.ValidateCapabilityArtifact(kind, content, fullCypherParser{}, nil)
 	if err != nil {
 		t.Fatalf("materializer error: %v", err)
 	}
@@ -242,18 +242,20 @@ func reviewState(t *testing.T, ctx context.Context, conn *substrate.Conn, propos
 // real Loom-minted instanceKey always is — Contract #10 §10.3/§10.5) so the
 // tests exercise the claim indirection, not an accidental id coincidence.
 const (
-	capIDPending = "CAcapPendingHJKMNPQR"
-	capIDBadKind = "CAcapBadKindHJKMNPQR"
-	capIDBadConf = "CAcapBadConfHJKMNPQR"
-	capIDBadSpec = "CAcapBadSpecHJKMNPQR"
-	capIDNoClaim = "CAcapNoreqHJKMNPQRST"
-	capIDReplay  = "CAcapRedoHJKMNPQRSTU"
+	capIDPending        = "CAcapPendingHJKMNPQR"
+	capIDBadKind        = "CAcapBadKindHJKMNPQR"
+	capIDBadConf        = "CAcapBadConfHJKMNPQR"
+	capIDBadSpec        = "CAcapBadSpecHJKMNPQR"
+	capIDNoClaim        = "CAcapNoreqHJKMNPQRST"
+	capIDReplay         = "CAcapRedoHJKMNPQRSTU"
+	capIDGrantOverscope = "CAcapExceedHJKMNPQRS"
 
-	capHandlePending = "CAHNDPendingHJKMNPQR"
-	capHandleBadKind = "CAHNDBadKindHJKMNPQR"
-	capHandleBadConf = "CAHNDBadConfHJKMNPQR"
-	capHandleBadSpec = "CAHNDBadSpecHJKMNPQR"
-	capHandleReplay  = "CAHNDRedoHJKMNPQRSTU"
+	capHandlePending        = "CAHNDPendingHJKMNPQR"
+	capHandleBadKind        = "CAHNDBadKindHJKMNPQR"
+	capHandleBadConf        = "CAHNDBadConfHJKMNPQR"
+	capHandleBadSpec        = "CAHNDBadSpecHJKMNPQR"
+	capHandleReplay         = "CAHNDRedoHJKMNPQRSTU"
+	capHandleGrantOverscope = "CAHNDExceedHJKMNPQRS"
 )
 
 // TestCapAuthor_ValidLens_Pending: a well-formed, deterministically-validated
@@ -318,13 +320,14 @@ func TestCapAuthor_ValidLens_Pending(t *testing.T) {
 
 // TestCapAuthor_DisabledKind_Invalid: a kind outside this increment's enabled
 // set is stored invalid — the proposal is still recorded (auditability), never
-// pending.
+// pending. weaverTarget is not enabled until Fire 3 (lens + grant are the two
+// kinds enabled today).
 func TestCapAuthor_DisabledKind_Invalid(t *testing.T) {
 	ctx, conn := setupCapAuthorEnv(t)
 	cp, cons := newCapAuthorPipeline(t, ctx, conn, "ca-badkind")
 
 	proposalKey := "vtx.capabilityproposal." + capIDBadKind
-	req := requestEnv(testutil.GenReqID("CARequest"), capIDBadKind, "grant RescheduleAppointment to front-desk")
+	req := requestEnv(testutil.GenReqID("CARequest"), capIDBadKind, "a convergence target over active leases")
 	testutil.PublishOp(t, conn, req)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
 
@@ -332,7 +335,7 @@ func TestCapAuthor_DisabledKind_Invalid(t *testing.T) {
 	testutil.PublishOp(t, conn, claim)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
 
-	rec := recordEnv(t, testutil.GenReqID("CARecord"), capHandleBadKind, "grant", json.RawMessage(`{}`), 0.9)
+	rec := recordEnv(t, testutil.GenReqID("CARecord"), capHandleBadKind, "weaverTarget", json.RawMessage(`{}`), 0.9)
 	testutil.PublishOp(t, conn, rec)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
 
@@ -396,6 +399,82 @@ func TestCapAuthor_MaterializerRejected_Invalid(t *testing.T) {
 
 	if got := reviewState(t, ctx, conn, proposalKey); got != "invalid" {
 		t.Fatalf("review.state = %q, want invalid (materializer-rejected artifact)", got)
+	}
+}
+
+// TestCapAuthor_GrantExceedsRequesterScope_Invalid: the adversarial case the
+// "grant" kind's §5 scope check exists to close — the requester holds ONLY
+// "self" for the named operationType, but the AI-authored artifact requests
+// granting "any" (broader authority than the requester's own). Proves the
+// scope check is genuinely wired end-to-end through the real op, not merely
+// unit-tested in isolation: the proposal is recorded (auditable) but never
+// pending, so it can never reach approve/apply.
+func TestCapAuthor_GrantExceedsRequesterScope_Invalid(t *testing.T) {
+	ctx, conn := setupCapAuthorEnv(t)
+	cp, cons := newCapAuthorPipeline(t, ctx, conn, "ca-grant-overscope")
+
+	proposalKey := "vtx.capabilityproposal." + capIDGrantOverscope
+	req := requestEnv(testutil.GenReqID("CAReqOverscope"), capIDGrantOverscope, "grant DeleteEverything to operator")
+	testutil.PublishOp(t, conn, req)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	claim := claimEnv(testutil.GenReqID("CAClmOverscope"), capHandleGrantOverscope, proposalKey)
+	testutil.PublishOp(t, conn, claim)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	content, err := json.Marshal(pkgmgr.GrantArtifactContent{
+		OperationType: "DeleteEverything",
+		Scope:         "any",
+		GrantsTo:      []string{"operator"},
+	})
+	if err != nil {
+		t.Fatalf("marshal grant content: %v", err)
+	}
+	// The requester holds only "self" — narrower than the "any" the artifact
+	// requests — exactly as pkgmgr.ValidateCapabilityArtifact's caller (the
+	// bridge in the full design) would compute from a fresh Contract #6 read.
+	held := []pkgmgr.HeldPermission{{OperationType: "DeleteEverything", Scope: "self"}}
+	report, err := pkgmgr.ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held)
+	if err != nil {
+		t.Fatalf("materializer error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected the materializer to reject a grant exceeding the requester's held scope, got valid")
+	}
+	validation := map[string]any{"state": "invalid"}
+	if len(report.Errors) > 0 {
+		b, _ := json.Marshal(report.Errors)
+		validation["report"] = string(b)
+	}
+	result := map[string]any{
+		"kind":       "grant",
+		"content":    string(content),
+		"target":     map[string]any{"mode": "newPackage"},
+		"rationale":  "reasoned capability authoring proposal",
+		"confidence": 0.9,
+		"validation": validation,
+	}
+	resultBytes, _ := json.Marshal(result)
+	payload := map[string]any{
+		"externalRef": capHandleGrantOverscope,
+		"status":      "completed",
+		"result":      string(resultBytes),
+	}
+	b, _ := json.Marshal(payload)
+	rec := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("CARecOverscope"),
+		Lane:          processor.LaneDefault,
+		OperationType: "RecordCapabilityProposal",
+		Actor:         capStaffActorKey,
+		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		Class:         "capabilityproposal",
+		Payload:       json.RawMessage(b),
+	}
+	testutil.PublishOp(t, conn, rec)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	if got := reviewState(t, ctx, conn, proposalKey); got != "invalid" {
+		t.Fatalf("review.state = %q, want invalid (grant exceeds requester's held scope — never dispatchable)", got)
 	}
 }
 
