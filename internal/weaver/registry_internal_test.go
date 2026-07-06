@@ -193,6 +193,107 @@ func TestRegistry_OrphanedSpecHealthIssue(t *testing.T) {
 	}
 }
 
+// TestRegistry_TargetIDRenameRemovesStaleEntry proves removeOwnedTargetLocked's
+// rename branch (registry.go): a spec update on the SAME vertex that changes
+// targetId drops the OLD targetId's registration entirely rather than leaving
+// it as an orphaned entry alongside the new one. The new targetId registers
+// via the fresh-load path (exists=false — a rename is not treated as an
+// update of the old target; the reconcile layer tears the old consumer down
+// from the registry no longer listing it).
+func TestRegistry_TargetIDRenameRemovesStaleEntry(t *testing.T) {
+	t.Parallel()
+	s := newTestSource(t)
+	id := testNanoID(t)
+
+	var loaded, updated []*Target
+	s.setLoadCallback(func(tgt *Target) { loaded = append(loaded, tgt) })
+	s.setUpdateCallback(func(old, new *Target) { updated = append(updated, new) })
+
+	s.handle(vertexEvent(t, id, weaverTargetClass))
+	s.handle(specEvent(t, id, targetSpecFixture("fixtureOldName")))
+	if _, ok := s.target("fixtureOldName"); !ok {
+		t.Fatalf("fixtureOldName must register on first spec")
+	}
+
+	// Same vertex, spec update renames targetId.
+	s.handle(specEvent(t, id, targetSpecFixture("fixtureNewName")))
+
+	if _, ok := s.target("fixtureOldName"); ok {
+		t.Fatalf("a targetId rename must remove the stale old-name entry, but it is still registered")
+	}
+	if _, ok := s.target("fixtureNewName"); !ok {
+		t.Fatalf("the renamed targetId must register")
+	}
+	s.mu.Lock()
+	_, ownsOld := s.targetOwner["fixtureOldName"]
+	owner, ownsNew := s.targetOwner["fixtureNewName"]
+	s.mu.Unlock()
+	if ownsOld {
+		t.Fatalf("targetOwner must not still list the stale old targetId")
+	}
+	if !ownsNew || owner != id {
+		t.Fatalf("targetOwner for the new targetId must point at the owning vertex, got owner=%q ok=%v", owner, ownsNew)
+	}
+
+	// A rename is exists=false at dispatch (the old entry was fully removed,
+	// not "updated"), so it fires loadCB for the new name, not updateCB.
+	if len(loaded) != 2 { // initial fixtureOldName load + fixtureNewName load
+		t.Fatalf("expected 2 loadCB calls (initial + renamed), got %d", len(loaded))
+	}
+	if len(updated) != 0 {
+		t.Fatalf("a targetId rename must not fire updateCB, got %d calls", len(updated))
+	}
+}
+
+// TestRegistry_RemovePatternLocked_SkipsAliasReassignedToAnotherVertex proves
+// removePatternLocked's guard (registry.go): when a patternId alias has been
+// re-registered by a NEWER pattern vertex, deleting the OLDER vertex that
+// originally owned that alias must NOT clobber the live mapping — only an
+// alias still pointing at the deleted vertex is removed.
+func TestRegistry_RemovePatternLocked_SkipsAliasReassignedToAnotherVertex(t *testing.T) {
+	t.Parallel()
+	s := newTestSource(t)
+	oldID := testNanoID(t)
+	newID := testNanoID(t)
+
+	oldSpec, err := json.Marshal(map[string]any{"class": "spec", "data": map[string]any{
+		"patternId": "sharedAlias", "steps": []any{},
+	}})
+	if err != nil {
+		t.Fatalf("marshal old pattern spec: %v", err)
+	}
+	s.indexPattern(oldID, oldSpec)
+	if key, ok := s.patternMetaKey("sharedAlias"); !ok || key != "vtx.meta."+oldID {
+		t.Fatalf("sharedAlias must resolve to the old vertex first, got %q ok=%v", key, ok)
+	}
+
+	// A newer pattern vertex takes over the same patternId alias.
+	newSpec, err := json.Marshal(map[string]any{"class": "spec", "data": map[string]any{
+		"patternId": "sharedAlias", "steps": []any{},
+	}})
+	if err != nil {
+		t.Fatalf("marshal new pattern spec: %v", err)
+	}
+	s.indexPattern(newID, newSpec)
+	if key, ok := s.patternMetaKey("sharedAlias"); !ok || key != "vtx.meta."+newID {
+		t.Fatalf("sharedAlias must now resolve to the new vertex, got %q ok=%v", key, ok)
+	}
+
+	// Deleting the OLD (now-stale-owner) vertex must not clobber the alias
+	// the new vertex holds.
+	s.mu.Lock()
+	s.removePatternLocked(oldID)
+	s.mu.Unlock()
+
+	if key, ok := s.patternMetaKey("sharedAlias"); !ok || key != "vtx.meta."+newID {
+		t.Fatalf("removing the stale old vertex must NOT remove an alias reassigned to a live vertex, got %q ok=%v", key, ok)
+	}
+	// The old vertex's own bare-id alias (never reassigned) is still removed.
+	if _, ok := s.patternMetaKey(oldID); ok {
+		t.Fatalf("the old vertex's own id alias must still be removed")
+	}
+}
+
 // TestValidateTarget_GapColumnCharsetAndReservedParam proves the install-time
 // validations: a gaps key with characters invalid in a KV key segment is
 // rejected (it becomes a mark-key segment), and a playbook param named
