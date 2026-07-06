@@ -397,6 +397,29 @@ lands. A small note will be added to `vault-crypto-shredding-design.md` Phase B'
 bridge-egress unwrap point) — **uncommitted, for Andrew**, only if/when Fire 3 is greenlit; this design
 does not stage it now (Vault's §3.10 is the governing contract and is already staged).
 
+> **🚧 GROUNDING FINDING (2026-07-06, Lattice Steward fire) — Fire 2 is now BLOCKED, not just
+> "not yet picked up."** Vault has since shipped (2026-07-05, `vault-crypto-shredding-design.md`) and
+> **every identity-anchored PII aspect in the current schema is `sensitive: true`**
+> (`packages/identity-domain/ddls.go`: `.name`, `.email`, `.phone`, `.ssn`, `.dob` — there is no
+> `.demographics` aspect at all; the design's Fire 2 example was illustrative, not grounded in the
+> as-built schema). Confirmed by reading `internal/processor/step4_hydrate.go` +
+> `sensitive_decrypt.go`: decrypt-on-read is a **Processor commit-path middleware applied per-key to
+> ANY op's `kv.Read`/`contextHint.reads`**, not scoped to the writing op — so `resolve_subject_params`'s
+> `kv.Read` on `.ssn`/`.dob` would return real **plaintext** (not ciphertext, contrary to this
+> section's original "would resolve to ciphertext" concern) and bake it directly into the
+> `external.<adapter>` event, landing **plaintext SSN/DOB in the durable `events.external.>` stream** —
+> exactly the exposure Fire 3 exists to prevent, now live risk since Vault shipped, not a future one.
+> There is **no non-sensitive identity field left to safely demo Fire 2's "today-consumer" with**.
+> Building Fire 3's sensitive-ref envelope (§7) requires a **Starlark-exposed sensitivity-detection
+> primitive that does not exist today** (nothing lets the `orchestration-base` resolver helper tell "this
+> aspect's DDL is `sensitive: true`" apart from a plain one — decrypt-on-read deliberately hides that
+> fact from Starlark, `sensitive_decrypt.go`: *"Starlark never sees the envelope, only the decrypted
+> plaintext"*) — this is a **genuinely new mechanism, not an established pattern to extend**, so it
+> routes to the **Designer** (`lattice-designer`), not an inline Steward build. **Do not build Fire 2
+> against `.ssn`/`.dob` as currently speced** until Fire 3's primitive is designed and ratified — flag
+> this row `🚧 blocked-on:` a Designer fire for "Starlark sensitivity-detection primitive (adapter
+> read-seam Fire 3)" on the board.
+
 ---
 
 ## 8. Risks, alternatives, adjacencies

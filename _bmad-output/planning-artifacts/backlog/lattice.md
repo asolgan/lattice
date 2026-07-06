@@ -136,7 +136,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | Real adapters + async result-return | Replace the `Fake*` adapters with real vendors + design the async result path. | ★★ | M–L | ✅ async result-return done · real adapters deferred (prod) |
-| Adapter read-seam / richer params | Adapters can only use what the target-lens row projects; add a subject-templated fetch seam for extra fields (SSN/DOB). | ★★ | S–M | 🏗️ building · [design](../../implementation-artifacts/adapter-read-seam-subject-templated-params-design.md) · F1 (sub-templated params) shipped |
+| Adapter read-seam / richer params | Adapters can only use what the target-lens row projects; add a subject-templated fetch seam for extra fields (SSN/DOB). | ★★ | S–M | 🚧 blocked-on: Designer (Starlark sensitivity-detection primitive) · [design](../../implementation-artifacts/adapter-read-seam-subject-templated-params-design.md) §grounding-finding · F1 shipped, F2 unsafe as speced (all identity PII is now Vault-sensitive) |
 
 ### Scale-out
 | Item | What it is | Imp | Size | State |
@@ -148,7 +148,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Edge & personal lenses (the path Loupe grows into)
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| Personal / Secure Lens | Refractor projects a per-identity security-filtered subgraph stream; the Interest-Set watchlist; RLS-style link filtering. | ★★ | L | 🏗️ building · [design](../../implementation-artifacts/personal-secure-lens-design.md) · PL.3 (D1 readableAnchors gate) shipped — next: PL.4 Hydration Hook |
+| Personal / Secure Lens | Refractor projects a per-identity security-filtered subgraph stream; the Interest-Set watchlist; RLS-style link filtering. | ★★ | L | 🏗️ building · [design](../../implementation-artifacts/personal-secure-lens-design.md) · PL.4 (Hydration Hook) shipped — next: PL.5 (Vault ciphertext, now unblocked) |
 | NATS-subject publish-events adapter | A Refractor target adapter publishing projection deltas to `lattice.sync.user.<id>` — required for Personal Lens. | ★★ | S–M | 📐 subsumed → Personal Lens Fire 1 |
 | Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. | ★★ | XL | ✅ ratified · [design](../../implementation-artifacts/edge-lattice-full-design.md) · 🚧 seq (far) |
 
@@ -192,6 +192,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-06 · `98ac889` · [Refractor] Personal Lens Fire PL.4 — Hydration Hook (`personal.hydrate` control RPC, cold bulk projection + terminal marker); 3-layer reviewed, fixed forward (SetRevisionCursor CAS race)
 - 2026-07-06 · `6cfda76` · [Weaver] weaver-exhausted-escalation-and-model CLOSED (Fire 9 Inc1) — exhausted budget escalates to Augur or raises `GapBudgetExhausted`; `augur.model` threaded; 3-layer reviewed, fixed forward (mark-storm bug)
 - 2026-07-06 · `7f34136` · [LoftSpace/Weaver planner] Lease-renewal R3 CLOSED — `renewalsRead` dual-anchor lens + tenant/landlord Renewal cards + task CTAs; 3-layer reviewed, fixed forward (co-manager read-access gap, numeric coercion)
 - 2026-07-06 · `286fd98` · [Chronicler/docs] component doc page + Fork-C re-ratification (own `health.chronicler.<instance>` heartbeat, Loupe node already expects it); eventlens→`cmd/chronicler` extraction is the ratified pending build
