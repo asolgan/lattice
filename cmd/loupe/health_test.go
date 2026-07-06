@@ -5,6 +5,30 @@ import (
 	"time"
 )
 
+func TestHumanizeAgo(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "0s ago"},
+		{1 * time.Second, "1s ago"},
+		{59 * time.Second, "59s ago"},
+		{60 * time.Second, "1m ago"},
+		{90 * time.Second, "1m ago"},
+		{59 * time.Minute, "59m ago"},
+		{60 * time.Minute, "1h ago"},
+		{23 * time.Hour, "23h ago"},
+		{24 * time.Hour, "1d ago"},
+		{25 * time.Hour, "1d ago"},
+		{9 * 24 * time.Hour, "9d ago"},
+	}
+	for _, c := range cases {
+		if got := humanizeAgo(c.d); got != c.want {
+			t.Errorf("humanizeAgo(%v) = %q, want %q", c.d, got, c.want)
+		}
+	}
+}
+
 func TestClassifyHealthKey(t *testing.T) {
 	cases := []struct {
 		key       string

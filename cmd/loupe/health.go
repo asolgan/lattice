@@ -66,14 +66,31 @@ func classifyHealthKey(key string) (group, kind string) {
 	}
 }
 
-// freshness formats time-since as "Xs ago", clamping a future timestamp (clock
-// skew between emitter and Loupe host) to "0s ago".
+// freshness formats time-since as a human-scaled "ago" string, clamping a
+// future timestamp (clock skew between emitter and Loupe host) to "0s ago".
 func freshness(t time.Time) string {
 	d := time.Since(t).Round(time.Second)
 	if d < 0 {
 		d = 0
 	}
-	return fmt.Sprintf("%ds ago", int64(d.Seconds()))
+	return humanizeAgo(d)
+}
+
+// humanizeAgo renders a non-negative duration at the coarsest unit that
+// keeps it readable at a glance — seconds past a minute stop being a scannable
+// number (e.g. "32914s ago"), so it steps up to minutes/hours/days, truncated
+// (not rounded) to the single largest unit.
+func humanizeAgo(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds ago", int64(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int64(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int64(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int64(d.Hours()/24))
+	}
 }
 
 // parseHealthTime reads an RFC3339 timestamp out of a JSON value map.
