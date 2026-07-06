@@ -226,10 +226,22 @@ func runHook() {
 	}
 
 	var b strings.Builder
+	var issues, warnings int
 	for _, fd := range findings {
+		if fd.warn {
+			warnings++
+			fmt.Fprintf(&b, "%s:%d: warn: %s\n", fd.file, fd.line, fd.msg)
+			continue
+		}
+		issues++
 		fmt.Fprintf(&b, "%s:%d: %s\n", fd.file, fd.line, fd.msg)
 	}
-	fmt.Fprintf(&b, "lint-conventions: %d convention issue(s) in the file you just edited — fix before commit (CI enforces STRICT).", len(findings))
+	switch {
+	case issues > 0:
+		fmt.Fprintf(&b, "lint-conventions: %d convention issue(s) (+%d advisory warning(s)) in the file you just edited — fix the issues before commit (CI enforces STRICT).", issues, warnings)
+	default:
+		fmt.Fprintf(&b, "lint-conventions: %d advisory read-posture warning(s) in the file you just edited — classify or declare the reads when convenient (advisory; does not fail CI).", warnings)
+	}
 	msg := b.String()
 
 	fmt.Fprintln(os.Stderr, msg)
