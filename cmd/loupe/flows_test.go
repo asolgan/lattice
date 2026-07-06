@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"net/http/httptest"
+	"testing"
+	"time"
+)
 
 func TestComputeFlows(t *testing.T) {
 	store := map[string][]byte{
@@ -74,6 +78,80 @@ func TestComputeFlows(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestComputeTimeline(t *testing.T) {
+	rfc := func(s string) time.Time { tm, _ := time.Parse(time.RFC3339, s); return tm }
+	store := map[string][]byte{
+		// Fully inside the window.
+		"inside000000000000": []byte(`{"instance_id":"inside000000000000","pattern_ref":"onboarding","status":"complete","started_at":"2026-07-05T10:10:00Z","ended_at":"2026-07-05T10:20:00Z"}`),
+		// Ends before the window starts — no overlap.
+		"before0000000000000": []byte(`{"instance_id":"before0000000000000","pattern_ref":"onboarding","status":"complete","started_at":"2026-07-05T09:00:00Z","ended_at":"2026-07-05T09:30:00Z"}`),
+		// Starts after the window ends — no overlap.
+		"after00000000000000": []byte(`{"instance_id":"after00000000000000","pattern_ref":"onboarding","status":"complete","started_at":"2026-07-05T11:30:00Z","ended_at":"2026-07-05T11:45:00Z"}`),
+		// Still running (no ended_at) and started before the window — live
+		// through the window's own end (treated as open).
+		"running0000000000000": []byte(`{"instance_id":"running0000000000000","pattern_ref":"onboarding","status":"running","started_at":"2026-07-05T10:55:00Z"}`),
+		// Unparsable started_at — skipped, never fatal to the rest.
+		"badstart000000000000": []byte(`{"instance_id":"badstart000000000000","pattern_ref":"onboarding","status":"complete","started_at":"not-a-time","ended_at":"2026-07-05T10:15:00Z"}`),
+	}
+	get := func(key string) ([]byte, bool) { b, ok := store[key]; return b, ok }
+	keys := make([]string, 0, len(store))
+	for k := range store {
+		keys = append(keys, k)
+	}
+	from, to := rfc("2026-07-05T10:00:00Z"), rfc("2026-07-05T11:00:00Z")
+
+	rows := computeTimeline(keys, get, from, to)
+	if len(rows) != 2 {
+		t.Fatalf("want 2 overlapping flows, got %d: %+v", len(rows), rows)
+	}
+	byID := map[string]timelineFlow{}
+	for _, r := range rows {
+		byID[r.InstanceID] = r
+	}
+	if _, ok := byID["inside000000000000"]; !ok {
+		t.Error("fully-inside flow missing from timeline")
+	}
+	if _, ok := byID["running0000000000000"]; !ok {
+		t.Error("still-running flow missing from timeline")
+	}
+	if _, ok := byID["before0000000000000"]; ok {
+		t.Error("flow that ended before the window should not overlap")
+	}
+	if _, ok := byID["after00000000000000"]; ok {
+		t.Error("flow that started after the window should not overlap")
+	}
+	if _, ok := byID["badstart000000000000"]; ok {
+		t.Error("unparsable started_at should be skipped")
+	}
+}
+
+// TestHandleHistoryTimelineValidation pins that query validation runs BEFORE
+// the requireConn guard: a malformed/inverted window answers 400 even with no
+// NATS connection (testServer's nil-conn posture), never the misleading 502
+// a conn-first check would give.
+func TestHandleHistoryTimelineValidation(t *testing.T) {
+	mux := testServer()
+
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/history/timeline?from=garbage&to=2026-07-05T11:00:00Z", nil))
+	if rec.Code != 400 {
+		t.Errorf("malformed from = %d, want 400", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/history/timeline?from=2026-07-05T11:00:00Z&to=2026-07-05T10:00:00Z", nil))
+	if rec.Code != 400 {
+		t.Errorf("to before from = %d, want 400", rec.Code)
+	}
+
+	// Well-formed params fall through to requireConn — nil conn = 502.
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/history/timeline?from=2026-07-05T10:00:00Z&to=2026-07-05T11:00:00Z", nil))
+	if rec.Code != 502 {
+		t.Errorf("valid params, nil conn = %d, want 502", rec.Code)
+	}
 }
 
 func TestLiveLoomInstances(t *testing.T) {

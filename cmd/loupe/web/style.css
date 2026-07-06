@@ -899,6 +899,21 @@ a.tab { text-decoration: none; display: inline-block; }
   #pulse-rows { max-height: 240px; }
 }
 
+/* Map scrubber (F13 §4.2 v1 — flow-liveness replay): a full-width strip below
+   the map stage, not a rail element (it spans the timeline). */
+.sysmap-scrubber { margin-top: 14px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-raised); }
+.sysmap-scrubber-head { display: flex; align-items: center; gap: 10px; }
+.sysmap-scrubber-label { color: var(--text-dim); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+#scrubber-range { flex: 1; min-width: 0; }
+#scrubber-clock { min-width: 46px; text-align: center; }
+/* Sized directly (not via the shared ".small" class) — setStatus() rewrites
+   #scrubber-status's className wholesale on every update, which would strip
+   a class-based size the moment any status message is set. */
+#scrubber-status { font-size: 12px; }
+.sysmap-scrubber.replaying { border-color: var(--accent-dim); }
+.sysmap-scrubber.replaying #scrubber-clock { color: var(--accent); }
+#scrubber-flows:empty { display: none; }
+
 /* Live pulse: the stream LED (topbar + feed header), the rail feed, and the
    map edge flow animation. */
 .pulse-led {

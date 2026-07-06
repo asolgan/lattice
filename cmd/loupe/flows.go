@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"sort"
+	"time"
 
 	"github.com/asolgan/lattice/internal/bootstrap"
 )
@@ -39,6 +40,31 @@ type flowRow struct {
 // (§2.5.2: a terminal row is never badged live/orphaned regardless — it is
 // just done — and a "running" row stays unbadged, not falsely "orphaned",
 // when liveKnown is false).
+// flowCols is the Chronicler's on-the-wire read-model row (snake_case,
+// orchestration-history-read-model-design.md §2.6) — shared by every handler
+// that reads the `orchestration-history` bucket so the decode rule (and its
+// poison-tolerance) lives in one place.
+type flowCols struct {
+	InstanceID    string `json:"instance_id"`
+	PatternRef    string `json:"pattern_ref"`
+	SubjectKey    string `json:"subject_key"`
+	Status        string `json:"status"`
+	StartedAt     string `json:"started_at"`
+	EndedAt       string `json:"ended_at"`
+	FailureReason string `json:"failure_reason"`
+}
+
+// decodeFlowCols decodes one bucket entry, rejecting a poison/malformed entry
+// (never fatal to the caller's list) or a row missing the instance_id a
+// well-formed row must carry.
+func decodeFlowCols(raw []byte) (flowCols, bool) {
+	var cols flowCols
+	if json.Unmarshal(raw, &cols) != nil || cols.InstanceID == "" {
+		return flowCols{}, false
+	}
+	return cols, true
+}
+
 func computeFlows(keys []string, get kvGetter, liveIDs map[string]bool, liveKnown bool, statusFilter string) []flowRow {
 	rows := make([]flowRow, 0)
 	for _, k := range keys {
@@ -46,16 +72,8 @@ func computeFlows(keys []string, get kvGetter, liveIDs map[string]bool, liveKnow
 		if !ok {
 			continue
 		}
-		var cols struct {
-			InstanceID    string `json:"instance_id"`
-			PatternRef    string `json:"pattern_ref"`
-			SubjectKey    string `json:"subject_key"`
-			Status        string `json:"status"`
-			StartedAt     string `json:"started_at"`
-			EndedAt       string `json:"ended_at"`
-			FailureReason string `json:"failure_reason"`
-		}
-		if json.Unmarshal(raw, &cols) != nil || cols.InstanceID == "" {
+		cols, ok := decodeFlowCols(raw)
+		if !ok {
 			continue
 		}
 		if statusFilter != "" && statusFilter != "all" && cols.Status != statusFilter {
@@ -108,6 +126,113 @@ func liveLoomInstances(raw json.RawMessage) map[string]bool {
 		out[inst.InstanceID] = true
 	}
 	return out
+}
+
+// timelineFlow is one flow's liveness span for the map scrubber (F13 §4.2's
+// v1 tier — flow-liveness replay). EndedAt empty means still running as of
+// the read (the FE treats it as live through "now").
+type timelineFlow struct {
+	InstanceID string `json:"instanceId"`
+	PatternRef string `json:"patternRef"`
+	Status     string `json:"status"`
+	StartedAt  string `json:"startedAt"`
+	EndedAt    string `json:"endedAt,omitempty"`
+}
+
+// computeTimeline assembles the scrubber's flow-liveness rows: every flow
+// whose `[started_at, ended_at)` span overlaps `[from, to)`, per the F13 §4.2
+// v1 design ("a flow contributes to the frame between its started_at and
+// ended_at"). A row with an unparsable started_at is skipped (a durable read
+// model tolerates a poison entry rather than failing the whole window); a
+// still-running row (empty ended_at) is treated as live through `to` — the
+// scrubber's own window bound stands in for "still open" without guessing at
+// a real end time. Rows are returned unsorted (the FE's pure frame math sorts
+// however it needs).
+func computeTimeline(keys []string, get kvGetter, from, to time.Time) []timelineFlow {
+	rows := make([]timelineFlow, 0)
+	for _, k := range keys {
+		raw, ok := get(k)
+		if !ok {
+			continue
+		}
+		cols, ok := decodeFlowCols(raw)
+		if !ok {
+			continue
+		}
+		started, err := time.Parse(time.RFC3339, cols.StartedAt)
+		if err != nil {
+			continue
+		}
+		ended := to
+		if cols.EndedAt != "" {
+			e, err := time.Parse(time.RFC3339, cols.EndedAt)
+			if err != nil {
+				continue
+			}
+			ended = e
+		}
+		if started.After(to) || !ended.After(from) {
+			continue // the span [started, ended) doesn't overlap [from, to)
+		}
+		rows = append(rows, timelineFlow{
+			InstanceID: cols.InstanceID,
+			PatternRef: cols.PatternRef,
+			Status:     cols.Status,
+			StartedAt:  cols.StartedAt,
+			EndedAt:    cols.EndedAt,
+		})
+	}
+	return rows
+}
+
+// handleHistoryTimeline implements GET /api/history/timeline?from=&to= (both
+// RFC3339, required) — the map scrubber's v1 data source (F13 §4.2). It reads
+// the same `orchestration-history` bucket the Flows tab already proves live
+// (no new backend dependency): the FE reconstructs replay frames from the
+// flow spans client-side (logic/scrubber.js's framesFromFlows).
+func (s *server) handleHistoryTimeline(w http.ResponseWriter, r *http.Request) {
+	// Query validation is a client error independent of connectivity — it
+	// runs before requireConn so a malformed request answers 400 even against
+	// a down NATS, instead of masking it behind a misleading 502.
+	fromStr, toStr := r.URL.Query().Get("from"), r.URL.Query().Get("to")
+	from, err := time.Parse(time.RFC3339, fromStr)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "from must be RFC3339: "+err.Error())
+		return
+	}
+	to, err := time.Parse(time.RFC3339, toStr)
+	if err != nil {
+		s.writeError(w, http.StatusBadRequest, "to must be RFC3339: "+err.Error())
+		return
+	}
+	if !to.After(from) {
+		s.writeError(w, http.StatusBadRequest, "to must be after from")
+		return
+	}
+
+	conn, ok := s.requireConn(w)
+	if !ok {
+		return
+	}
+	ctx, cancel := s.reqContext(r)
+	defer cancel()
+
+	bucket := bootstrap.OrchestrationHistoryBucket
+	keys, err := conn.KVListKeys(ctx, bucket)
+	if err != nil {
+		s.writeError(w, http.StatusBadGateway,
+			"list "+bucket+": "+err.Error()+" (is orchestration-base installed and the Refractor projecting?)")
+		return
+	}
+	get := func(key string) ([]byte, bool) {
+		entry, err := conn.KVGet(ctx, bucket, key)
+		if err != nil {
+			return nil, false
+		}
+		return entry.Value, true
+	}
+
+	s.writeJSON(w, http.StatusOK, map[string]any{"flows": computeTimeline(keys, get, from, to)})
 }
 
 // handleFlows implements GET /api/flows?status= — the Chronicler's Loom-flow

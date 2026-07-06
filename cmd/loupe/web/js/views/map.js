@@ -9,6 +9,7 @@ import { el, api, setStatus } from "../api.js";
 import { appPointerCopy, componentStatusClass, designAheadCopy, designAheadPointer, groupLenses, lensStateDot, lensStateGlyph, pendingReadpathCopy, sysmapSummary, sysmapTier } from "../logic/status.js";
 import { deriveTransitions, ledClass } from "../logic/feed.js";
 import { keyTarget } from "../logic/keys.js";
+import { clockLabel, framesFromFlows, timelineWindow } from "../logic/scrubber.js";
 import { navigate } from "../router.js";
 import * as pulse from "../pulse.js";
 
@@ -51,6 +52,7 @@ function enter() {
       if (evt.type === "row" && evt.row.kind === "event") pulseFlow();
     });
   }
+  scrubberLoad();
 }
 
 // leave stops the auto-refresh poll so a hidden panel isn't polled, and drops
@@ -59,6 +61,141 @@ function leave() {
   stopSystemMapAuto();
   hideSysmapTip();
   if (sysmap.unsubPulse) { sysmap.unsubPulse(); sysmap.unsubPulse = null; }
+  scrubberStopPlaying();
+  scrubber.fetchSeq++; // invalidate any in-flight scrubberLoad — its response is now a no-op
+}
+
+// ---- Map scrubber (F13 §4.2 v1 — flow-liveness replay) ----
+//
+// v1 rides only the `orchestration-history` bucket the Flows tab already
+// proves live: a frame is which flows were running at a sampled instant, not
+// per-edge pulse (that needs the Chronicler's archive-mode event stream — a
+// data source that doesn't exist yet, so it isn't faked here). Dragging the
+// range control away from its right end ("now") enters REPLAY and shows the
+// live-flow list/count for the scrubbed instant; the map's own rendering is
+// untouched — this is purely additive per the design's "no behavior change
+// to the shipped map when the scrubber is at now" rule.
+const SCRUBBER_WINDOW_MS = 60 * 60 * 1000; // trailing 1h, like the Flows "today" facet's grain
+const SCRUBBER_FRAMES = 60; // one sample per minute across the window
+const scrubber = { frames: [], flowsById: new Map(), index: 0, playTimer: null, fetchSeq: 0 };
+
+// scrubberLoad fetches the replay window. fetchSeq is bumped on every call and
+// checked after the await — a rapid leave→enter (or any overlapping load)
+// makes a stale, slower response a no-op instead of clobbering whatever a
+// newer load (or scrubberDisable) already rendered. Playback always stops
+// first: a load mid-play would otherwise leave a running interval ticking
+// against a frame array it no longer matches (§ this fire's review).
+async function scrubberLoad() {
+  const range = document.getElementById("scrubber-range");
+  if (!range) return;
+  scrubberStopPlaying();
+  const seq = ++scrubber.fetchSeq;
+  const win = timelineWindow(Date.now(), SCRUBBER_WINDOW_MS);
+  const body = await api("/api/history/timeline?from=" + encodeURIComponent(new Date(win.from).toISOString())
+    + "&to=" + encodeURIComponent(new Date(win.to).toISOString()));
+  if (seq !== scrubber.fetchSeq) return; // superseded by a newer load or a leave()
+  if (body.error) {
+    scrubberDisable("history unavailable — " + body.error);
+    return;
+  }
+  const flows = body.flows || [];
+  scrubber.flowsById = new Map(flows.map((f) => [f.instanceId, f]));
+  const step = (win.to - win.from) / SCRUBBER_FRAMES;
+  scrubber.frames = framesFromFlows(flows, win.from, win.to, step);
+  if (!scrubber.frames.length) {
+    scrubberDisable("no replay window available");
+    return;
+  }
+  range.disabled = false;
+  range.min = "0";
+  range.max = String(scrubber.frames.length - 1);
+  range.value = String(scrubber.frames.length - 1);
+  const playBtn = document.getElementById("scrubber-play");
+  const liveBtn = document.getElementById("scrubber-live");
+  // A single-frame window has nothing to replay — disable play rather than
+  // let it flash to "pause" and stop in the same tick with no visible change.
+  if (playBtn) playBtn.disabled = scrubber.frames.length <= 1;
+  if (liveBtn) liveBtn.disabled = false;
+  setStatus("scrubber-status", flows.length + " flow(s) in the trailing hour");
+  scrubberSetIndex(scrubber.frames.length - 1);
+}
+
+// scrubberDisable renders the honest "not available" state (§4.2's "a stack
+// without the Chronicler shows the scrubber disabled" rule) — the control
+// stays visible but inert rather than hidden, so an operator sees the
+// capability exists. Always stops playback first — an in-flight play timer
+// must never keep ticking against a now-empty frame array.
+function scrubberDisable(msg) {
+  scrubberStopPlaying();
+  scrubber.frames = [];
+  const range = document.getElementById("scrubber-range");
+  if (range) { range.disabled = true; range.min = "0"; range.max = "0"; range.value = "0"; }
+  const playBtn = document.getElementById("scrubber-play");
+  const liveBtn = document.getElementById("scrubber-live");
+  if (playBtn) playBtn.disabled = true;
+  if (liveBtn) liveBtn.disabled = true;
+  setStatus("scrubber-status", msg, true);
+  const flowsEl = document.getElementById("scrubber-flows");
+  if (flowsEl) flowsEl.textContent = "";
+}
+
+// scrubberSetIndex renders one frame: the right-most index is LIVE ("now",
+// same as the shipped F6 map — no behavior change), any other index is
+// REPLAY (shows the playhead clock + which flows were live then).
+function scrubberSetIndex(i) {
+  scrubber.index = i;
+  const range = document.getElementById("scrubber-range");
+  const clock = document.getElementById("scrubber-clock");
+  const flowsEl = document.getElementById("scrubber-flows");
+  const strip = document.getElementById("sysmap-scrubber");
+  if (range) range.value = String(i);
+  const frame = scrubber.frames[i];
+  if (!frame) return;
+  const atLive = i === scrubber.frames.length - 1;
+  if (strip) strip.classList.toggle("replaying", !atLive);
+  if (clock) clock.textContent = atLive ? "live" : clockLabel(frame.t);
+  if (!flowsEl) return;
+  if (atLive || !frame.liveFlows.length) {
+    flowsEl.textContent = atLive ? "" : "(no flows running at this time)";
+    return;
+  }
+  const names = frame.liveFlows.map((id) => {
+    const f = scrubber.flowsById.get(id);
+    return f && f.patternRef ? f.patternRef : id;
+  });
+  flowsEl.textContent = frame.rollup + " running: " + names.join(", ");
+}
+
+function scrubberStopPlaying() {
+  if (scrubber.playTimer) { clearInterval(scrubber.playTimer); scrubber.playTimer = null; }
+  const playBtn = document.getElementById("scrubber-play");
+  if (playBtn && !playBtn.disabled) playBtn.textContent = "▶ play";
+}
+
+function scrubberTogglePlay() {
+  if (scrubber.playTimer) { scrubberStopPlaying(); return; }
+  if (!scrubber.frames.length) return;
+  // Play always starts from the current position, wrapping to the start if
+  // already at (or past) the live edge — replaying is the point of "play".
+  if (scrubber.index >= scrubber.frames.length - 1) scrubberSetIndex(0);
+  const playBtn = document.getElementById("scrubber-play");
+  if (playBtn) playBtn.textContent = "⏸ pause";
+  scrubber.playTimer = setInterval(() => {
+    if (scrubber.index >= scrubber.frames.length - 1) { scrubberStopPlaying(); return; }
+    scrubberSetIndex(scrubber.index + 1);
+  }, 300);
+}
+
+function scrubberInit() {
+  const range = document.getElementById("scrubber-range");
+  if (range) range.addEventListener("input", () => { scrubberStopPlaying(); scrubberSetIndex(Number(range.value)); });
+  const playBtn = document.getElementById("scrubber-play");
+  if (playBtn) playBtn.addEventListener("click", scrubberTogglePlay);
+  const liveBtn = document.getElementById("scrubber-live");
+  if (liveBtn) liveBtn.addEventListener("click", () => {
+    scrubberStopPlaying();
+    if (scrubber.frames.length) scrubberSetIndex(scrubber.frames.length - 1);
+  });
 }
 
 // refreshSystemMap is the single clock: re-fetches /api/systemmap and
@@ -862,6 +999,7 @@ function init() {
   if (pauseBtn) pauseBtn.addEventListener("click", () => pulse.setPaused(!pulse.paused()));
   const clearBtn = document.getElementById("pulse-clear");
   if (clearBtn) clearBtn.addEventListener("click", () => pulse.clearRows());
+  scrubberInit();
 
   // Re-measure + redraw on resize (debounced), only while the map is rendered.
   window.addEventListener("resize", () => {

@@ -59,6 +59,17 @@
           </section>
         </aside>
       </div>
+      <div id="sysmap-scrubber" class="sysmap-scrubber">
+        <div class="sysmap-scrubber-head">
+          <span class="sysmap-scrubber-label" title="F13 v1 — flow-liveness replay off the Chronicler's orchestration-history bucket; edge-level replay awaits archive mode">history</span>
+          <input type="range" id="scrubber-range" min="0" max="0" value="0" disabled>
+          <span class="mono small" id="scrubber-clock">live</span>
+          <button id="scrubber-play" disabled>▶ play</button>
+          <button id="scrubber-live" disabled>live</button>
+          <span class="muted" id="scrubber-status"></span>
+        </div>
+        <div class="muted small" id="scrubber-flows"></div>
+      </div>
     </section>
 
     <!-- Graph explorer -->

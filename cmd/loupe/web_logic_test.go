@@ -804,3 +804,80 @@ func TestPkgLogicJS(t *testing.T) {
 		t.Errorf("uninstallSummary empty = %q", got)
 	}
 }
+
+// TestScrubberLogicJS pins the map scrubber's pure frame math (logic/scrubber.js,
+// F13 §4.2 v1): which flows are live at a given instant, the sampled frame
+// track built from that, the playhead clock label, and the default window.
+func TestScrubberLogicJS(t *testing.T) {
+	vm := logicVM(t, "scrubber.js")
+
+	flows := []any{
+		// Live the whole window.
+		map[string]any{"instanceId": "a", "startedAt": "2026-07-05T10:00:00Z", "endedAt": "2026-07-05T10:30:00Z"},
+		// Starts mid-window, still running (no endedAt) — open on the right.
+		map[string]any{"instanceId": "b", "startedAt": "2026-07-05T10:15:00Z"},
+		// Ends before the window starts — never live in it.
+		map[string]any{"instanceId": "c", "startedAt": "2026-07-05T09:00:00Z", "endedAt": "2026-07-05T09:30:00Z"},
+		// Unparsable startedAt — never counts live, never throws.
+		map[string]any{"instanceId": "d", "startedAt": "not-a-time"},
+	}
+	t0 := float64(1783245600000) // 2026-07-05T10:00:00Z in ms
+
+	live, ok := call(t, vm, "liveAt", flows, t0).([]any)
+	if !ok || len(live) != 1 || live[0] != "a" {
+		t.Fatalf("liveAt(t0) = %v, want [a]", live)
+	}
+	live, _ = call(t, vm, "liveAt", flows, t0+16*60*1000).([]any) // t0+16min: a still running, b started
+	ids := map[string]bool{}
+	for _, id := range live {
+		ids[id.(string)] = true
+	}
+	if !ids["a"] || !ids["b"] || len(ids) != 2 {
+		t.Errorf("liveAt(t0+16m) = %v, want [a b]", live)
+	}
+
+	frames, ok := call(t, vm, "framesFromFlows", flows, t0, t0+30*60*1000, 15*60*1000).([]any)
+	if !ok || len(frames) != 3 {
+		t.Fatalf("framesFromFlows = %v, want 3 frames (0/15/30 min)", frames)
+	}
+	f0 := frames[0].(map[string]any)
+	if toFloat(f0["rollup"]) != 1 {
+		t.Errorf("frame 0 rollup = %v, want 1", f0["rollup"])
+	}
+	f2 := frames[2].(map[string]any)
+	if toFloat(f2["rollup"]) != 1 { // a ends exactly at t0+30m — not live at the boundary
+		t.Errorf("frame 2 (a's end boundary) rollup = %v, want 1 (only b)", f2["rollup"])
+	}
+
+	// A non-positive step or inverted window yields no frames, not a hang.
+	if got, _ := call(t, vm, "framesFromFlows", flows, t0, t0+1000, 0).([]any); len(got) != 0 {
+		t.Errorf("step=0 frames = %v, want none", got)
+	}
+	if got, _ := call(t, vm, "framesFromFlows", flows, t0+1000, t0, 1000).([]any); len(got) != 0 {
+		t.Errorf("inverted window frames = %v, want none", got)
+	}
+
+	if got := call(t, vm, "clockLabel", t0); got != "10:00:00" {
+		t.Errorf("clockLabel(t0) = %v, want 10:00:00", got)
+	}
+	if got := call(t, vm, "clockLabel", "garbage"); got != "" {
+		t.Errorf("clockLabel(garbage) = %v, want empty", got)
+	}
+
+	win, ok := call(t, vm, "timelineWindow", t0, 60*60*1000).(map[string]any)
+	if !ok || toFloat(win["from"]) != t0-3600000 || toFloat(win["to"]) != t0 {
+		t.Errorf("timelineWindow = %v", win)
+	}
+	win, _ = call(t, vm, "timelineWindow", t0, -5).(map[string]any)
+	if toFloat(win["from"]) != t0 {
+		t.Errorf("timelineWindow negative span = %v, want zero-width at now", win)
+	}
+
+	// A step far smaller than the window (a plausible unit-mismatch bug —
+	// seconds passed where ms was meant) must clamp to MAX_FRAMES rather than
+	// building a multi-million-entry array synchronously.
+	huge, ok := call(t, vm, "framesFromFlows", flows, t0, t0+24*60*60*1000, 1).([]any)
+	if !ok || len(huge) > 2001 {
+		t.Errorf("framesFromFlows with step=1 over a 24h window = %d frames, want clamped to <=2001", len(huge))
+	}
+}
