@@ -142,6 +142,23 @@ strict two-target alternation on one path freezes both targets via the existing 
 `oscillation_internal_test.go`'s fighting-targets fixture (design table's Fire 7 acceptance). Fire 8
 (admission control) is next.
 
+**Fire 8 SHIPPED (2026-07-05):** priority-fair token-bucket admission control (§3.4), purely in-memory
+and wired at `planGap` — the seam both lane-1 dispatch and the reconciler reclaim share. A target's
+optional `admission` block (`globalRate` / `adapterRates`, `admission.go`) is consulted only once a gap's
+action has resolved (so the adapter to check is known), right before `buildPlan`; a denial returns
+`NakWithDelay` with no mark, no plan, and no Health issue (ordinary pacing, never a fault). Contention is
+broken by the optional §10.2 `priority` row column (higher first, default 0): every `admit()` call both
+submits its own request and cooperatively drains the bucket's shared priority queue — a lower-priority
+id's own redelivery cannot jump a higher-priority id already waiting; the token is granted to the
+higher-priority id and collected on ITS own next call. A grant nobody ever collects (e.g. a closed gap
+that never redelivers again) is reclaimed and refunded after `admissionGrantTTL`. Proven end to end in
+`admission_internal_test.go`'s 3000-row burst fixture (design table's Fire 8 acceptance: "3k-row fixture
+paced + priority-ordered"): a 50/sec budget admits its first 50 from free burst capacity, then drains the
+remaining 2950 in rate-bounded waves that always serve the highest still-outstanding priority first.
+Contract: the §10.2 `priority` column + the `admission` block land per §4's already-ratified "lands with
+the fire" rider (isolated diff hunk, committed independently of the separate pending R1/Fire-3 edits
+already in that file). Fire 9 (the Augur floor) is next.
+
 **Pre-build gate (run 2026-07-04, in the Fire 5 session):** the self-imposed adversarial pass over
 episode-stability under reclaim, focused specifically on the hazard the existing dispatch pipeline
 structurally invited — `dispatchGap`/`planGap` resolve a plan from the target's playbook *before*
