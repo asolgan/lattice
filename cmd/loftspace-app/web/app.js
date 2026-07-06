@@ -7,7 +7,7 @@
 const APPLICANT_KEY = "loftspace.applicant";
 const MODE_KEY = "loftspace.mode";
 const state = {
-  listings: [], applications: [], tasks: [], docs: [], identities: [], units: [],
+  listings: [], applications: [], tasks: [], renewals: [], docs: [], identities: [], units: [],
   applicant: null, current: null, currentTask: null, view: "browse", highlight: null,
   mode: "applicant",
   docScope: null,
@@ -85,6 +85,46 @@ const COMPLETIONS = {
       { name: "dob", label: "Date of birth", type: "date", required: true },
     ],
     submitLabel: "Submit details",
+  },
+  // The four renewal ops (design loftspace-lease-renewal-goal-authored-target-
+  // design.md §4.4/§4.5, R3). SignRenewal/VerifyGuarantor also need leaseApp +
+  // applicant, which assignTask never populates on the task itself (it only
+  // ever carries assignee/scopedTo/forOperation, §10.5) — extraFromRenewal
+  // sources them from the matching renewalsRead row once submitComplete loads
+  // it (see below). SetRenewalTerms/CancelRenewal need only renewalKey
+  // (=target), which the generic targetField plumbing already supplies.
+  SignRenewal: {
+    title: "Sign your lease renewal",
+    klass: "renewal",
+    targetField: "renewalKey",
+    fields: [],
+    submitLabel: "Sign renewal",
+    extraFromRenewal: (row) => ({ leaseApp: row.leaseApp, applicant: row.tenant }),
+  },
+  VerifyGuarantor: {
+    title: "Verify tenant's guarantor",
+    klass: "renewal",
+    targetField: "renewalKey",
+    fields: [{ name: "method", label: "Verification method", placeholder: "phone call, updated pay stub", required: false }],
+    submitLabel: "Verify guarantor",
+    extraFromRenewal: (row) => ({ leaseApp: row.leaseApp, applicant: row.tenant }),
+  },
+  SetRenewalTerms: {
+    title: "Set renewal terms",
+    klass: "renewal",
+    targetField: "renewalKey",
+    fields: [
+      { name: "rentAmount", label: "Monthly rent", type: "number", min: "1", step: "1", placeholder: "2500", required: true, positive: true },
+      { name: "termMonths", label: "Lease term, months", type: "number", min: "1", step: "1", placeholder: "12", required: true, positive: true },
+    ],
+    submitLabel: "Set terms",
+  },
+  CancelRenewal: {
+    title: "Decline this renewal",
+    klass: "renewal",
+    targetField: "renewalKey",
+    fields: [{ name: "reason", label: "Reason", placeholder: "Selling the property.", required: false }],
+    submitLabel: "Decline renewal",
   },
 };
 
@@ -319,8 +359,12 @@ function setApplicant(value) {
   renderListings(); // re-enable/disable Apply for the new applicant
   if (state.view === "apps") loadApplications(); // re-scope the tracker to the new applicant
   if (state.view === "tasks") loadTasks(); // re-scope the inbox to the new applicant
+  if (state.view === "renewals") loadRenewals(); // re-scope the renewal cycles to the new applicant
   if (state.view === "docs") loadDocsView(); // re-scope the documents to the new applicant
-  if (state.mode === "landlord") loadLandlord(); // re-scope the operator console to the new sign-in
+  if (state.mode === "landlord") {
+    loadLandlord(); // re-scope the operator console to the new sign-in
+    loadRenewals();
+  }
 }
 
 // ---- New applicant modal ----
@@ -408,7 +452,7 @@ async function submitNewApplicant(ev) {
 
 // ---- Tabs (Browse & Apply / My Applications / Tasks / Documents) ----
 
-const VIEWS = ["browse", "apps", "tasks", "docs"];
+const VIEWS = ["browse", "apps", "tasks", "renewals", "docs"];
 
 function showView(view) {
   state.view = view;
@@ -424,6 +468,7 @@ function showView(view) {
   if (view === "browse") renderListings();
   if (view === "apps") loadApplications();
   if (view === "tasks") loadTasks();
+  if (view === "renewals") loadRenewals();
   if (view === "docs") loadDocsView();
 }
 
@@ -464,6 +509,7 @@ function applyMode() {
   if (landlord) {
     for (const v of VIEWS) $("#view-" + v).hidden = true;
     loadLandlord();
+    loadRenewals();
   } else {
     showView(state.view);
   }
@@ -1439,6 +1485,8 @@ function openComplete(task) {
     input.id = "tc-" + f.name;
     input.type = f.type || "text";
     if (f.placeholder) input.placeholder = f.placeholder;
+    if (f.min !== undefined) input.min = f.min;
+    if (f.step !== undefined) input.step = f.step;
     wrap.append(label, input);
     host.append(wrap);
   }
@@ -1475,7 +1523,43 @@ async function submitComplete(ev) {
       }
       continue;
     }
-    payload[f.name] = v;
+    if (f.type === "number") {
+      const n = Number(v);
+      // Number("") is 0, not NaN, but v is already non-empty here — a
+      // malformed numeric string (or a positive-required field like
+      // rentAmount typed as "0") must surface as a client-side error, not
+      // silently serialize as JSON null (JSON.stringify(NaN) === "null") or
+      // ride to the op only to bounce off its own InvalidArgument guard.
+      if (Number.isNaN(n) || (f.positive && n <= 0)) {
+        toast(f.label + " must be a valid" + (f.positive ? ", positive" : "") + " number.", "err");
+        return;
+      }
+      payload[f.name] = n;
+    } else {
+      payload[f.name] = v;
+    }
+  }
+
+  const reads = [target];
+  if (desc.extraFromRenewal) {
+    // VerifyGuarantor/SignRenewal also need leaseApp + applicant, which
+    // assignTask never puts on the task itself (§10.5: only assignee/scopedTo/
+    // forOperation) — source them from the matching renewalsRead row, loading
+    // it fresh if this is the first renewal action this session.
+    let row = (state.renewals || []).find((rr) => rr.entityKey === target);
+    if (!row) {
+      try {
+        row = await loadRenewalsQuiet().then((rows) => rows.find((rr) => rr.entityKey === target));
+      } catch (_) {
+        row = null;
+      }
+    }
+    if (!row) {
+      toast("Could not find this renewal's details — reload Renewals and try again.", "err");
+      return;
+    }
+    Object.assign(payload, desc.extraFromRenewal(row));
+    if (row.leaseApp) reads.push(row.leaseApp);
   }
 
   const submit = $("#complete-submit");
@@ -1487,7 +1571,7 @@ async function submitComplete(ev) {
       body: JSON.stringify({
         operationType: task.operationName,
         class: desc.klass,
-        reads: [target],
+        reads,
         payload,
       }),
     });
@@ -1509,8 +1593,12 @@ async function submitComplete(ev) {
     if (task.operationName === "SignLease" && target) ensureLeaseDocument(target);
     closeComplete();
     toast(desc.title + " — done.", "ok");
-    loadTasks();
-    loadApplications();
+    if (desc.klass === "renewal") {
+      loadRenewals();
+    } else {
+      loadTasks();
+      loadApplications();
+    }
   } catch (e) {
     toast("Could not complete: " + e.message, "err");
   } finally {
@@ -1541,6 +1629,170 @@ async function completeTask(taskKey) {
   } catch (e) {
     console.warn("CompleteTask request failed:", e.message);
   }
+}
+
+// ---- Renewals (R3) ----
+//
+// Read from the PROTECTED, DUAL-ANCHORED read_renewals model (design §4.5):
+// one query, /api/renewals, serves BOTH audiences — a signed-in tenant sees
+// their own renewal cycles, a signed-in landlord sees the cycles for units
+// they manage, RLS decides which. Which role the current sign-in plays is
+// read off state.mode (this trusted-tool app labels a sign-in "Applicant" or
+// "Landlord" up front, same as every other view here) rather than guessed per
+// row, since a real deployment's landlord and tenant are always distinct
+// people signing in through the role they picked.
+
+async function loadRenewalsQuiet() {
+  if (!state.applicant) {
+    state.renewals = [];
+    return state.renewals;
+  }
+  const data = await authedGet("/api/renewals");
+  state.renewals = data.renewals || [];
+  return state.renewals;
+}
+
+async function loadRenewals() {
+  const landlord = state.mode === "landlord";
+  const grid = $(landlord ? "#landlord-renewals" : "#renewals");
+  const empty = $(landlord ? "#landlord-renewals-empty" : "#renewals-empty");
+  const summary = landlord ? null : $("#renewals-summary");
+  if (!state.applicant) {
+    grid.innerHTML = "";
+    state.renewals = [];
+    empty.hidden = false;
+    empty.textContent = landlord
+      ? "Sign in above to see the renewal cycles for units you manage."
+      : "Select an applicant identity above to see your renewal cycles.";
+    if (summary) summary.textContent = "";
+    return;
+  }
+  if (summary) summary.textContent = "loading…";
+  try {
+    await loadRenewalsQuiet();
+  } catch (e) {
+    grid.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = "Could not load renewals: " + e.message;
+    if (summary) summary.textContent = "";
+    return;
+  }
+  renderRenewals();
+}
+
+function renderRenewals() {
+  const landlord = state.mode === "landlord";
+  const grid = $(landlord ? "#landlord-renewals" : "#renewals");
+  const empty = $(landlord ? "#landlord-renewals-empty" : "#renewals-empty");
+  const summary = landlord ? null : $("#renewals-summary");
+  grid.innerHTML = "";
+  if (state.renewals.length === 0) {
+    empty.hidden = false;
+    empty.textContent = landlord
+      ? "No renewal cycles yet for the units you manage."
+      : "No renewal cycles yet. One opens automatically as your lease nears its term end.";
+    if (summary) summary.textContent = "";
+    return;
+  }
+  empty.hidden = true;
+  for (const row of state.renewals) grid.append(renderRenewalCard(row, landlord));
+  if (summary) {
+    const n = state.renewals.length;
+    summary.textContent = `${n} renewal cycle${n === 1 ? "" : "s"}`;
+  }
+}
+
+// renewalReady reports whether row has everything SignRenewal's own write
+// guard requires (terms set; guarantor verified if one is on file) — mirrors
+// the planner's signRenewal `pre`, the terminal-leg rule (design §4.3/§5).
+function renewalReady(row) {
+  return !!row.termsSetAt && (row.hasGuarantor !== true || !!row.guarantorVerifiedAt);
+}
+
+function renewalStatusLabel(row) {
+  if (row.status === "complete") return "Renewed";
+  if (row.status === "cancelled") return "Declined";
+  return "Open";
+}
+
+function renderRenewalCard(row, landlord) {
+  const card = document.createElement("div");
+  card.className = "card task-card";
+
+  const title = document.createElement("div");
+  title.className = "addr";
+  title.textContent = row.unitAddress || shortKey(row.leaseApp);
+
+  const sub = document.createElement("div");
+  sub.className = "addr-sub";
+  const bits = [];
+  if (row.cycleEnd) bits.push("term ends " + fmtDate(row.cycleEnd));
+  if (row.termsSetAt) bits.push((row.rentAmount != null ? "$" + row.rentAmount + "/mo" : "terms set") + (row.termMonths != null ? " · " + row.termMonths + " mo" : ""));
+  if (row.hasGuarantor === true) bits.push(row.guarantorVerifiedAt ? "guarantor verified " + fmtDate(row.guarantorVerifiedAt) : "guarantor pending");
+  if (row.signedAt) bits.push("signed " + fmtDate(row.signedAt));
+  if (row.status === "cancelled" && row.cancelReason) bits.push("declined: " + row.cancelReason);
+  sub.textContent = bits.join(" · ");
+
+  const meta = document.createElement("div");
+  meta.className = "task-scope mono";
+  meta.textContent = shortKey(row.entityKey);
+
+  const actions = document.createElement("div");
+  actions.className = "card-actions";
+  const badge = document.createElement("span");
+  badge.className = "badge " + row.status;
+  badge.textContent = renewalStatusLabel(row);
+  actions.append(badge);
+
+  const open = row.status === "open";
+  const unsigned = open && !row.signedAt;
+  if (landlord) {
+    if (unsigned) {
+      const setTermsBtn = document.createElement("button");
+      setTermsBtn.textContent = row.termsSetAt ? "Update terms" : "Set terms";
+      setTermsBtn.addEventListener("click", () => openRenewalAction(row, "SetRenewalTerms"));
+      actions.append(setTermsBtn);
+    }
+    if (open && row.hasGuarantor === true && !row.guarantorVerifiedAt) {
+      const verifyBtn = document.createElement("button");
+      verifyBtn.textContent = "Verify guarantor";
+      verifyBtn.addEventListener("click", () => openRenewalAction(row, "VerifyGuarantor"));
+      actions.append(verifyBtn);
+    }
+    if (unsigned) {
+      const declineBtn = document.createElement("button");
+      declineBtn.className = "ghost";
+      declineBtn.textContent = "Decline";
+      declineBtn.addEventListener("click", () => openRenewalAction(row, "CancelRenewal"));
+      actions.append(declineBtn);
+    }
+  } else if (unsigned && renewalReady(row)) {
+    const signBtn = document.createElement("button");
+    signBtn.textContent = "Sign renewal";
+    signBtn.addEventListener("click", () => openRenewalAction(row, "SignRenewal"));
+    actions.append(signBtn);
+  }
+
+  card.append(title, sub, meta, actions);
+  return card;
+}
+
+// openRenewalAction drives a renewal op through the SAME complete-task modal
+// (openComplete/submitComplete/COMPLETIONS) the Tasks inbox uses, via a
+// SYNTHETIC task built straight from the already-loaded renewal row rather
+// than a real my-tasks entry. This is deliberate, not a shortcut: CancelRenewal
+// has no assignTask leg at all (design §4.4, a landlord task-LESS terminal
+// action), and completeTask(taskKey) already no-ops on a falsy key (see
+// above), so a taskKey-less synthetic task is the exact right shape for all
+// four ops — the tenant's REAL SignRenewal task (Tasks tab) and this card's
+// button both submit the identical op and either can complete it first.
+function openRenewalAction(row, operationName) {
+  openComplete({
+    taskKey: null,
+    operationName,
+    operationDescription: COMPLETIONS[operationName].title,
+    scopedTo: row.entityKey,
+  });
 }
 
 // ensureLeaseDocument produces + durably attaches the executed-lease artifact for
@@ -3087,9 +3339,11 @@ function init() {
   $("#tab-browse").addEventListener("click", () => showView("browse"));
   $("#tab-apps").addEventListener("click", () => showView("apps"));
   $("#tab-tasks").addEventListener("click", () => showView("tasks"));
+  $("#tab-renewals").addEventListener("click", () => showView("renewals"));
   $("#tab-docs").addEventListener("click", () => showView("docs"));
   $("#reload-apps").addEventListener("click", loadApplications);
   $("#reload-tasks").addEventListener("click", loadTasks);
+  $("#reload-renewals").addEventListener("click", loadRenewals);
   $("#reload-docs").addEventListener("click", loadDocsView);
   $("#doc-scope").addEventListener("change", (e) => {
     state.docScope = e.target.value;

@@ -24,6 +24,7 @@
     <button id="tab-browse" class="tab active" role="tab" aria-selected="true" aria-controls="view-browse">Browse &amp; Apply</button>
     <button id="tab-apps" class="tab" role="tab" aria-selected="false" aria-controls="view-apps">My Applications</button>
     <button id="tab-tasks" class="tab" role="tab" aria-selected="false" aria-controls="view-tasks">Tasks</button>
+    <button id="tab-renewals" class="tab" role="tab" aria-selected="false" aria-controls="view-renewals">Renewals</button>
     <button id="tab-docs" class="tab" role="tab" aria-selected="false" aria-controls="view-docs">Documents</button>
   </nav>
 
@@ -88,6 +89,17 @@
       <div id="tasks-empty" class="empty" hidden></div>
     </section>
 
+    <!-- Renewals (tenant) -->
+    <section id="view-renewals" role="tabpanel" aria-labelledby="tab-renewals" hidden>
+      <div class="panel-controls">
+        <button id="reload-renewals" class="ghost">Refresh</button>
+        <span id="renewals-summary" class="summary"></span>
+      </div>
+
+      <div id="renewals" class="grid grid-wide" aria-live="polite"></div>
+      <div id="renewals-empty" class="empty" hidden></div>
+    </section>
+
     <!-- Documents -->
     <section id="view-docs" role="tabpanel" aria-labelledby="tab-docs" hidden>
       <div class="panel-controls">
@@ -144,6 +156,10 @@
         <div id="units" class="grid grid-wide" aria-live="polite"></div>
         <div id="units-empty" class="empty" hidden></div>
       </div>
+
+      <h3 class="search-group-title">Renewal cycles</h3>
+      <div id="landlord-renewals" class="grid grid-wide" aria-live="polite"></div>
+      <div id="landlord-renewals-empty" class="empty" hidden></div>
     </section>
   </main>
 

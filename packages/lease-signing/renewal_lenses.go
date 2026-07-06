@@ -2,8 +2,8 @@ package leasesigning
 
 import "github.com/asolgan/lattice/internal/pkgmgr"
 
-// RenewalLenses returns the package's two renewal convergence lenses (design
-// loftspace-lease-renewal-goal-authored-target-design.md §4.2/§4.3):
+// RenewalLenses returns the package's renewal lenses (design
+// loftspace-lease-renewal-goal-authored-target-design.md §4.2/§4.3/§4.5):
 //
 //   - leaseExpiry (Target A, frozen table): anchored on the LEASEAPP, opens the
 //     renewal cycle once a signed+approved application's tenancy nears its
@@ -11,9 +11,12 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //   - renewalComplete (Target B, mode: planned): anchored on the RENEWAL
 //     vertex, walks back to its leaseapp for tenant/landlord/guarantor/bgcheck
 //     facts, and is the first goal-authored gap (§10.8 Planner extension).
+//   - renewalsRead (R3): the FE-facing, dual-anchored (tenant + landlord)
+//     protected Postgres read model — the sibling of the two Weaver-internal
+//     lenses above, but for display rather than dispatch.
 //
-// Both share the SAME shape of walk (renewal→leaseapp→{applicant, unit}) that
-// leaseApplicationCompleteSpec already established; comments here focus on
+// All three share the SAME shape of walk (renewal→leaseapp→{applicant, unit})
+// that leaseApplicationCompleteSpec already established; comments here focus on
 // what is NEW rather than re-explaining the shared idioms (readinessOptionalMatch
 // etc. are a different target's concern and are not reused here — the renewal
 // targets need only the bgcheck freshness fragment, inlined per-lens below).
@@ -55,6 +58,53 @@ func RenewalLenses() []pkgmgr.LensSpec {
 				EmptyBehavior: "delete",
 				KeyColumn:     "entityId",
 				Freshness:     "auto",
+			},
+		},
+		{
+			// renewalsRead — the protected Postgres FE read model (design §4.5,
+			// R3). Sibling of leaseApplicationsRead/landlordLeaseApplicationsRead,
+			// but DUAL-anchored: one row per renewal cycle, readable by EITHER
+			// the tenant OR the managing landlord (§6.14's authz_anchors is a SET
+			// with any-match RLS semantics — no new machinery, just two elements
+			// instead of one). This is the FE-facing sibling of the Weaver-internal
+			// renewalComplete lens above: same walk, same facts, but a plain
+			// (non-actorAggregate) projection into an RLS table instead of the
+			// weaver-targets orchestration bucket, so the two can never be
+			// conflated at the read boundary (P5: apps read this, never
+			// weaver-targets).
+			//
+			// Every MATCH is REQUIRED (the leaseApplicationsRead/
+			// landlordLeaseApplicationsRead fail-closed convention): a renewal
+			// missing its leaseapp/tenant/unit/landlord link projects no row
+			// rather than a null-anchored one. In practice this is a no-op
+			// exclusion — OpenRenewal never fires until leaseExpiry's own gate
+			// already required a live unit with >=1 manager (leaseExpirySpec
+			// below), so every renewal this lens ever sees already has all four
+			// links.
+			CanonicalName: "renewalsRead",
+			Class:         "meta.lens",
+			Adapter:       "postgres",
+			Table:         "read_renewals",
+			Engine:        "full",
+			Spec:          renewalsReadSpec,
+			Protected:     true,
+			IntoKey:       []string{"renewal_id"},
+			Columns: []pkgmgr.PostgresColumn{
+				{Name: "entity_key", Type: "text"},
+				{Name: "lease_app", Type: "text"},
+				{Name: "tenant", Type: "text"},
+				{Name: "landlord", Type: "text"},
+				{Name: "status", Type: "text"},
+				{Name: "cycle_end", Type: "text"},
+				{Name: "unit_address", Type: "text"},
+				{Name: "rent_amount", Type: "double precision"},
+				{Name: "term_months", Type: "double precision"},
+				{Name: "terms_set_at", Type: "text"},
+				{Name: "has_guarantor", Type: "boolean"},
+				{Name: "guarantor_verified_at", Type: "text"},
+				{Name: "guarantor_method", Type: "text"},
+				{Name: "signed_at", Type: "text"},
+				{Name: "cancel_reason", Type: "text"},
 			},
 		},
 	}
@@ -192,4 +242,78 @@ RETURN
      (termsSetAt <> null) AND
      (signedAt <> null)
    )) AS violating
+`
+
+// renewalsReadSpec is renewalsRead's cypher — the FE-facing dual-anchor sibling
+// of renewalCompleteSpec above. It mirrors that lens's walk (renewal→leaseapp→
+// {applicant, unit→landlord}) verbatim rather than cross-referencing it (each
+// §10.2-adjacent lens is a self-contained projection, the same posture
+// renewalCompleteSpec's own doc comment states), but projects DISPLAY columns
+// for the FE (unit address, terms, verification/signature timestamps) instead
+// of the engine's boolean gap columns, and closes with an authz_anchors set
+// instead of the weaver-targets envelope.
+//
+//   - landlord (the single display/action-target field) is the SAME
+//     deterministic MIN-key pick renewalCompleteSpec uses — the planner
+//     assigns SetRenewalTerms/VerifyGuarantor tasks to exactly ONE canonical
+//     manager, so the engine-dispatch semantics need a single winner.
+//     authz_anchors is a DIFFERENT question — READ access — and must NOT
+//     collapse to that same single winner: landlordLeaseApplicationsRead
+//     (this file's sibling) already establishes that every co-manager gets a
+//     row (there, by fanning out one row per co-manager); here, since the
+//     read model stays one-row-per-renewal (matching renewalCompleteSpec's
+//     shape, not the fan-out shape), the fix is to fold ALL managing
+//     landlords' NanoIDs into the anchor SET instead. A min-key-only anchor
+//     set would silently deny read access to a legitimate co-manager who
+//     isn't the canonical one — caught in review, not by accident.
+//   - hasGuarantor is the tenant's raw .profile flag, read here (not bridged
+//     from renewalComplete) so this lens has no runtime dependency on the
+//     Weaver-internal target.
+//   - authz_anchors = tenant + EVERY managing landlord's bare NanoID (§6.14's
+//     set is exactly this: any-match over an arbitrary-size set, not a pair).
+//     Both the tenant and every co-manager may read their own renewal row; a
+//     third party sees nothing (the primordial cap-read self-grant already
+//     grants every identity its own NanoID, so no new grant-lens is needed
+//     for any of them).
+const renewalsReadSpec = `
+MATCH (rn:renewal)
+MATCH (rn)-[:renews]->(app:leaseapp)
+MATCH (app)-[:applicationFor]->(tenant:identity)
+MATCH (app)-[:appliesToUnit]->(u:unit)
+MATCH (u)<-[:manages]-(landlord:identity)
+WITH
+  rn.key                                   AS entityKey,
+  rn.data.status                           AS status,
+  rn.data.cycleEnd                         AS cycleEnd,
+  rn.data.reason                           AS cancelReason,
+  app.key                                  AS leaseAppKey,
+  tenant.key                               AS tenantKey,
+  min(DISTINCT landlord.key)               AS landlordKey,
+  collect(DISTINCT nanoIdFromKey(landlord.key)) AS landlordAnchors,
+  u.address.data.line1                     AS unitAddress,
+  tenant.profile.data.hasGuarantor         AS hasGuarantor,
+  rn.terms.data.rentAmount                 AS rentAmount,
+  rn.terms.data.termMonths                 AS termMonths,
+  rn.terms.data.setAt                      AS termsSetAt,
+  rn.guarantorVerification.data.verifiedAt AS guarantorVerifiedAt,
+  rn.guarantorVerification.data.method     AS guarantorMethod,
+  rn.renewalSignature.data.signedAt        AS signedAt
+RETURN
+  nanoIdFromKey(entityKey)                 AS renewal_id,
+  entityKey                                AS entity_key,
+  leaseAppKey                              AS lease_app,
+  tenantKey                                AS tenant,
+  landlordKey                              AS landlord,
+  status,
+  cycleEnd                                 AS cycle_end,
+  unitAddress                              AS unit_address,
+  rentAmount                               AS rent_amount,
+  termMonths                               AS term_months,
+  termsSetAt                               AS terms_set_at,
+  hasGuarantor                             AS has_guarantor,
+  guarantorVerifiedAt                      AS guarantor_verified_at,
+  guarantorMethod                          AS guarantor_method,
+  signedAt                                 AS signed_at,
+  cancelReason                             AS cancel_reason,
+  [nanoIdFromKey(tenantKey)] + landlordAnchors AS authz_anchors
 `

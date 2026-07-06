@@ -61,6 +61,9 @@ declares:
       adapter: nats-kv
       bucket: weaver-targets
       engine: full
+    - canonicalName: renewalsRead
+      adapter: postgres
+      engine: full
   permissions:
     - operationType: CreateLeaseApplication
       scope: any
