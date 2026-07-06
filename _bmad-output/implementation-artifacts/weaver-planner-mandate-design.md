@@ -33,6 +33,17 @@ surface merged to `main`:
   the §10.8 Planner-extension subsection are **frozen on `main`**. The other four
   `contract-10-weaver-text-reconciliation` drift spots remain on that backlog row.
 
+**Amendment (2026-07-05, Andrew-ratified in the renewal ratify session):** the first consumer
+(LoftSpace lease renewal — `loftspace-lease-renewal-goal-authored-target-design.md`) revised three of
+this design's ratified execution sentences: **per-leg dispatch** through the frozen action vocabulary
+(pin-until-leg-complete; pin-release = the leg's `__effect` close-credit + per-leg dispatch-count
+reset), **per-leg mark pinning** (leg boundaries mint fresh marks — §10.3 clauses revised in lockstep),
+and the **per-gap `actions` catalog** as the synthesis domain (an op effect alone carries no dispatch
+binding; the global auto-catalog is reserved). The compile-to-`plan-<hash>`-pattern shape is **RESERVED
+for op-only single-actor plans** — unbuilt, no consumer. The §2/§3.2/§3.3/§8 passages describing it are
+struck in place below. The renewal build itself (R1 dispatch wiring → R2 package → R3 FE) is
+**lane-consolidated into this lane** (Andrew, anti-ping-pong; the verticals row was removed).
+
 **Next:** Fires 1–5 shipped (op-DDL `effects`; `__effect` confidence window; the pure `planner` library;
 `mode`/`candidates`/`goal` parsing + shadow compare; `mode:"planned"` candidate-selection dispatch). The
 Lattice Steward builds **Fire 6** (goal-regression synthesis dispatch) next from §8.
@@ -228,11 +239,12 @@ verify, and continuously re-plan the path that closes a gap — and prove the sy
   precondition needing a column the lens doesn't project is an install-time validation error, exactly the
   §10.2↔§10.8 column-seam rule. **No new Weaver Core-KV reads.** (Loom's guard eval remains the only
   sanctioned non-Processor reader; we do not widen it.)
-- **Loom pinning executes synthesized plans with zero Loom changes.** A plan compiles to an ordinary
-  linear pattern; Weaver submits it as a `meta.loomPattern` vertex **via the Processor** (P2, auditable),
-  keyed by content hash (`plan-<hash>`), then `triggerLoom` as today. The instance pins at start (§10.5)
-  and drains under its definition regardless of later GC. Re-derivation of the same plan hits the same
-  vertex — re-fires collapse instead of multiplying patterns.
+- **[SUPERSEDED 2026-07-05 — renewal-design ratification; see the Ratification addendum.]** ~~Loom
+  pinning executes synthesized plans with zero Loom changes (plan → `meta.loomPattern` `plan-<hash>` →
+  `triggerLoom`).~~ The first consumer proved a compiled pattern cannot express a multi-actor chain
+  (§10.5 pins a userTask's assignee to the one instance subject): **execution is per-leg through the
+  frozen action vocabulary** (§10.8 as amended); the compile-to-pattern shape is **RESERVED for op-only
+  single-actor plans**, unbuilt. Zero Loom changes holds a fortiori.
 - **The Augur is already the AI boundary with a human gate** (§10.8, ratified 2026-06-27): `unplannable`
   escalation → structured-output proposal → `vtx.augurProposal` → human review → `proposedOp` dispatch
   with deterministic re-validation. The planner slots **below** it as the deterministic tier;
@@ -268,18 +280,21 @@ next episode replans from the new state with updated confidence — the escalati
   `MarkLease`). Updated on the two real dispatch legs (lane-1 fire + sweep reclaim) and on the gap-close
   path (`clearClosedMarks`) — the same seams the dispatch-count uses. Event-keyed, never clock-sampled;
   deterministic. GC'd by the sweep's existing orphan legs.
-- **Plan vertices**: `meta.loomPattern` named `plan-<hash(canonical plan JSON)>`, submitted via Processor,
-  GC'd when no live instance pins them and no current (state, catalog) re-derives them.
+- **Plan vertices**: **[SUPERSEDED 2026-07-05 — Ratification addendum]** — no plan vertices in the
+  ratified per-leg execution (the mark carries the plan hash, diagnostic-only); reserved with the
+  op-only compile-to-pattern shape.
 
 ### 3.3 Selection and synthesis (Fires 5–6, the engine change)
 
 Fire 5 (`candidates`): the Strategist asks the planner to pick ONE candidate — preconditions evaluated
 against the row, ranked by (satisfied-preconditions, close-rate window, declared cost, canonical
 tie-break). Downstream unchanged: same mark (pinning the pick), same `maxretries_<g>` budget now bounding
-the *gap across candidates*, same actuator. Fire 6 (`goal`): full goal regression over the installed
-catalog (ops with `effects` + Loom patterns as macro-actions); the resulting chain compiles to a plan
-vertex + `triggerLoom`. Dispatch-time re-validation mirrors the `proposedOp` precedent (action vocabulary,
-live-registry resolution, Weaver-authority) — the planner gets no scope the table didn't have.
+the *gap across candidates*, same actuator. Fire 6 (`goal`) **[as amended 2026-07-05 — Ratification
+addendum]**: goal regression over the gap's **declared per-gap `actions` catalog** (not a global
+installed-effects catalog — an op effect carries no dispatch binding); the plan executes **per leg**
+(each episode dispatches `Steps[0]`'s action binding; pin releases on effects-hold). Dispatch-time
+re-validation mirrors the `proposedOp` precedent per leg (action vocabulary, live-registry resolution,
+Weaver-authority) — the planner gets no scope the table didn't have.
 
 ### 3.4 Diagnostics and arbitration (Fires 7–8, cross-row sight)
 
@@ -376,7 +391,7 @@ just-in-time per fire from this doc.
 | 3 | `internal/weaver/planner` pure library (goal regression, canonical determinism, no-plan as value) | table tests + catalog-permutation stability property | none |
 | 4 | §10.8 parse/validation of `mode`/`candidates`/`goal`; shadow compare + divergence surface | shadow target dispatches byte-identically; divergence visible | none |
 | 5 | `mode: planned` single-step selection among `candidates`; mark pins the pick | decline-twice fixture falls A→B unaided; mode-absent targets byte-identical; revert = control-plane flag | low |
-| 6 | Goal regression → `plan-<hash>` vertices → `triggerLoom`; plan GC; dispatch-time re-validation | different states → different plans; same state → same vertex; GC proven; zero Loom diffs | medium |
+| 6 | *(amended 2026-07-05)* Goal regression over per-gap `actions` → **per-leg dispatch** (pin-release on effects-hold, leg `__effect` credit, per-leg count reset); pkgmgr authoring surface; no plan vertices/GC (reserved) | different states → different plans; same state → same plan; reclaim re-fires the pinned leg; effects-hold advances; zero Loom diffs | medium |
 | 7 | Contraction monitor + oscillation detector (freeze via `__control` + Health) | fighting-targets fixture frozen + one causal-pair issue | low |
 | 8 | Admission control: dispatch scheduler, budgets, §10.2 priority column (contract rider lands here) | 3k-row fixture paced + priority-ordered; no-budget = unchanged | medium |
 | 9 | `unplannable`(extended)/`exhausted` → Augur; plan-shaped proposals via Fire-6 path; promotion proposals | no-plan fixture → proposal; approved plan dispatches once; promotion at threshold | medium |

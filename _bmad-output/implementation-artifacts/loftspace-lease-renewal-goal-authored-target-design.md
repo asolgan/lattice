@@ -1,24 +1,28 @@
 # LoftSpace lease renewal — the first goal-authored Weaver target — design
 
-**Status:** 📐 **awaiting-Andrew (ratification)** · adversarial pass RUN (3 read-only lenses, §11) and
-folded — this is the post-review revision.
-**Stream:** Verticals (LoftSpace: `lease-signing` + `loftspace-domain` + FE) **coupled to** the Weaver
-planner mandate's Fire 6 Increment 3 (Lattice lane) — Inc3's synthesis-dispatch machinery lands **with**
-this first real consumer, per the mandate's 2026-07-05 unblock.
+**Status:** ✅ **Andrew-ratified 2026-07-05 (ratify session) — ratified as staged, lane consolidated to
+Lattice.** The §10.8 strike-and-replace (per-leg execution, `actions` catalog, doctrine rider incl. the
+terminal-leg rule) + §10.3 mark riders are ratified; adversarial pass ran pre-ratification (3 read-only
+lenses, §11). **Lane consolidation (Andrew, anti-ping-pong — the kv.Links precedent):** the verticals
+row is REMOVED; R1 dispatch wiring → R2 package → R3 FE all ship from the **Lattice lane** (the FE
+Engineer + Sally pair on R3). The Lattice Steward had already shipped Inc3's parse+validate half
+(`b99d51c`) against this design's §5 surface before ratification.
+**Stream:** Lattice (Stream 2) — lane-consolidated at ratification (Verticals-filed demand; the
+LoftSpace package + FE fires ship from the Lattice lane with the engine work, one lane end-to-end).
+Inc3's synthesis-dispatch machinery lands **with** this first real consumer, per the mandate's
+2026-07-05 unblock.
 **Designer fire:** Winston, 2026-07-05 (Andrew-routed demand, `verticals.md`).
 **Builds on:** `weaver-planner-mandate-design.md` (ratified 2026-07-04; Fires 1–5 + 6 Inc1–2 + 7 shipped),
 Contract #10 §10.2/§10.3/§10.5/§10.8, the shipped `lease-signing` chain, `loftspace-domain` ownership +
 listing economics.
-**Contract change:** **YES — §10.8 + a small §10.3 rider, staged UNCOMMITTED** in
-`docs/contracts/10-orchestration-surfaces.md` (the file already carries two earlier pending proposals —
-the `surface` GapAction and `goalColumns`; this adds the third block). **It is a strike-and-replace of
-three ratified 2026-07-04 sentences** (plan execution, mark pinning, synthesis catalog), flagged as such
-— not an additive block. Parts: the goal-first **doctrine rider**, the **per-leg execution amendment**
-(Fork 1+2), the per-gap **`actions` catalog**, and the §10.3 mark-clause rider.
+**Contract change:** **RATIFIED 2026-07-05 — §10.8 + §10.3** (the strike-and-replace of three ratified
+2026-07-04 sentences — plan execution, mark pinning, synthesis catalog — plus the goal-first doctrine
+rider and the per-gap `actions` grammar). Commits with this ratify session's disposition of the two
+sibling proposals sharing the file (`surface`, `goalColumns`).
 
 ---
 
-## For Andrew (ratification in one look)
+## For Andrew (ratification in one look) — DECIDED 2026-07-05: ratified as recommended; lane consolidated to Lattice
 
 **What:** lease renewal for LoftSpace — a lease nearing expiry opens a per-tenant renewal chain (fresh
 bgcheck only if stale, guarantor re-verify only if one exists, landlord rent adjustment, tenant
@@ -368,17 +372,18 @@ package authors, Augur Fire 9):
    are per-target, so cross-target false alternation requires deliberately shared aspect paths — kept
    disjoint by §4.3's DDL rule.
 
-## 9. Decomposition (coupled build — one shipping window, two lanes, one-way sequence)
+## 9. Decomposition (one shipping window, **one lane — Lattice** (consolidated at ratification), one-way sequence)
 
 | Fire | Lane | Scope | Proves |
 |---|---|---|---|
 | **R1 — Inc3′ engine** | Lattice (`internal/weaver`, `internal/pkgmgr`) | pkgmgr `mode`/`goal`/`goalColumns`/`actions` authoring fields + emission + install validation (incl. **row-reachability of `pre`/`effects`**); registry `actions` parse; `resolvePlannedAction` goal branch → `Synthesize` (`maxDepth` const) → `Steps[0]` dispatch via `buildPlan` **with per-leg dispatch-time re-validation**; pin-release on effects-hold (via `goalColumnPaths`) + leg `__effect` close-credit + `__count` reset; budget-suppression Health issue; oscillation ref→declared-effects bridge; `ErrNoPlan` → `unplannable` | Renewal-shaped fixture (4 actions, `anyOf` goal, terminal-leg `pre`): per-tenant plans differ; same state → same plan (hash-stable); reclaim re-fires the pinned leg (no re-rank); effects-hold advances to the next leg; count resets per leg; **zero Loom diffs**; mode-absent targets byte-identical (suite invariant) |
-| **R2 — package** | Verticals (`packages/lease-signing`, `loftspace-domain`) | `.tenancy` create-only stamping in DecideLeaseApplication; renewal vertex/link/aspect DDLs + OpenRenewal/SetRenewalTerms/VerifyGuarantor/SignRenewal/CancelRenewal (+ DDL `Effects`, path-disjoint across targets); both lenses + targets (A frozen, B `mode:planned`); permissions; `verify-package` | E2E (ephemeral stack, short windows): two tenants — (guarantor, stale bgcheck) vs (none, fresh) — converge through **different** chains to signed + extended `.tenancy`; a declined renewal parks terminally; Target A re-arms for the next cycle |
-| **R3 — FE** | Verticals (FE) | `renewalsRead` dual-anchor lens; tenant + landlord renewal cards + task CTAs + decline | Live two-browser walkthrough on the running stack |
+| **R2 — package** | Lattice (lane-consolidated; code in `packages/lease-signing`, `loftspace-domain`) | `.tenancy` create-only stamping in DecideLeaseApplication; renewal vertex/link/aspect DDLs + OpenRenewal/SetRenewalTerms/VerifyGuarantor/SignRenewal/CancelRenewal (+ DDL `Effects`, path-disjoint across targets); both lenses + targets (A frozen, B `mode:planned`); permissions; `verify-package` | E2E (ephemeral stack, short windows): two tenants — (guarantor, stale bgcheck) vs (none, fresh) — converge through **different** chains to signed + extended `.tenancy`; a declined renewal parks terminally; Target A re-arms for the next cycle |
+| **R3 — FE** | Lattice + FE Engineer/Sally (lane-consolidated) | `renewalsRead` dual-anchor lens; tenant + landlord renewal cards + task CTAs + decline | Live two-browser walkthrough on the running stack |
 
 R1 ships first (engine before consumer — fixture-proven, with R2 in the same window; shipping R2 first
-would raise loud `PlaybookConfigError` alerts, not a silent wedge, but the order stands). The contract
-edits commit at ratification (Winston, per the ratified-contract-commit rule).
+would raise loud `PlaybookConfigError` alerts, not a silent wedge, but the order stands). The build
+lives on the **lattice board only** (the verticals row was removed at ratification — lane
+consolidation); the contract edits committed at ratification per the ratified-contract-commit rule.
 
 ## 10. Test strategy / migration
 
