@@ -353,7 +353,8 @@ value: { targetId, entityKey, gap, action, claimId?, claimedAt, leaseExpiresAt, 
     instance, hence no new userTask). This dedups the whole pattern — the correct altitude for
     `triggerLoom`.
 
-  A legitimate close→reopen mints a new mark ⇒ new `claimId` ⇒ a fresh artifact; an out-of-band deletion
+  A legitimate close→reopen — or a §10.8 planned-**leg** boundary (ratified Andrew 2026-07-05) —
+  mints a new mark ⇒ new `claimId` ⇒ a fresh artifact; an out-of-band deletion
   self-heals (hard-tombstone ⇒ `kv.Read()` `None` ⇒ create; logical delete ⇒ present-but-`isDeleted`
   ⇒ create). This **supersedes** the prior "accepted rare double / check-before-act = Phase-3 hardening"
   disposition for the two human userTask actions. **External gaps are unchanged** — their reclaim
@@ -988,6 +989,7 @@ Every action's params are resolved per row (templating below). The Actuator subm
 | `assignTask` | `{ operation, assignee, target }` | `CreateTask` (§10.1): `assignedTo`→`assignee`, `forOperation`→`operation`, `scopedTo`→`target`. |
 | `directOp` | `{ operation, target?, params?, reads? }` | submit `operation` directly as a remediation op. `reads?` is the dispatched op's `contextHint.reads` — bare vertex keys, each a literal or `row.<column>` — so an op that must hydrate its candidate vertex (e.g. `TombstoneObject` reading the object's `linkEpoch`) gets the key straight from the lens row. Additive + `omitempty`: a `directOp` that omits it dispatches read-free exactly as before. A clause-billing target is a canonical consumer: `operation` is the literal `DebitAccount`, `target`/`params`/`reads` row-templated (the amount as a numeric param column; clause + account keys routed into `reads` for hydration). |
 | `proposedOp` | *(none — sourced from the row)* | **Additive, opt-in (Augur dispatch, Fire 2b).** Dispatch the **row-carried** `proposedAction` + `proposedParams` (materialised into a `GapAction`) after a **dispatch-time deterministic re-validation** (action ∈ the escalation catalog `{triggerLoom, assignTask, directOp}` · live-registry resolution via the existing `buildPlan` · **default-deny scope** to the row's TRUSTED candidate `candidateKey` · op ∈ Weaver's service-actor authority). Unlike the three static actions, the op + params are *data per row*, not playbook config; the proposed op carries a **proposal-scoped deterministic requestId** so a sweep re-dispatch collapses on the Contract #4 tracker (at-most-once). Used **only** by the `augur` package's primordial `augurDispatch` convergence target (see "Augur dispatch" below); wiring `proposedOp` to a row whose source is not a §5-validated approved proposal is a package bug. The `directOp`-must-be-literal guard stays intact for ordinary playbooks — `proposedOp` is the gated sibling for the one §5-validated dynamic-op surface. |
+| `surface` | `{ issueCode, issueSeverity? }` | **Additive (FR28/FR29 Fire 3).** Dispatch **nothing** — no op, no mark, no OCC, no episode. While the gap column stays true, raises a Contract #5 §5.5 `issues[]` entry keyed `issueCode` at `issueSeverity` (default `warning`); the issue clears via the ordinary level-reconciled mark-clearing pass once the row stops naming the column. `issueCode` is required; `issueSeverity` ∈ `{warning, error}`. Manual-intervention-only — the sibling of `triggerLoom`/`assignTask`/`directOp`/`proposedOp` for a gap the playbook author wants surfaced, never remediated. Used by `orchestration-base`'s primordial `unroutedTasks` target (`missing_claim` → `{action:"surface", issueCode:"UnroutedTasks"}` — an open role-queued task left unclaimed past its own `expiresAt`). |
 
 > **`nudge` — RETIRED (Amended 2026-06-18 — 13.1, External I/O Bridge).** The `nudge` GapAction (and the
 > `operation` field added to it in Story 10.2) is removed: external I/O moves out of Weaver (convergence
@@ -1093,7 +1095,9 @@ in-flight**, the Strategist looks up `gaps[col]` and the Actuator executes:
   not the dotted full key — §10.2). Set via **KV create (CAS-on-absent)** — *that* create **is** the
   anti-storm OCC: concurrent evaluations of the same gap race the create, the loser drops, the winner
   dispatches. Value shape (incl. TTL/lease, full `entityKey`) freezes in §10.3.
-- **Mark clears** on **gap-close** or **lease expiry** — both **level-reconciled, not edge-triggered**
+- **Mark clears** on **gap-close**, **planned-leg completion** (Planner extension, ratified Andrew
+  2026-07-05: the pinned leg's declared `effects` all hold in the current row), or **lease
+  expiry** — all **level-reconciled, not edge-triggered**
   (§10.3 weaver-state): on each watch update and reconciler sweep, Weaver compares the **current** row's
   `missing_<col>` against existing marks and deletes any whose column is now `false` (a coalescing watch
   can drop the transitional flip, so Weaver must not depend on *seeing* it). Lease expiry is enforced by
@@ -1138,7 +1142,11 @@ contract.)*
 "gaps": {
   "missing_<g>": { "action": … }           // frozen shape — ALWAYS wins (operator override)
                | { "candidates": [ { "action": …, "pre"?: <guard>, "cost"?: int }, … ] }
-               | { "goal": <guard> }       // synthesis target over the installed effects catalog
+               | { "goal": <guard>,        // synthesis target (per-leg execution below)
+                   "goalColumns"?: { "<column>": "<aspect path>" },  // see below (Fire 6 Increment 2)
+                   "actions": [ { "ref": "<unique>", <one frozen action's fields>,
+                                  "pre"?: <guard>, "effects": [ <atoms> ], "cost"?: int }, … ] }
+                                             // the gap's planning catalog — see below (2026-07-05)
 }
 ```
 
@@ -1150,20 +1158,82 @@ contract.)*
   §10.2↔§10.8 column seam; no new Weaver Core-KV reads), ranked by (precondition satisfaction,
   windowed close-rate from `__effect` (§10.3), declared `cost`, then lexicographic actionRef). The
   `maxretries_<g>` budget bounds the **gap across candidates**.
-- **Synthesis (`goal`) is bounded goal regression** over the installed catalog (ops with `effects` +
-  Loom patterns as macro-actions), a pure function of (row, catalog, `__effect` window) with canonical
-  tie-breaking. The plan compiles to a linear Loom pattern submitted **via the Processor** as a
-  `meta.loomPattern` vertex keyed by content hash (**`plan-<hash(canonical plan JSON)>`** — same
-  (state, catalog) re-derivation → same vertex, re-fires collapse), then `triggerLoom` as frozen
-  (§10.5 pinning governs in-flight instances; GC when no live pin and no current re-derivation).
-  Dispatch-time re-validation mirrors `proposedOp` (action vocabulary · live-registry resolution ·
-  Weaver-authority).
-- **The mark pins the choice for the episode's lifetime:** the §10.3 mark's `action` carries the chosen
-  actionRef / plan hash at CAS-create, and a sweep reclaim re-dispatches the **pinned** choice — the
-  planner never re-plans mid-episode. Replanning happens only at episode boundaries (close→reopen),
-  preserving the deterministic-requestId / reclaim-collapse machinery unchanged.
+- **Synthesis (`goal`) is bounded goal regression** over the gap's **declared `actions` catalog**
+  (below — a closed, package-authored set; *revises the ratified "installed catalog (ops with `effects`
+  + Loom patterns as macro-actions)" wording, 2026-07-05:* an op's DDL `effects` are the integrity
+  source an entry mirrors, but an op effect alone carries no dispatch binding — no assignee, no params —
+  so a global ops-derived auto-catalog is **reserved**, not implied), a pure function of (row, catalog,
+  `__effect` window) with canonical tie-breaking. **`goalColumns`** (per-gap, optional — scoped to the same gap as its `goal`, never
+  shared across gaps in one target) is how that "pure function of row" stays true when a `goal` addresses
+  an **aspect** path (e.g. `subject.signature.data.signedAt`, matching a real op's declared `effects`): a
+  §10.2 row flattens an aspect-projected column onto a bare name with no aspect tag, and the default
+  row→State mapping addresses every column at its **root** path (`subject.data.<column>`), so an
+  aspect-shaped goal would otherwise never see the row's own value under the right key — silently
+  mis-resolving an already-met goal as unmet and synthesizing a spurious plan. `goalColumns` maps the
+  affected column names to the aspect-qualified path they actually represent (install-validated: must
+  parse under §10.5, must be aspect-qualified — a root-shaped entry is rejected as redundant — values
+  must be unique, and every path must be referenced by the same gap's `goal`); a column absent from the
+  map is unaffected, keeping `subject.data.<column>`. The mirror-image mistake is rejected too: a
+  `candidates[].pre` may only address a **root** path — `pre` has no analogous bridge, so an
+  aspect-shaped `pre` would be permanently unsatisfiable. No new Weaver Core-KV read either way — same
+  §10.2↔§10.8 column seam `candidates`' `pre` already rides. **Execution is per-leg (revises the
+  ratified compile-to-pattern clause; ratified Andrew 2026-07-05):** each episode dispatches
+  **`plan.Steps[0]`'s declared action binding** (`triggerLoom` / `assignTask` / `directOp`) through the
+  ordinary actuator path, and the mark pins that leg (plus the plan hash, diagnostic-only); **the pin
+  releases once the leg's declared `effects` all hold in the current row** (a pure row predicate,
+  evaluated through the gap's `goalColumns` bridge at the existing single-mark-read seams), so a reclaim
+  re-dispatches the pinned leg while incomplete and re-plans **only past a completed leg** —
+  level-triggered advance, the graph is the program counter; a mid-chain regression (e.g. a freshness
+  lapse) re-enters the plan at the regressed leg. **Pin-release is the pinned leg's `__effect`
+  close-credit and resets the gap's dispatch count** (per-leg budget semantics; the level-reconciled
+  gap-close credits the final leg) — without these couplings, healthy chains would read as permanent
+  lens/effect mismatches and waiting human legs would burn the chain budget on reclaim cadence.
+  Rationale for the revision: a compiled pattern cannot express a **multi-actor** chain (§10.5 pins a
+  userTask's `assignedTo`/`scopedTo` to the one instance subject — the frozen step shape carries no
+  assignee) and would run a second program counter beside the level machinery. The struck
+  compile-to-a-linear-`meta.loomPattern` (**`plan-<hash(canonical plan JSON)>`**) → `triggerLoom` shape
+  is **RESERVED for op-only single-actor plans** (systemOp legs at machine latency, where per-leg sweep
+  hops would matter); it is not built until such a consumer exists. Dispatch-time re-validation mirrors
+  `proposedOp` **per leg** (action vocabulary · live-registry resolution · Weaver-authority).
+- **The mark pins the choice per leg (revises the ratified episode-lifetime wording; ratified Andrew
+  2026-07-05):** the §10.3 mark's `action` carries the chosen actionRef (+ plan hash) at
+  CAS-create, and a sweep reclaim re-dispatches the **pinned** leg verbatim — no re-rank, no re-plan —
+  until the leg's declared `effects` hold in the current row, at which point the mark closes and the
+  next episode re-synthesizes from the advanced state. For single-step selection (`candidates`) this
+  degenerates to exactly the prior episode-lifetime pin (one leg = one gap-close). Replanning thus
+  happens only at **leg boundaries** (effects-hold) and **gap boundaries** (close→reopen), both minting
+  a fresh mark ⇒ fresh `claimId`; the deterministic-requestId / reclaim-collapse machinery is unchanged
+  within a leg, and stats feed new episodes only.
+- **`actions`** (required alongside `goal`; install rejects a `goal` gap with an empty catalog) is the
+  gap's planning catalog: each entry couples a **dispatch binding** (exactly one frozen action's fields —
+  same shapes + validation as a static gap action, `row.<column>` templating included) with the
+  planner-facing triple `pre?` / `effects` / `cost?` (`cost` defaults to 1; `ref`s unique per gap).
+  `effects` are concrete assertions (`present`/`absent`/`equals`, or an `allOf` of those — `anyOf`/`not`
+  rejected at install: they cannot become a definite fact). **`pre` and `effects` paths must be
+  row-reachable** — a root column the lens projects, or an aspect path this gap's `goalColumns` maps
+  (an unreachable `effects` path would make its leg permanently un-releasable; unlike `candidates[].pre`,
+  an `actions[].pre` MAY address a `goalColumns`-bridged aspect path, because a goal gap's State carries
+  the bridge).
 - **Escalation:** "no plan derivable" flows into the existing `augur.escalate` **`unplannable`** trigger
-  (its meaning extends to "no playbook entry AND no derivable plan"); no new trigger token.
+  (its meaning extends to "no playbook entry AND no derivable plan"); no new trigger token. Budget
+  exhaustion on a planned gap raises a standing Health issue at the suppression site (never a silent
+  park).
+- **Goal-first authoring (doctrine rider — ratified Andrew 2026-07-05).** The dependency-gating
+  doctrine ("a dependent gap simply isn't `true` until its prerequisite closes") remains the norm for
+  fixed, singly-dispatched procedures. When a convergence procedure is a **genuine chain — ≥2 legs, or
+  per-entity variability** (legs that apply to some rows and not others) — the lens author MAY instead
+  declare **one gap** carrying `goal` + `actions` and let synthesis derive each row's chain, rather than
+  pre-decomposing into N gated `missing_*` columns. Authoring rules: goal atoms address **row facts** —
+  a column projecting a real aspect field bridges to its effect-visible path via `goalColumns`; a
+  **walk-computed** column (a fact the lens derives across links, e.g. an only-if-fresh validity) stays
+  root-named and its closing action declares the **same root path** in `effects` (the two classes meet
+  in planner State-space by construction). Conditional legs live in the **goal** (`anyOf` with a data
+  disjunct), optionally mirrored by the action's `pre`. **Terminal-leg rule:** an action whose op
+  closes the gap's anchor (flips the completion fact) MUST declare a `pre` entailing the **remainder of
+  the goal**, mirrored in that op's own write guard — otherwise op-defined completion can outrun
+  goal-defined completion under canonical tie-breaking and silently skip legs. Write paths always carry
+  their own guards (an op MUST NOT rely on the planner for write-safety). A single-step gap stays a
+  frozen-table `action` — goal-authoring one step is ceremony, not doctrine.
 
 ---
 
@@ -1250,5 +1320,8 @@ emits events and writes no business vertex — nothing in the pipeline special-c
 | 2026-06-13 | **§10.8 `nudge` action `operation` field ratified (Andrew) — §10.8** (`cmd/weaver/CONTRACT-AMENDMENT-REQUEST.md` Request 4, Story 10.2). The `nudge` action params become **`{ adapter, operation, subject, params? }`** (`operation` **required**), and the `missing_bgcheck` example gains `"operation": "ResolveBackgroundCheck"`. `operation` is the **resolve-op type** — the op the Two-Phase Nudge submits in its Resolve leg to record the external outcome back into Core KV (Claim→Execute→Resolve, arch Item 3). Reconciles an internal inconsistency: the §10.3 `weaver-claims` record already carries `operation`, but that value could only come from the playbook's nudge action, which had no field for it; without it the Resolve leg has no op to submit and a claim could never reach `state=resolved`. A blank or `row.`-templated `operation` routes to the same `errConfig`-surfaced-to-Health posture as a blank/templated `adapter`. |
 | 2026-06-18 | **External I/O Bridge amendments ratified (Andrew) — §10.2 / §10.3 / §10.5 / §10.6 / §10.8** (one coherent package; CARs in `cmd/{loom,weaver,refractor}/CONTRACT-AMENDMENT-REQUEST.md`; umbrella `_bmad-output/planning-artifacts/sprint-change-proposal-2026-06-18.md`). The reference vertical surfaced that external I/O sat in the wrong engine; it moves out of Weaver (convergence *detection*) into **Loom + a new generic `bridge` component** (deterministic *execution*), event-driven and symmetric to userTasks. **§10.5/§10.6 (loom):** new **`externalTask`** step kind — two-op-shaped `{kind, adapter, params, replyOp, instanceOp}` (Loom submits the `instanceOp`, which creates the `service.<x>.instance` claim vertex + emits an `external.<adapter>` event via that op's transactional outbox, then **parks**); a **third** completion-correlation key **`payload.externalRef`** (= the `instanceKey` Loom mints write-ahead and parks on as `token.<instanceKey>`; the bridge's `replyOp` echoes it back). The "no new envelope field" userTask assumption is **struck** — this is a real engine extension (a 3rd `correlationKeys` key). Loom stays pure (event rides the op's outbox, no NATS handle). **§10.3 (weaver A):** **`weaver-claims` RETIRED** — the Two-Phase Nudge claim record + Claim→Execute→Resolve protocol leave Weaver; the visible-claim guarantee (FR58/NFR-S11) is now the **service-instance vertex in Core KV** (created before the `external.*` event is publishable). Reason: the resolve op could not address a candidate ≠ the nudge `subject` (hard-coded payload + Starlark can't read `authContext`). **Hard invariant pinned:** the bridge result-op `requestId` MUST be `deterministic(idempotencyKey = instanceKey)` (redelivery collapses on the Contract #4 tracker → exactly one result mutation). `weaver-state` + the reconciler/sweeper are **KEPT** (they serve `triggerLoom`/`assignTask`/`directOp`); only the nudge-specific `claimId` clauses retired. **§10.8 (weaver B):** **`nudge` GapAction RETIRED** (supersedes the Story-10.2 `operation`-on-nudge addition above) — external remediation is now `triggerLoom` of a pattern containing an `externalTask`; the `missing_bgcheck` example becomes a `triggerLoom`. **§10.2 (refractor, Option (b)):** a convergence target lens MAY be an **`actorAggregate`** (needed to reproject on linked-constituent change — identity aspects + service-instance across links); the **frozen §10.2 key + `splitRowKey` stay UNCHANGED** — such a lens declares an explicit key column emitting the bare-NanoID `<entityId>` instead of the default `{actorSuffix}` (= `<type>.<id>`), landing in the Epic-12 Output-descriptor machinery. **Contract #3 — NO amendment** (dropped at ratification): `external` is an ordinary domain under the open `<domain>.<eventName>` model (no Processor allowlist), realized via a package event-type DDL + the bridge's `events.external.>` consumer (envelope spec → `docs/components/bridge.md`). Bucket/constant/verify-enumeration teardown + the engine work land in the External I/O Bridge epic — Epic 13, stories 13.2–13.5 — under full 3-layer review + the FR58 crash/retry proof; the `Fake*` adapters move-then-delete to the bridge (never a window where neither path works). **Pre-commit coherence refinement (Andrew, 2026-06-18):** the claim vertex's **type is package-chosen** (the bridge is **type-agnostic** — `service.<x>.instance` is the lease demo's choice, not a contract constraint), the external **outcome is recorded as aspect(s) per D5** (minimum data in the vertex root, never fat root `data`), and bridge idempotency rests on the deterministic result-op `requestId` + the adapter's `idempotencyKey` dedup — **not** a typed-vertex read. |
 | 2026-06-18 | **externalTask deadline + completion symmetry (UNCOMMITTED — pending Andrew's review) — §10.5/§10.6.** Corrects the externalTask deadline, which (as first ratified above) said "exactly like a systemOp": on deadline-fire with a committed-but-not-yet-replied `instanceOp` the engine would **advance the cursor before the external result landed** — broken wait-for-result (a later outcome-branching step reads stale/absent data) on any slow/dead bridge or short timeout. **Fix: externalTask is handled like a `userTask`, not a systemOp.** The deadline is a **bounded creation-deadline on the `instanceOp` submission**; on `instanceOp` commit it **disarms** → the wait for the bridge `replyOp` is **unbounded** (never advances on the deadline). A rejected/lost `instanceOp` still → `FailPattern` (FR29; the submission is never a silent wedge). **Completion** becomes a dedicated **`orchestration.externalTaskCompleted{externalRef}`** event **emitted by the `replyOp` DDL** — the uniform orchestration-domain signal symmetric to `orchestration.taskCompleted{taskKey}` (Loom's existing `loom-orchestration` consumer advances it; externalTask patterns declare `completionDomains: ["orchestration"]`; a load-time warn mirrors `userTaskCompletionUnobservable`). Emitted-by-the-replyOp (not platform-injected as `taskCompleted` is) because the `replyOp` is a purpose-built completion op, not an oblivious business op. Also corrected the stale "full `vtx.<type>.<id>` key" §10.6 wording to the **opaque bare-NanoID handle** Loom actually mints (the Story 13.2 §0 resolution; the `instanceOp` DDL forms the typed key from the handle). Engine + 13.2-fixture/test updates land in the follow-up story; `docs/components/{loom,bridge}.md` updated in lockstep. |
+| 2026-07-05 | **§10.8 — new `surface` GapAction RATIFIED (Andrew, 2026-07-05).** FR29 ("unrouted tasks surface; never silently dropped") needed a gap remediation that raises a Health-KV issue and dispatches nothing — no existing action fit "surface, don't act" (`triggerLoom`/`assignTask`/`directOp` all submit an op; `proposedOp` is row-sourced dynamic dispatch). Additive: `{ action: "surface", issueCode, issueSeverity? }` — no mark, no OCC, no episode; the issue clears via the ordinary level-reconciled mark-clearing pass. Engine: `dispatchGap` short-circuits before `shadowCompare`/OCC/mark-read; `clearClosedMarks` special-cases it (a surface gap never had a mark). First (and so far only) consumer: `orchestration-base`'s primordial `unroutedTasks` target. Code shipped `e67e073`; this table row is the proposed contract text. |
+| 2026-07-05 | **§10.8 `goalColumns` RATIFIED (Andrew, 2026-07-05) — Fire 6 Inc2's lens-column → aspect-path bridge.** Staged 2026-07-04 with the Inc2 ship (`c8bc5a6`; `goal_state_internal_test.go` proves the lease-signing shape end to end); the 2026-07-05 verification pass cross-checked all five validation clauses (per-gap scope, aspect-qualified-only, root-shaped rejected, unique values, goal-referenced-only, plus the aspect-shaped `candidates[].pre` rejection) against the shipped engine — exact match. Normative text lives in the §10.8 Synthesis bullet. |
+| 2026-07-05 | **§10.8 goal-first rider + per-leg plan execution + per-gap `actions` catalog; §10.3 mark-clause rider — RATIFIED (Andrew, 2026-07-05, the renewal ratify session).** First-consumer fit from the LoftSpace lease-renewal design (`loftspace-lease-renewal-goal-authored-target-design.md`). **Revises three ratified 2026-07-04 sentences** (a strike-and-replace, flagged as such, not an additive block): (1) **plan execution** — per-leg dispatch through the frozen action vocabulary with pin-until-leg-complete + the leg's `__effect` close-credit + per-leg dispatch-count reset; the compiled `plan-<hash>` Loom-pattern shape is RESERVED for op-only single-actor plans (unbuilt, no consumer; the multi-actor blocker is §10.5's userTask `assignedTo`==`scopedTo`==subject invariant, deliberately untouched); (2) **mark pinning** — pinned per leg; leg boundaries mint fresh marks/`claimId`s (§10.3 clearing + close→reopen clauses revised in lockstep); (3) **synthesis domain** — the gap's declared `actions` catalog (closed, package-authored) rather than a global installed-effects catalog (auto-catalog reserved: an op effect carries no dispatch binding). **Adds:** the `actions` grammar (dispatch binding + `pre`/`effects`/`cost`; `pre`/`effects` paths must be row-reachable — root or the gap's `goalColumns`-bridged; an `actions[].pre` MAY be aspect-bridged, unlike `candidates[].pre`) and the goal-first authoring **doctrine rider** (sanctioned alternative to gating-cypher decomposition for ≥2-leg / per-entity-variable chains; the **terminal-leg rule**: a completion-flipping action's `pre` must entail the goal remainder, mirrored in its op's write guard; budget exhaustion surfaces a Health issue, never a silent park). Affected: Weaver engine (Fire 6 Inc3), pkgmgr install validation, package authors (`lease-signing` reference), Augur Fire 9 (plan-shaped proposals become action-sequences under the same execution). |
 | 2026-07-04 | **Weaver planner mandate RATIFIED (Andrew, both forks accepted) — §10.3 reserved key shapes + §10.8 Planner extension (surface frozen; engine build-pending, 9 fires).** Fork 1: Weaver re-expands its *selection* altitude (choosing *what* to dispatch) — the 13.1 collapse was an *I/O-placement* decision, not a *selection-intelligence* one; the 13.1 execution placement (Loom + bridge) stays intact. Fork 2: **in-place evolution + shadow mode + per-target `mode` cutover**, never a parallel Weaver 2.0. §10.3: documents the two **as-built** reserved `weaver-state` shapes (`<targetId>.__control`, `…​.__count` — the arch-review-flagged drift; the other three drift spots stay on `contract-10-weaver-text-reconciliation`) and adds `<targetId>.__effect.<gapColumn>.<actionRef>` effect bookkeeping. §10.8: additive opt-in "Planner extension" — op-DDL `effects` (guard-grammar atoms), `meta.weaverTarget` `mode: shadow\|planned` + per-gap `candidates`/`goal` (precedence: explicit `action` > `candidates` > `goal`; absent mode = byte-identical frozen behavior), deterministic selection/goal-regression synthesis, content-addressed `plan-<hash>` Loom-pattern vertices via the Processor, mark-pinned per-episode choice (reclaim never re-plans), `unplannable` escalation reuse. `effects` placement kept in §10.8 (Weaver is the consumer). Design: `weaver-planner-mandate-design.md`. |
 | 2026-06-19 | **§10.8 — `directOp` gains optional `reads?` (ratified, Andrew).** Additive + `omitempty`: a `directOp` gap action may declare `reads?` — its dispatched op's `contextHint.reads` (bare vertex keys, each a literal or `row.<column>`) — so an op that must hydrate its candidate vertex gets the key from the lens row. Needed because no Weaver gap action declared the dispatched op's reads, and the off-graph-blob GC's `directOp(TombstoneObject)` must hydrate the object to read its `data.linkEpoch` for the orphan-detection stale-check; the candidate key is already the lens row's `entityKey`, so this routes it. Engine: `GapActionSpec`/`GapAction` gain `Reads []string`; `buildPlan`'s `directOp` branch resolves the templates + sets `plan.reads`. The off-graph blob plane (`objects-base`) is the first `directOp` consumer. No existing target's emitted body changes (omitempty). |
