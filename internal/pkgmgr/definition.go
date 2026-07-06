@@ -193,6 +193,15 @@ type WeaverTargetSpec struct {
 	// into the meta.weaverTarget body so the Weaver registry parses it into a
 	// runtime AugurPolicy; nil emits no `augur` key (the frozen-contract shape).
 	Augur *AugurSpec
+
+	// Mode selects the planner-extension posture (Contract #10 §10.8 Planner
+	// extension, mirrors the engine's Target.Mode): "" (the default — omitted
+	// from the emitted body) is frozen table-only behavior, byte-identical to
+	// every target installed before the planner mandate; "shadow" computes the
+	// planner's pick per gap but never dispatches it; "planned" dispatches the
+	// planner's pick for real (a gap needs Goal + Actions, or Candidates, to
+	// have anything for the planner to pick from).
+	Mode string
 }
 
 // AugurSpec mirrors the engine's AugurPolicy (Contract #10 §10.8 "Augur
@@ -248,6 +257,59 @@ type GapActionSpec struct {
 	// omitted.
 	IssueCode     string
 	IssueSeverity string
+
+	// Goal is the Fire-6 goal-regression synthesis target (Contract #10 §10.8
+	// Planner extension, the loftspace-lease-renewal-goal-authored-target-design
+	// R1): a §10.5 guard-grammar predicate over the gap's row (goalColumns-
+	// bridged aspect facts included) the planner searches Actions to satisfy.
+	// Required alongside Actions in both directions — install rejects a goal
+	// with an empty catalog, and a catalog with no goal to synthesize toward.
+	// Mutually exclusive in practice with Action/Candidates (a target picks one
+	// remediation shape per gap), though the installer does not enforce that —
+	// the engine's dispatch order (explicit Action wins, then goal) makes a
+	// combination merely redundant, not unsafe.
+	Goal json.RawMessage
+	// GoalColumns bridges an ASPECT-qualified fact Goal addresses (e.g.
+	// `subject.signature.data.signedAt`) to the lens's flattened row column
+	// name — a §10.2 row has no aspect tags, so without this map Goal could
+	// never see an Effect's aspect path as satisfied. Map key = the lens
+	// BodyColumn name; value = its guard-grammar path string
+	// ("subject.<aspect>.data.<field>"). A root-shaped column needs no entry
+	// (it already addresses subject.data.<column> by default).
+	GoalColumns map[string]string
+	// Actions is the gap's planning catalog — a per-gap, package-authored set
+	// of dispatchable actions (the same action-contract shape as GapActionSpec)
+	// each coupled with the planner-facing Pre/Effects/Cost triple. The
+	// installer requires every Pre/Effects path to be row-reachable (a root
+	// column, or an aspect path this gap's GoalColumns bridges) so no entry is
+	// permanently ineligible or un-satisfiable.
+	Actions []ActionCatalogEntrySpec
+}
+
+// ActionCatalogEntrySpec mirrors the engine's ActionCatalogEntry (Contract #10
+// §10.8 Planner extension, R1) field-for-field: one entry in a goal gap's
+// Actions catalog. Ref identifies the entry for the synthesized plan's steps
+// and the canonical tie-break (cost ascending, then Ref lexicographically);
+// the Action/Pattern/.../Reads fields are the same dispatch-binding shape as
+// GapActionSpec. Pre optionally gates this entry's eligibility in the search;
+// Effects are the atoms it entails once dispatched (required — an entry with
+// nothing it entails can never advance a plan; each must be a concrete
+// present/absent/equals assertion, never anyOf/not); Cost ranks the search
+// (ascending, ties break on Ref; omitted/zero defaults to 1 at the engine).
+type ActionCatalogEntrySpec struct {
+	Ref       string
+	Action    string
+	Pattern   string
+	Subject   string
+	Adapter   string
+	Operation string
+	Assignee  string
+	Target    string
+	Params    map[string]string
+	Reads     []string
+	Pre       json.RawMessage
+	Effects   []json.RawMessage
+	Cost      int
 }
 
 // LoomPatternSpec is one meta.loomPattern meta-vertex a package declares

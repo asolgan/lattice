@@ -402,7 +402,24 @@ func validateWeaverTargetArtifact(wc WeaverTargetArtifactContent) ArtifactValida
 func weaverTargetArtifactDefinition(wc WeaverTargetArtifactContent, name, version string) Definition {
 	gaps := make(map[string]GapActionSpec, len(wc.Gaps))
 	for col, ga := range wc.Gaps {
-		gaps[col] = GapActionSpec(ga)
+		// Field-by-field, not a type conversion: GapActionArtifact is a
+		// deliberately restricted subset of GapActionSpec (no goal-authoring
+		// surface — same posture as WeaverTargetArtifactContent excluding
+		// Augur below), so the two types no longer share an identical
+		// underlying field sequence.
+		gaps[col] = GapActionSpec{
+			Action:        ga.Action,
+			Pattern:       ga.Pattern,
+			Subject:       ga.Subject,
+			Adapter:       ga.Adapter,
+			Operation:     ga.Operation,
+			Assignee:      ga.Assignee,
+			Target:        ga.Target,
+			Params:        ga.Params,
+			Reads:         ga.Reads,
+			IssueCode:     ga.IssueCode,
+			IssueSeverity: ga.IssueSeverity,
+		}
 	}
 	return Definition{
 		Name:    name,

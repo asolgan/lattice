@@ -416,11 +416,12 @@ func resolveLensRef(lensRef string, lensByCanonical map[string]string) (string, 
 
 // weaverTargetSpecBody builds the meta.weaverTarget body stored as the `spec`
 // aspect's data — the §10.8 `{targetId, lensRef, gaps}` shape the Weaver
-// registry deserializes into a runtime Target. Optional gap-action fields are
-// omitted when empty so the emitted body matches the engine's minimal shape.
-// The `pattern` (triggerLoom) and `operation` (assignTask/directOp) refs
-// are shipped verbatim; the engine registry resolves them live at dispatch
-// (patternMetaKey / opMetaKey).
+// registry deserializes into a runtime Target, plus the optional `mode`
+// planner-extension posture. Optional gap-action fields are omitted when empty
+// so the emitted body matches the engine's minimal shape. The `pattern`
+// (triggerLoom) and `operation` (assignTask/directOp) refs are shipped
+// verbatim; the engine registry resolves them live at dispatch (patternMetaKey
+// / opMetaKey).
 func weaverTargetSpecBody(t WeaverTargetSpec, lensRef string) map[string]any {
 	gaps := make(map[string]any, len(t.Gaps))
 	for col, ga := range t.Gaps {
@@ -433,6 +434,9 @@ func weaverTargetSpecBody(t WeaverTargetSpec, lensRef string) map[string]any {
 	}
 	if t.Augur != nil {
 		body["augur"] = augurBody(t.Augur)
+	}
+	if t.Mode != "" {
+		body["mode"] = t.Mode
 	}
 	return body
 }
@@ -522,6 +526,77 @@ func gapActionBody(ga GapActionSpec) map[string]any {
 	}
 	if ga.IssueSeverity != "" {
 		body["issueSeverity"] = ga.IssueSeverity
+	}
+	if len(ga.Goal) > 0 {
+		body["goal"] = ga.Goal
+	}
+	if len(ga.GoalColumns) > 0 {
+		cols := make(map[string]any, len(ga.GoalColumns))
+		for k, v := range ga.GoalColumns {
+			cols[k] = v
+		}
+		body["goalColumns"] = cols
+	}
+	if len(ga.Actions) > 0 {
+		actions := make([]any, len(ga.Actions))
+		for i, entry := range ga.Actions {
+			actions[i] = actionCatalogEntryBody(entry)
+		}
+		body["actions"] = actions
+	}
+	return body
+}
+
+// actionCatalogEntryBody emits one Actions-catalog entry (Contract #10 §10.8
+// Planner extension, R1), including only the fields the engine parses and
+// omitting empty optionals so the body matches the engine's ActionCatalogEntry
+// shape. Pattern/Operation are shipped verbatim, same as gapActionBody.
+func actionCatalogEntryBody(e ActionCatalogEntrySpec) map[string]any {
+	body := map[string]any{"ref": e.Ref, "action": e.Action}
+	if e.Pattern != "" {
+		body["pattern"] = e.Pattern
+	}
+	if e.Subject != "" {
+		body["subject"] = e.Subject
+	}
+	if e.Adapter != "" {
+		body["adapter"] = e.Adapter
+	}
+	if e.Operation != "" {
+		body["operation"] = e.Operation
+	}
+	if e.Assignee != "" {
+		body["assignee"] = e.Assignee
+	}
+	if e.Target != "" {
+		body["target"] = e.Target
+	}
+	if len(e.Params) > 0 {
+		params := make(map[string]any, len(e.Params))
+		for k, v := range e.Params {
+			params[k] = v
+		}
+		body["params"] = params
+	}
+	if len(e.Reads) > 0 {
+		reads := make([]any, len(e.Reads))
+		for i, r := range e.Reads {
+			reads[i] = r
+		}
+		body["reads"] = reads
+	}
+	if len(e.Pre) > 0 {
+		body["pre"] = e.Pre
+	}
+	if len(e.Effects) > 0 {
+		effects := make([]any, len(e.Effects))
+		for i, eff := range e.Effects {
+			effects[i] = eff
+		}
+		body["effects"] = effects
+	}
+	if e.Cost != 0 {
+		body["cost"] = e.Cost
 	}
 	return body
 }

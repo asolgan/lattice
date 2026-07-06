@@ -91,6 +91,9 @@ func (def Definition) validateWeaverTargets() error {
 				idx, t.TargetID, prev)
 		}
 		seen[t.TargetID] = idx
+		if err := validateTargetMode(idx, t.TargetID, t.Mode); err != nil {
+			return err
+		}
 		for col, ga := range t.Gaps {
 			if !strings.HasPrefix(col, gapColumnPrefix) || col == gapColumnPrefix {
 				return fmt.Errorf("pkgmgr: WeaverTarget[%d] %q: gaps key %q does not match the missing_<gap> column convention",
@@ -104,7 +107,23 @@ func (def Definition) validateWeaverTargets() error {
 				return fmt.Errorf("pkgmgr: WeaverTarget[%d] %q: gaps key %q param %q is reserved (the engine writes the OCC revision-condition under that payload field)",
 					idx, t.TargetID, col, reservedGapParam)
 			}
-			if err := validateGapAction(idx, t.TargetID, col, ga); err != nil {
+			// A goal-authored gap (R1) legitimately declares no top-level
+			// Action — dispatch comes entirely from the Actions catalog via
+			// goal regression (mirrors the engine: buildPlan's Mode==planned
+			// branch falls through to the goal/candidates resolution exactly
+			// when ga.Action == ""). validateGapAction's action-table check
+			// only applies when an explicit Action is authored; a gap with
+			// neither an Action nor a Goal has nothing telling the engine what
+			// to do and is rejected here instead.
+			if ga.Action != "" {
+				if err := validateGapAction(idx, t.TargetID, col, ga); err != nil {
+					return err
+				}
+			} else if len(ga.Goal) == 0 {
+				return fmt.Errorf("pkgmgr: WeaverTarget[%d] %q: gaps key %q has no action and no goal (a gap must declare an explicit action or a goal-authored catalog)",
+					idx, t.TargetID, col)
+			}
+			if err := validateGapPlannerFields(idx, t.TargetID, col, ga); err != nil {
 				return err
 			}
 		}

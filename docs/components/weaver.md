@@ -460,8 +460,8 @@ aspect fact is invisible under the wrong key); with the bridge, the same row cor
 as already met (zero-step plan). Zero new Weaver Core-KV reads either way.
 
 This increment resolved the schema and proved it in isolation, ahead of R1's actual dispatch wiring (see
-below) — no package authors a `goalColumns`/`goal` pair via `pkgmgr` yet (a raw-JSON-installed target is
-the only way to exercise it today, same residual R1 left open).
+below). A package now authors a `goalColumns`/`goal` pair via `pkgmgr.GapActionSpec` directly (the R1
+pkgmgr-authoring increment below) — a raw-JSON-installed target is no longer the only way to exercise it.
 
 ## Goal gap actions catalog (Fire 6 Increment 3, parse + validate only)
 
@@ -546,12 +546,42 @@ even when a fresh rank would prefer a different one (both at the resolver and th
 completed leg releases and the SAME delivery/sweep pass advances to the next leg under a fresh mark and
 claimId; a goal no catalog action can ever reach escalates to the augur reasoning op instead of alerting.
 
-**Deferred to a later R1 increment** (`loftspace-lease-renewal-goal-authored-target-design.md` §9): pkgmgr
-authoring fields for `mode`/`goal`/`goalColumns`/`actions` (today a goal-mode target can only be installed
-via raw JSON, bypassing `pkgmgr` — a gap across Fires 4/5 too, not new here) and the oscillation
-detector's ref→declared-effects bridge for a goal leg (the generic `maxretries_<g>` budget-suppression
-mechanism already applies to every gap shape, goal included; a goal-leg-specific Health issue at the
-suppression site is filed follow-up polish, not a functional gap).
+**Deferred as follow-up polish, not a functional gap:** the oscillation detector's ref→declared-effects
+bridge for a goal leg (the generic `maxretries_<g>` budget-suppression mechanism already applies to every
+gap shape, goal included; a goal-leg-specific Health issue at the suppression site is the remaining polish).
+
+## pkgmgr authoring — `mode`/`goal`/`goalColumns`/`actions` (R1 pkgmgr increment)
+
+The engine-side wiring above landed ahead of any package being able to author it — until this increment, a
+goal-mode target could only be installed via raw JSON, bypassing `pkgmgr` entirely (a gap that also spanned
+Fires 4/5's `mode`/`candidates` surfaces). `pkgmgr.WeaverTargetSpec` gained `Mode`; `pkgmgr.GapActionSpec`
+gained `Goal`/`GoalColumns`/`Actions` (`[]ActionCatalogEntrySpec`, field-for-field mirroring the engine's
+`ActionCatalogEntry`) — `Candidates` (Fire 5) authoring remains a separate, not-yet-built pkgmgr surface,
+out of scope here. `weaverTargetSpecBody`/`gapActionBody` (`build.go`) emit the new fields verbatim
+(`json.RawMessage` values pass through `map[string]any` unchanged, the same pattern `DDLSpec.Effects`
+already uses) so the installed body matches exactly what the engine's registry parses.
+
+Install-time validation (`plannerfields.go`) mirrors the engine's `validateTarget` mode check,
+`parseGoalColumns`, and `validateActionsCatalog` (including the **row-reachability** rule for `pre`/
+`effects` — root-shaped, or aspect-shaped and bridged by this gap's `goalColumns`) so a package that would
+fail the engine's own CDC-load validation fails loudly at install instead, same doctrine as `validateEffects`
+for op-DDL `Effects`. One adaptation the mirror required: a goal-authored gap legitimately declares no
+top-level `action` (dispatch comes entirely from the `actions` catalog via goal regression — the engine's
+own `buildPlan` Mode==planned branch falls through to goal resolution exactly when `ga.Action == ""`), so
+`validateGapAction`'s action-table check now runs only when an explicit `Action` is authored; a gap with
+neither an `Action` nor a `Goal` is rejected instead (nothing tells the engine what to do). The
+capability-materializer's AI-authored-target mirror (`capabilitymaterializer.go`) stays a deliberately
+restricted subset — it does not expose the goal-authoring surface, same posture as its existing `augur`
+exclusion — so its `GapActionArtifact`→`GapActionSpec` conversion switched from a bare type conversion to
+an explicit field list (the two types no longer share an identical field sequence).
+
+Proven in `plannerfields_test.go`: the renewal target's actual shape (a root-mapped fact, a
+`goalColumns`-bridged aspect fact, the terminal-leg `pre`) installs clean; every install-time rejection
+(mode unknown, goal without actions and vice versa, malformed guard, root-shaped/duplicate/unreferenced
+`goalColumns`, duplicate/empty `ref`/`action`, negative cost, missing/non-concrete/unreachable
+`effects`, unreachable `pre`) is exercised; `weaverTargetSpecBody`'s emitted shape is asserted directly.
+Every pre-existing `pkgmgr` weaver-target test still passes unchanged (byte-identical for every
+non-goal-authored gap).
 
 ---
 
@@ -805,7 +835,7 @@ What ships today in `internal/weaver` + `cmd/weaver`, and what is deliberately d
 | **Control API/CLI (Pause/Resume surface)** | ✅ Shipped (FR30). `internal/weaver/control` exposes `list`/`disable`/`enable`/`revoke` over a `nats-io/nats.go/micro` Services responder; `lattice weaver` CLI group. See "Control plane" above. |
 | **Lane 2 (event-targeted-audit) + `weaver-work`** | ⏳ Phase 3 (§10.3: no durable bucket today). |
 | **Real target Lens via Refractor + playbook package data** | ✅ Shipped — the `lease-signing` reference vertical provides a real convergence target + §10.8 playbook; the engine also runs against test-written §10.2 fixture rows. |
-| **Planner mandate (dispatcher → solver)** | 🏗️ Building (Contract #10 §10.8 "Planner extension", ratified 2026-07-04). Fire 1 ✅: op-DDL `Effects` (`internal/pkgmgr` `DDLSpec.Effects`, §10.5 guard-grammar predicates a commit entails, parsed by the new standalone `internal/guardgrammar` package) + install-time validation (`validateEffects`); the `lease-signing` package declares `SignLease`→`.signature present` and `RecordLeaseServiceOutcome`→`.outcome present`. Fire 2 ✅: the `__effect` confidence window (see above). Fire 3 ✅: the pure `internal/weaver/planner` goal-regression library (see above) — table-tested, catalog-permutation-stable. Fire 4 ✅: `mode`/`candidates`/`goal` install-validated parsing + the shadow-compare diagnostic (see above) — zero dispatch-decision change; the Strategist's real dispatch reads only `ga.Action`. Fire 5 ✅: `mode:"planned"` candidate selection actually dispatches (see above) — the first fire that changes a real decision; mark-pinned across reclaim, byte-identical for every other mode/explicit-action gap. Fire 6 Increments 1–3 ✅: the runtime op-effects catalog, the goal-regression State-schema (row↔aspect) bridge, and the per-gap `actions` planning-catalog parse/install-validation (see above) — all zero dispatch-decision change. Fire 6 R1 ✅: `resolveGoalAction`'s dispatch wiring — `planner.Synthesize` over a gap's `actions` catalog, per-leg dispatch + pin, and `releaseCompletedLeg`'s effects-hold leg-advance (see "Goal-regression dispatch + per-leg pin/release" above) — the first fire a `goal` gap actually dispatches; `pkgmgr` authoring fields for `mode`/`goal`/`goalColumns`/`actions` remain (today only a raw-JSON-installed target can exercise it). Fire 7 ✅: the contraction monitor + oscillation detector (see above) — heartbeat-surfaced diagnostics only, zero dispatch-decision change (a goal leg's own ref→effects oscillation bridge is unwired follow-up polish). Fire 8 ✅: admission control (dispatch-pacing token bucket + §10.2 `priority` column). Fire 9 (Augur floor) remains: `_bmad-output/implementation-artifacts/weaver-planner-mandate-design.md` §8. |
+| **Planner mandate (dispatcher → solver)** | 🏗️ Building (Contract #10 §10.8 "Planner extension", ratified 2026-07-04). Fire 1 ✅: op-DDL `Effects` (`internal/pkgmgr` `DDLSpec.Effects`, §10.5 guard-grammar predicates a commit entails, parsed by the new standalone `internal/guardgrammar` package) + install-time validation (`validateEffects`); the `lease-signing` package declares `SignLease`→`.signature present` and `RecordLeaseServiceOutcome`→`.outcome present`. Fire 2 ✅: the `__effect` confidence window (see above). Fire 3 ✅: the pure `internal/weaver/planner` goal-regression library (see above) — table-tested, catalog-permutation-stable. Fire 4 ✅: `mode`/`candidates`/`goal` install-validated parsing + the shadow-compare diagnostic (see above) — zero dispatch-decision change; the Strategist's real dispatch reads only `ga.Action`. Fire 5 ✅: `mode:"planned"` candidate selection actually dispatches (see above) — the first fire that changes a real decision; mark-pinned across reclaim, byte-identical for every other mode/explicit-action gap. Fire 6 Increments 1–3 ✅: the runtime op-effects catalog, the goal-regression State-schema (row↔aspect) bridge, and the per-gap `actions` planning-catalog parse/install-validation (see above) — all zero dispatch-decision change. Fire 6 R1 ✅: `resolveGoalAction`'s dispatch wiring — `planner.Synthesize` over a gap's `actions` catalog, per-leg dispatch + pin, and `releaseCompletedLeg`'s effects-hold leg-advance (see "Goal-regression dispatch + per-leg pin/release" above) — the first fire a `goal` gap actually dispatches. Fire 6 R1 pkgmgr ✅: `pkgmgr` authoring fields for `mode`/`goal`/`goalColumns`/`actions` (see "pkgmgr authoring" above) — a package now authors a goal-mode target directly; `Candidates` (Fire 5) authoring remains a separate, unbuilt pkgmgr surface. Fire 7 ✅: the contraction monitor + oscillation detector (see above) — heartbeat-surfaced diagnostics only, zero dispatch-decision change (a goal leg's own ref→effects oscillation bridge is unwired follow-up polish). Fire 8 ✅: admission control (dispatch-pacing token bucket + §10.2 `priority` column). Fire 9 (Augur floor) remains: `_bmad-output/implementation-artifacts/weaver-planner-mandate-design.md` §8. |
 
 ---
 
