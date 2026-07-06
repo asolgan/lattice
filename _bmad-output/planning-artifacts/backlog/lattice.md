@@ -115,8 +115,8 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 **forks** (Gateway, read-path auth, Vault, multi-cell, HA-NATS) and **frozen-contract** changes are
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
-> 🎯 **Build-ready now**: **Object crypto-shred Fire 2** (Fire 1 platform seam shipped `93d6f88`;
-> Loupe client-side encrypt/decrypt path next) — unblocked, not yet picked up. *Still genuinely
+> 🎯 **Build-ready now**: **Object crypto-shred Fire 3** (Fires 1+2 shipped `93d6f88`/`6169671`;
+> erasure-coverage tests next) — unblocked, not yet picked up. *Still genuinely
 > gated*: **AI-caps Fire 4** (Andrew sign-off on AI-code-execution, not the sandbox).
 
 ### Security & trust boundary
@@ -130,7 +130,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | **[identity-hygiene] Dedup over encrypted PII (duplicateCandidates)** | Post-Vault, the lens's WHERE matching (email/phone equality, name Levenshtein) runs on per-identity-DEK ciphertext → functionally inert; a secure lens can't fix in-engine matching. Needs a design: blind-index/HMAC companion aspect vs sanctioned engine mechanism. | ★★ | M | 📋 needs-design (Designer) · context in the [vault design](../../implementation-artifacts/vault-crypto-shredding-design.md) Fire 5b-i checkpoint |
-| **[Object Store] Crypto-shred for object-store blobs** | Vault covers sensitive **aspects** (Core KV) but not PII-bearing **blobs** (lease PDFs, ID scans, signatures) — extend crypto-shred to the Object Store. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/object-store-crypto-shred-design.md) §8 checkpoint · Fire 1 (platform seam) shipped `93d6f88`; next: Fire 2 (Loupe client-side encrypt/decrypt) |
+| **[Object Store] Crypto-shred for object-store blobs** | Vault covers sensitive **aspects** (Core KV) but not PII-bearing **blobs** (lease PDFs, ID scans, signatures) — extend crypto-shred to the Object Store. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/object-store-crypto-shred-design.md) §8 checkpoint · Fire 1+2 shipped (`93d6f88`, `6169671`); next: Fire 3 (erasure-coverage tests) |
 
 ### External-I/O maturity (bridge follow-ons)
 | Item | What it is | Imp | Size | State |
@@ -192,6 +192,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-06 · `6169671` · [Privacy/Object Store] Crypto-shred Fire 2 — Loupe trusted-client encrypt/decrypt path (AES-256-GCM, oid-bound AAD, Vault WrapKey/UnwrapKey RPCs); 3-layer reviewed, fixed forward (AAD binding); Fire 3 next
 - 2026-07-06 · `98ac889` · [Refractor] Personal Lens Fire PL.4 — Hydration Hook (`personal.hydrate` control RPC, cold bulk projection + terminal marker); 3-layer reviewed, fixed forward (SetRevisionCursor CAS race)
 - 2026-07-06 · `6cfda76` · [Weaver] weaver-exhausted-escalation-and-model CLOSED (Fire 9 Inc1) — exhausted budget escalates to Augur or raises `GapBudgetExhausted`; `augur.model` threaded; 3-layer reviewed, fixed forward (mark-storm bug)
 - 2026-07-06 · `7f34136` · [LoftSpace/Weaver planner] Lease-renewal R3 CLOSED — `renewalsRead` dual-anchor lens + tenant/landlord Renewal cards + task CTAs; 3-layer reviewed, fixed forward (co-manager read-access gap, numeric coercion)

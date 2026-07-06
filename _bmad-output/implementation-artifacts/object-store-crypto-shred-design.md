@@ -387,6 +387,37 @@ this design needs §3.10's per-identity DEK + the `internal/vault` SPI. Build or
 > (`cmd/loupe/objects.go` trusted-client encrypt/decrypt path) — no behavior is visible from Fire 1 alone
 > (no uploader sets `sensitive` yet).
 
+> **🏗️ CHECKPOINT (2026-07-06).** Fire 2 shipped `6169671` (main, no worktree left open — merged
+> fast-forward). Built: two new Vault NATS RPCs (`WrapKey`/`UnwrapKey`, `internal/vault/service.go`,
+> mirroring the existing `Decrypt` endpoint's panic-recovery + generic-error-over-the-wire posture) —
+> needed because Loupe has no in-process Vault (only the Processor does), a gap the design's Fire 2
+> sketch hadn't spelled out; `lattice.vault.wrapkey`/`unwrapkey` granted to Loupe's nkey (mirroring
+> `lattice.vault.decrypt`), `deploy/nats-server.conf` regenerated, `internal/natsperm` reachability test
+> added. `cmd/loupe/objects.go`/`objects_crypto.go`: `handleSensitiveObjectUpload` reads the plaintext
+> fully (an AEAD seals a whole buffer), computes the plaintext digest + identity-salted oid *before*
+> encrypting, generates a random CEK, AES-256-GCM-seals the bytes with the oid as AAD (hardened during
+> review — binds ciphertext to its object so a `.content` document splice can't graft one object's bytes
+> onto another's oid), wraps the CEK via the Vault RPC, streams ciphertext to `core-objects`, submits
+> `AttachObject` with the envelope. `handleSensitiveObjectDecrypt` (`GET ?decrypt=true`) unwraps, decrypts,
+> verifies the GCM tag + re-hashes the plaintext digest, serves under the same anti-XSS disposition/CSP as
+> the default (ciphertext) path. 3-layer adversarial reviewed (Blind Hunter, Edge Case Hunter, Acceptance
+> Auditor, all corroborating a faithful build); fixed forward the AAD-binding gap the Blind Hunter found
+> (was `nil` AAD) before shipping. Tests: `internal/vault/service_test.go` (wrap/unwrap round-trip,
+> shredded-identity-denied), `cmd/loupe/objects_crypto_test.go` (digest golden value, AEAD round-trip +
+> wrong-key/tampered/wrong-AAD rejection, wrappedCEK encode/decode), `internal/natsperm` (Loupe-only
+> reachability). **Not covered by an automated test (flagged by the Acceptance Auditor, not blocking):** a
+> full Loupe-handler-level HTTP upload→ciphertext-at-rest→decrypt round trip — `cmd/loupe` has no
+> live-server HTTP integration harness for any handler today (verified: none of its existing `_test.go`
+> files stand up a real `*server` + httptest), and Fire 2 is dormant (no consumer sets `sensitive` yet, so
+> there is nothing to click through in Loupe's UI) — deferred to **Fire 4** (the real vertical consumer),
+> matching how Fire 1's own checkpoint deferred `make verify-package-objects-base` similarly. Two
+> pre-existing, non-blocking gaps the review surfaced (shared with the non-sensitive path / Fire 1's DDL,
+> not introduced by Fire 2) were spun off as chips rather than fixed inline: the dedup self-heal's silent
+> handling of a transient KV read error, and `governingIdentity` lacking the liveness check `targetKey`
+> gets. **Next: Fire 3** (erasure-coverage tests — `ShredIdentityKey` → `UnwrapKey` fails → the blob is
+> permanently undecryptable — falls out of Fire 1's DEK-wrapping with no new code, so this fire is the
+> proof).
+
 ---
 
 ## 9. Open ratification items (for Andrew)
