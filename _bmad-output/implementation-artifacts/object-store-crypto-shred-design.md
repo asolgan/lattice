@@ -434,6 +434,50 @@ this design needs §3.10's per-identity DEK + the `internal/vault` SPI. Build or
 > `sensitive`, e.g. the LoftSpace lease-signing PDF or a Clinic ID scan — the demand proof; Verticals- or
 > Lattice-stream territory, either steward can pick it up).
 
+> **🔭 Fire 4 grounding finding (2026-07-06, no code committed) — flag-for-Andrew before building.**
+> Grounded both candidate consumers: **Clinic has no object-store upload path at all** (no
+> `cmd/clinic-app/objects.go`) — out of scope, would be building a whole new upload feature, not
+> flipping an existing one. **LoftSpace's lease-signing PDF is real and live**
+> (`cmd/loftspace-app/lease_document.go:118` `handleLeaseDocumentAttach`, applicant identity already
+> resolvable as `row.Applicant`) — the obvious target. **But it cannot simply mirror Fire 2's Loupe
+> build**, because Fire 2's crypto path depends on a **Loupe-only privilege**: `fetchPiiKeyEnvelope`
+> (`cmd/loupe/objects_crypto.go:119`) reads the identity's `piiKey` Envelope via a **direct Core-KV
+> read** — the P5 inspector exception only Loupe gets — before calling `Vault.WrapKey`/`UnwrapKey`.
+> `loftspace-app` cannot do that read (P5), and its NATS nkey has **no `lattice.vault.wrapkey`/
+> `unwrapkey` grant today** — `internal/natsperm/vault_wrapkey_test.go` explicitly pins clinic-app-class
+> vertical apps as **denied** those two RPC subjects, proving the current design deliberately scopes
+> them to Loupe only.
+>
+> Closing this gap for real needs two changes, and the **second is a genuine trust-boundary
+> widening, not a mechanical mirror**:
+> 1. **P5-compliant read seam** (uncontroversial, additive): add a sibling lens in `privacy-base`
+>    projecting the piiKey Envelope's non-secret fields (`wrappedDEK, keyId, kekVersion, alg` — inert
+>    without the Vault's master KEK, same posture as the existing `shredStatus` lens) to a new KV
+>    bucket a vertical app can read via ordinary `KVGet` — no different in kind from any other lens.
+> 2. **Extend the `lattice.vault.wrapkey`/`unwrapkey` NATS grant from Loupe-only to `loftspace-app`**
+>    (`deploy/gen-dev-nkeys/main.go`'s matrix + regenerate `deploy/nats-server.conf`) — this is the part
+>    that changes who may originate an envelope-key wrap/unwrap, i.e. who is trusted to mint/read
+>    ciphertext under an identity's DEK client-side. Fire 2's own design language treats Loupe as "a
+>    named trusted plaintext consumer" for this RPC specifically (`deploy/gen-dev-nkeys/main.go:181`
+>    comment) — extending that same trust to a second, non-console component is the kind of security-
+>    posture decision this steward's own guardrails reserve for Andrew (Vault/crypto-shred trust
+>    boundary), not an implementation detail to decide solo. **Not built here** — attempted, then
+>    stopped before committing anything (the auto-mode permission classifier independently flagged the
+>    same concern).
+>
+> **Recommendation for Andrew's call:** ratify extending the wrapkey/unwrapkey grant to `loftspace-app`
+> specifically (narrowest widening — same two subjects Loupe already has, no broader Vault access, no
+> Core-KV access), on the reasoning that §7.2 already lists vertical apps as trusted bytes-plane
+> uploaders standing alongside Loupe, and Fire 4 was scoped from the start to have a vertical app do
+> this exact client-side encrypt/decrypt. **Once ratified**, Fire 4 Increment 1 is: the `privacy-base`
+> `piiKeyEnvelope` lens (harmless on its own, drafted and test-passing in a discarded worktree, easy to
+> redo) + the natsperm grant + extending `internal/natsperm/vault_wrapkey_test.go` to prove
+> `loftspace-app` reachable (alongside `clinic-app` staying denied, since Clinic isn't a Fire-4
+> consumer) + extracting `cmd/loupe/objects_crypto.go`'s generic AEAD/wrap-RPC helpers into a shared
+> `internal/objectcrypto` package so `loftspace-app` doesn't duplicate ~150 lines of security-sensitive
+> code. Increment 2: wire `handleLeaseDocumentAttach` + a decrypt-capable read path. Full 3-layer
+> review on both (capability/crypto plane).
+
 ---
 
 ## 9. Open ratification items (for Andrew)

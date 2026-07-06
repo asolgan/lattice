@@ -115,9 +115,9 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 **forks** (Gateway, read-path auth, Vault, multi-cell, HA-NATS) and **frozen-contract** changes are
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
-> 🎯 **Build-ready now**: **Object crypto-shred Fire 4** (Fires 1+2+3 shipped `93d6f88`/`6169671`/`5e83939`;
-> a real vertical consumer — flip one genuine PII blob to `sensitive`, e.g. LoftSpace lease-signing PDF or
-> a Clinic ID scan) — unblocked, not yet picked up. *Still genuinely gated*: **AI-caps Fire 4** (Andrew
+> 🎯 **Build-ready now**: nothing fully unblocked — see the two 🔭 flags below.
+> *Genuinely gated*: **Object crypto-shred Fire 4** (Fires 1+2+3 shipped `93d6f88`/`6169671`/`5e83939`) —
+> grounding surfaced a real trust-boundary fork, flagged for Andrew (🔭 below); **AI-caps Fire 4** (Andrew
 > sign-off on AI-code-execution, not the sandbox).
 
 ### Security & trust boundary
@@ -131,7 +131,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | **[identity-hygiene] Dedup over encrypted PII (duplicateCandidates)** | Post-Vault, the lens's WHERE matching (email/phone equality, name Levenshtein) runs on per-identity-DEK ciphertext → functionally inert; a secure lens can't fix in-engine matching. Needs a design: blind-index/HMAC companion aspect vs sanctioned engine mechanism. | ★★ | M | 📋 needs-design (Designer) · context in the [vault design](../../implementation-artifacts/vault-crypto-shredding-design.md) Fire 5b-i checkpoint |
-| **[Object Store] Crypto-shred for object-store blobs** | Vault covers sensitive **aspects** (Core KV) but not PII-bearing **blobs** (lease PDFs, ID scans, signatures) — extend crypto-shred to the Object Store. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/object-store-crypto-shred-design.md) §8 checkpoint · Fire 1+2+3 shipped (`93d6f88`, `6169671`, `5e83939`); next: Fire 4 (real vertical consumer) |
+| **[Object Store] Crypto-shred for object-store blobs** | Vault covers sensitive **aspects** (Core KV) but not PII-bearing **blobs** (lease PDFs, ID scans, signatures) — extend crypto-shred to the Object Store. | ★★ | M | 🔭 flag-for-Andrew · [design](../../implementation-artifacts/object-store-crypto-shred-design.md) §8 finding · Fire 4 needs loftspace-app granted `lattice.vault.wrapkey/unwrapkey` (trust-boundary widen, Andrew's call) |
 
 ### External-I/O maturity (bridge follow-ons)
 | Item | What it is | Imp | Size | State |
