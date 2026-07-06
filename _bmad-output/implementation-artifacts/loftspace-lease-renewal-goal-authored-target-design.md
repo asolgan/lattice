@@ -385,6 +385,26 @@ would raise loud `PlaybookConfigError` alerts, not a silent wedge, but the order
 lives on the **lattice board only** (the verticals row was removed at ratification — lane
 consolidation); the contract edits committed at ratification per the ratified-contract-commit rule.
 
+> **🏗️ CHECKPOINT (2026-07-05, R2 shipped).** Package built + 3-layer reviewed. Two as-built deviations
+> from this doc's §4 text: **(1)** the renewal completion aspect is `.renewalSignature`, not `.signature`
+> as written above — `SignLease`'s pre-existing DDL already declares the effect path
+> `subject.signature.data.signedAt`, and Weaver's Fire-7 oscillation ring keys purely on the bare
+> `{Aspect,Field}` path with no vertex-type/operationType component, so the as-written name would have
+> let ordinary concurrent lease-signing + renewal-signing traffic false-trigger a freeze of both
+> unrelated targets (caught by the adversarial pass, not present in §11's original review — that pass
+> only checked disjointness within the new Target A/B pair, not against the pre-existing
+> `leaseApplicationComplete` target). **(2)** `SignRenewal` additionally rejects `RenewalNotOpen` when
+> `status != open` (a §4.4 gap: nothing else stopped a second submission against an already-complete
+> renewal from re-reading the by-then-extended `leaseEnd` and double-extending it); `SetRenewalTerms`
+> rejects non-integer `termMonths` (`InvalidTermMonths`) rather than silently truncating. `applicant`
+> confirmed load-bearing (a real link-verification hop distinct from `leaseApp`'s) and now declared in
+> `InputSchema` alongside `leaseApp` for both `VerifyGuarantor`/`SignRenewal`. **R3 note:** the
+> `assignTask` dispatch path (`internal/weaver/strategist.go`) never populates a task's bound op payload
+> beyond `assignee`/`scopedTo`/`forOperation` — `leaseApp`/`applicant`/`renewalKey` are NOT derivable by
+> a human from the task alone. R3's FE must supply these as hidden fields sourced from the
+> `renewalComplete`/`renewalsRead` row (which already carries `entityKey`/`tenant`/`landlord`), not ask
+> the operator to type NanoIDs. Next: R3 (FE).
+
 ## 10. Test strategy / migration
 
 Unit: planner fixtures (anyOf vacuous satisfaction, terminal-leg ordering under tie-break — the B1
