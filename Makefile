@@ -58,6 +58,7 @@ NKEY_CLINIC_APP ?= $(NKEY_DIR)/clinic-app.nk
 NKEY_LATTICE_PKG ?= $(NKEY_DIR)/lattice-pkg.nk
 NKEY_LATTICE_CLI ?= $(NKEY_DIR)/lattice.nk
 NKEY_GATEWAY ?= $(NKEY_DIR)/gateway.nk
+NKEY_CHRONICLER ?= $(NKEY_DIR)/chronicler.nk
 
 # VAULT_KEK_FILE — the Processor's sensitive-aspect crypto master KEK
 # (Contract #3 §3.10, internal/vault). UNLIKE the nkey seeds above (transport
@@ -338,7 +339,7 @@ provision-vault-kek:
 	@chmod 600 $(VAULT_KEK_FILE)
 
 ## up-full — Full local deployment on latest source: kernel (make up) +
-## orchestration tier (Loom/Weaver/Bridge/object-store-manager) + core packages
+## orchestration tier (Loom/Weaver/Bridge/object-store-manager/Chronicler) + core packages
 ## + Gateway (:8080, dev-mode) + Loupe, all in the background. When it returns,
 ## open http://127.0.0.1:7777.
 ## For a clean rebuild from scratch, run `make down` first.
@@ -361,7 +362,7 @@ up-full:
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LOUPE) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) LOUPE_PG_DSN=$(LOUPE_PG_DSN) ./bin/loupe >loupe.log 2>&1 </dev/null &
 	@sleep 1
 	@echo "==> Full Lattice ready. Loupe http://127.0.0.1:7777 · Gateway :8080 (dev-mode)."
-	@echo "==> Logs: loupe.log gateway.log loom.log weaver.log bridge.log objmgr.log refractor.log processor.log"
+	@echo "==> Logs: loupe.log gateway.log loom.log weaver.log bridge.log objmgr.log chronicler.log refractor.log processor.log"
 
 ## up-loftspace — Full stack + the LoftSpace vertical + the applicant app on :7788.
 ## Runs up-full, installs the LoftSpace vertical (orchestration-base → location-domain
@@ -480,15 +481,19 @@ provision-gateway-role:
 		-c "GRANT SELECT ON ALL TABLES IN SCHEMA public TO gateway;"
 
 ## orchestration — Build + start the orchestration tier (Loom, Weaver, Bridge,
-## object-store-manager) in the background. Requires a running deployment
-## (make up). object-store-manager needs no actor key; the rest load the admin
-## actor from the bootstrap JSON. Logs: loom.log weaver.log bridge.log objmgr.log.
-## Detects an already-running tier first and reuses it rather than killing and
-## restarting it out from under whoever else is relying on it.
+## object-store-manager, Chronicler) in the background. Requires a running
+## deployment (make up). object-store-manager needs no actor key; Chronicler
+## submits no ops (P2) but still authenticates via its own NKEY (natsperm
+## grants it $KV.orchestration-history.> + health-kv only); the rest load the
+## admin actor from the bootstrap JSON. Logs: loom.log weaver.log bridge.log
+## objmgr.log chronicler.log. Detects an already-running tier first and
+## reuses it rather than killing and restarting it out from under whoever
+## else is relying on it.
 orchestration:
 	@if pgrep -x loom >/dev/null 2>&1 && pgrep -x weaver >/dev/null 2>&1 && \
-	    pgrep -x bridge >/dev/null 2>&1 && pgrep "^object-store" >/dev/null 2>&1; then \
-		echo "==> Orchestration tier already running (loom/weaver/bridge/objmgr all up) — reusing."; \
+	    pgrep -x bridge >/dev/null 2>&1 && pgrep "^object-store" >/dev/null 2>&1 && \
+	    pgrep -x chronicler >/dev/null 2>&1; then \
+		echo "==> Orchestration tier already running (loom/weaver/bridge/objmgr/chronicler all up) — reusing."; \
 	else \
 		set -e; \
 		echo "==> Killing any prior orchestration processes..."; \
@@ -496,16 +501,19 @@ orchestration:
 		pkill -x weaver 2>/dev/null || true; \
 		pkill -x bridge 2>/dev/null || true; \
 		pkill "^object-store" 2>/dev/null || true; \
+		pkill -x chronicler 2>/dev/null || true; \
 		echo "==> Building orchestration binaries..."; \
 		go build -o bin/loom ./cmd/loom; \
 		go build -o bin/weaver ./cmd/weaver; \
 		go build -o bin/bridge ./cmd/bridge; \
 		go build -o bin/object-store-manager ./cmd/object-store-manager; \
-		echo "==> Starting Loom / Weaver / Bridge / object-store-manager in background..."; \
+		go build -o bin/chronicler ./cmd/chronicler; \
+		echo "==> Starting Loom / Weaver / Bridge / object-store-manager / Chronicler in background..."; \
 		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LOOM) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/loom >loom.log 2>&1 </dev/null & \
 		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_WEAVER) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/weaver >weaver.log 2>&1 </dev/null & \
 		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_BRIDGE) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/bridge >bridge.log 2>&1 </dev/null & \
 		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_OBJMGR) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/object-store-manager >objmgr.log 2>&1 </dev/null & \
+		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_CHRONICLER) ./bin/chronicler >chronicler.log 2>&1 </dev/null & \
 		echo "==> Orchestration tier started."; \
 	fi
 

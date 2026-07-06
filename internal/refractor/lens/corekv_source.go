@@ -69,6 +69,30 @@ type envelopeProbe struct {
 	Class string `json:"class"`
 }
 
+// sourceKindProbe peeks at a LensSpec body's `source.kind` without
+// unmarshalling into the (now Chronicler-only) SourceConfig shape.
+type sourceKindProbe struct {
+	Source *struct {
+		Kind string `json:"kind"`
+	} `json:"source"`
+}
+
+// isEventStreamSpec reports whether a lens spec body declares
+// `source.kind: "eventStream"` — a Chronicler-owned definition
+// (chronicler-host-reconciliation), never a Refractor lens. Mirrors
+// internal/chronicler's own isEventStreamSpec pre-check, inverted: that
+// package's discovery loop silently skips every non-eventStream spec: this
+// one silently skips every eventStream spec. A malformed body is treated as
+// non-eventStream — the normal unmarshal below still validates its shape
+// and reports fail-closed.
+func isEventStreamSpec(specBody []byte) bool {
+	var probe sourceKindProbe
+	if err := json.Unmarshal(specBody, &probe); err != nil {
+		return false
+	}
+	return probe.Source != nil && probe.Source.Kind == "eventStream"
+}
+
 // LensSpec mirrors the JSON aspect body stored at
 // `vtx.meta.<NanoID>.spec` (parent vertex class `meta.lens`). See
 // MORPH-DEVIATIONS Deviation 11.
@@ -93,14 +117,6 @@ type LensSpec struct {
 	// Output carries the §6.13 Output descriptor for an actor-aggregate lens.
 	// It is read declaratively in place of the per-canonical-name Go wrappers.
 	Output *OutputDescriptorSpec `json:"output,omitempty"`
-
-	// Source describes where this lens's rows are derived from. Absent ⇒
-	// {kind: "coreKv"} — re-execute CypherRule over Core-KV CDC, the only
-	// behavior every lens shipped before this field existed. See
-	// eventsource.go for the "eventStream" alternative (no Core-KV read, no
-	// cypher — the Chronicler's `eventStream` lens-source primitive,
-	// orchestration-history-read-model-design.md §2.2).
-	Source *SourceConfig `json:"source,omitempty"`
 }
 
 // OutputDescriptorSpec mirrors the JSON shape of the §6.13 Output descriptor
@@ -439,6 +455,14 @@ func (s *CoreKVSource) dispatchSpec(lensID string, body []byte, revision uint64)
 		s.logger.Error("lens spec unwrap failed", "lensId", lensID, "err", err)
 		return
 	}
+	if isEventStreamSpec(specBody) {
+		// Chronicler-owned (internal/chronicler discovers and projects these
+		// independently from its own vtx.meta.> watch) — Refractor no longer
+		// hosts eventStream lenses (chronicler-host-reconciliation). Skipped
+		// silently, the same way a non-meta.lens vertex is skipped, rather
+		// than falling through to translateSpec's cypherRule-required error.
+		return
+	}
 	var spec LensSpec
 	if err := json.Unmarshal(specBody, &spec); err != nil {
 		s.logger.Error("lens spec unmarshal failed", "lensId", lensID, "err", err)
@@ -478,19 +502,6 @@ func (s *CoreKVSource) dispatchSpec(lensID string, body []byte, revision uint64)
 func translateSpec(spec *LensSpec) (*Rule, error) {
 	if spec.ID == "" {
 		return nil, fmt.Errorf("lens spec: id required")
-	}
-
-	kind := "coreKv"
-	if spec.Source != nil && spec.Source.Kind != "" {
-		kind = spec.Source.Kind
-	}
-	switch kind {
-	case "coreKv":
-		// Falls through to the existing cypher/Core-KV translation below.
-	case "eventStream":
-		return translateEventStreamSpec(spec)
-	default:
-		return nil, fmt.Errorf("lens %q: source.kind must be \"coreKv\" or \"eventStream\", got %q", spec.ID, kind)
 	}
 
 	if strings.TrimSpace(spec.CypherRule) == "" {
@@ -643,72 +654,6 @@ func translateSpec(spec *LensSpec) (*Rule, error) {
 	r.ResolvedEngine = attempted[len(attempted)-1]
 	r.CompiledRule = compiled
 	return r, nil
-}
-
-// translateEventStreamSpec translates a `source.kind: "eventStream"` LensSpec.
-// No cypher engine is resolved — an event lens has no Core-KV vertex to
-// MATCH; the event payload is the only data (§1.3 of the design). v1 targets
-// nats_kv only and requires exactly one key column and one subject (the
-// substrate.RunDurableConsumer primitive takes a single FilterSubject).
-func translateEventStreamSpec(spec *LensSpec) (*Rule, error) {
-	if strings.TrimSpace(spec.CypherRule) != "" {
-		return nil, fmt.Errorf("lens %q: cypherRule must be empty for an eventStream source (no cypher — the event payload is the only data)", spec.ID)
-	}
-	if spec.Source == nil {
-		return nil, fmt.Errorf("lens %q: source required", spec.ID)
-	}
-	if len(spec.Source.Subjects) == 0 {
-		return nil, fmt.Errorf("lens %q: source.subjects is required for an eventStream lens", spec.ID)
-	}
-	if len(spec.Source.Subjects) != 1 {
-		return nil, fmt.Errorf("lens %q: source.subjects must have exactly one entry (v1: substrate.RunDurableConsumer supports one FilterSubject)", spec.ID)
-	}
-	if err := validateEventProjection(spec.Source.Project); err != nil {
-		return nil, fmt.Errorf("lens %q: %w", spec.ID, err)
-	}
-	if spec.TargetType != "nats_kv" {
-		return nil, fmt.Errorf("lens %q: an eventStream source supports targetType \"nats_kv\" only (got %q)", spec.ID, spec.TargetType)
-	}
-
-	var cfg TargetNATSKVConfig
-	if err := json.Unmarshal(spec.TargetConfig, &cfg); err != nil {
-		return nil, fmt.Errorf("lens %q: targetConfig unmarshal: %w", spec.ID, err)
-	}
-	if cfg.Bucket == "" || len(cfg.Key) == 0 {
-		return nil, fmt.Errorf("lens %q: targetConfig.{bucket,key} required for nats_kv", spec.ID)
-	}
-	if len(cfg.Key) != 1 {
-		return nil, fmt.Errorf("lens %q: an eventStream lens targets exactly one key column (got %d)", spec.ID, len(cfg.Key))
-	}
-	if cfg.Protected || cfg.GrantTable || len(cfg.SecureColumns) > 0 {
-		return nil, fmt.Errorf("lens %q: an eventStream lens may not declare protected/grantTable/secureColumns", spec.ID)
-	}
-	// The target key column and the projection's declared columns are two
-	// independent shapes (targetConfig.key vs. source.project.columns) — a
-	// lens author can set the key correctly but forget (or typo) that
-	// column's own mapping, producing a lens that loads and stores rows
-	// correctly keyed, but whose stored document never carries its own
-	// identifying field. Reject that mismatch at load time rather than
-	// silently accepting it.
-	if _, ok := spec.Source.Project.Columns[cfg.Key[0]]; !ok {
-		return nil, fmt.Errorf("lens %q: targetConfig.key %q has no matching entry in source.project.columns (the key value must also be projected as a row column)", spec.ID, cfg.Key[0])
-	}
-	dm, err := adapter.ParseDeleteMode(cfg.DeleteMode)
-	if err != nil {
-		return nil, fmt.Errorf("lens %q: targetConfig.deleteMode: %w", spec.ID, err)
-	}
-
-	return &Rule{
-		ID:            spec.ID,
-		CanonicalName: spec.CanonicalName,
-		Source:        spec.Source,
-		Into: IntoConfig{
-			Target:     "nats_kv",
-			Bucket:     cfg.Bucket,
-			Key:        KeyField(cfg.Key),
-			DeleteMode: string(dm),
-		},
-	}, nil
 }
 
 // validateSecureColumns enforces the Secure-Lens declaration invariants

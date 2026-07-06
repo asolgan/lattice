@@ -100,6 +100,88 @@ func TestCoreKVSource_LoadsLensFromAspect(t *testing.T) {
 	}, 3*time.Second, 50*time.Millisecond, "update callback not invoked")
 }
 
+// TestCoreKVSource_SkipsEventStreamSpec verifies that a lens spec declaring
+// `source.kind: "eventStream"` (a Chronicler-owned definition, e.g.
+// orchestration-base's loomFlowHistory) is silently skipped rather than
+// dispatched to translateSpec — which would otherwise fail every time with
+// "cypherRule required" (an eventStream spec never carries a cypherRule)
+// and spam an ERROR log on every restart / Core-KV replay
+// (chronicler-host-reconciliation Increment 2).
+func TestCoreKVSource_SkipsEventStreamSpec(t *testing.T) {
+	opts := &natsserver.Options{Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: jsstore.Dir(t)}
+	s := test.RunServer(opts)
+	defer s.Shutdown()
+
+	nc, err := nats.Connect(s.ClientURL())
+	require.NoError(t, err)
+	defer nc.Close()
+
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+	defer conn.Close()
+
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	kv, err := js.CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "core-kv"})
+	require.NoError(t, err)
+
+	src := lens.NewCoreKVSource(conn, "core-kv", slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	loaded := make(chan *lens.Rule, 4)
+	src.SetLoadCallback(func(r *lens.Rule) { loaded <- r })
+	require.NoError(t, src.Start(ctx))
+
+	vtxKey := "vtx.meta.EvStrmLensAbCdEfGhJk"
+	require.NoError(t, putJSON(ctx, kv, vtxKey, map[string]any{"id": "EvStrmLensAbCdEfGhJk", "class": "meta.lens"}))
+
+	specBody := map[string]any{
+		"id":            "EvStrmLensAbCdEfGhJk",
+		"canonicalName": "lens.loomFlowHistory",
+		"targetType":    "nats_kv",
+		"targetConfig":  map[string]any{"bucket": "orchestration-history", "key": []string{"instanceId"}},
+		"source": map[string]any{
+			"kind":     "eventStream",
+			"subjects": []string{"events.loom.>"},
+			"project": map[string]any{
+				"key":     "targetKey",
+				"columns": map[string]any{"instanceId": "targetKey"},
+			},
+		},
+	}
+	require.NoError(t, putJSON(ctx, kv, vtxKey+".spec", specBody))
+
+	// A coreKv lens written right after must still load normally — the skip
+	// must be specific to eventStream, not a wholesale dispatchSpec break.
+	coreKvKey := "vtx.meta.CoreKvLensAbCdEfGhJk"
+	require.NoError(t, putJSON(ctx, kv, coreKvKey, map[string]any{"id": "CoreKvLensAbCdEfGhJk", "class": "meta.lens"}))
+	coreKvSpec := lens.LensSpec{
+		ID:           "CoreKvLensAbCdEfGhJk",
+		TargetType:   "nats_kv",
+		CypherRule:   "MATCH (c:contract) RETURN c.id AS contract_id",
+		TargetConfig: json.RawMessage(`{"bucket":"contract_view","key":["contract_id"]}`),
+	}
+	coreKvSpecJSON, err := json.Marshal(coreKvSpec)
+	require.NoError(t, err)
+	require.NoError(t, putJSON(ctx, kv, coreKvKey+".spec", coreKvSpecJSON))
+
+	select {
+	case r := <-loaded:
+		require.Equal(t, "CoreKvLensAbCdEfGhJk", r.ID, "the eventStream lens must never reach loadCB")
+	case <-time.After(3 * time.Second):
+		t.Fatal("coreKv load callback not invoked within 3s")
+	}
+
+	select {
+	case r := <-loaded:
+		t.Fatalf("eventStream lens %q unexpectedly reached loadCB", r.ID)
+	case <-time.After(300 * time.Millisecond):
+		// Expected: nothing more arrives.
+	}
+}
+
 func putJSON(ctx context.Context, kv jetstream.KeyValue, key string, value any) error {
 	var data []byte
 	switch v := value.(type) {

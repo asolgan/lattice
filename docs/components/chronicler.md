@@ -2,12 +2,12 @@
 
 **Component reference** | Audience: implementers + architects
 
-**Status:** ✅ ratified (Fork C, 2026-07-02; re-ratified 2026-07-06). The event→row projection logic ships
-today **hosted in Refractor** (`internal/refractor/eventlens` + `internal/refractor/lens/eventsource.go`,
-wired in `cmd/refractor/main.go`). Per the ratified decision it is being **extracted** into the standalone
-`cmd/chronicler` binary + `internal/chronicler` package; until that lands, the `internal/refractor`
-locations are the current host. Design: `orchestration-history-read-model-design.md`. Board:
-`chronicler-host-reconciliation`.
+**Status:** ✅ ratified (Fork C, 2026-07-02; re-ratified 2026-07-06) and **host-extraction complete**
+(`chronicler-host-reconciliation` Increment 2) — the event→row projection logic runs as its own standalone
+`cmd/chronicler` binary + `internal/chronicler` package, wired into `make orchestration` alongside
+Loom/Weaver/Bridge/object-store-manager. Refractor no longer hosts any eventStream code: `internal/refractor/
+eventlens` and `internal/refractor/lens/eventsource.go` are removed, and `LensSpec` carries no `Source` field.
+Design: `orchestration-history-read-model-design.md`. Board: `chronicler-host-reconciliation`.
 
 ---
 
@@ -43,14 +43,8 @@ Two modes:
 
 | Path | Role |
 |------|------|
-| `cmd/chronicler/` *(target)* | Binary entry point; assembles the event→row pipeline from `ConsumerSupervisor` + the adapter SPI + `healthkv.Reporter`. Emits the `health.chronicler.<instance>` heartbeat. |
-| `internal/chronicler/` *(target)* | The event→row projection engine — the extraction home of today's `internal/refractor/eventlens` (`manager.go`, `project.go`) + the `eventStream` lens-source primitive (`internal/refractor/lens/eventsource.go`). |
-
-**Current host (pre-extraction):** the same logic lives in `internal/refractor/eventlens/` +
-`internal/refractor/lens/eventsource.go`, activated by `startEventStreamPipeline` in
-`cmd/refractor/main.go`. The extraction moves the host; the event→row model, the package-owned
-definitions, the read-model targets, and the P5 read path all carry over verbatim, and Refractor keeps no
-`LensSpec.Source`.
+| `cmd/chronicler/` | Binary entry point; assembles the event→row pipeline from `ConsumerSupervisor` + the adapter SPI + `healthkv.Reporter`. Emits the `health.chronicler.<instance>` heartbeat. |
+| `internal/chronicler/` | The event→row projection engine (`manager.go`, `projection.go`, `definition.go`, `source.go`) — a byte-for-byte-verified port of the prior `internal/refractor/eventlens` + `internal/refractor/lens/eventsource.go`, now the sole host. |
 
 ---
 
@@ -108,7 +102,7 @@ severity — no Loupe change required.
 
 | Fire | Scope | State |
 |------|-------|-------|
-| **F1** | The component + PROJECT mode + `loomFlowHistory` (`orchestration-base` ships the definition) | Projection logic shipped; **host extraction to `cmd/chronicler` pending** (`chronicler-host-reconciliation`) |
+| **F1** | The component + PROJECT mode + `loomFlowHistory` (`orchestration-base` ships the definition) | ✅ shipped, standalone binary (`chronicler-host-reconciliation` CLOSED) |
 | **F2** | Weaver history (`events.weaver.>`) | Follows F1 |
 | **F3** | ARCHIVE mode + the `core-operations` intent-ledger archive (the PRD unlimited-retention path; FR51's substrate) | Deferred |
 
