@@ -1,7 +1,17 @@
 # Gateway claim-flow authz contradiction — identity self-provisioning (design)
 
-**Status:** 📐 **awaiting-Andrew (ratification)** · Designer fire (Winston, 2026-07-04) · Lattice lane
-(Arch-review intake / Gateway Fire 4 re-grounding)
+**Status:** ✅ **Andrew-ratified (2026-07-06) — UN-SHELVED.** Designer fire (Winston, 2026-07-04) · Lattice
+lane (Arch-review intake / Gateway Fire 4 re-grounding).
+
+> **Ratification update (Andrew, 2026-07-06).** Ratified — Fork B (`identityProvisioner`, the narrow role).
+> **The "shelve the build" recommendation is overridden:** the driver the shelf was waiting for now exists
+> — Andrew's initiative to run the platform's own **capability write-auth** end-to-end through the Gateway
+> with real, role-scoped users (retiring the load-bearing stub). This design's `ProvisionConsumerIdentity`
+> is how a real consumer comes to exist with a real role grant, so it is on the **critical path** of that
+> proof. Build is sequenced within `real-actor-write-auth-e2e-design.md`: **Phase 1** builds §3 minus the
+> walk-in binding (a consumer that exists + acts as itself); **Phase 2** builds the walk-in binding
+> (R1–R4). §11's "resolve at the Gateway" gains a shared-seam amendment (see the §11 note) because
+> browser-direct sends reads to the app, not the Gateway.
 
 ---
 
@@ -27,14 +37,15 @@ I recommend **retiring** that plan (§3.4) rather than re-scoping it.
 |---|---|---|
 | **The Gateway's new system-actor role** | **(A)** Seed the Gateway as a 6th `holdsRole → operator` system actor (Loom/Weaver/objmgr/privacy's exact shape) — zero new mechanism, reuses the shipped union-read verbatim. **(B)** A new, narrow `identityProvisioner` role granting *only* `ProvisionConsumerIdentity` — a few more moving pieces (new role, new permission, one manual one-time `AssignRole`). | **B.** Loom/Weaver/objmgr/privacy are triggered only by internal graph/schedule state — an external attacker has no direct path to their logic. The Gateway is triggered by **every single internet request**; stacking full `operator` (package install, meta-DDL mutation, every other package's operator-granted op) onto the one component that parses raw, unauthenticated HTTP bodies is a materially larger blast radius for a parsing/logic bug than the existing precedent ever had to accept. The narrow role costs a handful of extra lines and one documented ops step; full operator costs nothing today and a great deal the day the Gateway has a bug. |
 
-**Should this be built now?** **No — ratify the design, shelve the build.** Grounding (§2.5) found **zero**
-current or planned consumer for self-service signup: every op in both reference verticals
-(`clinic-domain`, `loftspace-domain`) is granted to `operator` only, and `lease-signing/permissions.go`
-already says outright *"no end-consumer submits a service-instance create in the demo."* Building the
-provisioning mechanism now is exactly the dead-scaffolding pattern this skill flags — a real consumer
-(a vertical that actually wants self-service consumer signup) doesn't exist yet. What ships **now** (this
-fire, doc-only) is the grounding + the corrected docs/board; what ships **when a real driver appears** is
-§3's mechanism, fully designed and ready to build in one Steward fire.
+**Should this be built now?** **Yes (as of 2026-07-06) — the driver arrived.** *(Original recommendation
+was ratify-but-shelve; overridden by Andrew — see the ratification banner.)* My §2.5 finding was correct
+about the *product* dimension: no vertical wants self-service signup yet. But it under-weighted a second,
+equally-legitimate consumer — **the platform's own auth posture.** To run capability write-auth end-to-end
+with real, role-scoped users (the driver, `real-actor-write-auth-e2e-design.md`), a real *consumer* must
+exist with a real *role*, and `ProvisionConsumerIdentity` is exactly how one comes into being. That is the
+same class of driver the system-actor Fire 2 already treated as valid ("retire the load-bearing stub").
+So this is on the critical path of that proof — not dead scaffolding. Build is sequenced there (Phase 1
+builds §3 minus the walk-in binding; Phase 2 the binding).
 
 **Frozen-contract change: none.** No contract specifies *who* may call `CreateUnclaimedIdentity`/
 `ClaimIdentity` (that's package-level `permissions.go`, unconstrained by Contract #9) or enumerates a
@@ -367,24 +378,27 @@ None. Verified, not assumed:
 
 ---
 
-## 9. Dead-scaffolding verdict + decomposition for the Steward
+## 9. Decomposition for the Steward — UN-SHELVED (Andrew, 2026-07-06)
 
-**Verdict: shelve.** Per §2.5, the consumer for this mechanism (a vertical that needs true self-service
-consumer signup, no staff intermediary) does not exist in either reference vertical today. Ratify the
-design; do not build §3 until a real driver files (a vertical backlog item asking for self-service
-signup, or Andrew greenlighting it directly).
+**Verdict: build, sequenced within `real-actor-write-auth-e2e-design.md`.** *(Original: shelve until a
+product driver files. Overridden — the auth-posture driver arrived; see the ratification banner + the
+"Should this be built now?" block.)*
 
-- **Increment 0 — ship now, doc/comment fixes only (no design dependency, no code risk).** Fix the stale
+- **Increment 0 — the doc/comment fix (no design dependency, no code risk).** Fix the stale
   `permissions.go:14-16` comment (§2.2) so it no longer misattributes scope enforcement to the Starlark
-  script. Trivial, one line, unrelated to whether §3 ever builds.
-- **Increment 1 — the mechanism (§3), build only once a real consumer files.** One Steward fire: the new op
-  + role + permission (identity-domain), the new bootstrap identity (`internal/bootstrap`), the Gateway-side
-  pre-flight + cache (`internal/gateway`), the one-time ops `AssignRole` step, tests per §7. Independently
-  shippable, independently valuable the moment it lands (unblocks whatever vertical triggered it) — not
-  dead scaffolding at that point because the consumer will exist by construction of being the trigger.
+  script. Trivial, one line.
+- **Increment 1 — the provisioning mechanism (§3), minus the walk-in binding** → **Phase 1** of the
+  driver. The new op + role + permission (identity-domain), the new bootstrap Gateway system identity
+  (`internal/bootstrap`), the Gateway-side pre-flight + cache (`internal/gateway`), the one-time ops
+  `AssignRole` step, tests per §7. This is what makes a real **consumer** exist with a real **role** so
+  the capability-auth e2e can exercise a scoped actor. R2 (claim-time `consumer` grant on U) is part of
+  the claim script and rides Phase 2 with the rest of the binding.
+- **Increment 2 — the walk-in credential binding (§11 R1–R4)** → **Phase 2** of the driver. The
+  `credential-bindings` materializer, the resolve-then-stamp seam (now a **shared** seam, §11 note), the
+  claim-time role grant, `RotateClaimKey`, the `sub`→NanoID derivation.
 
-No dead code shipped by this fire itself — this fire is doc-only (this design + the companion doc/board
-edits in §10); §3 is fully specified and ready, not built.
+The §3 mechanism is fully specified; Increment 1 is a clean Phase-1 fire the moment the driver's shared
+dev-IdP + `up-full-capability` land alongside it.
 
 ---
 
@@ -429,9 +443,18 @@ credentialindex"* — the index is a **credential → business-identity resoluti
 deterministic hash of the credential key for O(1) lookup. That only has a purpose if something *resolves*
 through it per request. The design of record for a real app is therefore:
 
-> **After claim, the person acts AS U.** The Gateway resolves credential → identity: verify JWT → A →
-> look up the binding → stamp `env.Actor = U` (write path) / `lattice.actor_id = U` (read path). No
-> binding → act as your own key (A). One seam, one component.
+> **After claim, the person acts AS U.** Resolve credential → identity: verify JWT → A → look up the
+> binding → stamp `env.Actor = U` (write path) / `lattice.actor_id = U` (read path). No binding → act as
+> your own key (A).
+
+> **Shared-seam amendment (2026-07-06, browser-direct topology).** This originally read "one seam, one
+> component — the Gateway." That holds only if the Gateway is the *sole* external surface. Andrew ratified
+> **browser-direct** (`real-actor-write-auth-e2e-design.md` §5): writes go browser→Gateway, but **reads go
+> browser→app**. So the app's read boundary *also* needs to resolve A→U to set `lattice.actor_id = U`. The
+> resolution is therefore a **shared lookup** both the Gateway (write stamp) and the app read boundaries
+> consult — a small library over the `credential-bindings` materializer below, imported by both (they
+> already share `internal/gateway/auth`). Same mechanism, relocated from "Gateway-private" to "shared
+> seam." Phase-2 scope (Phase 1's consumer acts as itself — no binding, no resolution needed).
 
 The alternative — the person acts as A forever and every downstream mechanism walks the binding — fails
 concretely on shipped machinery: the ephemeral task-grant lens projects `cap.ephemeral.<assignee>`

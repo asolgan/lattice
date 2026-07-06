@@ -17,6 +17,8 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 
 | Item | What it is (PO view) | Vertical | Owner | Imp | Size | State |
 |---|---|---|---|---|---|---|
+| **Browser-direct writes through the Gateway** | The app FE submits writes to the Gateway (`:8080/v1/operations`) with the user's Bearer token instead of `POST /api/op` (which stamps `bootstrap` root); reads stay on the app. The write half of the per-user auth the read path already does — needed to prove real scoped write-auth. | LoftSpace→Clinic | FE | ★★ | M | 🚧 blocked-on: real-actor-write-auth-e2e Phase 1 (Lattice) · [design](../../implementation-artifacts/real-actor-write-auth-e2e-design.md) |
+| **Consumer-scope op grant (real allow/deny)** | Grant ≥1 op to `consumer` (e.g. `CreateLeaseApplication`) with an applicant-self Starlark guard, so a real consumer has a scoped allow alongside a staff-only deny — the substance the capability-auth e2e proves. Today every op is `operator`-only. | LoftSpace | pkg | ★★ | S | 🚧 blocked-on: real-actor-write-auth-e2e Phase 1 (Lattice) · [design](../../implementation-artifacts/real-actor-write-auth-e2e-design.md) |
 
 ## PO notes (dated — drives rotation)
 
