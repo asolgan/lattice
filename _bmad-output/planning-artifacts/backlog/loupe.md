@@ -25,7 +25,7 @@ buildable-first; F11–F13 gated on lattice cross-lane asks (§6 there).
 
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **F12 — Vault surface + crypto-shred proof** | Node + page + Reveal (decrypt RPC on `sensitive` aspects) + `ShredIdentityKey` before/after proof. | ★★★ | L | 📋 ready — Vault CLOSED (lattice) · needs UX (Sally) + FE build · [UX §3](../../implementation-artifacts/loupe-platform-edges-ux.md) |
+| **F12 — Vault surface + crypto-shred proof** | Node + page + Reveal (decrypt RPC on `sensitive` aspects) + `ShredIdentityKey` before/after proof. | ★★★ | L | 🏗️ increment 1 shipped (component page + shred-status fleet view); next: Reveal (§3.2) then the crypto-shred proof view (§3.3) · [UX §3](../../implementation-artifacts/loupe-platform-edges-ux.md) |
 | **F13 — Chronicler Time Machine** | Flow-history browser + map scrubber + ledger browser (platform-edges brief §4 L1–L3); overrides the Chronicler design's "rides F6" display note (Loupe scope). | ★★★ | L | 🚧 L1 overlaps lattice's new standalone Flows tab (Chronicler Fire 3) — reconcile before building `#/history`; L2-full/L3 blocked-on: Chronicler archive mode (lattice, unscheduled) · [UX §4](../../implementation-artifacts/loupe-platform-edges-ux.md) |
 
 ## Component maintenance
@@ -51,12 +51,14 @@ Open items only (shipped ones are in the Done log) — none currently open.
 - 2026-07-04 — F11 built against the shipped op model (revocation kill-switch Fires 1+2, lattice); review found the materializer poison-pill (invalid actor key → forever-redelivery) — filed to lattice.md, fixed same-day (`37b54b2`).
 - 2026-07-03 — PO+Sally session (Andrew, screenshot-driven): filed **F14** — lens shelf crowding at ~24 lenses (label spam, truncation, hidden below-fold chips) + the verticals' map home. Andrew corrected the first ruling: gateway design F5 routes the verticals' USER writes through the Gateway in end-state (§3.4 bypass = service actors only) — door band shows solid direct (today) + dashed via-Gateway (end-state); UX amended + adjudicated same session (delegated).
 - 2026-07-05 — Vault CLOSED + Chronicler F1–F3 shipped (lattice, both same-day): F12 is ready-to-build (UX+FE only, no lattice blocker left); F13's L1 overlaps the Flows tab Chronicler's own Fire 3 shipped — reconcile before extending; L2-full/L3 stay blocked on the unscheduled Chronicler archive-mode fire.
-- **Next:** F12 (UX+FE build). F13: reconcile the shipped Flows tab into the `#/history` L1 spec, then L2/L3 wait on Chronicler archive mode. On the Gateway up-full ship: flip its `designAhead` flag off + verify the F11 revoke loop live (XS).
+- 2026-07-06 — F12 increment 1 shipped (component page + shred fleet view); verified live against a real shredded identity already on the stack. All §3.1 ⚠️ ASSUMES resolved: `health.vault.*` heartbeats live, `lattice.vault.decrypt` already granted to Loupe's nkey, `ShredIdentityKey` already grant-packaged to the operator role (`packages/privacy-operator-grant`) — no lattice-lane blocker for the remaining increments.
+- **Next:** F12 increment 2 (Reveal, §3.2 — sealed-aspect rendering + `POST /api/vault/decrypt` in the Graph explorer), then increment 3 (crypto-shred proof view, §3.3). F13: reconcile the shipped Flows tab into the `#/history` L1 spec, then L2/L3 wait on Chronicler archive mode. On the Gateway up-full ship: flip its `designAhead` flag off + verify the F11 revoke loop live (XS).
 
 ## Done log — loupe (newest first)
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-06 · `8742f49` · [Loupe/F12 inc.1] Vault component page — metrics line + `GET /api/vault/shreds` read-only shred-status fleet view (in-flight identities linked into the Graph explorer); verified live, lead self-review
 - 2026-07-04 · `cc0df14` · [Loupe/F14] Map scale — package-grouped lens cluster cards (exception-first density, filter) + verticals as curated door-band `app` nodes (offline≠red); verified live, lead self-review
 - 2026-07-04 · `1b19838` · [Loupe/F11] Gateway security console — auth-failure headline + JWKS panel (empty until the heartbeat `jwks` block) + typed-confirm revoke surface over the op model; 3-layer review fixed forward
 - 2026-07-03 · `1c77a6c` · [Loupe/F10] Curated topology — Gateway/Vault/Chronicler on the map (design-ahead state, ingress band, lateral Vault, object-store plane); verify + 3-layer review fixes through `6e6d0f4`
