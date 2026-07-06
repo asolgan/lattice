@@ -34,8 +34,31 @@ func (l Lane) valid() bool {
 // through the operation envelope as command parameters declared in
 // `Reads`. The script validates each declared key against Core KV
 // (envelope class, endpoint touch, not tombstoned) before acting on it.
+//
+// The read posture (Contract #2 §2.5 "Read posture"): `Reads` is fail-closed
+// (a missing key faults HydrationMiss — class (a)); `OptionalReads` is
+// absence-tolerant (a missing key is recorded known-absent and kv.Read serves
+// None from the step-4 snapshot — class (d), the read-before-create / dedup
+// pattern); `Enumerations` declares kv.Links link-enumerations (§2.5.1) as
+// METADATA only (class (e)) — the enumeration stays a bounded paged live read,
+// never hydrated; the declaration feeds the Edge mirror-coverage gate and the
+// static read-classification lint.
 type ContextHint struct {
-	Reads []string `json:"reads,omitempty"`
+	Reads         []string          `json:"reads,omitempty"`
+	OptionalReads []string          `json:"optionalReads,omitempty"`
+	Enumerations  []EnumerationHint `json:"enumerations,omitempty"`
+}
+
+// EnumerationHint is one declared kv.Links enumeration (Contract #2 §2.5 —
+// `contextHint.enumerations`): the hub vertex key, the link relation, and the
+// direction the hub sits in the link ("out" = hub is source, "in" = hub is
+// target). Metadata, not a hydration directive — the Processor validates the
+// shape at parse and otherwise ignores it (the script's kv.Links call is what
+// executes, paged and live).
+type EnumerationHint struct {
+	Hub       string `json:"hub"`
+	Relation  string `json:"relation"`
+	Direction string `json:"direction"`
 }
 
 // AuthContext mirrors Contract #2 §2.8 — auth path declaration.
@@ -181,6 +204,16 @@ func ParseEnvelope(data []byte) (*OperationEnvelope, error) {
 	}
 	if len(env.Payload) == 0 {
 		return nil, fmt.Errorf("envelope: payload is required (use {} for empty)")
+	}
+	if env.ContextHint != nil {
+		for i, e := range env.ContextHint.Enumerations {
+			if e.Hub == "" || e.Relation == "" {
+				return nil, fmt.Errorf("envelope: contextHint.enumerations[%d] requires hub and relation", i)
+			}
+			if e.Direction != "out" && e.Direction != "in" {
+				return nil, fmt.Errorf("envelope: contextHint.enumerations[%d] direction must be \"out\" or \"in\", got %q", i, e.Direction)
+			}
+		}
 	}
 	return &env, nil
 }

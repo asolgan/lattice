@@ -398,6 +398,13 @@ func (cp *CommitPath) commitPipeline(ctx context.Context, msg substrate.Message,
 		// and a create-once uniqueness collision keep surfacing as today).
 		defaulted := applyHydratedRevisions(result.Mutations, state.Context.Hydrated)
 
+		// (A′) Contract #2 §2.5 optionalReads: a `create` on a key step 4
+		// observed as known-absent is conditioned on that absence (CreateOnly is
+		// the assertion), which makes a lost create race on it retry-eligible —
+		// unlike an undeclared create-once collision, re-hydration resolves it
+		// (the key lands in Hydrated, the script re-branches, typically no-op).
+		absentCreates := absentConditionedCreates(result.Mutations, state.Context.KnownAbsent)
+
 		// --- Step 8: commit (with §10.7 task auto-completion injection). ---
 		now := cp.deps.Clock()
 		tracker := NewTracker(env, now)
@@ -494,6 +501,11 @@ func (cp *CommitPath) commitPipeline(ctx context.Context, msg substrate.Message,
 			var confErr *ConflictError
 			if errors.As(err, &confErr) {
 				moved := cp.movedDefaultedKeys(ctx, defaulted)
+				// A known-absent-conditioned create whose key now EXISTS lost the
+				// step-4-absence race — the declared-dedup analogue of a moved
+				// defaulted key: re-hydration sees it present and the script
+				// re-branches (Contract #2 §2.5 optionalReads).
+				moved = append(moved, cp.materializedAbsentKeys(ctx, absentCreates)...)
 				conflictKey := conflictKeyForSignal(confErr.ConflictingKey, moved)
 				if (len(moved) > 0 || mintedPiiKey) && attempt+1 < cp.deps.MaxCommitAttempts {
 					// (B) Absorb the benign same-key race: re-hydrate (fresh
@@ -570,6 +582,49 @@ func applyHydratedRevisions(mutations []MutationOp, hydrated map[string]VertexDo
 		defaulted[m.Key] = rev
 	}
 	return defaulted
+}
+
+// absentConditionedCreates returns the keys of `create` mutations targeting a
+// key step 4 recorded as known-absent (a declared `optionalReads` key that was
+// not found — Contract #2 §2.5). Such a create is conditioned on the step-4
+// observed ABSENCE (CreateOnly carries the assertion), so on a conflict the
+// commit path probes exactly these keys: one that now exists proves the benign
+// declared-dedup race and licenses the in-process retry. Creates on keys never
+// declared (or declared but present) are excluded — their collisions surface
+// as today (uniqueness/domain rejects the retry cannot fix).
+func absentConditionedCreates(mutations []MutationOp, knownAbsent map[string]struct{}) []string {
+	if len(knownAbsent) == 0 {
+		return nil
+	}
+	var keys []string
+	for _, m := range mutations {
+		if m.Op != "create" {
+			continue
+		}
+		if _, ok := knownAbsent[m.Key]; ok {
+			keys = append(keys, m.Key)
+		}
+	}
+	return keys
+}
+
+// materializedAbsentKeys reports which known-absent-conditioned create keys now
+// EXIST in Core KV — the step-4 absence they were conditioned on has been
+// invalidated by a concurrent winner. The mirror of movedDefaultedKeys for the
+// create side: bounded (one KVGet per absent-conditioned create, typically one),
+// probed only on a conflict. A transient read error or a still-absent key is
+// treated as "did not materialize" (conservative — surface rather than spin).
+func (cp *CommitPath) materializedAbsentKeys(ctx context.Context, absentCreates []string) []string {
+	if len(absentCreates) == 0 {
+		return nil
+	}
+	var materialized []string
+	for _, key := range absentCreates {
+		if _, err := cp.deps.Conn.KVGet(ctx, cp.deps.CoreBucket, key); err == nil {
+			materialized = append(materialized, key)
+		}
+	}
+	return materialized
 }
 
 // movedDefaultedKeys structurally attributes an atomic-batch revision conflict.

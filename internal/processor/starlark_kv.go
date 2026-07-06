@@ -72,11 +72,22 @@ func kvModule(getExecCtx func() context.Context, sc ScriptContext) *starlarkstru
 		}
 
 		// Cache-first (§2.5). A hydrated entry is, by construction, always a
-		// successful read: a contextHint key that was absent in Core KV fails
-		// hydration (HydrationMiss) before execution begins, so reaching the
-		// script with the key in sc.Hydrated guarantees it was present.
+		// successful read: a contextHint.reads key that was absent in Core KV
+		// fails hydration (HydrationMiss) before execution begins, and an
+		// optionalReads key only lands here when it was present, so reaching
+		// the script with the key in sc.Hydrated guarantees it was present.
 		if doc, ok := sc.Hydrated[key]; ok {
 			return vertexDocToStarlark(doc), nil
+		}
+		// Known-absent (§2.5 optionalReads): the key was declared
+		// absence-tolerant and was NOT found at the step-4 snapshot — serve
+		// None from the snapshot with NO live GET. This is what makes a
+		// declared read-before-create replay-stable and OCC-coherent: the
+		// script's absence branch and the commit's CreateOnly condition both
+		// reflect the same step-4 observation (a racing create surfaces as
+		// RevisionConflict → re-hydrate → now present → re-branch).
+		if _, absent := sc.KnownAbsent[key]; absent {
+			return starlarklib.None, nil
 		}
 
 		// Lazy on-demand read for a key not declared in contextHint.reads.

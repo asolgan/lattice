@@ -12,8 +12,10 @@ import (
 // Field roles (Contract #2 §2.5 + Contract #1 §1.5 + Contract #3 §3.1):
 //   - Operation: the full envelope the Processor consumed. Exposed to the
 //     script as the `op` global struct.
-//   - Hydrated: vertex/aspect documents pre-fetched per `contextHint.reads`.
-//     Exposed as the `state` global dict (key -> struct).
+//   - Hydrated: vertex/aspect documents pre-fetched per `contextHint.reads`
+//     plus the present `contextHint.optionalReads` keys. Exposed as the
+//     `state` global dict (key -> struct). Absent optionalReads keys land in
+//     KnownAbsent instead (never in `state`; kv.Read serves them as None).
 //   - DDLLookup: DDL meta-vertices keyed by canonicalName (e.g.,
 //     "identity"). Exposed as the `ddl` global dict. Populated from the
 //     DDL cache built at startup and refreshed on DDL mutations.
@@ -27,8 +29,19 @@ import (
 //     key not already in Hydrated raises a script error (tests that exercise
 //     contextHint-only paths may leave it unset).
 type ScriptContext struct {
-	Operation    *OperationEnvelope
-	Hydrated     map[string]VertexDoc
+	Operation *OperationEnvelope
+	Hydrated  map[string]VertexDoc
+	// KnownAbsent records the `contextHint.optionalReads` keys that were NOT
+	// found in Core KV at step 4 (Contract #2 §2.5 — the absence-tolerant
+	// declared read, class (d)). A key here resolved to *known-absent at the
+	// step-4 snapshot*: `kv.Read(key)` returns None from this record with NO
+	// live GET, and a `create` mutation the script derives off that absence is
+	// retry-attributable — if the CreateOnly commit conflicts and the key now
+	// exists, the commit path re-hydrates and re-executes (the key lands in
+	// Hydrated, the script re-branches no-op). Keys absent from BOTH Hydrated
+	// and KnownAbsent were simply not declared — kv.Read falls through to the
+	// lazy KVReader as before. Nil when the envelope declared no optionalReads.
+	KnownAbsent  map[string]struct{}
 	DDLLookup    map[string]MetaVertex
 	ScriptSource string
 	ScriptClass  string

@@ -25,7 +25,9 @@ import (
 //     script → EmptyScript / NoScriptForClass depending on whether
 //     the underlying DDL declared a script aspect at all.
 //  4. Hydrate every key in envelope.contextHint.reads (known-key reads
-//     only)
+//     only; a missing key faults HydrationMiss) and every key in
+//     envelope.contextHint.optionalReads (absence-tolerant: a missing key
+//     is recorded known-absent, Contract #2 §2.5 class (d)).
 type HydratorImpl struct {
 	Conn       *substrate.Conn
 	CoreBucket string
@@ -148,8 +150,13 @@ func (h *HydratorImpl) Hydrate(ctx context.Context, env *OperationEnvelope) (Hyd
 		}
 	}
 
-	// 4. Hydrate contextHint.reads (optional).
+	// 4. Hydrate contextHint.reads (fail-closed) + contextHint.optionalReads
+	// (absence-tolerant) — Contract #2 §2.5 read posture. A `reads` key that is
+	// missing faults HydrationMiss; an `optionalReads` key that is missing is
+	// recorded *known-absent* so kv.Read serves None from the step-4 snapshot
+	// (the class-(d) read-before-create / dedup pattern) with no live GET.
 	hydrated := make(map[string]VertexDoc)
+	var knownAbsent map[string]struct{}
 	if env.ContextHint != nil {
 		for _, key := range env.ContextHint.Reads {
 			if key == "" {
@@ -174,6 +181,37 @@ func (h *HydratorImpl) Hydrate(ctx context.Context, env *OperationEnvelope) (Hyd
 			}
 			hydrated[key] = doc
 		}
+		for _, key := range env.ContextHint.OptionalReads {
+			if key == "" {
+				continue
+			}
+			// A key in both lists keeps the fail-closed `reads` semantics: it
+			// either hydrated above or already faulted, so it is never demoted
+			// to absence-tolerant by a duplicate optionalReads entry.
+			if _, ok := hydrated[key]; ok {
+				continue
+			}
+			entry, err := h.Conn.KVGet(ctx, h.CoreBucket, key)
+			if err != nil {
+				if errors.Is(err, substrate.ErrKeyNotFound) {
+					if knownAbsent == nil {
+						knownAbsent = map[string]struct{}{}
+					}
+					knownAbsent[key] = struct{}{}
+					continue
+				}
+				return HydratedState{}, fmt.Errorf("step4: read %s: %w", key, err)
+			}
+			doc, err := parseVertexDoc(entry.Value, key)
+			if err != nil {
+				return HydratedState{}, fmt.Errorf("step4: parse %s: %w", key, err)
+			}
+			doc.Revision = entry.Revision
+			if err := decryptSensitiveDoc(ctx, h.Conn, h.CoreBucket, h.DDLs, h.Vault, &doc); err != nil {
+				return HydratedState{}, fmt.Errorf("step4: decrypt %s: %w", key, err)
+			}
+			hydrated[key] = doc
+		}
 	}
 
 	h.Logger.Info("step 4: hydrated",
@@ -181,12 +219,14 @@ func (h *HydratorImpl) Hydrate(ctx context.Context, env *OperationEnvelope) (Hyd
 		"class", class,
 		"ddlKey", ddlKey,
 		"contextHintCount", len(hydrated),
+		"knownAbsentCount", len(knownAbsent),
 	)
 
 	return HydratedState{
 		Context: ScriptContext{
 			Operation:    env,
 			Hydrated:     hydrated,
+			KnownAbsent:  knownAbsent,
 			DDLLookup:    map[string]MetaVertex{class: metaVtx},
 			ScriptSource: source,
 			ScriptClass:  class,
