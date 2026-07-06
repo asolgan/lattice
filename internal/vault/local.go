@@ -274,6 +274,28 @@ func (b *LocalBackend) UnwrapKey(ctx context.Context, identityKey string, envelo
 	return b.Decrypt(ctx, identityKey, envelope, wrapped)
 }
 
+// maxSessionKeyTTL bounds an IssueSessionKey request — a hygiene ceiling on
+// "short-lived" (design §3.6), not a security boundary: the boundary is
+// checkAndDeriveDEK's shred check below, run fresh on every call.
+const maxSessionKeyTTL = time.Hour
+
+// IssueSessionKey implements Vault. It returns identityKey's DEK — the same
+// key Encrypt/Decrypt use — via the identical shredded-check + derive path,
+// so a shredded identity is denied exactly as Decrypt would be. ttl <= 0 or
+// > maxSessionKeyTTL clamps to maxSessionKeyTTL rather than erroring.
+func (b *LocalBackend) IssueSessionKey(_ context.Context, identityKey string, envelope Envelope, _ string, ttl time.Duration) (SessionKey, error) {
+	dek, err := b.checkAndDeriveDEK(identityKey, envelope)
+	if err != nil {
+		return SessionKey{}, err
+	}
+	if ttl <= 0 || ttl > maxSessionKeyTTL {
+		ttl = maxSessionKeyTTL
+	}
+	key := make([]byte, len(dek))
+	copy(key, dek)
+	return SessionKey{Key: key, ExpiresAt: time.Now().UTC().Add(ttl)}, nil
+}
+
 // checkAndDeriveDEK returns the plaintext DEK for identityKey, or
 // ErrKeyShredded / ErrInvalidEnvelope. The shredded-check, DEK-cache lookup,
 // KEK-unwrap, and cache-write all run under one held lock — this is the

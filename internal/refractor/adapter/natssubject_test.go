@@ -136,6 +136,49 @@ func TestNatsSubjectAdapter_Upsert_DisjointActorsGetDisjointSubjects(t *testing.
 	assert.Equal(t, "e2", envB["key"])
 }
 
+// TestNatsSubjectAdapter_Upsert_CiphertextFieldSetsEncrypted proves Fire 5's
+// passthrough marking (personal-secure-lens-design.md §3.6): a row carrying a
+// Vault ciphertext-envelope-shaped field publishes with encrypted:true, and
+// the field itself is forwarded byte-for-byte (never decoded/decrypted).
+func TestNatsSubjectAdapter_Upsert_CiphertextFieldSetsEncrypted(t *testing.T) {
+	conn, js := startSyncServer(t)
+	a, err := adapter.NewNatsSubjectAdapter(context.Background(), conn, "lattice.sync.user", "SYNC", []string{adapter.PersonalActorKeyField, "entityId"})
+	require.NoError(t, err)
+
+	keys := map[string]any{adapter.PersonalActorKeyField: "identityA", "entityId": "identity.ssn"}
+	ciphertextEnvelope := map[string]any{"ct": "c2VhbGVkLWJ5dGVz", "nonce": "b25jZS1ieXRlcw==", "keyId": "identity-A"}
+	row := map[string]any{
+		"anchor": "identity.A",
+		"kind":   "aspect",
+		"class":  "identity.ssn",
+		"ssn":    ciphertextEnvelope,
+	}
+	require.NoError(t, a.Upsert(context.Background(), keys, row, 20481))
+
+	env := readSyncMsg(t, js, "SYNC", "lattice.sync.user.identityA")
+	assert.Equal(t, true, env["encrypted"], "a ciphertext-shaped field must set encrypted:true")
+	data, ok := env["data"].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, ciphertextEnvelope, data["ssn"], "the ciphertext envelope must forward unchanged, never decoded")
+}
+
+// TestNatsSubjectAdapter_Upsert_FieldNamedCtAloneNotFlaggedEncrypted proves
+// rowHasCiphertext requires the full envelope shape (ct+nonce+keyId all
+// non-empty), not just a field that happens to be named "ct" — a business
+// column named "ct" with no nonce/keyId must not false-positive as ciphertext.
+func TestNatsSubjectAdapter_Upsert_FieldNamedCtAloneNotFlaggedEncrypted(t *testing.T) {
+	conn, js := startSyncServer(t)
+	a, err := adapter.NewNatsSubjectAdapter(context.Background(), conn, "lattice.sync.user", "SYNC", []string{adapter.PersonalActorKeyField, "entityId"})
+	require.NoError(t, err)
+
+	keys := map[string]any{adapter.PersonalActorKeyField: "identityA", "entityId": "e1"}
+	row := map[string]any{"stats": map[string]any{"ct": "aGVsbG8="}} // a nested field merely named "ct", no nonce/keyId
+	require.NoError(t, a.Upsert(context.Background(), keys, row, 1))
+
+	env := readSyncMsg(t, js, "SYNC", "lattice.sync.user.identityA")
+	assert.Equal(t, false, env["encrypted"], "a bare 'ct'-named field with no nonce/keyId must not be flagged as ciphertext")
+}
+
 func TestNatsSubjectAdapter_Delete_PublishesTombstoneEnvelope(t *testing.T) {
 	conn, js := startSyncServer(t)
 	a, err := adapter.NewNatsSubjectAdapter(context.Background(), conn, "lattice.sync.user", "SYNC", []string{adapter.PersonalActorKeyField, "entityId"})

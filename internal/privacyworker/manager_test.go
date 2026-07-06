@@ -49,6 +49,10 @@ func (f *fakeVault) UnwrapKey(context.Context, string, vault.Envelope, vault.Cip
 	panic("fakeVault: UnwrapKey not used by privacyworker")
 }
 
+func (f *fakeVault) IssueSessionKey(context.Context, string, vault.Envelope, string, time.Duration) (vault.SessionKey, error) {
+	panic("fakeVault: IssueSessionKey not used by privacyworker")
+}
+
 func (f *fakeVault) ShredKey(_ context.Context, identityKey string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

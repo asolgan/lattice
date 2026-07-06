@@ -250,3 +250,98 @@ func TestService_WrapKey_MissingIdentityKey_Rejected(t *testing.T) {
 	resp := sendWrapKey(t, nc, vault.WrapKeyRequest{Key: []byte("k")})
 	require.NotEmpty(t, resp.Error)
 }
+
+func TestIssueSessionKeySubject_Exact(t *testing.T) {
+	assert.Equal(t, "lattice.vault.issuesessionkey", vault.IssueSessionKeySubject)
+}
+
+func sendIssueSessionKey(t *testing.T, nc *nats.Conn, req vault.IssueSessionKeyRequest) vault.IssueSessionKeyResponse {
+	t.Helper()
+	data, err := json.Marshal(req)
+	require.NoError(t, err)
+	reply, err := nc.Request(vault.IssueSessionKeySubject, data, 2*time.Second)
+	require.NoError(t, err, "NATS request to %s must succeed", vault.IssueSessionKeySubject)
+	var resp vault.IssueSessionKeyResponse
+	require.NoError(t, json.Unmarshal(reply.Data, &resp))
+	return resp
+}
+
+// TestService_IssueSessionKey_ReturnsTheDEK proves the Personal Lens Fire 5
+// happy path (personal-secure-lens-design.md §3.6): the Edge asks the cloud
+// for a transient session key and gets back the same DEK Decrypt/UnwrapKey
+// use, so it can open ciphertext deltas locally.
+func TestService_IssueSessionKey_ReturnsTheDEK(t *testing.T) {
+	nc := startTestServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	kek := make([]byte, 32)
+	backend, err := vault.NewLocalBackend(kek, "v1")
+	require.NoError(t, err)
+
+	env, err := backend.CreateIdentityKey(context.Background(), "identity-1")
+	require.NoError(t, err)
+
+	svc := vault.NewService(backend, nil)
+	require.NoError(t, svc.StartNATSListener(ctx, nc))
+
+	resp := sendIssueSessionKey(t, nc, vault.IssueSessionKeyRequest{
+		IdentityKey: "identity-1",
+		Envelope:    env,
+		AspectScope: "lease",
+		TTLSeconds:  60,
+	})
+	require.Empty(t, resp.Error)
+	require.NotEmpty(t, resp.Key)
+	assert.True(t, resp.ExpiresAt.After(time.Now()), "ExpiresAt must be in the future")
+
+	// The issued key is the same DEK Decrypt uses under the hood — an Edge
+	// holding it can open a ciphertext delta locally with plain AES-GCM.
+	directDEK, err := backend.IssueSessionKey(context.Background(), "identity-1", env, "lease", time.Minute)
+	require.NoError(t, err)
+	assert.Equal(t, directDEK.Key, resp.Key)
+}
+
+// TestService_IssueSessionKey_ShreddedIdentity_Denied is Gate-3 vector 5
+// (personal-secure-lens-design.md §5): once an identity is shredded, the
+// Vault must refuse to mint any further session key for it — the Edge can
+// never freshly decrypt that identity's ciphertext deltas again.
+func TestService_IssueSessionKey_ShreddedIdentity_Denied(t *testing.T) {
+	nc := startTestServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	kek := make([]byte, 32)
+	backend, err := vault.NewLocalBackend(kek, "v1")
+	require.NoError(t, err)
+
+	env, err := backend.CreateIdentityKey(context.Background(), "identity-1")
+	require.NoError(t, err)
+	require.NoError(t, backend.ShredKey(context.Background(), "identity-1"))
+
+	svc := vault.NewService(backend, nil)
+	require.NoError(t, svc.StartNATSListener(ctx, nc))
+
+	resp := sendIssueSessionKey(t, nc, vault.IssueSessionKeyRequest{
+		IdentityKey: "identity-1",
+		Envelope:    env,
+		TTLSeconds:  60,
+	})
+	require.NotEmpty(t, resp.Error)
+	assert.Empty(t, resp.Key)
+}
+
+func TestService_IssueSessionKey_MissingIdentityKey_Rejected(t *testing.T) {
+	nc := startTestServer(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	kek := make([]byte, 32)
+	backend, err := vault.NewLocalBackend(kek, "v1")
+	require.NoError(t, err)
+	svc := vault.NewService(backend, nil)
+	require.NoError(t, svc.StartNATSListener(ctx, nc))
+
+	resp := sendIssueSessionKey(t, nc, vault.IssueSessionKeyRequest{})
+	require.NotEmpty(t, resp.Error)
+}

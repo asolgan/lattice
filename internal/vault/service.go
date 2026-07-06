@@ -31,6 +31,11 @@ const WrapKeySubject = "lattice.vault.wrapkey"
 // unwrap RPC responds on — the read-side counterpart of WrapKeySubject.
 const UnwrapKeySubject = "lattice.vault.unwrapkey"
 
+// IssueSessionKeySubject is the NATS Services subject the transient
+// Edge-decrypt session-key RPC responds on (Personal Lens Fire 5,
+// personal-secure-lens-design.md §3.6 "Transient Decryption").
+const IssueSessionKeySubject = "lattice.vault.issuesessionkey"
+
 // decryptServiceName is the NATS Services registration name (exposed via
 // $SRV.PING/$SRV.INFO/$SRV.STATS alongside the endpoint).
 const decryptServiceName = "vault-decrypt"
@@ -39,8 +44,9 @@ const decryptServiceName = "vault-decrypt"
 // names for the wrap/unwrap RPCs, registered on the same micro.Service as
 // the decrypt endpoint.
 const (
-	wrapKeyServiceName   = "vault-wrapkey"
-	unwrapKeyServiceName = "vault-unwrapkey"
+	wrapKeyServiceName         = "vault-wrapkey"
+	unwrapKeyServiceName       = "vault-unwrapkey"
+	issueSessionKeyServiceName = "vault-issuesessionkey"
 )
 
 // handlerTimeout bounds a single decrypt call so a wedged backend fails the
@@ -95,6 +101,25 @@ type UnwrapKeyRequest struct {
 type UnwrapKeyResponse struct {
 	Key   []byte `json:"key,omitempty"`
 	Error string `json:"error,omitempty"`
+}
+
+// IssueSessionKeyRequest is the JSON payload for an IssueSessionKeySubject
+// request — mint a transient decryption key for identityKey's DEK. AspectScope
+// is carried for audit/API-shape only (personal-secure-lens-design.md §3.6);
+// TTLSeconds <= 0 lets the backend pick its own default/ceiling.
+type IssueSessionKeyRequest struct {
+	IdentityKey string   `json:"identityKey"`
+	Envelope    Envelope `json:"envelope"`
+	AspectScope string   `json:"aspectScope,omitempty"`
+	TTLSeconds  int64    `json:"ttlSeconds,omitempty"`
+}
+
+// IssueSessionKeyResponse is the JSON reply for an IssueSessionKeySubject
+// request. Exactly one of Key or Error is set.
+type IssueSessionKeyResponse struct {
+	Key       []byte    `json:"key,omitempty"`
+	ExpiresAt time.Time `json:"expiresAt,omitempty"`
+	Error     string    `json:"error,omitempty"`
 }
 
 // Service is the NATS Services responder exposing a Vault's Decrypt method
@@ -153,6 +178,12 @@ func (s *Service) StartNATSListener(ctx context.Context, nc *nats.Conn) error {
 		micro.WithEndpointSubject(UnwrapKeySubject)); err != nil {
 		_ = svc.Stop()
 		return fmt.Errorf("vault: AddEndpoint %q: %w", UnwrapKeySubject, err)
+	}
+	if err := svc.AddEndpoint(issueSessionKeyServiceName,
+		micro.HandlerFunc(func(req micro.Request) { s.handleIssueSessionKey(req) }),
+		micro.WithEndpointSubject(IssueSessionKeySubject)); err != nil {
+		_ = svc.Stop()
+		return fmt.Errorf("vault: AddEndpoint %q: %w", IssueSessionKeySubject, err)
 	}
 
 	s.mu.Lock()
@@ -319,6 +350,55 @@ func (s *Service) respondUnwrapKey(req micro.Request, resp UnwrapKeyResponse) {
 	data, err := json.Marshal(resp)
 	if err != nil {
 		s.logger.Error("vault: marshal unwrapKey response", "err", err)
+		if rErr := req.Respond([]byte(`{"error":"vault: response marshal failure"}`)); rErr != nil {
+			s.logger.Error("vault: send error response", "err", rErr)
+		}
+		return
+	}
+	if err := req.Respond(data); err != nil {
+		s.logger.Error("vault: send response", "err", err)
+	}
+}
+
+// handleIssueSessionKey is handleUnwrapKey's counterpart for
+// IssueSessionKeySubject, delegating to the Vault backend's IssueSessionKey.
+func (s *Service) handleIssueSessionKey(req micro.Request) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("vault: issueSessionKey handler panic", "panic", r)
+			s.respondIssueSessionKey(req, IssueSessionKeyResponse{Error: "vault: issue session key failed"})
+		}
+	}()
+
+	var in IssueSessionKeyRequest
+	if err := json.Unmarshal(req.Data(), &in); err != nil {
+		s.respondIssueSessionKey(req, IssueSessionKeyResponse{Error: "vault: invalid request"})
+		return
+	}
+	if in.IdentityKey == "" {
+		s.respondIssueSessionKey(req, IssueSessionKeyResponse{Error: "vault: identityKey required"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), handlerTimeout)
+	defer cancel()
+	sk, err := s.vault.IssueSessionKey(ctx, in.IdentityKey, in.Envelope, in.AspectScope, time.Duration(in.TTLSeconds)*time.Second)
+	if err != nil {
+		s.logger.Warn("vault: issueSessionKey request failed", "identityKey", in.IdentityKey, "err", err)
+		if errors.Is(err, ErrKeyShredded) {
+			s.respondIssueSessionKey(req, IssueSessionKeyResponse{Error: ErrKeyShredded.Error()})
+			return
+		}
+		s.respondIssueSessionKey(req, IssueSessionKeyResponse{Error: "vault: issue session key failed"})
+		return
+	}
+	s.respondIssueSessionKey(req, IssueSessionKeyResponse{Key: sk.Key, ExpiresAt: sk.ExpiresAt})
+}
+
+func (s *Service) respondIssueSessionKey(req micro.Request, resp IssueSessionKeyResponse) {
+	data, err := json.Marshal(resp)
+	if err != nil {
+		s.logger.Error("vault: marshal issueSessionKey response", "err", err)
 		if rErr := req.Respond([]byte(`{"error":"vault: response marshal failure"}`)); rErr != nil {
 			s.logger.Error("vault: send error response", "err", rErr)
 		}

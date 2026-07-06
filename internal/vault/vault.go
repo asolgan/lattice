@@ -43,6 +43,18 @@ type Ciphertext struct {
 	KeyID string `json:"keyId"`
 }
 
+// SessionKey is the transient decryption key IssueSessionKey mints for an
+// Edge node's local, in-memory decrypt of ciphertext deltas (Personal Lens
+// Fire 5, personal-secure-lens-design.md §3.6 — "Transient Decryption",
+// Edge Lattice.md §5). Key is the same per-identity DEK Decrypt/UnwrapKey use
+// (there is one DEK per identity, not one per aspect); ExpiresAt is a
+// hygiene bound the caller enforces locally, not the security boundary — the
+// real revocation guarantee is ShredKey, checked fresh on every issuance.
+type SessionKey struct {
+	Key       []byte    `json:"key"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
 // Sentinel errors a Vault backend returns. Callers (the Processor's
 // commit-path hooks, the decrypt RPC responder) match on these with
 // errors.Is rather than backend-specific error values.
@@ -115,4 +127,16 @@ type Vault interface {
 	// with ErrKeyShredded / ErrInvalidEnvelope / ErrDecryptFailed on the same
 	// conditions as Decrypt.
 	UnwrapKey(ctx context.Context, identityKey string, envelope Envelope, wrapped Ciphertext) ([]byte, error)
+
+	// IssueSessionKey mints a SessionKey for an Edge node to decrypt
+	// identityKey's ciphertext deltas locally (Personal Lens Fire 5). Like
+	// Decrypt/UnwrapKey it derives from envelope and fails with
+	// ErrKeyShredded once the identity's key has been shredded — so a
+	// shredded identity's already-delivered ciphertext deltas can never be
+	// freshly decrypted again ("remote shredding renders all local copies
+	// permanent gibberish", Edge Lattice.md §5). aspectScope is carried for
+	// audit/API-shape only: there is one DEK per identity, not one per
+	// aspect, so it does not select a different key. Fails with
+	// ErrInvalidEnvelope on the same conditions as Decrypt.
+	IssueSessionKey(ctx context.Context, identityKey string, envelope Envelope, aspectScope string, ttl time.Duration) (SessionKey, error)
 }

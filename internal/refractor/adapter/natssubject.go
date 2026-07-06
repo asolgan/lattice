@@ -12,6 +12,7 @@ import (
 
 	"github.com/asolgan/lattice/internal/refractor/subjects"
 	"github.com/asolgan/lattice/internal/substrate"
+	"github.com/asolgan/lattice/internal/vault"
 )
 
 var _ Adapter = (*NatsSubjectAdapter)(nil)
@@ -200,9 +201,12 @@ func splitEnvelopeRow(row map[string]any) (anchor, kind, class string, data map[
 	return anchor, kind, class, data
 }
 
-// Upsert publishes an "upsert" delta envelope to the actor's subject. There
-// is no ciphertext handling yet (Encrypted is always false) — sensitive-
-// aspect ciphertext passthrough is Fire 5 (Vault Phase A composition).
+// Upsert publishes an "upsert" delta envelope to the actor's subject. Personal
+// Lens has no SecureDecryptor (Fire 5, personal-secure-lens-design.md §3.6 —
+// the cloud never decrypts for the Edge): a sensitive aspect's data reaches
+// this row exactly as Core KV stores it, so Encrypted is set from whether any
+// Data field is shaped like a Vault ciphertext envelope, not decoded or
+// altered.
 func (a *NatsSubjectAdapter) Upsert(ctx context.Context, keys map[string]any, row map[string]any, projectionSeq uint64) error {
 	actor, err := resolveActor(keys)
 	if err != nil {
@@ -221,9 +225,41 @@ func (a *NatsSubjectAdapter) Upsert(ctx context.Context, keys map[string]any, ro
 		Class:         class,
 		Revision:      projectionSeq,
 		ProjectionSeq: projectionSeq,
+		Encrypted:     rowHasCiphertext(data),
 		Data:          data,
 	}
 	return a.publish(ctx, actor, env)
+}
+
+// rowHasCiphertext reports whether any of data's values is shaped like a
+// Vault sensitive-aspect ciphertext envelope ({ct,nonce,keyId} — Contract #3
+// §3.10, the same shape pipeline.ciphertextFromMap parses at the Secure
+// Lens's decrypt-at-projection surface). Personal Lens never decodes or
+// decrypts it — this only flags the envelope so the Edge knows to fetch a
+// transient session key (Vault Fire 5) before it can read the field.
+// Requires all three of CT/Nonce/KeyID non-empty (not just a non-empty CT):
+// json.Unmarshal silently ignores unrecognized/missing fields, so a plain
+// business field that merely happens to be named "ct" would otherwise
+// false-positive; a real envelope always carries all three.
+func rowHasCiphertext(data map[string]any) bool {
+	for _, v := range data {
+		m, ok := v.(map[string]any)
+		if !ok {
+			continue
+		}
+		raw, err := json.Marshal(m)
+		if err != nil {
+			continue
+		}
+		var ct vault.Ciphertext
+		if err := json.Unmarshal(raw, &ct); err != nil {
+			continue
+		}
+		if len(ct.CT) > 0 && len(ct.Nonce) > 0 && ct.KeyID != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // Delete publishes a "delete" delta envelope (key + tombstone, no body) to

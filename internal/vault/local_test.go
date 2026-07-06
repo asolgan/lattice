@@ -2,10 +2,13 @@ package vault_test
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -363,4 +366,69 @@ func TestLocalBackend_UnwrapKey_AfterShred_Denied(t *testing.T) {
 	_, err = b.UnwrapKey(ctx, "identity-1", env, wrapped)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, vault.ErrKeyShredded)
+}
+
+// TestLocalBackend_IssueSessionKey_ReturnsTheSameDEKAsDecrypt proves the
+// transient session key an Edge decrypts with locally is exactly the DEK
+// Encrypt/Decrypt use — so it can open any ciphertext delta for that
+// identity without a second key-derivation scheme to keep in sync.
+func TestLocalBackend_IssueSessionKey_ReturnsTheSameDEKAsDecrypt(t *testing.T) {
+	ctx := context.Background()
+	b := newTestBackend(t)
+
+	env, err := b.CreateIdentityKey(ctx, "identity-1")
+	require.NoError(t, err)
+	plaintext := []byte("sensitive delta payload")
+	ct, err := b.Encrypt(ctx, "identity-1", env, plaintext)
+	require.NoError(t, err)
+
+	sk, err := b.IssueSessionKey(ctx, "identity-1", env, "lease", time.Minute)
+	require.NoError(t, err)
+	require.NotEmpty(t, sk.Key)
+	assert.True(t, sk.ExpiresAt.After(time.Now()))
+
+	// Decrypt the ciphertext by hand under the issued session key exactly as
+	// an Edge node would — no call back to the Vault needed.
+	block, err := aes.NewCipher(sk.Key)
+	require.NoError(t, err)
+	gcm, err := cipher.NewGCM(block)
+	require.NoError(t, err)
+	opened, err := gcm.Open(nil, ct.Nonce, ct.CT, []byte("identity-1"))
+	require.NoError(t, err)
+	assert.Equal(t, plaintext, opened)
+}
+
+// TestLocalBackend_IssueSessionKey_AfterShred_Denied is Gate-3 vector 5
+// (personal-secure-lens-design.md §5): a shredded identity's session key
+// issuance must fail exactly like Decrypt/UnwrapKey.
+func TestLocalBackend_IssueSessionKey_AfterShred_Denied(t *testing.T) {
+	ctx := context.Background()
+	b := newTestBackend(t)
+
+	env, err := b.CreateIdentityKey(ctx, "identity-1")
+	require.NoError(t, err)
+	require.NoError(t, b.ShredKey(ctx, "identity-1"))
+
+	_, err = b.IssueSessionKey(ctx, "identity-1", env, "lease", time.Minute)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, vault.ErrKeyShredded)
+}
+
+// TestLocalBackend_IssueSessionKey_TTLClamped proves a non-positive or
+// over-ceiling ttl clamps to maxSessionKeyTTL rather than erroring or
+// minting an unbounded-lifetime key.
+func TestLocalBackend_IssueSessionKey_TTLClamped(t *testing.T) {
+	ctx := context.Background()
+	b := newTestBackend(t)
+
+	env, err := b.CreateIdentityKey(ctx, "identity-1")
+	require.NoError(t, err)
+
+	skZero, err := b.IssueSessionKey(ctx, "identity-1", env, "", 0)
+	require.NoError(t, err)
+	assert.True(t, skZero.ExpiresAt.After(time.Now().Add(59*time.Minute)), "ttl<=0 must clamp to the 1h ceiling, not mint a zero-lifetime key")
+
+	skOver, err := b.IssueSessionKey(ctx, "identity-1", env, "", 24*time.Hour)
+	require.NoError(t, err)
+	assert.True(t, skOver.ExpiresAt.Before(time.Now().Add(2*time.Hour)), "an over-ceiling ttl must clamp down to the 1h ceiling")
 }
