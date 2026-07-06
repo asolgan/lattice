@@ -5,6 +5,10 @@ description: "Winston's advancer for one swim-lane stream (Verticals OR Lattice,
 
 # Steward — advance one stream, one fire
 
+> **Running in a Claude Code REMOTE container?** Read **[`REMOTE.md`](REMOTE.md)** after this file — it
+> overrides the environment assumptions (worktree→fire-branch, contract-proposal-as-branch-commit,
+> ephemeral native stack, no Mac-local gitignored files). Everything else here binds unchanged.
+
 **Role:** Winston (AI tech lead), the advancer. **You advance ONE swim-lane stream, named by the caller:**
 
 - **Verticals** — App-vertical package + FE work; lane file `planning-artifacts/backlog/verticals.md`. Select
