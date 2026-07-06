@@ -68,7 +68,7 @@ type Deps struct {
 	DDLs *DDLCache
 }
 
-// CommitPath drives steps 1-3 (and stubbed 4-10) for a single envelope.
+// CommitPath drives the full commit path (steps 1-9 + the 6.5 encryption pass) for a single envelope.
 type CommitPath struct {
 	deps Deps
 }
@@ -176,7 +176,7 @@ func (cp *CommitPath) HandleMessage(ctx context.Context, msg jetstream.Msg) Mess
 	return outcome
 }
 
-// dispatch executes steps 1-3 then the stubbed 4-10 for one delivered operation,
+// dispatch executes the full commit path (steps 1-9 + the 6.5 encryption pass) for one delivered operation,
 // publishes any client reply, and returns the branch outcome plus the ack
 // Decision the caller must apply. It performs NO ack/nak/term itself — that
 // disposition belongs to the caller (the supervisor, or HandleMessage's
@@ -228,7 +228,7 @@ func (cp *CommitPath) dispatch(ctx context.Context, msg substrate.Message) (Mess
 		return OutcomeDuplicate, substrate.Ack
 	}
 
-	// --- Step 3: auth (stub). ---
+	// --- Step 3: auth. ---
 	decision, err := cp.deps.Authorizer.Authorize(ctx, env)
 	if err != nil {
 		cp.deps.Metrics.OpsRejected.Add(1)

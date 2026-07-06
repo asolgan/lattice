@@ -4,16 +4,17 @@
 // through the 9-step commit path, and atomically commits mutations +
 // idempotency tracker to Core KV.
 //
-// The 9-step commit path:
+// The 9-step commit path (with a 6.5 encryption pass between validate and build):
 //
 //	step 1: consume an operation envelope (JetStream pull consumer)
 //	step 2: dedup against the idempotency tracker (Core KV vtx.op.<requestId>)
 //	step 3: authorize via the Authorizer interface (CapabilityAuthorizer or StubAuthorizer)
-//	step 4: hydrate the ScriptContext from Core KV
+//	step 4: hydrate the ScriptContext from Core KV (declared contextHint.reads; the sandbox's kv.Read / kv.Links serve the write-path graph reads)
 //	step 5: execute the class Starlark script
 //	step 6: validate the ScriptResult against DDL constraints
+//	step 6.5: encrypt sensitive aspects through the Vault (step65_encrypt.go — sensitive-aspect ciphertext at rest)
 //	step 7: build the EventList
-//	step 8: atomically commit mutations + tracker to Core KV
+//	step 8: atomically commit mutations + tracker to Core KV (bounded §3.2 OCC re-hydrate/retry loop; §10.6 task auto-completion folded into the same batch)
 //	step 9: ack the JetStream message
 //
 // Event publishing is NOT a commit step: the faithful EventList is persisted
