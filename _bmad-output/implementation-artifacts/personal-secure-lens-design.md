@@ -463,7 +463,33 @@ fire (the one D1-gated step), and confidentiality + hydration extend it. **Depen
 > vector 5 stays PL.5's (Vault-gated). The subject subscribe-ACL (Fork 3, untrusted exposure) is
 > still open — the SYNC stream stays under the trusted-single-identity carve-out for *who may
 > connect*, independent of this fire's *what they'd see if they did*. `docs/components/refractor.md`
-> updated. **Next: PL.4** — the Hydration Hook.
+> updated. **PL.4 shipped** — `pipeline.Pipeline.Hydrate(ctx, identityID)`
+> (`internal/refractor/pipeline/hydrate.go`) re-executes `reprojectActors` for the one identity,
+> publishes every row through the active adapter, then publishes a terminal
+> `{op:"hydrationComplete", revision}` marker via the new optional `adapter.HydrationMarkerPublisher`
+> interface (implemented on `NatsSubjectAdapter`). `revision` is `Progress().LastAppliedSeq` captured
+> *before* reprojection, so a concurrent incremental delta can never carry a lower revision than the
+> bulk snapshot it raced. Control RPC `lattice.ctrl.refractor.personal.hydrate` (`control.Hydrator`
+> interface, `Service.SetPersonalHydrator`, wired in `cmd/refractor/main.go` alongside
+> `InstallPersonalLens`) — request `{identityId, deviceId?}`, response
+> `{personalHydrate:{hydrated,revision}}`. When `deviceId` is given, best-effort records the revision
+> into that device's Interest Set doc via the new `personalinterest.SetRevisionCursor` (the
+> `revisionCursor` field §3.3 already reserved for this fire), preserving its existing filter — pure
+> bookkeeping, not load-bearing (the Edge decides warm-vs-cold from its own local cursor, not this
+> field). **Deviation from this section's request shape (a judgment call, not a gap):** the RPC does
+> **not** take a `sinceRevision` field — §3.5's cold-vs-warm branch is entirely an **Edge-side**
+> decision (*"the device decides"*, per this section's own text): a warm device just resumes its
+> durable consumer locally and never calls `hydrate` at all, so the server RPC only has one path to
+> implement — it always runs the cold bulk projection when called. Adding a `sinceRevision` field the
+> server would ignore (or worse, half-honor) would be dead API surface with no Edge consumer yet to
+> exercise it (no Edge Lattice client exists — 🚧 seq, far). 3-layer adversarial review (Blind Hunter,
+> Edge Case Hunter, Acceptance Auditor) confirmed no security-gate bypass (hydration runs through the
+> identical `reprojectActors`/envelope/D1-filter path the live fan-out uses) and found one real race
+> — `SetRevisionCursor`'s original Get-then-Put could lose a concurrent writer's update — fixed to a
+> CAS retry loop (`kv.Update`/`Create` on `ErrRevisionConflict`, mirroring the codebase's existing OCC
+> pattern) before merge, with a concurrent-callers test added. `docs/components/refractor.md`
+> updated. **Next: PL.5** — Vault ciphertext + transient-key
+> composition (🚧 gated on Vault Phase A, which has since shipped — PL.5 is now unblocked too).
 
 1. **PL.1 — the `nats_subject` adapter + SYNC stream (the "brand-new adapter").** Implement
    `adapter/natssubject.go` (4-method SPI + ciphertext-passthrough), `TargetNATSSubjectConfig` +
@@ -502,7 +528,9 @@ fire (the one D1-gated step), and confidentiality + hydration extend it. **Depen
 **Build-now vs. gated:** PL.1, PL.2, PL.4 (warm/cold mechanics) are buildable **now** under the trusted
 posture. PL.3 gates on **D1**; PL.5 gates on **Vault Phase A**. The Steward can advance the platform
 (adapter, fan-out, hydration) immediately on ratification of *this* design, then close the security +
-confidentiality gates as D1 + Vault ratify.
+confidentiality gates as D1 + Vault ratify. **D1 and Vault Phase A have both since shipped
+(2026-07-05)** — PL.3's gate is closed (above) and PL.5 is now unblocked too; it remains the one open
+fire.
 
 ---
 

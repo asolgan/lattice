@@ -29,6 +29,12 @@ var ErrRuleNotRegistered = errors.New("control: rule not registered")
 // validateTimeout bounds the total time allowed for the validate op (NFR10 — CI-practical latency).
 const validateTimeout = 5 * time.Second
 
+// hydrateTimeout bounds the "hydrate" op (personal-secure-lens-design.md
+// §3.5, Fire PL.4): a cold bulk projection scoped to one identity's slice,
+// larger than a single KV read/write (register/deregister) but bounded to
+// one actor rather than a whole-lens rebuild.
+const hydrateTimeout = 30 * time.Second
+
 // authorizeTimeout bounds the capability check every dispatchEndpoint op runs
 // before dispatch (a single Capability KV GET, mirrors Weaver/Loom control's
 // handlerTimeout).
@@ -70,6 +76,15 @@ type Rebuilder interface {
 // Defined here so internal/control does not import internal/pipeline (architecture boundary).
 type Deleter interface {
 	Delete(ctx context.Context) error
+}
+
+// Hydrator is implemented by any component that can run a cold bulk
+// projection for one identity and return the high-water revision it was
+// projected through (personal-secure-lens-design.md §3.5, Fire PL.4).
+// *pipeline.Pipeline satisfies this via its Hydrate method. Defined here so
+// internal/control does not import internal/pipeline (architecture boundary).
+type Hydrator interface {
+	Hydrate(ctx context.Context, identityID string) (revision uint64, err error)
 }
 
 // RowNullifier is implemented by any component that can remove ONE projected row
@@ -123,6 +138,7 @@ type ControlResponse struct {
 	Delete             *DeleteResult             `json:"delete,omitempty"`             // present only for "delete" op
 	PersonalRegister   *PersonalRegisterResult   `json:"personalRegister,omitempty"`   // present only for "register" op
 	PersonalDeregister *PersonalDeregisterResult `json:"personalDeregister,omitempty"` // present only for "deregister" op
+	PersonalHydrate    *PersonalHydrateResult    `json:"personalHydrate,omitempty"`    // present only for "hydrate" op
 }
 
 // RebuildResult is the async acknowledgement returned by the "rebuild" op.
@@ -159,6 +175,16 @@ type PersonalRegisterResult struct {
 // "deregister" op.
 type PersonalDeregisterResult struct {
 	Deregistered bool `json:"deregistered"`
+}
+
+// PersonalHydrateResult is the synchronous acknowledgement returned by the
+// "hydrate" op (personal-secure-lens-design.md §3.5, Fire PL.4): the cold
+// bulk projection has completed and every row has been published; Revision
+// is the high-water mark the requesting device should resume incremental
+// delivery from.
+type PersonalHydrateResult struct {
+	Hydrated bool   `json:"hydrated"`
+	Revision uint64 `json:"revision"`
 }
 
 // ValidateResult is returned by the "validate" op. It contains a best-effort
@@ -200,6 +226,12 @@ type Service struct {
 	// Interest Set, personal-secure-lens-design.md §3.3). nil until
 	// SetPersonalInterestKV is called; those two ops fail closed until then.
 	personalInterestKV *substrate.KV
+	// personalHydrator backs the "hydrate" op (personal-secure-lens-design.md
+	// §3.5, Fire PL.4). nil until SetPersonalHydrator is called; the op fails
+	// closed until then. There is exactly one Personal Lens pipeline per
+	// deployment, so — like personalInterestKV — this is a single handle, not
+	// a per-ruleID registry.
+	personalHydrator Hydrator
 	// capability authorizes every dispatchEndpoint op (FR30,
 	// control-plane-capability-authz-design.md). Defaults to a
 	// StubCapabilityChecker (allow-all + log); SetCapabilityChecker swaps in a
@@ -264,6 +296,16 @@ func (s *Service) SetRuleGetter(rg RuleGetter) {
 func (s *Service) SetPersonalInterestKV(kv *substrate.KV) {
 	s.mu.Lock()
 	s.personalInterestKV = kv
+	s.mu.Unlock()
+}
+
+// SetPersonalHydrator registers the Hydrator the "hydrate" op dispatches to
+// (personal-secure-lens-design.md §3.5, Fire PL.4). Thread-safe; may be
+// called at any time. Until called, the op fails closed with an error
+// response. Pass nil to clear (e.g. on lens teardown).
+func (s *Service) SetPersonalHydrator(h Hydrator) {
+	s.mu.Lock()
+	s.personalHydrator = h
 	s.mu.Unlock()
 }
 
@@ -432,16 +474,16 @@ const controlSubjectPrefix = "lattice.ctrl.refractor"
 // supportedOps enumerates the per-op endpoint suffixes registered under
 // the NATS Services framework. The op name is taken from the trailing
 // subject token; see opFromSubject.
-var supportedOps = []string{"health", "validate", "rebuild", "pause", "resume", "delete", "register", "deregister"}
+var supportedOps = []string{"health", "validate", "rebuild", "pause", "resume", "delete", "register", "deregister", "hydrate"}
 
 // StartNATSListener registers the Refractor control plane as a NATS
 // micro-service named "refractor-control". One endpoint is added per
 // supportedOps entry, all sharing the wildcard subject pattern
 // "lattice.ctrl.refractor.*.<op>" so a single handler instance serves
-// every lens ID without prior knowledge. The "register"/"deregister" ops
-// (Personal Lens Interest Set) reuse the same wildcard: callers address them
-// at the fixed "lattice.ctrl.refractor.personal.<op>" subject — "personal" is
-// a pseudo-lensId, not a real lens.
+// every lens ID without prior knowledge. The "register"/"deregister"/"hydrate"
+// ops (Personal Lens Interest Set + hydration) reuse the same wildcard:
+// callers address them at the fixed "lattice.ctrl.refractor.personal.<op>"
+// subject — "personal" is a pseudo-lensId, not a real lens.
 //
 // All endpoints share the default queue group ("q") so multiple
 // Refractor instances distribute load — replaces the explicit
@@ -561,6 +603,10 @@ func (s *Service) dispatchEndpoint(op string, req micro.Request) {
 		s.respondMicro(req, s.personalRegister(context.Background(), body))
 	case "deregister":
 		s.respondMicro(req, s.personalDeregister(context.Background(), body))
+	case "hydrate":
+		hydrateCtx, hydrateCancel := context.WithTimeout(context.Background(), hydrateTimeout)
+		defer hydrateCancel()
+		s.respondMicro(req, s.personalHydrate(hydrateCtx, body))
 	default:
 		// Unreachable — supportedOps gates the endpoint registration.
 		s.respondMicro(req, ControlResponse{Error: fmt.Sprintf("unknown operation: %s", op)})
@@ -715,6 +761,40 @@ func (s *Service) personalDeregister(ctx context.Context, body ControlRequest) C
 		return ControlResponse{Error: err.Error()}
 	}
 	return ControlResponse{PersonalDeregister: &PersonalDeregisterResult{Deregistered: true}}
+}
+
+// personalHydrate runs a cold bulk projection for one identity through the
+// registered Hydrator (personal-secure-lens-design.md §3.5, Fire PL.4). Fails
+// closed if SetPersonalHydrator hasn't been called, or if identityId is
+// missing from the request body. On success, if a deviceId was also given and
+// the Interest Set KV is configured, best-effort records the resulting
+// revision as that device's cursor (personalinterest.SetRevisionCursor) —
+// bookkeeping only, not load-bearing for correctness (§3.5), so a cursor-write
+// failure is logged but does not fail the op: the data has already been
+// delivered.
+func (s *Service) personalHydrate(ctx context.Context, body ControlRequest) ControlResponse {
+	s.mu.Lock()
+	hydrator := s.personalHydrator
+	kv := s.personalInterestKV
+	s.mu.Unlock()
+	if hydrator == nil {
+		return ControlResponse{Error: "hydrate: personal hydrator not configured"}
+	}
+	if body.IdentityID == "" {
+		return ControlResponse{Error: "hydrate: identityId is required"}
+	}
+	revision, err := hydrator.Hydrate(ctx, body.IdentityID)
+	if err != nil {
+		return ControlResponse{Error: err.Error()}
+	}
+	if body.DeviceID != "" && kv != nil {
+		if cerr := personalinterest.SetRevisionCursor(ctx, kv, body.IdentityID, body.DeviceID, revision,
+			time.Now().UTC().Format(time.RFC3339)); cerr != nil {
+			slog.Warn("control: hydrate: record revision cursor", "identityId", body.IdentityID,
+				"deviceId", body.DeviceID, "err", cerr)
+		}
+	}
+	return ControlResponse{PersonalHydrate: &PersonalHydrateResult{Hydrated: true, Revision: revision}}
 }
 
 // validateRule reports that field-level validation is not available. It

@@ -83,7 +83,7 @@ func TestPersonalLens_PL3_E2E_NoCapReadEntry_DeniesFailClosed(t *testing.T) {
 	leaseID := pl2NanoID("pl3-noentry-lease")
 	leaseKey := substrate.VertexKey("lease", leaseID)
 
-	activatePersonalLens(t, h, pl2NanoID("pl3-noentry-lens"), pl3LeaseCypher(), []string{"entityId"}, h.capKV)
+	_, _ = activatePersonalLens(t, h, pl2NanoID("pl3-noentry-lens"), pl3LeaseCypher(), []string{"entityId"}, h.capKV)
 
 	// Deliberately NO cap-read.* seeded for this actor.
 	writePL2Vertex(t, h, identityKey, "identity", map[string]any{"name": "recipient"})
@@ -114,7 +114,7 @@ func TestPersonalLens_PL3_E2E_SecurityWinsOverRelevance(t *testing.T) {
 	leaseID := pl2NanoID("pl3-secwins-lease")
 	leaseKey := substrate.VertexKey("lease", leaseID)
 
-	activatePersonalLens(t, h, pl2NanoID("pl3-secwins-lens"), pl3LeaseCypher(), []string{"entityId"}, h.capKV)
+	_, _ = activatePersonalLens(t, h, pl2NanoID("pl3-secwins-lens"), pl3LeaseCypher(), []string{"entityId"}, h.capKV)
 
 	// cap-read grants a DIFFERENT anchor only — this lease is NOT among it.
 	putPL3ReadDoc(t, h, "cap-read.identity."+recipient, false,
@@ -165,7 +165,7 @@ func TestPersonalLens_PL3_E2E_GrantedAnchor_StreamsThenRevokeStops(t *testing.T)
 	_, leaseBareID, ok := substrate.ParseVertexKey(leaseKey)
 	require.True(t, ok)
 
-	activatePersonalLens(t, h, pl2NanoID("pl3-revoke-lens"), pl3LeaseCypher(), []string{"entityId"}, h.capKV)
+	_, _ = activatePersonalLens(t, h, pl2NanoID("pl3-revoke-lens"), pl3LeaseCypher(), []string{"entityId"}, h.capKV)
 
 	grantKey := "cap-read.identity." + recipient
 	putPL3ReadDoc(t, h, grantKey, false, pl3ReadableAnchor{AnchorType: "lease", AnchorID: leaseBareID})

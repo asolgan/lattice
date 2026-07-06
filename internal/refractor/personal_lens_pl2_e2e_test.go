@@ -99,7 +99,7 @@ func newPL2Harness(t *testing.T) *pl2Harness {
 // InstallPersonalLens — nil from the PL.2 tests below (fan-out/Interest Set
 // only, D1 gate disabled); the PL.3 suite passes h.capKV seeded with real
 // grants (personal_lens_pl3_e2e_test.go).
-func activatePersonalLens(t *testing.T, h *pl2Harness, lensID, cypher string, businessKeys []string, capKV *substrate.KV) *adapter.NatsSubjectAdapter {
+func activatePersonalLens(t *testing.T, h *pl2Harness, lensID, cypher string, businessKeys []string, capKV *substrate.KV) (*pipeline.Pipeline, *adapter.NatsSubjectAdapter) {
 	t.Helper()
 	const subjectPrefix = "lattice.sync.user"
 	const syncStream = "SYNC"
@@ -159,7 +159,7 @@ func activatePersonalLens(t *testing.T, h *pl2Harness, lensID, cypher string, bu
 	go p.Run(pipelineCtx)
 	t.Cleanup(pipelineCancel)
 
-	return adpt
+	return p, adpt
 }
 
 var fullEngineSingleton = full.New()
@@ -243,7 +243,7 @@ func TestPersonalLens_PL2_E2E_VertexFanOutReachesLinkedIdentity(t *testing.T) {
 
 	cypher := `MATCH (identity {key: $actorKey})-[:holds]->(l:lease) ` +
 		`RETURN l.key AS anchor, "lease" AS kind, l.id AS entityId, l.monthlyRent AS monthlyRent`
-	adpt := activatePersonalLens(t, h, pl2NanoID("vertexfan-lens"), cypher, []string{"entityId"}, nil)
+	_, adpt := activatePersonalLens(t, h, pl2NanoID("vertexfan-lens"), cypher, []string{"entityId"}, nil)
 
 	writePL2Vertex(t, h, identityKey, "identity", map[string]any{"name": "recipient"})
 	writePL2Vertex(t, h, leaseKey, "lease", map[string]any{"id": "lease-pl2-1", "monthlyRent": 2000})
@@ -306,7 +306,7 @@ func TestPersonalLens_PL2_E2E_InterestSetFiltersThenAdmits(t *testing.T) {
 
 	cypher := `MATCH (identity {key: $actorKey})-[:holds]->(l:lease) ` +
 		`RETURN l.key AS anchor, "lease" AS kind, l.id AS entityId, l.monthlyRent AS monthlyRent`
-	activatePersonalLens(t, h, pl2NanoID("interest-lens"), cypher, []string{"entityId"}, nil)
+	_, _ = activatePersonalLens(t, h, pl2NanoID("interest-lens"), cypher, []string{"entityId"}, nil)
 
 	// Register a device interested ONLY in "payment" — a "lease" delta must
 	// be suppressed. Drive this through the real control-plane RPC.

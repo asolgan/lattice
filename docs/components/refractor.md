@@ -98,7 +98,8 @@ shape**) or injected by the fan-out envelope (the **PL.2 shape**) — never both
   `NatsKVAdapter.buildKey`). A non-string or subject-unsafe `__actor` value fails the write with an
   error rather than reaching a panic — the value is untrusted, cypher-projected business data.
 - **Delta envelope** (`{op, key, anchor, kind, class, revision, projectionSeq, encrypted, data}`):
-  `op` is `"upsert"` or `"delete"`; `anchor`/`kind`/`class` are optional envelope metadata a lens's
+  `op` is `"upsert"` or `"delete"` (plus the Fire PL.4 terminal `"hydrationComplete"` marker, key/data
+  omitted — below); `anchor`/`kind`/`class` are optional envelope metadata a lens's
   RETURN clause supplies as reserved row-column names (promoted out of `data`, so they never appear
   twice); `data` is the remaining projected row (nil/omitted for a delete or an all-metadata row).
   `encrypted` is always `false` through PL.2 — Vault ciphertext passthrough is Fire 5.
@@ -132,8 +133,27 @@ shape**) or injected by the fan-out envelope (the **PL.2 shape**) — never both
   missing read grant). Threaded into `InstallPersonalLens` as `capKV`; `nil` disables the gate — a
   trusted/test-only posture, never a production default (`cmd/refractor/main.go` always opens a
   real `capability-kv` handle).
-- **Deferred to later PL fires** (`personal-secure-lens-design.md` §7): the Hydration Hook (PL.4)
-  and Vault-ciphertext + transient-key composition (PL.5, 🚧 gated on Vault Phase A).
+- **Hydration Hook (Fire PL.4, `internal/refractor/pipeline.Pipeline.Hydrate`).** The cold-start
+  catch-up path for a device that missed the SYNC stream's retention window (or is starting for the
+  first time): the control-plane RPC `lattice.ctrl.refractor.personal.hydrate` — request body
+  `{identityId, deviceId?}`, response `{personalHydrate: {hydrated: true, revision}}` — re-executes
+  the personal cypher for that one identity via the same `reprojectActors` machinery the live
+  cross-vertex fan-out uses (§ above), publishes every resulting row as a normal upsert/delete
+  through the active adapter, then (via the adapter's optional `HydrationMarkerPublisher`
+  interface) publishes a terminal `{op: "hydrationComplete", revision, projectionSeq}` marker to the
+  identity's subject. `revision` is the pipeline's own CDC forward-progress
+  (`Progress().LastAppliedSeq`) captured *before* reprojection runs, so any live incremental delta
+  applied concurrently with or after the hydrate call necessarily carries a revision at or above
+  this snapshot's — the Edge's last-writer-wins-by-revision resolution can never let a bulk
+  hydration snapshot regress a fresher incremental delta that raced it. When `deviceId` is given and
+  the Interest Set KV is configured, the resulting revision is best-effort recorded into that
+  device's Interest Set doc (`revisionCursor`, preserving its existing `types`/`anchors` filter) —
+  bookkeeping only; the Edge itself decides warm-vs-cold hydration from its own local cursor, not
+  from this field. Wired in `cmd/refractor/main.go` via `controlSvc.SetPersonalHydrator(p)`
+  alongside `InstallPersonalLens` — one Personal Lens pipeline per deployment, so this is a single
+  handle, not a per-ruleID registry (mirrors `SetPersonalInterestKV`).
+- **Deferred to later PL fires** (`personal-secure-lens-design.md` §7): Vault-ciphertext +
+  transient-key composition (PL.5, 🚧 gated on Vault Phase A).
 
 ### Protected read-model provisioning (read-path authorization, D1.3)
 
@@ -581,7 +601,7 @@ band — so a one-cycle spike does not flap the heartbeat.)
 
 | Feature | Phase | Notes |
 |---------|-------|-------|
-| Personal Lens / Secure Lens | Fires 1–3 (PL.1 transport, PL.2 fan-out + Interest Set, PL.3 D1 security gate) shipped; PL.4–PL.5 pending | Per-identity security-filtered projection. PL.1's `nats_subject` target adapter + PL.2's `ActorEnumerator` fan-out/Interest Set + PL.3's `capabilityread`-backed D1 gate (above) ship dark, still behind the trusted-single-identity carve-out for the NATS `SUB` boundary itself (Fork 3, subscribe-ACL); Hydration (PL.4) and Vault ciphertext (PL.5) remain |
+| Personal Lens / Secure Lens | Fires 1–4 (PL.1 transport, PL.2 fan-out + Interest Set, PL.3 D1 security gate, PL.4 Hydration Hook) shipped; PL.5 pending | Per-identity security-filtered projection. PL.1's `nats_subject` target adapter + PL.2's `ActorEnumerator` fan-out/Interest Set + PL.3's `capabilityread`-backed D1 gate + PL.4's `personal.hydrate` cold-bulk-projection RPC (above) ship dark, still behind the trusted-single-identity carve-out for the NATS `SUB` boundary itself (Fork 3, subscribe-ACL); Vault ciphertext + transient-key composition (PL.5) remains |
 | Multi-cell lens routing | Phase 3 | Current pipeline is single-cell |
 | Cross-instance latency aggregation | Phase 3 | Current `LatencyRingBuffer` is per-instance; no cluster-level rollup |
 | Link-envelope tombstone re-projection | Phase 3 | Currently adjacency entries are left in place on tombstone; re-projection on tombstone is not triggered |

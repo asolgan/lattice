@@ -181,6 +181,25 @@ func TestNatsSubjectAdapter_Upsert_MalformedActorFailsClosedNotPanic(t *testing.
 	assert.Error(t, err)
 }
 
+func TestNatsSubjectAdapter_PublishHydrationComplete_PublishesMarker(t *testing.T) {
+	conn, js := startSyncServer(t)
+	a, err := adapter.NewNatsSubjectAdapter(context.Background(), conn, "lattice.sync.user", "SYNC", []string{adapter.PersonalActorKeyField, "entityId"})
+	require.NoError(t, err)
+
+	require.NoError(t, a.PublishHydrationComplete(context.Background(), "identityA", 10500))
+
+	env := readSyncMsg(t, js, "SYNC", "lattice.sync.user.identityA")
+	assert.Equal(t, "hydrationComplete", env["op"])
+	assert.Equal(t, float64(10500), env["revision"])
+	assert.Equal(t, float64(10500), env["projectionSeq"])
+	assert.Nil(t, env["data"])
+	assert.Equal(t, "", env["key"], "the marker carries no row key")
+}
+
+func TestNatsSubjectAdapter_SatisfiesHydrationMarkerPublisher(t *testing.T) {
+	var _ adapter.HydrationMarkerPublisher = (*adapter.NatsSubjectAdapter)(nil)
+}
+
 func TestNatsSubjectAdapter_Probe(t *testing.T) {
 	conn, _ := startSyncServer(t)
 	a, err := adapter.NewNatsSubjectAdapter(context.Background(), conn, "lattice.sync.user", "SYNC", []string{adapter.PersonalActorKeyField})

@@ -62,6 +62,62 @@ func Register(ctx context.Context, kv *substrate.KV, identityID, deviceID string
 	return nil
 }
 
+// SetRevisionCursor records the high-water revision a device was hydrated
+// through (personal-secure-lens-design.md §3.5, Fire PL.4 — the
+// "personal.hydrate" control RPC). Read-modify-write on the existing
+// registration doc, preserving its Types/Anchors filter; a device with no
+// prior registration gets a bare cursor-only doc (registeredAt defaults to
+// now), so hydrating an unregistered device still records progress rather
+// than failing. Not itself load-bearing for correctness — the Edge decides
+// warm-vs-cold hydration from its own local cursor (§3.5); this is
+// server-side bookkeeping only.
+func SetRevisionCursor(ctx context.Context, kv *substrate.KV, identityID, deviceID string, revision uint64, registeredAt string) error {
+	key, err := Key(identityID, deviceID)
+	if err != nil {
+		return err
+	}
+	// CAS retry loop: a plain Get-then-Put would lose a concurrent writer's
+	// update (e.g. a register call adding a filter racing this hydrate call
+	// for the same device) — Update/Create are revision-conditioned, so a
+	// conflicting concurrent write surfaces as ErrRevisionConflict and this
+	// call retries against the new revision rather than silently clobbering it.
+	for {
+		doc := registrationDoc{RegisteredAt: registeredAt}
+		entry, getErr := kv.Get(ctx, key)
+		create := false
+		var expectedRev uint64
+		switch {
+		case getErr == nil:
+			if uerr := json.Unmarshal(entry.Value, &doc); uerr != nil {
+				return fmt.Errorf("personalinterest: unmarshal existing %q: %w", key, uerr)
+			}
+			expectedRev = entry.Revision
+		case errors.Is(getErr, substrate.ErrKeyNotFound):
+			create = true
+		default:
+			return fmt.Errorf("personalinterest: get %q: %w", key, getErr)
+		}
+		doc.RevisionCursor = revision
+		body, merr := json.Marshal(doc)
+		if merr != nil {
+			return fmt.Errorf("personalinterest: marshal cursor update for %q: %w", key, merr)
+		}
+		var casErr error
+		if create {
+			_, casErr = kv.Create(ctx, key, body)
+		} else {
+			_, casErr = kv.Update(ctx, key, body, expectedRev)
+		}
+		if casErr == nil {
+			return nil
+		}
+		if errors.Is(casErr, substrate.ErrRevisionConflict) {
+			continue
+		}
+		return fmt.Errorf("personalinterest: put %q: %w", key, casErr)
+	}
+}
+
 // Deregister removes a device's Interest Set. Idempotent — deregistering an
 // already-absent device is not an error (KV.Delete is itself idempotent).
 func Deregister(ctx context.Context, kv *substrate.KV, identityID, deviceID string) error {

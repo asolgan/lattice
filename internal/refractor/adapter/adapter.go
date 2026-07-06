@@ -53,3 +53,14 @@ type KeyLister interface {
 type RowReader interface {
 	GetRow(ctx context.Context, keys map[string]any) (row map[string]any, ok bool, err error)
 }
+
+// HydrationMarkerPublisher is an optional interface for adapters that support
+// publishing a terminal "hydrationComplete" marker after a cold bulk
+// projection (personal-secure-lens-design.md §3.5, Fire PL.4). Implemented by
+// NatsSubjectAdapter: the marker carries the high-water revision the device's
+// Sync Manager reverts to incremental delivery from. Called by
+// pipeline.Pipeline.Hydrate once every row of the bulk projection has been
+// published through Upsert/Delete.
+type HydrationMarkerPublisher interface {
+	PublishHydrationComplete(ctx context.Context, actorID string, revision uint64) error
+}

@@ -2,6 +2,7 @@ package personalinterest_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -128,6 +129,93 @@ func TestRegister_MissingIdentityOrDevice_Errors(t *testing.T) {
 
 	require.Error(t, personalinterest.Register(ctx, kv, "", "deviceX", nil, nil, time.Now().UTC().Format(time.RFC3339)))
 	require.Error(t, personalinterest.Register(ctx, kv, "identityA", "", nil, nil, time.Now().UTC().Format(time.RFC3339)))
+}
+
+func TestSetRevisionCursor_NewDevice_CreatesCursorOnlyDoc(t *testing.T) {
+	kv := newTestKV(t)
+	ctx := context.Background()
+
+	require.NoError(t, personalinterest.SetRevisionCursor(ctx, kv, "identityA", "deviceX", 10500,
+		time.Now().UTC().Format(time.RFC3339)))
+
+	key, err := personalinterest.Key("identityA", "deviceX")
+	require.NoError(t, err)
+	entry, err := kv.Get(ctx, key)
+	require.NoError(t, err)
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(entry.Value, &doc))
+	require.Equal(t, float64(10500), doc["revisionCursor"])
+}
+
+func TestSetRevisionCursor_PreservesExistingFilter(t *testing.T) {
+	kv := newTestKV(t)
+	ctx := context.Background()
+
+	require.NoError(t, personalinterest.Register(ctx, kv, "identityA", "deviceX", []string{"lease"}, nil, time.Now().UTC().Format(time.RFC3339)))
+	require.NoError(t, personalinterest.SetRevisionCursor(ctx, kv, "identityA", "deviceX", 20000,
+		time.Now().UTC().Format(time.RFC3339)))
+
+	// The Interest Set filter must survive the cursor update — a hydrate call
+	// must not silently revert a device to admit-all.
+	relevant, err := personalinterest.IsRelevant(ctx, kv, "identityA", "payment", "payment.1")
+	require.NoError(t, err)
+	require.False(t, relevant, "the pre-existing type filter must survive a revision-cursor update")
+
+	key, err := personalinterest.Key("identityA", "deviceX")
+	require.NoError(t, err)
+	entry, err := kv.Get(ctx, key)
+	require.NoError(t, err)
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(entry.Value, &doc))
+	require.Equal(t, float64(20000), doc["revisionCursor"])
+}
+
+func TestSetRevisionCursor_ConcurrentCallers_NeitherUpdateIsLost(t *testing.T) {
+	kv := newTestKV(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	require.NoError(t, personalinterest.Register(ctx, kv, "identityA", "deviceX", []string{"lease"}, nil, now))
+
+	// Two concurrent cursor-record calls for the SAME device (e.g. a hydrate
+	// racing another hydrate, or a register racing a hydrate) must both
+	// survive via the CAS retry loop — a plain Get-then-Put would let the
+	// second Put silently clobber the first's revision.
+	const n = 8
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func(rev uint64) {
+			errs <- personalinterest.SetRevisionCursor(ctx, kv, "identityA", "deviceX", rev, now)
+		}(uint64(1000 + i))
+	}
+	for i := 0; i < n; i++ {
+		require.NoError(t, <-errs)
+	}
+
+	// Whichever call's write landed last, the filter set by Register at the
+	// start must still be intact — no update was lost outright, only raced.
+	relevant, err := personalinterest.IsRelevant(ctx, kv, "identityA", "payment", "payment.1")
+	require.NoError(t, err)
+	require.False(t, relevant, "the type filter must survive concurrent cursor updates")
+
+	key, err := personalinterest.Key("identityA", "deviceX")
+	require.NoError(t, err)
+	entry, err := kv.Get(ctx, key)
+	require.NoError(t, err)
+	var doc map[string]any
+	require.NoError(t, json.Unmarshal(entry.Value, &doc))
+	cursor, ok := doc["revisionCursor"].(float64)
+	require.True(t, ok)
+	require.GreaterOrEqual(t, cursor, float64(1000))
+	require.Less(t, cursor, float64(1000+n))
+}
+
+func TestSetRevisionCursor_MissingIdentityOrDevice_Errors(t *testing.T) {
+	kv := newTestKV(t)
+	ctx := context.Background()
+
+	require.Error(t, personalinterest.SetRevisionCursor(ctx, kv, "", "deviceX", 1, time.Now().UTC().Format(time.RFC3339)))
+	require.Error(t, personalinterest.SetRevisionCursor(ctx, kv, "identityA", "", 1, time.Now().UTC().Format(time.RFC3339)))
 }
 
 func TestIsRelevant_ScopedToIdentityPrefix(t *testing.T) {

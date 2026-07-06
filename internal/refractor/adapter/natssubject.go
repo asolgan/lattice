@@ -258,6 +258,20 @@ func (a *NatsSubjectAdapter) publish(ctx context.Context, actor string, env delt
 	return nil
 }
 
+// PublishHydrationComplete publishes a terminal "hydrationComplete" marker to
+// actorID's subject, carrying the high-water revision (personal-secure-lens-
+// design.md §3.5, Fire PL.4). The device's Sync Manager reverts to
+// incremental delivery from this revision once it observes the marker. No
+// Key/Data — the marker carries only the revision.
+func (a *NatsSubjectAdapter) PublishHydrationComplete(ctx context.Context, actorID string, revision uint64) error {
+	env := deltaEnvelope{
+		Op:            "hydrationComplete",
+		Revision:      revision,
+		ProjectionSeq: revision,
+	}
+	return a.publish(ctx, actorID, env)
+}
+
 // Probe checks whether the backing JetStream stream is reachable.
 func (a *NatsSubjectAdapter) Probe(ctx context.Context) error {
 	if _, err := a.conn.JetStream().Stream(ctx, a.stream); err != nil {

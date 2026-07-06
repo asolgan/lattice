@@ -598,6 +598,11 @@ func main() {
 			if !projection.InstallPersonalLens(p, r, adjKV, coreKV, personalInterestKV, capabilityKV, logger) {
 				return
 			}
+			// The Hydration Hook (personal-secure-lens-design.md §3.5, Fire
+			// PL.4): the "personal.hydrate" control RPC dispatches to this
+			// lens's own pipeline. One Personal Lens per deployment, so this
+			// is a single handle, not a per-ruleID registry.
+			controlSvc.SetPersonalHydrator(p)
 		}
 
 		// A Secure Lens (Contract #3 §3.10): install the decrypt-at-projection
