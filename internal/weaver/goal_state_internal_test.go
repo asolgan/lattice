@@ -26,6 +26,11 @@ func TestValidateTarget_GoalColumns(t *testing.T) {
 			"missing_signature": {
 				Goal:        json.RawMessage(`{"present":"subject.signature.data.signedAt"}`),
 				GoalColumns: map[string]string{"signedAt": "subject.signature.data.signedAt"},
+				Actions: []ActionCatalogEntry{{
+					Ref:     "SignLease",
+					Action:  "directOp",
+					Effects: []json.RawMessage{json.RawMessage(`{"present":"subject.signature.data.signedAt"}`)},
+				}},
 			},
 		},
 	}
@@ -153,6 +158,11 @@ func TestRowState_AspectColumns_RecognizesGoalAlreadyMet(t *testing.T) {
 			"missing_signature": {
 				Goal:        json.RawMessage(`{"present":"subject.signature.data.signedAt"}`),
 				GoalColumns: map[string]string{"signedAt": "subject.signature.data.signedAt"},
+				Actions: []ActionCatalogEntry{{
+					Ref:     "SignLease",
+					Action:  "directOp",
+					Effects: []json.RawMessage{json.RawMessage(`{"present":"subject.signature.data.signedAt"}`)},
+				}},
 			},
 		},
 	}

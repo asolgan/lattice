@@ -465,6 +465,39 @@ this increment resolves the schema and proves it in isolation. The next incremen
 `mode:"planned"` goal-regression dispatch once a real target uses it, plus the plan-vertex/GC work §8
 describes.
 
+## Goal gap actions catalog (Fire 6 Increment 3, parse + validate only)
+
+The first-consumer fit (LoftSpace lease-renewal design) revised how a `goal` gap's search catalog is
+sourced: **not** Increment 1's global `effectsCatalog()` (every installed op's declared `Effects`,
+catalog-wide) but a **per-gap, package-authored `actions` list** — the ratified planner-mandate design's
+"installed catalog" framing is revised here (2026-07-05, contract text staged uncommitted awaiting
+Andrew) because an op's declared Effect alone carries no **dispatch binding** (no assignee, no params, no
+pattern) — a global auto-catalog would synthesize plans it could never actually dispatch. Each `actions`
+entry instead couples one dispatch binding (the same action-contract shape `candidates` already uses —
+`action`/`pattern`/`subject`/`adapter`/`operation`/`assignee`/`target`/`params`/`reads`) with the
+planner-facing triple `Synthesize` needs: a `ref` (unique per gap, used for both dispatch and the
+canonical tie-break), an optional `pre`, required `effects`, and an optional `cost` (defaults to 1 — unlike
+`candidates`, an unauthored cost here still has to contribute a real weight to a multi-step plan's total).
+
+**Install validation (`validateActionsCatalog`, `registry.go`):** required in both directions — a `goal`
+with an empty (or absent) `actions` catalog rejects the target (nothing to plan over), and a non-empty
+`actions` with no `goal` rejects too (nothing to plan toward). Every `ref` must be unique within the gap.
+Every `pre`/`effects` guard must parse under §10.5 and be **row-reachable** — root-shaped, or aspect-shaped
+AND one of this gap's own `goalColumns` bridge values (`requireRowReachable`): unlike `candidates[].pre`
+(root-only, no bridge exists), an `actions[].pre`/`.effects` MAY address a bridged aspect path because the
+goal gap's `planner.State` already carries it. Every `effects` atom must be a **concrete** assertion —
+`planner.ApplyEffects` against an empty `State` is reused (not re-implemented) to reject an `anyOf`/`not`
+effect at install rather than let it surface only as a buried `ErrUnsupportedEffect` deep in a future
+search. Parsed guards cache on the entry (`preGuard`/`effectGuards`), mirroring `goalGuard`'s parse-once
+pattern. Proven in `actions_catalog_internal_test.go`.
+
+**Not yet wired:** this increment is parse + validate only, zero dispatch-decision change (the same
+posture Fires 1/3/4 shipped at). The remaining Increment-3 work — `resolvePlannedAction`'s goal branch
+calling `planner.Synthesize` over this catalog, per-leg dispatch through `buildPlan`, pin-release on the
+pinned leg's effects holding in the current row, `__effect` close-crediting + `__count` reset per leg, and
+the budget-suppression Health issue — is checkpointed in `weaver-planner-mandate-design.md` §8 and
+`loftspace-lease-renewal-goal-authored-target-design.md` §9 (R1), both staged for the next Steward fire.
+
 ---
 
 ## Contraction monitor + oscillation detector (Fire 7)

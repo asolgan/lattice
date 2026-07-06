@@ -423,13 +423,25 @@ func TestValidateTarget_Candidates(t *testing.T) {
 
 // TestValidateTarget_Goal proves a gap's `goal` parses as a well-formed §10.5
 // guard (rejecting a malformed one) and is cached on the parsed target — not
-// yet consumed anywhere (Fire 6).
+// yet consumed anywhere (Fire 6). Since the Increment-3 actions-catalog
+// revision, goal requires a non-empty actions catalog alongside it
+// (actions_catalog_internal_test.go covers that requirement itself); this
+// fixture carries the minimal catalog so it keeps proving only what it always
+// proved — goal parsing — without also asserting the (separately tested)
+// actions requirement.
 func TestValidateTarget_Goal(t *testing.T) {
 	t.Parallel()
 	valid := &Target{
 		TargetID: "fixtureGoal",
 		Gaps: map[string]GapAction{
-			"missing_a": {Goal: json.RawMessage(`{"present":"subject.data.signature"}`)},
+			"missing_a": {
+				Goal: json.RawMessage(`{"present":"subject.data.signature"}`),
+				Actions: []ActionCatalogEntry{{
+					Ref:     "Do",
+					Action:  "directOp",
+					Effects: []json.RawMessage{json.RawMessage(`{"present":"subject.data.signature"}`)},
+				}},
+			},
 		},
 	}
 	if err := validateTarget(valid); err != nil {

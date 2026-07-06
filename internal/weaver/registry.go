@@ -138,6 +138,20 @@ type GapAction struct {
 	// this is the catchable half of that mistake).
 	GoalColumns map[string]string `json:"goalColumns,omitempty"`
 
+	// Actions is the gap's planning catalog (design
+	// weaver-planner-mandate-design.md revision, 2026-07-05 — the
+	// loftspace-lease-renewal-goal-authored-target-design's R1: a per-gap,
+	// package-authored catalog rather than a global installed-effects
+	// auto-catalog — an op effect alone carries no dispatch binding, so a
+	// global catalog would be undispatchable). Required alongside Goal
+	// (install rejects a goal gap with an empty catalog, and an Actions
+	// catalog with no Goal to synthesize toward). Each entry couples a
+	// dispatch binding (the same action-contract shape as GapCandidate) with
+	// the planner-facing triple Pre/Effects/Cost. Not yet consumed: this
+	// increment only parses + install-validates the shape; the goal-regression
+	// dispatch wiring (Synthesize → per-leg dispatch) is a later increment.
+	Actions []ActionCatalogEntry `json:"actions,omitempty"`
+
 	// goalGuard is Goal parsed once at install-validation time (nil unless Goal
 	// is set — a valid goal always parses, validateTarget rejects the target
 	// otherwise). Unexported: no engine path reads it yet.
@@ -179,6 +193,58 @@ type GapCandidate struct {
 	// preGuard is Pre parsed once at install-validation time (nil = always
 	// eligible). Unexported: read only by the Fire-4 shadow-compare ranking.
 	preGuard *guardgrammar.Guard `json:"-"`
+}
+
+// ActionCatalogEntry is one entry of a goal gap's Actions catalog (design
+// weaver-planner-mandate-design.md revision, 2026-07-05 — the
+// loftspace-lease-renewal-goal-authored-target-design's R1): a dispatch
+// binding — the same action-contract shape as GapCandidate (a chosen entry
+// dispatches exactly like an explicit GapAction) — coupled with the
+// planner-facing triple Synthesize needs: an optional Pre (gates whether this
+// action may be applied from a given planner.State), the Effects it entails
+// once dispatched, and an optional Cost. Unlike GapCandidate, both Pre and
+// Effects MAY address an aspect path this gap's GoalColumns bridges (the goal
+// gap's State already carries that bridge; candidates' rowState(row, nil)
+// never does).
+type ActionCatalogEntry struct {
+	// Ref identifies this entry for both the synthesized Plan's Steps and
+	// canonical tie-breaking (internal/weaver/planner.Action.Ref doc: cost
+	// ascending, then Ref lexicographically). Must be unique within the gap's
+	// catalog.
+	Ref string `json:"ref"`
+
+	Action    string            `json:"action"`
+	Pattern   string            `json:"pattern,omitempty"`
+	Subject   string            `json:"subject,omitempty"`
+	Adapter   string            `json:"adapter,omitempty"`
+	Operation string            `json:"operation,omitempty"`
+	Assignee  string            `json:"assignee,omitempty"`
+	Target    string            `json:"target,omitempty"`
+	Params    map[string]string `json:"params,omitempty"`
+	Reads     []string          `json:"reads,omitempty"`
+
+	// Pre gates this entry's eligibility in the search, evaluated against the
+	// gap's planner.State (row + GoalColumns bridge). Omitted means always
+	// available.
+	Pre json.RawMessage `json:"pre,omitempty"`
+	// Effects are the atoms this entry's dispatch entails once it commits —
+	// required, and each must be a concrete assertion (present/absent/equals,
+	// or an allOf of those; planner.ApplyEffects/ErrUnsupportedEffect rejects
+	// an anyOf/not effect at install rather than let it silently no-op deep in
+	// a search).
+	Effects []json.RawMessage `json:"effects"`
+	// Cost ranks the search (ascending; ties break on Ref lexicographically —
+	// internal/weaver/planner's canonical tie-break). Defaults to 1 when
+	// omitted (the zero value): unlike GapCandidate, an unauthored cost here
+	// must still contribute a real weight to a multi-step plan's total, so the
+	// zero value cannot mean "free."
+	Cost int `json:"cost,omitempty"`
+
+	// preGuard/effectGuards are Pre/Effects parsed once at install-validation
+	// time. Unexported: no engine path reads them yet (this increment is
+	// parse + validate only).
+	preGuard     *guardgrammar.Guard   `json:"-"`
+	effectGuards []*guardgrammar.Guard `json:"-"`
 }
 
 // Target is a parsed meta.weaverTarget body (Contract #10 §10.8): the binding
@@ -708,7 +774,114 @@ func validateGapPlannerFields(col string, ga GapAction) (GapAction, error) {
 		}
 		ga.goalColumnPaths = paths
 	}
+	if err := validateActionsCatalog(col, &ga); err != nil {
+		return ga, err
+	}
 	return ga, nil
+}
+
+// validateActionsCatalog install-validates one gap's optional Actions catalog
+// (design weaver-planner-mandate-design.md revision, 2026-07-05 — the
+// loftspace-lease-renewal-goal-authored-target-design's R1). Required
+// alongside Goal in both directions — a goal with no catalog can never
+// synthesize a plan, and a catalog with no goal has nothing to synthesize
+// toward — so either alone is rejected as a package-author config error, the
+// same fail-wholesale doctrine as goal/candidates/effects. Each entry's Ref
+// must be unique within the gap; its Pre/Effects paths must be
+// row-reachable — root-shaped, or aspect-shaped AND present in this gap's
+// (already-parsed) goalColumnPaths bridge — an unreachable Effects path would
+// make that entry's completion permanently un-satisfiable in the row-derived
+// State, and an unreachable Pre would make the entry permanently ineligible;
+// each Effects atom must be a concrete assertion (planner.ApplyEffects
+// rejects anyOf/not, mirrored here at install time rather than surfacing only
+// as a buried search-time error). Parsed guards are cached on the entry
+// (preGuard/effectGuards) so the not-yet-built dispatch wiring never re-parses
+// per episode.
+func validateActionsCatalog(col string, ga *GapAction) error {
+	if len(ga.Actions) == 0 {
+		if len(ga.Goal) > 0 {
+			return fmt.Errorf("gaps key %q: goal is set but actions is empty — synthesis has no catalog to plan over", col)
+		}
+		return nil
+	}
+	if len(ga.Goal) == 0 {
+		return fmt.Errorf("gaps key %q: actions is set but goal is empty — the catalog has no synthesis target", col)
+	}
+	refs := make(map[string]bool, len(ga.Actions))
+	for i, entry := range ga.Actions {
+		if entry.Ref == "" {
+			return fmt.Errorf("gaps key %q: actions[%d] has no ref", col, i)
+		}
+		if refs[entry.Ref] {
+			return fmt.Errorf("gaps key %q: actions[%d]: ref %q is declared more than once in this gap's catalog", col, i, entry.Ref)
+		}
+		refs[entry.Ref] = true
+		if entry.Action == "" {
+			return fmt.Errorf("gaps key %q: actions[%d] (ref %q) has no action", col, i, entry.Ref)
+		}
+		if entry.Cost < 0 {
+			return fmt.Errorf("gaps key %q: actions[%d] (ref %q): cost %d must be >= 0", col, i, entry.Ref, entry.Cost)
+		}
+		if entry.Cost == 0 {
+			entry.Cost = 1
+		}
+		if len(entry.Pre) > 0 {
+			g, err := guardgrammar.Parse(entry.Pre)
+			if err != nil {
+				return fmt.Errorf("gaps key %q: actions[%d] (ref %q).pre: %w", col, i, entry.Ref, err)
+			}
+			if err := requireRowReachable(col, "actions["+entry.Ref+"].pre", g, ga.goalColumnPaths); err != nil {
+				return err
+			}
+			entry.preGuard = g
+		}
+		if len(entry.Effects) == 0 {
+			return fmt.Errorf("gaps key %q: actions[%d] (ref %q) has no effects — an entry with nothing it entails can never advance a plan", col, i, entry.Ref)
+		}
+		effectGuards := make([]*guardgrammar.Guard, len(entry.Effects))
+		for j, raw := range entry.Effects {
+			g, err := guardgrammar.Parse(raw)
+			if err != nil {
+				return fmt.Errorf("gaps key %q: actions[%d] (ref %q).effects[%d]: %w", col, i, entry.Ref, j, err)
+			}
+			if _, err := planner.ApplyEffects(planner.State{}, []*guardgrammar.Guard{g}); err != nil {
+				return fmt.Errorf("gaps key %q: actions[%d] (ref %q).effects[%d]: %w", col, i, entry.Ref, j, err)
+			}
+			if err := requireRowReachable(col, fmt.Sprintf("actions[%s].effects[%d]", entry.Ref, j), g, ga.goalColumnPaths); err != nil {
+				return err
+			}
+			effectGuards[j] = g
+		}
+		entry.effectGuards = effectGuards
+		ga.Actions[i] = entry
+	}
+	return nil
+}
+
+// requireRowReachable rejects a guard tree that addresses a path no live
+// planner.State can ever carry: a root path (subject.data.<field>) is always
+// reachable (rowState's default mapping), and an aspect path is reachable
+// only when it is one of this gap's own goalColumnPaths values (the bridge
+// GoalColumns installs) — an aspect path from a DIFFERENT gap's bridge, or no
+// bridge at all, can never appear in this gap's State.
+func requireRowReachable(col, field string, g *guardgrammar.Guard, goalColumnPaths map[string]guardgrammar.Path) error {
+	for p := range guardPaths(g) {
+		if p.Aspect == "" {
+			continue
+		}
+		reachable := false
+		for _, bridged := range goalColumnPaths {
+			if bridged == p {
+				reachable = true
+				break
+			}
+		}
+		if !reachable {
+			return fmt.Errorf("gaps key %q: %s: path %q is aspect-shaped but not bridged by this gap's goalColumns — "+
+				"a row-derived State can never carry it, so this entry could never see it as (un)met", col, field, formatPath(p))
+		}
+	}
+	return nil
 }
 
 // validateAugurPolicy runs the §10.8 "Augur escalation" structural validations
