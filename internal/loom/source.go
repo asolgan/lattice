@@ -233,6 +233,9 @@ func (s *patternSource) dispatchSpec(id string, body []byte) {
 	if p.PatternID == "" {
 		p.PatternID = id
 	}
+	// MetaKey is the source vertex's canonical key — always the real
+	// vtx.meta.<NanoID>, independent of the (possibly human-named) PatternID.
+	p.MetaKey = "vtx.meta." + id
 	if err := p.validate(); err != nil {
 		s.logger.Error("loom: pattern rejected", "patternId", id, "err", err)
 		return

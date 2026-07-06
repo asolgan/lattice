@@ -337,13 +337,20 @@ provision-vault-kek:
 
 ## up-full — Full local deployment on latest source: kernel (make up) +
 ## orchestration tier (Loom/Weaver/Bridge/object-store-manager) + core packages
-## + Loupe, all in the background. When it returns, open http://127.0.0.1:7777.
+## + Gateway (:8080, dev-mode) + Loupe, all in the background. When it returns,
+## open http://127.0.0.1:7777.
 ## For a clean rebuild from scratch, run `make down` first.
 up-full:
 	@$(MAKE) up
 	@$(MAKE) orchestration
 	@$(MAKE) install-packages
 	@$(MAKE) provision-readpath
+	@echo "==> Building gateway binary..."
+	go build -o bin/gateway ./cmd/gateway
+	@echo "==> Killing any prior Gateway process..."
+	-pkill -f "bin/gateway" 2>/dev/null || true
+	@echo "==> Starting Gateway (:8080, dev-mode) in background..."
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_GATEWAY) GATEWAY_DEV_MODE=true GATEWAY_PG_DSN=$(GATEWAY_PG_DSN) GATEWAY_READ_MODELS_DIR=$(GATEWAY_READ_MODELS_DIR) ./bin/gateway >gateway.log 2>&1 </dev/null &
 	@echo "==> Building loupe binary..."
 	go build -o bin/loupe ./cmd/loupe
 	@echo "==> Killing any prior Loupe process..."
@@ -351,8 +358,8 @@ up-full:
 	@echo "==> Starting Loupe in background..."
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LOUPE) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) LOUPE_PG_DSN=$(LOUPE_PG_DSN) ./bin/loupe >loupe.log 2>&1 </dev/null &
 	@sleep 1
-	@echo "==> Full Lattice ready. Open http://127.0.0.1:7777 (Loupe)."
-	@echo "==> Logs: loupe.log loom.log weaver.log bridge.log objmgr.log refractor.log processor.log"
+	@echo "==> Full Lattice ready. Loupe http://127.0.0.1:7777 · Gateway :8080 (dev-mode)."
+	@echo "==> Logs: loupe.log gateway.log loom.log weaver.log bridge.log objmgr.log refractor.log processor.log"
 
 ## up-loftspace — Full stack + the LoftSpace vertical + the applicant app on :7788.
 ## Runs up-full, installs the LoftSpace vertical (orchestration-base → location-domain
@@ -496,7 +503,7 @@ orchestration:
 		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LOOM) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/loom >loom.log 2>&1 </dev/null & \
 		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_WEAVER) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/weaver >weaver.log 2>&1 </dev/null & \
 		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_BRIDGE) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/bridge >bridge.log 2>&1 </dev/null & \
-		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_OBJMGR) ./bin/object-store-manager >objmgr.log 2>&1 </dev/null & \
+		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_OBJMGR) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/object-store-manager >objmgr.log 2>&1 </dev/null & \
 		echo "==> Orchestration tier started."; \
 	fi
 

@@ -49,7 +49,11 @@ type Step struct {
 
 // Pattern is the in-engine view of a meta.loomPattern definition. A pattern
 // declares a single subjectType (the vertex type an instance runs for) and a
-// linear list of steps. patternId is the meta-vertex NanoID.
+// linear list of steps. PatternID is the spec-declared identifier — a
+// human-readable name when the spec supplies one, otherwise the source vertex's
+// NanoID. MetaKey is the real vtx.meta.<NanoID> vertex key, carried separately
+// so a dispatched op references the meta-vertex by its canonical key rather than
+// reconstructing it from the (possibly human-named) PatternID.
 //
 // completionDomains is the set of events.<domain>.> the engine reconciles a
 // durable per-domain completion consumer for (D2). It defaults to the pattern's
@@ -59,7 +63,12 @@ type Step struct {
 // not infer domains from operation names; correlation is domain-independent
 // (Contract #10 §10.6), so the SET of domains is sufficient.
 type Pattern struct {
-	PatternID         string   `json:"patternId"`
+	PatternID string `json:"patternId"`
+	// MetaKey is the source meta-vertex's canonical key (vtx.meta.<NanoID>), set
+	// by the pattern source at load time. Dispatched step ops carry it as
+	// authContext.target so they never reference the meta-vertex by the
+	// human-named PatternID (a forbidden vtx.meta.<canonicalName> shape).
+	MetaKey           string   `json:"metaKey,omitempty"`
 	SubjectType       string   `json:"subjectType"`
 	Steps             []Step   `json:"steps"`
 	CompletionDomains []string `json:"completionDomains,omitempty"`

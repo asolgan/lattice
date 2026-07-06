@@ -857,7 +857,7 @@ func (e *Engine) submitSystemOp(ctx context.Context, inst *Instance, pattern *Pa
 	token := deriveRequestID(inst.InstanceID, inst.Cursor)
 	inst.PendingToken = token
 
-	target := "vtx.meta." + pattern.PatternID
+	target := pattern.MetaKey
 	payload := map[string]any{"subjectKey": inst.SubjectKey}
 	// A systemOp's bound op is read-free in the Phase-2 vocabulary (the lifecycle
 	// ops are event-only — empty mutations, no vertex_alive), so no
@@ -1003,7 +1003,7 @@ func (e *Engine) submitExternalTask(ctx context.Context, inst *Instance, pattern
 		payload["params"] = step.Params
 	}
 
-	target := "vtx.meta." + pattern.PatternID
+	target := pattern.MetaKey
 	// The externalTask instanceOp validates the subject identity with vertex_alive
 	// (its DDL's no-orphan check), so the caller always hydrates the BARE
 	// subjectKey. Each subject.<aspect>.data.<field> params template additionally

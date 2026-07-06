@@ -64,8 +64,9 @@ func DDLs() []pkgmgr.DDLSpec {
 }
 
 // OpMetas makes AttachObject + DetachObject forOperation-resolvable so a future
-// Loom step can bind them; TombstoneObject is GC-internal (the v1b reclaimObject
-// pattern submits it directly) and is also resolvable for that binding.
+// Loom step can bind them; TombstoneObject is GC-internal (the object-store-
+// manager's owner-tombstone cascade submits it directly) and is also resolvable
+// for that binding.
 func OpMetas() []pkgmgr.OpMetaSpec {
 	return []pkgmgr.OpMetaSpec{
 		{OperationType: "AttachObject"},
