@@ -1,6 +1,6 @@
 # Design — Script-read posture: declared reads as the norm, bounded enumeration, and Processor-side guarded operations
 
-**Status: ✅ Andrew-ratified 2026-07-01** (reshaped over a ratification working session + two `bmad-party-mode` adversarial rounds — see §0). **Fires 1–2 contract surface (Contract #2 `optionalReads` + `enumerations` + read-posture) committed; the guard surface (Contract #2 `guard`/`correlationToken`, #3 `operation.guardSkipped`, #10 §10.5/§10.6) is staged at Fire 3 (build-deferred, and #03 currently carries an unrelated uncommitted edit).**
+**Status: ✅ Andrew-ratified 2026-07-01** (reshaped over a ratification working session + two `bmad-party-mode` adversarial rounds — see §0). **Fires 1–2 contract surface (Contract #2 `optionalReads` + `enumerations` + read-posture) committed; the guard surface (Contract #2 `guard`/`correlationToken`, #3 `operation.guardSkipped`, #10 §10.5/§10.6) is staged at Fire 3 (build-deferred, and #03 currently carries an unrelated uncommitted edit).** **Fires 1–2 BUILT 2026-07-06 on branch `claude/fable-model-qb9o6s`, awaiting Andrew's review/merge — see §12 build checkpoint.**
 **Author: Winston (Designer fire).**
 **Backlog row:** `planning-artifacts/backlog/lattice.md` → *Refinements & ops* → "Script-read posture".
 **Origin:** the Edge Lattice party-mode finding **F8** ("scripts reading Core KV is the root smell").
@@ -232,3 +232,75 @@ Two `bmad-party-mode` rounds (Andrew-requested) surfaced, and this revision inco
 ---
 
 *Designer fire — Winston. Awaits Andrew's ratification of the staged Contract #2/#3/#10 edits before the Steward builds Fires 1–2 (Fire 3 on its first guarded-pattern consumer).*
+
+---
+
+## 12. Build checkpoint — Fires 1–2 SHIPPED (2026-07-06, remote Steward fire)
+
+**Scope built:** Fires 1 + 2 exactly; Fire 3 (guards) untouched per the Andrew-routed assignment. All
+code + these docs ride branch `claude/fable-model-qb9o6s` (per the mid-fire protocol change: **no merge
+to main, no main pushes — Andrew's local agent reviews the branch and merges**). Commits:
+`697c0b0` (processor optionalReads), `0809d89` (Loom/Weaver/orchestration-base dispatch migration),
+`0a6ae40` (read-posture lint + annotations + enumerations exemplar), `112327b` (gofmt fixup), plus this
+checkpoint + the board-row edit.
+
+**Fire 1 — what shipped.**
+- `internal/processor`: `ContextHint.OptionalReads` + `EnumerationHint` on the envelope (enumerations
+  shape-validated at `ParseEnvelope`: hub/relation required, direction ∈ {out,in}); Hydrator hydrates
+  optionalReads like reads except not-found → `ScriptContext.KnownAbsent` (never `HydrationMiss`; a key
+  in both lists keeps fail-closed `reads` semantics); `kv.Read` serves a known-absent key as `None`
+  from the step-4 snapshot with **no live GET**; commit retry loop grows the (A′) attribution —
+  `absentConditionedCreates` × `materializedAbsentKeys`: a create off a known-absent key whose key now
+  exists is retry-eligible (re-hydrate → present → script re-branches no-op), while undeclared
+  create-once collisions surface unretried exactly as before (pinned by the existing
+  `CreateOnceCollisionSurfacesWithoutRetry` test). Same-commit-race e2e over real
+  Hydrator/Starlark/Committer proves the §3.1 invariant end-to-end (winner's doc survives).
+- Dispatchers: Loom `outboxRecord`/relay/`buildOutbox` carry optionalReads; `submitUserTask` declares
+  `[taskKey, subject.availability]` (`userTaskOptionalReads`, drift-guarded). Weaver `plan` grows a
+  claimID-keyed `optionalReads` closure (dedup key derives from the claimId-seeded stable taskId —
+  payload-vs-declaration equality pinned by `TestBuildPlan_AssignTask_OptionalReadsMatchPayload`);
+  `actuator.submit` threads it. orchestration-base DDL comments updated to the declared posture;
+  `TestCreateTask_DeclaredOptionalReads_CreateThenDedup` covers absent→create and re-dispatch→no-op.
+
+**Fire 2 — what shipped.**
+- `lint-conventions`: read-posture classification for `kv.Read`/`kv.Links` call sites in `packages/`
+  non-test files — `# read-posture: (c|d|e)` annotation (same line or ≤8 lines above); unannotated ⇒
+  class-(b) debt finding; kv.Links must be (e) with `relation=`; enumerate-then-write (e) without
+  `epoch=` gets the companion-epoch nudge. **All read-posture findings are ADVISORY** (`warn:` prefix,
+  never fail `--strict`) — the §7 warn-first landing; flip to blocking is a later one-line decision
+  once the debt list is worked down (55 warnings at ship).
+- Annotations: ClaimTask queuedFor enumeration (e, epoch = the task root its OCC-asserted update
+  contends), identity-hygiene + rbac-domain tombstone-guard enumerations + follow-up reads (e,
+  `epoch=none (accepted)` — read-only guards; Weaver detect+recover is the enforcer), clinic
+  `.hours`/`.timeOff` (c), CreateTask dedup + availability (d).
+- `enumerations` end-to-end: MergeIdentity's pipeline test declares its open-tasks-guard enumeration
+  (the first declared kv.Links op); parse-validation unit tests in `envelope_test.go`.
+
+**Grounded corrections (code moved since the design was written).**
+1. §1.3's inventory row "clinic `kv.Links(provider hasBooking)`" no longer exists — clinic moved to
+   write-path slot claims (see the hard-delete row's shelve note). Today's kv.Links consumers are
+   ClaimTask (queuedFor out), identity-hygiene and rbac-domain tombstone guards (in). The §3.2
+   companion-epoch exemplar therefore became ClaimTask's task-root OCC (a real epoch: every queuedFor
+   mutator commits through the task root), and the two read-only tombstone guards record an explicit
+   `epoch=none` acceptance.
+2. §4's "Contract #3 — `enumerations` metadata shape, to stage": the committed Contract #2 §2.5 text
+   already specifies the shape in full; no Contract #3 edit is needed for Fires 1–2 (and none was
+   made). The #3 edit remains grouped with the Fire-3 guard surface (`operation.guardSkipped`).
+3. The §3.1 "expectedRevision = the step-4-observed absence" phrasing is realized structurally:
+   `CreateOnly` *is* the absence assertion at commit (no new mutation field); the design's real delta
+   was making that collision **retry-attributable**, which is what (A′) adds.
+
+**Held / not built:** Fire 3 (guard/correlationToken/guardSkipped/§10.5 relocation, `evalGuard`
+removal) — build-deferred to the first guarded-pattern consumer, contracts staged then. Fire 4 (Edge
+predictability flag) — awaits Edge build. Migrating the remaining 55 class-(b) call sites (lease-
+signing, augur, capability-author, clinic dedup reads, ClaimTask's speculative reads …) to
+optionalReads/annotations — the lint's debt list is the worklist; flip the lint to blocking after.
+
+**Gates at ship:** `go build ./...`, `go vet ./...` clean; full `go test ./...` green on the branch
+(embedded-NATS; Postgres-gated tests skip — no adapter surface touched); `lint-conventions` STRICT
+exit 0 (0 issues, 55 advisory read-posture warnings = the intended debt list); board lint clean.
+`golangci-lint` could NOT run in the remote container (its binary is built on Go 1.25, the repo
+targets 1.26.1 — accepted environment limitation): **CI's golangci-lint is the authority** for that
+gate on this branch. Review: adversarial self-review, three lenses (acceptance vs Fire 1–2 scope /
+blind bug-hunt on crash-idempotency-ordering incl. an independent subagent pass over the full diff /
+validation + error-path edges); findings and dispositions recorded in the merge-request commit trail.
