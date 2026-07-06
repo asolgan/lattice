@@ -97,7 +97,7 @@ and stale-marker corrections were applied in the filing commit (Done log); these
 
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **chronicler-host-reconciliation** | Fork C re-ratified (Andrew, 2026-07-06): extract the event→row host (`internal/refractor/eventlens` + `lens/eventsource.go` + `cmd/refractor` wiring) into a standalone `cmd/chronicler` + `internal/chronicler` binary with its own `health.chronicler.<instance>` heartbeat (Loupe's node already expects it); Refractor keeps no `LensSpec.Source`. | ★★★ | M | ✅ ratified · [design](../../implementation-artifacts/orchestration-history-read-model-design.md) · [doc](../../../docs/components/chronicler.md) |
+| **chronicler-host-reconciliation** | Fork C re-ratified (Andrew, 2026-07-06): extract the event→row host into a standalone `cmd/chronicler` + `internal/chronicler` binary with its own `health.chronicler.<instance>` heartbeat; Refractor keeps no `LensSpec.Source`. | ★★★ | M | 🏗️ building · [design](../../implementation-artifacts/orchestration-history-read-model-design.md) §checkpoint · Inc 1 shipped `b78805f`; next: Inc 2 (cutover) |
 | **refractor-publish-acl-gap** | The deployed NKey allow-list misses `ops.system` (keyshredded finalization submit — Naks unbounded in the perm-enforced stack; live via `privacy-base`) and `lattice.sync.>` (Personal Lens deltas — latent). Add the grants + extend the `natsperm` proof vectors; record the shred-finalization op-submit as a sanctioned exception. Distinct from (and complements) `natsperm-matrix-hygiene`'s `$KV.>`-narrowing. | ★★★ | S | 📋 |
 | **refractor-protected-by-default-gate** | §6.14 mandates a Postgres business lens declaring neither `protected` nor `public` fails closed (activation + lint) — neither exists: an undeclared lens activates as a plain unguarded LWW table. Add the declare-one requirement at `translateSpec` + the `lint-conventions` gate; migrate existing plain lenses to explicit `public:true`. | ★★★ | S | 📋 |
 | **refractor-6-14-postgres-seam-truthup** | Close the remaining §6.14 seams: seq-guard the protected `Delete` (stale-replay resurrection window); stage the M5 wildcard-anchor contract edit the shipped RLS policy already enforces (reconcile the `rls.go`/`capabilityread.go` §6.14 citations with it); decide auth-plane vs warning severity for a paused grant/protected lens; fix the `int64(MaxUint64)` wrap in the shred→grant-table seq stamp. Supersedes the protected-Postgres-LWW row. | ★★ | S | 📋 |
@@ -114,10 +114,11 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 **forks** (Gateway, read-path auth, Vault, multi-cell, HA-NATS) and **frozen-contract** changes are
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
-> 🎯 **Build-ready now**: nothing fully unblocked — see the two 🔭 flags below.
-> *Genuinely gated*: **Object crypto-shred Fire 4** (Fires 1+2+3 shipped `93d6f88`/`6169671`/`5e83939`) —
-> grounding surfaced a real trust-boundary fork, flagged for Andrew (🔭 below); **AI-caps Fire 4** (Andrew
-> sign-off on AI-code-execution, not the sandbox).
+> 🎯 **Build-ready now** (this section only — check the **Arch-review intake** section above too, it
+> carries its own ✅ ratified / 📋 ready items, e.g. `chronicler-host-reconciliation` ★★★): nothing in
+> *this* section is fully unblocked. *Genuinely gated*: **Object crypto-shred Fire 4** (Fires 1+2+3
+> shipped `93d6f88`/`6169671`/`5e83939`) — grounding surfaced a real trust-boundary fork, flagged for
+> Andrew (🔭 below); **AI-caps Fire 4** (Andrew sign-off on AI-code-execution, not the sandbox).
 
 ### Security & trust boundary
 | Item | What it is | Imp | Size | State |
