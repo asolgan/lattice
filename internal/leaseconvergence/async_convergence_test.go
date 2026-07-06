@@ -143,6 +143,12 @@ func TestAsyncConvergence_NoDoubleDispatch_AcrossSweepTick(t *testing.T) {
 	h.driveApplicantSteps(appKey, applicantKey)
 	applicantID := applicantKey[len("vtx.identity."):]
 
+	// The landlord approves up front (the application is already signed): since
+	// 6c30a10 (DecideLeaseApplication, the human gate), missing_decision never
+	// closes on its own, so drainUntilConverged below would hang forever without
+	// this — the async gaps (bgcheck/payment) are orthogonal to the decision gate.
+	h.decideLandlord(appKey, "approved")
+
 	// Wait until the bgcheck is in flight: the lens projects inflight_bgcheck=true
 	// (the call was submitted, no outcome yet) with the gap still open.
 	require.Eventuallyf(t, func() bool {
@@ -207,6 +213,11 @@ func TestAsyncConvergence_Timeout_FailedThenOneRetry(t *testing.T) {
 	h.driveApplicantSteps(appKey, applicantKey)
 	applicantID := applicantKey[len("vtx.identity."):]
 
+	// The landlord approves up front — the human gate DecideLeaseApplication
+	// introduced (6c30a10) is orthogonal to the async bgcheck retry/timeout
+	// machinery this test exercises.
+	h.decideLandlord(appKey, "approved")
+
 	// The first call times out → a terminal failed outcome lands on the first
 	// bgcheck instance.
 	require.Eventuallyf(t, func() bool {
@@ -248,6 +259,12 @@ func TestAsyncConvergence_BoundedRetry_Exhausted(t *testing.T) {
 	appKey, appID, applicantKey := h.seedApplicant()
 	h.driveApplicantSteps(appKey, applicantKey)
 	applicantID := applicantKey[len("vtx.identity."):]
+
+	// The landlord approves up front — missing_decision is orthogonal to (and, per
+	// the lens, only opens AFTER) the bgcheck/payment gaps this test exercises, but
+	// approving early mirrors the other two async tests and keeps the row's overall
+	// shape consistent with a normal qualified-application flow.
+	h.decideLandlord(appKey, "approved")
 
 	// The chain dispatches up to bgcheckRetryCap fresh calls (each times out →
 	// failed → a fresh retry), then the dispatch-count reaches the cap and Weaver

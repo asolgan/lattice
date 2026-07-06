@@ -410,7 +410,7 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 	// to touch this entity again — no such write is guaranteed (the write
 	// that satisfied this leg's effect may be the last one for a while).
 	// Dispatch the next leg as a genuinely fresh episode via the SAME
-	// CAS-create path lane-1 uses (fireEpisode's inFlight=false branch)
+	// CAS-create path lane-1 uses (fireEpisode's found=false branch)
 	// instead of merely releasing.
 	if e.releaseCompletedLeg(ctx, targetID, entityID, gapColumn, ga, rec.Action, row, markRev) {
 		pl, actionRef, dec := e.planGap(ctx, target, targetID, entityID, gapColumn, ga, row, rowRevision, "")
@@ -419,7 +419,7 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 				"targetId", targetID, "entityId", entityID, "gap", gapColumn, "decision", dec)
 			return
 		}
-		if e.fireEpisode(ctx, targetID, entityID, entityKey, gapColumn, actionRef, pl, false, nil, 0, false) != substrate.Ack {
+		if e.fireEpisode(ctx, targetID, entityID, entityKey, gapColumn, actionRef, pl, false, nil, 0, false, false) != substrate.Ack {
 			// Either the fresh mark's CAS-create itself failed (truly
 			// markless — the next sweep pass retries the same release) or
 			// its op publish failed (the mark exists; the lease/reclaim
@@ -452,10 +452,26 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 		return
 	}
 
+	// confirmedConcluded mirrors fireEpisode's staleMark (evaluator.go): true
+	// when gapColumn is an EXTERNAL gap (a lens-declared inflight_<g>
+	// companion, currently false) per Contract #10 §10.3 — "External gaps are
+	// unchanged — their reclaim re-dispatch is intended (re-call a dead vendor
+	// / mint a fresh service instance), episode-scoped on markRevision and
+	// bounded by inflight_<g> + maxretries_<g>," distinct from the human
+	// userTask gaps (assignTask; triggerLoom of a userTask-containing
+	// pattern), which declare no such column and are governed instead by
+	// §10.3's claimId-verbatim-preservation rule — staleMark returns false
+	// unconditionally for them, so confirmedConcluded never applies. It gates
+	// both the backoff pacing below (that pacing exists to avoid phantom-task
+	// churn on a still-open human episode; §10.3 already bounds an external
+	// gap's retry by inflight_<g>/maxretries_<g> instead) and the claimId
+	// choice (below the pacing block).
+	confirmedConcluded := e.staleMark(targetID, row, gapColumn)
+
 	// Default per-key TTL backstop for the re-armed mark; widened below for a
 	// paced userTask reclaim.
 	markTTL := markTTLBackstopFactor * e.marks.lease
-	if rec.Action == actionAssignTask || rec.Action == actionTriggerLoom || rec.Action == actionProposedOp {
+	if !confirmedConcluded && (rec.Action == actionAssignTask || rec.Action == actionTriggerLoom || rec.Action == actionProposedOp) {
 		// Collapse-only reclaim: pace repeat reclaims with an exponential backoff
 		// keyed on the mark's own ClaimedAt + dispatch-count — the consumer
 		// collapses any repeat re-dispatch anyway, so re-firing every sweep is
@@ -469,8 +485,13 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 		// static playbook entry "proposedOp", never the inner one). An ordinary
 		// (non-Augur) directOp/external reclaim never reaches here (action check)
 		// — it is the intended bounded retry (§inflight_<g>/maxretries_<g>), never
-		// backed off. Best-effort: a count read or ClaimedAt parse failure falls
-		// through to a normal (unpaced) reclaim.
+		// backed off. confirmedConcluded also skips pacing: it is only ever
+		// true for an EXTERNAL gap (§10.3 above), whose retry is already
+		// bounded by inflight_<g>/maxretries_<g>, not by this userTask-phantom-
+		// churn timer — applying the timer here was the pre-existing drift from
+		// §10.3's "reclaim re-dispatch is intended" text for external gaps.
+		// Best-effort: a count read or ClaimedAt parse failure falls through to
+		// a normal (unpaced) reclaim.
 		if count, err := e.marks.getDispatchCount(ctx, targetID, entityID, gapColumn); err != nil {
 			e.logger.Debug("weaver sweep: reclaim backoff dispatch-count read failed; not pacing",
 				"targetId", targetID, "entityId", entityID, "gap", gapColumn, "err", err)
@@ -512,18 +533,40 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 		return
 	}
 
+	// The claimId a reclaim seeds the fresh dispatch with: by default preserve
+	// the mark's per-open-episode claimId across the reclaim (§10.3's
+	// claimId-verbatim rule for the human userTask gaps — assignTask;
+	// triggerLoom of a userTask-containing pattern) so the userTask/Loom-
+	// instance identity it seeds stays stable and a late-arriving completion
+	// of the OLD attempt still lands on it. But confirmedConcluded (above)
+	// means gapColumn is instead an EXTERNAL gap, for which §10.3 says
+	// "reclaim re-dispatch is intended... mint a fresh service instance" —
+	// preserving the old claimId here would seed the fresh triggerLoom
+	// dispatch with the SAME already-terminal Loom-instance identity
+	// (deriveStableInstanceID is claimId-seeded, strategist.go), collapsing
+	// the "retry" onto the dead episode as a no-op rather than the fresh
+	// instance §10.3 calls for. Mint a fresh one in that case, mirroring
+	// fireEpisode's stale-mark reclaim branch (dispatchGap's lane-1 analog of
+	// this same §10.3 external-gap rule).
+	claimID := rec.ClaimID
+	if confirmedConcluded {
+		if fresh, cErr := substrate.NewNanoID(); cErr == nil {
+			claimID = fresh
+		} else {
+			e.logger.Warn("weaver sweep: fresh claimId mint failed; preserving the concluded episode's claimId (the retry may collapse onto it)",
+				"targetId", targetID, "entityId", entityID, "gap", gapColumn, "err", cErr)
+		}
+	}
+
 	// The atomic claim: replace the expired mark in place, conditioned on the
 	// revision read this pass. A conflict means the key changed under the
 	// sweep — a fresh episode CAS-created it, or its TTL marker landed — and
 	// the current state owns the gap; skip.
-	// Preserve the mark's per-open-episode claimId across the reclaim (§10.3): a
-	// reclaim is the SAME open episode, so the userTask identity it seeds stays
-	// stable and the re-dispatch collapses on the existing task/instance.
 	// resolvedAction is written back unchanged for every non-candidates gap
 	// (== ga.Action) and re-pins the SAME candidate for a planned-mode one
 	// (== rec.Action, by construction of resolvePlannedAction's pinned-lookup
 	// branch) — the mark's Action never drifts across a reclaim.
-	newRev, conflict, err := e.marks.replace(ctx, targetID, entityID, gapColumn, entityKey, resolvedAction, rec.ClaimID, markRev, markTTL)
+	newRev, conflict, err := e.marks.replace(ctx, targetID, entityID, gapColumn, entityKey, resolvedAction, claimID, markRev, markTTL)
 	if err != nil {
 		e.logger.Warn("weaver sweep: reclaim re-arm failed; leaving expired mark for the next sweep",
 			"targetId", targetID, "entityId", entityID, "gap", gapColumn, "err", err)
@@ -545,12 +588,12 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 	e.bumpEffectDispatch(ctx, targetID, gapColumn, resolvedAction)
 	e.bumpOscillation(ctx, targetID, resolvedAction)
 	// Fresh episode: the requestId derives from the replace revision (a real new
-	// dispatch attempt). The preserved claimId keeps the userTask identity stable,
-	// so the new attempt collapses on the existing task/instance. A publish failure
-	// here leaves the fresh mark holding a live lease, so the retry is real — the
-	// sweep re-attempts at that lease's expiry, and a lane-1 redelivery re-fires
-	// the same fresh requestId before then.
-	if e.fire(ctx, targetID, entityID, gapColumn, newRev, rec.ClaimID, pl) != substrate.Ack {
+	// dispatch attempt). claimID (preserved or freshly minted, above) seeds the
+	// dispatch identity. A publish failure here leaves the fresh mark holding a
+	// live lease, so the retry is real — the sweep re-attempts at that lease's
+	// expiry, and a lane-1 redelivery re-fires the same fresh requestId before
+	// then.
+	if e.fire(ctx, targetID, entityID, gapColumn, newRev, claimID, pl) != substrate.Ack {
 		e.logger.Warn("weaver sweep: reclaim re-dispatch did not publish; the fresh mark's lease bounds the retry",
 			"targetId", targetID, "entityId", entityID, "gap", gapColumn)
 	}

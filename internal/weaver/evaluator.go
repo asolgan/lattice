@@ -251,7 +251,49 @@ func (e *Engine) dispatchGap(ctx context.Context, target *Target, targetID, enti
 	// re-firing is the safe side (the same episode requestId collapses on the
 	// Contract #4 tracker; a drop could wedge a lost publish behind its own
 	// mark).
-	return e.fireEpisode(ctx, targetID, entityID, entityKey, col, action, pl, msg.NumDelivered != 1, rec, markRev, found)
+	//
+	// staleMark reports whether col is an EXTERNAL gap (Contract #10 §10.3: "a
+	// legitimate close→reopen... mints a new claimId ⇒ a fresh artifact...
+	// External gaps are unchanged — their reclaim re-dispatch is intended
+	// (re-call a dead vendor / mint a fresh service instance), episode-scoped
+	// on markRevision and bounded by inflight_<g> + maxretries_<g>") — a lens
+	// author marks a gap as belonging to that class by declaring its
+	// inflight_<g> companion column at all; the human userTask gaps
+	// (assignTask, and triggerLoom of a userTask-containing pattern) declare
+	// no such column and are structurally untouched by this branch (staleMark
+	// returns false immediately below), so their claimId stays preserved
+	// verbatim exactly as §10.3 requires. staleMark reading false on a
+	// declared column does NOT need to distinguish "confirmed concluded" from
+	// "not yet dispatched" — for a real external gap, inflight_<g> is computed
+	// from actual outcome-presence (e.g. "dispatch aspect set, outcome aspect
+	// absent"), so it cannot read false while a call is genuinely still
+	// pending: a still-pending call keeps inflight_<g>=true, which
+	// gapSuppressed (checked before dispatchGap is ever reached) would already
+	// be blocking on. The additional `!leaseLive` requirement below only rules
+	// out the brief, same-process propagation-lag window right after THIS
+	// mark's own fresh dispatch (before its own effects have reprojected into
+	// this row) — an in-memory CDC round trip, milliseconds, not the mark's
+	// lease (seconds to the production default of 30 minutes).
+	stale := found && !leaseLive(rec.LeaseExpiresAt, time.Now()) && e.staleMark(targetID, row, col)
+	return e.fireEpisode(ctx, targetID, entityID, entityKey, col, action, pl, msg.NumDelivered != 1, rec, markRev, found, stale)
+}
+
+// staleMark reports whether gap column col is declared as an EXTERNAL gap
+// (Contract #10 §10.3) whose row currently shows no call in flight, so a
+// found mark for it is a stale bookkeeping remnant of a concluded attempt,
+// not a live episode. See the dispatchGap call site for the full contract
+// citation and why an absent inflight_<g> column (the human userTask gaps)
+// makes this unconditionally false, leaving their reclaim untouched (claimId
+// preserved verbatim, per §10.3).
+func (e *Engine) staleMark(targetID string, row map[string]any, col string) bool {
+	g, ok := strings.CutPrefix(col, gapColumnPrefix)
+	if !ok {
+		return false
+	}
+	if _, declared := row[inflightColumnPrefix+g]; !declared {
+		return false
+	}
+	return !e.boolColumn(targetID, row, inflightColumnPrefix+g)
 }
 
 // planGap resolves one gap's plan (Evaluator L2 + Strategist), routing a
@@ -355,28 +397,80 @@ func (e *Engine) admitGap(target *Target, targetID, entityID, col, adapter strin
 }
 
 // fireEpisode is the lane-1 dispatch core: CAS-create the mark on absence
-// (the dispatch OCC) and fire the episode op. rec/markRev/inFlight are the
+// (the dispatch OCC) and fire the episode op. rec/markRev/found/stale are the
 // caller's own already-read mark snapshot (dispatchGap reads it once, up
 // front, so the Fire 5 candidate-pin resolution and this fire decision never
-// see two different mark states). redelivered selects the in-flight
+// see two different mark states). redelivered selects the genuinely-in-flight
 // disposition — false drops (the anti-storm gate: another episode is in
 // flight), true re-publishes the SAME episode requestId (idempotent at the
-// Contract #4 tracker). The reconciler sweep does not pass through here: its
-// reclaim replaces the expired mark in place under a revision condition and
-// fires directly. action is recorded on the mark (the §10.3 value shape) so
-// the sweep can re-dispatch the right episode.
+// Contract #4 tracker). stale (staleMark) reclaims the mark in place instead —
+// see that branch. The reconciler sweep's OWN reclaim does not pass through
+// here for its lease-expiry case: it replaces the expired mark in place under
+// a revision condition and fires directly, independently. action is recorded
+// on the mark (the §10.3 value shape) so a later reclaim can re-dispatch the
+// right episode.
 func (e *Engine) fireEpisode(ctx context.Context, targetID, entityID, entityKey, col, action string,
-	pl *plan, redelivered bool, rec *mark, markRev uint64, inFlight bool) substrate.Decision {
+	pl *plan, redelivered bool, rec *mark, markRev uint64, found, stale bool) substrate.Decision {
 
-	if inFlight {
+	if found && !stale {
 		if !redelivered {
-			// A fresh delivery while the episode is in flight — the anti-storm
-			// drop.
+			// A fresh delivery while the episode is genuinely in flight — the
+			// anti-storm drop.
 			return substrate.Ack
 		}
 		// Redelivery retry path: re-publish the same episode with the existing
 		// mark's preserved claimId (so the userTask identity stays stable).
 		return e.fire(ctx, targetID, entityID, col, markRev, rec.ClaimID, pl)
+	}
+
+	if found && stale {
+		// col is an EXTERNAL gap (staleMark's doc: a lens-declared inflight_<g>
+		// companion, currently false) with an already-expired lease — nothing
+		// has cleared its mark yet (clearClosedMarks only fires once the GAP
+		// itself closes, still open here; only the prior ATTEMPT concluded),
+		// and the sweep's lease-based reclaim may not have ticked yet or may
+		// lose the race against the mark's own TTL. Reclaim it in place with
+		// the SAME CAS-replace the reconciler sweep uses for an expired lease,
+		// rather than a bare create (which would just lose the CAS against the
+		// still-present key, silently dropping this delivery exactly like the
+		// bug this branch fixes) or leaving it (which would wedge the gap
+		// behind a mark nothing else promptly clears).
+		//
+		// Mints a FRESH claimId rather than preserving rec.ClaimID — Contract
+		// #10 §10.3: "External gaps... their reclaim re-dispatch is intended
+		// (re-call a dead vendor / mint a fresh service instance)," unlike the
+		// human userTask gaps (assignTask; triggerLoom of a userTask-containing
+		// pattern), whose §10.3-mandated claimId-verbatim preservation this
+		// branch never reaches (they declare no inflight_<g> column, so
+		// staleMark is unconditionally false for them — see dispatchGap).
+		// Reusing the old claimId here would seed the fresh triggerLoom
+		// dispatch with the SAME already-terminal Loom-instance identity
+		// (deriveStableInstanceID is claimId-seeded, strategist.go), making it
+		// a no-op collapse rather than the fresh service instance §10.3 calls
+		// for.
+		claimID, err := substrate.NewNanoID()
+		if err != nil {
+			e.logger.Error("weaver: stale mark reclaim claimId mint failed; nak with delay",
+				"targetId", targetID, "entityId", entityID, "gap", col, "err", err)
+			return substrate.NakWithDelay
+		}
+		rev, conflict, err := e.marks.replace(ctx, targetID, entityID, col, entityKey, action, claimID,
+			markRev, markTTLBackstopFactor*e.marks.lease)
+		if err != nil {
+			e.logger.Error("weaver: stale mark reclaim failed; nak with delay",
+				"targetId", targetID, "entityId", entityID, "gap", col, "err", err)
+			return substrate.NakWithDelay
+		}
+		if conflict {
+			// The mark changed since this delivery's read — a concurrent
+			// reclaim (a redelivery of this same message, or the sweep) already
+			// won; the winner dispatched.
+			return substrate.Ack
+		}
+		e.bumpDispatchCount(ctx, targetID, entityID, col)
+		e.bumpEffectDispatch(ctx, targetID, col, action)
+		e.bumpOscillation(ctx, targetID, action)
+		return e.fire(ctx, targetID, entityID, col, rev, claimID, pl)
 	}
 
 	rev, claimID, lost, err := e.marks.create(ctx, targetID, entityID, col, entityKey, action)
