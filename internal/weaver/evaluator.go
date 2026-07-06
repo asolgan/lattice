@@ -112,11 +112,27 @@ func (e *Engine) handleRow(ctx context.Context, msg substrate.Message) substrate
 	nak := false
 	delayed := false
 	for _, col := range e.openGapColumns(targetID, row) {
-		if e.gapSuppressed(ctx, targetID, entityID, row, col) {
-			// A remediation is in flight (inflight_<g>) or the retry budget is
-			// spent (the weaver-state dispatch-count reached maxretries_<g>): the
-			// gap stays violating but must NOT be (re-)dispatched. Skip it —
-			// mark-clearing already ran above, so a stale mark does not linger.
+		if suppressed, exhausted := e.gapSuppressed(ctx, targetID, entityID, row, col); suppressed {
+			// A remediation is in flight (inflight_<g>): ordinary in-progress
+			// state, never escalated — the gap stays violating but must NOT be
+			// (re-)dispatched. Skip it — mark-clearing already ran above, so a
+			// stale mark does not linger.
+			//
+			// The retry budget is spent (maxretries_<g> reached): a decision
+			// point, not a park (Contract #10 §10.8 Planner extension: "budget
+			// exhaustion... raises a standing Health issue at the suppression
+			// site, never a silent park") — escalateExhaustedGap redirects to
+			// the Augur AI tier if the target opts "exhausted" into its augur
+			// block, else raises that standing issue itself.
+			if exhausted {
+				switch e.escalateExhaustedGap(ctx, target, targetID, entityID, entityKey, col, row, msg.Sequence) {
+				case substrate.Nak:
+					nak = true
+				case substrate.NakWithDelay:
+					delayed = true
+				default:
+				}
+			}
 			continue
 		}
 		switch e.dispatchGap(ctx, target, targetID, entityID, entityKey, col, row, msg) {
@@ -754,34 +770,41 @@ func (e *Engine) intColumn(targetID string, row map[string]any, col string) (int
 }
 
 // gapSuppressed reports whether gap column gapCol (a missing_<g>) must NOT be
-// (re-)dispatched: its inflight_<g> companion is true (a remediation is
-// legitimately in flight) OR its weaver-state dispatch-count has reached the row's
-// maxretries_<g> cap (the retry budget is spent — §E mechanism B). It is the
-// dispatch gate read by BOTH dispatch legs — the lane-1 loop and the sweep's
-// reclaim — so a suppressed gap is neither freshly dispatched nor reclaimed while
-// it stays violating.
+// (re-)dispatched, and — when suppressed — WHY: its inflight_<g> companion is
+// true (a remediation is legitimately in flight, `exhausted` false) OR its
+// weaver-state dispatch-count has reached the row's maxretries_<g> cap (the
+// retry budget is spent — §E mechanism B, `exhausted` true). It is the dispatch
+// gate read by BOTH dispatch legs — the lane-1 loop and the sweep's reclaim —
+// so a suppressed gap is neither freshly dispatched nor reclaimed while it
+// stays violating. The two suppression reasons are NOT interchangeable for the
+// caller: inflight is ordinary in-progress state that must always be left
+// alone, while exhausted is a decision point (Contract #10 §10.8 Planner
+// extension: "budget exhaustion... raises a standing Health issue at the
+// suppression site, never a silent park") — callers branch on `exhausted` to
+// invoke escalateExhaustedGap rather than silently skipping.
 //
-// inflight is authoritative and read first (a true inflight short-circuits the KV
-// read). An absent/non-bool inflight reads false via boolColumn (which surfaces a
-// non-bool as a RowDataError); an absent/garbled maxretries reads 0 via intColumn,
-// and a count-read failure logs and is treated as NOT-suppressing on the cap term
-// — the safe side in every case is to dispatch, so a missing/garbled companion or
-// a transient KV error never silently wedges a real gap. A gapCol without the
-// missing_ prefix has no companions, so it is never suppressed.
-func (e *Engine) gapSuppressed(ctx context.Context, targetID, entityID string, row map[string]any, gapCol string) bool {
+// inflight is authoritative and read first (a true inflight short-circuits the
+// KV read, and is never `exhausted`). An absent/non-bool inflight reads false
+// via boolColumn (which surfaces a non-bool as a RowDataError); an
+// absent/garbled maxretries reads 0 via intColumn, and a count-read failure
+// logs and is treated as NOT-suppressing on the cap term — the safe side in
+// every case is to dispatch, so a missing/garbled companion or a transient KV
+// error never silently wedges a real gap. A gapCol without the missing_ prefix
+// has no companions, so it is never suppressed.
+func (e *Engine) gapSuppressed(ctx context.Context, targetID, entityID string, row map[string]any, gapCol string) (suppressed, exhausted bool) {
 	g, ok := strings.CutPrefix(gapCol, gapColumnPrefix)
 	if !ok {
-		return false
+		return false, false
 	}
 	if e.boolColumn(targetID, row, inflightColumnPrefix+g) {
-		return true
+		return true, false
 	}
 	capN, ok := e.intColumn(targetID, row, maxretriesColumnPrefix+g)
 	if !ok || capN <= 0 {
 		// No usable cap on the row → the budget term cannot suppress (only
 		// inflight, already checked, can). A non-positive cap means "no budget
 		// configured for this gap" — never auto-suppress on it.
-		return false
+		return false, false
 	}
 	count, err := e.marks.getDispatchCount(ctx, targetID, entityID, gapCol)
 	if err != nil {
@@ -790,9 +813,90 @@ func (e *Engine) gapSuppressed(ctx context.Context, targetID, entityID string, r
 		// evaluation re-reads the count.
 		e.logger.Warn("weaver: dispatch-count read failed; not suppressing on the cap term",
 			"targetId", targetID, "entityId", entityID, "gap", gapCol, "err", err)
-		return false
+		return false, false
 	}
-	return count >= capN
+	if count >= capN {
+		return true, true
+	}
+	return false, false
+}
+
+// escalateExhaustedGap redirects a gap whose retry budget is spent
+// (weaver-state dispatch-count reached maxretries_<g>) to the Augur AI-
+// reasoning tier when the target's augur block opts "exhausted" into its
+// escalate list (Contract #10 §10.8 Augur escalation) — the generalization of
+// augurEscalation's existing "unplannable" redirect used by dispatchGap/
+// planGap: "no playbook entry" and "no more playbook attempts left" are both
+// dead ends for conventional remediation. When no augur policy escalates
+// "exhausted", it raises the Planner extension's promised standing Health
+// issue instead of silently parking the gap (§10.8: "Budget exhaustion on a
+// planned gap raises a standing Health issue at the suppression site, never a
+// silent park" — applied here to every gap class, frozen-table or planned,
+// since an unescalated cap is the identical silent-park failure mode either
+// way).
+//
+// Fires as a genuinely FRESH episode (planGap with no pinned action,
+// fireEpisode's found=false branch) — never through the gap's OWN mark: an
+// exhausted gap's mark (if one survives) belongs to the ORIGINAL action's
+// retry lineage, while the escalation is a different action entirely, keyed
+// under its own deterministic instanceKey (deriveAugurHandle) inside
+// CreateAugurReasoningClaim's own anti-storm mark. Callable from both lane-1
+// (handleRow) and the sweep (reclaim) — the shared suppression site both use.
+func (e *Engine) escalateExhaustedGap(ctx context.Context, target *Target, targetID, entityID, entityKey, gapColumn string,
+	row map[string]any, rowRevision uint64) substrate.Decision {
+
+	esc, escalated := augurEscalation(e.source, target, escalateExhausted, targetID, entityID, entityKey, gapColumn)
+	if !escalated {
+		e.alert(issueKeyGap(targetID, gapColumn), "warning", "GapBudgetExhausted",
+			"target "+targetID+": row column "+gapColumn+" has exhausted its retry budget with no augur escalation configured for \"exhausted\"")
+		return substrate.Ack
+	}
+	e.issues.clear(issueKeyGap(targetID, gapColumn))
+
+	// The exhausted gap's OWN mark, if one survives, occupies the SAME
+	// <targetId>.<entityId>.<gapColumn> key the escalation's fresh CAS-create
+	// needs. Two distinct cases, told apart the same way dispatchGap already
+	// does (leaseLive), because the escalation is invisible to the LENS's
+	// inflight_<g> companion (a different action class than the gap's normal
+	// remediation, so the row never reflects that an escalation is running):
+	//
+	//   - A LIVE mark means the escalation this function fired last time is
+	//     still genuinely in flight (its lease has not expired) — leave it
+	//     alone, exactly like the ordinary inflight case, or every
+	//     subsequent redelivery of this still-open gap would tear down and
+	//     re-fire a brand-new escalation episode on top of one already
+	//     running (a self-inflicted storm this function must not cause).
+	//   - A STALE mark (expired lease) or none at all belongs to the
+	//     original action's now-spent retry lineage (or a prior escalation
+	//     attempt that never completed) — clear it, revision-conditioned on
+	//     the read just taken so a genuinely concurrent fresh episode is
+	//     never clobbered, then fire fresh.
+	rec, markRev, found, err := e.marks.get(ctx, targetID, entityID, gapColumn)
+	if err != nil {
+		e.logger.Warn("weaver: mark read failed ahead of exhausted-gap escalation; nak with delay",
+			"targetId", targetID, "entityId", entityID, "gap", gapColumn, "err", err)
+		return substrate.NakWithDelay
+	}
+	if found && leaseLive(rec.LeaseExpiresAt, time.Now()) {
+		return substrate.Ack
+	}
+	if found {
+		if conflict, derr := e.marks.deleteRevision(ctx, targetID, entityID, gapColumn, markRev); derr != nil {
+			e.logger.Warn("weaver: clearing the exhausted gap's own mark failed ahead of escalation; will retry",
+				"targetId", targetID, "entityId", entityID, "gap", gapColumn, "err", derr)
+			return substrate.NakWithDelay
+		} else if conflict {
+			// The mark changed under us (revision mismatch) since the read
+			// above — a concurrent fresh episode owns the gap now; leave it.
+			return substrate.Ack
+		}
+	}
+
+	pl, actionRef, dec := e.planGap(ctx, target, targetID, entityID, gapColumn, esc, row, rowRevision, "")
+	if pl == nil {
+		return dec
+	}
+	return e.fireEpisode(ctx, targetID, entityID, entityKey, gapColumn, actionRef, pl, false, nil, 0, false, false)
 }
 
 // markCandidateColumns is the union of the playbook's gaps keys and the row's

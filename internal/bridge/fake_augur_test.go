@@ -135,6 +135,53 @@ func TestFakeAugur_Refusal(t *testing.T) {
 	}
 }
 
+// TestFakeAugur_HonoursModelOverride proves the target's optional augur.model
+// override (threaded by Weaver as Params["model"], the
+// weaver-exhausted-escalation-and-model wiring) is genuinely observable
+// end-to-end: FakeAugur echoes it back as the proposal's Model field instead
+// of its fixed default, exactly as a real model-backed adapter would.
+func TestFakeAugur_HonoursModelOverride(t *testing.T) {
+	t.Parallel()
+	a := bridge.NewFakeAugur()
+	entity := "vtx.leaseapp.applicant1"
+
+	disp, err := a.Execute(context.Background(), bridge.Request{
+		IdempotencyKey: "aug-model-1",
+		Subject:        "aug-model-1",
+		Params:         map[string]string{"entityId": entity, "model": "claude-sonnet-4-6"},
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	p, err := bridge.DecodeAugurProposal(disp.Result.Detail)
+	if err != nil {
+		t.Fatalf("decode proposal: %v", err)
+	}
+	if p.Model != "claude-sonnet-4-6" {
+		t.Fatalf("proposal Model = %q, want the overridden %q", p.Model, "claude-sonnet-4-6")
+	}
+
+	// No override in Params: falls back to the fixed fake default.
+	disp2, err := a.Execute(context.Background(), bridge.Request{
+		IdempotencyKey: "aug-model-2",
+		Subject:        "aug-model-2",
+		Params:         map[string]string{"entityId": entity},
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	p2, err := bridge.DecodeAugurProposal(disp2.Result.Detail)
+	if err != nil {
+		t.Fatalf("decode proposal: %v", err)
+	}
+	if p2.Model == "" {
+		t.Fatalf("proposal Model must default (non-empty) when no override is supplied")
+	}
+	if p2.Model == "claude-sonnet-4-6" {
+		t.Fatalf("the second call's proposal must NOT carry the first call's override — Params is per-request")
+	}
+}
+
 // TestFakeAugur_SetProposalOverride: the injection seam returns an arbitrary
 // proposal for a non-trigger Subject, while a trigger Subject still wins.
 func TestFakeAugur_SetProposalOverride(t *testing.T) {

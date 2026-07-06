@@ -1157,6 +1157,68 @@ func TestSweep_ExhaustedBudgetGapNotReclaimed(t *testing.T) {
 	h.requireNoOp(t)
 }
 
+// TestSweep_ExhaustedBudgetGapEscalatesToAugur proves Fire 9's second
+// suppression site (weaver-exhausted-escalation-and-model): the sweep is the
+// ONLY dispatch leg that still visits a row once its owning entity stops
+// producing fresh CDC deliveries, so it — not lane-1 — must actually close the
+// §10.8 "never a silent park" promise for a gap that has gone quiet. A target
+// escalating "exhausted" gets a fresh CreateAugurReasoningClaim episode fired
+// by the sweep; the exhausted gap's OWN (already-expired) mark is left
+// untouched (never reclaimed in place, never re-armed with the escalation
+// action) — the escalation is a genuinely separate episode.
+func TestSweep_ExhaustedBudgetGapEscalatesToAugur(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+	h.agePastWarmup()
+
+	const targetID = "fixtureExhaustedSweepAugur"
+	id := testNanoID(t)
+	spec := targetSpecFixture(targetID) // declares gaps.missing_a -> directOp FixA
+	spec["augur"] = map[string]any{"escalate": []any{"exhausted"}}
+	h.engine.source.handle(vertexEvent(t, id, weaverTargetClass))
+	h.engine.source.handle(specEvent(t, id, spec))
+
+	const cap = 3
+	entityID := testNanoID(t)
+	key := markKey(targetID, entityID, "missing_a")
+	rev := h.putMark(t, ctx, key, fixtureMark(targetID, entityID, "missing_a", "directOp", pastLease()))
+	for i := 0; i < cap; i++ {
+		if _, err := h.engine.marks.incrementDispatchCount(ctx, targetID, entityID, "missing_a"); err != nil {
+			t.Fatalf("seed dispatch-count: %v", err)
+		}
+	}
+	h.putRow(t, ctx, targetID, entityID, map[string]any{
+		"entityKey": "vtx.leaseApp." + entityID, "violating": true, "missing_a": true,
+		"inflight_a": false, "maxretries_a": cap,
+	})
+
+	h.pass(ctx)
+
+	op := h.nextOp(t)
+	if op["operationType"] != defaultAugurOp {
+		t.Fatalf("operationType = %v, want %q (the escalation, not the exhausted FixA action)", op["operationType"], defaultAugurOp)
+	}
+	// The exhausted gap's OWN (now-stale) mark is cleared and replaced by a
+	// FRESH one for the escalation episode — a genuinely new revision, never
+	// the original rev, and NOT the sweep's ordinary reclaim-in-place metric
+	// (this is a fresh CAS-create, not a reclaim of the original mark).
+	entry, err := h.conn.KVGet(ctx, "weaver-state", key)
+	if err != nil {
+		t.Fatalf("the escalation must leave a fresh mark at the gap's key: %v", err)
+	}
+	if entry.Revision == rev {
+		t.Fatalf("the escalation must not reuse the exhausted gap's original mark revision")
+	}
+	if reclaims, _, _, _, _ := h.engine.sweep.metrics(); reclaims != 0 {
+		t.Fatalf("sweepReclaims = %d, want 0 (the escalation is not a reclaim of the original mark)", reclaims)
+	}
+}
+
 // TestSweep_ReclaimIncrementsBudget proves a sweep reclaim (a fresh dispatch on a
 // re-armed mark) advances the chain's dispatch-count — so a multi-attempt chain
 // driven by the sweeper (not just CDC touches) accrues toward the cap. A reclaim

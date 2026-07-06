@@ -58,7 +58,7 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // aspects):
 //
 //	vtx.augurproposal.<handle>   root data = {}            (handle = the escalation episode's instanceKey)
-//	  .gap         { targetId, entityId, gapColumn, trigger }   # instanceOp — TRUSTED escalation context
+//	  .gap         { targetId, entityId, gapColumn, trigger, model }   # instanceOp — TRUSTED escalation context (model optional)
 //	  .proposed    { action, params }                           # replyOp — the model's remediation
 //	  .rationale   { text }                                     # replyOp — the model's reasoning (audit)
 //	  .confidence  { score }                                    # replyOp — 0..1 self-reported
@@ -85,7 +85,7 @@ func augurproposalDDL() pkgmgr.DDLSpec {
 		PermittedCommands: []string{"CreateAugurReasoningClaim", "RecordProposal", "ReviewProposal", "RecordProposalDispatch"},
 		Description: "Augur proposal DDL — the externalTask matched pair for one reasoning episode. " +
 			"Vertex shape: vtx.augurproposal.<handle>, class=augurproposal, root data = {} (D5); business " +
-			"data in aspects: .gap {targetId, entityId, gapColumn, trigger} (the instanceOp's TRUSTED " +
+			"data in aspects: .gap {targetId, entityId, gapColumn, trigger, model} (the instanceOp's TRUSTED " +
 			"escalation context), .proposed {action, params}, .rationale {text}, .confidence {score}, " +
 			".provenance {model, promptHash, catalogHash, reasonedAt}, .review {state, invalidReason, " +
 			"reviewedAt, dispatchedAt} (the replyOp's model-derived data + verdict). Relationships are LINKS: " +
@@ -123,6 +123,7 @@ func augurproposalDDL() pkgmgr.DDLSpec {
 			`{"primaryKey":{"type":"string","description":"vtx.augurproposal.<handle> of the recorded proposal. The recorded review.state (pending | invalid) is read from the proposal's .review aspect, not the op response."}}}`,
 		FieldDescription: map[string]string{
 			"externalRef": "The bare instanceKey handle Weaver minted for the reasoning episode (no dots / key segments / whitespace); the claim vertex key is vtx.augurproposal.<externalRef>. RecordProposal rejects if no live claim vertex exists for it (the CreateAugurReasoningClaim instanceOp must commit write-ahead).",
+			"model":       "CreateAugurReasoningClaim only — the optional adapter model override (the target's augur.model, Contract #10 §10.8), stored on .gap alongside the rest of the TRUSTED escalation context. Empty when the target's augur block sets none, in which case the adapter applies its own default (design: claude-opus-4-8).",
 			"status":      "The adapter's terminal outcome verbatim: completed (the model returned a structured proposal in result) or failed (a modeled refusal — the proposal is stored invalid with the refusal as its rationale, never dispatchable). Any other value rejects the op.",
 			"result":      "The model's structured-output proposal as a JSON string {action, params, confidence, rationale, model, promptHash, catalogHash, reasonedAt}. The §5 validator decodes it and validates action ∈ {triggerLoom, assignTask, directOp}, confidence ∈ [0,1], and no scope escape (a params entity-key other than the escalated candidate, read from the trusted claim). Required when status=completed.",
 			"verdict":     "ReviewProposal only — the operator's verdict on a pending proposal: 'approve' (re-validated against the §5 boundary, fail-closing to invalid if it no longer validates) or 'reject'. The reviewer is the trusted submitting actor (op.actor) and the stamp is the envelope submit time; neither is a payload field.",
@@ -145,6 +146,24 @@ func augurproposalDDL() pkgmgr.DDLSpec {
 					"augurEpisodeHJKMNPQRST with root {} (D5), the .gap aspect carrying the TRUSTED escalation context, and " +
 					"the forCandidate / forTarget links (proposal is the source). No .review / .proposed yet (the reasoning " +
 					"call is in flight). Emits external.augur off the transactional outbox for the bridge to pick up.",
+			},
+			{
+				Name: "CreateAugurReasoningClaim — exhausted-budget escalation with a model override (Fire 9)",
+				Payload: map[string]any{
+					"instanceKey": "augurEpisodeABCDEFGHIJ",
+					"adapter":     "augur",
+					"replyOp":     "RecordProposal",
+					"targetId":    "vtx.meta.<weaverTargetNanoID>",
+					"entityId":    "vtx.leaseapp.<applicantNanoID>",
+					"gapColumn":   "missing_bgcheck",
+					"trigger":     "exhausted",
+					"model":       "claude-sonnet-4-6",
+				},
+				ExpectedOutcome: "Identical to the trigger=unplannable case, plus: the .gap aspect additionally carries " +
+					"model=\"claude-sonnet-4-6\" — the target's augur.model override, threaded here so a model-backed " +
+					"adapter can honor it instead of its own default. trigger=\"exhausted\" means the escalated gap HAD a " +
+					"playbook entry whose retry budget (maxretries_<g>) was spent, not a missing one — Weaver redirects " +
+					"there exactly as it does for trigger=\"unplannable\", per the target's augur.escalate list.",
 			},
 			{
 				Name: "RecordProposal — a valid assignTask proposal for an unplannable approval gap (the bridge replyOp)",
@@ -431,6 +450,13 @@ def execute(state, op):
         entity_key = required_string(p, "entityId")
         gap_column = required_string(p, "gapColumn")
         trigger = required_string(p, "trigger")
+        # model is the OPTIONAL adapter model override (augur.model, Contract
+        # #10 §10.8) — "" when the target's augur block sets none, in which
+        # case the adapter applies its own default (design: claude-opus-4-8).
+        # Stripped like every other free-form string field here (required_string
+        # trims too) so a whitespace-only override reads as absent rather than
+        # masking the adapter's own default with garbage.
+        model = optional_string_attr(p, "model").strip()
 
         parts_of(target_key, "targetId", "meta")
         entity_type, entity_id = parts_of(entity_key, "entityId", "")
@@ -460,14 +486,15 @@ def execute(state, op):
             make_vtx(proposal_key, "augurproposal", {}),
             make_aspect(proposal_key, "gap", "augur.gap",
                         {"targetId": target_key, "entityId": entity_key,
-                         "gapColumn": gap_column, "trigger": trigger}),
+                         "gapColumn": gap_column, "trigger": trigger, "model": model}),
             make_link(forcand_lnk, proposal_key, entity_key, "forCandidate", "forCandidate", {}),
             make_link(fortarget_lnk, proposal_key, target_key, "forTarget", "forTarget", {}),
         ]
         # Emit external.<adapter> off this op's transactional outbox — the bridge's
         # externalEvent shape. The bare handle is the correlation token (instanceKey
         # == externalRef == idempotencyKey). params carries the gap context so the
-        # adapter (and FakeAugur) can scope its proposal to the escalated candidate.
+        # adapter (and FakeAugur) can scope its proposal to the escalated candidate;
+        # model (when set) is the adapter model override the reasoning call should use.
         event_data = {
             "instanceKey":    handle,
             "adapter":        adapter,
@@ -475,7 +502,7 @@ def execute(state, op):
             "externalRef":    handle,
             "idempotencyKey": handle,
             "params":         {"entityId": entity_key, "targetId": target_key,
-                               "gapColumn": gap_column, "trigger": trigger},
+                               "gapColumn": gap_column, "trigger": trigger, "model": model},
         }
         events = [{"class": "external." + adapter, "data": event_data}]
         return {"mutations": mutations, "events": events,

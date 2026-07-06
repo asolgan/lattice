@@ -144,8 +144,17 @@ func (f *FakeAugur) proposalFor(req Request) AugurProposal {
 	if entity == "" {
 		entity = req.Subject
 	}
+	// model honors the request's optional override (Weaver's augur.model,
+	// threaded through as Params["model"]) exactly as a real model-backed
+	// adapter would, falling back to the fixed fake default when the target
+	// set none — this is what makes the override genuinely observable
+	// end-to-end rather than a value that's threaded through and dropped.
+	model := req.Params["model"]
+	if model == "" {
+		model = fakeAugurModel
+	}
 	base := AugurProposal{
-		Model:       fakeAugurModel,
+		Model:       model,
 		PromptHash:  "fake-prompt-hash",
 		CatalogHash: "fake-catalog-hash",
 		ReasonedAt:  "2026-06-29T00:00:00Z",

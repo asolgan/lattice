@@ -285,6 +285,65 @@ func TestAugur_ValidPending(t *testing.T) {
 	}
 }
 
+// TestAugur_ClaimStoresModelOverride proves the weaver-exhausted-escalation-
+// and-model wiring's second half: CreateAugurReasoningClaim's optional "model"
+// param (Weaver's augur.model override) is stored on the .gap aspect alongside
+// the rest of the TRUSTED escalation context — so a model-backed adapter has it
+// available. Omitted entirely, it stores as "" (never fails, never invents a
+// value) — the adapter applies its own default.
+func TestAugur_ClaimStoresModelOverride(t *testing.T) {
+	ctx, conn := setupAugurEnv(t)
+	cp, cons := newProposalPipeline(t, ctx, conn, "ap-model")
+	targetKey, entityKey := seedEscalation(t, ctx, conn)
+
+	const handle = "BBaugurMdgtHJKMNPQRS"
+	payload := map[string]any{
+		"instanceKey": handle,
+		"adapter":     "augur",
+		"replyOp":     "RecordProposal",
+		"targetId":    targetKey,
+		"entityId":    entityKey,
+		"gapColumn":   "missing_bgcheck",
+		"trigger":     "exhausted",
+		"model":       "claude-sonnet-4-6",
+	}
+	b, _ := json.Marshal(payload)
+	claim := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("APClaimModel"),
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateAugurReasoningClaim",
+		Actor:         apStaffActorKey,
+		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		Class:         "augurproposal",
+		Payload:       json.RawMessage(b),
+	}
+	testutil.PublishOp(t, conn, claim)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	proposalKey := "vtx.augurproposal." + handle
+	gap := readDoc(t, ctx, conn, proposalKey+".gap")
+	gd, _ := gap["data"].(map[string]any)
+	if got, _ := gd["model"].(string); got != "claude-sonnet-4-6" {
+		t.Fatalf(".gap.model = %q, want the threaded override %q", got, "claude-sonnet-4-6")
+	}
+	if got, _ := gd["trigger"].(string); got != "exhausted" {
+		t.Fatalf(".gap.trigger = %q, want exhausted", got)
+	}
+
+	// A second claim with NO model param stores "" — never fails, never
+	// invents a value; the adapter applies its own default.
+	const handleNoModel = "BBaugurNomdHJKMNPQRS"
+	claimNoModel := createClaimEnv(testutil.GenReqID("APClaimNoModel"), handleNoModel, targetKey, entityKey)
+	testutil.PublishOp(t, conn, claimNoModel)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	gapNoModel := readDoc(t, ctx, conn, "vtx.augurproposal."+handleNoModel+".gap")
+	gdNoModel, _ := gapNoModel["data"].(map[string]any)
+	if got, _ := gdNoModel["model"].(string); got != "" {
+		t.Fatalf(".gap.model with no override = %q, want \"\"", got)
+	}
+}
+
 // TestAugur_BadAction_Invalid: an action outside the allowed escalation
 // vocabulary stores the proposal review.state=invalid (auditable, never
 // dispatchable) — the replyOp still ACCEPTS (the proposal is recorded), but the

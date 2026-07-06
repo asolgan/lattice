@@ -440,15 +440,28 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 		return
 	}
 
-	if e.gapSuppressed(ctx, targetID, entityID, row, gapColumn) {
+	if suppressed, exhausted := e.gapSuppressed(ctx, targetID, entityID, row, gapColumn); suppressed {
 		// Mirrors lane-1's dispatch-suppression gate: a gap with inflight_<g> set
-		// or whose weaver-state dispatch-count has reached maxretries_<g> must NOT
-		// be re-dispatched. This is the LOAD-BEARING skip — the mark-lease expiry →
-		// reclaim is the actual re-dispatch path for a long-pending external call
-		// (the lane-1 skip alone does not stop the sweep). Leave the expired mark;
-		// it is cleared by level reconcile once the gap closes, and the TTL
-		// backstop bounds it if not. The gap stays violating throughout — only
-		// re-dispatch is suppressed.
+		// must NOT be re-dispatched. This is the LOAD-BEARING skip — the
+		// mark-lease expiry → reclaim is the actual re-dispatch path for a
+		// long-pending external call (the lane-1 skip alone does not stop the
+		// sweep). Leave the expired mark; it is cleared by level reconcile once
+		// the gap closes, and the TTL backstop bounds it if not. The gap stays
+		// violating throughout — only re-dispatch is suppressed.
+		//
+		// A gap whose retry budget is spent (maxretries_<g>) is different: the
+		// sweep is the ONLY dispatch leg that still visits a row with no fresh
+		// CDC deliveries, so it is this site — not lane-1 — that must actually
+		// close the §10.8 "never a silent park" promise for a row that has gone
+		// quiet. escalateExhaustedGap either fires a fresh Augur escalation
+		// episode or raises the standing Health issue; it never touches this
+		// gap's own (already-exhausted, possibly already-expired) mark.
+		if exhausted {
+			if e.escalateExhaustedGap(ctx, target, targetID, entityID, entityKey, gapColumn, row, rowRevision) != substrate.Ack {
+				e.logger.Warn("weaver sweep: exhausted-gap escalation dispatch did not complete cleanly; will retry",
+					"targetId", targetID, "entityId", entityID, "gap", gapColumn)
+			}
+		}
 		return
 	}
 

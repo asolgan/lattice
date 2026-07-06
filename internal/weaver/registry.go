@@ -909,7 +909,7 @@ func validateAugurPolicy(a *AugurPolicy) error {
 				trig, escalateUnplannable, escalateExhausted)
 		}
 	}
-	for field, v := range map[string]string{"op": a.Op, "adapter": a.Adapter, "replyOp": a.ReplyOp} {
+	for field, v := range map[string]string{"op": a.Op, "adapter": a.Adapter, "replyOp": a.ReplyOp, "model": a.Model} {
 		if v != "" && !singleTokenPattern.MatchString(v) {
 			return fmt.Errorf("augur.%s value %q must be a single token matching %s", field, v, singleTokenPattern.String())
 		}

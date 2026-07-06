@@ -346,22 +346,24 @@ func TestGapSuppressed_Companions(t *testing.T) {
 	entityID := testNanoID(t)
 
 	cases := []struct {
-		name string
-		row  map[string]any
-		col  string
-		want bool
+		name          string
+		row           map[string]any
+		col           string
+		want          bool
+		wantExhausted bool
 	}{
-		{"no companions", map[string]any{"missing_x": true}, "missing_x", false},
-		{"inflight true", map[string]any{"missing_x": true, "inflight_x": true}, "missing_x", true},
-		{"inflight false, zero count under cap", map[string]any{"missing_x": true, "inflight_x": false, "maxretries_x": 3}, "missing_x", false},
-		{"non-bool inflight reads false", map[string]any{"missing_x": true, "inflight_x": "yes", "maxretries_x": 3}, "missing_x", false},
-		{"non-positive cap never suppresses", map[string]any{"missing_x": true, "maxretries_x": 0}, "missing_x", false},
-		{"non-gap column never suppressed", map[string]any{"inflight_x": true}, "violating", false},
+		{"no companions", map[string]any{"missing_x": true}, "missing_x", false, false},
+		{"inflight true", map[string]any{"missing_x": true, "inflight_x": true}, "missing_x", true, false},
+		{"inflight false, zero count under cap", map[string]any{"missing_x": true, "inflight_x": false, "maxretries_x": 3}, "missing_x", false, false},
+		{"non-bool inflight reads false", map[string]any{"missing_x": true, "inflight_x": "yes", "maxretries_x": 3}, "missing_x", false, false},
+		{"non-positive cap never suppresses", map[string]any{"missing_x": true, "maxretries_x": 0}, "missing_x", false, false},
+		{"non-gap column never suppressed", map[string]any{"inflight_x": true}, "violating", false, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := h.engine.gapSuppressed(ctx, "t1", entityID, tc.row, tc.col); got != tc.want {
-				t.Fatalf("gapSuppressed(%v, %q) = %v, want %v", tc.row, tc.col, got, tc.want)
+			got, gotExhausted := h.engine.gapSuppressed(ctx, "t1", entityID, tc.row, tc.col)
+			if got != tc.want || gotExhausted != tc.wantExhausted {
+				t.Fatalf("gapSuppressed(%v, %q) = (%v, %v), want (%v, %v)", tc.row, tc.col, got, gotExhausted, tc.want, tc.wantExhausted)
 			}
 		})
 	}
@@ -387,8 +389,8 @@ func TestGapSuppressed_BudgetCap(t *testing.T) {
 	row := map[string]any{"missing_x": true, "maxretries_x": 3}
 
 	// Zero count: under cap → not suppressed.
-	if h.engine.gapSuppressed(ctx, targetID, entityID, row, "missing_x") {
-		t.Fatalf("a zero dispatch-count under the cap must not suppress")
+	if suppressed, exhausted := h.engine.gapSuppressed(ctx, targetID, entityID, row, "missing_x"); suppressed || exhausted {
+		t.Fatalf("a zero dispatch-count under the cap must not suppress (got suppressed=%v exhausted=%v)", suppressed, exhausted)
 	}
 	// Drive the count to cap-1: still under → not suppressed.
 	for i := 0; i < 2; i++ {
@@ -396,22 +398,23 @@ func TestGapSuppressed_BudgetCap(t *testing.T) {
 			t.Fatalf("increment dispatch-count: %v", err)
 		}
 	}
-	if h.engine.gapSuppressed(ctx, targetID, entityID, row, "missing_x") {
-		t.Fatalf("a dispatch-count of cap-1 must not suppress (one more attempt allowed)")
+	if suppressed, exhausted := h.engine.gapSuppressed(ctx, targetID, entityID, row, "missing_x"); suppressed || exhausted {
+		t.Fatalf("a dispatch-count of cap-1 must not suppress (one more attempt allowed) (got suppressed=%v exhausted=%v)", suppressed, exhausted)
 	}
-	// One more → count == cap: suppressed.
+	// One more → count == cap: suppressed AND exhausted (the escalation-eligible
+	// reason, distinct from inflight).
 	if _, err := h.engine.marks.incrementDispatchCount(ctx, targetID, entityID, "missing_x"); err != nil {
 		t.Fatalf("increment dispatch-count: %v", err)
 	}
-	if !h.engine.gapSuppressed(ctx, targetID, entityID, row, "missing_x") {
-		t.Fatalf("a dispatch-count at the cap must suppress (budget spent)")
+	if suppressed, exhausted := h.engine.gapSuppressed(ctx, targetID, entityID, row, "missing_x"); !suppressed || !exhausted {
+		t.Fatalf("a dispatch-count at the cap must suppress AND report exhausted=true (budget spent) (got suppressed=%v exhausted=%v)", suppressed, exhausted)
 	}
 	// The gap-close reset deletes the count → dispatchable again (fresh budget).
 	if err := h.engine.marks.deleteDispatchCount(ctx, targetID, entityID, "missing_x"); err != nil {
 		t.Fatalf("delete dispatch-count: %v", err)
 	}
-	if h.engine.gapSuppressed(ctx, targetID, entityID, row, "missing_x") {
-		t.Fatalf("after the gap-close reset the budget must be fresh → not suppressed")
+	if suppressed, exhausted := h.engine.gapSuppressed(ctx, targetID, entityID, row, "missing_x"); suppressed || exhausted {
+		t.Fatalf("after the gap-close reset the budget must be fresh → not suppressed (got suppressed=%v exhausted=%v)", suppressed, exhausted)
 	}
 }
 
@@ -529,6 +532,149 @@ func TestHandleRow_BudgetIncrementsThenSuppresses(t *testing.T) {
 	}
 	if got, err := h.engine.marks.getDispatchCount(ctx, targetID, entityID, "missing_x"); err != nil || got != cap {
 		t.Fatalf("a suppressed delivery must not increment the count: got %d (err=%v), want %d", got, err, cap)
+	}
+}
+
+// TestHandleRow_ExhaustedGapEscalatesToAugur proves the Fire 9 wiring at
+// lane-1's suppression site (weaver-exhausted-escalation-and-model): a gap
+// whose retry budget is spent (maxretries_<g> reached) on a target that
+// escalates "exhausted" fires a CreateAugurReasoningClaim op — NOT its normal,
+// now-exhausted action — through the standard dispatch path, and never raises
+// GapBudgetExhausted (escalation is a live remediation avenue, not a park).
+func TestHandleRow_ExhaustedGapEscalatesToAugur(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newHandlerHarness(t, ctx)
+
+	const targetID = "fixtureExhaustedAugur"
+	id := testNanoID(t)
+	spec := targetSpecFixture(targetID) // declares gaps.missing_a -> directOp FixA
+	spec["augur"] = map[string]any{"escalate": []any{"exhausted"}}
+	h.engine.source.handle(vertexEvent(t, id, weaverTargetClass))
+	h.engine.source.handle(specEvent(t, id, spec))
+
+	entityID := testNanoID(t)
+	const cap = 2
+	for i := 0; i < cap; i++ {
+		if _, err := h.engine.marks.incrementDispatchCount(ctx, targetID, entityID, "missing_a"); err != nil {
+			t.Fatalf("seed dispatch-count: %v", err)
+		}
+	}
+	row := map[string]any{
+		"entityKey": "vtx.leaseApp." + entityID, "violating": true, "missing_a": true,
+		"inflight_a": false, "maxretries_a": cap,
+	}
+
+	if dec := h.engine.handleRow(ctx, h.rowMessage(t, targetID, entityID, row, 7, 1)); dec != substrate.Ack {
+		t.Fatalf("decision = %v, want Ack", dec)
+	}
+	op := h.nextOp(t)
+	if op["operationType"] != defaultAugurOp {
+		t.Fatalf("operationType = %v, want %q (the escalation, not the exhausted FixA action)", op["operationType"], defaultAugurOp)
+	}
+	if hasIssueCode(h.engine.issues.snapshot(), "GapBudgetExhausted") {
+		t.Fatalf("escalating must never raise GapBudgetExhausted, issues = %+v", h.engine.issues.snapshot())
+	}
+}
+
+// TestHandleRow_LiveEscalationMarkNotTornDownAndRefired proves the fix for a
+// real bug caught in review: the LENS never learns an escalation is running
+// (inflight_<g> is a lens-authored companion of the gap's NORMAL action, and
+// an Augur escalation is a different action class entirely — the row keeps
+// reporting inflight_a=false and missing_a=true for as long as the escalated
+// gap stays open), so gapSuppressed keeps reporting exhausted=true on EVERY
+// subsequent delivery of this still-violating row. Without a leaseLive check,
+// escalateExhaustedGap would tear down and re-fire a brand-new escalation
+// episode on every single redelivery — a self-inflicted storm. A LIVE mark
+// (the escalation this function already fired, still within its lease) must
+// be left alone, exactly like the ordinary inflight case.
+func TestHandleRow_LiveEscalationMarkNotTornDownAndRefired(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newHandlerHarness(t, ctx)
+
+	const targetID = "fixtureExhaustedAugurLive"
+	id := testNanoID(t)
+	spec := targetSpecFixture(targetID) // declares gaps.missing_a -> directOp FixA
+	spec["augur"] = map[string]any{"escalate": []any{"exhausted"}}
+	h.engine.source.handle(vertexEvent(t, id, weaverTargetClass))
+	h.engine.source.handle(specEvent(t, id, spec))
+
+	entityID := testNanoID(t)
+	entityKey := "vtx.leaseApp." + entityID
+	const cap = 2
+	for i := 0; i < cap; i++ {
+		if _, err := h.engine.marks.incrementDispatchCount(ctx, targetID, entityID, "missing_a"); err != nil {
+			t.Fatalf("seed dispatch-count: %v", err)
+		}
+	}
+	// Simulate an escalation episode this function already fired: a LIVE
+	// mark (fresh lease) at the exact key the escalation dispatches under.
+	liveRev, _, _, err := h.engine.marks.create(ctx, targetID, entityID, "missing_a", entityKey, actionDirectOp)
+	if err != nil {
+		t.Fatalf("seed live escalation mark: %v", err)
+	}
+	row := map[string]any{
+		"entityKey": entityKey, "violating": true, "missing_a": true,
+		"inflight_a": false, "maxretries_a": cap,
+	}
+
+	if dec := h.engine.handleRow(ctx, h.rowMessage(t, targetID, entityID, row, 7, 1)); dec != substrate.Ack {
+		t.Fatalf("decision = %v, want Ack", dec)
+	}
+	h.requireNoOp(t)
+	if _, markRev, found, err := h.engine.marks.get(ctx, targetID, entityID, "missing_a"); err != nil || !found || markRev != liveRev {
+		t.Fatalf("the live escalation mark must survive untouched (found=%v rev=%v want=%v err=%v)", found, markRev, liveRev, err)
+	}
+}
+
+// TestHandleRow_ExhaustedGapWithoutAugurRaisesHealthIssue proves the §10.8
+// "never a silent park" promise when no augur policy escalates "exhausted":
+// no op fires, and a standing GapBudgetExhausted issue is raised — the
+// visible signal this design replaces the bare, invisible `continue` with.
+func TestHandleRow_ExhaustedGapWithoutAugurRaisesHealthIssue(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newHandlerHarness(t, ctx)
+
+	const targetID = "fixtureExhaustedNoAugur"
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps:     map[string]GapAction{"missing_x": {Action: actionDirectOp, Operation: "FixX"}},
+	})
+	entityID := testNanoID(t)
+	const cap = 2
+	for i := 0; i < cap; i++ {
+		if _, err := h.engine.marks.incrementDispatchCount(ctx, targetID, entityID, "missing_x"); err != nil {
+			t.Fatalf("seed dispatch-count: %v", err)
+		}
+	}
+	row := map[string]any{
+		"entityKey": "vtx.leaseApp." + entityID, "violating": true, "missing_x": true,
+		"inflight_x": false, "maxretries_x": cap,
+	}
+
+	if dec := h.engine.handleRow(ctx, h.rowMessage(t, targetID, entityID, row, 9, 1)); dec != substrate.Ack {
+		t.Fatalf("decision = %v, want Ack", dec)
+	}
+	h.requireNoOp(t)
+	if !hasIssueCode(h.engine.issues.snapshot(), "GapBudgetExhausted") {
+		t.Fatalf("expected a standing GapBudgetExhausted issue, issues = %+v", h.engine.issues.snapshot())
+	}
+	if sev := issueSeverity(h.engine.issues.snapshot(), "GapBudgetExhausted"); sev != "warning" {
+		t.Fatalf("GapBudgetExhausted severity = %q, want warning", sev)
 	}
 }
 

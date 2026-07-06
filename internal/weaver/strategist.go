@@ -514,6 +514,22 @@ func augurEscalation(source *targetSource, target *Target, trigger, targetID, en
 	if replyOp == "" {
 		replyOp = defaultAugurReplyOp
 	}
+	params := map[string]string{
+		"instanceKey": deriveAugurHandle(targetID, entityID, gapColumn),
+		"adapter":     adapter,
+		"replyOp":     replyOp,
+		"targetId":    targetMetaKey,
+		"entityId":    entityKey,
+		"gapColumn":   gapColumn,
+		"trigger":     trigger,
+	}
+	if target.Augur.Model != "" {
+		// Optional adapter model override (Contract #10 §10.8 augur block;
+		// "default claude-opus-4-8" is the ADAPTER's own default, applied when
+		// this is omitted — Weaver passes it through only when the target sets
+		// one, exactly like Op/Adapter/ReplyOp's own omit-means-default posture).
+		params["model"] = target.Augur.Model
+	}
 	return GapAction{
 		Action:    actionDirectOp,
 		Operation: op,
@@ -521,15 +537,7 @@ func augurEscalation(source *targetSource, target *Target, trigger, targetID, en
 		// vertex (parallels triggerLoom's pattern-as-target); Weaver's
 		// service-actor holds the op at scope: any (augur permissions, Fire-1 (4)).
 		Target: targetMetaKey,
-		Params: map[string]string{
-			"instanceKey": deriveAugurHandle(targetID, entityID, gapColumn),
-			"adapter":     adapter,
-			"replyOp":     replyOp,
-			"targetId":    targetMetaKey,
-			"entityId":    entityKey,
-			"gapColumn":   gapColumn,
-			"trigger":     trigger,
-		},
+		Params: params,
 		// The no-orphan alive endpoints routed into ContextHint.Reads — the
 		// candidate (forCandidate) and the weaver target (forTarget). The op's
 		// own alive checks use kv.Read (read-path-independent), so these are

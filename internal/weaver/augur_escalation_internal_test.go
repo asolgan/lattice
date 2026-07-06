@@ -135,6 +135,68 @@ func TestAugurEscalation_FailsClosed(t *testing.T) {
 	}
 }
 
+// TestAugurEscalation_ExhaustedTriggerSymmetric proves `exhausted` escalates
+// exactly like `unplannable` when a target's augur block opts it in (Fire 9,
+// the weaver-exhausted-escalation-and-model backlog item) — and, symmetrically
+// with TestAugurEscalation_FailsClosed's "onlyExhausted" case, that a target
+// escalating only `unplannable` does NOT escalate an `exhausted` trigger.
+func TestAugurEscalation_ExhaustedTriggerSymmetric(t *testing.T) {
+	t.Parallel()
+	s, metaKey := registerAugurTarget(t, "budgetAware", map[string]any{
+		"escalate": []any{"exhausted"},
+	})
+	ga, ok := augurEscalation(s, mustTarget(t, s, "budgetAware"), escalateExhausted, "budgetAware", "e", "vtx.t.e", "missing_x")
+	if !ok {
+		t.Fatalf("a target escalating \"exhausted\" must escalate an exhausted trigger")
+	}
+	if ga.Action != actionDirectOp || ga.Operation != defaultAugurOp {
+		t.Fatalf("exhausted escalation must build the same directOp shape as unplannable: action=%q operation=%q", ga.Action, ga.Operation)
+	}
+	if ga.Params["trigger"] != escalateExhausted {
+		t.Fatalf("trigger param = %q want %q", ga.Params["trigger"], escalateExhausted)
+	}
+	if ga.Target != metaKey {
+		t.Fatalf("authTarget = %q want %q", ga.Target, metaKey)
+	}
+
+	sOnlyUnplannable, _ := registerAugurTarget(t, "onlyUnplannable", map[string]any{"escalate": []any{"unplannable"}})
+	if _, ok := augurEscalation(sOnlyUnplannable, mustTarget(t, sOnlyUnplannable, "onlyUnplannable"), escalateExhausted, "onlyUnplannable", "e", "vtx.t.e", "missing_x"); ok {
+		t.Fatalf("a target escalating only \"unplannable\" must not escalate an \"exhausted\" trigger")
+	}
+}
+
+// TestAugurEscalation_ThreadsModel proves the target's optional augur.model
+// override (Contract #10 §10.8) reaches the escalation GapAction's Params —
+// closing the "model is consumed by nothing" half of the
+// weaver-exhausted-escalation-and-model finding. Present verbatim when set;
+// genuinely ABSENT (not an empty string) when unset, so a real adapter's own
+// "omit means default" posture (mirroring Op/Adapter/ReplyOp) is preserved.
+func TestAugurEscalation_ThreadsModel(t *testing.T) {
+	t.Parallel()
+	sSet, _ := registerAugurTarget(t, "modelSet", map[string]any{
+		"escalate": []any{"unplannable"},
+		"model":    "claude-sonnet-4-6",
+	})
+	ga, ok := augurEscalation(sSet, mustTarget(t, sSet, "modelSet"), escalateUnplannable, "modelSet", "e", "vtx.t.e", "missing_x")
+	if !ok {
+		t.Fatalf("expected escalation")
+	}
+	if ga.Params["model"] != "claude-sonnet-4-6" {
+		t.Fatalf("model param = %q want the augur.model override threaded verbatim", ga.Params["model"])
+	}
+
+	sUnset, _ := registerAugurTarget(t, "modelUnset", map[string]any{
+		"escalate": []any{"unplannable"},
+	})
+	ga2, ok := augurEscalation(sUnset, mustTarget(t, sUnset, "modelUnset"), escalateUnplannable, "modelUnset", "e", "vtx.t.e", "missing_x")
+	if !ok {
+		t.Fatalf("expected escalation")
+	}
+	if _, present := ga2.Params["model"]; present {
+		t.Fatalf("model param must be ABSENT when the target sets no override (so the adapter's own default applies), got %q", ga2.Params["model"])
+	}
+}
+
 // TestDeriveAugurHandle_StableAndDistinct: the handle is deterministic in
 // (targetId, entityId, gapColumn) — so a redelivery / reclaim collapses on the
 // same claim — and distinct across each coordinate.
