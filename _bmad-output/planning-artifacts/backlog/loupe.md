@@ -25,7 +25,6 @@ buildable-first; F11–F13 gated on lattice cross-lane asks (§6 there).
 
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **F12 — Vault surface + crypto-shred proof** | Node + page + Reveal (decrypt RPC on `sensitive` aspects) + `ShredIdentityKey` before/after proof. | ★★★ | L | 🏗️ increment 2 shipped (Reveal — audited decrypt in the Graph explorer); next: the crypto-shred proof view (§3.3) · [UX §3](../../implementation-artifacts/loupe-platform-edges-ux.md) |
 | **F13 — Chronicler Time Machine** | Flow-history browser + map scrubber + ledger browser (platform-edges brief §4 L1–L3); overrides the Chronicler design's "rides F6" display note (Loupe scope). | ★★★ | L | 🚧 L1 overlaps lattice's new standalone Flows tab (Chronicler Fire 3) — reconcile before building `#/history`; L2-full/L3 blocked-on: Chronicler archive mode (lattice, unscheduled) · [UX §4](../../implementation-artifacts/loupe-platform-edges-ux.md) |
 
 ## Component maintenance
@@ -53,12 +52,14 @@ Open items only (shipped ones are in the Done log) — none currently open.
 - 2026-07-05 — Vault CLOSED + Chronicler F1–F3 shipped (lattice, both same-day): F12 is ready-to-build (UX+FE only, no lattice blocker left); F13's L1 overlaps the Flows tab Chronicler's own Fire 3 shipped — reconcile before extending; L2-full/L3 stay blocked on the unscheduled Chronicler archive-mode fire.
 - 2026-07-06 — F12 increment 1 shipped (component page + shred fleet view); verified live against a real shredded identity already on the stack. All §3.1 ⚠️ ASSUMES resolved: `health.vault.*` heartbeats live, `lattice.vault.decrypt` already granted to Loupe's nkey, `ShredIdentityKey` already grant-packaged to the operator role (`packages/privacy-operator-grant`) — no lattice-lane blocker for the remaining increments.
 - 2026-07-06 — F12 increment 2 shipped (Reveal — audited decrypt in the Graph explorer); 3-layer review fixed forward (identity-anchor validation, complete-envelope check, malformed-reply guard, stale-DOM guard); verified live against a real shredded identity's sealed row (never against live plaintext PII — the auto-mode PII-handling gate correctly declined that, and it isn't needed: the Go round-trip test already proves decrypt-to-plaintext through the real vault RPC). Noted, not filed as a blocker: `internal/vault/service.go`'s decrypt RPC responder logs only failed decrypts today, not successful ones — the design's "this reveal is audited" claim is a property of that responder, not of Loupe's proxy; a Lattice-lane follow-up to add success-path audit logging is fair game whenever that lane picks it up.
-- **Next:** F12 increment 3 (the crypto-shred proof view, §3.3 — before/after + cross-plane confirmation). F13: reconcile the shipped Flows tab into the `#/history` L1 spec, then L2/L3 wait on Chronicler archive mode. On the Gateway up-full ship: flip its `designAhead` flag off + verify the F11 revoke loop live (XS).
+- 2026-07-06 — **F12 CLOSED**: increment 3 shipped (the crypto-shred proof view, frontend-only, reused every existing endpoint); 3-layer review fixed forward (a failed status read no longer silently reads as a false negative, the finalization poll is now capped, DOM writes scoped). Verified live on both a temp preview port and the real running instance; declined (per the risky-action guardrail) to actually click-confirm a real ShredIdentityKey submission against the shared dev stack — the typed-confirm gating was verified via a wrong-token/right-token/cancel sequence instead.
+- **Next:** F13: reconcile the shipped Flows tab into the `#/history` L1 spec, then L2/L3 wait on Chronicler archive mode. On the Gateway up-full ship: flip its `designAhead` flag off + verify the F11 revoke loop live (XS).
 
 ## Done log — loupe (newest first)
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-06 · `78ca047` · [Loupe/F12 inc.3] Crypto-shred proof view — `#/graph/<identity>?view=shred`, typed-confirm `ShredIdentityKey` via `/api/op`; F12 CLOSED; 3-layer review fixed forward; verified live + CI green
 - 2026-07-06 · `fa78cde` · [Loupe/F12 inc.2] Reveal — audited decrypt in the Graph explorer (`POST /api/vault/decrypt`, sealed/revealed aspect rows); 3-layer review fixed forward; verified live + CI green
 - 2026-07-06 · `8742f49` · [Loupe/F12 inc.1] Vault component page — metrics line + `GET /api/vault/shreds` read-only shred-status fleet view (in-flight identities linked into the Graph explorer); verified live, lead self-review
 - 2026-07-04 · `cc0df14` · [Loupe/F14] Map scale — package-grouped lens cluster cards (exception-first density, filter) + verticals as curated door-band `app` nodes (offline≠red); verified live, lead self-review
