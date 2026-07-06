@@ -95,7 +95,6 @@ const (
 	defaultHealthBucket      = "health-kv"
 	defaultDevPublicKeyPath  = "deploy/gateway-dev-key/dev-public.pem"
 	defaultDevPrivateKeyPath = "deploy/gateway-dev-key/dev-private.pem"
-	devKeyID                 = "dev"
 	initialJWKSFetchTimeout  = 15 * time.Second
 )
 
@@ -338,9 +337,9 @@ func loadTrustedKeys(devMode bool, logger *slog.Logger) (map[string]crypto.Publi
 		if err != nil {
 			return nil, fmt.Errorf("load dev key %q: %w", devKeyPath, err)
 		}
-		keys[devKeyID] = pub
+		keys[auth.DevKeyID] = pub
 		logger.Warn("GATEWAY_DEV_MODE=true — the checked-in dev signing key is trusted; NEVER set this in production",
-			"kid", devKeyID, "path", devKeyPath)
+			"kid", auth.DevKeyID, "path", devKeyPath)
 	}
 
 	return keys, nil
@@ -437,17 +436,9 @@ func runDevToken(args []string) error {
 		return errors.New("-sub is required")
 	}
 
-	raw, err := os.ReadFile(*keyPath)
+	priv, err := auth.LoadDevSigningKey(*keyPath)
 	if err != nil {
-		return fmt.Errorf("read dev key: %w", err)
-	}
-	block, _ := pem.Decode(raw)
-	if block == nil {
-		return fmt.Errorf("no PEM block in %s", *keyPath)
-	}
-	privAny, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return fmt.Errorf("parse dev private key: %w", err)
+		return fmt.Errorf("load dev private key: %w", err)
 	}
 
 	now := time.Now()
@@ -457,8 +448,8 @@ func runDevToken(args []string) error {
 		ExpiresAt: jwt.NewNumericDate(now.Add(*ttl)),
 	}
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
-	tok.Header["kid"] = devKeyID
-	signed, err := tok.SignedString(privAny)
+	tok.Header["kid"] = auth.DevKeyID
+	signed, err := tok.SignedString(priv)
 	if err != nil {
 		return fmt.Errorf("sign dev token: %w", err)
 	}

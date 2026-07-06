@@ -92,8 +92,8 @@ func TestLoadTrustedKeys_DevModeAddsDevKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if _, ok := keys[devKeyID]; !ok {
-		t.Fatal("dev key not loaded under devKeyID")
+	if _, ok := keys[DevKeyID]; !ok {
+		t.Fatal("dev key not loaded under DevKeyID")
 	}
 	if !warned {
 		t.Error("expected the dev-mode warn callback to fire")
@@ -105,7 +105,7 @@ func TestLoadTrustedKeys_DevModeAddsDevKey(t *testing.T) {
 // otherwise be silently shadowed by the checked-in dev key.
 func TestLoadTrustedKeys_DevKidCollisionErrors(t *testing.T) {
 	dir := t.TempDir()
-	writeTestPEM(t, dir, devKeyID+".pem")
+	writeTestPEM(t, dir, DevKeyID+".pem")
 
 	_, err := LoadTrustedKeys(KeySourceConfig{
 		KeysDir:    dir,

@@ -6,12 +6,26 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/asolgan/lattice/internal/gateway/auth"
 )
 
 const testTimeout = 5 * time.Second
+
+// TestMain points the dev-auth posture's shared-dev-key loader at the repo
+// root (deploy/gateway-dev-key/), since a test binary's CWD is this package's
+// directory, not the repo root the production default path assumes.
+func TestMain(m *testing.M) {
+	os.Setenv("LOFTSPACE_APP_DEV_PRIVATE_KEY_PATH", "../../deploy/gateway-dev-key/dev-private.pem")
+	os.Setenv("LOFTSPACE_APP_DEV_PUBLIC_KEY_PATH", "../../deploy/gateway-dev-key/dev-public.pem")
+	os.Exit(m.Run())
+}
 
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -81,6 +95,67 @@ func TestSetupReadAuth_DevPosture(t *testing.T) {
 	}
 	if actor.ActorID != "vtx.identity."+sub {
 		t.Errorf("actorID = %q, want vtx.identity.%s", actor.ActorID, sub)
+	}
+}
+
+// TestSetupReadAuth_DevPosture_SharedKeyInteroperates proves the actual point
+// of the shared-dev-IdP interim (real-actor-write-auth-e2e-design.md §3.2):
+// a token minted here validates against an independently-built verifier that
+// trusts nothing but the shared dev key — standing in for the Gateway's own
+// trust set — and a token shaped like what `gateway dev-token` mints (no
+// iss/aud claims, kid auth.DevKeyID, signed with the same private key)
+// validates at this app's read boundary. One shared key, either direction.
+func TestSetupReadAuth_DevPosture_SharedKeyInteroperates(t *testing.T) {
+	t.Setenv("LOFTSPACE_APP_DEV_AUTH", "1")
+	authn, signer, err := setupReadAuth(discardLogger(), true)
+	if err != nil {
+		t.Fatalf("setupReadAuth: %v", err)
+	}
+
+	const sub = "Hj4kPmRtw9nbCxz5vQ2y"
+
+	// This app's minted token verifies against a Gateway-shaped trust set.
+	gatewayKeys, err := auth.LoadTrustedKeys(auth.KeySourceConfig{
+		DevMode:    true,
+		DevKeyPath: os.Getenv("LOFTSPACE_APP_DEV_PUBLIC_KEY_PATH"),
+	}, nil)
+	if err != nil {
+		t.Fatalf("LoadTrustedKeys: %v", err)
+	}
+	gatewayVerifier, err := auth.NewVerifier(auth.Config{Keys: gatewayKeys})
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	tok, _, err := signer.mint(sub)
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	if _, err := gatewayVerifier.Verify(tok); err != nil {
+		t.Errorf("app-minted token rejected by a Gateway-shaped verifier: %v", err)
+	}
+
+	// A `gateway dev-token`-shaped token (no iss/aud, same shared key)
+	// verifies at this app's read boundary.
+	privKey, err := auth.LoadDevSigningKey(os.Getenv("LOFTSPACE_APP_DEV_PRIVATE_KEY_PATH"))
+	if err != nil {
+		t.Fatalf("LoadDevSigningKey: %v", err)
+	}
+	gatewayTok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.RegisteredClaims{
+		Subject:   sub,
+		IssuedAt:  jwt.NewNumericDate(time.Now()),
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(15 * time.Minute)),
+	})
+	gatewayTok.Header["kid"] = auth.DevKeyID
+	signed, err := gatewayTok.SignedString(privKey)
+	if err != nil {
+		t.Fatalf("sign gateway-shaped token: %v", err)
+	}
+	actor, err := authn.Authenticate(t.Context(), signed)
+	if err != nil {
+		t.Fatalf("app read boundary rejected a gateway-shaped token: %v", err)
+	}
+	if actor.Subject != sub {
+		t.Errorf("subject = %q, want %q", actor.Subject, sub)
 	}
 }
 

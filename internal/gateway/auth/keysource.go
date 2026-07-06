@@ -2,6 +2,7 @@ package auth
 
 import (
 	"crypto"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
@@ -16,9 +17,17 @@ import (
 // control planes (control-plane-capability-authz-design.md).
 const defaultDevPublicKeyPath = "deploy/gateway-dev-key/dev-public.pem"
 
-// devKeyID is the dev key's kid, matching the "dev" header `gateway
-// dev-token` stamps.
-const devKeyID = "dev"
+// defaultDevPrivateKeyPath is the checked-in dev signing key's private half —
+// loaded only by a process that MINTS dev tokens (the Gateway CLI's
+// `dev-token` subcommand, and a vertical app's dev-auth read-boundary signer
+// per real-actor-write-auth-e2e-design.md §3.2's shared-dev-IdP interim).
+const defaultDevPrivateKeyPath = "deploy/gateway-dev-key/dev-private.pem"
+
+// DevKeyID is the dev key's kid, matching the "dev" header `gateway
+// dev-token` stamps. Exported so any process minting tokens against the
+// shared dev key (not just verifying them via LoadTrustedKeys) stamps the
+// identical kid.
+const DevKeyID = "dev"
 
 // KeySourceConfig configures LoadTrustedKeys — the static/dev-key trust-root
 // loader every JWT-verifying process shares: one IdP trust root (Gateway's
@@ -38,7 +47,7 @@ type KeySourceConfig struct {
 }
 
 // LoadTrustedKeys builds the kid→public-key map cfg describes: every <kid>.pem
-// under KeysDir, plus the checked-in dev key under devKeyID when DevMode is
+// under KeysDir, plus the checked-in dev key under DevKeyID when DevMode is
 // set. warn receives the dev-mode advisory message (nil-safe: a nil warn is a
 // no-op) — callers pass e.g. func(msg string) { logger.Warn(msg) }.
 //
@@ -88,17 +97,44 @@ func LoadTrustedKeys(cfg KeySourceConfig, warn func(msg string)) (map[string]cry
 		// shadowed by the checked-in dev key below — refuse instead of
 		// substituting an unexpected trust key under a name the caller
 		// picked for something else.
-		if _, collides := keys[devKeyID]; collides {
+		if _, collides := keys[DevKeyID]; collides {
 			return nil, fmt.Errorf("keys dir %q already defines kid %q — this collides with the reserved dev-mode "+
-				"kid; rename the file or disable dev mode", cfg.KeysDir, devKeyID)
+				"kid; rename the file or disable dev mode", cfg.KeysDir, DevKeyID)
 		}
-		keys[devKeyID] = pub
+		keys[DevKeyID] = pub
 		if warn != nil {
-			warn(fmt.Sprintf("dev mode: the checked-in dev signing key (%s, kid %q) is trusted; NEVER set this in production", path, devKeyID))
+			warn(fmt.Sprintf("dev mode: the checked-in dev signing key (%s, kid %q) is trusted; NEVER set this in production", path, DevKeyID))
 		}
 	}
 
 	return keys, nil
+}
+
+// LoadDevSigningKey loads the checked-in dev private key (PKCS8 PEM, RSA) —
+// the counterpart LoadTrustedKeys(DevMode: true) trusts under DevKeyID. An
+// empty path uses defaultDevPrivateKeyPath. Only a process that MINTS dev
+// tokens needs this (LoadTrustedKeys alone suffices to verify them).
+func LoadDevSigningKey(path string) (*rsa.PrivateKey, error) {
+	if path == "" {
+		path = defaultDevPrivateKeyPath
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	block, _ := pem.Decode(raw)
+	if block == nil {
+		return nil, fmt.Errorf("no PEM block found in %s", path)
+	}
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse PKCS8 private key: %w", err)
+	}
+	priv, ok := key.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("dev private key at %s is not RSA (got %T)", path, key)
+	}
+	return priv, nil
 }
 
 func loadPublicKeyPEM(path string) (crypto.PublicKey, error) {

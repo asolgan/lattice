@@ -2,7 +2,6 @@ package main
 
 import (
 	"crypto"
-	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
@@ -29,35 +28,34 @@ import (
 // Two postures, selected by env (fail-closed: neither set ⇒ no authenticator ⇒
 // every protected read is 401):
 //
-//   - DEMO (LOFTSPACE_APP_DEV_AUTH=1): the trusted loopback tool generates an
-//     EPHEMERAL in-process RSA keypair at startup, trusts its own public half in
-//     the Verifier, and exposes POST /api/dev-token to mint a short-lived JWT for
-//     the selected applicant identity. This is the explicit demo stand-in for the
-//     deferred Gateway/IdP login (design Option C) — it lets the browser FE keep
-//     working on the loopback demo while exercising the SAME verified-JWT → RLS
-//     path the production boundary uses. The signing key never persists and is
-//     never accepted from outside the process.
+//   - DEMO (LOFTSPACE_APP_DEV_AUTH=1): the trusted loopback tool signs with the
+//     checked-in dev key shared by the Gateway and every vertical app
+//     (deploy/gateway-dev-key/, kid auth.DevKeyID — real-actor-write-auth-e2e-
+//     design.md §3.2's shared-dev-IdP interim), and exposes POST /api/dev-token
+//     to mint a short-lived JWT for the selected applicant identity. Because the
+//     key is shared, a token minted here (or by `gateway dev-token`) verifies at
+//     BOTH this app's read boundary and the Gateway's write path — one dev
+//     identity, one token, both surfaces — which is what lets the browser-direct
+//     FE (writes → Gateway, reads → app) present a single Bearer token. This is
+//     the explicit demo stand-in for a real IdP login (design Option C); the
+//     private key is dev-only and never accepted from outside a loopback bind.
 //   - PRODUCTION (LOFTSPACE_APP_JWT_PUBLIC_KEY set): the Verifier trusts the
 //     real external IdP's public key(s); no minting happens here (the app never
 //     signs — actor signing keys live outside the platform). The FE presents
 //     real Bearer tokens (the deferred login flow).
 
-const (
-	devAuthKID      = "loftspace-dev"
-	devAuthIssuer   = "loftspace-app-dev"
-	devAuthAudience = "lattice-read"
-	devTokenTTL     = 30 * time.Minute
-)
+const devTokenTTL = 30 * time.Minute
 
 // devSigner mints short-lived JWTs for the demo posture. It is nil unless
-// LOFTSPACE_APP_DEV_AUTH is enabled.
+// LOFTSPACE_APP_DEV_AUTH is enabled. It signs with the shared dev key (no
+// issuer/audience claims), so the resulting token verifies both here and at
+// the Gateway and any other vertical app running the same shared-dev-IdP
+// posture — see the package doc.
 type devSigner struct {
-	priv     *rsa.PrivateKey
-	kid      string
-	issuer   string
-	audience string
-	ttl      time.Duration
-	now      func() time.Time
+	priv *rsa.PrivateKey
+	kid  string
+	ttl  time.Duration
+	now  func() time.Time
 }
 
 // mint returns a signed RS256 token whose `sub` is the bare identity id the RLS
@@ -68,8 +66,6 @@ func (d *devSigner) mint(subject string) (string, time.Time, error) {
 	exp := now.Add(d.ttl)
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.RegisteredClaims{
 		Subject:   subject,
-		Issuer:    d.issuer,
-		Audience:  jwt.ClaimStrings{d.audience},
 		IssuedAt:  jwt.NewNumericDate(now),
 		NotBefore: jwt.NewNumericDate(now),
 		ExpiresAt: jwt.NewNumericDate(exp),
@@ -98,26 +94,27 @@ func setupReadAuth(logger *slog.Logger, loopback bool) (*auth.Authenticator, *de
 		if strings.TrimSpace(os.Getenv("LOFTSPACE_APP_JWT_PUBLIC_KEY")) != "" {
 			logger.Warn("both LOFTSPACE_APP_DEV_AUTH and LOFTSPACE_APP_JWT_PUBLIC_KEY are set; dev-auth wins and the configured IdP public key is IGNORED")
 		}
-		priv, err := rsa.GenerateKey(rand.Reader, 2048)
+		priv, err := auth.LoadDevSigningKey(os.Getenv("LOFTSPACE_APP_DEV_PRIVATE_KEY_PATH"))
 		if err != nil {
-			return nil, nil, fmt.Errorf("dev-auth: generate ephemeral key: %w", err)
+			return nil, nil, fmt.Errorf("dev-auth: load shared dev signing key: %w", err)
 		}
-		verifier, err := auth.NewVerifier(auth.Config{
-			Keys:     map[string]crypto.PublicKey{devAuthKID: &priv.PublicKey},
-			Issuer:   devAuthIssuer,
-			Audience: devAuthAudience,
-		})
+		trustedKeys, err := auth.LoadTrustedKeys(auth.KeySourceConfig{
+			DevMode:    true,
+			DevKeyPath: os.Getenv("LOFTSPACE_APP_DEV_PUBLIC_KEY_PATH"),
+		}, func(msg string) { logger.Warn(msg) })
+		if err != nil {
+			return nil, nil, fmt.Errorf("dev-auth: load shared dev trust key: %w", err)
+		}
+		verifier, err := auth.NewVerifier(auth.Config{Keys: trustedKeys})
 		if err != nil {
 			return nil, nil, fmt.Errorf("dev-auth: build verifier: %w", err)
 		}
-		logger.Warn("DEV-AUTH ENABLED: minting demo JWTs in-process (NOT for production); the read boundary trusts an ephemeral key")
+		logger.Warn("DEV-AUTH ENABLED: minting demo JWTs in-process (NOT for production); the read boundary trusts the shared dev key")
 		signer := &devSigner{
-			priv:     priv,
-			kid:      devAuthKID,
-			issuer:   devAuthIssuer,
-			audience: devAuthAudience,
-			ttl:      devTokenTTL,
-			now:      time.Now,
+			priv: priv,
+			kid:  auth.DevKeyID,
+			ttl:  devTokenTTL,
+			now:  time.Now,
 		}
 		// Revocation is the D1.2 kill-switch; the demo has no revocation bucket, so
 		// pass nil (the Authenticator permits a nil checker — verification only).
