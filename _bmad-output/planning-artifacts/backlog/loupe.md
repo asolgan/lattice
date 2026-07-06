@@ -25,28 +25,12 @@ buildable-first; F11–F13 gated on lattice cross-lane asks (§6 there).
 
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **F1 — Console shell** | Hash router + route table, ES-module `logic/` split (strip-export convention), goja harness + dep + vendors row, `keyLink` resolver seed (link rows far-end-clickable + provenance chips), breadcrumbs. | ★★★ | M | ✅ shipped · checkpoint in [design §14](../../implementation-artifacts/loupe-2-ux-design.md) |
-| **F2 — Graph explorer** | Faceted/grouped/paged `#/graph` list, linkifying doc renderer, detail re-plumb, ego-graph hood mode; retires Core KV tab. | ★★★ | L | ✅ shipped · checkpoint in [design §14](../../implementation-artifacts/loupe-2-ux-design.md) |
-| **F3 — Component pages** | `#/component/<id>` ×6, plural instances (fixes LWW collapse), row-level control actions, refractor roster; retires Control tab. | ★★★ | L | ✅ shipped · checkpoint in [design §14](../../implementation-artifacts/loupe-2-ux-design.md) |
-| **F4 — Health absorption + status vocabulary** | Global alert strip (verbatim `health.alerts.*` incl. stub-auth-active), gates panel + rail (preserves `#sysmap-console` slot), `renderedState` incl. `pending-readpath` (the "7 degraded" fix); retires Health tab. | ★★★ | M | ✅ shipped · checkpoint in [design §14](../../implementation-artifacts/loupe-2-ux-design.md) |
-| **F5 — Lens page** | Four panels: definition (DDL) · state (+freshness slot) · control (delete behind typed confirm) · contents (nats_kv now, pg-pending state). | ★★★ | L | ✅ shipped · checkpoint in [design §14](../../implementation-artifacts/loupe-2-ux-design.md) |
-| **F6 — Live pulse** | SSE tail of core-events (deliver-new, bounded), rail feed, map edge pulse animation, topbar LED, degraded modes. | ★★ | M | ✅ shipped · checkpoint in [design §14](../../implementation-artifacts/loupe-2-ux-design.md) |
-| **F7 — Submit-Op follow-through** | Structured accepted panel (committed keys linkified), `#/op?type=` prefill, session op log, ~12s requestId-filtered follow-through riding the F6 feed. | ★★ | S | ✅ shipped · checkpoint in [design §14](../../implementation-artifacts/loupe-2-ux-design.md) |
-| **F8 — Packages first-class** | `#/package/<key>` graph-resolved contents + install/upgrade/uninstall behind typed confirms (F-004 mechanics). | ★★ | M | ✅ shipped · checkpoint in [design §14](../../implementation-artifacts/loupe-2-ux-design.md) |
-| **F9 — Postgres read seam (lens contents)** | Read-only PG connector (`LOUPE_PG_DSN`, SELECT-only role) lighting up the §6.4 panel for protected lenses + grant tables. Adjudicated in principle (design §15 Q6); role provisioning files to lattice lane if deploy/bootstrap-touching. | ★★ | M | ✅ shipped · checkpoint in [design §14](../../implementation-artifacts/loupe-2-ux-design.md) · full value needs the read role (lattice) |
-| **F10 — Curated topology + Gateway node** | `declaredComponents`/`skeletonEdges`/`sysmapTier` for all three (Gateway top-of-map external door · Vault side of Core-KV · Chronicler mirror of Refractor); design-ahead render until live. | ★★★ | M | ✅ shipped · checkpoint in [UX doc](../../implementation-artifacts/loupe-platform-edges-ux.md) · flip Gateway `designAhead` off when up-full starts it (lattice) |
-| **F11 — Gateway security console** | `#/component/gateway` page (auth metrics + JWKS key set) + the token-revoke surface (arch-review gap). | ★★ | M | ✅ shipped · checkpoint in [UX doc](../../implementation-artifacts/loupe-platform-edges-ux.md) · JWKS panel lights up on the heartbeat `jwks` block; live e2e needs Gateway up-full + fresh bootstrap (lattice) |
-| **F12 — Vault surface + crypto-shred proof** | Node + page + Reveal (decrypt RPC on `sensitive` aspects) + `ShredIdentityKey` before/after proof. | ★★★ | L | 📋 enablers shipped (`9f6a1f2`, lattice) · needs UX (Sally) + FE build · [UX §3](../../implementation-artifacts/loupe-platform-edges-ux.md) |
-| **F13 — Chronicler Time Machine** | Flow-history browser + map scrubber + ledger browser (platform-edges brief §4 L1–L3); overrides the Chronicler design's "rides F6" display note (Loupe scope). | ★★★ | L | 🚧 blocked-on: Chronicler build (lattice) · [UX §4](../../implementation-artifacts/loupe-platform-edges-ux.md) |
-| **F14 — Map scale: lens clusters + door band** | Lens shelf → package-grouped cluster cards (manifest-resolved, kernel fallback): exception-first density, filter box, one project edge per cluster. Verticals become curated `app` door-band nodes: solid direct-submit edge (today) + dashed via-Gateway edge (end-state, gateway design F5); offline≠red; clients discovery shelf stays. | ★★★ | M | ✅ shipped · checkpoint in [UX doc](../../implementation-artifacts/loupe-map-scale-ux.md) |
+| **F12 — Vault surface + crypto-shred proof** | Node + page + Reveal (decrypt RPC on `sensitive` aspects) + `ShredIdentityKey` before/after proof. | ★★★ | L | 📋 ready — Vault CLOSED (lattice) · needs UX (Sally) + FE build · [UX §3](../../implementation-artifacts/loupe-platform-edges-ux.md) |
+| **F13 — Chronicler Time Machine** | Flow-history browser + map scrubber + ledger browser (platform-edges brief §4 L1–L3); overrides the Chronicler design's "rides F6" display note (Loupe scope). | ★★★ | L | 🚧 L1 overlaps lattice's new standalone Flows tab (Chronicler Fire 3) — reconcile before building `#/history`; L2-full/L3 blocked-on: Chronicler archive mode (lattice, unscheduled) · [UX §4](../../implementation-artifacts/loupe-platform-edges-ux.md) |
 
 ## Component maintenance
 
-| Item | What it is | Imp | Size | State |
-|---|---|---|---|---|
-| **[Loupe] Same-origin gate console-wide** | Extend F8's `crossOriginBlocked` to the pre-existing mutating endpoints (`/api/op`, `/api/control/*`, `/api/objects`) — the loopback console's cheap CSRF gate, applied uniformly. | ★★ | XS | ✅ done (shipped with F9, + DNS-rebinding hardening) |
-| **[Loupe] Static-UI serving (`go:embed web`) untested** | The embedded operator-UI mount has no coverage. | ★ | XS | ✅ done (shipped with F1) |
-| **[Loupe] Operator UI has no automated coverage** | goja logic-tier harness for the pure `logic/*.js` seam. Fire 2 (chromedp browser e2e) stays 🗄️ designed-shelved. | ★★ | S | ✅ done (shipped with F1) · [design](../../implementation-artifacts/loupe-fe-test-strategy-design.md) |
+Open items only (shipped ones are in the Done log) — none currently open.
 
 ## Parked
 
@@ -56,17 +40,18 @@ buildable-first; F11–F13 gated on lattice cross-lane asks (§6 there).
 
 ## PO notes (rotation memory — capped, dated one-liners)
 
-- Cross-lane feeds: lens freshness (F5's slot) ← lattice.md "silent lens-projection stall" (📐); durable
-  event history (beyond F6's live tail) ← lattice.md "Loom/Weaver control-API surfacing" (📐).
+- Cross-lane feed: durable event history (beyond F6's live tail) ← resolved, shipped as the Chronicler
+  (lattice, F1–F3). F5's lens-freshness slot cross-reference is stale — re-verify against lattice.md.
 - 2026-07-01 PO review (Andrew session) — filed the program; found+fixed the control-plane lockout.
 - 2026-07-02 UX design adjudicated (2 premises corrected against live stack — see design §15).
 - 2026-07-02 PO review (Andrew session) — **extended 2.0** with platform-edges fires F10–F13 (Gateway/Vault/Chronicler onto the curated map + the Time Machine); map stays curated, agent-console stays shelved, design-ahead all three.
 - 2026-07-02 — F10–F13 UX **adjudicated** (Winston): [platform-edges-ux](../../implementation-artifacts/loupe-platform-edges-ux.md); Andrew grants `ShredIdentityKey`+`RevokeActor`, map shows design-ahead, revoke = op→event→Gateway-internal-KV (refined lattice revocation row → Designer). Cross-lane asks filed to lattice (Gateway up-full+jwks, Vault→Loupe enablers).
 - 2026-07-02 — removed the phase-gates chips from the map (Andrew): the security proofs (bypass g2 / capability g3) become a new Lattice component (human-named, periodic + "check now", isolated runner) — [security-proof-watchdog](../../implementation-artifacts/security-proof-watchdog-brief.md), filed Designer on lattice.
 - 2026-07-03 — **Loupe 2.0 core COMPLETE** (F1–F9 all shipped). F9's full value (protected-table rows) needs the read role — filed to lattice ("[Refractor/deploy] Loupe read-only PG role").
-- 2026-07-04 — F11 built against the shipped op model (revocation kill-switch Fires 1+2, lattice); review found the materializer poison-pill (invalid actor key → forever-redelivery) — filed to lattice.md.
+- 2026-07-04 — F11 built against the shipped op model (revocation kill-switch Fires 1+2, lattice); review found the materializer poison-pill (invalid actor key → forever-redelivery) — filed to lattice.md, fixed same-day (`37b54b2`).
 - 2026-07-03 — PO+Sally session (Andrew, screenshot-driven): filed **F14** — lens shelf crowding at ~24 lenses (label spam, truncation, hidden below-fold chips) + the verticals' map home. Andrew corrected the first ruling: gateway design F5 routes the verticals' USER writes through the Gateway in end-state (§3.4 bypass = service actors only) — door band shows solid direct (today) + dashed via-Gateway (end-state); UX amended + adjudicated same session (delegated).
-- **Next:** F12/F13 stay gated on Vault/Chronicler. On the Gateway up-full ship: flip its `designAhead` flag off + verify the F11 revoke loop live (XS).
+- 2026-07-05 — Vault CLOSED + Chronicler F1–F3 shipped (lattice, both same-day): F12 is ready-to-build (UX+FE only, no lattice blocker left); F13's L1 overlaps the Flows tab Chronicler's own Fire 3 shipped — reconcile before extending; L2-full/L3 stay blocked on the unscheduled Chronicler archive-mode fire.
+- **Next:** F12 (UX+FE build). F13: reconcile the shipped Flows tab into the `#/history` L1 spec, then L2/L3 wait on Chronicler archive mode. On the Gateway up-full ship: flip its `designAhead` flag off + verify the F11 revoke loop live (XS).
 
 ## Done log — loupe (newest first)
 
