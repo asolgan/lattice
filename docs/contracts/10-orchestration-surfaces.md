@@ -174,6 +174,26 @@ means Weaver watches all rows under its prefix and **acts only on `violating == 
 - `projectedAt` — deterministic as-of provenance, **same semantics as Contract #6 §6.3** (the
   candidate's `lastModifiedAt`, not a wall-clock read). The NATS KV entry's own revision arrives free
   on each watch update, so it is **not** projected into the value.
+- **`priority`** (optional, engine-recognized convention, Fire 8 — additive, lands with the fire per
+  §4's deferred §10.2 rider) — an integer, higher = more urgent. Consulted **only** when the row's
+  target declares an **`admission`** block, a sibling of §10.8's `mode`:
+  ```
+  "admission": {
+    "globalRate"?: <float>,                    // tokens/sec bounding the target's TOTAL dispatch rate
+    "adapterRates"?: { "<adapter>": <float> }  // per-adapter rate; overrides globalRate for a gap whose
+  }                                             // resolved action declares that Adapter (§10.8 table)
+  ```
+  Absent (every target before this fire) is unbounded — byte-identical dispatch, no row read. When
+  present, it **paces** (never gates for correctness) which already-resolved dispatches fire now vs. on
+  a later redelivery: a gap deferred by admission gets **no mark, no episode, no Health issue** —
+  ordinary pacing, not a fault, so the §10.3 anti-storm/idempotency machinery is untouched. Precedence
+  mirrors the action-selection convention (explicit > general): a gap whose resolved action declares a
+  matching `adapterRates` entry is governed by that rate instead of `globalRate`. Ties among contended
+  dispatches are broken by `priority` — higher first, absent/non-numeric = 0 (this column's default).
+  Purely process-local bookkeeping (mirrors the Fire-7 contraction/oscillation diagnostics): a restart
+  resets every budget's accrued tokens, never a correctness concern. A free-form param column by
+  storage, named by convention like `freshUntil`; every target without an `admission` block ignores it
+  entirely.
 
 **No read-path authz anchor here.** The `weaver-targets` bucket is internal operational state read
 only by Weaver (a bootstrap-provisioned service actor); it is never on the read-path, and read-path
