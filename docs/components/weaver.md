@@ -499,7 +499,48 @@ Proven end to end in `oscillation_internal_test.go`'s fighting-targets fixture: 
 different ops that both assert `subject.foo.data.x` are both disabled and one issue names the pair after
 the confirmed alternation.
 
-Fires 8–9 (admission control, the Augur floor) remain: `weaver-planner-mandate-design.md` §8.
+Fire 9 (the Augur floor) remains: `weaver-planner-mandate-design.md` §8.
+
+---
+
+## Admission control (Fire 8)
+
+A dispatch-pacing layer (`admission.go`) between the Strategist's plan resolution and the Actuator's
+fire — purely in-memory and process-local, mirroring `shadowStats`/`contractionStats`/`oscillationStats`:
+a restart resets every bucket, and the §10.3 mark CAS-create (the actual correctness/anti-storm gate)
+is completely untouched — admission control only paces WHICH already-resolved dispatches fire now vs.
+on a later redelivery, never whether a dispatch is safe to repeat.
+
+A target's optional `admission` block (`Target.Admission`, install-validated) declares one or both axes:
+`globalRate` bounds the target's total dispatch rate; `adapterRates` bounds gaps whose resolved action
+declares a matching `GapAction.Adapter` (a field already on the wire since Fire 5's `candidates` but
+never consumed until now) — an adapter-specific rate takes precedence over the global one for a gap that
+declares it, mirroring the explicit-beats-general `action`/`candidates`/`goal` precedence. **Absent
+(every target before this fire) is unbounded — byte-identical dispatch, no row read.**
+
+Each axis is a `tokenBucket`: refills continuously at the declared rate up to a one-second burst
+capacity, and — the defining property under contention — is **priority-fair**: an optional bare `priority`
+§10.2 row column (like `freshUntil`; absent/non-numeric reads as 0, the lowest tier) orders WHO gets a
+scarce token first. Every `admit()` call both submits its own request and cooperatively drains the shared
+priority queue (no ticker, matching this file's inline-processing style) — a lower-priority id's own
+redelivery must never jump a higher-priority id already waiting; the token is instead *granted* to the
+higher-priority id, collected on that id's own next call (no double-consumption). A grant nobody ever
+collects (a legitimately closed gap that never redelivers again) is reclaimed and refunded to the bucket
+after `admissionGrantTTL`, so a wave of closed episodes cannot slowly starve the budget. The pending queue
+is capped (`admissionPendingCap`) as a soft, lossy overflow bound — an evicted id simply re-queues on its
+next redelivery; no mark or episode state lives in the scheduler, so eviction is never a correctness
+hazard.
+
+Wired at the ONE seam both fresh-dispatch legs share — `planGap`, called by both lane-1's `dispatchGap`
+and the reconciler's `reclaim` — right after `resolvePlannedAction` resolves the gap's action (so the
+adapter to check is known) and before `buildPlan`: a denial returns `NakWithDelay` with **no mark, no
+plan, no Health issue** — ordinary pacing is not a fault, only the `admissionAdmitted`/`admissionDeferred`
+heartbeat counters move. Proven end to end in `admission_internal_test.go`'s 3000-row burst fixture
+(design table's Fire 8 acceptance: "3k-row fixture paced + priority-ordered"): a declared 50/sec budget
+admits its first 50 from free burst capacity, then drains the remaining 2950 in rate-bounded waves that
+always serve the highest still-outstanding priority first.
+
+Fire 9 (the Augur floor) remains: `weaver-planner-mandate-design.md` §8.
 
 ---
 

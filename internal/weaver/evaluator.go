@@ -265,6 +265,15 @@ func (e *Engine) planGap(ctx context.Context, target *Target, targetID, entityID
 
 	resolved, perr := e.resolvePlannedAction(ctx, target, targetID, col, ga, row, pinnedAction)
 	if perr == nil {
+		if !e.admitGap(target, targetID, entityID, col, resolved.Adapter, row) {
+			// Fire 8 admission control (design §3.4): a declared budget has no
+			// spare capacity for this gap right now. No mark, no plan, no
+			// issue — this is ordinary pacing, not a fault; the redelivery
+			// cadence is the retry, exactly like an unresolved-reference defer.
+			e.logger.Debug("weaver: gap dispatch deferred by admission control",
+				"targetId", targetID, "entityId", entityID, "gap", col)
+			return nil, "", substrate.NakWithDelay
+		}
 		var pl *plan
 		if pl, perr = buildPlan(e.source, targetID, entityID, col, resolved, row, rowRevision); perr == nil {
 			e.issues.clear(issueKeyGap(targetID, col))
@@ -294,6 +303,24 @@ func (e *Engine) planGap(ctx context.Context, target *Target, targetID, entityID
 			"target "+targetID+" gap "+col+": "+perr.msg)
 		return nil, "", substrate.Ack
 	}
+}
+
+// admitGap consults Fire 8's admission scheduler for one resolved gap
+// dispatch, called from BOTH fresh-dispatch seams planGap serves (lane-1's
+// dispatchGap and the reconciler's reclaim) — mirroring bumpEffectDispatch/
+// bumpOscillation's "same two seams" precedent, so a declared budget paces
+// reclaim re-fires exactly like fresh episodes. target.Admission == nil (every
+// target before this fire) short-circuits true without reading the row's
+// priority column — byte-identical dispatch. id is the mark-key shape
+// (<targetId>.<entityId>.<gapColumn>), a stable identity for this gap's
+// pending-admission entry across redeliveries.
+func (e *Engine) admitGap(target *Target, targetID, entityID, col, adapter string, row map[string]any) bool {
+	if target.Admission == nil {
+		return true
+	}
+	priority, _ := e.intColumn(targetID, row, admissionPriorityColumn)
+	id := targetID + "." + entityID + "." + col
+	return e.admission.admit(target.Admission, targetID, id, adapter, priority, time.Now())
 }
 
 // fireEpisode is the lane-1 dispatch core: CAS-create the mark on absence

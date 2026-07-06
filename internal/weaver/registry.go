@@ -201,6 +201,11 @@ type Target struct {
 	// targetModePlanned is parsed and validated identically but not yet
 	// consumed (Fires 5/6 wire its dispatch).
 	Mode string `json:"mode,omitempty"`
+
+	// Admission is the optional Fire-8 dispatch-pacing policy (§10.8 Planner
+	// extension "Admission control"): absent (every target before this fire)
+	// is unbounded, byte-identical dispatch. See AdmissionPolicy.
+	Admission *AdmissionPolicy `json:"admission,omitempty"`
 }
 
 // AugurPolicy is a target's parsed `augur` block (Contract #10 §10.8 "Augur
@@ -548,6 +553,9 @@ func validateTarget(t *Target) error {
 	if t.Mode != "" && t.Mode != targetModeShadow && t.Mode != targetModePlanned {
 		return fmt.Errorf("mode %q is not a known planner mode (%s | %s)", t.Mode, targetModeShadow, targetModePlanned)
 	}
+	if err := validateAdmissionPolicy(t.Admission); err != nil {
+		return err
+	}
 	for col, ga := range t.Gaps {
 		if len(col) <= len(gapColumnPrefix) || col[:len(gapColumnPrefix)] != gapColumnPrefix {
 			return fmt.Errorf("gaps key %q does not match the missing_<gap> column convention", col)
@@ -744,6 +752,40 @@ func validateAugurPolicy(a *AugurPolicy) error {
 		if a.AutoApply.MinConfidence < 0 || a.AutoApply.MinConfidence > 1 {
 			return fmt.Errorf("augur.autoApply.minConfidence %v is out of range (must be in [0,1])", a.AutoApply.MinConfidence)
 		}
+	}
+	return nil
+}
+
+// validateAdmissionPolicy runs the §10.8 "Admission control" install-time
+// validations on a target's optional admission block (Fire 8). A nil block is
+// the default (unbounded dispatch, byte-identical to every target before this
+// fire) and is always valid. A present block must declare at least one
+// positive rate — an empty block is exactly as inert as omitting it and is
+// almost certainly a package-author mistake, so it is rejected rather than
+// silently accepted as a no-op (the same doctrine GoalColumns' "referenced by
+// goal" check applies). Every declared rate, global or per-adapter, must be
+// strictly positive: a zero or negative rate is nonsensical (0 already means
+// "not declared" via the field's absence) and would either wedge every
+// dispatch on this axis forever or panic tokenBucket's capacity math.
+func validateAdmissionPolicy(a *AdmissionPolicy) error {
+	if a == nil {
+		return nil
+	}
+	if a.GlobalRate < 0 {
+		return fmt.Errorf("admission.globalRate %v must be >= 0 (0 means not declared)", a.GlobalRate)
+	}
+	declared := a.GlobalRate > 0
+	for adapter, rate := range a.AdapterRates {
+		if adapter == "" {
+			return fmt.Errorf("admission.adapterRates has an empty adapter key")
+		}
+		if rate <= 0 {
+			return fmt.Errorf("admission.adapterRates[%q] %v must be > 0 (omit the entry to leave that adapter ungoverned)", adapter, rate)
+		}
+		declared = true
+	}
+	if !declared {
+		return fmt.Errorf("admission block present but declares no positive rate (omit the block to leave the target unbounded)")
 	}
 	return nil
 }

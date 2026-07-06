@@ -103,6 +103,7 @@ type heartbeater struct {
 	temporal    *temporalStats
 	shadow      *shadowStats
 	contraction *contractionStats
+	admission   *admissionScheduler
 	logger      *slog.Logger
 
 	// ttlMultiplier derives the heartbeat's Health-KV TTL (interval ×
@@ -121,7 +122,7 @@ type heartbeater struct {
 func newHeartbeater(conn *substrate.Conn, healthBucket, instance string, every time.Duration,
 	states *healthkv.ConsumerStateCache, issues *issueCache, source *targetSource, marks *markStore,
 	sweep *sweeper, temporal *temporalStats, shadow *shadowStats, contraction *contractionStats,
-	logger *slog.Logger) *heartbeater {
+	admission *admissionScheduler, logger *slog.Logger) *heartbeater {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -142,6 +143,7 @@ func newHeartbeater(conn *substrate.Conn, healthBucket, instance string, every t
 		temporal:              temporal,
 		shadow:                shadow,
 		contraction:           contraction,
+		admission:             admission,
 		logger:                logger,
 		ttlMultiplier:         healthkv.DefaultTTLMultiplier,
 		effectMismatchAlerted: make(map[string]struct{}),
@@ -224,6 +226,13 @@ func (h *heartbeater) emit(ctx context.Context, status string) {
 	if h.contraction != nil {
 		if snap := h.contraction.snapshot(); len(snap) > 0 {
 			metrics["contractionTrajectory"] = snap
+		}
+	}
+	if h.admission != nil {
+		admitted, deferred := h.admission.metrics()
+		if admitted > 0 || deferred > 0 {
+			metrics["admissionAdmitted"] = admitted
+			metrics["admissionDeferred"] = deferred
 		}
 	}
 
