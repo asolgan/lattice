@@ -26,6 +26,7 @@ buildable-first; F11–F13 gated on lattice cross-lane asks (§6 there).
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | **F13 — Chronicler Time Machine** | Flow-history browser + map scrubber + ledger browser (platform-edges brief §4 L1–L3); overrides the Chronicler design's "rides F6" display note (Loupe scope). | ★★★ | L | 🚧 L1 reconciled (shipped Flows tab satisfies it, no rebuild) + L2 v1 SHIPPED (flow-liveness scrubber); L2-full/L3 blocked-on: Chronicler archive mode (lattice, unscheduled) · [UX §4](../../implementation-artifacts/loupe-platform-edges-ux.md) |
+| **F15 — Operator auth lift** | Real human operator login (replaces localhost-trust-as-admin) + op-submissions relayed through the Gateway as the verified operator (not `adminActor` root); reads stay direct-inspector behind the login. Control plane already lifted. | ★★★ | L | 📐 awaiting-Andrew · [design](../../implementation-artifacts/loupe-operator-auth-lift-design.md) · depends on real-actor-write-auth Phase 1 (lattice) |
 
 ## Component maintenance
 
