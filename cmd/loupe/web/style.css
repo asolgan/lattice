@@ -757,6 +757,19 @@ a.tab { text-decoration: none; display: inline-block; }
 .detail-action { padding: 3px 10px; font-size: 12px; }
 .detail-action-link { color: var(--accent); font-size: 12px; text-decoration: none; }
 .detail-action-link:hover { text-decoration: underline; }
+.detail-action-danger { margin-left: auto; }
+
+/* Crypto-shred proof view (F12 §3.3, #/graph/<identity>?view=shred). */
+.shred-head { font-family: var(--mono); font-size: 13px; margin-bottom: 4px; }
+.shred-aspects { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; }
+.shred-aspect-row { border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+.shred-aspect-name { font-family: var(--mono); font-size: 12px; color: var(--text-dim); display: block; margin-bottom: 6px; }
+.shred-aspect-body .sealed-line, .shred-aspect-body .revealed-line { margin: 0; }
+.shred-status-banner { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin: 12px 0; }
+.shred-status-banner.shredded { border-color: var(--red-dim, #7f1d1d); }
+.shred-checklist { display: flex; flex-direction: column; gap: 4px; font-family: var(--mono); font-size: 12px; margin-top: 8px; }
+.shred-checklist .ok { color: var(--green); }
+.shred-bounds { margin-top: 10px; }
 .notfound-card {
   display: flex; flex-direction: column; gap: 8px;
   border: 1px dashed var(--border); border-radius: 8px; padding: 14px;

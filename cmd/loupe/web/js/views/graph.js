@@ -1,16 +1,19 @@
 // Graph explorer (design §7): the faceted/grouped/paged entity list, the
-// linkified detail view, and the neighborhood (ego-graph) mode. List filter
-// state is URL-carried on the bare route (#/graph?type=&q=&deleted=1);
-// #/graph/<key> selects a detail, ?view=hood swaps the detail for the
-// ego-graph stage. Every rendered key resolves through keyTarget.
+// linkified detail view, the neighborhood (ego-graph) mode, and the
+// crypto-shred proof (F12 §3.3). List filter state is URL-carried on the
+// bare route (#/graph?type=&q=&deleted=1); #/graph/<key> selects a detail,
+// ?view=hood swaps the detail for the ego-graph stage, ?view=shred swaps it
+// for the shred proof. Every rendered key resolves through keyTarget.
 
-import { $, el, api, setStatus } from "../api.js";
+import { $, el, api, setStatus, toast } from "../api.js";
 import { shortId, keyTarget, classifyKey } from "../logic/keys.js";
 import {
   adaptiveRadius, ringPositions, sectorPositions,
   groupLinkItems, evictForBudget, hoodSentence,
 } from "../logic/hood.js";
 import { isSealedAspect, sealedSummary } from "../logic/sensitive.js";
+import { shredFinalizationLine } from "../logic/shred.js";
+import { deleteConfirmReady } from "../logic/lens.js";
 import { renderDoc, keyLinkEl } from "../render.js";
 import { navigate } from "../router.js";
 
@@ -57,6 +60,10 @@ function listHash(overrides) {
 function enter(route) {
   if (route.arg && route.params.view === "hood") {
     showHood(route.arg);
+    return;
+  }
+  if (route.arg && route.params.view === "shred") {
+    showShredProof(route.arg);
     return;
   }
   showList();
@@ -256,6 +263,14 @@ async function loadVertexDetail(key, openAspect) {
     setTimeout(() => { copyBtn.textContent = "copy key"; }, 1200);
   });
   actions.appendChild(copyBtn);
+  // Shred — the crypto-shred proof (F12 §3.3), identity vertices only.
+  // Destructive and irreversible, so it's styled apart from the others and
+  // opens a dedicated proof view rather than acting inline.
+  if (key.indexOf("vtx.identity.") === 0 && classifyKey(key) === "vertex") {
+    const shredBtn = el("button", "detail-action danger-btn detail-action-danger", "shred identity key…");
+    shredBtn.addEventListener("click", () => navigate("#/graph/" + key + "?view=shred"));
+    actions.appendChild(shredBtn);
+  }
   if (key.indexOf("vtx.task.") === 0) {
     const t = el("a", "detail-action-link", "open task inbox →");
     t.href = "#/tasks";
@@ -478,11 +493,15 @@ const hood = { center: null, batches: [], nodes: new Map(), edges: [], seq: 0 };
 function showList() {
   $("#graph-list-mode").style.display = "";
   $("#graph-hood").style.display = "none";
+  $("#graph-shred").style.display = "none";
+  stopShredPoll();
 }
 
 function showHood(centerKey) {
   $("#graph-list-mode").style.display = "none";
   $("#graph-hood").style.display = "";
+  $("#graph-shred").style.display = "none";
+  stopShredPoll();
   if (hood.center !== centerKey) {
     hood.center = centerKey;
     hood.batches = [];
@@ -774,6 +793,267 @@ function materialize(groupNode, link) {
 }
 
 // ---------------------------------------------------------------------------
+// Crypto-shred proof (F12 §3.3): before/after of an identity's sensitive
+// aspects across a ShredIdentityKey run, plus the cross-plane confirmation
+// (live Core KV, JetStream history, projections) and the async finalization
+// line. Reveal reuses renderSealedBody verbatim — the "after" state isn't a
+// separate rendering path, it's the operator re-clicking Reveal on the same
+// row and the Vault's own ErrKeyShredded answering honestly.
+
+const shredProof = { center: null, pollSeq: 0, pollTimer: null, modal: null };
+
+function stopShredPoll() {
+  if (shredProof.pollTimer) { clearTimeout(shredProof.pollTimer); shredProof.pollTimer = null; }
+  shredProof.pollSeq++; // invalidate any in-flight poll fetch's stale callback
+  closeShredModal();
+}
+
+function closeShredModal() {
+  if (shredProof.modal) { shredProof.modal.close(); shredProof.modal = null; }
+}
+
+async function showShredProof(identityKey) {
+  $("#graph-list-mode").style.display = "none";
+  $("#graph-hood").style.display = "none";
+  $("#graph-shred").style.display = "";
+  stopShredPoll();
+  shredProof.center = identityKey;
+
+  const box = $("#graph-shred-body");
+  box.innerHTML = "";
+  box.appendChild(el("div", "muted small", "loading…"));
+  const detail = await api("/api/vertex?key=" + encodeURIComponent(identityKey));
+  if (shredProof.center !== identityKey) return; // navigated away mid-load
+  if (detail.error) {
+    box.innerHTML = "";
+    box.appendChild(el("div", "error-text", detail.error));
+    return;
+  }
+
+  const aspects = detail.aspects || [];
+  const entries = await Promise.all(
+    aspects.map((a) => api("/api/corekv/entry?key=" + encodeURIComponent(a.key)))
+  );
+  if (shredProof.center !== identityKey) return;
+  // A per-aspect fetch failure must not silently read as "not sensitive" —
+  // it's an unknown, not a negative, so it's counted and surfaced rather
+  // than dropped from the sensitive-aspects summary.
+  let unchecked = 0;
+  const sensitive = [];
+  aspects.forEach((a, i) => {
+    const entry = entries[i];
+    if (!entry || entry.error) { unchecked++; return; }
+    const data = entry.envelope && entry.envelope.data;
+    if (isSealedAspect(data)) sensitive.push({ aspect: a, data });
+  });
+
+  const shredsBody = await api("/api/vault/shreds");
+  if (shredProof.center !== identityKey) return;
+  const row = !shredsBody.error && (shredsBody.shreds || []).find((r) => r.identityKey === identityKey);
+
+  renderShredProof(box, identityKey, sensitive, unchecked, row || null, shredsBody.error || null);
+  if (row && row.shredded && !(row.vaultKeyDestroyed && row.projectionsNullified)) {
+    scheduleShredPoll(identityKey);
+  }
+}
+
+function renderShredProof(box, identityKey, sensitive, unchecked, row, shredStatusError) {
+  box.innerHTML = "";
+  box.appendChild(el("div", "shred-head", "Identity " + shortId(identityKey) + " — crypto-shred proof"));
+
+  box.appendChild(el("p", "muted small",
+    "Sensitive aspects (" + sensitive.length + "): " +
+    (sensitive.length ? sensitive.map((s) => s.aspect.localName).join(" · ") : "(none)") +
+    (unchecked ? " (" + unchecked + " aspect(s) could not be checked for sensitivity)" : "")));
+  box.appendChild(el("p", "muted small",
+    "Reveal a sensitive aspect below to see real plaintext — establishing this identity is currently " +
+    "readable. Once shredded, the same Reveal button answers permanently unreadable instead."));
+
+  const list = el("div", "shred-aspects");
+  sensitive.forEach(({ aspect, data }) => {
+    const aspectRow = el("div", "shred-aspect-row");
+    aspectRow.appendChild(el("span", "shred-aspect-name", aspect.localName));
+    const body = el("div", "shred-aspect-body");
+    aspectRow.appendChild(body);
+    renderSealedBody(body, aspect.key, data);
+    list.appendChild(aspectRow);
+  });
+  box.appendChild(list);
+
+  const banner = el("div", "shred-status-banner" + (row && row.shredded ? " shredded" : ""));
+  if (shredStatusError) {
+    // A failed status read is an unknown, not a "not yet shredded" negative
+    // — say so rather than implying a false-clean state. ShredIdentityKey is
+    // an unconditioned update (privacy-base design), so offering the action
+    // regardless is safe: re-submitting an already-shredded identity is a
+    // no-op assertion, not a double-destroy.
+    banner.appendChild(el("div", "error-text small",
+      "could not determine this identity's shred status: " + shredStatusError));
+  }
+  if (row && row.shredded) {
+    banner.appendChild(el("div", null, "🔒 this identity's key has been shredded."));
+    banner.appendChild(shredChecklistEl(row));
+  } else {
+    banner.appendChild(el("p", "muted small",
+      "This permanently destroys the encryption key for this identity. Its PII becomes unrecoverable " +
+      "everywhere — live, history, and every projection. This cannot be undone."));
+    const shredBtn = el("button", "danger-btn", "Shred this identity's key");
+    shredBtn.addEventListener("click", () => openShredModal(identityKey));
+    banner.appendChild(shredBtn);
+  }
+  box.appendChild(banner);
+
+  box.appendChild(el("div", "muted small shred-bounds",
+    "This shreds sensitive aspects. PII in uploaded documents (object store) is a separate follow-on " +
+    "(crypto-shred for object-store blobs) — not erased by this action."));
+}
+
+// shredChecklistEl is the cross-plane confirmation — the teaching device
+// (why this works on an immutable ledger: destroying the key kills the
+// ciphertext in history too) — plus the async finalization line shared by
+// the initial render and every poll tick.
+function shredChecklistEl(row) {
+  const checklist = el("div", "shred-checklist");
+  checklist.appendChild(el("div", "ok", "✓ live Core KV — ciphertext unreadable (DEK destroyed)"));
+  checklist.appendChild(el("div", "ok", "✓ JetStream history — every prior value is the same dead ciphertext"));
+  checklist.appendChild(el("div", "ok", "✓ projections — Secure-Lens rows scrubbed to null; plain-lens rows hold only dead ciphertext"));
+  checklist.appendChild(el("div", null, "shred finalization: " + shredFinalizationLine(row)));
+  return checklist;
+}
+
+// SHRED_POLL_MAX_TICKS bounds scheduleShredPoll's recursive setTimeout chain
+// (2s/tick) to ~5 minutes — long enough for the vault/refractor async
+// finalization listeners to normally catch up, short enough that a stuck
+// finalization (a wedged privacy-worker, an unreachable Vault backend) stops
+// silently polling forever on an operator's idle tab instead of running
+// until the tab closes.
+const SHRED_POLL_MAX_TICKS = 150;
+
+// scheduleShredPoll re-polls GET /api/vault/shreds every 2s while this
+// identity's finalization is still in flight, repainting only the status
+// banner (not the sensitive-aspect rows, so an open Reveal isn't clobbered).
+// pollSeq invalidates a poll that outlives navigation away from this view —
+// stopShredPoll bumps it, so a stale fetch's .then is a silent no-op.
+function scheduleShredPoll(identityKey, tick) {
+  const seq = shredProof.pollSeq;
+  const n = tick || 0;
+  shredProof.pollTimer = setTimeout(async () => {
+    if (seq !== shredProof.pollSeq || shredProof.center !== identityKey) return;
+    const body = await api("/api/vault/shreds");
+    if (seq !== shredProof.pollSeq || shredProof.center !== identityKey) return;
+    const row = !body.error && (body.shreds || []).find((r) => r.identityKey === identityKey);
+    const banner = $("#graph-shred-body .shred-status-banner");
+    const finalized = row && row.shredded && row.vaultKeyDestroyed && row.projectionsNullified;
+    if (row && row.shredded && banner) {
+      banner.classList.add("shredded");
+      banner.innerHTML = "";
+      banner.appendChild(el("div", null, "🔒 this identity's key has been shredded."));
+      banner.appendChild(shredChecklistEl(row));
+    }
+    if (finalized) return;
+    if (n + 1 >= SHRED_POLL_MAX_TICKS) {
+      if (banner) {
+        banner.appendChild(el("div", "muted small",
+          "finalization is taking longer than " + Math.round(SHRED_POLL_MAX_TICKS * 2 / 60) +
+          " minute(s) — reload this view to keep watching."));
+      }
+      return;
+    }
+    scheduleShredPoll(identityKey, n + 1);
+  }, 2000);
+}
+
+// openShredModal is the typed-confirm destructive flow (mirrors lens.js's
+// openDeleteModal): the token is the identity's short id, exact match only.
+// ShredIdentityKey is an urgent-lane op (privacy-base design §2.2) submitted
+// via the existing /api/op surface — no new privileged endpoint.
+function openShredModal(identityKey) {
+  closeShredModal();
+  const token = shortId(identityKey);
+  let inFlight = false;
+  const overlay = el("div", "modal-overlay");
+  const modal = el("div", "modal");
+  modal.appendChild(el("h3", null, "Shred identity key"));
+  modal.appendChild(el("p", "muted",
+    "This permanently destroys the encryption key for " + identityKey + ". Its PII becomes unrecoverable " +
+    "everywhere — live, history, and every projection. This cannot be undone. Type the identity id to confirm:"));
+  modal.appendChild(el("div", "cid", token));
+  const input = el("input");
+  input.type = "text";
+  input.placeholder = token;
+  modal.appendChild(input);
+  const actions = el("div", "modal-actions");
+  const cancel = el("button", null, "Cancel");
+  const confirm = el("button", "danger-btn", "Shred");
+  confirm.disabled = true;
+  actions.appendChild(cancel);
+  actions.appendChild(confirm);
+  modal.appendChild(actions);
+  const msg = el("div", "small");
+  modal.appendChild(msg);
+  overlay.appendChild(modal);
+  document.body.appendChild(overlay);
+  input.focus();
+
+  const close = () => {
+    document.removeEventListener("keydown", onKey);
+    overlay.remove();
+    if (shredProof.modal && shredProof.modal.el === overlay) shredProof.modal = null;
+  };
+  const onKey = (e) => {
+    if (e.key === "Escape" && !inFlight) { close(); return; }
+    if (e.key === "Tab") {
+      const focusables = [input, cancel, confirm].filter((f) => !f.disabled);
+      if (!focusables.length) { e.preventDefault(); return; }
+      const i = focusables.indexOf(document.activeElement);
+      let next = i + (e.shiftKey ? -1 : 1);
+      if (i === -1) next = 0;
+      if (next < 0) next = focusables.length - 1;
+      if (next >= focusables.length) next = 0;
+      focusables[next].focus();
+      e.preventDefault();
+    }
+  };
+  document.addEventListener("keydown", onKey);
+  shredProof.modal = { el: overlay, close };
+
+  cancel.addEventListener("click", () => { if (!inFlight) close(); });
+  overlay.addEventListener("click", (e) => { if (e.target === overlay && !inFlight) close(); });
+  input.addEventListener("input", () => {
+    confirm.disabled = !deleteConfirmReady(input.value, token);
+  });
+  confirm.addEventListener("click", async () => {
+    inFlight = true;
+    confirm.disabled = true;
+    cancel.disabled = true;
+    input.disabled = true;
+    msg.className = "muted small";
+    msg.textContent = "submitting…";
+    const body = await api("/api/op", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operationType: "ShredIdentityKey",
+        lane: "urgent",
+        payload: { identityKey },
+        reads: [identityKey],
+      }),
+    });
+    inFlight = false;
+    if (body.error) {
+      msg.className = "error-text small";
+      msg.textContent = "shred failed: " + body.error;
+      cancel.disabled = false;
+      input.disabled = false;
+      return;
+    }
+    close();
+    toast("shred submitted for " + token);
+    if (shredProof.center === identityKey) showShredProof(identityKey);
+  });
+}
+
+// ---------------------------------------------------------------------------
 
 function applyFilters() {
   const target = listHash({
@@ -799,6 +1079,18 @@ function init() {
   $("#hood-list-btn").addEventListener("click", () => {
     navigate(hood.center ? "#/graph/" + hood.center : "#/graph");
   });
+  $("#shred-detail-btn").addEventListener("click", () => {
+    navigate(shredProof.center ? "#/graph/" + shredProof.center : "#/graph");
+  });
 }
 
-export { init, enter };
+// leave stops any live shred-finalization poll and closes an open typed-
+// confirm modal when the operator navigates to a different top-level view
+// (main.js calls this on view switch — see shell dispatch). Switching
+// between #/graph sub-views (list/hood/shred) is handled inline by each
+// show*() already, since that never leaves the graph view module.
+function leave() {
+  stopShredPoll();
+}
+
+export { init, enter, leave };
