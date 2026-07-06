@@ -19,7 +19,16 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 |---|---|---|---|---|---|---|
 | **Browser-direct writes through the Gateway** | The app FE submits writes to the Gateway (`:8080/v1/operations`) with the user's Bearer token instead of `POST /api/op` (which stamps `bootstrap` root); reads stay on the app. The write half of the per-user auth the read path already does — needed to prove real scoped write-auth. | LoftSpace→Clinic | FE | ★★ | M | 🚧 blocked-on: real-actor-write-auth-e2e Phase 1 (Lattice) · [design](../../implementation-artifacts/real-actor-write-auth-e2e-design.md) |
 | **Consumer-scope op grant (real allow/deny)** | Grant ≥1 op to `consumer` (e.g. `CreateLeaseApplication`) with an applicant-self Starlark guard, so a real consumer has a scoped allow alongside a staff-only deny — the substance the capability-auth e2e proves. Today every op is `operator`-only. | LoftSpace | pkg | ★★ | S | 🚧 blocked-on: real-actor-write-auth-e2e Phase 1 (Lattice) · [design](../../implementation-artifacts/real-actor-write-auth-e2e-design.md) |
-| **Café + Wellness mixed-use verticals (new)** | Two new vertical apps proving package composition on a shared identity: **Café** (ledger-backed house tabs) and **Wellness** (class scheduling + booking). Each = a package + thin FE, independently shippable, no platform blocker (ledger + slot-claim patterns already in the portfolio). Driver: back the mixed-use composition demo with real packages, not stubs. | Café/Wellness | pkg + FE | ★★ | L | 📋 ready (build one at a time; Café first) |
+| **Café vertical** (house tabs) | `cafe-domain` (café location + OpenTab/Charge/Settle) on a `cafe-ledger` mirror of loftspace/clinic-ledger (`cafeaccount heldFor` the resident leaseapp; own `cafeaccount`/`cafetransaction` types) + thin café FE (POS→tab · front-desk open-tabs · resident house-tab). **One-bill** payoff: a combined-statement lens unions `ledgerHistory`+`cafeHistory` by `leaseAppKey` so café charges land on the lease statement. | Café | pkg + FE | ★★★ | M | 📋 ready (build first) |
+| **Wellness vertical** (classes) | `wellness-domain` (studio + class/session + booking) reusing clinic-domain's generic slot-claim guard (`slot_cells`/`claim_cell`; only hub + aspect names change) + thin FE (schedule grid · roster · my-classes). **Resident-rate** payoff: CreateBooking reads the booker's live lease (`contextHint.reads`; verify `heldBy` the booker → no over-grant) then applies the member rate + writes `booking residentRate lease`. | Wellness | pkg + FE | ★★ | L | 📋 ready (after Café) |
+| **Mixed-use composition surfaces** | The "more than the sum" beats across lenses the one-liner omitted: **front-desk** unified resident context (lease + visit + open tab + booked class in one lookup, surfaced before asked) and **operations** portfolio-pulse aggregate (occupancy + service-attach-rate across packages) — views that exist only because the packages share one graph. Aggregate lenses + FE across both apps + Loupe. | Café/Wellness | FE + pkg | ★★★ | M | 📋 ready (after Café+Wellness) |
+| **Care→Wellness referral** | Post-visit, the clinic worklist offers a bookable wellness class (the clinic+wellness emergence — shared scheduling shape); a clinic→wellness handoff that opens a booking from the appointment context. | Clinic/Wellness | pkg + FE | ★ | S | 📋 ready (after Wellness) |
+
+**Spec** = the go-live composition demo (public-presence site, `localhost:7900/#demo`) — four lenses × package
+toggles. PO ruling: all composition is **package-level, no Lattice block** (ledger `heldFor` anchor · generic
+`claim_cell` · `contextHint.reads` — precedent: `DebitAccount`→clause; file:line grounding in the commit).
+Build against the real key shapes, not the demo's: keys are **NanoIDs** (Contract #1) and the account→lease
+relation is `heldFor` (the demo's `ACC88`/`BK7`/`L204` + `billedWith` are cosmetic).
 
 ## PO notes (dated — drives rotation)
 
@@ -29,6 +38,7 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic, staggered from 
 - **Rotation to date:** LoftSpace ×11, Clinic ×8 (last: LoftSpace 2026-07-04, drove the full apply→sign→approve flow live end-to-end; filed a My-Applications SELECT-omission bug).
 - **Method:** reuse the already-up shared stack (detect NATS :4222 / app :7788/:7799), drive the real flow via `/api/op` + the lens projections as the product owner, file scored items. Both apps exist + are exercisable live (`:7788` / `:7799`).
 - **Live-stack note:** a stale bootstrap JSON vs. a recreated Core KV was a recurring dev-loop trap (2026-07-03, 2026-07-04) that silently emptied reads; `make up` now self-heals it (`109f59a`, 2026-07-05) — re-verify empty-read reports as a real product bug first.
+- **2026-07-06:** Enriched Café+Wellness → 4 grounded, sequenced rows (Café first) + verified no platform block; spec = the go-live composition demo.
 - **Next:** Clinic.
 
 ## Done log — verticals (newest first)
