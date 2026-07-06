@@ -1,8 +1,16 @@
 # Lifting Loupe — real operator auth for the console (design)
 
-**Status:** 📐 **awaiting-Andrew (ratification)** · Designer fire (Winston, 2026-07-06) · Loupe (Stream 3) +
+**Status:** ✅ **Andrew-ratified (2026-07-06).** Designer fire (Winston, 2026-07-06) · Loupe (Stream 3) +
 Lattice lanes · **depends on** `real-actor-write-auth-e2e-design.md` Phase 1 (shared Fake IdP +
 `up-full-capability`) · **reconciles with** `control-plane-capability-authz-design.md` (✅ CLOSED)
+
+> **Ratification (Andrew, 2026-07-06): B then C — both built, C not deferred.** The operator-privilege
+> fork (§4) resolves to **build B first** (the scoped `consoleOperator` role; pkg-lifecycle stays a
+> distinct root-admin path *in the interim*), **then build C** (per-role scoped privileged-lane grants —
+> the real fix that retires the class-blind all-or-nothing operator-root and lets `consoleOperator` do
+> pkg-install without full root). C is a committed Lattice-lane build sequenced after B, **not** a flagged
+> follow-on. C's own design: **[scoped-privileged-lane-grants-design.md](scoped-privileged-lane-grants-design.md)**.
+> Option A (operators = root) is rejected as analyzed.
 
 ---
 

@@ -1,7 +1,8 @@
 # Real-actor write-auth end-to-end — proving scoped capability auth through the Gateway (design)
 
-**Status:** 📐 **awaiting-Andrew (ratification)** · Designer fire (Winston, 2026-07-06) · Lattice + Verticals
-lanes (Security & trust boundary / auth-plane hardening)
+**Status:** ✅ **Andrew-ratified (2026-07-06).** Designer fire (Winston, 2026-07-06) · Lattice + Verticals
+lanes (Security & trust boundary / auth-plane hardening). Browser-direct topology + prove-it-first
+(stub stays the `up-full` default until the capability proving lane is green) — both ratified.
 
 > Andrew steered this live on 2026-07-06 and pre-decided its two forks (recorded in "For Andrew"). This
 > doc writes up the shape for his ratification and **un-shelves**
