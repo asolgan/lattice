@@ -66,6 +66,21 @@
 > (or an attended session cycling `bin/refractor`+`bin/chronicler` against the live stack), confirm
 > `health.chronicler.<instance>` appears green and `loomFlowHistory` rows keep updating with no
 > `"cypherRule required"` errors in `refractor.log`.
+>
+> **✅ CHECKPOINT (2026-07-06) — live cutover complete, item CLOSED.** Attended session: rebuilt
+> `bin/refractor`/`bin/chronicler` from `512ce42`, cycled `refractor` (clean restart, zero
+> `"cypherRule required"` occurrences), started `chronicler` for the first time. First start failed
+> transport auth (`nats: Authorization Violation`) — the live `lattice-nats` container's bind-mounted
+> `deploy/nats-server.conf` had torn on a prior host-side rewrite (Docker Desktop file-sharing
+> consistency, not a content bug: `docker exec lattice-nats wc -l` showed 160 lines mid-token vs. the
+> host's complete 178); a `SIGHUP` reload hit the same torn view, so `docker compose restart nats` (same
+> container, no recreate) was needed to force a fresh mount read — JetStream state survived intact (623
+> core-kv messages, all streams/consumers restored) and every other component's substrate client
+> auto-reconnected with no manual intervention. Verified: `health.chronicler.<instance>` reports
+> `status: healthy`, `activeDefinitions: 1` (`loomFlowHistory`); `orchestration-history`'s backing stream
+> was already at 0 messages pre-cutover (no live Loom traffic since before Increment 2, not a
+> regression) so "rows keep updating" wasn't exercised end-to-end this session — the wiring (subscribe +
+> definition load) is confirmed correct and will materialize on the next real `events.loom.>` event.
 
 > ## RATIFICATION REWORK (2026-07-02) — supersedes the Fork-A/B framing below
 >
