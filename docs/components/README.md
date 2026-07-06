@@ -34,6 +34,10 @@ choices live HERE. Per-package capability definitions live under
   cursor.
 - [Weaver](./weaver.md) — the convergence engine: targets-as-Lenses, the 3-lane
   work stream, and triggerLoom / assignTask / directOp remediation.
+- [Augur](./augur.md) — the Weaver's AI-assisted reasoning tier (L3): escalates an
+  unplannable gap to a model, records the answer as a validated, human-reviewable proposal, and
+  dispatches an approved proposal back through the Weaver's remediation path (the Processor stays
+  the sole writer).
 - [Bridge](./bridge.md) — the external-I/O egress: a durable `events.external.>`
   consumer, the adapter registry, and idempotent result-op submission.
 - [The Chronicler](./chronicler.md) — the event-ledger materializer: tails platform event / ledger
@@ -99,7 +103,8 @@ between page and code is treated as a documentation bug.
 | Loupe — operator view-and-control console (trusted single-identity, loopback, no auth) | ✅ Built (Phase 3) |
 | Gateway — JWT auth, `Lattice-Actor` stamping | ✅ Built (Phase 3) — write-path (Fires 1+2: JWT verify + actor stamping + live JWKS); read-path enforcement in progress |
 | Vault, Privacy-worker — per-identity keys, crypto-shredding | ✅ Built (Phase 3) — encrypt-on-write/decrypt-on-read + `ShredIdentityKey`; per-vertical fires ongoing |
-| The Chronicler — event-ledger materializer (durable orchestration history) | ✅ Ratified (Fork C) — PROJECT mode + `loomFlowHistory` shipped, host extraction to `cmd/chronicler` pending |
+| The Chronicler — event-ledger materializer (durable orchestration history) | ✅ Built (Phase 2, Fork C) — PROJECT mode + `loomFlowHistory` + standalone `cmd/chronicler` host extraction complete |
+| The Augur — the Weaver's L3 AI-assisted reasoning tier | ✅ Built (Phase 3) — escalate → propose → validate → human-gate → dispatch; the `autoApply` autonomy dial designed + Andrew-gated |
 
 Each page's own *Implementation status* / *What's deferred* section is the
 authoritative, fine-grained record for that component.

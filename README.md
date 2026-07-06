@@ -205,9 +205,12 @@ Lattice is a small set of cooperating components, each with a living reference p
 | [Capability Packages](docs/components/_packages.md) | Installable bundles (identity, RBAC, domain logic) added through the `InstallPackage` kernel op — the kernel stays minimal |
 | [Loom](docs/components/loom.md) | The procedure engine — deterministic, idempotent, linear flows (the "executive") |
 | [Weaver](docs/components/weaver.md) | The convergence engine — drives a declared target state toward convergence (the "visionary") |
+| [Augur](docs/components/augur.md) | The Weaver's AI-assisted reasoning tier — escalates a gap the deterministic planner can't solve to a model, records the answer as a validated, human-reviewed proposal, then dispatches it back through the Weaver (the Processor stays the sole writer) |
 | [Bridge](docs/components/bridge.md) | The external-I/O egress — the one component that makes outbound calls to external systems, idempotently, via a durable `events.external.>` consumer and a pluggable adapter registry |
+| [The Chronicler](docs/components/chronicler.md) | The event-ledger materializer — tails the platform's event and intent-ledger streams into append-only history read models: the durable audit counterpart to Refractor's present-state projections (a separate binary by charter) |
 | [Object-store-manager](docs/components/object-store-manager.md) | The byte-janitor of the off-graph blob plane — reclaims object-store bytes when their vertex is tombstoned or crash-orphaned, and cascades owner-tombstones to detach dangling object links |
 | [Gateway](docs/components/gateway.md) | The edge trust boundary — verifies an external actor's IdP-signed JWT, stamps the verified identity onto every operation, and bounds each actor's read view to the sub-graph its ReBAC links permit, closing actor impersonation at the edge |
+| [Vault](docs/components/vault.md) | Per-identity key custody and crypto-shredding — encrypt-on-write / decrypt-on-read for sensitive aspects, and the irreversible `ShredKey` "right to be forgotten" primitive; a library embedded in the Processor and Refractor, with an async privacy-worker |
 | [Loupe](docs/components/loupe.md) | The internal operator console — browse Core KV, drive the engines' control planes, submit DDL-driven ops, install packages, upload blobs; a trusted single-identity, loopback-bound inspector (the one app allowed to read Core KV directly) |
 
 The exact wire shapes, key patterns, and behavioral rules are pinned in the data contracts under
@@ -217,9 +220,6 @@ The exact wire shapes, key patterns, and behavioral rules are pinned in the data
 
 The same primitives extend outward into the rest of the Lattice vision:
 
-- **Vault & crypto-shredding** — sensitive aspects are encrypted with per-identity keys, so the
-  "right to be forgotten" is *physical*: destroy the key and that identity's data — even in the
-  immutable ledger — becomes permanent, unrecoverable gibberish.
 - **Semantic Contracts ("Executable Paper")** — legal prose modeled as atomic **clause vertices**
   linked directly to the state they govern. The Weaver enforces each clause continuously, turning
   a contract into a live billing-and-compliance engine with a perfect chain of custody from the
@@ -245,7 +245,7 @@ This is the one place that distinguishes what's built from what's designed.
 | **Phase 1** | Trustworthy core: substrate, Processor write path, Refractor lens projections, identity/RBAC packages, Capability-Lens authorization, the Hello Lattice reference slice | ✅ Implemented + tested (CI-gated) |
 | **Phase 1.5** | Hardening: kernel minimization, package installs routed through the Processor, contract conformance suite, transactional event outbox | ✅ Complete |
 | **Phase 2** | Orchestration: Loom (procedures) + Weaver (convergence) + the external-I/O bridge + the Loftspace lease-application reference vertical | ✅ Complete (CI-gated) |
-| **Phase 3** | Now driven by the autonomous **agentic flywheel** (see *Built by AI agents*). **Building now:** the experience layer — Loupe operator surfaces + vertical-app front-ends (LoftSpace + Clinic) — plus the **Gateway** (`cmd/gateway`), whose write-path JWT-verify-and-stamp translator has shipped; its read-path enforcement is in progress. **Designed, fork-gated** — the *same* flywheel builds these as their architectural forks are ratified by Andrew: Vault (PII crypto-shredding), AI-authored capabilities, Semantic Contracts, Edge Lattice + Personal Lenses, multi-cell sharding | 🏗️ In progress |
+| **Phase 3** | Now driven by the autonomous **agentic flywheel** (see *Built by AI agents*). **Shipped:** the experience layer — the Loupe operator console + the LoftSpace and Clinic vertical front-ends — the **Gateway** trust boundary (`cmd/gateway`: write-path JWT-verify-and-stamp plus the RLS-enforced read-path front), **Vault** crypto-shredding, the **Chronicler** durable-history materializer (`cmd/chronicler`), and the **Augur** propose → review → dispatch reasoning loop (its `autoApply` autonomy dial designed + Andrew-gated). Real-actor end-to-end write-auth and human operator login are the auth surfaces still landing. **Designed and deferred** — built as each architectural fork is ratified: Semantic Contracts, Edge Lattice + Personal Lenses, and multi-cell sharding. | 🏗️ Continuous |
 
 ---
 
