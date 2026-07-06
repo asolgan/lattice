@@ -43,10 +43,29 @@
 > Also deferred: every OTHER component's pre-existing broad `$JS.API.>` grant (Refractor, Processor, Loom,
 > Weaver, …) still isn't denied `orchestration-history`'s stream-admin verbs — the same
 > `natsperm-matrix-hygiene`-tracked debt already accepted for `weaver-targets`/`token-revocation`, now
-> extended to cover this bucket too, not newly introduced here. **Next: Increment 2** — remove
-> `internal/refractor/eventlens` + `internal/refractor/lens/eventsource.go` + the `eventStream` branch/
-> `LensSpec.Source` field from Refractor, wire `cmd/chronicler` into the Makefile's orchestration tier
-> (`up-full`), and verify the cutover end-to-end against the shared dev stack.
+> extended to cover this bucket too, not newly introduced here.
+>
+> **🏗️ CHECKPOINT (2026-07-06) — Increment 2 shipped (`512ce42`), live cutover restart still pending.**
+> Removed `internal/refractor/eventlens` + `internal/refractor/lens/eventsource.go` + the `eventStream`
+> branch/`LensSpec.Source`/`Rule.Source` fields from Refractor (`translateEventStreamSpec`,
+> `startEventStreamPipeline`, and the hot-reload eventStream special-case in `cmd/refractor/main.go` all
+> removed); wired `cmd/chronicler` into `make orchestration` (alongside Loom/Weaver/Bridge/
+> object-store-manager) with a new `NKEY_CHRONICLER` var. 3-layer adversarial reviewed; both the Blind
+> Hunter and Edge Case Hunter independently converged on the same real gap — Refractor's `CoreKVSource`
+> still watches every `vtx.meta.>` `meta.lens` vertex (including the already-installed `loomFlowHistory`
+> eventStream spec `packages/orchestration-base/lenses.go` ships), and with the `Source` field gone would
+> fall through to `translateSpec`'s cypher path and permanently log `"cypherRule required"` on every
+> restart/replay — fixed forward with a cheap `isEventStreamSpec` pre-check (mirrors
+> `internal/chronicler`'s own inverse pre-check) that skips it silently instead; pinned with
+> `TestCoreKVSource_SkipsEventStreamSpec`. **Not yet done:** the live shared dev stack's `refractor`
+> process is still running the OLD binary (still actively projecting `loomFlowHistory` via its own
+> `eventlens`) — restarting it (+ starting `chronicler` for the first time) was deferred: the sandbox's
+> shared-workload guardrail blocked an unattended fire from cycling another stream's shared-stack process
+> outside `make`'s self-detecting targets, and starting `chronicler` alone first would reopen exactly the
+> dual-write hazard Increment 1 avoided. **Next: the live cutover** — on a future `make down && make up-full`
+> (or an attended session cycling `bin/refractor`+`bin/chronicler` against the live stack), confirm
+> `health.chronicler.<instance>` appears green and `loomFlowHistory` rows keep updating with no
+> `"cypherRule required"` errors in `refractor.log`.
 
 > ## RATIFICATION REWORK (2026-07-02) — supersedes the Fork-A/B framing below
 >
