@@ -10,6 +10,7 @@ import {
   adaptiveRadius, ringPositions, sectorPositions,
   groupLinkItems, evictForBudget, hoodSentence,
 } from "../logic/hood.js";
+import { isSealedAspect, sealedSummary } from "../logic/sensitive.js";
 import { renderDoc, keyLinkEl } from "../render.js";
 import { navigate } from "../router.js";
 
@@ -348,6 +349,64 @@ function isOpTracker(key) {
   return key.indexOf("vtx.op.") === 0 && classifyKey(key) === "vertex";
 }
 
+// renderSealedBody paints a sensitive aspect's default sealed state — the
+// "encrypted at rest" line, a Reveal button, and the raw ciphertext envelope
+// collapsed underneath (it's not secret, just unreadable). Reveal calls the
+// audited POST /api/vault/decrypt proxy; a shredded identity's key renders
+// "permanently unreadable" instead of plaintext (F12 §3.2/§3.3 — the
+// crypto-shred guarantee, visible right here). aspectKey is re-passed to a
+// "hide" affordance so re-sealing never needs a second fetch of the (still
+// unreadable) ciphertext.
+function renderSealedBody(bodyEl, aspectKey, ctData) {
+  bodyEl.innerHTML = "";
+  const line = el("div", "sealed-line");
+  line.appendChild(el("span", "badge sealed", "🔒 sensitive"));
+  line.appendChild(el("span", "sealed-summary", sealedSummary(ctData)));
+  const revealBtn = el("button", "sealed-reveal", "Reveal");
+  line.appendChild(revealBtn);
+  bodyEl.appendChild(line);
+
+  const raw = el("details", "sealed-raw");
+  raw.appendChild(el("summary", null, "raw envelope (ciphertext — unreadable)"));
+  raw.appendChild(renderDoc(ctData));
+  bodyEl.appendChild(raw);
+
+  revealBtn.addEventListener("click", async () => {
+    revealBtn.disabled = true;
+    revealBtn.textContent = "revealing…";
+    const res = await api("/api/vault/decrypt", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ aspectKey }),
+    });
+    // The operator may have navigated to a different vertex while the
+    // decrypt RPC was in flight — loadVertexDetail tears down the whole
+    // aspects section on selection change, so this row's bodyEl is no longer
+    // attached to the document. Don't paint plaintext into a detached row.
+    if (!bodyEl.isConnected) return;
+    if (res.error) {
+      revealBtn.disabled = false;
+      revealBtn.textContent = "Reveal";
+      line.appendChild(el("span", "error-text small", res.error));
+      return;
+    }
+    if (res.shredded) {
+      bodyEl.innerHTML = "";
+      bodyEl.appendChild(el("div", "sealed-shredded", "🔒 permanently unreadable — key shredded (ShredIdentityKey)"));
+      return;
+    }
+    bodyEl.innerHTML = "";
+    const revealedLine = el("div", "revealed-line");
+    revealedLine.appendChild(el("span", "badge revealed", "⚠ revealed"));
+    revealedLine.appendChild(el("span", "muted small", "this reveal is audited"));
+    const hideBtn = el("button", "sealed-hide", "hide");
+    revealedLine.appendChild(hideBtn);
+    bodyEl.appendChild(revealedLine);
+    bodyEl.appendChild(renderDoc(res.plaintext));
+    hideBtn.addEventListener("click", () => renderSealedBody(bodyEl, aspectKey, ctData));
+  });
+}
+
 // expanderRow renders a collapsed row that lazy-loads the entry's document via
 // /api/corekv/entry on toggle (rendered linkified). When farKey is given (a
 // link row), the row label's click navigates to the far-end vertex and a
@@ -379,7 +438,12 @@ function expanderRow(label, badge, key, farKey) {
         keyLine.appendChild(keyLinkEl(key));
         bodyEl.appendChild(keyLine);
       }
-      bodyEl.appendChild(renderDoc(e.envelope === null || e.envelope === undefined ? undefined : e.envelope));
+      const data = e.envelope && typeof e.envelope === "object" ? e.envelope.data : undefined;
+      if (badge === "aspect" && isSealedAspect(data)) {
+        renderSealedBody(bodyEl, key, data);
+      } else {
+        bodyEl.appendChild(renderDoc(e.envelope === null || e.envelope === undefined ? undefined : e.envelope));
+      }
     }
   };
 
