@@ -301,6 +301,14 @@ optionalReads/annotations — the lint's debt list is the worklist; flip the lin
 exit 0 (0 issues, 55 advisory read-posture warnings = the intended debt list); board lint clean.
 `golangci-lint` could NOT run in the remote container (its binary is built on Go 1.25, the repo
 targets 1.26.1 — accepted environment limitation): **CI's golangci-lint is the authority** for that
-gate on this branch. Review: adversarial self-review, three lenses (acceptance vs Fire 1–2 scope /
-blind bug-hunt on crash-idempotency-ordering incl. an independent subagent pass over the full diff /
-validation + error-path edges); findings and dispositions recorded in the merge-request commit trail.
+gate on this branch. Review: adversarial self-review, three lenses (acceptance vs Fire 1–2 scope;
+blind bug-hunt over the full diff on crash/idempotency/ordering; validation + error-path edges).
+Outcome: **no BUG-severity findings.** Fixed: the lint hook mislabeled advisory read-posture warnings
+as CI-blocking (`27b4145`). Dismissed with grounds: (a) `materializedAbsentKeys` counting a
+coincidentally-existing key — impossible, a create on that key in the batch means the CreateOnly
+genuinely conflicted, and retry is safe regardless (full re-derivation, bounded by
+MaxCommitAttempts); (b) tombstoned-key false-materialization — Conn.KVGet returns not-found for
+deleted keys; (c) Weaver's double `deriveStableTaskID` derivation drifting — deterministic fn,
+equality pinned by test; (d) old-binary/new-record skew on the Loom outbox optionalReads field —
+degrades to the lazy-read fallback, benign; (e) lint annotation-leak between adjacent calls within
+the 8-line window — advisory-only surface, closest-annotation-wins mitigates.
