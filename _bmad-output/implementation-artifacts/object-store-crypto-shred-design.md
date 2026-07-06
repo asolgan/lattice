@@ -418,6 +418,22 @@ this design needs §3.10's per-identity DEK + the `internal/vault` SPI. Build or
 > permanently undecryptable — falls out of Fire 1's DEK-wrapping with no new code, so this fire is the
 > proof).
 
+> **🏗️ CHECKPOINT (2026-07-06).** Fire 3 shipped `5e83939` (main, no worktree left open — merged
+> fast-forward). Built: `cmd/loupe/objects_crypto_e2e_test.go` — a `sensitiveObjectFixture` (embedded
+> JetStream Core-KV + `core-objects` Object Store + a live in-process Vault listener) exercises the
+> **real** `GET /api/objects/<oid>[?decrypt=true]` handlers end to end, seeding post-upload state
+> directly (upload itself still needs a Processor fake, deferred to Fire 4 per the Fire 2 checkpoint).
+> Proves: default reads stay ciphertext-only; `?decrypt=true` round-trips to the exact plaintext;
+> `ShredIdentityKey` makes the opt-in decrypt path fail permanently while the default path's bytes stay
+> the same inert ciphertext before and after the shred (no blob-specific shred logic — it falls out of
+> Fire 1's DEK-wrapping); and the §4.2 B-default multi-party shape — two identities holding
+> byte-identical content each get an independently salted oid/envelope, so shredding one party's DEK
+> never touches the other's copy. No production code changed. Lead-reviewed (test-only, no new attack
+> surface); gates green (`go build`, `make vet`, `golangci-lint run ./...` 0 issues, `lint-conventions`,
+> `go test ./cmd/loupe/...`). **Next: Fire 4** (a real vertical consumer — flip one genuine PII blob to
+> `sensitive`, e.g. the LoftSpace lease-signing PDF or a Clinic ID scan — the demand proof; Verticals- or
+> Lattice-stream territory, either steward can pick it up).
+
 ---
 
 ## 9. Open ratification items (for Andrew)
