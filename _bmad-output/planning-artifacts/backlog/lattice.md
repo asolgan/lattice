@@ -159,7 +159,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | AI-authored capabilities | A Lattice-aware agent proposes DDL/Starlark/lenses/workflows through human review + deterministic validation + rollback. | ★★–★★★ | L | 🏗️ building · [design](../../implementation-artifacts/ai-authored-capabilities-design.md) · Fire 3 CLOSED; next: Fire 4 (Starlark) 📐 awaiting-Andrew sign-off on AI-code-execution — sandbox builds WITH it, not before · Loupe UI is Stream 3's lane |
 | **The Augur** (AI reasoning tier — L3 evaluator) | Weaver's AI-assisted reasoning tier for ambiguous/novel convergence gaps. The marquee AI-native feature. | ★★ | M–L | ✅ Fires 1+2a+2b shipped (loop closes: escalate→review→dispatch) · [design](../../implementation-artifacts/augur-design.md) + [dispatch design](../../implementation-artifacts/augur-dispatch-pickup-design.md) · 🚧 Fire 3 autoApply Andrew-gated; follow-up: mid-flight-kill + drift-invalid e2e (§6 residual) |
 | Starlark guards (Loom) | The reserved `{reads, starlark}` guard escape hatch needs a verified-pure sandbox. | ★ | M | ✅ ratified (split) · [design](../../implementation-artifacts/loom-starlark-guards-design.md) · 🚧 Loom-side held (ships with first consumer) |
-| **Weaver planner mandate (dispatcher → solver)** | Remediation stops being a static gap→action lookup: deterministic planner (per-gap candidate selection, then goal-regression synthesis over op-declared effects) with contraction/oscillation diagnostics and admission control; shadow mode + per-target cutover; the Augur stays the AI boundary. | ★★★ | XL | 🏗️ building · [design](../../implementation-artifacts/weaver-planner-mandate-design.md) · next: [renewal](../../implementation-artifacts/loftspace-lease-renewal-goal-authored-target-design.md) R3 FE |
+| **Weaver planner mandate (dispatcher → solver)** | Remediation stops being a static gap→action lookup: deterministic planner (per-gap candidate selection, then goal-regression synthesis over op-declared effects) with contraction/oscillation diagnostics and admission control; shadow mode + per-target cutover; the Augur stays the AI boundary. | ★★★ | XL | 🏗️ building · [design](../../implementation-artifacts/weaver-planner-mandate-design.md) · [renewal](../../implementation-artifacts/loftspace-lease-renewal-goal-authored-target-design.md) CLOSED · next: Fire 9 |
 
 ### Read-model / projection maturity
 | Item | What it is | Imp | Size | State |
@@ -193,6 +193,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-06 · `7f34136` · [LoftSpace/Weaver planner] Lease-renewal R3 CLOSED — `renewalsRead` dual-anchor lens + tenant/landlord Renewal cards + task CTAs; 3-layer reviewed, fixed forward (co-manager read-access gap, numeric coercion)
 - 2026-07-06 · `286fd98` · [Chronicler/docs] component doc page + Fork-C re-ratification (own `health.chronicler.<instance>` heartbeat, Loupe node already expects it); eventlens→`cmd/chronicler` extraction is the ratified pending build
 - 2026-07-06 · `a865692` · [Refractor/docs] arch-review 2026-07-06 re-review filed + doc/marker truth-up (failure-tiers now-built sections, refractor.md 17-pkgs/step8-9/health-key, vendors ANTLR row, classify/rls stale markers)
 - 2026-07-06 · `8fa743c` · [Contract #3] §3.5/§3.4/§3.8 amended to as-built — referential integrity is script + Weaver's job (no step-6 dangling-ref pass); event schemas package-owned (no step-7 event-DDL check); arch item 5
@@ -218,14 +219,4 @@ One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archiv
 - 2026-07-05 · `cfc65fe` · [Loupe] Chronicler Fire 3 CLOSED — Flows tab (durable Loom-flow history, P5 read + live/orphaned badge), lead-reviewed
 - 2026-07-05 · `1e35cc9` · [Refractor/orchestration-base] Chronicler Fire 2 — `loomFlowHistory` event-sourced lens, first eventStream consumer, 3-layer reviewed
 - 2026-07-05 · `a55a9db` · [Refractor] Chronicler Fire 1 — `eventStream` lens-source primitive (dark; no production lens yet), 3-layer reviewed
-- 2026-07-05 · `6aade75` · [Loom/Weaver] loom-pattern-source-cold-registry CLOSED — per-boot nonce decouples durable uniqueness from `Instance` (both pattern/target-source)
-- 2026-07-05 · `a3f6a23` · [Security] Control-plane capability authz (FR30) Fire 1b — CapabilityKVChecker + control-authz grants, enforcement now default-on behind the shipped NATS trust floor; 3-layer reviewed
-- 2026-07-05 · `03976c2` · [Security] Control-plane capability authz (FR30) Fire 1a — Lattice-Actor header threaded through Weaver/Loom/Refractor control + CLI/Loupe, zero enforcement change; 3-layer reviewed
-- 2026-07-05 · `f30b80e` · [Refractor/adapter] Fixed pool.Close/DROP TABLE cleanup order in rls_test.go + rls_verify_test.go — `t.Cleanup(pool.Close)` so LIFO runs the drop first, no more leaked tables on rerun
-- 2026-07-05 · `109f59a` · [bootstrap] `make up` reuse-branch freshness check — gates reuse on `lattice bootstrap verify`; stale/mismatched JSON forces re-bootstrap instead of silently reading empty
-- 2026-07-05 · `fc41c3b` · [Core] UninstallPackage/UpgradePackage per-key OCC (F-011) CLOSED — Fire 2 (upgrade) per-key `expectedRevision` on update/tombstone, mirrors Fire 1
-- 2026-07-05 · `a2c86b4` · [Core] Atomic-batch size ceiling CLOSED — typed `BatchTooLarge` pre-flight guard (substrate) + step-8 rejection (Processor), no redelivery
-- 2026-07-05 · `744f75d` · [Docs] objmgr-and-bootstrap-component-pages CLOSED — bootstrap/vault/privacyworker component pages + README/architecture-overview updates + survey-rotation slots
-- 2026-07-05 · `e67e073` · [FR28/29] Role-queue + fallback Fire 3 CLOSED — `unroutedTasks` Weaver target (new `surface` GapAction, no dispatch, Health-KV only); §10.8 amendment uncommitted for Andrew
-- 2026-07-05 · `df742d2` · [AI-native] AI-authored capabilities Fire 3 CLOSED — weaverTarget/loomPattern kinds + Starlark-guard record-time gate, 3-layer reviewed
 - *(older entries rolled to [archive/lattice-done.md](archive/lattice-done.md))*

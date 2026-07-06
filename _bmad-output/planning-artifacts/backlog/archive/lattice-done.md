@@ -2,6 +2,16 @@
 
 Rolled from `lattice.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-05 · `6aade75` · [Loom/Weaver] loom-pattern-source-cold-registry CLOSED — per-boot nonce decouples durable uniqueness from `Instance` (both pattern/target-source)
+- 2026-07-05 · `a3f6a23` · [Security] Control-plane capability authz (FR30) Fire 1b — CapabilityKVChecker + control-authz grants, enforcement now default-on behind the shipped NATS trust floor; 3-layer reviewed
+- 2026-07-05 · `03976c2` · [Security] Control-plane capability authz (FR30) Fire 1a — Lattice-Actor header threaded through Weaver/Loom/Refractor control + CLI/Loupe, zero enforcement change; 3-layer reviewed
+- 2026-07-05 · `f30b80e` · [Refractor/adapter] Fixed pool.Close/DROP TABLE cleanup order in rls_test.go + rls_verify_test.go — `t.Cleanup(pool.Close)` so LIFO runs the drop first, no more leaked tables on rerun
+- 2026-07-05 · `109f59a` · [bootstrap] `make up` reuse-branch freshness check — gates reuse on `lattice bootstrap verify`; stale/mismatched JSON forces re-bootstrap instead of silently reading empty
+- 2026-07-05 · `fc41c3b` · [Core] UninstallPackage/UpgradePackage per-key OCC (F-011) CLOSED — Fire 2 (upgrade) per-key `expectedRevision` on update/tombstone, mirrors Fire 1
+- 2026-07-05 · `a2c86b4` · [Core] Atomic-batch size ceiling CLOSED — typed `BatchTooLarge` pre-flight guard (substrate) + step-8 rejection (Processor), no redelivery
+- 2026-07-05 · `744f75d` · [Docs] objmgr-and-bootstrap-component-pages CLOSED — bootstrap/vault/privacyworker component pages + README/architecture-overview updates + survey-rotation slots
+- 2026-07-05 · `e67e073` · [FR28/29] Role-queue + fallback Fire 3 CLOSED — `unroutedTasks` Weaver target (new `surface` GapAction, no dispatch, Health-KV only); §10.8 amendment uncommitted for Andrew
+- 2026-07-05 · `df742d2` · [AI-native] AI-authored capabilities Fire 3 CLOSED — weaverTarget/loomPattern kinds + Starlark-guard record-time gate, 3-layer reviewed
 - 2026-07-05 · `c58ba1c` · [AI-native] AI-authored capabilities Fire 2 CLOSED — `lattice capability list/review` + `lattice-pkg apply-proposal`, 3-layer reviewed
 - 2026-07-05 · `99f7255` · [AI-native] AI-authored capabilities Fire 2 fast-follow — grant kind in the materializer (scope check + e2e); Loupe/CLI affordance remains
 - 2026-07-05 · `99d3aa9` · [AI-native] AI-authored capabilities Fire 2 — F-004 apply loop + applied flip; lens-kind loop CLOSED; grant kind + Loupe/CLI affordance remain
