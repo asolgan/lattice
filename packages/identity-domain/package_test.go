@@ -25,7 +25,12 @@ func TestPackage_ManifestMatchesDefinition(t *testing.T) {
 }
 
 func TestPackage_DeclaresUserFacingRoles(t *testing.T) {
-	want := map[string]bool{"consumer": true, "frontOfHouse": true, "backOfHouse": true}
+	want := map[string]bool{
+		"consumer": true, "frontOfHouse": true, "backOfHouse": true,
+		// Not user-facing (system role for the Gateway's own identity), but
+		// declared in the same Roles slice as the others.
+		"identityProvisioner": true,
+	}
 	if got := len(Package.Roles); got != len(want) {
 		t.Fatalf("expected %d declared roles, got %d", len(want), got)
 	}
@@ -48,9 +53,9 @@ func TestPackage_DDLsAndOps(t *testing.T) {
 	if identity.Class != "meta.ddl.vertexType" {
 		t.Fatalf("identity DDL class = %q, want meta.ddl.vertexType", identity.Class)
 	}
-	if got := len(identity.PermittedCommands); got != 4 {
-		t.Fatalf("identity permittedCommands: got %d, want 4 "+
-			"(CreateUnclaimedIdentity, UpdateIdentityState, ClaimIdentity, RecordIdentityPII)", got)
+	if got := len(identity.PermittedCommands); got != 5 {
+		t.Fatalf("identity permittedCommands: got %d, want 5 "+
+			"(CreateUnclaimedIdentity, UpdateIdentityState, ClaimIdentity, RecordIdentityPII, ProvisionConsumerIdentity)", got)
 	}
 }
 

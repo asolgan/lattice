@@ -265,6 +265,16 @@ func entityNanoID(name, tag string) string {
 	return nanoIDFromSalt("lattice-pkg:" + name + ":" + tag)
 }
 
+// RoleID returns the deterministic, version-independent NanoID a package's
+// declared role receives at install — the exact value entityNanoID computes
+// internally for a RoleSpec. Exported so Go code outside the installer (e.g.
+// the Gateway, resolving a role's key to grant it in an op payload) can
+// address a package-declared role without a KV read or re-deriving the tag
+// convention.
+func RoleID(packageName, canonicalName string) string {
+	return entityNanoID(packageName, "role:"+canonicalName)
+}
+
 // permTag is the version-independent identity tag for a permission entity:
 // its operationType + scope (the logical identity per Contract #6), not its
 // position in the package's Permissions slice — so reordering the slice does

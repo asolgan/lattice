@@ -91,6 +91,18 @@ var (
 	// recorded in Core KV (vault-crypto-shredding-design.md §2.4, Fire 4b).
 	PrivacyIdentityID  string
 	PrivacyIdentityKey string
+	// GatewayIdentity is the Gateway's own system identity (Contract #7 §7.2's
+	// "additional internal service actor" pattern), used to submit
+	// ProvisionConsumerIdentity when a verified request's actor has never
+	// been seen before. Unlike Loom/Weaver/Bridge/object-store-manager, it
+	// does NOT get the primordial holdsRole→operator link (narrow-role
+	// fork, gateway-claim-flow-identity-provisioning-design.md §4 Option B)
+	// — an internet-facing component gets the least privilege that does its
+	// job, not root-equivalence. Its identityProvisioner grant is wired by a
+	// one-time, documented ops action after identity-domain installs (§3.3);
+	// before that step runs, its provisioning calls simply deny.
+	GatewayIdentityID  string
+	GatewayIdentityKey string
 
 	MetaRootID        string
 	MetaRootKey       string
@@ -189,6 +201,7 @@ type PrimordialIDsRaw struct {
 	BridgeIdentity               string `json:"bridgeIdentity"`
 	ObjmgrIdentity               string `json:"objmgrIdentity"`
 	PrivacyIdentity              string `json:"privacyIdentity"`
+	GatewayIdentity              string `json:"gatewayIdentity"`
 	MetaRoot                     string `json:"metaRoot"`
 	CapabilityLens               string `json:"capabilityLens"`
 	CapabilityReadLens           string `json:"capabilityReadLens"`
@@ -278,6 +291,16 @@ type PrimordialIDsRaw struct {
 //     RecordShredFinalization under it, mirroring Loom/Weaver/Bridge/objmgr).
 //     Adds 2 Core-KV keys (the identity vertex + its holdsRole link), so
 //     PrimordialVertexKeyCount moves 34 → 36.
+//   - "16": Gateway internal service-actor identity NanoID added
+//     (real-actor-write-auth-e2e-design.md Phase 1 / gateway-claim-flow-
+//     identity-provisioning-design.md §3.3 — the Gateway submits
+//     ProvisionConsumerIdentity under it on first authenticated touch).
+//     Unlike every other service actor it does NOT get a holdsRole→operator
+//     link (narrow-role fork, §4 Option B — an internet-facing component
+//     stays off root-equivalence); its identityProvisioner grant is wired by
+//     a one-time ops action once identity-domain installs. Adds 1 Core-KV
+//     key (the identity vertex only — no link), so PrimordialVertexKeyCount
+//     moves 36 → 37.
 type BootstrapFile struct {
 	Version       string           `json:"version"`
 	GeneratedAt   string           `json:"generatedAt"`
@@ -373,6 +396,7 @@ func currentRaw() PrimordialIDsRaw {
 		BridgeIdentity:               BridgeIdentityID,
 		ObjmgrIdentity:               ObjmgrIdentityID,
 		PrivacyIdentity:              PrivacyIdentityID,
+		GatewayIdentity:              GatewayIdentityID,
 		MetaRoot:                     MetaRootID,
 		CapabilityLens:               CapabilityLensID,
 		CapabilityReadLens:           CapabilityReadLensID,
@@ -416,17 +440,17 @@ func Load(path string) error {
 // checkVersion returns a clear error when the bootstrap file's version is
 // not one of the supported versions. This surfaces a meaningful message
 // instead of a confusing NanoID validation failure when an operator
-// upgrades Lattice without running `make down` first. Version 15 adds the
-// privacyIdentity service actor — the crypto-shred finalization actor
-// (vault-crypto-shredding-design.md Fire 4b); older files lack its NanoID
-// field and must be regenerated so the kernel topology matches.
+// upgrades Lattice without running `make down` first. Version 16 adds the
+// gatewayIdentity service actor (real-actor-write-auth-e2e-design.md Phase
+// 1); older files lack its NanoID field and must be regenerated so the
+// kernel topology matches.
 func checkVersion(f BootstrapFile) error {
 	switch f.Version {
-	case "15":
+	case "16":
 		return nil
 	default:
 		return fmt.Errorf(
-			"bootstrap file version mismatch: got %q, want \"15\" — run `make down && make up`",
+			"bootstrap file version mismatch: got %q, want \"16\" — run `make down && make up`",
 			f.Version,
 		)
 	}
@@ -442,6 +466,7 @@ func generate() (PrimordialIDsRaw, error) {
 		&raw.BridgeIdentity,
 		&raw.ObjmgrIdentity,
 		&raw.PrivacyIdentity,
+		&raw.GatewayIdentity,
 		&raw.MetaRoot,
 		&raw.CapabilityLens,
 		&raw.CapabilityReadLens,
@@ -486,6 +511,7 @@ func populate(raw PrimordialIDsRaw) error {
 		{"bridgeIdentity", raw.BridgeIdentity},
 		{"objmgrIdentity", raw.ObjmgrIdentity},
 		{"privacyIdentity", raw.PrivacyIdentity},
+		{"gatewayIdentity", raw.GatewayIdentity},
 		{"metaRoot", raw.MetaRoot},
 		{"capabilityLens", raw.CapabilityLens},
 		{"capabilityReadLens", raw.CapabilityReadLens},
@@ -520,6 +546,7 @@ func populate(raw PrimordialIDsRaw) error {
 	BridgeIdentityID = raw.BridgeIdentity
 	ObjmgrIdentityID = raw.ObjmgrIdentity
 	PrivacyIdentityID = raw.PrivacyIdentity
+	GatewayIdentityID = raw.GatewayIdentity
 	MetaRootID = raw.MetaRoot
 	CapabilityLensID = raw.CapabilityLens
 	CapabilityReadLensID = raw.CapabilityReadLens
@@ -566,6 +593,7 @@ func populate(raw PrimordialIDsRaw) error {
 	BridgeIdentityKey = substrate.VertexKey("identity", BridgeIdentityID)
 	ObjmgrIdentityKey = substrate.VertexKey("identity", ObjmgrIdentityID)
 	PrivacyIdentityKey = substrate.VertexKey("identity", PrivacyIdentityID)
+	GatewayIdentityKey = substrate.VertexKey("identity", GatewayIdentityID)
 	MetaRootKey = substrate.VertexKey("meta", MetaRootID)
 	CapabilityLensKey = substrate.VertexKey("meta", CapabilityLensID)
 	CapabilityReadLensKey = substrate.VertexKey("meta", CapabilityReadLensID)
@@ -588,7 +616,7 @@ func populate(raw PrimordialIDsRaw) error {
 
 func persistWithStatus(path string, raw PrimordialIDsRaw, status string) error {
 	f := BootstrapFile{
-		Version:       "15",
+		Version:       "16",
 		GeneratedAt:   time.Now().UTC().Format(time.RFC3339Nano),
 		Status:        status,
 		PrimordialIDs: raw,
@@ -619,6 +647,10 @@ func PrimordialVertexKeys() []string {
 		BridgeIdentityKey,
 		ObjmgrIdentityKey,
 		PrivacyIdentityKey,
+		// Gateway identity — seeded, but deliberately excluded from the
+		// service-actor holdsRole links below (narrow-role fork; it earns
+		// identityProvisioner via a one-time ops action instead)
+		GatewayIdentityKey,
 		// meta-meta DDL
 		MetaRootKey,
 		// InstallPackage / UninstallPackage / UpgradePackage primordial DDLs
@@ -663,9 +695,10 @@ func PrimordialVertexKeys() []string {
 // PrimordialVertexKeyCount is the count of TOP-LEVEL kernel keys (the
 // ones in PrimordialVertexKeys()). Used as a count-only readiness gate
 // where loading lattice.bootstrap.json would race startup. Current count
-// is 36 entries: 1 op + 1 admin + 5 service actors (Loom + Weaver +
-// Bridge + object-store-manager + privacy) + 1 meta-DDL + 3
+// is 37 entries: 1 op + 1 admin + 6 service actors (Loom + Weaver +
+// Bridge + object-store-manager + privacy + Gateway) + 1 meta-DDL + 3
 // install/uninstall/upgrade DDLs + 1 lens (the capability primordial-identity
 // anchor) + 1 role + 6 perms (3 meta + 3 install/uninstall/upgrade) + 12 links
-// (6 grantedBy + 6 holdsRole) + 5 aspect-type meta-vertices.
-const PrimordialVertexKeyCount = 36
+// (6 grantedBy + 6 holdsRole — Gateway deliberately has none) + 5
+// aspect-type meta-vertices.
+const PrimordialVertexKeyCount = 37

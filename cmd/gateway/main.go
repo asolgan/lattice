@@ -39,6 +39,8 @@
 // Environment:
 //
 //	GATEWAY_ADDR              HTTP listen address (default: :8080)
+//	BOOTSTRAP_JSON_PATH       primordial-ID file (default: ./lattice.bootstrap.json) — supplies the
+//	                          Gateway's own service-actor identity for the auto-provisioning pre-flight
 //	NATS_URL                  NATS server URL (default: nats://localhost:4222)
 //	NATS_NKEY / NATS_CREDS    Gateway's own NATS credential (the #75 "gateway" user)
 //	GATEWAY_JWT_KEYS_DIR      directory of <kid>.pem trusted public keys (static IdP snapshot)
@@ -80,9 +82,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 
+	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/gateway"
 	"github.com/asolgan/lattice/internal/gateway/auth"
 	"github.com/asolgan/lattice/internal/gateway/revocation"
+	"github.com/asolgan/lattice/internal/pkgmgr"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -207,8 +211,14 @@ func run(logger *slog.Logger) error {
 	}
 	instance := "gw-" + rawInstance
 
+	bootstrapJSONPath := envOrDefault("BOOTSTRAP_JSON_PATH", "./lattice.bootstrap.json")
+	if err := bootstrap.Load(bootstrapJSONPath); err != nil {
+		return fmt.Errorf("load primordial IDs from %s: %w", bootstrapJSONPath, err)
+	}
+
 	metrics := &gateway.Metrics{}
 	srv := gateway.NewServer(authn, conn, metrics, logger)
+	srv.ConfigureProvisioning(bootstrap.GatewayIdentityKey, "vtx.role."+pkgmgr.RoleID("identity-domain", "consumer"))
 
 	readModels, err := loadReadModels(os.Getenv("GATEWAY_READ_MODELS_DIR"))
 	if err != nil {

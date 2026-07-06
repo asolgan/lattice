@@ -6,14 +6,18 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //
 // Grant matrix:
 //
-//	CreateUnclaimedIdentity → frontOfHouse, backOfHouse, operator
-//	UpdateIdentityState     → operator
-//	ClaimIdentity (self)    → consumer
-//	RecordIdentityPII       → frontOfHouse, backOfHouse, operator
+//	CreateUnclaimedIdentity   → frontOfHouse, backOfHouse, operator
+//	UpdateIdentityState       → operator
+//	ClaimIdentity (self)      → consumer
+//	RecordIdentityPII         → frontOfHouse, backOfHouse, operator
+//	ProvisionConsumerIdentity → identityProvisioner, operator
 //
-// Scope `self` for ClaimIdentity: platformPermissions[] match is
-// exact-operationType only; scope enforcement happens in the Starlark
-// `ClaimIdentity` branch (one-credential-one-identity via credentialindex).
+// Scope `self` for ClaimIdentity is enforced at step 3 (auth), before the
+// script ever runs: an existence gate (the actor must already hold some
+// role granting ClaimIdentity) and a self-match gate (authContext.target ==
+// actor). The Starlark `ClaimIdentity` branch itself only ever does a
+// negative dedup (an actor must not already be bound to a different
+// identity, via credentialindex) — it never re-derives the scope check.
 func Permissions() []pkgmgr.PermissionSpec {
 	perms := []pkgmgr.PermissionSpec{
 		{
@@ -39,6 +43,12 @@ func Permissions() []pkgmgr.PermissionSpec {
 			Scope:         "any",
 			Note:          "Grants the right to record applicant PII (ssn/dob sensitive aspects) on an existing identity.",
 			GrantsTo:      []string{"frontOfHouse", "backOfHouse", "operator"},
+		},
+		{
+			OperationType: "ProvisionConsumerIdentity",
+			Scope:         "any",
+			Note:          "Grants the right to idempotently auto-provision a bare consumer identity on first authenticated touch (the Gateway's own system identity; scoped narrow rather than full operator).",
+			GrantsTo:      []string{"identityProvisioner", "operator"},
 		},
 	}
 	return append(perms, RevocationPermissions()...)

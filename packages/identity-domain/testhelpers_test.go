@@ -35,6 +35,10 @@ const (
 	consumerActorID  = "JcnsmActHJKMNPQRSTUV"
 	consumerActorKey = "vtx.identity." + consumerActorID
 	consumerCapKey   = "cap.identity." + consumerActorID
+
+	gatewayActorID  = "JgtwyActHJKMNPQRSTUV"
+	gatewayActorKey = "vtx.identity." + gatewayActorID
+	gatewayCapKey   = "cap.identity." + gatewayActorID
 )
 
 // staffCapDoc seeds a cap doc granting the operator-equivalent staff
@@ -81,14 +85,35 @@ func consumerCapDoc() *processor.CapabilityDoc {
 	}
 }
 
+// gatewayCapDoc seeds a cap doc granting only ProvisionConsumerIdentity —
+// the Gateway's own narrow identityProvisioner-equivalent grant (scope=any).
+func gatewayCapDoc() *processor.CapabilityDoc {
+	now := time.Now().UTC()
+	return &processor.CapabilityDoc{
+		Key:                    gatewayCapKey,
+		Actor:                  gatewayActorKey,
+		Version:                "1.0",
+		ProjectedAt:            now.Format(time.RFC3339Nano),
+		ProjectedFromRevisions: map[string]uint64{gatewayActorKey: 1},
+		Lanes:                  []string{"default"},
+		PlatformPermissions: []processor.PlatformPermission{
+			{OperationType: "ProvisionConsumerIdentity", Scope: "any"},
+		},
+		ServiceAccess:   []processor.ServiceAccessEntry{},
+		EphemeralGrants: []processor.EphemeralGrant{},
+		Roles:           []string{"vtx.role.identityProvisioner"},
+	}
+}
+
 // setupTestEnv assembles the standard identity-domain test environment:
 // embedded NATS, KV buckets, primordials seeded, Phase 1 packages
-// installed, staff + consumer cap docs seeded.
+// installed, staff + consumer + gateway cap docs seeded.
 func setupTestEnv(t *testing.T) (context.Context, *substrate.Conn) {
 	t.Helper()
 	ctx, conn := testutil.SetupPackageTestEnv(t)
 	testutil.SeedCapDoc(t, ctx, conn, staffCapDoc())
 	testutil.SeedCapDoc(t, ctx, conn, consumerCapDoc())
+	testutil.SeedCapDoc(t, ctx, conn, gatewayCapDoc())
 	return ctx, conn
 }
 

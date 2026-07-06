@@ -21,6 +21,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/asolgan/lattice/cmd/lattice/output"
@@ -56,6 +57,53 @@ type Server struct {
 	// /v1/operations exactly as before.
 	pgPool     PgPool
 	readModels map[string]ReadModel
+
+	// gatewayActorKey + consumerRoleKey + provisioned back the first-
+	// authenticated-touch auto-provisioning pre-flight (ConfigureProvisioning,
+	// real-actor-write-auth-e2e-design.md Phase 1). gatewayActorKey empty
+	// until configured — a Server with it unset still serves /v1/operations
+	// exactly as before.
+	gatewayActorKey string
+	consumerRoleKey string
+	provisioned     *provisionedCache
+}
+
+// provisionedCacheMaxEntries caps provisionedCache's memory: it holds one
+// entry per distinct authenticated actor for the life of the process, with
+// no TTL, so an unbounded map would be a slow leak on a long-lived,
+// internet-facing Gateway. On overflow the whole set is cleared rather than
+// evicted piecemeal (simpler than LRU; a false miss just re-runs the
+// idempotent op, so a full-clear burst of re-provisioning is harmless).
+const provisionedCacheMaxEntries = 100_000
+
+// provisionedCache is a bounded, pure latency optimization: a false miss
+// just re-runs the idempotent ProvisionConsumerIdentity op, so correctness
+// never depends on it, and it starts empty on every restart by design (a
+// cold Gateway harmlessly re-provisions already-provisioned actors once).
+// Mirrors issueCache's convention (health.go).
+type provisionedCache struct {
+	mu   sync.Mutex
+	seen map[string]struct{}
+}
+
+func newProvisionedCache() *provisionedCache {
+	return &provisionedCache{seen: make(map[string]struct{})}
+}
+
+func (c *provisionedCache) has(actorKey string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.seen[actorKey]
+	return ok
+}
+
+func (c *provisionedCache) add(actorKey string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.seen) >= provisionedCacheMaxEntries {
+		c.seen = make(map[string]struct{})
+	}
+	c.seen[actorKey] = struct{}{}
 }
 
 // Logger is the minimal logging surface Server needs (satisfied by *slog.Logger).
@@ -96,6 +144,24 @@ func NewServer(authn *auth.Authenticator, conn *substrate.Conn, metrics *Metrics
 		reqTimeout: defaultReqTimeout,
 		metrics:    metrics,
 	}
+}
+
+// ConfigureProvisioning enables the first-authenticated-touch auto-
+// provisioning pre-flight (real-actor-write-auth-e2e-design.md Phase 1,
+// gateway-claim-flow-identity-provisioning-design.md §3.4): before
+// submitting the caller's own op, handleOperations submits
+// ProvisionConsumerIdentity under gatewayActorKey for any verified actor not
+// yet seen. gatewayActorKey is bootstrap.GatewayIdentityKey; consumerRoleKey
+// is "vtx.role."+pkgmgr.RoleID("identity-domain","consumer") — the caller
+// resolves both so this package stays free of a pkgmgr/bootstrap import.
+// Call before RegisterRoutes. Unconfigured (either argument empty), the
+// pre-flight is skipped — mirrors ConfigureReadModels' additive-capability
+// pattern; a Server with neither still serves /v1/operations exactly as
+// before.
+func (s *Server) ConfigureProvisioning(gatewayActorKey, consumerRoleKey string) {
+	s.gatewayActorKey = gatewayActorKey
+	s.consumerRoleKey = consumerRoleKey
+	s.provisioned = newProvisionedCache()
 }
 
 // RegisterRoutes mounts the Gateway's HTTP surface on mux — the write-path
@@ -181,6 +247,8 @@ func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.provisionActorIfNeeded(ctx, actor.ActorID)
+
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "read body: "+err.Error())
@@ -219,6 +287,61 @@ func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
 	s.metrics.opsSubmittedTotal.Add(1)
 
 	writeJSON(w, replyStatusCode(reply), reply)
+}
+
+// provisionActorIfNeeded submits ProvisionConsumerIdentity under the
+// Gateway's own actor for a verified actor not yet in the in-memory
+// provisioned set. A no-op when ConfigureProvisioning was never called.
+// Tolerates any submit error or non-accepted reply — this is a best-effort
+// pre-flight, not the source of truth on capability; the caller's own op
+// (submitted right after, under its real, unforgeable actor) re-checks
+// capability independently and is denied on its own merits if provisioning
+// truly never lands. Failing here would make the whole request depend on an
+// op whose only job is convenience, so a failure just means "try again next
+// request" (logged, not surfaced to the HTTP caller).
+func (s *Server) provisionActorIfNeeded(ctx context.Context, actorID string) {
+	if s.gatewayActorKey == "" || s.consumerRoleKey == "" || s.provisioned.has(actorID) {
+		return
+	}
+	payload, err := json.Marshal(map[string]string{
+		"targetActorKey":  actorID,
+		"consumerRoleKey": s.consumerRoleKey,
+	})
+	if err != nil {
+		s.logger.Error("gateway: marshal provisioning payload", "actor", actorID, "error", err)
+		return
+	}
+	requestID, err := substrate.NewNanoID()
+	if err != nil {
+		s.logger.Error("gateway: generate provisioning requestId", "actor", actorID, "error", err)
+		return
+	}
+	env := &processor.OperationEnvelope{
+		RequestID:     requestID,
+		Lane:          processor.LaneDefault,
+		OperationType: "ProvisionConsumerIdentity",
+		Actor:         s.gatewayActorKey,
+		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		Class:         "identity",
+		Payload:       payload,
+		// Deliberately no ContextHint: targetActorKey legitimately does not
+		// exist yet on the fresh-actor path, and a declared-but-absent read
+		// faults (HydrationMiss) before the script runs — exactly what the
+		// script's own kv.Read-based checks are built to avoid. Declaring it
+		// here would fault every first-touch request and defeat the op.
+	}
+	reply, err := s.submit(ctx, env)
+	if err != nil {
+		s.logger.Warn("gateway: auto-provision consumer identity: submit failed, will retry next request",
+			"actor", actorID, "error", err)
+		return
+	}
+	if reply.Status != processor.ReplyStatusAccepted && reply.Status != processor.ReplyStatusDuplicate {
+		s.logger.Warn("gateway: auto-provision consumer identity: not accepted, will retry next request",
+			"actor", actorID, "status", reply.Status)
+		return
+	}
+	s.provisioned.add(actorID)
 }
 
 // bearerToken extracts the token from a well-formed `Authorization: Bearer

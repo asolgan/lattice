@@ -1,11 +1,12 @@
 name: identity-domain
-version: 0.1.0
+version: 0.2.0
 description: |
   Identity vertex creation, claim, and state-machine management. Provides
   CreateUnclaimedIdentity, UpdateIdentityState, ClaimIdentity,
-  RecordIdentityPII. Depends on rbac-domain. The consumer, frontOfHouse,
-  and backOfHouse roles are declared in the package definition and created
-  in the single install batch routed through the Processor (Story 1.5.5).
+  RecordIdentityPII, ProvisionConsumerIdentity. Depends on rbac-domain. The
+  consumer, frontOfHouse, backOfHouse, and identityProvisioner roles are
+  declared in the package definition and created in the single install
+  batch routed through the Processor (Story 1.5.5).
 depends:
   - rbac-domain
 declares:
@@ -45,6 +46,9 @@ declares:
     - operationType: RecordIdentityPII
       scope: any
       grantsTo: [frontOfHouse, backOfHouse, operator]
+    - operationType: ProvisionConsumerIdentity
+      scope: any
+      grantsTo: [identityProvisioner, operator]
     - operationType: RevokeActor
       scope: any
       grantsTo: [operator]

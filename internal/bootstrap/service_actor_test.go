@@ -223,11 +223,11 @@ func TestServiceActors_KeyCountDelta(t *testing.T) {
 }
 
 // TestPrimordialVertexKeyCount_AgreesWithEnumeration asserts the declared
-// count constant matches the enumerated slice length and is the expected 36
-// after the privacy service actor (identity vertex + holdsRole link,
-// vault-crypto-shredding-design.md Fire 4b) was added. This is the pure-Go
-// mirror of the scripts/verify-kernel.go len()==Count agreement check (the
-// kernel-topology lockstep guard).
+// count constant matches the enumerated slice length and is the expected 37
+// after the Gateway service actor (identity vertex only, deliberately NO
+// holdsRole link — real-actor-write-auth-e2e-design.md Phase 1) was added.
+// This is the pure-Go mirror of the scripts/verify-kernel.go len()==Count
+// agreement check (the kernel-topology lockstep guard).
 func TestPrimordialVertexKeyCount_AgreesWithEnumeration(t *testing.T) {
 	populateForTest(t)
 	keys := PrimordialVertexKeys()
@@ -235,8 +235,87 @@ func TestPrimordialVertexKeyCount_AgreesWithEnumeration(t *testing.T) {
 		t.Fatalf("PrimordialVertexKeys() enumerates %d but PrimordialVertexKeyCount is %d",
 			len(keys), PrimordialVertexKeyCount)
 	}
-	if PrimordialVertexKeyCount != 36 {
-		t.Fatalf("PrimordialVertexKeyCount = %d, want 36", PrimordialVertexKeyCount)
+	if PrimordialVertexKeyCount != 37 {
+		t.Fatalf("PrimordialVertexKeyCount = %d, want 37", PrimordialVertexKeyCount)
+	}
+}
+
+// TestGatewayIdentity_SeededWithoutHoldsRoleLink asserts the Gateway identity
+// vertex is present in the primordial batch (protected, class
+// identity.system.gateway) but — unlike every other service actor — the
+// batch contains NO holdsRole link sourced from it. This pins the
+// narrow-role fork (gateway-claim-flow-identity-provisioning-design.md §4
+// Option B): the Gateway is internet-facing, so it never gets
+// root-equivalence via the primordial topology.
+func TestGatewayIdentity_SeededWithoutHoldsRoleLink(t *testing.T) {
+	populateForTest(t)
+	idx := entriesByKey(t)
+
+	raw, ok := idx[GatewayIdentityKey]
+	if !ok {
+		t.Fatalf("primordial batch missing Gateway identity %q", GatewayIdentityKey)
+	}
+	var v vtxEnvelope
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatalf("unmarshal %q: %v", GatewayIdentityKey, err)
+	}
+	if v.Class != "identity.system.gateway" {
+		t.Errorf("class = %q, want identity.system.gateway", v.Class)
+	}
+	if prot, _ := v.Data["protected"].(bool); !prot {
+		t.Errorf("data.protected = %v, want true", v.Data["protected"])
+	}
+
+	gatewayHoldsRoleKey := "lnk.identity." + GatewayIdentityID + ".holdsRole.role." + RoleOperatorID
+	if _, ok := idx[gatewayHoldsRoleKey]; ok {
+		t.Fatalf("Gateway must NOT get a holdsRole->operator link, but found %q in the primordial batch", gatewayHoldsRoleKey)
+	}
+}
+
+// TestGatewayKeyDerivation mirrors TestBridgeKeyDerivation for the Gateway
+// identity — only the vertex key exists (no holdsRole link key is ever
+// derived for it).
+func TestGatewayKeyDerivation(t *testing.T) {
+	populateForTest(t)
+	if want := "vtx.identity." + GatewayIdentityID; GatewayIdentityKey != want {
+		t.Errorf("GatewayIdentityKey = %q, want %q", GatewayIdentityKey, want)
+	}
+}
+
+// TestGeneratePopulateRoundTrip_Gateway mirrors
+// TestGeneratePopulateRoundTrip_Bridge for the Gateway identity.
+func TestGeneratePopulateRoundTrip_Gateway(t *testing.T) {
+	raw, err := generate()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	if !substrate.IsValidNanoID(raw.GatewayIdentity) {
+		t.Fatalf("generate() produced invalid gatewayIdentity NanoID: %q", raw.GatewayIdentity)
+	}
+	if err := populate(raw); err != nil {
+		t.Fatalf("populate: %v", err)
+	}
+	wantID := raw.GatewayIdentity
+	if GatewayIdentityID != wantID {
+		t.Errorf("GatewayIdentityID = %q, want %q", GatewayIdentityID, wantID)
+	}
+
+	data, err := json.Marshal(currentRaw())
+	if err != nil {
+		t.Fatalf("marshal currentRaw: %v", err)
+	}
+	var back PrimordialIDsRaw
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.GatewayIdentity != wantID {
+		t.Fatalf("round-tripped gatewayIdentity = %q, want %q", back.GatewayIdentity, wantID)
+	}
+	if err := populate(back); err != nil {
+		t.Fatalf("re-populate: %v", err)
+	}
+	if GatewayIdentityKey != "vtx.identity."+wantID {
+		t.Errorf("after round-trip GatewayIdentityKey = %q, want %q", GatewayIdentityKey, "vtx.identity."+wantID)
 	}
 }
 
@@ -295,16 +374,16 @@ func TestGeneratePopulateRoundTrip_Bridge(t *testing.T) {
 	}
 }
 
-// TestCheckVersion_RejectsStaleAcceptsCurrent proves the version-15 gate: a
-// version-15 file passes, and any other version (notably "14", which predates
-// the privacy service actor) is hard-rejected with the make-down/make-up
-// guidance so a stale file can never silently run against a mismatched kernel
-// topology (AC #2).
+// TestCheckVersion_RejectsStaleAcceptsCurrent proves the version-16 gate: a
+// version-16 file passes, and any other version (notably "15", which
+// predates the Gateway service actor) is hard-rejected with the
+// make-down/make-up guidance so a stale file can never silently run against
+// a mismatched kernel topology (AC #2).
 func TestCheckVersion_RejectsStaleAcceptsCurrent(t *testing.T) {
-	if err := checkVersion(BootstrapFile{Version: "15"}); err != nil {
-		t.Errorf("checkVersion(version=15): unexpected error %v", err)
+	if err := checkVersion(BootstrapFile{Version: "16"}); err != nil {
+		t.Errorf("checkVersion(version=16): unexpected error %v", err)
 	}
-	for _, v := range []string{"14", "13", "12", "11", "10", "9", "8", "7", "6", "5", ""} {
+	for _, v := range []string{"15", "14", "13", "12", "11", "10", "9", "8", "7", "6", "5", ""} {
 		err := checkVersion(BootstrapFile{Version: v})
 		if err == nil {
 			t.Errorf("checkVersion(version=%q): expected rejection, got nil", v)

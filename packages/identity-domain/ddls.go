@@ -1,6 +1,20 @@
 package identitydomain
 
-import "github.com/asolgan/lattice/internal/pkgmgr"
+import (
+	"strings"
+
+	"github.com/asolgan/lattice/internal/pkgmgr"
+)
+
+// consumerRoleKey is this package's own "consumer" role key, computed
+// deterministically (pkgmgr.RoleID mirrors what the installer mints at
+// install time — no KV read required). ProvisionConsumerIdentity's script
+// pins its consumerRoleKey payload field against this literal rather than
+// trusting any live vtx.role.* the caller supplies (defense-in-depth: the
+// grant matrix already restricts who can call the op, but the op's OWN
+// script should not be able to be steered into granting a different role,
+// e.g. operator, to a first-touch actor).
+var consumerRoleKey = "vtx.role." + pkgmgr.RoleID("identity-domain", "consumer")
 
 // DDLs returns the package's DDL meta-vertex declarations:
 //   - `identity` (meta.ddl.vertexType) — handles CreateUnclaimedIdentity,
@@ -22,6 +36,10 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Architectural rules: known-key reads only. The duplicate-detection
 // index lookups (vtx.identityindex.*) use crypto.sha256NanoID-derived
 // known keys provided by the caller in ContextHint.Reads.
+// ProvisionConsumerIdentity's read-before-create existence check and its
+// consumerRoleKey validity check use kv.Read instead (Contract #2 §2.5):
+// both keys may legitimately be absent, and a declared-but-absent
+// ContextHint read faults (HydrationMiss) before the script runs.
 func DDLs() []pkgmgr.DDLSpec {
 	return []pkgmgr.DDLSpec{
 		{
@@ -32,6 +50,7 @@ func DDLs() []pkgmgr.DDLSpec {
 				"UpdateIdentityState",
 				"ClaimIdentity",
 				"RecordIdentityPII",
+				"ProvisionConsumerIdentity",
 			},
 			Description: "Identity domain DDL. " +
 				"Vertex shape: vtx.identity.<NanoID>, class=identity. " +
@@ -43,7 +62,11 @@ func DDLs() []pkgmgr.DDLSpec {
 				"credentialBinding (sensitive; null pre-claim), " +
 				"mergedInto (vertex-key reference, set only by identity-hygiene package's MergeIdentity). " +
 				"The client mints the claim secret, submits only claimKeyHash; Lattice never holds the plaintext. " +
-				"State machine + IdentityMerged guard enforced in .script.",
+				"State machine + IdentityMerged guard enforced in .script. " +
+				"ProvisionConsumerIdentity: idempotently creates a bare, already-claimed consumer identity at a " +
+				"caller-supplied key (the Gateway's first-authenticated-touch auto-provisioning pre-flight) — " +
+				"the deterministic ActorID a verified JWT subject maps to, not a minted key. Grants the consumer " +
+				"role via a holdsRole link; no PII.",
 			Script: identityDDLScript,
 			InputSchema: `{"type":"object","properties":` +
 				`{"name":{"type":"string","maxLength":200,"description":"Person's display name. Required for CreateUnclaimedIdentity."},` +
@@ -56,7 +79,9 @@ func DDLs() []pkgmgr.DDLSpec {
 				`"claimKey":{"type":"string","description":"One-time-use claim key plaintext (ClaimIdentity). Its sha256 must match the stored hash."},` +
 				`"targetIdentityKey":{"type":"string","description":"vtx.identity.<NanoID> of the unclaimed identity to claim (ClaimIdentity)."},` +
 				`"ssn":{"type":"string","description":"Applicant Social Security Number (RecordIdentityPII, required). 9 digits; any hyphens are accepted and stripped; stored normalized as a sensitive aspect."},` +
-				`"dob":{"type":"string","description":"Applicant date of birth (RecordIdentityPII, required). ISO YYYY-MM-DD; stored as a sensitive aspect."}}}`,
+				`"dob":{"type":"string","description":"Applicant date of birth (RecordIdentityPII, required). ISO YYYY-MM-DD; stored as a sensitive aspect."},` +
+				`"targetActorKey":{"type":"string","description":"vtx.identity.<NanoID> — the ActorID a verified JWT subject maps to (ProvisionConsumerIdentity). Caller-derived, never minted."},` +
+				`"consumerRoleKey":{"type":"string","description":"vtx.role.<NanoID> of the consumer role to grant (ProvisionConsumerIdentity). Caller-resolved via pkgmgr.RoleID; validated alive before granting."}}}`,
 			OutputSchema: `{"type":"object","properties":` +
 				`{"primaryKey":{"type":"string","description":"vtx.identity.<NanoID> of the created, claimed, or PII-recorded identity (the operation's principal key)."}}}`,
 			FieldDescription: map[string]string{
@@ -71,6 +96,8 @@ func DDLs() []pkgmgr.DDLSpec {
 				"targetIdentityKey": "Full vtx.identity.<NanoID> of the unclaimed identity the calling actor wants to claim.",
 				"ssn":               "Applicant SSN. Required on RecordIdentityPII. 9 digits; any hyphens are accepted and stripped; stored normalized in a sensitive vtx.identity.<NanoID>.ssn aspect.",
 				"dob":               "Applicant date of birth. Required on RecordIdentityPII. ISO YYYY-MM-DD; stored in a sensitive vtx.identity.<NanoID>.dob aspect.",
+				"targetActorKey":    "vtx.identity.<NanoID> ActorID to provision (ProvisionConsumerIdentity, required). Must be the exact key a verified JWT subject resolves to; rejected if not NanoID-shaped.",
+				"consumerRoleKey":   "vtx.role.<NanoID> of the consumer role (ProvisionConsumerIdentity, required). Must resolve to a live role vertex; rejected otherwise.",
 			},
 			Examples: []pkgmgr.ExampleSpec{
 				{
@@ -91,6 +118,13 @@ func DDLs() []pkgmgr.DDLSpec {
 					ExpectedOutcome: "Validates formats, writes sensitive vtx.identity.<NanoID>.ssn (normalized to 123456789) and " +
 						".dob aspects onto the existing identity; the identity vertex root data is not mutated. " +
 						"A sensitive ssn/dob aspect on any non-identity vertex is rejected by the step-6 sensitiveAspectScope rule.",
+				},
+				{
+					Name:    "ProvisionConsumerIdentity — Gateway first-touch auto-provisioning",
+					Payload: map[string]any{"targetActorKey": "vtx.identity.<NanoID>", "consumerRoleKey": "vtx.role.<NanoID>"},
+					ExpectedOutcome: "Fresh actor: creates the identity vertex + a .state=claimed aspect + a holdsRole link to " +
+						"consumerRoleKey, emits identity.provisioned, returns primaryKey=targetActorKey. Already-provisioned " +
+						"actor: no-op (empty mutations/events, no response) — safe to call on every request.",
 				},
 			},
 		},
@@ -282,7 +316,14 @@ def execute(state, op):
 // identityDDLScript is the identity DDL Starlark script. State machine:
 // unclaimed -> claimed. The merged state is set only by the
 // identity-hygiene package's MergeIdentity script.
-const identityDDLScript = `
+// identityDDLScript is derived from identityDDLScriptTemplate by pinning
+// the one placeholder — the package's own consumer role key — to its real,
+// deterministic value (see consumerRoleKey above) so the script can enforce
+// ProvisionConsumerIdentity's role grant by equality rather than trusting
+// any live role vertex the caller names.
+var identityDDLScript = strings.Replace(identityDDLScriptTemplate, "__EXPECTED_CONSUMER_ROLE_KEY__", consumerRoleKey, 1)
+
+const identityDDLScriptTemplate = `
 def make_update(key, data):
     return {"op": "update", "key": key, "document": {"isDeleted": False, "data": data}}
 
@@ -438,6 +479,71 @@ def execute(state, op):
             "events": events,
             "response": {"primaryKey": identity_key},
         }
+
+    if ot == "ProvisionConsumerIdentity":
+        nanoid_alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz123456789"
+        target_actor_key = p.targetActorKey if hasattr(p, "targetActorKey") else None
+        if target_actor_key == None or type(target_actor_key) != type(""):
+            fail("InvalidArgument: targetActorKey: required")
+        prefix = "vtx.identity."
+        if not target_actor_key.startswith(prefix):
+            fail("InvalidArgument: targetActorKey: must be vtx.identity.<NanoID>")
+        actor_id = target_actor_key[len(prefix):]
+        if len(actor_id) != 20:
+            fail("InvalidArgument: targetActorKey: id segment must be a 20-char NanoID")
+        for ch in actor_id.elems():
+            if ch not in nanoid_alphabet:
+                fail("InvalidArgument: targetActorKey: id segment must be NanoID-alphabet")
+
+        # kv.Read, NOT a contextHint read: target_actor_key legitimately may
+        # not exist yet (the fresh-actor case), and a declared-but-absent
+        # read faults (HydrationMiss) before the script ever runs — exactly
+        # what kv.Read avoids (mirrors orchestration-base CreateTask). Unlike
+        # CreateTask, no op in this package (or anywhere) ever tombstones a
+        # bare identity vertex, so there is no un-tombstone-and-recreate case
+        # to self-heal here: ANY existing record — live or (hypothetically)
+        # tombstoned — is already-provisioned. Treating a tombstoned record
+        # as absent and falling through to "create" would hit a hard
+        # RevisionConflict at commit (create-only conditioning targets the
+        # NATS subject's last sequence, not its logical isDeleted flag), so
+        # deliberately not mirroring CreateTask's isDeleted branch here.
+        existing = kv.Read(target_actor_key)
+        if existing != None:
+            # No "response" here: the write-path reply-constraint rejects a
+            # script-named primaryKey that isn't in this op's own write
+            # footprint, and an empty-mutations no-op writes nothing
+            # (mirrors AssignRole / CreateTask's idempotent no-op shape).
+            return {"mutations": [], "events": []}
+
+        # Pinned to the package's OWN consumer role, not trusted from the
+        # payload: the grant matrix lets identityProvisioner AND operator
+        # call this op, so a caller-supplied consumerRoleKey that was merely
+        # checked for "is some live role" could steer a first-touch actor
+        # into ANY role (e.g. operator) instead of consumer. Equality against
+        # the literal closes that — the field still exists so the caller is
+        # explicit about intent, but the script is the enforcement boundary.
+        consumer_role_key = p.consumerRoleKey if hasattr(p, "consumerRoleKey") else None
+        if consumer_role_key != "__EXPECTED_CONSUMER_ROLE_KEY__":
+            fail("InvalidArgument: consumerRoleKey: must be the identity-domain consumer role")
+        role_vtx = kv.Read(consumer_role_key)
+        if role_vtx == None or role_vtx.isDeleted:
+            fail("UnknownRole: " + consumer_role_key)
+        role_id = consumer_role_key[len("vtx.role."):]
+
+        link_key = "lnk.identity." + actor_id + ".holdsRole.role." + role_id
+        mutations = [
+            {"op": "create", "key": target_actor_key,
+             "document": {"class": "identity", "isDeleted": False, "data": {}}},
+            {"op": "create", "key": target_actor_key + ".state",
+             "document": {"class": "state", "vertexKey": target_actor_key, "localName": "state",
+                          "isDeleted": False, "data": {"value": "claimed"}}},
+            {"op": "create", "key": link_key,
+             "document": {"class": "holdsRole", "isDeleted": False,
+                          "sourceVertex": target_actor_key, "targetVertex": consumer_role_key,
+                          "localName": "holdsRole", "data": {}}},
+        ]
+        events = [{"class": "identity.provisioned", "data": {"identityKey": target_actor_key}}]
+        return {"mutations": mutations, "events": events, "response": {"primaryKey": target_actor_key}}
 
     if ot == "ClaimIdentity":
         def fail_claim(outcome):

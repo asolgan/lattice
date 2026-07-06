@@ -265,7 +265,12 @@ func (s *Seeder) provisionStreams(ctx context.Context) error {
 //   - 1 admin→operator holdsRole link
 //   - 5 service-actor→operator holdsRole links (Loom + Weaver + Bridge + object-store-manager + privacy)
 //
-// Total ≈ 75 Core KV entries. See `scripts/verify-kernel.go`.
+// The Gateway service-actor identity is also seeded, deliberately WITHOUT a
+// holdsRole→operator link (narrow-role fork; earns only identityProvisioner,
+// via a one-time ops action, once identity-domain installs) — not counted
+// in the 5 service-actor holdsRole links above.
+//
+// Total ≈ 76 Core KV entries. See `scripts/verify-kernel.go`.
 //
 // Roles consumer/frontOfHouse/backOfHouse and the identity DDL + its
 // permissions and grants move to packages (rbac-domain, identity-domain,
@@ -434,6 +439,22 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 		map[string]any{"protected": true,
 			"note": "Internal privacy-plane service-actor identity (crypto-shred finalization). The privacyworker + Refractor keyshredded listeners submit RecordShredFinalization under it. Root-equivalent via holdsRole to the operator role."})
 	if err := add(PrivacyIdentityKey, privacyIDVal, privacyIDErr); err != nil {
+		return nil, err
+	}
+
+	// The Gateway is seeded here like the other service actors, but — unlike
+	// every one of them — deliberately gets NO holdsRole→operator link (no
+	// entry in 10a below). It is internet-facing (triggered by every
+	// unauthenticated HTTP request that reaches it, unlike the internal-only
+	// triggers of Loom/Weaver/Bridge/objmgr/privacy), so it earns only the
+	// narrow `identityProvisioner` role via a one-time ops action once
+	// identity-domain installs (gateway-claim-flow-identity-provisioning-
+	// design.md §3.3, §4 Option B). Before that action runs, its
+	// ProvisionConsumerIdentity calls simply deny (fail-closed).
+	gatewayIDVal, gatewayIDErr := MakeVertexEnvelope(GatewayIdentityKey, "identity.system.gateway",
+		map[string]any{"protected": true,
+			"note": "Internal Gateway service-actor identity. NOT root-equivalent — narrowly scoped to identityProvisioner once wired, not holdsRole→operator."})
+	if err := add(GatewayIdentityKey, gatewayIDVal, gatewayIDErr); err != nil {
 		return nil, err
 	}
 
@@ -793,6 +814,10 @@ func buildPrimordialEntries() ([]kvEntry, error) {
 	if err := add(PrivacyHoldsRoleLinkKey, privacyHoldsVal, privacyHoldsErr); err != nil {
 		return nil, err
 	}
+
+	// No Gateway entry here, deliberately — see the seeding comment above
+	// (narrow-role fork). It is the one seeded service actor that never
+	// gets a holdsRole→operator link.
 
 	return entries, nil
 }

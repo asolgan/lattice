@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -217,6 +218,119 @@ func TestHandleOperations_ForgedActorNeverWins(t *testing.T) {
 	}
 	if captured.Actor != "vtx.identity.REALACTOR00000000000" {
 		t.Fatalf("EXPOSED — env.Actor = %q, want the verified actor (forged body actor won)", captured.Actor)
+	}
+}
+
+// --- ConfigureProvisioning / auto-provisioning pre-flight ------------------
+
+// TestHandleOperations_ProvisioningPreflight_FirstTouch: a fresh actor's
+// first request triggers ProvisionConsumerIdentity under the configured
+// gatewayActorKey BEFORE the caller's own op, carrying targetActorKey (the
+// verified actor) + consumerRoleKey.
+func TestHandleOperations_ProvisioningPreflight_FirstTouch(t *testing.T) {
+	priv := newTestKey(t)
+	authn := testAuthenticator(t, priv, "k1")
+	token := signToken(t, priv, "k1", "FRESHACTOR000000000A")
+
+	var captured []*processor.OperationEnvelope
+	fake := func(_ context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
+		captured = append(captured, env)
+		return &processor.OperationReply{RequestID: env.RequestID, Status: processor.ReplyStatusAccepted}, nil
+	}
+	s := newTestServer(t, authn, fake)
+	s.ConfigureProvisioning("vtx.identity.GATEWAY00000000000A", "vtx.role.CONSUMER0000000000A")
+
+	w := doOperations(t, s, token, `{"operationType":"PingPlatform"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if len(captured) != 2 {
+		t.Fatalf("submit called %d times, want 2 (provision then the real op)", len(captured))
+	}
+
+	prov := captured[0]
+	if prov.OperationType != "ProvisionConsumerIdentity" {
+		t.Fatalf("first submit OperationType = %q, want ProvisionConsumerIdentity", prov.OperationType)
+	}
+	if prov.Actor != "vtx.identity.GATEWAY00000000000A" {
+		t.Fatalf("first submit Actor = %q, want the Gateway's own actor", prov.Actor)
+	}
+	if prov.ContextHint != nil {
+		t.Fatalf("first submit ContextHint = %+v, want nil — targetActorKey does not exist yet on the "+
+			"fresh-actor path, and a declared-but-absent read faults (HydrationMiss) before the script "+
+			"runs, defeating the op on every first-touch request", prov.ContextHint)
+	}
+	var payload struct {
+		TargetActorKey  string `json:"targetActorKey"`
+		ConsumerRoleKey string `json:"consumerRoleKey"`
+	}
+	if err := json.Unmarshal(prov.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal provisioning payload: %v", err)
+	}
+	if payload.TargetActorKey != "vtx.identity.FRESHACTOR000000000A" {
+		t.Fatalf("targetActorKey = %q, want the verified actor", payload.TargetActorKey)
+	}
+	if payload.ConsumerRoleKey != "vtx.role.CONSUMER0000000000A" {
+		t.Fatalf("consumerRoleKey = %q, want the configured role key", payload.ConsumerRoleKey)
+	}
+
+	real := captured[1]
+	if real.OperationType != "PingPlatform" || real.Actor != "vtx.identity.FRESHACTOR000000000A" {
+		t.Fatalf("second submit = %+v, want the caller's own op under the verified actor", real)
+	}
+}
+
+// TestHandleOperations_ProvisioningPreflight_CacheHit: a second request from
+// the same actor skips the provisioning submit entirely.
+func TestHandleOperations_ProvisioningPreflight_CacheHit(t *testing.T) {
+	priv := newTestKey(t)
+	authn := testAuthenticator(t, priv, "k1")
+	token := signToken(t, priv, "k1", "REPEATACTOR00000000")
+
+	var opTypes []string
+	fake := func(_ context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
+		opTypes = append(opTypes, env.OperationType)
+		return &processor.OperationReply{RequestID: env.RequestID, Status: processor.ReplyStatusAccepted}, nil
+	}
+	s := newTestServer(t, authn, fake)
+	s.ConfigureProvisioning("vtx.identity.GATEWAY00000000000A", "vtx.role.CONSUMER0000000000A")
+
+	doOperations(t, s, token, `{"operationType":"PingPlatform"}`)
+	doOperations(t, s, token, `{"operationType":"PingPlatform"}`)
+
+	if len(opTypes) != 3 {
+		t.Fatalf("submit calls = %v, want [ProvisionConsumerIdentity PingPlatform PingPlatform] (3 total)", opTypes)
+	}
+	if opTypes[0] != "ProvisionConsumerIdentity" || opTypes[1] != "PingPlatform" || opTypes[2] != "PingPlatform" {
+		t.Fatalf("submit calls = %v, want provisioning only once (first request)", opTypes)
+	}
+}
+
+// TestHandleOperations_ProvisioningPreflight_ToleratesFailure: a provisioning
+// submit error never blocks the caller's own op — the real op's own
+// capability check is the authority, not this best-effort pre-flight.
+func TestHandleOperations_ProvisioningPreflight_ToleratesFailure(t *testing.T) {
+	priv := newTestKey(t)
+	authn := testAuthenticator(t, priv, "k1")
+	token := signToken(t, priv, "k1", "FAILACTOR000000000A")
+
+	calls := 0
+	fake := func(_ context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
+		calls++
+		if env.OperationType == "ProvisionConsumerIdentity" {
+			return nil, errors.New("simulated NATS timeout")
+		}
+		return &processor.OperationReply{RequestID: env.RequestID, Status: processor.ReplyStatusAccepted}, nil
+	}
+	s := newTestServer(t, authn, fake)
+	s.ConfigureProvisioning("vtx.identity.GATEWAY00000000000A", "vtx.role.CONSUMER0000000000A")
+
+	w := doOperations(t, s, token, `{"operationType":"PingPlatform"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s (a provisioning failure must not fail the real op)", w.Code, w.Body.String())
+	}
+	if calls != 2 {
+		t.Fatalf("submit called %d times, want 2 (provisioning attempted, then the real op still ran)", calls)
 	}
 }
 
