@@ -2,11 +2,13 @@ package weaver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/asolgan/lattice/internal/substrate"
+	"github.com/asolgan/lattice/internal/weaver/planner"
 )
 
 // Action names of the Contract #10 §10.8 action table.
@@ -64,6 +66,17 @@ const (
 type planError struct {
 	kind errKind
 	msg  string
+	// unplannable marks a failure planGap must retry through the target's
+	// augur.escalate("unplannable") policy before falling through to this
+	// error's ordinary disposition (Fire 6, R1: design
+	// loftspace-lease-renewal-goal-authored-target-design.md §5 — "'no plan
+	// derivable' flows into the existing unplannable trigger"). Set only by
+	// resolveGoalAction: a fresh Synthesize returning planner.ErrNoPlan, or a
+	// pinned leg ref the gap's Actions catalog no longer declares (which is
+	// indistinguishable, without more bookkeeping, from a redelivered episode
+	// that was itself already escalated to the augur — retrying the
+	// escalation re-derives the identical deterministic dispatch either way).
+	unplannable bool
 }
 
 func (e *planError) Error() string { return e.msg }
@@ -260,59 +273,75 @@ func buildPlan(source *targetSource, targetID, entityID, gapColumn string,
 
 // resolvePlannedAction resolves one gap's playbook entry to a concrete,
 // dispatchable GapAction (design weaver-planner-mandate-design.md §3.3, Fire
-// 5): the ONLY gaps this touches are candidates-only ("" Action, non-empty
-// Candidates) on a target in mode:"planned" — every other shape (an explicit
-// Action, a non-planned/absent/shadow mode, or a goal-only gap Fire 6 has not
-// wired yet) returns ga UNCHANGED, so those targets' dispatch stays
-// byte-identical to every fire before this one.
+// 5/6): the ONLY gaps this touches are a candidates-only or goal-only gap
+// ("" Action) on a target in mode:"planned" — every other shape (an explicit
+// Action, or a non-planned/absent/shadow mode) returns ga UNCHANGED, so those
+// targets' dispatch stays byte-identical to every fire before this one.
+// Alongside the resolved GapAction, it returns the actionRef the caller
+// records on the mark and the `__effect`/oscillation bookkeeping: for every
+// unchanged/candidates shape this is exactly the dispatch contract type
+// (ga.Action / the picked candidate's Action, as before this fire) — a goal
+// leg's ref is its OWN catalog Ref instead, decoupled from its dispatch
+// contract type, because a goal catalog may (and the first real consumer
+// does) declare multiple legs sharing one contract type (e.g. several
+// assignTask legs to different assignees) that must stay individually
+// pin-matchable and individually credited in the `__effect` window.
 //
-// pinnedAction is the mark's currently-recorded Action ("" for a genuinely
+// pinnedAction is the mark's currently-recorded actionRef ("" for a genuinely
 // fresh episode with no mark yet). This is the load-bearing branch (design
-// §2): a fresh episode RANKS candidates and picks the winner; an episode that
-// already has a mark (an in-flight redelivery, or the sweep reclaiming an
-// expired lease) MUST reuse that exact pin rather than re-ranking — ranking
-// depends on live, time-varying inputs (the §10.3 `__effect` close-rate
-// window), so re-ranking mid-episode could silently swap which action a
-// retry fires under the SAME requestId/claimId, corrupting the Contract #4
-// idempotency the mark exists to guarantee. Replanning only ever happens at a
-// fresh episode (a mark absent because the gap just opened, or because the
-// previous episode closed and cleared it) — exactly the design's "replanning
-// happens only at episode boundaries."
-func (e *Engine) resolvePlannedAction(ctx context.Context, target *Target, targetID, gapColumn string,
-	ga GapAction, row map[string]any, pinnedAction string) (GapAction, *planError) {
+// §2): a fresh episode RANKS candidates / SYNTHESIZES a plan and picks the
+// winner; an episode that already has a mark (an in-flight redelivery, or the
+// sweep reclaiming an expired lease) MUST reuse that exact pin rather than
+// re-ranking/re-planning — both depend on live, time-varying inputs (the
+// §10.3 `__effect` close-rate window; a goal plan additionally on the
+// CURRENT row state), so re-deriving mid-episode could silently swap which
+// action a retry fires under the SAME requestId/claimId, corrupting the
+// Contract #4 idempotency the mark exists to guarantee. Replanning only ever
+// happens at a fresh episode (a mark absent because the gap just opened, the
+// previous episode closed, or — goal gaps only — the pinned LEG's declared
+// effects came to hold and releaseCompletedLeg cleared it) — exactly the
+// design's "replanning happens only at episode/leg boundaries."
+func (e *Engine) resolvePlannedAction(ctx context.Context, target *Target, targetID, entityID, gapColumn string,
+	ga GapAction, row map[string]any, pinnedAction string) (GapAction, string, *planError) {
 
-	if target.Mode != targetModePlanned || ga.Action != "" || len(ga.Candidates) == 0 {
-		return ga, nil
+	if target.Mode != targetModePlanned || ga.Action != "" {
+		return ga, ga.Action, nil
 	}
-	if pinnedAction != "" {
+	if len(ga.Candidates) > 0 {
+		if pinnedAction != "" {
+			for _, c := range ga.Candidates {
+				if c.Action == pinnedAction {
+					return candidateGapAction(c), c.Action, nil
+				}
+			}
+			// The playbook changed since this episode was dispatched (the pinned
+			// candidate was removed) — a config error, not a data error: only a
+			// package re-author can fix it, and retrying the same row changes
+			// nothing.
+			return GapAction{}, "", &planError{kind: errConfig, msg: fmt.Sprintf(
+				"gap %q: pinned action %q no longer exists among the playbook's candidates", gapColumn, pinnedAction)}
+		}
+		picked, ok := e.rankCandidates(ctx, targetID, gapColumn, ga.Candidates, row)
+		if !ok {
+			// No candidate's precondition currently holds against this row — a
+			// per-row data condition (this row's fields don't satisfy anything
+			// eligible right now), not a systemic config error; bounded, alerted,
+			// never a hot loop (mirrors an ordinary template-data error).
+			return GapAction{}, "", &planError{kind: errData, msg: fmt.Sprintf(
+				"gap %q: no candidate is currently eligible (every candidate's precondition evaluated false)", gapColumn)}
+		}
 		for _, c := range ga.Candidates {
-			if c.Action == pinnedAction {
-				return candidateGapAction(c), nil
+			if c.Action == picked {
+				return candidateGapAction(c), picked, nil
 			}
 		}
-		// The playbook changed since this episode was dispatched (the pinned
-		// candidate was removed) — a config error, not a data error: only a
-		// package re-author can fix it, and retrying the same row changes
-		// nothing.
-		return GapAction{}, &planError{kind: errConfig, msg: fmt.Sprintf(
-			"gap %q: pinned action %q no longer exists among the playbook's candidates", gapColumn, pinnedAction)}
+		return GapAction{}, "", &planError{kind: errConfig, msg: fmt.Sprintf(
+			"gap %q: internal — ranked candidate %q not found in its own candidate list", gapColumn, picked)}
 	}
-	picked, ok := e.rankCandidates(ctx, targetID, gapColumn, ga.Candidates, row)
-	if !ok {
-		// No candidate's precondition currently holds against this row — a
-		// per-row data condition (this row's fields don't satisfy anything
-		// eligible right now), not a systemic config error; bounded, alerted,
-		// never a hot loop (mirrors an ordinary template-data error).
-		return GapAction{}, &planError{kind: errData, msg: fmt.Sprintf(
-			"gap %q: no candidate is currently eligible (every candidate's precondition evaluated false)", gapColumn)}
+	if ga.Goal != nil {
+		return e.resolveGoalAction(gapColumn, ga, row, pinnedAction)
 	}
-	for _, c := range ga.Candidates {
-		if c.Action == picked {
-			return candidateGapAction(c), nil
-		}
-	}
-	return GapAction{}, &planError{kind: errConfig, msg: fmt.Sprintf(
-		"gap %q: internal — ranked candidate %q not found in its own candidate list", gapColumn, picked)}
+	return ga, ga.Action, nil
 }
 
 // candidateGapAction materializes a chosen GapCandidate into the GapAction
@@ -331,6 +360,100 @@ func candidateGapAction(c GapCandidate) GapAction {
 		Params:    c.Params,
 		Reads:     c.Reads,
 	}
+}
+
+// catalogEntryGapAction materializes a chosen ActionCatalogEntry into the
+// GapAction shape buildPlan consumes — the goal-branch analogue of
+// candidateGapAction (registry.go's ActionCatalogEntry doc: "the same
+// action-contract shape as GapCandidate").
+func catalogEntryGapAction(entry ActionCatalogEntry) GapAction {
+	return GapAction{
+		Action:    entry.Action,
+		Pattern:   entry.Pattern,
+		Subject:   entry.Subject,
+		Adapter:   entry.Adapter,
+		Operation: entry.Operation,
+		Assignee:  entry.Assignee,
+		Target:    entry.Target,
+		Params:    entry.Params,
+		Reads:     entry.Reads,
+	}
+}
+
+// goalMaxDepthSlack bounds Synthesize's search depth relative to the gap's
+// own catalog size (design loftspace-lease-renewal-goal-authored-target-design.md
+// §4.3: "maxDepth = len(actions) + 2", an R1 constant): every real chain is at
+// most one leg per catalog entry, and the +2 slack absorbs a bounded amount of
+// oscillation (an action whose effects transiently undo another's) without
+// letting the search run unbounded.
+const goalMaxDepthSlack = 2
+
+// resolveGoalAction resolves one goal-mode gap (Fire 6, R1 — design
+// loftspace-lease-renewal-goal-authored-target-design.md §4.3/§9): bounded
+// goal regression over the gap's declared Actions catalog picks the
+// cheapest leg toward Goal from the CURRENT row state (rowState bridged
+// through this gap's own goalColumnPaths, exactly like rankCandidates' root
+// mapping but with the Fire-6 aspect bridge). A fresh episode
+// (pinnedAction=="") synthesizes and dispatches the winning plan's first
+// step; an in-flight episode reuses the pinned leg verbatim — no re-rank, no
+// re-plan — mirroring the candidates branch's pin discipline exactly, for
+// the same idempotency reason (doc above).
+func (e *Engine) resolveGoalAction(gapColumn string, ga GapAction, row map[string]any, pinnedAction string) (GapAction, string, *planError) {
+	if pinnedAction != "" {
+		for _, entry := range ga.Actions {
+			if entry.Ref == pinnedAction {
+				return catalogEntryGapAction(entry), entry.Ref, nil
+			}
+		}
+		// The pinned ref isn't in the current catalog. Two indistinguishable
+		// causes: the playbook changed since dispatch (a genuine config
+		// error), or this episode was previously escalated to the augur
+		// reasoning tier (planGap's unplannable retry pins the escalated
+		// directOp's OWN Action string, which lives outside this gap's Ref
+		// space entirely) and is being redelivered/reclaimed. Route through
+		// the SAME unplannable-escalation retry a fresh Synthesize failure
+		// gets, so a redelivered escalated episode re-derives the identical
+		// deterministic augur dispatch instead of alerting; a target with no
+		// escalation policy still surfaces this as a data error either way.
+		return GapAction{}, "", &planError{kind: errData, unplannable: true, msg: fmt.Sprintf(
+			"gap %q: pinned plan leg %q is not in the goal's actions catalog", gapColumn, pinnedAction)}
+	}
+
+	state := rowState(row, ga.goalColumnPaths)
+	catalog := make([]planner.Action, len(ga.Actions))
+	for i, entry := range ga.Actions {
+		cost := entry.Cost
+		if cost == 0 {
+			cost = 1
+		}
+		catalog[i] = planner.Action{Ref: entry.Ref, Cost: cost, Precondition: entry.preGuard, Effects: entry.effectGuards}
+	}
+	p, err := planner.Synthesize(ga.goalGuard, state, catalog, len(ga.Actions)+goalMaxDepthSlack)
+	if err != nil {
+		if !errors.Is(err, planner.ErrNoPlan) {
+			return GapAction{}, "", &planError{kind: errConfig, msg: fmt.Sprintf(
+				"gap %q: internal planner error: %v", gapColumn, err)}
+		}
+		return GapAction{}, "", &planError{kind: errData, unplannable: true, msg: fmt.Sprintf(
+			"gap %q: no plan derivable toward the goal from the current row state", gapColumn)}
+	}
+	if len(p.Steps) == 0 {
+		// The goal already holds against the current row, yet the gap column
+		// is still open — the lens authors its goal and its missing_<g>
+		// column to agree (design §4.3), so this is a lens/goal mismatch, not
+		// a normal outcome. Surface it loudly rather than dispatch nothing
+		// while the gap stays open forever.
+		return GapAction{}, "", &planError{kind: errData, msg: fmt.Sprintf(
+			"gap %q: the goal already holds against the current row, but the gap column is still open (lens/goal authoring mismatch)", gapColumn)}
+	}
+	leg := p.Steps[0].ActionRef
+	for _, entry := range ga.Actions {
+		if entry.Ref == leg {
+			return catalogEntryGapAction(entry), entry.Ref, nil
+		}
+	}
+	return GapAction{}, "", &planError{kind: errConfig, msg: fmt.Sprintf(
+		"gap %q: internal — synthesized leg %q not found in its own actions catalog", gapColumn, leg)}
 }
 
 // defaultAugur* are the reasoning-tier dispatch defaults a target's augur block

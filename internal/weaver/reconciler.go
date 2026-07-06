@@ -384,6 +384,53 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 		return
 	}
 
+	// entityKey is needed by BOTH paths below (the leg-advance dispatch and
+	// the ordinary reclaim), so resolve and validate it up front — moved
+	// ahead of the goal-release check (was below, alongside the ordinary
+	// reclaim) rather than duplicated.
+	entityKey, _ := row["entityKey"].(string)
+	if entityKey == "" {
+		// Without the §10.2 entityKey echo no remediation can name its
+		// candidate — and an expired mark over such a row can never be
+		// reclaimed, so leaving it would re-alert on every pass forever (a
+		// lease-less mark has no TTL to bound it). Treat the pair as corrupt
+		// evidence: alert + delete; the next well-formed row delivery
+		// dispatches fresh.
+		s.deleteCorrupt(ctx, key, markRev,
+			"row "+targetID+"."+entityID+" is violating but carries no entityKey")
+		return
+	}
+
+	// Fire 6, R1: the pinned leg's declared effects may already hold in the
+	// CURRENT row (releaseCompletedLeg re-reads it fresh here, independent of
+	// CDC delivery timing) even though the mark's lease has expired — a leg
+	// boundary, not a stuck episode. The sweep enumerates MARKS, not rows
+	// (see sweeper doc), so simply releasing and returning would leave the
+	// gap markless and INVISIBLE until an unrelated future row write happens
+	// to touch this entity again — no such write is guaranteed (the write
+	// that satisfied this leg's effect may be the last one for a while).
+	// Dispatch the next leg as a genuinely fresh episode via the SAME
+	// CAS-create path lane-1 uses (fireEpisode's inFlight=false branch)
+	// instead of merely releasing.
+	if e.releaseCompletedLeg(ctx, targetID, entityID, gapColumn, ga, rec.Action, row, markRev) {
+		pl, actionRef, dec := e.planGap(ctx, target, targetID, entityID, gapColumn, ga, row, rowRevision, "")
+		if pl == nil {
+			e.logger.Warn("weaver sweep: leg-advance plan failed; the gap stays markless until the next row delivery",
+				"targetId", targetID, "entityId", entityID, "gap", gapColumn, "decision", dec)
+			return
+		}
+		if e.fireEpisode(ctx, targetID, entityID, entityKey, gapColumn, actionRef, pl, false, nil, 0, false) != substrate.Ack {
+			// Either the fresh mark's CAS-create itself failed (truly
+			// markless — the next sweep pass retries the same release) or
+			// its op publish failed (the mark exists; the lease/reclaim
+			// cycle retries it like any other stuck episode) — either way
+			// this is a bounded, retried condition, never a silent wedge.
+			e.logger.Warn("weaver sweep: leg-advance dispatch did not complete cleanly; will retry",
+				"targetId", targetID, "entityId", entityID, "gap", gapColumn)
+		}
+		return
+	}
+
 	if !e.boolColumn(targetID, row, "violating") {
 		// Mirrors lane-1's L1 gate (handleRow dispatches only violating rows):
 		// an open missing_* on a non-violating row must not be re-dispatched
@@ -448,19 +495,6 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 				markTTL = want
 			}
 		}
-	}
-
-	entityKey, _ := row["entityKey"].(string)
-	if entityKey == "" {
-		// Without the §10.2 entityKey echo the remediation cannot name its
-		// candidate — and an expired mark over such a row can never be
-		// reclaimed, so leaving it would re-alert on every pass forever (a
-		// lease-less mark has no TTL to bound it). Treat the pair as corrupt
-		// evidence: alert + delete; the next well-formed row delivery
-		// dispatches fresh.
-		s.deleteCorrupt(ctx, key, markRev,
-			"row "+targetID+"."+entityID+" is violating but carries no entityKey")
-		return
 	}
 
 	// Plan BEFORE touching the expired mark: a failed plan (unresolved

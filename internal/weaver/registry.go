@@ -57,8 +57,8 @@ const (
 // behavior, byte-identical to every target installed before this fire.
 // "shadow" computes the planner's pick for each gap declaring candidates and
 // compares it against the table's actual dispatch (never dispatching it);
-// "planned" is parsed and validated identically but not yet consumed —
-// Fires 5/6 wire its dispatch.
+// "planned" dispatches the planner's pick for real — Fire 5 for a
+// candidates-only gap, Fire 6 for a goal-authored one (resolvePlannedAction).
 const (
 	targetModeShadow  = "shadow"
 	targetModePlanned = "planned"
@@ -104,10 +104,9 @@ type GapAction struct {
 	// until Fire 5.
 	Candidates []GapCandidate `json:"candidates,omitempty"`
 	// Goal is the Fire-6 synthesis target (§10.8 Planner extension): bounded
-	// goal regression over the installed op-effects catalog. Parsed +
-	// install-validated here (goalGuard); not yet consumed — the catalog this
-	// needs to plan or shadow-compare against first exists at runtime with
-	// Fire 6's engine work.
+	// goal regression over this gap's own declared Actions catalog (below).
+	// Parsed + install-validated here (goalGuard); a mode:"planned" target
+	// resolves it at dispatch time via resolveGoalAction.
 	Goal json.RawMessage `json:"goal,omitempty"`
 
 	// GoalColumns resolves the Fire-6 State-schema gap (design
@@ -147,21 +146,20 @@ type GapAction struct {
 	// (install rejects a goal gap with an empty catalog, and an Actions
 	// catalog with no Goal to synthesize toward). Each entry couples a
 	// dispatch binding (the same action-contract shape as GapCandidate) with
-	// the planner-facing triple Pre/Effects/Cost. Not yet consumed: this
-	// increment only parses + install-validates the shape; the goal-regression
-	// dispatch wiring (Synthesize → per-leg dispatch) is a later increment.
+	// the planner-facing triple Pre/Effects/Cost. resolveGoalAction
+	// (strategist.go) is the consumer: a fresh episode synthesizes a plan
+	// over this catalog via planner.Synthesize and dispatches its first
+	// step; an in-flight episode reuses its pinned entry verbatim.
 	Actions []ActionCatalogEntry `json:"actions,omitempty"`
 
 	// goalGuard is Goal parsed once at install-validation time (nil unless Goal
 	// is set — a valid goal always parses, validateTarget rejects the target
-	// otherwise). Unexported: no engine path reads it yet.
+	// otherwise). Unexported: read by resolveGoalAction (strategist.go).
 	goalGuard *guardgrammar.Guard `json:"-"`
 
 	// goalColumnPaths is GoalColumns parsed once at install-validation time
-	// (nil unless GoalColumns is set). Unexported: no dispatch path consumes
-	// it yet (Fire 6 goal-regression dispatch is a later increment) —
-	// Increment 2 resolves the schema and proves it via rowState + a unit
-	// test.
+	// (nil unless GoalColumns is set). Unexported: read by resolveGoalAction
+	// and releaseCompletedLeg via rowState's aspectCols bridge.
 	goalColumnPaths map[string]guardgrammar.Path `json:"-"`
 }
 
@@ -241,8 +239,9 @@ type ActionCatalogEntry struct {
 	Cost int `json:"cost,omitempty"`
 
 	// preGuard/effectGuards are Pre/Effects parsed once at install-validation
-	// time. Unexported: no engine path reads them yet (this increment is
-	// parse + validate only).
+	// time. Unexported: read by resolveGoalAction (as the catalog's
+	// planner.Action.Precondition/Effects) and releaseCompletedLeg (checking
+	// whether the pinned entry's effectGuards now hold in the row).
 	preGuard     *guardgrammar.Guard   `json:"-"`
 	effectGuards []*guardgrammar.Guard `json:"-"`
 }
@@ -264,8 +263,8 @@ type Target struct {
 	// Fire 4): "" (absent, the default — every target installed before this
 	// fire) is frozen table-only behavior, byte-identical; targetModeShadow
 	// computes + records the planner's pick per gap but never dispatches it;
-	// targetModePlanned is parsed and validated identically but not yet
-	// consumed (Fires 5/6 wire its dispatch).
+	// targetModePlanned dispatches the planner's pick for real (Fire 5
+	// candidates, Fire 6 goal).
 	Mode string `json:"mode,omitempty"`
 
 	// Admission is the optional Fire-8 dispatch-pacing policy (§10.8 Planner
@@ -795,8 +794,8 @@ func validateGapPlannerFields(col string, ga GapAction) (GapAction, error) {
 // each Effects atom must be a concrete assertion (planner.ApplyEffects
 // rejects anyOf/not, mirrored here at install time rather than surfacing only
 // as a buried search-time error). Parsed guards are cached on the entry
-// (preGuard/effectGuards) so the not-yet-built dispatch wiring never re-parses
-// per episode.
+// (preGuard/effectGuards) so resolveGoalAction's dispatch wiring never
+// re-parses per episode.
 func validateActionsCatalog(col string, ga *GapAction) error {
 	if len(ga.Actions) == 0 {
 		if len(ga.Goal) > 0 {

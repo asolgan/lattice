@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/asolgan/lattice/internal/substrate"
+	"github.com/asolgan/lattice/internal/weaver/planner"
 )
 
 // handleRow is the lane-1 handler: one KV-CDC message = the current state of
@@ -226,6 +227,18 @@ func (e *Engine) dispatchGap(ctx context.Context, target *Target, targetID, enti
 		pinnedAction = rec.Action
 	}
 
+	// Fire 6, R1: a goal-mode gap's pinned LEG may have already completed
+	// (its declared effects now hold in the row) even though the gap's own
+	// missing_<g> column is still open — a chain mid-flight, not a closed
+	// gap. releaseCompletedLeg clears the leg's mark/count/effect-close
+	// bookkeeping and, on release, the rest of this call proceeds as a
+	// genuinely fresh episode: planGap synthesizes/dispatches the NEXT leg
+	// from the now-advanced state. A no-op for every non-goal gap.
+	if found && e.releaseCompletedLeg(ctx, targetID, entityID, col, ga, pinnedAction, row, markRev) {
+		found = false
+		pinnedAction = ""
+	}
+
 	pl, action, dec := e.planGap(ctx, target, targetID, entityID, col, ga, row, msg.Sequence, pinnedAction)
 	if pl == nil {
 		return dec
@@ -253,17 +266,35 @@ func (e *Engine) dispatchGap(ctx context.Context, target *Target, targetID, enti
 // only a package re-author can fix it. pl == nil means do not dispatch — the
 // returned Decision is the caller's disposition for this gap.
 //
-// pinnedAction (Fire 5) is the mark's currently-recorded Action, or "" for a
-// genuinely fresh episode — the sole input resolvePlannedAction needs to tell
-// "pick fresh" from "reuse the pin" apart for a planned-mode candidates-only
-// gap; every other gap shape ignores it. The returned string is the resolved
-// actionRef (== ga.Action unchanged for every non-candidates gap) the caller
-// threads into the mark/effect-bookkeeping so a fresh candidate pick gets
-// recorded, and a reused pin gets re-recorded identically.
+// pinnedAction (Fire 5/6) is the mark's currently-recorded actionRef, or ""
+// for a genuinely fresh episode — the sole input resolvePlannedAction needs
+// to tell "pick fresh" from "reuse the pin" apart for a planned-mode
+// candidates-only or goal-only gap; every other gap shape ignores it. The
+// returned string is the resolved actionRef (== ga.Action unchanged for
+// every non-planned gap; the picked candidate's Action; or a goal leg's own
+// catalog Ref) the caller threads into the mark/effect-bookkeeping so a
+// fresh pick gets recorded, and a reused pin gets re-recorded identically.
+//
+// A goal gap's Synthesize dead-end (planner.ErrNoPlan) — or a redelivered
+// episode whose pin was itself a prior escalation (resolveGoalAction's doc)
+// — surfaces as an unplannable-flagged *planError; before falling through to
+// its ordinary disposition, this retries EXACTLY the same
+// augur.escalate("unplannable") policy dispatchGap's "no playbook entry"
+// dead-end already uses (Contract #10 §10.8 "Augur escalation" — "its
+// meaning extends to 'no playbook entry AND no derivable plan'; no new
+// trigger token"), so a target with that policy redirects a stuck goal chain
+// to AI reasoning instead of alerting forever.
 func (e *Engine) planGap(ctx context.Context, target *Target, targetID, entityID, col string, ga GapAction, row map[string]any,
 	rowRevision uint64, pinnedAction string) (*plan, string, substrate.Decision) {
 
-	resolved, perr := e.resolvePlannedAction(ctx, target, targetID, col, ga, row, pinnedAction)
+	resolved, actionRef, perr := e.resolvePlannedAction(ctx, target, targetID, entityID, col, ga, row, pinnedAction)
+	if perr != nil && perr.unplannable {
+		entityKey, _ := row["entityKey"].(string)
+		if esc, escalated := augurEscalation(e.source, target, escalateUnplannable, targetID, entityID, entityKey, col); escalated {
+			e.issues.clear(issueKeyGap(targetID, col))
+			resolved, actionRef, perr = esc, esc.Action, nil
+		}
+	}
 	if perr == nil {
 		if !e.admitGap(target, targetID, entityID, col, resolved.Adapter, row) {
 			// Fire 8 admission control (design §3.4): a declared budget has no
@@ -278,7 +309,7 @@ func (e *Engine) planGap(ctx context.Context, target *Target, targetID, entityID
 		if pl, perr = buildPlan(e.source, targetID, entityID, col, resolved, row, rowRevision); perr == nil {
 			e.issues.clear(issueKeyGap(targetID, col))
 			e.issues.clear(issueKeyData(targetID, col))
-			return pl, resolved.Action, substrate.Ack
+			return pl, actionRef, substrate.Ack
 		}
 	}
 	switch perr.kind {
@@ -513,6 +544,72 @@ func (e *Engine) clearClosedMarks(ctx context.Context, target *Target, targetID,
 		}
 	}
 	return ok
+}
+
+// releaseCompletedLeg reports whether gap col's currently-pinned goal-mode
+// leg (Fire 6, R1) has its declared Effects all holding against the current
+// row — the leg is DONE — and if so releases it: clears the mark, resets the
+// gap's per-chain dispatch-count, and credits the just-finished leg's
+// `__effect` close, mirroring clearClosedMarks' gap-close bookkeeping but
+// scoped to one LEG rather than the whole gap. A no-op (false) for every
+// non-goal gap, a fresh episode (pinnedAction==""), or a pin whose ref the
+// catalog no longer names (planGap's unplannable retry owns that case).
+//
+// A release is a LEG boundary, not a gap boundary: the gap's own missing_<g>
+// column may well still be true (more legs remain), so the caller must
+// re-evaluate as a genuinely fresh episode (pinnedAction="") immediately
+// after a true return — the next resolveGoalAction call synthesizes the NEXT
+// leg from the now-advanced row state, per the design's "replanning happens
+// only at leg boundaries (effects-hold) and gap boundaries (close→reopen)."
+// markRev is the revision the caller read the mark at (dispatchGap's
+// up-front read, or the sweep's own read this pass) — the delete is
+// revision-conditioned on it so a mark that changed underneath (a concurrent
+// path already released/advanced this SAME leg) is left alone rather than
+// blindly cleared, mirroring the revision-conditioning every other
+// sweep-path mark mutation (replace, deleteMark) already applies.
+func (e *Engine) releaseCompletedLeg(ctx context.Context, targetID, entityID, col string, ga GapAction, pinnedAction string, row map[string]any, markRev uint64) bool {
+	if ga.Goal == nil || pinnedAction == "" {
+		return false
+	}
+	var entry *ActionCatalogEntry
+	for i := range ga.Actions {
+		if ga.Actions[i].Ref == pinnedAction {
+			entry = &ga.Actions[i]
+			break
+		}
+	}
+	if entry == nil {
+		return false
+	}
+	state := rowState(row, ga.goalColumnPaths)
+	for _, g := range entry.effectGuards {
+		if !planner.EvalGuard(g, state) {
+			return false
+		}
+	}
+	conflict, err := e.marks.deleteRevision(ctx, targetID, entityID, col, markRev)
+	if err != nil {
+		e.logger.Error("weaver: goal leg release mark clear failed",
+			"targetId", targetID, "entityId", entityID, "gap", col, "action", pinnedAction, "err", err)
+		return false
+	}
+	if conflict {
+		// The mark changed since the caller's read — a concurrent path
+		// already released or is otherwise handling this episode. Not this
+		// caller's release to claim.
+		return false
+	}
+	if err := e.marks.deleteDispatchCount(ctx, targetID, entityID, col); err != nil {
+		e.logger.Warn("weaver: goal leg release dispatch-count reset failed",
+			"targetId", targetID, "entityId", entityID, "gap", col, "err", err)
+	}
+	if err := e.marks.recordEffectClose(ctx, targetID, col, pinnedAction); err != nil {
+		e.logger.Warn("weaver: goal leg release effect-close record failed",
+			"targetId", targetID, "entityId", entityID, "gap", col, "action", pinnedAction, "err", err)
+	}
+	e.logger.Info("weaver: goal leg released; re-planning from the advanced state",
+		"targetId", targetID, "entityId", entityID, "gap", col, "action", pinnedAction)
+	return true
 }
 
 // boolColumn reads a §10.2 bool column off a row. A present value of any other

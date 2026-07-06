@@ -230,6 +230,28 @@ func (m *markStore) delete(ctx context.Context, targetID, entityID, gapColumn st
 	return nil
 }
 
+// deleteRevision clears one gap's mark, but ONLY if it is still at revision —
+// the revision-conditioned counterpart to delete, for a caller that read the
+// mark at a known revision and must not blindly clear a DIFFERENT episode
+// that raced in since (releaseCompletedLeg's reconciler call site: the sweep
+// reads an expired mark, but a concurrent CDC delivery may have already
+// released that SAME leg and CAS-created a fresh mark for the next one before
+// the sweep's delete lands — a blind KVDelete would then wipe the fresh
+// episode's mark instead of skipping it, exactly the race `replace` and
+// `deleteMark` already guard against for every other sweep-path mutation).
+// conflict=true (mirroring replace's own conflict semantics) means the mark
+// changed or is already gone — the caller must not proceed as if ITS release
+// won.
+func (m *markStore) deleteRevision(ctx context.Context, targetID, entityID, gapColumn string, revision uint64) (conflict bool, err error) {
+	if err := m.conn.KVDeleteRevision(ctx, m.bucket, markKey(targetID, entityID, gapColumn), revision); err != nil {
+		if errors.Is(err, substrate.ErrRevisionConflict) || errors.Is(err, substrate.ErrKeyNotFound) {
+			return true, nil
+		}
+		return false, err
+	}
+	return false, nil
+}
+
 // countKeySuffix names the reserved dispatch-count key tail:
 // `<targetId>.<entityId>.<gapColumn>.__count`. The count is matched (and skipped)
 // by suffix wherever marks are enumerated — the reconciler sweep and the

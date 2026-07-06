@@ -34,7 +34,7 @@ func TestResolvePlannedAction_NonCandidateShapesUnchanged(t *testing.T) {
 	explicit := GapAction{Action: actionDirectOp, Operation: "X",
 		Candidates: []GapCandidate{{Action: actionAssignTask}}}
 	planned := &Target{TargetID: "t1", Mode: targetModePlanned}
-	got, perr := e.resolvePlannedAction(ctx, planned, "t1", "missing_a", explicit, map[string]any{}, "")
+	got, _, perr := e.resolvePlannedAction(ctx, planned, "t1", "e1", "missing_a", explicit, map[string]any{}, "")
 	if perr != nil {
 		t.Fatalf("explicit Action must never error, got %v", perr)
 	}
@@ -45,7 +45,7 @@ func TestResolvePlannedAction_NonCandidateShapesUnchanged(t *testing.T) {
 	candidatesOnly := GapAction{Candidates: []GapCandidate{{Action: actionDirectOp, Operation: "Y"}}}
 	for _, mode := range []string{"", targetModeShadow} {
 		target := &Target{TargetID: "t1", Mode: mode}
-		got, perr := e.resolvePlannedAction(ctx, target, "t1", "missing_a", candidatesOnly, map[string]any{}, "")
+		got, _, perr := e.resolvePlannedAction(ctx, target, "t1", "e1", "missing_a", candidatesOnly, map[string]any{}, "")
 		if perr != nil {
 			t.Fatalf("mode %q must never error on a candidates-only gap (byte-identical no-op), got %v", mode, perr)
 		}
@@ -66,7 +66,7 @@ func TestResolvePlannedAction_FreshEpisodeRanks(t *testing.T) {
 		{Action: actionTriggerLoom, Pattern: "expensiveFlow", Subject: "row.entityKey", Cost: 5},
 		{Action: actionDirectOp, Operation: "Cheap", Cost: 0},
 	}}
-	got, perr := e.resolvePlannedAction(context.Background(), target, "t1", "missing_a", ga, map[string]any{}, "")
+	got, _, perr := e.resolvePlannedAction(context.Background(), target, "t1", "e1", "missing_a", ga, map[string]any{}, "")
 	if perr != nil {
 		t.Fatalf("expected a pick, got error %v", perr)
 	}
@@ -89,7 +89,7 @@ func TestResolvePlannedAction_PinnedEpisodeReusesChoice(t *testing.T) {
 	}}
 	// Pinned to the costlier candidate — as if a prior fresh episode picked it
 	// before Cheap existed, or before its cost/close-rate made it preferable.
-	got, perr := e.resolvePlannedAction(context.Background(), target, "t1", "missing_a", ga, map[string]any{}, actionTriggerLoom)
+	got, _, perr := e.resolvePlannedAction(context.Background(), target, "t1", "e1", "missing_a", ga, map[string]any{}, actionTriggerLoom)
 	if perr != nil {
 		t.Fatalf("a pinned choice must resolve without error, got %v", perr)
 	}
@@ -106,7 +106,7 @@ func TestResolvePlannedAction_PinVanished(t *testing.T) {
 	e := shadowTestEngine(t)
 	target := &Target{TargetID: "t1", Mode: targetModePlanned}
 	ga := GapAction{Candidates: []GapCandidate{{Action: actionDirectOp, Operation: "Cheap", Cost: 0}}}
-	_, perr := e.resolvePlannedAction(context.Background(), target, "t1", "missing_a", ga, map[string]any{}, "aRemovedCandidate")
+	_, _, perr := e.resolvePlannedAction(context.Background(), target, "t1", "e1", "missing_a", ga, map[string]any{}, "aRemovedCandidate")
 	if perr == nil || perr.kind != errConfig {
 		t.Fatalf("expected an errConfig for a vanished pin, got %v", perr)
 	}
@@ -122,7 +122,7 @@ func TestResolvePlannedAction_NoEligibleCandidate(t *testing.T) {
 	ga := GapAction{Candidates: []GapCandidate{
 		{Action: actionDirectOp, Operation: "X", preGuard: parseGuard(t, `{"present":"subject.data.nope"}`)},
 	}}
-	_, perr := e.resolvePlannedAction(context.Background(), target, "t1", "missing_a", ga, map[string]any{}, "")
+	_, _, perr := e.resolvePlannedAction(context.Background(), target, "t1", "e1", "missing_a", ga, map[string]any{}, "")
 	if perr == nil || perr.kind != errData {
 		t.Fatalf("expected an errData when no candidate is eligible, got %v", perr)
 	}
