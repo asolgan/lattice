@@ -170,6 +170,22 @@ fire's authorization (the same boundary Inc 2b's nkey activation hit). The cyphe
 correct by the embedded-NATS regression suite above; only the live end-to-end reprojection await the
 next full bootstrap cycle.
 
+**Refractor restart, live-verified (2026-07-07):** cycled the running `bin/refractor` process (kill +
+relaunch, same binary/env — no rebuild needed since only the lens *definition* was newly installed, not
+Refractor's code) to pick up the `one-bill` package's DDL, which — per this repo's documented cache-at-install-time
+caveat — a live Refractor won't see until restart. Confirmed via `nats kv ls` (refractor's own nkey): the
+`one-bill-history` bucket now exists (created `2026-07-07 06:05:57`) and Refractor came back up with zero
+errors. It shows 0 rows, which is *correct*, not a gap — `core-kv` has no `:transaction` or `:cafetransaction`
+vertices yet (no rent or café charge has ever been posted on this dev stack), so both source ledgers'
+own history buckets (`loftspace-ledger-history`, `cafe-ledger-history`) are equally empty; the lens has
+nothing to union yet. This closes Inc 3's live-reprojection gap at the Refractor level — the cypher logic
+was already proven by the embedded-NATS regression suite, and now the live install path is proven too.
+**Inc 2b's separate gap is still open and untouched by this**: `cafe-app`'s own NATS nkey
+(`deploy/nkeys/cafe-app.nk`, already generated) needs the shared dev NATS container's *authorization
+config* reloaded before `cafe-app` can authenticate — that requires touching the shared NATS container
+itself (not a single component process), a materially different risk tier from a Refractor-only restart,
+so it stays deferred to an explicitly authorized full-stack cycle as before.
+
 ## Next
 
 - **Mixed-use composition surfaces** (verticals.md) — front-desk/operations aggregate views consuming
