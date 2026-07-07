@@ -145,3 +145,36 @@ func TestIsReadable_DoesNotLeakAcrossActors(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, readable, "actor A1 must not inherit actor B1's grants")
 }
+
+// TestIsReadable_MalformedJSON_PropagatesError pins the fail-closed *error*
+// arm on an unparseable "cap-read.*" document: a producer bug (or hand-edited
+// KV state) that leaves non-JSON bytes at the key must surface as an error,
+// not a silent deny — a caller distinguishing "denied" from "the gate itself
+// is broken" needs this to actually error.
+func TestIsReadable_MalformedJSON_PropagatesError(t *testing.T) {
+	kv := newTestKV(t)
+	_, err := kv.Put(context.Background(), "cap-read.identity.A1", []byte("not-json"))
+	require.NoError(t, err, "raw Put bypasses putReadDoc's marshal so the stored bytes are genuinely malformed")
+
+	readable, err := capabilityread.IsReadable(context.Background(), kv, "identity", "A1", "unitNano1")
+	require.Error(t, err, "an unparseable cap-read document must error, not silently deny")
+	require.False(t, readable)
+	require.Contains(t, err.Error(), "unmarshal")
+	require.Contains(t, err.Error(), "cap-read.identity.A1")
+}
+
+// TestIsReadable_ListKeysFailure_PropagatesError pins the fail-closed *error*
+// arm on the domain-slice discovery list: a KV-list failure (here, an
+// already-canceled context — ListKeysFilter checks ctx.Err() after
+// enumerating, substrate/kv.go:282) must surface as an error, not the silent
+// "no domain slices" a swallowed error would produce.
+func TestIsReadable_ListKeysFailure_PropagatesError(t *testing.T) {
+	kv := newTestKV(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	readable, err := capabilityread.IsReadable(ctx, kv, "identity", "A1", "unitNano1")
+	require.Error(t, err, "a list-keys failure must error, not silently deny as if no domain slices existed")
+	require.False(t, readable)
+	require.Contains(t, err.Error(), "list domain slices")
+}
