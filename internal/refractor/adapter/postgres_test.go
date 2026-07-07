@@ -236,7 +236,7 @@ func TestBuildUpsertSQL_Guarded_AppendsProjectionSeqGuard(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assert.Equal(t,
-		`INSERT INTO "read_lease_applications" ("lease_id", "status", "projection_seq") VALUES ($1, $2, $3) ON CONFLICT ("lease_id") DO UPDATE SET "status" = EXCLUDED."status", "projection_seq" = EXCLUDED."projection_seq" WHERE EXCLUDED."projection_seq" > "read_lease_applications"."projection_seq"`,
+		`INSERT INTO "read_lease_applications" ("lease_id", "status", "projection_seq") VALUES ($1, $2, $3) ON CONFLICT ("lease_id") DO UPDATE SET "status" = EXCLUDED."status", "projection_seq" = EXCLUDED."projection_seq", "is_deleted" = false WHERE EXCLUDED."projection_seq" > "read_lease_applications"."projection_seq"`,
 		sql,
 	)
 	assert.Equal(t, []any{"abc", "submitted", int64(42)}, args)
@@ -256,7 +256,7 @@ func TestBuildUpsertSQL_Guarded_KeyOnlyRow_StillGuardsNotDoNothing(t *testing.T)
 	)
 	require.NoError(t, err)
 	assert.NotContains(t, sql, "DO NOTHING")
-	assert.Contains(t, sql, `DO UPDATE SET "projection_seq" = EXCLUDED."projection_seq" WHERE`)
+	assert.Contains(t, sql, `DO UPDATE SET "projection_seq" = EXCLUDED."projection_seq", "is_deleted" = false WHERE`)
 	assert.Equal(t, []any{"e1", int64(7)}, args)
 }
 
@@ -273,7 +273,43 @@ func TestBuildUpsertSQL_Guarded_RowSuppliedProjectionSeqIgnored(t *testing.T) {
 	)
 	require.NoError(t, err)
 	assert.Equal(t,
-		`INSERT INTO "t" ("id", "name", "projection_seq") VALUES ($1, $2, $3) ON CONFLICT ("id") DO UPDATE SET "name" = EXCLUDED."name", "projection_seq" = EXCLUDED."projection_seq" WHERE EXCLUDED."projection_seq" > "t"."projection_seq"`,
+		`INSERT INTO "t" ("id", "name", "projection_seq") VALUES ($1, $2, $3) ON CONFLICT ("id") DO UPDATE SET "name" = EXCLUDED."name", "projection_seq" = EXCLUDED."projection_seq", "is_deleted" = false WHERE EXCLUDED."projection_seq" > "t"."projection_seq"`,
+		sql,
+	)
+	assert.Equal(t, []any{"e1", "x", int64(7)}, args)
+}
+
+// TestBuildUpsertSQL_Guarded_RevivesTombstone proves a guarded Upsert always
+// resets IsDeletedColumn to false: a live re-projection at a higher seq must
+// revive a row a prior guarded Delete tombstoned (mirrors
+// PostgresGrantWriter.UpsertGrant's is_deleted=false on conflict) — otherwise
+// the row would stay invisible under the RLS policy's "NOT is_deleted" clause
+// forever, even after a legitimate re-create.
+func TestBuildUpsertSQL_Guarded_RevivesTombstone(t *testing.T) {
+	a := newTestAdapter(t, "t", []string{"id"})
+	a.SetGuarded(true)
+
+	sql, _, err := a.buildUpsertSQL(map[string]any{"id": "e1"}, map[string]any{"name": "x"}, 7)
+	require.NoError(t, err)
+	assert.Contains(t, sql, `"is_deleted" = false`)
+}
+
+// TestBuildUpsertSQL_Guarded_RowSuppliedTombstoneColumnsIgnored proves a
+// lens-declared row value under IsDeletedColumn/DeletedAtColumn never collides
+// with (or overrides) the platform-owned tombstone columns — mirroring the
+// ProjectionSeqColumn collision guard above.
+func TestBuildUpsertSQL_Guarded_RowSuppliedTombstoneColumnsIgnored(t *testing.T) {
+	a := newTestAdapter(t, "t", []string{"id"})
+	a.SetGuarded(true)
+
+	sql, args, err := a.buildUpsertSQL(
+		map[string]any{"id": "e1"},
+		map[string]any{"is_deleted": true, "deleted_at": "bogus", "name": "x"},
+		7,
+	)
+	require.NoError(t, err)
+	assert.Equal(t,
+		`INSERT INTO "t" ("id", "name", "projection_seq") VALUES ($1, $2, $3) ON CONFLICT ("id") DO UPDATE SET "name" = EXCLUDED."name", "projection_seq" = EXCLUDED."projection_seq", "is_deleted" = false WHERE EXCLUDED."projection_seq" > "t"."projection_seq"`,
 		sql,
 	)
 	assert.Equal(t, []any{"e1", "x", int64(7)}, args)
@@ -439,7 +475,7 @@ func TestPostgresAdapter_Upsert_MissingTable_Integration(t *testing.T) {
 func TestBuildDeleteSQL_SingleKey_Hard(t *testing.T) {
 	a := newTestAdapterMode(t, "occupancy_view", []string{"agreement_id"}, DeleteModeHard)
 
-	sql, args, err := a.buildDeleteSQL(map[string]any{"agreement_id": "abc"})
+	sql, args, err := a.buildDeleteSQL(map[string]any{"agreement_id": "abc"}, 0)
 	require.NoError(t, err)
 	assert.Equal(t,
 		`DELETE FROM "occupancy_view" WHERE "agreement_id" = $1`,
@@ -451,7 +487,7 @@ func TestBuildDeleteSQL_SingleKey_Hard(t *testing.T) {
 func TestBuildDeleteSQL_SingleKey_Soft(t *testing.T) {
 	a := newTestAdapterMode(t, "occupancy_view", []string{"agreement_id"}, DeleteModeSoft)
 
-	sql, args, err := a.buildDeleteSQL(map[string]any{"agreement_id": "abc"})
+	sql, args, err := a.buildDeleteSQL(map[string]any{"agreement_id": "abc"}, 0)
 	require.NoError(t, err)
 	assert.Equal(t,
 		`UPDATE "occupancy_view" SET is_deleted=true, deleted_at=NOW() WHERE "agreement_id" = $1`,
@@ -463,7 +499,7 @@ func TestBuildDeleteSQL_SingleKey_Soft(t *testing.T) {
 func TestBuildDeleteSQL_CompositeKey_Hard(t *testing.T) {
 	a := newTestAdapterMode(t, "occupancy_view", []string{"team_id", "agreement_id"}, DeleteModeHard)
 
-	sql, args, err := a.buildDeleteSQL(map[string]any{"team_id": "t1", "agreement_id": "abc"})
+	sql, args, err := a.buildDeleteSQL(map[string]any{"team_id": "t1", "agreement_id": "abc"}, 0)
 	require.NoError(t, err)
 	assert.Equal(t,
 		`DELETE FROM "occupancy_view" WHERE "team_id" = $1 AND "agreement_id" = $2`,
@@ -475,13 +511,47 @@ func TestBuildDeleteSQL_CompositeKey_Hard(t *testing.T) {
 func TestBuildDeleteSQL_CompositeKey_Soft(t *testing.T) {
 	a := newTestAdapterMode(t, "occupancy_view", []string{"team_id", "agreement_id"}, DeleteModeSoft)
 
-	sql, args, err := a.buildDeleteSQL(map[string]any{"team_id": "t1", "agreement_id": "abc"})
+	sql, args, err := a.buildDeleteSQL(map[string]any{"team_id": "t1", "agreement_id": "abc"}, 0)
 	require.NoError(t, err)
 	assert.Equal(t,
 		`UPDATE "occupancy_view" SET is_deleted=true, deleted_at=NOW() WHERE "team_id" = $1 AND "agreement_id" = $2`,
 		sql,
 	)
 	assert.Equal(t, []any{"t1", "abc"}, args)
+}
+
+// TestBuildDeleteSQL_Guarded_SeqGuardedSoftTombstone proves a guarded (protected
+// read-model) adapter's Delete is ALWAYS a seq-guarded soft tombstone —
+// regardless of deleteMode — so ProjectionSeqColumn's watermark survives a
+// delete the way it survives an Upsert: a later stale replay's ON CONFLICT
+// guard still has a row to compare its projectionSeq against, instead of
+// hard-DELETE discarding the watermark and letting the replay resurrect the
+// row unconditionally (Contract #6 §6.14).
+func TestBuildDeleteSQL_Guarded_SeqGuardedSoftTombstone(t *testing.T) {
+	a := newTestAdapter(t, "read_lease_applications", []string{"lease_id"})
+	a.SetGuarded(true)
+
+	sql, args, err := a.buildDeleteSQL(map[string]any{"lease_id": "abc"}, 42)
+	require.NoError(t, err)
+	assert.Equal(t,
+		`UPDATE "read_lease_applications" SET is_deleted=true, deleted_at=NOW(), projection_seq=$2 WHERE "lease_id" = $1 AND projection_seq < $2`,
+		sql,
+	)
+	assert.Equal(t, []any{"abc", int64(42)}, args)
+}
+
+// TestBuildDeleteSQL_Guarded_IgnoresDeclaredDeleteMode proves the guarded path
+// overrides deleteMode entirely — even an adapter constructed with
+// DeleteModeSoft still emits the seq-guarded tombstone (with projection_seq
+// bumped), never the unguarded plain soft-delete UPDATE.
+func TestBuildDeleteSQL_Guarded_IgnoresDeclaredDeleteMode(t *testing.T) {
+	a := newTestAdapterMode(t, "t", []string{"id"}, DeleteModeSoft)
+	a.SetGuarded(true)
+
+	sql, _, err := a.buildDeleteSQL(map[string]any{"id": "x"}, 5)
+	require.NoError(t, err)
+	assert.Contains(t, sql, "projection_seq=$2")
+	assert.Contains(t, sql, "AND projection_seq < $2")
 }
 
 // ── buildListKeysSQL / ListKeys unit tests (no real Postgres needed) ────────
@@ -503,6 +573,20 @@ func TestBuildListKeysSQL_Soft_ExcludesDeleted(t *testing.T) {
 	a := newTestAdapterMode(t, "occupancy_view", []string{"agreement_id"}, DeleteModeSoft)
 	assert.Equal(t,
 		`SELECT "agreement_id" FROM "occupancy_view" WHERE NOT "is_deleted"`,
+		a.buildListKeysSQL(),
+	)
+}
+
+// TestBuildListKeysSQL_Guarded_ExcludesDeleted proves a guarded (protected)
+// adapter excludes tombstoned rows from ListKeys even though its declared
+// deleteMode is the default DeleteModeHard — the guarded Delete path always
+// soft-tombstones (buildDeleteSQL), so "live" must be derived from a.guarded,
+// not from deleteMode alone.
+func TestBuildListKeysSQL_Guarded_ExcludesDeleted(t *testing.T) {
+	a := newTestAdapter(t, "read_lease_applications", []string{"lease_id"})
+	a.SetGuarded(true)
+	assert.Equal(t,
+		`SELECT "lease_id" FROM "read_lease_applications" WHERE NOT "is_deleted"`,
 		a.buildListKeysSQL(),
 	)
 }
@@ -565,7 +649,7 @@ func TestPostgresAdapter_ListKeys_Soft_ExcludesDeleted_Integration(t *testing.T)
 func TestBuildDeleteSQL_MissingKeyField(t *testing.T) {
 	a := newTestAdapter(t, "t", []string{"id", "tenant"})
 
-	_, _, err := a.buildDeleteSQL(map[string]any{"id": 1}) // "tenant" absent
+	_, _, err := a.buildDeleteSQL(map[string]any{"id": 1}, 0) // "tenant" absent
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tenant")
 }
@@ -574,7 +658,7 @@ func TestBuildDeleteSQL_ColumnNamesQuoted(t *testing.T) {
 	// Reserved-word column name must be double-quoted.
 	a := newTestAdapter(t, "t", []string{"order"})
 
-	sql, _, err := a.buildDeleteSQL(map[string]any{"order": 99})
+	sql, _, err := a.buildDeleteSQL(map[string]any{"order": 99}, 0)
 	require.NoError(t, err)
 	assert.Contains(t, sql, `"order"`)
 }
@@ -738,6 +822,67 @@ func TestPostgresAdapter_Delete_Soft_Integration(t *testing.T) {
 	err = pool.QueryRow(ctx, `SELECT is_deleted FROM delete_soft_test WHERE id = 'abc'`).Scan(&isDeleted)
 	require.NoError(t, err)
 	assert.True(t, isDeleted, "soft-delete must retain the row with is_deleted=true")
+}
+
+// TestPostgresAdapter_GuardedDelete_PreventsStaleReplayResurrection is the
+// Contract #6 §6.14 proof this fire closes: a guarded (protected read-model)
+// table's Delete must retain the projection_seq watermark, so a stale replay
+// arriving after the delete cannot resurrect the row. A hard DELETE would
+// instead discard the watermark, letting the stale INSERT's ON CONFLICT guard
+// find no row to compare against and succeed unconditionally.
+func TestPostgresAdapter_GuardedDelete_PreventsStaleReplayResurrection(t *testing.T) {
+	dsn := skipIfNoPostgres(t)
+
+	pool, err := pgxpool.New(context.Background(), dsn)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	ctx := context.Background()
+
+	_, err = pool.Exec(ctx, `CREATE TEMP TABLE guarded_delete_test (
+		id TEXT PRIMARY KEY, name TEXT,
+		projection_seq BIGINT NOT NULL DEFAULT 0,
+		is_deleted BOOLEAN NOT NULL DEFAULT false,
+		deleted_at TIMESTAMPTZ)`)
+	require.NoError(t, err)
+
+	a, err := NewPostgresAdapter(pool, "guarded_delete_test", []string{"id"}, 5*time.Second, DeleteModeHard)
+	require.NoError(t, err)
+	a.SetGuarded(true)
+
+	// Live projection at seq 10.
+	require.NoError(t, a.Upsert(ctx, map[string]any{"id": "abc"}, map[string]any{"name": "Acme"}, 10))
+
+	// Delete at seq 20 — must retain the row as a tombstone, not remove it.
+	require.NoError(t, a.Delete(ctx, map[string]any{"id": "abc"}, 20))
+
+	var isDeleted bool
+	var seq int64
+	err = pool.QueryRow(ctx, `SELECT is_deleted, projection_seq FROM guarded_delete_test WHERE id = 'abc'`).Scan(&isDeleted, &seq)
+	require.NoError(t, err, "the row must still exist after a guarded delete (tombstone, not removal)")
+	assert.True(t, isDeleted)
+	assert.Equal(t, int64(20), seq)
+
+	// A stale CDC replay for the pre-delete seq (15, between the upsert and the
+	// delete) arrives after the delete. Without the retained watermark, this
+	// INSERT ... ON CONFLICT would find no row to guard against and resurrect
+	// the entity unconditionally.
+	require.NoError(t, a.Upsert(ctx, map[string]any{"id": "abc"}, map[string]any{"name": "STALE"}, 15))
+
+	err = pool.QueryRow(ctx, `SELECT is_deleted, projection_seq FROM guarded_delete_test WHERE id = 'abc'`).Scan(&isDeleted, &seq)
+	require.NoError(t, err)
+	assert.True(t, isDeleted, "a stale replay (seq 15 < stored seq 20) must not revive the tombstone")
+	assert.Equal(t, int64(20), seq, "a stale replay must not move the watermark backward")
+
+	// A fresh, later projection (seq 30) legitimately revives the row.
+	require.NoError(t, a.Upsert(ctx, map[string]any{"id": "abc"}, map[string]any{"name": "Acme Again"}, 30))
+
+	var name string
+	err = pool.QueryRow(ctx, `SELECT name, is_deleted, projection_seq FROM guarded_delete_test WHERE id = 'abc'`).Scan(&name, &isDeleted, &seq)
+	require.NoError(t, err)
+	assert.False(t, isDeleted, "a fresh higher-seq upsert must revive the tombstoned row")
+	assert.Equal(t, "Acme Again", name)
+	assert.Equal(t, int64(30), seq)
 }
 
 // ── coerceForPgx unit tests (no real Postgres needed) ────────────────────────

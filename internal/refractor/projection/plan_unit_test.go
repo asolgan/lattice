@@ -328,6 +328,18 @@ func TestIsAuthPlane(t *testing.T) {
 	if IsAuthPlane(&lens.Rule{Into: lens.IntoConfig{Target: "nats_kv", Bucket: "my-tasks"}}) {
 		t.Fatalf("my-tasks bucket must NOT be auth-plane")
 	}
+	// A grant-table lens (Contract #6 §6.14) writes actor_read_grants, the
+	// read-auth source of truth every protected table's RLS policy consults —
+	// its pause must alert at the same severity as a paused capability-kv lens.
+	if !IsAuthPlane(&lens.Rule{Into: lens.IntoConfig{Target: "postgres", GrantTable: true}}) {
+		t.Fatalf("a grant-table postgres lens must classify as auth-plane")
+	}
+	// An ordinary protected business lens is NOT itself the read-auth source of
+	// truth — RLS enforcement is Postgres-native and independent of this lens's
+	// own freshness, so it stays at the generic business-lens severity tier.
+	if IsAuthPlane(&lens.Rule{Into: lens.IntoConfig{Target: "postgres", Protected: true}}) {
+		t.Fatalf("an ordinary protected (non-grant-table) postgres lens must NOT be auth-plane")
+	}
 }
 
 // --- contributing-source provenance widening (AC5) ---

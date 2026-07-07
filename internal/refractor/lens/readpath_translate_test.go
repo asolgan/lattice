@@ -61,8 +61,9 @@ func TestTranslateSpec_ProtectedAndPublic_Rejected(t *testing.T) {
 }
 
 func TestTranslateSpec_ProtectedSoftDelete_Rejected(t *testing.T) {
-	// A protected RLS table has no is_deleted/deleted_at column and the §6.14
-	// policy does not filter it, so deleteMode "soft" would loop on every delete.
+	// A protected table's delete semantics are platform-owned — the guarded
+	// adapter always performs a seq-guarded soft tombstone regardless of
+	// deleteMode — so a lens declaring "soft" implies a choice it doesn't have.
 	_, err := translateSpec(protectedSpec(t, map[string]any{"protected": true, "deleteMode": "soft"}))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "deleteMode")

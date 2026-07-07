@@ -28,6 +28,20 @@ const AuthzAnchorsColumn = "authz_anchors"
 // fresher projected row.
 const ProjectionSeqColumn = "projection_seq"
 
+// IsDeletedColumn and DeletedAtColumn are the platform-added tombstone columns
+// every protected read-model table carries (Contract #6 §6.14), mirroring
+// actor_read_grants' own is_deleted column. A guarded PostgresAdapter's Delete
+// retains the row as a seq-guarded soft tombstone instead of a hard DELETE, so
+// ProjectionSeqColumn's watermark survives the delete the same way it survives
+// on actor_read_grants — a hard delete would discard the watermark, letting a
+// later stale replay's ON CONFLICT guard find no row to compare against and
+// resurrect it unconditionally. The generated RLS policy denies a tombstoned
+// row to every reader regardless of anchor membership.
+const (
+	IsDeletedColumn = "is_deleted"
+	DeletedAtColumn = "deleted_at"
+)
+
 // GrantKeyColumns is the composite key a grant-projecting lens RETURNs, in
 // order — the primary key of actor_read_grants. A lens targeting the grant
 // table projects exactly these three columns.
@@ -81,9 +95,11 @@ func policyName(table string) string {
 // rather than a checklist item.
 //
 // The generated table carries the caller's key columns (text, NOT NULL), the
-// caller's body columns (verbatim type), and two platform columns: authz_anchors
-// (text[], the §6.14 set of bare-NanoID match tokens) and projection_seq
-// (bigint). The set-membership policy makes a row visible iff the current actor
+// caller's body columns (verbatim type), and four platform columns:
+// authz_anchors (text[], the §6.14 set of bare-NanoID match tokens),
+// projection_seq (bigint), and is_deleted/deleted_at (the guarded Delete's
+// seq-guarded soft tombstone, mirroring actor_read_grants). The set-membership
+// policy makes a row visible iff it is not tombstoned AND the current actor
 // holds a grant for ANY of its authz_anchors.
 //
 // Every protected table is created with ENABLE + FORCE ROW LEVEL SECURITY, so a
@@ -137,6 +153,8 @@ func BuildProtectedTableDDL(table string, keyCols []string, body []ColumnDef) ([
 	colDefs = append(colDefs,
 		"authz_anchors text[] NOT NULL DEFAULT '{}'",
 		"projection_seq bigint NOT NULL DEFAULT 0",
+		"is_deleted boolean NOT NULL DEFAULT false",
+		"deleted_at timestamptz",
 	)
 	quotedKeys := make([]string, len(keyCols))
 	for i, k := range keyCols {
@@ -161,6 +179,11 @@ func BuildProtectedTableDDL(table string, keyCols []string, body []ColumnDef) ([
 	// table GRANTs + the trusted projector posture (P2). FORCE RLS still
 	// deny-alls reads on a table whose policy was never generated (H3).
 	//
+	// The leading "NOT is_deleted" denies a tombstoned row (a guarded Delete's
+	// soft tombstone, above) to every reader regardless of anchor membership —
+	// a hard DELETE would instead have discarded the row's projection_seq
+	// watermark, letting a stale replay resurrect it (see IsDeletedColumn).
+	//
 	// The second EXISTS is the WildcardAnchor escape hatch (§6.14 M5): a grant
 	// row anchored '*' matches every row of THIS table regardless of its
 	// authz_anchors — the read-side mirror of the write path's scope:"any" root
@@ -170,15 +193,18 @@ func BuildProtectedTableDDL(table string, keyCols []string, body []ColumnDef) ([
 	dropPolicy := fmt.Sprintf("DROP POLICY IF EXISTS %s ON %s", pol, qt)
 	createPolicy := fmt.Sprintf(
 		"CREATE POLICY %s ON %s FOR SELECT USING (\n"+
-			"  EXISTS (SELECT 1 FROM %s\n"+
-			"          WHERE actor_id = current_setting('lattice.actor_id', true)\n"+
-			"            AND anchor_id = '*'\n"+
-			"            AND NOT is_deleted)\n"+
-			"  OR\n"+
-			"  EXISTS (SELECT 1 FROM unnest(authz_anchors) a\n"+
-			"          WHERE a IN (SELECT anchor_id FROM %s\n"+
-			"                      WHERE actor_id = current_setting('lattice.actor_id', true)\n"+
-			"                        AND NOT is_deleted))\n"+
+			"  NOT is_deleted\n"+
+			"  AND (\n"+
+			"    EXISTS (SELECT 1 FROM %s\n"+
+			"            WHERE actor_id = current_setting('lattice.actor_id', true)\n"+
+			"              AND anchor_id = '*'\n"+
+			"              AND NOT is_deleted)\n"+
+			"    OR\n"+
+			"    EXISTS (SELECT 1 FROM unnest(authz_anchors) a\n"+
+			"            WHERE a IN (SELECT anchor_id FROM %s\n"+
+			"                        WHERE actor_id = current_setting('lattice.actor_id', true)\n"+
+			"                          AND NOT is_deleted))\n"+
+			"  )\n"+
 			")",
 		pol, qt, quoteIdent(GrantTable), quoteIdent(GrantTable),
 	)
@@ -347,8 +373,9 @@ func ProvisionProtectedTable(ctx context.Context, pool *pgxpool.Pool, table stri
 //     denies all rows (a fail-closed outage, never a leak — §6.14 H3); with
 //     either off, the table is readable. An absent table fails here.
 //   - the expected columns present with the platform types (authz_anchors is
-//     exactly text[], projection_seq is bigint, every key + body column present) —
-//     a missing/mistyped column would fail the write anyway; verifying up front
+//     exactly text[], projection_seq is bigint, is_deleted is boolean,
+//     deleted_at is timestamptz, every key + body column present) — a
+//     missing/mistyped column would fail the write anyway; verifying up front
 //     turns a per-row write error into a clean activation pause with a named
 //     column.
 //   - the §6.14 set-membership SELECT policy present and intact — not merely that
@@ -429,6 +456,16 @@ func VerifyProtectedTable(ctx context.Context, pool *pgxpool.Pool, table string,
 		return fmt.Errorf("rls: verify %q: missing projection_seq column", table)
 	} else if dt != "bigint" {
 		return fmt.Errorf("rls: verify %q: projection_seq must be bigint, found %q", table, dt)
+	}
+	if dt, ok := cols[IsDeletedColumn]; !ok {
+		return fmt.Errorf("rls: verify %q: missing %s column", table, IsDeletedColumn)
+	} else if dt != "boolean" {
+		return fmt.Errorf("rls: verify %q: %s must be boolean, found %q", table, IsDeletedColumn, dt)
+	}
+	if dt, ok := cols[DeletedAtColumn]; !ok {
+		return fmt.Errorf("rls: verify %q: missing %s column", table, DeletedAtColumn)
+	} else if dt != "timestamp with time zone" {
+		return fmt.Errorf("rls: verify %q: %s must be timestamptz, found %q", table, DeletedAtColumn, dt)
 	}
 
 	// 3. The §6.14 membership policy is present and intact: the deterministically

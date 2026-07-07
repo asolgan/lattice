@@ -80,11 +80,23 @@ func (p *ProjectionPlan) RequiresGuard() bool {
 	return p.AuthPlane || p.Output.RequiresGuardedTombstone()
 }
 
-// IsAuthPlane classifies a lens as auth-plane iff its target bucket is
-// capability-kv. Derived from the bucket, never from a canonical-name list and
-// never from an extra aspect (neither is in the ratified Contract #6 §6.13).
+// IsAuthPlane classifies a lens as auth-plane iff it either writes the
+// capability-kv bucket (the write-authorization surface) or is a grant-table
+// lens projecting to actor_read_grants (Contract #6 §6.14) — the read-auth
+// source of truth every protected table's RLS policy consults. A paused
+// grant-table lens freezes read authorization the same way a paused
+// capability-kv lens freezes write authorization, so both alert at the
+// heartbeater's auth-plane (error) severity rather than the generic business-
+// lens (warning) tier. An ordinary protected business lens is NOT auth-plane
+// by this test — RLS enforcement is Postgres-native and independent of that
+// lens's own freshness; only the grant table it reads from is auth-critical.
+// Derived from the bucket/target, never from a canonical-name list and never
+// from an extra aspect.
 func IsAuthPlane(r *lens.Rule) bool {
-	return r.Into.Target == "nats_kv" && r.Into.Bucket == AuthPlaneBucket
+	if r.Into.Target == "nats_kv" && r.Into.Bucket == AuthPlaneBucket {
+		return true
+	}
+	return r.Into.Target == "postgres" && r.Into.GrantTable
 }
 
 // Compile turns an actor-aggregate lens rule into a ProjectionPlan: it

@@ -141,14 +141,15 @@ func (a *PostgresAdapter) buildUpsertSQL(keys map[string]any, row map[string]any
 
 	// 3. Sort non-key columns alphabetically for deterministic SQL.
 	// Key columns that appear in row are filtered out to prevent duplicate-column errors.
-	// ProjectionSeqColumn is platform-owned (guarded mode appends it explicitly
-	// below), so a same-named lens-declared column would collide — filter it too.
+	// ProjectionSeqColumn/IsDeletedColumn/DeletedAtColumn are platform-owned
+	// (guarded mode sets them explicitly below), so a same-named lens-declared
+	// column would collide — filter them too.
 	nonKeyCols := make([]string, 0, len(row))
 	for col := range row {
 		if _, isKey := keySet[col]; isKey {
 			continue
 		}
-		if a.guarded && col == ProjectionSeqColumn {
+		if a.guarded && (col == ProjectionSeqColumn || col == IsDeletedColumn || col == DeletedAtColumn) {
 			continue
 		}
 		nonKeyCols = append(nonKeyCols, col)
@@ -190,7 +191,11 @@ func (a *PostgresAdapter) buildUpsertSQL(keys map[string]any, row map[string]any
 	conflictCols := strings.Join(quotedKeyCols, ", ")
 
 	// 8. DO UPDATE SET for non-key (+ guard) columns; DO NOTHING only when
-	// unguarded and there are no non-key columns.
+	// unguarded and there are no non-key columns. A guarded write also always
+	// resets IsDeletedColumn to false: a fresh Upsert at a higher seq is a live
+	// re-projection, so a row a prior guarded Delete tombstoned must be revived
+	// (mirrors PostgresGrantWriter.UpsertGrant's `is_deleted = false`). This is a
+	// literal, not EXCLUDED-sourced, since no lens ever projects IsDeletedColumn.
 	var onConflict string
 	if len(nonKeyCols) == 0 && !a.guarded {
 		onConflict = "DO NOTHING"
@@ -203,6 +208,9 @@ func (a *PostgresAdapter) buildUpsertSQL(keys map[string]any, row map[string]any
 		for i, col := range setCols {
 			q := quoteIdent(col)
 			setParts[i] = fmt.Sprintf("%s = EXCLUDED.%s", q, q)
+		}
+		if a.guarded {
+			setParts = append(setParts, fmt.Sprintf("%s = false", quoteIdent(IsDeletedColumn)))
 		}
 		onConflict = "DO UPDATE SET " + strings.Join(setParts, ", ")
 		if a.guarded {
@@ -278,16 +286,18 @@ func (a *PostgresAdapter) Upsert(ctx context.Context, keys map[string]any, row m
 }
 
 // buildListKeysSQL constructs the key-only SELECT for ListKeys: the key
-// columns in a.keyOrder order, filtered to live rows only in soft-delete
-// mode (a soft tombstone is an UPDATE, not a row removal, so it must be
-// excluded from the "currently live" set the diff compares against).
+// columns in a.keyOrder order, filtered to live rows only when a soft
+// tombstone can appear in the table — unguarded DeleteModeSoft, or a.guarded
+// (which always soft-tombstones on Delete regardless of deleteMode, see
+// buildDeleteSQL) — since a tombstone is an UPDATE, not a row removal, and
+// must be excluded from the "currently live" set the diff compares against.
 func (a *PostgresAdapter) buildListKeysSQL() string {
 	quotedKeyCols := make([]string, len(a.keyOrder))
 	for i, k := range a.keyOrder {
 		quotedKeyCols[i] = quoteIdent(k)
 	}
 	sqlStr := fmt.Sprintf(`SELECT %s FROM "%s"`, strings.Join(quotedKeyCols, ", "), a.table)
-	if a.deleteMode == DeleteModeSoft {
+	if a.deleteMode == DeleteModeSoft || a.guarded {
 		sqlStr += ` WHERE NOT "is_deleted"`
 	}
 	return sqlStr
@@ -354,19 +364,29 @@ func (a *PostgresAdapter) Truncate(ctx context.Context) error {
 	return err
 }
 
-// buildDeleteSQL constructs the delete SQL and its argument slice, branching on
-// the adapter's construction-time deleteMode.
+// buildDeleteSQL constructs the delete SQL and its argument slice.
 //
-//   - DeleteModeHard (default): `DELETE FROM "<table>" WHERE <clauses>` — the row
-//     is physically removed. Lineage already lives in Core KV.
-//   - DeleteModeSoft: `UPDATE "<table>" SET is_deleted=true, deleted_at=NOW()
-//     WHERE <clauses>` — a tombstone is retained for audit/forensic targets. The
-//     target table must then have `is_deleted boolean` and `deleted_at
-//     timestamptz` columns.
+//   - a.guarded (a protected read-model table, Contract #6 §6.14): ALWAYS a
+//     seq-guarded soft tombstone, regardless of deleteMode — `UPDATE "<table>"
+//     SET is_deleted=true, deleted_at=NOW(), projection_seq=$N WHERE <clauses>
+//     AND projection_seq < $N`. Retaining the row and bumping its watermark
+//     (rather than discarding it via a hard DELETE) means a later stale CDC
+//     replay's Upsert still finds a row to compare its projectionSeq against —
+//     a hard delete would leave no row, so the ON CONFLICT guard in
+//     buildUpsertSQL never fires and the plain INSERT resurrects the row
+//     unconditionally. deleteMode is not lens-configurable for a guarded
+//     table: this is a platform invariant, not a per-lens choice.
+//   - DeleteModeSoft (unguarded): `UPDATE "<table>" SET is_deleted=true,
+//     deleted_at=NOW() WHERE <clauses>` — an unguarded tombstone for
+//     audit/forensic targets that opt in; not seq-guarded (§6.2 last-writer-
+//     wins).
+//   - DeleteModeHard (default, unguarded): `DELETE FROM "<table>" WHERE
+//     <clauses>` — the row is physically removed. Lineage already lives in
+//     Core KV.
 //
 // Key columns appear in a.keyOrder order with positional placeholders $1, $2, ...
 // All identifiers are double-quoted via quoteIdent.
-func (a *PostgresAdapter) buildDeleteSQL(keys map[string]any) (string, []any, error) {
+func (a *PostgresAdapter) buildDeleteSQL(keys map[string]any, projectionSeq uint64) (string, []any, error) {
 	args := make([]any, len(a.keyOrder))
 	clauses := make([]string, len(a.keyOrder))
 	for i, k := range a.keyOrder {
@@ -379,27 +399,37 @@ func (a *PostgresAdapter) buildDeleteSQL(keys map[string]any) (string, []any, er
 	}
 	where := strings.Join(clauses, " AND ")
 	var sql string
-	if a.deleteMode == DeleteModeSoft {
+	switch {
+	case a.guarded:
+		args = append(args, int64(projectionSeq))
+		seqParam := fmt.Sprintf("$%d", len(args))
+		sql = fmt.Sprintf(
+			`UPDATE "%s" SET is_deleted=true, deleted_at=NOW(), projection_seq=%s WHERE %s AND projection_seq < %s`,
+			a.table, seqParam, where, seqParam,
+		)
+	case a.deleteMode == DeleteModeSoft:
 		sql = fmt.Sprintf(`UPDATE "%s" SET is_deleted=true, deleted_at=NOW() WHERE %s`, a.table, where)
-	} else {
+	default:
 		sql = fmt.Sprintf(`DELETE FROM "%s" WHERE %s`, a.table, where)
 	}
 	return sql, args, nil
 }
 
-// Delete removes a row from the Postgres table by its key fields.
-// Zero rows affected is not an error — deletion of a non-existent row is idempotent (NFR2).
-// []any and map[string]any key values are coerced to json.RawMessage for JSONB columns.
+// Delete removes (or, for a guarded protected table, seq-guarded soft-
+// tombstones — see buildDeleteSQL) a row from the Postgres table by its key
+// fields. Zero rows affected is not an error — deletion of a non-existent row,
+// or a stale-seq no-op on a guarded table, is idempotent (NFR2). []any and
+// map[string]any key values are coerced to json.RawMessage for JSONB columns.
 // The per-rule queryTimeout is applied via withTimeout. Returns nil on success.
 //
-// projectionSeq is accepted to satisfy the Adapter interface but ignored: the
-// monotonic projection-write guard is not enforced on Postgres targets
-// (Contract #6 §6.2).
-func (a *PostgresAdapter) Delete(ctx context.Context, keys map[string]any, _ uint64) error {
+// projectionSeq is ignored unless the adapter is guarded: an ordinary Postgres
+// lens keeps the unconditional last-writer-wins behavior Contract #6 §6.2
+// documents.
+func (a *PostgresAdapter) Delete(ctx context.Context, keys map[string]any, projectionSeq uint64) error {
 	ctx, cancel := a.withTimeout(ctx)
 	defer cancel()
 
-	sqlStr, args, err := a.buildDeleteSQL(keys)
+	sqlStr, args, err := a.buildDeleteSQL(keys, projectionSeq)
 	if err != nil {
 		return err
 	}

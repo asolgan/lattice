@@ -696,6 +696,8 @@ func validateSecureColumns(spec *LensSpec, cfg TargetPostgresConfig) error {
 	reserved := map[string]struct{}{
 		adapter.AuthzAnchorsColumn:  {},
 		adapter.ProjectionSeqColumn: {},
+		adapter.IsDeletedColumn:     {},
+		adapter.DeletedAtColumn:     {},
 	}
 	seen := make(map[string]struct{}, len(cfg.SecureColumns))
 	for _, sc := range cfg.SecureColumns {
@@ -728,18 +730,17 @@ func validateSecureColumns(spec *LensSpec, cfg TargetPostgresConfig) error {
 }
 
 // validateProtectedDeleteMode rejects a protected lens declaring deleteMode
-// "soft": BuildProtectedTableDDL provisions no is_deleted/deleted_at columns,
-// and the §6.14 set-membership policy does not filter on is_deleted (only the
-// grant table tombstones), so a soft delete (UPDATE … SET is_deleted=true)
-// would hit a missing column on every delete — a write error the pump
-// misclassifies as transient and retries forever. Reused by translateSpec
-// (spec-load time, the live activation path) and EmitReadPathDDL (DDL-emission
-// time, the operator-facing CLI) so the two views of "is this lens spec
-// coherent" cannot silently diverge — a spec loadable is DDL-emittable and
-// vice versa.
+// "soft": a protected table's tombstone semantics are platform-owned, not
+// lens-configurable — NewProtectedAdapter's guarded Delete always performs the
+// seq-guarded soft tombstone (buildDeleteSQL) regardless of the adapter's
+// deleteMode, so a lens declaring "soft" would imply a choice it doesn't
+// actually have. Reused by translateSpec (spec-load time, the live activation
+// path) and EmitReadPathDDL (DDL-emission time, the operator-facing CLI) so the
+// two views of "is this lens spec coherent" cannot silently diverge — a spec
+// loadable is DDL-emittable and vice versa.
 func validateProtectedDeleteMode(lensID string, protected bool, dm adapter.DeleteMode) error {
 	if protected && dm == adapter.DeleteModeSoft {
-		return fmt.Errorf("lens %q: a protected read model cannot use deleteMode \"soft\" — the RLS table has no is_deleted column and the §6.14 policy does not filter it; use the default \"hard\" delete", lensID)
+		return fmt.Errorf("lens %q: a protected read model's delete semantics are platform-owned (always a seq-guarded soft tombstone) — declaring deleteMode \"soft\" implies a lens-level choice that does not exist; leave deleteMode unset or \"hard\"", lensID)
 	}
 	return nil
 }

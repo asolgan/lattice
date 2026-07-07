@@ -212,7 +212,13 @@ func (m *Manager) handleKeyShredded(ctx context.Context, msg substrate.Message) 
 		// maximum watermark rather than any stream-relative sequence number (this
 		// event isn't on the row's own CDC stream, so no naturally-comparable
 		// sequence exists). No effect on an unguarded target (the common case),
-		// which ignores projectionSeq entirely.
+		// which ignores projectionSeq entirely. math.MaxInt64, not MaxUint64: a
+		// guarded Postgres grant-table/protected target (rls.go) binds this value
+		// as a signed int64 column parameter — MaxUint64 wraps to -1 there, which
+		// would always LOSE the guard comparison instead of always winning it.
+		// MaxInt64 is still unreachably far above any real CDC/stream sequence, so
+		// the "always wins" property holds on both the uint64 NATS-KV path and the
+		// int64 Postgres path.
 		//
 		// KNOWN LIMITATION (observed empirically against a live full-engine
 		// harness, cause not fully isolated): a deleted row can reappear shortly
@@ -228,7 +234,7 @@ func (m *Manager) handleKeyShredded(ctx context.Context, msg substrate.Message) 
 		// (mirroring the negative/filter-retraction projection pattern) or Fire
 		// 5's Secure Lens closes the gap. Flagged on the board as a Fire 4a
 		// residual, not silently swept under "done."
-		err := m.cfg.Control.NullifyRow(ctx, target.RuleID, keys, math.MaxUint64)
+		err := m.cfg.Control.NullifyRow(ctx, target.RuleID, keys, math.MaxInt64)
 		if err == nil {
 			continue
 		}
