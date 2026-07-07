@@ -867,6 +867,16 @@ a.tab { text-decoration: none; display: inline-block; }
 .topbar-status { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 #topbar-pill { text-decoration: none; }
 #topbar-pill:empty { display: none; }
+#topbar-logout {
+  width: auto;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 2px 10px;
+  font-size: 12px;
+  border-radius: 10px;
+}
+#topbar-logout:hover { color: var(--text); background: var(--bg-input); }
 
 #alertstrip { display: none; }
 #alertstrip.visible {

@@ -19,10 +19,18 @@ function pretty(v) {
 
 // api GETs/POSTs JSON and returns the parsed body. A non-2xx with a JSON body
 // is returned as-is (it carries {"error":...}); a transport failure is mapped
-// to a synthetic {error} object so callers always get an object.
+// to a synthetic {error} object so callers always get an object. A 401 means
+// the operator session ended (expiry, revocation, or never logged in) —
+// every /api/* route is behind the same gate, so this is the one place that
+// needs to notice and send the operator back to /login rather than let each
+// caller render a stray "operator login required" error inline.
 async function api(path, opts) {
   try {
     const res = await fetch(path, opts);
+    if (res.status === 401) {
+      location.replace("/login");
+      return { error: "operator login required" };
+    }
     const text = await res.text();
     let body;
     try { body = text ? JSON.parse(text) : {}; }

@@ -54,6 +54,14 @@ function init() {
   refreshShellHealth();
   shell.timer = setInterval(() => { if (!document.hidden) refreshShellHealth(); }, POLL_MS);
   document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshShellHealth(); });
+
+  const logout = $("#topbar-logout");
+  if (logout) {
+    logout.addEventListener("click", async () => {
+      await api("/api/operator/logout", { method: "POST" });
+      location.href = "/login";
+    });
+  }
 }
 
 export { init };

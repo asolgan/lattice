@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -350,5 +351,450 @@ func TestFullMux_GatedEndToEnd(t *testing.T) {
 	gated.ServeHTTP(rec, authed)
 	if rec.Code == http.StatusUnauthorized {
 		t.Fatalf("authenticated API request still 401'd: body=%s", rec.Body.String())
+	}
+}
+
+func TestIsOperatorAuthExempt(t *testing.T) {
+	exempt := []string{operatorDevTokenPath, operatorSessionPath, operatorLogoutPath, loginPagePath}
+	for _, p := range exempt {
+		if !isOperatorAuthExempt(p) {
+			t.Errorf("isOperatorAuthExempt(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{"/", "/api/systemmap", "/js/main.js", "/login/"} {
+		if isOperatorAuthExempt(p) {
+			t.Errorf("isOperatorAuthExempt(%q) = true, want false", p)
+		}
+	}
+}
+
+func TestIsBrowserNavigation(t *testing.T) {
+	cases := []struct {
+		method string
+		dest   string
+		want   bool
+	}{
+		{http.MethodGet, "document", true},
+		{http.MethodGet, "Document", true}, // header values are case-insensitive
+		{http.MethodGet, "empty", false},   // a fetch()/XHR call, not a navigation
+		{http.MethodGet, "", false},        // curl/httptest send no Sec-Fetch-Dest
+		{http.MethodPost, "document", false},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest(c.method, "/", nil)
+		if c.dest != "" {
+			r.Header.Set("Sec-Fetch-Dest", c.dest)
+		}
+		if got := isBrowserNavigation(r); got != c.want {
+			t.Errorf("isBrowserNavigation(method=%s, dest=%q) = %v, want %v", c.method, c.dest, got, c.want)
+		}
+	}
+}
+
+// TestRequireOperator_SessionCookie_PassesThrough proves the cookie transport
+// authenticates identically to the Authorization header — the browser-usable
+// half of the same credential (a plain page load cannot carry a custom
+// header, but the browser attaches a cookie automatically).
+func TestRequireOperator_SessionCookie_PassesThrough(t *testing.T) {
+	s := devAuthServer(t)
+	tok, exp, err := s.devSigner.mint("Hj4kPmRtw9nbCxz5vQ2y")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	called := false
+	gate := s.requireOperator(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/systemmap", nil)
+	r.AddCookie(&http.Cookie{Name: operatorSessionCookieName, Value: tok, Expires: exp})
+	gate.ServeHTTP(rec, r)
+	if !called {
+		t.Fatal("next handler must run with a valid session cookie")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+}
+
+func TestRequireOperator_ForgedCookie_401(t *testing.T) {
+	s := devAuthServer(t)
+	gate := s.requireOperator(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler must not run with a forged session cookie")
+	}))
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/systemmap", nil)
+	r.AddCookie(&http.Cookie{Name: operatorSessionCookieName, Value: "not.a.valid.jwt"})
+	gate.ServeHTTP(rec, r)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (forged cookie)", rec.Code)
+	}
+}
+
+// TestRequireOperator_BrowserNavigation_RedirectsToLogin proves the actual
+// fix: an unauthenticated top-level page load bounces to /login instead of
+// surfacing a bare JSON error a browser can do nothing useful with.
+func TestRequireOperator_BrowserNavigation_RedirectsToLogin(t *testing.T) {
+	s := devAuthServer(t)
+	gate := s.requireOperator(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler must not run without a credential")
+	}))
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Sec-Fetch-Dest", "document")
+	gate.ServeHTTP(rec, r)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("status = %d, want 302 (redirect to /login)", rec.Code)
+	}
+	if loc := rec.Header().Get("Location"); loc != loginPagePath {
+		t.Errorf("Location = %q, want %q", loc, loginPagePath)
+	}
+}
+
+// TestRequireOperator_NonNavigationRequest_Still401 pins that the redirect is
+// scoped to real browser navigations — a fetch()/XHR call (or curl, or the
+// existing test suite) must keep seeing the plain JSON 401 it already parses.
+func TestRequireOperator_NonNavigationRequest_Still401(t *testing.T) {
+	s := devAuthServer(t)
+	gate := s.requireOperator(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler must not run without a credential")
+	}))
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.Header.Set("Sec-Fetch-Dest", "empty") // a fetch()/XHR call, not a navigation
+	gate.ServeHTTP(rec, r)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (non-navigation request)", rec.Code)
+	}
+}
+
+// TestHandleOperatorDevToken_Mint_SetsSessionCookie proves the dev-login
+// button's whole trip: mint sets a browser-usable, loopback-appropriate
+// cookie (not Secure on loopback http, or a real browser would drop it) in
+// addition to the existing JSON token response.
+func TestHandleOperatorDevToken_Mint_SetsSessionCookie(t *testing.T) {
+	s := devAuthServer(t)
+	s.bindHost = "127.0.0.1" // mirrors main.go's real loopback default
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, operatorDevTokenPath, nil)
+	s.handleOperatorDevToken(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var found *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == operatorSessionCookieName {
+			found = c
+		}
+	}
+	if found == nil {
+		t.Fatal("dev-token mint must set the operator session cookie")
+	}
+	if !found.HttpOnly {
+		t.Error("session cookie must be HttpOnly")
+	}
+	if found.Secure {
+		t.Error("session cookie must not be Secure on a loopback bind (plain http://127.0.0.1 dev use)")
+	}
+	if found.SameSite != http.SameSiteStrictMode {
+		t.Errorf("SameSite = %v, want Strict", found.SameSite)
+	}
+	if _, err := s.authn.Authenticate(t.Context(), found.Value); err != nil {
+		t.Errorf("cookie value must be the verifiable minted token: %v", err)
+	}
+}
+
+func TestHandleLoginPage_ServesHTML(t *testing.T) {
+	s := &server{logger: discardLogger(), natsTimeout: time.Second}
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, loginPagePath, nil)
+	s.handleLoginPage(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "text/html; charset=utf-8" {
+		t.Errorf("Content-Type = %q, want text/html; charset=utf-8", ct)
+	}
+	if !strings.Contains(rec.Body.String(), "Loupe") {
+		t.Error("login page body does not look like the login page")
+	}
+}
+
+// TestHandleOperatorSession_ValidToken_SetsCookie proves the manual-token
+// exchange: an already-verified Bearer token (pasted from a real IdP, or
+// minted separately) becomes a usable session cookie. It cannot mint or widen
+// anything — verifyOperatorToken is the same check every transport shares.
+func TestHandleOperatorSession_ValidToken_SetsCookie(t *testing.T) {
+	s := devAuthServer(t)
+	tok, _, err := s.devSigner.mint("Hj4kPmRtw9nbCxz5vQ2y")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, operatorSessionPath, strings.NewReader(`{"token":"`+tok+`"}`))
+	s.handleOperatorSession(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var found *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == operatorSessionCookieName {
+			found = c
+		}
+	}
+	if found == nil || found.Value != tok {
+		t.Fatalf("session cookie not set to the presented token: %+v", found)
+	}
+}
+
+func TestHandleOperatorSession_InvalidToken_401(t *testing.T) {
+	s := devAuthServer(t)
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, operatorSessionPath, strings.NewReader(`{"token":"not.a.valid.jwt"}`))
+	s.handleOperatorSession(rec, r)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (invalid token)", rec.Code)
+	}
+}
+
+func TestHandleOperatorSession_EmptyToken_401(t *testing.T) {
+	s := devAuthServer(t)
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, operatorSessionPath, strings.NewReader(`{"token":""}`))
+	s.handleOperatorSession(rec, r)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (empty token)", rec.Code)
+	}
+}
+
+func TestHandleOperatorSession_BadJSON_400(t *testing.T) {
+	s := devAuthServer(t)
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, operatorSessionPath, strings.NewReader(`not json`))
+	s.handleOperatorSession(rec, r)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (malformed JSON)", rec.Code)
+	}
+}
+
+func TestHandleOperatorSession_NoAuthConfigured_401(t *testing.T) {
+	s := &server{logger: discardLogger(), natsTimeout: time.Second} // authn nil
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, operatorSessionPath, strings.NewReader(`{"token":"anything"}`))
+	s.handleOperatorSession(rec, r)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (no auth posture configured)", rec.Code)
+	}
+}
+
+func TestHandleOperatorSession_WrongMethod_405(t *testing.T) {
+	s := devAuthServer(t)
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, operatorSessionPath, nil)
+	s.handleOperatorSession(rec, r)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rec.Code)
+	}
+}
+
+func TestHandleOperatorSession_CrossOrigin_403(t *testing.T) {
+	s := devAuthServer(t)
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, operatorSessionPath, strings.NewReader(`{"token":"x"}`))
+	r.Header.Set("Origin", "https://evil.example")
+	s.handleOperatorSession(rec, r)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (cross-origin session request blocked)", rec.Code)
+	}
+}
+
+func TestHandleOperatorLogout_ClearsCookie(t *testing.T) {
+	s := devAuthServer(t)
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, operatorLogoutPath, nil)
+	s.handleOperatorLogout(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var found *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == operatorSessionCookieName {
+			found = c
+		}
+	}
+	if found == nil {
+		t.Fatal("logout must set the session cookie (cleared)")
+	}
+	if found.MaxAge >= 0 || found.Value != "" {
+		t.Errorf("logout cookie not cleared: MaxAge=%d Value=%q", found.MaxAge, found.Value)
+	}
+}
+
+func TestHandleOperatorLogout_WrongMethod_405(t *testing.T) {
+	s := devAuthServer(t)
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, operatorLogoutPath, nil)
+	s.handleOperatorLogout(rec, r)
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", rec.Code)
+	}
+}
+
+func TestHandleOperatorLogout_CrossOrigin_403(t *testing.T) {
+	s := devAuthServer(t)
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, operatorLogoutPath, nil)
+	r.Header.Set("Origin", "https://evil.example")
+	s.handleOperatorLogout(rec, r)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403 (cross-origin logout request blocked)", rec.Code)
+	}
+}
+
+// TestFullMux_BrowserLoginFlow_EndToEnd proves the actual fix end-to-end: a
+// browser with no credential at all can reach /login, an unauthenticated
+// top-level navigation to / bounces there automatically, and the dev-login
+// mint's cookie — used alone, with NO Authorization header, exactly what a
+// real browser can do — passes the same gated mux GET / goes through.
+func TestFullMux_BrowserLoginFlow_EndToEnd(t *testing.T) {
+	s := devAuthServer(t)
+	mux := http.NewServeMux()
+	s.registerRoutes(mux)
+	gated := s.requireOperator(mux)
+
+	rec := httptest.NewRecorder()
+	gated.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, loginPagePath, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /login unauthenticated: status = %d, want 200", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	nav := httptest.NewRequest(http.MethodGet, "/", nil)
+	nav.Header.Set("Sec-Fetch-Dest", "document")
+	gated.ServeHTTP(rec, nav)
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != loginPagePath {
+		t.Fatalf("unauthenticated navigation to /: status = %d, Location = %q, want 302 to %s",
+			rec.Code, rec.Header().Get("Location"), loginPagePath)
+	}
+
+	mintRec := httptest.NewRecorder()
+	gated.ServeHTTP(mintRec, httptest.NewRequest(http.MethodPost, operatorDevTokenPath, nil))
+	if mintRec.Code != http.StatusOK {
+		t.Fatalf("dev-token mint through the gated mux: status = %d, want 200", mintRec.Code)
+	}
+	var cookie *http.Cookie
+	for _, c := range mintRec.Result().Cookies() {
+		if c.Name == operatorSessionCookieName {
+			cookie = c
+		}
+	}
+	if cookie == nil {
+		t.Fatal("dev-token mint through the gated mux must set the session cookie")
+	}
+
+	rec = httptest.NewRecorder()
+	authed := httptest.NewRequest(http.MethodGet, "/", nil)
+	authed.AddCookie(cookie)
+	gated.ServeHTTP(rec, authed)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("cookie-authenticated static UI request: status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestVerifyOperatorToken_WrongSubject_Denied pins the login gate to a NAMED
+// operator (design intent, §1/§3.1): a validly-signed, non-expired,
+// non-empty-subject token that simply names a DIFFERENT identity than the
+// one configured as the operator must still be denied. Without this check, a
+// token minted for any subject by anything trusting the same key/IdP (e.g.
+// another app sharing the dev key, real-actor-write-auth-e2e-design.md §3.2)
+// would open the console.
+func TestVerifyOperatorToken_WrongSubject_Denied(t *testing.T) {
+	s := devAuthServer(t) // operatorActorKey = vtx.identity.Hj4kPmRtw9nbCxz5vQ2y
+	tok, _, err := s.devSigner.mint("SomeOtherIdentityNotTheOperator")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	if _, err := s.verifyOperatorToken(t.Context(), tok); err == nil {
+		t.Fatal("expected an error for a validly-signed token naming a different identity")
+	}
+}
+
+// TestRequireOperator_ValidTokenWrongSubject_401 is the gate-level version of
+// the above — the actual attack surface a browser or curl could hit.
+func TestRequireOperator_ValidTokenWrongSubject_401(t *testing.T) {
+	s := devAuthServer(t)
+	tok, _, err := s.devSigner.mint("SomeOtherIdentityNotTheOperator")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	gate := s.requireOperator(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler must not run for a token naming a different identity than the configured operator")
+	}))
+	rec := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, "/api/systemmap", nil)
+	r.Header.Set("Authorization", "Bearer "+tok)
+	gate.ServeHTTP(rec, r)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 (token names a different identity than the configured operator)", rec.Code)
+	}
+}
+
+// TestVerifyOperatorToken_NoOperatorConfigured_Denied proves a validly-signed
+// token cannot pass when Loupe has no configured operator identity at all
+// (LOUPE_OPERATOR_ACTOR_KEY unset and no bootstrap admin actor loaded) —
+// there is no "anyone" to fall back to.
+func TestVerifyOperatorToken_NoOperatorConfigured_Denied(t *testing.T) {
+	t.Setenv("LOUPE_DEV_AUTH", "1")
+	authn, signer, err := setupOperatorAuth(discardLogger(), true)
+	if err != nil {
+		t.Fatalf("setupOperatorAuth: %v", err)
+	}
+	s := &server{logger: discardLogger(), authn: authn, devSigner: signer, natsTimeout: time.Second} // operatorActorKey empty
+	tok, _, err := signer.mint("anyone")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	if _, err := s.verifyOperatorToken(t.Context(), tok); err == nil {
+		t.Fatal("expected an error when no operator actor is configured, even with a validly-signed token")
+	}
+}
+
+// TestAuthenticateConsole_BadHeaderGoodCookie_FallsBack proves the
+// precedence fix: a present-but-invalid Authorization header (a stale
+// devtools-replayed header, a misbehaving extension) must not mask an
+// otherwise-valid session cookie.
+func TestAuthenticateConsole_BadHeaderGoodCookie_FallsBack(t *testing.T) {
+	s := devAuthServer(t)
+	tok, exp, err := s.devSigner.mint("Hj4kPmRtw9nbCxz5vQ2y")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/api/systemmap", nil)
+	r.Header.Set("Authorization", "Bearer not.a.valid.jwt")
+	r.AddCookie(&http.Cookie{Name: operatorSessionCookieName, Value: tok, Expires: exp})
+	actor, err := s.authenticateConsole(r)
+	if err != nil {
+		t.Fatalf("authenticateConsole: %v (a bad header must not mask a good cookie)", err)
+	}
+	if actor.Subject != "Hj4kPmRtw9nbCxz5vQ2y" {
+		t.Errorf("subject = %q, want the cookie's subject", actor.Subject)
+	}
+}
+
+// TestAuthenticateConsole_GoodHeaderWins proves the header is still tried
+// first when both transports carry a valid credential — no behavior change
+// for the existing header-only callers (API clients, curl, tests).
+func TestAuthenticateConsole_GoodHeaderWins(t *testing.T) {
+	s := devAuthServer(t)
+	tok, exp, err := s.devSigner.mint("Hj4kPmRtw9nbCxz5vQ2y")
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/api/systemmap", nil)
+	r.Header.Set("Authorization", "Bearer "+tok)
+	r.AddCookie(&http.Cookie{Name: operatorSessionCookieName, Value: "not.a.valid.jwt", Expires: exp})
+	if _, err := s.authenticateConsole(r); err != nil {
+		t.Fatalf("authenticateConsole: %v (a valid header must succeed regardless of a bad cookie)", err)
 	}
 }

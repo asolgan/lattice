@@ -121,6 +121,9 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/objects", s.handleObjects)
 	mux.HandleFunc("/api/objects/", s.handleObjects)
 	mux.HandleFunc(operatorDevTokenPath, s.handleOperatorDevToken)
+	mux.HandleFunc(operatorSessionPath, s.handleOperatorSession)
+	mux.HandleFunc(operatorLogoutPath, s.handleOperatorLogout)
+	mux.HandleFunc(loginPagePath, s.handleLoginPage)
 }
 
 // writeJSON encodes v as JSON with the given status code.
