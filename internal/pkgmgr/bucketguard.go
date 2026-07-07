@@ -2,6 +2,8 @@ package pkgmgr
 
 import (
 	"fmt"
+
+	"github.com/asolgan/lattice/internal/bootstrap"
 )
 
 // reservedBucketAliases maps a short, provision-time alias to the canonical
@@ -19,16 +21,41 @@ var reservedBucketAliases = map[string]string{
 	"capability": "capability-kv",
 }
 
+// reservedBucketNames are canonical bucket names a package lens must never
+// declare as its own Bucket. Each is a platform-private store (Core-KV
+// itself, Health-KV self-reporting, an engine's own cursor/adjacency state,
+// the Gateway's revocation set) that the Refractor nats-kv adapter
+// auto-creates verbatim and a rebuild Truncate purges wholesale — unlike the
+// shared platform-projection buckets packages legitimately target
+// (weaver-targets, capability-kv, orchestration-history), these are never
+// lens targets, so a mis-authored lens naming one would silently wipe
+// platform state on the next rebuild.
+var reservedBucketNames = map[string]struct{}{
+	bootstrap.CoreKVBucket:            {},
+	bootstrap.HealthKVBucket:          {},
+	bootstrap.RefractorAdjacencyKV:    {},
+	bootstrap.LoomStateBucket:         {},
+	bootstrap.WeaverStateBucket:       {},
+	bootstrap.PersonalLensInterestKV:  {},
+	bootstrap.GatewayRevocationBucket: {},
+}
+
 // validateLensBuckets rejects any lens whose declared Bucket is a reserved
-// short alias of a provisioned bucket, directing the author to the canonical
-// name. It is a pure function (no I/O) so it runs before any KV operation and
-// is unit-testable without a live substrate.
+// short alias of a provisioned bucket (directing the author to the canonical
+// name), or the canonical name of a platform-private bucket that is never a
+// lens target. It is a pure function (no I/O) so it runs before any KV
+// operation and is unit-testable without a live substrate.
 func (def Definition) validateLensBuckets() error {
 	for idx, l := range def.Lenses {
 		if canonical, reserved := reservedBucketAliases[l.Bucket]; reserved {
 			return fmt.Errorf(
 				"pkgmgr: Lens[%d] %q declares Bucket %q, which is a reserved alias of the provisioned bucket %q — use %q so the lens targets the real auth-plane bucket (the alias auto-creates a phantom bucket no reader consults)",
 				idx, l.CanonicalName, l.Bucket, canonical, canonical)
+		}
+		if _, reserved := reservedBucketNames[l.Bucket]; reserved {
+			return fmt.Errorf(
+				"pkgmgr: Lens[%d] %q declares Bucket %q, which is a platform-private bucket, never a lens target — the nats-kv adapter would auto-create/truncate it verbatim, wiping platform state on the next rebuild",
+				idx, l.CanonicalName, l.Bucket)
 		}
 	}
 	return nil

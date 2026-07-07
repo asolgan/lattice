@@ -47,6 +47,20 @@ const (
 	defaultHeartbeatEvery    = 10 * time.Second
 )
 
+// reservedActivationBuckets mirrors internal/pkgmgr's reservedBucketNames
+// (bucketguard.go) as a fail-closed backstop at Refractor lens activation —
+// the platform-private buckets a lens must never target, since the nats-kv
+// adapter auto-creates/truncates whatever Bucket a lens declares verbatim.
+var reservedActivationBuckets = map[string]struct{}{
+	bootstrap.CoreKVBucket:            {},
+	bootstrap.HealthKVBucket:          {},
+	bootstrap.RefractorAdjacencyKV:    {},
+	bootstrap.LoomStateBucket:         {},
+	bootstrap.WeaverStateBucket:       {},
+	bootstrap.PersonalLensInterestKV:  {},
+	bootstrap.GatewayRevocationBucket: {},
+}
+
 type pipelineEntry struct {
 	cancel        context.CancelFunc
 	done          chan struct{}
@@ -340,6 +354,14 @@ func main() {
 		}
 		switch r.Into.Target {
 		case "nats_kv":
+			// Fail-closed mirror of pkgmgr's install-time reserved-bucket guard
+			// (internal/pkgmgr/bucketguard.go): a platform-private bucket must
+			// never be auto-created/truncated as a lens target, even if a lens
+			// spec reached activation by a path that skipped pkgmgr's check
+			// (hand-authored spec, direct install).
+			if _, reserved := reservedActivationBuckets[r.Into.Bucket]; reserved {
+				return nil, fmt.Errorf("lens %q: Bucket %q is a platform-private bucket, never a lens target — refusing to open/create it", r.ID, r.Into.Bucket)
+			}
 			// Open the target bucket as a substrate handle; create it first if it
 			// does not exist (pre-provisioned buckets like capability-kv are reused).
 			targetKV, err := conn.OpenKV(ctx, r.Into.Bucket)

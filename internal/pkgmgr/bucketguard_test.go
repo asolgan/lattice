@@ -61,6 +61,65 @@ func TestValidateLensBuckets_AcceptsCanonicalBucket(t *testing.T) {
 	}
 }
 
+// TestValidateLensBuckets_AcceptsSharedPlatformTargets asserts the shared
+// platform-projection buckets packages legitimately target (weaver-targets,
+// orchestration-history) are NOT rejected by the reserved-bucket-name guard —
+// only platform-private stores are reserved, not every primordial bucket.
+func TestValidateLensBuckets_AcceptsSharedPlatformTargets(t *testing.T) {
+	def := Definition{
+		Name:    "orchestration-base",
+		Version: "0.1.0",
+		Lenses: []LensSpec{
+			{CanonicalName: "taskTargets", Bucket: "weaver-targets"},
+			{CanonicalName: "flowHistory", Bucket: "orchestration-history"},
+		},
+	}
+
+	if err := def.validateLensBuckets(); err != nil {
+		t.Fatalf("expected shared platform-projection buckets to pass validation, got: %v", err)
+	}
+}
+
+// TestValidateLensBuckets_RejectsPlatformPrivateBucketName asserts a lens
+// declaring the canonical name of a platform-private bucket (never a lens
+// target) is rejected, not just the short "capability" alias — the gap the
+// arch-review's lens-target-reserved-bucket-guard finding identified: a
+// mis-authored lens naming "health-kv" or "refractor-adjacency" verbatim
+// would auto-create/truncate it, silently wiping platform state.
+func TestValidateLensBuckets_RejectsPlatformPrivateBucketName(t *testing.T) {
+	cases := []string{
+		"core-kv",
+		"health-kv",
+		"refractor-adjacency",
+		"loom-state",
+		"weaver-state",
+		"personal-lens-interest",
+		"token-revocation",
+	}
+	for _, bucket := range cases {
+		t.Run(bucket, func(t *testing.T) {
+			def := Definition{
+				Name:    "evil-pkg",
+				Version: "0.1.0",
+				Lenses: []LensSpec{
+					{CanonicalName: "wipeout", Bucket: bucket},
+				},
+			}
+			err := def.validateLensBuckets()
+			if err == nil {
+				t.Fatalf("expected lens declaring Bucket %q to be rejected, got nil error", bucket)
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "wipeout") {
+				t.Errorf("error should name the offending lens; got %q", msg)
+			}
+			if !strings.Contains(msg, bucket) {
+				t.Errorf("error should name the reserved bucket %q; got %q", bucket, msg)
+			}
+		})
+	}
+}
+
 func TestValidateLensAdapters_NatsKV_RequiresBucket(t *testing.T) {
 	def := Definition{
 		Name:    "pkg",
