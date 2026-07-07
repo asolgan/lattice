@@ -45,6 +45,12 @@ const (
 	// does not import the gateway package). Materialized by the Gateway's own
 	// events.gateway.> consumer, not a Lens target.
 	GatewayRevocationBucket = "token-revocation"
+	// GatewayCredentialBindingsBucket is the Gateway's credential→identity
+	// resolution set (must match internal/gateway/credentialbinding.BucketName
+	// by value — bootstrap does not import the gateway package). Materialized
+	// by the Gateway's own events.identity.> consumer, not a Lens target
+	// (gateway-claim-flow-identity-provisioning-design.md §11.0/§11.5 R1).
+	GatewayCredentialBindingsBucket = "credential-bindings"
 
 	// CoreObjectsBucket is the off-graph binary blob store — a JetStream Object
 	// Store (backed by stream OBJ_core-objects), NOT a KV bucket. It is the
@@ -117,6 +123,11 @@ func (s *Seeder) ProvisionBuckets(ctx context.Context) error {
 		// per-key TTL, durable (rebuildable from the event stream on cold start,
 		// but must not silently disappear between rebuilds).
 		{GatewayRevocationBucket, "Lattice Gateway Token-Revocation KV — actor kill-switch set", false},
+		// credential-bindings is a compacting latest-per-actor set (put on
+		// claim; no unbind path in this refinement's scope) materialized by
+		// the Gateway from events.identity.>; no per-key TTL, durable
+		// (rebuildable from the event stream on cold start).
+		{GatewayCredentialBindingsBucket, "Lattice Gateway Credential-Bindings KV — credential→identity resolution set", false},
 	}
 
 	for _, b := range buckets {

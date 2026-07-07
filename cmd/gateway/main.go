@@ -36,6 +36,15 @@
 // outbox gateway.actorRevoked/actorUnrevoked, which the materializer folds
 // into the local bucket revocation.Checker reads per request.
 //
+// CREDENTIAL-BINDING RESOLUTION (gateway-claim-flow-identity-provisioning-
+// design.md §11.0/§11.5 R1): additive, best-effort — unlike the revocation
+// kill-switch, a credential-bindings bucket/materializer failure logs a
+// warning and starts anyway (every actor then simply acts as itself, exactly
+// as before this mechanism existed). ClaimIdentity ops (identity-domain)
+// outbox identity.claimed, which the materializer folds into the local
+// bucket the write path (handleOperations) and the read-model routes
+// (read.go) both resolve a raw credential actor through.
+//
 // Environment:
 //
 //	GATEWAY_ADDR              HTTP listen address (default: :8080)
@@ -89,6 +98,7 @@ import (
 	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/gateway"
 	"github.com/asolgan/lattice/internal/gateway/auth"
+	"github.com/asolgan/lattice/internal/gateway/credentialbinding"
 	"github.com/asolgan/lattice/internal/gateway/revocation"
 	"github.com/asolgan/lattice/internal/pkgmgr"
 	"github.com/asolgan/lattice/internal/substrate"
@@ -208,6 +218,18 @@ func run(logger *slog.Logger) error {
 	}
 	authn := auth.NewAuthenticator(verifier, revocation.New(revKV))
 
+	// Credential-binding resolution (R1) is additive/best-effort, unlike the
+	// revocation kill-switch above: a deployment that hasn't re-run bootstrap
+	// yet (bucket doesn't exist) still starts — every actor simply acts as
+	// itself until the bucket is provisioned.
+	var credentialBindingsResolver gateway.CredentialBindingResolver
+	credKV, err := conn.OpenKV(context.Background(), credentialbinding.BucketName)
+	if err != nil {
+		logger.Warn("gateway: credential-bindings bucket unavailable; credential resolution disabled", "error", err)
+	} else {
+		credentialBindingsResolver = credentialbinding.New(credKV)
+	}
+
 	rawInstance, err := substrate.NewNanoID()
 	if err != nil {
 		return fmt.Errorf("generate instance id: %w", err)
@@ -224,6 +246,9 @@ func run(logger *slog.Logger) error {
 	srv.ConfigureProvisioning(bootstrap.GatewayIdentityKey, "vtx.role."+pkgmgr.RoleID("identity-domain", "consumer"))
 	if origins := os.Getenv("GATEWAY_CORS_ORIGINS"); origins != "" {
 		srv.ConfigureCORS(strings.Split(origins, ","))
+	}
+	if credentialBindingsResolver != nil {
+		srv.ConfigureCredentialBindings(credentialBindingsResolver)
 	}
 
 	readModels, err := loadReadModels(os.Getenv("GATEWAY_READ_MODELS_DIR"))
@@ -262,6 +287,18 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("start revocation materializer: %w", err)
 	}
 	defer revSup.Stop()
+
+	// Credential-bindings materializer (R1) is additive/best-effort, mirroring
+	// the bucket-open above: a failure here logs a warning and the Gateway
+	// starts without credential resolution rather than refusing to start.
+	if credentialBindingsResolver != nil {
+		credSup, err := gateway.StartCredentialBindingsMaterializer(ctx, conn, hb, logger)
+		if err != nil {
+			logger.Warn("gateway: start credential-bindings materializer failed; credential resolution disabled", "error", err)
+		} else {
+			defer credSup.Stop()
+		}
+	}
 
 	go hb.Run(ctx)
 

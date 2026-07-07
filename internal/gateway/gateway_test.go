@@ -221,6 +221,101 @@ func TestHandleOperations_ForgedActorNeverWins(t *testing.T) {
 	}
 }
 
+// --- ConfigureCredentialBindings / resolveActor ---------------------------
+
+// fakeCredentialResolver is a fixed-answer CredentialBindingResolver: bound
+// resolves rawActorID to identityKey; unbound reports bound=false; a
+// non-nil err always wins.
+type fakeCredentialResolver struct {
+	identityKey string
+	bound       bool
+	err         error
+}
+
+func (f fakeCredentialResolver) Resolve(context.Context, string) (string, bool, error) {
+	return f.identityKey, f.bound, f.err
+}
+
+// TestHandleOperations_CredentialBinding_ResolvesToClaimedIdentity proves a
+// bound credential actor's op is stamped with the claimed business identity,
+// not the raw credential (gateway-claim-flow-identity-provisioning-
+// design.md §11.0/§11.5 R1).
+func TestHandleOperations_CredentialBinding_ResolvesToClaimedIdentity(t *testing.T) {
+	priv := newTestKey(t)
+	authn := testAuthenticator(t, priv, "k1")
+	token := signToken(t, priv, "k1", "RAWCREDENTIAL00000000")
+
+	var captured *processor.OperationEnvelope
+	fake := func(_ context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
+		captured = env
+		return &processor.OperationReply{RequestID: env.RequestID, Status: processor.ReplyStatusAccepted}, nil
+	}
+	s := newTestServer(t, authn, fake)
+	s.ConfigureCredentialBindings(fakeCredentialResolver{identityKey: "vtx.identity.CLAIMEDBUSINESS0000", bound: true})
+
+	w := doOperations(t, s, token, `{"operationType":"RenewLease"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if captured.Actor != "vtx.identity.CLAIMEDBUSINESS0000" {
+		t.Fatalf("env.Actor = %q, want the resolved business identity", captured.Actor)
+	}
+}
+
+// TestHandleOperations_CredentialBinding_ClaimIdentityCarveOut proves
+// ClaimIdentity always sees the raw credential actor, never resolved — the
+// one carve-out (§11.0): a resolved actor would let an already-bound person
+// chain-claim a second identity.
+func TestHandleOperations_CredentialBinding_ClaimIdentityCarveOut(t *testing.T) {
+	priv := newTestKey(t)
+	authn := testAuthenticator(t, priv, "k1")
+	token := signToken(t, priv, "k1", "RAWCREDENTIAL00000000")
+
+	var captured *processor.OperationEnvelope
+	fake := func(_ context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
+		captured = env
+		return &processor.OperationReply{RequestID: env.RequestID, Status: processor.ReplyStatusAccepted}, nil
+	}
+	s := newTestServer(t, authn, fake)
+	s.ConfigureCredentialBindings(fakeCredentialResolver{identityKey: "vtx.identity.CLAIMEDBUSINESS0000", bound: true})
+
+	w := doOperations(t, s, token, `{"operationType":"ClaimIdentity"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if captured.Actor != "vtx.identity.RAWCREDENTIAL00000000" {
+		t.Fatalf("ClaimIdentity env.Actor = %q, want the raw credential (carve-out bypassed)", captured.Actor)
+	}
+}
+
+// TestHandleOperations_CredentialBinding_ResolveError_FallsBackToRawActor
+// proves a resolver failure (e.g. KV unreachable) fails OPEN to the raw
+// credential actor rather than denying the request — acting as the raw
+// credential is the documented deny-safe fallback (the actor simply lacks
+// the claimed identity's business-scoped grants; it never gains more than
+// it's entitled to).
+func TestHandleOperations_CredentialBinding_ResolveError_FallsBackToRawActor(t *testing.T) {
+	priv := newTestKey(t)
+	authn := testAuthenticator(t, priv, "k1")
+	token := signToken(t, priv, "k1", "RAWCREDENTIAL00000000")
+
+	var captured *processor.OperationEnvelope
+	fake := func(_ context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
+		captured = env
+		return &processor.OperationReply{RequestID: env.RequestID, Status: processor.ReplyStatusAccepted}, nil
+	}
+	s := newTestServer(t, authn, fake)
+	s.ConfigureCredentialBindings(fakeCredentialResolver{err: errors.New("kv unreachable")})
+
+	w := doOperations(t, s, token, `{"operationType":"RenewLease"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if captured.Actor != "vtx.identity.RAWCREDENTIAL00000000" {
+		t.Fatalf("env.Actor = %q, want the raw credential on resolver error", captured.Actor)
+	}
+}
+
 // --- ConfigureProvisioning / auto-provisioning pre-flight ------------------
 
 // TestHandleOperations_ProvisioningPreflight_FirstTouch: a fresh actor's

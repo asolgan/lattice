@@ -73,6 +73,24 @@ type Server struct {
 	// browser calling cross-origin is refused by the browser itself, same as
 	// today.
 	corsOrigins map[string]struct{}
+
+	// credentialBindings backs ConfigureCredentialBindings (the claim-flow
+	// shared-seam amendment, R1): nil until configured, in which case every
+	// request acts as its raw authenticated actor exactly as before this
+	// mechanism existed.
+	credentialBindings CredentialBindingResolver
+}
+
+// CredentialBindingResolver is the credential→identity resolution surface
+// the write path (handleOperations) and the Gateway's own read-model routes
+// (read.go) consult after authentication
+// (gateway-claim-flow-identity-provisioning-design.md §11.0/§11.5 R1).
+// internal/gateway/credentialbinding provides the substrate-backed
+// implementation.
+type CredentialBindingResolver interface {
+	// Resolve looks up rawActorID's claimed business identity. bound=false
+	// (no error) means unclaimed — the caller should act as rawActorID.
+	Resolve(ctx context.Context, rawActorID string) (identityKey string, bound bool, err error)
 }
 
 // provisionedCacheMaxEntries caps provisionedCache's memory: it holds one
@@ -169,6 +187,48 @@ func (s *Server) ConfigureProvisioning(gatewayActorKey, consumerRoleKey string) 
 	s.gatewayActorKey = gatewayActorKey
 	s.consumerRoleKey = consumerRoleKey
 	s.provisioned = newProvisionedCache()
+}
+
+// ConfigureCredentialBindings enables credential→identity resolution on both
+// the write path (handleOperations) and the Gateway's own read-model routes
+// (read.go): after authentication, a raw credential actor (A) that has
+// claimed a business identity (U) acts as U instead — every subsequent
+// mutation/read anchors on the identity the business links point at, not the
+// bare credential (gateway-claim-flow-identity-provisioning-design.md
+// §11.0). Unconfigured (nil resolver, the default), every actor acts as
+// itself exactly as before this method existed.
+func (s *Server) ConfigureCredentialBindings(r CredentialBindingResolver) {
+	s.credentialBindings = r
+}
+
+// claimIdentityOperationType is the one carve-out resolveActor's caller must
+// apply: ClaimIdentity binds a credential to a business identity by hashing
+// op.actor, so it must see the raw credential — a resolved actor would let
+// an already-bound person chain-claim a second identity
+// (gateway-claim-flow-identity-provisioning-design.md §11.0 "one carve-out").
+const claimIdentityOperationType = "ClaimIdentity"
+
+// resolveActor consults the credential-bindings resolver (if configured) to
+// turn a raw credential actor into its claimed business identity. An
+// unconfigured resolver, a miss (no binding yet — the CDC-lag window between
+// a live claim and this Gateway's local bucket observing it), or a lookup
+// error all resolve to rawActorID unchanged: acting as the raw credential is
+// the documented deny-safe fallback — a person who hasn't claimed, or whose
+// claim hasn't propagated yet, only ever sees/writes their own data, never
+// more than they're entitled to.
+func (s *Server) resolveActor(ctx context.Context, rawActorID string) string {
+	if s.credentialBindings == nil {
+		return rawActorID
+	}
+	identityKey, bound, err := s.credentialBindings.Resolve(ctx, rawActorID)
+	if err != nil {
+		s.logger.Error("gateway: credential-binding resolve failed", "actor", rawActorID, "error", err)
+		return rawActorID
+	}
+	if !bound {
+		return rawActorID
+	}
+	return identityKey
 }
 
 // ConfigureCORS enables CORS handling on POST /v1/operations for the given
@@ -325,7 +385,12 @@ func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	env, err := buildEnvelope(req, actor.ActorID, time.Now())
+	resolvedActor := actor.ActorID
+	if req.OperationType != claimIdentityOperationType {
+		resolvedActor = s.resolveActor(ctx, actor.ActorID)
+	}
+
+	env, err := buildEnvelope(req, resolvedActor, time.Now())
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

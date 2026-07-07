@@ -110,7 +110,7 @@ func DDLs() []pkgmgr.DDLSpec {
 				{
 					Name:            "ClaimIdentity — actor claims their identity",
 					Payload:         map[string]any{"targetIdentityKey": "vtx.identity.<NanoID>", "claimKey": "<plaintextKey>"},
-					ExpectedOutcome: "Verifies claimKey hash, writes credentialBinding aspect, transitions state unclaimed→claimed, tombstones claimKey aspect.",
+					ExpectedOutcome: "Verifies claimKey hash, writes credentialBinding aspect, transitions state unclaimed→claimed, tombstones claimKey aspect, grants holdsRole→consumer to the claimed identity.",
 				},
 				{
 					Name:    "RecordIdentityPII — capture applicant SSN/DOB",
@@ -317,11 +317,12 @@ def execute(state, op):
 // unclaimed -> claimed. The merged state is set only by the
 // identity-hygiene package's MergeIdentity script.
 // identityDDLScript is derived from identityDDLScriptTemplate by pinning
-// the one placeholder — the package's own consumer role key — to its real,
-// deterministic value (see consumerRoleKey above) so the script can enforce
-// ProvisionConsumerIdentity's role grant by equality rather than trusting
-// any live role vertex the caller names.
-var identityDDLScript = strings.Replace(identityDDLScriptTemplate, "__EXPECTED_CONSUMER_ROLE_KEY__", consumerRoleKey, 1)
+// every occurrence of the placeholder — the package's own consumer role key
+// — to its real, deterministic value (see consumerRoleKey above): both
+// ProvisionConsumerIdentity (enforcing its role grant by equality against a
+// caller-supplied field) and ClaimIdentity (granting the same role
+// unconditionally, no caller input involved) reference the one literal.
+var identityDDLScript = strings.ReplaceAll(identityDDLScriptTemplate, "__EXPECTED_CONSUMER_ROLE_KEY__", consumerRoleKey)
 
 const identityDDLScriptTemplate = `
 def make_update(key, data):
@@ -600,6 +601,18 @@ def execute(state, op):
 
         observed_at = op.submittedAt
 
+        # The claim is the moment the identity becomes an acting business
+        # identity (env.Actor / lattice.actor_id resolve to it from here on,
+        # gateway-claim-flow-identity-provisioning-design.md §11.0 R1) — grant
+        # consumer in the same commit so there is no window where the person
+        # acts as a role-less identity. Pinned to the package's own literal
+        # (mirrors ProvisionConsumerIdentity, §11.5 R2): no caller input names
+        # the role, so there is nothing to steer.
+        consumer_role_key = "__EXPECTED_CONSUMER_ROLE_KEY__"
+        consumer_role_id = consumer_role_key[len("vtx.role."):]
+        target_id = target_identity_key[len("vtx.identity."):]
+        consumer_grant_key = "lnk.identity." + target_id + ".holdsRole.role." + consumer_role_id
+
         mutations = [
             {"op": "create", "key": target_identity_key + ".credentialBinding",
              "document": {"class": "credentialBinding", "vertexKey": target_identity_key,
@@ -615,6 +628,10 @@ def execute(state, op):
                           "data": {"actorKey": actor_key,
                                    "identityKey": target_identity_key,
                                    "boundAt": observed_at}}},
+            {"op": "create", "key": consumer_grant_key,
+             "document": {"class": "holdsRole", "isDeleted": False,
+                          "sourceVertex": target_identity_key, "targetVertex": consumer_role_key,
+                          "localName": "holdsRole", "data": {}}},
         ]
 
         events = [{"class": "identity.claimed", "data": {
