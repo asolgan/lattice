@@ -20,6 +20,12 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //     orchestrator path 14.4 exercises. (Q6: a user-facing consumer grant for
 //     the real applicant path is an additive refinement — the ephemeral task
 //     grant is the runtime authorization either way.)
+//   - CreateLeaseApplication also grants `consumer`, scope=self
+//     (real-actor-write-auth-e2e design §3.4): a real applicant applies for
+//     themselves through the Gateway. `authContext.target == actor` is
+//     checked at step 3 (Contract #6, mirroring identity-domain's
+//     ClaimIdentity); the Starlark script separately requires
+//     payload.applicant == actor, since step 3 never sees the payload.
 func Permissions() []pkgmgr.PermissionSpec {
 	return []pkgmgr.PermissionSpec{
 		{
@@ -27,6 +33,12 @@ func Permissions() []pkgmgr.PermissionSpec {
 			Scope:         "any",
 			Note:          "Grants the operator the right to submit CreateLeaseApplication operations.",
 			GrantsTo:      []string{"operator"},
+		},
+		{
+			OperationType: "CreateLeaseApplication",
+			Scope:         "self",
+			Note:          "Grants a consumer the right to create their OWN lease application (payload.applicant == actor).",
+			GrantsTo:      []string{"consumer"},
 		},
 		{
 			OperationType: "CreateLeaseServiceInstance",

@@ -82,7 +82,7 @@ LATTICE_PROCESSOR_AUTH_MODE ?= stub
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up up-full up-full-capability dev-seed-staff up-loftspace orchestration install-packages install-loftspace run-loupe run-gateway run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role provision-clinic-role provision-gateway-role provision-readpath provision-vault-kek reinstall-package verify-package-service-location verify-package-augur verify-conformance build vet lint-conventions lint-board install-skills test test-rollback test-lease-convergence test-object-gc test-crypto-shred test-system-actor-capability test-control-plane-authz test-augur-convergence test-unrouted-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
+.PHONY: up up-full up-full-capability dev-seed-staff provision-gateway-identity-provisioner test-real-actor-auth up-loftspace orchestration install-packages install-loftspace run-loupe run-gateway run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role provision-clinic-role provision-gateway-role provision-readpath provision-vault-kek reinstall-package verify-package-service-location verify-package-augur verify-conformance build vet lint-conventions lint-board install-skills test test-rollback test-lease-convergence test-object-gc test-crypto-shred test-system-actor-capability test-control-plane-authz test-augur-convergence test-unrouted-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 ## Detects an already-healthy kernel first and reuses it — invoking this against a
@@ -140,7 +140,7 @@ up:
 		go build -o bin/processor ./cmd/processor; \
 		$(MAKE) provision-vault-kek; \
 		echo "==> Starting processor in background..."; \
-		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_PROCESSOR) PROCESSOR_FILTER=ops.default,ops.urgent,ops.system,ops.meta LATTICE_AUTH_MODE=$(LATTICE_PROCESSOR_AUTH_MODE) LATTICE_VAULT_MASTER_KEK_FILE=$(VAULT_KEK_FILE) ./bin/processor >processor.log 2>&1 </dev/null & \
+		NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_PROCESSOR) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) PROCESSOR_FILTER=ops.default,ops.urgent,ops.system,ops.meta LATTICE_AUTH_MODE=$(LATTICE_PROCESSOR_AUTH_MODE) LATTICE_VAULT_MASTER_KEK_FILE=$(VAULT_KEK_FILE) ./bin/processor >processor.log 2>&1 </dev/null & \
 		echo "==> Lattice ready."; \
 	fi
 
@@ -325,7 +325,7 @@ processor:
 ## Requires `make up` to have completed (NATS reachable, core-operations stream live).
 run-processor: processor provision-vault-kek
 	@echo "==> Starting processor (Ctrl-C to stop)..."
-	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_PROCESSOR) LATTICE_VAULT_MASTER_KEK_FILE=$(VAULT_KEK_FILE) ./bin/processor
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_PROCESSOR) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) LATTICE_VAULT_MASTER_KEK_FILE=$(VAULT_KEK_FILE) ./bin/processor
 
 ## provision-vault-kek — Generate the local Vault master KEK (Contract #3
 ## §3.10, internal/vault) on first use. Idempotent: a no-op once the file
@@ -382,9 +382,10 @@ up-full-capability:
 	@echo "==> Restarting the Processor under LATTICE_AUTH_MODE=capability (stub OFF; real-actor-write-auth-e2e proving lane)..."
 	-pkill -f "bin/processor" 2>/dev/null || true
 	@sleep 1
-	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_PROCESSOR) PROCESSOR_FILTER=ops.default,ops.urgent,ops.system,ops.meta LATTICE_AUTH_MODE=capability LATTICE_VAULT_MASTER_KEK_FILE=$(VAULT_KEK_FILE) ./bin/processor >processor.log 2>&1 </dev/null &
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_PROCESSOR) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) PROCESSOR_FILTER=ops.default,ops.urgent,ops.system,ops.meta LATTICE_AUTH_MODE=capability LATTICE_VAULT_MASTER_KEK_FILE=$(VAULT_KEK_FILE) ./bin/processor >processor.log 2>&1 </dev/null &
 	@sleep 1
 	@$(MAKE) dev-seed-staff
+	@$(MAKE) provision-gateway-identity-provisioner
 	@echo "==> up-full-capability ready: Processor running under the REAL CapabilityAuthorizer (stub OFF). Loupe http://127.0.0.1:7777 · Gateway :8080 (dev-mode)."
 
 ## dev-seed-staff — Dev-seed ONE staff identity holding `operator`, for the
@@ -419,6 +420,40 @@ dev-seed-staff:
 		--payload "{\"actorKey\":\"$$STAFF_KEY\",\"roleKey\":\"$$ROLE_KEY\"}" \
 		--context-hint-reads "$$STAFF_KEY,$$ROLE_KEY"; \
 	 echo "==> Dev staff identity ready: $$STAFF_KEY holds operator. Mint a token: ./bin/gateway dev-token -sub $$STAFF_ID"
+
+## provision-gateway-identity-provisioner — Grant the Gateway's own system
+## identity the `identityProvisioner` role (gateway-claim-flow-identity-provisioning-design.md
+## §3.3/§4): the one-time, documented ops action ProvisionConsumerIdentity
+## needs before a first-touch consumer can auto-provision — before this runs,
+## the Gateway's pre-flight submits ProvisionConsumerIdentity under its own
+## identity and is denied (`no matching platformPermission`), tolerated as a
+## best-effort no-op (gateway.go's provisionActorIfNeeded), so the symptom is
+## silent: the consumer identity just never appears. Idempotent (AssignRole
+## on an already-held role is a no-op grant link create-or-noop, not an error).
+provision-gateway-identity-provisioner:
+	@go build -o bin/lattice ./cmd/lattice
+	@ADMIN_ID=$$(jq -r '.primordialIDs.bootstrapIdentity' $(BOOTSTRAP_JSON)); \
+	 GATEWAY_ID=$$(jq -r '.primordialIDs.gatewayIdentity' $(BOOTSTRAP_JSON)); \
+	 ADMIN_KEY="vtx.identity.$$ADMIN_ID"; \
+	 GATEWAY_KEY="vtx.identity.$$GATEWAY_ID"; \
+	 ROLE_KEY=$$(go run ./scripts/print-role-id.go identity-domain identityProvisioner); \
+	 echo "==> Assigning identityProvisioner ($$ROLE_KEY) to the Gateway's system identity ($$GATEWAY_KEY)..."; \
+	 NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_CLI) ./bin/lattice op submit \
+		--operation-type AssignRole --actor "$$ADMIN_KEY" --output json \
+		--payload "{\"actorKey\":\"$$GATEWAY_KEY\",\"roleKey\":\"$$ROLE_KEY\"}" \
+		--context-hint-reads "$$GATEWAY_KEY,$$ROLE_KEY"; \
+	 echo "==> Gateway identity provisioning ready: first-touch ProvisionConsumerIdentity can now succeed."
+
+## test-real-actor-auth — real-actor-write-auth-e2e design §4 Phase 1 item 4,
+## the core proof. Requires `make up-full-capability` (Processor under
+## LATTICE_AUTH_MODE=capability) and `make install-loftspace` (CreateLocation /
+## SetListingStatus / CreateLeaseApplication need the LoftSpace vertical
+## installed) already run against the shared stack. Not self-contained (like
+## verify-package-*, it targets the shared stack's NATS_URL/Gateway, not an
+## embedded fixture).
+test-real-actor-auth:
+	@echo "==> Running the real-actor-write-auth e2e proof..."
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_CLI) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) go run ./scripts/verify-real-actor-write-auth.go
 
 ## up-loftspace — Full stack + the LoftSpace vertical + the applicant app on :7788.
 ## Runs up-full, installs the LoftSpace vertical (orchestration-base → location-domain

@@ -30,6 +30,13 @@ const (
 	ledgerActorID  = "BBLEDGERACTRHJKMNPQR"
 	ledgerActorKey = "vtx.identity." + ledgerActorID
 	ledgerCapKey   = "cap.identity." + ledgerActorID
+
+	// ledgerConsumerRoleID stands in for identity-domain's real `consumer`
+	// role NanoID: this package's tests don't install identity-domain (only
+	// rbac + hygiene via SetupPackageTestEnv), so lease-signing's
+	// CreateLeaseApplication scope=self grant (GrantsTo: "consumer") needs a
+	// role id registered directly.
+	ledgerConsumerRoleID = "BBConsumerRoZe2JKMNP"
 )
 
 func ledgerCapDoc() *processor.CapabilityDoc {
@@ -59,7 +66,7 @@ func setupLedgerEnv(t *testing.T) (context.Context, *substrate.Conn) {
 	stop := testutil.RunMetaInstallPipeline(t, ctx, conn)
 	defer stop()
 	inst := pkgmgr.NewInstaller(conn, bootstrap.BootstrapIdentityKey)
-	inst.RoleIDs = map[string]string{"operator": bootstrap.RoleOperatorID}
+	inst.RoleIDs = map[string]string{"operator": bootstrap.RoleOperatorID, "consumer": ledgerConsumerRoleID}
 	if _, err := inst.Install(ctx, orchestrationbase.Package); err != nil {
 		t.Fatalf("install orchestration-base: %v", err)
 	}

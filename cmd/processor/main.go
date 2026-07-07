@@ -11,6 +11,9 @@
 //	NATS_URL                          NATS server URL (default: nats://localhost:4222)
 //	NATS_NKEY                         path to a per-component NKey seed file (transport-authorization credential; empty = anonymous)
 //	NATS_CREDS                        path to a NATS JWT creds file (alternative to NATS_NKEY; at most one is set)
+//	BOOTSTRAP_JSON_PATH               path to lattice.bootstrap.json (default: ./lattice.bootstrap.json) — supplies
+//	                                  bootstrap.RoleOperatorID, which the system-actor discovery probe below
+//	                                  (bootstrap.SystemActorKeys) matches holdsRole links against.
 //	LATTICE_AUTH_MODE                 capability (default) | stub (test/dev — emits stub-auth-active alert)
 //	LATTICE_AUTH_TRACE_ALLOW_DECISIONS  "true" to also trace ALLOWED decisions (default: "false" — denial-only per FR23)
 //	PROCESSOR_INSTANCE                instance id (default: auto-generated proc-<NanoID>)
@@ -65,6 +68,11 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
+	bootstrapJSONPath := envOrDefault("BOOTSTRAP_JSON_PATH", "./lattice.bootstrap.json")
+	if err := bootstrap.Load(bootstrapJSONPath); err != nil {
+		return fmt.Errorf("load bootstrap JSON: %w", err)
+	}
+
 	natsURL := envOrDefault("NATS_URL", nats.DefaultURL)
 	// Default LATTICE_AUTH_MODE is `capability`. The stub mode remains available
 	// behind an explicit env knob for dev/test deployments; operators selecting

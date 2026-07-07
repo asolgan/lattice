@@ -503,16 +503,32 @@ func loadBootstrap(path string) (*bootstrapJSON, string, error) {
 
 // roleIDsFromBootstrap returns the canonical-name → NanoID map for
 // kernel-seeded roles. The kernel seeds the `operator` role; the other
-// roles (consumer, frontOfHouse, backOfHouse) are declared by
-// identity-domain (Definition.Roles), minted with deterministic NanoIDs,
-// and merged into Installer.RoleIDs at install time.
+// roles (consumer, frontOfHouse, backOfHouse, identityProvisioner) are
+// declared by identity-domain (Definition.Roles) and minted with
+// deterministic NanoIDs (pkgmgr.RoleID("identity-domain", canonicalName) —
+// the same computation cmd/gateway/main.go's ConfigureProvisioning call
+// already relies on to resolve the consumer role without a KV round-trip).
+// `cmd/lattice-pkg install` runs identity-domain and its downstream
+// consumers (e.g. lease-signing's CreateLeaseApplication scope=self grant,
+// real-actor-write-auth-e2e design §3.4) as SEPARATE process invocations, so
+// "merged into Installer.RoleIDs at install time" only holds within
+// identity-domain's own install — a downstream package's install needs these
+// resolved here too. Legacy bootstrap.json fields, when present, override
+// the deterministic default (warm-tree compatibility).
 func roleIDsFromBootstrap(bs *bootstrapJSON) map[string]string {
 	out := map[string]string{}
 	if id := bs.PrimordialIDs["roleOperator"]; id != "" {
 		out["operator"] = id
 	}
-	// Legacy fields tolerated for warm-tree compatibility — empty values
-	// drop out as no-ops in the installer's resolveGrants pass.
+	for _, name := range []string{"consumer", "frontOfHouse", "backOfHouse", "identityProvisioner"} {
+		out[name] = pkgmgr.RoleID("identity-domain", name)
+	}
+	// Legacy fields tolerated for warm-tree compatibility — override the
+	// deterministic default above when present (roleConsumer/roleFrontOfHouse/
+	// roleBackOfHouse only; rolePlatformIntl maps to a role no package
+	// currently declares, so it has no deterministic default to override —
+	// it stays a pure legacy pass-through, dropping out as a no-op in
+	// resolveGrants unless some future package declares that role).
 	for _, name := range []string{"roleConsumer", "roleFrontOfHouse", "roleBackOfHouse", "rolePlatformIntl"} {
 		short := canonicalFromBootstrapField(name)
 		if short == "" {

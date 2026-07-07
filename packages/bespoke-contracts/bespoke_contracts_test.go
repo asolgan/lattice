@@ -31,6 +31,13 @@ const (
 	bcActorID  = "BBBESPOKEACTRHJKMNPQ"
 	bcActorKey = "vtx.identity." + bcActorID
 	bcCapKey   = "cap.identity." + bcActorID
+
+	// bcConsumerRoleID stands in for identity-domain's real `consumer` role
+	// NanoID: this package's tests don't install identity-domain (only rbac +
+	// hygiene via SetupPackageTestEnv), so lease-signing's
+	// CreateLeaseApplication scope=self grant (GrantsTo: "consumer") needs a
+	// role id registered directly.
+	bcConsumerRoleID = "BBConsumerRoZe3JKMNP"
 )
 
 func bcCapDoc() *processor.CapabilityDoc {
@@ -62,7 +69,7 @@ func setupBcEnv(t *testing.T) (context.Context, *substrate.Conn) {
 	stop := testutil.RunMetaInstallPipeline(t, ctx, conn)
 	defer stop()
 	inst := pkgmgr.NewInstaller(conn, bootstrap.BootstrapIdentityKey)
-	inst.RoleIDs = map[string]string{"operator": bootstrap.RoleOperatorID}
+	inst.RoleIDs = map[string]string{"operator": bootstrap.RoleOperatorID, "consumer": bcConsumerRoleID}
 	if _, err := inst.Install(ctx, orchestrationbase.Package); err != nil {
 		t.Fatalf("install orchestration-base: %v", err)
 	}

@@ -36,6 +36,12 @@ const (
 	lsActorID  = "BBlsActorrHJKMNPQRST"
 	lsActorKey = "vtx.identity." + lsActorID
 	lsCapKey   = "cap.identity." + lsActorID
+
+	// lsConsumerRoleID stands in for identity-domain's real `consumer` role
+	// NanoID: this package's tests don't install identity-domain (only rbac +
+	// hygiene via SetupPackageTestEnv), so lease-signing's own CreateLeaseApplication
+	// scope=self grant (GrantsTo: "consumer") needs a role id registered directly.
+	lsConsumerRoleID = "BBConsumerRoZeHJKMNP"
 )
 
 // lsCapDoc grants the test actor the lease-signing ops (scope any).
@@ -89,7 +95,7 @@ func installLeaseDeps(t *testing.T, ctx context.Context, conn *substrate.Conn) {
 	stop := testutil.RunMetaInstallPipeline(t, ctx, conn)
 	defer stop()
 	inst := pkgmgr.NewInstaller(conn, bootstrap.BootstrapIdentityKey)
-	inst.RoleIDs = map[string]string{"operator": bootstrap.RoleOperatorID}
+	inst.RoleIDs = map[string]string{"operator": bootstrap.RoleOperatorID, "consumer": lsConsumerRoleID}
 	if _, err := inst.Install(ctx, orchestrationbase.Package); err != nil {
 		t.Fatalf("install orchestration-base: %v", err)
 	}
@@ -162,6 +168,28 @@ func seedApplicant(t *testing.T, ctx context.Context, conn *substrate.Conn, id s
 	key := "vtx.identity." + id
 	seedVertex(t, ctx, conn, key, "identity", map[string]any{"state": "claimed"})
 	return key
+}
+
+// seedConsumerSelfCapDoc grants applicantKey (as its own actor) the
+// CreateLeaseApplication scope=self permission a real consumer holds
+// (permissions.go) — used only by the dedicated consumer-self-scope tests
+// below; the standing operator path (lsActorKey) never needs this.
+func seedConsumerSelfCapDoc(t *testing.T, ctx context.Context, conn *substrate.Conn, applicantKey string) {
+	t.Helper()
+	now := time.Now().UTC()
+	testutil.SeedCapDoc(t, ctx, conn, &processor.CapabilityDoc{
+		Key:                    "cap.identity." + applicantKey[len("vtx.identity."):],
+		Actor:                  applicantKey,
+		Version:                "1.0",
+		ProjectedAt:            now.Format(time.RFC3339Nano),
+		ProjectedFromRevisions: map[string]uint64{applicantKey: 1},
+		Lanes:                  []string{"default"},
+		PlatformPermissions: []processor.PlatformPermission{
+			{OperationType: "CreateLeaseApplication", Scope: "self"},
+		},
+		ServiceAccess:   []processor.ServiceAccessEntry{},
+		EphemeralGrants: []processor.EphemeralGrant{},
+	})
 }
 
 // seedUnit seeds a live location-domain unit (vtx.unit.<id>, class=location),
@@ -945,6 +973,64 @@ func TestCreateLeaseApplication_UnknownUnit_Rejected(t *testing.T) {
 		// the script where the UnknownUnit guard rejects.
 		Payload:     json.RawMessage(`{"applicant":"` + applicantKey + `","unit":"` + missingUnit + `"}`),
 		ContextHint: &processor.ContextHint{Reads: []string{applicantKey}},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+}
+
+// TestCreateLeaseApplication_ConsumerSelfScope_Allowed exercises the real
+// consumer scope=self permission (permissions.go) end to end at step 3 —
+// distinct from the operator-path tests above, which never touch this grant.
+// A consumer submits for themselves (applicant == actor) with
+// authContext.target == actor (the scope=self step-3 requirement, Contract
+// #6) and is accepted.
+func TestCreateLeaseApplication_ConsumerSelfScope_Allowed(t *testing.T) {
+	ctx, conn := setupLeaseEnv(t)
+	cp, cons := newLeasePipeline(t, ctx, conn, "create-app-consumer-self")
+
+	applicantKey := seedApplicant(t, ctx, conn, "BBConsumer1AppHJKMNP")
+	unitKey := seedUnit(t, ctx, conn, "BBConsumer1UnitHJKMN")
+	seedConsumerSelfCapDoc(t, ctx, conn, applicantKey)
+
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("consumerSelf01"),
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateLeaseApplication",
+		Actor:         applicantKey,
+		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		Class:         "leaseapp",
+		Payload:       json.RawMessage(`{"applicant":"` + applicantKey + `","unit":"` + unitKey + `"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{applicantKey, unitKey}},
+		AuthContext:   &processor.AuthContext{Target: applicantKey},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+}
+
+// TestCreateLeaseApplication_ConsumerNamesDifferentApplicant_Rejected: step 3's
+// scope=self only checks authContext.target == actor (Contract #6) — it never
+// looks at payload.applicant. A consumer satisfying that check (target ==
+// actor) but naming a DIFFERENT identity as the applicant must still be
+// rejected, by the Starlark applicant-self guard (scripts.go).
+func TestCreateLeaseApplication_ConsumerNamesDifferentApplicant_Rejected(t *testing.T) {
+	ctx, conn := setupLeaseEnv(t)
+	cp, cons := newLeasePipeline(t, ctx, conn, "create-app-consumer-forge")
+
+	consumerKey := seedApplicant(t, ctx, conn, "BBConsumer3AppHJKMNP")
+	victimKey := seedApplicant(t, ctx, conn, "BBConsumer2AppHJKMNP")
+	unitKey := seedUnit(t, ctx, conn, "BBConsumer3UnitHJKMN")
+	seedConsumerSelfCapDoc(t, ctx, conn, consumerKey)
+
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("consumerForge1"),
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateLeaseApplication",
+		Actor:         consumerKey,
+		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		Class:         "leaseapp",
+		Payload:       json.RawMessage(`{"applicant":"` + victimKey + `","unit":"` + unitKey + `"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{victimKey, unitKey}},
+		AuthContext:   &processor.AuthContext{Target: consumerKey},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)

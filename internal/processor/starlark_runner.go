@@ -491,13 +491,18 @@ func operationEnvelopeToStarlark(op *OperationEnvelope) *starlarkstruct.Struct {
 			}
 		}
 	}
+	authContextTarget := ""
+	if op.AuthContext != nil {
+		authContextTarget = op.AuthContext.Target
+	}
 	return starlarkstruct.FromStringDict(starlarkstruct.Default, starlarklib.StringDict{
-		"requestId":     starlarklib.String(op.RequestID),
-		"lane":          starlarklib.String(string(op.Lane)),
-		"operationType": starlarklib.String(op.OperationType),
-		"actor":         starlarklib.String(op.Actor),
-		"submittedAt":   starlarklib.String(op.SubmittedAt),
-		"payload":       starlarkstruct.FromStringDict(starlarkstruct.Default, payloadFields),
+		"requestId":         starlarklib.String(op.RequestID),
+		"lane":              starlarklib.String(string(op.Lane)),
+		"operationType":     starlarklib.String(op.OperationType),
+		"actor":             starlarklib.String(op.Actor),
+		"submittedAt":       starlarklib.String(op.SubmittedAt),
+		"payload":           starlarkstruct.FromStringDict(starlarkstruct.Default, payloadFields),
+		"authContextTarget": starlarklib.String(authContextTarget),
 	})
 }
 

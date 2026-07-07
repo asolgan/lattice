@@ -68,6 +68,9 @@ declares:
     - operationType: CreateLeaseApplication
       scope: any
       grantsTo: [operator]
+    - operationType: CreateLeaseApplication
+      scope: self
+      grantsTo: [consumer]
     - operationType: CreateLeaseServiceInstance
       scope: any
       grantsTo: [operator]

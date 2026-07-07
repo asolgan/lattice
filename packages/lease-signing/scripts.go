@@ -255,6 +255,19 @@ def execute(state, op):
         if not vertex_alive(state, unit):
             fail("UnknownUnit: " + unit)
 
+        # Applicant-self (consumer's scope=self grant only): step 3 authorizes
+        # scope=self by checking authContext.target == actor (Contract #6),
+        # but never looks at payload.applicant — a consumer could satisfy that
+        # check while naming a DIFFERENT identity as the applicant. The script
+        # closes that gap by requiring authContextTarget == applicant whenever
+        # authContextTarget is present. It is empty for the standing operator
+        # grant (scope=any, the installer/test/orchestrator path, which never
+        # sets authContext), so this check is a no-op there — operator keeps
+        # submitting CreateLeaseApplication on behalf of any applicant, exactly
+        # as its own grant (unconstrained by scope) already allows.
+        if op.authContextTarget != "" and op.authContextTarget != applicant:
+            fail("AuthDenied: an applicant may only create an application for themselves")
+
         # leaseAppId is a caller-supplied write-ahead seam (mirrors
         # service-domain's instanceId). Absent → mint internally. CreateOnly
         # semantics make a crash-retry with the same id collapse on the
