@@ -212,7 +212,13 @@ value: { targetId, entityKey, gap, action, claimId?, claimedAt, leaseExpiresAt, 
   and re-attempt. With TTL == lease the key self-deletes the instant it becomes reclaimable and the
   reclaim clause is mechanically unreachable; `2 × lease` is the smallest factor that satisfies both
   the *never-wedge* (TTL) and *re-attempt* (sweep) clauses together. `SweepInterval` is clamped
-  ≤ lease so at least one sweep pass lands inside the lease-to-TTL window.
+  ≤ lease so at least one sweep pass lands inside the lease-to-TTL window. **Paced-reclaim widening
+  (as-built):** for a *collapse-only* userTask reclaim (a still-open `assignTask` / `triggerLoom` /
+  `proposedOp` episode whose repeat dispatch is pure churn), the sweep re-arms the mark on an
+  **exponential backoff** and widens that reclaim's per-key TTL to cover the longer interval
+  (`backoffInterval(n) + 2 × SweepInterval`, capped at the Contract #4 24h tracker horizon) — strictly
+  longer than `2 × lease`, never shorter, so the never-wedge invariant holds; `directOp` / external
+  reclaims (the intended bounded retry) are never backed off.
 - **Mark-clearing is level-reconciled, not edge-triggered** (§10.8): on each watch update **and** each
   reconciler sweep, Weaver compares the **current** row's `missing_<col>` against existing marks for
   that `<targetId>.<entityId>` and deletes any mark whose column is now `false` — it does **not** rely
@@ -271,7 +277,7 @@ skips all three (never enumerated as `CorruptMark`).
 |---|---|
 | `<targetId>.__control` | *(as-built since FR30 — documented here per the 2026-07-02 arch-review reconciliation)* durable dispatch-disable marker; authority for the control plane's `disable`/`enable`/`revoke` remediation-skip (`docs/components/weaver.md`). |
 | `<targetId>.<entityId>.<gapColumn>.__count` | *(as-built — same reconciliation)* the retry-budget dispatch-count bounded by the lens's `maxretries_<g>` column; incremented on both dispatch legs, deleted on gap-close, long-TTL orphan backstop. |
-| `<targetId>.__effect.<gapColumn>.<actionRef>` | **Ratified 2026-07-04 (planner extension — see §10.8); build-pending (Fire 2).** Per-(gap, action) effect bookkeeping: dispatch/close counters over a sliding window of the last K episodes (K config-tunable, default 20; event-keyed ring in the value, no clock sampling). Written on the two real dispatch legs and the level-reconciled gap-close path; GC'd by the sweep's orphan legs when the target/gap/action leaves the registry. |
+| `<targetId>.__effect.<gapColumn>.<actionRef>` | **Ratified 2026-07-04 (planner extension — see §10.8); shipped (Fire 2).** Per-(gap, action) effect bookkeeping: dispatch/close counters over a sliding window of the last K episodes (K = 20, a compile-time constant; event-keyed ring in the value, no clock sampling). Written on the two real dispatch legs and the level-reconciled gap-close path; GC'd by the sweep's orphan legs when the target/gap/action leaves the registry. |
 
 ### `weaver-claims` — RETIRED (Amended 2026-06-18 — 13.1, External I/O Bridge)
 

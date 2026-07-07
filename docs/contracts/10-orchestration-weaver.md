@@ -67,6 +67,13 @@ means Weaver watches all rows under its prefix and **acts only on `violating == 
 - gap columns **`missing_<gap>`** — snake_case bools. **The §10.8 `gaps` map keys bind *exactly* to
   these column names.** The Strategist's gap-detection = scan keys with the `missing_` prefix whose
   value is `true`.
+- **dispatch-suppression companions `inflight_<g>` / `maxretries_<g>`** (optional, engine-recognized,
+  per-gap) — a Lens may project, per gap `g`, an `inflight_<g>` bool (a remediation is already in flight
+  → suppress re-dispatch) and/or an integer `maxretries_<g>` cap (the retry budget the §10.3
+  dispatch-count is bounded by). Both are read to alter dispatch, **not** gaps — they never carry the
+  `missing_` prefix, so the gap scan ignores them; an absent/non-bool `inflight_<g>` and an
+  absent/non-positive `maxretries_<g>` both read to the **safe (dispatchable)** side, so a missing or
+  garbled input never silently wedges a real gap. See §10.8 (dispatch suppression) and §10.3 (`__count`).
 - **param columns** (free-form, e.g. `applicant`) — whatever the §10.8 playbook templates reference
   (`row.<field>`); the Lens **must project every column the playbook templates name**.
 - **`freshUntil`** (optional, engine-recognized convention) — an RFC3339 instant the target cypher
@@ -98,12 +105,14 @@ means Weaver watches all rows under its prefix and **acts only on `violating == 
   storage, named by convention like `freshUntil`; every target without an `admission` block ignores it
   entirely.
 
-**No read-path authz anchor here.** The `weaver-targets` bucket is internal operational state read
-only by Weaver (a bootstrap-provisioned service actor); it is never on the read-path, and read-path
-auth is Phase-3-deferred (D1). The scoping the remediation needs is carried by the **param columns**
-above, and each remediation op the Actuator submits carries its own `authContext`. *If* a target Lens
-is **also** projected to the Phase-3 Postgres read-path, it carries the D1 authz anchor **there** like
-any protected Lens — orthogonal to this bucket.
+**No read-path authz anchor in the bucket.** The `weaver-targets` bucket is Weaver's convergence
+read-model: Weaver watches it (lane 1), and vertical apps MAY read its rows as an ordinary **P5 lens
+read-model** (`cmd/loftspace-app` reads the lease-convergence rows this way — reads = lenses). What it
+does **not** carry is a read-path **authz anchor**: unlike a protected Postgres lens these NATS-KV rows
+are unscoped, so an app that must scope them does so in its own query (e.g. by `applicant`), and
+read-path auth (D1) is enforced where a target Lens is **also** projected to the protected Postgres
+read-path — orthogonal to this bucket. The scoping a *remediation* needs is carried by the **param
+columns** above, and each remediation op the Actuator submits carries its own `authContext`.
 
 **Retraction (per D4, settled).** Gap closes → `violating` / `missing_*` flip via **upsert**. True
 entity deletion → row deleted (`IsDeleted` path). **Deferred:** true emit-only-when-violating requires
@@ -134,11 +143,13 @@ meta.weaverTarget {
                             "assignee": "row.applicant", "target": "row.entityKey" }
   },
   "augur": {                                     // ✅ Andrew-ratified 2026-06-27 — see "Augur escalation" below
-    "escalate": ["unplannable"],                 // stuck-gap triggers escalated to AI reasoning (the Augur)
-    "pattern":  "augurReasoning",                // the triggerLoom externalTask reasoning pattern
-    "model":    "claude-opus-4-8"                // optional adapter model override (default: claude-opus-4-8)
+    "escalate": ["unplannable", "exhausted"],    // stuck-gap triggers escalated to AI reasoning (the Augur)
+    "op":       "CreateAugurReasoningClaim",     // OPTIONAL override — the reasoning op Weaver dispatches (directOp)
+    "adapter":  "augur",                         // OPTIONAL override — the bridge adapter (default shown)
+    "replyOp":  "RecordProposal",                // OPTIONAL override — records the proposal (default shown)
+    "model":    "claude-opus-4-8"                // OPTIONAL — adapter model override (default: claude-opus-4-8)
     // "autoApply": { ... }                      // Fire 3 ONLY — DESIGNED, not built until Andrew ratifies auto-apply
-  }
+  }                                              // minimal block = just `escalate`; op/adapter/replyOp default at dispatch
 }
 ```
 
@@ -230,9 +241,11 @@ in-flight**, the Strategist looks up `gaps[col]` and the Actuator executes:
   a **NATS per-key TTL + active reconciler** (§10.3) — a dead reconciler can't wedge a gap forever.
   Async remediations (Loom — incl. an `externalTask`'s external call via the bridge) close their gap
   when their downstream work lands and the Lens re-projects `false`; `claimedAt` tags the episode so a
-  stale prior-episode mark can't shadow a re-open. **Re-fire idempotency by action** is pinned in §10.3
-  (`triggerLoom` / `assignTask` = documented rare-double; an `externalTask` external call dedups on the
-  **deterministic** bridge result-op `requestId`, §10.3 `weaver-claims` retirement note).
+  stale prior-episode mark can't shadow a re-open. **Re-fire idempotency by action** is pinned in §10.3:
+  a `triggerLoom` / `assignTask` reclaim is **consumer-collapsed** on the mark's `claimId`-seeded
+  artifact id (this **supersedes** the earlier "documented rare-double" disposition, §10.3), and an
+  `externalTask` external call dedups on the **deterministic** bridge result-op `requestId` (§10.3
+  `weaver-claims` retirement note).
 - **Gaps fire in parallel** — independent remediations run concurrently.
 - **Gap *dependencies* are encoded in the target Lens predicates, not in Weaver.** If bgcheck needs
   onboarding first, the Lens makes `missing_bgcheck` true only once onboarding is done
@@ -247,8 +260,10 @@ Target + playbook are **package data**; the Weaver engine is a generic dispatche
 > **Ratified 2026-07-04 (Andrew), both forks accepted** — Weaver re-expands its *selection* altitude
 > (choosing *what* to dispatch) while the 13.1 *I/O placement* stays intact (external I/O = Loom +
 > bridge; Weaver never holds an adapter), and the build is **in-place + shadow mode + per-target
-> cutover**, not a parallel engine. The surface is frozen; the engine work is **build-pending** across
-> the 9 fires in the design doc.
+> cutover**, not a parallel engine. The surface is frozen; the engine work has **shipped** (Fires 1–8 +
+> Fire 9 Increment 1 — op-DDL `effects`, the `__effect` window, the goal-regression library, selection
+> and goal-regression dispatch, contraction/oscillation diagnostics, admission control, and the
+> exhausted-budget escalation). The Fire 9 AI-reasoning tail (a novel-gap Augur floor) follows.
 > Full design: `_bmad-output/implementation-artifacts/weaver-planner-mandate-design.md`. **Everything in
 > this subsection is additive and opt-in**: a target carrying none of the new fields — and every target
 > installed today — behaves **byte-identically** to the frozen shapes above. Nothing here changes the
@@ -288,8 +303,9 @@ contract.)*
   (below — a closed, package-authored set; *revises the ratified "installed catalog (ops with `effects`
   + Loom patterns as macro-actions)" wording, 2026-07-05:* an op's DDL `effects` are the integrity
   source an entry mirrors, but an op effect alone carries no dispatch binding — no assignee, no params —
-  so a global ops-derived auto-catalog is **reserved**, not implied), a pure function of (row, catalog,
-  `__effect` window) with canonical tie-breaking. **`goalColumns`** (per-gap, optional — scoped to the same gap as its `goal`, never
+  so a global ops-derived auto-catalog is **reserved**, not implied), a pure function of (row, catalog)
+  with canonical tie-breaking (candidate *selection* additionally reads the `__effect` close-rate window
+  §10.3; goal *synthesis* does not). **`goalColumns`** (per-gap, optional — scoped to the same gap as its `goal`, never
   shared across gaps in one target) is how that "pure function of row" stays true when a `goal` addresses
   an **aspect** path (e.g. `subject.signature.data.signedAt`, matching a real op's declared `effects`): a
   §10.2 row flattens an aspect-projected column onto a bare name with no aspect tag, and the default
@@ -305,7 +321,8 @@ contract.)*
   §10.2↔§10.8 column seam `candidates`' `pre` already rides. **Execution is per-leg (revises the
   ratified compile-to-pattern clause; ratified Andrew 2026-07-05):** each episode dispatches
   **`plan.Steps[0]`'s declared action binding** (`triggerLoom` / `assignTask` / `directOp`) through the
-  ordinary actuator path, and the mark pins that leg (plus the plan hash, diagnostic-only); **the pin
+  ordinary actuator path, and the mark pins that leg (the diagnostic plan hash is **RESERVED** — not
+  emitted today, coupled to the compile-to-pattern shape below); **the pin
   releases once the leg's declared `effects` all hold in the current row** (a pure row predicate,
   evaluated through the gap's `goalColumns` bridge at the existing single-mark-read seams), so a reclaim
   re-dispatches the pinned leg while incomplete and re-plans **only past a completed leg** —
@@ -322,8 +339,8 @@ contract.)*
   hops would matter); it is not built until such a consumer exists. Dispatch-time re-validation mirrors
   `proposedOp` **per leg** (action vocabulary · live-registry resolution · Weaver-authority).
 - **The mark pins the choice per leg (revises the ratified episode-lifetime wording; ratified Andrew
-  2026-07-05):** the §10.3 mark's `action` carries the chosen actionRef (+ plan hash) at
-  CAS-create, and a sweep reclaim re-dispatches the **pinned** leg verbatim — no re-rank, no re-plan —
+  2026-07-05):** the §10.3 mark's `action` carries the chosen actionRef at CAS-create (the diagnostic
+  plan hash is **RESERVED**, not emitted today), and a sweep reclaim re-dispatches the **pinned** leg verbatim — no re-rank, no re-plan —
   until the leg's declared `effects` hold in the current row, at which point the mark closes and the
   next episode re-synthesizes from the advanced state. For single-step selection (`candidates`) this
   degenerates to exactly the prior episode-lifetime pin (one leg = one gap-close). Replanning thus
@@ -344,6 +361,14 @@ contract.)*
   (its meaning extends to "no playbook entry AND no derivable plan"); no new trigger token. Budget
   exhaustion on a planned gap raises a standing Health issue at the suppression site (never a silent
   park).
+- **Cross-row/target diagnostics (Fire 7) + engine-autonomous freeze.** Weaver maintains purely
+  in-memory, heartbeat-surfaced diagnostics — a per-target contraction trajectory (violating-row count
+  classified shrinking / steady / diverging) and an oscillation detector that joins a dispatched
+  `actionRef` to the aspect path(s) its declared `effects` assert. On a **confirmed two-target fight**
+  over one contested path (a repeating strict alternation), the detector **freezes both targets** via
+  the §10.3 `__control` disable seam and raises one `TargetOscillation` Health issue naming the causal
+  pair — a freeze-and-alert safety stop, **never a new dispatch**. This is the one place the engine
+  disables a target autonomously; a restart resets the diagnostics (lane-1 replay re-derives state).
 - **Goal-first authoring (doctrine rider — ratified Andrew 2026-07-05).** The dependency-gating
   doctrine ("a dependent gap simply isn't `true` until its prerequisite closes") remains the norm for
   fixed, singly-dispatched procedures. When a convergence procedure is a **genuine chain — ≥2 legs, or

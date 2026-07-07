@@ -12,19 +12,22 @@
 > — the named feature that implements L3. **Additive, opt-in, default-absent.** A `meta.weaverTarget` MAY
 > carry an `augur` block. With **no `augur` block** the target behaves **exactly as the frozen contract** —
 > an unplannable gap (a `missing_*: true` column with no `gaps[col]` entry) fails closed (config error →
-> alert, above). The `augur` block redirects that dead-end to the Augur: Weaver dispatches a `triggerLoom`
-> of the `augur.pattern` reasoning `externalTask` (a new `augur` **bridge adapter** — package/bridge data,
-> the `external` domain is ordinary per §10.5; Weaver never calls the model directly), the model (default
+> alert, above). The `augur` block redirects that dead-end to the Augur: Weaver dispatches the reasoning
+> **op directly** (a `directOp` — Option F, no Loom wrapper; `augur.op`, default `CreateAugurReasoningClaim`)
+> through the `augur.adapter` **bridge adapter** (default `augur` — package/bridge data, the `external`
+> domain is ordinary per §10.5; Weaver never calls the model directly), the model (default
 > `claude-opus-4-8`) proposes a remediation **constrained to the installed action catalog** — via Anthropic
 > **structured outputs** (`output_config.format`) / strict tool use, so it cannot emit an out-of-catalog
-> action — and the `replyOp` records it as a `vtx.augurProposal` vertex (package DDL) **pending human
-> review**. The AI **proposes**; a deterministic validator + a human gate **govern**; the Processor stays
+> action — and the `augur.replyOp` (default `RecordProposal`) records it as a `vtx.augurProposal` vertex
+> (package DDL) **pending human review**. The AI **proposes**; a deterministic validator + a human gate **govern**; the Processor stays
 > the sole writer (P2). Full design: `_bmad-output/implementation-artifacts/augur-design.md`.
 >
 > ```
 > "augur": {
 >   "escalate": ["unplannable" | "exhausted", ...],  // which stuck-gap triggers escalate (default: none)
->   "pattern":  "<reasoning externalTask pattern ref>",
+>   "op":       "<reasoning op; default CreateAugurReasoningClaim>",   // dispatched as a directOp (Option F)
+>   "adapter":  "<bridge adapter; default augur>",
+>   "replyOp":  "<records the proposal; default RecordProposal>",
 >   "model":    "<optional adapter model override; default claude-opus-4-8>",
 >   "autoApply": {                                    // OPTIONAL — DESIGNED, not enabled until Andrew ratifies
 >     "actions": ["<low-risk action allow-list>"],    //   the autonomy boundary. A proposal in this allow-list
@@ -34,8 +37,8 @@
 > ```
 >
 > **Install-time validation** (same class as the `gaps`-key + `targetId`-uniqueness checks): `augur.escalate`
-> values ∈ `{unplannable, exhausted}`; `augur.pattern` resolves to an installed `meta.loomPattern` whose body
-> is an `externalTask`; `augur.autoApply.actions` ⊆ `{triggerLoom, assignTask, directOp}`. **Affected
+> values ∈ `{unplannable, exhausted}`; `augur.op` / `augur.adapter` / `augur.replyOp` / `augur.model` (all
+> optional overrides) are single NATS-token strings; `augur.autoApply.actions` ⊆ `{triggerLoom, assignTask, directOp}`. **Affected
 > consumers:** the Weaver engine (the escalation branch) + package authors (the `augur` package).
 > The `gaps`/templating/action-table shapes below are **unchanged**.
 
