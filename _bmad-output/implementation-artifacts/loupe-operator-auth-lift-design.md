@@ -4,12 +4,16 @@
 Lattice lanes · **depends on** `real-actor-write-auth-e2e-design.md` Phase 1 (shared Fake IdP +
 `up-full-capability`) · **reconciles with** `control-plane-capability-authz-design.md` (✅ CLOSED)
 
-**🏗️ Build checkpoint (Loupe lane):** §7 item 3 (operator login gate) **SHIPPED** `19c1dd0` —
+**🏗️ Build checkpoint (Loupe lane):** §7 item 3 (operator login gate) **SHIPPED** `19c1dd0` + `af43dab` —
 `requireOperator` wraps the whole mux (static UI + every `/api/*`), fail-closed, `LOUPE_DEV_AUTH` /
-`LOUPE_JWT_PUBLIC_KEY` postures mirroring `cmd/loftspace-app/readauth.go`; verified live (unauthenticated
-→ 401 on both the UI and the API, forged token → 401, dev-minted token → 200) + CI green. §7 item 1's
-role+permissions half **SHIPPED** `5bee182` (Lattice lane) — `packages/console-operator` declares
-`consoleOperator` + grants it the default-lane console ops + `ctrl.*`, no privileged lane. **Next:**
+`LOUPE_JWT_PUBLIC_KEY` postures mirroring `cmd/loftspace-app/readauth.go`, pinned to the configured
+operator subject rather than any validly-signed token. A browser can now actually complete the login
+(`af43dab`: HttpOnly session cookie + `/login` page + unauth-navigation redirect — `19c1dd0` shipped only
+the server-side gate with no way for a browser to ever attach a token, which left the console unusable
+until this fix). Verified live (curl + a real browser: log in → System Map loads live → log out →
+redirected to `/login` → log back in) + CI green. §7 item 1's role+permissions half **SHIPPED** `5bee182`
+(Lattice lane) — `packages/console-operator` declares `consoleOperator` + grants it the default-lane
+console ops + `ctrl.*`, no privileged lane. **Next:**
 re-scope the existing seeded Loupe operator identity off `holdsRole→operator` onto `consoleOperator` (§7
 item 1's other half), then §7 item 4 (op-submissions relay through the Gateway, replacing `adminActor`
 direct-stamp in `op.go`/`server.go`/`objects.go`/`pkg.go`); items 5 (pkg-lifecycle gating) and 6 (e2e
