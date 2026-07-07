@@ -94,8 +94,30 @@ type Config struct {
 	Issuer string
 	// Audience, when non-empty, is required to be present in the token `aud`.
 	Audience string
+	// KeyInfo optionally carries per-kid provenance (source/alg/addedAt) for
+	// the keys in Keys, surfaced read-only via Verifier.Info() for the
+	// Gateway's jwks health block. A kid present in Keys but absent here (or
+	// when KeyInfo is nil entirely) gets a zero-value KeyInfo — never
+	// consulted on the Verify hot path, purely observability.
+	KeyInfo map[string]KeyInfo
 	// now overrides the clock for tests; nil uses time.Now.
 	now func() time.Time
+}
+
+// KeyInfo is a trusted key's provenance — surfaced for observability only
+// (the Gateway's jwks health block, Contract #5) and never consulted on the
+// Verify hot path, which reads only the kid→key map.
+type KeyInfo struct {
+	// Source is "jwks" (fetched from the configured JWKS endpoint) or
+	// "static" (an operator-configured KeysDir/dev-mode PEM).
+	Source string
+	// Alg is the JWK's advisory `alg` member when known ("" for static keys,
+	// or a JWKS entry that omitted it — RFC 7517 §4.4 makes it optional).
+	Alg string
+	// AddedAt is when this kid first entered the trusted set. Preserved
+	// across JWKS polls that re-fetch an already-trusted kid (only a
+	// genuinely new kid gets a fresh timestamp).
+	AddedAt time.Time
 }
 
 // DefaultClockSkew is the time tolerance applied when Config.ClockSkew is zero.
@@ -121,6 +143,7 @@ type VerifiedActor struct {
 // lock on the hot Verify path.
 type Verifier struct {
 	keys      atomic.Pointer[map[string]crypto.PublicKey]
+	info      atomic.Pointer[map[string]KeyInfo]
 	clockSkew time.Duration
 	issuer    string
 	audience  string
@@ -165,21 +188,56 @@ func NewVerifier(cfg Config) (*Verifier, error) {
 		parser:    parser,
 	}
 	v.keys.Store(&keys)
+	info := make(map[string]KeyInfo, len(keys))
+	for kid := range keys {
+		info[kid] = cfg.KeyInfo[kid]
+	}
+	v.info.Store(&info)
 	return v, nil
 }
 
-// SetKeys atomically replaces the trusted kid→public-key set. A concurrent
-// Verify call in flight completes against whichever set it already loaded (no
-// lock, no torn reads) — the standard atomic-pointer swap pattern. Called by
-// a JWKS poller (jwks.go) on each successful refresh; never called with an
-// empty map (a poller keeps the last-known-good set on a failed/empty fetch
-// rather than swapping in nothing — see JWKSPoller.poll).
+// SetKeys atomically replaces the trusted kid→public-key set, discarding any
+// prior per-kid provenance (equivalent to SetKeysWithInfo(keys, nil)). Kept
+// for callers that don't track provenance — every kid reads back a
+// zero-value KeyInfo from Info() until a SetKeysWithInfo call populates it.
 func (v *Verifier) SetKeys(keys map[string]crypto.PublicKey) {
+	v.SetKeysWithInfo(keys, nil)
+}
+
+// SetKeysWithInfo atomically replaces the trusted kid→public-key set and its
+// per-kid provenance. A concurrent Verify call in flight completes against
+// whichever key set it already loaded (no lock, no torn reads) — the
+// standard atomic-pointer swap pattern. Called by a JWKS poller (jwks.go) on
+// each successful refresh; never called with an empty keys map (a poller
+// keeps the last-known-good set on a failed/empty fetch rather than swapping
+// in nothing — see JWKSPoller.FetchOnce). A kid in keys but absent from info
+// reads back a zero-value KeyInfo from Info().
+func (v *Verifier) SetKeysWithInfo(keys map[string]crypto.PublicKey, info map[string]KeyInfo) {
 	cp := make(map[string]crypto.PublicKey, len(keys))
 	for kid, k := range keys {
 		cp[kid] = k
 	}
 	v.keys.Store(&cp)
+	cpInfo := make(map[string]KeyInfo, len(keys))
+	for kid := range keys {
+		cpInfo[kid] = info[kid]
+	}
+	v.info.Store(&cpInfo)
+}
+
+// Info returns a snapshot of the current trusted set's per-kid provenance,
+// keyed by kid — read by the Gateway's jwks health block. Never consulted on
+// the Verify hot path.
+func (v *Verifier) Info() map[string]KeyInfo {
+	p := v.info.Load()
+	if p == nil {
+		return nil
+	}
+	cp := make(map[string]KeyInfo, len(*p))
+	for kid, i := range *p {
+		cp[kid] = i
+	}
+	return cp
 }
 
 // Verify checks tokenString and returns the authenticated actor, or one of the

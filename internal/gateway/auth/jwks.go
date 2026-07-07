@@ -31,6 +31,11 @@ type jwk struct {
 	Kty string `json:"kty"`
 	Kid string `json:"kid"`
 	Use string `json:"use"`
+	// Alg is the JWK's optional (RFC 7517 §4.4) advisory signing algorithm.
+	// Never consulted for a trust decision (jwt.WithValidMethods is the actual
+	// alg gate) — read only by jwksAlgs, for the jwks health block's
+	// provenance display.
+	Alg string `json:"alg"`
 	// RSA
 	N string `json:"n"`
 	E string `json:"e"`
@@ -172,4 +177,25 @@ func parseECJWK(k jwk) (*ecdsa.PublicKey, error) {
 
 func base64URLDecode(s string) ([]byte, error) {
 	return base64.RawURLEncoding.DecodeString(s)
+}
+
+// jwksAlgs extracts the optional per-kid `alg` member from a JWK Set document,
+// parsed independently of ParseJWKS so every existing ParseJWKS/FetchJWKS
+// caller keeps its current signature and arity. Best-effort only: a
+// malformed document yields a nil map (the caller already has the real
+// ParseJWKS error to act on) and a kid with no `alg` member is simply absent
+// from the result — both read as "unknown" by the jwks health block, never
+// as a trust decision.
+func jwksAlgs(data []byte) map[string]string {
+	var set jwkSet
+	if err := json.Unmarshal(data, &set); err != nil {
+		return nil
+	}
+	algs := make(map[string]string, len(set.Keys))
+	for _, k := range set.Keys {
+		if k.Kid != "" && k.Alg != "" {
+			algs[k.Kid] = k.Alg
+		}
+	}
+	return algs
 }

@@ -143,8 +143,11 @@ func run(logger *slog.Logger) error {
 	}
 
 	keys := make(map[string]crypto.PublicKey, len(staticKeys))
+	keyInfo := make(map[string]auth.KeyInfo, len(staticKeys))
+	now := time.Now()
 	for kid, k := range staticKeys {
 		keys[kid] = k
+		keyInfo[kid] = auth.KeyInfo{Source: "static", AddedAt: now}
 	}
 
 	if jwksURL != "" {
@@ -152,7 +155,7 @@ func run(logger *slog.Logger) error {
 			return err
 		}
 		fetchCtx, cancel := context.WithTimeout(ctx, initialJWKSFetchTimeout)
-		jwksKeys, skipped, ferr := auth.FetchJWKS(fetchCtx, jwksURL, nil)
+		jwksKeys, jwksKeyAlgs, skipped, ferr := auth.FetchJWKS(fetchCtx, jwksURL, nil)
 		cancel()
 		for _, s := range skipped {
 			logger.Warn("gateway: JWKS entry skipped", "reason", s)
@@ -166,6 +169,7 @@ func run(logger *slog.Logger) error {
 		} else {
 			for kid, k := range jwksKeys {
 				keys[kid] = k
+				keyInfo[kid] = auth.KeyInfo{Source: "jwks", Alg: jwksKeyAlgs[kid], AddedAt: now}
 			}
 		}
 	}
@@ -180,18 +184,20 @@ func run(logger *slog.Logger) error {
 		Keys:     keys,
 		Issuer:   os.Getenv("GATEWAY_JWT_ISSUER"),
 		Audience: os.Getenv("GATEWAY_JWT_AUDIENCE"),
+		KeyInfo:  keyInfo,
 	})
 	if err != nil {
 		return fmt.Errorf("build JWT verifier: %w", err)
 	}
 
+	var jwksPoller *auth.JWKSPoller
 	if jwksURL != "" {
 		interval, ierr := parsePollInterval(os.Getenv("GATEWAY_JWKS_POLL_INTERVAL"))
 		if ierr != nil {
 			return fmt.Errorf("parse GATEWAY_JWKS_POLL_INTERVAL: %w", ierr)
 		}
-		poller := auth.NewJWKSPoller(jwksURL, verifier, staticKeys, interval, logger)
-		go poller.Run(ctx)
+		jwksPoller = auth.NewJWKSPoller(jwksURL, verifier, staticKeys, interval, logger)
+		go jwksPoller.Run(ctx)
 		logger.Info("JWKS polling enabled", "url", jwksURL, "interval", interval)
 	}
 
@@ -278,6 +284,7 @@ func run(logger *slog.Logger) error {
 	}
 
 	hb := gateway.NewHeartbeater(conn, envOrDefault("HEALTH_KV_BUCKET", defaultHealthBucket), instance, metrics, logger)
+	hb.SetJWKSSource(verifier, jwksPoller)
 
 	// Attach the revocation materializer before the HTTP listener binds — a
 	// failure here refuses to start (design §2.4); it never leaves the

@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/asolgan/lattice/internal/gateway/auth"
 	"github.com/asolgan/lattice/internal/gateway/revocation"
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -41,6 +42,7 @@ type healthDoc struct {
 	Metrics     map[string]any  `json:"metrics"`
 	Issues      []healthIssue   `json:"issues"`
 	Revocation  revocationBlock `json:"revocation"`
+	Jwks        jwksBlock       `json:"jwks"`
 }
 
 // revocationBlock is the token-revocation kill-switch's live-state summary
@@ -53,6 +55,25 @@ type revocationBlock struct {
 	RevokedCount      int    `json:"revokedCount"`
 	LastEventSeq      uint64 `json:"lastEventSeq"`
 	LastSyncAt        string `json:"lastSyncAt"`
+}
+
+// jwksBlock is the JWT trust-key set's live-state summary — the Loupe F11
+// JWKS panel's read surface, mirroring the revocation block. keys lists the
+// current trusted set's provenance; lastPoll/swaps describe the background
+// JWKSPoller's activity (both zero-valued when no JWKS URL is configured —
+// a static/dev-only Gateway still reports its trusted keys, just with no
+// poller behind them).
+type jwksBlock struct {
+	Keys     []jwksKeyEntry `json:"keys"`
+	LastPoll string         `json:"lastPoll"`
+	Swaps    uint64         `json:"swaps"`
+}
+
+type jwksKeyEntry struct {
+	Kid     string `json:"kid"`
+	Source  string `json:"source"`
+	Alg     string `json:"alg"`
+	AddedAt string `json:"addedAt"`
 }
 
 type healthIssue struct {
@@ -146,6 +167,15 @@ type Heartbeater struct {
 	revocationConnected atomic.Bool
 	revocationLastSeq   atomic.Uint64
 	revocationLastSync  atomic.Int64 // UnixNano; 0 = never synced
+
+	// jwks* back the jwks heartbeat block — set once via SetJWKSSource after
+	// both the Verifier and (if a JWKS URL is configured) the JWKSPoller
+	// exist. jwksVerifier nil means jwksSnapshot reports an empty block (no
+	// JWT auth wired at all, e.g. some test harnesses); jwksPoller nil means
+	// "no JWKS URL configured" — keys still reflect the Verifier's
+	// static/dev-only trusted set, with lastPoll/swaps left at zero.
+	jwksVerifier *auth.Verifier
+	jwksPoller   *auth.JWKSPoller
 }
 
 // NewHeartbeater builds a Heartbeater. bucket is the Health KV bucket name
@@ -200,6 +230,47 @@ func (h *Heartbeater) SetRevocationConnected(connected bool) {
 func (h *Heartbeater) RecordRevocationSync(seq uint64, at time.Time) {
 	h.revocationLastSeq.Store(seq)
 	h.revocationLastSync.Store(at.UnixNano())
+}
+
+// SetJWKSSource attaches the JWT Verifier (and, if JWKS polling is
+// configured, its JWKSPoller) whose state jwksSnapshot reports. poller may be
+// nil (static/dev-only trust, no live polling). Call once, before Run — not
+// safe to change concurrently with emit().
+func (h *Heartbeater) SetJWKSSource(verifier *auth.Verifier, poller *auth.JWKSPoller) {
+	h.jwksVerifier = verifier
+	h.jwksPoller = poller
+}
+
+// jwksSnapshot builds the current jwks heartbeat block from the attached
+// Verifier/JWKSPoller (see SetJWKSSource). Returns a zero-value block if no
+// Verifier is attached.
+func (h *Heartbeater) jwksSnapshot() jwksBlock {
+	if h.jwksVerifier == nil {
+		return jwksBlock{}
+	}
+	info := h.jwksVerifier.Info()
+	kids := make([]string, 0, len(info))
+	for kid := range info {
+		kids = append(kids, kid)
+	}
+	sort.Strings(kids)
+	entries := make([]jwksKeyEntry, 0, len(kids))
+	for _, kid := range kids {
+		ki := info[kid]
+		addedAt := ""
+		if !ki.AddedAt.IsZero() {
+			addedAt = ki.AddedAt.UTC().Format(time.RFC3339)
+		}
+		entries = append(entries, jwksKeyEntry{Kid: kid, Source: ki.Source, Alg: ki.Alg, AddedAt: addedAt})
+	}
+	block := jwksBlock{Keys: entries}
+	if h.jwksPoller != nil {
+		block.Swaps = h.jwksPoller.Swaps()
+		if lp := h.jwksPoller.LastPollAt(); !lp.IsZero() {
+			block.LastPoll = lp.UTC().Format(time.RFC3339)
+		}
+	}
+	return block
 }
 
 // revocationSnapshot builds the current revocation heartbeat block.
@@ -261,6 +332,7 @@ func (h *Heartbeater) emit(ctx context.Context, status string) {
 		Metrics:     h.metrics.snapshot(),
 		Issues:      issues,
 		Revocation:  h.revocationSnapshot(ctx),
+		Jwks:        h.jwksSnapshot(),
 	}
 	raw, err := json.Marshal(doc)
 	if err != nil {

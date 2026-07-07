@@ -135,6 +135,65 @@ func TestJWKSPoller_Rotation(t *testing.T) {
 	}
 }
 
+func TestJWKSPoller_FetchOnce_RecordsProvenanceAndCounters(t *testing.T) {
+	jwksKP := newRSA(t)
+	devKP := newRSA(t)
+	jwk1 := rsaJWK("idp1", jwksKP.pub)
+	jwk1.Alg = "RS256"
+	srv := newJWKSServer(t, marshalJWKS(t, jwk1))
+
+	v := verifierFor(t, map[string]crypto.PublicKey{"dev": devKP.pub})
+	poller := NewJWKSPoller(srv.url(), v, map[string]crypto.PublicKey{"dev": devKP.pub}, 0, nil)
+
+	if !poller.LastPollAt().IsZero() {
+		t.Fatalf("LastPollAt before any fetch = %v, want zero", poller.LastPollAt())
+	}
+
+	if err := poller.FetchOnce(context.Background()); err != nil {
+		t.Fatalf("FetchOnce (round 1): %v", err)
+	}
+	if poller.LastPollAt().IsZero() {
+		t.Error("LastPollAt after a successful fetch is still zero")
+	}
+	if got := poller.Swaps(); got != 1 {
+		t.Errorf("Swaps after the first fetch = %d, want 1 (seed placeholder → idp1+dev)", got)
+	}
+
+	info := v.Info()
+	idp1 := info["idp1"]
+	if idp1.Source != "jwks" || idp1.Alg != "RS256" || idp1.AddedAt.IsZero() {
+		t.Errorf("info[idp1] = %+v, want Source=jwks Alg=RS256 AddedAt set", idp1)
+	}
+	dev := info["dev"]
+	if dev.Source != "static" || dev.AddedAt.IsZero() {
+		t.Errorf("info[dev] = %+v, want Source=static AddedAt set", dev)
+	}
+	firstDevAddedAt := dev.AddedAt
+
+	// A second fetch of the SAME kid set must not bump swaps and must
+	// preserve dev's original AddedAt (it re-enters the merge every poll,
+	// but it isn't a newly-trusted key).
+	if err := poller.FetchOnce(context.Background()); err != nil {
+		t.Fatalf("FetchOnce (round 2, unchanged): %v", err)
+	}
+	if got := poller.Swaps(); got != 1 {
+		t.Errorf("Swaps after an unchanged-kid-set refetch = %d, want still 1", got)
+	}
+	if got := v.Info()["dev"].AddedAt; !got.Equal(firstDevAddedAt) {
+		t.Errorf("dev.AddedAt changed across an unchanged refetch: %v -> %v", firstDevAddedAt, got)
+	}
+
+	// IdP adds a second key: the kid set changes, so swaps increments again.
+	jwk2 := rsaJWK("idp2", newRSA(t).pub)
+	srv.setBody(marshalJWKS(t, jwk1, jwk2))
+	if err := poller.FetchOnce(context.Background()); err != nil {
+		t.Fatalf("FetchOnce (round 3, added key): %v", err)
+	}
+	if got := poller.Swaps(); got != 2 {
+		t.Errorf("Swaps after adding a kid = %d, want 2", got)
+	}
+}
+
 func TestJWKSPoller_IntervalClamping(t *testing.T) {
 	v := verifierFor(t, map[string]crypto.PublicKey{"seed": newRSA(t).pub})
 

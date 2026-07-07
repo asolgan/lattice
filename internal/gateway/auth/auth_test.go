@@ -466,3 +466,54 @@ func TestAuthenticate_BadTokenSkipsRevocation(t *testing.T) {
 		t.Errorf("revocation consulted (%q) on a bad token; want skipped", rc.gotID)
 	}
 }
+
+// TestVerifier_Info_DefaultsAndOverride — NewVerifier's Config.KeyInfo seeds
+// Info(); a kid present in Keys but absent from KeyInfo reads back a
+// zero-value KeyInfo rather than being missing entirely.
+func TestVerifier_Info_DefaultsAndOverride(t *testing.T) {
+	kp := newRSA(t)
+	other := newRSA(t)
+	v, err := NewVerifier(Config{
+		Keys: map[string]crypto.PublicKey{"known": kp.pub, "unlabeled": other.pub},
+		KeyInfo: map[string]KeyInfo{
+			"known": {Source: "static", Alg: "RS256", AddedAt: fixedNow},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+
+	info := v.Info()
+	if got := info["known"]; got.Source != "static" || got.Alg != "RS256" || !got.AddedAt.Equal(fixedNow) {
+		t.Errorf("info[known] = %+v, want the seeded KeyInfo", got)
+	}
+	if got := info["unlabeled"]; got != (KeyInfo{}) {
+		t.Errorf("info[unlabeled] = %+v, want zero-value (no KeyInfo entry given)", got)
+	}
+}
+
+// TestVerifier_SetKeysWithInfo_ReplacesBoth — a fresh SetKeysWithInfo call
+// fully replaces both the trusted set and its provenance; a kid dropped from
+// keys must not linger in Info(), and a kid with no info entry defaults to
+// zero-value rather than erroring.
+func TestVerifier_SetKeysWithInfo_ReplacesBoth(t *testing.T) {
+	kp := newRSA(t)
+	v := verifierFor(t, map[string]crypto.PublicKey{"old": kp.pub})
+
+	newKP := newRSA(t)
+	v.SetKeysWithInfo(
+		map[string]crypto.PublicKey{"new": newKP.pub, "bare": kp.pub},
+		map[string]KeyInfo{"new": {Source: "jwks", Alg: "ES256", AddedAt: fixedNow}},
+	)
+
+	info := v.Info()
+	if _, ok := info["old"]; ok {
+		t.Error(`info["old"] present after SetKeysWithInfo dropped it`)
+	}
+	if got := info["new"]; got.Source != "jwks" || got.Alg != "ES256" {
+		t.Errorf(`info["new"] = %+v, want the passed KeyInfo`, got)
+	}
+	if got := info["bare"]; got != (KeyInfo{}) {
+		t.Errorf(`info["bare"] = %+v, want zero-value (no info entry given)`, got)
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
 	"time"
 )
 
@@ -57,6 +58,14 @@ type JWKSPoller struct {
 	staticKeys map[string]crypto.PublicKey
 	interval   time.Duration
 	logger     Logger
+
+	// lastPollAt/swaps back the Gateway's jwks health block — lastPollAt is
+	// the last SUCCESSFUL fetch (UnixNano; 0 = never), mirroring the
+	// revocation block's lastSyncAt semantics; swaps counts fetches whose
+	// resulting trusted kid set differed from the prior one (a kid added or
+	// removed), not every poll tick.
+	lastPollAt atomic.Int64
+	swaps      atomic.Uint64
 }
 
 // NewJWKSPoller builds a poller for url, hot-swapping verifier's trusted keys
@@ -88,7 +97,7 @@ func NewJWKSPoller(url string, verifier *Verifier, staticKeys map[string]crypto.
 // key set — the caller decides whether that failure is fatal (fail-closed at
 // startup) or tolerable (a background Run tick, which logs and continues).
 func (p *JWKSPoller) FetchOnce(ctx context.Context) error {
-	keys, skipped, err := p.fetch(ctx)
+	keys, algs, skipped, err := p.fetch(ctx)
 	if err != nil {
 		return err
 	}
@@ -105,8 +114,59 @@ func (p *JWKSPoller) FetchOnce(ctx context.Context) error {
 	for kid, k := range p.staticKeys {
 		merged[kid] = k
 	}
-	p.verifier.SetKeys(merged)
+
+	prevInfo := p.verifier.Info()
+	now := time.Now()
+	info := make(map[string]KeyInfo, len(merged))
+	for kid := range merged {
+		source := "jwks"
+		if _, isStatic := p.staticKeys[kid]; isStatic {
+			source = "static"
+		}
+		addedAt := now
+		if pi, ok := prevInfo[kid]; ok && !pi.AddedAt.IsZero() {
+			addedAt = pi.AddedAt
+		}
+		info[kid] = KeyInfo{Source: source, Alg: algs[kid], AddedAt: addedAt}
+	}
+	if keySetChanged(prevInfo, merged) {
+		p.swaps.Add(1)
+	}
+	p.verifier.SetKeysWithInfo(merged, info)
+	p.lastPollAt.Store(now.UnixNano())
 	return nil
+}
+
+// keySetChanged reports whether merged's kid set differs from prevInfo's —
+// an add or a remove, not a same-kid value refresh (a rotated key under the
+// same kid isn't a "swap" by this definition; a genuinely different kid set
+// is).
+func keySetChanged(prevInfo map[string]KeyInfo, merged map[string]crypto.PublicKey) bool {
+	if len(prevInfo) != len(merged) {
+		return true
+	}
+	for kid := range merged {
+		if _, ok := prevInfo[kid]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+// LastPollAt returns the last successful JWKS fetch time, or the zero Time if
+// none has succeeded yet.
+func (p *JWKSPoller) LastPollAt() time.Time {
+	ns := p.lastPollAt.Load()
+	if ns == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, ns)
+}
+
+// Swaps returns the count of fetches whose resulting trusted kid set
+// differed from the prior one (see keySetChanged).
+func (p *JWKSPoller) Swaps() uint64 {
+	return p.swaps.Load()
 }
 
 // Run polls at the configured interval until ctx is done. A failed poll is
@@ -128,7 +188,7 @@ func (p *JWKSPoller) Run(ctx context.Context) {
 	}
 }
 
-func (p *JWKSPoller) fetch(ctx context.Context) (keys map[string]crypto.PublicKey, skipped []string, err error) {
+func (p *JWKSPoller) fetch(ctx context.Context) (keys map[string]crypto.PublicKey, algs map[string]string, skipped []string, err error) {
 	return FetchJWKS(ctx, p.url, p.client)
 }
 
@@ -139,35 +199,41 @@ var defaultJWKSClient = &http.Client{Timeout: 10 * time.Second}
 
 // FetchJWKS fetches url and parses it as a JWKS document (ParseJWKS), bounded
 // to maxJWKSBodyBytes. client may be nil to use a default 10s-timeout client.
+// algs carries each surviving kid's advisory `alg` member (jwksAlgs) for the
+// jwks health block's provenance display — best-effort, never a trust input.
 // Exposed at package level so both JWKSPoller and a one-shot caller (e.g. an
 // initial fail-closed startup fetch) share one fetch implementation.
-func FetchJWKS(ctx context.Context, url string, client *http.Client) (keys map[string]crypto.PublicKey, skipped []string, err error) {
+func FetchJWKS(ctx context.Context, url string, client *http.Client) (keys map[string]crypto.PublicKey, algs map[string]string, skipped []string, err error) {
 	if client == nil {
 		client = defaultJWKSClient
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, nil, fmt.Errorf("build JWKS request: %w", err)
+		return nil, nil, nil, fmt.Errorf("build JWKS request: %w", err)
 	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, nil, fmt.Errorf("fetch JWKS: %w", err)
+		return nil, nil, nil, fmt.Errorf("fetch JWKS: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("fetch JWKS: unexpected status %s", resp.Status)
+		return nil, nil, nil, fmt.Errorf("fetch JWKS: unexpected status %s", resp.Status)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxJWKSBodyBytes+1))
 	if err != nil {
-		return nil, nil, fmt.Errorf("read JWKS response: %w", err)
+		return nil, nil, nil, fmt.Errorf("read JWKS response: %w", err)
 	}
 	if len(body) > maxJWKSBodyBytes {
-		return nil, nil, fmt.Errorf("JWKS response exceeds %d bytes", maxJWKSBodyBytes)
+		return nil, nil, nil, fmt.Errorf("JWKS response exceeds %d bytes", maxJWKSBodyBytes)
 	}
 
-	return ParseJWKS(body)
+	keys, skipped, err = ParseJWKS(body)
+	if err != nil {
+		return nil, nil, skipped, err
+	}
+	return keys, jwksAlgs(body), skipped, nil
 }
