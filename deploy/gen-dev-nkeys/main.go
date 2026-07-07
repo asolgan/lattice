@@ -248,6 +248,12 @@ var matrix = []component{
 		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$JS.API.>", "$JS.ACK.>"},
 		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
 	},
+	{
+		name:     "cafe-app",
+		desc:     "vertical app (P5 reader); writes via ops",
+		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$JS.API.>", "$JS.ACK.>"},
+		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
+	},
 }
 
 func main() {

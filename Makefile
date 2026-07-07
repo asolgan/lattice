@@ -40,7 +40,7 @@ GATEWAY_READ_MODELS_DIR ?= $(abspath ./deploy/gateway-read-models)
 # Origins allowed to call POST /v1/operations cross-origin — the vertical apps'
 # own dev ports, since the browser-direct write path (real-actor-write-auth-e2e-
 # design.md §3.1) has the FE call the Gateway directly from its own origin.
-GATEWAY_CORS_ORIGINS ?= http://localhost:7788,http://localhost:7799
+GATEWAY_CORS_ORIGINS ?= http://localhost:7788,http://localhost:7799,http://localhost:7801
 
 # Per-component dev NKey seeds (NATS account-level write restriction, Path A —
 # deploy/nats-server.conf's permission matrix). Each binary's NATS_NKEY points at
@@ -60,6 +60,7 @@ NKEY_OBJMGR ?= $(NKEY_DIR)/object-store-manager.nk
 NKEY_LOUPE ?= $(NKEY_DIR)/loupe.nk
 NKEY_LOFTSPACE_APP ?= $(NKEY_DIR)/loftspace-app.nk
 NKEY_CLINIC_APP ?= $(NKEY_DIR)/clinic-app.nk
+NKEY_CAFE_APP ?= $(NKEY_DIR)/cafe-app.nk
 NKEY_LATTICE_PKG ?= $(NKEY_DIR)/lattice-pkg.nk
 NKEY_LATTICE_CLI ?= $(NKEY_DIR)/lattice.nk
 NKEY_GATEWAY ?= $(NKEY_DIR)/gateway.nk
@@ -542,6 +543,25 @@ up-clinic:
 	@sleep 1
 	@echo "==> Clinic ready. Operator/inspector: http://127.0.0.1:7777 (Loupe) · patient app: http://127.0.0.1:7799"
 
+## up-cafe — One-command Café vertical: up-full → install-cafe → build + start
+## cafe-app (:7801) in the background alongside Loupe (:7777). No protected
+## Postgres read model exists for café (every lens is plain NATS-KV), so no
+## provision-*-role step is needed, unlike up-loftspace/up-clinic.
+## Logs: cafe-app.log (+ the up-full logs).
+up-cafe:
+	@$(MAKE) up-full
+	@$(MAKE) install-cafe
+	@echo "==> Building cafe-app binary..."
+	go build -o bin/cafe-app ./cmd/cafe-app
+	@echo "==> Killing any prior cafe-app process..."
+	-pkill -f "bin/cafe-app" 2>/dev/null || true
+	@echo "==> Starting cafe-app in background (dev-auth staff token minter)..."
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_CAFE_APP) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) \
+		CAFE_APP_DEV_AUTH=1 \
+		./bin/cafe-app >cafe-app.log 2>&1 </dev/null &
+	@sleep 1
+	@echo "==> Café ready. Operator/inspector: http://127.0.0.1:7777 (Loupe) · café app: http://127.0.0.1:7801"
+
 ## provision-clinic-role — Create the clinic-app's Postgres read role: a
 ## NON-superuser, SELECT-only role (D1.5), mirroring provision-loftspace-role
 ## (D1.3). The app MUST NOT read as the `lattice` superuser — superusers (and
@@ -679,6 +699,26 @@ install-clinic:
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/clinic-ledger
 	@echo "==> Clinic vertical installed (domain + reminders + ledger). Drive it via the clinic-app, the lattice CLI, or Loupe."
 
+## install-cafe — Install the Café vertical onto a running up-full stack, in
+## dependency order: orchestration-base → service-domain → lease-signing →
+## cafe-ledger → cafe-domain (identity-domain is already installed by
+## install-packages/up-full). Drive it via the cafe-app, the lattice CLI, or
+## Loupe.
+install-cafe:
+	@echo "==> Building lattice-pkg..."
+	go build -o bin/lattice-pkg ./cmd/lattice-pkg
+	@echo "==> Installing orchestration-base..."
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/orchestration-base
+	@echo "==> Installing service-domain..."
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/service-domain
+	@echo "==> Installing lease-signing..."
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/lease-signing
+	@echo "==> Installing cafe-ledger..."
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/cafe-ledger
+	@echo "==> Installing cafe-domain..."
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/cafe-domain
+	@echo "==> Café vertical installed (lease-signing + cafe-ledger + cafe-domain). Drive it via the cafe-app, the lattice CLI, or Loupe."
+
 ## reinstall-package — Dev-loop: diff-apply ONE edited package's DDL/lens onto the
 ## RUNNING stack in place, no `make down` (F-004 upgrade-aware install). PKG=<dir>,
 ## e.g. `make reinstall-package PKG=packages/clinic-domain`. A same-version edit
@@ -718,6 +758,30 @@ refresh-clinic:
 		./bin/clinic-app >clinic-app.log 2>&1 </dev/null &
 	@sleep 1
 	@echo "==> Clinic refreshed (packages diff-applied + clinic-app restarted). Patient app: http://127.0.0.1:7799"
+
+## refresh-cafe — Dev-loop refresh of the Café vertical onto the RUNNING stack,
+## no `make down`: diff-apply the vertical's packages in place (F-004
+## upgrade-aware install) AND rebuild+restart bin/cafe-app. Requires an
+## already-running up-cafe (or up-full + install-cafe). CAVEAT: an ADDED
+## lens/role/op won't activate under a live stack — use `make down && up-cafe`.
+refresh-cafe:
+	@echo "==> Building lattice-pkg..."
+	go build -o bin/lattice-pkg ./cmd/lattice-pkg
+	@echo "==> Diff-applying café packages in place..."
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install --force packages/orchestration-base
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install --force packages/service-domain
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install --force packages/lease-signing
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install --force packages/cafe-ledger
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install --force packages/cafe-domain
+	@echo "==> Rebuilding cafe-app binary..."
+	go build -o bin/cafe-app ./cmd/cafe-app
+	@echo "==> Restarting cafe-app..."
+	-pkill -f "bin/cafe-app" 2>/dev/null || true
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_CAFE_APP) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) \
+		CAFE_APP_DEV_AUTH=1 \
+		./bin/cafe-app >cafe-app.log 2>&1 </dev/null &
+	@sleep 1
+	@echo "==> Café refreshed (packages diff-applied + cafe-app restarted). Café app: http://127.0.0.1:7801"
 
 ## refresh-loftspace — Dev-loop refresh of the LoftSpace vertical onto the RUNNING
 ## stack, no `make down`: diff-apply the vertical's packages in place (F-004
@@ -795,6 +859,15 @@ run-clinic-app:
 	go build -o bin/clinic-app ./cmd/clinic-app
 	@echo "==> Clinic app on http://127.0.0.1:7799 (Ctrl-C to stop)..."
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_CLINIC_APP) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/clinic-app
+
+## run-cafe-app — Build + run the Café app in the FOREGROUND. Open
+## http://127.0.0.1:7801. Requires a running deployment with the Café vertical
+## installed (make up-full + install-cafe, or make up-cafe).
+run-cafe-app:
+	@echo "==> Building cafe-app binary..."
+	go build -o bin/cafe-app ./cmd/cafe-app
+	@echo "==> Café app on http://127.0.0.1:7801 (Ctrl-C to stop)..."
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_CAFE_APP) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) CAFE_APP_DEV_AUTH=1 ./bin/cafe-app
 
 ## test — Run all Go unit + integration tests.
 ## Test packages run concurrently (-p 4). Every embedded NATS/JetStream

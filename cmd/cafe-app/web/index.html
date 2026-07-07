@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Café</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">Café <span class="brand-sub">house tabs</span></div>
+  <nav class="tabs" role="tablist">
+    <button class="tab active" data-view="pos" role="tab" aria-selected="true">POS</button>
+    <button class="tab" data-view="frontdesk" role="tab" aria-selected="false">Front Desk</button>
+    <button class="tab" data-view="resident" role="tab" aria-selected="false">Resident</button>
+  </nav>
+</header>
+
+<main>
+  <section id="view-pos" role="tabpanel">
+    <div class="panel-controls">
+      <label for="pos-lease">Lease</label>
+      <select id="pos-lease"></select>
+      <button id="pos-refresh" class="ghost">Refresh</button>
+      <span class="summary" id="pos-summary"></span>
+    </div>
+    <div id="pos-body"></div>
+  </section>
+
+  <section id="view-frontdesk" role="tabpanel" hidden>
+    <div class="panel-controls">
+      <button id="frontdesk-refresh" class="ghost">Refresh</button>
+      <span class="summary" id="frontdesk-summary"></span>
+    </div>
+    <div id="frontdesk-grid" class="grid" aria-live="polite"></div>
+  </section>
+
+  <section id="view-resident" role="tabpanel" hidden>
+    <div class="panel-controls">
+      <label for="resident-lease">Lease</label>
+      <select id="resident-lease"></select>
+      <button id="resident-refresh" class="ghost">Refresh</button>
+    </div>
+    <div id="resident-body"></div>
+  </section>
+</main>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

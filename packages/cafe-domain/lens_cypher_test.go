@@ -157,9 +157,35 @@ func TestCafeTabSettlement_OpenNotViolating(t *testing.T) {
 
 	v := f.projectAt(t, "opentab")[0].Values
 	require.Equal(t, "vtx.tab."+f.ids["opentab"], v["entityKey"])
+	require.Equal(t, "open", v["status"])
+	require.Equal(t, "2026-07-07T12:00:00Z", v["openedAt"])
+	require.Nil(t, v["settledAt"], "still open — never settled")
 	require.Equal(t, false, v["missing_account"], "still open — never violates")
 	require.Equal(t, false, v["missing_charge"], "still open — never violates")
 	require.Equal(t, false, v["violating"])
+}
+
+func TestCafeTabSettlement_SettledStatusAndTimestampsProjected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newCdFixture(t)
+	f.vtx(t, "settledtab", "tab")
+	f.aspect(t, "settledtab", "status", "tabStatus", map[string]any{
+		"value": "settled", "totalCents": 1200.0,
+		"openedAt": "2026-07-07T12:00:00Z", "settledAt": "2026-07-07T13:00:00Z",
+	})
+	f.vtx(t, "settledtab_lease", "leaseapp")
+	f.edge(t, "openFor", "settledtab", "settledtab_lease")
+	f.aspect(t, "settledtab_lease", "cafeLedgerAccount", "cafeLedgerAccountGuard", map[string]any{"accountKey": "vtx.cafeaccount.BBFAKEACCTHJKMNPQRST"})
+	f.vtx(t, "settledtab_tx", "cafetransaction")
+	f.edge(t, "settles", "settledtab_tx", "settledtab")
+
+	v := f.projectAt(t, "settledtab")[0].Values
+	require.Equal(t, "settled", v["status"])
+	require.Equal(t, "2026-07-07T12:00:00Z", v["openedAt"])
+	require.Equal(t, "2026-07-07T13:00:00Z", v["settledAt"])
+	require.Equal(t, false, v["violating"], "fully posted — converged")
 }
 
 func TestCafeTabSettlement_SettledZeroTotal_NotViolating(t *testing.T) {

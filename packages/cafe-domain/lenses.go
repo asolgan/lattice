@@ -22,7 +22,7 @@ func Lenses() []pkgmgr.LensSpec {
 			Output: &pkgmgr.OutputDescriptorSpec{
 				AnchorType:       "tab",
 				OutputKeyPattern: TabSettlementTarget + ".{actorSuffix}",
-				BodyColumns:      []string{"violating", "missing_account", "missing_charge", "entityKey", "tabKey", "leaseAppKey", "accountKey", "totalCents"},
+				BodyColumns:      []string{"violating", "missing_account", "missing_charge", "entityKey", "tabKey", "leaseAppKey", "accountKey", "totalCents", "status", "openedAt", "settledAt"},
 				EmptyBehavior:    "delete",
 				KeyColumn:        "entityId",
 				Freshness:        "auto",
@@ -63,6 +63,8 @@ WITH
   t.key AS entityKey,
   t.status.data.value AS status,
   t.status.data.totalCents AS totalCents,
+  t.status.data.openedAt AS openedAt,
+  t.status.data.settledAt AS settledAt,
   l.key AS leaseAppKey,
   l.cafeLedgerAccount.data.accountKey AS accountKey,
   count(tx.key) AS txCount
@@ -73,6 +75,9 @@ RETURN
   leaseAppKey,
   accountKey,
   totalCents,
+  status,
+  openedAt,
+  settledAt,
   ((status = 'settled') AND (totalCents > 0) AND (accountKey = null)) AS missing_account,
   ((status = 'settled') AND (totalCents > 0) AND (accountKey <> null) AND (txCount = 0)) AS missing_charge,
   (

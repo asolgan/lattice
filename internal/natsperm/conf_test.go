@@ -165,7 +165,7 @@ func TestConfigParses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse config: %v", err)
 	}
-	if got, want := len(opts.Nkeys), 14; got != want {
+	if got, want := len(opts.Nkeys), 15; got != want {
 		t.Errorf("NKey users = %d, want %d", got, want)
 	}
 	// Every user must carry an explicit publish allow-list (default-deny on
