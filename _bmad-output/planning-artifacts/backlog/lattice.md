@@ -97,7 +97,6 @@ and stale-marker corrections were applied in the filing commit (Done log); these
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | **refractor-6-14-postgres-seam-truthup** | Close the remaining §6.14 seams: seq-guard the protected `Delete` (stale-replay resurrection window); stage the M5 wildcard-anchor contract edit the shipped RLS policy already enforces (reconcile the `rls.go`/`capabilityread.go` §6.14 citations with it); decide auth-plane vs warning severity for a paused grant/protected lens; fix the `int64(MaxUint64)` wrap in the shred→grant-table seq stamp. Supersedes the protected-Postgres-LWW row. | ★★ | S | 📋 |
-| **refractor-failure-tier-backhalf** | `cmd/refractor` never wires `SetRetryQueue`/`SetAuditWriter`: no deferred retry, no DLQ routing, no audit emission. Wire the shipped libraries, or ratify the Nak-only posture and rewrite the failure-tier Route column. | ★★ | S | 📋 |
 | **section-6-13-invalidation-amendment** | §6.13's frozen text specifies an `Invalidation` plan member + fails-activation rule that retire-simple-engine deliberately deleted (code: broad-BFS enumerator, warn-and-proceed). Stage the in-place contract edit reconciling §6.13 to the as-ratified reality, uncommitted for Andrew. | ★★ | S | 🔭 flag-for-Andrew |
 | **refractor-health-contract-minors** | Align the heartbeat `version` (`"0.1.0"`→`"1.0"`) and status (`"shutdown"`→`shuttingDown`) to Contract #5 (Processor already conforms; update the observability schema doc); add a `pendingSpecs` spec-before-parent ordering test. | ★ | S | 📋 |
 
@@ -203,6 +202,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-07 · `8b481a1` · [Refractor] refractor-failure-tier-backhalf — wired `SetRetryQueue`(deferred retry/DLQ) + `SetAuditWriter` (per-rule audit trail) in `cmd/refractor`, both previously dormant; lead-reviewed, CI green
 - 2026-07-07 · `e189e74` · [Gateway] jwks health block — per-kid provenance (source/alg/addedAt) + poller lastPoll/swaps counters, mirroring the revocation block; lead-reviewed, CI green
 - 2026-07-07 · `5bee182` · [pkgmgr] console-operator role package — mechanism B part 1 (scoped `consoleOperator` role + default-lane/ctrl.* grants, no privileged lane); lead-reviewed, CI green
 - 2026-07-07 · `8846771` · [loftspace-app/clinic-app] real-actor-write-auth-e2e Phase 2 Inc 2 — credential-bindings read-boundary wiring, both vertical apps; lead-reviewed (mirrors already 3-layer-reviewed Gateway resolver), CI green
