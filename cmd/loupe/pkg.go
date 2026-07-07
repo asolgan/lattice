@@ -51,6 +51,7 @@ import (
 	rbacdomain "github.com/asolgan/lattice/packages/rbac-domain"
 	servicedomain "github.com/asolgan/lattice/packages/service-domain"
 	servicelocation "github.com/asolgan/lattice/packages/service-location"
+	wellnessdomain "github.com/asolgan/lattice/packages/wellness-domain"
 )
 
 // packageRegistry maps a manifest name to its compiled Go Definition. Keep in
@@ -81,6 +82,7 @@ var packageRegistry = map[string]pkgmgr.Definition{
 	"bespoke-contracts":      bespokecontracts.Package,
 	"control-authz":          controlauthz.Package,
 	"console-operator":       consoleoperator.Package,
+	"wellness-domain":        wellnessdomain.Package,
 }
 
 // pkgApplyTimeout bounds an install/upgrade/uninstall round-trip. The

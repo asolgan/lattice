@@ -1,0 +1,69 @@
+name: wellness-domain
+version: 0.1.0
+description: |
+  Wellness bookable domain: studio / session / booking vertex types + their
+  aspects and links, written by Create*/Tombstone*/Cancel* ops. CreateSession
+  claims a deterministic studioSlotClaim per covered 15-minute cell
+  (double-session lock, mirrors clinic-domain's providerSlotClaim).
+  CreateBooking claims the first free sessionSeatClaim within the session's
+  capacity (SessionFull once exhausted — the same CreateOnly idiom extended
+  over a seat-index dimension) and, given an optional leaseAppKey, verifies
+  residency via lease-signing's applicationFor link before granting the
+  resident rate (a mismatch falls through to standard, never a hard
+  failure). Three projection lenses (wellnessStudios, wellnessSessions,
+  wellnessBookings) are the P5 read models a wellness FE reads. No PHI/PII,
+  no protected Postgres layer. Depends lease-signing (documentation only —
+  CreateBooking reads its leaseapp by known key, no install-order
+  requirement enforced at the Starlark level).
+depends:
+  - lease-signing
+declares:
+  ddls:
+    - canonicalName: studio
+      class: meta.ddl.vertexType
+    - canonicalName: session
+      class: meta.ddl.vertexType
+    - canonicalName: booking
+      class: meta.ddl.vertexType
+    - canonicalName: studioProfile
+      class: meta.ddl.aspectType
+    - canonicalName: sessionSchedule
+      class: meta.ddl.aspectType
+    - canonicalName: studioSlotClaim
+      class: meta.ddl.aspectType
+    - canonicalName: sessionSeatClaim
+      class: meta.ddl.aspectType
+    - canonicalName: bookingStatus
+      class: meta.ddl.aspectType
+  lenses:
+    - canonicalName: wellnessStudios
+      adapter: nats-kv
+      bucket: wellness-studios
+      engine: full
+    - canonicalName: wellnessSessions
+      adapter: nats-kv
+      bucket: wellness-sessions
+      engine: full
+    - canonicalName: wellnessBookings
+      adapter: nats-kv
+      bucket: wellness-bookings
+      engine: full
+  permissions:
+    - operationType: CreateStudio
+      scope: any
+      grantsTo: [operator]
+    - operationType: TombstoneStudio
+      scope: any
+      grantsTo: [operator]
+    - operationType: CreateSession
+      scope: any
+      grantsTo: [operator]
+    - operationType: TombstoneSession
+      scope: any
+      grantsTo: [operator]
+    - operationType: CreateBooking
+      scope: any
+      grantsTo: [operator]
+    - operationType: CancelBooking
+      scope: any
+      grantsTo: [operator]

@@ -53,6 +53,7 @@ import (
 	rbacdomain "github.com/asolgan/lattice/packages/rbac-domain"
 	servicedomain "github.com/asolgan/lattice/packages/service-domain"
 	servicelocation "github.com/asolgan/lattice/packages/service-location"
+	wellnessdomain "github.com/asolgan/lattice/packages/wellness-domain"
 )
 
 // bootstrapJSON is the on-disk shape of lattice.bootstrap.json. We need
@@ -88,6 +89,7 @@ var packageRegistry = map[string]pkgmgr.Definition{
 	"bespoke-contracts":      bespokecontracts.Package,
 	"control-authz":          controlauthz.Package,
 	"console-operator":       consoleoperator.Package,
+	"wellness-domain":        wellnessdomain.Package,
 }
 
 func main() {
