@@ -477,6 +477,7 @@ func TestValidateWeaverTargets_AugurRejections(t *testing.T) {
 		{"unknown trigger", &AugurSpec{Escalate: []string{"someday"}}, "not a known trigger"},
 		{"bad op token", &AugurSpec{Escalate: []string{"unplannable"}, Op: "bad.op"}, "single token"},
 		{"bad adapter token", &AugurSpec{Escalate: []string{"unplannable"}, Adapter: "a b"}, "single token"},
+		{"bad model token", &AugurSpec{Escalate: []string{"unplannable"}, Model: "claude opus 4.8"}, "single token"},
 		{"bad autoApply action", &AugurSpec{Escalate: []string{"unplannable"},
 			AutoApply: &AugurAutoApplySpec{Actions: []string{"DropTable"}}}, "not a known action"},
 		{"minConfidence too high", &AugurSpec{Escalate: []string{"unplannable"},

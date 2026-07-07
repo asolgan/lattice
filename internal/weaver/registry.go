@@ -605,8 +605,9 @@ func (s *targetSource) rejectTarget(id, reason string) {
 // matches missing_* and is a valid single KV-key segment (it is the third
 // segment of the <targetId>.<entityId>.<gapColumn> mark key), no playbook
 // params key collides with the engine-owned expectedRevision payload field,
-// and targetId is a valid single KV-key segment (it is a weaver-targets key
-// prefix and a durable-name segment, so dots are forbidden).
+// a surface gap's optional issueSeverity is one aggregateStatus can escalate
+// ("warning"|"error"), and targetId is a valid single KV-key segment (it is a
+// weaver-targets key prefix and a durable-name segment, so dots are forbidden).
 func validateTarget(t *Target) error {
 	if t.TargetID == "" {
 		return fmt.Errorf("targetId is required")
@@ -631,6 +632,10 @@ func validateTarget(t *Target) error {
 		}
 		if _, reserved := ga.Params["expectedRevision"]; reserved {
 			return fmt.Errorf("gaps key %q: param \"expectedRevision\" is reserved (the engine writes the OCC revision-condition under that payload field)", col)
+		}
+		if ga.Action == actionSurface && ga.IssueSeverity != "" && ga.IssueSeverity != "warning" && ga.IssueSeverity != "error" {
+			return fmt.Errorf("gaps key %q action %q issueSeverity %q must be \"warning\" or \"error\" (omit for the \"warning\" default) — aggregateStatus only escalates those two",
+				col, ga.Action, ga.IssueSeverity)
 		}
 		parsedGa, err := validateGapPlannerFields(col, ga)
 		if err != nil {
@@ -1200,17 +1205,21 @@ func (s *targetSource) indexOpEffects(id string, evt substrate.KVEvent) {
 	s.mu.Unlock()
 }
 
-// effectsCatalog builds the Fire-6 goal-regression catalog (design
-// weaver-planner-mandate-design.md §3.3) from every op-meta vertex currently
-// carrying both an operationType (indexOpMeta) and a parsed `.effects` aspect
-// (indexOpEffects): one planner.Action per operationType, deterministically
-// sorted by Ref. Cost is uniformly 1 — no declared per-op cost surface exists
-// yet, so cheapest-total-cost degenerates to fewest-steps — and Precondition
-// is left nil (always available): dispatch-time re-validation, mirroring the
-// proposedOp precedent, is what actually gates whether an op may fire; the
-// planner gets no scope the frozen table didn't have (design §3.3). An
-// operationType with no Effects entry never enters the catalog — it can never
-// close a goal, so it would only slow the search.
+// effectsCatalog builds a GLOBAL ops-derived goal-regression catalog from every
+// op-meta vertex currently carrying both an operationType (indexOpMeta) and a
+// parsed `.effects` aspect (indexOpEffects): one planner.Action per
+// operationType, deterministically sorted by Ref, uniform Cost 1, nil
+// Precondition (dispatch-time re-validation is what gates whether an op may
+// fire).
+//
+// RESERVED, not wired to any live dispatch path. The live goal-regression path
+// is the per-gap `actions` catalog a target authors explicitly (goalActions on
+// the Target, resolved by resolveGoalAction); Contract #10 §10.8 marks a global
+// auto-catalog "reserved, not implied", so this global view is not consulted at
+// dispatch. It reads the same live opMetaByType/opEffects index that
+// effectPathsFor (the oscillation detector) depends on, and its join semantics
+// are exercised by effects_catalog_internal_test.go; it stays as the built,
+// tested shape a future global-catalog consumer would adopt.
 func (s *targetSource) effectsCatalog() []planner.Action {
 	s.mu.Lock()
 	defer s.mu.Unlock()

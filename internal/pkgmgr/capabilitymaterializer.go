@@ -319,9 +319,36 @@ var knownWeaverTargetFields = map[string]bool{
 	"gaps":     true,
 }
 
-// unknownWeaverTargetFields decodes content as a generic JSON object and
-// returns any top-level key outside knownWeaverTargetFields, sorted for a
-// deterministic report. Mirrors unknownLensFields.
+// knownGapActionFields are the JSON keys GapActionArtifact exposes for one
+// entry in a weaverTarget's `gaps` map. An out-of-scope key on a gap entry
+// (e.g. "goal"/"candidates"/"mode"/"augur" — planner-extension surfaces the AI
+// path does not enable) is silently DROPPED by json.Unmarshal into
+// GapActionArtifact and would materialize as a plain gap, bypassing §5's
+// stored-invalid audit trail. Mirrors knownWeaverTargetFields' explicit
+// allow-list rationale, one level down.
+var knownGapActionFields = map[string]bool{
+	"action":        true,
+	"pattern":       true,
+	"subject":       true,
+	"adapter":       true,
+	"operation":     true,
+	"assignee":      true,
+	"target":        true,
+	"params":        true,
+	"reads":         true,
+	"issueCode":     true,
+	"issueSeverity": true,
+}
+
+// unknownWeaverTargetFields decodes content as a generic JSON object and returns
+// any key — at the top level (outside knownWeaverTargetFields) OR inside a `gaps`
+// entry (outside knownGapActionFields) — that the AI weaverTarget path does not
+// expose, sorted for a deterministic report. A per-gap smuggled key is reported
+// as `gaps.<col>.<key>`. The nested scan matters because json.Unmarshal into
+// GapActionArtifact silently drops an unknown gap key, so without it a
+// scope-widening posture buried in a gap (not at the top level) would
+// materialize as a plain gap rather than land on the §5 stored-invalid audit
+// trail. Mirrors unknownLensFields, extended one level down.
 func unknownWeaverTargetFields(content json.RawMessage) []string {
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(content, &raw); err != nil {
@@ -331,6 +358,22 @@ func unknownWeaverTargetFields(content json.RawMessage) []string {
 	for k := range raw {
 		if !knownWeaverTargetFields[k] {
 			extra = append(extra, k)
+		}
+	}
+	if gapsRaw, ok := raw["gaps"]; ok {
+		var gaps map[string]json.RawMessage
+		if err := json.Unmarshal(gapsRaw, &gaps); err == nil {
+			for col, gapRaw := range gaps {
+				var gap map[string]json.RawMessage
+				if err := json.Unmarshal(gapRaw, &gap); err != nil {
+					continue
+				}
+				for k := range gap {
+					if !knownGapActionFields[k] {
+						extra = append(extra, "gaps."+col+"."+k)
+					}
+				}
+			}
 		}
 	}
 	sort.Strings(extra)

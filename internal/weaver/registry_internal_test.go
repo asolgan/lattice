@@ -341,6 +341,37 @@ func TestValidateTarget_GapColumnCharsetAndReservedParam(t *testing.T) {
 	}
 }
 
+// TestValidateTarget_SurfaceIssueSeverity proves a surface gap's issueSeverity
+// is confined at load to a grade aggregateStatus can escalate: "" (default
+// "warning"), "warning", or "error" load; anything else (e.g. a raw-op-authored
+// "critical") is rejected, closing the mirror-drift with pkgmgr's validator so a
+// surface issue can never sit open while the heartbeat still reports clean.
+func TestValidateTarget_SurfaceIssueSeverity(t *testing.T) {
+	t.Parallel()
+	surface := func(sev string) *Target {
+		return &Target{
+			TargetID: "fixtureSurface",
+			Gaps: map[string]GapAction{
+				"missing_probe": {Action: actionSurface, IssueCode: "ProbeStuck", IssueSeverity: sev},
+			},
+		}
+	}
+	for _, sev := range []string{"", "warning", "error"} {
+		if err := validateTarget(surface(sev)); err != nil {
+			t.Fatalf("surface issueSeverity %q must load: %v", sev, err)
+		}
+	}
+	for _, sev := range []string{"critical", "info", "fatal", "Warning"} {
+		err := validateTarget(surface(sev))
+		if err == nil {
+			t.Fatalf("surface issueSeverity %q must be rejected at validateTarget", sev)
+		}
+		if !strings.Contains(err.Error(), "issueSeverity") {
+			t.Fatalf("surface issueSeverity %q: unexpected rejection reason: %v", sev, err)
+		}
+	}
+}
+
 func TestValidateTarget_AugurPolicy(t *testing.T) {
 	t.Parallel()
 

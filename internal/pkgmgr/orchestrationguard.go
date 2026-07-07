@@ -138,9 +138,10 @@ func (def Definition) validateWeaverTargets() error {
 // on a target's optional augur block, mirroring the engine's validateAugurPolicy.
 // A nil block is the frozen-contract default (always valid). When present: at
 // least one escalate trigger (each ∈ {unplannable, exhausted}); the optional
-// Op/Adapter/ReplyOp overrides, when set, are single tokens (Option F — Weaver
-// dispatches the reasoning op directly as a directOp, so there is NO loom pattern
-// to resolve; the op / adapter / replyOp default at dispatch when omitted);
+// Op/Adapter/ReplyOp/Model overrides, when set, are single tokens (Option F —
+// Weaver dispatches the reasoning op directly as a directOp, so there is NO loom
+// pattern to resolve; the op / adapter / replyOp default at dispatch when
+// omitted, and model is a bare adapter override token);
 // autoApply.actions ⊆ the §10.8 action table; minConfidence ∈ [0,1].
 func (def Definition) validateAugurSpec(targetIdx int, targetID string, a *AugurSpec) error {
 	if a == nil {
@@ -156,7 +157,7 @@ func (def Definition) validateAugurSpec(targetIdx int, targetID string, a *Augur
 				targetIdx, targetID, trig, escalateUnplannable, escalateExhausted)
 		}
 	}
-	for field, v := range map[string]string{"op": a.Op, "adapter": a.Adapter, "replyOp": a.ReplyOp} {
+	for field, v := range map[string]string{"op": a.Op, "adapter": a.Adapter, "replyOp": a.ReplyOp, "model": a.Model} {
 		if v != "" && !singleTokenPattern.MatchString(v) {
 			return fmt.Errorf("pkgmgr: WeaverTarget[%d] %q: augur.%s value %q must be a single token matching %s",
 				targetIdx, targetID, field, v, singleTokenPattern.String())

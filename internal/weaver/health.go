@@ -319,10 +319,14 @@ func (h *heartbeater) flagEffectMismatches(ctx context.Context, metrics map[stri
 
 // aggregateStatus reconciles the reported lifecycle status with the open issue
 // set per Contract #5 §5.3: any "error" issue ⇒ "unhealthy", otherwise any
-// "warning" issue ⇒ "degraded", otherwise the lifecycle status is kept. The
-// "starting" and "shutdown" phases are returned unchanged — an initializing or
-// draining component reports its lifecycle phase, not a steady-state health
-// grade, even if transient issues are present.
+// "warning" (or any other unrecognized non-empty severity) issue ⇒ "degraded",
+// otherwise the lifecycle status is kept. Treating an unknown severity as at
+// least "degraded" keeps §5.3's honesty invariant (issues empty iff healthy):
+// an open issue can never leave the heartbeat reporting clean merely because its
+// severity string is one this switch does not name. The "starting" and
+// "shutdown" phases are returned unchanged — an initializing or draining
+// component reports its lifecycle phase, not a steady-state health grade, even
+// if transient issues are present.
 func aggregateStatus(lifecycle string, issues []healthIssue) string {
 	if lifecycle == "starting" || lifecycle == "shutdown" {
 		return lifecycle
@@ -332,7 +336,7 @@ func aggregateStatus(lifecycle string, issues []healthIssue) string {
 		switch is.Severity {
 		case "error":
 			return "unhealthy"
-		case "warning":
+		default:
 			worst = "degraded"
 		}
 	}

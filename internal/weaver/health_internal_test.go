@@ -7,9 +7,12 @@ import (
 
 // aggregateStatus must reconcile the lifecycle status with the open issue set
 // per Contract #5 §5.3: a heartbeat is "healthy" only when issues is empty; an
-// open warning ⇒ "degraded"; an open error ⇒ "unhealthy" (worst-wins). The
-// "starting" / "shutdown" lifecycle phases are reported verbatim regardless of
-// transient issues.
+// open warning (or any other unrecognized non-empty severity) ⇒ "degraded"; an
+// open error ⇒ "unhealthy" (worst-wins). An unknown severity must NOT leave the
+// status clean — that would let an issue sit open while the heartbeat reports
+// healthy, breaking §5.3's issues-empty-iff-healthy invariant. The "starting" /
+// "shutdown" lifecycle phases are reported verbatim regardless of transient
+// issues.
 func TestAggregateStatus(t *testing.T) {
 	t.Parallel()
 	warn := healthIssue{Severity: "warning", Code: "TemplateDataError"}
@@ -30,7 +33,8 @@ func TestAggregateStatus(t *testing.T) {
 		{"multiple warnings stay degraded", "healthy", []healthIssue{warn, warn}, "degraded"},
 		{"starting verbatim despite error", "starting", []healthIssue{err}, "starting"},
 		{"shutdown verbatim despite error", "shutdown", []healthIssue{err}, "shutdown"},
-		{"unknown severity ignored", "healthy", []healthIssue{{Severity: "info", Code: "X"}}, "healthy"},
+		{"unknown severity degrades not ignored", "healthy", []healthIssue{{Severity: "info", Code: "X"}}, "degraded"},
+		{"unknown severity still loses to error", "healthy", []healthIssue{{Severity: "critical", Code: "X"}, err}, "unhealthy"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

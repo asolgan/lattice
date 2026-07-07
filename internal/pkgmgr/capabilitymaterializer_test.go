@@ -2,6 +2,7 @@ package pkgmgr
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/asolgan/lattice/internal/refractor/ruleengine/full"
@@ -520,6 +521,27 @@ func TestValidateCapabilityArtifact_WeaverTargetAugurFieldRejected(t *testing.T)
 	}
 	if report.Valid {
 		t.Fatalf("expected an invalid report for an out-of-scope 'augur' field")
+	}
+}
+
+func TestValidateCapabilityArtifact_WeaverTargetSmuggledGapFieldRejected(t *testing.T) {
+	// A planner-extension surface (goal/candidates/mode/augur) buried in a GAP
+	// entry — not at the top level — is out of scope for the AI weaverTarget
+	// path. GapActionArtifact does not expose it, so json.Unmarshal SILENTLY
+	// DROPS it and the gap would materialize as a plain directOp, bypassing §5's
+	// stored-invalid audit trail. The nested unknown-field scan must catch it and
+	// report it as gaps.<col>.<key>.
+	content := json.RawMessage(`{"targetId":"aiTargetDispatch","lensRef":"someExistingLens","gaps":{"missing_x":{"action":"directOp","operation":"SendReminder","goal":[{"present":"row.done"}]}}}`)
+	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a gap smuggling an out-of-scope 'goal' key")
+	}
+	joined := strings.Join(report.Errors, " ")
+	if !strings.Contains(joined, "gaps.missing_x.goal") {
+		t.Fatalf("smuggled gap key must be reported as gaps.missing_x.goal; got %q", joined)
 	}
 }
 
