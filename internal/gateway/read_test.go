@@ -38,9 +38,10 @@ func TestValidReadModelName(t *testing.T) {
 // --- fakePgPool: no real Postgres, proves the auth/wiring path -----------
 
 type fakeTx struct {
-	execs  []string
-	rows   []map[string]any
-	commit bool
+	execs    []string
+	execArgs [][]any
+	rows     []map[string]any
+	commit   bool
 }
 
 func (f *fakeTx) Begin(ctx context.Context) (pgx.Tx, error) { panic("not used") }
@@ -56,6 +57,7 @@ func (f *fakeTx) Prepare(ctx context.Context, name, sql string) (*pgconn.Stateme
 }
 func (f *fakeTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	f.execs = append(f.execs, sql)
+	f.execArgs = append(f.execArgs, args)
 	return pgconn.CommandTag{}, nil
 }
 func (f *fakeTx) Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error) {
@@ -258,6 +260,67 @@ func TestRegisterRoutes_InvalidNameSkipped(t *testing.T) {
 	mux.ServeHTTP(w, r)
 	if w.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405 (the write-path handler, not shadowed/removed)", w.Code)
+	}
+}
+
+// TestHandleReadModel_CredentialBinding_ScopesToClaimedIdentity proves a
+// bound credential actor's read scopes lattice.actor_id to the claimed
+// business identity, not the raw credential subject
+// (gateway-claim-flow-identity-provisioning-design.md §11.0/§11.5 R1) — the
+// Gateway's own read-model routes get the same resolution as the write path.
+func TestHandleReadModel_CredentialBinding_ScopesToClaimedIdentity(t *testing.T) {
+	priv := newTestKey(t)
+	authn := testAuthenticator(t, priv, "k1")
+	token := signToken(t, priv, "k1", "RAWCREDENTIAL00000000")
+
+	tx := &fakeTx{}
+	s := &Server{authn: authn, logger: nopLogger{}, reqTimeout: testReqTimeout, metrics: &Metrics{}}
+	s.ConfigureReadModels(&fakePgPool{tx: tx}, map[string]ReadModel{"widgets": {Query: "SELECT 1"}})
+	s.ConfigureCredentialBindings(fakeCredentialResolver{identityKey: "vtx.identity.CLAIMEDBUSINESS0000", bound: true})
+
+	mux := http.NewServeMux()
+	s.RegisterRoutes(mux)
+	r := httptest.NewRequest(http.MethodGet, "/v1/widgets", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if len(tx.execArgs) == 0 || len(tx.execArgs[0]) == 0 {
+		t.Fatal("set_config never received an actor argument")
+	}
+	if got := tx.execArgs[0][0]; got != "CLAIMEDBUSINESS0000" {
+		t.Fatalf("lattice.actor_id = %v, want the resolved business identity's bare id", got)
+	}
+}
+
+// TestHandleReadModel_CredentialBinding_Unbound_UsesRawSubject proves an
+// unbound (or unconfigured) actor reads exactly as before — the raw JWT
+// subject, unchanged.
+func TestHandleReadModel_CredentialBinding_Unbound_UsesRawSubject(t *testing.T) {
+	priv := newTestKey(t)
+	authn := testAuthenticator(t, priv, "k1")
+	token := signToken(t, priv, "k1", "RAWCREDENTIAL00000000")
+
+	tx := &fakeTx{}
+	s := &Server{authn: authn, logger: nopLogger{}, reqTimeout: testReqTimeout, metrics: &Metrics{}}
+	s.ConfigureReadModels(&fakePgPool{tx: tx}, map[string]ReadModel{"widgets": {Query: "SELECT 1"}})
+	s.ConfigureCredentialBindings(fakeCredentialResolver{bound: false})
+
+	mux := http.NewServeMux()
+	s.RegisterRoutes(mux)
+	r := httptest.NewRequest(http.MethodGet, "/v1/widgets", nil)
+	r.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if got := tx.execArgs[0][0]; got != "RAWCREDENTIAL00000000" {
+		t.Fatalf("lattice.actor_id = %v, want the raw subject (unbound)", got)
 	}
 }
 

@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/asolgan/lattice/internal/gateway/auth"
 )
 
 // PgPool is the subset of *pgxpool.Pool a read-model query needs — a single
@@ -96,7 +98,12 @@ func (s *Server) handleReadModel(name string, model ReadModel) http.HandlerFunc 
 			return
 		}
 
-		rows, err := queryReadModel(ctx, s.pgPool, model.Query, actor.Subject)
+		// A claimed credential (A) reads as its business identity (U) — the
+		// same shared-seam resolution the write path applies
+		// (gateway-claim-flow-identity-provisioning-design.md §11.0/§11.5
+		// R1), so RLS scopes rows to U's links, not A's.
+		resolvedSubject := strings.TrimPrefix(s.resolveActor(ctx, actor.ActorID), auth.IdentityKeyPrefix)
+		rows, err := queryReadModel(ctx, s.pgPool, model.Query, resolvedSubject)
 		if err != nil {
 			s.metrics.readFailuresTotal.Add(1)
 			s.logger.Error("gateway: read model query failed", "readModel", name, "error", err)

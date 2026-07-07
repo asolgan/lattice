@@ -33,6 +33,17 @@ import (
 
 const claimInstance = "icl-test"
 
+// claimedConsumerGrantKey returns the lnk.identity.<id>.holdsRole.role.<id>
+// key ClaimIdentity's R2 refinement grants the claimed identity
+// (gateway-claim-flow-identity-provisioning-design.md §11.5).
+func claimedConsumerGrantKey(t *testing.T, identityKey string) string {
+	t.Helper()
+	roleKey := consumerRoleKey(t)
+	identityID := identityKey[len("vtx.identity."):]
+	roleID := roleKey[len("vtx.role."):]
+	return "lnk.identity." + identityID + ".holdsRole.role." + roleID
+}
+
 func newClaimPipeline(t *testing.T, ctx context.Context, conn *substrate.Conn, durable string) (*processor.CommitPath, jetstream.Consumer) {
 	t.Helper()
 	logger := testutil.TestLogger()
@@ -141,6 +152,23 @@ func TestClaimIdentity_Success(t *testing.T) {
 
 	if _, err := conn.KVGet(ctx, testutil.HarnessCoreBucket, credIndexKey); err != nil {
 		t.Fatalf("credentialindex vertex not found at %s: %v", credIndexKey, err)
+	}
+
+	grantKey := claimedConsumerGrantKey(t, identityKey)
+	grantEntry, err := conn.KVGet(ctx, testutil.HarnessCoreBucket, grantKey)
+	if err != nil {
+		t.Fatalf("R2: holdsRole grant not found at %s: %v", grantKey, err)
+	}
+	var grantDoc struct {
+		SourceVertex string `json:"sourceVertex"`
+		TargetVertex string `json:"targetVertex"`
+	}
+	if err := json.Unmarshal(grantEntry.Value, &grantDoc); err != nil {
+		t.Fatalf("unmarshal holdsRole grant: %v", err)
+	}
+	if grantDoc.SourceVertex != identityKey || grantDoc.TargetVertex != consumerRoleKey(t) {
+		t.Fatalf("R2: holdsRole grant source/target = %q/%q, want %q/%q",
+			grantDoc.SourceVertex, grantDoc.TargetVertex, identityKey, consumerRoleKey(t))
 	}
 
 	assertTrackerEvent(t, ctx, conn, claimReqID, "identity.claimed")
