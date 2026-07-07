@@ -99,9 +99,7 @@ and stale-marker corrections were applied in the filing commit (Done log); these
 |---|---|---|---|---|
 | **refractor-6-14-postgres-seam-truthup** | Close the remaining §6.14 seams: seq-guard the protected `Delete` (stale-replay resurrection window); stage the M5 wildcard-anchor contract edit the shipped RLS policy already enforces (reconcile the `rls.go`/`capabilityread.go` §6.14 citations with it); decide auth-plane vs warning severity for a paused grant/protected lens; fix the `int64(MaxUint64)` wrap in the shred→grant-table seq stamp. Supersedes the protected-Postgres-LWW row. | ★★ | S | 📋 |
 | **refractor-failure-tier-backhalf** | `cmd/refractor` never wires `SetRetryQueue`/`SetAuditWriter`: no deferred retry, no DLQ routing, no audit emission. Wire the shipped libraries, or ratify the Nak-only posture and rewrite the failure-tier Route column. | ★★ | S | 📋 |
-| **lens-target-reserved-bucket-guard** | `pkgmgr` denies only the `"capability"` alias; Refractor auto-creates any bucket a lens names and rebuild `Truncate` purges it — a mis-authored lens can wipe `health-kv`/`refractor-adjacency`; ACL-less dev runs have no backstop. Add a reserved-bucket denylist in `pkgmgr` + a fail-closed mirror at Refractor activation. | ★★ | S | 📋 |
 | **section-6-13-invalidation-amendment** | §6.13's frozen text specifies an `Invalidation` plan member + fails-activation rule that retire-simple-engine deliberately deleted (code: broad-BFS enumerator, warn-and-proceed). Stage the in-place contract edit reconciling §6.13 to the as-ratified reality, uncommitted for Andrew. | ★★ | S | 🔭 flag-for-Andrew |
-| **capabilityread-error-arm-tests** | Pin the D1 gate's fail-closed *error* posture: `(false, error)` on KV Get failure, malformed slice JSON, and list-keys failure is unpinned and free to rot. | ★★ | S | 📋 |
 | **refractor-health-contract-minors** | Align the heartbeat `version` (`"0.1.0"`→`"1.0"`) and status (`"shutdown"`→`shuttingDown`) to Contract #5 (Processor already conforms; update the observability schema doc); add a `pendingSpecs` spec-before-parent ordering test. | ★ | S | 📋 |
 
 ## Lattice feature backlog — the Phase-3 build queue
@@ -191,6 +189,8 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-07 · `0d6c71e` · [Refractor] capabilityread-error-arm-tests — 2 of 3 D1-gate error arms pinned (malformed-JSON, list-keys-failure); Get-failure arm left as documented residual (not racelessly triggerable); lead-reviewed
+- 2026-07-07 · `c5ed56b` · [pkgmgr/Refractor] lens-target-reserved-bucket-guard — reserved-bucket-name denylist (install-time) + fail-closed activation mirror; adversarially reviewed, clean
 - 2026-07-07 · `da8ee6c` · [Refractor/pkgmgr] refractor-protected-by-default-gate — declare-one gate (translateSpec + pkgmgr + lint-conventions); 3-layer reviewed, fixed forward (lint scanner rewrite, BootstrapLens gap, Public+GrantTable guard)
 - 2026-07-07 · `921fda4` · [lease-signing/processor/lattice-pkg] real-actor-write-auth-e2e Phase 1 items 4+6 — consumer scope=self grant + live e2e proof; 2 platform bugs fixed along the way; 3-layer reviewed, fixed forward
 
