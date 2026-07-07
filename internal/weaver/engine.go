@@ -74,12 +74,13 @@ type Config struct {
 	// tick gates nothing).
 	SweepOrphanWarmup time.Duration
 	// ReclaimBackoffBase is the base interval for the reclaim backoff applied to
-	// collapse-only userTask actions (assignTask/triggerLoom): the sweep paces
-	// repeat reclaims of the SAME still-open episode at base × 2^(count-1),
-	// capped at ReclaimBackoffCap, instead of re-firing every pass. The FIRST
-	// reclaim still fires at lease-expiry (count 0→1 ⇒ base), so lost-dispatch
-	// recovery is unchanged; directOp/external gaps are never backed off (their
-	// reclaim re-dispatch is the intended bounded retry). Values <= 0 default to
+	// the collapse-only actions (assignTask/triggerLoom and the Augur's
+	// proposedOp): the sweep paces repeat reclaims of the SAME still-open
+	// episode at base × 2^(count-1), capped at ReclaimBackoffCap, instead of
+	// re-firing every pass. The FIRST reclaim still fires at lease-expiry
+	// (count 0→1 ⇒ base), so lost-dispatch recovery is unchanged; ordinary
+	// (non-Augur) directOp/external gaps are never backed off (their reclaim
+	// re-dispatch is the intended bounded retry). Values <= 0 default to
 	// MarkLease (the first repeat then paces at the same cadence as the lease).
 	ReclaimBackoffBase time.Duration
 	// ReclaimBackoffCap caps the reclaim backoff interval. Defaults to 24h — the

@@ -85,13 +85,15 @@ func (e *Engine) temporalSpec() substrate.ConsumerSpec {
 
 // scheduleFreshness is the lane-3 scheduling leg, run from handleRow on every
 // non-tombstone row delivery (violating or not — level-driven): when the row
-// carries a future freshUntil, the Actuator publishes the per-target-per-entity
-// @at schedule. Every delivery re-publishes idempotently — one-schedule-per-
-// subject replace makes the re-publish a no-op-equivalent, and a row
-// re-projected with a NEW freshUntil replaces the prior timer. Returns false
-// only when the schedule publish itself failed (the caller Naks with delay —
-// bounded cadence, never a hot loop); data errors are surfaced and skipped
-// (redelivery cannot fix a projected row).
+// carries a freshUntil, the Actuator publishes the per-target-per-entity @at
+// schedule at that instant. A future instant arms a pending timer; a past
+// instant is published verbatim and nats-server fires it immediately (an
+// overdue deadline — correct level semantics). Every delivery re-publishes
+// idempotently — one-schedule-per-subject replace makes the re-publish a
+// no-op-equivalent, and a row re-projected with a NEW freshUntil replaces the
+// prior timer. Returns false only when the schedule publish itself failed (the
+// caller Naks with delay — bounded cadence, never a hot loop); data errors are
+// surfaced and skipped (redelivery cannot fix a projected row).
 func (e *Engine) scheduleFreshness(ctx context.Context, targetID, entityID, key string, row map[string]any) bool {
 	// Freshness timers arm/re-arm even while the target is disabled: scheduling
 	// is bookkeeping that keeps lane-3 state current, so an instant re-enable

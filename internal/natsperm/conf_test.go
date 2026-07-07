@@ -253,7 +253,7 @@ func TestLensTargetWriteIsolation(t *testing.T) {
 		t.Fatalf("refractor KVPut weaver-targets: want success, got %v", err)
 	}
 
-	assertDeniedPuts(t, url, "weaver-targets", []string{"loom", "loupe", "lattice", "gateway"})
+	assertDeniedPuts(t, url, "weaver-targets", []string{"loom", "loupe", "lattice", "gateway", "weaver"})
 }
 
 // TestOpsSystemPublishAccess: refractor's keyshredded manager
@@ -475,7 +475,7 @@ func TestBackingStreamSideChannel(t *testing.T) {
 	}
 
 	// a non-owner's purge is denied at the door — the request gets no reply.
-	for _, component := range []string{"loom", "loupe", "refractor"} {
+	for _, component := range []string{"loom", "loupe", "refractor", "weaver"} {
 		component := component
 		t.Run("denied-purge/"+component, func(t *testing.T) {
 			t.Parallel()

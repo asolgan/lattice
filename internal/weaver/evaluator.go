@@ -68,12 +68,13 @@ func (e *Engine) handleRow(ctx context.Context, msg substrate.Message) substrate
 		return substrate.Ack
 	}
 
-	// Lane-3 scheduling leg: a row carrying a future freshUntil (re-)arms its
+	// Lane-3 scheduling leg: a row carrying a freshUntil (re-)arms its
 	// per-target-per-entity @at timer on EVERY delivery, violating or not —
-	// level-driven, idempotent under one-schedule-per-subject replace. Runs
-	// even for a disabled target: arming the timer is state-recording
-	// bookkeeping, so an instant re-enable loses no deadline. Only a
-	// schedule-publish failure defers the row.
+	// level-driven, idempotent under one-schedule-per-subject replace. A future
+	// instant arms a pending timer; a past instant is published verbatim and
+	// fires immediately (overdue deadline). Runs even for a disabled target:
+	// arming the timer is state-recording bookkeeping, so an instant re-enable
+	// loses no deadline. Only a schedule-publish failure defers the row.
 	if !e.scheduleFreshness(ctx, targetID, entityID, key, row) {
 		return substrate.NakWithDelay
 	}

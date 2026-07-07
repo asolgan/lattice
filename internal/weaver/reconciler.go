@@ -385,9 +385,8 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 	}
 
 	// entityKey is needed by BOTH paths below (the leg-advance dispatch and
-	// the ordinary reclaim), so resolve and validate it up front — moved
-	// ahead of the goal-release check (was below, alongside the ordinary
-	// reclaim) rather than duplicated.
+	// the ordinary reclaim), so resolve and validate it once here, ahead of
+	// the goal-release check, rather than resolving it separately on each path.
 	entityKey, _ := row["entityKey"].(string)
 	if entityKey == "" {
 		// Without the §10.2 entityKey echo no remediation can name its
