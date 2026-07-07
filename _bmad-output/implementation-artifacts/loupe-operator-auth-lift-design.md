@@ -13,11 +13,26 @@ the server-side gate with no way for a browser to ever attach a token, which lef
 until this fix). Verified live (curl + a real browser: log in → System Map loads live → log out →
 redirected to `/login` → log back in) + CI green. §7 item 1's role+permissions half **SHIPPED** `5bee182`
 (Lattice lane) — `packages/console-operator` declares `consoleOperator` + grants it the default-lane
-console ops + `ctrl.*`, no privileged lane. **Next:**
-re-scope the existing seeded Loupe operator identity off `holdsRole→operator` onto `consoleOperator` (§7
-item 1's other half), then §7 item 4 (op-submissions relay through the Gateway, replacing `adminActor`
-direct-stamp in `op.go`/`server.go`/`objects.go`/`pkg.go`); items 5 (pkg-lifecycle gating) and 6 (e2e
-proof) follow.
+console ops + `ctrl.*`, no privileged lane.
+
+**§7 item 4 (op-submissions relay through the Gateway) SHIPPED `635db70`** — `op.go`/`server.go`
+(`handleOp`)/`objects.go`/`pkg.go` (via a new optional `internal/pkgmgr.Installer.Submit` field) all relay
+the requesting operator's own verified Bearer token to `POST /v1/operations` instead of stamping
+`adminActor`; Loupe stamps no actor of its own anywhere in the op-submission path now. 3-layer reviewed,
+fixed forward (Loupe's own context timeout and the Gateway's internal wait-for-Processor timeout raced at
+the same 8s with Loupe's clock starting first, discarding the Gateway's 202-with-requestId fallback —
+op-submission handlers now use a longer `gatewaySubmitContext`, 20s). Verified live against the real
+Gateway + Processor (curl and the actual Submit-Op browser UI) + CI green. **This closes the mechanism,
+not the authorization outcome:** the seeded Loupe operator identity is still whatever `LOUPE_OPERATOR_ACTOR_KEY`
+resolves to (unset today, falling back to `adminActor` — root-equivalent), so relaying its token via the
+Gateway commits with the same effective privilege as the old direct-stamp until the re-scope below lands.
+
+**Next:** re-scope the existing seeded Loupe operator identity off `holdsRole→operator` onto
+`consoleOperator` (§7 item 1's other half — Lattice lane; investigated during item 4's fire and found to
+be a genuine identity-provisioning question, not a trivial pattern-mirror, so it stayed there rather than
+being absorbed into the Loupe-lane fire). Items 5 (pkg-lifecycle gating) and 6 (the capability-mode e2e
+deny proof — the actual proof that a scoped `consoleOperator` is denied a meta-lane op) follow once that
+lands.
 
 > **Ratification (Andrew, 2026-07-06): B then C — both built, C not deferred.** The operator-privilege
 > fork (§4) resolves to **build B first** (the scoped `consoleOperator` role; pkg-lifecycle stays a

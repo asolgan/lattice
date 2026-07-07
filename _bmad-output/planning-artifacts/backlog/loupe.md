@@ -26,7 +26,7 @@ buildable-first; F11–F13 gated on lattice cross-lane asks (§6 there).
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | **F13 — Chronicler Time Machine** | Flow-history browser + map scrubber + ledger browser (platform-edges brief §4 L1–L3); overrides the Chronicler design's "rides F6" display note (Loupe scope). | ★★★ | L | 🚧 L1 reconciled (shipped Flows tab satisfies it, no rebuild) + L2 v1 SHIPPED (flow-liveness scrubber); L2-full/L3 blocked-on: Chronicler archive mode (lattice, unscheduled) · [UX §4](../../implementation-artifacts/loupe-platform-edges-ux.md) |
-| **F15 — Operator auth lift** | Real human operator login (replaces localhost-trust-as-admin) + op-submissions relayed through the Gateway as the verified operator (not `adminActor` root); reads stay direct-inspector behind the login. Control plane already lifted. | ★★★ | L | 🏗️ building (worktree) · [design](../../implementation-artifacts/loupe-operator-auth-lift-design.md) · inc.1 login+session SHIPPED (`19c1dd0`, `af43dab`); next: inc.2 Gateway-relay (§7 item 4) |
+| **F15 — Operator auth lift** | Real human operator login (replaces localhost-trust-as-admin) + op-submissions relayed through the Gateway as the verified operator (not `adminActor` root); reads stay direct-inspector behind the login. Control plane already lifted. | ★★★ | L | 🏗️ building (worktree) · [design](../../implementation-artifacts/loupe-operator-auth-lift-design.md) · shipped `19c1dd0`,`af43dab`,`635db70`; next: items 5–6 |
 
 ## Component maintenance
 
@@ -61,6 +61,7 @@ Open items only (shipped ones are in the Done log) — none currently open.
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-07 · `635db70` · [Loupe/F15 inc.2] Op-submissions relay through the Gateway, replacing `adminActor` direct-stamp. 3-layer reviewed, fixed forward; verified live + CI green
 - 2026-07-06 · `af43dab` · [Loupe/F15 inc.1] Browser-usable login session — cookie + `/login` page + unauth-nav redirect; pins gate to the configured operator. 3-layer reviewed, fixed forward; verified live + CI green
 - 2026-07-06 · `19c1dd0` · [Loupe/F15 inc.1] Operator login gate — requireOperator wraps the whole mux; 3-layer reviewed, fixed forward; verified live + CI green
 
