@@ -6,22 +6,31 @@
 // Weaver / Loom control planes, list packages, and submit operations. The
 // browser is a thin view; this Go server does all NATS I/O.
 //
-// SAFETY: Loupe has NO authentication and acts as admin. It binds 127.0.0.1
-// only by default. A non-loopback LOUPE_ADDR is an explicit opt-in and logs a
-// loud warning at startup — a trusted-deployment tool must not silently become
-// an auth-less network-wide admin handle.
+// SAFETY: the console requires a verified operator Bearer JWT for every
+// request (readauth.go's requireOperator) — no valid token, no console. It
+// binds 127.0.0.1 only by default. A non-loopback LOUPE_ADDR is an explicit
+// opt-in and logs a loud warning at startup, and refuses the loopback-only
+// dev-auth posture (LOUPE_DEV_AUTH requires a real IdP instead, via
+// LOUPE_JWT_PUBLIC_KEY, on a non-loopback bind).
 //
 // Environment:
 //
-//	LOUPE_ADDR           HTTP listen address (default: 127.0.0.1:7777)
-//	NATS_URL             NATS server URL (default: nats://localhost:4222)
-//	BOOTSTRAP_JSON_PATH  path to lattice.bootstrap.json (default: ./lattice.bootstrap.json)
-//	LOUPE_PG_DSN         read-only Postgres DSN for the lens-contents seam
-//	                     (unset: postgres-target lens contents render pg-pending)
+//	LOUPE_ADDR                 HTTP listen address (default: 127.0.0.1:7777)
+//	NATS_URL                   NATS server URL (default: nats://localhost:4222)
+//	BOOTSTRAP_JSON_PATH        path to lattice.bootstrap.json (default: ./lattice.bootstrap.json)
+//	LOUPE_PG_DSN               read-only Postgres DSN for the lens-contents seam
+//	                           (unset: postgres-target lens contents render pg-pending)
+//	LOUPE_DEV_AUTH             loopback-only demo login: mints operator tokens via
+//	                           POST /api/operator/dev-token, signed with the shared
+//	                           dev key the Gateway/vertical apps also trust
+//	LOUPE_JWT_PUBLIC_KEY       PEM public key of a real operator IdP (production posture);
+//	                           LOUPE_JWT_ISSUER / LOUPE_JWT_AUDIENCE / LOUPE_JWT_KID refine it
 //
 // Logs to stderr in slog text format. The server starts even when NATS is
 // unreachable or the bootstrap file is missing: the UI is served and each
-// /api/* call returns a JSON error the UI renders, never a crash.
+// /api/* call returns a JSON error the UI renders, never a crash. Neither
+// LOUPE_DEV_AUTH nor LOUPE_JWT_PUBLIC_KEY set means no operator can log in —
+// every request 401s until one is configured.
 package main
 
 import (
@@ -147,6 +156,14 @@ func run(logger *slog.Logger) error {
 	// servers are running with LATTICE_CONTROL_JWT_* configured.
 	operatorActorToken := os.Getenv("LOUPE_OPERATOR_ACTOR_TOKEN")
 
+	authn, signer, err := setupOperatorAuth(logger, isLoopbackHost(bindHost))
+	if err != nil {
+		return err
+	}
+	if authn == nil {
+		logger.Warn("no operator auth posture configured (set LOUPE_DEV_AUTH or LOUPE_JWT_PUBLIC_KEY); every request will 401")
+	}
+
 	srv := &server{
 		conn:               conn,
 		adminActor:         adminActor,
@@ -158,6 +175,8 @@ func run(logger *slog.Logger) error {
 		pg:                 pgPool,
 		pgDSNInvalid:       pgDSNInvalid,
 		bindHost:           bindHost,
+		authn:              authn,
+		devSigner:          signer,
 	}
 
 	mux := http.NewServeMux()
@@ -165,7 +184,7 @@ func run(logger *slog.Logger) error {
 
 	httpServer := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
+		Handler:           srv.requireOperator(mux),
 		ReadHeaderTimeout: 10 * time.Second,
 		// WriteTimeout bounds a slow-reading client holding an object-byte
 		// stream open; sized generously so a legitimate large download on a slow
@@ -202,9 +221,10 @@ func run(logger *slog.Logger) error {
 }
 
 // warnIfNonLoopback logs a loud warning when addr's host resolves to anything
-// other than loopback. Loupe is auth-less and acts as admin; a non-local bind
-// exposes admin control to the network. A bare ":<port>" (all interfaces) and
-// any explicit non-loopback host trip the warning.
+// other than loopback. A non-local bind requires a real operator IdP
+// (LOUPE_JWT_PUBLIC_KEY) — LOUPE_DEV_AUTH refuses to enable off loopback. A
+// bare ":<port>" (all interfaces) and any explicit non-loopback host trip the
+// warning.
 func warnIfNonLoopback(logger *slog.Logger, addr string) {
 	host, _, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -216,7 +236,7 @@ func warnIfNonLoopback(logger *slog.Logger, addr string) {
 	if isLoopbackHost(host) {
 		return
 	}
-	logger.Warn("Loupe has no auth and acts as admin; binding to a non-local address exposes admin control to the network",
+	logger.Warn("Loupe is binding to a non-local address; a real operator IdP (LOUPE_JWT_PUBLIC_KEY) is required — LOUPE_DEV_AUTH refuses to enable off loopback",
 		"addr", addr)
 }
 

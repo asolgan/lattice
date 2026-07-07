@@ -19,6 +19,7 @@ import (
 	"github.com/asolgan/lattice/cmd/lattice/output"
 	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/controlauth"
+	"github.com/asolgan/lattice/internal/gateway/auth"
 	"github.com/asolgan/lattice/internal/pkgmgr"
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
@@ -72,6 +73,13 @@ type server struct {
 	// deployed and then crashed reads absent-red, not "not yet deployed".
 	everLiveMu sync.Mutex
 	everLive   map[string]bool
+	// authn verifies the operator's Bearer JWT for the console's front door
+	// (requireOperator, readauth.go). nil means no auth posture is configured,
+	// which fails every gated request closed with 401.
+	authn *auth.Authenticator
+	// devSigner mints operator dev-tokens (POST /api/operator/dev-token) when
+	// the loopback dev-auth posture is enabled; nil otherwise.
+	devSigner *devSigner
 }
 
 func (s *server) registerRoutes(mux *http.ServeMux) {
@@ -112,6 +120,7 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 	// the bare and trailing-segment patterns route to the same handler.
 	mux.HandleFunc("/api/objects", s.handleObjects)
 	mux.HandleFunc("/api/objects/", s.handleObjects)
+	mux.HandleFunc(operatorDevTokenPath, s.handleOperatorDevToken)
 }
 
 // writeJSON encodes v as JSON with the given status code.
@@ -131,10 +140,11 @@ func (s *server) writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 // crossOriginBlocked rejects a state-changing request whose Origin header
-// names a different site — the cheap same-origin gate for a loopback-bound,
-// unauthenticated operator console (a hostile web page can form-POST to a
-// well-known local port; the browser always attaches Origin to cross-origin
-// POSTs). Requests without an Origin (curl, same-site GET-initiated) pass.
+// names a different site — the cheap same-origin gate for a loopback-bound
+// operator console (a hostile web page can form-POST to a well-known local
+// port; the browser always attaches Origin to cross-origin POSTs), defense in
+// depth alongside the operator login gate (requireOperator, readauth.go).
+// Requests without an Origin (curl, same-site GET-initiated) pass.
 // Every mutating endpoint checks this before doing any work: the op submit,
 // the control planes, object upload/detach, and the package installer family.
 //

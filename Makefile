@@ -364,7 +364,7 @@ up-full:
 	@echo "==> Killing any prior Loupe process..."
 	-pkill -f "bin/loupe" 2>/dev/null || true
 	@echo "==> Starting Loupe in background..."
-	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LOUPE) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) LOUPE_PG_DSN=$(LOUPE_PG_DSN) ./bin/loupe >loupe.log 2>&1 </dev/null &
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LOUPE) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) LOUPE_PG_DSN=$(LOUPE_PG_DSN) LOUPE_DEV_AUTH=1 ./bin/loupe >loupe.log 2>&1 </dev/null &
 	@sleep 1
 	@echo "==> Full Lattice ready. Loupe http://127.0.0.1:7777 · Gateway :8080 (dev-mode)."
 	@echo "==> Logs: loupe.log gateway.log loom.log weaver.log bridge.log objmgr.log chronicler.log refractor.log processor.log"
@@ -750,7 +750,7 @@ run-loupe:
 	@echo "==> Building loupe binary..."
 	go build -o bin/loupe ./cmd/loupe
 	@echo "==> Loupe on http://127.0.0.1:7777 (Ctrl-C to stop)..."
-	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LOUPE) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) LOUPE_PG_DSN=$(LOUPE_PG_DSN) ./bin/loupe
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LOUPE) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) LOUPE_PG_DSN=$(LOUPE_PG_DSN) LOUPE_DEV_AUTH=1 ./bin/loupe
 
 ## run-gateway — Build + run the Gateway (external write-path translator) in the
 ## FOREGROUND, DEV MODE (trusts the checked-in dev JWT key — never for prod).
