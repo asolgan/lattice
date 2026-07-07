@@ -1,0 +1,76 @@
+name: console-operator
+version: 0.1.0
+description: |
+  Declares a scoped consoleOperator role and grants it the default-lane
+  console ops (ShredIdentityKey, RevokeActor, UnrevokeActor, AttachObject,
+  DetachObject) plus the ctrl.<component>.<verb> control-plane ops — the
+  Loupe operator's routine console surface, at zero privileged-lane exposure.
+  Deliberately distinct from the kernel-primordial operator role so a console
+  operator stays an ordinary (non-system) rbac actor, no anchor, no
+  boot-snapshot dependency. Grant-only — pkg-lifecycle ops stay meta-lane,
+  anchor-only (mechanism B; mechanism C is the flagged follow-on).
+  loupe-operator-auth-lift-design.md mechanism B.
+depends:
+  - rbac-domain
+  - identity-domain
+  - privacy-base
+  - objects-base
+declares:
+  permissions:
+    - operationType: ShredIdentityKey
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: RevokeActor
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: UnrevokeActor
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: AttachObject
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: DetachObject
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: ctrl.weaver.read
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: ctrl.weaver.disable
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: ctrl.weaver.enable
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: ctrl.weaver.revoke
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: ctrl.loom.read
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: ctrl.loom.pause
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: ctrl.loom.resume
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: ctrl.refractor.read
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: ctrl.refractor.rebuild
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: ctrl.refractor.pause
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: ctrl.refractor.resume
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: ctrl.refractor.delete
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: ctrl.refractor.register
+      scope: any
+      grantsTo: [consoleOperator]
+    - operationType: ctrl.refractor.deregister
+      scope: any
+      grantsTo: [consoleOperator]

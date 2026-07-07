@@ -1,0 +1,160 @@
+package consoleoperator
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/asolgan/lattice/internal/controlauth"
+	"github.com/asolgan/lattice/internal/pkgmgr"
+)
+
+// TestPackage_ManifestMatchesDefinition confirms the on-disk manifest.yaml
+// cross-validates against the exported Definition (the most common package-
+// authoring drift bug), before any NATS integration.
+func TestPackage_ManifestMatchesDefinition(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	m, err := pkgmgr.ParseManifest(filepath.Join(wd, "manifest.yaml"))
+	if err != nil {
+		t.Fatalf("ParseManifest: %v", err)
+	}
+	if err := m.VerifyAgainstDefinition(Package); err != nil {
+		t.Fatalf("manifest <-> Definition drift: %v", err)
+	}
+}
+
+// TestPackage_GrantOnlyNoDDLsOrLenses pins the package's shape: a grant-only
+// package (mirrors packages/control-authz, packages/privacy-operator-grant).
+func TestPackage_GrantOnlyNoDDLsOrLenses(t *testing.T) {
+	if len(Package.DDLs) != 0 || len(Package.Lenses) != 0 {
+		t.Fatalf("grant-only package must declare no DDLs/lenses; got %d DDLs, %d lenses",
+			len(Package.DDLs), len(Package.Lenses))
+	}
+	deps := map[string]bool{}
+	for _, d := range Package.Depends {
+		deps[d] = true
+	}
+	for _, want := range []string{"rbac-domain", "identity-domain", "privacy-base", "objects-base"} {
+		if !deps[want] {
+			t.Errorf("Depends = %v, want to include %q", Package.Depends, want)
+		}
+	}
+}
+
+// TestPackage_DeclaresConsoleOperatorRoleDistinctFromPrimordialOperator pins
+// the naming decision the package.go doc explains at length: the new role is
+// "consoleOperator", never "operator" (the kernel-primordial, root-equivalent
+// role every SystemActorKeys() holder is discovered by).
+func TestPackage_DeclaresConsoleOperatorRoleDistinctFromPrimordialOperator(t *testing.T) {
+	if len(Package.Roles) != 1 {
+		t.Fatalf("Roles = %d, want exactly 1", len(Package.Roles))
+	}
+	role := Package.Roles[0]
+	if role.CanonicalName != "consoleOperator" {
+		t.Fatalf("role CanonicalName = %q, want %q (must not collide with the primordial %q role)",
+			role.CanonicalName, "consoleOperator", "operator")
+	}
+}
+
+// TestPackage_NoPrivilegedLaneOpsGranted pins mechanism B's core safety
+// property: this package must never grant a meta-lane (pkg-lifecycle) op —
+// those stay anchor-only until mechanism C (scoped-privileged-lane-grants)
+// ships. A consoleOperator with InstallPackage/UninstallPackage/UpgradePackage
+// would be this design's exact regression.
+func TestPackage_NoPrivilegedLaneOpsGranted(t *testing.T) {
+	privileged := map[string]bool{
+		"InstallPackage":      true,
+		"UninstallPackage":    true,
+		"UpgradePackage":      true,
+		"CreateMetaVertex":    true,
+		"UpdateMetaVertex":    true,
+		"TombstoneMetaVertex": true,
+	}
+	for _, p := range Package.Permissions {
+		if privileged[p.OperationType] {
+			t.Errorf("console-operator grants privileged op %q — mechanism B must stay meta-lane-free (that's mechanism C)", p.OperationType)
+		}
+	}
+}
+
+// TestPackage_EveryOpGrantsOnlyToConsoleOperatorScopeAny pins the full
+// default-lane + ctrl.* permission surface and that every one grants only to
+// consoleOperator, scope any.
+func TestPackage_EveryOpGrantsOnlyToConsoleOperatorScopeAny(t *testing.T) {
+	want := []string{
+		"ShredIdentityKey", "RevokeActor", "UnrevokeActor", "AttachObject", "DetachObject",
+		"ctrl.weaver.read", "ctrl.weaver.disable", "ctrl.weaver.enable", "ctrl.weaver.revoke",
+		"ctrl.loom.read", "ctrl.loom.pause", "ctrl.loom.resume",
+		"ctrl.refractor.read", "ctrl.refractor.rebuild", "ctrl.refractor.pause", "ctrl.refractor.resume",
+		"ctrl.refractor.delete", "ctrl.refractor.register", "ctrl.refractor.deregister",
+	}
+	if len(Package.Permissions) != len(want) {
+		t.Fatalf("Permissions = %d, want %d", len(Package.Permissions), len(want))
+	}
+	got := make(map[string]pkgmgr.PermissionSpec, len(Package.Permissions))
+	for _, p := range Package.Permissions {
+		got[p.OperationType] = p
+	}
+	for _, op := range want {
+		p, ok := got[op]
+		if !ok {
+			t.Errorf("missing permission %q", op)
+			continue
+		}
+		if p.Scope != "any" {
+			t.Errorf("%s: scope = %q, want any", op, p.Scope)
+		}
+		if len(p.GrantsTo) != 1 || p.GrantsTo[0] != "consoleOperator" {
+			t.Errorf("%s: GrantsTo = %v, want [consoleOperator]", op, p.GrantsTo)
+		}
+	}
+}
+
+// TestPackage_GrantedCtrlVerbsMatchControlauthOpTables is the drift guard
+// packages/control-authz's own test names but doesn't share code with (this
+// package intentionally doesn't depend on control-authz — see package.go):
+// it derives the expected ctrl.<component>.<verb> set DIRECTLY from
+// internal/controlauth's WeaverOps/LoomOps/RefractorOps (the source of
+// truth) instead of a second hand-maintained literal, so a future op added
+// to one table and forgotten here fails HERE.
+func TestPackage_GrantedCtrlVerbsMatchControlauthOpTables(t *testing.T) {
+	wantByComponent := map[string]map[string]controlauth.OpMeta{
+		"weaver":    controlauth.WeaverOps,
+		"loom":      controlauth.LoomOps,
+		"refractor": controlauth.RefractorOps,
+	}
+	wantVerbs := map[string]struct{}{}
+	for component, ops := range wantByComponent {
+		seenVerbs := map[string]struct{}{}
+		for _, meta := range ops {
+			seenVerbs[meta.Verb] = struct{}{}
+		}
+		for verb := range seenVerbs {
+			wantVerbs["ctrl."+component+"."+verb] = struct{}{}
+		}
+	}
+
+	gotVerbs := map[string]struct{}{}
+	for _, p := range Package.Permissions {
+		if p.OperationType == "ShredIdentityKey" || p.OperationType == "RevokeActor" ||
+			p.OperationType == "UnrevokeActor" || p.OperationType == "AttachObject" ||
+			p.OperationType == "DetachObject" {
+			continue
+		}
+		gotVerbs[p.OperationType] = struct{}{}
+	}
+
+	for op := range wantVerbs {
+		if _, ok := gotVerbs[op]; !ok {
+			t.Errorf("internal/controlauth declares an op requiring verb %q, but console-operator grants no such permission (a permanent, ungrantable deny)", op)
+		}
+	}
+	for op := range gotVerbs {
+		if _, ok := wantVerbs[op]; !ok {
+			t.Errorf("console-operator grants %q, but no internal/controlauth op table resolves to that verb (an orphaned, dead grant)", op)
+		}
+	}
+}

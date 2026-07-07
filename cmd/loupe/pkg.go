@@ -33,6 +33,7 @@ import (
 	clinicdomain "github.com/asolgan/lattice/packages/clinic-domain"
 	clinicledger "github.com/asolgan/lattice/packages/clinic-ledger"
 	clinicreminders "github.com/asolgan/lattice/packages/clinic-reminders"
+	consoleoperator "github.com/asolgan/lattice/packages/console-operator"
 	controlauthz "github.com/asolgan/lattice/packages/control-authz"
 	identitydomain "github.com/asolgan/lattice/packages/identity-domain"
 	identityhygiene "github.com/asolgan/lattice/packages/identity-hygiene"
@@ -73,6 +74,7 @@ var packageRegistry = map[string]pkgmgr.Definition{
 	"privacy-operator-grant": privacyoperatorgrant.Package,
 	"bespoke-contracts":      bespokecontracts.Package,
 	"control-authz":          controlauthz.Package,
+	"console-operator":       consoleoperator.Package,
 }
 
 // pkgApplyTimeout bounds an install/upgrade/uninstall round-trip. The

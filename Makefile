@@ -613,7 +613,8 @@ orchestration:
 	fi
 
 ## install-packages — Install the core Capability Packages into a running
-## deployment, in dependency order: rbac-domain → control-authz → privacy-base → identity-domain → objects-base.
+## deployment, in dependency order: rbac-domain → control-authz → privacy-base →
+## identity-domain → objects-base → console-operator.
 ## (lattice-pkg only warns on unmet deps; ordering is the caller's responsibility.)
 install-packages:
 	@echo "==> Building lattice-pkg..."
@@ -630,6 +631,8 @@ install-packages:
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/identity-domain
 	@echo "==> Installing objects-base..."
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/objects-base
+	@echo "==> Installing console-operator (scoped consoleOperator role; loupe-operator-auth-lift mechanism B)..."
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/console-operator
 
 ## install-loftspace — Install the LoftSpace lease-application vertical onto a
 ## running full stack (make up-full first), in dependency order:
