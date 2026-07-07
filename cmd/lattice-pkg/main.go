@@ -46,6 +46,7 @@ import (
 	loftspacedomain "github.com/asolgan/lattice/packages/loftspace-domain"
 	loftspaceledger "github.com/asolgan/lattice/packages/loftspace-ledger"
 	objectsbase "github.com/asolgan/lattice/packages/objects-base"
+	onebill "github.com/asolgan/lattice/packages/one-bill"
 	orchestrationbase "github.com/asolgan/lattice/packages/orchestration-base"
 	privacybase "github.com/asolgan/lattice/packages/privacy-base"
 	privacyoperatorgrant "github.com/asolgan/lattice/packages/privacy-operator-grant"
@@ -78,6 +79,7 @@ var packageRegistry = map[string]pkgmgr.Definition{
 	"loftspace-ledger":       loftspaceledger.Package,
 	"cafe-ledger":            cafeledger.Package,
 	"cafe-domain":            cafedomain.Package,
+	"one-bill":               onebill.Package,
 	"objects-base":           objectsbase.Package,
 	"augur":                  augur.Package,
 	"capability-author":      capabilityauthor.Package,

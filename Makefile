@@ -719,6 +719,21 @@ install-cafe:
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/cafe-domain
 	@echo "==> Café vertical installed (lease-signing + cafe-ledger + cafe-domain). Drive it via the cafe-app, the lattice CLI, or Loupe."
 
+## install-onebill — Install the Café Inc 3 "one-bill" composition lens (Café
+## vertical row, ★★★): re-projects loftspace-ledger's + cafe-ledger's posted
+## transactions, tagged by source, into the shared one-bill-history bucket
+## keyed by leaseAppKey. Requires BOTH `make install-loftspace` and
+## `make install-cafe` to have already run (it matches :transaction/:account
+## and :cafetransaction/:cafeaccount vertex classes from each) — installing it
+## before either just means that lens side projects zero rows until the
+## matching ledger is installed, not an error.
+install-onebill:
+	@echo "==> Building lattice-pkg..."
+	go build -o bin/lattice-pkg ./cmd/lattice-pkg
+	@echo "==> Installing one-bill..."
+	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/one-bill
+	@echo "==> one-bill installed. Combined lease statement: one-bill-history bucket, keyed by leaseAppKey."
+
 ## reinstall-package — Dev-loop: diff-apply ONE edited package's DDL/lens onto the
 ## RUNNING stack in place, no `make down` (F-004 upgrade-aware install). PKG=<dir>,
 ## e.g. `make reinstall-package PKG=packages/clinic-domain`. A same-version edit

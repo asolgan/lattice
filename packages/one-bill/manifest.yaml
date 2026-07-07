@@ -1,0 +1,24 @@
+name: one-bill
+version: 0.1.0
+description: |
+  Café vertical Inc 3 — the combined-statement lens. No vertex types, links,
+  or permissions of its own: two Lenses (oneBillRentEntries, oneBillCafeEntries)
+  re-project loftspace-ledger's and cafe-ledger's already-posted transactions,
+  tagged by source, into the shared one-bill-history bucket keyed by
+  leaseAppKey — café charges land on the same combined statement as rent.
+  The cypher engine has no UNION, so this is two Lenses sharing one bucket
+  (mirrors rbac-domain/service-location's cap.roles.* / cap.svc.* precedent).
+  Depends on loftspace-ledger and cafe-ledger.
+depends:
+  - loftspace-ledger
+  - cafe-ledger
+declares:
+  lenses:
+    - canonicalName: oneBillRentEntries
+      adapter: nats-kv
+      bucket: one-bill-history
+      engine: full
+    - canonicalName: oneBillCafeEntries
+      adapter: nats-kv
+      bucket: one-bill-history
+      engine: full
