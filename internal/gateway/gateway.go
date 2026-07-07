@@ -270,6 +270,12 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 // Bearer-authenticates the caller, strips any client-supplied actor, stamps
 // the verified actor, and publishes the resulting envelope.
 func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
+	if len(s.corsOrigins) > 0 {
+		// Vary: Origin regardless of the allow/deny outcome — a shared cache in
+		// front of this endpoint must never serve one origin's CORS-headered
+		// response to another.
+		w.Header().Set("Vary", "Origin")
+	}
 	if origin := r.Header.Get("Origin"); s.allowedOrigin(origin) {
 		writeCORSHeaders(w, origin)
 	}

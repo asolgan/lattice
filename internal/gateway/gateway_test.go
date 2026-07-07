@@ -503,6 +503,12 @@ func TestCORS_Preflight_DisallowedOrigin_NoHeaders(t *testing.T) {
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "" {
 		t.Fatalf("Access-Control-Allow-Origin = %q, want empty for a disallowed origin", got)
 	}
+	// Vary: Origin must still be set on a denied-CORS response — a shared
+	// cache in front of this endpoint must never serve one origin's response
+	// (headered or not) to another.
+	if got := w.Header().Get("Vary"); got != "Origin" {
+		t.Fatalf("Vary = %q, want %q even for a disallowed origin", got, "Origin")
+	}
 }
 
 func TestCORS_ActualRequest_AllowedOriginGetsHeaders(t *testing.T) {
