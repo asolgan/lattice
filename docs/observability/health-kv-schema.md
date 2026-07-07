@@ -214,6 +214,15 @@ each heartbeat), `lastEventSeq` / `lastSyncAt` (the backing-stream sequence and 
 successful revoke/unrevoke fold; `lastSyncAt` is `""` until the first fold). A paused consumer surfaces
 `revocation.consumerDisconnected` (error) in `issues[]` alongside `consumerConnected: false`.
 
+The heartbeat also carries a `jwks` block (Loupe F11's JWKS panel) — the JWT trust-key set's live-state
+summary: `keys[]` lists every currently-trusted kid's provenance (`source`: `"jwks"` or `"static"`; `alg`:
+the JWK's advisory signing algorithm when known, `""` otherwise; `addedAt`: when the kid first entered the
+trusted set, preserved across re-fetches of an already-trusted key). `lastPoll` / `swaps` describe the
+background `JWKSPoller`'s activity (`lastPoll` is the last successful fetch, `""` until one succeeds;
+`swaps` counts fetches whose resulting kid set changed, not every poll tick) — both `""`/`0` when no
+`GATEWAY_JWKS_URL` is configured (a static/dev-only Gateway still reports `keys[]`, with no poller behind
+it).
+
 ### Object-store-manager
 
 Source package: `internal/objectmanager/`
@@ -528,6 +537,13 @@ the scan failed; `timers*` only when the temporal lane is wired).
     "revokedCount": <int>,
     "lastEventSeq": <int>,
     "lastSyncAt": "<RFC3339 | \"\">"
+  },
+  "jwks": {
+    "keys": [
+      {"kid": "<string>", "source": "jwks | static", "alg": "<string | \"\">", "addedAt": "<RFC3339 | \"\">"}
+    ],
+    "lastPoll": "<RFC3339 | \"\">",
+    "swaps": <int>
   }
 }
 ```
