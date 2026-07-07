@@ -11,6 +11,10 @@ Lattice lane (Security & trust boundary) · **the "C" of** `loupe-operator-auth-
 > sequenced after B, behind `real-actor-write-auth` Phase 1. **Contract #6 §6.4 edit** (§5): staged
 > uncommitted when C's build is the next fire (specified now to avoid a days-long dangling edit in the
 > shared tree).
+>
+> **B progress:** the `consoleOperator` role + its non-privileged permissions **shipped** `5bee182`
+> (`packages/console-operator`). Remaining before C can start: re-scope Loupe's seeded operator identity
+> onto this role + the Loupe-lane relay wiring (loupe-operator-auth-lift-design.md §7).
 
 ---
 
