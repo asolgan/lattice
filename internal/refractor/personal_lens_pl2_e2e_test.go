@@ -311,6 +311,9 @@ func TestPersonalLens_PL2_E2E_InterestSetFiltersThenAdmits(t *testing.T) {
 	// Register a device interested ONLY in "payment" — a "lease" delta must
 	// be suppressed. Drive this through the real control-plane RPC.
 	ctrlSvc := control.NewService()
+	// Allow-all stub: this e2e drives the personal-lens projection path, not
+	// capability enforcement (a nil/unconfigured checker fails closed).
+	ctrlSvc.SetCapabilityChecker(control.NewStubCapabilityChecker(nil))
 	ctrlSvc.SetPersonalInterestKV(h.interestKV)
 	ctrlCtx, ctrlCancel := context.WithCancel(h.ctx)
 	t.Cleanup(ctrlCancel)

@@ -123,6 +123,9 @@ func TestPersonalLens_PL3_E2E_SecurityWinsOverRelevance(t *testing.T) {
 	// The device's Interest Set explicitly declares "lease" relevant — the
 	// relevance filter alone would admit this delta.
 	ctrlSvc := control.NewService()
+	// Allow-all stub: this e2e drives the personal-lens projection path, not
+	// capability enforcement (a nil/unconfigured checker fails closed).
+	ctrlSvc.SetCapabilityChecker(control.NewStubCapabilityChecker(nil))
 	ctrlSvc.SetPersonalInterestKV(h.interestKV)
 	ctrlCtx, ctrlCancel := context.WithCancel(h.ctx)
 	t.Cleanup(ctrlCancel)

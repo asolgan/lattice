@@ -61,6 +61,9 @@ func TestPersonalLens_PL4_E2E_HydrateBulkProjectsThenCompletes(t *testing.T) {
 	}, 20*time.Second, 200*time.Millisecond, "CDC fan-out from the seed writes must settle before hydrate")
 
 	ctrlSvc := control.NewService()
+	// Allow-all stub: this e2e drives the personal-lens hydrate path, not
+	// capability enforcement (a nil/unconfigured checker fails closed).
+	ctrlSvc.SetCapabilityChecker(control.NewStubCapabilityChecker(nil))
 	ctrlSvc.SetPersonalHydrator(p)
 	ctrlSvc.SetPersonalInterestKV(h.interestKV)
 	ctrlCtx, ctrlCancel := context.WithCancel(h.ctx)
@@ -134,6 +137,9 @@ func TestPersonalLens_PL4_E2E_HydrateNoLease_PublishesOnlyMarker(t *testing.T) {
 	require.NoError(t, err)
 
 	ctrlSvc := control.NewService()
+	// Allow-all stub: this e2e drives the personal-lens hydrate path, not
+	// capability enforcement (a nil/unconfigured checker fails closed).
+	ctrlSvc.SetCapabilityChecker(control.NewStubCapabilityChecker(nil))
 	ctrlSvc.SetPersonalHydrator(p)
 	ctrlCtx, ctrlCancel := context.WithCancel(h.ctx)
 	t.Cleanup(ctrlCancel)

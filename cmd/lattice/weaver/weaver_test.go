@@ -55,7 +55,10 @@ func startWeaverControlTest(t *testing.T, eng *fakeEngine) string {
 	conn, err := connectRaw(t, url)
 	require.NoError(t, err)
 
-	svc := control.NewService(eng, nil, testutil.TestLogger())
+	// Explicit allow-all stub: these tests exercise the CLI→wire mechanics, not
+	// capability enforcement (a nil checker fails closed). Auth is covered by the
+	// control package's own tests.
+	svc := control.NewService(eng, control.NewStubCapabilityChecker(testutil.TestLogger()), testutil.TestLogger())
 	require.NoError(t, svc.StartNATSListener(ctx, conn))
 	require.NoError(t, conn.Flush())
 
@@ -73,7 +76,7 @@ func (r *recordingCapability) Authorize(_ context.Context, actor, _, _ string) e
 }
 
 // startWeaverControlTestWithCapability is startWeaverControlTest but wired to
-// a caller-supplied CapabilityChecker instead of the default stub.
+// a caller-supplied CapabilityChecker instead of the plain helper's allow-all stub.
 func startWeaverControlTestWithCapability(t *testing.T, eng *fakeEngine, cap control.CapabilityChecker) string {
 	t.Helper()
 	url := testutil.StartEmbeddedNATS(t)
