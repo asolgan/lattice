@@ -84,7 +84,6 @@ Severity-ordered; same row discipline as component maintenance (shipped rows col
 | **gateway-claim-flow-authz-contradiction** | Claim ops must be reachable pre-auth, but identity-domain role-gates both (`CreateUnclaimedIdentity` → staff, `ClaimIdentity` → `consumer` self) and a fresh actor holds no role → chicken-and-egg. Fix: `ProvisionConsumerIdentity` (Gateway auto-provisions a consumer on first touch, narrow `identityProvisioner` role). | ★★ | M | ✅ mechanism shipped (`7326774`) · walk-in binding (Phase 2) remains under real-actor-write-auth-e2e |
 | **real-actor-write-auth-e2e** | Prove scoped capability write-auth end-to-end: apps submit as real role-scoped users through the Gateway (not `bootstrap` root) via a shared dev Fake IdP, under `up-full-capability`, with a genuine allow + deny. Retires the stub as a load-bearing crutch (app tier; system-actor Fire 2 did the engine tier). Browser-direct topology. | ★★★ | L | 🏗️ Phase 2 building · [design](../../implementation-artifacts/real-actor-write-auth-e2e-design.md) · Inc 1 (`50128de`) shipped; next: Inc 2 app read-boundaries |
 | **[auth] scoped privileged-lane grants (retire all-or-nothing operator-root)** | `holdsRole→operator` is class-blind full root — no middle tier; a Loupe operator can't run pkg-install without being kernel root; boot-snapshot staleness. Fix (C1): per-op lanes in `cap.roles` + a core allowlist → a `consoleOperator` runs meta-lane pkg-lifecycle without root, no snapshot. | ★★ | M | ✅ ratified (Andrew 2026-07-06, C1) · [design](../../implementation-artifacts/scoped-privileged-lane-grants-design.md) · build after B; §6.4 edit specified |
-| **contract-10-weaver-text-reconciliation** | Contract #10 Weaver drift — 2 of 5 spots remain (reserved-key, anti-storm cross-ref, revision-history reconciled by the planner-mandate ratify + the shard): the augur block still specs `pattern`+triggerLoom while the engine takes op/adapter/replyOp+directOp, so a package author's field is silently dropped; and §10.2 still calls weaver-targets "read only by Weaver, never on the read-path" vs its P5 app-read reality. Stage one uncommitted edit for Andrew. | ★★ | S | 📋 |
 | **natsperm-matrix-hygiene** | Refractor's `$KV.>` write is broader than its lens-target set (covers dynamically-named package buckets — narrowing needs a real design, not a mechanical prune). | ★ | S | 📋 · bridge phantom-bucket half shipped `0377938`; remaining: Refractor narrowing needs design |
 | **contract7-7.3-config-example-refresh** | §7.3's bootstrap.json example still lists `processorIdentityKey` + a 5-key `metaMetaDDLKeys` block (same drift §7.2 items 1/7 fixed) — reconcile to the as-built config struct (no processor identity; one self-describing root DDL). Needs a read of the bootstrap config struct first. | ★ | XS | 📋 |
 | **fr22-service-denial-structural-fields** | FR22's `DenialDetails` has no service branch — a service-op denial names nothing structural. Fork B: emit `deniedService` (from authContext) + `deniedServiceClass` (one `.class` aspect read at denial time); `availableServiceClasses` is out of scope — what's available is the app's read-model question (P5). Contract #6 §6.12 is the spec. | ★ | S | 📋 · Fork B ratified 2026-07-03 (§6.12 amended) · low-priority |
@@ -101,6 +100,21 @@ and stale-marker corrections were applied in the filing commit (Done log); these
 | **refractor-failure-tier-backhalf** | `cmd/refractor` never wires `SetRetryQueue`/`SetAuditWriter`: no deferred retry, no DLQ routing, no audit emission. Wire the shipped libraries, or ratify the Nak-only posture and rewrite the failure-tier Route column. | ★★ | S | 📋 |
 | **section-6-13-invalidation-amendment** | §6.13's frozen text specifies an `Invalidation` plan member + fails-activation rule that retire-simple-engine deliberately deleted (code: broad-BFS enumerator, warn-and-proceed). Stage the in-place contract edit reconciling §6.13 to the as-ratified reality, uncommitted for Andrew. | ★★ | S | 🔭 flag-for-Andrew |
 | **refractor-health-contract-minors** | Align the heartbeat `version` (`"0.1.0"`→`"1.0"`) and status (`"shutdown"`→`shuttingDown`) to Contract #5 (Processor already conforms; update the observability schema doc); add a `pendingSpecs` spec-before-parent ordering test. | ★ | S | 📋 |
+
+### Weaver re-review (2026-07-06)
+
+Scoped Weaver re-review — verdict **healthy** (best-conformed engine); full evidence in
+[arch-review-2026-07-06-weaver.md](../../../docs/reviews/arch-review-2026-07-06-weaver.md). The W2 control
+fail-closed fix, W3 validator-parity + heartbeat honesty, W4 targetId install-check, W1/W6 comment +
+natsperm hygiene, and the W5 contract reconciliation shipped this session (Done log); these are the
+deferred follow-ons.
+
+| Item | What it is | Imp | Size | State |
+|---|---|---|---|---|
+| **weaver-admission-pkgmgr-authoring** | The §10.2 admission block (dispatch pacing) is engine-complete but has no `pkgmgr` authoring path — only a raw-JSON install can declare it. Add `WeaverTargetSpec.Admission` + validation mirroring the engine's `validateAdmissionPolicy`. Consumer: a vertical target pacing a vendor adapter (LoftSpace bgcheck/payment). | ★ | S | 📋 |
+| **health-issue-since-field** | Health issue records omit Contract #5 §5.5's required `since` (first-arose ISO-8601 timestamp) — verified for Weaver, likely platform-wide. Thread a first-seen clock through each engine's issue cache. | ★ | M | 📋 · platform-wide (verified Weaver) |
+| **weaver-ctrl-publish-grant-trim** | The weaver NATS user may publish its own `lattice.ctrl.weaver.>` subjects; the control responder needs only subscribe + `allow_responses`. Trim the grant in `deploy/nats-server.conf` + `gen-dev-nkeys`. Least-privilege nit (self-scoped, still capability-checked). | ★ | XS | 📋 |
+| **weaver-untested-arms** | Five untested failure arms (none security-critical): `seedDisabledTargets` list-keys error → Start abort; disable/enable fail-safe ordering + silent Pause/Resume bool discards; `releaseCompletedLeg` revision-conflict skip; `freezeOscillatingPair` Disable-failure leg. Add colocated tests. | ★ | S | 📋 |
 
 ## Lattice feature backlog — the Phase-3 build queue
 
@@ -189,6 +203,8 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-07 · `0a73c3c` · [Weaver] arch-review fixes — control fail-closed default (3 planes), validator-mirror parity + heartbeat honesty, cross-package targetId install-check, materializer step-recursion, comment/natsperm hygiene; CI green
+- 2026-07-07 · `b9433a2` · [Contract #10] weaver/augur/substrate shards reconciled to as-built — augur op/adapter/replyOp+directOp, §10.2 P5 read-path, anti-storm supersede, plan-hash RESERVED; retires contract-10-weaver-text-reconciliation
 - 2026-07-07 · `0d6c71e` · [Refractor] capabilityread-error-arm-tests — 2 of 3 D1-gate error arms pinned (malformed-JSON, list-keys-failure); Get-failure arm left as documented residual (not racelessly triggerable); lead-reviewed
 - 2026-07-07 · `c5ed56b` · [pkgmgr/Refractor] lens-target-reserved-bucket-guard — reserved-bucket-name denylist (install-time) + fail-closed activation mirror; adversarially reviewed, clean
 - 2026-07-07 · `da8ee6c` · [Refractor/pkgmgr] refractor-protected-by-default-gate — declare-one gate (translateSpec + pkgmgr + lint-conventions); 3-layer reviewed, fixed forward (lint scanner rewrite, BootstrapLens gap, Public+GrantTable guard)
