@@ -478,6 +478,11 @@ this design needs §3.10's per-identity DEK + the `internal/vault` SPI. Build or
 > code. Increment 2: wire `handleLeaseDocumentAttach` + a decrypt-capable read path. Full 3-layer
 > review on both (capability/crypto plane).
 
+> **✅ Ratified (2026-07-07, Andrew, attended session).** Extending `lattice.vault.wrapkey`/`unwrapkey`
+> from Loupe-only to `loftspace-app` is approved as recommended above — narrowest widening, no broader
+> Vault or Core-KV access. Fire 4 Increment 1 (privacy-base `piiKeyEnvelope` lens + the natsperm grant +
+> `internal/objectcrypto` extraction + test extension) is build-ready; not started in this session.
+
 ---
 
 ## 9. Open ratification items (for Andrew)
