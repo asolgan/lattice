@@ -286,6 +286,19 @@ func TestOpsSystemPublishAccess(t *testing.T) {
 	assertDeniedPublish(t, url, "ops.system", []string{"chronicler"})
 }
 
+// TestVerticalAppOpsPublishDenied: the vertical apps write browser-direct through
+// the Gateway (which authenticates the caller + strips/stamps the actor), so they
+// hold NO core-operations (ops.>) publish — a compromised app cannot forge an
+// env.Actor over the transport (#75 Fire 2b). clinic-app + cafe-app are fully
+// closed here. loftspace-app is deliberately NOT yet in this set: its server-side
+// lease-document generation still self-asserts an actor over ops.> and is retired
+// to an external-I/O flow (bridge + Loom externalTask) in a follow-on fire, at
+// which point loftspace-app's ops.> publish comes off too.
+func TestVerticalAppOpsPublishDenied(t *testing.T) {
+	url := startServerFromConf(t)
+	assertDeniedPublish(t, url, "ops.default", []string{"clinic-app", "cafe-app"})
+}
+
 // TestPersonalSyncPublishAccess: refractor's nats_subject Personal Lens
 // adapter (internal/refractor/adapter/natssubject.go) publishes delta
 // envelopes to lattice.sync.user.<actor> — latent (no lens installs one yet)

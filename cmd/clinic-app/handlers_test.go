@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 )
 
 // fakeKV builds a kvGetter over an in-memory map for the compute* seam tests —
@@ -125,26 +124,3 @@ func apptFixture() ([]string, kvGetter) {
 	})
 }
 
-// TestBuildEnvelope_Defaults pins the op-envelope seam the FE relies on: a missing
-// lane defaults to "default", an empty payload to "{}", and reads carry through.
-func TestBuildEnvelope_Defaults(t *testing.T) {
-	env, err := buildEnvelope(opRequest{OperationType: "CreateAppointment", Reads: []string{"vtx.patient.a", "vtx.provider.b", "", "vtx.patient.a"}}, "req1", "vtx.identity.admin", time.Time{})
-	if err != nil {
-		t.Fatalf("buildEnvelope: %v", err)
-	}
-	if env.Lane != "default" {
-		t.Fatalf("lane default = %q, want default", env.Lane)
-	}
-	if string(env.Payload) != "{}" {
-		t.Fatalf("payload default = %q, want {}", string(env.Payload))
-	}
-	if env.ContextHint == nil || len(env.ContextHint.Reads) != 2 {
-		t.Fatalf("reads not cleaned/deduped: %+v", env.ContextHint)
-	}
-}
-
-func TestBuildEnvelope_RequiresOperationType(t *testing.T) {
-	if _, err := buildEnvelope(opRequest{}, "req", "actor", time.Time{}); err == nil {
-		t.Fatalf("expected an error for a missing operationType")
-	}
-}

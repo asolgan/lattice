@@ -249,14 +249,14 @@ var matrix = []component{
 	},
 	{
 		name:     "clinic-app",
-		desc:     "vertical app (P5 reader); writes via ops",
-		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$JS.API.>", "$JS.ACK.>"},
+		desc:     "vertical app (P5 reader); writes go browser-direct through the Gateway — holds NO core-operations (ops.>) publish so a compromised app cannot forge an env.Actor (#75 Fire 2b)",
+		pubAllow: []string{"$KV.health-kv.>", "$JS.API.>", "$JS.ACK.>"},
 		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
 	},
 	{
 		name:     "cafe-app",
-		desc:     "vertical app (P5 reader); writes via ops",
-		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$JS.API.>", "$JS.ACK.>"},
+		desc:     "vertical app (P5 reader); writes go browser-direct through the Gateway — holds NO core-operations (ops.>) publish so a compromised app cannot forge an env.Actor (#75 Fire 2b)",
+		pubAllow: []string{"$KV.health-kv.>", "$JS.API.>", "$JS.ACK.>"},
 		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
 	},
 }

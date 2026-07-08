@@ -76,7 +76,6 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/my-visit-series", s.handleMyVisitSeries)
 	mux.HandleFunc("/api/staff/visit-series", s.handleStaffVisitSeries)
 	mux.HandleFunc("/api/ledger", s.handleLedger)
-	mux.HandleFunc("/api/op", s.handleOp)
 	mux.HandleFunc("/api/dev-token", s.handleDevToken)
 	mux.HandleFunc("/api/config", s.handleConfig)
 }
