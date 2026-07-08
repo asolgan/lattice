@@ -330,6 +330,60 @@ func TestHelloLattice_Milestone3_CreateBook(t *testing.T) {
 	start := time.Now()
 	ctx := testCtx(t)
 
+	// CreateBook is hello-lattice's own ad hoc tutorial DDL — unlike a
+	// package-installed DDL it ships no permissions.go, so nothing grants it
+	// to any role. Provision the grant the same way Milestone 5 provisions it
+	// for the AI agent: CreatePermission + GrantPermission to the operator
+	// role, which bootstrap identity holds primordially.
+	permReply := submitOp(t, ctx, "CreatePermission", "rbac", processor.LaneDefault,
+		bootstrap.BootstrapIdentityKey, map[string]any{"operationType": "CreateBook", "scope": "any"})
+	if permReply.Status != processor.ReplyStatusAccepted {
+		errCode, errMsg := "", ""
+		if permReply.Error != nil {
+			errCode = string(permReply.Error.Code)
+			errMsg = permReply.Error.Message
+		}
+		t.Fatalf("CreatePermission(CreateBook) rejected: status=%s code=%s msg=%q primaryKey=%q", permReply.Status, errCode, errMsg, permReply.PrimaryKey)
+	}
+	permKey := permReply.PrimaryKey
+
+	grantReply := submitOpWithHint(t, ctx, "GrantPermission", "rbac", processor.LaneDefault,
+		bootstrap.BootstrapIdentityKey, map[string]any{"permKey": permKey, "roleKey": bootstrap.RoleOperatorKey},
+		&processor.ContextHint{Reads: []string{permKey, bootstrap.RoleOperatorKey}})
+	if grantReply.Status != processor.ReplyStatusAccepted {
+		errCode, errMsg := "", ""
+		if grantReply.Error != nil {
+			errCode = string(grantReply.Error.Code)
+			errMsg = grantReply.Error.Message
+		}
+		t.Fatalf("GrantPermission(CreateBook->operator) rejected: status=%s code=%s msg=%q primaryKey=%q", grantReply.Status, errCode, errMsg, grantReply.PrimaryKey)
+	}
+
+	// Wait for the grant to reproject into bootstrap identity's cap.roles doc
+	// (rbac-domain's capabilityRoles lens) before submitting CreateBook —
+	// under real capability mode the Processor authorizes against the live
+	// projection, not the just-committed mutation.
+	tr := aiagent.NewTraverser(harnessConn, bootstrap.CoreKVBucket, bootstrap.CapabilityKVBucket)
+	capHasCreateBook := func() bool {
+		doc, derr := tr.ReadCapability(ctx, bootstrap.BootstrapIdentityID)
+		if derr != nil {
+			return false
+		}
+		for _, p := range doc.PlatformPermissions {
+			if p.OperationType == "CreateBook" {
+				return true
+			}
+		}
+		return false
+	}
+	convergeDeadline := time.Now().Add(nfrP3ProjectionCIDeadline)
+	for !capHasCreateBook() {
+		if time.Now().After(convergeDeadline) {
+			t.Fatalf("bootstrap identity's capability doc never reprojected to include CreateBook within %v", nfrP3ProjectionCIDeadline)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
 	reply := submitOp(t, ctx, "CreateBook", "book", processor.LaneDefault, bootstrap.BootstrapIdentityKey,
 		map[string]any{"title": "The Pragmatic Programmer"})
 	if reply.Status != processor.ReplyStatusAccepted {
