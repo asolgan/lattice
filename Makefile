@@ -836,9 +836,10 @@ install-onebill:
 ## e.g. `make reinstall-package PKG=packages/clinic-domain`. A same-version edit
 ## lands via --force; a bumped version auto-upgrades. The Processor commits the
 ## create/update/tombstone delta in one atomic batch and the Refractor re-projects
-## the changed lenses live. CAVEAT: an ADDED lens/role/op won't activate under a
-## live stack (the Refractor + DDL cache load lenses at install time) — for a
-## brand-new entity use `make down && up-<vertical>`. See docs/components/_packages.md.
+## the changed lenses live — an ADDED lens/role/op hot-activates the same as an
+## edited one (Refractor's CDC watch + the DDL cache both react to any commit, not
+## just updates). Only a primordial/kernel-seed change needs `make down &&
+## up-<vertical>`. See docs/components/_packages.md.
 reinstall-package:
 	@if [ -z "$(PKG)" ]; then echo "usage: make reinstall-package PKG=packages/<dir>"; exit 2; fi
 	@echo "==> Building lattice-pkg..."
@@ -848,10 +849,10 @@ reinstall-package:
 
 ## refresh-clinic — Dev-loop refresh of the Clinic vertical onto the RUNNING stack,
 ## no `make down`: diff-apply the vertical's packages in place (F-004 upgrade-aware
-## install) AND rebuild+restart bin/clinic-app, so an edited handler / lens / DDL
-## lands in one command. Requires an already-running up-clinic (or up-full +
-## install-clinic). Mirrors up-clinic minus the teardown + up-full. CAVEAT: an
-## ADDED lens/role/op won't activate under a live stack — use `make down && up-clinic`.
+## install) AND rebuild+restart bin/clinic-app, so an edited OR newly-added handler /
+## lens / DDL lands live in one command (both hot-activate — no restart needed).
+## Requires an already-running up-clinic (or up-full + install-clinic). Mirrors
+## up-clinic minus the teardown + up-full.
 refresh-clinic:
 	@echo "==> Building lattice-pkg..."
 	go build -o bin/lattice-pkg ./cmd/lattice-pkg
@@ -873,9 +874,9 @@ refresh-clinic:
 
 ## refresh-cafe — Dev-loop refresh of the Café vertical onto the RUNNING stack,
 ## no `make down`: diff-apply the vertical's packages in place (F-004
-## upgrade-aware install) AND rebuild+restart bin/cafe-app. Requires an
-## already-running up-cafe (or up-full + install-cafe). CAVEAT: an ADDED
-## lens/role/op won't activate under a live stack — use `make down && up-cafe`.
+## upgrade-aware install) AND rebuild+restart bin/cafe-app — an edited OR
+## newly-added lens/role/op hot-activates live, no restart needed. Requires an
+## already-running up-cafe (or up-full + install-cafe).
 refresh-cafe:
 	@echo "==> Building lattice-pkg..."
 	go build -o bin/lattice-pkg ./cmd/lattice-pkg
@@ -897,10 +898,10 @@ refresh-cafe:
 
 ## refresh-loftspace — Dev-loop refresh of the LoftSpace vertical onto the RUNNING
 ## stack, no `make down`: diff-apply the vertical's packages in place (F-004
-## upgrade-aware install) AND rebuild+restart bin/loftspace-app. Requires an
+## upgrade-aware install) AND rebuild+restart bin/loftspace-app — an edited OR
+## newly-added lens/role/op hot-activates live, no restart needed. Requires an
 ## already-running up-loftspace (or up-full + install-loftspace). Mirrors
-## up-loftspace minus the teardown + up-full. CAVEAT: an ADDED lens/role/op won't
-## activate under a live stack — use `make down && up-loftspace`.
+## up-loftspace minus the teardown + up-full.
 refresh-loftspace:
 	@echo "==> Building lattice-pkg..."
 	go build -o bin/lattice-pkg ./cmd/lattice-pkg

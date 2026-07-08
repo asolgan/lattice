@@ -250,12 +250,15 @@ rebuild (`go build -o bin/<x> ./cmd/<x>`) → **relaunch it in the BACKGROUND** 
 `BOOTSTRAP_JSON_PATH`; assets are `go:embed`'d, so the rebuilt binary serves the new ones — `make
 run-<vertical>-app` is *foreground / human-only*, don't use it unattended) → verify → **leave the new
 binary running** so Andrew sees the latest. *(A changed lens / DDL is different: **F-004** SHIPPED in-place
-package refresh — `make reinstall-package PKG=…` / `refresh-<vertical>` diff-apply an EDITED package on the
-running stack with no teardown — but a newly-ADDED entity or any primordial/kernel-seed change still needs a
-fresh bootstrap and won't hot-reload, so verify those via unit tests + the truly self-contained e2e targets
+package refresh — `make reinstall-package PKG=…` / `refresh-<vertical>` diff-apply an EDITED **or
+newly-ADDED** package entity on the running stack with no teardown, live: Refractor's durable `vtx.meta.>`
+CDC watch and the Processor's `DDLCache.Invalidate` both react to any committed `vtx.meta.*` write — create
+or update alike, no restart (`docs/components/_packages.md`; proven live by
+`TestCoreKVSource_LoadsLensFromAspect`). Only a **primordial/kernel-seed** change (`internal/bootstrap`)
+needs a fresh bootstrap — no package write can touch that state regardless. The self-contained e2e targets
 (`make test-*-convergence`, `make test-object-gc` — embedded in-process NATS, no Docker, never touch the
-shared stack). Note `make verify-package-*` is **not** self-contained — it targets `NATS_URL` (default
-`localhost:4222`), i.e. the shared stack, so it needs one already up.)*
+shared stack) remain useful when no live stack is up. Note `make verify-package-*` is **not** self-contained
+— it targets `NATS_URL` (default `localhost:4222`), i.e. the shared stack, so it needs one already up.)*
 
 **Verify headless-first; the browser is the OOM risk — one tab, closed when done.** Prove correctness
 **headlessly** (`go test`, `curl` the JSON, `node --check`) — that covers most fires and is what most of this

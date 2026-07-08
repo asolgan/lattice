@@ -336,6 +336,7 @@ make refresh-clinic        # or: make refresh-loftspace
 lattice-pkg install --dry-run packages/clinic-domain
 ```
 
-An *added* lens/role/op still needs a fresh kernel (`make down && up-<vertical>`) —
-the Refractor activates lenses at install time; *edited* existing lenses re-project
-live. See [Capability Packages → Upgrade](docs/components/_packages.md#upgrade--in-place-dev-loop-refresh-f-004).
+A *newly-added* lens/role/op hot-activates live too, same as an edit — the
+Refractor's CDC watch and the Processor's DDL cache both react to any commit, not
+just updates. Only a change to the *primordial* kernel seed needs a fresh
+`make down && up-<vertical>`. See [Capability Packages → Upgrade](docs/components/_packages.md#upgrade--in-place-dev-loop-refresh-f-004).

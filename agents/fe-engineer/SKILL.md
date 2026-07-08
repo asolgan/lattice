@@ -81,10 +81,12 @@ you are building*:
    `pkill -f "bin/<x>"` → `go build -o bin/<x> ./cmd/<x>` → **relaunch in the BACKGROUND** (with `NATS_URL` /
    `BOOTSTRAP_JSON_PATH`; `make run-<vertical>-app` is foreground/human-only) → verify → **leave the new binary
    running**. If no core stack is up, `make up-<vertical>` and leave it up. (**F-004** SHIPPED in-place package refresh —
-   `make reinstall-package` / `refresh-<vertical>` diff-apply an EDITED **lens/DDL** on the running stack with no
-   teardown — but a newly-ADDED entity or any primordial/kernel-seed change still needs a fresh bootstrap and
-   won't hot-reload, so verify those via unit tests + the truly self-contained e2e targets (`make
-   test-*-convergence`, `make test-object-gc` — embedded in-process NATS, no Docker), not the live stack.
+   `make reinstall-package` / `refresh-<vertical>` diff-apply an EDITED **or newly-ADDED lens/DDL** on the
+   running stack with no teardown, live: Refractor's durable `vtx.meta.>` CDC watch and the Processor's
+   DDL-cache invalidation both react to any committed `vtx.meta.*` write — create or update alike, no restart
+   (`docs/components/_packages.md`). Only a **primordial/kernel-seed** change needs a fresh bootstrap. Verify
+   live in-browser; the self-contained e2e targets (`make test-*-convergence`, `make test-object-gc` —
+   embedded in-process NATS, no Docker) are also useful when no live stack is up.
    (`make verify-package-*` is not self-contained — it targets the shared stack's `NATS_URL`.))
 4. **Gates:** `go build ./...`, `make vet`, `golangci-lint run ./...`,
    `STRICT=1 go run ./scripts/lint-conventions.go`, and `go test ./cmd/loupe/...`.

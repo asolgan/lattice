@@ -186,6 +186,18 @@ config* reloaded before `cafe-app` can authenticate — that requires touching t
 itself (not a single component process), a materially different risk tier from a Refractor-only restart,
 so it stays deferred to an explicitly authorized full-stack cycle as before.
 
+**Correction (2026-07-07, Steward, per Andrew's request):** the "documented F-004 caveat" cited above to
+justify this restart does not hold — it was a misreading of `_packages.md`'s own Upgrade section, since
+corrected there. Refractor's `CoreKVSource` holds a **durable** `vtx.meta.>` CDC subscription for the life
+of the process and dispatches a newly-observed lens vertex to the **same** load callback as any other
+lens, whether it arrived via a fresh install, an upgrade, or a same-version `--force`; the Processor's
+`DDLCache.Invalidate` is equally unconditional. `TestCoreKVSource_LoadsLensFromAspect` proves this live at
+the unit level (starts the source, *then* writes the lens). The `one-bill` lens would have started
+projecting into `one-bill-history` without the restart performed here — the restart was unnecessary, not
+wrong (it's a real, safe, standing capability: cycling Refractor is always available and did no harm), but
+future fires should live-verify a newly-installed lens directly rather than defaulting to a restart. See
+`docs/components/_packages.md`'s "brand-new entity" section for the corrected mechanism.
+
 ## Next
 
 - **Mixed-use composition surfaces** (verticals.md) — front-desk/operations aggregate views consuming

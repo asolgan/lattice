@@ -280,11 +280,22 @@ cross-ref — a `lensRef`, a `grantedBy` link).
 > are stable and upgrades are true in-place updates. A fresh `make up` (which
 > re-seeds the kernel) never shows it.
 
-**Caveat — a brand-new entity needs a fresh kernel.** The Refractor activates
-lenses and the Processor loads the DDL cache at **install** time; an *added* lens /
-role / op in a same-version `--force` won't hot-reload under a live stack. For a
-brand-new entity, use `make down && up-<vertical>`. *Edited* existing lenses/DDLs
-re-project live.
+**A brand-new entity hot-activates too — no restart.** Once the create mutation is
+submitted (a fresh install, a version-bump upgrade, or a same-version `--force`
+re-apply — a same-version `install` *without* `--force` is the idempotency no-op
+above, not an activation gap), Refractor's `CoreKVSource` and the Processor's
+`DDLCache` both react to it exactly like any other CDC event: `CoreKVSource` holds a
+**durable** `vtx.meta.>` subscription for the life of the process (`internal/refractor/lens/corekv_source.go`),
+and its `dispatchSpec` calls the **same** load callback whether the lens vertex is
+brand new or already known — there is no install-time-only path. `DDLCache.Invalidate`
+(`internal/processor/ddl_cache.go`, called synchronously from step 8 on every committed
+`vtx.meta.*` mutation) is equally unconditional: it reloads whatever is now at the
+key regardless of whether the cache previously held an entry there. Proven live at
+the unit level by `TestCoreKVSource_LoadsLensFromAspect`, which starts the source
+*before* writing the lens — modeling exactly this case. *(A `make down &&
+up-<vertical>` fresh bootstrap is a different, narrower case: the **primordial**
+kernel seed in `internal/bootstrap` — fixed NanoIDs no package write, new or
+edited, can ever touch; see `docs/contracts/07-primordial-bootstrap.md`.)*
 
 **Dev-loop Makefile targets** wrap this for the common edit-test loop on a running
 stack:

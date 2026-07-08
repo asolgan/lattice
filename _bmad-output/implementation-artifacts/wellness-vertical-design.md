@@ -133,7 +133,8 @@ into the fire (reverted the fix locally, confirmed the test catches it, restored
 ## Next (this design doc's checkpoint)
 
 - **Inc 2 — thin FE** (`cmd/wellness-app`, mirrors `cmd/cafe-app`'s three-view shape: schedule grid ·
-  roster · my-classes) + live-verify (same Refractor-restart idiom Café Inc 3 used, see
-  `cafe-ledger-design.md`'s 2026-07-07 addendum).
+  roster · my-classes) + live-verify directly against the running stack — **no Refractor restart needed**:
+  Café Inc 3's restart was based on a since-corrected doc caveat (`cafe-ledger-design.md`'s 2026-07-07
+  correction note; `docs/components/_packages.md`), a newly-installed lens hot-activates live.
 - **Mixed-use composition surfaces** (verticals.md, gated "after Wellness") — front-desk / operations
   aggregate views, once Wellness's own lenses are live.

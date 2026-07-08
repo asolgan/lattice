@@ -162,9 +162,10 @@ weaver / loom / bridge / objmgr / Loupe) is forbidden if you didn't start it (sh
 **But the single binary you just rebuilt — `bin/<vertical>-app` (:7788 / :7799) or `bin/loupe` — is yours to
 cycle** to serve + verify new (`go:embed`'d) assets: reuse the running core stack, `pkill` the stale binary,
 rebuild, relaunch it in the **background**, verify in-browser, leave it running. (**F-004** SHIPPED in-place package refresh —
-`make reinstall-package` / `refresh-<vertical>` diff-apply an EDITED lens / DDL on the running stack with no
-teardown — but a newly-ADDED entity or any primordial/kernel-seed change still needs a fresh bootstrap and
-won't hot-reload, so verify those via tests + the ephemeral-stack e2e targets.) A *stale running binary serves the OLD assets* — restarting your own binary is how you verify, and is
+`make reinstall-package` / `refresh-<vertical>` diff-apply an EDITED **or newly-ADDED** lens / DDL on the
+running stack with no teardown, live — both hot-activate, no restart (Refractor's durable CDC watch + the
+Processor's DDL-cache invalidation react to any commit, not just updates; `docs/components/_packages.md`).
+Only a primordial/kernel-seed change needs a fresh bootstrap.) A *stale running binary serves the OLD assets* — restarting your own binary is how you verify, and is
 **not** `make down`.
 
 ## 8. Rollout

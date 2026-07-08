@@ -555,8 +555,8 @@ The existing table + two columns: `installedAt` (from the package vertex envelop
   (multipart; server unpacks to a temp dir under the scratchpad-equivalent, runs the `pkgmgr` installer,
   streams the result). Reply (created keys, roles, grants) renders linkified.
 - **Upgrade / refresh:** on the detail page — re-submit the package files against the existing install
-  (the F-004 in-place refresh semantics: package *edits* apply; a newly-added entity or kernel-seed change
-  still needs a fresh bootstrap — the confirm dialog states exactly this caveat).
+  (the F-004 in-place refresh semantics: edited *and* newly-added entities both activate live, no restart —
+  the confirm dialog states exactly this; only a kernel-seed change needs a fresh bootstrap).
 - **Uninstall:** destructive-styled, typed confirm ("type the package name") + a summary of what will be
   tombstoned (the resolved contents counts from §9.2). Reply linkified.
 

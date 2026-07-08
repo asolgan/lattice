@@ -483,7 +483,8 @@ platform machinery**, with L1 (+ optionally L2) as the only platform touches.
 > golangci-lint/full `go test ./...` short suite); `make verify-kernel`/`test-bypass`/`test-capability-
 > adversarial` were **not** run — they require `make down && make up` against the shared multi-fire stack,
 > which this fire does not own (no security/capability-plane surface touched here regardless). **Not yet
-> verified live in-browser** (a newly-added package needs a fresh bootstrap, not a hot F-004 refresh) — proven
+> verified live in-browser** (deferred, not blocked — a newly-added package hot-activates live same as an
+> edit, per `docs/components/_packages.md`) — proven
 > instead via a self-contained Processor-pipeline integration test (`bespoke_contracts_test.go`, embedded NATS)
 > exercising CreateClause → DebitAccount{clauseRef} end-to-end, plus a `full`-engine cypher unit test of the
 > lens. **Fire L1** (the §10.8 doc clarification) was **not** done this fire — it's a Lattice-lane doc touch

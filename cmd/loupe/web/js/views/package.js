@@ -145,8 +145,8 @@ function lifecyclePanel(pkg) {
     openApplyModal({
       title: "Upgrade / refresh " + (pkg.name || pkg.key),
       intro: "Re-submits the package's manifest.yaml against the existing install " +
-        "(in-place diff-apply). Package edits apply in place; a newly-added entity " +
-        "or any kernel-seed change still needs a fresh bootstrap.",
+        "(in-place diff-apply). Edited and newly-added entities both activate live, " +
+        "no restart — only a primordial kernel-seed change needs a fresh bootstrap.",
       endpoint: "/api/packages/upgrade",
       // No force checkbox: the explicit-upgrade endpoint diff-applies a
       // same-version target unconditionally, so force changes nothing.
