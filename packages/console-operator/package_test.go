@@ -3,6 +3,7 @@ package consoleoperator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/asolgan/lattice/internal/controlauth"
@@ -26,12 +27,27 @@ func TestPackage_ManifestMatchesDefinition(t *testing.T) {
 	}
 }
 
-// TestPackage_GrantOnlyNoDDLsOrLenses pins the package's shape: a grant-only
-// package (mirrors packages/control-authz, packages/privacy-operator-grant).
-func TestPackage_GrantOnlyNoDDLsOrLenses(t *testing.T) {
-	if len(Package.DDLs) != 0 || len(Package.Lenses) != 0 {
-		t.Fatalf("grant-only package must declare no DDLs/lenses; got %d DDLs, %d lenses",
-			len(Package.DDLs), len(Package.Lenses))
+// TestPackage_NoDDLsExactlyOneReadGrantLens pins the package's shape: no
+// DDLs (an ordinary rbac/grant package, mirrors packages/control-authz,
+// packages/privacy-operator-grant), plus exactly ONE lens — its own read-side
+// wildcard-grant producer (consoleOperatorReadGrants), never a business
+// read model.
+func TestPackage_NoDDLsExactlyOneReadGrantLens(t *testing.T) {
+	if len(Package.DDLs) != 0 {
+		t.Fatalf("package must declare no DDLs; got %d", len(Package.DDLs))
+	}
+	if len(Package.Lenses) != 1 {
+		t.Fatalf("package must declare exactly 1 lens (its read-grant producer); got %d", len(Package.Lenses))
+	}
+	lens := Package.Lenses[0]
+	if lens.CanonicalName != "consoleOperatorReadGrants" {
+		t.Errorf("lens CanonicalName = %q, want %q", lens.CanonicalName, "consoleOperatorReadGrants")
+	}
+	if !lens.GrantTable {
+		t.Error("the lens must be a GrantTable producer, not a business read model")
+	}
+	if lens.Protected || lens.Public {
+		t.Error("a GrantTable lens must not also be Protected/Public — those are business-read-model concerns")
 	}
 	deps := map[string]bool{}
 	for _, d := range Package.Depends {
@@ -41,6 +57,26 @@ func TestPackage_GrantOnlyNoDDLsOrLenses(t *testing.T) {
 		if !deps[want] {
 			t.Errorf("Depends = %v, want to include %q", Package.Depends, want)
 		}
+	}
+}
+
+// TestPackage_ReadGrantLensMatchesConsoleOperatorOnly pins the cypher's
+// exclusivity: it must key on the consoleOperator role specifically, never
+// the primordial `operator` role (that's the kernel's
+// capabilityReadWildcardGrants lens's job) — a package granting read-side
+// wildcard access to primordial-root holders would be a package-vocabulary
+// walk into kernel territory, the exact layering violation the kernel lens's
+// own doc comment says to avoid.
+func TestPackage_ReadGrantLensMatchesConsoleOperatorOnly(t *testing.T) {
+	spec := Package.Lenses[0].Spec
+	if !strings.Contains(spec, "'consoleOperator'") {
+		t.Errorf("lens spec must match role.canonicalName = 'consoleOperator': %s", spec)
+	}
+	if strings.Contains(spec, "'operator'") {
+		t.Errorf("lens spec must not reference the primordial 'operator' role — that's the kernel lens's job: %s", spec)
+	}
+	if !strings.Contains(spec, "'*'") {
+		t.Errorf("lens spec must grant the wildcard anchor '*': %s", spec)
 	}
 }
 

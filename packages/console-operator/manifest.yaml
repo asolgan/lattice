@@ -1,5 +1,5 @@
 name: console-operator
-version: 0.1.0
+version: 0.2.0
 description: |
   Declares a scoped consoleOperator role and grants it the default-lane
   console ops (ShredIdentityKey, RevokeActor, UnrevokeActor, AttachObject,
@@ -7,8 +7,12 @@ description: |
   Loupe operator's routine console surface, at zero privileged-lane exposure.
   Deliberately distinct from the kernel-primordial operator role so a console
   operator stays an ordinary (non-system) rbac actor, no anchor, no
-  boot-snapshot dependency. Grant-only — pkg-lifecycle ops stay meta-lane,
-  anchor-only (mechanism B; mechanism C is the flagged follow-on).
+  boot-snapshot dependency. pkg-lifecycle ops stay meta-lane, anchor-only
+  (mechanism B; mechanism C is the flagged follow-on). Also carries this
+  role's read-side wildcard grant (consoleOperatorReadGrants), the
+  capabilityReadWildcardGrants sibling for this package-installed role — M5's
+  posture (wildcard grant through RLS, never a bypass) applied to
+  consoleOperator the same way the kernel lens already applies it to root.
   loupe-operator-auth-lift-design.md mechanism B.
 depends:
   - rbac-domain
@@ -16,6 +20,10 @@ depends:
   - privacy-base
   - objects-base
 declares:
+  lenses:
+    - canonicalName: consoleOperatorReadGrants
+      adapter: postgres
+      engine: full
   permissions:
     - operationType: ShredIdentityKey
       scope: any

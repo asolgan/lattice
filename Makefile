@@ -18,6 +18,12 @@
 SHELL := /bin/bash
 NATS_URL ?= nats://localhost:4222
 BOOTSTRAP_JSON ?= $(abspath ./lattice.bootstrap.json)
+# Persists the standing consoleOperator identity dev-seed-console-operator
+# provisions (loupe-operator-auth-lift-design.md mechanism B), mirroring
+# BOOTSTRAP_JSON's shape: generated once per deployment, gitignored, read by
+# up-full to set LOUPE_OPERATOR_ACTOR_KEY so a fresh Loupe restart keeps using
+# the scoped operator instead of silently falling back to root.
+LOUPE_OPERATOR_JSON ?= $(abspath ./loupe-operator.json)
 # The loftspace-app read-boundary DSN (D1.3): a NON-superuser, SELECT-only role so
 # Postgres RLS is enforced (the lattice superuser would bypass it). See
 # provision-loftspace-role.
@@ -366,12 +372,14 @@ up-full:
 	@echo "==> Starting Gateway (:8080, dev-mode) in background..."
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_GATEWAY) GATEWAY_DEV_MODE=true GATEWAY_PG_DSN=$(GATEWAY_PG_DSN) GATEWAY_READ_MODELS_DIR=$(GATEWAY_READ_MODELS_DIR) GATEWAY_CORS_ORIGINS=$(GATEWAY_CORS_ORIGINS) ./bin/gateway >gateway.log 2>&1 </dev/null &
 	@$(MAKE) provision-loupe-role
+	@$(MAKE) dev-seed-console-operator
 	@echo "==> Building loupe binary..."
 	go build -o bin/loupe ./cmd/loupe
 	@echo "==> Killing any prior Loupe process..."
 	-pkill -f "bin/loupe" 2>/dev/null || true
-	@echo "==> Starting Loupe in background..."
-	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LOUPE) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) LOUPE_PG_DSN=$(LOUPE_PG_DSN) LOUPE_DEV_AUTH=1 ./bin/loupe >loupe.log 2>&1 </dev/null &
+	@echo "==> Starting Loupe in background (operator identity per mechanism B: scoped consoleOperator by default, never root)..."
+	@LOUPE_OP_KEY=$$(jq -r '.operatorActorKey // empty' $(LOUPE_OPERATOR_JSON) 2>/dev/null); \
+	 NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LOUPE) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) LOUPE_PG_DSN=$(LOUPE_PG_DSN) LOUPE_OPERATOR_ACTOR_KEY="$$LOUPE_OP_KEY" LOUPE_DEV_AUTH=1 ./bin/loupe >loupe.log 2>&1 </dev/null &
 	@sleep 1
 	@echo "==> Full Lattice ready. Loupe http://127.0.0.1:7777 · Gateway :8080 (dev-mode)."
 	@echo "==> Logs: loupe.log gateway.log loom.log weaver.log bridge.log objmgr.log chronicler.log refractor.log processor.log"
@@ -432,16 +440,31 @@ dev-seed-staff:
 		--context-hint-reads "$$STAFF_KEY,$$ROLE_KEY"; \
 	 echo "==> Dev staff identity ready: $$STAFF_KEY holds operator. Mint a token: ./bin/gateway dev-token -sub $$STAFF_ID"
 
-## dev-seed-console-operator — Dev-seed ONE identity holding the scoped
-## `consoleOperator` role (packages/console-operator), NOT the kernel-primordial
-## `operator` role dev-seed-staff grants — loupe-operator-auth-lift-design.md
-## mechanism B: this is the non-root identity F15 items 5-6 need to prove the
-## meta-lane deny (InstallPackage etc. stay anchor-only; consoleOperator never
-## gets SystemActorKeys()-discovered root-equivalence). Requires
-## `make install-packages` (console-operator) already run. Not idempotent
-## across repeat runs (mints a fresh identity each time), same as
-## dev-seed-staff.
+## dev-seed-console-operator — Provisions THE standing consoleOperator
+## identity (packages/console-operator), NOT the kernel-primordial `operator`
+## role dev-seed-staff grants — loupe-operator-auth-lift-design.md mechanism
+## B: Loupe's real, non-root operator identity, root reserved for the rare,
+## explicit pkg-lifecycle deploy action (§4: "used explicitly and rarely, not
+## routine console use"). IDEMPOTENT (unlike dev-seed-staff): persists the
+## identity's key to LOUPE_OPERATOR_JSON on first run and reuses it on every
+## later run/restart, so up-full's Loupe launch (below) can pick it up as the
+## actual default rather than a one-off test fixture. Requires
+## `make install-packages` (console-operator, version >= 0.2.0 for its
+## read-grant lens) already run.
 dev-seed-console-operator:
+	@if [ -f $(LOUPE_OPERATOR_JSON) ]; then \
+		OP_KEY=$$(jq -r '.operatorActorKey' $(LOUPE_OPERATOR_JSON)); \
+		echo "==> Console-operator identity already provisioned: $$OP_KEY ($(LOUPE_OPERATOR_JSON) exists)"; \
+	 else \
+		$(MAKE) --no-print-directory _dev-seed-console-operator-create; \
+	 fi
+
+# _dev-seed-console-operator-create is dev-seed-console-operator's creation
+# path, split out so the idempotency check above is a single shell's if/else
+# (a bare `exit 0` inside one `@`-prefixed recipe line only exits THAT line's
+# subshell in Make, not the rest of the recipe — this split is what actually
+# makes the skip work, not the exit code).
+_dev-seed-console-operator-create:
 	@go build -o bin/lattice ./cmd/lattice
 	@ADMIN_ID=$$(jq -r '.primordialIDs.bootstrapIdentity' $(BOOTSTRAP_JSON)); \
 	 ADMIN_KEY="vtx.identity.$$ADMIN_ID"; \
@@ -461,8 +484,9 @@ dev-seed-console-operator:
 		--operation-type AssignRole --actor "$$ADMIN_KEY" --output json \
 		--payload "{\"actorKey\":\"$$OP_KEY\",\"roleKey\":\"$$ROLE_KEY\"}" \
 		--context-hint-reads "$$OP_KEY,$$ROLE_KEY"; \
+	 echo "{\"operatorActorKey\":\"$$OP_KEY\"}" > $(LOUPE_OPERATOR_JSON); \
 	 echo "==> Dev console-operator identity ready: $$OP_KEY holds consoleOperator (NOT root)."; \
-	 echo "==> Point Loupe at it: LOUPE_OPERATOR_ACTOR_KEY=$$OP_KEY (restart loupe with this set)."; \
+	 echo "==> Persisted to $(LOUPE_OPERATOR_JSON) — up-full will use it automatically from now on."; \
 	 echo "==> Mint a login token: ./bin/gateway dev-token -sub $$OP_ID"
 
 ## provision-gateway-identity-provisioner — Grant the Gateway's own system
@@ -651,10 +675,11 @@ provision-gateway-role:
 ## actor_read_grants row, not an engine-level bypass, so even admin reads pass
 ## through RLS and remain attributable/loggable (an un-instrumented superuser
 ## read-actor is one compromise from total exposure). cmd/loupe/pg.go sets
-## lattice.actor_id to s.operatorActorKey per query; the kernel's
-## capabilityReadWildcardGrants lens grants that identity's wildcard row today
-## (holdsRole->operator, the default LOUPE_OPERATOR_ACTOR_KEY). Do not add
-## BYPASSRLS here.
+## lattice.actor_id to s.operatorActorKey per query; packages/console-operator's
+## consoleOperatorReadGrants lens grants the standing default (scoped operator,
+## mechanism B) its wildcard row, and the kernel's capabilityReadWildcardGrants
+## lens covers root the same way if LOUPE_OPERATOR_ACTOR_KEY is ever pointed
+## back at it. Do not add BYPASSRLS here.
 provision-loupe-role:
 	@echo "==> Provisioning loupe non-superuser SELECT-only Postgres role..."
 	docker compose exec -T postgres psql -U lattice -d lattice -v ON_ERROR_STOP=1 -c "\

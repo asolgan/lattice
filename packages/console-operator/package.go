@@ -25,31 +25,67 @@
 // (or re-scoping Loupe's existing seeded operator identity onto this role)
 // is a separate Loupe-lane wiring step
 // (loupe-operator-auth-lift-design.md §7 decomposition items 4-6), not this
-// package's scope. This package ships the grant data only.
+// package's scope. This package ships the grant data.
 //
 // The pkg-lifecycle ops (InstallPackage/UninstallPackage/UpgradePackage) are
 // deliberately NOT granted here — those stay meta-lane, anchor-only (root)
 // per mechanism B; scoped-privileged-lane-grants-design.md (mechanism C) is
 // the follow-on that would let consoleOperator run them without root.
 //
+// consoleOperatorReadGrants is this package's read-side half: a
+// capabilityReadWildcardGrants sibling (internal/bootstrap/lenses.go), same
+// posture (Andrew's ratified M5 decision, read-path-authorization-d1-
+// design.md §8 — wildcard grant through RLS, never a bypass), disjoint
+// grant_source ('cap-read.consoleOperator' vs the kernel's 'cap-read.root').
+// The kernel lens deliberately keys on the primordial `operator` role only
+// ("not a package-vocabulary walk" — its own doc comment) and cannot cover a
+// package-installed role without crossing that layering boundary; this lens
+// is where that boundary is meant to be crossed instead — a package granting
+// its OWN role's read-side counterpart to its OWN write-side grants, exactly
+// like clinic-domain's clinicPatientReadGrants sits beside its patient
+// permissions. Without this, re-scoping Loupe's operator identity onto
+// consoleOperator (mechanism B, below) would silently zero out its Postgres
+// reads (RLS-denied, indistinguishable from empty) the moment it stopped
+// holding the primordial `operator` role.
+//
 // Install via `lattice-pkg install packages/console-operator` (after
-// rbac-domain, identity-domain, privacy-base, objects-base). No DDLs or
-// lenses — a grant-only package (mirrors packages/control-authz's shape).
+// rbac-domain, identity-domain, privacy-base, objects-base).
 package consoleoperator
 
 import "github.com/asolgan/lattice/internal/pkgmgr"
 
+// consoleOperatorReadGrantsSpec mirrors internal/bootstrap/lenses.go's
+// CapabilityReadWildcardGrantsLensDefinition cypher exactly, substituting the
+// package-installed role name for the primordial one.
+const consoleOperatorReadGrantsSpec = `MATCH (identity:identity)-[:holdsRole]->(role:role)
+WHERE role.canonicalName.data.value = 'consoleOperator'
+RETURN
+  nanoIdFromKey(identity.key) AS actor_id,
+  '*'                         AS anchor_id,
+  'cap-read.consoleOperator'  AS grant_source
+`
+
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
 	Name:        "console-operator",
-	Version:     "0.1.0",
-	Description: "Grants a scoped consoleOperator role the default-lane console ops + ctrl.* control-plane ops, without root.",
+	Version:     "0.2.0",
+	Description: "Grants a scoped consoleOperator role the default-lane console ops + ctrl.* control-plane ops, without root, plus its read-side wildcard grant.",
 	Depends:     []string{"rbac-domain", "identity-domain", "privacy-base", "objects-base"},
 	Permissions: Permissions(),
 	Roles: []pkgmgr.RoleSpec{
 		{
 			CanonicalName: "consoleOperator",
 			Description:   "Scoped Loupe console operator: default-lane console ops (shred/revoke/object) + ctrl.* control-plane ops. Not root — no privileged lane, no anchor.",
+		},
+	},
+	Lenses: []pkgmgr.LensSpec{
+		{
+			CanonicalName: "consoleOperatorReadGrants",
+			Class:         "meta.lens",
+			Adapter:       "postgres",
+			GrantTable:    true,
+			Engine:        "full",
+			Spec:          consoleOperatorReadGrantsSpec,
 		},
 	},
 }

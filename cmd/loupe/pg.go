@@ -29,19 +29,16 @@ import (
 // compromise from total exposure"). Every query below runs inside a
 // transaction that sets lattice.actor_id to Loupe's configured operator
 // (s.operatorActorKey's bare NanoID, mirroring cmd/loftspace-app/applications.go's
-// queryApplications) — the kernel's capabilityReadWildcardGrants lens grants
-// that identity anchor '*' when it holds the primordial `operator` role, so
-// RLS itself resolves "sees everything," exactly like every other protected
-// read, never a role-level bypass.
-//
-// KNOWN GAP (not built): that kernel lens keys on holdsRole->operator only.
-// If LOUPE_OPERATOR_ACTOR_KEY is ever re-scoped to a consoleOperator identity
-// (loupe-operator-auth-lift-design.md mechanism B) instead of root, Postgres
-// reads would silently go to zero rows (RLS-denied, not pg-pending) until a
-// parallel wildcard-grant lens covers consoleOperator too — out of scope here
-// because F15 items 5-6 (the operator-tier proof) don't exercise Postgres
-// reads (design §9), and §1's "reads stay direct-inspector" table only
-// enumerates Core-KV/Health-KV/lens/vault-proxy, not this F9 seam.
+// queryApplications). Two disjoint producers grant that identity the wildcard
+// anchor '*', covering both mechanism-B postures: the kernel's
+// capabilityReadWildcardGrants lens (internal/bootstrap/lenses.go) for a
+// holdsRole->operator (root) identity, and packages/console-operator's own
+// consoleOperatorReadGrants lens for a holdsRole->consoleOperator (scoped,
+// the standing default per loupe-operator-auth-lift-design.md mechanism B)
+// identity — so RLS itself resolves "sees everything" for whichever posture
+// is configured, exactly like every other protected read, never a
+// role-level bypass. Verified live against real (non-empty) protected-table
+// data, not just an empty-table coincidence.
 
 // pgStatementTimeoutMS is applied as the pool's statement_timeout runtime
 // parameter so a pathological query dies server-side even if the client-side
