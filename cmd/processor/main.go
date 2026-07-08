@@ -73,10 +73,16 @@ func run(logger *slog.Logger) error {
 	}
 
 	natsURL := envOrDefault("NATS_URL", nats.DefaultURL)
-	// Default LATTICE_AUTH_MODE is `capability`. The stub mode remains available
-	// behind an explicit env knob for dev/test deployments; operators selecting
-	// it see WARN logs + a Health KV `stub-auth-active` alert.
+	// Capability is the only auth mode a running Processor may use. `stub`
+	// (allow-all) is retired as a deployable posture — a deployed binary refuses
+	// to start in it so a stray `LATTICE_AUTH_MODE=stub` can never silently
+	// disable authorization in a real deployment. The StubAuthorizer type
+	// survives only as internal test scaffolding (tests build pipelines directly,
+	// never through this entry point).
 	authMode := processor.AuthMode(envOrDefault("LATTICE_AUTH_MODE", string(processor.AuthModeCapability)))
+	if authMode == processor.AuthModeStub {
+		return fmt.Errorf("LATTICE_AUTH_MODE=stub is not permitted for a running Processor — stub (allow-all) auth is retired as a deployable posture; use capability")
+	}
 	traceAllowDecisions := os.Getenv("LATTICE_AUTH_TRACE_ALLOW_DECISIONS") == "true"
 
 	instance := os.Getenv("PROCESSOR_INSTANCE")

@@ -2,10 +2,9 @@
 # Requires: Docker, Docker Compose, Go 1.26.1+
 #
 # Quick reference:
-#   make up              — start the kernel (NATS + Postgres, bootstrap, refractor, processor)
-#   make up LATTICE_PROCESSOR_AUTH_MODE=capability — same, Processor under real capability auth (stub off)
+#   make up              — start the kernel (NATS + Postgres, bootstrap, refractor, processor) under real capability auth
 #   make up-full         — full stack on latest: kernel + orchestration tier + core packages + Loupe
-#   make up-full-capability — up-full, Processor under real capability auth (stub off) + a dev-seeded staff identity
+#   make up-full-capability — up-full + a dev-seeded staff identity (capability is now the default; kept for the proving-lane seed)
 #   make install-loftspace — add the LoftSpace lease-app vertical onto a running up-full
 #   make refresh-clinic  — dev-loop: diff-apply edited clinic packages + restart clinic-app (no teardown)
 #   make reinstall-package PKG=packages/<dir> — diff-apply one edited package in place
@@ -84,15 +83,12 @@ NKEY_CHRONICLER ?= $(NKEY_DIR)/chronicler.nk
 VAULT_KEK_FILE ?= $(abspath ./deploy/vault/master.kek)
 
 # LATTICE_PROCESSOR_AUTH_MODE — the `make up` background Processor's auth mode.
-# Defaults to `stub` (allow-all) so the dev stack stays permissive without
-# every installed package's operator grants having to be exercised first.
-# Override to `capability` (`make up LATTICE_PROCESSOR_AUTH_MODE=capability`)
-# to run the platform's own orchestration under the REAL CapabilityAuthorizer
-# + the Fire 1 union read (system-actor-package-op-grants-design.md §8 Fire 2) —
-# requires rbac-domain + the engine-op-granting packages already installed
-# (`make install-packages` / `up-full` does this) so Loom/Weaver/objmgr/privacy's
-# cap.roles.<actor> projections exist before their first engine op fires.
-LATTICE_PROCESSOR_AUTH_MODE ?= stub
+# Capability is the ONLY operational mode: the platform runs under the real
+# CapabilityAuthorizer whether or not packages are installed yet (class-aware
+# routing degrades gracefully pre-rbac — see cmd/processor/main.go). `stub`
+# (allow-all) is retired as a deployable posture — the deployed binaries refuse
+# to start in it (see the mains); it survives only as internal test scaffolding.
+LATTICE_PROCESSOR_AUTH_MODE ?= capability
 
 # Load .env if it exists (ignored by git).
 -include .env
@@ -385,7 +381,7 @@ up-full:
 	@echo "==> Logs: loupe.log gateway.log loom.log weaver.log bridge.log objmgr.log chronicler.log refractor.log processor.log"
 
 ## up-full-capability — up-full, then the Processor under REAL CapabilityAuthorizer
-## auth (stub OFF): the real-actor-write-auth-e2e proving lane (design §4 Phase 1
+## auth: the real-actor-write-auth-e2e proving lane (design §4 Phase 1
 ## item 3). `make up`'s reuse-detection only checks liveness, not auth mode, so a
 ## stub Processor left running by a prior `make up`/`up-full` would otherwise go
 ## unnoticed under this target — so this restarts ONLY the Processor, standalone,
@@ -394,18 +390,18 @@ up-full:
 ## staff identity holding `operator` (design §3.3) so a real staff actor exists for
 ## the allow side of the proof — a real consumer instead comes from the Gateway's
 ## ProvisionConsumerIdentity pre-flight on first authenticated touch (no seed
-## needed). Stub `make up-full` is untouched. To go back to stub, restart the
-## Processor again with `make up` (LATTICE_PROCESSOR_AUTH_MODE defaults to stub).
+## needed). up-full already runs the Processor under capability (the only
+## operational mode now), so the restart below is a mode-preserving refresh.
 up-full-capability:
 	@$(MAKE) up-full
-	@echo "==> Restarting the Processor under LATTICE_AUTH_MODE=capability (stub OFF; real-actor-write-auth-e2e proving lane)..."
+	@echo "==> Refreshing the Processor under LATTICE_AUTH_MODE=capability (real-actor-write-auth-e2e proving lane)..."
 	-pkill -f "bin/processor" 2>/dev/null || true
 	@sleep 1
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_PROCESSOR) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) PROCESSOR_FILTER=ops.default,ops.urgent,ops.system,ops.meta LATTICE_AUTH_MODE=capability LATTICE_VAULT_MASTER_KEK_FILE=$(VAULT_KEK_FILE) ./bin/processor >processor.log 2>&1 </dev/null &
 	@sleep 1
 	@$(MAKE) dev-seed-staff
 	@$(MAKE) provision-gateway-identity-provisioner
-	@echo "==> up-full-capability ready: Processor running under the REAL CapabilityAuthorizer (stub OFF). Loupe http://127.0.0.1:7777 · Gateway :8080 (dev-mode)."
+	@echo "==> up-full-capability ready: Processor running under the REAL CapabilityAuthorizer. Loupe http://127.0.0.1:7777 · Gateway :8080 (dev-mode)."
 
 ## dev-seed-staff — Dev-seed ONE staff identity holding `operator`, for the
 ## real-actor-write-auth-e2e proving lane (design §3.3). Submits

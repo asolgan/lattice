@@ -164,6 +164,9 @@ func envOrDefault(key, def string) string {
 // unresolvable.
 func wireControlChecker(ctx context.Context, conn *substrate.Conn, component string, ops map[string]controlauth.OpMeta, logger *slog.Logger) (*controlauth.CapabilityKVChecker, error) {
 	mode := controlauth.AuthMode(envOrDefault("LATTICE_AUTH_MODE", string(controlauth.AuthModeCapability)))
+	if mode == controlauth.AuthModeStub {
+		return nil, fmt.Errorf("LATTICE_AUTH_MODE=stub is not permitted for a running component — stub (allow-all) control auth is retired as a deployable posture; use capability")
+	}
 
 	// Class-aware platform routing is unconditional (mirrors cmd/processor's
 	// step-3 wiring): system actors read the cap.<actor> ∪ cap.roles.<actor>
