@@ -55,12 +55,14 @@ Open items only (shipped ones are in the Done log) — none currently open.
 - 2026-07-06 — **F12 CLOSED**: increment 3 shipped (the crypto-shred proof view, frontend-only, reused every existing endpoint); 3-layer review fixed forward (a failed status read no longer silently reads as a false negative, the finalization poll is now capped, DOM writes scoped). Verified live on both a temp preview port and the real running instance; declined (per the risky-action guardrail) to actually click-confirm a real ShredIdentityKey submission against the shared dev stack — the typed-confirm gating was verified via a wrong-token/right-token/cancel sequence instead.
 - 2026-07-06 — F13 L1 reconciled (shipped Flows tab satisfies it, no `#/history` rebuild) + L2 v1 shipped (flow-liveness map scrubber, rides the same bucket); L2-full/L3 still wait on Chronicler archive mode.
 - 2026-07-07 — **F15 CLOSED**: items 5-6 shipped (`56911ac`) — pkg-lifecycle root-admin gate (confused-deputy close) + live e2e proof under `up-full-capability` (consoleOperator RevokeActor allowed, InstallPackage denied). Also closed the cross-filed "Loupe read-only PG role" lattice item in the same commit (M5 wildcard-grant, not bypass).
+- 2026-07-07 — Follow-up (`6b1ab6e`): `56911ac` proved the mechanism but left the live default operator as root — actually re-scoped it (console-operator's own read-grant lens + persisted `loupe-operator.json`, `up-full` wires it automatically); verified live against real non-empty protected-table data.
 - **Next:** F13 L2-full/L3 stay blocked on Chronicler archive mode (unscheduled, lattice). On the Gateway up-full ship: flip its `designAhead` flag off + verify the F11 revoke loop live (XS).
 
 ## Done log — loupe (newest first)
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-07 · `6b1ab6e` · [Loupe/F15] Actually re-scoped the standing operator to consoleOperator (56911ac only proved the mechanism); console-operator's own read-grant lens + persisted identity. Verified live vs. real data, CI green
 - 2026-07-07 · `56911ac` · [Loupe/F15 inc.3] Items 5-6 CLOSED — pkg-lifecycle root-admin gate + live e2e (consoleOperator allow/deny); Postgres F9 seam wired to M5's wildcard-grant posture. Verified live + unit test, CI green
 - 2026-07-07 · `635db70` · [Loupe/F15 inc.2] Op-submissions relay through the Gateway, replacing `adminActor` direct-stamp. 3-layer reviewed, fixed forward; verified live + CI green
 - 2026-07-06 · `af43dab` · [Loupe/F15 inc.1] Browser-usable login session — cookie + `/login` page + unauth-nav redirect; pins gate to the configured operator. 3-layer reviewed, fixed forward; verified live + CI green
