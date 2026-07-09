@@ -45,6 +45,47 @@ func TestApply_FreshInstall(t *testing.T) {
 	}
 }
 
+// TestApply_PermissionLanesWrittenToVertexData proves PermissionSpec.Lanes
+// (scoped-privileged-lane-grants-design.md Fire 1) round-trips onto the
+// permission vertex's data.
+func TestApply_PermissionLanesWrittenToVertexData(t *testing.T) {
+	ctx, conn, inst := newInstallerHarness(t)
+
+	def := sampleDef("0.1.0")
+	def.Permissions[0].Lanes = []string{"meta"}
+	if _, err := inst.Install(ctx, def); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	permKey := "vtx.permission." + entityNanoID(def.Name, permTag("SampleOp", "any"))
+	perm := kvDoc(t, ctx, conn, permKey)
+	data, _ := perm["data"].(map[string]any)
+	lanes, ok := data["lanes"].([]any)
+	if !ok || len(lanes) != 1 || lanes[0] != "meta" {
+		t.Fatalf("expected data.lanes=[meta]; got %+v", data["lanes"])
+	}
+}
+
+// TestApply_PermissionLanesOmittedWhenUnset proves a PermissionSpec with no
+// Lanes writes no "lanes" key at all (absent, not an empty array) — today's
+// default for every existing package, and what the per-op-lanes-absent
+// fallback in step3_auth_capability.go's platformLaneGate depends on.
+func TestApply_PermissionLanesOmittedWhenUnset(t *testing.T) {
+	ctx, conn, inst := newInstallerHarness(t)
+
+	def := sampleDef("0.1.0")
+	if _, err := inst.Install(ctx, def); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	permKey := "vtx.permission." + entityNanoID(def.Name, permTag("SampleOp", "any"))
+	perm := kvDoc(t, ctx, conn, permKey)
+	data, _ := perm["data"].(map[string]any)
+	if _, present := data["lanes"]; present {
+		t.Fatalf("expected no lanes key when Lanes is unset; got %+v", data)
+	}
+}
+
 // TestApply_SameVersionSkips: install v1, Apply v1 with no force → skip,
 // preserving today's install idempotency.
 func TestApply_SameVersionSkips(t *testing.T) {

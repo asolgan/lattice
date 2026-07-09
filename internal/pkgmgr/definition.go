@@ -698,4 +698,11 @@ type PermissionSpec struct {
 	// Note is an optional human-readable note stored in the permission
 	// vertex's data.
 	Note string
+
+	// Lanes optionally names the privileged lane(s) (a subset of
+	// meta/urgent/system) this grant authorizes on the matched op. Absent
+	// means default-lane-only (via the doc-level fallback). A privileged
+	// entry here is honored by the Processor only if core's allowlist
+	// covers {operationType, lane} (scoped-privileged-lane-grants-design.md).
+	Lanes []string
 }

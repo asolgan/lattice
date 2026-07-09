@@ -249,18 +249,14 @@ func (a *CapabilityAuthorizer) Authorize(ctx context.Context, env *OperationEnve
 		}, nil
 	}
 
-	// Platform-path lane gate (Contract #2 §2.3) — the actor's standing
-	// capability doc is the lane authority. Checked AFTER parse and BEFORE the
-	// operationType matcher ("before any further processing"), reading
-	// doc.Lanes from the doc the platform read already fetched (no extra GET).
-	// Fail-closed: an absent/empty doc.Lanes grants NO lane, including default.
-	if entry.coverage.kind == pathPlatform && !laneGranted(env.Lane, doc.Lanes) {
-		return Decision{
-			Authorized: false,
-			Code:       ErrCodeLaneUnauthorized,
-			Reason:     "lane " + string(env.Lane) + ": not in the actor's granted lanes",
-		}, nil
-	}
+	// The platform-path lane gate now runs per-matched-permission, inside
+	// matchPlatformPermission (scoped-privileged-lane-grants-design.md C1):
+	// a matched entry's own Lanes (if any) gate submission, falling back to
+	// doc.Lanes when the entry carries none. A lane isn't a capability (only
+	// a granted op ever authorizes), so gating after the op match — rather
+	// than on the whole doc before it — never widens what's grantable; it
+	// only lets a specific grant carry a narrower-or-wider lane than the
+	// doc-level default.
 
 	// doc.ProjectedAt is recorded as provenance for the auth-trace; it is no
 	// longer compared against any freshness ceiling.
@@ -404,6 +400,27 @@ func (a *CapabilityAuthorizer) matchServiceAccess(env *OperationEnvelope, doc *C
 	}
 }
 
+// platformLaneGate is the per-matched-permission lane authority (Contract #2
+// §2.3, scoped-privileged-lane-grants-design.md C1). A matched entry's own
+// Lanes gate submission when present; an entry that carries none defers to
+// the doc-level Lanes fallback (the pre-C1 whole-doc behavior). Fail-closed:
+// an empty resolved set grants no lane, including default. Returns nil when
+// the lane is granted (caller proceeds to authorize).
+func platformLaneGate(env *OperationEnvelope, doc *CapabilityDoc, p *PlatformPermission) *Decision {
+	granted := p.Lanes
+	if len(granted) == 0 {
+		granted = doc.Lanes
+	}
+	if laneGranted(env.Lane, granted) {
+		return nil
+	}
+	return &Decision{
+		Authorized: false,
+		Code:       ErrCodeLaneUnauthorized,
+		Reason:     "lane " + string(env.Lane) + ": not in the actor's granted lanes",
+	}
+}
+
 func (a *CapabilityAuthorizer) matchPlatformPermission(env *OperationEnvelope, doc *CapabilityDoc, resolved *ResolvedPermission) Decision {
 	for i := range doc.PlatformPermissions {
 		p := &doc.PlatformPermissions[i]
@@ -412,6 +429,9 @@ func (a *CapabilityAuthorizer) matchPlatformPermission(env *OperationEnvelope, d
 		}
 		switch p.Scope {
 		case "any":
+			if dec := platformLaneGate(env, doc, p); dec != nil {
+				return *dec
+			}
 			resolved.Path = "platform"
 			resolved.PlatformPermission = p
 			return Decision{Authorized: true}
@@ -436,6 +456,9 @@ func (a *CapabilityAuthorizer) matchPlatformPermission(env *OperationEnvelope, d
 					Code:       ErrCodeAuthDenied,
 					Reason:     "platform scope=self: target != actor",
 				}
+			}
+			if dec := platformLaneGate(env, doc, p); dec != nil {
+				return *dec
 			}
 			resolved.Path = "platform"
 			resolved.PlatformPermission = p

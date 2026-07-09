@@ -853,6 +853,72 @@ func TestCapabilityAuthorizer_LaneGate_TaskNonDefaultRejectedNoRead(t *testing.T
 	}
 }
 
+// TestCapabilityAuthorizer_LaneGate_PerOpLanesNarrowerThanDoc proves C1's
+// per-matched-permission gate (scoped-privileged-lane-grants-design.md): an
+// entry's own Lanes, when present, are the authority for that op — even a
+// lane the doc otherwise grants is denied if the matched entry doesn't carry
+// it.
+func TestCapabilityAuthorizer_LaneGate_PerOpLanesNarrowerThanDoc(t *testing.T) {
+	now := time.Now().UTC()
+	doc := freshDoc(now)
+	doc.Lanes = []string{"default", "meta"}
+	doc.PlatformPermissions = append(doc.PlatformPermissions,
+		PlatformPermission{OperationType: "DefaultOnlyOp", Scope: "any", Lanes: []string{"default"}})
+	a, _, _ := newCapAuthForTest(t, doc, now)
+
+	env := envForLane("DefaultOnlyOp", capTestActorKey, LaneMeta, nil)
+	dec, err := a.Authorize(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if dec.Authorized || dec.Code != ErrCodeLaneUnauthorized {
+		t.Fatalf("expected LaneUnauthorized: entry's own Lanes=[default] must override doc.Lanes; got %+v", dec)
+	}
+}
+
+// TestCapabilityAuthorizer_LaneGate_PerOpLanesGrantedFallsThrough proves the
+// same entry's own lane, when it IS in its Lanes, authorizes normally.
+func TestCapabilityAuthorizer_LaneGate_PerOpLanesGrantedFallsThrough(t *testing.T) {
+	now := time.Now().UTC()
+	doc := freshDoc(now)
+	doc.Lanes = []string{"default", "meta"}
+	doc.PlatformPermissions = append(doc.PlatformPermissions,
+		PlatformPermission{OperationType: "DefaultOnlyOp", Scope: "any", Lanes: []string{"default"}})
+	a, _, _ := newCapAuthForTest(t, doc, now)
+
+	env := envForLane("DefaultOnlyOp", capTestActorKey, LaneDefault, nil)
+	dec, err := a.Authorize(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if !dec.Authorized {
+		t.Fatalf("expected authorized: default is in the entry's own Lanes; got %+v", dec)
+	}
+	if dec.Resolved == nil || dec.Resolved.PlatformPermission == nil || dec.Resolved.PlatformPermission.OperationType != "DefaultOnlyOp" {
+		t.Fatalf("expected Resolved.PlatformPermission=DefaultOnlyOp; got %+v", dec.Resolved)
+	}
+}
+
+// TestCapabilityAuthorizer_LaneGate_PerOpLanesAbsentFallsBackToDoc proves an
+// entry with no Lanes of its own still defers to doc.Lanes (the pre-C1
+// behavior, unchanged) — Fire 1 is additive, not a behavior change for
+// today's permissions (none set Lanes yet).
+func TestCapabilityAuthorizer_LaneGate_PerOpLanesAbsentFallsBackToDoc(t *testing.T) {
+	now := time.Now().UTC()
+	doc := freshDoc(now)
+	doc.Lanes = []string{"default", "system"}
+	a, _, _ := newCapAuthForTest(t, doc, now)
+
+	env := envForLane("PingPlatform", capTestActorKey, LaneSystem, nil)
+	dec, err := a.Authorize(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if !dec.Authorized {
+		t.Fatalf("expected authorized via doc.Lanes fallback (entry carries no Lanes); got %+v", dec)
+	}
+}
+
 func TestCapabilityAuthorizer_LaneGate_ServiceDefaultPasses(t *testing.T) {
 	now := time.Now().UTC()
 	a, _, _ := newCapAuthForTest(t, freshDoc(now), now)

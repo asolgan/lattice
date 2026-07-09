@@ -13,8 +13,18 @@ Lattice lane (Security & trust boundary) · **the "C" of** `loupe-operator-auth-
 > shared tree).
 >
 > **B progress:** the `consoleOperator` role + its non-privileged permissions **shipped** `5bee182`
-> (`packages/console-operator`). Remaining before C can start: re-scope Loupe's seeded operator identity
-> onto this role + the Loupe-lane relay wiring (loupe-operator-auth-lift-design.md §7).
+> (`packages/console-operator`); re-scope + relay wiring **shipped** `56911ac`/`6b1ab6e` — B is CLOSED,
+> unblocking C.
+>
+> **C progress — Fire 1 (§7 item 1) shipped:** `PermissionSpec.Lanes []string` (`internal/pkgmgr`),
+> optional per-op `lanes` on `PlatformPermission` (`internal/capabilitykv`), rbac-domain's
+> `capabilityRoles` lens projects it, and the Processor's step-3 platform-path lane gate moved from a
+> whole-doc pre-check to a per-matched-permission check (falls back to doc-level `lanes` when an entry
+> carries none) — `internal/processor/step3_auth_capability.go`. Contract #6 §6.4 edit committed alongside
+> (marked not-yet-enforced pending Fire 2). Behavior-preserving today: no `PermissionSpec` sets `Lanes`
+> yet. **Next: Fire 2** — the core privileged-lane allowlist + fail-closed strip +
+> `PrivilegedLaneGrantRejected` Health issue (§7 item 2), required before any package may safely set a
+> privileged `lanes` value. Then **Fire 3** — `consoleOperator` gains the allowlisted pkg-lifecycle grants.
 
 ---
 

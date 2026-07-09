@@ -91,6 +91,20 @@ grants it; both keys absent → `AuthDenied`, §6.8) and bounded to the ~5–7 k
 their engine/background ops — never the user hot path. Absent rbac-domain, the derivation degrades to
 `cap.<actor>` for all actors (floor only; ordinary actors deny by absence).
 
+**Privileged lanes are core-policy-owned, not anchor-exclusive (scoped-privileged-lane-grants-design.md,
+mechanism C1).** A `cap.roles.<actor>` entry MAY carry a privileged (`meta`/`urgent`/`system`) per-op
+`lanes` value (§6.4) — but it is honored only when `{operationType, lane}` is on a core-owned allowlist (a
+Processor constant); an unlisted privileged grant is stripped to `default` and raises a
+`PrivilegedLaneGrantRejected` Health issue. This relaxes the *mechanism* (no longer a hard-coded
+`cap.roles ⇒ lanes:["default"]` ceiling) while preserving the *invariant* (core still decides what may
+ever be privileged; a package only assigns an allowlisted grant to a role). The anchor's doc-level `lanes`
+is unaffected — root keeps all four lanes regardless of the allowlist. **Sequencing (as of this edit):**
+Fire 1 (the per-op `lanes` field + the per-matched-permission gate) has landed; the **allowlist +
+fail-closed strip + `PrivilegedLaneGrantRejected` is Fire 2, not yet built** — no package sets a privileged
+`lanes` value yet, so this is inert in production today, but a per-op `lanes` grant that a package *did*
+set would currently be honored unconditionally (no core gate) until Fire 2 ships. See the design doc's §7
+decomposition.
+
 ### 6.2 Document Shape
 
 ```json
@@ -215,6 +229,7 @@ Each entry describes a system-level operation not scoped to any service.
 |-------|----------|---------|
 | `operationType` | yes | Operation-type identifier, matched by **exact string equality** (no casing constraint is enforced). **Business** operations are conventionally PascalCase verb-noun (Contract #2 §2.1 — `CreateIdentity`, `ClaimIdentity`). **Platform control** operations use the reserved **`ctrl.<comp>.<verb>`** namespace (e.g. `ctrl.weaver.disable`, `ctrl.refractor.rebuild`, `ctrl.loom.pause`) — mirroring the `lattice.ctrl.<comp>.<verb>` control subject taxonomy and keeping control grants unmistakably distinct from business ops. |
 | `scope` | yes | One of `any`, `self`, `owned`, `specific`. See §6.7. (Platform control ops use `any` — blanket per-verb grants; platform-path `specific` is a deny-stub, §6.7, so per-target control scoping is deferred to when `specific` is implemented.) |
+| `lanes` | no | Optional array of lanes this grant authorizes (default `["default"]` when absent). The step-3 lane gate checks `env.Lane` against the **matched permission's** `lanes` on the platform path (falling back to the doc-level `lanes`, §6.3, for entries without their own) — **landed**. A **privileged** lane (`meta`/`urgent`/`system`) in a package-projected (`cap.roles`) grant is honored **only if** `{operationType, lane}` is on the core privileged-lane allowlist (a Processor constant); otherwise it is stripped to `default` and a `PrivilegedLaneGrantRejected` Health issue is raised — **the allowlist + strip is Fire 2 of scoped-privileged-lane-grants-design.md, not yet built** (see §6.1's sequencing note); no package sets a privileged `lanes` value today. The **anchor** doc's lanes are unaffected (root keeps all four). |
 
 Processor dispatch (when `authContext.service` is null AND `authContext.task` is null):
 1. Scan `platformPermissions[]` for matching `operationType`
@@ -223,7 +238,8 @@ Processor dispatch (when `authContext.service` is null AND `authContext.task` is
    - `self` → require `authContext.target == actor`
    - `specific` → require `authContext.target` exact-match on the scope's allowed targets — **platform-path `specific` is currently a deny-stub** (returns `AuthContextMismatch`, "not implemented"); full impl deferred to **Phase 3** (see §6.7 note + Contract #10 §10.8 `StartLoomPattern`). Distinct from task/ephemeral `target` matching, which **is** implemented.
    - `owned` → deferred to Phase 2 (requires ownership-link model)
-3. → allow or deny
+3. Gate the lane (see `lanes` above) — a scope-approved match still denies (`LaneUnauthorized`) if the resolved lane set excludes `authContext`'s submission lane.
+4. → allow or deny
 
 ### 6.5 serviceAccess[]
 

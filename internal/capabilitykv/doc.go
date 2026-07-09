@@ -45,6 +45,11 @@ type Doc struct {
 type PlatformPermission struct {
 	OperationType string `json:"operationType"`
 	Scope         string `json:"scope"`
+
+	// Lanes optionally names the lane(s) this specific grant authorizes,
+	// overriding the doc-level Lanes fallback for a matched op (scoped-
+	// privileged-lane-grants-design.md). Absent/empty defers to Doc.Lanes.
+	Lanes []string `json:"lanes,omitempty"`
 }
 
 // ServiceAccessEntry — Contract #6 §6.5. The actor's resolved access to

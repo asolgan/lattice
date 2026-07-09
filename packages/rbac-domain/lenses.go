@@ -12,7 +12,9 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //
 //   - capabilityRoles (actor-aggregate): for every actor holding an rbac role,
 //     projects cap.roles.<actor-suffix> carrying that actor's role-derived
-//     platformPermissions[] ({operationType, scope}) plus the role keys held.
+//     platformPermissions[] ({operationType, scope, lanes}) plus the role
+//     keys held. `lanes` is per-op and optional (absent unless the granting
+//     permission's PermissionSpec.Lanes set it) — Contract #6 §6.4.
 //     The disjoint cap.roles.* key space (Contract #6 §6.1) keeps the
 //     package's grant projection off the core cap.<actor> key, so ordinary
 //     actors read their grants from cap.roles.<actor> via the registered auth
@@ -76,7 +78,8 @@ RETURN
   identity.key AS actorKey,
   collect(DISTINCT {
     operationType: perm.data.operationType,
-    scope: perm.data.scope
+    scope: perm.data.scope,
+    lanes: perm.data.lanes
   }) AS platformPermissions,
   collect(DISTINCT role.key) AS roles
 `

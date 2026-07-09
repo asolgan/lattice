@@ -246,6 +246,9 @@ func (i *Installer) buildInstallBatch(
 		if p.Note != "" {
 			data["note"] = p.Note
 		}
+		if len(p.Lanes) > 0 {
+			data["lanes"] = p.Lanes
+		}
 		addCreate(permKey, docVertex("permission", data))
 		// Grant links — one per role canonical name in GrantsTo.
 		for _, role := range p.GrantsTo {
