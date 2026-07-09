@@ -284,6 +284,98 @@ async function submitOp(actorKind, body, opts) {
   });
 }
 
+// ---- Object attach/detach: browser-direct (#75 Fire 2b increment 2) ----
+// The app's own /api/objects POST/DELETE used to submit AttachObject/DetachObject
+// itself, stamping a fixed admin actor over its NATS core-operations publish grant
+// — exactly the forgery surface Fire 2b closes. Bytes still go through this app
+// (POST /api/objects — the $O byte-plane helper, never a forgery vector, inert
+// until anchored), but the anchor op is submitted here, browser-direct through
+// the Gateway via submitOp("staff", ...), the same path SignLease already uses.
+// operator already holds AttachObject/DetachObject scope:any (objects-base
+// permissions.go) — no new grant needed.
+
+// NANOID_ALPHABET/NANOID_LENGTH mirror internal/substrate (Contract #1) exactly.
+const NANOID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz123456789";
+const NANOID_LENGTH = 20;
+
+// deriveNanoID mirrors substrate.DeriveNanoID byte-for-byte (a SHA-256 expansion
+// across the canonical alphabet, re-hashing as the digest is exhausted), so an
+// AttachObject submitted here collapses on the Contract #4 tracker exactly like
+// a server-derived requestId would — load-bearing for object-store-manager's
+// never-attached reconcile grace window (internal/objectmanager), which assumes
+// a retried attach of the same bytes+slot reuses the same requestId.
+async function deriveNanoID(namespace, input) {
+  const enc = new TextEncoder();
+  let digest = new Uint8Array(await crypto.subtle.digest("SHA-256", enc.encode(namespace + input)));
+  let di = 0;
+  const out = [];
+  for (let i = 0; i < NANOID_LENGTH; i++) {
+    if (di >= digest.length) {
+      digest = new Uint8Array(await crypto.subtle.digest("SHA-256", digest));
+      di = 0;
+    }
+    out.push(NANOID_ALPHABET[digest[di] % NANOID_ALPHABET.length]);
+    di++;
+  }
+  return out.join("");
+}
+
+// ATTACH_REQ_NAMESPACE mirrors loftspace-app's Go-side attachReqNamespace
+// (lease_document.go) — one shared AttachObject dedup convention regardless of
+// which side submits the op.
+const ATTACH_REQ_NAMESPACE = "loftspace:object:attach:";
+
+// objectLinkKey mirrors objects.go's helper: lnk.object.<oid>.<linkName>.<type>.<id>.
+function objectLinkKey(oid, targetKey, linkName) {
+  const parts = targetKey.split(".");
+  if (parts.length !== 3 || parts[0] !== "vtx") {
+    throw new Error("targetKey must be vtx.<type>.<id>: " + targetKey);
+  }
+  return "lnk.object." + oid + "." + linkName + "." + parts[1] + "." + parts[2];
+}
+
+// attachObject uploads bytes to this app's byte-plane helper, then submits
+// AttachObject browser-direct through the Gateway. Throws on a rejected op (or
+// a transport error) so callers can count/report; the byte-plane response's oid
+// is returned so the caller doesn't need to recompute it.
+async function attachObject(file, targetKey, linkName) {
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("targetKey", targetKey);
+  fd.append("linkName", linkName);
+  const uploaded = await api("/api/objects", { method: "POST", body: fd });
+  const { oid, digest, storeName, size, contentType } = uploaded;
+  const payload = { digest, size, contentType, storeName, targetKey, linkName };
+  if (file.name) payload.filename = file.name;
+  const requestId = await deriveNanoID(ATTACH_REQ_NAMESPACE, [digest, targetKey, linkName].join("\x00"));
+  const reply = await submitOp("staff", {
+    requestId,
+    operationType: "AttachObject",
+    class: "object",
+    reads: [targetKey],
+    payload,
+  });
+  if (reply && reply.status === "rejected") {
+    const msg = reply.error ? `${reply.error.code}: ${reply.error.message}` : "rejected";
+    throw new Error(msg);
+  }
+  return { oid, linkName, targetKey, size, contentType };
+}
+
+// detachObject submits DetachObject browser-direct, mirroring attachObject.
+// Does NOT throw on a rejected reply — callers branch on reply.status like the
+// old DELETE /api/objects response did.
+async function detachObject(oid, targetKey, linkName) {
+  const linkKey = objectLinkKey(oid, targetKey, linkName);
+  const objKey = "vtx.object." + oid;
+  return submitOp("staff", {
+    operationType: "DetachObject",
+    class: "object",
+    reads: [linkKey, objKey],
+    payload: { oid, targetKey, linkName },
+  });
+}
+
 // openDocument fetches a D1.5-protected object's bytes with the Bearer token
 // (a plain <a href> navigation can't attach one) and opens them as a blob URL
 // in a new tab. The blob URL is revoked after a delay long enough for the new
@@ -2237,25 +2329,13 @@ async function submitUpload(ev) {
     return;
   }
 
-  const fd = new FormData();
-  fd.append("file", file);
-  fd.append("targetKey", scope);
-  fd.append("linkName", slot);
-
   const submit = $("#upload-submit");
   submit.disabled = true;
   try {
-    const reply = await api("/api/objects", { method: "POST", body: fd });
-    if (reply && reply.status === "rejected") {
-      const msg = reply.error ? `${reply.error.code}: ${reply.error.message}` : "rejected";
-      toast("Upload rejected — " + msg, "err");
-      return;
-    }
-    if (reply && reply.oid) {
-      state.sessionUploads[reply.oid] = { linkName: slot, ownerKey: scope };
-    }
+    const attached = await attachObject(file, scope, slot);
+    state.sessionUploads[attached.oid] = { linkName: slot, ownerKey: scope };
     fileInput.value = "";
-    toast("Document uploaded.", "ok", reply && reply.oid ? reply.oid : "");
+    toast("Document uploaded.", "ok", attached.oid);
     // The lens may take a moment to project; a Refresh shows it once projected.
     loadDocuments();
   } catch (e) {
@@ -2268,8 +2348,7 @@ async function submitUpload(ev) {
 async function detachDoc(oid, sess) {
   if (!confirm("Detach this document? The file is removed from this record.")) return;
   try {
-    const q = "?targetKey=" + encodeURIComponent(sess.ownerKey) + "&linkName=" + encodeURIComponent(sess.linkName);
-    const reply = await api("/api/objects/" + encodeURIComponent(oid) + q, { method: "DELETE" });
+    const reply = await detachObject(oid, sess.ownerKey, sess.linkName);
     if (reply && reply.status === "rejected") {
       const msg = reply.error ? `${reply.error.code}: ${reply.error.message}` : "rejected";
       toast("Could not detach — " + msg, "err");
@@ -3136,21 +3215,12 @@ async function submitPostListing(ev) {
 
 // ---- Listing photos (landlord upload + applicant gallery) ----
 
-// uploadUnitPhoto attaches one image to a unit as a listing photo: POST the bytes
-// + AttachObject under linkName=listingPhoto, ownerKey=vtx.unit.<id> — the same
-// generic objects-base plumbing the Documents tab uses, just a different owner.
-// Rejects throw so the caller can count/report.
+// uploadUnitPhoto attaches one image to a unit as a listing photo: upload the
+// bytes then AttachObject under linkName=listingPhoto, ownerKey=vtx.unit.<id> —
+// the same generic objects-base plumbing the Documents tab uses, just a
+// different owner. Rejects throw so the caller can count/report.
 async function uploadUnitPhoto(unitKey, file) {
-  const fd = new FormData();
-  fd.append("file", file);
-  fd.append("targetKey", unitKey);
-  fd.append("linkName", PHOTO_LINK);
-  const reply = await api("/api/objects", { method: "POST", body: fd });
-  if (reply && reply.status === "rejected") {
-    const msg = reply.error ? `${reply.error.code}: ${reply.error.message}` : "rejected";
-    throw new Error(msg);
-  }
-  return reply;
+  return attachObject(file, unitKey, PHOTO_LINK);
 }
 
 // openLightbox shows a unit's photos full-size with prev/next + a thumbnail strip.
@@ -3263,8 +3333,7 @@ async function removeUnitPhoto(oid) {
   if (!unitKey) return;
   if (!confirm("Remove this photo from the listing?")) return;
   try {
-    const q = "?targetKey=" + encodeURIComponent(unitKey) + "&linkName=" + encodeURIComponent(PHOTO_LINK);
-    const reply = await api("/api/objects/" + encodeURIComponent(oid) + q, { method: "DELETE" });
+    const reply = await detachObject(oid, unitKey, PHOTO_LINK);
     if (reply && reply.status === "rejected") {
       const msg = reply.error ? `${reply.error.code}: ${reply.error.message}` : "rejected";
       toast("Could not remove — " + msg, "err");

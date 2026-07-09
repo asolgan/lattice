@@ -10,18 +10,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"time"
 
-	"github.com/asolgan/lattice/cmd/lattice/output"
 	"github.com/asolgan/lattice/internal/bootstrap"
-	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
 )
-
-// attachReqNamespace seeds the deterministic AttachObject requestId so a
-// double-submitted upload of identical bytes to the same slot collapses on the
-// Contract #4 tracker.
-const attachReqNamespace = "loftspace:object:attach:"
 
 // attachmentsKeyPrefix is the OutputKeyPattern prefix of the objects-base
 // `objectAttachments` display lens. The Documents tab reads these rows out of
@@ -122,10 +114,14 @@ func (s *server) entitledToObjectOwner(ctx context.Context, actorID, ownerKey st
 
 // handleObjects routes /api/objects:
 //
-//	POST   /api/objects                              → upload bytes + AttachObject
-//	GET    /api/objects?owner=     (or ?applicant=)  → list objects scoped to an owner key
-//	GET    /api/objects/<oid>                        → stream the bytes back
-//	DELETE /api/objects/<oid>?targetKey=&linkName=   → DetachObject
+//	POST /api/objects                             → upload bytes (byte-plane only; the browser
+//	                                                 submits AttachObject itself, browser-direct)
+//	GET  /api/objects?owner=     (or ?applicant=)  → list objects scoped to an owner key
+//	GET  /api/objects/<oid>                        → stream the bytes back
+//
+// AttachObject/DetachObject are submitted browser-direct through the Gateway's
+// POST /v1/operations (real-actor-write-auth-e2e; #75 Fire 2b) — this app never
+// asserts an actor for the anchor op, so it holds no route for either.
 func (s *server) handleObjects(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/objects")
 	rest = strings.Trim(rest, "/")
@@ -136,11 +132,9 @@ func (s *server) handleObjects(w http.ResponseWriter, r *http.Request) {
 		s.handleObjectList(w, r)
 	case r.Method == http.MethodGet && rest != "":
 		s.handleObjectGet(w, r, rest)
-	case r.Method == http.MethodDelete && rest != "":
-		s.handleObjectDetach(w, r, rest)
 	default:
 		s.writeError(w, http.StatusBadRequest,
-			"expected POST /api/objects, GET /api/objects?applicant=, GET /api/objects/<oid>, or DELETE /api/objects/<oid>?targetKey=&linkName=")
+			"expected POST /api/objects, GET /api/objects?applicant=, or GET /api/objects/<oid>")
 	}
 }
 
@@ -301,20 +295,18 @@ func (s *server) resolveAllowedObjectOwners(ctx context.Context, r *http.Request
 	return allowed, 0, ""
 }
 
-// handleObjectUpload implements POST /api/objects. It streams the file part to
-// the core-objects store (cap enforced in substrate), derives the
-// content-addressed oid, then submits AttachObject. Bytes first, then graph: a
-// failed op leaves only collectable bytes, never a partial graph. The read set
-// is [targetKey] only — the owner the FE already knows — so the app never probes
-// Core KV (P5).
+// handleObjectUpload implements POST /api/objects — the byte-plane half only.
+// It streams the file part to the core-objects store (cap enforced in
+// substrate) and hands back the content-addressed oid plus everything the
+// browser needs to submit AttachObject itself, browser-direct through the
+// Gateway (#75 Fire 2b: this app never asserts an actor for the anchor op). A
+// browser that uploads bytes but never follows up with AttachObject leaves an
+// orphan; object-store-manager's never-attached reconcile (a low-cadence
+// backstop, internal/objectmanager) reclaims it after its grace window, so no
+// compensating delete is needed here.
 func (s *server) handleObjectUpload(w http.ResponseWriter, r *http.Request) {
 	conn, ok := s.requireConn(w)
 	if !ok {
-		return
-	}
-	if s.adminActor == "" {
-		s.writeError(w, http.StatusBadGateway,
-			"admin actor not loaded; a valid bootstrap file (BOOTSTRAP_JSON_PATH) is required to submit ops")
 		return
 	}
 
@@ -367,45 +359,14 @@ func (s *server) handleObjectUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	oid := substrate.SHA256NanoID("object:" + info.Digest)
-
-	payload := map[string]any{
-		"digest": info.Digest, "size": info.Size, "contentType": contentType,
-		"storeName": storeName, "targetKey": targetKey, "linkName": linkName,
+	resp := map[string]any{
+		"oid": oid, "digest": info.Digest, "storeName": storeName,
+		"size": info.Size, "contentType": contentType,
 	}
 	if header.Filename != "" {
-		payload["filename"] = header.Filename
+		resp["filename"] = header.Filename
 	}
-
-	// Deterministic requestId (CC6): content-derived so a re-submitted upload of
-	// the same bytes to the same slot collapses on the tracker.
-	requestID := substrate.DeriveNanoID(attachReqNamespace,
-		strings.Join([]string{info.Digest, targetKey, linkName}, "\x00"))
-	env := &processor.OperationEnvelope{
-		RequestID:     requestID,
-		Lane:          processor.LaneDefault,
-		OperationType: "AttachObject",
-		Actor:         s.adminActor,
-		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
-		Class:         "object",
-		Payload:       mustJSON(payload),
-		ContextHint:   &processor.ContextHint{Reads: []string{targetKey}},
-	}
-	reply, err := output.SubmitOp(ctx, conn, env)
-	if err != nil {
-		// The op never landed → our just-uploaded bytes are an orphan; reclaim.
-		_ = conn.ObjectDelete(ctx, bootstrap.CoreObjectsBucket, storeName)
-		s.writeError(w, http.StatusBadGateway, "submit AttachObject: "+err.Error())
-		return
-	}
-	if reply.Status == processor.ReplyStatusRejected {
-		_ = conn.ObjectDelete(ctx, bootstrap.CoreObjectsBucket, storeName)
-		s.writeJSON(w, http.StatusBadRequest, reply)
-		return
-	}
-	s.writeJSON(w, http.StatusOK, map[string]any{
-		"oid": oid, "linkName": linkName, "targetKey": targetKey,
-		"size": info.Size, "contentType": contentType,
-	})
+	s.writeJSON(w, http.StatusOK, resp)
 }
 
 // handleObjectGet implements GET /api/objects/<oid>. It resolves the storeName
@@ -536,65 +497,4 @@ func (s *server) authorizeObjectGet(ctx context.Context, r *http.Request, owners
 		}
 	}
 	return false, http.StatusNotFound, "object not found in the read model"
-}
-
-// handleObjectDetach implements DELETE /api/objects/<oid>?targetKey=&linkName=.
-// The read set is the deterministic link + object keys (both known-present for a
-// document the app is detaching) — no Core KV probe (P5). linkName must be
-// supplied by the caller; the FE knows it for session-uploaded documents.
-func (s *server) handleObjectDetach(w http.ResponseWriter, r *http.Request, oid string) {
-	conn, ok := s.requireConn(w)
-	if !ok {
-		return
-	}
-	if s.adminActor == "" {
-		s.writeError(w, http.StatusBadGateway,
-			"admin actor not loaded; a valid bootstrap file is required to submit ops")
-		return
-	}
-	if !substrate.IsValidNanoID(oid) {
-		s.writeError(w, http.StatusBadRequest, "invalid object id")
-		return
-	}
-	targetKey := strings.TrimSpace(r.URL.Query().Get("targetKey"))
-	linkName := strings.TrimSpace(r.URL.Query().Get("linkName"))
-	if targetKey == "" || linkName == "" {
-		s.writeError(w, http.StatusBadRequest, "targetKey and linkName query params are required")
-		return
-	}
-	linkKey, err := objectLinkKey(oid, targetKey, linkName)
-	if err != nil {
-		s.writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	objKey := "vtx.object." + oid
-
-	ctx, cancel := s.reqContext(r)
-	defer cancel()
-
-	requestID, err := substrate.NewNanoID()
-	if err != nil {
-		s.writeError(w, http.StatusBadGateway, "generate request id: "+err.Error())
-		return
-	}
-	env := &processor.OperationEnvelope{
-		RequestID:     requestID,
-		Lane:          processor.LaneDefault,
-		OperationType: "DetachObject",
-		Actor:         s.adminActor,
-		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
-		Class:         "object",
-		Payload:       mustJSON(map[string]any{"oid": oid, "targetKey": targetKey, "linkName": linkName}),
-		ContextHint:   &processor.ContextHint{Reads: []string{linkKey, objKey}},
-	}
-	reply, err := output.SubmitOp(ctx, conn, env)
-	if err != nil {
-		s.writeError(w, http.StatusBadGateway, "submit DetachObject: "+err.Error())
-		return
-	}
-	status := http.StatusOK
-	if reply.Status == processor.ReplyStatusRejected {
-		status = http.StatusBadRequest
-	}
-	s.writeJSON(w, status, reply)
 }

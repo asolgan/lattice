@@ -28,6 +28,13 @@ const leaseDocLinkName = "signedLease"
 // rather than leaking an orphan blob on every call.
 const leaseDocStoreNamespace = "loftspace:lease-doc:store:"
 
+// attachReqNamespace seeds the deterministic AttachObject requestId so a
+// double-submitted attach of identical bytes to the same slot collapses on the
+// Contract #4 tracker. Shared with the browser-direct upload path's own
+// AttachObject submission (web/app.js deriveNanoID) — one dedup convention
+// regardless of which side submits the op.
+const attachReqNamespace = "loftspace:object:attach:"
+
 // handleLeaseDocument routes /api/lease-document — the produced executed-lease
 // artifact for a signed application:
 //
