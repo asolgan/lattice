@@ -28,6 +28,8 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 | **No-show doesn't cost anything** | `SetAppointmentStatus(status=noShow)` is purely a status flip — no consequence. `clinic-ledger`'s `DebitAccount` + `clinic-reminders`' Weaver gap-remediation pattern (`missing_reminder` → `directOp`) are both already shipped; a `noShow-no-fee-charged` gap closed the same way (`directOp DebitAccount`) auto-protects revenue on the same mechanism reminders already use. | Clinic | pkg | ★ | S | 📋 ready |
 | **Clinic is a single-location, single-specialty silo** | `location-domain` is unused by `clinic-domain` (explicit in its own docs, unlike `loftspace-domain`); a provider has exactly one `specialty` and no site. A real multi-site practice group needs provider↔location + per-location scheduling — mirror `loftspace-domain`'s already-proven `location-domain` integration pattern. Bigger structural lift; sequence after the other Clinic items land. | Clinic | pkg | ★★ | L | 📋 ready |
 | **Read-posture debt sweep (vertical packages)** | ~44 unclassified `kv.Read` sites (Contract #2 §2.5 lint "class-(b) debt") across `lease-signing`/`wellness-domain`/`clinic-domain`/`loftspace-domain` — reclassify to declared `optionalReads` (preferred) or an explicit `(c)/(e)` annotation. See [design](../../implementation-artifacts/clinic-patient-self-service-booking-design.md) Checkpoint for the worked example. `internal/*` core packages carry ~21 more — Lattice stream's to sweep. | Cross-vertical | pkg | ★ | S | 📋 ready |
+| **Café tab settlement never posts to the ledger (regression)** | Live-verified end-to-end on the shared multi-vertical stack: OpenTab→Charge→Settle all commit, but Weaver's `CreateAccount` dispatch fails closed forever (class ambiguity) — a settled tab sits `posted:false` permanently. Was marked CLOSED (`7556f62`) untested against a multi-ledger stack. | Café | pkg | ★★★ | S | 🚧 blocked-on: [Weaver class fix](lattice.md) |
+| **Café has no payment-collection UI** | `cafe-ledger`'s `CreditAccount` (record a payment) is a fully-built DDL but `cmd/cafe-app` never calls it — no route, no FE form, no reference anywhere in the app. Once a tab settles, a resident's café balance has no path to ever be paid down through this vertical's own UI. Add a "Record payment" action (front-desk or resident view) invoking `CreditAccount`. | Café | pkg + FE | ★★ | S | 📋 ready |
 
 **Explicitly descoped (ambitious-PO pass, 2026-07-09):** structured diagnosis/procedure coding (ICD/CPT),
 vitals, and e-prescribing were considered and deliberately NOT filed — a certified EHR is out of scope for a
@@ -47,11 +49,11 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic ↔ Café, stagg
 joins once `cmd/wellness-app` (Inc 2) ships** — today it has a package but no app to exercise; see
 [agents/vertical-po/SKILL.md](../../../agents/vertical-po/SKILL.md) §1.
 
-- **Rotation to date:** LoftSpace ×11, Clinic ×9, Café ×0 (last: Clinic 2026-07-09 ambitious-PO pass, surveyed the full clinic-domain/reminders/ledger surface + filed 6 net-new full-featured-app gaps: write-only clinical notes, no real reminder delivery, no patient self-booking, self-pay-only billing, no no-show fee, single-location silo). Café added to rotation 2026-07-09 (`cmd/cafe-app` shipped 2026-07-07; not yet exercised).
+- **Rotation to date:** LoftSpace ×11, Clinic ×9, Café ×1 (2026-07-09: first live exercise — found Weaver tab-settlement posting fails closed on the shared stack (platform bug, blocked-on lattice.md) + no payment-collection UI).
 - **Method:** reuse the already-up shared stack (detect NATS :4222 / app :7788/:7799/:7801), drive the real flow via `/api/op` + the lens projections as the product owner, file scored items. All three apps exist + are exercisable live (`:7788` / `:7799` / `:7801`).
 - **Live-stack note:** a stale bootstrap JSON vs. a recreated Core KV was a recurring dev-loop trap (2026-07-03, 2026-07-04) that silently emptied reads; `make up` now self-heals it (`109f59a`, 2026-07-05) — re-verify empty-read reports as a real product bug first.
 - **2026-07-06:** Enriched Café+Wellness → 4 grounded, sequenced rows (Café first) + verified no platform block; spec = the go-live composition demo.
-- **Next:** Café (never yet exercised).
+- **Next:** LoftSpace.
 
 ## Done log — verticals (newest first)
 
