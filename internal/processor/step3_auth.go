@@ -201,6 +201,7 @@ func SelectAuthorizerArgs(opts SelectAuthorizerOpts) (Authorizer, error) {
 			capabilityAuthorizerOptions{
 				extraEntries:           opts.ExtraEntries,
 				platformKeysDerivation: platformKeysDerivation,
+				emitter:                opts.Emitter,
 			})
 	default:
 		return nil, errUnknownAuthMode(opts.Mode)

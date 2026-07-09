@@ -116,9 +116,10 @@ func newCapAuthForTest(t *testing.T, doc *CapabilityDoc, clockAt time.Time) (*Ca
 		}
 	}
 	clock := &fakeClock{now: clockAt}
-	a, err := NewCapabilityAuthorizer(reader, "capability-kv", clock, DefaultCapabilityAuthorizerConfig(), capTestLogger())
+	a, err := newCapabilityAuthorizer(reader, "capability-kv", clock, DefaultCapabilityAuthorizerConfig(), capTestLogger(),
+		capabilityAuthorizerOptions{emitter: emitter})
 	if err != nil {
-		t.Fatalf("NewCapabilityAuthorizer: %v", err)
+		t.Fatalf("newCapabilityAuthorizer: %v", err)
 	}
 	return a, emitter, reader
 }
@@ -943,5 +944,119 @@ func TestStubAuthorizer_BypassesLaneGate(t *testing.T) {
 	}
 	if !dec.Authorized {
 		t.Fatalf("stub must bypass the lane gate (allow-all degraded mode); got %+v", dec)
+	}
+}
+
+// --- Fire 2: core privileged-lane allowlist (scoped-privileged-lane-grants-
+// design.md §3.3) -----------------------------------------------------------
+//
+// A per-op Lanes entry is always package-projected (cap.roles.<actor>, per
+// §3.3's grounding — the anchor's own cypher-projected entries never carry
+// per-op lanes). An allowlisted {operationType, lane} pair is honored
+// verbatim; a non-allowlisted privileged lane is stripped to default and
+// raises PrivilegedLaneGrantRejected — never silently honored.
+
+func TestCapabilityAuthorizer_LaneGate_AllowlistedPrivilegedLaneGranted(t *testing.T) {
+	now := time.Now().UTC()
+	doc := freshDoc(now)
+	doc.PlatformPermissions = append(doc.PlatformPermissions,
+		PlatformPermission{OperationType: "InstallPackage", Scope: "any", Lanes: []string{"meta"}})
+	a, emitter, _ := newCapAuthForTest(t, doc, now)
+
+	env := envForLane("InstallPackage", capTestActorKey, LaneMeta, nil)
+	dec, err := a.Authorize(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if !dec.Authorized {
+		t.Fatalf("expected authorized: InstallPackage@meta is allowlisted (v1); got %+v", dec)
+	}
+	if len(emitter.calls) != 0 {
+		t.Fatalf("expected no alert for an allowlisted privileged grant; got %+v", emitter.calls)
+	}
+}
+
+func TestCapabilityAuthorizer_LaneGate_NonAllowlistedPrivilegedLaneStripped(t *testing.T) {
+	now := time.Now().UTC()
+	doc := freshDoc(now)
+	doc.PlatformPermissions = append(doc.PlatformPermissions,
+		PlatformPermission{OperationType: "TombstoneMetaVertex", Scope: "any", Lanes: []string{"meta"}})
+	a, emitter, _ := newCapAuthForTest(t, doc, now)
+
+	// The rogue grant claims meta but TombstoneMetaVertex@meta isn't
+	// allowlisted — stripped to default, so a meta submission denies.
+	env := envForLane("TombstoneMetaVertex", capTestActorKey, LaneMeta, nil)
+	dec, _ := a.Authorize(context.Background(), env)
+	if dec.Authorized || dec.Code != ErrCodeLaneUnauthorized {
+		t.Fatalf("expected LaneUnauthorized: non-allowlisted privileged lane must be stripped; got %+v", dec)
+	}
+	if len(emitter.calls) != 1 || emitter.calls[0].code != AlertCodePrivilegedLaneGrantRejected {
+		t.Fatalf("expected one privileged-lane-grant-rejected alert; got %+v", emitter.calls)
+	}
+	if got := emitter.calls[0].details["operationType"]; got != "TombstoneMetaVertex" {
+		t.Fatalf("expected alert details.operationType=TombstoneMetaVertex; got %+v", emitter.calls[0].details)
+	}
+}
+
+func TestCapabilityAuthorizer_LaneGate_NonAllowlistedPrivilegedLaneStillGrantsDefault(t *testing.T) {
+	now := time.Now().UTC()
+	doc := freshDoc(now)
+	doc.PlatformPermissions = append(doc.PlatformPermissions,
+		PlatformPermission{OperationType: "TombstoneMetaVertex", Scope: "any", Lanes: []string{"meta"}})
+	a, _, _ := newCapAuthForTest(t, doc, now)
+
+	// Stripped to default, not to nothing: a default submission still works.
+	env := envForLane("TombstoneMetaVertex", capTestActorKey, LaneDefault, nil)
+	dec, err := a.Authorize(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if !dec.Authorized {
+		t.Fatalf("expected the stripped grant to still confer default; got %+v", dec)
+	}
+}
+
+func TestCapabilityAuthorizer_LaneGate_AllowlistIsPerOperation(t *testing.T) {
+	now := time.Now().UTC()
+	doc := freshDoc(now)
+	// InstallPackage@meta is allowlisted; InstallPackage@urgent is not.
+	doc.PlatformPermissions = append(doc.PlatformPermissions,
+		PlatformPermission{OperationType: "InstallPackage", Scope: "any", Lanes: []string{"urgent"}})
+	a, emitter, _ := newCapAuthForTest(t, doc, now)
+
+	env := envForLane("InstallPackage", capTestActorKey, LaneUrgent, nil)
+	dec, _ := a.Authorize(context.Background(), env)
+	if dec.Authorized || dec.Code != ErrCodeLaneUnauthorized {
+		t.Fatalf("expected LaneUnauthorized: InstallPackage@urgent is not on the v1 allowlist; got %+v", dec)
+	}
+	if len(emitter.calls) != 1 || emitter.calls[0].code != AlertCodePrivilegedLaneGrantRejected {
+		t.Fatalf("expected one privileged-lane-grant-rejected alert; got %+v", emitter.calls)
+	}
+}
+
+func TestCapabilityAuthorizer_LaneGate_AnchorRootGrantNeverAllowlistChecked(t *testing.T) {
+	now := time.Now().UTC()
+	doc := freshDoc(now)
+	// The anchor floor: doc-level Lanes carries all four; no entry sets its
+	// own per-op Lanes (mirrors bootstrap/lenses.go's CapabilityLensDefinition
+	// — the root grant is never entry-scoped).
+	doc.Lanes = []string{"default", "meta", "urgent", "system"}
+	// TombstoneMetaVertex isn't on the privileged-lane allowlist at all, but
+	// the anchor's root grant reaches lane authority via the doc.Lanes
+	// fallback (no entry-level Lanes), which the allowlist never touches.
+	doc.PlatformPermissions = append(doc.PlatformPermissions,
+		PlatformPermission{OperationType: "TombstoneMetaVertex", Scope: "any"})
+	a, emitter, _ := newCapAuthForTest(t, doc, now)
+
+	env := envForLane("TombstoneMetaVertex", capTestActorKey, LaneMeta, nil)
+	dec, err := a.Authorize(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if !dec.Authorized {
+		t.Fatalf("expected the anchor's doc.Lanes-fallback grant to authorize unchecked; got %+v", dec)
+	}
+	if len(emitter.calls) != 0 {
+		t.Fatalf("expected no alert for a doc.Lanes-fallback (anchor) grant; got %+v", emitter.calls)
 	}
 }

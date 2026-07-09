@@ -65,8 +65,8 @@ func DefaultCapabilityAuthorizerConfig() CapabilityAuthorizerConfig {
 
 // AuthAlertEmitter is the minimal Health KV alert surface. Implementations
 // write to `health.alerts.security.<code>` per Contract #5 alert
-// convention. The `stub-auth-active` alert (see StubAuthorizer) is the sole
-// security alert code; the capability authorizer itself emits no alerts.
+// convention. Alert codes: `stub-auth-active` (StubAuthorizer) and
+// `privileged-lane-grant-rejected` (CapabilityAuthorizer's platformLaneGate).
 type AuthAlertEmitter interface {
 	EmitAlert(ctx context.Context, code string, details map[string]any)
 }
@@ -87,6 +87,7 @@ type CapabilityAuthorizer struct {
 	cfg      CapabilityAuthorizerConfig
 	logger   *slog.Logger
 	registry []authEntry
+	emitter  AuthAlertEmitter
 
 	// Health KV samples — read by HealthHeartbeater at tick.
 	latency *latencyRing
@@ -104,6 +105,9 @@ type capabilityAuthorizerOptions struct {
 	// [cap.<actor>, cap.roles.<actor>] union, ordinary actor →
 	// [cap.roles.<actor>]).
 	platformKeysDerivation func(string) ([]string, error)
+	// emitter raises PrivilegedLaneGrantRejected (and any future auth alert)
+	// to Health KV. Nil defaults to noopAlertEmitter{}.
+	emitter AuthAlertEmitter
 }
 
 // NewCapabilityAuthorizer constructs the production authorizer. `reader`
@@ -137,6 +141,10 @@ func newCapabilityAuthorizer(reader CapabilityReader, bucket string, clock Clock
 	if logger == nil {
 		logger = slog.Default()
 	}
+	emitter := opts.emitter
+	if emitter == nil {
+		emitter = noopAlertEmitter{}
+	}
 	registry, err := buildAuthRegistry(opts.extraEntries, opts.platformKeysDerivation)
 	if err != nil {
 		return nil, err
@@ -148,6 +156,7 @@ func newCapabilityAuthorizer(reader CapabilityReader, bucket string, clock Clock
 		cfg:      cfg,
 		logger:   logger,
 		registry: registry,
+		emitter:  emitter,
 		latency:  newLatencyRing(cfg.LatencyBufferSize),
 	}, nil
 }
@@ -400,16 +409,74 @@ func (a *CapabilityAuthorizer) matchServiceAccess(env *OperationEnvelope, doc *C
 	}
 }
 
+// privilegedLanes are the non-default lanes the core allowlist below gates.
+var privilegedLanes = map[string]bool{
+	string(LaneMeta):   true,
+	string(LaneUrgent): true,
+	string(LaneSystem): true,
+}
+
+// privilegedLaneAllowlist is the core-owned policy of which {operationType,
+// lane} pairs a package-projected per-op grant may EVER honor at a
+// privileged lane (scoped-privileged-lane-grants-design.md §3.3, Fire 2). v1
+// = the pkg-lifecycle trio at meta. A pair absent here is always stripped to
+// default, regardless of what any package's PermissionSpec.Lanes claims —
+// core owns the policy of what may ever be privilege-granted; a package
+// owns only the assignment (which role gets an allowlisted grant).
+var privilegedLaneAllowlist = map[string]map[string]bool{
+	"InstallPackage":   {string(LaneMeta): true},
+	"UninstallPackage": {string(LaneMeta): true},
+	"UpgradePackage":   {string(LaneMeta): true},
+}
+
+// AlertCodePrivilegedLaneGrantRejected is raised (Contract #5 §5.5 alert
+// convention) each time a per-op grant claims a privileged lane the core
+// allowlist doesn't sanction for that operationType — signal for an
+// operator that a package declared an over-broad PermissionSpec.Lanes,
+// quietly narrowed to default rather than silently honored.
+const AlertCodePrivilegedLaneGrantRejected = "privileged-lane-grant-rejected"
+
+// disallowedPrivilegedLanes returns the subset of lanes that are privileged
+// (meta/urgent/system) but not on privilegedLaneAllowlist for operationType.
+// A non-privileged lane (default) is never rejected.
+func disallowedPrivilegedLanes(operationType string, lanes []string) []string {
+	allowed := privilegedLaneAllowlist[operationType]
+	var rejected []string
+	for _, l := range lanes {
+		if privilegedLanes[l] && !allowed[l] {
+			rejected = append(rejected, l)
+		}
+	}
+	return rejected
+}
+
 // platformLaneGate is the per-matched-permission lane authority (Contract #2
 // §2.3, scoped-privileged-lane-grants-design.md C1). A matched entry's own
 // Lanes gate submission when present; an entry that carries none defers to
 // the doc-level Lanes fallback (the pre-C1 whole-doc behavior). Fail-closed:
 // an empty resolved set grants no lane, including default. Returns nil when
 // the lane is granted (caller proceeds to authorize).
-func platformLaneGate(env *OperationEnvelope, doc *CapabilityDoc, p *PlatformPermission) *Decision {
+//
+// An entry-level Lanes value is always package-projected (cap.roles.<actor>,
+// rbac-domain's capabilityRoles lens, per-op PermissionSpec.Lanes) — the
+// anchor's own cypher-projected root grant (bootstrap/lenses.go's
+// CapabilityLensDefinition) never sets per-entry lanes, so it always takes
+// the doc.Lanes fallback above and never reaches the allowlist check below.
+// That's why the check here is unconditional on any non-empty p.Lanes: it
+// gates the one and only path a privileged per-op lane can arrive through
+// (scoped-privileged-lane-grants-design.md §3.3, Fire 2).
+func (a *CapabilityAuthorizer) platformLaneGate(env *OperationEnvelope, doc *CapabilityDoc, p *PlatformPermission) *Decision {
 	granted := p.Lanes
 	if len(granted) == 0 {
 		granted = doc.Lanes
+	} else if rejected := disallowedPrivilegedLanes(env.OperationType, granted); len(rejected) > 0 {
+		a.emitter.EmitAlert(context.Background(), AlertCodePrivilegedLaneGrantRejected, map[string]any{
+			"actor":         env.Actor,
+			"requestId":     env.RequestID,
+			"operationType": env.OperationType,
+			"rejectedLanes": rejected,
+		})
+		granted = []string{string(LaneDefault)}
 	}
 	if laneGranted(env.Lane, granted) {
 		return nil
@@ -429,7 +496,7 @@ func (a *CapabilityAuthorizer) matchPlatformPermission(env *OperationEnvelope, d
 		}
 		switch p.Scope {
 		case "any":
-			if dec := platformLaneGate(env, doc, p); dec != nil {
+			if dec := a.platformLaneGate(env, doc, p); dec != nil {
 				return *dec
 			}
 			resolved.Path = "platform"
@@ -457,7 +524,7 @@ func (a *CapabilityAuthorizer) matchPlatformPermission(env *OperationEnvelope, d
 					Reason:     "platform scope=self: target != actor",
 				}
 			}
-			if dec := platformLaneGate(env, doc, p); dec != nil {
+			if dec := a.platformLaneGate(env, doc, p); dec != nil {
 				return *dec
 			}
 			resolved.Path = "platform"
