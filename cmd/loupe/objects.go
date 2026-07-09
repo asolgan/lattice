@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/asolgan/lattice/internal/bootstrap"
+	"github.com/asolgan/lattice/internal/objectcrypto"
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -239,7 +240,7 @@ func (s *server) handleSensitiveObjectUpload(w http.ResponseWriter, ctx context.
 	// associated data (below) — otherwise a `.content` document splice could
 	// graft one object's ciphertext/envelope onto another's oid within the
 	// same governing identity and still decrypt.
-	plaintextDigest := sha256Digest(plaintext)
+	plaintextDigest := objectcrypto.Digest(plaintext)
 	oid := substrate.SHA256NanoID("object:" + governingIdentity + ":" + plaintextDigest)
 	objKey := "vtx.object." + oid
 
@@ -249,17 +250,17 @@ func (s *server) handleSensitiveObjectUpload(w http.ResponseWriter, ctx context.
 		return
 	}
 
-	cek, err := generateCEK()
+	cek, err := objectcrypto.GenerateCEK()
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	contentNonce, ciphertext, err := sealAESGCM(cek, plaintext, []byte(oid))
+	contentNonce, ciphertext, err := objectcrypto.Seal(cek, plaintext, []byte(oid))
 	if err != nil {
 		s.writeError(w, http.StatusInternalServerError, "encrypt: "+err.Error())
 		return
 	}
-	wrapped, err := vaultWrapKey(ctx, conn, governingIdentity, env, cek)
+	wrapped, err := objectcrypto.WrapKey(ctx, conn, governingIdentity, env, cek)
 	if err != nil {
 		s.writeError(w, http.StatusBadGateway, "wrap CEK: "+err.Error())
 		return
@@ -281,9 +282,9 @@ func (s *server) handleSensitiveObjectUpload(w http.ResponseWriter, ctx context.
 		"storeName": storeName, "targetKey": targetKey, "linkName": linkName,
 		"sensitive": true, "governingIdentity": governingIdentity,
 		"encryption": map[string]any{
-			"algo":       contentEncryptionAlgo,
+			"algo":       objectcrypto.ContentEncryptionAlgo,
 			"nonce":      base64.StdEncoding.EncodeToString(contentNonce),
-			"wrappedCEK": encodeWrappedCEK(wrapped),
+			"wrappedCEK": objectcrypto.EncodeWrappedCEK(wrapped),
 			"keyId":      governingIdentity,
 		},
 	}
@@ -486,7 +487,7 @@ func (s *server) handleObjectGet(w http.ResponseWriter, r *http.Request, oid str
 // plaintext under the same anti-XSS disposition/CSP posture as the default
 // path (object-store-crypto-shred-design.md §3.4).
 func (s *server) handleSensitiveObjectDecrypt(w http.ResponseWriter, ctx context.Context, conn *substrate.Conn, oid string, doc objectContentDoc) {
-	wrapped, err := decodeWrappedCEK(doc.Data.Encryption.WrappedCEK)
+	wrapped, err := objectcrypto.DecodeWrappedCEK(doc.Data.Encryption.WrappedCEK)
 	if err != nil {
 		s.writeError(w, http.StatusBadGateway, "decode wrappedCEK: "+err.Error())
 		return
@@ -496,7 +497,7 @@ func (s *server) handleSensitiveObjectDecrypt(w http.ResponseWriter, ctx context
 		s.writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	cek, err := vaultUnwrapKey(ctx, conn, doc.Data.GoverningIdentity, env, wrapped)
+	cek, err := objectcrypto.UnwrapKey(ctx, conn, doc.Data.GoverningIdentity, env, wrapped)
 	if err != nil {
 		s.writeError(w, http.StatusBadGateway, "unwrap CEK: "+err.Error())
 		return
@@ -523,12 +524,12 @@ func (s *server) handleSensitiveObjectDecrypt(w http.ResponseWriter, ctx context
 		return
 	}
 
-	plaintext, err := openAESGCM(cek, contentNonce, ciphertext, []byte(oid))
+	plaintext, err := objectcrypto.Open(cek, contentNonce, ciphertext, []byte(oid))
 	if err != nil {
 		s.writeError(w, http.StatusBadGateway, "decrypt failed: tampered or corrupt ciphertext")
 		return
 	}
-	if sha256Digest(plaintext) != doc.Data.Digest {
+	if objectcrypto.Digest(plaintext) != doc.Data.Digest {
 		s.writeError(w, http.StatusBadGateway, "decrypt succeeded but plaintext digest mismatch — integrity check failed")
 		return
 	}

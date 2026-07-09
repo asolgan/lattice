@@ -250,7 +250,15 @@ var matrix = []component{
 		// $O.core-objects.> — document byte uploads (objects.go ObjectPut); bytes
 		// are inert until a browser-direct AttachObject (via the Gateway) anchors
 		// them, so the byte-ingest grant carries no actor authority.
-		pubAllow: []string{"$KV.health-kv.>", "$O.core-objects.>", "$JS.API.>", "$JS.ACK.>"},
+		// lattice.vault.wrapkey / lattice.vault.unwrapkey — the blob-plane
+		// envelope-key RPCs (object-store-crypto-shred-design.md §3.1 Fire 2,
+		// §9 Fire 4 Increment 1), extended from Loupe-only to loftspace-app
+		// (✅ Andrew-ratified 2026-07-07 — narrowest widening, same two
+		// subjects Loupe already has, no broader Vault or Core-KV access): the
+		// lease-signing PDF upload generates a per-object CEK client-side and
+		// wraps/unwraps it via the Processor's Vault, mirroring Loupe's Fire 2
+		// path, rather than holding the master KEK itself.
+		pubAllow: []string{"$KV.health-kv.>", "$O.core-objects.>", "$JS.API.>", "$JS.ACK.>", "lattice.vault.wrapkey", "lattice.vault.unwrapkey"},
 		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
 	},
 	{

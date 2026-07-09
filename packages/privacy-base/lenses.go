@@ -10,7 +10,15 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // augur-proposals / my-tasks.
 const ShredStatusBucket = "privacy-shreds"
 
-// Lenses returns the package's single lens.
+// PiiKeyEnvelopeBucket is the package-owned NATS-KV read model the
+// piiKeyEnvelope lens projects into — the P5-compliant read seam
+// (object-store-crypto-shred-design.md §9 Fire 4 Increment 1) that lets a
+// vertical app (e.g. loftspace-app) fetch an identity's wrapped-DEK Envelope
+// to drive the Vault's WrapKey/UnwrapKey RPCs, without the Loupe-only direct
+// Core-KV read (P5 inspector exception) cmd/loupe/objects_crypto.go uses.
+const PiiKeyEnvelopeBucket = "privacy-pii-key-envelopes"
+
+// Lenses returns the package's lenses.
 //
 // shredStatus is the shred-finalization observability lens
 // (vault-crypto-shredding-design.md §2.4 point 4): pure visibility —
@@ -52,6 +60,14 @@ func Lenses() []pkgmgr.LensSpec {
 			Engine:        "full",
 			Spec:          shredStatusSpec,
 		},
+		{
+			CanonicalName: "piiKeyEnvelope",
+			Class:         "meta.lens",
+			Adapter:       "nats-kv",
+			Bucket:        PiiKeyEnvelopeBucket,
+			Engine:        "full",
+			Spec:          piiKeyEnvelopeSpec,
+		},
 	}
 }
 
@@ -71,3 +87,21 @@ RETURN
   i.piiKey.data.vaultKeyDestroyedAt AS vaultKeyDestroyedAt,
   i.piiKey.data.projectionsNullified AS projectionsNullified,
   i.piiKey.data.projectionsNullifiedAt AS projectionsNullifiedAt`
+
+// piiKeyEnvelopeSpec projects one row per identity that has ever received a
+// piiKey envelope (real or the ShredIdentityKey empty-wrappedDEK placeholder
+// — the WHERE's `keyId <> null` aspect-presence guard admits both, since a
+// vertical app's WrapKey/UnwrapKey call needs the same Envelope shape either
+// way and a shredded placeholder correctly makes the Vault RPC fail closed).
+// Only the wrapped-DEK Envelope's NON-SECRET fields are projected —
+// wrappedDEK is ciphertext, inert without the Vault's master KEK, the same
+// posture as shredStatus. keyId here is redundant with the row's own key but
+// kept so the projected row is a complete, self-describing Envelope.
+const piiKeyEnvelopeSpec = `MATCH (i:identity)
+WHERE i.piiKey.data.keyId <> null
+RETURN
+  i.key AS key,
+  i.piiKey.data.wrappedDEK AS wrappedDEK,
+  i.piiKey.data.keyId AS keyId,
+  i.piiKey.data.kekVersion AS kekVersion,
+  i.piiKey.data.alg AS alg`

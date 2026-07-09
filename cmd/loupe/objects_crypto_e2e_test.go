@@ -18,6 +18,7 @@ import (
 
 	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/jsstore"
+	"github.com/asolgan/lattice/internal/objectcrypto"
 	"github.com/asolgan/lattice/internal/substrate"
 	"github.com/asolgan/lattice/internal/vault"
 )
@@ -94,14 +95,14 @@ func putSensitiveObjectDirect(t *testing.T, ctx context.Context, conn *substrate
 		t.Fatalf("put piiKey: %v", err)
 	}
 
-	plaintextDigest := sha256Digest(plaintext)
+	plaintextDigest := objectcrypto.Digest(plaintext)
 	oid = substrate.SHA256NanoID("object:" + governingIdentity + ":" + plaintextDigest)
 
-	cek, err := generateCEK()
+	cek, err := objectcrypto.GenerateCEK()
 	if err != nil {
 		t.Fatalf("generate CEK: %v", err)
 	}
-	nonce, ciphertext, err := sealAESGCM(cek, plaintext, []byte(oid))
+	nonce, ciphertext, err := objectcrypto.Seal(cek, plaintext, []byte(oid))
 	if err != nil {
 		t.Fatalf("seal: %v", err)
 	}
@@ -124,9 +125,9 @@ func putSensitiveObjectDirect(t *testing.T, ctx context.Context, conn *substrate
 			"digest": plaintextDigest, "size": len(ciphertext), "contentType": contentType,
 			"storeName": storeName, "sensitive": true, "governingIdentity": governingIdentity,
 			"encryption": map[string]any{
-				"algo":       contentEncryptionAlgo,
+				"algo":       objectcrypto.ContentEncryptionAlgo,
 				"nonce":      base64.StdEncoding.EncodeToString(nonce),
-				"wrappedCEK": encodeWrappedCEK(wrapped),
+				"wrappedCEK": objectcrypto.EncodeWrappedCEK(wrapped),
 				"keyId":      governingIdentity,
 			},
 		},

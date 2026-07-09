@@ -20,6 +20,10 @@ declares:
       adapter: nats-kv
       bucket: privacy-shreds
       engine: full
+    - canonicalName: piiKeyEnvelope
+      adapter: nats-kv
+      bucket: privacy-pii-key-envelopes
+      engine: full
   permissions:
     - operationType: RecordShredFinalization
       scope: any

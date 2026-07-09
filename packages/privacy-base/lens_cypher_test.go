@@ -117,3 +117,49 @@ func TestShredStatusLens_ProjectsOnlyShreddedIdentities(t *testing.T) {
 	require.Equal(t, "2026-07-02T10:12:00Z", done["vaultKeyDestroyedAt"])
 	require.Equal(t, "2026-07-02T10:13:00Z", done["projectionsNullifiedAt"])
 }
+
+// TestPiiKeyEnvelopeLens_ProjectsOnlyIdentitiesWithAnEnvelope proves the
+// piiKeyEnvelope lens (object-store-crypto-shred-design.md §9 Fire 4
+// Increment 1 — the P5-compliant read seam a vertical app uses instead of
+// Loupe's direct Core-KV read): the `keyId <> null` aspect-presence guard
+// admits both a real envelope AND a ShredIdentityKey empty-wrappedDEK
+// placeholder (a shredded identity's row still projects — WrapKey/UnwrapKey
+// then fails closed on it, which is correct), and keeps piiKey-less
+// identities out entirely.
+func TestPiiKeyEnvelopeLens_ProjectsOnlyIdentitiesWithAnEnvelope(t *testing.T) {
+	adjKV, coreKV := shredCypherKVs(t)
+
+	realKey := putShredVtx(t, coreKV, "AArealEnvelopeAAAAAA", map[string]any{
+		"wrappedDEK": "d2FyID09PT0=", "keyId": "vtx.identity.AArealEnvelopeAAAAAA",
+		"kekVersion": "v1", "alg": "AES-256-GCM", "shredded": false,
+	})
+	placeholderKey := putShredVtx(t, coreKV, "AAplaceholderAAAAAAA", map[string]any{
+		"wrappedDEK": "", "keyId": "vtx.identity.AAplaceholderAAAAAAA",
+		"kekVersion": "", "alg": "", "shredded": true,
+	})
+	putShredVtx(t, coreKV, "AAnoPiiKeyAAAAAAAAAA", nil)
+
+	eng := full.New()
+	cr, err := eng.Parse(piiKeyEnvelopeSpec)
+	require.NoError(t, err, "piiKeyEnvelope cypher must parse on the full engine")
+	now := time.Now().UTC().Format(time.RFC3339)
+	rows, err := eng.ExecuteWith(context.Background(), cr, ruleengine.EventContext{Parameters: map[string]any{
+		"now": now, "projectedAt": now,
+	}}, adjKV, coreKV)
+	require.NoError(t, err)
+
+	byKey := map[string]ruleengine.ProjectionResult{}
+	for _, r := range rows {
+		k, _ := r.Values["key"].(string)
+		byKey[k] = r
+	}
+	require.Len(t, byKey, 2, "only identities WITH a piiKey aspect may project; got %v", byKey)
+
+	real := byKey[realKey].Values
+	require.Equal(t, "d2FyID09PT0=", real["wrappedDEK"])
+	require.Equal(t, "v1", real["kekVersion"])
+	require.Equal(t, "AES-256-GCM", real["alg"])
+
+	placeholder := byKey[placeholderKey].Values
+	require.Equal(t, "", placeholder["wrappedDEK"], "a shredded placeholder still projects — WrapKey/UnwrapKey fails closed on the empty key, not this lens")
+}

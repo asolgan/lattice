@@ -19,8 +19,9 @@ const (
 
 // TestVaultWrapUnwrapKeyReachability proves the transport gate for the
 // blob-plane envelope-key RPCs (object-store-crypto-shred-design.md §3.1
-// Fire 2), mirroring TestVaultDecryptReachability: Loupe — the trusted
-// uploader — may reach both subjects, while an ordinary vertical app may not.
+// Fire 2, §9 Fire 4 Increment 1), mirroring TestVaultDecryptReachability:
+// Loupe and loftspace-app — the two named trusted plaintext consumers — may
+// reach both subjects, while clinic-app (not a Fire 4 consumer) may not.
 func TestVaultWrapUnwrapKeyReachability(t *testing.T) {
 	url := startServerFromConf(t)
 
@@ -38,20 +39,23 @@ func TestVaultWrapUnwrapKeyReachability(t *testing.T) {
 		t.Fatalf("flush responder: %v", err)
 	}
 
-	loupe := connectAs(t, url, "loupe")
-	for _, subj := range []string{vaultWrapKeySubject, vaultUnwrapKeySubject} {
-		reply, err := loupe.NATS().Request(subj, []byte(`{"identityKey":"vtx.identity.x"}`), 3*time.Second)
-		if err != nil {
-			t.Fatalf("loupe request %q: want reply, got %v", subj, err)
-		}
-		if len(reply.Data) == 0 {
-			t.Fatalf("loupe request %q: empty reply", subj)
+	for _, trusted := range []string{"loupe", "loftspace-app"} {
+		conn := connectAs(t, url, trusted)
+		for _, subj := range []string{vaultWrapKeySubject, vaultUnwrapKeySubject} {
+			reply, err := conn.NATS().Request(subj, []byte(`{"identityKey":"vtx.identity.x"}`), 3*time.Second)
+			if err != nil {
+				t.Fatalf("%s request %q: want reply, got %v", trusted, subj, err)
+			}
+			if len(reply.Data) == 0 {
+				t.Fatalf("%s request %q: empty reply", trusted, subj)
+			}
 		}
 	}
 
-	// An ordinary vertical app is NOT authorized: its publish is rejected at the
-	// transport, so the request never reaches the responder and the call times
-	// out (the denied-publish signal for a plain request — no reply ever comes).
+	// An ordinary vertical app not named as a Fire 4 consumer is NOT
+	// authorized: its publish is rejected at the transport, so the request
+	// never reaches the responder and the call times out (the
+	// denied-publish signal for a plain request — no reply ever comes).
 	rogue := connectAs(t, url, "clinic-app")
 	for _, subj := range []string{vaultWrapKeySubject, vaultUnwrapKeySubject} {
 		rctx, rcancel := context.WithTimeout(context.Background(), deniedTimeout)
