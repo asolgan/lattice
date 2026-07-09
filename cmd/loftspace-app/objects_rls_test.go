@@ -60,6 +60,9 @@ func TestObjectsD1_5_LeaseappEntitlement_RLS(t *testing.T) {
 		{Name: "terms_move_in_date", Type: "text"},
 		{Name: "terms_lease_term_months", Type: "double precision"},
 		{Name: "terms_requested_rent", Type: "double precision"},
+		{Name: "doc_store_name", Type: "text"},
+		{Name: "doc_filename", Type: "text"},
+		{Name: "doc_content_type", Type: "text"},
 	}
 	ddl, err := adapter.BuildProtectedTableDDL("read_lease_applications", []string{"app_id"}, body)
 	if err != nil {
