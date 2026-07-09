@@ -81,7 +81,7 @@ Severity-ordered; same row discipline as component maintenance (shipped rows col
 
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **[auth] scoped privileged-lane grants (retire all-or-nothing operator-root)** | `holdsRole→operator` is class-blind full root — no middle tier; a Loupe operator can't run pkg-install without being kernel root; boot-snapshot staleness. Fix (C1): per-op lanes in `cap.roles` + a core allowlist → a `consoleOperator` runs meta-lane pkg-lifecycle without root, no snapshot. | ★★ | M | ✅ ratified (C1) · [design](../../implementation-artifacts/scoped-privileged-lane-grants-design.md) · shipped `5bee182`,`635db70`; build after re-scope |
+| **[auth] scoped privileged-lane grants (retire all-or-nothing operator-root)** | `holdsRole→operator` is class-blind full root — no middle tier; a Loupe operator can't run pkg-install without being kernel root; boot-snapshot staleness. Fix (C1): per-op lanes in `cap.roles` + a core allowlist → a `consoleOperator` runs meta-lane pkg-lifecycle without root, no snapshot. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/scoped-privileged-lane-grants-design.md) · re-scope done (Loupe `6b1ab6e`); next: Fire 1 (lanes field + per-op gate) |
 | **natsperm-matrix-hygiene** | Refractor's `$KV.>` write is broader than its lens-target set (covers dynamically-named package buckets — narrowing needs a real design, not a mechanical prune). | ★ | S | 📋 · bridge phantom-bucket half shipped `0377938`; remaining: Refractor narrowing needs design |
 | **contract7-7.3-config-example-refresh** | §7.3's bootstrap.json example still lists `processorIdentityKey` + a 5-key `metaMetaDDLKeys` block (same drift §7.2 items 1/7 fixed) — reconcile to the as-built config struct (no processor identity; one self-describing root DDL). | ★ | XS | 📐 fix drafted, UNCOMMITTED in the tree for Andrew (frozen-contract edit, no paired design) |
 | **fr22-service-denial-structural-fields** | FR22's `DenialDetails` has no service branch — a service-op denial names nothing structural. Fork B: emit `deniedService` (from authContext) + `deniedServiceClass` (one `.class` aspect read at denial time); `availableServiceClasses` is out of scope — what's available is the app's read-model question (P5). Contract #6 §6.12 is the spec. | ★ | S | 📋 · Fork B ratified 2026-07-03 (§6.12 amended) · low-priority |
@@ -120,8 +120,8 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
 > 🎯 **Build-ready now** (this section only — check the **Arch-review intake** section above too, it
-> carries its own ✅ ratified / 📋 ready items, e.g. `chronicler-host-reconciliation` ★★★): nothing in
-> *this* section is fully unblocked. *Genuinely gated*: **Object crypto-shred Fire 4** (Fires 1+2+3
+> carries its own ✅ ratified / 📋 ready items, e.g. `scoped-privileged-lane-grants` ★★, now building):
+> nothing in *this* section is fully unblocked. *Genuinely gated*: **Object crypto-shred Fire 4** (Fires 1+2+3
 > shipped `93d6f88`/`6169671`/`5e83939`) — grounding surfaced a real trust-boundary fork, flagged for
 > Andrew (🔭 below); **AI-caps Fire 4** (Andrew sign-off on AI-code-execution, not the sandbox).
 
