@@ -81,7 +81,6 @@ Severity-ordered; same row discipline as component maintenance (shipped rows col
 
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **[auth] scoped privileged-lane grants (retire all-or-nothing operator-root)** | `holdsRole→operator` is class-blind full root — no middle tier; a Loupe operator can't run pkg-install without being kernel root; boot-snapshot staleness. Fix (C1): per-op lanes in `cap.roles` + a core allowlist → a `consoleOperator` runs meta-lane pkg-lifecycle without root, no snapshot. | ★★ | M | 🔭 Fire 3 (consoleOperator grants) — [design](../../implementation-artifacts/scoped-privileged-lane-grants-design.md); needs Andrew, autonomous RBAC edit blocked |
 | **natsperm-matrix-hygiene** | Refractor's `$KV.>` write is broader than its lens-target set (covers dynamically-named package buckets — narrowing needs a real design, not a mechanical prune). | ★ | S | 📋 · bridge phantom-bucket half shipped `0377938`; remaining: Refractor narrowing needs design |
 | **contract7-7.3-config-example-refresh** | §7.3's bootstrap.json example still lists `processorIdentityKey` + a 5-key `metaMetaDDLKeys` block (same drift §7.2 items 1/7 fixed) — reconcile to the as-built config struct (no processor identity; one self-describing root DDL). | ★ | XS | 📐 fix drafted, UNCOMMITTED in the tree for Andrew (frozen-contract edit, no paired design) |
 | **fr22-service-denial-structural-fields** | FR22's `DenialDetails` has no service branch — a service-op denial names nothing structural. Fork B: emit `deniedService` (from authContext) + `deniedServiceClass` (one `.class` aspect read at denial time); `availableServiceClasses` is out of scope — what's available is the app's read-model question (P5). Contract #6 §6.12 is the spec. | ★ | S | 📋 · Fork B ratified 2026-07-03 (§6.12 amended) · low-priority |
@@ -120,7 +119,7 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
 > 🎯 **Build-ready now** (this section only — check the **Arch-review intake** section above too, it
-> carries its own ✅ ratified / 📋 ready items, e.g. `scoped-privileged-lane-grants` ★★, now building):
+> carries its own ✅ ratified / 📋 ready items, e.g. `fr22-service-denial-structural-fields` ★, Fork B ratified):
 > nothing in *this* section is fully unblocked. *Genuinely gated*: **Object crypto-shred Fire 4** (Fires 1+2+3
 > shipped `93d6f88`/`6169671`/`5e83939`) — grounding surfaced a real trust-boundary fork, flagged for
 > Andrew (🔭 below); **AI-caps Fire 4** (Andrew sign-off on AI-code-execution, not the sandbox).
@@ -195,6 +194,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-09 · `20abd1e` · [auth] scoped-privileged-lane-grants Fire 3 CLOSED — consoleOperator gains the allowlisted pkg-lifecycle trio at meta; requireRootAdmin retired
 - 2026-07-09 · `f644399` · [Refractor] natskv-guard-edge-branches (storedProjectionSeq half) — fixed negative-seq uint64 wrap, removed dead json.Number branch, covered malformed/absent/negative/non-numeric watermarks; CI green
 - 2026-07-09 · `0982345` · [auth] scoped-privileged-lane-grants Fire 2 — core `{op,lane}` allowlist + fail-closed strip-to-default + `PrivilegedLaneGrantRejected` alert; CI green
 - 2026-07-09 · `16c3993` · [test] CI fix — sync a second Postgres fixture's `read_lease_applications` column list (objects_rls_test.go), missed in the same-day fire; CI green

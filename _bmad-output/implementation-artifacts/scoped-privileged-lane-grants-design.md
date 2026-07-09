@@ -1,8 +1,8 @@
 # Scoped privileged-lane grants — a middle tier between ordinary and root (design)
 
-**Status:** ✅ **Andrew-ratified (2026-07-06) — mechanism C1.** Designer fire (Winston, 2026-07-06) ·
-Lattice lane (Security & trust boundary) · **the "C" of** `loupe-operator-auth-lift-design.md` §4 ·
-**sequenced after** B (the scoped `consoleOperator` role).
+**Status:** ✅ **CLOSED — all 3 fires shipped (2026-07-09).** Andrew-ratified (2026-07-06) — mechanism
+C1. Designer fire (Winston, 2026-07-06) · Lattice lane (Security & trust boundary) · **the "C" of**
+`loupe-operator-auth-lift-design.md` §4 · **sequenced after** B (the scoped `consoleOperator` role).
 
 > **Ratification (Andrew, 2026-07-06): C1** — per-op `lanes` on the grant + a **core-owned allowlist** of
 > grantable `{op→privileged-lane}` (v1 = the pkg-lifecycle trio at `meta`); `consoleOperator` stays an
@@ -29,9 +29,17 @@ Lattice lane (Security & trust boundary) · **the "C" of** `loupe-operator-auth-
 > a non-allowlisted privileged lane is stripped to `default` and raises `PrivilegedLaneGrantRejected`
 > (`AuthAlertEmitter`, wired through `SelectAuthorizerArgs`'s capability-mode branch). The anchor's own
 > root grant never carries entry-level lanes (its cypher projects doc-level `Lanes` only), so it's
-> unaffected by the allowlist — proven by a dedicated unit test. **Next: Fire 3** —
-> `consoleOperator` gains the allowlisted pkg-lifecycle grants + retires B's root-admin interim for
-> the pkg tab.
+> unaffected by the allowlist — proven by a dedicated unit test.
+>
+> **Fire 3 (§7 item 3) shipped** `20abd1e`: `packages/console-operator` now grants `consoleOperator` the
+> allowlisted `InstallPackage`/`UninstallPackage`/`UpgradePackage` trio at `Lanes:["meta"]`; Loupe's
+> `requireRootAdmin` front-door gate on the pkg-lifecycle handlers is retired (`cmd/loupe/pkg.go`) —
+> authorization now happens Processor-side via the Fire 2 allowlist, since `pkgmgrSubmit` already relays
+> through the Gateway under the calling operator's own Bearer token. Proven by
+> `internal/processor/step3_auth_capability_test.go`'s `TestCapabilityAuthorizer_ConsoleOperatorPkgLifecycleGrant_*`
+> triad (meta allowed, ungranted op denied, urgent/system `LaneUnauthorized`) plus the updated
+> `packages/console-operator` unit tests and the live e2e proof (`scripts/verify-loupe-operator-tier.go`).
+> **C is CLOSED** — the missing-middle-tier finding and the boot-snapshot-staleness finding are both fixed.
 
 ---
 
