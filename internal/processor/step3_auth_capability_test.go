@@ -1060,3 +1060,73 @@ func TestCapabilityAuthorizer_LaneGate_AnchorRootGrantNeverAllowlistChecked(t *t
 		t.Fatalf("expected no alert for a doc.Lanes-fallback (anchor) grant; got %+v", emitter.calls)
 	}
 }
+
+// --- Fire 3: consoleOperator-shaped pkg-lifecycle grant
+// (scoped-privileged-lane-grants-design.md §7 item 3 / §9 triad) ----------
+//
+// consoleOperatorDoc mirrors the actual cap.roles.<actor> shape
+// packages/console-operator projects for a consoleOperator holder: an
+// ORDINARY actor (doc.Lanes = ["default"] only, no anchor, no
+// SystemActorKeys) whose PlatformPermissions carry the allowlisted
+// pkg-lifecycle trio with their own per-op Lanes:["meta"] — never a
+// doc-level privileged lane.
+
+func consoleOperatorDoc(now time.Time) *CapabilityDoc {
+	doc := freshDoc(now)
+	doc.Lanes = []string{"default"}
+	trio := []string{"InstallPackage", "UninstallPackage", "UpgradePackage"}
+	for _, op := range trio {
+		doc.PlatformPermissions = append(doc.PlatformPermissions,
+			PlatformPermission{OperationType: op, Scope: "any", Lanes: []string{"meta"}})
+	}
+	return doc
+}
+
+func TestCapabilityAuthorizer_ConsoleOperatorPkgLifecycleGrant_InstallPackageAtMetaAllowed(t *testing.T) {
+	now := time.Now().UTC()
+	a, emitter, _ := newCapAuthForTest(t, consoleOperatorDoc(now), now)
+
+	env := envForLane("InstallPackage", capTestActorKey, LaneMeta, nil)
+	dec, err := a.Authorize(context.Background(), env)
+	if err != nil {
+		t.Fatalf("Authorize: %v", err)
+	}
+	if !dec.Authorized {
+		t.Fatalf("expected a consoleOperator-shaped grant to authorize InstallPackage@meta; got %+v", dec)
+	}
+	if len(emitter.calls) != 0 {
+		t.Fatalf("expected no PrivilegedLaneGrantRejected alert for the allowlisted grant; got %+v", emitter.calls)
+	}
+}
+
+func TestCapabilityAuthorizer_ConsoleOperatorPkgLifecycleGrant_UngrantedMetaOpDenied(t *testing.T) {
+	now := time.Now().UTC()
+	a, _, _ := newCapAuthForTest(t, consoleOperatorDoc(now), now)
+
+	// CreateMetaVertex is never granted to consoleOperator — no matching
+	// PlatformPermission entry at all, regardless of lane.
+	env := envForLane("CreateMetaVertex", capTestActorKey, LaneMeta, nil)
+	dec, _ := a.Authorize(context.Background(), env)
+	if dec.Authorized || dec.Code != ErrCodeAuthDenied {
+		t.Fatalf("expected AuthDenied for an ungranted op; got %+v", dec)
+	}
+}
+
+func TestCapabilityAuthorizer_ConsoleOperatorPkgLifecycleGrant_UrgentAndSystemLanesUnauthorized(t *testing.T) {
+	now := time.Now().UTC()
+	for _, lane := range []Lane{LaneUrgent, LaneSystem} {
+		a, emitter, _ := newCapAuthForTest(t, consoleOperatorDoc(now), now)
+		env := envForLane("InstallPackage", capTestActorKey, lane, nil)
+		dec, _ := a.Authorize(context.Background(), env)
+		// consoleOperator's grant only ever carries Lanes:["meta"] — urgent/
+		// system are simply absent from the granted set (never a rogue
+		// privileged claim needing the allowlist's strip-and-alert path), so
+		// this denies via the plain lane-membership check, no alert.
+		if dec.Authorized || dec.Code != ErrCodeLaneUnauthorized {
+			t.Fatalf("lane %s: expected LaneUnauthorized (InstallPackage is only allowlisted at meta); got %+v", lane, dec)
+		}
+		if len(emitter.calls) != 0 {
+			t.Fatalf("lane %s: expected no alert (the grant never claimed this lane); got %+v", lane, emitter.calls)
+		}
+	}
+}

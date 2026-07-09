@@ -95,23 +95,51 @@ func TestPackage_DeclaresConsoleOperatorRoleDistinctFromPrimordialOperator(t *te
 	}
 }
 
-// TestPackage_NoPrivilegedLaneOpsGranted pins mechanism B's core safety
-// property: this package must never grant a meta-lane (pkg-lifecycle) op —
-// those stay anchor-only until mechanism C (scoped-privileged-lane-grants)
-// ships. A consoleOperator with InstallPackage/UninstallPackage/UpgradePackage
-// would be this design's exact regression.
-func TestPackage_NoPrivilegedLaneOpsGranted(t *testing.T) {
-	privileged := map[string]bool{
-		"InstallPackage":      true,
-		"UninstallPackage":    true,
-		"UpgradePackage":      true,
+// TestPackage_OnlyAllowlistedPkgLifecycleOpsGranted pins mechanism C's core
+// safety property (scoped-privileged-lane-grants-design.md §7 item 3): this
+// package grants EXACTLY the allowlisted pkg-lifecycle trio
+// (InstallPackage/UninstallPackage/UpgradePackage) at the `meta` lane, each
+// carrying its own per-op Lanes:["meta"] (never a doc-level grant), and
+// nothing else privileged — CreateMetaVertex/UpdateMetaVertex/
+// TombstoneMetaVertex and any urgent/system lane stay ungranted. Any
+// deviation here would be either a regression back to root-required (missing
+// the trio) or a privilege-escalation surface (extra ops/lanes).
+func TestPackage_OnlyAllowlistedPkgLifecycleOpsGranted(t *testing.T) {
+	wantPrivileged := map[string]bool{
+		"InstallPackage":   true,
+		"UninstallPackage": true,
+		"UpgradePackage":   true,
+	}
+	neverGranted := map[string]bool{
 		"CreateMetaVertex":    true,
 		"UpdateMetaVertex":    true,
 		"TombstoneMetaVertex": true,
 	}
+	got := make(map[string]pkgmgr.PermissionSpec, len(Package.Permissions))
 	for _, p := range Package.Permissions {
-		if privileged[p.OperationType] {
-			t.Errorf("console-operator grants privileged op %q — mechanism B must stay meta-lane-free (that's mechanism C)", p.OperationType)
+		if neverGranted[p.OperationType] {
+			t.Errorf("console-operator must never grant %q", p.OperationType)
+		}
+		if wantPrivileged[p.OperationType] {
+			got[p.OperationType] = p
+		} else if len(p.Lanes) != 0 {
+			t.Errorf("%s: unexpected privileged Lanes=%v on a non-pkg-lifecycle op", p.OperationType, p.Lanes)
+		}
+	}
+	for op := range wantPrivileged {
+		p, ok := got[op]
+		if !ok {
+			t.Errorf("missing allowlisted pkg-lifecycle grant %q", op)
+			continue
+		}
+		if len(p.Lanes) != 1 || p.Lanes[0] != "meta" {
+			t.Errorf("%s: Lanes = %v, want [meta]", op, p.Lanes)
+		}
+		if p.Scope != "any" {
+			t.Errorf("%s: scope = %q, want any", op, p.Scope)
+		}
+		if len(p.GrantsTo) != 1 || p.GrantsTo[0] != "consoleOperator" {
+			t.Errorf("%s: GrantsTo = %v, want [consoleOperator]", op, p.GrantsTo)
 		}
 	}
 }
@@ -126,6 +154,7 @@ func TestPackage_EveryOpGrantsOnlyToConsoleOperatorScopeAny(t *testing.T) {
 		"ctrl.loom.read", "ctrl.loom.pause", "ctrl.loom.resume",
 		"ctrl.refractor.read", "ctrl.refractor.rebuild", "ctrl.refractor.pause", "ctrl.refractor.resume",
 		"ctrl.refractor.delete", "ctrl.refractor.register", "ctrl.refractor.deregister",
+		"InstallPackage", "UninstallPackage", "UpgradePackage",
 	}
 	if len(Package.Permissions) != len(want) {
 		t.Fatalf("Permissions = %d, want %d", len(Package.Permissions), len(want))
@@ -177,7 +206,9 @@ func TestPackage_GrantedCtrlVerbsMatchControlauthOpTables(t *testing.T) {
 	for _, p := range Package.Permissions {
 		if p.OperationType == "ShredIdentityKey" || p.OperationType == "RevokeActor" ||
 			p.OperationType == "UnrevokeActor" || p.OperationType == "AttachObject" ||
-			p.OperationType == "DetachObject" {
+			p.OperationType == "DetachObject" ||
+			p.OperationType == "InstallPackage" || p.OperationType == "UninstallPackage" ||
+			p.OperationType == "UpgradePackage" {
 			continue
 		}
 		gotVerbs[p.OperationType] = struct{}{}

@@ -519,11 +519,13 @@ test-real-actor-auth:
 	@echo "==> Running the real-actor-write-auth e2e proof..."
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_CLI) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) go run ./scripts/verify-real-actor-write-auth.go
 
-## test-loupe-operator-tier — loupe-operator-auth-lift-design.md §7 item 6, the
-## operator-tier analog of test-real-actor-auth. Requires `make up-full-capability`
-## already running (real Processor under LATTICE_AUTH_MODE=capability, real
-## Gateway). Proves a consoleOperator can RevokeActor (default-lane) but is
-## DENIED InstallPackage (meta-lane stays anchor-only, mechanism B).
+## test-loupe-operator-tier — loupe-operator-auth-lift-design.md §7 item 6 +
+## scoped-privileged-lane-grants-design.md §7 item 3, the operator-tier analog
+## of test-real-actor-auth. Requires `make up-full-capability` already running
+## (real Processor under LATTICE_AUTH_MODE=capability, real Gateway). Proves a
+## consoleOperator can RevokeActor (default-lane) and InstallPackage@meta
+## (allowlisted pkg-lifecycle trio, mechanism C) but is denied
+## InstallPackage@default (LaneUnauthorized) and CreateMetaVertex (ungranted).
 test-loupe-operator-tier:
 	@echo "==> Running the Loupe operator-tier e2e proof..."
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_CLI) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) go run ./scripts/verify-loupe-operator-tier.go

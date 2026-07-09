@@ -4,10 +4,16 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 
 // Permissions grants the consoleOperator role the default-lane console ops
 // (shred/revoke/object) plus the ctrl.<component>.<verb> control-plane ops —
-// loupe-operator-auth-lift-design.md §3.4/§4 (mechanism B). None of these
-// touch a privileged lane: every op here is granted at the `cap.roles`
-// default lane, the same tier every ordinary role reads (no anchor, no
-// `SystemActorKeys`, no boot-snapshot dependency).
+// loupe-operator-auth-lift-design.md §3.4/§4 (mechanism B) — plus the
+// allowlisted pkg-lifecycle trio at the `meta` lane
+// (scoped-privileged-lane-grants-design.md §7 item 3, mechanism C). The
+// default-lane ops are granted at the `cap.roles` default lane, the same
+// tier every ordinary role reads (no anchor, no `SystemActorKeys`, no
+// boot-snapshot dependency); the pkg-lifecycle trio carries its own per-op
+// `Lanes:["meta"]`, honored by the Processor only because
+// `{InstallPackage/UninstallPackage/UpgradePackage, meta}` is on the core
+// privileged-lane allowlist — consoleOperator stays an ordinary `cap.roles`
+// actor even with this grant.
 //
 // The five default-lane ops are additive alongside their existing `operator`
 // grants (privacy-operator-grant, identity-domain, objects-base) — this
@@ -52,6 +58,29 @@ func Permissions() []pkgmgr.PermissionSpec {
 	perms = append(perms, componentPermissions("weaver", []string{"read", "disable", "enable", "revoke"})...)
 	perms = append(perms, componentPermissions("loom", []string{"read", "pause", "resume"})...)
 	perms = append(perms, componentPermissions("refractor", []string{"read", "rebuild", "pause", "resume", "delete", "register", "deregister"})...)
+	perms = append(perms, pkgLifecyclePermissions()...)
+	return perms
+}
+
+// pkgLifecyclePermissions grants consoleOperator the allowlisted
+// pkg-lifecycle trio at the `meta` lane
+// (scoped-privileged-lane-grants-design.md §7 item 3): the Processor's core
+// privileged-lane allowlist honors exactly this {operationType, lane} set for
+// a package-projected `cap.roles` grant, so this does not confer root — every
+// other privileged lane (urgent/system) and every other meta-lane op
+// (CreateMetaVertex/UpdateMetaVertex/TombstoneMetaVertex) stays ungranted.
+func pkgLifecyclePermissions() []pkgmgr.PermissionSpec {
+	trio := []string{"InstallPackage", "UninstallPackage", "UpgradePackage"}
+	perms := make([]pkgmgr.PermissionSpec, 0, len(trio))
+	for _, op := range trio {
+		perms = append(perms, pkgmgr.PermissionSpec{
+			OperationType: op,
+			Scope:         "any",
+			Lanes:         []string{"meta"},
+			Note:          "Authorizes consoleOperator to submit " + op + " at the meta lane (core privileged-lane allowlist, mechanism C).",
+			GrantsTo:      []string{"consoleOperator"},
+		})
+	}
 	return perms
 }
 

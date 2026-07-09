@@ -11,21 +11,26 @@
 // AssignRole consoleOperator, mirroring `make dev-seed-console-operator`) and
 // a disposable throwaway identity to revoke, all submitted directly over NATS
 // as the bootstrap actor (setup, not part of the proof). Mints an RS256 dev
-// token in-process for the consoleOperator subject, then drives two real HTTP
-// calls through the Gateway's POST /v1/operations:
+// token in-process for the consoleOperator subject, then drives four real
+// HTTP calls through the Gateway's POST /v1/operations
+// (scoped-privileged-lane-grants-design.md §7 item 3 / §9 e2e triad):
 //
 //  1. RevokeActor{actor: throwaway}  → allowed  (default-lane, consoleOperator grant)
-//  2. InstallPackage                 → DENIED   (AuthDenied — meta-lane stays anchor-only;
-//     mechanism B's core safety property, packages/console-operator's own
-//     TestPackage_NoPrivilegedLaneOpsGranted pins the grant side of this,
-//     this script pins the Processor's enforcement side)
+//  2. InstallPackage @ meta lane     → auth ALLOWED (not AuthDenied/LaneUnauthorized —
+//     the pkg-lifecycle trio is now allowlisted at meta for consoleOperator, mechanism C;
+//     an empty payload still fails later validation, so this only proves step-3 passed)
+//  3. InstallPackage @ default lane  → LaneUnauthorized (the grant's own Lanes:["meta"]
+//     is the authority — it does NOT also fall through to the doc-level default)
+//  4. CreateMetaVertex @ meta lane   → AuthDenied (never granted — the allowlist bounds
+//     WHICH ops may ride meta, it doesn't widen consoleOperator's op set)
 //
 // Does NOT re-test the control plane (lattice.ctrl.>) — that surface was
 // already lifted and proven by control-plane-capability-authz-design.md
-// Fire 1a-2 (CLOSED); this script only proves the two NEW surfaces items 5-6
-// add. Does NOT exercise Loupe's own /api/packages/* HTTP gate
-// (cmd/loupe/pkg.go's requireRootAdmin) — that is covered directly by
-// cmd/loupe/pkg_test.go, since it needs no live Gateway/Processor.
+// Fire 1a-2 (CLOSED); this script only proves the NEW surfaces items 5-6 (B)
+// and item 3 (C, this fire) add. Does NOT exercise Loupe's own
+// /api/packages/* HTTP handlers — mechanism C retired their root-admin front
+// gate (cmd/loupe/pkg.go), so authorization for that surface is entirely the
+// Processor-side proof this script drives.
 //
 // Exit 0: all assertions pass. Exit 1: one or more assertions failed.
 //
@@ -132,13 +137,31 @@ func main() {
 	})
 	assertAccepted(revokeReply, "consoleOperator RevokeActor (default-lane)")
 
-	// --- 2. consoleOperator InstallPackage -> DENIED (meta-lane stays root) -
+	// --- 2. consoleOperator InstallPackage@meta -> auth ALLOWED (mechanism C) -
 
-	installReply := submitViaGateway(ctx, client, gatewayURL, operatorToken, gatewayOpRequest{
+	installMetaReply := submitViaGateway(ctx, client, gatewayURL, operatorToken, gatewayOpRequest{
+		OperationType: "InstallPackage",
+		Lane:          "meta",
+		Payload:       map[string]any{},
+	})
+	assertAuthPassed(installMetaReply, "consoleOperator InstallPackage@meta (allowlisted, mechanism C)")
+
+	// --- 3. consoleOperator InstallPackage@default -> LaneUnauthorized ------
+
+	installDefaultReply := submitViaGateway(ctx, client, gatewayURL, operatorToken, gatewayOpRequest{
 		OperationType: "InstallPackage",
 		Payload:       map[string]any{},
 	})
-	assertDenied(installReply, "consoleOperator InstallPackage (meta-lane)")
+	assertLaneUnauthorized(installDefaultReply, "consoleOperator InstallPackage@default (grant is meta-only)")
+
+	// --- 4. consoleOperator CreateMetaVertex@meta -> DENIED (never granted) -
+
+	createMetaReply := submitViaGateway(ctx, client, gatewayURL, operatorToken, gatewayOpRequest{
+		OperationType: "CreateMetaVertex",
+		Lane:          "meta",
+		Payload:       map[string]any{},
+	})
+	assertDenied(createMetaReply, "consoleOperator CreateMetaVertex@meta (ungranted)")
 
 	fmt.Printf("\n%d OK, %d FAIL\n", okCount, failCount)
 	if failCount > 0 {
@@ -221,6 +244,7 @@ type contextHint struct {
 
 type gatewayOpRequest struct {
 	OperationType string                 `json:"operationType"`
+	Lane          string                 `json:"lane,omitempty"`
 	Class         string                 `json:"class,omitempty"`
 	Payload       map[string]any         `json:"payload,omitempty"`
 	ContextHint   *contextHint           `json:"contextHint,omitempty"`
@@ -280,6 +304,48 @@ func assertDenied(r gatewayResult, label string) {
 		return
 	}
 	ok("%s: denied with the scoped AuthDenied (HTTP 403)", label)
+}
+
+// assertLaneUnauthorized proves a specific denial code — LaneUnauthorized —
+// distinct from AuthDenied: the op IS granted, just not at the lane
+// submitted (scoped-privileged-lane-grants-design.md §3.2's per-matched-
+// permission gate).
+func assertLaneUnauthorized(r gatewayResult, label string) {
+	if r.httpStatus != http.StatusForbidden {
+		fail("%s: want HTTP 403 (Forbidden), got HTTP %d", label, r.httpStatus)
+		return
+	}
+	if r.reply.Status != processor.ReplyStatusRejected || r.reply.Error == nil {
+		fail("%s: want a rejected reply with an error code, got status=%s", label, r.reply.Status)
+		return
+	}
+	if r.reply.Error.Code != processor.ErrCodeLaneUnauthorized {
+		fail("%s: want LaneUnauthorized (not %s) — a green run here would prove nothing", label, r.reply.Error.Code)
+		return
+	}
+	ok("%s: denied with LaneUnauthorized (HTTP 403)", label)
+}
+
+// assertAuthPassed proves step-3 authorized the op WITHOUT asserting the
+// whole operation succeeded — InstallPackage with an empty payload still
+// fails later validation, so the only claim this script can make live
+// (without fabricating a real manifest) is "this did not fail on
+// AuthDenied or LaneUnauthorized", i.e. the allowlisted meta-lane grant was
+// honored and the request proceeded past step 3.
+func assertAuthPassed(r gatewayResult, label string) {
+	if r.reply.Status == processor.ReplyStatusAccepted {
+		ok("%s: accepted outright (HTTP %d)", label, r.httpStatus)
+		return
+	}
+	if r.reply.Error != nil && (r.reply.Error.Code == processor.ErrCodeAuthDenied || r.reply.Error.Code == processor.ErrCodeLaneUnauthorized) {
+		fail("%s: auth-layer denial %s — the allowlisted meta-lane grant was not honored", label, r.reply.Error.Code)
+		return
+	}
+	errCode := ""
+	if r.reply.Error != nil {
+		errCode = string(r.reply.Error.Code)
+	}
+	ok("%s: passed step-3 auth (later-stage code=%s, HTTP %d — expected past an empty payload)", label, errCode, r.httpStatus)
 }
 
 // waitForRoleGrant polls actorKey's cap.roles.<actor> projection (Refractor's

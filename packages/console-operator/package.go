@@ -1,11 +1,13 @@
 // Package consoleoperator is the scoped console-operator Capability Package
 // (loupe-operator-auth-lift-design.md mechanism B,
 // scoped-privileged-lane-grants-design.md §3.4 "consoleOperator stays an
-// ordinary actor"). It declares a `consoleOperator` role and grants it the
-// default-lane console ops (ShredIdentityKey, RevokeActor, UnrevokeActor,
-// AttachObject, DetachObject) plus the ctrl.<component>.<verb> control-plane
-// ops — everything a Loupe operator needs for routine console use, at zero
-// privileged-lane exposure.
+// ordinary actor", §7 item 3). It declares a `consoleOperator` role and
+// grants it the default-lane console ops (ShredIdentityKey, RevokeActor,
+// UnrevokeActor, AttachObject, DetachObject) plus the
+// ctrl.<component>.<verb> control-plane ops plus the allowlisted
+// pkg-lifecycle trio (InstallPackage/UninstallPackage/UpgradePackage) at the
+// `meta` lane — everything a Loupe operator needs for routine console use,
+// including running the package-lifecycle tab, without root.
 //
 // `consoleOperator` is a package-installed role deliberately DISTINCT from
 // the kernel-primordial `operator` role (`vtx.role.<RoleOperatorID>`,
@@ -27,10 +29,12 @@
 // (loupe-operator-auth-lift-design.md §7 decomposition items 4-6), not this
 // package's scope. This package ships the grant data.
 //
-// The pkg-lifecycle ops (InstallPackage/UninstallPackage/UpgradePackage) are
-// deliberately NOT granted here — those stay meta-lane, anchor-only (root)
-// per mechanism B; scoped-privileged-lane-grants-design.md (mechanism C) is
-// the follow-on that would let consoleOperator run them without root.
+// The pkg-lifecycle ops (InstallPackage/UninstallPackage/UpgradePackage) ARE
+// granted here, at the `meta` lane, via mechanism C
+// (scoped-privileged-lane-grants-design.md §7 item 3): the Processor's core
+// privileged-lane allowlist honors exactly this {op, lane} set for a
+// package-projected `cap.roles` grant, so consoleOperator can run the pkg tab
+// without holding the root-equivalent primordial `operator` role.
 //
 // consoleOperatorReadGrants is this package's read-side half: a
 // capabilityReadWildcardGrants sibling (internal/bootstrap/lenses.go), same
@@ -68,14 +72,14 @@ RETURN
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
 	Name:        "console-operator",
-	Version:     "0.2.0",
-	Description: "Grants a scoped consoleOperator role the default-lane console ops + ctrl.* control-plane ops, without root, plus its read-side wildcard grant.",
+	Version:     "0.3.0",
+	Description: "Grants a scoped consoleOperator role the default-lane console ops + ctrl.* control-plane ops + the allowlisted pkg-lifecycle trio at meta, without root, plus its read-side wildcard grant.",
 	Depends:     []string{"rbac-domain", "identity-domain", "privacy-base", "objects-base"},
 	Permissions: Permissions(),
 	Roles: []pkgmgr.RoleSpec{
 		{
 			CanonicalName: "consoleOperator",
-			Description:   "Scoped Loupe console operator: default-lane console ops (shred/revoke/object) + ctrl.* control-plane ops. Not root — no privileged lane, no anchor.",
+			Description:   "Scoped Loupe console operator: default-lane console ops (shred/revoke/object) + ctrl.* control-plane ops + the allowlisted pkg-lifecycle trio at meta. Not root — no anchor, no other privileged lane.",
 		},
 	},
 	Lenses: []pkgmgr.LensSpec{
