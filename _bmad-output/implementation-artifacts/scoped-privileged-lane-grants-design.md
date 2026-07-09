@@ -22,9 +22,16 @@ Lattice lane (Security & trust boundary) · **the "C" of** `loupe-operator-auth-
 > whole-doc pre-check to a per-matched-permission check (falls back to doc-level `lanes` when an entry
 > carries none) — `internal/processor/step3_auth_capability.go`. Contract #6 §6.4 edit committed alongside
 > (marked not-yet-enforced pending Fire 2). Behavior-preserving today: no `PermissionSpec` sets `Lanes`
-> yet. **Next: Fire 2** — the core privileged-lane allowlist + fail-closed strip +
-> `PrivilegedLaneGrantRejected` Health issue (§7 item 2), required before any package may safely set a
-> privileged `lanes` value. Then **Fire 3** — `consoleOperator` gains the allowlisted pkg-lifecycle grants.
+> yet.
+>
+> **Fire 2 (§7 item 2) shipped** `0982345`: the core `{operationType→allowed-privileged-lanes}`
+> allowlist (v1 = the pkg-lifecycle trio at `meta`) gates any entry-level `PlatformPermission.Lanes` —
+> a non-allowlisted privileged lane is stripped to `default` and raises `PrivilegedLaneGrantRejected`
+> (`AuthAlertEmitter`, wired through `SelectAuthorizerArgs`'s capability-mode branch). The anchor's own
+> root grant never carries entry-level lanes (its cypher projects doc-level `Lanes` only), so it's
+> unaffected by the allowlist — proven by a dedicated unit test. **Next: Fire 3** —
+> `consoleOperator` gains the allowlisted pkg-lifecycle grants + retires B's root-admin interim for
+> the pkg tab.
 
 ---
 

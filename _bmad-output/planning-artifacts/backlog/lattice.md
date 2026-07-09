@@ -81,7 +81,7 @@ Severity-ordered; same row discipline as component maintenance (shipped rows col
 
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **[auth] scoped privileged-lane grants (retire all-or-nothing operator-root)** | `holdsRole→operator` is class-blind full root — no middle tier; a Loupe operator can't run pkg-install without being kernel root; boot-snapshot staleness. Fix (C1): per-op lanes in `cap.roles` + a core allowlist → a `consoleOperator` runs meta-lane pkg-lifecycle without root, no snapshot. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/scoped-privileged-lane-grants-design.md) · next: Fire 2 (core allowlist) |
+| **[auth] scoped privileged-lane grants (retire all-or-nothing operator-root)** | `holdsRole→operator` is class-blind full root — no middle tier; a Loupe operator can't run pkg-install without being kernel root; boot-snapshot staleness. Fix (C1): per-op lanes in `cap.roles` + a core allowlist → a `consoleOperator` runs meta-lane pkg-lifecycle without root, no snapshot. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/scoped-privileged-lane-grants-design.md) · next: Fire 3 (consoleOperator grants) |
 | **natsperm-matrix-hygiene** | Refractor's `$KV.>` write is broader than its lens-target set (covers dynamically-named package buckets — narrowing needs a real design, not a mechanical prune). | ★ | S | 📋 · bridge phantom-bucket half shipped `0377938`; remaining: Refractor narrowing needs design |
 | **contract7-7.3-config-example-refresh** | §7.3's bootstrap.json example still lists `processorIdentityKey` + a 5-key `metaMetaDDLKeys` block (same drift §7.2 items 1/7 fixed) — reconcile to the as-built config struct (no processor identity; one self-describing root DDL). | ★ | XS | 📐 fix drafted, UNCOMMITTED in the tree for Andrew (frozen-contract edit, no paired design) |
 | **fr22-service-denial-structural-fields** | FR22's `DenialDetails` has no service branch — a service-op denial names nothing structural. Fork B: emit `deniedService` (from authContext) + `deniedServiceClass` (one `.class` aspect read at denial time); `availableServiceClasses` is out of scope — what's available is the app's read-model question (P5). Contract #6 §6.12 is the spec. | ★ | S | 📋 · Fork B ratified 2026-07-03 (§6.12 amended) · low-priority |
@@ -195,6 +195,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-09 · `0982345` · [auth] scoped-privileged-lane-grants Fire 2 — core `{op,lane}` allowlist + fail-closed strip-to-default + `PrivilegedLaneGrantRejected` alert; CI green
 - 2026-07-09 · `16c3993` · [test] CI fix — sync a second Postgres fixture's `read_lease_applications` column list (objects_rls_test.go), missed in the same-day fire; CI green
 - 2026-07-09 · `3a9d140` · [Security] #75 Fire 2b CLOSED — lease-doc gen is external I/O (docGen triad+bridge+Weaver auto-attach); loftspace-app `ops.>` stripped — [design](../../implementation-artifacts/lease-doc-external-io-design.md)
 - 2026-07-08 · `ed90925` · [loftspace-app] #75 Fire 2b increment 2 — Attach/DetachObject browser-direct via the Gateway; dedup requestId ported to JS (verified vs Go); live-verified
