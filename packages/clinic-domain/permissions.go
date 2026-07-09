@@ -6,6 +6,14 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // The role canonical name `operator` is resolved by cmd/lattice-pkg to the seeded
 // NanoID from lattice.bootstrap.json — identical to loftspace-domain. No new
 // capability surface: the trusted-tool operator already holds standing permission.
+//
+// CreateAppointment ALSO grants `consumer`, scope=self (real-actor-write-auth-e2e
+// idiom, lease-signing's CreateLeaseApplication precedent): a real patient books
+// their own appointment through the Gateway. `authContext.target == actor` is
+// checked at step 3 (Contract #6); the Starlark script separately requires the
+// target identity to be the NAMED patient's linked identity (via the patient's
+// identifiedBy link), since step 3 never sees the payload and the patient vertex
+// — not the identity — is the op's endpoint.
 func Permissions() []pkgmgr.PermissionSpec {
 	mk := func(op string) pkgmgr.PermissionSpec {
 		return pkgmgr.PermissionSpec{
@@ -24,6 +32,12 @@ func Permissions() []pkgmgr.PermissionSpec {
 		mk("SetProviderHours"),
 		mk("SetProviderTimeOff"),
 		mk("CreateAppointment"),
+		{
+			OperationType: "CreateAppointment",
+			Scope:         "self",
+			Note:          "Grants a consumer the right to book an appointment for THEMSELVES (payload.patient must be a patient linked, via identifiedBy, to the caller's own identity).",
+			GrantsTo:      []string{"consumer"},
+		},
 		mk("RescheduleAppointment"),
 		mk("SetAppointmentStatus"),
 		mk("RecordEncounter"),

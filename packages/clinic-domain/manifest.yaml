@@ -49,6 +49,13 @@ description: |
   wired for contact (identifiedBy link + Secure-Lens display); the clinical
   record's (.encounter raw PHI) right-to-be-forgotten + display remain
   deferred.
+  CreateAppointment ALSO grants consumer scope=self (real-actor-write-auth-e2e
+  idiom, mirroring lease-signing's CreateLeaseApplication precedent): a real
+  patient books their own appointment through the Gateway. Step 3 authorizes
+  scope=self via authContext.target == actor (Contract #6); the script
+  separately requires the target identity to be the named patient's linked
+  identity (via identifiedBy), since the op's endpoint is the patient vertex,
+  not an identity.
 declares:
   ddls:
     - canonicalName: patient
@@ -130,6 +137,9 @@ declares:
     - operationType: CreateAppointment
       scope: any
       grantsTo: [operator]
+    - operationType: CreateAppointment
+      scope: self
+      grantsTo: [consumer]
     - operationType: RescheduleAppointment
       scope: any
       grantsTo: [operator]

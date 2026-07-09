@@ -41,6 +41,13 @@ const (
 	clConsumerID     = "CLconsumerHJKMNPQRST"
 	clConsumerKey    = "vtx.identity." + clConsumerID
 	clConsumerCapKey = "cap.identity." + clConsumerID
+
+	// clConsumerRoleID stands in for identity-domain's real `consumer` role
+	// NanoID: this package's tests don't install identity-domain (only rbac +
+	// hygiene via SetupPackageTestEnv), so clinic-domain's own CreateAppointment
+	// scope=self grant (GrantsTo: "consumer") needs a role id registered directly
+	// (the lease-signing lsConsumerRoleID idiom).
+	clConsumerRoleID = "CLConsumerRoZeHJKMNP"
 )
 
 // clinicOps are the ops the staff actor needs.
@@ -79,10 +86,12 @@ func clConsumerCapDoc() *processor.CapabilityDoc {
 		ProjectedAt:            now.Format(time.RFC3339Nano),
 		ProjectedFromRevisions: map[string]uint64{clConsumerKey: 1},
 		Lanes:                  []string{"default"},
-		PlatformPermissions:    []processor.PlatformPermission{},
-		ServiceAccess:          []processor.ServiceAccessEntry{},
-		EphemeralGrants:        []processor.EphemeralGrant{},
-		Roles:                  []string{"vtx.role.consumer"},
+		PlatformPermissions: []processor.PlatformPermission{
+			{OperationType: "CreateAppointment", Scope: "self"},
+		},
+		ServiceAccess:   []processor.ServiceAccessEntry{},
+		EphemeralGrants: []processor.EphemeralGrant{},
+		Roles:           []string{"vtx.role.consumer"},
 	}
 }
 
@@ -91,7 +100,7 @@ func setupClinicEnv(t *testing.T) (context.Context, *substrate.Conn) {
 	ctx, conn := testutil.SetupPackageTestEnv(t) // installs rbac+identity+hygiene
 	stop := testutil.RunMetaInstallPipeline(t, ctx, conn)
 	inst := pkgmgr.NewInstaller(conn, bootstrap.BootstrapIdentityKey)
-	inst.RoleIDs = map[string]string{"operator": bootstrap.RoleOperatorID}
+	inst.RoleIDs = map[string]string{"operator": bootstrap.RoleOperatorID, "consumer": clConsumerRoleID}
 	if _, err := inst.Install(ctx, clinicdomain.Package); err != nil {
 		stop()
 		t.Fatalf("install clinic-domain: %v", err)
@@ -1375,5 +1384,79 @@ func TestClinic_UnauthorizedDenied(t *testing.T) {
 
 	if !clMissing(t, ctx, conn, "vtx.patient."+clNanoIDFromRequestID(reqID)) {
 		t.Fatalf("a patient was committed by an unauthorized consumer")
+	}
+}
+
+// TestClinic_CreateAppointmentConsumerSelfScope_Allowed exercises the real
+// consumer scope=self permission (permissions.go) end to end: a patient linked
+// (identifiedBy) to the caller's own identity books their OWN appointment —
+// step 3 authorizes scope=self via authContext.target == actor (Contract #6),
+// and the script's own identifiedBy-link check (ddls.go) confirms the target
+// identity actually owns the named patient.
+func TestClinic_CreateAppointmentConsumerSelfScope_Allowed(t *testing.T) {
+	ctx, conn := setupClinicEnv(t)
+	cp, cons := newClinicPipeline(t, ctx, conn, "appt-consumer-self")
+
+	clSeedVertex(t, ctx, conn, clConsumerKey, "identity", false)
+
+	patientID := clSubmit(t, ctx, conn, cp, cons, "selfpat00001", "CreatePatient", "patient",
+		`{"fullName":"Self Booker","identityKey":"`+clConsumerKey+`"}`,
+		[]string{clConsumerKey}, processor.OutcomeAccepted)
+	patientKey := "vtx.patient." + patientID
+	providerKey := createProvider(t, ctx, conn, cp, cons, "selfprv0001", "Dr. Nora Vance", "Dermatology")
+
+	reqID := testutil.GenReqID("selfappt0001")
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateAppointment",
+		Actor:         clConsumerKey,
+		SubmittedAt:   clSubmittedAnchor,
+		Class:         "appointment",
+		Payload:       json.RawMessage(`{"patient":"` + patientKey + `","provider":"` + providerKey + `","startsAt":"2026-07-01T15:00:00Z","endsAt":"2026-07-01T15:30:00Z"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{patientKey, providerKey}},
+		AuthContext:   &processor.AuthContext{Target: clConsumerKey},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	apptKey := "vtx.appointment." + clNanoIDFromRequestID(reqID)
+	if adoc := clReadDoc(t, ctx, conn, apptKey); adoc["class"] != "appointment" {
+		t.Fatalf("appointment class = %v, want appointment", adoc["class"])
+	}
+}
+
+// TestClinic_CreateAppointmentConsumerNamesUnlinkedPatient_Rejected proves the
+// Starlark guard closes the gap step 3 leaves open: step 3's scope=self only
+// checks authContext.target == actor, never looks at payload.patient. A
+// consumer satisfying that check (target == actor) but naming a patient NOT
+// linked to their own identity — no identifiedBy link, or linked to someone
+// else — must still be rejected, by the script's identifiedBy-link check.
+func TestClinic_CreateAppointmentConsumerNamesUnlinkedPatient_Rejected(t *testing.T) {
+	ctx, conn := setupClinicEnv(t)
+	cp, cons := newClinicPipeline(t, ctx, conn, "appt-consumer-forge")
+
+	// A patient with no linked identity at all (the common shape: staff creates
+	// most patients without ever pre-minting/wiring an identity).
+	victimPatientKey := createPatient(t, ctx, conn, cp, cons, "forgepat0001", "Unlinked Patient")
+	providerKey := createProvider(t, ctx, conn, cp, cons, "forgeprv0001", "Dr. Owen Reyes", "Pediatrics")
+
+	reqID := testutil.GenReqID("forgeappt001")
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateAppointment",
+		Actor:         clConsumerKey,
+		SubmittedAt:   clSubmittedAnchor,
+		Class:         "appointment",
+		Payload:       json.RawMessage(`{"patient":"` + victimPatientKey + `","provider":"` + providerKey + `","startsAt":"2026-07-01T15:00:00Z","endsAt":"2026-07-01T15:30:00Z"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{victimPatientKey, providerKey}},
+		AuthContext:   &processor.AuthContext{Target: clConsumerKey},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+
+	if !clMissing(t, ctx, conn, "vtx.appointment."+clNanoIDFromRequestID(reqID)) {
+		t.Fatalf("an appointment was committed for a patient not linked to the caller's identity")
 	}
 }

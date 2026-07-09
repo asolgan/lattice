@@ -56,7 +56,12 @@ func setupLedgerEnv(t *testing.T) (context.Context, *substrate.Conn) {
 	stop := testutil.RunMetaInstallPipeline(t, ctx, conn)
 	defer stop()
 	inst := pkgmgr.NewInstaller(conn, bootstrap.BootstrapIdentityKey)
-	inst.RoleIDs = map[string]string{"operator": bootstrap.RoleOperatorID}
+	// ledConsumerRoleID stands in for identity-domain's real `consumer` role
+	// NanoID: clinic-domain's CreateAppointment scope=self grant (GrantsTo:
+	// "consumer") needs a role id registered directly, since these tests don't
+	// install identity-domain (the lease-signing lsConsumerRoleID idiom).
+	const ledConsumerRoleID = "LEDConsumerRoZeHJKMN"
+	inst.RoleIDs = map[string]string{"operator": bootstrap.RoleOperatorID, "consumer": ledConsumerRoleID}
 	if _, err := inst.Install(ctx, clinicdomain.Package); err != nil {
 		t.Fatalf("install clinic-domain: %v", err)
 	}

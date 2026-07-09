@@ -131,34 +131,55 @@ func TestPackage_NoCommandOverlapAcrossVertexTypes(t *testing.T) {
 	}
 }
 
-// TestPackage_Permissions pins every op granted to operator (scope any) and
-// nothing else, plus the three projection lenses and no package dependency.
+// TestPackage_Permissions pins every op granted to operator (scope any) —
+// except CreateAppointment, which ALSO carries a consumer scope=self grant
+// (patient self-booking) — plus the three projection lenses and no package
+// dependency.
 func TestPackage_Permissions(t *testing.T) {
-	wantPerms := map[string]bool{
-		"CreatePatient": false, "TombstonePatient": false,
-		"CreateProvider": false, "TombstoneProvider": false,
-		"SetProviderProfile": false, "SetProviderHours": false, "SetProviderTimeOff": false,
-		"CreateAppointment": false, "RescheduleAppointment": false,
-		"SetAppointmentStatus": false, "RecordEncounter": false, "TombstoneAppointment": false,
+	type wantGrant struct {
+		scope     string
+		grantsTo  string
+		fulfilled bool
 	}
-	if got := len(Package.Permissions); got != len(wantPerms) {
-		t.Fatalf("expected %d permissions, got %d", len(wantPerms), got)
+	wantPerms := map[string][]*wantGrant{
+		"CreatePatient": {{scope: "any", grantsTo: "operator"}}, "TombstonePatient": {{scope: "any", grantsTo: "operator"}},
+		"CreateProvider": {{scope: "any", grantsTo: "operator"}}, "TombstoneProvider": {{scope: "any", grantsTo: "operator"}},
+		"SetProviderProfile": {{scope: "any", grantsTo: "operator"}}, "SetProviderHours": {{scope: "any", grantsTo: "operator"}}, "SetProviderTimeOff": {{scope: "any", grantsTo: "operator"}},
+		"CreateAppointment": {{scope: "any", grantsTo: "operator"}, {scope: "self", grantsTo: "consumer"}}, "RescheduleAppointment": {{scope: "any", grantsTo: "operator"}},
+		"SetAppointmentStatus": {{scope: "any", grantsTo: "operator"}}, "RecordEncounter": {{scope: "any", grantsTo: "operator"}}, "TombstoneAppointment": {{scope: "any", grantsTo: "operator"}},
+	}
+	wantCount := 0
+	for _, grants := range wantPerms {
+		wantCount += len(grants)
+	}
+	if got := len(Package.Permissions); got != wantCount {
+		t.Fatalf("expected %d permissions, got %d", wantCount, got)
 	}
 	for _, perm := range Package.Permissions {
-		if _, ok := wantPerms[perm.OperationType]; !ok {
+		grants, ok := wantPerms[perm.OperationType]
+		if !ok {
 			t.Fatalf("unexpected permission for %q", perm.OperationType)
 		}
-		wantPerms[perm.OperationType] = true
-		if perm.Scope != "any" {
-			t.Fatalf("%s scope = %q, want any", perm.OperationType, perm.Scope)
+		if len(perm.GrantsTo) != 1 {
+			t.Fatalf("%s grantsTo = %v, want exactly one role", perm.OperationType, perm.GrantsTo)
 		}
-		if len(perm.GrantsTo) != 1 || perm.GrantsTo[0] != "operator" {
-			t.Fatalf("%s grantsTo = %v, want [operator]", perm.OperationType, perm.GrantsTo)
+		matched := false
+		for _, g := range grants {
+			if g.scope == perm.Scope && g.grantsTo == perm.GrantsTo[0] {
+				g.fulfilled = true
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			t.Fatalf("%s: unexpected (scope=%q, grantsTo=%v)", perm.OperationType, perm.Scope, perm.GrantsTo)
 		}
 	}
-	for op, seen := range wantPerms {
-		if !seen {
-			t.Fatalf("missing permission for op %q", op)
+	for op, grants := range wantPerms {
+		for _, g := range grants {
+			if !g.fulfilled {
+				t.Fatalf("missing permission for op %q (scope=%s, grantsTo=%s)", op, g.scope, g.grantsTo)
+			}
 		}
 	}
 
