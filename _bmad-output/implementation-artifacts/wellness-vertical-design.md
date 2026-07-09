@@ -3,6 +3,18 @@
 **Status:** ✅ Winston-ratified — build-ready. Pure implementation decisions (package shape, naming),
 no frozen-contract change, no architectural fork — decided per CLAUDE.md / steward §0 and built this fire.
 
+**Inc 2 shipped (2026-07-09, `a7f5b52`):** `cmd/wellness-app` — a thin FE mirroring `cmd/cafe-app`'s
+shape exactly (vanilla HTML/CSS/JS, three views: Schedule / Roster / My Classes), reading the three P5
+lenses below plus the shared `leaseApplicationComplete` convergence lens for the resident/lease picker
+(the "who" dimension, mirroring `cafe-app`'s lease picker). Wired into the Path-A NATS permission matrix
+(`deploy/gen-dev-nkeys`) alongside the other three vertical apps. Build/vet/lint/lint-conventions(P5)
+all green, CI green. **Live-data browser verify is PENDING a one-time NATS server reload** — adding a
+new component's nkey to the static Path-A matrix requires the NATS process to pick up the regenerated
+`deploy/nats-server.conf`, and this fire correctly declined to bounce the shared, always-on NATS
+container unattended (sandboxed as a shared-infra action). Whoever next touches the stack (a `make up`
+cycle that bounces NATS, or a manual `docker compose restart nats`) picks this up for free; no further
+code change is needed.
+
 ## Scope of this increment
 
 `verticals.md`'s Wellness row is ★★/L and bundles `wellness-domain` (studio + class/session + booking)
@@ -132,9 +144,7 @@ into the fire (reverted the fix locally, confirmed the test catches it, restored
 
 ## Next (this design doc's checkpoint)
 
-- **Inc 2 — thin FE** (`cmd/wellness-app`, mirrors `cmd/cafe-app`'s three-view shape: schedule grid ·
-  roster · my-classes) + live-verify directly against the running stack — **no Refractor restart needed**:
-  Café Inc 3's restart was based on a since-corrected doc caveat (`cafe-ledger-design.md`'s 2026-07-07
-  correction note; `docs/components/_packages.md`), a newly-installed lens hot-activates live.
+- **Inc 2 — thin FE shipped** (`cmd/wellness-app`, `a7f5b52`). Live-data browser verify is pending the
+  one-time NATS reload noted above (a stack-infra step, not a code gap).
 - **Mixed-use composition surfaces** (verticals.md, gated "after Wellness") — front-desk / operations
   aggregate views, once Wellness's own lenses are live.
