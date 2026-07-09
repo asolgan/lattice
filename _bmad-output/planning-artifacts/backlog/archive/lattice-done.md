@@ -2,6 +2,8 @@
 
 Rolled from `lattice.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-06 · `—` · [Security] Control-plane capability authz (FR30) CLOSED — Fires 1a-1c+2 shipped (verified-actor JWT, both control planes gated) — [design](../../implementation-artifacts/control-plane-capability-authz-design.md)
+- 2026-07-05 · `—` · [Gateway] Edge trust-boundary CLOSED — Fire 1+2+3 shipped (write path, JWKS, RLS read-front); Fire 5 is ops not Steward — [design](../../implementation-artifacts/gateway-external-trust-boundary-design.md)
 - 2026-07-07 · `921fda4` · [lease-signing/processor/lattice-pkg] real-actor-write-auth-e2e Phase 1 items 4+6 — consumer scope=self grant + live e2e proof; 2 platform bugs fixed along the way; 3-layer reviewed, fixed forward
 - 2026-07-06 · `265d5d8` · [Processor/Loom/Weaver] script-read-posture Fires 1–2 — optionalReads + enumerations metadata + read-posture lint; 3-layer reviewed, CI green
 - 2026-07-06 · `5ad5d6e` · [Makefile] real-actor-write-auth-e2e Phase 1 item 3 — `up-full-capability` + `dev-seed-staff` (staff identity holds operator); lead-reviewed, live-verified except the AssignRole leg (permission-gated); item 4 (e2e) next
