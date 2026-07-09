@@ -261,19 +261,18 @@ func storedProjectionSeq(data []byte) (uint64, bool) {
 	if !ok {
 		return 0, false
 	}
-	// JSON numbers decode into float64 through map[string]any.
-	switch v := raw.(type) {
-	case float64:
-		return uint64(v), true
-	case json.Number:
-		n, err := v.Int64()
-		if err != nil || n < 0 {
-			return 0, false
-		}
-		return uint64(n), true
-	default:
+	// json.Unmarshal into map[string]any always decodes a JSON number as
+	// float64 (this function never uses a json.Decoder.UseNumber() reader,
+	// so json.Number is unreachable here). A negative value is a malformed
+	// watermark, not a real low seq — treated as absent rather than
+	// converted, which would wrap to a bogus near-max uint64 and poison
+	// every future guarded write to the key (permanent false "already
+	// newer" no-op).
+	v, ok := raw.(float64)
+	if !ok || v < 0 {
 		return 0, false
 	}
+	return uint64(v), true
 }
 
 // ListKeys returns every live key in the bucket, split back into its
