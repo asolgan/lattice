@@ -248,11 +248,15 @@ provenance — payload gains optional `{idpIssuer, idpSubject}` (from `VerifiedA
 `.RawSubject`) — and the script writes an **`.idpBinding` aspect** on A:
 `{ "class": "idpBinding", "data": { "iss": "...", "sub": "..." } }`. This is the audit/support
 answer to "which IdP account is this identity?" (the derivation is one-way; without the aspect the
-question is unanswerable). Sensitivity check, not assumed: some IdPs put emails in `sub` — but
-identity-domain **already** stores `email`/`phone` as plain aspects (they are the dedup index inputs;
-only `ssn`/`dob` are Vault-classed), so this introduces no new sensitivity class in this domain. A is
-otherwise bare by design (claim-flow §11.1 step 5) — `.idpBinding` is credential-plane provenance, not
-business PII accretion.
+question is unanswerable). Sensitivity: **`.idpBinding` is classed sensitive, like every other identity
+PII aspect.** (An earlier draft claimed email/phone were stored plain, quoting the claim-flow design —
+**stale**: `packages/identity-domain/ddls.go` now classes `name`/`email`/`phone`/`ssn`/`dob` all
+sensitive, Vault-encrypted at rest per-identity-DEK. Some IdPs put emails in `sub`, so `.idpBinding`
+joins its siblings.) Two consequences, both good: A gains a DEK, so **crypto-shredding A severs the
+IdP-account linkage** (the claim-flow §11.2 "shred the discoverable identity-set" walk now covers the
+credential plane too); and the audit read goes through the sanctioned Vault decrypt path like any other
+PII, not a plain read. A is otherwise bare by design (claim-flow §11.1 step 5) — `.idpBinding` is
+credential-plane provenance, not business PII accretion.
 
 ### 3.4 What does NOT change (verified, not assumed)
 
@@ -522,9 +526,9 @@ under a precondition the first draft didn't enforce.
   shipped provisioning design (idempotent, consumer-only, rate-limited at the reverse-proxy, Gateway
   Fire 5); derivation neither widens nor narrows it. Not re-litigated.
 - **A7 — Does the derived id leak the IdP account?** One-way (no enumeration from the id); linkability
-  lives only in the explicit `.idpBinding` aspect, which is the *point* (audit), sits in a domain that
-  already stores contact PII plainly, and is crypto-shred-covered the day identity aspects are (same
-  vertex). → §3.3.
+  lives only in the explicit `.idpBinding` aspect, which is the *point* (audit), is **sensitivity-classed
+  and Vault-encrypted like its sibling identity PII aspects** (correcting a stale plain-storage claim,
+  §3.3), and is severed by crypto-shredding A (the aspect gives A its DEK). → §3.3.
 
 ---
 
@@ -541,3 +545,119 @@ under a precondition the first draft didn't enforce.
   load-bearing for #11; includes the Google two-form-`iss` note).
 - `_bmad-output/planning-artifacts/backlog/lattice.md` — new Security-&-trust-boundary row,
   📐 awaiting-Andrew, linking here.
+- *(2026-07-10, ratification Q&A)* §12 added; §3.3/§10-A7 PII-sensitivity claim corrected against
+  current code; two follow-up rows filed (multi-credential linking + merge credential-awareness →
+  `lattice.md`; app-read revocation gap → `verticals.md`).
+
+---
+
+## 12. Ratification Q&A (Andrew, 2026-07-10) — resolution cost; multi-IdP duplicates
+
+Two questions raised while reviewing the staged design, answered from the code and folded in here so
+the doc is the record.
+
+### 12.1 Is the per-request A→U resolution a bottleneck?
+
+**Your reading of the posture is correct and unchanged by this design:** when A is bound to U, the
+door that receives the request resolves before acting — the Gateway stamps the resolved actor on every
+write, and (browser-direct) the app's read boundary rewrites the RLS actor on every read. Exactly
+**one resolution per external request** at whichever door received it (the control plane never
+re-resolves — #11 §11.4; the Processor consumes the stamped actor as-is).
+
+**What a resolution costs today (grounded).** `credentialbinding.Resolver.Resolve` is a single NATS-KV
+`Get` against the deployment-local `credential-bindings` bucket (`credentialbinding.go:67`) — no cache,
+deliberately simple. Per external request the doors run: Gateway write = JWT verify (in-process
+crypto) + revocation `Get` + resolution `Get` + the Processor request-reply commit; Gateway read =
+verify + revocation `Get` + resolution `Get` + the RLS `SELECT`; app read = verify + resolution `Get` +
+the RLS `SELECT`. So the resolution `Get` is the **same cost class as the revocation `Get` the Gateway
+already runs per request** (the accepted precedent): one round-trip on the same persistent connection
+to the same NATS server the request's real work rides — and that real work (a JetStream
+request-reply commit, or a Postgres query) is the latency floor, an order of magnitude above a KV
+`Get`. At the platform's target write rates (the 10–100 ops/sec envelope the Gateway F2 fork was
+argued against) this is noise, not a bottleneck.
+
+**"Did we already have the answer?" — half of it.** The *staleness* posture was designed (the M3
+CDC-lag window: a fresh claim resolves as A until the materializer folds it — deny-safe, self-healing)
+and the *provisioning* pre-flight already carries an in-process cache (`provisionedCache`, bounded
+100k, "pure latency optimization"). The resolution **throughput** posture was never written down. Now
+it is, with the scale path pre-named so nobody redesigns under pressure:
+
+1. **In-process TTL cache** on the resolver (positive entries only, seconds-scale TTL) — the
+   `provisionedCache` pattern. Caveat that bounds the TTL: a future merge/rebind (§12.2 Gap 2) would
+   repoint a binding, and a long-lived positive cache would keep resolving to the merged-loser.
+2. **The NATS-native endgame: a KV watch-mirror.** The bucket is small (one entry per claimed human);
+   a `Watch` folding it into an in-memory map makes resolution zero-round-trip at every door — the
+   same local-fold discipline the Gateway's own revocation/bindings materializers already demonstrate.
+   Correct under the same deny-safe miss semantics (worst case: act as A for the watch-lag window).
+
+Neither is needed now; both are correctness-preserving when needed. **One asymmetry worth knowing
+(deliberate, verified):** a revocation-check *error* denies (fail-closed — security boundary); a
+resolution *error* falls back to acting as raw A (deny-safe — reduced scope, `readauth.go:210`,
+`gateway.go`'s `resolveActor`). Both are the right direction for what each protects.
+
+**One adjacent gap surfaced by this grounding (filed, `verticals.md`):** all four vertical apps'
+read postures construct `NewAuthenticator(verifier, nil)` — **no revocation checker** — so a revoked
+credential keeps *reading* at the apps until its token expires (writes die immediately at the
+Gateway). The short-TTL backstop covers it, but the apps already open the bindings bucket per request;
+opening `token-revocation` beside it is symmetric and cheap.
+
+### 12.2 Multi-IdP sign-in (Google yesterday, Apple today) — duplicate identities
+
+**Reframe with the two layers first.** Sign-in via a second IdP mints a second **credential** identity
+(A_G, A_A — distinct `(iss, sub)`, distinct derived keys, both bare). That much is by design and
+harmless *in itself* — a human with two sign-in methods legitimately holds two credentials. Whether it
+becomes a **duplicate-identity problem** splits by scenario, and the honest answer is: **prevention is
+structurally impossible to do completely, resolution machinery exists but has two real gaps, and the
+strongest lever is a deployment-topology choice.**
+
+- **Scenario A (walk-in; business identity U exists).** The dupes are *only credentials*. The problem
+  is **Gap 1 — there is no second-credential binding path**: `credentialBinding` is a singular aspect,
+  `ClaimIdentity` requires `state == "unclaimed"`, and the claim secret is spent on first use — so
+  strictly **one A per U, ever**, today. The Apple login *works* but acts as bare A_A and sees none of
+  the person's data (deny-safe, but reads as "the app lost my account"). The fix is an explicit
+  **link-another-sign-in flow** — authenticated as U (via A_G), authorize binding A_A; or a staff-gated
+  re-issue scoped to *claimed* identities (today's `RotateClaimKey`/R4 correctly fails closed on
+  claimed). Note #11 is already compatible: its dedup guard is per-credential (each A binds ≤ 1 U);
+  N credentials → one U is an additive extension, no contract change.
+- **Scenario B (self-signup; A_G *is* the business identity).** A_A is a genuine duplicate business
+  identity. **Prevention (partial, buildable):** the token's **verified email claim** can probe the
+  existing blind dedup index — `vtx.identityindex.<sha256NanoID("email:"+email)>` is computable
+  transiently without persisting the email (a read-probe, compatible with "the Gateway writes no PII
+  from tokens"), and it works **despite Vault encryption** because the index is a deterministic hash
+  vertex. A hit at first-touch means "this human probably exists — offer linking," instead of silently
+  minting a parallel identity. But a probe with no linking flow to act on the hit is dead scaffolding —
+  so it sequences **with** Gap 1's flow, not before it. **Honest limit:** email matching is a
+  heuristic, not a guarantee — Apple's Hide-My-Email mints per-app relay addresses that defeat email
+  matching *everywhere* (Lattice-side and IdP-broker-side alike), and humans use different emails per
+  provider. The only complete mechanism is explicit user-driven linking + after-the-fact merge.
+- **Resolution — identity-hygiene, audited for exactly your question.** Two findings, one already
+  tracked, one new:
+  1. **Candidate discovery is inert over Vault ciphertext** — `duplicateCandidates`' WHERE (email/phone
+     equality, name-Levenshtein) runs on per-identity-DEK ciphertext. Already a tracked board row
+     (Privacy/Vault, needs-design). Note for that design: the **identityindex is precisely the blind
+     index the equality half wants** (shared-index-membership as the match signal); only the
+     name-Levenshtein half genuinely needs something new.
+  2. **`MergeIdentity` is not credential-aware (new — Gap 2, filed).** Verified in the package: the
+     merge script rekeys only the operator-supplied link lists and writes
+     `state=merged`/`mergedInto`/ACR — it never repoints `vtx.credentialindex.<hash(A)>` entries or
+     `credentialBinding` aspects, **and** the Gateway/app binding materializers fold **only**
+     `identity.claimed` events (`credential_bindings_materializer.go:119`), so no merge-driven rebind
+     could reach the local buckets even if the graph were fixed. Consequence: if U2 (claimed by A)
+     merges into U1, **A resolves to the merged-loser U2 forever** — graph-side and bucket-side. The
+     fix shape: merge repoints the credentialindex + emits an `identity.rebound`-class event the
+     materializers fold (and any resolver cache from §12.1 must respect).
+- **The strongest prevention is topological: prefer the IdP-broker posture.** Your premise (N raw
+  issuers + a chooser) is supported by this design's per-`kid` specs — but the **recommended** prod
+  posture is **one Lattice-facing issuer**: the deployment's broker (Keycloak/Auth0) federates
+  Google/Apple upstream, and account-linking happens **at the broker**, the layer that owns the email
+  + interactive context (Keycloak's First-Broker-Login flow does exactly this — "detect existing
+  user," automatic/manual linking, disable-auto-create; vendor-corroborated 2026-07-10). Lattice then
+  sees **one `(iss, sub)` per human** no matter which button they clicked, and the whole dupe class
+  shrinks to the broker's linking quality. Under #11 this is just the degenerate one-source case — no
+  contract or code delta. Direct multi-raw-IdP trust remains supported and inherits the
+  in-Lattice mechanisms above.
+
+**Filed from this Q&A:** `lattice.md` → *Multi-credential identity linking + merge
+credential-awareness* (Gap 1 + Gap 2 + the provision-time probe, one design item — they share the
+binding seam); `verticals.md` → *app read boundaries skip the revocation kill-switch* (§12.1).
+Neither changes the staged #11.
