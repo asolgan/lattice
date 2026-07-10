@@ -70,7 +70,7 @@ func WeaverTargets() []pkgmgr.WeaverTargetSpec {
 			"missing_bgcheck":       {Action: "triggerLoom", Pattern: "backgroundCheck", Subject: "row.applicant", Adapter: "backgroundCheck"},
 			"missing_payment":       {Action: "triggerLoom", Pattern: "collectPayment", Subject: "row.applicant", Adapter: "stripe"},
 			"missing_signature":     {Action: "assignTask", Operation: "SignLease", Assignee: "row.applicant", Target: "row.entityKey"},
-			"missing_listingLeased": {Action: "directOp", Operation: "SetListingStatus", Params: map[string]string{"unit": "row.unitKey", "status": "leased"}, Reads: []string{"row.unitKey"}},
+			"missing_listingLeased": {Action: "directOp", Operation: "SetListingStatus", Params: map[string]string{"unit": "row.unitKey", "status": "leased"}, Reads: []string{"row.unitKey", "row.unitKey.listing"}},
 			"missing_leaseDoc":      {Action: "triggerLoom", Pattern: "leaseDocument", Subject: "row.entityKey"},
 			"missing_leaseDocAttach": {Action: "directOp", Operation: "AttachObject", Params: map[string]string{
 				"digest": "row.docDigest", "size": "row.docSize", "contentType": "row.docContentType",

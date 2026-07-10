@@ -195,7 +195,7 @@ func setListingStatus(t *testing.T, ctx context.Context, conn *substrate.Conn, c
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         class,
 		Payload:       json.RawMessage(payload),
-		ContextHint:   &processor.ContextHint{Reads: []string{unitKey}},
+		ContextHint:   &processor.ContextHint{Reads: []string{unitKey, unitKey + ".listing"}},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, want)

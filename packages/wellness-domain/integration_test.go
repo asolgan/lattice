@@ -10,6 +10,8 @@ import (
 	"context"
 	"encoding/json"
 	"math/rand/v2"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -193,6 +195,61 @@ func createStudio(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *p
 	return "vtx.studio." + nanoIDFromRequestID(reqID)
 }
 
+// atStudioLnkKey / forSessionLnkKey are the deterministic validation-link keys
+// require_matching_studio / require_matching_session read (ddls.go) — (a)
+// declared reads at the TombstoneSession / CancelBooking dispatch.
+func atStudioLnkKey(t *testing.T, sessionKey, studioKey string) string {
+	t.Helper()
+	_, sessID, _ := substrate.ParseVertexKey(sessionKey)
+	_, studioID, _ := substrate.ParseVertexKey(studioKey)
+	return "lnk.session." + sessID + ".atStudio.studio." + studioID
+}
+
+func forSessionLnkKey(t *testing.T, bookingKey, sessionKey string) string {
+	t.Helper()
+	_, bookID, _ := substrate.ParseVertexKey(bookingKey)
+	_, sessID, _ := substrate.ParseVertexKey(sessionKey)
+	return "lnk.booking." + bookID + ".forSession.session." + sessID
+}
+
+// wdSlotCellCode mirrors the package's slot_cellcode Starlark helper (strip
+// '-'/':' and lowercase) so a test dispatcher can declare a covered cell's
+// slot-claim key, script-read-posture-design.md §13.
+func wdSlotCellCode(cellStart string) string {
+	s := strings.ReplaceAll(cellStart, "-", "")
+	s = strings.ReplaceAll(s, ":", "")
+	return strings.ToLower(s)
+}
+
+// wdSlotClaimKeys enumerates the 15-minute cells [startsAt, endsAt) covers
+// (mirroring slot_cells/enforce_grid, ddls.go) into their hub slot-claim keys.
+func wdSlotClaimKeys(t *testing.T, hub, startsAt, endsAt string) []string {
+	t.Helper()
+	start, err := time.Parse(time.RFC3339, startsAt)
+	if err != nil {
+		t.Fatalf("parse startsAt %q: %v", startsAt, err)
+	}
+	end, err := time.Parse(time.RFC3339, endsAt)
+	if err != nil {
+		t.Fatalf("parse endsAt %q: %v", endsAt, err)
+	}
+	var keys []string
+	for cur := start; cur.Before(end); cur = cur.Add(15 * time.Minute) {
+		keys = append(keys, hub+".slot"+wdSlotCellCode(cur.UTC().Format(time.RFC3339)))
+	}
+	return keys
+}
+
+// wdSeatKeys enumerates a session's seat-claim aspect keys up to capacity,
+// mirroring claim_first_free_seat's bounded loop (ddls.go).
+func wdSeatKeys(sessionKey string, capacity int) []string {
+	keys := make([]string, 0, capacity)
+	for n := 1; n <= capacity; n++ {
+		keys = append(keys, sessionKey+".seat"+strconv.Itoa(n))
+	}
+	return keys
+}
+
 func createSession(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, studioKey, name, startsAt, endsAt string, capacity int) (string, processor.MessageOutcome) {
 	t.Helper()
 	reqID := testutil.GenReqID(label)
@@ -207,7 +264,10 @@ func createSession(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *
 		SubmittedAt:   "2026-07-07T12:00:00Z",
 		Class:         "session",
 		Payload:       payload,
-		ContextHint:   &processor.ContextHint{Reads: []string{studioKey}},
+		ContextHint: &processor.ContextHint{
+			Reads:         []string{studioKey},
+			OptionalReads: wdSlotClaimKeys(t, studioKey, startsAt, endsAt),
+		},
 	}
 	testutil.PublishOp(t, conn, env)
 	outcome := testutil.DriveOne(t, ctx, cp, cons, "")
@@ -219,9 +279,18 @@ func createBooking(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *
 	reqID := testutil.GenReqID(label)
 	payloadMap := map[string]any{"session": sessionKey, "booker": bookerKey}
 	reads := []string{sessionKey, sessionKey + ".schedule", bookerKey}
+	// Resident-rate lookup (leaseapp + .tenancy + applicationFor link) is
+	// (d)-declared optionalReads — absent falls through to the standard rate
+	// (ddls.go, script-read-posture-design.md §13). Seat claims are the same
+	// class over the session's capacity dimension (20 covers every capacity
+	// this suite's fixtures use; claim_first_free_seat bounds it at 200).
+	optionalReads := wdSeatKeys(sessionKey, 20)
 	if leaseAppKey != "" {
 		payloadMap["leaseAppKey"] = leaseAppKey
-		reads = append(reads, leaseAppKey)
+		_, leaseID, _ := substrate.ParseVertexKey(leaseAppKey)
+		_, bookerID, _ := substrate.ParseVertexKey(bookerKey)
+		optionalReads = append(optionalReads, leaseAppKey, leaseAppKey+".tenancy",
+			"lnk.leaseapp."+leaseID+".applicationFor.identity."+bookerID)
 	}
 	payload, _ := json.Marshal(payloadMap)
 	env := &processor.OperationEnvelope{
@@ -232,7 +301,7 @@ func createBooking(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *
 		SubmittedAt:   "2026-07-07T12:00:00Z",
 		Class:         "booking",
 		Payload:       payload,
-		ContextHint:   &processor.ContextHint{Reads: reads},
+		ContextHint:   &processor.ContextHint{Reads: reads, OptionalReads: optionalReads},
 	}
 	testutil.PublishOp(t, conn, env)
 	outcome := testutil.DriveOne(t, ctx, cp, cons, "")
@@ -447,7 +516,10 @@ func TestCancelBooking_ReleasesSeatForNextClaimant(t *testing.T) {
 		SubmittedAt:   "2026-07-07T12:10:00Z",
 		Class:         "booking",
 		Payload:       json.RawMessage(`{"bookingKey":"` + bookingKey + `","session":"` + sessionKey + `"}`),
-		ContextHint:   &processor.ContextHint{Reads: []string{bookingKey, bookingKey + ".status"}},
+		ContextHint: &processor.ContextHint{Reads: []string{
+			bookingKey, bookingKey + ".status",
+			forSessionLnkKey(t, bookingKey, sessionKey),
+		}},
 	}
 	testutil.PublishOp(t, conn, cancelEnv)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
@@ -479,7 +551,10 @@ func TestTombstoneSession_ReleasesStudioSlotCells(t *testing.T) {
 		SubmittedAt:   "2026-07-07T12:10:00Z",
 		Class:         "session",
 		Payload:       json.RawMessage(`{"sessionKey":"` + sessionKey + `","studio":"` + studioKey + `"}`),
-		ContextHint:   &processor.ContextHint{Reads: []string{sessionKey, sessionKey + ".schedule"}},
+		ContextHint: &processor.ContextHint{Reads: []string{
+			sessionKey, sessionKey + ".schedule",
+			atStudioLnkKey(t, sessionKey, studioKey),
+		}},
 	}
 	testutil.PublishOp(t, conn, tombstoneEnv)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)

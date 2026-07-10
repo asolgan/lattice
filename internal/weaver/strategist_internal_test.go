@@ -80,6 +80,31 @@ func TestBuildPlan_DirectOp_MissingReadColumn(t *testing.T) {
 	}
 }
 
+// TestBuildPlan_DirectOp_ReadsRowColumnAspectSuffix pins the row.<column>.<aspect>
+// derived-read form (script-read-posture-design.md §13 hard case 4): a Reads
+// entry whose column isn't itself in the row falls back to joining the
+// resolved root column's key with the trailing segment, mirroring the
+// Starlark idiom `unit + ".listing"` — used by lease-signing's
+// missing_listingLeased gap to declare SetListingStatus's unit.listing read.
+func TestBuildPlan_DirectOp_ReadsRowColumnAspectSuffix(t *testing.T) {
+	t.Parallel()
+	ga := GapAction{
+		Action:    "directOp",
+		Operation: "SetListingStatus",
+		Params:    map[string]string{"unit": "row.unitKey", "status": "leased"},
+		Reads:     []string{"row.unitKey", "row.unitKey.listing"},
+	}
+	row := map[string]any{"unitKey": "vtx.unit.AAunitHJKMNPQRSTUV"}
+	pl, perr := buildPlan(nil, "leaseApplicationComplete", "AAappHJKMNPQRSTUVWXY", "missing_listingLeased", ga, row, 3)
+	if perr != nil {
+		t.Fatalf("buildPlan: %v", perr)
+	}
+	want := []string{"vtx.unit.AAunitHJKMNPQRSTUV", "vtx.unit.AAunitHJKMNPQRSTUV.listing"}
+	if len(pl.reads) != len(want) || pl.reads[0] != want[0] || pl.reads[1] != want[1] {
+		t.Fatalf("reads = %v want %v", pl.reads, want)
+	}
+}
+
 // TestBuildPlan_AssignTask_OptionalReadsMatchPayload pins the Contract #2 §2.5
 // optionalReads set an assignTask dispatch declares: exactly the stable task
 // dedup key and the assignee's `.availability` routing aspect — and, load-

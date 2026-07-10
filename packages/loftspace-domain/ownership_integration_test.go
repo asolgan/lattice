@@ -57,14 +57,17 @@ func assignUnitOwner(t *testing.T, ctx context.Context, conn *substrate.Conn, cp
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "loftspaceOwnership",
 		Payload:       json.RawMessage(`{"landlord":"` + landlordKey + `","unit":"` + unitKey + `"}`),
-		ContextHint:   &processor.ContextHint{Reads: []string{landlordKey, unitKey}},
+		ContextHint: &processor.ContextHint{
+			Reads:         []string{landlordKey, unitKey},
+			OptionalReads: []string{manageLinkKey(landlordKey, unitKey)},
+		},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, want)
 }
 
 // removeUnitOwner submits RemoveUnitOwner(landlord, unit). The link is read on
-// demand, so no declared reads are required.
+// demand (d, declared optionalReads — it may not exist, idempotent no-op).
 func removeUnitOwner(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, landlordKey, unitKey string, want processor.MessageOutcome) {
 	t.Helper()
 	env := &processor.OperationEnvelope{
@@ -75,6 +78,7 @@ func removeUnitOwner(t *testing.T, ctx context.Context, conn *substrate.Conn, cp
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "loftspaceOwnership",
 		Payload:       json.RawMessage(`{"landlord":"` + landlordKey + `","unit":"` + unitKey + `"}`),
+		ContextHint:   &processor.ContextHint{OptionalReads: []string{manageLinkKey(landlordKey, unitKey)}},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, want)

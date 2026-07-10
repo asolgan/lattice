@@ -576,6 +576,8 @@ def slot_cellcode(cell_start):
 
 def claim_cell(hub, cellcode, cls, conflict_code, who):
     key = hub + ".slot" + cellcode
+    # read-posture: (d) declared optionalReads at CreateSession dispatch — an
+    # absent cell is the common case (no existing booking), never a required read.
     existing = kv.Read(key)
     if existing != None and not existing.isDeleted:
         fail(conflict_code + ": " + who + " " + hub + " slot " + cellcode + " is already booked")
@@ -586,6 +588,8 @@ def claim_cell(hub, cellcode, cls, conflict_code, who):
 def require_matching_studio(sess_id, studio):
     _, studio_id = parts_of(studio, "studio", "studio")
     at_studio_lnk = "lnk.session." + sess_id + ".atStudio.studio." + studio_id
+    # read-posture: (a) declared reads at TombstoneSession dispatch (validation
+    # link; absence means the caller named the wrong studio — WrongStudio).
     asl = kv.Read(at_studio_lnk)
     if asl == None or asl.isDeleted:
         fail("WrongStudio: studio " + studio + " is not the studio of session vtx.session." + sess_id)
@@ -653,6 +657,8 @@ def execute(state, op):
         studio = required_string(p, "studio")
         require_matching_studio(sess_id, studio)
 
+        # read-posture: (a) declared reads at TombstoneSession dispatch —
+        # required for cell release.
         sched = kv.Read(sess_key + ".schedule")
         mutations = [make_tombstone(sess_key)]
         mutations.extend(release_cells_mutations(studio, sched))
@@ -768,6 +774,8 @@ def require_live_typed(state, key, name, want_class):
 def require_matching_session(book_id, session):
     _, sess_id = parts_of(session, "session", "session")
     for_session_lnk = "lnk.booking." + book_id + ".forSession.session." + sess_id
+    # read-posture: (a) declared reads at CancelBooking dispatch (validation
+    # link; absence means the caller named the wrong session — WrongSession).
     fs = kv.Read(for_session_lnk)
     if fs == None or fs.isDeleted:
         fail("WrongSession: session " + session + " is not the session of booking vtx.booking." + book_id)
@@ -787,6 +795,8 @@ def claim_first_free_seat(session_key, capacity):
         if n > capacity:
             fail("SessionFull: " + session_key + " has no open seats (capacity " + str(capacity) + ")")
         seat_key = session_key + ".seat" + str(n)
+        # read-posture: (d) declared optionalReads at CreateBooking dispatch
+        # (first-free-seat claim; an absent seat is the common case).
         existing = kv.Read(seat_key)
         if existing == None:
             return n, make_aspect(session_key, "seat" + str(n), "sessionSeatClaim", {})
@@ -807,6 +817,7 @@ def execute(state, op):
         _, booker_id = parts_of(booker, "booker", "identity")
         require_live_typed(state, booker, "booker", "identity")
 
+        # read-posture: (a) declared reads at CreateBooking dispatch.
         sched = kv.Read(session + ".schedule")
         if sched == None or sched.isDeleted:
             fail("InvalidState: " + session + ".schedule is missing; cannot book")
@@ -821,6 +832,9 @@ def execute(state, op):
         lease_key = optional_string(p, "leaseAppKey")
         if lease_key != None:
             _, lease_id = parts_of(lease_key, "leaseAppKey", "leaseapp")
+            # read-posture: (d) declared optionalReads at CreateBooking
+            # dispatch (resident-rate lookup; absent → falls through to
+            # standard rate, never a hard failure).
             lease_doc = kv.Read(lease_key)
             lease_alive = lease_doc != None and not lease_doc.isDeleted
             # .tenancy is stamped CreateOnly on a leaseapp's FIRST
@@ -830,8 +844,10 @@ def execute(state, op):
             # Without this check a pending or declined applicant (the
             # applicationFor link stays live in both cases) would wrongly
             # qualify for the resident rate.
+            # read-posture: (d) declared optionalReads at CreateBooking dispatch.
             tenancy_doc = kv.Read(lease_key + ".tenancy")
             tenancy_present = tenancy_doc != None and not tenancy_doc.isDeleted
+            # read-posture: (d) declared optionalReads at CreateBooking dispatch.
             app_for_lnk = kv.Read("lnk.leaseapp." + lease_id + ".applicationFor.identity." + booker_id)
             link_live = app_for_lnk != None and not app_for_lnk.isDeleted
             if lease_alive and tenancy_present and link_live:
@@ -869,6 +885,7 @@ def execute(state, op):
         session = required_string(p, "session")
         require_matching_session(book_id, session)
 
+        # read-posture: (a) declared reads at CancelBooking dispatch.
         status = kv.Read(book_key + ".status")
         if status == None or status.isDeleted:
             fail("InvalidState: " + book_key + ".status is missing; cannot cancel")

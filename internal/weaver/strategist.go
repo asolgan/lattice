@@ -262,13 +262,17 @@ func buildPlan(source *targetSource, targetID, entityID, gapColumn string,
 			params[name] = resolved
 		}
 		params["expectedRevision"] = expectedRevision
-		// The dispatched op's reads: each is a literal or a row.<column> template
-		// (e.g. row.entityKey to hand the op its candidate vertex). The candidate
-		// key is already in the lens row, so this just routes it into the op's
+		// The dispatched op's reads: each is a literal, a row.<column> template
+		// (e.g. row.entityKey to hand the op its candidate vertex), or a
+		// row.<column>.<aspect> template for a key one aspect below a row
+		// column's own vertex root (script-read-posture-design.md §13 hard
+		// case 4 — mirrors the Starlark idiom `unit + ".listing"`; the column
+		// need not itself carry the composed key). The candidate key is
+		// already in the lens row, so this just routes it into the op's
 		// ContextHint.Reads so its DDL can hydrate + validate it.
 		var reads []string
 		for i, rt := range ga.Reads {
-			r, perr := resolveStringParam(fmt.Sprintf("reads[%d]", i), rt, row)
+			r, perr := resolveReadKey(fmt.Sprintf("reads[%d]", i), rt, row)
 			if perr != nil {
 				return nil, perr
 			}
@@ -605,4 +609,40 @@ func resolveStringParam(name, value string, row map[string]any) (string, *planEr
 			msg: fmt.Sprintf("param %q must resolve to a non-empty string (got %T)", name, v)}
 	}
 	return s, nil
+}
+
+// resolveReadKey resolves one GapActionSpec.Reads template entry. It accepts
+// the same row.<column> substitution resolveStringParam does; when that
+// fails because the column is absent, it falls back to a derived-aspect form
+// row.<column>.<aspect> — the column resolves to a vertex root key and
+// <aspect> (which may itself contain dots) is joined onto it, mirroring the
+// Starlark idiom `unit + ".listing"` for a read one aspect below a row
+// column's own key (script-read-posture-design.md §13 hard case 4). Only
+// Reads uses this — Params/Target/Operation stay exact row-column lookups,
+// since a param value isn't necessarily a composable key.
+func resolveReadKey(name, value string, row map[string]any) (string, *planError) {
+	s, perr := resolveStringParam(name, value, row)
+	if perr == nil {
+		return s, nil
+	}
+	if perr.kind != errData {
+		return "", perr
+	}
+	col, templated := strings.CutPrefix(value, rowTemplatePrefix)
+	if !templated {
+		return "", perr
+	}
+	base, aspect, found := strings.Cut(col, ".")
+	if !found {
+		return "", perr
+	}
+	v, ok := row[base]
+	if !ok || v == nil {
+		return "", perr
+	}
+	root, ok := v.(string)
+	if !ok || root == "" {
+		return "", perr
+	}
+	return root + "." + aspect, nil
 }

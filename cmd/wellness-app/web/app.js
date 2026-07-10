@@ -45,6 +45,24 @@ async function submitOp(body) {
   });
 }
 
+// idOf returns a key's raw trailing NanoID segment (unlike shortKey, which
+// truncates for display) — used to compose a link key from two vertex keys.
+function idOf(key) {
+  const parts = (key || "").split(".");
+  return parts[parts.length - 1];
+}
+
+// seatKeys enumerates a session's seat-claim aspect keys up to its capacity,
+// mirroring the Starlark's claim_first_free_seat loop (ddls.go) so the
+// dispatcher can declare each as an optionalReads (script-read-posture-
+// design.md §13, class-d): an absent seat is the common case (open spot),
+// never a required read.
+function seatKeys(sessionKey, capacity) {
+  const keys = [];
+  for (let n = 1; n <= capacity; n++) keys.push(sessionKey + ".seat" + n);
+  return keys;
+}
+
 async function opOrThrow(body, what) {
   const reply = await submitOp(body);
   if (reply && reply.status === "rejected") {
@@ -196,8 +214,19 @@ async function renderSchedule() {
       try {
         const payload = { session: se.sessionKey, booker: bookerKey };
         if (leaseAppKey) payload.leaseAppKey = leaseAppKey;
+        // Resident-rate lookup (leaseapp + .tenancy + applicationFor link) is
+        // (d)-declared optionalReads — absence just falls through to the
+        // standard rate (ddls.go, script-read-posture-design.md §13).
+        const optionalReads = seatKeys(se.sessionKey, se.capacity);
+        if (leaseAppKey) {
+          optionalReads.push(
+            leaseAppKey,
+            leaseAppKey + ".tenancy",
+            "lnk.leaseapp." + idOf(leaseAppKey) + ".applicationFor.identity." + idOf(bookerKey),
+          );
+        }
         await opOrThrow(
-          { operationType: "CreateBooking", class: "booking", reads: [se.sessionKey, se.sessionKey + ".schedule"], payload },
+          { operationType: "CreateBooking", class: "booking", reads: [se.sessionKey, se.sessionKey + ".schedule"], optionalReads, payload },
           "book the class"
         );
         toast("Booked.", true);
@@ -283,8 +312,11 @@ async function renderRoster() {
     btn.addEventListener("click", async () => {
       btn.disabled = true;
       try {
+        // forSession validation link is (a)-declared reads (require_matching_session,
+        // ddls.go — absence means the caller named the wrong session).
+        const forSessionLnk = "lnk.booking." + idOf(b.bookingKey) + ".forSession.session." + idOf(sessionKey);
         await opOrThrow(
-          { operationType: "CancelBooking", class: "booking", reads: [b.bookingKey, b.bookingKey + ".status"], payload: { bookingKey: b.bookingKey, session: sessionKey } },
+          { operationType: "CancelBooking", class: "booking", reads: [b.bookingKey, b.bookingKey + ".status", forSessionLnk], payload: { bookingKey: b.bookingKey, session: sessionKey } },
           "cancel the booking"
         );
         toast("Booking cancelled.", true);
@@ -344,8 +376,9 @@ async function renderMyClasses() {
     btn.addEventListener("click", async () => {
       btn.disabled = true;
       try {
+        const forSessionLnk = "lnk.booking." + idOf(b.bookingKey) + ".forSession.session." + idOf(b.sessionKey);
         await opOrThrow(
-          { operationType: "CancelBooking", class: "booking", reads: [b.bookingKey, b.bookingKey + ".status"], payload: { bookingKey: b.bookingKey, session: b.sessionKey } },
+          { operationType: "CancelBooking", class: "booking", reads: [b.bookingKey, b.bookingKey + ".status", forSessionLnk], payload: { bookingKey: b.bookingKey, session: b.sessionKey } },
           "cancel the booking"
         );
         toast("Booking cancelled.", true);

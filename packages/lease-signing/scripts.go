@@ -445,6 +445,8 @@ def execute(state, op):
         # unit key in ContextHint.Reads, mirroring the existing unit-verification
         # idiom in this script.
         if decision == "approved":
+            # read-posture: (d) declared optionalReads at DecideLeaseApplication
+            # dispatch — None is the expected, common first-approve case.
             existing_tenancy = kv.Read(app_key + ".tenancy")
             if existing_tenancy == None or existing_tenancy.isDeleted:
                 # appliesToUnit is required at CreateLeaseApplication (no unit-less
@@ -457,9 +459,14 @@ def execute(state, op):
                 unit = required_string(p, "unit")
                 _, unit_id = parts_of(unit, "unit", "unit")
                 applies_to_lnk = "lnk.leaseapp." + app_id + ".appliesToUnit.unit." + unit_id
+                # read-posture: (a) declared reads at DecideLeaseApplication
+                # dispatch (validation link; absence — UnitMismatch — means the
+                # caller named a unit that isn't this application's own).
                 ulink = kv.Read(applies_to_lnk)
                 if ulink == None or ulink.isDeleted:
                     fail("UnitMismatch: " + unit + " is not the unit application " + app_key + " applies to")
+                # read-posture: (a) declared reads at DecideLeaseApplication
+                # dispatch (script-read-posture-design.md §13 hard case 4).
                 listing = kv.Read(unit + ".listing")
                 if listing == None or listing.isDeleted:
                     fail("NoListing: unit " + unit + " has no .listing aspect; cannot compute a tenancy term")
@@ -574,12 +581,18 @@ def execute(state, op):
         employment_verified = employment == "employed" or employment == "self-employed"
         ref_count = len(refs)
 
-        # The unit's monthly listing rent, read ON DEMAND (kv.Read §2.5, non-OCC
-        # config read — mirroring clinic's enforce_hours). None when the unit has no
-        # listing / no positive rent (an income-to-rent signal is then genuinely
-        # unknown, not false). Read at submit time against the rent then-current; a
-        # later rent change is reflected on the next SetApplicantProfile. The applicant
-        # AND the guarantor income-to-rent checks both derive from it.
+        # The unit's monthly listing rent, read ON DEMAND (kv.Read §2.5). None
+        # when the unit has no listing / no positive rent (an income-to-rent
+        # signal is then genuinely unknown, not false). Read at submit time
+        # against the rent then-current; a later rent change is reflected on
+        # the next SetApplicantProfile. The applicant AND the guarantor
+        # income-to-rent checks both derive from it.
+        # read-posture: (d) declared optionalReads at SetApplicantProfile
+        # dispatch — unlike a true (c) config read, unit.listing is a
+        # per-request payload-derivable key (script-read-posture-design.md §13
+        # hard case 4: DecideLeaseApplication/SetListingStatus read the SAME
+        # key required; this call's absence-tolerance is its own semantics,
+        # not a reason to treat the key itself as undeclarable config).
         rent = None
         listing = kv.Read(unit + ".listing")
         if listing != None and not listing.isDeleted:

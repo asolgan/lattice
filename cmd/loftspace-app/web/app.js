@@ -1482,6 +1482,11 @@ async function submitProfile(ev, row) {
       operationType: "SetApplicantProfile",
       class: "leaseapp",
       reads: [row.entityKey],
+      // The unit's listing rent (income-to-rent lookup) is (d)-declared
+      // optionalReads — absent falls through to an unknown income-to-rent
+      // signal, never a hard failure (scripts.go, script-read-posture-
+      // design.md §13 hard case 4).
+      optionalReads: [payload.unit + ".listing"],
       payload,
     });
     if (reply && reply.status === "rejected") {
@@ -2991,11 +2996,26 @@ async function decideApplication(a, decision) {
     const trimmed = reason.trim();
     if (trimmed) payload.reason = trimmed;
   }
+  // An approve needs `unit` — DecideLeaseApplication verifies it against the
+  // application's own appliesToUnit link and reads its .listing to stamp
+  // .tenancy on the FIRST approve (scripts.go); harmless on a decline or a
+  // re-approve that already carries .tenancy (both read the key but never
+  // require it there), so it's included whenever it's known.
+  const reads = [a.leaseAppKey];
+  if (decision === "approved" && a.unitKey) {
+    payload.unit = a.unitKey;
+    reads.push(
+      "lnk.leaseapp." + shortKey(a.leaseAppKey) + ".appliesToUnit.unit." + shortKey(a.unitKey),
+      a.unitKey + ".listing",
+    );
+  }
+  const optionalReads = decision === "approved" ? [a.leaseAppKey + ".tenancy"] : [];
   try {
     const reply = await submitOp("staff", {
       operationType: "DecideLeaseApplication",
       class: "leaseapp",
-      reads: [a.leaseAppKey],
+      reads,
+      optionalReads,
       payload,
     });
     if (reply && reply.status === "rejected") {
@@ -3072,7 +3092,7 @@ async function setListingStatus(u, status) {
     const reply = await submitOp("staff", {
       operationType: "SetListingStatus",
       class: "loftspaceListing",
-      reads: [u.unitKey],
+      reads: [u.unitKey, u.unitKey + ".listing"],
       payload: { unit: u.unitKey, status },
     });
     if (reply && reply.status === "rejected") {
@@ -3163,6 +3183,10 @@ async function submitPostListing(ev) {
           operationType: "AssignUnitOwner",
           class: "loftspaceOwnership",
           reads: [state.applicant, unitKey],
+          // Deterministic per-(landlord, unit) management link — (d) declared
+          // optionalReads (ownership.go): it never exists yet for a
+          // freshly-minted unit, so it's absence-tolerant, not required.
+          optionalReads: ["lnk.identity." + shortKey(state.applicant) + ".manages.unit." + shortKey(unitKey)],
           payload: { landlord: state.applicant, unit: unitKey },
         },
         "assign yourself as the unit's manager",

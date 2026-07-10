@@ -1324,6 +1324,21 @@ func TestSignLease_WritesSignatureAspect(t *testing.T) {
 	_ = identitydomain.Package
 }
 
+// decideReadsFor builds DecideLeaseApplication's declared ContextHint: the
+// appliesToUnit validation link + unit.listing are (a) required reads (the
+// FIRST approve's tenancy-stamp block, scripts.go); .tenancy itself is (d)
+// optionalReads (None is the expected first-approve case). Harmless (unread,
+// but declared regardless) on a decline or an already-tenancy-stamped
+// re-approve — script-read-posture-design.md §13 hard case 4.
+func decideReadsFor(leaseAppKey, unit string) *processor.ContextHint {
+	_, appID, _ := substrate.ParseVertexKey(leaseAppKey)
+	_, unitID, _ := substrate.ParseVertexKey(unit)
+	return &processor.ContextHint{
+		Reads:         []string{leaseAppKey, "lnk.leaseapp." + appID + ".appliesToUnit.unit." + unitID, unit + ".listing"},
+		OptionalReads: []string{leaseAppKey + ".tenancy"},
+	}
+}
+
 // decide submits DecideLeaseApplication{leaseAppKey, decision, unit} (class
 // leaseapp) at the given submittedAt and asserts the outcome. unit is the
 // application's own appliesToUnit target (createApplication/unitKeyFor's
@@ -1340,7 +1355,7 @@ func decide(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *process
 		SubmittedAt:   submittedAt,
 		Class:         "leaseapp",
 		Payload:       json.RawMessage(`{"leaseAppKey":"` + leaseAppKey + `","decision":"` + decision + `","unit":"` + unit + `"}`),
-		ContextHint:   &processor.ContextHint{Reads: []string{leaseAppKey}},
+		ContextHint:   decideReadsFor(leaseAppKey, unit),
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, want)
@@ -1443,7 +1458,7 @@ func decideReason(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *p
 		SubmittedAt:   submittedAt,
 		Class:         "leaseapp",
 		Payload:       json.RawMessage(payload),
-		ContextHint:   &processor.ContextHint{Reads: []string{leaseAppKey}},
+		ContextHint:   decideReadsFor(leaseAppKey, unit),
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, want)
@@ -1510,7 +1525,9 @@ func setProfile(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *pro
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "leaseapp",
 		Payload:       json.RawMessage(b),
-		ContextHint:   &processor.ContextHint{Reads: []string{leaseAppKey}},
+		// unit.listing (rent lookup) is (d) declared optionalReads — absent
+		// falls through to an unknown income-to-rent signal (scripts.go).
+		ContextHint: &processor.ContextHint{Reads: []string{leaseAppKey}, OptionalReads: []string{unit + ".listing"}},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, want)
