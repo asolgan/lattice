@@ -52,12 +52,14 @@ func (nopLogger) Error(string, ...any) {}
 // caller's use of FetchOnce before serving traffic (mirrors the existing
 // "no trusted keys configured — refusing to start" posture in cmd/gateway).
 type JWKSPoller struct {
-	url        string
-	client     *http.Client
-	verifier   *Verifier
-	staticKeys map[string]crypto.PublicKey
-	interval   time.Duration
-	logger     Logger
+	url         string
+	client      *http.Client
+	verifier    *Verifier
+	staticKeys  map[string]crypto.PublicKey
+	staticSpecs map[string]BindingSpec
+	issuer      string
+	interval    time.Duration
+	logger      Logger
 
 	// lastPollAt/swaps back the Gateway's jwks health block — lastPollAt is
 	// the last SUCCESSFUL fetch (UnixNano; 0 = never), mirroring the
@@ -69,10 +71,26 @@ type JWKSPoller struct {
 }
 
 // NewJWKSPoller builds a poller for url, hot-swapping verifier's trusted keys
-// on each successful fetch. staticKeys may be nil. interval <= 0 uses
-// DefaultJWKSPollInterval; a positive interval below MinJWKSPollInterval is
-// clamped up to it. logger may be nil (discards).
-func NewJWKSPoller(url string, verifier *Verifier, staticKeys map[string]crypto.PublicKey, interval time.Duration, logger Logger) *JWKSPoller {
+// on each successful fetch. Every kid this poller FETCHES is opaque-mode,
+// pinned to issuer (a live JWKS endpoint is by definition an external IdP —
+// Contract #11 §3.2 — issuer is required, not optional: a live key source
+// with no declared issuer would allow cross-issuer subject replay, finding
+// A8). staticKeys/staticSpecs (both may be nil) are operator-configured keys
+// (dev/break-glass) ALWAYS merged into every swap, layered under the
+// JWKS-fetched keys — every kid in staticKeys must have a valid entry in
+// staticSpecs (the same fail-closed rule NewVerifier enforces). interval <= 0
+// uses DefaultJWKSPollInterval; a positive interval below MinJWKSPollInterval
+// is clamped up to it. logger may be nil (discards).
+func NewJWKSPoller(url string, verifier *Verifier, staticKeys map[string]crypto.PublicKey, staticSpecs map[string]BindingSpec, issuer string, interval time.Duration, logger Logger) (*JWKSPoller, error) {
+	if issuer == "" {
+		return nil, fmt.Errorf("auth: JWKS poller for %q requires a declared issuer — a live external key source "+
+			"is always opaque-mode and MUST pin an expected iss", url)
+	}
+	for kid := range staticKeys {
+		if err := validateSpec(kid, staticSpecs[kid]); err != nil {
+			return nil, err
+		}
+	}
 	if interval <= 0 {
 		interval = DefaultJWKSPollInterval
 	} else if interval < MinJWKSPollInterval {
@@ -82,13 +100,15 @@ func NewJWKSPoller(url string, verifier *Verifier, staticKeys map[string]crypto.
 		logger = nopLogger{}
 	}
 	return &JWKSPoller{
-		url:        url,
-		client:     &http.Client{Timeout: 10 * time.Second},
-		verifier:   verifier,
-		staticKeys: staticKeys,
-		interval:   interval,
-		logger:     logger,
-	}
+		url:         url,
+		client:      &http.Client{Timeout: 10 * time.Second},
+		verifier:    verifier,
+		staticKeys:  staticKeys,
+		staticSpecs: staticSpecs,
+		issuer:      issuer,
+		interval:    interval,
+		logger:      logger,
+	}, nil
 }
 
 // FetchOnce fetches and parses the JWKS document and, on success, swaps it
@@ -119,20 +139,24 @@ func (p *JWKSPoller) FetchOnce(ctx context.Context) error {
 	now := time.Now()
 	info := make(map[string]KeyInfo, len(merged))
 	for kid := range merged {
+		spec := BindingSpec{Mode: ModeOpaque, Issuer: p.issuer}
 		source := "jwks"
 		if _, isStatic := p.staticKeys[kid]; isStatic {
 			source = "static"
+			spec = p.staticSpecs[kid]
 		}
 		addedAt := now
 		if pi, ok := prevInfo[kid]; ok && !pi.AddedAt.IsZero() {
 			addedAt = pi.AddedAt
 		}
-		info[kid] = KeyInfo{Source: source, Alg: algs[kid], AddedAt: addedAt}
+		info[kid] = KeyInfo{Source: source, Alg: algs[kid], AddedAt: addedAt, Spec: spec}
 	}
 	if keySetChanged(prevInfo, merged) {
 		p.swaps.Add(1)
 	}
-	p.verifier.SetKeysWithInfo(merged, info)
+	if err := p.verifier.SetKeysWithInfo(merged, info); err != nil {
+		return fmt.Errorf("gateway: JWKS refresh produced an invalid binding spec: %w", err)
+	}
 	p.lastPollAt.Store(now.UnixNano())
 	return nil
 }

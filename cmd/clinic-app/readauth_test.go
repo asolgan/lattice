@@ -117,14 +117,14 @@ func TestSetupReadAuth_DevPosture_SharedKeyInteroperates(t *testing.T) {
 	const sub = "Hj4kPmRtw9nbCxz5vQ2y"
 
 	// This app's minted token verifies against a Gateway-shaped trust set.
-	gatewayKeys, err := auth.LoadTrustedKeys(auth.KeySourceConfig{
+	gatewayKeys, gatewaySpecs, err := auth.LoadTrustedKeys(auth.KeySourceConfig{
 		DevMode:    true,
 		DevKeyPath: os.Getenv("CLINIC_APP_DEV_PUBLIC_KEY_PATH"),
 	}, nil)
 	if err != nil {
 		t.Fatalf("LoadTrustedKeys: %v", err)
 	}
-	gatewayVerifier, err := auth.NewVerifier(auth.Config{Keys: gatewayKeys})
+	gatewayVerifier, err := auth.NewVerifier(auth.Config{Keys: gatewayKeys, KeyInfo: auth.KeyInfoFromSpecs(gatewaySpecs)})
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
@@ -214,8 +214,8 @@ func (f fakeCredentialResolver) Resolve(context.Context, string) (string, bool, 
 // (real-actor-write-auth-e2e-design.md §5).
 func TestAuthenticateRead_CredentialBinding_ResolvesToClaimedIdentity(t *testing.T) {
 	s := devAuthServer(t)
-	s.credBindings = fakeCredentialResolver{identityKey: "vtx.identity.CLAIMEDBUSINESS0000", bound: true}
-	tok, _, err := s.devSigner.mint("RAWCREDENTIAL00000000")
+	s.credBindings = fakeCredentialResolver{identityKey: "vtx.identity.Bz9wLqXmPr4tKvNhYc3d", bound: true}
+	tok, _, err := s.devSigner.mint("Rk3mNpQwZx8bFhTj2Ycd")
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestAuthenticateRead_CredentialBinding_ResolvesToClaimedIdentity(t *testing
 	if err != nil {
 		t.Fatalf("authenticateRead: %v", err)
 	}
-	if actor.Subject != "CLAIMEDBUSINESS0000" {
+	if actor.Subject != "Bz9wLqXmPr4tKvNhYc3d" {
 		t.Errorf("subject = %q, want the resolved business identity", actor.Subject)
 	}
 }
@@ -236,7 +236,7 @@ func TestAuthenticateRead_CredentialBinding_ResolvesToClaimedIdentity(t *testing
 func TestAuthenticateRead_CredentialBinding_Unbound_ActsAsRawActor(t *testing.T) {
 	s := devAuthServer(t)
 	s.credBindings = fakeCredentialResolver{bound: false}
-	tok, _, err := s.devSigner.mint("RAWCREDENTIAL00000000")
+	tok, _, err := s.devSigner.mint("Rk3mNpQwZx8bFhTj2Ycd")
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
@@ -246,7 +246,7 @@ func TestAuthenticateRead_CredentialBinding_Unbound_ActsAsRawActor(t *testing.T)
 	if err != nil {
 		t.Fatalf("authenticateRead: %v", err)
 	}
-	if actor.Subject != "RAWCREDENTIAL00000000" {
+	if actor.Subject != "Rk3mNpQwZx8bFhTj2Ycd" {
 		t.Errorf("subject = %q, want the raw credential actor unchanged", actor.Subject)
 	}
 }
@@ -259,7 +259,7 @@ func TestAuthenticateRead_CredentialBinding_Unbound_ActsAsRawActor(t *testing.T)
 func TestAuthenticateRead_CredentialBinding_ResolveError_FallsBackToRawActor(t *testing.T) {
 	s := devAuthServer(t)
 	s.credBindings = fakeCredentialResolver{err: errors.New("kv unreachable")}
-	tok, _, err := s.devSigner.mint("RAWCREDENTIAL00000000")
+	tok, _, err := s.devSigner.mint("Rk3mNpQwZx8bFhTj2Ycd")
 	if err != nil {
 		t.Fatalf("mint: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestAuthenticateRead_CredentialBinding_ResolveError_FallsBackToRawActor(t *
 	if err != nil {
 		t.Fatalf("authenticateRead: %v", err)
 	}
-	if actor.Subject != "RAWCREDENTIAL00000000" {
+	if actor.Subject != "Rk3mNpQwZx8bFhTj2Ycd" {
 		t.Errorf("subject = %q, want the raw credential actor unchanged (fail open)", actor.Subject)
 	}
 }

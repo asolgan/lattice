@@ -53,9 +53,13 @@
 //	NATS_URL                  NATS server URL (default: nats://localhost:4222)
 //	NATS_NKEY / NATS_CREDS    Gateway's own NATS credential (the #75 "gateway" user)
 //	GATEWAY_JWT_KEYS_DIR      directory of <kid>.pem trusted public keys (static IdP snapshot)
+//	GATEWAY_JWT_KEYS_DIR_ISSUER required whenever GATEWAY_JWT_KEYS_DIR is set — the single issuer every
+//	                          kid loaded from that dir is pinned to (Contract #11 §3.2: a configured
+//	                          external source is always opaque-mode and MUST declare its expected iss)
 //	GATEWAY_JWKS_URL          IdP JWKS endpoint (https://…) — polled for kid-keyed key rotation
+//	GATEWAY_JWKS_ISSUER       required whenever GATEWAY_JWKS_URL is set — same per-source issuer pin,
+//	                          for the JWKS-fetched keys
 //	GATEWAY_JWKS_POLL_INTERVAL poll interval (default 5m, floor 30s; Go duration syntax e.g. "2m")
-//	GATEWAY_JWT_ISSUER        optional; required `iss` claim value
 //	GATEWAY_JWT_AUDIENCE      optional; required `aud` claim member
 //	GATEWAY_DEV_MODE          "true" to additionally trust the checked-in dev key + allow a non-https JWKS URL (dev/CI only)
 //	GATEWAY_DEV_KEY_PATH      override the dev public-key path (default: deploy/gateway-dev-key/dev-public.pem)
@@ -137,7 +141,8 @@ func run(logger *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	staticKeys, err := loadTrustedKeys(devMode, logger)
+	keysDirIssuer := os.Getenv("GATEWAY_JWT_KEYS_DIR_ISSUER")
+	staticKeys, staticSpecs, err := loadTrustedKeys(devMode, keysDirIssuer, logger)
 	if err != nil {
 		return fmt.Errorf("load trusted JWT keys: %w", err)
 	}
@@ -147,12 +152,17 @@ func run(logger *slog.Logger) error {
 	now := time.Now()
 	for kid, k := range staticKeys {
 		keys[kid] = k
-		keyInfo[kid] = auth.KeyInfo{Source: "static", AddedAt: now}
+		keyInfo[kid] = auth.KeyInfo{Source: "static", AddedAt: now, Spec: staticSpecs[kid]}
 	}
 
+	jwksIssuer := os.Getenv("GATEWAY_JWKS_ISSUER")
 	if jwksURL != "" {
 		if err := validateJWKSURL(jwksURL, devMode); err != nil {
 			return err
+		}
+		if jwksIssuer == "" {
+			return errors.New("GATEWAY_JWKS_URL is set but GATEWAY_JWKS_ISSUER is not — a live external key " +
+				"source MUST pin an expected iss (Contract #11 §3.2)")
 		}
 		fetchCtx, cancel := context.WithTimeout(ctx, initialJWKSFetchTimeout)
 		jwksKeys, jwksKeyAlgs, skipped, ferr := auth.FetchJWKS(fetchCtx, jwksURL, nil)
@@ -169,7 +179,8 @@ func run(logger *slog.Logger) error {
 		} else {
 			for kid, k := range jwksKeys {
 				keys[kid] = k
-				keyInfo[kid] = auth.KeyInfo{Source: "jwks", Alg: jwksKeyAlgs[kid], AddedAt: now}
+				keyInfo[kid] = auth.KeyInfo{Source: "jwks", Alg: jwksKeyAlgs[kid], AddedAt: now,
+					Spec: auth.BindingSpec{Mode: auth.ModeOpaque, Issuer: jwksIssuer}}
 			}
 		}
 	}
@@ -182,7 +193,6 @@ func run(logger *slog.Logger) error {
 
 	verifier, err := auth.NewVerifier(auth.Config{
 		Keys:     keys,
-		Issuer:   os.Getenv("GATEWAY_JWT_ISSUER"),
 		Audience: os.Getenv("GATEWAY_JWT_AUDIENCE"),
 		KeyInfo:  keyInfo,
 	})
@@ -196,7 +206,10 @@ func run(logger *slog.Logger) error {
 		if ierr != nil {
 			return fmt.Errorf("parse GATEWAY_JWKS_POLL_INTERVAL: %w", ierr)
 		}
-		jwksPoller = auth.NewJWKSPoller(jwksURL, verifier, staticKeys, interval, logger)
+		jwksPoller, err = auth.NewJWKSPoller(jwksURL, verifier, staticKeys, staticSpecs, jwksIssuer, interval, logger)
+		if err != nil {
+			return fmt.Errorf("build JWKS poller: %w", err)
+		}
 		go jwksPoller.Run(ctx)
 		logger.Info("JWKS polling enabled", "url", jwksURL, "interval", interval)
 	}
@@ -359,15 +372,24 @@ func parsePollInterval(raw string) (time.Duration, error) {
 	return time.ParseDuration(raw)
 }
 
-// loadTrustedKeys builds the kid→public-key map the Verifier trusts. See the
-// package doc for the fail-closed profile-gating rule.
-func loadTrustedKeys(devMode bool, logger *slog.Logger) (map[string]crypto.PublicKey, error) {
+// loadTrustedKeys builds the kid→public-key map the Verifier trusts, and the
+// matching per-kid BindingSpec (Contract #11 §3.2): every GATEWAY_JWT_KEYS_DIR
+// kid is opaque-mode pinned to keysDirIssuer (required whenever the dir is
+// set — refusing to silently trust an unpinned external source), the dev key
+// is nanoid-mode (never operator-selectable). See the package doc for the
+// fail-closed profile-gating rule.
+func loadTrustedKeys(devMode bool, keysDirIssuer string, logger *slog.Logger) (map[string]crypto.PublicKey, map[string]auth.BindingSpec, error) {
 	keys := make(map[string]crypto.PublicKey)
+	specs := make(map[string]auth.BindingSpec)
 
 	if dir := os.Getenv("GATEWAY_JWT_KEYS_DIR"); dir != "" {
+		if keysDirIssuer == "" {
+			return nil, nil, errors.New("GATEWAY_JWT_KEYS_DIR is set but GATEWAY_JWT_KEYS_DIR_ISSUER is not — " +
+				"a configured external source MUST pin an expected iss (Contract #11 §3.2)")
+		}
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			return nil, fmt.Errorf("read GATEWAY_JWT_KEYS_DIR %q: %w", dir, err)
+			return nil, nil, fmt.Errorf("read GATEWAY_JWT_KEYS_DIR %q: %w", dir, err)
 		}
 		for _, e := range entries {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".pem") {
@@ -376,9 +398,10 @@ func loadTrustedKeys(devMode bool, logger *slog.Logger) (map[string]crypto.Publi
 			kid := strings.TrimSuffix(e.Name(), ".pem")
 			pub, err := loadPublicKeyPEM(filepath.Join(dir, e.Name()))
 			if err != nil {
-				return nil, fmt.Errorf("load key %q: %w", e.Name(), err)
+				return nil, nil, fmt.Errorf("load key %q: %w", e.Name(), err)
 			}
 			keys[kid] = pub
+			specs[kid] = auth.BindingSpec{Mode: auth.ModeOpaque, Issuer: keysDirIssuer}
 		}
 	}
 
@@ -386,14 +409,15 @@ func loadTrustedKeys(devMode bool, logger *slog.Logger) (map[string]crypto.Publi
 		devKeyPath := envOrDefault("GATEWAY_DEV_KEY_PATH", defaultDevPublicKeyPath)
 		pub, err := loadPublicKeyPEM(devKeyPath)
 		if err != nil {
-			return nil, fmt.Errorf("load dev key %q: %w", devKeyPath, err)
+			return nil, nil, fmt.Errorf("load dev key %q: %w", devKeyPath, err)
 		}
 		keys[auth.DevKeyID] = pub
+		specs[auth.DevKeyID] = auth.BindingSpec{Mode: auth.ModeNanoID}
 		logger.Warn("GATEWAY_DEV_MODE=true — the checked-in dev signing key is trusted; NEVER set this in production",
 			"kid", auth.DevKeyID, "path", devKeyPath)
 	}
 
-	return keys, nil
+	return keys, specs, nil
 }
 
 // loadReadModels builds the Fire 3 read-model registry from a directory of

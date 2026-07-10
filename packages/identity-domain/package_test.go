@@ -45,8 +45,8 @@ func TestPackage_DeclaresUserFacingRoles(t *testing.T) {
 }
 
 func TestPackage_DDLsAndOps(t *testing.T) {
-	if got := len(Package.DDLs); got != 11 {
-		t.Fatalf("expected 11 DDLs (identity + ssn, dob, name, email, phone, claimKey, credentialBinding + "+
+	if got := len(Package.DDLs); got != 12 {
+		t.Fatalf("expected 12 DDLs (identity + ssn, dob, name, email, phone, claimKey, credentialBinding, idpBinding + "+
 			"actorRevocation, gateway.actorRevoked, gateway.actorUnrevoked), got %d", got)
 	}
 	identity := ddlByCanonicalName(t, "identity")

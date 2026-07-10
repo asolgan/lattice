@@ -140,14 +140,14 @@ func setupOperatorAuth(logger *slog.Logger, loopback bool) (*auth.Authenticator,
 		if err != nil {
 			return nil, nil, fmt.Errorf("dev-auth: load shared dev signing key: %w", err)
 		}
-		trustedKeys, err := auth.LoadTrustedKeys(auth.KeySourceConfig{
+		trustedKeys, trustedSpecs, err := auth.LoadTrustedKeys(auth.KeySourceConfig{
 			DevMode:    true,
 			DevKeyPath: os.Getenv("LOUPE_DEV_PUBLIC_KEY_PATH"),
 		}, func(msg string) { logger.Warn(msg) })
 		if err != nil {
 			return nil, nil, fmt.Errorf("dev-auth: load shared dev trust key: %w", err)
 		}
-		verifier, err := auth.NewVerifier(auth.Config{Keys: trustedKeys})
+		verifier, err := auth.NewVerifier(auth.Config{Keys: trustedKeys, KeyInfo: auth.KeyInfoFromSpecs(trustedSpecs)})
 		if err != nil {
 			return nil, nil, fmt.Errorf("dev-auth: build verifier: %w", err)
 		}
@@ -171,10 +171,15 @@ func setupOperatorAuth(logger *slog.Logger, loopback bool) (*auth.Authenticator,
 	if err != nil {
 		return nil, nil, fmt.Errorf("LOUPE_JWT_PUBLIC_KEY: %w", err)
 	}
+	issuer := os.Getenv("LOUPE_JWT_ISSUER")
+	if strings.TrimSpace(issuer) == "" {
+		return nil, nil, fmt.Errorf("LOUPE_JWT_ISSUER is required alongside LOUPE_JWT_PUBLIC_KEY " +
+			"(a configured external IdP source MUST pin an expected iss — Contract #11 §3.2)")
+	}
 	kid := envOrDefault("LOUPE_JWT_KID", "idp-key-1")
 	verifier, err := auth.NewVerifier(auth.Config{
 		Keys:     map[string]crypto.PublicKey{kid: pub},
-		Issuer:   os.Getenv("LOUPE_JWT_ISSUER"),
+		KeyInfo:  map[string]auth.KeyInfo{kid: {Spec: auth.BindingSpec{Mode: auth.ModeOpaque, Issuer: issuer}}},
 		Audience: os.Getenv("LOUPE_JWT_AUDIENCE"),
 	})
 	if err != nil {

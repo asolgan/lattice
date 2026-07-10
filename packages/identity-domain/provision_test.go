@@ -195,6 +195,79 @@ func TestProvisionConsumerIdentity_NonGatewayActor_Denied(t *testing.T) {
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
 }
 
+// TestProvisionConsumerIdentity_WithIdpProvenance_WritesIdpBindingAspect
+// proves the Increment 2 delta (external-actor-authn-binding-design.md §3.3
+// / §9): when the Gateway's pre-flight passes idpIssuer/idpSubject (an
+// opaque-mode token's raw provenance), the script writes a sensitive
+// .idpBinding aspect verbatim alongside the usual fresh-actor mutations.
+func TestProvisionConsumerIdentity_WithIdpProvenance_WritesIdpBindingAspect(t *testing.T) {
+	ctx, conn := setupTestEnv(t)
+	cp, cons := newProvisionPipeline(t, ctx, conn, "pci-idp")
+	roleKey := consumerRoleKey(t)
+
+	const iss = "https://accounts.google.com"
+	const sub = "110169484474386276334"
+	payload, err := json.Marshal(map[string]string{
+		"targetActorKey": freshActorKey, "consumerRoleKey": roleKey,
+		"idpIssuer": iss, "idpSubject": sub,
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("PCIIdp"),
+		Lane:          processor.LaneDefault,
+		OperationType: "ProvisionConsumerIdentity",
+		Actor:         gatewayActorKey,
+		SubmittedAt:   "2026-07-10T10:00:00Z",
+		Class:         "identity",
+		Payload:       payload,
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	idpBinding := readDecryptedAspectData(t, ctx, conn, freshActorKey, "idpBinding")
+	if got, _ := idpBinding["iss"].(string); got != iss {
+		t.Fatalf("idpBinding.iss = %q, want %q", got, iss)
+	}
+	if got, _ := idpBinding["sub"].(string); got != sub {
+		t.Fatalf("idpBinding.sub = %q, want %q", got, sub)
+	}
+}
+
+// TestProvisionConsumerIdentity_MismatchedIdpFields_Rejected proves the pair
+// travels together — idpIssuer without idpSubject (or vice versa) is a
+// wiring fault, not a partial-provenance case, and must be rejected before
+// any mutation lands.
+func TestProvisionConsumerIdentity_MismatchedIdpFields_Rejected(t *testing.T) {
+	ctx, conn := setupTestEnv(t)
+	cp, cons := newProvisionPipeline(t, ctx, conn, "pci-idp-mismatch")
+	roleKey := consumerRoleKey(t)
+
+	payload, err := json.Marshal(map[string]string{
+		"targetActorKey": freshActorKey, "consumerRoleKey": roleKey,
+		"idpIssuer": "https://accounts.google.com", // idpSubject deliberately omitted
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("PCIIdpMismatch"),
+		Lane:          processor.LaneDefault,
+		OperationType: "ProvisionConsumerIdentity",
+		Actor:         gatewayActorKey,
+		SubmittedAt:   "2026-07-10T10:00:00Z",
+		Class:         "identity",
+		Payload:       payload,
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+
+	if _, err := conn.KVGet(ctx, testutil.HarnessCoreBucket, freshActorKey); err == nil {
+		t.Fatalf("identity vertex must NOT be created when idpIssuer/idpSubject are mismatched")
+	}
+}
+
 // TestProvisionConsumerIdentity_OtherLiveRoleKey_Rejected is the security
 // regression for the pinned-role fix: a live, real role that is NOT
 // consumer (here, operator) must be rejected — not silently granted — even

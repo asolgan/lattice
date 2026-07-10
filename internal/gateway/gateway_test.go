@@ -51,7 +51,10 @@ func signToken(t *testing.T, priv *rsa.PrivateKey, kid, sub string) string {
 // with no NATS dependency (revocation checker nil).
 func testAuthenticator(t *testing.T, priv *rsa.PrivateKey, kid string) *auth.Authenticator {
 	t.Helper()
-	v, err := auth.NewVerifier(auth.Config{Keys: map[string]crypto.PublicKey{kid: &priv.PublicKey}})
+	v, err := auth.NewVerifier(auth.Config{
+		Keys:    map[string]crypto.PublicKey{kid: &priv.PublicKey},
+		KeyInfo: map[string]auth.KeyInfo{kid: {Spec: auth.BindingSpec{Mode: auth.ModeNanoID}}},
+	})
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
@@ -69,11 +72,11 @@ func TestBuildEnvelope_StampsVerifiedActor_IgnoresBodyActor(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 
-	env, err := buildEnvelope(req, "vtx.identity.REALACTOR00000000000", time.Now())
+	env, err := buildEnvelope(req, "vtx.identity.baNpMQRJzFSxajuvkFqh", time.Now())
 	if err != nil {
 		t.Fatalf("buildEnvelope: %v", err)
 	}
-	if env.Actor != "vtx.identity.REALACTOR00000000000" {
+	if env.Actor != "vtx.identity.baNpMQRJzFSxajuvkFqh" {
 		t.Fatalf("Actor = %q, want the verified actor (forged body actor must never win)", env.Actor)
 	}
 }
@@ -229,7 +232,7 @@ func doOperations(t *testing.T, s *Server, token, body string) *httptest.Respons
 func TestHandleOperations_ForgedActorNeverWins(t *testing.T) {
 	priv := newTestKey(t)
 	authn := testAuthenticator(t, priv, "k1")
-	token := signToken(t, priv, "k1", "REALACTOR00000000000")
+	token := signToken(t, priv, "k1", "baNpMQRJzFSxajuvkFqh")
 
 	var captured *processor.OperationEnvelope
 	fake := func(_ context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
@@ -247,7 +250,7 @@ func TestHandleOperations_ForgedActorNeverWins(t *testing.T) {
 	if captured == nil {
 		t.Fatal("submit was never called")
 	}
-	if captured.Actor != "vtx.identity.REALACTOR00000000000" {
+	if captured.Actor != "vtx.identity.baNpMQRJzFSxajuvkFqh" {
 		t.Fatalf("EXPOSED — env.Actor = %q, want the verified actor (forged body actor won)", captured.Actor)
 	}
 }
@@ -274,7 +277,7 @@ func (f fakeCredentialResolver) Resolve(context.Context, string) (string, bool, 
 func TestHandleOperations_CredentialBinding_ResolvesToClaimedIdentity(t *testing.T) {
 	priv := newTestKey(t)
 	authn := testAuthenticator(t, priv, "k1")
-	token := signToken(t, priv, "k1", "RAWCREDENTIAL00000000")
+	token := signToken(t, priv, "k1", "NcxqoP292Z4a7uPKftM6")
 
 	var captured *processor.OperationEnvelope
 	fake := func(_ context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
@@ -300,7 +303,7 @@ func TestHandleOperations_CredentialBinding_ResolvesToClaimedIdentity(t *testing
 func TestHandleOperations_CredentialBinding_ClaimIdentityCarveOut(t *testing.T) {
 	priv := newTestKey(t)
 	authn := testAuthenticator(t, priv, "k1")
-	token := signToken(t, priv, "k1", "RAWCREDENTIAL00000000")
+	token := signToken(t, priv, "k1", "NcxqoP292Z4a7uPKftM6")
 
 	var captured *processor.OperationEnvelope
 	fake := func(_ context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
@@ -314,7 +317,7 @@ func TestHandleOperations_CredentialBinding_ClaimIdentityCarveOut(t *testing.T) 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	if captured.Actor != "vtx.identity.RAWCREDENTIAL00000000" {
+	if captured.Actor != "vtx.identity.NcxqoP292Z4a7uPKftM6" {
 		t.Fatalf("ClaimIdentity env.Actor = %q, want the raw credential (carve-out bypassed)", captured.Actor)
 	}
 }
@@ -328,7 +331,7 @@ func TestHandleOperations_CredentialBinding_ClaimIdentityCarveOut(t *testing.T) 
 func TestHandleOperations_CredentialBinding_ResolveError_FallsBackToRawActor(t *testing.T) {
 	priv := newTestKey(t)
 	authn := testAuthenticator(t, priv, "k1")
-	token := signToken(t, priv, "k1", "RAWCREDENTIAL00000000")
+	token := signToken(t, priv, "k1", "NcxqoP292Z4a7uPKftM6")
 
 	var captured *processor.OperationEnvelope
 	fake := func(_ context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
@@ -342,7 +345,7 @@ func TestHandleOperations_CredentialBinding_ResolveError_FallsBackToRawActor(t *
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	if captured.Actor != "vtx.identity.RAWCREDENTIAL00000000" {
+	if captured.Actor != "vtx.identity.NcxqoP292Z4a7uPKftM6" {
 		t.Fatalf("env.Actor = %q, want the raw credential on resolver error", captured.Actor)
 	}
 }
@@ -356,7 +359,7 @@ func TestHandleOperations_CredentialBinding_ResolveError_FallsBackToRawActor(t *
 func TestHandleOperations_ProvisioningPreflight_FirstTouch(t *testing.T) {
 	priv := newTestKey(t)
 	authn := testAuthenticator(t, priv, "k1")
-	token := signToken(t, priv, "k1", "FRESHACTOR000000000A")
+	token := signToken(t, priv, "k1", "nXFwju1FgWbCTmAdPZkF")
 
 	var captured []*processor.OperationEnvelope
 	fake := func(_ context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
@@ -391,8 +394,8 @@ func TestHandleOperations_ProvisioningPreflight_FirstTouch(t *testing.T) {
 	if got := prov.ContextHint.Reads; len(got) != 1 || got[0] != "vtx.role.CONSUMER0000000000A" {
 		t.Fatalf("first submit ContextHint.Reads = %v, want [vtx.role.CONSUMER0000000000A]", got)
 	}
-	if got := prov.ContextHint.OptionalReads; len(got) != 1 || got[0] != "vtx.identity.FRESHACTOR000000000A" {
-		t.Fatalf("first submit ContextHint.OptionalReads = %v, want [vtx.identity.FRESHACTOR000000000A]", got)
+	if got := prov.ContextHint.OptionalReads; len(got) != 1 || got[0] != "vtx.identity.nXFwju1FgWbCTmAdPZkF" {
+		t.Fatalf("first submit ContextHint.OptionalReads = %v, want [vtx.identity.nXFwju1FgWbCTmAdPZkF]", got)
 	}
 	var payload struct {
 		TargetActorKey  string `json:"targetActorKey"`
@@ -401,7 +404,7 @@ func TestHandleOperations_ProvisioningPreflight_FirstTouch(t *testing.T) {
 	if err := json.Unmarshal(prov.Payload, &payload); err != nil {
 		t.Fatalf("unmarshal provisioning payload: %v", err)
 	}
-	if payload.TargetActorKey != "vtx.identity.FRESHACTOR000000000A" {
+	if payload.TargetActorKey != "vtx.identity.nXFwju1FgWbCTmAdPZkF" {
 		t.Fatalf("targetActorKey = %q, want the verified actor", payload.TargetActorKey)
 	}
 	if payload.ConsumerRoleKey != "vtx.role.CONSUMER0000000000A" {
@@ -409,7 +412,7 @@ func TestHandleOperations_ProvisioningPreflight_FirstTouch(t *testing.T) {
 	}
 
 	real := captured[1]
-	if real.OperationType != "PingPlatform" || real.Actor != "vtx.identity.FRESHACTOR000000000A" {
+	if real.OperationType != "PingPlatform" || real.Actor != "vtx.identity.nXFwju1FgWbCTmAdPZkF" {
 		t.Fatalf("second submit = %+v, want the caller's own op under the verified actor", real)
 	}
 }
@@ -419,7 +422,7 @@ func TestHandleOperations_ProvisioningPreflight_FirstTouch(t *testing.T) {
 func TestHandleOperations_ProvisioningPreflight_CacheHit(t *testing.T) {
 	priv := newTestKey(t)
 	authn := testAuthenticator(t, priv, "k1")
-	token := signToken(t, priv, "k1", "REPEATACTOR00000000")
+	token := signToken(t, priv, "k1", "fj9NpfDYJPwLy2epMitM")
 
 	var opTypes []string
 	fake := func(_ context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
@@ -446,7 +449,7 @@ func TestHandleOperations_ProvisioningPreflight_CacheHit(t *testing.T) {
 func TestHandleOperations_ProvisioningPreflight_ToleratesFailure(t *testing.T) {
 	priv := newTestKey(t)
 	authn := testAuthenticator(t, priv, "k1")
-	token := signToken(t, priv, "k1", "FAILACTOR000000000A")
+	token := signToken(t, priv, "k1", "CHBLgu4cFdrFKVqAaXJj")
 
 	calls := 0
 	fake := func(_ context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
@@ -487,7 +490,7 @@ func TestHandleOperations_InvalidSignature_401(t *testing.T) {
 	other := newTestKey(t)
 	authn := testAuthenticator(t, priv, "k1")
 	// signed by a DIFFERENT key than the one the Authenticator trusts under kid "k1".
-	badToken := signToken(t, other, "k1", "someone")
+	badToken := signToken(t, other, "k1", "bN92DrPeSkb4zJYvgDJy")
 
 	s := newTestServer(t, authn, func(context.Context, *processor.OperationEnvelope) (*processor.OperationReply, error) {
 		t.Fatal("submit must not be called for an invalid signature")
@@ -502,12 +505,15 @@ func TestHandleOperations_InvalidSignature_401(t *testing.T) {
 
 func TestHandleOperations_Revoked_403(t *testing.T) {
 	priv := newTestKey(t)
-	v, err := auth.NewVerifier(auth.Config{Keys: map[string]crypto.PublicKey{"k1": &priv.PublicKey}})
+	v, err := auth.NewVerifier(auth.Config{
+		Keys:    map[string]crypto.PublicKey{"k1": &priv.PublicKey},
+		KeyInfo: map[string]auth.KeyInfo{"k1": {Spec: auth.BindingSpec{Mode: auth.ModeNanoID}}},
+	})
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
 	authn := auth.NewAuthenticator(v, alwaysRevoked{})
-	token := signToken(t, priv, "k1", "someone")
+	token := signToken(t, priv, "k1", "bN92DrPeSkb4zJYvgDJy")
 
 	s := newTestServer(t, authn, func(context.Context, *processor.OperationEnvelope) (*processor.OperationReply, error) {
 		t.Fatal("submit must not be called for a revoked actor")
@@ -527,7 +533,7 @@ func (alwaysRevoked) IsRevoked(context.Context, string) (bool, error) { return t
 func TestHandleOperations_RejectedReply_MapsAuthDeniedTo403(t *testing.T) {
 	priv := newTestKey(t)
 	authn := testAuthenticator(t, priv, "k1")
-	token := signToken(t, priv, "k1", "someone")
+	token := signToken(t, priv, "k1", "bN92DrPeSkb4zJYvgDJy")
 
 	fake := func(_ context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
 		return &processor.OperationReply{
@@ -562,7 +568,7 @@ func TestHandleOperations_GETNotAllowed(t *testing.T) {
 func TestHandleOperations_MalformedBody_400(t *testing.T) {
 	priv := newTestKey(t)
 	authn := testAuthenticator(t, priv, "k1")
-	token := signToken(t, priv, "k1", "someone")
+	token := signToken(t, priv, "k1", "bN92DrPeSkb4zJYvgDJy")
 	s := newTestServer(t, authn, func(context.Context, *processor.OperationEnvelope) (*processor.OperationReply, error) {
 		t.Fatal("submit must not be called for a malformed body")
 		return nil, nil
@@ -579,7 +585,7 @@ func TestHandleOperations_MalformedBody_400(t *testing.T) {
 func TestCORS_Unconfigured_NoHeaders(t *testing.T) {
 	priv := newTestKey(t)
 	authn := testAuthenticator(t, priv, "k1")
-	token := signToken(t, priv, "k1", "someone")
+	token := signToken(t, priv, "k1", "bN92DrPeSkb4zJYvgDJy")
 	s := newTestServer(t, authn, func(_ context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
 		return &processor.OperationReply{RequestID: env.RequestID, Status: processor.ReplyStatusAccepted}, nil
 	})
@@ -648,7 +654,7 @@ func TestCORS_Preflight_DisallowedOrigin_NoHeaders(t *testing.T) {
 func TestCORS_ActualRequest_AllowedOriginGetsHeaders(t *testing.T) {
 	priv := newTestKey(t)
 	authn := testAuthenticator(t, priv, "k1")
-	token := signToken(t, priv, "k1", "someone")
+	token := signToken(t, priv, "k1", "bN92DrPeSkb4zJYvgDJy")
 	s := newTestServer(t, authn, func(_ context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
 		return &processor.OperationReply{RequestID: env.RequestID, Status: processor.ReplyStatusAccepted}, nil
 	})

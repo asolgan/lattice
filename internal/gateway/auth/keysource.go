@@ -38,6 +38,12 @@ type KeySourceConfig struct {
 	// KeysDir, if non-empty, is a directory of <kid>.pem trusted public keys
 	// (a static IdP snapshot).
 	KeysDir string
+	// KeysDirIssuer is the single issuer every kid loaded from KeysDir is
+	// pinned to (Contract #11 §3.2: a configured external source is always
+	// opaque-mode and MUST declare its expected iss). Required whenever
+	// KeysDir is set — LoadTrustedKeys refuses to start without it (an
+	// unpinned issuer would allow cross-issuer subject replay, finding A8).
+	KeysDirIssuer string
 	// DevMode additionally trusts the checked-in dev key at DevKeyPath (or
 	// defaultDevPublicKeyPath) — local dev/CI only, never production.
 	DevMode bool
@@ -46,26 +52,35 @@ type KeySourceConfig struct {
 	DevKeyPath string
 }
 
-// LoadTrustedKeys builds the kid→public-key map cfg describes: every <kid>.pem
-// under KeysDir, plus the checked-in dev key under DevKeyID when DevMode is
-// set. warn receives the dev-mode advisory message (nil-safe: a nil warn is a
-// no-op) — callers pass e.g. func(msg string) { logger.Warn(msg) }.
+// LoadTrustedKeys builds the kid→public-key map cfg describes (every
+// <kid>.pem under KeysDir, plus the checked-in dev key under DevKeyID when
+// DevMode is set) and the matching per-kid BindingSpec map: every KeysDir kid
+// gets ModeOpaque pinned to cfg.KeysDirIssuer; the dev key gets ModeNanoID
+// (never operator-selectable — Contract #11 §3.2, finding MAJOR-4). warn
+// receives the dev-mode advisory message (nil-safe: a nil warn is a no-op) —
+// callers pass e.g. func(msg string) { logger.Warn(msg) }.
 //
 // An explicitly-configured KeysDir (cfg.KeysDir != "") that scans to ZERO
-// <kid>.pem files is a startup ERROR, never a silent empty result: a caller
-// who set KeysDir clearly intends a trust root to load from it, so a wrong
-// extension, an empty/not-yet-synced directory, or a typo'd path must fail
-// loudly — silently returning an empty map here would let a caller's
-// "configured but got nothing" collapse into the same shape as "never
-// configured," which for a JWT-verification trust root means quietly falling
-// back to no verification at all (a 3-layer review finding, Fire 2).
-func LoadTrustedKeys(cfg KeySourceConfig, warn func(msg string)) (map[string]crypto.PublicKey, error) {
+// <kid>.pem files, or declares no KeysDirIssuer, is a startup ERROR, never a
+// silent empty result: a caller who set KeysDir clearly intends a trust root
+// to load from it, so a wrong extension, an empty/not-yet-synced directory,
+// a typo'd path, or a missing issuer pin must fail loudly — silently
+// returning an empty map here would let a caller's "configured but got
+// nothing" collapse into the same shape as "never configured," which for a
+// JWT-verification trust root means quietly falling back to no verification
+// at all (a 3-layer review finding, Fire 2).
+func LoadTrustedKeys(cfg KeySourceConfig, warn func(msg string)) (map[string]crypto.PublicKey, map[string]BindingSpec, error) {
 	keys := make(map[string]crypto.PublicKey)
+	specs := make(map[string]BindingSpec)
 
 	if cfg.KeysDir != "" {
+		if cfg.KeysDirIssuer == "" {
+			return nil, nil, fmt.Errorf("keys dir %q configured with no KeysDirIssuer — a configured external "+
+				"source MUST pin an expected iss (refusing to silently trust an unpinned opaque source)", cfg.KeysDir)
+		}
 		entries, err := os.ReadDir(cfg.KeysDir)
 		if err != nil {
-			return nil, fmt.Errorf("read keys dir %q: %w", cfg.KeysDir, err)
+			return nil, nil, fmt.Errorf("read keys dir %q: %w", cfg.KeysDir, err)
 		}
 		for _, e := range entries {
 			if e.IsDir() || !strings.HasSuffix(e.Name(), ".pem") {
@@ -74,12 +89,13 @@ func LoadTrustedKeys(cfg KeySourceConfig, warn func(msg string)) (map[string]cry
 			kid := strings.TrimSuffix(e.Name(), ".pem")
 			pub, err := loadPublicKeyPEM(filepath.Join(cfg.KeysDir, e.Name()))
 			if err != nil {
-				return nil, fmt.Errorf("load key %q: %w", e.Name(), err)
+				return nil, nil, fmt.Errorf("load key %q: %w", e.Name(), err)
 			}
 			keys[kid] = pub
+			specs[kid] = BindingSpec{Mode: ModeOpaque, Issuer: cfg.KeysDirIssuer}
 		}
 		if len(keys) == 0 {
-			return nil, fmt.Errorf("keys dir %q contains no <kid>.pem files — refusing to silently trust nothing "+
+			return nil, nil, fmt.Errorf("keys dir %q contains no <kid>.pem files — refusing to silently trust nothing "+
 				"(an explicitly configured trust-root directory must yield at least one key)", cfg.KeysDir)
 		}
 	}
@@ -91,23 +107,24 @@ func LoadTrustedKeys(cfg KeySourceConfig, warn func(msg string)) (map[string]cry
 		}
 		pub, err := loadPublicKeyPEM(path)
 		if err != nil {
-			return nil, fmt.Errorf("load dev key %q: %w", path, err)
+			return nil, nil, fmt.Errorf("load dev key %q: %w", path, err)
 		}
 		// A <kid>.pem in KeysDir named "dev.pem" would otherwise be silently
 		// shadowed by the checked-in dev key below — refuse instead of
 		// substituting an unexpected trust key under a name the caller
 		// picked for something else.
 		if _, collides := keys[DevKeyID]; collides {
-			return nil, fmt.Errorf("keys dir %q already defines kid %q — this collides with the reserved dev-mode "+
+			return nil, nil, fmt.Errorf("keys dir %q already defines kid %q — this collides with the reserved dev-mode "+
 				"kid; rename the file or disable dev mode", cfg.KeysDir, DevKeyID)
 		}
 		keys[DevKeyID] = pub
+		specs[DevKeyID] = BindingSpec{Mode: ModeNanoID}
 		if warn != nil {
 			warn(fmt.Sprintf("dev mode: the checked-in dev signing key (%s, kid %q) is trusted; NEVER set this in production", path, DevKeyID))
 		}
 	}
 
-	return keys, nil
+	return keys, specs, nil
 }
 
 // LoadDevSigningKey loads the checked-in dev private key (PKCS8 PEM, RSA) —

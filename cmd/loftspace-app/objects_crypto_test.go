@@ -195,8 +195,8 @@ func multipartUpload(t *testing.T, hs *httptest.Server, token string, content []
 // else's governingIdentity.
 func TestHandleObjectUpload_Sensitive_RequiresSelfIdentity(t *testing.T) {
 	_, hs, _, _, mint := sensitiveObjectFixture(t)
-	alice := "alice0000000000000a"
-	victim := "vtx.identity.victim000000000001"
+	alice := "rHByTRQJyGuy9kFodCBF"
+	victim := "vtx.identity.PQipBmNwsvkcQeoT37Az"
 
 	res, body := multipartUpload(t, hs, mint(alice), []byte("hello"), "vtx.identity."+alice, "idDocument", true, victim)
 	if res.StatusCode != http.StatusForbidden {
@@ -224,11 +224,11 @@ func TestHandleObjectUpload_Sensitive_RequiresAuth(t *testing.T) {
 func TestHandleObjectUpload_Sensitive_SealsAndReturnsEnvelope(t *testing.T) {
 	_, hs, backend, conn, mint := sensitiveObjectFixture(t)
 	ctx := context.Background()
-	applicant := "vtx.identity.applicant00000000001"
+	applicant := "vtx.identity.3LvdXTKPzXGFaGY6YpS3"
 	seedPiiKeyEnvelope(t, ctx, conn, backend, applicant)
 
 	plaintext := []byte("this is a scanned ID document, definitely PII")
-	res, body := multipartUpload(t, hs, mint("applicant00000000001"), plaintext, applicant, "idDocument", true, applicant)
+	res, body := multipartUpload(t, hs, mint("3LvdXTKPzXGFaGY6YpS3"), plaintext, applicant, "idDocument", true, applicant)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%v", res.StatusCode, body)
 	}
@@ -267,7 +267,7 @@ func TestHandleObjectUpload_Sensitive_SealsAndReturnsEnvelope(t *testing.T) {
 func TestHandleObjectGet_Sensitive_DefaultServesCiphertext(t *testing.T) {
 	_, hs, backend, conn, mint := sensitiveObjectFixture(t)
 	ctx := context.Background()
-	applicant := "vtx.identity.applicant00000000002"
+	applicant := "vtx.identity.CxfkHaFmU5rq87ZnNwEC"
 	env := seedPiiKeyEnvelope(t, ctx, conn, backend, applicant)
 
 	plaintext := []byte("proof of income pay stub contents")
@@ -275,7 +275,7 @@ func TestHandleObjectGet_Sensitive_DefaultServesCiphertext(t *testing.T) {
 	seedObjectAttachmentRow(t, ctx, conn, oid, storeName, "application/pdf", int64(len(ciphertext)), applicant, true, digest, applicant, enc)
 
 	req, _ := http.NewRequest(http.MethodGet, hs.URL+"/api/objects/"+oid, nil)
-	req.Header.Set("Authorization", "Bearer "+mint("applicant00000000002"))
+	req.Header.Set("Authorization", "Bearer "+mint("CxfkHaFmU5rq87ZnNwEC"))
 	res, err := hs.Client().Do(req)
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -298,7 +298,7 @@ func TestHandleObjectGet_Sensitive_DefaultServesCiphertext(t *testing.T) {
 func TestHandleObjectGet_Sensitive_DecryptTrue_RoundTrip(t *testing.T) {
 	_, hs, backend, conn, mint := sensitiveObjectFixture(t)
 	ctx := context.Background()
-	applicant := "vtx.identity.applicant00000000003"
+	applicant := "vtx.identity.tQ1UF6Q7GaTfr5ZLZYPt"
 	env := seedPiiKeyEnvelope(t, ctx, conn, backend, applicant)
 
 	plaintext := []byte("a passport scan's worth of bytes")
@@ -306,7 +306,7 @@ func TestHandleObjectGet_Sensitive_DecryptTrue_RoundTrip(t *testing.T) {
 	seedObjectAttachmentRow(t, ctx, conn, oid, storeName, "image/jpeg", int64(len(plaintext)), applicant, true, digest, applicant, enc)
 
 	req, _ := http.NewRequest(http.MethodGet, hs.URL+"/api/objects/"+oid+"?decrypt=true", nil)
-	req.Header.Set("Authorization", "Bearer "+mint("applicant00000000003"))
+	req.Header.Set("Authorization", "Bearer "+mint("tQ1UF6Q7GaTfr5ZLZYPt"))
 	res, err := hs.Client().Do(req)
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -328,7 +328,7 @@ func TestHandleObjectGet_Sensitive_DecryptTrue_RoundTrip(t *testing.T) {
 func TestHandleObjectGet_Sensitive_DecryptTrue_WrongUserDenied(t *testing.T) {
 	_, hs, backend, conn, mint := sensitiveObjectFixture(t)
 	ctx := context.Background()
-	applicant := "vtx.identity.applicant00000000004"
+	applicant := "vtx.identity.TvusEprLkxRLfaTrvmQu"
 	env := seedPiiKeyEnvelope(t, ctx, conn, backend, applicant)
 
 	plaintext := []byte("someone else's sensitive document")
@@ -336,7 +336,7 @@ func TestHandleObjectGet_Sensitive_DecryptTrue_WrongUserDenied(t *testing.T) {
 	seedObjectAttachmentRow(t, ctx, conn, oid, storeName, "image/jpeg", int64(len(plaintext)), applicant, true, digest, applicant, enc)
 
 	req, _ := http.NewRequest(http.MethodGet, hs.URL+"/api/objects/"+oid+"?decrypt=true", nil)
-	req.Header.Set("Authorization", "Bearer "+mint("astranger000000000000"))
+	req.Header.Set("Authorization", "Bearer "+mint("hb8sfKSJRymkSyod9obZ"))
 	res, err := hs.Client().Do(req)
 	if err != nil {
 		t.Fatalf("get: %v", err)
@@ -354,7 +354,7 @@ func TestHandleObjectGet_Sensitive_DecryptTrue_WrongUserDenied(t *testing.T) {
 func TestHandleObjectGet_Sensitive_ShreddedIdentity_PermanentlyUndecryptable(t *testing.T) {
 	_, hs, backend, conn, mint := sensitiveObjectFixture(t)
 	ctx := context.Background()
-	applicant := "vtx.identity.applicant00000000005"
+	applicant := "vtx.identity.W511DQ4C3WbTEPn8wWPs"
 	env := seedPiiKeyEnvelope(t, ctx, conn, backend, applicant)
 
 	plaintext := []byte("a document that will become permanently unrecoverable")
@@ -365,7 +365,7 @@ func TestHandleObjectGet_Sensitive_ShreddedIdentity_PermanentlyUndecryptable(t *
 		t.Fatalf("shred key: %v", err)
 	}
 
-	token := mint("applicant00000000005")
+	token := mint("W511DQ4C3WbTEPn8wWPs")
 
 	t.Run("decrypt=true now fails", func(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodGet, hs.URL+"/api/objects/"+oid+"?decrypt=true", nil)

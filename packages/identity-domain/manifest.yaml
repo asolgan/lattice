@@ -27,6 +27,8 @@ declares:
       class: meta.ddl.aspectType
     - canonicalName: credentialBinding
       class: meta.ddl.aspectType
+    - canonicalName: idpBinding
+      class: meta.ddl.aspectType
     - canonicalName: actorRevocation
       class: meta.ddl.vertexType
     - canonicalName: gateway.actorRevoked

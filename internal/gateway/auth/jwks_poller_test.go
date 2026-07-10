@@ -47,7 +47,10 @@ func TestJWKSPoller_FetchOnce_PopulatesVerifier(t *testing.T) {
 	srv := newJWKSServer(t, marshalJWKS(t, rsaJWK("k1", kp.pub)))
 
 	v := verifierFor(t, map[string]crypto.PublicKey{"placeholder": newRSA(t).pub})
-	poller := NewJWKSPoller(srv.url(), v, nil, 0, nil)
+	poller, err := NewJWKSPoller(srv.url(), v, nil, nil, testIss, 0, nil)
+	if err != nil {
+		t.Fatalf("NewJWKSPoller: %v", err)
+	}
 
 	if err := poller.FetchOnce(context.Background()); err != nil {
 		t.Fatalf("FetchOnce: %v", err)
@@ -70,7 +73,11 @@ func TestJWKSPoller_FetchOnce_MergesStaticKeys(t *testing.T) {
 	srv := newJWKSServer(t, marshalJWKS(t, rsaJWK("idp1", jwksKP.pub)))
 
 	v := verifierFor(t, map[string]crypto.PublicKey{"dev": devKP.pub})
-	poller := NewJWKSPoller(srv.url(), v, map[string]crypto.PublicKey{"dev": devKP.pub}, 0, nil)
+	poller, err := NewJWKSPoller(srv.url(), v, map[string]crypto.PublicKey{"dev": devKP.pub},
+		map[string]BindingSpec{"dev": {Mode: ModeNanoID}}, testIss, 0, nil)
+	if err != nil {
+		t.Fatalf("NewJWKSPoller: %v", err)
+	}
 
 	if err := poller.FetchOnce(context.Background()); err != nil {
 		t.Fatalf("FetchOnce: %v", err)
@@ -89,7 +96,10 @@ func TestJWKSPoller_FetchOnce_FailureLeavesVerifierUnchanged(t *testing.T) {
 	srv := newJWKSServer(t, marshalJWKS(t, rsaJWK("k1", kp.pub)))
 
 	v := verifierFor(t, map[string]crypto.PublicKey{"seed": kp.pub})
-	poller := NewJWKSPoller(srv.url(), v, nil, 0, nil)
+	poller, err := NewJWKSPoller(srv.url(), v, nil, nil, testIss, 0, nil)
+	if err != nil {
+		t.Fatalf("NewJWKSPoller: %v", err)
+	}
 
 	srv.setFail(true)
 	if err := poller.FetchOnce(context.Background()); err == nil {
@@ -111,7 +121,10 @@ func TestJWKSPoller_Rotation(t *testing.T) {
 	srv := newJWKSServer(t, marshalJWKS(t, rsaJWK("k1", kp1.pub)))
 
 	v := verifierFor(t, map[string]crypto.PublicKey{"seed": kp1.pub})
-	poller := NewJWKSPoller(srv.url(), v, nil, 0, nil)
+	poller, err := NewJWKSPoller(srv.url(), v, nil, nil, testIss, 0, nil)
+	if err != nil {
+		t.Fatalf("NewJWKSPoller: %v", err)
+	}
 
 	if err := poller.FetchOnce(context.Background()); err != nil {
 		t.Fatalf("FetchOnce (round 1): %v", err)
@@ -143,7 +156,11 @@ func TestJWKSPoller_FetchOnce_RecordsProvenanceAndCounters(t *testing.T) {
 	srv := newJWKSServer(t, marshalJWKS(t, jwk1))
 
 	v := verifierFor(t, map[string]crypto.PublicKey{"dev": devKP.pub})
-	poller := NewJWKSPoller(srv.url(), v, map[string]crypto.PublicKey{"dev": devKP.pub}, 0, nil)
+	poller, err := NewJWKSPoller(srv.url(), v, map[string]crypto.PublicKey{"dev": devKP.pub},
+		map[string]BindingSpec{"dev": {Mode: ModeNanoID}}, testIss, 0, nil)
+	if err != nil {
+		t.Fatalf("NewJWKSPoller: %v", err)
+	}
 
 	if !poller.LastPollAt().IsZero() {
 		t.Fatalf("LastPollAt before any fetch = %v, want zero", poller.LastPollAt())
@@ -197,10 +214,24 @@ func TestJWKSPoller_FetchOnce_RecordsProvenanceAndCounters(t *testing.T) {
 func TestJWKSPoller_IntervalClamping(t *testing.T) {
 	v := verifierFor(t, map[string]crypto.PublicKey{"seed": newRSA(t).pub})
 
-	if p := NewJWKSPoller("https://example.test", v, nil, 0, nil); p.interval != DefaultJWKSPollInterval {
+	if p, err := NewJWKSPoller("https://example.test", v, nil, nil, testIss, 0, nil); err != nil {
+		t.Fatalf("NewJWKSPoller: %v", err)
+	} else if p.interval != DefaultJWKSPollInterval {
 		t.Errorf("interval = %v, want default %v", p.interval, DefaultJWKSPollInterval)
 	}
-	if p := NewJWKSPoller("https://example.test", v, nil, MinJWKSPollInterval/2, nil); p.interval != MinJWKSPollInterval {
+	if p, err := NewJWKSPoller("https://example.test", v, nil, nil, testIss, MinJWKSPollInterval/2, nil); err != nil {
+		t.Fatalf("NewJWKSPoller: %v", err)
+	} else if p.interval != MinJWKSPollInterval {
 		t.Errorf("interval = %v, want clamped floor %v", p.interval, MinJWKSPollInterval)
+	}
+}
+
+// TestNewJWKSPoller_NoIssuerErrors — a live external key source with no
+// declared issuer is a construction error: it is always opaque-mode and MUST
+// pin an expected iss (Contract #11 §3.2, finding A8).
+func TestNewJWKSPoller_NoIssuerErrors(t *testing.T) {
+	v := verifierFor(t, map[string]crypto.PublicKey{"seed": newRSA(t).pub})
+	if _, err := NewJWKSPoller("https://example.test", v, nil, nil, "", 0, nil); err == nil {
+		t.Fatal("NewJWKSPoller with no issuer: want error, got nil")
 	}
 }

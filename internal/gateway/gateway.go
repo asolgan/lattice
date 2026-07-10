@@ -369,7 +369,7 @@ func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.provisionActorIfNeeded(ctx, actor.ActorID)
+	s.provisionActorIfNeeded(ctx, actor.ActorID, actor.Issuer, actor.RawSubject)
 
 	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
 	if err != nil {
@@ -426,14 +426,26 @@ func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
 // truly never lands. Failing here would make the whole request depend on an
 // op whose only job is convenience, so a failure just means "try again next
 // request" (logged, not surfaced to the HTTP caller).
-func (s *Server) provisionActorIfNeeded(ctx context.Context, actorID string) {
+// idpIssuer/idpSubject are the verifier's raw provenance (VerifiedActor.Issuer/
+// .RawSubject, Contract #11 §3.3) — non-empty only for an opaque-mode token
+// (a real external IdP); a nanoid-mode dev token carries no iss claim, so
+// both are empty and the payload omits them (ProvisionConsumerIdentity treats
+// the pair as optional). When present, the script writes them onto a fresh
+// identity as the .idpBinding aspect — the audit answer to "which IdP account
+// is this identity?"
+func (s *Server) provisionActorIfNeeded(ctx context.Context, actorID, idpIssuer, idpSubject string) {
 	if s.gatewayActorKey == "" || s.consumerRoleKey == "" || s.provisioned.has(actorID) {
 		return
 	}
-	payload, err := json.Marshal(map[string]string{
+	payloadFields := map[string]string{
 		"targetActorKey":  actorID,
 		"consumerRoleKey": s.consumerRoleKey,
-	})
+	}
+	if idpIssuer != "" {
+		payloadFields["idpIssuer"] = idpIssuer
+		payloadFields["idpSubject"] = idpSubject
+	}
+	payload, err := json.Marshal(payloadFields)
 	if err != nil {
 		s.logger.Error("gateway: marshal provisioning payload", "actor", actorID, "error", err)
 		return

@@ -39,10 +39,11 @@ func WireActorVerifierFromEnv(ctx context.Context, conn *substrate.Conn, logger 
 	keysDir := os.Getenv("LATTICE_CONTROL_JWT_KEYS_DIR")
 	devMode := os.Getenv("LATTICE_CONTROL_JWT_DEV_MODE") == "true"
 
-	keys, err := auth.LoadTrustedKeys(auth.KeySourceConfig{
-		KeysDir:    keysDir,
-		DevMode:    devMode,
-		DevKeyPath: os.Getenv("LATTICE_CONTROL_JWT_DEV_KEY_PATH"),
+	keys, specs, err := auth.LoadTrustedKeys(auth.KeySourceConfig{
+		KeysDir:       keysDir,
+		KeysDirIssuer: os.Getenv("LATTICE_CONTROL_JWT_ISSUER"),
+		DevMode:       devMode,
+		DevKeyPath:    os.Getenv("LATTICE_CONTROL_JWT_DEV_KEY_PATH"),
 	}, func(msg string) { logger.Warn("controlauth: " + msg) })
 	if err != nil {
 		return nil, fmt.Errorf("controlauth: load trusted JWT keys: %w", err)
@@ -54,7 +55,7 @@ func WireActorVerifierFromEnv(ctx context.Context, conn *substrate.Conn, logger 
 
 	verifier, err := auth.NewVerifier(auth.Config{
 		Keys:     keys,
-		Issuer:   os.Getenv("LATTICE_CONTROL_JWT_ISSUER"),
+		KeyInfo:  auth.KeyInfoFromSpecs(specs),
 		Audience: os.Getenv("LATTICE_CONTROL_JWT_AUDIENCE"),
 	})
 	if err != nil {

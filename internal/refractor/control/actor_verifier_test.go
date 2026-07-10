@@ -50,7 +50,7 @@ func TestControl_ActorVerifier_ValidTokenResolvesVerifiedActor(t *testing.T) {
 	nc, _ := startControlTestServerConn(t)
 
 	priv := newVerifierTestRSAKey(t)
-	verifier, err := auth.NewVerifier(auth.Config{Keys: map[string]crypto.PublicKey{verifierTestKID: &priv.PublicKey}})
+	verifier, err := auth.NewVerifier(auth.Config{Keys: map[string]crypto.PublicKey{verifierTestKID: &priv.PublicKey}, KeyInfo: map[string]auth.KeyInfo{verifierTestKID: {Spec: auth.BindingSpec{Mode: auth.ModeNanoID}}}})
 	require.NoError(t, err)
 	av := controlauth.NewActorVerifier(auth.NewAuthenticator(verifier, nil))
 
@@ -64,11 +64,11 @@ func TestControl_ActorVerifier_ValidTokenResolvesVerifiedActor(t *testing.T) {
 	require.NoError(t, svc.StartNATSListener(ctx, nc))
 
 	subj := control.ControlSubject("rule-actor-test", "health")
-	token := signVerifierTestToken(t, priv, "opNanoID1")
+	token := signVerifierTestToken(t, priv, "WKbsDE4kGZoDiPCFdcER")
 	_, err = nc.RequestMsg(controlauth.NewActorRequestMsg(subj, token), 2*time.Second)
 	require.NoError(t, err)
 
-	assert.Equal(t, "vtx.identity.opNanoID1", rec.actor(), "capability.Authorize must see the VERIFIED actor id, never the raw token")
+	assert.Equal(t, "vtx.identity.WKbsDE4kGZoDiPCFdcER", rec.actor(), "capability.Authorize must see the VERIFIED actor id, never the raw token")
 }
 
 // TestControl_ActorVerifier_NoTokenDeniesBeforeCapabilityRead proves an
@@ -79,7 +79,7 @@ func TestControl_ActorVerifier_NoTokenDeniesBeforeCapabilityRead(t *testing.T) {
 	nc, _ := startControlTestServerConn(t)
 
 	priv := newVerifierTestRSAKey(t)
-	verifier, err := auth.NewVerifier(auth.Config{Keys: map[string]crypto.PublicKey{verifierTestKID: &priv.PublicKey}})
+	verifier, err := auth.NewVerifier(auth.Config{Keys: map[string]crypto.PublicKey{verifierTestKID: &priv.PublicKey}, KeyInfo: map[string]auth.KeyInfo{verifierTestKID: {Spec: auth.BindingSpec{Mode: auth.ModeNanoID}}}})
 	require.NoError(t, err)
 	av := controlauth.NewActorVerifier(auth.NewAuthenticator(verifier, nil))
 

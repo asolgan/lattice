@@ -105,7 +105,10 @@ func TestResolveActor_NilVerifier_NoHeaderResolvesEmpty(t *testing.T) {
 
 func TestResolveActor_VerifierConfigured_ValidTokenResolvesActorID(t *testing.T) {
 	priv := newTestRSAKey(t)
-	verifier, err := auth.NewVerifier(auth.Config{Keys: map[string]crypto.PublicKey{testVerifierKID: &priv.PublicKey}})
+	verifier, err := auth.NewVerifier(auth.Config{
+		Keys:    map[string]crypto.PublicKey{testVerifierKID: &priv.PublicKey},
+		KeyInfo: map[string]auth.KeyInfo{testVerifierKID: {Spec: auth.BindingSpec{Mode: auth.ModeNanoID}}},
+	})
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
@@ -119,19 +122,22 @@ func TestResolveActor_VerifierConfigured_ValidTokenResolvesActorID(t *testing.T)
 	}
 	defer nc.Close()
 
-	token := signTestToken(t, priv, testVerifierKID, validTestClaims("abc123"))
+	token := signTestToken(t, priv, testVerifierKID, validTestClaims("HWiis7G8Q9pqmc2nm5x1"))
 	reply, err := nc.RequestMsg(NewActorRequestMsg("controlauth.test.resolve", token), 2*time.Second)
 	if err != nil {
 		t.Fatalf("request: %v", err)
 	}
-	if got := string(reply.Data); got != "vtx.identity.abc123" {
-		t.Fatalf("got actor %q, want vtx.identity.abc123", got)
+	if got := string(reply.Data); got != "vtx.identity.HWiis7G8Q9pqmc2nm5x1" {
+		t.Fatalf("got actor %q, want vtx.identity.HWiis7G8Q9pqmc2nm5x1", got)
 	}
 }
 
 func TestResolveActor_VerifierConfigured_NoTokenDenies(t *testing.T) {
 	priv := newTestRSAKey(t)
-	verifier, err := auth.NewVerifier(auth.Config{Keys: map[string]crypto.PublicKey{testVerifierKID: &priv.PublicKey}})
+	verifier, err := auth.NewVerifier(auth.Config{
+		Keys:    map[string]crypto.PublicKey{testVerifierKID: &priv.PublicKey},
+		KeyInfo: map[string]auth.KeyInfo{testVerifierKID: {Spec: auth.BindingSpec{Mode: auth.ModeNanoID}}},
+	})
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
@@ -146,7 +152,10 @@ func TestResolveActor_VerifierConfigured_NoTokenDenies(t *testing.T) {
 
 func TestResolveActor_VerifierConfigured_MalformedTokenDenies(t *testing.T) {
 	priv := newTestRSAKey(t)
-	verifier, err := auth.NewVerifier(auth.Config{Keys: map[string]crypto.PublicKey{testVerifierKID: &priv.PublicKey}})
+	verifier, err := auth.NewVerifier(auth.Config{
+		Keys:    map[string]crypto.PublicKey{testVerifierKID: &priv.PublicKey},
+		KeyInfo: map[string]auth.KeyInfo{testVerifierKID: {Spec: auth.BindingSpec{Mode: auth.ModeNanoID}}},
+	})
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
@@ -164,14 +173,17 @@ func TestResolveActor_VerifierConfigured_MalformedTokenDenies(t *testing.T) {
 
 func TestResolveActor_VerifierConfigured_ExpiredTokenDenies(t *testing.T) {
 	priv := newTestRSAKey(t)
-	verifier, err := auth.NewVerifier(auth.Config{Keys: map[string]crypto.PublicKey{testVerifierKID: &priv.PublicKey}})
+	verifier, err := auth.NewVerifier(auth.Config{
+		Keys:    map[string]crypto.PublicKey{testVerifierKID: &priv.PublicKey},
+		KeyInfo: map[string]auth.KeyInfo{testVerifierKID: {Spec: auth.BindingSpec{Mode: auth.ModeNanoID}}},
+	})
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
 	av := NewActorVerifier(auth.NewAuthenticator(verifier, nil))
 
 	expired := jwt.RegisteredClaims{
-		Subject:   "abc123",
+		Subject:   "HWiis7G8Q9pqmc2nm5x1",
 		IssuedAt:  jwt.NewNumericDate(time.Now().Add(-time.Hour)),
 		ExpiresAt: jwt.NewNumericDate(time.Now().Add(-time.Minute)),
 	}
@@ -185,14 +197,17 @@ func TestResolveActor_VerifierConfigured_ExpiredTokenDenies(t *testing.T) {
 
 func TestResolveActor_VerifierConfigured_RevokedActorDenies(t *testing.T) {
 	priv := newTestRSAKey(t)
-	verifier, err := auth.NewVerifier(auth.Config{Keys: map[string]crypto.PublicKey{testVerifierKID: &priv.PublicKey}})
+	verifier, err := auth.NewVerifier(auth.Config{
+		Keys:    map[string]crypto.PublicKey{testVerifierKID: &priv.PublicKey},
+		KeyInfo: map[string]auth.KeyInfo{testVerifierKID: {Spec: auth.BindingSpec{Mode: auth.ModeNanoID}}},
+	})
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
-	rev := &fakeRevocationChecker{revoked: map[string]bool{"vtx.identity.abc123": true}}
+	rev := &fakeRevocationChecker{revoked: map[string]bool{"vtx.identity.HWiis7G8Q9pqmc2nm5x1": true}}
 	av := NewActorVerifier(auth.NewAuthenticator(verifier, rev))
 
-	token := signTestToken(t, priv, testVerifierKID, validTestClaims("abc123"))
+	token := signTestToken(t, priv, testVerifierKID, validTestClaims("HWiis7G8Q9pqmc2nm5x1"))
 	req := &fakeMicroRequest{headers: nats.Header{HeaderActor: []string{token}}}
 	_, err = ResolveActor(context.Background(), req, av)
 	if !errors.Is(err, auth.ErrTokenRevoked) {
@@ -203,7 +218,10 @@ func TestResolveActor_VerifierConfigured_RevokedActorDenies(t *testing.T) {
 func TestResolveActor_VerifierConfigured_UnknownSignerDenies(t *testing.T) {
 	trustedPriv := newTestRSAKey(t)
 	untrustedPriv := newTestRSAKey(t)
-	verifier, err := auth.NewVerifier(auth.Config{Keys: map[string]crypto.PublicKey{testVerifierKID: &trustedPriv.PublicKey}})
+	verifier, err := auth.NewVerifier(auth.Config{
+		Keys:    map[string]crypto.PublicKey{testVerifierKID: &trustedPriv.PublicKey},
+		KeyInfo: map[string]auth.KeyInfo{testVerifierKID: {Spec: auth.BindingSpec{Mode: auth.ModeNanoID}}},
+	})
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
@@ -212,7 +230,7 @@ func TestResolveActor_VerifierConfigured_UnknownSignerDenies(t *testing.T) {
 	// Forged: signed by a key the verifier does not trust, but claiming the
 	// trusted kid — proves ResolveActor denies on signature mismatch, not
 	// just on an absent kid.
-	token := signTestToken(t, untrustedPriv, testVerifierKID, validTestClaims("abc123"))
+	token := signTestToken(t, untrustedPriv, testVerifierKID, validTestClaims("HWiis7G8Q9pqmc2nm5x1"))
 	req := &fakeMicroRequest{headers: nats.Header{HeaderActor: []string{token}}}
 	_, err = ResolveActor(context.Background(), req, av)
 	if !errors.Is(err, auth.ErrInvalidSignature) {

@@ -280,7 +280,12 @@ func TestSetKeys_HotSwap(t *testing.T) {
 		t.Fatalf("Verify(tok2) before swap: err = %v, want ErrUnknownKey", err)
 	}
 
-	v.SetKeys(map[string]crypto.PublicKey{"k2": kp2.pub})
+	if err := v.SetKeysWithInfo(
+		map[string]crypto.PublicKey{"k2": kp2.pub},
+		map[string]KeyInfo{"k2": {Spec: BindingSpec{Mode: ModeNanoID}}},
+	); err != nil {
+		t.Fatalf("SetKeysWithInfo: %v", err)
+	}
 
 	if _, err := v.Verify(tok2); err != nil {
 		t.Fatalf("Verify(tok2) after swap: %v", err)

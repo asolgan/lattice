@@ -140,7 +140,7 @@ func TestHandleReadModel_Unauthenticated_401(t *testing.T) {
 func TestHandleReadModel_PoolNil_502(t *testing.T) {
 	priv := newTestKey(t)
 	authn := testAuthenticator(t, priv, "k1")
-	token := signToken(t, priv, "k1", "SOMEACTOR000000000000")
+	token := signToken(t, priv, "k1", "NTLJmwGKScNmwzUpeB5J")
 	s := &Server{authn: authn, logger: nopLogger{}, reqTimeout: testReqTimeout, metrics: &Metrics{}}
 	s.ConfigureReadModels(nil, map[string]ReadModel{"widgets": {Query: "SELECT 1"}})
 
@@ -174,7 +174,7 @@ func TestHandleReadModel_UnregisteredName_404(t *testing.T) {
 func TestHandleReadModel_GETScopesActorAndScansRowsGenerically(t *testing.T) {
 	priv := newTestKey(t)
 	authn := testAuthenticator(t, priv, "k1")
-	token := signToken(t, priv, "k1", "LANDLORD0000000000000")
+	token := signToken(t, priv, "k1", "oC8heCGu6HFWpp37xcpS")
 
 	tx := &fakeTx{rows: []map[string]any{
 		{"unit_key": "vtx.unit.1", "unit_rent": 1500.0},
@@ -241,7 +241,7 @@ func TestHandleReadModel_POSTNotAllowed(t *testing.T) {
 func TestRegisterRoutes_InvalidNameSkipped(t *testing.T) {
 	priv := newTestKey(t)
 	authn := testAuthenticator(t, priv, "k1")
-	token := signToken(t, priv, "k1", "someone")
+	token := signToken(t, priv, "k1", "WK3wrHzkvsDmsQTU5WLx")
 	fake := func(_ context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
 		return &processor.OperationReply{RequestID: env.RequestID, Status: processor.ReplyStatusAccepted}, nil
 	}
@@ -271,7 +271,7 @@ func TestRegisterRoutes_InvalidNameSkipped(t *testing.T) {
 func TestHandleReadModel_CredentialBinding_ScopesToClaimedIdentity(t *testing.T) {
 	priv := newTestKey(t)
 	authn := testAuthenticator(t, priv, "k1")
-	token := signToken(t, priv, "k1", "RAWCREDENTIAL00000000")
+	token := signToken(t, priv, "k1", "5K2w3V5zERE4oNUuu71w")
 
 	tx := &fakeTx{}
 	s := &Server{authn: authn, logger: nopLogger{}, reqTimeout: testReqTimeout, metrics: &Metrics{}}
@@ -302,7 +302,7 @@ func TestHandleReadModel_CredentialBinding_ScopesToClaimedIdentity(t *testing.T)
 func TestHandleReadModel_CredentialBinding_Unbound_UsesRawSubject(t *testing.T) {
 	priv := newTestKey(t)
 	authn := testAuthenticator(t, priv, "k1")
-	token := signToken(t, priv, "k1", "RAWCREDENTIAL00000000")
+	token := signToken(t, priv, "k1", "5K2w3V5zERE4oNUuu71w")
 
 	tx := &fakeTx{}
 	s := &Server{authn: authn, logger: nopLogger{}, reqTimeout: testReqTimeout, metrics: &Metrics{}}
@@ -319,7 +319,7 @@ func TestHandleReadModel_CredentialBinding_Unbound_UsesRawSubject(t *testing.T) 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	if got := tx.execArgs[0][0]; got != "RAWCREDENTIAL00000000" {
+	if got := tx.execArgs[0][0]; got != "5K2w3V5zERE4oNUuu71w" {
 		t.Fatalf("lattice.actor_id = %v, want the raw subject (unbound)", got)
 	}
 }

@@ -31,8 +31,8 @@ import (
 const (
 	gwRLSTestSchema = "gateway_rls_test"
 	gwRLSTestRole   = "gateway_rls_test_reader"
-	gwSubOwnerA     = "OWNERAAAAAAAAAAAAAAA"
-	gwSubOwnerB     = "OWNERBBBBBBBBBBBBBBB"
+	gwSubOwnerA     = "DTF1cTG597CakmXX6DLJ"
+	gwSubOwnerB     = "XmXvRLA9d1F8paEAWxeG"
 )
 
 func skipIfNoPostgresRLS(t *testing.T) string {
@@ -142,7 +142,10 @@ func TestReadModel_RLS_Enforcement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	v, err := auth.NewVerifier(auth.Config{Keys: map[string]crypto.PublicKey{"k1": &priv.PublicKey}})
+	v, err := auth.NewVerifier(auth.Config{
+		Keys:    map[string]crypto.PublicKey{"k1": &priv.PublicKey},
+		KeyInfo: map[string]auth.KeyInfo{"k1": {Spec: auth.BindingSpec{Mode: auth.ModeNanoID}}},
+	})
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
@@ -190,7 +193,7 @@ func TestReadModel_RLS_Enforcement(t *testing.T) {
 	})
 
 	t.Run("an actor with no grant sees nothing (no 403/404 oracle)", func(t *testing.T) {
-		code, rows := get(t, "NOGRANTACTOR00000000")
+		code, rows := get(t, "9CFtKJ2BUdngSg5C1VXj")
 		if code != http.StatusOK {
 			t.Fatalf("status = %d, want 200", code)
 		}

@@ -60,13 +60,17 @@ func DDLs() []pkgmgr.DDLSpec {
 				"dob (sensitive, ISO YYYY-MM-DD applicant date of birth, written by RecordIdentityPII), " +
 				"claimKey (sensitive, stores the client-supplied claimKeyHash verbatim; tombstoned after claim), " +
 				"credentialBinding (sensitive; null pre-claim), " +
+				"idpBinding (sensitive; the raw iss/sub of the external IdP token an opaque-mode ActorID was " +
+				"derived from — Contract #11 §3.3, written only by ProvisionConsumerIdentity, absent for a " +
+				"nanoid-mode/dev-provisioned actor), " +
 				"mergedInto (vertex-key reference, set only by identity-hygiene package's MergeIdentity). " +
 				"The client mints the claim secret, submits only claimKeyHash; Lattice never holds the plaintext. " +
 				"State machine + IdentityMerged guard enforced in .script. " +
 				"ProvisionConsumerIdentity: idempotently creates a bare, already-claimed consumer identity at a " +
 				"caller-supplied key (the Gateway's first-authenticated-touch auto-provisioning pre-flight) — " +
 				"the deterministic ActorID a verified JWT subject maps to, not a minted key. Grants the consumer " +
-				"role via a holdsRole link; no PII.",
+				"role via a holdsRole link; optionally records IdP provenance (.idpBinding) when the token was " +
+				"opaque-mode; otherwise no PII.",
 			Script: identityDDLScript,
 			InputSchema: `{"type":"object","properties":` +
 				`{"name":{"type":"string","maxLength":200,"description":"Person's display name. Required for CreateUnclaimedIdentity."},` +
@@ -81,7 +85,9 @@ func DDLs() []pkgmgr.DDLSpec {
 				`"ssn":{"type":"string","description":"Applicant Social Security Number (RecordIdentityPII, required). 9 digits; any hyphens are accepted and stripped; stored normalized as a sensitive aspect."},` +
 				`"dob":{"type":"string","description":"Applicant date of birth (RecordIdentityPII, required). ISO YYYY-MM-DD; stored as a sensitive aspect."},` +
 				`"targetActorKey":{"type":"string","description":"vtx.identity.<NanoID> — the ActorID a verified JWT subject maps to (ProvisionConsumerIdentity). Caller-derived, never minted."},` +
-				`"consumerRoleKey":{"type":"string","description":"vtx.role.<NanoID> of the consumer role to grant (ProvisionConsumerIdentity). Caller-resolved via pkgmgr.RoleID; validated alive before granting."}}}`,
+				`"consumerRoleKey":{"type":"string","description":"vtx.role.<NanoID> of the consumer role to grant (ProvisionConsumerIdentity). Caller-resolved via pkgmgr.RoleID; validated alive before granting."},` +
+				`"idpIssuer":{"type":"string","description":"Raw JWT iss claim (ProvisionConsumerIdentity, optional). Present only for an opaque-mode token (Contract #11 §3.2); written verbatim into the .idpBinding aspect."},` +
+				`"idpSubject":{"type":"string","description":"Raw JWT sub claim (ProvisionConsumerIdentity, optional). Must accompany idpIssuer; written verbatim into the .idpBinding aspect."}}}`,
 			OutputSchema: `{"type":"object","properties":` +
 				`{"primaryKey":{"type":"string","description":"vtx.identity.<NanoID> of the created, claimed, or PII-recorded identity (the operation's principal key)."}}}`,
 			FieldDescription: map[string]string{
@@ -98,6 +104,8 @@ func DDLs() []pkgmgr.DDLSpec {
 				"dob":               "Applicant date of birth. Required on RecordIdentityPII. ISO YYYY-MM-DD; stored in a sensitive vtx.identity.<NanoID>.dob aspect.",
 				"targetActorKey":    "vtx.identity.<NanoID> ActorID to provision (ProvisionConsumerIdentity, required). Must be the exact key a verified JWT subject resolves to; rejected if not NanoID-shaped.",
 				"consumerRoleKey":   "vtx.role.<NanoID> of the consumer role (ProvisionConsumerIdentity, required). Must resolve to a live role vertex; rejected otherwise.",
+				"idpIssuer":         "Raw JWT iss claim (ProvisionConsumerIdentity, optional; present only for an opaque-mode token). Stored verbatim in the sensitive .idpBinding aspect.",
+				"idpSubject":        "Raw JWT sub claim (ProvisionConsumerIdentity, optional; must accompany idpIssuer). Stored verbatim in the sensitive .idpBinding aspect.",
 			},
 			Examples: []pkgmgr.ExampleSpec{
 				{
@@ -125,6 +133,15 @@ func DDLs() []pkgmgr.DDLSpec {
 					ExpectedOutcome: "Fresh actor: creates the identity vertex + a .state=claimed aspect + a holdsRole link to " +
 						"consumerRoleKey, emits identity.provisioned, returns primaryKey=targetActorKey. Already-provisioned " +
 						"actor: no-op (empty mutations/events, no response) — safe to call on every request.",
+				},
+				{
+					Name: "ProvisionConsumerIdentity — opaque-mode first touch with IdP provenance",
+					Payload: map[string]any{
+						"targetActorKey": "vtx.identity.<NanoID>", "consumerRoleKey": "vtx.role.<NanoID>",
+						"idpIssuer": "https://accounts.google.com", "idpSubject": "110169484474386276334",
+					},
+					ExpectedOutcome: "Same as the fresh-actor case, plus a sensitive .idpBinding aspect recording the raw " +
+						"iss/sub (Contract #11 §3.3) — the audit answer to which IdP account this identity is.",
 				},
 			},
 		},
@@ -292,6 +309,35 @@ func DDLs() []pkgmgr.DDLSpec {
 					Name:            "credentialBinding aspect",
 					Payload:         map[string]any{"actorKey": "vtx.actor.<NanoID>", "boundAt": "2026-05-22T11:00:00Z"},
 					ExpectedOutcome: "Stored as sensitive vtx.identity.<NanoID>.credentialBinding; rejected on any non-identity vertex by step-6 sensitiveAspectScope.",
+				},
+			},
+		},
+		{
+			CanonicalName:     "idpBinding",
+			Class:             "meta.ddl.aspectType",
+			Sensitive:         true,
+			PermittedCommands: []string{"ProvisionConsumerIdentity"},
+			Description: "External IdP account provenance. Sensitive aspect-type " +
+				"(Contract #11 §3.3): stored as vtx.identity.<NanoID>.idpBinding, sensitive=true, " +
+				"identity-anchored, the crypto-shred unit — shredding the identity's DEK severs the " +
+				"IdP-account linkage. Written only by ProvisionConsumerIdentity, and only for an opaque-mode " +
+				"token (Contract #11 §3.2); a nanoid-mode/dev-provisioned actor never gets this aspect. The " +
+				"audit/support answer to \"which IdP account is this identity?\" — the derivation " +
+				"(SHA256NanoID) is one-way, so without this aspect the question is unanswerable.",
+			Script: sensitiveAspectDDLScript,
+			InputSchema: `{"type":"object","properties":` +
+				`{"iss":{"type":"string","description":"Raw JWT iss claim of the external IdP token the ActorID was derived from."},` +
+				`"sub":{"type":"string","description":"Raw JWT sub claim of the external IdP token the ActorID was derived from."}}}`,
+			OutputSchema: `{"type":"object"}`,
+			FieldDescription: map[string]string{
+				"iss": "Raw JWT iss claim, stored verbatim as a sensitive aspect on the identity.",
+				"sub": "Raw JWT sub claim, stored verbatim as a sensitive aspect on the identity.",
+			},
+			Examples: []pkgmgr.ExampleSpec{
+				{
+					Name:            "idpBinding aspect",
+					Payload:         map[string]any{"iss": "https://accounts.google.com", "sub": "110169484474386276334"},
+					ExpectedOutcome: "Stored as sensitive vtx.identity.<NanoID>.idpBinding; rejected on any non-identity vertex by step-6 sensitiveAspectScope.",
 				},
 			},
 		},
@@ -546,6 +592,22 @@ def execute(state, op):
                           "sourceVertex": target_actor_key, "targetVertex": consumer_role_key,
                           "localName": "holdsRole", "data": {}}},
         ]
+
+        # Optional IdP provenance (Contract #11 §3.3): present only for an
+        # opaque-mode token (a real external IdP); a nanoid-mode/dev token
+        # carries neither, so this whole block is skipped for dev-provisioned
+        # actors — exactly the "absent for nanoid-mode" behavior the DDL
+        # documents. The pair travels together: a caller supplying one
+        # without the other is a wiring fault, not a partial-provenance case.
+        idp_issuer = p.idpIssuer if hasattr(p, "idpIssuer") else None
+        idp_subject = p.idpSubject if hasattr(p, "idpSubject") else None
+        if (idp_issuer == None) != (idp_subject == None):
+            fail("InvalidArgument: idpIssuer/idpSubject: must both be present or both absent")
+        if idp_issuer != None:
+            mutations.append({"op": "create", "key": target_actor_key + ".idpBinding",
+                "document": {"class": "idpBinding", "vertexKey": target_actor_key, "localName": "idpBinding",
+                             "isDeleted": False, "data": {"iss": idp_issuer, "sub": idp_subject}}})
+
         events = [{"class": "identity.provisioned", "data": {"identityKey": target_actor_key}}]
         return {"mutations": mutations, "events": events, "response": {"primaryKey": target_actor_key}}
 

@@ -4,7 +4,8 @@
 
 > The Gateway is a **platform binary** (`cmd/gateway`) — it has no frozen interface contract of its
 > own; it *builds to* Contract #2 (the operation envelope's `actor` field), #6 (Capability KV),
-> #9 (Identity Claim Flow), and #5 (Health KV). Its design of record is
+> #9 (Identity Claim Flow), #11 (External actor authN — subject binding), and #5 (Health KV). Its
+> design of record is
 > `_bmad-output/implementation-artifacts/gateway-external-trust-boundary-design.md`. Update this page in
 > the same commit as the code; drift between page and code is a documentation bug.
 
@@ -112,22 +113,37 @@ The external write surface **refuses to start** unless at least one trusted publ
 "no IdP ⇒ no external writes," never a silent anonymous fallback. Any combination of the three sources
 below may be configured; the trusted set is their union.
 
-- `GATEWAY_JWT_KEYS_DIR` — a directory of `<kid>.pem` SubjectPublicKeyInfo files: a **static** snapshot
-  of the deployment's IdP JWKS. An operator refreshes the snapshot and restarts to rotate.
-- `GATEWAY_JWKS_URL` — a **live** IdP JWKS endpoint (`https://…`; `http://` is refused unless
-  `GATEWAY_DEV_MODE=true`, the same profile gate the dev key uses). Fetched once at startup — a failed
-  initial fetch with no other key source configured refuses to start (fail-closed) — then polled in the
-  background (`GATEWAY_JWKS_POLL_INTERVAL`, default 5m, floor 30s) and **hot-swapped** into the Verifier
-  (`auth.JWKSPoller`): a rotated IdP signing key is picked up with **no Gateway restart**. A poll
-  failure (network blip, IdP hiccup) logs and **keeps the last-known-good key set** — fail-safe, not
-  fail-closed, once already serving traffic. `GATEWAY_JWT_KEYS_DIR`/dev keys are re-merged into every
-  poll, so a JWKS response can add or retire IdP keys but can never un-trust an operator-configured key.
+- `GATEWAY_JWT_KEYS_DIR` (+ **required** `GATEWAY_JWT_KEYS_DIR_ISSUER`) — a directory of `<kid>.pem`
+  SubjectPublicKeyInfo files: a **static** snapshot of the deployment's IdP JWKS. An operator refreshes
+  the snapshot and restarts to rotate.
+- `GATEWAY_JWKS_URL` (+ **required** `GATEWAY_JWKS_ISSUER`) — a **live** IdP JWKS endpoint (`https://…`;
+  `http://` is refused unless `GATEWAY_DEV_MODE=true`, the same profile gate the dev key uses). Fetched
+  once at startup — a failed initial fetch with no other key source configured refuses to start
+  (fail-closed) — then polled in the background (`GATEWAY_JWKS_POLL_INTERVAL`, default 5m, floor 30s) and
+  **hot-swapped** into the Verifier (`auth.JWKSPoller`): a rotated IdP signing key is picked up with
+  **no Gateway restart**. A poll failure (network blip, IdP hiccup) logs and **keeps the last-known-good
+  key set** — fail-safe, not fail-closed, once already serving traffic. `GATEWAY_JWT_KEYS_DIR`/dev keys
+  are re-merged into every poll, so a JWKS response can add or retire IdP keys but can never un-trust an
+  operator-configured key.
 - `GATEWAY_DEV_MODE=true` — **additionally** trusts the checked-in dev key
   (`deploy/gateway-dev-key/`, kid `"dev"`, DEV-ONLY like the NATS dev nkeys) and allows a plaintext-HTTP
   `GATEWAY_JWKS_URL`. Mint a token: `bin/gateway dev-token -sub <identityNanoID>`. **Never set in
   production.**
 - None configured (and the initial JWKS fetch, if attempted, fails) → `run()` returns an error before
   the HTTP listener starts.
+
+**Subject binding (Contract #11 §3.2).** Every trusted kid carries a per-source `BindingSpec{mode,
+issuer}`, fixed at load time — a spec-less kid is a construction error, never a silent default.
+`GATEWAY_JWT_KEYS_DIR` and `GATEWAY_JWKS_URL` are always **`opaque`**: the verified `sub` is IdP-native,
+so the actor id is derived as `SHA256NanoID("idpsub:"+len(iss)+":"+iss+":"+sub)`, and the token's `iss`
+MUST exactly match that source's declared issuer (`…_ISSUER`) — the mandatory per-source pin that
+confines an opaque source to its own derived subject subspace (an unpinned issuer would let a
+hostile-but-trusted IdP sign `iss=<peer's issuer>` and derive the peer's users' identities). The dev key
+is always **`nanoid`**: `sub` **is** the bare identity NanoID, passed through after an `IsValidNanoID`
+shape gate — an arbitrary-identity-assertion grant, correct for the checked-in dev key and unreachable
+from any operator config (there is no `…_SUBJECT_MODE` knob). `VerifiedActor.Issuer`/`.RawSubject` carry
+the raw claims for audit provenance (§3.3's `.idpBinding` aspect); `Subject`/`ActorID` always carry the
+bound id every downstream surface (RLS var, revocation key, resolver key, envelope stamp) agrees on.
 
 ---
 
@@ -180,10 +196,17 @@ NATS user (`deploy/nkeys/gateway.nk`) grants `ops.>` / `health-kv.>` publish, de
 (forged-actor-never-wins) proves the strip-and-stamp defeats impersonation.
 
 **Built (Fire 2 remainder).** `internal/gateway/auth` (`ParseJWKS` — a dependency-free RFC 7517/7518 JWK
-Set parser for RSA/EC keys; `JWKSPoller` — fetch + background poll + hot-swap into the Verifier via the
-new `Verifier.SetKeys`, atomic-pointer-backed for a lock-free hot path) + `cmd/gateway` (`GATEWAY_JWKS_URL`
+Set parser for RSA/EC keys; `JWKSPoller` — fetch + background poll + hot-swap into the Verifier via
+`Verifier.SetKeysWithInfo`, atomic-pointer-backed for a lock-free hot path) + `cmd/gateway` (`GATEWAY_JWKS_URL`
 / `GATEWAY_JWKS_POLL_INTERVAL` wiring, the https-unless-dev-mode transport gate, fail-closed initial fetch).
 No new vendor dependency — JWK parsing uses only `crypto`/`encoding` stdlib packages.
+
+**Built (Contract #11 — external actor authN, subject binding).** `internal/gateway/auth`'s per-kid
+`BindingSpec{mode, issuer}` (opaque-mode derivation via `substrate.SHA256NanoID`, mandatory per-source
+issuer pin, nanoid-mode dev passthrough with an `IsValidNanoID` gate); `GATEWAY_JWT_KEYS_DIR_ISSUER` /
+`GATEWAY_JWKS_ISSUER` generalize the old single `GATEWAY_JWT_ISSUER` to per-source; `VerifiedActor.Issuer`/
+`.RawSubject` provenance threaded into `ProvisionConsumerIdentity`'s optional `idpIssuer`/`idpSubject`
+payload fields, written as the sensitive `.idpBinding` aspect (`packages/identity-domain`).
 
 **Built (token-revocation kill-switch, Fire 1 of
 `gateway-token-revocation-activation-design.md`).** identity-domain's `RevokeActor`/`UnrevokeActor`

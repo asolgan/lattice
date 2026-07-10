@@ -35,6 +35,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // IdentityKeyPrefix is the canonical prefix of an identity vertex key
@@ -79,7 +81,85 @@ var (
 	// ErrNoTrustedKeys — the Verifier was constructed with no public keys; it
 	// fails closed (every token is rejected) rather than trusting nothing.
 	ErrNoTrustedKeys = errors.New("auth: no trusted keys configured")
+	// ErrMissingIssuer — an opaque-mode kid's token carries no `iss` claim.
+	// Contract #11 §3: the per-source issuer pin is what confines an opaque
+	// source to its own derived subject subspace, so a missing issuer is
+	// refused rather than treated as "unpinned" (finding A8).
+	ErrMissingIssuer = errors.New("auth: opaque-mode token is missing the required iss claim")
+	// ErrIssuerMismatch — an opaque-mode token's `iss` does not equal the
+	// verifying kid's declared BindingSpec.Issuer. This is the cross-issuer
+	// sub-replay guard (Contract #11 §3, finding A8): without it, a
+	// hostile-but-trusted IdP-A could sign iss=<IdP-B> and derive IdP-B's
+	// users' identities.
+	ErrIssuerMismatch = errors.New("auth: token iss does not match the verifying key's declared issuer")
+	// ErrInvalidSubject — a nanoid-mode token's `sub` is not a well-formed
+	// Contract #1 NanoID. Closes the residual where a non-NanoID subject
+	// silently became a garbage key, failing late at provisioning instead of
+	// at the trust boundary.
+	ErrInvalidSubject = errors.New("auth: nanoid-mode token subject is not a valid NanoID")
 )
+
+// BindingMode is how a trusted key's verified `sub` claim binds to a Lattice
+// actor id (Contract #11 §3.2) — a property of the KEY SOURCE, fixed at load
+// time, never inferred from token content.
+type BindingMode string
+
+const (
+	// ModeOpaque is every configured external IdP source (a static <kid>.pem
+	// dir or a JWKS endpoint): sub is IdP-native, so the actor id is derived
+	// as SHA256NanoID("idpsub:"+len(iss)+":"+iss+":"+sub) — confined to that
+	// source's declared issuer (BindingSpec.Issuer is mandatory in this mode).
+	ModeOpaque BindingMode = "opaque"
+	// ModeNanoID is the in-code dev key only, never operator-selectable from
+	// config: sub IS the bare identity NanoID, passed through after an
+	// IsValidNanoID shape gate. An arbitrary-identity assertion grant — exactly
+	// right for the checked-in dev key, exactly wrong for a third-party IdP.
+	ModeNanoID BindingMode = "nanoid"
+)
+
+// BindingSpec is a trusted key's subject-binding rule (Contract #11 §3.2). A
+// kid with no declared spec is a construction error — a trusted key never
+// binds by silent default (finding A2).
+type BindingSpec struct {
+	Mode BindingMode
+	// Issuer is the source's declared `iss`, required and enforced exact-match
+	// when Mode == ModeOpaque; unused under ModeNanoID.
+	Issuer string
+}
+
+// validateSpec enforces that kid declares a well-formed BindingSpec: a known
+// Mode, and — for ModeOpaque — a non-empty Issuer (the mandatory per-source
+// pin that confinement depends on, finding A8). Called at every point a
+// trusted set is installed (construction and hot-swap alike) so a kid can
+// never enter the trusted set half-configured.
+func validateSpec(kid string, spec BindingSpec) error {
+	switch spec.Mode {
+	case ModeOpaque:
+		if spec.Issuer == "" {
+			return fmt.Errorf("auth: kid %q is opaque-mode but declares no issuer — a configured external "+
+				"source MUST pin an expected iss (an unpinned issuer allows cross-issuer subject replay)", kid)
+		}
+	case ModeNanoID:
+		// No issuer needed — sub passes through after the IsValidNanoID gate.
+	default:
+		return fmt.Errorf("auth: kid %q has no binding spec declared (mode %q) — a trusted key must declare "+
+			"how its subject binds to an actor id", kid, spec.Mode)
+	}
+	return nil
+}
+
+// KeyInfoFromSpecs wraps a kid→BindingSpec map (as returned by
+// LoadTrustedKeys) into the kid→KeyInfo map Config.KeyInfo / SetKeysWithInfo
+// expect, leaving Source/Alg/AddedAt zero (observability-only — callers that
+// track provenance separately can overwrite those fields). A convenience for
+// the common case of a caller with no separate provenance to attach.
+func KeyInfoFromSpecs(specs map[string]BindingSpec) map[string]KeyInfo {
+	info := make(map[string]KeyInfo, len(specs))
+	for kid, spec := range specs {
+		info[kid] = KeyInfo{Spec: spec}
+	}
+	return info
+}
 
 // Config configures a Verifier.
 type Config struct {
@@ -94,19 +174,23 @@ type Config struct {
 	Issuer string
 	// Audience, when non-empty, is required to be present in the token `aud`.
 	Audience string
-	// KeyInfo optionally carries per-kid provenance (source/alg/addedAt) for
-	// the keys in Keys, surfaced read-only via Verifier.Info() for the
-	// Gateway's jwks health block. A kid present in Keys but absent here (or
-	// when KeyInfo is nil entirely) gets a zero-value KeyInfo — never
-	// consulted on the Verify hot path, purely observability.
+	// KeyInfo carries per-kid provenance (source/alg/addedAt) AND the
+	// mandatory BindingSpec for the keys in Keys. Every kid in Keys MUST have
+	// an entry here with a valid Spec (NewVerifier rejects a spec-less kid —
+	// a trusted key never binds by silent default, Contract #11 §3.2); the
+	// Source/Alg/AddedAt fields may be left zero (observability-only, surfaced
+	// via Verifier.Info() for the Gateway's jwks health block, never consulted
+	// on the Verify hot path).
 	KeyInfo map[string]KeyInfo
 	// now overrides the clock for tests; nil uses time.Now.
 	now func() time.Time
 }
 
-// KeyInfo is a trusted key's provenance — surfaced for observability only
-// (the Gateway's jwks health block, Contract #5) and never consulted on the
-// Verify hot path, which reads only the kid→key map.
+// KeyInfo is a trusted key's provenance plus its mandatory BindingSpec.
+// Source/Alg/AddedAt are observability only (the Gateway's jwks health block,
+// Contract #5) and never consulted on the Verify hot path; Spec IS consulted
+// — it is how Verify turns a verified `sub` into an actor id (Contract #11
+// §3.2).
 type KeyInfo struct {
 	// Source is "jwks" (fetched from the configured JWKS endpoint) or
 	// "static" (an operator-configured KeysDir/dev-mode PEM).
@@ -118,6 +202,9 @@ type KeyInfo struct {
 	// across JWKS polls that re-fetch an already-trusted kid (only a
 	// genuinely new kid gets a fresh timestamp).
 	AddedAt time.Time
+	// Spec is the mandatory subject-binding rule for this kid (Contract #11
+	// §3.2). Required — see the Config.KeyInfo doc.
+	Spec BindingSpec
 }
 
 // DefaultClockSkew is the time tolerance applied when Config.ClockSkew is zero.
@@ -135,15 +222,33 @@ type VerifiedActor struct {
 	TokenID string
 	// ExpiresAt is the token `exp`.
 	ExpiresAt time.Time
+	// Issuer is the raw `iss` claim, when present — provenance (Contract #11
+	// §3.2/§3.3), captured regardless of binding mode. Never itself a trust
+	// decision (the opaque-mode issuer check already ran inside Verify).
+	Issuer string
+	// RawSubject is the raw `sub` claim as the IdP sent it — under ModeOpaque
+	// this differs from Subject (which carries the DERIVED id); under
+	// ModeNanoID the two are identical. Provenance only (§3.3's .idpBinding
+	// aspect), never itself an actor id.
+	RawSubject string
+}
+
+// trustedKey is one trusted kid's key + provenance/binding, held together so
+// a hot-swap can never pair a new key with a stale spec (finding MINOR-5) —
+// the single atomically-swapped map below is the fix; there is deliberately
+// no second parallel atomic.Pointer.
+type trustedKey struct {
+	Key  crypto.PublicKey
+	Info KeyInfo
 }
 
 // Verifier verifies IdP-signed JWTs and extracts the actor. It is safe for
-// concurrent use — the trusted key set is held behind an atomic pointer so a
-// JWKS poller (see jwks.go) can hot-swap it (kid-keyed rotation) without a
-// lock on the hot Verify path.
+// concurrent use — the trusted key set is held behind a single atomic pointer
+// (key + provenance + binding spec together) so a JWKS poller (see jwks.go)
+// can hot-swap it (kid-keyed rotation) without a lock on the hot Verify path
+// and without a key/spec pairing ever going torn across the swap.
 type Verifier struct {
-	keys      atomic.Pointer[map[string]crypto.PublicKey]
-	info      atomic.Pointer[map[string]KeyInfo]
+	trusted   atomic.Pointer[map[string]trustedKey]
 	clockSkew time.Duration
 	issuer    string
 	audience  string
@@ -154,14 +259,20 @@ type Verifier struct {
 // NewVerifier builds a Verifier from cfg. It returns ErrNoTrustedKeys if no
 // public keys are configured (fail closed — a keyless verifier would reject
 // every token, which is correct, but the misconfiguration is worth surfacing at
-// construction rather than silently denying all reads).
+// construction rather than silently denying all reads). It returns an error if
+// any kid in cfg.Keys has no valid cfg.KeyInfo[kid].Spec — a trusted key never
+// binds by silent default (Contract #11 §3.2, finding A2).
 func NewVerifier(cfg Config) (*Verifier, error) {
 	if len(cfg.Keys) == 0 {
 		return nil, ErrNoTrustedKeys
 	}
-	keys := make(map[string]crypto.PublicKey, len(cfg.Keys))
+	trusted := make(map[string]trustedKey, len(cfg.Keys))
 	for kid, k := range cfg.Keys {
-		keys[kid] = k
+		info := cfg.KeyInfo[kid]
+		if err := validateSpec(kid, info.Spec); err != nil {
+			return nil, err
+		}
+		trusted[kid] = trustedKey{Key: k, Info: info}
 	}
 	skew := cfg.ClockSkew
 	if skew == 0 {
@@ -187,55 +298,45 @@ func NewVerifier(cfg Config) (*Verifier, error) {
 		now:       nowFn,
 		parser:    parser,
 	}
-	v.keys.Store(&keys)
-	info := make(map[string]KeyInfo, len(keys))
-	for kid := range keys {
-		info[kid] = cfg.KeyInfo[kid]
-	}
-	v.info.Store(&info)
+	v.trusted.Store(&trusted)
 	return v, nil
 }
 
-// SetKeys atomically replaces the trusted kid→public-key set, discarding any
-// prior per-kid provenance (equivalent to SetKeysWithInfo(keys, nil)). Kept
-// for callers that don't track provenance — every kid reads back a
-// zero-value KeyInfo from Info() until a SetKeysWithInfo call populates it.
-func (v *Verifier) SetKeys(keys map[string]crypto.PublicKey) {
-	v.SetKeysWithInfo(keys, nil)
-}
-
 // SetKeysWithInfo atomically replaces the trusted kid→public-key set and its
-// per-kid provenance. A concurrent Verify call in flight completes against
-// whichever key set it already loaded (no lock, no torn reads) — the
-// standard atomic-pointer swap pattern. Called by a JWKS poller (jwks.go) on
-// each successful refresh; never called with an empty keys map (a poller
-// keeps the last-known-good set on a failed/empty fetch rather than swapping
-// in nothing — see JWKSPoller.FetchOnce). A kid in keys but absent from info
-// reads back a zero-value KeyInfo from Info().
-func (v *Verifier) SetKeysWithInfo(keys map[string]crypto.PublicKey, info map[string]KeyInfo) {
-	cp := make(map[string]crypto.PublicKey, len(keys))
+// per-kid provenance/binding-spec in one swap. A concurrent Verify call in
+// flight completes against whichever key set it already loaded (no lock, no
+// torn reads) — the standard atomic-pointer swap pattern. Called by a JWKS
+// poller (jwks.go) on each successful refresh; never called with an empty
+// keys map (a poller keeps the last-known-good set on a failed/empty fetch
+// rather than swapping in nothing — see JWKSPoller.FetchOnce). It returns an
+// error, WITHOUT swapping anything in, if any kid in keys has no valid
+// info[kid].Spec — the same fail-closed rule NewVerifier enforces at
+// construction applies at every hot-swap too.
+func (v *Verifier) SetKeysWithInfo(keys map[string]crypto.PublicKey, info map[string]KeyInfo) error {
+	trusted := make(map[string]trustedKey, len(keys))
 	for kid, k := range keys {
-		cp[kid] = k
+		ki := info[kid]
+		if err := validateSpec(kid, ki.Spec); err != nil {
+			return err
+		}
+		trusted[kid] = trustedKey{Key: k, Info: ki}
 	}
-	v.keys.Store(&cp)
-	cpInfo := make(map[string]KeyInfo, len(keys))
-	for kid := range keys {
-		cpInfo[kid] = info[kid]
-	}
-	v.info.Store(&cpInfo)
+	v.trusted.Store(&trusted)
+	return nil
 }
 
-// Info returns a snapshot of the current trusted set's per-kid provenance,
-// keyed by kid — read by the Gateway's jwks health block. Never consulted on
-// the Verify hot path.
+// Info returns a snapshot of the current trusted set's per-kid provenance
+// (including its BindingSpec), keyed by kid — read by the Gateway's jwks
+// health block. Never consulted on the Verify hot path (Verify reads its own
+// atomic snapshot directly).
 func (v *Verifier) Info() map[string]KeyInfo {
-	p := v.info.Load()
+	p := v.trusted.Load()
 	if p == nil {
 		return nil
 	}
 	cp := make(map[string]KeyInfo, len(*p))
-	for kid, i := range *p {
-		cp[kid] = i
+	for kid, t := range *p {
+		cp[kid] = t.Info
 	}
 	return cp
 }
@@ -244,8 +345,34 @@ func (v *Verifier) Info() map[string]KeyInfo {
 // sentinel errors above on any failure. It never returns a VerifiedActor on
 // error.
 func (v *Verifier) Verify(tokenString string) (VerifiedActor, error) {
+	// keyfunc and the binding-spec lookup below share ONE map load (captured
+	// into matched here) so the key that verified the signature and the spec
+	// that binds its subject always come from the same atomic snapshot — a
+	// second independent load could observe an intervening hot-swap and pair
+	// the verified key with a DIFFERENT kid's (or no) spec (finding MINOR-5).
+	var matched trustedKey
+	keyfunc := func(token *jwt.Token) (any, error) {
+		switch token.Method.(type) {
+		case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA:
+			// asymmetric — expected.
+		default:
+			return nil, ErrUnsupportedAlgorithm
+		}
+		kid, _ := token.Header["kid"].(string)
+		if kid == "" {
+			return nil, ErrUnknownKey
+		}
+		trusted := *v.trusted.Load()
+		entry, ok := trusted[kid]
+		if !ok {
+			return nil, ErrUnknownKey
+		}
+		matched = entry
+		return entry.Key, nil
+	}
+
 	claims := jwt.RegisteredClaims{}
-	_, err := v.parser.ParseWithClaims(tokenString, &claims, v.keyfunc)
+	_, err := v.parser.ParseWithClaims(tokenString, &claims, keyfunc)
 	if err != nil {
 		return VerifiedActor{}, mapParseError(err)
 	}
@@ -265,40 +392,48 @@ func (v *Verifier) Verify(tokenString string) (VerifiedActor, error) {
 	if sub == "" {
 		return VerifiedActor{}, ErrMissingSubject
 	}
+	iss := strings.TrimSpace(claims.Issuer)
+
+	// Subject binding (Contract #11 §3.2) — a property of the trust source,
+	// never inferred from token content (rejected Option C, design §4).
+	var actorSubject string
+	switch matched.Info.Spec.Mode {
+	case ModeOpaque:
+		if iss == "" {
+			return VerifiedActor{}, ErrMissingIssuer
+		}
+		if iss != matched.Info.Spec.Issuer {
+			// Cross-issuer sub-replay guard (finding A8): without this, a
+			// trusted-but-hostile source could sign iss=<peer's issuer> and
+			// derive the peer's users' identities.
+			return VerifiedActor{}, ErrIssuerMismatch
+		}
+		// Length-framed so no (iss', sub') != (iss, sub) can produce the same
+		// input string, even with ':' inside either value.
+		actorSubject = substrate.SHA256NanoID(fmt.Sprintf("idpsub:%d:%s:%s", len(iss), iss, sub))
+	case ModeNanoID:
+		if !substrate.IsValidNanoID(sub) {
+			return VerifiedActor{}, ErrInvalidSubject
+		}
+		actorSubject = sub
+	default:
+		// Unreachable: validateSpec (construction + every SetKeysWithInfo
+		// swap) already rejects any kid with an invalid/absent Spec.Mode.
+		return VerifiedActor{}, fmt.Errorf("auth: kid has no binding spec (mode %q)", matched.Info.Spec.Mode)
+	}
 
 	var exp time.Time
 	if claims.ExpiresAt != nil {
 		exp = claims.ExpiresAt.Time
 	}
 	return VerifiedActor{
-		ActorID:   IdentityKeyPrefix + sub,
-		Subject:   sub,
-		TokenID:   claims.ID,
-		ExpiresAt: exp,
+		ActorID:    IdentityKeyPrefix + actorSubject,
+		Subject:    actorSubject,
+		TokenID:    claims.ID,
+		ExpiresAt:  exp,
+		Issuer:     iss,
+		RawSubject: sub,
 	}, nil
-}
-
-// keyfunc resolves the trusted public key for a token by its `kid` header. The
-// signing method is re-asserted here as defense in depth even though
-// WithValidMethods already gates the alg — so a future relaxation of the parser
-// options cannot silently re-open the symmetric/none surface.
-func (v *Verifier) keyfunc(token *jwt.Token) (any, error) {
-	switch token.Method.(type) {
-	case *jwt.SigningMethodRSA, *jwt.SigningMethodECDSA:
-		// asymmetric — expected.
-	default:
-		return nil, ErrUnsupportedAlgorithm
-	}
-	kid, _ := token.Header["kid"].(string)
-	if kid == "" {
-		return nil, ErrUnknownKey
-	}
-	keys := *v.keys.Load()
-	key, ok := keys[kid]
-	if !ok {
-		return nil, ErrUnknownKey
-	}
-	return key, nil
 }
 
 // checkTime enforces exp (required) and nbf/iat (when present) under the

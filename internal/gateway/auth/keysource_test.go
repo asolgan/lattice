@@ -27,12 +27,12 @@ func writeTestPEM(t *testing.T, dir, name string) {
 }
 
 func TestLoadTrustedKeys_EmptyConfigReturnsEmptyMap(t *testing.T) {
-	keys, err := LoadTrustedKeys(KeySourceConfig{}, nil)
+	keys, specs, err := LoadTrustedKeys(KeySourceConfig{}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(keys) != 0 {
-		t.Fatalf("got %d keys, want 0 (the legitimate Fire-1 opt-out shape)", len(keys))
+	if len(keys) != 0 || len(specs) != 0 {
+		t.Fatalf("got %d keys / %d specs, want 0/0 (the legitimate Fire-1 opt-out shape)", len(keys), len(specs))
 	}
 }
 
@@ -41,7 +41,7 @@ func TestLoadTrustedKeys_DirWithKeysLoadsThem(t *testing.T) {
 	writeTestPEM(t, dir, "idp-key-1.pem")
 	writeTestPEM(t, dir, "idp-key-2.pem")
 
-	keys, err := LoadTrustedKeys(KeySourceConfig{KeysDir: dir}, nil)
+	keys, specs, err := LoadTrustedKeys(KeySourceConfig{KeysDir: dir, KeysDirIssuer: testIss}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -53,6 +53,24 @@ func TestLoadTrustedKeys_DirWithKeysLoadsThem(t *testing.T) {
 	}
 	if _, ok := keys["idp-key-2"]; !ok {
 		t.Error("missing kid idp-key-2")
+	}
+	for _, kid := range []string{"idp-key-1", "idp-key-2"} {
+		if got := specs[kid]; got.Mode != ModeOpaque || got.Issuer != testIss {
+			t.Errorf("specs[%q] = %+v, want ModeOpaque pinned to %q", kid, got, testIss)
+		}
+	}
+}
+
+// TestLoadTrustedKeys_KeysDirWithNoIssuerErrors — a configured KeysDir with
+// no declared KeysDirIssuer refuses to load: a configured external source
+// MUST pin an expected iss (Contract #11 §3.2, finding A8).
+func TestLoadTrustedKeys_KeysDirWithNoIssuerErrors(t *testing.T) {
+	dir := t.TempDir()
+	writeTestPEM(t, dir, "idp-key-1.pem")
+
+	_, _, err := LoadTrustedKeys(KeySourceConfig{KeysDir: dir}, nil)
+	if err == nil {
+		t.Fatal("expected an error for a KeysDir configured with no KeysDirIssuer")
 	}
 }
 
@@ -69,7 +87,7 @@ func TestLoadTrustedKeys_ExplicitDirWithNoPEMsErrors(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	_, err := LoadTrustedKeys(KeySourceConfig{KeysDir: dir}, nil)
+	_, _, err := LoadTrustedKeys(KeySourceConfig{KeysDir: dir, KeysDirIssuer: testIss}, nil)
 	if err == nil {
 		t.Fatal("expected an error for an explicitly configured but empty-of-.pem-files keys dir")
 	}
@@ -77,7 +95,7 @@ func TestLoadTrustedKeys_ExplicitDirWithNoPEMsErrors(t *testing.T) {
 
 func TestLoadTrustedKeys_ExplicitEmptyDirErrors(t *testing.T) {
 	dir := t.TempDir()
-	_, err := LoadTrustedKeys(KeySourceConfig{KeysDir: dir}, nil)
+	_, _, err := LoadTrustedKeys(KeySourceConfig{KeysDir: dir, KeysDirIssuer: testIss}, nil)
 	if err == nil {
 		t.Fatal("expected an error for an explicitly configured, entirely empty keys dir")
 	}
@@ -85,7 +103,7 @@ func TestLoadTrustedKeys_ExplicitEmptyDirErrors(t *testing.T) {
 
 func TestLoadTrustedKeys_DevModeAddsDevKey(t *testing.T) {
 	warned := false
-	keys, err := LoadTrustedKeys(KeySourceConfig{
+	keys, specs, err := LoadTrustedKeys(KeySourceConfig{
 		DevMode:    true,
 		DevKeyPath: "../../../deploy/gateway-dev-key/dev-public.pem",
 	}, func(string) { warned = true })
@@ -94,6 +112,9 @@ func TestLoadTrustedKeys_DevModeAddsDevKey(t *testing.T) {
 	}
 	if _, ok := keys[DevKeyID]; !ok {
 		t.Fatal("dev key not loaded under DevKeyID")
+	}
+	if got := specs[DevKeyID]; got.Mode != ModeNanoID {
+		t.Errorf("specs[DevKeyID] = %+v, want ModeNanoID", got)
 	}
 	if !warned {
 		t.Error("expected the dev-mode warn callback to fire")
@@ -107,10 +128,11 @@ func TestLoadTrustedKeys_DevKidCollisionErrors(t *testing.T) {
 	dir := t.TempDir()
 	writeTestPEM(t, dir, DevKeyID+".pem")
 
-	_, err := LoadTrustedKeys(KeySourceConfig{
-		KeysDir:    dir,
-		DevMode:    true,
-		DevKeyPath: "../../../deploy/gateway-dev-key/dev-public.pem",
+	_, _, err := LoadTrustedKeys(KeySourceConfig{
+		KeysDir:       dir,
+		KeysDirIssuer: testIss,
+		DevMode:       true,
+		DevKeyPath:    "../../../deploy/gateway-dev-key/dev-public.pem",
 	}, nil)
 	if err == nil {
 		t.Fatal("expected an error when a scanned key's kid collides with the reserved dev kid")
