@@ -103,7 +103,6 @@ deferred follow-ons.
 
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **weaver-admission-pkgmgr-authoring** | The §10.2 admission block (dispatch pacing) is engine-complete but has no `pkgmgr` authoring path — only a raw-JSON install can declare it. Add `WeaverTargetSpec.Admission` + validation mirroring the engine's `validateAdmissionPolicy`. Consumer: a vertical target pacing a vendor adapter (LoftSpace bgcheck/payment). | ★ | S | 📋 |
 | **weaver-untested-arms** | Five untested failure arms (none security-critical): `seedDisabledTargets` list-keys error → Start abort; disable/enable fail-safe ordering + silent Pause/Resume bool discards; `releaseCompletedLeg` revision-conflict skip; `freezeOscillatingPair` Disable-failure leg. Add colocated tests. | ★ | S | 📋 |
 
 ## Lattice feature backlog — the Phase-3 build queue
@@ -185,6 +184,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-10 · `eb7243c` · [Weaver] weaver-admission-pkgmgr-authoring — `WeaverTargetSpec.Admission` authoring path + install-time validation; lease-signing paces backgroundCheck/stripe; CI green
 - 2026-07-10 · `710f1f0` · [Weaver/Bridge/Gateway/Loom/objmgr] health-issue-since-field — stamp+persist Contract #5 §5.5 `since` on every health issue, platform-wide; CI green
 - 2026-07-09 · `e35cc38` · [Contracts] §6.14 protected-Delete+M5 wildcard, §7.3 bootstrap.json example, §10 task-revive text ratified — reconciliation to shipped code (94087bd/128111f); no code change
 - 2026-07-09 · [F-004] Package version upgrade / DDL hot-reload CLOSED — Fires 1a-3 shipped; optional Fire-2 live-e2e deferred — [design](../../implementation-artifacts/package-version-upgrade-design.md)
