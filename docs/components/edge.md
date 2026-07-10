@@ -33,13 +33,23 @@ package, built incrementally per the design's §7 Steward decomposition (EDGE.1 
   `local:` bbolt bucket (`PutLocal`/`GetLocal`) scaffolds the design's **sovereign, device-only**
   namespace — entries a user creates locally that are never uploaded — kept in its own bucket so the
   mirror's apply path can never reach it.
+- **`internal/edge/sync`** — the Sync Manager (design §3.2): a durable JetStream consumer
+  (`substrate.RunDurableConsumer`, stable per-`(identityId, deviceId)` durable name) on the Personal-Lens
+  `SYNC` stream, filtered to the actor's own `lattice.sync.user.<id>` subject. Each delivered delta drives
+  `store.ApplyUpsert`/`ApplyDelete` and advances `store.SetCursor` to the message's stream sequence — a
+  malformed envelope is `Term`inated (poison, never redelivered), an apply failure is `Nak`ed for retry. On
+  cold start (no local cursor) or a detected **gap** (the local cursor has fallen behind the SYNC stream's
+  current `FirstSeq` — retention pruned messages the node never saw), it calls the Personal-Lens
+  `personal.register`/`personal.hydrate` control RPCs (`internal/refractor/control`) before subscribing; a
+  warm cursor still within retention skips both and resumes incrementally from the durable's own ack floor.
+  Control-plane requests carry an optional `Lattice-Actor` header (trusted posture; EDGE.3 replaces this
+  with a Gateway-verified identity).
+- **`cmd/edge`** — the binary wiring `store` + `sync` together (mirrors `cmd/loupe`'s flat layout):
+  `EDGE_STORE_PATH`/`NATS_URL`/`EDGE_IDENTITY_ID`/`EDGE_DEVICE_ID`/`EDGE_ACTOR_KEY` env config, connects,
+  and blocks running the Sync Manager until SIGINT/SIGTERM.
 
 **Not yet built** (see the design doc §7 for the full fire-by-fire plan):
 
-- **`internal/edge/sync`** — subscribing the Personal-Lens `SYNC` stream and driving `store.ApplyUpsert`/
-  `ApplyDelete` from inbound delta envelopes; the gap→re-hydrate trigger on a long disconnect; the
-  `personal.hydrate`/`personal.register` control-RPC calls (cold start).
-- **`cmd/edge`** — the binary wiring `store` + `sync` (+ later `overlay`/`agent`/`vault`) together.
 - **`internal/edge/overlay`** (EDGE.2) — the optimistic local-apply + intent queue write path.
 - **`internal/edge/agent`** (EDGE.2) — the intent uploader + reconcile-by-revision conflict handling.
 - **`internal/edge/vault`** (EDGE.4) — the transient session-key Vault Proxy for sensitive aspects.

@@ -110,8 +110,9 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
 > 🎯 **Build-ready now** (this section only — check the **Arch-review intake** section above too, it
-> carries its own ✅ ratified / 📋 ready items): **Edge Lattice EDGE.1** (Edge & personal lenses) — 🏗️
-> building, `internal/edge/store` shipped `1783f10`; next `internal/edge/sync` (edge design §7 checkpoint).
+> carries its own ✅ ratified / 📋 ready items): **Edge Lattice EDGE.2** (Edge & personal lenses) — EDGE.1
+> (the offline-first read loop: `internal/edge/store` + `internal/edge/sync` + `cmd/edge`) is done; next
+> `internal/edge/overlay` + `internal/edge/agent` (edge design §7 checkpoint).
 > *Still gated*: **AI-caps Fire 4** (Andrew sign-off on AI-code-execution, not the sandbox).
 > Whoever ships the named pick updates this callout to the next one — a stale callout starves the lane.
 
@@ -143,7 +144,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | Personal / Secure Lens | Refractor projects a per-identity security-filtered subgraph stream; the Interest-Set watchlist; RLS-style link filtering. | ★★ | L | ✅ effectively done · [design](../../implementation-artifacts/personal-secure-lens-design.md) · Fires 1–5 shipped (D1 + Vault gates closed); PL.6 (multicast dedup, WebSocket bridge) deferred, no Edge consumer yet |
-| Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. EDGE.1+2 (trusted-posture offline loop; PL.1/2 shipped) build first, EDGE.3–5 per the §7 gates. | ★★★ | XL | 🏗️ building · [design §7 checkpoint](../../implementation-artifacts/edge-lattice-full-design.md) `1783f10` · next: `internal/edge/sync` |
+| Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. EDGE.1+2 (trusted-posture offline loop; PL.1/2 shipped) build first, EDGE.3–5 per the §7 gates. | ★★★ | XL | 🏗️ building · [design §7 checkpoint](../../implementation-artifacts/edge-lattice-full-design.md) · EDGE.1 done · next: EDGE.2 `internal/edge/overlay`+`agent` |
 
 ### AI-native
 | Item | What it is | Imp | Size | State |

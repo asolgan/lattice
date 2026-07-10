@@ -507,18 +507,23 @@ feature*.
 
 ## 7. Decomposition for the Steward (fire-by-fire, each independently shippable + green)
 
-> **🏗️ CHECKPOINT (2026-07-10, Steward).** EDGE.1 started. **Done:** `internal/edge/store` (§3.1, the
-> Local VAL Store) — bbolt-backed, Contract #1-keyed, `ApplyUpsert`/`ApplyDelete` LWW-by-revision,
-> persisted `Cursor`, scaffolded `local:` sovereign namespace; unit-tested per §5; `docs/components/edge.md`
-> + `docs/vendors.md` bbolt row added; `1783f10`. **Next:** `internal/edge/sync` (§3.2) — subscribe the
-> Personal-Lens `SYNC` stream (subject `lattice.sync.user.<id>`, stream `"SYNC"`), parse the delta envelope
-> (`{op,key,anchor,kind,class,revision,projectionSeq,encrypted,data}` — `internal/refractor/adapter/
-> natssubject.go`'s unexported `deltaEnvelope`, mirror the JSON shape, don't import it), drive
-> `store.ApplyUpsert`/`ApplyDelete` from `op:upsert`/`op:delete`, persist `store.SetCursor` per applied
-> message, and call `personal.hydrate` (`lattice.ctrl.refractor.personal.hydrate`, `internal/refractor/
-> control/service.go`) + `personal.register` on cold start / gap. Then `cmd/edge` wires `store` + `sync`
-> together (mirrors `cmd/loupe`'s flat layout) — that's the rest of EDGE.1's "Green" bar (§7.1: mirror-
-> convergence + cold-hydration + gap→re-hydrate e2e against a live trusted slice).
+> **🏗️ CHECKPOINT (2026-07-10, Steward).** EDGE.1 CLOSED — the offline-first read loop is done. **Done:**
+> `internal/edge/store` (§3.1, the Local VAL Store) — bbolt-backed, Contract #1-keyed, `ApplyUpsert`/
+> `ApplyDelete` LWW-by-revision, persisted `Cursor`, scaffolded `local:` sovereign namespace (`1783f10`).
+> `internal/edge/sync` (§3.2, the Sync Manager) — `substrate.RunDurableConsumer` on the `SYNC` stream
+> (per-actor `lattice.sync.user.<id>` filter, stable per-device durable name), a locally re-declared
+> `deltaEnvelope` mirroring `natssubject.go`'s wire shape, `store.ApplyUpsert`/`ApplyDelete` per delivered
+> delta + `store.SetCursor` advancing on every applied message, cold-start/gap-triggered
+> `personal.register`+`personal.hydrate` control RPCs (gap detected by comparing the local cursor to the
+> SYNC stream's live `FirstSeq`), warm resume otherwise. `cmd/edge` — the binary wiring `store`+`sync`
+> (mirrors `cmd/loupe`'s flat layout; `EDGE_STORE_PATH`/`NATS_URL`/`EDGE_IDENTITY_ID`/`EDGE_DEVICE_ID`/
+> `EDGE_ACTOR_KEY` env config). Ephemeral-stack e2e (embedded NATS + a real `control.Service` +
+> capability-stub, §5's "against a live trusted slice") proves cold-start hydrate+register, warm-resume
+> skips hydrate, gap→re-hydrate, and the upsert/delete/hydrationComplete/unknown-op/malformed-envelope
+> apply switch. `docs/components/edge.md` updated in the same commit. **Next:** EDGE.2 —
+> `internal/edge/overlay` (optimistic local-apply + pending overlay + UI-discovery) +
+> `internal/edge/agent` (durable intent queue, submit-on-reconnect, tracker poll/confirm, conflict
+> re-audit, local GC) — trusted posture, §7 item 2.
 
 Ordered so the security-inert local-first loop lands first (co-built with its cloud producer), the security
 turn-on is its own gated fire, and confidentiality + the real device extend it. **Dependency gates explicit.**
