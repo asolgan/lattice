@@ -267,6 +267,83 @@ func TestKVUpdateWithTTL(t *testing.T) {
 	}
 }
 
+// TestKVPutWithTTL proves the raw-header TTL path: the entry self-expires at
+// the TTL and is visible (and re-writable) before then, while ttl<=0 falls
+// back to a plain unconditional KVPut (no expiry, preserved by CAS on a
+// subsequent KVCreate of the same key only after it actually expires).
+func TestKVPutWithTTL(t *testing.T) {
+	c, ctx := newTestConn(t)
+	bucket := "core-kv"
+	provisionCoreBucket(ctx, t, c, bucket)
+
+	key := VertexKey("identity", testNanoID1)
+	seq, err := c.KVPutWithTTL(ctx, bucket, key, []byte(`{"n":1}`), time.Second)
+	if err != nil {
+		t.Fatalf("KVPutWithTTL: %v", err)
+	}
+	if seq == 0 {
+		t.Fatalf("KVPutWithTTL returned sequence 0")
+	}
+	entry, err := c.KVGet(ctx, bucket, key)
+	if err != nil || string(entry.Value) != `{"n":1}` {
+		t.Fatalf("KVGet after KVPutWithTTL: entry=%v err=%v", entry, err)
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	expired := false
+	for time.Now().Before(deadline) {
+		if _, err := c.KVGet(ctx, bucket, key); errors.Is(err, ErrKeyNotFound) {
+			expired = true
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if !expired {
+		t.Fatalf("key %q never expired via KVPutWithTTL's TTL", key)
+	}
+
+	// ttl <= 0 falls back to a plain KVPut (no expiry header).
+	key2 := VertexKey("identity", testNanoID2)
+	if _, err := c.KVPutWithTTL(ctx, bucket, key2, []byte(`{"n":1}`), 0); err != nil {
+		t.Fatalf("KVPutWithTTL(ttl=0): %v", err)
+	}
+	entry2, err := c.KVGet(ctx, bucket, key2)
+	if err != nil || string(entry2.Value) != `{"n":1}` {
+		t.Fatalf("KVGet after KVPutWithTTL(ttl=0): entry=%v err=%v", entry2, err)
+	}
+}
+
+// TestKVDeleteRevision proves the optimistic-concurrency delete: a stale
+// expectedRevision conflicts and leaves the entry live, while the current
+// revision deletes it (subsequent KVGet returns ErrKeyNotFound).
+func TestKVDeleteRevision(t *testing.T) {
+	c, ctx := newTestConn(t)
+	bucket := "core-kv"
+	provisionCoreBucket(ctx, t, c, bucket)
+
+	key := VertexKey("identity", testNanoID1)
+	rev, err := c.KVCreate(ctx, bucket, key, []byte(`{"n":1}`))
+	if err != nil {
+		t.Fatalf("KVCreate: %v", err)
+	}
+
+	// A stale expected revision conflicts and leaves the entry live.
+	if err := c.KVDeleteRevision(ctx, bucket, key, rev+1); !errors.Is(err, ErrRevisionConflict) {
+		t.Fatalf("expected ErrRevisionConflict on stale delete-revision, got %v", err)
+	}
+	if _, err := c.KVGet(ctx, bucket, key); err != nil {
+		t.Fatalf("a conflicted delete-revision must leave the entry intact, got %v", err)
+	}
+
+	// The matching revision deletes.
+	if err := c.KVDeleteRevision(ctx, bucket, key, rev); err != nil {
+		t.Fatalf("KVDeleteRevision at the live revision: %v", err)
+	}
+	if _, err := c.KVGet(ctx, bucket, key); !errors.Is(err, ErrKeyNotFound) {
+		t.Fatalf("expected ErrKeyNotFound after KVDeleteRevision, got %v", err)
+	}
+}
+
 func TestAtomicBatch_Commits(t *testing.T) {
 	c, ctx := newTestConn(t)
 	bucket := "core-kv"

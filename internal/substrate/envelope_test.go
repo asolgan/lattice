@@ -101,6 +101,48 @@ func TestUpdate_TripletOnly(t *testing.T) {
 	}
 }
 
+// Update is the time.Now() convenience form of UpdateAt — it must stamp the
+// same lastModified* triplet and leave the created* triplet untouched.
+func TestUpdate_UsesCurrentTime(t *testing.T) {
+	actor1 := VertexKey("identity", testNanoID1)
+	op1 := VertexKey("op", testNanoID3)
+	past := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	env := NewDocumentEnvelopeAt("identity", actor1, op1, past)
+	origCreatedAt := env.CreatedAt
+
+	before := time.Now().UTC()
+	actor2 := VertexKey("identity", testNanoID2)
+	op2 := VertexKey("op", testNanoID1)
+	env.Update(actor2, op2)
+	after := time.Now().UTC()
+
+	if env.CreatedAt != origCreatedAt {
+		t.Fatalf("CreatedAt mutated: %q -> %q", origCreatedAt, env.CreatedAt)
+	}
+	if env.LastModifiedBy != actor2 || env.LastModifiedByOp != op2 {
+		t.Fatalf("lastModified actor/op not updated")
+	}
+	got, err := time.Parse(time.RFC3339Nano, env.LastModifiedAt)
+	if err != nil {
+		t.Fatalf("LastModifiedAt not parseable: %v", err)
+	}
+	if got.Before(before) || got.After(after) {
+		t.Fatalf("LastModifiedAt %v not within [%v, %v]", got, before, after)
+	}
+}
+
+// Update panics on an empty actor/opTracker exactly like UpdateAt — it must
+// not silently stamp an unattributed modification.
+func TestUpdate_EmptyActor_Panics(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("expected Update with empty actor to panic")
+		}
+	}()
+	env := NewDocumentEnvelope("identity", VertexKey("identity", testNanoID1), VertexKey("op", testNanoID3))
+	env.Update("", VertexKey("op", testNanoID1))
+}
+
 func TestAspectAndLinkEnvelopes_Marshal(t *testing.T) {
 	actor := VertexKey("identity", testNanoID2)
 	op := VertexKey("op", testNanoID3)

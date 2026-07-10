@@ -11,6 +11,7 @@ import (
 	"github.com/asolgan/lattice/internal/jsstore"
 	"github.com/nats-io/nats-server/v2/server"
 	natsserver "github.com/nats-io/nats-server/v2/test"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nkeys"
 )
 
@@ -152,6 +153,61 @@ func TestConnect_MissingCredsFile_Errors(t *testing.T) {
 	_, err := Connect(ctx, ConnectOpts{URL: url, CredsFile: filepath.Join(t.TempDir(), "absent.creds")})
 	if err == nil {
 		t.Fatal("expected error for missing creds file, got nil")
+	}
+}
+
+// Wrap adapts a caller-constructed *nats.Conn (dialed with options substrate
+// does not expose via ConnectOpts) into a working *Conn: KV operations must
+// round-trip exactly as they do through Connect.
+func TestWrap_RoundTrip(t *testing.T) {
+	url := startEmbeddedNATS(t)
+	nc, err := nats.Connect(url, nats.Name("wrap-test"))
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+
+	c, err := Wrap(nc)
+	if err != nil {
+		t.Fatalf("Wrap: %v", err)
+	}
+	if c.NATS() != nc {
+		t.Fatalf("Wrap must retain the caller's *nats.Conn")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	const bucket = "wrap-bucket"
+	provisionCoreBucket(ctx, t, c, bucket)
+	if _, err := c.KVPut(ctx, bucket, "k", []byte("v")); err != nil {
+		t.Fatalf("KVPut over a Wrap()'d conn: %v", err)
+	}
+	entry, err := c.KVGet(ctx, bucket, "k")
+	if err != nil || string(entry.Value) != "v" {
+		t.Fatalf("KVGet over a Wrap()'d conn: entry=%v err=%v", entry, err)
+	}
+}
+
+// Wrap itself only constructs a JetStream context over nc — it does not probe
+// the connection, so it succeeds even against an already-closed *nats.Conn.
+// The closed connection surfaces at the first actual KV operation instead.
+func TestWrap_ClosedConn_FailsOnUse(t *testing.T) {
+	url := startEmbeddedNATS(t)
+	nc, err := nats.Connect(url)
+	if err != nil {
+		t.Fatalf("nats.Connect: %v", err)
+	}
+	nc.Close()
+
+	c, err := Wrap(nc)
+	if err != nil {
+		t.Fatalf("Wrap over a closed *nats.Conn must still construct, got: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+	if _, err := c.KVPut(ctx, "any-bucket", "k", []byte("v")); err == nil {
+		t.Fatal("expected a KV operation over a closed connection to fail, got nil")
 	}
 }
 
