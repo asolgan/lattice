@@ -861,6 +861,8 @@ def claim_identity(identity_key):
     # absent and both emit op:create for the IDENTICAL key, but CreateOnly on a key
     # at revision 0 commits exactly once — the loser's whole batch RevisionConflicts
     # (fail closed, never a silent double-claim).
+    # read-posture: (d) declared in contextHint.optionalReads by CreatePatient's
+    # dispatcher (cmd/clinic-app/web/app.js)
     existing = kv.Read(identity_key + ".patientClaim")
     if existing != None:
         fail("IdentityAlreadyClaimed: " + identity_key + " is already linked to another patient")
@@ -1436,6 +1438,8 @@ def claim_cell(hub, cellcode, cls, conflict_code, who):
     # key with revision 0 commits exactly once — the loser's whole batch rejects
     # (RevisionConflict), the Processor retries, and the retry's kv.Read now sees the
     # winner's live cell and fails closed.
+    # read-posture: (d) declared in contextHint.optionalReads by CreateAppointment /
+    # RescheduleAppointment's dispatcher (cmd/clinic-app/web/app.js slotClaimKeys)
     key = hub + ".slot" + cellcode
     existing = kv.Read(key)
     if existing != None and not existing.isDeleted:
@@ -1728,6 +1732,9 @@ def execute(state, op):
         # single-op semantics (it closes the single-op invalid transition; concurrent
         # transitions race exactly as the upsert already did). Re-opening a terminal
         # appointment is a future explicit op, not a status flip.
+        # read-posture: (d) declared in contextHint.optionalReads by
+        # SetAppointmentStatus's dispatcher (cmd/clinic-app/web/app.js) — absence is
+        # the legit first-set case (no status yet)
         cur_val = None
         cur_status = kv.Read(appt_key + ".status")
         if cur_status != None and not cur_status.isDeleted:

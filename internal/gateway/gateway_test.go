@@ -143,6 +143,37 @@ func TestBuildEnvelope_ForwardsAuthContextAndReads(t *testing.T) {
 	}
 }
 
+// TestBuildEnvelope_ForwardsOptionalReads proves a browser-direct client can
+// declare Contract #2 §2.5 optionalReads (script-read-posture-design.md §13
+// verticals-fire dispatcher wiring) — a class-(d) read-before-create/dedup —
+// same dedup/trim treatment as Reads, both wire forms (bare + nested).
+func TestBuildEnvelope_ForwardsOptionalReads(t *testing.T) {
+	req := operationRequest{
+		OperationType: "Ping",
+		Reads:         []string{"vtx.a.1"},
+		OptionalReads: []string{"vtx.a.1.guard", "vtx.a.1.guard", " "},
+	}
+	env, err := buildEnvelope(req, "vtx.identity.x", time.Now())
+	if err != nil {
+		t.Fatalf("buildEnvelope: %v", err)
+	}
+	if env.ContextHint == nil || len(env.ContextHint.OptionalReads) != 1 || env.ContextHint.OptionalReads[0] != "vtx.a.1.guard" {
+		t.Fatalf("ContextHint.OptionalReads = %+v, want deduped [vtx.a.1.guard]", env.ContextHint)
+	}
+
+	nested := operationRequest{
+		OperationType: "Ping",
+		ContextHint:   &operationRequestContext{Reads: []string{"vtx.a.1"}, OptionalReads: []string{"vtx.a.1.guard"}},
+	}
+	env2, err := buildEnvelope(nested, "vtx.identity.x", time.Now())
+	if err != nil {
+		t.Fatalf("buildEnvelope: %v", err)
+	}
+	if env2.ContextHint == nil || len(env2.ContextHint.OptionalReads) != 1 || env2.ContextHint.OptionalReads[0] != "vtx.a.1.guard" {
+		t.Fatalf("nested contextHint.optionalReads not forwarded: %+v", env2.ContextHint)
+	}
+}
+
 // --- bearerToken -----------------------------------------------------------
 
 func TestBearerToken(t *testing.T) {

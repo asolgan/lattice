@@ -297,16 +297,18 @@ type operationRequest struct {
 	Class         string                   `json:"class,omitempty"`
 	Payload       json.RawMessage          `json:"payload,omitempty"`
 	Reads         []string                 `json:"reads,omitempty"`
+	OptionalReads []string                 `json:"optionalReads,omitempty"`
 	AuthContext   *processor.AuthContext   `json:"authContext,omitempty"`
 	ContextHint   *operationRequestContext `json:"contextHint,omitempty"`
 }
 
 // operationRequestContext lets a client declare Contract #2 §2.5 reads
-// either as a bare `reads` array or nested under `contextHint.reads` — both
-// forms are accepted so a caller mirroring the OperationEnvelope wire shape
-// works unmodified.
+// either as a bare `reads`/`optionalReads` array or nested under
+// `contextHint.{reads,optionalReads}` — both forms are accepted so a caller
+// mirroring the OperationEnvelope wire shape works unmodified.
 type operationRequestContext struct {
-	Reads []string `json:"reads,omitempty"`
+	Reads         []string `json:"reads,omitempty"`
+	OptionalReads []string `json:"optionalReads,omitempty"`
 }
 
 // errorResponse is the JSON body of a non-2xx reply.
@@ -541,18 +543,34 @@ func buildEnvelope(req operationRequest, actorID string, now time.Time) (*proces
 		Payload:       payload,
 		AuthContext:   req.AuthContext,
 	}
-	if reads := cleanReads(req); len(reads) > 0 {
-		env.ContextHint = &processor.ContextHint{Reads: reads}
+	reads := cleanKeys(req.Reads, contextHintReads(req))
+	optionalReads := cleanKeys(req.OptionalReads, contextHintOptionalReads(req))
+	if len(reads) > 0 || len(optionalReads) > 0 {
+		env.ContextHint = &processor.ContextHint{Reads: reads, OptionalReads: optionalReads}
 	}
 	return env, nil
 }
 
-// cleanReads accepts either wire form (bare `reads` or `contextHint.reads`),
-// trims, dedups, and drops empties.
-func cleanReads(req operationRequest) []string {
-	raw := req.Reads
-	if len(raw) == 0 && req.ContextHint != nil {
-		raw = req.ContextHint.Reads
+func contextHintReads(req operationRequest) []string {
+	if req.ContextHint == nil {
+		return nil
+	}
+	return req.ContextHint.Reads
+}
+
+func contextHintOptionalReads(req operationRequest) []string {
+	if req.ContextHint == nil {
+		return nil
+	}
+	return req.ContextHint.OptionalReads
+}
+
+// cleanKeys accepts either wire form (bare array or the nested contextHint
+// array), trims, dedups, and drops empties.
+func cleanKeys(bare, nested []string) []string {
+	raw := bare
+	if len(raw) == 0 {
+		raw = nested
 	}
 	if len(raw) == 0 {
 		return nil

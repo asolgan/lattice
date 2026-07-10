@@ -282,6 +282,7 @@ async function submitOp(operationType, klass, payload, reads, opts) {
   const [base, token] = await Promise.all([gatewayURL(), asSelf ? selfWriteToken() : staffReadToken()]);
   if (asSelf && !token) throw new Error("this patient has no linked identity — self-service booking is unavailable");
   const body = { operationType, class: klass, payload, reads };
+  if (opts && opts.optionalReads) body.optionalReads = opts.optionalReads;
   if (asSelf) body.authContext = { target: patientIdentityKey() };
   return api(base + "/v1/operations", {
     method: "POST",
@@ -506,7 +507,16 @@ async function submitNewPatient(ev) {
 
     const payload = { fullName: name };
     if (identityKey) payload.identityKey = identityKey;
-    const reply = await submitOp("CreatePatient", "patient", payload, identityKey ? [identityKey] : undefined);
+    // read-posture (d): identityKey + ".patientClaim" is a read-before-create dedup
+    // guard (claim_identity, ddls.go) — its absence is the common, legitimate case,
+    // so it is declared optionalReads, not reads (script-read-posture-design.md §13).
+    const reply = await submitOp(
+      "CreatePatient",
+      "patient",
+      payload,
+      identityKey ? [identityKey] : undefined,
+      identityKey ? { optionalReads: [identityKey + ".patientClaim"] } : undefined,
+    );
     const msg = rejectionMessage(reply);
     if (msg) {
       toast("Could not create patient — " + msg, "err");
@@ -1344,6 +1354,33 @@ function addMinutesRFC3339(localValue, minutes) {
   return d.toISOString().replace(/\.\d{3}Z$/, "Z");
 }
 
+// slotCells / slotCellCode mirror the clinic-domain Starlark's grid
+// discretization (ddls.go slot_cells/slot_cellcode) so the dispatcher can
+// declare each covered cell's slot-claim key as an optionalReads
+// (script-read-posture-design.md §13, claim_cell class-d) — an absent slot is
+// the common case (no existing booking), never a required read.
+const SLOT_GRID_STEP_MINUTES = 15;
+const SLOT_MAX_CELLS = 96; // 24h backstop, mirrors MAX_SLOT_CELLS
+
+function slotCells(startsAt, endsAt) {
+  const cells = [];
+  let cur = new Date(startsAt);
+  const end = new Date(endsAt);
+  for (let i = 0; i < SLOT_MAX_CELLS + 1 && cur < end; i++) {
+    cells.push(cur.toISOString().replace(/\.\d{3}Z$/, "Z"));
+    cur = new Date(cur.getTime() + SLOT_GRID_STEP_MINUTES * 60000);
+  }
+  return cells;
+}
+
+function slotCellCode(cellStart) {
+  return cellStart.replace(/-/g, "").replace(/:/g, "").toLowerCase();
+}
+
+function slotClaimKeys(hub, startsAt, endsAt) {
+  return slotCells(startsAt, endsAt).map((c) => hub + ".slot" + slotCellCode(c));
+}
+
 // toLocalInputValue formats a stored RFC3339 (UTC) instant back into the local
 // "YYYY-MM-DDTHH:MM" a <input type=datetime-local> expects, for prefilling the
 // reschedule modal with the appointment's current time.
@@ -1406,9 +1443,14 @@ async function submitBook(ev) {
     // The op claims a deterministic slot-claim aspect per covered 15-minute grid
     // cell on both the provider and patient hubs — the write-path key collision at
     // commit IS the double-book lock (SlotConflict / PatientDoubleBook), so no
-    // per-hub OCC epoch needs to be declared here.
+    // per-hub OCC epoch needs to be declared here. Each covered cell's slot-claim
+    // key is (d)-declared optionalReads (claim_cell, ddls.go — absence is the
+    // common no-existing-booking case; script-read-posture-design.md §13).
+    const optionalReads = slotClaimKeys(provider, startsAt, endsAt).concat(
+      slotClaimKeys(state.patient, startsAt, endsAt),
+    );
     const reply = await submitOp("CreateAppointment", "appointment", payload,
-      [state.patient, provider], { asSelf });
+      [state.patient, provider], { asSelf, optionalReads });
     const msg = rejectionMessage(reply);
     if (msg) {
       toast("Booking rejected — " + friendlyBookingRejection(msg), "err");
@@ -2762,9 +2804,21 @@ const TERMINAL_STATUS_VALUES = ["completed", "cancelled", "noShow"];
 
 async function setStatus(a, status, onDone) {
   const payload = { appointmentKey: a.appointmentKey, status };
+  // read-posture: appt.status is (d) — absence is the legit first-set case
+  // (optionalReads); the terminal-transition branch additionally reads (a)
+  // appt.schedule + the withProvider/forPatient endpoint-validation links,
+  // required only when this call can hit that branch (script-read-posture-
+  // design.md §13).
+  const reads = [a.appointmentKey];
+  const optionalReads = [a.appointmentKey + ".status"];
   if (TERMINAL_STATUS_VALUES.indexOf(status) !== -1 && status !== a.status) {
     payload.provider = a.providerKey;
     payload.patient = a.patientKey;
+    reads.push(
+      a.appointmentKey + ".schedule",
+      "lnk.appointment." + bareId(a.appointmentKey) + ".withProvider.provider." + bareId(a.providerKey),
+      "lnk.appointment." + bareId(a.appointmentKey) + ".forPatient.patient." + bareId(a.patientKey),
+    );
   }
   if (status === "noShow" || status === "cancelled") {
     const verb = status === "noShow" ? "Mark as no-show" : "Cancel this appointment";
@@ -2778,7 +2832,8 @@ async function setStatus(a, status, onDone) {
       "SetAppointmentStatus",
       "appointment",
       payload,
-      [a.appointmentKey],
+      reads,
+      { optionalReads },
     );
     const msg = rejectionMessage(reply);
     if (msg) {
@@ -2861,8 +2916,27 @@ async function submitReschedule(ev) {
   const submit = $("#reschedule-submit");
   submit.disabled = true;
   try {
-    const reply = await submitOp("RescheduleAppointment", "appointment", payload,
-      [a.appointmentKey]);
+    // read-posture (a): the appointment's current .schedule (required to compute
+    // released/claimed cells) + the withProvider/forPatient endpoint-validation
+    // links (require_matching_provider/patient, ddls.go) — script-read-posture-
+    // design.md §13. The new interval's slot-claim keys are (d) optionalReads
+    // (claim_cell; an over-declare of cells already held across the move is
+    // harmless — the script only reads what claim_cell actually calls kv.Read on).
+    const optionalReads = slotClaimKeys(a.providerKey, startsAt, endsAt).concat(
+      slotClaimKeys(a.patientKey, startsAt, endsAt),
+    );
+    const reply = await submitOp(
+      "RescheduleAppointment",
+      "appointment",
+      payload,
+      [
+        a.appointmentKey,
+        a.appointmentKey + ".schedule",
+        "lnk.appointment." + bareId(a.appointmentKey) + ".withProvider.provider." + bareId(a.providerKey),
+        "lnk.appointment." + bareId(a.appointmentKey) + ".forPatient.patient." + bareId(a.patientKey),
+      ],
+      { optionalReads },
+    );
     const msg = rejectionMessage(reply);
     if (msg) {
       toast("Could not reschedule — " + friendlyBookingRejection(msg), "err");
