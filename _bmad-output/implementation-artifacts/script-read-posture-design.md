@@ -339,3 +339,120 @@ report went deeper). Reconciliation, fixes applied on the fire branch pre-merge:
   boundary — false-negative vector on an advisory-only lint; tighten (reset at intervening
   kv.* call) when the debt list is worked down. (iii) `fileMutates` is file-granular — coarse but
   conservative; same revisit point as (ii).
+
+---
+
+## 13. Sweep worklist — verified inventory + plan (2026-07-09)
+
+**Provenance.** Andrew flagged that agents keep copying the class-(b) pattern despite the advisory
+lint, and asked for a verified inventory + sweep plan. This section is the durable record; the sweep
+board rows on both lanes ([verticals](../planning-artifacts/backlog/verticals.md) ·
+[lattice](../planning-artifacts/backlog/lattice.md)) point here. The authoritative *list* is always
+`go run ./scripts/lint-conventions.go` — line numbers below drift as files change; the dispositions
+are what to keep.
+
+**The accrual fact.** 55 warnings at Fire 2's landing (2026-07-06) → **65 today**; the +10 are all
+`wellness-domain`, whose first commit is 2026-07-07 — **one day after the advisory lint landed**. The
+warn-only gate demonstrably does not deter new debt (the `orchestration-base` ClaimTask reads predate
+the lint, 2026-06-30 FR28 Fire 1 — pre-existing, not accrual). Interim mitigation shipped 2026-07-09:
+a CLAUDE.md read-posture convention bullet all agents load.
+
+**End-state (restating §2/§7 — unchanged).** Migrate/annotate every class-(b) site, then flip the
+read-posture findings advisory→blocking (STRICT CI fails). `kv.Read` and `kv.Links` **stay in the
+sandbox**: (c) config reads and (e) enumerations are sanctioned live classes, and the runtime lazy
+fallback remains (enforcement is CI-static, per Contract #2 §2.5 "undeclared reads still execute").
+Capability *removal* is not the ratified plan and would need a Contract #2 §2.5/§2.5.1 amendment; the
+Edge design does not require it either — its gate (`contextHint.reads ⊆ mirror`, F4 for enumerations)
+degrades undeclared ops to pending rather than depending on the capability being absent.
+
+**Sequencing (three fires):**
+1. **Verticals fire (★★★ · M).** The 44 vertical-package sites below + the declarations at their
+   dispatchers (app FE envelopes in `cmd/{loftspace,clinic,wellness}-app/web/app.js` — wellness
+   CreateBooking/CancelBooking already pass `reads`, the precedent — plus the Weaver renewal/listing
+   directOps in `packages/lease-signing/renewal_targets.go` etc.).
+2. **Platform fire (★★★ · S–M).** The 21 platform-package sites + dispatcher declarations; **add the
+   lint's missing `(a) <declared-by>` annotation form** (the regex accepts only `(c|d|e)`, so sites
+   that are ALREADY dispatcher-declared — wellness :810/:872, augur :470/:472,
+   `external_params.go:54` — have no honest silencing path); annotate the missed (e) follow-up
+   (`orchestration-base/ddls.go:441`); reword the editor-hook's "classify … when convenient" to name
+   the coming block; add **production `contextHint.enumerations` declarations for the four (e)
+   enumeration ops** — today only the MergeIdentity pipeline test declares one, so the Edge
+   mirror-coverage gate has zero production data.
+3. **The flip (lattice, one line, after 1+2).** Read-posture findings advisory→blocking. Deliberately
+   NOT a baseline-ratchet (block-new-only) — both fires are expected to land within days at ★★★;
+   ratchet machinery would outlive its usefulness.
+
+**Proposed dispositions** (rollup: **38 (a) · 24 (d) · 1 (c) · 1 (e) · 1 chained**; the sweep fire
+re-verifies each against the §3.1 fail-closed rule — required key → `reads`, never `optionalReads`):
+
+| site | op / script | key read | class | note |
+|---|---|---|---|---|
+| augur:407/420/429 | ReviewProposal revalidate | `proposal.{proposed,confidence,gap}` | a | from externalRef; absence = error |
+| augur:470/472 | CreateAugurReasoningClaim | `target_key` / `entity_key` | a | Weaver directOp already declares — annotate only |
+| augur:522 | RecordProposal | `proposal.gap` | a | absence = wiring fault |
+| augur:643/719 | ReviewProposal / RecordProposalDispatch | `proposal.review` | a | absence = error |
+| cap-author:386 | RecordCapabilityProposal | `claim.target` | a | from externalRef |
+| cap-author:393 | RecordCapabilityProposal | `proposal.request` | **chained** | key from :386's result — see hard case 1 |
+| cap-author:525/613/635/643 | Review/MarkApplied | `proposal.{review,target}` + `pkg.manifest` | a | from payload ids |
+| cap-author:794 | CreateAuthoringClaim | `subject_key` | a | from payload |
+| clinic:864 | CreatePatient claim_identity | `identity.patientClaim` | d | read-before-create dedup |
+| clinic:1440 | Create/Reschedule claim_cell | `hub.slot<cell>` | d | slot claim; absent→claim |
+| clinic:1455/1464 | require_matching_{provider,patient} | `lnk withProvider/forPatient` | a | validation links, derivable |
+| clinic:1663/1760/1823 | Reschedule / terminal / Tombstone | `appt.schedule` | a | required for cell release |
+| clinic:1732 | SetAppointmentStatus | `appt.status` | d | absent = legit first-set |
+| identity:511 | ProvisionConsumerIdentity | `target_actor_key` | d | read-before-create |
+| identity:529 | ProvisionConsumerIdentity | `consumer_role_key` | a | pinned literal; absence = error |
+| renewal:173/325 | OpenRenewal / SignRenewal | `app.tenancy` | a | renewable app always has tenancy |
+| renewal:206/354 | SetTerms / Cancel | `renewal.renewalSignature` | d | absent = normal unsigned |
+| renewal:246/252/299/305 | VerifyGuarantor / SignRenewal | `lnk renews / applicationFor` | a | validation links |
+| renewal:260/314 | VerifyGuarantor / SignRenewal | `app.profile` | d | absent = no-guarantor branch |
+| renewal:309/317 | SignRenewal | `renewal.{terms,guarantorVerification}` | d | ordering / conditional states |
+| scripts:305/524 | Create/Withdraw LeaseApplication | `lnk appliedToUnit` guard | d | guard read-before-create/tombstone |
+| scripts:395/416/448 | DecideLeaseApplication | `app.{decision,signature,tenancy}` | d | first-decision / unsigned / create-once |
+| scripts:460/502/509/556 | Decide/Withdraw/SetProfile | `lnk appliesToUnit / applicationFor` | a | validation links |
+| scripts:463 | DecideLeaseApplication | `unit.listing` | a | hard-fails NoListing — see hard case 4 |
+| scripts:584 | SetApplicantProfile | `unit.listing` | c | author-stated config-live — see hard case 4 |
+| loftspace ddls:408 | SetListingStatus | `unit.listing` | a | directOp declares `[unit]`; add `.listing` — hard case 4 |
+| ownership:191/217 | Assign/RemoveUnitOwner | `lnk manages` | d | create/revoke idempotency branches |
+| orch-base:430 | ClaimTask | `assigned` link (this actor) | d | self-claim idempotency |
+| orch-base:441 | ClaimTask | `holdsRole` link | **e** | per-candidate follow-up of the :419 kv.Links — annotate |
+| external_params:54 | externalTask resolve_subject_params | declared subject key | a | Loom already declares — annotate only |
+| privacy:164 | ShredIdentityKey | `identity.piiKey` | d | absent = never-sensitive branch |
+| wellness:579 | CreateSession claim_cell | `hub.slot<cell>` | d | slot claim |
+| wellness:589/771 | Tombstone/Cancel validations | `lnk atStudio / forSession` | a | validation links |
+| wellness:656 | TombstoneSession | `session.schedule` | a | cell release |
+| wellness:790 | CreateBooking | `session.seat<n>` | d | first-free-seat claim |
+| wellness:810/872 | Create/CancelBooking | `session.schedule` / `booking.status` | a | FE already declares — annotate only |
+| wellness:824/833/835 | CreateBooking resident-rate | `leaseapp{,.tenancy}` + `lnk applicationFor` | d | absent → standard rate |
+
+**Hard cases (resolve at build):**
+1. **`capability-author/ddls.go:393` — chained.** `proposal_key` is resolved from the :386 read's
+   result; the Bridge reply dispatcher knows only `externalRef`, so the key is *undeclarable*.
+   Sanction with an explicit annotation + why (recommended), or restructure the claim indirection to
+   carry `proposalKey` (breaks the opaque-externalRef choice — not recommended).
+2. **`orchestration-base/ddls.go:441`** — the one (e) follow-up read missed when :416 was annotated;
+   mirror `rbac-domain:214`.
+3. **No-production-dispatcher ops** (ClaimTask, augur ReviewProposal, TombstoneAppointment,
+   RemoveUnitOwner — test-only today): declarations land in the test envelopes now; the future
+   UI/dispatcher inherits them when wired.
+4. **Listing-read posture split**: `scripts.go:463` + `loftspace/ddls.go:408` hard-fail on a missing
+   `unit.listing` (→ a) while `scripts.go:584` treats the same read as deliberately-live (c). Pick one
+   posture for listing economics and apply it to all three.
+
+**kv.Links status.** 4 production sites, all `(e)`-annotated: `orchestration-base/ddls.go:419`
+(queuedFor out, epoch = task root) · `identity-hygiene/ddls.go:156` · `rbac-domain/ddls.go:210` (both
+in, `epoch=none (accepted)`) · `lease-signing/leasedoc_scripts.go:91`. Dispatch-side `enumerations`
+declared in production: **zero** (fire 2 closes this). The clinic kv.Links consumer no longer exists
+(write-path slot claims, 2026-07-02).
+
+**Dispatcher map (where the declarations go):** augur ops ← Weaver strategist directOps + Bridge
+replyOp (`internal/bridge/augur_proposal.go`); capability-author ← Bridge replyOp + `cmd/lattice`
+CLI + Loom externalTask; clinic/wellness/loftspace/lease-signing ops ← their app FEs
+(`cmd/*-app/web/app.js`) + Weaver renewal/listing directOps (`packages/lease-signing/renewal_targets.go`);
+ProvisionConsumerIdentity ← Gateway auto-provision (`internal/gateway/gateway.go`) + bootstrap;
+ShredIdentityKey ← Loupe UI + Refractor keyshredded re-submit; externalTask instanceOps ← Loom
+(engine-declared reads).
+
+*(Ancillary, this session: Contract #10 §10.3's revive parenthetical — "lazy on-demand, not a
+contextHint read" — reconciled to the shipped `optionalReads` dispatch; staged UNCOMMITTED for
+Andrew.)*
