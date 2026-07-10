@@ -233,8 +233,10 @@ value: { targetId, entityKey, gap, action, claimId?, claimedAt, leaseExpiresAt, 
   cannot *prevent* a double; only the consumer, committing against real state, can). The **consumer** is
   the single idempotency authority:
   - **`assignTask` → `CreateTask`:** the task vertex lives in **Core KV**, so the `CreateTask` Starlark
-    script reads the task key via **`kv.Read()`** (§2.5 lazy on-demand read — *not* a `contextHint`
-    read, which would fatal-`HydrationMiss` on the legitimately-absent key) and branches: present **and
+    script reads the task key via **`kv.Read()`** (a declared **`contextHint.optionalReads`** key, §2.5 —
+    absence-tolerant, served from the step-4 snapshot; the dispatchers declare it, and an undeclared
+    submitter degrades to the §2.5 lazy fallback. *Not* a `reads` entry, which would fatal-`HydrationMiss`
+    on the legitimately-absent key) and branches: present **and
     alive** (`task != None and not task.isDeleted`) → empty mutations **and** empty events (a coherent
     silent no-op); absent → create as normal (the `CreateOnly` mutation is the narrow concurrent-dispatch
     backstop); present **and** logically-deleted → **revive**, an `update` mutation conditioned on the
