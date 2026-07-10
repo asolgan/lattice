@@ -11,9 +11,18 @@
 // device-only aspects (drafts, private notes) the Sync Manager never
 // uploads (§3.1) — kept in a separate bbolt bucket so the mirror's apply
 // path can never reach it.
+//
+// Two further buckets back the EDGE.2 write path on the same embedded file:
+// a pending-overlay bucket (internal/edge/overlay, §3.4 — the optimistic
+// value shown for a key while its authoring intent is in flight) and a
+// durable intent queue (internal/edge/agent, §3.5 — operation envelopes
+// queued for upload, in FIFO submission order). Neither is a confirmed
+// mirror entry; both are node-local operational state.
 package store
 
 import (
+	"bytes"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 
@@ -23,9 +32,11 @@ import (
 )
 
 const (
-	bucketVAL   = "val"   // Contract #1 keyed entries mirrored from the cloud.
-	bucketLocal = "local" // sovereign, device-only entries — never uploaded.
-	bucketMeta  = "meta"  // Sync Manager cursor + node-local bookkeeping.
+	bucketVAL     = "val"     // Contract #1 keyed entries mirrored from the cloud.
+	bucketLocal   = "local"   // sovereign, device-only entries — never uploaded.
+	bucketMeta    = "meta"    // Sync Manager cursor + node-local bookkeeping.
+	bucketPending = "pending" // overlay: optimistic values for in-flight intents (§3.4).
+	bucketIntents = "intents" // agent: durable FIFO of queued operation envelopes (§3.5).
 
 	cursorKey = "cursor"
 )
@@ -51,7 +62,7 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("edge/store: open %q: %w", path, err)
 	}
 	err = db.Update(func(tx *bbolt.Tx) error {
-		for _, name := range []string{bucketVAL, bucketLocal, bucketMeta} {
+		for _, name := range []string{bucketVAL, bucketLocal, bucketMeta, bucketPending, bucketIntents} {
 			if _, err := tx.CreateBucketIfNotExists([]byte(name)); err != nil {
 				return fmt.Errorf("edge/store: create bucket %q: %w", name, err)
 			}
@@ -125,6 +136,156 @@ func (s *Store) Get(key string) (entry Entry, ok bool, err error) {
 		return err
 	})
 	return entry, ok, err
+}
+
+// PendingEntry is one optimistic-overlay record (edge-lattice-full-design.md
+// §3.4): the local-only value to show for Key while RequestID's operation is
+// still in flight. BaseRevision is the confirmed VAL entry's revision for
+// Key at the moment the overlay was applied (0 if the key had never been
+// confirmed) — the overlay package uses it to detect supersession: once the
+// confirmed entry's revision advances past BaseRevision (from this intent's
+// own eventual commit or any other concurrent write), the overlay is stale.
+type PendingEntry struct {
+	Key          string          `json:"key"`
+	RequestID    string          `json:"requestId"`
+	Data         json.RawMessage `json:"data,omitempty"`
+	Deleted      bool            `json:"deleted"`
+	BaseRevision uint64          `json:"baseRevision"`
+}
+
+// PutPending writes (or replaces) key's pending overlay.
+func (s *Store) PutPending(entry PendingEntry) error {
+	v, err := json.Marshal(entry)
+	if err != nil {
+		return fmt.Errorf("edge/store: encode pending %q: %w", entry.Key, err)
+	}
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		return tx.Bucket([]byte(bucketPending)).Put([]byte(entry.Key), v)
+	})
+}
+
+// GetPending returns key's pending overlay, or ok=false if none is active.
+func (s *Store) GetPending(key string) (entry PendingEntry, ok bool, err error) {
+	err = s.db.View(func(tx *bbolt.Tx) error {
+		v := tx.Bucket([]byte(bucketPending)).Get([]byte(key))
+		if v == nil {
+			return nil
+		}
+		if uErr := json.Unmarshal(v, &entry); uErr != nil {
+			return fmt.Errorf("edge/store: decode pending %q: %w", key, uErr)
+		}
+		ok = true
+		return nil
+	})
+	return entry, ok, err
+}
+
+// DeletePending removes key's pending overlay, if any (a no-op if absent).
+func (s *Store) DeletePending(key string) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		return tx.Bucket([]byte(bucketPending)).Delete([]byte(key))
+	})
+}
+
+// ListPending returns every currently-active pending overlay. Bounded by the
+// number of outstanding local intents (the user's own in-flight edits), not
+// the mirror's total size.
+func (s *Store) ListPending() ([]PendingEntry, error) {
+	var entries []PendingEntry
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		return tx.Bucket([]byte(bucketPending)).ForEach(func(k, v []byte) error {
+			var e PendingEntry
+			if err := json.Unmarshal(v, &e); err != nil {
+				return fmt.Errorf("edge/store: decode pending %q: %w", k, err)
+			}
+			entries = append(entries, e)
+			return nil
+		})
+	})
+	return entries, err
+}
+
+// ScanPrefix returns every confirmed VAL entry whose key has the given
+// prefix, in key order. Contract #1 keys sort lexically by type/id/relation,
+// so a link-key prefix ("lnk.<type>.<id>.<relation>.", the overlay package's
+// UI-discovery use, §3.4) returns exactly that hub+relation's confirmed
+// links. Bounded by the local mirror's size — O(user activity), the vault's
+// design intent, never O(total entities).
+func (s *Store) ScanPrefix(prefix string) ([]Entry, error) {
+	var entries []Entry
+	p := []byte(prefix)
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		c := tx.Bucket([]byte(bucketVAL)).Cursor()
+		for k, v := c.Seek(p); k != nil && bytes.HasPrefix(k, p); k, v = c.Next() {
+			var e Entry
+			if err := json.Unmarshal(v, &e); err != nil {
+				return fmt.Errorf("edge/store: decode entry %q: %w", k, err)
+			}
+			entries = append(entries, e)
+		}
+		return nil
+	})
+	return entries, err
+}
+
+// IntentRecord is one durably-queued outbound operation (edge-lattice-full-
+// design.md §3.5): Envelope is the marshaled processor.OperationEnvelope the
+// agent package submits on drain. Seq is the store-assigned FIFO order —
+// ListIntents returns records in Seq order regardless of insertion timing
+// across restarts.
+type IntentRecord struct {
+	Seq      uint64          `json:"seq"`
+	Envelope json.RawMessage `json:"envelope"`
+}
+
+// EnqueueIntent durably appends envelope to the intent queue and returns its
+// assigned sequence number.
+func (s *Store) EnqueueIntent(envelope json.RawMessage) (seq uint64, err error) {
+	err = s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(bucketIntents))
+		seq, err = b.NextSequence()
+		if err != nil {
+			return fmt.Errorf("edge/store: next intent sequence: %w", err)
+		}
+		rec := IntentRecord{Seq: seq, Envelope: envelope}
+		v, mErr := json.Marshal(rec)
+		if mErr != nil {
+			return fmt.Errorf("edge/store: encode intent %d: %w", seq, mErr)
+		}
+		return b.Put(seqKey(seq), v)
+	})
+	return seq, err
+}
+
+// ListIntents returns every queued intent in FIFO (Seq) order.
+func (s *Store) ListIntents() ([]IntentRecord, error) {
+	var recs []IntentRecord
+	err := s.db.View(func(tx *bbolt.Tx) error {
+		return tx.Bucket([]byte(bucketIntents)).ForEach(func(_, v []byte) error {
+			var rec IntentRecord
+			if err := json.Unmarshal(v, &rec); err != nil {
+				return fmt.Errorf("edge/store: decode intent: %w", err)
+			}
+			recs = append(recs, rec)
+			return nil
+		})
+	})
+	return recs, err
+}
+
+// DeleteIntent removes a queued intent by its assigned sequence number
+// (a no-op if already absent) — called once the cloud has authoritatively
+// decided the intent's fate (accepted, duplicate, or rejected).
+func (s *Store) DeleteIntent(seq uint64) error {
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		return tx.Bucket([]byte(bucketIntents)).Delete(seqKey(seq))
+	})
+}
+
+func seqKey(seq uint64) []byte {
+	b := make([]byte, 8)
+	binary.BigEndian.PutUint64(b, seq)
+	return b
 }
 
 // PutLocal writes a sovereign, device-only entry under the given name (the

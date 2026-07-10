@@ -178,3 +178,95 @@ func TestGetLocal_AbsentNameReturnsNotOK(t *testing.T) {
 	require.False(t, ok)
 	require.Nil(t, data)
 }
+
+func TestPending_RoundTripsAndDeletes(t *testing.T) {
+	s := openTestStore(t)
+
+	_, ok, err := s.GetPending(testVtxKey)
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	entry := PendingEntry{Key: testVtxKey, RequestID: "req1", Data: []byte(`{"a":1}`), BaseRevision: 3}
+	require.NoError(t, s.PutPending(entry))
+
+	got, ok, err := s.GetPending(testVtxKey)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.Equal(t, entry.RequestID, got.RequestID)
+	require.Equal(t, entry.BaseRevision, got.BaseRevision)
+	require.JSONEq(t, `{"a":1}`, string(got.Data))
+
+	list, err := s.ListPending()
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+
+	require.NoError(t, s.DeletePending(testVtxKey))
+	_, ok, err = s.GetPending(testVtxKey)
+	require.NoError(t, err)
+	require.False(t, ok)
+
+	list, err = s.ListPending()
+	require.NoError(t, err)
+	require.Empty(t, list)
+}
+
+func TestScanPrefix_ReturnsOnlyMatchingConfirmedEntries(t *testing.T) {
+	s := openTestStore(t)
+
+	linkA := "lnk.lease.Lk2Pn6mQrtwzKbcXvP3T.hasBooking.booking.Bk2Pn6mQrtwzKbcXvP3T"
+	linkB := "lnk.lease.Lk2Pn6mQrtwzKbcXvP3T.hasBooking.booking.Ck2Pn6mQrtwzKbcXvP3T"
+	other := "lnk.lease.Zk2Pn6mQrtwzKbcXvP3T.hasBooking.booking.Bk2Pn6mQrtwzKbcXvP3T"
+
+	_, err := s.ApplyUpsert(linkA, 1, []byte(`{}`))
+	require.NoError(t, err)
+	_, err = s.ApplyUpsert(linkB, 1, []byte(`{}`))
+	require.NoError(t, err)
+	_, err = s.ApplyUpsert(other, 1, []byte(`{}`))
+	require.NoError(t, err)
+
+	entries, err := s.ScanPrefix("lnk.lease.Lk2Pn6mQrtwzKbcXvP3T.hasBooking.")
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+	keys := []string{entries[0].Key, entries[1].Key}
+	require.ElementsMatch(t, []string{linkA, linkB}, keys)
+}
+
+func TestIntentQueue_FIFOAndDelete(t *testing.T) {
+	s := openTestStore(t)
+
+	seq1, err := s.EnqueueIntent([]byte(`{"requestId":"one"}`))
+	require.NoError(t, err)
+	seq2, err := s.EnqueueIntent([]byte(`{"requestId":"two"}`))
+	require.NoError(t, err)
+	require.Less(t, seq1, seq2)
+
+	list, err := s.ListIntents()
+	require.NoError(t, err)
+	require.Len(t, list, 2)
+	require.Equal(t, seq1, list[0].Seq)
+	require.Equal(t, seq2, list[1].Seq)
+	require.JSONEq(t, `{"requestId":"one"}`, string(list[0].Envelope))
+
+	require.NoError(t, s.DeleteIntent(seq1))
+	list, err = s.ListIntents()
+	require.NoError(t, err)
+	require.Len(t, list, 1)
+	require.Equal(t, seq2, list[0].Seq)
+}
+
+func TestIntentQueue_PersistsAcrossReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "edge.db")
+	s, err := Open(path)
+	require.NoError(t, err)
+	_, err = s.EnqueueIntent([]byte(`{"requestId":"one"}`))
+	require.NoError(t, err)
+	require.NoError(t, s.Close())
+
+	reopened, err := Open(path)
+	require.NoError(t, err)
+	defer func() { _ = reopened.Close() }()
+
+	list, err := reopened.ListIntents()
+	require.NoError(t, err)
+	require.Len(t, list, 1, "a queued intent must survive a process restart")
+}

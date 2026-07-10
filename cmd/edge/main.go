@@ -1,9 +1,13 @@
 // cmd/edge — the Edge Lattice reference node (edge-lattice-full-design.md
-// EDGE.1): a local-first device that mirrors a single identity's Personal-Lens
-// slice into an embedded local store and keeps it fresh via the Sync
-// Manager. Trusted-posture only (no JWT, no security filter — the same
-// carve-out Loupe and Personal Lens PL.1/PL.2 use); EDGE.3 replaces
-// EDGE_ACTOR_KEY with a real Gateway-verified identity.
+// EDGE.1+EDGE.2): a local-first device that mirrors a single identity's
+// Personal-Lens slice into an embedded local store, keeps it fresh via the
+// Sync Manager, and drives the optimistic write path (overlay + agent) —
+// intents queued locally are drained to core-operations on a fixed
+// interval, with a RevisionConflict triggering a re-hydrate and any
+// rejection discarding the stale overlay. Trusted-posture only (no JWT, no
+// security filter — the same carve-out Loupe and Personal Lens PL.1/PL.2
+// use); EDGE.3 replaces EDGE_ACTOR_KEY with a real Gateway-verified
+// identity and routes the agent's submit through the Gateway.
 //
 // Environment:
 //
@@ -31,10 +35,17 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/asolgan/lattice/internal/edge/agent"
+	"github.com/asolgan/lattice/internal/edge/overlay"
 	"github.com/asolgan/lattice/internal/edge/store"
 	"github.com/asolgan/lattice/internal/edge/sync"
 	"github.com/asolgan/lattice/internal/substrate"
 )
+
+// agentDrainInterval is how often the intent queue is drained and the
+// overlay GC sweep runs. Fixed (not env-configurable) — a reference node
+// has no operational reason to tune this yet.
+const agentDrainInterval = 5 * time.Second
 
 func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -88,8 +99,39 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
+	ov := overlay.New(st)
+	ag := agent.New(conn, st, ov, mgr, agent.Config{
+		Logger: logger,
+		Conflict: func(c agent.ConflictInfo) {
+			logger.Warn("edge agent: intent rejected", "requestId", c.RequestID, "keys", c.Keys)
+		},
+	})
+	go runAgentLoop(ctx, ag, logger)
+
 	logger.Info("edge sync manager starting", "identityId", identityID, "deviceId", deviceID)
 	return mgr.Run(ctx)
+}
+
+// runAgentLoop periodically drains the intent queue (submit-on-reconnect:
+// the underlying NATS client auto-reconnects, so a fixed-interval retry
+// covers "connectivity returned" without a dedicated reconnect hook) and
+// sweeps the overlay's local GC (design §3.5). Runs until ctx is done.
+func runAgentLoop(ctx context.Context, ag *agent.Agent, logger *slog.Logger) {
+	ticker := time.NewTicker(agentDrainInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := ag.Drain(ctx); err != nil {
+				logger.Warn("edge agent: drain failed, will retry", "err", err)
+			}
+			if _, err := ag.GC(); err != nil {
+				logger.Warn("edge agent: GC failed", "err", err)
+			}
+		}
+	}
 }
 
 func envOrDefault(key, def string) string {

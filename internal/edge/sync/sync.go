@@ -126,6 +126,17 @@ func (m *Manager) Run(ctx context.Context) error {
 	}, m.handle)
 }
 
+// Rehydrate runs a fresh cold bulk projection unconditionally — the
+// internal/edge/agent package's conflict re-audit (edge-lattice-full-
+// design.md §3.5): a RevisionConflict means the cloud state moved under an
+// offline edit, so the mirror needs to catch up before the user re-decides.
+// No anchor-scoped hydrate RPC ships yet, so this reuses the same full
+// personal.hydrate call ensureFresh makes on cold start/gap, rather than
+// inventing a narrower primitive.
+func (m *Manager) Rehydrate(ctx context.Context) error {
+	return m.hydrate(ctx)
+}
+
 // ensureFresh hydrates when the local store has never been hydrated (no
 // cursor) or when the stored cursor has fallen behind the SYNC stream's
 // current retention window (a long disconnect pruned messages the node
