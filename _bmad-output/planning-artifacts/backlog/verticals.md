@@ -25,6 +25,7 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 | **No-show doesn't cost anything** | `SetAppointmentStatus(status=noShow)` is purely a status flip — no consequence. `clinic-ledger`'s `DebitAccount` + `clinic-reminders`' Weaver gap-remediation pattern (`missing_reminder` → `directOp`) are both already shipped; a `noShow-no-fee-charged` gap closed the same way (`directOp DebitAccount`) auto-protects revenue on the same mechanism reminders already use. | Clinic | pkg | ★ | S | 📋 ready |
 | **Clinic is a single-location, single-specialty silo** | `location-domain` is unused by `clinic-domain` (explicit in its own docs, unlike `loftspace-domain`); a provider has exactly one `specialty` and no site. A real multi-site practice group needs provider↔location + per-location scheduling — mirror `loftspace-domain`'s already-proven `location-domain` integration pattern. Bigger structural lift; sequence after the other Clinic items land. | Clinic | pkg | ★★ | L | 📋 ready |
 | **Self-service identity 403s on THIS dev stack — env gap, not a code gap** | Re-grounded 2026-07-10: the filed fix (`ClaimIdentity` right after `CreateUnclaimedIdentity`) was wrong — the real mechanism (`ProvisionConsumerIdentity`) is already built; this stack just needs a one-time ops step + Gateway restart. No FE/package change needed. See [finding](../../implementation-artifacts/self-service-identity-env-gap-finding.md). | Cross-vertical | ops | ★★★ | XS | 🚧 blocked-on: Gateway `identityProvisioner` grant + restart — needs Andrew auth (chip filed) |
+| **`/api/ledger` has no auth boundary** | `handleLedger` (`ledger.go:118`) never calls `authenticateRead`, unlike every sibling read (`patients.go:107`, `appointments.go:237`); any unauthenticated caller pulls any patient's billing history by patientKey — confirmed live, no token. Mirror the D1.5 fix already applied to `handleAppointments`. | Clinic | pkg | ★★★ | S | 📋 ready |
 
 **Explicitly descoped (ambitious-PO pass, 2026-07-09):** structured diagnosis/procedure coding (ICD/CPT),
 vitals, and e-prescribing were considered and deliberately NOT filed — a certified EHR is out of scope for a
@@ -44,12 +45,13 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic ↔ Café, stagg
 joins once `cmd/wellness-app` (Inc 2) ships** — today it has a package but no app to exercise; see
 [agents/vertical-po/SKILL.md](../../../agents/vertical-po/SKILL.md) §1.
 
-- **Rotation to date:** LoftSpace ×12, Clinic ×9, Café ×1 (2026-07-09: first live exercise — found Weaver tab-settlement posting fails closed on the shared stack (platform bug, blocked-on lattice.md) + no payment-collection UI).
+- **Rotation to date:** LoftSpace ×12, Clinic ×10, Café ×1 (2026-07-09: first live exercise — found Weaver tab-settlement posting fails closed on the shared stack (platform bug, blocked-on lattice.md) + no payment-collection UI).
 - **Method:** reuse the already-up shared stack (detect NATS :4222 / app :7788/:7799/:7801), drive the real flow via `/api/op` + the lens projections as the product owner, file scored items. All three apps exist + are exercisable live (`:7788` / `:7799` / `:7801`).
 - **Live-stack note:** a stale bootstrap JSON vs. a recreated Core KV was a recurring dev-loop trap (2026-07-03, 2026-07-04) that silently emptied reads; `make up` now self-heals it (`109f59a`, 2026-07-05) — re-verify empty-read reports as a real product bug first.
 - **2026-07-06:** Enriched Café+Wellness → 4 grounded, sequenced rows (Café first) + verified no platform block; spec = the go-live composition demo.
 - **2026-07-09:** LoftSpace — exercised Browse&Apply live; found + root-caused self-service identity never claims (blocks CreateLeaseApplication for every applicant); filed.
-- **Next:** Clinic.
+- **2026-07-10:** Clinic — drove staff booking/schedule/ledger live on the shared stack; found + confirmed `/api/ledger` unauthenticated (any caller reads any patient's billing history); filed.
+- **Next:** Café.
 
 ## Done log — verticals (newest first)
 
