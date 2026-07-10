@@ -1865,7 +1865,9 @@ async function loadMySeries() {
 // from the patient's own NanoID), so GET /api/ledger resolves it server-side
 // via the `clinicPatientAccounts` lens and returns "" when the patient hasn't
 // opened one yet — the FE never guesses it. Mirrors loftspace-app's payment
-// ledger, keyed by patient instead of lease.
+// ledger, keyed by patient instead of lease. /api/ledger is staff-authenticated
+// (authedGetAsStaff) — it is a front-desk-only view today, gated the same as
+// /api/staff/patients.
 
 // moneyAmount formats a cents amount as a USD-style dollar figure.
 function moneyAmount(cents) {
@@ -1892,7 +1894,7 @@ async function loadLedger() {
   empty.hidden = true;
   let data;
   try {
-    data = await api("/api/ledger?patientKey=" + encodeURIComponent(state.patient));
+    data = await authedGetAsStaff("/api/ledger?patientKey=" + encodeURIComponent(state.patient));
   } catch (e) {
     balanceEl.textContent = "";
     empty.hidden = false;
@@ -1953,7 +1955,7 @@ async function openLedgerAccount(patientKey) {
   // the loser's guard-aspect create-only write — re-fetch the ledger, which
   // resolves the account key via the clinicPatientAccounts lens regardless of
   // which side won.
-  const data = await api("/api/ledger?patientKey=" + encodeURIComponent(patientKey));
+  const data = await authedGetAsStaff("/api/ledger?patientKey=" + encodeURIComponent(patientKey));
   if (data.accountKey) return data.accountKey;
   const msg = rejectionMessage(reply);
   throw new Error(msg || "could not open the ledger account");

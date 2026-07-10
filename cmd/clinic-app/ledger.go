@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sort"
 	"strings"
+
+	"github.com/jackc/pgx/v5"
 
 	clinicledger "github.com/asolgan/lattice/packages/clinic-ledger"
 )
@@ -110,14 +113,53 @@ func resolvePatientAccount(keys []string, get kvGetter, patientKey string) strin
 	return ""
 }
 
+// patientVisibleToActor reports whether patientKey is visible to actorID
+// under the clinicPatientsRead protected model's RLS policy (selectPatientsSQL
+// in patients.go): every roster row carries an EMPTY authz_anchors set, so a
+// row here is visible ONLY to an actor holding the reserved WildcardAnchor
+// grant (staff). The ledger has no protected model of its own — this reuses
+// the already-provisioned clinicPatientsRead table as the ledger's
+// authorization gate rather than standing up new schema for a second lens.
+func patientVisibleToActor(ctx context.Context, pool pgxBeginner, actorID, patientKey string) (bool, error) {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+
+	if _, err := tx.Exec(ctx, "SELECT set_config('lattice.actor_id', $1, true)", actorID); err != nil {
+		return false, err
+	}
+	var one int
+	visible := true
+	if err := tx.QueryRow(ctx, "SELECT 1 FROM read_clinic_patients WHERE patient_key = $1 LIMIT 1", patientKey).Scan(&one); err != nil {
+		if err != pgx.ErrNoRows {
+			return false, err
+		}
+		visible = false
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	return visible, nil
+}
+
 // handleLedger implements GET /api/ledger?patientKey= — the billing-history
 // view, served from the `clinicLedgerHistory` + `clinicPatientAccounts` lens
 // read models (NOT Core KV, P5). It returns the patient's transaction rows,
 // the running balance, and the account key (empty if the patient has not
 // opened a ledger account yet) the FE needs to post a new charge or payment.
+//
+// Gated on authenticateRead + patientVisibleToActor (the same class of fix
+// D1.5 applied to handleAppointments' old unauthenticated `?patient=`
+// vector): unlike that vector this stays a single endpoint rather than
+// splitting into a self/staff pair, because clinic-ledger has no self-service
+// billing view yet — every caller today is the front-desk staff view
+// (cmd/clinic-app/web/app.js loadLedger, authedGetAsStaff).
 func (s *server) handleLedger(w http.ResponseWriter, r *http.Request) {
-	conn, ok := s.requireConn(w)
-	if !ok {
+	actor, err := s.authenticateRead(r)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "authentication required: "+err.Error())
 		return
 	}
 	patientKey := strings.TrimSpace(r.URL.Query().Get("patientKey"))
@@ -128,6 +170,27 @@ func (s *server) handleLedger(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := s.reqContext(r)
 	defer cancel()
+
+	if s.pgPool == nil {
+		s.writeError(w, http.StatusBadGateway,
+			"protected read model not configured (set CLINIC_APP_PG_DSN and ensure Postgres + the clinic-domain protected lens are up)")
+		return
+	}
+	visible, err := patientVisibleToActor(ctx, s.pgPool, actor.Subject, patientKey)
+	if err != nil {
+		s.logger.Error("check patient visibility for ledger read", "error", err)
+		s.writeError(w, http.StatusBadGateway, "could not verify read access")
+		return
+	}
+	if !visible {
+		s.writeError(w, http.StatusForbidden, "patient not visible to this actor")
+		return
+	}
+
+	conn, ok := s.requireConn(w)
+	if !ok {
+		return
+	}
 
 	acctBucket := clinicledger.PatientAccountsBucket
 	acctKeys, err := conn.KVListKeys(ctx, acctBucket)

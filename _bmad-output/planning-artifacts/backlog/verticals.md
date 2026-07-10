@@ -25,7 +25,6 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 | **No-show doesn't cost anything** | `SetAppointmentStatus(status=noShow)` is purely a status flip — no consequence. `clinic-ledger`'s `DebitAccount` + `clinic-reminders`' Weaver gap-remediation pattern (`missing_reminder` → `directOp`) are both already shipped; a `noShow-no-fee-charged` gap closed the same way (`directOp DebitAccount`) auto-protects revenue on the same mechanism reminders already use. | Clinic | pkg | ★ | S | 📋 ready |
 | **Clinic is a single-location, single-specialty silo** | `location-domain` is unused by `clinic-domain` (explicit in its own docs, unlike `loftspace-domain`); a provider has exactly one `specialty` and no site. A real multi-site practice group needs provider↔location + per-location scheduling — mirror `loftspace-domain`'s already-proven `location-domain` integration pattern. Bigger structural lift; sequence after the other Clinic items land. | Clinic | pkg | ★★ | L | 📋 ready |
 | **Self-service identity 403s on THIS dev stack — env gap, not a code gap** | Re-grounded 2026-07-10: the filed fix (`ClaimIdentity` right after `CreateUnclaimedIdentity`) was wrong — the real mechanism (`ProvisionConsumerIdentity`) is already built; this stack just needs a one-time ops step + Gateway restart. No FE/package change needed. See [finding](../../implementation-artifacts/self-service-identity-env-gap-finding.md). | Cross-vertical | ops | ★★★ | XS | 🚧 blocked-on: Gateway `identityProvisioner` grant + restart — needs Andrew auth (chip filed) |
-| **`/api/ledger` has no auth boundary** | `handleLedger` (`ledger.go:118`) never calls `authenticateRead`, unlike every sibling read (`patients.go:107`, `appointments.go:237`); any unauthenticated caller pulls any patient's billing history by patientKey — confirmed live, no token. Mirror the D1.5 fix already applied to `handleAppointments`. | Clinic | pkg | ★★★ | S | 📋 ready |
 
 **Explicitly descoped (ambitious-PO pass, 2026-07-09):** structured diagnosis/procedure coding (ICD/CPT),
 vitals, and e-prescribing were considered and deliberately NOT filed — a certified EHR is out of scope for a
@@ -57,6 +56,7 @@ joins once `cmd/wellness-app` (Inc 2) ships** — today it has a package but no 
 
 One line per shipped item (`date · SHA · title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-10 · `—` · `/api/ledger` unauthenticated-read CLOSED — gated on `authenticateRead` + staff wildcard visibility (reuses `clinicPatientsRead`, no new schema), live-verified 401/403/200 + real FE flow
 - 2026-07-10 · `—` · Clinic patient picker name search — `?q=` ILIKE + debounced typeahead, live-verified (`#provider` split off, left ready)
 - 2026-07-10 · `—` · Read-posture sweep Fire 4 — clinic-domain 5 residual sites, vertical-package sweep CLOSED (0 warnings repo-wide) — [design §13](../../implementation-artifacts/script-read-posture-design.md)
 - 2026-07-10 · `b5744a9` · Read-posture sweep Fire 3 — lease-signing 19/19 (scripts.go 7 + renewal_scripts.go 12), closes lease-signing entirely — [design §13](../../implementation-artifacts/script-read-posture-design.md)
