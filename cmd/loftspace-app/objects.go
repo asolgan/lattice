@@ -31,25 +31,40 @@ var inlineImageTypes = map[string]bool{
 
 // attachmentRow is one projected `objectAttachments` row — the byte-plane
 // metadata for a single object plus the owner keys it is linked to. owners is
-// the list filter input for "documents for this applicant".
+// the list filter input for "documents for this applicant". Sensitive /
+// GoverningIdentity / Encryption / Digest carry the crypto-shred envelope
+// (object-store-crypto-shred-design.md §9 Fire 4 Increment 2) — all null/zero
+// for a non-sensitive object, since the DDL never writes those keys for one.
 type attachmentRow struct {
-	EntityKey   string `json:"entityKey"`
-	StoreName   string `json:"storeName"`
-	ContentType string `json:"contentType"`
-	Size        int64  `json:"size"`
-	Owners      []struct {
+	EntityKey         string `json:"entityKey"`
+	StoreName         string `json:"storeName"`
+	ContentType       string `json:"contentType"`
+	Size              int64  `json:"size"`
+	Digest            string `json:"digest"`
+	Sensitive         bool   `json:"sensitive"`
+	GoverningIdentity string `json:"governingIdentity"`
+	Encryption        struct {
+		Algo       string `json:"algo"`
+		Nonce      string `json:"nonce"`
+		WrappedCEK string `json:"wrappedCEK"`
+		KeyID      string `json:"keyId"`
+	} `json:"encryption"`
+	Owners []struct {
 		OwnerKey string `json:"ownerKey"`
 	} `json:"owners"`
 }
 
 // documentView is the Documents-tab projection of one attached object: the oid
 // (the stable address for view / detach), its display metadata, and the owner it
-// is attached to within the applicant's scope.
+// is attached to within the applicant's scope. Sensitive tells the FE to
+// request the decrypt-capable read (?decrypt=true) rather than the ciphertext
+// default (object-store-crypto-shred-design.md §9 Fire 4 Increment 2).
 type documentView struct {
 	OID         string `json:"oid"`
 	OwnerKey    string `json:"ownerKey"`
 	ContentType string `json:"contentType"`
 	Size        int64  `json:"size"`
+	Sensitive   bool   `json:"sensitive"`
 }
 
 // objectLinkKey reconstructs lnk.object.<oid>.<linkName>.<tgtType>.<tgtId> from
@@ -180,6 +195,7 @@ func computeDocuments(keys []string, get kvGetter, owners []string) []documentVi
 		}
 		out = append(out, documentView{
 			OID: oid, OwnerKey: matched, ContentType: row.ContentType, Size: row.Size,
+			Sensitive: row.Sensitive,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].OID < out[j].OID })
@@ -304,6 +320,36 @@ func (s *server) resolveAllowedObjectOwners(ctx context.Context, r *http.Request
 // orphan; object-store-manager's never-attached reconcile (a low-cadence
 // backstop, internal/objectmanager) reclaims it after its grace window, so no
 // compensating delete is needed here.
+//
+// sensitive=true (object-store-crypto-shred-design.md §9 Fire 4 Increment 2)
+// branches to the crypto-shred path: the byte-plane write still happens here
+// (unchanged from #75 — only the AttachObject SUBMISSION moved browser-side),
+// but the bytes are sealed under a per-object CEK before they ever reach
+// core-objects, and the response carries the encryption envelope for the
+// browser to fold into its AttachObject payload. governingIdentity must equal
+// the caller's OWN authenticated identity: unlike Loupe (an admin console the
+// Vault's wrap/unwrap RPC already trusts wholesale), an applicant browser
+// session is not equivalently trusted, so this app enforces the same
+// ownership check entitledToObjectOwner's identity branch already makes —
+// self-only, so a legitimate upload through THIS endpoint can only ever wrap
+// under the caller's own DEK.
+//
+// This does NOT close every confused-deputy path: AttachObject's own
+// submission is browser-direct via the Gateway's shared "staff" trusted-tool
+// credential (#75 Fire 2b — staffReadToken carries no real per-applicant
+// subject, and operator already holds AttachObject scope:any), so a caller
+// who already holds that credential could submit AttachObject directly,
+// bypassing this handler, with a self-consistent-looking but Vault-unwrapped
+// (forged) encryption block claiming an arbitrary governingIdentity — the
+// SAME pre-existing trust boundary every other AttachObject field
+// (targetKey/linkName/storeName) already has today, not something this
+// increment introduces or could close alone (closing it needs a real
+// consumer scope=self grant for AttachObject, mirroring
+// CreateLeaseApplication's; flagged as a residual, not built here). Bounded:
+// no plaintext ever leaks this way — Vault's AEAD tag rejects a forged
+// wrappedCEK on decrypt — the exposure is a spurious governingIdentity
+// attribution on an object the forger already controls, not a
+// confidentiality breach.
 func (s *server) handleObjectUpload(w http.ResponseWriter, r *http.Request) {
 	conn, ok := s.requireConn(w)
 	if !ok {
@@ -317,6 +363,8 @@ func (s *server) handleObjectUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	targetKey := strings.TrimSpace(r.FormValue("targetKey"))
 	linkName := strings.TrimSpace(r.FormValue("linkName"))
+	sensitive := strings.TrimSpace(r.FormValue("sensitive")) == "true"
+	governingIdentity := strings.TrimSpace(r.FormValue("governingIdentity"))
 	if targetKey == "" || linkName == "" {
 		s.writeError(w, http.StatusBadRequest, "targetKey and linkName form fields are required")
 		return
@@ -324,6 +372,21 @@ func (s *server) handleObjectUpload(w http.ResponseWriter, r *http.Request) {
 	if _, err := objectLinkKey("x", targetKey, linkName); err != nil {
 		s.writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	if sensitive {
+		if governingIdentity == "" {
+			s.writeError(w, http.StatusBadRequest, "governingIdentity form field is required when sensitive=true")
+			return
+		}
+		actor, err := s.authenticateRead(r)
+		if err != nil {
+			s.writeError(w, http.StatusUnauthorized, "authentication required: "+err.Error())
+			return
+		}
+		if governingIdentity != "vtx.identity."+actor.Subject {
+			s.writeError(w, http.StatusForbidden, "governingIdentity must be your own identity")
+			return
+		}
 	}
 	file, header, err := r.FormFile("file")
 	if err != nil {
@@ -342,6 +405,11 @@ func (s *server) handleObjectUpload(w http.ResponseWriter, r *http.Request) {
 
 	ctx, cancel := s.reqContext(r)
 	defer cancel()
+
+	if sensitive {
+		s.handleSensitiveObjectUpload(w, ctx, conn, file, contentType, governingIdentity)
+		return
+	}
 
 	storeName, err := substrate.NewNanoID()
 	if err != nil {
@@ -369,10 +437,20 @@ func (s *server) handleObjectUpload(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, resp)
 }
 
-// handleObjectGet implements GET /api/objects/<oid>. It resolves the storeName
-// from the `objectAttachments` lens read model (NOT Core KV; P5) and streams the
-// bytes (NATS verifies the digest as it streams). The Refractor is never in the
-// byte path.
+// handleObjectGet implements GET /api/objects/<oid>[?decrypt=true]. It
+// resolves the storeName from the `objectAttachments` lens read model (NOT
+// Core KV; P5) and streams the bytes (NATS verifies the digest as it
+// streams). The Refractor is never in the byte path.
+//
+// A sensitive object's bytes are ciphertext at rest; the default response is
+// that ciphertext, unreadable by construction — no additional read-path
+// authorization needed beyond the ordinary owner entitlement below
+// (object-store-crypto-shred-design.md §3.4/§9 Fire 4 Increment 2).
+// `?decrypt=true` is the opt-in plaintext read, gated behind the SAME
+// authorizeObjectGet entitlement every object read already requires (an
+// identity-owned sensitive document is the applicant's own upload, so the
+// existing self-ownership check is exactly the right gate — no separate
+// crypto-specific authorization is needed).
 func (s *server) handleObjectGet(w http.ResponseWriter, r *http.Request, oid string) {
 	conn, ok := s.requireConn(w)
 	if !ok {
@@ -385,17 +463,28 @@ func (s *server) handleObjectGet(w http.ResponseWriter, r *http.Request, oid str
 	ctx, cancel := s.reqContext(r)
 	defer cancel()
 
-	storeName, contentType, owners, ok := s.resolveObject(ctx, conn, oid)
+	row, ok := s.resolveObject(ctx, conn, oid)
 	if !ok {
 		s.writeError(w, http.StatusNotFound, "object not found in the read model")
 		return
+	}
+	var owners []string
+	for _, o := range row.Owners {
+		if o.OwnerKey != "" {
+			owners = append(owners, o.OwnerKey)
+		}
 	}
 	if authOK, status, msg := s.authorizeObjectGet(ctx, r, owners); !authOK {
 		s.writeError(w, status, msg)
 		return
 	}
 
-	rc, info, err := conn.ObjectGet(ctx, bootstrap.CoreObjectsBucket, storeName)
+	if row.Sensitive && r.URL.Query().Get("decrypt") == "true" {
+		s.handleSensitiveObjectDecrypt(w, ctx, conn, oid, row)
+		return
+	}
+
+	rc, info, err := conn.ObjectGet(ctx, bootstrap.CoreObjectsBucket, row.StoreName)
 	if err != nil {
 		if errors.Is(err, substrate.ErrObjectNotFound) {
 			s.writeError(w, http.StatusNotFound, "object bytes not found")
@@ -410,7 +499,7 @@ func (s *server) handleObjectGet(w http.ResponseWriter, r *http.Request, oid str
 	// every other type (svg / html / pdf / unknown) is forced to a neutral
 	// octet-stream attachment so an uploaded active document can never run as
 	// same-origin script. The CSP is the belt.
-	ct := contentType
+	ct := row.ContentType
 	disposition := "attachment"
 	if inlineImageTypes[ct] {
 		disposition = "inline"
@@ -426,16 +515,15 @@ func (s *server) handleObjectGet(w http.ResponseWriter, r *http.Request, oid str
 	_, _ = io.Copy(w, rc)
 }
 
-// resolveObject finds an object's storeName + contentType + owners in the
-// `objectAttachments` read model by oid (NOT Core KV; P5). It lists the lens keys
-// and matches the row whose entityKey is vtx.object.<oid> — the same list-and-
-// filter pattern the other vertical-app readers use. owners is the raw
-// owner-key list off the row (may be empty for a degenerate zero-link object).
-func (s *server) resolveObject(ctx context.Context, conn *substrate.Conn, oid string) (storeName, contentType string, owners []string, ok bool) {
+// resolveObject finds an object's full `objectAttachments` row by oid (NOT
+// Core KV; P5). It lists the lens keys and matches the row whose entityKey is
+// vtx.object.<oid> — the same list-and-filter pattern the other vertical-app
+// readers use.
+func (s *server) resolveObject(ctx context.Context, conn *substrate.Conn, oid string) (row attachmentRow, ok bool) {
 	bucket := bootstrap.WeaverTargetsBucket
 	keys, err := conn.KVListKeys(ctx, bucket)
 	if err != nil {
-		return "", "", nil, false
+		return attachmentRow{}, false
 	}
 	want := "vtx.object." + oid
 	for _, k := range keys {
@@ -446,20 +534,15 @@ func (s *server) resolveObject(ctx context.Context, conn *substrate.Conn, oid st
 		if err != nil {
 			continue
 		}
-		var row attachmentRow
-		if json.Unmarshal(entry.Value, &row) != nil {
+		var r attachmentRow
+		if json.Unmarshal(entry.Value, &r) != nil {
 			continue
 		}
-		if row.EntityKey == want && row.StoreName != "" {
-			for _, o := range row.Owners {
-				if o.OwnerKey != "" {
-					owners = append(owners, o.OwnerKey)
-				}
-			}
-			return row.StoreName, row.ContentType, owners, true
+		if r.EntityKey == want && r.StoreName != "" {
+			return r, true
 		}
 	}
-	return "", "", nil, false
+	return attachmentRow{}, false
 }
 
 // authorizeObjectGet enforces D1.5 on a resolved object's owners before its

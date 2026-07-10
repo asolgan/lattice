@@ -610,6 +610,11 @@ func TestObject_SensitiveAttach_IdentitySaltedOid(t *testing.T) {
 	if sensitive, _ := cdata["sensitive"].(bool); !sensitive {
 		t.Fatalf(".content.sensitive must be true, got %v", cdata["sensitive"])
 	}
+	if gov, _ := cdata["governingIdentity"].(string); gov != applicant {
+		t.Fatalf(".content.governingIdentity must be persisted as the top-level field a decrypt read keys "+
+			"its piiKeyEnvelope lookup on (redundant with encryption.keyId but not derivable from it alone "+
+			"without also trusting the object's own encryption block) — want %q, got %q", applicant, gov)
+	}
 	enc, _ := cdata["encryption"].(map[string]any)
 	if enc == nil {
 		t.Fatalf(".content.encryption missing, got %v", cdata)

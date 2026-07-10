@@ -39,6 +39,14 @@ const DOC_SLOTS = {
   signedLeasePdf: "Signed lease (PDF)",
 };
 
+// SENSITIVE_DOC_SLOTS are the upload slots that are genuine applicant PII
+// (object-store-crypto-shred-design.md §9 Fire 4 Increment 2) — encrypted at
+// rest under the applicant's own DEK. signedLeasePdf is NOT here: that
+// artifact is now generated server-side by the bridge's docGen adapter and
+// Weaver-auto-attached (#75 Fire 2b) — this manual upload path is a fallback,
+// out of scope for this increment.
+const SENSITIVE_DOC_SLOTS = new Set(["idDocument", "proofOfIncome"]);
+
 // PHOTO_LINK is the link name every listing photo is attached under (owner =
 // vtx.unit.<id>). It's deterministic (unlike the per-document slot), so a unit
 // photo from any session can be detached — the manage-photos modal relies on it.
@@ -338,15 +346,32 @@ function objectLinkKey(oid, targetKey, linkName) {
 // AttachObject browser-direct through the Gateway. Throws on a rejected op (or
 // a transport error) so callers can count/report; the byte-plane response's oid
 // is returned so the caller doesn't need to recompute it.
-async function attachObject(file, targetKey, linkName) {
+//
+// sensitiveOpts (object-store-crypto-shred-design.md §9 Fire 4 Increment 2):
+// pass { governingIdentity } to upload a crypto-shreddable PII document (e.g.
+// an ID scan / proof-of-income) — the server seals the bytes under a per-object
+// CEK and returns the encryption envelope alongside the usual byte-plane
+// metadata; this function folds it into the AttachObject payload unchanged
+// (the app itself never sees key material, only the already-wrapped
+// envelope). Omit for an ordinary (unencrypted) attach.
+async function attachObject(file, targetKey, linkName, sensitiveOpts) {
   const fd = new FormData();
   fd.append("file", file);
   fd.append("targetKey", targetKey);
   fd.append("linkName", linkName);
+  if (sensitiveOpts && sensitiveOpts.governingIdentity) {
+    fd.append("sensitive", "true");
+    fd.append("governingIdentity", sensitiveOpts.governingIdentity);
+  }
   const uploaded = await api("/api/objects", { method: "POST", body: fd });
-  const { oid, digest, storeName, size, contentType } = uploaded;
+  const { oid, digest, storeName, size, contentType, sensitive, governingIdentity, encryption } = uploaded;
   const payload = { digest, size, contentType, storeName, targetKey, linkName };
   if (file.name) payload.filename = file.name;
+  if (sensitive) {
+    payload.sensitive = true;
+    payload.governingIdentity = governingIdentity;
+    payload.encryption = encryption;
+  }
   const requestId = await deriveNanoID(ATTACH_REQ_NAMESPACE, [digest, targetKey, linkName].join("\x00"));
   const reply = await submitOp("staff", {
     requestId,
@@ -380,7 +405,11 @@ async function detachObject(oid, targetKey, linkName) {
 // (a plain <a href> navigation can't attach one) and opens them as a blob URL
 // in a new tab. The blob URL is revoked after a delay long enough for the new
 // tab to load the content, so it doesn't leak for the life of the page.
-async function openDocument(oid) {
+// sensitive requests the decrypt-capable read (?decrypt=true) — a sensitive
+// document's default GET is ciphertext by construction (object-store-crypto-
+// shred-design.md §3.4/§9 Fire 4 Increment 2); viewing it as a document
+// requires the opt-in plaintext read.
+async function openDocument(oid, sensitive) {
   let token;
   try {
     token = await readToken();
@@ -392,7 +421,8 @@ async function openDocument(oid) {
     toast("select an applicant identity to sign in", "err");
     return;
   }
-  const res = await fetch("/api/objects/" + encodeURIComponent(oid), {
+  const fetchURL = "/api/objects/" + encodeURIComponent(oid) + (sensitive ? "?decrypt=true" : "");
+  const res = await fetch(fetchURL, {
     headers: { Authorization: "Bearer " + token },
   });
   if (!res.ok) {
@@ -400,9 +430,9 @@ async function openDocument(oid) {
     return;
   }
   const blob = await res.blob();
-  const url = URL.createObjectURL(blob);
-  window.open(url, "_blank", "noopener");
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  const blobURL = URL.createObjectURL(blob);
+  window.open(blobURL, "_blank", "noopener");
+  setTimeout(() => URL.revokeObjectURL(blobURL), 60000);
 }
 
 function toast(msg, kind, extra) {
@@ -2268,7 +2298,7 @@ function renderDocCard(d) {
   const view = document.createElement("button");
   view.className = "ghost btn-link";
   view.textContent = "View";
-  view.addEventListener("click", () => openDocument(d.oid));
+  view.addEventListener("click", () => openDocument(d.oid, d.sensitive));
   actions.append(view);
 
   // Detach is available for documents uploaded this session (the FE knows the
@@ -2314,7 +2344,8 @@ async function submitUpload(ev) {
   const submit = $("#upload-submit");
   submit.disabled = true;
   try {
-    const attached = await attachObject(file, scope, slot);
+    const sensitiveOpts = SENSITIVE_DOC_SLOTS.has(slot) ? { governingIdentity: state.applicant } : null;
+    const attached = await attachObject(file, scope, slot, sensitiveOpts);
     state.sessionUploads[attached.oid] = { linkName: slot, ownerKey: scope };
     fileInput.value = "";
     toast("Document uploaded.", "ok", attached.oid);

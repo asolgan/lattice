@@ -487,6 +487,7 @@ def attach_object(state, p):
                     "contentType": content_type, "storeName": store_name}
     if sensitive:
         content_data["sensitive"] = True
+        content_data["governingIdentity"] = governing_identity
         content_data["encryption"] = encryption_data
     link_data = {}
     if filename != None:

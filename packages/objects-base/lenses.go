@@ -49,7 +49,7 @@ func Lenses() []pkgmgr.LensSpec {
 			Output: &pkgmgr.OutputDescriptorSpec{
 				AnchorType:       "object",
 				OutputKeyPattern: "objectAttachments.{actorSuffix}",
-				BodyColumns:      []string{"entityKey", "storeName", "contentType", "size", "owners"},
+				BodyColumns:      []string{"entityKey", "storeName", "contentType", "size", "owners", "sensitive", "governingIdentity", "encryption", "digest"},
 				EmptyBehavior:    "delete",
 				KeyColumn:        "entityId",
 			},
@@ -132,6 +132,21 @@ RETURN
 //     the full engine cannot project `type(r)` — so `owners` carries only the
 //     destination node key. Detach of a listed doc (which needs the linkName)
 //     is therefore a documented follow-up.
+//   - `sensitive` / `governingIdentity` / `encryption` (object-store-crypto-
+//     shred-design.md §3.1/§9 Fire 4 Increment 2) are the same null-safe
+//     `.content.data.<field>` reads as the metadata columns above — a
+//     non-sensitive object simply never had these keys written, so they
+//     project null (Cypher missing-property semantics), same as any absent
+//     aspect field elsewhere in this codebase. `encryption` is returned as the
+//     whole nested object verbatim (algo/nonce/wrappedCEK/keyId), the same
+//     idiom `owners` already uses for a nested-map column — this is the
+//     P5-compliant read seam a vertical app's decrypt-capable GET uses in
+//     place of Loupe's direct Core-KV `.content` read.
+//   - `digest` (the plaintext digest for a sensitive object; the byte-plane's
+//     own for a non-sensitive one) is also projected so a decrypt-capable
+//     read can re-verify the post-decrypt plaintext against it — the same
+//     independent integrity check Loupe's `handleSensitiveObjectDecrypt`
+//     already makes beyond the GCM tag alone.
 const objectAttachmentsSpec = `
 MATCH (o:object {key: $actorKey})
 OPTIONAL MATCH (o)-[r]->(owner)
@@ -140,6 +155,10 @@ WITH
   o.content.data.storeName AS storeName,
   o.content.data.contentType AS contentType,
   o.content.data.size AS size,
+  o.content.data.digest AS digest,
+  o.content.data.sensitive AS sensitive,
+  o.content.data.governingIdentity AS governingIdentity,
+  o.content.data.encryption AS encryption,
   collect(DISTINCT { ownerKey: owner.key }) AS owners
 RETURN
   entityKey AS actorKey,
@@ -147,5 +166,9 @@ RETURN
   storeName,
   contentType,
   size,
+  digest,
+  sensitive,
+  governingIdentity,
+  encryption,
   owners
 `

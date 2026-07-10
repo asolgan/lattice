@@ -123,6 +123,28 @@ func (f *objLensFixture) content(t *testing.T, objName, storeName, contentType s
 	require.NoError(t, err)
 }
 
+// contentSensitive writes the object's .content aspect as a sensitive
+// (crypto-shreddable) attach would leave it — the same shape attach_object's
+// AttachObject DDL persists (packages/objects-base/ddls.go), so this proves
+// the objectAttachments lens's P5-compliant read seam against the real
+// on-wire document shape, not a hand-picked one.
+func (f *objLensFixture) contentSensitive(t *testing.T, objName, storeName, contentType string, size int, governingIdentity string) {
+	t.Helper()
+	id := f.ids[objName]
+	key := "vtx.object." + id + ".content"
+	body := map[string]any{"key": key, "class": "object", "isDeleted": false,
+		"data": map[string]any{
+			"storeName": storeName, "contentType": contentType, "size": size,
+			"digest": "SHA-256=sensitiveLensTestDigest", "sensitive": true, "governingIdentity": governingIdentity,
+			"encryption": map[string]any{
+				"algo": "AES-256-GCM", "nonce": "bm9uY2U=", "wrappedCEK": "d3JhcHBlZA==", "keyId": governingIdentity,
+			},
+		}}
+	raw, _ := json.Marshal(body)
+	_, err := f.coreKV.Put(context.Background(), key, raw)
+	require.NoError(t, err)
+}
+
 // owner writes an owner (identity) vertex, live or tombstoned (the dead-target case).
 func (f *objLensFixture) owner(t *testing.T, name string, deleted bool) string {
 	t.Helper()
@@ -380,4 +402,55 @@ func TestObjectAttachments_ZeroLinks_OneRowNoOwners(t *testing.T) {
 	v := rows[0].Values
 	require.Equal(t, "store-orphan", v["storeName"])
 	require.Empty(t, ownerKeys(t, v["owners"]), "no real owner key after the null artifact is dropped")
+}
+
+// Test D — a non-sensitive object's row projects null for the sensitive-object
+// columns (Cypher missing-property semantics — the key is never written in the
+// non-sensitive branch, object-store-crypto-shred-design.md §9 Fire 4
+// Increment 2), never a zero-value that could be mistaken for "sensitive:false
+// but present."
+func TestObjectAttachments_NonSensitive_ProjectsNullEnvelope(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newObjLensFixture(t)
+	f.object(t, "photo", 1, 1)
+	f.content(t, "photo", "store-plain", "image/png", 10)
+
+	rows := f.projectAttachments(t, "photo")
+	require.Len(t, rows, 1)
+	v := rows[0].Values
+	require.Nil(t, v["sensitive"])
+	require.Nil(t, v["governingIdentity"])
+	require.Nil(t, v["encryption"])
+}
+
+// Test E — a sensitive object's row projects sensitive/governingIdentity/the
+// FULL nested encryption envelope verbatim — the P5-compliant read seam a
+// vertical app's decrypt-capable GET depends on in place of Loupe's direct
+// Core-KV `.content` read (object-store-crypto-shred-design.md §9 Fire 4
+// Increment 2). Proves the engine resolves a nested `.data.encryption.<field>`
+// object as a single projected column, not just flat `.data.<field>` scalars.
+func TestObjectAttachments_Sensitive_ProjectsEncryptionEnvelope(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newObjLensFixture(t)
+	f.object(t, "idscan", 1, 1)
+	applicantKey := f.owner(t, "applicant", false)
+	governingIdentity := applicantKey
+	f.contentSensitive(t, "idscan", "store-cipher", "image/jpeg", 2048, governingIdentity)
+	f.link(t, "idDocument", "idscan", "applicant")
+
+	rows := f.projectAttachments(t, "idscan")
+	require.Len(t, rows, 1)
+	v := rows[0].Values
+	require.Equal(t, true, v["sensitive"])
+	require.Equal(t, governingIdentity, v["governingIdentity"])
+	require.Equal(t, "SHA-256=sensitiveLensTestDigest", v["digest"])
+	enc, ok := v["encryption"].(map[string]any)
+	require.True(t, ok, "encryption must project as a nested object, got %T", v["encryption"])
+	require.Equal(t, "AES-256-GCM", enc["algo"])
+	require.Equal(t, "d3JhcHBlZA==", enc["wrappedCEK"])
+	require.Equal(t, governingIdentity, enc["keyId"])
 }
