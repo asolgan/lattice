@@ -2,6 +2,8 @@
 
 Rolled from `lattice.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-09 · `16c3993` · [test] CI fix — sync a second Postgres fixture's `read_lease_applications` column list (objects_rls_test.go), missed in the same-day fire; CI green
+- 2026-07-09 · `3a9d140` · [Security] #75 Fire 2b CLOSED — lease-doc gen is external I/O (docGen triad+bridge+Weaver auto-attach); loftspace-app `ops.>` stripped — [design](../../implementation-artifacts/lease-doc-external-io-design.md)
 - 2026-07-08 · `56784ac` · [docs] lens-hotreload-doc-fix CLOSED — "new lens needs Refractor restart" was false; corrected across 11 files incl. steward/fe-engineer SKILL.md + Loupe UI; CI green
 - 2026-07-08 · `3e4930d` · [hello-lattice] grant CreateBook to operator before Milestone 3 submits it — capability-mode fix
 - 2026-07-08 · `050e5ac` · [Auth] unconditional class-aware platform routing — dropped the rbac boot-probe latch that stale-latched "rbac absent" for a component's whole life

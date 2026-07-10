@@ -186,6 +186,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-10 · `c0875e6` · [Core] substrate-untested-arms — Wrap adapter (incl. closed-conn), IsConnectionError/IsInvalidKeyError classifiers, DocumentEnvelope.Update, KVPutWithTTL, KVDeleteRevision; cov 75.6%→77.5%; CI green
 - 2026-07-10 · `20b8707` · [Bootstrap] bootstrap-untested-arms — two-phase-commit recovery/error paths (nanoid.go) + toMap map/struct/marshal-error/non-object-error branches (envelope.go, no prior test file); cov 61.9%→65.5%; CI green
 - 2026-07-10 · `d6161aa` · [Refractor] natskv-guard-edge-branches (guardedWrite half) — kvStore seam + scripted-fake tests cover CAS retry (Create+Update) and exhaustion; CI green
 - 2026-07-10 · `9812231` · [Security] Contract #11 external actor authN — per-kid opaque/nanoid subject binding + IdP-provenance `.idpBinding` aspect; CI green
@@ -210,6 +211,4 @@ One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archiv
 - 2026-07-09 · `20abd1e` · [auth] scoped-privileged-lane-grants Fire 3 CLOSED — consoleOperator gains the allowlisted pkg-lifecycle trio at meta; requireRootAdmin retired
 - 2026-07-09 · `f644399` · [Refractor] natskv-guard-edge-branches (storedProjectionSeq half) — fixed negative-seq uint64 wrap, removed dead json.Number branch, covered malformed/absent/negative/non-numeric watermarks; CI green
 - 2026-07-09 · `0982345` · [auth] scoped-privileged-lane-grants Fire 2 — core `{op,lane}` allowlist + fail-closed strip-to-default + `PrivilegedLaneGrantRejected` alert; CI green
-- 2026-07-09 · `16c3993` · [test] CI fix — sync a second Postgres fixture's `read_lease_applications` column list (objects_rls_test.go), missed in the same-day fire; CI green
-- 2026-07-09 · `3a9d140` · [Security] #75 Fire 2b CLOSED — lease-doc gen is external I/O (docGen triad+bridge+Weaver auto-attach); loftspace-app `ops.>` stripped — [design](../../implementation-artifacts/lease-doc-external-io-design.md)
 - *(older entries rolled to [archive/lattice-done.md](archive/lattice-done.md); includes `94c8224` hello-lattice NFR-P3 flake fix)*
