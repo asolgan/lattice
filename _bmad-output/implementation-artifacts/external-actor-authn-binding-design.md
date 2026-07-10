@@ -1,8 +1,14 @@
 # External actor authN — IdP subject binding (R3) + Contract #11 un-deferred (design)
 
-**Status:** 📐 **awaiting-Andrew (ratification)** · Designer fire (Winston, 2026-07-10) · Lattice lane
-(Security & trust boundary) · Directed by Andrew's 2026-07-10 questions on `gateway.md` + the gateway
-design docs.
+**Status:** ✅ **Andrew-ratified (2026-07-10) — as recommended.** Designer fire (Winston, 2026-07-10) ·
+Lattice lane (Security & trust boundary) · Directed by Andrew's 2026-07-10 questions on `gateway.md` +
+the gateway design docs.
+
+> **Ratified (Andrew, 2026-07-10).** Fork = **A** as recommended (binding is a property of the trust
+> source: configured external sources always `opaque` with a mandatory per-source issuer; the DEV-ONLY
+> key pinned `nanoid` in code, never operator-selectable). **Contract #11 committed with this
+> ratification** (`docs/contracts/11-external-actor-authn.md` + the README index row). Build-ready for
+> the Lattice Steward: the one S–M fire of §9.
 
 ---
 
