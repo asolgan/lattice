@@ -104,10 +104,10 @@ func TestStaffPatientsReadBoundary_WildcardSeesEverything(t *testing.T) {
 		return tok
 	}
 
-	get := func(t *testing.T, authz string) (int, []protectedPatientRow) {
+	getPath := func(t *testing.T, path, authz string) (int, []protectedPatientRow) {
 		t.Helper()
 		rec := httptest.NewRecorder()
-		r := httptest.NewRequest(http.MethodGet, "/api/staff/patients", nil)
+		r := httptest.NewRequest(http.MethodGet, path, nil)
 		if authz != "" {
 			r.Header.Set("Authorization", authz)
 		}
@@ -118,6 +118,10 @@ func TestStaffPatientsReadBoundary_WildcardSeesEverything(t *testing.T) {
 		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
 		return rec.Code, resp.Patients
 	}
+	get := func(t *testing.T, authz string) (int, []protectedPatientRow) {
+		t.Helper()
+		return getPath(t, "/api/staff/patients", authz)
+	}
 
 	t.Run("staff sees every patient via the wildcard grant", func(t *testing.T) {
 		code, rows := get(t, "Bearer "+mint(subStaff))
@@ -126,6 +130,26 @@ func TestStaffPatientsReadBoundary_WildcardSeesEverything(t *testing.T) {
 		}
 		if len(rows) != 2 {
 			t.Fatalf("staff must see BOTH patients, got %+v", rows)
+		}
+	})
+
+	t.Run("staff filters by name via ?q= — case-insensitive substring", func(t *testing.T) {
+		code, rows := getPath(t, "/api/staff/patients?q=riv", "Bearer "+mint(subStaff))
+		if code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", code)
+		}
+		if len(rows) != 1 || rows[0].Name != "Alice Rivera" {
+			t.Fatalf("q=riv must match only Alice Rivera, got %+v", rows)
+		}
+	})
+
+	t.Run("?q= still enforces RLS — no wildcard grant sees nothing even on a matching name", func(t *testing.T) {
+		code, rows := getPath(t, "/api/staff/patients?q=riv", "Bearer "+mint(subPatientA))
+		if code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", code)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("a non-wildcard actor must see no roster rows even under a name filter, got %+v", rows)
 		}
 	})
 

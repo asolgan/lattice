@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"net/http"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // protectedPatientRow is one row of the clinicPatientsRead protected Postgres
@@ -33,12 +35,24 @@ SELECT patient_key, name, email, phone, identity_key
 FROM read_clinic_patients
 ORDER BY name, patient_key`
 
+// selectPatientsFilteredSQL narrows the roster to a name-ILIKE match, capped
+// so a broad term can't pull the whole clinic's history into one response —
+// mirrors loftspace-app's selectSearchPeopleSQL (search.go).
+const selectPatientsFilteredSQL = `
+SELECT patient_key, name, email, phone, identity_key
+FROM read_clinic_patients
+WHERE name ILIKE $1
+ORDER BY name, patient_key
+LIMIT 50`
+
 // queryPatients runs the protected read inside a per-request transaction with a
 // txn-local actor session variable — the same pooling-safety discipline as
 // queryMyAppointments / queryMyVisitSeries (SET LOCAL is discarded at
 // COMMIT/ROLLBACK, so the pooled connection inherits no actor across
-// requests). The query itself carries no auth filter; RLS is the scope.
-func queryPatients(ctx context.Context, pool pgxBeginner, actorID string) ([]protectedPatientRow, error) {
+// requests). The query itself carries no auth filter; RLS is the scope. q, if
+// non-empty, narrows to a case-insensitive name match (front-desk typeahead) —
+// empty q preserves the prior unfiltered/unlimited behavior.
+func queryPatients(ctx context.Context, pool pgxBeginner, actorID, q string) ([]protectedPatientRow, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -49,7 +63,12 @@ func queryPatients(ctx context.Context, pool pgxBeginner, actorID string) ([]pro
 		return nil, err
 	}
 
-	rows, err := tx.Query(ctx, selectPatientsSQL)
+	var rows pgx.Rows
+	if q == "" {
+		rows, err = tx.Query(ctx, selectPatientsSQL)
+	} else {
+		rows, err = tx.Query(ctx, selectPatientsFilteredSQL, "%"+q+"%")
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +117,8 @@ func (s *server) handleStaffPatients(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := s.reqContext(r)
 	defer cancel()
 
-	rows, err := queryPatients(ctx, s.pgPool, actor.Subject)
+	q := r.URL.Query().Get("q")
+	rows, err := queryPatients(ctx, s.pgPool, actor.Subject, q)
 	if err != nil {
 		s.logger.Error("read protected clinic patients (staff)", "error", err)
 		s.writeError(w, http.StatusBadGateway, "could not read the protected patients model")

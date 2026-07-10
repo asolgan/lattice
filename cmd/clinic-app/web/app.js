@@ -9,7 +9,11 @@
 
 const PATIENT_KEY = "clinic.patient";
 const state = {
-  patients: [],
+  patients: [], // append-only lookup cache — every patient the FE has ever seen, never shrinks (so an
+  // already-selected patient's contact/self-token lookups survive a later ?q= filter)
+  patientOptions: [], // the roster currently rendered in the #patient select — the full cache, or a
+  // narrower ?q= match while a front-desk search is active
+  providers: [],
   providers: [],
   appts: [],
   schedule: [],
@@ -369,33 +373,66 @@ function restorePatient() {
 // switcher used to read the unprotected /api/patients, letting ANY caller dump
 // every patient's full name with no authentication at all (a membership-
 // disclosure PHI leak). authedGetAsStaff mints its own fixed-subject token, so
-// this still works before a patient has been selected.
-async function loadPatients() {
+// this still works before a patient has been selected. q, if given, narrows
+// the server-side query to a name match (the front-desk typeahead) — the
+// result only replaces state.patientOptions (what the select renders); it is
+// merged INTO state.patients (never removed from it), so a patient the search
+// scrolls past never loses its resolvable contact/self-token lookup.
+async function loadPatients(q) {
+  const query = (q || "").trim();
   try {
-    const data = await authedGetAsStaff("/api/staff/patients");
-    state.patients = data.patients || [];
+    const path = query ? "/api/staff/patients?q=" + encodeURIComponent(query) : "/api/staff/patients";
+    const data = await authedGetAsStaff(path);
+    const results = data.patients || [];
+    state.patientOptions = results;
+    if (query) {
+      const known = new Map(state.patients.map((p) => [p.patientKey, p]));
+      for (const p of results) known.set(p.patientKey, p);
+      state.patients = Array.from(known.values());
+    } else {
+      state.patients = results;
+    }
   } catch (_) {
-    state.patients = [];
+    state.patientOptions = [];
+    if (!query) state.patients = [];
   }
   populatePatientSelect();
   renderPatientContact();
   syncBookPatient();
 }
 
+// wirePatientSearch debounces #patient-search into loadPatients(q) — mirrors
+// loftspace-app's unified-search debounce (app.js wireUnifiedSearch, 250ms).
+let patientSearchTimer = null;
+function wirePatientSearch() {
+  const input = $("#patient-search");
+  if (!input) return;
+  input.addEventListener("input", () => {
+    clearTimeout(patientSearchTimer);
+    const q = input.value.trim();
+    patientSearchTimer = setTimeout(() => loadPatients(q), 250);
+  });
+}
+
 function populatePatientSelect() {
   const sel = $("#patient");
   sel.innerHTML = "";
+  const options = state.patientOptions;
   const placeholder = document.createElement("option");
   placeholder.value = "";
-  placeholder.textContent = state.patients.length ? "Select patient…" : "No patients — add one →";
+  placeholder.textContent = options.length
+    ? "Select patient…"
+    : state.patients.length
+      ? "No matches"
+      : "No patients — add one →";
   sel.append(placeholder);
-  for (const p of state.patients) {
+  for (const p of options) {
     const o = document.createElement("option");
     o.value = p.patientKey;
     o.textContent = p.name;
     sel.append(o);
   }
-  const values = state.patients.map((p) => p.patientKey);
+  const values = options.map((p) => p.patientKey);
   sel.value = state.patient && values.includes(state.patient) ? state.patient : "";
 }
 
@@ -531,6 +568,8 @@ async function submitNewPatient(ev) {
       state.patient = key;
       localStorage.setItem(PATIENT_KEY, key);
     }
+    const search = $("#patient-search");
+    if (search) search.value = "";
     await loadPatients();
   } catch (e) {
     toast("Could not create patient: " + e.message, "err");
@@ -3085,6 +3124,7 @@ function init() {
   // remains the floor and the op stays the authority.
 
   $("#patient").addEventListener("change", (e) => setPatient(e.target.value));
+  wirePatientSearch();
   $("#new-patient").addEventListener("click", openNewPatient);
   $("#patient-cancel").addEventListener("click", closeNewPatient);
   $("#patient-overlay").addEventListener("click", (e) => {

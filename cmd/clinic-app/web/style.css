@@ -82,7 +82,7 @@ main { padding: 18px; max-width: 1180px; margin: 0 auto; }
 input, select, button, textarea { font-family: inherit; }
 
 input[type="date"], input[type="datetime-local"], input[type="number"],
-input[type="text"], input[type="email"], select, textarea {
+input[type="text"], input[type="email"], input[type="search"], select, textarea {
   background: var(--bg-input);
   border: 1px solid var(--border);
   color: var(--text);
@@ -90,7 +90,8 @@ input[type="text"], input[type="email"], select, textarea {
   border-radius: 6px;
   font-size: 13px;
 }
-#patient { min-width: 240px; }
+.patient-search { width: 160px; }
+#patient { min-width: 200px; }
 
 button {
   background: var(--accent-dim);
