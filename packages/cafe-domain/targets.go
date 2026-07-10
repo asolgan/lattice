@@ -3,7 +3,7 @@ package cafedomain
 import "github.com/asolgan/lattice/internal/pkgmgr"
 
 // WeaverTargets returns the package's meta.weaverTarget playbook (Contract
-// #10 §10.8). Two independent gaps, mirroring bespoke-contracts/targets.go's
+// #10 §10.8). Two independent gaps, mirroring semantic-contracts/targets.go's
 // missing_charge → directOp(DebitAccount) shape, plus a lazy account-open
 // step ahead of it:
 //

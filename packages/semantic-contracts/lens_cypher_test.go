@@ -1,4 +1,4 @@
-package bespokecontracts
+package semanticcontracts
 
 // Rule-engine proof of the clauseSatisfaction convergence lens, driven
 // through the `full` engine (engine:"full") against an embedded NATS

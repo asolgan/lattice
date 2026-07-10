@@ -384,7 +384,7 @@ func TestDebitAccount_UnknownAccount(t *testing.T) {
 }
 
 // TestDebitAccount_TabRefWritesSettlesLink (cafe-domain Settle consumer,
-// mirroring bespoke-contracts' clauseRef test): a DebitAccount carrying a
+// mirroring semantic-contracts' clauseRef test): a DebitAccount carrying a
 // live tabRef writes the settles audit link (transaction→tab) alongside the
 // normal postedTo link, on top of the byte-for-byte-unaffected plain path
 // TestDebitCreditAccount_PostEntries already covers (no tabRef at all).

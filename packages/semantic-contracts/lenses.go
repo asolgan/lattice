@@ -1,4 +1,4 @@
-package bespokecontracts
+package semanticcontracts
 
 import "github.com/asolgan/lattice/internal/pkgmgr"
 

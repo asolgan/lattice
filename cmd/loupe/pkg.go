@@ -28,7 +28,6 @@ import (
 	"github.com/asolgan/lattice/internal/pkgmgr"
 	"github.com/asolgan/lattice/internal/substrate"
 	augur "github.com/asolgan/lattice/packages/augur"
-	bespokecontracts "github.com/asolgan/lattice/packages/bespoke-contracts"
 	cafedomain "github.com/asolgan/lattice/packages/cafe-domain"
 	cafeledger "github.com/asolgan/lattice/packages/cafe-ledger"
 	capabilityauthor "github.com/asolgan/lattice/packages/capability-author"
@@ -49,6 +48,7 @@ import (
 	privacybase "github.com/asolgan/lattice/packages/privacy-base"
 	privacyoperatorgrant "github.com/asolgan/lattice/packages/privacy-operator-grant"
 	rbacdomain "github.com/asolgan/lattice/packages/rbac-domain"
+	semanticcontracts "github.com/asolgan/lattice/packages/semantic-contracts"
 	servicedomain "github.com/asolgan/lattice/packages/service-domain"
 	servicelocation "github.com/asolgan/lattice/packages/service-location"
 	wellnessdomain "github.com/asolgan/lattice/packages/wellness-domain"
@@ -79,7 +79,7 @@ var packageRegistry = map[string]pkgmgr.Definition{
 	"capability-author":      capabilityauthor.Package,
 	"privacy-base":           privacybase.Package,
 	"privacy-operator-grant": privacyoperatorgrant.Package,
-	"bespoke-contracts":      bespokecontracts.Package,
+	"semantic-contracts":     semanticcontracts.Package,
 	"control-authz":          controlauthz.Package,
 	"console-operator":       consoleoperator.Package,
 	"wellness-domain":        wellnessdomain.Package,

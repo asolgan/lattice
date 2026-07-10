@@ -1,4 +1,4 @@
-package bespokecontracts
+package semanticcontracts
 
 // clauseDDLScript handles CreateClause + InspectPremises + SupersedeClause
 // (Fire V4 self-amendment). Known-key reads only (validates the lease/

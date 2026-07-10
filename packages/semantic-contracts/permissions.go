@@ -1,4 +1,4 @@
-package bespokecontracts
+package semanticcontracts
 
 import "github.com/asolgan/lattice/internal/pkgmgr"
 
@@ -28,7 +28,7 @@ func Permissions() []pkgmgr.PermissionSpec {
 		{
 			OperationType: "CreateClause",
 			Scope:         "any",
-			Note:          "Grants the operator the right to submit CreateClause (installs a bespoke-contract clause governing a lease and charging a ledger account, or a judgment clause assigning an inspector).",
+			Note:          "Grants the operator the right to submit CreateClause (installs a semantic-contract clause governing a lease and charging a ledger account, or a judgment clause assigning an inspector).",
 			GrantsTo:      []string{"operator"},
 		},
 		{

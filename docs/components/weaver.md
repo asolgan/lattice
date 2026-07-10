@@ -127,7 +127,7 @@ clause-satisfaction lens exactly like any other target. Weaver never evaluates t
 still only watches `violating` and dispatches the playbook action (`directOp DebitAccount` for a
 computational gap, `assignTask` for a judgment one); the clause's bespoke-ness lives entirely in the
 package's DDL + lens + playbook, never in a Weaver-side runtime. See
-`_bmad-output/implementation-artifacts/bespoke-contracts-executable-paper-design.md`.
+`_bmad-output/implementation-artifacts/semantic-contracts-executable-paper-design.md`.
 
 ---
 

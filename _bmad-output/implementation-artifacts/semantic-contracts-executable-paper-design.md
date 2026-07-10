@@ -1,9 +1,12 @@
-# Bespoke Contracts / "Executable Paper" — semantic clauses as convergence targets
+# Semantic Contracts / "Executable Paper" — semantic clauses as convergence targets
 
 **Status: ✅ Andrew-ratified (2026-07-02) — the SCOPING RE-CALL accepted: pattern + package, no platform
 engine.** Lattice = the §10.8/§10.2 clarification (committed with this ratification) + the rounding UDF on
 demand; the reference package (Fires V1–V3) routes to the Verticals board — its ledger dependency shipped
 2026-07-01/02, so it is buildable now.
+**Naming (Andrew, 2026-07-09): the feature's name is *Semantic Contracts* (the vault's own term); the
+package ships as `packages/semantic-contracts`.** Fires V1–V4 were built under the working name
+`bespoke-contracts`, which the checkpoint notes and commit history below retain.
 
 > **Ratification Q&A (2026-07-02) — the three-tier bespoke-ness model + an explicit VAULT DEVIATION.**
 > Andrew's question: how can clause DDL + Starlark be designed upfront for bespoke contracts? Answer —

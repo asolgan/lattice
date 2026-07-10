@@ -2,7 +2,7 @@ package cafedomain
 
 // Rule-engine proof of the cafeTabSettlement convergence lens, driven through
 // the `full` engine (engine:"full") against an embedded NATS Core/Adjacency
-// KV — the same harness bespoke-contracts / lease-signing / clinic-reminders
+// KV — the same harness semantic-contracts / lease-signing / clinic-reminders
 // use.
 //
 //   - OPEN: a tab still open never violates either gap, regardless of total.

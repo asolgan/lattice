@@ -51,7 +51,7 @@ func Lenses() []pkgmgr.LensSpec {
 //     audit link this OPTIONAL MATCH walks, so once posted the gap converges
 //     and stays converged (a tab is settled exactly once — Settle rejects a
 //     second call with TabNotOpen — so there is no re-open path to guard,
-//     unlike bespoke-contracts' recurring-clause freshness lane).
+//     unlike semantic-contracts' recurring-clause freshness lane).
 //
 // A tab with totalCents=0 (opened and settled with nothing charged) never
 // violates either gap — no house-tab posting is needed for a zero-amount

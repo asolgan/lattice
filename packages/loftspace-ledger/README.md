@@ -55,7 +55,7 @@ credit) client-side, so concurrent debits/credits never race a read-modify-write
 `DebitAccount`'s optional `clauseRef` additionally writes the `authorizedBy` audit link
 (transaction → clause) and updates the clause's `.status` — `completed` for a one-time clause, or
 `chargeValidUntil` re-armed (`recurringChargePeriod = 720h`, `scripts.go`) for a `period: monthly`
-clause (Fire V3) — the `bespoke-contracts` Executable Paper package's canonical `directOp` consumer
+clause (Fire V3) — the `semantic-contracts` Executable Paper package's canonical `directOp` consumer
 of this ledger.
 
 ## Where the ledger is surfaced

@@ -1,4 +1,4 @@
-package bespokecontracts
+package semanticcontracts
 
 import "github.com/asolgan/lattice/internal/pkgmgr"
 
@@ -33,7 +33,7 @@ func clauseDDL() pkgmgr.DDLSpec {
 		// shape, plus clauseKey naming the one it amends) and tombstones the
 		// amended clause's root — the anchor-tombstone retraction precedent.
 		PermittedCommands: []string{"CreateClause", "InspectPremises", "SupersedeClause"},
-		Description: "Bespoke-contract clause DDL. Vertex shape: vtx.clause.<NanoID>, class=clause, root data = {} " +
+		Description: "Semantic-contract clause DDL. Vertex shape: vtx.clause.<NanoID>, class=clause, root data = {} " +
 			"(minimal, D5 — the provision text and terms are aspects). CreateClause{leaseAppKey, kind?, prose, " +
 			"accountKey?, amountCents?, period?, rateCents?, periodDays?, daysOccupied?, inspectorKey?, " +
 			"conditionedOnKey?} mints the clause under a fresh NanoID, requiring the lease (and, per kind, the " +

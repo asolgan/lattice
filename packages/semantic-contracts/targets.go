@@ -1,4 +1,4 @@
-package bespokecontracts
+package semanticcontracts
 
 import "github.com/asolgan/lattice/internal/pkgmgr"
 
@@ -32,7 +32,7 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //
 // Every row.<col> template is a clauseSatisfaction BodyColumn — the
 // §10.2↔§10.8 column seam, cross-checked by
-// TestBespokeContracts_PlaybookColumnsMatchLens.
+// TestSemanticContracts_PlaybookColumnsMatchLens.
 func WeaverTargets() []pkgmgr.WeaverTargetSpec {
 	return []pkgmgr.WeaverTargetSpec{
 		{

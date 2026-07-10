@@ -1,5 +1,5 @@
-// Package bespokecontracts is the LoftSpace "Executable Paper" reference
-// package (Fires V1-V4 of the bespoke-contracts-executable-paper design):
+// Package semanticcontracts is the LoftSpace "Executable Paper" reference
+// package (Fires V1-V4 of the semantic-contracts-executable-paper design):
 // fixed/one-time, conditioned, judgment, recurring monthly, and prorated
 // computational clauses, plus self-amendment (Fire V4), all riding the
 // convergence machinery the platform already ships — no new engine, no
@@ -53,17 +53,17 @@
 //     (anchor-tombstone retraction — its clauseSatisfaction row deletes),
 //     and marks its .status superseded (audit).
 //
-// See _bmad-output/implementation-artifacts/bespoke-contracts-executable-paper-design.md
+// See _bmad-output/implementation-artifacts/semantic-contracts-executable-paper-design.md
 // §3, §4.1, §7, §10 (Fires V1-V4). Depends lease-signing (the leaseapp a
 // clause governs) + loftspace-ledger (the account a clause charges + the
 // DebitAccount op the playbook dispatches).
-package bespokecontracts
+package semanticcontracts
 
 import "github.com/asolgan/lattice/internal/pkgmgr"
 
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
-	Name:    "bespoke-contracts",
+	Name:    "semantic-contracts",
 	Version: "0.4.0",
 	Description: "LoftSpace 'Executable Paper' reference package (Fires V1-V4 — fixed/one-time, conditioned, " +
 		"judgment, recurring monthly, and prorated computational clauses, plus self-amendment): the clause vertex " +

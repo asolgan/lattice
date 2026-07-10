@@ -1,17 +1,17 @@
-package bespokecontracts
+package semanticcontracts
 
 import (
 	"strings"
 	"testing"
 )
 
-// TestBespokeContracts_PlaybookColumnsMatchLens (the §10.2↔§10.8 seam,
+// TestSemanticContracts_PlaybookColumnsMatchLens (the §10.2↔§10.8 seam,
 // mirroring TestLeaseSigning_PlaybookColumnsMatchLens). A static assertion
 // (no pipeline): every row.<col> token the playbook templates is a member of
 // the clauseSatisfaction lens's BodyColumns, and the single gaps key is a
 // missing_* column the lens projects. Catches a drift between the playbook
 // and the lens cheaply.
-func TestBespokeContracts_PlaybookColumnsMatchLens(t *testing.T) {
+func TestSemanticContracts_PlaybookColumnsMatchLens(t *testing.T) {
 	lensCols := map[string]bool{}
 	var cols []string
 	for _, l := range Lenses() {

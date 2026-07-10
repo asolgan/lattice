@@ -65,7 +65,7 @@ DDLs permit `CreateAccount`/`DebitAccount` for those classes. Instead, `Settle` 
   extension (this fire) writes the `settles` audit link back to the tab, which is exactly what the
   lens's `OPTIONAL MATCH (t)<-[:settles]-(tx:cafetransaction)` reads to converge the gap.
 
-Mirrors `bespoke-contracts/targets.go`'s `missing_charge → directOp(DebitAccount)` shape verbatim —
+Mirrors `semantic-contracts/targets.go`'s `missing_charge → directOp(DebitAccount)` shape verbatim —
 every payload field the dispatched op requires goes directly in `Params` (the `objects-base`
 precedent), never relies on `Target` (which only ever sets `AuthContext.Target` for auth-path scoping,
 never a payload value).

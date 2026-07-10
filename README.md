@@ -218,12 +218,19 @@ The exact wire shapes, key patterns, and behavioral rules are pinned in the data
 
 ### The wider platform
 
-The same primitives extend outward into the rest of the Lattice vision:
+The same primitives extend outward into the rest of the Lattice vision — the first of these has
+already shipped:
 
-- **Semantic Contracts ("Executable Paper")** — legal prose modeled as atomic **clause vertices**
-  linked directly to the state they govern. The Weaver enforces each clause continuously, turning
-  a contract into a live billing-and-compliance engine with a perfect chain of custody from the
-  signed paragraph to every action it authorized.
+- **Semantic Contracts ("Executable Paper") — ✅ shipped** — legal prose modeled as atomic
+  **clause vertices** linked directly to the state they govern. The Weaver enforces each clause
+  continuously, turning a contract into a live billing-and-compliance engine with a perfect chain
+  of custody from the signed paragraph to every action it authorized. Realized not as a new engine
+  but as a **modeling pattern** on the shipped convergence machinery, plus the `semantic-contracts`
+  LoftSpace reference package: one-time, conditioned, recurring, prorated, and judgment clauses;
+  clause supersession (self-amending paper); and a "why was I charged this?" audit trail from any
+  ledger line back to the clause that authorized it. One deliberate deviation from the original
+  vision: a clause never carries executable code — the predicate is lens cypher and formulas
+  compute in the Processor's sandbox, so the Weaver stays a lens consumer, never a script runtime.
 - **Edge Lattice & Personal Lenses** — a sovereign client-side node (mobile / web / IoT) running
   the same VAL model and Starlark locally for offline-first, zero-latency, privacy-first
   interaction. The cloud Refractor pushes each device a **Personal Lens** — a security-filtered
@@ -245,7 +252,7 @@ This is the one place that distinguishes what's built from what's designed.
 | **Phase 1** | Trustworthy core: substrate, Processor write path, Refractor lens projections, identity/RBAC packages, Capability-Lens authorization, the Hello Lattice reference slice | ✅ Implemented + tested (CI-gated) |
 | **Phase 1.5** | Hardening: kernel minimization, package installs routed through the Processor, contract conformance suite, transactional event outbox | ✅ Complete |
 | **Phase 2** | Orchestration: Loom (procedures) + Weaver (convergence) + the external-I/O bridge + the Loftspace lease-application reference vertical | ✅ Complete (CI-gated) |
-| **Phase 3** | Now driven by the autonomous **agentic flywheel** (see *Built by AI agents*). **Shipped:** the experience layer — the Loupe operator console + the LoftSpace and Clinic vertical front-ends — the **Gateway** trust boundary (`cmd/gateway`: write-path JWT-verify-and-stamp plus the RLS-enforced read-path front), **Vault** crypto-shredding, the **Chronicler** durable-history materializer (`cmd/chronicler`), and the **Augur** propose → review → dispatch reasoning loop (its `autoApply` autonomy dial designed + Andrew-gated). Real-actor end-to-end write-auth and human operator login are the auth surfaces still landing. **Designed and deferred** — built as each architectural fork is ratified: Semantic Contracts, Edge Lattice + Personal Lenses, and multi-cell sharding. | 🏗️ Continuous |
+| **Phase 3** | Now driven by the autonomous **agentic flywheel** (see *Built by AI agents*). **Shipped:** the experience layer — the Loupe operator console + the LoftSpace and Clinic vertical front-ends — the **Gateway** trust boundary (`cmd/gateway`: write-path JWT-verify-and-stamp plus the RLS-enforced read-path front), **Vault** crypto-shredding, the **Chronicler** durable-history materializer (`cmd/chronicler`), the **Augur** propose → review → dispatch reasoning loop (its `autoApply` autonomy dial designed + Andrew-gated), and **Semantic Contracts** ("Executable Paper") — clause-vertex obligations continuously enforced by the Weaver as ordinary convergence targets, shipped as a sanctioned pattern + the `semantic-contracts` reference package. Real-actor end-to-end write-auth and human operator login are the auth surfaces still landing. **Designed and deferred** — built as each architectural fork is ratified: Edge Lattice + Personal Lenses, and multi-cell sharding. | 🏗️ Continuous |
 
 ---
 

@@ -27,7 +27,7 @@
 //     optional clauseRef additionally writes the authorizedBy link (transaction
 //     → clause) and updates the clause's .status — completed for a one-time
 //     clause, or chargeValidUntil re-armed for a period="monthly" clause
-//     (Fire V3) — the bespoke-contracts Executable Paper package's canonical
+//     (Fire V3) — the semantic-contracts Executable Paper package's canonical
 //     directOp consumer.
 //
 //   - The `ledgerHistory` lens (§10.2-style read model, one row per
@@ -37,9 +37,9 @@
 //     is opened) — the FE's only way to resolve a lease's account key, since
 //     it can no longer be derived from leaseAppKey.
 //
-// This is the ledger the bespoke-contracts-executable-paper design builds to:
+// This is the ledger the semantic-contracts-executable-paper design builds to:
 // vtx.account.<id> + Debit/CreditAccount + ledger entries linked back to
-// their authorizing source (packages/bespoke-contracts, Fire V1).
+// their authorizing source (packages/semantic-contracts, Fire V1).
 //
 // Mirrors packages/clinic-ledger, with the account held for a lease instead
 // of a patient (see implementation-artifacts/adjacency-shared-nanoid-collision-design.md

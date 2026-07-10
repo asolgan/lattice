@@ -214,7 +214,7 @@ def post_entry(state, op, entry_type, event_class, allow_clause_ref):
         fail("InvalidArgument: amountCents: required positive number")
     memo = optional_string(p, "memo")
 
-    # clauseRef (DebitAccount only — the bespoke-contracts Executable Paper
+    # clauseRef (DebitAccount only — the semantic-contracts Executable Paper
     # consumer, Contract #10 §10.8): the clause this charge is authorized by.
     # A clause playbook dispatch always declares row.clauseKey in Reads, so
     # the clause is hydrated here; a plain human-submitted DebitAccount omits
@@ -267,7 +267,7 @@ def post_entry(state, op, entry_type, event_class, allow_clause_ref):
         # clauseValidUntil is stamped UNCONDITIONALLY, regardless of which
         # branch below fires. This op has no read of the clause's own
         # .terms.data.period (only its root is hydrated — see
-        # bespoke-contracts' targets.go Reads), so clause_period is a
+        # semantic-contracts' targets.go Reads), so clause_period is a
         # caller-supplied signal, not a verified one; a hand-submitted
         # DebitAccount (this is an ordinary operator-granted op, not
         # Weaver-exclusive) could in principle pass a period that disagrees

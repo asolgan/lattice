@@ -45,7 +45,7 @@ func Lenses() []pkgmgr.LensSpec {
 // rentEntriesSpec re-projects loftspace-ledger's posted transactions (no
 // compile-time dependency needed — the cypher matches vertex class labels at
 // read time, same as loftspace-ledger's own OPTIONAL MATCH into
-// bespoke-contracts' :clause) tagged source:"rent", into the shared one-bill
+// semantic-contracts' :clause) tagged source:"rent", into the shared one-bill
 // bucket. Every MATCH is REQUIRED: a row projects only for a transaction
 // genuinely posted to a live account held for a live lease.
 const rentEntriesSpec = `MATCH (t:transaction)

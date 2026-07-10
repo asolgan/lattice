@@ -6,7 +6,7 @@ import (
 )
 
 // TestCafeDomain_PlaybookColumnsMatchLens (the §10.2↔§10.8 seam, mirroring
-// TestBespokeContracts_PlaybookColumnsMatchLens). A static assertion (no
+// TestSemanticContracts_PlaybookColumnsMatchLens). A static assertion (no
 // pipeline): every row.<col> token the playbook templates is a member of the
 // cafeTabSettlement lens's BodyColumns, and both gaps keys are missing_*
 // columns the lens projects. Catches a drift between the playbook and the

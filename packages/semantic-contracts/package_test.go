@@ -1,4 +1,4 @@
-package bespokecontracts
+package semanticcontracts
 
 import (
 	"os"

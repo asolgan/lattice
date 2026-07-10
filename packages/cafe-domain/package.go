@@ -31,7 +31,7 @@
 // cafe-ledger's DebitAccount is extended (this fire) with an optional
 // tabRef: when present it writes the lnk.cafetransaction.settles.tab audit
 // link the cafeTabSettlement lens's missing_charge gate reads — the
-// bespoke-contracts clauseRef precedent, additive and byte-for-byte
+// semantic-contracts clauseRef precedent, additive and byte-for-byte
 // unaffected for a plain human-submitted DebitAccount.
 //
 // See _bmad-output/implementation-artifacts/cafe-ledger-design.md's "Next"

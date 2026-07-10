@@ -202,7 +202,7 @@ def zero_pad(n, width):
     return s
 
 def add_months(rfc3339_instant, months):
-    # Calendar-month addition on an RFC3339 instant (bespoke-contracts' "date math
+    # Calendar-month addition on an RFC3339 instant (semantic-contracts' "date math
     # belongs to the op, cypher only compares" precedent): the deterministic
     # Starlark sandbox has no calendar-aware builtin (time.rfc3339_add's Go
     # duration form is hours-only — no months unit), and a lease term is a

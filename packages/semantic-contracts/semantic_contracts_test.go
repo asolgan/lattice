@@ -1,10 +1,10 @@
-// bespoke-contracts integration tests through the real install + Processor
-// pipeline. External test package (bespokecontracts_test) so they exercise
+// semantic-contracts integration tests through the real install + Processor
+// pipeline. External test package (semanticcontracts_test) so they exercise
 // the public Lattice surface: seed the kernel, install rbac + identity +
 // hygiene + orchestration-base + service-domain + lease-signing +
-// loftspace-ledger + bespoke-contracts through the Processor, then submit the
+// loftspace-ledger + semantic-contracts through the Processor, then submit the
 // ops and assert the committed Core-KV shape + the emitted events.
-package bespokecontracts_test
+package semanticcontracts_test
 
 import (
 	"context"
@@ -20,17 +20,17 @@ import (
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
 	"github.com/asolgan/lattice/internal/testutil"
-	bespokecontracts "github.com/asolgan/lattice/packages/bespoke-contracts"
 	leasesigning "github.com/asolgan/lattice/packages/lease-signing"
 	loftspaceledger "github.com/asolgan/lattice/packages/loftspace-ledger"
 	orchestrationbase "github.com/asolgan/lattice/packages/orchestration-base"
+	semanticcontracts "github.com/asolgan/lattice/packages/semantic-contracts"
 	servicedomain "github.com/asolgan/lattice/packages/service-domain"
 )
 
 const (
-	bcActorID  = "BBBESPOKEACTRHJKMNPQ"
-	bcActorKey = "vtx.identity." + bcActorID
-	bcCapKey   = "cap.identity." + bcActorID
+	scActorID  = "BBSEMANTICACTRHJKMNP"
+	scActorKey = "vtx.identity." + scActorID
+	scCapKey   = "cap.identity." + scActorID
 
 	// bcConsumerRoleID stands in for identity-domain's real `consumer` role
 	// NanoID: this package's tests don't install identity-domain (only rbac +
@@ -43,11 +43,11 @@ const (
 func bcCapDoc() *processor.CapabilityDoc {
 	now := time.Now().UTC()
 	return &processor.CapabilityDoc{
-		Key:                    bcCapKey,
-		Actor:                  bcActorKey,
+		Key:                    scCapKey,
+		Actor:                  scActorKey,
 		Version:                "1.0",
 		ProjectedAt:            now.Format(time.RFC3339Nano),
-		ProjectedFromRevisions: map[string]uint64{bcActorKey: 1},
+		ProjectedFromRevisions: map[string]uint64{scActorKey: 1},
 		Lanes:                  []string{"default"},
 		PlatformPermissions: []processor.PlatformPermission{
 			{OperationType: "CreateAccount", Scope: "any"},
@@ -82,8 +82,8 @@ func setupBcEnv(t *testing.T) (context.Context, *substrate.Conn) {
 	if _, err := inst.Install(ctx, loftspaceledger.Package); err != nil {
 		t.Fatalf("install loftspace-ledger: %v", err)
 	}
-	if _, err := inst.Install(ctx, bespokecontracts.Package); err != nil {
-		t.Fatalf("install bespoke-contracts: %v", err)
+	if _, err := inst.Install(ctx, semanticcontracts.Package); err != nil {
+		t.Fatalf("install semantic-contracts: %v", err)
 	}
 	testutil.SeedCapDoc(t, ctx, conn, bcCapDoc())
 	return ctx, conn
@@ -165,7 +165,7 @@ func createAccount(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *
 		RequestID:     reqID,
 		Lane:          processor.LaneDefault,
 		OperationType: "CreateAccount",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T12:00:00Z",
 		Class:         "account",
 		Payload:       json.RawMessage(`{"leaseAppKey":"` + leaseAppKey + `"}`),
@@ -183,7 +183,7 @@ func createClause(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *p
 		RequestID:     reqID,
 		Lane:          processor.LaneDefault,
 		OperationType: "CreateClause",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T12:00:00Z",
 		Class:         "clause",
 		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseAppKey + `","accountKey":"` + acctKey +
@@ -281,7 +281,7 @@ func TestCreateClause_UnknownLease(t *testing.T) {
 		RequestID:     testutil.GenReqID("clauseunknownlease1"),
 		Lane:          processor.LaneDefault,
 		OperationType: "CreateClause",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T12:00:00Z",
 		Class:         "clause",
 		Payload:       json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","accountKey":"vtx.account.BBABSENTACCTHJKMNPQR","prose":"x","amountCents":100}`),
@@ -311,7 +311,7 @@ func TestDebitAccount_ClauseRef_WritesAuthorizedByAndCompletesClause(t *testing.
 		RequestID:     debitReqID,
 		Lane:          processor.LaneDefault,
 		OperationType: "DebitAccount",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T13:00:00Z",
 		Class:         "transaction",
 		Payload:       json.RawMessage(`{"accountKey":"` + acctKey + `","amountCents":4500,"clauseRef":"` + clauseKey + `"}`),
@@ -360,7 +360,7 @@ func TestCreateClause_ConditionedFee_WritesConditionedOnLink(t *testing.T) {
 		RequestID:     reqID,
 		Lane:          processor.LaneDefault,
 		OperationType: "CreateClause",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T12:00:00Z",
 		Class:         "clause",
 		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","accountKey":"` + acctKey +
@@ -400,7 +400,7 @@ func TestCreateClause_ConditionedFee_UnknownConditionVertex(t *testing.T) {
 		RequestID:     testutil.GenReqID("createclausecondunk1"),
 		Lane:          processor.LaneDefault,
 		OperationType: "CreateClause",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T12:00:00Z",
 		Class:         "clause",
 		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","accountKey":"` + acctKey +
@@ -426,7 +426,7 @@ func TestCreateClause_JudgmentClause_WritesInspectorLinkNoCharge(t *testing.T) {
 		RequestID:     reqID,
 		Lane:          processor.LaneDefault,
 		OperationType: "CreateClause",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T12:00:00Z",
 		Class:         "clause",
 		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","kind":"judgment",` +
@@ -475,7 +475,7 @@ func TestCreateClause_JudgmentClause_UnknownInspector(t *testing.T) {
 		RequestID:     testutil.GenReqID("createclausejudgunk1"),
 		Lane:          processor.LaneDefault,
 		OperationType: "CreateClause",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T12:00:00Z",
 		Class:         "clause",
 		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","kind":"judgment",` +
@@ -501,7 +501,7 @@ func TestInspectPremises_WritesInspectionAspect(t *testing.T) {
 		RequestID:     clauseReqID,
 		Lane:          processor.LaneDefault,
 		OperationType: "CreateClause",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T12:00:00Z",
 		Class:         "clause",
 		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","kind":"judgment",` +
@@ -516,7 +516,7 @@ func TestInspectPremises_WritesInspectionAspect(t *testing.T) {
 		RequestID:     testutil.GenReqID("inspectpremises00001"),
 		Lane:          processor.LaneDefault,
 		OperationType: "InspectPremises",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T13:00:00Z",
 		Class:         "clause",
 		Payload:       json.RawMessage(`{"clauseKey":"` + clauseKey + `"}`),
@@ -550,7 +550,7 @@ func TestInspectPremises_AlreadyInspected_Rejected(t *testing.T) {
 		RequestID:     clauseReqID,
 		Lane:          processor.LaneDefault,
 		OperationType: "CreateClause",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T12:00:00Z",
 		Class:         "clause",
 		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","kind":"judgment",` +
@@ -565,7 +565,7 @@ func TestInspectPremises_AlreadyInspected_Rejected(t *testing.T) {
 		RequestID:     testutil.GenReqID("inspecttwice0000001"),
 		Lane:          processor.LaneDefault,
 		OperationType: "InspectPremises",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T13:00:00Z",
 		Class:         "clause",
 		Payload:       json.RawMessage(`{"clauseKey":"` + clauseKey + `"}`),
@@ -578,7 +578,7 @@ func TestInspectPremises_AlreadyInspected_Rejected(t *testing.T) {
 		RequestID:     testutil.GenReqID("inspecttwice0000002"),
 		Lane:          processor.LaneDefault,
 		OperationType: "InspectPremises",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T14:00:00Z",
 		Class:         "clause",
 		Payload:       json.RawMessage(`{"clauseKey":"` + clauseKey + `"}`),
@@ -603,7 +603,7 @@ func TestDebitAccount_NoClauseRef_Unaffected(t *testing.T) {
 		RequestID:     debitReqID,
 		Lane:          processor.LaneDefault,
 		OperationType: "DebitAccount",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T13:00:00Z",
 		Class:         "transaction",
 		Payload:       json.RawMessage(`{"accountKey":"` + acctKey + `","amountCents":15000,"memo":"June rent"}`),
@@ -652,7 +652,7 @@ func TestCreateClause_Prorated_ComputesExactAmountCents(t *testing.T) {
 			RequestID:     reqID,
 			Lane:          processor.LaneDefault,
 			OperationType: "CreateClause",
-			Actor:         bcActorKey,
+			Actor:         scActorKey,
 			SubmittedAt:   "2026-07-02T12:00:00Z",
 			Class:         "clause",
 			Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","accountKey":"` + acctKey +
@@ -692,7 +692,7 @@ func TestCreateClause_Prorated_RejectsMonthlyPeriod(t *testing.T) {
 		RequestID:     testutil.GenReqID("proratedmonthly00001"),
 		Lane:          processor.LaneDefault,
 		OperationType: "CreateClause",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T12:00:00Z",
 		Class:         "clause",
 		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","accountKey":"` + acctKey +
@@ -721,7 +721,7 @@ func TestDebitAccount_RecurringClause_ReArmsChargeValidUntil(t *testing.T) {
 		RequestID:     clauseReqID,
 		Lane:          processor.LaneDefault,
 		OperationType: "CreateClause",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T12:00:00Z",
 		Class:         "clause",
 		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","accountKey":"` + acctKey +
@@ -738,7 +738,7 @@ func TestDebitAccount_RecurringClause_ReArmsChargeValidUntil(t *testing.T) {
 		RequestID:     debitReqID,
 		Lane:          processor.LaneDefault,
 		OperationType: "DebitAccount",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T13:00:00Z",
 		Class:         "transaction",
 		Payload:       json.RawMessage(`{"accountKey":"` + acctKey + `","amountCents":1500,"clauseRef":"` + clauseKey + `","period":"monthly"}`),
@@ -802,7 +802,7 @@ func TestDebitAccount_RecurringClause_MismatchedPeriodOmitted_StillReArms(t *tes
 		RequestID:     clauseReqID,
 		Lane:          processor.LaneDefault,
 		OperationType: "CreateClause",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T12:00:00Z",
 		Class:         "clause",
 		Payload: json.RawMessage(`{"leaseAppKey":"` + leaseKey + `","accountKey":"` + acctKey +
@@ -819,7 +819,7 @@ func TestDebitAccount_RecurringClause_MismatchedPeriodOmitted_StillReArms(t *tes
 		RequestID:     debitReqID,
 		Lane:          processor.LaneDefault,
 		OperationType: "DebitAccount",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T13:00:00Z",
 		Class:         "transaction",
 		Payload:       json.RawMessage(`{"accountKey":"` + acctKey + `","amountCents":1500,"clauseRef":"` + clauseKey + `"}`),
@@ -859,7 +859,7 @@ func TestSupersedeClause_TombstonesOldWritesAmendsLinkMintsNew(t *testing.T) {
 		RequestID:     supersedeReqID,
 		Lane:          processor.LaneDefault,
 		OperationType: "SupersedeClause",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T14:00:00Z",
 		Class:         "clause",
 		Payload: json.RawMessage(`{"clauseKey":"` + oldClauseKey + `","leaseAppKey":"` + leaseKey +
@@ -927,7 +927,7 @@ func TestSupersedeClause_UnknownOldClause_Rejected(t *testing.T) {
 		RequestID:     testutil.GenReqID("supersedeunknown0001"),
 		Lane:          processor.LaneDefault,
 		OperationType: "SupersedeClause",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T14:00:00Z",
 		Class:         "clause",
 		Payload: json.RawMessage(`{"clauseKey":"` + absentClauseKey + `","leaseAppKey":"` + leaseKey +
@@ -956,7 +956,7 @@ func TestSupersedeClause_DoubleSupersede_SecondRejected(t *testing.T) {
 		RequestID:     testutil.GenReqID("supersedetwice00001"),
 		Lane:          processor.LaneDefault,
 		OperationType: "SupersedeClause",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T14:00:00Z",
 		Class:         "clause",
 		Payload: json.RawMessage(`{"clauseKey":"` + oldClauseKey + `","leaseAppKey":"` + leaseKey +
@@ -970,7 +970,7 @@ func TestSupersedeClause_DoubleSupersede_SecondRejected(t *testing.T) {
 		RequestID:     testutil.GenReqID("supersedetwice00002"),
 		Lane:          processor.LaneDefault,
 		OperationType: "SupersedeClause",
-		Actor:         bcActorKey,
+		Actor:         scActorKey,
 		SubmittedAt:   "2026-07-02T15:00:00Z",
 		Class:         "clause",
 		Payload: json.RawMessage(`{"clauseKey":"` + oldClauseKey + `","leaseAppKey":"` + leaseKey +

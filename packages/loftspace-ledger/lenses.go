@@ -56,11 +56,11 @@ func Lenses() []pkgmgr.LensSpec {
 // the read model is keyed by vtx.transaction.<id>; transactionKey repeats it in
 // the body for the reader.
 //
-// The trailing OPTIONAL MATCH walks authorizedBy to a bespoke-contracts clause
+// The trailing OPTIONAL MATCH walks authorizedBy to a semantic-contracts clause
 // (Fire V4 "why was I charged this?") — OPTIONAL because a plain human-
 // submitted DebitAccount/CreditAccount carries no clauseRef, and this lens
 // projects a row for every transaction regardless. No compile-time dependency
-// on bespoke-contracts: the cypher matches a vertex by class label at read
+// on semantic-contracts: the cypher matches a vertex by class label at read
 // time, same as any other package's lens matching a cross-package link.
 const ledgerHistorySpec = `MATCH (t:transaction)
 MATCH (t)-[:postedTo]->(a:account)
