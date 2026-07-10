@@ -238,3 +238,52 @@ func TestDiagnosticKeys_TTLExpiryAndRearm(t *testing.T) {
 		}
 	})
 }
+
+// EmitAlert's health.alerts.security.<alertCode> keys joined Category B
+// (health-kv-ttl-orphan-expiry-design.md's Category D deferred them): a
+// recurring alert re-arms and stays visible, but once the condition stops
+// firing — e.g. stub-auth-active can never re-fire once a deployed binary
+// refuses a stub-mode start — the key self-clears instead of reading
+// "warning" forever until an operator wipes the bucket by hand.
+func TestEmitAlert_TTLExpiryAndRearm(t *testing.T) {
+	ctx, conn := setupTTLHarness(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	t.Run("re-arms across repeated occurrences, then expires once they stop", func(t *testing.T) {
+		e := newTestHealthAlertEmitter(conn, "proc-alert-1", 1*time.Second, logger)
+		key := "health.alerts.security.stub-auth-active"
+
+		stop := time.Now().Add(3 * time.Second) // > TTL
+		for time.Now().Before(stop) {
+			e.EmitAlert(ctx, "stub-auth-active", map[string]any{"callCount": 1})
+			time.Sleep(300 * time.Millisecond)
+		}
+		if _, err := conn.KVGet(ctx, ttlTestHealthBucket, key); err != nil {
+			t.Fatalf("re-armed alert key should still be present past one TTL window: %v", err)
+		}
+
+		deadline := time.Now().Add(10 * time.Second)
+		expired := false
+		for time.Now().Before(deadline) {
+			if _, err := conn.KVGet(ctx, ttlTestHealthBucket, key); errors.Is(err, substrate.ErrKeyNotFound) {
+				expired = true
+				break
+			}
+			time.Sleep(200 * time.Millisecond)
+		}
+		if !expired {
+			t.Fatalf("alert key %q never expired once occurrences stopped", key)
+		}
+	})
+
+	t.Run("diagnosticTTL=0 disables TTL (sticky key)", func(t *testing.T) {
+		e := newTestHealthAlertEmitter(conn, "proc-alert-2", 0, logger)
+		e.EmitAlert(ctx, "privileged-lane-grant-rejected", map[string]any{"actor": "vtx.identity.x"})
+		key := "health.alerts.security.privileged-lane-grant-rejected"
+
+		time.Sleep(2 * time.Second)
+		if _, err := conn.KVGet(ctx, ttlTestHealthBucket, key); err != nil {
+			t.Fatalf("diagnosticTTL=0 must disable TTL, but key is gone: %v", err)
+		}
+	})
+}

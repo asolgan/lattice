@@ -6,7 +6,11 @@
 // Key shape (Contract #5 alert convention): health.alerts.security.<alertCode>
 //
 // Multiple bursts of the same alert OVERWRITE the previous entry — the alert
-// represents "this is currently happening", not an audit log.
+// represents "this is currently happening", not an audit log. Each write
+// carries diagnosticTTL (re-armed on every write), so an alert condition
+// that stops recurring clears itself within the window instead of persisting
+// forever with no re-emission path to clear it (e.g. stub-auth-active can
+// never re-fire once a deployed binary refuses a stub-mode start).
 package processor
 
 import (
@@ -137,11 +141,10 @@ type HealthAlertEmitter struct {
 	logger   *slog.Logger
 
 	// diagnosticTTL bounds the per-instance claim-attempts/commit-conflicts
-	// breadcrumbs — a fixed window applied on every write (each write re-arms
-	// it), so a dead instance's counters clear diagnosticTTL after its last
-	// write instead of persisting forever. Zero disables TTL (plain KVPut).
-	// Unused by EmitAlert (security alerts stay sticky "currently happening"
-	// state, not a diagnostic breadcrumb).
+	// breadcrumbs and the EmitAlert security-alert entries — a fixed window
+	// applied on every write (each write re-arms it), so a condition that
+	// stops recurring clears diagnosticTTL after its last write instead of
+	// persisting forever. Zero disables TTL (plain KVPut).
 	diagnosticTTL time.Duration
 }
 
@@ -154,7 +157,7 @@ func NewHealthAlertEmitter(conn *substrate.Conn, bucket string, logger *slog.Log
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &HealthAlertEmitter{conn: conn, bucket: bucket, logger: logger}
+	return &HealthAlertEmitter{conn: conn, bucket: bucket, logger: logger, diagnosticTTL: healthkv.DefaultDiagnosticTTL}
 }
 
 // NewClaimAttemptEmitter constructs a ClaimAttemptEmitter wired to Health KV.
@@ -210,7 +213,10 @@ func (e *HealthAlertEmitter) RecordClaimAttempt(ctx context.Context, outcome str
 	}
 }
 
-// EmitAlert implements AuthAlertEmitter.
+// EmitAlert implements AuthAlertEmitter. The write carries diagnosticTTL
+// (re-armed on every write, zero disables TTL), so an alert whose condition
+// stops recurring self-clears within the window instead of persisting until
+// the bucket is wiped by hand.
 func (e *HealthAlertEmitter) EmitAlert(ctx context.Context, code string, details map[string]any) {
 	key := "health.alerts.security." + code
 	body := map[string]any{
@@ -225,7 +231,7 @@ func (e *HealthAlertEmitter) EmitAlert(ctx context.Context, code string, details
 		e.logger.Warn("alert: marshal failed", "code", code, "error", err)
 		return
 	}
-	if _, err := e.conn.KVPut(ctx, e.bucket, key, raw); err != nil {
+	if _, err := e.conn.KVPutWithTTL(ctx, e.bucket, key, raw, e.diagnosticTTL); err != nil {
 		e.logger.Warn("alert: KV write failed", "code", code, "key", key, "error", err)
 	}
 }
