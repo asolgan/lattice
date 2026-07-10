@@ -58,6 +58,15 @@ Two kinds of actor read this file; know which one you are.
     writes = ops.** The only sanctioned direct-KV writes outside Refractor's own lens targets are Health KV
     (`health.<component>.<instance>` — operational self-reporting, not Core KV, not a lens).
 
+- **Starlark read posture (Contract #2 §2.5) — script reads are declared, not lazy.** The submitter lists
+  exact keys in `contextHint.reads` (absence = correctness error) or `optionalReads` (absence-tolerant
+  read-before-create/dedup — **never a required key**); the only sanctioned live reads are annotated
+  `# read-posture: (c)` config reads and `(e)` bounded `kv.Links` enumerations + their follow-up reads.
+  An unannotated `kv.Read`/`kv.Links` in a `packages/` script is class-(b) debt — `lint-conventions`
+  warns today and the gate flips to blocking once the debt sweep lands. **Do not copy the lazy pattern
+  from existing scripts** (much of that corpus is the debt being swept); new scripts land clean, with the
+  declarations added at every dispatcher of the op.
+
 ## Authoritative external sources (vendors)
 
 When you need the **authoritative behavior of a vendored dependency** (semantics, version-gated
