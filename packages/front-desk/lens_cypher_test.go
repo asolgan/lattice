@@ -205,3 +205,49 @@ func TestFrontDeskBookings_SkipsCancelledBooking(t *testing.T) {
 	rows := f.project(t, bookingsSpec)
 	require.Empty(t, rows, "a soft-deleted (cancelled) booking must be filtered by the engine's isDeleted guard")
 }
+
+// mkUnit seeds a unit vertex with .listing + .address aspects
+// (loftspace-domain's shape).
+func (f *fdFixture) mkUnit(t *testing.T, name string, rentAmount float64, rentCurrency string, leaseTermMonths float64, line1 string) {
+	t.Helper()
+	f.vtx(t, name, "unit")
+	f.aspect(t, name, "listing", "loftspaceListing", map[string]any{
+		"rentAmount": rentAmount, "rentCurrency": rentCurrency, "bedrooms": 1.0, "leaseTermMonths": leaseTermMonths, "status": "leased",
+	})
+	f.aspect(t, name, "address", "loftspaceAddress", map[string]any{"line1": line1, "city": "Metropolis"})
+}
+
+func TestFrontDeskLeaseDetails_ProjectsUnitRow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newFdFixture(t)
+	f.vtx(t, "l1", "leaseapp")
+	f.mkUnit(t, "l1_unit", 2500, "USD", 12, "123 Main St")
+	f.edge(t, "appliesToUnit", "l1", "l1_unit")
+
+	rows := f.project(t, leaseDetailsSpec)
+	require.Len(t, rows, 1)
+	v := rows[0].Values
+	require.Equal(t, "vtx.leaseapp."+f.ids["l1"], v["key"])
+	require.Equal(t, "vtx.leaseapp."+f.ids["l1"], v["leaseAppKey"])
+	require.Equal(t, "vtx.unit."+f.ids["l1_unit"], v["unitKey"])
+	require.Equal(t, "123 Main St", v["unitAddress"])
+	require.Equal(t, 2500.0, v["unitRent"])
+	require.Equal(t, "USD", v["unitCurrency"])
+	require.Equal(t, 12.0, v["unitLeaseTermMonths"])
+}
+
+func TestFrontDeskLeaseDetails_NullsWhenNoUnit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newFdFixture(t)
+	f.vtx(t, "l1", "leaseapp")
+
+	rows := f.project(t, leaseDetailsSpec)
+	require.Len(t, rows, 1, "a leaseapp with no appliesToUnit link still projects a row, rent/term null")
+	v := rows[0].Values
+	require.Nil(t, v["unitKey"])
+	require.Nil(t, v["unitRent"])
+}

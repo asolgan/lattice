@@ -1,12 +1,16 @@
 name: front-desk
-version: 0.1.0
+version: 0.2.0
 description: |
-  Café/Wellness mixed-use composition Inc 1 — the front-desk unified resident
-  context. No vertex types, links, or permissions of its own: one Lens
-  (frontDeskBookings) re-projects wellness-domain's resident-rate bookings,
-  keyed by leaseAppKey, into the front-desk-bookings bucket, so a resident's
-  booked class shows up next to their open café tab (cafe-domain's own
-  cafeTabSettlement lens already serves that half) without a second lookup.
+  Café/Wellness mixed-use composition Inc 1 + Inc 4 — the front-desk unified
+  resident context. No vertex types, links, or permissions of its own: two
+  Lenses — frontDeskBookings re-projects wellness-domain's resident-rate
+  bookings, keyed by leaseAppKey, into the front-desk-bookings bucket, so a
+  resident's booked class shows up next to their open café tab (cafe-domain's
+  own cafeTabSettlement lens already serves that half) without a second
+  lookup; frontDeskLeaseDetails re-projects every leaseapp's applied-to unit
+  rent/currency/term/address, keyed by leaseAppKey, into the
+  front-desk-lease-details bucket, so the front-desk card can show lease
+  details regardless of whether the resident has a booked class.
   Depends on wellness-domain.
 depends:
   - wellness-domain
@@ -15,4 +19,8 @@ declares:
     - canonicalName: frontDeskBookings
       adapter: nats-kv
       bucket: front-desk-bookings
+      engine: full
+    - canonicalName: frontDeskLeaseDetails
+      adapter: nats-kv
+      bucket: front-desk-lease-details
       engine: full

@@ -69,6 +69,12 @@ function parseDollars(s) {
   return Math.round(n * 100);
 }
 
+// rentAmount formats a lease's unit rent — a plain dollar amount (not
+// cents, unlike money()'s café-ledger amounts) with its currency code.
+function rentAmount(amount, currency) {
+  return "$" + Number(amount).toFixed(0) + " " + (currency || "");
+}
+
 function shortKey(key) {
   if (!key) return "";
   const parts = key.split(".");
@@ -274,12 +280,21 @@ async function loadFrontDesk() {
     (br.bookings || []).forEach((b) => { bookingsByLease[b.leaseAppKey] = b; });
   } catch (_) { /* front-desk not installed / unreachable — badges just don't show */ }
 
+  // Same join, for the resident's applied-to unit rent/term — every open
+  // tab's lease, not just those with a booked class (best-effort, same
+  // degrade-to-hidden posture as bookingsByLease above).
+  let leaseDetailsByLease = {};
+  try {
+    const ld = await api("/api/frontdesk-lease-details");
+    (ld.leaseDetails || []).forEach((d) => { leaseDetailsByLease[d.leaseAppKey] = d; });
+  } catch (_) { /* front-desk not installed / unreachable — lease details just don't show */ }
+
   summary.textContent = tabs.length + " open tab" + (tabs.length === 1 ? "" : "s");
   if (!tabs.length) {
     grid.innerHTML = '<div class="empty">No open tabs.</div>';
     return;
   }
-  grid.innerHTML = tabs.map((t) => frontDeskCard(t, bookingsByLease[t.leaseAppKey])).join("");
+  grid.innerHTML = tabs.map((t) => frontDeskCard(t, bookingsByLease[t.leaseAppKey], leaseDetailsByLease[t.leaseAppKey])).join("");
   tabs.forEach((t) => {
     const btn = document.getElementById("settle-" + t.tabKey.replace(/[^a-zA-Z0-9]/g, ""));
     if (!btn) return;
@@ -300,10 +315,14 @@ async function loadFrontDesk() {
   });
 }
 
-function frontDeskCard(t, booking) {
+function frontDeskCard(t, booking, lease) {
   const id = "settle-" + t.tabKey.replace(/[^a-zA-Z0-9]/g, "");
   const classBadge = booking
     ? '<div class="meta">🧘 Booked: ' + (booking.sessionName || "class") + " · " + (booking.startsAt || "?") + "</div>"
+    : "";
+  const leaseLine = lease && lease.unitRent
+    ? '<div class="meta">🏠 ' + rentAmount(lease.unitRent, lease.unitCurrency) + "/mo" +
+      (lease.unitLeaseTermMonths ? " · " + lease.unitLeaseTermMonths + "mo term" : "") + "</div>"
     : "";
   return (
     '<div class="card">' +
@@ -312,6 +331,7 @@ function frontDeskCard(t, booking) {
     '<div class="amount">' + money(t.totalCents) + "</div>" +
     '<div class="meta">Opened ' + (t.openedAt || "?") + "</div>" +
     classBadge +
+    leaseLine +
     '<div class="card-actions"><button id="' + id + '" class="danger">Settle</button></div>' +
     "</div>"
   );

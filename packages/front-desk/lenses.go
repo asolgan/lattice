@@ -10,8 +10,16 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // (lattice-architecture.md P5).
 const BookingsBucket = "front-desk-bookings"
 
-// Lenses returns the package's single Lens declaration. No UNION is needed
-// here (unlike one-bill, which shares one bucket between two lenses to work
+// LeaseDetailsBucket is the NATS-KV read model the frontDeskLeaseDetails
+// lens projects into — one row per leaseapp, keyed by leaseAppKey, carrying
+// the applied-to unit's rent/currency/term/address. The Café front-desk view
+// reads THIS bucket to show lease details (term/rent) on every open-tab
+// card, not just those with a booked class (frontDeskBookings' anchor is the
+// booking, so it has no row for a leaseapp with no booking).
+const LeaseDetailsBucket = "front-desk-lease-details"
+
+// Lenses returns the package's Lens declarations. No UNION is needed here
+// (unlike one-bill, which shares one bucket between two lenses to work
 // around the cypher engine's missing UNION) — front-desk re-projects only
 // wellness-domain's residentRate-linked bookings; the café side of the
 // "unified resident context" (open tabs) is already served by cafe-domain's
@@ -28,6 +36,14 @@ func Lenses() []pkgmgr.LensSpec {
 			Bucket:        BookingsBucket,
 			Engine:        "full",
 			Spec:          bookingsSpec,
+		},
+		{
+			CanonicalName: "frontDeskLeaseDetails",
+			Class:         "meta.lens",
+			Adapter:       "nats-kv",
+			Bucket:        LeaseDetailsBucket,
+			Engine:        "full",
+			Spec:          leaseDetailsSpec,
 		},
 	}
 }
@@ -54,3 +70,21 @@ RETURN
   se.schedule.data.name AS sessionName,
   se.schedule.data.startsAt AS startsAt,
   'wellness' AS source`
+
+// leaseDetailsSpec projects one row per leaseapp — anchored on the leaseapp
+// itself (not the unit or a booking), so every open café tab's lease gets a
+// row regardless of whether that resident has a booked class. The
+// appliesToUnit walk is OPTIONAL (mirrors lease-signing's
+// leaseApplicationCompleteSpec): unit is required at CreateLeaseApplication
+// so a live application always resolves one, but a tombstoned unit must not
+// drop the anchor — it degrades to null rent/term rather than no row.
+const leaseDetailsSpec = `MATCH (l:leaseapp)
+OPTIONAL MATCH (l)-[:appliesToUnit]->(u:unit)
+RETURN
+  l.key AS key,
+  l.key AS leaseAppKey,
+  u.key AS unitKey,
+  u.address.data.line1 AS unitAddress,
+  u.listing.data.rentAmount AS unitRent,
+  u.listing.data.rentCurrency AS unitCurrency,
+  u.listing.data.leaseTermMonths AS unitLeaseTermMonths`
