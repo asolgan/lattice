@@ -50,7 +50,22 @@ func findRenewalKeyFor(t *testing.T, ctx context.Context, conn *substrate.Conn, 
 	return ""
 }
 
+// renewsLinkKey / applicationForLinkKey reconstruct the renewal-cycle
+// validation links renewal_scripts.go verifies (VerifyGuarantor/SignRenewal),
+// mirroring lease_signing_test.go's guardLinkKey idiom.
+func renewsLinkKey(renewalKey, leaseAppKey string) string {
+	_, renewalID, _ := substrate.ParseVertexKey(renewalKey)
+	_, appID, _ := substrate.ParseVertexKey(leaseAppKey)
+	return "lnk.renewal." + renewalID + ".renews.leaseapp." + appID
+}
+func applicationForLinkKey(leaseAppKey, applicantKey string) string {
+	_, appID, _ := substrate.ParseVertexKey(leaseAppKey)
+	_, applicantID, _ := substrate.ParseVertexKey(applicantKey)
+	return "lnk.leaseapp." + appID + ".applicationFor.identity." + applicantID
+}
+
 // setRenewalTerms submits SetRenewalTerms{renewalKey, rentAmount, termMonths}.
+// optionalReads carries the (d) .renewalSignature TermsLocked check.
 func setRenewalTerms(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, renewalKey string, rentAmount, termMonths float64, want processor.MessageOutcome) {
 	t.Helper()
 	payload, _ := json.Marshal(map[string]any{"renewalKey": renewalKey, "rentAmount": rentAmount, "termMonths": termMonths})
@@ -62,13 +77,15 @@ func setRenewalTerms(t *testing.T, ctx context.Context, conn *substrate.Conn, cp
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "renewal",
 		Payload:       json.RawMessage(payload),
-		ContextHint:   &processor.ContextHint{Reads: []string{renewalKey}},
+		ContextHint:   &processor.ContextHint{Reads: []string{renewalKey}, OptionalReads: []string{renewalKey + ".renewalSignature"}},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, want)
 }
 
 // verifyGuarantor submits VerifyGuarantor{renewalKey, leaseApp, applicant, method?}.
+// reads carries the (a) renews/applicationFor validation links; optionalReads
+// carries the (d) leaseApp.profile no-guarantor-on-file check.
 func verifyGuarantor(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, renewalKey, leaseAppKey, applicantKey, method string, want processor.MessageOutcome) {
 	t.Helper()
 	payload := map[string]any{"renewalKey": renewalKey, "leaseApp": leaseAppKey, "applicant": applicantKey}
@@ -84,13 +101,19 @@ func verifyGuarantor(t *testing.T, ctx context.Context, conn *substrate.Conn, cp
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "renewal",
 		Payload:       json.RawMessage(b),
-		ContextHint:   &processor.ContextHint{Reads: []string{renewalKey}},
+		ContextHint: &processor.ContextHint{
+			Reads:         []string{renewalKey, renewsLinkKey(renewalKey, leaseAppKey), applicationForLinkKey(leaseAppKey, applicantKey)},
+			OptionalReads: []string{leaseAppKey + ".profile"},
+		},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, want)
 }
 
-// signRenewal submits SignRenewal{renewalKey, leaseApp, applicant}.
+// signRenewal submits SignRenewal{renewalKey, leaseApp, applicant}. reads
+// carries the (a) renews/applicationFor validation links + leaseApp.tenancy
+// (a renewable application always has one); optionalReads carries the (d)
+// .terms / leaseApp.profile / .guarantorVerification ordering-state reads.
 func signRenewal(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, renewalKey, leaseAppKey, applicantKey string, want processor.MessageOutcome) {
 	t.Helper()
 	payload, _ := json.Marshal(map[string]any{"renewalKey": renewalKey, "leaseApp": leaseAppKey, "applicant": applicantKey})
@@ -102,13 +125,22 @@ func signRenewal(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *pr
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "renewal",
 		Payload:       json.RawMessage(payload),
-		ContextHint:   &processor.ContextHint{Reads: []string{renewalKey}},
+		ContextHint: &processor.ContextHint{
+			Reads: []string{
+				renewalKey,
+				renewsLinkKey(renewalKey, leaseAppKey),
+				applicationForLinkKey(leaseAppKey, applicantKey),
+				leaseAppKey + ".tenancy",
+			},
+			OptionalReads: []string{renewalKey + ".terms", leaseAppKey + ".profile", renewalKey + ".guarantorVerification"},
+		},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, want)
 }
 
-// cancelRenewal submits CancelRenewal{renewalKey, reason?}.
+// cancelRenewal submits CancelRenewal{renewalKey, reason?}. optionalReads
+// carries the (d) .renewalSignature TermsLocked check.
 func cancelRenewal(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, renewalKey, reason string, want processor.MessageOutcome) {
 	t.Helper()
 	payload := map[string]any{"renewalKey": renewalKey}
@@ -124,7 +156,7 @@ func cancelRenewal(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "renewal",
 		Payload:       json.RawMessage(b),
-		ContextHint:   &processor.ContextHint{Reads: []string{renewalKey}},
+		ContextHint:   &processor.ContextHint{Reads: []string{renewalKey}, OptionalReads: []string{renewalKey + ".renewalSignature"}},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, want)
@@ -187,7 +219,7 @@ func TestOpenRenewal_CreatesVertexAndLink_IdempotentOnDuplicate(t *testing.T) {
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "renewal",
 		Payload:       json.RawMessage(`{"leaseApp":"` + appKey + `"}`),
-		ContextHint:   &processor.ContextHint{Reads: []string{appKey}},
+		ContextHint:   &processor.ContextHint{Reads: []string{appKey, appKey + ".tenancy"}},
 	}
 	testutil.PublishOp(t, conn, env1)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
@@ -216,7 +248,7 @@ func TestOpenRenewal_CreatesVertexAndLink_IdempotentOnDuplicate(t *testing.T) {
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "renewal",
 		Payload:       json.RawMessage(`{"leaseApp":"` + appKey + `"}`),
-		ContextHint:   &processor.ContextHint{Reads: []string{appKey}},
+		ContextHint:   &processor.ContextHint{Reads: []string{appKey, appKey + ".tenancy"}},
 	}
 	testutil.PublishOp(t, conn, env2)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
@@ -245,7 +277,7 @@ func TestOpenRenewal_NoTenancy_Rejected(t *testing.T) {
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "renewal",
 		Payload:       json.RawMessage(`{"leaseApp":"` + appKey + `"}`),
-		ContextHint:   &processor.ContextHint{Reads: []string{appKey}},
+		ContextHint:   &processor.ContextHint{Reads: []string{appKey, appKey + ".tenancy"}},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
@@ -311,7 +343,7 @@ func openRenewalHelper(t *testing.T, ctx context.Context, conn *substrate.Conn, 
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "renewal",
 		Payload:       json.RawMessage(`{"leaseApp":"` + appKey + `"}`),
-		ContextHint:   &processor.ContextHint{Reads: []string{appKey}},
+		ContextHint:   &processor.ContextHint{Reads: []string{appKey, appKey + ".tenancy"}},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)

@@ -30,11 +30,12 @@ func RenewalTargets() []pkgmgr.WeaverTargetSpec {
 	}
 }
 
-// leaseExpiryTarget is Target A. Reads = [row.entityKey]: the leaseapp key is
-// already in the violation row (the anchor itself), routed into OpenRenewal's
-// ContextHint.Reads so its DDL can hydrate + validate it (and its .tenancy
-// aspect, read on-demand inside the op — not a declared Reads entry, mirroring
-// how SetApplicantProfile reads the unit's .listing on demand).
+// leaseExpiryTarget is Target A. Reads = [row.entityKey, row.entityKey.tenancy]:
+// the leaseapp key is already in the violation row (the anchor itself), routed
+// into OpenRenewal's ContextHint.Reads so its DDL can hydrate + validate it; its
+// .tenancy aspect is a (a) required declared read too (script-read-posture-
+// design.md §13 — a renewable application always has one), via the
+// row.<column>.<aspect> template form (hard case 4's row-templating extension).
 func leaseExpiryTarget() pkgmgr.WeaverTargetSpec {
 	return pkgmgr.WeaverTargetSpec{
 		TargetID: "leaseExpiry",
@@ -44,7 +45,7 @@ func leaseExpiryTarget() pkgmgr.WeaverTargetSpec {
 				Action:    "directOp",
 				Operation: "OpenRenewal",
 				Params:    map[string]string{"leaseApp": "row.entityKey"},
-				Reads:     []string{"row.entityKey"},
+				Reads:     []string{"row.entityKey", "row.entityKey.tenancy"},
 			},
 		},
 	}

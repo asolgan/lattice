@@ -1063,7 +1063,10 @@ func applyToUnit(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *pr
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "leaseapp",
 		Payload:       json.RawMessage(`{"applicant":"` + applicantKey + `","unit":"` + unitKey + `"}`),
-		ContextHint:   &processor.ContextHint{Reads: []string{applicantKey, unitKey}},
+		ContextHint: &processor.ContextHint{
+			Reads:         []string{applicantKey, unitKey},
+			OptionalReads: []string{guardLinkKey(applicantKey, unitKey)},
+		},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, want)
@@ -1183,10 +1186,13 @@ func TestCreateLeaseApplication_ReapplyAfterWithdraw_RevivesGuardLink(t *testing
 }
 
 // withdraw submits WithdrawLeaseApplication{leaseAppKey, unit, applicant} (class
-// leaseapp, reads=[leaseAppKey]; the unit / applicant / guard links are kv.Read on
-// demand) and asserts the outcome.
+// leaseapp). reads carries the two (a) required validation links (appliesToUnit /
+// applicationFor); optionalReads carries the (d) guard link it frees.
 func withdraw(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, leaseAppKey, unitKey, applicantKey string, want processor.MessageOutcome) {
 	t.Helper()
+	_, appID, _ := substrate.ParseVertexKey(leaseAppKey)
+	_, unitID, _ := substrate.ParseVertexKey(unitKey)
+	_, applicantID, _ := substrate.ParseVertexKey(applicantKey)
 	env := &processor.OperationEnvelope{
 		RequestID:     testutil.GenReqID(label),
 		Lane:          processor.LaneDefault,
@@ -1195,7 +1201,14 @@ func withdraw(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *proce
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "leaseapp",
 		Payload:       json.RawMessage(`{"leaseAppKey":"` + leaseAppKey + `","unit":"` + unitKey + `","applicant":"` + applicantKey + `"}`),
-		ContextHint:   &processor.ContextHint{Reads: []string{leaseAppKey}},
+		ContextHint: &processor.ContextHint{
+			Reads: []string{
+				leaseAppKey,
+				"lnk.leaseapp." + appID + ".appliesToUnit.unit." + unitID,
+				"lnk.leaseapp." + appID + ".applicationFor.identity." + applicantID,
+			},
+			OptionalReads: []string{guardLinkKey(applicantKey, unitKey)},
+		},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, want)
@@ -1326,16 +1339,18 @@ func TestSignLease_WritesSignatureAspect(t *testing.T) {
 
 // decideReadsFor builds DecideLeaseApplication's declared ContextHint: the
 // appliesToUnit validation link + unit.listing are (a) required reads (the
-// FIRST approve's tenancy-stamp block, scripts.go); .tenancy itself is (d)
-// optionalReads (None is the expected first-approve case). Harmless (unread,
-// but declared regardless) on a decline or an already-tenancy-stamped
-// re-approve — script-read-posture-design.md §13 hard case 4.
+// FIRST approve's tenancy-stamp block, scripts.go); .tenancy, .decision (the
+// terminal-decision guard's prior-value check), and .signature (the
+// approve-readiness floor) are all (d) optionalReads — None is the expected
+// first-decide / first-approve case. Harmless (unread, but declared
+// regardless) on a decline or an already-tenancy-stamped re-approve —
+// script-read-posture-design.md §13 hard case 4.
 func decideReadsFor(leaseAppKey, unit string) *processor.ContextHint {
 	_, appID, _ := substrate.ParseVertexKey(leaseAppKey)
 	_, unitID, _ := substrate.ParseVertexKey(unit)
 	return &processor.ContextHint{
 		Reads:         []string{leaseAppKey, "lnk.leaseapp." + appID + ".appliesToUnit.unit." + unitID, unit + ".listing"},
-		OptionalReads: []string{leaseAppKey + ".tenancy"},
+		OptionalReads: []string{leaseAppKey + ".tenancy", leaseAppKey + ".decision", leaseAppKey + ".signature"},
 	}
 }
 
@@ -1510,13 +1525,17 @@ func TestDecideLeaseApplication_Reason(t *testing.T) {
 	}
 }
 
-// setProfile submits SetApplicantProfile (reads=[leaseAppKey]) merging the
-// leaseAppKey + unit into the supplied payload, and asserts the outcome.
+// setProfile submits SetApplicantProfile merging the leaseAppKey + unit into the
+// supplied payload, and asserts the outcome. reads carries the (a) required
+// appliesToUnit validation link; optionalReads carries the (d) unit.listing rent
+// lookup — absent falls through to an unknown income-to-rent signal (scripts.go).
 func setProfile(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, leaseAppKey, unit string, payload map[string]any, want processor.MessageOutcome) {
 	t.Helper()
 	payload["leaseAppKey"] = leaseAppKey
 	payload["unit"] = unit
 	b, _ := json.Marshal(payload)
+	_, appID, _ := substrate.ParseVertexKey(leaseAppKey)
+	_, unitID, _ := substrate.ParseVertexKey(unit)
 	env := &processor.OperationEnvelope{
 		RequestID:     testutil.GenReqID(label),
 		Lane:          processor.LaneDefault,
@@ -1525,9 +1544,10 @@ func setProfile(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *pro
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "leaseapp",
 		Payload:       json.RawMessage(b),
-		// unit.listing (rent lookup) is (d) declared optionalReads — absent
-		// falls through to an unknown income-to-rent signal (scripts.go).
-		ContextHint: &processor.ContextHint{Reads: []string{leaseAppKey}, OptionalReads: []string{unit + ".listing"}},
+		ContextHint: &processor.ContextHint{
+			Reads:         []string{leaseAppKey, "lnk.leaseapp." + appID + ".appliesToUnit.unit." + unitID},
+			OptionalReads: []string{unit + ".listing"},
+		},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, want)

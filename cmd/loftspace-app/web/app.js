@@ -102,6 +102,12 @@ const COMPLETIONS = {
   // sources them from the matching renewalsRead row once submitComplete loads
   // it (see below). SetRenewalTerms/CancelRenewal need only renewalKey
   // (=target), which the generic targetField plumbing already supplies.
+  // extraReads(target, row) returns the op's (a)/(d) read-posture declarations
+  // beyond [target] (script-read-posture-design.md §13): the renews/
+  // applicationFor validation links are (a) required reads (derived from
+  // target's + row.leaseApp's/row.tenant's own NanoIDs, mirroring
+  // guardLinkKey-style key reconstruction); .terms/.profile/
+  // .guarantorVerification/.renewalSignature/.tenancy per the table below.
   SignRenewal: {
     title: "Sign your lease renewal",
     klass: "renewal",
@@ -109,6 +115,14 @@ const COMPLETIONS = {
     fields: [],
     submitLabel: "Sign renewal",
     extraFromRenewal: (row) => ({ leaseApp: row.leaseApp, applicant: row.tenant }),
+    extraReads: (target, row) => ({
+      reads: [
+        renewsLinkKey(target, row.leaseApp),
+        applicationForLinkKey(row.leaseApp, row.tenant),
+        row.leaseApp + ".tenancy",
+      ],
+      optionalReads: [target + ".terms", row.leaseApp + ".profile", target + ".guarantorVerification"],
+    }),
   },
   VerifyGuarantor: {
     title: "Verify tenant's guarantor",
@@ -117,6 +131,10 @@ const COMPLETIONS = {
     fields: [{ name: "method", label: "Verification method", placeholder: "phone call, updated pay stub", required: false }],
     submitLabel: "Verify guarantor",
     extraFromRenewal: (row) => ({ leaseApp: row.leaseApp, applicant: row.tenant }),
+    extraReads: (target, row) => ({
+      reads: [renewsLinkKey(target, row.leaseApp), applicationForLinkKey(row.leaseApp, row.tenant)],
+      optionalReads: [row.leaseApp + ".profile"],
+    }),
   },
   SetRenewalTerms: {
     title: "Set renewal terms",
@@ -127,6 +145,7 @@ const COMPLETIONS = {
       { name: "termMonths", label: "Lease term, months", type: "number", min: "1", step: "1", placeholder: "12", required: true, positive: true },
     ],
     submitLabel: "Set terms",
+    extraReads: (target) => ({ optionalReads: [target + ".renewalSignature"] }),
   },
   CancelRenewal: {
     title: "Decline this renewal",
@@ -134,8 +153,19 @@ const COMPLETIONS = {
     targetField: "renewalKey",
     fields: [{ name: "reason", label: "Reason", placeholder: "Selling the property.", required: false }],
     submitLabel: "Decline renewal",
+    extraReads: (target) => ({ optionalReads: [target + ".renewalSignature"] }),
   },
 };
+
+// renewsLinkKey / applicationForLinkKey reconstruct the renewal-cycle
+// validation links renewal_scripts.go verifies (VerifyGuarantor/SignRenewal),
+// mirroring guardLinkKey's deterministic-key idiom.
+function renewsLinkKey(renewalKey, leaseAppKey) {
+  return "lnk.renewal." + shortKey(renewalKey) + ".renews.leaseapp." + shortKey(leaseAppKey);
+}
+function applicationForLinkKey(leaseAppKey, applicantKey) {
+  return "lnk.leaseapp." + shortKey(leaseAppKey) + ".applicationFor.identity." + shortKey(applicantKey);
+}
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -935,12 +965,18 @@ async function submitApply(ev) {
     // CreateLeaseApplication carries the real consumer scope=self grant
     // (design §3.4): submit as the applicant themselves, with authContext.target
     // matching payload.applicant, so a real consumer's own apply is allowed.
+    // optionalReads carries the per-(applicant, unit) duplicate-application guard
+    // link (script-read-posture-design.md §13, class-d) — absent is the common
+    // first-apply case; the script decides revive-vs-create from the read.
     const reply = await submitOp(
       "applicant",
       {
         operationType: "CreateLeaseApplication",
         class: "leaseapp",
         reads: [state.applicant, row.unitKey],
+        optionalReads: [
+          "lnk.identity." + shortKey(state.applicant) + ".appliedToUnit.unit." + shortKey(row.unitKey),
+        ],
         payload,
       },
       { authContext: { target: state.applicant } }
@@ -1435,8 +1471,8 @@ function renderProfilePanel(row) {
 }
 
 // submitProfile sends SetApplicantProfile with the raw profile fields (the package
-// derives + projects the landlord-facing signals). reads=[leaseAppKey] (the op
-// validates the application + reads the unit's listing rent on demand).
+// derives + projects the landlord-facing signals). The op validates the application
+// + its appliesToUnit link, and reads the unit's listing rent on demand.
 async function submitProfile(ev, row) {
   ev.preventDefault();
   const f = ev.target;
@@ -1481,7 +1517,12 @@ async function submitProfile(ev, row) {
     const reply = await submitOp("staff", {
       operationType: "SetApplicantProfile",
       class: "leaseapp",
-      reads: [row.entityKey],
+      // The appliesToUnit validation link is (a)-declared reads — required,
+      // absence is a caller error (UnitMismatch).
+      reads: [
+        row.entityKey,
+        "lnk.leaseapp." + shortKey(row.entityKey) + ".appliesToUnit.unit." + shortKey(row.unitKey),
+      ],
       // The unit's listing rent (income-to-rent lookup) is (d)-declared
       // optionalReads — absent falls through to an unknown income-to-rent
       // signal, never a hard failure (scripts.go, script-read-posture-
@@ -1508,11 +1549,22 @@ async function submitProfile(ev, row) {
 // current applicant (whose My Applications view this is) is passed through.
 async function withdrawApplication(row) {
   if (!confirm("Withdraw this application? You'll be able to apply to this unit again.")) return;
+  const appId = shortKey(row.entityKey);
+  const unitId = shortKey(row.unitKey);
+  const applicantId = shortKey(state.applicant);
   try {
+    // reads carries the two required validation links (script-read-posture-design.md
+    // §13, class-a); optionalReads carries the duplicate-application guard link
+    // WithdrawLeaseApplication frees (class-d) — absent when never guarded.
     const reply = await submitOp("staff", {
       operationType: "WithdrawLeaseApplication",
       class: "leaseapp",
-      reads: [row.entityKey],
+      reads: [
+        row.entityKey,
+        "lnk.leaseapp." + appId + ".appliesToUnit.unit." + unitId,
+        "lnk.leaseapp." + appId + ".applicationFor.identity." + applicantId,
+      ],
+      optionalReads: ["lnk.identity." + applicantId + ".appliedToUnit.unit." + unitId],
       payload: { leaseAppKey: row.entityKey, unit: row.unitKey, applicant: state.applicant },
     });
     if (reply && reply.status === "rejected") {
@@ -1696,25 +1748,32 @@ async function submitComplete(ev) {
   }
 
   const reads = [target];
+  let renewalRow = null;
   if (desc.extraFromRenewal) {
     // VerifyGuarantor/SignRenewal also need leaseApp + applicant, which
     // assignTask never puts on the task itself (§10.5: only assignee/scopedTo/
     // forOperation) — source them from the matching renewalsRead row, loading
     // it fresh if this is the first renewal action this session.
-    let row = (state.renewals || []).find((rr) => rr.entityKey === target);
-    if (!row) {
+    renewalRow = (state.renewals || []).find((rr) => rr.entityKey === target);
+    if (!renewalRow) {
       try {
-        row = await loadRenewalsQuiet().then((rows) => rows.find((rr) => rr.entityKey === target));
+        renewalRow = await loadRenewalsQuiet().then((rows) => rows.find((rr) => rr.entityKey === target));
       } catch (_) {
-        row = null;
+        renewalRow = null;
       }
     }
-    if (!row) {
+    if (!renewalRow) {
       toast("Could not find this renewal's details — reload Renewals and try again.", "err");
       return;
     }
-    Object.assign(payload, desc.extraFromRenewal(row));
-    if (row.leaseApp) reads.push(row.leaseApp);
+    Object.assign(payload, desc.extraFromRenewal(renewalRow));
+    if (renewalRow.leaseApp) reads.push(renewalRow.leaseApp);
+  }
+  let optionalReads;
+  if (desc.extraReads) {
+    const extra = desc.extraReads(target, renewalRow);
+    if (extra.reads) reads.push(...extra.reads);
+    optionalReads = extra.optionalReads;
   }
 
   const submit = $("#complete-submit");
@@ -1724,6 +1783,7 @@ async function submitComplete(ev) {
       operationType: task.operationName,
       class: desc.klass,
       reads,
+      optionalReads,
       payload,
     });
     if (reply && reply.status === "rejected") {
@@ -3009,7 +3069,12 @@ async function decideApplication(a, decision) {
       a.unitKey + ".listing",
     );
   }
-  const optionalReads = decision === "approved" ? [a.leaseAppKey + ".tenancy"] : [];
+  // .decision (script-read-posture-design.md §13, class-d) is read on every
+  // call — the terminal-decision guard's prior-value check; absent is the
+  // common first-decide case. .signature is read only on an approve (the
+  // readiness floor); .tenancy only on an approve too (hard case 4, above).
+  const optionalReads = [a.leaseAppKey + ".decision"];
+  if (decision === "approved") optionalReads.push(a.leaseAppKey + ".signature", a.leaseAppKey + ".tenancy");
   try {
     const reply = await submitOp("staff", {
       operationType: "DecideLeaseApplication",

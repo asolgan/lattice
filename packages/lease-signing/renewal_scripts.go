@@ -170,6 +170,9 @@ def execute(state, op):
         if not vertex_alive(state, app_key):
             fail("UnknownLeaseApplication: " + app_key)
 
+        # read-posture: (a) declared reads at OpenRenewal dispatch — a
+        # renewable application always has a .tenancy aspect (stamped on
+        # first approve); absence is a wiring fault.
         tenancy = kv.Read(app_key + ".tenancy")
         if tenancy == None or tenancy.isDeleted:
             fail("NoTenancy: application " + app_key + " has no .tenancy aspect; a renewal cycle cannot open without one")
@@ -203,6 +206,8 @@ def execute(state, op):
         status = renewal_vtx.data.get("status")
         if status != "open":
             fail("TermsLocked: renewal " + renewal_key + " is not open (status=" + str(status) + ")")
+        # read-posture: (d) declared optionalReads at SetRenewalTerms dispatch
+        # — absent is the normal not-yet-signed case.
         sig = kv.Read(renewal_key + ".renewalSignature")
         if sig != None and not sig.isDeleted:
             fail("TermsLocked: renewal " + renewal_key + " is already signed; terms cannot change under a recorded signature")
@@ -243,12 +248,16 @@ def execute(state, op):
 
         app_key = required_string(p, "leaseApp")
         _, app_id = parts_of(app_key, "leaseApp", "leaseapp")
+        # read-posture: (a) declared reads at VerifyGuarantor dispatch
+        # (validation link; absence — LeaseAppMismatch — is a caller error).
         renews_lnk = kv.Read("lnk.renewal." + renewal_id + ".renews.leaseapp." + app_id)
         if renews_lnk == None or renews_lnk.isDeleted:
             fail("LeaseAppMismatch: " + app_key + " is not the leaseapp renewal " + renewal_key + " renews")
 
         applicant = required_string(p, "applicant")
         _, applicant_id = parts_of(applicant, "applicant", "identity")
+        # read-posture: (a) declared reads at VerifyGuarantor dispatch
+        # (validation link; absence — ApplicantMismatch — is a caller error).
         app_for_lnk = kv.Read("lnk.leaseapp." + app_id + ".applicationFor.identity." + applicant_id)
         if app_for_lnk == None or app_for_lnk.isDeleted:
             fail("ApplicantMismatch: " + applicant + " is not the applicant of application " + app_key)
@@ -257,6 +266,8 @@ def execute(state, op):
         # SetApplicantProfile onto app_key), never on the applicant identity —
         # the applicant link above is what authenticates which leaseapp's
         # profile to read.
+        # read-posture: (d) declared optionalReads at VerifyGuarantor dispatch
+        # — absent is the fail-closed no-guarantor-on-file branch.
         profile = kv.Read(app_key + ".profile")
         has_guarantor = profile != None and not profile.isDeleted and profile.data.get("hasGuarantor") == True
         if not has_guarantor:
@@ -296,24 +307,34 @@ def execute(state, op):
 
         app_key = required_string(p, "leaseApp")
         _, app_id = parts_of(app_key, "leaseApp", "leaseapp")
+        # read-posture: (a) declared reads at SignRenewal dispatch (validation
+        # link; absence — LeaseAppMismatch — is a caller error).
         renews_lnk = kv.Read("lnk.renewal." + renewal_id + ".renews.leaseapp." + app_id)
         if renews_lnk == None or renews_lnk.isDeleted:
             fail("LeaseAppMismatch: " + app_key + " is not the leaseapp renewal " + renewal_key + " renews")
 
         applicant = required_string(p, "applicant")
         _, applicant_id = parts_of(applicant, "applicant", "identity")
+        # read-posture: (a) declared reads at SignRenewal dispatch (validation
+        # link; absence — ApplicantMismatch — is a caller error).
         app_for_lnk = kv.Read("lnk.leaseapp." + app_id + ".applicationFor.identity." + applicant_id)
         if app_for_lnk == None or app_for_lnk.isDeleted:
             fail("ApplicantMismatch: " + applicant + " is not the applicant of application " + app_key)
 
+        # read-posture: (d) declared optionalReads at SignRenewal dispatch —
+        # absent is the not-yet-terms-set ordering state (NotReadyToSign).
         terms = kv.Read(renewal_key + ".terms")
         if terms == None or terms.isDeleted:
             fail("NotReadyToSign: renewal " + renewal_key + " has no .terms set yet")
 
         # See VerifyGuarantor: .profile lives on the LEASEAPP, not the identity.
+        # read-posture: (d) declared optionalReads at SignRenewal dispatch —
+        # absent is the fail-closed no-guarantor branch.
         profile = kv.Read(app_key + ".profile")
         has_guarantor = profile != None and not profile.isDeleted and profile.data.get("hasGuarantor") == True
         if has_guarantor:
+            # read-posture: (d) declared optionalReads at SignRenewal dispatch
+            # — absent is the not-yet-verified ordering state (GuarantorNotVerified).
             gv = kv.Read(renewal_key + ".guarantorVerification")
             if gv == None or gv.isDeleted:
                 fail("GuarantorNotVerified: renewal " + renewal_key + " requires guarantor verification before signing")
@@ -322,6 +343,9 @@ def execute(state, op):
         term_months = terms.data.get("termMonths")
 
         tenancy_key = app_key + ".tenancy"
+        # read-posture: (a) declared reads at SignRenewal dispatch — a
+        # renewable application always has a .tenancy aspect; absence is a
+        # wiring fault.
         tenancy = kv.Read(tenancy_key)
         if tenancy == None or tenancy.isDeleted:
             fail("NoTenancy: application " + app_key + " has no .tenancy aspect to extend")
@@ -351,6 +375,8 @@ def execute(state, op):
         renewal_vtx = state[renewal_key] if renewal_key in state else None
         if renewal_vtx == None or (hasattr(renewal_vtx, "isDeleted") and renewal_vtx.isDeleted):
             fail("UnknownRenewal: " + renewal_key)
+        # read-posture: (d) declared optionalReads at CancelRenewal dispatch
+        # — absent is the normal not-yet-signed case.
         sig = kv.Read(renewal_key + ".renewalSignature")
         if sig != None and not sig.isDeleted:
             fail("TermsLocked: renewal " + renewal_key + " is already signed; a signed cycle cannot be cancelled")

@@ -293,8 +293,7 @@ def execute(state, op):
         # keyed on the pair IS the constraint (relationships are links, never keys in
         # an aspect — Contract #1). lnk.identity.<a>.appliedToUnit.unit.<u> reads as
         # "this applicant applied to this unit" (§1.1: the link is the later-arriving
-        # fact; source = the applicant, target = the unit). Read it ON DEMAND (kv.Read,
-        # §2.5; the unit may have no guard yet, so a declared read would HydrationMiss):
+        # fact; source = the applicant, target = the unit):
         #   - alive  → DuplicateApplication (the applicant already has a live one).
         #   - absent → make_link (op:create) is the guard: two concurrent first-applies
         #              both create, the second RevisionConflicts on the key (fail closed).
@@ -302,6 +301,8 @@ def execute(state, op):
         #              would collide with the tombstone — revive-on-create), CAS-guarded
         #              so two concurrent re-applies fail closed.
         guard_key = "lnk.identity." + applicant_id + ".appliedToUnit.unit." + unit_id
+        # read-posture: (d) declared optionalReads at CreateLeaseApplication
+        # dispatch — absent is the common first-apply case.
         guard = kv.Read(guard_key)
         if guard != None and not guard.isDeleted:
             fail("DuplicateApplication: applicant " + applicant + " already has a live application for unit " + unit)
@@ -388,10 +389,10 @@ def execute(state, op):
         # decision stays accepted (idempotent / re-run-safe under at-least-once);
         # changing a recorded decision to a DIFFERENT value is rejected — an approved or
         # declined application must not silently flip or oscillate (the verified live
-        # bug: approved→declined committed freely). The prior decision is read lazily
-        # (kv.Read, §2.5 — the link-check idiom already used in this script), matching
-        # the op's unconditioned single-op semantics. Reconsidering a recorded decision
+        # bug: approved→declined committed freely). Reconsidering a recorded decision
         # is a future explicit re-open op, not a silent overwrite.
+        # read-posture: (d) declared optionalReads at DecideLeaseApplication
+        # dispatch — absent is the common first-decide case.
         prior = kv.Read(app_key + ".decision")
         if prior != None and not prior.isDeleted:
             prior_val = prior.data.get("value")
@@ -413,6 +414,8 @@ def execute(state, op):
         # unqualified applicant. A DECLINE carries no readiness floor — a landlord may
         # decline at any point.
         if decision == "approved":
+            # read-posture: (d) declared optionalReads at DecideLeaseApplication
+            # dispatch — an unsigned application is the fail branch, not absence.
             sig = kv.Read(app_key + ".signature")
             if sig == None or sig.isDeleted:
                 fail("NotReadyToApprove: application " + app_key + " has not been signed by the applicant; cannot approve an unsigned application")
@@ -506,6 +509,8 @@ def execute(state, op):
         unit = required_string(p, "unit")
         _, unit_id = parts_of(unit, "unit", "unit")
         applies_to_lnk = "lnk.leaseapp." + app_id + ".appliesToUnit.unit." + unit_id
+        # read-posture: (a) declared reads at WithdrawLeaseApplication dispatch
+        # (validation link; absence — UnitMismatch — is a caller error).
         ulink = kv.Read(applies_to_lnk)
         if ulink == None or ulink.isDeleted:
             fail("UnitMismatch: " + unit + " is not the unit application " + app_key + " applies to")
@@ -513,6 +518,8 @@ def execute(state, op):
         applicant = required_string(p, "applicant")
         _, applicant_id = parts_of(applicant, "applicant", "identity")
         app_for_lnk = "lnk.leaseapp." + app_id + ".applicationFor.identity." + applicant_id
+        # read-posture: (a) declared reads at WithdrawLeaseApplication dispatch
+        # (validation link; absence — ApplicantMismatch — is a caller error).
         alink = kv.Read(app_for_lnk)
         if alink == None or alink.isDeleted:
             fail("ApplicantMismatch: " + applicant + " is not the applicant of application " + app_key)
@@ -525,9 +532,10 @@ def execute(state, op):
         # Free the per-(applicant, unit) guard link: tombstone it so a re-apply
         # revives it. UNCONDITIONED (the withdraw is the authority the application is
         # gone; an alive guard blocks any concurrent re-apply, so no revive races
-        # this). Read it first so a never-guarded application (legacy data) writes no
-        # phantom key — absent → nothing to free.
+        # this). absent → nothing to free.
         guard_key = "lnk.identity." + applicant_id + ".appliedToUnit.unit." + unit_id
+        # read-posture: (d) declared optionalReads at WithdrawLeaseApplication
+        # dispatch — a never-guarded (legacy) application is the absent branch.
         guard = kv.Read(guard_key)
         if guard != None and not guard.isDeleted:
             mutations.append(make_link_tombstone(guard_key, applicant, unit, "appliedToUnit", "appliedToUnit"))
@@ -560,6 +568,8 @@ def execute(state, op):
         unit = required_string(p, "unit")
         _, unit_id = parts_of(unit, "unit", "unit")
         applies_to_lnk = "lnk.leaseapp." + app_id + ".appliesToUnit.unit." + unit_id
+        # read-posture: (a) declared reads at SetApplicantProfile dispatch
+        # (validation link; absence — UnitMismatch — is a caller error).
         link = kv.Read(applies_to_lnk)
         if link == None or link.isDeleted:
             fail("UnitMismatch: " + unit + " is not the unit application " + app_key + " applies to")
