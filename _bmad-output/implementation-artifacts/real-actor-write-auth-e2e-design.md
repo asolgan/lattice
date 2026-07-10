@@ -161,6 +161,20 @@ Then:
 All three through the real Gateway, under capability mode, against real projected `cap.roles` docs. That is
 the honest proof the stub has been hiding.
 
+**`AttachObject → consumer` scope=self — folded in here (Andrew, 2026-07-09).** Browser-direct `AttachObject`
+(loftspace `web/app.js`'s `attachObject()` → `submitOp("staff")`) is today authorized only by `objects-base`'s
+`operator` scope:any grant (`packages/objects-base/permissions.go`), so any staff-token holder can attach to —
+or claim `governingIdentity` on — any target. This is the same staff-wildcard-write posture this section
+describes, **not** an attach-specific hole: a lone `objects-base` consumer scope=self grant would sit dormant
+exactly like `CreateLeaseApplication`'s does, because every loftspace write submits as `"staff"` until the
+per-actor migration. So when the staff-wildcard writes move to real per-actor auth (the Phase-3 retire-staff
+work), include AttachObject in the same fire — (1) add the `objects-base` `consumer` scope=self grant, self ==
+`targetKey` == the caller's identity (the live sensitive consumer, LoftSpace `idDocument`/`proofOfIncome`,
+attaches to `vtx.identity.<applicant>`); (2) switch `attachObject()` off `submitOp("staff")` to the applicant
+actor; (3) let the platform authz plane enforce `governingIdentity == caller` — today only an app-level upload
+belt (`cmd/loftspace-app/objects.go`), bypassable by a direct-op crafter. Type-agnostic non-self attaches
+(photo→listing) stay on operator. No contract change (Contract #6 already defines scope=self).
+
 ---
 
 ## 4. Decomposition — two phases, cross-lane
