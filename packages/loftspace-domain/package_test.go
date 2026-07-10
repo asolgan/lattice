@@ -145,13 +145,14 @@ func TestPackage_Permissions(t *testing.T) {
 		t.Fatalf("expected Depends [location-domain], got %v", Package.Depends)
 	}
 
-	// Two projection lenses (availableListings — the P5 read model for listed
+	// Three projection lenses (availableListings — the P5 read model for listed
 	// units; applicantRosterRead — the PROTECTED Postgres identity roster,
 	// D1.5, and a SECURE LENS: the sensitive identity name decrypts at
-	// projection time, so no unprotected roster surface exists); no role,
-	// weaver target, loom pattern, or op-meta.
-	if got := len(Package.Lenses); got != 2 {
-		t.Fatalf("expected 2 lenses, got %d", got)
+	// projection time, so no unprotected roster surface exists; landlordUnitsRead
+	// — the PROTECTED, landlord-anchored occupancy model, portfolio-pulse Inc 2);
+	// no role, weaver target, loom pattern, or op-meta.
+	if got := len(Package.Lenses); got != 3 {
+		t.Fatalf("expected 3 lenses, got %d", got)
 	}
 	lensByName := map[string]pkgmgr.LensSpec{}
 	for _, l := range Package.Lenses {
@@ -177,6 +178,17 @@ func TestPackage_Permissions(t *testing.T) {
 	}
 	if !strings.Contains(roster.Spec, "i.name.data           AS name") {
 		t.Fatalf("applicantRosterRead must RETURN the whole name envelope (i.name.data) for the secure decryptor, got: %s", roster.Spec)
+	}
+	units, ok := lensByName["landlordUnitsRead"]
+	if !ok || units.Adapter != "postgres" || units.Table != "read_landlord_units" ||
+		!units.Protected || !units.DiffRetraction {
+		t.Fatalf("unexpected landlordUnitsRead shape: %+v", units)
+	}
+	if len(units.IntoKey) != 2 || units.IntoKey[0] != "unit_id" || units.IntoKey[1] != "landlord_id" {
+		t.Fatalf("landlordUnitsRead IntoKey = %v, want [unit_id landlord_id]", units.IntoKey)
+	}
+	if !strings.Contains(units.Spec, "<-[:manages]-(landlord:identity)") {
+		t.Fatalf("landlordUnitsRead must walk the manages link from unit to landlord, got: %s", units.Spec)
 	}
 	if got := len(Package.WeaverTargets); got != 0 {
 		t.Fatalf("expected 0 weaverTargets, got %d", got)

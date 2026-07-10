@@ -2531,6 +2531,40 @@ async function loadLandlord() {
   }
   renderUnits();
   loadLandlordRLS();
+  loadPortfolioPulse();
+}
+
+// loadPortfolioPulse — the occupancy half of the operations portfolio-pulse
+// aggregate (mixed-use-composition-design.md Inc 2): every unit the signed-in
+// landlord manages, RLS-scoped, folded into an occupancy rate + status
+// breakdown. Best-effort like loadLandlordRLS: an unavailable read boundary
+// hides the card rather than breaking the view (the same dev-posture-gap the
+// RLS banner already tolerates).
+async function loadPortfolioPulse() {
+  const el = $("#portfolio-pulse");
+  if (!el) return;
+  if (!state.applicant) {
+    el.hidden = true;
+    return;
+  }
+  try {
+    const data = await authedGet("/api/portfolio-pulse");
+    if (!data.totalUnits) {
+      el.hidden = false;
+      el.textContent = "📊 Portfolio pulse: no managed units yet.";
+      return;
+    }
+    const pct = Math.round(data.occupancyRate * 100);
+    el.hidden = false;
+    el.textContent = `📊 Portfolio pulse: ${pct}% occupied (${data.leased}/${data.totalUnits} leased` +
+      (data.available ? `, ${data.available} available` : "") +
+      (data.pending ? `, ${data.pending} pending` : "") +
+      (data.notListed ? `, ${data.notListed} not listed` : "") +
+      ").";
+  } catch (e) {
+    console.warn("portfolio-pulse unavailable:", e);
+    el.hidden = true;
+  }
 }
 
 // loadLandlordRLS reads /api/landlord/applications as an AUTHENTICATED actor;

@@ -75,6 +75,46 @@ func Lenses() []pkgmgr.LensSpec {
 				{Column: "name", IdentityKeyColumn: "identity_key", Field: "value"},
 			},
 		},
+		{
+			// landlordUnitsRead — the protected Postgres read model for
+			// portfolio-pulse occupancy (mixed-use-composition-design.md Inc 2):
+			// one row per unit the landlord manages, independent of any lease
+			// application — a vacant, never-applied-to unit still projects a
+			// row (unlike lease-signing's landlordLeaseApplicationsRead, which
+			// requires a leaseapp to exist at all, so an unlisted/un-applied-to
+			// unit is invisible to it). MATCH REQUIRES the `manages` link, so a
+			// row exists only for a unit that has a manager; a co-managed unit
+			// fans out to one row per landlord (composite unit_id/landlord_id
+			// key, mirroring landlordLeaseApplicationsRead's app_id/landlord_id
+			// shape). unit_status is the raw `.listing.data.status`
+			// (available/pending/leased/withdrawn) or null when never listed —
+			// the occupancy handler treats null as its own "not yet listed"
+			// bucket, not an error.
+			//
+			// DIFF RETRACTION: like landlordLeaseApplicationsRead, this walks
+			// `manages` structurally rather than an anchor-key equality, so a
+			// RemoveUnitOwner unassign needs Refractor's target-diff retraction
+			// path, not anchor-self retraction.
+			CanonicalName:  "landlordUnitsRead",
+			Class:          "meta.lens",
+			Adapter:        "postgres",
+			Table:          "read_landlord_units",
+			Engine:         "full",
+			Spec:           landlordUnitsReadSpec,
+			Protected:      true,
+			DiffRetraction: true,
+			IntoKey:        []string{"unit_id", "landlord_id"},
+			Columns: []pkgmgr.PostgresColumn{
+				{Name: "unit_key", Type: "text"},
+				{Name: "landlord_key", Type: "text"},
+				{Name: "unit_address", Type: "text"},
+				{Name: "unit_city", Type: "text"},
+				{Name: "unit_region", Type: "text"},
+				{Name: "unit_status", Type: "text"},
+				{Name: "unit_rent", Type: "double precision"},
+				{Name: "unit_currency", Type: "text"},
+			},
+		},
 	}
 }
 
@@ -128,4 +168,24 @@ RETURN
   i.name.data           AS name,
   i.state.data.value    AS state,
   []                    AS authz_anchors
+`
+
+// landlordUnitsReadSpec projects one row per (unit, managing landlord) pair —
+// see the Lenses() declaration above for the shape rationale. authz_anchors
+// carries exactly the managing landlord's bare NanoID (the primordial
+// cap-read self-grant + §6.14 set-membership RLS policy scope the row to
+// that landlord alone, mirroring landlordLeaseApplicationsRead).
+const landlordUnitsReadSpec = `MATCH (u:unit)<-[:manages]-(landlord:identity)
+RETURN
+  nanoIdFromKey(u.key)          AS unit_id,
+  nanoIdFromKey(landlord.key)   AS landlord_id,
+  u.key                         AS unit_key,
+  landlord.key                  AS landlord_key,
+  u.address.data.line1          AS unit_address,
+  u.address.data.city           AS unit_city,
+  u.address.data.region         AS unit_region,
+  u.listing.data.status         AS unit_status,
+  u.listing.data.rentAmount     AS unit_rent,
+  u.listing.data.rentCurrency   AS unit_currency,
+  [nanoIdFromKey(landlord.key)] AS authz_anchors
 `
