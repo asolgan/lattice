@@ -385,6 +385,37 @@ degrades undeclared ops to pending rather than depending on the capability being
    clear the Edge row's `🚧 seq:` and EDGE.1 (edge design §7 — the trusted-posture local mirror + sync
    loop; its PL.1/PL.2 co-build dependency already shipped) becomes the lane's next ratified pick.
 
+**Verticals-fire progress.** Fire 1 (2026-07-09, `5263c2b`) migrated clinic-domain's 8 sites +
+shipped the Gateway `optionalReads` wire path. Fire 2 (2026-07-09, `41e3bcf`) migrated
+**wellness-domain's all 10 sites** (`ddls.go` annotations + `cmd/wellness-app/web/app.js`
+reads/optionalReads + the `integration_test.go` dispatcher declarations — a `seatKeys`/
+`wdSlotClaimKeys` helper pair mirrors clinic's `slotClaimKeys` grid-discretization idiom) and
+**loftspace-domain's all 3 sites** (`SetListingStatus` + `AssignUnitOwner`/`RemoveUnitOwner`), and
+**resolved hard case 4**: unit.listing economics take ONE posture across all touch points —
+declarable everywhere (the key is always payload/row-derivable), split only by required (a) vs
+absence-tolerant (d) per call semantics, never treated as (c) live config. That closed
+`lease-signing/scripts.go`'s DecideLeaseApplication tenancy-stamp block (lines ~448/460/463, the
+FIRST-approve `.tenancy`/`.listing` reads) and SetApplicantProfile's rent lookup (line ~591,
+reclassified from the originally-proposed (c) to (d)), plus the **Weaver-dispatched**
+`missing_listingLeased` directOp's `unit.listing` read — which needed a small, backward-compatible
+extension to `internal/weaver/strategist.go`'s row-templating (`resolveReadKey`): a NEW
+`row.<column>.<aspect>` form falls back to joining a resolved row column's key with a trailing
+aspect segment (mirroring the Starlark `unit + ".listing"` idiom) when the exact `row.<column>`
+lookup fails, tried only for `Reads` (Params/Target/Operation are unaffected) —
+`TestBuildPlan_DirectOp_ReadsRowColumnAspectSuffix` pins it, and
+`TestLeaseSigning_PlaybookColumnsMatchLens` was extended to accept the derived-suffix form (base
+column must still be a lens BodyColumn). Fire 2 also fixed a **live bug** found while instrumenting
+this exact path: `cmd/loftspace-app/web/app.js`'s `decideApplication` never sent `unit` in the
+DecideLeaseApplication payload, so every FIRST landlord approval would have hard-failed
+`InvalidArgument: unit: required` — fixed alongside the read declaration (the Go DDL test suite
+already covered `unit` correctly; only the FE dispatcher had drifted).
+
+**Remaining (lease-signing, ~20 sites: `scripts.go` lines 305/395/416/509/516/531/563 +
+`renewal_scripts.go`'s 11 renewal-cycle sites) continue in a subsequent Verticals fire.** The
+Platform annotation-form gap (§13 sequencing item 2) is ALREADY shipped (`d439919`, platform-package
+sweep 21/21) — once lease-signing's remainder lands, only the flip (sequencing item 3) is
+outstanding.
+
 **Proposed dispositions** (rollup: **38 (a) · 24 (d) · 1 (c) · 1 (e) · 1 chained**; the sweep fire
 re-verifies each against the §3.1 fail-closed rule — required key → `reads`, never `optionalReads`):
 
