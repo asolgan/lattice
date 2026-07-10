@@ -410,11 +410,39 @@ DecideLeaseApplication payload, so every FIRST landlord approval would have hard
 `InvalidArgument: unit: required` — fixed alongside the read declaration (the Go DDL test suite
 already covered `unit` correctly; only the FE dispatcher had drifted).
 
-**Remaining (lease-signing, ~20 sites: `scripts.go` lines 305/395/416/509/516/531/563 +
-`renewal_scripts.go`'s 11 renewal-cycle sites) continue in a subsequent Verticals fire.** The
-Platform annotation-form gap (§13 sequencing item 2) is ALREADY shipped (`d439919`, platform-package
-sweep 21/21) — once lease-signing's remainder lands, only the flip (sequencing item 3) is
-outstanding.
+**Fire 3 (verticals, this fire) closes lease-signing: all 19 sites** — `scripts.go`'s 7
+(CreateLeaseApplication's duplicate-guard, DecideLeaseApplication's `.decision`/`.signature`,
+Withdraw/SetApplicantProfile's validation links) + `renewal_scripts.go`'s 12 renewal-cycle sites
+(OpenRenewal's `.tenancy`, SetRenewalTerms/CancelRenewal's `.renewalSignature`,
+VerifyGuarantor/SignRenewal's `renews`/`applicationFor` links + `.profile`/`.terms`/
+`.guarantorVerification`/`.tenancy`) — annotated + declared at every dispatcher
+(`cmd/loftspace-app/web/app.js`'s `submitProfile`/`withdrawApplication`/`decideApplication`/
+`submitComplete`, `renewal_targets.go`'s `leaseExpiryTarget` Weaver directOp via the
+`row.entityKey.tenancy` template form, and the matching Go test `ContextHint` declarations in
+`lease_signing_test.go`/`renewal_ops_test.go`). One caveat surfaced verifying live: a class-(a)
+required validation-link read that is legitimately absent (a caller-supplied wrong unit/applicant/
+leaseApp) now faults a raw platform `HydrationMiss` at hydrate, pre-empting the script's own nicer
+structured rejection (`UnitMismatch`/`ApplicantMismatch`/`LeaseAppMismatch`) — the outcome (Rejected)
+is unchanged, only the error shape degrades; this is the same tradeoff already accepted by Fire 1/2's
+identical `validation link → (a), absence = caller error` classification (verified live on
+`TestWithdrawLeaseApplication`'s wrong-applicant case, pre-existing before this fire), not a new
+defect — noted here since the flip (sequencing item 3) will make this the PERMANENT error shape for
+these callers.
+
+**Residual found on ship (out of scope for this fire): clinic-domain has 5 sites Fire 1's commit
+message claimed closed but did not migrate** — `ddls.go`'s `require_matching_provider`/
+`require_matching_patient` (the `withProvider`/`forPatient` validation links, table rows
+clinic:1455/1464) and three `appt.schedule` reads (Reschedule/terminal/Tombstone, table rows
+clinic:1663/1760/1823) are still unannotated `kv.Read` (verified via
+`STRICT=1 go run ./scripts/lint-conventions.go` post-Fire-3: 5 clinic-domain warnings, 0
+lease-signing). Fire 1's "clinic-domain sweep 8/8" was inaccurate — only `864`/`1440`-area's two
+class-(d) dedup sites landed. A subsequent Verticals fire closes these 5 (same `validation link → a`
+/ `appt.schedule cell-release → a` pattern this fire's Withdraw/SignRenewal sites already mirror) —
+line numbers drift, re-verify against the lint's live list, not the table.
+
+The Platform annotation-form gap (§13 sequencing item 2) is ALREADY shipped (`d439919`,
+platform-package sweep 21/21) — once the clinic-domain residual lands, only the flip (sequencing
+item 3) is outstanding.
 
 **Proposed dispositions** (rollup: **38 (a) · 24 (d) · 1 (c) · 1 (e) · 1 chained**; the sweep fire
 re-verifies each against the §3.1 fail-closed rule — required key → `reads`, never `optionalReads`):
