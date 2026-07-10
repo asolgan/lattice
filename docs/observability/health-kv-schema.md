@@ -39,8 +39,13 @@ Three lifecycle classes:
   (read-modify-write) — their TTL re-arms on every write, so it bounds the key's lifetime to
   `diagnosticTTL` *after the instance's last write*, the same "dead instance's key eventually
   clears" property Category A gets from its heartbeat, applied here to a non-heartbeat breadcrumb.
+  The shared, alert-code-scoped `health.alerts.security.<alertCode>` (`HealthAlertEmitter.EmitAlert`)
+  joined Category B too: same `diagnosticTTL`, re-armed on every occurrence, so an alert whose
+  condition stops recurring clears itself instead of staying "warning" forever with no re-emission
+  path to clear it (e.g. `stub-auth-active` can never re-fire once a deployed binary refuses a
+  stub-mode start).
   See the [Health-KV TTL design](../../_bmad-output/implementation-artifacts/health-kv-ttl-orphan-expiry-design.md)
-  for the full orphan taxonomy.
+  for the full orphan taxonomy (which originally deferred the alert plane as "Category D, out of scope").
 - **Category C — durable consumer pause-state** (`health.<component>.consumer-state.<name>`,
   written by the shared `internal/healthkv.ConsumerSink`): **no TTL** — this is durable
   operator/structural pause state, not a liveness signal; a death-tied TTL would risk silently
@@ -76,7 +81,7 @@ Source package: `internal/processor/`
 | `health.processor.<instance>.malformed-operation.<requestId>` | per malformed envelope | `internal/processor/health.go` | `HealthHeartbeater.EmitMalformedOperation()` | Category B — fixed 1h default, not re-armed |
 | `health.processor.<instance>.claim-attempts.<outcome>` | per `ClaimIdentity` call | `internal/processor/health_alerts.go` | `HealthAlertEmitter.RecordClaimAttempt()` | Category B — 1h default, re-armed each write |
 | `health.processor.<instance>.commit-conflicts` | per same-key commit conflict | `internal/processor/health_alerts.go` | `HealthAlertEmitter.RecordCommitConflict()` | Category B — 1h default, re-armed each write |
-| `health.alerts.security.<alertCode>` | on security event | `internal/processor/health_alerts.go` | `HealthAlertEmitter.EmitAlert()` | Category D — alert-code-scoped, out of scope (§ TTL / Lifecycle) |
+| `health.alerts.security.<alertCode>` | on security event | `internal/processor/health_alerts.go` | `HealthAlertEmitter.EmitAlert()` | Category B — 1h default, re-armed each write |
 | `health.processor.<instance>.auth-trace.<requestId>` | per auth denial | `internal/processor/step3_auth_trace.go` | `AuthTraceEmitter.Emit()` | fixed 1h |
 
 **`<instance>`** follows the convention `proc-<NanoID>` (Contract #5 §5.1).
@@ -84,7 +89,7 @@ Source package: `internal/processor/`
 **`<outcome>` enum** for claim-attempts: `success`, `invalid-key`, `wrong-state`, `flagged`,
 `merged`, `credential-already-bound`, `no-target`.
 
-**`<alertCode>` enum** (known Phase 1 codes): `stub-auth-active`.
+**`<alertCode>` enum** (known Phase 1 codes): `stub-auth-active`, `privileged-lane-grant-rejected`.
 
 **Event-driven keys** (only present when the described event occurs — not asserted by the
 completeness test):
