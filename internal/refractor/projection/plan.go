@@ -24,8 +24,10 @@ const ActorAggregateKind = "actorAggregate"
 
 // AuthPlaneBucket is the target bucket that classifies a lens as auth-plane: a
 // lens projecting into capability-kv writes an authorization surface (cap.*,
-// including the decomposed cap.roles.* / cap.svc.*), so an uncovered MATCH
-// construct fails activation closed rather than falling back to broad BFS.
+// including the decomposed cap.roles.* / cap.svc.*), so it is projection-write
+// guarded (§6.2 monotonic-seq tombstone) and alerts at the auth-plane heartbeat
+// severity. Fan-out is the unconditional broad adjacency BFS for every lens (a
+// sound superset); see IsAuthPlane, which also covers the Postgres grant table.
 const AuthPlaneBucket = "capability-kv"
 
 // ExecutionPlan is the Execution half of a ProjectionPlan: the per-actor full-
