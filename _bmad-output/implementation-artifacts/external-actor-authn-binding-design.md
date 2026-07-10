@@ -1,8 +1,8 @@
 # External actor authN — IdP subject binding (R3) + Contract #11 un-deferred (design)
 
-**Status:** ✅ **Andrew-ratified (2026-07-10) — as recommended.** Designer fire (Winston, 2026-07-10) ·
-Lattice lane (Security & trust boundary) · Directed by Andrew's 2026-07-10 questions on `gateway.md` +
-the gateway design docs.
+**Status:** ✅ **Built (2026-07-10).** Ratified same-day; the §9 fire (both increments) shipped in one
+commit (`9812231`) — Lattice lane (Security & trust boundary) · Directed by Andrew's 2026-07-10
+questions on `gateway.md` + the gateway design docs.
 
 > **Ratified (Andrew, 2026-07-10).** Fork = **A** as recommended (binding is a property of the trust
 > source: configured external sources always `opaque` with a mandatory per-source issuer; the DEV-ONLY
