@@ -2,6 +2,14 @@
 
 Rolled from `lattice.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-07 · `56911ac` · [Refractor/deploy] loupe-read-only-pg-role CLOSED — wildcard-grant posture per Andrew's standing M5 decision (not a bypass, row cited the wrong doc); verified live, CI green
+- 2026-07-07 · `af86835` · [Weaver] weaver-ctrl-publish-grant-trim — dropped the redundant `lattice.ctrl.weaver.>` publish grant (subscribe + `allow_responses` already cover the control responder); natsperm-verified
+- 2026-07-07 · `94087bd` · [Refractor] refractor-6-14-postgres-seam-truthup — seq-guarded protected-Delete tombstone, grant-table auth-plane severity, int64 wrap fix; lead-reviewed, CI green
+- 2026-07-07 · `8b481a1` · [Refractor] refractor-failure-tier-backhalf — wired `SetRetryQueue`(deferred retry/DLQ) + `SetAuditWriter` (per-rule audit trail) in `cmd/refractor`, both previously dormant; lead-reviewed, CI green
+- 2026-07-07 · `e189e74` · [Gateway] jwks health block — per-kid provenance (source/alg/addedAt) + poller lastPoll/swaps counters, mirroring the revocation block; lead-reviewed, CI green
+- 2026-07-07 · `5bee182` · [pkgmgr] console-operator role package — mechanism B part 1 (scoped `consoleOperator` role + default-lane/ctrl.* grants, no privileged lane); lead-reviewed, CI green
+- 2026-07-07 · `8846771` · [loftspace-app/clinic-app] real-actor-write-auth-e2e Phase 2 Inc 2 — credential-bindings read-boundary wiring, both vertical apps; lead-reviewed (mirrors already 3-layer-reviewed Gateway resolver), CI green
+- 2026-07-07 · `0a73c3c` · [Weaver] arch-review fixes — control fail-closed default (3 planes), validator-mirror parity + heartbeat honesty, cross-package targetId install-check, materializer step-recursion, comment/natsperm hygiene; CI green
 - 2026-07-07 · `b9433a2` · [Contract #10] weaver/augur/substrate shards reconciled to as-built — augur op/adapter/replyOp+directOp, §10.2 P5 read-path, anti-storm supersede, plan-hash RESERVED; retires contract-10-weaver-text-reconciliation
 - 2026-07-07 · `0d6c71e` · [Refractor] capabilityread-error-arm-tests — 2 of 3 D1-gate error arms pinned (malformed-JSON, list-keys-failure); Get-failure arm left as documented residual (not racelessly triggerable); lead-reviewed
 - 2026-07-07 · `c5ed56b` · [pkgmgr/Refractor] lens-target-reserved-bucket-guard — reserved-bucket-name denylist (install-time) + fail-closed activation mirror; adversarially reviewed, clean

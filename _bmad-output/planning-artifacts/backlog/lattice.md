@@ -110,9 +110,9 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
 > 🎯 **Build-ready now** (this section only — check the **Arch-review intake** section above too, it
-> carries its own ✅ ratified / 📋 ready items): **Read-posture debt sweep → flip** (§13 worklist —
-> Refinements & ops) — platform half (21) 🏗️ done, [verticals half](verticals.md) in-flight; the flip
-> ships once both land, un-blocking **Edge Lattice** (EDGE.1 next).
+> carries its own ✅ ratified / 📋 ready items): **Edge Lattice EDGE.1** (Edge & personal lenses) — the
+> read-posture debt sweep + advisory→blocking flip that gated it shipped `63aab49`; trusted-posture
+> offline loop next (edge design §7).
 > *Still gated*: **AI-caps Fire 4** (Andrew sign-off on AI-code-execution, not the sandbox).
 > Whoever ships the named pick updates this callout to the next one — a stale callout starves the lane.
 
@@ -144,7 +144,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | Personal / Secure Lens | Refractor projects a per-identity security-filtered subgraph stream; the Interest-Set watchlist; RLS-style link filtering. | ★★ | L | ✅ effectively done · [design](../../implementation-artifacts/personal-secure-lens-design.md) · Fires 1–5 shipped (D1 + Vault gates closed); PL.6 (multicast dedup, WebSocket bridge) deferred, no Edge consumer yet |
-| Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. EDGE.1+2 (trusted-posture offline loop; PL.1/2 shipped) build first, EDGE.3–5 per the §7 gates. | ★★★ | XL | ✅ ratified · [design §7](../../implementation-artifacts/edge-lattice-full-design.md) · 🚧 seq: read-posture sweep+flip (Andrew 2026-07-09), then EDGE.1 |
+| Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. EDGE.1+2 (trusted-posture offline loop; PL.1/2 shipped) build first, EDGE.3–5 per the §7 gates. | ★★★ | XL | ✅ ratified · [design §7](../../implementation-artifacts/edge-lattice-full-design.md) · read-posture flip shipped `63aab49` — unblocked; next: EDGE.1 |
 
 ### AI-native
 | Item | What it is | Imp | Size | State |
@@ -167,7 +167,6 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | **CI pipeline speed (continuous)** | Make CI faster without weakening any gate — owned continuously by the **Whetstone**. Matrix split done (serial → 4 parallel jobs); convergence + unit parallelized. | ★★ | M (ongoing) | 🏗️ continuous (Whetstone) · `internal/bridge`'s 46 tests + a fixture race fixed (d2b6321, package 35s→7s) but `unit` job wall-clock unchanged (~137s) — local per-package sums don't predict the `-p4` critical path; next: capture real per-package timing FROM a CI run to find the actual pole |
 | **Hard-delete mutation verb (true link/aspect keyspace reclaim)** | Mutation vocab is create/update/tombstone (soft PUTs); a tombstoned key persists + is still enumerated by `kv.Links`. A 4th `delete` verb (NATS `DEL`) lets dead links leave the keyspace, bounding `kv.Links` LIST cost. | ★ | M | 🗄️ shelved (Andrew 2026-07-02) · [design + hold banner](../../implementation-artifacts/hard-delete-mutation-verb-design.md) · demand dissolved by clinic write-path slot claims; §3 edits reverted; revive only on a real reclaim driver |
 | **Script-read posture — declared+hydrated vs live `kv.get`/`kv.Links`** | Declared+hydrated reads as the write-path norm: `optionalReads` folds read-before-create in; `kv.Links` declared-as-metadata (Edge-gate + best-effort lint, not hydrated); guards become a generic Processor-side operation feature (supersedes Loom's engine read). | ★★ | L | ✅ Fires 1–2 shipped · [design §12](../../implementation-artifacts/script-read-posture-design.md) · Fire 3 (guards) deferred to its first consumer; debt sweep + warn→block flip = its own row below |
-| **Read-posture debt sweep (platform packages) → flip lint to blocking** | 21 class-(b) lazy `kv.Read` sites in `packages/` — declare (a/d) or annotate (c/e) incl. dispatcher envelopes; flip advisory→blocking after the [verticals half](verticals.md) too — stops accrual, feeds Edge's declared-reads ⊆ mirror gate. | ★★★ | S–M | 🏗️ platform 21/21 done · [design §13](../../implementation-artifacts/script-read-posture-design.md) · next: flip once verticals lands |
 
 ### Parking lot — very low priority (far, far back)
 
@@ -184,6 +183,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-10 · `63aab49` · [scripts] read-posture-debt-sweep-flip — §13 sequencing item 3, advisory→blocking (STRICT CI fails, 0 issues repo-wide); unblocks Edge Lattice EDGE.1
 - 2026-07-10 · `495476b` · [Loom] loom-untested-arms — resumeStepZero pattern-pin-missing branch + disarmDeadline re-entry/error arms covered; CI green
 - 2026-07-10 · `0103725` · [Weaver] weaver-untested-arms — 4/5 untested failure arms colocated-tested (control.go + evaluator.go); CI green
 - 2026-07-10 · `7372765` · [Weaver] augur-dispatch-§6-residual — mid-flight-kill + scope-escape-invalid e2e for Fire 2b's proposedOp dispatch; CI green
@@ -210,13 +210,4 @@ One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archiv
 - 2026-07-08 · `050e5ac` · [Auth] unconditional class-aware platform routing — dropped the rbac boot-probe latch that stale-latched "rbac absent" for a component's whole life
 - 2026-07-08 · `3e4930d` · [hello-lattice] grant CreateBook to operator before Milestone 3 submits it — capability-mode fix
 - 2026-07-08 · `56784ac` · [docs] lens-hotreload-doc-fix CLOSED — "new lens needs Refractor restart" was false; corrected across 11 files incl. steward/fe-engineer SKILL.md + Loupe UI; CI green
-- 2026-07-07 · `56911ac` · [Refractor/deploy] loupe-read-only-pg-role CLOSED — wildcard-grant posture per Andrew's standing M5 decision (not a bypass, row cited the wrong doc); verified live, CI green
-
-- 2026-07-07 · `af86835` · [Weaver] weaver-ctrl-publish-grant-trim — dropped the redundant `lattice.ctrl.weaver.>` publish grant (subscribe + `allow_responses` already cover the control responder); natsperm-verified
-- 2026-07-07 · `94087bd` · [Refractor] refractor-6-14-postgres-seam-truthup — seq-guarded protected-Delete tombstone, grant-table auth-plane severity, int64 wrap fix; lead-reviewed, CI green
-- 2026-07-07 · `8b481a1` · [Refractor] refractor-failure-tier-backhalf — wired `SetRetryQueue`(deferred retry/DLQ) + `SetAuditWriter` (per-rule audit trail) in `cmd/refractor`, both previously dormant; lead-reviewed, CI green
-- 2026-07-07 · `e189e74` · [Gateway] jwks health block — per-kid provenance (source/alg/addedAt) + poller lastPoll/swaps counters, mirroring the revocation block; lead-reviewed, CI green
-- 2026-07-07 · `5bee182` · [pkgmgr] console-operator role package — mechanism B part 1 (scoped `consoleOperator` role + default-lane/ctrl.* grants, no privileged lane); lead-reviewed, CI green
-- 2026-07-07 · `8846771` · [loftspace-app/clinic-app] real-actor-write-auth-e2e Phase 2 Inc 2 — credential-bindings read-boundary wiring, both vertical apps; lead-reviewed (mirrors already 3-layer-reviewed Gateway resolver), CI green
-- 2026-07-07 · `0a73c3c` · [Weaver] arch-review fixes — control fail-closed default (3 planes), validator-mirror parity + heartbeat honesty, cross-package targetId install-check, materializer step-recursion, comment/natsperm hygiene; CI green
 - *(older entries rolled to [archive/lattice-done.md](archive/lattice-done.md); includes `94c8224` hello-lattice NFR-P3 flake fix)*
