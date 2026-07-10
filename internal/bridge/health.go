@@ -62,6 +62,7 @@ type healthIssue struct {
 	Severity string `json:"severity"`
 	Code     string `json:"code"`
 	Message  string `json:"message"`
+	Since    string `json:"since"`
 }
 
 // issueCache holds the bridge's active dispatch-time alerts (an unregistered
@@ -69,25 +70,35 @@ type healthIssue struct {
 // condition that resolves clears its own entry. The heartbeater surfaces the
 // snapshot as Contract #5 issues — the "never silently drop" surface (an
 // errConfig event is acked, but its issue is always raised). An adapter-failure
-// issue clears on the next successful dispatch of the same adapter.
+// issue clears on the next successful dispatch of the same adapter. since
+// tracks each key's first-arose timestamp (Contract #5 §5.5) so it persists
+// across heartbeats while the issue stays open, and clears with the issue so a
+// later re-occurrence gets a fresh since rather than reusing the stale one.
 type issueCache struct {
 	mu     sync.Mutex
 	issues map[string]healthIssue
+	since  map[string]string
 }
 
 func newIssueCache() *issueCache {
-	return &issueCache{issues: make(map[string]healthIssue)}
+	return &issueCache{issues: make(map[string]healthIssue), since: make(map[string]string)}
 }
 
 func (c *issueCache) set(key, severity, code, message string) {
 	c.mu.Lock()
-	c.issues[key] = healthIssue{Severity: severity, Code: code, Message: message}
+	since, ok := c.since[key]
+	if !ok {
+		since = substrate.FormatTimestamp(time.Now())
+		c.since[key] = since
+	}
+	c.issues[key] = healthIssue{Severity: severity, Code: code, Message: message, Since: since}
 	c.mu.Unlock()
 }
 
 func (c *issueCache) clear(key string) {
 	c.mu.Lock()
 	delete(c.issues, key)
+	delete(c.since, key)
 	c.mu.Unlock()
 }
 
@@ -125,6 +136,13 @@ type heartbeater struct {
 	// ttlMultiplier derives the heartbeat's Health-KV TTL (interval ×
 	// ttlMultiplier, Contract #5 §5.6). Zero disables TTL.
 	ttlMultiplier int
+
+	// consumerPausedSince tracks each pausedStructural consumer's first-arose
+	// timestamp (Contract #5 §5.5), since the ConsumerPaused issue is built
+	// inline from live consumer state rather than through issueCache. Owned
+	// solely by emit (single heartbeat ticker goroutine — no lock needed); a
+	// consumer no longer paused is dropped so a later pause gets a fresh since.
+	consumerPausedSince map[string]string
 }
 
 func newHeartbeater(conn *substrate.Conn, healthBucket, instance string, every time.Duration, states *healthkv.ConsumerStateCache, issues *issueCache, metrics *dispatchMetrics, logger *slog.Logger) *heartbeater {
@@ -135,16 +153,17 @@ func newHeartbeater(conn *substrate.Conn, healthBucket, instance string, every t
 		every = defaultHeartbeatEvery
 	}
 	return &heartbeater{
-		conn:          conn,
-		bucket:        healthBucket,
-		instance:      instance,
-		startedAt:     time.Now(),
-		interval:      every,
-		states:        states,
-		issues:        issues,
-		metrics:       metrics,
-		logger:        logger,
-		ttlMultiplier: healthkv.DefaultTTLMultiplier,
+		conn:                conn,
+		bucket:              healthBucket,
+		instance:            instance,
+		startedAt:           time.Now(),
+		interval:            every,
+		states:              states,
+		issues:              issues,
+		metrics:             metrics,
+		logger:              logger,
+		ttlMultiplier:       healthkv.DefaultTTLMultiplier,
+		consumerPausedSince: make(map[string]string),
 	}
 }
 
@@ -195,16 +214,7 @@ func (h *heartbeater) emit(ctx context.Context, status string) {
 		metrics[k] = v
 	}
 
-	issues := h.issues.snapshot()
-	for name, state := range states {
-		if state == "pausedStructural" {
-			issues = append(issues, healthIssue{
-				Severity: severityWarning,
-				Code:     "ConsumerPaused",
-				Message:  "consumer " + name + " paused awaiting operator resume",
-			})
-		}
-	}
+	issues := append(h.issues.snapshot(), h.pausedIssues(states, now)...)
 
 	doc := bridgeHealthDoc{
 		Key:         h.key(),
@@ -230,6 +240,38 @@ func (h *heartbeater) emit(ctx context.Context, status string) {
 
 func (h *heartbeater) key() string {
 	return "health.bridge." + h.instance
+}
+
+// pausedIssues builds the ConsumerPaused issue for each pausedStructural
+// consumer, stamping+persisting each one's since (Contract #5 §5.5) in
+// h.consumerPausedSince across ticks and dropping a consumer that is no longer
+// paused so a later pause gets a fresh since. Pure apart from that persisted
+// map — takes states/now as params so it's testable without a live conn.
+func (h *heartbeater) pausedIssues(states map[string]string, now time.Time) []healthIssue {
+	var issues []healthIssue
+	pausedNow := make(map[string]struct{})
+	for name, state := range states {
+		if state == "pausedStructural" {
+			pausedNow[name] = struct{}{}
+			since, ok := h.consumerPausedSince[name]
+			if !ok {
+				since = substrate.FormatTimestamp(now)
+				h.consumerPausedSince[name] = since
+			}
+			issues = append(issues, healthIssue{
+				Severity: severityWarning,
+				Code:     "ConsumerPaused",
+				Message:  "consumer " + name + " paused awaiting operator resume",
+				Since:    since,
+			})
+		}
+	}
+	for name := range h.consumerPausedSince {
+		if _, ok := pausedNow[name]; !ok {
+			delete(h.consumerPausedSince, name)
+		}
+	}
+	return issues
 }
 
 // aggregateStatus reconciles the reported lifecycle phase with the open issue

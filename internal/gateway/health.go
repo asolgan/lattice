@@ -80,6 +80,7 @@ type healthIssue struct {
 	Severity string `json:"severity"`
 	Code     string `json:"code"`
 	Message  string `json:"message"`
+	Since    string `json:"since"`
 }
 
 // issueCache holds the Gateway's active operational alerts (e.g. the
@@ -87,25 +88,35 @@ type healthIssue struct {
 // keyed so a condition that resolves clears its own entry. The Heartbeater
 // surfaces the snapshot as Contract #5 issues, feeding aggregateStatus so a
 // heartbeat carrying an issue can never self-report "healthy". Mirrors the
-// bridge's issueCache.
+// bridge's issueCache. since tracks each key's first-arose timestamp
+// (Contract #5 §5.5) so it persists across heartbeats while the issue stays
+// open, and clears with the issue so a later re-occurrence gets a fresh since
+// rather than reusing the stale one.
 type issueCache struct {
 	mu     sync.Mutex
 	issues map[string]healthIssue
+	since  map[string]string
 }
 
 func newIssueCache() *issueCache {
-	return &issueCache{issues: make(map[string]healthIssue)}
+	return &issueCache{issues: make(map[string]healthIssue), since: make(map[string]string)}
 }
 
 func (c *issueCache) set(key, severity, code, message string) {
 	c.mu.Lock()
-	c.issues[key] = healthIssue{Severity: severity, Code: code, Message: message}
+	since, ok := c.since[key]
+	if !ok {
+		since = substrate.FormatTimestamp(time.Now())
+		c.since[key] = since
+	}
+	c.issues[key] = healthIssue{Severity: severity, Code: code, Message: message, Since: since}
 	c.mu.Unlock()
 }
 
 func (c *issueCache) clear(key string) {
 	c.mu.Lock()
 	delete(c.issues, key)
+	delete(c.since, key)
 	c.mu.Unlock()
 }
 

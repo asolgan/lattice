@@ -39,6 +39,7 @@ type healthIssue struct {
 	Severity string `json:"severity"`
 	Code     string `json:"code"`
 	Message  string `json:"message"`
+	Since    string `json:"since"`
 }
 
 // runningInstanceCounter reports how many loom-state instance.<id> entries are
@@ -91,6 +92,13 @@ type heartbeater struct {
 	// ttlMultiplier derives the heartbeat's Health-KV TTL (interval ×
 	// ttlMultiplier, Contract #5 §5.6). Zero disables TTL.
 	ttlMultiplier int
+
+	// pausedSince tracks each pausedStructural consumer's first-arose
+	// timestamp (Contract #5 §5.5), since the ConsumerPaused issue is built
+	// inline from live consumer state. Owned solely by emit (single heartbeat
+	// ticker goroutine — no lock needed); a consumer no longer paused is
+	// dropped so a later pause gets a fresh since.
+	pausedSince map[string]string
 }
 
 func newHeartbeater(conn *substrate.Conn, healthBucket, stateBucket, instance string, every time.Duration, states *healthkv.ConsumerStateCache, logger *slog.Logger) *heartbeater {
@@ -110,6 +118,7 @@ func newHeartbeater(conn *substrate.Conn, healthBucket, stateBucket, instance st
 		counter:       &runningInstanceCounter{conn: conn, bucket: stateBucket, logger: logger},
 		logger:        logger,
 		ttlMultiplier: healthkv.DefaultTTLMultiplier,
+		pausedSince:   make(map[string]string),
 	}
 }
 
@@ -162,16 +171,7 @@ func (h *heartbeater) emit(ctx context.Context, status string) {
 		h.logger.Warn("loom heartbeat: running-instance scan failed", "err", err)
 	}
 
-	issues := []healthIssue{}
-	for name, state := range states {
-		if state == "pausedStructural" {
-			issues = append(issues, healthIssue{
-				Severity: "warning",
-				Code:     "ConsumerPaused",
-				Message:  "consumer " + name + " paused awaiting operator resume",
-			})
-		}
-	}
+	issues := h.pausedIssues(states, now)
 	sort.Slice(issues, func(i, j int) bool { return issues[i].Message < issues[j].Message })
 
 	doc := loomHealthDoc{
@@ -198,6 +198,38 @@ func (h *heartbeater) emit(ctx context.Context, status string) {
 
 func (h *heartbeater) key() string {
 	return "health.loom." + h.instance
+}
+
+// pausedIssues builds the ConsumerPaused issue for each pausedStructural
+// consumer, stamping+persisting each one's since (Contract #5 §5.5) in
+// h.pausedSince across ticks and dropping a consumer that is no longer paused
+// so a later pause gets a fresh since. Pure apart from that persisted map —
+// takes states/now as params so it's testable without a live conn.
+func (h *heartbeater) pausedIssues(states map[string]string, now time.Time) []healthIssue {
+	issues := []healthIssue{}
+	pausedNow := make(map[string]struct{})
+	for name, state := range states {
+		if state == "pausedStructural" {
+			pausedNow[name] = struct{}{}
+			since, ok := h.pausedSince[name]
+			if !ok {
+				since = substrate.FormatTimestamp(now)
+				h.pausedSince[name] = since
+			}
+			issues = append(issues, healthIssue{
+				Severity: "warning",
+				Code:     "ConsumerPaused",
+				Message:  "consumer " + name + " paused awaiting operator resume",
+				Since:    since,
+			})
+		}
+	}
+	for name := range h.pausedSince {
+		if _, ok := pausedNow[name]; !ok {
+			delete(h.pausedSince, name)
+		}
+	}
+	return issues
 }
 
 // aggregateStatus reconciles the reported lifecycle phase with the open issue

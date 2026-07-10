@@ -54,3 +54,40 @@ func TestHeartbeaterTTLDerivation(t *testing.T) {
 		t.Fatalf("negative multiplier must clamp to 0, heartbeatTTL() = %v, want %v", got, want)
 	}
 }
+
+// The inline ConsumerPaused issue (Loom has no issueCache — every issue is
+// built from live consumer state) must carry the Contract #5 §5.5
+// since-persistence guarantee: stamped once while a consumer stays
+// pausedStructural, cleared and re-stamped once it resumes and pauses again.
+func TestPausedIssuesSincePersistence(t *testing.T) {
+	t.Parallel()
+	h := &heartbeater{pausedSince: make(map[string]string)}
+	t1 := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)
+	t2 := t1.Add(30 * time.Second)
+
+	paused := map[string]string{"c1": "pausedStructural"}
+
+	first := h.pausedIssues(paused, t1)
+	if len(first) != 1 || first[0].Code != "ConsumerPaused" || first[0].Since == "" {
+		t.Fatalf("first tick: got %+v, want one ConsumerPaused issue with a since", first)
+	}
+	since := first[0].Since
+
+	second := h.pausedIssues(paused, t2)
+	if len(second) != 1 || second[0].Since != since {
+		t.Fatalf("since not persisted: first %q, second %+v", since, second)
+	}
+
+	resumed := h.pausedIssues(map[string]string{"c1": "running"}, t2.Add(10*time.Second))
+	if len(resumed) != 0 {
+		t.Fatalf("resumed tick: got %d issues, want 0", len(resumed))
+	}
+	if _, ok := h.pausedSince["c1"]; ok {
+		t.Fatalf("resumed consumer still tracked in pausedSince")
+	}
+
+	repaused := h.pausedIssues(paused, t2.Add(time.Minute))
+	if len(repaused) != 1 || repaused[0].Since == since {
+		t.Fatalf("repaused consumer reused stale since %q: %+v", since, repaused)
+	}
+}

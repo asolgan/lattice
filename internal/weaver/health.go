@@ -40,30 +40,41 @@ type healthIssue struct {
 	Severity string `json:"severity"`
 	Code     string `json:"code"`
 	Message  string `json:"message"`
+	Since    string `json:"since"`
 }
 
 // issueCache holds the engine's active config/data-error alerts (rejected
 // targets, unknown gap columns, template data errors), keyed so a condition
 // that resolves clears its own entry. The heartbeater surfaces the snapshot as
-// Contract #5 issues — the FR29 "never silently drop" surface.
+// Contract #5 issues — the FR29 "never silently drop" surface. since tracks
+// each key's first-arose timestamp (Contract #5 §5.5) so it persists across
+// heartbeats while the issue stays open, and clears with the issue so a later
+// re-occurrence gets a fresh since rather than reusing the stale one.
 type issueCache struct {
 	mu     sync.Mutex
 	issues map[string]healthIssue
+	since  map[string]string
 }
 
 func newIssueCache() *issueCache {
-	return &issueCache{issues: make(map[string]healthIssue)}
+	return &issueCache{issues: make(map[string]healthIssue), since: make(map[string]string)}
 }
 
 func (c *issueCache) set(key, severity, code, message string) {
 	c.mu.Lock()
-	c.issues[key] = healthIssue{Severity: severity, Code: code, Message: message}
+	since, ok := c.since[key]
+	if !ok {
+		since = substrate.FormatTimestamp(time.Now())
+		c.since[key] = since
+	}
+	c.issues[key] = healthIssue{Severity: severity, Code: code, Message: message, Since: since}
 	c.mu.Unlock()
 }
 
 func (c *issueCache) clear(key string) {
 	c.mu.Lock()
 	delete(c.issues, key)
+	delete(c.since, key)
 	c.mu.Unlock()
 }
 
@@ -117,6 +128,13 @@ type heartbeater struct {
 	// emit, which only ever runs on the single heartbeat ticker goroutine — no
 	// lock needed.
 	effectMismatchAlerted map[string]struct{}
+
+	// consumerPausedSince tracks each pausedStructural consumer's first-arose
+	// timestamp (Contract #5 §5.5), since the ConsumerPaused issue is built
+	// inline from live consumer state rather than through issueCache. Owned
+	// solely by emit (single heartbeat ticker goroutine — no lock needed); a
+	// consumer no longer paused is dropped so a later pause gets a fresh since.
+	consumerPausedSince map[string]string
 }
 
 func newHeartbeater(conn *substrate.Conn, healthBucket, instance string, every time.Duration,
@@ -147,6 +165,7 @@ func newHeartbeater(conn *substrate.Conn, healthBucket, instance string, every t
 		logger:                logger,
 		ttlMultiplier:         healthkv.DefaultTTLMultiplier,
 		effectMismatchAlerted: make(map[string]struct{}),
+		consumerPausedSince:   make(map[string]string),
 	}
 }
 
@@ -236,16 +255,7 @@ func (h *heartbeater) emit(ctx context.Context, status string) {
 		}
 	}
 
-	issues := h.issues.snapshot()
-	for name, state := range states {
-		if state == "pausedStructural" {
-			issues = append(issues, healthIssue{
-				Severity: "warning",
-				Code:     "ConsumerPaused",
-				Message:  "consumer " + name + " paused awaiting operator resume",
-			})
-		}
-	}
+	issues := append(h.issues.snapshot(), h.pausedIssues(states, now)...)
 
 	// Contract #5 §5.2/§5.3: a heartbeat carrying issues must not report
 	// status:"healthy" (issues is empty iff healthy). Escalate the lifecycle
@@ -280,6 +290,38 @@ func (h *heartbeater) emit(ctx context.Context, status string) {
 
 func (h *heartbeater) key() string {
 	return "health.weaver." + h.instance
+}
+
+// pausedIssues builds the ConsumerPaused issue for each pausedStructural
+// consumer, stamping+persisting each one's since (Contract #5 §5.5) in
+// h.consumerPausedSince across ticks and dropping a consumer that is no longer
+// paused so a later pause gets a fresh since. Pure apart from that persisted
+// map — takes states/now as params so it's testable without a live conn.
+func (h *heartbeater) pausedIssues(states map[string]string, now time.Time) []healthIssue {
+	var issues []healthIssue
+	pausedNow := make(map[string]struct{})
+	for name, state := range states {
+		if state == "pausedStructural" {
+			pausedNow[name] = struct{}{}
+			since, ok := h.consumerPausedSince[name]
+			if !ok {
+				since = substrate.FormatTimestamp(now)
+				h.consumerPausedSince[name] = since
+			}
+			issues = append(issues, healthIssue{
+				Severity: "warning",
+				Code:     "ConsumerPaused",
+				Message:  "consumer " + name + " paused awaiting operator resume",
+				Since:    since,
+			})
+		}
+	}
+	for name := range h.consumerPausedSince {
+		if _, ok := pausedNow[name]; !ok {
+			delete(h.consumerPausedSince, name)
+		}
+	}
+	return issues
 }
 
 // flagEffectMismatches scans every `__effect` confidence window (heartbeat

@@ -118,3 +118,36 @@ func TestEmitHeartbeat_WritesWithDerivedTTL(t *testing.T) {
 		t.Fatalf("heartbeat key missing right after emit: %v", err)
 	}
 }
+
+// issueCache.set must stamp since (Contract #5 §5.5) on first appearance, hold
+// it steady across repeat set calls for the same key while the issue stays
+// open, and clear it with the issue so a later re-occurrence gets a fresh
+// since rather than reusing the stale one.
+func TestIssueCacheSincePersistence(t *testing.T) {
+	t.Parallel()
+	c := newIssueCache()
+
+	c.set("k", severityWarning, "Code", "first")
+	first := c.snapshot()
+	if len(first) != 1 || first[0].Since == "" {
+		t.Fatalf("first set: got %+v, want one issue with a non-empty since", first)
+	}
+	since := first[0].Since
+
+	c.set("k", severityWarning, "Code", "still open")
+	second := c.snapshot()
+	if len(second) != 1 || second[0].Since != since {
+		t.Fatalf("since not persisted across repeat set: first %q, second %+v", since, second)
+	}
+
+	c.clear("k")
+	if len(c.snapshot()) != 0 {
+		t.Fatalf("cleared key still present: %+v", c.snapshot())
+	}
+
+	c.set("k", severityWarning, "Code", "reoccurred")
+	reoccurred := c.snapshot()
+	if len(reoccurred) != 1 || reoccurred[0].Since == since {
+		t.Fatalf("reoccurred issue reused stale since %q: %+v", since, reoccurred)
+	}
+}
