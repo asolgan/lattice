@@ -51,8 +51,18 @@ retract (the `ok=false` fall-through, pinned by test) — and the vault design g
 that retraction. **Fire 3 (adapter `ListKeysForAnchor` + set-difference Deletes) is the next increment**
 and inherits this fire's review posture (Deletes on the read path → full 3-layer). Deferred with it: the
 `availableListings` live ephemeral-stack e2e (§4's PO-visible proof; the platform mechanism is pinned at
-the pipeline layer by `filter_retraction_internal_test.go`), and a review carry-out row is filed for an
-activation-time guard pinning the convergence-lens no-filtering-WHERE invariant.
+the pipeline layer by `filter_retraction_internal_test.go`).
+
+**Convergence-lens no-filtering-WHERE guard CLOSED (2026-07-10, `61859e0`).** The review carry-out above
+shipped as `(*full.CompiledRule).ValidateNoFilteringWhereForConvergence`, called from
+`cmd/refractor/main.go`'s `startPipeline` beside the `DiffRetraction` guard: a **plain**
+(non-actorAggregate) lens targeting `weaver-targets` now fails to activate if it carries a filtering
+(non-optional `MATCH`, or any `WITH`) `WHERE`. Grounding found the stated invariant was false as
+literally written — `unroutedTasks` (`packages/orchestration-base`) is a live, tested convergence lens
+with a required `WHERE` — but it's `actorAggregate`, whose zero-match case resolves safely through the
+envelope's `EmptyBehavior` (Weaver treats a missing row and a live `violating: false` row identically),
+so the guard scopes to plain lenses only and `unroutedTasks` is correctly exempt, not broken.
+`docs/components/refractor.md`'s authoring-invariant prose corrected to match.
 
 **Fire 3 CHECKPOINT (2026-07-02, Lattice Steward, full 3-layer review).** Shipped as a **lens-wide**
 diff rather than the sketched per-anchor `ListKeysForAnchor(anchorKey)` scoping: `adapter.KeyLister.

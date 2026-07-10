@@ -161,7 +161,6 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Read-model / projection maturity
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **[Refractor] Convergence-lens filtering-WHERE activation guard** | Filter-retraction relies on convergence (`violating`) lenses never carrying a filtering WHERE (a retracted row reads to Weaver as entity deletion) — true for every live lens but unenforced at activation. | ★ | XS–S | 📋 review carry-out · [design](../../implementation-artifacts/negative-filter-retraction-projection-design.md) §Fires-1+2-checkpoint |
 | Elasticsearch target adapter | A third lens target adapter (only NATS-KV + Postgres ship; no consumer yet). | ★ | M | ✅ ratified (2026-07-02, OpenSearch pin + FTS-first interim) · [design](../../implementation-artifacts/search-target-adapter-design.md) · shelf — first consumer (LoftSpace FTS unified search) filed on verticals; the OpenSearch adapter builds only on search-engine-scale demand |
 | **[Refractor] Cross-instance projection-latency rollup** | Aggregate per-lens projection latency across Refractor instances into one per-component view (single-instance today, so per-instance == per-component). Link-tombstone re-projection half **subsumed** by the link-aspect reprojection design. | ★ | S | 🚧 seq behind HA-NATS multi-instance · [link-aspect design](../../implementation-artifacts/link-aspect-triggered-reprojection-plain-lenses-design.md) subsumes the tombstone half; no multi-instance consumer yet |
 
@@ -187,6 +186,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-10 · `61859e0` · [Refractor] convergence-lens-where-guard — `ValidateNoFilteringWhereForConvergence` activation-time guard; exempts actorAggregate lenses (unroutedTasks precedent); CI green
 - 2026-07-10 · `0fd7f3f` · [CI] unit-job worker-packing experiment — natsperm/lease-signing isolated onto a dedicated worker, measured no win vs. noisy baseline, reverted (c2f25bb → 0fd7f3f); CI green
 - 2026-07-10 · `63aab49` · [scripts] read-posture-debt-sweep-flip — §13 sequencing item 3, advisory→blocking (STRICT CI fails, 0 issues repo-wide); unblocks Edge Lattice EDGE.1
 - 2026-07-10 · `495476b` · [Loom] loom-untested-arms — resumeStepZero pattern-pin-missing branch + disarmDeadline re-entry/error arms covered; CI green
