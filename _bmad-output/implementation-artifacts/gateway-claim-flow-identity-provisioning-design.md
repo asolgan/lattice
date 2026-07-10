@@ -596,6 +596,15 @@ when the driver files; 7 is already tracked. Nothing new is platform-blocked.
 
 ### 11.4 Refinement R3 spelled out: the `sub` → NanoID mapping
 
+> **R3 is now its own full design + frozen contract (2026-07-10):
+> `external-actor-authn-binding-design.md` + the staged `docs/contracts/11-external-actor-authn.md`.**
+> That design realizes option (a) below with the refinements a full grounding surfaced — the
+> derivation input is **length-framed** (`idpsub:<len(iss)>:<iss>:<sub>`, injection-proof, not a bare
+> `iss + "|" + sub`), binding is a **per-trust-source mode** (`opaque` derives, the dev key stays
+> `nanoid` passthrough) so dev tokens keep working, and the `opaque` **issuer pin is mandatory
+> per-source** (a peer-issuer replay would otherwise cross-derive a peer user). The sketch below is
+> retained as the origin of the decision; #11 is the authority.
+
 Real IdP subjects are not NanoIDs (`auth0|507f1f77…`, `google-oauth2|1234…`), and Contract #1 §1.1 keys
 must stay NanoID-shaped — §3.1 already refuses malformed keys but deferred the mapping. Two candidate
 shapes; **recommendation: (a)**:

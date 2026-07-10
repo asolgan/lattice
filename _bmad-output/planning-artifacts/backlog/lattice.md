@@ -122,6 +122,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | ✅ effectively done · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) §Fire-3-status · only deferred Fire 4 (prod mTLS) remains |
+| **External actor authN — IdP subject binding + Contract #11 un-deferred** | How a real 3rd-party IdP's JWT `sub` becomes a Lattice identity key: per-source binding (`opaque` derives, dev key `nanoid` passthrough), fail-closed validation, mandatory issuer pin. Realizes claim-flow R3. | ★★★ | S–M | 📐 awaiting-Andrew · [design](../../implementation-artifacts/external-actor-authn-binding-design.md) · frozen-contract #11 staged UNCOMMITTED · adversarial pass run |
 
 ### Privacy / Vault
 | Item | What it is | Imp | Size | State |

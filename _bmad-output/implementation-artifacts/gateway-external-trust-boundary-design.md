@@ -42,7 +42,8 @@ uncommitted.
 **Ratified (Andrew, 2026-06-29).** **F2 = A** (Gateway-stamp + transport-trust — no per-op crypto, no Contract #2
 change), **F3 = A** (external IdP + fail-closed dev signer), **F4 = A** (extend the one translator for reads),
 **F5 = A** (build Fire 1 now). **Contract #11 (JWT format) = deferred** (freeze when a 2nd consumer needs it; for
-now in `gateway.md`, not frozen) → **no frozen-contract change.** **Decomposition collapsed (fewer-larger-fires
+now in `gateway.md`, not frozen) → **no frozen-contract change.** *[2026-07-10: this deferral is now lifted —
+#11 staged, see §5.]* **Decomposition collapsed (fewer-larger-fires
 steer):** the whole buildable-now **write surface is ONE fire** (translator + dev signer + JWKS + claim-front +
 health + `gateway.md`); the **read-front is a 2nd fire behind D1.3** (Lattice consuming the Verticals D1.3
 protected read-model **one-way**); the prod reverse-proxy is **ops, not a Steward fire.** **Hard build gate:**
@@ -285,11 +286,16 @@ ops fires. This is the same **ratify-now / build-Fire-1** pattern already accept
 verify-and-stamp seam, the reverse-proxy/translator split, the trusted-boundary posture, the dev-IdP +
 fail-closed key gate), mirroring `loupe.md`. Ships with Fire 1.
 
-**Deferred (NOT staged now):** a **Contract #11 — Gateway / actor-authN (JWT format)** freezing the
-`{sub, exp, iss, aud, kid, jti}` claim set + the `vtx.identity.<sub>` binding. Recommend freezing it only
-when a **second** consumer needs it stable (the Edge node, or control-plane-authz Fire 2 — which already
-names "a `Lattice-Actor` header" + the JWT seam). Until then the format is documented in `gateway.md`. If
-Andrew prefers freezing now, I'll stage the §11 edit uncommitted on request.
+**Contract #11 — UN-DEFERRED (2026-07-10), superseding this paragraph's original defer.** This section
+originally deferred *"Contract #11 — Gateway / actor-authN (JWT format)"* until a second consumer needed
+it. That trigger is now met and exceeded (seven verifying surfaces share the seam; the browser-direct
+topology makes the token profile a public interface), and Andrew directed the un-defer. The contract is
+now **staged uncommitted** as `docs/contracts/11-external-actor-authn.md` — and it is broader than this
+paragraph anticipated on both axes: not Gateway-only (all external-authN surfaces) and not format-only
+(the **subject binding** — how a JWT `sub` becomes a Lattice identity key, `nanoid`/`opaque` modes +
+the `(iss, sub)` derivation — is the load-bearing half). Design of record:
+`external-actor-authn-binding-design.md`. The `{sub, exp, iss, aud, kid, jti}` profile this paragraph
+named is now #11 §11.2; the `vtx.identity.<sub>` binding is now the `nanoid`-mode case of #11 §11.3.
 
 ---
 
@@ -406,7 +412,8 @@ per §8). Findings folded above:
   build is fully specified against A. **F3 = Option A** (external IdP + dev signer). **F4 = Option A**
   (extend the translator). **F5 = Option A** (build Fire 1 now, with/after #75 Fire 2).
 - **No frozen-contract edit** (build-to #2/#6/#9/#5); Contract #11 (JWT format) deferred to a second
-  consumer, not staged.
+  consumer, not staged. **[Superseded 2026-07-10 — #11 un-deferred + staged; see §5 and
+  `external-actor-authn-binding-design.md`.]**
 - **Overwrite (not reject) a client-supplied actor.** **`authContext` stays client-supplied.** **Read-front
   serves only RLS-Postgres + explicit-public models.** **Service actors keep the direct-submit bypass.**
 
