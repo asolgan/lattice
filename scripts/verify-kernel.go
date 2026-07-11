@@ -284,15 +284,11 @@ func main() {
 			fmt.Printf("  OK  stream: %s\n", streamName)
 		}
 	}
-	for _, bucket := range []string{
-		bootstrap.CoreKVBucket, bootstrap.HealthKVBucket, bootstrap.CapabilityKVBucket,
-		bootstrap.WeaverStateBucket, bootstrap.LoomStateBucket,
-		bootstrap.WeaverTargetsBucket, bootstrap.RefractorAdjacencyKV,
-	} {
-		if _, err := js.KeyValue(ctx, bucket); err != nil {
-			failures = append(failures, fmt.Sprintf("MISSING KV bucket: %s (%v)", bucket, err))
+	for _, b := range bootstrap.PlatformBuckets() {
+		if _, err := js.KeyValue(ctx, b.Name); err != nil {
+			failures = append(failures, fmt.Sprintf("MISSING KV bucket: %s (%v)", b.Name, err))
 		} else {
-			fmt.Printf("  OK  bucket: %s\n", bucket)
+			fmt.Printf("  OK  bucket: %s\n", b.Name)
 		}
 	}
 

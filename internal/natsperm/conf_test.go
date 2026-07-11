@@ -1,7 +1,9 @@
 package natsperm
 
 import (
+	"bytes"
 	"context"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -15,6 +17,7 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/test"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"github.com/nats-io/nkeys"
 )
 
 // deniedTimeout bounds a publish we expect the server to reject: a denied
@@ -221,7 +224,9 @@ func TestCapabilityKVWriteIsolation(t *testing.T) {
 // non-chronicler component cannot — the direct proof for
 // chronicler-host-reconciliation's new matrix entry (only Chronicler writes
 // this bucket, mirroring TestLensTargetWriteIsolation's refractor pin for
-// weaver-targets).
+// weaver-targets). refractor is included in the denied roster post natsperm-
+// matrix-hygiene Fire 1 — its broad $KV.> no longer reaches non-owned
+// platform buckets.
 func TestChroniclerOrchestrationHistoryWriteAccess(t *testing.T) {
 	url := startServerFromConf(t)
 
@@ -235,7 +240,7 @@ func TestChroniclerOrchestrationHistoryWriteAccess(t *testing.T) {
 		t.Fatalf("chronicler KVPut orchestration-history: want success, got %v", err)
 	}
 
-	assertDeniedPuts(t, url, "orchestration-history", []string{"loom", "weaver", "loupe", "lattice", "gateway", "loftspace-app", "clinic-app"})
+	assertDeniedPuts(t, url, "orchestration-history", []string{"refractor", "loom", "weaver", "loupe", "lattice", "gateway", "loftspace-app", "clinic-app"})
 }
 
 // TestLensTargetWriteIsolation: refractor (the sole projector) may write a
@@ -398,13 +403,13 @@ func TestBridgeNoPhantomKVGrants(t *testing.T) {
 }
 
 // gatewayOwnedBucketDeniedComponents lists every matrix component other than
-// gateway (the owner), refractor, and bootstrap — the two components holding
-// a broad $KV.> grant with no per-bucket denies (pre-existing, tracked debt,
-// natsperm-matrix-hygiene Fire 1) that this fire does not narrow. Shared by
+// gateway (the owner) and bootstrap (the exempt provisioner) — refractor is
+// now included: natsperm-matrix-hygiene Fire 1 closed the broad-$KV.>-with-
+// no-per-bucket-denies gap these tests used to carve out for it. Shared by
 // both gateway-owned-bucket isolation tests below so the roster can't drift
 // between them independently of the real component matrix.
 var gatewayOwnedBucketDeniedComponents = []string{
-	"processor", "loom", "weaver", "bridge", "chronicler", "object-store-manager",
+	"processor", "refractor", "loom", "weaver", "bridge", "chronicler", "object-store-manager",
 	"lattice-pkg", "loupe", "lattice", "loftspace-app", "clinic-app", "cafe-app",
 	"wellness-app",
 }
@@ -412,10 +417,9 @@ var gatewayOwnedBucketDeniedComponents = []string{
 // TestGatewayRevocationBucketWriteIsolation: only the gateway (its own
 // events.gateway.> materializer) may write the token-revocation kill-switch
 // set — pins the gateway-token-revocation-activation-design.md §2.8 grant as
-// scoped, not a blanket leak. refractor/bootstrap are excluded from the
-// denied set like every other lens-target bucket (TestLensTargetWriteIsolation):
-// their broad $KV.> grant is pre-existing, tracked debt (natsperm-matrix-hygiene),
-// not something this fire narrows.
+// scoped, not a blanket leak. bootstrap is excluded (the exempt provisioner);
+// refractor is now included in the denied roster post natsperm-matrix-hygiene
+// Fire 1.
 func TestGatewayRevocationBucketWriteIsolation(t *testing.T) {
 	url := startServerFromConf(t)
 
@@ -504,22 +508,25 @@ func TestControlPlaneOperatorAccess(t *testing.T) {
 
 // TestBackingStreamSideChannel: denying $KV.core-kv.> publish is not enough — a
 // holder of the broad $JS.API.> grant could otherwise destroy the backing
-// stream directly. The stream-admin verbs on KV_core-kv are denied for
-// non-owners; the owner (processor) retains them.
+// stream directly. Only bootstrap (the provisioner) may administer the
+// stream; post natsperm-matrix-hygiene Fire 1 the owner (processor) is denied
+// too — the Chronicler precedent (a row writer never needs to administer its
+// own backing stream) now applies matrix-wide, not just to orchestration-
+// history.
 func TestBackingStreamSideChannel(t *testing.T) {
 	url := startServerFromConf(t)
 
 	boot := connectAs(t, url, "bootstrap")
 	provision(t, boot, "core-kv")
 
-	// processor (owner) may purge its own stream.
-	proc := connectAs(t, url, "processor")
-	if _, err := proc.NATS().Request("$JS.API.STREAM.PURGE.KV_core-kv", []byte("{}"), 3*time.Second); err != nil {
-		t.Fatalf("processor PURGE KV_core-kv: want success, got %v", err)
+	// bootstrap (the provisioner) may purge the stream it created.
+	if _, err := boot.NATS().Request("$JS.API.STREAM.PURGE.KV_core-kv", []byte("{}"), 3*time.Second); err != nil {
+		t.Fatalf("bootstrap PURGE KV_core-kv: want success, got %v", err)
 	}
 
-	// a non-owner's purge is denied at the door — the request gets no reply.
-	for _, component := range []string{"loom", "loupe", "refractor", "weaver"} {
+	// every non-bootstrap component's purge — including the owner's — is
+	// denied at the door; the request gets no reply.
+	for _, component := range []string{"processor", "loom", "loupe", "refractor", "weaver"} {
 		component := component
 		t.Run("denied-purge/"+component, func(t *testing.T) {
 			t.Parallel()
@@ -563,4 +570,192 @@ func TestChroniclerBackingStreamSideChannel(t *testing.T) {
 			t.Error("chronicler PURGE KV_orchestration-history: want denial, got a reply")
 		}
 	})
+}
+
+// nonBootstrapComponentNames returns every Matrix component name except
+// bootstrap — the roster the registry-driven tests below iterate, so a
+// newly added component is automatically covered without a hand-edited list.
+func nonBootstrapComponentNames() []string {
+	names := make([]string, 0, len(Matrix)-1)
+	for _, c := range Matrix {
+		if c.Name == bootstrapComponentName {
+			continue
+		}
+		names = append(names, c.Name)
+	}
+	return names
+}
+
+// TestRegistryDrivenWriteIsolation replaces the per-bucket hand vectors above
+// with one registry-driven check (natsperm-matrix-hygiene-design.md §7 item
+// 1): for every PlatformBuckets() row with an Owner, the owner's KVPut
+// succeeds and every OTHER non-bootstrap matrix component's KVPut is denied
+// — deriving both axes (buckets × components) from source so a new platform
+// bucket or a new matrix component is covered automatically, and the
+// already-stale hand lists this generalizes can't silently drift again.
+func TestRegistryDrivenWriteIsolation(t *testing.T) {
+	url := startServerFromConf(t)
+	boot := connectAs(t, url, "bootstrap")
+
+	for _, b := range bootstrap.PlatformBuckets() {
+		b := b
+		if b.Owner == "" {
+			continue // SharedWrite (health-kv) — covered by TestHealthKVSharedWriteAccess.
+		}
+		t.Run(b.Name, func(t *testing.T) {
+			provision(t, boot, b.Name)
+
+			owner := connectAs(t, url, b.Owner)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := owner.KVPut(ctx, b.Name, "registry-driven.test", []byte("v")); err != nil {
+				t.Fatalf("owner %s KVPut %s: want success, got %v", b.Owner, b.Name, err)
+			}
+
+			var denied []string
+			for _, name := range nonBootstrapComponentNames() {
+				if name != b.Owner {
+					denied = append(denied, name)
+				}
+			}
+			assertDeniedPuts(t, url, b.Name, denied)
+		})
+	}
+}
+
+// TestHealthKVSharedWriteAccess: health-kv is SharedWrite — every non-
+// bootstrap matrix component must be able to self-report its heartbeat
+// (health.<component>.<inst>); a missing grant here silences a component's
+// monitoring silently, so this is a positive pin, not just a denial check.
+func TestHealthKVSharedWriteAccess(t *testing.T) {
+	url := startServerFromConf(t)
+
+	boot := connectAs(t, url, "bootstrap")
+	provision(t, boot, "health-kv")
+
+	for _, name := range nonBootstrapComponentNames() {
+		name := name
+		t.Run("allowed/"+name, func(t *testing.T) {
+			t.Parallel()
+			c := connectAs(t, url, name)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := c.KVPut(ctx, "health-kv", "health."+name+".test", []byte("v")); err != nil {
+				t.Fatalf("%s KVPut health-kv: want success, got %v", name, err)
+			}
+		})
+	}
+}
+
+// TestRegistryDrivenStreamAdminSideChannel generalizes
+// TestBackingStreamSideChannel / TestChroniclerBackingStreamSideChannel
+// matrix-wide (design §7 item 2, closing the natsperm-matrix-hygiene-tracked
+// debt): for every registered platform bucket, bootstrap (the provisioner)
+// may purge the backing stream and every OTHER non-bootstrap component —
+// INCLUDING the bucket's own owner — is denied. A row writer never needs to
+// administer its own backing stream; bootstrap primordially provisions all
+// of them.
+func TestRegistryDrivenStreamAdminSideChannel(t *testing.T) {
+	url := startServerFromConf(t)
+	boot := connectAs(t, url, "bootstrap")
+
+	for _, b := range bootstrap.PlatformBuckets() {
+		b := b
+		t.Run(b.Name, func(t *testing.T) {
+			provision(t, boot, b.Name)
+
+			purgeSubject := "$JS.API.STREAM.PURGE.KV_" + b.Name
+			if _, err := boot.NATS().Request(purgeSubject, []byte("{}"), 3*time.Second); err != nil {
+				t.Fatalf("bootstrap PURGE KV_%s: want success, got %v", b.Name, err)
+			}
+
+			for _, name := range nonBootstrapComponentNames() {
+				name := name
+				t.Run("denied-purge/"+name, func(t *testing.T) {
+					t.Parallel()
+					c := connectAs(t, url, name)
+					if _, err := c.NATS().Request(purgeSubject, []byte("{}"), deniedTimeout); err == nil {
+						t.Errorf("%s PURGE KV_%s: want denial, got a reply", name, b.Name)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestRefractorPrivateBucketsWriteAccess: refractor's two platform-private
+// stores (refractor-adjacency, personal-lens-interest) are owner-derived
+// grants, not covered by any hand-authored positive pin before this fire —
+// proves the registry's Allow() derivation actually grants them, not just
+// the pre-existing $KV.> catch-all.
+func TestRefractorPrivateBucketsWriteAccess(t *testing.T) {
+	url := startServerFromConf(t)
+	boot := connectAs(t, url, "bootstrap")
+	ref := connectAs(t, url, "refractor")
+
+	for _, bucket := range []string{"refractor-adjacency", "personal-lens-interest"} {
+		bucket := bucket
+		t.Run(bucket, func(t *testing.T) {
+			provision(t, boot, bucket)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if _, err := ref.KVPut(ctx, bucket, "registry-driven.test", []byte("v")); err != nil {
+				t.Fatalf("refractor KVPut %s: want success, got %v", bucket, err)
+			}
+		})
+	}
+}
+
+// TestRefractorDynamicPackageBucketWriteAccess: refractor's un-enumerable
+// $KV.> allow must still admit — including auto-create — a dynamically-named
+// package lens-target bucket that carries none of the platform-bucket
+// registry's owner/deny treatment. This is the residual the registry design
+// explicitly keeps (§3.3): narrowing by denies, not by enumerating allows.
+func TestRefractorDynamicPackageBucketWriteAccess(t *testing.T) {
+	url := startServerFromConf(t)
+	ref := connectAs(t, url, "refractor")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := ref.JetStream().CreateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "test-pkg-bucket"}); err != nil {
+		t.Fatalf("refractor CreateKeyValue test-pkg-bucket: want success, got %v", err)
+	}
+	if _, err := ref.KVPut(ctx, "test-pkg-bucket", "target.1", []byte("v")); err != nil {
+		t.Fatalf("refractor KVPut test-pkg-bucket: want success, got %v", err)
+	}
+}
+
+// TestConfMatchesMatrix is the cheapest possible regen-forgotten alarm
+// (design §5): re-renders deploy/nats-server.conf from internal/natsperm
+// (Matrix + bootstrap.PlatformBuckets(), via the committed dev seeds) and
+// asserts it is byte-identical to the committed file. A registry/matrix edit
+// that forgets `go run ./deploy/gen-dev-nkeys` fails CI here instead of
+// silently shipping a stale conf the embedded-server tests never notice
+// (they load the committed file directly, not a live render).
+func TestConfMatchesMatrix(t *testing.T) {
+	pubKeys := make(map[string]string, len(Matrix))
+	for _, c := range Matrix {
+		seed, err := os.ReadFile(seedPath(t, c.Name))
+		if err != nil {
+			t.Fatalf("read seed for %s: %v", c.Name, err)
+		}
+		kp, err := nkeys.FromSeed(bytes.TrimSpace(seed))
+		if err != nil {
+			t.Fatalf("parse seed for %s: %v", c.Name, err)
+		}
+		pub, err := kp.PublicKey()
+		if err != nil {
+			t.Fatalf("public key for %s: %v", c.Name, err)
+		}
+		pubKeys[c.Name] = pub
+	}
+
+	rendered := RenderConf(pubKeys)
+	committed, err := os.ReadFile(confPath(t))
+	if err != nil {
+		t.Fatalf("read committed conf: %v", err)
+	}
+	if rendered != string(committed) {
+		t.Error("deploy/nats-server.conf is stale — Matrix/PlatformBuckets changed but the conf was not regenerated; run `go run ./deploy/gen-dev-nkeys` and commit the result")
+	}
 }

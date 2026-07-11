@@ -30,17 +30,10 @@ var reservedBucketAliases = map[string]string{
 // legitimately target
 // (weaver-targets, capability-kv, orchestration-history), these are never
 // lens targets, so a mis-authored lens naming one would silently wipe
-// platform state on the next rebuild.
-var reservedBucketNames = map[string]struct{}{
-	bootstrap.CoreKVBucket:                    {},
-	bootstrap.HealthKVBucket:                  {},
-	bootstrap.RefractorAdjacencyKV:            {},
-	bootstrap.LoomStateBucket:                 {},
-	bootstrap.WeaverStateBucket:               {},
-	bootstrap.PersonalLensInterestKV:          {},
-	bootstrap.GatewayRevocationBucket:         {},
-	bootstrap.GatewayCredentialBindingsBucket: {},
-}
+// platform state on the next rebuild. Derived from bootstrap's platform-
+// bucket registry (every !LensTarget row) so a new platform-private bucket
+// cannot ship without this guard picking it up automatically.
+var reservedBucketNames = bootstrap.ReservedBuckets()
 
 // validateLensBuckets rejects any lens whose declared Bucket is a reserved
 // short alias of a provisioned bucket (directing the author to the canonical

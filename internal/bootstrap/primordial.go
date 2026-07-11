@@ -99,45 +99,14 @@ func NewSeeder(nc *nats.Conn, logger *slog.Logger) (*Seeder, error) {
 // ProvisionBuckets creates all required KV buckets and JetStream streams.
 // Re-running is idempotent: existing buckets are left unchanged.
 func (s *Seeder) ProvisionBuckets(ctx context.Context) error {
-	buckets := []struct {
-		name        string
-		description string
-		ttl         bool
-	}{
-		{CoreKVBucket, "Lattice Core KV — primary graph store", true},
-		{HealthKVBucket, "Lattice Health KV — component heartbeats", true},
-		{CapabilityKVBucket, "Lattice Capability KV — Refractor projection targets", true},
-		{WeaverStateBucket, "Lattice Weaver State KV", true},
-		{LoomStateBucket, "Lattice Loom State KV — per-instance pattern cursors", true},
-		// weaver-targets rows are durable Lens projections — no per-key TTL keys
-		// live here (TTL-leased marks live in weaver-state). History stays the KV
-		// default 1, which is what DeliverLastPerSubject CDC consumers expect.
-		{WeaverTargetsBucket, "Lattice Weaver Targets KV — shared target-Lens projection bucket", false},
-		// orchestration-history is a guarded eventStream Lens target (monotonic
-		// last_event_seq CAS, not per-key TTL) — history stays the KV default 1.
-		{OrchestrationHistoryBucket, "Lattice Orchestration History KV — Chronicler durable Loom-flow read model", false},
-		{RefractorAdjacencyKV, "Refractor internal adjacency store (private)", false},
-		{PersonalLensInterestKV, "Refractor Personal Lens Interest Set registry (private)", false},
-		// token-revocation is a compacting latest-per-actor set (put on revoke,
-		// del on unrevoke) materialized by the Gateway from events.gateway.>; no
-		// per-key TTL, durable (rebuildable from the event stream on cold start,
-		// but must not silently disappear between rebuilds).
-		{GatewayRevocationBucket, "Lattice Gateway Token-Revocation KV — actor kill-switch set", false},
-		// credential-bindings is a compacting latest-per-actor set (put on
-		// claim; no unbind path in this refinement's scope) materialized by
-		// the Gateway from events.identity.>; no per-key TTL, durable
-		// (rebuildable from the event stream on cold start).
-		{GatewayCredentialBindingsBucket, "Lattice Gateway Credential-Bindings KV — credential→identity resolution set", false},
-	}
-
-	for _, b := range buckets {
+	for _, b := range PlatformBuckets() {
 		cfg := jetstream.KeyValueConfig{
-			Bucket:      b.name,
-			Description: b.description,
+			Bucket:      b.Name,
+			Description: b.Description,
 			// MaxValueSize: -1 (unlimited)
 			// History: 1 (default)
 		}
-		if b.ttl {
+		if b.PerKeyTTL {
 			// LimitMarkerTTL enables per-key TTL support (Contract #4 §4.3).
 			// Enables AllowMsgTTL on the underlying stream.
 			// NATS requires LimitMarkerTTL >= 1 second.
@@ -146,7 +115,7 @@ func (s *Seeder) ProvisionBuckets(ctx context.Context) error {
 
 		kv, err := s.js.CreateOrUpdateKeyValue(ctx, cfg)
 		if err != nil {
-			return fmt.Errorf("create/update KV bucket %q: %w", b.name, err)
+			return fmt.Errorf("create/update KV bucket %q: %w", b.Name, err)
 		}
 		s.logger.Info("KV bucket ready", "bucket", kv.Bucket())
 
@@ -155,9 +124,9 @@ func (s *Seeder) ProvisionBuckets(ctx context.Context) error {
 		// batch + tracker) and loom-state (Loom's per-transition cursor + token
 		// batch, Contract #10 §10.3). CreateKeyValue does NOT set this
 		// automatically; UpdateStream is required.
-		if b.name == CoreKVBucket || b.name == LoomStateBucket {
-			if err := s.enableAtomicPublish(ctx, b.name); err != nil {
-				return fmt.Errorf("enable AtomicPublish on %q: %w", b.name, err)
+		if b.Name == CoreKVBucket || b.Name == LoomStateBucket {
+			if err := s.enableAtomicPublish(ctx, b.Name); err != nil {
+				return fmt.Errorf("enable AtomicPublish on %q: %w", b.Name, err)
 			}
 		}
 	}

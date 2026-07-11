@@ -51,15 +51,11 @@ const (
 // (bucketguard.go) as a fail-closed backstop at Refractor lens activation —
 // the platform-private buckets a lens must never target, since the nats-kv
 // adapter auto-creates/truncates whatever Bucket a lens declares verbatim.
-var reservedActivationBuckets = map[string]struct{}{
-	bootstrap.CoreKVBucket:            {},
-	bootstrap.HealthKVBucket:          {},
-	bootstrap.RefractorAdjacencyKV:    {},
-	bootstrap.LoomStateBucket:         {},
-	bootstrap.WeaverStateBucket:       {},
-	bootstrap.PersonalLensInterestKV:  {},
-	bootstrap.GatewayRevocationBucket: {},
-}
+// Derived from bootstrap's platform-bucket registry, like pkgmgr's guard, so
+// the two mirrors cannot drift apart again (credential-bindings was missing
+// from this map before the registry existed — a second live instance of the
+// same hand-copied-list bug bucketguard.go had).
+var reservedActivationBuckets = bootstrap.ReservedBuckets()
 
 type pipelineEntry struct {
 	cancel        context.CancelFunc

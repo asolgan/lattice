@@ -192,14 +192,12 @@ func VerifyKernel(ctx context.Context, conn *substrate.Conn) []string {
 		}
 	}
 
-	// 7. KV buckets.
-	for _, bucket := range []string{
-		CoreKVBucket, HealthKVBucket, CapabilityKVBucket,
-		WeaverStateBucket, LoomStateBucket, WeaverTargetsBucket, RefractorAdjacencyKV,
-		PersonalLensInterestKV,
-	} {
-		if _, err := js.KeyValue(ctx, bucket); err != nil {
-			failures = append(failures, fmt.Sprintf("MISSING KV bucket: %s (%v)", bucket, err))
+	// 7. KV buckets — every registry row (bootstrap.PlatformBuckets) must be
+	// provisioned; the registry is now ProvisionBuckets' source, so this
+	// verifies parity rather than a hand-copied subset.
+	for _, b := range PlatformBuckets() {
+		if _, err := js.KeyValue(ctx, b.Name); err != nil {
+			failures = append(failures, fmt.Sprintf("MISSING KV bucket: %s (%v)", b.Name, err))
 		}
 	}
 
