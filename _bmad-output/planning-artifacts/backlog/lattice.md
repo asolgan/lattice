@@ -113,10 +113,10 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 > the offline-first read loop AND the optimistic write path (`internal/edge/{store,sync,overlay,agent}` +
 > `cmd/edge`) are done. **Edge's own queue is now gated**: EDGE.3 (untrusted multi-identity) needs D1
 > (Personal Lens PL.3) + the Gateway write-path translator + NATS-account subscribe-ACL — not build-ready
-> yet (edge design §7 checkpoint) — but its gate is now owned + ratified. **Next picks (both ✅
-> 2026-07-10): per-identity subscribe-ACL Fires 1–3** (fork A auth-callout — builds the EDGE.3 gate
-> leg, Security table) · **sensitive-param-egress Fires 1–2** (first real PII adapter payload,
-> lease-signing e2e, External-I/O table).
+> yet (edge design §7 checkpoint) — but its gate is now owned + ratified. **Next picks: per-identity
+> subscribe-ACL Fires 1–3** (✅ 2026-07-10, fork A auth-callout — builds the EDGE.3 gate leg, Security
+> table) · **sensitive-param-egress Fire 2** (Fire 1 shipped 2026-07-10/11 — disposition + emission
+> guard; Fire 2 = bridge unwrap + lease-signing e2e consumer, External-I/O table).
 > *Still gated*: **AI-caps Fire 4** (Andrew sign-off on AI-code-execution, not the sandbox).
 > Whoever ships the named pick updates this callout to the next one — a stale callout starves the lane.
 
@@ -136,7 +136,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | Real adapters + async result-return | Replace the `Fake*` adapters with real vendors + design the async result path. | ★★ | M–L | ✅ async result-return done · real adapters deferred (prod) |
-| Adapter read-seam / richer params | Adapters can only use what the target-lens row projects; add a subject-templated fetch seam for extra fields (SSN/DOB). | ★★ | S–M | ✅ ratified 2026-07-10 · [sensitive-param-egress design](../../implementation-artifacts/sensitive-param-egress-design.md) · F1 shipped; Fires 1–2 build-ready |
+| Adapter read-seam / richer params | Adapters can only use what the target-lens row projects; add a subject-templated fetch seam for extra fields (SSN/DOB). | ★★ | S–M | 🏗️ building · [sensitive-param-egress design](../../implementation-artifacts/sensitive-param-egress-design.md) §9 · next: Fire 2 (bridge unwrap + lease-signing e2e) |
 
 ### Scale-out
 | Item | What it is | Imp | Size | State |
@@ -186,6 +186,8 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 ## Done log — lattice (newest first)
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
+
+- 2026-07-11 · `d384015` · [Processor/Loom] sensitive-param-egress Fire 1 — egressReads disposition + external-emission guard; fixed a live docGen PII leak found while building; CI green
 
 - 2026-07-11 · `5489ab4` · [CI] AckResumeFromLastAck flake fixed — internal/substrate's 3s redelivery deadline too tight under `-p 4` load (CI: timed out at 3.09s; local: 0.1-0.15s ×10); widened to 8s; CI green
 - 2026-07-10 · `7eab200` · [Bridge] bridge-untested-arms — AdapterFunc.Execute/Poll + FakeBackgroundCheck/FakeStripe/FakeDocGen Poll unreachable-error arms covered; cov 85.3%→86.3%; CI green

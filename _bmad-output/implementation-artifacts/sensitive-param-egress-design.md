@@ -422,6 +422,23 @@ Sequencing: Fire 2 strictly after Fire 1 (refs must exist before the unwrap has 
 Fire 1's mechanism is exercised by every existing template-inferred read path and its own guard; Fire 2
 ships with the live e2e consumer.
 
+**🏗️ CHECKPOINT (Steward, 2026-07-11): Fire 1 SHIPPED, `d384015`, CI green.** Built + tested in worktree
+`/tmp/lattice-worktrees/sensitive-param-egress-fire1` (removed post-merge). Full 3-layer adversarial review
+run (independent agent): no critical/high findings; two LOW findings folded before commit —
+(1) the parse-time reads×egressReads mutual-exclusion check extended to also cover optionalReads×egressReads
+(a key in both would otherwise silently hydrate as plaintext via the optionalReads loop, which runs first);
+(2) the `resolve_subject_params` helper's shared `kv.Read(key)` call site now documents BOTH read-posture
+classes it can serve ((a) subject root when `aspect==""`, (f) templated aspect otherwise) instead of only (f).
+**Discovered + fixed in the same fire:** `packages/lease-signing/leasedoc_scripts.go`'s `CreateLeaseDocInstance`
+was already leaking the applicant's sensitive `.name` aspect as plaintext into the durable `external.docGen`
+event via an ad hoc lazy read of a LINK-DISCOVERED key (`live_link_target` + `aspect_data` — not a
+subject-templated param, so Loom cannot pre-declare it under `egressReads`). Fixed by omitting `tenantName`
+from the generated document (the DDL's own pre-existing "nameless document" degrade convention), not by any
+mechanism change; `leasedoc_ops_test.go` updated to match. **Next: Fire 2** — the bridge unwrap + the
+`lattice.vault.decrypt` grant/read-denial pairing + lease-signing's live e2e consumer (§7). A future Fire 3
+candidate (not scoped, not started): extend egress-safe reads to link-discovered aspects so `tenantName` can
+be restored to the docGen document without a plaintext leak.
+
 ## 10. Adversarial pass (run this fire, independent agent — findings folded)
 
 The pass verified every mechanism claim against code and killed two of my draft's load-bearing choices:
