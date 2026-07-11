@@ -242,6 +242,30 @@ func driveOneAny(t *testing.T, ctx context.Context, cp *CommitPath, cons jetstre
 	return outcome
 }
 
+// awaitAckSettled polls the consumer until NumAckPending and NumPending both
+// reach zero. An ack/term is applied to consumer state asynchronously inside
+// the server (the ack subscription enqueues it; a consumer goroutine drains
+// the queue), so a client Flush proves receipt, not application — the only
+// sound barrier is watching the state converge.
+func awaitAckSettled(t *testing.T, ctx context.Context, cons jetstream.Consumer) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		info, err := cons.Info(ctx)
+		if err != nil {
+			t.Fatalf("consumer info: %v", err)
+		}
+		if info.NumAckPending == 0 && info.NumPending == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ack not applied to consumer state: NumAckPending = %d, NumPending = %d, want 0/0",
+				info.NumAckPending, info.NumPending)
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+}
+
 func setupTestPipeline(t *testing.T) (context.Context, *substrate.Conn, *CommitPath, jetstream.Consumer, *Metrics) {
 	url := startEmbeddedNATS(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -329,24 +353,14 @@ func TestIntegration_MalformedNackTerminated(t *testing.T) {
 		t.Fatalf("expected malformed-operation marker at %q, got %v", healthKey, err)
 	}
 
-	// Confirm the message did NOT redeliver: pull info from the
-	// consumer and verify ack pending is zero after term. Flush first so the
-	// term (published asynchronously by HandleMessage) is guaranteed processed
-	// by the server before we read its consumer state — a deterministic
-	// PING/PONG barrier, not a timing guess.
+	// Confirm the message did NOT redeliver: the term must settle into
+	// consumer state (nothing ack-pending, nothing pending). Flush pushes the
+	// term (published asynchronously by HandleMessage) out of the client
+	// promptly; awaitAckSettled observes the server apply it.
 	if err := conn.NATS().Flush(); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
-	info, err := cons.Info(ctx)
-	if err != nil {
-		t.Fatalf("consumer info: %v", err)
-	}
-	if info.NumAckPending != 0 {
-		t.Fatalf("NumAckPending after term = %d, want 0", info.NumAckPending)
-	}
-	if info.NumPending != 0 {
-		t.Fatalf("NumPending after term = %d, want 0", info.NumPending)
-	}
+	awaitAckSettled(t, ctx, cons)
 }
 
 // AC4: tracker-write-failure retry-safe — simulate commit failure by

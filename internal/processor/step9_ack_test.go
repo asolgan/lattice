@@ -64,17 +64,11 @@ func TestAckerImpl_E2E(t *testing.T) {
 		t.Fatalf("Ack: %v", err)
 	}
 
-	// Flush so the ack (published asynchronously by Msg.Ack) is guaranteed
-	// processed by the server before we read consumer state — a deterministic
-	// PING/PONG barrier rather than a timing guess.
+	// Flush pushes the ack (published asynchronously by Msg.Ack) out of the
+	// client promptly; awaitAckSettled observes the server apply it to
+	// consumer state.
 	if err := conn.NATS().Flush(); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
-	info, err := cons.Info(ctx)
-	if err != nil {
-		t.Fatalf("consumer info: %v", err)
-	}
-	if info.NumAckPending != 0 {
-		t.Fatalf("NumAckPending after ack = %d, want 0", info.NumAckPending)
-	}
+	awaitAckSettled(t, ctx, cons)
 }
