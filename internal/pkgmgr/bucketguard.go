@@ -24,20 +24,22 @@ var reservedBucketAliases = map[string]string{
 // reservedBucketNames are canonical bucket names a package lens must never
 // declare as its own Bucket. Each is a platform-private store (Core-KV
 // itself, Health-KV self-reporting, an engine's own cursor/adjacency state,
-// the Gateway's revocation set) that the Refractor nats-kv adapter
-// auto-creates verbatim and a rebuild Truncate purges wholesale — unlike the
-// shared platform-projection buckets packages legitimately target
+// the Gateway's revocation set and credential-bindings set) that the
+// Refractor nats-kv adapter auto-creates verbatim and a rebuild Truncate
+// purges wholesale — unlike the shared platform-projection buckets packages
+// legitimately target
 // (weaver-targets, capability-kv, orchestration-history), these are never
 // lens targets, so a mis-authored lens naming one would silently wipe
 // platform state on the next rebuild.
 var reservedBucketNames = map[string]struct{}{
-	bootstrap.CoreKVBucket:            {},
-	bootstrap.HealthKVBucket:          {},
-	bootstrap.RefractorAdjacencyKV:    {},
-	bootstrap.LoomStateBucket:         {},
-	bootstrap.WeaverStateBucket:       {},
-	bootstrap.PersonalLensInterestKV:  {},
-	bootstrap.GatewayRevocationBucket: {},
+	bootstrap.CoreKVBucket:                    {},
+	bootstrap.HealthKVBucket:                  {},
+	bootstrap.RefractorAdjacencyKV:            {},
+	bootstrap.LoomStateBucket:                 {},
+	bootstrap.WeaverStateBucket:               {},
+	bootstrap.PersonalLensInterestKV:          {},
+	bootstrap.GatewayRevocationBucket:         {},
+	bootstrap.GatewayCredentialBindingsBucket: {},
 }
 
 // validateLensBuckets rejects any lens whose declared Bucket is a reserved

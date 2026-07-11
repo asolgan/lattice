@@ -397,13 +397,25 @@ func TestBridgeNoPhantomKVGrants(t *testing.T) {
 	assertDeniedPuts(t, url, "bridge-schedule", []string{"bridge"})
 }
 
+// gatewayOwnedBucketDeniedComponents lists every matrix component other than
+// gateway (the owner), refractor, and bootstrap — the two components holding
+// a broad $KV.> grant with no per-bucket denies (pre-existing, tracked debt,
+// natsperm-matrix-hygiene Fire 1) that this fire does not narrow. Shared by
+// both gateway-owned-bucket isolation tests below so the roster can't drift
+// between them independently of the real component matrix.
+var gatewayOwnedBucketDeniedComponents = []string{
+	"processor", "loom", "weaver", "bridge", "chronicler", "object-store-manager",
+	"lattice-pkg", "loupe", "lattice", "loftspace-app", "clinic-app", "cafe-app",
+	"wellness-app",
+}
+
 // TestGatewayRevocationBucketWriteIsolation: only the gateway (its own
 // events.gateway.> materializer) may write the token-revocation kill-switch
 // set — pins the gateway-token-revocation-activation-design.md §2.8 grant as
-// scoped, not a blanket leak. refractor is excluded from the denied set like
-// every other lens-target bucket (TestLensTargetWriteIsolation): its broad
-// $KV.> grant is pre-existing, tracked debt (natsperm-matrix-hygiene), not
-// something this fire narrows.
+// scoped, not a blanket leak. refractor/bootstrap are excluded from the
+// denied set like every other lens-target bucket (TestLensTargetWriteIsolation):
+// their broad $KV.> grant is pre-existing, tracked debt (natsperm-matrix-hygiene),
+// not something this fire narrows.
 func TestGatewayRevocationBucketWriteIsolation(t *testing.T) {
 	url := startServerFromConf(t)
 
@@ -417,8 +429,28 @@ func TestGatewayRevocationBucketWriteIsolation(t *testing.T) {
 		t.Fatalf("gateway KVPut token-revocation: want success, got %v", err)
 	}
 
-	assertDeniedPuts(t, url, "token-revocation", []string{"processor", "loom", "weaver", "bridge",
-		"loupe", "lattice", "loftspace-app", "clinic-app", "object-store-manager"})
+	assertDeniedPuts(t, url, "token-revocation", gatewayOwnedBucketDeniedComponents)
+}
+
+// TestGatewayCredentialBindingsWriteIsolation: only the gateway (its own
+// credential-bindings materializer, internal/gateway/credential_bindings_materializer.go)
+// may write the credential→identity resolution set. This pins the natsperm-
+// matrix-hygiene Fire-0 fix — the grant was previously missing, so the shipped
+// materializer was silently transport-denied under enforcement (a live bug).
+func TestGatewayCredentialBindingsWriteIsolation(t *testing.T) {
+	url := startServerFromConf(t)
+
+	boot := connectAs(t, url, "bootstrap")
+	provision(t, boot, "credential-bindings")
+
+	gw := connectAs(t, url, "gateway")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := gw.KVPut(ctx, "credential-bindings", "vtx.identity.test", []byte("v")); err != nil {
+		t.Fatalf("gateway KVPut credential-bindings: want success, got %v", err)
+	}
+
+	assertDeniedPuts(t, url, "credential-bindings", gatewayOwnedBucketDeniedComponents)
 }
 
 // TestControlPlaneOperatorAccess: the operator surfaces (loupe, the lattice CLI)

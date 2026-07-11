@@ -270,8 +270,9 @@ var matrix = []component{
 	{
 		name: "gateway",
 		desc: "external write-path translator — verifies JWTs, stamps the verified actor, submits ops; mutates Core state only via ops (P2); " +
-			"owns token-revocation (materialized from its own events.gateway.> consumer, gateway-token-revocation-activation-design.md)",
-		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$KV.token-revocation.>", "$JS.API.>", "$JS.ACK.>"},
+			"owns token-revocation (materialized from its own events.gateway.> consumer, gateway-token-revocation-activation-design.md) and " +
+			"credential-bindings (materialized from its own credential→identity resolution set)",
+		pubAllow: []string{bootstrap.OpsWildcardSubject, "$KV.health-kv.>", "$KV.token-revocation.>", "$KV.credential-bindings.>", "$JS.API.>", "$JS.ACK.>"},
 		pubDeny:  denyProtected([]string{"$KV.core-kv.>", "$KV.capability-kv.>"}, coreKVStream, capabilityKVStream),
 	},
 	{

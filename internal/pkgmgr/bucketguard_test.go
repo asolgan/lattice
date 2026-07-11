@@ -95,6 +95,7 @@ func TestValidateLensBuckets_RejectsPlatformPrivateBucketName(t *testing.T) {
 		"weaver-state",
 		"personal-lens-interest",
 		"token-revocation",
+		"credential-bindings",
 	}
 	for _, bucket := range cases {
 		t.Run(bucket, func(t *testing.T) {
