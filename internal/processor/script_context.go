@@ -52,6 +52,12 @@ type ScriptContext struct {
 	// when nil, a `kv.Links()` call raises a script error (tests that do not
 	// exercise enumeration may leave it unset).
 	LinkLister ScriptLinkLister
+	// SensitiveReads is the shared tracker recording whether this execution
+	// decrypted any sensitive aspect as plaintext, across both step 4's
+	// hydration and the lazy kv.Read() seam (KVReader). Populated by step 4
+	// (Hydrate); consulted by step 6's external-egress emission guard
+	// (design sensitive-param-egress §3.6). Never nil in production wiring.
+	SensitiveReads *sensitiveReadTracker
 }
 
 // ScriptKVReader performs a single on-demand Core KV read for a Starlark

@@ -14,36 +14,42 @@ import (
 // string, number, bool, or nested object) is passed through verbatim.
 const subjectParamPrefix = "subject."
 
-// inferExternalTaskReads computes the instanceOp's ContextHint.Reads for an
-// externalTask step (Contract #10 §10.5 subject-templated params, Mechanism 2).
+// inferExternalTaskReads computes the instanceOp's ContextHint.Reads +
+// ContextHint.EgressReads for an externalTask step (Contract #10 §10.5
+// subject-templated params, Mechanism 2; the egressReads split is the
+// sensitive-param-egress design §3.4).
 //
-// The subject root (subjectKey) is always read — the instanceOp's no-orphan
-// vertex_alive check needs it. In addition, every params value shaped
-// subject.<aspect>.data.<field> contributes the known aspect key
-// subjectKey + "." + <aspect>, so the Processor hydrates the aspect the
-// instanceOp DDL resolves the template against. A subject.data.<field> token
-// reads only the subject root (already in the set).
+// The subject root (subjectKey) is always returned in reads — the instanceOp's
+// no-orphan vertex_alive check needs it. In addition, every params value
+// shaped subject.<aspect>.data.<field> contributes the known aspect key
+// subjectKey + "." + <aspect> to egressReads (NOT reads): the aspect is read
+// for external egress, so a sensitive aspect hydrates as a ref rather than
+// plaintext (§3.1 egressReads disposition) — the instanceOp DDL cannot tell
+// which templated aspects are sensitive, so ALL template-inferred aspect
+// reads classify as egressReads uniformly; a non-sensitive aspect hydrates
+// identically either way. A subject.data.<field> token reads only the subject
+// root (already in reads).
 //
 // Mechanism 2 (Andrew's directive): Loom DECLARES the read-set by pure string
 // parsing and performs NO Core KV read; resolution happens Processor-side in the
 // instanceOp DDL from the JIT-hydrated, OCC-snapshot working set. params is the
 // opaque step.Params, unchanged on the wire (the engine never substitutes a
-// value). The returned read-set is deterministically ordered (subject root
-// first, then aspect keys sorted) so the outbox envelope is byte-stable.
+// value). Both returned sets are deterministically ordered (aspect keys
+// sorted by param-key order) so the outbox envelope is byte-stable.
 //
 // A subject.* value that is not a well-formed §10.5 path is a malformed template
 // failed loudly here at submit — never dispatched with an unresolvable token.
-func inferExternalTaskReads(subjectKey string, params json.RawMessage) ([]string, error) {
-	reads := []string{subjectKey}
+func inferExternalTaskReads(subjectKey string, params json.RawMessage) (reads []string, egressReads []string, err error) {
+	reads = []string{subjectKey}
 	if len(params) == 0 {
-		return reads, nil
+		return reads, nil, nil
 	}
 	var m map[string]json.RawMessage
 	if err := json.Unmarshal(params, &m); err != nil {
 		// params is not a JSON object (e.g. a bare array/scalar) — no string-keyed
 		// subject.* tokens to infer; the opaque value still passes through to the
 		// instanceOp unchanged.
-		return reads, nil
+		return reads, nil, nil
 	}
 
 	// Iterate in sorted param-key order so the appended aspect reads are
@@ -63,9 +69,9 @@ func inferExternalTaskReads(subjectKey string, params json.RawMessage) ([]string
 		if !strings.HasPrefix(s, subjectParamPrefix) {
 			continue // a literal string — passed through verbatim
 		}
-		gp, err := parseGuardPath(s)
-		if err != nil {
-			return nil, fmt.Errorf("loom: externalTask param %q: malformed subject template %q: %w", k, s, err)
+		gp, perr := parseGuardPath(s)
+		if perr != nil {
+			return nil, nil, fmt.Errorf("loom: externalTask param %q: malformed subject template %q: %w", k, s, perr)
 		}
 		if gp.aspect == "" {
 			continue // subject.data.<field> reads the subject root (already declared)
@@ -73,8 +79,8 @@ func inferExternalTaskReads(subjectKey string, params json.RawMessage) ([]string
 		akey := subjectKey + "." + gp.aspect
 		if !seen[akey] {
 			seen[akey] = true
-			reads = append(reads, akey)
+			egressReads = append(egressReads, akey)
 		}
 	}
-	return reads, nil
+	return reads, egressReads, nil
 }

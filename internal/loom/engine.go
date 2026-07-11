@@ -863,7 +863,7 @@ func (e *Engine) submitSystemOp(ctx context.Context, inst *Instance, pattern *Pa
 	// ops are event-only — empty mutations, no vertex_alive), so no
 	// ContextHint.Reads is declared. A future systemOp that reads would set its
 	// own read-set here from the step's known target.
-	ob, err := buildOutbox(token, step.Operation, payload, target, e.cfg.Lane, e.cfg.ActorKey, nil, nil)
+	ob, err := buildOutbox(token, step.Operation, payload, target, e.cfg.Lane, e.cfg.ActorKey, nil, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -962,7 +962,7 @@ func (e *Engine) submitUserTask(ctx context.Context, inst *Instance, pattern *Pa
 	// un-deduped 3-key set, not Loom's deduped 2-key set.
 	reads := userTaskReads(inst.SubjectKey, forOperation)
 	ob, err := buildOutbox(opRequestID, opCreateTask, payload, inst.SubjectKey, e.cfg.Lane, e.cfg.ActorKey, reads,
-		userTaskOptionalReads(taskKey, inst.SubjectKey))
+		userTaskOptionalReads(taskKey, inst.SubjectKey), nil)
 	if err != nil {
 		return err
 	}
@@ -1026,17 +1026,19 @@ func (e *Engine) submitExternalTask(ctx context.Context, inst *Instance, pattern
 	// The externalTask instanceOp validates the subject identity with vertex_alive
 	// (its DDL's no-orphan check), so the caller always hydrates the BARE
 	// subjectKey. Each subject.<aspect>.data.<field> params template additionally
-	// contributes the known aspect key subjectKey.<aspect> (§10.5 / Mechanism 2:
-	// Loom DECLARES the read-set by pure string parsing and reads NO Core KV; the
-	// instanceOp DDL resolves the templates Processor-side from the hydrated state).
+	// contributes the known aspect key subjectKey.<aspect> as an EGRESS read
+	// (§10.5 / Mechanism 2: Loom DECLARES the read-set by pure string parsing
+	// and reads NO Core KV; the instanceOp DDL resolves the templates
+	// Processor-side from the hydrated state — a sensitive aspect hydrates as
+	// a ref, never plaintext, sensitive-param-egress design §3.4).
 	// The instanceOp is the pattern's step string — the engine names no concrete op
 	// or type. The read-set is cross-checked against the owning package's DDL script
 	// by the package's drift-guard test.
-	reads, err := inferExternalTaskReads(inst.SubjectKey, step.Params)
+	reads, egressReads, err := inferExternalTaskReads(inst.SubjectKey, step.Params)
 	if err != nil {
 		return err
 	}
-	ob, err := buildOutbox(opRequestID, step.InstanceOp, payload, target, e.cfg.Lane, e.cfg.ActorKey, reads, nil)
+	ob, err := buildOutbox(opRequestID, step.InstanceOp, payload, target, e.cfg.Lane, e.cfg.ActorKey, reads, nil, egressReads)
 	if err != nil {
 		return err
 	}
@@ -1067,7 +1069,7 @@ func (e *Engine) complete(ctx context.Context, inst *Instance, pattern *Pattern,
 	requestID := deriveRequestID(inst.InstanceID, lifecycleCursor)
 	// CompletePattern is event-only (no mutations, no reads) — read-free envelope.
 	ob, err := buildOutbox(requestID, opCompletePattern,
-		map[string]any{"instanceId": inst.InstanceID}, "", e.cfg.Lane, e.cfg.ActorKey, nil, nil)
+		map[string]any{"instanceId": inst.InstanceID}, "", e.cfg.Lane, e.cfg.ActorKey, nil, nil, nil)
 	if err != nil {
 		return err
 	}
@@ -1097,7 +1099,7 @@ func (e *Engine) fail(ctx context.Context, inst *Instance, oldToken, reason stri
 		payload["reason"] = reason
 	}
 	// FailPattern is event-only (no mutations, no reads) — read-free envelope.
-	ob, err := buildOutbox(requestID, opFailPattern, payload, "", e.cfg.Lane, e.cfg.ActorKey, nil, nil)
+	ob, err := buildOutbox(requestID, opFailPattern, payload, "", e.cfg.Lane, e.cfg.ActorKey, nil, nil, nil)
 	if err != nil {
 		return err
 	}

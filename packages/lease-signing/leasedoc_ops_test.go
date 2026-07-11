@@ -157,8 +157,15 @@ func TestLeaseDocInstance_MintsClaim_EmitsDocGenEvent(t *testing.T) {
 	if doc == nil {
 		t.Fatalf("params.doc missing: %v", params)
 	}
+	// tenantName is deliberately never assembled (sensitive-param-egress design
+	// §3.6's emission guard — see leasedoc_scripts.go's CreateLeaseDocInstance
+	// comment): a link-discovered sensitive aspect has no contextHint.egressReads
+	// declaration path, so the DDL omits it rather than leak plaintext into the
+	// durable external.docGen event.
+	if _, present := doc["tenantName"]; present {
+		t.Fatalf("doc.tenantName must be omitted (no egress-safe read path yet), got %v", doc["tenantName"])
+	}
 	wantStrings := map[string]string{
-		"tenantName":        "Alice Smith",
 		"applicant":         applicantKey,
 		"unitKey":           unitKey,
 		"unitAddress":       "123 Loft St",

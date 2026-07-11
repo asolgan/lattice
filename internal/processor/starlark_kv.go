@@ -307,14 +307,23 @@ func parseLinkDoc(data []byte, key string) (LinkDoc, error) {
 // every other error propagates. Single-key GET only — never a prefix scan.
 //
 // ddls/vault back decrypt-on-read (Contract #3 §3.10) for a sensitive aspect
-// read lazily rather than via contextHint — the same decryption step 4
+// read lazily rather than via contextHint — the same disposition step 4
 // applies to its pre-fetched keys. Both nil-safe: a reader without them
 // (most test harnesses) returns the aspect's ciphertext opaque, unchanged.
+//
+// egressKeys/tracker carry the op's egressReads disposition to this seam too
+// (§3.1 "one disposition, both read paths"): a key declared in
+// contextHint.egressReads is, by construction, already served from the step-4
+// Hydrated cache (kv.Read is cache-first), so this lazy path only matters for
+// consistency — a key present in egressKeys but reached here anyway gets the
+// same ref-if-sensitive disposition, never plaintext.
 type connKVReader struct {
-	conn   *substrate.Conn
-	bucket string
-	ddls   *DDLCache
-	vault  vault.Vault
+	conn       *substrate.Conn
+	bucket     string
+	ddls       *DDLCache
+	vault      vault.Vault
+	egressKeys map[string]struct{}
+	tracker    *sensitiveReadTracker
 }
 
 // ReadVertex implements ScriptKVReader.
@@ -331,7 +340,8 @@ func (r connKVReader) ReadVertex(ctx context.Context, key string) (*VertexDoc, e
 		return nil, err
 	}
 	doc.Revision = entry.Revision
-	if err := decryptSensitiveDoc(ctx, r.conn, r.bucket, r.ddls, r.vault, &doc); err != nil {
+	_, egress := r.egressKeys[key]
+	if err := decryptSensitiveDoc(ctx, r.conn, r.bucket, r.ddls, r.vault, &doc, egress, r.tracker); err != nil {
 		return nil, err
 	}
 	return &doc, nil

@@ -182,6 +182,47 @@ func TestResolveSubjectParams_TombstonedAspect_LoudFail(t *testing.T) {
 	}
 }
 
+// TestResolveSubjectParams_SensitiveRefPassThrough_FieldAppended: a
+// contextHint.egressReads-hydrated sensitive aspect carries a $sensitiveRef
+// marker instead of plaintext (design sensitive-param-egress §3.2/§3.3) — the
+// resolver recognizes it BEFORE the field lookup and returns a
+// {"$sensitiveRef": {...marker, "field": <name>}} dict for the bridge's
+// post-decrypt extraction. The plaintext absent-field check never fires: the
+// field is legitimately not there (the aspect never decrypted).
+func TestResolveSubjectParams_SensitiveRefPassThrough_FieldAppended(t *testing.T) {
+	h := epHydrated()
+	ssnKey := epSubject + ".ssn"
+	h[ssnKey] = processor.VertexDoc{
+		Key: ssnKey, Class: "ssn", VertexKey: epSubject, LocalName: "ssn",
+		Data: map[string]interface{}{
+			"$sensitiveRef": map[string]interface{}{
+				"ref":        ssnKey,
+				"ciphertext": map[string]interface{}{"ct": "Y2lwaGVy", "nonce": "bm9uY2U=", "keyId": "k1"},
+			},
+		},
+	}
+	got, err := runResolve(t, map[string]interface{}{
+		"ssn": "subject.ssn.data.value",
+	}, h)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	sref, ok := got["ssn"].(map[string]interface{})["$sensitiveRef"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("ssn: got %+v, want a $sensitiveRef dict", got["ssn"])
+	}
+	if sref["ref"] != ssnKey {
+		t.Fatalf("$sensitiveRef.ref = %v, want %q", sref["ref"], ssnKey)
+	}
+	if sref["field"] != "value" {
+		t.Fatalf("$sensitiveRef.field = %v, want %q (the requested plaintext field name)", sref["field"], "value")
+	}
+	ct, ok := sref["ciphertext"].(map[string]interface{})
+	if !ok || ct["keyId"] != "k1" {
+		t.Fatalf("$sensitiveRef.ciphertext = %+v, want the hydrated ciphertext verbatim", sref["ciphertext"])
+	}
+}
+
 // TestResolveSubjectParams_MalformedTemplate_LoudFail: a subject.* value that is
 // not a §10.5 path is rejected (defense-in-depth — Loom's inferExternalTaskReads
 // rejects it first at submit, but the resolver also validates).
