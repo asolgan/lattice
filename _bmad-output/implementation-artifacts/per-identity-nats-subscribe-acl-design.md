@@ -1,6 +1,12 @@
 # Per-identity NATS subscribe-ACL (Edge sync plane) — design
 
-**Status: 📐 awaiting-Andrew (ratification)** · Designer fire 2026-07-10
+**Status: ✅ RATIFIED (Andrew, 2026-07-10) — fork A: NATS auth callout on the existing static conf.**
+B (operator mode) stays the recorded evolution with its revive trigger (NATS account-level tenant
+isolation demand); C (gateway proxy) stays rejected (couples EDGE.3 to the deferred EDGE.5 WS bridge).
+The #11 §11.1 consumer-table row is committed with this ratification. Ratification DD verified every
+vendor claim against the pinned NATS 2.14 module source (issuer/auth_users requirements, fail-closed
+callout, expiry-disconnect, filtered-create pinning, NKey bypass, client filtered-create form) — zero
+corrections. The Steward builds Fires 1–3; Fire 3 flips EDGE.3 build-ready. · Designer fire 2026-07-10
 **Backlog row:** [lattice.md](../planning-artifacts/backlog/lattice.md) → Security & trust boundary → *Per-identity NATS subscribe-ACL (Edge sync plane)*
 **Consumers:** [Edge Lattice EDGE.3](edge-lattice-full-design.md) (§7 — the one open gate leg) · [Personal Lens Fork 3](personal-secure-lens-design.md) (subject subscribe-authorization)
 **Contracts:** #11 (external actor authN — build-to, plus one staged consumer-table row, see §6) · #1 (subject shapes — build-to) · #75 design's §3.2 matrix (extends, does not alter)
@@ -15,7 +21,8 @@ server-side permission set that allows subscribing **only its own** `lattice.syn
 subject (+ its own scoped JetStream consumer and inbox), with revocation cutting new connects
 immediately and live connections at authorization expiry. This closes the one open EDGE.3 gate leg.
 
-**The architectural fork (your call) — how dynamic per-identity NATS authN is minted:**
+**The architectural fork — DECIDED: A (Andrew, 2026-07-10). How dynamic per-identity NATS authN is
+minted (B/C kept as the recorded roads not taken):**
 
 - **A — NATS auth callout on the existing static conf (my recommendation).** Keep the shipped #75
   Path-A posture (16 static NKey users, one `nats-server.conf`) untouched; add the server's
@@ -443,7 +450,7 @@ EDGE.3's Gate-3 Edge read-bypass suite (Edge design §5) then composes these end
 
 ## 10. Decomposition for the Steward (fire-by-fire, each independently shippable + green)
 
-> Build **only after ✅ Andrew-ratified.** Contract #11 §11.1 row commits with ratification.
+> ✅ Ratified 2026-07-10 (fork A); the #11 §11.1 row committed with the ratification.
 
 1. **Fire 1 — the callout boundary (platform).** `internal/gateway/natsauth` (responder: verify →
    revoke → resolve → issue; permission template as tested data) + `substrate.ConnectOpts.Token` +

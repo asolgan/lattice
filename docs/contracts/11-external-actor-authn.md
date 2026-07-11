@@ -32,6 +32,7 @@ The bound actor feeds, identically, on every surface:
 | RLS read boundary (`set_config('lattice.actor_id', …)`, Contract #6 §6.14) | the bare id of the §11.4-**resolved** actor (`nanoIdFromKey(resolve(ActorID))`) |
 | Revocation kill-switch (`token-revocation` bucket) | the pre-resolution `ActorID` (`A`, §11.5) |
 | Credential→business resolution (`credential-bindings`, §11.4) | the pre-resolution `ActorID` (`A`), as the lookup key |
+| NATS connect surface (Edge sync plane — the auth-callout responder) | the §11.4-**resolved** actor, as the identity every subject in the issued per-connection permission set derives from; the pre-resolution `ActorID` (`A`) for the §11.5 revocation check at connect |
 
 The bound actor id `A` (§11.3) is what the verifier produces; the envelope stamp and the RLS var carry
 whatever `A` **resolves to** (§11.4) — never a raw `Subject` a resolving surface would then override.

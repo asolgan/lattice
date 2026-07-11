@@ -113,9 +113,10 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 > the offline-first read loop AND the optimistic write path (`internal/edge/{store,sync,overlay,agent}` +
 > `cmd/edge`) are done. **Edge's own queue is now gated**: EDGE.3 (untrusted multi-identity) needs D1
 > (Personal Lens PL.3) + the Gateway write-path translator + NATS-account subscribe-ACL — not build-ready
-> yet (edge design §7 checkpoint). **Next pick: sensitive-param-egress Fires 1–2** (✅ ratified
-> 2026-07-10, External-I/O table — the first real PII adapter payload, lease-signing e2e as the live
-> consumer).
+> yet (edge design §7 checkpoint) — but its gate is now owned + ratified. **Next picks (both ✅
+> 2026-07-10): per-identity subscribe-ACL Fires 1–3** (fork A auth-callout — builds the EDGE.3 gate
+> leg, Security table) · **sensitive-param-egress Fires 1–2** (first real PII adapter payload,
+> lease-signing e2e, External-I/O table).
 > *Still gated*: **AI-caps Fire 4** (Andrew sign-off on AI-code-execution, not the sandbox).
 > Whoever ships the named pick updates this callout to the next one — a stale callout starves the lane.
 
@@ -124,7 +125,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 |---|---|---|---|---|
 | NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | ✅ effectively done · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) §Fire-3-status · only deferred Fire 4 (prod mTLS) remains |
 | **Multi-credential identity linking + merge credential-awareness** | One human, N IdPs: no path binds a 2nd credential to a claimed U (claim is one-shot); MergeIdentity never repoints credentialindex/bindings and the materializers fold `identity.claimed` only → a merge strands A on the merged-loser. Link flow + merge rebind + provision probe + unlink + whoami. | ★★ | M | ✅ ratified 2026-07-10 (unlink in scope — 4 fires) · [design](../../implementation-artifacts/multi-credential-identity-linking-design.md) |
-| **Per-identity NATS subscribe-ACL (Edge sync plane)** | Untrusted Edge connections may subscribe ONLY their own per-identity SYNC subject (`subjects.PersonalSync`), and revocation must cut subscribe. #75 v1 explicitly declined subscribe lockdown (§3.2); PL Fork 3 assumed #75 delivers it — un-owned gap, now filed. Needs dynamic per-identity NATS authN (auth-callout vs operator-JWT fork), consuming Contract #11 tokens. | ★★ | M | 📐 awaiting-Andrew · [design](../../implementation-artifacts/per-identity-nats-subscribe-acl-design.md) |
+| **Per-identity NATS subscribe-ACL (Edge sync plane)** | Untrusted Edge connections may subscribe ONLY their own per-identity SYNC subject (`subjects.PersonalSync`), and revocation must cut subscribe. #75 v1 explicitly declined subscribe lockdown (§3.2); PL Fork 3 assumed #75 delivers it — un-owned gap, now owned. Dynamic per-identity NATS authN consuming Contract #11 tokens. | ★★ | M | ✅ ratified 2026-07-10 (fork A — auth callout) · [design](../../implementation-artifacts/per-identity-nats-subscribe-acl-design.md) · Fire 3 flips EDGE.3 build-ready |
 
 ### Privacy / Vault
 | Item | What it is | Imp | Size | State |
