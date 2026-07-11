@@ -136,7 +136,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Privacy / Vault
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **[identity-hygiene] Dedup over encrypted PII (duplicateCandidates)** | Write-time flagging on the identityindex convention: create-collision emits a durable `duplicateOf` link; PII-free structural lens; decrypt-free merge repoint + in-commit shred erase via `indexes` links; fixes the live duplicate-create RevisionConflict + merge EdgeNotALink bugs. | ★★ | M | 🏗️ building · [design §checkpoint](../../implementation-artifacts/dedup-over-encrypted-pii-design.md) · next: Fire 2 merge maintenance |
+| **[identity-hygiene] Dedup over encrypted PII (duplicateCandidates)** | Write-time flagging on the identityindex convention: create-collision emits a durable `duplicateOf` link; PII-free structural lens; decrypt-free merge repoint + in-commit shred erase via `indexes` links; fixes the live duplicate-create RevisionConflict + merge EdgeNotALink bugs. | ★★ | M | 🏗️ building · [design §checkpoint](../../implementation-artifacts/dedup-over-encrypted-pii-design.md) · next: Fire 3 shred hygiene |
 
 ### External-I/O maturity (bridge follow-ons)
 | Item | What it is | Imp | Size | State |
@@ -192,6 +192,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-11 · `3a2aa15` · [identity-hygiene] dedup-over-encrypted-pii Fire 2 — MergeIdentity duplicateOf both-direction tombstone + indexes-driven repoint + edge trust-gate real-class fix; CI green (incl. verify-package-identity-hygiene)
 - 2026-07-11 · `51a3f2e` · [identity-hygiene] dedup-over-encrypted-pii Fire 1 — duplicateOf/indexes links + dispatcher sweep fixes live RevisionConflict; PII-free lens; DiffRetraction on nats-kv; CI green
 - 2026-07-11 · `4258180` · [natsperm] natsperm-matrix-hygiene Fire 1 CLOSED — platform-bucket registry derives provisioning/guards/matrix; matrix hoisted to internal/natsperm; CI green
 - 2026-07-11 · `2a5459d` · [Gateway] natsperm-matrix-hygiene Fire 0 — credential-bindings publish grant + bucketguard reserved entry (live bug fix); CI green

@@ -23,8 +23,20 @@ duplicateOf/indexes classes. Full `go test ./...` (97 packages) + `go build`/`ma
 (`make verify-package-identity-hygiene`) — the two new link-type DDLs are new entities, which F-004's
 in-place refresh does not cover, and a fresh bootstrap of the shared stack was judged too disruptive
 for a bounded fire; the exhaustive local suite (including real-Processor-pipeline integration tests)
-is the substitute evidence. **Next: Fire 2** (merge maintenance — `MergeIdentity` tombstone +
-`indexes`-driven repoint + the edge-trust-gate fix).
+is the substitute evidence. **🏗️ Fire 2 checkpoint (Steward, 2026-07-11).** Shipped: `MergeIdentity`
+now tombstones the pair's `duplicateOf` link (both directional keys probed via optionalReads — the
+operator may invert primary/secondary from the link's own creation direction, §3.4/§12 finding 6);
+repoints the secondary's owned `identityindex` vertices via their inbound `indexes` links (bounded
+kv.Links enumeration, tombstone old link + update owner + create new link — no decryption); the edge
+trust gate no longer requires `envelope.class == "link"` (real production links carry their relation
+name as class, e.g. `holdsRole` — §2.4/§12 finding 7, a bug that failed every production merge on its
+first edge). `cmd/lattice/candidates` declares the new optionalReads + the second (`indexes`)
+enumeration hint. 4 new e2e tests (forward + inverted duplicateOf tombstone, indexes repoint with a
+third-party-untouched assertion, real-class trust-gate acceptance). Full `go test ./...` (97 packages)
++ `go build`/`make vet`/`golangci-lint`/`STRICT lint-conventions` green, **and** verified against the
+live shared dev stack this time (`verify-package-identity-hygiene` — CI `stack-gates` job, no new
+entities this fire so no bootstrap disruption). **Next: Fire 3** (shred hygiene — `ShredIdentityKey`
+in-commit erase of owned indexes + duplicateOf links).
 Backlog row: `planning-artifacts/backlog/lattice.md` → *Privacy / Vault → [identity-hygiene] Dedup over
 encrypted PII* (★★, M). Charter: `vault-crypto-shredding-design.md` Fire 5b-i checkpoint ("blind-index /
 HMAC companion aspect at write time, or a sanctioned engine-side mechanism — routed to the Designer").
