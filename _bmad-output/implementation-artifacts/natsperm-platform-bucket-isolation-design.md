@@ -1,6 +1,11 @@
 # NATS permission matrix — platform-bucket write isolation (Refractor `$KV.>` narrowing) — design
 
-**Status: 📐 awaiting-Andrew (ratification)** · Designer fire 2026-07-10
+**Status: ✅ RATIFIED (Andrew, 2026-07-10) — fork A (registry-derived denies; `$KV.>` allow kept).**
+Fork B (`lens-*` prefix allowlist) formally **retired** — inexpressible on the substrate (whole-token
+wildcards, dot-free bucket names) — and the §8 fold obligation is done: the write-restriction design's
+§3.4/§8.3/§11 "noted path" sentences are rewritten in the ratification commit to point here. Fire 0
+(Gateway credential-bindings grant) remains its own independent 📋 row. The Lattice Steward builds
+Fire 1. · Designer fire 2026-07-10
 **Backlog row:** [lattice.md](../planning-artifacts/backlog/lattice.md) → Arch-review intake → *natsperm-matrix-hygiene* (the deferred Refractor half; the bridge phantom-bucket half shipped `0377938`)
 **Origin:** [arch-review 2026-07-02](../../docs/reviews/arch-review-2026-07-02.md) finding + action #19; the residual **accepted for v1** by the ratified [NATS account write restriction design](nats-account-write-restriction-design.md) §3.4/§8.3
 **Contracts:** none changed — the matrix (`deploy/gen-dev-nkeys`), `deploy/nats-server.conf`, `internal/pkgmgr/bucketguard.go`, and `internal/natsperm` are component/deploy surface, not frozen contracts. Contract #7 §7.1 (bootstrap as the sanctioned provisioner) is built-to verbatim.

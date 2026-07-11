@@ -249,10 +249,12 @@ auth code.
   **Resolution:** Refractor — the *sole* lens projector — is granted `publish $KV.>` with a single
   **deny `$KV.core-kv.>`**. "Refractor may write any KV target except Core KV" is *correct by
   construction* (it never writes Core KV; it writes every other projection) and future-proof (new
-  packages need no conf change). Residual: Refractor *could* technically write `weaver-state` /
-  `loom-state`; accepted for v1 (Refractor is trusted internal; the high-value bucket, Core KV, is
-  denied). A later tightening can prefix all lens targets (`lens.*`) and narrow Refractor to that
-  prefix — noted, not forced.
+  packages need no conf change). The v1 residual (Refractor could write `weaver-state`/`loom-state`
+  etc.) is closed by the ratified
+  [platform-bucket isolation design](natsperm-platform-bucket-isolation-design.md): registry-derived
+  explicit denies on every non-owned platform bucket. (A `lens.*`-prefix allowlist is **inexpressible
+  on the substrate** — NATS wildcards match whole tokens only and bucket names are dot-free
+  `^[a-zA-Z0-9_-]+$` — so prefix-narrowing was retired, not built.)
 - **JS-API over-restriction (adversarial finding — the top break-risk).** Every internal component
   creates **durable consumers** (`$JS.API.CONSUMER.CREATE.*`) and needs stream info. Narrowly
   scoping `$JS.API.>` per stream is brittle and would break the stack. **Resolution:** v1 grants
@@ -380,8 +382,10 @@ The proof is the bypass suite flipping from *soft* to *hard*:
 - **8.2 Residual: actor impersonation over `core-operations`.** Out of scope by design (§2) —
   closed by D1.1 / control Fire 2 authN. Stated honestly in the For-Andrew block; this design is a
   *layer*, not the whole boundary.
-- **8.3 Residual: trusted-internal lateral writes.** Refractor's broad `$KV.>`-except-core (§3.4) and
-  shared subscribe leave some intra-trust latitude; accepted for v1, tightening path noted.
+- **8.3 Residual: trusted-internal lateral writes.** Refractor's broad `$KV.>`-except-core (§3.4) is
+  closed by the ratified [platform-bucket isolation design](natsperm-platform-bucket-isolation-design.md)
+  (registry-derived denies); shared **subscribe** latitude remains accepted intra-trust (the external
+  subscribe story is the per-identity subscribe-ACL design's).
 - **8.4 mTLS is not in this design.** #75 pairs NATS-auth with mTLS (transport *encryption*). They
   are orthogonal: auth = *who may publish*; mTLS = *is the channel encrypted/peer-verified*.
   Recommend mTLS be configured in the same `nats-server.conf` as a deploy concern (Fire 4 / ops), not
@@ -516,7 +520,9 @@ one-time authorization to restart the shared stack unattended).
 - *Static conf vs operator mode?* → **Fork for Andrew (§9); recommend A (static-conf NKey) now.**
 - *NKey vs creds vs user/pass?* → **NKey** (§9), resolved.
 - *Allow-list vs deny-list for Refractor's lens-target writes?* → **`$KV.>` allow + `$KV.core-kv.>`
-  deny** (§3.4), resolved (future tightening via a `lens.*` prefix, noted).
+  deny** (§3.4), resolved; tightened by the ratified
+  [platform-bucket isolation design](natsperm-platform-bucket-isolation-design.md)'s registry-derived
+  denies (the once-noted `lens.*` prefix is inexpressible on the substrate — retired).
 - *Lock down subscribe too?* → **No** in v1 (§3.2) — read-side subject scoping is the Personal-Lens /
   Edge concern (D1 territory), not this hardening.
 - *Does this need actor-authN to be useful?* → **No** (§2) — it closes direct fabrication standalone;

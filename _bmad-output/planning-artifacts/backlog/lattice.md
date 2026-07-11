@@ -79,7 +79,7 @@ Severity-ordered; same row discipline as component maintenance (shipped rows col
 
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **natsperm-matrix-hygiene** | Refractor's `$KV.>` write is broader than its lens-target set (covers dynamically-named package buckets — narrowing needs a real design, not a mechanical prune). | ★ | S | 📐 awaiting-Andrew · [design](../../implementation-artifacts/natsperm-platform-bucket-isolation-design.md) · bridge half shipped `0377938` |
+| **natsperm-matrix-hygiene** | Platform-bucket registry (bucket → owner/lensTarget/sharedWrite) derives provisioning, the pkgmgr lens guard, and the matrix owner-allows + non-owner denies — narrows Refractor's `$KV.>` off engine/auth buckets and closes the `$JS.API.>` backing-stream side-channel matrix-wide. | ★ | S | ✅ ratified 2026-07-10 (fork A; `lens-*` prefix retired as infeasible) · [design](../../implementation-artifacts/natsperm-platform-bucket-isolation-design.md) |
 
 ### Refractor re-review (2026-07-06)
 
