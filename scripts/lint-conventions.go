@@ -51,7 +51,7 @@
 //     --strict, per the script-read-posture design §13's flip once the
 //     platform + verticals sweeps closed the debt list). Every script
 //     `kv.Read(` / `kv.Links(` call site in a
-//     packages/ non-test file must carry a `# read-posture: (a|c|d|e)`
+//     packages/ non-test file must carry a `# read-posture: (a|c|d|e|f)`
 //     Starlark annotation on the call line or within the preceding lines:
 //     (a) required read declared in contextHint.reads by the dispatcher (the
 //     key's absence is a correctness error — annotate the site's own
@@ -64,7 +64,10 @@
 //     records `epoch=` (the companion class-(a) serialization key an
 //     enumerate-then-write contends, or an explicit `epoch=none (…)`
 //     acceptance — best-effort; Weaver detect+recover enforces);
-//     a per-element follow-up kv.Read off an enumeration is also (e).
+//     a per-element follow-up kv.Read off an enumeration is also (e);
+//     (f) required read declared in contextHint.egressReads by the dispatcher
+//     (sensitive-param-egress design §3.1) — fail-closed like (a), except a
+//     sensitive-DDL key hydrates as a `$sensitiveRef` marker, never plaintext.
 //     An UNANNOTATED call is flagged class-(b) — a declarable-but-undeclared
 //     lazy read, the read posture's only debt class. Same posture as
 //     TestPackage_NoScans, extended from "no raw scans" to "declare (or
@@ -114,7 +117,7 @@ var (
 	// call must carry on its line or within the preceding window.
 	kvCall        = regexp.MustCompile(`kv\.(Read|Links)\(`)
 	kvLinksCall   = regexp.MustCompile(`kv\.Links\(`)
-	readPosture   = regexp.MustCompile(`#\s*read-posture:\s*\(([acde])\)`)
+	readPosture   = regexp.MustCompile(`#\s*read-posture:\s*\(([acdef])\)`)
 	scriptMutates = regexp.MustCompile(`"op":\s*"(create|update|tombstone)"|make_(vtx|link|aspect|update)`)
 	// lensAdapterPostgres anchors a pkgmgr.LensSpec composite literal's Adapter
 	// field declaring "postgres" (Contract #6 §6.14: a postgres business read
@@ -457,7 +460,7 @@ func checkReadPosture(path string, ln int, line string, window []string, fileMut
 			call = "kv.Links"
 		}
 		return []finding{{file: path, line: ln, warn: false,
-			msg: "read-posture: unclassified " + call + " — class-(b) debt (Contract #2 §2.5). Declare the key in contextHint reads/optionalReads and annotate the call: `# read-posture: (a) <declared-by>` (required read declared in contextHint.reads), `(c) <why>` (config, deliberately live), `(d) <declared-by>` (declared optionalReads), or `(e) relation=<rel> epoch=<key|none (…)>` (bounded enumeration / its follow-up read)"}}
+			msg: "read-posture: unclassified " + call + " — class-(b) debt (Contract #2 §2.5). Declare the key in contextHint reads/optionalReads/egressReads and annotate the call: `# read-posture: (a) <declared-by>` (required read declared in contextHint.reads), `(c) <why>` (config, deliberately live), `(d) <declared-by>` (declared optionalReads), `(e) relation=<rel> epoch=<key|none (…)>` (bounded enumeration / its follow-up read), or `(f) <declared-by>` (declared egressReads — sensitive-param-egress design §3.1)"}}
 	}
 	var out []finding
 	if isLinks {

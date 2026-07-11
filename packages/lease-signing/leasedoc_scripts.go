@@ -12,12 +12,19 @@ package leasesigning
 //     unsigned application must fail with no claim and no dispatch).
 //   - the emitted params carry the RESOLVED document fields (§10.5's
 //     linked-vertex read: kv.Links walks the applicationFor / appliesToUnit
-//     links; kv.Read loads the applicant's .name — decrypt-on-read supplies the
-//     plaintext {value} for a sensitive aspect — the unit's .address/.listing,
-//     and the application's own .terms), so the vendor receives real field
-//     values and never touches the graph or a lens. Absent optional fields are
-//     omitted from doc{}; the vendor's renderer degrades exactly as the display
-//     path does (an unnamed applicant renders by bare key).
+//     links; kv.Read loads the unit's .address/.listing and the application's
+//     own .terms), so the vendor receives real field values and never touches
+//     the graph or a lens. Absent optional fields are omitted from doc{}; the
+//     vendor's renderer degrades exactly as the display path does (an unnamed
+//     applicant renders by bare key). The applicant's .name is deliberately
+//     NOT read here (sensitive-param-egress design §3.6's emission guard): a
+//     link-discovered sensitive aspect has no contextHint.egressReads
+//     declaration path (Loom cannot pre-declare a key this DDL only resolves
+//     at execute time via live_link_target), so a plaintext read here would
+//     be structurally rejected as sensitive-plaintext-into-external-event.
+//     The vendor renders a nameless document (the same degrade this DDL
+//     already used for a shredded/unprovisioned applicant) until a follow-on
+//     extends egress-safe reads to link-discovered aspects.
 const leaseDocInstanceDDLScript = `
 def make_vtx(key, cls, data):
     return {"op": "create", "key": key,
@@ -184,20 +191,16 @@ def execute(state, op):
         applicant = live_link_target(subject_key, "applicationFor")
         if applicant != None:
             doc["applicant"] = applicant
-            # The identity's display name: a sensitive aspect, so kv.Read's
-            # decrypt-on-read supplies the plaintext {value}. The decrypt needs
-            # the identity's live, un-shredded .piiKey — probe it FIRST, because
-            # kv.Read of a sensitive aspect FAILS (not degrades) when the key
-            # envelope is absent, and a shredded key envelope stays PRESENT with
-            # data.shredded=true (privacy-base's ShredIdentityKey updates it in
-            # place rather than deleting it) — so presence alone is not enough,
-            # the probe must also check the flag. A nameless document renders by
-            # the bare applicant key rather than wedge generation (the same
-            # degrade rule as an unnamed identity — crypto-shredded applicants
-            # included).
-            pii_key = aspect_data(applicant + ".piiKey")
-            if pii_key != None and not pii_key.get("shredded"):
-                put_string(doc, "tenantName", aspect_data(applicant + ".name"), "value")
+            # tenantName is deliberately NOT assembled here: the identity's
+            # display name is a sensitive aspect, and this key is discovered
+            # at execute time from the applicationFor link — Loom cannot
+            # pre-declare it in contextHint.egressReads, so a plaintext
+            # kv.Read/aspect_data of it is rejected by the commit-path
+            # emission guard (sensitive-param-egress design §3.6: no
+            # sensitive plaintext may reach an external.* event). The vendor
+            # renders a nameless document (the same degrade this DDL already
+            # used for a shredded/unprovisioned applicant) until a follow-on
+            # extends egress-safe reads to link-discovered aspects.
 
         unit = live_link_target(subject_key, "appliesToUnit")
         if unit != None:

@@ -151,12 +151,17 @@ func (h *HydratorImpl) Hydrate(ctx context.Context, env *OperationEnvelope) (Hyd
 	}
 
 	// 4. Hydrate contextHint.reads (fail-closed) + contextHint.optionalReads
-	// (absence-tolerant) — Contract #2 §2.5 read posture. A `reads` key that is
+	// (absence-tolerant) + contextHint.egressReads (fail-closed, ref-if-
+	// sensitive) — Contract #2 §2.5 read posture. A `reads` key that is
 	// missing faults HydrationMiss; an `optionalReads` key that is missing is
 	// recorded *known-absent* so kv.Read serves None from the step-4 snapshot
-	// (the class-(d) read-before-create / dedup pattern) with no live GET.
+	// (the class-(d) read-before-create / dedup pattern) with no live GET; an
+	// `egressReads` key that is missing faults HydrationMiss identically to
+	// `reads` — a param template's target is by definition required.
 	hydrated := make(map[string]VertexDoc)
 	var knownAbsent map[string]struct{}
+	tracker := &sensitiveReadTracker{}
+	var egressKeys map[string]struct{}
 	if env.ContextHint != nil {
 		for _, key := range env.ContextHint.Reads {
 			if key == "" {
@@ -176,7 +181,7 @@ func (h *HydratorImpl) Hydrate(ctx context.Context, env *OperationEnvelope) (Hyd
 				return HydratedState{}, fmt.Errorf("step4: parse %s: %w", key, err)
 			}
 			doc.Revision = entry.Revision
-			if err := decryptSensitiveDoc(ctx, h.Conn, h.CoreBucket, h.DDLs, h.Vault, &doc); err != nil {
+			if err := decryptSensitiveDoc(ctx, h.Conn, h.CoreBucket, h.DDLs, h.Vault, &doc, false, tracker); err != nil {
 				return HydratedState{}, fmt.Errorf("step4: decrypt %s: %w", key, err)
 			}
 			hydrated[key] = doc
@@ -212,7 +217,41 @@ func (h *HydratorImpl) Hydrate(ctx context.Context, env *OperationEnvelope) (Hyd
 				return HydratedState{}, fmt.Errorf("step4: parse %s: %w", key, err)
 			}
 			doc.Revision = entry.Revision
-			if err := decryptSensitiveDoc(ctx, h.Conn, h.CoreBucket, h.DDLs, h.Vault, &doc); err != nil {
+			if err := decryptSensitiveDoc(ctx, h.Conn, h.CoreBucket, h.DDLs, h.Vault, &doc, false, tracker); err != nil {
+				return HydratedState{}, fmt.Errorf("step4: decrypt %s: %w", key, err)
+			}
+			hydrated[key] = doc
+		}
+		for _, key := range env.ContextHint.EgressReads {
+			if key == "" {
+				continue
+			}
+			if egressKeys == nil {
+				egressKeys = map[string]struct{}{}
+			}
+			egressKeys[key] = struct{}{}
+			// ParseEnvelope already rejects a key declared under egressReads
+			// AND EITHER reads or optionalReads, so this cannot re-hydrate an
+			// already-cached read (plaintext or known-absent) under a
+			// weaker/conflicting disposition.
+			if _, ok := hydrated[key]; ok {
+				continue
+			}
+			entry, err := h.Conn.KVGet(ctx, h.CoreBucket, key)
+			if err != nil {
+				if errors.Is(err, substrate.ErrKeyNotFound) {
+					return HydratedState{}, &HydrationError{
+						Code: "HydrationMiss", MissingKey: key, OperationRequestID: rid,
+					}
+				}
+				return HydratedState{}, fmt.Errorf("step4: read %s: %w", key, err)
+			}
+			doc, err := parseVertexDoc(entry.Value, key)
+			if err != nil {
+				return HydratedState{}, fmt.Errorf("step4: parse %s: %w", key, err)
+			}
+			doc.Revision = entry.Revision
+			if err := decryptSensitiveDoc(ctx, h.Conn, h.CoreBucket, h.DDLs, h.Vault, &doc, true, tracker); err != nil {
 				return HydratedState{}, fmt.Errorf("step4: decrypt %s: %w", key, err)
 			}
 			hydrated[key] = doc
@@ -238,10 +277,11 @@ func (h *HydratorImpl) Hydrate(ctx context.Context, env *OperationEnvelope) (Hyd
 			// Back the script's lazy kv.Read() (§2.5) with a single-key reader
 			// over the same Conn + Core bucket used for hydration. A read of a
 			// key not pre-fetched via contextHint falls through to this.
-			KVReader: connKVReader{conn: h.Conn, bucket: h.CoreBucket, ddls: h.DDLs, vault: h.Vault},
+			KVReader: connKVReader{conn: h.Conn, bucket: h.CoreBucket, ddls: h.DDLs, vault: h.Vault, egressKeys: egressKeys, tracker: tracker},
 			// Back the script's kv.Links() (§2.5.1) with a bounded link lister
 			// over the same Conn + Core bucket — the op-time set-valued enumeration.
-			LinkLister: connLinkLister{conn: h.Conn, bucket: h.CoreBucket},
+			LinkLister:     connLinkLister{conn: h.Conn, bucket: h.CoreBucket},
+			SensitiveReads: tracker,
 		},
 	}, nil
 }

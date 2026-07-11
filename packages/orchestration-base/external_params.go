@@ -29,6 +29,19 @@ package orchestrationbase
 // The grammar mirrors the engine's parseGuardPath (guard.go) and the resolver
 // must stay in lockstep with it: subject.data.<field> reads the subject root,
 // subject.<aspect>.data.<field> reads the named aspect.
+//
+// A subject.<aspect>.data.<field> token declares its aspect key in
+// contextHint.egressReads, not contextHint.reads (Loom's inferExternalTaskReads,
+// sensitive-param-egress design §3.4) — a sensitive aspect therefore hydrates
+// as a `$sensitiveRef` marker rather than plaintext. The resolver checks for
+// that marker BEFORE the field lookup (§3.3): it has no sensitivity knowledge
+// of its own, it only recognizes the marker the Processor authored. When
+// present, the token resolves to a `$sensitiveRef` dict carrying the requested
+// `field` name for the bridge's post-decrypt extraction at the egress
+// boundary; the plaintext absent-field check does not apply (the field is
+// legitimately not there — the aspect never decrypted). A non-sensitive
+// egressReads aspect hydrates exactly like a plain read, so it falls through
+// to the ordinary field lookup unchanged.
 const ResolveSubjectParamsHelper = `
 def _resolve_subject_token(param_name, token, subject_key):
     rest = token[len("subject."):]
@@ -51,14 +64,25 @@ def _resolve_subject_token(param_name, token, subject_key):
     if aspect != "":
         key = subject_key + "." + aspect
 
-    # read-posture: (a) declared in contextHint.reads by Loom's
-    # inferExternalTaskReads (internal/loom/externaltask_params.go) — every
-    # subject.<aspect>.data.<field> param token contributes its aspect key
+    # This one call site serves two dispositions depending on the token
+    # shape: when aspect == "" (subject.data.<field>), key is the subject
+    # root —
+    # read-posture: (a) declared in contextHint.reads unconditionally by
+    # Loom's inferExternalTaskReads (internal/loom/externaltask_params.go).
+    # When aspect != "" (subject.<aspect>.data.<field>), key is the templated
+    # aspect —
+    # read-posture: (f) declared in contextHint.egressReads by the same
+    # function — every such param token contributes its aspect key there.
     node = kv.Read(key)
     if node == None:
         fail("MissingSubjectData: " + param_name + " = " + token + " (key " + key + " absent)")
     if hasattr(node, "isDeleted") and node.isDeleted:
         fail("MissingSubjectData: " + param_name + " = " + token + " (key " + key + " tombstoned)")
+    sref = node.data.get("$sensitiveRef")
+    if sref != None:
+        egress = dict(sref)
+        egress["field"] = field
+        return {"$sensitiveRef": egress}
     val = node.data.get(field)
     if val == None:
         fail("MissingSubjectData: " + param_name + " = " + token + " (field " + field + " absent or null)")

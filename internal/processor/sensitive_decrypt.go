@@ -9,16 +9,35 @@ import (
 	"github.com/asolgan/lattice/internal/vault"
 )
 
-// decryptSensitiveDoc replaces doc.Data with its decrypted plaintext when
-// doc's class resolves to a sensitive DDL (Contract #3 §3.10) — the
-// decrypt-on-read half of commit-path step 6.5's encrypt-on-write, shared by
-// step 4's contextHint.reads hydration and the lazy kv.Read() seam
-// (connKVReader). ddls or v nil, or doc's class not found / not sensitive,
-// leaves doc untouched: the aspect's ciphertext shape passes through as
-// opaque data, the safe default for a pipeline that never wired a Vault
-// (most test harnesses that do not exercise PII).
-func decryptSensitiveDoc(ctx context.Context, conn *substrate.Conn, bucket string, ddls *DDLCache, v vault.Vault, doc *VertexDoc) error {
-	if ddls == nil || v == nil || doc == nil {
+// sensitiveReadTracker records whether this operation's execution decrypted
+// any sensitive aspect as PLAINTEXT (the egress=false disposition below) —
+// consulted by step 6's emission guard (design sensitive-param-egress §3.6):
+// an op that emits an `external.*`-domain event AND decrypted sensitive
+// plaintext this execution is rejected, because sensitive data may reach an
+// external event only as an `egressReads` ref. Shared by pointer across step
+// 4's contextHint.reads/optionalReads/egressReads decrypt calls and the lazy
+// kv.Read() seam (connKVReader) for one execution.
+type sensitiveReadTracker struct {
+	plaintextRead bool
+}
+
+// decryptSensitiveDoc applies the Contract #3 §3.10 read-side disposition
+// when doc's class resolves to a sensitive DDL: shared by step 4's
+// contextHint.reads/optionalReads/egressReads hydration and the lazy
+// kv.Read() seam (connKVReader). ddls nil, or doc's class not found / not
+// sensitive, leaves doc untouched: the aspect's ciphertext shape passes
+// through as opaque data.
+//
+// egress selects the disposition for a sensitive doc: false decrypts to
+// plaintext (v nil leaves the ciphertext untouched — the safe default for a
+// pipeline that never wired a Vault, most test harnesses that do not
+// exercise PII) and marks tracker plaintext-read; true never decrypts —
+// instead doc.Data becomes a `$sensitiveRef` marker (the aspect's at-rest
+// ciphertext verbatim, keyed by its own aspect key) that the bridge unwraps
+// at the external-egress boundary (design sensitive-param-egress §3.2). A
+// non-sensitive doc is unaffected by egress either way.
+func decryptSensitiveDoc(ctx context.Context, conn *substrate.Conn, bucket string, ddls *DDLCache, v vault.Vault, doc *VertexDoc, egress bool, tracker *sensitiveReadTracker) error {
+	if ddls == nil || doc == nil {
 		return nil
 	}
 	ref, ok := ddls.Lookup(doc.Class)
@@ -30,6 +49,23 @@ func decryptSensitiveDoc(ctx context.Context, conn *substrate.Conn, bucket strin
 		// A malformed or non-identity-anchored sensitive aspect should never
 		// have committed (step 6 rejects it at write time) — decrypt-on-read
 		// is not the place to re-litigate that; leave the document as-is.
+		return nil
+	}
+	if egress {
+		// Ref-marker authoring needs only the DDL lookup + the ciphertext
+		// already in hand — no live Vault backend required (design §3.2). The
+		// key envelope is deliberately NOT carried: a consumer must always
+		// resolve it live at decrypt time (the restart-/replay-proof shred
+		// gate), never from a frozen copy.
+		doc.Data = map[string]interface{}{
+			"$sensitiveRef": map[string]interface{}{
+				"ref":        doc.Key,
+				"ciphertext": doc.Data,
+			},
+		}
+		return nil
+	}
+	if v == nil {
 		return nil
 	}
 	envelope, err := readPiiKeyEnvelope(ctx, conn, bucket, vertexKey)
@@ -49,6 +85,9 @@ func decryptSensitiveDoc(ctx context.Context, conn *substrate.Conn, bucket strin
 		return fmt.Errorf("unmarshal decrypted %s: %w", doc.Key, err)
 	}
 	doc.Data = value
+	if tracker != nil {
+		tracker.plaintextRead = true
+	}
 	return nil
 }
 

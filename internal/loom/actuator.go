@@ -38,6 +38,7 @@ type opEnvelope struct {
 type contextHint struct {
 	Reads         []string `json:"reads,omitempty"`
 	OptionalReads []string `json:"optionalReads,omitempty"`
+	EgressReads   []string `json:"egressReads,omitempty"`
 }
 
 type authContext struct {
@@ -97,8 +98,8 @@ func (r *relay) handle(ctx context.Context, msg substrate.Message) (substrate.De
 		SubmittedAt:   substrate.FormatTimestamp(time.Now()),
 		Payload:       rec.Payload,
 	}
-	if len(rec.Reads) > 0 || len(rec.OptionalReads) > 0 {
-		env.ContextHint = &contextHint{Reads: rec.Reads, OptionalReads: rec.OptionalReads}
+	if len(rec.Reads) > 0 || len(rec.OptionalReads) > 0 || len(rec.EgressReads) > 0 {
+		env.ContextHint = &contextHint{Reads: rec.Reads, OptionalReads: rec.OptionalReads, EgressReads: rec.EgressReads}
 	}
 	if rec.Target != "" {
 		env.AuthContext = &authContext{Target: rec.Target}
@@ -126,8 +127,11 @@ func (r *relay) handle(ctx context.Context, msg substrate.Message) (substrate.De
 // reads is the dispatched op's ContextHint.Reads (the bare vertex keys its DDL
 // hydrates), nil/empty for read-free ops; optionalReads is its
 // ContextHint.OptionalReads (Contract #2 §2.5 — declared absence-tolerant
-// reads, e.g. CreateTask's dedup key), nil/empty when the op reads none.
-func buildOutbox(requestID, operation string, payload map[string]any, target, lane, actor string, reads, optionalReads []string) (*outboxRecord, error) {
+// reads, e.g. CreateTask's dedup key), nil/empty when the op reads none;
+// egressReads is its ContextHint.EgressReads (§2.5 class (f) — declared
+// external-egress reads, e.g. an externalTask's subject-templated aspect
+// keys), nil/empty when the op declares none.
+func buildOutbox(requestID, operation string, payload map[string]any, target, lane, actor string, reads, optionalReads, egressReads []string) (*outboxRecord, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("loom: marshal op payload: %w", err)
@@ -141,5 +145,6 @@ func buildOutbox(requestID, operation string, payload map[string]any, target, la
 		Actor:         actor,
 		Reads:         reads,
 		OptionalReads: optionalReads,
+		EgressReads:   egressReads,
 	}, nil
 }

@@ -71,6 +71,9 @@ func NewValidator(cache *DDLCache, conn *substrate.Conn, coreBucket string, logg
 // via its instanceOf chain.
 func (v *ValidatorImpl) Validate(ctx context.Context, env *OperationEnvelope, result ScriptResult, state HydratedState) error {
 	rid := env.RequestID
+	if err := validateExternalEgressGuard(result, state, rid); err != nil {
+		return err
+	}
 	for _, m := range result.Mutations {
 		if err := v.validateOne(ctx, env, m, result, state, rid); err != nil {
 			return err
@@ -79,6 +82,34 @@ func (v *ValidatorImpl) Validate(ctx context.Context, env *OperationEnvelope, re
 	v.Logger.Info("step 6: validated",
 		"requestId", rid,
 		"mutations", len(result.Mutations))
+	return nil
+}
+
+// validateExternalEgressGuard enforces the design sensitive-param-egress
+// §3.6 commit-path guard: an op that emits an `external.*`-domain event AND
+// decrypted any sensitive aspect as plaintext this execution (via `reads`,
+// `optionalReads`, or a lazy kv.Read not under `egressReads`) is rejected —
+// sensitive data may reach an external event only as a ref via
+// `contextHint.egressReads`. Scope is deliberately the external-egress plane
+// only: an op emitting no external.* event may still decrypt and derive a
+// value into an ordinary domain event, today's DDL-trust surface, unchanged.
+func validateExternalEgressGuard(result ScriptResult, state HydratedState, rid string) error {
+	tracker := state.Context.SensitiveReads
+	if tracker == nil || !tracker.plaintextRead {
+		return nil
+	}
+	for _, ev := range result.Events {
+		if eventDomain(ev.Class) != "external" {
+			continue
+		}
+		return &DDLViolation{
+			ViolatedConstraint: "externalEgressSensitivePlaintext",
+			OperationRequestID: rid,
+			Detail: fmt.Sprintf(
+				"event class %q (external-egress domain) rejected: this execution decrypted a sensitive aspect as plaintext; sensitive data may reach an external event only as a contextHint.egressReads ref",
+				ev.Class),
+		}
+	}
 	return nil
 }
 

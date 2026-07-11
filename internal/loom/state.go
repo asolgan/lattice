@@ -107,6 +107,11 @@ type outboxRecord struct {
 	// known-absent when missing — never a HydrationMiss. Same additive
 	// backward-compat as Reads.
 	OptionalReads []string `json:"optionalReads,omitempty"`
+	// EgressReads is the dispatched op's ContextHint.EgressReads (Contract #2
+	// §2.5 class (f), sensitive-param-egress design §3.4): an externalTask
+	// instanceOp's subject-templated aspect keys, hydrated ref-if-sensitive
+	// rather than plaintext. Same additive backward-compat as Reads.
+	EgressReads []string `json:"egressReads,omitempty"`
 }
 
 // deadlineMark is the thin value stored under deadline.<instanceId> (Contract

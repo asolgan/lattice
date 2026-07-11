@@ -42,11 +42,17 @@ func (l Lane) valid() bool {
 // pattern); `Enumerations` declares kv.Links link-enumerations (§2.5.1) as
 // METADATA only (class (e)) — the enumeration stays a bounded paged live read,
 // never hydrated; the declaration feeds the Edge mirror-coverage gate and the
-// static read-classification lint.
+// static read-classification lint; `EgressReads` declares reads for external
+// egress (§2.5 class (f)) — fail-closed like `Reads`, except a sensitive-DDL
+// key hydrates as a `$sensitiveRef` marker (ciphertext, never plaintext)
+// rather than decrypted plaintext; a non-sensitive key hydrates identically to
+// a plain read. A key may not appear in `EgressReads` AND EITHER `Reads` or
+// `OptionalReads` (parse error — ambiguous disposition).
 type ContextHint struct {
 	Reads         []string          `json:"reads,omitempty"`
 	OptionalReads []string          `json:"optionalReads,omitempty"`
 	Enumerations  []EnumerationHint `json:"enumerations,omitempty"`
+	EgressReads   []string          `json:"egressReads,omitempty"`
 }
 
 // EnumerationHint is one declared kv.Links enumeration (Contract #2 §2.5 —
@@ -212,6 +218,27 @@ func ParseEnvelope(data []byte) (*OperationEnvelope, error) {
 			}
 			if e.Direction != "out" && e.Direction != "in" {
 				return nil, fmt.Errorf("envelope: contextHint.enumerations[%d] direction must be \"out\" or \"in\", got %q", i, e.Direction)
+			}
+		}
+		if len(env.ContextHint.EgressReads) > 0 {
+			// A key must carry exactly one disposition — reject it declared
+			// under egressReads AND EITHER of the other two read classes,
+			// not just reads. optionalReads⊓egressReads is the same
+			// ambiguity: without this check the optionalReads hydration
+			// loop (which runs first) would win and cache the key as
+			// PLAINTEXT, silently demoting its egressReads disposition
+			// instead of refusing loudly.
+			other := make(map[string]struct{}, len(env.ContextHint.Reads)+len(env.ContextHint.OptionalReads))
+			for _, k := range env.ContextHint.Reads {
+				other[k] = struct{}{}
+			}
+			for _, k := range env.ContextHint.OptionalReads {
+				other[k] = struct{}{}
+			}
+			for _, k := range env.ContextHint.EgressReads {
+				if _, dup := other[k]; dup {
+					return nil, fmt.Errorf("envelope: contextHint key %q declared in egressReads and also in reads/optionalReads (ambiguous disposition)", k)
+				}
 			}
 		}
 	}
