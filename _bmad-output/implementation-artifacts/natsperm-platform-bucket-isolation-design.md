@@ -5,7 +5,8 @@ Fork B (`lens-*` prefix allowlist) formally **retired** — inexpressible on the
 wildcards, dot-free bucket names) — and the §8 fold obligation is done: the write-restriction design's
 §3.4/§8.3/§11 "noted path" sentences are rewritten in the ratification commit to point here. Fire 0
 (Gateway credential-bindings grant) **SHIPPED** `2a5459d` (2026-07-11) — was its own independent row,
-not gated on this ratification. The Lattice Steward builds Fire 1. · Designer fire 2026-07-10
+not gated on this ratification. **Fire 1 (the registry + derivations) SHIPPED** (Lattice Steward,
+2026-07-11) — CLOSED, no further builds queued. · Designer fire 2026-07-10
 **Backlog row:** [lattice.md](../planning-artifacts/backlog/lattice.md) → Arch-review intake → *natsperm-matrix-hygiene* (the deferred Refractor half; the bridge phantom-bucket half shipped `0377938`)
 **Origin:** [arch-review 2026-07-02](../../docs/reviews/arch-review-2026-07-02.md) finding + action #19; the residual **accepted for v1** by the ratified [NATS account write restriction design](nats-account-write-restriction-design.md) §3.4/§8.3
 **Contracts:** none changed — the matrix (`deploy/gen-dev-nkeys`), `deploy/nats-server.conf`, `internal/pkgmgr/bucketguard.go`, and `internal/natsperm` are component/deploy surface, not frozen contracts. Contract #7 §7.1 (bootstrap as the sanctioned provisioner) is built-to verbatim.
@@ -340,12 +341,15 @@ bootstrap), `make verify-kernel` untouched.
   to `bucketguard.go`'s reserved map, regenerated the conf, added the positive Gateway pin + denied-puts
   vector (full non-owner roster, excluding refractor/bootstrap's pre-existing broad `$KV.>` debt) + the
   pkgmgr rejection case. Restores the shipped materializer under enforcement. XS.
-- **Fire 1 — the registry + derivations (this design):** `bootstrap.PlatformBuckets()`;
-  `ProvisionBuckets` + `verify.go` + `pkgmgr.validateLensBuckets` +
-  `cmd/refractor` `reservedActivationBuckets` derive from it; the matrix hoists into
-  `internal/natsperm` with `gen-dev-nkeys` as its thin renderer deriving owner-allows + denies;
-  regenerate conf; the §7 table-driven vectors + conf-parity drift vector. Subsumes Fire 0's hand
-  edits if Fire 0 hasn't shipped yet (either order is safe). S–M, one fire, independently green.
+- **Fire 1 — the registry + derivations (this design) — SHIPPED (Lattice Steward, 2026-07-11):**
+  `bootstrap.PlatformBuckets()` + `ReservedBuckets()`; `ProvisionBuckets` + `verify.go` +
+  `scripts/verify-kernel.go` + `pkgmgr.validateLensBuckets` + `cmd/refractor`
+  `reservedActivationBuckets` derive from it (the latter's own `credential-bindings` hole — a
+  second live instance of the hand-copied-list bug — closed as a byproduct); the matrix hoisted into
+  `internal/natsperm` (`Component`/`Matrix`/`RenderConf`) with `gen-dev-nkeys` reduced to a thin
+  renderer; conf regenerated (seeds unchanged, reused); registry-driven write-isolation +
+  matrix-wide stream-admin-side-channel + conf-parity drift tests added
+  (`internal/natsperm/conf_test.go`); full suite + 3-layer adversarial review green.
 
 ## 10. Risks & alternatives considered
 

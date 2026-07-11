@@ -78,7 +78,6 @@ Severity-ordered; same row discipline as component maintenance (shipped rows col
 
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **natsperm-matrix-hygiene** | Platform-bucket registry (bucket → owner/lensTarget/sharedWrite) derives provisioning, the pkgmgr lens guard, and the matrix owner-allows + non-owner denies — narrows Refractor's `$KV.>` off engine/auth buckets and closes the `$JS.API.>` backing-stream side-channel matrix-wide. | ★ | S | ✅ ratified 2026-07-10 (fork A; `lens-*` prefix retired as infeasible) · [design](../../implementation-artifacts/natsperm-platform-bucket-isolation-design.md) |
 
 ### Refractor re-review (2026-07-06)
 
@@ -193,6 +192,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-11 · `4258180` · [natsperm] natsperm-matrix-hygiene Fire 1 CLOSED — platform-bucket registry derives provisioning/guards/matrix; matrix hoisted to internal/natsperm; CI green
 - 2026-07-11 · `2a5459d` · [Gateway] natsperm-matrix-hygiene Fire 0 — credential-bindings publish grant + bucketguard reserved entry (live bug fix); CI green
 - 2026-07-11 · `474745b` · [Processor] AI-caps Fire 4 inc 1 / loom-starlark-guards Fire 1 — shared sandbox leaf `internal/starlarksandbox` extracted, zero behavior change, 3-layer reviewed; CI green
 - 2026-07-11 · `d713398` · [Bridge] sensitive-param-egress Fire 2 CLOSED — egress unwrap + vault.decrypt grant + lease-signing live consumer; CI green
