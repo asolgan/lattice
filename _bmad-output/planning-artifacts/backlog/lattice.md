@@ -186,6 +186,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-10 · `7eab200` · [Bridge] bridge-untested-arms — AdapterFunc.Execute/Poll + FakeBackgroundCheck/FakeStripe/FakeDocGen Poll unreachable-error arms covered; cov 85.3%→86.3%; CI green
 - 2026-07-10 · `e2a6a27` · [Processor] stub-auth-active-alert-ttl — `EmitAlert` joins Category B's `diagnosticTTL` (re-armed each write); self-clears instead of staying "warning" forever; CI green
 - 2026-07-10 · `c0875e6` · [Core] substrate-untested-arms — Wrap adapter (incl. closed-conn), IsConnectionError/IsInvalidKeyError classifiers, DocumentEnvelope.Update, KVPutWithTTL, KVDeleteRevision; cov 75.6%→77.5%; CI green
 - 2026-07-10 · `20b8707` · [Bootstrap] bootstrap-untested-arms — two-phase-commit recovery/error paths (nanoid.go) + toMap map/struct/marshal-error/non-object-error branches (envelope.go, no prior test file); cov 61.9%→65.5%; CI green
@@ -210,6 +211,4 @@ One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archiv
 - 2026-07-09 · `659c635` · [Weaver] directOp-class-pin — `GapActionSpec.Class` threads to `opEnvelope.Class`; pinned on Café/bespoke-contracts ledger dispatches; unblocks [Café tab-settlement](verticals.md); CI green
 - 2026-07-09 · `128111f` · [orchestration-base] CreateTask logical-delete create-wedge — present-but-isDeleted task revives via CAS-guarded update, not a blind create; §10 revive text ratified; CI green
 - 2026-07-09 · `20abd1e` · [auth] scoped-privileged-lane-grants Fire 3 CLOSED — consoleOperator gains the allowlisted pkg-lifecycle trio at meta; requireRootAdmin retired
-- 2026-07-09 · `f644399` · [Refractor] natskv-guard-edge-branches (storedProjectionSeq half) — fixed negative-seq uint64 wrap, removed dead json.Number branch, covered malformed/absent/negative/non-numeric watermarks; CI green
-- 2026-07-09 · `0982345` · [auth] scoped-privileged-lane-grants Fire 2 — core `{op,lane}` allowlist + fail-closed strip-to-default + `PrivilegedLaneGrantRejected` alert; CI green
 - *(older entries rolled to [archive/lattice-done.md](archive/lattice-done.md); includes `94c8224` hello-lattice NFR-P3 flake fix)*
