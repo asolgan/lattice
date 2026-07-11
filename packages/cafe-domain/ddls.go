@@ -3,11 +3,13 @@ package cafedomain
 import "github.com/asolgan/lattice/internal/pkgmgr"
 
 // DDLs returns the package's DDL meta-vertex declarations: `tab` (OpenTab,
-// Charge, Settle) and the `tabStatus` aspect-type declaration (the step-6
-// write gate for the .status aspect the tab vertexType DDL's own script
-// writes). Mirrors the known-key discipline of location-domain /
-// loftspace-domain / clinic-domain: every op reads ONLY by known key, no
-// prefix scans, no adjacency lookups, no lens-output reads.
+// Charge, Settle), the `tabStatus` aspect-type declaration (the step-6 write
+// gate for the .status aspect the tab vertexType DDL's own script writes),
+// and the `cafeOpenTabGuard` aspect-type declaration (the step-6 write gate
+// for the per-lease open-tab dedup guard OpenTab/Settle maintain). Mirrors
+// the known-key discipline of location-domain / loftspace-domain /
+// clinic-domain: every op reads ONLY by known key, no prefix scans, no
+// adjacency lookups, no lens-output reads.
 //
 // A tab is a short-lived POS session against a resident lease, settled into
 // cafe-ledger's append-only cafeaccount/cafetransaction ledger (Café Inc 1,
@@ -20,6 +22,7 @@ func DDLs() []pkgmgr.DDLSpec {
 	return []pkgmgr.DDLSpec{
 		tabVertexTypeDDL(),
 		tabStatusAspectTypeDDL(),
+		openTabGuardAspectTypeDDL(),
 	}
 }
 
@@ -30,17 +33,22 @@ func tabVertexTypeDDL() pkgmgr.DDLSpec {
 		PermittedCommands: []string{"OpenTab", "Charge", "Settle"},
 		Description: "Café house-tab session DDL. Vertex shape: vtx.tab.<NanoID>, class=tab, root data = {} " +
 			"(minimal, D5 — the running total lives on the .status aspect). OpenTab{leaseAppKey} validates the lease " +
-			"is alive, mints the tab, writes .status {value: open, totalCents: 0, openedAt, leaseAppKey} (leaseAppKey " +
-			"denormalized onto .status so Charge/Settle never need a second declared read for the link target) and " +
-			"the openFor link (tab→leaseapp). Charge{tabKey, amountCents} adds a positive amount to an OPEN tab's " +
-			"running total — an OCC-conditioned upsert of .status keyed on the aspect's own current revision (the " +
-			"providerSlotClaim precedent: two concurrent charges racing the same tab must not lose an update, so " +
-			"totalCents is a real accumulator, not an idempotent set). Settle{tabKey} closes an OPEN tab (.status.value " +
-			"→ settled, settledAt stamped, totalCents frozen), also OCC-conditioned. Settling emits tab.settled — the " +
-			"cafeTabSettlement lens (lenses.go) picks up a settled tab with totalCents>0 and dispatches the resident's " +
-			"café-ledger posting (opening a cafeaccount via CreateAccount on first use, then DebitAccount{tabRef}) " +
-			"through Weaver, never a direct cross-package write from this script. Both Charge and Settle reject a tab " +
-			"that is not currently open (TabNotOpen) — a settled tab cannot be charged again or double-settled.",
+			"is alive, rejects OpenTabAlreadyExists if the lease already has an open tab (the per-lease " +
+			"cafeOpenTabGuard aspect on the leaseapp, mirroring cafe-ledger's cafeLedgerAccountGuard: a class-(d) " +
+			"optionalReads dedup — create the guard fresh on a lease's first-ever tab, OCC-revive it from its prior " +
+			"tombstone on a later one), mints the tab, writes .status {value: open, totalCents: 0, openedAt, " +
+			"leaseAppKey} (leaseAppKey denormalized onto .status so Charge/Settle never need a second declared read " +
+			"for the link target) and the openFor link (tab→leaseapp). Charge{tabKey, amountCents} adds a positive " +
+			"amount to an OPEN tab's running total — an OCC-conditioned upsert of .status keyed on the aspect's own " +
+			"current revision (the providerSlotClaim precedent: two concurrent charges racing the same tab must not " +
+			"lose an update, so totalCents is a real accumulator, not an idempotent set). Settle{tabKey} closes an " +
+			"OPEN tab (.status.value → settled, settledAt stamped, totalCents frozen), also OCC-conditioned, and " +
+			"tombstones the lease's cafeOpenTabGuard so a later OpenTab can claim it again. Settling emits tab.settled " +
+			"— the cafeTabSettlement lens (lenses.go) picks up a settled tab with totalCents>0 and dispatches the " +
+			"resident's café-ledger posting (opening a cafeaccount via CreateAccount on first use, then " +
+			"DebitAccount{tabRef}) through Weaver, never a direct cross-package write from this script. Both Charge " +
+			"and Settle reject a tab that is not currently open (TabNotOpen) — a settled tab cannot be charged again " +
+			"or double-settled.",
 		Script: tabDDLScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"leaseAppKey":{"type":"string","description":"vtx.leaseapp.<NanoID> the tab is opened for (OpenTab; required, validated alive)."},` +
@@ -61,8 +69,9 @@ func tabVertexTypeDDL() pkgmgr.DDLSpec {
 				Name:    "OpenTab — start a house tab for a resident",
 				Payload: map[string]any{"leaseAppKey": "vtx.leaseapp.<NanoID>"},
 				ExpectedOutcome: "Validates the lease is alive. Mints vtx.tab.<NanoID> (root {}) + .status " +
-					"{value: open, totalCents: 0, openedAt, leaseAppKey} + the openFor link (tab→leaseapp). Returns " +
-					"primaryKey (the tab key). Rejects UnknownLeaseApplication if the lease is absent.",
+					"{value: open, totalCents: 0, openedAt, leaseAppKey} + the openFor link (tab→leaseapp) + claims " +
+					"the lease's cafeOpenTabGuard. Returns primaryKey (the tab key). Rejects UnknownLeaseApplication " +
+					"if the lease is absent, or OpenTabAlreadyExists if the lease already has an open tab.",
 			},
 			{
 				Name:    "Charge — ring up an item on an open tab",
@@ -116,9 +125,51 @@ func tabStatusAspectTypeDDL() pkgmgr.DDLSpec {
 	}
 }
 
+// openTabGuardAspectTypeDDL declares the .cafeOpenTab aspect (class
+// cafeOpenTabGuard) OpenTab writes on the PRE-EXISTING leaseapp — the
+// deterministic per-lease guard that enforces "at most one OPEN tab per
+// lease at a time" (unlike cafe-ledger's cafeLedgerAccountGuard, which is a
+// one-time-forever guard: a lease's café account never goes away, but its
+// tab is a repeatable session, so this guard is claimed by OpenTab and
+// released by Settle, over and over across the lease's life). The local
+// name is vertical-prefixed (cafeOpenTab, not openTab) for the same reason
+// cafeLedgerAccountGuard is: this leaseapp may carry other packages' own
+// guard aspects, and a bare local name risks colliding key-for-key.
+// Declaration-only: the aspect is written by OpenTab and tombstoned by
+// Settle, never has its own operationType.
+func openTabGuardAspectTypeDDL() pkgmgr.DDLSpec {
+	return pkgmgr.DDLSpec{
+		CanonicalName:     "cafeOpenTabGuard",
+		Class:             "meta.ddl.aspectType",
+		PermittedCommands: []string{"OpenTab", "Settle"},
+		Description: "Per-lease open-tab uniqueness guard aspect. Stored as vtx.leaseapp.<NanoID>.cafeOpenTab " +
+			"(class cafeOpenTabGuard) = {tabKey: <vtx.tab.<NanoID>>}. Non-sensitive. Claimed by OpenTab: a class-(d) " +
+			"optionalReads dedup declared as <leaseAppKey>.cafeOpenTab — absent (the lease's first-ever tab, or any " +
+			"prior tab already settled and its guard tombstoned) mints the guard fresh (create-only, the concurrent-" +
+			"race backstop); present-but-tombstoned OCC-revives it keyed on its own current revision; present-and-" +
+			"alive rejects the new OpenTab with OpenTabAlreadyExists. Released by Settle: an unconditioned tombstone " +
+			"(mirrors clinic-domain's slot-cell release — a stale-tombstone race can only free the guard early, " +
+			"never leave two tabs open) the moment the tab it names closes, so the very next OpenTab for this lease " +
+			"finds it absent-or-tombstoned again.",
+		Script:       aspectDeclarationOnlyScript,
+		InputSchema:  `{"type":"object","properties":{"tabKey":{"type":"string"}}}`,
+		OutputSchema: `{"type":"object"}`,
+		FieldDescription: map[string]string{
+			"tabKey": "The vtx.tab.<NanoID> currently holding this lease's open-tab slot.",
+		},
+		Examples: []pkgmgr.ExampleSpec{
+			{
+				Name:            "lease open-tab guard aspect",
+				Payload:         map[string]any{"tabKey": "vtx.tab.<NanoID>"},
+				ExpectedOutcome: "Stored as vtx.leaseapp.<NanoID>.cafeOpenTab; claimed by OpenTab, tombstoned by Settle.",
+			},
+		},
+	}
+}
+
 // aspectDeclarationOnlyScript is the declaration-only Starlark for
-// tabStatus — written by the tab vertexType DDL's own script, never
-// dispatched as an operation in its own right.
+// tabStatus / cafeOpenTabGuard — written by the tab vertexType DDL's own
+// script, never dispatched as an operation in its own right.
 const aspectDeclarationOnlyScript = `
 def execute(state, op):
     fail("aspect-type DDL: not an operation handler: " + op.operationType)
@@ -128,7 +179,11 @@ def execute(state, op):
 // and Settle both declare tabKey + tabKey+".status" in ContextHint.Reads so
 // the current .status revision is hydrated for OCC conditioning (the
 // providerSlotClaim precedent — an accumulator must not lose a concurrent
-// update, unlike an idempotent status flip's unconditioned upsert).
+// update, unlike an idempotent status flip's unconditioned upsert). OpenTab
+// declares <leaseAppKey>.cafeOpenTab in ContextHint.OptionalReads (Contract
+// #2 §2.5 class-(d) read-before-create/dedup) so the per-lease open-tab
+// guard's current state — absent, tombstoned, or alive — is hydrated
+// without a live GET.
 const tabDDLScript = `
 def make_vtx(key, cls, data):
     return {"op": "create", "key": key,
@@ -151,6 +206,10 @@ def make_link(key, source, target, cls, local_name, data):
             "document": {"class": cls, "isDeleted": False,
                          "sourceVertex": source, "targetVertex": target,
                          "localName": local_name, "data": data}}
+
+def make_tombstone(key):
+    return {"op": "tombstone", "key": key,
+            "document": {"isDeleted": True, "data": {}}}
 
 def required_string(p, name):
     if not hasattr(p, name):
@@ -232,6 +291,27 @@ def execute(state, op):
         if not vertex_alive(state, lease_key):
             fail("UnknownLeaseApplication: " + lease_key)
 
+        # One open tab per lease, guarded by a deterministic aspect on the
+        # LEASEAPP (not the tab — the tab's own id is independent and
+        # unknown until minted below). A class-(d) optionalReads dedup: the
+        # caller always declares <leaseAppKey>.cafeOpenTab in
+        # contextHint.optionalReads (absence-tolerant, unlike the
+        # cafeLedgerAccountGuard precedent's required reads — here a repeat
+        # OpenTab across the lease's life is the NORMAL flow, not just a
+        # racing retry, so the guard key legitimately may or may not exist
+        # yet). Absent → mint the guard fresh (create-only write is the
+        # concurrent-race backstop for a genuine first-ever race). Present
+        # but tombstoned (a prior tab already settled and released it) →
+        # OCC-revive it keyed on its own current revision. Present and
+        # alive → this lease already has an open tab, reject cleanly.
+        guard_key = lease_key + ".cafeOpenTab"
+        if guard_key in state:
+            if vertex_alive(state, guard_key):
+                fail("OpenTabAlreadyExists: " + lease_key)
+            guard_revision = state[guard_key].revision
+        else:
+            guard_revision = None
+
         tab_id = bare_nanoid_or_mint(p, "tabId")
         tab_key = "vtx.tab." + tab_id
         opened_at = time.rfc3339_utc(op.submittedAt)
@@ -240,11 +320,18 @@ def execute(state, op):
         # lease is the target (Contract #1 §1.1). Reads as "tab openFor lease."
         open_for_lnk = "lnk.tab." + tab_id + ".openFor.leaseapp." + lease_key.split(".")[2]
 
+        if guard_revision == None:
+            guard_mut = make_aspect(lease_key, "cafeOpenTab", "cafeOpenTabGuard", {"tabKey": tab_key})
+        else:
+            guard_mut = make_aspect_upsert_occ(lease_key, "cafeOpenTab", "cafeOpenTabGuard",
+                                                {"tabKey": tab_key}, guard_revision)
+
         mutations = [
             make_vtx(tab_key, "tab", {}),
             make_aspect(tab_key, "status", "tabStatus",
                         {"value": "open", "totalCents": 0, "openedAt": opened_at, "leaseAppKey": lease_key}),
             make_link(open_for_lnk, tab_key, lease_key, "openFor", "openFor", {}),
+            guard_mut,
         ]
         events = [{"class": "tab.opened", "data": {"tabKey": tab_key, "leaseAppKey": lease_key}}]
         return {"mutations": mutations, "events": events,
@@ -286,7 +373,15 @@ def execute(state, op):
         status_data = {"value": "settled", "totalCents": total_cents,
                         "openedAt": existing.data.get("openedAt"),
                         "leaseAppKey": lease_key, "settledAt": settled_at}
-        mutations = [make_aspect_upsert_occ(tab_key, "status", "tabStatus", status_data, existing.revision)]
+        # Release the lease's open-tab guard so its next OpenTab can claim it
+        # again — unconditioned, mirroring clinic-domain's slot-cell release
+        # (a stale-tombstone race can only free the guard early, never leave
+        # two tabs open; OpenTab's own OCC-revive is what actually
+        # serializes a genuine race on the next claim).
+        mutations = [
+            make_aspect_upsert_occ(tab_key, "status", "tabStatus", status_data, existing.revision),
+            make_tombstone(lease_key + ".cafeOpenTab"),
+        ]
         events = [{"class": "tab.settled", "data": {"tabKey": tab_key, "leaseAppKey": lease_key, "totalCents": total_cents}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": tab_key}}

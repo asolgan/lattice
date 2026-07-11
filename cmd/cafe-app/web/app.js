@@ -174,7 +174,13 @@ async function renderPos() {
       btn.disabled = true;
       try {
         await opOrThrow(
-          { operationType: "OpenTab", class: "tab", reads: [leaseAppKey], payload: { leaseAppKey } },
+          {
+            operationType: "OpenTab",
+            class: "tab",
+            reads: [leaseAppKey],
+            optionalReads: [leaseAppKey + ".cafeOpenTab"],
+            payload: { leaseAppKey },
+          },
           "open the tab"
         );
         toast("Tab opened.", true);

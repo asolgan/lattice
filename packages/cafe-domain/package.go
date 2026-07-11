@@ -5,17 +5,25 @@
 //
 // It declares:
 //
-//   - The `tab` vertex type (DDL `tab`) — OpenTab mints vtx.tab.<NanoID>
-//     (root data {} per D5) + a .status aspect {value: open, totalCents: 0,
-//     openedAt, leaseAppKey} + the openFor link (tab→leaseapp). Charge
-//     OCC-conditions an accumulate onto .status.totalCents (the
-//     providerSlotClaim precedent: a real accumulator must not lose a
-//     concurrent update, unlike an idempotent status flip). Settle
-//     OCC-conditions the close (.status.value → settled, settledAt
-//     stamped).
+//   - The `tab` vertex type (DDL `tab`) — OpenTab validates the lease has no
+//     open tab already (the cafeOpenTabGuard aspect below), mints
+//     vtx.tab.<NanoID> (root data {} per D5) + a .status aspect {value:
+//     open, totalCents: 0, openedAt, leaseAppKey} + the openFor link
+//     (tab→leaseapp). Charge OCC-conditions an accumulate onto
+//     .status.totalCents (the providerSlotClaim precedent: a real
+//     accumulator must not lose a concurrent update, unlike an idempotent
+//     status flip). Settle OCC-conditions the close (.status.value →
+//     settled, settledAt stamped) and releases the guard.
 //
 //   - The `tabStatus` aspect type (DDL `tabStatus`) — the step-6 write gate
 //     for .status, written by the tab vertexType DDL's own script.
+//
+//   - The `cafeOpenTabGuard` aspect type (DDL `cafeOpenTabGuard`) — the
+//     step-6 write gate for .cafeOpenTab, a per-lease aspect on the
+//     leaseapp enforcing at most one open tab per lease at a time. Claimed
+//     by OpenTab (create fresh or OCC-revive from tombstone), released by
+//     Settle (tombstone) — repeatable across the lease's life, unlike
+//     cafe-ledger's one-time-forever cafeLedgerAccountGuard.
 //
 //   - The `cafeTabSettlement` actorAggregate convergence lens (§10.2),
 //     anchored on tab: `missing_account` is true while a settled,

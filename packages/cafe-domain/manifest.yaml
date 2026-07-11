@@ -16,6 +16,8 @@ declares:
       class: meta.ddl.vertexType
     - canonicalName: tabStatus
       class: meta.ddl.aspectType
+    - canonicalName: cafeOpenTabGuard
+      class: meta.ddl.aspectType
   lenses:
     - canonicalName: cafeTabSettlement
       adapter: nats-kv

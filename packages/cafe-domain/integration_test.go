@@ -148,8 +148,12 @@ func seedLease(t *testing.T, ctx context.Context, conn *substrate.Conn, id strin
 	return key
 }
 
-// openTab submits OpenTab{leaseAppKey} and returns the tab key.
-func openTab(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, leaseAppKey string) string {
+// openTab submits OpenTab{leaseAppKey}, declaring the per-lease
+// cafeOpenTab guard in OptionalReads (Contract #2 §2.5 class-(d) — the
+// guard legitimately may or may not exist yet), and returns the tab key.
+// The caller drives the expected outcome (a lease with an already-open tab
+// must reject).
+func openTabExpect(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, leaseAppKey string, outcome processor.MessageOutcome) string {
 	t.Helper()
 	reqID := testutil.GenReqID(label)
 	env := &processor.OperationEnvelope{
@@ -160,11 +164,21 @@ func openTab(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *proces
 		SubmittedAt:   "2026-07-07T12:00:00Z",
 		Class:         "tab",
 		Payload:       json.RawMessage(`{"leaseAppKey":"` + leaseAppKey + `"}`),
-		ContextHint:   &processor.ContextHint{Reads: []string{leaseAppKey}},
+		ContextHint: &processor.ContextHint{
+			Reads:         []string{leaseAppKey},
+			OptionalReads: []string{leaseAppKey + ".cafeOpenTab"},
+		},
 	}
 	testutil.PublishOp(t, conn, env)
-	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+	testutil.DriveOne(t, ctx, cp, cons, outcome)
 	return "vtx.tab." + nanoIDFromRequestID(reqID)
+}
+
+// openTab submits OpenTab{leaseAppKey} expecting acceptance and returns the
+// tab key.
+func openTab(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, leaseAppKey string) string {
+	t.Helper()
+	return openTabExpect(t, ctx, conn, cp, cons, label, leaseAppKey, processor.OutcomeAccepted)
 }
 
 func TestOpenTab_MintsTabOpenForLease(t *testing.T) {
@@ -387,4 +401,66 @@ func TestCharge_RejectsAfterSettle(t *testing.T) {
 	}
 	testutil.PublishOp(t, conn, chargeEnv)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+}
+
+// TestOpenTab_RejectsSecondConcurrentTab proves the fix for the no-guard
+// bug: a lease with an already-open tab must reject a second OpenTab
+// (verticals.md — "Café tab: no guard against a 2nd concurrent open tab per
+// lease").
+func TestOpenTab_RejectsSecondConcurrentTab(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	cp, cons := newDomainPipeline(t, ctx, conn, "opentabguard")
+
+	leaseKey := seedLease(t, ctx, conn, "BBCAFEDMNGRDLEASEHJK")
+	firstTabKey := openTab(t, ctx, conn, cp, cons, "cdopentabgrd00000001", leaseKey)
+
+	secondTabKey := openTabExpect(t, ctx, conn, cp, cons, "cdopentabgrd00000002", leaseKey, processor.OutcomeRejected)
+
+	guardDoc := readDoc(t, ctx, conn, leaseKey+".cafeOpenTab")
+	guardData, _ := guardDoc["data"].(map[string]any)
+	if got, _ := guardData["tabKey"].(string); got != firstTabKey {
+		t.Fatalf("guard tabKey = %q, want %q (first tab, unaffected by rejected second)", got, firstTabKey)
+	}
+	if keyExists(t, ctx, conn, secondTabKey) {
+		t.Fatalf("rejected second OpenTab must not have minted a tab: %s", secondTabKey)
+	}
+}
+
+// TestOpenTab_AllowsReopenAfterSettle proves the guard is released (not a
+// one-time-forever guard like cafe-ledger's account guard): once the first
+// tab is settled, the same lease can open a new one.
+func TestOpenTab_AllowsReopenAfterSettle(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	cp, cons := newDomainPipeline(t, ctx, conn, "opentabreopen")
+
+	leaseKey := seedLease(t, ctx, conn, "BBCAFEDMNRPNLEASEHJK")
+	firstTabKey := openTab(t, ctx, conn, cp, cons, "cdopentabrpn00000001", leaseKey)
+
+	settleEnv := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("cdsettlerpn000000001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "Settle",
+		Actor:         domainActorKey,
+		SubmittedAt:   "2026-07-07T13:00:00Z",
+		Class:         "tab",
+		Payload:       json.RawMessage(`{"tabKey":"` + firstTabKey + `"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{firstTabKey, firstTabKey + ".status"}},
+	}
+	testutil.PublishOp(t, conn, settleEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	if keyExists(t, ctx, conn, leaseKey+".cafeOpenTab") {
+		t.Fatalf("guard must be tombstoned once its tab is settled")
+	}
+
+	secondTabKey := openTab(t, ctx, conn, cp, cons, "cdopentabrpn00000002", leaseKey)
+	if secondTabKey == firstTabKey {
+		t.Fatalf("second tab must be a distinct vertex")
+	}
+
+	guardDoc := readDoc(t, ctx, conn, leaseKey+".cafeOpenTab")
+	guardData, _ := guardDoc["data"].(map[string]any)
+	if got, _ := guardData["tabKey"].(string); got != secondTabKey {
+		t.Fatalf("guard tabKey = %q, want %q (revived for the second tab)", got, secondTabKey)
+	}
 }
