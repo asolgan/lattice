@@ -138,15 +138,21 @@ surfaces trusting the same key under different modes or issuers would violate th
 
 A bound actor `A` may have claimed a business identity `U` (Contract #9 `ClaimIdentity` →
 `credentialBinding` / `credentialindex`; materialized into the `credential-bindings` bucket from the
-`identity.claimed` event). Surfaces that resolve MUST do so uniformly:
+`identity.claimed` and `identity.rebound` events, and an `identity.unbound` event (credential unlink)
+folds as an explicit bucket-key **delete** — the one row-set shrink in this plane, never covered by
+overwrite-by-reprojection). Surfaces that resolve MUST do so uniformly:
 
 - Resolution applies identically to the write-path stamp and the read-path actor var (`A → U` on both,
   or on neither) — a split would let one human read as `U` but write as `A`, or vice versa.
 - A resolution miss (no binding, materializer lag, bucket error) is deny-safe: act as `A` (self-only
   reach), never an error that blocks authentication.
-- **Carve-out:** `ClaimIdentity` operations are always submitted with the **raw** credential actor `A`
-  (the one-credential-one-identity dedup hashes `op.actor`; a resolved actor would let a bound person
-  chain-claim).
+- An identity may be bound by **multiple** credentials (one human, N sign-in methods); each
+  credential still resolves to **at most one** identity — the per-credential dedup guard is
+  unchanged. An identity merge repoints the losing identity's credentials to the winner via
+  `identity.rebound`.
+- **Carve-out:** credential-binding operations (`ClaimIdentity`, `CompleteCredentialLink`) are always
+  submitted with the **raw** credential actor `A` (the one-credential-one-identity dedup hashes
+  `op.actor`; a resolved actor would let a bound person chain-claim or chain-link).
 - **Which surfaces resolve.** The external write door (the Gateway) and the external read boundaries
   (the vertical apps) resolve. The **control-plane seam** (Weaver/Loom/Refractor) does **not**
   re-resolve: its ops arrive already actor-stamped by the door that authenticated them, so a second

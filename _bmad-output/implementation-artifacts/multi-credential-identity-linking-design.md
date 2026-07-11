@@ -1,8 +1,14 @@
 # Multi-credential identity linking + merge credential-awareness (design)
 
-**Status:** 📐 **awaiting-Andrew (ratification).** Designer fire (Winston, 2026-07-10) · Lattice lane
-(Security & trust boundary) · Filed from the external-actor-authN ratification Q&A
-([authN design §12.2](external-actor-authn-binding-design.md)).
+**Status:** ✅ **RATIFIED (Andrew, 2026-07-10) — with one scope change: `UnlinkCredential` builds now
+(Fire 4), not deferred-to-demand.** The A2 mis-merge elevation is consciously accepted (levers stand:
+operator-only grant, `identity.rebound` audit event, revocation as the immediate cut). Demand side:
+a request is filed with the Vertical PO (verticals board, PO notes 2026-07-10) to spec the
+account-surface consumer ("manage sign-in methods"). The #11 §11.4 edit is committed with this
+ratification, including the `identity.unbound` explicit-delete fold Fire 4 needs. Ratification DD
+corrected A4's enforcement mechanism (§3.3) and the derivation-fire staleness (§3.5/§6/§9).
+Designer fire (Winston, 2026-07-10) · Lattice lane (Security & trust boundary) · Filed from the
+external-actor-authN ratification Q&A ([authN design §12.2](external-actor-authn-binding-design.md)).
 
 ---
 
@@ -203,11 +209,15 @@ same out-of-band handoff discipline as the claim link (§11.1a of the claim-flow
   `secondary.credentialBinding`, `primary.credentialBinding`.
 - **Credential set** = secondary's `credentials` array (fallback `[{actorKey, boundAt}]`; empty if
   the aspect is absent — a never-claimed staff-created secondary folds nothing). **Trust basis for
-  array-driven repoint (finding A4):** the `credentialBinding` aspect class admits no generic
-  writes (`permittedCommands` intentionally empty, `ddls.go:273–297`) — the array is maintained
-  exclusively by the claim/link/merge scripts, so repointing from it trusts script-maintained state
-  at the same grade as the index vertices themselves; there is no external writer that could plant
-  a foreign entry.
+  array-driven repoint (finding A4 — mechanism corrected at ratification DD):** aspect-class write
+  gating is **not** the protection: an empty `permittedCommands` is *unrestricted*, not locked
+  (`step6_validate.go:129` skips the check for an empty list; the DDL text itself says "intentionally
+  empty so any identity-anchored writer is allowed"). The array's real trust basis is the
+  **package-install boundary**: only the claim/link/merge scripts emit mutations for this aspect,
+  the same grade as the index vertices and the `identity.claimed` event feed itself — all equally
+  writable by a malicious installed package (the platform's stated DDL-trust boundary, the same
+  posture the sensitive-param-egress ref-trust decision rests on). Reading the array adds no new
+  writer surface.
 - **Plus the implicit self-credential:** the secondary **key itself** joins the set (with
   `boundAt = mergedAt`). A Scenario-B secondary *is* its own credential — without this, its future
   logins resolve-miss to the merged-dead vertex, the exact hole being closed; and recording it in
@@ -241,9 +251,9 @@ same out-of-band handoff discipline as the claim link (§11.1a of the claim-flow
 - **Retraction check (run, not assumed):** merge is a **single-key overwrite** per credential
   (bucket entry and index vertex repoint in place — auto-retracting); **no row-set shrink exists in
   this design's build scope**, so no missing-Delete over-grant window. The one genuine
-  key-disappears case — removing a credential — is `UnlinkCredential`, which is *designed* (§8) with
-  its explicit bucket-delete fold and **deferred to its first consumer** (dead-scaffolding test:
-  revocation already covers the security need; no product demand yet).
+  key-disappears case — removing a credential — is `UnlinkCredential` (**Fire 4**, §8), whose fold is
+  an **explicit bucket `KVDelete`** — the one genuine row-set shrink in this plane, never covered by
+  overwrite-by-reprojection.
 - **Staleness window:** until the materializer folds the rebound, A still resolves to the merged
   secondary — whose links were rekeyed away and whose state ops fail closed (`FR4` post-merge
   redirect test), so the window degrades to less-reach, never wrong-reach; self-heals on fold. Same
@@ -302,8 +312,9 @@ Authenticated `GET /v1/actor` on the Gateway:
   `SHA256NanoID("idpsub:…")` — a browser cannot compute it from its own token, so without whoami no
   FE can fill `authContext.target` for **any** self-scoped op (`ClaimIdentity`,
   `InitiateCredentialLink`, `CompleteCredentialLink`) or declare the `credentialindex` dedup read.
-  Today's dev `nanoid` mode masks this (sub *is* the id). This is a **prerequisite the #11
-  derivation fire will surface the hard way** — flagged in §9 sequencing.
+  The dev `nanoid` mode masks this (sub *is* the id) — but the #11 derivation fire **shipped without
+  whoami** (`9812231`, 2026-07-10): opaque-mode derivation is live for any configured external IdP
+  source, so the gap is real now. whoami builds in Fire 2 (§9).
 - Read-only at the platform level (the one write it can trigger is the shipped idempotent
   provisioning op, P2-clean); no Core-KV read (resolution is the gateway-owned bucket; the hint is
   relayed from the op reply).
@@ -353,7 +364,9 @@ Authenticated `GET /v1/actor` on the Gateway:
 **Contract #11 §11.4 — the actual edit, staged UNCOMMITTED in `main`** (three touches):
 
 1. Fold source: *"materialized into the `credential-bindings` bucket from the `identity.claimed`
-   event"* → *"…from the `identity.claimed` and `identity.rebound` events"*.
+   event"* → *"…from the `identity.claimed` and `identity.rebound` events, and an `identity.unbound`
+   event (credential unlink) folds as an explicit bucket-key delete"* (the delete clause added at
+   ratification when Fire 4 moved into scope).
 2. Carve-out: *"`ClaimIdentity` operations are always submitted with the raw credential actor"* →
    the credential-binding op pair (`ClaimIdentity`, `CompleteCredentialLink`), same rationale
    (the dedup hashes `op.actor`; a resolved actor would let a bound person chain-claim/chain-link).
@@ -384,15 +397,16 @@ existing Gateway).
   is the anti-takeover property, kept intact: `CompleteCredentialLink` binds only with a fresh
   in-graph secret armed by U itself; nothing weakens `ClaimIdentity`'s gates).
 - **"Doesn't revocation cover the lost-credential case?"** For **cutting** a credential, yes
-  (per-credential kill-switch, per-request) — that is why `UnlinkCredential` is deferred. What
-  revocation cannot do is *add* a credential (Gap 1) or *re-target* one (Gap 2).
+  (per-credential kill-switch, per-request) — revocation stays the security cut; `UnlinkCredential`
+  (Fire 4) is the account-hygiene remove. What revocation cannot do is *add* a credential (Gap 1)
+  or *re-target* one (Gap 2).
 - **Does this introduce new state?** One aspect field (`credentials` array), one aspect class
   (`.linkKey`, the `.claimKey` twin), one event class (`identity.rebound`), one materializer fold
   case, one Gateway HTTP endpoint. No new bucket, lens, vertex type, link type, or engine surface.
 - **Does anything duplicate an in-flight design?** Checked (§2): the subscribe-ACL design shares the
   resolution seam read-side only and pre-declared compatibility; the #11 derivation fire (Steward,
   ratified) changes how A is *computed* upstream of everything here — both compose, neither
-  collides. The whoami endpoint is the one shared prerequisite (§9).
+  collides. The derivation fire shipped without whoami (`9812231`) — it now builds here, Fire 2 (§9).
 
 ## 7. Migration & test strategy
 
@@ -432,6 +446,15 @@ verify (both packages' DDL/permissions change).
 - **Rejected — binding links (`lnk.identity.<A>.credentialFor.identity.<U>`)** — see §4.2.
 - **Rejected — reusing `identity.claimed` for merge-rebinds** (zero materializer delta): phantom
   claims in the audit stream and no `previousIdentityKey`; a 3-line fold case is the honest price.
+- **`UnlinkCredential` — in scope (Fire 4; ratification moved it from deferred-to-demand to build,
+  Andrew 2026-07-10):** `{Scope: self}` as U, payload names the credential to remove; tombstones its
+  index vertex, removes it from the array, emits `identity.unbound {actorKey, identityKey}`; the
+  materializer gains the **explicit bucket `KVDelete`** fold. **Self-lockout guard:** removing the
+  **last** entry in the credential set fails with the generic code — an identity must keep ≥ 1
+  sign-in path (the emergency cut for a compromised sole credential stays operator revocation, which
+  needs no self-session). A Scenario-B implicit self-credential is not an array entry and is not
+  unlinkable — it *is* the identity. The FE consumer is the Vertical PO's filed request
+  ("manage sign-in methods", verticals board).
 - **Rejected — probing from the Gateway directly** (a Core-KV `Get` on the index vertex): the
   Gateway is not in P5's inspector-exception set and must not become a Core-KV reader; declared
   optionalReads put the read where every write-path read belongs (Processor-side). Costs one
@@ -455,15 +478,9 @@ verify (both packages' DDL/permissions change).
   (A→U) survive — resolution then lands on a shredded/tombstoned identity whose reads deny. Correct
   direction (deny), but the forget-flow's "walk the discoverable identity-set" (claim-flow §11.2)
   should also revoke the bound credentials — one line added to that walk when `UnlinkCredential`
-  lands; until then revocation-by-operator covers it.
-- **Deferred (designed, not built) — `UnlinkCredential`:** `{Scope: self}` as U, payload names the
-  credential to remove; tombstones its index vertex, removes it from the array, emits
-  `identity.unbound {actorKey}`; the materializer gains the **explicit bucket `KVDelete`** (the one
-  genuine row-set-shrink retraction in this plane — named here so nobody later assumes
-  overwrite-by-reprojection covers it). Build gates on a real consumer (self-service credential
-  removal demand); revocation covers the security need meanwhile.
+  lands (Fire 4); until then revocation-by-operator covers it.
 
-## 9. Decomposition for the Steward (three fires + one deferred)
+## 9. Decomposition for the Steward (four fires)
 
 1. **Fire 1 (S–M) — merge credential-awareness.** `packages/identity-hygiene` (reads, credential-set
    fold incl. self-credential, index upserts, array union, aspect tombstone, `identity.rebound`) +
@@ -473,14 +490,18 @@ verify (both packages' DDL/permissions change).
 2. **Fire 2 (M) — the link flow.** `packages/identity-domain` (`InitiateCredentialLink`,
    `CompleteCredentialLink`, `.linkKey` sensitive DDL, `credentials` array in the claim script) +
    `internal/gateway` (carve-out set extension, `GET /v1/actor` whoami) + §7 tests + the link e2e.
-   **Sequencing note:** whoami is also the missing client-side enabler for the ratified #11
-   derivation fire (§3.5) — whichever fire the Steward runs first should build it; the other
-   consumes it.
+   **Sequencing note:** the #11 derivation fire shipped first (`9812231`, 2026-07-10) without
+   whoami — Fire 2 builds it; it is the missing client-side enabler for every self-scoped op under
+   the now-live opaque derivation (§3.5).
 3. **Fire 3 (S) — the provision-time probe.** `ProvisionConsumerIdentity` payload/response — **both
    branches return the hint**, incl. the no-op branch (§3.4) — + Gateway verified-claim hashing +
    whoami `?probe=1` (forces the op past the provisioned fast-path set) + probe tests/e2e.
    Sequenced after Fire 2 (the hint's consumer is the link flow's FE routing).
-4. **Deferred — `UnlinkCredential` + the bucket-delete fold** (§8), on first real demand.
+4. **Fire 4 (S) — `UnlinkCredential` + the bucket-delete fold** (§8: last-credential lockout guard,
+   index-vertex tombstone, array removal, `identity.unbound` → materializer `KVDelete`) + tests
+   (happy path incl. the bucket delete; last-credential refusal; unlink-then-relink round-trip;
+   never-linked credential → generic fail). Sequenced after Fire 2 (it edits the array the link flow
+   maintains and shares whoami). The FE consumer is the Vertical PO's filed request.
 
 ## 10. Adversarial pass (security plane — run twice)
 
@@ -520,8 +541,8 @@ survived claims.
 - **T7 — event replay / fold ordering?** Single durable ordered consumer; upserts converge in
   stream order; full-replay rebuild converges (§3.3). The rebound fold is idempotent.
 - **T8 — retraction audit?** Every repoint in build scope is single-key overwrite (auto-retracting);
-  the only row-set shrink (unlink) is explicitly designed with its `KVDelete` and deferred — no
-  silent "reprojection retracts it" claim anywhere in this design.
+  the only row-set shrink (unlink, Fire 4) carries its explicit `KVDelete` fold — no silent
+  "reprojection retracts it" claim anywhere in this design.
 
 ## 11. Companion doc/board updates made in this fire
 

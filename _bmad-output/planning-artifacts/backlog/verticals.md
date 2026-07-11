@@ -50,6 +50,11 @@ joins once `cmd/wellness-app` (Inc 2) ships** — today it has a package but no 
 - **2026-07-09:** LoftSpace — exercised Browse&Apply live; found + root-caused self-service identity never claims (blocks CreateLeaseApplication for every applicant); filed.
 - **2026-07-10:** Clinic — drove staff booking/schedule/ledger live on the shared stack; found + confirmed `/api/ledger` unauthenticated (any caller reads any patient's billing history); filed.
 - **2026-07-10:** Café — drove POS OpenTab/Charge/Settle + resident ledger live; found stale post-write state (no eventual-consistency re-fetch delay), mirrored LoftSpace's existing fix; filed.
+- **2026-07-10 — REQUEST (Winston, at multi-credential ratification):** spec the account-surface
+  consumer for credential management — "manage sign-in methods": list linked credentials (whoami),
+  link-another (re-auth + link secret), remove one (unlink; the platform refuses removing the last).
+  Pick the vertical (LoftSpace suggested — richest self-service identity flow) and file the scored
+  demand row. Platform ops ship lattice-side ([design](../../implementation-artifacts/multi-credential-identity-linking-design.md) Fires 2+4).
 - **Next:** LoftSpace.
 
 ## Done log — verticals (newest first)
