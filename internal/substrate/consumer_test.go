@@ -71,8 +71,13 @@ func TestRunDurableConsumer_AckResumeFromLastAck(t *testing.T) {
 		})
 	}()
 
+	// 8s (not the file's usual 3-5s): this path does more than a single
+	// delivery — cancel run1, stand up run2, and have JetStream reopen the
+	// durable and redeliver 2 buffered messages — so it has less headroom
+	// under CI's -p 4 contention (observed flake: timed out at 3s in CI,
+	// passes in ~0.1s locally).
 	got := map[string]bool{}
-	deadline := time.After(3 * time.Second)
+	deadline := time.After(8 * time.Second)
 	for len(got) < 2 {
 		select {
 		case s := <-seen2:
