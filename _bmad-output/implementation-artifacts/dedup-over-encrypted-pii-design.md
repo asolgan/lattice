@@ -35,8 +35,32 @@ enumeration hint. 4 new e2e tests (forward + inverted duplicateOf tombstone, ind
 third-party-untouched assertion, real-class trust-gate acceptance). Full `go test ./...` (97 packages)
 + `go build`/`make vet`/`golangci-lint`/`STRICT lint-conventions` green, **and** verified against the
 live shared dev stack this time (`verify-package-identity-hygiene` — CI `stack-gates` job, no new
-entities this fire so no bootstrap disruption). **Next: Fire 3** (shred hygiene — `ShredIdentityKey`
-in-commit erase of owned indexes + duplicateOf links).
+entities this fire so no bootstrap disruption). **🏗️ Fire 3 checkpoint (Steward, 2026-07-11) — CLOSED,
+Fires 1–3 all shipped.** Shipped: `ShredIdentityKey` (privacy-base) gains two class-(e) enumerations
+(the identity's inbound `indexes` links; its `duplicateOf` links in both directions) and, in the SAME
+atomic batch as the shred intent, tombstones each owned identityindex vertex + its `indexes` link and
+every `duplicateOf` pair link touching the identity — decrypt-free, per §3.5. Dispatcher sweep: the one
+real dispatcher (Loupe's `openShredModal`, `cmd/loupe/web/js/views/graph.js`) declares the two
+enumerations; plumbed the `contextHint.enumerations` wire field end-to-end for the first time (it only
+existed for `reads`/`optionalReads` before) through `cmd/loupe`'s `/api/op` → Gateway's
+`POST /v1/operations` → `processor.ContextHint.Enumerations` — `opRequest`/`gatewayOperationRequest`/
+`operationRequest` all gained the field. **Adversarial finding caught this fire (grounding gap, not in
+the original 12):** erasing the identityindex vertex introduced tombstoning that Fire 1's
+`CreateUnclaimedIdentity` never accounted for — its `not in state` create-gate treated a
+present-but-tombstoned index as "already handled" and silently skipped re-indexing, orphaning a later
+same-contact create from dedup coverage (design §7's "post-shred create" test vector would have failed).
+Fixed with the same CAS-revive mutation shape as orchestration-base's `make_vtx_revive_occ` / `128111f`
+precedent (`index_vertex_mutation` in identity-domain, gated on `email_hit`/`phone_hit`/`name_hit` — the
+same hits the dup-check already computes — being tombstoned rather than live). 8 new tests (owned-index
+erase, duplicateOf erase from both the source and target side, re-shred idempotency, and the
+post-shred-revive vector) in `packages/privacy-base`, exercised through `packages/identity-domain`. Full
+`go test ./...` (97 packages) + `go build`/`make vet`/`golangci-lint`/`STRICT lint-conventions` all
+green. **Not verified against the live shared dev stack this fire** — `verify-package-identity` hung
+against the running processor (no error, no progress after 40s+); killed rather than risk disrupting the
+shared stack, mirroring Fire 1's precedent — the exhaustive local suite (incl. real-Processor
+integration tests) is the substitute evidence; no new entity types were added this fire (script-only
+change), so live-stack risk is low. Fire 4 (fuzzy sweep + gc + the CLI vault grant) remains
+**build-on-demand**, its own named trigger (§3.6) — not picked up by this fire.
 Backlog row: `planning-artifacts/backlog/lattice.md` → *Privacy / Vault → [identity-hygiene] Dedup over
 encrypted PII* (★★, M). Charter: `vault-crypto-shredding-design.md` Fire 5b-i checkpoint ("blind-index /
 HMAC companion aspect at write time, or a sanctioned engine-side mechanism — routed to the Designer").

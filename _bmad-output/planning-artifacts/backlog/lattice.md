@@ -136,7 +136,6 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Privacy / Vault
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **[identity-hygiene] Dedup over encrypted PII (duplicateCandidates)** | Write-time flagging on the identityindex convention: create-collision emits a durable `duplicateOf` link; PII-free structural lens; decrypt-free merge repoint + in-commit shred erase via `indexes` links; fixes the live duplicate-create RevisionConflict + merge EdgeNotALink bugs. | ★★ | M | 🏗️ building · [design §checkpoint](../../implementation-artifacts/dedup-over-encrypted-pii-design.md) · next: Fire 3 shred hygiene |
 
 ### External-I/O maturity (bridge follow-ons)
 | Item | What it is | Imp | Size | State |
@@ -192,6 +191,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-11 · `72919d9` · [identity-hygiene] dedup-over-encrypted-pii Fire 3 CLOSED — ShredIdentityKey in-commit indexes/duplicateOf erasure + CreateUnclaimedIdentity revive fix + batch-size preflight; Fires 1-3 all shipped; CI green
 - 2026-07-11 · `f4eb556` · [CI] natsperm deniedTimeout 2s→500ms (unit job's new long pole after this morning's matrix-hygiene Fire 1 added 2 registry-driven tests) — unit job 5m20→3m25, CI green, no new flakiness (stress-ran ×10)
 - 2026-07-11 · `3a2aa15` · [identity-hygiene] dedup-over-encrypted-pii Fire 2 — MergeIdentity duplicateOf both-direction tombstone + indexes-driven repoint + edge trust-gate real-class fix; CI green (incl. verify-package-identity-hygiene)
 - 2026-07-11 · `51a3f2e` · [identity-hygiene] dedup-over-encrypted-pii Fire 1 — duplicateOf/indexes links + dispatcher sweep fixes live RevisionConflict; PII-free lens; DiffRetraction on nats-kv; CI green
@@ -226,5 +226,4 @@ One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archiv
 - 2026-07-09 · `172fa98` · [Object Store] crypto-shred Fire 4 Increment 1 — `internal/objectcrypto` extracted from Loupe; privacy-base `piiKeyEnvelope` lens; `lattice.vault.wrapkey`/`unwrapkey` extended to loftspace-app; CI green
 - 2026-07-09 · `659c635` · [Weaver] directOp-class-pin — `GapActionSpec.Class` threads to `opEnvelope.Class`; pinned on Café/bespoke-contracts ledger dispatches; unblocks [Café tab-settlement](verticals.md); CI green
 - 2026-07-09 · `128111f` · [orchestration-base] CreateTask logical-delete create-wedge — present-but-isDeleted task revives via CAS-guarded update, not a blind create; §10 revive text ratified; CI green
-- 2026-07-09 · `20abd1e` · [auth] scoped-privileged-lane-grants Fire 3 CLOSED — consoleOperator gains the allowlisted pkg-lifecycle trio at meta; requireRootAdmin retired
 - *(older entries rolled to [archive/lattice-done.md](archive/lattice-done.md); includes `94c8224` hello-lattice NFR-P3 flake fix)*
