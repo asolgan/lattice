@@ -117,7 +117,11 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 > CLOSED** (2026-07-11) — Fire 1 (disposition + emission guard) + Fire 2 (bridge unwrap + lease-signing
 > live consumer) both shipped, CI green. **Next pick: per-identity subscribe-ACL Fires 1–3** (✅
 > 2026-07-10, fork A auth-callout — builds the EDGE.3 gate leg, Security table).
-> **AI-caps Fire 4** signed off 2026-07-10 (conditions in the design) — joins the build-ready set.
+> **AI-caps Fire 4 materializer NOT yet build-ready** (verified 2026-07-11): sign-off condition 1
+> (Processor-MAC'd sensitive-refs, sensitive-param-egress-design.md §3.6) has no code anywhere
+> (`git log --all` shows only the ratification doc commit) — it needs its own design pass
+> (lattice-designer), not an inline build. Fire 4's vertexTypeDDL/opMeta materializer stays blocked
+> until that lands; do not pick it up as "build-ready" without re-verifying.
 > Whoever ships the named pick updates this callout to the next one — a stale callout starves the lane.
 
 ### Security & trust boundary
@@ -154,7 +158,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### AI-native
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| AI-authored capabilities | A Lattice-aware agent proposes DDL/Starlark/lenses/workflows through human review + deterministic validation + rollback. | ★★–★★★ | L | 🏗️ building · [design](../../implementation-artifacts/ai-authored-capabilities-design.md) · Fire 4 inc 1 (shared sandbox leaf) SHIPPED `474745b` · next: inc 2 — vertexTypeDDL/opMeta materializer kinds + dry-run · Loupe UI is Stream 3's lane |
+| AI-authored capabilities | A Lattice-aware agent proposes DDL/Starlark/lenses/workflows through human review + deterministic validation + rollback. | ★★–★★★ | L | 🏗️ building · [design](../../implementation-artifacts/ai-authored-capabilities-design.md) · Fire 4 inc 1 (sandbox leaf) SHIPPED `474745b` · 🚧 blocked-on: MAC-hardening design (see callout above) before the materializer kinds · Loupe UI is Stream 3's lane |
 | **The Augur** (AI reasoning tier — L3 evaluator) | Weaver's AI-assisted reasoning tier for ambiguous/novel convergence gaps. The marquee AI-native feature. | ★★ | M–L | ✅ Fires 1+2a+2b shipped incl. §6 residual e2e (loop closes: escalate→review→dispatch) · [design](../../implementation-artifacts/augur-design.md) + [dispatch design](../../implementation-artifacts/augur-dispatch-pickup-design.md) · 🚧 Fire 3 autoApply Andrew-gated |
 | Starlark guards (Loom) | The reserved `{reads, starlark}` guard escape hatch needs a verified-pure sandbox. | ★ | M | ✅ ratified (split) · [design](../../implementation-artifacts/loom-starlark-guards-design.md) · Fire 1 (shared sandbox) SHIPPED `474745b` via AI-caps · 🚧 Fire 2 (Loom-side) held on guard-eval-location decision |
 | **Weaver planner mandate (dispatcher → solver)** | Remediation stops being a static gap→action lookup: deterministic planner (per-gap candidate selection, then goal-regression synthesis over op-declared effects) with contraction/oscillation diagnostics and admission control; shadow mode + per-target cutover; the Augur stays the AI boundary. | ★★★ | XL | ✅ effectively done · [design](../../implementation-artifacts/weaver-planner-mandate-design.md) · Fires 1-9(Inc1)+R1-R3 shipped, consumed by LoftSpace renewals; Fire 9 AI tail deferred - needs a novel Augur gap, not renewals |
