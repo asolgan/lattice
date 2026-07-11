@@ -1488,6 +1488,26 @@ async function submitBook(ev) {
     const optionalReads = slotClaimKeys(provider, startsAt, endsAt).concat(
       slotClaimKeys(state.patient, startsAt, endsAt),
     );
+    // Resident-visit confinement (Inc 5, mixed-use composition design):
+    // if the selected patient's own linked identity matches a lease
+    // applicant's identity, attach that lease so CreateAppointment can write
+    // a residentVisit link — best-effort, no leaseAppKey attached (and no
+    // hard failure) when the patient has no linked identity or no matching
+    // lease. Mirrors wellness-app's CreateBooking leaseAppKey wiring.
+    const identityKey = patientIdentityKey();
+    if (identityKey) {
+      try {
+        const rs = await api("/api/residents");
+        const match = (rs.residents || []).find((r) => r.bookerKey === identityKey);
+        if (match) {
+          payload.leaseAppKey = match.leaseAppKey;
+          optionalReads.push(
+            match.leaseAppKey,
+            match.leaseAppKey + ".tenancy",
+          );
+        }
+      } catch (_) { /* residents lookup unreachable — book without lease confinement */ }
+    }
     const reply = await submitOp("CreateAppointment", "appointment", payload,
       [state.patient, provider], { asSelf, optionalReads });
     const msg = rejectionMessage(reply);

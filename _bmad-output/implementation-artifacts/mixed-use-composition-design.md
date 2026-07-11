@@ -1,6 +1,10 @@
 # Mixed-use composition surfaces — design + checkpoint
 
-**Status:** 🏗️ building (Inc 1-4 shipped). Board row: [verticals.md](../planning-artifacts/backlog/verticals.md).
+**Status:** ✅ done (Inc 1-5 shipped this fire) — both goal halves are now
+complete: front-desk (booked class Inc 1, lease details Inc 4, clinic visit
+Inc 5; open tabs needed no new work, cafe-domain's own lens already serves
+it) and portfolio-pulse (occupancy Inc 2, service-attach-rate Inc 3). Board
+row: [verticals.md](../planning-artifacts/backlog/verticals.md).
 
 ## Goal
 
@@ -178,12 +182,67 @@ small unprotected nats-kv lens in `front-desk` itself** (`frontDeskLeaseDetails`
   "🏠 $2500 USD/mo · 12mo term" with no console errors; settled the tab afterward to leave the dev
   dataset clean.
 
-## Deferred (Inc 5+, not yet scoped in detail)
+## Increment 5 (shipped this fire) — front-desk: clinic visit
 
-- **Clinic visit in the unified context** — deliberately excluded from Inc 1 per the PHI-sensitivity
-  note on the *separate* "Clinical notes are write-only" backlog row (clinic patient data has its own
-  Secure-Lens/Vault posture, `identifiedBy` claim semantics differ from `residentRate`'s optional/
-  best-effort link) — needs its own grounding pass, not a copy-paste of this pattern.
+The Deferred clinic-visit tail, resolved with its own grounding pass (not a copy-paste of Inc 1's
+residentRate pattern, per the note it left):
 
-**Next fire on this item:** the clinic-visit tail (its own PHI/Vault grounding pass) — the last item
-in the Deferred list; re-read this doc's Deferred section first.
+**Grounding (resolved before building):** clinic-domain's `identifiedBy` claim is optional/best-effort
+— same shape as wellness's `residentRate`, not mandatory (`packages/clinic-domain/ddls.go`'s
+`CreatePatient`, `identity_key = optional_string(...)`). An appointment's `.schedule`/`.status` are
+already the codebase's own established OPERATIONAL/non-PHI line (`clinicAppointments` already projects
+them to staff) — only `.encounter`'s `summary`/`assessment`/`plan` are the raw clinical content the
+*separate* "Clinical notes are write-only" row keeps blocked on the Vault fork. A front-desk badge
+showing existence + time (no reason, no diagnosis) is therefore the SAME class of data already flowing
+through staff-facing lenses today — buildable now, no Vault/Designer/Andrew gate. What was missing was
+purely the wellness-style cross-package confinement link.
+
+- **`CreateAppointment`** (`packages/clinic-domain/ddls.go`) accepts an optional `leaseAppKey`, mirroring
+  wellness-domain's `CreateBooking` resident-rate check: qualifies for a `residentVisit` link
+  (appointment→leaseapp) only when the leaseapp is alive, carries a live `.tenancy` aspect (the same
+  first-approve signal `residentRate` uses), and its `applicationFor` applicant identity matches the
+  *patient's own* `identifiedBy` identity. Unlike wellness (whose booker IS an identity, supplied
+  directly), the patient's identity is resolved via the sanctioned bounded `kv.Links` enumeration
+  (Contract #2 §2.5.1, direction "out" on the lease's `applicationFor` — a leaseapp carries at most one
+  applicant) rather than a declared key, since `CreateAppointment`'s caller supplies a patient vertex,
+  not an identity. A mismatch or absent lease falls through silently, never a hard failure — confinement
+  hint, not a requirement.
+- **New `frontDeskVisits` lens** (`packages/front-desk/lenses.go`, package 0.2.0 → 0.3.0, `Depends` gains
+  `clinic-domain`): `MATCH (a:appointment)-[:residentVisit]->(l:leaseapp) WHERE a.status.data.value =
+  'scheduled'`, keyed by `leaseAppKey`, into a new `front-desk-visits` bucket. **Deliberately projects
+  only `startsAt`/`endsAt`** — never the `.schedule` visit reason, never patient/provider identity. This
+  narrows further than `clinicAppointments` does for clinic staff: front-desk/café staff are a materially
+  different, less-privileged audience than clinic staff, so "a visit is scheduled" is the ceiling, not
+  "why or with whom."
+- **`cmd/cafe-app`**: new `GET /api/frontdesk-visits` handler (`frontdesk.go`), same best-effort posture
+  as the bookings/lease-details handlers (missing bucket → empty list, not an error). FE
+  (`loadFrontDesk`/`frontDeskCard`) joins it client-side by `leaseAppKey`, same idiom as the other two
+  joins — each open-tab card now shows a "🩺 Visit: `<time>`" line when the resident has a live
+  resident-confined appointment.
+- **`cmd/clinic-app`**: new `GET /api/residents` handler (`residents.go`, a straight mirror of
+  `cmd/wellness-app/residents.go` — same `weaverTargetsBucket` / `leaseApplicationComplete.` prefix
+  precedent) so the booking form can resolve a `leaseAppKey` for the selected patient. `submitBook`
+  (`web/app.js`) looks up the selected patient's own `identityKey` (already available via
+  `patientIdentityKey()`, sourced from `/api/staff/patients`) against the residents list; on a match it
+  attaches `leaseAppKey` to the `CreateAppointment` payload + declares the lease/tenancy reads as (d)
+  optionalReads (mirrors wellness's dispatcher). Best-effort: an unreachable `/api/residents` books
+  without lease confinement rather than failing the booking.
+- Tests: `packages/front-desk/lens_cypher_test.go` (projects a residentVisit row with only
+  startsAt/endsAt — reason never leaks; skips no-link / non-scheduled / cancelled), `cmd/cafe-app`
+  `frontdesk_test.go` (tombstoned-row skip), `cmd/clinic-app/residents_test.go` (prefix-filter + sort),
+  and three `packages/clinic-domain/integration_test.go` cases through the real Processor — matched
+  lease → link written, mismatched-applicant lease → no link (booking still accepted), pending
+  (no-`.tenancy`) lease → no link — mirroring wellness-domain's `TestCreateBooking_ResidentRate*` trio
+  exactly.
+
+## Scope closed
+
+Both goal halves from the original backlog row are now built: **front-desk** unified resident context
+(booked class Inc 1, lease details Inc 4, clinic visit Inc 5; open tabs needed no new work — cafe-domain's
+own `cafeTabSettlement` lens already served it) and **operations portfolio-pulse** (occupancy Inc 2,
+service-attach-rate Inc 3). The row's original "+ Loupe" phrasing (PO's initial framing) was never built as
+a bespoke Loupe surface and this fire does not add one: Loupe is the platform's generic admin/console
+inspector (`lattice-architecture.md` P5 exception) and already inspects any installed package's lens
+buckets, including `front-desk`'s three, without needing a purpose-built view — consistent with every
+prior increment's registry-only Loupe touch (`cmd/loupe/pkg.go`'s `packageRegistry`, for install/admin
+visibility, not a dedicated aggregate page). No further increments are scoped on this item.

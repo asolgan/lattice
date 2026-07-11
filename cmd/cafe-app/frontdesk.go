@@ -116,3 +116,59 @@ func (s *server) handleFrontDeskLeaseDetails(w http.ResponseWriter, r *http.Requ
 	rows := computeFrontDeskLeaseDetails(keys, s.kvGetter(ctx, frontdesk.LeaseDetailsBucket))
 	s.writeJSON(w, http.StatusOK, map[string]any{"leaseDetails": rows})
 }
+
+// visitRow is one row of the front-desk `frontDeskVisits` lens
+// (packages/front-desk/lenses.go, Inc 5) — decoded straight off the wire and
+// served as-is: the "upcoming clinic visit" badge the front-desk grid joins
+// onto a resident's open-tab card, client-side, by leaseAppKey, the same
+// composition idiom bookingRow above uses. Deliberately carries only
+// existence + time — the lens itself never projects the visit reason or any
+// clinical content (front-desk's VisitsBucket doc comment).
+type visitRow struct {
+	AppointmentKey string `json:"appointmentKey"`
+	LeaseAppKey    string `json:"leaseAppKey"`
+	StartsAt       string `json:"startsAt"`
+	EndsAt         string `json:"endsAt"`
+}
+
+// computeFrontDeskVisits decodes every frontDeskVisits row in the
+// front-desk-visits bucket. A row that fails to decode or carries no
+// leaseAppKey is skipped (mirrors computeFrontDeskBookings).
+func computeFrontDeskVisits(keys []string, get kvGetter) []visitRow {
+	rows := make([]visitRow, 0)
+	for _, k := range keys {
+		raw, ok := get(k)
+		if !ok {
+			continue
+		}
+		var p visitRow
+		if json.Unmarshal(raw, &p) != nil || p.LeaseAppKey == "" {
+			continue
+		}
+		rows = append(rows, p)
+	}
+	return rows
+}
+
+// handleFrontDeskVisits implements GET /api/frontdesk-visits — the
+// resident's upcoming-clinic-visit badge for the front-desk grid, served
+// from the front-desk package's frontDeskVisits lens (P5). A stack without
+// front-desk (or clinic-domain) installed simply has no such bucket; that
+// reads back as "no rows," not an error, same best-effort posture as
+// handleFrontDeskBookings.
+func (s *server) handleFrontDeskVisits(w http.ResponseWriter, r *http.Request) {
+	conn, ok := s.requireConn(w)
+	if !ok {
+		return
+	}
+	ctx, cancel := s.reqContext(r)
+	defer cancel()
+
+	keys, err := conn.KVListKeys(ctx, frontdesk.VisitsBucket)
+	if err != nil {
+		s.writeJSON(w, http.StatusOK, map[string]any{"visits": []visitRow{}})
+		return
+	}
+	rows := computeFrontDeskVisits(keys, s.kvGetter(ctx, frontdesk.VisitsBucket))
+	s.writeJSON(w, http.StatusOK, map[string]any{"visits": rows})
+}

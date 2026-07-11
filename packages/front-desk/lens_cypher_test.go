@@ -18,6 +18,11 @@ package frontdesk
 //     ["booked"] only) — is absent from the result, proving the engine's
 //     standard isDeleted filter (executor.go) covers this lens same as
 //     every other.
+//
+// The Inc 5 clinic tail mirrors this same shape for visitsSpec:
+// TestFrontDeskVisits_ProjectsResidentVisitRow /
+// _SkipsAppointmentWithNoResidentVisitLink / _SkipsNonScheduledAppointment /
+// _SkipsCancelledAppointment.
 
 import (
 	"context"
@@ -250,4 +255,75 @@ func TestFrontDeskLeaseDetails_NullsWhenNoUnit(t *testing.T) {
 	v := rows[0].Values
 	require.Nil(t, v["unitKey"])
 	require.Nil(t, v["unitRent"])
+}
+
+// mkAppointment seeds an appointment with a .schedule + .status aspect,
+// optionally linked to a leaseapp (residentVisit) — mirrors mkBooking's
+// shape for the clinic side of the unified context (Inc 5).
+func (f *fdFixture) mkAppointment(t *testing.T, name, status string, withResidentVisit bool) {
+	t.Helper()
+	f.mkAppointmentDeleted(t, name, status, withResidentVisit, false)
+}
+
+func (f *fdFixture) mkAppointmentDeleted(t *testing.T, name, status string, withResidentVisit, deleted bool) {
+	t.Helper()
+	f.vtxDeleted(t, name, "appointment", deleted)
+	f.aspect(t, name, "status", "appointmentStatus", map[string]any{"value": status})
+	f.aspect(t, name, "schedule", "appointmentSchedule", map[string]any{
+		"startsAt": "2026-07-11T15:00:00Z", "endsAt": "2026-07-11T15:30:00Z", "remindAt": "2026-07-10T15:00:00Z", "reason": "Annual checkup",
+	})
+	if withResidentVisit {
+		f.vtx(t, name+"_lease", "leaseapp")
+		f.edge(t, "residentVisit", name, name+"_lease")
+	}
+}
+
+func TestFrontDeskVisits_ProjectsResidentVisitRow(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newFdFixture(t)
+	f.mkAppointment(t, "a1", "scheduled", true)
+
+	rows := f.project(t, visitsSpec)
+	require.Len(t, rows, 1)
+	v := rows[0].Values
+	require.Equal(t, "vtx.appointment."+f.ids["a1"], v["key"])
+	require.Equal(t, "vtx.leaseapp."+f.ids["a1_lease"], v["leaseAppKey"])
+	require.Equal(t, "2026-07-11T15:00:00Z", v["startsAt"])
+	require.Equal(t, "2026-07-11T15:30:00Z", v["endsAt"])
+	require.Nil(t, v["reason"], "the visit reason must never project — front desk sees existence + time only")
+}
+
+func TestFrontDeskVisits_SkipsAppointmentWithNoResidentVisitLink(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newFdFixture(t)
+	f.mkAppointment(t, "a1", "scheduled", false)
+
+	rows := f.project(t, visitsSpec)
+	require.Empty(t, rows, "an appointment with no residentVisit link must not project — front-desk shows only a resident's own visit")
+}
+
+func TestFrontDeskVisits_SkipsNonScheduledAppointment(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newFdFixture(t)
+	f.mkAppointment(t, "a1", "completed", true)
+
+	rows := f.project(t, visitsSpec)
+	require.Empty(t, rows, "a completed/cancelled/noShow appointment must not project — front-desk only badges an upcoming visit")
+}
+
+func TestFrontDeskVisits_SkipsCancelledAppointment(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	f := newFdFixture(t)
+	f.mkAppointmentDeleted(t, "a1", "scheduled", true, true)
+
+	rows := f.project(t, visitsSpec)
+	require.Empty(t, rows, "a soft-deleted appointment must be filtered by the engine's isDeleted guard")
 }

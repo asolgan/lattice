@@ -289,12 +289,21 @@ async function loadFrontDesk() {
     (ld.leaseDetails || []).forEach((d) => { leaseDetailsByLease[d.leaseAppKey] = d; });
   } catch (_) { /* front-desk not installed / unreachable — lease details just don't show */ }
 
+  // Same join, for the resident's own upcoming clinic visit (Inc 5) — existence
+  // + time only, never the visit reason (front-desk's frontDeskVisits lens
+  // never projects it). Best-effort, same degrade-to-hidden posture as above.
+  let visitsByLease = {};
+  try {
+    const vs = await api("/api/frontdesk-visits");
+    (vs.visits || []).forEach((v) => { visitsByLease[v.leaseAppKey] = v; });
+  } catch (_) { /* front-desk not installed / unreachable — visit badge just doesn't show */ }
+
   summary.textContent = tabs.length + " open tab" + (tabs.length === 1 ? "" : "s");
   if (!tabs.length) {
     grid.innerHTML = '<div class="empty">No open tabs.</div>';
     return;
   }
-  grid.innerHTML = tabs.map((t) => frontDeskCard(t, bookingsByLease[t.leaseAppKey], leaseDetailsByLease[t.leaseAppKey])).join("");
+  grid.innerHTML = tabs.map((t) => frontDeskCard(t, bookingsByLease[t.leaseAppKey], leaseDetailsByLease[t.leaseAppKey], visitsByLease[t.leaseAppKey])).join("");
   tabs.forEach((t) => {
     const btn = document.getElementById("settle-" + t.tabKey.replace(/[^a-zA-Z0-9]/g, ""));
     if (!btn) return;
@@ -315,7 +324,7 @@ async function loadFrontDesk() {
   });
 }
 
-function frontDeskCard(t, booking, lease) {
+function frontDeskCard(t, booking, lease, visit) {
   const id = "settle-" + t.tabKey.replace(/[^a-zA-Z0-9]/g, "");
   const classBadge = booking
     ? '<div class="meta">🧘 Booked: ' + (booking.sessionName || "class") + " · " + (booking.startsAt || "?") + "</div>"
@@ -323,6 +332,12 @@ function frontDeskCard(t, booking, lease) {
   const leaseLine = lease && lease.unitRent
     ? '<div class="meta">🏠 ' + rentAmount(lease.unitRent, lease.unitCurrency) + "/mo" +
       (lease.unitLeaseTermMonths ? " · " + lease.unitLeaseTermMonths + "mo term" : "") + "</div>"
+    : "";
+  // Existence + time only — never a visit reason (front-desk's frontDeskVisits
+  // lens never projects it; front desk staff see "a visit is scheduled," not
+  // why or with whom).
+  const visitBadge = visit
+    ? '<div class="meta">🩺 Visit: ' + (visit.startsAt || "?") + "</div>"
     : "";
   return (
     '<div class="card">' +
@@ -332,6 +347,7 @@ function frontDeskCard(t, booking, lease) {
     '<div class="meta">Opened ' + (t.openedAt || "?") + "</div>" +
     classBadge +
     leaseLine +
+    visitBadge +
     '<div class="card-actions"><button id="' + id + '" class="danger">Settle</button></div>' +
     "</div>"
   );

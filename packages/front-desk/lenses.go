@@ -18,6 +18,18 @@ const BookingsBucket = "front-desk-bookings"
 // booking, so it has no row for a leaseapp with no booking).
 const LeaseDetailsBucket = "front-desk-lease-details"
 
+// VisitsBucket is the NATS-KV read model the frontDeskVisits lens projects
+// into — the Inc 5 clinic tail of the unified resident context: one row per
+// LIVE, scheduled, resident-confined clinic appointment (residentVisit link
+// present), keyed by leaseAppKey. Deliberately carries ONLY existence + time
+// — never the .schedule visit reason, and never patient/provider identity —
+// front desk staff see "a visit is scheduled," not why or with whom; the
+// clinic's own PHI line (packages/clinic-domain/ddls.go) draws the boundary
+// at raw clinical content (.encounter), but a visit REASON is still more
+// than a café/front-desk audience needs, so this lens narrows further than
+// clinicAppointments does for clinic staff.
+const VisitsBucket = "front-desk-visits"
+
 // Lenses returns the package's Lens declarations. No UNION is needed here
 // (unlike one-bill, which shares one bucket between two lenses to work
 // around the cypher engine's missing UNION) — front-desk re-projects only
@@ -44,6 +56,14 @@ func Lenses() []pkgmgr.LensSpec {
 			Bucket:        LeaseDetailsBucket,
 			Engine:        "full",
 			Spec:          leaseDetailsSpec,
+		},
+		{
+			CanonicalName: "frontDeskVisits",
+			Class:         "meta.lens",
+			Adapter:       "nats-kv",
+			Bucket:        VisitsBucket,
+			Engine:        "full",
+			Spec:          visitsSpec,
 		},
 	}
 }
@@ -88,3 +108,23 @@ RETURN
   u.listing.data.rentAmount AS unitRent,
   u.listing.data.rentCurrency AS unitCurrency,
   u.listing.data.leaseTermMonths AS unitLeaseTermMonths`
+
+// visitsSpec projects one row per LIVE, scheduled clinic appointment carrying
+// a residentVisit link (appointment→leaseapp) — clinic-domain's
+// CreateAppointment writes that link only when the supplied leaseAppKey's
+// applicationFor link resolves to the same identity as the patient's own
+// identifiedBy identity (packages/clinic-domain/ddls.go
+// appointmentVertexTypeDDL), the same confinement shape bookingsSpec already
+// uses for residentRate. An appointment with no residentVisit link (no lease
+// claimed, or the claim didn't match) never projects — front-desk shows only
+// a resident's OWN visit, never the clinic's full schedule. RETURN carries
+// only startsAt/endsAt, deliberately excluding the .schedule visit reason —
+// see VisitsBucket's doc comment.
+const visitsSpec = `MATCH (a:appointment)-[:residentVisit]->(l:leaseapp)
+WHERE a.status.data.value = 'scheduled'
+RETURN
+  a.key AS key,
+  a.key AS appointmentKey,
+  l.key AS leaseAppKey,
+  a.schedule.data.startsAt AS startsAt,
+  a.schedule.data.endsAt AS endsAt`

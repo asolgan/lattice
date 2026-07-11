@@ -39,3 +39,22 @@ func TestComputeFrontDeskLeaseDetails_SkipsRowsWithNoLeaseAppKey(t *testing.T) {
 		t.Errorf("unexpected row: %+v", rows[0])
 	}
 }
+
+func TestComputeFrontDeskVisits_SkipsRowsWithNoLeaseAppKey(t *testing.T) {
+	keys, get := fakeKV(map[string]any{
+		"vtx.appointment.a1": map[string]any{
+			"appointmentKey": "vtx.appointment.a1", "leaseAppKey": "vtx.leaseapp.a",
+			"startsAt": "2026-07-11T15:00:00Z", "endsAt": "2026-07-11T15:30:00Z",
+		},
+		// a tombstoned/undecodable entry — skipped (no leaseAppKey)
+		"vtx.appointment.bad": map[string]any{},
+	})
+
+	rows := computeFrontDeskVisits(keys, get)
+	if len(rows) != 1 {
+		t.Fatalf("want 1 row (tombstoned entry excluded), got %d (%+v)", len(rows), rows)
+	}
+	if rows[0].LeaseAppKey != "vtx.leaseapp.a" || rows[0].StartsAt != "2026-07-11T15:00:00Z" {
+		t.Errorf("unexpected row: %+v", rows[0])
+	}
+}

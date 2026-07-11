@@ -318,7 +318,11 @@ func appointmentVertexTypeDDL() pkgmgr.DDLSpec {
 			"even when it falls inside the weekly .hours; a provider with no .timeOff is unrestricted. Both also reject a " +
 			"startsAt at or before op.submittedAt " +
 			"(ScheduleInPast) — a soft past-time guard (submittedAt is caller-supplied; the host clock is " +
-			"not exposed to Starlark).",
+			"not exposed to Starlark). CreateAppointment also accepts an optional leaseAppKey (mirrors " +
+			"wellness-domain's CreateBooking resident-rate check): when the leaseapp is alive, carries a " +
+			".tenancy aspect, and its applicant identity matches the patient's own identifiedBy identity, " +
+			"a residentVisit link (appointment→leaseapp) is written — a mismatch or absent lease falls " +
+			"through silently, never a hard failure.",
 		Script: appointmentDDLScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"patient":{"type":"string","description":"vtx.patient.<NanoID> the appointment is for (CreateAppointment / RescheduleAppointment; required; on create validated alive + class=patient, on reschedule/terminal-SetAppointmentStatus/TombstoneAppointment it must be the appointment's actual patient, validated via the forPatient link)."},` +
@@ -326,6 +330,7 @@ func appointmentVertexTypeDDL() pkgmgr.DDLSpec {
 			`"startsAt":{"type":"string","description":"Appointment start, RFC3339 (CreateAppointment / RescheduleAppointment; required). Caller supplies canonical UTC, aligned to the clinic's 15-minute booking grid (:00/:15/:30/:45; SlotGridViolation otherwise)."},` +
 			`"endsAt":{"type":"string","description":"Appointment end, RFC3339 (CreateAppointment / RescheduleAppointment; required). Caller supplies canonical UTC, aligned to the 15-minute grid; span capped at 96 cells / 24h (AppointmentTooLong)."},` +
 			`"reason":{"type":"string","description":"Visit reason / chief complaint (CreateAppointment / RescheduleAppointment; optional — on RescheduleAppointment an omitted reason clears it)."},` +
+			`"leaseAppKey":{"type":"string","description":"Optional vtx.leaseapp.<NanoID> the patient claims residency under (CreateAppointment; optional). Checked against the lease's applicationFor link matching the patient's identifiedBy identity — a mismatch falls through with no residentVisit link, never a hard failure."},` +
 			`"appointmentId":{"type":"string","description":"Optional bare NanoID for the new appointment vertex (CreateAppointment); absent → minted."},` +
 			`"appointmentKey":{"type":"string","description":"vtx.appointment.<NanoID> of an existing appointment (RescheduleAppointment / SetAppointmentStatus / TombstoneAppointment; required, validated alive)."},` +
 			`"status":{"type":"string","enum":["scheduled","confirmed","checkedIn","completed","cancelled","noShow"],"description":"New status (SetAppointmentStatus; required). Transitioning TO a terminal value (completed/cancelled/noShow) for the first time also requires provider + patient (to release the held slot-claim cells; omitted on a non-terminal transition or an idempotent same-value re-set)."},` +
@@ -344,6 +349,7 @@ func appointmentVertexTypeDDL() pkgmgr.DDLSpec {
 			"startsAt":          "Appointment start (RFC3339, canonical UTC). Stored on the .schedule aspect (CreateAppointment / RescheduleAppointment; required). Must be in the future relative to op.submittedAt — a past / now startsAt is rejected (ScheduleInPast). Must align to the 15-minute grid (SlotGridViolation).",
 			"endsAt":            "Appointment end (RFC3339, canonical UTC). Stored on the .schedule aspect (CreateAppointment / RescheduleAppointment; required). Must align to the 15-minute grid; span capped at 96 cells / 24h (AppointmentTooLong).",
 			"reason":            "Optional visit reason / chief complaint. Stored on the .schedule aspect when present (CreateAppointment / RescheduleAppointment; on RescheduleAppointment an omitted reason clears it).",
+			"leaseAppKey":       "Optional full vtx.leaseapp.<NanoID> key the patient claims residency under (CreateAppointment). Verified via the lease's applicationFor link matching the patient's own identifiedBy identity before writing a residentVisit link (appointment→leaseapp); a mismatch or absent lease silently omits the link.",
 			"appointmentId":     "Optional bare NanoID (no dots / key segments) for the new appointment vertex. Absent → minted with nanoid.new().",
 			"appointmentKey":    "Full vtx.appointment.<NanoID> key of an existing appointment (RescheduleAppointment rewrites its .schedule; SetAppointmentStatus validates it alive + class=appointment; TombstoneAppointment validates it alive).",
 			"status":            "New appointment status, one of {scheduled, confirmed, checkedIn, completed, cancelled, noShow} (SetAppointmentStatus; required). The first transition to a terminal value also requires provider + patient.",
@@ -1594,6 +1600,52 @@ def execute(state, op):
         if reason != None:
             sched["reason"] = reason
 
+        # Resident-visit confinement: an optional leaseAppKey, mirroring
+        # wellness-domain's CreateBooking residentRate check, qualifies the
+        # appointment for a residentVisit link (appointment→leaseapp) only
+        # when ALL THREE hold: the leaseapp is alive, its .tenancy aspect is
+        # present (the same first-approve signal residentRate uses — a
+        # pending/declined application never qualifies), and the leaseapp's
+        # applicant identity is THIS patient's own identifiedBy identity. A
+        # mismatch or absent lease falls through silently — leaseAppKey is a
+        # confinement hint, never a hard requirement, exactly like
+        # wellness's rate check.
+        resident_visit_mutation = None
+        lease_key = optional_string(p, "leaseAppKey")
+        if lease_key != None:
+            _, lease_id = parts_of(lease_key, "leaseAppKey", "leaseapp")
+            # read-posture: (d) declared optionalReads by CreateAppointment's
+            # dispatcher (resident-visit lookup; absent → falls through, never
+            # a hard failure — mirrors wellness-domain's ddls.go).
+            lease_doc = kv.Read(lease_key)
+            lease_alive = lease_doc != None and not lease_doc.isDeleted
+            tenancy_doc = kv.Read(lease_key + ".tenancy")
+            tenancy_present = tenancy_doc != None and not tenancy_doc.isDeleted
+            # Unlike wellness's CreateBooking (whose booker IS an identity,
+            # supplied directly), CreateAppointment's caller supplies a
+            # patient vertex, not an identity — the lease's applicant is
+            # resolved via the sanctioned bounded op-time enumeration
+            # (Contract #2 §2.5.1) rather than a declared key. A leaseapp
+            # carries AT MOST one outbound applicationFor link
+            # (lease-signing's one-applicant-per-application invariant), so
+            # this is never a keyspace scan.
+            # read-posture: (e) relation=applicationFor epoch=none (a lease
+            # created concurrently with this appointment is not a race this
+            # check needs to close — the silent fall-through is always safe)
+            applicant_page, _ = kv.Links(lease_key, "applicationFor", "out")
+            applicant_id = None
+            for lk in applicant_page:
+                if not lk.isDeleted:
+                    applicant_id = lk.targetVertex[len("vtx.identity."):]
+            if lease_alive and tenancy_present and applicant_id != None:
+                identified_by_lnk = "lnk.patient." + patient_id + ".identifiedBy.identity." + applicant_id
+                # read-posture: (e) per-candidate follow-up read off the
+                # enumeration above (data-derived key)
+                idb_doc = kv.Read(identified_by_lnk)
+                if idb_doc != None and not idb_doc.isDeleted:
+                    resident_visit_lnk = "lnk.appointment." + appt_id + ".residentVisit.leaseapp." + lease_id
+                    resident_visit_mutation = make_link(resident_visit_lnk, appt_key, lease_key, "residentVisit", "residentVisit", {})
+
         # Root data minimal (D5): {} on root. The patient / provider are links; the
         # schedule + status are aspects. One providerSlotClaim + one patientSlotClaim
         # per covered cell IS the double-book lock (write-path CreateOnly/
@@ -1605,6 +1657,8 @@ def execute(state, op):
             make_link(for_patient_lnk, appt_key, patient, "forPatient", "forPatient", {}),
             make_link(with_provider_lnk, appt_key, provider, "withProvider", "withProvider", {}),
         ]
+        if resident_visit_mutation != None:
+            mutations.append(resident_visit_mutation)
         for c in cells:
             cc = slot_cellcode(c)
             mutations.append(claim_cell(provider, cc, "providerSlotClaim", "SlotConflict", "provider"))

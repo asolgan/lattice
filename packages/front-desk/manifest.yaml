@@ -1,19 +1,24 @@
 name: front-desk
-version: 0.2.0
+version: 0.3.0
 description: |
-  Café/Wellness mixed-use composition Inc 1 + Inc 4 — the front-desk unified
-  resident context. No vertex types, links, or permissions of its own: two
-  Lenses — frontDeskBookings re-projects wellness-domain's resident-rate
-  bookings, keyed by leaseAppKey, into the front-desk-bookings bucket, so a
-  resident's booked class shows up next to their open café tab (cafe-domain's
-  own cafeTabSettlement lens already serves that half) without a second
-  lookup; frontDeskLeaseDetails re-projects every leaseapp's applied-to unit
-  rent/currency/term/address, keyed by leaseAppKey, into the
-  front-desk-lease-details bucket, so the front-desk card can show lease
-  details regardless of whether the resident has a booked class.
-  Depends on wellness-domain.
+  Café/Wellness/Clinic mixed-use composition Inc 1 + Inc 4 + Inc 5 — the
+  front-desk unified resident context. No vertex types, links, or
+  permissions of its own: three Lenses — frontDeskBookings re-projects
+  wellness-domain's resident-rate bookings, keyed by leaseAppKey, into the
+  front-desk-bookings bucket, so a resident's booked class shows up next to
+  their open café tab (cafe-domain's own cafeTabSettlement lens already
+  serves that half) without a second lookup; frontDeskLeaseDetails
+  re-projects every leaseapp's applied-to unit rent/currency/term/address,
+  keyed by leaseAppKey, into the front-desk-lease-details bucket, so the
+  front-desk card can show lease details regardless of whether the resident
+  has a booked class; frontDeskVisits re-projects clinic-domain's
+  residentVisit-linked appointments, keyed by leaseAppKey, into the
+  front-desk-visits bucket — existence + time of a resident's own upcoming
+  clinic visit only, never the visit reason or clinical content.
+  Depends on wellness-domain + clinic-domain.
 depends:
   - wellness-domain
+  - clinic-domain
 declares:
   lenses:
     - canonicalName: frontDeskBookings
@@ -23,4 +28,8 @@ declares:
     - canonicalName: frontDeskLeaseDetails
       adapter: nats-kv
       bucket: front-desk-lease-details
+      engine: full
+    - canonicalName: frontDeskVisits
+      adapter: nats-kv
+      bucket: front-desk-visits
       engine: full

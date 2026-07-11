@@ -868,14 +868,16 @@ install-onebill:
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_PKG) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) ./bin/lattice-pkg install packages/one-bill
 	@echo "==> one-bill installed. Combined lease statement: one-bill-history bucket, keyed by leaseAppKey."
 
-## install-frontdesk — Install the Café/Wellness "mixed-use composition
-## surfaces" Inc 1 lens (verticals row, ★★★): re-projects wellness-domain's
-## resident-rate bookings, tagged by source, into the front-desk-bookings
-## bucket keyed by leaseAppKey. Requires `make install-wellness` to have
-## already run (it matches :booking/:session vertex classes) — installing it
-## first just means the lens projects zero rows until wellness-domain lands,
-## not an error. The café half of the unified context (open tabs) needs no
-## install — it reuses cafe-domain's own cafeTabSettlement lens.
+## install-frontdesk — Install the Café/Wellness/Clinic "mixed-use composition
+## surfaces" lenses (verticals row, ★★★): re-projects wellness-domain's
+## resident-rate bookings into front-desk-bookings and clinic-domain's
+## resident-confined visits into front-desk-visits, both keyed by
+## leaseAppKey. Requires `make install-wellness` / `make install-clinic` to
+## have already run (it matches :booking/:session and :appointment vertex
+## classes) — installing it first just means that lens side projects zero
+## rows until the matching package lands, not an error. The café half of the
+## unified context (open tabs) needs no install — it reuses cafe-domain's own
+## cafeTabSettlement lens.
 install-frontdesk:
 	@echo "==> Building lattice-pkg..."
 	go build -o bin/lattice-pkg ./cmd/lattice-pkg

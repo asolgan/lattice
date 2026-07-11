@@ -134,6 +134,40 @@ func clSeedVertex(t *testing.T, ctx context.Context, conn *substrate.Conn, key, 
 	}
 }
 
+func clSeedLink(t *testing.T, ctx context.Context, conn *substrate.Conn, key, source, target, class, localName string) {
+	t.Helper()
+	doc := map[string]any{
+		"class": class, "isDeleted": false,
+		"sourceVertex": source, "targetVertex": target,
+		"localName": localName, "data": map[string]any{},
+	}
+	b, _ := json.Marshal(doc)
+	if _, err := conn.KVPut(ctx, testutil.HarnessCoreBucket, key, b); err != nil {
+		t.Fatalf("seed link %s: %v", key, err)
+	}
+}
+
+// clSeedLease seeds a leaseapp vertex and, when applicantID is non-empty, its
+// applicationFor link — the residency check CreateAppointment reads
+// (residentVisit, mirroring wellness-domain's residentRate). withTenancy
+// additionally stamps the .tenancy aspect DecideLeaseApplication's FIRST
+// approve writes — CreateAppointment requires its presence (not just a live
+// applicationFor link) before writing a residentVisit link, so a pending or
+// declined application (link alive, no .tenancy) must fall back to no link.
+func clSeedLease(t *testing.T, ctx context.Context, conn *substrate.Conn, leaseID, applicantID string, withTenancy bool) string {
+	t.Helper()
+	key := "vtx.leaseapp." + leaseID
+	clSeedVertex(t, ctx, conn, key, "leaseapp", false)
+	if applicantID != "" {
+		lnk := "lnk.leaseapp." + leaseID + ".applicationFor.identity." + applicantID
+		clSeedLink(t, ctx, conn, lnk, key, "vtx.identity."+applicantID, "applicationFor", "applicationFor")
+	}
+	if withTenancy {
+		clSeedVertex(t, ctx, conn, key+".tenancy", "tenancy", false)
+	}
+	return key
+}
+
 func clReadDoc(t *testing.T, ctx context.Context, conn *substrate.Conn, key string) map[string]any {
 	t.Helper()
 	entry, err := conn.KVGet(ctx, testutil.HarnessCoreBucket, key)
@@ -1528,5 +1562,127 @@ func TestClinic_CreateAppointmentConsumerNamesUnlinkedPatient_Rejected(t *testin
 
 	if !clMissing(t, ctx, conn, "vtx.appointment."+clNanoIDFromRequestID(reqID)) {
 		t.Fatalf("an appointment was committed for a patient not linked to the caller's identity")
+	}
+}
+
+// clCreateAppointmentWithLease submits CreateAppointment with an optional
+// leaseAppKey — mirrors wellness-domain integration_test.go's createBooking
+// helper, declaring the lease/tenancy reads as (d) optionalReads (absent is
+// the common no-lease case), never a hard requirement.
+func clCreateAppointmentWithLease(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, patientKey, providerKey, leaseAppKey string, want processor.MessageOutcome) string {
+	t.Helper()
+	reqID := testutil.GenReqID(label)
+	payloadMap := map[string]any{
+		"patient": patientKey, "provider": providerKey,
+		"startsAt": "2026-07-01T15:00:00Z", "endsAt": "2026-07-01T15:30:00Z",
+	}
+	optionalReads := []string{}
+	if leaseAppKey != "" {
+		payloadMap["leaseAppKey"] = leaseAppKey
+		optionalReads = append(optionalReads, leaseAppKey, leaseAppKey+".tenancy")
+	}
+	payload, _ := json.Marshal(payloadMap)
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateAppointment",
+		Actor:         clStaffActorKey,
+		SubmittedAt:   clSubmittedAnchor,
+		Class:         "appointment",
+		Payload:       payload,
+		ContextHint:   &processor.ContextHint{Reads: []string{patientKey, providerKey}, OptionalReads: optionalReads},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, want)
+	return clNanoIDFromRequestID(reqID)
+}
+
+// TestClinic_CreateAppointment_ResidentVisitWhenLeaseMatchesPatient proves the
+// Inc 5 confinement: a leaseAppKey whose applicationFor identity matches the
+// booked patient's own identifiedBy identity, AND carries a live .tenancy
+// aspect, gets a residentVisit link (appointment→leaseapp) — mirrors
+// wellness-domain's TestCreateBooking_ResidentRateWhenLeaseMatchesBooker.
+func TestClinic_CreateAppointment_ResidentVisitWhenLeaseMatchesPatient(t *testing.T) {
+	ctx, conn := setupClinicEnv(t)
+	cp, cons := newClinicPipeline(t, ctx, conn, "resident-visit-match")
+
+	identityKey := "vtx.identity.CLrvmatchHJKMNPQRSTU"
+	clSeedVertex(t, ctx, conn, identityKey, "identity", false)
+	patientID := clSubmit(t, ctx, conn, cp, cons, "rvmatchpat01", "CreatePatient", "patient",
+		`{"fullName":"Rae Visitor","identityKey":"`+identityKey+`"}`,
+		[]string{identityKey}, processor.OutcomeAccepted)
+	patientKey := "vtx.patient." + patientID
+	providerKey := createProvider(t, ctx, conn, cp, cons, "rvmatchprv01", "Dr. Owen Reyes", "Pediatrics")
+
+	leaseKey := clSeedLease(t, ctx, conn, "CLrvmatchLeaseHJKMNP", "CLrvmatchHJKMNPQRSTU", true)
+
+	apptID := clCreateAppointmentWithLease(t, ctx, conn, cp, cons, "rvmatchappt1", patientKey, providerKey, leaseKey, processor.OutcomeAccepted)
+	apptKey := "vtx.appointment." + apptID
+
+	residentVisitLnk := "lnk.appointment." + apptID + ".residentVisit.leaseapp.CLrvmatchLeaseHJKMNP"
+	ldoc := clReadDoc(t, ctx, conn, residentVisitLnk)
+	if ldoc["class"] != "residentVisit" {
+		t.Fatalf("residentVisit link class = %v, want residentVisit", ldoc["class"])
+	}
+	if ldoc["sourceVertex"] != apptKey || ldoc["targetVertex"] != leaseKey {
+		t.Fatalf("residentVisit link endpoints = src %v tgt %v, want %v/%v", ldoc["sourceVertex"], ldoc["targetVertex"], apptKey, leaseKey)
+	}
+}
+
+// TestClinic_CreateAppointment_MismatchedLeaseFallsBack proves a leaseAppKey
+// whose applicant is a DIFFERENT identity than the patient's own falls through
+// silently — no residentVisit link, and the appointment still commits (a
+// confinement hint, never a hard requirement) — mirrors wellness-domain's
+// TestCreateBooking_MismatchedLeaseFallsBackToStandardRate.
+func TestClinic_CreateAppointment_MismatchedLeaseFallsBack(t *testing.T) {
+	ctx, conn := setupClinicEnv(t)
+	cp, cons := newClinicPipeline(t, ctx, conn, "resident-visit-mismatch")
+
+	patientIdentityKey := "vtx.identity.CLrvmisPatHJKMNPQRST"
+	clSeedVertex(t, ctx, conn, patientIdentityKey, "identity", false)
+	patientID := clSubmit(t, ctx, conn, cp, cons, "rvmispat0001", "CreatePatient", "patient",
+		`{"fullName":"Mira Mismatch","identityKey":"`+patientIdentityKey+`"}`,
+		[]string{patientIdentityKey}, processor.OutcomeAccepted)
+	patientKey := "vtx.patient." + patientID
+	providerKey := createProvider(t, ctx, conn, cp, cons, "rvmisprv0001", "Dr. Owen Reyes", "Pediatrics")
+
+	// The lease's applicant is a DIFFERENT identity — never the patient's own.
+	otherIdentityID := "CLrvmisDiffHJKMNPQRS"
+	clSeedVertex(t, ctx, conn, "vtx.identity."+otherIdentityID, "identity", false)
+	leaseKey := clSeedLease(t, ctx, conn, "CLrvmisLeaseHJKMNPQR", otherIdentityID, true)
+
+	apptID := clCreateAppointmentWithLease(t, ctx, conn, cp, cons, "rvmisappt001", patientKey, providerKey, leaseKey, processor.OutcomeAccepted)
+
+	residentVisitLnk := "lnk.appointment." + apptID + ".residentVisit.leaseapp.CLrvmisLeaseHJKMNPQR"
+	if !clMissing(t, ctx, conn, residentVisitLnk) {
+		t.Fatalf("a residentVisit link was written for a lease applicant that does not match the patient's own identity")
+	}
+}
+
+// TestClinic_CreateAppointment_PendingLeaseFallsBack proves a leaseAppKey
+// whose applicationFor link matches the patient but carries NO .tenancy
+// aspect (a pending or declined application) falls through silently — no
+// residentVisit link — mirrors wellness-domain's
+// TestCreateBooking_PendingLeaseFallsBackToStandardRate.
+func TestClinic_CreateAppointment_PendingLeaseFallsBack(t *testing.T) {
+	ctx, conn := setupClinicEnv(t)
+	cp, cons := newClinicPipeline(t, ctx, conn, "resident-visit-pending")
+
+	identityKey := "vtx.identity.CLrvpendHJKMNPQRSTUV"
+	clSeedVertex(t, ctx, conn, identityKey, "identity", false)
+	patientID := clSubmit(t, ctx, conn, cp, cons, "rvpendpat001", "CreatePatient", "patient",
+		`{"fullName":"Penny Pending","identityKey":"`+identityKey+`"}`,
+		[]string{identityKey}, processor.OutcomeAccepted)
+	patientKey := "vtx.patient." + patientID
+	providerKey := createProvider(t, ctx, conn, cp, cons, "rvpendprv001", "Dr. Owen Reyes", "Pediatrics")
+
+	// applicationFor link present, but NO .tenancy — a pending/undecided lease.
+	leaseKey := clSeedLease(t, ctx, conn, "CLrvpendLeaseHJKMNPQ", "CLrvpendHJKMNPQRSTUV", false)
+
+	apptID := clCreateAppointmentWithLease(t, ctx, conn, cp, cons, "rvpendappt01", patientKey, providerKey, leaseKey, processor.OutcomeAccepted)
+
+	residentVisitLnk := "lnk.appointment." + apptID + ".residentVisit.leaseapp.CLrvpendLeaseHJKMNPQ"
+	if !clMissing(t, ctx, conn, residentVisitLnk) {
+		t.Fatalf("residentVisit link must NOT be written for a pending/undecided lease: %s", residentVisitLnk)
 	}
 }
