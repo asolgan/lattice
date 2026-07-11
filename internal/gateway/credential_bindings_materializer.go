@@ -35,10 +35,13 @@ const credentialBindingsIssueKey = "credential-bindings-consumer"
 // never-redelivered claim event is surfaced under.
 const credentialBindingsPoisonIssueKey = "credential-bindings-poison-key"
 
-// credentialClaimedEventBody is the shape the outbox publishes for
-// identity.claimed (packages/identity-domain/ddls.go's ClaimIdentity); the
-// business fields ride `payload`.
-type credentialClaimedEventBody struct {
+// credentialBindingEventBody is the shape the outbox publishes for both
+// identity.claimed (packages/identity-domain/ddls.go's ClaimIdentity) and
+// identity.rebound (packages/identity-hygiene/ddls.go's MergeIdentity,
+// multi-credential-identity-linking-design.md §3.3) — both fold the same
+// way (actorKey → identityKey); rebound's extra previousIdentityKey field
+// is audit-only and unused by the fold.
+type credentialBindingEventBody struct {
 	EventType string `json:"eventType"`
 	Payload   struct {
 		IdentityKey string `json:"identityKey"`
@@ -98,34 +101,37 @@ func StartCredentialBindingsMaterializer(ctx context.Context, conn *substrate.Co
 	return sup, nil
 }
 
-// credentialBindingsHandler folds an identity.claimed event into the
-// credential-bindings bucket, keyed by the raw credential actor (A) so
-// Resolve(actorID) is an O(1) point lookup. Must be idempotent
-// (at-least-once delivery): a redelivered claim re-puts the same key with
-// the same value. There is no unbind path in this refinement's scope — a
+// credentialBindingsHandler folds an identity.claimed or identity.rebound
+// event into the credential-bindings bucket, keyed by the raw credential
+// actor (A) so Resolve(actorID) is an O(1) point lookup. Must be idempotent
+// (at-least-once delivery): a redelivered claim or rebound re-puts the same
+// key with the same value. A rebound after a claim folds last and wins —
+// stream-ordered, single writer (multi-credential-identity-linking-
+// design.md §3.3). There is no unbind path in this refinement's scope — a
 // bound key lives for the actor's lifetime.
 func credentialBindingsHandler(conn *substrate.Conn, hb *Heartbeater, logger *slog.Logger) substrate.SupervisedHandler {
 	return func(ctx context.Context, msg substrate.Message) (substrate.Decision, error) {
 		if len(msg.Body) == 0 {
 			return substrate.Ack, nil
 		}
-		var eb credentialClaimedEventBody
+		var eb credentialBindingEventBody
 		if err := json.Unmarshal(msg.Body, &eb); err != nil {
 			logger.Warn("gateway: credential-bindings event body unparseable; dropping", "error", err)
 			hb.SetIssue(credentialBindingsPoisonIssueKey, severityError, "credentialBindings.malformedEvent",
 				"credential-bindings event body unparseable, dropped: "+err.Error())
 			return substrate.Ack, nil
 		}
-		if eb.EventType != "identity.claimed" {
+		if eb.EventType != "identity.claimed" && eb.EventType != "identity.rebound" {
 			// FilterSubject scopes delivery to events.identity.>, so a
 			// sibling identity-domain event (e.g. identity.provisioned)
-			// legitimately arrives here too — ignore anything but a claim.
+			// legitimately arrives here too — ignore anything but a
+			// claim/rebound.
 			return substrate.Ack, nil
 		}
 		if eb.Payload.ActorKey == "" || eb.Payload.IdentityKey == "" {
-			logger.Warn("gateway: identity.claimed event missing actorKey/identityKey; dropping")
+			logger.Warn("gateway: "+eb.EventType+" event missing actorKey/identityKey; dropping")
 			hb.SetIssue(credentialBindingsPoisonIssueKey, severityError, "credentialBindings.missingFields",
-				"identity.claimed event missing actorKey/identityKey, dropped")
+				eb.EventType+" event missing actorKey/identityKey, dropped")
 			return substrate.Ack, nil
 		}
 

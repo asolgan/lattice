@@ -56,6 +56,22 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // (`identityKey` field), the old link is tombstoned, and a new link to
 // primary is created — no decryption anywhere (linkage is ownership).
 //
+// Credential repoint (multi-credential-identity-linking-design.md §3.3):
+// every credential that currently resolves to secondary is repointed to
+// primary — closing the "a merge strands a credential on the merged-dead
+// identity forever" hole. secondary.credentialBinding and
+// primary.credentialBinding are declared optionalReads (a never-claimed or
+// Scenario-B identity has neither). The credential set is secondary's
+// `credentials` array (pre-Fire-2 fallback: the singular {actorKey,
+// boundAt} fields; empty if the aspect is absent) plus the implicit
+// self-credential (secondary's own key, closing the Scenario-B
+// resolve-miss hole). Each credential's `vtx.credentialindex.<hash>`
+// vertex is repointed to primary, the set is unioned into
+// primary.credentialBinding.credentials, secondary.credentialBinding is
+// tombstoned, and one identity.rebound event is emitted per credential —
+// the Gateway's credential-bindings materializer folds it like
+// identity.claimed.
+//
 // State updates:
 //   - secondary.state → "merged"
 //   - secondary.mergedInto → primary key
@@ -64,7 +80,7 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //
 // Events: one IdentityMerged carrying primary, secondary, linkCount and the
 // per-bucket link counts (linksMigrated, linksTombstonedOnly,
-// linkCollisionsMerged).
+// linkCollisionsMerged), plus one identity.rebound per repointed credential.
 //
 // Reply: MergeIdentity is multi-key with no single principal entity, so it
 // returns no primaryKey. The committed key set is the key set of
@@ -81,9 +97,11 @@ func DDLs() []pkgmgr.DDLSpec {
 				"duplicateCandidates Lens) and is validated against Core KV by " +
 				"the script. Rejects (IdentityHasOpenTasks) if secondary still holds " +
 				"a live assignedTo task in status open (Contract #10 §10.1 no-orphan " +
-				"tombstone guard) — reassign/cancel it first. Multi-key op: returns no " +
-				"primaryKey; merge counts ride the IdentityMerged event and the " +
-				"committed key set is in OperationReply.Revisions.",
+				"tombstone guard) — reassign/cancel it first. Repoints every credential " +
+				"resolving to secondary onto primary (multi-credential-identity-linking-" +
+				"design.md §3.3), emitting identity.rebound per credential. Multi-key " +
+				"op: returns no primaryKey; merge counts ride the IdentityMerged event " +
+				"and the committed key set is in OperationReply.Revisions.",
 			Script: identityHygieneScript,
 			InputSchema: `{"type":"object","required":["primary","secondary","edges"],"properties":` +
 				`{"primary":{"type":"string","description":"vtx.identity.<NanoID> of the surviving identity."},` +
@@ -147,6 +165,14 @@ func DDLs() []pkgmgr.DDLSpec {
 // absence-tolerant — dedup-over-encrypted-pii-design.md §3.4):
 //   - lnk.identity.<secondaryId>.duplicateOf.identity.<primaryId>
 //   - lnk.identity.<primaryId>.duplicateOf.identity.<secondaryId>
+//
+// Caller's ContextHint.OptionalReads MUST also include (dispatch-derivable,
+// absence-tolerant — multi-credential-identity-linking-design.md §3.3, A6:
+// a never-claimed or Scenario-B identity has no credentialBinding aspect,
+// and a required read's absence is a hydration fault that would block
+// exactly the merges this closes):
+//   - secondary.credentialBinding
+//   - primary.credentialBinding
 //
 // Caller's ContextHint.Enumerations MUST declare the secondary's inbound
 // `indexes` links (Hub: secondary, Relation: "indexes", Direction: "in"), in
@@ -297,6 +323,82 @@ def execute(state, op):
     # below accounts for them.
     idx_repoints = collect_indexes_repoints(secondary)
 
+    # --- Credential repoint (multi-credential-identity-linking-design.md
+    # §3.3): every credential resolving to secondary must repoint to
+    # primary, or a merged identity's login strands on the merged-dead
+    # vertex forever. Reads are optionalReads -- a never-claimed or
+    # Scenario-B identity has no credentialBinding aspect, and treating
+    # its absence as a hydration fault would block exactly the merges
+    # this closes.
+    def read_credential_binding(identity_key):
+        akey = identity_key + ".credentialBinding"
+        if akey in state:
+            d = state[akey]
+            if d != None and not (hasattr(d, "isDeleted") and d.isDeleted) and d.data != None:
+                return d.data
+        return None
+
+    sec_binding = read_credential_binding(secondary)
+    pri_binding = read_credential_binding(primary)
+    merged_at = op.submittedAt
+
+    seen_actors = {}
+    cred_set = []
+
+    def add_credential(actor_key, bound_at):
+        if actor_key == None or actor_key in seen_actors:
+            return
+        seen_actors[actor_key] = True
+        cred_set.append({"actorKey": actor_key, "boundAt": bound_at})
+
+    # Credential set = secondary's "credentials" array (pre-Fire-2
+    # fallback: the singular {actorKey, boundAt} fields; empty if the
+    # aspect is absent entirely -- a never-claimed staff-created
+    # secondary folds nothing on this front), plus the implicit
+    # self-credential: the secondary's own key, which closes the
+    # Scenario-B resolve-miss hole and is inert-but-correct for every
+    # other secondary shape.
+    if sec_binding != None:
+        arr = sec_binding.get("credentials")
+        if arr != None and type(arr) == type([]):
+            for c in arr:
+                add_credential(c.get("actorKey"), c.get("boundAt"))
+        elif sec_binding.get("actorKey") != None:
+            add_credential(sec_binding.get("actorKey"), sec_binding.get("boundAt"))
+    add_credential(secondary, merged_at)
+
+    # Union target: primary's existing credential set (same fallback
+    # shape) plus every entry in cred_set not already present.
+    pri_seen = {}
+    pri_unioned = []
+
+    def add_primary_credential(actor_key, bound_at):
+        if actor_key == None or actor_key in pri_seen:
+            return
+        pri_seen[actor_key] = True
+        pri_unioned.append({"actorKey": actor_key, "boundAt": bound_at})
+
+    if pri_binding != None:
+        parr = pri_binding.get("credentials")
+        if parr != None and type(parr) == type([]):
+            for c in parr:
+                add_primary_credential(c.get("actorKey"), c.get("boundAt"))
+        elif pri_binding.get("actorKey") != None:
+            add_primary_credential(pri_binding.get("actorKey"), pri_binding.get("boundAt"))
+    for c in cred_set:
+        add_primary_credential(c["actorKey"], c["boundAt"])
+
+    # Singular actorKey/boundAt fields keep meaning "first-bound
+    # credential" -- preserve primary's own if it already had one, else
+    # default to the first unioned entry (pri_unioned is never empty:
+    # cred_set always carries at least the secondary self-credential).
+    if pri_binding != None and pri_binding.get("actorKey") != None:
+        pri_singular_actor = pri_binding.get("actorKey")
+        pri_singular_bound = pri_binding.get("boundAt")
+    else:
+        pri_singular_actor = pri_unioned[0]["actorKey"]
+        pri_singular_bound = pri_unioned[0]["boundAt"]
+
     # --- Trust gate: validate every declared edge against Core KV.
     # Actors are not trusted to declare keys honestly; each must
     # re-read as a link envelope and endpoint-touch the secondary.
@@ -361,8 +463,14 @@ def execute(state, op):
     # duplicateOf tombstones: 1 mutation each. indexes repoints: up to 3
     # mutations each (tombstone old link + update index vertex + create new
     # link; the create is skipped if primary already owns the same index).
+    # Credential repoint: 1 credentialindex update per credential in
+    # cred_set, always exactly 1 primary.credentialBinding union write
+    # (cred_set is never empty), plus 1 secondary.credentialBinding
+    # tombstone iff that aspect was present.
+    cred_secondary_tombstone_muts = 1 if sec_binding != None else 0
     total_muts = (link_count_full * 2 + link_count_self + 2 + acr_count +
-                  len(dup_links_to_tombstone) + len(idx_repoints) * 3)
+                  len(dup_links_to_tombstone) + len(idx_repoints) * 3 +
+                  len(cred_set) + 1 + cred_secondary_tombstone_muts)
     if total_muts > 999:
         fail("MergeBatchTooLarge: " + str(total_muts))
 
@@ -440,6 +548,29 @@ def execute(state, op):
                              "sourceVertex": idx_vertex_key, "targetVertex": primary,
                              "localName": "indexes", "data": {}}})
 
+    # --- Credential repoint: unconditioned "update" per credential -- a
+    # blind Put for the data-derived credentialindex key (not dispatch-
+    # known ahead of cred_set), same idiom the claim script's own derived-
+    # key writes use.
+    for c in cred_set:
+        idx_key = "vtx.credentialindex." + crypto.sha256NanoID(c["actorKey"])
+        mutations.append({"op": "update", "key": idx_key,
+            "document": {"class": "credentialindex", "isDeleted": False,
+                         "data": {"actorKey": c["actorKey"], "identityKey": primary,
+                                  "boundAt": c["boundAt"]}}})
+
+    # primary.credentialBinding is declared optionalReads: CAS'd on its
+    # step-4 revision when present, an unconditioned blind Put (creating
+    # the aspect) when absent.
+    mutations.append({"op": "update", "key": primary + ".credentialBinding",
+        "document": {"class": "credentialBinding", "vertexKey": primary,
+                     "localName": "credentialBinding", "isDeleted": False,
+                     "data": {"actorKey": pri_singular_actor, "boundAt": pri_singular_bound,
+                              "credentials": pri_unioned}}})
+
+    if sec_binding != None:
+        mutations.append({"op": "tombstone", "key": secondary + ".credentialBinding"})
+
     # --- Secondary state aspect: -> merged ---
     mutations.append({"op": "update", "key": secondary + ".state",
         "document": {"class": "state", "vertexKey": secondary, "localName": "state",
@@ -463,7 +594,7 @@ def execute(state, op):
                             "document": {"class": asp, "vertexKey": primary, "localName": asp,
                                          "isDeleted": False, "data": {"value": sec_val}}})
 
-    # --- Event ---
+    # --- Events ---
     events = [{"class": "identity.merged", "data": {
         "primary": primary,
         "secondary": secondary,
@@ -473,6 +604,19 @@ def execute(state, op):
         "linkCollisionsMerged": link_collisions_merged,
         "mergedAt": op.submittedAt,
     }}]
+
+    # One identity.rebound per repointed credential -- the existing class
+    # (identity.claimed) is deliberately NOT reused: a rebind is a
+    # different fact (existing binding repointed, no claim occurred) that
+    # needs previousIdentityKey, and reuse would put phantom claims in the
+    # audit stream (design §4.3). The Gateway's credential-bindings
+    # materializer folds it like identity.claimed.
+    for c in cred_set:
+        events.append({"class": "identity.rebound", "data": {
+            "actorKey": c["actorKey"],
+            "identityKey": primary,
+            "previousIdentityKey": secondary,
+        }})
 
     # MergeIdentity is multi-key with no single principal entity, so it omits
     # primaryKey. The committed key set (rekeyed links, secondary.state,

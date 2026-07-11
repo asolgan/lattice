@@ -8,6 +8,7 @@ package identityhygiene_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -17,6 +18,7 @@ import (
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
 	"github.com/asolgan/lattice/internal/testutil"
+	"github.com/asolgan/lattice/internal/vault"
 )
 
 // Test actor NanoIDs — 20 chars, substrate.Alphabet only (no I/O/l/0).
@@ -247,6 +249,217 @@ func readAspectData(t *testing.T, ctx context.Context, conn *substrate.Conn, key
 	return data
 }
 
+// credentialIndexKey mirrors `crypto.sha256NanoID(actorKey)` (byte-identical
+// to substrate.SHA256NanoID — internal/substrate/derive.go's doc comment).
+func credentialIndexKey(actorKey string) string {
+	return "vtx.credentialindex." + substrate.SHA256NanoID(actorKey)
+}
+
+// seedCredentialIndexVertex writes a vtx.credentialindex.<hash> vertex
+// directly to Core KV, mirroring what ClaimIdentity/CompleteCredentialLink
+// would have written.
+func seedCredentialIndexVertex(t *testing.T, ctx context.Context, conn *substrate.Conn,
+	actorKey, identityKey, boundAt string) {
+	t.Helper()
+	doc := map[string]any{
+		"class":     "credentialindex",
+		"isDeleted": false,
+		"data": map[string]any{
+			"actorKey":    actorKey,
+			"identityKey": identityKey,
+			"boundAt":     boundAt,
+		},
+	}
+	b, _ := json.Marshal(doc)
+	if _, err := conn.KVPut(ctx, testutil.HarnessCoreBucket, credentialIndexKey(actorKey), b); err != nil {
+		t.Fatalf("seed credentialindex %s: %v", actorKey, err)
+	}
+}
+
+// seedCredentialBindingSingular writes an identity's .credentialBinding
+// aspect in the pre-Fire-2 singular shape (no `credentials` array) —
+// multi-credential-identity-linking-design.md §3.1's migration fallback.
+// credentialBinding is Vault-sensitivity-classed (identity-domain's DDL), so
+// this mirrors the real Processor's step-6.5 encrypt hook exactly like
+// identity-domain's seedSensitiveAspect test helper.
+func seedCredentialBindingSingular(t *testing.T, ctx context.Context, conn *substrate.Conn,
+	identityKey, actorKey, boundAt string) {
+	t.Helper()
+	seedSensitiveCredentialBinding(t, ctx, conn, identityKey, map[string]any{
+		"actorKey": actorKey, "boundAt": boundAt,
+	})
+}
+
+// seedCredentialBindingArray writes an identity's .credentialBinding aspect
+// with the Fire-2+ `credentials` array shape (design §3.1). credentials is
+// a list of {actorKey, boundAt} maps.
+func seedCredentialBindingArray(t *testing.T, ctx context.Context, conn *substrate.Conn,
+	identityKey string, credentials []map[string]any) {
+	t.Helper()
+	first := credentials[0]
+	seedSensitiveCredentialBinding(t, ctx, conn, identityKey, map[string]any{
+		"actorKey":    first["actorKey"],
+		"boundAt":     first["boundAt"],
+		"credentials": credentials,
+	})
+}
+
+// seedSensitiveCredentialBinding writes identityKey's .credentialBinding
+// aspect ciphertext-encoded exactly as the real Processor's step-6.5
+// encrypt hook would produce it, lazily minting the identity's piiKey via
+// the shared TestVault if absent.
+func seedSensitiveCredentialBinding(t *testing.T, ctx context.Context, conn *substrate.Conn,
+	identityKey string, plaintext map[string]any) {
+	t.Helper()
+	v := testutil.TestVault(t)
+	env := ensureTestPiiKey(t, ctx, conn, v, identityKey)
+
+	pt, err := json.Marshal(plaintext)
+	if err != nil {
+		t.Fatalf("marshal plaintext for %s.credentialBinding: %v", identityKey, err)
+	}
+	ct, err := v.Encrypt(ctx, identityKey, env, pt)
+	if err != nil {
+		t.Fatalf("encrypt %s.credentialBinding: %v", identityKey, err)
+	}
+	doc := map[string]any{
+		"class": "credentialBinding", "vertexKey": identityKey, "localName": "credentialBinding",
+		"isDeleted": false,
+		"data":      ct,
+	}
+	b, _ := json.Marshal(doc)
+	if _, err := conn.KVPut(ctx, testutil.HarnessCoreBucket, identityKey+".credentialBinding", b); err != nil {
+		t.Fatalf("seed credentialBinding %s: %v", identityKey, err)
+	}
+}
+
+// ensureTestPiiKey returns identityKey's existing piiKey envelope, or mints
+// and seeds a fresh one via v — the fixture-side mirror of the Processor's
+// step-6.5 lazy piiKey creation (identity-domain/testhelpers_test.go's
+// helper of the same name).
+func ensureTestPiiKey(t *testing.T, ctx context.Context, conn *substrate.Conn, v vault.Vault, identityKey string) vault.Envelope {
+	t.Helper()
+	entry, err := conn.KVGet(ctx, testutil.HarnessCoreBucket, identityKey+".piiKey")
+	if err == nil {
+		var doc struct {
+			Data vault.Envelope `json:"data"`
+		}
+		if uerr := json.Unmarshal(entry.Value, &doc); uerr != nil {
+			t.Fatalf("unmarshal piiKey for %s: %v", identityKey, uerr)
+		}
+		return doc.Data
+	}
+	if !errors.Is(err, substrate.ErrKeyNotFound) {
+		t.Fatalf("read piiKey for %s: %v", identityKey, err)
+	}
+	env, err := v.CreateIdentityKey(ctx, identityKey)
+	if err != nil {
+		t.Fatalf("CreateIdentityKey for %s: %v", identityKey, err)
+	}
+	doc := map[string]any{
+		"class":     "piiKey",
+		"vertexKey": identityKey,
+		"localName": "piiKey",
+		"isDeleted": false,
+		"data":      env,
+	}
+	b, _ := json.Marshal(doc)
+	if _, err := conn.KVPut(ctx, testutil.HarnessCoreBucket, identityKey+".piiKey", b); err != nil {
+		t.Fatalf("seed piiKey for %s: %v", identityKey, err)
+	}
+	return env
+}
+
+// assertCredentialIndexPointsTo asserts the credentialindex vertex for
+// actorKey is live and its identityKey field equals wantIdentityKey.
+func assertCredentialIndexPointsTo(t *testing.T, ctx context.Context, conn *substrate.Conn,
+	actorKey, wantIdentityKey string) {
+	t.Helper()
+	data := readAspectData(t, ctx, conn, credentialIndexKey(actorKey))
+	if got, _ := data["identityKey"].(string); got != wantIdentityKey {
+		t.Fatalf("credentialindex(%s).identityKey = %q, want %s", actorKey, got, wantIdentityKey)
+	}
+}
+
+// assertCredentialBindingAbsent asserts the identity's .credentialBinding
+// aspect key does not exist in Core KV at all (never written — distinct
+// from a tombstoned key, which exists with isDeleted=true; use
+// assertLinkTombstoned for that case).
+func assertCredentialBindingAbsent(t *testing.T, ctx context.Context, conn *substrate.Conn, identityKey string) {
+	t.Helper()
+	if _, err := conn.KVGet(ctx, testutil.HarnessCoreBucket, identityKey+".credentialBinding"); err == nil {
+		t.Fatalf("%s.credentialBinding should not exist", identityKey)
+	}
+}
+
+// readDecryptedCredentialBinding reads and Vault-decrypts identityKey's
+// .credentialBinding aspect (identity-domain/testhelpers_test.go's
+// readDecryptedAspectData, local copy — credentialBinding is
+// sensitivity-classed).
+func readDecryptedCredentialBinding(t *testing.T, ctx context.Context, conn *substrate.Conn, identityKey string) map[string]any {
+	t.Helper()
+	v := testutil.TestVault(t)
+	env := readTestPiiKeyEnvelope(t, ctx, conn, identityKey)
+
+	aspectKey := identityKey + ".credentialBinding"
+	entry, err := conn.KVGet(ctx, testutil.HarnessCoreBucket, aspectKey)
+	if err != nil {
+		t.Fatalf("KVGet %s: %v", aspectKey, err)
+	}
+	var doc struct {
+		Data vault.Ciphertext `json:"data"`
+	}
+	if err := json.Unmarshal(entry.Value, &doc); err != nil {
+		t.Fatalf("unmarshal %s: %v", aspectKey, err)
+	}
+	plaintext, err := v.Decrypt(ctx, identityKey, env, doc.Data)
+	if err != nil {
+		t.Fatalf("decrypt %s: %v", aspectKey, err)
+	}
+	var value map[string]any
+	if err := json.Unmarshal(plaintext, &value); err != nil {
+		t.Fatalf("unmarshal decrypted %s: %v", aspectKey, err)
+	}
+	return value
+}
+
+// readTestPiiKeyEnvelope reads and parses identityKey's piiKey aspect
+// (identity-domain/testhelpers_test.go's helper of the same name, local
+// copy).
+func readTestPiiKeyEnvelope(t *testing.T, ctx context.Context, conn *substrate.Conn, identityKey string) vault.Envelope {
+	t.Helper()
+	entry, err := conn.KVGet(ctx, testutil.HarnessCoreBucket, identityKey+".piiKey")
+	if err != nil {
+		t.Fatalf("KVGet piiKey for %s: %v", identityKey, err)
+	}
+	var doc struct {
+		Data vault.Envelope `json:"data"`
+	}
+	if err := json.Unmarshal(entry.Value, &doc); err != nil {
+		t.Fatalf("unmarshal piiKey for %s: %v", identityKey, err)
+	}
+	return doc.Data
+}
+
+// primaryCredentialActorKeys returns the set of actorKey values in the
+// primary's unioned .credentialBinding.credentials array.
+func primaryCredentialActorKeys(t *testing.T, ctx context.Context, conn *substrate.Conn, primaryKey string) map[string]bool {
+	t.Helper()
+	data := readDecryptedCredentialBinding(t, ctx, conn, primaryKey)
+	arr, _ := data["credentials"].([]any)
+	out := map[string]bool{}
+	for _, c := range arr {
+		m, ok := c.(map[string]any)
+		if !ok {
+			continue
+		}
+		if a, ok := m["actorKey"].(string); ok {
+			out[a] = true
+		}
+	}
+	return out
+}
+
 // assertTrackerEvent asserts the op tracker for reqID records an event of class eventClass.
 func assertTrackerEvent(t *testing.T, ctx context.Context, conn *substrate.Conn, reqID, eventClass string) {
 	t.Helper()
@@ -265,6 +478,30 @@ func assertTrackerEvent(t *testing.T, ctx context.Context, conn *substrate.Conn,
 		}
 	}
 	t.Fatalf("%s not in tracker eventClasses: %v", eventClass, ecs)
+}
+
+// countTrackerEventClass returns how many times eventClass appears in the
+// op tracker's eventClasses list (one entry is appended per emitted event —
+// multiple identity.rebound events, one per repointed credential, all land
+// in the same tracker).
+func countTrackerEventClass(t *testing.T, ctx context.Context, conn *substrate.Conn, reqID, eventClass string) int {
+	t.Helper()
+	entry, err := conn.KVGet(ctx, testutil.HarnessCoreBucket, processor.TrackerKey(reqID))
+	if err != nil {
+		t.Fatalf("tracker not found for %s: %v", reqID, err)
+	}
+	tr, err := processor.ParseTracker(entry.Value)
+	if err != nil {
+		t.Fatalf("ParseTracker: %v", err)
+	}
+	ecs, _ := tr.Data["eventClasses"].([]interface{})
+	count := 0
+	for _, ec := range ecs {
+		if ec == eventClass {
+			count++
+		}
+	}
+	return count
 }
 
 // seedDuplicateCandidateEntry writes a simulated `duplicate-candidates`
@@ -328,6 +565,16 @@ func mergeReads(primaryKey, secondaryKey string, edges []string) []string {
 	}
 	reads = append(reads, edges...)
 	return reads
+}
+
+// mergeCredentialOptionalReads builds the credentialBinding half of
+// ContextHint.OptionalReads for a MergeIdentity op (multi-credential-
+// identity-linking-design.md §3.3).
+func mergeCredentialOptionalReads(primaryKey, secondaryKey string) []string {
+	return []string{
+		secondaryKey + ".credentialBinding",
+		primaryKey + ".credentialBinding",
+	}
 }
 
 // mergePayload builds the JSON payload for a MergeIdentity op.

@@ -127,6 +127,85 @@ func TestCredentialBindingsMaterializer_LiveClaim(t *testing.T) {
 	}, 5*time.Second, 20*time.Millisecond, "claimed binding never appeared")
 }
 
+// TestCredentialBindingsMaterializer_LiveRebound proves identity.rebound
+// (packages/identity-hygiene/ddls.go's MergeIdentity, multi-credential-
+// identity-linking-design.md §3.3) folds into the bucket exactly like
+// identity.claimed.
+func TestCredentialBindingsMaterializer_LiveRebound(t *testing.T) {
+	conn, ctx := newCredentialBindingsTestConn(t)
+	createCredentialBindingsBucket(t, ctx, conn)
+
+	hb := NewHeartbeater(conn, "health-kv", "gw-test", &Metrics{}, nil)
+	sup, err := StartCredentialBindingsMaterializer(ctx, conn, hb, nil)
+	require.NoError(t, err)
+	t.Cleanup(sup.Stop)
+
+	actorKey := "vtx.identity.ReboundActorXYZ"
+	primaryKey := "vtx.identity.ReboundPrimryXY"
+	secondaryKey := "vtx.identity.ReboundSecndryX"
+	publishIdentityEvent(t, ctx, conn, "identity.rebound", map[string]any{
+		"actorKey": actorKey, "identityKey": primaryKey, "previousIdentityKey": secondaryKey,
+	})
+
+	require.Eventually(t, func() bool {
+		entry, err := conn.KVGet(ctx, credentialbinding.BucketName, actorKey)
+		if err != nil {
+			return false
+		}
+		var doc map[string]any
+		require.NoError(t, json.Unmarshal(entry.Value, &doc))
+		got, _ := doc["identityKey"].(string)
+		return got == primaryKey
+	}, 5*time.Second, 20*time.Millisecond, "rebound binding never appeared")
+}
+
+// TestCredentialBindingsMaterializer_ReboundAfterClaimConverges proves a
+// rebound after a claim folds last and wins — a merge repointing a credential
+// that was already bound via a prior claim must resolve to the merge's
+// primary, not the original claim target (design §3.3, "A rebound after a
+// claim folds last and wins").
+func TestCredentialBindingsMaterializer_ReboundAfterClaimConverges(t *testing.T) {
+	conn, ctx := newCredentialBindingsTestConn(t)
+	createCredentialBindingsBucket(t, ctx, conn)
+
+	hb := NewHeartbeater(conn, "health-kv", "gw-test", &Metrics{}, nil)
+	sup, err := StartCredentialBindingsMaterializer(ctx, conn, hb, nil)
+	require.NoError(t, err)
+	t.Cleanup(sup.Stop)
+
+	actorKey := "vtx.identity.ChainClaimActrX"
+	secondaryKey := "vtx.identity.ChainClaimSecY"
+	primaryKey := "vtx.identity.ChainClaimPriZ"
+
+	publishIdentityEvent(t, ctx, conn, "identity.claimed", map[string]any{
+		"identityKey": secondaryKey, "actorKey": actorKey,
+	})
+	require.Eventually(t, func() bool {
+		entry, err := conn.KVGet(ctx, credentialbinding.BucketName, actorKey)
+		if err != nil {
+			return false
+		}
+		var doc map[string]any
+		require.NoError(t, json.Unmarshal(entry.Value, &doc))
+		got, _ := doc["identityKey"].(string)
+		return got == secondaryKey
+	}, 5*time.Second, 20*time.Millisecond, "claimed binding never appeared")
+
+	publishIdentityEvent(t, ctx, conn, "identity.rebound", map[string]any{
+		"actorKey": actorKey, "identityKey": primaryKey, "previousIdentityKey": secondaryKey,
+	})
+	require.Eventually(t, func() bool {
+		entry, err := conn.KVGet(ctx, credentialbinding.BucketName, actorKey)
+		if err != nil {
+			return false
+		}
+		var doc map[string]any
+		require.NoError(t, json.Unmarshal(entry.Value, &doc))
+		got, _ := doc["identityKey"].(string)
+		return got == primaryKey
+	}, 5*time.Second, 20*time.Millisecond, "rebound never converged over the prior claim")
+}
+
 func TestCredentialBindingsMaterializer_IgnoresSiblingEvent(t *testing.T) {
 	conn, ctx := newCredentialBindingsTestConn(t)
 	createCredentialBindingsBucket(t, ctx, conn)

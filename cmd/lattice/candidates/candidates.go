@@ -200,6 +200,14 @@ maintained by the script itself (both declared, not part of the edge list).`,
 				"lnk.identity." + primaryID + ".duplicateOf.identity." + secondaryID,
 			}
 
+			// multi-credential-identity-linking-design.md §3.3: a
+			// never-claimed or Scenario-B identity has no credentialBinding
+			// aspect — optionalReads, absence-tolerant.
+			optionalReads = append(optionalReads,
+				secondaryKey+".credentialBinding",
+				primaryKey+".credentialBinding",
+			)
+
 			env := &processor.OperationEnvelope{
 				RequestID:     requestID,
 				Lane:          processor.LaneDefault,
@@ -210,12 +218,14 @@ maintained by the script itself (both declared, not part of the edge list).`,
 				// read-posture (script-read-posture-design §13): Reads is
 				// class (a) — the vertices/aspects/edges this CLI already
 				// resolved above. OptionalReads is class (d) — the
-				// dispatch-derivable duplicateOf probe keys. Enumerations
-				// declares the op's two class-(e) kv.Links calls (the
-				// secondary-has-open-tasks guard + the indexes-driven
-				// repoint, both dedup-over-encrypted-pii-design.md §3.4) as
-				// metadata — bounded + paged, never hydrated; the
-				// declaration feeds the Edge mirror-coverage gate.
+				// dispatch-derivable duplicateOf probe keys plus the
+				// credentialBinding probe keys (multi-credential-identity-
+				// linking-design.md §3.3). Enumerations declares the op's
+				// two class-(e) kv.Links calls (the secondary-has-open-tasks
+				// guard + the indexes-driven repoint, both
+				// dedup-over-encrypted-pii-design.md §3.4) as metadata —
+				// bounded + paged, never hydrated; the declaration feeds the
+				// Edge mirror-coverage gate.
 				ContextHint: &processor.ContextHint{
 					Reads:         reads,
 					OptionalReads: optionalReads,
