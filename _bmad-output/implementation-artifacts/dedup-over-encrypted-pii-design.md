@@ -1,6 +1,13 @@
 # Dedup over encrypted PII (duplicateCandidates) — design
 
-**Status: 📐 awaiting-Andrew (ratification).** Author: Winston (Designer fire, 2026-07-10).
+**Status: ✅ RATIFIED (Andrew, 2026-07-10).** Fork resolved as recommended: index hashes stay
+**unkeyed** (consistent with the shipped `identityindex` convention + the multi-credential probe);
+the keyed-HMAC upgrade is filed as the cross-cutting **keyed-identity-index-hashes** hardening row
+(lattice board, Security table — revive on a production threat model, migrating all index consumers
+together). Fire 4 (fuzzy sweep + gc + the CLI vault grant) stays **build-on-demand** with its named
+trigger. Zero contract edits. The Lattice Steward builds Fires 1–3; Fire 2 coordinates with the
+ratified multi-credential design's disjoint `MergeIdentity` edits (second-lander rebases).
+Author: Winston (Designer fire, 2026-07-10).
 Backlog row: `planning-artifacts/backlog/lattice.md` → *Privacy / Vault → [identity-hygiene] Dedup over
 encrypted PII* (★★, M). Charter: `vault-crypto-shredding-design.md` Fire 5b-i checkpoint ("blind-index /
 HMAC companion aspect at write time, or a sanctioned engine-side mechanism — routed to the Designer").
