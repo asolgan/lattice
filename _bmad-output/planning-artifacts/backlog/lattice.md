@@ -154,9 +154,9 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### AI-native
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| AI-authored capabilities | A Lattice-aware agent proposes DDL/Starlark/lenses/workflows through human review + deterministic validation + rollback. | ★★–★★★ | L | 🏗️ building · [design](../../implementation-artifacts/ai-authored-capabilities-design.md) · next: Fire 4 (Starlark) ✅ signed off 2026-07-10 w/ MAC'd-refs + AI-artifact-lint conditions · Loupe UI is Stream 3's lane |
+| AI-authored capabilities | A Lattice-aware agent proposes DDL/Starlark/lenses/workflows through human review + deterministic validation + rollback. | ★★–★★★ | L | 🏗️ building · [design](../../implementation-artifacts/ai-authored-capabilities-design.md) · Fire 4 inc 1 (shared sandbox leaf) SHIPPED `474745b` · next: inc 2 — vertexTypeDDL/opMeta materializer kinds + dry-run · Loupe UI is Stream 3's lane |
 | **The Augur** (AI reasoning tier — L3 evaluator) | Weaver's AI-assisted reasoning tier for ambiguous/novel convergence gaps. The marquee AI-native feature. | ★★ | M–L | ✅ Fires 1+2a+2b shipped incl. §6 residual e2e (loop closes: escalate→review→dispatch) · [design](../../implementation-artifacts/augur-design.md) + [dispatch design](../../implementation-artifacts/augur-dispatch-pickup-design.md) · 🚧 Fire 3 autoApply Andrew-gated |
-| Starlark guards (Loom) | The reserved `{reads, starlark}` guard escape hatch needs a verified-pure sandbox. | ★ | M | ✅ ratified (split) · [design](../../implementation-artifacts/loom-starlark-guards-design.md) · 🚧 Loom-side held (ships with first consumer) |
+| Starlark guards (Loom) | The reserved `{reads, starlark}` guard escape hatch needs a verified-pure sandbox. | ★ | M | ✅ ratified (split) · [design](../../implementation-artifacts/loom-starlark-guards-design.md) · Fire 1 (shared sandbox) SHIPPED `474745b` via AI-caps · 🚧 Fire 2 (Loom-side) held on guard-eval-location decision |
 | **Weaver planner mandate (dispatcher → solver)** | Remediation stops being a static gap→action lookup: deterministic planner (per-gap candidate selection, then goal-regression synthesis over op-declared effects) with contraction/oscillation diagnostics and admission control; shadow mode + per-target cutover; the Augur stays the AI boundary. | ★★★ | XL | ✅ effectively done · [design](../../implementation-artifacts/weaver-planner-mandate-design.md) · Fires 1-9(Inc1)+R1-R3 shipped, consumed by LoftSpace renewals; Fire 9 AI tail deferred - needs a novel Augur gap, not renewals |
 
 ### Read-model / projection maturity
@@ -187,6 +187,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-11 · `474745b` · [Processor] AI-caps Fire 4 inc 1 / loom-starlark-guards Fire 1 — shared sandbox leaf `internal/starlarksandbox` extracted, zero behavior change, 3-layer reviewed; CI green
 - 2026-07-11 · `d713398` · [Bridge] sensitive-param-egress Fire 2 CLOSED — egress unwrap + vault.decrypt grant + lease-signing live consumer; CI green
 - 2026-07-11 · `d384015` · [Processor/Loom] sensitive-param-egress Fire 1 — egressReads disposition + external-emission guard; fixed a live docGen PII leak found while building; CI green
 

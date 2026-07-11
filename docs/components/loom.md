@@ -109,8 +109,13 @@ time and rejected wholesale if malformed (`internal/loom/pattern.go` `validate()
   empty-string-after-trim is **absent**; `"0"` / `false` / `0` are **present** (never "falsy"). An
   absent path never `equals` anything (including a `null`/`""` comparand).
 - **Starlark escape hatch (`{"reads": […], "starlark": "…"}`) is RESERVED** — recognized at parse
-  time and rejected with a precise "reserved, not yet supported" error. The pure-evaluator extraction
-  lands only when the first Starlark guard is authored (§10.5); declarative-only ships without it.
+  time and rejected with a precise "reserved, not yet supported" error. The shared verified-pure
+  sandbox (`internal/starlarksandbox`) has landed — it builds WITH its first consumer per
+  loom-starlark-guards-design.md Fire 1, which turned out to be the Processor's own script runner
+  (refactored to consume it, zero behavior change) plus the AI-authored-capabilities Fire 4
+  generated-script dry-run, not a Loom guard — but Loom-side consumption (parsing + evaluating a
+  `{reads, starlark}` guard via that same sandbox, Fire 2) is still HELD pending the
+  guard-evaluation-location decision; declarative-only ships without it until then.
 
 Hydration is **per-evaluation** (no cross-step cache): at step entry the engine JIT-reads the subject
 root + the referenced aspects from Core KV and resolves the path. The loom-local resolver
@@ -416,9 +421,11 @@ placement (Contract #10 §10.3/§10.8).
 **Deferred (Phase 3+).**
 
 - Starlark guard evaluation — the reserved `{reads, starlark}` escape hatch is recognized and rejected
-  at parse time. The shared verified-pure sandbox lands only when the first Starlark guard is authored
-  (§10.5); the declarative grammar above covers the field-presence / equality predicates the current
-  flows need. It must remain side-effect-free.
+  at parse time. The shared verified-pure sandbox (`internal/starlarksandbox`) has landed (its first
+  consumers are the Processor's own refactored script runner + the AI-authored-capabilities Fire 4
+  dry-run, not Loom); Loom-side consumption (Fire 2 — parseGuard/evalGuard against that sandbox) is
+  HELD pending the guard-evaluation-location decision. The declarative grammar above covers the
+  field-presence / equality predicates the current flows need. It must remain side-effect-free.
 - A durable `loom.*` read model beyond the control plane's live `loom-state` reads — the
   operator-facing control API (`lattice.ctrl.loom.*`: list / consumers / inspect / pause / resume) ships
   today; a Refractor lens over the `loom.*` event stream for a queryable historical read model is future work.
