@@ -47,7 +47,6 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | **[Loom] Guardless-step recovery check-before-act probe** | On total `loom-state` loss + a re-triggered `StartLoomPattern`, a fresh instance replays guards from cursor 0 (re-runs an already-applied guarded step). | ★ | S–M | 🗄️ shelved-backup (Andrew: no new engine Core-KV reads) |
-| **[Gateway] credential-bindings publish grant missing (live bug)** | The shipped credential-bindings materializer KVPuts on the Gateway NKey connection, but the matrix grants only token-revocation — every fold is transport-denied under enforcement; `bucketguard.go` also misses the bucket. Grant + guard entry + natsperm vectors. | ★★ | XS | 📋 ready · [evidence](../../implementation-artifacts/natsperm-platform-bucket-isolation-design.md) §Fire-0 — ships independently of that design's ratification |
 | **[Weaver] `inflight_<g>`-as-external-gap-marker is unenforced** | The stale-mark reclaim relies on `inflight_<g>` only ever being lens-authored for a real outcome-driven external gap; true today but not install-time enforced. | ★ | S | 📋 needs-design (Designer) · install-time lens-schema check impossible as scoped (2026-07-10); runtime candidate: `staleMark` consults the gap's action class from the target spec — Weaver holds both at runtime |
 
 ### Survey log (round-robin rotation)
@@ -194,6 +193,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-11 · `2a5459d` · [Gateway] natsperm-matrix-hygiene Fire 0 — credential-bindings publish grant + bucketguard reserved entry (live bug fix); CI green
 - 2026-07-11 · `474745b` · [Processor] AI-caps Fire 4 inc 1 / loom-starlark-guards Fire 1 — shared sandbox leaf `internal/starlarksandbox` extracted, zero behavior change, 3-layer reviewed; CI green
 - 2026-07-11 · `d713398` · [Bridge] sensitive-param-egress Fire 2 CLOSED — egress unwrap + vault.decrypt grant + lease-signing live consumer; CI green
 - 2026-07-11 · `d384015` · [Processor/Loom] sensitive-param-egress Fire 1 — egressReads disposition + external-emission guard; fixed a live docGen PII leak found while building; CI green
