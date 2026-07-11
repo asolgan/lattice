@@ -79,6 +79,12 @@ type Server struct {
 	// request acts as its raw authenticated actor exactly as before this
 	// mechanism existed.
 	credentialBindings CredentialBindingResolver
+
+	// identityIndexHint backs ConfigureIdentityIndexHint (the provision-time
+	// identityindex probe, multi-credential-identity-linking-design.md §3.4):
+	// nil until configured, in which case whoami `?probe=1` always omits
+	// existingIdentityHint (best-effort — absence never denies anything).
+	identityIndexHint IdentityIndexHintResolver
 }
 
 // CredentialBindingResolver is the credential→identity resolution surface
@@ -91,6 +97,17 @@ type CredentialBindingResolver interface {
 	// Resolve looks up rawActorID's claimed business identity. bound=false
 	// (no error) means unclaimed — the caller should act as rawActorID.
 	Resolve(ctx context.Context, rawActorID string) (identityKey string, bound bool, err error)
+}
+
+// IdentityIndexHintResolver is the P5-clean read seam whoami's `?probe=1`
+// path consults (multi-credential-identity-linking-design.md §3.4).
+// internal/gateway/identityindexhint provides the substrate-backed
+// implementation reading the identity-domain package's identityIndexHint
+// lens bucket.
+type IdentityIndexHintResolver interface {
+	// Lookup answers whether a live identityindex vertex exists at indexKey
+	// and which identity it points at. found=false (no error) means no hint.
+	Lookup(ctx context.Context, indexKey string) (identityKey string, found bool, err error)
 }
 
 // provisionedCacheMaxEntries caps provisionedCache's memory: it holds one
@@ -199,6 +216,14 @@ func (s *Server) ConfigureProvisioning(gatewayActorKey, consumerRoleKey string) 
 // itself exactly as before this method existed.
 func (s *Server) ConfigureCredentialBindings(r CredentialBindingResolver) {
 	s.credentialBindings = r
+}
+
+// ConfigureIdentityIndexHint wires the identity-index-hint read seam whoami's
+// `?probe=1` path consults (multi-credential-identity-linking-design.md
+// §3.4). Unconfigured (nil resolver, the default), `?probe=1` always omits
+// existingIdentityHint from the response.
+func (s *Server) ConfigureIdentityIndexHint(r IdentityIndexHintResolver) {
+	s.identityIndexHint = r
 }
 
 // claimIdentityOperationType is the one carve-out resolveActor's caller must

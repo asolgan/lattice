@@ -34,6 +34,7 @@ var Package = pkgmgr.Definition{
 	Depends:     []string{"rbac-domain"},
 	DDLs:        DDLs(),
 	Permissions: Permissions(),
+	Lenses:      Lenses(),
 	Roles: []pkgmgr.RoleSpec{
 		{CanonicalName: "consumer", Description: "A resident, tenant, or other end-consumer of platform services."},
 		{CanonicalName: "frontOfHouse", Description: "Front-of-house staff with visibility into resident-facing operations."},

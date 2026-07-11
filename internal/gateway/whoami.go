@@ -3,7 +3,9 @@ package gateway
 import (
 	"context"
 	"net/http"
+	"strings"
 
+	"github.com/asolgan/lattice/internal/gateway/auth"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -14,9 +16,10 @@ import (
 // self-scoped op (ClaimIdentity, InitiateCredentialLink,
 // CompleteCredentialLink) or declare the credentialindex dedup read.
 type whoamiResponse struct {
-	ActorID            string `json:"actorId"`
-	ResolvedActorID    string `json:"resolvedActorId"`
-	CredentialIndexKey string `json:"credentialIndexKey"`
+	ActorID              string `json:"actorId"`
+	ResolvedActorID      string `json:"resolvedActorId"`
+	CredentialIndexKey   string `json:"credentialIndexKey"`
+	ExistingIdentityHint bool   `json:"existingIdentityHint,omitempty"`
 }
 
 // handleWhoami implements GET /v1/actor. Runs the same authenticate →
@@ -27,6 +30,17 @@ type whoamiResponse struct {
 // would declare on a ClaimIdentity/CompleteCredentialLink dedup read.
 // Read-only at the platform level: the only write it can trigger is the
 // shipped idempotent ProvisionConsumerIdentity op (P2-clean).
+//
+// `?probe=1` additionally computes existingIdentityHint
+// (multi-credential-identity-linking-design.md §3.4): a direct, P5-clean
+// read against the identity-domain package's identityIndexHint lens bucket
+// (internal/gateway/identityindexhint) — never through an operation reply,
+// since Contract #2 §2.7's closed `response` schema permits only
+// `primaryKey` and cannot carry read-derived data. Scoped to emails the
+// caller provably controls: the hash is computed exclusively from the
+// token's own verified `email`/`email_verified` claims, never from
+// client-supplied input, so the probe cannot become an arbitrary-email
+// existence oracle.
 func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "GET required")
@@ -56,9 +70,38 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 
 	resolvedActor := s.resolveActor(ctx, actor.ActorID)
 
-	writeJSON(w, http.StatusOK, whoamiResponse{
+	resp := whoamiResponse{
 		ActorID:            actor.ActorID,
 		ResolvedActorID:    resolvedActor,
 		CredentialIndexKey: "vtx.credentialindex." + substrate.SHA256NanoID(actor.ActorID),
-	})
+	}
+
+	if r.URL.Query().Get("probe") == "1" {
+		resp.ExistingIdentityHint = s.probeExistingIdentityHint(ctx, actor)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// probeExistingIdentityHint answers §3.4's "an account matching your
+// verified email may already exist" question. false covers every
+// legitimately absent case — no configured resolver, no verified email
+// claim, no matching index vertex, or a hit that resolves to the caller's
+// own actor key — never a hydration fault or an error surfaced to the
+// caller; a probe is a soft UX hint, not a security-relevant read.
+func (s *Server) probeExistingIdentityHint(ctx context.Context, actor auth.VerifiedActor) bool {
+	if s.identityIndexHint == nil || actor.VerifiedEmail == "" {
+		return false
+	}
+	normalizedEmail := strings.ToLower(strings.TrimSpace(actor.VerifiedEmail))
+	if normalizedEmail == "" {
+		return false
+	}
+	indexKey := "vtx.identityindex." + substrate.SHA256NanoID("email:"+normalizedEmail)
+	identityKey, found, err := s.identityIndexHint.Lookup(ctx, indexKey)
+	if err != nil {
+		s.logger.Warn("gateway: identity-index-hint lookup failed", "actor", actor.ActorID, "error", err)
+		return false
+	}
+	return found && identityKey != actor.ActorID
 }

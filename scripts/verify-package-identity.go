@@ -26,10 +26,13 @@
 //	  CompleteCredentialLink    → consumer
 //	4 role vertices (consumer, frontOfHouse, backOfHouse — user-facing;
 //	  identityProvisioner — system-only) seeded by PreInstall hook (vtx.role.<NanoID>)
+//	1 identityIndexHint Lens meta-vertex (vtx.meta.<NanoID>) with class=meta.lens
+//	3 Lens aspects: .canonicalName=identityIndexHint, .spec (contains
+//	  identityindex + identityKey), .adapter/.bucket/.engine via the envelope
 //	1 package vertex (vtx.package.<NanoID>)
 //	1 package manifest aspect with name=identity-domain
 //
-// Total target: ~80 OK lines.
+// Total target: ~86 OK lines.
 //
 // Exit 0: all assertions pass.
 // Exit 1: one or more assertions failed.
@@ -52,9 +55,10 @@ import (
 )
 
 const (
-	identityPackageName  = "identity-domain"
-	identityDDLCanonical = "identity"
-	identityCoreKVBucket = "core-kv"
+	identityPackageName   = "identity-domain"
+	identityDDLCanonical  = "identity"
+	identityCoreKVBucket  = "core-kv"
+	identityLensCanonical = "identityIndexHint"
 )
 
 // grantTarget maps operationType → expected grantee canonical names.
@@ -388,6 +392,79 @@ func main() {
 			fail(roleKey, "role is tombstoned")
 		} else {
 			ok(fmt.Sprintf("vtx.role.%s canonicalName=%s exists", roleID, roleName))
+		}
+	}
+
+	// -------------------------------------------------------------------------
+	// 8a. Find the identityIndexHint Lens meta-vertex (the provision-time
+	// probe's P5-clean read seam, multi-credential-identity-linking-
+	// design.md §3.4).
+	// -------------------------------------------------------------------------
+	hintLensKey, err := pkgverify.FindMetaByCanonical(ctx, coreKV, allKeys, identityLensCanonical)
+	if err != nil || hintLensKey == "" {
+		fail("identityIndexHint Lens meta-vertex", fmt.Sprintf("vtx.meta.*.canonicalName=%q not found: %v", identityLensCanonical, err))
+	} else {
+		ok(fmt.Sprintf("identityIndexHint Lens meta-vertex exists: %s", hintLensKey))
+	}
+
+	if hintLensKey != "" {
+		if env, err := pkgverify.GetEnvelope(ctx, coreKV, hintLensKey); err != nil {
+			fail(hintLensKey+" class", fmt.Sprintf("cannot read: %v", err))
+		} else {
+			cls, _ := env["class"].(string)
+			if cls != "meta.lens" {
+				fail(hintLensKey+" class", fmt.Sprintf("got %q want meta.lens", cls))
+			} else {
+				ok(hintLensKey + " class=meta.lens")
+			}
+			isDeleted, _ := env["isDeleted"].(bool)
+			if isDeleted {
+				fail(hintLensKey, "Lens vertex is tombstoned")
+			} else {
+				ok(hintLensKey + " isDeleted=false")
+			}
+		}
+
+		specKey := hintLensKey + ".spec"
+		if env, err := pkgverify.GetEnvelope(ctx, coreKV, specKey); err != nil {
+			fail(specKey, fmt.Sprintf("missing: %v", err))
+		} else {
+			data, _ := env["data"].(map[string]any)
+			src, _ := data["cypherRule"].(string)
+			missingTerms := []string{}
+			for _, term := range []string{"identityindex", "identityKey"} {
+				if !strings.Contains(src, term) {
+					missingTerms = append(missingTerms, term)
+				}
+			}
+			if len(missingTerms) > 0 {
+				fail(specKey, fmt.Sprintf("spec missing terms: %v", missingTerms))
+			} else {
+				ok(specKey + " contains identityindex, identityKey")
+			}
+			if err := pkgverify.CheckAspectEnvelope(env, specKey, hintLensKey, "spec"); err != nil {
+				fail(specKey+" envelope", err.Error())
+			} else {
+				ok(specKey + " envelope shape OK")
+			}
+		}
+
+		cnKey := hintLensKey + ".canonicalName"
+		if env, err := pkgverify.GetEnvelope(ctx, coreKV, cnKey); err != nil {
+			fail(cnKey, fmt.Sprintf("missing: %v", err))
+		} else {
+			data, _ := env["data"].(map[string]any)
+			val, _ := data["value"].(string)
+			if val != identityLensCanonical {
+				fail(cnKey, fmt.Sprintf("value=%q want %q", val, identityLensCanonical))
+			} else {
+				ok(cnKey + " value=" + identityLensCanonical)
+			}
+			if err := pkgverify.CheckAspectEnvelope(env, cnKey, hintLensKey, "canonicalName"); err != nil {
+				fail(cnKey+" envelope", err.Error())
+			} else {
+				ok(cnKey + " envelope shape OK")
+			}
 		}
 	}
 

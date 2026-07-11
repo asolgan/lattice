@@ -159,6 +159,66 @@ func TestVerify_ValidES256(t *testing.T) {
 	}
 }
 
+// signRS256WithEmail signs an idpClaims token (multi-credential-identity-
+// linking-design.md §3.4) — same signing path as signRS256, extended with
+// the optional `email`/`email_verified` claims.
+func signRS256WithEmail(t *testing.T, priv *rsa.PrivateKey, kid string, c jwt.RegisteredClaims, email string, verified bool) string {
+	t.Helper()
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, idpClaims{
+		RegisteredClaims: c,
+		Email:            email,
+		EmailVerified:    verified,
+	})
+	if kid != "" {
+		tok.Header["kid"] = kid
+	}
+	s, err := tok.SignedString(priv)
+	if err != nil {
+		t.Fatalf("sign RS256 with email: %v", err)
+	}
+	return s
+}
+
+func TestVerify_EmailVerified_CapturesVerifiedEmail(t *testing.T) {
+	kp := newRSA(t)
+	v := verifierFor(t, map[string]crypto.PublicKey{testKID: kp.pub})
+
+	got, err := v.Verify(signRS256WithEmail(t, kp.priv, testKID, claims(), "Person@Example.Test", true))
+	if err != nil {
+		t.Fatalf("Verify: unexpected error %v", err)
+	}
+	if got.VerifiedEmail != "Person@Example.Test" {
+		t.Errorf("VerifiedEmail = %q, want %q (Verify carries the raw claim; normalization is the caller's job)",
+			got.VerifiedEmail, "Person@Example.Test")
+	}
+}
+
+func TestVerify_EmailUnverified_OmitsVerifiedEmail(t *testing.T) {
+	kp := newRSA(t)
+	v := verifierFor(t, map[string]crypto.PublicKey{testKID: kp.pub})
+
+	got, err := v.Verify(signRS256WithEmail(t, kp.priv, testKID, claims(), "person@example.test", false))
+	if err != nil {
+		t.Fatalf("Verify: unexpected error %v", err)
+	}
+	if got.VerifiedEmail != "" {
+		t.Errorf("VerifiedEmail = %q, want empty (email_verified=false must never be trusted)", got.VerifiedEmail)
+	}
+}
+
+func TestVerify_NoEmailClaim_OmitsVerifiedEmail(t *testing.T) {
+	kp := newRSA(t)
+	v := verifierFor(t, map[string]crypto.PublicKey{testKID: kp.pub})
+
+	got, err := v.Verify(signRS256(t, kp.priv, testKID, claims()))
+	if err != nil {
+		t.Fatalf("Verify: unexpected error %v", err)
+	}
+	if got.VerifiedEmail != "" {
+		t.Errorf("VerifiedEmail = %q, want empty (no email claim present)", got.VerifiedEmail)
+	}
+}
+
 // TestVerify_RejectAlgNone is the alg-none bypass: an unsigned token must never
 // authenticate.
 func TestVerify_RejectAlgNone(t *testing.T) {

@@ -231,6 +231,23 @@ type VerifiedActor struct {
 	// ModeNanoID the two are identical. Provenance only (§3.3's .idpBinding
 	// aspect), never itself an actor id.
 	RawSubject string
+	// VerifiedEmail is the `email` claim, populated only when the IdP also
+	// asserted `email_verified: true` — never trusted otherwise. Optional;
+	// empty when absent or unverified. Not part of Contract #11's accepted
+	// token profile (§11.2, which governs authentication itself) — an
+	// orthogonal, best-effort claim carried through the same way `jti`
+	// becomes TokenID, consumed by the provision-time identityindex probe
+	// (multi-credential-identity-linking-design.md §3.4).
+	VerifiedEmail string
+}
+
+// idpClaims extends jwt.RegisteredClaims with the optional, non-authenticating
+// `email`/`email_verified` claims (multi-credential-identity-linking-design.md
+// §3.4). Absence of either is not an error — VerifiedEmail simply stays empty.
+type idpClaims struct {
+	jwt.RegisteredClaims
+	Email         string `json:"email,omitempty"`
+	EmailVerified bool   `json:"email_verified,omitempty"`
 }
 
 // trustedKey is one trusted kid's key + provenance/binding, held together so
@@ -371,14 +388,14 @@ func (v *Verifier) Verify(tokenString string) (VerifiedActor, error) {
 		return entry.Key, nil
 	}
 
-	claims := jwt.RegisteredClaims{}
+	claims := idpClaims{}
 	_, err := v.parser.ParseWithClaims(tokenString, &claims, keyfunc)
 	if err != nil {
 		return VerifiedActor{}, mapParseError(err)
 	}
 
 	now := v.now()
-	if err := v.checkTime(&claims, now); err != nil {
+	if err := v.checkTime(&claims.RegisteredClaims, now); err != nil {
 		return VerifiedActor{}, err
 	}
 	if v.issuer != "" && claims.Issuer != v.issuer {
@@ -426,13 +443,18 @@ func (v *Verifier) Verify(tokenString string) (VerifiedActor, error) {
 	if claims.ExpiresAt != nil {
 		exp = claims.ExpiresAt.Time
 	}
+	var verifiedEmail string
+	if claims.EmailVerified {
+		verifiedEmail = strings.TrimSpace(claims.Email)
+	}
 	return VerifiedActor{
-		ActorID:    IdentityKeyPrefix + actorSubject,
-		Subject:    actorSubject,
-		TokenID:    claims.ID,
-		ExpiresAt:  exp,
-		Issuer:     iss,
-		RawSubject: sub,
+		ActorID:       IdentityKeyPrefix + actorSubject,
+		Subject:       actorSubject,
+		TokenID:       claims.ID,
+		ExpiresAt:     exp,
+		Issuer:        iss,
+		RawSubject:    sub,
+		VerifiedEmail: verifiedEmail,
 	}, nil
 }
 

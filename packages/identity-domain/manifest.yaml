@@ -42,6 +42,11 @@ declares:
       class: meta.ddl.eventType
     - canonicalName: gateway.actorUnrevoked
       class: meta.ddl.eventType
+  lenses:
+    - canonicalName: identityIndexHint
+      adapter: nats-kv
+      bucket: identity-index-hint
+      engine: full
   permissions:
     - operationType: CreateUnclaimedIdentity
       scope: any

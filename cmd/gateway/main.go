@@ -103,6 +103,7 @@ import (
 	"github.com/asolgan/lattice/internal/gateway"
 	"github.com/asolgan/lattice/internal/gateway/auth"
 	"github.com/asolgan/lattice/internal/gateway/credentialbinding"
+	"github.com/asolgan/lattice/internal/gateway/identityindexhint"
 	"github.com/asolgan/lattice/internal/gateway/revocation"
 	"github.com/asolgan/lattice/internal/pkgmgr"
 	"github.com/asolgan/lattice/internal/substrate"
@@ -249,6 +250,18 @@ func run(logger *slog.Logger) error {
 		credentialBindingsResolver = credentialbinding.New(credKV)
 	}
 
+	// The identity-index-hint lens bucket (identity-domain package, §3.4) is
+	// additive/best-effort the same way: a deployment whose identity-domain
+	// package hasn't installed this lens yet still starts — whoami `?probe=1`
+	// simply omits existingIdentityHint until the bucket exists.
+	var identityIndexHintResolver gateway.IdentityIndexHintResolver
+	hintKV, err := conn.OpenKV(context.Background(), identityindexhint.BucketName)
+	if err != nil {
+		logger.Warn("gateway: identity-index-hint bucket unavailable; provision-time probe disabled", "error", err)
+	} else {
+		identityIndexHintResolver = identityindexhint.New(hintKV)
+	}
+
 	rawInstance, err := substrate.NewNanoID()
 	if err != nil {
 		return fmt.Errorf("generate instance id: %w", err)
@@ -268,6 +281,9 @@ func run(logger *slog.Logger) error {
 	}
 	if credentialBindingsResolver != nil {
 		srv.ConfigureCredentialBindings(credentialBindingsResolver)
+	}
+	if identityIndexHintResolver != nil {
+		srv.ConfigureIdentityIndexHint(identityIndexHintResolver)
 	}
 
 	readModels, err := loadReadModels(os.Getenv("GATEWAY_READ_MODELS_DIR"))
