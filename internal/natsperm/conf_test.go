@@ -25,8 +25,11 @@ import (
 // out-of-band on the connection), so the Put blocks until its context expires.
 // The owner's positive write on the same bucket returns promptly, so a timeout
 // here means "the write was rejected" — the only variable between the owner and
-// the rogue is the connection's permission set.
-const deniedTimeout = 2 * time.Second
+// the rogue is the connection's permission set. The denial itself is enforced
+// synchronously by the embedded, loopback-only server before any store I/O —
+// nothing ever arrives late — so this only needs to clear real scheduling
+// jitter, not network latency; 500ms leaves a wide margin over that.
+const deniedTimeout = 500 * time.Millisecond
 
 // repoRoot walks up from this test file to the module root (the dir holding
 // go.mod), so the test finds deploy/ regardless of the working directory.
