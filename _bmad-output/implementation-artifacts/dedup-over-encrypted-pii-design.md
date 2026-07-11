@@ -8,6 +8,23 @@ together). Fire 4 (fuzzy sweep + gc + the CLI vault grant) stays **build-on-dema
 trigger. Zero contract edits. The Lattice Steward builds Fires 1–3; Fire 2 coordinates with the
 ratified multi-credential design's disjoint `MergeIdentity` edits (second-lander rebases).
 Author: Winston (Designer fire, 2026-07-10).
+**🏗️ Fire 1 checkpoint (Steward, 2026-07-11).** Shipped: `indexes` + `duplicateOf` link DDLs
+(identity-domain); `CreateUnclaimedIdentity` script emits both on create (name index added as a
+third dimension) and activates the dormant probe via a dispatcher optionalReads sweep (`lattice
+identity create-unclaimed`, the clinic-app/loftspace-app "New patient/applicant" flows, and the
+verify-loupe-operator-tier/verify-real-actor-write-auth dev-seed scripts) — fixes the live
+duplicate-create `RevisionConflict`; `duplicateCandidates` lens re-authored minimal/PII-free with
+`DiffRetraction: true`; `DiffRetraction` threaded onto the NATS-KV adapter path (was postgres-only —
+`corekv_source.go` TargetNATSKVConfig, `pkgmgr/build.go`, the `bucketguard.go` install-time gate);
+`cmd/lattice/candidates` re-pointed at the new `<primaryId>.<secondaryId>` row shape, criteria via a
+`duplicateOf` link KVGet, merge-edge enumeration via bounded `KVListKeysFilter` excluding
+duplicateOf/indexes classes. Full `go test ./...` (97 packages) + `go build`/`make vet`/
+`golangci-lint`/`STRICT lint-conventions` all green. Not verified against the live shared dev stack
+(`make verify-package-identity-hygiene`) — the two new link-type DDLs are new entities, which F-004's
+in-place refresh does not cover, and a fresh bootstrap of the shared stack was judged too disruptive
+for a bounded fire; the exhaustive local suite (including real-Processor-pipeline integration tests)
+is the substitute evidence. **Next: Fire 2** (merge maintenance — `MergeIdentity` tombstone +
+`indexes`-driven repoint + the edge-trust-gate fix).
 Backlog row: `planning-artifacts/backlog/lattice.md` → *Privacy / Vault → [identity-hygiene] Dedup over
 encrypted PII* (★★, M). Charter: `vault-crypto-shredding-design.md` Fire 5b-i checkpoint ("blind-index /
 HMAC companion aspect at write time, or a sanctioned engine-side mechanism — routed to the Designer").
