@@ -269,6 +269,12 @@ func TestDebitCreditAccount_PostEntries(t *testing.T) {
 	if got, _ := entryData["memo"].(string); got != "Office visit copay" {
 		t.Fatalf("entry.memo = %q, want %q", got, "Office visit copay")
 	}
+	if got, _ := entryData["billedTo"].(string); got != "self" {
+		t.Fatalf("entry.billedTo = %q, want default \"self\" when omitted", got)
+	}
+	if _, present := entryData["expectedReimbursementCents"]; present {
+		t.Fatalf("entry.expectedReimbursementCents must be absent for a self-pay debit, got %v", entryData["expectedReimbursementCents"])
+	}
 
 	txDoc := readDoc(t, ctx, conn, debitTxKey)
 	if d, _ := txDoc["data"].(map[string]any); len(d) != 0 {
@@ -306,6 +312,88 @@ func TestDebitCreditAccount_PostEntries(t *testing.T) {
 	creditEntryData, _ := creditEntryDoc["data"].(map[string]any)
 	if got, _ := creditEntryData["type"].(string); got != "credit" {
 		t.Fatalf("entry.type = %q, want credit", got)
+	}
+	if _, present := creditEntryData["billedTo"]; present {
+		t.Fatalf("entry.billedTo must be absent on a credit (payment) entry, got %v", creditEntryData["billedTo"])
+	}
+}
+
+// TestDebitAccount_InsuranceBilling (test 2b). A debit billed to insurance
+// stores billedTo + expectedReimbursementCents on the .entry aspect; a
+// same-account debit with no billedTo defaults to self, proving the two
+// coexist without cross-contamination.
+func TestDebitAccount_InsuranceBilling(t *testing.T) {
+	ctx, conn := setupLedgerEnv(t)
+	cp, cons := newLedgerPipeline(t, ctx, conn, "insurancebilling")
+
+	patientKey := createPatient(t, ctx, conn, cp, cons, "mkpatins00000000001", "Dana Osei")
+	acctKey := createAccount(t, ctx, conn, cp, cons, "createacctins00001", patientKey)
+
+	debitReqID := testutil.GenReqID("debitinsurance000001")
+	debitEnv := &processor.OperationEnvelope{
+		RequestID:     debitReqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "DebitAccount",
+		Actor:         ledgerActorKey,
+		SubmittedAt:   "2026-07-01T13:00:00Z",
+		Class:         "clinictransaction",
+		Payload: json.RawMessage(`{"accountKey":"` + acctKey + `","amountCents":15000,"memo":"Specialist visit",` +
+			`"billedTo":"insurance","expectedReimbursementCents":12000}`),
+		ContextHint: &processor.ContextHint{Reads: []string{acctKey}},
+	}
+	testutil.PublishOp(t, conn, debitEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	debitTxKey := "vtx.clinictransaction." + nanoIDFromRequestID(debitReqID)
+	entryDoc := readDoc(t, ctx, conn, debitTxKey+".entry")
+	entryData, _ := entryDoc["data"].(map[string]any)
+	if got, _ := entryData["billedTo"].(string); got != "insurance" {
+		t.Fatalf("entry.billedTo = %q, want insurance", got)
+	}
+	if got, _ := entryData["expectedReimbursementCents"].(float64); got != 12000 {
+		t.Fatalf("entry.expectedReimbursementCents = %v, want 12000", got)
+	}
+}
+
+// TestDebitAccount_PayerDimensionValidation (test 2c). Rejects every
+// malformed shape of the billedTo/expectedReimbursementCents dimension: an
+// unrecognized billedTo value, insurance billing with no reimbursement
+// figure, a self-pay debit that supplies one anyway, a reimbursement that
+// exceeds the charge, and either field on a CreditAccount (a payment has
+// nothing to bill).
+func TestDebitAccount_PayerDimensionValidation(t *testing.T) {
+	ctx, conn := setupLedgerEnv(t)
+	cp, cons := newLedgerPipeline(t, ctx, conn, "payervalidation")
+
+	patientKey := createPatient(t, ctx, conn, cp, cons, "mkpatpv0000000000001", "Eli Farrow")
+	acctKey := createAccount(t, ctx, conn, cp, cons, "createacctpv000001", patientKey)
+
+	cases := []struct {
+		name    string
+		opType  string
+		payload string
+	}{
+		{"unrecognized billedTo value", "DebitAccount", `{"accountKey":"` + acctKey + `","amountCents":1000,"billedTo":"medicare"}`},
+		{"insurance with no reimbursement figure", "DebitAccount", `{"accountKey":"` + acctKey + `","amountCents":1000,"billedTo":"insurance"}`},
+		{"self-pay debit supplying a reimbursement anyway", "DebitAccount", `{"accountKey":"` + acctKey + `","amountCents":1000,"billedTo":"self","expectedReimbursementCents":500}`},
+		{"reimbursement exceeds the charge", "DebitAccount", `{"accountKey":"` + acctKey + `","amountCents":1000,"billedTo":"insurance","expectedReimbursementCents":1500}`},
+		{"non-positive reimbursement", "DebitAccount", `{"accountKey":"` + acctKey + `","amountCents":1000,"billedTo":"insurance","expectedReimbursementCents":0}`},
+		{"billedTo on a credit (payment)", "CreditAccount", `{"accountKey":"` + acctKey + `","amountCents":1000,"billedTo":"self"}`},
+		{"expectedReimbursementCents on a credit (payment)", "CreditAccount", `{"accountKey":"` + acctKey + `","amountCents":1000,"expectedReimbursementCents":500}`},
+	}
+	for i, c := range cases {
+		env := &processor.OperationEnvelope{
+			RequestID:     testutil.GenReqID("payerval" + string(rune('0'+i)) + "00000001"),
+			Lane:          processor.LaneDefault,
+			OperationType: c.opType,
+			Actor:         ledgerActorKey,
+			SubmittedAt:   "2026-07-01T13:00:00Z",
+			Class:         "clinictransaction",
+			Payload:       json.RawMessage(c.payload),
+			ContextHint:   &processor.ContextHint{Reads: []string{acctKey}},
+		}
+		testutil.PublishOp(t, conn, env)
+		testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
 	}
 }
 

@@ -113,7 +113,12 @@ def execute(state, op):
 // account. The ledger is append-only: no aspect on the account is read or
 // mutated here, so concurrent debits/credits against the same account never
 // race a read-modify-write — the balance is derived by the ledgerHistory lens
-// summing entries.
+// summing entries. A debit entry carries a bounded payer dimension —
+// billedTo (self|insurance, default self) and, only when billedTo is
+// insurance, expectedReimbursementCents (must be positive, capped at
+// amountCents) — so a clinic can track what it billed insurance for vs. what
+// it collected; a credit (payment) has nothing to bill and rejects both
+// fields.
 const transactionDDLScript = `
 def make_vtx(key, cls, data):
     return {"op": "create", "key": key,
@@ -197,6 +202,33 @@ def post_entry(state, op, entry_type, event_class):
     entry_data = {"type": entry_type, "amountCents": amount_cents, "postedAt": posted_at}
     if memo != None:
         entry_data["memo"] = memo
+
+    # billedTo/expectedReimbursementCents is a charge-only dimension (a
+    # payment has nothing to bill) — reject either field on a credit so the
+    # shape stays bounded rather than silently accepting and ignoring them.
+    has_billed_to = hasattr(p, "billedTo") and getattr(p, "billedTo") != None
+    has_reimb = hasattr(p, "expectedReimbursementCents") and getattr(p, "expectedReimbursementCents") != None
+    if entry_type == "debit":
+        billed_to = optional_string(p, "billedTo")
+        if billed_to == None:
+            billed_to = "self"
+        if billed_to != "self" and billed_to != "insurance":
+            fail("InvalidArgument: billedTo: must be \"self\" or \"insurance\", got " + billed_to)
+        entry_data["billedTo"] = billed_to
+
+        if billed_to == "insurance":
+            if not has_reimb:
+                fail("InvalidArgument: expectedReimbursementCents: required when billedTo is \"insurance\"")
+            reimb_cents = require_number(p, "expectedReimbursementCents")
+            if reimb_cents <= 0:
+                fail("InvalidArgument: expectedReimbursementCents: required positive number")
+            if reimb_cents > amount_cents:
+                fail("InvalidArgument: expectedReimbursementCents: cannot exceed amountCents")
+            entry_data["expectedReimbursementCents"] = reimb_cents
+        elif has_reimb:
+            fail("InvalidArgument: expectedReimbursementCents: only valid when billedTo is \"insurance\"")
+    elif has_billed_to or has_reimb:
+        fail("InvalidArgument: billedTo/expectedReimbursementCents: only valid on a debit (charge), not a credit (payment)")
 
     # postedTo: the transaction (later-arriving) is the source, the
     # pre-existing account is the target (Contract #1 §1.1). Reads as

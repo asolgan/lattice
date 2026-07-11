@@ -69,7 +69,9 @@ RETURN
   t.entry.data.type AS type,
   t.entry.data.amountCents AS amountCents,
   t.entry.data.memo AS memo,
-  t.entry.data.postedAt AS postedAt`
+  t.entry.data.postedAt AS postedAt,
+  t.entry.data.billedTo AS billedTo,
+  t.entry.data.expectedReimbursementCents AS expectedReimbursementCents`
 
 // patientAccountsSpec projects one row per patient — the anchor is the
 // patient (not the account), so a patient with no ledger account yet still

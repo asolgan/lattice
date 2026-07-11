@@ -12,7 +12,7 @@ running stack).
 
 | Kind | Canonical names |
 |---|---|
-| **Vertex types** (2) | `clinicaccount` (root `{}`, D5) · `clinictransaction` (root `{}`, D5, `.entry` aspect) |
+| **Vertex types** (2) | `clinicaccount` (root `{}`, D5) · `clinictransaction` (root `{}`, D5, `.entry` aspect incl. a debit-only payer dimension) |
 | **Aspect types** (1) | `clinicLedgerAccountGuard` — `vtx.patient.<id>.ledgerAccount`, the per-patient create-only uniqueness guard |
 | **Links** (2) | `heldFor` (account → patient) · `postedTo` (transaction → account) |
 | **Operations** (3) | `CreateAccount` · `DebitAccount` · `CreditAccount` |
@@ -26,7 +26,9 @@ single-identity model, no new capability surface, identical to `loftspace-ledger
 ```
 vtx.clinicaccount.<id>                 class=clinicaccount       root {} (D5 — balance is lens-derived)
 vtx.clinictransaction.<id>             class=clinictransaction   root {} (D5)
-vtx.clinictransaction.<id>.entry       class=entry               {type ∈ debit|credit, amountCents, memo?, postedAt}
+vtx.clinictransaction.<id>.entry       class=entry               {type ∈ debit|credit, amountCents, memo?, postedAt,
+                                                                   billedTo? ∈ self|insurance (debit only, default self),
+                                                                   expectedReimbursementCents? (debit + billedTo=insurance only)}
 vtx.patient.<id>.ledgerAccount         class=clinicLedgerAccountGuard  {accountKey}  (the uniqueness guard)
 
 lnk.clinicaccount.<id>.heldFor.patient.<id>            (account → patient; account is the later-arriving vertex)
@@ -57,6 +59,16 @@ for why the account carries its own id rather than the patient's.
 and the `postedTo` link back to the account — no balance field is ever written or mutated; the
 `clinicLedgerHistory` lens derives a balance by summing `amountCents` (positive for debit, negative
 for credit) client-side, so concurrent debits/credits never race a read-modify-write.
+
+## Payer dimension (billing, not a claims pipeline)
+
+A `DebitAccount` charge optionally carries `billedTo` (`self` | `insurance`, defaults to `self` when
+omitted) and, only when `billedTo` is `insurance`, `expectedReimbursementCents` (must be positive and
+`<= amountCents`) — enough for a clinic to track what it billed insurance for vs. what it actually
+collected via a `CreditAccount` payment. Both fields reject on `CreditAccount` (a payment has nothing
+to bill). This is **not** X12 837/835 claims/clearinghouse integration — that certified-EHR-scale
+lift is explicitly out of bounds for a reference vertical; the dimension only bounds what a debit
+entry *claims* about its payer.
 
 ## Where the ledger is surfaced
 
