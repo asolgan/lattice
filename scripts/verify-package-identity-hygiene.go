@@ -6,21 +6,22 @@
 // Connects to a running Lattice NATS instance and checks that the
 // identity-hygiene package has been correctly installed. Asserts:
 //
-//  1 DDL meta-vertex (vtx.meta.<NanoID>) with class=meta.ddl.vertexType
-//  8 DDL aspects: .canonicalName=identityHygiene,
-//                 .permittedCommands=[MergeIdentity], .description, .script,
-//                 .inputSchema, .outputSchema, .fieldDescription, .examples
-//    Each aspect also validated for correct vertexKey + localName envelope fields.
-//  1 Lens meta-vertex (vtx.meta.<NanoID>) with class=meta.lens
-//  5 Lens aspects: .canonicalName=duplicateCandidates, .spec (contains
-//    secondaryInboundEdges + secondaryOutboundEdges + levenshteinRatio),
-//    .adapter, .bucket, .engine
-//  1 MergeIdentity permission vertex with class=permission, scope=any
-//  1 grantedBy link (MergeIdentity permission → operator role)
-//  1 package vertex (vtx.package.<NanoID>)
-//  1 package manifest aspect with name=identity-hygiene
+//	1 DDL meta-vertex (vtx.meta.<NanoID>) with class=meta.ddl.vertexType
+//	8 DDL aspects: .canonicalName=identityHygiene,
+//	               .permittedCommands=[MergeIdentity], .description, .script,
+//	               .inputSchema, .outputSchema, .fieldDescription, .examples
+//	  Each aspect also validated for correct vertexKey + localName envelope fields.
+//	1 Lens meta-vertex (vtx.meta.<NanoID>) with class=meta.lens
+//	5 Lens aspects: .canonicalName=duplicateCandidates, .spec (contains
+//	  duplicateOf + nanoIdFromKey + primaryId/secondaryId, and none of the old
+//	  levenshteinRatio/PII-detail/edge-enumeration terms), .adapter, .bucket,
+//	  .engine
+//	1 MergeIdentity permission vertex with class=permission, scope=any
+//	1 grantedBy link (MergeIdentity permission → operator role)
+//	1 package vertex (vtx.package.<NanoID>)
+//	1 package manifest aspect with name=identity-hygiene
 //
-// Total target: ~20 OK lines.
+// Total target: ~21 OK lines.
 //
 // Exit 0: all assertions pass.
 // Exit 1: one or more assertions failed.
@@ -257,7 +258,7 @@ func main() {
 			data, _ := env["data"].(map[string]any)
 			src, _ := data["cypherRule"].(string)
 			missingTerms := []string{}
-			for _, term := range []string{"secondaryInboundEdges", "secondaryOutboundEdges", "levenshteinRatio"} {
+			for _, term := range []string{"duplicateOf", "nanoIdFromKey", "primaryId", "secondaryId"} {
 				if !strings.Contains(src, term) {
 					missingTerms = append(missingTerms, term)
 				}
@@ -265,7 +266,22 @@ func main() {
 			if len(missingTerms) > 0 {
 				fail(specKey, fmt.Sprintf("spec missing terms: %v", missingTerms))
 			} else {
-				ok(specKey + " contains secondaryInboundEdges, secondaryOutboundEdges, levenshteinRatio")
+				ok(specKey + " contains duplicateOf, nanoIdFromKey, primaryId, secondaryId")
+			}
+			// Negative assertion: the re-authored lens is PII-free and
+			// in-engine-matching-free (dedup-over-encrypted-pii-design.md
+			// §3.3) — no PII detail columns, no fuzzy-match/edge-enumeration
+			// remnants from the old spec.
+			forbiddenTerms := []string{}
+			for _, term := range []string{"levenshteinRatio", "primaryDetail", "secondaryDetail", "secondaryInboundEdges", "secondaryOutboundEdges"} {
+				if strings.Contains(src, term) {
+					forbiddenTerms = append(forbiddenTerms, term)
+				}
+			}
+			if len(forbiddenTerms) > 0 {
+				fail(specKey, fmt.Sprintf("spec contains forbidden terms (old in-engine-matching/PII-detail/edge-enumeration shape): %v", forbiddenTerms))
+			} else {
+				ok(specKey + " contains no PII-detail/edge-enumeration/fuzzy-match remnants")
 			}
 			if err := pkgverify.CheckAspectEnvelope(env, specKey, lensKey, "spec"); err != nil {
 				fail(specKey+" envelope", err.Error())

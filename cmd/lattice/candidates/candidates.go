@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/asolgan/lattice/cmd/lattice/output"
+	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -20,14 +21,16 @@ import (
 // identity-hygiene duplicateCandidates Lens.
 const duplicateCandidatesBucket = "duplicate-candidates"
 
-// candidateEntry is the shape of a duplicate-candidates Lens output entry.
+// candidateEntry mirrors the re-authored duplicateCandidates lens row shape
+// (dedup-over-encrypted-pii-design.md §3.3): bare NanoIDs + full keys only —
+// no PII, no edge columns (this CLI enumerates the secondary's edges itself,
+// §3.3/§3.4, a strictly more truthful source than the lens ever carried).
 type candidateEntry struct {
-	PrimaryKey             string   `json:"primaryKey"`
-	SecondaryKey           string   `json:"secondaryKey"`
-	SecondaryInboundEdges  []string `json:"secondaryInboundEdges,omitempty"`
-	SecondaryOutboundEdges []string `json:"secondaryOutboundEdges,omitempty"`
-	Score                  float64  `json:"score,omitempty"`
-	Criterion              string   `json:"criterion,omitempty"`
+	PrimaryID    string   `json:"primaryId"`
+	SecondaryID  string   `json:"secondaryId"`
+	PrimaryKey   string   `json:"primaryKey"`
+	SecondaryKey string   `json:"secondaryKey"`
+	Criteria     []string `json:"criteria,omitempty"`
 }
 
 // NewCommand returns the cobra.Command for the candidates command group.
@@ -78,6 +81,7 @@ func newListCommand(natsURL, outputFmt *string) *cobra.Command {
 				if err := json.Unmarshal(entry.Value, &ce); err != nil {
 					continue
 				}
+				ce.Criteria = duplicateOfCriteria(ctx, conn, ce.PrimaryID, ce.SecondaryID)
 				entries = append(entries, ce)
 			}
 
@@ -88,29 +92,50 @@ func newListCommand(natsURL, outputFmt *string) *cobra.Command {
 				fmt.Println("(no duplicate candidates)")
 				return nil
 			}
-			fmt.Printf("%-45s %-45s %s\n", "PRIMARY_KEY", "SECONDARY_KEY", "SCORE/CRITERION")
+			fmt.Printf("%-45s %-45s %s\n", "PRIMARY_KEY", "SECONDARY_KEY", "CRITERIA")
 			for _, e := range entries {
-				scoreStr := fmt.Sprintf("%.2f/%s", e.Score, e.Criterion)
-				fmt.Printf("%-45s %-45s %s\n", e.PrimaryKey, e.SecondaryKey, scoreStr)
+				fmt.Printf("%-45s %-45s %s\n", e.PrimaryKey, e.SecondaryKey, strings.Join(e.Criteria, ","))
 			}
 			return nil
 		},
 	}
 }
 
+// duplicateOfCriteria KVGets the pair's duplicateOf link doc for display.
+// identity-domain's CreateUnclaimedIdentity always writes it
+// secondary→primary (the later-arriving identity is the source, Contract #1
+// §1.1), but both directional keys are cheap to derive from the row's bare
+// IDs, so try both — one hits.
+func duplicateOfCriteria(ctx context.Context, conn *substrate.Conn, primaryID, secondaryID string) []string {
+	for _, key := range []string{
+		"lnk.identity." + secondaryID + ".duplicateOf.identity." + primaryID,
+		"lnk.identity." + primaryID + ".duplicateOf.identity." + secondaryID,
+	} {
+		entry, err := conn.KVGet(ctx, bootstrap.CoreKVBucket, key)
+		if err != nil {
+			continue
+		}
+		var doc struct {
+			Data struct {
+				Criteria []string `json:"criteria"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(entry.Value, &doc) == nil {
+			return doc.Data.Criteria
+		}
+	}
+	return nil
+}
+
 func newMergeCommand(natsURL, outputFmt, defaultActor *string) *cobra.Command {
 	var actor string
-	var force bool
 
 	cmd := &cobra.Command{
 		Use:   "merge <primary> <secondary>",
 		Short: "Submit a MergeIdentity operation for two identity candidates",
-		Long: `merge reads the duplicate-candidates entry for the secondary key
-to enumerate inbound/outbound edges, then submits a MergeIdentity
-operation with the discovered edge list.
-
-If no duplicate-candidates entry exists for the secondary, the CLI
-warns and requires --force to proceed without edge migration.`,
+		Long: `merge enumerates the secondary identity's live links directly (bounded,
+subject-filtered — excluding duplicateOf/indexes pair-evidence classes),
+then submits a MergeIdentity operation with the discovered edge list.`,
 		Args: cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if actor == "" {
@@ -122,6 +147,7 @@ warns and requires --force to proceed without edge migration.`,
 
 			primaryKey := args[0]
 			secondaryKey := args[1]
+			secondaryID := stripPrefix(secondaryKey, "vtx.identity.")
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
@@ -136,28 +162,12 @@ warns and requires --force to proceed without edge migration.`,
 			}
 			defer conn.Close()
 
-			// Derive the candidate key from primary + secondary IDs.
-			candidateKey := deriveCandidateKey(primaryKey, secondaryKey)
-
-			var edges []string
-			kvEntry, err := conn.KVGet(ctx, duplicateCandidatesBucket, candidateKey)
+			edges, err := enumerateSecondaryEdges(ctx, conn, secondaryID)
 			if err != nil {
-				if !force {
-					if *outputFmt == "json" {
-						return output.PrintJSONError("CandidateNotFound",
-							fmt.Sprintf("no duplicate-candidates entry for %s → %s; use --force to proceed without edge migration",
-								primaryKey, secondaryKey))
-					}
-					fmt.Fprintf(os.Stderr, "warning: no duplicate-candidates entry for secondary %s\n", secondaryKey)
-					fmt.Fprintf(os.Stderr, "use --force to proceed without edge migration (the Processor will reject if undeclared edges exist)\n")
-					os.Exit(1)
+				if *outputFmt == "json" {
+					return output.PrintJSONError("EnumerateError", err.Error())
 				}
-			} else {
-				var ce candidateEntry
-				if err := json.Unmarshal(kvEntry.Value, &ce); err == nil {
-					edges = append(edges, ce.SecondaryInboundEdges...)
-					edges = append(edges, ce.SecondaryOutboundEdges...)
-				}
+				return err
 			}
 
 			payload, _ := json.Marshal(map[string]interface{}{
@@ -225,16 +235,44 @@ warns and requires --force to proceed without edge migration.`,
 	}
 
 	cmd.Flags().StringVar(&actor, "actor", "", "actor key (defaults to credential file actorKey)")
-	cmd.Flags().BoolVar(&force, "force", false, "proceed without edge migration if no candidate entry exists")
 	return cmd
 }
 
-// deriveCandidateKey builds the candidate bucket key from primary + secondary keys.
-// Key shape: flagged.identity.<primaryID>.identity.<secondaryID>
-func deriveCandidateKey(primaryKey, secondaryKey string) string {
-	primaryID := stripPrefix(primaryKey, "vtx.identity.")
-	secondaryID := stripPrefix(secondaryKey, "vtx.identity.")
-	return "flagged.identity." + primaryID + ".identity." + secondaryID
+// enumerateSecondaryEdges bounded-lists the secondary identity's live links
+// in both directions via subject-filtered KVListKeysFilter — outbound
+// (secondary as source: `lnk.identity.<sid>.>`) and inbound (secondary as
+// target: `lnk.*.*.*.identity.<sid>`, mid-token wildcards) — excluding the
+// duplicateOf/indexes pair-evidence classes (dedup-over-encrypted-pii-
+// design.md §3.3), which are not business edges and were never part of a
+// merge's edge migration. Both filters are server-side-bounded by the
+// secondary's degree in that direction, never the keyspace.
+func enumerateSecondaryEdges(ctx context.Context, conn *substrate.Conn, secondaryID string) ([]string, error) {
+	excludedClass := map[string]bool{"duplicateOf": true, "indexes": true}
+	var edges []string
+	for _, filter := range []string{
+		"lnk.identity." + secondaryID + ".>",
+		"lnk.*.*.*.identity." + secondaryID,
+	} {
+		cursor := ""
+		for {
+			keys, next, err := conn.KVListKeysFilter(ctx, bootstrap.CoreKVBucket, filter, cursor, 500)
+			if err != nil {
+				return nil, fmt.Errorf("list %s: %w", filter, err)
+			}
+			for _, k := range keys {
+				parts := strings.Split(k, ".")
+				if len(parts) != 6 || excludedClass[parts[3]] {
+					continue
+				}
+				edges = append(edges, k)
+			}
+			if next == "" {
+				break
+			}
+			cursor = next
+		}
+	}
+	return edges, nil
 }
 
 func stripPrefix(s, prefix string) string {

@@ -45,9 +45,9 @@ func TestPackage_DeclaresUserFacingRoles(t *testing.T) {
 }
 
 func TestPackage_DDLsAndOps(t *testing.T) {
-	if got := len(Package.DDLs); got != 12 {
-		t.Fatalf("expected 12 DDLs (identity + ssn, dob, name, email, phone, claimKey, credentialBinding, idpBinding + "+
-			"actorRevocation, gateway.actorRevoked, gateway.actorUnrevoked), got %d", got)
+	if got := len(Package.DDLs); got != 14 {
+		t.Fatalf("expected 14 DDLs (identity + ssn, dob, name, email, phone, claimKey, credentialBinding, idpBinding + "+
+			"indexes, duplicateOf + actorRevocation, gateway.actorRevoked, gateway.actorUnrevoked), got %d", got)
 	}
 	identity := ddlByCanonicalName(t, "identity")
 	if identity.Class != "meta.ddl.vertexType" {

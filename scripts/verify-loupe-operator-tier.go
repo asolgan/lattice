@@ -172,12 +172,17 @@ func main() {
 // seedConsoleOperator creates a fresh identity + AssignRole(consoleOperator),
 // mirroring `make dev-seed-console-operator` (loupe-operator-auth-lift-
 // design.md mechanism B) — the non-root operator identity the proof needs.
+// The salt suffixes both name and email: identity-domain's name-based dedup
+// index (dedup-over-encrypted-pii-design.md) rejects a second live create
+// under an already-indexed exact name, and this script does not declare the
+// name-index optionalRead — a repeat run against a persistent dev stack
+// needs a fresh name, not just a fresh email.
 func seedConsoleOperator(ctx context.Context, conn *substrate.Conn, adminKey, consoleOperatorRoleKey string) string {
 	salt, err := substrate.NewNanoID()
 	must(err, "generate operator email salt")
 	claimSum := mustSHA256Hex("loupe-operator-tier-e2e-" + salt)
 	idReply := submitOp(ctx, conn, adminKey, "CreateUnclaimedIdentity", "identity", map[string]any{
-		"name": "Loupe Operator-Tier E2E", "email": "loupe-op-e2e-" + salt[:8] + "@dev.lattice.local", "claimKeyHash": claimSum,
+		"name": "Loupe Operator-Tier E2E " + salt[:8], "email": "loupe-op-e2e-" + salt[:8] + "@dev.lattice.local", "claimKeyHash": claimSum,
 	}, nil)
 	mustAccepted(idReply, "seed console-operator identity")
 	operatorKey := idReply.PrimaryKey
@@ -197,7 +202,7 @@ func seedThrowawayIdentity(ctx context.Context, conn *substrate.Conn, adminKey s
 	must(err, "generate throwaway email salt")
 	claimSum := mustSHA256Hex("loupe-operator-tier-e2e-throwaway-" + salt)
 	idReply := submitOp(ctx, conn, adminKey, "CreateUnclaimedIdentity", "identity", map[string]any{
-		"name": "Loupe Operator-Tier E2E Throwaway", "email": "loupe-op-e2e-throwaway-" + salt[:8] + "@dev.lattice.local", "claimKeyHash": claimSum,
+		"name": "Loupe Operator-Tier E2E Throwaway " + salt[:8], "email": "loupe-op-e2e-throwaway-" + salt[:8] + "@dev.lattice.local", "claimKeyHash": claimSum,
 	}, nil)
 	mustAccepted(idReply, "seed throwaway identity")
 	ok("seeded disposable throwaway identity %s (RevokeActor target)", idReply.PrimaryKey)

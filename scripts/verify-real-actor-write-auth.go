@@ -17,10 +17,10 @@
 // never-before-seen consumer subject, then drives three real HTTP calls
 // through the Gateway's POST /v1/operations:
 //
-//	1. staff  SetListingStatus        → allowed  (operator grant)
-//	2. consumer SetListingStatus      → DENIED   (AuthDenied — the scoped deny)
-//	3. consumer CreateLeaseApplication → allowed (consumer scope=self grant,
-//	   authContext.target == the consumer's own actor key)
+//  1. staff  SetListingStatus        → allowed  (operator grant)
+//  2. consumer SetListingStatus      → DENIED   (AuthDenied — the scoped deny)
+//  3. consumer CreateLeaseApplication → allowed (consumer scope=self grant,
+//     authContext.target == the consumer's own actor key)
 //
 // Also asserts the claim-flow ProvisionConsumerIdentity pre-flight: the
 // consumer's identity does not exist before call 2 (its first authenticated
@@ -201,12 +201,18 @@ func main() {
 // identity's own vtx.identity.<NanoID> is minted internally by the script
 // (nanoid.new()), so the caller cannot choose it — the returned primaryKey
 // is the real staff key.
+//
+// The salt suffixes both name and email: identity-domain's name-based dedup
+// index (dedup-over-encrypted-pii-design.md) rejects a second live create
+// under an already-indexed exact name, and this script does not declare the
+// name-index optionalRead — a repeat run against a persistent dev stack
+// needs a fresh name, not just a fresh email.
 func seedStaff(ctx context.Context, conn *substrate.Conn, adminKey, roleOperatorKey string) string {
 	salt, err := substrate.NewNanoID()
 	must(err, "generate staff email salt")
 	claimSum := mustSHA256Hex("real-actor-e2e-staff-" + salt)
 	idReply := submitOp(ctx, conn, adminKey, "CreateUnclaimedIdentity", "identity", map[string]any{
-		"name": "Real-Actor E2E Staff", "email": "staff-" + salt[:8] + "@dev.lattice.local", "claimKeyHash": claimSum,
+		"name": "Real-Actor E2E Staff " + salt[:8], "email": "staff-" + salt[:8] + "@dev.lattice.local", "claimKeyHash": claimSum,
 	}, nil)
 	mustAccepted(idReply, "seed staff identity")
 	staffKey := idReply.PrimaryKey
@@ -288,10 +294,10 @@ type contextHint struct {
 // gatewayOpRequest mirrors the Gateway's POST /v1/operations body (there is
 // deliberately no actor field — the Gateway stamps the verified actor).
 type gatewayOpRequest struct {
-	OperationType string               `json:"operationType"`
-	Class         string               `json:"class,omitempty"`
-	Payload       map[string]any       `json:"payload,omitempty"`
-	ContextHint   *contextHint         `json:"contextHint,omitempty"`
+	OperationType string                 `json:"operationType"`
+	Class         string                 `json:"class,omitempty"`
+	Payload       map[string]any         `json:"payload,omitempty"`
+	ContextHint   *contextHint           `json:"contextHint,omitempty"`
 	AuthContext   *processor.AuthContext `json:"authContext,omitempty"`
 }
 

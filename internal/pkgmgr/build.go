@@ -375,6 +375,9 @@ func lensSpecBody(lensID string, l LensSpec) map[string]any {
 			"bucket": l.Bucket,
 			"key":    keyField,
 		}
+		if l.DiffRetraction {
+			targetConfig["diffRetraction"] = true
+		}
 	}
 
 	spec := map[string]any{

@@ -29,6 +29,10 @@ declares:
       class: meta.ddl.aspectType
     - canonicalName: idpBinding
       class: meta.ddl.aspectType
+    - canonicalName: indexes
+      class: meta.ddl.linkType
+    - canonicalName: duplicateOf
+      class: meta.ddl.linkType
     - canonicalName: actorRevocation
       class: meta.ddl.vertexType
     - canonicalName: gateway.actorRevoked

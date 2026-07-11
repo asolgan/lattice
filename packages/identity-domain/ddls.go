@@ -341,6 +341,55 @@ func DDLs() []pkgmgr.DDLSpec {
 				},
 			},
 		},
+		{
+			CanonicalName: "indexes",
+			Class:         "meta.ddl.linkType",
+			Description: "identityindex indexes identity. Ownership edge from a " +
+				"vtx.identityindex.<hash> vertex to the vtx.identity.<NanoID> it currently points at " +
+				"(lnk.identityindex.<hash>.indexes.identity.<NanoID>). Created in the same batch as the " +
+				"index vertex by CreateUnclaimedIdentity; repointed (tombstone + create) by " +
+				"identity-hygiene's MergeIdentity; tombstoned by ShredIdentityKey. Makes merge repoint and " +
+				"shred erase decrypt-free — linkage is ownership, so no plaintext lookup is needed. " +
+				"permittedCommands is intentionally empty: multi-writer, open posture (mirrors the " +
+				"identity-anchored aspect DDLs above).",
+			Script:       linkTypeDDLScript,
+			InputSchema:  `{"type":"object"}`,
+			OutputSchema: `{"type":"object"}`,
+			FieldDescription: map[string]string{
+				"link": "No payload fields — this DDL declares the indexes link class/direction only; it is never an operation handler.",
+			},
+			Examples: []pkgmgr.ExampleSpec{
+				{
+					Name:            "indexes link",
+					Payload:         map[string]any{},
+					ExpectedOutcome: "lnk.identityindex.<hash>.indexes.identity.<NanoID>, data {}; owner of the index vertex's identityKey.",
+				},
+			},
+		},
+		{
+			CanonicalName: "duplicateOf",
+			Class:         "meta.ddl.linkType",
+			Description: "identity duplicateOf identity. Durable pair evidence " +
+				"(lnk.identity.<newId>.duplicateOf.identity.<existingId>) recorded by CreateUnclaimedIdentity " +
+				"when a new identity's normalized email/phone/name collides with a live identityindex hit; " +
+				"the later-arriving identity is the source. data.criteria unions the matched dimensions " +
+				"(exact-email/exact-phone/exact-name). Tombstoned (both directions) by identity-hygiene's " +
+				"MergeIdentity on merge, and by ShredIdentityKey on shred. permittedCommands is " +
+				"intentionally empty: multi-writer, open posture.",
+			Script:       linkTypeDDLScript,
+			InputSchema:  `{"type":"object","properties":{"criteria":{"type":"array","items":{"type":"string"},"description":"Matched dimensions: exact-email, exact-phone, exact-name."}}}`,
+			OutputSchema: `{"type":"object"}`,
+			FieldDescription: map[string]string{
+				"criteria": "Which normalized dimensions matched the incumbent identity.",
+			},
+			Examples: []pkgmgr.ExampleSpec{
+				{
+					Name:            "duplicateOf link",
+					Payload:         map[string]any{"criteria": []any{"exact-email"}},
+					ExpectedOutcome: "lnk.identity.<newId>.duplicateOf.identity.<existingId>, data {criteria: [\"exact-email\"]}.",
+				},
+			},
+		},
 		RevocationDDL(),
 		ActorRevokedEventDDL(),
 		ActorUnrevokedEventDDL(),
@@ -357,6 +406,17 @@ func DDLs() []pkgmgr.DDLSpec {
 const sensitiveAspectDDLScript = `
 def execute(state, op):
     fail("aspect-type DDL: not an operation handler: " + op.operationType)
+`
+
+// linkTypeDDLScript is the declaration-only Starlark shared by this
+// package's link-type DDLs (indexes, duplicateOf). A link-type DDL declares
+// a link class's shape and direction; it is not an operation handler (the
+// identity/identity-hygiene DDLs' operations create/tombstone the links).
+// No operation carries a link class as its operation class, so execute is
+// never dispatched here — it fails closed if it ever is.
+const linkTypeDDLScript = `
+def execute(state, op):
+    fail("link-type DDL: not an operation handler: " + op.operationType)
 `
 
 // identityDDLScript is the identity DDL Starlark script. State machine:
@@ -468,17 +528,30 @@ def execute(state, op):
         if claim_key_algo != "sha256":
             fail("InvalidArgument: claimKeyAlgo: only sha256 is supported")
 
+        normalized_name = " ".join(name.lower().split())
+        name_index_key = "vtx.identityindex." + crypto.sha256NanoID("name:" + normalized_name)
+
         duplicate = False
+        matched = {}
         if email != None:
             email_index_key = "vtx.identityindex." + crypto.sha256NanoID("email:" + email)
             email_hit = state[email_index_key] if email_index_key in state else None
             if email_hit != None and (not hasattr(email_hit, "isDeleted") or not email_hit.isDeleted):
                 duplicate = True
+                incumbent_key = email_hit.data["identityKey"]
+                matched[incumbent_key] = (matched[incumbent_key] if incumbent_key in matched else []) + ["exact-email"]
         if phone != None:
             phone_index_key = "vtx.identityindex." + crypto.sha256NanoID("phone:" + phone)
             phone_hit = state[phone_index_key] if phone_index_key in state else None
             if phone_hit != None and (not hasattr(phone_hit, "isDeleted") or not phone_hit.isDeleted):
                 duplicate = True
+                incumbent_key = phone_hit.data["identityKey"]
+                matched[incumbent_key] = (matched[incumbent_key] if incumbent_key in matched else []) + ["exact-phone"]
+        name_hit = state[name_index_key] if name_index_key in state else None
+        if name_hit != None and (not hasattr(name_hit, "isDeleted") or not name_hit.isDeleted):
+            duplicate = True
+            incumbent_key = name_hit.data["identityKey"]
+            matched[incumbent_key] = (matched[incumbent_key] if incumbent_key in matched else []) + ["exact-name"]
 
         identity_id = nanoid.new()
         identity_key = "vtx.identity." + identity_id
@@ -506,6 +579,10 @@ def execute(state, op):
                 mutations.append({"op": "create", "key": email_index_key,
                     "document": {"class": "identityindex", "isDeleted": False,
                                  "data": {"contactType": "email", "identityKey": identity_key}}})
+                mutations.append({"op": "create", "key": "lnk." + email_index_key[len("vtx."):] + ".indexes.identity." + identity_id,
+                    "document": {"class": "indexes", "isDeleted": False,
+                                 "sourceVertex": email_index_key, "targetVertex": identity_key,
+                                 "localName": "indexes", "data": {}}})
         if phone != None:
             mutations.append({"op": "create", "key": identity_key + ".phone",
                 "document": {"class": "phone", "vertexKey": identity_key, "localName": "phone",
@@ -514,11 +591,33 @@ def execute(state, op):
                 mutations.append({"op": "create", "key": phone_index_key,
                     "document": {"class": "identityindex", "isDeleted": False,
                                  "data": {"contactType": "phone", "identityKey": identity_key}}})
+                mutations.append({"op": "create", "key": "lnk." + phone_index_key[len("vtx."):] + ".indexes.identity." + identity_id,
+                    "document": {"class": "indexes", "isDeleted": False,
+                                 "sourceVertex": phone_index_key, "targetVertex": identity_key,
+                                 "localName": "indexes", "data": {}}})
+        if name_index_key not in state:
+            mutations.append({"op": "create", "key": name_index_key,
+                "document": {"class": "identityindex", "isDeleted": False,
+                             "data": {"contactType": "name", "identityKey": identity_key}}})
+            mutations.append({"op": "create", "key": "lnk." + name_index_key[len("vtx."):] + ".indexes.identity." + identity_id,
+                "document": {"class": "indexes", "isDeleted": False,
+                             "sourceVertex": name_index_key, "targetVertex": identity_key,
+                             "localName": "indexes", "data": {}}})
+
+        matched_identity_keys = []
+        for incumbent_key in matched:
+            matched_identity_keys.append(incumbent_key)
+            mutations.append({"op": "create",
+                "key": "lnk." + identity_key[len("vtx."):] + ".duplicateOf." + incumbent_key[len("vtx."):],
+                "document": {"class": "duplicateOf", "isDeleted": False,
+                             "sourceVertex": identity_key, "targetVertex": incumbent_key,
+                             "localName": "duplicateOf", "data": {"criteria": matched[incumbent_key]}}})
 
         events = [{"class": "identity.created", "data": {
             "identityKey": identity_key,
             "state": initial_state,
             "duplicate": duplicate,
+            "matchedIdentityKeys": matched_identity_keys,
         }}]
 
         return {

@@ -49,14 +49,14 @@ func TestPackage_DDLScriptCompilesAsStarlark(t *testing.T) {
 	}
 }
 
-// TestPackage_SingleLensWithEdgeEnumeration asserts the package
-// declares exactly one Lens — `duplicateCandidates` — which itself
-// enumerates the secondary's incident edges via `collect(DISTINCT ...)`.
-// A second Lens read by Processor's MergeIdentity script would extend
-// Processor's read surface beyond the architecturally-fixed set
-// (Core KV + DDL cache + Capability KV + idempotency tracker) and is
-// forbidden.
-func TestPackage_SingleLensWithEdgeEnumeration(t *testing.T) {
+// TestPackage_SingleLensMinimalPIIFree asserts the package declares
+// exactly one Lens — `duplicateCandidates` — re-authored as a minimal,
+// PII-free duplicateOf-link traversal (dedup-over-encrypted-pii-design.md
+// §3.3): no PII detail columns, no edge enumeration (the CLI enumerates
+// the secondary's edges itself via bounded KVListKeys — candidates.go —
+// not a second Lens, which would extend Processor's read surface beyond
+// the architecturally-fixed set and is forbidden).
+func TestPackage_SingleLensMinimalPIIFree(t *testing.T) {
 	if got := len(Package.Lenses); got != 1 {
 		t.Fatalf("expected exactly 1 lens, got %d", got)
 	}
@@ -64,14 +64,32 @@ func TestPackage_SingleLensWithEdgeEnumeration(t *testing.T) {
 	if lens.CanonicalName != "duplicateCandidates" {
 		t.Fatalf("expected sole lens canonicalName=duplicateCandidates, got %q", lens.CanonicalName)
 	}
+	if !lens.DiffRetraction {
+		t.Error("duplicateCandidates must opt into DiffRetraction (pair-keyed output defeats anchor-derived retraction)")
+	}
+	wantKey := []string{"primaryId", "secondaryId"}
+	if got := lens.IntoKey; len(got) != len(wantKey) || got[0] != wantKey[0] || got[1] != wantKey[1] {
+		t.Fatalf("duplicateCandidates IntoKey = %v, want %v", got, wantKey)
+	}
 	for _, marker := range []string{
-		"secondaryInboundEdges",
-		"secondaryOutboundEdges",
-		"collect(DISTINCT",
-		"OPTIONAL MATCH",
+		"duplicateOf",
+		"nanoIdFromKey",
+		"state.data.value",
 	} {
 		if !contains(lens.Spec, marker) {
 			t.Errorf("duplicateCandidates spec missing required marker %q", marker)
+		}
+	}
+	for _, forbidden := range []string{
+		"levenshteinRatio",
+		"secondaryInboundEdges",
+		"secondaryOutboundEdges",
+		"primaryDetail",
+		"secondaryDetail",
+		" IN [",
+	} {
+		if contains(lens.Spec, forbidden) {
+			t.Errorf("duplicateCandidates spec must not contain %q (old in-engine-matching / PII-detail / edge-enumeration shape)", forbidden)
 		}
 	}
 }

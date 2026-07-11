@@ -198,9 +198,10 @@ type TargetPostgresConfig struct {
 	SecureColumns []SecureColumn `json:"secureColumns,omitempty"`
 
 	// DiffRetraction opts this plain postgres lens into Fire 3's target-diff
-	// retraction (see lens.IntoConfig.DiffRetraction). Postgres only — this
-	// mechanism reads the adapter's live key set (adapter.KeyLister), which the
-	// NATS-KV adapter also implements, but no live lens needs it there.
+	// retraction (see lens.IntoConfig.DiffRetraction). This mechanism reads the
+	// adapter's live key set (adapter.KeyLister), which the NATS-KV adapter
+	// (TargetNATSKVConfig.DiffRetraction) also implements and, since
+	// dedup-over-encrypted-pii-design.md's duplicateCandidates lens, also uses.
 	DiffRetraction bool `json:"diffRetraction,omitempty"`
 }
 
@@ -243,6 +244,13 @@ type TargetNATSKVConfig struct {
 	Protected     bool           `json:"protected,omitempty"`
 	GrantTable    bool           `json:"grantTable,omitempty"`
 	SecureColumns []SecureColumn `json:"secureColumns,omitempty"`
+
+	// DiffRetraction opts this plain lens into Fire 3's target-diff retraction
+	// (see lens.IntoConfig.DiffRetraction) — dedup-over-encrypted-pii-design.md
+	// §2.3/§3.3's first NATS-KV consumer (a pair-keyed output defeats
+	// anchor-derived retraction). The NATS-KV adapter implements KeyLister /
+	// Purge (natskv.go), so it needs no additional adapter-side change.
+	DiffRetraction bool `json:"diffRetraction,omitempty"`
 }
 
 // TargetNATSSubjectConfig is the expected shape of LensSpec.TargetConfig
@@ -617,10 +625,11 @@ func translateSpec(spec *LensSpec) (*Rule, error) {
 			return nil, fmt.Errorf("lens %q: targetConfig.deleteMode: %w", spec.ID, err)
 		}
 		r.Into = IntoConfig{
-			Target:     "nats_kv",
-			Bucket:     cfg.Bucket,
-			Key:        KeyField(cfg.Key),
-			DeleteMode: string(dm),
+			Target:         "nats_kv",
+			Bucket:         cfg.Bucket,
+			Key:            KeyField(cfg.Key),
+			DeleteMode:     string(dm),
+			DiffRetraction: cfg.DiffRetraction,
 		}
 	case "nats_subject":
 		var cfg TargetNATSSubjectConfig

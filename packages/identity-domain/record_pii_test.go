@@ -61,7 +61,7 @@ func createIdentity(t *testing.T, ctx context.Context, conn *substrate.Conn,
 		Actor:         staffActorKey,
 		SubmittedAt:   "2026-05-22T10:00:00Z",
 		Class:         "identity",
-		Payload:       json.RawMessage(`{"name":"PII Applicant","email":"applicant-` + reqLabel + `@example.com","claimKeyHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
+		Payload:       json.RawMessage(`{"name":"PII Applicant ` + reqLabel + `","email":"applicant-` + reqLabel + `@example.com","claimKeyHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`),
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
@@ -563,8 +563,8 @@ func TestRecordPII_CreateIdentityWritesSensitiveAspects(t *testing.T) {
 
 	// name aspect landed (sensitive, identity-anchored).
 	name := readDecryptedAspectData(t, ctx, conn, identityKey, "name")
-	if got, _ := name["value"].(string); got != "PII Applicant" {
-		t.Fatalf("name aspect value = %q, want PII Applicant", got)
+	if got, _ := name["value"].(string); got != "PII Applicant PIIBackfillCreate" {
+		t.Fatalf("name aspect value = %q, want PII Applicant PIIBackfillCreate", got)
 	}
 	if c := readAspectClass(t, ctx, conn, identityKey+".name"); c != "name" {
 		t.Fatalf("name aspect class = %q, want name", c)

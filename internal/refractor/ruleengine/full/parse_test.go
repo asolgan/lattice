@@ -414,8 +414,10 @@ func TestParse_RbacCapabilityRolesLens(t *testing.T) {
 // TestParse_IdentityHygieneDuplicateCandidatesLens parses the real
 // `duplicateCandidates` lens spec from packages/identity-hygiene through the
 // full engine — the same engine selected at activation time via
-// `engine: "full"` — and asserts it compiles, including the `criterion`
-// CASE expression.
+// `engine: "full"` — and asserts it compiles with the minimal, PII-free
+// duplicateOf-link-traversal RETURN shape
+// (dedup-over-encrypted-pii-design.md §3.3): no PII detail columns, no edge
+// enumeration, just the pair's bare NanoIDs + full keys.
 func TestParse_IdentityHygieneDuplicateCandidatesLens(t *testing.T) {
 	if len(identityhygiene.Package.Lenses) != 1 {
 		t.Fatalf("expected exactly 1 lens, got %d", len(identityhygiene.Package.Lenses))
@@ -428,25 +430,14 @@ func TestParse_IdentityHygieneDuplicateCandidatesLens(t *testing.T) {
 	q := parse(t, lens.Spec)
 
 	r := firstReturn(t, q)
-	var found *CaseExpr
-	var alias string
-	for _, it := range r.Items {
-		if ce, ok := it.Expr.(*CaseExpr); ok {
-			found = ce
-			alias = it.Alias
+	wantAliases := []string{"primaryId", "secondaryId", "primaryKey", "secondaryKey"}
+	if len(r.Items) != len(wantAliases) {
+		t.Fatalf("expected %d RETURN items, got %d: %+v", len(wantAliases), len(r.Items), r.Items)
+	}
+	for i, want := range wantAliases {
+		if got := r.Items[i].Alias; got != want {
+			t.Fatalf("RETURN item[%d] alias = %q, want %q", i, got, want)
 		}
-	}
-	if found == nil {
-		t.Fatalf("expected a CASE expression in RETURN, got items %+v", r.Items)
-	}
-	if alias != "criterion" {
-		t.Fatalf("expected CASE expression aliased 'criterion', got %q", alias)
-	}
-	if len(found.Alternatives) != 2 {
-		t.Fatalf("expected 2 WHEN/THEN alternatives, got %d", len(found.Alternatives))
-	}
-	if found.Else == nil {
-		t.Fatalf("expected ELSE 'levenshtein-name' branch")
 	}
 }
 
