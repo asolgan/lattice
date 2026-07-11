@@ -20,16 +20,19 @@ override together. Two MEDIUM/LOW findings also folded (identity NanoID-alphabet
 resolved-identity check; a length cap on the CONNECT-supplied device name). `go build`/`make vet`/
 `golangci-lint`/`STRICT lint-conventions`/`go test` all green; `make verify-kernel` green against the
 live shared stack.
-**🚧 BLOCKED — not committed — needs Andrew's one-look authorization, not a design question.** The
-auth_callout mechanism needs a brand-new ACCOUNT-type NATS NKey seed
-(`deploy/nkeys/auth-callout-issuer.nk`) — the same dev-only-seed convention as the 16 already-committed
-`deploy/nkeys/*.nk` files (`gen-dev-nkeys`'s own doc: "committed like POSTGRES_PASSWORD: lattice_dev").
-The session's auto-mode credential-leakage classifier blocked staging that one new file for commit
-(a real, if dev-only, generated private key, in a confirmed-public repo, with no user present in this
-unattended fire to authorize it) — it did NOT flag any of the code. Andrew: either (a) explicitly
-authorize committing that one seed file (mirrors the 16 existing ones — no new precedent), or (b) it
-gets minted fresh + committed together with a future *attended* fire. Nothing else about this fire is
-blocked; the worktree is ready to merge the moment the seed is authorized.
+**✅ ADJUDICATED (Andrew, 2026-07-11, attended via Winston) — approved WITH the xkey condition; both
+seeds are ALREADY COMMITTED on `main`.** Option (a) granted: `deploy/nkeys/auth-callout-issuer.nk`
+(the steward's exact file, copied from the worktree) is committed — it mirrors the 16 dev-only seeds,
+no new precedent. **The condition (ratification-DD finding): the ratified day-one xkey was missing
+from Fire 1** — no x25519 generation, no `xkey:` in the conf block, not checkpoint-flagged — leaving
+the bearer JWT cleartext on the server→responder leg, against §7 ("enabled from day one") and the
+Fire-1 bullet ("issuer + xkey keys"). Winston pre-minted and committed the curve seed as
+**`deploy/nkeys/auth-callout-xkey.nk`** (same convention; `loadOrCreate` reuses it — point the
+generator at exactly that filename). **Before merge, the steward must:** (1) render `xkey:` (the
+curve public key) in the `auth_callout` block via gen-dev-nkeys; (2) unseal the xkey-encrypted
+request payload in the responder (`Nats-Server-Xkey` header path); (3) add a vector or unit assert
+that the committed conf's `auth_callout` block carries `xkey` — so the property cannot silently drop
+again. Nothing else is gated; the worktree merges once the xkey wiring is in and green.
 **Backlog row:** [lattice.md](../planning-artifacts/backlog/lattice.md) → Security & trust boundary → *Per-identity NATS subscribe-ACL (Edge sync plane)*
 **Consumers:** [Edge Lattice EDGE.3](edge-lattice-full-design.md) (§7 — the one open gate leg) · [Personal Lens Fork 3](personal-secure-lens-design.md) (subject subscribe-authorization)
 **Contracts:** #11 (external actor authN — build-to, plus one staged consumer-table row, see §6) · #1 (subject shapes — build-to) · #75 design's §3.2 matrix (extends, does not alter)
