@@ -25,6 +25,7 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 | **Billing is self-pay only, no payer dimension** | `clinic-ledger`'s `DebitAccount`/`CreditAccount` (append-only, lens-derived balance) has no concept of an insurance payer — every charge is implicitly self-pay. Add a bounded `billedTo: self｜insurance` + `expectedReimbursement` dimension to a debit entry (NOT real X12 837/835 claims/clearinghouse integration — that's a certified-EHR-scale undertaking, explicitly out of bounds for a reference vertical) so a clinic can at least track what it billed insurance for vs. collected. | Clinic | pkg | ★★ | M | 📋 ready |
 | **No-show doesn't cost anything** | `SetAppointmentStatus(status=noShow)` is purely a status flip — no consequence. `clinic-ledger`'s `DebitAccount` + `clinic-reminders`' Weaver gap-remediation pattern (`missing_reminder` → `directOp`) are both already shipped; a `noShow-no-fee-charged` gap closed the same way (`directOp DebitAccount`) auto-protects revenue on the same mechanism reminders already use. | Clinic | pkg | ★ | S | 📋 ready |
 | **Clinic is a single-location, single-specialty silo** | `location-domain` is unused by `clinic-domain` (explicit in its own docs, unlike `loftspace-domain`); a provider has exactly one `specialty` and no site. A real multi-site practice group needs provider↔location + per-location scheduling — mirror `loftspace-domain`'s already-proven `location-domain` integration pattern. Bigger structural lift; sequence after the other Clinic items land. | Clinic | pkg | ★★ | L | 📋 ready |
+| **Booking is provider-first, no specialty-based search** | Live-verified (`cmd/clinic-app/web/index.html:47`, `app.js` `computeOpenSlots`): the booking form's `#provider` is a flat name picker — a patient must already know which doctor to book, there is no "any provider with specialty X, next available" search. `/api/providers` already returns `specialty` per provider (no new lens/DDL), so this is FE-only: group the roster by specialty, compute open slots across the matching providers, surface the soonest. | Clinic | FE | ★ | S | 📋 ready |
 
 **Explicitly descoped (ambitious-PO pass, 2026-07-09):** structured diagnosis/procedure coding (ICD/CPT),
 vitals, and e-prescribing were considered and deliberately NOT filed — a certified EHR is out of scope for a
@@ -44,7 +45,7 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic ↔ Café, stagg
 joins once `cmd/wellness-app` (Inc 2) ships** — today it has a package but no app to exercise; see
 [agents/vertical-po/SKILL.md](../../../agents/vertical-po/SKILL.md) §1.
 
-- **Rotation to date:** LoftSpace ×13, Clinic ×10, Café ×2.
+- **Rotation to date:** LoftSpace ×13, Clinic ×11, Café ×2.
 - **Method:** reuse the already-up shared stack (detect NATS :4222 / app :7788/:7799/:7801), drive the real flow via `/api/op` + the lens projections as the product owner, file scored items. All three apps exist + are exercisable live (`:7788` / `:7799` / `:7801`).
 - **Live-stack note:** a stale bootstrap JSON vs. a recreated Core KV was a recurring dev-loop trap (2026-07-03, 2026-07-04) that silently emptied reads; `make up` now self-heals it (`109f59a`, 2026-07-05) — re-verify empty-read reports as a real product bug first.
 - **2026-07-06:** Enriched Café+Wellness → 4 grounded, sequenced rows (Café first) + verified no platform block; spec = the go-live composition demo.
@@ -53,7 +54,9 @@ joins once `cmd/wellness-app` (Inc 2) ships** — today it has a package but no 
 - **2026-07-10:** Café — drove POS OpenTab/Charge/Settle + resident ledger live; found stale post-write state (no eventual-consistency re-fetch delay), mirrored LoftSpace's existing fix; filed.
 - **2026-07-10 — REQUEST fulfilled:** LoftSpace — live-verified no account surface exists; filed
   "manage sign-in methods" (whoami/link/unlink), blocked-on multi-credential design Fires 2+4.
-- **Next:** Clinic.
+- **2026-07-11:** Clinic — drove booking/schedule/ledger live; booking form is provider-first with no
+  specialty search, filed FE-only fix; no platform block.
+- **Next:** Café.
 
 ## Done log — verticals (newest first)
 
