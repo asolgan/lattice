@@ -570,7 +570,7 @@ async function submitNewPatient(ev) {
     }
     const search = $("#patient-search");
     if (search) search.value = "";
-    await loadPatients();
+    setTimeout(loadPatients, 700);
   } catch (e) {
     toast("Could not create patient: " + e.message, "err");
   } finally {
@@ -734,13 +734,15 @@ async function submitAddProvider() {
     $("#np-prov-credentials").value = "";
     $("#add-provider").open = false;
     toast("Provider added.", "ok", key);
-    await loadProviders();
-    // The add affordance lives in the Availability tab — select the new provider
-    // there so the user can set its hours / time-off next.
-    if (key) {
-      $("#avail-provider").value = key;
-      renderAvailEditors();
-    }
+    setTimeout(async () => {
+      await loadProviders();
+      // The add affordance lives in the Availability tab — select the new provider
+      // there so the user can set its hours / time-off next.
+      if (key) {
+        $("#avail-provider").value = key;
+        renderAvailEditors();
+      }
+    }, 700);
   } catch (e) {
     toast("Could not add provider: " + e.message, "err");
   } finally {
@@ -2014,7 +2016,7 @@ async function submitLedgerEntry(opType, what) {
     toast(what.charAt(0).toUpperCase() + what.slice(1) + " recorded.", "ok");
     amountInput.value = "";
     memoInput.value = "";
-    await loadLedger();
+    setTimeout(loadLedger, 700);
   } catch (e) {
     toast("Could not " + what + " — " + e.message, "err");
   } finally {

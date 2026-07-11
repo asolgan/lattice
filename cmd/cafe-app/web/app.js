@@ -178,7 +178,7 @@ async function renderPos() {
           "open the tab"
         );
         toast("Tab opened.", true);
-        await renderPos();
+        setTimeout(renderPos, 700);
       } catch (e) {
         toast(e.message, false);
         btn.disabled = false;
@@ -205,7 +205,7 @@ async function renderPos() {
       );
       toast("Charged " + money(cents) + ".", true);
       input.value = "";
-      await renderPos();
+      setTimeout(renderPos, 700);
     } catch (e) {
       toast(e.message, false);
     } finally {
@@ -221,7 +221,7 @@ async function renderPos() {
         "settle the tab"
       );
       toast("Tab settled — posting to the café ledger shortly.", true);
-      await renderPos();
+      setTimeout(renderPos, 700);
     } catch (e) {
       toast(e.message, false);
       btn.disabled = false;
@@ -315,7 +315,7 @@ async function loadFrontDesk() {
           "settle the tab"
         );
         toast("Tab settled.", true);
-        await loadFrontDesk();
+        setTimeout(loadFrontDesk, 700);
       } catch (e) {
         toast(e.message, false);
         btn.disabled = false;
@@ -441,7 +441,7 @@ async function renderResident() {
           "record the payment"
         );
         toast("Payment of " + money(cents) + " recorded.", true);
-        await renderResident();
+        setTimeout(renderResident, 700);
       } catch (e) {
         toast(e.message, false);
         btn.disabled = false;

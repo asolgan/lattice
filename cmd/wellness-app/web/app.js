@@ -230,7 +230,7 @@ async function renderSchedule() {
           "book the class"
         );
         toast("Booked.", true);
-        await renderSchedule();
+        setTimeout(renderSchedule, 700);
       } catch (e) {
         toast(e.message, false);
         bookBtn.disabled = false;
@@ -320,7 +320,7 @@ async function renderRoster() {
           "cancel the booking"
         );
         toast("Booking cancelled.", true);
-        await renderRoster();
+        setTimeout(renderRoster, 700);
       } catch (e) {
         toast(e.message, false);
         btn.disabled = false;
@@ -382,7 +382,7 @@ async function renderMyClasses() {
           "cancel the booking"
         );
         toast("Booking cancelled.", true);
-        await renderMyClasses();
+        setTimeout(renderMyClasses, 700);
       } catch (e) {
         toast(e.message, false);
         btn.disabled = false;
