@@ -1,6 +1,12 @@
 # AI-authored capabilities — a Lattice-aware agent proposes packages (lenses / grants / targets / patterns / DDL) through deterministic validation + human review + F-004 rollback — design
 
 **Status: ✅ Andrew-ratified (2026-06-29)** — Decision 1 = A (human-in-the-loop always; B design-only), Decision 2 = phased (Starlark gated behind ⑥'s sandbox + a separate ratification); no frozen-contract change; build-sequenced behind the (shipped) Augur; first fire = the complete lens-kind loop. See the *Ratified* block.
+**Fire-4 sign-off GRANTED (Andrew, 2026-07-10)** — AI-authored Starlark may build, with two conditions
+folded into Fire 4's scope (§8): (1) **Processor-MAC'd sensitive-refs** land in/before Fire 4 (the
+sensitive-param-egress design's ratified trigger — ref provenance precedes AI-authored DDLs); (2) the
+deterministic validator additionally **lints AI-authored artifacts** for `$sensitiveRef` literals and
+sensitive-key read declarations. The verified-pure sandbox (`internal/starlarksandbox` Piece 1) builds
+WITH Fire 4 as its first consumer.
 **Component:** cross-cutting — a new `capability-author` package + a new bridge adapter + the Processor's F-004 install/upgrade ops (apply) + Loupe (review) · reuses the **Augur** propose→validate→gate→apply skeleton
 **Backlog row:** Lattice lane → *AI-native → AI-authored capabilities* (★★–★★★, L) — the marquee AI vision; **the Augur (✅ ratified) is its bounded, de-risking first step**, and this is the tier above it.
 **Author:** Winston (Designer fire, 2026-06-29)
@@ -546,11 +552,13 @@ kinds) and 4 (Starlark, gated on ⑥'s sandbox + a separate ratification) unchan
   reality) — flagged so a future increment doesn't assume Fire 3 closed it. Closing it for real needs either a
   Weaver/Loom-side per-target auth-anchor scope check or an operation-sensitivity allow-list — out of scope for
   a materializer-only fire.
-- **Fire 4 — Starlark-bearing kinds (GATED on the verified-pure Starlark sandbox + a separate
-  ratification).** The **vertexTypeDDL/opMeta** kinds, validated by static checks + `validateOpMetas` + the
-  verified-pure Starlark sandbox dry-run. **Ships dark / sequenced** behind the "Starlark guards" backlog
-  item *and* Andrew's sign-off on AI-authored executable code. *(M–L.)* — full 3-layer + the sandbox's own
-  review.
+- **Fire 4 — Starlark-bearing kinds (✅ signed off, Andrew 2026-07-10).** The **vertexTypeDDL/opMeta**
+  kinds, validated by static checks + `validateOpMetas` + the verified-pure Starlark sandbox dry-run
+  (`internal/starlarksandbox` Piece 1 builds WITH this fire — its first consumer). **Two sign-off
+  conditions in scope:** (1) **Processor-MAC'd sensitive-refs** ship in/before this fire (the
+  sensitive-param-egress design's ratified trigger); (2) the deterministic validator **rejects
+  AI-authored artifacts carrying `$sensitiveRef` literals or sensitive-key read declarations**.
+  *(M–L.)* — full 3-layer + the sandbox's own review.
 - **Fire 5 — Autonomy dial (designed, recommend NOT building; gated on Andrew).** A per-kind auto-apply
   allow-list + confidence floor for the lowest-risk kind only (a purely-additive grant within the
   operator's held scope). **Recommend it stay unbuilt** (§For-Andrew #1). *(S; design-only unless ratified.)*
