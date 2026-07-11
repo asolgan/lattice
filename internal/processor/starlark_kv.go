@@ -7,6 +7,7 @@ import (
 	starlarklib "go.starlark.net/starlark"
 	"go.starlark.net/starlarkstruct"
 
+	"github.com/asolgan/lattice/internal/starlarksandbox"
 	"github.com/asolgan/lattice/internal/substrate"
 	"github.com/asolgan/lattice/internal/vault"
 )
@@ -52,13 +53,15 @@ import (
 // at commit (step 8) resolve the residual publish→commit race. Do not assume
 // kv.Read is replay-stable.
 //
-// Latency note: each on-demand kv.Read is a NATS round-trip. getExecCtx returns
-// the per-invocation wall-budget context, so a slow read counts against the
-// script budget and surfaces as ScriptTimeout if it overruns. It is an
-// intentional opt-in for the idempotency-read pattern — NOT a general
-// scan/read-model hook (read models are lenses, P5).
-func kvModule(getExecCtx func() context.Context, sc ScriptContext) *starlarkstruct.Struct {
-	readFn := starlarklib.NewBuiltin("Read", func(_ *starlarklib.Thread, _ *starlarklib.Builtin, args starlarklib.Tuple, kwargs []starlarklib.Tuple) (starlarklib.Value, error) {
+// Latency note: each on-demand kv.Read is a NATS round-trip. The read binds
+// to the execution-scoped context starlarksandbox.Execute attaches to the
+// Starlark thread (starlarksandbox.ContextFromThread), which is the same
+// wall-budget-bound context the script itself runs under — so a slow read
+// counts against the script budget and surfaces as ScriptTimeout if it
+// overruns. It is an intentional opt-in for the idempotency-read pattern —
+// NOT a general scan/read-model hook (read models are lenses, P5).
+func kvModule(sc ScriptContext) *starlarkstruct.Struct {
+	readFn := starlarklib.NewBuiltin("Read", func(thread *starlarklib.Thread, _ *starlarklib.Builtin, args starlarklib.Tuple, kwargs []starlarklib.Tuple) (starlarklib.Value, error) {
 		if len(args) != 1 || len(kwargs) != 0 {
 			return nil, errBuiltin("kv.Read(key) takes exactly 1 positional argument")
 		}
@@ -94,7 +97,7 @@ func kvModule(getExecCtx func() context.Context, sc ScriptContext) *starlarkstru
 		if sc.KVReader == nil {
 			return nil, errBuiltin("kv.Read: no Core KV reader wired for on-demand read of " + key)
 		}
-		doc, err := sc.KVReader.ReadVertex(getExecCtx(), key)
+		doc, err := sc.KVReader.ReadVertex(starlarksandbox.ContextFromThread(thread, context.Background()), key)
 		if err != nil {
 			return nil, errBuiltin("kv.Read: " + err.Error())
 		}
@@ -115,7 +118,7 @@ func kvModule(getExecCtx func() context.Context, sc ScriptContext) *starlarkstru
 	// aspect. It is NOT a serialization point — see §2.5.1: a guard enforcing a
 	// constraint over the returned set must also contend a shared OCC-guarded key.
 	// Like kv.Read it reads LIVE Core KV (not replay-stable, §3.5).
-	linksFn := starlarklib.NewBuiltin("Links", func(_ *starlarklib.Thread, _ *starlarklib.Builtin, args starlarklib.Tuple, kwargs []starlarklib.Tuple) (starlarklib.Value, error) {
+	linksFn := starlarklib.NewBuiltin("Links", func(thread *starlarklib.Thread, _ *starlarklib.Builtin, args starlarklib.Tuple, kwargs []starlarklib.Tuple) (starlarklib.Value, error) {
 		var (
 			hubKey, relation, direction string
 			cursorVal                   starlarklib.Value = starlarklib.None
@@ -170,7 +173,7 @@ func kvModule(getExecCtx func() context.Context, sc ScriptContext) *starlarkstru
 		if sc.LinkLister == nil {
 			return nil, errBuiltin("kv.Links: no Core KV link lister wired for enumeration of " + keyFilter)
 		}
-		links, nextCursor, err := sc.LinkLister.ListLinks(getExecCtx(), keyFilter, cursor, limit)
+		links, nextCursor, err := sc.LinkLister.ListLinks(starlarksandbox.ContextFromThread(thread, context.Background()), keyFilter, cursor, limit)
 		if err != nil {
 			return nil, errBuiltin("kv.Links: " + err.Error())
 		}
@@ -232,7 +235,7 @@ func linkDocToStarlark(l LinkDoc) starlarklib.Value {
 		"key":          starlarklib.String(l.Key),
 		"class":        starlarklib.String(l.Class),
 		"isDeleted":    starlarklib.Bool(l.IsDeleted),
-		"data":         goMapToStarlarkDict(l.Data),
+		"data":         starlarksandbox.GoMapToStarlarkDict(l.Data),
 		"revision":     starlarklib.MakeUint64(l.Revision),
 		"sourceVertex": starlarklib.String(l.SourceVertex),
 		"targetVertex": starlarklib.String(l.TargetVertex),

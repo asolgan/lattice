@@ -2,7 +2,6 @@ package processor
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +9,8 @@ import (
 	starlarklib "go.starlark.net/starlark"
 	starlarkjson "go.starlark.net/lib/json"
 	"go.starlark.net/starlarkstruct"
+
+	"github.com/asolgan/lattice/internal/starlarksandbox"
 )
 
 // DefaultScriptWallBudget is the default wall-clock execution budget for a
@@ -43,6 +44,13 @@ func NewStarlarkRunner(wallBudget time.Duration, maxSteps int64) *StarlarkRunner
 // returned ScriptResult is the parsed return value of the script's
 // `execute(state, op)` function.
 //
+// The compile+thread+cancellation harness lives in internal/starlarksandbox
+// (the shared verified-pure sandbox leaf); Run builds the Processor-specific
+// globals (state/op/ddl/nanoid/crypto/time/json/kv), calls
+// starlarksandbox.Execute, and maps its generic *SandboxError onto the
+// Processor's own *ScriptError (which additionally carries the
+// ClaimKeyInvalid side-channel — see classifyScriptError).
+//
 // Failure modes mapped to ScriptError:
 //   - compile failure                      → Code="ScriptError"
 //   - resolve error (undefined name `os`)  → Code="SandboxViolation"
@@ -52,18 +60,13 @@ func NewStarlarkRunner(wallBudget time.Duration, maxSteps int64) *StarlarkRunner
 func (r *StarlarkRunner) Run(ctx context.Context, sc ScriptContext) (ScriptResult, error) {
 	rid := sc.Operation.RequestID
 
-	// execCtx is the context the `kv` module reads through. It starts as the
-	// inbound ctx and is swapped to the wall-budget context just before
-	// execution (below). This keeps the wall budget scoped to execution exactly
-	// as before (compile is not charged against it) while still bounding any
-	// kv.Read on-demand round-trip by — and counting it against — that budget.
-	execCtx := ctx
-	getExecCtx := func() context.Context { return execCtx }
+	stateVal := vertexMapToStarlarkWithHydrated(sc.Hydrated)
+	opVal := operationEnvelopeToStarlark(sc.Operation)
 
 	// Build globals.
 	globals := starlarklib.StringDict{
-		"state":  vertexMapToStarlarkWithHydrated(sc.Hydrated),
-		"op":     operationEnvelopeToStarlark(sc.Operation),
+		"state":  stateVal,
+		"op":     opVal,
 		"ddl":    ddlMapToStarlark(sc.DDLLookup),
 		"nanoid": nanoidModule(rid),
 		// crypto.sha256(s) — pure SHA-256 hash builtin. Deterministic,
@@ -87,156 +90,62 @@ func (r *StarlarkRunner) Run(ctx context.Context, sc ScriptContext) (ScriptResul
 		// LIVE Core KV state. A hard-deleted/absent key reads as None; a
 		// logically-deleted key (isDeleted=true) reads as a present doc carrying
 		// the flag. The opt-in read seam for the read-before-create idempotency
-		// pattern — not a read model (P5). See starlark_kv.go.
-		"kv": kvModule(getExecCtx, sc),
+		// pattern — not a read model (P5). It reads its execution-scoped context
+		// via starlarksandbox.ContextFromThread (see starlark_kv.go), so a slow
+		// round-trip counts against the same wall budget Execute enforces.
+		"kv": kvModule(sc),
 	}
 
-	// Compile. Resolve errors (referencing an unbound name like `os` without
-	// binding) fire here because go.starlark.net resolves names at compile time when
-	// `globals.Has` is supplied as the predeclared probe.
-	//nolint:staticcheck // SA1019: SourceProgramOptions migration deferred; current API verified safe for the sandboxed use case
-	_, prog, err := starlarklib.SourceProgram("<script>", sc.ScriptSource, globals.Has)
-	if err != nil {
-		return ScriptResult{}, classifyStarlarkError(err, rid)
-	}
-
-	// Per-call thread with cancellation wired to ctx + wall budget. The budget
-	// covers execution (Init + Call), not compile; routing execCtx here means a
-	// kv.Read round-trip shares — and is bounded by — the same budget.
-	wallCtx, cancel := context.WithTimeout(ctx, r.WallBudget)
-	defer cancel()
-	execCtx = wallCtx
-
-	thread := &starlarklib.Thread{
-		Name: "processor:" + rid,
-		// Load is intentionally nil — `load(...)` calls fail.
-	}
-	thread.SetMaxExecutionSteps(uint64(r.MaxSteps))
-
-	// Cancel the Starlark thread when ctx fires.
-	cancelCh := make(chan struct{})
-	defer close(cancelCh)
-	go func() {
-		select {
-		case <-wallCtx.Done():
-			thread.Cancel(wallCtx.Err().Error())
-		case <-cancelCh:
-		}
-	}()
-
-	// Define globals (compiles and runs top-level statements like `def execute`).
-	defined, err := prog.Init(thread, globals)
-	if err != nil {
-		return ScriptResult{}, classifyStarlarkError(err, rid)
-	}
-
-	executeFn, ok := defined["execute"]
-	if !ok {
-		return ScriptResult{}, &ScriptError{
-			Code:               "InvalidReturnShape",
-			Message:            "script must define an `execute(state, op)` function",
-			OperationRequestID: rid,
-		}
-	}
-
-	out, err := starlarklib.Call(thread, executeFn, starlarklib.Tuple{
-		globals["state"], globals["op"],
-	}, nil)
-	if err != nil {
-		// If the wall budget fired, prefer the timeout classification.
-		if wallCtx.Err() != nil && errors.Is(wallCtx.Err(), context.DeadlineExceeded) {
-			return ScriptResult{}, &ScriptError{
-				Code:               "ScriptTimeout",
-				Message:            fmt.Sprintf("script exceeded wall budget %s", r.WallBudget),
-				OperationRequestID: rid,
-			}
-		}
-		return ScriptResult{}, classifyStarlarkError(err, rid)
+	out, sErr := starlarksandbox.Execute(ctx, sc.ScriptSource, "execute", starlarklib.Tuple{stateVal, opVal}, globals, starlarksandbox.Budget{
+		Wall:     r.WallBudget,
+		MaxSteps: r.MaxSteps,
+	})
+	if sErr != nil {
+		return ScriptResult{}, classifyScriptError(sErr, rid)
 	}
 
 	return parseScriptResult(out, rid)
 }
 
-// classifyStarlarkError maps go.starlark.net error types onto our typed
-// ScriptError. The key signal for "sandbox violation" is starlark's
-// resolve.ErrorList (compile-time) or an EvalError whose backtrace shows
-// an undefined name — we treat unbound globals as SandboxViolation
-// because the only way a script references an undefined global is by
-// trying to use a forbidden module (os, time, http, ...).
-func classifyStarlarkError(err error, rid string) *ScriptError {
-	msg := err.Error()
-
-	// Resolve errors arrive as resolve.ErrorList — go.starlark.net's
-	// SourceProgram wraps them. The string contains "undefined:" for the
-	// classic sandbox violation case.
-	if strings.Contains(msg, "undefined:") {
-		line, col := extractStarlarkPosition(err)
-		return &ScriptError{
-			Code:               "SandboxViolation",
-			Message:            msg,
-			Line:               line,
-			Column:             col,
-			OperationRequestID: rid,
-		}
-	}
-	// `load` calls fail with "cannot load <module>: load not implemented".
-	if strings.Contains(msg, "load not implemented") || strings.Contains(msg, "load:") {
-		line, col := extractStarlarkPosition(err)
-		return &ScriptError{
-			Code:               "SandboxViolation",
-			Message:            msg,
-			Line:               line,
-			Column:             col,
-			OperationRequestID: rid,
-		}
-	}
-	// ClaimKeyInvalid: structured error from the ClaimIdentity script branch.
-	// The script calls fail("ClaimKeyInvalid: <outcome>") where outcome is the
-	// internal diagnostic detail. We parse it here so the executor can emit
-	// the specific outcome to Health KV before stripping it from the caller
-	// reply (NFR-S6 anti-enumeration).
-	if idx := strings.Index(msg, "ClaimKeyInvalid: "); idx >= 0 {
+// classifyScriptError maps a starlarksandbox.SandboxError onto the
+// Processor's own *ScriptError, adding the one Processor-specific
+// reclassification the generic leaf does not (and should not) know about:
+// ClaimKeyInvalid, a structured error from the ClaimIdentity script branch.
+// The script encodes a specific outcome (e.g. "invalid-key", "wrong-state")
+// in a fail("ClaimKeyInvalid: <outcome>") message; this parses it into the
+// Detail side-channel so the executor can emit the specific outcome to
+// Health KV before stripping it from the caller reply (NFR-S6
+// anti-enumeration: callers see only Code="ClaimKeyInvalid", no detail).
+func classifyScriptError(sErr *starlarksandbox.SandboxError, rid string) *ScriptError {
+	msg := sErr.Message
+	// Only reclassify a generic ScriptError — matching the original single-
+	// file classifier's priority order, where undefined:/load: were checked
+	// (and returned) before ClaimKeyInvalid was ever considered. A
+	// SandboxViolation/ScriptTimeout/InvalidReturnShape is never
+	// reinterpreted as ClaimKeyInvalid even if its message happens to
+	// contain that substring.
+	if idx := strings.Index(msg, "ClaimKeyInvalid: "); sErr.Code == starlarksandbox.ScriptError && idx >= 0 {
 		detail := strings.TrimSpace(msg[idx+len("ClaimKeyInvalid: "):])
 		// Strip any trailing ") or similar Starlark backtrace decoration.
 		if nl := strings.IndexAny(detail, "\n)"); nl >= 0 {
 			detail = strings.TrimSpace(detail[:nl])
 		}
-		line, col := extractStarlarkPosition(err)
 		return &ScriptError{
 			Code:               "ClaimKeyInvalid",
 			Message:            "ClaimKeyInvalid",
 			Detail:             detail,
-			Line:               line,
-			Column:             col,
+			Line:               sErr.Line,
+			Column:             sErr.Column,
 			OperationRequestID: rid,
 		}
 	}
-	// Anything else — syntax error, runtime fail() call, division by zero, etc.
-	line, col := extractStarlarkPosition(err)
 	return &ScriptError{
-		Code:               "ScriptError",
-		Message:            msg,
-		Line:               line,
-		Column:             col,
+		Code:               string(sErr.Code),
+		Message:            sErr.Message,
+		Line:               sErr.Line,
+		Column:             sErr.Column,
 		OperationRequestID: rid,
 	}
-}
-
-// extractStarlarkPosition tries to pull line/column from a starlark
-// EvalError or SyntaxError. Returns (0,0) if not available.
-func extractStarlarkPosition(err error) (int, int) {
-	type positioner interface{ Position() (string, int, int) }
-	var p positioner
-	if errors.As(err, &p) {
-		_, line, col := p.Position()
-		return line, col
-	}
-	var evalErr *starlarklib.EvalError
-	if errors.As(err, &evalErr) && len(evalErr.CallStack) > 0 {
-		pos := evalErr.CallStack[len(evalErr.CallStack)-1].Pos
-		return int(pos.Line), int(pos.Col)
-	}
-	return 0, 0
 }
 
 // parseScriptResult converts the Starlark return value into a ScriptResult.
@@ -405,6 +314,25 @@ func parseEvents(d *starlarklib.Dict, rid string) ([]EventSpec, error) {
 }
 
 // ---- Starlark value conversion ----
+//
+// The pure Go<->Starlark converters (goValueToStarlark / goMapToStarlarkDict /
+// starlarkDictToGoMap) live in internal/starlarksandbox (GoValueToStarlark /
+// GoMapToStarlarkDict / StarlarkDictToGoMap); these are thin unexported
+// aliases kept so the rest of this file's call sites are unchanged. Their
+// pinning tests (incl. the Starlark->Go direction, unused as an unexported
+// alias here) live at internal/starlarksandbox/convert_test.go.
+
+func goValueToStarlark(v interface{}) starlarklib.Value {
+	return starlarksandbox.GoValueToStarlark(v)
+}
+
+func goMapToStarlarkDict(m map[string]interface{}) *starlarklib.Dict {
+	return starlarksandbox.GoMapToStarlarkDict(m)
+}
+
+func starlarkDictToGoMap(d *starlarklib.Dict) map[string]interface{} {
+	return starlarksandbox.StarlarkDictToGoMap(d)
+}
 
 // stateMapValue is the Starlark `state` global exposed to scripts.
 //
@@ -527,87 +455,6 @@ func ddlMapToStarlark(m map[string]MetaVertex) *starlarklib.Dict {
 		}))
 	}
 	return d
-}
-
-func goMapToStarlarkDict(m map[string]interface{}) *starlarklib.Dict {
-	d := new(starlarklib.Dict)
-	for k, v := range m {
-		_ = d.SetKey(starlarklib.String(k), goValueToStarlark(v))
-	}
-	return d
-}
-
-func goValueToStarlark(v interface{}) starlarklib.Value {
-	switch x := v.(type) {
-	case nil:
-		return starlarklib.None
-	case string:
-		return starlarklib.String(x)
-	case bool:
-		return starlarklib.Bool(x)
-	case int:
-		return starlarklib.MakeInt(x)
-	case int64:
-		return starlarklib.MakeInt64(x)
-	case float64:
-		// Try to preserve int-typed JSON numbers (Go decodes all JSON
-		// numbers as float64).
-		if x == float64(int64(x)) {
-			return starlarklib.MakeInt64(int64(x))
-		}
-		return starlarklib.Float(x)
-	case map[string]interface{}:
-		return goMapToStarlarkDict(x)
-	case []interface{}:
-		l := starlarklib.NewList(nil)
-		for _, item := range x {
-			_ = l.Append(goValueToStarlark(item))
-		}
-		return l
-	default:
-		return starlarklib.String(fmt.Sprintf("%v", x))
-	}
-}
-
-func starlarkValueToGo(v starlarklib.Value) interface{} {
-	switch x := v.(type) {
-	case starlarklib.NoneType:
-		return nil
-	case starlarklib.String:
-		return string(x)
-	case starlarklib.Bool:
-		return bool(x)
-	case starlarklib.Int:
-		i, ok := x.Int64()
-		if !ok {
-			return x.String()
-		}
-		return i
-	case starlarklib.Float:
-		return float64(x)
-	case *starlarklib.Dict:
-		return starlarkDictToGoMap(x)
-	case *starlarklib.List:
-		out := make([]interface{}, x.Len())
-		for i := 0; i < x.Len(); i++ {
-			out[i] = starlarkValueToGo(x.Index(i))
-		}
-		return out
-	default:
-		return x.String()
-	}
-}
-
-func starlarkDictToGoMap(d *starlarklib.Dict) map[string]interface{} {
-	out := make(map[string]interface{}, d.Len())
-	for _, item := range d.Items() {
-		k, ok := item[0].(starlarklib.String)
-		if !ok {
-			continue
-		}
-		out[string(k)] = starlarkValueToGo(item[1])
-	}
-	return out
 }
 
 func dictString(d *starlarklib.Dict, key string) (string, error) {
