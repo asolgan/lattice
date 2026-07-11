@@ -18,6 +18,38 @@ func publishDurableTestMsg(ctx context.Context, t *testing.T, c *Conn, bucket, k
 	}
 }
 
+// awaitDurableQuiesced polls the durable's consumer info until it reports no
+// ack-pending message and no waiting pull request. A stopped RunDurableConsumer
+// unsubscribes asynchronously (the client's pull goroutine sends the UNSUB
+// after Stop returns), so its server-side pull request can outlive the run; a
+// message published while that request is still waiting is delivered into the
+// dead iterator and surfaces again only after AckWait — far beyond any test
+// deadline. Consumer info prunes waiting requests whose reply interest is gone
+// before reporting NumWaiting, so this poll converges as soon as the server
+// has processed the unsubscribe.
+func awaitDurableQuiesced(ctx context.Context, t *testing.T, c *Conn, stream, durable string) {
+	t.Helper()
+	cons, err := c.js.Consumer(ctx, stream, durable)
+	if err != nil {
+		t.Fatalf("consumer %q: %v", durable, err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		info, err := cons.Info(ctx)
+		if err != nil {
+			t.Fatalf("consumer info %q: %v", durable, err)
+		}
+		if info.NumAckPending == 0 && info.NumWaiting == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("durable %q did not quiesce: NumAckPending=%d NumWaiting=%d",
+				durable, info.NumAckPending, info.NumWaiting)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // TestRunDurableConsumer_AckResumeFromLastAck verifies the ack floor advances
 // and a re-run with the same Durable resumes at the next unacked message rather
 // than replaying from the start.
@@ -56,6 +88,12 @@ func TestRunDurableConsumer_AckResumeFromLastAck(t *testing.T) {
 		t.Fatalf("first run did not deliver alpha: %v", seen1)
 	}
 
+	// Barrier before the between-runs writes: until run1's pull request is
+	// gone from the server, a publish could be delivered into the stopped
+	// iterator (see awaitDurableQuiesced) and stall until AckWait. Quiescing
+	// first guarantees beta/gamma stay pending for run2's own pull.
+	awaitDurableQuiesced(ctx, t, c, cfg.Stream, durable)
+
 	// Writes between runs — these are what the resumed consumer must surface.
 	publishDurableTestMsg(ctx, t, c, bucket, "vtx.meta.beta", []byte(`{"v":2}`))
 	publishDurableTestMsg(ctx, t, c, bucket, "vtx.meta.gamma", []byte(`{"v":3}`))
@@ -71,11 +109,9 @@ func TestRunDurableConsumer_AckResumeFromLastAck(t *testing.T) {
 		})
 	}()
 
-	// 8s (not the file's usual 3-5s): this path does more than a single
-	// delivery — cancel run1, stand up run2, and have JetStream reopen the
-	// durable and redeliver 2 buffered messages — so it has less headroom
-	// under CI's -p 4 contention (observed flake: timed out at 3s in CI,
-	// passes in ~0.1s locally).
+	// 8s (not the file's usual 3-5s): this path stands up a second consumer
+	// instance on the durable before the first delivery can happen, so it has
+	// less headroom under CI's -p 4 contention.
 	got := map[string]bool{}
 	deadline := time.After(8 * time.Second)
 	for len(got) < 2 {
