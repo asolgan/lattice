@@ -56,6 +56,31 @@ convention as the issuer seed); `internal/gateway/natsauth` gained `UnsealReques
 All 7 conformance vectors + the natsauth unit suite pass against the real committed conf with live
 sealing/unsealing (not a bypassed fixture). `go build`/`make vet`/`golangci-lint`/`STRICT
 lint-conventions`/`go test ./...` all green. Merged to `main`.
+**✅ Fire 2 CLOSED (Steward, 2026-07-12).** `cmd/edge` now requires `EDGE_TOKEN` (a bearer JWT) — the
+sole credential for both the NATS connect (`substrate.ConnectOpts.Token`, Fire 1's field) and the
+`Lattice-Actor` control-RPC header; `EDGE_ACTOR_KEY` self-assertion retired. `substrate.ConnectOpts`
+gained `InboxPrefix` (new, purely additive — every other caller's zero value is unaffected) so the edge
+connects with `_INBOX.edge.<identityId>` per §3.3's own-inbox-namespace grant. On the Refractor side,
+`dispatchEndpoint` now binds `personal.{register,deregister,hydrate}` to the verified actor when an
+`ActorVerifier` is configured (closing the §3.4 payload seam): `controlauth.BareIdentityID` derives the
+bare identity id from the verified `ActorID`, with a NanoID-alphabet check mirroring natsauth's Fire 1
+derivation (belt-and-suspenders — both live ActorID binding modes already guarantee the shape at
+verification time, so this isn't currently load-bearing, but keeps parity + insurance against a future
+resolution step). A body `identityId` that disagrees with the verified actor is rejected outright; an
+absent one is filled from the verified actor. No verifier configured (dev/e2e fixtures) preserves Fire
+1's self-asserted-body behavior. Full 3-layer adversarial pass run against the diff: no exploitable
+bypass found in the current call graph (single body-decode path, fail-closed on error/mismatch, the
+three ops downstream of the override are exactly the three that read `body.IdentityID`). Vector 8 (§8)
+covered for all three ops (register/deregister/hydrate), not just hydrate. `go build`/`make vet`/
+`golangci-lint`/`STRICT lint-conventions`/`go test ./...` all green. Merged to `main` (`2f07d93`).
+**What Fire 2 does NOT do:** A→U credential-binding resolution (the natsauth Fire-1 responder's
+`resolveIdentity` step) is NOT mirrored here — the control-plane's `ActorVerifier` resolves only to the
+raw verified actor A, not a claimed U. Today this is deny-safe-equivalent (no credential-bindings bucket
+is wired into `cmd/refractor`, so any future resolver would itself deny-safe-fallback to "act as A" on a
+miss — the same outcome this fire already produces by construction). A claimed identity whose edge
+device hydrates via `personal.hydrate` will bind to A, not U, until a future fire plumbs
+`credentialbinding` into the Refractor control plane — flagged here, not silently gapped, should the
+multi-credential-linking claim flow (a parallel in-flight item) need it before then.
 **Backlog row:** [lattice.md](../planning-artifacts/backlog/lattice.md) → Security & trust boundary → *Per-identity NATS subscribe-ACL (Edge sync plane)*
 **Consumers:** [Edge Lattice EDGE.3](edge-lattice-full-design.md) (§7 — the one open gate leg) · [Personal Lens Fork 3](personal-secure-lens-design.md) (subject subscribe-authorization)
 **Contracts:** #11 (external actor authN — build-to, plus one staged consumer-table row, see §6) · #1 (subject shapes — build-to) · #75 design's §3.2 matrix (extends, does not alter)
