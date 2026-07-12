@@ -1,6 +1,6 @@
 # Op-status read surface — a sanctioned way to ask "did my operation land?"
 
-**Status: 🏗️ Fire 3 SHIPPED (`3bd743c`, 2026-07-12)** — Fire 1 (`f12f4ce`) shipped the
+**Status: ✅ ALL FIRES SHIPPED (Fire 4 `8d4ebd9`, 2026-07-12)** — Fire 1 (`f12f4ce`) shipped the
 `lattice.op.status` responder (`internal/opstatus`) + the bridge's skip-on-redelivery probe
 migration; the interim `BRIDGE_SKIP_ON_REDELIVERY=false` mitigation is REVERTED on the shared dev
 stack. Fire 2 (`a4446d5`) added `GET /v1/operations/{requestId}` (`internal/gateway`), backed by the
@@ -14,9 +14,17 @@ tracker's COMMITTED verdict — disposition (a) from §4, one probe instead of t
 gains the loom positive vector. Contract #10 §10.6's wording (GET the tracker/task-vertex → ask the
 RPC) is reconciled in `docs/contracts/10-orchestration-loom.md`, staged **UNCOMMITTED** for Andrew
 per house rules (a non-frozen-contract code/test change, paired with an already-ratified design, so
-the code shipped; only the contract-doc commit itself awaits Andrew). Fire 4 (`lattice op status`
-CLI) remains open. Ratified (Andrew, 2026-07-11): Fire 1 as designed; the Fires 2–4 sequencing
-accepted; the interim mitigation approved and APPLIED the same session (bridge restarted with
+the code shipped; only the contract-doc commit itself awaits Andrew). Fire 4 (`8d4ebd9`) migrates
+`lattice op status` (`cmd/lattice/op/op.go`) off its raw Core-KV `KVGet` of the tracker onto the same
+RPC — the last of the four named submitters in §1.5 to migrate. `lattice` gains the
+`lattice.op.status` pub-allow (`deploy/nats-server.conf` regenerated, applied live via
+`docker restart lattice-nats`); `TestOpStatusReachability` gains the CLI positive vector; live-stack
+smoke-verified (`lattice op submit` → `lattice op status` reported `committed:true`, and an unknown
+requestId reported not-found — both round-tripping through the RPC, not a direct KV read). With all
+four fires shipped, the account-wide read-side-laxity tightening (§4, "then, and only then") is
+unblocked — a follow-on natsperm-matrix-hygiene item, not part of this design. Ratified (Andrew,
+2026-07-11): Fire 1 as designed; the Fires 2–4 sequencing accepted; the interim mitigation approved
+and APPLIED the same session (bridge restarted with
 `BRIDGE_SKIP_ON_REDELIVERY=false` — the env lever added in cmd/bridge — all 6 stuck events drained,
 result ops committed, bridge health clean). Designer: Winston (main session, 2026-07-11) · Origin:
 live incident (bridge skip-on-redelivery probe broken by the same-day read-tightening) + Andrew's
@@ -175,7 +183,8 @@ only component that touches Core KV" invariant.
   verdict alone is the created signal (disposition (b), a narrow sanctioned Loom read, was not
   needed). The Contract #10 §10.6 wording reconciliation rides the fire, staged uncommitted for
   Andrew per house rules (`docs/contracts/10-orchestration-loom.md`).
-- **Fire 4 — `lattice op status` CLI** migrates off its raw KVGet.
+- **Fire 4 — `lattice op status` CLI SHIPPED (`8d4ebd9`, 2026-07-12)**: migrated off its raw KVGet
+  onto the same RPC — the last of the four named submitters.
 - **Then, and only then,** the matrix-hygiene "account-wide read-side laxity" row can extend the
   DIRECT.GET deny matrix-wide without breaking anyone — the sequencing that makes this design the
   standing answer rather than a bridge patch. Fires 2–4 are independent of each other; all depend
