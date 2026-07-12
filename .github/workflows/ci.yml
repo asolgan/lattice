@@ -13,15 +13,25 @@ on:
   pull_request:
     paths-ignore: *doc-paths
 
-# Four independent jobs run concurrently; wall-clock is the slowest job, not
+# Six independent jobs run concurrently; wall-clock is the slowest job, not
 # the sum. Every gate that ran in the old single serial job still runs, each in
 # exactly one job:
-#   lint-build  — build, vet, golangci, conventions-lint            (no Docker)
-#   stack-gates — make up → verify-kernel → 10× verify-package →
-#                 hello-lattice                                     (Docker)
-#   convergence — lease-convergence, object-gc                      (no Docker, embedded NATS)
-#   unit        — go test ./... -p 4                                (a Postgres service container;
-#                                                                     otherwise no Docker, embedded NATS)
+#   lint-build         — build, vet, golangci, conventions-lint     (no Docker)
+#   stack-gates        — make up → verify-kernel → 10× verify-package →
+#                         hello-lattice                             (Docker)
+#   convergence        — lease-convergence, object-gc               (no Docker, embedded NATS)
+#   unit-1, unit-2      — go test ./... -p 4, split into two weight-balanced
+#                         package-glob shards (unit was the long pole — one
+#                         `go test ./...` took ~2x any other job; the shards
+#                         are sized off per-package test-file LOC so wall-clock
+#                         roughly halves)                           (each a Postgres
+#                                                                     service container;
+#                                                                     otherwise no Docker,
+#                                                                     embedded NATS)
+#   unit-shard-coverage — asserts unit-1's + unit-2's package globs union to
+#                         EXACTLY `go list ./...`, so a newly added package
+#                         that isn't sorted into either shard fails CI loudly
+#                         instead of silently skipping                (no Docker)
 jobs:
   lint-build:
     runs-on: ubuntu-latest
@@ -151,7 +161,9 @@ jobs:
         # (the §5 validator DEFENDED assertion for the AI surface).
         run: make test-augur-convergence
 
-  unit:
+  # Shard package globs (also referenced verbatim by unit-shard-coverage below —
+  # keep the two in sync; the coverage job fails CI if they ever drift).
+  unit-1:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # A service Postgres (not the docker-compose stack) so internal/refractor/adapter's
@@ -180,13 +192,129 @@ jobs:
           go-version: "1.26"
           check-latest: true
 
-      - name: Run all tests (unit + integration)
+      - name: Run shard-1 tests (unit + integration)
         # -p 4: up to four test packages run concurrently. Every embedded
         # NATS+JetStream fixture binds a random port and owns a private
         # StoreDir under jsstore.Dir(t), so concurrent packages share no
         # JetStream file state — Postgres integration tests are the exception,
         # sharing the service container above (unique per-test table/role names
-        # keep them -p-parallel-safe, per their own doc comments).
+        # keep them -p-parallel-safe, per their own doc comments). This shard's
+        # package list is weight-balanced against unit-2 by per-package
+        # test-file line count (~53k LOC each half).
         env:
           POSTGRES_TEST_DSN: postgres://lattice:lattice_dev@localhost:5432/lattice?sslmode=disable
-        run: go test ./... -count=1 -p 4 -timeout 10m
+        run: >-
+          go test -count=1 -p 4 -timeout 10m
+          ./cmd/cafe-app/... ./cmd/clinic-app/... ./cmd/lattice/...
+          ./internal/aiagent/... ./internal/bypass/... ./internal/chronicler/...
+          ./internal/controlauth/... ./internal/natsperm/... ./internal/opstatus/...
+          ./internal/pkgmgr/... ./internal/processor/... ./internal/starlarksandbox/...
+          ./internal/substrate/... ./internal/testutil/... ./internal/vault/...
+          ./packages/clinic-domain/... ./packages/control-authz/...
+          ./packages/identity-domain/... ./packages/identity-hygiene/...
+          ./packages/lease-signing/... ./packages/location-domain/...
+          ./packages/loftspace-ledger/... ./packages/objects-base/...
+          ./packages/one-bill/... ./packages/orchestration-base/...
+          ./packages/privacy-operator-grant/... ./packages/service-domain/...
+          ./packages/wellness-domain/...
+
+  unit-2:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Same Postgres rationale as unit-1 — RLS-dependent tests (cmd/loftspace-app,
+    # internal/gateway, packages/clinic-reminders, internal/refractor's adapter +
+    # ruleengine/full subtrees) landed in this shard too.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: lattice
+          POSTGRES_PASSWORD: lattice_dev
+          POSTGRES_DB: lattice
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lattice -d lattice"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          check-latest: true
+
+      - name: Run shard-2 tests (unit + integration)
+        env:
+          POSTGRES_TEST_DSN: postgres://lattice:lattice_dev@localhost:5432/lattice?sslmode=disable
+        run: >-
+          go test -count=1 -p 4 -timeout 10m
+          ./cmd/bootstrap/... ./cmd/bridge/... ./cmd/chronicler/... ./cmd/edge/...
+          ./cmd/gateway/... ./cmd/lattice-pkg/... ./cmd/loftspace-app/...
+          ./cmd/loom/... ./cmd/loupe/... ./cmd/object-store-manager/...
+          ./cmd/processor/... ./cmd/refractor/... ./cmd/weaver/...
+          ./cmd/wellness-app/... ./deploy/... ./examples/...
+          ./internal/bootstrap/... ./internal/bridge/... ./internal/capabilitykv/...
+          ./internal/edge/... ./internal/gateway/... ./internal/guardgrammar/...
+          ./internal/healthkv/... ./internal/jsstore/... ./internal/loom/...
+          ./internal/objectcrypto/... ./internal/objectmanager/...
+          ./internal/privacyworker/... ./internal/refractor/... ./internal/spike/...
+          ./internal/weaver/... ./packages/augur/... ./packages/cafe-domain/...
+          ./packages/cafe-ledger/... ./packages/capability-author/...
+          ./packages/clinic-ledger/... ./packages/clinic-reminders/...
+          ./packages/console-operator/... ./packages/front-desk/...
+          ./packages/loftspace-domain/... ./packages/privacy-base/...
+          ./packages/rbac-domain/... ./packages/semantic-contracts/...
+          ./packages/service-location/... ./scripts/...
+
+  unit-shard-coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          check-latest: true
+
+      - name: Assert unit-1 + unit-2 package globs union to exactly `go list ./...`
+        # A fast (no Docker) guard against silent coverage loss: a package
+        # added later that isn't sorted into either shard's glob list above
+        # would otherwise never run in CI again.
+        run: |
+          go list ./... | sort -u > /tmp/all.txt
+          go list \
+            ./cmd/cafe-app/... ./cmd/clinic-app/... ./cmd/lattice/... \
+            ./internal/aiagent/... ./internal/bypass/... ./internal/chronicler/... \
+            ./internal/controlauth/... ./internal/natsperm/... ./internal/opstatus/... \
+            ./internal/pkgmgr/... ./internal/processor/... ./internal/starlarksandbox/... \
+            ./internal/substrate/... ./internal/testutil/... ./internal/vault/... \
+            ./packages/clinic-domain/... ./packages/control-authz/... \
+            ./packages/identity-domain/... ./packages/identity-hygiene/... \
+            ./packages/lease-signing/... ./packages/location-domain/... \
+            ./packages/loftspace-ledger/... ./packages/objects-base/... \
+            ./packages/one-bill/... ./packages/orchestration-base/... \
+            ./packages/privacy-operator-grant/... ./packages/service-domain/... \
+            ./packages/wellness-domain/... \
+            ./cmd/bootstrap/... ./cmd/bridge/... ./cmd/chronicler/... ./cmd/edge/... \
+            ./cmd/gateway/... ./cmd/lattice-pkg/... ./cmd/loftspace-app/... \
+            ./cmd/loom/... ./cmd/loupe/... ./cmd/object-store-manager/... \
+            ./cmd/processor/... ./cmd/refractor/... ./cmd/weaver/... \
+            ./cmd/wellness-app/... ./deploy/... ./examples/... \
+            ./internal/bootstrap/... ./internal/bridge/... ./internal/capabilitykv/... \
+            ./internal/edge/... ./internal/gateway/... ./internal/guardgrammar/... \
+            ./internal/healthkv/... ./internal/jsstore/... ./internal/loom/... \
+            ./internal/objectcrypto/... ./internal/objectmanager/... \
+            ./internal/privacyworker/... ./internal/refractor/... ./internal/spike/... \
+            ./internal/weaver/... ./packages/augur/... ./packages/cafe-domain/... \
+            ./packages/cafe-ledger/... ./packages/capability-author/... \
+            ./packages/clinic-ledger/... ./packages/clinic-reminders/... \
+            ./packages/console-operator/... ./packages/front-desk/... \
+            ./packages/loftspace-domain/... ./packages/privacy-base/... \
+            ./packages/rbac-domain/... ./packages/semantic-contracts/... \
+            ./packages/service-location/... ./scripts/... \
+            | sort -u > /tmp/sharded.txt
+          diff /tmp/all.txt /tmp/sharded.txt && echo "OK: shards cover exactly go list ./..."
