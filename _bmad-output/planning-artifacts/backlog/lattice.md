@@ -128,7 +128,6 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 |---|---|---|---|---|
 | NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | ✅ effectively done · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) §Fire-3-status · only deferred Fire 4 (prod mTLS) remains |
 | **`ProvisionConsumerIdentity` idempotency check is wrong — self-service apply broken every vertical** | `ddls.go:724` no-ops on "vertex exists" instead of "holds consumer role"; `CreateUnclaimedIdentity`-then-self-submit (every app's own UX) pre-creates that vertex, so the auto-grant silently skips forever. Fix: check the `holdsRole` link, mirroring `AssignRole`. | ★★★ | XS–S | 📋 ready · [finding](../../implementation-artifacts/provision-consumer-identity-idempotency-bug-finding.md) |
-| **Multi-credential identity linking + merge credential-awareness** | One human, N IdPs: no path binds a 2nd credential to a claimed U (claim is one-shot); MergeIdentity never repoints credentialindex/bindings and the materializers fold `identity.claimed` only → a merge strands A on the merged-loser. Link flow + merge rebind + provision probe + unlink + whoami. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/multi-credential-identity-linking-design.md) · next: Fire 4 (UnlinkCredential) |
 | **Keyed identity-index hashes (HMAC)** | Unkeyed `sha256NanoID` contact hashes are dictionary-testable with substrate access and persist in JetStream history post-shred; a Vault-keyed HMAC bounds it but needs a MAC primitive + key custody at every hash computer, and must migrate ALL index consumers (identityindex, provision probe, dedup) in one stroke. | ★ now / ★★ prod | M | 🗄️ shelved (revive: production threat model) · [analysis](../../implementation-artifacts/dedup-over-encrypted-pii-design.md) §9.1/§10-C |
 
 ### Privacy / Vault
@@ -190,6 +189,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-12 · `eec08a6` · [identity-domain,Gateway] multi-credential-identity-linking Fire 4 CLOSED — UnlinkCredential + credentialindex revive-safety + materializer bucket-delete fold; Fires 1-4 all shipped; CI green
 - 2026-07-12 · `3e345d1` · [Edge,scripts] per-identity-nats-subscribe-acl Fire 3 CLOSED — live-stack revocation e2e proves vector 4 against real prod wiring; EDGE.3 gate flipped build-ready; CI green
 - 2026-07-12 · `2f07d93` · [Edge,Refractor] per-identity-nats-subscribe-acl Fire 2 — cmd/edge EDGE_TOKEN connect + inbox scoping; Refractor personal.{register,deregister,hydrate} bind to the verified actor; CI green
 - 2026-07-11 · `a3ec8d5` · [Gateway,natsperm] per-identity-nats-subscribe-acl Fire 1 CLOSED — xkey day-one condition wired (UnsealRequest/SealResponse sealed-box round trip); CI green
