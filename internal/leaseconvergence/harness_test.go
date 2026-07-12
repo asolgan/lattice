@@ -44,6 +44,7 @@ import (
 	"github.com/asolgan/lattice/internal/bridge"
 	"github.com/asolgan/lattice/internal/jsstore"
 	"github.com/asolgan/lattice/internal/loom"
+	"github.com/asolgan/lattice/internal/opstatus"
 	"github.com/asolgan/lattice/internal/pkgmgr"
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/processor/outbox"
@@ -248,6 +249,13 @@ func newHarness(t *testing.T, opts ...harnessOpt) *harness {
 	vaultSvc := vault.NewService(v, logger)
 	require.NoError(t, vaultSvc.StartNATSListener(ctx, nc))
 
+	// The op-status RPC (lattice.op.status) — hosted on the same conn,
+	// mirroring cmd/processor's own wiring. This is the LIVE bridge's
+	// skip-on-redelivery probe (op-status-read-surface-design.md Fire 1):
+	// without it the probe's RPC has no responder.
+	opStatusSvc := opstatus.NewService(conn, bootstrap.CoreKVBucket, logger)
+	require.NoError(t, opStatusSvc.StartNATSListener(ctx, nc))
+
 	// --- install the real chain via the real InstallPackage op path (ops.meta).
 	h.installChain()
 
@@ -302,7 +310,6 @@ func newHarness(t *testing.T, opts ...harnessOpt) *harness {
 	h.bgFake = bridge.NewFakeBackgroundCheck()
 	h.stripe = bridge.NewFakeStripe()
 	bridgeEng := bridge.NewEngine(conn, bridge.Config{
-		CoreKVBucket:    bootstrap.CoreKVBucket,
 		EventsStream:    bootstrap.CoreEventsStreamName,
 		HealthKVBucket:  bootstrap.HealthKVBucket,
 		ActorKey:        bootstrap.BridgeIdentityKey,

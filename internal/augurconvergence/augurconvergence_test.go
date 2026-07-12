@@ -53,6 +53,7 @@ import (
 	"github.com/asolgan/lattice/internal/bootstrap"
 	"github.com/asolgan/lattice/internal/bridge"
 	"github.com/asolgan/lattice/internal/jsstore"
+	"github.com/asolgan/lattice/internal/opstatus"
 	"github.com/asolgan/lattice/internal/pkgmgr"
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/processor/outbox"
@@ -128,6 +129,12 @@ func newHarness(t *testing.T, prepare func(*bridge.FakeAugur)) *harness {
 	t.Cleanup(procCC.Stop)
 	go func() { _ = outbox.New(conn, bootstrap.CoreKVBucket, logger).Run(ctx) }()
 
+	// The op-status RPC (lattice.op.status) — the LIVE bridge's
+	// skip-on-redelivery probe (op-status-read-surface-design.md Fire 1);
+	// without it the probe's RPC has no responder.
+	opStatusSvc := opstatus.NewService(conn, bootstrap.CoreKVBucket, logger)
+	require.NoError(t, opStatusSvc.StartNATSListener(ctx, nc))
+
 	// Install rbac → identity → orchestration-base → augur via the real
 	// InstallPackage op path (registers the CreateAugurReasoningClaim +
 	// RecordProposal op-meta the Processor's operationType→class index resolves,
@@ -166,7 +173,6 @@ func newHarness(t *testing.T, prepare func(*bridge.FakeAugur)) *harness {
 		prepare(h.augur)
 	}
 	bridgeEng := bridge.NewEngine(conn, bridge.Config{
-		CoreKVBucket:    bootstrap.CoreKVBucket,
 		EventsStream:    bootstrap.CoreEventsStreamName,
 		HealthKVBucket:  bootstrap.HealthKVBucket,
 		ActorKey:        bootstrap.BridgeIdentityKey,
