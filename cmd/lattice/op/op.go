@@ -18,6 +18,7 @@ import (
 
 	"github.com/asolgan/lattice/cmd/lattice/output"
 	"github.com/asolgan/lattice/internal/bootstrap"
+	"github.com/asolgan/lattice/internal/opstatus"
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -183,11 +184,10 @@ func readPayload(source string) ([]byte, error) {
 func newStatusCommand(natsURL, outputFmt *string) *cobra.Command {
 	return &cobra.Command{
 		Use:   "status <requestId>",
-		Short: "Read an operation's tracker entry from Core KV",
+		Short: "Ask whether an operation landed (via the lattice.op.status RPC)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			requestID := args[0]
-			trackerKey := processor.TrackerKey(requestID)
 
 			ctx, cancel := context.WithTimeout(context.Background(), output.DefaultTimeout)
 			defer cancel()
@@ -202,27 +202,67 @@ func newStatusCommand(natsURL, outputFmt *string) *cobra.Command {
 			}
 			defer conn.Close()
 
-			entry, err := conn.KVGet(ctx, bootstrap.CoreKVBucket, trackerKey)
+			resp, err := requestOpStatus(ctx, conn, requestID)
 			if err != nil {
 				if *outputFmt == "json" {
-					_ = output.PrintJSONError("NotFound", fmt.Sprintf("tracker key %s: %v", trackerKey, err))
+					_ = output.PrintJSONError("RequestError", err.Error())
 					os.Exit(1)
 				}
-				fmt.Fprintf(os.Stderr, "not found: %s (%v)\n", trackerKey, err)
+				fmt.Fprintf(os.Stderr, "request failed: %v\n", err)
+				os.Exit(1)
+			}
+			if resp.Error != "" {
+				if *outputFmt == "json" {
+					_ = output.PrintJSONError("ResponderError", resp.Error)
+					os.Exit(1)
+				}
+				fmt.Fprintf(os.Stderr, "responder error: %s\n", resp.Error)
+				os.Exit(1)
+			}
+			if !resp.Found {
+				if *outputFmt == "json" {
+					_ = output.PrintJSONError("NotFound", fmt.Sprintf("requestId %s: no tracker (absent or TTL-expired)", requestID))
+					os.Exit(1)
+				}
+				fmt.Fprintf(os.Stderr, "not found: %s (no tracker — absent or TTL-expired)\n", requestID)
 				os.Exit(1)
 			}
 
 			if *outputFmt == "json" {
-				var doc map[string]interface{}
-				if err := json.Unmarshal(entry.Value, &doc); err != nil {
-					return output.PrintJSONError("ParseError", err.Error())
-				}
-				return output.PrintJSON(doc)
+				return output.PrintJSON(resp)
 			}
-			fmt.Printf("trackerKey: %s\n%s\n", trackerKey, string(entry.Value))
+			fmt.Printf("requestId:   %s\ncommitted:   %t\nisDeleted:   %t\ncommittedAt: %s\nclass:       %s\n",
+				requestID, resp.Committed, resp.IsDeleted, resp.CommittedAt, resp.Class)
 			return nil
 		},
 	}
+}
+
+// opStatusTimeout bounds the CLI's own wait on the lattice.op.status RPC,
+// mirroring internal/gateway's opStatusTimeout / internal/loom's
+// trackerExistsTimeout.
+const opStatusTimeout = 5 * time.Second
+
+// requestOpStatus asks the Processor-hosted lattice.op.status RPC whether
+// requestID landed (op-status-read-surface-design.md Fire 4), replacing the
+// CLI's former raw KVGet of the Contract #4 tracker — mirrors
+// internal/gateway's requestOpStatus / internal/loom's trackerExists.
+func requestOpStatus(ctx context.Context, conn *substrate.Conn, requestID string) (*opstatus.Response, error) {
+	reqBody, err := json.Marshal(opstatus.Request{RequestID: requestID})
+	if err != nil {
+		return nil, fmt.Errorf("marshal op-status request: %w", err)
+	}
+	rctx, cancel := context.WithTimeout(ctx, opStatusTimeout)
+	defer cancel()
+	data, err := conn.Request(rctx, opstatus.Subject, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("request op-status %q: %w", requestID, err)
+	}
+	var resp opstatus.Response
+	if uerr := json.Unmarshal(data, &resp); uerr != nil {
+		return nil, fmt.Errorf("parse op-status reply for %q: %w", requestID, uerr)
+	}
+	return &resp, nil
 }
 
 // newTraceCommand creates the op trace subcommand.

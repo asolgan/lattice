@@ -14,10 +14,11 @@ import (
 const opStatusSubject = "lattice.op.status"
 
 // TestOpStatusReachability proves the transport gate for the op-status RPC
-// (op-status-read-surface-design.md Fires 1-3). The responder does NO
+// (op-status-read-surface-design.md Fires 1-4). The responder does NO
 // caller-level authorization, so this publish allow-list IS the boundary:
-// the bridge (Fire 1), the Gateway (Fire 2), and Loom (Fire 3) may reach
-// lattice.op.status, while an ordinary vertical app may not.
+// the bridge (Fire 1), the Gateway (Fire 2), Loom (Fire 3), and the lattice
+// CLI (Fire 4) may reach lattice.op.status, while an ordinary vertical app
+// may not.
 //
 // The Processor hosts the responder in production (the sole sanctioned
 // Core-KV reader). Here a processor-seed connection stands in as the
@@ -70,6 +71,17 @@ func TestOpStatusReachability(t *testing.T) {
 	}
 	if len(loomReply.Data) == 0 {
 		t.Fatalf("loom request %q: empty reply", opStatusSubject)
+	}
+
+	// The lattice CLI is authorized too — `lattice op status` (Fire 4) backs
+	// onto this same RPC, replacing its former raw Core-KV tracker KVGet.
+	cli := connectAs(t, url, "lattice")
+	cliReply, err := cli.NATS().Request(opStatusSubject, []byte(`{"requestId":"x"}`), 3*time.Second)
+	if err != nil {
+		t.Fatalf("lattice request %q: want reply, got %v", opStatusSubject, err)
+	}
+	if len(cliReply.Data) == 0 {
+		t.Fatalf("lattice request %q: empty reply", opStatusSubject)
 	}
 
 	// An ordinary vertical app is NOT authorized: its publish is rejected at the

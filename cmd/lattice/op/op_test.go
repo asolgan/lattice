@@ -11,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/asolgan/lattice/internal/bootstrap"
+	"github.com/asolgan/lattice/internal/opstatus"
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
 	"github.com/asolgan/lattice/internal/testutil"
@@ -128,6 +129,64 @@ func TestOpStatus_HappyPath(t *testing.T) {
 	expected := "vtx.op." + requestID
 	if key != expected {
 		t.Errorf("TrackerKey(%q) = %q, want %q", requestID, key, expected)
+	}
+}
+
+// TestRequestOpStatus_HappyPath verifies the `lattice op status` migration
+// (op-status-read-surface-design.md Fire 4): requestOpStatus asks the
+// lattice.op.status RPC — never a direct Core-KV read — and reports the
+// committed verdict for a landed op and Found:false for an unknown
+// requestId.
+func TestRequestOpStatus_HappyPath(t *testing.T) {
+	ctx, conn, cp, cons := setupOpEnv(t)
+
+	svc := opstatus.NewService(conn, bootstrap.CoreKVBucket, nil)
+	if err := svc.StartNATSListener(ctx, conn.NATS()); err != nil {
+		t.Fatalf("StartNATSListener: %v", err)
+	}
+
+	requestID := testutil.GenReqID("OpStatusCLI")
+	env := &processor.OperationEnvelope{
+		RequestID:     requestID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateUnclaimedIdentity",
+		Actor:         staffActorKey,
+		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		Class:         "identity",
+		Payload:       json.RawMessage(`{"name":"Status Test","email":"status@example.com","claimKeyHash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}`),
+	}
+
+	cc, err := cons.Consume(func(m jetstream.Msg) {
+		cp.HandleMessage(ctx, m)
+	})
+	if err != nil {
+		t.Fatalf("Consume: %v", err)
+	}
+	defer cc.Stop()
+
+	reply, err := submitOp(ctx, conn, env)
+	if err != nil {
+		t.Fatalf("submitOp: %v", err)
+	}
+	if reply.Status != processor.ReplyStatusAccepted {
+		t.Fatalf("status = %q, want accepted (error: %+v)", reply.Status, reply.Error)
+	}
+
+	resp, err := requestOpStatus(ctx, conn, requestID)
+	if err != nil {
+		t.Fatalf("requestOpStatus: %v", err)
+	}
+	if !resp.Found || !resp.Committed {
+		t.Errorf("requestOpStatus(%q) = %+v, want found+committed", requestID, resp)
+	}
+
+	unknownID, _ := substrate.NewNanoID()
+	missing, err := requestOpStatus(ctx, conn, unknownID)
+	if err != nil {
+		t.Fatalf("requestOpStatus (unknown): %v", err)
+	}
+	if missing.Found {
+		t.Errorf("requestOpStatus(%q) = %+v, want not found", unknownID, missing)
 	}
 }
 

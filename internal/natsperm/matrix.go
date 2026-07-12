@@ -290,7 +290,11 @@ var Matrix = []Component{
 		Desc: "operator CLI + verify tools — submits ops, reads",
 		// lattice.ctrl.> — CLI control commands (pause/resume/rebuild/…) request
 		// the component control planes, same operator surface as Loupe's.
-		ExtraPubAllow: []string{bootstrap.OpsWildcardSubject, "$JS.API.>", "$JS.ACK.>", "lattice.ctrl.>"},
+		// lattice.op.status — `lattice op status` (Fire 4 of
+		// op-status-read-surface-design.md): replaces the CLI's former raw
+		// Core-KV tracker KVGet with the Processor-hosted RPC, the last of the
+		// four named submitters (§1.5) to migrate off a direct tracker read.
+		ExtraPubAllow: []string{bootstrap.OpsWildcardSubject, "$JS.API.>", "$JS.ACK.>", "lattice.ctrl.>", "lattice.op.status"},
 	},
 	{
 		Name: "gateway",
