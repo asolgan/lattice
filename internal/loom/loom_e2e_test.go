@@ -18,6 +18,7 @@ import (
 
 	"github.com/asolgan/lattice/internal/jsstore"
 	"github.com/asolgan/lattice/internal/loom"
+	"github.com/asolgan/lattice/internal/opstatus"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -132,7 +133,20 @@ type fakeProcessor struct {
 
 const replyInboxHeader = "Lattice-Reply-Inbox"
 
+// startOpStatusResponder hosts the lattice.op.status RPC (Processor-hosted in
+// production; op-status-read-surface-design.md) on conn, backed by
+// coreKVBucket — the same bucket fakeProcessor.trackOnce writes the Contract
+// #4 tracker to — so Loom's deadline-probe trackerExists (an RPC as of
+// Fire 3, never a direct KVGet) has something to answer it in these embedded-
+// NATS tests. Started once per fakeProcessor, alongside its op-commit loop.
+func startOpStatusResponder(t *testing.T, ctx context.Context, conn *substrate.Conn) {
+	t.Helper()
+	svc := opstatus.NewService(conn, coreKVBucket, testLogger())
+	require.NoError(t, svc.StartNATSListener(ctx, conn.NATS()))
+}
+
 func (f *fakeProcessor) run(ctx context.Context, t *testing.T) {
+	startOpStatusResponder(t, ctx, f.conn)
 	cons, err := f.conn.JetStream().CreateOrUpdateConsumer(ctx, opsStream, jetstream.ConsumerConfig{
 		Durable:       "fake-processor",
 		FilterSubject: "ops.>",

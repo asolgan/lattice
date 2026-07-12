@@ -151,6 +151,19 @@ func (c *Conn) NATS() *nats.Conn { return c.nc }
 // hatch — prefer the typed helpers.
 func (c *Conn) JetStream() jetstream.JetStream { return c.js }
 
+// Request performs a NATS request-reply call on subject with body, returning
+// the reply payload. It is the substrate-level RPC seam for components that
+// must not hold a raw *nats.Conn of their own (e.g. internal/loom's no-raw-NATS
+// boundary) but still need point-to-point request-reply, mirroring the shape
+// of the typed KV helpers below.
+func (c *Conn) Request(ctx context.Context, subject string, body []byte) ([]byte, error) {
+	msg, err := c.nc.RequestWithContext(ctx, subject, body)
+	if err != nil {
+		return nil, fmt.Errorf("substrate: request %q: %w", subject, err)
+	}
+	return msg.Data, nil
+}
+
 // Close shuts down the connection. Safe to call multiple times.
 func (c *Conn) Close() {
 	if c.nc != nil {

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/asolgan/lattice/internal/healthkv"
+	"github.com/asolgan/lattice/internal/opstatus"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -1154,17 +1155,21 @@ func (e *Engine) handleDeadline(ctx context.Context, subjPrefix string, msg subs
 }
 
 // onDeadline runs the read-before-act probe for an instance whose step deadline
-// fired (Contract #10 §10.6): GET the Contract #4 op tracker for the pending
-// token — present → the op committed but its event was missed → advance + alert;
-// absent but the outbox record still present → the relay has not delivered →
-// re-arm; absent and no outbox record → rejected → fail. Every branch re-reads
+// fired (Contract #10 §10.6): ask the lattice.op.status RPC (Processor-hosted,
+// the sole sanctioned Core-KV reader; op-status-read-surface-design.md Fire 3)
+// whether the Contract #4 op tracker for the pending token COMMITTED — present
+// → the op committed but its event was missed → advance + alert; absent but
+// the outbox record still present → the relay has not delivered → re-arm;
+// absent and no outbox record → rejected → fail. Every branch re-reads
 // instance state and is CAS-on-running (the advance/fail paths verify the
 // pending token), so a redelivered marker / second replica is a no-op.
 //
 // The pending step's kind selects the probe:
 //   - userTask (vtx.task.<id> token) → onUserTaskDeadline: the deadline is
-//     bounded on the task-CREATION only, so the probe reads the task vertex and
-//     the CreateTask op's tracker/outbox to decide created-vs-rejected.
+//     bounded on the task-CREATION only, so the probe reads the CreateTask
+//     op's tracker/outbox to decide created-vs-rejected (a CreateTask commit
+//     mints the task vertex in the same Processor commit, so the tracker
+//     alone is the created signal — no separate task-vertex read).
 //   - externalTask → onExternalTaskDeadline: bounded on the instanceOp
 //     SUBMISSION only (symmetric to a userTask), so the probe disarms on commit
 //     for an unbounded bridge wait rather than advancing. The pending token is
@@ -1243,47 +1248,34 @@ func (e *Engine) onDeadline(ctx context.Context, instanceID string) error {
 // onUserTaskDeadline runs the read-before-act probe for a userTask whose bounded
 // creation-deadline fired (the §10.6 deadline+probe applied to task creation). It
 // distinguishes "still waiting for the task to be CREATED" (a bounded machine
-// action) from "the task exists, now waiting for the HUMAN" (unbounded):
+// action) from "the task exists, now waiting for the HUMAN" (unbounded) —
+// entirely off the CreateTask op's tracker, since a CreateTask commit mints the
+// task vertex in the same Processor commit (no separate vtx.task.<id> read):
 //
-//  1. GET the task vertex vtx.task.<taskId> from Core KV. Present → the
-//     CreateTask committed and the flow is now in the legitimate unbounded human
-//     wait → disarm the creation-deadline (the cursor/token are untouched) and
-//     stop; the human may take days.
-//  2. Absent → probe the CreateTask op like a systemOp deadline: its tracker
-//     present → CreateTask committed but the task-vertex read raced/missed →
-//     re-arm; else its outbox record still present → the relay has not delivered
-//     → re-arm; else (no task, no tracker, no outbox) → CreateTask rejected/lost
-//     → fail.
+//  1. CreateTask tracker committed → the flow is now in the legitimate
+//     unbounded human wait → disarm the creation-deadline (the cursor/token
+//     are untouched) and stop; the human may take days.
+//  2. Not committed, outbox record still present → the relay has not
+//     delivered CreateTask yet → re-arm.
+//  3. Not committed, no outbox record → CreateTask rejected/lost → fail.
 //
 // Every branch re-reads instance state via the caller and is CAS-on-running (the
 // fail path verifies the pending token), so a redelivered marker / second replica
 // is a no-op.
 func (e *Engine) onUserTaskDeadline(ctx context.Context, inst *Instance) error {
-	taskID := deriveTaskID(inst.InstanceID, inst.Cursor)
-	created, err := e.taskVertexExists(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	if created {
-		// The task vertex exists: the bounded creation wait is over and the
-		// unbounded human wait begins. Disarm the deadline without touching the
-		// cursor/token — the instance stays running until the human acts.
-		e.logger.Info("loom: userTask created; disarming creation-deadline for unbounded human wait",
-			"instanceId", inst.InstanceID, "cursor", inst.Cursor, "taskId", taskID)
-		return e.state.disarmDeadline(ctx, inst.InstanceID)
-	}
-
 	opRequestID := deriveRequestID(inst.InstanceID, inst.Cursor)
 	committed, err := e.trackerExists(ctx, opRequestID)
 	if err != nil {
 		return err
 	}
 	if committed {
-		// CreateTask committed but the task-vertex read raced the commit; the next
-		// probe will see the vertex. Extend the creation-deadline rather than fail.
-		e.logger.Info("loom: CreateTask committed but task vertex not yet visible; re-arming",
+		// CreateTask committed — the task vertex now exists and the bounded
+		// creation wait is over; the unbounded human wait begins. Disarm the
+		// deadline without touching the cursor/token — the instance stays
+		// running until the human acts.
+		e.logger.Info("loom: CreateTask committed; disarming creation-deadline for unbounded human wait",
 			"instanceId", inst.InstanceID, "cursor", inst.Cursor, "createTaskRequestId", opRequestID)
-		return e.state.rearmDeadline(ctx, inst.InstanceID, e.cfg.CreateTaskTimeout)
+		return e.state.disarmDeadline(ctx, inst.InstanceID)
 	}
 
 	outboxPending, err := e.state.outboxExists(ctx, opRequestID)
@@ -1297,9 +1289,9 @@ func (e *Engine) onUserTaskDeadline(ctx context.Context, inst *Instance) error {
 		return e.state.rearmDeadline(ctx, inst.InstanceID, e.cfg.CreateTaskTimeout)
 	}
 
-	// No task vertex, no tracker, no outbox record → the CreateTask was rejected
-	// or lost. Fail the instance rather than park the token forever (§10.6: never
-	// a silent wedge).
+	// No tracker, no outbox record → the CreateTask was rejected or lost. Fail
+	// the instance rather than park the token forever (§10.6: never a silent
+	// wedge).
 	return e.fail(ctx, inst, inst.PendingToken,
 		fmt.Sprintf("step %d CreateTask rejected", inst.Cursor))
 }
@@ -1369,31 +1361,38 @@ func (e *Engine) onExternalTaskDeadline(ctx context.Context, inst *Instance) err
 		fmt.Sprintf("step %d instanceOp rejected", inst.Cursor))
 }
 
+// trackerExistsTimeout bounds Loom's own wait on the lattice.op.status RPC
+// (op-status-read-surface-design.md Fire 3), independent of the responder's
+// internal handler timeout — a wedged or unreachable Processor must not hang
+// the deadline-probe handler indefinitely. Mirrors internal/bridge's
+// resultAlreadyLandedTimeout.
+const trackerExistsTimeout = 5 * time.Second
+
 // trackerExists reports whether the Contract #4 op tracker vtx.op.<requestId>
-// exists in Core KV (a read — Loom never writes Core KV). A committed op writes
-// the tracker; a rejected op (denied before commit step 8) writes none.
+// has COMMITTED — via the lattice.op.status RPC (Processor-hosted, the sole
+// sanctioned Core-KV reader; op-status-read-surface-design.md Fire 3), never a
+// direct Core-KV read: Loom carries no raw NATS handle of its own (AC #8), so
+// conn.Request (the substrate-level RPC seam) stands in for e.conn.NATS().
+// A committed op writes the tracker; a rejected op (denied before commit
+// step 8) writes none — the RPC's Committed field (found AND NOT isDeleted)
+// is exactly this signal.
 func (e *Engine) trackerExists(ctx context.Context, requestID string) (bool, error) {
-	_, err := e.conn.KVGet(ctx, e.cfg.CoreKVBucket, "vtx.op."+requestID)
+	reqBody, err := json.Marshal(opstatus.Request{RequestID: requestID})
 	if err != nil {
-		if errors.Is(err, substrate.ErrKeyNotFound) {
-			return false, nil
-		}
+		return false, fmt.Errorf("loom: marshal op-status request: %w", err)
+	}
+	rctx, cancel := context.WithTimeout(ctx, trackerExistsTimeout)
+	defer cancel()
+	data, err := e.conn.Request(rctx, opstatus.Subject, reqBody)
+	if err != nil {
 		return false, fmt.Errorf("loom: probe tracker %q: %w", requestID, err)
 	}
-	return true, nil
-}
-
-// taskVertexExists reports whether the task vertex vtx.task.<taskId> exists in
-// Core KV (a read — Loom never writes Core KV). A committed CreateTask mints it;
-// a rejected CreateTask mints none. It is the signal that a userTask's bounded
-// creation wait is over and the unbounded human wait may begin (§10.6).
-func (e *Engine) taskVertexExists(ctx context.Context, taskID string) (bool, error) {
-	_, err := e.conn.KVGet(ctx, e.cfg.CoreKVBucket, "vtx.task."+taskID)
-	if err != nil {
-		if errors.Is(err, substrate.ErrKeyNotFound) {
-			return false, nil
-		}
-		return false, fmt.Errorf("loom: probe task vertex %q: %w", taskID, err)
+	var resp opstatus.Response
+	if uerr := json.Unmarshal(data, &resp); uerr != nil {
+		return false, fmt.Errorf("loom: parse op-status reply for %q: %w", requestID, uerr)
 	}
-	return true, nil
+	if resp.Error != "" {
+		return false, fmt.Errorf("loom: op-status RPC for %q: %s", requestID, resp.Error)
+	}
+	return resp.Committed, nil
 }

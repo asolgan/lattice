@@ -169,9 +169,13 @@ var Matrix = []Component{
 		AllowResponses: true, // control responder (lattice.ctrl.refractor.>)
 	},
 	{
-		Name:           "loom",
-		Desc:           "pattern engine; mutates Core state only by submitting ops (P2); owns loom-state",
-		ExtraPubAllow:  []string{bootstrap.OpsWildcardSubject, "lattice.ctrl.loom.>", "$JS.API.>", "$JS.ACK.>"},
+		Name: "loom",
+		Desc: "pattern engine; mutates Core state only by submitting ops (P2); owns loom-state",
+		// lattice.op.status — the §10.6 deadline+probe's RPC to the
+		// Processor-hosted Contract #4 tracker projection (Fire 3 of
+		// op-status-read-surface-design.md), replacing Loom's direct
+		// Core-KV tracker/task-vertex reads.
+		ExtraPubAllow:  []string{bootstrap.OpsWildcardSubject, "lattice.ctrl.loom.>", "$JS.API.>", "$JS.ACK.>", "lattice.op.status"},
 		AllowResponses: true, // control responder (lattice.ctrl.loom.>)
 	},
 	{
