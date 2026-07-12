@@ -48,7 +48,7 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 |---|---|---|---|---|
 | **[Loom] Guardless-step recovery check-before-act probe** | On total `loom-state` loss + a re-triggered `StartLoomPattern`, a fresh instance replays guards from cursor 0 (re-runs an already-applied guarded step). | ★ | S–M | 🗄️ shelved-backup (Andrew: no new engine Core-KV reads) |
 | **[Weaver] `inflight_<g>`-as-external-gap-marker is unenforced** | The stale-mark reclaim relies on `inflight_<g>` only ever being lens-authored for a real outcome-driven external gap; true today but not install-time enforced. | ★ | S | 📋 needs-design (Designer) · install-time lens-schema check impossible as scoped (2026-07-10); runtime candidate: `staleMark` consults the gap's action class from the target spec — Weaver holds both at runtime |
-| **[natsperm] No account holds `$JS.FC.>` — flow-control ACK denied, watches hang under backlog** | No `Matrix` entry grants `$JS.FC.>`; a busy stream's flow control can't be ack'd, hangs forever, no error. Live repro 2026-07-11: `lattice-pkg install` hung 2+ fires (`docker logs lattice-nats`: 1000+/48h `Publish Violation`). | ★★ | XS | 🔭 flag-for-Andrew · fix grounded (add `"$JS.FC.>"` in matrix.go + regen conf + restart nats); classifier blocks unattended IAM edit |
+| **[Bridge/Processor] Op-status read surface — `lattice.op.status` responder** | Bridge's skip-on-redelivery tracker probe (`vtx.op.<id>` KVGet) is transport-denied by the B2 read-tightening → infinite 5s redelivery loop; proposal: Processor-hosted op-status RPC (vault.decrypt pattern), bridge migrates, CLI + read-side-laxity follow-ons named. | ★★★ | S | 📐 awaiting-Andrew · [design](../../implementation-artifacts/op-status-read-surface-design.md) |
 
 ### Survey log (round-robin rotation)
 
@@ -191,6 +191,9 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-11 · `232f9ea` · [Loupe] systemmap/lens-detail Core-KV listing scoped to vtx.package. subtree — false "RED — all absent" landing banner fixed, verified live on the 13K-key bucket
+- 2026-07-11 · `a6aeb04` · [Processor] deterministic-requestId resubmits unbrick on tracker/outbox subject residue (Contract #4 §4.3/§4.5 realized; F-004 same-version force-refresh works past 24h again); regression tests
+- 2026-07-11 · `616c3fa` · [natsperm] $JS.FC.> granted matrix-wide — the lattice-pkg install hang root-caused (flow-control ack denied → permanent KV-listing stall) + lattice-pkg 60s bound + substrate partial-listing guards
 - 2026-07-11 · `4bae4d5` · [CI] two unit-job flakes root-caused at source — processor ack/term consumer-state reads + substrate AckResume dead-iterator race; poll/quiesce test barriers, vendor-source-grounded (detail in commit msgs); CI green
 - 2026-07-11 · `5ce906b` · [identity-domain,gateway] multi-credential-linking Fire 3 — provision-time identityindex probe (whoami `?probe=1`), built as a P5-clean lens read (§3.4 build-note); no contract change; CI green
 - 2026-07-11 · `bfe91b4` · [scripts] verify-package-identity — expect Fire 2's 2 new permittedCommands (CI stack-gates caught the stale count live); CI green
