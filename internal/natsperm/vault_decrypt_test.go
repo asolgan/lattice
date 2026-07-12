@@ -25,6 +25,7 @@ const vaultDecryptSubject = "lattice.vault.decrypt"
 // subscribe is unrestricted under the write-only-restriction model, and it
 // replies over _INBOX.> (which the processor's publish allow-list carries).
 func TestVaultDecryptReachability(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	resp := connectAs(t, url, "processor")
