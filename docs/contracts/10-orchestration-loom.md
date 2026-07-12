@@ -219,15 +219,17 @@ for instance `I`:
 1. **GET `instance.<I>`.** Absent or `status != running` → **ack/no-op** (already terminal, or a stale
    marker). Re-reading current state — never acting on the marker alone — is the idempotency +
    multi-replica guard.
-2. Let `T = instance.pendingToken`. **Read-before-act probe: GET the Contract #4 op tracker `vtx.op.<T>`**
-   (a Core-KV *read* — Loom reads, never writes Core KV; symmetric to the bridge's read-before-act
-   recovery on the service-instance vertex, §10.3):
-   - **tracker present** → the op committed; its completion event was missed (mis-declared
+2. Let `T = instance.pendingToken`. **Read-before-act probe: ask the `lattice.op.status` RPC whether the
+   Contract #4 op tracker `vtx.op.<T>` COMMITTED** (Processor-hosted, the sole sanctioned Core-KV reader;
+   op-status-read-surface-design.md — never a direct Core-KV read; Loom carries no raw NATS handle of its
+   own, so the request rides `substrate.Conn.Request`, symmetric to the bridge's read-before-act recovery
+   on the service-instance vertex, §10.3):
+   - **committed** → the op committed; its completion event was missed (mis-declared
      `completionDomains` / lost) → **advance** exactly as the committed terminal would, **and alert**
      ("completion recovered via deadline probe — check `completionDomains`"). Flow stays live.
-   - **tracker absent, `outbox.<T>` present** → the relay has not delivered yet → **re-arm**
+   - **not committed, `outbox.<T>` present** → the relay has not delivered yet → **re-arm**
      `deadline.<I>` (fresh TTL); do **not** fail.
-   - **tracker absent, `outbox.<T>` absent** → published but did not commit → **rejected** → per
+   - **not committed, `outbox.<T>` absent** → published but did not commit → **rejected** → per
      `retryCount` policy re-submit (fresh `outbox.<T>` + re-arm) or `status=failed` (atomic batch also
      deletes `token.<T>` + `deadline.<I>`) → submit `FailPattern` (§10.9). **Alert.**
 3. Every branch re-reads `instance` and is CAS-on-`running`, so a redelivered marker / second replica
@@ -236,7 +238,7 @@ for instance `I`:
 The deadline is set **≫ expected op latency** (the `weaver-state` lease precedent); a late commit after a
 false-fail finds the pointer gone → dropped (a bounded, alerted divergence, not a silent one).
 
-### userTask creation path — bounded creation-deadline + task-vertex probe
+### userTask creation path — bounded creation-deadline + tracker probe
 
 A userTask step is **two waits in sequence**: a **bounded** wait for the task to be *created* (a machine
 action — `CreateTask` commits in milliseconds), then an **unbounded** wait for the human to act on it.
@@ -247,16 +249,18 @@ forever (the silent wedge §10.6 forbids).
 
 - A userTask step arms a **bounded creation-deadline** (`CreateTaskTimeout`, sized ≫ any `CreateTask`
   commit latency — **not** a human-response window).
-- When it fires, a read-before-act probe GETs the task vertex **`vtx.task.<taskId>`** from Core KV (a
-  Loom *read*, like the systemOp tracker GET):
-  - **present** → the task was created; the flow is now in the legitimate **unbounded human wait** →
+- When it fires, the read-before-act probe asks the `lattice.op.status` RPC whether the `CreateTask`
+  op's Contract #4 tracker COMMITTED — a `CreateTask` commit mints the task vertex in the same Processor
+  commit, so the tracker's verdict alone is the created signal (no separate task-vertex read):
+  - **committed** → the task was created; the flow is now in the legitimate **unbounded human wait** →
     **disarm** the deadline (cursor/token untouched) and stop. The human may take days — there is no
     further runtime timeout.
-  - **absent** → probe the `CreateTask` op's Contract #4 tracker / `outbox` record exactly like the
-    systemOp path (tracker present → committed-but-raced → re-arm; outbox present → relay not yet
-    delivered → re-arm; neither → `CreateTask` **rejected/lost** → `FailPattern` + alert).
-- Every branch is CAS-on-`running`, mirroring the systemOp handler. Loom only **reads** Core KV here;
-  the module boundary (substrate-only) is unchanged.
+  - **not committed, `outbox.<taskOpRequestId>` present** → the relay has not delivered `CreateTask` yet
+    → **re-arm**.
+  - **not committed, outbox absent** → `CreateTask` **rejected/lost** → `FailPattern` + alert.
+- Every branch is CAS-on-`running`, mirroring the systemOp handler. Loom only **reads** (via the RPC,
+  never a direct Core-KV read) here; the module boundary (substrate-only, no raw NATS handle) is
+  unchanged.
 
 **Honest nuance:** after the creation-deadline disarms (the task vertex exists), there is **no runtime
 timeout** on the human wait — so a *mis-declared userTask `completionDomains`* (one that omits the
