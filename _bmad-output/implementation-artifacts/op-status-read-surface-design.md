@@ -12,9 +12,9 @@ Processor commit as its tracker, so `onUserTaskDeadline` now disarms purely off 
 tracker's COMMITTED verdict — disposition (a) from §4, one probe instead of two. `loom` gains the
 `lattice.op.status` pub-allow (`deploy/nats-server.conf` regenerated); `TestOpStatusReachability`
 gains the loom positive vector. Contract #10 §10.6's wording (GET the tracker/task-vertex → ask the
-RPC) is reconciled in `docs/contracts/10-orchestration-loom.md`, staged **UNCOMMITTED** for Andrew
-per house rules (a non-frozen-contract code/test change, paired with an already-ratified design, so
-the code shipped; only the contract-doc commit itself awaits Andrew). Fire 4 (`8d4ebd9`) migrates
+RPC) is reconciled in `docs/contracts/10-orchestration-loom.md` — committed and pushed (`c5221f9`) per
+house rules (paired with this already-ratified design, so the contract-doc commit lands with the rest
+of the build rather than sitting UNCOMMITTED). Fire 4 (`8d4ebd9`) migrates
 `lattice op status` (`cmd/lattice/op/op.go`) off its raw Core-KV `KVGet` of the tracker onto the same
 RPC — the last of the four named submitters in §1.5 to migrate. `lattice` gains the
 `lattice.op.status` pub-allow (`deploy/nats-server.conf` regenerated, applied live via

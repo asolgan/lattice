@@ -48,7 +48,7 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 |---|---|---|---|---|
 | **[Loom] Guardless-step recovery check-before-act probe** | On total `loom-state` loss + a re-triggered `StartLoomPattern`, a fresh instance replays guards from cursor 0 (re-runs an already-applied guarded step). | ★ | S–M | 🗄️ shelved-backup (Andrew: no new engine Core-KV reads) |
 | **[Weaver] `inflight_<g>`-as-external-gap-marker is unenforced** | The stale-mark reclaim relies on `inflight_<g>` only ever being lens-authored for a real outcome-driven external gap; true today but not install-time enforced. | ★ | S | 📋 needs-design (Designer) · install-time lens-schema check impossible as scoped (2026-07-10); runtime candidate: `staleMark` consults the gap's action class from the target spec — Weaver holds both at runtime |
-| **[Bridge/Processor] Op-status read surface — `lattice.op.status` responder** | Processor-hosted op-status RPC (vault.decrypt pattern); all 4 named submitters migrated. | ★★★ | S | ✅ all 4 fires shipped · [design](../../implementation-artifacts/op-status-read-surface-design.md) · §10.6 contract edit still UNCOMMITTED for Andrew · unblocks matrix-hygiene read-tightening follow-on |
+| **[Bridge/Processor] Op-status read surface — `lattice.op.status` responder** | Processor-hosted op-status RPC (vault.decrypt pattern); all 4 named submitters migrated. | ★★★ | S | ✅ all 4 fires shipped · [design](../../implementation-artifacts/op-status-read-surface-design.md) · 🔭 §10.6 contract edit push-held for Andrew (see design doc Status) · unblocks matrix-hygiene read-tightening follow-on |
 | **[Refractor/rbac-domain] service-location grants missing from `cap.roles` projection** | 8 operator permissions are `grantedBy`-linked in Core KV but absent from the live `cap.roles.<actor>` doc — ops wrongly denied; comparable grants from other packages DID propagate. | ★★★ | ? | 🔭 flag-for-Andrew · filed as spawn_task chip 2026-07-12 (task_cbc1d94b) |
 
 ### Survey log (round-robin rotation)
@@ -113,10 +113,14 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 > (2026-07-12) — the offline-first read loop, the optimistic write path, and the untrusted
 > multi-identity security turn-on (Gateway-submit, Personal Lens PL.3 fan-out, per-identity
 > subscribe-ACL) are all done — see [edge design §7](../../implementation-artifacts/edge-lattice-full-design.md).
-> **Next Edge increment: EDGE.4** (Vault Proxy, gated on Vault Phase A + PL.5, both since shipped) or
-> **EDGE.5** (browser/mobile node, gated on the Gateway WS/push bridge) — either is build-ready; a full
-> multi-persona adversarial re-review of the EDGE.3 security boundary is flagged open in the design
-> doc §8 (not run this fire) and worth doing before EDGE.4 composes the transient-key path onto it.
+> **Next Edge increment: EDGE.4** (Vault Proxy, gated on Vault Phase A + PL.5, both since shipped) —
+> **now ALSO gated** on the newly-filed `personal.hydrate`/register/deregister capability-auth gap
+> (Security & trust boundary table above): under real `LATTICE_AUTH_MODE=capability` no ordinary
+> identity's own Edge node can reach these RPCs at all today (control-operator-only grant, hydrate
+> ungranted even there, no self-scope concept) — EDGE.4's session-key RPC would land in the exact same
+> unreachable family, so build that self-scope primitive first. **EDGE.5** (browser/mobile node, gated
+> on the Gateway WS/push bridge) remains a separate, larger, Designer-scoped item. A full multi-persona
+> adversarial re-review of the EDGE.3 security boundary is still flagged open in the design doc §8.
 > **sensitive-param-egress CLOSED** (2026-07-11) — Fire 1 (disposition + emission guard) + Fire 2 (bridge
 > unwrap + lease-signing live consumer) both shipped, CI green.
 > **edge-manifest Fire 0 SHIPPED** (2026-07-12, `78955d0`) — `pkgmgr.LensSpec` can now declare a
@@ -141,6 +145,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 |---|---|---|---|---|
 | NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | ✅ effectively done · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) §Fire-3-status · only deferred Fire 4 (prod mTLS) remains |
 | **Keyed identity-index hashes (HMAC)** | Unkeyed `sha256NanoID` contact hashes are dictionary-testable with substrate access and persist in JetStream history post-shred; a Vault-keyed HMAC bounds it but needs a MAC primitive + key custody at every hash computer, and must migrate ALL index consumers (identityindex, provision probe, dedup) in one stroke. | ★ now / ★★ prod | M | 🗄️ shelved (revive: production threat model) · [analysis](../../implementation-artifacts/dedup-over-encrypted-pii-design.md) §9.1/§10-C |
+| **`personal.hydrate`/`register`/`deregister` unreachable by real identities under capability auth** | Transport grant still empty post-Fire-2 (`natsauth.go` `controlRPCs`) AND the capability gate needs `ctrl.refractor.<verb> scope=any`, granted only to `control-operator` (hydrate ungranted even there) — no self-scope exists. | ★★★ | M | 📋 needs-design · evidence: `natsauth.go:83-103`, `control/service.go:568-611`, `controlauth/checker.go:132-160`, `control-authz/manifest.yaml` · blocks Edge re-hydrate + EDGE.4 |
 
 ### Privacy / Vault
 | Item | What it is | Imp | Size | State |
