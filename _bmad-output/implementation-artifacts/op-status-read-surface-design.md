@@ -1,21 +1,28 @@
 # Op-status read surface — a sanctioned way to ask "did my operation land?"
 
-**Status: 🏗️ Fire 2 SHIPPED (`a4446d5`, 2026-07-12)** — Fire 1 (`f12f4ce`) shipped the
+**Status: 🏗️ Fire 3 SHIPPED (`3bd743c`, 2026-07-12)** — Fire 1 (`f12f4ce`) shipped the
 `lattice.op.status` responder (`internal/opstatus`) + the bridge's skip-on-redelivery probe
 migration; the interim `BRIDGE_SKIP_ON_REDELIVERY=false` mitigation is REVERTED on the shared dev
-stack. Fire 2 adds `GET /v1/operations/{requestId}` (`internal/gateway`), backed by the same RPC:
-turns the write path's 202-fallback "poll Core KV" contract (unsatisfiable by browser actors, §1.5)
-into a real read-your-own-writes poll — bearer-authenticated, its own CORS/preflight handling (a
-bearer-token GET always triggers an OPTIONS preflight), Gateway granted `lattice.op.status`
-pub-allow, `deploy/nats-server.conf` regenerated. Fires 3–4 (Loom probe migration + §10.6
-reconciliation, CLI) remain open. Ratified (Andrew, 2026-07-11): Fire 1 as designed; the Fires 2–4
-sequencing accepted; the interim mitigation approved and APPLIED the same session (bridge restarted
-with `BRIDGE_SKIP_ON_REDELIVERY=false` — the env lever added in cmd/bridge — all 6 stuck events
-drained, result ops committed, bridge health clean). Designer: Winston (main session, 2026-07-11) ·
-Origin: live incident (bridge skip-on-redelivery probe broken by the same-day read-tightening) +
-Andrew's framing: read posture was meant to stop components reading *business data* from Core KV;
-checking the status of an op you submitted is a legitimate generic need everyone has, and today the
-only way to do it is a Core KV `Get`.
+stack. Fire 2 (`a4446d5`) added `GET /v1/operations/{requestId}` (`internal/gateway`), backed by the
+same RPC. Fire 3 migrates Loom's §10.6 deadline-probe `trackerExists` (3 call sites) off direct
+Core-KV `KVGet`s onto the same RPC, via a new `substrate.Conn.Request` seam (Loom carries no raw NATS
+handle of its own, AC #8). `taskVertexExists` (the `vtx.task.<id>` business-vertex read named-not-
+solved in §4) is RETIRED, not migrated: a `CreateTask` commit mints the task vertex in the same
+Processor commit as its tracker, so `onUserTaskDeadline` now disarms purely off the CreateTask
+tracker's COMMITTED verdict — disposition (a) from §4, one probe instead of two. `loom` gains the
+`lattice.op.status` pub-allow (`deploy/nats-server.conf` regenerated); `TestOpStatusReachability`
+gains the loom positive vector. Contract #10 §10.6's wording (GET the tracker/task-vertex → ask the
+RPC) is reconciled in `docs/contracts/10-orchestration-loom.md`, staged **UNCOMMITTED** for Andrew
+per house rules (a non-frozen-contract code/test change, paired with an already-ratified design, so
+the code shipped; only the contract-doc commit itself awaits Andrew). Fire 4 (`lattice op status`
+CLI) remains open. Ratified (Andrew, 2026-07-11): Fire 1 as designed; the Fires 2–4 sequencing
+accepted; the interim mitigation approved and APPLIED the same session (bridge restarted with
+`BRIDGE_SKIP_ON_REDELIVERY=false` — the env lever added in cmd/bridge — all 6 stuck events drained,
+result ops committed, bridge health clean). Designer: Winston (main session, 2026-07-11) · Origin:
+live incident (bridge skip-on-redelivery probe broken by the same-day read-tightening) + Andrew's
+framing: read posture was meant to stop components reading *business data* from Core KV; checking the
+status of an op you submitted is a legitimate generic need everyone has, and today the only way to do
+it is a Core KV `Get`.
 
 ## Ratification block (decided 2026-07-11; kept for the build fire's context)
 
@@ -161,13 +168,13 @@ only component that touches Core KV" invariant.
   polls Core KV" contract (§1.5) into a real read-your-own-writes poll for browser actors. The
   strongest product consumer of the surface; a Vertical-PO demand row should pair with it
   (build-over-defer: the consumer is nameable today).
-- **Fire 3 — Loom probe migration** (`trackerExists` ×3 → the RPC). Requires the Contract #10 §10.6
-  wording reconciliation (it currently names a direct GET) — the contract edit rides the fire,
-  staged uncommitted for Andrew per house rules. Loom's `taskVertexExists` (`vtx.task.<id>` — a
-  business vertex, out of a vtx.op-scoped RPC's reach) is NAMED here, not solved: candidate
-  dispositions are (a) derive the same signal from the CreateTask op's tracker via the RPC, or
-  (b) a narrow sanctioned Loom read alongside its existing provisional guard-read exception —
-  the fire grounds which.
+- **Fire 3 — Loom probe migration SHIPPED (`3bd743c`, 2026-07-12)**: `trackerExists` ×3 → the RPC,
+  via a new `substrate.Conn.Request` seam (Loom's no-raw-NATS-handle boundary, AC #8). Disposition
+  (a) taken for `taskVertexExists`: retired entirely rather than migrated — a `CreateTask` commit
+  mints the task vertex in the same Processor commit as its tracker, so the tracker's COMMITTED
+  verdict alone is the created signal (disposition (b), a narrow sanctioned Loom read, was not
+  needed). The Contract #10 §10.6 wording reconciliation rides the fire, staged uncommitted for
+  Andrew per house rules (`docs/contracts/10-orchestration-loom.md`).
 - **Fire 4 — `lattice op status` CLI** migrates off its raw KVGet.
 - **Then, and only then,** the matrix-hygiene "account-wide read-side laxity" row can extend the
   DIRECT.GET deny matrix-wide without breaking anyone — the sequencing that makes this design the
