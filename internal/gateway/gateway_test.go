@@ -16,6 +16,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/asolgan/lattice/internal/gateway/auth"
+	"github.com/asolgan/lattice/internal/opstatus"
 	"github.com/asolgan/lattice/internal/processor"
 )
 
@@ -700,5 +701,165 @@ func TestCORS_ActualRequest_AllowedOriginGetsHeaders(t *testing.T) {
 	}
 	if got := w.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:7788" {
 		t.Fatalf("Access-Control-Allow-Origin = %q, want the allowed origin", got)
+	}
+}
+
+// --- handleOperationStatus (GET /v1/operations/{requestId}, Fire 2) --------
+
+func doOperationStatus(t *testing.T, s *Server, token, requestID string) *httptest.ResponseRecorder {
+	t.Helper()
+	mux := http.NewServeMux()
+	s.RegisterRoutes(mux)
+	r := httptest.NewRequest(http.MethodGet, "/v1/operations/"+requestID, nil)
+	if token != "" {
+		r.Header.Set("Authorization", "Bearer "+token)
+	}
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	return w
+}
+
+func TestHandleOperationStatus_Found(t *testing.T) {
+	priv := newTestKey(t)
+	authn := testAuthenticator(t, priv, "k1")
+	token := signToken(t, priv, "k1", "bN92DrPeSkb4zJYvgDJy")
+	s := newTestServer(t, authn, nil)
+	s.opStatus = func(_ context.Context, requestID string) (*opstatus.Response, error) {
+		if requestID != "abc123" {
+			t.Fatalf("opStatus called with %q, want abc123", requestID)
+		}
+		return &opstatus.Response{Found: true, Committed: true, Class: "identity"}, nil
+	}
+
+	w := doOperationStatus(t, s, token, "abc123")
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var resp opstatus.Response
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !resp.Found || !resp.Committed {
+		t.Fatalf("resp = %+v, want found+committed", resp)
+	}
+}
+
+func TestHandleOperationStatus_NotFound(t *testing.T) {
+	priv := newTestKey(t)
+	authn := testAuthenticator(t, priv, "k1")
+	token := signToken(t, priv, "k1", "bN92DrPeSkb4zJYvgDJy")
+	s := newTestServer(t, authn, nil)
+	s.opStatus = func(context.Context, string) (*opstatus.Response, error) {
+		return &opstatus.Response{Found: false}, nil
+	}
+
+	w := doOperationStatus(t, s, token, "neverlanded")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleOperationStatus_Unauthenticated_401(t *testing.T) {
+	priv := newTestKey(t)
+	authn := testAuthenticator(t, priv, "k1")
+	s := newTestServer(t, authn, nil)
+	s.opStatus = func(context.Context, string) (*opstatus.Response, error) {
+		t.Fatal("opStatus must not be called for an unauthenticated request")
+		return nil, nil
+	}
+
+	w := doOperationStatus(t, s, "", "abc123")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401", w.Code)
+	}
+}
+
+// TestHandleOperationStatus_InvalidRequestID_400 proves the path segment
+// guard rejects a dotted/wildcarded id BEFORE the RPC round trip — the same
+// discipline internal/opstatus's own isBareID applies server-side.
+func TestHandleOperationStatus_InvalidRequestID_400(t *testing.T) {
+	priv := newTestKey(t)
+	authn := testAuthenticator(t, priv, "k1")
+	token := signToken(t, priv, "k1", "bN92DrPeSkb4zJYvgDJy")
+	s := newTestServer(t, authn, nil)
+	s.opStatus = func(context.Context, string) (*opstatus.Response, error) {
+		t.Fatal("opStatus must not be called for an invalid requestId")
+		return nil, nil
+	}
+
+	w := doOperationStatus(t, s, token, "vtx.op.something")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleOperationStatus_RPCError_502(t *testing.T) {
+	priv := newTestKey(t)
+	authn := testAuthenticator(t, priv, "k1")
+	token := signToken(t, priv, "k1", "bN92DrPeSkb4zJYvgDJy")
+	s := newTestServer(t, authn, nil)
+	s.opStatus = func(context.Context, string) (*opstatus.Response, error) {
+		return nil, errors.New("processor unreachable")
+	}
+
+	w := doOperationStatus(t, s, token, "abc123")
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleOperationStatus_PostNotAllowed(t *testing.T) {
+	priv := newTestKey(t)
+	authn := testAuthenticator(t, priv, "k1")
+	s := newTestServer(t, authn, nil)
+
+	mux := http.NewServeMux()
+	s.RegisterRoutes(mux)
+	r := httptest.NewRequest(http.MethodPost, "/v1/operations/abc123", nil)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, r)
+	if w.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("status = %d, want 405", w.Code)
+	}
+}
+
+// TestHandleOperationStatus_CORS_PreflightAndActualRequest proves the status
+// endpoint answers its own preflight — a browser GET carrying `Authorization`
+// (required here) always triggers an OPTIONS preflight regardless of method,
+// so this is not covered by handleOperations' CORS path.
+func TestHandleOperationStatus_CORS_PreflightAndActualRequest(t *testing.T) {
+	priv := newTestKey(t)
+	authn := testAuthenticator(t, priv, "k1")
+	token := signToken(t, priv, "k1", "bN92DrPeSkb4zJYvgDJy")
+	s := newTestServer(t, authn, nil)
+	s.opStatus = func(context.Context, string) (*opstatus.Response, error) {
+		return &opstatus.Response{Found: true, Committed: true}, nil
+	}
+	s.ConfigureCORS([]string{"http://localhost:7788"})
+
+	mux := http.NewServeMux()
+	s.RegisterRoutes(mux)
+
+	preflight := httptest.NewRequest(http.MethodOptions, "/v1/operations/abc123", nil)
+	preflight.Header.Set("Origin", "http://localhost:7788")
+	pw := httptest.NewRecorder()
+	mux.ServeHTTP(pw, preflight)
+	if pw.Code != http.StatusNoContent {
+		t.Fatalf("preflight status = %d, want 204, body=%s", pw.Code, pw.Body.String())
+	}
+	if got := pw.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:7788" {
+		t.Fatalf("preflight Access-Control-Allow-Origin = %q, want the allowed origin", got)
+	}
+
+	actual := httptest.NewRequest(http.MethodGet, "/v1/operations/abc123", nil)
+	actual.Header.Set("Origin", "http://localhost:7788")
+	actual.Header.Set("Authorization", "Bearer "+token)
+	aw := httptest.NewRecorder()
+	mux.ServeHTTP(aw, actual)
+	if aw.Code != http.StatusOK {
+		t.Fatalf("actual status = %d, want 200, body=%s", aw.Code, aw.Body.String())
+	}
+	if got := aw.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:7788" {
+		t.Fatalf("actual Access-Control-Allow-Origin = %q, want the allowed origin", got)
 	}
 }

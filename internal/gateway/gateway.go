@@ -26,6 +26,7 @@ import (
 
 	"github.com/asolgan/lattice/cmd/lattice/output"
 	"github.com/asolgan/lattice/internal/gateway/auth"
+	"github.com/asolgan/lattice/internal/opstatus"
 	"github.com/asolgan/lattice/internal/processor"
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -42,12 +43,20 @@ const maxBodyBytes = 1 << 20
 // stamping/auth logic is provable without a NATS connection.
 type submitFunc func(ctx context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error)
 
+// opStatusFunc is the side effect of asking the Processor-hosted
+// lattice.op.status RPC whether an operation landed (op-status-read-surface-
+// design.md Fire 2). The default implementation requests over a live
+// *substrate.Conn; tests inject a fake so handleOperationStatus is provable
+// without a NATS connection.
+type opStatusFunc func(ctx context.Context, requestID string) (*opstatus.Response, error)
+
 // Server is the Gateway's HTTP handler set. Its only mutable state is
 // Metrics, which is safe for concurrent use — the Server itself is safe for
 // concurrent use.
 type Server struct {
 	authn      *auth.Authenticator
 	submit     submitFunc
+	opStatus   opStatusFunc
 	logger     Logger
 	reqTimeout time.Duration
 	metrics    *Metrics
@@ -182,10 +191,41 @@ func NewServer(authn *auth.Authenticator, conn *substrate.Conn, metrics *Metrics
 		submit: func(ctx context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
 			return output.SubmitOp(ctx, conn, env)
 		},
+		opStatus: func(ctx context.Context, requestID string) (*opstatus.Response, error) {
+			return requestOpStatus(ctx, conn, requestID)
+		},
 		logger:     logger,
 		reqTimeout: defaultReqTimeout,
 		metrics:    metrics,
 	}
+}
+
+// opStatusTimeout bounds the Gateway's wait on the lattice.op.status RPC,
+// independent of the responder's own handler timeout — a wedged or
+// unreachable Processor must not hang the HTTP request indefinitely. Mirrors
+// internal/bridge's resultAlreadyLandedTimeout (op-status-read-surface-
+// design.md Fire 1).
+const opStatusTimeout = 5 * time.Second
+
+// requestOpStatus asks the Processor-hosted lattice.op.status RPC whether
+// requestID landed (op-status-read-surface-design.md Fire 2), mirroring
+// internal/bridge/dispatch.go's resultAlreadyLanded.
+func requestOpStatus(ctx context.Context, conn *substrate.Conn, requestID string) (*opstatus.Response, error) {
+	reqBody, err := json.Marshal(opstatus.Request{RequestID: requestID})
+	if err != nil {
+		return nil, fmt.Errorf("gateway: marshal op-status request: %w", err)
+	}
+	rctx, cancel := context.WithTimeout(ctx, opStatusTimeout)
+	defer cancel()
+	msg, err := conn.NATS().RequestWithContext(rctx, opstatus.Subject, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("gateway: request op-status %q: %w", requestID, err)
+	}
+	var resp opstatus.Response
+	if uerr := json.Unmarshal(msg.Data, &resp); uerr != nil {
+		return nil, fmt.Errorf("gateway: parse op-status reply for %q: %w", requestID, uerr)
+	}
+	return &resp, nil
 }
 
 // ConfigureProvisioning enables the first-authenticated-touch auto-
@@ -302,13 +342,14 @@ func (s *Server) allowedOrigin(origin string) bool {
 }
 
 // writeCORSHeaders sets the Access-Control-Allow-* headers for a request from
-// origin (already confirmed allowed by the caller). Vary: Origin marks the
-// response as origin-dependent so a shared cache never serves it cross-origin.
-func writeCORSHeaders(w http.ResponseWriter, origin string) {
+// origin (already confirmed allowed by the caller) on the given methods.
+// Vary: Origin marks the response as origin-dependent so a shared cache never
+// serves it cross-origin.
+func writeCORSHeaders(w http.ResponseWriter, origin, methods string) {
 	h := w.Header()
 	h.Set("Access-Control-Allow-Origin", origin)
 	h.Set("Vary", "Origin")
-	h.Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	h.Set("Access-Control-Allow-Methods", methods)
 	h.Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	h.Set("Access-Control-Max-Age", "600")
 }
@@ -319,6 +360,7 @@ func writeCORSHeaders(w http.ResponseWriter, origin string) {
 // once, from whatever is configured at this call).
 func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/v1/operations", s.handleOperations)
+	mux.HandleFunc("/v1/operations/{requestId}", s.handleOperationStatus)
 	mux.HandleFunc("/v1/actor", s.handleWhoami)
 	for name, model := range s.readModels {
 		if !ValidReadModelName(name) {
@@ -385,7 +427,7 @@ func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Vary", "Origin")
 	}
 	if origin := r.Header.Get("Origin"); s.allowedOrigin(origin) {
-		writeCORSHeaders(w, origin)
+		writeCORSHeaders(w, origin, "POST, OPTIONS")
 	}
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
@@ -460,6 +502,86 @@ func (s *Server) handleOperations(w http.ResponseWriter, r *http.Request) {
 	s.metrics.opsSubmittedTotal.Add(1)
 
 	writeJSON(w, replyStatusCode(reply), reply)
+}
+
+// handleOperationStatus implements GET /v1/operations/{requestId} — turns the
+// write path's 202 fallback (a Processor reply timeout) into a real
+// read-your-own-writes poll for browser actors, backed by the
+// lattice.op.status RPC (op-status-read-surface-design.md Fire 2). Every
+// authenticated actor may query any requestId — the RPC exposes op metadata
+// (status/class/timestamps), never payloads, so its blast radius is a
+// traffic oracle at worst (design §5, accepted for Fire 1; per-actor scoping
+// is a named follow-on, not required here).
+//
+// Handles its own CORS/preflight (mirrors handleOperations): a browser GET
+// carrying `Authorization` triggers a preflight OPTIONS regardless of
+// method, so this route is registered method-agnostic and dispatches here.
+func (s *Server) handleOperationStatus(w http.ResponseWriter, r *http.Request) {
+	if len(s.corsOrigins) > 0 {
+		w.Header().Set("Vary", "Origin")
+	}
+	if origin := r.Header.Get("Origin"); s.allowedOrigin(origin) {
+		writeCORSHeaders(w, origin, "GET, OPTIONS")
+	}
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "GET required")
+		return
+	}
+	s.metrics.requestsTotal.Add(1)
+
+	token, ok := bearerToken(r)
+	if !ok {
+		s.metrics.authFailuresTotal.Add(1)
+		writeError(w, http.StatusUnauthorized, "missing or malformed Authorization: Bearer header")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), s.reqTimeout)
+	defer cancel()
+
+	if _, err := s.authn.Authenticate(ctx, token); err != nil {
+		s.metrics.authFailuresTotal.Add(1)
+		status, msg := mapAuthError(err)
+		writeError(w, status, msg)
+		return
+	}
+
+	requestID := r.PathValue("requestId")
+	if !isBareRequestID(requestID) {
+		writeError(w, http.StatusBadRequest, "requestId must be a bare id")
+		return
+	}
+
+	resp, err := s.opStatus(ctx, requestID)
+	if err != nil {
+		s.logger.Error("gateway: op-status RPC failed", "requestId", requestID, "error", err)
+		writeError(w, http.StatusBadGateway, "op status lookup failed")
+		return
+	}
+	if resp.Error != "" {
+		writeError(w, http.StatusBadGateway, resp.Error)
+		return
+	}
+	if !resp.Found {
+		writeError(w, http.StatusNotFound, "operation not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// isBareRequestID mirrors internal/opstatus's own isBareID guard (this
+// package's path segment is caller-controlled exactly like the RPC's own
+// requestId payload) — reject before spending a round trip to the Processor
+// on input the responder would refuse anyway.
+func isBareRequestID(s string) bool {
+	if s == "" {
+		return false
+	}
+	return !strings.ContainsAny(s, ".*> \t\n")
 }
 
 // provisionActorIfNeeded submits ProvisionConsumerIdentity under the

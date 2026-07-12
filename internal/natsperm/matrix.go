@@ -295,7 +295,12 @@ var Matrix = []Component{
 			"credential-bindings (materialized from its own credential→identity resolution set); hosts the auth-callout responder " +
 			"(internal/gateway/natsauth, per-identity-nats-subscribe-acl-design.md) — allow_responses covers its reply to the server's " +
 			"dynamic $SYS.REQ.USER.AUTH reply-to inbox",
-		ExtraPubAllow:  []string{bootstrap.OpsWildcardSubject, "$JS.API.>", "$JS.ACK.>"},
+		// lattice.op.status — GET /v1/operations/{requestId} (Fire 2 of
+		// op-status-read-surface-design.md): turns the write path's 202
+		// fallback into a real read-your-own-writes poll for browser actors,
+		// backed by the Processor-hosted Contract #4 tracker projection —
+		// never a direct Core-KV read (P5/P2 stay intact).
+		ExtraPubAllow:  []string{bootstrap.OpsWildcardSubject, "$JS.API.>", "$JS.ACK.>", "lattice.op.status"},
 		AllowResponses: true,
 	},
 	{

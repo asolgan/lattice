@@ -14,9 +14,9 @@ import (
 const opStatusSubject = "lattice.op.status"
 
 // TestOpStatusReachability proves the transport gate for the op-status RPC
-// (op-status-read-surface-design.md Fire 1). The responder does NO
+// (op-status-read-surface-design.md Fires 1-2). The responder does NO
 // caller-level authorization, so this publish allow-list IS the boundary:
-// the bridge — the Fire 1 migrated consumer — may reach lattice.op.status,
+// the bridge (Fire 1) and the Gateway (Fire 2) may reach lattice.op.status,
 // while an ordinary vertical app may not.
 //
 // The Processor hosts the responder in production (the sole sanctioned
@@ -48,6 +48,17 @@ func TestOpStatusReachability(t *testing.T) {
 	}
 	if len(reply.Data) == 0 {
 		t.Fatalf("bridge request %q: empty reply", opStatusSubject)
+	}
+
+	// The Gateway is authorized too — GET /v1/operations/{requestId} (Fire 2)
+	// backs onto this same RPC.
+	gw := connectAs(t, url, "gateway")
+	gwReply, err := gw.NATS().Request(opStatusSubject, []byte(`{"requestId":"x"}`), 3*time.Second)
+	if err != nil {
+		t.Fatalf("gateway request %q: want reply, got %v", opStatusSubject, err)
+	}
+	if len(gwReply.Data) == 0 {
+		t.Fatalf("gateway request %q: empty reply", opStatusSubject)
 	}
 
 	// An ordinary vertical app is NOT authorized: its publish is rejected at the
