@@ -42,8 +42,11 @@ package, built incrementally per the design's §7 Steward decomposition (EDGE.1 
   current `FirstSeq` — retention pruned messages the node never saw), it calls the Personal-Lens
   `personal.register`/`personal.hydrate` control RPCs (`internal/refractor/control`) before subscribing; a
   warm cursor still within retention skips both and resumes incrementally from the durable's own ack floor.
-  Control-plane requests carry an optional `Lattice-Actor` header (trusted posture; EDGE.3 replaces this
-  with a Gateway-verified identity).
+  Control-plane requests carry a `Lattice-Actor` header stamped with the device's bearer JWT
+  (`EDGE_TOKEN`) — when the Refractor's `ActorVerifier` is configured, `personal.register`/`deregister`/
+  `hydrate` bind to the verified actor server-side, overriding any `identityId` the request body asserts
+  (per-identity-nats-subscribe-acl-design.md §3.4); no verifier configured preserves the self-asserted
+  body (dev/e2e fixtures).
 - **`internal/edge/overlay`** (design §3.4, the Edge "Processor" — pure-A this increment, no local
   Starlark prediction yet): `Apply` installs the caller-supplied intended value as a pending overlay over
   a key, visible immediately through `Read`; the overlay retires the instant ANY fresher confirmed value
@@ -60,9 +63,12 @@ package, built incrementally per the design's §7 Steward decomposition (EDGE.1 
   the stale overlay; any other rejection discards without re-hydrating. `GC` sweeps pending overlays a
   `Read` never revisited.
 - **`cmd/edge`** — the binary wiring `store` + `sync` + `overlay` + `agent` together (mirrors `cmd/loupe`'s
-  flat layout): `EDGE_STORE_PATH`/`NATS_URL`/`EDGE_IDENTITY_ID`/`EDGE_DEVICE_ID`/`EDGE_ACTOR_KEY` env
-  config, connects, runs the Sync Manager, and drains the agent's intent queue + sweeps overlay GC on a
-  fixed interval (submit-on-reconnect rides the NATS client's own auto-reconnect) until SIGINT/SIGTERM.
+  flat layout): `EDGE_STORE_PATH`/`NATS_URL`/`EDGE_IDENTITY_ID`/`EDGE_DEVICE_ID`/`EDGE_TOKEN` env config,
+  connects to NATS via the auth-callout boundary (`substrate.ConnectOpts.Token` + a
+  `_INBOX.edge.<id>`-scoped `InboxPrefix`, per-identity-nats-subscribe-acl-design.md §3.3), runs the Sync
+  Manager, and drains the agent's intent queue + sweeps overlay GC on a fixed interval
+  (submit-on-reconnect rides the NATS client's own auto-reconnect) until SIGINT/SIGTERM. `EDGE_TOKEN` is
+  the sole credential — `EDGE_ACTOR_KEY` self-assertion has retired.
 
 **Not yet built** (see the design doc §7 for the full fire-by-fire plan):
 
