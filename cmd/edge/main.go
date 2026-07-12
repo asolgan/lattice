@@ -1,13 +1,19 @@
 // cmd/edge — the Edge Lattice reference node (edge-lattice-full-design.md
-// EDGE.1+EDGE.2): a local-first device that mirrors a single identity's
+// EDGE.1+EDGE.2, connect hardening per per-identity-nats-subscribe-acl-
+// design.md Fire 2): a local-first device that mirrors a single identity's
 // Personal-Lens slice into an embedded local store, keeps it fresh via the
 // Sync Manager, and drives the optimistic write path (overlay + agent) —
 // intents queued locally are drained to core-operations on a fixed
 // interval, with a RevisionConflict triggering a re-hydrate and any
-// rejection discarding the stale overlay. Trusted-posture only (no JWT, no
-// security filter — the same carve-out Loupe and Personal Lens PL.1/PL.2
-// use); EDGE.3 replaces EDGE_ACTOR_KEY with a real Gateway-verified
-// identity and routes the agent's submit through the Gateway.
+// rejection discarding the stale overlay. The connection authenticates to
+// NATS via the auth-callout boundary (a bearer JWT, EDGE_TOKEN) and stamps
+// the same JWT as the control plane's Lattice-Actor header — the Refractor
+// verifies it and binds every personal.{register,deregister,hydrate} call
+// to the resolved identity server-side (§3.4), so the token is the sole
+// authority; no client-asserted identity field is trusted. Still
+// single-identity/no security-filter (the same carve-out Loupe and Personal
+// Lens PL.1/PL.2 use) — EDGE.3 (Personal Lens PL.3 exposure + Gateway
+// write routing) is gated on this design's Fire 3.
 //
 // Environment:
 //
@@ -16,10 +22,11 @@
 //	EDGE_IDENTITY_ID    the identity NanoID this node mirrors (required)
 //	EDGE_DEVICE_ID      this device's id, distinguishes multiple nodes for
 //	                    the same identity (required)
-//	EDGE_ACTOR_KEY      the vtx.identity.<id> key stamped as the Lattice-Actor
-//	                    header on personal.register/personal.hydrate control
-//	                    requests (trusted posture; default: EDGE_IDENTITY_ID
-//	                    vertex-keyed)
+//	EDGE_TOKEN          a bearer JWT (Contract #11) authenticating this
+//	                    device's NATS connection (auth-callout token) and
+//	                    stamped as the Lattice-Actor header on every
+//	                    personal.{register,deregister,hydrate} control
+//	                    request (required)
 //
 // Logs to stderr in slog text format. Blocks until SIGINT/SIGTERM.
 package main
@@ -63,7 +70,10 @@ func run(logger *slog.Logger) error {
 	if identityID == "" || deviceID == "" {
 		return errors.New("EDGE_IDENTITY_ID and EDGE_DEVICE_ID must both be set")
 	}
-	actorKey := envOrDefault("EDGE_ACTOR_KEY", substrate.VertexKey("identity", identityID))
+	token := os.Getenv("EDGE_TOKEN")
+	if token == "" {
+		return errors.New("EDGE_TOKEN must be set")
+	}
 
 	st, err := store.Open(storePath)
 	if err != nil {
@@ -80,8 +90,8 @@ func run(logger *slog.Logger) error {
 		Name:          "edge-" + identityID + "-" + deviceID,
 		MaxReconnects: -1,
 		ReconnectWait: 2 * time.Second,
-		NKeySeedFile:  os.Getenv("NATS_NKEY"),
-		CredsFile:     os.Getenv("NATS_CREDS"),
+		Token:         token,
+		InboxPrefix:   "_INBOX.edge." + identityID,
 	})
 	if err != nil {
 		return err
@@ -92,7 +102,7 @@ func run(logger *slog.Logger) error {
 	mgr, err := sync.New(conn, st, sync.Config{
 		IdentityID:  identityID,
 		DeviceID:    deviceID,
-		ActorHeader: actorKey,
+		ActorHeader: token,
 		Logger:      logger,
 	})
 	if err != nil {

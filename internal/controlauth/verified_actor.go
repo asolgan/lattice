@@ -11,10 +11,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/nats-io/nats.go/micro"
 
 	"github.com/asolgan/lattice/internal/gateway/auth"
+	"github.com/asolgan/lattice/internal/substrate"
 )
 
 // ErrNoToken is returned by ResolveActor when an ActorVerifier is configured
@@ -66,4 +68,25 @@ func ResolveActor(ctx context.Context, req micro.Request, verifier *ActorVerifie
 		return "", fmt.Errorf("controlauth: verify actor token: %w", err)
 	}
 	return actor.ActorID, nil
+}
+
+// BareIdentityID derives the bare Personal-Lens identity id (the shape
+// internal/refractor/personalinterest and subjects.PersonalSync key on)
+// from a verified ActorID (`vtx.identity.<id>`). Mirrors
+// internal/gateway/natsauth's identical derivation (its authorize
+// function) — same defense-in-depth: a prefix-less or non-NanoID-alphabet
+// actor id fails closed rather than binding a personal-lens op (a KV key,
+// a re-projected cypher scope, a `lattice.sync.user.<id>` publish) to a
+// malformed id (per-identity-nats-subscribe-acl-design.md §3.4). Both live
+// ActorID binding modes (opaque SHA256NanoID, dev nanoid passthrough)
+// already guarantee this shape at verification time — the check here is
+// belt-and-suspenders, not currently load-bearing, kept for parity with
+// natsauth and as insurance against a future resolution step between
+// verification and this call.
+func BareIdentityID(actorID string) (string, error) {
+	id := strings.TrimPrefix(actorID, auth.IdentityKeyPrefix)
+	if id == actorID || id == "" || !substrate.IsValidNanoID(id) {
+		return "", fmt.Errorf("controlauth: verified actor %q is not a well-formed identity key", actorID)
+	}
+	return id, nil
 }

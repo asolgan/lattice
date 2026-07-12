@@ -588,6 +588,30 @@ func (s *Service) dispatchEndpoint(op string, req micro.Request) {
 		}
 	}
 
+	// Personal-lens identity binding (per-identity-nats-subscribe-acl-
+	// design.md §3.4): once an ActorVerifier is configured, body.IdentityID
+	// is a client-asserted payload field the transport ACL cannot fix (the
+	// subject is shared across identities) — bind it to the verified actor
+	// instead of trusting it. A non-empty body value that disagrees with the
+	// verified actor is a client bug, not a routing hint, and is rejected.
+	// No verifier configured (dev/e2e fixtures) preserves today's
+	// self-asserted-body behavior.
+	if verifier != nil {
+		switch op {
+		case "register", "deregister", "hydrate":
+			boundIdentityID, err := controlauth.BareIdentityID(actor)
+			if err != nil {
+				s.respondMicro(req, ControlResponse{Error: err.Error()})
+				return
+			}
+			if body.IdentityID != "" && body.IdentityID != boundIdentityID {
+				s.respondMicro(req, ControlResponse{Error: "personal: identityId does not match the verified actor"})
+				return
+			}
+			body.IdentityID = boundIdentityID
+		}
+	}
+
 	switch op {
 	case "health":
 		s.respondMicro(req, s.getHealth(context.Background(), lensID))

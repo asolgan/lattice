@@ -47,6 +47,15 @@ type ConnectOpts struct {
 	// internal/gateway/natsauth. Empty ⇒ no token. At most one of
 	// NKeySeedFile / CredsFile / Token is set.
 	Token string
+	// InboxPrefix, when non-empty, scopes every request-reply inbox this
+	// connection creates under "<InboxPrefix>.<nuid>" instead of the
+	// client-wide default (nats.go's InboxPrefix option). The per-identity
+	// subscribe-ACL template (per-identity-nats-subscribe-acl-design.md
+	// §3.3) grants subscribe on the caller's own inbox namespace only — a
+	// shared default prefix would let one identity's connection collide
+	// with (and be denied access to) another's replies. Empty ⇒ nats.go's
+	// default "_INBOX" prefix.
+	InboxPrefix string
 }
 
 // Conn is substrate's opinionated NATS handle. It owns the underlying
@@ -80,6 +89,9 @@ func Connect(ctx context.Context, opts ConnectOpts) (*Conn, error) {
 	}
 	if opts.ReconnectWait > 0 {
 		natsOpts = append(natsOpts, nats.ReconnectWait(opts.ReconnectWait))
+	}
+	if opts.InboxPrefix != "" {
+		natsOpts = append(natsOpts, nats.CustomInboxPrefix(opts.InboxPrefix))
 	}
 	credCount := 0
 	for _, set := range []bool{opts.NKeySeedFile != "", opts.CredsFile != "", opts.Token != ""} {
