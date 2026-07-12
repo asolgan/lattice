@@ -73,10 +73,40 @@ func DDLs() []pkgmgr.DDLSpec {
 // that mints the claim vertex) and RecordServiceOutcome (the replyOp shape
 // that records the outcome). CreateServiceTemplate is install-time / admin
 // provisioning and is not bound by a downstream step, so it gets no op-meta.
+//
+// RequestService (edge-manifest Fire 1, G8) is the platform's first
+// service-path consumer op — its op-meta carries the descriptor-vocabulary
+// aspects (edge-showcase-app-design.md §3.3) so an edge client can render +
+// submit it with no hardcoded knowledge of this package. Dispatch.Class is
+// "service" — the service DDL's own CanonicalName, the Contract #2 §2.1
+// envelope `class` DDL-hint — not the created instance's fine-grained
+// envelope class (service.<fam>.instance), which the script derives
+// server-side from the template.
 func OpMetas() []pkgmgr.OpMetaSpec {
 	return []pkgmgr.OpMetaSpec{
 		{OperationType: "CreateServiceInstance"},
 		{OperationType: "RecordServiceOutcome"},
+		{
+			OperationType: "RequestService",
+			Presentation: &pkgmgr.OpPresentationSpec{
+				Title:       "Request service",
+				Description: "Start a run of this service for yourself.",
+				Icon:        "service",
+				Tone:        "primary",
+				SubmitLabel: "Request",
+			},
+			InputSchema: `{"type":"object","properties":` +
+				`{"service":{"type":"string","description":"vtx.service.<NanoID> of the service template being requested."}},` +
+				`"required":["service"]}`,
+			FieldDescriptions: map[string]string{
+				"service": "The service template this run is of — auto-filled by the client from the service being viewed (dispatch.targetField), not user-entered.",
+			},
+			Dispatch: &pkgmgr.OpDispatchSpec{
+				Class:       "service",
+				AuthContext: "service",
+				TargetField: "service",
+			},
+		},
 	}
 }
 
@@ -84,7 +114,7 @@ func serviceDDL() pkgmgr.DDLSpec {
 	return pkgmgr.DDLSpec{
 		CanonicalName:     "service",
 		Class:             "meta.ddl.vertexType",
-		PermittedCommands: []string{"CreateServiceTemplate", "CreateServiceInstance", "RecordServiceOutcome"},
+		PermittedCommands: []string{"CreateServiceTemplate", "CreateServiceInstance", "RecordServiceOutcome", "RequestService"},
 		Description: "Service domain DDL. Vertex shape: vtx.service.<NanoID>, root data = {} " +
 			"(minimal, D5). A service vertex is a TEMPLATE (an offering) or an INSTANCE (a run of an " +
 			"offering), discriminated by the vertex ENVELOPE class (service.<x>.template / " +
@@ -99,10 +129,19 @@ func serviceDDL() pkgmgr.DDLSpec {
 			"availableAt availability assertion (template→location) is owned by service-location, not this " +
 			"DDL. CreateServiceTemplate mints a template (envelope class service.<x>.template) + its " +
 			"instanceOf→service-DDL-meta link, and writes the providedBy link only when the endpoint is " +
-			"supplied (validated alive). " +
+			"supplied (validated alive); an optional presentation payload object {name, description?, icon, " +
+			"category?} is written as the template's .presentation aspect (edge-manifest Fire 1 — the " +
+			"client-facing display metadata a personal-lens catalog projects). " +
 			"CreateServiceInstance mints an instance (envelope class service.<x>.instance), requires + " +
 			"validates a live template (instanceOf) and a live applicant identity (providedTo), and accepts " +
 			"an optional caller-supplied bare-NanoID instanceId (a write-ahead seam: absent → minted). " +
+			"RequestService (edge-manifest Fire 1, G8) is the consumer-invocable service-path counterpart: " +
+			"the caller supplies only the template key (service); the applicant is the verified op actor " +
+			"(never caller-supplied), and the instance family is derived from the template's own envelope " +
+			"class. No scope=self/operator grant is needed — step 3 already authorized this exact actor for " +
+			"this exact service via authContext.service against the cap.svc availability grant " +
+			"(service-location's lens); the script re-asserts payload.service == authContextService so a " +
+			"forged payload naming a different, unauthorized template cannot slip through. " +
 			"RecordServiceOutcome records the external-call result as the .outcome aspect {status " +
 			"(completed|failed), completedAt (canonical-UTC RFC3339)} on the instance; the outcome lives " +
 			"in the aspect, never on root data (D5). It rejects a non-existent / template (not instance) / " +
@@ -112,23 +151,28 @@ func serviceDDL() pkgmgr.DDLSpec {
 			`{"family":{"type":"string","enum":["backgroundCheck","payment"],"description":"The service family <x> (backgroundCheck|payment). Sets the vertex envelope class service.<x>.template|instance."},` +
 			`"templateId":{"type":"string","description":"Optional bare NanoID for the template vertex (CreateServiceTemplate); absent → minted."},` +
 			`"providedBy":{"type":"string","description":"Optional vtx.<provType>.<NanoID> that provides the template; the providedBy link is written only when supplied (CreateServiceTemplate)."},` +
-			`"instanceId":{"type":"string","description":"Optional bare NanoID for the instance vertex (CreateServiceInstance); supplied by a caller that must know the key before commit (e.g. Loom's write-ahead handle). Absent → minted."},` +
+			`"presentation":{"type":"object","description":"Optional client-facing display metadata (CreateServiceTemplate): {name, description?, icon, category?}. Written as the template's .presentation aspect.",` +
+			`"properties":{"name":{"type":"string"},"description":{"type":"string"},"icon":{"type":"string"},"category":{"type":"string"}}},` +
+			`"instanceId":{"type":"string","description":"Optional bare NanoID for the instance vertex (CreateServiceInstance/RequestService); supplied by a caller that must know the key before commit (e.g. Loom's write-ahead handle). Absent → minted."},` +
 			`"template":{"type":"string","description":"vtx.service.<NanoID> of the template this instance is of (CreateServiceInstance; required, validated alive + is a template)."},` +
 			`"providedTo":{"type":"string","description":"vtx.identity.<NanoID> of the applicant this instance is for (CreateServiceInstance; required, validated alive)."},` +
+			`"service":{"type":"string","description":"vtx.service.<NanoID> of the template being requested (RequestService; required, must equal the authorized authContext.service)."},` +
 			`"instanceKey":{"type":"string","description":"vtx.service.<NanoID> of the instance to record an outcome for (RecordServiceOutcome; required, validated alive + is an instance + not already recorded)."},` +
 			`"status":{"type":"string","enum":["completed","failed"],"description":"The terminal outcome (RecordServiceOutcome): completed = the external call succeeded with a satisfying result; failed = the call failed or returned a non-satisfying result."},` +
 			`"completedAt":{"type":"string","description":"RFC3339 instant the external call completed (RecordServiceOutcome; normalized to canonical UTC whole-second RFC3339). The freshness-predicate input."},` +
 			`"expectedRevision":{"type":"integer","description":"Optional OCC guard (RecordServiceOutcome): the instance root revision the caller read; the outcome write is rejected if the instance changed concurrently."}},` +
-			`"required":["family"]}`,
+			`"required":[]}`,
 		OutputSchema: `{"type":"object","properties":` +
 			`{"primaryKey":{"type":"string","description":"vtx.service.<NanoID> of the created/updated service vertex (the operation's principal key)."}}}`,
 		FieldDescription: map[string]string{
 			"family":           "The service family <x>, one of {backgroundCheck, payment}. Determines the vertex envelope class (service.<x>.template for CreateServiceTemplate, service.<x>.instance for CreateServiceInstance). Required for the create ops.",
 			"templateId":       "Optional bare NanoID (no dots / key segments) for the template vertex (vtx.service.<templateId>) created by CreateServiceTemplate. Absent → minted with nanoid.new().",
 			"providedBy":       "Optional full vtx.<provType>.<NanoID> key of the provider of the template offering. CreateServiceTemplate validates it is alive and writes the providedBy link only when supplied.",
-			"instanceId":       "Optional bare NanoID (no dots / key segments) for the instance vertex (vtx.service.<instanceId>) created by CreateServiceInstance. Supplied by a caller that must know the instance key before the op commits — e.g. a Loom externalTask step write-aheading its token.<instanceKey> handle. Absent → minted with nanoid.new(). A crash-retry with the same id collapses on the Contract #4 tracker.",
+			"presentation":     "Optional client-facing display metadata {name, description?, icon, category?} (CreateServiceTemplate). Written verbatim as the template's .presentation aspect; absent → no aspect written (a template stays undescribed, per edge-showcase-app-design.md §3.3's degrade-gracefully rule).",
+			"instanceId":       "Optional bare NanoID (no dots / key segments) for the instance vertex (vtx.service.<instanceId>) created by CreateServiceInstance or RequestService. Supplied by a caller that must know the instance key before the op commits — e.g. a Loom externalTask step write-aheading its token.<instanceKey> handle. Absent → minted with nanoid.new(). A crash-retry with the same id collapses on the Contract #4 tracker.",
 			"template":         "Full vtx.service.<NanoID> key of the template this instance is a run of. CreateServiceInstance requires it, validates it is alive and is a template (its envelope class ends in .template), and writes the instanceOf link.",
 			"providedTo":       "Full vtx.identity.<NanoID> key of the applicant this instance is provided to. CreateServiceInstance requires it, validates the identity is alive, and writes the providedTo link (the convergence link a downstream lens reads across).",
+			"service":          "Full vtx.service.<NanoID> key of the template being requested (RequestService). Required, must be alive + a template, and must equal the authorized authContext.service — a mismatch is rejected (the payload cannot name a different template than the one step 3 authorized).",
 			"instanceKey":      "Full vtx.service.<NanoID> key of the instance to record an outcome for. RecordServiceOutcome validates it is alive, is an instance (not a template), and has no outcome yet.",
 			"status":           "The terminal outcome value: completed (the external call succeeded with a satisfying result) or failed (the call failed or returned a non-satisfying result). Stored on the .outcome aspect.",
 			"completedAt":      "RFC3339 timestamp the external call completed. Normalized to canonical UTC whole-second RFC3339 and stored on the .outcome aspect — the freshness-predicate input a downstream lens compares lexically.",
@@ -157,6 +201,18 @@ func serviceDDL() pkgmgr.DDLSpec {
 					"(instance→template) + the providedTo link (instance→identity). NO outcome aspect yet (absence = not-yet-complete). " +
 					"Accepts an optional caller-supplied bare-NanoID instanceId. Returns primaryKey (the instance key). " +
 					"Rejects with ScriptError if the template or applicant is absent.",
+			},
+			{
+				Name: "RequestService — a consumer self-invokes a service they're authorized for",
+				Payload: map[string]any{
+					"service": "vtx.service.<templateNanoID>",
+				},
+				ExpectedOutcome: "Requires authContext.service == payload.service (step 3 already authorized this actor for this " +
+					"exact template via the cap.svc availability grant). Validates the template (alive + a template). Atomically " +
+					"commits vtx.service.<NanoID> (root data {}, envelope class derived from the template's own family) + the " +
+					"instanceOf link (instance→template) + the providedTo link (instance→the verified op actor, never a payload " +
+					"field). Returns primaryKey (the instance key). Rejects with ScriptError if the template is absent, is not a " +
+					"template, or payload.service does not match the authorized authContext.service.",
 			},
 			{
 				Name: "RecordServiceOutcome — record a passing background check",
@@ -224,6 +280,28 @@ def optional_int(p, name):
     if type(v) != type(0):
         fail("InvalidArgument: " + name + ": must be an integer")
     return v
+
+def optional_presentation(p):
+    # Returns CreateServiceTemplate's optional "presentation" payload object
+    # {name, description?, icon, category?} as a plain dict ready for
+    # make_aspect, or None when absent — every field individually optional
+    # (edge-showcase-app-design.md §3.3: an undescribed template still
+    # installs; it just isn't Facet-renderable). A present-but-non-object
+    # value is a structured ScriptError.
+    if not hasattr(p, "presentation"):
+        return None
+    d = getattr(p, "presentation")
+    if d == None:
+        return None
+    if type(d) != type({}):
+        fail("InvalidArgument: presentation: must be an object")
+    data = {}
+    for field in ["name", "description", "icon", "category"]:
+        if field in d and d[field] != None and type(d[field]) == type("") and len(d[field].strip()) > 0:
+            data[field] = d[field].strip()
+    if len(data) == 0:
+        return None
+    return data
 
 # The service families this package admits (<x> in the class string
 # service.<x>.template | service.<x>.instance). One service DDL handles all
@@ -344,10 +422,68 @@ def execute(state, op):
             provby_lnk = "lnk.service." + tpl_id + ".providedBy." + prov_type + "." + prov_id
             mutations.append(make_link(provby_lnk, tpl_key, provided_by, "providedBy", "providedBy", {}))
 
+        # Optional client-facing display metadata (edge-manifest Fire 1,
+        # edge-showcase-app-design.md §3.3): written once, at creation, as a
+        # sibling aspect — never on root data (D5). Absent → no aspect (the
+        # template installs exactly as before this fire).
+        pres = optional_presentation(p)
+        if pres != None:
+            mutations.append(make_aspect(tpl_key, "presentation", "presentation", pres))
+
         events = [{"class": "service.templateCreated",
                    "data": {"serviceKey": tpl_key, "family": fam}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": tpl_key}}
+
+    if ot == "RequestService":
+        # The platform's first service-path consumer op (edge-manifest
+        # Fire 1, G8): step 3 already authorized this exact actor for this
+        # exact template via authContext.service (the cap.svc availability
+        # grant service-location's lens projects) — no scope=self/operator
+        # PermissionSpec exists or is needed for this operationType. The
+        # script's only job is to re-assert payload.service matches the
+        # authorized value (a forged payload naming a different template
+        # must not slip through) and to derive the applicant from the
+        # verified op actor, never from the payload.
+        svc_key = required_string(p, "service")
+        if op.authContextService == "" or op.authContextService != svc_key:
+            fail("AuthContextMismatch: service payload field must match the authorized authContext.service")
+        if not vertex_alive(state, svc_key):
+            fail("UnknownTemplate: " + svc_key)
+        tpl_class = vertex_class(state, svc_key)
+        if tpl_class == None or not tpl_class.endswith(".template"):
+            fail("NotATemplate: " + svc_key + " is not a service template")
+        # tpl_class is "service.<fam>.template" — derive the instance's family
+        # from the template's own envelope class rather than trusting a
+        # caller-supplied field (mirrors CreateServiceInstance's family
+        # validation, minus the redundant payload round-trip).
+        fam = tpl_class.split(".")[1]
+        _, tpl_id = parts_of(svc_key, "service", "service")
+
+        applicant = op.actor
+        if applicant == "":
+            fail("AuthContextMismatch: RequestService requires a verified op actor")
+        _, applicant_id = parts_of(applicant, "actor", "identity")
+        if not vertex_alive(state, applicant):
+            fail("UnknownApplicant: " + applicant)
+
+        inst_id = bare_nanoid_or_mint(p, "instanceId")
+        inst_key = "vtx.service." + inst_id
+        inst_class = "service." + fam + ".instance"
+
+        instance_of_lnk = "lnk.service." + inst_id + ".instanceOf.service." + tpl_id
+        provided_to_lnk = "lnk.service." + inst_id + ".providedTo.identity." + applicant_id
+
+        mutations = [
+            make_vtx(inst_key, inst_class, {}),
+            make_link(instance_of_lnk, inst_key, svc_key, "instanceOf", "instanceOf", {}),
+            make_link(provided_to_lnk, inst_key, applicant, "providedTo", "providedTo", {}),
+        ]
+        events = [{"class": "service.instanceCreated",
+                   "data": {"serviceKey": inst_key, "family": fam,
+                            "template": svc_key, "providedTo": applicant}}]
+        return {"mutations": mutations, "events": events,
+                "response": {"primaryKey": inst_key}}
 
     if ot == "CreateServiceInstance":
         fam = required_family(p)

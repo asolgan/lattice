@@ -233,6 +233,33 @@ func (i *Installer) buildInstallBatch(
 			addCreate(opMetaKey+".effects", docAspect(opMetaKey, "effects", "effects",
 				map[string]any{"guards": guards}))
 		}
+		// Descriptor-vocabulary aspects (edge-manifest Fire 1): each optional,
+		// each conditional on the field being populated — an op meta that sets
+		// none of them installs byte-identical to before this fire.
+		if o.Presentation != nil {
+			addCreate(opMetaKey+".presentation", docAspect(opMetaKey, "presentation", "presentation",
+				opPresentationBody(o.Presentation)))
+		}
+		if o.InputSchema != "" {
+			addCreate(opMetaKey+".inputSchema", docAspect(opMetaKey, "inputSchema", "inputSchema",
+				map[string]any{"schema": o.InputSchema}))
+		}
+		if len(o.FieldDescriptions) > 0 {
+			fdMap := make(map[string]any, len(o.FieldDescriptions))
+			for k, v := range o.FieldDescriptions {
+				fdMap[k] = v
+			}
+			addCreate(opMetaKey+".fieldDescriptions", docAspect(opMetaKey, "fieldDescriptions", "fieldDescriptions",
+				map[string]any{"fieldDescriptions": fdMap}))
+		}
+		if o.Dispatch != nil {
+			addCreate(opMetaKey+".dispatch", docAspect(opMetaKey, "dispatch", "dispatch",
+				opDispatchBody(o.Dispatch)))
+		}
+		if o.Sensitive {
+			addCreate(opMetaKey+".sensitive", docAspect(opMetaKey, "sensitive", "sensitive",
+				map[string]any{"value": true}))
+		}
 	}
 
 	// Permissions + grant links.
@@ -476,6 +503,65 @@ func admissionBody(a *AdmissionSpec) map[string]any {
 			rates[adapter] = rate
 		}
 		body["adapterRates"] = rates
+	}
+	return body
+}
+
+// opPresentationBody emits an op meta's `.presentation` aspect body, including
+// only the fields the author populated (an all-empty OpPresentationSpec would
+// otherwise be indistinguishable from "no presentation" on the wire).
+func opPresentationBody(p *OpPresentationSpec) map[string]any {
+	body := map[string]any{}
+	if p.Title != "" {
+		body["title"] = p.Title
+	}
+	if p.ShortLabel != "" {
+		body["shortLabel"] = p.ShortLabel
+	}
+	if p.Description != "" {
+		body["description"] = p.Description
+	}
+	if p.Icon != "" {
+		body["icon"] = p.Icon
+	}
+	if p.Tone != "" {
+		body["tone"] = p.Tone
+	}
+	if p.SubmitLabel != "" {
+		body["submitLabel"] = p.SubmitLabel
+	}
+	if p.Group != "" {
+		body["group"] = p.Group
+	}
+	return body
+}
+
+// opDispatchBody emits an op meta's `.dispatch` aspect body, including only
+// the fields the author populated.
+func opDispatchBody(d *OpDispatchSpec) map[string]any {
+	body := map[string]any{}
+	if d.Class != "" {
+		body["class"] = d.Class
+	}
+	if d.AuthContext != "" {
+		body["authContext"] = d.AuthContext
+	}
+	if d.TargetField != "" {
+		body["targetField"] = d.TargetField
+	}
+	if len(d.ContextParams) > 0 {
+		params := make(map[string]any, len(d.ContextParams))
+		for k, v := range d.ContextParams {
+			params[k] = v
+		}
+		body["contextParams"] = params
+	}
+	if len(d.Reads) > 0 {
+		reads := make([]any, len(d.Reads))
+		for i, r := range d.Reads {
+			reads[i] = r
+		}
+		body["reads"] = reads
 	}
 	return body
 }

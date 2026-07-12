@@ -407,9 +407,73 @@ type StepSpec struct {
 // A future ergonomic could auto-emit one of these per DDL PermittedCommand so
 // authors never hand-list them; the explicit field keeps the author in control
 // of exactly which ops are resolvable.
+//
+// Presentation/InputSchema/FieldDescriptions/Dispatch/Sensitive (edge-manifest
+// Fire 1, edge-showcase-app-design.md §3.3) are the descriptor vocabulary: an
+// edge client renders a form + submits an op from these fields alone, with no
+// hardcoded per-op knowledge. All five are optional — an op meta that omits
+// them installs byte-identical to every op meta before this fire; an op meta
+// that supplies none of them still resolves normally, it just isn't
+// Facet-renderable (edge-showcase-app-design.md §3.3: "ops without descriptors
+// still render, degraded").
 type OpMetaSpec struct {
 	// OperationType is the op this vertex makes `forOperation`-resolvable.
 	OperationType string
+
+	// Presentation is the client-facing display metadata for this op
+	// (title/icon/tone/etc). Nil emits no `.presentation` aspect.
+	Presentation *OpPresentationSpec
+
+	// InputSchema is a per-op JSON Schema string for this op's payload —
+	// finer-grained than the owning DDL's merged InputSchema (which today
+	// unions every PermittedCommand's fields with `"required":[]`, unusable
+	// for driving a single-op form). Empty emits no `.inputSchema` aspect.
+	InputSchema string
+
+	// FieldDescriptions maps InputSchema field names to help text. Empty
+	// emits no `.fieldDescriptions` aspect.
+	FieldDescriptions map[string]string
+
+	// Dispatch is the machine-readable submission recipe (class/authContext/
+	// contextParams/reads) a client uses to author a Contract #2 envelope
+	// from this op meta alone. Nil emits no `.dispatch` aspect.
+	Dispatch *OpDispatchSpec
+
+	// Sensitive marks this op's payload as carrying fields the sensitive-
+	// param-egress mechanism must guard (masked entry, no local echo).
+	// Defaults false; emits `.sensitive` only when true (mirrors DDLSpec's
+	// own Sensitive field).
+	Sensitive bool
+}
+
+// OpPresentationSpec is an op meta's client-facing display metadata
+// (edge-showcase-app-design.md §3.3). Icons/tones are semantic tokens from a
+// small fixed set the client interprets; the client owns all pixels.
+type OpPresentationSpec struct {
+	Title       string
+	ShortLabel  string
+	Description string
+	Icon        string
+	Tone        string // "primary" | "neutral" | "destructive"
+	SubmitLabel string
+	Group       string
+}
+
+// OpDispatchSpec is an op meta's machine-readable submission recipe
+// (edge-showcase-app-design.md §3.3 — "the machine-readable version of the
+// loftspace COMPLETIONS registry"). A client builds a Contract #2 envelope
+// from this alone: OperationType + Class from Dispatch, AuthContext selects
+// which of the wire envelope's `self|service|task` fields the client
+// populates (`self` -> {target: actorId}; `service` -> {service: serviceKey};
+// `task` -> {task, target: scopedTo}) — NOT itself a processor.AuthContext
+// value. ContextParams/Reads entries are templates substituted from
+// `{actor}`, `{scopedTo}`, `{service}`, `{payload.<field>}`.
+type OpDispatchSpec struct {
+	Class         string
+	AuthContext   string // "self" | "service" | "task"
+	TargetField   string
+	ContextParams map[string]string
+	Reads         []string
 }
 
 // RoleSpec is one user-facing role a package declares. The installer
