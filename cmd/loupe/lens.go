@@ -430,9 +430,13 @@ func (s *server) lensDetail(w http.ResponseWriter, r *http.Request, id string) {
 		s.writeError(w, http.StatusBadGateway, "list health-kv: "+err.Error())
 		return
 	}
-	coreKeys, err := conn.KVListKeys(ctx, bootstrap.CoreKVBucket)
+	// Scoped to the `vtx.package.` subtree — findOwningPackage (the only
+	// coreKeys consumer downstream) reads package manifests exclusively, and
+	// an unscoped whole-corpus listing would burn the request budget on a
+	// large bucket before the detail assembly starts.
+	coreKeys, err := conn.KVListKeysPrefix(ctx, bootstrap.CoreKVBucket, "vtx.package.")
 	if err != nil {
-		s.writeError(w, http.StatusBadGateway, "list core-kv: "+err.Error())
+		s.writeError(w, http.StatusBadGateway, "list core-kv packages: "+err.Error())
 		return
 	}
 	coreGet := func(key string) ([]byte, bool) {

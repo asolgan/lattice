@@ -372,10 +372,16 @@ func (s *server) handleSystemMap(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The F14 lens-cluster grouping key (Loupe is the P5 inspector exception):
-	// one Core-KV key list + package-manifest pass per poll, not per lens.
-	coreKeys, err := conn.KVListKeys(ctx, bootstrap.CoreKVBucket)
+	// one package-manifest pass per poll, not per lens. The listing is
+	// server-side scoped to the `vtx.package.` subtree — the only keys
+	// buildLensPackageIndex consults — because this handler renders the
+	// landing view inside the shared per-request budget: an unscoped listing
+	// walks the whole Core KV corpus first and, on a large bucket, exhausts
+	// the budget before a single health entry is read, which the assembler
+	// then renders as every component absent-red (a false total outage).
+	coreKeys, err := conn.KVListKeysPrefix(ctx, bootstrap.CoreKVBucket, "vtx.package.")
 	if err != nil {
-		s.writeError(w, http.StatusBadGateway, "list core-kv: "+err.Error())
+		s.writeError(w, http.StatusBadGateway, "list core-kv packages: "+err.Error())
 		return
 	}
 	coreGet := func(key string) ([]byte, bool) {
