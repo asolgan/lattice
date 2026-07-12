@@ -172,7 +172,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Refinements & ops
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **CI pipeline speed (continuous)** | Make CI faster without weakening any gate — owned continuously by the **Whetstone**. Matrix split done (serial → 4 parallel jobs); convergence + unit parallelized. | ★★ | M (ongoing) | 🏗️ continuous (Whetstone) · unit job 5m20→3m25 this fire (Done log) · next: re-baseline the new long pole before picking a lever |
+| **CI pipeline speed (continuous)** | Make CI faster without weakening any gate — owned continuously by the **Whetstone**. Matrix split done (serial → 4 parallel jobs); convergence + unit parallelized. | ★★ | M (ongoing) | 🏗️ continuous (Whetstone) · unit job holding ~208-235s, noisy — intra-package `t.Parallel()` doesn't move it, the stage is CPU-oversubscribed under `-p 4` (Done log) · next: target total CPU-seconds (module/build caching, or trim an actually-slow test), not concurrency reshuffling |
 | **Hard-delete mutation verb (true link/aspect keyspace reclaim)** | Mutation vocab is create/update/tombstone (soft PUTs); a tombstoned key persists + is still enumerated by `kv.Links`. A 4th `delete` verb (NATS `DEL`) lets dead links leave the keyspace, bounding `kv.Links` LIST cost. | ★ | M | 🗄️ shelved (Andrew 2026-07-02) · [design + hold banner](../../implementation-artifacts/hard-delete-mutation-verb-design.md) · demand dissolved by clinic write-path slot claims; §3 edits reverted; revive only on a real reclaim driver |
 | **Script-read posture — declared+hydrated vs live `kv.get`/`kv.Links`** | Declared+hydrated reads as the write-path norm: `optionalReads` folds read-before-create in; `kv.Links` declared-as-metadata (Edge-gate + best-effort lint, not hydrated); guards become a generic Processor-side operation feature (supersedes Loom's engine read). | ★★ | L | ✅ Fires 1–2 shipped · [design §12](../../implementation-artifacts/script-read-posture-design.md) · Fire 3 (guards) deferred to its first consumer; debt sweep + warn→block flip = its own row below |
 
@@ -191,6 +191,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-11 · `ce47946` · [CI] natsperm `t.Parallel()` experiment — local win (34.4s→25.9s) didn't hold in CI (unit job CPU-oversubscribed under `-p 4`); reverted (85b77a9→ce47946); CI green
 - 2026-07-11 · `232f9ea` · [Loupe] systemmap/lens-detail Core-KV listing scoped to vtx.package. subtree — false "RED — all absent" landing banner fixed, verified live on the 13K-key bucket
 - 2026-07-11 · `a6aeb04` · [Processor] deterministic-requestId resubmits unbrick on tracker/outbox subject residue (Contract #4 §4.3/§4.5 realized; F-004 same-version force-refresh works past 24h again); regression tests
 - 2026-07-11 · `616c3fa` · [natsperm] $JS.FC.> granted matrix-wide — the lattice-pkg install hang root-caused (flow-control ack denied → permanent KV-listing stall) + lattice-pkg 60s bound + substrate partial-listing guards
