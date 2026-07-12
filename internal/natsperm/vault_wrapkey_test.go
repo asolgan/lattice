@@ -23,7 +23,6 @@ const (
 // Loupe and loftspace-app — the two named trusted plaintext consumers — may
 // reach both subjects, while clinic-app (not a Fire 4 consumer) may not.
 func TestVaultWrapUnwrapKeyReachability(t *testing.T) {
-	t.Parallel()
 	url := startServerFromConf(t)
 
 	resp := connectAs(t, url, "processor")
