@@ -17,10 +17,13 @@ description: "Winston's advancer for one swim-lane stream (Verticals OR Lattice,
   Select by **round-robin across components** (stalest first).
 
 The two streams run in **parallel** on disjoint code by default (verticals = `packages/<vertical>*` +
-`cmd/<x>-app`; Lattice = `internal/*` + core packages) — this is the organizing split for demand/selection, not
-what prevents collisions: two fires colliding on the same files is prevented by the mutual-exclusion lock the
-unattended fires run under (at most one fleet fire at a time), so *you* finishing a single coupled item across
-the boundary (§2 "wear the other hat") is safe. **Ladder:** drive owners at **L1**, commit at
+`cmd/<x>-app`; Lattice = `internal/*` + core packages). What prevents collisions is **not** a single
+fleet-wide lock — each stream serializes only against itself, on its own lane-private lock (Lattice's is
+shared with `ci-whetstone`; Verticals and Loupe each hold their own) — it's the disjoint code, each fire
+building in its own isolated worktree, and disjoint lane files (`lattice.md` / `verticals.md` / `loupe.md`)
+committed straight to `main`, so concurrent commits rebase cleanly almost always. That's also why *you*
+finishing a single coupled item across the boundary (§2 "wear the other hat") is safe. **Ladder:** drive
+owners at **L1**, commit at
 **L2** (gates green + no frozen-contract *commit* + revertible), escalate **L3** the *commit* of a contract
 change + architectural forks to Andrew. **Metric:** Andrew-interventions per shipped change, trending down.
 Design: `implementation-artifacts/agentic-ops-swimlanes-design.md`.
@@ -148,10 +151,12 @@ Pre-emption order (within your stream):
      Lattice-only. **Do not file it to `verticals.md` and stop.** Filing a live, already-scoped item to the
      other lane's board and walking away is how items ping-pong and stall — a Steward "detects something's not
      its lane" and routes away work a fire's worth of effort would just finish; that's the failure mode this
-     rule exists to kill, symmetrically with the Verticals-side rule above. It's also **safe now that it wasn't
-     necessarily before**: the reason the streams were code-path-disjoint in the first place was so two
-     *concurrent* fires wouldn't collide — that's the mutual-exclusion lock's job now (at most one fleet fire at
-     a time), not code-path segregation, so one fire finishing both halves of one item carries no collision risk.
+     rule exists to kill, symmetrically with the Verticals-side rule above. **Safe by construction, not by
+     lock:** each stream builds in its own isolated worktree and commits to its own lane file (`lattice.md` /
+     `verticals.md`) straight to `main`, so a Lattice fire's package/FE tail and a concurrently-running
+     Verticals fire rebase cleanly almost always (§7 of the swimlanes design) — `git pull --rebase` before you
+     push is the backstop on the rare overlap. (Lattice/Whetstone share one lane-private lock and Verticals
+     holds its own, mirroring Loupe's carve-out — this was never actually the lock's job.)
 
      **When it's real design work, not a bounce:** if finishing the item means inventing a genuinely **new**
      architectural mechanism — no existing, ratified pattern to extend — that's design work, not execution, the
@@ -166,10 +171,12 @@ Pre-emption order (within your stream):
      - **"Too big for one fire"** → that is exactly what the **🏗️ multi-fire checkpoint** is for (§4). *Start*
        the big item, ship its first increment as a green commit, leave a 🏗️ checkpoint — do **not** substitute a
        smaller item to avoid starting it.
-     - **"Might collide with the parallel (verticals) stream"** → not a real excuse: the mutual-exclusion lock,
-       not code-path segregation, is what prevents fires colliding now. Build the **whole item** — `internal/*`
-       and any package/FE tail alike, wearing the other hat per the rule above — in your own lane; don't split
-       it across boards or downgrade it to avoid the vertical-package piece.
+     - **"Might collide with the parallel (verticals) stream"** → not a real excuse: disjoint code + per-fire
+       worktrees + disjoint lane files are what prevent collision (see "wear the other hat" above), not a
+       shared lock — Lattice and Verticals run independent lane-private locks and are designed to run
+       concurrently. Build the **whole item** — `internal/*` and any package/FE tail alike, wearing the other
+       hat per the rule above — in your own lane; don't split it across boards or downgrade it to avoid the
+       vertical-package piece.
      - **"Continuous improvement always counts as ready"** → §2.4 keeps the lane from looking empty; it does
        **not** license a maintenance pin when a higher-importance ready / ratified item is sitting there.
 

@@ -55,14 +55,15 @@ experience, the FE Engineer builds it (UX-then-FE).
 
 ## The scheduled fleet
 
-| Task | Role (stream) | Cadence | Build-heavy lock? |
+| Task | Role (stream) | Cadence | Build-heavy lock |
 |---|---|---|---|
-| `steward-autonomous` | `steward` — **Lattice** advancer | hourly (`6 */1`) — intentional; the Lattice backlog is big | yes |
-| `steward-verticals` | `steward` — **Verticals** advancer | odd hours (`42 1-23/2`) | yes |
-| `ci-whetstone` | `whetstone` — cross-cutting CI-speed | 2×/day (`48 6,18`) | yes |
-| `lattice-designer` | `designer` — Lattice design (readiness) | odd hours (`6 1-23/2`), pipelines before the Lattice advancer | no |
-| `platform-surveyor` | `surveyor` — Lattice hydrator | 3×/day (`56 7,15,23`) | no |
-| `vertical-po-discovery` | `vertical-po` — Verticals hydrator | 3×/day (`41 5,13,21`) | no |
+| `steward-autonomous` | `steward` — **Lattice** advancer | hourly (`6 */1`) — intentional; the Lattice backlog is big | lattice |
+| `steward-verticals` | `steward` — **Verticals** advancer | odd hours (`42 1-23/2`) | verticals |
+| `steward-loupe` | `steward` mechanics + `fe-engineer` — **Loupe** advancer (Stream 3) | every 4h (`17 0-20/4`) | loupe |
+| `ci-whetstone` | `whetstone` — cross-cutting CI-speed | 2×/day (`48 6,18`) | lattice |
+| `lattice-designer` | `designer` — Lattice design (readiness) | odd hours (`6 1-23/2`), pipelines before the Lattice advancer | none |
+| `platform-surveyor` | `surveyor` — Lattice hydrator | 3×/day (`56 7,15,23`) | none |
+| `vertical-po-discovery` | `vertical-po` — Verticals hydrator | 3×/day (`41 5,13,21`) | none |
 
 The Lattice stream is a three-stage pipeline: **Surveyor** (raw demand) → **Designer** (build-ready designs) →
 **Lattice Steward** (builds), with the **Whetstone** as a cross-cutting CI-speed loop. `owner`, `fe-engineer`,
@@ -74,30 +75,43 @@ here — see "How these are used" above.
 tasks share, they landed within seconds of each other, separated only by the scheduler's own small dispatch
 jitter) — spread ~15-20 apart within the hour so a same-hour pair has real separation instead of a coin flip.
 
-### Concurrency: the lock is scoped to build-heavy roles, not the whole fleet
+### Concurrency: one lane-private lock per stream, not one fleet-wide lock
 
 This runs on a single 16GB dev Mac — Docker + the native service binaries + the Go toolchain + browser
 automation from even two concurrent fires is enough to exhaust memory and get the host to pause Claude/Chrome
-(happened twice). But the actual risk is concentrated in the roles that touch Docker / run `go build`/`go
-test` / hold a worktree — **`steward-autonomous`, `steward-verticals`, `ci-whetstone`**. `lattice-designer`,
-`platform-surveyor`, and `vertical-po-discovery` are file-only (read code, edit a markdown lane file, `git
-commit`) — they were never part of the resource-contention problem, so a fleet-wide lock only cost them
-throughput for no safety benefit (this bit us directly: `steward-autonomous` runs hourly by design — the
-Lattice backlog is big — and a fleet-wide lock meant it was competing with *every* other role's slot, not just
-the two other build-heavy ones).
+(happened twice). So every build-heavy role (touches Docker / runs `go build`/`go test` / holds a worktree —
+**`steward-autonomous`, `steward-verticals`, `steward-loupe`, `ci-whetstone`**) still coordinates with
+*something* — but not with the whole fleet. `lattice-designer`, `platform-surveyor`, and `vertical-po-discovery`
+are file-only (read code, edit a markdown lane file, `git commit`) — they were never part of the
+resource-contention problem, so they take no lock and run whenever their schedule fires.
 
-So: **only the 3 build-heavy roles participate** in the mutual-exclusion lock: `mkdir
-/tmp/lattice-agentic-ops-build.lock` (atomic; fails if another of the 3 already holds it) before doing anything
-else, and `rm -rf` on that same path as its last action, success or failure alike. A lock older than 90 minutes
-is treated as abandoned (a crashed/killed fire that never released) and reclaimed rather than wedging that
-lane. The other 3 roles run whenever their schedule fires, no coordination at all. If you add a 7th scheduled
-role, give it the lock only if it actually builds/touches Docker — the lock protects fires that ask for it, not
-ad-hoc/generic worktree sessions outside this fleet either way. `make up` / `make orchestration` separately
-detect an already-healthy stack and no-op instead of restarting it, so an ad-hoc `make up` from a stray
-worktree (or from a lock-free role like `vertical-po-discovery`, which can bring its own vertical up on a cold
-stack) is safe too. Jitter (above) reduces how often the 3 locked roles collide with each other; it doesn't
-eliminate it — a long fire can still be running when the next locked slot arrives, and that's fine, the clean
-no-op-and-retry is the backstop, not a failure mode.
+**Each build-heavy stream gets its own lock, so the concurrency the swim-lane design actually calls for**
+(disjoint code + disjoint worktrees + disjoint lane files, `agentic-ops-swimlanes-design.md` §2/§7) **isn't
+blocked by a lock built for a different problem** (dev-machine RAM contention, not code collision):
+
+| Lock path | Held by | Lane |
+|---|---|---|
+| `/tmp/lattice-agentic-ops-build.lock` | `steward-autonomous`, `ci-whetstone` | Lattice (CI speed is cross-cutting platform work, shares the Lattice Steward's slot) |
+| `/tmp/lattice-verticals-build.lock` | `steward-verticals` | Verticals (Andrew's dispensation 2026-07-12, mirroring Loupe) |
+| `/tmp/lattice-loupe-build.lock` | `steward-loupe` | Loupe (Andrew's dispensation 2026-07-02) |
+
+Same mechanics for all three: `mkdir <path>` (atomic; fails if another holder of *that* lock already has it)
+before doing anything else, `rm -rf` on that same path as the last action, success or failure alike. A lock
+older than 90 minutes is treated as abandoned (a crashed/killed fire that never released) and reclaimed rather
+than wedging that lane. A role only ever touches its own lock — `steward-verticals` must never acquire the
+shared Lattice lock, and vice versa.
+
+Within the Lattice lock, `steward-autonomous` and `ci-whetstone` still fully serialize — that pairing is a real
+resource-contention concern and CI-speed work isn't its own stream. If you add an 8th scheduled role, give it a
+lock only if it actually builds/touches Docker, then decide which lock: more work on an existing stream's code
+joins that stream's lock; a genuinely new stream on disjoint code (like Verticals or Loupe) gets its own,
+mirroring this carve-out. `make up` / `make orchestration` separately detect an already-healthy stack and
+no-op instead of restarting it, so an ad-hoc `make up` from a stray worktree (or from a lock-free role like
+`vertical-po-discovery`, which can bring its own vertical up on a cold stack) is safe too. Jitter (above)
+reduces how often same-lock roles collide with each other; it doesn't eliminate it — a long fire can still be
+running when the next same-lock slot arrives, and that's fine, the clean no-op-and-retry is the backstop, not a
+failure mode. Running all 3 locks' fires at once trades the RAM headroom the original single lock bought for
+more throughput — the same trade Loupe's carve-out already made, now extended to Verticals.
 
 ### Commit attribution isn't automatic for scheduled fires
 
@@ -108,14 +122,14 @@ Learned this the hard way: removing a hardcoded `Co-Authored-By: Claude Opus 4.8
 different model ran the fire) silently dropped attribution entirely for every scheduled role, since nothing
 else was telling those fires to add one. Every scheduled prompt now carries an explicit **COMMIT ATTRIBUTION**
 instruction instead: name whichever model you actually are (check your own system prompt), never a hardcoded
-string. If you add a 7th scheduled role, give it the same instruction — don't assume the harness fills this in
+string. If you add an 8th scheduled role, give it the same instruction — don't assume the harness fills this in
 for you outside an interactive session.
 
 ### Chips need a push — an unattended fire has no one watching the session
 
-A `spawn_task` chip only surfaces if Andrew happens to open the exact session that filed it; for one of the 6
+A `spawn_task` chip only surfaces if Andrew happens to open the exact session that filed it; for one of the 7
 scheduled fires, that's easy to miss entirely. Each prompt therefore also sends a `PushNotification` immediately
 after any `spawn_task` call (its own, or one made by an inline sub-role like `owner`/`fe-engineer`/`lamplighter`)
-— terse, one line, leads with what the chip flags. If you add a 7th scheduled role, give it the same instruction.
+— terse, one line, leads with what the chip flags. If you add an 8th scheduled role, give it the same instruction.
 First real use may pause on a permission prompt nobody's there to answer since these tasks have never called
 `PushNotification` before — click "Run now" once per task to pre-approve it ahead of that.
