@@ -74,8 +74,9 @@ func TestNewNatsSubjectAdapter_EnsuresStream(t *testing.T) {
 	_, err := adapter.NewNatsSubjectAdapter(context.Background(), conn, "lattice.sync.user", "SYNC", []string{adapter.PersonalActorKeyField, "entityId"})
 	require.NoError(t, err)
 
-	_, err = js.Stream(context.Background(), "SYNC")
+	s, err := js.Stream(context.Background(), "SYNC")
 	assert.NoError(t, err, "SYNC stream must exist after construction")
+	assert.Equal(t, 24*time.Hour, s.CachedInfo().Config.MaxAge, "SYNC stream must retain the designed 24h MaxAge (personal-secure-lens-design.md §3.2)")
 }
 
 func TestNewNatsSubjectAdapter_RejectsMissingConfig(t *testing.T) {

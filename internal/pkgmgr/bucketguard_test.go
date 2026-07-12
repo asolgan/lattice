@@ -203,6 +203,64 @@ func TestValidateLensAdapters_Postgres_Valid(t *testing.T) {
 	}
 }
 
+func TestValidateLensAdapters_NatsSubject_RequiresSubjectPrefixAndStream(t *testing.T) {
+	cases := []struct {
+		name string
+		lens LensSpec
+	}{
+		{"missing both", LensSpec{CanonicalName: "L", Adapter: "nats-subject", IntoKey: []string{"__actor"}}},
+		{"missing Stream", LensSpec{CanonicalName: "L", Adapter: "nats-subject", SubjectPrefix: "lattice.sync.user", IntoKey: []string{"__actor"}}},
+		{"missing SubjectPrefix", LensSpec{CanonicalName: "L", Adapter: "nats-subject", Stream: "SYNC", IntoKey: []string{"__actor"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			def := Definition{Name: "pkg", Version: "0.1.0", Lenses: []LensSpec{tc.lens}}
+			if err := def.validateLensAdapters(); err == nil {
+				t.Fatalf("expected validation error for %s, got nil", tc.name)
+			}
+		})
+	}
+}
+
+func TestValidateLensAdapters_NatsSubject_RequiresActorKeyField(t *testing.T) {
+	def := Definition{
+		Name:    "pkg",
+		Version: "0.1.0",
+		Lenses: []LensSpec{{
+			CanonicalName: "L",
+			Adapter:       "nats-subject",
+			SubjectPrefix: "lattice.sync.user",
+			Stream:        "SYNC",
+			IntoKey:       []string{"entityId"},
+		}},
+	}
+	err := def.validateLensAdapters()
+	if err == nil {
+		t.Fatal("expected error for nats-subject lens whose IntoKey omits __actor, got nil")
+	}
+	if !strings.Contains(err.Error(), "__actor") {
+		t.Errorf("error should name the missing __actor field; got %q", err)
+	}
+}
+
+func TestValidateLensAdapters_NatsSubject_Valid(t *testing.T) {
+	def := Definition{
+		Name:    "pkg",
+		Version: "0.1.0",
+		Lenses: []LensSpec{{
+			CanonicalName: "L",
+			Adapter:       "nats-subject",
+			SubjectPrefix: "lattice.sync.user",
+			Stream:        "SYNC",
+			IntoKey:       []string{"__actor", "entityId"},
+			Personal:      true,
+		}},
+	}
+	if err := def.validateLensAdapters(); err != nil {
+		t.Fatalf("expected valid nats-subject lens to pass, got: %v", err)
+	}
+}
+
 func TestValidateLensAdapters_UnknownAdapter_Rejected(t *testing.T) {
 	def := Definition{
 		Name:    "pkg",

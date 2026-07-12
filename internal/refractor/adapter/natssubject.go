@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/nats-io/nats.go/jetstream"
 
@@ -86,6 +87,12 @@ func NewNatsSubjectAdapter(ctx context.Context, conn *substrate.Conn, subjectPre
 	return &NatsSubjectAdapter{conn: conn, subjectPrefix: subjectPrefix, stream: stream, keyOrder: keyOrder}, nil
 }
 
+// syncStreamMaxAge bounds the SYNC stream's retention (personal-secure-lens-
+// design.md §3.2: "short retention ... the vault's 'ephemerality' property").
+// A node that falls behind this window re-hydrates from a cold
+// personal.hydrate call instead of replaying a long backlog.
+const syncStreamMaxAge = 24 * time.Hour
+
 // ensureSyncStream provisions the backing stream, unioning subjectPrefix's
 // wildcard into any subjects the stream already carries rather than
 // replacing them outright. JetStream's CreateOrUpdateStream (substrate's
@@ -102,11 +109,12 @@ func ensureSyncStream(ctx context.Context, conn *substrate.Conn, stream, subject
 		return err
 	}
 	if slices.Contains(existingSubjects, wildcard) {
-		return conn.EnsureStream(ctx, substrate.StreamSpec{Name: stream, Subjects: existingSubjects})
+		return conn.EnsureStream(ctx, substrate.StreamSpec{Name: stream, Subjects: existingSubjects, MaxAge: syncStreamMaxAge})
 	}
 	return conn.EnsureStream(ctx, substrate.StreamSpec{
 		Name:     stream,
 		Subjects: append(existingSubjects, wildcard),
+		MaxAge:   syncStreamMaxAge,
 	})
 }
 

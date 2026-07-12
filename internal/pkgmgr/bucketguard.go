@@ -2,9 +2,17 @@ package pkgmgr
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/asolgan/lattice/internal/bootstrap"
 )
+
+// personalActorKeyField mirrors internal/refractor/adapter.PersonalActorKeyField
+// ("__actor") — the reserved nats-subject key field every Personal Lens
+// IntoKey must include. Not imported: pkgmgr avoids a dependency on
+// internal/refractor internals by convention (see LensSpec.Source's doc
+// comment in definition.go).
+const personalActorKeyField = "__actor"
 
 // reservedBucketAliases maps a short, provision-time alias to the canonical
 // NATS KV bucket a package lens must target. A provisioned bucket is keyed
@@ -75,8 +83,15 @@ func (def Definition) validateLensAdapters() error {
 			if l.Table == "" && !l.GrantTable {
 				return fmt.Errorf("pkgmgr: Lens[%d] %q (postgres): Table required", idx, l.CanonicalName)
 			}
+		case "nats-subject":
+			if l.SubjectPrefix == "" || l.Stream == "" {
+				return fmt.Errorf("pkgmgr: Lens[%d] %q (nats-subject): SubjectPrefix and Stream are required", idx, l.CanonicalName)
+			}
+			if !slices.Contains(l.IntoKey, personalActorKeyField) {
+				return fmt.Errorf("pkgmgr: Lens[%d] %q (nats-subject): IntoKey must include %q (the reserved actor key field)", idx, l.CanonicalName, personalActorKeyField)
+			}
 		default:
-			return fmt.Errorf("pkgmgr: Lens[%d] %q: unknown Adapter %q (must be \"nats-kv\" or \"postgres\")", idx, l.CanonicalName, l.Adapter)
+			return fmt.Errorf("pkgmgr: Lens[%d] %q: unknown Adapter %q (must be \"nats-kv\", \"postgres\", or \"nats-subject\")", idx, l.CanonicalName, l.Adapter)
 		}
 	}
 	return nil

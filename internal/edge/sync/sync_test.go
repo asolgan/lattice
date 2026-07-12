@@ -267,3 +267,71 @@ func TestManager_Handle(t *testing.T) {
 	decision = mgr.handle(ctx, substrate.Message{Sequence: 5, Body: []byte("not json")})
 	assert.Equal(t, substrate.Term, decision, "a malformed envelope is dropped, not redelivered")
 }
+
+// TestManager_Handle_OnChangeFiresOnlyOnApplied proves the change-notification
+// hook (edge-showcase-app-design.md §7 Fire 0, G3) fires exactly once per
+// delta that actually lands in the store, with the right deleted flag, and
+// stays silent for a stale/duplicate redelivery dropped under last-writer-
+// wins-by-revision — a UI host must not be told "changed" for a no-op apply.
+func TestManager_Handle_OnChangeFiresOnlyOnApplied(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	conn := newSyncTestConn(t, ctx)
+	st := openTestStore(t)
+
+	type change struct {
+		key     string
+		deleted bool
+	}
+	var changes []change
+	mgr, err := New(conn, st, Config{
+		IdentityID: "identityA", DeviceID: "deviceX", Logger: testutil.TestLogger(),
+		OnChange: func(key string, deleted bool) { changes = append(changes, change{key, deleted}) },
+	})
+	require.NoError(t, err)
+
+	body := func(env deltaEnvelope) []byte {
+		b, err := json.Marshal(env)
+		require.NoError(t, err)
+		return b
+	}
+	leaseID, err := substrate.NewNanoID()
+	require.NoError(t, err)
+	key := substrate.VertexKey("lease", leaseID)
+
+	// Fresh upsert: fires with deleted=false.
+	mgr.handle(ctx, substrate.Message{Sequence: 1, Body: body(deltaEnvelope{Op: "upsert", Key: key, Revision: 2})})
+	// Stale redelivery (revision behind current): dropped, must not fire.
+	mgr.handle(ctx, substrate.Message{Sequence: 2, Body: body(deltaEnvelope{Op: "upsert", Key: key, Revision: 1})})
+	// Delete: fires with deleted=true.
+	mgr.handle(ctx, substrate.Message{Sequence: 3, Body: body(deltaEnvelope{Op: "delete", Key: key, Revision: 3})})
+	// Stale delete redelivery: dropped, must not fire.
+	mgr.handle(ctx, substrate.Message{Sequence: 4, Body: body(deltaEnvelope{Op: "delete", Key: key, Revision: 1})})
+
+	require.Equal(t, []change{{key, false}, {key, true}}, changes)
+}
+
+// TestManager_UpdateInterest_RegistersWithoutHydrating proves the Interest
+// re-registration passthrough (edge-showcase-app-design.md §7 Fire 0, G4)
+// calls only personal.register — no personal.hydrate — and updates cfg so a
+// later reconnect/hydrate re-registers with the new interest.
+func TestManager_UpdateInterest_RegistersWithoutHydrating(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	conn := newSyncTestConn(t, ctx)
+	interestKV := openInterestKV(t, ctx, conn)
+
+	recipient := "identityA"
+	h := &fakeHydrator{conn: conn}
+	startControlService(t, ctx, conn, h, interestKV)
+
+	st := openTestStore(t)
+	mgr, err := New(conn, st, Config{IdentityID: recipient, DeviceID: "deviceX", Logger: testutil.TestLogger()})
+	require.NoError(t, err)
+
+	require.NoError(t, mgr.UpdateInterest(ctx, []string{"lease"}, []string{"unit-1"}))
+
+	assert.Empty(t, h.calledWith, "UpdateInterest must not call personal.hydrate")
+	assert.Equal(t, []string{"lease"}, mgr.cfg.Types)
+	assert.Equal(t, []string{"unit-1"}, mgr.cfg.Anchors)
+}

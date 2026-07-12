@@ -62,6 +62,13 @@ type Config struct {
 	Types   []string
 	Anchors []string
 	Logger  *slog.Logger
+	// OnChange, if set, is invoked from handle() after a delivered upsert or
+	// delete actually lands in the Local VAL Store (a stale/reordered delta
+	// dropped under last-writer-wins-by-revision does not fire this). key is
+	// the Contract #1 key that changed; deleted reports which store method
+	// applied it. A UI host uses this to react to deltas instead of polling
+	// overlay.Read per key (edge-showcase-app-design.md §7 Fire 0, G3).
+	OnChange func(key string, deleted bool)
 }
 
 // Manager is the Edge node's Sync Manager.
@@ -135,6 +142,23 @@ func (m *Manager) Run(ctx context.Context) error {
 // inventing a narrower primitive.
 func (m *Manager) Rehydrate(ctx context.Context) error {
 	return m.hydrate(ctx)
+}
+
+// UpdateInterest re-registers the device's Interest Set with new types/
+// anchors via the "personal.register" control RPC alone — no cold
+// personal.hydrate call. Use this when a host changes what the user is
+// watching (edge-showcase-app-design.md §7 Fire 0, G4): registration is
+// additive server-side (personalinterest.Register widens/narrows the
+// server's push filter), and the already-hydrated store keeps whatever it
+// holds for keys no longer in scope until GC reclaims them — this call does
+// not retroactively hydrate a newly-widened scope's backlog. Callers that
+// need the newly-in-scope data populated immediately should follow with
+// Rehydrate. cfg.Types/cfg.Anchors are updated so a later reconnect/hydrate
+// re-registers with the same interest.
+func (m *Manager) UpdateInterest(ctx context.Context, types, anchors []string) error {
+	m.cfg.Types = types
+	m.cfg.Anchors = anchors
+	return m.registerInterest(ctx)
 }
 
 // ensureFresh hydrates when the local store has never been hydrated (no
@@ -268,14 +292,22 @@ func (m *Manager) handle(_ context.Context, msg substrate.Message) substrate.Dec
 	}
 	switch env.Op {
 	case "upsert":
-		if _, err := m.store.ApplyUpsert(env.Key, env.Revision, env.Data); err != nil {
+		applied, err := m.store.ApplyUpsert(env.Key, env.Revision, env.Data)
+		if err != nil {
 			m.logger.Error("edge/sync: apply upsert failed", "key", env.Key, "err", err)
 			return substrate.Nak
 		}
+		if applied && m.cfg.OnChange != nil {
+			m.cfg.OnChange(env.Key, false)
+		}
 	case "delete":
-		if _, err := m.store.ApplyDelete(env.Key, env.Revision); err != nil {
+		applied, err := m.store.ApplyDelete(env.Key, env.Revision)
+		if err != nil {
 			m.logger.Error("edge/sync: apply delete failed", "key", env.Key, "err", err)
 			return substrate.Nak
+		}
+		if applied && m.cfg.OnChange != nil {
+			m.cfg.OnChange(env.Key, true)
 		}
 	case "hydrationComplete":
 		m.logger.Info("edge/sync: hydration complete", "revision", env.Revision)

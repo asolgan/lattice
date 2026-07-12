@@ -521,13 +521,35 @@ type LensSpec struct {
 	// OutputDescriptorSpec below already uses.
 	Source *SourceConfig
 
-	// Adapter is the projection-output adapter — `"nats-kv"` or `"postgres"`.
+	// Adapter is the projection-output adapter — `"nats-kv"`, `"postgres"`,
+	// or `"nats-subject"`.
 	Adapter string
 
 	// Bucket is the target NATS KV bucket name (nats-kv adapter only). The
 	// Refractor's nats-kv adapter auto-creates-or-opens the bucket on first
 	// projection. Must not be a reserved short alias (see validateLensBuckets).
 	Bucket string
+
+	// SubjectPrefix and Stream configure a "nats-subject" adapter — the
+	// Personal Lens transport (personal-secure-lens-design.md), required
+	// when Adapter is "nats-subject" and ignored otherwise. Mirrors the
+	// Refractor-side lens.IntoConfig.SubjectPrefix/Stream fields (JSON shape
+	// only, not the same Go type — see Source's doc comment above). IntoKey
+	// doubles as the nats-subject targetConfig.key and must include the
+	// reserved actor key field ("__actor", mirroring
+	// internal/refractor/adapter.PersonalActorKeyField) regardless of
+	// Personal.
+	SubjectPrefix string
+
+	// Stream is the JetStream stream backing a "nats-subject" adapter (e.g.
+	// "SYNC"). Required when Adapter is "nats-subject".
+	Stream string
+
+	// Personal opts a "nats-subject" lens into the cross-vertex fan-out
+	// (personal-secure-lens-design.md §3.3): Refractor re-executes the lens
+	// cypher once per enumerated identity recipient instead of relying on
+	// the cypher's own RETURN to supply the actor. nats-subject only.
+	Personal bool
 
 	// DSN is the Postgres connection string (postgres adapter only). A package
 	// declares posture + columns, not a deployment connection string, so DSN may

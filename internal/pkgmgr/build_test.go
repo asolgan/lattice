@@ -45,6 +45,58 @@ func TestLensSpecBody_NatsKV_EmptyAdapterDefaultsToNatsKV(t *testing.T) {
 	}
 }
 
+func TestLensSpecBody_NatsSubject(t *testing.T) {
+	body := lensSpecBody("lens-id-subject", LensSpec{
+		CanonicalName: "myPersonalLens",
+		Adapter:       "nats-subject",
+		SubjectPrefix: "lattice.sync.user",
+		Stream:        "SYNC",
+		Personal:      true,
+		Engine:        "full",
+		IntoKey:       []string{"__actor", "entityId"},
+		Spec:          "MATCH (i:identity)-[:owns]->(l:lease) RETURN i.id AS entityId",
+	})
+
+	if got := body["targetType"]; got != "nats_subject" {
+		t.Errorf("targetType: want nats_subject, got %q", got)
+	}
+	cfg, ok := body["targetConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("targetConfig: not a map")
+	}
+	if cfg["subjectPrefix"] != "lattice.sync.user" {
+		t.Errorf("targetConfig.subjectPrefix: want lattice.sync.user, got %v", cfg["subjectPrefix"])
+	}
+	if cfg["stream"] != "SYNC" {
+		t.Errorf("targetConfig.stream: want SYNC, got %v", cfg["stream"])
+	}
+	if cfg["personal"] != true {
+		t.Errorf("targetConfig.personal: want true, got %v", cfg["personal"])
+	}
+	key, ok := cfg["key"].([]string)
+	if !ok || len(key) != 2 || key[0] != "__actor" || key[1] != "entityId" {
+		t.Errorf("targetConfig.key: want [__actor entityId], got %v", cfg["key"])
+	}
+	if _, hasBucket := cfg["bucket"]; hasBucket {
+		t.Error("targetConfig should not contain bucket for nats-subject")
+	}
+}
+
+func TestLensSpecBody_NatsSubject_NonPersonalOmitsPersonalKey(t *testing.T) {
+	body := lensSpecBody("lens-id-subject-2", LensSpec{
+		CanonicalName: "directPersonalLens",
+		Adapter:       "nats-subject",
+		SubjectPrefix: "lattice.sync.user",
+		Stream:        "SYNC",
+		IntoKey:       []string{"__actor"},
+		Spec:          "MATCH (i:identity) RETURN i.id AS __actor",
+	})
+	cfg := body["targetConfig"].(map[string]any)
+	if _, has := cfg["personal"]; has {
+		t.Error("targetConfig should omit personal when Personal is false")
+	}
+}
+
 func TestLensSpecBody_Postgres(t *testing.T) {
 	body := lensSpecBody("lens-id-3", LensSpec{
 		CanonicalName: "myPgLens",
@@ -357,6 +409,8 @@ func TestValidateLensReadPath(t *testing.T) {
 		{"grant postgres ok", LensSpec{CanonicalName: "L", Adapter: "postgres", GrantTable: true}, false},
 		{"plain postgres (neither declared) rejected", LensSpec{CanonicalName: "L", Adapter: "postgres", Table: "t"}, true},
 		{"protected on nats-kv rejected", LensSpec{CanonicalName: "L", Adapter: "nats-kv", Bucket: "b", Protected: true}, true},
+		{"protected on nats-subject rejected", LensSpec{CanonicalName: "L", Adapter: "nats-subject", SubjectPrefix: "p", Stream: "SYNC", IntoKey: []string{"__actor"}, Protected: true}, true},
+		{"diffRetraction on nats-subject rejected", LensSpec{CanonicalName: "L", Adapter: "nats-subject", SubjectPrefix: "p", Stream: "SYNC", IntoKey: []string{"__actor"}, DiffRetraction: true}, true},
 		{"grant on default adapter rejected", LensSpec{CanonicalName: "L", Adapter: "", Bucket: "b", GrantTable: true}, true},
 		{"columns on nats-kv rejected", LensSpec{CanonicalName: "L", Adapter: "nats-kv", Bucket: "b", Columns: []PostgresColumn{{Name: "x", Type: "text"}}}, true},
 		{"protected and public rejected", LensSpec{CanonicalName: "L", Adapter: "postgres", Table: "t", Protected: true, Public: true}, true},

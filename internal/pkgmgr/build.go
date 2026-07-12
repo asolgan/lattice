@@ -365,6 +365,16 @@ func lensSpecBody(lensID string, l LensSpec) map[string]any {
 			}
 			targetConfig["secureColumns"] = secure
 		}
+	case "nats-subject":
+		targetType = "nats_subject"
+		targetConfig = map[string]any{
+			"subjectPrefix": l.SubjectPrefix,
+			"stream":        l.Stream,
+			"key":           l.IntoKey,
+		}
+		if l.Personal {
+			targetConfig["personal"] = true
+		}
 	default: // "nats-kv" or empty
 		targetType = "nats_kv"
 		keyField := l.IntoKey
