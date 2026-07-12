@@ -1,6 +1,7 @@
 # Clinic multi-site — design note
 
-**Status:** Increment 1 (backend) shipped. Increment 2 (FE) queued.
+**Status:** Increment 1 (backend) shipped. Increment 2 (site directory FE +
+booking site filter + appointment→site association) shipped.
 **Board row:** [verticals.md](../planning-artifacts/backlog/verticals.md) — "Clinic is a single-location, single-specialty silo".
 
 ## Problem
@@ -44,28 +45,39 @@ link-contribution), applied 1:1 to clinic:
   single actor key. A separate one-row-per-pair lens with a composite key sidesteps
   the question entirely and has a proven precedent.)
 
-## What's NOT in this increment (Increment 2, next fire)
+## Increment 2 (shipped)
 
-- **FE**: a site directory admin page (`SetSiteProfile`/`AssignProviderSite` forms) and
-  a `#book-site` filter in the booking picker (mirrors `8315a88`'s specialty filter).
-- **Per-location scheduling hours**: today `.hours`/`.timeOff` are still keyed only on
-  the provider — a provider practicing at two sites has ONE availability set shared
-  across both. Making hours vary per-(provider, site) is a real design fork (does the
-  15-minute slot-claim key become `vtx.provider.<id>.location.<siteId>.slot<cellcode>`,
-  or does a provider's per-site hours simply gate booking while the claim stays
-  provider-global — which already correctly prevents a provider being double-booked
-  across two sites at once, a desirable side effect of keeping the claim provider-
-  scoped). Recommend keeping the slot-claim provider-scoped (no change) and adding an
-  optional per-site `.hours` override read at booking time — smallest change, preserves
-  the cross-site double-book guard for free. Left as a follow-up design decision, not
-  blocking Increment 1.
-- **Appointment→site association**: `CreateAppointment` does not yet record which site
-  a booking is at. Needed before per-location hours can gate anything. Increment 2.
+- **FE**: `cmd/clinic-app` — a "Sites" admin tab (`SetSiteProfile` via a
+  `CreateLocation → SetSiteProfile` chain, mirroring `loftspace-app`'s
+  `submitPostListing` chain; `AssignProviderSite`/`RemoveProviderSite` forms) and a
+  `#book-site` filter in the booking picker (mirrors `8315a88`'s specialty filter,
+  including the soonest-opening panel). New read handlers `GET /api/sites` /
+  `GET /api/provider-sites` serve the `clinicSites`/`providerSites` lenses (P5).
+- **Appointment→site association**: `CreateAppointment` accepts an optional `site`
+  (`vtx.building.<NanoID>`). Once supplied it is HARD-validated — unlike `leaseAppKey`'s
+  silent fall-through — the building must be alive + `class=location` AND the provider
+  must `practicesAt` it (`require_site_membership`, `ddls.go`), or the whole booking
+  rejects (`UnknownSite` / `NotALocation` / `ProviderNotAtSite`). On success an `atSite`
+  link (`lnk.appointment.<id>.atSite.building.<id>`, appointment→building) is written.
+  Omitted → no site recorded, fully backward-compatible with every pre-Inc2 appointment.
+
+**Per-location scheduling hours** (deferred, unchanged from Increment 1's note): `.hours`/
+`.timeOff` are still keyed only on the provider — a provider practicing at two sites has
+ONE availability set shared across both. Left as a follow-up design decision; the
+recommendation (keep the slot-claim provider-scoped, add an optional per-site `.hours`
+override read at booking time) still stands and is not blocked by Increment 2.
 
 ## Verification
 
 `packages/clinic-domain/site_integration_test.go` — full lifecycle through the real
-Processor (create/idempotent-reassign/revive/reject-dead-provider/multi-site). Makefile
-install-order (`install-clinic`, `verify-package-clinic-domain`,
-`verify-package-clinic-reminders`, `refresh-clinic`) and
+Processor (create/idempotent-reassign/revive/reject-dead-provider/multi-site, plus
+Increment 2's `TestClinic_CreateAppointment_WithValidSite` /
+`_RejectsProviderNotAtSite` / `_RejectsNonLocationSite`). `cmd/clinic-app/handlers_test.go`
+covers `computeSites`/`computeProviderSites`. Makefile install-order (`install-clinic`,
+`verify-package-clinic-domain`, `verify-package-clinic-reminders`, `refresh-clinic`) and
 `scripts/verify-package-clinic-domain.go` updated for the new dependency + DDLs + ops.
+Live-verified on the shared dev stack via direct Gateway `submitOp` calls (reject/assign/
+accept + `atSite` link committed) — the `clinicSites`/`providerSites` lens READ SIDE is
+not yet visible on that particular stack because its long-running Refractor process
+never picked up the two new lenses (pre-existing gap from Increment 1, flagged
+separately; a Refractor restart resolves it).
