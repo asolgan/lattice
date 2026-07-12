@@ -118,6 +118,10 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 > doc §8 (not run this fire) and worth doing before EDGE.4 composes the transient-key path onto it.
 > **sensitive-param-egress CLOSED** (2026-07-11) — Fire 1 (disposition + emission guard) + Fire 2 (bridge
 > unwrap + lease-signing live consumer) both shipped, CI green.
+> **edge-manifest Fire 0 SHIPPED** (2026-07-12, `78955d0`) — `pkgmgr.LensSpec` can now declare a
+> `nats-subject` Personal Lens; SYNC stream carries the designed 24h MaxAge; `internal/edge/sync`
+> exports an `OnChange` hook + `UpdateInterest` passthrough. **Next: Fire 1** (the `packages/edge-manifest`
+> package + vocabulary spec + `RequestService` op + seed-edge-demo) — build-ready, depends on Fire 0 only.
 > **AI-caps Fire 4 materializer NOT yet build-ready** (verified 2026-07-11): sign-off condition 1
 > (Processor-MAC'd sensitive-refs, sensitive-param-egress-design.md §3.6) has no code anywhere
 > (`git log --all` shows only the ratification doc commit) — it needs its own design pass
@@ -152,7 +156,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 |---|---|---|---|---|
 | Personal / Secure Lens | Refractor projects a per-identity security-filtered subgraph stream; the Interest-Set watchlist; RLS-style link filtering. | ★★ | L | ✅ effectively done · [design](../../implementation-artifacts/personal-secure-lens-design.md) · Fires 1–5 shipped (D1 + Vault gates closed); PL.6 (multicast dedup, WebSocket bridge) deferred, no Edge consumer yet |
 | Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. EDGE.1–3 (Go node, offline loop, untrusted security turn-on) shipped; EDGE.4–5 per the §7 gates. | ★★★ | XL | 🏗️ building · [design §7](../../implementation-artifacts/edge-lattice-full-design.md) · EDGE.1–3 done · next: EDGE.4 (Vault Proxy) or EDGE.5 (browser node), both build-ready |
-| Edge-manifest + personal-lens consumer (Facet platform half) | Five per-identity `nats_subject` manifest lenses (me/services/catalog/tasks/instances) + descriptor vocabulary (presentation/per-op schema/dispatch); `pkgmgr.LensSpec` `nats_subject` adapter; `RequestService` service-path op; seeded topology. Un-defers PL.6/EDGE.5. | ★★★ | L | ✅ ratified 2026-07-11 · [design §7](../../implementation-artifacts/edge-showcase-app-design.md) · Fire 0 build-ready (nats_subject LensSpec + SYNC MaxAge + edge change-hook) |
+| Edge-manifest + personal-lens consumer (Facet platform half) | Five per-identity `nats_subject` manifest lenses (me/services/catalog/tasks/instances) + descriptor vocabulary (presentation/per-op schema/dispatch); `pkgmgr.LensSpec` `nats_subject` adapter; `RequestService` service-path op; seeded topology. Un-defers PL.6/EDGE.5. | ★★★ | L | 🏗️ building · [design §7](../../implementation-artifacts/edge-showcase-app-design.md) · next: Fire 1 manifest package + vocabulary |
 
 ### AI-native
 | Item | What it is | Imp | Size | State |
@@ -190,6 +194,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-12 · `78955d0` · [pkgmgr,Refractor,Edge] edge-manifest Fire 0 — nats-subject LensSpec adapter, SYNC stream 24h MaxAge, edge/sync OnChange + UpdateInterest; CI green
 - 2026-07-12 · `8d4ebd9` · [CLI] op-status-read-surface Fire 4 CLOSED — `lattice op status` migrates off raw Core-KV KVGet onto the lattice.op.status RPC; live-stack smoke-verified; CI green
 - 2026-07-12 · `3bd743c` · [Loom] op-status-read-surface Fire 3 — trackerExists migrates to the lattice.op.status RPC; taskVertexExists retired; §10.6 contract edit staged uncommitted; CI green
 - 2026-07-12 · `a4446d5` · [Gateway] op-status-read-surface Fire 2 — GET /v1/operations/{requestId} backs the 202-fallback poll onto the lattice.op.status RPC; CI green
