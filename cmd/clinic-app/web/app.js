@@ -448,6 +448,7 @@ function setPatient(value) {
   // appointments (cross-provider double-book exclusion). Idempotent; bails if the
   // Book form has no provider/date yet.
   refreshSlots();
+  renderSoonest();
   if (state.view === "appts") {
     loadAppts();
     loadMySeries();
@@ -653,13 +654,15 @@ async function loadProviders() {
   } catch (_) {
     state.providers = [];
   }
-  populateProviderSelect("#provider");
+  populateSpecialtySelect();
+  populateProviderSelect("#provider", { specialty: $("#book-specialty") ? $("#book-specialty").value : "" });
   populateProviderSelect("#sched-provider", { includeAll: true });
   populateProviderSelect("#avail-provider");
   populateProviderSelect("#series-provider");
   refreshBookEnabled();
   renderSlotCalendar();
   renderAvailEditors();
+  renderSoonest();
 }
 
 // renderAvailEditors re-seeds (only if the selected provider changed) and renders
@@ -745,33 +748,64 @@ function providerLabel(p) {
 // the Schedule picker (includeAll), never the booking picker — you book one provider.
 const SCHED_ALL = "__all__";
 
+// populateProviderSelect fills a provider picker from the roster, optionally
+// narrowed to opts.specialty — the booking picker's specialty filter uses this so
+// the dropdown only lists providers who can actually help, instead of a flat list
+// the patient has to already know a name to navigate.
 function populateProviderSelect(sel, opts) {
   const el = $(sel);
   if (!el) return;
   const prev = el.value;
   el.innerHTML = "";
+  const roster = opts && opts.specialty ? state.providers.filter((p) => p.specialty === opts.specialty) : state.providers;
   const placeholder = document.createElement("option");
   placeholder.value = "";
-  placeholder.textContent = state.providers.length ? "Select provider…" : "No providers — add one in the Availability tab";
+  placeholder.textContent = roster.length
+    ? "Select provider…"
+    : opts && opts.specialty
+      ? `No ${opts.specialty} providers — try "Any specialty".`
+      : "No providers — add one in the Availability tab";
   el.append(placeholder);
-  if (opts && opts.includeAll && state.providers.length) {
+  if (opts && opts.includeAll && roster.length) {
     const all = document.createElement("option");
     all.value = SCHED_ALL;
     all.textContent = "All providers (clinic-wide)";
     el.append(all);
   }
-  for (const p of state.providers) {
+  for (const p of roster) {
     const o = document.createElement("option");
     o.value = p.providerKey;
     o.textContent = providerLabel(p);
     el.append(o);
   }
-  const values = state.providers.map((p) => p.providerKey);
+  const values = roster.map((p) => p.providerKey);
   if (prev === SCHED_ALL && opts && opts.includeAll) {
     el.value = SCHED_ALL;
   } else {
     el.value = values.includes(prev) ? prev : "";
   }
+}
+
+// populateSpecialtySelect fills the booking specialty filter from the roster's
+// distinct specialties, defaulting to "Any specialty" — the entry point for a
+// patient who knows what kind of care they need but not which provider offers it.
+function populateSpecialtySelect() {
+  const el = $("#book-specialty");
+  if (!el) return;
+  const prev = el.value;
+  el.innerHTML = "";
+  const any = document.createElement("option");
+  any.value = "";
+  any.textContent = "Any specialty";
+  el.append(any);
+  const specialties = [...new Set(state.providers.map((p) => p.specialty).filter(Boolean))].sort();
+  for (const s of specialties) {
+    const o = document.createElement("option");
+    o.value = s;
+    o.textContent = s;
+    el.append(o);
+  }
+  el.value = specialties.includes(prev) ? prev : "";
 }
 
 async function submitAddProvider() {
@@ -1431,6 +1465,81 @@ async function refreshSlots() {
       $("#startsAt").value = toLocalInputValue(iso);
       refreshTimeOffWarning();
       refreshSlots();
+    });
+    box.appendChild(btn);
+  }
+}
+
+// findSoonestSlots computes, for each provider matching the given specialty (all
+// providers if ""), their single earliest open slot within a bounded look-ahead
+// window — so a patient who only knows the specialty they need, not a specific
+// provider's name, can see who is soonest available. Stops scanning a provider's
+// days once its first open slot is found (only that provider's soonest matters
+// here); the full remaining-day picker is still computeOpenSlots via refreshSlots
+// once a specific provider is chosen. Mirrors computeOpenSlots' UTC-day grid.
+async function findSoonestSlots(specialty, durationMin, nowMs, daysAhead, limit) {
+  const candidates = state.providers.filter((p) => !specialty || p.specialty === specialty);
+  const patAppts = state.patient ? await patientAppointments(state.patient) : [];
+  const results = [];
+  for (const p of candidates) {
+    if (!Array.isArray(p.hours) || !p.hours.length) continue;
+    const provAppts = await providerAppointments(p.providerKey);
+    const blocking = provAppts.concat(patAppts);
+    for (let d = 0; d < daysAhead; d++) {
+      const day = new Date(nowMs + d * 86400000);
+      const dateStr = ymdUTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate());
+      const slots = computeOpenSlots(p, dateStr, durationMin, blocking, nowMs);
+      if (slots.length) {
+        results.push({ ms: slots[0], providerKey: p.providerKey, dateStr });
+        break;
+      }
+    }
+  }
+  results.sort((a, b) => a.ms - b.ms);
+  return results.slice(0, limit || 5);
+}
+
+// renderSoonest shows the soonest open slot per matching provider (grouped by the
+// selected specialty) so a patient can book without already knowing a provider's
+// name. Hidden once a specific provider is chosen below — that provider's own
+// calendar (renderSlotCalendar/refreshSlots) takes over from there.
+async function renderSoonest() {
+  const box = $("#soonest");
+  if (!box) return;
+  box.innerHTML = "";
+  if ($("#provider").value) return;
+  const specialty = $("#book-specialty").value;
+  const durationMin = Number($("#duration").value || 30);
+  const results = await findSoonestSlots(specialty, durationMin, Date.now(), 14, 5);
+  // The specialty/duration/provider may have changed while awaiting the fetches.
+  if ($("#book-specialty").value !== specialty || Number($("#duration").value || 30) !== durationMin || $("#provider").value) return;
+  if (!results.length) {
+    const m = document.createElement("p");
+    m.className = "muted";
+    m.textContent = specialty ? `No open slots for ${specialty} in the next two weeks.` : "No open slots in the next two weeks.";
+    box.appendChild(m);
+    return;
+  }
+  const label = document.createElement("p");
+  label.className = "hint";
+  label.textContent = "Soonest available — pick one, or choose a specific provider below instead.";
+  box.appendChild(label);
+  for (const r of results) {
+    const p = providerByKey(r.providerKey);
+    const iso = new Date(r.ms).toISOString().replace(/\.\d{3}Z$/, "Z");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "slot-btn";
+    btn.textContent = `${providerLabel(p)} — ${slotTimeLabel(r.ms)} ${r.dateStr}`;
+    btn.addEventListener("click", () => {
+      $("#provider").value = r.providerKey;
+      $("#slot-date").value = r.dateStr;
+      $("#startsAt").value = toLocalInputValue(iso);
+      refreshBookEnabled();
+      refreshTimeOffWarning();
+      renderSlotCalendar();
+      refreshSlots();
+      renderSoonest();
     });
     box.appendChild(btn);
   }
@@ -3243,8 +3352,20 @@ function init() {
     $("#slot-date").value = "";
     renderSlotCalendar();
     refreshSlots();
+    renderSoonest();
   });
-  $("#duration").addEventListener("change", refreshSlots);
+  $("#book-specialty").addEventListener("change", () => {
+    populateProviderSelect("#provider", { specialty: $("#book-specialty").value });
+    refreshBookEnabled();
+    $("#slot-date").value = "";
+    renderSlotCalendar();
+    refreshSlots();
+    renderSoonest();
+  });
+  $("#duration").addEventListener("change", () => {
+    refreshSlots();
+    renderSoonest();
+  });
   $("#add-provider-submit").addEventListener("click", submitAddProvider);
   // Availability tab — its own provider picker drives both editors; a change
   // re-seeds each draft from the newly-selected provider's projected values.
