@@ -14,7 +14,7 @@ const state = {
   patientOptions: [], // the roster currently rendered in the #patient select — the full cache, or a
   // narrower ?q= match while a front-desk search is active
   providers: [],
-  providers: [],
+  providerSearch: "", // #provider-search term, filters the booking picker's roster client-side (name/specialty substring)
   appts: [],
   schedule: [],
   followups: [], // every appointment whose documented visit requested a follow-up (clinic-wide worklist)
@@ -743,6 +743,19 @@ function providerLabel(p) {
   return p.specialty ? `${p.name} · ${p.specialty}` : p.name;
 }
 
+// wireProviderSearch filters #provider (the booking picker only) as the front
+// desk types — client-side, since the roster is already fully loaded (unlike
+// #patient's server ?q=, providers carry no PII and the roster is small
+// enough that a round-trip buys nothing).
+function wireProviderSearch() {
+  const input = $("#provider-search");
+  if (!input) return;
+  input.addEventListener("input", () => {
+    state.providerSearch = input.value.trim();
+    populateProviderSelect("#provider", { specialty: $("#book-specialty") ? $("#book-specialty").value : "" });
+  });
+}
+
 // SCHED_ALL is the sentinel select value for the clinic-wide "All providers"
 // schedule view (every provider's appointments on one grid). It is offered only on
 // the Schedule picker (includeAll), never the booking picker — you book one provider.
@@ -757,14 +770,20 @@ function populateProviderSelect(sel, opts) {
   if (!el) return;
   const prev = el.value;
   el.innerHTML = "";
-  const roster = opts && opts.specialty ? state.providers.filter((p) => p.specialty === opts.specialty) : state.providers;
+  let roster = opts && opts.specialty ? state.providers.filter((p) => p.specialty === opts.specialty) : state.providers;
+  if (sel === "#provider" && state.providerSearch) {
+    const q = state.providerSearch.toLowerCase();
+    roster = roster.filter((p) => (p.name || "").toLowerCase().includes(q) || (p.specialty || "").toLowerCase().includes(q));
+  }
   const placeholder = document.createElement("option");
   placeholder.value = "";
   placeholder.textContent = roster.length
     ? "Select provider…"
-    : opts && opts.specialty
-      ? `No ${opts.specialty} providers — try "Any specialty".`
-      : "No providers — add one in the Availability tab";
+    : sel === "#provider" && state.providerSearch
+      ? "No matches"
+      : opts && opts.specialty
+        ? `No ${opts.specialty} providers — try "Any specialty".`
+        : "No providers — add one in the Availability tab";
   el.append(placeholder);
   if (opts && opts.includeAll && roster.length) {
     const all = document.createElement("option");
@@ -3324,6 +3343,7 @@ function init() {
 
   $("#patient").addEventListener("change", (e) => setPatient(e.target.value));
   wirePatientSearch();
+  wireProviderSearch();
   $("#new-patient").addEventListener("click", openNewPatient);
   $("#patient-cancel").addEventListener("click", closeNewPatient);
   $("#patient-overlay").addEventListener("click", (e) => {
