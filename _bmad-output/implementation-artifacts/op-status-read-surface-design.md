@@ -1,11 +1,15 @@
 # Op-status read surface — a sanctioned way to ask "did my operation land?"
 
-**Status: 📐 awaiting-Andrew** · Designer: Winston (main session, 2026-07-11) · Origin: live incident
-(bridge skip-on-redelivery probe broken by the same-day read-tightening) + Andrew's framing: read posture
-was meant to stop components reading *business data* from Core KV; checking the status of an op you
-submitted is a legitimate generic need everyone has, and today the only way to do it is a Core KV `Get`.
+**Status: ✅ RATIFIED (Andrew, 2026-07-11)** — Fire 1 ratified as designed; the Fires 2–4 sequencing
+accepted; the interim mitigation approved and APPLIED the same session (bridge restarted with
+`BRIDGE_SKIP_ON_REDELIVERY=false` — the env lever added in cmd/bridge — all 6 stuck events drained,
+result ops committed, bridge health clean; re-enable the probe when Fire 1 ships). Designer: Winston
+(main session, 2026-07-11) · Origin: live incident (bridge skip-on-redelivery probe broken by the
+same-day read-tightening) + Andrew's framing: read posture was meant to stop components reading
+*business data* from Core KV; checking the status of an op you submitted is a legitimate generic need
+everyone has, and today the only way to do it is a Core KV `Get`.
 
-## For Andrew (one-look ratification block)
+## Ratification block (decided 2026-07-11; kept for the build fire's context)
 
 - **Confirmed incident.** The natsperm-matrix-hygiene Fire 1 read-tightening (2026-07-11, `4258180`,
   executing sensitive-param-egress §8/B2) denies the bridge `$JS.API.DIRECT.GET.KV_core-kv(.>)`. That
@@ -35,8 +39,9 @@ submitted is a legitimate generic need everyone has, and today the only way to d
   WHERE the read runs (Processor-side, behind a subject-scoped RPC), not what it means. One touchpoint
   is NAMED for the Loom follow-on: Contract #10 §10.6 words Loom's probe as a direct GET and will need
   reconciling when Loom migrates (§4).
-- **Decision asked:** ratify the `lattice.op.status` responder (Fire 1) + the bridge migration (same
-  fire); approve the interim probe-off mitigation if the loop's noise matters before the fire lands.
+- **Decisions (Andrew, 2026-07-11):** Fire 1 (`lattice.op.status` responder + bridge migration)
+  RATIFIED; Fires 2–4 sequencing ACCEPTED; interim probe-off mitigation APPROVED and applied (see
+  Status). Fire 1 is build-ready for the Lattice Steward.
 
 ## 1. Problem & grounding (verified against code + the live stack this session)
 

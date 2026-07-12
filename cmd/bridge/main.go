@@ -80,7 +80,7 @@ func run(logger *slog.Logger) error {
 	}
 	defer conn.Close()
 
-	engine := bridge.NewEngine(conn, bridge.Config{
+	cfg := bridge.Config{
 		CoreKVBucket:   bootstrap.CoreKVBucket,
 		EventsStream:   bootstrap.CoreEventsStreamName,
 		HealthKVBucket: bootstrap.HealthKVBucket,
@@ -88,7 +88,21 @@ func run(logger *slog.Logger) error {
 		Instance:       instance,
 		Lane:           lane,
 		Logger:         logger,
-	})
+	}
+	// BRIDGE_SKIP_ON_REDELIVERY=false disables the optional skip-on-redelivery
+	// tracker probe (engine default: enabled). The probe is defense-in-depth —
+	// every adapter dedups on the reused idempotencyKey — so running without it
+	// trades one redundant idempotent adapter call per redelivery for zero
+	// Core KV reads: the operational lever when the probe's read path is
+	// unavailable (op-status-read-surface-design.md, interim mitigation).
+	if v := os.Getenv("BRIDGE_SKIP_ON_REDELIVERY"); v != "" {
+		on, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("parse BRIDGE_SKIP_ON_REDELIVERY %q: %w", v, err)
+		}
+		cfg.SkipOnRedelivery = &on
+	}
+	engine := bridge.NewEngine(conn, cfg)
 
 	// Register the reference adapters (the real Stripe / background-check /
 	// legal-doc integrations are Phase 3). A package's external.<adapter> events

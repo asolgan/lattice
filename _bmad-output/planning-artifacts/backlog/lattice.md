@@ -48,7 +48,7 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 |---|---|---|---|---|
 | **[Loom] Guardless-step recovery check-before-act probe** | On total `loom-state` loss + a re-triggered `StartLoomPattern`, a fresh instance replays guards from cursor 0 (re-runs an already-applied guarded step). | ★ | S–M | 🗄️ shelved-backup (Andrew: no new engine Core-KV reads) |
 | **[Weaver] `inflight_<g>`-as-external-gap-marker is unenforced** | The stale-mark reclaim relies on `inflight_<g>` only ever being lens-authored for a real outcome-driven external gap; true today but not install-time enforced. | ★ | S | 📋 needs-design (Designer) · install-time lens-schema check impossible as scoped (2026-07-10); runtime candidate: `staleMark` consults the gap's action class from the target spec — Weaver holds both at runtime |
-| **[Bridge/Processor] Op-status read surface — `lattice.op.status` responder** | Bridge's skip-on-redelivery tracker probe (`vtx.op.<id>` KVGet) is transport-denied by the B2 read-tightening → infinite 5s redelivery loop; proposal: Processor-hosted op-status RPC (vault.decrypt pattern), bridge migrates, CLI + read-side-laxity follow-ons named. | ★★★ | S | 📐 awaiting-Andrew · [design](../../implementation-artifacts/op-status-read-surface-design.md) |
+| **[Bridge/Processor] Op-status read surface — `lattice.op.status` responder** | Processor-hosted op-status RPC (vault.decrypt pattern); bridge probe migrates (Fire 1); Fires 2–4: Gateway status endpoint, Loom probe migration (+§10.6 reconciliation), CLI — the gate for matrix-wide read tightening. Interim probe-off mitigation applied. | ★★★ | S | ✅ ratified · [design](../../implementation-artifacts/op-status-read-surface-design.md) |
 
 ### Survey log (round-robin rotation)
 
