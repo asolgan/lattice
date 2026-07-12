@@ -23,7 +23,9 @@ I/O — the front-end is served from `cmd/loupe/web` (go:embed'd assets) and onl
 local-first machinery* — the same substrate + reconcile-by-revision a real Edge Lattice node would use
 — so it doubles as the **first prototype of Edge Lattice** without taking on the Edge security layer. It
 is a stepping stone: prove the local-first view/control loop now; grow into the per-user sovereign node
-later, once the deferred security pieces (Gateway, read-path auth, Personal Lens) land.
+later. The platform-side security pieces that evolution depends on — the Gateway, read-path auth (D1),
+and the Personal Lens — have since shipped; Loupe's own per-identity turn-on is the remaining step (see
+Implementation status below).
 
 ---
 
@@ -69,8 +71,10 @@ not-connected path).
 
 Loupe runs as a **single trusted / privileged identity** (the primordial admin actor) with **no
 authentication** and **no per-user authorization** — by design. It explicitly does **not** build
-per-user authN / authZ, the Gateway, read-path authorization (D1), or a Personal Lens; it reads the
-**full** graph as a trusted client. Per-user scoping is a later Edge evolution.
+per-user authN / authZ itself; it reads the **full** graph as a trusted client, staying outside the
+Gateway / read-path authorization (D1) / Personal Lens stack that other actors go through (all three
+have since shipped platform-side — see Implementation status). Per-user scoping is a later Edge
+evolution.
 
 Because it is an auth-less admin handle, the **loopback bind is load-bearing**:
 
@@ -101,9 +105,10 @@ server serves and table-tested inside `go test ./cmd/loupe/...` — no Node, no 
 files are declarations + one trailing `export { … }` line in ES6-conservative syntax (goja parse
 failure is the loud gate); DOM/render code is verified by the fe-engineer's in-browser pass.
 
-**Deferred (Phase 3+ — the Edge evolution).** Per-user authN / authZ, the Gateway, read-path
-authorization (D1), and the Personal Lens. These are the pieces that turn the trusted inspector into a
-per-user sovereign Edge node; until they land, Loupe stays a single-identity loopback tool. All four are
-now 🔭 Designed (ratified 2026-06-27, build-pending): read-path auth (D1) is the foundation (Postgres-RLS
-+ a JWT read-actor seam), the Gateway's read-actor seam is D1 increment 1, and the Personal Lens (the
-Edge fan-out path) is sequenced behind D1 + a concrete Edge consumer.
+**Deferred (Phase 3+ — the Edge evolution).** Loupe's own per-user authN / authZ turn-on — the piece
+that would turn the trusted inspector into a per-user sovereign Edge node; until it lands, Loupe stays a
+single-identity loopback tool. The platform-side pieces it would consume have since **shipped**: the
+**Gateway** (JWT write-path + RLS-enforced read-path), **read-path authorization (D1)**, and the
+**Personal Lens** (per-identity security-filtered projection, Fires 1–5) are all ✅ built and in use by
+the vertical apps. What remains is Loupe-specific — wiring per-identity auth into its own request path —
+and is not yet scheduled.

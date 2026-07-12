@@ -146,9 +146,10 @@ Sensitive aspects (SSN, DOB) are encrypted under a per-identity key the Processo
 | Package install/uninstall, transactional event outbox, per-lens delete mode | ✅ Phase 1.5 — implemented |
 | Loom, Weaver, Bridge (external I/O), object-store-manager (blob byte-janitor), `orchestration-base` + `lease-signing` (Loftspace reference vertical) packages | ✅ Phase 2 — implemented |
 | Experience layer — Loupe (operator/inspector, reads Core KV; :7777) + vertical apps LoftSpace (:7788) & Clinic (:7799), which read **lens read-model projections** (P5), never Core KV; all trusted single-identity, loopback, no per-user auth yet | 🏗️ Phase 3 — implemented (building out) |
-| Gateway (JWT auth, `Lattice-Actor` stamping, token revocation) | ✅ Phase 3 — implemented (write-path: JWT verify + actor stamping + live JWKS); read-path enforcement in progress |
+| Gateway (JWT auth, `Lattice-Actor` stamping, token revocation) | ✅ Phase 3 — implemented (write-path: JWT verify + actor stamping + live JWKS; read-path authorization gate — D1 — also closed via the Personal/Secure Lens) |
 | Vault (per-identity keys, encrypt-on-write/decrypt-on-read, crypto-shredding), privacy-worker (async `ShredKey` finalization) | ✅ Phase 3 — implemented (local envelope-encryption backend); production KMS backend deferred |
-| Edge Lattice, Personal Lens, offline-first sync | 🔭 Phase 3+ — designed |
+| Personal / Secure Lens (per-identity security-filtered projection, Interest-Set watchlist) | ✅ Phase 3+ — implemented (D1 + Vault gates closed); multicast dedup / WebSocket bridge deferred, no Edge consumer yet |
+| Edge Lattice (sovereign client node, offline-first sync) | 🏗️ Phase 3+ — implemented (building out) — Go node, offline-first read loop, optimistic write path, and the untrusted multi-identity security turn-on are shipped; the Vault Proxy and a browser/mobile node remain |
 | Cells & sharding, multi-cell routing | 🔭 Phase 3+ — designed |
 
 ## Related reading
