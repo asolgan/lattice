@@ -1,6 +1,6 @@
 # Refractor lens-registry restart integrity — per-boot replay + registry-reconciliation detection
 
-**Status: 📐 awaiting-Andrew (ratification)**
+**Status: ✅ Andrew-ratified (2026-07-13) — HIGH-PRIORITY build (live P0-class incident).** Ratification Q&A folded in: alternative (d) own-KV stateful cache (§4), the pattern's ratification trail (§3), the §4.1 horizontal-scaling analysis + age-guarded prune hardening.
 **Author:** Winston (Designer fire, 2026-07-13)
 **Backlog:** Read-model / projection maturity — *[Refractor] lens registry silently empty after restart* (live-found P0-class incident, 2026-07-12/13)
 **Owning components:** `internal/refractor/lens/corekv_source.go` (the fix), `internal/refractor/health` + `cmd/refractor/main.go` (detection), `cmd/lattice/health` (staleness surfacing). Docs: `docs/components/refractor.md`.
