@@ -114,11 +114,12 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 > multi-identity security turn-on (Gateway-submit, Personal Lens PL.3 fan-out, per-identity
 > subscribe-ACL) are all done — see [edge design §7](../../implementation-artifacts/edge-lattice-full-design.md).
 > **Next Edge increment: EDGE.4** (Vault Proxy, gated on Vault Phase A + PL.5, both since shipped) —
-> **now ALSO gated** on the newly-filed `personal.hydrate`/register/deregister capability-auth gap
-> (Security & trust boundary table above): under real `LATTICE_AUTH_MODE=capability` no ordinary
-> identity's own Edge node can reach these RPCs at all today (control-operator-only grant, hydrate
-> ungranted even there, no self-scope concept) — EDGE.4's session-key RPC would land in the exact same
-> unreachable family, so build that self-scope primitive first. **EDGE.5** (browser/mobile node, gated
+> the `personal.hydrate`/register/deregister capability-auth gap that additionally gated it is now
+> CLOSED (2026-07-12): `ctrl.refractor.{register,deregister,hydrate}` grant scope=any to the `consumer`
+> role (identity-domain dependency added to `packages/control-authz`), the missing `hydrate` op-table
+> entry is in, and the matching transport subjects are open in `natsauth.go`'s `controlRPCs` — safe
+> because the §3.4 server-side identity-binding override confines each op to the caller's own identity
+> regardless of capability scope. EDGE.4 is unblocked. **EDGE.5** (browser/mobile node, gated
 > on the Gateway WS/push bridge) remains a separate, larger, Designer-scoped item. A full multi-persona
 > adversarial re-review of the EDGE.3 security boundary is still flagged open in the design doc §8.
 > **sensitive-param-egress CLOSED** (2026-07-11) — Fire 1 (disposition + emission guard) + Fire 2 (bridge
@@ -145,7 +146,6 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 |---|---|---|---|---|
 | NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | ✅ effectively done · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) §Fire-3-status · only deferred Fire 4 (prod mTLS) remains |
 | **Keyed identity-index hashes (HMAC)** | Unkeyed `sha256NanoID` contact hashes are dictionary-testable with substrate access and persist in JetStream history post-shred; a Vault-keyed HMAC bounds it but needs a MAC primitive + key custody at every hash computer, and must migrate ALL index consumers (identityindex, provision probe, dedup) in one stroke. | ★ now / ★★ prod | M | 🗄️ shelved (revive: production threat model) · [analysis](../../implementation-artifacts/dedup-over-encrypted-pii-design.md) §9.1/§10-C |
-| **`personal.hydrate`/`register`/`deregister` unreachable by real identities under capability auth** | Transport grant still empty post-Fire-2 (`natsauth.go` `controlRPCs`) AND the capability gate needs `ctrl.refractor.<verb> scope=any`, granted only to `control-operator` (hydrate ungranted even there) — no self-scope exists. | ★★★ | M | 🔭 flag-for-Andrew · not new design, it's §3.3's own ratified-but-unbuilt grant; fully diffed as spawn_task chip 2026-07-12 (grant-widening needs attended sign-off) · blocks EDGE.4 |
 
 ### Privacy / Vault
 | Item | What it is | Imp | Size | State |
@@ -206,6 +206,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-13 · `3e3c993` · [controlauth,natsauth,control-authz] per-identity-nats-subscribe-acl Fire 2 tail — opened personal.hydrate/register/deregister (op table + consumer grant + transport); EDGE.4 unblocked; CI green
 - 2026-07-13 · `9a86a01` · [Refractor] projection-package coverage sweep — Install{ActorAggregate,PersonalLens} wiring + personalEnvelopeFn D1/Interest-Set branches; 59.2%→93.0%; CI green
 - 2026-07-13 · `a6c3802` · [Core/bootstrap] test-coverage sweep — Persist, PrivacyActorKey (incl. pre-v15 absent case), seedPrimordialPerKey concurrent-bootstrap fallback; 65.7%→69.3%; CI green
 - 2026-07-12 · `4b8e815` · [Weaver] registry-cleanup-edge-branches-uncovered SHIPPED — CDC malformed-input paths covered, 84.8%→86.2%; CI green
