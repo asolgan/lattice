@@ -84,19 +84,21 @@ const inboxPrefix = "_INBOX.edge"
 // (per-identity-nats-subscribe-acl-design.md, ratified 2026-07-10) landed
 // the §3.4 server-side identity-binding override
 // (internal/refractor/control/service.go's dispatchEndpoint binds
-// body.IdentityID to the verified actor for register/deregister/hydrate,
-// rejecting a mismatching client-asserted value) but left this transport
-// grant closed — hydrate in particular was additionally unreachable by
-// ANY actor until the matching internal/controlauth ops-table entry and
-// packages/control-authz manifest grant were added alongside this list.
+// body.IdentityID to the verified actor for register/deregister/hydrate/
+// sessionkey, rejecting a mismatching client-asserted value) but left this
+// transport grant closed — hydrate in particular was additionally
+// unreachable by ANY actor until the matching internal/controlauth ops-table
+// entry and packages/control-authz manifest grant were added alongside this
+// list. sessionkey (edge-lattice-full-design.md §3.6, EDGE.4) joined the
+// same §3.4 binding and the same three-places-in-lockstep pattern.
 //
 // Both halves must land together: the transport grant here (which subjects
 // a connection may even reach) and the capability-plane grant in
 // packages/control-authz/manifest.yaml (ctrl.refractor.{register,deregister,
-// hydrate} scope=any → consumer) are independently necessary and jointly
-// sufficient. Granting only this list without the capability-plane grant is
-// a no-op (the subject is reachable but CapabilityKVChecker.Authorize still
-// denies every actor). Granting only the capability-plane entry without
+// hydrate,sessionkey} scope=any → consumer) are independently necessary and
+// jointly sufficient. Granting only this list without the capability-plane
+// grant is a no-op (the subject is reachable but CapabilityKVChecker.Authorize
+// still denies every actor). Granting only the capability-plane entry without
 // opening these subjects reopens the original gap in the other direction:
 // nothing ever lets the connection reach the subject to exercise the grant
 // it holds. The §3.4 binding is what makes granting scope=any broadly (to
@@ -107,6 +109,7 @@ var controlRPCs = []string{
 	"lattice.ctrl.refractor.personal.register",
 	"lattice.ctrl.refractor.personal.deregister",
 	"lattice.ctrl.refractor.personal.hydrate",
+	"lattice.ctrl.refractor.personal.sessionkey",
 }
 
 // Authenticator is the verify+revocation seam. *auth.Authenticator

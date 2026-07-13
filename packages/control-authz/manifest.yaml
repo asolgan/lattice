@@ -10,15 +10,17 @@ description: |
   sequence, not by this package.
   control-plane-capability-authz-design.md §3.5 (FR30 Fire 1b).
 
-  ctrl.refractor.{register,deregister,hydrate} additionally grant scope=any to
-  the consumer role (identity-domain) — per-identity-nats-subscribe-acl-design.md
-  §3.3/§3.4 (Fire 2, ratified 2026-07-10). This is a broad grant (every
-  claimed/unclaimed identity holds consumer) that is safe ONLY because
-  internal/refractor/control/service.go's dispatchEndpoint unconditionally
-  binds the op's body.IdentityID to the caller's own VERIFIED actor id for
-  these three ops (§3.4), rejecting a mismatching client-asserted value —
-  the capability's scope=any never actually lets one identity act on
-  another's Personal Lens interest set; the effect is confined server-side
+  ctrl.refractor.{register,deregister,hydrate,sessionkey} additionally grant
+  scope=any to the consumer role (identity-domain) —
+  per-identity-nats-subscribe-acl-design.md §3.3/§3.4 (Fire 2, ratified
+  2026-07-10); edge-lattice-full-design.md §3.6 (EDGE.4, sessionkey). This is
+  a broad grant (every claimed/unclaimed identity holds consumer) that is
+  safe ONLY because internal/refractor/control/service.go's dispatchEndpoint
+  unconditionally binds the op's body.IdentityID to the caller's own
+  VERIFIED actor id for these four ops (§3.4), rejecting a mismatching
+  client-asserted value — the capability's scope=any never actually lets one
+  identity act on another's Personal Lens interest set or read another
+  identity's Vault session key; the effect is confined server-side
   regardless of what the capability grants. Granting this without that
   binding (or granting it without also opening the matching transport RPCs
   in internal/gateway/natsauth's controlRPCs) would reopen the original
@@ -71,5 +73,8 @@ declares:
       scope: any
       grantsTo: [control-operator, consumer]
     - operationType: ctrl.refractor.hydrate
+      scope: any
+      grantsTo: [control-operator, consumer]
+    - operationType: ctrl.refractor.sessionkey
       scope: any
       grantsTo: [control-operator, consumer]

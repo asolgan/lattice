@@ -14,10 +14,12 @@ import (
 	"github.com/nats-io/nats.go/micro"
 
 	"github.com/asolgan/lattice/internal/controlauth"
+	"github.com/asolgan/lattice/internal/gateway/auth"
 	"github.com/asolgan/lattice/internal/refractor/health"
 	"github.com/asolgan/lattice/internal/refractor/lens"
 	"github.com/asolgan/lattice/internal/refractor/personalinterest"
 	"github.com/asolgan/lattice/internal/substrate"
+	"github.com/asolgan/lattice/internal/vault"
 )
 
 // ErrRuleNotRegistered is returned by NullifyRow (and other per-ruleID lookups)
@@ -34,6 +36,11 @@ const validateTimeout = 5 * time.Second
 // larger than a single KV read/write (register/deregister) but bounded to
 // one actor rather than a whole-lens rebuild.
 const hydrateTimeout = 30 * time.Second
+
+// sessionKeyTimeout bounds the "sessionkey" op (edge-lattice-full-design.md
+// §3.6, EDGE.4): one piiKey point-read plus one Vault crypto call, closer in
+// shape to register/deregister than to the bulk hydrate op.
+const sessionKeyTimeout = 10 * time.Second
 
 // authorizeTimeout bounds the capability check every dispatchEndpoint op runs
 // before dispatch (a single Capability KV GET, mirrors Weaver/Loom control's
@@ -58,6 +65,16 @@ type Pauser interface {
 // *lens.CoreKVSource satisfies this via its Get method (formerly *lens.Loader).
 type RuleGetter interface {
 	Get(ruleID string) (*lens.Rule, bool)
+}
+
+// coreKVGetter is the single point-read the "sessionkey" op needs from Core
+// KV (the identity's piiKey aspect) — mirrors
+// internal/refractor/pipeline.coreKVGetter; duplicated rather than imported
+// so this package does not depend on internal/refractor/pipeline (the same
+// architecture boundary Resumer/Pauser/Hydrator above already keep).
+// *substrate.KV satisfies it; tests inject a fake.
+type coreKVGetter interface {
+	Get(ctx context.Context, key string) (*substrate.KVEntry, error)
 }
 
 // Rebuilder is implemented by any component that can perform an in-place rebuild
@@ -118,6 +135,15 @@ type ControlRequest struct {
 	DeviceID   string   `json:"deviceId,omitempty"`
 	Types      []string `json:"types,omitempty"`
 	Anchors    []string `json:"anchors,omitempty"`
+
+	// AspectScope and TTLSeconds are used by the "sessionkey" op
+	// (edge-lattice-full-design.md §3.6, EDGE.4), sent on
+	// lattice.ctrl.refractor.personal.sessionkey. AspectScope is carried
+	// through to vault.IssueSessionKey for audit/API-shape only (there is one
+	// DEK per identity, not one per aspect). TTLSeconds <= 0 lets the Vault
+	// backend pick its own default/ceiling.
+	AspectScope string `json:"aspectScope,omitempty"`
+	TTLSeconds  int64  `json:"ttlSeconds,omitempty"`
 }
 
 // ControlResponse is the JSON payload returned by the control service.
@@ -139,6 +165,7 @@ type ControlResponse struct {
 	PersonalRegister   *PersonalRegisterResult   `json:"personalRegister,omitempty"`   // present only for "register" op
 	PersonalDeregister *PersonalDeregisterResult `json:"personalDeregister,omitempty"` // present only for "deregister" op
 	PersonalHydrate    *PersonalHydrateResult    `json:"personalHydrate,omitempty"`    // present only for "hydrate" op
+	PersonalSessionKey *PersonalSessionKeyResult `json:"personalSessionKey,omitempty"` // present only for "sessionkey" op
 }
 
 // RebuildResult is the async acknowledgement returned by the "rebuild" op.
@@ -187,6 +214,17 @@ type PersonalHydrateResult struct {
 	Revision uint64 `json:"revision"`
 }
 
+// PersonalSessionKeyResult is the synchronous acknowledgement returned by the
+// "sessionkey" op (edge-lattice-full-design.md §3.6, EDGE.4): a transient
+// session key for the requesting identity's own DEK, for the Edge node to
+// decrypt ciphertext deltas locally and in-memory. ExpiresAt is a hygiene
+// bound the caller enforces locally, not the security boundary — the Vault's
+// ShredKey, checked fresh on every "sessionkey" call, is (vault.SessionKey).
+type PersonalSessionKeyResult struct {
+	Key       []byte    `json:"key"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
 // ValidateResult is returned by the "validate" op. It contains a best-effort
 // field-presence report based on a sample of current Core KV entries.
 type ValidateResult struct {
@@ -232,6 +270,15 @@ type Service struct {
 	// deployment, so — like personalInterestKV — this is a single handle, not
 	// a per-ruleID registry.
 	personalHydrator Hydrator
+	// coreKV backs the "sessionkey" op's piiKey envelope point-read
+	// (edge-lattice-full-design.md §3.6, EDGE.4). nil until SetCoreKV is
+	// called; the op fails closed until then.
+	coreKV coreKVGetter
+	// vault backs the "sessionkey" op's IssueSessionKey call. nil until
+	// SetVault is called (a deployment without a configured Vault backend
+	// leaves EDGE.4 unreachable, same posture as a lens with SecureColumns
+	// and no vaultBackend); the op fails closed until then.
+	vault vault.Vault
 	// capability authorizes every dispatchEndpoint op (FR30,
 	// control-plane-capability-authz-design.md). Defaults to the fail-closed
 	// denyAllChecker (deny-all + loud Warn) so the pre-set window fails closed;
@@ -310,6 +357,28 @@ func (s *Service) SetPersonalInterestKV(kv *substrate.KV) {
 func (s *Service) SetPersonalHydrator(h Hydrator) {
 	s.mu.Lock()
 	s.personalHydrator = h
+	s.mu.Unlock()
+}
+
+// SetCoreKV registers the Core KV handle the "sessionkey" op reads the
+// requesting identity's piiKey envelope through (edge-lattice-full-design.md
+// §3.6, EDGE.4). Thread-safe; may be called at any time. Until called, the
+// op fails closed with an error response.
+func (s *Service) SetCoreKV(kv coreKVGetter) {
+	s.mu.Lock()
+	s.coreKV = kv
+	s.mu.Unlock()
+}
+
+// SetVault registers the Vault backend the "sessionkey" op mints transient
+// session keys through. Thread-safe; may be called at any time. Until
+// called, the op fails closed with an error response. Callers must not pass
+// a nil-valued concrete pointer wrapped in a non-nil vault.Vault interface
+// (check the concrete pointer for nil before calling, as cmd/refractor does
+// for vaultBackend) — SetVault(nil) is the only way to clear it.
+func (s *Service) SetVault(v vault.Vault) {
+	s.mu.Lock()
+	s.vault = v
 	s.mu.Unlock()
 }
 
@@ -478,7 +547,7 @@ const controlSubjectPrefix = "lattice.ctrl.refractor"
 // supportedOps enumerates the per-op endpoint suffixes registered under
 // the NATS Services framework. The op name is taken from the trailing
 // subject token; see opFromSubject.
-var supportedOps = []string{"health", "validate", "rebuild", "pause", "resume", "delete", "register", "deregister", "hydrate"}
+var supportedOps = []string{"health", "validate", "rebuild", "pause", "resume", "delete", "register", "deregister", "hydrate", "sessionkey"}
 
 // StartNATSListener registers the Refractor control plane as a NATS
 // micro-service named "refractor-control". One endpoint is added per
@@ -598,7 +667,7 @@ func (s *Service) dispatchEndpoint(op string, req micro.Request) {
 	// self-asserted-body behavior.
 	if verifier != nil {
 		switch op {
-		case "register", "deregister", "hydrate":
+		case "register", "deregister", "hydrate", "sessionkey":
 			boundIdentityID, err := controlauth.BareIdentityID(actor)
 			if err != nil {
 				s.respondMicro(req, ControlResponse{Error: err.Error()})
@@ -635,6 +704,10 @@ func (s *Service) dispatchEndpoint(op string, req micro.Request) {
 		hydrateCtx, hydrateCancel := context.WithTimeout(context.Background(), hydrateTimeout)
 		defer hydrateCancel()
 		s.respondMicro(req, s.personalHydrate(hydrateCtx, body))
+	case "sessionkey":
+		skCtx, skCancel := context.WithTimeout(context.Background(), sessionKeyTimeout)
+		defer skCancel()
+		s.respondMicro(req, s.personalSessionKey(skCtx, body))
 	default:
 		// Unreachable — supportedOps gates the endpoint registration.
 		s.respondMicro(req, ControlResponse{Error: fmt.Sprintf("unknown operation: %s", op)})
@@ -823,6 +896,73 @@ func (s *Service) personalHydrate(ctx context.Context, body ControlRequest) Cont
 		}
 	}
 	return ControlResponse{PersonalHydrate: &PersonalHydrateResult{Hydrated: true, Revision: revision}}
+}
+
+// personalSessionKey mints a transient Vault session key for the requesting
+// identity's own DEK (edge-lattice-full-design.md §3.6, EDGE.4): the Edge
+// node's local, in-memory decrypt path for ciphertext deltas. Fails closed
+// if SetCoreKV/SetVault haven't been called, if identityId is missing, or if
+// the identity has no piiKey aspect (never minted a sensitive aspect). A
+// shredded identity's key surfaces vault.ErrKeyShredded's message verbatim —
+// the caller's ciphertext deltas are permanent gibberish by design (§3.6
+// "Remote Shredding"), not a bug to retry.
+//
+// body.IdentityID is bound to the verified actor (dispatchEndpoint, above)
+// when an ActorVerifier is configured — this handler never trusts a
+// client-asserted identity for key custody.
+func (s *Service) personalSessionKey(ctx context.Context, body ControlRequest) ControlResponse {
+	s.mu.Lock()
+	kv := s.coreKV
+	v := s.vault
+	s.mu.Unlock()
+	if kv == nil || v == nil {
+		return ControlResponse{Error: "sessionkey: vault not configured"}
+	}
+	if body.IdentityID == "" {
+		return ControlResponse{Error: "sessionkey: identityId is required"}
+	}
+	identityKey := auth.IdentityKeyPrefix + body.IdentityID
+
+	envelope, err := s.readPiiKeyEnvelope(ctx, identityKey)
+	if err != nil {
+		if errors.Is(err, substrate.ErrKeyNotFound) {
+			return ControlResponse{Error: fmt.Sprintf("sessionkey: identity %s has no piiKey aspect (never wrote a sensitive aspect)", identityKey)}
+		}
+		return ControlResponse{Error: fmt.Sprintf("sessionkey: read piiKey for %s: %s", identityKey, err.Error())}
+	}
+
+	sk, err := v.IssueSessionKey(ctx, identityKey, envelope, body.AspectScope, time.Duration(body.TTLSeconds)*time.Second)
+	if err != nil {
+		return ControlResponse{Error: err.Error()}
+	}
+	return ControlResponse{PersonalSessionKey: &PersonalSessionKeyResult{Key: sk.Key, ExpiresAt: sk.ExpiresAt}}
+}
+
+// readPiiKeyEnvelope point-reads and parses vtx.identity.<id>.piiKey — the
+// same aspect shape the Processor's commit path writes (the aspect
+// envelope's `data` field carries the vault.Envelope). Mirrors
+// internal/refractor/pipeline.SecureDecryptor.readPiiKeyEnvelope; duplicated
+// rather than imported for the same architecture-boundary reason as
+// coreKVGetter above. A soft-deleted piiKey aspect is treated as absent.
+func (s *Service) readPiiKeyEnvelope(ctx context.Context, identityKey string) (vault.Envelope, error) {
+	entry, err := s.coreKV.Get(ctx, identityKey+".piiKey")
+	if err != nil {
+		return vault.Envelope{}, err
+	}
+	if entry == nil || len(entry.Value) == 0 {
+		return vault.Envelope{}, substrate.ErrKeyNotFound
+	}
+	var doc struct {
+		IsDeleted bool           `json:"isDeleted"`
+		Data      vault.Envelope `json:"data"`
+	}
+	if err := json.Unmarshal(entry.Value, &doc); err != nil {
+		return vault.Envelope{}, fmt.Errorf("parse piiKey %s.piiKey: %w", identityKey, err)
+	}
+	if doc.IsDeleted {
+		return vault.Envelope{}, substrate.ErrKeyNotFound
+	}
+	return doc.Data, nil
 }
 
 // validateRule reports that field-level validation is not available. It

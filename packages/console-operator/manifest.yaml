@@ -88,6 +88,9 @@ declares:
     - operationType: ctrl.refractor.hydrate
       scope: any
       grantsTo: [consoleOperator]
+    - operationType: ctrl.refractor.sessionkey
+      scope: any
+      grantsTo: [consoleOperator]
     - operationType: InstallPackage
       scope: any
       grantsTo: [consoleOperator]

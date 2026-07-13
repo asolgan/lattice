@@ -154,6 +154,7 @@ func main() {
 	poolManager := adapter.NewPoolManager()
 	controlSvc := control.NewService()
 	controlSvc.SetPersonalInterestKV(personalInterestKV)
+	controlSvc.SetCoreKV(coreKV)
 	checker, err := wireControlChecker(ctx, conn, "refractor", controlauth.RefractorOps, logger)
 	if err != nil {
 		logger.Error("wire control-plane capability checker", "err", err)
@@ -200,6 +201,14 @@ func main() {
 	if vaultErr != nil {
 		logger.Error("load vault backend", "err", vaultErr)
 		os.Exit(1)
+	}
+	// The "sessionkey" control op (edge-lattice-full-design.md §3.6, EDGE.4)
+	// needs the same vaultBackend Secure Lenses use. Guard on the concrete
+	// pointer, not the vault.Vault interface SetVault takes — a nil
+	// *vault.LocalBackend wrapped in a non-nil interface would defeat
+	// personalSessionKey's `s.vault == nil` fail-closed check.
+	if vaultBackend != nil {
+		controlSvc.SetVault(vaultBackend)
 	}
 	// vaultCalls counts Vault.Decrypt invocations across every Secure Lens for
 	// the Contract #5 §5.4 vault_calls_total heartbeat metric. Reports 0 while

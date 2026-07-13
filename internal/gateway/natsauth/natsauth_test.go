@@ -386,9 +386,10 @@ func TestPermissionsFor_ExactPerConnectionPinning(t *testing.T) {
 	// The control RPCs ARE granted as of Fire 2 (§3.3/§3.4, ratified
 	// 2026-07-10): the server-side identity-binding override in
 	// internal/refractor/control/service.go confines register/deregister/
-	// hydrate to the caller's own identity regardless of capability scope,
-	// so it is now safe to open the transport subjects — see controlRPCs'
-	// doc comment.
+	// hydrate/sessionkey to the caller's own identity regardless of
+	// capability scope, so it is now safe to open the transport subjects —
+	// see controlRPCs' doc comment. sessionkey (edge-lattice-full-design.md
+	// §3.6, EDGE.4) joined the same binding.
 	wantPub := []string{
 		"$JS.API.CONSUMER.CREATE.SYNC.edge-sync-U1-D1.lattice.sync.user.U1",
 		"$JS.API.CONSUMER.MSG.NEXT.SYNC.edge-sync-U1-D1",
@@ -398,6 +399,7 @@ func TestPermissionsFor_ExactPerConnectionPinning(t *testing.T) {
 		"lattice.ctrl.refractor.personal.register",
 		"lattice.ctrl.refractor.personal.deregister",
 		"lattice.ctrl.refractor.personal.hydrate",
+		"lattice.ctrl.refractor.personal.sessionkey",
 	}
 	if fmt.Sprint([]string(perms.Pub.Allow)) != fmt.Sprint(wantPub) {
 		t.Fatalf("Pub.Allow = %v, want %v", perms.Pub.Allow, wantPub)

@@ -39,7 +39,7 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 var Package = pkgmgr.Definition{
 	Name:        "control-authz",
 	Version:     "0.1.0",
-	Description: "Grants ctrl.<component>.<verb> control-plane permissions to a new control-operator role, plus the three Personal Lens ops to consumer (§3.4-confined).",
+	Description: "Grants ctrl.<component>.<verb> control-plane permissions to a new control-operator role, plus the four identity-bound Personal Lens ops to consumer (§3.4-confined).",
 	Depends:     []string{"rbac-domain", "identity-domain"},
 	Permissions: Permissions(),
 	Roles: []pkgmgr.RoleSpec{

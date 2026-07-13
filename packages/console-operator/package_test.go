@@ -154,6 +154,7 @@ func TestPackage_EveryOpGrantsOnlyToConsoleOperatorScopeAny(t *testing.T) {
 		"ctrl.loom.read", "ctrl.loom.pause", "ctrl.loom.resume",
 		"ctrl.refractor.read", "ctrl.refractor.rebuild", "ctrl.refractor.pause", "ctrl.refractor.resume",
 		"ctrl.refractor.delete", "ctrl.refractor.register", "ctrl.refractor.deregister", "ctrl.refractor.hydrate",
+		"ctrl.refractor.sessionkey",
 		"InstallPackage", "UninstallPackage", "UpgradePackage",
 	}
 	if len(Package.Permissions) != len(want) {
