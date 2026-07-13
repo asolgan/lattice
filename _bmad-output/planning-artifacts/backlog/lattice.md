@@ -109,11 +109,10 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
 > 🎯 **Build-ready now** (this section only — check the **Arch-review intake** section above too, it
-> carries its own ✅ ratified / 📋 ready items): **the Refractor lens-registry restart-integrity fix**
-> (Read-model / projection maturity table) — Fire A (per-boot durable + age-guarded prune, the actual
-> P0 fix) SHIPPED `6503f22`, CI green; Fire B (detection: lensesRegistered metric + reconciliation
-> probe + health-summary staleness) still 🏗️ building — pick that up next before anything else in this
-> section. Then: **Edge Lattice EDGE.1 + EDGE.2 + EDGE.3 CLOSED**
+> carries its own ✅ ratified / 📋 ready items): **lens-registry-restart-integrity CLOSED** (2026-07-13,
+> Fire A `6503f22` + Fire B `8ccdfff`) — live-stack verified (cycled the running Refractor process onto
+> the build; 59 lenses reactivated on restart, `lensesRegistered: 59`, no `LensRegistryIncomplete`).
+> Next: **Edge Lattice EDGE.1 + EDGE.2 + EDGE.3 CLOSED**
 > (2026-07-12) — the offline-first read loop, the optimistic write path, and the untrusted
 > multi-identity security turn-on (Gateway-submit, Personal Lens PL.3 fan-out, per-identity
 > subscribe-ACL) are all done — see [edge design §7](../../implementation-artifacts/edge-lattice-full-design.md).
@@ -185,7 +184,6 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Read-model / projection maturity
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **[Refractor] Lens registry silently empty after restart** | Registry rebuilt only from the fixed `refractor-lens-source` durable's replay; once caught up, every restart boots ZERO pipelines while heartbeating green (live incident 2026-07-12/13, ~59 lenses frozen ~14h). Fix = the Loom/Weaver per-boot-durable pattern (age-guarded prune) + a registry-reconciliation red-issue probe. | ★★★ | M | 🏗️ building · [design](../../implementation-artifacts/refractor-lens-registry-restart-integrity-design.md) · Fire A SHIPPED `6503f22` · next: Fire B (detection) |
 | Elasticsearch target adapter | A third lens target adapter (only NATS-KV + Postgres ship; no consumer yet). | ★ | M | ✅ ratified (2026-07-02, OpenSearch pin + FTS-first interim) · [design](../../implementation-artifacts/search-target-adapter-design.md) · shelf — FTS interim consumer SHIPPED (`b105cf5`); OpenSearch adapter itself still has no consumer |
 | **[Refractor] Cross-instance projection-latency rollup** | Aggregate per-lens projection latency across Refractor instances into one per-component view (single-instance today, so per-instance == per-component). Link-tombstone re-projection half **subsumed** by the link-aspect reprojection design. | ★ | S | 🚧 seq behind HA-NATS multi-instance · [link-aspect design](../../implementation-artifacts/link-aspect-triggered-reprojection-plain-lenses-design.md) subsumes the tombstone half; no multi-instance consumer yet |
 
@@ -211,6 +209,8 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-13 · `182d751` · [weaver] fixed CI-caught TestTargetSource_StableInstanceGetsFreshDurableEachBoot flake from the age-guarded prune (Loom's sibling test was fixed in Fire A, Weaver's copy was missed); CI green
+- 2026-07-13 · `8ccdfff` · [refractor,cmd/lattice] lens-registry-restart-integrity Fire B CLOSED — lensesRegistered metric + RegistryProbe reconciliation + health-summary lens staleness; live-stack verified; CI green
 - 2026-07-13 · `6503f22` · [refractor,substrate,loom] lens-registry-restart-integrity Fire A — CoreKVSource per-boot durable (fixes the live P0 cold-registry incident) + age-guarded PruneStaleDurables (all 4 meta-sources inherit it); CI green
 - 2026-07-13 · `ca9affe` · [controlauth,natsauth,control-authz] per-identity-nats-subscribe-acl Fire 2 tail — opened personal.hydrate/register/deregister (op table + consumer grant + transport); EDGE.4 unblocked; CI green
 - 2026-07-13 · `9a86a01` · [Refractor] projection-package coverage sweep — Install{ActorAggregate,PersonalLens} wiring + personalEnvelopeFn D1/Interest-Set branches; 59.2%→93.0%; CI green
