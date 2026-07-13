@@ -181,6 +181,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Read-model / projection maturity
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
+| **[Refractor] Lens registry silently empty after restart** | Registry rebuilt only from the fixed `refractor-lens-source` durable's replay; once caught up, every restart boots ZERO pipelines while heartbeating green (live incident 2026-07-12/13, ~59 lenses frozen ~14h). Fix = the Loom/Weaver per-boot-durable pattern + a registry-reconciliation red-issue probe. | ★★★ | M | 📐 awaiting-Andrew · [design](../../implementation-artifacts/refractor-lens-registry-restart-integrity-design.md) |
 | Elasticsearch target adapter | A third lens target adapter (only NATS-KV + Postgres ship; no consumer yet). | ★ | M | ✅ ratified (2026-07-02, OpenSearch pin + FTS-first interim) · [design](../../implementation-artifacts/search-target-adapter-design.md) · shelf — FTS interim consumer SHIPPED (`b105cf5`); OpenSearch adapter itself still has no consumer |
 | **[Refractor] Cross-instance projection-latency rollup** | Aggregate per-lens projection latency across Refractor instances into one per-component view (single-instance today, so per-instance == per-component). Link-tombstone re-projection half **subsumed** by the link-aspect reprojection design. | ★ | S | 🚧 seq behind HA-NATS multi-instance · [link-aspect design](../../implementation-artifacts/link-aspect-triggered-reprojection-plain-lenses-design.md) subsumes the tombstone half; no multi-instance consumer yet |
 
