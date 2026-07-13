@@ -76,10 +76,15 @@ func TestTargetSource_StableInstanceGetsFreshDurableEachBoot(t *testing.T) {
 	second := newTargetSource(conn, bucket, "stable-instance", newIssueCache(), logger)
 	require.NoError(t, second.start(secondCtx))
 
+	// The first boot's durable is still within substrate.PruneStaleDurableAge
+	// (age-guarded — refractor-lens-registry-restart-integrity-design.md
+	// §4.1), so it survives the second boot's prune call alongside the new
+	// one; look for a durable other than durable1 rather than assuming only
+	// one match exists.
 	var durable2 string
 	require.Eventually(t, func() bool {
-		durable2 = targetDurableWithPrefix(ctx, t, js, "KV_"+bucket, durablePrefix)
-		return durable2 != "" && durable2 != durable1
+		durable2 = targetDurableWithPrefixExcluding(ctx, t, js, "KV_"+bucket, durablePrefix, durable1)
+		return durable2 != ""
 	}, 5*time.Second, 50*time.Millisecond, "second boot should create a durable distinct from the first")
 
 	require.NotEqual(t, durable1, durable2,
@@ -97,6 +102,27 @@ func targetDurableWithPrefix(ctx context.Context, t *testing.T, js jetstream.Jet
 	found := ""
 	for name := range lister.Name() {
 		if strings.HasPrefix(name, prefix) {
+			found = name
+		}
+	}
+	require.NoError(t, lister.Err())
+	return found
+}
+
+// targetDurableWithPrefixExcluding returns the name of a JetStream durable
+// consumer on stream whose name starts with prefix and is not exclude, or ""
+// if none exists yet. Used where more than one durable under the prefix may
+// legitimately coexist (e.g. an age-guarded prior-boot durable alongside a
+// fresh one) and the test cares about "a distinct one exists", not "the
+// only one".
+func targetDurableWithPrefixExcluding(ctx context.Context, t *testing.T, js jetstream.JetStream, stream, prefix, exclude string) string {
+	t.Helper()
+	st, err := js.Stream(ctx, stream)
+	require.NoError(t, err)
+	lister := st.ConsumerNames(ctx)
+	found := ""
+	for name := range lister.Name() {
+		if strings.HasPrefix(name, prefix) && name != exclude {
 			found = name
 		}
 	}
