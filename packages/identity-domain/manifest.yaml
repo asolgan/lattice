@@ -47,6 +47,11 @@ declares:
       adapter: nats-kv
       bucket: identity-index-hint
       engine: full
+    - canonicalName: identityCredentialsRead
+      adapter: postgres
+      table: read_identity_credentials
+      engine: full
+      protected: true
   permissions:
     - operationType: CreateUnclaimedIdentity
       scope: any

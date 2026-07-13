@@ -8,7 +8,7 @@
 const APPLICANT_KEY = "loftspace.applicant";
 const MODE_KEY = "loftspace.mode";
 const state = {
-  listings: [], applications: [], tasks: [], renewals: [], docs: [], identities: [], units: [],
+  listings: [], applications: [], tasks: [], renewals: [], docs: [], identities: [], units: [], credentials: [],
   applicant: null, current: null, currentTask: null, view: "browse", highlight: null,
   mode: "applicant",
   docScope: null,
@@ -504,6 +504,181 @@ async function runClaimCeremony(uKey, uBareId) {
   return aBareId;
 }
 
+// ---- Account settings (manage sign-in methods, multi-credential-identity-
+// linking-design.md §3/§8) ----
+//
+// Lists the credentials bound to the signed-in applicant (GET /api/credentials,
+// the identityCredentialsRead Secure Lens — packages/identity-domain/lenses.go),
+// links a new one, and removes one. Link mirrors the claim ceremony above
+// exactly (arm a secret, then immediately "complete" it as a freshly minted
+// device) — this demo has no literal second browser, so the ceremony's own
+// two-step shape (arm as U, prove as the new raw credential) stands in for a
+// real second device without any shortcut around the actual ops.
+
+async function loadAccount() {
+  const list = $("#account-credentials");
+  const empty = $("#account-empty");
+  if (!state.applicant) {
+    list.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = "Select an applicant identity above to manage its sign-in methods.";
+    $("#account-summary").textContent = "";
+    return;
+  }
+  $("#account-summary").textContent = "loading…";
+  try {
+    const data = await authedGet("/api/credentials");
+    state.credentials = data.credentials || [];
+  } catch (e) {
+    list.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = "Could not load sign-in methods: " + e.message;
+    $("#account-summary").textContent = "";
+    return;
+  }
+  renderAccount();
+}
+
+function renderAccount() {
+  const list = $("#account-credentials");
+  const empty = $("#account-empty");
+  list.innerHTML = "";
+  const creds = state.credentials || [];
+  if (creds.length === 0) {
+    empty.hidden = false;
+    empty.textContent = "No sign-in methods found.";
+    $("#account-summary").textContent = "";
+    return;
+  }
+  empty.hidden = true;
+  const currentDevice = loadApplicantAuthMap()[bareId(state.applicant)];
+  for (const c of creds) list.append(renderCredentialCard(c, creds.length, currentDevice));
+  const n = creds.length;
+  $("#account-summary").textContent = `${n} sign-in method${n === 1 ? "" : "s"}`;
+}
+
+function renderCredentialCard(c, totalCount, currentDevice) {
+  const card = document.createElement("div");
+  card.className = "card";
+
+  const title = document.createElement("div");
+  title.className = "addr";
+  title.textContent = "Sign-in method " + bareId(c.actorKey).slice(0, 8) + "…";
+
+  const bound = document.createElement("div");
+  bound.className = "addr-sub";
+  bound.textContent = c.boundAt ? "Linked " + new Date(c.boundAt).toLocaleString() : "";
+
+  const actions = document.createElement("div");
+  actions.className = "card-actions";
+  if (bareId(c.actorKey) === currentDevice) {
+    const badge = document.createElement("span");
+    badge.className = "badge complete";
+    badge.textContent = "this device";
+    actions.append(badge);
+  }
+  const removeBtn = document.createElement("button");
+  removeBtn.type = "button";
+  removeBtn.className = "ghost";
+  removeBtn.textContent = "Remove";
+  removeBtn.disabled = totalCount <= 1;
+  removeBtn.title = totalCount <= 1 ? "Cannot remove your last remaining sign-in method" : "";
+  removeBtn.addEventListener("click", () => unlinkCredential(c));
+  actions.append(removeBtn);
+
+  card.append(title);
+  if (bound.textContent) card.append(bound);
+  card.append(actions);
+  return card;
+}
+
+// unlinkCredential submits UnlinkCredential {Scope: self} — the normal resolved
+// path (op.actor == U == target), removing one entry from U's own credentials
+// array. The platform itself refuses removing the last remaining credential
+// (CredentialUnlinkRejected: last-credential); the button above is disabled for
+// that case too, but the server check is the real backstop.
+async function unlinkCredential(c) {
+  if (!confirm("Remove this sign-in method? It will no longer be able to sign in to this identity.")) return;
+  const uKey = state.applicant;
+  try {
+    const reply = await submitOp(
+      "applicant",
+      {
+        operationType: "UnlinkCredential",
+        class: "identity",
+        reads: [uKey, uKey + ".state"],
+        optionalReads: [uKey + ".credentialBinding"],
+        payload: { credentialActorKey: c.actorKey },
+      },
+      { authContext: { target: uKey } }
+    );
+    if (reply && reply.status === "rejected") {
+      const msg = reply.error ? `${reply.error.code}: ${reply.error.message}` : "rejected";
+      toast("Could not remove — " + msg, "err");
+      return;
+    }
+    toast("Sign-in method removed.", "ok");
+    setTimeout(loadAccount, 600);
+  } catch (e) {
+    toast("Could not remove: " + e.message, "err");
+  }
+}
+
+// linkNewCredential runs the InitiateCredentialLink/CompleteCredentialLink pair
+// (multi-credential-identity-linking-design.md §3.2) back to back: arm a fresh
+// link secret as U (the signed-in applicant), then immediately prove it as a
+// brand-new device identity A2 — the same client-minted-secret idiom
+// runClaimCeremony uses for the first credential, extended to an Nth one.
+async function linkNewCredential() {
+  const uKey = state.applicant;
+  if (!uKey) return;
+  try {
+    const secret = mintClaimSecret();
+    const hash = await sha256Hex(secret);
+    const initiateReply = await submitOp(
+      "applicant",
+      {
+        operationType: "InitiateCredentialLink",
+        class: "identity",
+        reads: [uKey, uKey + ".state"],
+        payload: { linkKeyHash: hash },
+      },
+      { authContext: { target: uKey } }
+    );
+    if (initiateReply && initiateReply.status === "rejected") {
+      const msg = initiateReply.error ? `${initiateReply.error.code}: ${initiateReply.error.message}` : "rejected";
+      toast("Could not link a new method — " + msg, "err");
+      return;
+    }
+
+    const a2BareId = await sha256NanoID(bareId(uKey) + ":device:" + mintClaimSecret());
+    const a2Key = "vtx.identity." + a2BareId;
+    const completeOp = {
+      operationType: "CompleteCredentialLink",
+      class: "identity",
+      reads: [uKey, uKey + ".state"],
+      optionalReads: [uKey + ".linkKey", uKey + ".credentialBinding", "vtx.credentialindex." + (await sha256NanoID(a2Key))],
+      payload: { targetIdentityKey: uKey, linkKey: secret },
+      authContext: { target: a2Key },
+    };
+    let completeReply;
+    for (let attempt = 0; ; attempt++) {
+      completeReply = await postOpAsSubject(a2BareId, completeOp);
+      if (!isTransientAuthLag(completeReply) || attempt >= retryBackoffsMs.length) break;
+      await new Promise((resolve) => setTimeout(resolve, retryBackoffsMs[attempt]));
+    }
+    if (completeReply && completeReply.status === "rejected") {
+      const msg = completeReply.error ? `${completeReply.error.code}: ${completeReply.error.message}` : "rejected";
+      toast("Could not link a new method — " + msg, "err");
+      return;
+    }
+    toast("New sign-in method linked.", "ok");
+    setTimeout(loadAccount, 600);
+  } catch (e) {
+    toast("Could not link a new method: " + e.message, "err");
+  }
+}
+
 // ---- Object attach/detach: browser-direct (#75 Fire 2b increment 2) ----
 // The app's own /api/objects POST/DELETE used to submit AttachObject/DetachObject
 // itself, stamping a fixed admin actor over its NATS core-operations publish grant
@@ -732,6 +907,7 @@ function setApplicant(value) {
   if (state.view === "tasks") loadTasks(); // re-scope the inbox to the new applicant
   if (state.view === "renewals") loadRenewals(); // re-scope the renewal cycles to the new applicant
   if (state.view === "docs") loadDocsView(); // re-scope the documents to the new applicant
+  if (state.view === "account") loadAccount(); // re-scope sign-in methods to the new applicant
   if (state.mode === "landlord") {
     loadLandlord(); // re-scope the operator console to the new sign-in
     loadRenewals();
@@ -902,7 +1078,7 @@ async function submitNewApplicant(ev) {
 
 // ---- Tabs (Browse & Apply / My Applications / Tasks / Documents) ----
 
-const VIEWS = ["browse", "apps", "tasks", "renewals", "docs"];
+const VIEWS = ["browse", "apps", "tasks", "renewals", "docs", "account"];
 
 function showView(view) {
   state.view = view;
@@ -920,6 +1096,7 @@ function showView(view) {
   if (view === "tasks") loadTasks();
   if (view === "renewals") loadRenewals();
   if (view === "docs") loadDocsView();
+  if (view === "account") loadAccount();
 }
 
 // ---- Mode (Applicant / Landlord) ----
@@ -3824,10 +4001,13 @@ function init() {
   $("#tab-tasks").addEventListener("click", () => showView("tasks"));
   $("#tab-renewals").addEventListener("click", () => showView("renewals"));
   $("#tab-docs").addEventListener("click", () => showView("docs"));
+  $("#tab-account").addEventListener("click", () => showView("account"));
   $("#reload-apps").addEventListener("click", loadApplications);
   $("#reload-tasks").addEventListener("click", loadTasks);
   $("#reload-renewals").addEventListener("click", loadRenewals);
   $("#reload-docs").addEventListener("click", loadDocsView);
+  $("#reload-account").addEventListener("click", loadAccount);
+  $("#link-credential").addEventListener("click", linkNewCredential);
   $("#doc-scope").addEventListener("change", (e) => {
     state.docScope = e.target.value;
     syncUploadAvailability();

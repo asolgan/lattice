@@ -26,6 +26,7 @@
     <button id="tab-tasks" class="tab" role="tab" aria-selected="false" aria-controls="view-tasks">Tasks</button>
     <button id="tab-renewals" class="tab" role="tab" aria-selected="false" aria-controls="view-renewals">Renewals</button>
     <button id="tab-docs" class="tab" role="tab" aria-selected="false" aria-controls="view-docs">Documents</button>
+    <button id="tab-account" class="tab" role="tab" aria-selected="false" aria-controls="view-account">Account</button>
   </nav>
 
   <main>
@@ -127,6 +128,18 @@
 
       <div id="docs" class="grid grid-wide" aria-live="polite"></div>
       <div id="docs-empty" class="empty" hidden></div>
+    </section>
+
+    <!-- Account (manage sign-in methods) -->
+    <section id="view-account" role="tabpanel" aria-labelledby="tab-account" hidden>
+      <div class="panel-controls">
+        <button id="link-credential" type="button">＋ Link another sign-in method</button>
+        <button id="reload-account" class="ghost">Refresh</button>
+        <span id="account-summary" class="summary"></span>
+      </div>
+
+      <div id="account-credentials" class="grid grid-wide" aria-live="polite"></div>
+      <div id="account-empty" class="empty" hidden></div>
     </section>
 
     <!-- Landlord — my units -->

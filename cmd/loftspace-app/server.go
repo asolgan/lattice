@@ -71,6 +71,7 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/listings", s.handleListings)
 	mux.HandleFunc("/api/staff/identities", s.handleStaffIdentities)
 	mux.HandleFunc("/api/applications", s.handleApplications)
+	mux.HandleFunc("/api/credentials", s.handleCredentials)
 	mux.HandleFunc("/api/unit-applications", s.handleUnitApplications)
 	mux.HandleFunc("/api/landlord/applications", s.handleLandlordApplications)
 	mux.HandleFunc("/api/portfolio-pulse", s.handlePortfolioPulse)
