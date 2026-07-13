@@ -153,7 +153,7 @@ func TestPackage_EveryOpGrantsOnlyToConsoleOperatorScopeAny(t *testing.T) {
 		"ctrl.weaver.read", "ctrl.weaver.disable", "ctrl.weaver.enable", "ctrl.weaver.revoke",
 		"ctrl.loom.read", "ctrl.loom.pause", "ctrl.loom.resume",
 		"ctrl.refractor.read", "ctrl.refractor.rebuild", "ctrl.refractor.pause", "ctrl.refractor.resume",
-		"ctrl.refractor.delete", "ctrl.refractor.register", "ctrl.refractor.deregister",
+		"ctrl.refractor.delete", "ctrl.refractor.register", "ctrl.refractor.deregister", "ctrl.refractor.hydrate",
 		"InstallPackage", "UninstallPackage", "UpgradePackage",
 	}
 	if len(Package.Permissions) != len(want) {

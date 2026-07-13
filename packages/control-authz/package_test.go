@@ -37,8 +37,10 @@ func TestPackage_GrantOnlyNoDDLsOrLenses(t *testing.T) {
 	for _, d := range Package.Depends {
 		deps[d] = true
 	}
-	if !deps["rbac-domain"] {
-		t.Errorf("Depends = %v, want to include rbac-domain", Package.Depends)
+	for _, want := range []string{"rbac-domain", "identity-domain"} {
+		if !deps[want] {
+			t.Errorf("Depends = %v, want to include %q", Package.Depends, want)
+		}
 	}
 }
 
@@ -57,25 +59,30 @@ func TestPackage_DeclaresControlOperatorRoleDistinctFromPrimordialOperator(t *te
 	}
 }
 
-// TestPackage_EveryControlOpHasExactlyOneGrantToControlOperator pins the
-// full 14-permission ctrl.<component>.<verb> surface (4 weaver + 3 loom + 7
-// refractor — internal/controlauth's WeaverOps/LoomOps/RefractorOps) and that
-// every one grants only to control-operator, scope any.
-func TestPackage_EveryControlOpHasExactlyOneGrantToControlOperator(t *testing.T) {
-	want := []string{
+// TestPackage_EveryControlOpHasExpectedGrantees pins the full 15-permission
+// ctrl.<component>.<verb> surface (4 weaver + 3 loom + 8 refractor —
+// internal/controlauth's WeaverOps/LoomOps/RefractorOps): every op grants
+// scope=any, and every op grants to control-operator ALONE except the three
+// identity-bound Personal Lens ops (register/deregister/hydrate), which
+// additionally grant to consumer (§3.4-confined — see personalLensPermissions).
+func TestPackage_EveryControlOpHasExpectedGrantees(t *testing.T) {
+	wantSoleControlOperator := []string{
 		"ctrl.weaver.read", "ctrl.weaver.disable", "ctrl.weaver.enable", "ctrl.weaver.revoke",
 		"ctrl.loom.read", "ctrl.loom.pause", "ctrl.loom.resume",
 		"ctrl.refractor.read", "ctrl.refractor.rebuild", "ctrl.refractor.pause", "ctrl.refractor.resume",
-		"ctrl.refractor.delete", "ctrl.refractor.register", "ctrl.refractor.deregister",
+		"ctrl.refractor.delete",
 	}
-	if len(Package.Permissions) != len(want) {
-		t.Fatalf("Permissions = %d, want %d", len(Package.Permissions), len(want))
+	wantControlOperatorAndConsumer := []string{
+		"ctrl.refractor.register", "ctrl.refractor.deregister", "ctrl.refractor.hydrate",
+	}
+	if got, want := len(Package.Permissions), len(wantSoleControlOperator)+len(wantControlOperatorAndConsumer); got != want {
+		t.Fatalf("Permissions = %d, want %d", got, want)
 	}
 	got := make(map[string]pkgmgr.PermissionSpec, len(Package.Permissions))
 	for _, p := range Package.Permissions {
 		got[p.OperationType] = p
 	}
-	for _, op := range want {
+	for _, op := range wantSoleControlOperator {
 		p, ok := got[op]
 		if !ok {
 			t.Errorf("missing permission %q", op)
@@ -86,6 +93,23 @@ func TestPackage_EveryControlOpHasExactlyOneGrantToControlOperator(t *testing.T)
 		}
 		if len(p.GrantsTo) != 1 || p.GrantsTo[0] != "control-operator" {
 			t.Errorf("%s: GrantsTo = %v, want [control-operator]", op, p.GrantsTo)
+		}
+	}
+	for _, op := range wantControlOperatorAndConsumer {
+		p, ok := got[op]
+		if !ok {
+			t.Errorf("missing permission %q", op)
+			continue
+		}
+		if p.Scope != "any" {
+			t.Errorf("%s: scope = %q, want any", op, p.Scope)
+		}
+		grants := map[string]bool{}
+		for _, g := range p.GrantsTo {
+			grants[g] = true
+		}
+		if len(p.GrantsTo) != 2 || !grants["control-operator"] || !grants["consumer"] {
+			t.Errorf("%s: GrantsTo = %v, want [control-operator consumer]", op, p.GrantsTo)
 		}
 	}
 }

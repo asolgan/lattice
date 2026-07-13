@@ -85,6 +85,9 @@ declares:
     - operationType: ctrl.refractor.deregister
       scope: any
       grantsTo: [consoleOperator]
+    - operationType: ctrl.refractor.hydrate
+      scope: any
+      grantsTo: [consoleOperator]
     - operationType: InstallPackage
       scope: any
       grantsTo: [consoleOperator]
