@@ -2,8 +2,6 @@ package vault_test
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/rand"
 	"errors"
 	"sync"
@@ -387,15 +385,79 @@ func TestLocalBackend_IssueSessionKey_ReturnsTheSameDEKAsDecrypt(t *testing.T) {
 	require.NotEmpty(t, sk.Key)
 	assert.True(t, sk.ExpiresAt.After(time.Now()))
 
-	// Decrypt the ciphertext by hand under the issued session key exactly as
-	// an Edge node would — no call back to the Vault needed.
-	block, err := aes.NewCipher(sk.Key)
-	require.NoError(t, err)
-	gcm, err := cipher.NewGCM(block)
-	require.NoError(t, err)
-	opened, err := gcm.Open(nil, ct.Nonce, ct.CT, []byte("identity-1"))
+	// Decrypt the ciphertext under the issued session key exactly as an Edge
+	// node would (internal/edge/vault) — no call back to the Vault needed.
+	opened, err := vault.OpenWithSessionKey(sk.Key, "identity-1", ct)
 	require.NoError(t, err)
 	assert.Equal(t, plaintext, opened)
+}
+
+func TestOpenWithSessionKey_WrongIdentityKeyAAD_Denied(t *testing.T) {
+	ctx := context.Background()
+	b := newTestBackend(t)
+
+	env, err := b.CreateIdentityKey(ctx, "identity-1")
+	require.NoError(t, err)
+	ct, err := b.Encrypt(ctx, "identity-1", env, []byte("payload"))
+	require.NoError(t, err)
+	sk, err := b.IssueSessionKey(ctx, "identity-1", env, "", time.Minute)
+	require.NoError(t, err)
+
+	_, err = vault.OpenWithSessionKey(sk.Key, "identity-2", ct)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, vault.ErrDecryptFailed)
+}
+
+func TestOpenWithSessionKey_WrongSessionKey_Denied(t *testing.T) {
+	ctx := context.Background()
+	b := newTestBackend(t)
+
+	env, err := b.CreateIdentityKey(ctx, "identity-1")
+	require.NoError(t, err)
+	ct, err := b.Encrypt(ctx, "identity-1", env, []byte("payload"))
+	require.NoError(t, err)
+
+	wrongKey := make([]byte, 32)
+	_, err = rand.Read(wrongKey)
+	require.NoError(t, err)
+
+	_, err = vault.OpenWithSessionKey(wrongKey, "identity-1", ct)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, vault.ErrDecryptFailed)
+}
+
+func TestOpenWithSessionKey_TamperedCiphertext_Denied(t *testing.T) {
+	ctx := context.Background()
+	b := newTestBackend(t)
+
+	env, err := b.CreateIdentityKey(ctx, "identity-1")
+	require.NoError(t, err)
+	ct, err := b.Encrypt(ctx, "identity-1", env, []byte("payload"))
+	require.NoError(t, err)
+	sk, err := b.IssueSessionKey(ctx, "identity-1", env, "", time.Minute)
+	require.NoError(t, err)
+
+	ct.CT[0] ^= 0xFF
+	_, err = vault.OpenWithSessionKey(sk.Key, "identity-1", ct)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, vault.ErrDecryptFailed)
+}
+
+func TestOpenWithSessionKey_MalformedNonce_Denied(t *testing.T) {
+	ctx := context.Background()
+	b := newTestBackend(t)
+
+	env, err := b.CreateIdentityKey(ctx, "identity-1")
+	require.NoError(t, err)
+	ct, err := b.Encrypt(ctx, "identity-1", env, []byte("payload"))
+	require.NoError(t, err)
+	sk, err := b.IssueSessionKey(ctx, "identity-1", env, "", time.Minute)
+	require.NoError(t, err)
+
+	ct.Nonce = ct.Nonce[:len(ct.Nonce)-1]
+	_, err = vault.OpenWithSessionKey(sk.Key, "identity-1", ct)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, vault.ErrDecryptFailed)
 }
 
 // TestLocalBackend_IssueSessionKey_AfterShred_Denied is Gate-3 vector 5

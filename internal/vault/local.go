@@ -416,3 +416,25 @@ func newGCM(key []byte) (cipher.AEAD, error) {
 	}
 	return cipher.NewGCM(block)
 }
+
+// OpenWithSessionKey AEAD-opens ct under sessionKey — a SessionKey.Key
+// returned by IssueSessionKey — binding identityKey as associated data
+// exactly as LocalBackend.Decrypt does server-side. It is the local-decrypt
+// counterpart for a caller (the Edge Vault Proxy client, edge-lattice-full-
+// design.md §3.6, EDGE.4) that holds a session key but no live Vault
+// backend. Fails with ErrDecryptFailed on any authentication failure (wrong
+// key, tampered ciphertext, wrong identityKey, or a malformed nonce length).
+func OpenWithSessionKey(sessionKey []byte, identityKey string, ct Ciphertext) ([]byte, error) {
+	gcm, err := newGCM(sessionKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrDecryptFailed, err)
+	}
+	if len(ct.Nonce) != gcm.NonceSize() {
+		return nil, fmt.Errorf("%w: invalid nonce length: got %d, want %d", ErrDecryptFailed, len(ct.Nonce), gcm.NonceSize())
+	}
+	plaintext, err := gcm.Open(nil, ct.Nonce, ct.CT, []byte(identityKey))
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrDecryptFailed, err)
+	}
+	return plaintext, nil
+}
