@@ -478,7 +478,7 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 	// churn on a still-open human episode; §10.3 already bounds an external
 	// gap's retry by inflight_<g>/maxretries_<g> instead) and the claimId
 	// choice (below the pacing block).
-	confirmedConcluded := e.staleMark(targetID, row, gapColumn)
+	confirmedConcluded := e.staleMark(targetID, row, gapColumn, ga)
 
 	// Default per-key TTL backstop for the re-armed mark; widened below for a
 	// paced userTask reclaim.

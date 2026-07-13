@@ -291,7 +291,7 @@ func (e *Engine) dispatchGap(ctx context.Context, target *Target, targetID, enti
 	// mark's own fresh dispatch (before its own effects have reprojected into
 	// this row) — an in-memory CDC round trip, milliseconds, not the mark's
 	// lease (seconds to the production default of 30 minutes).
-	stale := found && !leaseLive(rec.LeaseExpiresAt, time.Now()) && e.staleMark(targetID, row, col)
+	stale := found && !leaseLive(rec.LeaseExpiresAt, time.Now()) && e.staleMark(targetID, row, col, ga)
 	return e.fireEpisode(ctx, targetID, entityID, entityKey, col, action, pl, msg.NumDelivered != 1, rec, markRev, found, stale)
 }
 
@@ -302,7 +302,26 @@ func (e *Engine) dispatchGap(ctx context.Context, target *Target, targetID, enti
 // citation and why an absent inflight_<g> column (the human userTask gaps)
 // makes this unconditionally false, leaving their reclaim untouched (claimId
 // preserved verbatim, per §10.3).
-func (e *Engine) staleMark(targetID string, row map[string]any, col string) bool {
+//
+// A declared inflight_<g> is only trustworthy for a gap whose playbook action
+// can actually make an external call with a later, outcome-driven conclusion
+// (directOp; proposedOp, since an Augur proposal's materialized inner action
+// is data-dependent and may itself be directOp — Contract #10 §10.8). The
+// userTask actions (assignTask, triggerLoom) and surface never have such an
+// outcome, so a lens declaring inflight_<g> alongside one of them is a lens-
+// authoring bug, not a real external gap — this mirrors the rec.Action class
+// check reconciler.go's reclaim does for backoff pacing, applied instead to
+// the playbook's static ga.Action. Trusting the marker anyway would let a
+// misauthored column silently reclassify a human episode's reclaim as an
+// external-gap stale-reconcile, dropping its §10.3 claimId-preservation
+// guarantee. On mismatch, the marker is ignored (treated as absent) and a
+// Health issue is raised on its own key (issueKeyInflightMismatch, never
+// issueKeyGap — planGap's success path unconditionally clears issueKeyGap
+// on every clean dispatch, which a reclaim always attempts right after this
+// check, so sharing that key would wipe the alert before the same pass ends);
+// the issue self-clears once staleMark next runs clean for this gap (e.g.
+// after a package fix removes the column or retargets the action).
+func (e *Engine) staleMark(targetID string, row map[string]any, col string, ga GapAction) bool {
 	g, ok := strings.CutPrefix(col, gapColumnPrefix)
 	if !ok {
 		return false
@@ -310,6 +329,14 @@ func (e *Engine) staleMark(targetID string, row map[string]any, col string) bool
 	if _, declared := row[inflightColumnPrefix+g]; !declared {
 		return false
 	}
+	key := issueKeyInflightMismatch(targetID, col)
+	if ga.Action != actionDirectOp && ga.Action != actionProposedOp {
+		e.alert(key, "error", "InflightActionMismatch",
+			"target "+targetID+": row column "+inflightColumnPrefix+g+" is declared but gap "+col+
+				"'s playbook action \""+ga.Action+"\" is not external-dispatch (directOp/proposedOp); ignoring the marker")
+		return false
+	}
+	e.issues.clear(key)
 	return !e.boolColumn(targetID, row, inflightColumnPrefix+g)
 }
 
@@ -972,6 +999,9 @@ func (e *Engine) alert(key, severity, code, message string) {
 
 func issueKeyGap(targetID, col string) string  { return "gap:" + targetID + "." + col }
 func issueKeyData(targetID, col string) string { return "data:" + targetID + "." + col }
+func issueKeyInflightMismatch(targetID, col string) string {
+	return "inflightMismatch:" + targetID + "." + col
+}
 func issueKeyEffect(targetID, gapColumn, actionRef string) string {
 	return "effect:" + targetID + "." + gapColumn + "." + actionRef
 }

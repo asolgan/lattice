@@ -690,6 +690,64 @@ func TestReclaim_StableUserTaskIdentity(t *testing.T) {
 	}
 }
 
+// TestSweep_InflightActionMismatchIgnoredForUserTaskGap proves the
+// staleMark/ga.Action cross-check: a triggerLoom gap has no external-call
+// outcome, so a lens mistakenly declaring its inflight_<g> companion column
+// (a package authoring bug) must NOT be trusted as proof the gap is a
+// concluded EXTERNAL gap. Before the cross-check, this mark would have been
+// misclassified confirmedConcluded=true and reclaimed with a FRESH claimId
+// (§10.3's external-gap behavior), collapsing the "retry" onto a new,
+// unrelated Loom instance and violating §10.3's claimId-verbatim rule for a
+// human userTask gap. The reclaim must instead preserve the mark's claimId
+// exactly like TestReclaim_StableUserTaskIdentity, and the mismatch must
+// surface as a Health issue rather than fail silently (FR29).
+func TestSweep_InflightActionMismatchIgnoredForUserTaskGap(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+
+	const targetID = "fixtureInflightMismatch"
+	const gap = "missing_onboarding"
+	const claimID = "Lk2Pn6mQrtwzKbcXvP3T"
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps:     map[string]GapAction{gap: {Action: actionTriggerLoom, Pattern: "onboardFlow", Subject: "row.entityKey"}},
+	})
+	h.engine.source.mu.Lock()
+	h.engine.source.patternMeta["onboardFlow"] = "vtx.meta." + testNanoID(t)
+	h.engine.source.mu.Unlock()
+
+	entityID := testNanoID(t)
+	key := markKey(targetID, entityID, gap)
+	// A misauthored lens: inflight_<g> declared on a triggerLoom gap, reading
+	// false (which, absent the cross-check, reads as "call concluded").
+	h.putRow(t, ctx, targetID, entityID, map[string]any{
+		"entityKey": "vtx.leaseApp." + entityID, "violating": true, gap: true, "inflight_onboarding": false,
+	})
+
+	m := fixtureMark(targetID, entityID, gap, "triggerLoom", pastLease())
+	m.ClaimID = claimID
+	h.putMark(t, ctx, key, m)
+	h.pass(ctx)
+	h.nextOp(t)
+
+	rec, _, found, err := h.engine.marks.get(ctx, targetID, entityID, gap)
+	if err != nil || !found {
+		t.Fatalf("re-armed mark missing: err=%v found=%v", err, found)
+	}
+	if rec.ClaimID != claimID {
+		t.Fatalf("a mismatched inflight_<g> must not mint a fresh claimId for a userTask gap: got %q want preserved %q",
+			rec.ClaimID, claimID)
+	}
+	if !hasIssueCode(h.engine.issues.snapshot(), "InflightActionMismatch") {
+		t.Fatalf("expected an InflightActionMismatch Health issue for the misdeclared column")
+	}
+}
+
 // TestReclaim_StableTaskId_AssignTask is the assignTask analogue of the proof
 // above: a SignLease assignTask gap reclaimed across two mark-lease expiries
 // re-dispatches CreateTask with the SAME claimId-derived taskId both times, so
