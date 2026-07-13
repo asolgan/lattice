@@ -58,7 +58,7 @@ experience, the FE Engineer builds it (UX-then-FE).
 | Task | Role (stream) | Cadence | Build-heavy lock |
 |---|---|---|---|
 | `steward-autonomous` | `steward` — **Lattice** advancer | hourly (`6 */1`) — intentional; the Lattice backlog is big | lattice |
-| `steward-verticals` | `steward` — **Verticals** advancer | odd hours (`42 1-23/2`) | verticals |
+| `steward-verticals` | `steward` — **Verticals** advancer | odd hours (`42 1-23/2`) | lattice |
 | `steward-loupe` | `steward` mechanics + `fe-engineer` — **Loupe** advancer (Stream 3) | every 4h (`17 0-20/4`) | loupe |
 | `ci-whetstone` | `whetstone` — cross-cutting CI-speed | 2×/day (`48 6,18`) | lattice |
 | `lattice-designer` | `designer` — Lattice design (readiness) | odd hours (`6 1-23/2`), pipelines before the Lattice advancer | none |
@@ -75,43 +75,36 @@ here — see "How these are used" above.
 tasks share, they landed within seconds of each other, separated only by the scheduler's own small dispatch
 jitter) — spread ~15-20 apart within the hour so a same-hour pair has real separation instead of a coin flip.
 
-### Concurrency: one lane-private lock per stream, not one fleet-wide lock
+### Concurrency: the lock is scoped to build-heavy roles, not the whole fleet
 
 This runs on a single 16GB dev Mac — Docker + the native service binaries + the Go toolchain + browser
 automation from even two concurrent fires is enough to exhaust memory and get the host to pause Claude/Chrome
-(happened twice). So every build-heavy role (touches Docker / runs `go build`/`go test` / holds a worktree —
-**`steward-autonomous`, `steward-verticals`, `steward-loupe`, `ci-whetstone`**) still coordinates with
-*something* — but not with the whole fleet. `lattice-designer`, `platform-surveyor`, and `vertical-po-discovery`
-are file-only (read code, edit a markdown lane file, `git commit`) — they were never part of the
-resource-contention problem, so they take no lock and run whenever their schedule fires.
+(happened multiple times — including 2026-07-12, when Verticals briefly got its own lane lock so it could fire
+alongside the Lattice Steward: Lattice + Verticals running concurrently proved too heavy for this Mac, and the
+split was reverted the same day). The actual risk is concentrated in the roles that touch Docker / run `go
+build`/`go test` / hold a worktree — **`steward-autonomous`, `steward-verticals`, `ci-whetstone`**.
+`lattice-designer`, `platform-surveyor`, and `vertical-po-discovery` are file-only (read code, edit a markdown
+lane file, `git commit`) — they were never part of the resource-contention problem, so a fleet-wide lock only
+cost them throughput for no safety benefit (this bit us directly: `steward-autonomous` runs hourly by design —
+the Lattice backlog is big — and a fleet-wide lock meant it was competing with *every* other role's slot, not
+just the two other build-heavy ones).
 
-**Each build-heavy stream gets its own lock, so the concurrency the swim-lane design actually calls for**
-(disjoint code + disjoint worktrees + disjoint lane files, `agentic-ops-swimlanes-design.md` §2/§7) **isn't
-blocked by a lock built for a different problem** (dev-machine RAM contention, not code collision):
-
-| Lock path | Held by | Lane |
-|---|---|---|
-| `/tmp/lattice-agentic-ops-build.lock` | `steward-autonomous`, `ci-whetstone` | Lattice (CI speed is cross-cutting platform work, shares the Lattice Steward's slot) |
-| `/tmp/lattice-verticals-build.lock` | `steward-verticals` | Verticals (Andrew's dispensation 2026-07-12, mirroring Loupe) |
-| `/tmp/lattice-loupe-build.lock` | `steward-loupe` | Loupe (Andrew's dispensation 2026-07-02) |
-
-Same mechanics for all three: `mkdir <path>` (atomic; fails if another holder of *that* lock already has it)
-before doing anything else, `rm -rf` on that same path as the last action, success or failure alike. A lock
-older than 90 minutes is treated as abandoned (a crashed/killed fire that never released) and reclaimed rather
-than wedging that lane. A role only ever touches its own lock — `steward-verticals` must never acquire the
-shared Lattice lock, and vice versa.
-
-Within the Lattice lock, `steward-autonomous` and `ci-whetstone` still fully serialize — that pairing is a real
-resource-contention concern and CI-speed work isn't its own stream. If you add an 8th scheduled role, give it a
-lock only if it actually builds/touches Docker, then decide which lock: more work on an existing stream's code
-joins that stream's lock; a genuinely new stream on disjoint code (like Verticals or Loupe) gets its own,
-mirroring this carve-out. `make up` / `make orchestration` separately detect an already-healthy stack and
-no-op instead of restarting it, so an ad-hoc `make up` from a stray worktree (or from a lock-free role like
-`vertical-po-discovery`, which can bring its own vertical up on a cold stack) is safe too. Jitter (above)
-reduces how often same-lock roles collide with each other; it doesn't eliminate it — a long fire can still be
-running when the next same-lock slot arrives, and that's fine, the clean no-op-and-retry is the backstop, not a
-failure mode. Running all 3 locks' fires at once trades the RAM headroom the original single lock bought for
-more throughput — the same trade Loupe's carve-out already made, now extended to Verticals.
+So: **those 3 build-heavy roles participate** in the mutual-exclusion lock: `mkdir
+/tmp/lattice-agentic-ops-build.lock` (atomic; fails if another of the 3 already holds it) before doing anything
+else, and `rm -rf` on that same path as its last action, success or failure alike. A lock older than 90 minutes
+is treated as abandoned (a crashed/killed fire that never released) and reclaimed rather than wedging that
+lane. **`steward-loupe` is the one build-heavy exception** — its `cmd/loupe/**` footprint is light enough to
+coexist, so it holds its own separate lock (`/tmp/lattice-loupe-build.lock`, Andrew's 2026-07-02 dispensation)
+instead of joining the shared one; that headroom does NOT generalize (see the Verticals attempt above) —
+default a new build-heavy role to the shared lock unless you have real evidence it's as light as Loupe. The
+other 3 roles run whenever their schedule fires, no coordination at all. If you add an 8th scheduled role, give
+it a lock only if it actually builds/touches Docker — the lock protects fires that ask for it, not
+ad-hoc/generic worktree sessions outside this fleet either way. `make up` / `make orchestration` separately
+detect an already-healthy stack and no-op instead of restarting it, so an ad-hoc `make up` from a stray
+worktree (or from a lock-free role like `vertical-po-discovery`, which can bring its own vertical up on a cold
+stack) is safe too. Jitter (above) reduces how often the 3 locked roles collide with each other; it doesn't
+eliminate it — a long fire can still be running when the next locked slot arrives, and that's fine, the clean
+no-op-and-retry is the backstop, not a failure mode.
 
 ### Commit attribution isn't automatic for scheduled fires
 
