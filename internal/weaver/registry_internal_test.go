@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asolgan/lattice/internal/guardgrammar"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -588,5 +589,232 @@ func TestValidateTarget_Goal(t *testing.T) {
 	}}
 	if err := validateTarget(bad); err == nil {
 		t.Fatalf("a malformed goal must reject the whole target")
+	}
+}
+
+// TestRegistry_HandleMalformedEnvelope proves the CDC ingestion path never
+// panics or partially registers on malformed input: a vertex whose envelope
+// body is not valid JSON is dropped without indexing a class, and an aspect
+// whose localName the registry does not route (neither "spec" nor "effects")
+// is ignored outright — no buffering, no index entry.
+func TestRegistry_HandleMalformedEnvelope(t *testing.T) {
+	t.Parallel()
+	s := newTestSource(t)
+
+	id := testNanoID(t)
+	s.handle(substrate.KVEvent{Key: "vtx.meta." + id, Value: []byte("not json")})
+	s.mu.Lock()
+	_, known := s.classes[id]
+	s.mu.Unlock()
+	if known {
+		t.Fatalf("a vertex with an unparseable envelope must not register a class")
+	}
+
+	id2 := testNanoID(t)
+	s.handle(vertexEvent(t, id2, weaverTargetClass))
+	body, err := json.Marshal(map[string]any{"class": "other", "data": map[string]any{}})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	s.handle(substrate.KVEvent{Key: "vtx.meta." + id2 + ".other", Value: body})
+	s.mu.Lock()
+	pending := len(s.pendingSpecs)
+	s.mu.Unlock()
+	if pending != 0 {
+		t.Fatalf("an unrouted aspect localName must not buffer, got %d pending entries", pending)
+	}
+}
+
+// TestRegistry_DispatchTargetMalformedSpec proves a malformed
+// meta.weaverTarget spec body is rejected loudly (an Error log + a
+// TargetRejected Health issue) rather than silently registering a broken
+// target: unwrap failure (the body isn't valid JSON at all) and unmarshal
+// failure (valid JSON, wrong shape for Target) both reject and never fire
+// loadCB.
+func TestRegistry_DispatchTargetMalformedSpec(t *testing.T) {
+	t.Parallel()
+	s := newTestSource(t)
+	var loaded int
+	s.setLoadCallback(func(*Target) { loaded++ })
+
+	id := testNanoID(t)
+	s.handle(vertexEvent(t, id, weaverTargetClass))
+
+	s.dispatchTarget(id, []byte("not json"))
+	if !hasIssueCode(s.issues.snapshot(), "TargetRejected") {
+		t.Fatalf("an unparseable spec body must raise a TargetRejected issue")
+	}
+
+	s.issues.clear("target:" + id)
+	s.dispatchTarget(id, []byte(`{"gaps": "not-a-map"}`))
+	if !hasIssueCode(s.issues.snapshot(), "TargetRejected") {
+		t.Fatalf("a spec body that fails to unmarshal into Target must raise TargetRejected")
+	}
+
+	if loaded != 0 {
+		t.Fatalf("a rejected target must never fire loadCB, got %d calls", loaded)
+	}
+}
+
+// TestRegistry_RemoveSpecFiresUpdateCB proves removeSpec's cleanup signal:
+// deleting a registered target's spec aspect fires updateCB with
+// (removed, nil) — the signal the lane-1 consumer reconcile depends on to
+// tear the target's consumer down.
+func TestRegistry_RemoveSpecFiresUpdateCB(t *testing.T) {
+	t.Parallel()
+	s := newTestSource(t)
+	id := testNanoID(t)
+	var oldSeen, newSeen *Target
+	var calls int
+	s.setUpdateCallback(func(old, new *Target) {
+		calls++
+		oldSeen, newSeen = old, new
+	})
+
+	s.handle(vertexEvent(t, id, weaverTargetClass))
+	s.handle(specEvent(t, id, targetSpecFixture("fixtureRemoveSpec")))
+	if _, ok := s.target("fixtureRemoveSpec"); !ok {
+		t.Fatalf("target must register before the delete")
+	}
+
+	s.handle(substrate.KVEvent{Key: "vtx.meta." + id + ".spec", IsDeleted: true})
+
+	if calls != 1 {
+		t.Fatalf("expected exactly 1 updateCB call on spec delete, got %d", calls)
+	}
+	if oldSeen == nil || oldSeen.TargetID != "fixtureRemoveSpec" {
+		t.Fatalf("updateCB's old argument must be the removed target, got %+v", oldSeen)
+	}
+	if newSeen != nil {
+		t.Fatalf("updateCB's new argument must be nil on a removal, got %+v", newSeen)
+	}
+}
+
+// TestRegistry_IndexPatternMalformedSpec proves a malformed meta.loomPattern
+// spec is dropped without panicking or registering a stale alias: unwrap
+// failure and unmarshal failure both leave the pattern index untouched.
+func TestRegistry_IndexPatternMalformedSpec(t *testing.T) {
+	t.Parallel()
+	s := newTestSource(t)
+	id := testNanoID(t)
+
+	s.indexPattern(id, []byte("not json"))
+	if _, ok := s.patternMetaKey(id); ok {
+		t.Fatalf("an unparseable pattern spec must not register")
+	}
+
+	s.indexPattern(id, []byte(`{"steps": {}, "patternId": 123}`))
+	if _, ok := s.patternMetaKey(id); ok {
+		t.Fatalf("a pattern spec that fails to unmarshal must not register")
+	}
+}
+
+// TestRegistry_IndexOpEffectsMalformedBody proves a malformed op-meta
+// .effects aspect body is dropped (defense-in-depth — pkgmgr already rejects
+// this shape at install time) rather than panicking or partially indexing:
+// unwrap failure and unmarshal failure both leave the op's effects catalog
+// entry absent.
+func TestRegistry_IndexOpEffectsMalformedBody(t *testing.T) {
+	t.Parallel()
+	s := newTestSource(t)
+	id := testNanoID(t)
+
+	s.indexOpEffects(id, substrate.KVEvent{Value: []byte("not json")})
+	s.mu.Lock()
+	_, has := s.opEffects[id]
+	s.mu.Unlock()
+	if has {
+		t.Fatalf("an unparseable effects body must not index")
+	}
+
+	s.indexOpEffects(id, substrate.KVEvent{Value: []byte(`{"guards": "not-a-list"}`)})
+	s.mu.Lock()
+	_, has = s.opEffects[id]
+	s.mu.Unlock()
+	if has {
+		t.Fatalf("an effects body that fails to unmarshal must not index")
+	}
+}
+
+// TestRegistry_GuardPathHelpers proves the guard-path helpers shared by
+// install-time validation and the oscillation detector: collectGuardPaths
+// (guardPaths) recurses through allOf/anyOf/not to collect every leaf path,
+// effectLeafPaths recurses through allOf but skips anyOf/not (neither can
+// name a definite written path), and formatPath renders both the root and
+// aspect-qualified path forms used in error messages.
+func TestRegistry_GuardPathHelpers(t *testing.T) {
+	t.Parallel()
+
+	nested, err := guardgrammar.Parse(json.RawMessage(`{
+		"allOf": [
+			{"present": "subject.data.applicant"},
+			{"anyOf": [
+				{"equals": {"path": "subject.profile.data.age", "value": 18}},
+				{"not": {"present": "subject.data.other"}}
+			]}
+		]
+	}`))
+	if err != nil {
+		t.Fatalf("parse nested guard: %v", err)
+	}
+
+	paths := guardPaths(nested)
+	if len(paths) != 3 {
+		t.Fatalf("collectGuardPaths must recurse through allOf/anyOf/not, got %d paths: %+v", len(paths), paths)
+	}
+
+	leaves := effectLeafPaths(nested)
+	if len(leaves) != 1 || leaves[0].Field != "applicant" {
+		t.Fatalf("effectLeafPaths must recurse allOf but skip anyOf/not children, got %+v", leaves)
+	}
+
+	if got := formatPath(guardgrammar.Path{Field: "applicant"}); got != "subject.data.applicant" {
+		t.Fatalf("formatPath root form: got %q", got)
+	}
+	if got := formatPath(guardgrammar.Path{Aspect: "profile", Field: "age"}); got != "subject.profile.data.age" {
+		t.Fatalf("formatPath aspect form: got %q", got)
+	}
+}
+
+// TestRegistry_UnwrapSpecBodyFallback proves unwrapSpecBody's third branch:
+// a body that carries neither the caller's sentinel field nor a "data"
+// wrapper is returned unchanged (the bare-body-as-is fallback), rather than
+// erroring or stripping content — the caller's own unmarshal is what
+// ultimately validates the shape.
+func TestRegistry_UnwrapSpecBodyFallback(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"foo":"bar"}`)
+	got, err := unwrapSpecBody(body, "guards")
+	if err != nil {
+		t.Fatalf("unwrapSpecBody must not error on the fallback shape: %v", err)
+	}
+	if string(got) != string(body) {
+		t.Fatalf("unwrapSpecBody fallback must return the body unchanged, got %q", got)
+	}
+}
+
+// TestRegistry_TargetMetaKeyAndOwnerVertexID_NotFound prove the not-found
+// path of both registry-read helpers: an unregistered targetId resolves to
+// ("", false) rather than a zero-value key that could be mistaken for a real
+// vtx.meta.<id>.
+func TestRegistry_TargetMetaKeyAndOwnerVertexID_NotFound(t *testing.T) {
+	t.Parallel()
+	s := newTestSource(t)
+	if key, ok := s.targetMetaKey("neverRegistered"); ok || key != "" {
+		t.Fatalf("targetMetaKey for an unregistered targetId must be (\"\", false), got (%q, %v)", key, ok)
+	}
+	if id, ok := s.ownerVertexID("neverRegistered"); ok || id != "" {
+		t.Fatalf("ownerVertexID for an unregistered targetId must be (\"\", false), got (%q, %v)", id, ok)
+	}
+}
+
+// TestNewTargetSource_NilLoggerDefaults proves newTargetSource falls back to
+// slog.Default() when constructed with a nil logger, rather than leaving a
+// nil *slog.Logger that would panic on first use.
+func TestNewTargetSource_NilLoggerDefaults(t *testing.T) {
+	t.Parallel()
+	s := newTargetSource(nil, "core-kv", "test", newIssueCache(), nil)
+	if s.logger == nil {
+		t.Fatalf("newTargetSource must default a nil logger to slog.Default()")
 	}
 }
