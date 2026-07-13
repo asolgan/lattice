@@ -188,7 +188,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Refinements & ops
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **CI pipeline speed (continuous)** | Make CI faster without weakening any gate — owned continuously by the **Whetstone**. Matrix split done (serial → 4 parallel jobs); convergence + unit parallelized; unit itself now sharded across 2 runners. | ★★ | M (ongoing) | 🏗️ continuous (Whetstone) · unit-1/unit-2 shard: ~145s total wall-clock vs ~237s single-runner unit (Done log) · next: caching / a slow-test trim, or a 3rd unit shard if either side grows past ~150s |
+| **CI pipeline speed (continuous)** | Make CI faster without weakening any gate — owned continuously by the **Whetstone**. Matrix split done (serial → 4 parallel jobs); convergence + unit parallelized; unit itself now sharded across 2 runners. | ★★ | M (ongoing) | 🏗️ continuous (Whetstone) · natsperm's 32 per-test embedded-NATS spins now `t.Parallel()` (69s→53s, Done log) but shard wall-clock held flat (~140s) — lease-signing/clinic-domain/identity-domain/processor are the real co-bottleneck now · next: trim those, or a 3rd unit shard |
 | **Hard-delete mutation verb (true link/aspect keyspace reclaim)** | Mutation vocab is create/update/tombstone (soft PUTs); a tombstoned key persists + is still enumerated by `kv.Links`. A 4th `delete` verb (NATS `DEL`) lets dead links leave the keyspace, bounding `kv.Links` LIST cost. | ★ | M | 🗄️ shelved (Andrew 2026-07-02) · [design + hold banner](../../implementation-artifacts/hard-delete-mutation-verb-design.md) · demand dissolved by clinic write-path slot claims; §3 edits reverted; revive only on a real reclaim driver |
 | **Script-read posture — declared+hydrated vs live `kv.get`/`kv.Links`** | Declared+hydrated reads as the write-path norm: `optionalReads` folds read-before-create in; `kv.Links` declared-as-metadata (Edge-gate + best-effort lint, not hydrated); guards become a generic Processor-side operation feature (supersedes Loom's engine read). | ★★ | L | ✅ Fires 1–2 shipped · [design §12](../../implementation-artifacts/script-read-posture-design.md) · Fire 3 (guards) deferred to its first consumer; debt sweep + warn→block flip SHIPPED `63aab49` |
 
@@ -207,6 +207,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-13 · `b56f155` · [CI] internal/natsperm's 32 per-test embedded-NATS conformance tests now `t.Parallel()` (69s→53s in CI, zero races); shard wall-clock unchanged, real bottleneck named
 - 2026-07-13 · `0b72492` · [rbac-domain] service-location cap.roles gap CLOSED — ground-truthed healthy live; added a regression test for recurrence
 - 2026-07-13 · `f1ce5bb` · [Weaver] inflight_<g>-as-external-gap-marker SHIPPED — staleMark cross-checks ga.Action vs directOp/proposedOp, InflightActionMismatch Health issue on mismatch; CI green
 - 2026-07-13 · `3c61feb` · [vault,edge] EDGE.4 increment 2 — `internal/edge/vault` client: session-key request+TTL-cache + local AEAD decrypt via new `vault.OpenWithSessionKey`; `Reader` composes over `overlay.Read`; CI green
