@@ -51,6 +51,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/asolgan/lattice/cmd/lattice/output"
@@ -98,7 +99,8 @@ func main() {
 
 	salt, err := substrate.NewNanoID()
 	must(err, "generate tenant email salt")
-	claimSum := mustSHA256Hex("edge-demo-tenant-" + salt)
+	claimKeyPlaintext := "edge-demo-tenant-" + salt
+	claimSum := mustSHA256Hex(claimKeyPlaintext)
 	tenantReply := submitOp(ctx, conn, adminKey, "CreateUnclaimedIdentity", "identity",
 		map[string]any{
 			"name":         "Demo Tenant " + salt[:8],
@@ -117,6 +119,22 @@ func main() {
 		map[string]any{"identity": tenantKey, "location": unitKey},
 		&processor.ContextHint{Reads: []string{tenantKey, unitKey}})
 	fmt.Println("==> wired:           tenant residesIn unit")
+
+	// facet-app-ux.md §3.0: "Fire 2's seed identity is always pre-claimed" —
+	// flip state directly as the admin operator (UpdateIdentityState,
+	// scope=any, GrantsTo:[operator]) rather than running the real
+	// ClaimIdentity ceremony: that op's own mutation unconditionally
+	// (re-)creates the tenant's holdsRole→consumer link (permissions.go's
+	// "grant consumer in the same commit" R1), which collides with the
+	// AssignRole above (RevisionConflict — a create expecting revision 0
+	// on a link this seed already created). UpdateIdentityState only
+	// touches .state, so it doesn't touch the role grant at all — correct
+	// for seeding topology (not proving the credential-claim ceremony,
+	// which the real LoftSpace/Clinic apply flows already cover).
+	submitOp(ctx, conn, adminKey, "UpdateIdentityState", "identity",
+		map[string]any{"identityKey": tenantKey, "newState": "claimed"},
+		&processor.ContextHint{Reads: []string{tenantKey, tenantKey + ".state"}})
+	fmt.Println("==> claimed:         tenant identity is now claimed")
 
 	// --- service template (backgroundCheck family, "Maple Laundry" branding) --
 
@@ -154,6 +172,11 @@ func main() {
 	fmt.Printf("    template: %s\n", templateKey)
 	fmt.Println("    A subsequent RequestService as the tenant, with authContext.service ==",
 		templateKey, ", is now authorized via the cap.svc availability grant once it projects.")
+
+	// Machine-readable line for `make up-facet` (facet-app-ux.md §7): the
+	// bare NanoID (not the full vtx.identity.<id> key) is what EDGE_IDENTITY_ID
+	// and `bin/gateway dev-token -sub <NanoID>` both expect.
+	fmt.Printf("FACET_TENANT_NANOID=%s\n", strings.TrimPrefix(tenantKey, "vtx.identity."))
 }
 
 // findRequestServiceOpMeta scans Core KV for the RequestService op-meta
@@ -185,6 +208,10 @@ func findRequestServiceOpMeta(ctx context.Context, conn *substrate.Conn) string 
 // setup path, not the Gateway) and fatals on a transport error, mirroring
 // verify-real-actor-write-auth.go's helper of the same name.
 func submitOp(ctx context.Context, conn *substrate.Conn, actorKey, operationType, class string, payload map[string]any, hint *processor.ContextHint) *processor.OperationReply {
+	return submitOpWithAuthContext(ctx, conn, actorKey, operationType, class, payload, hint, nil)
+}
+
+func submitOpWithAuthContext(ctx context.Context, conn *substrate.Conn, actorKey, operationType, class string, payload map[string]any, hint *processor.ContextHint, authContext *processor.AuthContext) *processor.OperationReply {
 	reqID, err := substrate.NewNanoID()
 	must(err, "generate requestId")
 	payloadBytes, err := json.Marshal(payload)
@@ -198,6 +225,7 @@ func submitOp(ctx context.Context, conn *substrate.Conn, actorKey, operationType
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Payload:       payloadBytes,
 		ContextHint:   hint,
+		AuthContext:   authContext,
 	}
 	reply, err := output.SubmitOp(ctx, conn, env)
 	must(err, "submit "+operationType)

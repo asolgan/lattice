@@ -69,17 +69,23 @@ type Config struct {
 	// applied it. A UI host uses this to react to deltas instead of polling
 	// overlay.Read per key (edge-showcase-app-design.md §7 Fire 0, G3).
 	OnChange func(key string, deleted bool)
+	// OnHydrationComplete, if set, is invoked from handle() when the
+	// terminal "hydrationComplete" delta for the cold bulk projection
+	// arrives — the signal a UI host uses to stop showing a loading state
+	// (facet-app-ux.md §2/§3.0: "nothing today tells a host process the
+	// initial catch-up is done").
+	OnHydrationComplete func(revision uint64)
 }
 
 // Manager is the Edge node's Sync Manager.
 type Manager struct {
-	conn   *substrate.Conn
-	store  *store.Store
-	cfg    Config
-	stream string
-	prefix string
+	conn    *substrate.Conn
+	store   *store.Store
+	cfg     Config
+	stream  string
+	prefix  string
 	durable string
-	logger *slog.Logger
+	logger  *slog.Logger
 }
 
 // New creates a Manager. Returns an error if cfg.IdentityID or cfg.DeviceID
@@ -311,6 +317,9 @@ func (m *Manager) handle(_ context.Context, msg substrate.Message) substrate.Dec
 		}
 	case "hydrationComplete":
 		m.logger.Info("edge/sync: hydration complete", "revision", env.Revision)
+		if m.cfg.OnHydrationComplete != nil {
+			m.cfg.OnHydrationComplete(env.Revision)
+		}
 	default:
 		m.logger.Warn("edge/sync: unknown delta op, cursor still advanced", "op", env.Op)
 	}

@@ -18,7 +18,8 @@ import (
 // package, and internal/gateway's shape is unexported. There is
 // deliberately no actor/submittedAt field: the Gateway stamps both itself
 // from the caller's verified Bearer token, ignoring anything a caller might
-// send.
+// send. AuthContext DOES forward (unlike actor/submittedAt) — it selects
+// which auth path step-3 evaluates (Contract #2 §2.8), not who the actor is.
 type gatewayOperationRequest struct {
 	RequestID     string                      `json:"requestId,omitempty"`
 	Lane          string                      `json:"lane,omitempty"`
@@ -28,6 +29,7 @@ type gatewayOperationRequest struct {
 	Reads         []string                    `json:"reads,omitempty"`
 	OptionalReads []string                    `json:"optionalReads,omitempty"`
 	Enumerations  []processor.EnumerationHint `json:"enumerations,omitempty"`
+	AuthContext   *processor.AuthContext      `json:"authContext,omitempty"`
 }
 
 type gatewayErrorBody struct {
@@ -69,6 +71,7 @@ func (g *GatewaySubmitter) Submit(ctx context.Context, env *processor.OperationE
 		req.OptionalReads = env.ContextHint.OptionalReads
 		req.Enumerations = env.ContextHint.Enumerations
 	}
+	req.AuthContext = env.AuthContext
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal gateway request: %w", err)

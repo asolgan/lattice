@@ -1,10 +1,18 @@
 name: edge-manifest
-version: 0.1.0
+version: 0.2.0
 description: |
   The Facet edge app's world manifest: five Personal Lenses (edgeIdentity/
   edgeServices/edgeCatalog/edgeTasks/edgeInstances) projecting identity,
   reachable services, the op descriptor vocabulary, open tasks, and service
   instances into the manifest.* namespace over the per-actor SYNC transport.
+  Plus edgeManifestReadGrants, a cap-read.edgeManifest.<actor> read-grant
+  producer lens (Fire 2): every non-self-anchored manifest row is otherwise
+  dropped by Refractor's D1 readableAnchors fail-closed gate, which is
+  never derived from the manifest lenses' own reachability. This is an
+  actorAggregate nats-kv lens (the same shape internal/bootstrap/lenses.go's
+  CapabilityReadLensDefinition uses at the kernel level, this package's own
+  instance of it) — not a Postgres GrantTable (that's Path A / RLS for
+  Protected reads, irrelevant here).
 depends:
   - identity-domain
   - orchestration-base
@@ -26,4 +34,7 @@ declares:
       engine: full
     - canonicalName: edgeInstances
       adapter: nats-subject
+      engine: full
+    - canonicalName: edgeManifestReadGrants
+      adapter: nats-kv
       engine: full

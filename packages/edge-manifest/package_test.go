@@ -33,29 +33,50 @@ func TestPackage_NoDDLsOrPermissions(t *testing.T) {
 	}
 }
 
-func TestPackage_FiveLenses(t *testing.T) {
-	if got := len(Package.Lenses); got != 5 {
-		t.Fatalf("expected 5 lenses, got %d", got)
+// manifestLensNames are the five Personal Lenses (edge-showcase-app-
+// design.md §3.2). readGrantLensName is their Fire 2 read-grant producer
+// (nats-kv, actorAggregate) — a structurally different class (never
+// Personal, never nats-subject) that TestPackage_LensesAreNatsSubjectPersonal/
+// TestPackage_LensRowKeysAreManifestNamespaced correctly exclude.
+var manifestLensNames = map[string]bool{
+	"edgeIdentity": true, "edgeServices": true, "edgeCatalog": true,
+	"edgeTasks": true, "edgeInstances": true,
+}
+
+const readGrantLensName = "edgeManifestReadGrants"
+
+func TestPackage_SixLenses(t *testing.T) {
+	if got := len(Package.Lenses); got != 6 {
+		t.Fatalf("expected 6 lenses (5 manifest + 1 read-grant producer), got %d", got)
 	}
 	names := map[string]bool{}
 	for _, l := range Package.Lenses {
 		names[l.CanonicalName] = true
 	}
-	for _, want := range []string{"edgeIdentity", "edgeServices", "edgeCatalog", "edgeTasks", "edgeInstances"} {
+	for want := range manifestLensNames {
 		if !names[want] {
 			t.Fatalf("missing lens %q (have %v)", want, names)
 		}
 	}
+	if !names[readGrantLensName] {
+		t.Fatalf("missing lens %q (have %v)", readGrantLensName, names)
+	}
 }
 
 // TestPackage_LensesAreNatsSubjectPersonal pins the Personal Lens transport
-// shape every edge-manifest lens must share (edge-showcase-app-design.md
-// §3.1): nats-subject adapter, the shared SYNC stream + lattice.sync.user
-// subject prefix, Personal:true fan-out, and __actor present in IntoKey
+// shape every MANIFEST lens must share (edge-showcase-app-design.md §3.1):
+// nats-subject adapter, the shared SYNC stream + lattice.sync.user subject
+// prefix, Personal:true fan-out, and __actor present in IntoKey
 // (bucketguard.go enforces this at build time — this test pins the intent
-// so a future lens addition doesn't silently omit it).
+// so a future lens addition doesn't silently omit it). The read-grant
+// producer lens is a deliberately different shape (nats-kv, actorAggregate
+// — see TestPackage_ReadGrantLensIsActorAggregateNatsKV) and is excluded
+// here.
 func TestPackage_LensesAreNatsSubjectPersonal(t *testing.T) {
 	for _, l := range Package.Lenses {
+		if !manifestLensNames[l.CanonicalName] {
+			continue
+		}
 		if l.Adapter != "nats-subject" {
 			t.Errorf("%s: adapter = %q, want nats-subject", l.CanonicalName, l.Adapter)
 		}
@@ -80,10 +101,51 @@ func TestPackage_LensesAreNatsSubjectPersonal(t *testing.T) {
 	}
 }
 
-// TestPackage_LensRowKeysAreManifestNamespaced pins that every lens's first
-// non-actor RETURN column is a literal "manifest.<ns>" string (the
-// buildKey dot-join anchor) — the reserved namespace edge/store.go's
-// isStorableKey exemption recognizes.
+// TestPackage_ReadGrantLensIsActorAggregateNatsKV pins the read-grant
+// producer shape (Fire 2): nats-kv adapter into the shared "capability"
+// bucket, ProjectionKind "actorAggregate" with a §6.13 Output descriptor
+// targeting "cap-read.edgeManifest.{actorSuffix}" — the same declarative
+// shape internal/bootstrap/lenses.go's CapabilityReadLensDefinition uses at
+// the kernel level, this package's own instance of it (Path B — gates
+// Personal Lens publication via capabilityread.IsReadable — NOT the
+// Postgres GrantTable shape packages/console-operator/clinic-domain use,
+// which is Path A / RLS for Protected postgres reads and irrelevant here).
+func TestPackage_ReadGrantLensIsActorAggregateNatsKV(t *testing.T) {
+	var found *pkgmgr.LensSpec
+	for i := range Package.Lenses {
+		if Package.Lenses[i].CanonicalName == readGrantLensName {
+			found = &Package.Lenses[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("lens %q not found", readGrantLensName)
+	}
+	if found.Adapter != "nats-kv" {
+		t.Errorf("adapter = %q, want nats-kv", found.Adapter)
+	}
+	if found.Bucket != "capability-kv" {
+		t.Errorf("bucket = %q, want capability-kv", found.Bucket)
+	}
+	if found.ProjectionKind != "actorAggregate" {
+		t.Errorf("ProjectionKind = %q, want actorAggregate", found.ProjectionKind)
+	}
+	if found.Output == nil {
+		t.Fatal("Output descriptor is nil")
+	}
+	if found.Output.OutputKeyPattern != "cap-read.edgeManifest.{actorSuffix}" {
+		t.Errorf("OutputKeyPattern = %q, want cap-read.edgeManifest.{actorSuffix}", found.Output.OutputKeyPattern)
+	}
+	if found.Personal {
+		t.Error("Personal = true, want false (actorAggregate uses its own $actorKey re-execution, not the nats-subject Personal flag)")
+	}
+}
+
+// TestPackage_LensRowKeysAreManifestNamespaced pins that every MANIFEST
+// lens's first non-actor RETURN column is a literal "manifest.<ns>" string
+// (the buildKey dot-join anchor) — the reserved namespace edge/store.go's
+// isStorableKey exemption recognizes. The read-grant producer lens has no
+// `ns`/manifest-key column at all (a different RETURN shape entirely) and
+// is excluded.
 func TestPackage_LensRowKeysAreManifestNamespaced(t *testing.T) {
 	want := map[string]string{
 		"edgeIdentity":  `"manifest.me" AS ns`,
@@ -93,6 +155,9 @@ func TestPackage_LensRowKeysAreManifestNamespaced(t *testing.T) {
 		"edgeInstances": `"manifest.inst" AS ns`,
 	}
 	for _, l := range Package.Lenses {
+		if l.CanonicalName == readGrantLensName {
+			continue
+		}
 		lit, ok := want[l.CanonicalName]
 		if !ok {
 			t.Fatalf("unexpected lens %q", l.CanonicalName)

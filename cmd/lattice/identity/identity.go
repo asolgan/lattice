@@ -199,6 +199,12 @@ Read payload from --payload @file.json or stdin (-).`,
 				Actor:         actor,
 				SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 				Payload:       json.RawMessage(payloadBytes),
+				// ClaimIdentity's scope=self is enforced at step 3 via a
+				// self-match gate (authContext.target == actor) — omitting
+				// this rejects with AuthDenied/NoCapabilityEntry regardless
+				// of role grants (packages/identity-domain/permissions.go,
+				// claim_test.go's TestClaimIdentity_Success).
+				AuthContext: &processor.AuthContext{Target: actor},
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

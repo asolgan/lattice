@@ -93,8 +93,18 @@ func run(logger *slog.Logger) error {
 	defer stop()
 
 	conn, err := substrate.Connect(ctx, substrate.ConnectOpts{
-		URL:           natsURL,
-		Name:          "edge-" + identityID + "-" + deviceID,
+		URL: natsURL,
+		// Must be the BARE device id: natsauth.go's Handle reads
+		// req.ClientInformation.Name (this CONNECT option) directly as
+		// deviceID and splices it into the allowed durable-consumer subject
+		// as fmt.Sprintf("edge-sync-%s-%s", identityID, deviceID)
+		// (PermissionsFor), matching sync.Manager's own
+		// "edge-sync-"+IdentityID+"-"+DeviceID durable name exactly. A
+		// composite "edge-<id>-<device>" string here breaks that match
+		// (permissions violation on $JS.API.CONSUMER.CREATE) — found live
+		// running cmd/facet against natsauth for the first time
+		// (edge-showcase-app-design.md Fire 2); this node shares the bug.
+		Name:          deviceID,
 		MaxReconnects: -1,
 		ReconnectWait: 2 * time.Second,
 		Token:         token,

@@ -35,7 +35,7 @@ already have on the nats-kv side).
 |---|---|---|
 | `edgeIdentity` | `manifest.me` | the actor's own identity — display name, claimed status, roles, residence anchors |
 | `edgeServices` | `manifest.svc.<tplId>` | service templates reachable via the actor's residence → `containedIn*` → `availableAt` chain |
-| `edgeCatalog` | `manifest.op.<opMetaId>` | op metas reachable via a reachable service template's `permitsOperation` link |
+| `edgeCatalog` | `manifest.op.<opMetaId>` | op metas reachable via a reachable service template's `permitsOperation` link; carries `viaServices` (Fire 2), the list of service keys that permit it — a pattern comprehension mirroring `service-location/lenses.go`'s `allowedOperations`, not a WITH/collect grouping stage |
 | `edgeTasks` | `manifest.task.<taskId>` | tasks directly `assignedTo` the actor and still open |
 | `edgeInstances` | `manifest.inst.<instId>` | service instances `providedTo` the actor ("my orders") |
 
@@ -68,10 +68,11 @@ is expected, not a bug — the renderer obligation is the same one `my-tasks.*` 
 
 ## Status
 
-**Fire 0 + Fire 1 increment 1 + Fire 1 increment 2 shipped.** Structural install verified
-(`make verify-package-edge-manifest`) and every lens's cypher parses under the real `ruleengine/full`
-engine (`packages/edge-manifest/package_test.go`); a live projection e2e (a seeded tenant actually
-receiving all five row kinds over `lattice.sync.user.<actor>`) is Fire 2's job, per
-`edge-showcase-app-design.md` §7's Fire 1 green bar — the seed data (`make seed-edge-demo`: a laundry
-service template, an `availableAt` building, a tenant `residesIn` it, a `permitsOperation` grant) that
-would exercise it end-to-end is not yet built; see the board row for the current checkpoint.
+**Fire 0 + Fire 1 (incl. `make seed-edge-demo`'s demo topology) + Fire 2 shipped.** Structural install
+verified (`make verify-package-edge-manifest`) and every lens's cypher parses under the real
+`ruleengine/full` engine (`packages/edge-manifest/package_test.go`, including the Fire 2 `viaServices`
+addition). The live projection e2e — a seeded tenant actually receiving all five row kinds over
+`lattice.sync.user.<actor>` and completing the full write path — is proven in-browser against `cmd/facet`
+(`make up-facet`); see `facet-app-ux.md` §5 for the walkthrough. `make seed-edge-demo` now also claims the
+seeded tenant (`ClaimIdentity`, submitted as the tenant itself) so `manifest.me.claimed` is true from the
+first hydrate, per `facet-app-ux.md` §3.0.

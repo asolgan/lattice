@@ -1,0 +1,270 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"net/http"
+	"sync"
+	"time"
+
+	"github.com/asolgan/lattice/internal/edge/agent"
+	"github.com/asolgan/lattice/internal/edge/overlay"
+	"github.com/asolgan/lattice/internal/processor"
+)
+
+// frame is one SSE event pushed to every connected browser tab. kind selects
+// the SSE `event:` name the browser's EventSource listens on
+// (facet-app-ux.md §4's "the SSE stream is the only data path"):
+//
+//   - "manifest" — a manifest.* row changed (or, on (re)connect, the initial
+//     snapshot replayed as a burst of these). Carries the overlay-merged
+//     value (Pending included) so a locally-queued write shows immediately.
+//   - "outbox"   — one Outbox entry's lifecycle state changed
+//     (queued/submitting/confirmed/rejected, §3.4a/b).
+//   - "ready"    — the cold hydration catch-up finished (§3.0's "Hydrating"
+//     → "Home" transition signal).
+type frame struct {
+	Kind     string          `json:"-"`
+	Key      string          `json:"key,omitempty"`
+	Deleted  bool            `json:"deleted,omitempty"`
+	Pending  bool            `json:"pending,omitempty"`
+	Data     json.RawMessage `json:"data,omitempty"`
+	Revision uint64          `json:"revision,omitempty"`
+	Outbox   *outboxEntry    `json:"outbox,omitempty"`
+}
+
+// outboxEntry mirrors facet-app-ux.md §3.4a: one enqueued write and its
+// lifecycle. Payload/Reads/OptionalReads/AuthContext are retained so the
+// browser can rebuild the exact envelope for Retry, or reopen the
+// descriptor form pre-filled for Review (§3.4b) without re-deriving
+// anything server-side.
+type outboxEntry struct {
+	RequestID     string                 `json:"requestId"`
+	OperationType string                 `json:"operationType"`
+	Payload       json.RawMessage        `json:"payload"`
+	Reads         []string               `json:"reads,omitempty"`
+	OptionalReads []string               `json:"optionalReads,omitempty"`
+	AuthContext   *processor.AuthContext `json:"authContext,omitempty"`
+	State         string                 `json:"state"` // queued|submitting|confirmed|rejected
+	ErrorCode     string                 `json:"errorCode,omitempty"`
+	ErrorMessage  string                 `json:"errorMessage,omitempty"`
+	CreatedAt     time.Time              `json:"createdAt"`
+}
+
+// maxOutboxEntries bounds the in-memory outbox map (never persisted across
+// restart — a fresh process just starts empty, same as the local mirror
+// would on a fresh EDGE_STORE_PATH). A long-running dev host trims the
+// oldest terminal (confirmed/rejected) entries past this cap rather than
+// growing unbounded.
+const maxOutboxEntries = 200
+
+// feed is the SSE broadcaster + the Outbox's server-side state. One per
+// process; safe for concurrent use from the sync Manager's callback
+// goroutine, the agent's drain loop, and every connected SSE handler.
+type feed struct {
+	mu      sync.Mutex
+	subs    map[chan frame]struct{}
+	outbox  map[string]*outboxEntry
+	outboxQ []string // insertion order, for trimming
+}
+
+func newFeed() *feed {
+	return &feed{
+		subs:   make(map[chan frame]struct{}),
+		outbox: make(map[string]*outboxEntry),
+	}
+}
+
+func (f *feed) subscribe() chan frame {
+	ch := make(chan frame, 32)
+	f.mu.Lock()
+	f.subs[ch] = struct{}{}
+	f.mu.Unlock()
+	return ch
+}
+
+func (f *feed) unsubscribe(ch chan frame) {
+	f.mu.Lock()
+	delete(f.subs, ch)
+	f.mu.Unlock()
+}
+
+func (f *feed) publish(fr frame) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for ch := range f.subs {
+		select {
+		case ch <- fr:
+		default:
+			// A slow/stuck client drops frames rather than blocking every
+			// other subscriber or the caller (the sync Manager's own
+			// delivery goroutine) — its next reconnect gets a fresh
+			// snapshot anyway (facet-app-ux.md §4).
+		}
+	}
+}
+
+// publishManifestKey re-reads key through the overlay (merging any pending
+// optimistic value) and publishes its current state — used both for a live
+// OnChange delta and for the initial snapshot replay, so the two code paths
+// can't drift.
+func (f *feed) publishManifestKey(ov *overlay.Overlay, key string, deleted bool) {
+	v, ok, err := ov.Read(key)
+	if err != nil || !ok {
+		f.publish(frame{Kind: "manifest", Key: key, Deleted: true})
+		return
+	}
+	f.publish(frame{Kind: "manifest", Key: key, Deleted: v.Deleted, Pending: v.Pending, Data: v.Data})
+}
+
+func (f *feed) publishReady(revision uint64) {
+	f.publish(frame{Kind: "ready", Revision: revision})
+}
+
+// enqueueOutbox records a freshly-queued write and publishes its initial
+// "queued" frame.
+func (f *feed) enqueueOutbox(e *outboxEntry) {
+	f.mu.Lock()
+	f.outbox[e.RequestID] = e
+	f.outboxQ = append(f.outboxQ, e.RequestID)
+	f.trimOutboxLocked()
+	f.mu.Unlock()
+	f.publish(frame{Kind: "outbox", Outbox: e})
+}
+
+// setOutboxState updates a tracked entry's lifecycle state and publishes
+// the change. A requestId with no tracked entry (e.g. a stale queued intent
+// from a prior process lifetime, drained after a restart) is a silent
+// no-op — there is no browser tab to tell anyway.
+func (f *feed) setOutboxState(requestID, state, errCode, errMsg string) {
+	f.mu.Lock()
+	e, ok := f.outbox[requestID]
+	if ok {
+		e.State = state
+		e.ErrorCode = errCode
+		e.ErrorMessage = errMsg
+	}
+	f.mu.Unlock()
+	if ok {
+		f.publish(frame{Kind: "outbox", Outbox: e})
+	}
+}
+
+// snapshotOutbox returns every tracked entry (a page refresh's "what's
+// still in flight" replay, §3.0/§3.4).
+func (f *feed) snapshotOutbox() []*outboxEntry {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]*outboxEntry, 0, len(f.outbox))
+	for _, id := range f.outboxQ {
+		if e, ok := f.outbox[id]; ok {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// trimOutboxLocked drops the oldest terminal (confirmed/rejected) entries
+// once the map exceeds maxOutboxEntries. Caller holds f.mu.
+func (f *feed) trimOutboxLocked() {
+	for len(f.outboxQ) > maxOutboxEntries {
+		id := f.outboxQ[0]
+		e, ok := f.outbox[id]
+		if ok && (e.State == "confirmed" || e.State == "rejected") {
+			delete(f.outbox, id)
+			f.outboxQ = f.outboxQ[1:]
+			continue
+		}
+		// Oldest entry is still in flight — stop trimming rather than
+		// dropping a queued/submitting entry the UI still needs to see.
+		break
+	}
+}
+
+// writeSSE serves GET /api/feed: replays a full manifest snapshot + the
+// current outbox, then streams live frames until the client disconnects.
+func writeSSE(w http.ResponseWriter, r *http.Request, logger *slog.Logger, fd *feed, snapshot func() []frame) {
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+
+	ch := fd.subscribe()
+	defer fd.unsubscribe(ch)
+
+	for _, fr := range snapshot() {
+		writeFrame(w, fr)
+	}
+	for _, e := range fd.snapshotOutbox() {
+		writeFrame(w, frame{Kind: "outbox", Outbox: e})
+	}
+	fl.Flush()
+
+	ctx := r.Context()
+	ping := time.NewTicker(20 * time.Second)
+	defer ping.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case fr := <-ch:
+			writeFrame(w, fr)
+			fl.Flush()
+		case <-ping.C:
+			// SSE comment line — keeps intermediary proxies/browsers from
+			// timing out an idle connection; ignored by EventSource.
+			_, _ = w.Write([]byte(": ping\n\n"))
+			fl.Flush()
+		}
+	}
+}
+
+func writeFrame(w http.ResponseWriter, fr frame) {
+	data, err := json.Marshal(fr)
+	if err != nil {
+		return
+	}
+	_, _ = w.Write([]byte("event: " + fr.Kind + "\ndata: "))
+	_, _ = w.Write(data)
+	_, _ = w.Write([]byte("\n\n"))
+}
+
+// trackingSubmitter decorates a real agent.Submitter with Outbox lifecycle
+// tracking (queued is set by the enqueue handler before Enqueue; this
+// wrapper covers submitting/confirmed/rejected) — a pure decorator so
+// internal/edge/agent needs no changes for facet's UI-facing state (that
+// package deliberately has no "on success" hook; see agent.go's resolve()).
+type trackingSubmitter struct {
+	inner agent.Submitter
+	feed  *feed
+}
+
+func (t *trackingSubmitter) Submit(ctx context.Context, env *processor.OperationEnvelope) (*processor.OperationReply, error) {
+	t.feed.setOutboxState(env.RequestID, "submitting", "", "")
+	reply, err := t.inner.Submit(ctx, env)
+	if err != nil {
+		// Transport failure (Gateway/NATS unreachable) — not a business
+		// rejection. Revert to queued so the next Drain tick retries and
+		// the Outbox keeps showing "Queued", per facet-app-ux.md §5 step 4
+		// (offline queue, no user action required on reconnect).
+		t.feed.setOutboxState(env.RequestID, "queued", "", "")
+		return reply, err
+	}
+	switch reply.Status {
+	case processor.ReplyStatusAccepted, processor.ReplyStatusDuplicate:
+		t.feed.setOutboxState(env.RequestID, "confirmed", "", "")
+	case processor.ReplyStatusRejected:
+		code, msg := "", ""
+		if reply.Error != nil {
+			code, msg = string(reply.Error.Code), reply.Error.Message
+		}
+		t.feed.setOutboxState(env.RequestID, "rejected", code, msg)
+	}
+	return reply, err
+}

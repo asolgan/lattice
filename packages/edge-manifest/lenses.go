@@ -5,15 +5,45 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Lenses returns the package's five Personal-Lens declarations
 // (edge-showcase-app-design.md §3.2) — the first real `nats-subject` /
 // Personal Lens package in the repo (the adapter plumbing shipped latent in
-// Fire 0; this is its first production consumer). Every lens is
-// Personal:true (Refractor's cross-vertex fan-out re-executes the cypher
-// once per reachable identity, binding $actorKey to that identity's own
-// key — personal-secure-lens-design.md §3.3), delivers over the shared
-// `lattice.sync.user.<actor>` subject (SubjectPrefix/Stream), and keys its
-// rows under the reserved `manifest.` namespace via IntoKey's dot-join
-// (edge/store.go's ApplyUpsert/ApplyDelete carry a matching exemption for
-// this prefix, since a `manifest.*` key is a projection-row key, not a
-// Contract #1 key).
+// Fire 0; this is its first production consumer) — plus ONE read-grant
+// PRODUCER lens, edgeManifestReadGrants (Fire 2 fix, added building
+// cmd/facet): every non-self-anchored Personal Lens row (edgeServices/
+// edgeCatalog/edgeTasks/edgeInstances each anchor on a vertex OTHER than the
+// recipient identity — a service template, op meta, task, or instance) is
+// silently dropped by Refractor's D1 `readableAnchors` fail-closed gate
+// (internal/refractor/projection/personal.go's personalEnvelopeFn calls
+// capabilityread.IsReadable, which reads the NATS-KV "capability" bucket's
+// per-actor `cap-read.<domain>.<actor>` documents — Contract #6 §6.14 Path
+// B — NOT the Postgres actor_read_grants table a `GrantTable:true` lens
+// feeds (Path A, RLS enforcement for Protected postgres reads; irrelevant
+// here since edge-manifest has no Postgres/Protected lens at all). This
+// gate is orthogonal to — and never derived from — the manifest lenses' own
+// cypher reachability (internal/bootstrap/lenses.go's
+// CapabilityReadLensDefinition doc: "each package ships its own
+// cap-read.<domain>... lens for the relationships it owns"). Fire 1 shipped
+// the five manifest lenses without this read-grant half, which is why only
+// edgeIdentity's self-anchored manifest.me ever reached a live tenant.
+// edgeManifestReadGrants is edge-manifest's own
+// `ProjectionKind:"actorAggregate"` + nats-kv `Output` descriptor lens —
+// the SAME declarative shape internal/bootstrap/lenses.go's
+// CapabilityReadLensDefinition uses at the kernel level, just the first
+// PACKAGE to use it (every existing package cap-read producer —
+// console-operator, clinic-domain — is the OTHER kind, a Postgres
+// GrantTable feeding Path A; this is Path B, and edge-manifest is Path B's
+// first package producer). One combined `cap-read.edgeManifest.<actor>`
+// slice covers all four non-self anchor kinds (service/op/task/instance) —
+// no need for four separate lenses, since the actor's effective readable
+// set is already a union over every slice class, and one slice may itself
+// list many anchors.
+//
+// Every Personal-Lens cypher below is Personal:true (Refractor's
+// cross-vertex fan-out re-executes the cypher once per reachable identity,
+// binding $actorKey to that identity's own key — personal-secure-lens-
+// design.md §3.3), delivers over the shared `lattice.sync.user.<actor>`
+// subject (SubjectPrefix/Stream), and keys its rows under the reserved
+// `manifest.` namespace via IntoKey's dot-join (edge/store.go's
+// ApplyUpsert/ApplyDelete carry a matching exemption for this prefix, since
+// a `manifest.*` key is a projection-row key, not a Contract #1 key).
 //
 // $actorKey is NOT the "current identity" for actor-aggregate lenses (those
 // bind $actorKey to whichever vertex was mutated); for a Personal:true lens
@@ -90,6 +120,23 @@ func Lenses() []pkgmgr.LensSpec {
 			Engine:        "full",
 			IntoKey:       []string{"__actor", "ns", "entityId"},
 			Spec:          edgeInstancesSpec,
+		},
+		{
+			CanonicalName:  "edgeManifestReadGrants",
+			Class:          "meta.lens",
+			Adapter:        "nats-kv",
+			Bucket:         "capability-kv",
+			Engine:         "full",
+			ProjectionKind: "actorAggregate",
+			Output: &pkgmgr.OutputDescriptorSpec{
+				AnchorType:       "identity",
+				OutputKeyPattern: "cap-read.edgeManifest.{actorSuffix}",
+				BodyColumns:      []string{"readableAnchors"},
+				EmptyBehavior:    "delete",
+				Freshness:        "auto",
+				Lanes:            []string{"default"},
+			},
+			Spec: edgeManifestReadGrantsSpec,
 		},
 	}
 }
@@ -171,6 +218,15 @@ RETURN
 // fields null, per §3.3 "ops without descriptors still render, degraded").
 // v1 scope: the service-permitsOperation path only (see the package doc
 // comment above for the two deferred paths).
+//
+// viaServices (added Fire 2, facet-app-ux.md §3.3 Service detail) answers
+// "which service(s) offer this op" without a WITH/collect grouping stage —
+// it reuses the pattern-comprehension-in-RETURN form service-location/
+// lenses.go's `allowedOperations` already proves parses under this engine,
+// just walked in the reverse direction from `op`. This is presentation
+// only (design §4.5: the manifest affects visibility, never permission),
+// so a global (not actor-scoped) permitsOperation fan-in is an acceptable
+// v1 narrowing, same class as the other named scope-downs above.
 const edgeCatalogSpec = `
 MATCH (identity:identity {key: $actorKey})
 OPTIONAL MATCH (identity)-[:residesIn]->(home)-[:containedIn*0..]->(container)
@@ -198,7 +254,8 @@ RETURN
   op.dispatch.data.targetField AS dispatchTargetField,
   op.dispatch.data.contextParams AS dispatchContextParams,
   op.dispatch.data.reads AS dispatchReads,
-  op.sensitive.data.value AS sensitive
+  op.sensitive.data.value AS sensitive,
+  [(op)<-[:permitsOperation]-(svc:service) | svc.key] AS viaServices
 `
 
 // edgeTasksSpec projects one `manifest.task.<taskId>` row per task directly
@@ -245,4 +302,37 @@ RETURN
   (CASE WHEN inst.outcome.data.status <> null THEN inst.outcome.data.status ELSE "open" END) AS status,
   inst.outcome.data.status AS outcome,
   inst.outcome.data.completedAt AS completedAt
+`
+
+// edgeManifestReadGrantsSpec is edge-manifest's single combined read-grant
+// producer for all four non-self-anchored manifest lenses (edgeServices,
+// edgeCatalog, edgeTasks, edgeInstances) — an actorAggregate lens mirroring
+// internal/bootstrap/lenses.go's CapabilityReadLensDefinition shape exactly
+// (one row per actor, a readableAnchors[] array), just walking THIS
+// package's reachability chains instead of the trivial self-anchor.
+//
+// Each anchor kind's OPTIONAL MATCH is independent of the others (no shared
+// WITH-scoping), so a tenant reachable to N services and M tasks produces
+// an N×M intermediate row fan-out before collect(DISTINCT ...) re-dedupes
+// each column — correct (DISTINCT drops the cross-product duplicates), not
+// maximally efficient, but the same multi-branch collect()+concat shape
+// packages/orchestration-base's ephemeralGrants lens already proves parses
+// and executes under this engine (no UNION, no list comprehension across
+// independent branches — string "+" is the only concatenation this engine
+// has, and it works on two collect() results the same way it works on two
+// strings).
+const edgeManifestReadGrantsSpec = `
+MATCH (identity:identity {key: $actorKey})
+OPTIONAL MATCH (identity)-[:residesIn]->(home)-[:containedIn*0..]->(container)
+OPTIONAL MATCH (container)<-[:availableAt]-(tpl:service)
+OPTIONAL MATCH (tpl)-[:permitsOperation]->(op:meta)
+OPTIONAL MATCH (identity)<-[:assignedTo]-(task:task)
+OPTIONAL MATCH (identity)<-[:providedTo]-(inst:service)
+RETURN
+  identity.key AS actorKey,
+  collect(DISTINCT {anchorType: 'service', anchorId: nanoIdFromKey(tpl.key), via: ['availableAt']}) +
+  collect(DISTINCT {anchorType: 'meta', anchorId: nanoIdFromKey(op.key), via: ['permitsOperation']}) +
+  collect(DISTINCT {anchorType: 'task', anchorId: nanoIdFromKey(task.key), via: ['assignedTo']}) +
+  collect(DISTINCT {anchorType: 'service', anchorId: nanoIdFromKey(inst.key), via: ['providedTo']})
+  AS readableAnchors
 `

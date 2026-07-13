@@ -94,7 +94,7 @@ LATTICE_PROCESSOR_AUTH_MODE ?= capability
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up up-full up-full-capability dev-seed-staff provision-gateway-identity-provisioner test-real-actor-auth up-loftspace orchestration install-packages install-loftspace run-loupe run-gateway run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role provision-clinic-role provision-gateway-role provision-readpath provision-vault-kek reinstall-package verify-package-service-location verify-package-edge-manifest install-edge-manifest seed-edge-demo verify-package-augur verify-conformance build vet lint-conventions lint-board install-skills test test-rollback test-lease-convergence test-object-gc test-crypto-shred test-system-actor-capability test-control-plane-authz test-augur-convergence test-unrouted-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
+.PHONY: up up-full up-full-capability dev-seed-staff provision-gateway-identity-provisioner test-real-actor-auth up-loftspace orchestration install-packages install-loftspace run-loupe run-gateway run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role provision-clinic-role provision-gateway-role provision-readpath provision-vault-kek reinstall-package verify-package-service-location verify-package-edge-manifest install-edge-manifest seed-edge-demo up-facet run-facet verify-package-augur verify-conformance build vet lint-conventions lint-board install-skills test test-rollback test-lease-convergence test-object-gc test-crypto-shred test-system-actor-capability test-control-plane-authz test-augur-convergence test-unrouted-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 ## Detects an already-healthy kernel first and reuses it — invoking this against a
@@ -176,6 +176,7 @@ down:
 	-pkill -f "bin/loupe" 2>/dev/null || true
 	-pkill -f "bin/loftspace-app" 2>/dev/null || true
 	-pkill -f "bin/clinic-app" 2>/dev/null || true
+	-pkill -f "bin/facet" 2>/dev/null || true
 	@echo "==> Down complete."
 
 ## verify-kernel — Assert post-Story-4.7 kernel keys exist with correct envelopes.
@@ -933,6 +934,45 @@ install-edge-manifest:
 seed-edge-demo:
 	@echo "==> Running the edge-manifest demo seed..."
 	NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_CLI) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) go run ./scripts/seed-edge-demo.go
+
+## up-facet — build + start facet (:7810) in the background alongside Loupe
+## (:7777): ensures edge-manifest is installed, reseeds the demo topology
+## (seed-edge-demo is NOT idempotent — a fresh tenant every run, same as
+## dev-seed-staff), mints that tenant a dev bearer JWT via
+## `bin/gateway dev-token` (EDGE.3 is live — facet needs a real token, not a
+## trusted-posture placeholder), and launches facet against it.
+## facet-app-ux.md §7.
+up-facet:
+	@$(MAKE) up-full
+	@$(MAKE) install-edge-manifest
+	@echo "==> Building gateway (dev-token minter)..."
+	go build -o bin/gateway ./cmd/gateway
+	@echo "==> Building facet binary..."
+	go build -o bin/facet ./cmd/facet
+	@echo "==> Seeding the edge-manifest demo topology + minting a dev token..."
+	@SEED_OUT="$$(NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_CLI) BOOTSTRAP_JSON_PATH=$(BOOTSTRAP_JSON) go run ./scripts/seed-edge-demo.go)"; \
+	echo "$$SEED_OUT"; \
+	TENANT_ID=$$(echo "$$SEED_OUT" | grep '^FACET_TENANT_NANOID=' | cut -d= -f2); \
+	if [ -z "$$TENANT_ID" ]; then echo "FATAL: could not parse tenant NanoID from seed output"; exit 1; fi; \
+	FACET_TOKEN=$$(./bin/gateway dev-token -sub "$$TENANT_ID" -ttl 24h); \
+	echo "==> Killing any prior facet process..."; \
+	pkill -f "bin/facet" 2>/dev/null || true; \
+	echo "==> Starting facet in background (tenant $$TENANT_ID)..."; \
+	EDGE_STORE_PATH=./facet.db NATS_URL=$(NATS_URL) EDGE_GATEWAY_URL=http://localhost:8080 \
+		EDGE_IDENTITY_ID="$$TENANT_ID" EDGE_DEVICE_ID=facet-dev-1 EDGE_TOKEN="$$FACET_TOKEN" \
+		./bin/facet >facet.log 2>&1 </dev/null & \
+	sleep 1; \
+	echo "==> Facet ready: http://127.0.0.1:7810 (tenant $$TENANT_ID)"
+
+## run-facet — Build + run the Facet app in the FOREGROUND against an
+## already-up + already-seeded stack. Requires EDGE_IDENTITY_ID and
+## EDGE_TOKEN in the environment (see `make up-facet`'s seed+dev-token
+## steps for how to derive them for a given tenant).
+run-facet:
+	@echo "==> Building facet binary..."
+	go build -o bin/facet ./cmd/facet
+	@echo "==> Facet app on http://127.0.0.1:7810 (Ctrl-C to stop)..."
+	NATS_URL=$(NATS_URL) EDGE_GATEWAY_URL=http://localhost:8080 EDGE_DEVICE_ID=$${EDGE_DEVICE_ID:-facet-dev-1} ./bin/facet
 
 ## install-onebill — Install the Café Inc 3 "one-bill" composition lens (Café
 ## vertical row, ★★★): re-projects loftspace-ledger's + cafe-ledger's posted

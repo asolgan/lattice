@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0f1115" />
+<title>Facet</title>
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+<div id="boot" class="boot">
+  <div class="brand-mark">Facet</div>
+  <div class="spinner"></div>
+  <div class="boot-label" id="boot-label">Connecting…</div>
+  <div class="progress-thin" id="boot-progress" hidden></div>
+</div>
+
+<div id="app" class="app" hidden>
+  <div id="reconnect-banner" class="reconnect-banner" hidden>Reconnecting…</div>
+  <header class="topbar">
+    <div class="brand">Facet</div>
+    <div class="identity-name" id="identity-name"></div>
+    <div class="spacer"></div>
+    <button class="outbox-btn" id="outbox-btn" data-view="activity">
+      Outbox<span class="count" id="outbox-count" hidden>0</span>
+    </button>
+  </header>
+
+  <main class="screen">
+    <section id="view-home" data-view="home"></section>
+    <section id="view-services" data-view="services" hidden></section>
+    <section id="view-tasks" data-view="tasks" hidden></section>
+    <section id="view-activity" data-view="activity" hidden></section>
+    <section id="view-me" data-view="me" hidden></section>
+  </main>
+
+  <nav class="bottom-nav">
+    <button data-view="home" class="active"><span class="glyph">&#8962;</span>Home</button>
+    <button data-view="services"><span class="glyph">&#9635;</span>Services</button>
+    <button data-view="tasks"><span class="glyph">&#10003;</span>Tasks<span class="nav-badge" id="tasks-badge" hidden>0</span></button>
+    <button data-view="activity"><span class="glyph">&#8635;</span>Activity</button>
+    <button data-view="me"><span class="glyph">&#9673;</span>Me</button>
+  </nav>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast" class="toast" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
