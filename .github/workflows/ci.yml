@@ -18,8 +18,11 @@ on:
 # exactly one job:
 #   lint-build         — build, vet, golangci, conventions-lint     (no Docker)
 #   stack-gates        — make up → verify-kernel → 10× verify-package →
-#                         hello-lattice                             (Docker)
-#   convergence        — lease-convergence, object-gc               (no Docker, embedded NATS)
+#                         hello-lattice → health-completeness        (Docker)
+#   convergence        — lease-convergence, object-gc, augur-convergence,
+#                         unrouted-convergence, crypto-shred,
+#                         system-actor-capability, control-plane-authz
+#                                                                     (no Docker, embedded NATS)
 #   unit-1, unit-2      — go test ./... -p 4, split into two weight-balanced
 #                         package-glob shards (unit was the long pole — one
 #                         `go test ./...` took ~2x any other job; the shards
@@ -122,6 +125,12 @@ jobs:
         env:
           GITHUB_SHA: ${{ github.sha }}
 
+      - name: Run Health KV completeness gate (Phase 1 Gate 5)
+        # Connects to the live NATS + running Processor/Refractor and asserts
+        # every non-event-driven Health KV key documented in
+        # docs/observability/health-kv-schema.md appears within 30s.
+        run: make test-health-completeness
+
       - name: Tear down
         if: always()
         run: make down
@@ -160,6 +169,35 @@ jobs:
         # pending (billed once) AND a scope-escaping proposal is stored invalid
         # (the §5 validator DEFENDED assertion for the AI surface).
         run: make test-augur-convergence
+
+      - name: Run unrouted-convergence gate (FR28/FR29 unroutedTasks Weaver target)
+        # Boots Processor + Weaver in-process; installs rbac → identity →
+        # orchestration-base via the real InstallPackage path and proves the
+        # `surface` action round-trips: a violating row raises a named Health-KV
+        # issue with no remediation dispatched, and the issue clears on close.
+        run: make test-unrouted-convergence
+
+      - name: Run crypto-shred gate (Vault crypto-shredding e2e)
+        # Boots the real Processor commit path (Vault encrypt-on-write /
+        # decrypt-on-read) plus a Refractor lens + the KeyShredded nullification
+        # listener; drives CreateUnclaimedIdentity → ShredIdentityKey and proves
+        # both the async privacy-worker and the Refractor listener handle it.
+        run: make test-crypto-shred
+
+      - name: Run system-actor-capability gate (Fire 2)
+        # Boots the real Processor under LATTICE_AUTH_MODE=capability + the real
+        # Refractor; submits the four system-actor-submitted engine ops (Weaver
+        # MarkExpired, Loom CreateTask, object-store-manager DetachObject,
+        # RecordShredFinalization) as the real kernel-seeded actors and proves
+        # each authorizes.
+        run: make test-system-actor-capability
+
+      - name: Run control-plane-authz gate (FR30 Fire 1b Gate-3)
+        # Boots the real Processor under LATTICE_AUTH_MODE=capability + the real
+        # Refractor; drives a real weaver control.Service round-trip over NATS:
+        # operator disable succeeds, intruder disable denied, anonymous disable
+        # denied.
+        run: make test-control-plane-authz
 
   # Shard package globs (also referenced verbatim by unit-shard-coverage below —
   # keep the two in sync; the coverage job fails CI if they ever drift).
