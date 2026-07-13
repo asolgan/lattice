@@ -200,6 +200,7 @@ func provisionSyncStream(t *testing.T, url string) {
 // consumer) its OWN lattice.sync.user.<id> subject and receive a delivered
 // message.
 func TestAuthCallout_OwnSliceSubscribeAllowed(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 	provisionSyncStream(t, url)
 
@@ -254,6 +255,7 @@ func TestAuthCallout_OwnSliceSubscribeAllowed(t *testing.T) {
 // connection cannot subscribe B's raw subject, cannot create a consumer
 // filtered on B's subject, and cannot pull from B's durable.
 func TestAuthCallout_CrossIdentityDenied(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 	provisionSyncStream(t, url)
 
@@ -336,6 +338,7 @@ func TestAuthCallout_CrossIdentityDenied(t *testing.T) {
 // tokens; "responder down" is covered by natsauth's own unit tests, not
 // re-proven here against a live server to avoid an auth_timeout-bound test).
 func TestAuthCallout_FailClosed(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 	priv, pub := rsaKeypair(t)
 	startResponder(t, url, "test-kid", pub, "")
@@ -363,6 +366,7 @@ func TestAuthCallout_FailClosed(t *testing.T) {
 // test, natsauth.TestResponder_Handle_AuthorizationCappedAtMaxTTL): a
 // revoked actor's identity cannot establish a new connection.
 func TestAuthCallout_Revocation(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 	priv, pub := rsaKeypair(t)
 	identity := nanoID(t)
@@ -378,6 +382,7 @@ func TestAuthCallout_Revocation(t *testing.T) {
 // connection may publish neither its own sync subject (delta forgery — only
 // Refractor publishes there) nor core-operations.
 func TestAuthCallout_DeltaForgeryDenied(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 	provisionSyncStream(t, url)
 	priv, pub := rsaKeypair(t)
@@ -406,6 +411,7 @@ func TestAuthCallout_DeltaForgeryDenied(t *testing.T) {
 // TestAuthCallout_InboxIsolation is design §8 vector 7: identity A may not
 // subscribe identity B's reply-inbox namespace.
 func TestAuthCallout_InboxIsolation(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 	priv, pub := rsaKeypair(t)
 	startResponder(t, url, "test-kid", pub, "")

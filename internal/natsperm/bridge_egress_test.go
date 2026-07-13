@@ -13,6 +13,7 @@ import (
 // named trusted plaintext consumer of lattice.vault.decrypt, alongside Loupe —
 // the mirror of TestVaultDecryptReachability with "bridge" in place of "loupe".
 func TestBridgeVaultDecryptReachability(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	resp := connectAs(t, url, "processor")
@@ -48,6 +49,7 @@ func TestBridgeVaultDecryptReachability(t *testing.T) {
 // reads work in general, so the bridge's failure is permission-based, not
 // bucket-absence.
 func TestBridgeCoreKVReadIsolation(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	boot := connectAs(t, url, "bootstrap")
@@ -100,6 +102,7 @@ func TestBridgeCoreKVReadIsolation(t *testing.T) {
 // sibling test above) is correctly denied — the sibling test would then pass
 // for the wrong reason (it never exercises this subject shape).
 func TestBridgeCoreKVReadIsolation_DirectGetBareSubject(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 	assertDeniedPublish(t, url, "$JS.API.DIRECT.GET.KV_core-kv", []string{"bridge"})
 }

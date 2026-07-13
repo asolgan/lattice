@@ -27,6 +27,7 @@ const opStatusSubject = "lattice.op.status"
 // allow-list carries — the same posture TestVaultDecryptReachability relies
 // on).
 func TestOpStatusReachability(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	resp := connectAs(t, url, "processor")

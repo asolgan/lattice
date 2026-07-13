@@ -213,6 +213,7 @@ func TestAuthCalloutConfigured(t *testing.T) {
 // may write Core KV; every other component — including refractor, which holds a
 // broad $KV.> grant but an explicit $KV.core-kv.> deny — is rejected.
 func TestCoreKVWriteIsolation(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	boot := connectAs(t, url, "bootstrap")
@@ -233,6 +234,7 @@ func TestCoreKVWriteIsolation(t *testing.T) {
 // TestCapabilityKVWriteIsolation: only refractor (and bootstrap) may write the
 // auth projection; even the processor — the Core-KV owner — is denied.
 func TestCapabilityKVWriteIsolation(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	boot := connectAs(t, url, "bootstrap")
@@ -257,6 +259,7 @@ func TestCapabilityKVWriteIsolation(t *testing.T) {
 // matrix-hygiene Fire 1 — its broad $KV.> no longer reaches non-owned
 // platform buckets.
 func TestChroniclerOrchestrationHistoryWriteAccess(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	boot := connectAs(t, url, "bootstrap")
@@ -275,6 +278,7 @@ func TestChroniclerOrchestrationHistoryWriteAccess(t *testing.T) {
 // TestLensTargetWriteIsolation: refractor (the sole projector) may write a
 // lens-target read model; a non-projector cannot (it is not in its allow-list).
 func TestLensTargetWriteIsolation(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	boot := connectAs(t, url, "bootstrap")
@@ -300,6 +304,7 @@ func TestLensTargetWriteIsolation(t *testing.T) {
 // chronicler is the pinned negative: its own matrix comment declares it
 // "submits no ops" (P2 — a pure read-model materializer).
 func TestOpsSystemPublishAccess(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	boot := connectAs(t, url, "bootstrap")
@@ -328,6 +333,7 @@ func TestOpsSystemPublishAccess(t *testing.T) {
 // externalTask flow and anchored by Weaver's AttachObject dispatch, so the app
 // submits no operation (the Gateway is the only write door for apps).
 func TestVerticalAppOpsPublishDenied(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 	assertDeniedPublish(t, url, "ops.default", []string{"clinic-app", "cafe-app", "loftspace-app", "wellness-app"})
 }
@@ -339,6 +345,7 @@ func TestVerticalAppOpsPublishDenied(t *testing.T) {
 // (refractor-publish-acl-gap). Only Refractor's Personal Lens pipeline ever
 // publishes here.
 func TestPersonalSyncPublishAccess(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	boot := connectAs(t, url, "bootstrap")
@@ -363,6 +370,7 @@ func TestPersonalSyncPublishAccess(t *testing.T) {
 // executed-lease artifact's bytes — inert until an AttachObject op anchors
 // them); loupe + loftspace-app are the trusted-client uploaders.
 func TestObjectStoreWriteAccess(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	boot := connectAs(t, url, "bootstrap")
@@ -395,6 +403,7 @@ func TestObjectStoreWriteAccess(t *testing.T) {
 // negative: whoever gives clinic blob upload must move it into the positive
 // set (object-plane-nats-permissions-design.md §8).
 func TestObjectStoreWriteIsolation(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	boot := connectAs(t, url, "bootstrap")
@@ -421,6 +430,7 @@ func TestObjectStoreWriteIsolation(t *testing.T) {
 // health-kv (health.go's KVPut). Pins the tightened matrix (natsperm-matrix-
 // hygiene, arch #19) — a phantom grant is a silent widen, not a working path.
 func TestBridgeNoPhantomKVGrants(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	boot := connectAs(t, url, "bootstrap")
@@ -450,6 +460,7 @@ var gatewayOwnedBucketDeniedComponents = []string{
 // refractor is now included in the denied roster post natsperm-matrix-hygiene
 // Fire 1.
 func TestGatewayRevocationBucketWriteIsolation(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	boot := connectAs(t, url, "bootstrap")
@@ -471,6 +482,7 @@ func TestGatewayRevocationBucketWriteIsolation(t *testing.T) {
 // matrix-hygiene Fire-0 fix — the grant was previously missing, so the shipped
 // materializer was silently transport-denied under enforcement (a live bug).
 func TestGatewayCredentialBindingsWriteIsolation(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	boot := connectAs(t, url, "bootstrap")
@@ -492,6 +504,7 @@ func TestGatewayCredentialBindingsWriteIsolation(t *testing.T) {
 // lattice.ctrl.> publish grant silences every operator control action with an
 // opaque request timeout, so this asserts the round trip, not just denials.
 func TestControlPlaneOperatorAccess(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	// The refractor user stands in for its own control plane: subscribe allows
@@ -543,6 +556,7 @@ func TestControlPlaneOperatorAccess(t *testing.T) {
 // own backing stream) now applies matrix-wide, not just to orchestration-
 // history.
 func TestBackingStreamSideChannel(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	boot := connectAs(t, url, "bootstrap")
@@ -578,6 +592,7 @@ func TestBackingStreamSideChannel(t *testing.T) {
 // TestGatewayRevocationBucketWriteIsolation already documents for
 // weaver-targets/token-revocation, now also covering this bucket.
 func TestChroniclerBackingStreamSideChannel(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	boot := connectAs(t, url, "bootstrap")
@@ -623,6 +638,7 @@ func nonBootstrapComponentNames() []string {
 // bucket or a new matrix component is covered automatically, and the
 // already-stale hand lists this generalizes can't silently drift again.
 func TestRegistryDrivenWriteIsolation(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 	boot := connectAs(t, url, "bootstrap")
 
@@ -657,6 +673,7 @@ func TestRegistryDrivenWriteIsolation(t *testing.T) {
 // (health.<component>.<inst>); a missing grant here silences a component's
 // monitoring silently, so this is a positive pin, not just a denial check.
 func TestHealthKVSharedWriteAccess(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 
 	boot := connectAs(t, url, "bootstrap")
@@ -685,6 +702,7 @@ func TestHealthKVSharedWriteAccess(t *testing.T) {
 // administer its own backing stream; bootstrap primordially provisions all
 // of them.
 func TestRegistryDrivenStreamAdminSideChannel(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 	boot := connectAs(t, url, "bootstrap")
 
@@ -718,6 +736,7 @@ func TestRegistryDrivenStreamAdminSideChannel(t *testing.T) {
 // proves the registry's Allow() derivation actually grants them, not just
 // the pre-existing $KV.> catch-all.
 func TestRefractorPrivateBucketsWriteAccess(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 	boot := connectAs(t, url, "bootstrap")
 	ref := connectAs(t, url, "refractor")
@@ -741,6 +760,7 @@ func TestRefractorPrivateBucketsWriteAccess(t *testing.T) {
 // registry's owner/deny treatment. This is the residual the registry design
 // explicitly keeps (§3.3): narrowing by denies, not by enumerating allows.
 func TestRefractorDynamicPackageBucketWriteAccess(t *testing.T) {
+	t.Parallel()
 	url := startServerFromConf(t)
 	ref := connectAs(t, url, "refractor")
 
