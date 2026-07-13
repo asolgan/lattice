@@ -176,7 +176,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 |---|---|---|---|---|
 | AI-authored capabilities | A Lattice-aware agent proposes DDL/Starlark/lenses/workflows through human review + deterministic validation + rollback. | ★★–★★★ | L | 🏗️ building · [design](../../implementation-artifacts/ai-authored-capabilities-design.md) · 🚧 blocked-on: sensitive-ref-MAC ratification+build (Security table row) before the Fire-4 materializer kinds · Loupe UI is Stream 3's lane |
 | **The Augur** (AI reasoning tier — L3 evaluator) | Weaver's AI-assisted reasoning tier for ambiguous/novel convergence gaps. The marquee AI-native feature. | ★★ | M–L | ✅ Fires 1+2a+2b shipped incl. §6 residual e2e (loop closes: escalate→review→dispatch) · [design](../../implementation-artifacts/augur-design.md) + [dispatch design](../../implementation-artifacts/augur-dispatch-pickup-design.md) · 🚧 Fire 3 autoApply Andrew-gated |
-| Starlark guards (Loom) | The reserved `{reads, starlark}` guard escape hatch needs a verified-pure sandbox. | ★ | M | ✅ ratified (split) · [design](../../implementation-artifacts/loom-starlark-guards-design.md) · Fire 1 (shared sandbox) SHIPPED `474745b` via AI-caps · 📋 Fire 2 ready — stays Loom-side per Andrew's no-new-engine-KV-read directive (2026-06-29) |
+| Starlark guards (Loom) | The `{reads, starlark}` guard escape hatch needs a verified-pure sandbox. | ★ | M | ✅ SHIPPED (both fires) · [design](../../implementation-artifacts/loom-starlark-guards-design.md) · Fire 1 `474745b` (shared sandbox) + Fire 2 (Loom guard eval) — see Done log |
 | **Weaver planner mandate (dispatcher → solver)** | Remediation stops being a static gap→action lookup: deterministic planner (per-gap candidate selection, then goal-regression synthesis over op-declared effects) with contraction/oscillation diagnostics and admission control; shadow mode + per-target cutover; the Augur stays the AI boundary. | ★★★ | XL | ✅ effectively done · [design](../../implementation-artifacts/weaver-planner-mandate-design.md) · Fires 1-9(Inc1)+R1-R3 shipped, consumed by LoftSpace renewals; Fire 9 AI tail deferred - needs a novel Augur gap, not renewals |
 
 ### Read-model / projection maturity
@@ -207,6 +207,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-13 · `e0c64df` · [loom,starlarksandbox] Starlark guards Fire 2 CLOSED — `{reads, starlark}` guard eval lit up, budget-bounded parse-time compile-check, deterministic dict key ordering fix; CI green
 - 2026-07-13 · `b56f155` · [CI] internal/natsperm's 32 per-test embedded-NATS conformance tests now `t.Parallel()` (69s→53s in CI, zero races); shard wall-clock unchanged, real bottleneck named
 - 2026-07-13 · `0b72492` · [rbac-domain] service-location cap.roles gap CLOSED — ground-truthed healthy live; added a regression test for recurrence
 - 2026-07-13 · `f1ce5bb` · [Weaver] inflight_<g>-as-external-gap-marker SHIPPED — staleMark cross-checks ga.Action vs directOp/proposedOp, InflightActionMismatch Health issue on mismatch; CI green
