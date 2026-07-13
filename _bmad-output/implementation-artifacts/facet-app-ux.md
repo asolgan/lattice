@@ -1,11 +1,18 @@
 # facet-app — UX design (Fire 2: dev host + renderer v0)
 
-> **Status:** ✅ **Winston-ratified — build-ready.** No frozen-contract change, no new architectural fork —
-> every decision here is implementation/UX-level, resolved by Winston (wearing Sally's hat) grounded in the
-> ratified `edge-showcase-app-design.md` §3/§4/§5/§7 and the shipped `internal/edge` + `packages/edge-manifest`
-> machinery. The UX-then-FE flow: this is the UX spec; the FE Engineer builds `cmd/facet` from it next fire
-> and verifies in-browser. Pairs with the board row *Edge showcase app (Facet)* (Cross-vertical, ★★★, XL) —
-> this fire closes the "Sally UX spec first" half of Fire 2; **cmd/facet** itself is the next 🏗️ increment.
+> **Status:** ✅ **SHIPPED** (`f5b3031`, 2026-07-13). `cmd/facet` built per this spec and live-verified against
+> the seeded demo stack: Home → Service Detail → descriptor form → submit → Outbox confirmed → instance
+> appears in both Activity and Service Detail. Not live-clicked this fire: the offline/reconnect banner and
+> task-completion auto-clear (no task was seeded) — same proven SSE/agent-retry code paths `cmd/edge` already
+> exercises, not a gap in what shipped. Next: Fire 3 (real auth turn-on), gated on subscribe-ACL Fires 1-3 +
+> multi-credential Fire 2 (both ratified, queued in `lattice.md`).
+>
+> **Platform gaps this fire also closed** (surfaced by live verification, not anticipated by this spec):
+> `packages/edge-manifest` never shipped its D1 read-grant producer (added `edgeManifestReadGrants`, an
+> actorAggregate nats-kv lens — every non-self-anchored manifest row was silently dropped without it);
+> `internal/edge/agent.GatewaySubmitter` never forwarded `env.AuthContext` to the Gateway; `cmd/edge`'s NATS
+> connection `Name` used a composite string that breaks natsauth's durable-consumer permission match (bare
+> device id required) — `cmd/facet` and `cmd/edge` both fixed. See the commit message for full detail.
 
 ---
 
@@ -363,8 +370,5 @@ transition).
 
 ## 9. Follow-ups flagged for Winston before the FE Engineer builds
 
-1. **`OnHydrationComplete` hook** (§2) — a one-line, same-file mirror of the existing `OnChange` field in
-   `internal/edge/sync/sync.go`; add it at the start of the `cmd/facet` build fire, not as a separate filed
-   item.
-2. **Port `:7810`** is picked by sequence, not reserved anywhere else in the repo as of this writing —
-   confirm no collision before wiring `make up-facet`.
+Both resolved in the Fire 2 build (`f5b3031`): `OnHydrationComplete` added to `internal/edge/sync/sync.go`;
+port `:7810` confirmed free and wired into `make up-facet`.
