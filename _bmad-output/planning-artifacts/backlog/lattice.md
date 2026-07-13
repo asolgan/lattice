@@ -206,6 +206,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-13 · `a6c3802` · [Core/bootstrap] test-coverage sweep — Persist, PrivacyActorKey (incl. pre-v15 absent case), seedPrimordialPerKey concurrent-bootstrap fallback; 65.7%→69.3%; CI green
 - 2026-07-12 · `4b8e815` · [Weaver] registry-cleanup-edge-branches-uncovered SHIPPED — CDC malformed-input paths covered, 84.8%→86.2%; CI green
 - 2026-07-12 · `d24446e` · [docs] doc sweep — README/architecture-overview/loupe.md corrected to reflect shipped D1 + Personal Lens + Edge Lattice EDGE.1-3 (were still marked designed/deferred)
 - 2026-07-12 · `f6be3b0` · [edge-manifest,refractor] edge-manifest Fire 1 CLOSED — install-edge-manifest chain, seed-edge-demo, live e2e; fixed a lens anchor bug blocking all 5 lenses from ever publishing; CI green
