@@ -48,7 +48,6 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 |---|---|---|---|---|
 | **[Loom] Guardless-step recovery check-before-act probe** | On total `loom-state` loss + a re-triggered `StartLoomPattern`, a fresh instance replays guards from cursor 0 (re-runs an already-applied guarded step). | ★ | S–M | 🗄️ shelved-backup (Andrew: no new engine Core-KV reads) |
 | **[Bridge/Processor] Op-status read surface — `lattice.op.status` responder** | Processor-hosted op-status RPC (vault.decrypt pattern); all 4 named submitters migrated. | ★★★ | S | ✅ all 4 fires shipped · [design](../../implementation-artifacts/op-status-read-surface-design.md) · 🔭 §10.6 contract edit push-held for Andrew (see design doc Status) · unblocks matrix-hygiene read-tightening follow-on |
-| **[Refractor/rbac-domain] service-location grants missing from `cap.roles` projection** | 8 operator permissions are `grantedBy`-linked in Core KV but absent from the live `cap.roles.<actor>` doc — ops wrongly denied; comparable grants from other packages DID propagate. | ★★★ | ? | 🔭 flag-for-Andrew · filed as spawn_task chip 2026-07-12 (task_cbc1d94b) |
 
 ### Survey log (round-robin rotation)
 
@@ -208,6 +207,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-13 · `0b72492` · [rbac-domain] service-location cap.roles gap CLOSED — ground-truthed healthy live; added a regression test for recurrence
 - 2026-07-13 · `f1ce5bb` · [Weaver] inflight_<g>-as-external-gap-marker SHIPPED — staleMark cross-checks ga.Action vs directOp/proposedOp, InflightActionMismatch Health issue on mismatch; CI green
 - 2026-07-13 · `3c61feb` · [vault,edge] EDGE.4 increment 2 — `internal/edge/vault` client: session-key request+TTL-cache + local AEAD decrypt via new `vault.OpenWithSessionKey`; `Reader` composes over `overlay.Read`; CI green
 - 2026-07-13 · `fb557cb` · [refractor,gateway,control-authz] EDGE.4 increment 1 — identity-bound `sessionkey` control RPC (Vault Proxy trust boundary), grants in lockstep across 3 places; CI green
