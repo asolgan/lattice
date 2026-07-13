@@ -449,6 +449,24 @@
     </div>
   </div>
 
+  <div id="wellness-overlay" class="overlay" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="wellness-title">
+      <h2 id="wellness-title">Book a wellness class</h2>
+      <p class="lead" id="wellness-context">Refer this patient to a bookable class.</p>
+      <form id="wellness-form">
+        <div class="field">
+          <label for="wellness-session">Class</label>
+          <select id="wellness-session" required></select>
+          <p class="hint" id="wellness-session-hint"></p>
+        </div>
+        <div class="modal-actions">
+          <button type="button" id="wellness-cancel" class="ghost">Cancel</button>
+          <button type="submit" id="wellness-submit">Book</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
   <div id="toast" class="toast" hidden></div>
 
   <script src="app.js"></script>

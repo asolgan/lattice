@@ -29,6 +29,7 @@ const state = {
   rescheduling: null, // the appointment row being rescheduled (modal context)
   reschedulingAsSelf: false, // whether the open reschedule modal was opened from the self-service toggle
   documenting: null, // { a, onDone } for the Document-visit (RecordEncounter) modal
+  wellnessBooking: null, // { a, identityKey, sessions } for the Care→Wellness referral modal
   schedView: "week", // Schedule tab calendar mode: "week" | "day"
   schedAnchor: null, // a Date within the visible period (null → current week/day)
   schedSelected: null, // appointmentKey shown in the Schedule detail panel
@@ -190,7 +191,15 @@ async function authedGetAsProvider(path, providerKey) {
 let selfTokenCache = { subject: null, token: null, exp: 0 };
 
 function patientIdentityKey() {
-  const m = state.patients.find((p) => p.patientKey === state.patient);
+  return identityKeyForPatient(state.patient);
+}
+
+// identityKeyForPatient resolves ANY patient's linked identity (not just the
+// selected patient-context one patientIdentityKey() covers) — the worklist's
+// completed-appointment cards render for whichever patient the appointment
+// belongs to, independent of the currently selected patient.
+function identityKeyForPatient(patientKey) {
+  const m = state.patients.find((p) => p.patientKey === patientKey);
   return (m && m.identityKey) || null;
 }
 
@@ -3460,6 +3469,15 @@ function renderApptCard(a, opts) {
     doc.textContent = a.documentedAt ? "Edit documentation" : "Document visit";
     doc.addEventListener("click", () => openEncounter(a, loadAppts));
     btns.append(doc);
+    // Care→Wellness referral: only offered when the patient has a linked
+    // identity (CreateBooking.booker requires one — see identityKeyForPatient).
+    if (identityKeyForPatient(a.patientKey)) {
+      const wellness = document.createElement("button");
+      wellness.className = "ghost";
+      wellness.textContent = "Book wellness class";
+      wellness.addEventListener("click", () => openWellnessBooking(a));
+      btns.append(wellness);
+    }
     actions.append(btns);
   }
 
@@ -3683,6 +3701,106 @@ async function submitReschedule(ev) {
   }
 }
 
+// ---- Care→Wellness referral (CreateBooking against a patient's own linked
+// identity, from the completed-appointment worklist card) ----
+//
+// wellness-domain's CreateBooking has no consumer self-service grant (unlike
+// clinic-domain's appointment ops) — every booking submits with the staff
+// Bearer token, mirroring cmd/wellness-app's own booking flow. The class
+// picker is served from this app's own /api/wellness/sessions proxy (a
+// cross-package lens read against wellness-domain's wellness-sessions /
+// wellness-bookings NATS-KV buckets, P5 — mirrors handleResidents' existing
+// weaver-targets read).
+
+async function openWellnessBooking(a) {
+  const identityKey = identityKeyForPatient(a.patientKey);
+  if (!identityKey) {
+    toast("This patient has no linked identity yet — wellness booking is unavailable.", "err");
+    return;
+  }
+  state.wellnessBooking = { a, identityKey, sessions: [] };
+  const who = a.patientName || shortKey(a.patientKey);
+  $("#wellness-context").textContent = "Referring " + who + " to a bookable class.";
+  const sel = $("#wellness-session");
+  sel.innerHTML = "<option>loading…</option>";
+  $("#wellness-session-hint").textContent = "";
+  $("#wellness-overlay").hidden = false;
+  try {
+    const data = await api("/api/wellness/sessions");
+    const sessions = (data.sessions || []).filter((se) => se.capacity <= 0 || se.bookedCount < se.capacity);
+    state.wellnessBooking.sessions = sessions;
+    if (!sessions.length) {
+      sel.innerHTML = "";
+      $("#wellness-session-hint").textContent = "No open classes right now.";
+      $("#wellness-submit").disabled = true;
+      return;
+    }
+    $("#wellness-submit").disabled = false;
+    sel.innerHTML = sessions
+      .map(
+        (se) =>
+          `<option value="${se.sessionKey}">${se.name || shortKey(se.sessionKey)} — ${fmtWhen(se.startsAt, se.endsAt)}${se.studioName ? " · " + se.studioName : ""}</option>`,
+      )
+      .join("");
+  } catch (e) {
+    sel.innerHTML = "";
+    $("#wellness-session-hint").textContent = "Could not load classes: " + e.message;
+    $("#wellness-submit").disabled = true;
+  }
+}
+
+function closeWellnessBooking() {
+  $("#wellness-overlay").hidden = true;
+  state.wellnessBooking = null;
+}
+
+// seatKeysFor enumerates a session's per-seat claim keys — the (d)
+// optionalReads CreateBooking's seat-claim loop reads, mirroring
+// cmd/wellness-app/web/app.js's own seatKeys().
+function seatKeysFor(sessionKey, capacity) {
+  const keys = [];
+  for (let n = 1; n <= capacity; n++) keys.push(sessionKey + ".seat" + n);
+  return keys;
+}
+
+async function submitWellnessBooking(ev) {
+  ev.preventDefault();
+  const ctx = state.wellnessBooking;
+  if (!ctx) {
+    closeWellnessBooking();
+    return;
+  }
+  const sessionKey = $("#wellness-session").value;
+  if (!sessionKey) {
+    toast("Pick a class.", "err");
+    return;
+  }
+  const session = ctx.sessions.find((se) => se.sessionKey === sessionKey);
+  const submit = $("#wellness-submit");
+  submit.disabled = true;
+  try {
+    const optionalReads = session && session.capacity > 0 ? seatKeysFor(sessionKey, session.capacity) : [];
+    const reply = await submitOp(
+      "CreateBooking",
+      "booking",
+      { session: sessionKey, booker: ctx.identityKey },
+      [sessionKey, sessionKey + ".schedule"],
+      { optionalReads },
+    );
+    const msg = rejectionMessage(reply);
+    if (msg) {
+      toast("Could not book the class — " + msg, "err");
+      return;
+    }
+    closeWellnessBooking();
+    toast("Wellness class booked.", "ok");
+  } catch (e) {
+    toast("Could not book the class: " + e.message, "err");
+  } finally {
+    submit.disabled = false;
+  }
+}
+
 // ---- Document visit (RecordEncounter — the post-visit clinical record) ----
 //
 // RecordEncounter upserts the appointment's .encounter aspect. The RAW clinical
@@ -3834,6 +3952,12 @@ function init() {
   });
   $("#encounter-form").addEventListener("submit", submitEncounter);
   $("#enc-followup").addEventListener("change", toggleFollowupDate);
+
+  $("#wellness-cancel").addEventListener("click", closeWellnessBooking);
+  $("#wellness-overlay").addEventListener("click", (e) => {
+    if (e.target === $("#wellness-overlay")) closeWellnessBooking();
+  });
+  $("#wellness-form").addEventListener("submit", submitWellnessBooking);
 
   $("#provider").addEventListener("change", () => {
     refreshBookEnabled();
