@@ -383,23 +383,24 @@ func TestPermissionsFor_ExactPerConnectionPinning(t *testing.T) {
 		t.Fatalf("Sub.Allow = %v, want %v", perms.Sub.Allow, wantSub)
 	}
 
+	// The control RPCs ARE granted as of Fire 2 (§3.3/§3.4, ratified
+	// 2026-07-10): the server-side identity-binding override in
+	// internal/refractor/control/service.go confines register/deregister/
+	// hydrate to the caller's own identity regardless of capability scope,
+	// so it is now safe to open the transport subjects — see controlRPCs'
+	// doc comment.
 	wantPub := []string{
 		"$JS.API.CONSUMER.CREATE.SYNC.edge-sync-U1-D1.lattice.sync.user.U1",
 		"$JS.API.CONSUMER.MSG.NEXT.SYNC.edge-sync-U1-D1",
 		"$JS.API.CONSUMER.INFO.SYNC.edge-sync-U1-D1",
 		"$JS.API.CONSUMER.DELETE.SYNC.edge-sync-U1-D1",
 		"$JS.ACK.SYNC.edge-sync-U1-D1.>",
+		"lattice.ctrl.refractor.personal.register",
+		"lattice.ctrl.refractor.personal.deregister",
+		"lattice.ctrl.refractor.personal.hydrate",
 	}
 	if fmt.Sprint([]string(perms.Pub.Allow)) != fmt.Sprint(wantPub) {
 		t.Fatalf("Pub.Allow = %v, want %v", perms.Pub.Allow, wantPub)
-	}
-	// The control RPCs are deliberately NOT granted in Fire 1 (an
-	// adversarial-pass finding, HIGH — see controlRPCs' doc comment): they
-	// wait for Fire 2's matched server-side identity-binding override.
-	for _, subj := range perms.Pub.Allow {
-		if strings.HasPrefix(subj, "lattice.ctrl.") {
-			t.Fatalf("Fire 1 must not grant a control RPC, got %q", subj)
-		}
 	}
 
 	// No wildcard-family grant anywhere (the wildcard-mechanics finding the
@@ -429,7 +430,22 @@ func TestPermissionsFor_DifferentIdentitiesNeverShareASubject(t *testing.T) {
 			}
 		}
 	}
+	isControlRPC := func(subj string) bool {
+		for _, rpc := range controlRPCs {
+			if subj == rpc {
+				return true
+			}
+		}
+		return false
+	}
 	for _, subjA := range a.Pub.Allow {
+		if isControlRPC(subjA) {
+			// The control RPCs are deliberately identity-agnostic subjects
+			// (design §3.3/§3.4) — confinement to the caller's own identity
+			// is enforced server-side by the body.IdentityID binding
+			// override, not by templating the identity into the subject.
+			continue
+		}
 		for _, subjB := range b.Pub.Allow {
 			if subjA == subjB {
 				t.Fatalf("identity alice and bob share a publish subject: %q", subjA)

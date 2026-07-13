@@ -80,27 +80,34 @@ const syncSubjectPrefix = "lattice.sync.user"
 // (design §3.3) — the per-identity reply-inbox namespace.
 const inboxPrefix = "_INBOX.edge"
 
-// controlRPCs is DELIBERATELY EMPTY in Fire 1 — a build-time finding, not
-// the design's original shape. Design §3.3's table lists
-// lattice.ctrl.refractor.personal.{register,deregister,hydrate} as an
-// identity-agnostic grant, reasoning that "the Refractor's personal handler
-// binds the payload identity server-side (§3.4)". That binding is Fire 2
-// scope (§10 decomposition item 2) and does NOT exist yet:
-// internal/refractor/control/service.go's personalRegister/personalDeregister/
-// personalHydrate all read body.IdentityID directly with no comparison to
-// the control-plane's verified actor (dispatchEndpoint's capability gate
-// checks only "does this actor hold ctrl.refractor.<verb> scope=any", never
-// per-identity) — an adversarial pass on this fire confirmed it (HIGH
-// finding). Granting these subjects to every untrusted, merely-authenticated
-// connection BEFORE that binding lands would let identity A forge
-// register/deregister/hydrate calls naming an arbitrary victim identity B.
-// So Fire 1 ships sync-plane READ confinement only (subscribe + the
-// connection's own consumer/inbox); the control-RPC grant + the §3.4
-// server-side override land together in Fire 2, matched as the design
-// itself already scopes them (cmd/edge stamps the verified actor header,
-// Refractor overrides body.IdentityID with it) — granting transport access
-// without the verifying half is exactly the gap this fire must not ship.
-var controlRPCs = []string{}
+// controlRPCs grants the design §3.3 control-RPC subjects — Fire 2
+// (per-identity-nats-subscribe-acl-design.md, ratified 2026-07-10) landed
+// the §3.4 server-side identity-binding override
+// (internal/refractor/control/service.go's dispatchEndpoint binds
+// body.IdentityID to the verified actor for register/deregister/hydrate,
+// rejecting a mismatching client-asserted value) but left this transport
+// grant closed — hydrate in particular was additionally unreachable by
+// ANY actor until the matching internal/controlauth ops-table entry and
+// packages/control-authz manifest grant were added alongside this list.
+//
+// Both halves must land together: the transport grant here (which subjects
+// a connection may even reach) and the capability-plane grant in
+// packages/control-authz/manifest.yaml (ctrl.refractor.{register,deregister,
+// hydrate} scope=any → consumer) are independently necessary and jointly
+// sufficient. Granting only this list without the capability-plane grant is
+// a no-op (the subject is reachable but CapabilityKVChecker.Authorize still
+// denies every actor). Granting only the capability-plane entry without
+// opening these subjects reopens the original gap in the other direction:
+// nothing ever lets the connection reach the subject to exercise the grant
+// it holds. The §3.4 binding is what makes granting scope=any broadly (to
+// every identity via the consumer role) safe — it unconditionally confines
+// each op's effect to the caller's own identity regardless of capability
+// scope.
+var controlRPCs = []string{
+	"lattice.ctrl.refractor.personal.register",
+	"lattice.ctrl.refractor.personal.deregister",
+	"lattice.ctrl.refractor.personal.hydrate",
+}
 
 // Authenticator is the verify+revocation seam. *auth.Authenticator
 // (internal/gateway/auth) satisfies it; the interface keeps this package
