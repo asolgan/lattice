@@ -170,7 +170,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | Personal / Secure Lens | Refractor projects a per-identity security-filtered subgraph stream; the Interest-Set watchlist; RLS-style link filtering. | ★★ | L | ✅ effectively done · [design](../../implementation-artifacts/personal-secure-lens-design.md) · Fires 1–5 shipped (D1 + Vault gates closed); PL.6 (multicast dedup, WebSocket bridge) deferred, no Edge consumer yet |
-| Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. EDGE.1–3 (Go node, offline loop, untrusted security turn-on) shipped; EDGE.4–5 per the §7 gates. | ★★★ | XL | 🏗️ building · [design §7](../../implementation-artifacts/edge-lattice-full-design.md) · EDGE.1–3 done · EDGE.4 inc 1 (sessionkey control RPC) shipped · next: EDGE.4 inc 2 (`internal/edge/vault` client) or EDGE.5 |
+| Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. EDGE.1–3 (Go node, offline loop, untrusted security turn-on) shipped; EDGE.4–5 per the §7 gates. | ★★★ | XL | 🏗️ building · [design §7](../../implementation-artifacts/edge-lattice-full-design.md) · EDGE.1–4 done (Vault Proxy client + local decrypt-on-read shipped) · next: EDGE.5 (browser node, gated on Gateway WS bridge) |
 | Edge-manifest + personal-lens consumer (Facet platform half) | Five per-identity `nats_subject` manifest lenses (me/services/catalog/tasks/instances) + descriptor vocabulary (presentation/per-op schema/dispatch); `pkgmgr.LensSpec` `nats_subject` adapter; `RequestService` service-path op; seeded topology. Un-defers PL.6/EDGE.5. | ★★★ | L | ✅ CLOSED (Fire 1) · [design §7](../../implementation-artifacts/edge-showcase-app-design.md) · next: Fire 2 `[verticals]` Facet v0 app |
 
 ### AI-native
@@ -209,6 +209,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-13 · `3c61feb` · [vault,edge] EDGE.4 increment 2 — `internal/edge/vault` client: session-key request+TTL-cache + local AEAD decrypt via new `vault.OpenWithSessionKey`; `Reader` composes over `overlay.Read`; CI green
 - 2026-07-13 · `fb557cb` · [refractor,gateway,control-authz] EDGE.4 increment 1 — identity-bound `sessionkey` control RPC (Vault Proxy trust boundary), grants in lockstep across 3 places; CI green
 - 2026-07-13 · `182d751` · [weaver] fixed CI-caught TestTargetSource_StableInstanceGetsFreshDurableEachBoot flake from the age-guarded prune (Loom's sibling test was fixed in Fire A, Weaver's copy was missed); CI green
 - 2026-07-13 · `8ccdfff` · [refractor,cmd/lattice] lens-registry-restart-integrity Fire B CLOSED — lensesRegistered metric + RegistryProbe reconciliation + health-summary lens staleness; live-stack verified; CI green
@@ -232,16 +233,4 @@ One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archiv
 - 2026-07-12 · `3e345d1` · [Edge,scripts] per-identity-nats-subscribe-acl Fire 3 CLOSED — live-stack revocation e2e proves vector 4 against real prod wiring; EDGE.3 gate flipped build-ready; CI green
 - 2026-07-12 · `2f07d93` · [Edge,Refractor] per-identity-nats-subscribe-acl Fire 2 — cmd/edge EDGE_TOKEN connect + inbox scoping; Refractor personal.{register,deregister,hydrate} bind to the verified actor; CI green
 - 2026-07-11 · `a3ec8d5` · [Gateway,natsperm] per-identity-nats-subscribe-acl Fire 1 CLOSED — xkey day-one condition wired (UnsealRequest/SealResponse sealed-box round trip); CI green
-
-- 2026-07-11 · `ce47946` · [CI] natsperm `t.Parallel()` experiment — local win (34.4s→25.9s) didn't hold in CI (unit job CPU-oversubscribed under `-p 4`); reverted (85b77a9→ce47946); CI green
-- 2026-07-11 · `232f9ea` · [Loupe] systemmap/lens-detail Core-KV listing scoped to vtx.package. subtree — false "RED — all absent" landing banner fixed, verified live on the 13K-key bucket
-- 2026-07-11 · `a6aeb04` · [Processor] deterministic-requestId resubmits unbrick on tracker/outbox subject residue (Contract #4 §4.3/§4.5 realized; F-004 same-version force-refresh works past 24h again); regression tests
-- 2026-07-11 · `616c3fa` · [natsperm] $JS.FC.> granted matrix-wide — the lattice-pkg install hang root-caused (flow-control ack denied → permanent KV-listing stall) + lattice-pkg 60s bound + substrate partial-listing guards
-- 2026-07-11 · `4bae4d5` · [CI] two unit-job flakes root-caused at source — processor ack/term consumer-state reads + substrate AckResume dead-iterator race; poll/quiesce test barriers, vendor-source-grounded (detail in commit msgs); CI green
-- 2026-07-11 · `5ce906b` · [identity-domain,gateway] multi-credential-linking Fire 3 — provision-time identityindex probe (whoami `?probe=1`), built as a P5-clean lens read (§3.4 build-note); no contract change; CI green
-- 2026-07-11 · `bfe91b4` · [scripts] verify-package-identity — expect Fire 2's 2 new permittedCommands (CI stack-gates caught the stale count live); CI green
-- 2026-07-11 · `625f411` · [identity-hygiene] multi-credential-linking Fire 2 — link flow (InitiateCredentialLink/CompleteCredentialLink) + Gateway whoami; NFR-S6 leak found+fixed in review; CI green
-- 2026-07-11 · `259e4a1` · [identity-hygiene] multi-credential-linking Fire 1 — MergeIdentity repoints every credential resolving to a merged-away secondary onto primary; Gateway materializer folds identity.rebound; CI green
-- 2026-07-11 · `72919d9` · [identity-hygiene] dedup-over-encrypted-pii Fire 3 CLOSED — ShredIdentityKey in-commit indexes/duplicateOf erasure + CreateUnclaimedIdentity revive fix + batch-size preflight; Fires 1-3 all shipped; CI green
-- 2026-07-11 · `f4eb556` · [CI] natsperm deniedTimeout 2s→500ms (unit job's new long pole after this morning's matrix-hygiene Fire 1 added 2 registry-driven tests) — unit job 5m20→3m25, CI green, no new flakiness (stress-ran ×10)
 - *(older entries rolled to [archive/lattice-done.md](archive/lattice-done.md); includes `94c8224` hello-lattice NFR-P3 flake fix)*

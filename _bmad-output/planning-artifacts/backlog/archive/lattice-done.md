@@ -2,6 +2,17 @@
 
 Rolled from `lattice.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-11 · `ce47946` · [CI] natsperm `t.Parallel()` experiment — local win (34.4s→25.9s) didn't hold in CI (unit job CPU-oversubscribed under `-p 4`); reverted (85b77a9→ce47946); CI green
+- 2026-07-11 · `232f9ea` · [Loupe] systemmap/lens-detail Core-KV listing scoped to vtx.package. subtree — false "RED — all absent" landing banner fixed, verified live on the 13K-key bucket
+- 2026-07-11 · `a6aeb04` · [Processor] deterministic-requestId resubmits unbrick on tracker/outbox subject residue (Contract #4 §4.3/§4.5 realized; F-004 same-version force-refresh works past 24h again); regression tests
+- 2026-07-11 · `616c3fa` · [natsperm] $JS.FC.> granted matrix-wide — the lattice-pkg install hang root-caused (flow-control ack denied → permanent KV-listing stall) + lattice-pkg 60s bound + substrate partial-listing guards
+- 2026-07-11 · `4bae4d5` · [CI] two unit-job flakes root-caused at source — processor ack/term consumer-state reads + substrate AckResume dead-iterator race; poll/quiesce test barriers, vendor-source-grounded (detail in commit msgs); CI green
+- 2026-07-11 · `5ce906b` · [identity-domain,gateway] multi-credential-linking Fire 3 — provision-time identityindex probe (whoami `?probe=1`), built as a P5-clean lens read (§3.4 build-note); no contract change; CI green
+- 2026-07-11 · `bfe91b4` · [scripts] verify-package-identity — expect Fire 2's 2 new permittedCommands (CI stack-gates caught the stale count live); CI green
+- 2026-07-11 · `625f411` · [identity-hygiene] multi-credential-linking Fire 2 — link flow (InitiateCredentialLink/CompleteCredentialLink) + Gateway whoami; NFR-S6 leak found+fixed in review; CI green
+- 2026-07-11 · `259e4a1` · [identity-hygiene] multi-credential-linking Fire 1 — MergeIdentity repoints every credential resolving to a merged-away secondary onto primary; Gateway materializer folds identity.rebound; CI green
+- 2026-07-11 · `72919d9` · [identity-hygiene] dedup-over-encrypted-pii Fire 3 CLOSED — ShredIdentityKey in-commit indexes/duplicateOf erasure + CreateUnclaimedIdentity revive fix + batch-size preflight; Fires 1-3 all shipped; CI green
+- 2026-07-11 · `f4eb556` · [CI] natsperm deniedTimeout 2s→500ms (unit job's new long pole after this morning's matrix-hygiene Fire 1 added 2 registry-driven tests) — unit job 5m20→3m25, CI green, no new flakiness (stress-ran ×10)
 - 2026-07-11 · `3a2aa15` · [identity-hygiene] dedup-over-encrypted-pii Fire 2 — MergeIdentity duplicateOf both-direction tombstone + indexes-driven repoint + edge trust-gate real-class fix; CI green (incl. verify-package-identity-hygiene)
 - 2026-07-11 · `51a3f2e` · [identity-hygiene] dedup-over-encrypted-pii Fire 1 — duplicateOf/indexes links + dispatcher sweep fixes live RevisionConflict; PII-free lens; DiffRetraction on nats-kv; CI green
 - 2026-07-11 · `4258180` · [natsperm] natsperm-matrix-hygiene Fire 1 CLOSED — platform-bucket registry derives provisioning/guards/matrix; matrix hoisted to internal/natsperm; CI green

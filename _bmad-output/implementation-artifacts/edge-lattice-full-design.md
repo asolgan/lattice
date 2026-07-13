@@ -567,6 +567,27 @@ feature*.
 > client package (request + TTL-cache the session key, decrypt ciphertext deltas in-memory, never
 > persist plaintext, discard on TTL) and its wiring into the Edge node's local read path — that's
 > increment 2. §8 points (b)/(e) remain open for a future review pass.
+>
+> **🏗️ EDGE.4 increment 2 SHIPPED** — the `internal/edge/vault` client: `Client.Decrypt` requests +
+> TTL-caches a session key via the same `personal.sessionkey` control-RPC pattern
+> `internal/edge/sync` already uses for `register`/`hydrate`, then opens the ciphertext locally via a
+> new exported `vault.OpenWithSessionKey` (the free-function counterpart of
+> `LocalBackend.Decrypt`'s AEAD-open, binding `identityKey` as AAD identically) — no further NATS
+> round-trip per read while the cached key's TTL holds; a failed/denied request (incl. a shredded
+> identity, surfaced as the Vault's `ErrKeyShredded` message verbatim) clears the cache rather than
+> risk reusing a stale key. `Reader` composes this over `overlay.Overlay.Read`: a value shaped as the
+> Contract #3 §3.10 `{ct, nonce, keyId}` envelope is transparently decrypted in-memory before
+> returning; plaintext is never written back to the Local VAL Store — non-ciphertext data and
+> deleted/absent results pass through unchanged. Proven end-to-end against a real `control.Service` +
+> `vault.LocalBackend` over an embedded NATS server (not a hand-rolled fake responder): decrypt
+> round-trip, session-key cache reuse (verified by closing the control-plane connection between two
+> `Decrypt` calls and asserting the second still succeeds), and shredded-identity denial. **Not yet
+> wired**: `cmd/edge` is still a headless sync/write daemon with no query surface of its own (no
+> HTTP/gRPC handler calls `Overlay.Read` today) — `Reader` is the ready decrypt-aware read path for
+> whichever increment adds one (a Facet/edge-showcase-app UI, or a future `cmd/edge` query API); there
+> is nothing in `cmd/edge/main.go` to wire it into yet. §8 points (b)/(e) remain open for a future
+> review pass; EDGE.4 is otherwise feature-complete (server RPC + client + local decrypt-on-read all
+> shipped).
 
 Ordered so the security-inert local-first loop lands first (co-built with its cloud producer), the security
 turn-on is its own gated fire, and confidentiality + the real device extend it. **Dependency gates explicit.**
