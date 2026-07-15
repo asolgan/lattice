@@ -648,7 +648,6 @@ func TestRegistryDrivenWriteIsolation(t *testing.T) {
 			continue // SharedWrite (health-kv) — covered by TestHealthKVSharedWriteAccess.
 		}
 		t.Run(b.Name, func(t *testing.T) {
-			t.Parallel()
 			provision(t, boot, b.Name)
 
 			owner := connectAs(t, url, b.Owner)
@@ -710,7 +709,6 @@ func TestRegistryDrivenStreamAdminSideChannel(t *testing.T) {
 	for _, b := range bootstrap.PlatformBuckets() {
 		b := b
 		t.Run(b.Name, func(t *testing.T) {
-			t.Parallel()
 			provision(t, boot, b.Name)
 
 			purgeSubject := "$JS.API.STREAM.PURGE.KV_" + b.Name
