@@ -1,6 +1,11 @@
 # Global identity for a hyperscale tenant (cross-cell shadows + cross-region residency) — design
 
-**Status: 📐 awaiting-Andrew (ratification).** Author: Winston (Designer fire, 2026-06-30). The named open
+**Status: ✅ RATIFIED (Andrew, 2026-07-16) — multi-homed-`identity` exception APPROVED; transparent
+Gateway hydrate-and-retry (zero contract edits). 🚫 DO NOT BUILD until further notice (Andrew's words:
+"ratified - DO NOT BUILD until further notice"). The build hold is Andrew-gated and does NOT auto-clear
+when multi-cell Fire 2 or a hyperscale driver lands — no steward picks this up, no lane files fires from
+it, and no session re-proposes it, until Andrew explicitly lifts the hold.**
+Author: Winston (Designer fire, 2026-06-30). The named open
 extension the **multi-cell** ratification (2026-06-29) carved out of its core and routed to a dedicated
 follow-on. Backlog row: `planning-artifacts/backlog/lattice.md` → *Scale-out → Global identity for a
 hyperscale tenant* (★ now / ★★★ at hyperscale, L–XL).
@@ -66,14 +71,12 @@ revoke, compared at auth — *fail-closed*); **whole-actor cut** is instant (the
 most-restrictive**; canonical PII never auto-replicates across borders (the shadow is PII-stripped); **air-gapped
 sovereign jurisdictions (PIPL/Russia) are a federation case, not a shadow case** (§5, the named hard edge).
 
-**Build sequencing (honest — ratify-now / build-on-driver).** This sits on **unbuilt multi-cell** (itself
-shelved behind Gateway + HA-NATS + a real scale driver). You cannot shadow across cells that do not exist, so
-**every fire here sequences behind multi-cell Fire 2** (the Global Adjacency Index + Gateway router) **plus a
-real hyperscale driver** (none at 10–100 ops/sec / ≤100K keys / ~500 members — a single cell is orders of
-magnitude within ceiling). The recommendation mirrors multi-cell/Vault/D1: **ratify the design, shelve the
-build** behind its prerequisites + driver. No fire is buildable now (the would-be "Fire 0" pseudonymous-anchor
-discipline is already shipped by D1's `nanoIdFromKey`), so there is **nothing to start** — "the design is ready
-and sequenced" is the correct output.
+**Build sequencing (as ratified — hold is Andrew-gated, not driver-gated).** This sits on **unbuilt
+multi-cell** (itself shelved behind Gateway + HA-NATS + a real scale driver); no fire is buildable now (the
+would-be "Fire 0" pseudonymous-anchor discipline is already shipped by D1's `nanoIdFromKey`). At ratification
+Andrew replaced the design's proposed auto-clearing gate (multi-cell Fire 2 + a hyperscale driver) with an
+**explicit hold: DO NOT BUILD until further notice.** Prerequisites landing does not clear it; only Andrew
+lifting the hold does. When lifted, the §7 fires still sequence behind multi-cell Fire 2 + a real driver.
 
 ---
 
@@ -441,10 +444,11 @@ dimension to placement** and **reshapes the shadow** — it does **not** fork th
 
 ## 7. Decomposition for the Steward (fire-by-fire)
 
-**Honest sequencing — the whole feature is build-deferred behind multi-cell + a real hyperscale driver; no
-fire is buildable now.** (The one piece that *could* precede — a pseudonymous-anchor primitive — is **already
-shipped** as D1's `nanoIdFromKey`, so there is no de-risking "Fire 0" to start.) Ratify the design, shelve the
-build like Vault/D1/HA/multi-cell. When the gate clears, the fires are:
+**Sequencing as ratified — 🚫 DO NOT BUILD until Andrew lifts the hold (see the Status banner); the hold
+does not auto-clear on prerequisites.** (The one piece that *could* precede — a pseudonymous-anchor
+primitive — is **already shipped** as D1's `nanoIdFromKey`, so there is no de-risking "Fire 0" to start.)
+If and when Andrew lifts the hold, the fires below still sequence behind multi-cell Fire 2 + a real
+hyperscale driver:
 
 - **Fire 1 — the Global Identity Registry + residency on `cell-registry` (behind multi-cell Fire 2).** The
   replicated `identity-registry` KV (`homeCell`/`shadowCells`/`residency`/`revocationGen`); the
