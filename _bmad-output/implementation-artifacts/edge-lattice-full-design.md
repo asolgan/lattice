@@ -444,7 +444,8 @@ feature*.
 - **B — browser/mobile PWA first** (WASM + SQLite/IndexedDB + WS/push bridge). *Pros:* the real per-user device.
   *Cons:* couples the first Edge increment to the **unbuilt** Gateway WS/push bridge + a WASM build + a
   different local store — three new variables before the core loop is even proven.
-- **Recommendation: A first; B is EDGE.5, gated on the Gateway WS/push bridge.** Prove the loop in Go against the
+- **Recommendation: A first; B is EDGE.5** *(its "Gateway WS/push bridge" gate framing is since superseded —
+  see §7 item 5 / [edge-browser-node-design.md](edge-browser-node-design.md))*. Prove the loop in Go against the
   real cloud, then port the *same* `internal/edge` engine to a browser host with a SQLite/IndexedDB store + WS
   transport. The engine is host-agnostic by construction (the store + transport are interfaces).
 
@@ -624,11 +625,14 @@ turn-on is its own gated fire, and confidentiality + the real device extend it. 
    shredded identity can never decrypt. **🚧 GATED on Vault Phase A + Personal Lens PL.5 (the `IssueSessionKey`
    RPC).** *Depends on: EDGE.1 (mirror) + EDGE.3 (an authenticated identity to scope the key to).*
 
-5. **EDGE.5 — the browser/mobile node (the real per-user device).** Port the *same* `internal/edge` engine to a
-   WASM/browser host: a SQLite/IndexedDB store implementation + a **WebSocket transport** + **push-notification
-   wake** (the device-can't-hold-TCP problem). *Green:* the browser node runs the same convergence + offline
-   e2e against the WS bridge. **🚧 GATED on the Gateway WS/push edge-delivery bridge.** *Depends on: EDGE.3
-   (the engine is host-agnostic; this swaps store + transport).*
+5. **EDGE.5 — the browser/mobile node (the real per-user device).** *Designed 2026-07-16 —
+   [edge-browser-node-design.md](edge-browser-node-design.md), 📐 awaiting-Andrew.* This item's original
+   "🚧 GATED on the Gateway WS/push edge-delivery bridge" framing is **superseded**: the Facet design §5
+   split the blob (WebSocket = a native NATS 2.14 listener, config not construction; only the push-waker
+   stays undesigned, deferred to Facet Stage 3), and the EDGE.5 design executes it — WS listener +
+   auth-callout parity vectors, a `store`/transport seam extraction, and a wasm semantics core with a JS
+   transport shell (nats.go has no browser transport — the vendor's browser client is nats.js). Fires
+   W1–W3 `[lattice]` + W4 `[verticals]` (= Facet Fire 4). *Depends on: EDGE.3 (shipped).*
 
 6. **EDGE.6 (deferred, design-only) — the authoritative local Edge Processor (FORK-A option B).** Local Starlark
    + distributed DDL + bounded local-authority commit + zero-knowledge proofs (vault §2 full vision).
@@ -639,7 +643,8 @@ turn-on is its own gated fire, and confidentiality + the real device extend it. 
 **Build-now vs. gated.** **EDGE.1 + EDGE.2 + EDGE.3 are done** — the complete offline-first loop
 (security-inert, trusted posture) plus the untrusted multi-identity security turn-on (Gateway-verified
 submit + PL.3 fan-out + subscribe-ACL). **EDGE.4 on Vault Phase A + PL.5 (both since shipped) behind
-EDGE.3; EDGE.5 on the Gateway WS bridge; EDGE.6 is design-only.** This mirrors the ratify-now /
+EDGE.3; EDGE.5 designed (📐 awaiting-Andrew, [edge-browser-node-design.md](edge-browser-node-design.md) —
+no Gateway bridge; native WS + wasm host); EDGE.6 is design-only.** This mirrors the ratify-now /
 build-as-foundations-land posture already accepted for Multi-cell, HA-NATS, and Personal Lens itself.
 
 ---
