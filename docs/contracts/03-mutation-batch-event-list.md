@@ -243,6 +243,16 @@ ciphertext, never plaintext.
 or carried copy**. A shred rewrites `piiKey` to a shredded placeholder at the source; a frozen envelope
 copy in a durable plane would out-live that rewrite and defeat crypto-shredding across a Vault restart.
 
+**Ref-provenance rule.** A sensitive-ref is **authenticated at mint**: the Processor stamps every
+`$sensitiveRef` it authors with a MAC (a key derived from the Vault's platform secret) binding
+`{ref, requestId, ciphertext}` — `requestId` being the minting operation's, carried top-level on the
+emitted event. The **external-egress unwrap consumer decrypts only through the ref-verified decrypt
+RPC**, which recomputes the MAC before any decryption and derives the identity from the authenticated
+`ref`; an unverifiable ref (absent or mismatched MAC) is a permanent data error — never decrypted,
+never retried. A ref is a per-execution artifact, not a durable capability: a consumer never accepts a
+marker outside the event of the operation that minted it. The wholesale decrypt RPC (no MAC) remains
+for the trusted-tool inspector class only.
+
 ### 3.11 Sensitive-object (blob) encryption at rest
 
 The blob analog of §3.10. An object (the off-graph blob plane, Contract #7 §7.2 — `vtx.object.<oid>` +

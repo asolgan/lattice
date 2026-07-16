@@ -92,12 +92,15 @@ then park; the completer is a human for userTask, the bridge for externalTask). 
   instanceOp resolves the templates from that JIT-hydrated state as it emits the `external.<adapter>`
   event — so an adapter receives the real subject fields it needs (a vendor's legal-name / DOB / address)
   without any reader touching a lens read-model. **A template over a `sensitive: true` aspect (§3.10)
-  resolves to a sensitive-ref** (`{"$sensitiveRef": {ref, ciphertext, field}}` — the at-rest ciphertext,
-  never plaintext): plaintext PII never enters the `external.<adapter>` event, the claim vertex, or any
-  durable plane. The **bridge** is the unwrap point — at dispatch, just before the adapter call, it
-  resolves each sensitive-ref via the Vault decrypt RPC using the identity's **live** key envelope
-  (never a stored copy — §3.10 live-envelope rule), so a shredded identity's ref fails closed. An unwrap
-  failure is a data error: a permanent one (shredded/malformed/absent) posts the terminal `replyOp` with
+  resolves to a sensitive-ref** (`{"$sensitiveRef": {ref, ciphertext, mac, field}}` — the at-rest
+  ciphertext, never plaintext; `mac` is the Processor's provenance stamp over
+  `{ref, requestId, ciphertext}`, §3.10 ref-provenance rule): plaintext PII never enters the
+  `external.<adapter>` event, the claim vertex, or any durable plane. The **bridge** is the unwrap point
+  — at dispatch, just before the adapter call, it resolves each sensitive-ref via the **ref-verified
+  Vault decrypt RPC** (MAC mandatory; the event's top-level `requestId` is part of the verified input)
+  using the identity's **live** key envelope (never a stored copy — §3.10 live-envelope rule), so a
+  fabricated or spliced ref and a shredded identity's ref both fail closed. An unwrap failure is a data
+  error: a permanent one (unverified/shredded/malformed/absent) posts the terminal `replyOp` with
   a failed outcome so the pattern converges; a transient one retries — never a blank field to a vendor. The **`row.<column>`** half of §10.8 templating is the **Weaver actuator's**
   resolution (`subject`/`assignee`/`target` selection from a violation row) and is **not** reachable on
   the Loom write path: by the time the instanceOp runs the violation row is gone, the write path must not
