@@ -25,7 +25,7 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 | **Clinic is a single-location, single-specialty silo** | `location-domain` is unused by `clinic-domain` (explicit in its own docs, unlike `loftspace-domain`); a provider has exactly one `specialty` and no site. A real multi-site practice group needs provider↔location + per-location scheduling — mirror `loftspace-domain`'s already-proven `location-domain` integration pattern. Bigger structural lift; sequence after the other Clinic items land. | Clinic | pkg | ★★ | L | ✅ shipped · [design](../../implementation-artifacts/clinic-multisite-design.md) |
 | **Booking is provider-first, no specialty-based search** | Booking form now has a specialty filter + a "soonest available" panel computing each matching provider's earliest open slot. | Clinic | FE | ★ | S | ✅ shipped `8315a88` |
 | **Café tab: no guard against a 2nd concurrent open tab per lease** | Live-verified: `OpenTab` (`cafe-domain/ddls.go:225`) mints unconditionally, no dedup — unlike this package's own `cafeLedgerAccountGuard` "one account per lease" precedent. POS's `renderPos` (`app.js:169`) picks one via `find()`, silently ignoring the other — a real revenue leak, not just a UI quirk. | Café | pkg | ★★ | S | ✅ shipped `3def314` |
-| **Facet cold-start races the cap projection** | Fresh `make up-facet` fails facet on cold start: `seed-edge-demo`'s `waitForRoleGrant` waits for the tenant's WRITE cap, but facet's `personal.register` (controlauth) needs the control/read cap (`cap-read.<tenant>`) Refractor projects a beat later → `controlauth: no capability kv entry for actor` and facet exits; a restart once it lands succeeds (verified 2026-07-16 rebuild). | Facet | pkg + FE | ★ | S | 📋 ready — next: `seed-edge-demo` also waits for `cap-read.<tenant>`, or `cmd/facet` retries register on the transient missing-cap |
+| **Facet cold-start races the cap projection** | Fresh `make up-facet` could fail facet on cold start: `seed-edge-demo` printed the tenant handoff before its `AssignRole`'s `ctrl.refractor.register` grant (packages/control-authz) finished re-projecting into `cap.roles.<tenant>` → `controlauth: no capability kv entry for actor`. | Facet | pkg | ★ | S | ✅ shipped `ef45e83` |
 
 **Explicitly descoped (ambitious-PO pass, 2026-07-09):** structured diagnosis/procedure coding (ICD/CPT),
 vitals, and e-prescribing were considered and deliberately NOT filed — a certified EHR is out of scope for a
@@ -62,6 +62,7 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic ↔ Café ↔ We
 
 One line per shipped item (`date · SHA · title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-16 · `ef45e83` · Facet cold-start cap-projection race CLOSED — `seed-edge-demo` waits for `ctrl.refractor.register` in `cap.roles.<tenant>` before the tenant handoff
 - 2026-07-13 · `e86ab45` · Care→Wellness referral — clinic worklist "Book wellness class" CTA + `/api/wellness/sessions` proxy, `CreateBooking` submit
 - 2026-07-13 · `25623d9` · LoftSpace account settings — new `identityCredentialsRead` Secure Lens + Account tab (list/link/unlink); live-verify pending, dev-stack installs broken
 - 2026-07-13 · `f5b3031` · Edge showcase app (Facet) Fire 2 — `cmd/facet` dev host + PWA renderer, live-verified — [UX](../../implementation-artifacts/facet-app-ux.md)
