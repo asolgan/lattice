@@ -1,6 +1,8 @@
 # Bootstrap primordial-ID globals race — one populate per process, mirrored under test
 
-**Status: 📐 awaiting-Andrew (ratification).** · Designer (Winston), 2026-07-16 · Lattice lane (Stream 2)
+**Status: ✅ RATIFIED (Andrew, 2026-07-16) — test-scoped fix (§4) as recommended; the universal
+instance refactor stays REJECTED with its §5.1 revive condition. No contract change. The Lattice
+Steward builds Fires 1–2 (§7).** · Designer (Winston), 2026-07-16 · Lattice lane (Stream 2)
 Backlog row: *"`internal/bootstrap` primordial-ID globals race"* —
 `_bmad-output/planning-artifacts/backlog/lattice.md` → Refinements & ops.
 
