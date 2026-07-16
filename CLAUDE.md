@@ -67,6 +67,10 @@ Two kinds of actor read this file; know which one you are.
   from existing scripts** (much of that corpus is the debt being swept); new scripts land clean, with the
   declarations added at every dispatcher of the op.
 
+## Tests & Determinism
+Never use fixed `time.Sleep` for synchronization in tests — use deterministic sync (channels, polling with condition, WaitGroup). 
+Use valid 20-char NanoIDs with limited alphabet (see `internal/substrate/nanoid.go`) in seed data.
+
 ## Authoritative external sources (vendors)
 
 When you need the **authoritative behavior of a vendored dependency** (semantics, version-gated
