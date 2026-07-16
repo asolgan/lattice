@@ -238,7 +238,12 @@ create (`git worktree add`) and merge to `main` when green — **not the main ch
 for *commits* (scoped `git add`), but `go build ./...` / `golangci-lint` / `go test` in a *shared* checkout
 would compile the **other** stream's uncommitted in-progress code and fail spuriously. **DOCUMENTS — your lane
 file, design docs, and contracts — are edited DIRECTLY in `main`** (never a worktree; contracts stay
-**uncommitted** for Andrew). Per-lane files keep the two streams from colliding in `main`.
+**uncommitted** for Andrew). Per-lane files keep the two streams from colliding in `main`. **STACK
+LIFECYCLE (`make up*` / `make down`) runs ONLY from the main checkout, never a worktree** — `docker-compose.yml`
+mounts `deploy/nats-server.conf` by a *relative* path, so `docker compose up` from a worktree recreates the
+pinned `lattice-nats` container and wipes all Core KV (the 2026-07-13 data loss); a `make assert-main-checkout`
+guard + a PreToolUse session hook now refuse it. **Reuse the running stack from your worktree; if none is up,
+`cd` to the main repo root to bring it up** (`refresh-<vertical>` for a live package edit needs no teardown).
 
 **Shared core stack vs. your own app binary** (the rule that bit a prior fire): **"never `make down` a stack
 you didn't start" means the CORE STACK** — NATS + processor / refractor / weaver / loom / bridge / objmgr /

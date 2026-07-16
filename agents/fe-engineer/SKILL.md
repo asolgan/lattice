@@ -80,7 +80,7 @@ you are building*:
    `bin/<vertical>-app` (:7788/:7799) / `bin/loupe` is YOURS to cycle:** **reuse the running core stack**, then
    `pkill -f "bin/<x>"` → `go build -o bin/<x> ./cmd/<x>` → **relaunch in the BACKGROUND** (with `NATS_URL` /
    `BOOTSTRAP_JSON_PATH`; `make run-<vertical>-app` is foreground/human-only) → verify → **leave the new binary
-   running**. If no core stack is up, `make up-<vertical>` and leave it up. (**F-004** SHIPPED in-place package refresh —
+   running**. If no core stack is up, bring it up **from the main checkout** (`cd` to the main repo root — **never your worktree**: `make up-*` from a worktree recreates `lattice-nats` and wipes all Core KV; a `make` guard + a session hook now refuse it), then reuse it from your worktree. (**F-004** SHIPPED in-place package refresh —
    `make reinstall-package` / `refresh-<vertical>` diff-apply an EDITED **or newly-ADDED lens/DDL** on the
    running stack with no teardown, live: Refractor's durable `vtx.meta.>` CDC watch and the Processor's
    DDL-cache invalidation both react to any committed `vtx.meta.*` write — create or update alike, no restart
