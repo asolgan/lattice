@@ -94,7 +94,37 @@ LATTICE_PROCESSOR_AUTH_MODE ?= capability
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: up up-full up-full-capability dev-seed-staff provision-gateway-identity-provisioner test-real-actor-auth up-loftspace orchestration install-packages install-loftspace run-loupe run-gateway run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role provision-clinic-role provision-gateway-role provision-readpath provision-vault-kek reinstall-package verify-package-service-location verify-package-edge-manifest install-edge-manifest seed-edge-demo up-facet run-facet verify-package-augur verify-conformance build vet lint-conventions lint-board install-skills test test-rollback test-lease-convergence test-object-gc test-crypto-shred test-system-actor-capability test-control-plane-authz test-augur-convergence test-unrouted-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
+.PHONY: assert-main-checkout up up-full up-full-capability dev-seed-staff provision-gateway-identity-provisioner test-real-actor-auth up-loftspace orchestration install-packages install-loftspace run-loupe run-gateway run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role provision-clinic-role provision-gateway-role provision-readpath provision-vault-kek reinstall-package verify-package-service-location verify-package-edge-manifest install-edge-manifest seed-edge-demo up-facet run-facet verify-package-augur verify-conformance build vet lint-conventions lint-board install-skills test test-rollback test-lease-convergence test-object-gc test-crypto-shred test-system-actor-capability test-control-plane-authz test-augur-convergence test-unrouted-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
+
+## assert-main-checkout — Refuse stack lifecycle from anywhere but the main working
+## tree. docker-compose.yml mounts deploy/nats-server.conf by a RELATIVE path, so a
+## `docker compose up` from a git worktree sees a different mount SOURCE (the file
+## content is identical — only the path differs), recreates the pinned lattice-nats
+## container, and DESTROYS its ephemeral JetStream: total, silent Core-KV loss
+## (root-caused 2026-07-13). The Compose project-name pin does NOT prevent this —
+## only running from the main checkout does. Fail-open: auto-passes in CI (single
+## checkout) and outside git; override (unsafe) with LATTICE_ALLOW_ANYWHERE=1.
+assert-main-checkout:
+	@if [ "$$LATTICE_ALLOW_ANYWHERE" = "1" ]; then exit 0; fi; \
+	gitcommon=$$(git rev-parse --git-common-dir 2>/dev/null) || exit 0; \
+	[ -n "$$gitcommon" ] || exit 0; \
+	common=$$(cd "$$gitcommon" 2>/dev/null && pwd -P) || exit 0; \
+	[ -n "$$common" ] || exit 0; \
+	main_root=$$(dirname "$$common"); \
+	cur=$$(pwd -P); \
+	if [ "$$cur" != "$$main_root" ]; then \
+		echo "======================================================================"; \
+		echo " REFUSING 'make $@'-class stack lifecycle from a non-main checkout."; \
+		echo "   here : $$cur"; \
+		echo "   main : $$main_root"; \
+		echo " docker compose up/down from a worktree RECREATES lattice-nats and"; \
+		echo " WIPES all JetStream data (Core KV). Code and tests belong in the"; \
+		echo " worktree; the stack comes up from main."; \
+		echo "   cd $$main_root  then re-run (reuse the stack if it is already up)."; \
+		echo " Override (unsafe): LATTICE_ALLOW_ANYWHERE=1 make <target>"; \
+		echo "======================================================================"; \
+		exit 1; \
+	fi
 
 ## up — Bring up NATS + Postgres, run bootstrap binary, block until readiness gate.
 ## Detects an already-healthy kernel first and reuses it — invoking this against a
@@ -106,7 +136,7 @@ LATTICE_PROCESSOR_AUTH_MODE ?= capability
 ## were recreated out-of-band (bypassing `make down`) looks process-healthy but
 ## seeds against a stale primordial ID set, so reads silently return empty
 ## while writes still succeed. A mismatch forces the fresh re-bootstrap below.
-up:
+up: assert-main-checkout
 	@PROC_HEALTHY=0; \
 	if docker compose ps --status running --services 2>/dev/null | grep -qx nats && \
 	    docker compose ps --status running --services 2>/dev/null | grep -qx postgres && \
@@ -156,13 +186,16 @@ up:
 		echo "==> Lattice ready."; \
 	fi
 
-## down — Tear down all containers and remove the bootstrap JSON.
+## down — Tear down all containers and remove the per-graph dev JSON artifacts
+## (lattice.bootstrap.json + loupe-operator.json). Both name random NanoIDs seeded
+## into the now-destroyed graph, so a stale copy dangles a fresh bootstrap (empty
+## reads / a Loupe operator identity that no longer exists) — clear them with the data.
 ## Volumes are ephemeral (not named), so container removal clears NATS + Postgres data.
-down:
+down: assert-main-checkout
 	@echo "==> Stopping and removing containers..."
 	docker compose down --remove-orphans
-	@echo "==> Removing bootstrap JSON (if present)..."
-	rm -f $(BOOTSTRAP_JSON)
+	@echo "==> Removing per-graph dev artifacts (bootstrap + Loupe operator JSON)..."
+	rm -f $(BOOTSTRAP_JSON) $(LOUPE_OPERATOR_JSON)
 	@echo "==> Killing any background refractor processes..."
 	-pkill -f "bin/refractor" 2>/dev/null || true
 	@echo "==> Killing any background processor processes..."
