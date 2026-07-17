@@ -625,14 +625,15 @@ turn-on is its own gated fire, and confidentiality + the real device extend it. 
    shredded identity can never decrypt. **🚧 GATED on Vault Phase A + Personal Lens PL.5 (the `IssueSessionKey`
    RPC).** *Depends on: EDGE.1 (mirror) + EDGE.3 (an authenticated identity to scope the key to).*
 
-5. **EDGE.5 — the browser/mobile node (the real per-user device).** *Designed 2026-07-16 —
-   [edge-browser-node-design.md](edge-browser-node-design.md), 📐 awaiting-Andrew.* This item's original
+5. **EDGE.5 — the browser/mobile node (the real per-user device).** *Designed + ✅ Andrew-ratified
+   2026-07-16 — [edge-browser-node-design.md](edge-browser-node-design.md), FORK-W A′.* This item's original
    "🚧 GATED on the Gateway WS/push edge-delivery bridge" framing is **superseded**: the Facet design §5
    split the blob (WebSocket = a native NATS 2.14 listener, config not construction; only the push-waker
    stays undesigned, deferred to Facet Stage 3), and the EDGE.5 design executes it — WS listener +
    auth-callout parity vectors, a `store`/transport seam extraction, and a wasm semantics core with a JS
    transport shell (nats.go has no browser transport — the vendor's browser client is nats.js). Fires
-   W1–W3 `[lattice]` + W4 `[verticals]` (= Facet Fire 4). *Depends on: EDGE.3 (shipped).*
+   W1–W4 ALL `[lattice]` (Andrew's single-lane directive at ratification — W4, the Facet renderer swap
+   = Facet Fire 4, builds in-lane rather than handed to verticals). *Depends on: EDGE.3 (shipped).*
 
 6. **EDGE.6 (deferred, design-only) — the authoritative local Edge Processor (FORK-A option B).** Local Starlark
    + distributed DDL + bounded local-authority commit + zero-knowledge proofs (vault §2 full vision).
@@ -643,8 +644,9 @@ turn-on is its own gated fire, and confidentiality + the real device extend it. 
 **Build-now vs. gated.** **EDGE.1 + EDGE.2 + EDGE.3 are done** — the complete offline-first loop
 (security-inert, trusted posture) plus the untrusted multi-identity security turn-on (Gateway-verified
 submit + PL.3 fan-out + subscribe-ACL). **EDGE.4 on Vault Phase A + PL.5 (both since shipped) behind
-EDGE.3; EDGE.5 designed (📐 awaiting-Andrew, [edge-browser-node-design.md](edge-browser-node-design.md) —
-no Gateway bridge; native WS + wasm host); EDGE.6 is design-only.** This mirrors the ratify-now /
+EDGE.3; EDGE.5 ✅ ratified 2026-07-16 ([edge-browser-node-design.md](edge-browser-node-design.md) —
+no Gateway bridge; native WS + wasm semantics core + JS transport shell, W1–W4 single-lane); EDGE.6 is
+design-only.** This mirrors the ratify-now /
 build-as-foundations-land posture already accepted for Multi-cell, HA-NATS, and Personal Lens itself.
 
 ---

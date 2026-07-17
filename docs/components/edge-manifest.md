@@ -12,8 +12,9 @@
 
 ## Overview
 
-`edge-manifest` is the world manifest the Facet edge app (design §4) renders from: five **Personal
-Lenses** (`packages/edge-manifest/lenses.go`) that re-project data other packages already own —
+`edge-manifest` is the world manifest the Facet edge app (design §4) renders from: six lenses
+(`packages/edge-manifest/lenses.go`) — five **Personal Lenses** plus the `edgeManifestReadGrants`
+capability-read lens that makes them deliverable — re-projecting data other packages already own —
 identity, orchestration-base's tasks, service-domain's templates/instances, service-location's residence
 graph — into the reserved `manifest.` key namespace, delivered per-actor over the shared
 `lattice.sync.user.<actor>` SYNC transport (the `nats-subject` Personal Lens adapter, `edge-manifest
@@ -24,7 +25,7 @@ It is the **first production package** to use the `nats-subject`/Personal Lens a
 shipped latent in Fire 0 (proven only by inline e2e tests, `internal/refractor/personal_lens_pl*_e2e_test.go`)
 with zero real `packages/*` consumers until this one.
 
-## The five lenses (row schemas)
+## The lenses (row schemas)
 
 All rows carry the reserved `manifest.` key prefix (`internal/edge/store.go`'s `ApplyUpsert`/
 `ApplyDelete` carry a matching exemption from the Contract #1 key-shape gate for this prefix — a
@@ -38,8 +39,11 @@ already have on the nats-kv side).
 | `edgeCatalog` | `manifest.op.<opMetaId>` | op metas reachable via a reachable service template's `permitsOperation` link; carries `viaServices` (Fire 2), the list of service keys that permit it — a pattern comprehension mirroring `service-location/lenses.go`'s `allowedOperations`, not a WITH/collect grouping stage |
 | `edgeTasks` | `manifest.task.<taskId>` | tasks directly `assignedTo` the actor and still open |
 | `edgeInstances` | `manifest.inst.<instId>` | service instances `providedTo` the actor ("my orders") |
+| `edgeManifestReadGrants` | `cap-read.edgeManifest.<actor>` (nats-kv, `capability-kv`) | the D1 read-grant half (Contract #6 §6.14): projects each actor's readable manifest anchors so the fail-closed `readableAnchors` gate publishes the four non-self-anchored lenses — without it only `manifest.me` ever leaves the Refractor |
 
-See `edge-showcase-app-design.md` §3.2 for the full normative JSON row shapes (`vocab: 1`) and §3.3 for
+This page + `lenses.go` are the normative as-built row shapes (design §3.2's JSON is the semantic
+reference — as-built rows flatten its nesting, per its 2026-07-16 amendment; the `vocab` stamp is not
+yet projected and activates at the vocabulary freeze). See design §3.3 for
 the descriptor-vocabulary fields `edgeCatalog` reads back off each op meta's optional
 `.presentation`/`.inputSchema`/`.fieldDescriptions`/`.dispatch`/`.sensitive` aspects (`pkgmgr.OpMetaSpec`,
 `edge-manifest Fire 1 increment 1`) — an op meta that never adopted the vocabulary still projects a row,
