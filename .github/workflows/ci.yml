@@ -52,10 +52,11 @@ jobs:
 
       - name: Build Edge engine for the browser target
         # The Edge engine's semantics are single-sourced in Go and compiled to
-        # wasm for the browser node (edge-browser-node-design.md §3.2). Nothing
-        # runs this target yet; the check exists so an import that cannot build
-        # for a browser — bbolt above all — can never re-enter the engine
-        # unnoticed between here and the browser host landing.
+        # wasm for the browser node (edge-browser-node-design.md §3.2). The
+        # store's browser half is now executed too (see the conformance job);
+        # this check still earns its place by covering the packages that job
+        # does not run, so an import that cannot build for a browser — bbolt
+        # above all — can never re-enter the engine unnoticed.
         run: GOOS=js GOARCH=wasm go build ./internal/edge/...
 
       - name: Assert the browser Edge engine cannot reach a NATS client
@@ -337,6 +338,28 @@ jobs:
           ./packages/loftspace-domain/... ./packages/privacy-base/...
           ./packages/rbac-domain/... ./packages/semantic-contracts/...
           ./packages/service-location/... ./scripts/...
+
+  edge-browser-store:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # The browser Edge node's store is the one engine half that cannot be
+    # proven by any other job here: bbolt's suite says nothing about
+    # IndexedDB, and the js/wasm build check in lint-build only proves the
+    # port compiles. This runs the SAME conformance suite against a real
+    # IndexedDB in the runner image's headless Chrome, so a port that
+    # compiles but breaks the last-writer-wins gate, FIFO order, or
+    # durability across a reopen fails here rather than in a user's tab.
+    # Its own job (not a shard) because it is the only one needing a browser.
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26"
+          check-latest: true
+
+      - name: Run the Edge IndexedDB store conformance suite
+        run: make test-edge-idb-conformance
 
   unit-shard-coverage:
     runs-on: ubuntu-latest

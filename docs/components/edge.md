@@ -24,15 +24,35 @@ package, built incrementally per the design's §7 Steward decomposition (EDGE.1 
 **EDGE.1 + EDGE.2 + EDGE.3 done.** Shipped so far:
 
 - **`internal/edge/store`** — the Local VAL Store (design §3.1): an embedded, transactional local KV
-  (`bbolt`) keyed by the exact Contract #1 key strings (`vtx.<type>.<id>`, `vtx.<type>.<id>.<localName>`,
+  keyed by the exact Contract #1 key strings (`vtx.<type>.<id>`, `vtx.<type>.<id>.<localName>`,
   `lnk.<typeA>.<idA>.<rel>.<typeB>.<idB>`). Each entry carries the projected fragment plus the cloud
   revision that produced it. `ApplyUpsert`/`ApplyDelete` implement **last-writer-wins by revision** — a
   write applies iff its revision is ≥ the currently-stored one, so a stale/duplicate/reordered delta
   (JetStream is at-least-once and can reorder) is dropped, never applied out of order. A `Cursor`/
   `SetCursor` pair persists the Sync Manager's last-applied stream sequence across restarts. A separate
-  `local:` bbolt bucket (`PutLocal`/`GetLocal`) scaffolds the design's **sovereign, device-only**
-  namespace — entries a user creates locally that are never uploaded — kept in its own bucket so the
+  `local:` namespace (`PutLocal`/`GetLocal`) scaffolds the design's **sovereign, device-only** entries —
+  ones a user creates locally that are never uploaded — kept in its own bucket/object store so the
   mirror's apply path can never reach it.
+
+  `Store` is an **interface with two engines**, because the same semantics run on two hosts:
+
+  | Engine | Host | Build |
+  |---|---|---|
+  | `BoltStore` (`bolt.go`, `bbolt`) | the trusted Go hosts (`cmd/edge`, `cmd/facet`) | `!js` — bbolt is mmap-based and has no js/wasm build |
+  | `IDBStore` (`idb.go`, IndexedDB via `syscall/js`) | the browser node (EDGE.5 W3) | `js` |
+
+  Neither engine is the definition. **`store/storetest` is**: a conformance suite both engines answer
+  to, so a port is proven to have preserved last-writer-wins, FIFO intent order, and durability across a
+  reopen — rather than merely to have compiled. The browser engine runs it against a **real IndexedDB in
+  a real headless Chrome** (`make test-edge-idb-conformance`; CI job `edge-browser-store`), since Node
+  ships no IndexedDB and a fake would only prove the port matches someone's reimplementation of the
+  engine the PWA actually runs on.
+
+  Two IndexedDB properties the port is written around (authority + rationale in
+  [`docs/vendors.md`](../vendors.md)): a transaction is active only while one of its requests is pending,
+  so the last-writer-wins read-modify-write issues its write from **inside** the read's success callback
+  rather than after a Go channel round-trip; and a transaction's `complete` event — not a request's
+  success — is the durability point, so every write awaits it.
 - **`internal/edge/sync`** — the Sync Manager (design §3.2): a durable JetStream consumer
   (`substrate.RunDurableConsumer`, stable per-`(identityId, deviceId)` durable name) on the Personal-Lens
   `SYNC` stream, filtered to the actor's own `lattice.sync.user.<id>` subject. Each delivered delta drives
@@ -87,7 +107,10 @@ package, built incrementally per the design's §7 Steward decomposition (EDGE.1 
   ✅ ratified). It is **not** gated on a Gateway WS bridge — no such component exists or is planned.
   WebSocket is a native NATS listener (a `websocket {}` block, shipped by fire W1 below); the only
   genuinely undesigned piece is the **push-waker** (background wake when the tab is dead), deferred to
-  Facet Stage 3. Remaining: W3 (the wasm host + JS shell), W4 (Facet browser-native).
+  Facet Stage 3. W3 is landing in increments: the DTO extraction and the IndexedDB store are in (the
+  store table above), leaving the wasm host entry point + the JS shell (vendored `nats.js`, leader
+  election, token-refresh reconnect) and the consumer-create wire-form parity test. Then W4 (Facet
+  browser-native).
 
 **The browser-build boundary.** The engine's semantics packages compile under `GOOS=js GOARCH=wasm` and
 reach **no NATS client** — CI asserts both (a build check, and a `go list -deps` assertion over the same
@@ -150,4 +173,6 @@ never a Gate-3 exposure.
   (`nats_subject` adapter, `SYNC` stream, delta envelope, hydration/register control RPCs) Edge consumes.
 - `docs/contracts/01-addressing-and-envelope.md` §1.1 — the key shapes the local store mirrors
   byte-for-byte.
-- `docs/vendors.md` — `go.etcd.io/bbolt`, the local store's embedded KV.
+- `docs/vendors.md` — `go.etcd.io/bbolt` (the Go hosts' embedded KV), **IndexedDB** (the browser host's,
+  incl. the transaction-lifetime and key-generator semantics the port is written around), and
+  **wasmbrowsertest** (the headless-Chrome runner the browser conformance gate uses).

@@ -98,7 +98,7 @@ LATTICE_PROCESSOR_AUTH_MODE ?= capability
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: assert-main-checkout up up-full up-full-capability dev-seed-staff provision-gateway-identity-provisioner test-real-actor-auth up-loftspace orchestration install-packages install-loftspace run-loupe run-gateway run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role provision-clinic-role provision-gateway-role provision-readpath provision-vault-kek reinstall-package verify-package-service-location verify-package-edge-manifest install-edge-manifest seed-edge-demo seed-showcase up-facet run-facet provision-facet-role verify-package-augur verify-conformance build vet lint-conventions lint-board install-skills test test-rollback test-lease-convergence test-object-gc test-crypto-shred test-system-actor-capability test-control-plane-authz test-augur-convergence test-unrouted-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
+.PHONY: assert-main-checkout up up-full up-full-capability dev-seed-staff provision-gateway-identity-provisioner test-real-actor-auth up-loftspace orchestration install-packages install-loftspace run-loupe run-gateway run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role provision-clinic-role provision-gateway-role provision-readpath provision-vault-kek reinstall-package verify-package-service-location verify-package-edge-manifest install-edge-manifest seed-edge-demo seed-showcase up-facet run-facet provision-facet-role verify-package-augur verify-conformance build vet lint-conventions lint-board install-skills test test-rollback test-lease-convergence test-object-gc test-edge-idb-conformance test-crypto-shred test-system-actor-capability test-control-plane-authz test-augur-convergence test-unrouted-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
 
 ## assert-main-checkout — Refuse stack lifecycle from anywhere but the main working
 ## tree. docker-compose.yml mounts deploy/nats-server.conf by a RELATIVE path, so a
@@ -1315,6 +1315,24 @@ test-lease-convergence:
 .PHONY: test-object-gc
 test-object-gc:
 	go test -tags objectgc ./internal/objectgc/... -run TestObjectGC -v -p 1 -count=1 -timeout 3m
+
+## test-edge-idb-conformance — the browser Edge store's conformance gate
+## (edge-browser-node-design.md §3.3). Runs the SAME internal/edge/store
+## conformance suite the bbolt store passes, compiled to js/wasm and executed
+## against a real IndexedDB in a real headless Chrome — the check that the
+## browser port preserved the Store semantics rather than merely compiling.
+##
+## Self-contained: no Docker, no NATS, no shared stack. It does need a Chrome
+## (or Chromium) on PATH, which every dev box and the CI runner image already
+## have. WASM_BROWSER_TEST_VERSION pins the runner; see docs/vendors.md.
+WASM_BROWSER_TEST_VERSION ?= v0.11.0
+.PHONY: test-edge-idb-conformance
+test-edge-idb-conformance:
+	@echo "==> Installing wasmbrowsertest $(WASM_BROWSER_TEST_VERSION)..."
+	go install github.com/agnivade/wasmbrowsertest@$(WASM_BROWSER_TEST_VERSION)
+	@echo "==> Running the Edge IndexedDB store conformance suite in headless Chrome..."
+	PATH="$$PATH:$$(go env GOPATH)/bin" GOOS=js GOARCH=wasm \
+		go test -exec wasmbrowsertest ./internal/edge/store/... -count=1 -timeout 3m
 
 ## test-crypto-shred — Vault crypto-shredding Fire 4a end-to-end gate.
 ## Self-contained: embedded NATS, installs rbac → privacy-base → identity →
