@@ -40,6 +40,9 @@ func ledgerCapDoc() *processor.CapabilityDoc {
 		Lanes:                  []string{"default"},
 		PlatformPermissions: []processor.PlatformPermission{
 			{OperationType: "CreatePatient", Scope: "any"},
+			{OperationType: "CreateProvider", Scope: "any"},
+			{OperationType: "CreateAppointment", Scope: "any"},
+			{OperationType: "SetAppointmentStatus", Scope: "any"},
 			{OperationType: "CreateAccount", Scope: "any"},
 			{OperationType: "DebitAccount", Scope: "any"},
 			{OperationType: "CreditAccount", Scope: "any"},
@@ -435,6 +438,122 @@ func TestDebitAccount_NonPositiveAmountRejected(t *testing.T) {
 		Class:         "clinictransaction",
 		Payload:       json.RawMessage(`{"accountKey":"` + acctKey + `","amountCents":0}`),
 		ContextHint:   &processor.ContextHint{Reads: []string{acctKey}},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+}
+
+// createProvider submits CreateProvider and returns the provider's full key.
+func createProvider(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, fullName, specialty string) string {
+	t.Helper()
+	reqID := testutil.GenReqID(label)
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateProvider",
+		Actor:         ledgerActorKey,
+		SubmittedAt:   "2026-07-01T12:00:00Z",
+		Class:         "provider",
+		Payload:       json.RawMessage(`{"fullName":"` + fullName + `","specialty":"` + specialty + `"}`),
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+	return "vtx.provider." + nanoIDFromRequestID(reqID)
+}
+
+// createAppointment submits CreateAppointment and returns the appointment's
+// full key.
+func createAppointment(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, patientKey, providerKey, startsAt, endsAt string) string {
+	t.Helper()
+	reqID := testutil.GenReqID(label)
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateAppointment",
+		Actor:         ledgerActorKey,
+		SubmittedAt:   "2026-06-25T12:00:00Z",
+		Class:         "appointment",
+		Payload: json.RawMessage(`{"patient":"` + patientKey + `","provider":"` + providerKey +
+			`","startsAt":"` + startsAt + `","endsAt":"` + endsAt + `"}`),
+		ContextHint: &processor.ContextHint{Reads: []string{patientKey, providerKey}},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+	return "vtx.appointment." + nanoIDFromRequestID(reqID)
+}
+
+// TestDebitAccount_AppointmentRefWritesSettlesLink (test 3). A DebitAccount
+// carrying appointmentRef writes the settles audit link (transaction→
+// appointment) the clinicNoShowSettlement lens reads; a plain DebitAccount
+// with no appointmentRef writes no such link (byte-for-byte the existing
+// self-pay shape).
+func TestDebitAccount_AppointmentRefWritesSettlesLink(t *testing.T) {
+	ctx, conn := setupLedgerEnv(t)
+	cp, cons := newLedgerPipeline(t, ctx, conn, "apptref")
+
+	patientKey := createPatient(t, ctx, conn, cp, cons, "mkpatapref00000001", "Farah Al-Amin")
+	providerKey := createProvider(t, ctx, conn, cp, cons, "mkprovapref0000001", "Dr. Kim", "family-medicine")
+	acctKey := createAccount(t, ctx, conn, cp, cons, "createacctapref0001", patientKey)
+	apptKey := createAppointment(t, ctx, conn, cp, cons, "mkapptapref0000001", patientKey, providerKey, "2026-06-25T15:00:00Z", "2026-06-25T15:30:00Z")
+	apptID := apptKey[len("vtx.appointment."):]
+
+	debitReqID := testutil.GenReqID("debitapref0000000001")
+	debitEnv := &processor.OperationEnvelope{
+		RequestID:     debitReqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "DebitAccount",
+		Actor:         ledgerActorKey,
+		SubmittedAt:   "2026-06-26T09:00:00Z",
+		Class:         "clinictransaction",
+		Payload:       json.RawMessage(`{"accountKey":"` + acctKey + `","amountCents":2500,"appointmentRef":"` + apptKey + `"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{acctKey, apptKey}},
+	}
+	testutil.PublishOp(t, conn, debitEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	settlesLnk := "lnk.clinictransaction." + nanoIDFromRequestID(debitReqID) + ".settles.appointment." + apptID
+	if !keyExists(t, ctx, conn, settlesLnk) {
+		t.Fatalf("settles link must exist: %s", settlesLnk)
+	}
+
+	// A plain DebitAccount (no appointmentRef) writes no settles link at all.
+	plainReqID := testutil.GenReqID("debitapref0000000002")
+	plainEnv := &processor.OperationEnvelope{
+		RequestID:     plainReqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "DebitAccount",
+		Actor:         ledgerActorKey,
+		SubmittedAt:   "2026-06-26T09:05:00Z",
+		Class:         "clinictransaction",
+		Payload:       json.RawMessage(`{"accountKey":"` + acctKey + `","amountCents":1000}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{acctKey}},
+	}
+	testutil.PublishOp(t, conn, plainEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+	plainSettlesLnk := "lnk.clinictransaction." + nanoIDFromRequestID(plainReqID) + ".settles.appointment." + apptID
+	if keyExists(t, ctx, conn, plainSettlesLnk) {
+		t.Fatalf("a plain DebitAccount with no appointmentRef must write no settles link, found %s", plainSettlesLnk)
+	}
+}
+
+// TestDebitAccount_UnknownAppointmentRefRejected rejects a DebitAccount whose
+// appointmentRef names a non-existent appointment (UnknownAppointment).
+func TestDebitAccount_UnknownAppointmentRefRejected(t *testing.T) {
+	ctx, conn := setupLedgerEnv(t)
+	cp, cons := newLedgerPipeline(t, ctx, conn, "unknownapptref")
+
+	patientKey := createPatient(t, ctx, conn, cp, cons, "mkpatuar00000000001", "Grant Okafor")
+	acctKey := createAccount(t, ctx, conn, cp, cons, "createacctuar000001", patientKey)
+
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("debituar0000000001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "DebitAccount",
+		Actor:         ledgerActorKey,
+		SubmittedAt:   "2026-06-26T09:00:00Z",
+		Class:         "clinictransaction",
+		Payload:       json.RawMessage(`{"accountKey":"` + acctKey + `","amountCents":2500,"appointmentRef":"vtx.appointment.CLABSENTAPPTHJKMNPQR"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{acctKey, "vtx.appointment.CLABSENTAPPTHJKMNPQR"}},
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)

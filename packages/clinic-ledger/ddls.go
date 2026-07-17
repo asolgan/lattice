@@ -114,14 +114,19 @@ func transactionDDL() pkgmgr.DDLSpec {
 			"billedTo (self|insurance, default self when omitted) and, only when billedTo is insurance, " +
 			"expectedReimbursementCents (positive, capped at amountCents) — so a clinic can track what it billed insurance for " +
 			"vs. what it actually collected (a CreditAccount payment) — NOT real X12 837/835 claims/clearinghouse integration, " +
-			"which is out of scope for a reference vertical. Both fields reject on a CreditAccount (a payment has nothing to bill).",
+			"which is out of scope for a reference vertical. Both fields reject on a CreditAccount (a payment has nothing to bill). " +
+			"DebitAccount also accepts an optional appointmentRef (vtx.appointment.<NanoID>, validated alive when supplied — " +
+			"UnknownAppointment otherwise): when present, writes a settles audit link (transaction→appointment) that the " +
+			"clinicNoShowSettlement lens (targets.go) walks to converge the no-show-fee gap once posted. A plain " +
+			"human-submitted DebitAccount (no appointmentRef) is unaffected — the field mirrors cafe-ledger's tabRef shape.",
 		Script: transactionDDLScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"accountKey":{"type":"string","description":"vtx.clinicaccount.<NanoID> the transaction posts to (DebitAccount/CreditAccount; required, validated alive)."},` +
 			`"amountCents":{"type":"number","description":"The transaction amount in integer cents; required, must be > 0. A debit is a charge (increases what the patient owes); a credit is a payment (decreases it)."},` +
 			`"memo":{"type":"string","description":"Optional free-text description of the charge or payment (e.g. \"Office visit copay\", \"Insurance payment\"). Optional."},` +
 			`"billedTo":{"type":"string","enum":["self","insurance"],"description":"DebitAccount only; who the charge is billed to. Optional, defaults to \"self\" when omitted. Rejected on CreditAccount."},` +
-			`"expectedReimbursementCents":{"type":"number","description":"DebitAccount only, and only when billedTo is \"insurance\": the amount expected back from the payer, in integer cents. Required when billedTo is \"insurance\" (rejected otherwise), must be > 0 and <= amountCents."}},` +
+			`"expectedReimbursementCents":{"type":"number","description":"DebitAccount only, and only when billedTo is \"insurance\": the amount expected back from the payer, in integer cents. Required when billedTo is \"insurance\" (rejected otherwise), must be > 0 and <= amountCents."},` +
+			`"appointmentRef":{"type":"string","description":"DebitAccount only; optional vtx.appointment.<NanoID> back-reference to the no-show appointment this charge settles. When supplied, validated alive (UnknownAppointment otherwise) and a settles audit link (transaction→appointment) is written — the clinicNoShowSettlement lens reads it to converge the gap. Mirrors cafe-ledger's tabRef."}},` +
 			`"required":["accountKey","amountCents"]}`,
 		OutputSchema: `{"type":"object","properties":` +
 			`{"primaryKey":{"type":"string","description":"vtx.clinictransaction.<NanoID> of the minted transaction (the operation's principal key)."}}}`,
@@ -131,6 +136,7 @@ func transactionDDL() pkgmgr.DDLSpec {
 			"memo":                       "Optional free-text description of the charge or payment (e.g. \"Office visit copay\", \"Insurance payment — claim #4471\"). Stored on the .entry aspect when supplied; projected by the ledgerHistory lens.",
 			"billedTo":                   "DebitAccount only: \"self\" or \"insurance\" (default \"self\" when omitted). Stored on the .entry aspect; projected by the ledgerHistory lens. Rejected on CreditAccount — a payment has nothing to bill.",
 			"expectedReimbursementCents": "DebitAccount only, and only when billedTo is \"insurance\": the amount expected back from the payer, in integer cents (required then, must be > 0 and <= amountCents; rejected when billedTo is \"self\" or on a CreditAccount).",
+			"appointmentRef":             "DebitAccount only: optional full vtx.appointment.<NanoID> key of the no-show appointment this charge settles. Validated alive when supplied (UnknownAppointment otherwise); writes a settles link (transaction→appointment) the clinicNoShowSettlement lens walks to converge the gap.",
 		},
 		Examples: []pkgmgr.ExampleSpec{
 			{
@@ -148,6 +154,14 @@ func transactionDDL() pkgmgr.DDLSpec {
 					"billedTo": "insurance", "expectedReimbursementCents": 12000},
 				ExpectedOutcome: "Same as the self-pay case, but the .entry aspect adds billedTo: \"insurance\" + expectedReimbursementCents: 12000. " +
 					"Rejects InvalidArgument if expectedReimbursementCents is missing, <= 0, or > amountCents.",
+			},
+			{
+				Name: "DebitAccount — Weaver-dispatched no-show settlement (appointmentRef)",
+				Payload: map[string]any{"accountKey": "vtx.clinicaccount.<NanoID>", "amountCents": 2500, "appointmentRef": "vtx.appointment.<NanoID>"},
+				ExpectedOutcome: "Same as the self-pay case, plus validates appointmentRef is alive (UnknownAppointment otherwise) " +
+					"and writes lnk.clinictransaction.<id>.settles.appointment.<id> (transaction→appointment). This is the shape " +
+					"clinic-ledger's own clinicNoShowSettlement Weaver target dispatches — a human-submitted DebitAccount simply " +
+					"omits appointmentRef and gets the plain self-pay-copay shape above.",
 			},
 			{
 				Name:    "CreditAccount — record a payment",

@@ -730,6 +730,69 @@ func TestClinic_TerminalStatusGuard(t *testing.T) {
 	}
 }
 
+// TestClinic_NoShowFee proves the billing consequence a plain noShow status
+// flip otherwise lacked: transitioning to noShow stores a noShowFeeCents
+// amount on .status — a caller-supplied positive figure, or a 2500 default
+// when omitted — that clinic-ledger's clinicNoShowSettlement lens reads to
+// post a DebitAccount charge. A non-positive supplied fee is rejected; a
+// non-noShow transition (e.g. completed) never sets the field at all.
+func TestClinic_NoShowFee(t *testing.T) {
+	t.Parallel()
+	ctx, conn := setupClinicEnv(t)
+	cp, cons := newClinicPipeline(t, ctx, conn, "status-noshowfee")
+
+	patientKey := createPatient(t, ctx, conn, cp, cons, "mkpat0011", "Noshow Patient")
+	providerKey := createProvider(t, ctx, conn, cp, cons, "mkprv0011", "Dr. Fee", "Cardiology")
+	apptID := clSubmit(t, ctx, conn, cp, cons, "mkappt0011", "CreateAppointment", "appointment",
+		`{"patient":"`+patientKey+`","provider":"`+providerKey+`","startsAt":"2026-07-11T09:00:00Z","endsAt":"2026-07-11T09:30:00Z"}`,
+		[]string{patientKey, providerKey}, processor.OutcomeAccepted)
+	apptKey := "vtx.appointment." + apptID
+
+	// Omitted noShowFeeCents defaults to 2500.
+	clSubmit(t, ctx, conn, cp, cons, "setnoshow001", "SetAppointmentStatus", "appointment",
+		`{"appointmentKey":"`+apptKey+`","status":"noShow","provider":"`+providerKey+`","patient":"`+patientKey+`"}`,
+		[]string{apptKey}, processor.OutcomeAccepted)
+	status := clReadDoc(t, ctx, conn, apptKey+".status")
+	st, _ := status["data"].(map[string]any)
+	if st["value"] != "noShow" {
+		t.Fatalf("status = %v, want noShow", st["value"])
+	}
+	if got, _ := st["noShowFeeCents"].(float64); got != 2500 {
+		t.Fatalf("noShowFeeCents = %v, want default 2500", st["noShowFeeCents"])
+	}
+
+	// A caller-supplied positive fee overrides the default on the idempotent
+	// same-value re-set.
+	clSubmit(t, ctx, conn, cp, cons, "setnoshow002", "SetAppointmentStatus", "appointment",
+		`{"appointmentKey":"`+apptKey+`","status":"noShow","noShowFeeCents":5000}`,
+		[]string{apptKey}, processor.OutcomeAccepted)
+	status = clReadDoc(t, ctx, conn, apptKey+".status")
+	st, _ = status["data"].(map[string]any)
+	if got, _ := st["noShowFeeCents"].(float64); got != 5000 {
+		t.Fatalf("noShowFeeCents = %v, want caller-supplied 5000", got)
+	}
+
+	// A non-positive supplied fee is rejected.
+	clSubmit(t, ctx, conn, cp, cons, "setnoshow003", "SetAppointmentStatus", "appointment",
+		`{"appointmentKey":"`+apptKey+`","status":"noShow","noShowFeeCents":0}`,
+		[]string{apptKey}, processor.OutcomeRejected)
+
+	// A different appointment moved to a non-noShow terminal status never
+	// gets a noShowFeeCents field at all.
+	apptID2 := clSubmit(t, ctx, conn, cp, cons, "mkappt0012", "CreateAppointment", "appointment",
+		`{"patient":"`+patientKey+`","provider":"`+providerKey+`","startsAt":"2026-07-12T09:00:00Z","endsAt":"2026-07-12T09:30:00Z"}`,
+		[]string{patientKey, providerKey}, processor.OutcomeAccepted)
+	apptKey2 := "vtx.appointment." + apptID2
+	clSubmit(t, ctx, conn, cp, cons, "setcompl002", "SetAppointmentStatus", "appointment",
+		`{"appointmentKey":"`+apptKey2+`","status":"completed","provider":"`+providerKey+`","patient":"`+patientKey+`"}`,
+		[]string{apptKey2}, processor.OutcomeAccepted)
+	status2 := clReadDoc(t, ctx, conn, apptKey2+".status")
+	st2, _ := status2["data"].(map[string]any)
+	if _, present := st2["noShowFeeCents"]; present {
+		t.Fatalf("a completed transition must never set noShowFeeCents, got %v", st2["noShowFeeCents"])
+	}
+}
+
 // TestClinic_RecordEncounter proves the post-visit clinical-record path: a
 // RecordEncounter upserts the .encounter aspect carrying the RAW clinical content
 // (summary / assessment / plan — captured plaintext-for-now, the .demographics PHI

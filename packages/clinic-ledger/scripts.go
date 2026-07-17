@@ -182,13 +182,22 @@ def vertex_alive(state, key):
         return False
     return True
 
-def post_entry(state, op, entry_type, event_class):
+def post_entry(state, op, entry_type, event_class, allow_appointment_ref):
     p = op.payload
     acct_key = required_string(p, "accountKey")
     _, acct_id = parts_of(acct_key, "accountKey", "clinicaccount")
 
     if not vertex_alive(state, acct_key):
         fail("UnknownAccount: " + acct_key)
+
+    appt_key = None
+    appt_id = None
+    if allow_appointment_ref:
+        appt_key = optional_string(p, "appointmentRef")
+        if appt_key != None:
+            _, appt_id = parts_of(appt_key, "appointmentRef", "appointment")
+            if not vertex_alive(state, appt_key):
+                fail("UnknownAppointment: " + appt_key)
 
     amount_cents = require_number(p, "amountCents")
     if amount_cents <= 0:
@@ -242,6 +251,16 @@ def post_entry(state, op, entry_type, event_class):
         make_aspect(tx_key, "entry", "transactionEntry", entry_data),
         make_link(posted_to_lnk, tx_key, acct_key, "postedTo", "postedTo", {}),
     ]
+
+    # settles: the transaction (later-arriving) is the source, the
+    # pre-existing appointment is the target (Contract #1 §1.1). Only
+    # written when the caller supplied appointmentRef — a plain
+    # human-submitted DebitAccount is unaffected. The clinicNoShowSettlement
+    # lens walks this link to converge the no-show-fee gap once posted.
+    if appt_key != None:
+        settles_lnk = "lnk.clinictransaction." + tx_id + ".settles.appointment." + appt_id
+        mutations.append(make_link(settles_lnk, tx_key, appt_key, "settles", "settles", {}))
+
     events = [{"class": event_class,
                "data": {"accountKey": acct_key, "transactionKey": tx_key, "amountCents": amount_cents}}]
     return {"mutations": mutations, "events": events,
@@ -251,10 +270,10 @@ def execute(state, op):
     ot = op.operationType
 
     if ot == "DebitAccount":
-        return post_entry(state, op, "debit", "account.debited")
+        return post_entry(state, op, "debit", "account.debited", True)
 
     if ot == "CreditAccount":
-        return post_entry(state, op, "credit", "account.credited")
+        return post_entry(state, op, "credit", "account.credited", False)
 
     fail("transaction DDL: unknown operationType: " + ot)
 `

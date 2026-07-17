@@ -19,16 +19,22 @@ const LedgerHistoryBucket = "clinic-ledger-history"
 // patient have a ledger account, and what is its key."
 const PatientAccountsBucket = "clinic-patient-accounts"
 
+// NoShowSettlementTarget is the §10.8 TargetID == the clinicNoShowSettlement
+// lens's OutputKeyPattern prefix — the §10.2↔§10.8 binding Weaver reads.
+const NoShowSettlementTarget = "clinicNoShowSettlement"
+
 // Lenses returns the package's Lens declarations: clinicLedgerHistory (one row
 // per posted transaction, flattening the .entry aspect + the account/patient
 // it posted to into a query-optimized read-model row — the FE derives a
 // running balance client-side by summing amountCents, positive for debit,
 // negative for credit, over rows for a given patientKey/accountKey; the
-// ledger itself never stores a mutable running total) and
-// clinicPatientAccounts (the patient -> account key lookup, since the account
-// key is no longer derivable). Prefixed like the package's DDLs (ddls.go): a
-// Lens canonicalName is global across every installed package, and
-// loftspace-ledger already owns the bare `ledgerHistory` name.
+// ledger itself never stores a mutable running total), clinicPatientAccounts
+// (the patient -> account key lookup, since the account key is no longer
+// derivable), and clinicNoShowSettlement (the missing_charge convergence lens
+// targets.go's WeaverTargets dispatches DebitAccount over). Prefixed like the
+// package's DDLs (ddls.go): a Lens canonicalName is global across every
+// installed package, and loftspace-ledger already owns the bare
+// `ledgerHistory` name.
 func Lenses() []pkgmgr.LensSpec {
 	return []pkgmgr.LensSpec{
 		{
@@ -47,8 +53,70 @@ func Lenses() []pkgmgr.LensSpec {
 			Engine:        "full",
 			Spec:          patientAccountsSpec,
 		},
+		{
+			CanonicalName:  NoShowSettlementTarget,
+			Class:          "meta.lens",
+			Adapter:        "nats-kv",
+			Bucket:         "weaver-targets",
+			Engine:         "full",
+			Spec:           noShowSettlementSpec,
+			ProjectionKind: "actorAggregate",
+			Output: &pkgmgr.OutputDescriptorSpec{
+				AnchorType:       "appointment",
+				OutputKeyPattern: NoShowSettlementTarget + ".{actorSuffix}",
+				BodyColumns:      []string{"violating", "missing_charge", "entityKey", "appointmentKey", "patientKey", "accountKey", "feeCents", "status"},
+				EmptyBehavior:    "delete",
+				KeyColumn:        "entityId",
+				Freshness:        "auto",
+			},
+		},
 	}
 }
+
+// noShowSettlementSpec is the one-row-per-appointment convergence cypher: a
+// noShow appointment carrying a positive noShowFeeCents needs its charge
+// posted onto the patient's clinic-ledger account, once. missing_charge only
+// (no missing_account gap — see targets.go's doc comment): the appointment's
+// patient must already have a clinicaccount, matching clinic's existing
+// billing assumption.
+//
+//   - `missing_charge` — the appointment is a noShow, carries a fee, the
+//     patient has a ledger account, and no clinictransaction `settles` this
+//     appointment yet (count(tx.key) collapses the fan to a single existence
+//     check — the objectLiveness/clauseSatisfaction idiom, same as
+//     cafe-domain's cafeTabSettlement). Weaver dispatches
+//     DebitAccount{accountKey, amountCents, appointmentRef} (targets.go) —
+//     the appointmentRef extension writes the settles audit link this
+//     OPTIONAL MATCH walks, so once posted the gap converges and stays
+//     converged (noShow is a terminal status — SetAppointmentStatus rejects
+//     transitioning away from it — so there is no re-open path to guard).
+//
+// An appointment whose patient has no clinicaccount yet never violates
+// (accountKey null); one with no noShowFeeCents (a noShow set before this
+// lens existed) never violates either — both are non-goals for v1, not a
+// gap this lens is meant to converge.
+const noShowSettlementSpec = `MATCH (appt:appointment {key: $actorKey})
+MATCH (appt)-[:forPatient]->(pt:patient)
+OPTIONAL MATCH (pt)<-[:heldFor]-(a:clinicaccount)
+OPTIONAL MATCH (appt)<-[:settles]-(tx:clinictransaction)
+WITH
+  appt.key AS entityKey,
+  appt.status.data.value AS status,
+  appt.status.data.noShowFeeCents AS feeCents,
+  pt.key AS patientKey,
+  a.key AS accountKey,
+  count(tx.key) AS txCount
+RETURN
+  entityKey AS actorKey,
+  entityKey,
+  entityKey AS appointmentKey,
+  patientKey,
+  accountKey,
+  feeCents,
+  status,
+  ((status = 'noShow') AND (feeCents <> null) AND (feeCents > 0) AND (accountKey <> null) AND (txCount = 0)) AS missing_charge,
+  ((status = 'noShow') AND (feeCents <> null) AND (feeCents > 0) AND (accountKey <> null) AND (txCount = 0)) AS violating
+`
 
 // ledgerHistorySpec projects one row per transaction, walking postedTo to the
 // account and heldFor to the patient so the FE can filter/group by patientKey

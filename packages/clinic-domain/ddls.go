@@ -296,7 +296,10 @@ func appointmentVertexTypeDDL() pkgmgr.DDLSpec {
 			"links + status untouched; an omitted reason clears it (the caller carries the existing reason). " +
 			"SetAppointmentStatus upserts the .status aspect to one of {scheduled, confirmed, checkedIn, completed, " +
 			"cancelled, noShow}, with an optional audit note (a cancel / no-show reason, stored on .status distinct " +
-			"from the .schedule visit reason). The terminal statuses {cancelled, completed, noShow} are FINAL: " +
+			"from the .schedule visit reason). Transitioning to noShow also stores a noShowFeeCents amount on .status " +
+			"(caller-supplied positive number, or a 2500 default when omitted) — the billing consequence a no-show " +
+			"otherwise lacked; clinic-ledger's clinicNoShowSettlement lens reads it to post a DebitAccount charge. " +
+			"The terminal statuses {cancelled, completed, noShow} are FINAL: " +
 			"re-setting the same terminal value is idempotent, but changing a terminal status to a different one is " +
 			"rejected (TerminalStatus) so a finished / cancelled visit cannot silently revert; non-terminal statuses " +
 			"move freely. RecordEncounter upserts the .encounter aspect — the post-visit clinical " +
@@ -345,6 +348,7 @@ func appointmentVertexTypeDDL() pkgmgr.DDLSpec {
 			`"appointmentKey":{"type":"string","description":"vtx.appointment.<NanoID> of an existing appointment (RescheduleAppointment / SetAppointmentStatus / TombstoneAppointment; required, validated alive)."},` +
 			`"status":{"type":"string","enum":["scheduled","confirmed","checkedIn","completed","cancelled","noShow"],"description":"New status (SetAppointmentStatus; required). Transitioning TO a terminal value (completed/cancelled/noShow) for the first time also requires provider + patient (to release the held slot-claim cells; omitted on a non-terminal transition or an idempotent same-value re-set)."},` +
 			`"note":{"type":"string","description":"Optional audit note for the transition, e.g. a cancel / no-show reason (SetAppointmentStatus; optional). Stored on .status, distinct from the .schedule visit reason; an omitted note carries none."},` +
+			`"noShowFeeCents":{"type":"number","description":"Optional no-show fee in integer cents, only meaningful when status is noShow (SetAppointmentStatus; optional, must be > 0 when supplied). Defaults to 2500 when omitted. Stored on .status; clinic-ledger's clinicNoShowSettlement lens reads it to post a DebitAccount charge against the patient's ledger account."},` +
 			`"summary":{"type":"string","description":"Visit summary / clinical note (RecordEncounter; required). RAW clinical content — captured plaintext-for-now (the .demographics PHI discipline), NEVER projected into a read model (the deferred Vault plane owns display)."},` +
 			`"assessment":{"type":"string","description":"Clinical assessment / diagnosis (RecordEncounter; optional). RAW PHI — captured, never projected."},` +
 			`"plan":{"type":"string","description":"Treatment plan / orders (RecordEncounter; optional). RAW PHI — captured, never projected. The clinical reason for any follow-up belongs here, not in the operational followUp fields."},` +
@@ -365,6 +369,7 @@ func appointmentVertexTypeDDL() pkgmgr.DDLSpec {
 			"appointmentKey":    "Full vtx.appointment.<NanoID> key of an existing appointment (RescheduleAppointment rewrites its .schedule; SetAppointmentStatus validates it alive + class=appointment; TombstoneAppointment validates it alive).",
 			"status":            "New appointment status, one of {scheduled, confirmed, checkedIn, completed, cancelled, noShow} (SetAppointmentStatus; required). The first transition to a terminal value also requires provider + patient.",
 			"note":              "Optional audit note recorded with a SetAppointmentStatus transition (e.g. a cancel / no-show reason). Stored on the .status aspect, distinct from the .schedule visit reason; omitted → no note.",
+			"noShowFeeCents":    "Optional no-show fee in integer cents (SetAppointmentStatus, only meaningful when status is noShow; must be > 0 when supplied, defaults to 2500 when omitted). Stored on the .status aspect; read by clinic-ledger's clinicNoShowSettlement lens to post a DebitAccount charge.",
 			"summary":           "Required visit summary / clinical note (RecordEncounter). RAW clinical content — captured plaintext-for-now under the trusted-tool posture (the .demographics PHI discipline) and NEVER projected into a read model; the deferred Vault plane owns its at-rest encryption + display.",
 			"assessment":        "Optional clinical assessment / diagnosis (RecordEncounter). RAW PHI — captured, never projected.",
 			"plan":              "Optional treatment plan / orders (RecordEncounter). RAW PHI — captured, never projected. The clinical reason for a follow-up lives here, not in the operational followUp fields.",
@@ -416,6 +421,16 @@ func appointmentVertexTypeDDL() pkgmgr.DDLSpec {
 				Payload: map[string]any{"appointmentKey": "vtx.appointment.<NanoID>", "status": "confirmed"},
 				ExpectedOutcome: "Validates the appointment is alive + class=appointment, then upserts the .status aspect " +
 					"{value: confirmed} (unconditioned — re-runnable). Returns primaryKey. Rejects a status outside the enum.",
+			},
+			{
+				Name: "SetAppointmentStatus — mark a no-show",
+				Payload: map[string]any{"appointmentKey": "vtx.appointment.<NanoID>", "status": "noShow",
+					"provider": "vtx.provider.<providerNanoID>", "patient": "vtx.patient.<patientNanoID>"},
+				ExpectedOutcome: "Validates the appointment is alive + provider/patient match its withProvider/forPatient links, " +
+					"then upserts the .status aspect {value: noShow, noShowFeeCents: 2500} (the default, since noShowFeeCents " +
+					"was omitted) and releases the appointment's held slot-claim cells. Emits clinic.appointmentStatusSet. " +
+					"clinic-ledger's clinicNoShowSettlement lens picks up the fee and posts a DebitAccount charge once the " +
+					"patient has a ledger account. Returns primaryKey.",
 			},
 			{
 				Name: "RecordEncounter — document a completed visit",
@@ -546,18 +561,20 @@ func statusAspectTypeDDL() pkgmgr.DDLSpec {
 		Class:             "meta.ddl.aspectType",
 		PermittedCommands: []string{"CreateAppointment", "SetAppointmentStatus"},
 		Description: "Appointment status aspect (clinic). Stored as vtx.appointment.<NanoID>.status (class " +
-			"appointmentStatus) = {value ∈ scheduled|confirmed|checkedIn|completed|cancelled|noShow, note?}. " +
-			"Non-sensitive. Written by CreateAppointment (initial scheduled) and SetAppointmentStatus (transitions, with " +
-			"an optional audit note — a cancel / no-show reason, distinct from the .schedule visit reason) — whose " +
-			"appointment vertexType DDL owns the script; this aspect-type DDL is the step-6 write gate. Declaration-only: " +
-			"no op handler.",
+			"appointmentStatus) = {value ∈ scheduled|confirmed|checkedIn|completed|cancelled|noShow, note?, " +
+			"noShowFeeCents?}. Non-sensitive. Written by CreateAppointment (initial scheduled) and SetAppointmentStatus " +
+			"(transitions, with an optional audit note — a cancel / no-show reason, distinct from the .schedule visit " +
+			"reason — and, only when transitioning to noShow, a noShowFeeCents amount: caller-supplied or a 2500 " +
+			"default) — whose appointment vertexType DDL owns the script; this aspect-type DDL is the step-6 write " +
+			"gate. Declaration-only: no op handler.",
 		Script: aspectDeclarationOnlyScript,
 		InputSchema: `{"type":"object","properties":` +
-			`{"value":{"type":"string","enum":["scheduled","confirmed","checkedIn","completed","cancelled","noShow"]},"note":{"type":"string"}}}`,
+			`{"value":{"type":"string","enum":["scheduled","confirmed","checkedIn","completed","cancelled","noShow"]},"note":{"type":"string"},"noShowFeeCents":{"type":"number"}}}`,
 		OutputSchema: `{"type":"object"}`,
 		FieldDescription: map[string]string{
-			"value": "Appointment status: scheduled | confirmed | checkedIn | completed | cancelled | noShow.",
-			"note":  "Optional audit note recorded with a status transition (e.g. a cancel / no-show reason).",
+			"value":          "Appointment status: scheduled | confirmed | checkedIn | completed | cancelled | noShow.",
+			"note":           "Optional audit note recorded with a status transition (e.g. a cancel / no-show reason).",
+			"noShowFeeCents": "Optional no-show fee in integer cents, present only when value is noShow (caller-supplied positive number, or a 2500 default when omitted).",
 		},
 		Examples: []pkgmgr.ExampleSpec{
 			{
@@ -1245,6 +1262,14 @@ def optional_string(p, name):
         return None
     return v
 
+
+def optional_number(p, name):
+    if not hasattr(p, name):
+        return None
+    v = getattr(p, name)
+    if v == None or (type(v) != type(0) and type(v) != type(0.0)):
+        return None
+    return v
 def bare_nanoid_or_mint(p, name):
     if not hasattr(p, name):
         return nanoid.new()
@@ -1903,6 +1928,19 @@ def execute(state, op):
         note = optional_string(p, "note")
         if note != None:
             status_data["note"] = note
+        # No-show fee (billing consequence for a missed visit): only meaningful
+        # when transitioning TO noShow. Caller-supplied noShowFeeCents (must be
+        # positive) or a default placeholder (2500) when omitted — same
+        # unconditioned-upsert idiom as note above, stored on .status so the
+        # clinicNoShowSettlement lens (clinic-ledger) can read it and post a
+        # DebitAccount charge (clinic-ledger-design.md).
+        if status == "noShow":
+            fee_cents = optional_number(p, "noShowFeeCents")
+            if fee_cents == None:
+                fee_cents = 2500
+            elif fee_cents <= 0:
+                fail("InvalidArgument: noShowFeeCents: must be a positive number")
+            status_data["noShowFeeCents"] = fee_cents
         mutations = [make_aspect_upsert(appt_key, "status", "appointmentStatus", status_data)]
         # A FIRST terminal transition (non-terminal → terminal; a same-value re-set is
         # skipped — its cells were already released by the first transition) frees the

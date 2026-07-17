@@ -33,6 +33,17 @@
 //     until one is opened) — the FE's only way to resolve a patient's account
 //     key, since it can no longer be derived from patientKey.
 //
+//   - The `clinicNoShowSettlement` actorAggregate lens + its Weaver playbook
+//     (targets.go): a noShow appointment carrying a noShowFeeCents (set by
+//     clinic-domain's SetAppointmentStatus) converges via a directOp
+//     DebitAccount{accountKey, amountCents, appointmentRef} once the
+//     patient's account exists — DebitAccount's optional appointmentRef
+//     writes the settles audit link (transaction→appointment) the lens
+//     reads to detect the gap is closed. Mirrors cafe-domain/cafe-ledger's
+//     missing_charge shape, but self-contained in this one package (no new
+//     cross-package dependency — see
+//     implementation-artifacts/clinic-noshow-fee-design.md).
+//
 // Mirrors packages/loftspace-ledger, with the account held for a patient
 // instead of a lease — a patient may have many appointments/encounters, and
 // billing tracks a single running balance across all of them. Both packages
@@ -54,14 +65,16 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
 	Name:    "clinic-ledger",
-	Version: "0.1.0",
+	Version: "0.2.0",
 	Description: "Clinic patient payment ledger: the clinicaccount vertex type (CreateAccount, independently-minted " +
 		"id, one per patient via a .ledgerAccount guard aspect on the patient) + the clinictransaction vertex type " +
-		"(DebitAccount/CreditAccount, append-only entries linked to the account via postedTo) + the " +
-		"clinicLedgerHistory read-model lens (one row per transaction) + the clinicPatientAccounts lens (patient -> " +
-		"account key lookup). Depends clinic-domain.",
-	Depends:     []string{"clinic-domain"},
-	DDLs:        DDLs(),
-	Lenses:      Lenses(),
-	Permissions: Permissions(),
+		"(DebitAccount/CreditAccount, append-only entries linked to the account via postedTo, DebitAccount taking an " +
+		"optional appointmentRef back-ref) + the clinicLedgerHistory read-model lens (one row per transaction) + the " +
+		"clinicPatientAccounts lens (patient -> account key lookup) + the clinicNoShowSettlement Weaver playbook " +
+		"(no-show fee auto-charge). Depends clinic-domain.",
+	Depends:       []string{"clinic-domain"},
+	DDLs:          DDLs(),
+	Lenses:        Lenses(),
+	Permissions:   Permissions(),
+	WeaverTargets: WeaverTargets(),
 }
