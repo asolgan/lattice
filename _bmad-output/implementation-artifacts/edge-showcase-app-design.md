@@ -254,7 +254,29 @@ A fidelity audit against this design (Andrew-prompted) found §7.1's increments 
 - **Green bar (the demo beat this design exists for): two browsers, two sessions, two identities, simultaneously, from one host and one seeded topology — different Home/services/tasks; sign out and back in re-enters the same identity; the claim branch still blooms a fresh one.**
 - **W4 forward-compat:** the login page + session model survive the EDGE.5 W4 renderer swap unchanged — W4 relocates the *engine* into the browser (token held by the in-page shell, per-browser store); the identity-selection surface stays. Named here so W4 does not re-litigate it.
 
-**Inc 3 — Me-screen claim/link UX + revocation UX (§4.4)**, as §7.1 named, now session-scoped. **Inc 4 — Fire-2 fidelity tail** (audit finds, all `cmd/facet/web`): the R3 pending-chip treatment is dead end-to-end (client never sends `touchedKey`; no render shows Pending — an edge-design R3 invariant, not a nicety); rejected-card Retry is unwired dead code; the offline banner keys on browser↔host SSE rather than host↔NATS state; confirmed outbox entries vanish instead of collapsing into history (UX §3.4); plus a regression test for "an undescribed op degrades" (§3.3's Fire-1 green-bar item, shipped untested).
+**✅ Inc 2 SHIPPED (`0e46aa5`, 2026-07-16).** `cmd/facet/engine.go` extracts
+the Fire 2/3 single-boot engine into a constructor; `enginemanager.go`
+multiplexes one per identity, ref-counted by live SSE holders and idle-reaped
+after 10m (the boot-env `EDGE_IDENTITY_ID` fallback, when set, is pinned —
+never reaped, since there's no on-demand re-mint for its externally-supplied
+token); `session.go` mirrors Loupe's HttpOnly/SameSite cookie generalized to
+loftspace's any-subject dev minting (`/login`, `POST /api/dev-login`, `POST
+/api/logout`, `GET /api/whoami`), falling back to the boot identity when no
+cookie verifies — a deployment that never sets `FACET_DEV_AUTH` is
+unaffected. `up-facet` now loads the showcase dataset (§7.3) and starts with
+no boot identity at all. Live-verified against the running dev stack: two
+cookie jars signed in as the two showcase tenants streamed distinct
+`manifest.me/inst/svc` data concurrently from one process; logout + re-login
+round-tripped back to the same identity; `/api/enqueue` 401s with no
+session. `FACET_STORE_DIR` (one bbolt file per identity) supersedes the
+single-file `EDGE_STORE_PATH`. **Deliberately out of scope for Inc 2:** a
+signed-in identity's UI has no "who am I / sign out" affordance yet (whoami
+exists server-side; Inc 3 wires it into the UI) and a second concurrent
+session for the *same* identity reuses one engine/device rather than minting
+a distinct device per browser tab — fine for the two-*different*-identities
+green bar this fire proves, named here so Inc 3 doesn't re-litigate it.
+
+**Inc 3 — Me-screen claim/link UX + revocation UX (§4.4)**, as §7.1 named, now session-scoped (build the sign-out affordance + whoami-driven header here). **Inc 4 — Fire-2 fidelity tail** (audit finds, all `cmd/facet/web`): the R3 pending-chip treatment is dead end-to-end (client never sends `touchedKey`; no render shows Pending — an edge-design R3 invariant, not a nicety); rejected-card Retry is unwired dead code; the offline banner keys on browser↔host SSE rather than host↔NATS state; confirmed outbox entries vanish instead of collapsing into history (UX §3.4); plus a regression test for "an undescribed op degrades" (§3.3's Fire-1 green-bar item, shipped untested).
 
 ### 7.3 Showcase dataset (Andrew-directed, 2026-07-16) — a curated demo world, not on-the-fly seeding
 
