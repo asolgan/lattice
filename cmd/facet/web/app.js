@@ -112,47 +112,100 @@ function opByFullKey(fullKey) {
   return row ? { key, data: row.data, pending: row.pending } : null;
 }
 
-// -------------------------------------------------------------- SSE feed
+// --------------------------------------------------------------- the feed
+//
+// The renderer is a reducer over one stream of frames (manifest/outbox/ready/
+// revoked/connectivity). Where those frames come from is a *source*: the Go
+// host serves them over SSE (`/api/feed`); the browser-native host (EDGE.5 W4)
+// serves the identical frames in-page over the wasm engine's `onFrame`. The
+// reducer below never sees the difference — a source is any object with
+//
+//   start(handlers) -> void | Promise   wire the live stream to feedHandlers
+//   enqueue(request) -> Promise<body>   submit one write; body.error on reject
+//   close()          -> void            tear the stream down (sign-out §4.4)
+//
+// so W4's "renderer swap" is a source swap, not a rewrite: the boot module
+// (boot.mjs) hands the renderer an edge-source when the page is configured for
+// the in-page engine, and the renderer falls back to the SSE source otherwise.
 
 let hasBootstrapped = false;
 let sseSilenceTimer = null;
-let activeFeed = null; // the live EventSource — closed on sign-out (§4.4 purge)
+let activeSource = null; // the live feed source — closed on sign-out (§4.4 purge)
 
-function connectFeed() {
-  const es = new EventSource("/api/feed");
-  activeFeed = es;
-  es.addEventListener("manifest", (e) => {
-    const fr = JSON.parse(e.data);
+// feedHandlers is the reducer's entry point, called by whichever source is
+// live. Both sources deliver the same parsed frame shapes (cmd/facet/feed.go
+// and internal/edge/browser/feed.go are the same struct), so these handlers
+// are source-agnostic.
+const feedHandlers = {
+  manifest(fr) {
     if (fr.deleted) state.rows.delete(fr.key);
     else state.rows.set(fr.key, { data: fr.data, pending: !!fr.pending });
     armSilenceFallback();
     scheduleRender();
-  });
-  es.addEventListener("outbox", (e) => {
-    const fr = JSON.parse(e.data);
-    applyOutboxFrame(fr.outbox);
-  });
-  es.addEventListener("ready", () => finishBoot());
-  es.addEventListener("revoked", (e) => {
-    let reason = "";
-    try { reason = (JSON.parse(e.data) || {}).reason || ""; } catch (err) { /* keep the default copy */ }
+  },
+  outbox(entry) { applyOutboxFrame(entry); },
+  ready() { finishBoot(); },
+  revoked(reason) {
     showRevocationBanner(reason);
     finishBoot(); // never strand a revoked session on the boot spinner
-  });
-  // The reconnect banner keys on the host's own NATS connectivity (this
-  // frame, design §4.4), never on onopen/onerror below — those reflect the
-  // browser↔host SSE transport, a different link that can stay open through
-  // a NATS outage (and vice versa).
-  es.addEventListener("connectivity", (e) => {
-    const fr = JSON.parse(e.data);
+  },
+  // The reconnect banner keys on the host's own NATS connectivity (this frame,
+  // design §4.4), never on the transport's own open/error — that link can stay
+  // open through a NATS outage (and vice versa).
+  connectivity(fr) {
     if (fr.connected) hideReconnectBanner(); else showReconnectBanner();
-  });
-  es.onopen = () => {
+  },
+  open() {
     if (!hasBootstrapped) {
       setBootLabel("Loading your world…", true);
       armSilenceFallback();
     }
+  },
+};
+
+// sseSource is the Go-host feed: the SSE stream `/api/feed` for frames and
+// POST `/api/enqueue` for writes — the shipped path, unchanged in behaviour.
+function sseSource() {
+  let es = null;
+  return {
+    start(h) {
+      es = new EventSource("/api/feed");
+      es.addEventListener("manifest", (e) => h.manifest(JSON.parse(e.data)));
+      es.addEventListener("outbox", (e) => h.outbox(JSON.parse(e.data).outbox));
+      es.addEventListener("ready", () => h.ready());
+      es.addEventListener("revoked", (e) => {
+        let reason = "";
+        try { reason = (JSON.parse(e.data) || {}).reason || ""; } catch (err) { /* keep the default copy */ }
+        h.revoked(reason);
+      });
+      es.addEventListener("connectivity", (e) => h.connectivity(JSON.parse(e.data)));
+      es.onopen = () => h.open();
+    },
+    enqueue(request) {
+      return fetch("/api/enqueue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      }).then((r) => r.json());
+    },
+    close() { if (es) { es.close(); es = null; } },
   };
+}
+
+// startFeed selects the source and wires it to the reducer. window.__facetBoot
+// is a Promise<source> the boot module sets when the page is configured for the
+// in-page engine; absent (the shipped Go-host page, and any boot that failed to
+// configure), the renderer uses the SSE source. A boot that resolves a source
+// but then throws while starting falls back to SSE too, so the app always loads.
+function startFeed() {
+  const boot = window.__facetBoot;
+  Promise.resolve(boot || sseSource())
+    .then((src) => { activeSource = src; return src.start(feedHandlers); })
+    .catch((err) => {
+      console.warn("facet: edge feed source failed, falling back to SSE", err);
+      activeSource = sseSource();
+      activeSource.start(feedHandlers);
+    });
 }
 
 function armSilenceFallback() {
@@ -184,7 +237,7 @@ function hideReconnectBanner() { $("reconnect-banner").hidden = true; }
 // closes the live SSE connection before the cookie is cleared, so no stray
 // frame repopulates state after logout starts, then hands off to /login.
 function signOut() {
-  if (activeFeed) { activeFeed.close(); activeFeed = null; }
+  if (activeSource) { activeSource.close(); activeSource = null; }
   state.rows.clear();
   state.outbox.clear();
   state.credentials = null;
@@ -852,14 +905,12 @@ function submitDescriptorForm(form, op, opKey, ctx, fieldNames, props, contextPa
   const authContext = buildAuthContext(op.dispatchAuthContext, ctx);
   const touchedKey = resolveTouchedKey(op, ctx);
 
-  fetch("/api/enqueue", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ operationType: op.operationType, class: op.dispatchClass || "", payload, reads, authContext, touchedKey }),
-  })
-    .then((r) => r.json())
+  // enqueue through the live source — POST /api/enqueue on the Go host, the
+  // wasm engine's api.enqueue in-page — so the same descriptor form drives
+  // either host unchanged (the W4 swap contract).
+  activeSource.enqueue({ operationType: op.operationType, class: op.dispatchClass || "", payload, reads, authContext, touchedKey })
     .then((body) => {
-      if (body.error) { toast(body.error, false); return; }
+      if (body && body.error) { toast(body.error, false); return; }
       hideModal();
       toast("Submitted", true);
     })
@@ -965,5 +1016,5 @@ document.addEventListener("DOMContentLoaded", () => {
   document.body.addEventListener("click", onGlobalClick);
   document.body.addEventListener("input", onGlobalInput);
   loadWhoami();
-  connectFeed();
+  startFeed();
 });

@@ -1359,6 +1359,17 @@ test-edge-consumer-parity:
 	@echo "==> Running the consumer-create wire-form parity test (nats.js vs the granted ACL)..."
 	go test -tags edgeparity ./internal/natsperm/ -run TestEdgeConsumerCreateWireFormParity -count=1 -v
 
+## test-facet-web — the Facet PWA renderer's unit vectors (node --test). The
+## renderer is a reducer over one feed source (cmd/facet/web/app.js); EDGE.5 W4
+## swaps that source from the Go host's SSE feed to the browser-native engine's
+## in-page onFrame (edge-browser-node-design.md §3.4). These vectors pin the
+## degraded-render contract + both source adapters (SSE and edge) + boot.mjs's
+## config gate and engine-assembly wiring against fakes. Node only, no Docker.
+.PHONY: test-facet-web
+test-facet-web:
+	@echo "==> Running the Facet renderer unit vectors (feed-source swap, node --test)..."
+	node --test cmd/facet/web/degraded_render.test.mjs cmd/facet/web/edge-source.test.mjs cmd/facet/web/feed_source.test.mjs
+
 ## build-edge-wasm — the browser Edge node's wasm artifact
 ## (edge-browser-node-design.md §3.3). Compiles cmd/edge-wasm (the same
 ## semantics engine cmd/facet embeds natively) to js/wasm and copies the

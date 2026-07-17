@@ -454,3 +454,10 @@ jobs:
 
       - name: Run the Edge consumer-create wire-form parity + leader-election gate
         run: make test-edge-consumer-parity
+
+      # The Facet renderer's feed-source swap (EDGE.5 W4): app.js reads its
+      # frames from a pluggable source — the Go host's SSE feed or the
+      # browser-native engine's in-page onFrame. These vectors pin both adapters
+      # + boot.mjs's wiring. Node only, so it rides this Node-equipped job.
+      - name: Run the Facet renderer unit vectors (feed-source swap)
+        run: make test-facet-web

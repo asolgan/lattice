@@ -53,6 +53,10 @@
 <div id="modal-root"></div>
 <div id="toast" class="toast" hidden></div>
 
+<!-- boot.mjs is a module (deferred): its top level sets window.__facetBoot when
+     the page is configured for the in-page engine, before app.js's
+     DOMContentLoaded handler reads it. A no-op on the shipped Go-host page. -->
+<script type="module" src="/boot.mjs"></script>
 <script src="/app.js"></script>
 </body>
 </html>

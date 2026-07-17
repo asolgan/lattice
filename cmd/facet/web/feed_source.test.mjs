@@ -1,0 +1,223 @@
+// Regression vectors for the EDGE.5 W4 renderer swap on the *other* two halves
+// of the seam: app.js's SSE feed source (the shipped Go-host path must keep
+// behaving byte-for-byte after the refactor to a pluggable source) and boot.mjs's
+// config gate + engine-assembly wiring. No live stack; Node's built-in runner.
+//
+// app.js is a plain browser script exposing function declarations to a vm
+// sandbox (the degraded_render.test.mjs idiom); boot.mjs and edge-source.mjs are
+// ESM imported directly.
+
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import vm from "node:vm";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { readBootConfig, assembleEdgeSource } from "./boot.mjs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const appSrc = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
+
+// fakeEventSource records listeners so a test can fire named SSE events and
+// assert the source translated them to reducer handler calls.
+function makeFakeEventSourceClass(instances) {
+  return class FakeEventSource {
+    constructor(url) {
+      this.url = url;
+      this.listeners = {};
+      this.closed = false;
+      instances.push(this);
+    }
+    addEventListener(name, fn) { this.listeners[name] = fn; }
+    close() { this.closed = true; }
+    fire(name, data) { this.listeners[name]({ data: JSON.stringify(data) }); }
+  };
+}
+
+function loadApp(extra) {
+  const sandbox = {
+    console,
+    document: { addEventListener() {} },
+    setTimeout: () => 0,
+    clearTimeout: () => {},
+    queueMicrotask: (fn) => fn(),
+    ...extra,
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(appSrc, sandbox, { filename: "app.js" });
+  return sandbox;
+}
+
+// norm rebuilds vm-context objects (JSON parsed inside the sandbox carry the
+// sandbox's Object.prototype) with this context's prototypes, so deepEqual
+// compares by structure rather than tripping on prototype identity.
+function norm(v) { return JSON.parse(JSON.stringify(v)); }
+
+function collectingHandlers() {
+  const seen = [];
+  return {
+    seen,
+    manifest: (fr) => seen.push(["manifest", fr]),
+    outbox: (entry) => seen.push(["outbox", entry]),
+    ready: () => seen.push(["ready"]),
+    revoked: (reason) => seen.push(["revoked", reason]),
+    connectivity: (fr) => seen.push(["connectivity", fr]),
+    open: () => seen.push(["open"]),
+  };
+}
+
+test("sseSource.start translates every SSE event to its reducer handler", () => {
+  const instances = [];
+  const { sseSource } = loadApp({ EventSource: makeFakeEventSourceClass(instances) });
+  const h = collectingHandlers();
+  const src = sseSource();
+  src.start(h);
+
+  assert.equal(instances.length, 1);
+  assert.equal(instances[0].url, "/api/feed");
+  const es = instances[0];
+
+  es.listeners.onopen ? es.listeners.onopen() : es.onopen();
+  es.fire("manifest", { key: "manifest.me", data: { displayName: "Ada" }, pending: true });
+  es.fire("outbox", { outbox: { requestId: "r1", state: "queued" } });
+  es.listeners.ready();
+  es.fire("revoked", { reason: "token revoked" });
+  es.fire("connectivity", { connected: false });
+
+  assert.deepEqual(norm(h.seen), [
+    ["open"],
+    ["manifest", { key: "manifest.me", data: { displayName: "Ada" }, pending: true }],
+    ["outbox", { requestId: "r1", state: "queued" }],
+    ["ready"],
+    ["revoked", "token revoked"],
+    ["connectivity", { connected: false }],
+  ]);
+});
+
+test("sseSource.start unwraps the outbox frame to its entry (parity with the edge source)", () => {
+  const instances = [];
+  const { sseSource } = loadApp({ EventSource: makeFakeEventSourceClass(instances) });
+  const h = collectingHandlers();
+  sseSource().start(h);
+  instances[0].fire("outbox", { outbox: { requestId: "r9", state: "confirmed" } });
+  assert.deepEqual(norm(h.seen), [["outbox", { requestId: "r9", state: "confirmed" }]]);
+});
+
+test("sseSource.revoked survives a malformed payload with an empty reason", () => {
+  const instances = [];
+  const { sseSource } = loadApp({ EventSource: makeFakeEventSourceClass(instances) });
+  const h = collectingHandlers();
+  sseSource().start(h);
+  instances[0].listeners.revoked({ data: "not json" });
+  assert.deepEqual(norm(h.seen), [["revoked", ""]]);
+});
+
+test("sseSource.enqueue POSTs the request to /api/enqueue and returns the parsed body", async () => {
+  const instances = [];
+  const calls = [];
+  const fetchFn = (url, init) => {
+    calls.push([url, init]);
+    return Promise.resolve({ json: () => Promise.resolve({ requestId: "z1" }) });
+  };
+  const { sseSource } = loadApp({ EventSource: makeFakeEventSourceClass(instances), fetch: fetchFn });
+  const src = sseSource();
+  const req = { operationType: "RequestService", payload: { a: 1 } };
+  const body = await src.enqueue(req);
+
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], "/api/enqueue");
+  assert.equal(calls[0][1].method, "POST");
+  assert.deepEqual(JSON.parse(calls[0][1].body), req);
+  assert.deepEqual(body, { requestId: "z1" });
+});
+
+test("sseSource.close closes the underlying EventSource", () => {
+  const instances = [];
+  const { sseSource } = loadApp({ EventSource: makeFakeEventSourceClass(instances) });
+  const src = sseSource();
+  src.start(collectingHandlers());
+  assert.equal(instances[0].closed, false);
+  src.close();
+  assert.equal(instances[0].closed, true);
+});
+
+// ---------------------------------------------------------------- boot.mjs
+
+test("readBootConfig returns null when the page is not configured for the in-page engine", () => {
+  const prev = globalThis.window;
+  try {
+    globalThis.window = {}; // no __EDGE_BOOT__
+    assert.equal(readBootConfig(), null);
+    globalThis.window = { __EDGE_BOOT__: { identityId: "i" } }; // incomplete
+    assert.equal(readBootConfig(), null);
+  } finally {
+    globalThis.window = prev;
+  }
+});
+
+test("readBootConfig fills defaults for the served asset URLs", () => {
+  const prev = globalThis.window;
+  try {
+    globalThis.window = {
+      __EDGE_BOOT__: {
+        identityId: "vtx.identity.abc",
+        deviceId: "dev1",
+        wsUrl: "ws://localhost:9222",
+        gatewayUrl: "http://localhost:8080",
+        token: "jwt",
+      },
+    };
+    const cfg = readBootConfig();
+    assert.equal(cfg.identityId, "vtx.identity.abc");
+    assert.equal(cfg.wasmUrl, "/edge.wasm");
+    assert.equal(cfg.wasmExecUrl, "/wasm_exec.js");
+    assert.equal(cfg.shellUrl, "/shell/shell.mjs");
+  } finally {
+    globalThis.window = prev;
+  }
+});
+
+test("assembleEdgeSource configures the shell, starts the engine, and wires the shell's deliver", async () => {
+  const cfg = {
+    identityId: "vtx.identity.abc",
+    deviceId: "dev1",
+    wsUrl: "ws://localhost:9222",
+    gatewayUrl: "http://localhost:8080",
+    token: "jwt",
+    types: ["svc"],
+    anchors: ["a1"],
+    storeName: "custom-store",
+  };
+
+  let shellConfig = null;
+  const shell = { deliver: null };
+  const createShell = (c) => { shellConfig = c; return shell; };
+
+  const api = { deliver: () => "delivered", onFrame: () => () => {}, snapshot: () => Promise.resolve([]), enqueue: () => Promise.resolve({}), stop: () => Promise.resolve() };
+  let startArg = null;
+  const latticeEdge = { start: (a) => { startArg = a; return Promise.resolve(api); } };
+
+  const src = await assembleEdgeSource({ latticeEdge, createShell, cfg });
+
+  // The shell got the transport config, with getToken as a live getter.
+  assert.equal(shellConfig.url, "ws://localhost:9222");
+  assert.equal(shellConfig.identityId, "vtx.identity.abc");
+  assert.equal(shellConfig.deviceId, "dev1");
+  assert.equal(typeof shellConfig.getToken, "function");
+  assert.equal(shellConfig.getToken(), "jwt");
+
+  // start() got the engine config, including the shell.
+  assert.equal(startArg.shell, shell);
+  assert.equal(startArg.gatewayUrl, "http://localhost:8080");
+  assert.deepEqual(startArg.types, ["svc"]);
+  assert.equal(startArg.storeName, "custom-store");
+
+  // The shell's push target is the engine's deliver (or the durable Naks every
+  // message and the mirror never advances).
+  assert.equal(shell.deliver, api.deliver);
+
+  // The result is a feed source.
+  assert.equal(typeof src.start, "function");
+  assert.equal(typeof src.enqueue, "function");
+  assert.equal(typeof src.close, "function");
+});
