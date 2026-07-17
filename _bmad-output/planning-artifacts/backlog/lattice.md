@@ -265,6 +265,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-17 · `b962871` · [CI] natsperm auth-callout PONG/PING flake fixed — connectEdge retries the pre-PONG RTT-PING race (nats-server 2s gate exceeded under CPU contention); deny vectors + prod conf untouched; stress 2/8→0/8
 - 2026-07-17 · `b67612a` · [facet,edge] EDGE.5 W4 inc 3 — renderer feed-source swap: app.js pluggable source (SSE Go-host unchanged) + edge-source.mjs (engine onFrame) + config-gated boot.mjs; `make test-facet-web` CI gate
 - 2026-07-17 · `e7a81c6` · [edge] EDGE.5 W4 inc 2 — host-side peer signal/consume: `OnChange`→`signalChange` (leader) + `onPeerChange`→re-read+republish (follower, off-loop goroutine); in-Chrome verified
 - 2026-07-17 · `fa99b34` · [edge] EDGE.5 W4 inc 1 — shell multi-tab layer: fixed the latent `electLeader(...).catch` leader-path TypeError + built the BroadcastChannel follower change-signal + first `createShell` unit vectors; CI green
@@ -298,5 +299,4 @@ One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archiv
 - 2026-07-12 · `d24446e` · [docs] doc sweep — README/architecture-overview/loupe.md corrected to reflect shipped D1 + Personal Lens + Edge Lattice EDGE.1-3 (were still marked designed/deferred)
 - 2026-07-12 · `f6be3b0` · [edge-manifest,refractor] edge-manifest Fire 1 CLOSED — install-edge-manifest chain, seed-edge-demo, live e2e; fixed a lens anchor bug blocking all 5 lenses from ever publishing; CI green
 - 2026-07-12 · `1b778f9` · [pkgmgr,edge,edge-manifest] edge-manifest Fire 1 inc 2 — 5-lens `packages/edge-manifest` (first nats-subject Personal Lens package), edge/store.go manifest.* key exemption, verify-package-edge-manifest; CI green
-- 2026-07-12 · `17d6fbe` · [CI] unit job split into weight-balanced unit-1/unit-2 shards + a coverage-guard job; overall wall-clock 237s→145s (~39% faster), CI green
 - *(older entries rolled to [archive/lattice-done.md](archive/lattice-done.md); includes `94c8224` hello-lattice NFR-P3 flake fix)*
