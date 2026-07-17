@@ -66,6 +66,7 @@ type Host struct {
 	agent      *agent.Agent
 	tr         *jsTransport
 	feed       *feed
+	shell      js.Value
 	logger     *slog.Logger
 
 	cancel context.CancelFunc
@@ -75,6 +76,11 @@ type Host struct {
 	// them. A js.Func is a Go-side registration the runtime never reclaims on
 	// its own; leaking one per start would leak the whole Host it closes over.
 	funcs []js.Func
+
+	// peerUnsub is the shell's onPeerChange unsubscribe function, invoked on
+	// Stop so a host that stops while the shell outlives it (a re-start on the
+	// same shell) leaves no dangling follower handler behind.
+	peerUnsub js.Value
 
 	stopOnce sync.Once
 }
@@ -139,6 +145,14 @@ func Start(ctx context.Context, cfg Config) (*Host, error) {
 		Logger:      logger,
 		OnChange: func(key string, deleted bool) {
 			fd.publishManifestKey(ov, key, deleted)
+			// The leader tab is the only one running a consumer, so OnChange
+			// fires here only for the tab that actually landed the delta. Tell
+			// the other tabs — which hold no consumer and so never saw this
+			// message — that the shared mirror moved, so their followers can
+			// re-read the key (edge-browser-node-design.md §3.3). A no-op when
+			// the shell exposes no signalChange (a single-context host has no
+			// peers): signalPeer guards on that.
+			signalPeer(cfg.Shell, key, deleted)
 		},
 		OnHydrationComplete: func(revision uint64) {
 			fd.publish(frame{Kind: "ready", Revision: revision})
@@ -173,9 +187,11 @@ func Start(ctx context.Context, cfg Config) (*Host, error) {
 		agent:      ag,
 		tr:         tr,
 		feed:       fd,
+		shell:      cfg.Shell,
 		logger:     logger,
 		cancel:     cancel,
 	}
+	h.watchPeers()
 
 	h.wg.Add(2)
 	go func() {
@@ -189,6 +205,47 @@ func Start(ctx context.Context, cfg Config) (*Host, error) {
 		h.runDrainLoop(hostCtx)
 	}()
 	return h, nil
+}
+
+// signalPeer posts one landed change onto the shell's cross-tab channel so a
+// follower (which runs no consumer and so never receives this delta) learns the
+// shared IndexedDB mirror moved. A single-context host — the parity harness, a
+// browser without BroadcastChannel — exposes no signalChange; there are no peers
+// to tell, so this is a no-op there.
+func signalPeer(shell js.Value, key string, deleted bool) {
+	if shell.Get("signalChange").Type() == js.TypeFunction {
+		shell.Call("signalChange", key, deleted)
+	}
+}
+
+// watchPeers registers the follower change-signal handler on the shell: when the
+// leader tab signals a landed change, this tab re-reads the touched key from the
+// shared store and republishes its manifest frame, so a follower's renderer
+// tracks the mirror the leader alone is writing (edge-browser-node-design.md
+// §3.3). A no-op when the shell exposes no onPeerChange (a single-context host).
+//
+// The re-read runs on a fresh goroutine, not inline: the handler is invoked
+// synchronously from the JS event loop, and publishManifestKey blocks on an
+// IndexedDB read whose completion is itself an event-loop callback — doing it
+// inline would deadlock the loop against its own read. The same reason onFrame
+// invokes the renderer's callback from a goroutine.
+func (h *Host) watchPeers() {
+	if h.shell.Get("onPeerChange").Type() != js.TypeFunction {
+		return
+	}
+	handler := js.FuncOf(func(_ js.Value, args []js.Value) any {
+		if len(args) == 0 || args[0].Type() != js.TypeString {
+			return nil
+		}
+		key := args[0].String()
+		deleted := len(args) > 1 && args[1].Truthy()
+		go h.feed.publishManifestKey(h.overlay, key, deleted)
+		return nil
+	})
+	h.funcs = append(h.funcs, handler)
+	if unsub := h.shell.Call("onPeerChange", handler); unsub.Type() == js.TypeFunction {
+		h.peerUnsub = unsub
+	}
 }
 
 // runDrainLoop retries queued intents until ctx is cancelled. A drain failure
@@ -314,6 +371,13 @@ func (h *Host) Stop() {
 	h.stopOnce.Do(func() {
 		h.cancel()
 		h.wg.Wait()
+		// Unregister the follower handler before releasing its js.Func: the
+		// shell may outlive this host (sign-out then a fresh start on the same
+		// shell), and a released js.Func the shell still holds would panic if
+		// re-invoked.
+		if h.peerUnsub.Type() == js.TypeFunction {
+			h.peerUnsub.Invoke()
+		}
 		_ = h.store.Close()
 		for _, f := range h.funcs {
 			f.Release()

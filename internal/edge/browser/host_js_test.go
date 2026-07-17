@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"syscall/js"
 	"testing"
+	"time"
 
 	"github.com/asolgan/lattice/internal/edge/transport"
 	"github.com/asolgan/lattice/internal/refractor/control/controlwire"
@@ -30,6 +31,17 @@ type fakeShell struct {
 	registerResp controlwire.ControlResponse
 	hydrateResp  controlwire.ControlResponse
 	funcs        []js.Func
+
+	// signalled captures each key the leader posts to peers via signalChange,
+	// and peerHandler holds the follower handler the host registered through
+	// onPeerChange so a test can fire it as the leader's signal would.
+	signalled   chan peerSignal
+	peerHandler js.Value
+}
+
+type peerSignal struct {
+	key     string
+	deleted bool
 }
 
 func newFakeShell() *fakeShell {
@@ -38,6 +50,7 @@ func newFakeShell() *fakeShell {
 		firstSeq:     0,
 		registerResp: controlwire.ControlResponse{PersonalRegister: &controlwire.PersonalRegisterResult{Registered: true}},
 		hydrateResp:  controlwire.ControlResponse{PersonalHydrate: &controlwire.PersonalHydrateResult{Hydrated: true, Revision: 1}},
+		signalled:    make(chan peerSignal, 8),
 	}
 }
 
@@ -76,6 +89,21 @@ func (s *fakeShell) value() js.Value {
 		}
 		b, _ := json.Marshal(resp)
 		return toUint8Array(b)
+	}))
+	obj.Set("signalChange", fn(func(_ js.Value, args []js.Value) any {
+		sig := peerSignal{key: args[0].String(), deleted: len(args) > 1 && args[1].Truthy()}
+		select {
+		case s.signalled <- sig:
+		default:
+		}
+		return js.Undefined()
+	}))
+	obj.Set("onPeerChange", fn(func(_ js.Value, args []js.Value) any {
+		s.peerHandler = args[0]
+		return fn(func(_ js.Value, _ []js.Value) any {
+			s.peerHandler = js.Undefined()
+			return nil
+		})
 	}))
 	return obj
 }
@@ -227,5 +255,67 @@ func TestHost_EnqueueQueuesDurableIntentWithOverlay(t *testing.T) {
 	}
 	if !v.Pending {
 		t.Fatalf("overlay value should be pending before confirmation")
+	}
+}
+
+// TestHost_DeliverSignalsPeers proves the leader half of W4 inc 2: landing a
+// delta posts the touched key to peers over the shell's signalChange, so a
+// follower tab (which holds no consumer and so never saw the message) can learn
+// the shared mirror moved (edge-browser-node-design.md §3.3).
+func TestHost_DeliverSignalsPeers(t *testing.T) {
+	shell := newFakeShell()
+	defer shell.release()
+	h := startHost(t, shell)
+
+	const key = "manifest.services.svc1"
+	if got := pushDelta(t, h, deltaEnvelope{Op: "upsert", Key: key, Revision: 1, Data: json.RawMessage(`{"name":"Laundry"}`)}, 1); got != "ack" {
+		t.Fatalf("upsert: got %q, want ack", got)
+	}
+
+	select {
+	case sig := <-shell.signalled:
+		if sig.key != key || sig.deleted {
+			t.Fatalf("signalChange: got %+v, want key=%q deleted=false", sig, key)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("landing a delta did not signal peers")
+	}
+}
+
+// TestHost_PeerChangeRepublishesFromStore proves the follower half: firing the
+// registered onPeerChange handler re-reads the key from the shared store and
+// republishes its manifest frame to the feed, so a follower's renderer tracks
+// the mirror the leader alone writes. The re-read must run off the event loop
+// (the handler spawns a goroutine); the feed-channel receive is the sync point.
+func TestHost_PeerChangeRepublishesFromStore(t *testing.T) {
+	shell := newFakeShell()
+	defer shell.release()
+	h := startHost(t, shell)
+
+	// Stand in for the leader tab's write into the shared IndexedDB: land the
+	// key through the normal delta path so the store holds it.
+	const key = "manifest.tasks.t1"
+	pushDelta(t, h, deltaEnvelope{Op: "upsert", Key: key, Revision: 1, Data: json.RawMessage(`{"title":"pickup"}`)}, 1)
+
+	// Subscribe only now, so the frame we observe is the follower republish, not
+	// the leader OnChange that fired during pushDelta above.
+	ch := h.feed.subscribe()
+	defer h.feed.unsubscribe(ch)
+
+	if shell.peerHandler.Type() != js.TypeFunction {
+		t.Fatal("host did not register an onPeerChange handler")
+	}
+	shell.peerHandler.Invoke(js.ValueOf(key), js.ValueOf(false))
+
+	select {
+	case fr := <-ch:
+		if fr.Kind != "manifest" || fr.Key != key {
+			t.Fatalf("peer republish: got %+v, want a manifest frame for %q", fr, key)
+		}
+		if fr.Deleted {
+			t.Fatalf("peer republish for a live key marked deleted: %+v", fr)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("peer signal did not republish a manifest frame")
 	}
 }
