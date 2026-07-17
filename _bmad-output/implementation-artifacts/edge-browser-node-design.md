@@ -136,6 +136,48 @@ Measured (`GOOS=js` probe importing the six engine packages, gzip -9):
 
 ### 3.3 Fire W3 — the browser host (wasm engine + JS shell)
 
+**W3 increment 2 — the IndexedDB store — SHIPPED (2026-07-17).** `store.Store`'s second engine is in:
+`IDBStore` (`internal/edge/store/idb.go`, `js`-tagged, `syscall/js`) beside the `!js` bbolt engine, and it
+passes the **same** `storetest` conformance suite W2 extracted — LWW-by-revision, FIFO intent order, and
+durability across a close-and-reopen are proven *of the port*, not inferred from it compiling. IndexedDB's
+key generator (`autoIncrement`) stands in for bbolt's `NextSequence`: monotonic and persisted with the
+object store, which the reopen vector pins. Per §5's licence, the suite was checked **non-vacuous against
+this engine** the way inc 1 checked its dependency gate — breaking the LWW gate fails both stale-drop
+vectors; unbounding `ScanPrefix` fails the scan vector.
+
+**The runner fork, resolved (§5 left it "pick at fire against toolchain reality"): headless Chrome via
+`wasmbrowsertest`, not Node + fake-IDB.** Grounded, not assumed: **Node ships no IndexedDB at all**
+(`typeof indexedDB` → `undefined`), so the Node route needs `fake-indexeddb` — an npm toolchain this repo
+does not have, to prove the port matches *a reimplementation of* the engine the PWA actually runs on. On
+the plane where a divergence means silently-wrong local state, that is the wrong thing to be right about.
+`wasmbrowsertest` runs the suite against a **real IndexedDB in a real headless Chrome**, installs as a
+pinned Go tool (v0.11.0, `WASM_BROWSER_TEST_VERSION`), and needs no npm — `make test-edge-idb-conformance`,
+CI job `edge-browser-store` (the runner image ships Chrome). New `docs/vendors.md` rows: **IndexedDB**
+(W3C spec as authority) + **wasmbrowsertest**.
+
+**Two IndexedDB semantics the port is written around** (now in `vendors.md`, since the next person will
+need the authority): a transaction is active only while a request it issued is pending and auto-commits
+once the event loop goes idle — so the LWW read-modify-write issues its `put` from **inside** the `get`'s
+success callback; and a transaction's `complete`, not a request's success, is the durability point, so
+every write awaits it. A probe showed Go's wasm scheduler resumes a blocked goroutine *within* the
+callback's own dispatch — a plain `await`-then-`put` does work today — but that is an **undocumented
+runtime property**, and the LWW gate is too load-bearing to rest on it, so the dependency is kept
+structural. Two hazards were closed beyond what the suite asks: `OpenIDB` fails on **`blocked`** (fired
+*instead of* success/error when another connection holds an older version open — an await watching only
+those two stalls forever with no event; unreachable at schema version 1, reachable the moment a bump meets
+the multi-tab host of §3.3), and the conformance factory deletes the database before opening so
+"fresh, empty store" holds by construction rather than by the runner's incidental clean profile.
+
+**Correction to this fire's own scope:** inc 2 was filed as "the browser host" — store **+**
+`make build-edge-wasm` **+** the JS shell. It shipped the **store half only**, deliberately: the wasm
+artifact has nothing to emit until the **host entry point** the JS shell brings exists, so a
+`build-edge-wasm` target landed now would build a `main` that exports nothing. **Inc 3 = the wasm host
+entry + the JS shell** (vendored `nats.js`, leader election, token-refresh reconnect, `InactiveThreshold`)
+**+ `make build-edge-wasm` + the consumer-create wire-form parity test + the nats.js `vendors.md` row.**
+The FORK-W size tripwire is unmoved and still un-tripped: the engine floor stands at **1.32 MB gz** against
+~2.6 MB, and `syscall/js` + this store are inside the ~1.28 MB of headroom inc 1 measured — the shell is
+what spends the rest.
+
 **The split (FORK-W A′):**
 
 | Layer | Runs | Owns |
