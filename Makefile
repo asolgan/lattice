@@ -1345,7 +1345,8 @@ test-edge-idb-conformance:
 ## its create-consumer wire form can differ from the Go node's and fail CLOSED
 ## in a user's tab while every Go test passes. Two proofs, needing only Node
 ## (no Docker, no shared stack):
-##   - the leader-election unit vectors (node --test) — multi-tab handoff logic;
+##   - the shell unit vectors (node --test) — multi-tab leader-election handoff
+##     (leader.test.mjs) + the follower change-signal (shell.test.mjs);
 ##   - the consumer-create wire-form parity test (Go, build-tag edgeparity) —
 ##     drives the real shell from Node against internal/natsperm's real
 ##     per-identity auth-callout, asserting nats.js emits the ACL-granted
@@ -1353,8 +1354,8 @@ test-edge-idb-conformance:
 ## The vendored bundle is regenerated per internal/edge/browser/shell/VENDOR.md.
 .PHONY: test-edge-consumer-parity
 test-edge-consumer-parity:
-	@echo "==> Running the Edge shell leader-election unit vectors (node --test)..."
-	node --test internal/edge/browser/shell/leader.test.mjs
+	@echo "==> Running the Edge shell unit vectors (leader election + multi-tab change-signal, node --test)..."
+	node --test internal/edge/browser/shell/leader.test.mjs internal/edge/browser/shell/shell.test.mjs
 	@echo "==> Running the consumer-create wire-form parity test (nats.js vs the granted ACL)..."
 	go test -tags edgeparity ./internal/natsperm/ -run TestEdgeConsumerCreateWireFormParity -count=1 -v
 

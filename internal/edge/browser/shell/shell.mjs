@@ -264,13 +264,24 @@ export function createSyncCore(config) {
 // reads current state; on leader death the lock releases and a follower takes
 // over, resuming from the cursor already in the store.
 //
+// Followers do not consume, so they never see a JetStream message; the leader
+// signals each landed change over a BroadcastChannel and every other tab
+// re-reads the touched key from the shared store (§3.3's follower change-signal).
+//
 // config adds to createSyncCore's:
 //   locks             optional LockManager (defaults to navigator.locks); the
 //                     injection seam the leader-election unit vectors drive
 //   persist           optional () => Promise; storage-persistence request
 //                     (defaults to navigator.storage.persist)
+//   channel           optional BroadcastChannel for the follower change-signal
+//                     (defaults to one named per identity); the injection seam
+//                     the peer-change unit vectors drive
+//   createCore        optional core factory (defaults to createSyncCore); the
+//                     injection seam that lets the multi-tab vectors observe
+//                     leadership gating without opening a real WS connection
 export function createShell(config) {
-  const core = createSyncCore(config);
+  const makeCore = config.createCore ?? createSyncCore;
+  const core = makeCore(config);
   const identityId = config.identityId;
   const locks = config.locks ?? (globalThis.navigator && globalThis.navigator.locks);
   const persist =
@@ -287,9 +298,41 @@ export function createShell(config) {
     persist().catch(() => {});
   }
 
+  // The follower change-signal (edge-browser-node-design.md §3.3). Only the
+  // leader tab holds a consumer and writes deltas into the shared per-identity
+  // IndexedDB; follower tabs read that same store but receive no JetStream
+  // message, so nothing tells them the mirror moved. The leader posts each
+  // landed change here; every other tab of the origin hears it and re-reads the
+  // touched key. A BroadcastChannel never echoes to the posting context, so a
+  // tab never hears its own signal — the leader's own renderer already updated
+  // from the delta itself.
+  const channel =
+    config.channel ??
+    (typeof globalThis.BroadcastChannel === "function"
+      ? new globalThis.BroadcastChannel("lattice-edge-sync-" + identityId)
+      : null);
+  const peerHandlers = new Set();
+  if (channel) {
+    channel.onmessage = (ev) => {
+      const d = ev?.data;
+      if (!d || typeof d.key !== "string") return;
+      for (const fn of peerHandlers) {
+        try {
+          fn(d.key, !!d.deleted);
+        } catch (err) {
+          logger.warn?.("edge/shell: onPeerChange handler threw", err?.message ?? err);
+        }
+      }
+    };
+  }
+
   // leadership resolves once this tab holds the sync lease. A follower's
-  // startConsumer awaits it, so only the leader opens a durable.
+  // startConsumer awaits it, so only the leader opens a durable. The handle is
+  // kept so an explicit close() (e.g. sign-out in a still-open tab) releases the
+  // lease and hands leadership to a follower, rather than waiting for the tab to
+  // close.
   let leadership = null;
+  let leaderHandle = null;
   function ensureLeadership() {
     if (leadership) return leadership;
     if (!locks) {
@@ -299,7 +342,7 @@ export function createShell(config) {
       return leadership;
     }
     leadership = new Promise((resolve) => {
-      electLeader({
+      leaderHandle = electLeader({
         lockName: "lattice-edge-sync-" + identityId,
         locks,
         onAcquire: () => {
@@ -309,7 +352,16 @@ export function createShell(config) {
         onRelease: () => {
           logger.debug?.("edge/shell: released sync leadership");
         },
-      }).catch((err) => logger.warn?.("edge/shell: leader election failed", err?.message ?? err));
+      });
+      // electLeader returns a handle, not a promise: leadership is signalled by
+      // onAcquire → resolve() above, and `settled` resolves only when the lease
+      // is *lost* (the callback returns) or rejects if the lock request itself
+      // fails. Watch it for that failure so a broken election surfaces instead
+      // of hanging startConsumer forever. (A `.catch` on the handle object was
+      // a no-such-method TypeError that rejected this promise on every Web-Locks
+      // host — the bug this replaces.)
+      leaderHandle.settled.catch((err) =>
+        logger.warn?.("edge/shell: leader election failed", err?.message ?? err));
     });
     return leadership;
   }
@@ -323,7 +375,36 @@ export function createShell(config) {
     stopConsumer: () => core.stopConsumer(),
     firstSequence: (stream) => core.firstSequence(stream),
     request: (subject, data, actor) => core.request(subject, data, actor),
-    close: () => core.close(),
+    // signalChange is the leader's call after a delta lands, so followers learn
+    // the shared store moved. A no-op when there is no channel (single-context
+    // hosts) or the key is empty.
+    signalChange: (key, deleted) => {
+      if (channel && typeof key === "string" && key) {
+        channel.postMessage({ key, deleted: !!deleted });
+      }
+    },
+    // onPeerChange registers a follower handler and returns an unsubscribe fn.
+    onPeerChange: (fn) => {
+      if (typeof fn !== "function") return () => {};
+      peerHandlers.add(fn);
+      return () => peerHandlers.delete(fn);
+    },
+    close: () => {
+      if (channel) {
+        channel.onmessage = null;
+        try {
+          channel.close();
+        } catch {
+          /* already closed */
+        }
+      }
+      peerHandlers.clear();
+      if (leaderHandle) {
+        leaderHandle.release();
+        leaderHandle = null;
+      }
+      return core.close();
+    },
     set deliver(fn) {
       core.deliver = fn;
     },
