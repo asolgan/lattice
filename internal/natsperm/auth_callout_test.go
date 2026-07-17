@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -167,6 +168,28 @@ func nanoID(t *testing.T) string {
 	return id
 }
 
+// pongPingHandshakeRace is nats.go's sendConnect error (v1.52 nats.go:3089)
+// when the server sends a PING where the client expects the PONG for its own
+// CONNECT+PING. It is a handshake-TIMING artifact, never an authorization
+// outcome: nats-server sends this RTT PING to a not-yet-authorized connection
+// only once the connect+callout round trip passes its hardcoded
+// maxNoRTTPingBeforeFirstPong gate (2s; nats-server v2.14 client.go:121,2585),
+// which under CI CPU contention a slow-but-correct callout can exceed. No deny
+// decision ever surfaces as this string — a rejected token/identity fails with
+// an "Authorization Violation"/"authentication expired" auth error instead — so
+// retrying it re-runs the (now-warm) callout under the 2s gate without ever
+// masking a real denial. This is a separate gate from startServerFromConfDual's
+// 10s auth_timeout override: that one bounds how long the server waits for a
+// pending callout before abandoning it; this one bounds how long it waits before
+// RTT-pinging a still-connecting client. The two are independent, so a generous
+// auth_timeout does not suppress this symptom (it fires at 2s regardless).
+const pongPingHandshakeRace = "expected 'PONG', got 'PING'"
+
+// maxEdgeConnectAttempts bounds connectEdge's retry of that one transient. On
+// the happy path (fast callout, the common case) the first dial succeeds and no
+// retry runs, so this adds zero wall-clock to a passing run.
+const maxEdgeConnectAttempts = 4
+
 // connectEdge dials as an untrusted (non-auth_users) connection presenting
 // bearerToken — every real Edge connect's shape, delegated to the responder.
 // Mirrors cmd/edge exactly, including nats.CustomInboxPrefix("_INBOX.edge.<identity>")
@@ -180,7 +203,15 @@ func connectEdge(t *testing.T, url, bearerToken, identity, deviceName string) (*
 	if identity != "" {
 		opts = append(opts, nats.CustomInboxPrefix("_INBOX.edge."+identity))
 	}
-	nc, err := nats.Connect(url, opts...)
+	var nc *nats.Conn
+	var err error
+	for attempt := 1; attempt <= maxEdgeConnectAttempts; attempt++ {
+		nc, err = nats.Connect(url, opts...)
+		if err == nil || !strings.Contains(err.Error(), pongPingHandshakeRace) {
+			break
+		}
+		// Transient RTT-PING-before-PONG race under load; re-dial the warm callout.
+	}
 	if err != nil {
 		return nil, err
 	}
