@@ -1,5 +1,5 @@
 name: wellness-domain
-version: 0.2.0
+version: 0.3.0
 description: |
   Wellness bookable domain: studio / session / booking vertex types + their
   aspects and links, written by Create*/Tombstone*/Cancel* ops. CreateSession
@@ -14,7 +14,11 @@ description: |
   wellnessBookings) are the P5 read models a wellness FE reads. No PHI/PII,
   no protected Postgres layer. Depends lease-signing (documentation only —
   CreateBooking reads its leaseapp by known key, no install-order
-  requirement enforced at the Starlark level).
+  requirement enforced at the Starlark level). CreateBooking and CancelBooking
+  each carry an op-meta with the edge-manifest descriptor vocabulary
+  (presentation/inputSchema/dispatch, edge-showcase-app-design.md §3.3, Fire
+  5 adoption) — metadata only; a client still needs a service-catalog path
+  (permitsOperation) to discover these ops.
 depends:
   - lease-signing
 declares:
@@ -73,3 +77,6 @@ declares:
     - operationType: CancelBooking
       scope: self
       grantsTo: [consumer]
+  opMetas:
+    - operationType: CreateBooking
+    - operationType: CancelBooking
