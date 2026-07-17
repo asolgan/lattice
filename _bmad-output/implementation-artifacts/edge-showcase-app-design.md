@@ -276,7 +276,66 @@ session for the *same* identity reuses one engine/device rather than minting
 a distinct device per browser tab — fine for the two-*different*-identities
 green bar this fire proves, named here so Inc 3 doesn't re-litigate it.
 
-**Inc 3 — Me-screen claim/link UX + revocation UX (§4.4)**, as §7.1 named, now session-scoped (build the sign-out affordance + whoami-driven header here). **Inc 4 — Fire-2 fidelity tail** (audit finds, all `cmd/facet/web`): the R3 pending-chip treatment is dead end-to-end (client never sends `touchedKey`; no render shows Pending — an edge-design R3 invariant, not a nicety); rejected-card Retry is unwired dead code; the offline banner keys on browser↔host SSE rather than host↔NATS state; confirmed outbox entries vanish instead of collapsing into history (UX §3.4); plus a regression test for "an undescribed op degrades" (§3.3's Fire-1 green-bar item, shipped untested).
+**Inc 3 — Me-screen claim/link UX + revocation UX (§4.4)**, as §7.1 named, now session-scoped (build the sign-out affordance + whoami-driven header here).
+
+**✅ Inc 3 SHIPPED (2026-07-17).** Me screen grows the claim card (a signed-in
+but unclaimed identity submits the Inc-1 `/api/claim` primitive against its own
+key), the whoami-driven header + sign-out affordance, and **manage sign-in
+methods**: `cmd/facet/credentials.go` serves `GET /api/credentials` from the
+already-shipped `identityCredentialsRead` Protected lens (no new lens — the
+loftspace account-settings work `25623d9` created it; Facet adds only
+`provision-facet-role` + `FACET_PG_DSN`, the same NON-superuser SELECT-only
+posture, so RLS confines the row to the caller), and runs link/unlink as ONE
+backend call each (`/api/credentials/link` submits Initiate as U then Complete
+as a fresh throwaway A2 — loftspace's browser-direct dance would violate
+Facet's "the browser talks to no one but this host" invariant). Live-verified:
+link → the credential projects → **signing in with that new credential opens
+U's world**; unlink → gone; removing the last one is refused by the platform
+(`CredentialUnlinkRejected: last-credential`).
+
+Four decisions this fire settled, recorded here rather than re-litigated:
+
+1. **A linked credential must actually sign in.** Facet's session was the raw
+   JWT subject, so signing in with a linked A2 opened A2's empty world while
+   the Gateway resolved *writes* to U — a "sign-in method" that couldn't sign
+   you in, i.e. §7.2's claim≠login substitution repeating. Login now resolves
+   through **`GET /v1/actor` → `resolvedActorId`** (§4.1 step 2's named
+   dependency, gap **G10** — this is its first Facet consumer) and mints the
+   cookie for the resolved identity, so the engine's NATS connection and every
+   write already authenticate as U. Deliberately NOT loftspace's
+   credential-bindings KV read: §4.5 binds Facet to "never reads platform
+   buckets"; the Gateway door is its only platform surface.
+2. **Purge-on-sign-out vs Inc 2's warm resume** (§4.4 vs §7.2 — genuinely
+   conflicting for this case, unreconciled until now): a reload/tab-close still
+   resumes warm; an **explicit sign-out or a revocation purges** the bbolt
+   mirror (`engineManager.Purge`). Inc 2's green bar is unaffected — re-entry
+   re-hydrates instead of resuming, a latency property, not that bar.
+3. **The revocation signal is the Gateway's 401/403, not an AuthDenied reply.**
+   `internal/edge/agent.ErrCredentialRejected` types the door's refusal (a small
+   fail-closed helper beside `auth.ErrTokenRevoked`); the intent stays queued so
+   a re-login drains it. An `AuthDenied` *reply* is deliberately NOT treated as
+   revocation — it is the routine capability-projection race `isTransientAuthLag`
+   retries, and keying the banner off it defaced a session for a ~200ms lag.
+4. **Purge forces engine eviction, which is what makes the sign-out flow
+   recoverable.** An engine's credential is minted once and never refreshed, and
+   `Acquire` returns the cached entry verbatim — so without eviction a
+   revoked-or-expired engine is handed straight back to the user who just
+   re-logged in, replaying the revocation forever (permanently, for a `pinned`
+   boot engine). Adversarial review caught this as a routine T+30min lockout.
+
+**Named residuals (not defects, not silently dropped):** the drain loop only
+notices a dead credential when an intent is queued, so a revoked user who never
+writes learns at the next write — §4.4 scopes revocation to "Gateway *writes*
+die immediately", and the other half of that bullet ("sync dies at authorization
+expiry ≤15m") still has **no UX**: the app shows Inc 2's "Reconnecting…" banner
+indefinitely. That is the honest next tail. A failed `CompleteCredentialLink`
+also leaves an orphan auto-provisioned A2 (the Gateway's first-touch pre-flight
+creates it before the op is evaluated) and a dangling armed `linkKey` with no
+TTL; both are harmless and retry-safe (re-initiating rotates the hash), and
+loftspace's shipped path has the identical shape — a reaper is neither app's to
+invent inline.
+
+**Inc 4 — Fire-2 fidelity tail** (audit finds, all `cmd/facet/web`): the R3 pending-chip treatment is dead end-to-end (client never sends `touchedKey`; no render shows Pending — an edge-design R3 invariant, not a nicety); rejected-card Retry is unwired dead code; the offline banner keys on browser↔host SSE rather than host↔NATS state; confirmed outbox entries vanish instead of collapsing into history (UX §3.4); plus a regression test for "an undescribed op degrades" (§3.3's Fire-1 green-bar item, shipped untested).
 
 ### 7.3 Showcase dataset (Andrew-directed, 2026-07-16) — a curated demo world, not on-the-fly seeding
 
