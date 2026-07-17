@@ -1,5 +1,5 @@
 name: clinic-domain
-version: 0.17.0
+version: 0.18.0
 depends:
   - location-domain
 description: |
@@ -58,6 +58,11 @@ description: |
   separately requires the target identity to be the named patient's linked
   identity (via identifiedBy), since the op's endpoint is the patient vertex,
   not an identity.
+  CreateAppointment, RescheduleAppointment, and SetAppointmentStatus (cancel
+  only) each carry an op-meta with the edge-manifest descriptor vocabulary
+  (presentation/inputSchema/dispatch, edge-showcase-app-design.md §3.3, Fire
+  5 adoption) — metadata only; a client still needs a service-catalog path
+  (permitsOperation) to discover these ops, not yet wired.
   Multi-site (depends on location-domain): SetSiteProfile writes a `.site`
   aspect {name} onto a location-domain vtx.building (validated alive +
   class=location) — the clinicSite vertexType DDL / clinicSiteProfile
@@ -197,3 +202,7 @@ declares:
     - operationType: RemoveProviderSite
       scope: any
       grantsTo: [operator]
+  opMetas:
+    - operationType: CreateAppointment
+    - operationType: RescheduleAppointment
+    - operationType: SetAppointmentStatus
