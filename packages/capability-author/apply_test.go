@@ -71,7 +71,7 @@ func applyEnv(reqID, proposalID, packageKey, installRequestID string) *processor
 // rather than widening every existing recordEnv call site.
 func recordEnvForApply(t *testing.T, reqID, handle, packageName string, content json.RawMessage, confidence float64) *processor.OperationEnvelope {
 	t.Helper()
-	report, err := pkgmgr.ValidateCapabilityArtifact("lens", content, fullCypherParser{}, nil)
+	report, err := pkgmgr.ValidateCapabilityArtifact("lens", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("materializer error: %v", err)
 	}
@@ -110,7 +110,7 @@ func recordEnvForApply(t *testing.T, reqID, handle, packageName string, content 
 // runs the scope check exactly as production will.
 func recordEnvForGrant(t *testing.T, reqID, handle, packageName string, content json.RawMessage, held []pkgmgr.HeldPermission, confidence float64) *processor.OperationEnvelope {
 	t.Helper()
-	report, err := pkgmgr.ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held)
+	report, err := pkgmgr.ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held, nil)
 	if err != nil {
 		t.Fatalf("materializer error: %v", err)
 	}

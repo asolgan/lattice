@@ -40,10 +40,11 @@ func grantContent(t *testing.T, gc GrantArtifactContent) json.RawMessage {
 }
 
 func TestValidateCapabilityArtifact_DisabledKind(t *testing.T) {
-	// vertexTypeDDL is gated behind Fire 4 (Starlark) — lens/grant/weaverTarget/
-	// loomPattern are the four kinds this increment enables, so a still-disabled
-	// kind is needed here.
-	report, err := ValidateCapabilityArtifact("vertexTypeDDL", json.RawMessage(`{}`), fullCypherParser{}, nil)
+	// aspectTypeDDL is not (and is not planned to become) an enabled kind — the
+	// "vertexTypeDDL"/"opMeta" kinds Fire 4 enables deliberately exclude the
+	// aspect-type DDL class (see VertexTypeDDLArtifactContent's doc), so this
+	// remains a genuinely disabled kind for this test's purpose.
+	report, err := ValidateCapabilityArtifact("aspectTypeDDL", json.RawMessage(`{}`), fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -56,7 +57,7 @@ func TestValidateCapabilityArtifact_DisabledKind(t *testing.T) {
 }
 
 func TestValidateCapabilityArtifact_MalformedContent(t *testing.T) {
-	_, err := ValidateCapabilityArtifact("lens", json.RawMessage(`not-json`), fullCypherParser{}, nil)
+	_, err := ValidateCapabilityArtifact("lens", json.RawMessage(`not-json`), fullCypherParser{}, nil, nil)
 	if err == nil {
 		t.Fatalf("expected a caller-contract error for malformed content")
 	}
@@ -69,7 +70,7 @@ func TestValidateCapabilityArtifact_ValidLens(t *testing.T) {
 		Bucket:        "active-providers",
 		Spec:          "MATCH (p:provider) RETURN p.key AS key",
 	})
-	report, err := ValidateCapabilityArtifact("lens", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("lens", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestValidateCapabilityArtifact_UnparseableCypher(t *testing.T) {
 		Bucket:        "broken-lens",
 		Spec:          "MATCH (p:provider RETURN p.key AS key", // missing close paren
 	})
-	report, err := ValidateCapabilityArtifact("lens", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("lens", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -100,7 +101,7 @@ func TestValidateCapabilityArtifact_MissingCanonicalName(t *testing.T) {
 		Bucket:  "no-name",
 		Spec:    "MATCH (p:provider) RETURN p.key AS key",
 	})
-	report, err := ValidateCapabilityArtifact("lens", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("lens", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestValidateCapabilityArtifact_CoreKVAdapterRejected(t *testing.T) {
 		Adapter:       "core-kv",
 		Spec:          "MATCH (p:provider) RETURN p.key AS key",
 	})
-	report, err := ValidateCapabilityArtifact("lens", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("lens", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -136,7 +137,7 @@ func TestValidateCapabilityArtifact_ReservedBucketAliasRejected(t *testing.T) {
 		Bucket:        "capability",
 		Spec:          "MATCH (p:provider) RETURN p.key AS key",
 	})
-	report, err := ValidateCapabilityArtifact("lens", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("lens", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -150,7 +151,7 @@ func TestValidateCapabilityArtifact_OutOfScopeFieldRejected(t *testing.T) {
 	// (e.g. "protected") must be caught, not silently dropped by json.Unmarshal
 	// and downgraded to a plain lens.
 	content := json.RawMessage(`{"canonicalName":"sneakyProtected","adapter":"postgres","table":"sneaky","spec":"MATCH (p:provider) RETURN p.key AS key","protected":true}`)
-	report, err := ValidateCapabilityArtifact("lens", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("lens", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -165,7 +166,7 @@ func TestValidateCapabilityArtifact_MissingBucketRejected(t *testing.T) {
 		Adapter:       "nats-kv",
 		Spec:          "MATCH (p:provider) RETURN p.key AS key",
 	})
-	report, err := ValidateCapabilityArtifact("lens", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("lens", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -181,7 +182,7 @@ func TestValidateCapabilityArtifact_ValidGrant(t *testing.T) {
 		GrantsTo:      []string{"front-desk"},
 	})
 	held := []HeldPermission{{OperationType: "RescheduleAppointment", Scope: "any"}}
-	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held)
+	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,7 +198,7 @@ func TestValidateCapabilityArtifact_GrantExactScopeMatch(t *testing.T) {
 		GrantsTo:      []string{"front-desk"},
 	})
 	held := []HeldPermission{{OperationType: "RescheduleAppointment", Scope: "any"}}
-	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held)
+	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -216,7 +217,7 @@ func TestValidateCapabilityArtifact_GrantExceedsRequesterScope_Rejected(t *testi
 		GrantsTo:      []string{"front-desk"},
 	})
 	held := []HeldPermission{{OperationType: "RescheduleAppointment", Scope: "self"}}
-	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held)
+	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -233,7 +234,7 @@ func TestValidateCapabilityArtifact_GrantRequesterHoldsNothing_Rejected(t *testi
 		Scope:         "self",
 		GrantsTo:      []string{"operator"},
 	})
-	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -251,7 +252,7 @@ func TestValidateCapabilityArtifact_GrantDifferentOperationType_Rejected(t *test
 		GrantsTo:      []string{"operator"},
 	})
 	held := []HeldPermission{{OperationType: "RescheduleAppointment", Scope: "any"}}
-	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held)
+	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -265,7 +266,7 @@ func TestValidateCapabilityArtifact_GrantMissingOperationType_Rejected(t *testin
 		Scope:    "self",
 		GrantsTo: []string{"front-desk"},
 	})
-	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -281,7 +282,7 @@ func TestValidateCapabilityArtifact_GrantInvalidScope_Rejected(t *testing.T) {
 		GrantsTo:      []string{"front-desk"},
 	})
 	held := []HeldPermission{{OperationType: "RescheduleAppointment", Scope: "any"}}
-	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held)
+	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -296,7 +297,7 @@ func TestValidateCapabilityArtifact_GrantEmptyGrantsTo_Rejected(t *testing.T) {
 		Scope:         "self",
 	})
 	held := []HeldPermission{{OperationType: "RescheduleAppointment", Scope: "any"}}
-	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held)
+	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -312,7 +313,7 @@ func TestValidateCapabilityArtifact_GrantWhitespaceRole_Rejected(t *testing.T) {
 		GrantsTo:      []string{"  "},
 	})
 	held := []HeldPermission{{OperationType: "RescheduleAppointment", Scope: "any"}}
-	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held)
+	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -328,7 +329,7 @@ func TestValidateCapabilityArtifact_GrantDuplicateRole_Rejected(t *testing.T) {
 		GrantsTo:      []string{"front-desk", "front-desk"},
 	})
 	held := []HeldPermission{{OperationType: "RescheduleAppointment", Scope: "any"}}
-	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held)
+	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -341,7 +342,7 @@ func TestValidateCapabilityArtifact_KindCaseSensitive_Rejected(t *testing.T) {
 	// The enabled-kind check is exact-string, case-sensitive — "Grant" must
 	// never be silently treated as the enabled "grant" kind, on either this Go
 	// allow-list or the independent Starlark ENABLED_KINDS gate it mirrors.
-	report, err := ValidateCapabilityArtifact("Grant", json.RawMessage(`{}`), fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("Grant", json.RawMessage(`{}`), fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -372,7 +373,7 @@ func TestValidateCapabilityArtifact_GrantOutOfScopeFieldRejected(t *testing.T) {
 	// dropped by json.Unmarshal.
 	content := json.RawMessage(`{"operationType":"RescheduleAppointment","scope":"self","grantsTo":["front-desk"],"roles":["operator"]}`)
 	held := []HeldPermission{{OperationType: "RescheduleAppointment", Scope: "any"}}
-	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held)
+	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -430,7 +431,7 @@ func TestValidateCapabilityArtifact_ValidWeaverTarget(t *testing.T) {
 			"missing_followUp": {Action: "directOp", Operation: "SendReminder"},
 		},
 	})
-	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -446,7 +447,7 @@ func TestValidateCapabilityArtifact_WeaverTargetMissingTargetID_Rejected(t *test
 			"missing_followUp": {Action: "directOp", Operation: "SendReminder"},
 		},
 	})
-	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -466,7 +467,7 @@ func TestValidateCapabilityArtifact_WeaverTargetBadGapColumn_Rejected(t *testing
 			"followUp": {Action: "directOp", Operation: "SendReminder"},
 		},
 	})
-	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -483,7 +484,7 @@ func TestValidateCapabilityArtifact_WeaverTargetReservedGapParam_Rejected(t *tes
 			"missing_followUp": {Action: "directOp", Operation: "SendReminder", Params: map[string]string{"expectedRevision": "5"}},
 		},
 	})
-	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -500,7 +501,7 @@ func TestValidateCapabilityArtifact_WeaverTargetUnknownActionRejected(t *testing
 			"missing_followUp": {Action: "deleteEverything"},
 		},
 	})
-	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -515,7 +516,7 @@ func TestValidateCapabilityArtifact_WeaverTargetAugurFieldRejected(t *testing.T)
 	// a raw payload smuggling it must be caught, not silently dropped by
 	// json.Unmarshal and downgraded to a plain (augur-less) target.
 	content := json.RawMessage(`{"targetId":"aiTargetDispatch","lensRef":"someExistingLens","gaps":{"missing_followUp":{"action":"directOp","operation":"SendReminder"}},"augur":{"escalate":["unplannable"]}}`)
-	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -532,7 +533,7 @@ func TestValidateCapabilityArtifact_WeaverTargetSmuggledGapFieldRejected(t *test
 	// stored-invalid audit trail. The nested unknown-field scan must catch it and
 	// report it as gaps.<col>.<key>.
 	content := json.RawMessage(`{"targetId":"aiTargetDispatch","lensRef":"someExistingLens","gaps":{"missing_x":{"action":"directOp","operation":"SendReminder","goal":[{"present":"row.done"}]}}}`)
-	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("weaverTarget", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -551,7 +552,7 @@ func TestValidateCapabilityArtifact_LoomPatternSmuggledStepFieldRejected(t *test
 	// stored-invalid audit trail — the same class as a smuggled gap field. The
 	// nested step scan must catch it and report it as steps[<i>].<key>.
 	content := json.RawMessage(`{"patternId":"aiPattern","subjectType":"vtx.thing","steps":[{"kind":"systemOp","operation":"DoThing","escalate":["x"]}]}`)
-	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -601,7 +602,7 @@ func TestValidateCapabilityArtifact_ValidLoomPattern(t *testing.T) {
 			Operation: "SendReminder",
 		}},
 	})
-	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -622,7 +623,7 @@ func TestValidateCapabilityArtifact_LoomPatternExternalTask_Valid(t *testing.T) 
 			Params:     map[string]any{"foo": "bar"},
 		}},
 	})
-	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -636,7 +637,7 @@ func TestValidateCapabilityArtifact_LoomPatternNoSteps_Rejected(t *testing.T) {
 		PatternID:   "aiPattern",
 		SubjectType: "capabilityproposal",
 	})
-	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -657,7 +658,7 @@ func TestValidateCapabilityArtifact_LoomPatternSystemOpForbidsAdapter_Rejected(t
 			Adapter:   "someAdapter",
 		}},
 	})
-	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -675,7 +676,7 @@ func TestValidateCapabilityArtifact_LoomPatternUnknownKind_Rejected(t *testing.T
 			Operation: "SendReminder",
 		}},
 	})
-	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -691,7 +692,7 @@ func TestValidateCapabilityArtifact_LoomPatternUnknownFieldRejected(t *testing.T
 	// though no LoomPatternSpec field is excluded today (future-proofing
 	// against schema drift, not a currently-live posture).
 	content := json.RawMessage(`{"patternId":"aiPattern","subjectType":"capabilityproposal","steps":[{"kind":"systemOp","operation":"SendReminder"}],"futureField":"sneaky"}`)
-	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -713,7 +714,7 @@ func TestValidateCapabilityArtifact_LoomPatternDeclarativeGuard_Valid(t *testing
 			Guard:     map[string]any{"present": "subject.someAspect.data.someField"},
 		}},
 	})
-	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -736,7 +737,7 @@ func TestValidateCapabilityArtifact_LoomPatternStarlarkGuardRejected(t *testing.
 			Guard:     map[string]any{"reads": []any{"subject"}, "starlark": "return True"},
 		}},
 	})
-	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -755,7 +756,7 @@ func TestValidateCapabilityArtifact_LoomPatternMalformedGuardRejected(t *testing
 			Guard:     map[string]any{"present": "subject.x", "absent": "subject.y"},
 		}},
 	})
-	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil)
+	report, err := ValidateCapabilityArtifact("loomPattern", content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -790,5 +791,513 @@ func TestDefinitionForCapabilityArtifact_LoomPattern(t *testing.T) {
 	}
 	if len(lp.Steps) != 1 || lp.Steps[0].Kind != "systemOp" || lp.Steps[0].Operation != "SendReminder" {
 		t.Fatalf("materialized LoomPattern.Steps = %+v, want one systemOp/SendReminder step", lp.Steps)
+	}
+}
+
+// ---- Fire 4: vertexTypeDDL + opMeta kinds ----
+
+func vertexTypeDDLContent(t *testing.T, vc VertexTypeDDLArtifactContent) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(vc)
+	if err != nil {
+		t.Fatalf("marshal vertexTypeDDL content: %v", err)
+	}
+	return b
+}
+
+func opMetaContent(t *testing.T, oc OpMetaArtifactContent) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(oc)
+	if err != nil {
+		t.Fatalf("marshal opMeta content: %v", err)
+	}
+	return b
+}
+
+// validDDLScript is a minimal well-formed vertexTypeDDL script: it compiles,
+// defines a 2-parameter execute(state, op), and references only names
+// ddlScriptSandboxGlobals predeclares. Validate never calls it, so the body
+// content itself is inert for this test file's purposes.
+const validDDLScript = "def execute(state, op):\n    return {\"mutations\": [], \"events\": []}\n"
+
+// fakeSensitiveResolver is a caller-supplied SensitiveAspectResolver test
+// double — the set of aspect local names it reports as sensitive.
+type fakeSensitiveResolver map[string]bool
+
+func (f fakeSensitiveResolver) IsSensitiveAspect(aspectLocalName string) bool {
+	return f[aspectLocalName]
+}
+
+func TestValidateCapabilityArtifact_ValidVertexTypeDDL(t *testing.T) {
+	content := vertexTypeDDLContent(t, VertexTypeDDLArtifactContent{
+		CanonicalName:     "aiWidget",
+		PermittedCommands: []string{"CreateWidget"},
+		Description:       "an AI-authored widget",
+		Script:            validDDLScript,
+	})
+	report, err := ValidateCapabilityArtifact("vertexTypeDDL", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("expected a valid report, got errors: %v", report.Errors)
+	}
+}
+
+func TestValidateCapabilityArtifact_VertexTypeDDLMissingCanonicalName_Rejected(t *testing.T) {
+	content := vertexTypeDDLContent(t, VertexTypeDDLArtifactContent{
+		PermittedCommands: []string{"CreateWidget"},
+		Script:            validDDLScript,
+	})
+	report, err := ValidateCapabilityArtifact("vertexTypeDDL", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a missing canonicalName")
+	}
+}
+
+func TestValidateCapabilityArtifact_VertexTypeDDLMissingScript_Rejected(t *testing.T) {
+	content := vertexTypeDDLContent(t, VertexTypeDDLArtifactContent{
+		CanonicalName:     "aiWidget",
+		PermittedCommands: []string{"CreateWidget"},
+	})
+	report, err := ValidateCapabilityArtifact("vertexTypeDDL", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a missing script")
+	}
+}
+
+func TestValidateCapabilityArtifact_VertexTypeDDLScriptSyntaxError_Rejected(t *testing.T) {
+	content := vertexTypeDDLContent(t, VertexTypeDDLArtifactContent{
+		CanonicalName:     "aiWidget",
+		PermittedCommands: []string{"CreateWidget"},
+		// Missing colon after the def header — a compile-time syntax error.
+		Script: "def execute(state, op)\n    return {}\n",
+	})
+	report, err := ValidateCapabilityArtifact("vertexTypeDDL", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a script with a syntax error")
+	}
+}
+
+func TestValidateCapabilityArtifact_VertexTypeDDLScriptUndefinedName_Rejected(t *testing.T) {
+	content := vertexTypeDDLContent(t, VertexTypeDDLArtifactContent{
+		CanonicalName:     "aiWidget",
+		PermittedCommands: []string{"CreateWidget"},
+		// "os" is not a predeclared name — the sandbox must reject this at
+		// resolve time exactly as starlarksandbox.Execute would at dispatch.
+		Script: "def execute(state, op):\n    return os.getenv(\"X\")\n",
+	})
+	report, err := ValidateCapabilityArtifact("vertexTypeDDL", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a script referencing an undeclared name")
+	}
+}
+
+func TestValidateCapabilityArtifact_VertexTypeDDLScriptWrongArity_Rejected(t *testing.T) {
+	content := vertexTypeDDLContent(t, VertexTypeDDLArtifactContent{
+		CanonicalName:     "aiWidget",
+		PermittedCommands: []string{"CreateWidget"},
+		// execute must take exactly 2 params (state, op) — this takes 1.
+		Script: "def execute(state):\n    return {}\n",
+	})
+	report, err := ValidateCapabilityArtifact("vertexTypeDDL", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a wrong-arity execute entrypoint")
+	}
+}
+
+func TestValidateCapabilityArtifact_VertexTypeDDLSmuggledClassFieldRejected(t *testing.T) {
+	// "class" is deliberately not exposed by VertexTypeDDLArtifactContent (Class
+	// is hardcoded meta.ddl.vertexType) — an artifact trying to smuggle
+	// "meta.ddl.aspectType" would otherwise be silently dropped by
+	// json.Unmarshal and materialize as a plain vertexType DDL, hiding the
+	// out-of-scope attempt.
+	content := json.RawMessage(`{"canonicalName":"aiWidget","permittedCommands":["CreateWidget"],"script":` +
+		`"def execute(state, op):\n    return {}\n","class":"meta.ddl.aspectType"}`)
+	report, err := ValidateCapabilityArtifact("vertexTypeDDL", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a smuggled 'class' field")
+	}
+}
+
+func TestValidateCapabilityArtifact_VertexTypeDDLSmuggledSensitiveFieldRejected(t *testing.T) {
+	content := json.RawMessage(`{"canonicalName":"aiWidget","permittedCommands":["CreateWidget"],"script":` +
+		`"def execute(state, op):\n    return {}\n","sensitive":true}`)
+	report, err := ValidateCapabilityArtifact("vertexTypeDDL", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a smuggled 'sensitive' field")
+	}
+}
+
+func TestValidateCapabilityArtifact_VertexTypeDDLSmuggledExampleFieldRejected(t *testing.T) {
+	// A field buried inside an examples[] entry — not at the top level — must
+	// be caught by the nested unknown-field scan (reported as examples[0].<key>),
+	// same discipline as weaverTarget's gaps.<col>.<key> scan.
+	content := json.RawMessage(`{"canonicalName":"aiWidget","permittedCommands":["CreateWidget"],"script":` +
+		`"def execute(state, op):\n    return {}\n","examples":[{"name":"ex1","expectedOutcome":"ok","secret":"leak"}]}`)
+	report, err := ValidateCapabilityArtifact("vertexTypeDDL", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a smuggled examples[0].secret field")
+	}
+}
+
+func TestValidateCapabilityArtifact_VertexTypeDDLSensitiveRefLiteralInScript_Rejected(t *testing.T) {
+	content := vertexTypeDDLContent(t, VertexTypeDDLArtifactContent{
+		CanonicalName:     "aiWidget",
+		PermittedCommands: []string{"CreateWidget"},
+		Script:            "def execute(state, op):\n    return {\"x\": \"$sensitiveRef\"}\n",
+	})
+	report, err := ValidateCapabilityArtifact("vertexTypeDDL", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a script literally spelling $sensitiveRef")
+	}
+}
+
+func TestDefinitionForCapabilityArtifact_VertexTypeDDL(t *testing.T) {
+	content := vertexTypeDDLContent(t, VertexTypeDDLArtifactContent{
+		CanonicalName:     "aiWidget",
+		PermittedCommands: []string{"CreateWidget"},
+		Description:       "an AI-authored widget",
+		Script:            validDDLScript,
+		Examples: []ExampleArtifact{
+			{Name: "ex1", Payload: map[string]any{"foo": "bar"}, ExpectedOutcome: "creates a widget"},
+		},
+	})
+	def, err := DefinitionForCapabilityArtifact("vertexTypeDDL", content, "ai-ddl-pkg", "1.0.0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(def.DDLs) != 1 {
+		t.Fatalf("expected exactly one DDL, got %d", len(def.DDLs))
+	}
+	d := def.DDLs[0]
+	if d.CanonicalName != "aiWidget" || d.Class != "meta.ddl.vertexType" {
+		t.Fatalf("materialized DDL = %+v, want canonicalName=aiWidget class=meta.ddl.vertexType", d)
+	}
+	if d.Sensitive {
+		t.Fatalf("materialized DDL.Sensitive = true, want false (never exposed by this kind)")
+	}
+	if len(d.Examples) != 1 || d.Examples[0].Name != "ex1" {
+		t.Fatalf("materialized DDL.Examples = %+v, want one ex1 example", d.Examples)
+	}
+}
+
+func TestValidateCapabilityArtifact_ValidOpMeta(t *testing.T) {
+	content := opMetaContent(t, OpMetaArtifactContent{
+		OperationType: "RequestWidget",
+		Presentation:  &OpPresentationArtifact{Title: "Request a widget", Tone: "primary"},
+	})
+	report, err := ValidateCapabilityArtifact("opMeta", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("expected a valid report, got errors: %v", report.Errors)
+	}
+}
+
+func TestValidateCapabilityArtifact_OpMetaMissingOperationType_Rejected(t *testing.T) {
+	content := opMetaContent(t, OpMetaArtifactContent{
+		Presentation: &OpPresentationArtifact{Title: "Request a widget"},
+	})
+	report, err := ValidateCapabilityArtifact("opMeta", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a missing operationType")
+	}
+}
+
+func TestValidateCapabilityArtifact_OpMetaSmuggledSensitiveFieldRejected(t *testing.T) {
+	content := json.RawMessage(`{"operationType":"RequestWidget","sensitive":true}`)
+	report, err := ValidateCapabilityArtifact("opMeta", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a smuggled top-level 'sensitive' field")
+	}
+}
+
+func TestValidateCapabilityArtifact_OpMetaSmuggledDispatchFieldRejected(t *testing.T) {
+	// A field buried inside dispatch — not at the top level — must be caught by
+	// the nested unknown-field scan (reported as dispatch.<key>).
+	content := json.RawMessage(`{"operationType":"RequestWidget","dispatch":{"class":"self","sensitive":true}}`)
+	report, err := ValidateCapabilityArtifact("opMeta", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a smuggled dispatch.sensitive field")
+	}
+}
+
+func TestValidateCapabilityArtifact_OpMetaReadsRootOnly_ValidEvenWithNilResolver(t *testing.T) {
+	// A bare placeholder read (no aspect segment) reads only the vertex root,
+	// which per D5 carries no sensitive data by construction — not flagged
+	// even with no resolver supplied.
+	content := opMetaContent(t, OpMetaArtifactContent{
+		OperationType: "RequestWidget",
+		Dispatch:      &OpDispatchArtifact{Class: "self", AuthContext: "self", Reads: []string{"{actor}"}},
+	})
+	report, err := ValidateCapabilityArtifact("opMeta", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("expected a valid report, got errors: %v", report.Errors)
+	}
+}
+
+func TestValidateCapabilityArtifact_OpMetaReadsNilResolver_RejectedClosed(t *testing.T) {
+	content := opMetaContent(t, OpMetaArtifactContent{
+		OperationType: "RequestWidget",
+		Dispatch:      &OpDispatchArtifact{Class: "self", AuthContext: "self", Reads: []string{"{actor}.ssn"}},
+	})
+	report, err := ValidateCapabilityArtifact("opMeta", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report: an aspect-naming read with no resolver supplied must fail closed")
+	}
+}
+
+func TestValidateCapabilityArtifact_OpMetaReadsSensitiveAspect_Rejected(t *testing.T) {
+	content := opMetaContent(t, OpMetaArtifactContent{
+		OperationType: "RequestWidget",
+		Dispatch:      &OpDispatchArtifact{Class: "self", AuthContext: "self", Reads: []string{"{actor}.ssn"}},
+	})
+	resolver := fakeSensitiveResolver{"ssn": true}
+	report, err := ValidateCapabilityArtifact("opMeta", content, fullCypherParser{}, nil, resolver)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a declared read naming a sensitive-classed aspect")
+	}
+}
+
+func TestValidateCapabilityArtifact_OpMetaReadsNonSensitiveAspect_Valid(t *testing.T) {
+	content := opMetaContent(t, OpMetaArtifactContent{
+		OperationType: "RequestWidget",
+		Dispatch:      &OpDispatchArtifact{Class: "self", AuthContext: "self", Reads: []string{"{actor}.displayName"}},
+	})
+	resolver := fakeSensitiveResolver{"ssn": true}
+	report, err := ValidateCapabilityArtifact("opMeta", content, fullCypherParser{}, nil, resolver)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("expected a valid report for a read naming a non-sensitive aspect, got errors: %v", report.Errors)
+	}
+}
+
+func TestValidateCapabilityArtifact_OpMetaReadsPayloadTemplateSensitiveAspect_Rejected(t *testing.T) {
+	// {payload.<field>} is itself a bracketed placeholder containing a dot
+	// (definition.go's documented vocabulary) — naively splitting on "."
+	// would misparse this and let a sensitive-aspect read on ANOTHER vertex
+	// (named by a payload field, not just the caller's own {actor}) slip
+	// through unchecked.
+	content := opMetaContent(t, OpMetaArtifactContent{
+		OperationType: "RequestWidget",
+		Dispatch:      &OpDispatchArtifact{Class: "self", AuthContext: "self", Reads: []string{"{payload.targetActor}.ssn"}},
+	})
+	resolver := fakeSensitiveResolver{"ssn": true}
+	report, err := ValidateCapabilityArtifact("opMeta", content, fullCypherParser{}, nil, resolver)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a {payload.<field>}-templated read naming a sensitive-classed aspect")
+	}
+}
+
+func TestValidateCapabilityArtifact_OpMetaReadsPayloadTemplateBare_Valid(t *testing.T) {
+	// A bare {payload.<field>} reference (no further aspect suffix) reads
+	// only the AI's own proposed payload field, not Vault-classified aspect
+	// data — never flagged, even with no resolver.
+	content := opMetaContent(t, OpMetaArtifactContent{
+		OperationType: "RequestWidget",
+		Dispatch:      &OpDispatchArtifact{Class: "self", AuthContext: "self", Reads: []string{"{payload.targetActor}"}},
+	})
+	report, err := ValidateCapabilityArtifact("opMeta", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("expected a valid report, got errors: %v", report.Errors)
+	}
+}
+
+func TestValidateCapabilityArtifact_OpMetaReadsBareAspectNoPlaceholder_RejectedClosed(t *testing.T) {
+	// A bare aspect name with no {actor}/{scopedTo}/{service}/{payload.*}
+	// placeholder prefix at all does not match OpDispatchSpec's documented
+	// read-template vocabulary — must fail closed as unrecognized, not be
+	// silently treated as a safe "root-only" read.
+	content := opMetaContent(t, OpMetaArtifactContent{
+		OperationType: "RequestWidget",
+		Dispatch:      &OpDispatchArtifact{Class: "self", AuthContext: "self", Reads: []string{"ssn"}},
+	})
+	report, err := ValidateCapabilityArtifact("opMeta", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a bare aspect name with no recognized placeholder prefix")
+	}
+}
+
+func TestValidateCapabilityArtifact_OpMetaReadsFullyQualifiedKey_RejectedClosed(t *testing.T) {
+	// A fully-qualified vtx.* key is the DIFFERENT ContextHint.Reads wire
+	// format, not OpDispatchSpec.Reads' documented template shape — must
+	// fail closed as unrecognized rather than misparse a path segment as the
+	// aspect.
+	content := opMetaContent(t, OpMetaArtifactContent{
+		OperationType: "RequestWidget",
+		Dispatch:      &OpDispatchArtifact{Class: "self", AuthContext: "self", Reads: []string{"vtx.identity.abc123.ssn"}},
+	})
+	report, err := ValidateCapabilityArtifact("opMeta", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a fully-qualified vtx.* key read entry")
+	}
+}
+
+func TestValidateCapabilityArtifact_OpMetaReadsDoubledSeparator_RejectedClosed(t *testing.T) {
+	content := opMetaContent(t, OpMetaArtifactContent{
+		OperationType: "RequestWidget",
+		Dispatch:      &OpDispatchArtifact{Class: "self", AuthContext: "self", Reads: []string{"{actor}..ssn"}},
+	})
+	report, err := ValidateCapabilityArtifact("opMeta", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a doubled-separator read entry")
+	}
+}
+
+func TestValidateCapabilityArtifact_VertexTypeDDLDuplicatePermittedCommand_Rejected(t *testing.T) {
+	content := vertexTypeDDLContent(t, VertexTypeDDLArtifactContent{
+		CanonicalName:     "aiWidget",
+		PermittedCommands: []string{"CreateWidget", "CreateWidget"},
+		Script:            validDDLScript,
+	})
+	report, err := ValidateCapabilityArtifact("vertexTypeDDL", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a duplicate permittedCommands entry")
+	}
+}
+
+func TestValidateCapabilityArtifact_VertexTypeDDLEmptyPermittedCommand_Rejected(t *testing.T) {
+	content := vertexTypeDDLContent(t, VertexTypeDDLArtifactContent{
+		CanonicalName:     "aiWidget",
+		PermittedCommands: []string{"", "  "},
+		Script:            validDDLScript,
+	})
+	report, err := ValidateCapabilityArtifact("vertexTypeDDL", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for an empty/whitespace-only permittedCommands entry")
+	}
+}
+
+func TestValidateCapabilityArtifact_VertexTypeDDLWhitespaceCanonicalName_Rejected(t *testing.T) {
+	content := vertexTypeDDLContent(t, VertexTypeDDLArtifactContent{
+		CanonicalName:     "   ",
+		PermittedCommands: []string{"CreateWidget"},
+		Script:            validDDLScript,
+	})
+	report, err := ValidateCapabilityArtifact("vertexTypeDDL", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for a whitespace-only canonicalName")
+	}
+}
+
+func TestDefinitionForCapabilityArtifact_OpMeta(t *testing.T) {
+	content := opMetaContent(t, OpMetaArtifactContent{
+		OperationType: "RequestWidget",
+		Presentation:  &OpPresentationArtifact{Title: "Request a widget", Tone: "primary"},
+		InputSchema:   `{"type":"object"}`,
+		Dispatch:      &OpDispatchArtifact{Class: "self", AuthContext: "self", TargetField: "widget"},
+	})
+	def, err := DefinitionForCapabilityArtifact("opMeta", content, "ai-opmeta-pkg", "1.0.0")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(def.OpMetas) != 1 {
+		t.Fatalf("expected exactly one OpMeta, got %d", len(def.OpMetas))
+	}
+	om := def.OpMetas[0]
+	if om.OperationType != "RequestWidget" {
+		t.Fatalf("materialized OpMeta.OperationType = %q, want RequestWidget", om.OperationType)
+	}
+	if om.Sensitive {
+		t.Fatalf("materialized OpMeta.Sensitive = true, want false (never exposed by this kind)")
+	}
+	if om.Presentation == nil || om.Presentation.Title != "Request a widget" {
+		t.Fatalf("materialized OpMeta.Presentation = %+v, want Title=Request a widget", om.Presentation)
+	}
+	if om.Dispatch == nil || om.Dispatch.Class != "self" || om.Dispatch.TargetField != "widget" {
+		t.Fatalf("materialized OpMeta.Dispatch = %+v, want class=self targetField=widget", om.Dispatch)
+	}
+}
+
+func TestValidateCapabilityArtifact_SensitiveRefLiteralRejected_AnyKind(t *testing.T) {
+	// Condition-2 rule 1 (sensitive-ref-mac-provenance-design.md §7) applies to
+	// EVERY kind, not just the two Fire 4 kinds — proven here against an
+	// otherwise-valid "grant" artifact with the literal smuggled into `note`.
+	content := grantContent(t, GrantArtifactContent{
+		OperationType: "RescheduleAppointment",
+		Scope:         "self",
+		GrantsTo:      []string{"front-desk"},
+		Note:          "copy of $sensitiveRef",
+	})
+	held := []HeldPermission{{OperationType: "RescheduleAppointment", Scope: "any"}}
+	report, err := ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report for content spelling the $sensitiveRef literal")
 	}
 }

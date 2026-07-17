@@ -248,7 +248,15 @@ func freshApprovalVerdict(ctx context.Context, conn *substrate.Conn, proposalID 
 		}
 	}
 
-	report, err := pkgmgr.ValidateCapabilityArtifact(row.Kind, json.RawMessage(row.Content), fullCypherParser{}, held)
+	var sensitiveAspects pkgmgr.SensitiveAspectResolver
+	if row.Kind == "opMeta" {
+		sensitiveAspects, err = newLiveSensitiveAspectResolver(ctx, conn)
+		if err != nil {
+			return nil, fmt.Errorf("load live DDL catalog for sensitive-aspect check: %w", err)
+		}
+	}
+
+	report, err := pkgmgr.ValidateCapabilityArtifact(row.Kind, json.RawMessage(row.Content), fullCypherParser{}, held, sensitiveAspects)
 	if err != nil {
 		return nil, fmt.Errorf("validate artifact: %w", err)
 	}
@@ -296,6 +304,34 @@ func heldPermissionsForActor(ctx context.Context, conn *substrate.Conn, actor st
 		}
 	}
 	return held, nil
+}
+
+// ddlCacheSensitiveResolver adapts internal/processor.DDLCache to
+// pkgmgr.SensitiveAspectResolver: an aspectType DDL's CanonicalName IS the
+// bare aspect local name (e.g. "ssn"/"dob" — packages/identity-domain/ddls.go),
+// so Lookup(aspectLocalName).Sensitive is exactly the live authority the §5
+// condition-2 rule-2 check (sensitive-ref-mac-provenance-design.md §7) needs.
+type ddlCacheSensitiveResolver struct {
+	cache *processor.DDLCache
+}
+
+func (r ddlCacheSensitiveResolver) IsSensitiveAspect(aspectLocalName string) bool {
+	ref, ok := r.cache.Lookup(aspectLocalName)
+	return ok && ref.Sensitive
+}
+
+// newLiveSensitiveAspectResolver builds a pkgmgr.SensitiveAspectResolver
+// backed by a one-shot DDLCache scan of the live catalog — the approve-time
+// freshness re-check §5 requires (the record-time verdict may be stale by
+// the time an operator approves; this CLI always re-validates against what's
+// actually installed NOW, same posture as heldPermissionsForActor's live
+// read for the grant kind).
+func newLiveSensitiveAspectResolver(ctx context.Context, conn *substrate.Conn) (pkgmgr.SensitiveAspectResolver, error) {
+	cache := processor.NewDDLCache(conn, bootstrap.CoreKVBucket, nil)
+	if err := cache.Refresh(ctx); err != nil {
+		return nil, fmt.Errorf("refresh DDL cache: %w", err)
+	}
+	return ddlCacheSensitiveResolver{cache: cache}, nil
 }
 
 // validateBareID rejects a proposal id carrying key-shape metacharacters —

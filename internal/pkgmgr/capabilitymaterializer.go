@@ -12,15 +12,18 @@ import (
 // EnabledArtifactKinds is the artifact-kind allow-list for the capability-author
 // package (ai-authored-capabilities-design.md §3.2). The kinds are ordered by the
 // deterministic-validatability spine: "lens" (Fire 1), "grant" (Fire 2 fast-
-// follow), and "weaverTarget"/"loomPattern" (Fire 3) are enabled here —
-// vertexTypeDDL/opMeta (Starlark-bearing) are gated behind the separate verified-
-// pure Starlark sandbox + ratification (§3.2 Fire 4). A kind outside this set is
-// never valid, regardless of content.
+// follow), "weaverTarget"/"loomPattern" (Fire 3), and "vertexTypeDDL"/"opMeta"
+// (Fire 4, Starlark-bearing — gated on the verified-pure Starlark sandbox dry-run,
+// internal/starlarksandbox, plus the sensitive-ref-mac-provenance-design.md §7
+// condition-2 lint) are all enabled here. A kind outside this set is never valid,
+// regardless of content.
 var EnabledArtifactKinds = map[string]bool{
-	"lens":         true,
-	"grant":        true,
-	"weaverTarget": true,
-	"loomPattern":  true,
+	"lens":          true,
+	"grant":         true,
+	"weaverTarget":  true,
+	"loomPattern":   true,
+	"vertexTypeDDL": true,
+	"opMeta":        true,
 }
 
 // enabledArtifactKindsList returns EnabledArtifactKinds' keys sorted, for a
@@ -216,11 +219,30 @@ func requesterHolds(held []HeldPermission, operationType, requestedScope string)
 // basis for the "grant" kind's scope check (a grant may never exceed what the
 // requester themselves holds). Ignored by every other kind; a caller validating
 // a non-grant artifact may pass nil.
-func ValidateCapabilityArtifact(kind string, content json.RawMessage, parser CypherParser, requesterHeld []HeldPermission) (ArtifactValidationReport, error) {
+//
+// sensitiveAspects is the condition-2 rule-2 basis (sensitive-ref-mac-
+// provenance-design.md §7) for the "opMeta" kind's declared-read check —
+// ignored by every other kind; a caller validating a non-opMeta artifact (or
+// one with no live catalog to verify against) may pass nil, though passing
+// nil for an opMeta artifact that declares any aspect-naming read fails that
+// artifact closed (see validateOpMetaArtifact).
+func ValidateCapabilityArtifact(kind string, content json.RawMessage, parser CypherParser, requesterHeld []HeldPermission, sensitiveAspects SensitiveAspectResolver) (ArtifactValidationReport, error) {
 	if !EnabledArtifactKinds[kind] {
 		return ArtifactValidationReport{
 			Valid:  false,
 			Errors: []string{fmt.Sprintf("artifact kind %q is not enabled (enabled: %v)", kind, enabledArtifactKindsList())},
+		}, nil
+	}
+
+	// Condition-2 rule 1 (sensitive-ref-mac-provenance-design.md §7): the
+	// literal "$sensitiveRef" marker is Processor-authored — no legitimate
+	// artifact of ANY kind ever spells it. Checked once, ahead of the
+	// per-kind switch, so it can never be missed by a future kind that
+	// forgets to call it.
+	if containsSensitiveRefLiteral(content) {
+		return ArtifactValidationReport{
+			Valid:  false,
+			Errors: []string{fmt.Sprintf("artifact content declares the literal %q — sensitive refs are Processor-minted, never AI-authored", sensitiveRefLiteral)},
 		}, nil
 	}
 
@@ -304,6 +326,42 @@ func ValidateCapabilityArtifact(kind string, content json.RawMessage, parser Cyp
 			}, nil
 		}
 		return validateLoomPatternArtifact(lp), nil
+	case "vertexTypeDDL":
+		var vc VertexTypeDDLArtifactContent
+		if err := json.Unmarshal(content, &vc); err != nil {
+			return ArtifactValidationReport{}, fmt.Errorf("pkgmgr: capability materializer: malformed vertexTypeDDL artifact content: %w", err)
+		}
+		// Same scope-widening defense as the other kinds: a field this
+		// increment's VertexTypeDDLArtifactContent doesn't expose (namely
+		// "class"/"sensitive"/"effects") would otherwise be silently dropped
+		// by json.Unmarshal rather than rejected.
+		if extra := unknownVertexTypeDDLFields(content); len(extra) > 0 {
+			return ArtifactValidationReport{
+				Valid: false,
+				Errors: []string{fmt.Sprintf(
+					"vertexTypeDDL artifact content declares out-of-scope field(s) %v — this increment enables only canonicalName/permittedCommands/description/script/inputSchema/outputSchema/fieldDescription/examples (Class is fixed meta.ddl.vertexType; no aspectType/sensitive/effects postures)",
+					extra)},
+			}, nil
+		}
+		return validateVertexTypeDDLArtifact(vc), nil
+	case "opMeta":
+		var oc OpMetaArtifactContent
+		if err := json.Unmarshal(content, &oc); err != nil {
+			return ArtifactValidationReport{}, fmt.Errorf("pkgmgr: capability materializer: malformed opMeta artifact content: %w", err)
+		}
+		// Same scope-widening defense as the other kinds: a field this
+		// increment's OpMetaArtifactContent doesn't expose (namely
+		// "sensitive") would otherwise be silently dropped by json.Unmarshal
+		// rather than rejected.
+		if extra := unknownOpMetaFields(content); len(extra) > 0 {
+			return ArtifactValidationReport{
+				Valid: false,
+				Errors: []string{fmt.Sprintf(
+					"opMeta artifact content declares out-of-scope field(s) %v — this increment enables only operationType/presentation/inputSchema/fieldDescriptions/dispatch (no sensitive posture)",
+					extra)},
+			}, nil
+		}
+		return validateOpMetaArtifact(oc, sensitiveAspects), nil
 	default:
 		// Unreachable: EnabledArtifactKinds gates every case above.
 		return ArtifactValidationReport{Valid: false, Errors: []string{"unhandled enabled kind " + kind}}, nil
@@ -807,6 +865,18 @@ func DefinitionForCapabilityArtifact(kind string, content json.RawMessage, name,
 			return Definition{}, fmt.Errorf("pkgmgr: capability apply: malformed loomPattern artifact content: %w", err)
 		}
 		return loomPatternArtifactDefinition(lp, name, version), nil
+	case "vertexTypeDDL":
+		var vc VertexTypeDDLArtifactContent
+		if err := json.Unmarshal(content, &vc); err != nil {
+			return Definition{}, fmt.Errorf("pkgmgr: capability apply: malformed vertexTypeDDL artifact content: %w", err)
+		}
+		return vertexTypeDDLArtifactDefinition(vc, name, version), nil
+	case "opMeta":
+		var oc OpMetaArtifactContent
+		if err := json.Unmarshal(content, &oc); err != nil {
+			return Definition{}, fmt.Errorf("pkgmgr: capability apply: malformed opMeta artifact content: %w", err)
+		}
+		return opMetaArtifactDefinition(oc, name, version), nil
 	default:
 		// Unreachable: EnabledArtifactKinds gates every case above.
 		return Definition{}, fmt.Errorf("pkgmgr: capability apply: unhandled enabled kind %q", kind)

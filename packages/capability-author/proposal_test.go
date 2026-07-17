@@ -176,7 +176,7 @@ func claimEnv(reqID, handle, proposalKey string) *processor.OperationEnvelope {
 // exactly as a real completed adapter reply would.
 func recordEnv(t *testing.T, reqID, handle, kind string, content json.RawMessage, confidence float64) *processor.OperationEnvelope {
 	t.Helper()
-	report, err := pkgmgr.ValidateCapabilityArtifact(kind, content, fullCypherParser{}, nil)
+	report, err := pkgmgr.ValidateCapabilityArtifact(kind, content, fullCypherParser{}, nil, nil)
 	if err != nil {
 		t.Fatalf("materializer error: %v", err)
 	}
@@ -229,6 +229,39 @@ func validLensContent(t *testing.T, name string) json.RawMessage {
 	return b
 }
 
+// validVertexTypeDDLScript is the minimal well-formed Starlark script a
+// vertexTypeDDL artifact's record-time sandbox dry-run (starlarksandbox.
+// Validate — internal/pkgmgr's first caller at package-install/record time,
+// ai-authored-capabilities-design.md §8 Fire 4) accepts: it compiles and
+// defines a 2-parameter execute(state, op) entrypoint.
+const validVertexTypeDDLScript = "def execute(state, op):\n    return {\"mutations\": [], \"events\": []}\n"
+
+func validVertexTypeDDLContent(t *testing.T, canonicalName string) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(pkgmgr.VertexTypeDDLArtifactContent{
+		CanonicalName:     canonicalName,
+		PermittedCommands: []string{"CreateWidget"},
+		Description:       "an AI-authored widget",
+		Script:            validVertexTypeDDLScript,
+	})
+	if err != nil {
+		t.Fatalf("marshal vertexTypeDDL content: %v", err)
+	}
+	return b
+}
+
+func validOpMetaContent(t *testing.T, operationType string) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(pkgmgr.OpMetaArtifactContent{
+		OperationType: operationType,
+		Presentation:  &pkgmgr.OpPresentationArtifact{Title: "Request a widget", Tone: "primary"},
+	})
+	if err != nil {
+		t.Fatalf("marshal opMeta content: %v", err)
+	}
+	return b
+}
+
 func reviewState(t *testing.T, ctx context.Context, conn *substrate.Conn, proposalKey string) string {
 	t.Helper()
 	doc := readDoc(t, ctx, conn, proposalKey+".review")
@@ -249,6 +282,8 @@ const (
 	capIDNoClaim        = "CAcapNoreqHJKMNPQRST"
 	capIDReplay         = "CAcapRedoHJKMNPQRSTU"
 	capIDGrantOverscope = "CAcapExceedHJKMNPQRS"
+	capIDVertexTypeDDL  = "CAcapVertexDHJKMNPQR"
+	capIDOpMeta         = "CAcapMetaXHJKMNPQRST"
 
 	capHandlePending        = "CAHNDPendingHJKMNPQR"
 	capHandleBadKind        = "CAHNDBadKindHJKMNPQR"
@@ -256,6 +291,8 @@ const (
 	capHandleBadSpec        = "CAHNDBadSpecHJKMNPQR"
 	capHandleReplay         = "CAHNDRedoHJKMNPQRSTU"
 	capHandleGrantOverscope = "CAHNDExceedHJKMNPQRS"
+	capHandleVertexTypeDDL  = "CAHNDVertexDHJKMNPQR"
+	capHandleOpMeta         = "CAHNDMetaXHJKMNPQRST"
 )
 
 // TestCapAuthor_ValidLens_Pending: a well-formed, deterministically-validated
@@ -315,6 +352,68 @@ func TestCapAuthor_ValidLens_Pending(t *testing.T) {
 	td, _ := targetDoc["data"].(map[string]any)
 	if got, _ := td["proposalKey"].(string); got != proposalKey {
 		t.Fatalf("claim .target.proposalKey = %q, want %q", got, proposalKey)
+	}
+}
+
+// TestCapAuthor_ValidVertexTypeDDL_Pending proves the Fire 4 "vertexTypeDDL"
+// kind is actually enabled on the LIVE RecordCapabilityProposal Starlark op
+// (packages/capability-author/ddls.go's ENABLED_KINDS), not just the Go-side
+// pkgmgr.EnabledArtifactKinds map — the two allow-lists could otherwise drift
+// silently (Go accepts a kind the Starlark op still rejects as "not enabled
+// in this increment").
+func TestCapAuthor_ValidVertexTypeDDL_Pending(t *testing.T) {
+	ctx, conn := setupCapAuthorEnv(t)
+	cp, cons := newCapAuthorPipeline(t, ctx, conn, "ca-vertextypeddl")
+
+	proposalKey := "vtx.capabilityproposal." + capIDVertexTypeDDL
+	req := requestEnv(testutil.GenReqID("CARequest"), capIDVertexTypeDDL, "a widget vertex type")
+	testutil.PublishOp(t, conn, req)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	claim := claimEnv(testutil.GenReqID("CAClaim"), capHandleVertexTypeDDL, proposalKey)
+	testutil.PublishOp(t, conn, claim)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	rec := recordEnv(t, testutil.GenReqID("CARecord"), capHandleVertexTypeDDL, "vertexTypeDDL", validVertexTypeDDLContent(t, "aiWidget"), 0.9)
+	testutil.PublishOp(t, conn, rec)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	if got := reviewState(t, ctx, conn, proposalKey); got != "pending" {
+		t.Fatalf("review.state = %q, want pending", got)
+	}
+	artDoc := readDoc(t, ctx, conn, proposalKey+".artifact")
+	ad, _ := artDoc["data"].(map[string]any)
+	if got, _ := ad["kind"].(string); got != "vertexTypeDDL" {
+		t.Fatalf(".artifact.kind = %q, want vertexTypeDDL", got)
+	}
+}
+
+// TestCapAuthor_ValidOpMeta_Pending is TestCapAuthor_ValidVertexTypeDDL_Pending's
+// sibling proof for the Fire 4 "opMeta" kind.
+func TestCapAuthor_ValidOpMeta_Pending(t *testing.T) {
+	ctx, conn := setupCapAuthorEnv(t)
+	cp, cons := newCapAuthorPipeline(t, ctx, conn, "ca-opmeta")
+
+	proposalKey := "vtx.capabilityproposal." + capIDOpMeta
+	req := requestEnv(testutil.GenReqID("CARequest"), capIDOpMeta, "an op-meta for requesting a widget")
+	testutil.PublishOp(t, conn, req)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	claim := claimEnv(testutil.GenReqID("CAClaim"), capHandleOpMeta, proposalKey)
+	testutil.PublishOp(t, conn, claim)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	rec := recordEnv(t, testutil.GenReqID("CARecord"), capHandleOpMeta, "opMeta", validOpMetaContent(t, "RequestWidget"), 0.9)
+	testutil.PublishOp(t, conn, rec)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	if got := reviewState(t, ctx, conn, proposalKey); got != "pending" {
+		t.Fatalf("review.state = %q, want pending", got)
+	}
+	artDoc := readDoc(t, ctx, conn, proposalKey+".artifact")
+	ad, _ := artDoc["data"].(map[string]any)
+	if got, _ := ad["kind"].(string); got != "opMeta" {
+		t.Fatalf(".artifact.kind = %q, want opMeta", got)
 	}
 }
 
@@ -434,7 +533,7 @@ func TestCapAuthor_GrantExceedsRequesterScope_Invalid(t *testing.T) {
 	// requests — exactly as pkgmgr.ValidateCapabilityArtifact's caller (the
 	// bridge in the full design) would compute from a fresh Contract #6 read.
 	held := []pkgmgr.HeldPermission{{OperationType: "DeleteEverything", Scope: "self"}}
-	report, err := pkgmgr.ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held)
+	report, err := pkgmgr.ValidateCapabilityArtifact("grant", content, fullCypherParser{}, held, nil)
 	if err != nil {
 		t.Fatalf("materializer error: %v", err)
 	}

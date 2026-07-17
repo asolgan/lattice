@@ -1,7 +1,8 @@
 // Package capabilityauthor is the AI-authored-capabilities data + safety
 // foundation (ai-authored-capabilities-design.md) — capture + escalation
-// dispatch (Fire 1), review + apply (Fire 2), and the weaverTarget/loomPattern
-// artifact kinds (Fire 3).
+// dispatch (Fire 1), review + apply (Fire 2), the weaverTarget/loomPattern
+// artifact kinds (Fire 3), and the Starlark-bearing vertexTypeDDL/opMeta
+// artifact kinds (Fire 4).
 //
 // A Lattice-aware agent turns a capability REQUEST ("a lens listing active
 // providers by specialty") into a proposed package artifact, deterministically
@@ -52,12 +53,18 @@
 //     (full Contract #6 permission-identity validation plus the scope check:
 //     the artifact's operationType+scope must be a subset of what the
 //     requesting operator already holds — the property that makes it safe to
-//     let an AI author authority-widening artifacts at all), and the
+//     let an AI author authority-widening artifacts at all), the
 //     "weaverTarget"/"loomPattern" kinds (the same validateWeaverTargets/
 //     validateLoomPatterns a hand-authored package's §10.8/§10.5 declarations
 //     run through; a weaverTarget artifact may not carry an `augur` escalation
 //     block — out of scope for an AI to configure its own reasoning-escalation
-//     policy in this increment).
+//     policy in this increment), and the "vertexTypeDDL"/"opMeta" kinds (Fire
+//     4 — a verified-pure internal/starlarksandbox.Validate dry-run of a
+//     vertexTypeDDL's Script, plus the sensitive-ref-mac-provenance-design.md
+//     §7 condition-2 lint: no artifact of any kind may spell the literal
+//     "$sensitiveRef", and an opMeta's declared Dispatch.Reads may never name
+//     a sensitive-classed aspect — an AI-authored capability that needs PII
+//     egress routes to human authoring instead).
 //
 //   - A `lattice capability list`/`review` CLI review-and-apply affordance
 //     (cmd/lattice/capability): lists proposals from the capabilityProposals
@@ -100,9 +107,7 @@
 // Deliberately NOT yet built (the fire's remaining checkpoints, see the design
 // doc): the real claude-opus-4-8-backed `capabilityAuthor` bridge adapter (only
 // the deterministic `FakeCapabilityAuthor` ships — the same posture Augur's own
-// adapter is still in); a Loupe UI affordance (the CLI one has shipped); the
-// Starlark-bearing `vertexTypeDDL`/`opMeta` kinds (gated behind the verified-pure
-// sandbox + a separate ratification).
+// adapter is still in); a Loupe UI affordance (the CLI one has shipped).
 //
 // Install via the InstallPackage kernel op. See docs/components/_packages.md
 // and _bmad-output/implementation-artifacts/ai-authored-capabilities-design.md.
@@ -113,8 +118,8 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
 	Name:          "capability-author",
-	Version:       "0.6.0",
-	Description:   "AI-authored capabilities — Fire 1 capture + escalation dispatch + P5 read models, Fire 2 review + apply + a CLI review-and-apply affordance, and Fire 3 weaverTarget/loomPattern artifact kinds: the capabilityproposal + capabilityauthorclaim vertex types, the RequestCapabilityAuthoring/CreateAuthoringClaim/RecordCapabilityProposal/ReviewCapabilityProposal/MarkCapabilityProposalApplied ops (§5 record-time + approve-time deterministic-validation boundary for the lens/grant/weaverTarget/loomPattern kinds, plus the F-004-apply-then-mark-applied loop closer), the capabilityAuthorPending weaver-target lens, the capabilityAuthor Loom pattern, and the capabilityProposals/capabilityAuthorContext review + catalog lenses. The Starlark-bearing kinds and a Loupe UI affordance land in later increments.",
+	Version:       "0.7.0",
+	Description:   "AI-authored capabilities — Fire 1 capture + escalation dispatch + P5 read models, Fire 2 review + apply + a CLI review-and-apply affordance, Fire 3 weaverTarget/loomPattern artifact kinds, and Fire 4 Starlark-bearing vertexTypeDDL/opMeta artifact kinds: the capabilityproposal + capabilityauthorclaim vertex types, the RequestCapabilityAuthoring/CreateAuthoringClaim/RecordCapabilityProposal/ReviewCapabilityProposal/MarkCapabilityProposalApplied ops (§5 record-time + approve-time deterministic-validation boundary for the lens/grant/weaverTarget/loomPattern/vertexTypeDDL/opMeta kinds, plus the F-004-apply-then-mark-applied loop closer), the capabilityAuthorPending weaver-target lens, the capabilityAuthor Loom pattern, and the capabilityProposals/capabilityAuthorContext review + catalog lenses. A Loupe UI affordance lands in a later increment.",
 	Depends:       []string{"orchestration-base"},
 	DDLs:          DDLs(),
 	Permissions:   Permissions(),

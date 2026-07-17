@@ -1,14 +1,16 @@
 name: capability-author
-version: 0.6.0
+version: 0.7.0
 description: |
   AI-authored capabilities — Fire 1 capture + escalation dispatch + review lenses, Fire 2
-  review + apply + a CLI review-and-apply affordance, and Fire 3 weaverTarget/loomPattern
-  artifact kinds (ai-authored-capabilities-design.md). The capabilityproposal +
+  review + apply + a CLI review-and-apply affordance, Fire 3 weaverTarget/loomPattern
+  artifact kinds, and Fire 4 Starlark-bearing vertexTypeDDL/opMeta artifact kinds
+  (ai-authored-capabilities-design.md). The capabilityproposal +
   capabilityauthorclaim vertex types; the RequestCapabilityAuthoring/CreateAuthoringClaim/
   RecordCapabilityProposal capture pair (a request mints the proposal vertex write-ahead;
   the escalation dispatch triggers the reasoning call; a record carries a proposed artifact
   + its already-computed §5 deterministic-validation verdict and stores review.state =
-  pending | invalid — kind ∈ {lens, grant, weaverTarget, loomPattern}); ReviewCapabilityProposal
+  pending | invalid — kind ∈ {lens, grant, weaverTarget, loomPattern, vertexTypeDDL, opMeta});
+  ReviewCapabilityProposal
   (a human operator flips a pending proposal to approved | rejected, re-running the §5
   boundary against the live catalog on approve); MarkCapabilityProposalApplied (the operator
   records the applied-flip after separately applying an approved proposal through the

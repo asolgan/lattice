@@ -13,9 +13,10 @@ import (
 // `capabilityauthorclaim` vertex-type DDL owns the escalation-dispatch
 // instanceOp (§3.4). Together they carry Fire 1 (capture + dispatch), Fire 2
 // (review + apply + a CLI review-and-apply affordance, lens + grant kinds),
-// and Fire 3 (weaverTarget + loomPattern kinds in the materializer); the
-// Starlark-bearing vertexTypeDDL/opMeta kinds remain gated behind the
-// verified-pure sandbox (see the design doc's §3.2/§8 checkpoint).
+// Fire 3 (weaverTarget + loomPattern kinds in the materializer), and Fire 4
+// (the Starlark-bearing vertexTypeDDL/opMeta kinds, gated on the
+// verified-pure Starlark sandbox dry-run + the sensitive-ref-mac-provenance
+// §7 condition-2 lint — see the design doc's §3.2/§8 checkpoint).
 //
 //   - RequestCapabilityAuthoring mints the proposal vertex write-ahead of the
 //     reasoning call (mirrors augur's CreateAugurReasoningClaim), recording the
@@ -177,7 +178,7 @@ func capabilityProposalDDL() pkgmgr.DDLSpec {
 			`"contextRef":{"type":"string","description":"RequestCapabilityAuthoring only — an optional pointer to bounded context the reasoning call hydrates (opaque to this DDL)."},` +
 			`"externalRef":{"type":"string","description":"RecordCapabilityProposal only — the bare Loom instanceKey handle CreateAuthoringClaim minted; the op resolves the real proposal vertex via vtx.capabilityauthorclaim.<externalRef>.target (never treated as the proposal's own id)."},` +
 			`"status":{"type":"string","description":"RecordCapabilityProposal only — the adapter's terminal outcome: completed (the model proposed an artifact) or failed (a modeled refusal — stored invalid, never dispatchable)."},` +
-			`"result":{"type":"string","description":"RecordCapabilityProposal only — the model's structured-output proposal as a JSON string {kind, content, target:{mode,packageName,baseVersion?,newVersion?}, rationale, confidence, validation:{state,report?,deltaPreview?}, provenance:{model?,promptHash?,catalogHash?,reasonedAt?}} — the opaque adapter Detail. Required when status=completed; carried verbatim as the rationale on a refusal. validation.state is the ALREADY-COMPUTED §5 verdict (pkgmgr.ValidateCapabilityArtifact, run by the trusted caller before submission — the script does not itself re-run the parser/validateAll). kind enables 'lens', 'grant', 'weaverTarget', or 'loomPattern' in this increment; any other value, or a validation.state other than 'valid', or an out-of-range confidence, or an undecodable result stores the proposal review.state=invalid (auditable, never a hard reject)."},` +
+			`"result":{"type":"string","description":"RecordCapabilityProposal only — the model's structured-output proposal as a JSON string {kind, content, target:{mode,packageName,baseVersion?,newVersion?}, rationale, confidence, validation:{state,report?,deltaPreview?}, provenance:{model?,promptHash?,catalogHash?,reasonedAt?}} — the opaque adapter Detail. Required when status=completed; carried verbatim as the rationale on a refusal. validation.state is the ALREADY-COMPUTED §5 verdict (pkgmgr.ValidateCapabilityArtifact, run by the trusted caller before submission — the script does not itself re-run the parser/validateAll). kind enables 'lens', 'grant', 'weaverTarget', 'loomPattern', 'vertexTypeDDL', or 'opMeta'; any other value, or a validation.state other than 'valid', or an out-of-range confidence, or an undecodable result stores the proposal review.state=invalid (auditable, never a hard reject)."},` +
 			`"verdict":{"type":"string","description":"ReviewCapabilityProposal only — the operator's verdict on a pending proposal: 'approve' (re-validated against the §5 boundary via the fresh validation payload field, fail-closing to invalid if it no longer validates) or 'reject'. The reviewer is the trusted submitting actor (op.actor) and the stamp is the envelope submit time; neither is a payload field."},` +
 			`"validation":{"type":"object","description":"ReviewCapabilityProposal, approve verdict only — the FRESH §5 verdict {state,report?} the caller computed by re-running pkgmgr.ValidateCapabilityArtifact against the CURRENT catalog/registry immediately before submitting (record-time and approve-time can drift). state must be exactly 'valid' or the approve fail-closes to invalid; ignored on a reject verdict."},` +
 			`"packageKey":{"type":"string","description":"MarkCapabilityProposalApplied only — the vtx.package.<id> the caller's separate F-004 Installer.Apply produced (pkgmgr.ApplyResult.PackageKey). Verified live (a .manifest aspect must exist) and its recorded name must match this proposal's own target.packageName before it is recorded as the appliedAs link target."},` +
@@ -345,7 +346,7 @@ def proposal_number(d, name):
         return -1.0
     return v
 
-ENABLED_KINDS = ["lens", "grant", "weaverTarget", "loomPattern"]
+ENABLED_KINDS = ["lens", "grant", "weaverTarget", "loomPattern", "vertexTypeDDL", "opMeta"]
 
 def execute(state, op):
     ot = op.operationType
