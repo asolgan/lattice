@@ -119,7 +119,9 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 > EDGE.1–4 are now all done (see the Edge Lattice row below). **EDGE.5** (browser/mobile node) is
 > ✅ ratified (2026-07-16, FORK-W A′) — [edge-browser-node-design.md](../../implementation-artifacts/edge-browser-node-design.md);
 > fires W1–W4 ALL run in THIS lane (Andrew: single-lane, incl. W4's Facet renderer swap — do not
-> park W4 as "verticals"). The §8 full multi-persona
+> park W4 as "verticals"). **W1 SHIPPED** (2026-07-17, `e0de4bb`) — the WS listener is on and the
+> callout is proven transport-invariant. **Next named build-ready pick: EDGE.5 W2** (engine seams —
+> `store.Store` interface + `DeltaSource`/`ControlClient`; no dependency on W1). The §8 full multi-persona
 > adversarial re-review of the EDGE.3 security boundary is ✅ COMPLETE (2026-07-16, Designer, 5 lenses) —
 > boundary holds, no CRITICAL/HIGH; 5 hardening follow-ons filed (RR-1…RR-5 below), none an EDGE.5 gate.
 > See [edge design §8.1](../../implementation-artifacts/edge-lattice-full-design.md).
@@ -145,7 +147,6 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 > **`[bootstrap] internal/bootstrap primordial-ID globals race` CLOSED** (2026-07-16) — Fire 1 (`0e8ecfd`,
 > `testutil.EnsurePrimordials` + `t.Parallel()` on lease-signing/clinic-domain/identity-domain) + Fire 2
 > (`2a5ee60`, migrated the ~20 suite-local harnesses + the lint-conventions gate) both shipped, CI green.
-> Next named build-ready pick: **EDGE.5** W1–W4 (this lane) — see the callout above.
 > Whoever ships the named pick updates this callout to the next one — a stale callout starves the lane.
 
 ### Security & trust boundary
@@ -177,7 +178,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | Personal / Secure Lens | Refractor projects a per-identity security-filtered subgraph stream; the Interest-Set watchlist; RLS-style link filtering. | ★★ | L | ✅ effectively done · [design](../../implementation-artifacts/personal-secure-lens-design.md) · Fires 1–5 shipped (D1 + Vault gates closed); PL.6 WS half subsumed by the ratified [EDGE.5 design](../../implementation-artifacts/edge-browser-node-design.md); multicast dedup stays deferred (bandwidth trigger) |
-| Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. EDGE.1–3 (Go node, offline loop, untrusted security turn-on) shipped; EDGE.4–5 per the §7 gates. | ★★★ | XL | 🏗️ building · [design §7](../../implementation-artifacts/edge-lattice-full-design.md) · EDGE.1–4 done · EDGE.5 ✅ ratified 2026-07-16, W1–W4 all this lane · [EDGE.5 design](../../implementation-artifacts/edge-browser-node-design.md) |
+| Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. EDGE.1–3 (Go node, offline loop, untrusted security turn-on) shipped; EDGE.4–5 per the §7 gates. | ★★★ | XL | 🏗️ building · [design §7](../../implementation-artifacts/edge-lattice-full-design.md) · EDGE.1–4 done · [EDGE.5 design](../../implementation-artifacts/edge-browser-node-design.md) W1 ✅ · next: W2 engine seams (store/transport interfaces + `GOOS=js` build check) |
 | Edge-manifest + personal-lens consumer (Facet platform half) | Five per-identity `nats_subject` manifest lenses (me/services/catalog/tasks/instances) + descriptor vocabulary (presentation/per-op schema/dispatch); `pkgmgr.LensSpec` `nats_subject` adapter; `RequestService` service-path op; seeded topology. Un-defers PL.6/EDGE.5. | ★★★ | L | ✅ CLOSED (Fires 0–1; +6th read-grant lens at Fire 2) · [design §3.2 amendment](../../implementation-artifacts/edge-showcase-app-design.md) · app half continues as Facet Fire 3 (verticals.md) |
 | **RR-1 — Edge `Revision==0` delta ordering hazard** | Personal-lens adjacency-watch reprojection publishes sentinel seq-0 deltas to the Edge; the Edge LWW gate applies-on-equal so a reordered rev-0 upsert/tombstone transiently resurrects/drops a key. Guarded server adapters already skip seq-0; the Edge SYNC adapter doesn't. | ★★ | S–M | 📋 ready · [design §8.1 RR-1](../../implementation-artifacts/edge-lattice-full-design.md) · fix: skip seq-0 adj-watch write for the natssubject adapter |
 | **RR-2 — Edge Sync/agent reconcile hardening** | Three coupled defects: poison-key `Nak` hot-loop (should `Term` like a malformed envelope); unrecognized terminal `ReplyStatus` dequeues + loses a durable edit (must stay queued); overlay `Discard` ignores `RequestID` (drops a newer intent's overlay). | ★★ | M | 📋 ready · [design §8.1 RR-2](../../implementation-artifacts/edge-lattice-full-design.md) |
@@ -220,6 +221,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-17 · `e0de4bb` · [natsperm,edge] EDGE.5 W1 — native WS listener + the 6 Edge auth vectors twinned over ws://; origin fail-open killed (shape pin + real 403 handshake); fixed a vacuous ops deny; CI green
 - 2026-07-16 · `2a5ee60` · [testutil,lint-conventions] bootstrap-globals-race Fire 2 CLOSED — migrated ~20 suite-local harnesses to EnsurePrimordials + added the lint gate; CI green
 - 2026-07-16 · `0e8ecfd` · [testutil] bootstrap-globals-race Fire 1 — EnsurePrimordials (sync.Once) + t.Parallel() re-applied on lease-signing/clinic-domain/identity-domain; CI green
 - 2026-07-16 · `219fa0c` · [pkgmgr,capability-author] AI-caps Fire 4 SHIPPED — vertexTypeDDL/opMeta kinds + condition-2 lint + live SensitiveAspectResolver; adversarially reviewed, fixed a real fail-open bug; CI green
