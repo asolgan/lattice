@@ -182,10 +182,22 @@ artifact has nothing to emit until the **host entry point** the JS shell brings 
   headless Chrome (`test-edge-idb-conformance` now runs `internal/edge/browser` beside the store suite). The
   js CI gate's build + `go list -deps` nats-free assertion now covers `cmd/edge-wasm` too.
 
-- **Inc 3b — the JS shell** (vendored `nats.js`, leader election, token-refresh reconnect, `InactiveThreshold`)
-  **+ the consumer-create wire-form parity test + the nats.js `vendors.md` row** — the transport half the
-  `jsTransport` seam calls out to (`startConsumer`/`stopConsumer`/`firstSequence`/`request`, plus pushing
-  deltas in via `deliver`).
+- **Inc 3b — SHIPPED (2026-07-17): the JS shell** (`internal/edge/browser/shell`, `86d29c9`). The transport
+  half the `jsTransport` seam calls out to, over vendored `nats.js` 3.4.0 (single static ESM bundle, no npm
+  in the tree; `shell/VENDOR.md` + a `docs/vendors.md` row): `createSyncCore` supplies
+  `startConsumer`/`stopConsumer`/`firstSequence`/`request` + pushes deltas via `deliver`, with a token-refresh
+  authenticator, the durable's `InactiveThreshold`, and the `Lattice-Actor` header; `createShell` adds Web
+  Locks leader election (`leader.mjs` + node unit vectors) and `storage.persist()`. The **consumer-create
+  wire-form parity test** (`internal/natsperm`, build-tag `edgeparity`, `make test-edge-consumer-parity`, CI
+  job `edge-consumer-parity`) drives the real shell from Node against the real per-identity callout and pins
+  that nats.js emits the ACL-granted `$JS.API.CONSUMER.CREATE.SYNC.<durable>.<filter>` form — fail-closed,
+  with a cross-identity control case (non-vacuous) and a MSG.NEXT/ACK round-trip. Two findings it grounded:
+  (1) nats.js's `jetstreamManager` probes `$JS.API.INFO` (ungranted, un-probed by nats.go) → opened
+  `{checkAPI:false}` for wire parity; (2) **STREAM.INFO is denied to the Edge grant** but
+  `natstransport.FirstSequence` (gap detection) needs it — a **pre-existing** gap affecting the shipped Go
+  nodes too, filed for design (lattice.md Security row); the shell stays at parity with the Go node rather
+  than diverging. **Deferred to W4** (the renderer/in-page integration where it is exercised): the shell's
+  BroadcastChannel follower change-signal.
 
 **The size tripwire, measured honestly (inc 3a).** The 1.32 MB-gz "engine floor" was measured by a
 **blank-import probe** (`_ "internal/edge/…"`), which the linker's dead-code elimination strips down to the

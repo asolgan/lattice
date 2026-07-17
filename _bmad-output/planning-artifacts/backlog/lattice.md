@@ -136,9 +136,15 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 > blank-import (DCE'd) figure; a real main linking the write path hit 3.0 MB gz — so the browser host
 > got a `syscall/js` fetch submitter (dropping `net/http`/`crypto/tls`, which `fetch` supplies
 > natively), landing the artifact at **1.71 MB gz**, under the ~2.6 MB tripwire.
-> **Next named build-ready pick: EDGE.5 W3 inc 3b** — the JS shell (vendored nats.js, leader election,
-> token-refresh reconnect, `InactiveThreshold`) that the `jsTransport` seam calls out to, + the
-> consumer-create wire-form parity test + the nats.js vendors.md row
+> **W3 inc 3b SHIPPED** (2026-07-17) — the JS transport shell over vendored `nats.js` 3.4.0
+> (`internal/edge/browser/shell`): the four `jsTransport` seam methods over `wsconnect`, token-refresh
+> authenticator, `InactiveThreshold`, Web Locks leader election (+ node unit vectors), + the
+> consumer-create wire-form parity test (`make test-edge-consumer-parity`, CI job `edge-consumer-parity`,
+> build-tag `edgeparity`) proving nats.js emits the ACL-granted filtered-create form (fail-closed, non-vacuous)
+> + the nats.js `vendors.md` row. Two grounded findings: `$JS.API.INFO` probe fixed with `{checkAPI:false}`
+> (wire parity with nats.go); a pre-existing STREAM.INFO gap filed (Security row). **W3 is now inc 1–3b done.**
+> **Next named build-ready pick: EDGE.5 W4** — the renderer/in-page integration (Facet's EventSource →
+> the wasm host's `onFrame`; the shell's BroadcastChannel follower change-signal completes there)
 > ([§3.3](../../implementation-artifacts/edge-browser-node-design.md)). The §8 full multi-persona
 > adversarial re-review of the EDGE.3 security boundary is ✅ COMPLETE (2026-07-16, Designer, 5 lenses) —
 > boundary holds, no CRITICAL/HIGH; 5 hardening follow-ons filed (RR-1…RR-5 below), none an EDGE.5 gate.
@@ -175,6 +181,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | **Keyed identity-index hashes (HMAC)** | Unkeyed `sha256NanoID` contact hashes are dictionary-testable with substrate access and persist in JetStream history post-shred; a Vault-keyed HMAC bounds it but needs a MAC primitive + key custody at every hash computer, and must migrate ALL index consumers (identityindex, provision probe, dedup) in one stroke. | ★ now / ★★ prod | M | 🗄️ shelved (revive: production threat model) · [analysis](../../implementation-artifacts/dedup-over-encrypted-pii-design.md) §9.1/§10-C |
 | **RR-3 — PL.3 fail-closed on `capKV == nil`** | The personal-lens read-grant gate is skipped (lens runs OPEN) when `capKV` is nil, logging only a WARN. Prod-safe today (Refractor exits on KV-open failure), but a future personal lens wired without `capKV` runs fully open. Refuse to register a `personal:true` lens without `capKV`. | ★ | S | 📋 ready · [design §8.1 RR-3](../../implementation-artifacts/edge-lattice-full-design.md) |
 | **RR-5 — Assert `ActorVerifier` on the Edge-facing control plane** | The §3.4 control-op identity binding is gated on `verifier != nil`; with no verifier, `body.IdentityID` is self-asserted (dev posture). An untrusted-Edge control service should refuse to start without a verifier rather than silently degrade. | ★★ | S | 📋 ready · [design §8.1 RR-5](../../implementation-artifacts/edge-lattice-full-design.md) |
+| **Edge gap-detection needs STREAM.INFO, which the grant denies** | `sync.Manager.gapped()` → `FirstSequence` → `$JS.API.STREAM.INFO.SYNC`, omitted from the Edge callout grant (leaks cross-identity stream stats). Proven denied under the real grant (W3-inc-3b harness); hits the shipped Go nodes AND the browser node — warm resume w/ a stored cursor fails closed (cold start hydrates, so latent). Fix = design call (scoped STREAM.INFO, or gap from CONSUMER.INFO), not a steward grant-widening. | ★★ | M | 🔭 flag-for-Andrew · needs design |
 
 ### Privacy / Vault
 | Item | What it is | Imp | Size | State |
@@ -196,7 +203,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | Personal / Secure Lens | Refractor projects a per-identity security-filtered subgraph stream; the Interest-Set watchlist; RLS-style link filtering. | ★★ | L | ✅ effectively done · [design](../../implementation-artifacts/personal-secure-lens-design.md) · Fires 1–5 shipped (D1 + Vault gates closed); PL.6 WS half subsumed by the ratified [EDGE.5 design](../../implementation-artifacts/edge-browser-node-design.md); multicast dedup stays deferred (bandwidth trigger) |
-| Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. EDGE.1–3 (Go node, offline loop, untrusted security turn-on) shipped; EDGE.4–5 per the §7 gates. | ★★★ | XL | 🏗️ building · [design §7](../../implementation-artifacts/edge-lattice-full-design.md) · EDGE.1–4 done · [EDGE.5 design](../../implementation-artifacts/edge-browser-node-design.md) W1 ✅ W2 ✅ W3 inc 1–3a ✅ · next: W3 inc 3b — JS shell (nats.js) + wire-form parity test |
+| Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. EDGE.1–3 (Go node, offline loop, untrusted security turn-on) shipped; EDGE.4–5 per the §7 gates. | ★★★ | XL | 🏗️ building · [design §7](../../implementation-artifacts/edge-lattice-full-design.md) · EDGE.1–4 done · [EDGE.5 design](../../implementation-artifacts/edge-browser-node-design.md) W1 ✅ W2 ✅ W3 inc 1–3b ✅ · next: W4 — renderer/in-page integration |
 | Edge-manifest + personal-lens consumer (Facet platform half) | Five per-identity `nats_subject` manifest lenses (me/services/catalog/tasks/instances) + descriptor vocabulary (presentation/per-op schema/dispatch); `pkgmgr.LensSpec` `nats_subject` adapter; `RequestService` service-path op; seeded topology. Un-defers PL.6/EDGE.5. | ★★★ | L | ✅ CLOSED (Fires 0–1; +6th read-grant lens at Fire 2) · [design §3.2 amendment](../../implementation-artifacts/edge-showcase-app-design.md) · app half continues as Facet Fire 3 (verticals.md) |
 | **RR-1 — Edge `Revision==0` delta ordering hazard** | Personal-lens adjacency-watch reprojection publishes sentinel seq-0 deltas to the Edge; the Edge LWW gate applies-on-equal so a reordered rev-0 upsert/tombstone transiently resurrects/drops a key. Guarded server adapters already skip seq-0; the Edge SYNC adapter doesn't. | ★★ | S–M | 📋 ready · [design §8.1 RR-1](../../implementation-artifacts/edge-lattice-full-design.md) · fix: skip seq-0 adj-watch write for the natssubject adapter |
 | **RR-2 — Edge Sync/agent reconcile hardening** | Three coupled defects: poison-key `Nak` hot-loop (should `Term` like a malformed envelope); unrecognized terminal `ReplyStatus` dequeues + loses a durable edit (must stay queued); overlay `Discard` ignores `RequestID` (drops a newer intent's overlay). | ★★ | M | 📋 ready · [design §8.1 RR-2](../../implementation-artifacts/edge-lattice-full-design.md) |
@@ -240,6 +247,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-17 · `86d29c9` · [edge,ci] EDGE.5 W3 inc 3b — JS transport shell over vendored nats.js 3.4.0 + consumer-create wire-form parity test (`edge-consumer-parity` CI job) + vendors.md row; CI green
 - 2026-07-17 · `2127e27` · [edge,ci] EDGE.5 W3 inc 3a — wasm host entry (`internal/edge/browser` + `cmd/edge-wasm`) + `make build-edge-wasm`, driven over its JS API on real IndexedDB in Chrome; fetch submitter → 1.71 MB gz; CI green
 - 2026-07-17 · `ee270f7` · [edge,ci] EDGE.5 W3 inc 2 — IndexedDB store (`syscall/js`) passing the storetest conformance suite on real IndexedDB in headless Chrome (wasmbrowsertest, pinned); vendors.md rows; CI job `edge-browser-store`; CI green
 - 2026-07-17 · `ddd9e25` · [edge,processor,vault] EDGE.5 W3 inc 1 — 4 wire-leaf DTO pkgs (alias re-exports); engine 2.28→1.32 MB gz, zero nats-io under GOOS=js; js gate now asserts go list -deps; CI green
