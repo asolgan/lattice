@@ -17,7 +17,7 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 
 | Item | What it is (PO view) | Vertical | Owner | Imp | Size | State |
 |---|---|---|---|---|---|---|
-| **Edge showcase app (Facet)** | Discovery-driven personal client on the Edge foundation: hardcodes only IdP login + connect; services, ops, forms, tasks arrive as data via `edge-manifest` personal lenses + a descriptor vocabulary (#52/#54/#55). PWA-first. | Cross-vertical | Sally + FE Engineer + pkg | ★★★ | XL | 🏗️ building · [design §7.5](../../implementation-artifacts/edge-showcase-app-design.md) · next: wellness edge-manifest descriptor/catalog adoption, café self-scope ops, or 2nd-renderer spike |
+| **Edge showcase app (Facet)** | Discovery-driven personal client on the Edge foundation: hardcodes only IdP login + connect; services, ops, forms, tasks arrive as data via `edge-manifest` personal lenses + a descriptor vocabulary (#52/#54/#55). PWA-first. | Cross-vertical | Sally + FE Engineer + pkg | ★★★ | XL | 🏗️ building · [design §7.5](../../implementation-artifacts/edge-showcase-app-design.md) · next: café self-scope ops, or 2nd-renderer spike |
 | **Account settings — manage sign-in methods** | Live-verified: LoftSpace has no account/profile surface at all today (grepped `app.js`/`index.html` — only qualification-profile, no identity page). Page for the applicant to see linked credentials (`whoami`), link another (`InitiateCredentialLink`/`CompleteCredentialLink`), and remove one (`UnlinkCredential`, platform refuses removing the last). | LoftSpace | FE + pkg | ★★ | S | ✅ shipped `25623d9` |
 | **Care→Wellness referral** | Post-visit, the clinic worklist offers a bookable wellness class (the clinic+wellness emergence — shared scheduling shape); a clinic→wellness handoff that opens a booking from the appointment context. | Clinic/Wellness | pkg + FE | ★ | S | ✅ shipped `e86ab45` |
 | **Clinical notes are write-only** | `RecordEncounter` PHI (`ddls.go:333-336`) captured, never projected. The cited `clinicPatientsRead` Secure-Lens precedent does NOT extend — that decrypts identity-anchored Vault ciphertext; this is raw plaintext on a non-identity vertex, and that exact shortcut was already REJECTED pre-Vault (`vault-crypto-shredding-design.md` ratification decision #2). | Clinic | pkg | ★★★ | M | 🚧 blocked-on: Vault extended to non-identity content (architectural fork, Andrew) |
@@ -62,6 +62,9 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic ↔ Café ↔ We
 
 One line per shipped item (`date · SHA · title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-17 · `97db230` · Facet Fire 5 — wellness catalog-path wiring: `wellness` family + Riverside Wellness Studio template availableAt/permitsOperation-wired to CreateBooking/CancelBooking, live-verified on the SYNC manifest feed
+- 2026-07-17 · `0d16c34` · Facet Fire 5 — wellness edge-manifest descriptor metadata (CreateBooking/CancelBooking; first real use of `dispatch.contextParams`)
+- 2026-07-17 · `a5f7ee9` · Fixed clinic's Fire 5 Inc 1 `Dispatch.Class` bug (was "clinic", should be DDL CanonicalName "appointment") — confirmed live, regression-guarded
 - 2026-07-17 · `fa8ccee` · Wellness self-service booking CLOSED — wellness-app "Me" bar (sign in, no claim ceremony needed) + fixed a pre-existing booker/bookedBy read-posture gap; live-verified
 - 2026-07-17 · `ac21a6c` · Wellness self-service booking Inc 1 — `CreateBooking`/`CancelBooking` consumer scope=self grant, mirrors clinic-domain's self-service pattern; package layer only, FE checkpointed
 - 2026-07-17 · `27dc762` · Clinic no-show fee auto-charge — `clinicNoShowSettlement` Weaver playbook + `DebitAccount` `appointmentRef`, self-contained in `clinic-ledger` — [design](../../implementation-artifacts/clinic-noshow-fee-design.md)
@@ -85,14 +88,4 @@ One line per shipped item (`date · SHA · title`). Oldest roll to `archive/` pa
 - 2026-07-11 · `3def314` · Café per-lease open-tab guard — `cafeOpenTabGuard` aspect (claim/OCC-revive/tombstone), rejects a 2nd concurrent `OpenTab`
 - 2026-07-11 · `99d00bf` · Clinic billing payer dimension — `billedTo` self｜insurance + `expectedReimbursementCents` on a debit entry (clinic-ledger)
 - 2026-07-11 · `—` · Write-ops stale-state fix mirrored onto cafe-app (5 sites) + clinic-app (3) + wellness-app (3), closing "clinic likely shares the gap"
-- 2026-07-10 · `1d1ac53` · Mixed-use composition CLOSED — Inc 5 clinic-visit tail (`residentVisit` link + `frontDeskVisits` lens, existence+time only, no PHI) — [design](../../implementation-artifacts/mixed-use-composition-design.md)
-- 2026-07-10 · `8b3848b` · Mixed-use composition Inc 4 — front-desk lease details (term/rent card line, corrected the Inc 3 note's stale premise) — [design](../../implementation-artifacts/mixed-use-composition-design.md)
-- 2026-07-10 · `838761f` · App read boundaries revocation kill-switch CLOSED — loftspace/clinic wired (cafe/wellness have no protected read boundary, N/A) — [authN §12.1](../../implementation-artifacts/external-actor-authn-binding-design.md)
-- 2026-07-10 · `—` · Self-service identity 403s CLOSED — env gap, ops fix + Gateway restart, live-verified fresh-identity apply — [finding](../../implementation-artifacts/self-service-identity-env-gap-finding.md)
-- 2026-07-10 · `—` · `/api/ledger` unauthenticated-read CLOSED — gated on `authenticateRead` + staff wildcard visibility (reuses `clinicPatientsRead`, no new schema), live-verified 401/403/200 + real FE flow
-- 2026-07-10 · `—` · Clinic patient picker name search — `?q=` ILIKE + debounced typeahead, live-verified (`#provider` split off, left ready)
-- 2026-07-10 · `—` · Read-posture sweep Fire 4 — clinic-domain 5 residual sites, vertical-package sweep CLOSED (0 warnings repo-wide) — [design §13](../../implementation-artifacts/script-read-posture-design.md)
-- 2026-07-10 · `b5744a9` · Read-posture sweep Fire 3 — lease-signing 19/19 (scripts.go 7 + renewal_scripts.go 12), closes lease-signing entirely — [design §13](../../implementation-artifacts/script-read-posture-design.md)
-- 2026-07-10 · `41e3bcf` · Read-posture sweep Fire 2 — wellness+loftspace 13/44 + hard case 4 — [design §13](../../implementation-artifacts/script-read-posture-design.md)
-- 2026-07-10 · `5263c2b` · Read-posture sweep Fire 1 — Gateway optionalReads wiring + clinic-domain 8/44 — [design §13](../../implementation-artifacts/script-read-posture-design.md)
 - *(older entries rolled to [archive/verticals-done.md](archive/verticals-done.md))*
