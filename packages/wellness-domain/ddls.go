@@ -817,6 +817,16 @@ def execute(state, op):
         _, booker_id = parts_of(booker, "booker", "identity")
         require_live_typed(state, booker, "booker", "identity")
 
+        # Consumer self-scope (scope=self grant only): step 3 authorizes via
+        # authContext.target == actor (Contract #6); the payload.booker field
+        # IS the identity making the booking (no patient-style indirection
+        # needed here, unlike clinic-domain's CreateAppointment), so the
+        # script closes the gap with a direct field compare — no extra kv.Read.
+        # Empty for the standing operator grant (scope=any never sets
+        # authContext), so this check is a no-op there.
+        if op.authContextTarget != "" and op.authContextTarget != booker:
+            fail("AuthDenied: a consumer may only book a class for themselves")
+
         # read-posture: (a) declared reads at CreateBooking dispatch.
         sched = kv.Read(session + ".schedule")
         if sched == None or sched.isDeleted:
@@ -884,6 +894,24 @@ def execute(state, op):
 
         session = required_string(p, "session")
         require_matching_session(book_id, session)
+
+        # Consumer self-scope (scope=self grant only): step 3 authorizes via
+        # authContext.target == actor (Contract #6), but the op's endpoint is
+        # the BOOKING vertex, not an identity. The script closes the gap by
+        # requiring the target identity to be THIS booking's actual bookedBy
+        # identity — mirrors clinic-domain's SetAppointmentStatus self-cancel
+        # guard, over the bookedBy link instead of identifiedBy. Empty for the
+        # standing operator grant (scope=any never sets authContext), so this
+        # check is a no-op there.
+        if op.authContextTarget != "":
+            _, target_identity_id = parts_of(op.authContextTarget, "authContextTarget", "identity")
+            booked_by_lnk = "lnk.booking." + book_id + ".bookedBy.identity." + target_identity_id
+            # read-posture: (d) declared optionalReads by the self-service
+            # caller — it already knows payload.bookingKey and its own
+            # authContext.target before submitting, so it computes this key
+            # client-side and declares it.
+            if kv.Read(booked_by_lnk) == None:
+                fail("AuthDenied: a consumer may only cancel their own booking")
 
         # read-posture: (a) declared reads at CancelBooking dispatch.
         status = kv.Read(book_key + ".status")

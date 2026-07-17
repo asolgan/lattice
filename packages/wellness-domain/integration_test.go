@@ -34,7 +34,36 @@ const (
 	domainCapKey   = "cap.identity." + domainActorID
 
 	domainConsumerRoleID = "BBConsumerRoZeWnessD"
+
+	// domainConsumerID stands in for identity-domain's real `consumer` role
+	// grant flow (mirrors clinic-domain's clConsumerID) — the self-service
+	// caller's own identity, distinct from the operator actor above.
+	domainConsumerID  = "BBWELLNESSCQNSHJKMNP"
+	domainConsumerKey = "vtx.identity." + domainConsumerID
+	domainConsumerCap = "cap.identity." + domainConsumerID
 )
+
+// domainConsumerCapDoc grants the consumer role's scope=self CreateBooking /
+// CancelBooking permissions — the real-actor-write-auth-e2e self-service
+// caller, mirrors clinic-domain's clConsumerCapDoc.
+func domainConsumerCapDoc() *processor.CapabilityDoc {
+	now := time.Now().UTC()
+	return &processor.CapabilityDoc{
+		Key:                    domainConsumerCap,
+		Actor:                  domainConsumerKey,
+		Version:                "1.0",
+		ProjectedAt:            now.Format(time.RFC3339Nano),
+		ProjectedFromRevisions: map[string]uint64{domainConsumerKey: 1},
+		Lanes:                  []string{"default"},
+		PlatformPermissions: []processor.PlatformPermission{
+			{OperationType: "CreateBooking", Scope: "self"},
+			{OperationType: "CancelBooking", Scope: "self"},
+		},
+		ServiceAccess:   []processor.ServiceAccessEntry{},
+		EphemeralGrants: []processor.EphemeralGrant{},
+		Roles:           []string{"vtx.role.consumer"},
+	}
+}
 
 func domainCapDoc() *processor.CapabilityDoc {
 	now := time.Now().UTC()
@@ -572,5 +601,157 @@ func TestTombstoneSession_ReleasesStudioSlotCells(t *testing.T) {
 	_, outcome := createSession(t, ctx, conn, cp, cons, "wdcreatesessio000010", studioKey, "Power Sculpt", "2026-07-08T09:00:00Z", "2026-07-08T09:30:00Z", 20)
 	if outcome != processor.OutcomeAccepted {
 		t.Fatalf("CreateSession on freed cells outcome = %v, want Accepted", outcome)
+	}
+}
+
+// TestCreateBooking_ConsumerSelfScope_Allowed proves a real resident, holding
+// only the consumer scope=self grant, can book a class for THEMSELVES:
+// payload.booker names their own identity and authContext.target matches it.
+func TestCreateBooking_ConsumerSelfScope_Allowed(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	testutil.SeedCapDoc(t, ctx, conn, domainConsumerCapDoc())
+	cp, cons := newDomainPipeline(t, ctx, conn, "bookingselfok")
+
+	studioKey := createStudio(t, ctx, conn, cp, cons, "wdselfstudio000001", "Flow Room")
+	sessionKey, _ := createSession(t, ctx, conn, cp, cons, "wdselfsession000001", studioKey, "Vinyasa Flow", "2026-07-08T09:00:00Z", "2026-07-08T09:30:00Z", 20)
+	seedIdentity(t, ctx, conn, domainConsumerID)
+
+	reqID := testutil.GenReqID("wdselfbooking000001")
+	payload, _ := json.Marshal(map[string]any{"session": sessionKey, "booker": domainConsumerKey})
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateBooking",
+		Actor:         domainConsumerKey,
+		SubmittedAt:   "2026-07-07T12:00:00Z",
+		Class:         "booking",
+		Payload:       payload,
+		ContextHint:   &processor.ContextHint{Reads: []string{sessionKey, sessionKey + ".schedule", domainConsumerKey}, OptionalReads: wdSeatKeys(sessionKey, 20)},
+		AuthContext:   &processor.AuthContext{Target: domainConsumerKey},
+	}
+	testutil.PublishOp(t, conn, env)
+	outcome := testutil.DriveOne(t, ctx, cp, cons, "")
+	if outcome != processor.OutcomeAccepted {
+		t.Fatalf("self-service CreateBooking outcome = %v, want Accepted", outcome)
+	}
+}
+
+// TestCreateBooking_ConsumerSelfScope_RejectedForOtherBooker proves the
+// Starlark guard closes the gap step 3 leaves open: step 3's scope=self only
+// checks authContext.target == actor, never looks at payload.booker. A
+// consumer satisfying that check but naming a DIFFERENT identity as the
+// booker must be rejected — self-service never lets one resident book on
+// behalf of another.
+func TestCreateBooking_ConsumerSelfScope_RejectedForOtherBooker(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	testutil.SeedCapDoc(t, ctx, conn, domainConsumerCapDoc())
+	cp, cons := newDomainPipeline(t, ctx, conn, "bookingselfother")
+
+	studioKey := createStudio(t, ctx, conn, cp, cons, "wdselfstudio000002", "Flow Room")
+	sessionKey, _ := createSession(t, ctx, conn, cp, cons, "wdselfsession000002", studioKey, "Vinyasa Flow", "2026-07-08T09:00:00Z", "2026-07-08T09:30:00Z", 20)
+	seedIdentity(t, ctx, conn, domainConsumerID)
+	otherBookerKey := seedIdentity(t, ctx, conn, "BBWELLQTHERBKRHJKMNP")
+
+	reqID := testutil.GenReqID("wdselfbooking000002")
+	payload, _ := json.Marshal(map[string]any{"session": sessionKey, "booker": otherBookerKey})
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateBooking",
+		Actor:         domainConsumerKey,
+		SubmittedAt:   "2026-07-07T12:00:00Z",
+		Class:         "booking",
+		Payload:       payload,
+		ContextHint:   &processor.ContextHint{Reads: []string{sessionKey, sessionKey + ".schedule", otherBookerKey}, OptionalReads: wdSeatKeys(sessionKey, 20)},
+		AuthContext:   &processor.AuthContext{Target: domainConsumerKey},
+	}
+	testutil.PublishOp(t, conn, env)
+	outcome := testutil.DriveOne(t, ctx, cp, cons, "")
+	if outcome != processor.OutcomeRejected {
+		t.Fatalf("self-service CreateBooking for another booker outcome = %v, want Rejected (AuthDenied)", outcome)
+	}
+}
+
+// TestCancelBooking_ConsumerSelfScope_Allowed proves a real resident can
+// cancel THEIR OWN booking: the booking's bookedBy link resolves to the
+// caller's own authContext.target identity.
+func TestCancelBooking_ConsumerSelfScope_Allowed(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	testutil.SeedCapDoc(t, ctx, conn, domainConsumerCapDoc())
+	cp, cons := newDomainPipeline(t, ctx, conn, "cancelselfok")
+
+	studioKey := createStudio(t, ctx, conn, cp, cons, "wdselfstudio000003", "Small Studio")
+	sessionKey, _ := createSession(t, ctx, conn, cp, cons, "wdselfsession000003", studioKey, "Intro Class", "2026-07-08T09:00:00Z", "2026-07-08T09:30:00Z", 1)
+	seedIdentity(t, ctx, conn, domainConsumerID)
+	bookingKey, outcome := createBooking(t, ctx, conn, cp, cons, "wdselfbookmine000001", sessionKey, domainConsumerKey, "")
+	if outcome != processor.OutcomeAccepted {
+		t.Fatalf("setup CreateBooking outcome = %v, want Accepted", outcome)
+	}
+
+	bookingID := bookingKey[len("vtx.booking."):]
+	bookedByLnk := "lnk.booking." + bookingID + ".bookedBy.identity." + domainConsumerID
+
+	reqID := testutil.GenReqID("wdselfcancel000001")
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CancelBooking",
+		Actor:         domainConsumerKey,
+		SubmittedAt:   "2026-07-07T12:10:00Z",
+		Class:         "booking",
+		Payload:       json.RawMessage(`{"bookingKey":"` + bookingKey + `","session":"` + sessionKey + `"}`),
+		ContextHint: &processor.ContextHint{
+			Reads:         []string{bookingKey, bookingKey + ".status", forSessionLnkKey(t, bookingKey, sessionKey)},
+			OptionalReads: []string{bookedByLnk},
+		},
+		AuthContext: &processor.AuthContext{Target: domainConsumerKey},
+	}
+	testutil.PublishOp(t, conn, env)
+	cancelOutcome := testutil.DriveOne(t, ctx, cp, cons, "")
+	if cancelOutcome != processor.OutcomeAccepted {
+		t.Fatalf("self-service CancelBooking outcome = %v, want Accepted", cancelOutcome)
+	}
+}
+
+// TestCancelBooking_ConsumerSelfScope_RejectedForOthersBooking proves a
+// consumer satisfying step 3 (authContext.target == actor) but naming a
+// booking that is NOT their own (a different bookedBy identity) is rejected
+// — self-service never lets one resident cancel another's booking.
+func TestCancelBooking_ConsumerSelfScope_RejectedForOthersBooking(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	testutil.SeedCapDoc(t, ctx, conn, domainConsumerCapDoc())
+	cp, cons := newDomainPipeline(t, ctx, conn, "cancelselfother")
+
+	studioKey := createStudio(t, ctx, conn, cp, cons, "wdselfstudio000004", "Small Studio")
+	sessionKey, _ := createSession(t, ctx, conn, cp, cons, "wdselfsession000004", studioKey, "Intro Class", "2026-07-08T09:00:00Z", "2026-07-08T09:30:00Z", 1)
+	seedIdentity(t, ctx, conn, domainConsumerID)
+	otherBookerKey := seedIdentity(t, ctx, conn, "BBWELLQTHERBKR2HJKMN")
+	bookingKey, outcome := createBooking(t, ctx, conn, cp, cons, "wdselfbookoth000001", sessionKey, otherBookerKey, "")
+	if outcome != processor.OutcomeAccepted {
+		t.Fatalf("setup CreateBooking outcome = %v, want Accepted", outcome)
+	}
+
+	bookingID := bookingKey[len("vtx.booking."):]
+	bookedByLnk := "lnk.booking." + bookingID + ".bookedBy.identity." + domainConsumerID
+
+	reqID := testutil.GenReqID("wdselfcancel000002")
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CancelBooking",
+		Actor:         domainConsumerKey,
+		SubmittedAt:   "2026-07-07T12:10:00Z",
+		Class:         "booking",
+		Payload:       json.RawMessage(`{"bookingKey":"` + bookingKey + `","session":"` + sessionKey + `"}`),
+		ContextHint: &processor.ContextHint{
+			Reads:         []string{bookingKey, bookingKey + ".status", forSessionLnkKey(t, bookingKey, sessionKey)},
+			OptionalReads: []string{bookedByLnk},
+		},
+		AuthContext: &processor.AuthContext{Target: domainConsumerKey},
+	}
+	testutil.PublishOp(t, conn, env)
+	cancelOutcome := testutil.DriveOne(t, ctx, cp, cons, "")
+	if cancelOutcome != processor.OutcomeRejected {
+		t.Fatalf("self-service CancelBooking of another's booking outcome = %v, want Rejected (AuthDenied)", cancelOutcome)
 	}
 }
