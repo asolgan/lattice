@@ -4,6 +4,7 @@ Rolled from `lattice.md` when its live Done log passed ~25 entries. Full detail 
 
 - 2026-07-13 · `9a86a01` · [Refractor] projection-package coverage sweep — Install{ActorAggregate,PersonalLens} wiring + personalEnvelopeFn D1/Interest-Set branches; 59.2%→93.0%; CI green
 - 2026-07-12 · `1b778f9` · [pkgmgr,edge,edge-manifest] edge-manifest Fire 1 inc 2 — 5-lens `packages/edge-manifest` (first nats-subject Personal Lens package), edge/store.go manifest.* key exemption, verify-package-edge-manifest; CI green
+- 2026-07-12 · `f6be3b0` · [edge-manifest,refractor] edge-manifest Fire 1 CLOSED — install-edge-manifest chain, seed-edge-demo, live e2e; fixed a lens anchor bug blocking all 5 lenses from ever publishing; CI green
 - 2026-07-12 · `17d6fbe` · [CI] unit job split into weight-balanced unit-1/unit-2 shards + a coverage-guard job; overall wall-clock 237s→145s (~39% faster), CI green
 - 2026-07-12 · `cd5a077` · [pkgmgr,Processor,service-domain] edge-manifest Fire 1 inc 1 — OpMetaSpec descriptor-vocabulary fields + RequestService service-path consumer op + template .presentation aspect; CI green
 - 2026-07-12 · `78955d0` · [pkgmgr,Refractor,Edge] edge-manifest Fire 0 — nats-subject LensSpec adapter, SYNC stream 24h MaxAge, edge/sync OnChange + UpdateInterest; CI green

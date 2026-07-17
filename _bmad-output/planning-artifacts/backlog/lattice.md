@@ -160,9 +160,12 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 > dispatched by `fr.kind`) + `boot.mjs`, the config-gated wasm+shell boot that wires
 > `latticeEdge.start()` and `shell.deliver = api.deliver` (no-op absent a `window.__EDGE_BOOT__`, so the
 > Go host is byte-identical). New `make test-facet-web` node gate in the edge-consumer-parity CI job.
-> **Next named build-ready pick: EDGE.5 W4 inc 4** — `cmd/facet`→static file server (serve the wasm +
-> shell assets + inject the boot config) + the Fire-4 cross-machine no-binary e2e (Gate-3 class); depends
-> on Facet Fire 3 auth turn-on (verticals.md, 🏗️ building)
+> **EDGE.5 W4 inc 4a SHIPPED** (2026-07-17, `37617be`) — the browser-native serving surface:
+> `cmd/facet` gains `FACET_BROWSER_ENGINE`, serving the wasm + shell assets and rewriting only the index to
+> inject `window.__EDGE_BOOT__` (token in-page under `no-store`, device id browser-local via
+> `boot.mjs` resolveDeviceId); nil = the shipped Go host, byte-identical. Go handler + node tested.
+> **Next named build-ready pick: EDGE.5 W4 inc 4b** — the Fire-4 cross-machine no-binary Gate-3 e2e (live
+> stack + `make build-edge-wasm` + headless Chrome; wire `make up-facet` for the native mode)
 > ([§3.4](../../implementation-artifacts/edge-browser-node-design.md)). The §8 full multi-persona
 > adversarial re-review of the EDGE.3 security boundary is ✅ COMPLETE (2026-07-16, Designer, 5 lenses) —
 > boundary holds, no CRITICAL/HIGH; 5 hardening follow-ons filed (RR-1…RR-5 below), none an EDGE.5 gate.
@@ -221,7 +224,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | Personal / Secure Lens | Refractor projects a per-identity security-filtered subgraph stream; the Interest-Set watchlist; RLS-style link filtering. | ★★ | L | ✅ effectively done · [design](../../implementation-artifacts/personal-secure-lens-design.md) · Fires 1–5 shipped (D1 + Vault gates closed); PL.6 WS half subsumed by the ratified [EDGE.5 design](../../implementation-artifacts/edge-browser-node-design.md); multicast dedup stays deferred (bandwidth trigger) |
-| Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. EDGE.1–3 (Go node, offline loop, untrusted security turn-on) shipped; EDGE.4–5 per the §7 gates. | ★★★ | XL | 🏗️ building · [design §7](../../implementation-artifacts/edge-lattice-full-design.md) · EDGE.1–4 done · [EDGE.5 design](../../implementation-artifacts/edge-browser-node-design.md) W1–W3 ✅ · W4 inc 1–3 ✅ (shell multi-tab + host peer consume + renderer feed-source swap) · next: W4 inc 4 static host + Gate-3 e2e |
+| Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. EDGE.1–3 (Go node, offline loop, untrusted security turn-on) shipped; EDGE.4–5 per the §7 gates. | ★★★ | XL | 🏗️ building · [design §7](../../implementation-artifacts/edge-lattice-full-design.md) · EDGE.1–4 done · [EDGE.5 design](../../implementation-artifacts/edge-browser-node-design.md) W1–W3 ✅ · W4 inc 1–4a ✅ (through the browser-native serving surface) · next: W4 inc 4b Gate-3 cross-machine e2e |
 | Edge-manifest + personal-lens consumer (Facet platform half) | Five per-identity `nats_subject` manifest lenses (me/services/catalog/tasks/instances) + descriptor vocabulary (presentation/per-op schema/dispatch); `pkgmgr.LensSpec` `nats_subject` adapter; `RequestService` service-path op; seeded topology. Un-defers PL.6/EDGE.5. | ★★★ | L | ✅ CLOSED (Fires 0–1; +6th read-grant lens at Fire 2) · [design §3.2 amendment](../../implementation-artifacts/edge-showcase-app-design.md) · app half continues as Facet Fire 3 (verticals.md) |
 | **RR-1 — Edge `Revision==0` delta ordering hazard** | Personal-lens adjacency-watch reprojection publishes sentinel seq-0 deltas to the Edge; the Edge LWW gate applies-on-equal so a reordered rev-0 upsert/tombstone transiently resurrects/drops a key. Guarded server adapters already skip seq-0; the Edge SYNC adapter doesn't. | ★★ | S–M | 📋 ready · [design §8.1 RR-1](../../implementation-artifacts/edge-lattice-full-design.md) · fix: skip seq-0 adj-watch write for the natssubject adapter |
 | **RR-4 — Edge producer→consumer envelope round-trip test** | The re-declared `deltaEnvelope` (sync.go) has no test decoding a real `NatsSubjectAdapter` envelope through the consumer struct + `edge/store`; a producer-side field rename passes CI. | ★ | S | 📋 ready · [design §8.1 RR-4](../../implementation-artifacts/edge-lattice-full-design.md) |
@@ -264,6 +267,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-17 · `37617be` · [facet,edge] EDGE.5 W4 inc 4a — browser-native serving surface: `FACET_BROWSER_ENGINE` serves wasm+shell + injects `__EDGE_BOOT__` (token in-page/no-store, device id browser-local); nil = shipped Go host unchanged
 - 2026-07-17 · `5bbff9d` · [edge] RR-2 sync/agent reconcile hardening — poison-key Term (store.ErrUnstorableKey), unrecognized-status keeps intent queued, overlay Discard matches RequestID; CI green
 - 2026-07-17 · `b962871` · [CI] natsperm auth-callout PONG/PING flake fixed — connectEdge retries the pre-PONG RTT-PING race (nats-server 2s gate exceeded under CPU contention); deny vectors + prod conf untouched; stress 2/8→0/8
 - 2026-07-17 · `b67612a` · [facet,edge] EDGE.5 W4 inc 3 — renderer feed-source swap: app.js pluggable source (SSE Go-host unchanged) + edge-source.mjs (engine onFrame) + config-gated boot.mjs; `make test-facet-web` CI gate
@@ -297,5 +301,4 @@ One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archiv
 - 2026-07-13 · `a6c3802` · [Core/bootstrap] test-coverage sweep — Persist, PrivacyActorKey (incl. pre-v15 absent case), seedPrimordialPerKey concurrent-bootstrap fallback; 65.7%→69.3%; CI green
 - 2026-07-12 · `4b8e815` · [Weaver] registry-cleanup-edge-branches-uncovered SHIPPED — CDC malformed-input paths covered, 84.8%→86.2%; CI green
 - 2026-07-12 · `d24446e` · [docs] doc sweep — README/architecture-overview/loupe.md corrected to reflect shipped D1 + Personal Lens + Edge Lattice EDGE.1-3 (were still marked designed/deferred)
-- 2026-07-12 · `f6be3b0` · [edge-manifest,refractor] edge-manifest Fire 1 CLOSED — install-edge-manifest chain, seed-edge-demo, live e2e; fixed a lens anchor bug blocking all 5 lenses from ever publishing; CI green
 - *(older entries rolled to [archive/lattice-done.md](archive/lattice-done.md); includes `94c8224` hello-lattice NFR-P3 flake fix)*

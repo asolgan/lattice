@@ -279,9 +279,31 @@ Node-equipped `edge-consumer-parity` CI job (which previously ran nothing for th
 `window.__EDGE_BOOT__` token bootstrap it consumes is minted by **Facet Fire 3** (auth turn-on) and
 served by **inc 4**, so the edge source's live path is exercised at inc 4's cross-machine e2e, not here.
 
-**W4 remaining increment:** **inc 4** — `cmd/facet` shrinks to a static file server (serving the wasm +
-shell assets and injecting the `window.__EDGE_BOOT__` config) + the ratified Fire-4 cross-machine,
-no-binary e2e (the W4 green bar, Gate-3 class). Depends on Facet Fire 3 (auth turn-on, 🏗️ building).
+**W4 inc 4a — the browser-native serving surface — SHIPPED (2026-07-17, `37617be`).** `cmd/facet` gains an
+opt-in browser-native mode (`FACET_BROWSER_ENGINE`): it serves the wasm artifact (`/edge.wasm` +
+`/wasm_exec.js` from `FACET_EDGE_WASM_DIR`) and the JS shell (`/shell/` from `FACET_EDGE_SHELL_DIR`),
+forcing the `application/wasm` + `.mjs` content-types the browser loaders require, and rewrites *only* the
+app-shell index (every other static path delegates unchanged) to splice `window.__EDGE_BOOT__ =
+{identityId, wsUrl, gatewayUrl, token}` in front of the `boot.mjs` tag — reached only after
+`requireSession`. The token is the same credential the Go host would use as this identity's NATS
+connection (a cookie session's JWT, or the boot `EDGE_TOKEN`); `json.Marshal`'s HTML escaping makes it
+script-breakout-safe and the page is `Cache-Control: no-store`. Two ratified consequences made explicit
+(`browserengine.go`, `docs/components/edge.md`): the bearer JWT necessarily leaves the HttpOnly cookie for
+the page body (nats.js is a JS client), riding the ≤15 m authz TTL; and the **device id is browser-local**
+— `boot.mjs`'s `resolveDeviceId` persists a NanoID-alphabet id in localStorage (durable-name-safe,
+warm-resume-stable) rather than taking a server-injected one, so `readBootConfig` no longer requires
+`deviceId`. `nil` browserEngine leaves the shipped Go host byte-for-byte unchanged. Green (each Go
+handler-level + node, no live stack): asset serving with correct types; index injection for a cookie
+session (fields present, ordered before `boot.mjs`, `no-store`, no `deviceId`); the boot-fallback token
+path; script-breakout escaping; mode-off = un-injected shipped page + no wasm route; `resolveDeviceId`
+generate/persist/resume/regenerate-malformed/degrade-on-throw; a config valid with no `deviceId`.
+
+**W4 remaining increment:** **inc 4b** — the ratified Fire-4 cross-machine, no-binary e2e (the W4 green
+bar, Gate-3 class): the Fire-2 e2e completed by the PWA on a second machine under confined WS permissions
+with no local binary, plus the WS twins of the read-bypass posture (A's browser never receives B's deltas;
+a revoked token cannot reconnect). Needs a live stack + `make build-edge-wasm` + headless Chrome, so it is
+its own fire (not deterministically runnable inline). Wire `make up-facet` for `FACET_BROWSER_ENGINE`
+alongside it.
 
 ### 3.5 Read/write/state summary (unchanged invariants)
 
