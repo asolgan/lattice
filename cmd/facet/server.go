@@ -51,6 +51,17 @@ type server struct {
 	// failing the whole process (same optional-dependency posture as
 	// loftspace-app's own pgPool).
 	pgPool *pgxpool.Pool
+	// browserEngine, when non-nil (FACET_BROWSER_ENGINE), turns cmd/facet into
+	// a static host for the in-page wasm engine: it serves the wasm + shell
+	// assets and injects window.__EDGE_BOOT__ so the browser runs the engine
+	// itself over WebSocket (EDGE.5 W4 inc 4, browserengine.go). Nil = the
+	// shipped Go host, unchanged.
+	browserEngine *browserEngineConfig
+	// bootToken is the process's EDGE_TOKEN — the credential the boot-env
+	// single-user fallback identity connects with. In browser-native mode it
+	// is the token injected for that identity (there is no cookie to read it
+	// from). Empty in a login-only deployment.
+	bootToken string
 }
 
 func (s *server) registerRoutes(mux *http.ServeMux) {
@@ -59,7 +70,16 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 		panic("facet: embed web sub-fs: " + err.Error())
 	}
 	inner := http.NewServeMux()
-	inner.Handle("/", http.FileServer(http.FS(sub)))
+	fileServer := http.FileServer(http.FS(sub))
+	if s.browserEngine != nil {
+		// Browser-native mode: the index is rewritten to carry __EDGE_BOOT__
+		// and the wasm/shell assets are served; all other static files still
+		// come from the embedded file server via serveBrowserIndex's delegate.
+		inner.Handle("/", s.serveBrowserIndex(fileServer))
+		s.registerBrowserEngineRoutes(inner)
+	} else {
+		inner.Handle("/", fileServer)
+	}
 	inner.HandleFunc("/api/feed", s.handleFeed)
 	inner.HandleFunc("/api/enqueue", s.handleEnqueue)
 	inner.HandleFunc("/api/claim", s.handleClaim)

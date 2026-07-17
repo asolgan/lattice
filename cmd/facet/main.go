@@ -76,6 +76,13 @@ const (
 	defaultGatewayURL  = "http://localhost:8080"
 	defaultStoreDir    = "./facet-store"
 	agentDrainInterval = 5 * time.Second
+
+	// Browser-native mode (FACET_BROWSER_ENGINE, EDGE.5 W4 inc 4) asset
+	// locations. wasmDir is the build-edge-wasm output; shellDir is the
+	// in-tree JS transport shell; wsURL is the natsperm WebsocketPort listener.
+	defaultEdgeWasmDir  = "bin/edge-wasm"
+	defaultEdgeShellDir = "internal/edge/browser/shell"
+	defaultEdgeWSURL    = "ws://127.0.0.1:9222"
 )
 
 func main() {
@@ -151,6 +158,17 @@ func run(logger *slog.Logger) error {
 		logger.Info("boot identity engine seeded (single-user fallback, no login required)", "identityId", bootIdentityID, "deviceId", deviceID)
 	}
 
+	var browserEngine *browserEngineConfig
+	if isTruthy(os.Getenv("FACET_BROWSER_ENGINE")) {
+		browserEngine = &browserEngineConfig{
+			wasmDir:  envOrDefault("FACET_EDGE_WASM_DIR", defaultEdgeWasmDir),
+			shellDir: envOrDefault("FACET_EDGE_SHELL_DIR", defaultEdgeShellDir),
+			wsURL:    envOrDefault("EDGE_WS_URL", defaultEdgeWSURL),
+		}
+		logger.Info("facet browser-native serving mode enabled (EDGE.5 W4): the browser runs the engine in-page over WebSocket, no local engine binary",
+			"wasmDir", browserEngine.wasmDir, "shellDir", browserEngine.shellDir, "wsUrl", browserEngine.wsURL)
+	}
+
 	srv := &server{
 		logger:         logger,
 		gatewayURL:     gatewayURL,
@@ -160,6 +178,8 @@ func run(logger *slog.Logger) error {
 		bootIdentityID: bootIdentityID,
 		loopback:       loopback,
 		pgPool:         pgPool,
+		browserEngine:  browserEngine,
+		bootToken:      os.Getenv("EDGE_TOKEN"),
 	}
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)

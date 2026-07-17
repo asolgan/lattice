@@ -13,7 +13,7 @@ import vm from "node:vm";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readBootConfig, assembleEdgeSource } from "./boot.mjs";
+import { readBootConfig, assembleEdgeSource, resolveDeviceId } from "./boot.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appSrc = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
@@ -175,6 +175,81 @@ test("readBootConfig fills defaults for the served asset URLs", () => {
   } finally {
     globalThis.window = prev;
   }
+});
+
+test("readBootConfig accepts a config with no deviceId (browser-local, §3.5)", () => {
+  const prev = globalThis.window;
+  try {
+    // The static host (inc 4) does NOT inject deviceId — it is resolved
+    // browser-side in boot() — so its absence must not void an otherwise
+    // complete config.
+    globalThis.window = {
+      __EDGE_BOOT__: {
+        identityId: "vtx.identity.abc",
+        wsUrl: "ws://localhost:9222",
+        gatewayUrl: "http://localhost:8080",
+        token: "jwt",
+      },
+    };
+    const cfg = readBootConfig();
+    assert.notEqual(cfg, null, "a config missing only deviceId is still valid");
+    assert.equal(cfg.deviceId, undefined);
+  } finally {
+    globalThis.window = prev;
+  }
+});
+
+// ---------------------------------------------------------- resolveDeviceId
+
+function fakeStorage(seed) {
+  const m = new Map(Object.entries(seed || {}));
+  return {
+    getItem: (k) => (m.has(k) ? m.get(k) : null),
+    setItem: (k, v) => m.set(k, v),
+    _map: m,
+  };
+}
+
+const DEVICE_ID_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz123456789";
+
+function isSafeDeviceId(s) {
+  if (typeof s !== "string" || s.length !== 20) return false;
+  for (const ch of s) if (!DEVICE_ID_ALPHABET.includes(ch)) return false;
+  return true;
+}
+
+test("resolveDeviceId generates a durable-name-safe id and persists it", () => {
+  const storage = fakeStorage();
+  const id = resolveDeviceId(storage);
+  assert.ok(isSafeDeviceId(id), `generated id ${id} must be a 20-char NanoID-alphabet string`);
+  assert.equal(storage.getItem("facet.deviceId"), id, "the id is persisted");
+  // A second call returns the SAME persisted id (warm resume across reloads).
+  assert.equal(resolveDeviceId(storage), id);
+});
+
+test("resolveDeviceId returns a valid stored id unchanged", () => {
+  const stored = "ABCDEFGHJKLMNPQRSTUV"; // 20 chars, all in-alphabet
+  const storage = fakeStorage({ "facet.deviceId": stored });
+  assert.equal(resolveDeviceId(storage), stored);
+});
+
+test("resolveDeviceId regenerates when the stored id is malformed", () => {
+  // A dot is forbidden in a JetStream consumer name — a stored id carrying one
+  // (corrupt, or an older scheme) must be replaced, not trusted.
+  const storage = fakeStorage({ "facet.deviceId": "bad.id.with.dots.xx" });
+  const id = resolveDeviceId(storage);
+  assert.ok(isSafeDeviceId(id));
+  assert.notEqual(id, "bad.id.with.dots.xx");
+  assert.equal(storage.getItem("facet.deviceId"), id, "the replacement is persisted");
+});
+
+test("resolveDeviceId degrades to an ephemeral id when storage throws", () => {
+  const throwing = {
+    getItem: () => { throw new Error("blocked"); },
+    setItem: () => { throw new Error("blocked"); },
+  };
+  const id = resolveDeviceId(throwing);
+  assert.ok(isSafeDeviceId(id), "a boot must still get a usable id with storage unavailable");
 });
 
 test("assembleEdgeSource configures the shell, starts the engine, and wires the shell's deliver", async () => {

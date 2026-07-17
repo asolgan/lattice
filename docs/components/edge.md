@@ -107,10 +107,24 @@ package, built incrementally per the design's §7 Steward decomposition (EDGE.1 
   ✅ ratified). It is **not** gated on a Gateway WS bridge — no such component exists or is planned.
   WebSocket is a native NATS listener (a `websocket {}` block, shipped by fire W1 below); the only
   genuinely undesigned piece is the **push-waker** (background wake when the tab is dead), deferred to
-  Facet Stage 3. W3 is landing in increments: the DTO extraction and the IndexedDB store are in (the
-  store table above), leaving the wasm host entry point + the JS shell (vendored `nats.js`, leader
-  election, token-refresh reconnect) and the consumer-create wire-form parity test. Then W4 (Facet
-  browser-native).
+  Facet Stage 3. W1–W3 are in (native WS listener, the store/transport seams, the wasm host + JS shell
+  over vendored `nats.js`); W4 makes Facet browser-native. W4 inc 1–3 wired the renderer feed-source
+  swap; **inc 4** turns `cmd/facet` into a static host for the in-page engine — see below. The remaining
+  W4 tail is the cross-machine, no-binary Gate-3 e2e (the ratified Fire-4 green bar).
+
+**Browser-native serving mode (`FACET_BROWSER_ENGINE`, W4 inc 4).** With the flag set, `cmd/facet` stops
+being the engine host and becomes a static file server: it serves the wasm artifact + the JS shell
+(`FACET_EDGE_WASM_DIR`, default `bin/edge-wasm` — run `make build-edge-wasm` first; `FACET_EDGE_SHELL_DIR`,
+default `internal/edge/browser/shell`) and rewrites the app-shell index to carry a per-session
+`window.__EDGE_BOOT__ = {identityId, wsUrl, gatewayUrl, token}` (`EDGE_WS_URL`, default the `:9222`
+listener). `boot.mjs` reads it and starts the in-page engine over WebSocket, so the browser does the
+projection with **no local Go engine**. Two consequences worth stating plainly: (1) the bearer JWT now
+lives in the page body — it *must*, since `nats.js` is a JS client and cannot use an HttpOnly cookie — so
+the injected page is `Cache-Control: no-store` and rides the same ≤15 m authz TTL as the Go host's own
+NATS connection (this is the mode's inherent trade for dropping the local binary; the shipped Go host,
+flag unset, keeps the token HttpOnly and is byte-for-byte unchanged). (2) The **device id is
+browser-local** (localStorage, `boot.mjs`'s `resolveDeviceId`), not injected — persisted so a reload
+resumes the same durable consumer instead of orphaning one per load.
 
 **The browser-build boundary.** The engine's semantics packages compile under `GOOS=js GOARCH=wasm` and
 reach **no NATS client** — CI asserts both (a build check, and a `go list -deps` assertion over the same

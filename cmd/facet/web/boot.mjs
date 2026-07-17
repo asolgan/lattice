@@ -15,16 +15,71 @@
 
 import { edgeSource } from "./edge-source.mjs";
 
+// deviceIdKey is the localStorage slot the browser's own device id lives in.
+// The device id is browser-local (edge-browser-node-design.md §3.5), NOT handed
+// down by the static host: it is persisted so a reload reuses the SAME durable
+// consumer (warm resume) instead of orphaning a fresh one per page load.
+const deviceIdKey = "facet.deviceId";
+
+// deviceIdAlphabet is the canonical Lattice NanoID charset (internal/substrate/
+// keys/nanoid.go) — alphanumeric with no confusables and, critically, none of
+// the '.', '*', '>' or whitespace a JetStream consumer name forbids (the id is
+// spliced into the durable name `edge-sync-<identity>-<device>`).
+const deviceIdAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz123456789";
+const deviceIdLength = 20;
+
+function isSafeDeviceId(s) {
+  if (typeof s !== "string" || s.length !== deviceIdLength) return false;
+  for (const ch of s) if (!deviceIdAlphabet.includes(ch)) return false;
+  return true;
+}
+
+function randomDeviceId() {
+  const bytes = new Uint8Array(deviceIdLength);
+  const c = globalThis.crypto;
+  if (c && typeof c.getRandomValues === "function") {
+    c.getRandomValues(bytes);
+  } else {
+    // No WebCrypto (a non-secure context) — a device id needs uniqueness, not
+    // cryptographic secrecy, so Math.random is an acceptable last resort.
+    for (let i = 0; i < deviceIdLength; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  // The tiny modulo bias (256 % 58 ≠ 0) is irrelevant across a 58^20 space —
+  // collisions remain astronomically unlikely.
+  let out = "";
+  for (let i = 0; i < deviceIdLength; i++) out += deviceIdAlphabet[bytes[i] % deviceIdAlphabet.length];
+  return out;
+}
+
+// resolveDeviceId returns this browser's stable device id, generating and
+// persisting one on first use. A stored id that fails the charset/length check
+// (corrupt or from an older scheme) is regenerated. Storage being unavailable
+// (private mode, disabled) degrades to an ephemeral per-load id rather than
+// failing the boot.
+export function resolveDeviceId(storage = globalThis.localStorage) {
+  try {
+    const existing = storage && storage.getItem(deviceIdKey);
+    if (isSafeDeviceId(existing)) return existing;
+  } catch { /* storage unavailable — fall through to an ephemeral id */ }
+  const id = randomDeviceId();
+  try {
+    if (storage) storage.setItem(deviceIdKey, id);
+  } catch { /* ignore: an ephemeral id still boots, it just won't resume warm */ }
+  return id;
+}
+
 // readBootConfig returns the in-page-engine bootstrap, or null when the page is
 // not configured for it (the shipped Go-host page). A malformed config is
 // treated as absent rather than fatal — the SSE fallback still loads the app.
+// deviceId is NOT required here: the static host does not inject it (§3.5), so
+// an absent one is resolved browser-side in boot() via resolveDeviceId.
 export function readBootConfig() {
   const c = globalThis.window && window.__EDGE_BOOT__;
   if (!c || typeof c !== "object") return null;
-  if (!c.identityId || !c.deviceId || !c.wsUrl || !c.gatewayUrl || !c.token) return null;
+  if (!c.identityId || !c.wsUrl || !c.gatewayUrl || !c.token) return null;
   return {
     identityId: c.identityId,
-    deviceId: c.deviceId,
+    deviceId: c.deviceId || undefined,
     wsUrl: c.wsUrl,
     gatewayUrl: c.gatewayUrl,
     token: c.token,
@@ -98,6 +153,8 @@ function loadScript(src) {
 // the ~440 KB nats.js bundle), and assemble the source. Rejects on any failure
 // so app.js's startFeed falls back to SSE rather than stranding the boot.
 async function boot(cfg) {
+  // Fill the browser-local device id the static host did not inject (§3.5).
+  if (!cfg.deviceId) cfg.deviceId = resolveDeviceId();
   await loadScript(cfg.wasmExecUrl);
   const go = new globalThis.Go();
   const result = await WebAssembly.instantiateStreaming(fetch(cfg.wasmUrl), go.importObject);
