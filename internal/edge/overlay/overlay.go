@@ -69,10 +69,23 @@ func (o *Overlay) Apply(key, requestID string, data json.RawMessage, deleted boo
 	})
 }
 
-// Discard drops key's pending overlay outright, if any — the intent's op
-// was rejected (agent's job to call this): the optimistic value never
-// becomes cloud truth, so showing it further would misrepresent state.
-func (o *Overlay) Discard(key string) error {
+// Discard drops key's pending overlay iff it is still the one requestID
+// installed — the intent's op was rejected (agent's job to call this): the
+// optimistic value never becomes cloud truth, so showing it further would
+// misrepresent state. The requestID match is load-bearing: a store.PutPending
+// overwrites by key, so a newer intent for the same key may already own the
+// overlay; that newer overlay is still valid until its own intent resolves, and
+// this older rejected intent must not drop it (edge-lattice-full-design.md §8.1
+// RR-2(iii)). A no-op if the key has no pending overlay or a different intent
+// now owns it.
+func (o *Overlay) Discard(key, requestID string) error {
+	pending, ok, err := o.store.GetPending(key)
+	if err != nil {
+		return fmt.Errorf("edge/overlay: discard read pending %q: %w", key, err)
+	}
+	if !ok || pending.RequestID != requestID {
+		return nil
+	}
 	return o.store.DeletePending(key)
 }
 

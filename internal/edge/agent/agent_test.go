@@ -177,6 +177,41 @@ func TestDrain_TransportFailureLeavesIntentQueued(t *testing.T) {
 	require.Len(t, intents, 1, "a transport failure must leave the intent queued for a later Drain")
 }
 
+// TestDrain_UnrecognizedStatusLeavesIntentQueued proves an unrecognized
+// terminal reply status (a future async-reply code, or a protocol anomaly) does
+// NOT dequeue the intent or discard its overlay: the durable edit is the only
+// record of the user's change and must survive a reply the node cannot
+// interpret (edge-lattice-full-design.md §8.1 RR-2(ii)). It also stops the
+// drain so a following intent stays queued (FIFO), resolved by a later Drain.
+func TestDrain_UnrecognizedStatusLeavesIntentQueued(t *testing.T) {
+	ctx := context.Background()
+	st, ov := openTestStack(t)
+
+	sub := &fakeSubmitter{decide: func(env *processor.OperationEnvelope) (*processor.OperationReply, error) {
+		return &processor.OperationReply{RequestID: env.RequestID, Status: processor.ReplyStatus("pendingAsync")}, nil
+	}}
+
+	require.NoError(t, ov.Apply(testKey, "req1", []byte(`{"rent":150}`), false))
+	a := New(sub, st, ov, nil, Config{})
+	require.NoError(t, a.Enqueue(testEnv("req1"), []string{testKey}))
+	require.NoError(t, a.Enqueue(testEnv("req2"), nil))
+
+	require.NoError(t, a.Drain(ctx))
+
+	// req1 got its unrecognized reply → both it and the FIFO-following req2 stay
+	// queued; req2 was never even submitted (drain stopped at req1).
+	intents, err := st.ListIntents()
+	require.NoError(t, err)
+	require.Len(t, intents, 2, "an unrecognized status must leave the durable edit (and everything behind it) queued")
+	require.Equal(t, []string{"req1"}, sub.seen, "drain must stop at the unresolved intent, not submit req2")
+
+	// The overlay is untouched — nothing authoritative said to drop it.
+	v, ok, err := ov.Read(testKey)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.True(t, v.Pending, "the optimistic overlay must survive an uninterpretable reply")
+}
+
 func TestDrain_MalformedIntentIsDroppedNotWedged(t *testing.T) {
 	ctx := context.Background()
 	st, ov := openTestStack(t)

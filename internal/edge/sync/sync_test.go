@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -43,6 +44,16 @@ func openTestStore(t *testing.T) edgestore.Store {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = st.Close() })
 	return st
+}
+
+// transientErrStore is an edgestore.Store whose ApplyUpsert returns a plain
+// (non-sentinel) error for any key — the transient-failure case handle() must
+// Nak rather than Term. Only ApplyUpsert is exercised by that path; the
+// embedded nil Store makes any other call panic loudly if the path changes.
+type transientErrStore struct{ edgestore.Store }
+
+func (transientErrStore) ApplyUpsert(string, uint64, json.RawMessage) (bool, error) {
+	return false, errors.New("edge/store: simulated transient backing-engine failure")
 }
 
 func openInterestKV(t *testing.T, ctx context.Context, conn *substrate.Conn) *substrate.KV {
@@ -268,6 +279,56 @@ func TestManager_Handle(t *testing.T) {
 
 	decision = mgr.handle(ctx, transport.Delta{Sequence: 5, Body: []byte("not json")})
 	assert.Equal(t, transport.Term, decision, "a malformed envelope is dropped, not redelivered")
+}
+
+// TestManager_Handle_UnstorableKeyTerminates proves a delta carrying a key the
+// store can never accept (neither a Contract #1 key nor a manifest-prefixed
+// projection row — e.g. a lens `ns` typo) is Term'd, not Nak'd: the store
+// rejects it identically on every redelivery, so a Nak would hot-loop it
+// forever (edge-lattice-full-design.md §8.1 RR-2(i)). A transient store error
+// still Naks — proven separately by the fake below.
+func TestManager_Handle_UnstorableKeyTerminates(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	conn := newSyncTestConn(t, ctx)
+	st := openTestStore(t)
+	mgr, err := New(natstransport.New(conn), st, Config{IdentityID: "identityA", DeviceID: "deviceX", Logger: testutil.TestLogger()})
+	require.NoError(t, err)
+
+	body := func(env deltaEnvelope) []byte {
+		b, err := json.Marshal(env)
+		require.NoError(t, err)
+		return b
+	}
+
+	// A syntactically well-formed envelope whose key is neither Contract #1 nor
+	// manifest-prefixed: the store's ErrUnstorableKey path.
+	up := mgr.handle(ctx, transport.Delta{Sequence: 1, Body: body(deltaEnvelope{Op: "upsert", Key: "not-a-real-key", Revision: 1, Data: json.RawMessage(`{"x":1}`)})})
+	assert.Equal(t, transport.Term, up, "an unstorable upsert key is dropped, not redelivered")
+
+	del := mgr.handle(ctx, transport.Delta{Sequence: 2, Body: body(deltaEnvelope{Op: "delete", Key: "manifes.typo.key", Revision: 1})})
+	assert.Equal(t, transport.Term, del, "an unstorable delete key is dropped, not redelivered")
+}
+
+// TestManager_Handle_TransientApplyErrorNaks proves the RR-2(i) classification
+// is narrow: only store.ErrUnstorableKey terminates; any OTHER apply error is
+// treated as transient and Nak'd for redelivery (e.g. a backing-engine I/O
+// blip). A fake store returns a non-sentinel error for a valid key.
+func TestManager_Handle_TransientApplyErrorNaks(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	conn := newSyncTestConn(t, ctx)
+	mgr, err := New(natstransport.New(conn), &transientErrStore{}, Config{IdentityID: "identityA", DeviceID: "deviceX", Logger: testutil.TestLogger()})
+	require.NoError(t, err)
+
+	leaseID, err := substrate.NewNanoID()
+	require.NoError(t, err)
+	key := substrate.VertexKey("lease", leaseID)
+	b, err := json.Marshal(deltaEnvelope{Op: "upsert", Key: key, Revision: 1, Data: json.RawMessage(`{"x":1}`)})
+	require.NoError(t, err)
+
+	decision := mgr.handle(ctx, transport.Delta{Sequence: 1, Body: b})
+	assert.Equal(t, transport.Nak, decision, "a transient (non-sentinel) apply error must Nak for redelivery, not Term")
 }
 
 // TestManager_Handle_OnChangeFiresOnlyOnApplied proves the change-notification

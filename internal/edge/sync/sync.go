@@ -15,6 +15,7 @@ package sync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -301,6 +302,9 @@ func (m *Manager) handle(_ context.Context, d transport.Delta) transport.Decisio
 	case "upsert":
 		applied, err := m.store.ApplyUpsert(env.Key, env.Revision, env.Data)
 		if err != nil {
+			if decision, terminal := m.classifyApplyError("upsert", env.Key, err); terminal {
+				return decision
+			}
 			m.logger.Error("edge/sync: apply upsert failed", "key", env.Key, "err", err)
 			return transport.Nak
 		}
@@ -310,6 +314,9 @@ func (m *Manager) handle(_ context.Context, d transport.Delta) transport.Decisio
 	case "delete":
 		applied, err := m.store.ApplyDelete(env.Key, env.Revision)
 		if err != nil {
+			if decision, terminal := m.classifyApplyError("delete", env.Key, err); terminal {
+				return decision
+			}
 			m.logger.Error("edge/sync: apply delete failed", "key", env.Key, "err", err)
 			return transport.Nak
 		}
@@ -329,4 +336,19 @@ func (m *Manager) handle(_ context.Context, d transport.Delta) transport.Decisio
 		return transport.Nak
 	}
 	return transport.Ack
+}
+
+// classifyApplyError decides whether an ApplyUpsert/ApplyDelete error is
+// deterministic (terminal=true) — the store will reject this key identically on
+// every redelivery — or transient. An unstorable key (store.ErrUnstorableKey:
+// a lens `ns` typo, or a future non-manifest personal lens) is terminal and
+// must Term rather than Nak into an infinite redelivery hot-loop, exactly as
+// handle() Terms a malformed envelope for the same reason. Any other apply
+// error is treated as transient (terminal=false) and left to the caller to Nak.
+func (m *Manager) classifyApplyError(op, key string, err error) (transport.Decision, bool) {
+	if errors.Is(err, store.ErrUnstorableKey) {
+		m.logger.Error("edge/sync: unstorable delta key, dropping", "op", op, "key", key, "err", err)
+		return transport.Term, true
+	}
+	return transport.Nak, false
 }

@@ -113,7 +113,7 @@ func TestDiscard_DropsOverlayAndFallsBackToConfirmed(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, o.Apply(testKey, "req1", []byte(`{"rent":150}`), false))
 
-	require.NoError(t, o.Discard(testKey))
+	require.NoError(t, o.Discard(testKey, "req1"))
 
 	v, ok, err := o.Read(testKey)
 	require.NoError(t, err)
@@ -126,7 +126,7 @@ func TestDiscard_OnNeverConfirmedKeyLeavesNothing(t *testing.T) {
 	o, _ := openTestOverlay(t)
 	require.NoError(t, o.Apply(testKey, "req1", []byte(`{"rent":150}`), false))
 
-	require.NoError(t, o.Discard(testKey))
+	require.NoError(t, o.Discard(testKey, "req1"))
 
 	_, ok, err := o.Read(testKey)
 	require.NoError(t, err)
@@ -141,10 +141,33 @@ func TestPendingKeys_ListsActiveOverlaysOnly(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []string{testKey}, keys)
 
-	require.NoError(t, o.Discard(testKey))
+	require.NoError(t, o.Discard(testKey, "req1"))
 	keys, err = o.PendingKeys()
 	require.NoError(t, err)
 	require.Empty(t, keys)
+}
+
+func TestDiscard_StaleRequestIDLeavesNewerOverlay(t *testing.T) {
+	o, _ := openTestOverlay(t)
+	// req1 installs an overlay, then req2 supersedes it for the same key
+	// (store.PutPending overwrites by key). A late rejection of the OLDER req1
+	// must not drop req2's still-valid overlay (RR-2(iii)).
+	require.NoError(t, o.Apply(testKey, "req1", []byte(`{"rent":150}`), false))
+	require.NoError(t, o.Apply(testKey, "req2", []byte(`{"rent":175}`), false))
+
+	require.NoError(t, o.Discard(testKey, "req1"))
+
+	v, ok, err := o.Read(testKey)
+	require.NoError(t, err)
+	require.True(t, ok)
+	require.True(t, v.Pending, "req2's overlay must survive an older intent's discard")
+	require.JSONEq(t, `{"rent":175}`, string(v.Data))
+
+	// req2's own rejection retires it.
+	require.NoError(t, o.Discard(testKey, "req2"))
+	_, ok, err = o.Read(testKey)
+	require.NoError(t, err)
+	require.False(t, ok)
 }
 
 func TestLinks_OutDirection_ConfirmedAndPending(t *testing.T) {

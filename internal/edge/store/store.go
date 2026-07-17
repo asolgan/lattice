@@ -24,10 +24,21 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 
 	"github.com/asolgan/lattice/internal/substrate/keys"
 )
+
+// ErrUnstorableKey is returned by ApplyUpsert/ApplyDelete when key is neither a
+// valid Contract #1 vertex/aspect/link key nor a reserved manifest-prefix
+// projection-row key. It is a deterministic classification failure — the same
+// key will never become storable on redelivery — so a consumer applying an
+// at-least-once delta feed (internal/edge/sync) must treat it as terminal
+// (Term the message) rather than Nak-and-redeliver into a hot loop. Every Store
+// implementation wraps this sentinel so callers can errors.Is against it
+// regardless of the backing engine.
+var ErrUnstorableKey = errors.New("edge/store: key is not a Contract #1 or manifest key")
 
 // manifestKeyPrefix is the reserved projection-row key namespace for a
 // Personal Lens's nats-subject deltas that are not themselves Core-KV keys

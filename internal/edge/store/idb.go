@@ -147,7 +147,7 @@ func (s *IDBStore) Close() error {
 // error).
 func (s *IDBStore) ApplyUpsert(key string, revision uint64, data json.RawMessage) (applied bool, err error) {
 	if !isStorableKey(key) {
-		return false, fmt.Errorf("edge/store: ApplyUpsert: %q is not a Contract #1 or manifest key", key)
+		return false, fmt.Errorf("edge/store: ApplyUpsert: %q: %w", key, ErrUnstorableKey)
 	}
 	return s.applyDelta(key, Entry{Key: key, Revision: revision, Data: data})
 }
@@ -156,7 +156,7 @@ func (s *IDBStore) ApplyUpsert(key string, revision uint64, data json.RawMessage
 // as ApplyUpsert.
 func (s *IDBStore) ApplyDelete(key string, revision uint64) (applied bool, err error) {
 	if !isStorableKey(key) {
-		return false, fmt.Errorf("edge/store: ApplyDelete: %q is not a Contract #1 or manifest key", key)
+		return false, fmt.Errorf("edge/store: ApplyDelete: %q: %w", key, ErrUnstorableKey)
 	}
 	return s.applyDelta(key, Entry{Key: key, Revision: revision, Deleted: true})
 }

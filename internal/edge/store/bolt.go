@@ -64,7 +64,7 @@ func (s *BoltStore) Close() error {
 // error).
 func (s *BoltStore) ApplyUpsert(key string, revision uint64, data json.RawMessage) (applied bool, err error) {
 	if !isStorableKey(key) {
-		return false, fmt.Errorf("edge/store: ApplyUpsert: %q is not a Contract #1 or manifest key", key)
+		return false, fmt.Errorf("edge/store: ApplyUpsert: %q: %w", key, ErrUnstorableKey)
 	}
 	err = s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(bucketVAL))
@@ -85,7 +85,7 @@ func (s *BoltStore) ApplyUpsert(key string, revision uint64, data json.RawMessag
 // as ApplyUpsert.
 func (s *BoltStore) ApplyDelete(key string, revision uint64) (applied bool, err error) {
 	if !isStorableKey(key) {
-		return false, fmt.Errorf("edge/store: ApplyDelete: %q is not a Contract #1 or manifest key", key)
+		return false, fmt.Errorf("edge/store: ApplyDelete: %q: %w", key, ErrUnstorableKey)
 	}
 	err = s.db.Update(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(bucketVAL))

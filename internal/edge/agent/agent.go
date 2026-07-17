@@ -143,8 +143,18 @@ func (a *Agent) Drain(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("edge/agent: submit %s: %w", ir.Envelope.RequestID, err)
 		}
-		if err := a.resolve(ctx, ir, reply); err != nil {
-			a.logger.Error("edge/agent: resolve reply failed", "requestId", ir.Envelope.RequestID, "err", err)
+		dequeue, resolveErr := a.resolve(ctx, ir, reply)
+		if resolveErr != nil {
+			a.logger.Error("edge/agent: resolve reply failed", "requestId", ir.Envelope.RequestID, "err", resolveErr)
+		}
+		if !dequeue {
+			// The cloud's reply was not a terminal outcome we can act on (an
+			// unrecognized status — a future async-reply code, or a protocol
+			// anomaly). Leave THIS intent and every intent behind it queued so
+			// the durable edit is never silently lost and FIFO order holds; a
+			// later Drain re-resolves it once the status is handled. Mirrors the
+			// transport-failure early return above.
+			return nil
 		}
 		if err := a.store.DeleteIntent(rec.Seq); err != nil {
 			return fmt.Errorf("edge/agent: dequeue %s: %w", ir.Envelope.RequestID, err)
@@ -153,14 +163,18 @@ func (a *Agent) Drain(ctx context.Context) error {
 	return nil
 }
 
-// resolve applies a terminal reply's outcome: accepted/duplicate does
-// nothing further (the overlay retires itself once the mirror catches up);
-// rejected re-hydrates on RevisionConflict, discards the intent's overlays
-// unconditionally, and reports the conflict.
-func (a *Agent) resolve(ctx context.Context, ir intentRecord, reply *opwire.OperationReply) error {
+// resolve applies a terminal reply's outcome and reports whether the intent
+// should be dequeued. accepted/duplicate does nothing further (the overlay
+// retires itself once the mirror catches up) and dequeues; rejected re-hydrates
+// on RevisionConflict, discards the intent's own overlays, reports the conflict,
+// and dequeues. An unrecognized status is NOT a terminal outcome this node can
+// act on — a future async-reply code, or a protocol anomaly — so it returns
+// dequeue=false: the durable edit stays queued rather than being dropped on a
+// reply the node cannot interpret (edge-lattice-full-design.md §8.1 RR-2(ii)).
+func (a *Agent) resolve(ctx context.Context, ir intentRecord, reply *opwire.OperationReply) (dequeue bool, err error) {
 	switch reply.Status {
 	case opwire.ReplyStatusAccepted, opwire.ReplyStatusDuplicate:
-		return nil
+		return true, nil
 	case opwire.ReplyStatusRejected:
 		if reply.Error != nil && reply.Error.Code == opwire.ErrCodeRevisionConflict && a.rehydrate != nil {
 			if err := a.rehydrate.Rehydrate(ctx); err != nil {
@@ -168,14 +182,14 @@ func (a *Agent) resolve(ctx context.Context, ir intentRecord, reply *opwire.Oper
 			}
 		}
 		for _, key := range ir.TouchedKeys {
-			if err := a.overlay.Discard(key); err != nil {
-				return fmt.Errorf("discard overlay %q: %w", key, err)
+			if err := a.overlay.Discard(key, ir.Envelope.RequestID); err != nil {
+				return true, fmt.Errorf("discard overlay %q: %w", key, err)
 			}
 		}
 		a.reportConflict(ir, reply)
-		return nil
+		return true, nil
 	default:
-		return fmt.Errorf("unrecognized reply status %q", reply.Status)
+		return false, fmt.Errorf("unrecognized reply status %q", reply.Status)
 	}
 }
 
