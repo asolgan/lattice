@@ -138,8 +138,12 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 > Facet's own next is Fire 3 (auth turn-on), now unblocked — see verticals.md.
 > **Processor-MAC'd sensitive-refs CLOSED** (2026-07-16) — Fire 1 (mint+verify) + Fire 2
 > (bridge swap + natsperm grant swap) both shipped, CI green — see the Security & trust boundary row.
-> **AI-caps Fire 4's vertexTypeDDL/opMeta materializer is now the named build-ready pick**
-> (its blocking condition 1 is satisfied; condition 2, the static lint, is Fire 4's own build).
+> **AI-caps Fire 4 SHIPPED** (2026-07-16, `219fa0c`) — vertexTypeDDL/opMeta materializer kinds,
+> the condition-2 lint, and a live-catalog `SensitiveAspectResolver`; AI-authored-capabilities is now
+> effectively done (Fire 5 stays design-only per Andrew's recommendation; a Loupe UI affordance is
+> Stream 3's lane) — see the AI-native table row below.
+> **`[bootstrap] internal/bootstrap primordial-ID globals race`** is now the named build-ready pick
+> (✅ Andrew-ratified 2026-07-16, 2-fire test-scoped design — see the Refinements & ops row).
 > Whoever ships the named pick updates this callout to the next one — a stale callout starves the lane.
 
 ### Security & trust boundary
@@ -180,7 +184,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### AI-native
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| AI-authored capabilities | A Lattice-aware agent proposes DDL/Starlark/lenses/workflows through human review + deterministic validation + rollback. | ★★–★★★ | L | 🏗️ building · [design](../../implementation-artifacts/ai-authored-capabilities-design.md) · unblocked (2026-07-16, sensitive-ref-MAC Fires 1–2 shipped) · next: Fire-4 materializer kinds · Loupe UI is Stream 3's lane |
+| AI-authored capabilities | A Lattice-aware agent proposes DDL/Starlark/lenses/workflows through human review + deterministic validation + rollback. | ★★–★★★ | L | ✅ effectively done · [design](../../implementation-artifacts/ai-authored-capabilities-design.md) · Fires 1–4 shipped (2026-07-16, `219fa0c`); Fire 5 (auto-apply) design-only per Andrew; Loupe UI is Stream 3's lane |
 | **The Augur** (AI reasoning tier — L3 evaluator) | Weaver's AI-assisted reasoning tier for ambiguous/novel convergence gaps. The marquee AI-native feature. | ★★ | M–L | ✅ Fires 1+2a+2b shipped incl. §6 residual e2e (loop closes: escalate→review→dispatch) · [design](../../implementation-artifacts/augur-design.md) + [dispatch design](../../implementation-artifacts/augur-dispatch-pickup-design.md) · 🚧 Fire 3 autoApply Andrew-gated |
 | Starlark guards (Loom) | The `{reads, starlark}` guard escape hatch needs a verified-pure sandbox. | ★ | M | ✅ SHIPPED (both fires) · [design](../../implementation-artifacts/loom-starlark-guards-design.md) · Fire 1 `474745b` (shared sandbox) + Fire 2 (Loom guard eval) — see Done log |
 | **Weaver planner mandate (dispatcher → solver)** | Remediation stops being a static gap→action lookup: deterministic planner (per-gap candidate selection, then goal-regression synthesis over op-declared effects) with contraction/oscillation diagnostics and admission control; shadow mode + per-target cutover; the Augur stays the AI boundary. | ★★★ | XL | ✅ effectively done · [design](../../implementation-artifacts/weaver-planner-mandate-design.md) · Fires 1-9(Inc1)+R1-R3 shipped, consumed by LoftSpace renewals; Fire 9 AI tail deferred - needs a novel Augur gap, not renewals |
@@ -214,6 +218,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-16 · `219fa0c` · [pkgmgr,capability-author] AI-caps Fire 4 SHIPPED — vertexTypeDDL/opMeta kinds + condition-2 lint + live SensitiveAspectResolver; adversarially reviewed, fixed a real fail-open bug; CI green
 - 2026-07-16 · `8a34fe4` · [bridge,vault,natsperm] sensitive-ref-mac-provenance Fire 2 CLOSED — bridge requires+verifies the MAC via lattice.vault.decryptref, natsperm grant swap, DEFENDED fabricated-ref e2e; adversarially reviewed; CI green
 - 2026-07-16 · `b96f819` · [vault,processor] sensitive-ref-mac-provenance Fire 1 — Vault.MAC primitive + lattice.vault.decryptref RPC + both mint seams stamp the marker; full 3-layer adversarial review; CI green
 - 2026-07-15 · `91a614f` · [CI] fixed natsperm auth-callout flake (unit-1 run 29383547635, Authorization Violation) — test-server auth_timeout 2s→10s under shard CPU contention; prod conf untouched
@@ -247,5 +252,4 @@ One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archiv
 - 2026-07-12 · `eec08a6` · [identity-domain,Gateway] multi-credential-identity-linking Fire 4 CLOSED — UnlinkCredential + credentialindex revive-safety + materializer bucket-delete fold; Fires 1-4 all shipped; CI green
 - 2026-07-12 · `3e345d1` · [Edge,scripts] per-identity-nats-subscribe-acl Fire 3 CLOSED — live-stack revocation e2e proves vector 4 against real prod wiring; EDGE.3 gate flipped build-ready; CI green
 - 2026-07-12 · `2f07d93` · [Edge,Refractor] per-identity-nats-subscribe-acl Fire 2 — cmd/edge EDGE_TOKEN connect + inbox scoping; Refractor personal.{register,deregister,hydrate} bind to the verified actor; CI green
-- 2026-07-11 · `a3ec8d5` · [Gateway,natsperm] per-identity-nats-subscribe-acl Fire 1 CLOSED — xkey day-one condition wired (UnsealRequest/SealResponse sealed-box round trip); CI green
 - *(older entries rolled to [archive/lattice-done.md](archive/lattice-done.md); includes `94c8224` hello-lattice NFR-P3 flake fix)*
