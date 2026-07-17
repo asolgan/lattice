@@ -2,11 +2,11 @@
 
 // seed-showcase.go — dev-seed for `make seed-showcase` (edge-showcase-app-
 // design.md §7.3, §7.4): loads a curated two-persona demo world using
-// service-domain's real families ({laundry, fitness, clinic} among the enum) —
-// P7 makes the envelope class the machine truth, so a template's family must
-// match what it's presented as, or a completed run of it reads as a
-// different real thing to any family-matching consumer (e.g. lease-signing's
-// renewals lens).
+// service-domain's real families ({laundry, fitness, clinic, wellness} among
+// the enum) — P7 makes the envelope class the machine truth, so a template's
+// family must match what it's presented as, or a completed run of it reads
+// as a different real thing to any family-matching consumer (e.g.
+// lease-signing's renewals lens).
 //
 // IDEMPOTENT (deterministic handles so reloads converge, unlike
 // seed-edge-demo.go's "fresh vertices every run"): every location/template
@@ -62,22 +62,24 @@ import (
 // seam: a second run recognizes this exact world instead of minting a
 // disjoint one.
 const (
-	buildingID   = "A9jnKK2bGwZNrfHHkLme"
-	unit1ID      = "J11XtyS84Tiv16GcC6eE"
-	unit2ID      = "eM2RNxs5S5rDFr6i8cfa"
-	laundryTplID = "z1vfcNcXdkdyHhJoFz55"
-	fitnessTplID = "xeY6h9HU3MYWUuiUZhcA"
-	clinicTplID  = "hqYJYTcdwtPPfD2pPG8c"
-	instance1ID  = "w3wX6tCr9EQMDo7zKu6P"
+	buildingID    = "A9jnKK2bGwZNrfHHkLme"
+	unit1ID       = "J11XtyS84Tiv16GcC6eE"
+	unit2ID       = "eM2RNxs5S5rDFr6i8cfa"
+	laundryTplID  = "z1vfcNcXdkdyHhJoFz55"
+	fitnessTplID  = "xeY6h9HU3MYWUuiUZhcA"
+	clinicTplID   = "hqYJYTcdwtPPfD2pPG8c"
+	wellnessTplID = "nh8YmMryPJbSzhCyTLxR"
+	instance1ID   = "w3wX6tCr9EQMDo7zKu6P"
 
 	// CreateLocation mints vtx.<locationType>.<id> — the type-specific prefix,
 	// not a generic "location" one (location-domain's ddls.go).
-	buildingKey   = "vtx.building." + buildingID
-	unit1Key      = "vtx.unit." + unit1ID
-	unit2Key      = "vtx.unit." + unit2ID
-	laundryTplKey = "vtx.service." + laundryTplID
-	fitnessTplKey = "vtx.service." + fitnessTplID
-	clinicTplKey  = "vtx.service." + clinicTplID
+	buildingKey    = "vtx.building." + buildingID
+	unit1Key       = "vtx.unit." + unit1ID
+	unit2Key       = "vtx.unit." + unit2ID
+	laundryTplKey  = "vtx.service." + laundryTplID
+	fitnessTplKey  = "vtx.service." + fitnessTplID
+	clinicTplKey   = "vtx.service." + clinicTplID
+	wellnessTplKey = "vtx.service." + wellnessTplID
 
 	tenant1Name  = "Riley Chen"
 	tenant1Email = "riley.chen@showcase.dev.lattice.local"
@@ -114,13 +116,16 @@ func main() {
 		recoverAndPrint(ctx, conn)
 		retireLegacyTemplates(ctx, conn)
 		// The building's liveness only proves the ORIGINAL world loaded; a
-		// later increment (e.g. the §7.4 clinic template) can still be
-		// missing — or partially wired — on an already-seeded stack.
-		// seedClinicTemplate is internally idempotent per-mutation, so
-		// calling it unconditionally here layers in whatever's missing
-		// without re-submitting anything already committed.
+		// later increment (e.g. the §7.4 clinic template, the wellness
+		// template below) can still be missing — or partially wired — on an
+		// already-seeded stack. seedClinicTemplate/seedWellnessTemplate are
+		// internally idempotent per-mutation, so calling them unconditionally
+		// here layers in whatever's missing without re-submitting anything
+		// already committed.
 		seedClinicTemplate(ctx, conn, adminKey)
 		fmt.Println("==> template clinic: " + clinicTplKey + " availableAt building, permits CreateAppointment/RescheduleAppointment/SetAppointmentStatus")
+		seedWellnessTemplate(ctx, conn, adminKey)
+		fmt.Println("==> template wellness: " + wellnessTplKey + " availableAt building, permits CreateBooking/CancelBooking")
 		return
 	}
 	consumerRoleKey := "vtx.role." + pkgmgr.RoleID("identity-domain", "consumer")
@@ -174,6 +179,14 @@ func main() {
 
 	seedClinicTemplate(ctx, conn, adminKey)
 	fmt.Println("==> template clinic: " + clinicTplKey + " availableAt building, permits CreateAppointment/RescheduleAppointment/SetAppointmentStatus")
+
+	// --- wellness "book a class" template, same mixed-use building precedent
+	// as clinic above — permits CreateBooking/CancelBooking directly (they
+	// also carry their own scope=self auth, not RequestService's
+	// authContext.service path) --
+
+	seedWellnessTemplate(ctx, conn, adminKey)
+	fmt.Println("==> template wellness: " + wellnessTplKey + " availableAt building, permits CreateBooking/CancelBooking")
 
 	// --- one completed instance for tenant1 (the Activity timeline seed) --
 
@@ -285,6 +298,45 @@ func seedClinicTemplate(ctx context.Context, conn *substrate.Conn, adminKey stri
 		submitOp(ctx, conn, adminKey, "WirePermitsOperation", "serviceLocation",
 			map[string]any{"service": clinicTplKey, "operation": opMeta},
 			&processor.ContextHint{Reads: []string{clinicTplKey, opMeta}})
+	}
+}
+
+// seedWellnessTemplate mints the wellness "book a class" service template,
+// wires it availableAt the showcase building, and permitsOperation-links it
+// directly to wellness-domain's two self-scope consumer ops (CreateBooking,
+// CancelBooking) — the catalog-path wiring named in
+// edge-showcase-app-design.md §7's residual note, mirroring
+// seedClinicTemplate exactly (same building, same permitsOperation pattern;
+// wellness's own studio/session vertices are unrelated to catalog
+// reachability, which needs only the availableAt container on the actor's
+// own containedIn chain).
+func seedWellnessTemplate(ctx context.Context, conn *substrate.Conn, adminKey string) {
+	if !alive(ctx, conn, wellnessTplKey) {
+		submitOp(ctx, conn, adminKey, "CreateServiceTemplate", "service",
+			map[string]any{"family": "wellness", "templateId": wellnessTplID, "presentation": map[string]any{
+				"name":        "Riverside Wellness Studio",
+				"description": "Book, or cancel, a class",
+				"icon":        "wellness",
+				"category":    "wellness",
+			}}, nil)
+	}
+
+	availableAtLnk := "lnk.service." + wellnessTplID + ".availableAt." + strings.TrimPrefix(buildingKey, "vtx.")
+	if !alive(ctx, conn, availableAtLnk) {
+		submitOp(ctx, conn, adminKey, "WireAvailableAt", "serviceLocation",
+			map[string]any{"service": wellnessTplKey, "location": buildingKey},
+			&processor.ContextHint{Reads: []string{wellnessTplKey, buildingKey}})
+	}
+
+	for _, opType := range []string{"CreateBooking", "CancelBooking"} {
+		opMeta := findOpMetaByType(ctx, conn, opType)
+		permitsLnk := "lnk.service." + wellnessTplID + ".permitsOperation." + strings.TrimPrefix(opMeta, "vtx.")
+		if alive(ctx, conn, permitsLnk) {
+			continue
+		}
+		submitOp(ctx, conn, adminKey, "WirePermitsOperation", "serviceLocation",
+			map[string]any{"service": wellnessTplKey, "operation": opMeta},
+			&processor.ContextHint{Reads: []string{wellnessTplKey, opMeta}})
 	}
 }
 
