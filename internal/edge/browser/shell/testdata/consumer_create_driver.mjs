@@ -73,7 +73,20 @@ if (mode === "roundtrip") {
   };
 }
 
+// A watchdog so a stuck connection produces a diagnostic instead of a bare,
+// output-less exit. This exact hang bit once: on a runtime with no global
+// WebSocket (Node < 22), nats.js `wsconnect` never settles, the awaits below
+// hang, and the process exits 13 ("unsettled top-level await") with no stdout —
+// an opaque failure. The timer is deliberately kept referenced: that is what
+// holds the event loop open long enough to emit this line instead of exiting
+// empty-handed; done() clears it on every success path.
+const watchdog = setTimeout(() => {
+  console.log("DRIVER_TIMEOUT (connection never settled — check the runtime has a global WebSocket, Node >= 22)");
+  process.exit(1);
+}, 20_000);
+
 function done(ok, line) {
+  clearTimeout(watchdog);
   console.log(line);
   // Give a drained close a moment; never hang the test on cleanup.
   core.close().finally(() => process.exit(ok ? 0 : 1));

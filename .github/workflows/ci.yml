@@ -447,7 +447,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          # Node 22: the vendored nats.js browser client's wsconnect needs a
+          # global WebSocket, which is stable (unflagged) only from Node 22 —
+          # Node 20 has none and every parity vector fails to connect.
+          node-version: "22"
 
       - name: Run the Edge consumer-create wire-form parity + leader-election gate
         run: make test-edge-consumer-parity
