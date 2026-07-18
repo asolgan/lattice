@@ -272,6 +272,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-17 · `9c830a4` · [weaver] test-cover the effect-mismatch loud surface (flagEffectMismatches set→recover→clear + metric, 53%→100%) + formatISODuration hours/clamp (50%→100%)
 - 2026-07-17 · `7fc7b42` · [edge,facet] edge-syncgap Inc 2 — client swap: gapped() over personal.syncgap (bounded retry, strict nil-result), FirstSequence deleted from seam+transports+shell, cmd/facet sync-restart
 - 2026-07-17 · `0acd68c` · [refractor,edge] edge-syncgap Inc 1 — the platform op: personal.syncgap control RPC (boolean, identity-bound, own verb) off the control host's own STREAM.INFO; six-place lockstep + STREAM.INFO deny vector
 - 2026-07-17 · `ebb02ab` · [edge,refractor] EDGE.5 RR-1/3/4/5 boundary follow-ons CLOSED — edge SYNC adj-watch seq-0 skip + personal-lens requireReadGate fail-closed + producer→consumer round-trip test + REQUIRE_ACTOR_VERIFIER startup guard
