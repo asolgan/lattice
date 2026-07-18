@@ -27,9 +27,24 @@ buildable-first; F11–F13 gated on lattice cross-lane asks (§6 there).
 |---|---|---|---|---|
 | **F13 — Chronicler Time Machine** | Flow-history browser + map scrubber + ledger browser (platform-edges brief §4 L1–L3); overrides the Chronicler design's "rides F6" display note (Loupe scope). | ★★★ | L | 🚧 L1 reconciled (shipped Flows tab satisfies it, no rebuild) + L2 v1 SHIPPED (flow-liveness scrubber); L2-full/L3 blocked-on: Chronicler archive mode (lattice, unscheduled) · [UX §4](../../implementation-artifacts/loupe-platform-edges-ux.md) |
 
+## New capability surfaces — 2026-07-18 PO survey
+
+Gaps found wearing the PO hat: Lattice platform capabilities shipped since Loupe's last feature work
+(~F15, 2026-07-07) that have **no operator surface** in the console today (all CLI-only). Pipeline: each
+needs a Sally UX pass → Winston adjudicates (Andrew-delegated for this program) → Loupe Steward builds.
+
+| Item | What it is | Imp | Size | State |
+|---|---|---|---|---|
+| **F16 — AI review console** | Operator control point for the AI-native loop, zero surface today (CLI-only): (a) **capability-proposal** queue — pending items, the DDL/Starlark/lens diff, approve/reject → apply, applied status (P5 read-models `capabilityProposals`/`capabilityAuthorContext`); (b) **Augur L3 escalation** queue — pending escalations, proposed ops, `ReviewProposal` verdict, `augurDispatch` outcome. Shared review pattern ⇒ one console, two tabs; build (a) first. | ★★★ | M | 🚧 needs UX design (Sally) |
+| **F17 — Orchestration queue observability** | Loupe's task inbox (`tasks.go`) shows only status/assignee/scopedTo/operation — blind to the FR28 queue plane shipped since: `queuedFor` + `ClaimTask`, `unroutedTasks` (Weaver-surfaced via Health-KV), availability-gated routing + `SetAvailability`. Add queued/unrouted/available columns + a "stuck/unrouted work" view. High value (live orchestration visibility), small. | ★★★ | S–M | 🚧 needs UX design (Sally, light) |
+| **F18 — Weaver planner-mandate diagnostics** | Planner mandate shipped end-to-end (consumed by LoftSpace renewals) with rich heartbeat-surfaced diagnostics — contraction monitor + oscillation detector, shadow-mode agree/diverge metrics, admission-control token-bucket pacing, `LensEffectMismatch`/effect-confidence — but only the generic component-page health rollup shows it. Add a planner solver/remediation view (oscillation, divergence, admission state). | ★★ | M | 🚧 needs UX design (Sally) |
+| **F19 — Edge / Personal-Lens fleet** | A whole plane is invisible: Personal Lens (PL.1–6) + Edge Lattice (EDGE.1–5) — per-identity subscribe ACL, `personal.{hydrate,register,deregister,syncgap}` control RPCs, Interest Sets, native WS listener. Add a connected-edge-nodes / personal-lens-subscribers / sync-gap-health view. Sovereign per-user ⇒ medium operator value, but the console can't see the edge fleet at all. | ★★ | M–L | 🚧 needs UX design (Sally) |
+
 ## Component maintenance
 
-Open items only (shipped ones are in the Done log) — none currently open.
+| Item | What it is | Imp | Size | State |
+|---|---|---|---|---|
+| **designAhead trio flip** | `systemmap.go` still hardcodes gateway/vault/chronicler as `designAhead:true`, but all three now heartbeat live (Gateway in `up-full`; Vault `health.vault.*`; Chronicler `health.chronicler.*`) — the flag is moot when live and only mis-renders the DOWN state as "design-ahead" not a real absent/offline signal. Decide the down-state posture (core-expected red vs vertical-style offline; kernel-only `make up` skips them) and flip. Also verify the F11 revoke loop live now Gateway runs in up-full. | ★★ | XS–S | 📋 ready |
 
 ## Parked
 
@@ -56,12 +71,14 @@ Open items only (shipped ones are in the Done log) — none currently open.
 - 2026-07-06 — F13 L1 reconciled (shipped Flows tab satisfies it, no `#/history` rebuild) + L2 v1 shipped (flow-liveness map scrubber, rides the same bucket); L2-full/L3 still wait on Chronicler archive mode.
 - 2026-07-07 — **F15 CLOSED**: items 5-6 shipped (`56911ac`) — pkg-lifecycle root-admin gate (confused-deputy close) + live e2e proof under `up-full-capability` (consoleOperator RevokeActor allowed, InstallPackage denied). Also closed the cross-filed "Loupe read-only PG role" lattice item in the same commit (M5 wildcard-grant, not bypass).
 - 2026-07-07 — Follow-up (`6b1ab6e`): `56911ac` proved the mechanism but left the live default operator as root — actually re-scoped it (console-operator's own read-grant lens + persisted `loupe-operator.json`, `up-full` wires it automatically); verified live against real non-empty protected-table data.
-- **Next:** F13 L2-full/L3 stay blocked on Chronicler archive mode (unscheduled, lattice). On the Gateway up-full ship: flip its `designAhead` flag off + verify the F11 revoke loop live (XS).
+- 2026-07-18 — Café + Wellness curated onto the door-band Apps group (all four verticals render together, client-shelf empty) — `3470f7d`, verified live (all four green). Same session: **PO survey** (Loupe untouched since F15/2026-07-07) filed F16–F19 + the `designAhead`-trio maintenance row; the old "flip Gateway designAhead" Next-line is now that row (Gateway up-full trigger shipped `11cc15f`).
+- **Next:** F13 L2-full/L3 stay blocked on Chronicler archive mode (unscheduled, lattice). Newly-filed F16 (AI review console) is the highest-value gap — needs a Sally UX pass first. The `designAhead`-trio maintenance row is 📋 ready (smallest, most concrete).
 
 ## Done log — loupe (newest first)
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-18 · `3470f7d` · [Loupe/maint] System Map cleanup — Café + Wellness curated onto the door-band Apps group (all four verticals together; client-shelf empty). Verified live (all four green), lead self-review, CI green
 - 2026-07-07 · `6b1ab6e` · [Loupe/F15] Actually re-scoped the standing operator to consoleOperator (56911ac only proved the mechanism); console-operator's own read-grant lens + persisted identity. Verified live vs. real data, CI green
 - 2026-07-07 · `56911ac` · [Loupe/F15 inc.3] Items 5-6 CLOSED — pkg-lifecycle root-admin gate + live e2e (consoleOperator allow/deny); Postgres F9 seam wired to M5's wildcard-grant posture. Verified live + unit test, CI green
 - 2026-07-07 · `635db70` · [Loupe/F15 inc.2] Op-submissions relay through the Gateway, replacing `adminActor` direct-stamp. 3-layer reviewed, fixed forward; verified live + CI green
