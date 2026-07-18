@@ -38,6 +38,7 @@ struct FacetSwiftUISpikeApp: App {
             store.statusMessage = "Login failed: \(error)"
             return
         }
+        store.attach(feedClient: client)
         do {
             for try await frame in client.stream() {
                 store.apply(frame)

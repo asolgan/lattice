@@ -1,8 +1,6 @@
 import Foundation
 
 /// Mirrors `cmd/facet/feed.go`'s `frame` struct field-for-field, except
-/// `Outbox` (write-lifecycle UI, out of this spike's scope — the spike is
-/// read-path renderer-neutrality, not a second write surface) and
 /// `Kind`, which the Go side tags `json:"-"` because it rides the SSE
 /// `event:` line rather than the body; this side sets it the same way,
 /// from the event name the frame arrived on (see `SSEDecoder`).
@@ -13,6 +11,7 @@ public struct ManifestFrame: Equatable {
     public let pending: Bool
     public let data: JSONValue?
     public let revision: UInt64
+    public let outbox: OutboxEntry?
     public let reason: String
     public let connected: Bool
 
@@ -41,6 +40,7 @@ public struct ManifestFrame: Equatable {
         let pending: Bool?
         let data: JSONValue?
         let revision: UInt64?
+        let outbox: OutboxEntry?
         let reason: String?
         let connected: Bool?
     }
@@ -55,7 +55,26 @@ public struct ManifestFrame: Equatable {
         self.pending = body.pending ?? false
         self.data = body.data
         self.revision = body.revision ?? 0
+        self.outbox = body.outbox
         self.reason = body.reason ?? ""
         self.connected = body.connected ?? false
+    }
+}
+
+/// Mirrors `cmd/facet/feed.go`'s `outboxEntry` — the write-lifecycle fields
+/// this spike's UI actually surfaces (state machine + error), not the
+/// re-hydration fields (`Payload`/`Reads`/`OptionalReads`/`AuthContext`/
+/// `CreatedAt`) the Go doc names for reopening a form pre-filled, which no
+/// SwiftUI view here does yet.
+public struct OutboxEntry: Equatable, Decodable {
+    public let requestID: String
+    public let operationType: String
+    public let state: String // queued|submitting|confirmed|rejected
+    public let errorCode: String?
+    public let errorMessage: String?
+
+    enum CodingKeys: String, CodingKey {
+        case requestID = "requestId"
+        case operationType, state, errorCode, errorMessage
     }
 }

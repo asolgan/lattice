@@ -57,6 +57,49 @@ public final class FeedClient {
     /// this long-lived, connection-never-closes SSE response (curl streamed
     /// it instantly) — a delegate's `didReceive data:` callbacks fire
     /// incrementally as bytes actually arrive, which is what SSE needs.
+    /// `POST /api/enqueue` — the write path (`cmd/facet/server.go`'s
+    /// `handleEnqueue`, its `enqueueRequest` mirrored field-for-field here).
+    /// Returns immediately with the minted `requestId`; the actual
+    /// Gateway round-trip happens on the Go host's drain loop and its
+    /// outcome arrives back over `stream()` as an `outbox` frame — this
+    /// call never blocks on that, matching the PWA's `app.js` `enqueue()`.
+    public func enqueue(
+        operationType: String,
+        dispatchClass: String = "",
+        payload: JSONValue,
+        reads: [String] = [],
+        optionalReads: [String] = [],
+        authContext: JSONValue? = nil,
+        touchedKey: String = ""
+    ) async throws -> String {
+        guard let cookie = sessionCookie else {
+            throw FeedClientError.notLoggedIn
+        }
+        var body: [String: JSONValue] = [
+            "operationType": .string(operationType),
+            "payload": payload,
+        ]
+        if !dispatchClass.isEmpty { body["class"] = .string(dispatchClass) }
+        if !reads.isEmpty { body["reads"] = .array(reads.map(JSONValue.string)) }
+        if !optionalReads.isEmpty { body["optionalReads"] = .array(optionalReads.map(JSONValue.string)) }
+        if let authContext { body["authContext"] = authContext }
+        if !touchedKey.isEmpty { body["touchedKey"] = .string(touchedKey) }
+
+        var req = URLRequest(url: baseURL.appendingPathComponent("api/enqueue"))
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue(cookie, forHTTPHeaderField: "Cookie")
+        req.httpBody = try JSONEncoder().encode(JSONValue.object(body))
+
+        let (data, response) = try await session.data(for: req)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            throw FeedClientError.enqueueFailedStatus(status)
+        }
+        struct EnqueueResponse: Decodable { let requestId: String }
+        return try JSONDecoder().decode(EnqueueResponse.self, from: data).requestId
+    }
+
     public func stream() -> AsyncThrowingStream<ManifestFrame, Error> {
         AsyncThrowingStream { continuation in
             guard let cookie = sessionCookie else {
@@ -129,4 +172,5 @@ public enum FeedClientError: Error {
     case loginFailed
     case notLoggedIn
     case streamFailedStatus(Int)
+    case enqueueFailedStatus(Int)
 }

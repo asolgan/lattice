@@ -4,8 +4,10 @@ import Foundation
 /// (`edge-manifest/lenses.go`'s RETURN clauses), the same way the Go host
 /// carries `Data json.RawMessage` in `cmd/facet/feed.go`'s `frame` rather
 /// than a per-namespace struct — this is that same posture on the Swift
-/// side, decoded once and read field-by-field per section.
-public enum JSONValue: Decodable, Equatable {
+/// side, decoded once and read field-by-field per section. Also encodable,
+/// for the write path: `FeedClient.enqueue`'s request body is built the
+/// same generic, namespace-agnostic way.
+public enum JSONValue: Codable, Equatable {
     case string(String)
     case number(Double)
     case bool(Bool)
@@ -29,6 +31,22 @@ public enum JSONValue: Decodable, Equatable {
             self = .object(v)
         } else {
             throw DecodingError.dataCorruptedError(in: container, debugDescription: "unsupported JSON value")
+        }
+    }
+
+    /// The write-path half of the `json.RawMessage` mirroring this type's
+    /// doc already claims for reads: `FeedClient.enqueue` builds a request
+    /// body out of `JSONValue`s the same generic, namespace-agnostic way
+    /// `ContentView` reads manifest rows — no per-operation Swift struct.
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let v): try container.encode(v)
+        case .number(let v): try container.encode(v)
+        case .bool(let v): try container.encode(v)
+        case .object(let v): try container.encode(v)
+        case .array(let v): try container.encode(v)
+        case .null: try container.encodeNil()
         }
     }
 

@@ -22,13 +22,15 @@ completely satisfied, not a re-architecture.
 ## Layout
 
 - `Sources/FacetManifestKit` — platform-agnostic: `JSONValue` (loosely-typed JSON, mirroring the Go
-  host's `json.RawMessage` posture), `ManifestFrame` (mirrors `cmd/facet/feed.go`'s `frame` struct),
-  `SSEDecoder` (pure line-based SSE parser, unit-tested), `FeedClient` (dev-login + live SSE stream
-  against a running `cmd/facet` host).
+  host's `json.RawMessage` posture, encodable as well as decodable so it also builds write-request
+  bodies), `ManifestFrame` (mirrors `cmd/facet/feed.go`'s `frame` struct, including the `outbox`
+  write-lifecycle field), `SSEDecoder` (pure line-based SSE parser, unit-tested), `FeedClient`
+  (dev-login + live SSE stream + `enqueue` writes against a running `cmd/facet` host).
 - `Sources/FacetSwiftUISpike` — the SwiftUI app: `ManifestStore` (last-write-wins reducer over the
-  frame stream, the same reducer shape `app.js`'s manifest handler uses), `ContentView` (renders
-  Services/Catalog/Tasks/My Instances sections straight off manifest row fields — no manifest-specific
-  text anywhere in the view code), `FacetSwiftUISpikeApp` (entry point).
+  frame stream, the same reducer shape `app.js`'s manifest handler uses; also owns the attached
+  `FeedClient` and the live Outbox lifecycle dict), `ContentView` (renders Services/Catalog/Tasks/My
+  Instances/Outbox sections straight off manifest row fields — no manifest-specific text anywhere in
+  the view code; each Catalog row has an "Enqueue" button), `FacetSwiftUISpikeApp` (entry point).
 - `Tests/FacetManifestKitTests` — XCTest coverage of `SSEDecoder`/`ManifestFrame`/`JSONValue`. **Could
   not run in this sandbox** (no XCTest module without full Xcode — see caveat above); will run under a
   normal Xcode toolchain. The same assertions were verified live via a throwaway `swift run` smoke
@@ -46,6 +48,30 @@ FACET_BASE_URL=http://127.0.0.1:7810 FACET_IDENTITY_ID=<20-char-NanoID> swift ru
 The identity id is a `make seed-showcase` tenant (`FACET_TENANT1_NANOID`/`FACET_TENANT2_NANOID` from its
 output) — `up-facet` runs with `FACET_DEV_AUTH=1` and no boot identity, so a session must be established
 via `POST /api/dev-login` first; `FeedClient.devLogin` does this before opening the feed.
+
+## Write path
+
+`FeedClient.enqueue(operationType:payload:reads:optionalReads:authContext:touchedKey:)` POSTs to
+`/api/enqueue`, mirroring `cmd/facet/server.go`'s `enqueueRequest` field-for-field. Like the PWA, this
+call is fire-and-forget: it returns a `requestId` immediately, and the write's outcome
+(queued/submitting/confirmed/rejected) arrives back over the same SSE stream `stream()` already
+consumes, as an `outbox` frame — `ManifestStore` tracks it in a `[String: OutboxEntry]` and
+`ContentView` renders it under "Outbox". The Catalog section's "Enqueue" button submits an empty
+(`{}`) payload — it proves the SwiftUI renderer can drive a real write through the same envelope path
+a filled-in form would use, not that every op succeeds with no fields (an op with required
+`inputSchema` fields comes back `rejected` with the Starlark-level `InvalidArgument`, which is itself
+part of the round trip this button proves). Building the descriptor-form renderer that resolves
+`inputSchema`/`dispatch.reads`/`dispatch.contextParams` into a real filled-in form — `app.js`'s
+`renderOpForm` on the PWA side — is a separate, larger increment, not done here.
+
+Live-verified (throwaway `swift run` smoke check during Fire 5 Inc 2, not checked in — see the design
+doc's §7 build note for the transcript): `OpenTab{leaseAppKey}` against a real fixture lease
+(`vtx.leaseapp.Z8ebXzStgUGerUpqeHEF`, the one §7.9's café self-service proof minted) with `reads`
+declaring the lease vertex and `optionalReads` declaring the `cafeOpenTab` guard key + the
+`applicationFor` link key round-tripped `queued → submitting → confirmed` over the live SSE stream, and
+the new tab was independently confirmed via `cafe-app`'s own `/api/tabs` read API — a write initiated
+by this Swift client actually reached the Gateway/Processor and landed in Core KV, not just a
+client-side illusion.
 
 ## A note on `URLSession.bytes(for:)`
 

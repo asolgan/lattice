@@ -24,9 +24,10 @@ struct ContentView: View {
                     }
                 }
                 manifestSection("Services", rows: store.services, title: "name", subtitle: "description")
-                manifestSection("Catalog", rows: store.ops, title: "title", subtitle: "description")
+                catalogSection()
                 manifestSection("Tasks", rows: store.tasks, title: "operationType", subtitle: nil)
                 manifestSection("My Instances", rows: store.instances, title: "templateName", subtitle: "status")
+                outboxSection()
             }
             .navigationTitle("Facet (SwiftUI spike)")
             .toolbar {
@@ -57,6 +58,57 @@ struct ContentView: View {
                         if let subtitleField, let subtitle = row[subtitleField]?.stringValue {
                             Text(subtitle).font(.caption).foregroundStyle(.secondary)
                         }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The write-path trigger: unlike `app.js`'s descriptor-form renderer
+    /// (`facet-app-ux.md` §3.6), which resolves a `manifest.op` row's
+    /// `inputSchema`/`dispatch` fields into a real form before submitting,
+    /// this spike proves only that a SwiftUI view CAN drive
+    /// `ManifestStore.enqueue` end-to-end — an empty-object payload, no
+    /// field resolution. An op requiring payload fields will come back
+    /// `rejected` over the Outbox section below rather than `confirmed`;
+    /// that is still a real round trip through the same envelope path a
+    /// filled-in form would use. Building the actual form renderer is
+    /// named, not done, in the design's residual (§7 Fire 5).
+    @ViewBuilder
+    private func catalogSection() -> some View {
+        if !store.ops.isEmpty {
+            Section("Catalog (\(store.ops.count))") {
+                ForEach(Array(store.ops.enumerated()), id: \.offset) { _, row in
+                    HStack {
+                        VStack(alignment: .leading) {
+                            Text(row["title"]?.stringValue ?? "(untitled)")
+                            if let subtitle = row["description"]?.stringValue {
+                                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        if let operationType = row["operationType"]?.stringValue {
+                            Button("Enqueue") {
+                                Task { await store.enqueue(operationType: operationType, payload: .object([:])) }
+                            }
+                            .buttonStyle(.bordered)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func outboxSection() -> some View {
+        if !store.outbox.isEmpty {
+            Section("Outbox (\(store.outbox.count))") {
+                ForEach(store.outbox, id: \.requestID) { entry in
+                    VStack(alignment: .leading) {
+                        Text(entry.operationType)
+                        Text(entry.errorMessage ?? entry.state)
+                            .font(.caption)
+                            .foregroundStyle(entry.state == "rejected" ? .red : (entry.state == "confirmed" ? .green : .secondary))
                     }
                 }
             }
