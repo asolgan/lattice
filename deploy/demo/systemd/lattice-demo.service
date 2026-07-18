@@ -1,0 +1,17 @@
+# Installed by demo-bootstrap.sh with __REPO__ substituted. Brings the demo
+# stack up at boot; the nightly lattice-demo-reset.timer handles reseeding.
+[Unit]
+Description=Lattice hosted demo — full stack + Facet (demo-persona posture)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=__REPO__
+ExecStart=__REPO__/deploy/demo/demo-up.sh
+TimeoutStartSec=1800
+
+[Install]
+WantedBy=multi-user.target

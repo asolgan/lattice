@@ -1,0 +1,13 @@
+# Reverse proxy for the hosted demo: TLS at the edge, Facet on loopback.
+# {$DEMO_HOST} resolves from Caddy's environment; demo-bootstrap.sh instead
+# substitutes the literal host when installing to /etc/caddy/Caddyfile, so no
+# environment plumbing is required. Automatic HTTPS (Let's Encrypt) needs the
+# host's DNS pointing at this box un-proxied; behind a proxying CDN, replace
+# the automatic cert with the CDN's origin certificate via a `tls` directive.
+{$DEMO_HOST} {
+	encode zstd gzip
+	# /api/feed is SSE — stream unbuffered.
+	reverse_proxy 127.0.0.1:7810 {
+		flush_interval -1
+	}
+}

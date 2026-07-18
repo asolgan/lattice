@@ -1,0 +1,12 @@
+# Installed by demo-bootstrap.sh with __REPO__ substituted. One reset run;
+# scheduling lives in lattice-demo-reset.timer.
+[Unit]
+Description=Lattice hosted demo — nightly world reset (wipe + reseed)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=__REPO__
+ExecStart=__REPO__/deploy/demo/demo-reset.sh
+TimeoutStartSec=1800
