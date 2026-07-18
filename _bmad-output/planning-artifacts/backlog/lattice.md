@@ -72,7 +72,8 @@ feature backlog; Loupe moved to its own lane, [loupe.md](loupe.md)). Survey the 
 - 2026-07-13 Core (processor healthy, clean lint/vet, no TODOs; step 6.5 sensitive-encrypt path was 0% covered, filled 80.1%→82.0%).
 - 2026-07-18 Weaver (healthy, 86.8%/78.6%/91.3% cov, clean lint, no TODOs; filed error-branch-coverage + a doc-drift fix).
 - 2026-07-18 Loom (healthy, 82.3%/80.2% cov, clean lint, no TODOs; prior deadline/redelivery gaps already shipped `495476b`; filed starlark-guard-sandbox-value-iface-uncovered).
-- **Next:** Refractor.
+- 2026-07-18 Refractor (healthy, build/lint clean; confirmed all 8 07-06-review findings already resolved in code — no new rows).
+- **Next:** object-store-manager.
 
 ## Arch-review intake — platform hardening & doc/contract truth
 
@@ -86,9 +87,10 @@ Severity-ordered; same row discipline as component maintenance (shipped rows col
 
 ### Refractor re-review (2026-07-06)
 
-The deferred post-update re-review the 2026-07-02 pass held back — verdict **drifted**; full evidence in
-[arch-review-2026-07-06.md](../../../docs/reviews/arch-review-2026-07-06.md). The docs-refresh, vendors-row,
-and stale-marker corrections were applied in the filing commit (Done log); these are the open builds.
+The deferred post-update re-review the 2026-07-02 pass held back — verdict **drifted** at the time; full
+evidence in [arch-review-2026-07-06.md](../../../docs/reviews/arch-review-2026-07-06.md). **CLOSED** — the
+2026-07-18 survey confirmed all 8 ranked corrections landed (`de4290b4`, `c5ed56b0`, `da8ee6cc` + the
+Chronicler-host extraction and NKey-matrix grants), no open rows remain.
 
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
