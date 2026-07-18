@@ -27,12 +27,18 @@ declares:
     - operationType: OpenTab
       scope: any
       grantsTo: [operator]
+    - operationType: OpenTab
+      scope: self
+      grantsTo: [consumer]
     - operationType: Charge
       scope: any
       grantsTo: [operator]
     - operationType: Settle
       scope: any
       grantsTo: [operator]
+    - operationType: Settle
+      scope: self
+      grantsTo: [consumer]
   weaverTargets:
     - targetId: cafeTabSettlement
       lensRef: cafeTabSettlement

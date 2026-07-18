@@ -48,7 +48,9 @@ func tabVertexTypeDDL() pkgmgr.DDLSpec {
 			"resident's café-ledger posting (opening a cafeaccount via CreateAccount on first use, then " +
 			"DebitAccount{tabRef}) through Weaver, never a direct cross-package write from this script. Both Charge " +
 			"and Settle reject a tab that is not currently open (TabNotOpen) — a settled tab cannot be charged again " +
-			"or double-settled.",
+			"or double-settled. OpenTab and Settle also grant scope=self to consumer: a resident may open or " +
+				"settle a tab for their OWN lease only, verified via the lease's applicationFor→identity link " +
+				"(AuthDenied otherwise); Charge stays operator-only (no catalog to bound a self-submitted amount).",
 		Script: tabDDLScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"leaseAppKey":{"type":"string","description":"vtx.leaseapp.<NanoID> the tab is opened for (OpenTab; required, validated alive)."},` +
@@ -183,7 +185,10 @@ def execute(state, op):
 // declares <leaseAppKey>.cafeOpenTab in ContextHint.OptionalReads (Contract
 // #2 §2.5 class-(d) read-before-create/dedup) so the per-lease open-tab
 // guard's current state — absent, tombstoned, or alive — is hydrated
-// without a live GET.
+// without a live GET. A scope=self caller (OpenTab, Settle) additionally
+// declares the lease's applicationFor→identity link in OptionalReads (also
+// class-(d)) so the resident-self authorization check below can confirm the
+// lease belongs to them without a live GET.
 const tabDDLScript = `
 def make_vtx(key, cls, data):
     return {"op": "create", "key": key,
@@ -287,9 +292,29 @@ def execute(state, op):
 
     if ot == "OpenTab":
         lease_key = required_string(p, "leaseAppKey")
-        parts_of(lease_key, "leaseAppKey", "leaseapp")
+        _, lease_id = parts_of(lease_key, "leaseAppKey", "leaseapp")
         if not vertex_alive(state, lease_key):
             fail("UnknownLeaseApplication: " + lease_key)
+
+        # Resident-self (consumer's scope=self grant only): step 3 authorizes
+        # scope=self by checking authContext.target == actor (Contract #6),
+        # but the op's endpoint is the LEASEAPP, not an identity — step 3
+        # never sees the payload and has no notion of "this lease's
+        # applicant" anyway. The script closes the gap by requiring the
+        # target identity to be the lease's own applicant (lease-signing's
+        # applicationFor link, the same patient/identifiedBy indirection
+        # clinic-domain's CreateAppointment uses). Empty for the standing
+        # operator grant (scope=any never sets authContext), so this check is
+        # a no-op there — operator keeps opening tabs on behalf of any lease.
+        if op.authContextTarget != "":
+            _, target_identity_id = parts_of(op.authContextTarget, "authContextTarget", "identity")
+            application_for_lnk = "lnk.leaseapp." + lease_id + ".applicationFor.identity." + target_identity_id
+            # read-posture: (d) declared in contextHint.optionalReads by the
+            # self-service caller — it already knows both its own leaseAppKey
+            # and its own authContext.target before submitting, so it
+            # computes this key client-side and declares it.
+            if kv.Read(application_for_lnk) == None:
+                fail("AuthDenied: a resident may only open a tab for their own lease")
 
         # One open tab per lease, guarded by a deterministic aspect on the
         # LEASEAPP (not the tab — the tab's own id is independent and
@@ -318,7 +343,7 @@ def execute(state, op):
 
         # openFor: the tab (later-arriving) is the source, the pre-existing
         # lease is the target (Contract #1 §1.1). Reads as "tab openFor lease."
-        open_for_lnk = "lnk.tab." + tab_id + ".openFor.leaseapp." + lease_key.split(".")[2]
+        open_for_lnk = "lnk.tab." + tab_id + ".openFor.leaseapp." + lease_id
 
         if guard_revision == None:
             guard_mut = make_aspect(lease_key, "cafeOpenTab", "cafeOpenTabGuard", {"tabKey": tab_key})
@@ -370,6 +395,23 @@ def execute(state, op):
         settled_at = time.rfc3339_utc(op.submittedAt)
         total_cents = existing.data.get("totalCents")
         lease_key = existing.data.get("leaseAppKey")
+
+        # Resident-self (consumer's scope=self grant only): same closure as
+        # OpenTab above, but the lease is recovered from the tab's OWN
+        # .status aspect (already declared/read for require_open_status),
+        # never from caller-supplied payload — a caller declaring the wrong
+        # leaseAppKey simply won't have the right composite key pre-hydrated,
+        # so the read below returns None and this fails closed regardless.
+        if op.authContextTarget != "":
+            _, target_identity_id = parts_of(op.authContextTarget, "authContextTarget", "identity")
+            lease_id = lease_key.split(".")[2]
+            application_for_lnk = "lnk.leaseapp." + lease_id + ".applicationFor.identity." + target_identity_id
+            # read-posture: (d) declared in contextHint.optionalReads by the
+            # self-service caller (it knows its own tabKey + leaseAppKey +
+            # authContext.target before submitting).
+            if kv.Read(application_for_lnk) == None:
+                fail("AuthDenied: a resident may only settle their own tab")
+
         status_data = {"value": "settled", "totalCents": total_cents,
                         "openedAt": existing.data.get("openedAt"),
                         "leaseAppKey": lease_key, "settledAt": settled_at}

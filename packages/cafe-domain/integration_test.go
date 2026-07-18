@@ -34,7 +34,37 @@ const (
 	domainCapKey   = "cap.identity." + domainActorID
 
 	domainConsumerRoleID = "BBConsumerRoZeCafeDo"
+
+	// domainConsumerID stands in for identity-domain's real `consumer` role
+	// grant flow (mirrors wellness-domain's domainConsumerID) — the
+	// self-service caller's own identity, distinct from the operator actor
+	// above.
+	domainConsumerID  = "BBCAFEDMANCQNSHJKMNP"
+	domainConsumerKey = "vtx.identity." + domainConsumerID
+	domainConsumerCap = "cap.identity." + domainConsumerID
 )
+
+// domainConsumerCapDoc grants the consumer role's scope=self OpenTab /
+// Settle permissions — the real-actor-write-auth-e2e self-service caller,
+// mirrors wellness-domain's domainConsumerCapDoc.
+func domainConsumerCapDoc() *processor.CapabilityDoc {
+	now := time.Now().UTC()
+	return &processor.CapabilityDoc{
+		Key:                    domainConsumerCap,
+		Actor:                  domainConsumerKey,
+		Version:                "1.0",
+		ProjectedAt:            now.Format(time.RFC3339Nano),
+		ProjectedFromRevisions: map[string]uint64{domainConsumerKey: 1},
+		Lanes:                  []string{"default"},
+		PlatformPermissions: []processor.PlatformPermission{
+			{OperationType: "OpenTab", Scope: "self"},
+			{OperationType: "Settle", Scope: "self"},
+		},
+		ServiceAccess:   []processor.ServiceAccessEntry{},
+		EphemeralGrants: []processor.EphemeralGrant{},
+		Roles:           []string{"vtx.role.consumer"},
+	}
+}
 
 func domainCapDoc() *processor.CapabilityDoc {
 	now := time.Now().UTC()
@@ -145,6 +175,38 @@ func seedLease(t *testing.T, ctx context.Context, conn *substrate.Conn, id strin
 	t.Helper()
 	key := "vtx.leaseapp." + id
 	seedVertex(t, ctx, conn, key, "leaseapp", map[string]any{})
+	return key
+}
+
+func seedIdentity(t *testing.T, ctx context.Context, conn *substrate.Conn, id string) string {
+	t.Helper()
+	key := "vtx.identity." + id
+	seedVertex(t, ctx, conn, key, "identity", map[string]any{})
+	return key
+}
+
+func seedLink(t *testing.T, ctx context.Context, conn *substrate.Conn, key, source, target, class, localName string) {
+	t.Helper()
+	doc := map[string]any{
+		"class": class, "isDeleted": false,
+		"sourceVertex": source, "targetVertex": target,
+		"localName": localName, "data": map[string]any{},
+	}
+	b, _ := json.Marshal(doc)
+	if _, err := conn.KVPut(ctx, testutil.HarnessCoreBucket, key, b); err != nil {
+		t.Fatalf("seed link %s: %v", key, err)
+	}
+}
+
+// seedLeaseWithApplicant seeds a leaseapp vertex + its applicationFor link
+// to applicantID — the residency check OpenTab/Settle's self-scope guard
+// reads (mirrors wellness-domain's seedLease(..., applicantID, ...)).
+func seedLeaseWithApplicant(t *testing.T, ctx context.Context, conn *substrate.Conn, leaseID, applicantID string) string {
+	t.Helper()
+	key := "vtx.leaseapp." + leaseID
+	seedVertex(t, ctx, conn, key, "leaseapp", map[string]any{})
+	lnk := "lnk.leaseapp." + leaseID + ".applicationFor.identity." + applicantID
+	seedLink(t, ctx, conn, lnk, key, "vtx.identity."+applicantID, "applicationFor", "applicationFor")
 	return key
 }
 
@@ -462,5 +524,155 @@ func TestOpenTab_AllowsReopenAfterSettle(t *testing.T) {
 	guardData, _ := guardDoc["data"].(map[string]any)
 	if got, _ := guardData["tabKey"].(string); got != secondTabKey {
 		t.Fatalf("guard tabKey = %q, want %q (revived for the second tab)", got, secondTabKey)
+	}
+}
+
+// TestOpenTab_ConsumerSelfScope_Allowed proves a real resident, holding only
+// the consumer scope=self grant, can open a house tab for THEIR OWN lease:
+// payload.leaseAppKey names a lease identified-by their own identity and
+// authContext.target matches it.
+func TestOpenTab_ConsumerSelfScope_Allowed(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	testutil.SeedCapDoc(t, ctx, conn, domainConsumerCapDoc())
+	cp, cons := newDomainPipeline(t, ctx, conn, "opentabselfok")
+
+	seedIdentity(t, ctx, conn, domainConsumerID)
+	leaseKey := seedLeaseWithApplicant(t, ctx, conn, "BBCAFEDMNSLFQKLEASEH", domainConsumerID)
+	applicationForLnk := "lnk.leaseapp.BBCAFEDMNSLFQKLEASEH.applicationFor.identity." + domainConsumerID
+
+	reqID := testutil.GenReqID("cdselfopentab0000001")
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "OpenTab",
+		Actor:         domainConsumerKey,
+		SubmittedAt:   "2026-07-07T12:00:00Z",
+		Class:         "tab",
+		Payload:       json.RawMessage(`{"leaseAppKey":"` + leaseKey + `"}`),
+		ContextHint: &processor.ContextHint{
+			Reads:         []string{leaseKey},
+			OptionalReads: []string{leaseKey + ".cafeOpenTab", applicationForLnk},
+		},
+		AuthContext: &processor.AuthContext{Target: domainConsumerKey},
+	}
+	testutil.PublishOp(t, conn, env)
+	outcome := testutil.DriveOne(t, ctx, cp, cons, "")
+	if outcome != processor.OutcomeAccepted {
+		t.Fatalf("self-service OpenTab outcome = %v, want Accepted", outcome)
+	}
+}
+
+// TestOpenTab_ConsumerSelfScope_RejectedForOthersLease proves the Starlark
+// guard closes the gap step 3 leaves open: step 3's scope=self only checks
+// authContext.target == actor, never looks at payload.leaseAppKey. A
+// consumer satisfying that check but naming a lease identified-by a
+// DIFFERENT identity must be rejected — self-service never lets one
+// resident open a tab against another's lease.
+func TestOpenTab_ConsumerSelfScope_RejectedForOthersLease(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	testutil.SeedCapDoc(t, ctx, conn, domainConsumerCapDoc())
+	cp, cons := newDomainPipeline(t, ctx, conn, "opentabselfother")
+
+	seedIdentity(t, ctx, conn, domainConsumerID)
+	otherApplicantID := "BBCAFEDMQTHERAPPHJKM"
+	seedIdentity(t, ctx, conn, otherApplicantID)
+	leaseKey := seedLeaseWithApplicant(t, ctx, conn, "BBCAFEDMNSLFQTHLEASE", otherApplicantID)
+	// The consumer declares the applicationFor link for THEIR OWN identity —
+	// which does not exist for this lease (it belongs to otherApplicantID) —
+	// so the declared read simply comes back absent, failing closed.
+	wrongApplicationForLnk := "lnk.leaseapp.BBCAFEDMNSLFQTHLEASE.applicationFor.identity." + domainConsumerID
+
+	reqID := testutil.GenReqID("cdselfopentab0000002")
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "OpenTab",
+		Actor:         domainConsumerKey,
+		SubmittedAt:   "2026-07-07T12:00:00Z",
+		Class:         "tab",
+		Payload:       json.RawMessage(`{"leaseAppKey":"` + leaseKey + `"}`),
+		ContextHint: &processor.ContextHint{
+			Reads:         []string{leaseKey},
+			OptionalReads: []string{leaseKey + ".cafeOpenTab", wrongApplicationForLnk},
+		},
+		AuthContext: &processor.AuthContext{Target: domainConsumerKey},
+	}
+	testutil.PublishOp(t, conn, env)
+	outcome := testutil.DriveOne(t, ctx, cp, cons, "")
+	if outcome != processor.OutcomeRejected {
+		t.Fatalf("self-service OpenTab for another's lease outcome = %v, want Rejected (AuthDenied)", outcome)
+	}
+}
+
+// TestSettle_ConsumerSelfScope_Allowed proves a real resident can settle
+// THEIR OWN open tab: the tab's leaseAppKey resolves (via applicationFor) to
+// the caller's own authContext.target identity.
+func TestSettle_ConsumerSelfScope_Allowed(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	testutil.SeedCapDoc(t, ctx, conn, domainConsumerCapDoc())
+	cp, cons := newDomainPipeline(t, ctx, conn, "settleselfok")
+
+	seedIdentity(t, ctx, conn, domainConsumerID)
+	leaseKey := seedLeaseWithApplicant(t, ctx, conn, "BBCAFEDMNSTLQKLEASEH", domainConsumerID)
+	tabKey := openTab(t, ctx, conn, cp, cons, "cdselfsettlesetup0001", leaseKey)
+	applicationForLnk := "lnk.leaseapp.BBCAFEDMNSTLQKLEASEH.applicationFor.identity." + domainConsumerID
+
+	reqID := testutil.GenReqID("cdselfsettletab000001")
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "Settle",
+		Actor:         domainConsumerKey,
+		SubmittedAt:   "2026-07-07T13:00:00Z",
+		Class:         "tab",
+		Payload:       json.RawMessage(`{"tabKey":"` + tabKey + `"}`),
+		ContextHint: &processor.ContextHint{
+			Reads:         []string{tabKey, tabKey + ".status"},
+			OptionalReads: []string{applicationForLnk},
+		},
+		AuthContext: &processor.AuthContext{Target: domainConsumerKey},
+	}
+	testutil.PublishOp(t, conn, env)
+	outcome := testutil.DriveOne(t, ctx, cp, cons, "")
+	if outcome != processor.OutcomeAccepted {
+		t.Fatalf("self-service Settle outcome = %v, want Accepted", outcome)
+	}
+}
+
+// TestSettle_ConsumerSelfScope_RejectedForOthersTab proves a consumer
+// satisfying step 3 (authContext.target == actor) but naming a tab whose
+// lease is NOT their own is rejected — self-service never lets one resident
+// settle another's tab.
+func TestSettle_ConsumerSelfScope_RejectedForOthersTab(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	testutil.SeedCapDoc(t, ctx, conn, domainConsumerCapDoc())
+	cp, cons := newDomainPipeline(t, ctx, conn, "settleselfother")
+
+	seedIdentity(t, ctx, conn, domainConsumerID)
+	otherApplicantID := "BBCAFEDMQTHERTABHJKM"
+	seedIdentity(t, ctx, conn, otherApplicantID)
+	leaseKey := seedLeaseWithApplicant(t, ctx, conn, "BBCAFEDMNSTLQTHLEASE", otherApplicantID)
+	tabKey := openTab(t, ctx, conn, cp, cons, "cdselfsettleoth0000001", leaseKey)
+	wrongApplicationForLnk := "lnk.leaseapp.BBCAFEDMNSTLQTHLEASE.applicationFor.identity." + domainConsumerID
+
+	reqID := testutil.GenReqID("cdselfsettletab000002")
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "Settle",
+		Actor:         domainConsumerKey,
+		SubmittedAt:   "2026-07-07T13:00:00Z",
+		Class:         "tab",
+		Payload:       json.RawMessage(`{"tabKey":"` + tabKey + `"}`),
+		ContextHint: &processor.ContextHint{
+			Reads:         []string{tabKey, tabKey + ".status"},
+			OptionalReads: []string{wrongApplicationForLnk},
+		},
+		AuthContext: &processor.AuthContext{Target: domainConsumerKey},
+	}
+	testutil.PublishOp(t, conn, env)
+	outcome := testutil.DriveOne(t, ctx, cp, cons, "")
+	if outcome != processor.OutcomeRejected {
+		t.Fatalf("self-service Settle of another's tab outcome = %v, want Rejected (AuthDenied)", outcome)
 	}
 }
