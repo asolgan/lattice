@@ -1,6 +1,15 @@
 # Edge gap detection without STREAM.INFO — the `personal.syncgap` control RPC
 
-**Status: ✅ Andrew-ratified (2026-07-17) — boolean result chosen (the §5 `firstSeq`
+**Status: ✅ SHIPPED (2026-07-17) — Inc 1 `0acd68c` (the platform op) + Inc 2 `7fc7b42` (the client
+swap), both CI-green. The Edge node (Go + browser) now speaks no `$JS.API.STREAM.*` verb; the EDGE.5
+Gate-3 reconnect leg is unblocked (a fresh attended :9222 re-run is the remaining verification). One
+deliberate deviation from §8: the "live syncgap round-trip through the real control service" is delivered
+at the `internal/edge/sync` layer (a real `control.Service` wired with `SetSyncFirstSeq` over embedded
+NATS, driven via real `natstransport` with stream eviction advancing `FirstSeq`) rather than by extending
+the Refractor manifest e2e — that harness drains SYNC via a raw consumer and has no control-service /
+sync-Manager seam to extend.**
+
+**Originally: ✅ Andrew-ratified (2026-07-17) — boolean result chosen (the §5 `firstSeq`
 alternative declined, on ownership-of-semantics + minimal-wire grounds); no frozen-contract edit
 (builds to Contract #6 §230's reserved `ctrl.<comp>.<verb>` namespace); the §7 availability trade-off
 (warm boot now depends on the control plane being up) accepted with the bounded-retry + `cmd/facet`
