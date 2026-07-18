@@ -1079,7 +1079,7 @@ a.pulse-derived-text:hover { color: var(--text); }
 
 .review-state { font-size: 10px; padding: 1px 8px; border-radius: 10px; border: 1px solid var(--border); text-transform: uppercase; letter-spacing: 0.3px; }
 .review-state.pending { color: var(--yellow); border-color: var(--yellow); }
-.review-state.approved, .review-state.applied { color: var(--green); border-color: var(--green); }
+.review-state.approved, .review-state.applied, .review-state.dispatched { color: var(--green); border-color: var(--green); }
 .review-state.rejected { color: var(--text-dim); border-color: var(--border); }
 .review-state.invalid { color: var(--red); border-color: var(--red); }
 .review-state.authoring { color: var(--accent); border-color: var(--accent-dim); }
@@ -1097,6 +1097,7 @@ a.pulse-derived-text:hover { color: var(--text); }
 .review-glyph { font-size: 12px; }
 .review-invalid-reason { color: var(--red); font-size: 12px; margin-top: 4px; }
 .review-valid-ok { color: var(--green); border-color: var(--green); }
+.review-subtabs { margin-bottom: 10px; }
 
 /* Submit-Op reply panel, follow-through, and session op log (design §10) */
 .opreply { border: 1px solid var(--border); border-radius: 6px; padding: 10px 12px; margin-bottom: 10px; background: var(--bg-raised); }

@@ -11,14 +11,18 @@ const POLL_MS = 30000;
 const shell = { timer: null, expanded: false, fetchSeq: 0 };
 
 // refreshReviewBadge drives the top-nav "Review" count badge (§2.2 — the
-// number of proposals in review.state=pending, i.e. awaiting a human
-// verdict). Best-effort: a fetch error just hides the badge rather than
-// erroring the whole shell tick. Augur's count joins this in F16.3.
+// number of proposals in review.state=pending across BOTH loops, i.e.
+// awaiting a human verdict). Best-effort: a fetch error on either endpoint
+// just contributes 0 rather than erroring the whole shell tick.
 async function refreshReviewBadge() {
   const badge = $("#review-badge");
   if (!badge) return;
-  const body = await api("/api/review/capability");
-  const n = body.error ? 0 : pendingCount(body.proposals || []);
+  const [capability, augur] = await Promise.all([
+    api("/api/review/capability"),
+    api("/api/review/augur"),
+  ]);
+  const n = (capability.error ? 0 : pendingCount(capability.proposals || [])) +
+    (augur.error ? 0 : pendingCount(augur.proposals || []));
   if (n > 0) {
     badge.textContent = String(n);
     badge.classList.add("visible");

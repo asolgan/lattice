@@ -139,6 +139,77 @@ func TestPendingCount(t *testing.T) {
 	}
 }
 
+func TestAugurDisplayState(t *testing.T) {
+	vm := logicVM(t, "review.js")
+
+	if got := call(t, vm, "augurDisplayState", map[string]any{}); got != "authoring" {
+		t.Errorf("no reviewState (claim in flight) = %v, want authoring", got)
+	}
+	if got := call(t, vm, "augurDisplayState", map[string]any{"reviewState": "pending"}); got != "pending" {
+		t.Errorf("pending = %v", got)
+	}
+	if got := call(t, vm, "augurDisplayState", map[string]any{"reviewState": "invalid"}); got != "invalid" {
+		t.Errorf("invalid = %v", got)
+	}
+	if got := call(t, vm, "augurDisplayState", map[string]any{"reviewState": "approved"}); got != "approved" {
+		t.Errorf("approved, no dispatchedAt = %v, want approved", got)
+	}
+	if got := call(t, vm, "augurDisplayState", map[string]any{
+		"reviewState": "approved", "dispatchedAt": "2026-07-18T00:00:00Z",
+	}); got != "dispatched" {
+		t.Errorf("approved + dispatchedAt = %v, want dispatched", got)
+	}
+	if got := call(t, vm, "augurDisplayState", map[string]any{"reviewState": "rejected"}); got != "rejected" {
+		t.Errorf("rejected = %v", got)
+	}
+}
+
+func TestAugurProposalRows(t *testing.T) {
+	vm := logicVM(t, "review.js")
+
+	raw := []any{
+		map[string]any{"proposalId": "low-conf-pending", "reviewState": "pending", "confidence": 0.2, "reasonedAt": "2026-07-18T00:00:00Z"},
+		map[string]any{"proposalId": "high-conf-pending", "reviewState": "pending", "confidence": 0.9, "reasonedAt": "2026-07-01T00:00:00Z"},
+		map[string]any{"proposalId": "dispatched-newest", "reviewState": "approved", "dispatchedAt": "2026-07-19T00:00:00Z", "reasonedAt": "2026-07-19T00:00:00Z"},
+		map[string]any{"proposalId": "authoring", "reasonedAt": "2026-07-20T00:00:00Z"},
+	}
+	got, ok := call(t, vm, "augurProposalRows", raw).([]any)
+	if !ok {
+		t.Fatalf("augurProposalRows did not return an array")
+	}
+	if len(got) != 4 {
+		t.Fatalf("len = %d, want 4", len(got))
+	}
+	order := make([]string, len(got))
+	byID := make(map[string]map[string]any, len(got))
+	for i, r := range got {
+		row := r.(map[string]any)
+		id := row["proposalId"].(string)
+		order[i] = id
+		byID[id] = row
+	}
+	// pending group sorts by confidence DESCENDING (§8.4 — high before low,
+	// never hidden), ahead of the non-pending group, which sorts newest first.
+	want := []string{"high-conf-pending", "low-conf-pending", "authoring", "dispatched-newest"}
+	for i := range want {
+		if order[i] != want[i] {
+			t.Errorf("order[%d] = %q, want %q (full order: %v)", i, order[i], want[i], order)
+		}
+	}
+	dispatched := byID["dispatched-newest"]
+	if dispatched["displayState"] != "dispatched" || dispatched["actionable"] != false {
+		t.Errorf("dispatched-newest row shape = %v", dispatched)
+	}
+	authoring := byID["authoring"]
+	if authoring["displayState"] != "authoring" || authoring["actionable"] != false {
+		t.Errorf("authoring row shape = %v", authoring)
+	}
+	highConf := byID["high-conf-pending"]
+	if highConf["displayState"] != "pending" || highConf["actionable"] != true {
+		t.Errorf("high-conf-pending row shape = %v", highConf)
+	}
+}
+
 func TestProposalRows(t *testing.T) {
 	vm := logicVM(t, "review.js")
 

@@ -1,31 +1,52 @@
-// The AI review console (#/review, loupe-f16-ai-review-console-ux.md §3):
-// F16.1 ships the capability-proposal queue + detail card and the safe half
-// of the action loop (reject) — approve + apply are F16.2. #/review and
-// #/review/capability both land on the queue; #/review/capability/<id> drills
-// into one proposal. An #/review/augur route is a dead end until F16.3.
+// The AI review console (#/review, loupe-f16-ai-review-console-ux.md §0):
+// two tabs, one shared card component. #/review and #/review/capability both
+// land on the capability queue; #/review/augur lands on the Augur queue;
+// #/review/<tab>/<id> drills into one proposal. F16.1 shipped the capability
+// tab's queue+detail+reject; F16.3 adds the whole Augur tab (queue, detail,
+// approve, reject — Augur's approve re-validates entirely server-side, so
+// unlike capability's F16.2 it carries no client-computed validation payload
+// and needs no separate apply step).
 
 import { $, el, api, setStatus, toast } from "../api.js";
 import { replaceRoute } from "../router.js";
 import { renderDoc, keyLinkEl } from "../render.js";
 import {
-  kindGlyph, reviewStateClass, confidenceBand, agoFrom, proposalRows, proposalDisplayState,
+  kindGlyph, reviewStateClass, confidenceBand, agoFrom,
+  proposalRows, proposalDisplayState, augurProposalRows, augurDisplayState,
 } from "../logic/review.js";
+
+const TABS = ["capability", "augur"];
+const QUEUE_BLURB = {
+  capability: "Capability-authoring proposals — an AI reasoned out a new DDL artifact " +
+    "(lens, grant, weaverTarget, loomPattern, vertexTypeDDL, or opMeta) and parked it for a human " +
+    "verdict. Nothing installs until you approve it here.",
+  augur: "Augur escalations — the platform hit an orchestration gap it had no playbook for (or " +
+    "exhausted one) and an AI proposed a remediation. Nothing dispatches until you approve it here.",
+};
 
 const state = { arg: null };
 
 function enter(route) {
-  const parts = (route.arg || "").split("/").filter(Boolean);
+  const raw = route.arg || "";
+  const parts = raw.split("/").filter(Boolean);
   const tab = parts[0] || "capability";
-  if (tab !== "capability") {
-    // Only the capability tab exists until F16.3 ships Augur.
+  if (TABS.indexOf(tab) === -1) {
     replaceRoute("/review/capability");
     return;
   }
-  state.arg = route.arg;
+  state.arg = raw;
+  updateTabNav(tab);
   const id = parts[1] || null;
   toggleViews(!!id);
-  if (id) loadDetail(id);
-  else loadQueue();
+  if (id) loadDetail(tab, id, raw);
+  else loadQueue(tab, raw);
+}
+
+function updateTabNav(tab) {
+  $("#review-tab-capability").classList.toggle("active", tab === "capability");
+  $("#review-tab-augur").classList.toggle("active", tab === "augur");
+  $("#review-queue-blurb").textContent = QUEUE_BLURB[tab] || "";
+  $("#review-detail-back").href = "#/review/" + tab;
 }
 
 function toggleViews(showDetail) {
@@ -35,32 +56,34 @@ function toggleViews(showDetail) {
 
 // --- Queue -----------------------------------------------------------------
 
-async function loadQueue() {
+async function loadQueue(tab, raw) {
   const cards = $("#review-cards");
   setStatus("review-status", "loading…");
-  const body = await api("/api/review/capability");
-  if (state.arg !== "capability" && state.arg !== "") return; // navigated away
+  const body = await api("/api/review/" + tab);
+  if (state.arg !== raw) return; // navigated away
   cards.innerHTML = "";
   if (body.error) {
     setStatus("review-status", body.error, true);
     return;
   }
-  const rows = proposalRows(body.proposals || []);
+  const rows = tab === "augur" ? augurProposalRows(body.proposals || []) : proposalRows(body.proposals || []);
   setStatus("review-status", rows.length + " proposal(s)");
   if (!rows.length) {
     cards.appendChild(el("div", "muted",
-      "No capability proposals yet. When an AI authors a new lens, grant, or op, it lands here for your review."));
+      tab === "augur"
+        ? "No Augur escalations yet. When the platform hits an orchestration gap and an AI proposes a remediation, it lands here for your review."
+        : "No capability proposals yet. When an AI authors a new lens, grant, or op, it lands here for your review."));
     return;
   }
-  rows.forEach((row) => cards.appendChild(queueCard(row)));
+  rows.forEach((row) => cards.appendChild(tab === "augur" ? augurQueueCard(row) : capabilityQueueCard(row)));
 }
 
 // cardBorderClass reuses the existing .card left-border color vocabulary
 // (green/yellow/red, from the Health-card family) rather than inventing a
 // parallel one — the state chip inside the card is the precise signal.
-const cardBorderClass = { pending: "yellow", approved: "green", applied: "green", invalid: "red" };
+const cardBorderClass = { pending: "yellow", approved: "green", applied: "green", dispatched: "green", invalid: "red" };
 
-function queueCard(row) {
+function capabilityQueueCard(row) {
   const displayState = row.displayState;
   const card = el("a", "card review-card " + (cardBorderClass[displayState] || ""));
   card.href = "#/review/capability/" + encodeURIComponent(row.proposalId);
@@ -91,15 +114,42 @@ function queueCard(row) {
   return card;
 }
 
+function augurQueueCard(row) {
+  const displayState = row.displayState;
+  const card = el("a", "card review-card " + (cardBorderClass[displayState] || ""));
+  card.href = "#/review/augur/" + encodeURIComponent(row.proposalId);
+  card.appendChild(el("div", "card-key", (row.gapColumn || "(no gap recorded)") +
+    (row.entityId ? " on " + row.entityId : "")));
+  const meta = el("div", "review-card-meta");
+  meta.appendChild(el("span", reviewStateClass(displayState), displayState));
+  if (row.trigger) meta.appendChild(el("span", "review-glyph", row.trigger));
+  if (row.proposedAction) meta.appendChild(el("span", null, row.proposedAction));
+  if (typeof row.confidence === "number") {
+    const band = confidenceBand(row.confidence);
+    meta.appendChild(el("span", "confidence-band " + band, "conf " + row.confidence.toFixed(2)));
+  }
+  if (row.model) meta.appendChild(el("span", null, row.model));
+  const ago = agoFrom(row.reasonedAt, Date.now());
+  if (ago) meta.appendChild(el("span", null, ago));
+  card.appendChild(meta);
+  if (row.entityId) {
+    const ent = el("div", "muted small");
+    ent.appendChild(document.createTextNode("candidate "));
+    ent.appendChild(keyLinkEl(row.entityId));
+    card.appendChild(ent);
+  }
+  return card;
+}
+
 // --- Detail ------------------------------------------------------------
 
-async function loadDetail(id) {
+async function loadDetail(tab, id, raw) {
   const body = $("#review-detail-body");
   body.innerHTML = "";
   body.appendChild(el("div", "muted small", "loading…"));
   setStatus("review-detail-status", "loading…");
-  const proposal = await api("/api/review/capability/" + encodeURIComponent(id));
-  if (state.arg !== "capability/" + id) return; // navigated away while loading
+  const proposal = await api("/api/review/" + tab + "/" + encodeURIComponent(id));
+  if (state.arg !== raw) return; // navigated away while loading
   body.innerHTML = "";
   if (proposal.error) {
     setStatus("review-detail-status", proposal.error, true);
@@ -107,18 +157,26 @@ async function loadDetail(id) {
     card.appendChild(el("div", "notfound-key", id));
     card.appendChild(el("div", "muted", proposal.error));
     const back = el("a", "key-link", "← back to the queue");
-    back.href = "#/review/capability";
+    back.href = "#/review/" + tab;
     card.appendChild(back);
     body.appendChild(card);
     return;
   }
   setStatus("review-detail-status", "");
-  body.appendChild(headSection(proposal));
-  body.appendChild(rationaleSection(proposal));
-  body.appendChild(artifactSection(proposal));
-  body.appendChild(deltaSection(proposal));
-  body.appendChild(provenanceSection(proposal));
-  body.appendChild(actionSection(proposal));
+  if (tab === "augur") {
+    body.appendChild(augurHeadSection(proposal));
+    body.appendChild(rationaleSection(proposal));
+    body.appendChild(proposedOpSection(proposal));
+    body.appendChild(augurProvenanceSection(proposal));
+    body.appendChild(augurActionSection(proposal, raw));
+  } else {
+    body.appendChild(headSection(proposal));
+    body.appendChild(rationaleSection(proposal));
+    body.appendChild(artifactSection(proposal));
+    body.appendChild(deltaSection(proposal));
+    body.appendChild(provenanceSection(proposal));
+    body.appendChild(actionSection(proposal, raw));
+  }
 }
 
 function panel(title) {
@@ -214,7 +272,7 @@ function provenanceSection(p) {
   return details;
 }
 
-function actionSection(p) {
+function actionSection(p, raw) {
   const box = panel("Verdict");
   const displayState = proposalDisplayState(p);
   if (displayState !== "pending") {
@@ -244,14 +302,14 @@ function actionSection(p) {
         reads: [proposalKey + ".review"],
       }),
     });
-    if (state.arg !== "capability/" + p.proposalId) return; // navigated away
+    if (state.arg !== raw) return; // navigated away
     if (body.error) {
       setStatus("review-detail-status", "reject failed: " + body.error, true);
       row.querySelectorAll("button").forEach((b) => { if (b !== approve) b.disabled = false; });
       return;
     }
     toast("proposal rejected");
-    loadDetail(p.proposalId);
+    loadDetail("capability", p.proposalId, raw);
   });
   row.appendChild(reject);
   box.appendChild(row);
@@ -274,9 +332,155 @@ function outcomeLine(p, displayState) {
   return "reasoning still in flight";
 }
 
+// --- Augur detail (F16.3) ---------------------------------------------
+
+function augurHeadSection(p) {
+  const box = panel(null);
+  box.appendChild(el("h2", "comp-title", p.gapColumn || "(no gap recorded)"));
+  const displayState = augurDisplayState(p);
+  box.appendChild(el("span", reviewStateClass(displayState), displayState));
+  if (displayState === "invalid" && p.invalidReason) {
+    box.appendChild(el("div", "review-invalid-reason", p.invalidReason));
+  }
+  const timeline = el("div", "muted small");
+  const bits = [];
+  if (p.trigger) bits.push("trigger: " + p.trigger);
+  if (p.reasonedAt) bits.push("reasoned " + agoFrom(p.reasonedAt, Date.now()) + " (" + p.reasonedAt + ")");
+  if (p.reviewedAt) bits.push("reviewed " + agoFrom(p.reviewedAt, Date.now()) + " (" + p.reviewedAt + ")");
+  if (p.dispatchedAt) bits.push("dispatched " + agoFrom(p.dispatchedAt, Date.now()) + " (" + p.dispatchedAt + ")");
+  timeline.textContent = bits.join(" · ");
+  box.appendChild(timeline);
+  if (p.entityId) {
+    const ent = el("div", "muted small");
+    ent.appendChild(document.createTextNode("candidate "));
+    ent.appendChild(keyLinkEl(p.entityId));
+    box.appendChild(ent);
+  }
+  if (p.targetId) {
+    const tgt = el("div", "muted small");
+    tgt.appendChild(document.createTextNode("weaver target "));
+    tgt.appendChild(keyLinkEl(p.targetId));
+    box.appendChild(tgt);
+  }
+  return box;
+}
+
+function proposedOpSection(p) {
+  const box = panel("The proposed remediation");
+  if (!p.proposedAction) {
+    box.appendChild(el("div", "muted", "reasoning still in flight — no proposal recorded yet"));
+    return box;
+  }
+  const meta = el("div", "review-card-meta");
+  meta.appendChild(el("span", "review-glyph", p.proposedAction));
+  if (typeof p.confidence === "number") {
+    const band = confidenceBand(p.confidence);
+    meta.appendChild(el("span", "confidence-band " + band, "conf " + p.confidence.toFixed(2)));
+  }
+  box.appendChild(meta);
+  box.appendChild(p.proposedParams !== undefined && p.proposedParams !== null
+    ? renderDoc(p.proposedParams)
+    : el("div", "muted small", "(no params recorded)"));
+  return box;
+}
+
+function augurProvenanceSection(p) {
+  const details = el("details");
+  details.appendChild(el("summary", "muted small", "provenance"));
+  const inner = panel(null);
+  inner.appendChild(el("div", "muted small", "model: " + (p.model || "?")));
+  inner.appendChild(el("div", "muted small", "reasonedAt: " + (p.reasonedAt || "?")));
+  details.appendChild(inner);
+  return details;
+}
+
+function augurActionSection(p, raw) {
+  const box = panel("Verdict");
+  const displayState = augurDisplayState(p);
+  if (displayState !== "pending") {
+    box.appendChild(el("div", "muted", augurOutcomeLine(p, displayState)));
+    return box;
+  }
+  const row = el("div", "lens-ctlrow");
+  const proposalKey = "vtx.augurproposal." + p.proposalId;
+
+  const approve = el("button", null, "Approve & dispatch");
+  approve.addEventListener("click", async () => {
+    if (!window.confirm(
+      "Approving arms autonomous dispatch of this op against " + (p.entityId || "the escalated candidate") + ".")) return;
+    row.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    setStatus("review-detail-status", "submitting approve…");
+    const body = await api("/api/op", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operationType: "ReviewProposal",
+        payload: { externalRef: p.proposalId, verdict: "approve" },
+        reads: [proposalKey + ".review", proposalKey + ".proposed", proposalKey + ".confidence", proposalKey + ".gap"],
+      }),
+    });
+    if (state.arg !== raw) return; // navigated away
+    if (body.error) {
+      setStatus("review-detail-status", "approve failed: " + body.error, true);
+      row.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+      return;
+    }
+    toast("proposal approved — dispatch is now armed");
+    loadDetail("augur", p.proposalId, raw);
+  });
+  row.appendChild(approve);
+
+  const reject = el("button", "danger-btn", "Reject");
+  reject.addEventListener("click", async () => {
+    if (!window.confirm(
+      "Reject this proposal? The AI's reasoning stays recorded for audit; the remediation will not dispatch.")) return;
+    row.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    setStatus("review-detail-status", "submitting reject…");
+    const body = await api("/api/op", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        operationType: "ReviewProposal",
+        payload: { externalRef: p.proposalId, verdict: "reject" },
+        reads: [proposalKey + ".review"],
+      }),
+    });
+    if (state.arg !== raw) return; // navigated away
+    if (body.error) {
+      setStatus("review-detail-status", "reject failed: " + body.error, true);
+      row.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+      return;
+    }
+    toast("proposal rejected");
+    loadDetail("augur", p.proposalId, raw);
+  });
+  row.appendChild(reject);
+  box.appendChild(row);
+  return box;
+}
+
+function augurOutcomeLine(p, displayState) {
+  if (displayState === "dispatched") {
+    return "approved & dispatched at " + (p.dispatchedAt || "?");
+  }
+  if (displayState === "approved") {
+    return "approved at " + (p.reviewedAt || "?") + " — awaiting dispatch";
+  }
+  if (displayState === "rejected") {
+    return "rejected at " + (p.reviewedAt || "?");
+  }
+  if (displayState === "invalid") {
+    return "invalid — " + (p.invalidReason || "no reason recorded");
+  }
+  return "reasoning still in flight";
+}
+
 function init() {
   const back = $("#review-load");
-  if (back) back.addEventListener("click", loadQueue);
+  if (back) back.addEventListener("click", () => {
+    const parts = (state.arg || "").split("/").filter(Boolean);
+    loadQueue(parts[0] || "capability", state.arg);
+  });
 }
 
 function leave() {}

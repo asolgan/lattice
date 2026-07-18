@@ -223,22 +223,26 @@
       <div class="files-grid" id="files-grid"></div>
     </section>
 
-    <!-- AI review console (drill-through: #/review/capability/<id>; F16.1 —
-         capability queue + detail + reject. Augur tab is F16.3. -->
+    <!-- AI review console (drill-through: #/review/<tab>/<id>) — two tabs, one
+         shared card component (loupe-f16-ai-review-console-ux.md §0): F16.1
+         shipped the capability queue + detail + reject; F16.3 adds the Augur
+         escalation queue + detail + approve/reject. -->
     <section class="panel" id="panel-review">
+      <div class="tabs review-subtabs">
+        <a class="tab" id="review-tab-capability" href="#/review/capability">Capability</a>
+        <a class="tab" id="review-tab-augur" href="#/review/augur">Augur</a>
+      </div>
       <div id="review-queue-view">
         <div class="panel-controls">
           <button id="review-load">Refresh</button>
           <span class="muted" id="review-status"></span>
         </div>
-        <p class="muted small">Capability-authoring proposals — an AI reasoned out a new DDL artifact
-          (lens, grant, weaverTarget, loomPattern, vertexTypeDDL, or opMeta) and parked it for a human
-          verdict. Nothing installs until you approve it here.</p>
+        <p class="muted small" id="review-queue-blurb"></p>
         <div class="cards" id="review-cards"></div>
       </div>
       <div id="review-detail-view" style="display:none">
         <div class="panel-controls">
-          <a class="detail-action-link" href="#/review/capability">← back to the queue</a>
+          <a class="detail-action-link" id="review-detail-back" href="#/review/capability">← back to the queue</a>
           <span class="muted" id="review-detail-status"></span>
         </div>
         <div class="lens-panels" id="review-detail-body"></div>

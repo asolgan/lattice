@@ -33,6 +33,7 @@ var reviewStateClassMap = {
   pending: "review-state pending",
   approved: "review-state approved",
   applied: "review-state applied",
+  dispatched: "review-state dispatched",
   rejected: "review-state rejected",
   invalid: "review-state invalid",
 };
@@ -113,7 +114,7 @@ function proposalRows(list) {
 }
 
 // pendingCount counts raw rows awaiting a human verdict — the shell nav
-// badge's data source (§2.2). Augur's count joins this in F16.3.
+// badge's data source (§2.2), joined across both loops by the caller.
 function pendingCount(list) {
   var n = 0;
   var rows = list || [];
@@ -123,4 +124,61 @@ function pendingCount(list) {
   return n;
 }
 
-export { kindGlyph, proposalDisplayState, reviewStateClass, confidenceBand, isActionable, agoFrom, proposalRows, pendingCount };
+// augurDisplayState collapses a raw Augur row's reviewState/dispatchedAt
+// into the one state the card renders: "authoring" (claim minted, reasoning
+// still in flight — reviewState null, per lenses.go's "Loupe renders 'in
+// flight' for a null state"), "pending" (awaiting a human verdict),
+// "invalid" (machine- or re-validation-blocked, terminal), "approved"
+// (armed, not yet dispatched), "dispatched" (approved AND dispatchedAt is
+// set), or "rejected".
+function augurDisplayState(row) {
+  var r = row || {};
+  var state = r.reviewState;
+  if (!state) return "authoring";
+  if (state === "approved" && r.dispatchedAt) return "dispatched";
+  return state;
+}
+
+// augurProposalRows shapes the server's raw augur-proposals rows into the
+// queue's view model. Sort (§4.1, adjudicated §8.4): actionable (pending)
+// rows first, sorted by confidence DESCENDING within that group (credible
+// proposals rise; an unscored/non-numeric confidence sorts as lowest, never
+// hidden); non-pending rows sort newest reasonedAt first. Both groups
+// tie-break on proposalId for stability.
+function augurProposalRows(list) {
+  var rows = (list || []).map(function (r) {
+    return {
+      proposalId: r.proposalId || "",
+      targetId: r.targetId || "",
+      entityId: r.entityId || "",
+      gapColumn: r.gapColumn || "",
+      trigger: r.trigger || "",
+      proposedAction: r.proposedAction || "",
+      proposedParams: r.proposedParams,
+      rationale: r.rationale || "",
+      confidence: r.confidence,
+      model: r.model || "",
+      reasonedAt: r.reasonedAt || "",
+      reviewedAt: r.reviewedAt || "",
+      reviewState: r.reviewState || "",
+      invalidReason: r.invalidReason || "",
+      dispatchedAt: r.dispatchedAt || "",
+      displayState: augurDisplayState(r),
+      actionable: isActionable(r),
+    };
+  });
+  rows.sort(function (a, b) {
+    if (a.actionable !== b.actionable) return a.actionable ? -1 : 1;
+    if (a.actionable) {
+      var ca = typeof a.confidence === "number" ? a.confidence : -1;
+      var cb = typeof b.confidence === "number" ? b.confidence : -1;
+      if (ca !== cb) return ca > cb ? -1 : 1;
+      return a.proposalId < b.proposalId ? -1 : a.proposalId > b.proposalId ? 1 : 0;
+    }
+    if (a.reasonedAt !== b.reasonedAt) return a.reasonedAt > b.reasonedAt ? -1 : 1;
+    return a.proposalId < b.proposalId ? -1 : a.proposalId > b.proposalId ? 1 : 0;
+  });
+  return rows;
+}
+
+export { kindGlyph, proposalDisplayState, reviewStateClass, confidenceBand, isActionable, agoFrom, proposalRows, pendingCount, augurDisplayState, augurProposalRows };
