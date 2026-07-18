@@ -455,6 +455,47 @@ Fire 5 residual now: the second-renderer spike continues — a literal iOS build
 elsewhere), then the write path (`enqueue`), then the acceptance-demo green bar (§ overview: "wire a
 brand-new service... watch it appear in both renderers with zero app change").
 
+### 7.11 Fire 5 — second-renderer spike Inc 2 (Winston, 2026-07-18) — write path, live-verified
+
+Closes the residual named in §7.10 that this machine can actually finish (the literal iOS build still
+needs a machine with full Xcode — unstarted, unchanged): `FeedClient.enqueue` (mirrors
+`cmd/facet/server.go`'s `enqueueRequest` field-for-field), `ManifestFrame`/`ManifestStore` now decode
+and track `outbox` SSE frames (previously dropped as "out of this spike's scope"), and `ContentView`
+gained an Outbox section plus a per-Catalog-row "Enqueue" button. `JSONValue` grew `Encodable`
+alongside its existing `Decodable` — the same generic `json.RawMessage` posture, now bidirectional —
+so the write body is built the same namespace-agnostic way the read side is rendered, no per-operation
+Swift struct.
+
+**Scope, honestly bounded.** The Enqueue button submits an empty (`{}`) payload — it proves the
+SwiftUI renderer can drive a write through the real envelope path, not that every op succeeds
+one-tap; an op with required `inputSchema` fields comes back `rejected` over the Outbox, which is
+itself a real (if unhappy) round trip. The full descriptor-form renderer that resolves
+`inputSchema`/`dispatch.reads`/`dispatch.contextParams` into a filled-in form — `app.js`'s
+`renderOpForm` on the PWA side — is a separate, larger increment, not attempted here.
+
+**Live-verified, a real confirmed write, not just a mechanism smoke check.** A throwaway `swift run`
+executable target (added to `Package.swift`, run, then reverted — not checked in, mirroring §7.10's
+convention) dev-logged in as `UvsgF4q1JUhuqZrLzbPZ` — the real resident identity §7.9 minted — and
+called `FeedClient.enqueue` for `OpenTab{leaseAppKey: vtx.leaseapp.Z8ebXzStgUGerUpqeHEF}` (that
+identity's own lease, §7.9's fixture, its prior tab already settled so the per-lease guard was clear).
+First attempt declared only the `applicationFor` link in `optionalReads` and came back `rejected:
+UnknownLeaseApplication` — a real bug caught, not the mechanism failing: `ddls.go`'s `OpenTab` reads
+the lease vertex itself via `state[lease_key]` to check it's alive, which requires the lease key in
+`reads` (required), not just the link in `optionalReads`. Corrected to `reads: [leaseKey]`,
+`optionalReads: [leaseKey + ".cafeOpenTab", applicationForLink]` — the outbox frame then transitioned
+`queued → submitting → confirmed` live over the SSE stream, and the new tab
+(`vtx.tab.feVhzS6AWddX6rhKbGxd`) was independently confirmed via `cafe-app`'s own `/api/tabs` read API,
+not just the outbox's own say-so. A write initiated by this Swift client reached the real
+Gateway/Processor and landed in Core KV.
+
+**Verified.** `swift build` (`FacetManifestKit` + `FacetSwiftUISpike`) succeeds clean after the
+throwaway target was removed.
+
+Fire 5 residual now: a literal iOS build (needs full Xcode elsewhere, unstarted since §7.10) and the
+descriptor-form renderer (turns the one-tap empty-payload Enqueue into a real filled-in form) remain
+before the acceptance-demo green bar (§ overview: "wire a brand-new service... watch it appear in both
+renderers with zero app change").
+
 ## 8. Non-goals (v1)
 
 No local authority (EDGE.6 stays a separate Andrew-gated decision); no admin/cross-identity surfaces (Loupe exists; Facet renders only vocabulary-described personal projections — it is not a graph browser); no payments UX; no vendor push integration before the waker design; no per-vertical bespoke screens — a vertical that wants richer-than-vocabulary UI builds its own FE (the existing pattern) while Facet keeps the universal floor.

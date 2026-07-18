@@ -2,6 +2,16 @@
 
 Rolled from `verticals.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-12 · `b4601de` · Clinic self-service reschedule + cancel CLOSED — extends the consumer scope=self grant pattern to `RescheduleAppointment` + cancel-only `SetAppointmentStatus`; My Appointments self-service toggle (v0.17.0)
+- 2026-07-12 · `1a7b53b` · Clinic multi-site Inc 2 CLOSED — site directory FE + `#book-site` filter + hard-validated `CreateAppointment` site param (`atSite` link) — [design](../../implementation-artifacts/clinic-multisite-design.md)
+- 2026-07-12 · `7877911` · Clinic multi-site Inc 1 — `practicesAt` provider↔building link + `.site` aspect + lenses — [design](../../implementation-artifacts/clinic-multisite-design.md)
+- 2026-07-12 · `3b9591f` · Clinic self-book claim ceremony CLOSED — mirrors LoftSpace's Apply fix; live-verified both new + pre-existing patient paths
+- 2026-07-12 · `850a16b` · LoftSpace Apply-to-lease claim ceremony CLOSED — wires ProvisionConsumerIdentity+ClaimIdentity + new `RotateClaimKey` recovery op; live-verified
+- 2026-07-12 · `1bfa107` · Clinic provider picker search — `#provider-search` client-side name/specialty filter, closes the `#provider` half left open 2026-07-10
+- 2026-07-12 · `8315a88` · Clinic booking specialty search — specialty filter + soonest-available-across-matching-providers panel, FE-only
+- 2026-07-11 · `3def314` · Café per-lease open-tab guard — `cafeOpenTabGuard` aspect (claim/OCC-revive/tombstone), rejects a 2nd concurrent `OpenTab`
+- 2026-07-11 · `99d00bf` · Clinic billing payer dimension — `billedTo` self｜insurance + `expectedReimbursementCents` on a debit entry (clinic-ledger)
+- 2026-07-11 · `—` · Write-ops stale-state fix mirrored onto cafe-app (5 sites) + clinic-app (3) + wellness-app (3), closing "clinic likely shares the gap"
 - 2026-07-10 · `1d1ac53` · Mixed-use composition CLOSED — Inc 5 clinic-visit tail (`residentVisit` link + `frontDeskVisits` lens, existence+time only, no PHI) — [design](../../implementation-artifacts/mixed-use-composition-design.md)
 - 2026-07-10 · `8b3848b` · Mixed-use composition Inc 4 — front-desk lease details (term/rent card line, corrected the Inc 3 note's stale premise) — [design](../../implementation-artifacts/mixed-use-composition-design.md)
 - 2026-07-10 · `838761f` · App read boundaries revocation kill-switch CLOSED — loftspace/clinic wired (cafe/wellness have no protected read boundary, N/A) — [authN §12.1](../../implementation-artifacts/external-actor-authn-binding-design.md)

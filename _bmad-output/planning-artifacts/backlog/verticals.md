@@ -17,7 +17,7 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 
 | Item | What it is (PO view) | Vertical | Owner | Imp | Size | State |
 |---|---|---|---|---|---|---|
-| **Edge showcase app (Facet)** | Discovery-driven personal client on the Edge foundation: hardcodes only IdP login + connect; services, ops, forms, tasks arrive as data via `edge-manifest` personal lenses + a descriptor vocabulary (#52/#54/#55). PWA-first. | Cross-vertical | Sally + FE Engineer + pkg | ★★★ | XL | 🏗️ building · [design §7.10](../../implementation-artifacts/edge-showcase-app-design.md) · 2nd-renderer spike Inc 1 shipped (macOS SwiftUI, live-verified) · next: literal iOS build, then write path |
+| **Edge showcase app (Facet)** | Discovery-driven personal client on the Edge foundation: hardcodes only IdP login + connect; services, ops, forms, tasks arrive as data via `edge-manifest` personal lenses + a descriptor vocabulary (#52/#54/#55). PWA-first. | Cross-vertical | Sally + FE Engineer + pkg | ★★★ | XL | 🏗️ building · [design §7.11](../../implementation-artifacts/edge-showcase-app-design.md) · 2nd-renderer spike Inc 2 shipped (write path, live-verified confirmed write) · next: descriptor-form renderer, then literal iOS build |
 | **Account settings — manage sign-in methods** | Live-verified: LoftSpace has no account/profile surface at all today (grepped `app.js`/`index.html` — only qualification-profile, no identity page). Page for the applicant to see linked credentials (`whoami`), link another (`InitiateCredentialLink`/`CompleteCredentialLink`), and remove one (`UnlinkCredential`, platform refuses removing the last). | LoftSpace | FE + pkg | ★★ | S | ✅ shipped `25623d9` |
 | **Care→Wellness referral** | Post-visit, the clinic worklist offers a bookable wellness class (the clinic+wellness emergence — shared scheduling shape); a clinic→wellness handoff that opens a booking from the appointment context. | Clinic/Wellness | pkg + FE | ★ | S | ✅ shipped `e86ab45` |
 | **Clinical notes are write-only** | `RecordEncounter` PHI (`ddls.go:333-336`) captured, never projected. The cited `clinicPatientsRead` Secure-Lens precedent does NOT extend — that decrypts identity-anchored Vault ciphertext; this is raw plaintext on a non-identity vertex, and that exact shortcut was already REJECTED pre-Vault (`vault-crypto-shredding-design.md` ratification decision #2). | Clinic | pkg | ★★★ | M | 🚧 blocked-on: Vault extended to non-identity content (architectural fork, Andrew) |
@@ -67,6 +67,7 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic ↔ Café ↔ We
 
 One line per shipped item (`date · SHA · title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-18 · `339f0a1` · Facet 2nd-renderer spike Inc 2 — write path (enqueue), live-verified confirmed write — [design §7.11](../../implementation-artifacts/edge-showcase-app-design.md)
 - 2026-07-18 · `f29bb89` · Facet 2nd-renderer spike Inc 1 — SwiftUI client, live-verified — [design §7.10](../../implementation-artifacts/edge-showcase-app-design.md)
 - 2026-07-18 · `16ef550` · Landlord sign-in reload race — `init()` awaits `loadIdentities()` before `applyMode()`; live-verified
 - 2026-07-18 · `86f8c76` · Café self-order — `menuitem` DDL + `menuCatalog` lens; self-Charge derives amountCents from the catalog, never the caller; Resident item picker; verified via embedded-NATS tests, not live-browser (new entity)
@@ -91,14 +92,4 @@ One line per shipped item (`date · SHA · title`). Oldest roll to `archive/` pa
 - 2026-07-13 · `25623d9` · LoftSpace account settings — new `identityCredentialsRead` Secure Lens + Account tab (list/link/unlink); live-verify pending, dev-stack installs broken
 - 2026-07-13 · `f5b3031` · Edge showcase app (Facet) Fire 2 — `cmd/facet` dev host + PWA renderer, live-verified — [UX](../../implementation-artifacts/facet-app-ux.md)
 - 2026-07-13 · `—` · Edge showcase app (Facet) Fire 2 UX spec — descriptor-form renderer + widget vocabulary mapping, Outbox/conflict UX, `cmd/facet` binary shape — [UX](../../implementation-artifacts/facet-app-ux.md)
-- 2026-07-12 · `b4601de` · Clinic self-service reschedule + cancel CLOSED — extends the consumer scope=self grant pattern to `RescheduleAppointment` + cancel-only `SetAppointmentStatus`; My Appointments self-service toggle (v0.17.0)
-- 2026-07-12 · `1a7b53b` · Clinic multi-site Inc 2 CLOSED — site directory FE + `#book-site` filter + hard-validated `CreateAppointment` site param (`atSite` link) — [design](../../implementation-artifacts/clinic-multisite-design.md)
-- 2026-07-12 · `7877911` · Clinic multi-site Inc 1 — `practicesAt` provider↔building link + `.site` aspect + lenses — [design](../../implementation-artifacts/clinic-multisite-design.md)
-- 2026-07-12 · `3b9591f` · Clinic self-book claim ceremony CLOSED — mirrors LoftSpace's Apply fix; live-verified both new + pre-existing patient paths
-- 2026-07-12 · `850a16b` · LoftSpace Apply-to-lease claim ceremony CLOSED — wires ProvisionConsumerIdentity+ClaimIdentity + new `RotateClaimKey` recovery op; live-verified
-- 2026-07-12 · `1bfa107` · Clinic provider picker search — `#provider-search` client-side name/specialty filter, closes the `#provider` half left open 2026-07-10
-- 2026-07-12 · `8315a88` · Clinic booking specialty search — specialty filter + soonest-available-across-matching-providers panel, FE-only
-- 2026-07-11 · `3def314` · Café per-lease open-tab guard — `cafeOpenTabGuard` aspect (claim/OCC-revive/tombstone), rejects a 2nd concurrent `OpenTab`
-- 2026-07-11 · `99d00bf` · Clinic billing payer dimension — `billedTo` self｜insurance + `expectedReimbursementCents` on a debit entry (clinic-ledger)
-- 2026-07-11 · `—` · Write-ops stale-state fix mirrored onto cafe-app (5 sites) + clinic-app (3) + wellness-app (3), closing "clinic likely shares the gap"
 - *(older entries rolled to [archive/verticals-done.md](archive/verticals-done.md))*
