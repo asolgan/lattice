@@ -87,7 +87,7 @@ main { padding: 18px; max-width: 1000px; margin: 0 auto; }
 
 input, select, button, textarea { font-family: inherit; }
 
-input[type="number"], input[type="text"], select, textarea {
+input[type="number"], input[type="text"], input[type="datetime-local"], select, textarea {
   background: var(--bg-input);
   border: 1px solid var(--border);
   color: var(--text);
@@ -174,6 +174,22 @@ button.danger:hover { background: #c94a3f; border-color: #c94a3f; }
 .field input, .field select { width: 100%; }
 .field-row { display: flex; gap: 10px; align-items: center; }
 .panel-actions { display: flex; gap: 10px; margin-top: 4px; flex-wrap: wrap; }
+
+.admin-form {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 20px;
+  max-width: 420px;
+}
+.admin-form h2 { margin: 0 0 12px; font-size: 15px; }
+.session-form {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+.session-form input { width: 100%; }
 
 .ledger-balance { font-weight: 600; font-size: 15px; margin: 8px 0 4px; }
 .ledger-list { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 4px; }

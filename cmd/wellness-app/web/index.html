@@ -13,6 +13,7 @@
     <button class="tab active" data-view="schedule" role="tab" aria-selected="true">Schedule</button>
     <button class="tab" data-view="roster" role="tab" aria-selected="false">Roster</button>
     <button class="tab" data-view="myclasses" role="tab" aria-selected="false">My Classes</button>
+    <button class="tab" data-view="studios" role="tab" aria-selected="false">Studios</button>
   </nav>
 </header>
 
@@ -50,6 +51,24 @@
       <button id="myclasses-refresh" class="ghost">Refresh</button>
     </div>
     <div id="myclasses-body"></div>
+  </section>
+
+  <section id="view-studios" role="tabpanel" hidden>
+    <div class="admin-form">
+      <h2>New studio</h2>
+      <div class="field">
+        <label for="studio-name">Studio name</label>
+        <input type="text" id="studio-name" placeholder="e.g. Sunrise Yoga Room" maxlength="120" />
+      </div>
+      <button id="studio-create">Create studio</button>
+    </div>
+
+    <div class="panel-controls">
+      <label>Studios</label>
+      <button id="studios-refresh" class="ghost">Refresh</button>
+      <span class="summary" id="studios-summary"></span>
+    </div>
+    <div id="studios-grid" class="grid" aria-live="polite"></div>
   </section>
 </main>
 

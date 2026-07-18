@@ -153,6 +153,7 @@ function showView(view) {
   if (view === "schedule") loadSchedule();
   else if (view === "roster") loadRoster();
   else if (view === "myclasses") loadMyClasses();
+  else if (view === "studios") loadStudiosAdmin();
 }
 
 // ---- shared picker data ------------------------------------------------
@@ -471,6 +472,160 @@ function myClassCard(b) {
   );
 }
 
+// ---- Studios (admin) view ------------------------------------------
+//
+// The operator surface for standing up the studios + classes the other three
+// tabs consume — the wellness analog of LoftSpace's Landlord listing creation
+// and Clinic's in-FE provider registration. CreateStudio/CreateSession are
+// operator-scope (wellness-domain permissions.go), so this view submits with
+// the default staff token, the same path Schedule/Roster already use.
+
+// toUtcInstant canonicalizes a datetime-local field ("YYYY-MM-DDTHH:MM",
+// grid-stepped) to the whole-second UTC RFC3339 instant CreateSession's grid
+// expects. The wellness grid is UTC, and the Schedule view already displays
+// session times as raw RFC3339 strings (fmtRange), so the entered wall-clock
+// is stamped ":00Z" verbatim — never shifted by the browser's local zone.
+function toUtcInstant(localValue) {
+  if (!localValue) return "";
+  return localValue.length === 16 ? localValue + ":00Z" : localValue + "Z";
+}
+
+// slotCellKeys mirrors sessionDDLScript's slot_cells + slot_cellcode
+// (packages/wellness-domain/ddls.go): CreateSession reads-then-claims one
+// studioSlotClaim aspect per covered 15-minute cell, so every covered cell is
+// a class-(d) optionalReads the dispatcher must declare — the same "FE mirrors
+// the Starlark read set" idiom seatKeys() uses for CreateBooking. Cells run
+// [startsAt, endsAt) on the :00/:15/:30/:45 grid; the 96-cell cap matches the
+// script's MAX_SLOT_CELLS (a longer span is rejected SessionTooLong server-side).
+function slotCellKeys(studioKey, startsAt, endsAt) {
+  const keys = [];
+  const end = Date.parse(endsAt);
+  let cur = Date.parse(startsAt);
+  for (let i = 0; i < 96 && cur < end; i++) {
+    const cc = new Date(cur).toISOString().slice(0, 19).replace(/[-:]/g, "").toLowerCase() + "z";
+    keys.push(studioKey + ".slot" + cc);
+    cur += 15 * 60 * 1000;
+  }
+  return keys;
+}
+
+async function loadStudiosAdmin() {
+  await renderStudiosAdmin();
+}
+
+async function renderStudiosAdmin() {
+  const grid = document.getElementById("studios-grid");
+  const summary = document.getElementById("studios-summary");
+  grid.innerHTML = "";
+  summary.textContent = "";
+  let studios;
+  try {
+    const r = await api("/api/studios");
+    studios = r.studios || [];
+  } catch (e) {
+    grid.innerHTML = '<div class="empty">' + e.message + "</div>";
+    return;
+  }
+  summary.textContent = studios.length + " studio" + (studios.length === 1 ? "" : "s");
+  if (!studios.length) {
+    grid.innerHTML = '<div class="empty">No studios yet — create one above.</div>';
+    return;
+  }
+  grid.innerHTML = studios.map(studioCard).join("");
+  studios.forEach(wireStudioCard);
+}
+
+function studioCard(s) {
+  const id = domId(s.studioKey);
+  return (
+    '<div class="card">' +
+    '<div class="who">' + (s.name || "?") + "</div>" +
+    '<div class="meta">' + shortKey(s.studioKey) + "</div>" +
+    '<div class="card-actions"><button id="sess-toggle-' + id + '" class="ghost">Schedule a class</button></div>' +
+    '<div id="sess-form-' + id + '" class="session-form" hidden>' +
+    '<div class="field"><label>Class name</label><input type="text" id="sess-name-' + id + '" placeholder="e.g. Vinyasa Flow" maxlength="120" /></div>' +
+    '<div class="field"><label>Starts</label><input type="datetime-local" id="sess-starts-' + id + '" step="900" /></div>' +
+    '<div class="field"><label>Ends</label><input type="datetime-local" id="sess-ends-' + id + '" step="900" /></div>' +
+    '<div class="field"><label>Capacity</label><input type="number" id="sess-cap-' + id + '" min="1" max="200" value="20" /></div>' +
+    '<button id="sess-create-' + id + '">Schedule class</button>' +
+    "</div>" +
+    "</div>"
+  );
+}
+
+function wireStudioCard(s) {
+  const id = domId(s.studioKey);
+  const form = document.getElementById("sess-form-" + id);
+  document.getElementById("sess-toggle-" + id).addEventListener("click", () => {
+    form.hidden = !form.hidden;
+  });
+  document.getElementById("sess-create-" + id).addEventListener("click", () => {
+    createSession(s.studioKey, {
+      name: document.getElementById("sess-name-" + id),
+      starts: document.getElementById("sess-starts-" + id),
+      ends: document.getElementById("sess-ends-" + id),
+      capacity: document.getElementById("sess-cap-" + id),
+      submit: document.getElementById("sess-create-" + id),
+    });
+  });
+}
+
+async function createStudio() {
+  const input = document.getElementById("studio-name");
+  const name = input.value.trim();
+  if (!name) { toast("Enter a studio name.", false); return; }
+  const btn = document.getElementById("studio-create");
+  btn.disabled = true;
+  try {
+    await opOrThrow(
+      { operationType: "CreateStudio", class: "studio", reads: [], payload: { name } },
+      "create the studio"
+    );
+    toast("Studio created.", true);
+    input.value = "";
+    studiosCache = null;
+    // The Schedule tab's studio picker also lists studios — force it to
+    // re-pull next time it loads so the new studio appears there too.
+    document.getElementById("schedule-studio").dataset.loaded = "";
+    setTimeout(renderStudiosAdmin, 700);
+  } catch (e) {
+    toast(e.message, false);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function createSession(studioKey, els) {
+  const name = els.name.value.trim();
+  const startsAt = toUtcInstant(els.starts.value);
+  const endsAt = toUtcInstant(els.ends.value);
+  const capacity = parseInt(els.capacity.value, 10);
+  if (!name) { toast("Enter a class name.", false); return; }
+  if (!startsAt || !endsAt) { toast("Pick a start and end time.", false); return; }
+  if (!(capacity >= 1 && capacity <= 200)) { toast("Capacity must be 1–200.", false); return; }
+  if (!(Date.parse(startsAt) < Date.parse(endsAt))) { toast("End time must be after start time.", false); return; }
+  els.submit.disabled = true;
+  try {
+    await opOrThrow(
+      {
+        operationType: "CreateSession",
+        class: "session",
+        reads: [studioKey],
+        optionalReads: slotCellKeys(studioKey, startsAt, endsAt),
+        payload: { studio: studioKey, name, startsAt, endsAt, capacity },
+      },
+      "schedule the class"
+    );
+    toast("Class scheduled.", true);
+    els.name.value = "";
+    setTimeout(renderStudiosAdmin, 700);
+  } catch (e) {
+    toast(e.message, false);
+  } finally {
+    els.submit.disabled = false;
+  }
+}
+
 // ---- Me bar ---------------------------------------------------------
 
 // refreshCurrentView re-renders whichever tab is active — called after
@@ -537,6 +692,8 @@ function init() {
   });
   document.getElementById("myclasses-resident").addEventListener("change", renderMyClasses);
   document.getElementById("myclasses-refresh").addEventListener("click", () => { residentsCache = null; loadMyClasses(); });
+  document.getElementById("studio-create").addEventListener("click", createStudio);
+  document.getElementById("studios-refresh").addEventListener("click", () => { studiosCache = null; renderStudiosAdmin(); });
   initMeBar();
   loadSchedule();
 }
