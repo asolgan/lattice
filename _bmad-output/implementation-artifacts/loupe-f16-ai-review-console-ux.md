@@ -1,10 +1,11 @@
 # Loupe 2.0 — F16: the AI review console (UX design)
 
-> **Status: 📐 awaiting adjudication — Winston (Andrew-delegated for the Loupe program, 2026-07-02).**
-> Author: Sally (UX). Filed by the PO survey 2026-07-18. Builds after adjudication, UX-then-FE, per the
-> Loupe pipeline. Grounded live against the shipped read-models + op DDLs (`packages/capability-author`,
-> `packages/augur`, `internal/pkgmgr`) — every not-yet-readable dependency is flagged inline ⚠️ **ASSUMES**.
-> House style follows [loupe-2-ux-design.md](loupe-2-ux-design.md) + [loupe-platform-edges-ux.md](loupe-platform-edges-ux.md).
+> **Status: ✅ ADJUDICATED — Winston, 2026-07-18 (Andrew-delegated for the Loupe program, 2026-07-02). BUILD-READY.**
+> Author: Sally (UX). Filed by the PO survey 2026-07-18. All four §8 forks resolved (see §8 — decisions, not
+> questions); first buildable fire is **F16.1** (zero cross-lane dep). Grounded live against the shipped
+> read-models + op DDLs (`packages/capability-author`, `packages/augur`, `internal/pkgmgr`) — every
+> not-yet-readable dependency is flagged inline ⚠️ **ASSUMES**. House style follows
+> [loupe-2-ux-design.md](loupe-2-ux-design.md) + [loupe-platform-edges-ux.md](loupe-platform-edges-ux.md).
 
 ---
 
@@ -185,18 +186,22 @@ The heart. Top-to-bottom, the way a reviewer actually reads it:
    which model, against which catalog snapshot, reasoned this.
 6. **The action row** (only when `review.state = pending`):
    - **Approve & install** — primary, but gated behind the re-validation + a confirm (§3.3).
-   - **Reject** — destructive-styled (`.file-detach` family), typed-confirm ("type the proposalId") since it
-     discards an AI's work; submits `ReviewCapabilityProposal{verdict:reject}`.
+   - **Reject** — a single-click confirm ("Reject this proposal? The AI's authored artifact stays recorded for
+     audit; it just won't be installed."), **not** a typed-confirm (✅ adjudicated §8.3: reject preserves the
+     vertex — it isn't destructive, so it doesn't earn typed-confirm friction). Submits
+     `ReviewCapabilityProposal{verdict:reject}`.
    - For non-pending states the row shows the outcome instead: "approved & applied by `<appliedByOp>` at
      `<appliedAt>`" (op key linkified) / "rejected at `<reviewedAt>`" / "invalid — `<invalidReason>`".
 
 ### 3.3 The approve path — the re-validation fork ⚠️ (F16's one real decision)
 
 Approve is **not** a blind POST of the stored verdict. Per the DDL, the operator's approve must carry a **fresh**
-`validation` payload, re-computed against the *current* catalog. Two ways to get it — **this is the fork for
-Winston/Andrew:**
+`validation` payload, re-computed against the *current* catalog. Two ways to get it — **✅ ADJUDICATED (Winston
+2026-07-18): Option A**, spiked first in F16.2; fall back to Option B only if the spike fails. The CLI already
+re-validates in-process (`cmd/lattice/capability` `freshApprovalVerdict`), so the three deps are known to be
+constructible outside the Processor — the spike should pass. The options, for the record:
 
-- **Option A — Loupe re-validates server-side (recommended).** On `POST /api/review/capability/<id>/approve`,
+- **Option A — Loupe re-validates server-side (✅ adjudicated §8.1).** On `POST /api/review/capability/<id>/approve`,
   the Loupe server calls `pkgmgr.ValidateCapabilityArtifact(kind, content, parser, requesterHeld,
   sensitiveAspects)` itself (Loupe already imports `internal/pkgmgr` — `cmd/loupe/pkg.go`), then stamps
   `ReviewCapabilityProposal{verdict:approve, validation:{state,report}}` via the existing op-submit path. If the
@@ -213,27 +218,27 @@ Winston/Andrew:**
   proposal by id against the live catalog and returns the fresh `{state,report}`; Loupe calls it, then submits.
   Heavier (a new platform surface) but keeps the validator's dependency-wiring on the lane that owns it.
 
-**Recommendation: Option A**, spiked in the build fire. It keeps the whole approve loop inside Loupe + the
-existing `/api/op` submit, mirrors how the Packages page already drives `pkgmgr` in-process, and needs no new
-platform surface — *if* the three deps wire cleanly. The FE ships against an internal
-`revalidate(proposal) → {state,report}` seam so the backend choice is swappable without touching the card UI.
+Either way, the FE ships against an internal `revalidate(proposal) → {state,report}` seam so the backend choice
+is swappable without touching the card UI. (Adjudicated to A above; the seam keeps B a drop-in fallback.)
 
 **After approve → apply (the real boundary of F16).** Approve only flips `review.state=approved`; the artifact
 still has to be *installed*. Apply is **not** a `/api/op` submit — it is a two-Processor-commit platform flow
 (`internal/pkgmgr.CapabilityApplyPlanForProposal` → `Installer.Apply` (a real F-004 install) → then
 `MarkCapabilityProposalApplied`, which verifies the target `vtx.package.<id>` is live and its manifest name
 matches `target.packageName`). Today only `cmd/lattice-pkg apply-proposal <id>` drives it, needing a bootstrap
-path + admin actor + direct-KV reads. So F16 has a real fork for apply:
+path + admin actor + direct-KV reads. **✅ ADJUDICATED (Winston 2026-07-18): apply-in-Loupe, spiked in F16.2,
+CLI hand-off as the graceful fallback.** The whole point of F16 is to be the *complete* human-in-the-loop
+surface — forcing the operator to a CLI for the last mile breaks the loop — so we build the endpoint; but it is
+contingent on the spike, and the fallback is real, not a failure. The two paths:
 
-- **Apply-in-Loupe (recommended for the closed loop):** a new **`POST /api/review/capability/<id>/apply`** that
-  wraps `CapabilityApplyPlanForProposal` server-side and submits both commits, rendering the installer reply
-  inline (collapsible, exactly like the Packages install reply, main §9.3). ⚠️ **ASSUMES** the apply flow's
-  bootstrap/admin-actor context is constructible inside the running Loupe process — **the F16.2 fire spikes this
-  alongside the approve re-validation** (same class of dependency-wiring question). This is what makes Loupe the
-  *complete* human-in-the-loop surface.
-- **Defer apply to the CLI (F16.2 fallback):** if that context isn't cleanly constructible, the card shows the
-  `approved`-but-not-applied state + the exact `lattice-pkg apply-proposal <id>` command to run, and files the
-  Loupe apply endpoint as a §6 cross-lane ask. The approve loop still ships; only the last mile waits.
+- **Apply-in-Loupe (the target):** a new **`POST /api/review/capability/<id>/apply`** that wraps
+  `CapabilityApplyPlanForProposal` server-side and submits both commits, rendering the installer reply inline
+  (collapsible, exactly like the Packages install reply, main §9.3). ⚠️ **ASSUMES** the apply flow's
+  bootstrap/admin-actor context is constructible inside the running Loupe process — **F16.2 spikes this alongside
+  the approve re-validation** (same class of dependency-wiring question).
+- **CLI hand-off (fallback, only if the spike fails):** the card shows the `approved`-but-not-applied state + the
+  exact `lattice-pkg apply-proposal <id>` command, and the Loupe apply endpoint becomes a §6 cross-lane ask. The
+  approve loop still ships; only the last mile waits.
 
 **The card honors reality:** it shows an **"Apply now"** button only if the Loupe apply endpoint exists; otherwise
 it shows the approved state + the CLI hand-off. No invented button.
@@ -265,7 +270,10 @@ renderer wholesale.
 ### 4.1 The queue — `#/review/augur`
 
 `GET /api/review/augur` over the `augur-proposals` bucket (same read-model path). One card per escalation,
-**pending first** (those await a human), then newest:
+**pending first** (those await a human), and within pending **sorted by confidence descending** so credible
+proposals rise to the top (✅ adjudicated §8.4); low-confidence pending cards are visually de-emphasized (dimmed
+confidence band) but **never hidden** — an operator must be able to see everything awaiting them. Non-pending
+sorts newest-first:
 
 - **Headline:** the **gap** — `gapColumn` on `targetId`/`entityId`, with `trigger` (what fired the escalation:
   `unplannable` = no playbook entry, or `exhausted` = retry budget spent). This is what the AI was reacting to.
@@ -286,7 +294,8 @@ Same shared card renderer as §3.2:
    - **Approve & dispatch** — primary, behind a confirm ("Approving arms autonomous dispatch of this op against
      `<entityId>`."). Submits `ReviewProposal{externalRef, verdict:approve}` via `/api/op` — **no validation
      payload** (Augur re-validates server-side). No apply step; the platform dispatches on `approved`.
-   - **Reject** — destructive-styled, typed-confirm; submits `ReviewProposal{verdict:reject}`.
+   - **Reject** — single-click confirm (not typed-confirm — §8.3, the proposal stays recorded for audit);
+     submits `ReviewProposal{verdict:reject}`.
    - For non-pending states: `invalid` shows `invalidReason` **prominent** (the audit payoff — *why the machine
      gate blocked an AI action*); `approved`/dispatched shows `dispatchedAt` + a link to the dispatched op/outcome
      if the read model carries one; `rejected` shows `reviewedAt`.
@@ -363,18 +372,23 @@ Suggested order: **F16.1 → F16.3 → F16.2** (ship the two zero-dependency fir
 actually *simpler* than F16.2's; land the heavy capability approve/apply fork last, after its spikes). Each fire
 retires nothing — F16 is purely additive.
 
-## 8. Open questions for Andrew
+## 8. Adjudication decisions (Winston, 2026-07-18 — Andrew-delegated)
 
-1. **Capability approve re-validation (§3.3):** Option A (Loupe re-validates in-process — recommended, matches
-   the CLI) vs Option B (a Lattice validation RPC)? F16.2 spikes A first; this confirms the preference.
-2. **Capability apply (§3.3):** apply-in-Loupe (a new endpoint wrapping `CapabilityApplyPlanForProposal` —
-   recommended for the complete closed loop) vs CLI hand-off (`lattice-pkg apply-proposal`)? F16.2 spikes the
-   endpoint; the fallback is graceful.
-3. **Reject friction:** typed-confirm on reject (it discards an AI's authored work) — right, or too heavy?
-   (Approve keeps its confirm regardless — it changes / dispatches against the running system.)
-4. **Augur confidence floor:** should the queue visually de-emphasize (or fold) very-low-confidence `pending`
-   Augur proposals so an operator's attention goes to the credible ones first? (A pure display choice — the data's
-   there in `confidence`.)
+All four resolved; the design is build-ready. None touches a frozen contract — each is a lead-level design call.
+
+1. **§8.1 — Capability approve re-validation → Option A** (Loupe re-validates in-process; §3.3). The CLI already
+   does exactly this (`freshApprovalVerdict`), so the deps are known-constructible. F16.2 spikes A first; Option B
+   (a Lattice validation RPC) stays a drop-in fallback behind the `revalidate()` seam if the spike fails.
+2. **§8.2 — Capability apply → apply-in-Loupe** (a `POST …/apply` wrapping `CapabilityApplyPlanForProposal`;
+   §3.3), so Loupe is the *complete* human-in-the-loop surface. Contingent on the F16.2 spike; the CLI hand-off
+   (`lattice-pkg apply-proposal`) is the graceful fallback, not a failure.
+3. **§8.3 — Reject → single-click confirm, NOT typed-confirm** (§3.2, §4.2). Reject preserves the proposal
+   vertex (auditable, re-proposable) — it isn't destructive, so it doesn't earn the typed-confirm friction
+   reserved for irreversible actions (shred / uninstall / revoke). Approve keeps its confirm — it changes /
+   dispatches against the running system.
+4. **§8.4 — Augur low-confidence → sort, don't hide** (§4.1). Pending sorts by confidence descending and dims
+   low-confidence cards, but never folds/hides them — an operator must see everything awaiting them. Pure display,
+   in the goja logic tier.
 
 ---
 
