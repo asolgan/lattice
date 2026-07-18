@@ -399,6 +399,62 @@ Fire 5 residual now: the second-renderer (iOS/SwiftUI) spike (unstarted) and a l
 
 The `RotateClaimKey` bug §7.8 flagged is already fixed (`98a5bcd`, a prior fire). Minted a fresh fixture through the real product paths, not a seed script: loftspace-app's "+ New applicant" ceremony created + claimed `vtx.identity.UvsgF4q1JUhuqZrLzbPZ`, then Apply against the `make seed-classic-demo` listing produced `vtx.leaseapp.Z8ebXzStgUGerUpqeHEF` with its `applicationFor` link to that identity — the exact class-(d) key café's self-scope guard reads (§7.8). Signed the same identity into café-app's Resident view: the lease picker auto-locked to the resident's own lease (no manual selection), Open Tab submitted `asSelf` and minted `vtx.tab.jxVYPwxYQoVn4nbFiqF2` with `createdBy=vtx.identity.UvsgF4q1JUhuqZrLzbPZ`, and Settle My Tab transitioned its `.status` aspect to `value=settled`, `lastModifiedBy` the same resident identity — confirmed by direct Core KV read, not just the FE toast. Zero console errors throughout. Fire 5 residual now: only the second-renderer (iOS/SwiftUI) spike remains, unstarted.
 
+### 7.10 Fire 5 — second-renderer spike Inc 1 (Winston, 2026-07-18) — native SwiftUI client, live-verified
+
+Starts the last Fire 5 residual: `clients/facet-swiftui-spike` (Swift Package Manager, no Xcode
+project) — a native SwiftUI client hydrating from the identical `manifest.*` feed the PWA renders,
+over `cmd/facet`'s already-shipped browser-facing HTTP+SSE surface (`POST /api/dev-login`,
+`GET /api/feed`) with zero changes to the Go host or the manifest package. `FacetManifestKit`
+(platform-agnostic: `JSONValue`, `ManifestFrame`, `SSEDecoder`, `FeedClient`) has no manifest-namespace
+knowledge baked in beyond the five key prefixes (`manifest.me`/`.svc.`/`.op.`/`.task.`/`.inst.`) —
+row fields are read generically, the same posture the Go host's own `json.RawMessage` carries.
+`FacetSwiftUISpikeApp`'s `ManifestStore` is a last-write-wins reducer, the same shape `app.js`'s
+manifest handler uses; `ContentView` renders Services/Catalog/Tasks/My Instances straight off row
+fields with no manifest-specific text of its own — the renderer-neutrality claim FORK-1's freeze
+trigger (§ overview, "the second renderer... proves client-neutrality") names.
+
+**Honest environment caveat — proxy platform, not literal iOS.** This machine carries Xcode Command
+Line Tools only (no Xcode.app, no iOS Simulator SDK — `xcrun --sdk iphonesimulator --show-sdk-path`
+fails). The package targets **macOS 13**, the closest buildable/runnable SwiftUI target available here,
+not an iPhone. `FacetManifestKit` has zero platform-specific code, so what's proven is the manifest's
+renderer-neutrality across a genuinely different UI paradigm (native declarative Swift vs. web PWA
+JS) — not that this exact bundle runs on an iOS device/simulator, which is untested and is the actual
+remaining gap, not a re-architecture. See `clients/facet-swiftui-spike/README.md` for the full caveat.
+
+**Verified.** `swift build` (both `FacetManifestKit` and the app target) succeeds. `swift test` could
+not run in this sandbox (no `XCTest`/`Testing` module without full Xcode) — the written `XCTest` suite
+(`Tests/FacetManifestKitTests/SSEDecoderTests.swift`) will run under a normal Xcode toolchain; its
+assertions were independently verified this fire via a throwaway `swift run` smoke check (not checked
+in) covering the same cases, all passing. **Live end-to-end, against the real running `cmd/facet`
+host** (`make seed-showcase`'s `FACET_TENANT1_NANOID`): `POST /api/dev-login` accepted, then
+`GET /api/feed` streamed and correctly parsed all five manifest sections in one connect — 1
+`manifest.me`, 5 `manifest.svc.*`, 8 `manifest.op.*`, 2 `manifest.task.*`, 2 `manifest.inst.*`, plus the
+initial `connectivity` frame (19 frames total). Hit and fixed one real bug along the way:
+`URLSession.bytes(for:)` (the modern async-sequence streaming API) never yielded a single line for this
+endpoint live — a long-lived SSE connection that never closes, pinging every 20s — while `curl` streamed
+it instantly; switched `FeedClient.stream()` to a delegate-based `URLSessionDataTask`, which fires
+`didReceive data:` incrementally as bytes actually arrive and has no such issue. Documented in the
+README so a future increment doesn't rediscover it.
+
+**Not done this increment (named, not silent):** no write path (`POST /api/enqueue`) — this increment
+is read-path renderer-neutrality only, mirroring how Fire 0/1 proved the manifest read-side before any
+write concern; no actual iOS device/simulator build (environment gap above); no screenshot/visual
+proof (this sandbox's `swift run` launches a SwiftUI window but has no way to capture it headlessly) —
+the live proof is the frame-by-frame SSE transcript above, not a screenshot.
+
+**FORK-1 freeze — not triggered by this increment.** The design's FORK-1 (§ overview) names "the second
+renderer proves client-neutrality" as the trigger to freeze `docs/components/edge-manifest.md` from a
+build-to spec into a frozen contract. This increment is real evidence toward that (a second, structurally
+different renderer, live-verified against the real manifest, zero backend change) but the caveat above
+(macOS proxy, no literal iOS build) means it is not a complete proof — freezing a doc into a contract is
+exactly the kind of final-architecture call that goes to Andrew, not something a fire self-ratifies.
+Flagging as a candidate for Andrew's call once a literal iOS build exists (needs a machine with full
+Xcode) or Andrew judges this macOS proof sufficient on its own.
+
+Fire 5 residual now: the second-renderer spike continues — a literal iOS build (needs full Xcode
+elsewhere), then the write path (`enqueue`), then the acceptance-demo green bar (§ overview: "wire a
+brand-new service... watch it appear in both renderers with zero app change").
+
 ## 8. Non-goals (v1)
 
 No local authority (EDGE.6 stays a separate Andrew-gated decision); no admin/cross-identity surfaces (Loupe exists; Facet renders only vocabulary-described personal projections — it is not a graph browser); no payments UX; no vendor push integration before the waker design; no per-vertical bespoke screens — a vertical that wants richer-than-vocabulary UI builds its own FE (the existing pattern) while Facet keeps the universal floor.
