@@ -62,6 +62,13 @@ type ControlRequest struct {
 	// backend pick its own default/ceiling.
 	AspectScope string `json:"aspectScope,omitempty"`
 	TTLSeconds  int64  `json:"ttlSeconds,omitempty"`
+
+	// Cursor is used by the "syncgap" op (edge-syncgap-control-rpc-design.md
+	// §3.1): the last SYNC stream sequence the requesting device applied.
+	// Serialized without omitempty — 0 (no deltas ever applied) is a
+	// legitimate, maximally-conservative value that must reach the server, so
+	// the handler answers gapped=true and the device re-hydrates.
+	Cursor uint64 `json:"cursor"`
 }
 
 // ControlResponse is the JSON payload returned by the control service.
@@ -84,6 +91,7 @@ type ControlResponse struct {
 	PersonalDeregister *PersonalDeregisterResult `json:"personalDeregister,omitempty"` // present only for "deregister" op
 	PersonalHydrate    *PersonalHydrateResult    `json:"personalHydrate,omitempty"`    // present only for "hydrate" op
 	PersonalSessionKey *PersonalSessionKeyResult `json:"personalSessionKey,omitempty"` // present only for "sessionkey" op
+	PersonalSyncGap    *PersonalSyncGapResult    `json:"personalSyncGap,omitempty"`    // present only for "syncgap" op
 }
 
 // RebuildResult is the async acknowledgement returned by the "rebuild" op.
@@ -141,6 +149,18 @@ type PersonalHydrateResult struct {
 type PersonalSessionKeyResult struct {
 	Key       []byte    `json:"key"`
 	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+// PersonalSyncGapResult is the synchronous answer returned by the "syncgap"
+// op (edge-syncgap-control-rpc-design.md §3.1): whether SYNC retention has
+// pruned messages past the requesting device's cursor
+// (edge-lattice-full-design.md §3.2 — a gapped cursor means a durable resume
+// would silently skip deltas, so the device must re-hydrate). Deliberately a
+// boolean, not the stream's FirstSeq: the gap semantic (cursor < FirstSeq,
+// and any future safety margin) stays with the retention owner and can change
+// without a wire change; the watermark is extracted, not handed out.
+type PersonalSyncGapResult struct {
+	Gapped bool `json:"gapped"`
 }
 
 // ValidateResult is returned by the "validate" op. It contains a best-effort

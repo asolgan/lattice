@@ -10,14 +10,16 @@ description: |
   sequence, not by this package.
   control-plane-capability-authz-design.md §3.5 (FR30 Fire 1b).
 
-  ctrl.refractor.{register,deregister,hydrate,sessionkey} additionally grant
-  scope=any to the consumer role (identity-domain) —
+  ctrl.refractor.{register,deregister,hydrate,sessionkey,syncgap} additionally
+  grant scope=any to the consumer role (identity-domain) —
   per-identity-nats-subscribe-acl-design.md §3.3/§3.4 (Fire 2, ratified
-  2026-07-10); edge-lattice-full-design.md §3.6 (EDGE.4, sessionkey). This is
+  2026-07-10); edge-lattice-full-design.md §3.6 (EDGE.4, sessionkey);
+  edge-syncgap-control-rpc-design.md (syncgap, warm-resume gap detection off
+  the STREAM.INFO admin API). This is
   a broad grant (every claimed/unclaimed identity holds consumer) that is
   safe ONLY because internal/refractor/control/service.go's dispatchEndpoint
   unconditionally binds the op's body.IdentityID to the caller's own
-  VERIFIED actor id for these four ops (§3.4), rejecting a mismatching
+  VERIFIED actor id for these ops (§3.4), rejecting a mismatching
   client-asserted value — the capability's scope=any never actually lets one
   identity act on another's Personal Lens interest set or read another
   identity's Vault session key; the effect is confined server-side
@@ -76,5 +78,8 @@ declares:
       scope: any
       grantsTo: [control-operator, consumer]
     - operationType: ctrl.refractor.sessionkey
+      scope: any
+      grantsTo: [control-operator, consumer]
+    - operationType: ctrl.refractor.syncgap
       scope: any
       grantsTo: [control-operator, consumer]

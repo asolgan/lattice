@@ -389,7 +389,8 @@ func TestPermissionsFor_ExactPerConnectionPinning(t *testing.T) {
 	// hydrate/sessionkey to the caller's own identity regardless of
 	// capability scope, so it is now safe to open the transport subjects —
 	// see controlRPCs' doc comment. sessionkey (edge-lattice-full-design.md
-	// §3.6, EDGE.4) joined the same binding.
+	// §3.6, EDGE.4) and syncgap (edge-syncgap-control-rpc-design.md) joined
+	// the same binding.
 	wantPub := []string{
 		"$JS.API.CONSUMER.CREATE.SYNC.edge-sync-U1-D1.lattice.sync.user.U1",
 		"$JS.API.CONSUMER.MSG.NEXT.SYNC.edge-sync-U1-D1",
@@ -400,6 +401,7 @@ func TestPermissionsFor_ExactPerConnectionPinning(t *testing.T) {
 		"lattice.ctrl.refractor.personal.deregister",
 		"lattice.ctrl.refractor.personal.hydrate",
 		"lattice.ctrl.refractor.personal.sessionkey",
+		"lattice.ctrl.refractor.personal.syncgap",
 	}
 	if fmt.Sprint([]string(perms.Pub.Allow)) != fmt.Sprint(wantPub) {
 		t.Fatalf("Pub.Allow = %v, want %v", perms.Pub.Allow, wantPub)

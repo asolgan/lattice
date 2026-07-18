@@ -59,13 +59,13 @@ func TestPackage_DeclaresControlOperatorRoleDistinctFromPrimordialOperator(t *te
 	}
 }
 
-// TestPackage_EveryControlOpHasExpectedGrantees pins the full 16-permission
-// ctrl.<component>.<verb> surface (4 weaver + 3 loom + 9 refractor —
+// TestPackage_EveryControlOpHasExpectedGrantees pins the full 17-permission
+// ctrl.<component>.<verb> surface (4 weaver + 3 loom + 10 refractor —
 // internal/controlauth's WeaverOps/LoomOps/RefractorOps): every op grants
-// scope=any, and every op grants to control-operator ALONE except the four
-// identity-bound Personal Lens ops (register/deregister/hydrate/sessionkey),
-// which additionally grant to consumer (§3.4-confined — see
-// personalLensPermissions).
+// scope=any, and every op grants to control-operator ALONE except the five
+// identity-bound Personal Lens ops
+// (register/deregister/hydrate/sessionkey/syncgap), which additionally grant
+// to consumer (§3.4-confined — see personalLensPermissions).
 func TestPackage_EveryControlOpHasExpectedGrantees(t *testing.T) {
 	wantSoleControlOperator := []string{
 		"ctrl.weaver.read", "ctrl.weaver.disable", "ctrl.weaver.enable", "ctrl.weaver.revoke",
@@ -75,6 +75,7 @@ func TestPackage_EveryControlOpHasExpectedGrantees(t *testing.T) {
 	}
 	wantControlOperatorAndConsumer := []string{
 		"ctrl.refractor.register", "ctrl.refractor.deregister", "ctrl.refractor.hydrate", "ctrl.refractor.sessionkey",
+		"ctrl.refractor.syncgap",
 	}
 	if got, want := len(Package.Permissions), len(wantSoleControlOperator)+len(wantControlOperatorAndConsumer); got != want {
 		t.Fatalf("Permissions = %d, want %d", got, want)

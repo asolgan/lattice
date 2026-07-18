@@ -32,13 +32,16 @@ var LoomOps = map[string]OpMeta{
 
 // RefractorOps mirrors internal/refractor/control/service.go's supportedOps
 // (health, validate, rebuild, pause, resume, delete, register, deregister,
-// hydrate, sessionkey). register/deregister/hydrate (Personal Lens
+// hydrate, sessionkey, syncgap). register/deregister/hydrate (Personal Lens
 // interest-set registration + initial sync, Fire PL.2 /
 // per-identity-nats-subscribe-acl Fire 2) and sessionkey (transient Vault
 // session key, edge-lattice-full-design.md §3.6, EDGE.4) postdate the FR30
 // design doc's §2(c) table; classified mutate here under the same
 // each-mutation-is-its-own-verb principle the design applies to every other
-// component mutation.
+// component mutation. syncgap (edge-syncgap-control-rpc-design.md) is its own
+// read verb — granting the generic ctrl.refractor.read would also open
+// health/validate on every lens (a topology leak); it is honestly Read: true
+// (it reveals one derived bit of stream state, mutates nothing).
 var RefractorOps = map[string]OpMeta{
 	"health":     {Verb: "read", Read: true},
 	"validate":   {Verb: "read", Read: true},
@@ -50,4 +53,5 @@ var RefractorOps = map[string]OpMeta{
 	"deregister": {Verb: "deregister", Read: false},
 	"hydrate":    {Verb: "hydrate", Read: false},
 	"sessionkey": {Verb: "sessionkey", Read: false},
+	"syncgap":    {Verb: "syncgap", Read: true},
 }

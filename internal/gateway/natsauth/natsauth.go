@@ -110,6 +110,7 @@ var controlRPCs = []string{
 	"lattice.ctrl.refractor.personal.deregister",
 	"lattice.ctrl.refractor.personal.hydrate",
 	"lattice.ctrl.refractor.personal.sessionkey",
+	"lattice.ctrl.refractor.personal.syncgap",
 }
 
 // Authenticator is the verify+revocation seam. *auth.Authenticator

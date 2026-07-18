@@ -43,6 +43,11 @@ const hydrateTimeout = 30 * time.Second
 // shape to register/deregister than to the bulk hydrate op.
 const sessionKeyTimeout = 10 * time.Second
 
+// syncGapTimeout bounds the "syncgap" op (edge-syncgap-control-rpc-design.md
+// §3.2): one STREAM.INFO round-trip made by the control host on its own
+// substrate connection, same order of magnitude as the authorize check.
+const syncGapTimeout = 5 * time.Second
+
 // authorizeTimeout bounds the capability check every dispatchEndpoint op runs
 // before dispatch (a single Capability KV GET, mirrors Weaver/Loom control's
 // handlerTimeout).
@@ -160,6 +165,9 @@ type PersonalHydrateResult = controlwire.PersonalHydrateResult
 // PersonalSessionKeyResult is the acknowledgement returned by the "sessionkey" op.
 type PersonalSessionKeyResult = controlwire.PersonalSessionKeyResult
 
+// PersonalSyncGapResult is the answer returned by the "syncgap" op.
+type PersonalSyncGapResult = controlwire.PersonalSyncGapResult
+
 // ValidateResult is returned by the "validate" op.
 type ValidateResult = controlwire.ValidateResult
 
@@ -205,6 +213,13 @@ type Service struct {
 	// leaves EDGE.4 unreachable, same posture as a lens with SecureColumns
 	// and no vaultBackend); the op fails closed until then.
 	vault vault.Vault
+	// syncFirstSeq backs the "syncgap" op: a func returning the SYNC stream's
+	// earliest still-retained sequence, read from the control host's own
+	// full-grant substrate connection (edge-syncgap-control-rpc-design.md
+	// §3.2). nil until SetSyncFirstSeq is called; the op fails closed until
+	// then. Like personalHydrator, a single handle per deployment (one
+	// personal lens), cleared to nil when that lens rule unloads.
+	syncFirstSeq func(ctx context.Context) (uint64, error)
 	// capability authorizes every dispatchEndpoint op (FR30,
 	// control-plane-capability-authz-design.md). Defaults to the fail-closed
 	// denyAllChecker (deny-all + loud Warn) so the pre-set window fails closed;
@@ -305,6 +320,19 @@ func (s *Service) SetCoreKV(kv coreKVGetter) {
 func (s *Service) SetVault(v vault.Vault) {
 	s.mu.Lock()
 	s.vault = v
+	s.mu.Unlock()
+}
+
+// SetSyncFirstSeq registers the "syncgap" op's stream-state read: a func
+// returning the SYNC stream's earliest still-retained sequence. The control
+// host wires it to its own substrate connection's STREAM.INFO — the trusted
+// full-grant read the per-identity Edge grant deliberately denies
+// (edge-syncgap-control-rpc-design.md §3.2). Thread-safe; may be called at
+// any time. Until called (or after being cleared with nil on lens teardown),
+// the op fails closed with an error response.
+func (s *Service) SetSyncFirstSeq(fn func(ctx context.Context) (uint64, error)) {
+	s.mu.Lock()
+	s.syncFirstSeq = fn
 	s.mu.Unlock()
 }
 
@@ -473,7 +501,7 @@ const controlSubjectPrefix = controlwire.SubjectPrefix
 // supportedOps enumerates the per-op endpoint suffixes registered under
 // the NATS Services framework. The op name is taken from the trailing
 // subject token; see opFromSubject.
-var supportedOps = []string{"health", "validate", "rebuild", "pause", "resume", "delete", "register", "deregister", "hydrate", "sessionkey"}
+var supportedOps = []string{"health", "validate", "rebuild", "pause", "resume", "delete", "register", "deregister", "hydrate", "sessionkey", "syncgap"}
 
 // StartNATSListener registers the Refractor control plane as a NATS
 // micro-service named "refractor-control". One endpoint is added per
@@ -593,7 +621,7 @@ func (s *Service) dispatchEndpoint(op string, req micro.Request) {
 	// self-asserted-body behavior.
 	if verifier != nil {
 		switch op {
-		case "register", "deregister", "hydrate", "sessionkey":
+		case "register", "deregister", "hydrate", "sessionkey", "syncgap":
 			boundIdentityID, err := controlauth.BareIdentityID(actor)
 			if err != nil {
 				s.respondMicro(req, ControlResponse{Error: err.Error()})
@@ -634,6 +662,10 @@ func (s *Service) dispatchEndpoint(op string, req micro.Request) {
 		skCtx, skCancel := context.WithTimeout(context.Background(), sessionKeyTimeout)
 		defer skCancel()
 		s.respondMicro(req, s.personalSessionKey(skCtx, body))
+	case "syncgap":
+		sgCtx, sgCancel := context.WithTimeout(context.Background(), syncGapTimeout)
+		defer sgCancel()
+		s.respondMicro(req, s.personalSyncGap(sgCtx, body))
 	default:
 		// Unreachable — supportedOps gates the endpoint registration.
 		s.respondMicro(req, ControlResponse{Error: fmt.Sprintf("unknown operation: %s", op)})
@@ -887,6 +919,34 @@ func (s *Service) readPiiKeyEnvelope(ctx context.Context, identityKey string) (v
 		return vault.Envelope{}, substrate.ErrKeyNotFound
 	}
 	return doc.Data, nil
+}
+
+// personalSyncGap answers whether SYNC retention has pruned messages past the
+// requesting device's cursor (edge-syncgap-control-rpc-design.md §3.2): the
+// Edge node's warm-resume freshness gate, moved off the JetStream STREAM.INFO
+// admin API (which the per-identity Edge grant denies, §4) and onto this
+// control RPC. Reads the SYNC stream's earliest still-retained sequence via
+// the syncFirstSeq seam — the control host's own full-grant substrate read —
+// and returns gapped = cursor < firstSeq. Fails closed if SetSyncFirstSeq
+// hasn't been called (or was cleared on lens teardown): the SetVault-absent
+// precedent, a never-resume-unverified posture. No cursor validation is
+// needed: 0 yields gapped=true (max-conservative → re-hydrate), any huge
+// value yields false — a client lying about its own cursor only mis-serves
+// itself (§7). The answer is identity-independent; body.IdentityID is still
+// bound to the verified actor upstream (dispatchEndpoint) for invariant
+// uniformity with the sibling personal ops.
+func (s *Service) personalSyncGap(ctx context.Context, body ControlRequest) ControlResponse {
+	s.mu.Lock()
+	firstSeqFn := s.syncFirstSeq
+	s.mu.Unlock()
+	if firstSeqFn == nil {
+		return ControlResponse{Error: "syncgap: stream state not configured"}
+	}
+	firstSeq, err := firstSeqFn(ctx)
+	if err != nil {
+		return ControlResponse{Error: fmt.Sprintf("syncgap: read stream state: %s", err.Error())}
+	}
+	return ControlResponse{PersonalSyncGap: &PersonalSyncGapResult{Gapped: body.Cursor < firstSeq}}
 }
 
 // validateRule reports that field-level validation is not available. It

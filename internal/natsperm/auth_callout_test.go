@@ -401,6 +401,45 @@ func crossIdentityDeniedVector(t *testing.T, url, edgeURL string, priv *rsa.Priv
 	}
 }
 
+// TestAuthCallout_StreamInfoDenied pins the whole point of the syncgap
+// control RPC (edge-syncgap-control-rpc-design.md §8) at the ACL layer: a
+// verified Edge identity's connection cannot look up the SYNC stream's
+// metadata via $JS.API.STREAM.INFO.SYNC — the admin verb the per-identity
+// grant deliberately excludes (§4: its request body carries subjects_filter,
+// which a subject ACL cannot constrain, so granting it would leak every
+// identity's per-subject message counts). The gap check moves onto
+// lattice.ctrl.refractor.personal.syncgap instead; that subject's ALLOW is
+// pinned deterministically by natsauth.TestPermissionsFor_ExactPerConnectionPinning's
+// allow-list assertion. This vector is the deny half of that pair, previously
+// proven only incidentally by the edge-consumer-parity harness.
+func TestAuthCallout_StreamInfoDenied(t *testing.T) {
+	t.Parallel()
+	url, wsURL := startServerFromConfDual(t)
+	provisionSyncStream(t, url)
+
+	priv, pub := rsaKeypair(t)
+	startResponder(t, url, "test-kid", pub, "")
+
+	forEachEdgeTransport(t, url, wsURL, func(t *testing.T, edgeURL string) {
+		identity := nanoID(t)
+		tok := mintBearerToken(t, priv, "test-kid", identity, time.Now().Add(time.Hour))
+		nc, err := connectEdge(t, edgeURL, tok, identity, "device-1")
+		if err != nil {
+			t.Fatalf("edge connect: want success, got %v", err)
+		}
+		js, err := jetstream.New(nc)
+		if err != nil {
+			t.Fatalf("jetstream context: %v", err)
+		}
+		// js.Stream issues $JS.API.STREAM.INFO.SYNC — not in the Edge grant.
+		infoCtx, infoCancel := context.WithTimeout(context.Background(), deniedTimeout)
+		defer infoCancel()
+		if _, err := js.Stream(infoCtx, syncStream); err == nil {
+			t.Fatal("edge looked up SYNC via STREAM.INFO — expected denial")
+		}
+	})
+}
+
 // TestAuthCallout_FailClosed is design §8 vector 3 (the parts a unit test
 // can exercise deterministically — malformed/expired/unknown-kid/empty
 // tokens; "responder down" is covered by natsauth's own unit tests, not

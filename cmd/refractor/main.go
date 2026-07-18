@@ -607,6 +607,26 @@ func main() {
 			// lens's own pipeline. One Personal Lens per deployment, so this
 			// is a single handle, not a per-ruleID registry.
 			controlSvc.SetPersonalHydrator(p)
+			// The syncgap gap-detection read (edge-syncgap-control-rpc-
+			// design.md §3.2): the "personal.syncgap" control RPC answers the
+			// Edge node's warm-resume freshness check off the control host's
+			// own full-grant STREAM.INFO, so the per-identity Edge grant never
+			// needs the stream verb it deliberately denies. The stream name is
+			// the lens rule's own Into.Stream — the authoritative target the
+			// nats_subject adapter and hydrator are already wired from; a "SYNC"
+			// literal here could gap-check the wrong stream in a deployment
+			// whose personal lens targets a differently-named one, and a
+			// wrong-stream FirstSeq can yield a false "not gapped". A fresh
+			// Stream lookup per call reads the current FirstSeq (mirrors the
+			// deleted natstransport.FirstSequence).
+			syncStream := r.Into.Stream
+			controlSvc.SetSyncFirstSeq(func(ctx context.Context) (uint64, error) {
+				st, err := conn.JetStream().Stream(ctx, syncStream)
+				if err != nil {
+					return 0, fmt.Errorf("syncgap: look up stream %q: %w", syncStream, err)
+				}
+				return st.CachedInfo().State.FirstSeq, nil
+			})
 		}
 
 		// A Secure Lens (Contract #3 §3.10): install the decrypt-at-projection
