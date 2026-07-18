@@ -182,6 +182,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-18 · `c26a7d6` · [objectcrypto] cover the Vault wrap/unwrap RPC seam (0%) + AEAD error guards — fake-Vault responder pins marshaling, round-trip, resp.Error propagation, transport + malformed-reply failure; 46.6%→91.4%
 - 2026-07-18 · `029256d` · [loom] fix `TestLoomE2E_MidRunRestartExactlyOnce` flake — submit counter trails the write-ahead pending token, so poll `fp.submitted`≥1 (new `waitSubmitted`) instead of reading once; -race -count=8 clean
 - 2026-07-17 · `9c830a4` · [weaver] test-cover the effect-mismatch loud surface (flagEffectMismatches set→recover→clear + metric, 53%→100%) + formatISODuration hours/clamp (50%→100%)
 - 2026-07-17 · `7fc7b42` · [edge,facet] edge-syncgap Inc 2 — client swap: gapped() over personal.syncgap (bounded retry, strict nil-result), FirstSequence deleted from seam+transports+shell, cmd/facet sync-restart
