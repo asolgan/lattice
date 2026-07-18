@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -369,6 +370,11 @@ func TestHandleReview_RoutingErrors(t *testing.T) {
 		{http.MethodGet, "/api/review/", http.StatusBadRequest},
 		{http.MethodGet, "/api/review/capability/a/b", http.StatusBadRequest},
 		{http.MethodGet, "/api/review/augur/a/b", http.StatusBadRequest},
+		// F16.2 action endpoints: POST-only, capability-only, known verbs only.
+		{http.MethodGet, "/api/review/capability/x/approve", http.StatusBadRequest},  // GET on a POST endpoint
+		{http.MethodPost, "/api/review/augur/x/approve", http.StatusBadRequest},      // augur has no approve endpoint
+		{http.MethodPost, "/api/review/augur/x/apply", http.StatusBadRequest},        // augur has no apply endpoint
+		{http.MethodPost, "/api/review/capability/x/bogus", http.StatusBadRequest},   // unknown verb
 	}
 	for _, c := range cases {
 		req, err := http.NewRequest(c.method, base+c.path, nil)
@@ -383,5 +389,160 @@ func TestHandleReview_RoutingErrors(t *testing.T) {
 		if res.StatusCode != c.want {
 			t.Errorf("%s %s: status = %d, want %d", c.method, c.path, res.StatusCode, c.want)
 		}
+	}
+}
+
+// validLensContent is a capability-artifact "content" payload (a JSON string
+// per the DDL) that ValidateCapabilityArtifact("lens", …) accepts with no live
+// substrate read — mirrors internal/pkgmgr's TestValidateCapabilityArtifact_ValidLens.
+const validLensContent = `{"canonicalName":"activeProvidersBySpecialty","adapter":"nats-kv","bucket":"active-providers","spec":"MATCH (p:provider) RETURN p.key AS key"}`
+
+// invalidLensContent parses as JSON but fails §5 validation (unparseable
+// cypher) — the re-validation "blocked" path, no error, report.Valid=false.
+const invalidLensContent = `{"canonicalName":"brokenLens","adapter":"nats-kv","bucket":"broken-lens","spec":"MATCH (p:provider RETURN p.key AS key"}`
+
+// putCapProposal writes a capability-proposals read-model row from a field map,
+// json-encoding it so a content field carrying its own JSON needs no manual
+// escaping.
+func putCapProposal(t *testing.T, put func(bucket, key, value string), id string, fields map[string]any) {
+	t.Helper()
+	key := "vtx.capabilityproposal." + id
+	fields["key"] = key
+	raw, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("marshal proposal %s: %v", id, err)
+	}
+	put(capabilityauthor.CapabilityProposalsBucket, key, string(raw))
+}
+
+func postReview(t *testing.T, client *http.Client, base, path string) (*http.Response, map[string]any) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, base+path, nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(res.Body).Decode(&body)
+	res.Body.Close()
+	return res, body
+}
+
+func TestReviewCapabilityApprove_BlockedOnRevalidation(t *testing.T) {
+	client, base, put := newTestReviewServer(t)
+	putCapProposal(t, put, "blk1", map[string]any{
+		"intent": "a lens that no longer validates", "kind": "lens",
+		"content": invalidLensContent, "reviewState": "pending",
+	})
+
+	res, body := postReview(t, client, base, "/api/review/capability/blk1/approve")
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (blocked is a 200 with a blocked flag)", res.StatusCode)
+	}
+	if body["blocked"] != true || body["validationState"] != "invalid" {
+		t.Errorf("want blocked:true + validationState:invalid, got %+v", body)
+	}
+}
+
+func TestReviewCapabilityApprove_ValidReachesGatewaySubmit(t *testing.T) {
+	client, base, put := newTestReviewServer(t)
+	putCapProposal(t, put, "ok1", map[string]any{
+		"intent": "a valid lens", "kind": "lens",
+		"content": validLensContent, "reviewState": "pending",
+	})
+
+	// The test server has no gatewayURL/operator token, so a proposal that
+	// PASSES re-validation proceeds to the Gateway relay and fails there — a
+	// 502 whose message proves re-validation was cleared and the submit was
+	// attempted (the live Gateway path itself is the F16.1-shipped op relay).
+	res, body := postReview(t, client, base, "/api/review/capability/ok1/approve")
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (valid → attempts gateway submit)", res.StatusCode)
+	}
+	if msg, _ := body["error"].(string); !strings.Contains(msg, "submit approve") {
+		t.Errorf("want a submit-approve gateway error, got %+v", body)
+	}
+}
+
+func TestReviewCapabilityApprove_NotPending(t *testing.T) {
+	client, base, put := newTestReviewServer(t)
+	putCapProposal(t, put, "appr1", map[string]any{
+		"intent": "already approved", "kind": "lens",
+		"content": validLensContent, "reviewState": "approved",
+	})
+
+	res, _ := postReview(t, client, base, "/api/review/capability/appr1/approve")
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (only a pending proposal is approvable)", res.StatusCode)
+	}
+}
+
+func TestReviewCapabilityApprove_NoArtifact(t *testing.T) {
+	client, base, put := newTestReviewServer(t)
+	// Pending but reasoning still in flight — no kind/content recorded yet.
+	putCapProposal(t, put, "flight1", map[string]any{
+		"intent": "reasoning in flight", "reviewState": "pending",
+	})
+
+	res, _ := postReview(t, client, base, "/api/review/capability/flight1/approve")
+	if res.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409 (no artifact to re-validate yet)", res.StatusCode)
+	}
+}
+
+func TestReviewCapabilityApprove_NotFound(t *testing.T) {
+	client, base, _ := newTestReviewServer(t)
+	res, _ := postReview(t, client, base, "/api/review/capability/missing1/approve")
+	if res.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", res.StatusCode)
+	}
+}
+
+func TestReviewCapabilityApprove_RejectsDottedID(t *testing.T) {
+	client, base, _ := newTestReviewServer(t)
+	res, _ := postReview(t, client, base, "/api/review/capability/a.b/approve")
+	if res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (a dotted id is never a valid control name)", res.StatusCode)
+	}
+}
+
+func TestReviewCapabilityApply_NoAdminActor(t *testing.T) {
+	client, base, put := newTestReviewServer(t)
+	putCapProposal(t, put, "app1", map[string]any{
+		"intent": "approved, ready to apply", "kind": "lens",
+		"content": validLensContent, "reviewState": "approved",
+	})
+
+	// The test server loads no bootstrap file, so adminActor is empty — apply
+	// must refuse before touching the installer.
+	res, body := postReview(t, client, base, "/api/review/capability/app1/apply")
+	if res.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (no admin actor loaded)", res.StatusCode)
+	}
+	if msg, _ := body["error"].(string); !strings.Contains(msg, "admin actor not loaded") {
+		t.Errorf("want an admin-actor error, got %+v", body)
+	}
+}
+
+func TestFreshCapabilityVerdict_Lens(t *testing.T) {
+	// The lens kind needs no live substrate read (held/sensitiveAspects both
+	// nil), so a nil conn is safe — this is the pure decision-logic seam.
+	ctx := context.Background()
+	valid, err := freshCapabilityVerdict(ctx, nil, capabilityProposalCols{Kind: "lens", Content: validLensContent})
+	if err != nil {
+		t.Fatalf("valid lens: unexpected error: %v", err)
+	}
+	if !valid.Valid {
+		t.Errorf("valid lens: want Valid, got errors %v", valid.Errors)
+	}
+	invalid, err := freshCapabilityVerdict(ctx, nil, capabilityProposalCols{Kind: "lens", Content: invalidLensContent})
+	if err != nil {
+		t.Fatalf("invalid lens: unexpected error: %v", err)
+	}
+	if invalid.Valid {
+		t.Errorf("invalid lens: want !Valid (unparseable cypher)")
 	}
 }

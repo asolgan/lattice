@@ -1,11 +1,12 @@
 // The AI review console (#/review, loupe-f16-ai-review-console-ux.md §0):
 // two tabs, one shared card component. #/review and #/review/capability both
 // land on the capability queue; #/review/augur lands on the Augur queue;
-// #/review/<tab>/<id> drills into one proposal. F16.1 shipped the capability
-// tab's queue+detail+reject; F16.3 adds the whole Augur tab (queue, detail,
-// approve, reject — Augur's approve re-validates entirely server-side, so
-// unlike capability's F16.2 it carries no client-computed validation payload
-// and needs no separate apply step).
+// #/review/<tab>/<id> drills into one proposal. The capability tab's approve
+// re-validates the artifact against the live catalog server-side (a dedicated
+// /approve endpoint) and installs it in a second step (/apply); its reject is
+// a plain /api/op submit. The Augur tab's approve/reject are both plain
+// /api/op submits — Augur re-validates entirely server-side, so it carries no
+// client-computed validation payload and has no separate apply step.
 
 import { $, el, api, setStatus, toast } from "../api.js";
 import { replaceRoute } from "../router.js";
@@ -256,7 +257,7 @@ function deltaSection(p) {
     ? renderDoc(p.validationDeltaPreview)
     : el("div", "muted small", "(no delta preview recorded)"));
   box.appendChild(el("div", "muted small",
-    "this preview was computed at author time — approving re-validates against the live catalog (F16.2)."));
+    "this preview was computed at author time — approving re-validates against the live catalog."));
   return box;
 }
 
@@ -275,6 +276,15 @@ function provenanceSection(p) {
 function actionSection(p, raw) {
   const box = panel("Verdict");
   const displayState = proposalDisplayState(p);
+  // Approved-but-not-applied: the human verdict landed; the artifact still
+  // has to be installed. F16.2's apply endpoint drives the two-commit F-004
+  // install in-process, so the card offers "Apply now" rather than a CLI
+  // hand-off (design §3.3).
+  if (displayState === "approved") {
+    box.appendChild(el("div", "muted", outcomeLine(p, displayState)));
+    box.appendChild(applyRow(p, raw));
+    return box;
+  }
   if (displayState !== "pending") {
     box.appendChild(el("div", "muted", outcomeLine(p, displayState)));
     return box;
@@ -282,8 +292,39 @@ function actionSection(p, raw) {
   const row = el("div", "lens-ctlrow");
 
   const approve = el("button", null, "Approve & install…");
-  approve.disabled = true;
-  approve.title = "approve + apply ships in F16.2 (re-validation against the live catalog)";
+  approve.title = "re-validates the artifact against the live catalog, then records your approval";
+  approve.addEventListener("click", async () => {
+    if (!window.confirm(
+      "Approve this proposal? Loupe re-validates the artifact against the current catalog before recording " +
+      "your approval; you then install it with a second click.")) return;
+    row.querySelectorAll("button").forEach((b) => { b.disabled = true; });
+    setStatus("review-detail-status", "re-validating + submitting approve…");
+    const body = await api("/api/review/capability/" + encodeURIComponent(p.proposalId) + "/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (state.arg !== raw) return; // navigated away
+    if (body.error) {
+      setStatus("review-detail-status", "approve failed: " + body.error, true);
+      row.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+      return;
+    }
+    if (body.blocked) {
+      // Re-validation against the live catalog failed — nothing was submitted.
+      setStatus("review-detail-status",
+        "this no longer validates against the current catalog: " + (body.validationReport || "no report"), true);
+      row.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+      return;
+    }
+    if (body.status === "rejected") {
+      setStatus("review-detail-status",
+        "approve rejected: " + ((body.error && body.error.message) || body.decision || "see reply"), true);
+      row.querySelectorAll("button").forEach((b) => { b.disabled = false; });
+      return;
+    }
+    toast("proposal approved — install it below");
+    loadDetail("capability", p.proposalId, raw);
+  });
   row.appendChild(approve);
 
   const reject = el("button", "danger-btn", "Reject");
@@ -305,7 +346,7 @@ function actionSection(p, raw) {
     if (state.arg !== raw) return; // navigated away
     if (body.error) {
       setStatus("review-detail-status", "reject failed: " + body.error, true);
-      row.querySelectorAll("button").forEach((b) => { if (b !== approve) b.disabled = false; });
+      row.querySelectorAll("button").forEach((b) => { b.disabled = false; });
       return;
     }
     toast("proposal rejected");
@@ -314,6 +355,38 @@ function actionSection(p, raw) {
   row.appendChild(reject);
   box.appendChild(row);
   return box;
+}
+
+// applyRow renders the "Apply now" control for an approved-but-not-applied
+// proposal (F16.2, design §3.3). Apply is the two-Processor-commit F-004
+// install flow the /apply endpoint drives server-side; on success the reply
+// carries the install delta + the mark-applied outcome and the card reloads
+// into its final "applied" state.
+function applyRow(p, raw) {
+  const row = el("div", "lens-ctlrow");
+  const apply = el("button", null, "Apply now");
+  apply.title = "installs the approved artifact (" + (p.targetMode || "install") +
+    (p.targetPackageName ? " " + p.targetPackageName : "") + ") and closes the proposal";
+  apply.addEventListener("click", async () => {
+    if (!window.confirm(
+      "Install this approved artifact now? This runs a real package install/upgrade against the running system.")) return;
+    apply.disabled = true;
+    setStatus("review-detail-status", "installing…");
+    const body = await api("/api/review/capability/" + encodeURIComponent(p.proposalId) + "/apply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+    });
+    if (state.arg !== raw) return; // navigated away
+    if (body.error) {
+      setStatus("review-detail-status", "apply failed: " + body.error, true);
+      apply.disabled = false;
+      return;
+    }
+    toast("artifact installed — proposal applied");
+    loadDetail("capability", p.proposalId, raw);
+  });
+  row.appendChild(apply);
+  return row;
 }
 
 function outcomeLine(p, displayState) {
