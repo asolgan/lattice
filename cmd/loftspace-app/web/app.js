@@ -397,10 +397,21 @@ function saveApplicantAuthEntry(uBareId, aBareId) {
 // pendingClaimSecrets holds a freshly client-minted (not yet claimed) secret
 // for an applicant created THIS session (submitNewApplicant) — in-memory
 // only, mirroring §11.1a: "the client retains the plaintext; it is the single
-// copy." An applicant picked from the roster with no pending secret (a prior
-// session, or one created before this ceremony was wired up) falls back to
-// staff-gated RotateClaimKey (R4) to re-issue one.
+// copy." An applicant picked from the roster with no pending secret AND
+// state=unclaimed (a prior session, or one created before this ceremony was
+// wired up) falls back to staff-gated RotateClaimKey (R4) to re-issue one. An
+// already-claimed identity never reaches RotateClaimKey — see
+// runClaimCeremony's direct-mint short-circuit below.
 const pendingClaimSecrets = {};
+
+// identityState looks up an identity's current state ("unclaimed" | "claimed"
+// | …) from the loaded roster — loadIdentities' protected read already
+// carries it (staff_identities.go's protectedIdentityRow.State). Null when
+// the roster hasn't loaded yet or the key isn't in it.
+function identityState(uKey) {
+  const m = state.identities.find((i) => i.identityKey === uKey);
+  return m ? m.state : null;
+}
 
 // mintDeviceToken mints a fresh, uncached dev-token for an arbitrary bare
 // subject — the one-off device-identity (A) calls the claim ceremony makes,
@@ -441,9 +452,11 @@ async function postOpAsSubject(subject, body) {
 const claimCeremonyInFlight = {};
 
 // ensureClaimedDevice runs the claim ceremony for applicant uKey the first
-// time it's needed and returns its device identity's bare id (A) — the
-// subject every subsequent token for uKey mints against. Idempotent per uKey
-// via the persisted applicantAuth map (both across calls and across reloads).
+// time it's needed and returns the bare id every subsequent token for uKey
+// mints against — normally a fresh device identity (A), or uKey's own bare
+// id directly when uKey is already claimed (runClaimCeremony's short-circuit).
+// Idempotent per uKey via the persisted applicantAuth map (both across calls
+// and across reloads).
 async function ensureClaimedDevice(uKey) {
   const uBareId = bareId(uKey);
   const map = loadApplicantAuthMap();
@@ -458,6 +471,17 @@ async function ensureClaimedDevice(uKey) {
 
 async function runClaimCeremony(uKey, uBareId) {
   let secret = pendingClaimSecrets[uKey];
+  if (!secret && identityState(uKey) === "claimed") {
+    // Already claimed — by this browser in a prior session, by a different
+    // browser, or pre-seeded outside this app entirely. ClaimIdentity grants
+    // consumer directly to the identity itself, not to a device (packages/
+    // identity-domain's ClaimIdentity script), so there is nothing left to
+    // claim: sign in the same way cafe-app/clinic-app/wellness-app's Me bar
+    // signs in an already-claimed resident — mint a token straight off the
+    // identity's own bare id, no RotateClaimKey/ClaimIdentity round trip.
+    saveApplicantAuthEntry(uBareId, uBareId);
+    return uBareId;
+  }
   if (!secret) {
     secret = mintClaimSecret();
     const newHash = await sha256Hex(secret);
