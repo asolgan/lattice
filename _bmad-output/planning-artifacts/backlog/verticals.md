@@ -28,6 +28,7 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 | **Facet cold-start races the cap projection** | Fresh `make up-facet` could fail facet on cold start: `seed-edge-demo` printed the tenant handoff before its `AssignRole`'s `ctrl.refractor.register` grant (packages/control-authz) finished re-projecting into `cap.roles.<tenant>` → `controlauth: no capability kv entry for actor`. | Facet | pkg | ★ | S | ✅ shipped `ef45e83` |
 | **Café self-order (catalog-bound self-Charge)** | Live-verified: a resident can OpenTab/Settle their own tab (self scope-checked correctly, incl. cross-lease + Charge denial), but Charge stays operator-only (`permissions.go`) — no menu/item catalog exists to bound a self-submitted `amountCents`. Unlike CreateBooking/CreateAppointment's catalog-bound slot, café residents can't ring up their own order. | Café | pkg | ★★ | M | ✅ shipped `86f8c76` |
 | **Classic vertical demo data has no seed path** | Live-verified: shared dev stack's Core KV holds zero `leaseapp`/`listing`/`appointment`/`tab` vertices — only `seed-edge-demo`/`seed-showcase` exist, and both mint Facet catalog scaffolding only (no `CreateLeaseApplication`/`SetListing`/`CreateAppointment` call in either). Blocks live PO discovery of classic (non-Facet) flows out of the box. | Cross-vertical | pkg | ★★ | S | ✅ shipped `934c487` |
+| **Landlord sign-in races the identity roster, can hard-fail** | Live-verified: reload in Landlord mode with an already-claimed applicant can 400 `InvalidStateTransition: RotateClaimKey requires state=unclaimed, got claimed` — `applyMode()` fires before `loadIdentities()` resolves, so `identityState()`'s already-claimed short-circuit (`app.js:474`) reads a still-empty roster. Fix: await roster load first. | LoftSpace | FE | ★★ | XS | 📋 ready |
 
 **Explicitly descoped (ambitious-PO pass, 2026-07-09):** structured diagnosis/procedure coding (ICD/CPT),
 vitals, and e-prescribing were considered and deliberately NOT filed — a certified EHR is out of scope for a
@@ -47,7 +48,7 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic ↔ Café ↔ We
 **Wellness joined** 2026-07-09 (`cmd/wellness-app` shipped, live on :7802) — fold it into rotation; see
 [agents/vertical-po/SKILL.md](../../../agents/vertical-po/SKILL.md) §1.
 
-- **Rotation to date:** LoftSpace ×14, Clinic ×12, Café ×4.
+- **Rotation to date:** LoftSpace ×15, Clinic ×12, Café ×4.
 - **Method:** reuse the already-up shared stack (detect NATS :4222 / app :7788/:7799/:7801/:7802), drive the real flow via `/api/op` + the lens projections as the product owner, file scored items. All four apps exist + are exercisable live (`:7788` / `:7799` / `:7801` / `:7802`).
 - **Live-stack note:** a stale bootstrap JSON vs. a recreated Core KV was a recurring dev-loop trap (2026-07-03, 2026-07-04) that silently emptied reads; `make up` now self-heals it (`109f59a`, 2026-07-05) — re-verify empty-read reports as a real product bug first.
 - **2026-07-09:** LoftSpace — exercised Browse&Apply live; found + root-caused self-service identity never claims (blocks CreateLeaseApplication for every applicant); filed.
@@ -59,7 +60,8 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic ↔ Café ↔ We
 - **2026-07-11:** LoftSpace — Apply rejected for every applicant; root-caused to the demo skipping the claim ceremony (app-side, not platform), filed.
 - **2026-07-12:** Clinic — drove booking/My Appointments live + code-verified permission pins; found self-service patients can book but never reschedule/cancel themselves (operator-only ops), filed.
 - **2026-07-17:** Café — hand-minted a lease + drove OpenTab/Charge/Settle + self-service scope=self live (open/settle-own-lease ✅, cross-lease + Charge correctly denied ✅); found no classic demo seed data + no self-order catalog, filed both.
-- **Next:** LoftSpace.
+- **2026-07-18:** LoftSpace — drove Applicant Browse/Apply/My Applications live (clean) + Landlord console; caught a live reload race hard-failing sign-in with `RotateClaimKey requires state=unclaimed, got claimed`, root-caused + filed.
+- **Next:** Clinic.
 
 ## Done log — verticals (newest first)
 
