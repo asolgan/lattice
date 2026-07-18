@@ -98,7 +98,7 @@ LATTICE_PROCESSOR_AUTH_MODE ?= capability
 # Load .env if it exists (ignored by git).
 -include .env
 
-.PHONY: assert-main-checkout up up-full up-full-capability dev-seed-staff provision-gateway-identity-provisioner test-real-actor-auth up-loftspace orchestration install-packages install-loftspace run-loupe run-gateway run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role provision-clinic-role provision-gateway-role provision-readpath provision-vault-kek reinstall-package verify-package-service-location verify-package-edge-manifest install-edge-manifest seed-edge-demo seed-showcase up-facet run-facet provision-facet-role verify-package-augur verify-conformance build vet lint-conventions lint-board install-skills test test-rollback test-lease-convergence test-object-gc test-edge-idb-conformance test-crypto-shred test-system-actor-capability test-control-plane-authz test-augur-convergence test-unrouted-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
+.PHONY: assert-main-checkout up up-full up-full-capability dev-seed-staff provision-gateway-identity-provisioner test-real-actor-auth up-loftspace orchestration install-packages install-loftspace run-loupe run-gateway run-loftspace-app down verify-kernel verify-package-rbac verify-package-identity verify-package-identity-hygiene verify-package-objects-base verify-package-location-domain verify-package-loftspace-domain verify-package-clinic-domain verify-package-clinic-reminders up-clinic install-clinic refresh-clinic refresh-loftspace provision-loftspace-role provision-clinic-role provision-gateway-role provision-readpath provision-vault-kek reinstall-package verify-package-service-location verify-package-edge-manifest install-edge-manifest seed-edge-demo seed-showcase up-facet up-facet-edge run-facet provision-facet-role verify-package-augur verify-conformance build vet lint-conventions lint-board install-skills test test-rollback test-lease-convergence test-object-gc test-edge-idb-conformance test-crypto-shred test-system-actor-capability test-control-plane-authz test-augur-convergence test-unrouted-convergence test-cli test-hello-lattice test-health-completeness processor run-processor clean logs ps
 
 ## assert-main-checkout — Refuse stack lifecycle from anywhere but the main working
 ## tree. docker-compose.yml mounts deploy/nats-server.conf by a RELATIVE path, so a
@@ -1011,6 +1011,41 @@ up-facet:
 		./bin/facet >facet.log 2>&1 </dev/null & \
 	sleep 1; \
 	echo "==> Facet ready: http://127.0.0.1:7810/login (sign in with a showcase tenant NanoID from 'make seed-showcase' output)"
+
+## up-facet-edge — up-facet, but in BROWSER-NATIVE mode (EDGE.5 W4,
+## edge-browser-node-design.md §3.4): the browser runs the wasm engine IN-PAGE
+## over the :9222 WebSocket — no local per-user engine binary, the "no binary"
+## half of Facet Fire 4's Gate-3 green bar. cmd/facet stops being the engine
+## host and becomes a static file server (FACET_BROWSER_ENGINE=1): it serves the
+## build-edge-wasm artifact + the JS transport shell and injects a per-session
+## window.__EDGE_BOOT__ (browserengine.go). Same showcase prep + dev-auth login
+## as up-facet; additionally builds the wasm and flips the browser-native env.
+## Sign in at /login as a showcase tenant exactly as with up-facet.
+##
+## REQUIRES the :9222 WS listener the in-page shell dials — mapped + loaded only
+## on a stack whose compose post-dates EDGE.5 W1. If `docker ps` shows
+## lattice-nats WITHOUT a 9222 port, the in-page engine cannot connect: bring a
+## fresh stack up (the ephemeral dev JetStream is re-seeded by this target's
+## seed-showcase step) so the recreate maps the port.
+up-facet-edge: build-edge-wasm
+	@$(MAKE) up-full
+	@$(MAKE) install-edge-manifest
+	@$(MAKE) provision-facet-role
+	@$(MAKE) provision-readpath
+	@echo "==> Building facet binary..."
+	go build -o bin/facet ./cmd/facet
+	@echo "==> Loading the showcase dataset (idempotent)..."
+	@$(MAKE) seed-showcase
+	@echo "==> Killing any prior facet process..."
+	@pkill -f "bin/facet" 2>/dev/null || true
+	@echo "==> Starting facet in BROWSER-NATIVE mode (FACET_BROWSER_ENGINE=1 — the browser runs the engine in-page over ws://127.0.0.1:9222)..."
+	@FACET_STORE_DIR=./facet-store NATS_URL=$(NATS_URL) EDGE_GATEWAY_URL=http://localhost:8080 \
+		FACET_DEV_AUTH=1 FACET_PG_DSN="$(FACET_PG_DSN)" \
+		FACET_BROWSER_ENGINE=1 FACET_EDGE_WASM_DIR=bin/edge-wasm \
+		FACET_EDGE_SHELL_DIR=internal/edge/browser/shell EDGE_WS_URL=ws://127.0.0.1:9222 \
+		./bin/facet >facet.log 2>&1 </dev/null & \
+	sleep 1; \
+	echo "==> Facet (browser-native) ready: http://127.0.0.1:7810/login (sign in with a showcase tenant NanoID from 'make seed-showcase' output)"
 
 ## provision-facet-role — Create facet's Postgres read role for the
 ## identityCredentialsRead Protected lens (the Me screen's "manage sign-in
