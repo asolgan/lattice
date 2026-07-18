@@ -204,6 +204,15 @@ func (s *server) reviewCapabilityQueue(w http.ResponseWriter, r *http.Request) {
 
 	keys, err := conn.KVListKeys(ctx, capabilityauthor.CapabilityProposalsBucket)
 	if err != nil {
+		if substrate.IsBucketNotFound(err) {
+			// The read-model bucket is provisioned by the capability-author
+			// package's lens DDL — absent bucket = that package isn't installed
+			// on this stack, so the capability-authoring loop simply isn't
+			// present. Report that as an unprovisioned empty console, not a
+			// gateway fault (the UI renders a "install to enable" empty state).
+			s.writeUnprovisionedReview(w, "capability-author")
+			return
+		}
 		s.writeError(w, http.StatusBadGateway, "list "+capabilityauthor.CapabilityProposalsBucket+": "+err.Error())
 		return
 	}
@@ -216,6 +225,20 @@ func (s *server) reviewCapabilityQueue(w http.ResponseWriter, r *http.Request) {
 	}
 	rows := computeCapabilityProposals(keys, get)
 	s.writeJSON(w, http.StatusOK, map[string]any{"proposals": rows, "count": len(rows)})
+}
+
+// writeUnprovisionedReview answers a review-queue read whose read-model bucket
+// does not exist yet: a 200 carrying an empty proposal set plus the
+// unprovisioned flag + the package that would provision it, so the UI (and the
+// shell badge, which reads count) treat it as an empty console rather than an
+// error. packageName is the package an operator installs to light the tab up.
+func (s *server) writeUnprovisionedReview(w http.ResponseWriter, packageName string) {
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"proposals":     []any{},
+		"count":         0,
+		"unprovisioned": true,
+		"packageName":   packageName,
+	})
 }
 
 func (s *server) reviewCapabilityDetail(w http.ResponseWriter, r *http.Request, id string) {
@@ -357,6 +380,13 @@ func (s *server) reviewAugurQueue(w http.ResponseWriter, r *http.Request) {
 
 	keys, err := conn.KVListKeys(ctx, augur.AugurProposalsBucket)
 	if err != nil {
+		if substrate.IsBucketNotFound(err) {
+			// Provisioned by the augur package's lens DDL — absent bucket = the
+			// Augur escalation loop isn't installed on this stack. Empty
+			// console, not a fault (§ same as the capability tab).
+			s.writeUnprovisionedReview(w, "augur")
+			return
+		}
 		s.writeError(w, http.StatusBadGateway, "list "+augur.AugurProposalsBucket+": "+err.Error())
 		return
 	}

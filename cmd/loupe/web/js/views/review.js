@@ -67,6 +67,14 @@ async function loadQueue(tab, raw) {
     setStatus("review-status", body.error, true);
     return;
   }
+  if (body.unprovisioned) {
+    // The read-model bucket doesn't exist because the package that provisions
+    // it isn't installed on this stack — a benign "not enabled here" state, not
+    // an error. Teach the operator how to light it up.
+    setStatus("review-status", "not installed on this stack");
+    cards.appendChild(reviewUnprovisionedCard(tab, body.packageName));
+    return;
+  }
   const rows = tab === "augur" ? augurProposalRows(body.proposals || []) : proposalRows(body.proposals || []);
   setStatus("review-status", rows.length + " proposal(s)");
   if (!rows.length) {
@@ -77,6 +85,29 @@ async function loadQueue(tab, raw) {
     return;
   }
   rows.forEach((row) => cards.appendChild(tab === "augur" ? augurQueueCard(row) : capabilityQueueCard(row)));
+}
+
+// reviewUnprovisionedCard is the empty-state shown when a tab's read-model
+// bucket doesn't exist because its owning package isn't installed on this
+// stack — a benign "not enabled here", distinct from both an error and a
+// genuinely-empty-but-provisioned queue. It names the package and the bundle
+// target that installs it, so the operator can light the tab up.
+function reviewUnprovisionedCard(tab, packageName) {
+  const pkg = packageName || (tab === "augur" ? "augur" : "capability-author");
+  const card = el("div", "card review-card");
+  card.appendChild(el("div", "card-key",
+    tab === "augur"
+      ? "The Augur escalation loop isn't installed on this stack."
+      : "The capability-authoring loop isn't installed on this stack."));
+  card.appendChild(el("div", "muted",
+    "This tab reads the " + pkg + " package's proposal read-model, which doesn't exist here yet — " +
+    "so there's nothing to review. This is expected on a stack that doesn't run the AI-native loop."));
+  const how = el("div", "muted small");
+  how.appendChild(document.createTextNode("Install it (with the other AI-loop package) via "));
+  how.appendChild(el("code", null, "make install-ai"));
+  how.appendChild(document.createTextNode(", then reload."));
+  card.appendChild(how);
+  return card;
 }
 
 // cardBorderClass reuses the existing .card left-border color vocabulary

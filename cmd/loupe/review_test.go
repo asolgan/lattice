@@ -546,3 +546,59 @@ func TestFreshCapabilityVerdict_Lens(t *testing.T) {
 		t.Errorf("invalid lens: want !Valid (unparseable cypher)")
 	}
 }
+
+// newBareReviewServer spins up an embedded NATS server with NO review buckets
+// created — the state of a stack where neither packages/capability-author nor
+// packages/augur is installed. The queue handlers must classify the missing
+// bucket as unprovisioned, not a fault.
+func newBareReviewServer(t *testing.T) (client *http.Client, baseURL string) {
+	t.Helper()
+	opts := &natsserver.Options{Host: "127.0.0.1", Port: -1, JetStream: true, StoreDir: jsstore.Dir(t)}
+	ns := natstest.RunServer(opts)
+	t.Cleanup(ns.Shutdown)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	conn, err := substrate.Connect(ctx, substrate.ConnectOpts{URL: ns.ClientURL(), Name: "loupe-test-bare"})
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(conn.Close)
+
+	srv := &server{conn: conn, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), natsTimeout: 5 * time.Second}
+	mux := http.NewServeMux()
+	srv.registerRoutes(mux)
+	hs := httptest.NewServer(mux)
+	t.Cleanup(hs.Close)
+	return hs.Client(), hs.URL
+}
+
+func TestReviewQueue_UnprovisionedWhenBucketAbsent(t *testing.T) {
+	client, base := newBareReviewServer(t)
+
+	cases := []struct{ tab, wantPkg string }{
+		{"capability", "capability-author"},
+		{"augur", "augur"},
+	}
+	for _, c := range cases {
+		res, err := client.Get(base + "/api/review/" + c.tab)
+		if err != nil {
+			t.Fatalf("GET %s: %v", c.tab, err)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(res.Body).Decode(&body); err != nil {
+			t.Fatalf("%s decode: %v", c.tab, err)
+		}
+		res.Body.Close()
+		// An absent bucket is a benign not-installed state, not a 502.
+		if res.StatusCode != http.StatusOK {
+			t.Errorf("%s: status = %d, want 200 (unprovisioned is not an error)", c.tab, res.StatusCode)
+		}
+		if body["unprovisioned"] != true || body["packageName"] != c.wantPkg {
+			t.Errorf("%s: want unprovisioned:true + packageName:%s, got %+v", c.tab, c.wantPkg, body)
+		}
+		if cnt, _ := body["count"].(float64); cnt != 0 {
+			t.Errorf("%s: want count 0, got %v", c.tab, body["count"])
+		}
+	}
+}

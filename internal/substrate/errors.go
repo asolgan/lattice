@@ -63,3 +63,17 @@ func IsConnectionError(err error) bool {
 func IsInvalidKeyError(err error) bool {
 	return errors.Is(err, jetstream.ErrInvalidKey)
 }
+
+// IsBucketNotFound reports whether err is (or wraps) a missing-KV-bucket fault:
+// the bucket (or its backing stream) does not exist. This is the classification
+// a caller wants when the bucket is provisioned lazily by something optional —
+// e.g. a lens read-model bucket that only exists once its owning package is
+// installed — so an absent bucket reads as "not provisioned yet", not a fault.
+// Covers both the substrate-typed ErrBucketNotFound (from KVStatus) and the raw
+// jetstream sentinels the KV open/list path surfaces, so callers classify it
+// without importing jetstream.
+func IsBucketNotFound(err error) bool {
+	return errors.Is(err, ErrBucketNotFound) ||
+		errors.Is(err, jetstream.ErrBucketNotFound) ||
+		errors.Is(err, jetstream.ErrStreamNotFound)
+}
