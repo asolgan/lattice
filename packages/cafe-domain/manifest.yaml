@@ -1,5 +1,5 @@
 name: cafe-domain
-version: 0.2.0
+version: 0.3.0
 description: |
   Café house-tab POS session domain: the tab vertex type (OpenTab/Charge/
   Settle, OCC-conditioned running total) + the tabStatus aspect type + the
@@ -7,7 +7,11 @@ description: |
   missing_charge) + the §10.8 playbook dispatching directOp(CreateAccount)/
   directOp(DebitAccount) (cafe-ledger) to post a settled tab onto the
   resident's house-tab account + edge-manifest descriptor metadata
-  (OpenTab/Settle, Fire 5 Inc 4). Depends lease-signing + cafe-ledger.
+  (OpenTab/Settle, Fire 5 Inc 4) + the menuItem self-order catalog
+  (CreateMenuItem/RetireMenuItem, the menuCatalog lens) a self-service
+  Charge binds against, deriving amountCents from a catalog entry rather
+  than trusting a caller-supplied number. Depends lease-signing +
+  cafe-ledger.
 depends:
   - lease-signing
   - cafe-ledger
@@ -19,10 +23,18 @@ declares:
       class: meta.ddl.aspectType
     - canonicalName: cafeOpenTabGuard
       class: meta.ddl.aspectType
+    - canonicalName: menuitem
+      class: meta.ddl.vertexType
+    - canonicalName: menuItemPrice
+      class: meta.ddl.aspectType
   lenses:
     - canonicalName: cafeTabSettlement
       adapter: nats-kv
       bucket: weaver-targets
+      engine: full
+    - canonicalName: menuCatalog
+      adapter: nats-kv
+      bucket: cafe-menu-catalog
       engine: full
   permissions:
     - operationType: OpenTab
@@ -34,12 +46,21 @@ declares:
     - operationType: Charge
       scope: any
       grantsTo: [operator]
+    - operationType: Charge
+      scope: self
+      grantsTo: [consumer]
     - operationType: Settle
       scope: any
       grantsTo: [operator]
     - operationType: Settle
       scope: self
       grantsTo: [consumer]
+    - operationType: CreateMenuItem
+      scope: any
+      grantsTo: [operator]
+    - operationType: RetireMenuItem
+      scope: any
+      grantsTo: [operator]
   weaverTargets:
     - targetId: cafeTabSettlement
       lensRef: cafeTabSettlement

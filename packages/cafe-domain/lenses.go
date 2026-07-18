@@ -6,9 +6,17 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // OutputKeyPattern prefix — the §10.2↔§10.8 binding Weaver reads.
 const TabSettlementTarget = "cafeTabSettlement"
 
-// Lenses returns the package's Lens declarations: the single
-// `cafeTabSettlement` actorAggregate convergence lens (§10.2) anchored on
-// tab.
+// MenuCatalogBucket is the NATS-KV read model the menuCatalog lens projects
+// into — the P5 query surface for "what can a resident self-order": an
+// application reads THIS projected bucket (one entry per live menuItem,
+// keyed by the item's key), never Core KV (lattice-architecture.md P5 —
+// lenses are the only application query surface).
+const MenuCatalogBucket = "cafe-menu-catalog"
+
+// Lenses returns the package's Lens declarations: the `cafeTabSettlement`
+// actorAggregate convergence lens (§10.2) anchored on tab, and the plain
+// `menuCatalog` projection (mirrors loftspace-domain's availableListings)
+// listing every live menuItem for the Resident view's self-order picker.
 func Lenses() []pkgmgr.LensSpec {
 	return []pkgmgr.LensSpec{
 		{
@@ -28,8 +36,29 @@ func Lenses() []pkgmgr.LensSpec {
 				Freshness:        "auto",
 			},
 		},
+		{
+			CanonicalName: "menuCatalog",
+			Class:         "meta.lens",
+			Adapter:       "nats-kv",
+			Bucket:        MenuCatalogBucket,
+			Engine:        "full",
+			Spec:          menuCatalogSpec,
+		},
 	}
 }
+
+// menuCatalogSpec projects one row per live menuItem — a tombstoned item
+// simply drops out of the MATCH, so RetireMenuItem needs no explicit filter
+// here (mirrors loftspace-domain's availableListingsSpec). The per-row key
+// column is `key` (the item key, the IntoKey default), so the read model is
+// keyed by vtx.menuitem.<id>; `menuItemKey` repeats it in the body for the
+// reader.
+const menuCatalogSpec = `MATCH (m:menuitem)
+RETURN
+  m.key AS key,
+  m.key AS menuItemKey,
+  m.price.data.name AS name,
+  m.price.data.priceCents AS priceCents`
 
 // tabSettlementSpec is the one-row-per-tab convergence cypher: a settled tab
 // with a positive total needs its charge posted onto the resident's

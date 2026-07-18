@@ -5,18 +5,20 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Permissions returns the package's permission vertices + grants. Every op
 // keeps its orchestrator-submitted grant (the trusted-tool app — POS /
 // front-desk FE — submits OpenTab when a resident's visit starts, Charge per
-// rung-up item, and Settle at checkout). OpenTab and Settle ALSO grant
-// `consumer`, scope=self (real-actor-write-auth-e2e idiom, clinic-domain's
-// CreateAppointment/wellness-domain's CreateBooking precedent): a resident
-// may start or close their OWN house tab. `authContext.target == actor` is
-// checked at step 3 (Contract #6); the Starlark script separately requires
-// the tab's lease to be identified-by that target identity (via the lease's
-// applicationFor link, lease-signing's own convergence-link shape) — the
-// same patient/identifiedBy indirection clinic-domain uses, since a café tab
-// is anchored to a lease, not an identity, directly. Charge stays
-// operator-only: it takes a raw amountCents with no catalog/menu to bound a
-// self-submitted charge against, unlike CreateBooking/CreateAppointment
-// which book an already-existing, provider-defined slot.
+// rung-up item, and Settle at checkout). OpenTab, Charge, and Settle ALL
+// ALSO grant `consumer`, scope=self (real-actor-write-auth-e2e idiom,
+// clinic-domain's CreateAppointment/wellness-domain's CreateBooking
+// precedent): a resident may open, self-order on, or close their OWN house
+// tab. `authContext.target == actor` is checked at step 3 (Contract #6); the
+// Starlark script separately requires the tab's lease to be identified-by
+// that target identity (via the lease's applicationFor link, lease-signing's
+// own convergence-link shape) — the same patient/identifiedBy indirection
+// clinic-domain uses, since a café tab is anchored to a lease, not an
+// identity, directly. A self-service Charge binds against the menuItem
+// catalog (CreateMenuItem/RetireMenuItem below, operator-only): the
+// referenced item's own .price.priceCents is what a resident's charge
+// amounts to, never a caller-supplied number — the gap the original
+// operator-only Charge grant existed to cover.
 func Permissions() []pkgmgr.PermissionSpec {
 	return []pkgmgr.PermissionSpec{
 		{
@@ -34,8 +36,14 @@ func Permissions() []pkgmgr.PermissionSpec {
 		{
 			OperationType: "Charge",
 			Scope:         "any",
-			Note:          "Grants the operator the right to submit Charge (rings up an item on an open tab).",
+			Note:          "Grants the operator the right to submit Charge (rings up an item on an open tab, raw amountCents).",
 			GrantsTo:      []string{"operator"},
+		},
+		{
+			OperationType: "Charge",
+			Scope:         "self",
+			Note:          "Grants a consumer the right to self-order on THEIR OWN house tab (the tab's lease must be identified-by the caller's own identity); amountCents is derived from a menuItem catalog entry, never trusted from the caller.",
+			GrantsTo:      []string{"consumer"},
 		},
 		{
 			OperationType: "Settle",
@@ -48,6 +56,18 @@ func Permissions() []pkgmgr.PermissionSpec {
 			Scope:         "self",
 			Note:          "Grants a consumer the right to settle THEIR OWN house tab (the tab's lease must be identified-by the caller's own identity).",
 			GrantsTo:      []string{"consumer"},
+		},
+		{
+			OperationType: "CreateMenuItem",
+			Scope:         "any",
+			Note:          "Grants the operator the right to add an item to the self-order menu catalog.",
+			GrantsTo:      []string{"operator"},
+		},
+		{
+			OperationType: "RetireMenuItem",
+			Scope:         "any",
+			Note:          "Grants the operator the right to remove an item from the self-order menu catalog.",
+			GrantsTo:      []string{"operator"},
 		},
 	}
 }

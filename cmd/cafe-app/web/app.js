@@ -492,12 +492,17 @@ async function renderResident() {
       : '<div class="empty">Pick a lease to view its house-tab history.</div>';
     return;
   }
-  let ledger, tabs;
+  let ledger, tabs, menu;
   try {
-    [ledger, tabs] = await Promise.all([
+    const fetches = [
       api("/api/ledger?leaseAppKey=" + encodeURIComponent(leaseAppKey)),
       api("/api/tabs?leaseAppKey=" + encodeURIComponent(leaseAppKey)),
-    ]);
+    ];
+    if (selfMode) fetches.push(api("/api/menu"));
+    const results = await Promise.all(fetches);
+    ledger = results[0];
+    tabs = results[1];
+    menu = results[2];
   } catch (e) {
     body.innerHTML = '<div class="empty">' + e.message + "</div>";
     return;
@@ -511,6 +516,24 @@ async function renderResident() {
       '</p><p class="meta">Opened ' + (open.openedAt || "?") + " — not yet settled</p></div>" +
       (selfMode ? '<div class="panel-actions" style="margin-top:-8px;"><button id="resident-settle-btn" class="danger">Settle My Tab</button></div>' : "")
     );
+    if (selfMode) {
+      const items = (menu && menu.menu) || [];
+      parts.push(
+        '<div class="panel" style="max-width:640px;">' +
+        "<h2>Order</h2>" +
+        (items.length
+          ? '<form id="self-order-form" class="field-row">' +
+            '<select id="self-order-item">' +
+            items
+              .map((it) => '<option value="' + it.menuItemKey + '">' + escapeHtml(it.name) + " — " + money(it.priceCents) + "</option>")
+              .join("") +
+            "</select>" +
+            '<button id="self-order-submit" type="submit">Add to Tab</button>' +
+            "</form>"
+          : '<p class="meta">No menu items available yet.</p>') +
+        "</div>"
+      );
+    }
   } else if (selfMode) {
     parts.push(
       '<div class="panel">' +
@@ -599,6 +622,34 @@ async function renderResident() {
         } catch (e) {
           toast(e.message, false);
           settleBtn.disabled = false;
+        }
+      });
+    }
+    const orderForm = document.getElementById("self-order-form");
+    if (orderForm) {
+      orderForm.addEventListener("submit", async (ev) => {
+        ev.preventDefault();
+        const menuItemKey = document.getElementById("self-order-item").value;
+        if (!menuItemKey) { toast("Pick an item first.", false); return; }
+        const btn = document.getElementById("self-order-submit");
+        btn.disabled = true;
+        try {
+          await opOrThrow(
+            {
+              operationType: "Charge",
+              class: "tab",
+              reads: [open.tabKey, open.tabKey + ".status", menuItemKey, menuItemKey + ".price"],
+              optionalReads: [applicationForOptionalRead(leaseAppKey, selfBookerKey)],
+              payload: { tabKey: open.tabKey, menuItemKey },
+            },
+            "add the item to your tab",
+            { asSelf: true }
+          );
+          toast("Added to your tab.", true);
+          setTimeout(renderResident, 700);
+        } catch (e) {
+          toast(e.message, false);
+          btn.disabled = false;
         }
       });
     }

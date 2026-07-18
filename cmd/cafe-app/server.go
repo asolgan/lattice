@@ -52,6 +52,7 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/frontdesk-visits", s.handleFrontDeskVisits)
 	mux.HandleFunc("/api/ledger", s.handleLedger)
 	mux.HandleFunc("/api/residents", s.handleResidents)
+	mux.HandleFunc("/api/menu", s.handleMenu)
 	mux.HandleFunc("/api/staff/dev-token", s.handleStaffDevToken)
 	mux.HandleFunc("/api/dev-token", s.handleDevToken)
 	mux.HandleFunc("/api/config", s.handleConfig)

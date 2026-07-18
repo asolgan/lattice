@@ -9,7 +9,8 @@
 // flows. This seeds one of each: a LoftSpace unit + available listing + a
 // consumer's lease application, a Clinic patient + provider + appointment
 // (linked to the lease so PO discovery can walk resident->tenant->patient),
-// and a Café tab opened against that same lease.
+// a Café tab opened against that same lease, and two menu-catalog items so
+// the tab's self-order picker has something to show.
 //
 // Requires `make install-showcase-domains` (loftspace/clinic/cafe/wellness
 // domains) already applied to the target stack — the domain ops below FATAL
@@ -138,6 +139,13 @@ func main() {
 			OptionalReads: []string{leaseAppKey + ".cafeOpenTab"},
 		})
 	fmt.Printf("==> tab:             %s (open)\n", tabReply.PrimaryKey)
+
+	menuItemReply := submitOp(ctx, conn, adminKey, "CreateMenuItem", "menuitem",
+		map[string]any{"name": "Latte", "priceCents": 450}, nil)
+	fmt.Printf("==> menu item:       %s (Latte, $4.50)\n", menuItemReply.PrimaryKey)
+	submitOp(ctx, conn, adminKey, "CreateMenuItem", "menuitem",
+		map[string]any{"name": "Croissant", "priceCents": 350}, nil)
+	fmt.Println("==> menu item:       Croissant, $3.50")
 
 	fmt.Println()
 	fmt.Println("==> classic vertical demo data seeded.")

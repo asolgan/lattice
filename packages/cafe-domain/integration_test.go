@@ -58,6 +58,7 @@ func domainConsumerCapDoc() *processor.CapabilityDoc {
 		Lanes:                  []string{"default"},
 		PlatformPermissions: []processor.PlatformPermission{
 			{OperationType: "OpenTab", Scope: "self"},
+			{OperationType: "Charge", Scope: "self"},
 			{OperationType: "Settle", Scope: "self"},
 		},
 		ServiceAccess:   []processor.ServiceAccessEntry{},
@@ -83,6 +84,8 @@ func domainCapDoc() *processor.CapabilityDoc {
 			{OperationType: "OpenTab", Scope: "any"},
 			{OperationType: "Charge", Scope: "any"},
 			{OperationType: "Settle", Scope: "any"},
+			{OperationType: "CreateMenuItem", Scope: "any"},
+			{OperationType: "RetireMenuItem", Scope: "any"},
 		},
 		ServiceAccess:   []processor.ServiceAccessEntry{},
 		EphemeralGrants: []processor.EphemeralGrant{},
@@ -674,5 +677,201 @@ func TestSettle_ConsumerSelfScope_RejectedForOthersTab(t *testing.T) {
 	outcome := testutil.DriveOne(t, ctx, cp, cons, "")
 	if outcome != processor.OutcomeRejected {
 		t.Fatalf("self-service Settle of another's tab outcome = %v, want Rejected (AuthDenied)", outcome)
+	}
+}
+
+// createMenuItem submits CreateMenuItem{name, priceCents} expecting
+// acceptance and returns the new item's key.
+func createMenuItem(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer, label, name string, priceCents int) string {
+	t.Helper()
+	reqID := testutil.GenReqID(label)
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateMenuItem",
+		Actor:         domainActorKey,
+		SubmittedAt:   "2026-07-18T12:00:00Z",
+		Class:         "menuitem",
+		Payload:       json.RawMessage(`{"name":"` + name + `","priceCents":` + strconv.Itoa(priceCents) + `}`),
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+	return "vtx.menuitem." + nanoIDFromRequestID(reqID)
+}
+
+func TestCreateMenuItem_MintsItemAndPriceAspect(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	cp, cons := newDomainPipeline(t, ctx, conn, "createmenuitem")
+
+	itemKey := createMenuItem(t, ctx, conn, cp, cons, "cdcreatemenuitem0001", "Latte", 450)
+
+	itemDoc := readDoc(t, ctx, conn, itemKey)
+	if d, _ := itemDoc["data"].(map[string]any); len(d) != 0 {
+		t.Fatalf("menuItem root data must stay minimal ({}) after CreateMenuItem, got %v", d)
+	}
+	priceDoc := readDoc(t, ctx, conn, itemKey+".price")
+	priceData, _ := priceDoc["data"].(map[string]any)
+	if got, _ := priceData["name"].(string); got != "Latte" {
+		t.Fatalf("price.name = %q, want Latte", got)
+	}
+	if got, _ := priceData["priceCents"].(float64); got != 450 {
+		t.Fatalf("price.priceCents = %v, want 450", got)
+	}
+}
+
+func TestCreateMenuItem_RejectsNonPositivePrice(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	cp, cons := newDomainPipeline(t, ctx, conn, "createmenuitembad")
+
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("cdcreatemenuitembad1"),
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateMenuItem",
+		Actor:         domainActorKey,
+		SubmittedAt:   "2026-07-18T12:00:00Z",
+		Class:         "menuitem",
+		Payload:       json.RawMessage(`{"name":"Free Sample","priceCents":0}`),
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+}
+
+func TestRetireMenuItem_Tombstones(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	cp, cons := newDomainPipeline(t, ctx, conn, "retiremenuitem")
+
+	itemKey := createMenuItem(t, ctx, conn, cp, cons, "cdretiremenuitemsu01", "Croissant", 350)
+
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("cdretiremenuitem0001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "RetireMenuItem",
+		Actor:         domainActorKey,
+		SubmittedAt:   "2026-07-18T12:05:00Z",
+		Class:         "menuitem",
+		Payload:       json.RawMessage(`{"menuItemKey":"` + itemKey + `"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{itemKey}},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	if keyExists(t, ctx, conn, itemKey) {
+		t.Fatalf("RetireMenuItem must tombstone the item: %s", itemKey)
+	}
+}
+
+// TestCharge_SelfOrder_DerivesAmountFromMenuItem proves a resident's
+// self-service Charge binds against the menuItem catalog: amountCents comes
+// from the referenced item's own .price.priceCents (450), never from any
+// caller-supplied amountCents (the payload carries none here).
+func TestCharge_SelfOrder_DerivesAmountFromMenuItem(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	testutil.SeedCapDoc(t, ctx, conn, domainConsumerCapDoc())
+	cp, cons := newDomainPipeline(t, ctx, conn, "chargeselfok")
+
+	seedIdentity(t, ctx, conn, domainConsumerID)
+	leaseKey := seedLeaseWithApplicant(t, ctx, conn, "BBCAFEDMNCHGQKLEASEH", domainConsumerID)
+	tabKey := openTab(t, ctx, conn, cp, cons, "cdselfchargesetup001", leaseKey)
+	itemKey := createMenuItem(t, ctx, conn, cp, cons, "cdselfchargemenu0001", "Latte", 450)
+	applicationForLnk := "lnk.leaseapp.BBCAFEDMNCHGQKLEASEH.applicationFor.identity." + domainConsumerID
+
+	reqID := testutil.GenReqID("cdselfchargetab000001")
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "Charge",
+		Actor:         domainConsumerKey,
+		SubmittedAt:   "2026-07-18T12:10:00Z",
+		Class:         "tab",
+		Payload:       json.RawMessage(`{"tabKey":"` + tabKey + `","menuItemKey":"` + itemKey + `"}`),
+		ContextHint: &processor.ContextHint{
+			Reads:         []string{tabKey, tabKey + ".status", itemKey, itemKey + ".price"},
+			OptionalReads: []string{applicationForLnk},
+		},
+		AuthContext: &processor.AuthContext{Target: domainConsumerKey},
+	}
+	testutil.PublishOp(t, conn, env)
+	outcome := testutil.DriveOne(t, ctx, cp, cons, "")
+	if outcome != processor.OutcomeAccepted {
+		t.Fatalf("self-order Charge outcome = %v, want Accepted", outcome)
+	}
+
+	statusDoc := readDoc(t, ctx, conn, tabKey+".status")
+	statusData, _ := statusDoc["data"].(map[string]any)
+	if got, _ := statusData["totalCents"].(float64); got != 450 {
+		t.Fatalf("status.totalCents = %v, want 450 (derived from the menu item's price)", got)
+	}
+}
+
+// TestCharge_SelfOrder_RejectedForOthersTab proves a consumer satisfying
+// step 3 (authContext.target == actor) but naming a tab whose lease is NOT
+// their own is rejected — self-order never lets one resident charge
+// another's tab.
+func TestCharge_SelfOrder_RejectedForOthersTab(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	testutil.SeedCapDoc(t, ctx, conn, domainConsumerCapDoc())
+	cp, cons := newDomainPipeline(t, ctx, conn, "chargeselfother")
+
+	seedIdentity(t, ctx, conn, domainConsumerID)
+	otherApplicantID := "BBCAFEDMQTHERCHGHJKM"
+	seedIdentity(t, ctx, conn, otherApplicantID)
+	leaseKey := seedLeaseWithApplicant(t, ctx, conn, "BBCAFEDMNCHGQTHLEASE", otherApplicantID)
+	tabKey := openTab(t, ctx, conn, cp, cons, "cdselfchargeoth00001", leaseKey)
+	itemKey := createMenuItem(t, ctx, conn, cp, cons, "cdselfchargeothmenu1", "Latte", 450)
+	wrongApplicationForLnk := "lnk.leaseapp.BBCAFEDMNCHGQTHLEASE.applicationFor.identity." + domainConsumerID
+
+	reqID := testutil.GenReqID("cdselfchargetab000002")
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "Charge",
+		Actor:         domainConsumerKey,
+		SubmittedAt:   "2026-07-18T12:10:00Z",
+		Class:         "tab",
+		Payload:       json.RawMessage(`{"tabKey":"` + tabKey + `","menuItemKey":"` + itemKey + `"}`),
+		ContextHint: &processor.ContextHint{
+			Reads:         []string{tabKey, tabKey + ".status", itemKey, itemKey + ".price"},
+			OptionalReads: []string{wrongApplicationForLnk},
+		},
+		AuthContext: &processor.AuthContext{Target: domainConsumerKey},
+	}
+	testutil.PublishOp(t, conn, env)
+	outcome := testutil.DriveOne(t, ctx, cp, cons, "")
+	if outcome != processor.OutcomeRejected {
+		t.Fatalf("self-order Charge of another's tab outcome = %v, want Rejected (AuthDenied)", outcome)
+	}
+}
+
+// TestCharge_SelfOrder_UnknownMenuItemRejected proves a self-service Charge
+// naming an absent menuItemKey is rejected, not silently zero-priced.
+func TestCharge_SelfOrder_UnknownMenuItemRejected(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	testutil.SeedCapDoc(t, ctx, conn, domainConsumerCapDoc())
+	cp, cons := newDomainPipeline(t, ctx, conn, "chargeselfunknownitem")
+
+	seedIdentity(t, ctx, conn, domainConsumerID)
+	leaseKey := seedLeaseWithApplicant(t, ctx, conn, "BBCAFEDMNCHGUNKLEASE", domainConsumerID)
+	tabKey := openTab(t, ctx, conn, cp, cons, "cdselfchargeunksetup1", leaseKey)
+	absentItemKey := "vtx.menuitem.BBABSENTMENUITEMHJKM"
+	applicationForLnk := "lnk.leaseapp.BBCAFEDMNCHGUNKLEASE.applicationFor.identity." + domainConsumerID
+
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("cdselfchargeunk00001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "Charge",
+		Actor:         domainConsumerKey,
+		SubmittedAt:   "2026-07-18T12:10:00Z",
+		Class:         "tab",
+		Payload:       json.RawMessage(`{"tabKey":"` + tabKey + `","menuItemKey":"` + absentItemKey + `"}`),
+		ContextHint: &processor.ContextHint{
+			Reads:         []string{tabKey, tabKey + ".status", absentItemKey, absentItemKey + ".price"},
+			OptionalReads: []string{applicationForLnk},
+		},
+		AuthContext: &processor.AuthContext{Target: domainConsumerKey},
+	}
+	testutil.PublishOp(t, conn, env)
+	outcome := testutil.DriveOne(t, ctx, cp, cons, "")
+	if outcome != processor.OutcomeRejected {
+		t.Fatalf("self-order Charge against an unknown menu item outcome = %v, want Rejected", outcome)
 	}
 }
