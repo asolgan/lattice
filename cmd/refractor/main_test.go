@@ -61,3 +61,48 @@ func TestIsOperationRoleIndexLens(t *testing.T) {
 		})
 	}
 }
+
+// TestThreadsKeyColumns pins the exemption set both the activation path and
+// the MATCH-update (hot-reload) path share. A Personal Lens is the case that
+// matters most: its reserved "__actor" key field is injected by the envelope
+// and is never a RETURN alias, so threading Into.Key at it fails validation
+// and REFUSES the update — which silently pins the running pipeline to its
+// old cypher until the process restarts, making every Personal Lens cypher
+// edit look like it simply did not take.
+func TestThreadsKeyColumns(t *testing.T) {
+	tests := []struct {
+		name string
+		rule *lens.Rule
+		want bool
+	}{
+		{
+			name: "plain projection lens threads its key columns",
+			rule: &lens.Rule{
+				Into: lens.IntoConfig{Target: "nats_kv", Bucket: "weaver-targets", Key: lens.KeyField{"entityId"}},
+			},
+			want: true,
+		},
+		{
+			name: "personal lens is exempt (__actor comes from the envelope)",
+			rule: &lens.Rule{
+				Into: lens.IntoConfig{Target: "nats_subject", Personal: true, Key: lens.KeyField{"__actor", "ns"}},
+			},
+			want: false,
+		},
+		{
+			name: "operation-role-index lens is exempt",
+			rule: &lens.Rule{
+				Into: lens.IntoConfig{Target: "nats_kv", Bucket: projection.AuthPlaneBucket, Key: lens.KeyField{"operationType"}},
+			},
+			want: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := threadsKeyColumns(tc.rule); got != tc.want {
+				t.Fatalf("threadsKeyColumns() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

@@ -426,6 +426,14 @@ func TestEdgeManifest_Fire1_E2E_FiveRowKindsAndRequestService(t *testing.T) {
 	require.NotNil(t, seen["manifest.me"], "manifest.me must arrive")
 	require.Equal(t, tenantKey, seen["manifest.me"]["identityKey"])
 	require.Equal(t, "Demo Tenant", seen["manifest.me"]["displayName"])
+	// sealedName carries the name aspect's whole `data` map, which on a stack
+	// with a Vault is the { ct, nonce, keyId } envelope the edge engine
+	// decrypts for display (display-name-convention-design.md §3 N3;
+	// internal/edge/vault's SelfName). This fixture writes Core KV directly,
+	// so step 6.5 never sealed it and the map here is the plaintext one —
+	// what is under test is that the alias resolves the aspect's whole data
+	// object through the real engine, not just its `.value` field.
+	require.Equal(t, map[string]any{"value": "Demo Tenant"}, seen["manifest.me"]["sealedName"])
 
 	var svcData map[string]any
 	for k, d := range seen {

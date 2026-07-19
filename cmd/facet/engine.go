@@ -14,6 +14,7 @@ import (
 	"github.com/asolgan/lattice/internal/edge/store"
 	edgesync "github.com/asolgan/lattice/internal/edge/sync"
 	"github.com/asolgan/lattice/internal/edge/transport/natstransport"
+	edgevault "github.com/asolgan/lattice/internal/edge/vault"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -116,7 +117,30 @@ func newEngine(ctx context.Context, cfg engineConfig, identityID, deviceID, toke
 		return nil, err
 	}
 
-	fd := newFeed()
+	// The actor key the control plane's self-asserted-actor fallback expects,
+	// shared verbatim by the sync manager below and the Vault client — both
+	// address that same control plane.
+	actorHeader := "vtx.identity." + identityID
+	ctrl := natstransport.New(conn)
+
+	// A Vault session-key client for this identity, so the sealed `name`
+	// aspect the manifest.me row carries can be decrypted in memory for
+	// display (display-name-convention-design.md §3 N3). A construction
+	// failure is not fatal: its only consequence is that the renderer keeps
+	// painting its typed fallback instead of the resident's name — the same
+	// degraded state a shredded identity produces by design.
+	var selfName *edgevault.SelfName
+	if vaultClient, verr := edgevault.New(ctrl, edgevault.Config{
+		IdentityID:  identityID,
+		ActorHeader: actorHeader,
+		Logger:      cfg.Logger,
+	}); verr != nil {
+		cfg.Logger.Warn("facet engine: vault client unavailable; self-name stays sealed", "identityId", identityID, "err", verr)
+	} else {
+		selfName = edgevault.NewSelfName(vaultClient)
+	}
+
+	fd := newFeed(selfName)
 	// Connectivity handlers key the offline banner on this connection's own
 	// host↔NATS state (design §4.4), not the browser↔host SSE transport —
 	// nats.go calls these on every disconnect/reconnect cycle regardless of
@@ -124,7 +148,7 @@ func newEngine(ctx context.Context, cfg engineConfig, identityID, deviceID, toke
 	conn.NATS().SetDisconnectErrHandler(func(_ *nats.Conn, _ error) { fd.setConnected(false) })
 	conn.NATS().SetReconnectHandler(func(_ *nats.Conn) { fd.setConnected(true) })
 	overlayStore := overlay.New(st)
-	mgr, err := edgesync.New(natstransport.New(conn), st, edgesync.Config{
+	mgr, err := edgesync.New(ctrl, st, edgesync.Config{
 		IdentityID: identityID,
 		DeviceID:   deviceID,
 		// See main.go's identical comment: the control plane's
@@ -132,7 +156,7 @@ func newEngine(ctx context.Context, cfg engineConfig, identityID, deviceID, toke
 		// not the bearer JWT (that authenticates the NATS connection itself
 		// via Token above, and every Gateway submit via
 		// agent.GatewaySubmitter).
-		ActorHeader: "vtx.identity." + identityID,
+		ActorHeader: actorHeader,
 		Logger:      cfg.Logger,
 		OnChange: func(key string, deleted bool) {
 			fd.publishManifestKey(overlayStore, key, deleted)

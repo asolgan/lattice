@@ -10,6 +10,7 @@ import (
 
 	"github.com/asolgan/lattice/internal/edge/agent"
 	"github.com/asolgan/lattice/internal/edge/overlay"
+	edgevault "github.com/asolgan/lattice/internal/edge/vault"
 	"github.com/asolgan/lattice/internal/processor"
 )
 
@@ -96,13 +97,18 @@ type feed struct {
 	// hidden state until the next transition, which would show "connected"
 	// even mid-outage for a tab that opened during one.
 	connected bool
+	// selfName decrypts this identity's sealed name into the manifest.me
+	// row's displayName on its way to the browser. nil (no Vault control
+	// plane wired) passes every row through untouched.
+	selfName *edgevault.SelfName
 }
 
-func newFeed() *feed {
+func newFeed(selfName *edgevault.SelfName) *feed {
 	return &feed{
 		subs:      make(map[chan frame]struct{}),
 		outbox:    make(map[string]*outboxEntry),
 		connected: true, // newEngine only calls newFeed after NATS dial succeeds
+		selfName:  selfName,
 	}
 }
 
@@ -145,7 +151,21 @@ func (f *feed) publishManifestKey(ov *overlay.Overlay, key string, deleted bool)
 		f.publish(frame{Kind: "manifest", Key: key, Deleted: true})
 		return
 	}
-	f.publish(frame{Kind: "manifest", Key: key, Deleted: v.Deleted, Pending: v.Pending, Data: v.Data})
+	f.publish(f.manifestFrame(key, v))
+}
+
+// manifestFrame builds the browser-facing frame for one manifest row. Both
+// paths that put a manifest row on the wire — the live delta above and
+// server.go's snapshot replay — go through here, so the decoration they
+// apply cannot drift.
+func (f *feed) manifestFrame(key string, v overlay.Value) frame {
+	return frame{
+		Kind:    "manifest",
+		Key:     key,
+		Deleted: v.Deleted,
+		Pending: v.Pending,
+		Data:    f.selfName.Decorate(context.Background(), key, v.Data),
+	}
 }
 
 func (f *feed) publishReady(revision uint64) {

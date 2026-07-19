@@ -170,6 +170,18 @@ const (
 // declined as a hollow/degenerate delegation row (personal.go's own doc:
 // "a personal lens's cypher must therefore always alias its neighbor's key
 // to anchor").
+//
+// The name is projected twice on purpose (display-name-convention-design.md
+// §3 N3). `name` is a sensitive aspect, so the Processor seals it at rest
+// (step 6.5) and `identity.name.data.value` resolves to null on any stack
+// with a Vault — the plaintext genuinely cannot reach a broadcast KV row,
+// and this lens declares no SecureColumns because putting identity PII in
+// one is exactly what the crypto-shredding design rejected. `sealedName`
+// therefore carries the { ct, nonce, keyId } envelope itself, which the edge
+// engine decrypts in memory for its own identity (internal/edge/vault's
+// SelfName). `displayName` still resolves directly on a stack whose
+// sensitive aspects were never sealed (an in-process harness with no Vault),
+// so both paths land on the same field the renderer reads.
 const edgeIdentitySpec = `
 MATCH (identity:identity {key: $actorKey})
 OPTIONAL MATCH (identity)-[:holdsRole]->(role:role)
@@ -180,6 +192,7 @@ RETURN
   "manifest.me" AS ns,
   identity.key AS identityKey,
   identity.name.data.value AS displayName,
+  identity.name.data AS sealedName,
   (identity.state.data.value = "claimed") AS claimed,
   collect(DISTINCT {key: role.key, name: role.canonicalName.data.value}) AS roles,
   collect(DISTINCT {key: loc.key, name: loc.presentation.data.name, container: container.key, containerName: container.presentation.data.name}) AS anchors

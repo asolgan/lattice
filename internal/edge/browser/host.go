@@ -48,6 +48,7 @@ import (
 	"github.com/asolgan/lattice/internal/edge/store"
 	edgesync "github.com/asolgan/lattice/internal/edge/sync"
 	"github.com/asolgan/lattice/internal/edge/transport"
+	edgevault "github.com/asolgan/lattice/internal/edge/vault"
 	"github.com/asolgan/lattice/internal/processor/opwire"
 	"github.com/asolgan/lattice/internal/substrate/keys"
 )
@@ -130,7 +131,24 @@ func Start(ctx context.Context, cfg Config) (*Host, error) {
 
 	hostCtx, cancel := context.WithCancel(ctx)
 	ov := overlay.New(st)
-	fd := newFeed()
+
+	// A Vault session-key client for this identity, so the sealed `name`
+	// aspect the manifest.me row carries can be decrypted in memory for
+	// display (display-name-convention-design.md §3 N3 — "the W3/W4 browser
+	// engine carries the same client"). A construction failure only costs the
+	// resident's name: the renderer keeps painting its typed fallback, the
+	// same degraded state a shredded identity produces by design.
+	var selfName *edgevault.SelfName
+	if vaultClient, verr := edgevault.New(tr, edgevault.Config{
+		IdentityID:  cfg.IdentityID,
+		ActorHeader: "vtx.identity." + cfg.IdentityID,
+		Logger:      logger,
+	}); verr != nil {
+		logger.Warn("edge/browser: vault client unavailable; self-name stays sealed", "identityId", cfg.IdentityID, "err", verr)
+	} else {
+		selfName = edgevault.NewSelfName(vaultClient)
+	}
+	fd := newFeed(selfName)
 
 	mgr, err := edgesync.New(tr, st, edgesync.Config{
 		IdentityID: cfg.IdentityID,
@@ -373,7 +391,7 @@ func (h *Host) Snapshot() ([]frame, error) {
 		if v.Deleted {
 			continue
 		}
-		out = append(out, frame{Kind: "manifest", Key: e.Key, Pending: v.Pending, Data: v.Data})
+		out = append(out, h.feed.manifestFrame(e.Key, v))
 	}
 	for _, e := range h.feed.snapshotOutbox() {
 		out = append(out, frame{Kind: "outbox", Outbox: e})
@@ -531,7 +549,7 @@ func (h *Host) jsAPI() map[string]any {
 			if !ok {
 				return nil, nil
 			}
-			return jsonParse(frame{Kind: "manifest", Key: v.Key, Deleted: v.Deleted, Pending: v.Pending, Data: v.Data}), nil
+			return jsonParse(h.feed.manifestFrame(v.Key, v)), nil
 		})
 	})
 

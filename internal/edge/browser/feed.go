@@ -10,6 +10,7 @@ import (
 
 	"github.com/asolgan/lattice/internal/edge/agent"
 	"github.com/asolgan/lattice/internal/edge/overlay"
+	edgevault "github.com/asolgan/lattice/internal/edge/vault"
 	"github.com/asolgan/lattice/internal/processor/opwire"
 )
 
@@ -76,12 +77,18 @@ type feed struct {
 	// starting a fresh host.
 	revokedReason string
 	connected     bool
+
+	// selfName decrypts this identity's sealed name into the manifest.me
+	// row's displayName on its way to the renderer. nil passes every row
+	// through untouched.
+	selfName *edgevault.SelfName
 }
 
-func newFeed() *feed {
+func newFeed(selfName *edgevault.SelfName) *feed {
 	return &feed{
-		subs:   make(map[chan frame]struct{}),
-		outbox: make(map[string]*outboxEntry),
+		subs:     make(map[chan frame]struct{}),
+		outbox:   make(map[string]*outboxEntry),
+		selfName: selfName,
 		// The shell reports the real state through setConnected as soon as it
 		// knows; starting optimistic keeps a freshly-started host from
 		// flashing an offline banner before the first report arrives.
@@ -125,7 +132,21 @@ func (f *feed) publishManifestKey(ov *overlay.Overlay, key string, deleted bool)
 		f.publish(frame{Kind: "manifest", Key: key, Deleted: true})
 		return
 	}
-	f.publish(frame{Kind: "manifest", Key: key, Deleted: v.Deleted, Pending: v.Pending, Data: v.Data})
+	f.publish(f.manifestFrame(key, v))
+}
+
+// manifestFrame builds the renderer-facing frame for one manifest row. Every
+// path that hands a manifest row to the page — the live delta above, the
+// snapshot replay, and the read() export — goes through here, so the
+// decoration they apply cannot drift (the same seam cmd/facet/feed.go holds).
+func (f *feed) manifestFrame(key string, v overlay.Value) frame {
+	return frame{
+		Kind:    "manifest",
+		Key:     key,
+		Deleted: v.Deleted,
+		Pending: v.Pending,
+		Data:    f.selfName.Decorate(context.Background(), key, v.Data),
+	}
 }
 
 // publishRevoked records and broadcasts that the Gateway refused this

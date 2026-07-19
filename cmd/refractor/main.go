@@ -491,18 +491,9 @@ func main() {
 			// Thread the output key columns so the engine builds the complete
 			// multi-column projection key (a composite-key lens — e.g. a
 			// GrantTable lens — needs every key column the adapter requires).
-			// Fail closed if a key column is not a RETURN alias. Only PLAIN
-			// projection lenses are threaded: an envelope lens (actor-aggregate /
-			// operation-role-index) derives its projection key from the envelope
-			// at write time, so its Into.Key (e.g. ["key"]) is not a RETURN alias
-			// and its applyReturn key map is discarded — threading/validating it
-			// would wrongly fail activation. A fan-out Personal Lens
-			// (projection.IsPersonalLens) is the same shape: its "__actor" key
-			// field is injected by the envelope from the enumerated recipient, not
-			// a RETURN alias, so InstallPersonalLens threads its business-only key
-			// columns itself.
-			if cr, ok := r.CompiledRule.(*full.CompiledRule); ok &&
-				!projection.IsActorAggregate(r) && !isOperationRoleIndexLens(r) && !projection.IsPersonalLens(r) {
+			// Fail closed if a key column is not a RETURN alias; see
+			// threadsKeyColumns for which lenses are exempt and why.
+			if cr, ok := r.CompiledRule.(*full.CompiledRule); ok && threadsKeyColumns(r) {
 				cr.KeyColumns = []string(r.Into.Key)
 				if err := cr.ValidateKeyColumns(); err != nil {
 					logger.Error("full engine key-column validation", "lensId", r.ID, "err", err)
@@ -792,8 +783,7 @@ func main() {
 					"lensId", newLens.ID)
 				return
 			}
-			if cr, ok := newLens.CompiledRule.(*full.CompiledRule); ok &&
-				!projection.IsActorAggregate(newLens) && !isOperationRoleIndexLens(newLens) {
+			if cr, ok := newLens.CompiledRule.(*full.CompiledRule); ok && threadsKeyColumns(newLens) {
 				cr.KeyColumns = []string(newLens.Into.Key)
 				if err := cr.ValidateKeyColumns(); err != nil {
 					logger.Error("full engine key-column validation (MATCH update)",
@@ -901,6 +891,22 @@ func main() {
 // Derived from the lens's Into descriptor, never from a canonical name.
 func isOperationRoleIndexLens(r *lens.Rule) bool {
 	return len(r.Into.Key) == 1 && r.Into.Key[0] == "operationType" && projection.IsAuthPlane(r)
+}
+
+// threadsKeyColumns reports whether r's Into.Key may be threaded onto its
+// compiled rule as RETURN-alias-validated key columns. Only PLAIN projection
+// lenses qualify: an envelope lens (actor-aggregate / operation-role-index)
+// and a fan-out Personal Lens both derive their projection key from the
+// envelope at write time, so their Into.Key (e.g. ["key"], or a Personal
+// Lens's reserved "__actor") is deliberately not a RETURN alias — validating
+// it would fail on a spec that is entirely correct.
+//
+// Both the activation path and the MATCH-update (hot-reload) path ask this
+// question, and they must answer it identically: a lens that activates but
+// whose later cypher edit is refused stays silently pinned to its old cypher
+// until the process restarts.
+func threadsKeyColumns(r *lens.Rule) bool {
+	return !projection.IsActorAggregate(r) && !isOperationRoleIndexLens(r) && !projection.IsPersonalLens(r)
 }
 
 // loadVault wires the optional local envelope-encryption Vault backend for

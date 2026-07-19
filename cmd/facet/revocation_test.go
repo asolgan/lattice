@@ -15,7 +15,7 @@ import (
 // happens to be listening. A browser connecting afterwards must still be
 // told, so the reason is sticky and replayed to every later subscriber.
 func TestFeedPublishRevoked_IsStickyAndReplayed(t *testing.T) {
-	fd := newFeed()
+	fd := newFeed(nil)
 	_, ok := fd.revoked()
 	require.False(t, ok)
 
@@ -39,7 +39,7 @@ func TestFeedPublishRevoked_IsStickyAndReplayed(t *testing.T) {
 // rejection every tick while intents stay queued; only the first publishes,
 // so a revoked session doesn't spray a frame every 5s forever.
 func TestFeedPublishRevoked_Idempotent(t *testing.T) {
-	fd := newFeed()
+	fd := newFeed(nil)
 	sub := fd.subscribe()
 
 	fd.publishRevoked("first")

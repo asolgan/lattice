@@ -138,7 +138,7 @@ func (s *server) handleFeed(w http.ResponseWriter, r *http.Request) {
 			if err != nil || !ok {
 				continue
 			}
-			frames = append(frames, frame{Kind: "manifest", Key: e.Key, Deleted: v.Deleted, Pending: v.Pending, Data: v.Data})
+			frames = append(frames, eng.feed.manifestFrame(e.Key, v))
 		}
 		return frames
 	})
