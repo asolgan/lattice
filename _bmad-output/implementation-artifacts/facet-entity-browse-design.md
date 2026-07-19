@@ -1,6 +1,6 @@
 # Facet entity browse — giving `dispatch.targetType` something to resolve against
 
-**Status:** 📐 awaiting-Andrew ratification (Winston, 2026-07-19)
+**Status:** ✅ Andrew-ratified 2026-07-19 (interactive) — v1 scope widened at ratification: clinic **providers included** alongside sessions (F2). The demand trigger F2 waited on arrived with the design itself — Andrew's live report of clinic "Open a Provider" degraded cards.
 **Board row:** [verticals.md](../planning-artifacts/backlog/verticals.md) — "Facet has no browse surface for bookable entities" (★★ / M)
 **Extends:** [edge-showcase-app-design.md](edge-showcase-app-design.md) §3.2, §3.3, §4.2 — and reconciles its §8 non-goal (below).
 
@@ -77,13 +77,14 @@ Two further constraints found while grounding, both of which shape the answer:
   link — but there is no `service → session` relation, and inventing one makes the *service* catalog carry
   instance data. Rejected as a worse-shaped version of B.
 
-### F2 — One generic entity lens, or one per kind? **(recommended: one lens, one kind in v1)**
+### F2 — One generic entity lens, or one per kind? **(ratified: one lens per kind; v1 ships sessions AND providers)**
 
-The no-`UNION` constraint (§2) means a single `edgeEntities` cypher covering both sessions and providers would
-cross-product them. v1 ships **sessions only**, as a *named* scope-down in the same style this package already
-uses for its other narrowings (`edgeCatalog` covers only the service-`permitsOperation` path; `edgeTasks` only
-direct `assignedTo`). Clinic providers are a **second walk in a second lens** when demanded — cheap, because
-`practicesAt` already exists and needs no DDL work.
+The no-`UNION` constraint (§2) means a single cypher covering both sessions and providers would cross-product
+them, so each kind gets **its own lens**, in the same style this package already uses for its other narrowings
+(`edgeCatalog` covers only the service-`permitsOperation` path; `edgeTasks` only direct `assignedTo`). v1 ships
+**both kinds** — `edgeEntitySessions` and `edgeEntityProviders` — the provider walk being cheap because
+`practicesAt` already exists and needs no DDL work. (As drafted this fork deferred providers "when demanded";
+Andrew widened v1 at ratification, the demand having arrived with his clinic report.)
 
 The generic vocabulary is in the **row shape**, not the cypher: `manifest.ent.<id>` rows carry
 `{entityKey, entityType, title, subtitle, when}`. The renderer browses by `entityType` and never learns what a
@@ -123,11 +124,15 @@ One fire, in this order (each step's failure is diagnosable before the next is a
    (validated alive + `class=location`, mirroring how `CreateSession` validates `studio`). No cascade.
 2. **Seeds.** `seed-classic-demo` + `seed-showcase` locate their studio in the showcase world, or the browse view
    is correct and empty. (A studio with no location is legal and simply un-browsable — the right default.)
-3. **edge-manifest — `edgeEntities`.** Sixth Personal lens, `IntoKey: ["__actor","ns","entityId"]`,
-   `ns = "manifest.ent"`, anchored on the session. Row: `{entityKey, entityType: 'session', title, subtitle, when}`
-   — `entityType` a **literal stamped per walk**, exactly as `selfAnchors` stamps its type
+   Providers need no seed work if the clinic seeds already wire `practicesAt` — verify, and wire it if absent.
+3. **edge-manifest — the entity lenses.** `edgeEntitySessions`: `IntoKey: ["__actor","ns","entityId"]`,
+   `ns = "manifest.ent"`, anchored on the session, row `{entityKey, entityType: 'session', title, subtitle, when}`.
+   `edgeEntityProviders`: same row shape with `entityType: 'provider'`, anchored on the provider, reached
+   `residesIn → containedIn*0.. → container <-practicesAt- provider`. In both, `entityType` is a **literal
+   stamped per walk**, exactly as `selfAnchors` stamps its type
    ([lenses.go:186-198](../../packages/edge-manifest/lenses.go)), never parsed from the key.
-4. **edge-manifest — `edgeManifestReadGrants`** gains the session anchor branch (§3 F4). Same commit as 3.
+4. **edge-manifest — `edgeManifestReadGrants`** gains the session **and provider** anchor branches (§3 F4).
+   Same commit as 3.
 5. **cmd/facet/web — the browse view.** A sixth view listing `manifest.ent` rows grouped by `entityType`;
    selecting one sets `ctx.entityKey` and renders that entity's offerable ops through the **existing**
    `opButton`/`resolveTargetKey` path. No change to dispatch resolution — this only feeds it.
@@ -144,7 +149,6 @@ Gates: `go build ./...`, `make vet`, `golangci-lint run ./...`, `STRICT=1 go run
 ## 5. What this deliberately does not do
 
 - Does not touch `availableAt`, `capabilityServiceAccess`, or any service-access authZ (§3 F1).
-- Does not add clinic providers (§3 F2) — a follow-on lens once demanded, no DDL work needed.
 - Does not make Facet a graph browser (§3 F3): only entities a declared `dispatch.targetType` names are ever
   projected, bounded by the actor's own residence reachability.
 - Does not change the descriptor vocabulary. `targetType` shipped in `dda7ad98` and is already correct.
