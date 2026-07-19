@@ -86,6 +86,11 @@ type server struct {
 	// Gateway), Loupe's own backend calls it, since some ops (the
 	// pkg-lifecycle batch) are assembled server-side.
 	gatewayURL string
+	// demoMode runs the hosted-demo read-only posture (LOUPE_DEMO_MODE,
+	// demo.go): every non-GET request is refused and the shell renders a
+	// visitor banner. Defense in depth only — the guarantee is the demo
+	// operator identity's capability grants.
+	demoMode bool
 }
 
 func (s *server) registerRoutes(mux *http.ServeMux) {
@@ -103,6 +108,7 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/vertices", s.handleVertices)
 	mux.HandleFunc("/api/vertex", s.handleVertex)
 	mux.HandleFunc("/api/health", s.handleHealth)
+	mux.HandleFunc("/api/demo", s.handleDemo)
 	mux.HandleFunc("/api/systemmap", s.handleSystemMap)
 	mux.HandleFunc("/api/component/", s.handleComponent)
 	mux.HandleFunc("/api/lenses", s.handleLenses)

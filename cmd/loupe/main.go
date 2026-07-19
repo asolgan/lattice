@@ -140,14 +140,26 @@ func run(logger *slog.Logger) error {
 		bindHost = ""
 	}
 
+	configuredOperatorKey := strings.TrimSpace(os.Getenv("LOUPE_OPERATOR_ACTOR_KEY"))
+	demoMode, err := demoModeEnabled(os.Getenv("LOUPE_DEMO_MODE"))
+	if err != nil {
+		return err
+	}
+	if err := demoOperatorGuard(demoMode, configuredOperatorKey, adminActor); err != nil {
+		return err
+	}
+
 	// operatorActorKey is stamped as the Lattice-Actor header on every outbound
 	// control-plane request (control-plane-capability-authz-design.md §3.6 —
 	// "Loupe is the trusted single-identity console; its identity is now
-	// explicit on the wire and granted, instead of anonymous"). Falls back to
-	// adminActor (today's only configured identity) until the design's Fire 1b
-	// seeds a dedicated ordinary `operator` identity — the fallback carries no
-	// enforcement risk yet since Fire 1a ships no capability decision.
-	operatorActorKey := envOrDefault("LOUPE_OPERATOR_ACTOR_KEY", adminActor)
+	// explicit on the wire and granted, instead of anonymous"). It falls back to
+	// adminActor, which is why the demo posture refuses to boot without an
+	// explicit key: under LOUPE_DEMO_MODE that fallback would run the whole
+	// console as the primordial admin (demoOperatorGuard, demo.go).
+	operatorActorKey := configuredOperatorKey
+	if operatorActorKey == "" {
+		operatorActorKey = adminActor
+	}
 	if operatorActorKey == "" {
 		logger.Warn("no operator actor configured (LOUPE_OPERATOR_ACTOR_KEY unset and no bootstrap admin actor loaded); control-plane requests will carry no Lattice-Actor header")
 	}
@@ -181,6 +193,12 @@ func run(logger *slog.Logger) error {
 		authn:              authn,
 		devSigner:          signer,
 		gatewayURL:         envOrDefault("LOUPE_GATEWAY_URL", defaultGatewayURL),
+		demoMode:           demoMode,
+	}
+	if demoMode {
+		logger.Warn("DEMO MODE: console is read-only; every non-GET request is refused. "+
+			"The guarantee is the demo operator's capability grants, not this process",
+			"operator", operatorActorKey)
 	}
 
 	mux := http.NewServeMux()
@@ -188,7 +206,7 @@ func run(logger *slog.Logger) error {
 
 	httpServer := &http.Server{
 		Addr:              addr,
-		Handler:           srv.requireOperator(mux),
+		Handler:           srv.requireOperator(srv.demoReadOnly(mux)),
 		ReadHeaderTimeout: 10 * time.Second,
 		// WriteTimeout bounds a slow-reading client holding an object-byte
 		// stream open; sized generously so a legitimate large download on a slow

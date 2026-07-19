@@ -1132,3 +1132,20 @@ a.pulse-derived-text:hover { color: var(--text); }
 .oplog-type { font-family: var(--mono); color: var(--text); }
 .oplog-ok { color: var(--green); border-color: var(--green); }
 .oplog-err { color: var(--red); border-color: var(--red); }
+
+/* Hosted-demo visitor banner (F20) — above the alert strip, deliberately
+   louder than an ordinary status line: it is a disclaimer for a visitor who
+   may not know they are looking at a live operator console. */
+#demobanner { display: none; }
+#demobanner.visible {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 6px 18px;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--yellow);
+  color: var(--yellow);
+  font-size: 12px;
+}
+#demobanner span { color: var(--text-dim); }

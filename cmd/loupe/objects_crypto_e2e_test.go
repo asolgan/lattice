@@ -298,3 +298,52 @@ func TestSensitiveObject_MultiPartyIndependentShred(t *testing.T) {
 		t.Fatalf("tenant decrypted body = %q, want %q", got, plaintext)
 	}
 }
+
+// TestSensitiveObjectGet_DemoMode_RevealRefused pins the one control standing
+// between a hosted-demo visitor and decrypted PII (F20,
+// loupe-f20-demo-operator-ux.md). A reveal is a GET, so the demo posture's
+// method rule never sees it, and the vault unwrap RPC rides Loupe's own NATS
+// credentials with no Lattice-Actor — so the demo operator's capability grants
+// are not consulted either. If this check regresses, nothing else denies it.
+func TestSensitiveObjectGet_DemoMode_RevealRefused(t *testing.T) {
+	_, backend, conn := sensitiveObjectFixture(t)
+	ctx := context.Background()
+	plaintext := []byte("this is the applicant's signed lease PDF bytes")
+	oid := putSensitiveObjectDirect(t, ctx, conn, backend, "vtx.identity.tenant2", plaintext, "application/pdf")
+
+	demo := &server{
+		conn: conn, logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		natsTimeout: 5 * time.Second, uploadCap: defaultUploadCap, demoMode: true,
+	}
+	mux := http.NewServeMux()
+	demo.registerRoutes(mux)
+	hs := httptest.NewServer(mux)
+	defer hs.Close()
+
+	res, err := hs.Client().Get(hs.URL + "/api/objects/" + oid + "?decrypt=true")
+	if err != nil {
+		t.Fatalf("GET decrypt=true: %v", err)
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(res.Body)
+	if res.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403; body = %s", res.StatusCode, body)
+	}
+	if bytes.Contains(body, plaintext) {
+		t.Fatal("the refusal leaked the plaintext it was refusing to reveal")
+	}
+	if !bytes.Contains(body, []byte("read-only demo")) {
+		t.Errorf("refusal should identify the demo posture, got %s", body)
+	}
+
+	// The non-decrypt path still serves (ciphertext), so demo mode narrows the
+	// reveal rather than breaking object reads.
+	plain, err := hs.Client().Get(hs.URL + "/api/objects/" + oid)
+	if err != nil {
+		t.Fatalf("GET without decrypt: %v", err)
+	}
+	defer plain.Body.Close()
+	if plain.StatusCode != http.StatusOK {
+		t.Errorf("ciphertext read status = %d, want 200", plain.StatusCode)
+	}
+}

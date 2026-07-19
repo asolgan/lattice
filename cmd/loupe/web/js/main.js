@@ -20,6 +20,7 @@ import * as files from "./views/files.js";
 import * as op from "./views/op.js";
 import * as lens from "./views/lens.js";
 import * as review from "./views/review.js";
+import * as demo from "./views/demo.js";
 
 // The route table: view name (the first hash segment) → panel + module. The
 // nav anchors carry the same hashes, so a tab click is just a hash change.
@@ -131,6 +132,7 @@ function renderCrumbs(route, entry) {
 // stream (one console-wide EventSource — the map feed and the op
 // follow-through share it), wire each view's static DOM, then start routing.
 shell.init();
+demo.init();
 pulse.init();
 map.init();
 graph.init();

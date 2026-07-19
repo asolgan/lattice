@@ -454,6 +454,17 @@ func (s *server) handleObjectGet(w http.ResponseWriter, r *http.Request, oid str
 	}
 
 	if doc.Data.Sensitive && r.URL.Query().Get("decrypt") == "true" {
+		// A reveal is a READ, so the demo posture's method rule (demo.go) does
+		// not reach it, and the unwrap RPC travels on Loupe's own NATS
+		// credentials with no Lattice-Actor — so the demo operator's capability
+		// grants do not govern it either. This check is the only thing standing
+		// between a demo visitor and decrypted PII; it is deliberately placed on
+		// the same condition the decrypt branch itself uses, so there is no
+		// spelling of the request that decrypts without passing here.
+		if s.demoMode {
+			s.writeError(w, http.StatusForbidden, demoDenialMessage)
+			return
+		}
 		s.handleSensitiveObjectDecrypt(w, ctx, conn, oid, doc)
 		return
 	}
