@@ -227,7 +227,7 @@ row in `docs/vendors.md`.
 | **F20.2** | §7 — demo polish: suppress write affordances per view, restore the three read-only control POSTs, `/login` disclaimer | Loupe | 📋 build-ready (§7; not a safety item; after F20.5) |
 | **F20.3** | §3.1 — the `demoOperator` grant package | Lattice (cross-lane) | filed (lattice.md row, 📋 ready) |
 | **F20.4** | §3.3 — Caddy subdomain + README | deploy (cross-lane) | 🚧 Andrew-gated on public launch |
-| **F20.5** | §6 — the public-origin posture: `LOUPE_PUBLIC_ORIGIN` (origin gate + `Secure` cookie), the dev-auth⇒demo boot coupling, the credential-exchange rate limiter, the SSE cap posture. **Blocks F20.4** — without it no visitor can log in | Loupe | 📋 build-ready (§6; build first) |
+| **F20.5** | §6 — the public-origin posture: `LOUPE_PUBLIC_ORIGIN` (origin gate + `Secure` cookie), the dev-auth⇒demo boot coupling, the credential-exchange rate limiter, the SSE cap posture. **Blocks F20.4** — without it no visitor can log in | Loupe | ✅ SHIPPED 2026-07-19 (`ca941e58`) |
 
 **Exposure checklist** — every line must hold before Loupe is reachable publicly:
 
@@ -242,7 +242,14 @@ row in `docs/vendors.md`.
    (§6.5 ships it in-lane with F20.5; this line is the deployed proof, not a decision).
 5. The live feed observed with more than four concurrent visitors (§6.6 resolves the cap: demo
    default 32, `LOUPE_EVENT_STREAM_MAX` override, visitor-legible at-cap message).
-6. Andrew's explicit go-ahead. Exposure is his call, not a fire's.
+6. **Single hop in front of Loupe** — Caddy terminating TLS directly, no CDN and no
+   second proxy. The limiter's per-peer keying reads the last `X-Forwarded-For` entry and
+   trusts it only from a loopback peer (§6.5 as built); with a further hop that entry is the
+   nearest edge, not the visitor, so every visitor behind one edge would share a single
+   10/min bucket and the 11th login attempt worldwide in any minute would 429. It degrades
+   to over-throttling, never to a bypass — but it is a topology constraint F20.4 must honor
+   or revisit.
+7. Andrew's explicit go-ahead. Exposure is his call, not a fire's.
 
 ## 6. F20.5 — the public-origin posture (build design)
 
@@ -351,6 +358,47 @@ the §6.4 combo refusal; limiter (per-peer 429 at 11th, global ceiling, XFF-last
 declared, RemoteAddr otherwise, eviction bound); SSE knob (default 4, demo 32, override, malformed
 refusal). Plus the checklist's live proofs post-deploy. One fire — the pieces share the declaration
 plumbing and none is independently shippable to the demo without the others.
+
+### 6.8 As built (`ca941e58`, 2026-07-19) — where the adversarial review moved the design
+
+Five deliberate departures from §6 as written. Each closes a defect the design did not
+anticipate; none changes an adjudicated fork.
+
+1. **The global ceiling is checked before any peer-map work** (§6.5 implied peer-first). As
+   designed, a full peer map ran a 4096-entry eviction sweep under the limiter's mutex on
+   every new-key arrival — *before* the global tier could refuse the request. A caller
+   rotating its peer key therefore made the limiter a more expensive DoS than the RSA
+   signing it exists to shield. Ceiling-first also has a pleasant consequence: at 300/min
+   against a 10-minute idle window the map can no longer fill with un-evictable entries at
+   all, so the untrackable-peer branch is now a bound that does not depend on that
+   arithmetic rather than a reachable state. The sweep is additionally throttled to once a
+   minute.
+2. **The forwarded peer key is trusted only from a loopback peer**, not from the mere fact
+   of a declaration. §6.5's Caddy reasoning is sound but conditional on the request having
+   *traversed* Caddy, and a declaration is not evidence of that — a caller reaching the
+   listener directly could mint a fresh full bucket per request and bypass the per-peer tier
+   entirely. Loopback is the same-host single-hop topology the demo deploys and one an
+   off-host client cannot forge. The entry must also parse as an IP, which bounds the map
+   key (an unvalidated header substring is attacker-sized). This is what surfaced checklist
+   item 6.
+3. **Only POST is charged.** §6.5 says "the three POST endpoints"; wrapping the handlers
+   charged every method. A GET is answered 405 without touching a key or a body, and
+   charging it would let a browser prefetch or a link-preview crawler spend a real visitor's
+   budget before they ever click Log in.
+4. **`LOUPE_EVENT_STREAM_MAX` is bounded at 1024**, not merely "> 0" (§6.6). The slot counter
+   is an `atomic.Int32`: a value past 2^31 truncated *negative* and refused every SSE tail
+   while boot reported success — the fail-closed parse rule §6.6 commits to never fired. The
+   bound is set for resources rather than just int32 safety, since each tail is a goroutine
+   plus an ephemeral ordered consumer.
+5. **One shared validator backs both the declaration and the comparison.** §6.1 and §6.2
+   described their rules separately, and implemented separately they disagreed: `matches`
+   accepted userinfo, paths, and queries the parser rejected, and used `strings.EqualFold`,
+   whose Unicode simple-case folding maps U+017F (ſ) to `s`. Neither is browser-reachable,
+   but an asymmetry where the wire side is looser than the config side is the shape a later
+   refactor turns into a real hole. Routing both through `originComponents` makes it
+   structurally impossible. The same pass added trailing-dot host normalization and port
+   range validation — either would otherwise boot a declaration no browser `Origin` could
+   ever equal, i.e. a permanent 403 with no boot-time signal.
 
 ## 7. F20.2 — demo polish (build design)
 

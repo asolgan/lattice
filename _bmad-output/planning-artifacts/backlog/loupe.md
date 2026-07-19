@@ -35,7 +35,7 @@ needs a Sally UX pass → Winston adjudicates (Andrew-delegated for this program
 
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **F20 — Hosted-demo read-only operator** | Loupe in the public demo as the behind-the-scenes view: a `demoOperator` role stripped to inspect-only grants, so every write is capability-denied at the platform — proving "even the console is capability-scoped" live; one-tap demo login; own subdomain + visitor disclaimer. Exposed only at public-launch. | ★★ | M | 🏗️ F20.1 SHIPPED · F20.5+F20.2 📋 build-ready (design §6–§7) · exposure Andrew-gated · [design + exposure checklist](../../implementation-artifacts/loupe-f20-demo-operator-ux.md) |
+| **F20 — Hosted-demo read-only operator** | Loupe in the public demo as the behind-the-scenes view: a `demoOperator` role stripped to inspect-only grants, so every write is capability-denied at the platform — proving "even the console is capability-scoped" live; one-tap demo login; own subdomain + visitor disclaimer. Exposed only at public-launch. | ★★ | M | 🏗️ F20.1+F20.5 SHIPPED · F20.2 📋 build-ready (design §7) · F20.3 cross-lane (lattice) · exposure Andrew-gated · [design + exposure checklist](../../implementation-artifacts/loupe-f20-demo-operator-ux.md) |
 
 ## Component maintenance
 
@@ -52,9 +52,6 @@ needs a Sally UX pass → Winston adjudicates (Andrew-delegated for this program
 
 ## PO notes (rotation memory — capped, dated one-liners)
 
-- 2026-07-06 — F12 increment 2 shipped (Reveal — audited decrypt in the Graph explorer); 3-layer review fixed forward (identity-anchor validation, complete-envelope check, malformed-reply guard, stale-DOM guard); verified live against a real shredded identity's sealed row (never against live plaintext PII — the auto-mode PII-handling gate correctly declined that, and it isn't needed: the Go round-trip test already proves decrypt-to-plaintext through the real vault RPC). Noted, not filed as a blocker: `internal/vault/service.go`'s decrypt RPC responder logs only failed decrypts today, not successful ones — the design's "this reveal is audited" claim is a property of that responder, not of Loupe's proxy; a Lattice-lane follow-up to add success-path audit logging is fair game whenever that lane picks it up.
-- 2026-07-06 — **F12 CLOSED**: increment 3 shipped (the crypto-shred proof view, frontend-only, reused every existing endpoint); 3-layer review fixed forward (a failed status read no longer silently reads as a false negative, the finalization poll is now capped, DOM writes scoped). Verified live on both a temp preview port and the real running instance; declined (per the risky-action guardrail) to actually click-confirm a real ShredIdentityKey submission against the shared dev stack — the typed-confirm gating was verified via a wrong-token/right-token/cancel sequence instead.
-- 2026-07-06 — F13 L1 reconciled (shipped Flows tab satisfies it, no `#/history` rebuild) + L2 v1 shipped (flow-liveness map scrubber, rides the same bucket); L2-full/L3 still wait on Chronicler archive mode.
 - 2026-07-07 — **F15 CLOSED**: items 5-6 shipped (`56911ac`) — pkg-lifecycle root-admin gate (confused-deputy close) + live e2e proof under `up-full-capability` (consoleOperator RevokeActor allowed, InstallPackage denied). Also closed the cross-filed "Loupe read-only PG role" lattice item in the same commit (M5 wildcard-grant, not bypass).
 - 2026-07-07 — Follow-up (`6b1ab6e`): `56911ac` proved the mechanism but left the live default operator as root — actually re-scoped it (console-operator's own read-grant lens + persisted `loupe-operator.json`, `up-full` wires it automatically); verified live against real non-empty protected-table data.
 - 2026-07-18 — Café + Wellness curated onto the door-band Apps group (all four verticals render together, client-shelf empty) — `3470f7d`, verified live (all four green). Same session: **PO survey** (Loupe untouched since F15/2026-07-07) filed F16–F19 + the `designAhead`-trio maintenance row; the old "flip Gateway designAhead" Next-line is now that row (Gateway up-full trigger shipped `11cc15f`).
@@ -71,12 +68,15 @@ needs a Sally UX pass → Winston adjudicates (Andrew-delegated for this program
 
 - 2026-07-19 — **F20 UX drafted + adjudicated inline (Winston) → F20.1 SHIPPED**: Loupe-side half only; exposure stays Andrew-gated. Two reusable findings in the [design](../../implementation-artifacts/loupe-f20-demo-operator-ux.md) §2.2/§2.3: a read-only posture needs a **reveal axis** separate from the write axis (a decrypt is a GET, and its vault RPC carries no actor), and Loupe's "loopback ⇒ safe" checks read the **bind host, not the peer** — behind a proxy login would 403 (F20.5, blocks exposure). **Next:** F20.5, then F20.2.
 
-- 2026-07-19 — **Designer pass (Winston): F20.5 + F20.2 flipped from problem statements to build designs** — [§6/§7 + second-pass adjudication §4.1](../../implementation-artifacts/loupe-f20-demo-operator-ux.md). Exposure-checklist #4/#5 resolved in-lane (limiter is Loupe-side — stock Caddy ships no rate-limit handler, Caddy now a `docs/vendors.md` row; SSE cap posture-derived). **Next:** build F20.5, then F20.2.
+- 2026-07-19 — **Designer pass (Winston): F20.5 + F20.2 flipped from problem statements to build designs** — [§6/§7 + second-pass adjudication §4.1](../../implementation-artifacts/loupe-f20-demo-operator-ux.md). Exposure-checklist #4/#5 resolved in-lane (limiter is Loupe-side — stock Caddy ships no rate-limit handler, Caddy now a `docs/vendors.md` row; SSE cap posture-derived).
+
+- 2026-07-19 — **F20.5 SHIPPED**: proxied login unblocked (checklist #2). 3-layer review found four real defects (limiter amplification, XFF trust, int32 SSE truncation, parse/match asymmetry) — all fixed forward; departures recorded in [design §6.8](../../implementation-artifacts/loupe-f20-demo-operator-ux.md). New checklist item: single-hop only, no CDN. **Next:** F20.2; F20.3 is the remaining cross-lane exposure dep.
 
 ## Done log — loupe (newest first)
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-19 · `ca941e58` · [Loupe/F20.5] Public-origin posture — `LOUPE_PUBLIC_ORIGIN` (origin gate + Secure cookie), dev-auth⇒demo boot coupling, credential-exchange limiter, SSE cap knob. 3-layer review fixed forward, live-verified, CI green
 - 2026-07-19 · `018dd913` · [Loupe/F20.1] Hosted-demo read-only posture — `LOUPE_DEMO_MODE` (default off): method default-deny, boot guard, reveal denial, visitor banner. 3-layer review fixed forward, live-verified, CI green
 - 2026-07-19 · `14a1b490` · [Loupe/F19] Edge fleet — Personal Lens subscriber roster + per-device sync-gap triage (`#/edge`). 3-layer review fixed forward, live-verified on a real 7-device fleet, CI green
 - 2026-07-19 · `a9fa69ae` · [Loupe/F18] Weaver planner diagnostics — exception-first Planner panel (oscillation · mismatch · contraction · admission · shadow); view-only, no server change. Goja coverage, live-verified, CI green
