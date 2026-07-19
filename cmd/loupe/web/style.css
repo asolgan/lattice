@@ -612,6 +612,9 @@ table.grid td { font-family: var(--mono); }
 
 /* Tasks inbox — reuses the .card family; just spacing + the complete action. */
 .task-card .card-sub { white-space: normal; word-break: normal; }
+/* The assignment line carries a long, unbreakable identity/role key plus the
+   availability chip and expiry — wrap it so nothing spills past the card edge. */
+.task-card .card-meta { flex-wrap: wrap; align-items: center; row-gap: 4px; }
 .task-scoped { margin-top: 6px; }
 .task-complete { margin-top: 10px; }
 
