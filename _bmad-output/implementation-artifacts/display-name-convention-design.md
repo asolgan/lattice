@@ -1,0 +1,91 @@
+# Display names across the graph — the "fewer NanoIDs" convention
+
+**Status: 📐 AWAITING ANDREW (2026-07-18).** Initiated by Andrew's PO pass on the live Facet run
+("Facet ocZv1Ptn…" header, id-labeled Unit/Building/leaseapp chips, "Unnamed" on the Me tab): raw
+NanoIDs are the primary label almost everywhere a human name should be. Andrew's ask: a generic,
+long-term mechanism — explicitly not a demo hack. On ratification: verticals lane, one item,
+internal order N1→N3 (§3).
+
+## 0. For Andrew — decisions requested
+
+- **D1 — four display classes** (§2) become *the* convention every lens + renderer follows.
+- **D2 — nameable business vertices ride a shared `.presentation` aspect shape** (service-domain's
+  proven `{name, description?, icon?, category?}`), declared per-type in each package's own DDL.
+  **Not `canonicalName`**: on meta vertices that aspect *is* the vertex's identity (Contract #1
+  dedup/recognition semantics, unique by construction); business display names are non-unique
+  mutable labels — overloading the meta-identity aspect for display would blur a load-bearing
+  invariant. (Your "use canonicalName where available" holds exactly for class 1 — metas — where
+  it already works today.)
+- **D3 — identity names stay sealed end-to-end.** Self-display decrypts locally via the shipped
+  EDGE.4 vault client; other-identity display (staff surfaces) is Protected-lens territory
+  (clinicPatientsRead precedent) and stays out of this design. Never plaintext PII in a broadcast
+  KV lens row — crypto-shred semantics survive display.
+- **D4 — renderer floor rule:** a bare NanoID is never a primary label (§2, last block).
+
+Non-goals: no global name registry; no canonicalName on business vertices; no plaintext PII in KV
+targets; no `FACET_DEMO_PERSONAS`-label shortcut for the header (the demo must run the product's
+own mechanism).
+
+## 1. Grounding (what exists, verified live 2026-07-18)
+
+- **Metas already display correctly**: the me-lens projects `role.canonicalName.data.value` — the
+  "consumer" chip renders a name today. Op-metas carry `.presentation` (title/icon) per the
+  descriptor vocabulary.
+- **Service templates already display correctly**: `.presentation` `{name, description, icon,
+  category}` (seed-showcase writes "Riverside Café" etc.; catalog cards render them). This is the
+  proven shape D2 generalizes.
+- **The identity name is *deliberately* null in the manifest**: `CreateUnclaimedIdentity` writes
+  `name`/`email`, but those are sensitive PII aspect types (identity-anchored, step-6) and
+  Vault-encrypted at rest — so `edgeIdentitySpec`'s `identity.name.data.value AS displayName`
+  projects null *by design* (the ciphertext envelope has no `.data.value`). Observed live:
+  seeded "Riley Chen", `displayName: null`. Not a bug — the projection slot exists, the plaintext
+  correctly can't reach it.
+- **EDGE.4 shipped the decrypt mechanism**: `internal/edge/vault.Client` — transient session key
+  from the Personal Lens control plane, TTL-cached in memory, decrypts ciphertext-shaped aspect
+  data from the local mirror on read; plaintext never written back; a shredded identity's key
+  request fails permanently ("local copies become gibberish").
+- **Row-context precedent**: `manifest.inst` rows already carry `templateName`/`templateIcon` —
+  "project the human context into the row" is the established Personal-Lens pattern.
+- **The gap**: location-domain vertices (building/unit) declare no name-bearing aspect; leaseapp/
+  tab/booking have no intrinsic name at all; the identity self-name has no display path wired.
+
+## 2. The convention — four display classes
+
+| # | Vertices | Display source | Why |
+|---|---|---|---|
+| 1 | `vtx.meta.*` (roles, op-metas, DDLs) | `canonicalName` (+ `.presentation` where richer copy exists) | already the meta's identity; unique by construction; works today |
+| 2 | Nameable business vertices (locations, service templates, studios, providers, …) | `.presentation` aspect `{name, icon?, …}`, declared in the owning package's DDL | reuse the proven service shape; display ≠ identity (see D2) |
+| 3 | `vtx.identity.*` | **self:** engine-local decrypt of the sealed `name` aspect via EDGE.4 `vault.Client` · **others:** Protected/Secure lens surfaces only (staff apps) | names are PII: sealed at rest, plaintext only inside an authorized session; shredding must keep working |
+| 4 | Relational vertices (leaseapp, tab, booking, service instance, task) | the projecting lens carries linked display context (`templateName` pattern); the renderer composes a typed label — "Lease application · Unit 2" | no intrinsic name; the label *is* the relationship |
+
+**Renderer floor rule (Facet, and every future renderer of the vocabulary):** a bare NanoID is
+never a primary label. Fallback ladder: `displayName` → composed relational label (class 4) →
+`<Type> · <short-id>` — with the full key reachable on inspect (honesty preserved, noise removed).
+"Unnamed" disappears as a state: an absent name renders the typed fallback, not a shrug.
+
+## 3. Fires (ONE verticals item, internal order — coupled, ships together per lane discipline)
+
+- **N1 (pkg):** location-domain accepts optional `presentation` at creation (and a
+  `SetLocationPresentation` op for live worlds); showcase + classic seeds name the world
+  ("Riverside Building", "Unit 1", "Unit 2"); edge-manifest lenses project location names into
+  `manifest.me.anchors` and every row that references a location.
+- **N2 (FE + lens):** renderer floor rule everywhere; leaseapp/task rows gain projected context
+  (lens adds the subject's display fields; "Sign Lease — Leaseapp Lh1ry1" becomes
+  "Sign Lease — Unit 1 lease").
+- **N3 (pkg + FE):** self-name — the me-lens projects the *sealed* `name` envelope (or the engine
+  reads the mirrored aspect); the Facet engine decrypts via `edge/vault.Client`; header + Me card
+  show the resident's name. Completing the seeded "Record Identity PII" task lights the name up
+  live — a natural demo beat. Wasm parity: the W3/W4 browser engine carries the same client.
+
+**Green bar:** a signed-in showcase resident sees zero raw NanoIDs across Home/Services/Tasks/
+Activity/Me; the header reads "Sam Okafor"; crypto-shredding that identity flips the header to the
+typed fallback (the shred story stays demonstrably true).
+
+## 4. Relations
+
+- **Self-anchor parameterization** (verticals row, same PO pass): `manifest.me` growing typed
+  self-anchors (leaseapp, patient, …) + `{me.<anchor>}` in `dispatch.contextParams` shares N1's
+  me-row work — build together or N1-first; the JWT-authenticated actor remains the server-side
+  proof (self-scope capability checks), the manifest is only the UX vehicle.
+- **Staff worlds** (separate discovery item): class-3 "others" display is that initiative's read
+  spine (Protected lenses); deliberately out of scope here.
