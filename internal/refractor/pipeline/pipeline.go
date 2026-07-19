@@ -374,6 +374,15 @@ func (p *Pipeline) Pending(ctx context.Context) (uint64, error) {
 	return p.supervisor.PendingForConsumer(ctx, p.consumerCfg.Name)
 }
 
+// RebuildInFlight reports whether a rebuild rescan is still draining — true
+// from the start of Rebuild until the completion watcher observes the consumer
+// fully drained (or the rebuild aborts). While true the lens's health entry is
+// "rebuilding": a supervisor active-persist during the window re-persists
+// "rebuilding" rather than a premature "active".
+func (p *Pipeline) RebuildInFlight() bool {
+	return p.rebuildInFlight.Load()
+}
+
 // HotReloadInto atomically replaces the adapter. Any message already in processMsg
 // continues with the adapter it captured at the start of that call; the next message
 // will use newAdpt. Returns an error if newAdpt is nil.
@@ -509,9 +518,15 @@ func (p *Pipeline) Rebuild(ctx context.Context, truncate bool) error {
 	return nil
 }
 
-// watchRebuildCompletion polls the supervised consumer's pending count at
+// watchRebuildCompletion polls the supervised consumer's outstanding count at
 // rebuildPollInterval. When it reaches zero, it transitions health KV from
 // "rebuilding" back to "active" (AC5).
+//
+// Outstanding counts the un-delivered backlog *and* the delivered-but-unacked
+// messages: a message the pump has fetched leaves the backlog the instant it is
+// delivered, so a backlog-only check reads zero mid-flight and would publish
+// "active" over a rescan that has not drained — and that is not a transient
+// mislabel when the in-flight message then fails and is redelivered.
 func (p *Pipeline) watchRebuildCompletion(ctx context.Context) {
 	// The rebuild window ends when this watcher exits for any reason; the
 	// deferred clear keeps the health sink from pinning "rebuilding" forever
@@ -524,7 +539,7 @@ func (p *Pipeline) watchRebuildCompletion(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			pending, err := p.supervisor.PendingForConsumer(ctx, p.consumerCfg.Name)
+			outstanding, err := p.supervisor.OutstandingForConsumer(ctx, p.consumerCfg.Name)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -532,7 +547,7 @@ func (p *Pipeline) watchRebuildCompletion(ctx context.Context) {
 				// Consumer may still be initializing or context cancelled; retry.
 				continue
 			}
-			if pending == 0 {
+			if outstanding == 0 {
 				// Clear the flag before the status write so a concurrent health
 				// sink SetActive that re-checks the flag converges on "active".
 				p.rebuildInFlight.Store(false)

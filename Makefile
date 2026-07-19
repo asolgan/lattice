@@ -1411,6 +1411,14 @@ test-object-gc:
 ## Self-contained: no Docker, no NATS, no shared stack. It does need a Chrome
 ## (or Chromium) on PATH, which every dev box and the CI runner image already
 ## have. WASM_BROWSER_TEST_VERSION pins the runner; see docs/vendors.md.
+##
+## The two packages run one at a time (-p 1). Each test binary invokes
+## wasmbrowsertest, which launches its OWN headless Chrome and waits a
+## chromedp-hardcoded 20s for Chrome's "DevTools listening on ..." banner
+## (chromedp's wsURLReadTimeout — wasmbrowsertest exposes no knob for it; its
+## whole configuration surface is the WASM_HEADLESS env var). Two Chromes
+## cold-starting at once on one runner can both miss that window under load;
+## serialized, each gets the full budget to itself.
 WASM_BROWSER_TEST_VERSION ?= v0.11.0
 .PHONY: test-edge-idb-conformance
 test-edge-idb-conformance:
@@ -1418,7 +1426,7 @@ test-edge-idb-conformance:
 	go install github.com/agnivade/wasmbrowsertest@$(WASM_BROWSER_TEST_VERSION)
 	@echo "==> Running the Edge store + browser-host suites in headless Chrome..."
 	PATH="$$PATH:$$(go env GOPATH)/bin" GOOS=js GOARCH=wasm \
-		go test -exec wasmbrowsertest ./internal/edge/store/... ./internal/edge/browser/... -count=1 -timeout 3m
+		go test -p 1 -exec wasmbrowsertest ./internal/edge/store/... ./internal/edge/browser/... -count=1 -timeout 3m
 
 ## test-edge-consumer-parity — the browser Edge node's transport-shell gate
 ## (edge-browser-node-design.md §2.3/§5). The browser node's NATS transport is

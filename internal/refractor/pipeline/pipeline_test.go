@@ -1305,9 +1305,18 @@ func (a *gateAdapter) Close() error { return nil }
 
 // TestPipeline_Rebuild_ProbeRecoveryKeepsRebuildingStatus verifies that an
 // infra pause recovering mid-rebuild does not persist a premature "active":
-// while the rebuild rescan is still draining (consumer lag non-zero), the
-// supervisor's recovery persist re-publishes "rebuilding". The health KV
-// history records every status write, so the assertion is timing-independent.
+// while the rebuild rescan is still draining, the supervisor's recovery persist
+// re-publishes "rebuilding". The health KV history records every status write,
+// so the assertion reads the whole transition sequence rather than a sampled
+// instant.
+//
+// Draining means the consumer has nothing outstanding — an un-acked in-flight
+// message counts. Once the pump fetches the message, the un-delivered backlog
+// reads zero while the rescan is still very much unfinished, so the completion
+// watcher must not treat a zero backlog as done. The rebuild poll interval is
+// deliberately far shorter than the work the test then does, so the watcher
+// polls many times across the recovery window: the assertion exercises the
+// watcher's decision instead of out-running its first tick.
 func TestPipeline_Rebuild_ProbeRecoveryKeepsRebuildingStatus(t *testing.T) {
 	env := startPipelineEnv(t)
 
@@ -1315,7 +1324,7 @@ func TestPipeline_Rebuild_ProbeRecoveryKeepsRebuildingStatus(t *testing.T) {
 	pipeline.ProbeInterval = 50 * time.Millisecond
 	t.Cleanup(func() { pipeline.ProbeInterval = origProbe })
 	origPoll := pipeline.RebuildPollInterval
-	pipeline.RebuildPollInterval = 100 * time.Millisecond
+	pipeline.RebuildPollInterval = 5 * time.Millisecond
 	t.Cleanup(func() { pipeline.RebuildPollInterval = origPoll })
 
 	eng, cr := compileFullRule(t,
@@ -1372,7 +1381,21 @@ func TestPipeline_Rebuild_ProbeRecoveryKeepsRebuildingStatus(t *testing.T) {
 	})
 	ga.probeOK.Store(false)
 
-	// 4. The recovery persist ran while the rebuild was in flight: after the
+	// 4. The redelivered message is in flight and un-acked, so it has left the
+	//    un-delivered backlog while the rescan is still unfinished. Confirm the
+	//    pipeline really is in that state, then hold there across many watcher
+	//    poll cycles: the watcher must decline to finish. A watcher keying off
+	//    the backlog alone completes on its first tick here.
+	require.Eventually(t, func() bool {
+		pending, perr := p.Pending(context.Background())
+		return perr == nil && pending == 0
+	}, 3*time.Second, 5*time.Millisecond,
+		"expected the redelivered message in flight: un-delivered backlog drained to zero")
+	require.Never(t, func() bool { return !p.RebuildInFlight() },
+		200*time.Millisecond, 5*time.Millisecond,
+		"completion watcher finished while an un-acked message was still outstanding")
+
+	// 5. The recovery persist ran while the rebuild was in flight: after the
 	//    first "rebuilding" write the history must never show "active".
 	hist, err := healthKV.History(context.Background(), "rule-rbp")
 	require.NoError(t, err)

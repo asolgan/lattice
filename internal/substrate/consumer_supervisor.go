@@ -344,21 +344,51 @@ func (s *ConsumerSupervisor) ManagedNames() []string {
 // consumer info cannot be read. Exposed as a substrate-typed accessor so callers
 // (e.g. Refractor's rebuild lag-watch) need no jetstream.Consumer handle.
 func (s *ConsumerSupervisor) PendingForConsumer(ctx context.Context, name string) (uint64, error) {
+	info, err := s.consumerInfo(ctx, name, "pending")
+	if err != nil {
+		return 0, err
+	}
+	return info.NumPending, nil
+}
+
+// OutstandingForConsumer returns the number of messages the named consumer has
+// not finished with: the un-delivered backlog (NumPending) plus the messages
+// delivered and still awaiting acknowledgement (NumAckPending). A message the
+// pump has fetched but not yet acked leaves NumPending, so NumPending alone
+// reads zero while work is still in flight — callers asking "has this consumer
+// drained?" (e.g. Refractor's rebuild-completion watch) must use this, not
+// PendingForConsumer, which answers the narrower "how deep is the backlog?"
+// that a lag/backlog metric wants.
+func (s *ConsumerSupervisor) OutstandingForConsumer(ctx context.Context, name string) (uint64, error) {
+	info, err := s.consumerInfo(ctx, name, "outstanding")
+	if err != nil {
+		return 0, err
+	}
+	ackPending := info.NumAckPending
+	if ackPending < 0 {
+		ackPending = 0
+	}
+	return info.NumPending + uint64(ackPending), nil
+}
+
+// consumerInfo reads the live ConsumerInfo for a managed durable. op names the
+// calling accessor so the error identifies which read failed.
+func (s *ConsumerSupervisor) consumerInfo(ctx context.Context, name, op string) (*jetstream.ConsumerInfo, error) {
 	s.mu.Lock()
 	mc, exists := s.managed[name]
 	s.mu.Unlock()
 	if !exists {
-		return 0, fmt.Errorf("substrate: ConsumerSupervisor: pending %q: not managed", name)
+		return nil, fmt.Errorf("substrate: ConsumerSupervisor: %s %q: not managed", op, name)
 	}
 	cons, err := s.conn.js.Consumer(ctx, mc.spec.Stream, name)
 	if err != nil {
-		return 0, fmt.Errorf("substrate: ConsumerSupervisor: pending %q: consumer: %w", name, err)
+		return nil, fmt.Errorf("substrate: ConsumerSupervisor: %s %q: consumer: %w", op, name, err)
 	}
 	info, err := cons.Info(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("substrate: ConsumerSupervisor: pending %q: info: %w", name, err)
+		return nil, fmt.Errorf("substrate: ConsumerSupervisor: %s %q: info: %w", op, name, err)
 	}
-	return info.NumPending, nil
+	return info, nil
 }
 
 // createConsumer creates (idempotently) the durable described by spec. The
