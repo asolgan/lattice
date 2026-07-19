@@ -518,6 +518,14 @@ its own — the per-lease `cafeOpenTabGuard` dedup read and the self-scope owner
 `ContextHint.OptionalReads` entries, and `OpDispatchSpec` has no `OptionalReads`-equivalent field —
 named as an open vocabulary gap, not silently worked around.
 
+> **CLOSED** (`753637ca`, 2026-07-19). `Dispatch.OptionalReads` ships end to end (spec → dispatch
+> aspect → `edgeCatalog` column → renderer), and templates gained a `:id` bare-id modifier so a
+> 6-segment link key is expressible — without it the ownership probe could not be declared at all.
+> `OpenTab` declares the guard + the `applicationFor` link; `Settle` declares the tab's `.status`
+> (required — the `targetField` fallback never declares aspects) plus its own probe. The
+> sensitivity gate now runs over both read surfaces. Live-verified: both ops' `optionalReads` reach
+> the client over SSE, substituted templates and all.
+
 **Verified in three layers, headless-first (the browser was never opened this fire).**
 1. `go build`/`go test ./packages/cafe-domain/...`, `make vet`, `STRICT=1 lint-conventions`,
    `golangci-lint` all green.
@@ -541,10 +549,8 @@ named as an open vocabulary gap, not silently worked around.
    outbox's own say-so.
 
 Fire 5 residual now: only the literal iOS build (needs full Xcode elsewhere) remains before the
-acceptance-demo green bar. The `OpDispatchSpec.OptionalReads` vocabulary gap (above) is real future
-work, not blocking — it only affects ops whose self-scope/dedup checks need reads beyond
-`payload`/`targetField`/the actor's own key (OpenTab today; none of the currently-catalog-visible ops
-with visible form fields need it).
+acceptance-demo green bar. The `OpDispatchSpec.OptionalReads` vocabulary gap (above) is closed by
+`753637ca`.
 
 ## 8. Non-goals (v1)
 
