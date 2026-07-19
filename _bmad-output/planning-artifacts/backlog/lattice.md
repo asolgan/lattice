@@ -50,6 +50,8 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 | **[Weaver] Fresh-episode/reclaim error-branch coverage** | `fireEpisode`'s stale-mark reclaim path (NanoID-mint + `marks.replace` failures, 41.4% cov), `bumpDispatchCount`/`bumpEffectDispatch` failure-log branches (50%), `sweeper.deleteEffect` conflict/delete-failure (44.4%), and `reconcileConsumers` supervisor Add/UpdateSpec/Reset/Remove + health-sink-delete failure paths (62.7%) are the lowest-covered branches in an otherwise 86.8%-covered package (`internal/weaver/evaluator.go`, `reconciler.go`, `engine.go`). | ★ | S–M | 📋 ready |
 | **[Weaver] Doc drift — stale op-vertex-pruner deferred bullet** | `docs/components/weaver.md` "Deferred (Phase 3+)" still lists "Full temporal scheduler / op-vertex pruner (#47/#49)" but the same doc's "Temporal lane" section (above it) already states #47 is realized by the two scheduling legs and #49 is retired — self-contradicting; drop the stale bullet. | ★ | XS | 📋 ready |
 | **[Loom] Starlark guard sandbox Value-interface branches uncovered** | `guard_starlark.go`'s `starlarkDataDict`/`starlarkSubject` `starlarklib.Value` methods (`String`/`Truth`/`Hash`/`AttrNames`/`Iterate`) sit at 0% — no test calls `str(subject)`, `bool(subject.data)`, `hash(subject)`, or iterates `subject.data`, though a guard script legally can. | ★ | XS–S | 📋 ready · `internal/loom/guard_starlark.go:65-159` |
+| **[object-store-manager] doc drift — "static healthy heartbeat" gap is stale** | `docs/components/object-store-manager.md`'s Implementation-status "Known gap" says the heartbeat is a static `"healthy"` that can't degrade; code already has `aggregateStatus` (100% cov, mirrors Loom/Weaver/Bridge) wired into `emitHeartbeat` — the gap is closed, doc wasn't updated. Drop the stale bullet. | ★ | XS | 📋 ready · `internal/objectmanager/manager.go:208-219,437-460` |
+| **[object-store-manager] cascade error/parse branches undertested** | The owner-tombstone-cascade's retry + malformed-input paths sit at 60–75% cov in an otherwise race-hardened, byte-deleting component: `cascadeDetach`'s NakWithDelay branches (60.0%), `submitDetach`'s marshal/publish-error returns (75.0%), `parseObjectLinkKey`'s owner-mismatch reject (66.7%), `splitVertexRoot`'s malformed-key reject (75.0%). | ★ | S | 📋 ready · `internal/objectmanager/cascade.go` |
 
 ### Survey log (round-robin rotation)
 
@@ -69,7 +71,8 @@ feature backlog; Loupe moved to its own lane, [loupe.md](loupe.md)). Survey the 
 - 2026-07-18 Weaver (healthy, 86.8%/78.6%/91.3% cov, clean lint, no TODOs; filed error-branch-coverage + a doc-drift fix).
 - 2026-07-18 Loom (healthy, 82.3%/80.2% cov, clean lint, no TODOs; prior deadline/redelivery gaps already shipped `495476b`; filed starlark-guard-sandbox-value-iface-uncovered).
 - 2026-07-18 Refractor (healthy, build/lint clean; confirmed all 8 07-06-review findings already resolved in code — no new rows).
-- **Next:** object-store-manager.
+- 2026-07-19 object-store-manager (67.5%/91.4% cov, clean lint, no TODOs; filed doc-drift fix + cascade error-branch coverage).
+- **Next:** Bootstrap.
 
 ## Arch-review intake — platform hardening & doc/contract truth
 
