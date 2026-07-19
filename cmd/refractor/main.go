@@ -783,19 +783,29 @@ func main() {
 					"lensId", newLens.ID)
 				return
 			}
-			if cr, ok := newLens.CompiledRule.(*full.CompiledRule); ok && threadsKeyColumns(newLens) {
-				cr.KeyColumns = []string(newLens.Into.Key)
-				if err := cr.ValidateKeyColumns(); err != nil {
-					logger.Error("full engine key-column validation (MATCH update)",
-						"lensId", newLens.ID, "err", err)
-					return
-				}
-				// The new cypher must still RETURN every alias the running
-				// decryptor consumes.
-				if err := cr.ValidateReturnAliases(secureAliasNames(entry.secureColumns)...); err != nil {
-					logger.Error("secure-column RETURN-alias validation (MATCH update)",
-						"lensId", newLens.ID, "err", err)
-					return
+			if cr, ok := newLens.CompiledRule.(*full.CompiledRule); ok {
+				// A Personal Lens is exempt from threading Into.Key verbatim
+				// ("__actor" is envelope-injected and never a RETURN alias),
+				// but it still needs its BUSINESS key columns — the activation
+				// path sets exactly these in InstallPersonalLens. Leaving them
+				// unset drops the executor to its first-RETURN-item fallback,
+				// so a multi-key lens emits a keys map without its business
+				// keys and the adapter rejects every write, forever.
+				keyCols, threaded := hotReloadKeyColumns(newLens)
+				if threaded {
+					cr.KeyColumns = keyCols
+					if err := cr.ValidateKeyColumns(); err != nil {
+						logger.Error("full engine key-column validation (MATCH update)",
+							"lensId", newLens.ID, "err", err)
+						return
+					}
+					// The new cypher must still RETURN every alias the running
+					// decryptor consumes.
+					if err := cr.ValidateReturnAliases(secureAliasNames(entry.secureColumns)...); err != nil {
+						logger.Error("secure-column RETURN-alias validation (MATCH update)",
+							"lensId", newLens.ID, "err", err)
+						return
+					}
 				}
 			}
 			entry.pipeline.UseFullEngine(fullEngine, newLens.CompiledRule)
@@ -907,6 +917,31 @@ func isOperationRoleIndexLens(r *lens.Rule) bool {
 // until the process restarts.
 func threadsKeyColumns(r *lens.Rule) bool {
 	return !projection.IsActorAggregate(r) && !isOperationRoleIndexLens(r) && !projection.IsPersonalLens(r)
+}
+
+// hotReloadKeyColumns returns the key columns to thread onto a rule's newly
+// compiled form on the MATCH-update (hot-reload) path, and whether to thread
+// (and therefore validate) at all.
+//
+// This must agree with what the ACTIVATION path installs, or a lens behaves
+// differently after a cypher edit than it did at boot. A Personal Lens is the
+// case that bites: it is exempt from threading Into.Key verbatim, because the
+// reserved "__actor" field is envelope-injected and never a RETURN alias — but
+// it still declares real business key columns, and InstallPersonalLens sets
+// exactly those at activation. Threading nothing leaves KeyColumns empty,
+// which drops the executor to its first-RETURN-item fallback: the keys map
+// then carries only the first alias, the adapter rejects every write with
+// "key field %q absent from keys map", and the pipeline retries that failure
+// for as long as the process runs.
+func hotReloadKeyColumns(r *lens.Rule) ([]string, bool) {
+	switch {
+	case threadsKeyColumns(r):
+		return []string(r.Into.Key), true
+	case projection.IsPersonalLens(r):
+		return projection.PersonalBusinessKeys(r), true
+	default:
+		return nil, false
+	}
 }
 
 // loadVault wires the optional local envelope-encryption Vault backend for

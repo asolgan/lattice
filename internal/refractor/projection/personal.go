@@ -26,6 +26,31 @@ func IsPersonalLens(r *lens.Rule) bool {
 	return r != nil && r.Into.Target == "nats_subject" && r.Into.Personal
 }
 
+// PersonalBusinessKeys returns the key columns a Personal Lens's cypher
+// actually RETURNs: Into.Key minus the reserved "__actor" field, which the
+// envelope injects at write time and which is therefore never a RETURN alias.
+//
+// Every path that threads key columns onto a Personal Lens's compiled rule
+// must use this, not Into.Key. Threading the full Into.Key fails
+// ValidateKeyColumns on "__actor"; threading nothing leaves KeyColumns empty,
+// which drops the executor to its single-key fallback (the first RETURN item)
+// and produces a keys map missing every business key — the adapter then
+// rejects every write with "key field %q absent from keys map", and a
+// multi-key Personal Lens retries that failure for as long as it runs.
+func PersonalBusinessKeys(r *lens.Rule) []string {
+	if r == nil {
+		return nil
+	}
+	businessKeys := make([]string, 0, len(r.Into.Key))
+	for _, k := range r.Into.Key {
+		if k == adapter.PersonalActorKeyField {
+			continue
+		}
+		businessKeys = append(businessKeys, k)
+	}
+	return businessKeys
+}
+
 // InstallPersonalLens wires the Fire 2 personal pipeline
 // (personal-secure-lens-design.md §3.3): the existing ActorEnumerator
 // (actorType "identity") drives per-recipient re-execution of the lens
@@ -64,13 +89,7 @@ func InstallPersonalLens(p *pipeline.Pipeline, r *lens.Rule, adjKV, coreKV, inte
 			"lensId", r.ID)
 	}
 
-	businessKeys := make([]string, 0, len(r.Into.Key))
-	for _, k := range r.Into.Key {
-		if k == adapter.PersonalActorKeyField {
-			continue
-		}
-		businessKeys = append(businessKeys, k)
-	}
+	businessKeys := PersonalBusinessKeys(r)
 	cr.KeyColumns = businessKeys
 	if err := cr.ValidateKeyColumns(); err != nil {
 		logger.Error("personal lens key-column validation", "lensId", r.ID, "err", err)
