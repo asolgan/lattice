@@ -79,6 +79,7 @@ func OpMetas() []pkgmgr.OpMetaSpec {
 				Class:       "tab",
 				AuthContext: "self",
 				TargetField: "tabKey",
+				TargetType:  "tab",
 			},
 		},
 	}

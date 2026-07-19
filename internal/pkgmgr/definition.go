@@ -469,9 +469,22 @@ type OpPresentationSpec struct {
 // value. ContextParams/Reads entries are templates substituted from
 // `{actor}`, `{scopedTo}`, `{service}`, `{payload.<field>}`.
 type OpDispatchSpec struct {
-	Class         string
-	AuthContext   string // "self" | "service" | "task"
-	TargetField   string
+	Class       string
+	AuthContext string // "self" | "service" | "task"
+	TargetField string
+
+	// TargetType is the Contract #1 vertex type TargetField's value must
+	// hold ("session" for a field named `session`, "appointment" for one
+	// named `appointmentKey`). It is what lets a client resolve the field
+	// from context by TYPE — the entity in view, the task's scopedTo
+	// target, the service — rather than inferring its source from
+	// AuthContext. The two answer different questions: AuthContext selects
+	// which wire-envelope field the client populates, TargetType says where
+	// TargetField's own value comes from. A client that cannot resolve a
+	// declared TargetType from its context has no business offering the op.
+	// Empty leaves the client its AuthContext-keyed fallback.
+	TargetType string
+
 	ContextParams map[string]string
 	Reads         []string
 }

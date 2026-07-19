@@ -533,6 +533,13 @@ function opButton(o, ctx) {
   if (!d.dispatchClass) {
     return `<div class="degraded-card">${esc(prettifyOpType(d.operationType))} — This isn't completable here yet — ask staff to help via the admin console.</div>`;
   }
+  // An op whose declared dispatch.targetType can't be resolved from this
+  // context is not submittable from here — offering it anyway is how "Book a
+  // class" reached the Processor with a vtx.identity where a vtx.session was
+  // required. Say what's missing instead of failing at submit time.
+  if (d.dispatchTargetField && !resolveTargetKey(d, ctx)) {
+    return `<div class="degraded-card">${esc(d.title || prettifyOpType(d.operationType))} — Open a ${esc(typeLabel(d.dispatchTargetType))} to do this; it can't be started from here.</div>`;
+  }
   const label = d.submitLabel || d.title || prettifyOpType(d.operationType);
   const attrs = [`data-open-op="${esc(o.key)}"`];
   if (ctx.serviceKey) attrs.push(`data-service-key="${esc(ctx.serviceKey)}"`);
@@ -1003,18 +1010,54 @@ function buildAuthContext(kind, ctx) {
   return undefined;
 }
 
-// targetFieldValue mirrors buildAuthContext's per-kind mapping but returns
-// the single scalar a `dispatch.targetField` payload key should hold — the
-// simpler sibling of contextParams template substitution for an op whose
-// dispatch aspect names one field directly instead of a template string
-// (e.g. RequestService's dispatch: {authContext:"service", targetField:"service"}
-// with no contextParams at all).
-function targetFieldValue(kind, ctx) {
-  const m = me();
-  if (kind === "self") return m && m.identityKey;
-  if (kind === "service") return ctx.serviceKey;
-  if (kind === "task") return ctx.scopedTo;
-  return undefined;
+// keyType reads the Contract #1 vertex type out of a `vtx.<type>.<id>` key,
+// or undefined for anything that isn't one.
+function keyType(k) {
+  return typeof k === "string" && k.startsWith("vtx.") ? k.split(".")[1] : undefined;
+}
+
+// resolveTargetKey answers what a `dispatch.targetField` payload key should
+// hold, by matching the op's declared `dispatch.targetType` (a Contract #1
+// vertex type) against the keys this context actually carries.
+//
+// Resolving by TYPE is the point: authContext says which wire-envelope field
+// the client populates, NOT where targetField's value comes from. Keying the
+// source off authContext conflated the two and filled every
+// `authContext:"self"` op's typed entity field with the actor's identity key
+// — wellness CreateBooking asked for a vtx.session and got a vtx.identity.
+//
+// Candidates run most-specific first: the entity in view, the task's scopedTo
+// target, the service. ctx.entityKey is the seam a browse surface fills in
+// (open a session, then "Book a class" resolves); nothing populates it yet,
+// which is precisely why those ops read as unofferable rather than broken.
+// Falling back to a unique self-anchored key of the wanted type lets an op
+// resolve against an entity the visitor demonstrably owns.
+//
+// undefined means "this op cannot be submitted from here" — opButton's gate,
+// not a hole to paper over with a wrong-typed key.
+function resolveTargetKey(op, ctx) {
+  if (!op.dispatchTargetField) return undefined;
+  const want = op.dispatchTargetType;
+
+  // An op meta predating the targetType vocabulary keeps the original
+  // authContext-keyed mapping, which is correct for the one shape it ever got
+  // right: a service-context op whose target IS the service.
+  if (!want) {
+    const kind = op.dispatchAuthContext;
+    if (kind === "service") return ctx.serviceKey;
+    if (kind === "task") return ctx.scopedTo;
+    return undefined;
+  }
+
+  for (const c of [ctx.entityKey, ctx.scopedTo, ctx.serviceKey]) {
+    if (keyType(c) === want) return c;
+  }
+  if (want === "identity") {
+    const m = me();
+    return (m && m.identityKey) || undefined;
+  }
+  const keys = selfAnchoredKeys(tasks()).get(want);
+  return keys && keys.size === 1 ? [...keys][0] : undefined;
 }
 
 // resolveTouchedKey picks the Contract #1 key this write's optimistic
@@ -1051,7 +1094,7 @@ function submitDescriptorForm(form, op, opKey, ctx, fieldNames, props, contextPa
     payload[field] = substituteTemplate(template, ctx, payload);
   }
   if (op.dispatchTargetField) {
-    payload[op.dispatchTargetField] = targetFieldValue(op.dispatchAuthContext, ctx);
+    payload[op.dispatchTargetField] = resolveTargetKey(op, ctx);
   }
 
   const reads = (op.dispatchReads || []).map((t) => substituteTemplate(t, ctx, payload));

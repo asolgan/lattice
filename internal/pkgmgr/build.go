@@ -549,6 +549,9 @@ func opDispatchBody(d *OpDispatchSpec) map[string]any {
 	if d.TargetField != "" {
 		body["targetField"] = d.TargetField
 	}
+	if d.TargetType != "" {
+		body["targetType"] = d.TargetType
+	}
 	if len(d.ContextParams) > 0 {
 		params := make(map[string]any, len(d.ContextParams))
 		for k, v := range d.ContextParams {

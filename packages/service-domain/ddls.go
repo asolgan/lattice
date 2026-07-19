@@ -105,6 +105,7 @@ func OpMetas() []pkgmgr.OpMetaSpec {
 				Class:       "service",
 				AuthContext: "service",
 				TargetField: "service",
+				TargetType:  "service",
 			},
 		},
 	}

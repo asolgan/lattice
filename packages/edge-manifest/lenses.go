@@ -268,6 +268,7 @@ RETURN
   op.dispatch.data.class AS dispatchClass,
   op.dispatch.data.authContext AS dispatchAuthContext,
   op.dispatch.data.targetField AS dispatchTargetField,
+  op.dispatch.data.targetType AS dispatchTargetType,
   op.dispatch.data.contextParams AS dispatchContextParams,
   op.dispatch.data.reads AS dispatchReads,
   op.sensitive.data.value AS sensitive,

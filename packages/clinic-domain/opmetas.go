@@ -63,6 +63,7 @@ func OpMetas() []pkgmgr.OpMetaSpec {
 				Class:       "appointment",
 				AuthContext: "self",
 				TargetField: "provider",
+				TargetType:  "provider",
 			},
 		},
 		{
@@ -94,6 +95,7 @@ func OpMetas() []pkgmgr.OpMetaSpec {
 				Class:       "appointment",
 				AuthContext: "self",
 				TargetField: "appointmentKey",
+				TargetType:  "appointment",
 			},
 		},
 		{
@@ -123,6 +125,7 @@ func OpMetas() []pkgmgr.OpMetaSpec {
 				Class:       "appointment",
 				AuthContext: "self",
 				TargetField: "appointmentKey",
+				TargetType:  "appointment",
 			},
 		},
 	}

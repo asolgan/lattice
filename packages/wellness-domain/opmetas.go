@@ -46,6 +46,7 @@ func OpMetas() []pkgmgr.OpMetaSpec {
 				Class:         "booking",
 				AuthContext:   "self",
 				TargetField:   "session",
+				TargetType:    "session",
 				ContextParams: map[string]string{"booker": "{actor}"},
 			},
 		},
@@ -70,6 +71,7 @@ func OpMetas() []pkgmgr.OpMetaSpec {
 				Class:       "booking",
 				AuthContext: "self",
 				TargetField: "bookingKey",
+				TargetType:  "booking",
 			},
 		},
 	}

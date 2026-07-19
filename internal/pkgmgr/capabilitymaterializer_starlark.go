@@ -362,6 +362,7 @@ type OpDispatchArtifact struct {
 	Class         string            `json:"class,omitempty"`
 	AuthContext   string            `json:"authContext,omitempty"`
 	TargetField   string            `json:"targetField,omitempty"`
+	TargetType    string            `json:"targetType,omitempty"`
 	ContextParams map[string]string `json:"contextParams,omitempty"`
 	Reads         []string          `json:"reads,omitempty"`
 }
@@ -384,7 +385,7 @@ var knownPresentationFields = map[string]bool{
 
 var knownDispatchFields = map[string]bool{
 	"class": true, "authContext": true, "targetField": true,
-	"contextParams": true, "reads": true,
+	"targetType": true, "contextParams": true, "reads": true,
 }
 
 // unknownOpMetaFields decodes content as a generic JSON object and returns
@@ -509,6 +510,7 @@ func opMetaArtifactDefinition(oc OpMetaArtifactContent, name, version string) De
 			Class:         oc.Dispatch.Class,
 			AuthContext:   oc.Dispatch.AuthContext,
 			TargetField:   oc.Dispatch.TargetField,
+			TargetType:    oc.Dispatch.TargetType,
 			ContextParams: oc.Dispatch.ContextParams,
 			Reads:         oc.Dispatch.Reads,
 		}
