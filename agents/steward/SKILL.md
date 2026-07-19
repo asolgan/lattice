@@ -343,6 +343,18 @@ running; the **browser tab** you do not.
   items are the **un-picked** ones; the picked item self-corrects during grounding anyway). *(Trialed
   2026-06-30: shipping D1.3 left its prerequisite still marked 🏗️ building and a dependent's blocker stale —
   both surfaced only by an after-the-fact sweep, which this step exists to pre-empt.)*
+- **On ship, harvest the build note's NAMED RESIDUALS into board rows (same docs commit).** A residual /
+  deferred tail that lives only in a design-doc paragraph ("the honest next tail", "no UX yet") is
+  **invisible to lane selection** — the fleet picks from rows, not prose, so an honestly-named tail starves
+  exactly as if it had been silently dropped. When the fire you admit names residuals: file each as a capped
+  row in the owning lane **in the same docs commit as the ✅ flip**, naming the residual's **consumer** (per
+  the deferred-tail rule) — or state in that commit why one is deliberately not filed (standing Andrew-block,
+  or already covered by a named existing row). Same discipline for forward-references: code/comments must not
+  point at another fire's *assumed* future deliverable — point at a filed row or the other design's ratified
+  scope, else you've created a seam nobody owns. *(Trialed 2026-07-18: Facet Inc 3 honestly named "sync dies
+  at authorization expiry — no UX" as the next tail but filed no row; EDGE.5 W4's shell then forward-referenced
+  a "Fire 3 refresh endpoint" no fire had scoped, and the gap surfaced only when a live host wedged — after
+  the hosted-demo consumer had already arrived.)*
 
 ## 5. Replenish if idle
 
