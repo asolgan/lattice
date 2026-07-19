@@ -9,8 +9,9 @@
 // flows. This seeds one of each: a LoftSpace unit + available listing + a
 // consumer's lease application, a Clinic patient + provider + appointment
 // (linked to the lease so PO discovery can walk resident->tenant->patient),
-// a Café tab opened against that same lease, and two menu-catalog items so
-// the tab's self-order picker has something to show.
+// a Café tab opened against that same lease, two menu-catalog items so the
+// tab's self-order picker has something to show, and a Wellness studio with
+// one bookable session.
 //
 // Requires `make install-showcase-domains` (loftspace/clinic/cafe/wellness
 // domains) already applied to the target stack — the domain ops below FATAL
@@ -34,6 +35,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/asolgan/lattice/cmd/lattice/output"
@@ -148,6 +150,34 @@ func main() {
 		map[string]any{"name": "Croissant", "priceCents": 350}, nil)
 	fmt.Println("==> menu item:       Croissant, $3.50")
 
+	// --- Wellness: studio + bookable session ---------------------------------
+
+	studioReply := submitOp(ctx, conn, adminKey, "CreateStudio", "studio",
+		map[string]any{"name": "Classic Demo Studio"}, nil)
+	studioKey := studioReply.PrimaryKey
+	fmt.Printf("==> studio:          %s\n", studioKey)
+
+	// Same 15-minute grid the clinic's appointment uses; the wellness DDL
+	// rejects an unaligned span with SlotGridViolation.
+	sessionStart := time.Now().UTC().Add(24 * time.Hour).Truncate(15 * time.Minute)
+	sessionEnd := sessionStart.Add(time.Hour)
+
+	sessionReply := submitOp(ctx, conn, adminKey, "CreateSession", "session",
+		map[string]any{
+			"studio":   studioKey,
+			"name":     "Vinyasa Flow",
+			"startsAt": sessionStart.Format(time.RFC3339),
+			"endsAt":   sessionEnd.Format(time.RFC3339),
+			"capacity": 12,
+		},
+		&processor.ContextHint{
+			Reads: []string{studioKey},
+			// The studio's per-cell slot claims: absent until something books
+			// the cell, so optional (Contract #2 §2.5 read-before-create).
+			OptionalReads: slotClaimKeys(studioKey, sessionStart, sessionEnd),
+		})
+	fmt.Printf("==> session:         %s (%s, capacity 12)\n", sessionReply.PrimaryKey, sessionStart.Format(time.RFC3339))
+
 	fmt.Println()
 	fmt.Println("==> classic vertical demo data seeded.")
 	fmt.Printf("    resident:    %s\n", consumerKey)
@@ -155,6 +185,21 @@ func main() {
 	fmt.Printf("    listing:     %s\n", unitKey)
 	fmt.Printf("    appointment: %s\n", apptReply.PrimaryKey)
 	fmt.Printf("    tab:         %s\n", tabReply.PrimaryKey)
+	fmt.Printf("    studio:      %s\n", studioKey)
+	fmt.Printf("    session:     %s\n", sessionReply.PrimaryKey)
+}
+
+// slotClaimKeys enumerates the 15-minute cells [start, end) covers into the
+// studio's slot-claim aspect keys, mirroring wellness-domain's slot_cells +
+// slot_cellcode Starlark helpers (strip '-'/':' and lowercase) so this
+// dispatcher can declare them, script-read-posture-design.md §13.
+func slotClaimKeys(hub string, start, end time.Time) []string {
+	var keys []string
+	for cur := start; cur.Before(end); cur = cur.Add(15 * time.Minute) {
+		code := strings.ToLower(strings.NewReplacer("-", "", ":", "").Replace(cur.UTC().Format(time.RFC3339)))
+		keys = append(keys, hub+".slot"+code)
+	}
+	return keys
 }
 
 // submitOp submits an operation as actorKey over NATS (the bootstrap-actor
