@@ -286,6 +286,7 @@ RETURN
   op.dispatch.data.targetType AS dispatchTargetType,
   op.dispatch.data.contextParams AS dispatchContextParams,
   op.dispatch.data.reads AS dispatchReads,
+  op.dispatch.data.optionalReads AS dispatchOptionalReads,
   op.sensitive.data.value AS sensitive,
   [(op)<-[:permitsOperation]-(svc:service) | svc.key] AS viaServices
 `

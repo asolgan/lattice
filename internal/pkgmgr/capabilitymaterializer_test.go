@@ -1301,3 +1301,83 @@ func TestValidateCapabilityArtifact_SensitiveRefLiteralRejected_AnyKind(t *testi
 		t.Fatalf("expected an invalid report for content spelling the $sensitiveRef literal")
 	}
 }
+
+// The condition-2 rule-2 gate covers BOTH declared-read surfaces. Gating only
+// the required half would leave `{actor}.ssn` declarable as an OPTIONAL read,
+// which reaches the same PII exactly as cheaply — the sensitivity of an aspect
+// has nothing to do with whether its absence is tolerated.
+func TestValidateCapabilityArtifact_OpMetaOptionalReadsSensitiveAspect_Rejected(t *testing.T) {
+	content := opMetaContent(t, OpMetaArtifactContent{
+		OperationType: "RequestWidget",
+		Dispatch: &OpDispatchArtifact{
+			Class: "self", AuthContext: "self",
+			OptionalReads: []string{"{actor}.ssn"},
+		},
+	})
+	resolver := fakeSensitiveResolver{"ssn": true}
+	report, err := ValidateCapabilityArtifact("opMeta", content, fullCypherParser{}, nil, resolver)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report: a sensitive aspect is no more declarable as an optional read than a required one")
+	}
+}
+
+func TestValidateCapabilityArtifact_OpMetaOptionalReadsNilResolver_RejectedClosed(t *testing.T) {
+	content := opMetaContent(t, OpMetaArtifactContent{
+		OperationType: "RequestWidget",
+		Dispatch: &OpDispatchArtifact{
+			Class: "self", AuthContext: "self",
+			OptionalReads: []string{"{actor}.ssn"},
+		},
+	})
+	report, err := ValidateCapabilityArtifact("opMeta", content, fullCypherParser{}, nil, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report: an aspect-naming optional read with no resolver must fail closed")
+	}
+}
+
+// The `:id` key-fragment form a human-authored package uses to build a link
+// key is deliberately OUTSIDE the AI-authored vocabulary: its leading segments
+// are literal text, so the classifier cannot say which segment is the aspect.
+// It must fail closed rather than be waved through as "probably a link".
+func TestValidateCapabilityArtifact_OpMetaOptionalReadsLinkShape_RejectedClosed(t *testing.T) {
+	content := opMetaContent(t, OpMetaArtifactContent{
+		OperationType: "RequestWidget",
+		Dispatch: &OpDispatchArtifact{
+			Class: "self", AuthContext: "self",
+			OptionalReads: []string{"lnk.leaseapp.{payload.leaseAppKey:id}.applicationFor.identity.{actor:id}"},
+		},
+	})
+	resolver := fakeSensitiveResolver{"ssn": true}
+	report, err := ValidateCapabilityArtifact("opMeta", content, fullCypherParser{}, nil, resolver)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if report.Valid {
+		t.Fatalf("expected an invalid report: a mid-entry placeholder is outside the AI-authored read vocabulary")
+	}
+}
+
+// A non-sensitive optional read is the ordinary café-guard case and must pass.
+func TestValidateCapabilityArtifact_OpMetaOptionalReadsNonSensitiveAspect_Valid(t *testing.T) {
+	content := opMetaContent(t, OpMetaArtifactContent{
+		OperationType: "RequestWidget",
+		Dispatch: &OpDispatchArtifact{
+			Class: "self", AuthContext: "self",
+			OptionalReads: []string{"{payload.leaseAppKey}.cafeOpenTab"},
+		},
+	})
+	resolver := fakeSensitiveResolver{"ssn": true}
+	report, err := ValidateCapabilityArtifact("opMeta", content, fullCypherParser{}, nil, resolver)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !report.Valid {
+		t.Fatalf("expected a valid report, got errors: %v", report.Errors)
+	}
+}

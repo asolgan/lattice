@@ -10,7 +10,10 @@ import (
 	"context"
 	"encoding/json"
 	"math/rand/v2"
+	"regexp"
+	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -873,5 +876,180 @@ func TestCharge_SelfOrder_UnknownMenuItemRejected(t *testing.T) {
 	outcome := testutil.DriveOne(t, ctx, cp, cons, "")
 	if outcome != processor.OutcomeRejected {
 		t.Fatalf("self-order Charge against an unknown menu item outcome = %v, want Rejected", outcome)
+	}
+}
+
+// substituteDispatch mirrors the descriptor client's template substitution
+// (cmd/facet/web/app.js substituteTemplate) so the tests below can build an
+// envelope from the SHIPPED OpMetas() declarations rather than a hand-written
+// read list. That is the whole point: a hand-written list proves the script
+// works, but only the declarations prove a descriptor-driven client can reach
+// it — the gap that made café OpenTab un-drivable from Facet.
+func substituteDispatch(tmpl, actorKey string, payload map[string]string) string {
+	return regexp.MustCompile(`\{([^}]+)\}`).ReplaceAllStringFunc(tmpl, func(m string) string {
+		expr := m[1 : len(m)-1]
+		bareID := false
+		if strings.HasSuffix(expr, ":id") {
+			bareID, expr = true, strings.TrimSuffix(expr, ":id")
+		}
+		var v string
+		switch {
+		case expr == "actor":
+			v = actorKey
+		case strings.HasPrefix(expr, "payload."):
+			v = payload[strings.TrimPrefix(expr, "payload.")]
+		case strings.HasPrefix(expr, "me."):
+			v = payload["me."+strings.TrimPrefix(expr, "me.")]
+		}
+		if bareID {
+			if parts := strings.Split(v, "."); len(parts) >= 3 {
+				return parts[2]
+			}
+			return ""
+		}
+		return v
+	})
+}
+
+// dispatchFor returns the shipped op-meta dispatch spec for an operationType.
+func dispatchFor(t *testing.T, opType string) *pkgmgr.OpDispatchSpec {
+	t.Helper()
+	for _, m := range cafedomain.OpMetas() {
+		if m.OperationType == opType {
+			if m.Dispatch == nil {
+				t.Fatalf("%s op-meta declares no dispatch spec", opType)
+			}
+			return m.Dispatch
+		}
+	}
+	t.Fatalf("no op-meta declared for %s", opType)
+	return nil
+}
+
+// TestDescriptorDrivenSelfService_OpenSettleReopen is the end-to-end proof that
+// cafe-domain's op-metas declare ENOUGH for a descriptor-driven client to run
+// the whole self-service tab cycle — open, settle, and open again — with no
+// hand-written read list anywhere. Every ContextHint key below is substituted
+// from the shipped Dispatch.Reads/Dispatch.OptionalReads templates.
+//
+// The reopen leg is the one that actually needed the optional half: Settle
+// tombstones the lease's .cafeOpenTab guard in place, so the second OpenTab
+// finds it PRESENT-but-dead and must OCC-revive it. A client that could not
+// declare that key would leave the guard unhydrated, drop the script to its
+// create-only branch, and collide with the live tombstone.
+func TestDescriptorDrivenSelfService_OpenSettleReopen(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	testutil.SeedCapDoc(t, ctx, conn, domainConsumerCapDoc())
+	cp, cons := newDomainPipeline(t, ctx, conn, "descriptorcycle")
+
+	seedIdentity(t, ctx, conn, domainConsumerID)
+	leaseID := "BBCAFEDMNDSCRPTRLESE"
+	leaseKey := seedLeaseWithApplicant(t, ctx, conn, leaseID, domainConsumerID)
+
+	openDispatch := dispatchFor(t, "OpenTab")
+	settleDispatch := dispatchFor(t, "Settle")
+
+	// openOnce builds an OpenTab envelope purely from the declared templates.
+	openOnce := func(label string) string {
+		// contextParams first — {me.leaseapp} is what fills leaseAppKey, so the
+		// visitor is never asked for it (and dispatch.reads then resolves
+		// {payload.leaseAppKey} against it).
+		vars := map[string]string{"me.leaseapp": leaseKey}
+		payload := map[string]string{}
+		for field, tmpl := range openDispatch.ContextParams {
+			payload[field] = substituteDispatch(tmpl, domainConsumerKey, vars)
+		}
+		if payload["leaseAppKey"] != leaseKey {
+			t.Fatalf("contextParams filled leaseAppKey = %q, want %q", payload["leaseAppKey"], leaseKey)
+		}
+		for k, v := range payload {
+			vars[k] = v
+		}
+
+		var reads, optional []string
+		for _, r := range openDispatch.Reads {
+			reads = append(reads, substituteDispatch(r, domainConsumerKey, vars))
+		}
+		for _, r := range openDispatch.OptionalReads {
+			optional = append(optional, substituteDispatch(r, domainConsumerKey, vars))
+		}
+		// The declarations must cover both halves of the script's needs.
+		wantGuard := leaseKey + ".cafeOpenTab"
+		wantLink := "lnk.leaseapp." + leaseID + ".applicationFor.identity." + domainConsumerID
+		if !slices.Contains(optional, wantGuard) {
+			t.Fatalf("OpenTab optionalReads %v must declare the per-lease guard %q", optional, wantGuard)
+		}
+		if !slices.Contains(optional, wantLink) {
+			t.Fatalf("OpenTab optionalReads %v must declare the ownership link %q", optional, wantLink)
+		}
+
+		body, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal payload: %v", err)
+		}
+		reqID := testutil.GenReqID(label)
+		testutil.PublishOp(t, conn, &processor.OperationEnvelope{
+			RequestID:     reqID,
+			Lane:          processor.LaneDefault,
+			OperationType: "OpenTab",
+			Actor:         domainConsumerKey,
+			SubmittedAt:   "2026-07-07T12:00:00Z",
+			Class:         openDispatch.Class,
+			Payload:       body,
+			ContextHint:   &processor.ContextHint{Reads: reads, OptionalReads: optional},
+			AuthContext:   &processor.AuthContext{Target: domainConsumerKey},
+		})
+		if outcome := testutil.DriveOne(t, ctx, cp, cons, ""); outcome != processor.OutcomeAccepted {
+			t.Fatalf("descriptor-driven OpenTab (%s) outcome = %v, want Accepted", label, outcome)
+		}
+		return "vtx.tab." + nanoIDFromRequestID(reqID)
+	}
+
+	firstTab := openOnce("cddesc0penfirst00001")
+
+	// Settle, again built only from Settle's own declarations. targetField is
+	// what a client fills from the tab it just opened.
+	vars := map[string]string{"me.leaseapp": leaseKey, settleDispatch.TargetField: firstTab}
+	var settleReads, settleOptional []string
+	for _, r := range settleDispatch.Reads {
+		settleReads = append(settleReads, substituteDispatch(r, domainConsumerKey, vars))
+	}
+	for _, r := range settleDispatch.OptionalReads {
+		settleOptional = append(settleOptional, substituteDispatch(r, domainConsumerKey, vars))
+	}
+	// require_open_status needs the tab's .status aspect — a declaration the
+	// targetField fallback alone never produces.
+	if !slices.Contains(settleReads, firstTab+".status") {
+		t.Fatalf("Settle reads %v must declare the tab's .status aspect", settleReads)
+	}
+	testutil.PublishOp(t, conn, &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("cddescsettle00000001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "Settle",
+		Actor:         domainConsumerKey,
+		SubmittedAt:   "2026-07-07T13:00:00Z",
+		Class:         settleDispatch.Class,
+		Payload:       json.RawMessage(`{"` + settleDispatch.TargetField + `":"` + firstTab + `"}`),
+		ContextHint:   &processor.ContextHint{Reads: settleReads, OptionalReads: settleOptional},
+		AuthContext:   &processor.AuthContext{Target: domainConsumerKey},
+	})
+	if outcome := testutil.DriveOne(t, ctx, cp, cons, ""); outcome != processor.OutcomeAccepted {
+		t.Fatalf("descriptor-driven Settle outcome = %v, want Accepted", outcome)
+	}
+
+	// The guard is now a live tombstone, not an absent key — the exact state
+	// the create-only branch cannot write over.
+	if keyExists(t, ctx, conn, leaseKey+".cafeOpenTab") {
+		t.Fatalf("guard must be tombstoned once its tab is settled")
+	}
+
+	secondTab := openOnce("cddesc0pensecnd00001")
+	if secondTab == firstTab {
+		t.Fatalf("reopened tab must be a distinct vertex")
+	}
+	guardDoc := readDoc(t, ctx, conn, leaseKey+".cafeOpenTab")
+	guardData, _ := guardDoc["data"].(map[string]any)
+	if got, _ := guardData["tabKey"].(string); got != secondTab {
+		t.Fatalf("guard tabKey = %q, want %q (revived for the reopened tab)", got, secondTab)
 	}
 }

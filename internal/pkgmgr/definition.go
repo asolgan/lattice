@@ -466,18 +466,29 @@ type OpPresentationSpec struct {
 // which of the wire envelope's `self|service|task` fields the client
 // populates (`self` -> {target: actorId}; `service` -> {service: serviceKey};
 // `task` -> {task, target: scopedTo}) — NOT itself a processor.AuthContext
-// value. ContextParams/Reads entries are templates substituted from
-// `{actor}`, `{scopedTo}`, `{service}`, `{payload.<field>}`, and — in
-// ContextParams only — `{me.<type>}`, the submitting identity's own vertex
-// of that Contract #1 type, taken from the `selfAnchors` set the client's
-// identity projection carries (edge-manifest's edgeIdentity lens projects
-// each as {type, key}). `{me.<type>}` is how a self-scope entity-key param
-// is declared rather than asked of the visitor as a raw vertex key: the
-// client fills it and never renders the field. It resolves only when the
-// identity holds exactly one vertex of that type — zero or several is not a
-// value to guess at, and a client that cannot resolve a declared
-// `{me.<type>}` has no business offering the op (the same rule TargetType
-// states below).
+// value. ContextParams/Reads/OptionalReads entries are templates substituted
+// from `{actor}`, `{scopedTo}`, `{service}`, `{payload.<field>}`, and
+// `{me.<type>}`, the submitting identity's own vertex of that Contract #1
+// type, taken from the `selfAnchors` set the client's identity projection
+// carries (edge-manifest's edgeIdentity lens projects each as {type, key}).
+// `{me.<type>}` is how a self-scope entity-key param is declared rather than
+// asked of the visitor as a raw vertex key: the client fills it and never
+// renders the field. It resolves only when the identity holds exactly one
+// vertex of that type — zero or several is not a value to guess at, and a
+// client that cannot resolve a declared `{me.<type>}` has no business
+// offering the op (the same rule TargetType states below).
+//
+// Any placeholder accepts a trailing `:id` modifier, which substitutes the
+// Contract #1 BARE id rather than the full `vtx.<type>.<id>` key. That is what
+// makes a LINK key expressible as a read declaration — a 6-segment
+// `lnk.<typeA>.<idA>.<relation>.<typeB>.<idB>` is built from bare ids, so
+// without `:id` an ownership link could not be declared at all and the script
+// would be left doing an undeclared live read. Unlike a vertex/aspect
+// template, a placeholder carrying `:id` is a key FRAGMENT: it may appear
+// mid-entry (e.g.
+// `lnk.leaseapp.{payload.leaseAppKey:id}.applicationFor.identity.{actor:id}`),
+// which is exactly why the AI-authored validator's stricter anchored
+// vocabulary rejects that shape — see sensitiveReadAspect.
 type OpDispatchSpec struct {
 	Class       string
 	AuthContext string // "self" | "service" | "task"
@@ -497,6 +508,23 @@ type OpDispatchSpec struct {
 
 	ContextParams map[string]string
 	Reads         []string
+
+	// OptionalReads are the dispatched op's ContextHint.OptionalReads — the
+	// absence-tolerant half of Contract #2 §2.5's declared read posture, and
+	// the only way a descriptor-driven client can express a class-(d)
+	// read-before-create/dedup or a fail-closed ownership probe. Same template
+	// vocabulary as Reads (including the `:id` modifier and `{me.<type>}`), so
+	// a composite key whose absence is the NORMAL case — a per-entity
+	// uniqueness guard whose prior claim was released, an ownership link that
+	// simply may not exist for this caller — is declarable rather than left to
+	// a live undeclared read.
+	//
+	// The split is semantic, not stylistic, and mis-filing it breaks the op in
+	// opposite directions: a key the script REQUIRES belongs in Reads (absence
+	// is a correctness error), while a key whose absence the script branches on
+	// belongs here — declaring such a key as a required Read fails the whole
+	// submission the first time it is legitimately absent.
+	OptionalReads []string
 }
 
 // RoleSpec is one user-facing role a package declares. The installer

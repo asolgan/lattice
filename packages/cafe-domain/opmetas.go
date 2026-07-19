@@ -33,12 +33,14 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // check (ddls.go) — discovered live during the Facet second-renderer spike
 // (edge-showcase-app-design.md §7.11) when a hand-built envelope that
 // declared only the applicationFor link in OptionalReads came back
-// UnknownLeaseApplication. This does not by itself make OpenTab fully
-// descriptor-form-drivable: the per-lease cafeOpenTabGuard dedup read and
-// the self-scope ownership check both need the guard aspect key and the
-// applicationFor link in ContextHint.OptionalReads, and OpDispatchSpec has
-// no OptionalReads-equivalent field yet — a genuine, still-open vocabulary
-// gap (§7.11's residual), not something this comment papers over.
+// UnknownLeaseApplication.
+//
+// Dispatch.OptionalReads carries the absence-tolerant half both ops need: the
+// per-lease cafeOpenTabGuard dedup key (absent on a lease's first-ever tab,
+// TOMBSTONED once a prior tab settled — so a required Read would fail the
+// common case) and the applicationFor ownership link the self-scope check
+// probes. The link key is built with the `:id` template modifier, since a
+// Contract #1 link is 6 segments of bare ids rather than a vtx key.
 func OpMetas() []pkgmgr.OpMetaSpec {
 	return []pkgmgr.OpMetaSpec{
 		{
@@ -61,6 +63,10 @@ func OpMetas() []pkgmgr.OpMetaSpec {
 				AuthContext:   "self",
 				ContextParams: map[string]string{"leaseAppKey": "{me.leaseapp}"},
 				Reads:         []string{"{payload.leaseAppKey}"},
+				OptionalReads: []string{
+					"{payload.leaseAppKey}.cafeOpenTab",
+					"lnk.leaseapp.{payload.leaseAppKey:id}.applicationFor.identity.{actor:id}",
+				},
 			},
 		},
 		{
@@ -83,6 +89,20 @@ func OpMetas() []pkgmgr.OpMetaSpec {
 				AuthContext: "self",
 				TargetField: "tabKey",
 				TargetType:  "tab",
+				// The tab's own .status aspect is REQUIRED, not optional:
+				// require_open_status reads it for the total/openedAt/lease it
+				// carries forward, so its absence is a correctness error. The
+				// targetField fallback declares the tab vertex but never its
+				// aspects.
+				Reads: []string{"{payload.tabKey}", "{payload.tabKey}.status"},
+				// The self-scope ownership probe. Settle recovers the lease
+				// from the tab's OWN .status (never caller-supplied), so this
+				// declares the resident's own lease anchor — a caller naming
+				// someone else's tab simply won't have the matching composite
+				// key hydrated, and the script's kv.Read fails it closed.
+				OptionalReads: []string{
+					"lnk.leaseapp.{me.leaseapp:id}.applicationFor.identity.{actor:id}",
+				},
 			},
 		},
 	}

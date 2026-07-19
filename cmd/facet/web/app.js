@@ -982,18 +982,34 @@ function renderField(name, schema, help, isRequired, prefillVal, opSensitive) {
 function substituteTemplate(str, ctx, payload) {
   if (typeof str !== "string") return str;
   return str.replace(/\{([^}]+)\}/g, (m, expr) => {
-    if (expr === "actor") return (me() && me().identityKey) || "";
-    if (expr === "service") return ctx.serviceKey || "";
-    if (expr === "scopedTo") return ctx.scopedTo || "";
+    // A trailing `:id` asks for the Contract #1 bare id instead of the full
+    // vtx key — what makes a 6-segment link key expressible as a declared
+    // read (dispatch.optionalReads' ownership probes are built from bare ids).
+    let bareId = false;
+    if (expr.endsWith(":id")) { bareId = true; expr = expr.slice(0, -3); }
+    const out = (v) => (bareId ? bareKeyId(v) : v);
+    if (expr === "actor") return out((me() && me().identityKey) || "");
+    if (expr === "service") return out(ctx.serviceKey || "");
+    if (expr === "scopedTo") return out(ctx.scopedTo || "");
     // {me.<type>} — the submitting identity's own vertex of that type, from
     // the me-row's declared selfAnchors. opButton has already refused to
     // offer an op whose {me.<type>} doesn't resolve, so reaching "" here
     // means the anchor set changed mid-form; the empty value fails at the
     // Processor rather than substituting some other identity's key.
-    if (expr.startsWith("me.")) return selfAnchorKey(expr.slice(3)) || "";
-    if (expr.startsWith("payload.")) { const v = payload[expr.slice(8)]; return v === undefined ? "" : v; }
+    if (expr.startsWith("me.")) return out(selfAnchorKey(expr.slice(3)) || "");
+    if (expr.startsWith("payload.")) { const v = payload[expr.slice(8)]; return v === undefined ? "" : out(v); }
     return m;
   });
+}
+
+// bareKeyId reads the Contract #1 id out of a `vtx.<type>.<id>` key. An
+// unresolved placeholder substitutes "" upstream, so an empty input stays
+// empty and the resulting key fails at the Processor rather than silently
+// addressing some other vertex.
+function bareKeyId(key) {
+  if (typeof key !== "string" || key === "") return "";
+  const parts = key.split(".");
+  return parts.length >= 3 ? parts[2] : "";
 }
 
 function buildAuthContext(kind, ctx) {
@@ -1108,13 +1124,21 @@ function submitDescriptorForm(form, op, opKey, ctx, fieldNames, props, contextPa
   // fails the request, so include it unconditionally.
   const selfKey = me() && me().identityKey;
   if (selfKey && !reads.includes(selfKey)) reads.push(selfKey);
+  // The absence-tolerant half (Contract #2 §2.5 class-(d)): a uniqueness
+  // guard whose prior claim was released, an ownership link that may not
+  // exist for this caller. An entry that failed to substitute is dropped
+  // rather than declared — a half-built key names nothing, and declaring it
+  // would only make the script's absent-branch look deliberate.
+  const optionalReads = (op.dispatchOptionalReads || [])
+    .map((t) => substituteTemplate(t, ctx, payload))
+    .filter((k) => k && !k.includes("{") && !k.includes(".."));
   const authContext = buildAuthContext(op.dispatchAuthContext, ctx);
   const touchedKey = resolveTouchedKey(op, ctx);
 
   // enqueue through the live source — POST /api/enqueue on the Go host, the
   // wasm engine's api.enqueue in-page — so the same descriptor form drives
   // either host unchanged (the W4 swap contract).
-  activeSource.enqueue({ operationType: op.operationType, class: op.dispatchClass || "", payload, reads, authContext, touchedKey })
+  activeSource.enqueue({ operationType: op.operationType, class: op.dispatchClass || "", payload, reads, optionalReads, authContext, touchedKey })
     .then((body) => {
       if (body && body.error) { toast(body.error, false); return; }
       hideModal();

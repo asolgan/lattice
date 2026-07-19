@@ -566,6 +566,13 @@ func opDispatchBody(d *OpDispatchSpec) map[string]any {
 		}
 		body["reads"] = reads
 	}
+	if len(d.OptionalReads) > 0 {
+		optional := make([]any, len(d.OptionalReads))
+		for i, r := range d.OptionalReads {
+			optional[i] = r
+		}
+		body["optionalReads"] = optional
+	}
 	return body
 }
 

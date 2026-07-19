@@ -139,3 +139,45 @@ test("a {me.<type>} contextParam is filled into the payload, never rendered", ()
   // still resolves to the lease the ContextHint must declare.
   assert.equal(app.substituteTemplate("{payload.leaseAppKey}", {}, payload), LEASE_A);
 });
+
+// ---- dispatch.optionalReads + the `:id` bare-id modifier ----
+// A Contract #1 link is six segments of BARE ids, so an ownership probe like
+// café OpenTab's applicationFor link cannot be composed from vtx keys alone.
+
+test("`:id` substitutes the bare Contract #1 id, not the vtx key", () => {
+  const app = loadApp({
+    identityKey: "vtx.identity.DDDDDDDDDDDDDDDDDDDD",
+    selfAnchors: [{ type: "leaseapp", key: LEASE_A }],
+  });
+  assert.equal(app.substituteTemplate("{actor:id}", {}, {}), "DDDDDDDDDDDDDDDDDDDD");
+  assert.equal(app.substituteTemplate("{me.leaseapp:id}", {}, {}), "AAAAAAAAAAAAAAAAAAAA");
+  assert.equal(app.substituteTemplate("{payload.leaseAppKey:id}", {}, { leaseAppKey: LEASE_A }),
+    "AAAAAAAAAAAAAAAAAAAA");
+  // An unresolvable anchor stays empty rather than leaking the actor key.
+  assert.equal(app.substituteTemplate("{me.tab:id}", {}, {}), "");
+});
+
+test("a link-shaped optionalRead composes into a whole 6-segment key", () => {
+  const app = loadApp({
+    identityKey: "vtx.identity.DDDDDDDDDDDDDDDDDDDD",
+    selfAnchors: [{ type: "leaseapp", key: LEASE_A }],
+  });
+  const tmpl = "lnk.leaseapp.{payload.leaseAppKey:id}.applicationFor.identity.{actor:id}";
+  assert.equal(app.substituteTemplate(tmpl, {}, { leaseAppKey: LEASE_A }),
+    "lnk.leaseapp.AAAAAAAAAAAAAAAAAAAA.applicationFor.identity.DDDDDDDDDDDDDDDDDDDD");
+  // The guard aspect: an ordinary 4-segment aspect key off the same payload.
+  assert.equal(app.substituteTemplate("{payload.leaseAppKey}.cafeOpenTab", {}, { leaseAppKey: LEASE_A }),
+    LEASE_A + ".cafeOpenTab");
+});
+
+test("an optionalRead that failed to substitute is dropped, never declared", () => {
+  // submitDescriptorForm's filter: an unresolved anchor leaves a hole, and a
+  // half-built key names nothing — declaring it would make the script's
+  // absent-branch look deliberate when the client simply couldn't answer.
+  const app = loadApp({ identityKey: "vtx.identity.DDDDDDDDDDDDDDDDDDDD", selfAnchors: [] });
+  const tmpl = "lnk.leaseapp.{me.leaseapp:id}.applicationFor.identity.{actor:id}";
+  const built = app.substituteTemplate(tmpl, {}, {});
+  assert.equal(built, "lnk.leaseapp..applicationFor.identity.DDDDDDDDDDDDDDDDDDDD");
+  const kept = [built].filter((k) => k && !k.includes("{") && !k.includes(".."));
+  assert.deepEqual(kept, []);
+});

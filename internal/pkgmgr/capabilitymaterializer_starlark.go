@@ -72,8 +72,21 @@ func containsSensitiveRefLiteral(content json.RawMessage) bool {
 // placeholder in the entry.
 var readPlaceholderRe = regexp.MustCompile(`^(\{actor\}|\{scopedTo\}|\{service\}|\{payload\.[^{}]+\})(.*)$`)
 
-// sensitiveReadAspect classifies one Dispatch.Reads template entry against
-// OpDispatchSpec's documented vocabulary. recognized is false for anything
+// sensitiveReadAspect classifies one Dispatch.Reads/Dispatch.OptionalReads
+// template entry against OpDispatchSpec's documented vocabulary.
+//
+// It deliberately recognizes only the ANCHORED subset of that vocabulary — a
+// placeholder at the START of the entry. A human-authored package may also
+// write a key FRAGMENT form (a placeholder carrying `:id`, appearing mid-entry
+// to build a 6-segment link key); those are reported unrecognized here and so
+// fail an AI-authored opMeta closed. That asymmetry is the intended posture,
+// not an oversight: a mid-entry placeholder means the entry's leading segments
+// are literal text, and this classifier's whole basis for calling a read safe
+// is knowing which segment is the aspect. Widening the shape it accepts would
+// widen what it must claim to have checked. An AI capability that genuinely
+// needs a link read routes to human authoring, exactly like a sensitive one.
+//
+// recognized is false for anything
 // that does not match that vocabulary at all — a bare aspect name with no
 // placeholder ("ssn"), a fully-qualified vtx.* key (that is the DIFFERENT
 // ContextHint.Reads wire format, not this field's documented shape), a
@@ -334,10 +347,10 @@ func vertexTypeDDLArtifactDefinition(vc VertexTypeDDLArtifactContent, name, vers
 // deliberately NOT exposed: it marks the op's OWN payload as needing
 // sensitive-param-egress guarding, a privacy-relevant posture an AI should
 // never self-declare (same narrowing rationale as vertexTypeDDL excluding
-// the aspect-type Sensitive flag). Dispatch.Reads — the one field this kind
-// exposes that can name a sensitive aspect — is the condition-2 rule-2
-// surface validateOpMetaArtifact checks against the injected
-// SensitiveAspectResolver.
+// the aspect-type Sensitive flag). Dispatch.Reads and Dispatch.OptionalReads —
+// the fields this kind exposes that can name a sensitive aspect — are the
+// condition-2 rule-2 surfaces validateOpMetaArtifact checks against the
+// injected SensitiveAspectResolver.
 type OpMetaArtifactContent struct {
 	OperationType     string                  `json:"operationType"`
 	Presentation      *OpPresentationArtifact `json:"presentation,omitempty"`
@@ -365,6 +378,7 @@ type OpDispatchArtifact struct {
 	TargetType    string            `json:"targetType,omitempty"`
 	ContextParams map[string]string `json:"contextParams,omitempty"`
 	Reads         []string          `json:"reads,omitempty"`
+	OptionalReads []string          `json:"optionalReads,omitempty"`
 }
 
 // knownOpMetaFields are the JSON keys OpMetaArtifactContent exposes for the
@@ -386,6 +400,7 @@ var knownPresentationFields = map[string]bool{
 var knownDispatchFields = map[string]bool{
 	"class": true, "authContext": true, "targetField": true,
 	"targetType": true, "contextParams": true, "reads": true,
+	"optionalReads": true,
 }
 
 // unknownOpMetaFields decodes content as a generic JSON object and returns
@@ -449,40 +464,51 @@ func validateOpMetaArtifact(oc OpMetaArtifactContent, sensitive SensitiveAspectR
 	}
 
 	if oc.Dispatch != nil {
-		for _, r := range oc.Dispatch.Reads {
-			aspect, recognized := sensitiveReadAspect(r)
-			if !recognized {
-				// Fails closed rather than silently passing: an entry
-				// outside OpDispatchSpec's documented template vocabulary
-				// could be a bare aspect name with no placeholder prefix at
-				// all (e.g. "ssn"), which this check has no basis to call
-				// safe.
-				errs = append(errs, fmt.Sprintf(
-					"dispatch.reads entry %q does not match a recognized template shape ({actor}|{scopedTo}|{service}, optionally with a .<aspect> suffix, or {payload.<field>}) — an AI-authored opMeta may not declare an unrecognized read",
-					r))
-				continue
-			}
-			if aspect == "" {
-				// A bare placeholder or bare payload-field reference — reads
-				// only the vertex root / the AI's own proposed payload
-				// field, never Vault-classified aspect data.
-				continue
-			}
-			if sensitive == nil {
-				errs = append(errs, fmt.Sprintf(
-					"dispatch.reads entry %q names aspect %q — no live sensitivity catalog was supplied to verify it is safe; an AI-authored opMeta may not declare an unverified aspect read",
-					r, aspect))
-				continue
-			}
-			if sensitive.IsSensitiveAspect(aspect) {
-				errs = append(errs, fmt.Sprintf(
-					"dispatch.reads entry %q resolves to sensitive-classed aspect %q — an AI-authored opMeta may not declare a sensitive-key read (route to human authoring)",
-					r, aspect))
-			}
-		}
+		errs = append(errs, sensitiveReadErrors("dispatch.reads", oc.Dispatch.Reads, sensitive)...)
+		errs = append(errs, sensitiveReadErrors("dispatch.optionalReads", oc.Dispatch.OptionalReads, sensitive)...)
 	}
 
 	return ArtifactValidationReport{Valid: len(errs) == 0, Errors: errs}
+}
+
+// sensitiveReadErrors runs the condition-2 rule-2 check over one declared-read
+// field, naming that field in every message. Both of an opMeta's read surfaces
+// are equally capable of naming a sensitive aspect, so both run it: gating
+// only the required half would leave `{actor}.ssn` declarable as an OPTIONAL
+// read, which reaches the same PII exactly as cheaply.
+func sensitiveReadErrors(field string, entries []string, sensitive SensitiveAspectResolver) []string {
+	var errs []string
+	for _, r := range entries {
+		aspect, recognized := sensitiveReadAspect(r)
+		if !recognized {
+			// Fails closed rather than silently passing: an entry outside
+			// OpDispatchSpec's documented template vocabulary could be a bare
+			// aspect name with no placeholder prefix at all (e.g. "ssn"),
+			// which this check has no basis to call safe.
+			errs = append(errs, fmt.Sprintf(
+				"%s entry %q does not match a recognized template shape ({actor}|{scopedTo}|{service}, optionally with a .<aspect> suffix, or {payload.<field>}) — an AI-authored opMeta may not declare an unrecognized read",
+				field, r))
+			continue
+		}
+		if aspect == "" {
+			// A bare placeholder or bare payload-field reference — reads only
+			// the vertex root / the AI's own proposed payload field, never
+			// Vault-classified aspect data.
+			continue
+		}
+		if sensitive == nil {
+			errs = append(errs, fmt.Sprintf(
+				"%s entry %q names aspect %q — no live sensitivity catalog was supplied to verify it is safe; an AI-authored opMeta may not declare an unverified aspect read",
+				field, r, aspect))
+			continue
+		}
+		if sensitive.IsSensitiveAspect(aspect) {
+			errs = append(errs, fmt.Sprintf(
+				"%s entry %q resolves to sensitive-classed aspect %q — an AI-authored opMeta may not declare a sensitive-key read (route to human authoring)",
+				field, r, aspect))
+		}
+	}
+	return errs
 }
 
 // opMetaArtifactDefinition is the single shape both record-time validation
@@ -513,6 +539,7 @@ func opMetaArtifactDefinition(oc OpMetaArtifactContent, name, version string) De
 			TargetType:    oc.Dispatch.TargetType,
 			ContextParams: oc.Dispatch.ContextParams,
 			Reads:         oc.Dispatch.Reads,
+			OptionalReads: oc.Dispatch.OptionalReads,
 		}
 	}
 	return Definition{
