@@ -147,9 +147,10 @@
         <code>personal.register</code>, with its Interest Set and its position in the
         <code>SYNC</code> stream. A device is <strong>gapped</strong> when the stream's retention floor has
         overtaken the point it consumed through: those deltas aged out, so a warm resume would silently
-        miss them and the device needs a cold <code>personal.hydrate</code>. Gap state is derived from
-        each device's own JetStream ack floor where it has one, and falls back to the Refractor's
-        best-effort hydration bookkeeping otherwise — a fallback verdict is labelled as such.</p>
+        miss them and the device needs a cold <code>personal.hydrate</code>. Gap state comes from each
+        device's own JetStream ack floor; a device with no consumer has no comparable position, so its
+        gap state reads <em>unknown</em> rather than healthy. This is who is <strong>registered</strong>,
+        not who is connected.</p>
       <p class="muted small" id="edge-retention"></p>
       <div id="edge-notes"></div>
       <div class="cards" id="edge-groups"></div>

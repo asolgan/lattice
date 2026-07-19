@@ -236,6 +236,9 @@ pre {
 .edge-identity .edge-device { border-top: 1px solid var(--border); padding-top: 8px; margin-top: 8px; }
 .edge-identity .edge-device:first-of-type { border-top: 0; }
 .edge-device-id { font-family: var(--mono); color: var(--text); margin-right: 8px; }
+/* The identity header's count + gap chips must not break mid-word. */
+.edge-identity > .card-key { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.edge-identity > .card-key .card-group { white-space: nowrap; }
 .edge-device .card-meta { flex-wrap: wrap; align-items: center; row-gap: 4px; }
 #edge-notes { margin-bottom: 10px; display: flex; flex-direction: column; gap: 4px; }
 .card-sub { font-family: var(--mono); font-size: 11px; color: var(--text-dim); word-break: break-all; margin-bottom: 6px; }
