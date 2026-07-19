@@ -157,34 +157,75 @@ const sessionRefreshPath = "/api/session/refresh";
 // which the visibilitychange check below also targets.
 const refreshIntervalMs = 20 * 60 * 1000;
 
+// idleTimeoutMs is how long the page goes without a sign of its human before
+// the renewal loop stops renewing. Renewal is a sliding session: left
+// ungated it slides forever, so a tab someone opened and walked away from
+// keeps its identity signed in for as long as the tab exists. Gating the
+// cadence on activity makes an abandoned session expire on the server's own
+// schedule while an in-use one still never lapses under the user.
+//
+// One full session TTL (devTokenTTL, 30 minutes) is the window: shorter and
+// a user reading one long page gets logged out mid-read; longer and the
+// grace only postpones the same problem. Reaching this point is not an
+// error — the session simply lapses, and the next interaction bounces to
+// /login via the auth-death path below.
+const idleTimeoutMs = 30 * 60 * 1000;
+
+// activityEvents are the DOM signals that count as "the human is still
+// here". Deliberately coarse — a real interaction, not mere pointer drift
+// over a parked window (mousemove would defeat the gate entirely, since a
+// bumped desk fires it). visibilitychange is wired separately in startLoop:
+// refocusing the tab is both activity AND the moment to catch up on a
+// renewal the browser throttled while it was hidden.
+const activityEvents = ["pointerdown", "keydown"];
+
 // createTokenRefresher builds the sliding-session renewal loop: refresh()
 // does one POST to sessionRefreshPath and, on success, updates the token
-// cell getToken() reads; startLoop() wires the interval + tab-visibility
-// triggers around it. Split from startLoop so a test can drive refresh()
-// directly without a real timer or a DOM (mirrors assembleEdgeSource/boot's
-// own split — the logic is unit-testable, the browser glue is not).
+// cell getToken() reads; startLoop() wires the interval + activity +
+// tab-visibility triggers around it. Split from startLoop so a test can
+// drive refresh()/renewIfActive() directly without a real timer or a DOM
+// (mirrors assembleEdgeSource/boot's own split — the logic is
+// unit-testable, the browser glue is not).
 //
 // A failed refresh (network hiccup, or the session is truly dead past even
 // the server's grace window) logs and leaves the cell at its last known
-// value — it does not invent a new failure signal. The existing paths
-// (nats.js's reconnect, the wasm host's ErrCredentialRejected → revoked
-// frame) already surface a credential that never recovers; this loop's job
-// is only to make reaching those paths the rare exception instead of the
-// 30-minute-in rule.
-export function createTokenRefresher(initialToken, { fetchImpl = fetch, logger = console } = {}) {
+// value — it does not invent a new failure signal. The one exception is a
+// 401: that is the server stating this session cannot be renewed even
+// inside its grace window, which is terminal and not a hiccup to ride out,
+// so it calls onAuthDeath (app.js's bounce to /login). The other failure
+// paths (nats.js's reconnect, the wasm host's ErrCredentialRejected →
+// revoked frame) still surface a credential that never recovers.
+//
+// now is injectable so a test can advance the clock past idleTimeoutMs
+// without waiting; onAuthDeath defaults to a no-op so the refresher stays
+// usable headless.
+export function createTokenRefresher(
+  initialToken,
+  { fetchImpl = fetch, logger = console, now = () => Date.now(), onAuthDeath = () => {} } = {},
+) {
   let current = initialToken;
   let lastRefreshAt = 0;
+  let lastActivityAt = now();
+
+  function noteActivity() { lastActivityAt = now(); }
+
+  function isIdle() { return now() - lastActivityAt > idleTimeoutMs; }
 
   async function refresh() {
     try {
       const res = await fetchImpl(sessionRefreshPath, { method: "POST" });
+      if (res.status === 401) {
+        logger.warn?.("facet: session can no longer be renewed; signing out");
+        onAuthDeath();
+        return false;
+      }
       if (!res.ok) throw new Error("HTTP " + res.status);
       const body = await res.json();
       if (!body || typeof body.token !== "string" || !body.token) {
         throw new Error("malformed refresh response");
       }
       current = body.token;
-      lastRefreshAt = Date.now();
+      lastRefreshAt = now();
       return true;
     } catch (err) {
       logger.warn?.("facet: session refresh failed; keeping the current token", err?.message ?? err);
@@ -192,20 +233,34 @@ export function createTokenRefresher(initialToken, { fetchImpl = fetch, logger =
     }
   }
 
+  // renewIfActive is the gated entry point every automatic trigger uses;
+  // refresh() stays ungated for the deliberate caller (a test, or a future
+  // explicit "stay signed in" affordance).
+  async function renewIfActive() {
+    if (isIdle()) return false;
+    return refresh();
+  }
+
   function startLoop() {
     if (typeof globalThis.setInterval === "function") {
-      globalThis.setInterval(refresh, refreshIntervalMs);
+      globalThis.setInterval(renewIfActive, refreshIntervalMs);
     }
     if (globalThis.document?.addEventListener) {
+      for (const name of activityEvents) {
+        globalThis.document.addEventListener(name, noteActivity, { passive: true });
+      }
       globalThis.document.addEventListener("visibilitychange", () => {
-        if (globalThis.document.visibilityState === "visible" && Date.now() - lastRefreshAt > refreshIntervalMs) {
-          refresh();
-        }
+        if (globalThis.document.visibilityState !== "visible") return;
+        // Refocusing is itself activity, so note it BEFORE the gate reads the
+        // clock: a tab left hidden past idleTimeoutMs and then returned to is
+        // a user who came back, not one who left.
+        noteActivity();
+        if (now() - lastRefreshAt > refreshIntervalMs) renewIfActive();
       });
     }
   }
 
-  return { getToken: () => current, refresh, startLoop };
+  return { getToken: () => current, refresh, renewIfActive, noteActivity, startLoop };
 }
 
 // loadScript injects a classic script (wasm_exec.js defines globalThis.Go) and
@@ -240,7 +295,13 @@ async function boot(cfg) {
   }
   if (!globalThis.latticeEdge) throw new Error("facet: wasm engine did not register latticeEdge");
   const { createShell } = await import(cfg.shellUrl);
-  const refresher = createTokenRefresher(cfg.token);
+  // The bounce itself lives in app.js (it owns the live feed source it has to
+  // close first) and is read at call time, not at boot: app.js's top level
+  // runs after this module's, and the earliest a refresh can fail is one
+  // interval away regardless.
+  const refresher = createTokenRefresher(cfg.token, {
+    onAuthDeath: () => globalThis.__facetAuthDeath?.(),
+  });
   refresher.startLoop();
   return assembleEdgeSource({ latticeEdge: globalThis.latticeEdge, createShell, cfg, getToken: refresher.getToken });
 }

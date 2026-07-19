@@ -26,11 +26,16 @@ function makeFakeEventSourceClass(instances) {
       this.url = url;
       this.listeners = {};
       this.closed = false;
+      // Mirrors the real readyState contract the source's onerror branches on:
+      // 0 CONNECTING (retrying), 1 OPEN, 2 CLOSED (gave up).
+      this.readyState = 1;
       instances.push(this);
     }
     addEventListener(name, fn) { this.listeners[name] = fn; }
     close() { this.closed = true; }
     fire(name, data) { this.listeners[name]({ data: JSON.stringify(data) }); }
+    // fireError drives the transport-failure path at a chosen readyState.
+    fireError(readyState) { this.readyState = readyState; this.onerror(); }
   };
 }
 
@@ -129,6 +134,87 @@ test("sseSource.enqueue POSTs the request to /api/enqueue and returns the parsed
   assert.equal(calls[0][1].method, "POST");
   assert.deepEqual(JSON.parse(calls[0][1].body), req);
   assert.deepEqual(body, { requestId: "z1" });
+});
+
+// -------------------------------------- SSE-mode terminal auth death (§4.4)
+//
+// The Go-host path has no token to refresh — its session IS the cookie — so
+// its expiry arrives as a transport failure with no status attached. These
+// vectors pin the probe-then-bounce: the page leaves for /login only for a
+// session whoami confirms is over, never for a server that merely blipped.
+
+// authDeathSandbox loads app.js with a fake location + a scripted whoami.
+function authDeathSandbox(whoamiBody, { throws = false } = {}) {
+  const instances = [];
+  const replaced = [];
+  const fetchCalls = [];
+  const fetchFn = (url, init) => {
+    fetchCalls.push([url, init]);
+    if (throws) return Promise.reject(new TypeError("offline"));
+    if (url === "/api/whoami") return Promise.resolve({ json: () => Promise.resolve(whoamiBody) });
+    return Promise.resolve({ status: 401, json: () => Promise.resolve({}) });
+  };
+  const sandbox = loadApp({
+    EventSource: makeFakeEventSourceClass(instances),
+    fetch: fetchFn,
+    location: { replace: (to) => replaced.push(to) },
+  });
+  return { sandbox, instances, replaced, fetchCalls };
+}
+
+// settle lets the probe's promise chain (fetch → json → bounce) run out.
+const settle = () => new Promise((r) => setImmediate(r));
+
+test("sseSource bounces to /login when the feed closes and whoami confirms the session is over", async () => {
+  const { sandbox, instances, replaced, fetchCalls } = authDeathSandbox({ loggedIn: false });
+  sandbox.sseSource().start(collectingHandlers());
+
+  instances[0].fireError(2 /* CLOSED */);
+  await settle();
+
+  assert.deepEqual(fetchCalls.map((c) => c[0]), ["/api/whoami"]);
+  assert.deepEqual(replaced, ["/login"], "an expired cookie must not leave the page silently frozen");
+});
+
+test("sseSource does NOT bounce while EventSource is still retrying", async () => {
+  const { sandbox, instances, replaced, fetchCalls } = authDeathSandbox({ loggedIn: false });
+  sandbox.sseSource().start(collectingHandlers());
+
+  instances[0].fireError(0 /* CONNECTING */);
+  await settle();
+
+  assert.equal(fetchCalls.length, 0, "a retryable hiccup is not worth a probe, let alone an eviction");
+  assert.deepEqual(replaced, []);
+});
+
+test("sseSource does NOT bounce when whoami still reports a live session", async () => {
+  // The boot-env single-user fallback: loggedIn with no cookie behind it, and
+  // no /login that could restore anything.
+  const { sandbox, instances, replaced } = authDeathSandbox({ loggedIn: true, canSignOut: false });
+  sandbox.sseSource().start(collectingHandlers());
+
+  instances[0].fireError(2 /* CLOSED */);
+  await settle();
+
+  assert.deepEqual(replaced, [], "a server restart under a still-valid session must not evict the page");
+});
+
+test("sseSource does NOT bounce when the whoami probe itself cannot be reached", async () => {
+  const { sandbox, instances, replaced } = authDeathSandbox(null, { throws: true });
+  sandbox.sseSource().start(collectingHandlers());
+
+  instances[0].fireError(2 /* CLOSED */);
+  await settle();
+
+  assert.deepEqual(replaced, [], "offline is not signed-out");
+});
+
+test("sseSource.enqueue bounces to /login on a 401 from the write path", async () => {
+  const { sandbox, replaced } = authDeathSandbox({ loggedIn: false });
+
+  await sandbox.sseSource().enqueue({ operationType: "RequestService", payload: {} });
+
+  assert.deepEqual(replaced, ["/login"]);
 });
 
 test("sseSource.close closes the underlying EventSource", () => {
@@ -354,13 +440,37 @@ test("createTokenRefresher.refresh() POSTs to /api/session/refresh and updates t
 });
 
 test("createTokenRefresher.refresh() keeps the last-known token on an HTTP error", async () => {
-  const { fn } = fakeFetch([{ ok: false, status: 401 }]);
+  const { fn } = fakeFetch([{ ok: false, status: 503 }]);
   const warnings = [];
   const r = createTokenRefresher("initial-token", { fetchImpl: fn, logger: { warn: (...a) => warnings.push(a) } });
 
   assert.equal(await r.refresh(), false);
   assert.equal(r.getToken(), "initial-token");
   assert.equal(warnings.length, 1);
+});
+
+test("createTokenRefresher.refresh() treats a 401 as terminal and calls onAuthDeath", async () => {
+  const { fn } = fakeFetch([{ ok: false, status: 401 }]);
+  let deaths = 0;
+  const r = createTokenRefresher("initial-token", {
+    fetchImpl: fn,
+    logger: { warn() {} },
+    onAuthDeath: () => { deaths++; },
+  });
+
+  assert.equal(await r.refresh(), false);
+  assert.equal(deaths, 1, "a session the server refuses to renew is over, not a hiccup to ride out");
+  assert.equal(r.getToken(), "initial-token");
+});
+
+test("createTokenRefresher.refresh() does NOT call onAuthDeath for a transient failure", async () => {
+  const { fn } = fakeFetch([{ ok: false, status: 503 }, { throws: new TypeError("network down") }]);
+  let deaths = 0;
+  const r = createTokenRefresher("t", { fetchImpl: fn, logger: { warn() {} }, onAuthDeath: () => { deaths++; } });
+
+  await r.refresh();
+  await r.refresh();
+  assert.equal(deaths, 0, "a 5xx or a dropped connection must not evict a still-valid session");
 });
 
 test("createTokenRefresher.refresh() keeps the last-known token on a network failure", async () => {
@@ -389,4 +499,80 @@ test("createTokenRefresher.refresh() can be called repeatedly, each call re-read
   assert.equal(r.getToken(), "token-2");
   await r.refresh();
   assert.equal(r.getToken(), "token-3");
+});
+
+// ------------------------------------------------ the renewal idle gate
+//
+// The property under test: a session renews for as long as its human is
+// there, and stops renewing once they are not — which is what keeps an
+// abandoned tab from holding an identity signed in indefinitely. The clock is
+// injected so these run instantly rather than over the real 30-minute window.
+
+const idleTimeoutMs = 30 * 60 * 1000;
+
+// clockRefresher builds a refresher over a hand-cranked clock. tick(ms)
+// advances it; the returned refresher's idle gate reads the same clock.
+function clockRefresher(script, opts = {}) {
+  let nowMs = 1_000_000;
+  const { calls, fn } = fakeFetch(script);
+  const r = createTokenRefresher("initial-token", {
+    fetchImpl: fn,
+    logger: { warn() {} },
+    now: () => nowMs,
+    ...opts,
+  });
+  return { r, calls, tick: (ms) => { nowMs += ms; } };
+}
+
+test("renewIfActive() renews while the page has seen recent activity", async () => {
+  const { r, calls, tick } = clockRefresher([{ body: { token: "fresh" } }]);
+
+  tick(idleTimeoutMs - 1000); // just inside the window
+  assert.equal(await r.renewIfActive(), true);
+  assert.equal(calls.length, 1);
+  assert.equal(r.getToken(), "fresh");
+});
+
+test("renewIfActive() stops renewing once the page has gone idle past the window", async () => {
+  const { r, calls, tick } = clockRefresher([{ body: { token: "fresh" } }]);
+
+  tick(idleTimeoutMs + 1000);
+  assert.equal(await r.renewIfActive(), false);
+  assert.equal(calls.length, 0, "an abandoned tab must not POST a renewal at all");
+  assert.equal(r.getToken(), "initial-token", "the session is left to lapse on the server's own schedule");
+});
+
+test("noteActivity() re-arms the gate — a user who comes back keeps their session", async () => {
+  const { r, calls, tick } = clockRefresher([{ body: { token: "fresh" } }]);
+
+  tick(idleTimeoutMs + 1000);
+  assert.equal(await r.renewIfActive(), false);
+
+  r.noteActivity(); // a pointerdown/keydown, or the tab being refocused
+  assert.equal(await r.renewIfActive(), true);
+  assert.equal(calls.length, 1);
+  assert.equal(r.getToken(), "fresh");
+});
+
+test("the idle gate does not block an explicit refresh()", async () => {
+  const { r, calls, tick } = clockRefresher([{ body: { token: "fresh" } }]);
+
+  tick(idleTimeoutMs * 10);
+  assert.equal(await r.refresh(), true, "refresh() is the deliberate caller's path; only the automatic triggers are gated");
+  assert.equal(calls.length, 1);
+});
+
+test("a page returning from idle to a session that already lapsed bounces to /login", async () => {
+  let deaths = 0;
+  const { r, calls, tick } = clockRefresher([{ ok: false, status: 401 }], { onAuthDeath: () => { deaths++; } });
+
+  tick(idleTimeoutMs + 1000);
+  await r.renewIfActive(); // gated: silent, no POST, no bounce
+  assert.equal(calls.length, 0);
+  assert.equal(deaths, 0, "an idle page is not yet an evicted one");
+
+  r.noteActivity(); // the user came back — and by now the session is gone
+  await r.renewIfActive();
+  assert.equal(calls.length, 1);
+  assert.equal(deaths, 1, "the terminal 401 is where the expiry finally gets a UX");
 });

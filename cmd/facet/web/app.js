@@ -239,17 +239,66 @@ function sseSource() {
       });
       es.addEventListener("connectivity", (e) => h.connectivity(JSON.parse(e.data)));
       es.onopen = () => h.open();
+      es.onerror = () => {
+        // EventSource retries a transport hiccup by itself and stays CONNECTING;
+        // it gives up and goes CLOSED only when the server answered something it
+        // will not retry — which is what an expired session cookie produces here
+        // (requireSession's 401). Probe before reacting: CLOSED alone does not
+        // prove the session died.
+        if (es && es.readyState === 2 /* CLOSED */) probeSessionForAuthDeath();
+      };
     },
     enqueue(request) {
       return fetch("/api/enqueue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),
-      }).then((r) => r.json());
+      }).then((r) => {
+        // requireSession answers a script call with 401 (it only redirects a
+        // top-level navigation), so this is the unambiguous "your session
+        // ended" signal on the write path.
+        if (r.status === 401) { onAuthDeath(); return {}; }
+        return r.json();
+      });
     },
     close() { if (es) { es.close(); es = null; } },
   };
 }
+
+// probeSessionForAuthDeath asks /api/whoami whether the session is actually
+// gone before evicting the page. EventSource reports only "errored", never a
+// status, so a dead cookie and a server restart look identical from onerror —
+// and whoami separates them: it is auth-exempt (never 401s itself) and answers
+// loggedIn:false only for a session that is genuinely over. It also keeps the
+// boot-env single-user fallback out of the bounce, since that reports loggedIn
+// with no cookie behind it and has no /login to be sent to.
+function probeSessionForAuthDeath() {
+  fetch("/api/whoami")
+    .then((r) => r.json())
+    .then((body) => { if (body && body.loggedIn === false) onAuthDeath(); })
+    .catch(() => {});
+}
+
+// onAuthDeath is the terminal-expiry reaction both feed modes share: the
+// session is over and no renewal brings it back, so close the live feed —
+// which drops the Go host's engine holder, letting an abandoned tab's engine
+// reap instead of re-minting behind it — and hand off to /login. Distinct from
+// signOut (the user did not ask, so there is no /api/logout to call) and from
+// the revocation banner (a credential killed out from under a session that is
+// otherwise still valid).
+let authDeathHandled = false;
+function onAuthDeath() {
+  if (authDeathHandled) return;
+  authDeathHandled = true;
+  if (activeSource) { activeSource.close(); activeSource = null; }
+  location.replace("/login");
+}
+
+// Published to window by the init handler below (browser glue stays out of
+// this file's top level, which the unit vectors load headless) for boot.mjs's
+// token refresher — it reaches this same terminal signal from the
+// browser-native side, a 401 from /api/session/refresh, but cannot import a
+// classic script.
 
 // startFeed selects the source and wires it to the reducer. window.__facetBoot
 // is a Promise<source> the boot module sets when the page is configured for the
@@ -1134,6 +1183,7 @@ function onGlobalInput(e) {
 // -------------------------------------------------------------------- init
 
 document.addEventListener("DOMContentLoaded", () => {
+  window.__facetAuthDeath = onAuthDeath;
   document.body.addEventListener("click", onGlobalClick);
   document.body.addEventListener("input", onGlobalInput);
   loadWhoami();
