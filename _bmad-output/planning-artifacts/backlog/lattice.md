@@ -52,6 +52,8 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 | **[Loom] Starlark guard sandbox Value-interface branches uncovered** | `guard_starlark.go`'s `starlarkDataDict`/`starlarkSubject` `starlarklib.Value` methods (`String`/`Truth`/`Hash`/`AttrNames`/`Iterate`) sit at 0% — no test calls `str(subject)`, `bool(subject.data)`, `hash(subject)`, or iterates `subject.data`, though a guard script legally can. | ★ | XS–S | 📋 ready · `internal/loom/guard_starlark.go:65-159` |
 | **[object-store-manager] doc drift — "static healthy heartbeat" gap is stale** | `docs/components/object-store-manager.md`'s Implementation-status "Known gap" says the heartbeat is a static `"healthy"` that can't degrade; code already has `aggregateStatus` (100% cov, mirrors Loom/Weaver/Bridge) wired into `emitHeartbeat` — the gap is closed, doc wasn't updated. Drop the stale bullet. | ★ | XS | 📋 ready · `internal/objectmanager/manager.go:208-219,437-460` |
 | **[object-store-manager] cascade error/parse branches undertested** | The owner-tombstone-cascade's retry + malformed-input paths sit at 60–75% cov in an otherwise race-hardened, byte-deleting component: `cascadeDetach`'s NakWithDelay branches (60.0%), `submitDetach`'s marshal/publish-error returns (75.0%), `parseObjectLinkKey`'s owner-mismatch reject (66.7%), `splitVertexRoot`'s malformed-key reject (75.0%). | ★ | S | 📋 ready · `internal/objectmanager/cascade.go` |
+| **[Bootstrap] Stale `lattice.bootstrap.json` vs. recreated Core KV — no freshness probe** | `LoadOrGenerate` skips `SeedPrimordial` whenever the local JSON says `status="committed"` — it never probes Core KV for the bootstrap op tracker, so a recreated/empty Core KV behind a surviving file comes up "ready" with silently-empty reads; recurred 3× (`docs/components/bootstrap.md` §Known gap). | ★★ | S–M | 📋 ready · `cmd/bootstrap/main.go:68-126`, `internal/bootstrap/nanoid.go:331` |
+| **[Bootstrap] Seed idempotency skip-branches undertested** | `seedPrimordialPerKey`'s already-exists/`IsRevisionConflict` concurrent-create skip branches (63.6% cov) and the `persistWithStatus`/`LoadOrGenerate` crash-recovery paths (71–77% cov) are the package's lowest-covered code — the two-phase-commit crash paths the whole component leans on are its least-tested part (69.3% pkg cov vs. 80–90% elsewhere). | ★ | S | 📋 ready · `internal/bootstrap/primordial.go:321`, `internal/bootstrap/nanoid.go:331,617` |
 
 ### Survey log (round-robin rotation)
 
@@ -60,7 +62,6 @@ Components: Core · Weaver · Loom · Refractor · Bootstrap · object-store-man
 feature backlog; Loupe moved to its own lane, [loupe.md](loupe.md)). Survey the stalest
 (`git log -1 --format=%ct -- <path>`), note ONE dated line, rotate.
 
-- 2026-07-01 Designer — search/ES target adapter (3rd Refractor adapter; OpenSearch rec., FTS interim) (→ 📐).
 - 2026-07-01 Designer — feature queue designed-out (all ~30 rows carry a design); resolved stale L309 (link-tombstone subsumed by link-aspect design, latency-rollup seq behind HA). Remaining 📋 = owner test-coverage.
 - 2026-07-02 Refractor (healthy, clean lint; retraction/rollup already tracked; filed capability-pipeline-link-aspect-fanout-untested + natskv-guard-edge-branches).
 - 2026-07-02 Arch-review, all components — filed the intake section below; Refractor findings held for the post-update re-review; root-identity designation → Designer.
@@ -72,7 +73,8 @@ feature backlog; Loupe moved to its own lane, [loupe.md](loupe.md)). Survey the 
 - 2026-07-18 Loom (healthy, 82.3%/80.2% cov, clean lint, no TODOs; prior deadline/redelivery gaps already shipped `495476b`; filed starlark-guard-sandbox-value-iface-uncovered).
 - 2026-07-18 Refractor (healthy, build/lint clean; confirmed all 8 07-06-review findings already resolved in code — no new rows).
 - 2026-07-19 object-store-manager (67.5%/91.4% cov, clean lint, no TODOs; filed doc-drift fix + cascade error-branch coverage).
-- **Next:** Bootstrap.
+- 2026-07-19 Bootstrap (69.3% cov, clean lint, no TODOs; filed stale-bootstrap-json-no-freshness-probe (★★, the documented Known-gap) + seed-idempotency-branch-coverage).
+- **Next:** Core.
 
 ## Arch-review intake — platform hardening & doc/contract truth
 
