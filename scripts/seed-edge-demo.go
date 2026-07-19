@@ -83,12 +83,14 @@ func main() {
 	// --- building + unit -----------------------------------------------------
 
 	buildingReply := submitOp(ctx, conn, adminKey, "CreateLocation", "location",
-		map[string]any{"locationType": "building"}, nil)
+		map[string]any{"locationType": "building",
+			"presentation": map[string]any{"name": "Riverside Building", "icon": "building"}}, nil)
 	buildingKey := buildingReply.PrimaryKey
 	fmt.Printf("==> building:        %s\n", buildingKey)
 
 	unitReply := submitOp(ctx, conn, adminKey, "CreateLocation", "location",
-		map[string]any{"locationType": "unit"}, nil)
+		map[string]any{"locationType": "unit",
+			"presentation": map[string]any{"name": "Unit 1", "icon": "door"}}, nil)
 	unitKey := unitReply.PrimaryKey
 	fmt.Printf("==> unit:            %s\n", unitKey)
 

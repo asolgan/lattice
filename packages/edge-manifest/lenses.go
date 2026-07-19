@@ -53,10 +53,13 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //
 // v1 scope-downs (named, not silent — each is a reasonable narrowing the
 // engine or the data model makes convenient to defer, not a correctness
-// gap in what IS built): edgeIdentity's anchors/roles arrays carry only
-// {key, ...} — no human-readable location type/label (the engine has no
-// vertex-type-from-key function outside nanoIdFromKey, and no string
-// concatenation to synthesize one); edgeCatalog covers only the
+// gap in what IS built): edgeIdentity's anchors carry the location's
+// `.presentation.data.name` (class-2 display source, display-name-convention-
+// design.md N1) plus its container's name, so a named world renders a
+// human label instead of a bare NanoID; the location TYPE segment is still
+// not synthesized into the row (the engine has no vertex-type-from-key
+// function outside nanoIdFromKey, and no string concatenation to build one),
+// so the renderer derives type from the key client-side; edgeCatalog covers only the
 // service-permitsOperation reachability path (role-standing-grant and
 // open-task-forOperation paths are deferred — a task's own bound op
 // already rides inline on its edgeTasks row, so the gap is "browse all my
@@ -179,7 +182,7 @@ RETURN
   identity.name.data.value AS displayName,
   (identity.state.data.value = "claimed") AS claimed,
   collect(DISTINCT {key: role.key, name: role.canonicalName.data.value}) AS roles,
-  collect(DISTINCT {key: loc.key, container: container.key}) AS anchors
+  collect(DISTINCT {key: loc.key, name: loc.presentation.data.name, container: container.key, containerName: container.presentation.data.name}) AS anchors
 `
 
 // edgeServicesSpec projects one `manifest.svc.<tplId>` row per service

@@ -20,5 +20,6 @@ func Permissions() []pkgmgr.PermissionSpec {
 		mk("TombstoneLocation"),
 		mk("WireContainedIn"),
 		mk("UnwireContainedIn"),
+		mk("SetLocationPresentation"),
 	}
 }

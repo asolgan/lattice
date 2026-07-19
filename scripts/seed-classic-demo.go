@@ -63,7 +63,8 @@ func main() {
 	// --- LoftSpace: unit + listing + consumer + lease application -----------
 
 	unitReply := submitOp(ctx, conn, adminKey, "CreateLocation", "location",
-		map[string]any{"locationType": "unit"}, nil)
+		map[string]any{"locationType": "unit",
+			"presentation": map[string]any{"name": "Unit 1", "icon": "door"}}, nil)
 	unitKey := unitReply.PrimaryKey
 	fmt.Printf("==> unit:            %s\n", unitKey)
 

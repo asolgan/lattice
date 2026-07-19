@@ -45,8 +45,8 @@ const (
 	locConsumerCapKey = "cap.identity." + locConsumerID
 )
 
-// locationOps are the four ops the staff actor is granted (scope any).
-var locationOps = []string{"CreateLocation", "TombstoneLocation", "WireContainedIn", "UnwireContainedIn"}
+// locationOps are the ops the staff actor is granted (scope any).
+var locationOps = []string{"CreateLocation", "TombstoneLocation", "WireContainedIn", "UnwireContainedIn", "SetLocationPresentation"}
 
 // staffCapDoc grants the staff actor all four location ops (scope any).
 func staffCapDoc() *processor.CapabilityDoc {
@@ -203,6 +203,113 @@ func TestLocation_CreateAllTypes(t *testing.T) {
 			t.Fatalf("%s root data = %v, want {} (D5)", locType, data)
 		}
 	}
+}
+
+// keyExists reports whether a Core-KV key resolves (used to assert the absence
+// of a .presentation aspect for an undescribed location).
+func keyExists(t *testing.T, ctx context.Context, conn *substrate.Conn, key string) bool {
+	t.Helper()
+	if _, err := conn.KVGet(ctx, testutil.HarnessCoreBucket, key); err != nil {
+		return false
+	}
+	return true
+}
+
+// TestLocation_CreatePresentation proves CreateLocation's optional display name
+// (display-name-convention-design.md class 2): a supplied presentation writes a
+// .presentation aspect {name, icon} on the location, and an omitted presentation
+// writes no aspect at all (an undescribed location degrades to a typed fallback,
+// it is not "Unnamed").
+func TestLocation_CreatePresentation(t *testing.T) {
+	ctx, conn := setupLocationEnv(t)
+	cp, cons := newLocationPipeline(t, ctx, conn, "create-pres")
+
+	// Named building.
+	reqID := testutil.GenReqID("mkNamedBldg")
+	locKey := "vtx.building." + nanoIDFromRequestID(reqID)
+	env := &processor.OperationEnvelope{
+		RequestID:     reqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "CreateLocation",
+		Actor:         locStaffActorKey,
+		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		Class:         "location",
+		Payload:       json.RawMessage(`{"locationType":"building","presentation":{"name":"Riverside Building","icon":"building"}}`),
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	presDoc := readDoc(t, ctx, conn, locKey+".presentation")
+	if presDoc["class"] != "presentation" {
+		t.Fatalf("presentation aspect class = %v, want presentation", presDoc["class"])
+	}
+	if vk, _ := presDoc["vertexKey"].(string); vk != locKey {
+		t.Fatalf("presentation aspect vertexKey = %q, want %q", vk, locKey)
+	}
+	data, _ := presDoc["data"].(map[string]any)
+	if got, _ := data["name"].(string); got != "Riverside Building" {
+		t.Fatalf("presentation.name = %q, want %q", got, "Riverside Building")
+	}
+	if got, _ := data["icon"].(string); got != "building" {
+		t.Fatalf("presentation.icon = %q, want %q", got, "building")
+	}
+
+	// An unnamed unit carries NO presentation aspect (degrade gracefully).
+	bareKey := createLocation(t, ctx, conn, cp, cons, "unit")
+	if keyExists(t, ctx, conn, bareKey+".presentation") {
+		t.Fatalf("a location created without a presentation payload must carry no .presentation aspect")
+	}
+}
+
+// TestLocation_SetLocationPresentation proves the live-world editor: setting a
+// presentation on an existing location writes the aspect; an empty presentation
+// object and a dead/absent subject are rejected.
+func TestLocation_SetLocationPresentation(t *testing.T) {
+	ctx, conn := setupLocationEnv(t)
+	cp, cons := newLocationPipeline(t, ctx, conn, "set-pres")
+
+	unitKey := createLocation(t, ctx, conn, cp, cons, "unit")
+
+	set := func(label, payload string, outcome processor.MessageOutcome) {
+		env := &processor.OperationEnvelope{
+			RequestID:     testutil.GenReqID(label),
+			Lane:          processor.LaneDefault,
+			OperationType: "SetLocationPresentation",
+			Actor:         locStaffActorKey,
+			SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+			Class:         "location",
+			Payload:       json.RawMessage(payload),
+			ContextHint:   &processor.ContextHint{Reads: []string{unitKey}},
+		}
+		testutil.PublishOp(t, conn, env)
+		testutil.DriveOne(t, ctx, cp, cons, outcome)
+	}
+
+	set("setPres00001", `{"locationKey":"`+unitKey+`","presentation":{"name":"Unit 1"}}`, processor.OutcomeAccepted)
+	data, _ := readDoc(t, ctx, conn, unitKey+".presentation")["data"].(map[string]any)
+	if got, _ := data["name"].(string); got != "Unit 1" {
+		t.Fatalf("presentation.name = %q, want %q", got, "Unit 1")
+	}
+
+	// An empty presentation object is rejected (nothing to set).
+	set("setPresEmpty", `{"locationKey":"`+unitKey+`","presentation":{}}`, processor.OutcomeRejected)
+
+	// A dead subject is rejected (endpoint-class/alive guard).
+	deadID := "LDdeadunitHJKMNPQRST"
+	deadKey := "vtx.unit." + deadID
+	seedDeletedVertex(t, ctx, conn, deadKey, "location")
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("setPresDead1"),
+		Lane:          processor.LaneDefault,
+		OperationType: "SetLocationPresentation",
+		Actor:         locStaffActorKey,
+		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+		Class:         "location",
+		Payload:       json.RawMessage(`{"locationKey":"` + deadKey + `","presentation":{"name":"Ghost"}}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{deadKey}},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
 }
 
 // TestLocation_ContainedInChain wires unit→building→property and asserts each

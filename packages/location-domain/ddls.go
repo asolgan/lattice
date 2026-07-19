@@ -55,21 +55,28 @@ func locationDDL() pkgmgr.DDLSpec {
 	return pkgmgr.DDLSpec{
 		CanonicalName:     "location",
 		Class:             "meta.ddl.vertexType",
-		PermittedCommands: []string{"CreateLocation", "TombstoneLocation", "WireContainedIn", "UnwireContainedIn"},
+		PermittedCommands: []string{"CreateLocation", "TombstoneLocation", "WireContainedIn", "UnwireContainedIn", "SetLocationPresentation"},
 		Description: "Location domain DDL. Vertex shape: vtx.<locationType>.<NanoID>, class=location, root data = {} " +
 			"(minimal, D5). locationType is one of {unit, building, property} (Contract #6 §6.9): it names the key " +
 			"type segment; the class is the shared discriminator `location`. Containment is the containedIn LINK " +
 			"(location→location, transitive — unit→building→property). containedIn direction: the contained CHILD " +
 			"is the later-arriving source, the container PARENT is the pre-existing target (Contract #1 §1.1); the " +
 			"sentence reads 'unit containedIn building'. CreateLocation mints a location vertex of the requested " +
-			"type. TombstoneLocation soft-deletes one. WireContainedIn writes the containedIn link only after " +
-			"validating BOTH endpoints are alive AND class=location (a non-location vertex is never wired into the " +
-			"place graph). UnwireContainedIn tombstones the link by its deterministic key.",
+			"type, and — when supplied — writes an optional client-facing display name as the location's " +
+			".presentation aspect (display-name-convention-design.md class 2: nameable business vertices ride the " +
+			"proven service-domain {name, description?, icon?, category?} shape; a bare NanoID is never a primary " +
+			"label). SetLocationPresentation sets/replaces the .presentation aspect on an existing live location " +
+			"(the live-world editor for a name CreateLocation didn't set). TombstoneLocation soft-deletes one. " +
+			"WireContainedIn writes the containedIn link only after validating BOTH endpoints are alive AND " +
+			"class=location (a non-location vertex is never wired into the place graph). UnwireContainedIn " +
+			"tombstones the link by its deterministic key.",
 		Script: locationDDLScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"locationType":{"type":"string","enum":["unit","building","property"],"description":"The location level (unit|building|property); sets the vtx.<locationType>.<NanoID> key prefix (CreateLocation)."},` +
 			`"locationId":{"type":"string","description":"Optional bare NanoID for the new location vertex (CreateLocation); absent → minted."},` +
-			`"locationKey":{"type":"string","description":"vtx.<locationType>.<NanoID> of an existing location (TombstoneLocation; required, validated alive)."},` +
+			`"presentation":{"type":"object","description":"Optional client-facing display metadata {name, description?, icon?, category?} written as the location's .presentation aspect (CreateLocation and SetLocationPresentation). Absent on CreateLocation → no aspect (undescribed location). Required non-empty on SetLocationPresentation.",` +
+			`"properties":{"name":{"type":"string"},"description":{"type":"string"},"icon":{"type":"string"},"category":{"type":"string"}}},` +
+			`"locationKey":{"type":"string","description":"vtx.<locationType>.<NanoID> of an existing location (TombstoneLocation and SetLocationPresentation; required, validated alive + class=location)."},` +
 			`"child":{"type":"string","description":"vtx.<locationType>.<NanoID> of the contained (child) location — the containedIn link source (WireContainedIn; required, validated alive + class=location)."},` +
 			`"parent":{"type":"string","description":"vtx.<locationType>.<NanoID> of the container (parent) location — the containedIn link target (WireContainedIn; required, validated alive + class=location)."},` +
 			`"linkKey":{"type":"string","description":"lnk.<childType>.<childId>.containedIn.<parentType>.<parentId> of an existing containedIn link (UnwireContainedIn; required, validated alive)."}},` +
@@ -79,7 +86,8 @@ func locationDDL() pkgmgr.DDLSpec {
 		FieldDescription: map[string]string{
 			"locationType": "The location level, one of {unit, building, property}. Determines the vtx.<locationType>.<NanoID> key prefix for CreateLocation; the class is always `location`.",
 			"locationId":   "Optional bare NanoID (no dots / key segments) for the new location vertex (vtx.<locationType>.<locationId>). Absent → minted with nanoid.new().",
-			"locationKey":  "Full vtx.<locationType>.<NanoID> key of an existing location vertex to tombstone.",
+			"presentation": "Optional client-facing display metadata {name, description?, icon?, category?}. On CreateLocation it is written verbatim as the location's .presentation aspect when supplied (absent → no aspect, an undescribed location — degrade-gracefully). On SetLocationPresentation it is required (a non-empty object with at least one field). Never plaintext PII — locations are non-identity business vertices (display-name-convention-design.md D2).",
+			"locationKey":  "Full vtx.<locationType>.<NanoID> key of an existing location vertex — the tombstone target (TombstoneLocation) or the presentation subject (SetLocationPresentation), validated alive + class=location.",
 			"child":        "Full vtx.<locationType>.<NanoID> key of the contained (child) location. WireContainedIn validates it is alive + class=location and writes it as the containedIn link SOURCE (the child is the later-arriving vertex, Contract #1 §1.1).",
 			"parent":       "Full vtx.<locationType>.<NanoID> key of the container (parent) location. WireContainedIn validates it is alive + class=location and writes it as the containedIn link TARGET.",
 			"linkKey":      "Full lnk.<childType>.<childId>.containedIn.<parentType>.<parentId> key of an existing containedIn link to tombstone (UnwireContainedIn).",
@@ -90,6 +98,20 @@ func locationDDL() pkgmgr.DDLSpec {
 				Payload: map[string]any{"locationType": "building"},
 				ExpectedOutcome: "Mints vtx.building.<NanoID> (class=location, root data {}). Returns primaryKey " +
 					"(the location key). Accepts an optional caller-supplied bare-NanoID locationId.",
+			},
+			{
+				Name:    "CreateLocation — mint a named building",
+				Payload: map[string]any{"locationType": "building", "presentation": map[string]any{"name": "Riverside Building", "icon": "building"}},
+				ExpectedOutcome: "Mints vtx.building.<NanoID> plus its .presentation aspect {name: \"Riverside Building\", " +
+					"icon: \"building\"} (class 2 display source). Returns primaryKey (the location key). An absent or " +
+					"empty presentation writes no aspect (the location stays undescribed and renders a typed fallback).",
+			},
+			{
+				Name:    "SetLocationPresentation — name an existing unit",
+				Payload: map[string]any{"locationKey": "vtx.unit.<unitNanoID>", "presentation": map[string]any{"name": "Unit 1"}},
+				ExpectedOutcome: "Writes/replaces the .presentation aspect {name: \"Unit 1\"} on the live location. Returns " +
+					"primaryKey (the location key). Rejects with ScriptError if the location is absent, tombstoned, not " +
+					"class=location, or the presentation object is empty.",
 			},
 			{
 				Name:    "WireContainedIn — place a unit inside a building",
@@ -118,6 +140,11 @@ const locationDDLScript = `
 def make_vtx(key, cls, data):
     return {"op": "create", "key": key,
             "document": {"class": cls, "isDeleted": False, "data": data}}
+
+def make_aspect(vtx_key, local_name, cls, data):
+    return {"op": "create", "key": vtx_key + "." + local_name,
+            "document": {"class": cls, "isDeleted": False,
+                         "vertexKey": vtx_key, "localName": local_name, "data": data}}
 
 def make_link(key, source, target, cls, local_name, data):
     return {"op": "create", "key": key,
@@ -155,6 +182,45 @@ def required_location_type(p):
     if lt not in LOCATION_TYPES:
         fail("InvalidArgument: locationType: must be one of unit, building, property; got " + lt)
     return lt
+
+# The client-facing display fields a location's .presentation aspect carries
+# (display-name-convention-design.md D2: locations are class-2 nameable business
+# vertices and ride service-domain's proven {name, description?, icon?,
+# category?} shape). Every field is individually optional; a location is a
+# non-identity business vertex, so this is a plain mutable label, never PII.
+PRESENTATION_FIELDS = ["name", "description", "icon", "category"]
+
+def clean_presentation(d):
+    # Returns the non-empty string fields of a presentation object as a plain
+    # dict, or None when the object is absent/None/empty (degrade gracefully:
+    # an undescribed location writes no aspect). A present-but-non-object value
+    # is a structured ScriptError.
+    if d == None:
+        return None
+    if type(d) != type({}):
+        fail("InvalidArgument: presentation: must be an object")
+    data = {}
+    for field in PRESENTATION_FIELDS:
+        if field in d and d[field] != None and type(d[field]) == type("") and len(d[field].strip()) > 0:
+            data[field] = d[field].strip()
+    if len(data) == 0:
+        return None
+    return data
+
+def optional_presentation(p):
+    # CreateLocation's optional presentation: absent → None (no aspect).
+    if not hasattr(p, "presentation"):
+        return None
+    return clean_presentation(getattr(p, "presentation"))
+
+def required_presentation(p):
+    # SetLocationPresentation's presentation: a non-empty object is required.
+    if not hasattr(p, "presentation"):
+        fail("InvalidArgument: presentation: required")
+    pres = clean_presentation(getattr(p, "presentation"))
+    if pres == None:
+        fail("InvalidArgument: presentation: required non-empty object with at least one of name, description, icon, category")
+    return pres
 
 def bare_nanoid_or_mint(p, name):
     # Returns the caller-supplied id when present, else a freshly minted one.
@@ -241,8 +307,28 @@ def execute(state, op):
         # Root data minimal (D5): {} on root; the type is the key segment, the
         # class is the shared LOCATION_CLASS discriminator.
         mutations = [make_vtx(loc_key, LOCATION_CLASS, {})]
+        # Optional client-facing display name (class-2 .presentation aspect).
+        # Absent → no aspect: an undescribed location renders a typed fallback,
+        # not "Unnamed" (display-name-convention-design.md renderer floor rule).
+        pres = optional_presentation(p)
+        if pres != None:
+            mutations.append(make_aspect(loc_key, "presentation", "presentation", pres))
         events = [{"class": "location.locationCreated",
                    "data": {"locationKey": loc_key, "locationType": lt}}]
+        return {"mutations": mutations, "events": events,
+                "response": {"primaryKey": loc_key}}
+
+    if ot == "SetLocationPresentation":
+        loc_key = required_string(p, "locationKey")
+        location_parts(loc_key, "locationKey")
+        # The subject MUST be a live location (endpoint-class validation, same
+        # guard the wire op applies): a name is never pinned to a dead or
+        # non-location vertex.
+        require_live_location(state, loc_key, "locationKey")
+        pres = required_presentation(p)
+        mutations = [make_aspect(loc_key, "presentation", "presentation", pres)]
+        events = [{"class": "location.presentationSet",
+                   "data": {"locationKey": loc_key}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": loc_key}}
 

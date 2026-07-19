@@ -7,12 +7,12 @@
 // location-domain package has been correctly installed. Asserts:
 //
 //	1 location DDL meta-vertex (vtx.meta.<NanoID>) with class=meta.ddl.vertexType
-//	8 DDL aspects: .canonicalName=location, .permittedCommands (4 ops),
+//	8 DDL aspects: .canonicalName=location, .permittedCommands (5 ops),
 //	               .description, .script, .inputSchema, .outputSchema,
 //	               .fieldDescription, .examples (each with a valid aspect envelope)
-//	4 permission vertices (CreateLocation, TombstoneLocation, WireContainedIn,
-//	               UnwireContainedIn), scope any
-//	4 grantedBy links (each op → operator)
+//	5 permission vertices (CreateLocation, TombstoneLocation, WireContainedIn,
+//	               UnwireContainedIn, SetLocationPresentation), scope any
+//	5 grantedBy links (each op → operator)
 //	1 package vertex (vtx.package.<NanoID>) + 1 manifest aspect (name=location-domain)
 //
 // Run via: go run ./scripts/verify-package-location-domain.go
@@ -38,7 +38,7 @@ const (
 	locationCoreKVBucket = "core-kv"
 )
 
-var locationExpectedOps = []string{"CreateLocation", "TombstoneLocation", "WireContainedIn", "UnwireContainedIn"}
+var locationExpectedOps = []string{"CreateLocation", "TombstoneLocation", "WireContainedIn", "UnwireContainedIn", "SetLocationPresentation"}
 
 func main() {
 	natsURL := pkgverify.EnvOrDefault("NATS_URL", nats.DefaultURL)

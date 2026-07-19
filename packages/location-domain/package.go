@@ -2,10 +2,11 @@
 // the spatial base domain — the place graph — mirroring how identity-domain
 // owns the identity base domain.
 //
-// One DDL (`location`) handles all four operations:
+// One DDL (`location`) handles all five operations:
 //
 //	CreateLocation, TombstoneLocation
 //	WireContainedIn, UnwireContainedIn
+//	SetLocationPresentation
 //
 // A location is one of three vertex types — unit, building, or property —
 // discriminated by the `locationType` op parameter (Contract #6 §6.9):
@@ -28,6 +29,12 @@
 // WireContainedIn validates BOTH endpoints are alive AND location-class before
 // it writes the link — a non-location vertex can never be wired into the place
 // graph.
+//
+// A location may carry an optional `.presentation` display aspect
+// ({name, description?, icon?, category?}) — set at creation or via
+// SetLocationPresentation. Locations are class-2 nameable business vertices
+// (display-name-convention-design.md): the aspect is a mutable non-identity
+// label a renderer projects instead of a bare NanoID, never PII.
 //
 // Install via `lattice-pkg install packages/location-domain`. See
 // docs/components/_packages.md.

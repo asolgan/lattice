@@ -137,18 +137,21 @@ func main() {
 	// --- building + two units --------------------------------------------
 
 	submitOp(ctx, conn, adminKey, "CreateLocation", "location",
-		map[string]any{"locationType": "building", "locationId": buildingID}, nil)
+		map[string]any{"locationType": "building", "locationId": buildingID,
+			"presentation": map[string]any{"name": "Riverside Building", "icon": "building"}}, nil)
 	fmt.Println("==> building:        " + buildingKey)
 
 	submitOp(ctx, conn, adminKey, "CreateLocation", "location",
-		map[string]any{"locationType": "unit", "locationId": unit1ID}, nil)
+		map[string]any{"locationType": "unit", "locationId": unit1ID,
+			"presentation": map[string]any{"name": "Unit 1", "icon": "door"}}, nil)
 	submitOp(ctx, conn, adminKey, "WireContainedIn", "location",
 		map[string]any{"child": unit1Key, "parent": buildingKey},
 		&processor.ContextHint{Reads: []string{unit1Key, buildingKey}})
 	fmt.Println("==> unit1:           " + unit1Key + " containedIn building")
 
 	submitOp(ctx, conn, adminKey, "CreateLocation", "location",
-		map[string]any{"locationType": "unit", "locationId": unit2ID}, nil)
+		map[string]any{"locationType": "unit", "locationId": unit2ID,
+			"presentation": map[string]any{"name": "Unit 2", "icon": "door"}}, nil)
 	submitOp(ctx, conn, adminKey, "WireContainedIn", "location",
 		map[string]any{"child": unit2Key, "parent": buildingKey},
 		&processor.ContextHint{Reads: []string{unit2Key, buildingKey}})

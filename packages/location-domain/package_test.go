@@ -39,7 +39,7 @@ func TestPackage_DDLAndOps(t *testing.T) {
 		t.Fatalf("DDL[0] class = %q, want meta.ddl.vertexType", ddl.Class)
 	}
 
-	wantCmds := map[string]bool{"CreateLocation": false, "TombstoneLocation": false, "WireContainedIn": false, "UnwireContainedIn": false}
+	wantCmds := map[string]bool{"CreateLocation": false, "TombstoneLocation": false, "WireContainedIn": false, "UnwireContainedIn": false, "SetLocationPresentation": false}
 	for _, c := range ddl.PermittedCommands {
 		if _, ok := wantCmds[c]; !ok {
 			t.Fatalf("unexpected permittedCommand %q", c)
@@ -53,7 +53,7 @@ func TestPackage_DDLAndOps(t *testing.T) {
 	}
 
 	// Every op is granted to operator (scope any) and nothing else.
-	wantPerms := map[string]bool{"CreateLocation": false, "TombstoneLocation": false, "WireContainedIn": false, "UnwireContainedIn": false}
+	wantPerms := map[string]bool{"CreateLocation": false, "TombstoneLocation": false, "WireContainedIn": false, "UnwireContainedIn": false, "SetLocationPresentation": false}
 	if got := len(Package.Permissions); got != len(wantPerms) {
 		t.Fatalf("expected %d permissions, got %d", len(wantPerms), got)
 	}
