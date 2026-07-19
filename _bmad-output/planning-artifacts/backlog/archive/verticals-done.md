@@ -2,6 +2,17 @@
 
 Rolled from `verticals.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-17 · `8ec52ff` · Facet Fire 5 Inc 4 — café descriptor metadata + catalog-path wiring: `cafe-domain.OpMetas()` + `service-domain` `cafe` family + "Riverside Café" showcase template, live-verified on the SSE manifest feed
+- 2026-07-17 · `a5828c5` · Facet Fire 5 — café self-scope adoption Inc 1: `OpenTab`/`Settle` consumer scope=self grant via the lease's applicationFor link; package layer only, FE checkpointed
+- 2026-07-17 · `97db230` · Facet Fire 5 — wellness catalog-path wiring: `wellness` family + Riverside Wellness Studio template availableAt/permitsOperation-wired to CreateBooking/CancelBooking, live-verified on the SYNC manifest feed
+- 2026-07-17 · `0d16c34` · Facet Fire 5 — wellness edge-manifest descriptor metadata (CreateBooking/CancelBooking; first real use of `dispatch.contextParams`)
+- 2026-07-17 · `a5f7ee9` · Fixed clinic's Fire 5 Inc 1 `Dispatch.Class` bug (was "clinic", should be DDL CanonicalName "appointment") — confirmed live, regression-guarded
+- 2026-07-17 · `fa8ccee` · Wellness self-service booking CLOSED — wellness-app "Me" bar (sign in, no claim ceremony needed) + fixed a pre-existing booker/bookedBy read-posture gap; live-verified
+- 2026-07-17 · `ac21a6c` · Wellness self-service booking Inc 1 — `CreateBooking`/`CancelBooking` consumer scope=self grant, mirrors clinic-domain's self-service pattern; package layer only, FE checkpointed
+- 2026-07-17 · `27dc762` · Clinic no-show fee auto-charge — `clinicNoShowSettlement` Weaver playbook + `DebitAccount` `appointmentRef`, self-contained in `clinic-ledger` — [design](../../implementation-artifacts/clinic-noshow-fee-design.md)
+- 2026-07-17 · `72dc9ed` · Facet Fire 5 Inc 2 — clinic catalog-path wiring: `clinic` family + Riverside Clinic template availableAt/permitsOperation-wired, live-verified
+- 2026-07-17 · `cd8696d` · Facet Fire 5 Inc 1 — edge-manifest descriptor metadata (presentation/inputSchema/dispatch) on clinic-domain's 3 self-scope consumer ops; café/wellness have no self-scope ops yet (named, not built)
+- 2026-07-17 · `9f46554` · Facet Inc 4 — Fire-2 fidelity tail: R3 touchedKey/pending-chip, dead Retry removed, connectivity-keyed offline banner, Outbox history collapse, degraded-render regression test
 - 2026-07-17 · `0d55b2a` · Facet Inc 3 — Me-screen claim/link UX + revocation UX; linked credential now signs in via `/v1/actor` (G10's first consumer); sign-out purges the local mirror
 - 2026-07-16 · `2696321` · Showcase dataset (§7.3) CLOSED — honest family enum + `RetireServiceTemplate` + idempotent `make seed-showcase` loader; retired both mislabeled live templates
 - 2026-07-16 · `ef45e83` · Facet cold-start cap-projection race CLOSED — `seed-edge-demo` waits for `ctrl.refractor.register` in `cap.roles.<tenant>` before the tenant handoff
