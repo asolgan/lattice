@@ -92,6 +92,41 @@ never a primary label. Fallback ladder: `displayName` → composed relational la
   against a real control service + Vault backend, including the shredded-identity fallback
   (`internal/edge/vault/selfname_test.go`).
 
+  **Live-stack tail, re-grounded 2026-07-19 (the restart was not the blocker).**
+  Driving the running showcase stack as tenant1 (Riley Chen) narrowed this a long
+  way, and ruled out the two cheap explanations:
+
+  - **Not a stale package.** The installed `edgeIdentity` lens spec in Core KV
+    (`vtx.meta.ua4dCK62adbHJDCxua4d.spec`) carries the N3 cypher — both
+    `identity.name.data AS sealedName` and the anchors' `loc.presentation.data.name`.
+  - **Not a stale Refractor.** The running binary post-dates the N3 fix and booted
+    after that spec was written; `lens lag` shows `edgeIdentity` reprojecting on
+    demand (confirmed twice, `lastProjectedAt` advancing within a second of a
+    location-aspect write).
+  - **Not missing source data.** The identity's sealed `.name` aspect exists, and
+    the three showcase locations now carry `.presentation` (see below).
+  - **Not a stale device mirror.** Facet was rebuilt and restarted, forcing a full
+    rehydrate; the row came back identical.
+
+  Yet the emitted `manifest.me` row still carries neither `sealedName` nor an
+  anchor `name`/`containerName` — the anchors project as bare
+  `{key, container}`, and `displayName` stays null. So the projection genuinely
+  omits both N3 fields with the correct rule installed and a reprojection
+  demonstrably running. Two candidates remain, and they were not separated:
+  **(a)** Refractor is executing a compiled rule older than the spec it holds, or
+  **(b)** the engine does not resolve these two expression forms — a neighbour's
+  aspect hop *inside* a `collect()` map, and an aspect's whole `.data` object as a
+  scalar-position alias — and yields null for each. Note the shipped proof covers
+  the alias *resolving*, not the envelope arriving. Separating (a) from (b) is one
+  targeted engine test on the two expression shapes; do that before touching either
+  the lens or the renderer.
+
+  Two real gaps *were* found and fixed while grounding this (`93c6064d`): the
+  showcase seed never named an already-seeded world (it passes location names only
+  on its from-scratch path), and `SetLocationPresentation` — the live-world editor
+  N1 shipped for exactly that — could not actually replace an existing
+  `.presentation`, dying with RevisionConflict against a create-only mutation.
+
 **Green bar:** a signed-in showcase resident sees zero raw NanoIDs across Home/Services/Tasks/
 Activity/Me; the header reads "Sam Okafor"; crypto-shredding that identity flips the header to the
 typed fallback (the shred story stays demonstrably true).
