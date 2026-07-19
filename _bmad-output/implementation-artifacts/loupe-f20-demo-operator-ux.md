@@ -224,7 +224,7 @@ row in `docs/vendors.md`.
 | Fire | Scope | Lane | State |
 |---|---|---|---|
 | **F20.1** | §3.2 — `LOUPE_DEMO_MODE`: method default-deny middleware, fail-closed flag + boot guard, reveal denial (§2.2), `/api/demo` + visitor banner | Loupe | ✅ SHIPPED 2026-07-19 |
-| **F20.2** | §7 — demo polish: suppress write affordances per view, restore the three read-only control POSTs, `/login` disclaimer | Loupe | 📋 build-ready (§7; not a safety item; after F20.5) |
+| **F20.2** | §7 — demo polish: suppress write affordances per view, restore the three read-only control POSTs, `/login` disclaimer | Loupe | ✅ SHIPPED 2026-07-19 (departures in §7.5) |
 | **F20.3** | §3.1 — the `demoOperator` grant package | Lattice (cross-lane) | filed (lattice.md row, 📋 ready) |
 | **F20.4** | §3.3 — Caddy subdomain + README | deploy (cross-lane) | 🚧 Andrew-gated on public launch |
 | **F20.5** | §6 — the public-origin posture: `LOUPE_PUBLIC_ORIGIN` (origin gate + `Secure` cookie), the dev-auth⇒demo boot coupling, the credential-exchange rate limiter, the SSE cap posture. **Blocks F20.4** — without it no visitor can log in | Loupe | ✅ SHIPPED 2026-07-19 (`ca941e58`) |
@@ -232,7 +232,8 @@ row in `docs/vendors.md`.
 **Exposure checklist** — every line must hold before Loupe is reachable publicly:
 
 1. F20.3 shipped, the demo identity provisioned, and its grants spot-checked live (a denied write
-   observed against the deployed stack, not inferred).
+   observed against the deployed stack, not inferred). The `/login` copy earns its platform-grants
+   sentence here and not before (§7.5 departure 1).
 2. F20.5 shipped — otherwise login 403s and the session cookie is not `Secure`.
 3. `LOUPE_DEMO_MODE=1` with `LOUPE_OPERATOR_ACTOR_KEY` naming the demo identity — the boot guard
    proves both, and a malformed flag now refuses to boot rather than failing open — and
@@ -452,3 +453,38 @@ et al. still denied, malformed/short/long paths denied) + the two classification
 logic tests for the affordance helper's posture gating; an httptest asserting `/login` contains the
 disclaimer exactly when demo mode is on. Live: the restored loom `inspect` / refractor `health`
 exercised as a demo visitor against the dev stack.
+
+### 7.5 As built (2026-07-19) — where the 3-layer review moved the design
+
+Four deliberate departures from §7 as written. Each closes a defect the design did not anticipate;
+none changes an adjudicated fork.
+
+1. **The `/login` copy does not credit the platform's grants** (§7.3 specified "writes are denied by
+   the platform's grants"). Both halves of that sentence are false today and one is false
+   permanently. F20.3 has not shipped, so no grant narrowing exists and `demoWriteDenied` is the
+   only control — a visitor told otherwise is misinformed, and an operator reading it may treat
+   F20.3 as done. And reveals are refused by *this process* (`objects.go`), because the vault RPC
+   carries no actor for grants to judge at all (§2.2). `demoDenialMessage` was deliberately worded
+   to avoid exactly this claim; the login copy now keeps the same discipline and promises only what
+   the console enforces. **When F20.3 ships, the platform sentence becomes true and worth adding** —
+   that is the demo's whole point — so it is a copy change gated on checklist item 1, not a
+   permanent omission.
+2. **The read-only classification travels to the client on `/api/demo`** rather than being restated
+   in JavaScript. §7.2 said "expose that posture once in client state" without saying how the client
+   learns which control ops survive; restating `control.go`'s table in JS would reintroduce exactly
+   the drift §7.1 engineers away. `/api/demo` is behind `requireOperator`, so §4.1 fork 5's
+   don't-widen-the-pre-auth-surface rationale is untouched. The client's read is omission-denies in
+   its own right: an unrecognized shape hides every op for that component.
+3. **The posture fetch is awaited before routing.** The control-op buttons decide visibility at
+   render time, and unlike the blanket CSS rule that path does not self-heal — a deep link straight
+   to `#/component/<id>` or `#/lens/<id>` would paint, and keep, every mutate button for the life of
+   the page. The blanket marker's race is cosmetic and self-correcting; this one was not.
+4. **Marking moved from the button to its enclosing row or panel** wherever the affordance carries a
+   caption, heading, or input (the Gateway revoke form, the lens delete row, the whole package
+   Lifecycle panel). Hiding a lone button leaves orphaned prose instructing a visitor to use a
+   control that is not on screen — the same reasoning §7.2 already applied to the upload form,
+   extended to the three surfaces it did not enumerate.
+
+Known cosmetic tail, not fixed: a weaver control row renders with no buttons at all (every weaver op
+mutates), and the map's pulse-empty state still invites "Submit an op" — a navigation link, not a
+write, whose destination's submit button is hidden.

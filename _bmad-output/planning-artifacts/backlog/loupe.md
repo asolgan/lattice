@@ -35,7 +35,7 @@ needs a Sally UX pass → Winston adjudicates (Andrew-delegated for this program
 
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **F20 — Hosted-demo read-only operator** | Loupe in the public demo as the behind-the-scenes view: a `demoOperator` role stripped to inspect-only grants, so every write is capability-denied at the platform — proving "even the console is capability-scoped" live; one-tap demo login; own subdomain + visitor disclaimer. Exposed only at public-launch. | ★★ | M | 🏗️ F20.1+F20.5 SHIPPED · F20.2 📋 build-ready (design §7) · F20.3 cross-lane (lattice) · exposure Andrew-gated · [design + exposure checklist](../../implementation-artifacts/loupe-f20-demo-operator-ux.md) |
+| **F20 — Hosted-demo read-only operator** | Loupe in the public demo as the behind-the-scenes view: a `demoOperator` role stripped to inspect-only grants, so every write is capability-denied at the platform — proving "even the console is capability-scoped" live; one-tap demo login; own subdomain + visitor disclaimer. Exposed only at public-launch. | ★★ | M | 🏗️ Loupe-side CLOSED (F20.1+F20.5+F20.2 SHIPPED) · F20.3 cross-lane (lattice) is the last exposure dep · exposure Andrew-gated · [design + exposure checklist](../../implementation-artifacts/loupe-f20-demo-operator-ux.md) |
 
 ## Component maintenance
 
@@ -52,7 +52,6 @@ needs a Sally UX pass → Winston adjudicates (Andrew-delegated for this program
 
 ## PO notes (rotation memory — capped, dated one-liners)
 
-- 2026-07-07 — **F15 CLOSED**: items 5-6 shipped (`56911ac`) — pkg-lifecycle root-admin gate (confused-deputy close) + live e2e proof under `up-full-capability` (consoleOperator RevokeActor allowed, InstallPackage denied). Also closed the cross-filed "Loupe read-only PG role" lattice item in the same commit (M5 wildcard-grant, not bypass).
 - 2026-07-07 — Follow-up (`6b1ab6e`): `56911ac` proved the mechanism but left the live default operator as root — actually re-scoped it (console-operator's own read-grant lens + persisted `loupe-operator.json`, `up-full` wires it automatically); verified live against real non-empty protected-table data.
 - 2026-07-18 — Café + Wellness curated onto the door-band Apps group (all four verticals render together, client-shelf empty) — `3470f7d`, verified live (all four green). Same session: **PO survey** (Loupe untouched since F15/2026-07-07) filed F16–F19 + the `designAhead`-trio maintenance row; the old "flip Gateway designAhead" Next-line is now that row (Gateway up-full trigger shipped `11cc15f`).
 - 2026-07-18 — F16 UX design drafted (Sally) + **adjudicated (Winston, Andrew-delegated)**, grounded live against the shipped read-models/op DDLs. Key finding: **both** loops are human-gated (Augur `augurDispatchPending` fires on `review.state="approved"`, not `pending`) — Augur is an action tab, not observe-only; its approve is *lighter* than capability's (server-side re-validation, no apply step). §8 forks resolved: approve=Loupe-in-process (Option A), apply=apply-in-Loupe (CLI fallback), reject=simple-confirm, Augur pending sorts by confidence. F16 → 📋 ready.
@@ -72,10 +71,13 @@ needs a Sally UX pass → Winston adjudicates (Andrew-delegated for this program
 
 - 2026-07-19 — **F20.5 SHIPPED**: proxied login unblocked (checklist #2). 3-layer review found four real defects (limiter amplification, XFF trust, int32 SSE truncation, parse/match asymmetry) — all fixed forward; departures recorded in [design §6.8](../../implementation-artifacts/loupe-f20-demo-operator-ux.md). New checklist item: single-hop only, no CDN. **Next:** F20.2; F20.3 is the remaining cross-lane exposure dep.
 
+- 2026-07-19 — **F20.2 SHIPPED → F20's Loupe half CLOSED** (F20.3 + Andrew's go-ahead are all that remain). Two reusable findings in [design §7.5](../../implementation-artifacts/loupe-f20-demo-operator-ux.md): a demo honesty surface must not promise the *platform's* grants while F20.3 is unshipped (and never for reveals — no actor on the vault RPC); and a suppression path deciding at render time needs the posture awaited before routing, since only the CSS-class path self-heals.
+
 ## Done log — loupe (newest first)
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-19 · `c645c772` · [Loupe/F20.2] Demo polish — inspect-only control reads (omission-denies classification), write-affordance suppression, `/login` disclaimer. 3-layer review fixed forward, live-verified, CI green
 - 2026-07-19 · `ca941e58` · [Loupe/F20.5] Public-origin posture — `LOUPE_PUBLIC_ORIGIN` (origin gate + Secure cookie), dev-auth⇒demo boot coupling, credential-exchange limiter, SSE cap knob. 3-layer review fixed forward, live-verified, CI green
 - 2026-07-19 · `018dd913` · [Loupe/F20.1] Hosted-demo read-only posture — `LOUPE_DEMO_MODE` (default off): method default-deny, boot guard, reveal denial, visitor banner. 3-layer review fixed forward, live-verified, CI green
 - 2026-07-19 · `14a1b490` · [Loupe/F19] Edge fleet — Personal Lens subscriber roster + per-device sync-gap triage (`#/edge`). 3-layer review fixed forward, live-verified on a real 7-device fleet, CI green
