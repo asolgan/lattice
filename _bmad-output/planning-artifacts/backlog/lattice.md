@@ -55,6 +55,9 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 | **[object-store-manager] cascade error/parse branches undertested** | The owner-tombstone-cascade's retry + malformed-input paths sit at 60–75% cov in an otherwise race-hardened, byte-deleting component: `cascadeDetach`'s NakWithDelay branches (60.0%), `submitDetach`'s marshal/publish-error returns (75.0%), `parseObjectLinkKey`'s owner-mismatch reject (66.7%), `splitVertexRoot`'s malformed-key reject (75.0%). | ★ | S | 📋 ready · `internal/objectmanager/cascade.go` |
 | **[Bootstrap] Stale `lattice.bootstrap.json` vs. recreated Core KV — no freshness probe** | `LoadOrGenerate` skips `SeedPrimordial` whenever the local JSON says `status="committed"` — it never probes Core KV for the bootstrap op tracker, so a recreated/empty Core KV behind a surviving file comes up "ready" with silently-empty reads; recurred 3× (`docs/components/bootstrap.md` §Known gap). | ★★ | S–M | 📋 ready · `cmd/bootstrap/main.go:68-126`, `internal/bootstrap/nanoid.go:331` |
 | **[Bootstrap] Seed idempotency skip-branches undertested** | `seedPrimordialPerKey`'s already-exists/`IsRevisionConflict` concurrent-create skip branches (63.6% cov) and the `persistWithStatus`/`LoadOrGenerate` crash-recovery paths (71–77% cov) are the package's lowest-covered code — the two-phase-commit crash paths the whole component leans on are its least-tested part (69.3% pkg cov vs. 80–90% elsewhere). | ★ | S | 📋 ready · `internal/bootstrap/primordial.go:321`, `internal/bootstrap/nanoid.go:331,617` |
+| **[Core/substrate] `ConsumerSupervisor` pending/outstanding accessors untested at the primitive level** | `PendingForConsumer`, the 2026-07-19-shipped `OutstandingForConsumer` (fixed a real rebuild-completion bug: unacked in-flight reads as drained), and `cancelAll`'s race-lost-`Add` unwind sit at 0% in substrate's own suite — exercised only indirectly via Refractor's integration test. | ★ | S | 📋 ready · `internal/substrate/consumer_supervisor.go:135,346,362,376` |
+| **[Core/processor] Outbox consumer `New`/`handle` under-covered** | `internal/processor/outbox/consumer.go`'s `New` (57.1%) and `handle` (62.5%) are the package's lowest-covered functions; `handle` is the crash-recovery/at-least-once-republish path (empty-body skip, poison-message Term, publish-Nak) the outbox's durability guarantee depends on. | ★ | XS–S | 📋 ready · `internal/processor/outbox/consumer.go:38,75` |
+| **[Core] Doc drift — processor.md UninstallPackage section is stale** | Says the client "currently submits tombstones unconditionally" and cites a `cmd/processor/CONTRACT-AMENDMENT-REQUEST.md` for the per-key-revision follow-up; both are stale — F-011 per-key OCC shipped (`installer.go` passes `expectedRevision` from a fresh `KVGet` per key) and the amendment file was deleted in a later cleanup. `docs/contracts/08-package-install.md` §Per-key-OCC is already correct. | ★ | XS | 📋 ready · `docs/components/processor.md:444-447`, `internal/pkgmgr/installer.go:822-830` |
 
 ### Survey log (round-robin rotation)
 
@@ -63,8 +66,6 @@ Components: Core · Weaver · Loom · Refractor · Bootstrap · object-store-man
 feature backlog; Loupe moved to its own lane, [loupe.md](loupe.md)). Survey the stalest
 (`git log -1 --format=%ct -- <path>`), note ONE dated line, rotate.
 
-- 2026-07-01 Designer — feature queue designed-out (all ~30 rows carry a design); resolved stale L309 (link-tombstone subsumed by link-aspect design, latency-rollup seq behind HA). Remaining 📋 = owner test-coverage.
-- 2026-07-02 Refractor (healthy, clean lint; retraction/rollup already tracked; filed capability-pipeline-link-aspect-fanout-untested + natskv-guard-edge-branches).
 - 2026-07-02 Arch-review, all components — filed the intake section below; Refractor findings held for the post-update re-review; root-identity designation → Designer.
 - 2026-07-02 Designer — object-plane-nats-permissions (★★★ arch #2; `$O.core-objects.>` grant fix + first natsperm object vectors; no contract change) (→ 📐).
 - 2026-07-05 objmgr-and-bootstrap-component-pages CLOSED — bootstrap/vault/privacyworker pages written, README+architecture-overview updated, Bootstrap + object-store-manager added to this rotation.
@@ -75,7 +76,8 @@ feature backlog; Loupe moved to its own lane, [loupe.md](loupe.md)). Survey the 
 - 2026-07-18 Refractor (healthy, build/lint clean; confirmed all 8 07-06-review findings already resolved in code — no new rows).
 - 2026-07-19 object-store-manager (67.5%/91.4% cov, clean lint, no TODOs; filed doc-drift fix + cascade error-branch coverage).
 - 2026-07-19 Bootstrap (69.3% cov, clean lint, no TODOs; filed stale-bootstrap-json-no-freshness-probe (★★, the documented Known-gap) + seed-idempotency-branch-coverage).
-- **Next:** Core.
+- 2026-07-19 Core (processor 81.8%/substrate 76.2% cov, clean lint, no TODOs; filed consumer-supervisor-accessors-untested + outbox-consumer-undercovered + processor.md UninstallPackage doc-drift).
+- **Next:** Weaver.
 
 ## Arch-review intake — platform hardening & doc/contract truth
 
