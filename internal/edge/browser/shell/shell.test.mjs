@@ -221,6 +221,22 @@ test("onPeerChange unsubscribe stops delivery; close tears the channel down", as
   leader.close();
 });
 
+test("getToken re-exposes config's own live getter, not a snapshot", async () => {
+  // cmd/facet's wasm host (internal/edge/browser/host.go's shellGetTokenFunc)
+  // pulls the current token from THIS method so the Gateway-write path shares
+  // the same rotating credential the WS transport's reconnect authenticator
+  // already reads from config.getToken (createSyncCore, above) — one source
+  // of truth for "what's the current token", not two that can drift.
+  let current = "token-a";
+  const shell = createShell({ identityId: "U", channel: null, createCore: makeFakeCore, getToken: () => current });
+
+  assert.equal(shell.getToken(), "token-a");
+  current = "token-b";
+  assert.equal(shell.getToken(), "token-b", "a later rotation must reach the shell with no reassembly");
+
+  shell.close();
+});
+
 test("an empty or missing key is not broadcast", async () => {
   const bus = makeBroadcastBus();
   const leader = createShell({ identityId: "U", channel: bus.channel(), createCore: makeFakeCore });

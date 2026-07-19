@@ -36,8 +36,13 @@ type server struct {
 	devSigner  *devSigner
 	// authn verifies a session cookie's token (session.go); nil when
 	// devSigner is nil (no minter configured ⇒ nothing to verify).
-	authn   *auth.Authenticator
-	engines *engineManager
+	authn *auth.Authenticator
+	// refreshAuthn is authn's sliding-session sibling — same trusted key,
+	// sessionRefreshGrace tolerance instead of the strict default — and
+	// backs ONLY POST /api/session/refresh (session.go). Nil under the same
+	// condition as authn.
+	refreshAuthn *auth.Authenticator
+	engines      *engineManager
 	// bootIdentityID is the boot-env EDGE_IDENTITY_ID fallback identity —
 	// see resolveSessionIdentity.
 	bootIdentityID string
@@ -95,6 +100,7 @@ func (s *server) registerRoutes(mux *http.ServeMux) {
 	inner.HandleFunc(devLoginPath, s.handleDevLogin)
 	inner.HandleFunc(logoutPath, s.handleLogout)
 	inner.HandleFunc(whoamiPath, s.handleWhoami)
+	inner.HandleFunc(sessionRefreshPath, s.handleSessionRefresh)
 	mux.Handle("/", s.requireSession(inner))
 }
 

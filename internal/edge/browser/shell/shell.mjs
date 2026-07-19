@@ -366,6 +366,14 @@ export function createShell(config) {
     },
     stopConsumer: () => core.stopConsumer(),
     request: (subject, data, actor) => core.request(subject, data, actor),
+    // getToken re-exposes config's own getter — the SAME live source the WS
+    // transport's authenticator re-reads on every reconnect (createSyncCore's
+    // connect(), above) — so the wasm host's Gateway-write submitter
+    // (internal/edge/browser/host.go's shellGetTokenFunc) can pull the
+    // current token too instead of the value it was started with. One
+    // source of truth for "what's the current token", read by both
+    // transports.
+    getToken: () => config.getToken(),
     // signalChange is the leader's call after a delta lands, so followers learn
     // the shared store moved. A no-op when there is no channel (single-context
     // hosts) or the key is empty.

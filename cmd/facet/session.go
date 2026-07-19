@@ -31,15 +31,30 @@ const devLoginPath = "/api/dev-login"
 const logoutPath = "/api/logout"
 const whoamiPath = "/api/whoami"
 const loginOptionsPath = "/api/login-options"
+const sessionRefreshPath = "/api/session/refresh"
+
+// sessionRefreshGrace is how far past a session token's stated exp POST
+// /api/session/refresh still honors it — the sliding-session renewal window
+// (edge-browser-node-design.md's deferred "Fire 3's refresh endpoint",
+// closing the gap boot.mjs's getToken comment named). The proactive refresh
+// loop the browser-native shell runs (boot.mjs) renews well before expiry in
+// the ordinary case, so this grace exists for the case that loop itself was
+// delayed — a backgrounded tab whose timers the browser throttled, a laptop
+// that slept — not as the normal renewal path.
+const sessionRefreshGrace = 5 * time.Minute
 
 // isSessionAuthExempt reports whether path is reachable with no session
 // cookie at all — the login page, the endpoints that establish/clear one,
 // and /api/claim (a not-yet-claimed identity has no session to present;
 // that ceremony is how a fresh user gets into the system in the first
-// place). Mirrors cmd/loupe/readauth.go's isOperatorAuthExempt.
+// place). /api/session/refresh belongs here too: it is reachable with an
+// already-expired (within grace) cookie by design, so it does its own
+// verification (handleSessionRefresh, against the grace-tolerant
+// refreshAuthn) rather than requireSession's strict one. Mirrors
+// cmd/loupe/readauth.go's isOperatorAuthExempt.
 func isSessionAuthExempt(path string) bool {
 	switch path {
-	case loginPagePath, devLoginPath, logoutPath, whoamiPath, loginOptionsPath, "/api/claim":
+	case loginPagePath, devLoginPath, logoutPath, whoamiPath, loginOptionsPath, sessionRefreshPath, "/api/claim":
 		return true
 	default:
 		return false
@@ -453,27 +468,92 @@ func (s *server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// setupSessionAuthn builds the verifier requireSession uses to check a
-// session cookie's token — the same shared dev key signer signs with,
-// loaded via the identical DevMode:true path setupDevSigner/cmd/loupe's
-// setupOperatorAuth already use, so a token minted here or by /api/claim's
-// throwaway credential both verify. Returns (nil, nil) when signer is nil —
-// session verification is meaningless without a signer to have minted the
-// cookie in the first place.
-func setupSessionAuthn(logger *slog.Logger, signer *devSigner) (*auth.Authenticator, error) {
+// sessionRefreshResponse is what POST /api/session/refresh returns: the
+// fresh bearer token, in the raw. Browser-native mode's boot.mjs needs the
+// literal value — it drives nats.js and the wasm host's Gateway submitter
+// directly, the same trust window.__EDGE_BOOT__'s initial injection already
+// extends the browser (bootConfigForSession) — alongside re-setting the
+// HttpOnly cookie so a plain page navigation stays signed in too.
+type sessionRefreshResponse struct {
+	Token     string `json:"token"`
+	ExpiresAt string `json:"expiresAt"`
+}
+
+// handleSessionRefresh implements POST /api/session/refresh — the
+// sliding-session renewal edge-browser-node-design.md's boot.mjs comment
+// named as Fire 3's still-missing endpoint. It verifies the current session
+// cookie with s.refreshAuthn's sessionRefreshGrace tolerance (wider than
+// every other session-gated request's strict default), then mints a fresh
+// token for the SAME identity and re-sets the cookie. It deliberately does
+// NOT re-run handleDevLogin's credential-binding resolution — that resolves
+// WHICH identity a login opens, a decision a refresh of an already-open
+// session never revisits.
+func (s *server) handleSessionRefresh(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		s.writeError(w, http.StatusMethodNotAllowed, "POST required")
+		return
+	}
+	if s.refreshAuthn == nil {
+		s.writeError(w, http.StatusNotFound, "refresh is disabled (FACET_DEV_AUTH not set)")
+		return
+	}
+	tok := sessionCookieToken(r)
+	if tok == "" {
+		s.writeError(w, http.StatusUnauthorized, "no session to refresh")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	actor, err := s.refreshAuthn.Authenticate(ctx, tok)
+	if err != nil {
+		s.writeError(w, http.StatusUnauthorized, "session cannot be refreshed; sign in again")
+		return
+	}
+	if !s.personaAllowed(actor.Subject) {
+		// The fence can only have narrowed since login (an operator edits
+		// FACET_DEMO_PERSONAS and restarts, which re-reads it at boot) —
+		// never let a stale session's refresh widen what it can still do.
+		s.writeError(w, http.StatusForbidden, "this deployment only signs in the listed demo personas")
+		return
+	}
+	token, exp, err := s.devSigner.mint(actor.Subject)
+	if err != nil {
+		s.writeError(w, http.StatusInternalServerError, "mint refreshed session token: "+err.Error())
+		return
+	}
+	s.setSessionCookie(w, token, exp)
+	s.writeJSON(w, http.StatusOK, sessionRefreshResponse{Token: token, ExpiresAt: exp.UTC().Format(time.RFC3339)})
+}
+
+// setupSessionAuthn builds the two verifiers session cookies use — the same
+// shared dev key signer signs with, loaded via the identical DevMode:true
+// path setupDevSigner/cmd/loupe's setupOperatorAuth already use, so a token
+// minted here, by /api/claim's throwaway credential, or by
+// handleSessionRefresh, all verify against both. strict enforces
+// auth.DefaultClockSkew and backs requireSession's ordinary per-request
+// check; refresh additionally tolerates sessionRefreshGrace past a token's
+// exp and backs ONLY handleSessionRefresh (see its doc). Both are
+// (nil, nil, nil) when signer is nil — session verification is meaningless
+// without a signer to have minted the cookie in the first place.
+func setupSessionAuthn(logger *slog.Logger, signer *devSigner) (strict, refresh *auth.Authenticator, err error) {
 	if signer == nil {
-		return nil, nil
+		return nil, nil, nil
 	}
 	trustedKeys, trustedSpecs, err := auth.LoadTrustedKeys(auth.KeySourceConfig{
 		DevMode:    true,
 		DevKeyPath: os.Getenv("FACET_DEV_PUBLIC_KEY_PATH"),
 	}, func(msg string) { logger.Warn(msg) })
 	if err != nil {
-		return nil, fmt.Errorf("dev-auth: load shared dev trust key: %w", err)
+		return nil, nil, fmt.Errorf("dev-auth: load shared dev trust key: %w", err)
 	}
-	verifier, err := auth.NewVerifier(auth.Config{Keys: trustedKeys, KeyInfo: auth.KeyInfoFromSpecs(trustedSpecs)})
+	keyInfo := auth.KeyInfoFromSpecs(trustedSpecs)
+	verifier, err := auth.NewVerifier(auth.Config{Keys: trustedKeys, KeyInfo: keyInfo})
 	if err != nil {
-		return nil, fmt.Errorf("dev-auth: build session verifier: %w", err)
+		return nil, nil, fmt.Errorf("dev-auth: build session verifier: %w", err)
 	}
-	return auth.NewAuthenticator(verifier, nil), nil
+	refreshVerifier, err := auth.NewVerifier(auth.Config{Keys: trustedKeys, KeyInfo: keyInfo, ClockSkew: sessionRefreshGrace})
+	if err != nil {
+		return nil, nil, fmt.Errorf("dev-auth: build session refresh verifier: %w", err)
+	}
+	return auth.NewAuthenticator(verifier, nil), auth.NewAuthenticator(refreshVerifier, nil), nil
 }

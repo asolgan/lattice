@@ -31,8 +31,15 @@ import (
 // back into this package's graph. A drift between them is caught by both hosts
 // exercising the same Gateway in the cross-machine e2e (W4).
 type fetchSubmitter struct {
-	url   string
-	token string
+	url string
+	// getToken returns the current bearer token, called fresh on every
+	// Submit rather than captured once — the credential is exp-bounded (the
+	// same JWT the WS shell's own getToken re-supplies on reconnect,
+	// internal/edge/browser/shell/shell.mjs), so a long-lived submitter that
+	// only ever read a token captured at Start() would start failing every
+	// submit once it expired (agent.ErrCredentialRejected, sticky sign-out)
+	// even after a refresh kept the shell's own connection alive.
+	getToken func() string
 }
 
 // gatewayOperationRequest mirrors agent's unexported wire shape for POST
@@ -58,7 +65,8 @@ var _ agent.Submitter = (*fetchSubmitter)(nil)
 // so the drain loop's errors.Is check (host.runDrainLoop) still fires the
 // sign-out flow.
 func (s *fetchSubmitter) Submit(ctx context.Context, env *opwire.OperationEnvelope) (*opwire.OperationReply, error) {
-	if s.token == "" {
+	token := s.getToken()
+	if token == "" {
 		return nil, fmt.Errorf("edge/browser: no gateway credential available to submit with")
 	}
 	req := gatewayOperationRequest{
@@ -79,7 +87,7 @@ func (s *fetchSubmitter) Submit(ctx context.Context, env *opwire.OperationEnvelo
 		return nil, fmt.Errorf("edge/browser: marshal gateway request: %w", err)
 	}
 
-	status, raw, err := s.fetch(ctx, body)
+	status, raw, err := s.fetch(ctx, body, token)
 	if err != nil {
 		return nil, fmt.Errorf("edge/browser: call gateway: %w", err)
 	}
@@ -130,10 +138,10 @@ func isCredentialRejection(status int) bool {
 // fetch issues the POST and returns the HTTP status plus the response body. It
 // runs on the caller's goroutine (never a js.Func callback), so the two awaits
 // — one for the Response, one for its text — are safe.
-func (s *fetchSubmitter) fetch(ctx context.Context, body []byte) (int, []byte, error) {
+func (s *fetchSubmitter) fetch(ctx context.Context, body []byte, token string) (int, []byte, error) {
 	headers := js.Global().Get("Object").New()
 	headers.Set("Content-Type", "application/json")
-	headers.Set("Authorization", "Bearer "+s.token)
+	headers.Set("Authorization", "Bearer "+token)
 
 	init := js.Global().Get("Object").New()
 	init.Set("method", "POST")

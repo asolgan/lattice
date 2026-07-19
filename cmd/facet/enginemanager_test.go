@@ -2,10 +2,14 @@ package main
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/asolgan/lattice/internal/testutil"
 )
 
 // TestEngineManager_AcquireWithNoSignerFailsClean proves Acquire refuses to
@@ -94,4 +98,53 @@ func TestEngineManager_RefCountingLogic(t *testing.T) {
 	m.mu.Unlock()
 	require.Equal(t, 1, e.refCount)
 	require.True(t, e.idleSince.IsZero())
+}
+
+// TestEngineManager_AcquireRebuildsAnEngineWhosePermanentlyClosed proves the
+// backstop newEngine's TokenHandler-based refresh is meant to make rare, not
+// load-bearing: a cached engine whose NATS connection has permanently closed
+// (nats.go's own give-up after repeated auth errors, or any other terminal
+// failure) is evicted and replaced by a fresh one on the next Acquire, rather
+// than being handed back forever — the pre-fix dead end this closes.
+//
+// A real embedded NATS server is used (not a bare *engine{} stand-in, unlike
+// the other tests in this file): the liveness check reads the real
+// *substrate.Conn's underlying *nats.Conn.IsClosed(), which a fake with a nil
+// conn can't exercise, and proving REBUILD (not just eviction) needs a real
+// dial to succeed for the replacement.
+func TestEngineManager_AcquireRebuildsAnEngineWhosePermanentlyClosed(t *testing.T) {
+	t.Parallel()
+	url := testutil.StartEmbeddedNATS(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	m := newEngineManager(ctx, engineManagerDeps{
+		engineConfig: engineConfig{
+			NATSURL:    url,
+			GatewayURL: "http://127.0.0.1:1", // never dialed: no intents are enqueued in this test
+			StoreDir:   t.TempDir(),
+			Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		},
+		Signer: testDevSigner(t),
+	})
+	identity := testNanoID(t)
+
+	eng1, err := m.Acquire(identity)
+	require.NoError(t, err)
+	require.False(t, eng1.conn.NATS().IsClosed(), "a freshly Acquired engine's connection must be live")
+
+	// Simulate nats.go's own permanent give-up (processAuthError's abort
+	// after two identical auth errors on the same server) — from the
+	// engine's point of view this looks identical: the connection is closed
+	// and nats.go will never reconnect it on its own.
+	eng1.conn.NATS().Close()
+	require.True(t, eng1.conn.NATS().IsClosed())
+
+	eng2, err := m.Acquire(identity)
+	require.NoError(t, err)
+	require.NotSame(t, eng1, eng2, "a dead-conn engine must be rebuilt, not handed back")
+	require.False(t, eng2.conn.NATS().IsClosed(), "the rebuilt engine's connection must be live")
+
+	m.Release(identity)
+	eng2.Close()
 }

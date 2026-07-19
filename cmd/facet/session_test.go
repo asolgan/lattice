@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -235,9 +237,10 @@ func TestRequireSession_ResolvedIdentityReachesHandlerInContext(t *testing.T) {
 }
 
 func TestSetupSessionAuthn_NilSignerYieldsNilAuthenticator(t *testing.T) {
-	authn, err := setupSessionAuthn(slog.Default(), nil)
+	authn, refreshAuthn, err := setupSessionAuthn(slog.Default(), nil)
 	require.NoError(t, err)
 	require.Nil(t, authn)
+	require.Nil(t, refreshAuthn)
 }
 
 func TestParseDemoPersonas(t *testing.T) {
@@ -315,4 +318,217 @@ func TestHandleLoginOptions(t *testing.T) {
 		require.Equal(t, http.StatusOK, w.Code)
 		require.JSONEq(t, `{"personas":[{"id":"`+id+`","label":"Riley","sub":"Unit 1"}]}`, w.Body.String())
 	})
+}
+
+// buildTestVerifierWithSkew mirrors buildTestVerifier with a caller-chosen
+// ClockSkew — handleSessionRefresh's grace-window tests need a WIDER skew
+// than the ordinary strict verifier to prove the refresh endpoint tolerates
+// what requireSession's own check would reject.
+func buildTestVerifierWithSkew(pub *rsa.PublicKey, kid string, skew time.Duration) (*auth.Authenticator, error) {
+	v, err := auth.NewVerifier(auth.Config{
+		Keys:      map[string]crypto.PublicKey{kid: pub},
+		KeyInfo:   map[string]auth.KeyInfo{kid: {Spec: auth.BindingSpec{Mode: auth.ModeNanoID}}},
+		ClockSkew: skew,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return auth.NewAuthenticator(v, nil), nil
+}
+
+// sessionRefreshTestServer builds a server whose authn/refreshAuthn pair
+// mirrors setupSessionAuthn's real split (same key, strict vs. grace skew) —
+// production wires both from one signer; these tests do the same so a
+// grace-window assertion is comparing the two verifiers setupSessionAuthn
+// would actually build, not a hand-tuned stand-in.
+func sessionRefreshTestServer(t *testing.T, signer *devSigner, extra func(*server)) *server {
+	t.Helper()
+	authn, err := buildTestVerifier(&signer.priv.PublicKey, signer.kid)
+	require.NoError(t, err)
+	refreshAuthn, err := buildTestVerifierWithSkew(&signer.priv.PublicKey, signer.kid, sessionRefreshGrace)
+	require.NoError(t, err)
+	srv := &server{logger: slog.Default(), devSigner: signer, authn: authn, refreshAuthn: refreshAuthn, loopback: true}
+	if extra != nil {
+		extra(srv)
+	}
+	return srv
+}
+
+// mintAt mints identityID's token as if the signer's clock read `when` —
+// gives a test precise control over a token's iat/exp instead of racing
+// time.Now()'s one-second JWT resolution. RS256 is a deterministic signature
+// scheme, so two mints of the SAME subject within the same wall-clock second
+// produce a byte-identical token — a real, harmless property, not a bug, but
+// one a test proving "this call minted something new" must route around.
+func mintAt(t *testing.T, signer *devSigner, identityID string, when time.Time) string {
+	t.Helper()
+	realNow := signer.now
+	signer.now = func() time.Time { return when }
+	defer func() { signer.now = realNow }()
+	token, _, err := signer.mint(identityID)
+	require.NoError(t, err)
+	return token
+}
+
+// mintExpiredBy mints identityID's token as if it were minted expiredBy ago
+// relative to now — i.e. the returned token's exp already lies expiredBy
+// behind wall-clock time. Used to construct a token that is expired-but-
+// within-grace (expiredBy < sessionRefreshGrace) or expired-past-grace
+// (expiredBy > sessionRefreshGrace) without waiting on a real clock.
+func mintExpiredBy(t *testing.T, signer *devSigner, identityID string, expiredBy time.Duration) string {
+	t.Helper()
+	return mintAt(t, signer, identityID, time.Now().Add(-signer.ttl).Add(-expiredBy))
+}
+
+func TestHandleSessionRefresh_DisabledWithoutDevSigner(t *testing.T) {
+	srv := &server{logger: slog.Default()}
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, sessionRefreshPath, nil)
+	srv.handleSessionRefresh(w, r)
+	require.Equal(t, http.StatusNotFound, w.Code)
+}
+
+func TestHandleSessionRefresh_MethodNotAllowed(t *testing.T) {
+	srv := sessionRefreshTestServer(t, testDevSigner(t), nil)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodGet, sessionRefreshPath, nil)
+	srv.handleSessionRefresh(w, r)
+	require.Equal(t, http.StatusMethodNotAllowed, w.Code)
+}
+
+func TestHandleSessionRefresh_NoCookieUnauthorized(t *testing.T) {
+	srv := sessionRefreshTestServer(t, testDevSigner(t), nil)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, sessionRefreshPath, nil)
+	srv.handleSessionRefresh(w, r)
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+func TestHandleSessionRefresh_InvalidCookieRejected(t *testing.T) {
+	srv := sessionRefreshTestServer(t, testDevSigner(t), nil)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, sessionRefreshPath, nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "not-a-jwt"})
+	srv.handleSessionRefresh(w, r)
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+// TestHandleSessionRefresh_ValidCookieRotatesTokenAndCookie is the ordinary
+// case: a fresh, unexpired session refreshes cleanly — a new token, a new
+// Set-Cookie, both for the SAME identity, and the fresh cookie verifies
+// against the ordinary strict authn exactly like a login-minted one would.
+func TestHandleSessionRefresh_ValidCookieRotatesTokenAndCookie(t *testing.T) {
+	signer := testDevSigner(t)
+	srv := sessionRefreshTestServer(t, signer, nil)
+	identity := testNanoID(t)
+	// Backdated a few seconds so its iat provably differs from the refresh's
+	// own mint below — RS256 is deterministic, so two mints within the same
+	// wall-clock second are byte-identical (see mintAt's doc).
+	oldToken := mintAt(t, signer, identity, time.Now().Add(-5*time.Second))
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, sessionRefreshPath, nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: oldToken})
+	srv.handleSessionRefresh(w, r)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var body sessionRefreshResponse
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
+	require.NotEmpty(t, body.Token)
+	require.NotEqual(t, oldToken, body.Token, "a refresh must mint a NEW token, not echo the old one")
+	require.NotEmpty(t, body.ExpiresAt)
+
+	var cookie *http.Cookie
+	for _, c := range w.Result().Cookies() {
+		if c.Name == sessionCookieName {
+			cookie = c
+		}
+	}
+	require.NotNil(t, cookie, "handleSessionRefresh must re-set the session cookie")
+	require.Equal(t, body.Token, cookie.Value, "the response token and the cookie must be the SAME fresh credential")
+
+	// The fresh token verifies against the ordinary strict authenticator, for
+	// the SAME identity — a page reload right after a refresh must not bounce
+	// to /login.
+	actor, err := srv.authn.Authenticate(context.Background(), body.Token)
+	require.NoError(t, err)
+	require.Equal(t, identity, actor.Subject)
+}
+
+// TestHandleSessionRefresh_GraceWindowAcceptsRecentlyExpiredToken proves the
+// sliding-session tolerance: a cookie that strict verification would already
+// reject (past auth.DefaultClockSkew) still refreshes when it's within
+// sessionRefreshGrace — the tab-backgrounded/laptop-asleep case the endpoint
+// exists for.
+func TestHandleSessionRefresh_GraceWindowAcceptsRecentlyExpiredToken(t *testing.T) {
+	signer := testDevSigner(t)
+	srv := sessionRefreshTestServer(t, signer, nil)
+	identity := testNanoID(t)
+	expired := mintExpiredBy(t, signer, identity, 2*time.Minute) // < sessionRefreshGrace (5m), > strict skew (60s)
+
+	// The strict authenticator (every other session-gated request) already
+	// refuses this token — proving the grace test below is actually testing
+	// a WIDER tolerance, not one that would pass anyway.
+	_, err := srv.authn.Authenticate(context.Background(), expired)
+	require.Error(t, err, "a 2-minute-expired token must already fail strict verification")
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, sessionRefreshPath, nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: expired})
+	srv.handleSessionRefresh(w, r)
+	require.Equal(t, http.StatusOK, w.Code, "a token expired within the grace window must still refresh")
+
+	var body sessionRefreshResponse
+	require.NoError(t, json.NewDecoder(w.Body).Decode(&body))
+	actor, err := srv.authn.Authenticate(context.Background(), body.Token)
+	require.NoError(t, err)
+	require.Equal(t, identity, actor.Subject)
+}
+
+// TestHandleSessionRefresh_BeyondGraceWindowRejected proves the grace window
+// is bounded, not unlimited: a session dead long enough has no refresh path
+// and must fall back to /login.
+func TestHandleSessionRefresh_BeyondGraceWindowRejected(t *testing.T) {
+	signer := testDevSigner(t)
+	srv := sessionRefreshTestServer(t, signer, nil)
+	identity := testNanoID(t)
+	expired := mintExpiredBy(t, signer, identity, sessionRefreshGrace+time.Minute)
+
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, sessionRefreshPath, nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: expired})
+	srv.handleSessionRefresh(w, r)
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+}
+
+// TestHandleSessionRefresh_PersonaFence mirrors TestHandleDevLogin_PersonaFence
+// for the refresh path: a session for an identity the CURRENT persona list no
+// longer names must not silently keep renewing.
+func TestHandleSessionRefresh_PersonaFence(t *testing.T) {
+	signer := testDevSigner(t)
+	allowed, outsider := testNanoID(t), testNanoID(t)
+	srv := sessionRefreshTestServer(t, signer, func(s *server) {
+		s.personas = []demoPersona{{ID: allowed, Label: "Riley"}}
+	})
+
+	outsiderToken, _, err := signer.mint(outsider)
+	require.NoError(t, err)
+	w := httptest.NewRecorder()
+	r := httptest.NewRequest(http.MethodPost, sessionRefreshPath, nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: outsiderToken})
+	srv.handleSessionRefresh(w, r)
+	require.Equal(t, http.StatusForbidden, w.Code)
+
+	allowedToken, _, err := signer.mint(allowed)
+	require.NoError(t, err)
+	w = httptest.NewRecorder()
+	r = httptest.NewRequest(http.MethodPost, sessionRefreshPath, nil)
+	r.AddCookie(&http.Cookie{Name: sessionCookieName, Value: allowedToken})
+	srv.handleSessionRefresh(w, r)
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
+func TestSessionRefreshPath_ExemptFromRequireSession(t *testing.T) {
+	require.True(t, isSessionAuthExempt(sessionRefreshPath),
+		"the refresh endpoint does its own grace-tolerant verification; requireSession's strict gate must not run first")
 }

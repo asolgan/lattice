@@ -101,16 +101,23 @@ export function readBootConfig() {
 //   latticeEdge  the global the wasm main registers ({start(config) -> Promise<api>})
 //   createShell  internal/edge/browser/shell's factory
 //   cfg          a readBootConfig() result
-export async function assembleEdgeSource({ latticeEdge, createShell, cfg, logger = console }) {
+//   getToken     () => string, the current bearer token — defaults to cfg.token
+//                (a fixed snapshot) when omitted; boot() below instead passes a
+//                createTokenRefresher getter so this reads the rotating value.
+export async function assembleEdgeSource({ latticeEdge, createShell, cfg, getToken, logger = console }) {
+  const currentToken = typeof getToken === "function" ? getToken : () => cfg.token;
   const shell = createShell({
     url: cfg.wsUrl,
     identityId: cfg.identityId,
     deviceId: cfg.deviceId,
     // getToken is a getter, not a fixed string, so nats.js re-supplies the
     // current token on every reconnect (the server drops the connection at
-    // authz expiry). In inc 3 the token is static; Fire 3's refresh endpoint
-    // makes this return a rotating token without touching this seam.
-    getToken: () => cfg.token,
+    // authz expiry) — and, via createShell's own getToken passthrough, so does
+    // the wasm host's Gateway-write submitter (internal/edge/browser/host.go's
+    // shellGetTokenFunc). currentToken is createTokenRefresher's live cell,
+    // not the cfg.token snapshot: this is what makes a refreshed session
+    // actually reach both transports rather than only the page's initial load.
+    getToken: currentToken,
     logger,
   });
 
@@ -119,7 +126,7 @@ export async function assembleEdgeSource({ latticeEdge, createShell, cfg, logger
     identityId: cfg.identityId,
     deviceId: cfg.deviceId,
     gatewayUrl: cfg.gatewayUrl,
-    token: cfg.token,
+    token: currentToken(),
     types: cfg.types,
     anchors: cfg.anchors,
     storeName: cfg.storeName,
@@ -133,6 +140,72 @@ export async function assembleEdgeSource({ latticeEdge, createShell, cfg, logger
   shell.deliver = api.deliver;
 
   return edgeSource(api);
+}
+
+// sessionRefreshPath is cmd/facet's sliding-session renewal endpoint
+// (session.go's handleSessionRefresh). Same-origin POST, so the HttpOnly
+// session cookie rides automatically; the response body carries the fresh
+// token's raw value for this in-page engine (the cookie alone cannot
+// authenticate a WS CONNECT or a fetch Authorization header).
+const sessionRefreshPath = "/api/session/refresh";
+
+// refreshIntervalMs sits comfortably inside the session's TTL (devTokenTTL,
+// cmd/facet/claim.go — 30 minutes today), so the common case renews with
+// margin to spare and never needs the server's sessionRefreshGrace window at
+// all. That window exists for the case THIS interval was delayed — a
+// backgrounded tab's timers throttled by the browser, a laptop that slept —
+// which the visibilitychange check below also targets.
+const refreshIntervalMs = 20 * 60 * 1000;
+
+// createTokenRefresher builds the sliding-session renewal loop: refresh()
+// does one POST to sessionRefreshPath and, on success, updates the token
+// cell getToken() reads; startLoop() wires the interval + tab-visibility
+// triggers around it. Split from startLoop so a test can drive refresh()
+// directly without a real timer or a DOM (mirrors assembleEdgeSource/boot's
+// own split — the logic is unit-testable, the browser glue is not).
+//
+// A failed refresh (network hiccup, or the session is truly dead past even
+// the server's grace window) logs and leaves the cell at its last known
+// value — it does not invent a new failure signal. The existing paths
+// (nats.js's reconnect, the wasm host's ErrCredentialRejected → revoked
+// frame) already surface a credential that never recovers; this loop's job
+// is only to make reaching those paths the rare exception instead of the
+// 30-minute-in rule.
+export function createTokenRefresher(initialToken, { fetchImpl = fetch, logger = console } = {}) {
+  let current = initialToken;
+  let lastRefreshAt = 0;
+
+  async function refresh() {
+    try {
+      const res = await fetchImpl(sessionRefreshPath, { method: "POST" });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      const body = await res.json();
+      if (!body || typeof body.token !== "string" || !body.token) {
+        throw new Error("malformed refresh response");
+      }
+      current = body.token;
+      lastRefreshAt = Date.now();
+      return true;
+    } catch (err) {
+      logger.warn?.("facet: session refresh failed; keeping the current token", err?.message ?? err);
+      return false;
+    }
+  }
+
+  function startLoop() {
+    if (typeof globalThis.setInterval === "function") {
+      globalThis.setInterval(refresh, refreshIntervalMs);
+    }
+    if (globalThis.document?.addEventListener) {
+      globalThis.document.addEventListener("visibilitychange", () => {
+        if (globalThis.document.visibilityState === "visible" && Date.now() - lastRefreshAt > refreshIntervalMs) {
+          refresh();
+        }
+      });
+    }
+  }
+
+  return { getToken: () => current, refresh, startLoop };
 }
 
 // loadScript injects a classic script (wasm_exec.js defines globalThis.Go) and
@@ -167,7 +240,9 @@ async function boot(cfg) {
   }
   if (!globalThis.latticeEdge) throw new Error("facet: wasm engine did not register latticeEdge");
   const { createShell } = await import(cfg.shellUrl);
-  return assembleEdgeSource({ latticeEdge: globalThis.latticeEdge, createShell, cfg });
+  const refresher = createTokenRefresher(cfg.token);
+  refresher.startLoop();
+  return assembleEdgeSource({ latticeEdge: globalThis.latticeEdge, createShell, cfg, getToken: refresher.getToken });
 }
 
 const cfg = readBootConfig();

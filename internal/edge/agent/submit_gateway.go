@@ -64,16 +64,32 @@ type gatewayErrorBody struct {
 type GatewaySubmitter struct {
 	// URL is the Gateway's base URL, e.g. "http://localhost:8080".
 	URL string
-	// Token is the bearer JWT (Contract #11) presented on every submit —
-	// the same EDGE_TOKEN the node's NATS connection authenticates with.
+	// Token is the bearer JWT (Contract #11) presented on every submit when
+	// TokenSource is nil — the same EDGE_TOKEN the node's NATS connection
+	// authenticates with.
 	Token string
+	// TokenSource, when set, is called for the current bearer token on every
+	// Submit instead of the fixed Token field — the seam a caller whose
+	// credential expires and can be locally re-minted uses to present a
+	// fresh token on every call rather than replaying one the Gateway has
+	// already refused (the JWT's own `exp`, not just NATS's, bounds how long
+	// a captured-once Token stays usable for a long-lived submitter).
+	TokenSource func() (string, error)
 	// Client defaults to http.DefaultClient when nil.
 	Client *http.Client
 }
 
 // Submit implements Submitter.
 func (g *GatewaySubmitter) Submit(ctx context.Context, env *opwire.OperationEnvelope) (*opwire.OperationReply, error) {
-	if g.Token == "" {
+	token := g.Token
+	if g.TokenSource != nil {
+		t, err := g.TokenSource()
+		if err != nil {
+			return nil, fmt.Errorf("edge/agent: refresh gateway credential: %w", err)
+		}
+		token = t
+	}
+	if token == "" {
 		return nil, fmt.Errorf("edge/agent: no gateway credential available to submit with")
 	}
 	req := gatewayOperationRequest{
@@ -98,7 +114,7 @@ func (g *GatewaySubmitter) Submit(ctx context.Context, env *opwire.OperationEnve
 		return nil, fmt.Errorf("build gateway request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+g.Token)
+	httpReq.Header.Set("Authorization", "Bearer "+token)
 
 	client := g.Client
 	if client == nil {

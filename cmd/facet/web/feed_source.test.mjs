@@ -13,7 +13,7 @@ import vm from "node:vm";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readBootConfig, assembleEdgeSource, resolveDeviceId } from "./boot.mjs";
+import { readBootConfig, assembleEdgeSource, resolveDeviceId, createTokenRefresher } from "./boot.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const appSrc = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
@@ -295,4 +295,98 @@ test("assembleEdgeSource configures the shell, starts the engine, and wires the 
   assert.equal(typeof src.start, "function");
   assert.equal(typeof src.enqueue, "function");
   assert.equal(typeof src.close, "function");
+});
+
+test("assembleEdgeSource wires a supplied getToken into the shell and the initial start() call, live", async () => {
+  // The sliding-session fix (session.go's handleSessionRefresh + boot()'s
+  // createTokenRefresher below): the shell must read a LIVE getter, not the
+  // cfg.token snapshot the page was served with — otherwise a rotated token
+  // never reaches the WS reconnect authenticator or the wasm host's Gateway
+  // submitter (internal/edge/browser/host.go's shellGetTokenFunc reads the
+  // SAME shell.getToken this proves gets wired).
+  const cfg = { identityId: "vtx.identity.abc", deviceId: "dev1", wsUrl: "ws://x", gatewayUrl: "http://gw", token: "stale-snapshot" };
+  let shellConfig = null;
+  const createShell = (c) => { shellConfig = c; return { deliver: null }; };
+  let startArg = null;
+  const latticeEdge = { start: (a) => { startArg = a; return Promise.resolve({ deliver: () => {} }); } };
+
+  let current = "live-token";
+  await assembleEdgeSource({ latticeEdge, createShell, cfg, getToken: () => current });
+
+  assert.equal(shellConfig.getToken(), "live-token", "the shell must read the live getter, not cfg.token");
+  assert.equal(startArg.token, "live-token", "the initial start() call must use the live getter's current value");
+
+  current = "rotated-token";
+  assert.equal(shellConfig.getToken(), "rotated-token", "a later rotation must reach the shell with no reassembly");
+});
+
+// ------------------------------------------------------- createTokenRefresher
+
+// fakeFetch resolves/rejects per a script of canned responses, one per call —
+// lets a test drive multiple refresh() calls with different outcomes.
+function fakeFetch(script) {
+  let i = 0;
+  const calls = [];
+  return {
+    calls,
+    fn: async (reqPath, init) => {
+      calls.push({ path: reqPath, init });
+      const step = script[Math.min(i, script.length - 1)];
+      i++;
+      if (step.throws) throw step.throws;
+      return { ok: step.ok !== false, status: step.status ?? (step.ok === false ? 401 : 200), json: async () => step.body };
+    },
+  };
+}
+
+test("createTokenRefresher.refresh() POSTs to /api/session/refresh and updates the token cell on success", async () => {
+  const { calls, fn } = fakeFetch([{ body: { token: "fresh-token", expiresAt: "2026-01-01T00:00:00Z" } }]);
+  const r = createTokenRefresher("initial-token", { fetchImpl: fn, logger: { warn() {} } });
+  assert.equal(r.getToken(), "initial-token");
+
+  const ok = await r.refresh();
+
+  assert.equal(ok, true);
+  assert.equal(r.getToken(), "fresh-token");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].path, "/api/session/refresh");
+  assert.equal(calls[0].init.method, "POST");
+});
+
+test("createTokenRefresher.refresh() keeps the last-known token on an HTTP error", async () => {
+  const { fn } = fakeFetch([{ ok: false, status: 401 }]);
+  const warnings = [];
+  const r = createTokenRefresher("initial-token", { fetchImpl: fn, logger: { warn: (...a) => warnings.push(a) } });
+
+  assert.equal(await r.refresh(), false);
+  assert.equal(r.getToken(), "initial-token");
+  assert.equal(warnings.length, 1);
+});
+
+test("createTokenRefresher.refresh() keeps the last-known token on a network failure", async () => {
+  const { fn } = fakeFetch([{ throws: new TypeError("network down") }]);
+  const r = createTokenRefresher("initial-token", { fetchImpl: fn, logger: { warn() {} } });
+
+  assert.equal(await r.refresh(), false);
+  assert.equal(r.getToken(), "initial-token");
+});
+
+test("createTokenRefresher.refresh() rejects a malformed response body without updating the cell", async () => {
+  const { fn } = fakeFetch([{ body: { expiresAt: "2026-01-01T00:00:00Z" } }]); // no token field
+  const r = createTokenRefresher("initial-token", { fetchImpl: fn, logger: { warn() {} } });
+
+  assert.equal(await r.refresh(), false);
+  assert.equal(r.getToken(), "initial-token");
+});
+
+test("createTokenRefresher.refresh() can be called repeatedly, each call re-reading the current cell", async () => {
+  const { fn } = fakeFetch([{ body: { token: "token-2" } }, { ok: false, status: 401 }, { body: { token: "token-3" } }]);
+  const r = createTokenRefresher("token-1", { fetchImpl: fn, logger: { warn() {} } });
+
+  await r.refresh();
+  assert.equal(r.getToken(), "token-2");
+  await r.refresh(); // fails — stays on token-2
+  assert.equal(r.getToken(), "token-2");
+  await r.refresh();
+  assert.equal(r.getToken(), "token-3");
 });

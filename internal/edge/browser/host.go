@@ -167,9 +167,13 @@ func Start(ctx context.Context, cfg Config) (*Host, error) {
 	// fetchSubmitter is the same Gateway write path the Go host uses (POST
 	// /v1/operations, Bearer token), issued over the browser's native fetch
 	// rather than net/http — see submit_fetch.go for why. P2 holds identically:
-	// the Processor stays the sole Core-KV writer.
+	// the Processor stays the sole Core-KV writer. getToken pulls from the
+	// SAME live source the WS shell's own reconnect authenticator reads
+	// (shellGetTokenFunc) rather than the cfg.Token snapshot Start() was
+	// called with, so a page that refreshes its session (boot.mjs) keeps
+	// Gateway writes working past the credential's original TTL too.
 	sub := &trackingSubmitter{
-		inner: &fetchSubmitter{url: cfg.GatewayURL, token: cfg.Token},
+		inner: &fetchSubmitter{url: cfg.GatewayURL, getToken: shellGetTokenFunc(cfg.Shell, cfg.Token)},
 		feed:  fd,
 	}
 	ag := agent.New(sub, st, ov, mgr, agent.Config{
@@ -215,6 +219,26 @@ func Start(ctx context.Context, cfg Config) (*Host, error) {
 func signalPeer(shell js.Value, key string, deleted bool) {
 	if shell.Get("signalChange").Type() == js.TypeFunction {
 		shell.Call("signalChange", key, deleted)
+	}
+}
+
+// shellGetTokenFunc returns a getter for fetchSubmitter reading the shell's
+// own live token source (shell.mjs's getToken, wired to boot.mjs's refreshed
+// cell — the same value the WS transport's reconnect authenticator already
+// re-reads on every attempt) when the shell exposes one. Falls back to the
+// static token Start() was called with otherwise — a shell fixture that
+// doesn't implement it (older shell, a test double), same disposition as
+// signalPeer/onPeerChange's feature detection above.
+func shellGetTokenFunc(shell js.Value, fallback string) func() string {
+	if shell.Get("getToken").Type() != js.TypeFunction {
+		return func() string { return fallback }
+	}
+	return func() string {
+		v := shell.Call("getToken")
+		if v.Type() != js.TypeString {
+			return fallback
+		}
+		return v.String()
 	}
 }
 

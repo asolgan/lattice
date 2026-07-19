@@ -254,3 +254,92 @@ func TestConnect_TokenWithNKeySeed_Rejected(t *testing.T) {
 		t.Fatalf("error = %q, want the both-set guard message", err)
 	}
 }
+
+// Token and TokenHandler are mutually exclusive too — nats.go itself refuses
+// both set (ErrTokenAlreadySet), so substrate's own guard catches it before
+// ever dialing, matching every other credential-pair rejection above.
+func TestConnect_TokenWithTokenHandler_Rejected(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+
+	_, err := Connect(ctx, ConnectOpts{
+		URL:          "nats://127.0.0.1:1",
+		Token:        "static-token",
+		TokenHandler: func() string { return "dynamic-token" },
+	})
+	if err == nil {
+		t.Fatal("expected error when both Token and TokenHandler are set, got nil")
+	}
+	if !strings.Contains(err.Error(), "exactly one credential") {
+		t.Fatalf("error = %q, want the both-set guard message", err)
+	}
+}
+
+// startEmbeddedNATSWithToken runs an in-process JetStream server that
+// requires the single static token to authenticate — the same fixed-secret
+// posture opts.Authorization configures, mirroring startEmbeddedNATSWithNKey
+// for the Token/TokenHandler credential kind.
+func startEmbeddedNATSWithToken(t *testing.T, token string) (url string) {
+	t.Helper()
+	opts := natsserver.DefaultTestOptions
+	opts.Port = -1
+	opts.JetStream = true
+	opts.StoreDir = jsstore.Dir(t)
+	opts.Authorization = token
+	s := natsserver.RunServer(&opts)
+	t.Cleanup(func() {
+		if jsCfg := s.JetStreamConfig(); jsCfg != nil {
+			defer os.RemoveAll(jsCfg.StoreDir)
+		}
+		s.Shutdown()
+	})
+	return s.ClientURL()
+}
+
+// TestConnect_TokenHandler_AuthenticatesLikeToken proves TokenHandler is
+// actually wired into the dial (not silently dropped): the value IT RETURNS,
+// not a fixed string, is what the token-requiring server sees. The seam this
+// exists for (cmd/facet's newEngine, engine.go) needs exactly this — a
+// caller who re-mints on every (re)connect attempt rather than replaying a
+// value captured once.
+func TestConnect_TokenHandler_AuthenticatesLikeToken(t *testing.T) {
+	t.Parallel()
+	const want = "the-current-token"
+	url := startEmbeddedNATSWithToken(t, want)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+
+	var calls int
+	c, err := Connect(ctx, ConnectOpts{
+		URL:  url,
+		Name: "tokenhandler-test",
+		TokenHandler: func() string {
+			calls++
+			return want
+		},
+	})
+	if err != nil {
+		t.Fatalf("TokenHandler-authenticated Connect: %v", err)
+	}
+	t.Cleanup(c.Close)
+	if calls == 0 {
+		t.Fatal("TokenHandler was never invoked — the option did not reach nats.go's dial")
+	}
+
+	const bucket = "tokenhandler-bucket"
+	provisionCoreBucket(ctx, t, c, bucket)
+	if _, err := c.KVPut(ctx, bucket, "k", []byte("v")); err != nil {
+		t.Fatalf("KVPut over a TokenHandler-authenticated conn: %v", err)
+	}
+
+	// A handler returning the WRONG token is rejected exactly like a wrong
+	// static Token would be — proving the returned value, not merely the
+	// handler's presence, is what the server checks.
+	if _, err := Connect(ctx, ConnectOpts{
+		URL:          url,
+		Name:         "tokenhandler-wrong",
+		TokenHandler: func() string { return "not-the-token" },
+	}); err == nil {
+		t.Fatal("expected Connect with a wrong TokenHandler value to be rejected, got nil")
+	}
+}

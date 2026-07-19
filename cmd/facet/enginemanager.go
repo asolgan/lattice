@@ -69,9 +69,11 @@ func newEngineManager(baseCtx context.Context, deps engineManagerDeps) *engineMa
 // main.go's boot-env single-user fallback (EDGE_IDENTITY_ID/EDGE_TOKEN),
 // whose token was minted OUTSIDE this process (e.g. `bin/gateway
 // dev-token`), not by deps.Signer. The entry is pinned: reapIdle never
-// closes it, since there is no on-demand way to re-mint its credential.
+// closes it, and Acquire's liveness check never rebuilds it either — both
+// would need to re-mint on this identity's behalf, which only deps.Signer
+// can do.
 func (m *engineManager) Seed(identityID, deviceID, token string) error {
-	eng, err := newEngine(m.baseCtx, m.deps.engineConfig, identityID, deviceID, token)
+	eng, err := newEngine(m.baseCtx, m.deps.engineConfig, identityID, deviceID, token, nil)
 	if err != nil {
 		return err
 	}
@@ -84,15 +86,30 @@ func (m *engineManager) Seed(identityID, deviceID, token string) error {
 // Acquire returns identityID's engine, starting it on first use (minting a
 // fresh device credential for it via deps.Signer) and incrementing its
 // holder count. Callers MUST pair every successful Acquire with a Release.
+//
+// A cached, non-pinned entry whose NATS connection has permanently closed is
+// evicted and rebuilt rather than handed back: newEngine's TokenHandler
+// keeps that connection recovering across the credential's TTL on its own,
+// so reaching this branch means reconnection genuinely failed for good
+// (nats.go exhausted MaxReconnects, or aborted after repeated identical auth
+// errors) — the same dead-end Purge's doc comment already named for the
+// pre-fix world, now closed as a backstop rather than relied on as the only
+// recovery path.
 func (m *engineManager) Acquire(identityID string) (*engine, error) {
 	m.mu.Lock()
 	if e, ok := m.entries[identityID]; ok {
-		e.refCount++
-		e.idleSince = time.Time{}
+		if e.pinned || !e.eng.conn.NATS().IsClosed() {
+			e.refCount++
+			e.idleSince = time.Time{}
+			m.mu.Unlock()
+			return e.eng, nil
+		}
+		delete(m.entries, identityID)
 		m.mu.Unlock()
-		return e.eng, nil
+		e.eng.Close()
+	} else {
+		m.mu.Unlock()
 	}
-	m.mu.Unlock()
 
 	if m.deps.Signer == nil {
 		return nil, fmt.Errorf("no credential minter configured (FACET_DEV_AUTH not set) — cannot start %s's engine", identityID)
@@ -105,7 +122,11 @@ func (m *engineManager) Acquire(identityID string) (*engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mint engine credential: %w", err)
 	}
-	eng, err := newEngine(m.baseCtx, m.deps.engineConfig, identityID, deviceID, token)
+	tokenSource := func() (string, error) {
+		t, _, err := m.deps.Signer.mint(identityID)
+		return t, err
+	}
+	eng, err := newEngine(m.baseCtx, m.deps.engineConfig, identityID, deviceID, token, tokenSource)
 	if err != nil {
 		return nil, err
 	}
@@ -188,13 +209,14 @@ func (m *engineManager) reapIdle() {
 // which is a latency property, not that bar.
 //
 // Purging is also what makes the §4.4 sign-out flow RECOVERABLE rather than
-// a dead end. An engine's credential is minted once, at first Acquire, and
-// Acquire's hot path returns the cached entry verbatim — it never re-mints.
-// So without eviction, a revoked-or-expired engine would be handed straight
-// back to the user who just re-logged in with a fresh cookie, replaying the
-// revocation forever (the new cookie only selects WHICH engine to use; it
-// does not refresh the one already built). Dropping the entry here forces
-// the next Acquire to build a new engine with a freshly minted credential.
+// a dead end for a REVOKED credential specifically. Revocation denies future
+// Gateway calls and reconnects without necessarily closing an already-open
+// NATS connection, so Acquire's own liveness check (conn.NATS().IsClosed())
+// does not catch it — an engine keeps serving a revoked identity's cached
+// local reads until something evicts it. Dropping the entry here forces the
+// next Acquire to build a new engine with a freshly minted credential; a
+// merely-expired-then-recovered engine has newEngine's TokenHandler for
+// that instead and needs no explicit purge.
 func (m *engineManager) Purge(identityID string) error {
 	// Defense in depth against a path escape: identityID is splice into a
 	// filename below, and filepath.Join CLEANS its result rather than

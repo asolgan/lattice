@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -43,6 +45,87 @@ func TestGatewaySubmitter_NoTokenErrorsWithoutCallingGateway(t *testing.T) {
 	_, err := g.Submit(context.Background(), testEnv("req1"))
 	require.Error(t, err)
 	require.False(t, called, "submit must not call the gateway with no credential")
+}
+
+// TestGatewaySubmitter_TokenSourceTakesPrecedenceOverToken proves TokenSource
+// wins when both are set — the shape cmd/facet's newEngine relies on: a
+// devSigner-backed engine sets TokenSource and leaves Token as an inert
+// initial value, never the other way round.
+func TestGatewaySubmitter_TokenSourceTakesPrecedenceOverToken(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		_ = json.NewEncoder(w).Encode(processor.OperationReply{RequestID: "req1", Status: processor.ReplyStatusAccepted})
+	}))
+	defer srv.Close()
+
+	g := &GatewaySubmitter{URL: srv.URL, Token: "stale-static-token", TokenSource: func() (string, error) { return "fresh-source-token", nil }}
+	_, err := g.Submit(context.Background(), testEnv("req1"))
+	require.NoError(t, err)
+	require.Equal(t, "Bearer fresh-source-token", gotAuth)
+}
+
+// TestGatewaySubmitter_TokenSourceCalledFreshEveryTime proves TokenSource is
+// re-invoked on every Submit rather than cached at construction — the whole
+// point of the seam: a long-lived submitter surviving past its original
+// token's exp by presenting whatever the source currently mints.
+func TestGatewaySubmitter_TokenSourceCalledFreshEveryTime(t *testing.T) {
+	var gotAuth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = append(gotAuth, r.Header.Get("Authorization"))
+		_ = json.NewEncoder(w).Encode(processor.OperationReply{RequestID: "req1", Status: processor.ReplyStatusAccepted})
+	}))
+	defer srv.Close()
+
+	calls := 0
+	g := &GatewaySubmitter{URL: srv.URL, TokenSource: func() (string, error) {
+		calls++
+		return fmt.Sprintf("token-%d", calls), nil
+	}}
+	_, err := g.Submit(context.Background(), testEnv("req1"))
+	require.NoError(t, err)
+	_, err = g.Submit(context.Background(), testEnv("req2"))
+	require.NoError(t, err)
+
+	require.Equal(t, []string{"Bearer token-1", "Bearer token-2"}, gotAuth)
+}
+
+// TestGatewaySubmitter_TokenSourceErrorDoesNotCallGatewayOrTypeAsRejection
+// proves a refresh failure (e.g. the local signer hiccups) surfaces as a
+// plain transient error Drain will retry — never ErrCredentialRejected,
+// which would wrongly fire the permanent sign-out flow for what is, from the
+// Gateway's point of view, a request that never even arrived.
+func TestGatewaySubmitter_TokenSourceErrorDoesNotCallGatewayOrTypeAsRejection(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+
+	g := &GatewaySubmitter{URL: srv.URL, TokenSource: func() (string, error) {
+		return "", errors.New("mint failed")
+	}}
+	_, err := g.Submit(context.Background(), testEnv("req1"))
+	require.Error(t, err)
+	require.False(t, called, "submit must not call the gateway when the token source itself failed")
+	require.NotErrorIs(t, err, ErrCredentialRejected)
+}
+
+// TestGatewaySubmitter_TokenSourceEmptyStringErrorsWithoutCallingGateway
+// mirrors TestGatewaySubmitter_NoTokenErrorsWithoutCallingGateway for the
+// TokenSource path: a source that mints an empty string is the same "no
+// credential available" case as a never-set Token.
+func TestGatewaySubmitter_TokenSourceEmptyStringErrorsWithoutCallingGateway(t *testing.T) {
+	called := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+	}))
+	defer srv.Close()
+
+	g := &GatewaySubmitter{URL: srv.URL, TokenSource: func() (string, error) { return "", nil }}
+	_, err := g.Submit(context.Background(), testEnv("req1"))
+	require.Error(t, err)
+	require.False(t, called)
 }
 
 // TestGatewaySubmitter_RevokedTokenDenied is the unit-level half of the

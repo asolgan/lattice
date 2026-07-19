@@ -45,8 +45,18 @@ type ConnectOpts struct {
 	// boundary (per-identity-nats-subscribe-acl-design.md §3.1a: "the bearer
 	// token arrives in `token`"), verified server-side by
 	// internal/gateway/natsauth. Empty ⇒ no token. At most one of
-	// NKeySeedFile / CredsFile / Token is set.
+	// NKeySeedFile / CredsFile / Token / TokenHandler is set.
 	Token string
+	// TokenHandler, when set, is called for the current bearer token on
+	// every (re)connect attempt instead of replaying the fixed Token string.
+	// The credential this boundary accepts is exp-bounded (the same JWT
+	// `exp` natsauth caps its issued grant to), so a long-lived connection
+	// whose caller can locally re-mint a fresh token needs this to survive
+	// past that expiry — nats.go's reconnect loop otherwise re-presents the
+	// original (now-expired) Token forever and gives up after two identical
+	// auth errors on the same server (its own processAuthError). At most one
+	// of NKeySeedFile / CredsFile / Token / TokenHandler is set.
+	TokenHandler func() string
 	// InboxPrefix, when non-empty, scopes every request-reply inbox this
 	// connection creates under "<InboxPrefix>.<nuid>" instead of the
 	// client-wide default (nats.go's InboxPrefix option). The per-identity
@@ -94,13 +104,13 @@ func Connect(ctx context.Context, opts ConnectOpts) (*Conn, error) {
 		natsOpts = append(natsOpts, nats.CustomInboxPrefix(opts.InboxPrefix))
 	}
 	credCount := 0
-	for _, set := range []bool{opts.NKeySeedFile != "", opts.CredsFile != "", opts.Token != ""} {
+	for _, set := range []bool{opts.NKeySeedFile != "", opts.CredsFile != "", opts.Token != "", opts.TokenHandler != nil} {
 		if set {
 			credCount++
 		}
 	}
 	if credCount > 1 {
-		return nil, fmt.Errorf("substrate: ConnectOpts has more than one of NKeySeedFile/CredsFile/Token set; exactly one credential may be supplied")
+		return nil, fmt.Errorf("substrate: ConnectOpts has more than one of NKeySeedFile/CredsFile/Token/TokenHandler set; exactly one credential may be supplied")
 	}
 	if opts.NKeySeedFile != "" {
 		nkeyOpt, err := nats.NkeyOptionFromSeed(opts.NKeySeedFile)
@@ -114,6 +124,9 @@ func Connect(ctx context.Context, opts ConnectOpts) (*Conn, error) {
 	}
 	if opts.Token != "" {
 		natsOpts = append(natsOpts, nats.Token(opts.Token))
+	}
+	if opts.TokenHandler != nil {
+		natsOpts = append(natsOpts, nats.TokenHandler(opts.TokenHandler))
 	}
 	nc, err := nats.Connect(opts.URL, natsOpts...)
 	if err != nil {

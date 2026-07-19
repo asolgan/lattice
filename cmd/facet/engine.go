@@ -51,15 +51,27 @@ type engine struct {
 // that identity's local store under cfg.StoreDir, and starts its sync.Manager
 // + agent drain loop. ctx bounds the engine's background goroutines; callers
 // must call Close to stop them and release the store/connection.
-func newEngine(ctx context.Context, cfg engineConfig, identityID, deviceID, token string) (*engine, error) {
+//
+// tokenSource, when non-nil, re-mints a fresh credential for identityID on
+// every NATS (re)connect attempt and every Gateway submit — the engine can
+// outlive the login-time JWT's TTL (engineManager's warm-resume idle window
+// is unbounded while a holder stays attached), and both the NATS auth-callout
+// grant and the Gateway's own verifier are exp-bounded by that same JWT.
+// Without it, nats.go replays the original token on every reconnect and
+// aborts permanently after two identical auth errors on the same server
+// (nats.go's processAuthError), and the Gateway submitter keeps presenting a
+// 401-doomed token forever (agent.ErrCredentialRejected, sticky sign-out).
+// nil is the boot-env fallback's posture (enginemanager.go's Seed): that
+// credential was minted OUTSIDE this process, so there is nothing to
+// re-mint — token stays static, exactly as before this fix.
+func newEngine(ctx context.Context, cfg engineConfig, identityID, deviceID, token string, tokenSource func() (string, error)) (*engine, error) {
 	storePath := filepath.Join(cfg.StoreDir, identityID+".db")
 	st, err := store.Open(storePath)
 	if err != nil {
 		return nil, err
 	}
 
-	engCtx, cancel := context.WithCancel(ctx)
-	conn, err := substrate.Connect(engCtx, substrate.ConnectOpts{
+	connOpts := substrate.ConnectOpts{
 		URL: cfg.NATSURL,
 		// Must be the BARE device id: natsauth.go's Handle reads
 		// req.ClientInformation.Name (this CONNECT option) directly as
@@ -72,12 +84,32 @@ func newEngine(ctx context.Context, cfg engineConfig, identityID, deviceID, toke
 		Name:          deviceID,
 		MaxReconnects: -1,
 		ReconnectWait: 2 * time.Second,
-		Token:         token,
 		// Must be "_INBOX.edge." (not "_INBOX.facet.") — natsauth's issued
 		// permission set grants exactly this literal prefix regardless of
 		// which app connects, keyed off the verified identity.
 		InboxPrefix: "_INBOX.edge." + identityID,
-	})
+	}
+	if tokenSource != nil {
+		connOpts.TokenHandler = func() string {
+			t, err := tokenSource()
+			if err != nil {
+				// mint() is a local RSA sign with no I/O; a failure here is not
+				// expected to recur. Fall back to the original token rather than
+				// an empty string — both are refused by the server if genuinely
+				// stale, but an empty token guarantees it. Never mutate the
+				// closed-over `token`: this callback can run from nats.go's
+				// internal reconnect goroutine, and the fallback must stay the
+				// same known-good value on every invocation, not a moving target.
+				cfg.Logger.Warn("facet engine: refresh NATS token failed; presenting the original login-time token", "identityId", identityID, "err", err)
+				return token
+			}
+			return t
+		}
+	} else {
+		connOpts.Token = token
+	}
+	engCtx, cancel := context.WithCancel(ctx)
+	conn, err := substrate.Connect(engCtx, connOpts)
 	if err != nil {
 		cancel()
 		_ = st.Close()
@@ -116,8 +148,12 @@ func newEngine(ctx context.Context, cfg engineConfig, identityID, deviceID, toke
 		return nil, err
 	}
 
+	gwSubmitter := &agent.GatewaySubmitter{URL: cfg.GatewayURL, Token: token}
+	if tokenSource != nil {
+		gwSubmitter.TokenSource = tokenSource
+	}
 	submitter := &trackingSubmitter{
-		inner: &agent.GatewaySubmitter{URL: cfg.GatewayURL, Token: token},
+		inner: gwSubmitter,
 		feed:  fd,
 	}
 	ag := agent.New(submitter, st, overlayStore, mgr, agent.Config{

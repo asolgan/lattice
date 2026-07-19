@@ -112,7 +112,7 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	authn, err := setupSessionAuthn(logger, signer)
+	authn, refreshAuthn, err := setupSessionAuthn(logger, signer)
 	if err != nil {
 		return err
 	}
@@ -185,6 +185,7 @@ func run(logger *slog.Logger) error {
 		gatewayURL:     gatewayURL,
 		devSigner:      signer,
 		authn:          authn,
+		refreshAuthn:   refreshAuthn,
 		engines:        engines,
 		bootIdentityID: bootIdentityID,
 		loopback:       loopback,
