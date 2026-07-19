@@ -89,6 +89,20 @@ const (
 	tenant2Email = "sam.okafor@showcase.dev.lattice.local"
 )
 
+// showcaseLocationNames is the class-2 display copy (display-name-convention-
+// design.md D2) for the three showcase locations, shared by the from-scratch
+// CreateLocation path and the live-world SetLocationPresentation path so the
+// two can never drift.
+var showcaseLocationNames = map[string]map[string]any{
+	buildingKey: {"name": "Riverside Building", "icon": "building"},
+	unit1Key:    {"name": "Unit 1", "icon": "door"},
+	unit2Key:    {"name": "Unit 2", "icon": "door"},
+}
+
+// showcaseLocationOrder fixes the iteration order a map does not have, so a
+// rerun submits its ops — and prints its lines — deterministically.
+var showcaseLocationOrder = []string{buildingKey, unit1Key, unit2Key}
+
 // legacyMislabeledTemplates are the two backgroundCheck-classed templates
 // seed-edge-demo.go minted, branded "Maple Laundry" via .presentation — §7.3
 // names them explicitly for retirement. Best-effort: retired only if still
@@ -130,6 +144,7 @@ func main() {
 		fmt.Println("==> template wellness: " + wellnessTplKey + " availableAt building, permits CreateBooking/CancelBooking")
 		seedCafeTemplate(ctx, conn, adminKey)
 		fmt.Println("==> template cafe: " + cafeTplKey + " availableAt building, permits OpenTab/Settle")
+		seedLocationPresentation(ctx, conn, adminKey)
 		return
 	}
 	consumerRoleKey := "vtx.role." + pkgmgr.RoleID("identity-domain", "consumer")
@@ -138,12 +153,12 @@ func main() {
 
 	submitOp(ctx, conn, adminKey, "CreateLocation", "location",
 		map[string]any{"locationType": "building", "locationId": buildingID,
-			"presentation": map[string]any{"name": "Riverside Building", "icon": "building"}}, nil)
+			"presentation": showcaseLocationNames[buildingKey]}, nil)
 	fmt.Println("==> building:        " + buildingKey)
 
 	submitOp(ctx, conn, adminKey, "CreateLocation", "location",
 		map[string]any{"locationType": "unit", "locationId": unit1ID,
-			"presentation": map[string]any{"name": "Unit 1", "icon": "door"}}, nil)
+			"presentation": showcaseLocationNames[unit1Key]}, nil)
 	submitOp(ctx, conn, adminKey, "WireContainedIn", "location",
 		map[string]any{"child": unit1Key, "parent": buildingKey},
 		&processor.ContextHint{Reads: []string{unit1Key, buildingKey}})
@@ -151,7 +166,7 @@ func main() {
 
 	submitOp(ctx, conn, adminKey, "CreateLocation", "location",
 		map[string]any{"locationType": "unit", "locationId": unit2ID,
-			"presentation": map[string]any{"name": "Unit 2", "icon": "door"}}, nil)
+			"presentation": showcaseLocationNames[unit2Key]}, nil)
 	submitOp(ctx, conn, adminKey, "WireContainedIn", "location",
 		map[string]any{"child": unit2Key, "parent": buildingKey},
 		&processor.ContextHint{Reads: []string{unit2Key, buildingKey}})
@@ -391,6 +406,27 @@ func seedCafeTemplate(ctx context.Context, conn *substrate.Conn, adminKey string
 		submitOp(ctx, conn, adminKey, "WirePermitsOperation", "serviceLocation",
 			map[string]any{"service": cafeTplKey, "operation": opMeta},
 			&processor.ContextHint{Reads: []string{cafeTplKey, opMeta}})
+	}
+}
+
+// seedLocationPresentation layers the class-2 display names onto the three
+// showcase locations. CreateLocation writes .presentation only when the
+// payload carries one, so a world minted before the display-name convention
+// landed has nameless locations permanently: nothing else backfills them —
+// Refractor projects on CDC, so manifest.me's anchors keep rendering bare
+// NanoIDs until the aspect is actually written. SetLocationPresentation is
+// the live-world editor for exactly that. Per-mutation idempotent (a
+// location whose .presentation is already live is skipped), mirroring
+// seedClinicTemplate.
+func seedLocationPresentation(ctx context.Context, conn *substrate.Conn, adminKey string) {
+	for _, locKey := range showcaseLocationOrder {
+		if alive(ctx, conn, locKey+".presentation") {
+			continue
+		}
+		submitOp(ctx, conn, adminKey, "SetLocationPresentation", "location",
+			map[string]any{"locationKey": locKey, "presentation": showcaseLocationNames[locKey]},
+			&processor.ContextHint{Reads: []string{locKey}})
+		fmt.Printf("==> named location:  %s (%s)\n", locKey, showcaseLocationNames[locKey]["name"])
 	}
 }
 

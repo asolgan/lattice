@@ -146,6 +146,16 @@ def make_aspect(vtx_key, local_name, cls, data):
             "document": {"class": cls, "isDeleted": False,
                          "vertexKey": vtx_key, "localName": local_name, "data": data}}
 
+def make_aspect_upsert(vtx_key, local_name, cls, data):
+    # Unconditioned full-replace upsert (mirrors clinic-domain's
+    # SetSiteProfile/SetProviderProfile): the aspect key is never listed in
+    # ContextHint.Reads, so it reaches commit with no expectedRevision and
+    # writes whether or not it already exists. A create-only mutation would
+    # RevisionConflict on every location that already carries a name.
+    return {"op": "update", "key": vtx_key + "." + local_name,
+            "document": {"class": cls, "isDeleted": False,
+                         "vertexKey": vtx_key, "localName": local_name, "data": data}}
+
 def make_link(key, source, target, cls, local_name, data):
     return {"op": "create", "key": key,
             "document": {"class": cls, "isDeleted": False,
@@ -326,7 +336,7 @@ def execute(state, op):
         # non-location vertex.
         require_live_location(state, loc_key, "locationKey")
         pres = required_presentation(p)
-        mutations = [make_aspect(loc_key, "presentation", "presentation", pres)]
+        mutations = [make_aspect_upsert(loc_key, "presentation", "presentation", pres)]
         events = [{"class": "location.presentationSet",
                    "data": {"locationKey": loc_key}}]
         return {"mutations": mutations, "events": events,

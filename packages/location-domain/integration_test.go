@@ -291,6 +291,19 @@ func TestLocation_SetLocationPresentation(t *testing.T) {
 		t.Fatalf("presentation.name = %q, want %q", got, "Unit 1")
 	}
 
+	// Replacing an existing presentation is a full-replace upsert, not a
+	// create: the second set must land against an aspect that already carries
+	// a revision, and must replace rather than merge (the dropped icon stays
+	// dropped).
+	set("setPres00002", `{"locationKey":"`+unitKey+`","presentation":{"name":"Unit 1A","description":"corner"}}`, processor.OutcomeAccepted)
+	data, _ = readDoc(t, ctx, conn, unitKey+".presentation")["data"].(map[string]any)
+	if got, _ := data["name"].(string); got != "Unit 1A" {
+		t.Fatalf("replaced presentation.name = %q, want %q", got, "Unit 1A")
+	}
+	if got, _ := data["description"].(string); got != "corner" {
+		t.Fatalf("replaced presentation.description = %q, want %q", got, "corner")
+	}
+
 	// An empty presentation object is rejected (nothing to set).
 	set("setPresEmpty", `{"locationKey":"`+unitKey+`","presentation":{}}`, processor.OutcomeRejected)
 
