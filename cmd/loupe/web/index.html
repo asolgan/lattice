@@ -123,11 +123,15 @@
             <option value="cancelled">cancelled</option>
           </select>
         </label>
+        <label class="muted"><input type="checkbox" id="tasks-stuck-only"> stuck/unrouted only</label>
         <span class="muted" id="tasks-status-msg"></span>
       </div>
-      <p class="muted small">The task inbox — open work assigned to identities. Each card shows the
-        operation the assignee must complete (name + instructions, link-sourced from the task's
-        <code>forOperation</code>). "Complete →" jumps to Submit Op with that operation pre-selected.</p>
+      <p class="muted small">The task inbox — open work routed to identities (<code>assigned →</code>, push)
+        or to a role's pull-queue (<code>queued →</code>, claimed via <code>ClaimTask</code>). An assignee's
+        <code>available</code>/<code>unavailable</code> chip is the routing gate (<code>SetAvailability</code>).
+        A <code>stuck · unrouted</code> task is an open role-queued task past its own expiry with no claim
+        (FR29) — it sorts to the top; the operator is its remediation. "Complete →" jumps to Submit Op with
+        that operation pre-selected.</p>
       <div class="cards" id="tasks-cards"></div>
     </section>
 

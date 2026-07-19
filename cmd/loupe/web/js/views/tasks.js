@@ -1,8 +1,10 @@
 // Tasks view: the task inbox. Each row is link-sourced server-side
-// (GET /api/tasks): assignee / operation / target from the task's links, and
-// the operation's human label (name + description) resolved from its
-// forOperation meta-vertex. Every entity on a card is a keyLink into the
-// Graph explorer (design §1.2 — no dead ends).
+// (GET /api/tasks): assignee / queue role / operation / target from the task's
+// links, the operation's human label (name + description) resolved from its
+// forOperation meta-vertex, and the FR28/FR29 queue plane — assignment kind
+// (assigned vs role-queued), assignee availability, and the stuck/unrouted flag.
+// Every entity on a card is a keyLink into the Graph explorer (design §1.2 — no
+// dead ends).
 
 import { $, el, api, setStatus } from "../api.js";
 import { navigate } from "../router.js";
@@ -26,20 +28,26 @@ async function loadTasks() {
     setStatus("tasks-status-msg", body.error, true);
     return;
   }
-  const tasks = body.tasks || [];
-  setStatus("tasks-status-msg", tasks.length + " task" + (tasks.length === 1 ? "" : "s"));
+  let tasks = body.tasks || [];
+  const stuckOnly = $("#tasks-stuck-only").checked;
+  const stuckCount = tasks.filter((t) => t.stuck).length;
+  if (stuckOnly) tasks = tasks.filter((t) => t.stuck);
+  let msg = tasks.length + " task" + (tasks.length === 1 ? "" : "s");
+  if (!stuckOnly && stuckCount) msg += " · " + stuckCount + " stuck/unrouted";
+  setStatus("tasks-status-msg", msg);
   if (!tasks.length) {
-    cards.appendChild(el("div", "muted", "(no tasks)"));
+    cards.appendChild(el("div", "muted", stuckOnly ? "(no stuck/unrouted work)" : "(no tasks)"));
     return;
   }
   tasks.forEach((t) => {
     const op = t.operation || {};
-    const card = el("div", "card task-card " + (t.status === "open" ? "green" : ""));
+    const card = el("div", "card task-card " + (t.stuck ? "red" : t.status === "open" ? "green" : ""));
     const title = el("div", "card-key");
     if (op.name) title.appendChild(el("span", null, op.name));
     else if (op.key) title.appendChild(keyLinkEl(op.key));
     else title.appendChild(el("span", null, "task"));
     title.appendChild(el("span", "card-group", t.status));
+    if (t.stuck) title.appendChild(el("span", "card-group badge-stuck", "stuck · unrouted"));
     card.appendChild(title);
     if (op.description) card.appendChild(el("div", "card-sub", op.description));
     if (t.key) {
@@ -48,10 +56,19 @@ async function loadTasks() {
       card.appendChild(keyLine);
     }
     const meta = el("div", "card-meta");
-    if (t.assignee) {
-      const a = el("span", null, "assignee ");
+    if (t.assignment === "queued" && t.queuedFor) {
+      // FR28 pull assignment: the task is queued to a role, claimed via ClaimTask.
+      const q = el("span", null, "queued → ");
+      q.appendChild(keyLinkEl(t.queuedFor));
+      meta.appendChild(q);
+    } else if (t.assignee) {
+      const a = el("span", null, "assigned → ");
       a.appendChild(keyLinkEl(t.assignee));
       meta.appendChild(a);
+      // Availability is the routing gate (absent aspect == available); only an
+      // assigned task has a single assignee to attribute it to.
+      if (t.available === false) meta.appendChild(el("span", "badge-unavailable", "unavailable"));
+      else if (t.available === true) meta.appendChild(el("span", "badge-available", "available"));
     }
     if (t.expiresAt) meta.appendChild(el("span", null, "expires " + t.expiresAt));
     card.appendChild(meta);
@@ -80,6 +97,7 @@ function startTaskOp(opName) {
 function init() {
   $("#tasks-load").addEventListener("click", loadTasks);
   $("#tasks-status").addEventListener("change", loadTasks);
+  $("#tasks-stuck-only").addEventListener("change", loadTasks);
 }
 
 export { init, enter };

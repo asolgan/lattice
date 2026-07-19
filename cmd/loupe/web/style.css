@@ -223,6 +223,10 @@ pre {
 .card.unhealthy { border-left-color: var(--red); }
 .card-key { font-size: 13px; font-weight: 600; word-break: break-word; margin-bottom: 2px; display: flex; align-items: center; gap: 8px; }
 .card-group { font-size: 10px; font-weight: 400; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--border); color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.4px; }
+.card-group.badge-stuck { color: var(--red); border-color: var(--red); }
+.badge-available, .badge-unavailable { font-size: 10px; padding: 1px 6px; border-radius: 10px; border: 1px solid var(--border); text-transform: uppercase; letter-spacing: 0.4px; }
+.badge-available { color: var(--green); border-color: var(--green); }
+.badge-unavailable { color: var(--yellow); border-color: var(--yellow); }
 .card-sub { font-family: var(--mono); font-size: 11px; color: var(--text-dim); word-break: break-all; margin-bottom: 6px; }
 .card-meta { display: flex; gap: 12px; color: var(--text-dim); font-size: 12px; }
 .card-status { font-weight: 600; }
