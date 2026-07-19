@@ -10,6 +10,7 @@ import { replaceRoute } from "../router.js";
 import { offlineComponentCopy, offlineComponentPointer, issueClass, lensStateDot, lensStateGlyph, pendingReadpathCopy } from "../logic/status.js";
 import { metricsLine, eventSummary, controlSurface } from "../logic/component.js";
 import { authFailureRate, pctLabel, jwksRows, revocationStatus, revokeActorValid, revokeConfirmReady } from "../logic/gateway.js";
+import { plannerPanels } from "../logic/planner.js";
 import { shredFleetSummary, shredFinalizationLine, shredInFlight } from "../logic/shred.js";
 import { renderDoc, keyLinkEl } from "../render.js";
 
@@ -134,6 +135,10 @@ function renderState(col, page) {
     renderGatewaySecurity(col, page);
   }
 
+  if (page.component === "weaver" && page.instances.length) {
+    renderWeaverPlanner(col, page);
+  }
+
   if (page.events && page.events.length) {
     col.appendChild(el("h3", "comp-section", "Events"));
     col.appendChild(el("p", "muted small",
@@ -218,6 +223,145 @@ function renderGatewaySecurity(col, page) {
     jwks.swaps.forEach((s) => hist.appendChild(el("div", "muted small", s)));
     col.appendChild(hist);
   }
+}
+
+// renderWeaverPlanner fills the Weaver page's left-column planner-mandate
+// diagnostics: the frozen oscillating pairs (the loud one — both targets are
+// disabled and only an operator re-Enable clears them), the effect-mismatch
+// windows, the contraction trajectories, the admission pacing, and the
+// shadow-comparison ledger. Exception-first: a healthy planner collapses to a
+// couple of quiet lines.
+//
+// One section per instance — the shadow/contraction/admission counters are
+// per-process in-memory state, so they are never merged into a fleet number no
+// process actually holds. With a single instance (the dev deployment) the
+// instance heading is suppressed.
+function renderWeaverPlanner(col, page) {
+  const panels = plannerPanels(page.instances);
+  col.appendChild(el("h3", "comp-section", "Planner"));
+  col.appendChild(el("p", "muted small",
+    "Planner-mandate diagnostics from the heartbeat. Counters are per-instance and in-memory — " +
+    "a Weaver restart resets them."));
+  panels.forEach((p) => {
+    if (panels.length > 1) col.appendChild(el("h4", "comp-subsection", p.instance));
+    if (!p.active) {
+      col.appendChild(el("div", "muted small",
+        "No planner activity recorded — no oscillation, no effect mismatch, and no target " +
+        "declaring shadow mode, contraction sampling or admission control."));
+      return;
+    }
+    renderPlannerOscillation(col, p);
+    renderPlannerEffects(col, p);
+    renderPlannerContraction(col, p);
+    renderPlannerAdmission(col, p);
+    renderPlannerShadow(col, p);
+  });
+}
+
+// renderPlannerOscillation renders the frozen fighting pairs. This is the one
+// planner diagnostic that has already taken an action (both targets disabled),
+// so it names the remediation and points at the control column that performs
+// it — rather than adding a second Enable button for the same op.
+function renderPlannerOscillation(col, p) {
+  if (!p.oscillation.length) return;
+  col.appendChild(el("h4", "comp-subsection", "Frozen — oscillating targets (" + p.oscillation.length + ")"));
+  p.oscillation.forEach((iss) => {
+    const box = el("div", "card unhealthy");
+    box.appendChild(el("div", "error-text", iss.message));
+    if (iss.since) box.appendChild(el("div", "muted small", "since " + iss.since));
+    box.appendChild(el("div", "muted small",
+      "Both targets are disabled. Re-Enable them from the Control column once the authoring " +
+      "conflict is fixed — re-enabling before that just restarts the fight."));
+    col.appendChild(box);
+  });
+}
+
+// renderPlannerEffects renders the LensEffectMismatch windows: a remediation
+// that keeps dispatching while the lens gap it targets never closes.
+function renderPlannerEffects(col, p) {
+  const count = p.effectMismatches;
+  if (count === null) {
+    col.appendChild(el("h4", "comp-subsection", "Effect mismatches"));
+    col.appendChild(el("div", "muted small",
+      "Scan unavailable — this heartbeat did not report the mismatch counter."));
+    return;
+  }
+  if (!count && !p.effectMismatchIssues.length) return;
+  col.appendChild(el("h4", "comp-subsection", "Effect mismatches (" + count + ")"));
+  col.appendChild(el("p", "muted small",
+    "Dispatches commit but the targeted lens gap never flips — points at a stale guard, a lens " +
+    "projecting the wrong column, or a remediation that silently no-ops."));
+  p.effectMismatchIssues.forEach((iss) => {
+    const row = el("div", "control-item");
+    row.appendChild(el("span", "warn-text small", iss.message));
+    if (iss.since) row.appendChild(el("span", "muted small", "since " + iss.since));
+    col.appendChild(row);
+  });
+}
+
+// renderPlannerContraction renders the contraction trajectories exception-first:
+// diverging targets are named loudly, shrinking ones quietly, and the steady
+// majority collapses to a count.
+function renderPlannerContraction(col, p) {
+  const c = p.contraction;
+  if (!c) return;
+  col.appendChild(el("h4", "comp-subsection", "Contraction trajectory (" + c.total + ")"));
+  if (c.diverging.length) {
+    const box = el("div", "card degraded");
+    box.appendChild(el("div", "warn-text",
+      c.diverging.length + " diverging — open gaps only grow; remediation is losing ground"));
+    c.diverging.forEach((id) => box.appendChild(el("div", "cid", id)));
+    col.appendChild(box);
+  }
+  const quiet = [];
+  if (c.shrinking.length) quiet.push(c.shrinking.length + " shrinking");
+  if (c.steady) quiet.push(c.steady + " steady");
+  if (quiet.length) col.appendChild(el("div", "muted small", quiet.join(" · ")));
+}
+
+// renderPlannerAdmission renders the token-bucket pacing counters.
+function renderPlannerAdmission(col, p) {
+  const a = p.admission;
+  if (!a) return;
+  col.appendChild(el("h4", "comp-subsection", "Admission control"));
+  const line = el("div", "comp-metrics");
+  line.appendChild(el("span", statusTextClass[a.cls] || "muted",
+    pctLabel({ pct: a.rate, cls: a.cls }) + " deferred"));
+  line.appendChild(el("span", "muted", " · " + a.admitted + " admitted / " + a.deferred + " deferred"));
+  col.appendChild(line);
+  if (a.cls === "warn") {
+    col.appendChild(el("div", "muted small",
+      "Sustained heavy deferral means the declared rate is below what the target needs — " +
+      "admission is meant to pace a burst, not to throttle steady work."));
+  }
+}
+
+// renderPlannerShadow renders the shadow-comparison ledger. Deliberately
+// neutral styling: the comparison never altered a dispatch, so a divergence is
+// a prompt to inspect the candidate ranking, not an incident.
+function renderPlannerShadow(col, p) {
+  const rows = p.shadow;
+  if (!rows) return;
+  col.appendChild(el("h4", "comp-subsection", "Planner shadow (" + rows.length + ")"));
+  col.appendChild(el("p", "muted small",
+    "Diagnostic only — the planner's pick is compared against what the table actually dispatched " +
+    "and never changes it. Divergence is a prompt to inspect the ranking, not an incident."));
+  rows.forEach((r) => {
+    const row = el("div", "control-item");
+    row.appendChild(el("span", "cid", r.targetId));
+    row.appendChild(el("span", "state-tag", pctLabel({ pct: r.rate }) + " diverging"));
+    row.appendChild(el("span", "muted small", r.agree + " agree / " + r.diverge + " diverge"));
+    col.appendChild(row);
+    if (!r.recent.length) return;
+    const hist = el("details", "comp-raw");
+    hist.appendChild(el("summary", "muted small", "recent divergences (" + r.recent.length + ")"));
+    r.recent.forEach((d) => {
+      hist.appendChild(el("div", "muted small",
+        d.at + " · " + d.gapColumn + " · " + d.entityId +
+        " — planner picked " + d.pickedRef + ", table dispatched " + d.actualRef));
+    });
+    col.appendChild(hist);
+  });
 }
 
 // renderVaultInfo fills the Vault page's right column with the shred-status
