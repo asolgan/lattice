@@ -131,14 +131,51 @@ never a primary label. Fallback ladder: `displayName` → composed relational la
     Refractor logged `lens loaded edgeIdentity` at 06:04:52 — *after* that write —
     with no refusal in its log. The compiled rule is current.
 
-  So the engine produces both fields and the rule that produces them is live. The
-  remaining search space is **downstream of projection**: this lens's target is
-  not a KV row but `nats_subject` / `personal: true` / stream `SYNC`
-  (`subjectPrefix: lattice.sync.user`), so the next step is the personal-envelope
-  emit path and the edge `manifestFrame` seam — capture the actual SYNC delta for
-  a signed-in actor and compare it field-by-field against the projection result,
-  rather than inferring from the rendered row. Do that before touching the lens or
-  the renderer.
+  So the engine produces both fields and the rule that produces them is live.
+
+  **The SYNC delta was then captured, and the premise itself is false (2026-07-19).**
+  Reading the stored `lattice.sync.user.>` deltas off the SYNC stream, the latest
+  `manifest.me` upsert for the showcase resident (`projectionSeq` 3094) carries
+  **both** N3 fields:
+
+  ```
+  "sealedName": { "ct": "lblX+zkn/…", "keyId": "vtx.identity.MQsm…", "nonce": "r8LN+…" },
+  "anchors":    [ { "key": "vtx.unit.J11X…", "name": "Unit 1",
+                    "container": "vtx.building.A9jn…", "containerName": "Riverside Building" } ]
+  ```
+
+  The cloud side is correct end to end — engine, compiled rule, personal envelope
+  (`personalEnvelopeFn` passes `row` through unmodified) and the `nats_subject`
+  adapter (`splitEnvelopeRow` puts every non-reserved column into `Data`).
+
+  **The loss is the device's local mirror.** Signing in as that resident and
+  reading `/api/feed` returns, on a live connection (`connected:true`), the
+  *pre-N3* row — `sealedName` absent entirely and `anchors` stripped to
+  `{key, container}`. `facet-store/<identityID>.db` contains that same stale
+  shape and no `sealedName` at all. So the device is serving a mirror row that
+  the newer delta never overwrote — which is exactly why the earlier
+  rebuild-and-rehydrate "came back identical".
+
+  **Leading candidate for why the mirror never reconciles, and it is an
+  environment artifact rather than a product defect:** the running stack denies
+  the gap-detection RPC —
+
+  ```
+  Permissions Violation for Publish to "lattice.ctrl.refractor.personal.syncgap"
+  ```
+
+  `bin/gateway` on this stack was built 2026-07-17 20:33; the grant for that
+  subject landed in `internal/gateway/natsauth` at 2026-07-17 22:52 (`0acd68c3`),
+  so the running auth-callout responder predates its own permission. The syncgap
+  RPC is precisely the mechanism that would pull a missed delta, so a device that
+  cannot call it keeps whatever its mirror already holds.
+
+  **Next step (cheap, decisive, not yet run):** rebuild + restart `bin/gateway`,
+  purge `facet-store/<identityID>.db`, re-login, and re-read `/api/feed`. If the
+  row returns with `sealedName` and named anchors, N3 is already complete and this
+  tail was a stale-dev-stack artifact throughout; if it does not, the defect is in
+  the mirror's apply/hydrate path and is real. The purge was deliberately left
+  un-run here — it deletes a device mirror on the stack Andrew may be demoing.
 
   Two real gaps *were* found and fixed while grounding this (`93c6064d`): the
   showcase seed never named an already-seeded world (it passes location names only
