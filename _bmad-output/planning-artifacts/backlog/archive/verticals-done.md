@@ -2,6 +2,13 @@
 
 Rolled from `verticals.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-17 · `0d55b2a` · Facet Inc 3 — Me-screen claim/link UX + revocation UX; linked credential now signs in via `/v1/actor` (G10's first consumer); sign-out purges the local mirror
+- 2026-07-16 · `2696321` · Showcase dataset (§7.3) CLOSED — honest family enum + `RetireServiceTemplate` + idempotent `make seed-showcase` loader; retired both mislabeled live templates
+- 2026-07-16 · `ef45e83` · Facet cold-start cap-projection race CLOSED — `seed-edge-demo` waits for `ctrl.refractor.register` in `cap.roles.<tenant>` before the tenant handoff
+- 2026-07-13 · `e86ab45` · Care→Wellness referral — clinic worklist "Book wellness class" CTA + `/api/wellness/sessions` proxy, `CreateBooking` submit
+- 2026-07-13 · `25623d9` · LoftSpace account settings — new `identityCredentialsRead` Secure Lens + Account tab (list/link/unlink); live-verify pending, dev-stack installs broken
+- 2026-07-13 · `f5b3031` · Edge showcase app (Facet) Fire 2 — `cmd/facet` dev host + PWA renderer, live-verified — [UX](../../implementation-artifacts/facet-app-ux.md)
+- 2026-07-13 · `—` · Edge showcase app (Facet) Fire 2 UX spec — descriptor-form renderer + widget vocabulary mapping, Outbox/conflict UX, `cmd/facet` binary shape — [UX](../../implementation-artifacts/facet-app-ux.md)
 - 2026-07-12 · `b4601de` · Clinic self-service reschedule + cancel CLOSED — extends the consumer scope=self grant pattern to `RescheduleAppointment` + cancel-only `SetAppointmentStatus`; My Appointments self-service toggle (v0.17.0)
 - 2026-07-12 · `1a7b53b` · Clinic multi-site Inc 2 CLOSED — site directory FE + `#book-site` filter + hard-validated `CreateAppointment` site param (`atSite` link) — [design](../../implementation-artifacts/clinic-multisite-design.md)
 - 2026-07-12 · `7877911` · Clinic multi-site Inc 1 — `practicesAt` provider↔building link + `.site` aspect + lenses — [design](../../implementation-artifacts/clinic-multisite-design.md)
