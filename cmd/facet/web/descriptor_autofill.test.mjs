@@ -65,7 +65,7 @@ test("renderField auto-anchored shows a read-only summary carrying the real key"
   assert.match(html, /class="static-field"/);
   assert.match(html, /type="hidden" name="leaseAppKey" value="vtx\.leaseapp\.AAAAAAAAAAAAAAAAAAAA"/);
   assert.doesNotMatch(html, /type="text"/); // never a paste-a-vertex-key input
-  assert.match(html, /Leaseapp AAAAAA/);    // prettify() summary, not the raw key
+  assert.match(html, /Lease application · AAAAAA/); // prettify() typed summary, not the raw key
 });
 
 test("renderField without the anchored flag renders the ordinary editable input", () => {

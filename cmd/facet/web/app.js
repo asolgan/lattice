@@ -25,15 +25,60 @@ function maybeParseJSON(v) {
   try { return JSON.parse(v); } catch (e) { return null; }
 }
 
-// prettify is the fallback label for any key the manifest didn't attach a
-// human-readable name to (edge-manifest's own documented v1 scope-down:
-// anchors/tasks carry only {key, ...}, no label — see packages/edge-manifest
-// package doc comment).
+// Human labels for the vertex types that surface in Facet. The floor rule
+// (display-name-convention-design.md §2) composes a typed label from the key
+// when no projected name exists — "Lease application · Lh1ry1", never a bare
+// NanoID. A type without an entry titleCases its own segment.
+const TYPE_LABELS = {
+  leaseapp: "Lease application",
+  identity: "Resident",
+  building: "Building",
+  unit: "Unit",
+  location: "Place",
+  role: "Role",
+  service: "Service",
+  task: "Task",
+  tab: "Tab",
+  booking: "Booking",
+  appointment: "Appointment",
+  session: "Session",
+  studio: "Studio",
+  menuitem: "Menu item",
+};
+function typeLabel(type) {
+  return TYPE_LABELS[type] || (type ? titleCase(type) : "Item");
+}
+
+// prettify is the last rung of the floor-rule ladder (design §2):
+// displayName → composed relational label → "<Type> · <short-id>". It never
+// returns a bare NanoID as a primary label; the full key stays reachable on
+// inspect. Used for any key the manifest didn't attach a projected name to.
 function prettify(key) {
   const parts = (key || "").split(".");
   if (parts.length < 3) return key || "Unknown";
-  const type = parts[1];
-  return type.charAt(0).toUpperCase() + type.slice(1) + " " + parts[2].slice(0, 6);
+  return typeLabel(parts[1]) + " · " + parts[2].slice(0, 6);
+}
+
+// anchorLabel names a residence anchor (class-2 location, design §2). N1
+// projects the unit's own `.presentation` name plus its container's name onto
+// the manifest.me anchor; compose "Unit 1 · Riverside Building", falling
+// through name-only / container-only to the typed floor — never a bare NanoID.
+function anchorLabel(a) {
+  if (!a) return "";
+  if (a.name && a.containerName) return a.name + " · " + a.containerName;
+  if (a.name) return a.name;
+  if (a.containerName) return a.containerName;
+  return prettify(a.key);
+}
+
+// identityLabel names the signed-in identity (class-3, design §2). The sealed
+// self-name (displayName) arrives via N3's vault decrypt; until then the floor
+// rule renders the typed fallback, never "Unnamed" — an absent name is a typed
+// label, not a shrug (design §2 renderer floor).
+function identityLabel(m) {
+  if (m && m.displayName) return m.displayName;
+  if (m && m.identityKey) return prettify(m.identityKey);
+  return shortIdentityLabel() || "Resident";
 }
 
 function prettifyOpType(t) {
@@ -314,7 +359,7 @@ function updateBadges() {
   // the signed-in user can always tell WHO they are signed in as (design
   // §7.2's whoami-driven header).
   const nm = me();
-  $("identity-name").textContent = (nm && nm.displayName) || shortIdentityLabel();
+  $("identity-name").textContent = nm ? identityLabel(nm) : shortIdentityLabel();
 }
 
 // whoami is fetched once at boot; the header reads it until (and unless) a
@@ -349,7 +394,7 @@ function renderHome() {
   $("view-home").innerHTML = `
     <section>
       <h2 class="section-title">My places</h2>
-      ${anchors.length ? `<div class="chip-row">${anchors.map((a) => `<span class="chip">${esc(prettify(a.key))}</span>`).join("")}</div>` : `<div class="empty">No residence linked yet.</div>`}
+      ${anchors.length ? `<div class="chip-row">${anchors.map((a) => `<span class="chip">${esc(anchorLabel(a))}</span>`).join("")}</div>` : `<div class="empty">No residence linked yet.</div>`}
     </section>
     <section>
       <h2 class="section-title">Services ${svcs.length > 4 ? `<a class="see-all" data-goto="services">See all &rarr;</a>` : ""}</h2>
@@ -545,13 +590,13 @@ function renderMe() {
   $("view-me").innerHTML = `
     <div class="card" style="cursor:default">
       ${row.pending ? `<span class="pending-chip">Pending</span>` : ""}
-      <div class="title" style="font-size:18px">${esc(m.displayName || "Unnamed")}</div>
+      <div class="title" style="font-size:18px">${esc(identityLabel(m))}</div>
       <div class="subtitle">${m.claimed ? "Claimed identity" : "Not yet claimed"}</div>
     </div>
     <h3 class="category-heading">Roles</h3>
     <div class="chip-row">${roles.length ? roles.map((r) => `<span class="chip">${esc(r.name || prettify(r.key))}</span>`).join("") : '<span class="subtitle">None</span>'}</div>
     <h3 class="category-heading">Places</h3>
-    <div class="chip-row">${anchors.length ? anchors.map((a) => `<span class="chip">${esc(prettify(a.key))}</span>`).join("") : '<span class="subtitle">None</span>'}</div>
+    <div class="chip-row">${anchors.length ? anchors.map((a) => `<span class="chip">${esc(anchorLabel(a))}</span>`).join("") : '<span class="subtitle">None</span>'}</div>
     ${m.claimed ? renderCredentialsSection() : renderClaimCard()}
   `;
   if (m.claimed && state.credentials === null && !credentialsLoading && !credentialsError) loadCredentials();
