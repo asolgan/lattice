@@ -8,7 +8,7 @@
 // /api/op submits — Augur re-validates entirely server-side, so it carries no
 // client-computed validation payload and has no separate apply step.
 
-import { $, el, api, setStatus, toast } from "../api.js";
+import { $, el, demoHide, api, setStatus, toast } from "../api.js";
 import { replaceRoute } from "../router.js";
 import { renderDoc, keyLinkEl } from "../render.js";
 import {
@@ -322,7 +322,7 @@ function actionSection(p, raw) {
   }
   const row = el("div", "lens-ctlrow");
 
-  const approve = el("button", null, "Approve & install…");
+  const approve = demoHide(el("button", null, "Approve & install…"));
   approve.title = "re-validates the artifact against the live catalog, then records your approval";
   approve.addEventListener("click", async () => {
     if (!window.confirm(
@@ -358,7 +358,7 @@ function actionSection(p, raw) {
   });
   row.appendChild(approve);
 
-  const reject = el("button", "danger-btn", "Reject");
+  const reject = demoHide(el("button", "danger-btn", "Reject"));
   reject.addEventListener("click", async () => {
     if (!window.confirm(
       "Reject this proposal? The AI's authored artifact stays recorded for audit; it just won't be installed.")) return;
@@ -395,7 +395,7 @@ function actionSection(p, raw) {
 // into its final "applied" state.
 function applyRow(p, raw) {
   const row = el("div", "lens-ctlrow");
-  const apply = el("button", null, "Apply now");
+  const apply = demoHide(el("button", null, "Apply now"));
   apply.title = "installs the approved artifact (" + (p.targetMode || "install") +
     (p.targetPackageName ? " " + p.targetPackageName : "") + ") and closes the proposal";
   apply.addEventListener("click", async () => {
@@ -508,7 +508,7 @@ function augurActionSection(p, raw) {
   const row = el("div", "lens-ctlrow");
   const proposalKey = "vtx.augurproposal." + p.proposalId;
 
-  const approve = el("button", null, "Approve & dispatch");
+  const approve = demoHide(el("button", null, "Approve & dispatch"));
   approve.addEventListener("click", async () => {
     if (!window.confirm(
       "Approving arms autonomous dispatch of this op against " + (p.entityId || "the escalated candidate") + ".")) return;
@@ -534,7 +534,7 @@ function augurActionSection(p, raw) {
   });
   row.appendChild(approve);
 
-  const reject = el("button", "danger-btn", "Reject");
+  const reject = demoHide(el("button", "danger-btn", "Reject"));
   reject.addEventListener("click", async () => {
     if (!window.confirm(
       "Reject this proposal? The AI's reasoning stays recorded for audit; the remediation will not dispatch.")) return;

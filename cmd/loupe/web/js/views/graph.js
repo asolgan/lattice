@@ -5,7 +5,7 @@
 // ?view=hood swaps the detail for the ego-graph stage, ?view=shred swaps it
 // for the shred proof. Every rendered key resolves through keyTarget.
 
-import { $, el, api, setStatus, toast } from "../api.js";
+import { $, el, demoHide, api, setStatus, toast } from "../api.js";
 import { shortId, keyTarget, classifyKey } from "../logic/keys.js";
 import {
   adaptiveRadius, ringPositions, sectorPositions,
@@ -267,7 +267,7 @@ async function loadVertexDetail(key, openAspect) {
   // Destructive and irreversible, so it's styled apart from the others and
   // opens a dedicated proof view rather than acting inline.
   if (key.indexOf("vtx.identity.") === 0 && classifyKey(key) === "vertex") {
-    const shredBtn = el("button", "detail-action danger-btn detail-action-danger", "shred identity key…");
+    const shredBtn = demoHide(el("button", "detail-action danger-btn detail-action-danger", "shred identity key…"));
     shredBtn.addEventListener("click", () => navigate("#/graph/" + key + "?view=shred"));
     actions.appendChild(shredBtn);
   }
@@ -279,7 +279,7 @@ async function loadVertexDetail(key, openAspect) {
   // A vertex can carry off-graph blobs — jump to Files with this key as the
   // pre-filled attach target.
   if (classifyKey(key) === "vertex" || classifyKey(key) === "meta") {
-    const af = el("a", "detail-action-link", "attach file →");
+    const af = demoHide(el("a", "detail-action-link", "attach file →"));
     af.href = "#/files?target=" + encodeURIComponent(key);
     actions.appendChild(af);
   }
@@ -377,7 +377,10 @@ function renderSealedBody(bodyEl, aspectKey, ctData) {
   const line = el("div", "sealed-line");
   line.appendChild(el("span", "badge sealed", "🔒 sensitive"));
   line.appendChild(el("span", "sealed-summary", sealedSummary(ctData)));
-  const revealBtn = el("button", "sealed-reveal", "Reveal");
+  // The reveal is the PII axis, not the write axis — the server denies it at
+  // its own call site (objects.go / the vault decrypt POST), and this only
+  // takes the button off a demo visitor's screen.
+  const revealBtn = demoHide(el("button", "sealed-reveal", "Reveal"));
   line.appendChild(revealBtn);
   bodyEl.appendChild(line);
 
@@ -897,7 +900,7 @@ function renderShredProof(box, identityKey, sensitive, unchecked, row, shredStat
     banner.appendChild(el("p", "muted small",
       "This permanently destroys the encryption key for this identity. Its PII becomes unrecoverable " +
       "everywhere — live, history, and every projection. This cannot be undone."));
-    const shredBtn = el("button", "danger-btn", "Shred this identity's key");
+    const shredBtn = demoHide(el("button", "danger-btn", "Shred this identity's key"));
     shredBtn.addEventListener("click", () => openShredModal(identityKey));
     banner.appendChild(shredBtn);
   }
@@ -984,7 +987,7 @@ function openShredModal(identityKey) {
   modal.appendChild(input);
   const actions = el("div", "modal-actions");
   const cancel = el("button", null, "Cancel");
-  const confirm = el("button", "danger-btn", "Shred");
+  const confirm = demoHide(el("button", "danger-btn", "Shred"));
   confirm.disabled = true;
   actions.appendChild(cancel);
   actions.appendChild(confirm);

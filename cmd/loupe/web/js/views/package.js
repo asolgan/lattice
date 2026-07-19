@@ -5,7 +5,7 @@
 // openApplyModal — the shared install/upgrade upload flow the Packages list's
 // toolbar Install action reuses.
 
-import { $, el, api, setStatus, toast } from "../api.js";
+import { $, el, demoHide, api, setStatus, toast } from "../api.js";
 import { navigate, replaceRoute } from "../router.js";
 import { manifestCandidate, applySummaryLine, uninstallSummary } from "../logic/pkg.js";
 import { deleteConfirmReady } from "../logic/lens.js";
@@ -134,7 +134,10 @@ function contentsPanel(pkg) {
 // F-004 in-place diff-apply, behind a dry-run preview) and uninstall
 // (destructive, typed confirm). Replies render linkified inline.
 function lifecyclePanel(pkg) {
-  const box = panel("Lifecycle");
+  // Every action in this panel is a write, so the whole panel is marked rather
+  // than its two buttons — otherwise a demo visitor gets a "Lifecycle" heading
+  // over an empty box and a stray soft-delete caption.
+  const box = demoHide(panel("Lifecycle"));
   const row = el("div", "lens-ctlrow");
   const upBtn = el("button", "comp-ctlbtn", "upgrade / refresh…");
   if (pkg.isDeleted) {
@@ -258,8 +261,8 @@ function openApplyModal(opts) {
 
   const actions = el("div", "modal-actions");
   const cancel = el("button", null, "Cancel");
-  const preview = el("button", null, "Preview (dry-run)");
-  const apply = el("button", "danger-btn", "Apply");
+  const preview = demoHide(el("button", null, "Preview (dry-run)"));
+  const apply = demoHide(el("button", "danger-btn", "Apply"));
   apply.disabled = true; // preview first — the delta IS the confirm
   actions.appendChild(cancel);
   actions.appendChild(preview);
@@ -336,7 +339,7 @@ function openUninstallModal(pkg) {
   modal.appendChild(input);
   const actions = el("div", "modal-actions");
   const cancel = el("button", null, "Cancel");
-  const confirm = el("button", "danger-btn", "Uninstall");
+  const confirm = demoHide(el("button", "danger-btn", "Uninstall"));
   confirm.disabled = true;
   actions.appendChild(cancel);
   actions.appendChild(confirm);

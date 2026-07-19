@@ -1,7 +1,7 @@
 // Files view: the off-graph blob plane — upload/attach + the attached-object
 // grid.
 
-import { $, el, pretty, api, setStatus } from "../api.js";
+import { $, el, demoHide, pretty, api, setStatus } from "../api.js";
 import { keyLinkEl } from "../render.js";
 
 const state = { loaded: false, seq: 0 };
@@ -101,7 +101,7 @@ async function loadFiles() {
     dl.href = "/api/objects/" + encodeURIComponent(oid);
     dl.setAttribute("download", "");
     actions.appendChild(dl);
-    const detach = el("button", "file-detach", "detach");
+    const detach = demoHide(el("button", "file-detach", "detach"));
     detach.addEventListener("click", () => detachObject(oid, targetKey, linkName));
     actions.appendChild(detach);
     meta.appendChild(actions);

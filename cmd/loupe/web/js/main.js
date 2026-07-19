@@ -132,7 +132,10 @@ function renderCrumbs(route, entry) {
 // stream (one console-wide EventSource — the map feed and the op
 // follow-through share it), wire each view's static DOM, then start routing.
 shell.init();
-demo.init();
+// Awaited before routing: the control-plane op buttons decide their visibility
+// at render time from this posture, so a deep link straight into a component
+// or lens page must not paint its first frame before the posture is known.
+await demo.init();
 pulse.init();
 map.init();
 graph.init();

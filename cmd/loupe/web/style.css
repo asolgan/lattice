@@ -1149,3 +1149,11 @@ a.pulse-derived-text:hover { color: var(--text); }
   font-size: 12px;
 }
 #demobanner span { color: var(--text-dim); }
+
+/* Affordance suppression (F20.2). One rule, keyed on the posture class
+   views/demo.js sets at boot: anything marked by demoHide() initiates a
+   platform write or a PII reveal, and a demo visitor's click on it would be
+   refused. Hiding is cosmetic only — the server's method rule and the
+   platform's grants are the enforcement — so an unmarked affordance is a
+   blemish, not a hole. */
+body.demo-mode [data-demo-hide] { display: none !important; }

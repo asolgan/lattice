@@ -197,3 +197,138 @@ func TestDemoModeEnabledFailsClosedOnGarbage(t *testing.T) {
 		}
 	}
 }
+
+// F20.2 §7.1 — the control-plane read carve-out. The classification can only
+// ever NARROW the method rule, so the tests pin both directions: the three
+// inspect-only reads pass, and everything else — including a malformed path that
+// merely looks like one — stays denied.
+
+func TestDemoAllowsControlPlaneReads(t *testing.T) {
+	for _, p := range []string{
+		"/api/control/loom/main/inspect",
+		"/api/control/refractor/abc123/health",
+		"/api/control/refractor/abc123/validate",
+	} {
+		if demoWriteDenied(http.MethodPost, p) {
+			t.Errorf("demoWriteDenied(POST, %s) = true, want false (a control-plane read)", p)
+		}
+	}
+
+	// Every op the classification does not name stays denied — including all
+	// three weaver ops, which mutate without exception.
+	for _, p := range []string{
+		"/api/control/loom/main/pause",
+		"/api/control/loom/main/resume",
+		"/api/control/weaver/t1/disable",
+		"/api/control/weaver/t1/enable",
+		"/api/control/weaver/t1/revoke",
+		"/api/control/refractor/abc/rebuild",
+		"/api/control/refractor/abc/pause",
+		"/api/control/refractor/abc/resume",
+		"/api/control/refractor/abc/delete",
+		// An op name borrowed from another component's read set must not pass.
+		"/api/control/weaver/t1/inspect",
+		"/api/control/loom/main/health",
+	} {
+		if !demoWriteDenied(http.MethodPost, p) {
+			t.Errorf("demoWriteDenied(POST, %s) = false, want true (a mutate)", p)
+		}
+	}
+
+	// Shape: the carve-out only recognizes exactly <comp>/<name>/<op>, parsed
+	// with the same helper handleControl routes with, so the gate cannot
+	// permit a request the handler would route somewhere else.
+	for _, p := range []string{
+		"/api/control/loom/inspect",                  // too short — no name
+		"/api/control/loom/main/inspect/extra",       // too long
+		"/api/control/loom//inspect",                 // empty name collapses to 2 parts
+		"/api/control/nosuch/main/inspect",           // unknown component
+		"/api/control/loom/main.sub/inspect",         // dotted name (subject-injection shape)
+		"/api/control/loom/main/INSPECT",             // case-sensitive, like the op table
+		"/api/controlx/loom/main/inspect",            // prefix near-miss
+		"/api/control/loom/main/inspect/../../pause", // path games
+	} {
+		if !demoWriteDenied(http.MethodPost, p) {
+			t.Errorf("demoWriteDenied(POST, %s) = false, want true (malformed shape)", p)
+		}
+	}
+
+	// The carve-out is POST-only: handleControl answers any other method with a
+	// 400 shape error, so the carve-out has nothing to say about them.
+	for _, m := range []string{http.MethodPut, http.MethodDelete, http.MethodPatch} {
+		if !demoWriteDenied(m, "/api/control/loom/main/inspect") {
+			t.Errorf("demoWriteDenied(%s, control read path) = false, want true (POST only)", m)
+		}
+	}
+}
+
+// TestReadOnlyOpsSubsetOfMutateOps pins the invariant that makes the carve-out
+// safe to reason about: a read-only op is always an op the component actually
+// accepts, so the gate can never permit a request mutateSubject would reject.
+func TestReadOnlyOpsSubsetOfMutateOps(t *testing.T) {
+	for comp, c := range controlComponents {
+		for op := range c.readOnlyOps {
+			if _, ok := c.mutateOps[op]; !ok {
+				t.Errorf("%s: readOnlyOps has %q, which is not in mutateOps", comp, op)
+			}
+		}
+	}
+}
+
+// TestReadOnlyOpsExactSet pins the classification itself. Widening it is the
+// one way the demo posture could start permitting a real mutation, so it must
+// be a deliberate, test-visible act rather than a quiet table edit.
+func TestReadOnlyOpsExactSet(t *testing.T) {
+	want := map[string][]string{
+		"loom":      {"inspect"},
+		"weaver":    {},
+		"refractor": {"health", "validate"},
+	}
+	got := controlReadOnlyOps()
+	if len(got) != len(want) {
+		t.Fatalf("controlReadOnlyOps() covers %d components, want %d", len(got), len(want))
+	}
+	for comp, wantOps := range want {
+		gotOps, ok := got[comp]
+		if !ok {
+			t.Errorf("no entry for %s", comp)
+			continue
+		}
+		if strings.Join(gotOps, ",") != strings.Join(wantOps, ",") {
+			t.Errorf("%s read-only ops = %v, want %v — widening this set permits a real mutation in demo mode",
+				comp, gotOps, wantOps)
+		}
+	}
+}
+
+// TestDemoPayloadCarriesReadOnlyOps: the console hides control buttons from
+// this list rather than from a second copy of the table in JavaScript, so the
+// buttons shown and the ops permitted cannot drift apart.
+func TestDemoPayloadCarriesReadOnlyOps(t *testing.T) {
+	rec := httptest.NewRecorder()
+	(&server{demoMode: true}).handleDemo(rec, httptest.NewRequest(http.MethodGet, "/api/demo", nil))
+	var body struct {
+		DemoMode           bool                `json:"demoMode"`
+		ReadOnlyControlOps map[string][]string `json:"readOnlyControlOps"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode /api/demo: %v", err)
+	}
+	if !body.DemoMode {
+		t.Fatal("demoMode should be true")
+	}
+	if got := body.ReadOnlyControlOps["loom"]; len(got) != 1 || got[0] != "inspect" {
+		t.Errorf("loom read-only ops = %v, want [inspect]", got)
+	}
+	if got, ok := body.ReadOnlyControlOps["weaver"]; !ok || len(got) != 0 {
+		t.Errorf("weaver read-only ops = %v (present=%v), want an empty list, not an absent key — "+
+			"the client hides every op for a component it cannot find", got, ok)
+	}
+	// Asserted on the wire, not on the decoded map: a JSON null also decodes to
+	// a present key holding a nil slice, so the check above cannot tell [] from
+	// null. The client reads the raw JSON, so that is the level to pin.
+	if !strings.Contains(rec.Body.String(), `"weaver":[]`) {
+		t.Errorf("body = %s, want weaver serialized as [] — a component with no "+
+			"inspect-only ops still gets a list", rec.Body.String())
+	}
+}

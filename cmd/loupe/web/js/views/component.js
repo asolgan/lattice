@@ -5,8 +5,9 @@
 // box (loom inspect's reply IS the deliverable); a successful mutation
 // re-renders only the rows, never the reply.
 
-import { $, el, api, setStatus, toast } from "../api.js";
+import { $, el, demoHide, api, setStatus, toast } from "../api.js";
 import { replaceRoute } from "../router.js";
+import { controlOpHidden } from "./demo.js";
 import { offlineComponentCopy, offlineComponentPointer, issueClass, lensStateDot, lensStateGlyph, pendingReadpathCopy } from "../logic/status.js";
 import { metricsLine, eventSummary, controlSurface } from "../logic/component.js";
 import { authFailureRate, pctLabel, jwksRows, revocationStatus, revokeActorValid, revokeConfirmReady } from "../logic/gateway.js";
@@ -507,6 +508,10 @@ function controlRow(comp, id, row, ops, out, refresh) {
   if (rowState) line.appendChild(el("span", "state-tag", String(rowState)));
   ops.forEach((op) => {
     const btn = el("button", "comp-ctlbtn", op);
+    // Control ops tunnel through POST, and in demo mode the server refuses
+    // every one that is not inspect-only — hide exactly those, per the
+    // server's own classification rather than a second copy of it here.
+    if (controlOpHidden(comp, op)) demoHide(btn);
     btn.addEventListener("click", () => {
       if (op === "revoke" && btn.dataset.armed !== "1") {
         btn.dataset.armed = "1";
@@ -563,15 +568,17 @@ function renderRevokeSurface(col, rowsBox, page, out) {
     state.revokeTimers = [setTimeout(refresh, 700), setTimeout(refresh, 2500)];
   };
 
-  rowsBox.appendChild(el("h4", "comp-subsection", "Revoke an actor"));
-  const form = el("div", "control-item");
+  // The heading, the form and the how-to all hide together: a lone actor-key
+  // input under instructions for a button that is not there reads as broken.
+  rowsBox.appendChild(demoHide(el("h4", "comp-subsection", "Revoke an actor")));
+  const form = demoHide(el("div", "control-item"));
   const input = el("input");
   input.type = "text";
   input.placeholder = "vtx.identity.<id>";
   const reason = el("input");
   reason.type = "text";
   reason.placeholder = "reason (optional)";
-  const btn = el("button", "danger-btn", "Revoke…");
+  const btn = demoHide(el("button", "danger-btn", "Revoke…"));
   btn.disabled = true;
   input.addEventListener("input", () => { btn.disabled = !revokeActorValid(input.value); });
   btn.addEventListener("click", () => {
@@ -586,10 +593,10 @@ function renderRevokeSurface(col, rowsBox, page, out) {
   form.appendChild(reason);
   form.appendChild(btn);
   rowsBox.appendChild(form);
-  rowsBox.appendChild(el("p", "muted small",
+  rowsBox.appendChild(demoHide(el("p", "muted small",
     "Revoked actors are refused at the Gateway (403) before any op is published. " +
     "Mint a test token (bin/gateway dev-token -sub <id>), revoke it here, and the next " +
-    "POST /v1/operations returns 403."));
+    "POST /v1/operations returns 403.")));
 
   rowsBox.appendChild(el("h4", "comp-subsection", "Currently revoked"));
   rowsBox.appendChild(listBox);
@@ -620,7 +627,7 @@ async function loadRevocations(listBox, out, refreshLater) {
     if (row.by) audit.push("by " + row.by);
     if (row.reason) audit.push(row.reason);
     if (audit.length) line.appendChild(el("span", "muted small", audit.join(" · ")));
-    const un = el("button", "comp-ctlbtn", "un-revoke");
+    const un = demoHide(el("button", "comp-ctlbtn", "un-revoke"));
     un.addEventListener("click", async () => {
       if (un.dataset.armed !== "1") {
         un.dataset.armed = "1";
@@ -673,7 +680,7 @@ function openRevokeModal(actor, reasonText, out, onDone) {
   modal.appendChild(input);
   const actions = el("div", "modal-actions");
   const cancel = el("button", null, "Cancel");
-  const confirm = el("button", "danger-btn", "Revoke");
+  const confirm = demoHide(el("button", "danger-btn", "Revoke"));
   confirm.disabled = true;
   actions.appendChild(cancel);
   actions.appendChild(confirm);
@@ -784,6 +791,7 @@ function rosterRow(lens, out, refresh) {
   row.appendChild(el("span", "muted small", (glyph ? glyph + " " : "") + lens.status));
   ["health", "validate", "pause", "resume", "rebuild"].forEach((op) => {
     const btn = el("button", "comp-ctlbtn", op === "health" ? "inspect" : op);
+    if (controlOpHidden("refractor", op)) demoHide(btn);
     if (op === "rebuild" && lens.status === "pending-readpath") {
       // Permanently inert on this row — runControlOp's blanket re-enable must
       // not resurrect it as a dead button.

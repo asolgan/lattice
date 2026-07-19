@@ -12,6 +12,20 @@ function el(tag, cls, text) {
   return e;
 }
 
+// demoHide marks an element as a platform-write or PII-reveal affordance, so
+// the hosted demo's shell rule (body.demo-mode in style.css) hides it from a
+// visitor whose click would 403 anyway. Returns the element, so it can wrap an
+// el(...) call inline.
+//
+// This is POLISH, not a boundary: enforcement is the server's demoReadOnly
+// method rule and the platform's capability grants. An affordance a later fire
+// forgets to mark stays visible and 403s honestly — cosmetic drift, never a
+// security regression, which is what makes a marker convention enough here.
+function demoHide(e) {
+  if (e) e.setAttribute("data-demo-hide", "");
+  return e;
+}
+
 function pretty(v) {
   try { return JSON.stringify(v, null, 2); }
   catch (_) { return String(v); }
@@ -64,4 +78,4 @@ function setStatus(id, msg, isError) {
   e.className = "muted" + (isError ? " error-text" : "");
 }
 
-export { $, $all, el, pretty, api, setStatus, toast };
+export { $, $all, el, demoHide, pretty, api, setStatus, toast };

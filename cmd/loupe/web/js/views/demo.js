@@ -1,18 +1,42 @@
-// The hosted-demo visitor banner (F20). Reads the posture once at boot and
-// renders it above the alert strip; the shaping decision lives in
-// logic/demo.js, this module only puts it on the page.
+// The hosted-demo posture (F20): reads /api/demo once at boot, renders the
+// visitor banner, and holds the posture for the rest of the console. The
+// shaping decisions live in logic/demo.js; this module only fetches and puts
+// things on the page.
+//
+// Affordance suppression is driven from here in two ways. The blanket case is
+// declarative — a `demo-mode` class on <body> plus one CSS rule hides every
+// element marked with demoHide(), so a view marks its write buttons once and
+// never consults the posture. The one case that needs the value is the
+// control-plane op buttons, where only the ops the server classifies as
+// inspect-only stay visible (controlOpHidden).
 
 import { $, api, el } from "../api.js";
-import { demoBanner } from "../logic/demo.js";
+import { demoBanner, demoPostureOn, demoControlOpHidden } from "../logic/demo.js";
+
+// The last /api/demo payload. Null until init resolves, which main.js awaits
+// before routing — so no view renders against an unknown posture.
+let payload = null;
 
 async function init() {
+  payload = await api("/api/demo");
+  // The class is what the shell's suppression rule keys off. It is decided by
+  // the posture itself, not by whether the banner happens to render, so the
+  // suppression mechanism does not hang off the banner's null contract.
+  if (!demoPostureOn(payload)) return;
+  document.body.classList.add("demo-mode");
+  const banner = demoBanner(payload);
   const host = $("#demobanner");
-  if (!host) return;
-  const banner = demoBanner(await api("/api/demo"));
-  if (!banner) return;
+  if (!banner || !host) return;
   host.appendChild(el("strong", null, banner.title));
   host.appendChild(el("span", null, banner.text));
   host.classList.add("visible");
 }
 
-export { init };
+// controlOpHidden reports whether a control-plane op button should be omitted
+// under the current posture — true only in demo mode, and only for ops outside
+// the server's own read-only classification.
+function controlOpHidden(comp, op) {
+  return demoControlOpHidden(payload, comp, op);
+}
+
+export { init, controlOpHidden };

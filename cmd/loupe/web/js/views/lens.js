@@ -8,8 +8,9 @@
 // Data: GET /api/lens/<id> + /api/lens/<id>/rows; mutations go through the
 // allow-listed /api/control/refractor/<id>/<op> proxy.
 
-import { $, el, api, setStatus, toast } from "../api.js";
+import { $, el, demoHide, api, setStatus, toast } from "../api.js";
 import { navigate, replaceRoute } from "../router.js";
+import { controlOpHidden } from "./demo.js";
 import { lensStateDot, lensStateGlyph, pendingReadpathCopy, issueClass } from "../logic/status.js";
 import { lensControls, deleteConfirmToken, deleteConfirmReady, latencyLine } from "../logic/lens.js";
 import { renderDoc, keyLinkEl } from "../render.js";
@@ -241,6 +242,9 @@ function controlPanel(lens, preservedReply) {
 
   lensControls(lens.status, isProtected).forEach((ctl) => {
     const btn = el("button", "comp-ctlbtn", ctl.op);
+    // Same rule as the component page's control rows: in demo mode only the
+    // ops the server classified read-only survive.
+    if (controlOpHidden("refractor", ctl.op)) demoHide(btn);
     if (ctl.note) btn.title = ctl.note;
     if (!ctl.enabled) {
       // Born-disabled by the enablement table — inert so the blanket
@@ -273,7 +277,9 @@ function controlPanel(lens, preservedReply) {
   box.appendChild(out);
 
   // delete — destructive, placed apart, typed confirm (§6.3).
-  const delRow = el("div", "lens-delrow");
+  // Marked at the row so the caption goes with the button — a lone "deletes the
+  // projection and its target rows" under nothing is worse than no row at all.
+  const delRow = demoHide(el("div", "lens-delrow"));
   const delBtn = el("button", "danger-btn", "delete lens…");
   delBtn.addEventListener("click", () => openDeleteModal(lens));
   delRow.appendChild(delBtn);
@@ -305,7 +311,7 @@ function openDeleteModal(lens) {
   modal.appendChild(input);
   const actions = el("div", "modal-actions");
   const cancel = el("button", null, "Cancel");
-  const confirm = el("button", "danger-btn", "Delete");
+  const confirm = demoHide(el("button", "danger-btn", "Delete"));
   confirm.disabled = true;
   actions.appendChild(cancel);
   actions.appendChild(confirm);

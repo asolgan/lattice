@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -19,6 +20,17 @@ type controlComponent struct {
 	// mutateOps is the set of per-name operations the UI may invoke. A mutate
 	// subject is built as "<subjectPrefix>.<name>.<op>".
 	mutateOps map[string]struct{}
+	// readOnlyOps is the subset of mutateOps that only inspects. The control
+	// planes tunnel a few pure reads through the same POST shape, so the demo
+	// posture's method rule would otherwise refuse them along with the real
+	// mutations; this is the classification that lets exactly those through
+	// (demoControlReadAllowed).
+	//
+	// Omission DENIES: an op absent here is a mutate as far as the demo gate is
+	// concerned, so a plane that grows an op stays closed until someone
+	// deliberately classifies it. Two tests pin the set — readOnlyOps ⊆
+	// mutateOps, and an exact expected set — so widening it is a visible act.
+	readOnlyOps map[string]struct{}
 }
 
 // controlComponents is the hardcoded per-component map of allowed read-subjects
@@ -33,14 +45,17 @@ var controlComponents = map[string]controlComponent{
 			"list":      "lattice.ctrl.loom.list",
 			"consumers": "lattice.ctrl.loom.consumers",
 		},
-		mutateOps: setOf("inspect", "pause", "resume"),
+		mutateOps:   setOf("inspect", "pause", "resume"),
+		readOnlyOps: setOf("inspect"),
 	},
 	"weaver": {
 		subjectPrefix: "lattice.ctrl.weaver",
 		reads: map[string]string{
 			"list": "lattice.ctrl.weaver.list",
 		},
-		mutateOps: setOf("disable", "enable", "revoke"),
+		// All three weaver ops mutate — no read-only carve-out.
+		mutateOps:   setOf("disable", "enable", "revoke"),
+		readOnlyOps: setOf(),
 	},
 	// Refractor serves only per-lens subjects (no fixed component-wide list);
 	// the UI discovers lens ids through the Health tab. The op set mirrors the
@@ -50,7 +65,51 @@ var controlComponents = map[string]controlComponent{
 		subjectPrefix: "lattice.ctrl.refractor",
 		reads:         map[string]string{},
 		mutateOps:     setOf("health", "validate", "rebuild", "pause", "resume", "delete"),
+		readOnlyOps:   setOf("health", "validate"),
 	},
+}
+
+// demoControlReadAllowed reports whether path is a control-plane POST that only
+// inspects, and may therefore pass the demo posture's method default-deny.
+//
+// It parses with splitNonEmpty — the same helper handleControl routes with — so
+// the gate and the handler can never disagree about which op is about to
+// execute. It only ever NARROWS: a permitted request still goes through
+// mutateSubject's full validation downstream.
+func demoControlReadAllowed(path string) bool {
+	rest, ok := strings.CutPrefix(path, "/api/control/")
+	if !ok {
+		return false
+	}
+	parts := splitNonEmpty(rest)
+	if len(parts) != 3 {
+		return false
+	}
+	c, ok := controlComponents[parts[0]]
+	if !ok {
+		return false
+	}
+	if err := validateControlName(parts[1]); err != nil {
+		return false
+	}
+	_, ok = c.readOnlyOps[parts[2]]
+	return ok
+}
+
+// controlReadOnlyOps renders the per-component read-only classification for
+// /api/demo, so the console hides the control buttons demo mode will refuse
+// without duplicating the table in JavaScript. Sorted for a stable response.
+func controlReadOnlyOps() map[string][]string {
+	out := make(map[string][]string, len(controlComponents))
+	for comp, c := range controlComponents {
+		ops := make([]string, 0, len(c.readOnlyOps))
+		for op := range c.readOnlyOps {
+			ops = append(ops, op)
+		}
+		sort.Strings(ops)
+		out[comp] = ops
+	}
+	return out
 }
 
 // splitNonEmpty splits a slash-delimited path tail into its non-empty

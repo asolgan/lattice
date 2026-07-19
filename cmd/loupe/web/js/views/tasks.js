@@ -6,7 +6,7 @@
 // Every entity on a card is a keyLink into the Graph explorer (design §1.2 — no
 // dead ends).
 
-import { $, el, api, setStatus } from "../api.js";
+import { $, el, demoHide, api, setStatus } from "../api.js";
 import { navigate } from "../router.js";
 import { keyLinkEl } from "../render.js";
 
@@ -78,7 +78,7 @@ async function loadTasks() {
       card.appendChild(sc);
     }
     if (t.status === "open" && op.name) {
-      const btn = el("button", "task-complete", "Complete in Submit Op →");
+      const btn = demoHide(el("button", "task-complete", "Complete in Submit Op →"));
       btn.addEventListener("click", () => startTaskOp(op.name));
       card.appendChild(btn);
     }

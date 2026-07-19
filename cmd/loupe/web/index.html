@@ -203,7 +203,7 @@
     <section class="panel" id="panel-packages">
       <div class="panel-controls">
         <button id="packages-load">Refresh</button>
-        <button id="packages-install">Install from file…</button>
+        <button id="packages-install" data-demo-hide>Install from file…</button>
         <span class="muted" id="packages-status"></span>
       </div>
       <table class="grid" id="packages-table">
@@ -223,7 +223,9 @@
 
     <!-- Files -->
     <section class="panel" id="panel-files">
-      <div class="files-upload">
+      <!-- The whole upload form hides in demo mode: hiding only the button
+           would leave orphaned target/link/replace fields with no action. -->
+      <div class="files-upload" data-demo-hide>
         <div class="op-row">
           <label>target key
             <input type="text" id="files-target" placeholder="vtx.identity.&lt;id&gt;">
@@ -315,7 +317,7 @@
           </label>
         </details>
         <div class="op-actions">
-          <button id="op-submit">Submit operation</button>
+          <button id="op-submit" data-demo-hide>Submit operation</button>
           <span class="muted" id="op-status"></span>
         </div>
         <div class="valuepane-head">Reply</div>

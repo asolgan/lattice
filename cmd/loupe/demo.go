@@ -50,16 +50,22 @@ var demoAllowedWritePaths = map[string]bool{
 // routes that do not exist yet. A path list would fail OPEN the day a fire adds
 // a write endpoint and forgets to update it.
 //
-// It over-denies, deliberately. The control plane tunnels three pure reads
-// through POST (loom `inspect`, refractor `health` and `validate`), so a demo
-// visitor loses those inspection replies. Restoring them means teaching this
-// rule which control ops are reads — a classification that lives in control.go
-// and would fail OPEN if it ever drifted — so the collateral is accepted here
-// and tracked as F20.2 rather than traded for a stale allowlist.
+// One carve-out sits on top of the method rule: the control plane tunnels a few
+// pure reads through POST (loom `inspect`, refractor `health` and `validate`),
+// and those pass — they are some of the more compelling behind-the-scenes
+// surfaces, and they mutate nothing. demoControlReadAllowed decides it from a
+// classification that lives beside mutateOps in control.go and is written so
+// that OMISSION DENIES: a plane that grows an op is refused in demo mode until
+// someone classifies it deliberately, which is what keeps this an allowlist
+// that cannot drift open.
 func demoWriteDenied(method, path string) bool {
 	switch method {
 	case http.MethodGet, http.MethodHead:
 		return false
+	case http.MethodPost:
+		if demoControlReadAllowed(path) {
+			return false
+		}
 	}
 	return !demoAllowedWritePaths[path]
 }
@@ -115,15 +121,21 @@ func demoModeEnabled(raw string) (bool, error) {
 }
 
 // handleDemo implements GET /api/demo — the posture the shell reads to decide
-// whether to render the visitor banner.
+// whether to render the visitor banner and which affordances to suppress.
+//
+// It carries the control-plane read-only classification so the console can hide
+// exactly the control buttons demo mode would refuse, without a second copy of
+// the table in JavaScript that could disagree with the gate. The list is
+// descriptive only: suppression is cosmetic, demoWriteDenied is enforcement.
 func (s *server) handleDemo(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		s.writeError(w, http.StatusMethodNotAllowed, "GET required")
 		return
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
-		"demoMode": s.demoMode,
-		"notice":   demoDenialMessage,
+		"demoMode":           s.demoMode,
+		"notice":             demoDenialMessage,
+		"readOnlyControlOps": controlReadOnlyOps(),
 	})
 }
 

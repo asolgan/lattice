@@ -75,12 +75,24 @@
     .manual.visible { display: block; }
     .status { margin-top: 14px; font-size: 12px; color: var(--text-dim); min-height: 1.5em; }
     .status.error { color: var(--red); }
+    .demo-notice {
+      border: 1px solid var(--accent-dim);
+      border-radius: 6px;
+      padding: 10px 12px;
+      margin: 0 0 18px;
+      font-size: 12px;
+      line-height: 1.55;
+      color: var(--text-dim);
+    }
+    .demo-notice strong { display: block; color: var(--text); margin-bottom: 4px; }
   </style>
 </head>
 <body>
   <div class="card">
     <p class="brand">Loupe <span class="brand-sub">· Lattice</span></p>
     <p class="lede">Operator login required — no valid session, no console.</p>
+
+    <!-- demo-notice -->
 
     <button type="button" id="dev-login">Log in as operator (dev)</button>
 

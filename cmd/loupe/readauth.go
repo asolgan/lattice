@@ -477,9 +477,36 @@ func (s *server) handleOperatorLogout(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+// Markers handleLoginPage rewrites when the demo posture is on. Both are exact
+// literals present exactly once in web/login.html, pinned by a test — a copy
+// edit that breaks a marker fails the suite rather than silently serving the
+// operator wording to demo visitors.
+const (
+	loginDemoNoticeMarker = "<!-- demo-notice -->"
+	loginDevButtonLabel   = "Log in as operator (dev)"
+	loginDemoButtonLabel  = "Enter the read-only demo"
+)
+
+// loginDemoNotice is the visitor disclaimer injected in place of the marker.
+// Static copy, no request-derived data, so it is safe to splice as HTML.
+//
+// It promises exactly what this process delivers, and deliberately does NOT
+// claim the demo identity's platform grants are narrow — that scoping is
+// provisioned separately and nothing here can verify it, which is the same
+// discipline demoDenialMessage is worded to keep. Nor does it credit the
+// refusal to the platform: reveals in particular are refused by this process
+// (objects.go), because the vault RPC carries no actor for grants to judge.
+const loginDemoNotice = `<p class="demo-notice"><strong>This is a live Lattice operator console.</strong>` +
+	`You are entering a hosted read-only demo, and every visitor signs in as the same demo identity. ` +
+	`The console accepts reads only — write actions and PII reveals are refused.</p>`
+
 // handleLoginPage implements GET /login — the standalone, self-contained
 // (no external JS/CSS, so no further requireOperator exemptions are needed)
 // page a fresh browser with no credential at all can always reach.
+//
+// The demo disclaimer is injected server-side rather than fetched, so it needs
+// no unauthenticated /api/demo exemption, survives JS being off, and keeps the
+// page self-contained.
 func (s *server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	body, err := webFS.ReadFile("web/login.html")
 	if err != nil {
@@ -487,6 +514,11 @@ func (s *server) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		// a programmer error (mirrors the fs.Sub panic in registerRoutes).
 		s.writeError(w, http.StatusInternalServerError, "login page: "+err.Error())
 		return
+	}
+	if s.demoMode {
+		page := strings.Replace(string(body), loginDemoNoticeMarker, loginDemoNotice, 1)
+		page = strings.Replace(page, loginDevButtonLabel, loginDemoButtonLabel, 1)
+		body = []byte(page)
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if _, err := w.Write(body); err != nil {
