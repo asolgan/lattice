@@ -1,21 +1,21 @@
 # Display names across the graph — the "fewer NanoIDs" convention
 
-**Status: 📐 AWAITING ANDREW (2026-07-18).** Initiated by Andrew's PO pass on the live Facet run
+**Status: ✅ RATIFIED (Andrew, 2026-07-18).** Initiated by Andrew's PO pass on the live Facet run
 ("Facet ocZv1Ptn…" header, id-labeled Unit/Building/leaseapp chips, "Unnamed" on the Me tab): raw
 NanoIDs are the primary label almost everywhere a human name should be. Andrew's ask: a generic,
-long-term mechanism — explicitly not a demo hack. On ratification: verticals lane, one item,
-internal order N1→N3 (§3).
+long-term mechanism — explicitly not a demo hack. Build: verticals lane, one item, internal order
+N1→N3 (§3).
 
-## 0. For Andrew — decisions requested
+## 0. Decisions — RATIFIED (Andrew, 2026-07-18)
 
-- **D1 — four display classes** (§2) become *the* convention every lens + renderer follows.
+- **D1 — four display classes** (§2) are *the* convention every lens + renderer follows.
 - **D2 — nameable business vertices ride a shared `.presentation` aspect shape** (service-domain's
   proven `{name, description?, icon?, category?}`), declared per-type in each package's own DDL.
   **Not `canonicalName`**: on meta vertices that aspect *is* the vertex's identity (Contract #1
   dedup/recognition semantics, unique by construction); business display names are non-unique
   mutable labels — overloading the meta-identity aspect for display would blur a load-bearing
-  invariant. (Your "use canonicalName where available" holds exactly for class 1 — metas — where
-  it already works today.)
+  invariant. (Andrew's "use canonicalName where available" holds exactly for class 1 — metas —
+  where it already works today.)
 - **D3 — identity names stay sealed end-to-end.** Self-display decrypts locally via the shipped
   EDGE.4 vault client; other-identity display (staff surfaces) is Protected-lens territory
   (clinicPatientsRead precedent) and stays out of this design. Never plaintext PII in a broadcast
