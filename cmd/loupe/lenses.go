@@ -21,11 +21,16 @@ type lensRow struct {
 	GrantTable    bool     `json:"grantTable,omitempty"`
 }
 
-// lensSpecInfo is the slice of a lens spec the roster joins in.
+// lensSpecInfo is the slice of a lens spec the roster joins in. Personal and
+// Stream describe a `nats_subject` Personal Lens target: the edge fleet view
+// discovers the SYNC stream to gap-check against from the installed lenses
+// themselves rather than assuming a literal name.
 type lensSpecInfo struct {
 	TargetType string
 	Protected  bool
 	GrantTable bool
+	Personal   bool
+	Stream     string
 }
 
 // lensSpec reads targetType + the read-path-authorization flags out of a
@@ -39,6 +44,8 @@ func lensSpec(get kvGetter, id string) lensSpecInfo {
 	if cfg, ok := d["targetConfig"].(map[string]any); ok {
 		info.Protected, _ = cfg["protected"].(bool)
 		info.GrantTable, _ = cfg["grantTable"].(bool)
+		info.Personal, _ = cfg["personal"].(bool)
+		info.Stream, _ = cfg["stream"].(string)
 	}
 	return info
 }

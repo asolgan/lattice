@@ -13,6 +13,7 @@
       <a class="tab active" data-tab="systemmap" href="#/map">System Map</a>
       <a class="tab" data-tab="graph" href="#/graph">Graph</a>
       <a class="tab" data-tab="tasks" href="#/tasks">Tasks</a>
+      <a class="tab" data-tab="edge" href="#/edge">Edge</a>
       <a class="tab" data-tab="flows" href="#/flows">Flows</a>
       <a class="tab" data-tab="packages" href="#/packages">Packages</a>
       <a class="tab" data-tab="files" href="#/files">Files</a>
@@ -133,6 +134,25 @@
         (FR29) — it sorts to the top; the operator is its remediation. "Complete →" jumps to Submit Op with
         that operation pre-selected.</p>
       <div class="cards" id="tasks-cards"></div>
+    </section>
+
+    <!-- Edge -->
+    <section class="panel" id="panel-edge">
+      <div class="panel-controls">
+        <button id="edge-load">Refresh</button>
+        <label class="muted"><input type="checkbox" id="edge-gapped-only"> gapped only</label>
+        <span class="muted" id="edge-status-msg"></span>
+      </div>
+      <p class="muted small">The Personal Lens subscriber fleet — every device registered through
+        <code>personal.register</code>, with its Interest Set and its position in the
+        <code>SYNC</code> stream. A device is <strong>gapped</strong> when the stream's retention floor has
+        overtaken the point it consumed through: those deltas aged out, so a warm resume would silently
+        miss them and the device needs a cold <code>personal.hydrate</code>. Gap state is derived from
+        each device's own JetStream ack floor where it has one, and falls back to the Refractor's
+        best-effort hydration bookkeeping otherwise — a fallback verdict is labelled as such.</p>
+      <p class="muted small" id="edge-retention"></p>
+      <div id="edge-notes"></div>
+      <div class="cards" id="edge-groups"></div>
     </section>
 
     <!-- Flows -->

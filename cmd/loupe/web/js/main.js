@@ -11,6 +11,7 @@ import * as pulse from "./pulse.js";
 import * as map from "./views/map.js";
 import * as graph from "./views/graph.js";
 import * as tasks from "./views/tasks.js";
+import * as edge from "./views/edge.js";
 import * as flows from "./views/flows.js";
 import * as component from "./views/component.js";
 import * as packages from "./views/packages.js";
@@ -28,6 +29,7 @@ const routes = {
   map:       { panel: "systemmap", view: map,       crumb: "System Map" },
   graph:     { panel: "graph",     view: graph,     crumb: "Graph" },
   tasks:     { panel: "tasks",     view: tasks,     crumb: "Tasks" },
+  edge:      { panel: "edge",      view: edge,      crumb: "Edge" },
   flows:     { panel: "flows",     view: flows,     crumb: "Flows" },
   component: { panel: "component", view: component, crumb: "System Map", nav: "systemmap", crumbHref: "#/map" },
   lens:      { panel: "lens",      view: lens,      crumb: "Refractor", nav: "systemmap", crumbHref: "#/component/refractor" },
@@ -133,6 +135,7 @@ pulse.init();
 map.init();
 graph.init();
 tasks.init();
+edge.init();
 flows.init();
 component.init();
 lens.init();
