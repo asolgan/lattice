@@ -72,10 +72,25 @@ never a primary label. Fallback ladder: `displayName` → composed relational la
 - **N2 (FE + lens):** renderer floor rule everywhere; leaseapp/task rows gain projected context
   (lens adds the subject's display fields; "Sign Lease — Leaseapp Lh1ry1" becomes
   "Sign Lease — Unit 1 lease").
-- **N3 (pkg + FE):** self-name — the me-lens projects the *sealed* `name` envelope (or the engine
-  reads the mirrored aspect); the Facet engine decrypts via `edge/vault.Client`; header + Me card
-  show the resident's name. Completing the seeded "Record Identity PII" task lights the name up
-  live — a natural demo beat. Wasm parity: the W3/W4 browser engine carries the same client.
+- **N3 (pkg + FE) — SHIPPED:** self-name. `edgeIdentitySpec` projects `identity.name.data` as
+  `sealedName` (the `{ct, nonce, keyId}` envelope; the pre-existing `displayName` alias stays for
+  a no-Vault stack), and `internal/edge/vault.SelfName` decrypts it in memory via the EDGE.4
+  client — that client's first consumer. Applied at one `manifestFrame` seam per engine, so the
+  live-delta / snapshot / browser-`read` paths cannot drift; both hosts carry it (wasm parity).
+  Every failure degrades to leaving the row alone, so the renderer's floor rule paints the typed
+  fallback — the shred story holds at the display surface. The FE needed no change: `app.js`'s
+  `identityLabel` already read `displayName`.
+
+  **Live-stack tail (not a code gap):** the browser beat — header reading the resident's name —
+  was not observed live this fire. Verifying it surfaced a *Refractor* bug, fixed in the same
+  commit: the MATCH-update hot-reload path threaded `Into.Key` without activation's
+  `IsPersonalLens` exemption, so a Personal Lens's `__actor` key failed RETURN-alias validation
+  and **every cypher edit was silently refused**, pinning the running pipeline to its old cypher.
+  The live stack still runs the pre-fix Refractor binary, so the in-browser confirmation waits on
+  that process being restarted by whoever owns it. Proven meanwhile at both halves: the lens alias
+  resolves through the real engine (`edge_manifest_fire1_e2e_test.go`), and the decrypt round-trips
+  against a real control service + Vault backend, including the shredded-identity fallback
+  (`internal/edge/vault/selfname_test.go`).
 
 **Green bar:** a signed-in showcase resident sees zero raw NanoIDs across Home/Services/Tasks/
 Activity/Me; the header reads "Sam Okafor"; crypto-shredding that identity flips the header to the
