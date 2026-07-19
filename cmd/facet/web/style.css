@@ -240,6 +240,10 @@ h2.section-title { font-size: 14px; text-transform: uppercase; letter-spacing: 0
   padding: 9px 11px; border-radius: 8px; font-size: 14px; width: 100%;
 }
 .field textarea { resize: vertical; min-height: 70px; }
+.field .static-field {
+  background: var(--bg-input); border: 1px solid var(--border); color: var(--text-dim);
+  padding: 9px 11px; border-radius: 8px; font-size: 14px;
+}
 
 .segmented { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .segmented button {

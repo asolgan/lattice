@@ -735,6 +735,38 @@ function openDescriptorForm(opKey, ctx) {
 
 // --------------------------------------------- the descriptor form (§3.6)
 
+// vtxTypeForField maps a descriptor field named "<type>Key" to its Contract #1
+// vertex type — the convention every self-scope entity-key field follows
+// ("leaseAppKey" -> "leaseapp", "tabKey" -> "tab", "sessionKey" -> "session").
+// Returns undefined for a field that isn't a "<type>Key", so only entity-key
+// fields are candidates for manifest auto-fill.
+function vtxTypeForField(name) {
+  const m = /^(.+)Key$/.exec(name || "");
+  return m ? m[1].toLowerCase() : undefined;
+}
+
+// selfAnchoredKeys indexes, by Contract #1 vertex type, the entity keys the
+// signed-in identity already owns per the manifest — today a task's scopedTo
+// target (the Sign-lease task names the resident's own vtx.leaseapp.<id>). A
+// descriptor form can then answer a "<type>Key" field from the manifest
+// instead of asking the visitor to paste a vertex key. Returns a Map of vtx
+// type -> Set of keys; a field only auto-fills when its type has exactly one,
+// so an ambiguous type (two leases) falls back to the editable input rather
+// than guessing. Absent the task (e.g. an already-signed lease whose task has
+// closed) the type is simply absent and the field stays editable.
+function selfAnchoredKeys(taskList) {
+  const byType = new Map();
+  for (const t of (taskList || [])) {
+    const k = t && t.data && t.data.scopedTo;
+    if (typeof k !== "string" || !k.startsWith("vtx.")) continue;
+    const type = k.split(".")[1];
+    if (!type) continue;
+    if (!byType.has(type)) byType.set(type, new Set());
+    byType.get(type).add(k);
+  }
+  return byType;
+}
+
 function renderDescriptorForm(op, opKey, ctx, prefill, reviewBanner) {
   const schema = maybeParseJSON(op.inputSchema) || { type: "object", properties: {} };
   const props = schema.properties || {};
@@ -744,7 +776,25 @@ function renderDescriptorForm(op, opKey, ctx, prefill, reviewBanner) {
   const targetField = op.dispatchTargetField;
   const fieldNames = Object.keys(props).filter((f) => !(f in contextParams) && f !== targetField);
 
-  const fieldsHtml = fieldNames.map((name) => renderField(name, props[name], fieldDescs[name], required.has(name), prefill[name], op.sensitive)).join("");
+  // A descriptor field naming a self-anchored entity key the manifest already
+  // carries (café OpenTab's leaseAppKey — the signed-in identity's own lease,
+  // named by its Sign-lease task) is auto-filled read-only rather than asked
+  // of the visitor as a raw vertex key. Only an unambiguous single match fills
+  // (see selfAnchoredKeys); a prefill the caller already supplied wins, and a
+  // field with no match falls back to its ordinary editable input.
+  const anchored = selfAnchoredKeys(tasks());
+  const merged = {};
+  const autoAnchored = new Set();
+  for (const name of fieldNames) {
+    const supplied = prefill[name];
+    if (supplied !== undefined && supplied !== null && supplied !== "") { merged[name] = supplied; continue; }
+    const t = vtxTypeForField(name);
+    const keys = t && anchored.get(t);
+    if (keys && keys.size === 1) { merged[name] = [...keys][0]; autoAnchored.add(name); }
+    else merged[name] = supplied;
+  }
+
+  const fieldsHtml = fieldNames.map((name) => renderField(name, props[name], fieldDescs[name], required.has(name), merged[name], op.sensitive, autoAnchored.has(name))).join("");
 
   showModal(`
     <button class="close-x" data-close>&times;</button>
@@ -764,13 +814,25 @@ function renderDescriptorForm(op, opKey, ctx, prefill, reviewBanner) {
   });
 }
 
-function renderField(name, schema, help, isRequired, prefillVal, opSensitive) {
+function renderField(name, schema, help, isRequired, prefillVal, opSensitive, anchored) {
   schema = schema || {};
   const label = schema.title || name;
   const helpHtml = help ? `<div class="help">${esc(help)}</div>` : "";
   const reqAttr = isRequired ? "required" : "";
   const val = prefillVal !== undefined && prefillVal !== null ? prefillVal : "";
   let inputHtml;
+
+  // A self-anchored key the manifest supplied (renderDescriptorForm's
+  // autoAnchored) shows as a read-only summary of the visitor's own entity,
+  // carrying the actual key in a hidden input the submit path still collects.
+  if (anchored && val) {
+    return `<div class="field">
+      <label>${esc(label)}</label>
+      <div class="static-field">${esc(prettify(val))}</div>
+      <input type="hidden" name="${esc(name)}" value="${esc(val)}">
+      ${helpHtml}
+    </div>`;
+  }
 
   if (schema.type === "boolean") {
     inputHtml = `<div class="toggle-switch ${val === true ? "on" : ""}" data-toggle-field="${esc(name)}"><div class="knob"></div></div>`;
