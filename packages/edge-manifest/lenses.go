@@ -266,11 +266,21 @@ RETURN
 // shape, mirrored from orchestration-base's myTasksSpec). v1 scope: direct
 // assignedTo only — FR28 role-queued tasks are deferred (see the package
 // doc comment above).
+//
+// scopedName projects the display name of the task's scoped target's subject
+// (class-4 relational label, display-name-convention-design.md §2): a
+// SignLease task scopedTo a leaseapp carries the applied-for unit's
+// `.presentation` name, so the renderer composes "Unit 1 lease" instead of a
+// bare NanoID. Mirrors the `templateName` idiom on edgeInstances — rides
+// inline on the already-readable task row, no separate read-grant. Null when
+// the target has no `appliesToUnit` subject (non-leaseapp scopes fall to the
+// renderer's typed floor).
 const edgeTasksSpec = `
 MATCH (identity:identity {key: $actorKey})<-[:assignedTo]-(task:task)
 WHERE task.data.status = "open"
 OPTIONAL MATCH (task)-[:forOperation]->(op)
 OPTIONAL MATCH (task)-[:scopedTo]->(tgt)
+OPTIONAL MATCH (tgt)-[:appliesToUnit]->(scopedUnit:unit)
 RETURN
   task.key AS anchor,
   "manifest.task" AS ns,
@@ -280,6 +290,7 @@ RETURN
   op.key AS forOperationKey,
   op.data.operationType AS operationType,
   tgt.key AS scopedTo,
+  scopedUnit.presentation.data.name AS scopedName,
   task.data.expiresAt AS expiresAt
 `
 

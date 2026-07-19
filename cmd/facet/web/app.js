@@ -71,6 +71,20 @@ function anchorLabel(a) {
   return prettify(a.key);
 }
 
+// scopedLabel names a task's scoped target (class-4 relational label,
+// design §2). The lens projects the target's subject name (scopedName) — a
+// SignLease task scopedTo a leaseapp carries its applied-for unit's name — so
+// compose "Unit 1 lease" from the subject + the target's type. Absent subject
+// name falls through to the typed floor (prettify), never a bare NanoID.
+const RELATIONAL_SUFFIX = { leaseapp: "lease" };
+function scopedLabel(scopedTo, scopedName) {
+  if (!scopedTo) return "";
+  if (!scopedName) return prettify(scopedTo);
+  const type = (scopedTo.split(".")[1]) || "";
+  const suffix = RELATIONAL_SUFFIX[type];
+  return suffix ? scopedName + " " + suffix : scopedName;
+}
+
 // identityLabel names the signed-in identity (class-3, design §2). The sealed
 // self-name (displayName) arrives via N3's vault decrypt; until then the floor
 // rule renders the typed fallback, never "Unnamed" — an absent name is a typed
@@ -424,7 +438,7 @@ function taskRow(t) {
     ${t.pending ? `<span class="pending-chip">Pending</span>` : ""}
     <div style="flex:1">
       <div class="title">${esc(title)}</div>
-      <div class="subtitle">${esc(prettify(d.scopedTo))} &middot; due ${esc(relativeTime(d.expiresAt))}</div>
+      <div class="subtitle">${esc(scopedLabel(d.scopedTo, d.scopedName))} &middot; due ${esc(relativeTime(d.expiresAt))}</div>
     </div>
   </div>`;
 }

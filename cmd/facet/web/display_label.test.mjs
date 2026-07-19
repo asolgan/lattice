@@ -48,6 +48,18 @@ test("anchorLabel composes N1 location + container names, floors to typed", () =
   assert.equal(anchorLabel({ key }), "Unit · UUUUUU");
 });
 
+test("scopedLabel composes the class-4 relational label from the projected subject name", () => {
+  const { scopedLabel } = loadApp();
+  const leaseapp = "vtx.leaseapp.LLLLLLLLLLLLLLLLLLLL";
+  // N2-tail: the lens projects the applied-for unit's name onto the task row
+  assert.equal(scopedLabel(leaseapp, "Unit 1"), "Unit 1 lease");
+  // a scoped type with no relational suffix mapping: the subject name alone
+  assert.equal(scopedLabel("vtx.booking.BBBBBBBBBBBBBBBBBBBB", "Yoga Flow"), "Yoga Flow");
+  // no projected subject name (non-leaseapp scope / unnamed unit): typed floor
+  assert.equal(scopedLabel(leaseapp, null), "Lease application · LLLLLL");
+  assert.equal(scopedLabel("", "Unit 1"), "");
+});
+
 test("identityLabel prefers the sealed self-name, else a typed fallback (never Unnamed)", () => {
   const { identityLabel } = loadApp();
   assert.equal(identityLabel({ displayName: "Sam Okafor" }), "Sam Okafor");
