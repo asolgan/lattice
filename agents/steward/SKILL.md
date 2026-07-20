@@ -311,10 +311,24 @@ running; the **browser tab** you do not.
     | grep -q "lattice/internal/<pkg>$" && echo "bin/$c"; done
   ```
 
-  Then for each one: `go build -o bin/<x> ./cmd/<x>` → `pkill -f "bin/<x>"` → relaunch in the **BACKGROUND**
-  with its captured env (read it off the running process first: `ps eww -p $(pgrep -f "bin/<x>")`) → confirm it
-  re-reports healthy in Health KV. **Verify freshness, don't assume it** — the running binary's mtime must
-  postdate the merge commit (`stat -f %Sm bin/<x>` vs `git log -1 --format=%cd`).
+  **The `Makefile` is the AUTHORITY for how a component is built and launched — never reconstruct a launch
+  from the live process.** Scraping env off a running process (`ps eww`) is guessing: it silently misses
+  anything the process didn't inherit, drops the log-file destination, and can diverge from the process-name
+  shape the Makefile's own reuse-guards match on. **Read the recipe, then use it:**
+  - **Orchestration tier** (`loom` / `weaver` / `bridge` / `object-store-manager` / `chronicler`) — recipe in
+    the **`orchestration`** target. It *reuses* when all five are up (`pgrep -x <name>`), so to land a rebuilt
+    one: kill it with the **same matcher the Makefile uses** (`pkill -x weaver`, not `pkill -f "bin/weaver"`),
+    then `make orchestration` — it rebuilds and relaunches the tier with the right `NKEY_*` /
+    `BOOTSTRAP_JSON_PATH` / log files. That is **not** `make down`.
+  - **Gateway** — recipe inline in **`up-full`** (`:8080`, dev-mode, `NKEY_GATEWAY` + `GATEWAY_PG_DSN` +
+    `GATEWAY_READ_MODELS_DIR` + `GATEWAY_CORS_ORIGINS`). **`make run-gateway` is FOREGROUND / human-only —
+    never unattended.**
+  - **Loupe / vertical apps** — as below.
+
+  If a component has no Makefile recipe, that is the gap to fix (add the target); don't paper over it with a
+  hand-rolled launch line. Then confirm it re-reports healthy in Health KV, and **verify freshness rather than
+  assuming it** — the running binary's mtime must postdate the merge commit (`stat -f %Sm bin/<x>` vs
+  `git log -1 --format=%cd`).
   **This applies to the CORE ENGINES too** (`weaver`, `processor`, `refractor`, `loom`, `gateway`, `bridge`,
   `objmgr`) — not just FE binaries. Cycling ONE engine binary against the still-running stack is **not**
   `make down` and is explicitly allowed; the "don't tear down a stack you didn't start" rule protects NATS +
