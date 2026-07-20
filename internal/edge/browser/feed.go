@@ -27,15 +27,16 @@ import (
 // and inferring connectivity from delta silence would show "offline" for any
 // quiet slice.
 type frame struct {
-	Kind      string          `json:"kind"`
-	Key       string          `json:"key,omitempty"`
-	Deleted   bool            `json:"deleted,omitempty"`
-	Pending   bool            `json:"pending,omitempty"`
-	Data      json.RawMessage `json:"data,omitempty"`
-	Revision  uint64          `json:"revision,omitempty"`
-	Outbox    *outboxEntry    `json:"outbox,omitempty"`
-	Reason    string          `json:"reason,omitempty"`
-	Connected bool            `json:"connected"`
+	Kind         string          `json:"kind"`
+	Key          string          `json:"key,omitempty"`
+	Deleted      bool            `json:"deleted,omitempty"`
+	Pending      bool            `json:"pending,omitempty"`
+	Data         json.RawMessage `json:"data,omitempty"`
+	Revision     uint64          `json:"revision,omitempty"`
+	Outbox       *outboxEntry    `json:"outbox,omitempty"`
+	Reason       string          `json:"reason,omitempty"`
+	Connected    bool            `json:"connected"`
+	SyncDegraded bool            `json:"syncDegraded,omitempty"`
 }
 
 func (f frame) toJS() any { return jsonParse(f) }
@@ -77,6 +78,11 @@ type feed struct {
 	// starting a fresh host.
 	revokedReason string
 	connected     bool
+	// syncDegraded mirrors facet's sticky sync-manager-degraded axis on the
+	// same "connectivity" frame kind. This host runs the sync manager once
+	// per page lifetime (no restart loop), so an error exit marks it and a
+	// reload is what clears it.
+	syncDegraded bool
 
 	// selfName decrypts this identity's sealed name into the manifest.me
 	// row's displayName on its way to the renderer. nil passes every row
@@ -178,16 +184,32 @@ func (f *feed) setConnected(connected bool) {
 	f.mu.Lock()
 	changed := f.connected != connected
 	f.connected = connected
+	degraded := f.syncDegraded
 	f.mu.Unlock()
 	if changed {
-		f.publish(frame{Kind: "connectivity", Connected: connected})
+		f.publish(frame{Kind: "connectivity", Connected: connected, SyncDegraded: degraded})
 	}
 }
 
-func (f *feed) connectedState() bool {
+// setSyncDegraded records the sync manager's degraded axis and broadcasts
+// real transitions on the same "connectivity" frame kind.
+func (f *feed) setSyncDegraded(degraded bool) {
+	f.mu.Lock()
+	changed := f.syncDegraded != degraded
+	f.syncDegraded = degraded
+	connected := f.connected
+	f.mu.Unlock()
+	if changed {
+		f.publish(frame{Kind: "connectivity", Connected: connected, SyncDegraded: degraded})
+	}
+}
+
+// connectivityState returns the sticky connectivity pair (for the snapshot
+// replay a fresh onFrame subscriber receives).
+func (f *feed) connectivityState() (connected, syncDegraded bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.connected
+	return f.connected, f.syncDegraded
 }
 
 func (f *feed) enqueueOutbox(e *outboxEntry) {

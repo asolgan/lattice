@@ -93,6 +93,14 @@ type Config struct {
 	// (facet-app-ux.md §2/§3.0: "nothing today tells a host process the
 	// initial catch-up is done").
 	OnHydrationComplete func(revision uint64)
+	// OnRunEstablished, if set, is invoked once per Run call, after
+	// ensureFresh succeeds and before the durable consumer starts — on the
+	// cold-hydrate and warm-resume paths alike (OnHydrationComplete fires
+	// only on the former). A host whose restart loop marked sync degraded
+	// when a prior Run exited uses this, not a delta callback, to clear the
+	// indicator: a quiet world delivers no deltas, so waiting on one would
+	// leave a recovered engine flagged degraded indefinitely.
+	OnRunEstablished func()
 }
 
 // Transport is the host-supplied seam a Manager drives: the durable delta
@@ -157,6 +165,9 @@ func New(tr Transport, st store.Store, cfg Config) (*Manager, error) {
 func (m *Manager) Run(ctx context.Context) error {
 	if err := m.ensureFresh(ctx); err != nil {
 		return fmt.Errorf("edge/sync: ensure fresh: %w", err)
+	}
+	if m.cfg.OnRunEstablished != nil {
+		m.cfg.OnRunEstablished()
 	}
 	return m.tr.RunDurableConsumer(ctx, transport.ConsumerConfig{
 		Stream:        m.stream,

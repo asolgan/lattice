@@ -175,6 +175,9 @@ func Start(ctx context.Context, cfg Config) (*Host, error) {
 		OnHydrationComplete: func(revision uint64) {
 			fd.publish(frame{Kind: "ready", Revision: revision})
 		},
+		OnRunEstablished: func() {
+			fd.setSyncDegraded(false)
+		},
 	})
 	if err != nil {
 		cancel()
@@ -219,6 +222,10 @@ func Start(ctx context.Context, cfg Config) (*Host, error) {
 	go func() {
 		defer h.wg.Done()
 		if err := mgr.Run(hostCtx); err != nil && hostCtx.Err() == nil {
+			// No restart loop here (one Run per page lifetime) — mark the
+			// degraded axis so the renderer shows a stale-world banner
+			// instead of a healthy-looking stale world; a reload retries.
+			fd.setSyncDegraded(true)
 			logger.Warn("edge/browser: sync manager exited", "err", err)
 		}
 	}()
@@ -382,7 +389,8 @@ func (h *Host) Snapshot() ([]frame, error) {
 		return nil, fmt.Errorf("edge/browser: snapshot: %w", err)
 	}
 	out := make([]frame, 0, len(entries)+len(h.feed.snapshotOutbox())+1)
-	out = append(out, frame{Kind: "connectivity", Connected: h.feed.connectedState()})
+	connected, syncDegraded := h.feed.connectivityState()
+	out = append(out, frame{Kind: "connectivity", Connected: connected, SyncDegraded: syncDegraded})
 	for _, e := range entries {
 		v, ok, err := h.overlay.Read(e.Key)
 		if err != nil || !ok {

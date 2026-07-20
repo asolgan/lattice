@@ -164,6 +164,9 @@ func newEngine(ctx context.Context, cfg engineConfig, identityID, deviceID, toke
 		OnHydrationComplete: func(revision uint64) {
 			fd.publishReady(revision)
 		},
+		OnRunEstablished: func() {
+			fd.setSyncDegraded(false)
+		},
 	})
 	if err != nil {
 		cancel()
@@ -204,9 +207,15 @@ func newEngine(ctx context.Context, cfg engineConfig, identityID, deviceID, toke
 	}()
 	go func() {
 		defer e.wg.Done()
-		runSyncLoop(engCtx, mgr, identityID, cfg.Logger)
+		runSyncLoop(engCtx, mgr, fd, identityID, cfg.Logger)
 	}()
 	return e, nil
+}
+
+// syncDegradedMarker is the seam runSyncLoop marks degraded/recovered sync
+// through — *feed in production; a recorder in tests.
+type syncDegradedMarker interface {
+	setSyncDegraded(degraded bool)
 }
 
 // runSyncLoop runs the Edge Sync Manager, restarting it with capped
@@ -218,7 +227,12 @@ func newEngine(ctx context.Context, cfg engineConfig, identityID, deviceID, toke
 // sync dead for the whole session, the pre-existing log-and-abandon behaviour
 // this design turns from latent to likely. A cancelled engine context ends the
 // loop cleanly; local store reads keep serving throughout (offline-first).
-func runSyncLoop(ctx context.Context, mgr *edgesync.Manager, identityID string, logger *slog.Logger) {
+//
+// Each error exit marks the feed's syncDegraded axis before backing off, so
+// the browser shows a stale-world banner instead of a healthy-looking stale
+// world; the manager's OnRunEstablished (wired in newEngine) clears it when a
+// retry gets past its freshness gate.
+func runSyncLoop(ctx context.Context, mgr *edgesync.Manager, fd syncDegradedMarker, identityID string, logger *slog.Logger) {
 	const (
 		baseBackoff = 500 * time.Millisecond
 		maxBackoff  = 30 * time.Second
@@ -232,6 +246,7 @@ func runSyncLoop(ctx context.Context, mgr *edgesync.Manager, identityID string, 
 		if err == nil {
 			return // Run returned without error and without cancellation — nothing to restart
 		}
+		fd.setSyncDegraded(true)
 		logger.Warn("facet engine: sync manager exited, restarting", "identityId", identityID, "backoff", backoff, "err", err)
 		timer := time.NewTimer(backoff)
 		select {

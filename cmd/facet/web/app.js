@@ -239,9 +239,13 @@ const feedHandlers = {
   },
   // The reconnect banner keys on the host's own NATS connectivity (this frame,
   // design §4.4), never on the transport's own open/error — that link can stay
-  // open through a NATS outage (and vice versa).
+  // open through a NATS outage (and vice versa). syncDegraded is the frame's
+  // second axis: the socket is fine but the sync manager is crash-looping
+  // (restart backoff), so rows render yet new deltas never apply. Offline
+  // wins — while disconnected, the reconnect banner already says stale.
   connectivity(fr) {
     if (fr.connected) hideReconnectBanner(); else showReconnectBanner();
+    setSyncDegradedBanner(!!fr.syncDegraded && !!fr.connected);
   },
   open() {
     if (!hasBootstrapped) {
@@ -366,6 +370,7 @@ function setBootLabel(text, showProgress) {
 
 function showReconnectBanner() { $("reconnect-banner").hidden = false; }
 function hideReconnectBanner() { $("reconnect-banner").hidden = true; }
+function setSyncDegradedBanner(visible) { $("sync-degraded-banner").hidden = !visible; }
 
 // ---------------------------------------------------------- sign-out (§4.4)
 

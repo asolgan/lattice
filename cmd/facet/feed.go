@@ -38,16 +38,22 @@ import (
 //     connection is actually alive — a stale EventSource state would keep
 //     the banner showing "Reconnecting…" after NATS came back, or hide it
 //     while NATS is genuinely down but the SSE tab never blinked.
+//     The same frame carries syncDegraded — the sync manager is in its
+//     restart-backoff loop (runSyncLoop) — a distinct axis from connected:
+//     the NATS socket can be perfectly healthy while every sync attempt
+//     wedges fail-closed (e.g. a controlauth denial on personal.syncgap),
+//     which without this bit renders as a healthy-looking stale world.
 type frame struct {
-	Kind      string          `json:"-"`
-	Key       string          `json:"key,omitempty"`
-	Deleted   bool            `json:"deleted,omitempty"`
-	Pending   bool            `json:"pending,omitempty"`
-	Data      json.RawMessage `json:"data,omitempty"`
-	Revision  uint64          `json:"revision,omitempty"`
-	Outbox    *outboxEntry    `json:"outbox,omitempty"`
-	Reason    string          `json:"reason,omitempty"`
-	Connected bool            `json:"connected"`
+	Kind         string          `json:"-"`
+	Key          string          `json:"key,omitempty"`
+	Deleted      bool            `json:"deleted,omitempty"`
+	Pending      bool            `json:"pending,omitempty"`
+	Data         json.RawMessage `json:"data,omitempty"`
+	Revision     uint64          `json:"revision,omitempty"`
+	Outbox       *outboxEntry    `json:"outbox,omitempty"`
+	Reason       string          `json:"reason,omitempty"`
+	Connected    bool            `json:"connected"`
+	SyncDegraded bool            `json:"syncDegraded,omitempty"`
 }
 
 // outboxEntry mirrors facet-app-ux.md §3.4a: one enqueued write and its
@@ -97,6 +103,12 @@ type feed struct {
 	// hidden state until the next transition, which would show "connected"
 	// even mid-outage for a tab that opened during one.
 	connected bool
+	// syncDegraded is the sticky sync-manager-in-restart-backoff state (the
+	// frame doc comment's syncDegraded axis): set by runSyncLoop when a Run
+	// exits with an error, cleared via the manager's OnRunEstablished once a
+	// retry gets past its freshness gate. Replayed to fresh SSE connections
+	// for the same reason connected is.
+	syncDegraded bool
 	// selfName decrypts this identity's sealed name into the manifest.me
 	// row's displayName on its way to the browser. nil (no Vault control
 	// plane wired) passes every row through untouched.
@@ -203,18 +215,34 @@ func (f *feed) setConnected(connected bool) {
 	f.mu.Lock()
 	changed := f.connected != connected
 	f.connected = connected
+	degraded := f.syncDegraded
 	f.mu.Unlock()
 	if changed {
-		f.publish(frame{Kind: "connectivity", Connected: connected})
+		f.publish(frame{Kind: "connectivity", Connected: connected, SyncDegraded: degraded})
 	}
 }
 
-// connectedState returns the current sticky connectivity state (for a fresh
-// SSE connection's initial replay — see writeSSE).
-func (f *feed) connectedState() bool {
+// setSyncDegraded records whether the sync manager is in its restart-backoff
+// loop and broadcasts the transition on the same "connectivity" frame kind —
+// a no-op when the state didn't change (every failed Run re-marks it, every
+// established Run re-clears it).
+func (f *feed) setSyncDegraded(degraded bool) {
+	f.mu.Lock()
+	changed := f.syncDegraded != degraded
+	f.syncDegraded = degraded
+	connected := f.connected
+	f.mu.Unlock()
+	if changed {
+		f.publish(frame{Kind: "connectivity", Connected: connected, SyncDegraded: degraded})
+	}
+}
+
+// connectivityState returns the current sticky connectivity pair (for a
+// fresh SSE connection's initial replay — see writeSSE).
+func (f *feed) connectivityState() (connected, syncDegraded bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.connected
+	return f.connected, f.syncDegraded
 }
 
 // enqueueOutbox records a freshly-queued write and publishes its initial
@@ -293,7 +321,8 @@ func writeSSE(w http.ResponseWriter, r *http.Request, logger *slog.Logger, fd *f
 	ch := fd.subscribe()
 	defer fd.unsubscribe(ch)
 
-	writeFrame(w, frame{Kind: "connectivity", Connected: fd.connectedState()})
+	connected, syncDegraded := fd.connectivityState()
+	writeFrame(w, frame{Kind: "connectivity", Connected: connected, SyncDegraded: syncDegraded})
 	for _, fr := range snapshot() {
 		writeFrame(w, fr)
 	}
