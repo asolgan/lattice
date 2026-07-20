@@ -6,8 +6,12 @@
 //
 // Idempotent: if lattice.bootstrap.json already exists with
 // status="committed", bucket/stream provisioning still runs (to recover
-// from partial failures) but primordial key seeding is skipped per
-// Contract #7 §7.4.
+// from partial failures) and Core KV is then probed for the primordial set.
+// Seeding is skipped only when the bucket confirms the set is present, per
+// Contract #7 §7.4; if the file and the bucket disagree — a recreated or
+// wiped Core KV behind a surviving committed file — the binary warns and
+// re-seeds using the file's stable NanoIDs, so the platform never comes up
+// "ready" over an empty Core KV.
 //
 // Crash recovery: if lattice.bootstrap.json exists with
 // status="in-progress", the same NanoIDs are reused and SeedPrimordial
@@ -101,6 +105,39 @@ func main() {
 	if err := seeder.ProvisionBuckets(ctx); err != nil {
 		logger.Error("bucket provisioning failed", "error", err)
 		os.Exit(1)
+	}
+
+	// `lattice.bootstrap.json` is file-local: it records what a bootstrap run
+	// once did on some Core KV, not what this Core KV currently holds. A
+	// recreated or wiped bucket behind a surviving status="committed" file
+	// would otherwise come up "ready" with silently-empty reads. Probe the
+	// bucket itself — provisioning above has ensured it exists — and seed on
+	// the bucket's answer. The NanoIDs loaded from the file are stable, so
+	// re-seeding restores exactly the keys existing packages and data
+	// already reference.
+	if !freshlyGenerated {
+		probeCtx, cancelProbe := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+		seeded, err := seeder.PrimordialSeeded(probeCtx)
+		cancelProbe()
+		if err != nil {
+			logger.Error("failed to probe Core KV for the primordial set", "error", err)
+			os.Exit(1)
+		}
+		if !seeded {
+			logger.Warn("lattice.bootstrap.json says committed but Core KV holds no op tracker — bucket recreated or wiped; re-seeding with the file's stable NanoIDs",
+				"path", bootstrapJSONPath, "key", bootstrap.BootstrapOpKey)
+			// Re-open the two-phase commit window before seeding. The file
+			// says "committed", but that claim does not cover this Core KV;
+			// leaving it would let a seed that dies partway read as complete
+			// to the next run — the exact state this probe exists to catch,
+			// and one the op tracker's write-first position would then mask.
+			// Only the status changes; the NanoIDs are untouched.
+			if err := bootstrap.PersistInProgress(bootstrapJSONPath); err != nil {
+				logger.Error("failed to mark lattice.bootstrap.json in-progress", "error", err)
+				os.Exit(1)
+			}
+			freshlyGenerated = true
+		}
 	}
 
 	if freshlyGenerated {

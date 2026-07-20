@@ -220,6 +220,28 @@ func (s *Seeder) provisionStreams(ctx context.Context) error {
 	return nil
 }
 
+// PrimordialSeeded reports whether the primordial set is present in Core KV,
+// probing the bootstrap op tracker key that SeedPrimordial writes first
+// (Contract #7 §7.7 ordering) and that therefore stands for the whole set.
+//
+// This is the authority on whether THIS Core KV has been seeded.
+// `lattice.bootstrap.json` records only what a bootstrap run once did on some
+// Core KV — a recreated or wiped bucket behind a surviving `status="committed"`
+// file leaves the two disagreeing, so a caller deciding whether to seed must
+// consult this and not the file alone.
+func (s *Seeder) PrimordialSeeded(ctx context.Context) (bool, error) {
+	kv, err := s.js.KeyValue(ctx, CoreKVBucket)
+	if err != nil {
+		return false, fmt.Errorf("open Core KV: %w", err)
+	}
+	if _, err := kv.Get(ctx, BootstrapOpKey); err == nil {
+		return true, nil
+	} else if !errors.Is(err, jetstream.ErrKeyNotFound) {
+		return false, fmt.Errorf("probe op tracker key: %w", err)
+	}
+	return false, nil
+}
+
 // Kernel composition:
 //
 //   - 1 bootstrap op tracker
@@ -264,18 +286,21 @@ func (s *Seeder) provisionStreams(ctx context.Context) error {
 // the bootstrap op tracker key already exists in Core KV, the function returns
 // without re-issuing the batch.
 func (s *Seeder) SeedPrimordial(ctx context.Context) error {
+	// Idempotent re-run guard: if the primordial set is already present in
+	// this Core KV, skip the whole batch.
+	seeded, err := s.PrimordialSeeded(ctx)
+	if err != nil {
+		return err
+	}
+	if seeded {
+		s.logger.Info("primordial set already present — skipping batch", "key", BootstrapOpKey)
+		return nil
+	}
+
+	// The per-key fallback below needs its own handle on Core KV.
 	kv, err := s.js.KeyValue(ctx, CoreKVBucket)
 	if err != nil {
 		return fmt.Errorf("open Core KV: %w", err)
-	}
-
-	// Idempotent re-run guard: if the op tracker already exists, the
-	// primordial set has previously committed. Skip the whole batch.
-	if _, err := kv.Get(ctx, BootstrapOpKey); err == nil {
-		s.logger.Info("primordial set already present — skipping batch", "key", BootstrapOpKey)
-		return nil
-	} else if !errors.Is(err, jetstream.ErrKeyNotFound) {
-		return fmt.Errorf("probe op tracker key: %w", err)
 	}
 
 	entries, err := buildPrimordialEntries()

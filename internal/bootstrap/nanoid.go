@@ -372,6 +372,20 @@ func LoadOrGenerate(path string) (freshlyGenerated bool, err error) {
 	return true, nil
 }
 
+// PersistInProgress rewrites lattice.bootstrap.json with
+// status="in-progress", keeping the currently-loaded NanoIDs, to open a
+// two-phase commit around a seed the file does not already cover.
+//
+// LoadOrGenerate opens that window itself when it mints fresh IDs, but a
+// caller that decides to seed against an already-`committed` file — Core KV
+// was recreated under it, so the file's claim no longer holds — must open the
+// window explicitly. Without it a seed that dies partway leaves the file
+// asserting `committed` over an incomplete Core KV, and the next run has no
+// signal to retry.
+func PersistInProgress(path string) error {
+	return persistWithStatus(path, currentRaw(), "in-progress")
+}
+
 // PersistCommitted rewrites lattice.bootstrap.json with status="committed"
 // after SeedPrimordial has successfully committed all primordial keys.
 // Call this instead of Persist when using the two-phase commit protocol.

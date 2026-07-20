@@ -29,8 +29,9 @@ Bootstrap solves two ordering problems that `make up` alone cannot:
    `lattice.bootstrap.json`: no file → generate fresh NanoIDs, write the file with
    `status="in-progress"`, then seed; file with `status="in-progress"` → crash recovery, reuse the
    same IDs and re-run seeding (idempotent — `SeedPrimordial`'s own guard skips a key that already
-   landed); file with `status="committed"` → load IDs, skip seeding entirely. This keeps the NanoID
-   set stable across restarts regardless of where a prior run crashed.
+   landed); file with `status="committed"` → load the IDs, then probe Core KV and skip seeding only
+   if the bucket confirms the primordial set is there (see *Freshness probe* below). This keeps the
+   NanoID set stable across restarts regardless of where a prior run crashed.
 2. **The readiness-gate deadlock.** The §7.5 readiness gate blocks until the admin/Loom/Weaver
    `cap.*` projections exist — but those are produced by Refractor, which `make up` starts *after*
    seeding. Bootstrap runs in two invocations to avoid the deadlock: a seed pass with
@@ -112,7 +113,7 @@ lives in packages (`rbac-domain`, `identity-domain`), not here: the kernel stays
 | Crash mid-seed (before `status="committed"`) | next run reuses the same NanoIDs (file says `in-progress`), re-runs `SeedPrimordial`; its idempotency guard skips already-committed keys |
 | NATS not yet accepting connections | `connectNATSWithRetry` retries (20 attempts, 1s delay) before failing |
 | Readiness gate times out (`cap.*` projections never appear) | seed pass exits 1 with `try make down && make up` — Refractor never came up or never projected |
-| **`lattice.bootstrap.json` stale vs. a recreated Core KV** | `make up`'s reuse branch skips re-seeding when kernel processes are already running, even if Core KV itself was recreated underneath — **reads silently return empty while writes still succeed**. Recurred 3× (2026-07-03/04); tracked as an open board item (`[bootstrap] Stale lattice.bootstrap.json …`, `lattice.md`). Repro: `lattice bootstrap verify`. |
+| **`lattice.bootstrap.json` stale vs. a recreated Core KV** | Caught at two layers, `make up`'s first. With kernel processes up, `make up` runs `lattice bootstrap verify` and on mismatch deletes the file — recovering with a **fresh** ID set, orphaning existing references. Otherwise `cmd/bootstrap` probes Core KV itself (see *Freshness probe*) and re-seeds at the file's **stable** NanoIDs. Repro: `lattice bootstrap verify`. |
 
 ---
 
@@ -134,6 +135,31 @@ lives in packages (`rbac-domain`, `identity-domain`), not here: the kernel stays
 ./internal/bootstrap/...` covers the seeder, the meta/install DDLs, and the two-phase-commit file
 handling.
 
-**Known gap:** the stale-`lattice.bootstrap.json`-vs-recreated-Core-KV failure mode above has no
-freshness check or Health-KV signal today — it is caught only by the operator noticing empty reads
-or running `lattice bootstrap verify` by hand.
+**Freshness probe.** `lattice.bootstrap.json` is file-local: it records what a bootstrap run once
+did on some Core KV, not what this Core KV currently holds. A `status="committed"` file is therefore
+never on its own grounds to skip seeding. After provisioning, `cmd/bootstrap` asks the bucket via
+`Seeder.PrimordialSeeded`, which probes the op tracker key that `SeedPrimordial` writes first
+(§7.7 ordering) and that therefore stands for the whole primordial set. Core KV — not the file — is
+the authority on whether a given bucket has been seeded.
+
+When the two disagree (a recreated or wiped Core KV behind a surviving committed file), bootstrap
+logs a warning naming the disagreement, rewrites the file to `status="in-progress"`, and re-seeds
+using its stable NanoIDs — so the restored keys are exactly the ones existing packages and data
+already reference. Reopening the two-phase window is what makes the re-seed safe to interrupt: the
+op tracker is written *first* (§7.7), so it marks a seed *started*, not finished, and a run that
+died partway would otherwise leave the sentinel present, the rest of the kernel absent, and the file
+still claiming `committed` — unrecoverable, because nothing would signal a retry. With the window
+open, the next run reads `in-progress` and re-seeds.
+
+A *partially* populated Core KV self-heals rather than erroring: the `CreateOnly` batch is rejected
+with a revision conflict, and `seedPrimordialPerKey` fills only the absent keys and exits 0. That is
+the same path a concurrent second bootstrapper takes, which is what it was built for.
+
+**Two layers, and `make up`'s takes precedence.** `make up`'s reuse branch independently runs
+`lattice bootstrap verify`, and on mismatch *deletes* `lattice.bootstrap.json` (Makefile) — so
+bootstrap then starts with no file and mints a **fresh** NanoID set, orphaning existing references.
+That branch only runs when the kernel processes are already up (`PROC_HEALTHY=1`), which is exactly
+the recreated-containers-under-a-live-stack case, so on that path the binary-level probe never
+fires. The probe therefore covers the remaining ones: a stopped-process stack, and any invocation
+that never goes through `make` (Docker, CI, running the binary directly). Reconciling the two so the
+stable-ID recovery wins where it can is tracked as a separate board item.
