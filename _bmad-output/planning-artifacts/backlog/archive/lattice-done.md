@@ -2,6 +2,30 @@
 
 Rolled from `lattice.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-17 · `9c830a4` · [weaver] test-cover the effect-mismatch loud surface (flagEffectMismatches set→recover→clear + metric, 53%→100%) + formatISODuration hours/clamp (50%→100%)
+- 2026-07-17 · `7fc7b42` · [edge,facet] edge-syncgap Inc 2 — client swap: gapped() over personal.syncgap (bounded retry, strict nil-result), FirstSequence deleted from seam+transports+shell, cmd/facet sync-restart
+- 2026-07-17 · `0acd68c` · [refractor,edge] edge-syncgap Inc 1 — the platform op: personal.syncgap control RPC (boolean, identity-bound, own verb) off the control host's own STREAM.INFO; six-place lockstep + STREAM.INFO deny vector
+- 2026-07-17 · `ebb02ab` · [edge,refractor] EDGE.5 RR-1/3/4/5 boundary follow-ons CLOSED — edge SYNC adj-watch seq-0 skip + personal-lens requireReadGate fail-closed + producer→consumer round-trip test + REQUIRE_ACTOR_VERIFIER startup guard
+- 2026-07-17 · `1573d11` · [facet,edge] EDGE.5 W4 inc 4b serving-wiring — `make up-facet-edge` browser-native stack target (build-edge-wasm + `FACET_BROWSER_ENGINE=1`); serving surface live-verified; live Gate-3 e2e = the tail (fresh :9222 stack)
+- 2026-07-17 · `37617be` · [facet,edge] EDGE.5 W4 inc 4a — browser-native serving surface: `FACET_BROWSER_ENGINE` serves wasm+shell + injects `__EDGE_BOOT__` (token in-page/no-store, device id browser-local); nil = shipped Go host unchanged
+- 2026-07-17 · `5bbff9d` · [edge] RR-2 sync/agent reconcile hardening — poison-key Term (store.ErrUnstorableKey), unrecognized-status keeps intent queued, overlay Discard matches RequestID; CI green
+- 2026-07-17 · `b962871` · [CI] natsperm auth-callout PONG/PING flake fixed — connectEdge retries the pre-PONG RTT-PING race (nats-server 2s gate exceeded under CPU contention); deny vectors + prod conf untouched; stress 2/8→0/8
+- 2026-07-17 · `b67612a` · [facet,edge] EDGE.5 W4 inc 3 — renderer feed-source swap: app.js pluggable source (SSE Go-host unchanged) + edge-source.mjs (engine onFrame) + config-gated boot.mjs; `make test-facet-web` CI gate
+- 2026-07-17 · `e7a81c6` · [edge] EDGE.5 W4 inc 2 — host-side peer signal/consume: `OnChange`→`signalChange` (leader) + `onPeerChange`→re-read+republish (follower, off-loop goroutine); in-Chrome verified
+- 2026-07-17 · `fa99b34` · [edge] EDGE.5 W4 inc 1 — shell multi-tab layer: fixed the latent `electLeader(...).catch` leader-path TypeError + built the BroadcastChannel follower change-signal + first `createShell` unit vectors; CI green
+- 2026-07-17 · `86d29c9` · [edge,ci] EDGE.5 W3 inc 3b — JS transport shell over vendored nats.js 3.4.0 + consumer-create wire-form parity test (`edge-consumer-parity` CI job) + vendors.md row; CI green
+- 2026-07-17 · `2127e27` · [edge,ci] EDGE.5 W3 inc 3a — wasm host entry (`internal/edge/browser` + `cmd/edge-wasm`) + `make build-edge-wasm`, driven over its JS API on real IndexedDB in Chrome; fetch submitter → 1.71 MB gz; CI green
+- 2026-07-17 · `ee270f7` · [edge,ci] EDGE.5 W3 inc 2 — IndexedDB store (`syscall/js`) passing the storetest conformance suite on real IndexedDB in headless Chrome (wasmbrowsertest, pinned); vendors.md rows; CI job `edge-browser-store`; CI green
+- 2026-07-17 · `ddd9e25` · [edge,processor,vault] EDGE.5 W3 inc 1 — 4 wire-leaf DTO pkgs (alias re-exports); engine 2.28→1.32 MB gz, zero nats-io under GOOS=js; js gate now asserts go list -deps; CI green
+- 2026-07-17 · `af7f2cf` · [edge,substrate] EDGE.5 W2 — store/transport interfaces, storetest conformance harness, `!js` tags on the trusted NATS paths, substrate/keys leaf pkg, `GOOS=js` CI gate; measured the W3 size blocker; CI green
+- 2026-07-17 · `e0de4bb` · [natsperm,edge] EDGE.5 W1 — native WS listener + the 6 Edge auth vectors twinned over ws://; origin fail-open killed (shape pin + real 403 handshake); fixed a vacuous ops deny; CI green
+- 2026-07-16 · `2a5ee60` · [testutil,lint-conventions] bootstrap-globals-race Fire 2 CLOSED — migrated ~20 suite-local harnesses to EnsurePrimordials + added the lint gate; CI green
+- 2026-07-16 · `0e8ecfd` · [testutil] bootstrap-globals-race Fire 1 — EnsurePrimordials (sync.Once) + t.Parallel() re-applied on lease-signing/clinic-domain/identity-domain; CI green
+- 2026-07-16 · `219fa0c` · [pkgmgr,capability-author] AI-caps Fire 4 SHIPPED — vertexTypeDDL/opMeta kinds + condition-2 lint + live SensitiveAspectResolver; adversarially reviewed, fixed a real fail-open bug; CI green
+- 2026-07-16 · `8a34fe4` · [bridge,vault,natsperm] sensitive-ref-mac-provenance Fire 2 CLOSED — bridge requires+verifies the MAC via lattice.vault.decryptref, natsperm grant swap, DEFENDED fabricated-ref e2e; adversarially reviewed; CI green
+- 2026-07-16 · `b96f819` · [vault,processor] sensitive-ref-mac-provenance Fire 1 — Vault.MAC primitive + lattice.vault.decryptref RPC + both mint seams stamp the marker; full 3-layer adversarial review; CI green
+- 2026-07-15 · `91a614f` · [CI] fixed natsperm auth-callout flake (unit-1 run 29383547635, Authorization Violation) — test-server auth_timeout 2s→10s under shard CPU contention; prod conf untouched
+- 2026-07-14 · `59f4881` · [CI] tried isolating natsperm into its own step + raised `-parallel`; reverted — CI wall-clock 139s→140s, no net win (`-p 4` was already CPU-bin-packed, not natsperm-bound)
 - 2026-07-14 · `ea2b48b` · [CI] internal/substrate's 63 tests now `t.Parallel()` (20.4s→9s local); CI shard flat — ceiling confirmed 2x
 - 2026-07-14 · `c22b3a6` · [CI] processor+outbox `t.Parallel()` (29s→9s, 17s→10s); found real `internal/bootstrap.populate()` global-state race blocking the same fix elsewhere
 - 2026-07-13 · `e0c64df` · [loom,starlarksandbox] Starlark guards Fire 2 CLOSED — `{reads, starlark}` guard eval lit up, budget-bounded parse-time compile-check, deterministic dict key ordering fix; CI green
