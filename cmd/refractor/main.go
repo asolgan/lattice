@@ -412,7 +412,10 @@ func main() {
 				if err != nil {
 					return nil, err
 				}
-				return adapter.NewGrantWriterAdapter(gw)
+				// The declared grant_source confines this lens to its own rows in the
+				// shared table — it guards every write and scopes the key enumeration
+				// diff retraction reads back.
+				return adapter.NewGrantWriterAdapter(gw, r.Into.GrantSource)
 			}
 			// A protected read model (read-path authorization, D1.3): the RLS-locked
 			// business table (FORCE ROW LEVEL SECURITY + the §6.14 set-membership
@@ -531,7 +534,14 @@ func main() {
 				logger.Error("diff retraction validation", "lensId", r.ID, "err", err)
 				return
 			}
-			p.SetDiffRetraction(true)
+			// And fail closed if the target cannot enumerate its keys: without
+			// that the lens would retract nothing while presenting as a lens
+			// that retracts (for a grant producer, as a working revocation
+			// path). A dark lens is the safe end of that trade.
+			if err := p.SetDiffRetraction(true); err != nil {
+				logger.Error("diff retraction adapter support", "lensId", r.ID, "err", err)
+				return
+			}
 			logger.Info("diff retraction installed", "lensId", r.ID)
 		}
 

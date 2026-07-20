@@ -510,13 +510,18 @@ func resultsContainKeys(results []ruleengine.EvalResult, keys map[string]any) bo
 // is set (SetDiffRetraction) — a convergence (`violating`-flag) lens never
 // opts in, so its deliberate never-retract contract is untouched.
 //
-// An adapter that doesn't implement KeyLister is a configuration defect (a
-// lens opted into DiffRetraction against an adapter that can't list keys);
-// results pass through unchanged rather than failing the whole projection.
+// An adapter that doesn't implement KeyLister is a configuration defect — a
+// lens opted into DiffRetraction against a target that cannot enumerate its
+// keys, so no row can ever be retracted. It fails the projection rather than
+// passing results through: for the retraction-bearing lenses this mechanism
+// exists to serve (a grant producer above all), silence would present a
+// permanently inert path as a working security control. Activation refuses the
+// lens up front (cmd/refractor's DiffRetraction guard), so reaching here means
+// the adapter was swapped underneath a running pipeline — loud is correct.
 func (p *Pipeline) applyDiffRetraction(ctx context.Context, results []ruleengine.EvalResult) ([]ruleengine.EvalResult, error) {
 	lister, ok := p.currentAdapter().(adapter.KeyLister)
 	if !ok {
-		return results, nil
+		return nil, fmt.Errorf("pipeline: diff retraction: adapter %T does not implement adapter.KeyLister — the lens cannot retract anything", p.currentAdapter())
 	}
 	existing, err := lister.ListKeys(ctx)
 	if err != nil {

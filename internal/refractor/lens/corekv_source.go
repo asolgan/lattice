@@ -207,6 +207,17 @@ type TargetPostgresConfig struct {
 	// to actor_read_grants and the key to (actor_id, anchor_id, grant_source).
 	GrantTable bool `json:"grantTable,omitempty"`
 
+	// GrantSource declares the grant_source this lens owns — the same literal
+	// its cypher RETURNs as the grant_source column. Declaring it lifts that
+	// value from row data to lens metadata, which is what lets the adapter
+	// confine a whole-table operation to this producer's own rows: it scopes
+	// ListKeys (the read half of DiffRetraction over the SHARED
+	// actor_read_grants table) and is enforced against every written row, so
+	// the declaration and the cypher cannot drift apart. Required with
+	// DiffRetraction; optional otherwise — an anchor-derived producer retracts
+	// through its anchor's tombstone and enumerates nothing.
+	GrantSource string `json:"grantSource,omitempty"`
+
 	// SecureColumns opts the lens into Secure-Lens decrypt-at-projection
 	// (Contract #3 §3.10 "the read-path-authorized Secure Lens"): each entry
 	// names a RETURN column carrying a sensitive aspect's ciphertext envelope
@@ -616,6 +627,17 @@ func translateSpec(spec *LensSpec) (*Rule, error) {
 		if !cfg.Protected && !cfg.Public && !cfg.GrantTable {
 			return nil, fmt.Errorf("lens %q: targetConfig must declare protected, public, or grantTable — a postgres business read model is protected by default and undeclared posture fails closed (Contract #6 §6.14)", spec.ID)
 		}
+		if cfg.GrantSource != "" && !cfg.GrantTable {
+			return nil, fmt.Errorf("lens %q: targetConfig.grantSource is meaningful only on a grantTable lens (it names the grant_source that lens owns in %s)", spec.ID, adapter.GrantTable)
+		}
+		// A grant lens's diff retraction reads back the SHARED actor_read_grants
+		// table, so it can only be confined to this producer's rows by a declared
+		// grant_source. Without one the adapter refuses to list keys, which would
+		// surface as a per-event projection failure; refuse the misdeclaration
+		// here instead, where the author can see what to fix.
+		if cfg.GrantTable && cfg.DiffRetraction && cfg.GrantSource == "" {
+			return nil, fmt.Errorf("lens %q: a grantTable lens with diffRetraction must declare targetConfig.grantSource — %s is shared across producers and retraction must be scoped to this lens's own rows (Contract #6 §6.14)", spec.ID, adapter.GrantTable)
+		}
 		cols, arrayCols, err := translatePostgresColumns(spec.ID, cfg)
 		if err != nil {
 			return nil, err
@@ -641,6 +663,7 @@ func translateSpec(spec *LensSpec) (*Rule, error) {
 			Protected:       cfg.Protected,
 			Public:          cfg.Public,
 			GrantTable:      cfg.GrantTable,
+			GrantSource:     cfg.GrantSource,
 			Columns:         cols,
 			ArrayColumns:    arrayCols,
 			SecureColumns:   cfg.SecureColumns,

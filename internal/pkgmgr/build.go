@@ -393,6 +393,9 @@ func lensSpecBody(lensID string, l LensSpec) map[string]any {
 		if l.GrantTable {
 			targetConfig["grantTable"] = true
 		}
+		if l.GrantSource != "" {
+			targetConfig["grantSource"] = l.GrantSource
+		}
 		if l.DiffRetraction {
 			targetConfig["diffRetraction"] = true
 		}

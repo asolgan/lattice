@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/asolgan/lattice/internal/refractor/adapter"
@@ -300,6 +301,38 @@ func TestPlainLens_NeighborKeyedComposite_FallsThroughToLinger(t *testing.T) {
 	require.Empty(t, results, "the dropped anchor re-derives no rows")
 }
 
+// TestSetDiffRetraction_NonKeyListerAdapter_Refused pins the fail-closed end of
+// the opt-in. A lens whose target cannot enumerate its keys can never retract a
+// row, and the failure is invisible from the outside — the lens keeps upserting,
+// so it looks alive. For a grant producer that inertness IS a stale-access bug
+// (proven live 2026-07-19: an unwire left the grant and the ex-staff actor kept
+// reading the row). Activation must refuse, so the lens stays dark.
+func TestSetDiffRetraction_NonKeyListerAdapter_Refused(t *testing.T) {
+	p, err := New("no-keylister", "nats_kv", "CORE", nil, nil, &keyedAdapter{}, nil)
+	require.NoError(t, err)
+
+	err = p.SetDiffRetraction(true)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "adapter.KeyLister")
+	assert.False(t, p.diffRetraction, "a refused opt-in must not leave the lens half-armed")
+
+	// Disabling is always allowed — no enumeration is required to not retract.
+	require.NoError(t, p.SetDiffRetraction(false))
+}
+
+// TestApplyDiffRetraction_NonKeyListerAdapter_Errors covers the runtime half of
+// the same rule: activation refuses first, so reaching here means the adapter
+// was swapped underneath a running pipeline. The projection fails loudly rather
+// than passing results through as if retraction had run.
+func TestApplyDiffRetraction_NonKeyListerAdapter_Errors(t *testing.T) {
+	p, err := New("swapped-adapter", "nats_kv", "CORE", nil, nil, &keyedAdapter{}, nil)
+	require.NoError(t, err)
+
+	_, err = p.applyDiffRetraction(context.Background(), nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does not implement adapter.KeyLister")
+}
+
 // TestPlainLens_NeighborKeyedComposite_DiffRetractionDeletes proves Fire 3
 // closes exactly the linger the sibling test above pins: the same
 // neighbor-keyed composite shape, but with DiffRetraction opted in
@@ -316,7 +349,7 @@ func TestPlainLens_NeighborKeyedComposite_DiffRetractionDeletes(t *testing.T) {
 	}
 	ctx := context.Background()
 	p, coreKV, _, targetKV := newRetractionPipeline(t, landlordShapeSpec, []string{"app_id", "landlord_id"})
-	p.SetDiffRetraction(true)
+	require.NoError(t, p.SetDiffRetraction(true))
 
 	const appID = "FRDiffAppAAAAAAAAAAA"
 	const unitID = "FRDiffUnitAAAAAAAAAA"

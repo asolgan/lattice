@@ -729,6 +729,17 @@ type LensSpec struct {
 	// to (actor_id, anchor_id, grant_source). Not a protected business model.
 	GrantTable bool
 
+	// GrantSource declares the grant_source this lens owns — the same literal
+	// its cypher RETURNs as the grant_source column (e.g. "cap-read.staff").
+	// Declaring it lifts that value from row data to lens metadata, which is
+	// what lets Refractor confine a whole-table operation to this producer's own
+	// rows in the SHARED actor_read_grants table: it scopes the key enumeration
+	// DiffRetraction diffs against, and is enforced against every row this lens
+	// writes, so the declaration and the cypher cannot drift apart. Required
+	// with DiffRetraction; optional otherwise — a producer that retracts through
+	// its anchor's tombstone enumerates nothing.
+	GrantSource string
+
 	// Columns declares the business columns of a Protected table (name + verbatim
 	// Postgres type) so Refractor can provision the table from the lens spec. The
 	// platform always adds authz_anchors text[] and projection_seq; key columns

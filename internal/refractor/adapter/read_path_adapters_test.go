@@ -14,9 +14,46 @@ import (
 // ── GrantWriterAdapter unit (no database) ────────────────────────────────────
 
 func TestNewGrantWriterAdapter_NilWriter(t *testing.T) {
-	_, err := NewGrantWriterAdapter(nil)
+	_, err := NewGrantWriterAdapter(nil, "cap-read.test")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "writer must not be nil")
+}
+
+// TestGrantWriterAdapter_ListKeys_RequiresDeclaredSource pins the fail-closed
+// end of the scoping rule: with no declared grant_source there is no safe
+// enumeration of the shared table, so ListKeys errors rather than returning
+// every producer's rows — which the pipeline's diff would then retract.
+func TestGrantWriterAdapter_ListKeys_RequiresDeclaredSource(t *testing.T) {
+	ga := &GrantWriterAdapter{w: &PostgresGrantWriter{}}
+	_, err := ga.ListKeys(context.Background())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires a declared grantSource")
+}
+
+// TestGrantWriterAdapter_RejectsForeignSource proves the declaration and the
+// cypher cannot drift: a row projecting some other producer's grant_source is
+// refused on both write paths. Without this the adapter would enumerate the
+// declared source's rows while writing another's, so the diff would match
+// nothing and retract the declared source's entire live set.
+func TestGrantWriterAdapter_RejectsForeignSource(t *testing.T) {
+	ga := &GrantWriterAdapter{w: &PostgresGrantWriter{}, source: "cap-read.staff"}
+	foreign := map[string]any{"actor_id": "A", "anchor_id": "X", "grant_source": "cap-read.clinic.patient"}
+
+	err := ga.Upsert(context.Background(), foreign, nil, 7)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `does not match the lens's declared grant_source "cap-read.staff"`)
+
+	err = ga.Delete(context.Background(), foreign, 7)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `does not match the lens's declared grant_source "cap-read.staff"`)
+}
+
+// TestGrantWriterAdapter_UndeclaredSourceSkipsCheck pins the back-compat end:
+// the shipped anchor-derived producers declare no source and must keep writing
+// whatever their cypher projects. They forgo ListKeys (above), not writes.
+func TestGrantWriterAdapter_UndeclaredSourceSkipsCheck(t *testing.T) {
+	ga := &GrantWriterAdapter{w: &PostgresGrantWriter{}}
+	assert.NoError(t, ga.checkSource("cap-read.anything"))
 }
 
 func TestGrantKeyFields(t *testing.T) {
@@ -175,7 +212,7 @@ func TestReadPathSeam_Integration(t *testing.T) {
 
 	// Grant the actor the row's anchor via the GrantWriterAdapter (the pipeline
 	// path: Upsert keyed by actor_id/anchor_id/grant_source).
-	ga, err := NewGrantWriterAdapter(gw)
+	ga, err := NewGrantWriterAdapter(gw, "cap-read.test")
 	require.NoError(t, err)
 	require.NoError(t, ga.Upsert(ctx,
 		map[string]any{"actor_id": actor, "anchor_id": anchor, "grant_source": "cap-read.test"},
@@ -197,6 +234,70 @@ func TestReadPathSeam_Integration(t *testing.T) {
 	// ProvisionProtectedTable is idempotent (re-run at every activation).
 	require.NoError(t, ProvisionProtectedTable(ctx, pool, tbl,
 		[]string{"id"}, []ColumnDef{{Name: "status", Type: "text"}}, 10*time.Second))
+}
+
+// TestGrantWriterAdapter_ListKeys_ScopedToOwnSource_Integration is the crux of
+// grant-lens diff retraction against the SHARED actor_read_grants table: the
+// pipeline retracts every listed key a fresh re-projection no longer produces,
+// so what ListKeys returns is exactly what one lens is allowed to revoke. It
+// must therefore return this producer's live rows and NOTHING of a coexisting
+// producer's — an unscoped list would hand lens A the authority to revoke every
+// grant lens B, C and the kernel ever wrote.
+func TestGrantWriterAdapter_ListKeys_ScopedToOwnSource_Integration(t *testing.T) {
+	dsn := skipIfNoPostgres(t)
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	require.NoError(t, err)
+	defer pool.Close()
+
+	suffix := sanitize(t.Name())
+	mine := "cap-read.mine." + suffix
+	theirs := "cap-read.theirs." + suffix
+	actorA := "actor_a_" + suffix
+	actorB := "actor_b_" + suffix
+
+	clean := func() {
+		_, _ = pool.Exec(context.Background(),
+			`DELETE FROM "actor_read_grants" WHERE grant_source = ANY($1)`, []string{mine, theirs})
+	}
+
+	gw, err := NewPostgresGrantWriter(pool, 10*time.Second)
+	require.NoError(t, err)
+	require.NoError(t, gw.Provision(ctx))
+	clean()
+	t.Cleanup(clean)
+
+	ga, err := NewGrantWriterAdapter(gw, mine)
+	require.NoError(t, err)
+	key := func(actor, anchor, source string) map[string]any {
+		return map[string]any{"actor_id": actor, "anchor_id": anchor, "grant_source": source}
+	}
+
+	// Two live grants from this lens, one from a coexisting producer.
+	require.NoError(t, ga.Upsert(ctx, key(actorA, "anchor1", mine), nil, 10))
+	require.NoError(t, ga.Upsert(ctx, key(actorB, "anchor2", mine), nil, 10))
+	require.NoError(t, gw.UpsertGrant(ctx, actorA, "anchor3", theirs, 10))
+
+	listed, err := ga.ListKeys(ctx)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []map[string]any{
+		key(actorA, "anchor1", mine),
+		key(actorB, "anchor2", mine),
+	}, listed, "only this lens's own grant_source rows are enumerable")
+
+	// A tombstoned row leaves the live set — the diff compares against what is
+	// currently granted, and a revoked grant must not be re-derived as a Delete.
+	require.NoError(t, ga.Delete(ctx, key(actorB, "anchor2", mine), 20))
+	listed, err = ga.ListKeys(ctx)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []map[string]any{key(actorA, "anchor1", mine)}, listed)
+
+	// The other producer's grant is untouched throughout.
+	var liveTheirs int
+	require.NoError(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM "actor_read_grants" WHERE grant_source = $1 AND NOT is_deleted`,
+		theirs).Scan(&liveTheirs))
+	assert.Equal(t, 1, liveTheirs, "a coexisting producer's grant survives this lens's retraction")
 }
 
 // TestProtectedAdapter_SeqGuard_Integration proves NewProtectedAdapter enables

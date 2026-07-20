@@ -267,8 +267,23 @@ func (p *Pipeline) SetEnvelopeFn(fn EnvelopeFn) {
 
 // SetDiffRetraction opts this plain lens into Fire 3's target-diff retraction
 // (see the diffRetraction field doc). Must be called before Run.
-func (p *Pipeline) SetDiffRetraction(enabled bool) {
+//
+// Enabling it against an adapter that cannot enumerate its keys is refused: the
+// mechanism is defined by the diff between the target's live key set and a
+// fresh re-projection, so without adapter.KeyLister there is no live key set
+// and the lens retracts nothing, forever, without erroring. That silence is the
+// danger — a grant producer's retraction IS its revocation path, so an inert
+// one presents as a working security control while access outlives the
+// relationship that justified it. Refusing here lets the caller fail the
+// activation, leaving the lens dark rather than half-armed.
+func (p *Pipeline) SetDiffRetraction(enabled bool) error {
+	if enabled {
+		if _, ok := p.currentAdapter().(adapter.KeyLister); !ok {
+			return fmt.Errorf("pipeline: diff retraction requires an adapter implementing adapter.KeyLister; %T does not — the lens could never retract a row", p.currentAdapter())
+		}
+	}
 	p.diffRetraction = enabled
+	return nil
 }
 
 // SetActorEnumerator installs the cross-vertex fan-out enumerator for the

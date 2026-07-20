@@ -328,6 +328,47 @@ WHERE EXCLUDED.projection_seq > ` + `"` + GrantTable + `"` + `.projection_seq`
 	return nil
 }
 
+// ListGrantsBySource returns the live (non-tombstoned) grants carrying
+// grantSource, each as an (actor_id, anchor_id, grant_source) key map. It is
+// the read half of a grant lens's DiffRetraction: the pipeline diffs this
+// against a fresh re-projection and revokes what the projection no longer
+// produces. The grant_source predicate confines that diff to the calling
+// lens's own rows — actor_read_grants is shared, so an unfiltered enumeration
+// would hand one producer every other producer's grants to retract. A tombstone
+// is an UPDATE, not a row removal, so is_deleted rows are excluded from the
+// "currently live" set (mirroring PostgresAdapter.buildListKeysSQL).
+func (w *PostgresGrantWriter) ListGrantsBySource(ctx context.Context, grantSource string) ([]map[string]any, error) {
+	if grantSource == "" {
+		return nil, fmt.Errorf("grant writer: list grants: grantSource must not be empty")
+	}
+	ctx, cancel := w.withTimeout(ctx)
+	defer cancel()
+	const q = `SELECT actor_id, anchor_id, grant_source FROM ` + `"` + GrantTable + `"` +
+		` WHERE grant_source = $1 AND NOT is_deleted`
+	rows, err := w.pool.Query(ctx, q, grantSource)
+	if err != nil {
+		return nil, fmt.Errorf("grant writer: list grants: %w", err)
+	}
+	defer rows.Close()
+
+	var out []map[string]any
+	for rows.Next() {
+		var actor, anchor, source string
+		if err := rows.Scan(&actor, &anchor, &source); err != nil {
+			return nil, fmt.Errorf("grant writer: list grants: scan: %w", err)
+		}
+		out = append(out, map[string]any{
+			GrantKeyColumns[0]: actor,
+			GrantKeyColumns[1]: anchor,
+			GrantKeyColumns[2]: source,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("grant writer: list grants: %w", err)
+	}
+	return out, nil
+}
+
 // ProvisionProtectedTable runs BuildProtectedTableDDL against the pool, creating
 // (idempotently) the protected read-model table with FORCE ROW LEVEL SECURITY
 // and the §6.14 set-membership policy. Called at protected-lens activation,

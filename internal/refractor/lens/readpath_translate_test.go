@@ -106,6 +106,56 @@ func TestTranslateSpec_GrantTable_Defaults(t *testing.T) {
 	assert.False(t, r.Into.Protected)
 }
 
+// grantSourceSpec builds a grant lens spec with the given extra targetConfig
+// keys merged over the grantTable baseline.
+func grantSourceSpec(t *testing.T, extra map[string]any) *LensSpec {
+	t.Helper()
+	cfg := map[string]any{"dsn": "postgres://localhost/test", "grantTable": true}
+	for k, v := range extra {
+		cfg[k] = v
+	}
+	return &LensSpec{
+		ID:           "cap-read-staff",
+		TargetType:   "postgres",
+		CypherRule:   "MATCH (i:identity) RETURN i.id AS actor_id, i.id AS anchor_id, 'cap-read.staff' AS grant_source",
+		TargetConfig: mustJSON(t, cfg),
+	}
+}
+
+func TestTranslateSpec_GrantSource_Threaded(t *testing.T) {
+	r, err := translateSpec(grantSourceSpec(t, map[string]any{"grantSource": "cap-read.staff"}))
+	require.NoError(t, err)
+	assert.Equal(t, "cap-read.staff", r.Into.GrantSource)
+}
+
+// A grant lens's diff retraction reads back the SHARED actor_read_grants table;
+// only a declared grantSource confines it to this producer's rows. Undeclared
+// must be refused at activation, not discovered per-event.
+func TestTranslateSpec_GrantTable_DiffRetraction_WithoutGrantSource_Rejected(t *testing.T) {
+	_, err := translateSpec(grantSourceSpec(t, map[string]any{"diffRetraction": true}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must declare targetConfig.grantSource")
+}
+
+func TestTranslateSpec_GrantTable_DiffRetraction_WithGrantSource_OK(t *testing.T) {
+	r, err := translateSpec(grantSourceSpec(t, map[string]any{
+		"diffRetraction": true,
+		"grantSource":    "cap-read.staff",
+	}))
+	require.NoError(t, err)
+	assert.True(t, r.Into.DiffRetraction)
+	assert.Equal(t, "cap-read.staff", r.Into.GrantSource)
+}
+
+func TestTranslateSpec_GrantSource_WithoutGrantTable_Rejected(t *testing.T) {
+	_, err := translateSpec(protectedSpec(t, map[string]any{
+		"protected":   true,
+		"grantSource": "cap-read.staff",
+	}))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "meaningful only on a grantTable lens")
+}
+
 func TestTranslateSpec_GrantTable_AndProtected_Rejected(t *testing.T) {
 	_, err := translateSpec(protectedSpec(t, map[string]any{"protected": true, "grantTable": true}))
 	require.Error(t, err)

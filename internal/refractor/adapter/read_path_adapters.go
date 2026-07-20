@@ -15,18 +15,34 @@ import (
 // across every grant_source, so a single grant lens's rebuild must not
 // TRUNCATE the whole table (that would wipe other sources' coexisting grants).
 // Per-source retraction flows through Delete → RevokeGrant instead.
+//
+// source is the lens's declared grant_source, and it is the confinement
+// boundary for every operation this adapter performs on the shared table:
+// ListKeys enumerates only rows carrying it, and Upsert/Delete reject a row
+// whose projected grant_source column disagrees with it. Empty means the lens
+// declared none — permitted (the shipped anchor-derived producers need no
+// enumeration), but then ListKeys is refused rather than falling back to an
+// unscoped one, which would diff this producer's rows against every other
+// producer's and retract theirs.
 type GrantWriterAdapter struct {
-	w *PostgresGrantWriter
+	w      *PostgresGrantWriter
+	source string
 }
 
-var _ Adapter = (*GrantWriterAdapter)(nil)
+var (
+	_ Adapter   = (*GrantWriterAdapter)(nil)
+	_ KeyLister = (*GrantWriterAdapter)(nil)
+)
 
-// NewGrantWriterAdapter wraps a non-nil PostgresGrantWriter.
-func NewGrantWriterAdapter(w *PostgresGrantWriter) (*GrantWriterAdapter, error) {
+// NewGrantWriterAdapter wraps a non-nil PostgresGrantWriter. source is the
+// lens's declared grant_source (see GrantWriterAdapter.source); "" is a lens
+// that declares none, which forgoes ListKeys and therefore DiffRetraction,
+// whose activation guard demands a usable KeyLister.
+func NewGrantWriterAdapter(w *PostgresGrantWriter, source string) (*GrantWriterAdapter, error) {
 	if w == nil {
 		return nil, fmt.Errorf("grant writer adapter: writer must not be nil")
 	}
-	return &GrantWriterAdapter{w: w}, nil
+	return &GrantWriterAdapter{w: w, source: source}, nil
 }
 
 // grantKeyFields extracts the three grant key columns as strings, erroring if
@@ -57,10 +73,27 @@ func grantKeyFields(keys map[string]any) (actor, anchor, source string, err erro
 	return
 }
 
+// checkSource rejects a projected grant_source that disagrees with the lens's
+// declared one. Without this the declaration and the cypher could drift, and
+// the drift would be silent AND destructive: ListKeys would enumerate the
+// declared source's rows while the projection produced another's, so the diff
+// would find no fresh row matching any listed key and retract the declared
+// source's entire live set. Skipped when the lens declared no source (nothing
+// to disagree with, and ListKeys is refused anyway).
+func (g *GrantWriterAdapter) checkSource(source string) error {
+	if g.source == "" || source == g.source {
+		return nil
+	}
+	return fmt.Errorf("grant writer adapter: row grant_source %q does not match the lens's declared grant_source %q", source, g.source)
+}
+
 // Upsert records a live grant under the monotonic-seq guard.
 func (g *GrantWriterAdapter) Upsert(ctx context.Context, keys map[string]any, _ map[string]any, projectionSeq uint64) error {
 	actor, anchor, source, err := grantKeyFields(keys)
 	if err != nil {
+		return err
+	}
+	if err := g.checkSource(source); err != nil {
 		return err
 	}
 	return g.w.UpsertGrant(ctx, actor, anchor, source, projectionSeq)
@@ -72,7 +105,29 @@ func (g *GrantWriterAdapter) Delete(ctx context.Context, keys map[string]any, pr
 	if err != nil {
 		return err
 	}
+	if err := g.checkSource(source); err != nil {
+		return err
+	}
 	return g.w.RevokeGrant(ctx, actor, anchor, source, projectionSeq)
+}
+
+// ListKeys returns every live grant this lens owns — the rows carrying its
+// declared grant_source — as (actor_id, anchor_id, grant_source) maps, the
+// same shape Upsert/Delete take as keys.
+//
+// The source scoping is load-bearing, not a filter for efficiency:
+// actor_read_grants is shared across every producer (see the type doc), so the
+// pipeline's DiffRetraction, which retracts every listed key the fresh
+// re-projection no longer produces, would revoke every OTHER package's grants
+// on this lens's first event if this enumerated the whole table. A lens that
+// declared no grant_source therefore gets an error, never an unscoped list:
+// there is no safe fallback, and DiffRetraction's activation guard refuses the
+// lens up front rather than letting it reach here.
+func (g *GrantWriterAdapter) ListKeys(ctx context.Context) ([]map[string]any, error) {
+	if g.source == "" {
+		return nil, fmt.Errorf("grant writer adapter: list keys requires a declared grantSource — %s is shared across producers and an unscoped list would retract every other producer's grants", GrantTable)
+	}
+	return g.w.ListGrantsBySource(ctx, g.source)
 }
 
 // Probe verifies the actor_read_grants table's out-of-band posture (it exists

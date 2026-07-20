@@ -126,6 +126,17 @@ func (def Definition) validateLensReadPath() error {
 		if l.DiffRetraction && l.Adapter != "postgres" && l.Adapter != "nats-kv" && l.Adapter != "" {
 			return fmt.Errorf("pkgmgr: Lens[%d] %q: DiffRetraction requires Adapter \"postgres\" or \"nats-kv\" (got %q) — Refractor's translateSpec only threads it onto those two targetConfig shapes", idx, l.CanonicalName, l.Adapter)
 		}
+		if l.GrantSource != "" && !l.GrantTable {
+			return fmt.Errorf("pkgmgr: Lens[%d] %q: GrantSource is meaningful only on a GrantTable lens — it names the grant_source that lens owns in the shared actor_read_grants table (Contract #6 §6.14)", idx, l.CanonicalName)
+		}
+		// Retraction on a grant lens reads back the SHARED actor_read_grants
+		// table, so only a declared GrantSource can confine the diff to this
+		// producer's own rows; an unscoped one would retract every other
+		// package's grants. Mirror Refractor's translateSpec guard here so the
+		// misdeclaration is caught at install time rather than at activation.
+		if l.GrantTable && l.DiffRetraction && l.GrantSource == "" {
+			return fmt.Errorf("pkgmgr: Lens[%d] %q: a GrantTable lens with DiffRetraction must declare GrantSource — actor_read_grants is shared across producers and retraction must be scoped to this lens's own rows (Contract #6 §6.14)", idx, l.CanonicalName)
+		}
 		if len(l.SecureColumns) > 0 {
 			// Mirror Refractor's validateSecureColumns (Contract #3 §3.10) so a
 			// Secure Lens that could never activate is rejected at install time.

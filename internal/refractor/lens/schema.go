@@ -75,6 +75,7 @@ type IntoConfig struct {
 	Protected    bool                `yaml:"-"` // provision an RLS table at activation + project authz_anchors
 	Public       bool                `yaml:"-"` // explicit public opt-out (no RLS)
 	GrantTable   bool                `yaml:"-"` // project to actor_read_grants via the seq-guarded writer
+	GrantSource  string              `yaml:"-"` // the grant_source this lens owns; scopes its writes + ListKeys to its own rows
 	Columns      []adapter.ColumnDef `yaml:"-"` // declared business columns to provision (protected only)
 	ArrayColumns []string            `yaml:"-"` // columns to encode as Postgres arrays (authz_anchors + text[] body cols)
 
