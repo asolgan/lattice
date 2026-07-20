@@ -38,6 +38,23 @@ const (
 	sweepReasonGapClosed     = "gapClosed"
 )
 
+// collapseOnlyReclaim reports whether re-dispatching this reclaim would COLLAPSE
+// onto the artifact the open episode already created rather than mount a genuinely
+// new attempt: the two human userTask actions (assignTask; triggerLoom of a
+// userTask-containing pattern), whose §10.3 claimId-verbatim preservation makes the
+// re-dispatch idempotent at the consumer, plus the Augur's proposalscoped
+// `proposedOp` (augur-dispatch-pickup §3.3/§3.4). confirmedConcluded narrows it to
+// the non-external case: an EXTERNAL gap's reclaim re-dispatch IS a fresh attempt
+// (§10.3 "re-call a dead vendor / mint a fresh service instance").
+//
+// Two reclaim-path decisions share this one predicate — backoff pacing (a collapsed
+// re-dispatch is pure churn, so pace it) and `__effect` window booking (a collapsed
+// re-dispatch is not a new attempt, so do not book one).
+func collapseOnlyReclaim(action string, confirmedConcluded bool) bool {
+	return !confirmedConcluded &&
+		(action == actionAssignTask || action == actionTriggerLoom || action == actionProposedOp)
+}
+
 // sweeper is the §10.3 active reconciler: on each pass it enumerates every
 // weaver-state mark (the bucket holds ONLY marks, bounded by the in-flight
 // count) and level-reconciles each against its current weaver-targets row —
@@ -483,7 +500,8 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 	// Default per-key TTL backstop for the re-armed mark; widened below for a
 	// paced userTask reclaim.
 	markTTL := markTTLBackstopFactor * e.marks.lease
-	if !confirmedConcluded && (rec.Action == actionAssignTask || rec.Action == actionTriggerLoom || rec.Action == actionProposedOp) {
+	collapseOnly := collapseOnlyReclaim(rec.Action, confirmedConcluded)
+	if collapseOnly {
 		// Collapse-only reclaim: pace repeat reclaims with an exponential backoff
 		// keyed on the mark's own ClaimedAt + dispatch-count — the consumer
 		// collapses any repeat re-dispatch anyway, so re-firing every sweep is
@@ -597,7 +615,19 @@ func (s *sweeper) reclaim(ctx context.Context, key string, markRev uint64, rec *
 	// CAS-create path — this is how a multi-attempt chain driven by sweep
 	// re-dispatches (not just CDC touches) accumulates toward maxretries_<g>.
 	e.bumpDispatchCount(ctx, targetID, entityID, gapColumn)
-	e.bumpEffectDispatch(ctx, targetID, gapColumn, resolvedAction)
+	// The `__effect` confidence window books ATTEMPTS, not dispatches, and its
+	// close side credits at most once per episode (clearClosedMarks flips the
+	// oldest pending slot when the GAP closes). A collapse-only re-dispatch
+	// mounts no new attempt — the consumer collapses it onto the artifact the
+	// open episode already created — so booking one appends a pending slot no
+	// close can ever answer. An episode held open across many reclaims (a human
+	// userTask can sit for days) would fill its whole window that way and trip a
+	// LensEffectMismatch that describes nothing real. The retry-budget count
+	// above is deliberately NOT gated: it bounds reclaim effort per §10.8,
+	// which is exactly what a repeat reclaim spends.
+	if !collapseOnly {
+		e.bumpEffectDispatch(ctx, targetID, gapColumn, resolvedAction)
+	}
 	e.bumpOscillation(ctx, targetID, resolvedAction)
 	// Fresh episode: the requestId derives from the replace revision (a real new
 	// dispatch attempt). claimID (preserved or freshly minted, above) seeds the
@@ -660,6 +690,25 @@ func (s *sweeper) deleteMark(ctx context.Context, key string, revision uint64,
 	}
 	if reason == sweepReasonGapClosed {
 		e.logger.Info("weaver sweep: mark cleared", logArgs...)
+		// A gapClosed delete is a CLOSE event for the §10.3 `__effect` window,
+		// exactly as it is on lane-1 (clearClosedMarks) — the sweep is simply
+		// whichever leg observed the close first, and for a row that has gone
+		// quiet it is the ONLY leg that will. Crediting only lane-1 biased every
+		// window toward zero closes and made false LensEffectMismatch warnings
+		// likelier the more the sweep won. Only a WON delete credits, which
+		// settles sweep-vs-sweep; lane-1's own delete is not revision-
+		// conditioned, so a lane-1 delivery racing this pass on the same closed
+		// gap can still credit alongside it. That over-credits by one slot only
+		// when another episode of this same (target, gap, action) is
+		// concurrently pending — a far narrower error, and in the safe
+		// direction, versus the systematic zero-close bias removed here. The
+		// orphan reasons never credit: targetRemoved/orphanColumn mean the gap
+		// went away rather than closed, and sweepEffect deletes those windows
+		// outright.
+		if cErr := e.marks.recordEffectClose(ctx, targetID, gapColumn, action); cErr != nil {
+			e.logger.Warn("weaver sweep: effect close record failed",
+				"targetId", targetID, "entityId", entityID, "gap", gapColumn, "err", cErr)
+		}
 	} else {
 		e.logger.Warn("weaver sweep: mark reclaimed", logArgs...)
 	}

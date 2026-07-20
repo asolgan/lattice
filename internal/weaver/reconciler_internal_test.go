@@ -1356,6 +1356,143 @@ func TestSweep_ReclaimRecordsEffectDispatch(t *testing.T) {
 	}
 }
 
+// TestSweep_CollapseOnlyReclaimBooksNoEffectDispatch is the counterpart to the
+// proof above: a reclaim that can only COLLAPSE (assignTask — the consumer
+// re-lands on the same claimId-derived task) mounts no new attempt, so it must
+// NOT book a pending `__effect` episode. Booking one would append a slot no
+// close can ever answer — a human userTask held open across enough reclaims
+// would fill its whole window and trip a LensEffectMismatch describing nothing.
+// The retry-budget dispatch-count is asserted to still advance: it bounds
+// reclaim effort, which a repeat reclaim genuinely spends.
+func TestSweep_CollapseOnlyReclaimBooksNoEffectDispatch(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+	h.agePastWarmup()
+
+	const targetID = "fixtureCollapseEffect"
+	const gap = "missing_signature"
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps: map[string]GapAction{gap: {
+			Action: actionAssignTask, Operation: "SignLease", Assignee: "row.applicant", Target: "row.entityKey",
+		}},
+	})
+	h.engine.source.mu.Lock()
+	h.engine.source.opMetaByType["SignLease"] = "vtx.meta." + testNanoID(t)
+	h.engine.source.mu.Unlock()
+
+	entityID := testNanoID(t)
+	h.putMark(t, ctx, markKey(targetID, entityID, gap),
+		fixtureMark(targetID, entityID, gap, actionAssignTask, pastLease()))
+	h.putRow(t, ctx, targetID, entityID, map[string]any{
+		"entityKey": "vtx.leaseApp." + entityID, "violating": true, gap: true,
+		"applicant": "vtx.identity." + testNanoID(t),
+	})
+
+	h.pass(ctx)
+	h.nextOp(t) // the reclaim re-dispatched (and will collapse at the consumer)
+
+	if _, _, ok, err := readEffectStats(ctx, h.engine.marks, targetID, gap, actionAssignTask); err != nil || ok {
+		t.Fatalf("a collapse-only reclaim must book no effect episode: present=%v (err=%v)", ok, err)
+	}
+	if got, err := h.engine.marks.getDispatchCount(ctx, targetID, entityID, gap); err != nil || got != 1 {
+		t.Fatalf("the retry-budget count must still advance: got %d (err=%v), want 1", got, err)
+	}
+}
+
+// TestSweep_GapClosedCreditsEffectClose proves the close side of the §10.3
+// `__effect` window has a sweep leg at all: when the sweep — not lane-1 — is
+// the leg that observes a gap close, the close must be credited to the window.
+// For a row that has gone quiet the sweep is the ONLY leg that will observe it,
+// so crediting lane-1 alone biased every window toward zero closes.
+func TestSweep_GapClosedCreditsEffectClose(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+	h.agePastWarmup()
+
+	const targetID = "fixtureSweepClose"
+	const gap = "missing_x"
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps:     map[string]GapAction{gap: {Action: actionDirectOp, Operation: "FixX"}},
+	})
+	entityID := testNanoID(t)
+	h.putMark(t, ctx, markKey(targetID, entityID, gap),
+		fixtureMark(targetID, entityID, gap, actionDirectOp, futureLease()))
+	// The dispatch this close answers.
+	if _, err := h.conn.KVCreate(ctx, "weaver-state", effectKey(targetID, gap, actionDirectOp),
+		mustMarshalEffectStats(t, effectStats{Window: []bool{false}})); err != nil {
+		t.Fatalf("seed effect key: %v", err)
+	}
+	// The gap has closed: the sweep clears the mark on the level reconcile.
+	h.putRow(t, ctx, targetID, entityID, map[string]any{
+		"entityKey": "vtx.leaseApp." + entityID, "violating": false, gap: false,
+	})
+
+	h.pass(ctx)
+
+	stats, _, ok, err := readEffectStats(ctx, h.engine.marks, targetID, gap, actionDirectOp)
+	if err != nil || !ok {
+		t.Fatalf("read effect stats after a sweep-won close: err=%v ok=%v", err, ok)
+	}
+	if len(stats.Window) != 1 || !stats.Window[0] {
+		t.Fatalf("window after a sweep-won close = %v, want [true] (closed)", stats.Window)
+	}
+}
+
+// TestSweep_OrphanDeleteCreditsNoEffectClose guards the gate above from being
+// widened to every sweep delete: targetRemoved/orphanColumn mean the gap went
+// AWAY rather than closed, so neither may be credited as an observed close.
+func TestSweep_OrphanDeleteCreditsNoEffectClose(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	h := newSweepHarness(t, ctx)
+	h.agePastWarmup()
+
+	const targetID = "fixtureOrphanNoClose"
+	const gap = "missing_x"
+	// The target is installed but its playbook no longer names the gap column:
+	// the mark is an orphanColumn delete, not a close.
+	h.seedTarget(&Target{
+		TargetID: targetID,
+		Gaps:     map[string]GapAction{"missing_other": {Action: actionDirectOp, Operation: "FixOther"}},
+	})
+	entityID := testNanoID(t)
+	h.putMark(t, ctx, markKey(targetID, entityID, gap),
+		fixtureMark(targetID, entityID, gap, actionDirectOp, pastLease()))
+	h.putRow(t, ctx, targetID, entityID, map[string]any{
+		"entityKey": "vtx.leaseApp." + entityID, "violating": true, gap: true,
+	})
+	if _, err := h.conn.KVCreate(ctx, "weaver-state", effectKey(targetID, gap, actionDirectOp),
+		mustMarshalEffectStats(t, effectStats{Window: []bool{false}})); err != nil {
+		t.Fatalf("seed effect key: %v", err)
+	}
+
+	h.pass(ctx)
+
+	// The window's own orphan-GC leg may delete it outright; what must never
+	// happen is its pending slot being flipped to closed.
+	if stats, _, ok, err := readEffectStats(ctx, h.engine.marks, targetID, gap, actionDirectOp); err == nil && ok {
+		if len(stats.Window) != 1 || stats.Window[0] {
+			t.Fatalf("an orphan-column delete must not credit a close: window = %v, want [false]", stats.Window)
+		}
+	}
+}
+
 // TestSweep_EffectOrphanColumn proves the `__effect` sweep-GC leg's
 // orphan-column half (mirrors TestSweep_OrphanColumn for the confidence
 // window instead of a mark): once the warm-up window has elapsed, a
