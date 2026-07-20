@@ -554,7 +554,7 @@ acceptance-demo green bar. The `OpDispatchSpec.OptionalReads` vocabulary gap (ab
 
 ## 8. Non-goals (v1)
 
-No local authority (EDGE.6 stays a separate Andrew-gated decision); no admin/cross-identity surfaces (Loupe exists; Facet renders only vocabulary-described personal projections — it is not a graph browser); no payments UX; no vendor push integration before the waker design; no per-vertical bespoke screens — a vertical that wants richer-than-vocabulary UI builds its own FE (the existing pattern) while Facet keeps the universal floor.
+No local authority (EDGE.6 stays a separate Andrew-gated decision); no admin or graph-browsing surfaces (Loupe exists — Facet is not a graph browser): cross-identity data reaches Facet only as role-derived, workplace-scoped worklists per [facet-staff-worlds-design.md](facet-staff-worlds-design.md) (✅ ratified 2026-07-19, lifting this section's former blanket "no cross-identity surfaces"), never as arbitrary vertex navigation; no payments UX; no vendor push integration before the waker design; no per-vertical bespoke screens — a vertical that wants richer-than-vocabulary UI builds its own FE (the existing pattern) while Facet keeps the universal floor.
 
 ## 9. The throwaway demo
 
