@@ -26,7 +26,12 @@ func Permissions() []pkgmgr.PermissionSpec {
 	return []pkgmgr.PermissionSpec{
 		mk("CreateStudio"),
 		mk("TombstoneStudio"),
-		mk("CreateSession"),
+		{
+			OperationType: "CreateSession",
+			Scope:         "any",
+			Note:          "Grants the operator and front-of-house staff the right to submit CreateSession (schedules a class on a studio's grid) — the studio front-desk beat.",
+			GrantsTo:      []string{"operator", "frontOfHouse"},
+		},
 		mk("TombstoneSession"),
 		mk("CreateBooking"),
 		{

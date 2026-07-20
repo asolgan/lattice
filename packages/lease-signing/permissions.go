@@ -85,8 +85,8 @@ func Permissions() []pkgmgr.PermissionSpec {
 		{
 			OperationType: "DecideLeaseApplication",
 			Scope:         "any",
-			Note:          "Grants the operator the right to submit DecideLeaseApplication (the landlord approves / declines an application via the trusted-tool app — the human gate the listing-flip waits behind; same operator model as SignLease).",
-			GrantsTo:      []string{"operator"},
+			Note:          "Grants the operator and front-of-house staff the right to submit DecideLeaseApplication (approve / decline an application via the trusted-tool app — the human gate the listing-flip waits behind; the front-desk \"applications to review\" beat).",
+			GrantsTo:      []string{"operator", "frontOfHouse"},
 		},
 		{
 			OperationType: "SetApplicantProfile",

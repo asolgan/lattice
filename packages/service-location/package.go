@@ -4,19 +4,29 @@
 // (the service catalog) into a thin access scheme; it owns no vertex types of
 // its own, only the links that wire the topology and the lens that projects it.
 //
-// One DDL (`serviceLocation`) handles the eight link ops:
+// One DDL (`serviceLocation`) handles the ten link ops:
 //
 //	WireResidesIn / UnwireResidesIn               # identity → location
+//	WireWorksAt / UnwireWorksAt                   # identity → location
 //	WireAvailableAt / UnwireAvailableAt           # service-template → location
 //	WireUnavailableAt / UnwireUnavailableAt       # service-template → location
 //	WirePermitsOperation / UnwirePermitsOperation # service → op-meta
 //
 // Direction follows Contract #1 §1.1 (later-arriving vertex is the SOURCE) and
-// reads as a sentence ("identity residesIn location", "service availableAt
-// location"). Each Wire op validates its endpoint classes at the op — residesIn
-// target is a location; availableAt / unavailableAt source is a service
-// TEMPLATE and target is a location; permitsOperation source is a service and
-// target is an op-meta vertex.
+// reads as a sentence ("identity residesIn location", "identity worksAt
+// location", "service availableAt location"). Each Wire op validates its
+// endpoint classes at the op — residesIn / worksAt target is a location;
+// availableAt / unavailableAt source is a service TEMPLATE and target is a
+// location; permitsOperation source is a service and target is an op-meta
+// vertex.
+//
+// residesIn and worksAt are the two identity spines, and they are read very
+// differently. residesIn is authorization-bearing: it is the left edge of the
+// capabilityServiceAccess join, so wiring it grants service access. worksAt is
+// pure topology — it says where a staff actor's world composes from and where
+// their workplace-anchored read grants derive, and it is deliberately absent
+// from that join. Staff authority is role grants (cap.roles), never a
+// consequence of where someone works.
 //
 // It ships one lens — `capabilityServiceAccess` (actorAggregate) — projecting
 // the disjoint key cap.svc.<actor-suffix> in the shared capability-kv bucket:
@@ -37,8 +47,8 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
 	Name:        "service-location",
-	Version:     "0.2.0",
-	Description: "Residence-based service-access scheme: residesIn/availableAt/unavailableAt/permitsOperation links + the capabilityServiceAccess lens projecting cap.svc.<actor>.",
+	Version:     "0.3.0",
+	Description: "Residence-based service-access scheme: residesIn/worksAt/availableAt/unavailableAt/permitsOperation links + the capabilityServiceAccess lens projecting cap.svc.<actor>.",
 	Depends:     []string{"location-domain", "service-domain"},
 	DDLs:        DDLs(),
 	Lenses:      Lenses(),

@@ -19,13 +19,21 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // referenced item's own .price.priceCents is what a resident's charge
 // amounts to, never a caller-supplied number — the gap the original
 // operator-only Charge grant existed to cover.
+//
+// OpenTab, Charge, and Settle additionally grant `frontOfHouse` at scope=any —
+// the POS beat the package doc above already describes as the trusted-tool
+// app's job. Naming the role makes that posture honest: the shipped café FE
+// submits as `operator` (root-equivalent) today, and `frontOfHouse` reaches
+// exactly the three tab ops and nothing else. The menu catalog
+// (CreateMenuItem / RetireMenuItem) stays operator-only — pricing is not a
+// front-desk decision, and the self-service Charge derivation trusts it.
 func Permissions() []pkgmgr.PermissionSpec {
 	return []pkgmgr.PermissionSpec{
 		{
 			OperationType: "OpenTab",
 			Scope:         "any",
-			Note:          "Grants the operator the right to submit OpenTab (starts a café house-tab session for a resident lease).",
-			GrantsTo:      []string{"operator"},
+			Note:          "Grants the operator and front-of-house staff the right to submit OpenTab (starts a café house-tab session for a resident lease).",
+			GrantsTo:      []string{"operator", "frontOfHouse"},
 		},
 		{
 			OperationType: "OpenTab",
@@ -36,8 +44,8 @@ func Permissions() []pkgmgr.PermissionSpec {
 		{
 			OperationType: "Charge",
 			Scope:         "any",
-			Note:          "Grants the operator the right to submit Charge (rings up an item on an open tab, raw amountCents).",
-			GrantsTo:      []string{"operator"},
+			Note:          "Grants the operator and front-of-house staff the right to submit Charge (rings up an item on an open tab, raw amountCents).",
+			GrantsTo:      []string{"operator", "frontOfHouse"},
 		},
 		{
 			OperationType: "Charge",
@@ -48,8 +56,8 @@ func Permissions() []pkgmgr.PermissionSpec {
 		{
 			OperationType: "Settle",
 			Scope:         "any",
-			Note:          "Grants the operator the right to submit Settle (closes a tab for house-account posting).",
-			GrantsTo:      []string{"operator"},
+			Note:          "Grants the operator and front-of-house staff the right to submit Settle (closes a tab for house-account posting).",
+			GrantsTo:      []string{"operator", "frontOfHouse"},
 		},
 		{
 			OperationType: "Settle",

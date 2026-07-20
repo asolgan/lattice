@@ -25,13 +25,14 @@ func TestPackage_ManifestMatchesDefinition(t *testing.T) {
 
 var slOps = []string{
 	"WireResidesIn", "UnwireResidesIn",
+	"WireWorksAt", "UnwireWorksAt",
 	"WireAvailableAt", "UnwireAvailableAt",
 	"WireUnavailableAt", "UnwireUnavailableAt",
 	"WirePermitsOperation", "UnwirePermitsOperation",
 }
 
-// TestPackage_DDLAndOps pins the single serviceLocation DDL, its eight link
-// commands, the eight operator-scoped permission grants, the two
+// TestPackage_DDLAndOps pins the single serviceLocation DDL, its ten link
+// commands, the ten operator-scoped permission grants, the two
 // dependencies (location-domain + service-domain), and that the package owns
 // NO vertex DDLs of its own and NO roles/weaver/loom/opMetas.
 func TestPackage_DDLAndOps(t *testing.T) {
@@ -174,7 +175,7 @@ func TestPackage_NoScans(t *testing.T) {
 func TestPackage_ScriptGuards(t *testing.T) {
 	src := Package.DDLs[0].Script
 	for _, want := range []string{
-		"residesIn", "availableAt", "unavailableAt", "permitsOperation",
+		"residesIn", "worksAt", "availableAt", "unavailableAt", "permitsOperation",
 		"NotALocation", "NotATemplate", "NotAnOpMeta", "require_live_location",
 		"require_live_service_template", "require_live_opmeta", ".template",
 	} {
@@ -224,5 +225,16 @@ func TestPackage_LensCypher(t *testing.T) {
 	// therefore appears exactly once: the positive match.
 	if n := strings.Count(src, "residesIn"); n != 1 {
 		t.Errorf("exclusion must anchor on loc0 (per residence chain), not re-walk residesIn from identity; residesIn count = %d, want 1", n)
+	}
+	// worksAt is PURE TOPOLOGY and must never appear in this cypher. residesIn is
+	// the authorization-bearing spine — it is the left edge of this join, so
+	// everything reachable from it is GRANTED. worksAt exists only to say where a
+	// staff actor's world composes from and where their workplace-anchored read
+	// grants derive. Wiring it in here would silently mean "working at a building
+	// entitles you to every service available there" — an over-grant nobody
+	// requested and one that would be invisible at the call site. Staff authority
+	// is role grants (cap.roles), never a consequence of employment topology.
+	if strings.Contains(src, "worksAt") {
+		t.Errorf("capabilityServiceAccess must NOT reference worksAt — the workplace spine is not an authorization input; service access derives from residesIn/availableAt only")
 	}
 }

@@ -5,10 +5,11 @@
 // Lattice surface a real package sees: seed the kernel, install rbac-domain +
 // identity-domain + identity-hygiene + orchestration-base + location-domain +
 // service-domain + service-location through the Processor, then submit the
-// eight link ops and assert the committed Core-KV shape — each link is a
+// ten link ops and assert the committed Core-KV shape — each link is a
 // sentence-valid topology edge whose endpoints are class-validated AT THE OP
-// (residesIn target=location; availableAt/unavailableAt source=a service
-// template, target=location; permitsOperation source=service, target=op-meta).
+// (residesIn / worksAt target=location; availableAt/unavailableAt source=a
+// service template, target=location; permitsOperation source=service,
+// target=op-meta).
 //
 // Coverage:
 //  1. TestSL_ResidesIn_WireUnwire          — identity→location link shape + direction + unwire
@@ -20,6 +21,9 @@
 //  7. TestSL_PermitsOperation_RejectsNonOpMeta — permitsOperation target must carry operationType
 //  8. TestSL_ResidesIn_Multiple            — residesIn cardinality is multiple
 //  9. TestSL_UnauthorizedDenied            — consumer cap doc → Rejected
+//  10. TestSL_WorksAt_WireUnwire           — staff spine link shape + direction + unwire
+//  11. TestSL_WorksAt_RejectsNonLocation   — worksAt target must be class=location
+//  12. TestSL_WorksAt_Multiple             — worksAt cardinality is multiple
 package servicelocation_test
 
 import (
@@ -50,9 +54,10 @@ const (
 	slConsumerCapKey = "cap.identity." + slConsumerID
 )
 
-// slOps are the eight link ops the staff actor is granted (scope any).
+// slOps are the ten link ops the staff actor is granted (scope any).
 var slOps = []string{
 	"WireResidesIn", "UnwireResidesIn",
+	"WireWorksAt", "UnwireWorksAt",
 	"WireAvailableAt", "UnwireAvailableAt",
 	"WireUnavailableAt", "UnwireUnavailableAt",
 	"WirePermitsOperation", "UnwirePermitsOperation",
@@ -230,6 +235,93 @@ func TestSL_ResidesIn_WireUnwire(t *testing.T) {
 	doc = readDoc(t, ctx, conn, lnk)
 	if del, _ := doc["isDeleted"].(bool); !del {
 		t.Fatalf("residesIn link should be tombstoned after unwire; got isDeleted=%v", del)
+	}
+}
+
+// TestSL_WorksAt_WireUnwire wires the staff spine identity→location and asserts
+// the 6-segment worksAt link shape + direction (identity=source, location=target
+// per Contract #1 §1.1 — "identity worksAt location"), then unwires it.
+func TestSL_WorksAt_WireUnwire(t *testing.T) {
+	ctx, conn := setupSLEnv(t)
+	cp, cons := newSLPipeline(t, ctx, conn, "worksat")
+
+	idID := "SLstaffQRHJKMNPQRSTU"
+	idKey := "vtx.identity." + idID
+	seedVertex(t, ctx, conn, idKey, "identity", map[string]any{"state": "claimed"})
+	bldgID := "SLworkbdgRHJKMNPQRST"
+	bldgKey := seedLocation(t, ctx, conn, "building", bldgID)
+
+	lnk := "lnk.identity." + idID + ".worksAt.building." + bldgID
+	submit(t, ctx, conn, cp, cons, "slWorkWire1", "WireWorksAt",
+		map[string]any{"identity": idKey, "location": bldgKey},
+		[]string{idKey, bldgKey}, processor.OutcomeAccepted)
+
+	doc := readDoc(t, ctx, conn, lnk)
+	if doc["class"] != "worksAt" {
+		t.Fatalf("worksAt link class = %v, want worksAt", doc["class"])
+	}
+	if got, _ := doc["sourceVertex"].(string); got != idKey {
+		t.Fatalf("worksAt sourceVertex = %q, want %q (identity is source)", got, idKey)
+	}
+	if got, _ := doc["targetVertex"].(string); got != bldgKey {
+		t.Fatalf("worksAt targetVertex = %q, want %q (location is target)", got, bldgKey)
+	}
+
+	submit(t, ctx, conn, cp, cons, "slWorkUnwire1", "UnwireWorksAt",
+		map[string]any{"linkKey": lnk}, []string{lnk}, processor.OutcomeAccepted)
+	doc = readDoc(t, ctx, conn, lnk)
+	if del, _ := doc["isDeleted"].(bool); !del {
+		t.Fatalf("worksAt link should be tombstoned after unwire; got isDeleted=%v", del)
+	}
+}
+
+// TestSL_WorksAt_RejectsNonLocation proves worksAt carries the SAME
+// location-class guard as residesIn: a workplace that is alive but not
+// class=location is rejected. Without this the staff spine could be anchored on
+// an arbitrary vertex, and the workplace-anchored read grants derived from it
+// would scope to something that is not a place.
+func TestSL_WorksAt_RejectsNonLocation(t *testing.T) {
+	ctx, conn := setupSLEnv(t)
+	cp, cons := newSLPipeline(t, ctx, conn, "worknonloc")
+
+	idID := "SLstaffnonmocHJKMNPQ"
+	idKey := "vtx.identity." + idID
+	seedVertex(t, ctx, conn, idKey, "identity", map[string]any{"state": "claimed"})
+	notLocID := "SLfakebdgQRHJKMNPQRS"
+	notLocKey := "vtx.building." + notLocID
+	seedVertex(t, ctx, conn, notLocKey, "service", nil)
+
+	submit(t, ctx, conn, cp, cons, "slWorkNonLoc", "WireWorksAt",
+		map[string]any{"identity": idKey, "location": notLocKey},
+		[]string{idKey, notLocKey}, processor.OutcomeRejected)
+}
+
+// TestSL_WorksAt_Multiple proves worksAt cardinality is multiple: one staff
+// member may work at two buildings concurrently (the multi-site front desk).
+func TestSL_WorksAt_Multiple(t *testing.T) {
+	ctx, conn := setupSLEnv(t)
+	cp, cons := newSLPipeline(t, ctx, conn, "workmulti")
+
+	idID := "SLmumtiworkRHJKMNPQR"
+	idKey := "vtx.identity." + idID
+	seedVertex(t, ctx, conn, idKey, "identity", map[string]any{"state": "claimed"})
+	bldgAKey := seedLocation(t, ctx, conn, "building", "SLmumtiwaQRHJKMNPQRS")
+	bldgBKey := seedLocation(t, ctx, conn, "building", "SLmumtiwbQRHJKMNPQRS")
+
+	submit(t, ctx, conn, cp, cons, "slWorkMultiA", "WireWorksAt",
+		map[string]any{"identity": idKey, "location": bldgAKey},
+		[]string{idKey, bldgAKey}, processor.OutcomeAccepted)
+	submit(t, ctx, conn, cp, cons, "slWorkMultiB", "WireWorksAt",
+		map[string]any{"identity": idKey, "location": bldgBKey},
+		[]string{idKey, bldgBKey}, processor.OutcomeAccepted)
+
+	for _, loc := range []string{bldgAKey, bldgBKey} {
+		locID := strings.TrimPrefix(loc, "vtx.building.")
+		lnk := "lnk.identity." + idID + ".worksAt.building." + locID
+		doc := readDoc(t, ctx, conn, lnk)
+		if del, _ := doc["isDeleted"].(bool); del {
+			t.Fatalf("worksAt link %s should be alive (multiple workplaces allowed)", lnk)
+		}
 	}
 }
 

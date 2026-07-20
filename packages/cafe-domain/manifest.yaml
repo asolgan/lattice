@@ -1,5 +1,5 @@
 name: cafe-domain
-version: 0.5.0
+version: 0.6.0
 description: |
   Café house-tab POS session domain: the tab vertex type (OpenTab/Charge/
   Settle, OCC-conditioned running total) + the tabStatus aspect type + the
@@ -39,19 +39,19 @@ declares:
   permissions:
     - operationType: OpenTab
       scope: any
-      grantsTo: [operator]
+      grantsTo: [operator, frontOfHouse]
     - operationType: OpenTab
       scope: self
       grantsTo: [consumer]
     - operationType: Charge
       scope: any
-      grantsTo: [operator]
+      grantsTo: [operator, frontOfHouse]
     - operationType: Charge
       scope: self
       grantsTo: [consumer]
     - operationType: Settle
       scope: any
-      grantsTo: [operator]
+      grantsTo: [operator, frontOfHouse]
     - operationType: Settle
       scope: self
       grantsTo: [consumer]

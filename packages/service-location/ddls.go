@@ -4,10 +4,11 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 
 // DDLs returns the package's DDL meta-vertex declarations.
 //
-// Single DDL `serviceLocation` (link-op class) handles all eight link ops that
-// wire the residence-based service-access topology:
+// Single DDL `serviceLocation` (link-op class) handles all ten link ops that
+// wire the residence-based service-access topology plus the workplace spine:
 //
 //	WireResidesIn, UnwireResidesIn               # identity → location
+//	WireWorksAt, UnwireWorksAt                   # identity → location
 //	WireAvailableAt, UnwireAvailableAt           # service-template → location
 //	WireUnavailableAt, UnwireUnavailableAt       # service-template → location
 //	WirePermitsOperation, UnwirePermitsOperation # service → op-meta
@@ -19,7 +20,7 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //     lookups, no lens-output reads. Each wire op validates its link endpoints
 //     by reading each by the key the caller lists in ContextHint.Reads.
 //   - Endpoint-class validation is AT THE OP (not the lens's untyped match):
-//     residesIn target MUST be class=location; availableAt / unavailableAt
+//     residesIn and worksAt targets MUST be class=location; availableAt / unavailableAt
 //     source MUST be a service TEMPLATE (a service whose ENVELOPE class
 //     ends in `.template`) and target MUST be class=location; permitsOperation
 //     source MUST be class=service and target MUST be an op-meta vertex
@@ -27,17 +28,24 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //     endpoint is never wired (structured ScriptError).
 //   - residesIn cardinality: MULTIPLE allowed — an identity may reside in many
 //     locations; the lens's fresh-var exclusion is residence-set-aware.
+//   - worksAt cardinality: MULTIPLE allowed — one person may work at several
+//     buildings. worksAt is PURE TOPOLOGY: it feeds lens reachability and
+//     workplace-anchored read-grant derivation, and is deliberately NOT an
+//     input to the capabilityServiceAccess join — availableAt / residesIn stay
+//     the only authorization-bearing edges there. Staff authority comes from
+//     role grants (cap.roles), never from where someone works.
 //
 // Link direction follows Contract #1 §1.1 (the later-arriving vertex is the
 // SOURCE) and reads as a sentence:
 //
 //	lnk.<idType>.<idId>.residesIn.<locType>.<locId>            # "identity residesIn location"
+//	lnk.<idType>.<idId>.worksAt.<locType>.<locId>              # "identity worksAt location"
 //	lnk.service.<tplId>.availableAt.<locType>.<locId>          # "service availableAt location"
 //	lnk.service.<tplId>.unavailableAt.<locType>.<locId>        # "service unavailableAt location"
 //	lnk.service.<svcId>.permitsOperation.meta.<opId>           # "service permitsOperation operation"
 //
 // Caller's ContextHint.Reads MUST include:
-//   - WireResidesIn: BOTH endpoints (the identity + the location).
+//   - WireResidesIn / WireWorksAt: BOTH endpoints (the identity + the location).
 //   - WireAvailableAt / WireUnavailableAt: the service template (its root
 //     envelope class is the discriminator the template guard reads) + the location.
 //   - WirePermitsOperation: the service + the op-meta vertex.
@@ -53,12 +61,15 @@ func serviceLocationDDL() pkgmgr.DDLSpec {
 		Class:         "meta.ddl.vertexType",
 		PermittedCommands: []string{
 			"WireResidesIn", "UnwireResidesIn",
+			"WireWorksAt", "UnwireWorksAt",
 			"WireAvailableAt", "UnwireAvailableAt",
 			"WireUnavailableAt", "UnwireUnavailableAt",
 			"WirePermitsOperation", "UnwirePermitsOperation",
 		},
 		Description: "Service-location scheme DDL. Wires the residence-based service-access topology " +
-			"(the cap.svc grant source) as LINKS: residesIn (identity→location: where an actor lives), " +
+			"(the cap.svc grant source) plus the workplace spine as LINKS: residesIn (identity→location: " +
+			"where an actor lives), worksAt (identity→location: where an actor works — pure topology, NOT a " +
+			"cap.svc input), " +
 			"availableAt (service-template→location: where an offering is available), unavailableAt " +
 			"(service-template→location: an explicit exclusion override), permitsOperation " +
 			"(service→op-meta: which operations a service exposes). All links: the later-arriving vertex is " +
@@ -66,12 +77,12 @@ func serviceLocationDDL() pkgmgr.DDLSpec {
 			"residesIn location', 'service availableAt location'. Each Wire op validates its endpoint classes " +
 			"at the op (residesIn target=location; availableAt/unavailableAt source=a service template " +
 			"[its envelope class ends in .template], target=location; permitsOperation source=service, " +
-			"target=an op-meta vertex). residesIn cardinality is multiple. Each Unwire op tombstones the link " +
+			"target=an op-meta vertex). residesIn and worksAt cardinality are multiple. Each Unwire op tombstones the link " +
 			"by its deterministic key.",
 		Script: serviceLocationDDLScript,
 		InputSchema: `{"type":"object","properties":` +
-			`{"identity":{"type":"string","description":"vtx.identity.<NanoID> of the resident — the residesIn link source (WireResidesIn; required, validated alive)."},` +
-			`"location":{"type":"string","description":"vtx.<locType>.<NanoID> of the location (WireResidesIn target / WireAvailableAt target / WireUnavailableAt target; required, validated alive + class=location)."},` +
+			`{"identity":{"type":"string","description":"vtx.identity.<NanoID> of the person — the residesIn link source (WireResidesIn) or the worksAt link source (WireWorksAt); required, validated alive."},` +
+			`"location":{"type":"string","description":"vtx.<locType>.<NanoID> of the location (WireResidesIn target / WireWorksAt target / WireAvailableAt target / WireUnavailableAt target; required, validated alive + class=location)."},` +
 			`"service":{"type":"string","description":"vtx.service.<NanoID> of the service — a template for WireAvailableAt/WireUnavailableAt (validated alive + a template, envelope class ends in .template), or any service for WirePermitsOperation (validated alive + a service.* envelope class)."},` +
 			`"operation":{"type":"string","description":"vtx.meta.<NanoID> of the op-meta vertex the service exposes — the permitsOperation link target (WirePermitsOperation; required, validated alive + carries data.operationType)."},` +
 			`"linkKey":{"type":"string","description":"The deterministic 6-segment link key of an existing link to tombstone (the Unwire ops; required, validated alive)."}},` +
@@ -79,8 +90,8 @@ func serviceLocationDDL() pkgmgr.DDLSpec {
 		OutputSchema: `{"type":"object","properties":` +
 			`{"primaryKey":{"type":"string","description":"The link key the operation wrote (Wire ops) or tombstoned (Unwire ops). Absent on idempotent no-op replays (nothing committed)."}}}`,
 		FieldDescription: map[string]string{
-			"identity":  "Full vtx.identity.<NanoID> key of the resident. WireResidesIn validates it is alive and writes it as the residesIn link SOURCE (the identity is the later-arriving vertex, Contract #1 §1.1).",
-			"location":  "Full vtx.<locType>.<NanoID> key of the location. Validated alive + class=location; written as the link TARGET for residesIn / availableAt / unavailableAt.",
+			"identity":  "Full vtx.identity.<NanoID> key of the person. WireResidesIn / WireWorksAt validate it is alive and write it as the link SOURCE (the identity is the later-arriving vertex, Contract #1 §1.1).",
+			"location":  "Full vtx.<locType>.<NanoID> key of the location. Validated alive + class=location; written as the link TARGET for residesIn / worksAt / availableAt / unavailableAt.",
 			"service":   "Full vtx.service.<NanoID> key. For availableAt/unavailableAt it MUST be a service template (its envelope class ends in .template); for permitsOperation it MUST be a service.* envelope class. Written as the link SOURCE.",
 			"operation": "Full vtx.meta.<NanoID> key of the op-meta vertex the service exposes. WirePermitsOperation validates it is alive and carries a data.operationType, then writes it as the permitsOperation link TARGET.",
 			"linkKey":   "Full 6-segment link key of an existing link to tombstone (the Unwire ops).",
@@ -93,6 +104,15 @@ func serviceLocationDDL() pkgmgr.DDLSpec {
 					"lnk.identity.<idNanoID>.residesIn.unit.<unitNanoID> (class=residesIn, source=identity, target=location). " +
 					"Returns primaryKey (the link key). Idempotent: a replay where the link already exists alive commits " +
 					"nothing and omits primaryKey. residesIn cardinality is multiple (an identity may reside in many locations).",
+			},
+			{
+				Name:    "WireWorksAt — place a staff member at their workplace",
+				Payload: map[string]any{"identity": "vtx.identity.<staffNanoID>", "location": "vtx.building.<buildingNanoID>"},
+				ExpectedOutcome: "Validates the identity (alive) and the building (alive + class=location), then writes " +
+					"lnk.identity.<staffNanoID>.worksAt.building.<buildingNanoID> (class=worksAt, source=identity, target=location). " +
+					"Returns primaryKey (the link key). Idempotent: a replay where the link already exists alive commits nothing " +
+					"and omits primaryKey. worksAt cardinality is multiple. The link is pure topology — it grants no service access " +
+					"(it is not a capabilityServiceAccess input); it scopes where a staff actor's world and read grants derive from.",
 			},
 			{
 				Name:    "WireAvailableAt — make a laundry service available at a building",
@@ -278,6 +298,21 @@ def execute(state, op):
                    "data": {"identity": identity, "location": location, "linkKey": lnk_key}}]
         return {"mutations": mutations, "events": events, "response": {"primaryKey": lnk_key}}
 
+    if ot == "WireWorksAt":
+        identity = required_string(p, "identity")
+        location = required_string(p, "location")
+        id_type, id_id = typed_vertex_parts(identity, "identity", "identity")
+        loc_type, loc_id = vertex_parts(location, "location")
+        if not vertex_alive(state, identity):
+            fail("UnknownIdentity: identity: " + identity + " is absent or tombstoned")
+        require_live_location(state, location, "location")
+        lnk_key, mutations = wire(state, identity, location, "worksAt", id_type, id_id, loc_type, loc_id)
+        if len(mutations) == 0:
+            return {"mutations": [], "events": []}
+        events = [{"class": "serviceLocation.worksAtWired",
+                   "data": {"identity": identity, "location": location, "linkKey": lnk_key}}]
+        return {"mutations": mutations, "events": events, "response": {"primaryKey": lnk_key}}
+
     if ot == "WireAvailableAt":
         service = required_string(p, "service")
         location = required_string(p, "location")
@@ -325,6 +360,13 @@ def execute(state, op):
         link_parts(lnk_key, "linkKey", "residesIn")
         mutations = unwire(state, lnk_key)
         events = [{"class": "serviceLocation.residesInUnwired", "data": {"linkKey": lnk_key}}]
+        return {"mutations": mutations, "events": events, "response": {"primaryKey": lnk_key}}
+
+    if ot == "UnwireWorksAt":
+        lnk_key = required_string(p, "linkKey")
+        link_parts(lnk_key, "linkKey", "worksAt")
+        mutations = unwire(state, lnk_key)
+        events = [{"class": "serviceLocation.worksAtUnwired", "data": {"linkKey": lnk_key}}]
         return {"mutations": mutations, "events": events, "response": {"primaryKey": lnk_key}}
 
     if ot == "UnwireAvailableAt":

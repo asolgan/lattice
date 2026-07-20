@@ -3,6 +3,7 @@ package clinicdomain
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -136,24 +137,37 @@ func TestPackage_NoCommandOverlapAcrossVertexTypes(t *testing.T) {
 	}
 }
 
-// TestPackage_Permissions pins every op granted to operator (scope any) —
-// except CreateAppointment, RescheduleAppointment, and SetAppointmentStatus,
-// which ALSO carry a consumer scope=self grant (patient self-booking /
-// self-reschedule / self-cancel) — plus the ten projection lenses and the
-// location-domain dependency.
+// TestPackage_Permissions pins the exact role SET on every grant. Three
+// postures are distinguished and each is load-bearing:
+//
+//   - operator-only (scope any) — the clinical + roster + provider surface.
+//   - operator + frontOfHouse (scope any) — the front-desk schedule beat:
+//     RescheduleAppointment and SetAppointmentStatus, and ONLY those two. A
+//     widening that leaks to RecordEncounter or CreatePatient fails here.
+//   - consumer (scope self) — patient self-booking / self-reschedule /
+//     self-cancel.
+//
+// Plus the ten projection lenses and the location-domain dependency.
 func TestPackage_Permissions(t *testing.T) {
 	type wantGrant struct {
 		scope     string
-		grantsTo  string
+		grantsTo  []string
 		fulfilled bool
 	}
+	op := func(roles ...string) []*wantGrant {
+		return []*wantGrant{{scope: "any", grantsTo: roles}}
+	}
+	operatorOnly := func() []*wantGrant { return op("operator") }
 	wantPerms := map[string][]*wantGrant{
-		"CreatePatient": {{scope: "any", grantsTo: "operator"}}, "TombstonePatient": {{scope: "any", grantsTo: "operator"}},
-		"CreateProvider": {{scope: "any", grantsTo: "operator"}}, "TombstoneProvider": {{scope: "any", grantsTo: "operator"}},
-		"SetProviderProfile": {{scope: "any", grantsTo: "operator"}}, "SetProviderHours": {{scope: "any", grantsTo: "operator"}}, "SetProviderTimeOff": {{scope: "any", grantsTo: "operator"}},
-		"CreateAppointment": {{scope: "any", grantsTo: "operator"}, {scope: "self", grantsTo: "consumer"}}, "RescheduleAppointment": {{scope: "any", grantsTo: "operator"}, {scope: "self", grantsTo: "consumer"}},
-		"SetAppointmentStatus": {{scope: "any", grantsTo: "operator"}, {scope: "self", grantsTo: "consumer"}}, "RecordEncounter": {{scope: "any", grantsTo: "operator"}}, "TombstoneAppointment": {{scope: "any", grantsTo: "operator"}},
-		"SetSiteProfile": {{scope: "any", grantsTo: "operator"}}, "AssignProviderSite": {{scope: "any", grantsTo: "operator"}}, "RemoveProviderSite": {{scope: "any", grantsTo: "operator"}},
+		"CreatePatient": operatorOnly(), "TombstonePatient": operatorOnly(),
+		"CreateProvider": operatorOnly(), "TombstoneProvider": operatorOnly(),
+		"SetProviderProfile": operatorOnly(), "SetProviderHours": operatorOnly(), "SetProviderTimeOff": operatorOnly(),
+		"CreateAppointment": {{scope: "any", grantsTo: []string{"operator"}}, {scope: "self", grantsTo: []string{"consumer"}}},
+		// The two front-desk ops — staff-widened, and the only two.
+		"RescheduleAppointment": {{scope: "any", grantsTo: []string{"operator", "frontOfHouse"}}, {scope: "self", grantsTo: []string{"consumer"}}},
+		"SetAppointmentStatus":  {{scope: "any", grantsTo: []string{"operator", "frontOfHouse"}}, {scope: "self", grantsTo: []string{"consumer"}}},
+		"RecordEncounter":       operatorOnly(), "TombstoneAppointment": operatorOnly(),
+		"SetSiteProfile": operatorOnly(), "AssignProviderSite": operatorOnly(), "RemoveProviderSite": operatorOnly(),
 	}
 	wantCount := 0
 	for _, grants := range wantPerms {
@@ -167,12 +181,9 @@ func TestPackage_Permissions(t *testing.T) {
 		if !ok {
 			t.Fatalf("unexpected permission for %q", perm.OperationType)
 		}
-		if len(perm.GrantsTo) != 1 {
-			t.Fatalf("%s grantsTo = %v, want exactly one role", perm.OperationType, perm.GrantsTo)
-		}
 		matched := false
 		for _, g := range grants {
-			if g.scope == perm.Scope && g.grantsTo == perm.GrantsTo[0] {
+			if g.scope == perm.Scope && slices.Equal(g.grantsTo, perm.GrantsTo) {
 				g.fulfilled = true
 				matched = true
 				break
@@ -182,10 +193,10 @@ func TestPackage_Permissions(t *testing.T) {
 			t.Fatalf("%s: unexpected (scope=%q, grantsTo=%v)", perm.OperationType, perm.Scope, perm.GrantsTo)
 		}
 	}
-	for op, grants := range wantPerms {
+	for opType, grants := range wantPerms {
 		for _, g := range grants {
 			if !g.fulfilled {
-				t.Fatalf("missing permission for op %q (scope=%s, grantsTo=%s)", op, g.scope, g.grantsTo)
+				t.Fatalf("missing permission for op %q (scope=%s, grantsTo=%v)", opType, g.scope, g.grantsTo)
 			}
 		}
 	}

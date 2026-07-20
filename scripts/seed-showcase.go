@@ -93,6 +93,8 @@ const (
 	tenant1Email = "riley.chen@showcase.dev.lattice.local"
 	tenant2Name  = "Sam Okafor"
 	tenant2Email = "sam.okafor@showcase.dev.lattice.local"
+	staffName    = "Dana Whitfield"
+	staffEmail   = "dana.whitfield@showcase.dev.lattice.local"
 )
 
 // showcaseLocationNames is the class-2 display copy (display-name-convention-
@@ -155,6 +157,10 @@ func main() {
 		seedClinicProvider(ctx, conn, adminKey)
 		fmt.Println("==> provider: " + providerKey + " practicesAt building")
 		seedLocationPresentation(ctx, conn, adminKey)
+		frontOfHouseRoleKey := "vtx.role." + pkgmgr.RoleID("identity-domain", "frontOfHouse")
+		staffKey := ensureStaff(ctx, conn, adminKey, frontOfHouseRoleKey, buildingKey, staffName, staffEmail)
+		fmt.Printf("==> staff:           %s (%s) worksAt building, holds frontOfHouse\n", staffKey, staffName)
+		fmt.Println("FACET_STAFF_NANOID=" + strings.TrimPrefix(staffKey, "vtx.identity."))
 		return
 	}
 	consumerRoleKey := "vtx.role." + pkgmgr.RoleID("identity-domain", "consumer")
@@ -188,6 +194,12 @@ func main() {
 	fmt.Printf("==> tenant1:         %s (%s) residesIn unit1\n", tenant1Key, tenant1Name)
 	tenant2Key := seedTenant(ctx, conn, adminKey, consumerRoleKey, unit2Key, tenant2Name, tenant2Email)
 	fmt.Printf("==> tenant2:         %s (%s) residesIn unit2\n", tenant2Key, tenant2Name)
+
+	// --- one staff persona, working at the building (not residing in a unit) --
+
+	frontOfHouseRoleKey := "vtx.role." + pkgmgr.RoleID("identity-domain", "frontOfHouse")
+	staffKey := ensureStaff(ctx, conn, adminKey, frontOfHouseRoleKey, buildingKey, staffName, staffEmail)
+	fmt.Printf("==> staff:           %s (%s) worksAt building, holds frontOfHouse\n", staffKey, staffName)
 
 	// --- two service templates, correct families, both availableAt the building --
 
@@ -255,6 +267,10 @@ func main() {
 	// (or a login attempt) never races cap.roles.<tenant>.
 	waitForRoleGrant(ctx, conn, tenant1Key, "ctrl.refractor.register")
 	waitForRoleGrant(ctx, conn, tenant2Key, "ctrl.refractor.register")
+	// The staff persona's grants come from the vertical packages, not the
+	// control-plane role — wait on one of them so a login never races
+	// cap.roles.<staff>.
+	waitForRoleGrant(ctx, conn, staffKey, "DecideLeaseApplication")
 
 	retireLegacyTemplates(ctx, conn)
 
@@ -262,6 +278,7 @@ func main() {
 	fmt.Println("==> showcase world seeded.")
 	fmt.Println("FACET_TENANT1_NANOID=" + strings.TrimPrefix(tenant1Key, "vtx.identity."))
 	fmt.Println("FACET_TENANT2_NANOID=" + strings.TrimPrefix(tenant2Key, "vtx.identity."))
+	fmt.Println("FACET_STAFF_NANOID=" + strings.TrimPrefix(staffKey, "vtx.identity."))
 }
 
 // seedTenant mints an unclaimed identity, grants consumer, wires residesIn,
@@ -289,6 +306,64 @@ func seedTenant(ctx context.Context, conn *substrate.Conn, adminKey, consumerRol
 		map[string]any{"identityKey": tenantKey, "newState": "claimed"},
 		&processor.ContextHint{Reads: []string{tenantKey, tenantKey + ".state"}})
 	return tenantKey
+}
+
+// ensureStaff returns the showcase staff persona, minting it only if the world
+// does not already have one. The building's liveness gates the whole
+// already-seeded branch, but a staff persona is a LATER increment — an existing
+// showcase world predates it — so this layers in like the other increments.
+//
+// Unlike the template seeds it cannot be idempotent per-mutation:
+// CreateUnclaimedIdentity mints a fresh NanoID on every call, so a blind re-run
+// would quietly accumulate a second, third, fourth staff identity all wired to
+// the same building. The worksAt link IS the identity of the persona here, so
+// recovering by that link is what makes the rerun safe.
+func ensureStaff(ctx context.Context, conn *substrate.Conn, adminKey, roleKey, buildingKey, name, email string) string {
+	js := conn.JetStream()
+	coreKV, err := js.KeyValue(ctx, bootstrap.CoreKVBucket)
+	must(err, "open core-kv")
+	allKeys, err := pkgverify.ListAllKeys(ctx, coreKV)
+	must(err, "list core-kv keys")
+	if existing := findLinkedIdentity(ctx, coreKV, allKeys, "worksAt", buildingKey); existing != "" {
+		return existing
+	}
+	return seedStaff(ctx, conn, adminKey, roleKey, buildingKey, name, email)
+}
+
+// seedStaff mints the showcase staff persona: an identity holding
+// `frontOfHouse` and wired worksAt the BUILDING (not residesIn a unit — staff
+// work here, they do not live here). It is the resident seed's mirror image,
+// and the difference is the whole point of the staff spine: a resident's world
+// composes from residesIn, a staff member's from worksAt + holdsRole.
+//
+// The persona deliberately gets NO residesIn link and NO consumer role, so its
+// world is purely staff-derived. It also holds no `operator` role: everything
+// it can do comes from the frontOfHouse grants the vertical packages declare
+// (DecideLeaseApplication, the two clinic schedule ops, the three café tab ops,
+// CreateSession) — which is what makes it the first showcase actor whose write
+// surface is narrower than root.
+//
+// State is flipped via UpdateIdentityState for the same reason seedTenant does
+// it: the real ClaimIdentity ceremony re-creates a holdsRole link that would
+// collide with the AssignRole grant above.
+func seedStaff(ctx context.Context, conn *substrate.Conn, adminKey, roleKey, buildingKey, name, email string) string {
+	salt, err := substrate.NewNanoID()
+	must(err, "generate staff claim-key salt")
+	claimSum := mustSHA256Hex("showcase-staff-" + salt)
+	reply := submitOp(ctx, conn, adminKey, "CreateUnclaimedIdentity", "identity",
+		map[string]any{"name": name, "email": email, "claimKeyHash": claimSum}, nil)
+	staffKey := reply.PrimaryKey
+
+	submitOp(ctx, conn, adminKey, "AssignRole", "",
+		map[string]any{"actorKey": staffKey, "roleKey": roleKey},
+		&processor.ContextHint{Reads: []string{staffKey, roleKey}})
+	submitOp(ctx, conn, adminKey, "WireWorksAt", "serviceLocation",
+		map[string]any{"identity": staffKey, "location": buildingKey},
+		&processor.ContextHint{Reads: []string{staffKey, buildingKey}})
+	submitOp(ctx, conn, adminKey, "UpdateIdentityState", "identity",
+		map[string]any{"identityKey": staffKey, "newState": "claimed"},
+		&processor.ContextHint{Reads: []string{staffKey, staffKey + ".state"}})
+	return staffKey
 }
 
 // seedTemplate mints a service template with the given fixed id + family +
@@ -533,9 +608,9 @@ func retireLegacyTemplates(ctx context.Context, conn *substrate.Conn) {
 }
 
 // recoverAndPrint scans Core KV for the residesIn links into the two fixed
-// units to recover the (minted, not fixed) tenant identity keys on an
-// idempotent rerun, and prints them in the same machine-readable form the
-// from-scratch path does.
+// units (and the worksAt link into the building) to recover the (minted, not
+// fixed) tenant + staff identity keys on an idempotent rerun, and prints them
+// in the same machine-readable form the from-scratch path does.
 func recoverAndPrint(ctx context.Context, conn *substrate.Conn) {
 	js := conn.JetStream()
 	coreKV, err := js.KeyValue(ctx, bootstrap.CoreKVBucket)
@@ -551,13 +626,24 @@ func recoverAndPrint(ctx context.Context, conn *substrate.Conn) {
 	if tenant2Key != "" {
 		fmt.Println("FACET_TENANT2_NANOID=" + strings.TrimPrefix(tenant2Key, "vtx.identity."))
 	}
+	if staffKey := findLinkedIdentity(ctx, coreKV, allKeys, "worksAt", buildingKey); staffKey != "" {
+		fmt.Println("FACET_STAFF_NANOID=" + strings.TrimPrefix(staffKey, "vtx.identity."))
+	}
 }
 
 // findResidentOf scans for a live lnk.identity.<id>.residesIn.unit.<unitId>
 // key (service-location's WireResidesIn shape) and returns its source
 // identity key, or "" if none found.
 func findResidentOf(ctx context.Context, coreKV jetstream.KeyValue, allKeys map[string]struct{}, unitKey string) string {
-	suffix := ".residesIn." + strings.TrimPrefix(unitKey, "vtx.")
+	return findLinkedIdentity(ctx, coreKV, allKeys, "residesIn", unitKey)
+}
+
+// findLinkedIdentity scans for a live lnk.identity.<id>.<relation>.<type>.<id>
+// key into targetKey and returns its source identity key, or "" if none found.
+// Both identity spines share this shape, so residence and workplace recovery
+// are the same scan with a different relation segment.
+func findLinkedIdentity(ctx context.Context, coreKV jetstream.KeyValue, allKeys map[string]struct{}, relation, targetKey string) string {
+	suffix := "." + relation + "." + strings.TrimPrefix(targetKey, "vtx.")
 	for k := range allKeys {
 		if !strings.HasPrefix(k, "lnk.identity.") || !strings.HasSuffix(k, suffix) {
 			continue
