@@ -21,7 +21,6 @@ import (
 
 const (
 	showcaseBuildingID = "A9jnKK2bGwZNrfHHkLme" // Riverside Building (seed-showcase)
-	showcaseUnit1ID    = "J11XtyS84Tiv16GcC6eE"
 )
 
 func main() {
@@ -71,7 +70,21 @@ func main() {
 			"accepted", "mint leaseapp at "+label)
 		return key
 	}
-	leaseA := leaseAt("vtx.unit."+showcaseUnit1ID, "Riverside (the staff's workplace)")
+	// A FRESH unit inside Riverside each run: lease-signing allows one live
+	// application per (applicant, unit), so reusing the seeded unit would make
+	// this harness single-shot.
+	uAID := mustID()
+	uAKey := "vtx.unit." + uAID
+	riverside := "vtx.building." + showcaseBuildingID
+	expect(submit(ctx, conn, admin, "CreateLocation", "location",
+		map[string]any{"locationType": "unit", "locationId": uAID}, nil),
+		"accepted", "mint a fresh unit")
+	expect(submit(ctx, conn, admin, "WireContainedIn", "location",
+		map[string]any{"child": uAKey, "parent": riverside},
+		&processor.ContextHint{Reads: []string{uAKey, riverside}}),
+		"accepted", "that unit containedIn Riverside")
+
+	leaseA := leaseAt(uAKey, "Riverside (the staff's workplace)")
 	leaseB := leaseAt(uKey, "building B")
 	fmt.Println()
 
