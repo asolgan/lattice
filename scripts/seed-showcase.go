@@ -696,7 +696,7 @@ func findLinkedIdentity(ctx context.Context, coreKV jetstream.KeyValue, allKeys 
 		if err != nil {
 			continue
 		}
-		src, _ := env["sourceVertex"].(string)
+		src := linkSourceIdentity(k)
 		if src == "" {
 			continue
 		}
@@ -709,6 +709,23 @@ func findLinkedIdentity(ctx context.Context, coreKV jetstream.KeyValue, allKeys 
 		return src, true
 	}
 	return tombstoned, false
+}
+
+// linkSourceIdentity derives the source identity key from a 6-segment link key
+// (lnk.identity.<id>.<relation>.<type>.<id>), returning "" for any other shape.
+//
+// The KEY is the only reliable source here, not the document's sourceVertex: a
+// tombstone mutation supplies just {isDeleted, data} and step 8 writes the whole
+// document, so a tombstoned link retains nothing but isDeleted, key and the
+// lastModified* triplet — its class, sourceVertex and targetVertex are gone.
+// Reading sourceVertex would silently skip exactly the dead links this recovery
+// exists to find.
+func linkSourceIdentity(linkKey string) string {
+	parts := strings.Split(linkKey, ".")
+	if len(parts) != 6 || parts[0] != "lnk" || parts[1] != "identity" || parts[2] == "" {
+		return ""
+	}
+	return "vtx.identity." + parts[2]
 }
 
 // alive reports whether key resolves to a live (non-tombstoned) Core KV doc.

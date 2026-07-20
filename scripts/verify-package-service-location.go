@@ -50,6 +50,7 @@ const (
 
 var slExpectedOps = []string{
 	"WireResidesIn", "UnwireResidesIn",
+	"WireWorksAt", "UnwireWorksAt",
 	"WireAvailableAt", "UnwireAvailableAt",
 	"WireUnavailableAt", "UnwireUnavailableAt",
 	"WirePermitsOperation", "UnwirePermitsOperation",
