@@ -54,7 +54,8 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 | **[Packages] `demoOperator` inspect-only grant package** | Filed by Loupe F20.3. A demo identity holding read grants only (no package lifecycle, `ReviewProposal`, `ShredIdentityKey`, `RevokeActor`, vault decrypt, or op-submit) — mirror `packages/console-operator`, minus every write. This is the actual security boundary for exposing Loupe publicly; its own read-only mode is only defense in depth. Needed at the demo's public-launch phase. | ★★ | S–M | 📋 ready · [Loupe F20 design §3.1](../../implementation-artifacts/loupe-f20-demo-operator-ux.md) |
 | **[Weaver] Lane-1 and the sweep can both credit one `__effect` close** | The sweep's `gapClosed` credit is revision-conditioned, but lane-1's `clearClosedMarks` delete is not, so a CDC delivery racing a sweep pass on the same closed gap credits alongside it. Over-credits one slot only when another episode of the same (target, gap, action) is concurrently pending — narrow, and in the safe direction, but it can mask one real mismatch. Fix = revision-condition lane-1's delete (its conflict must not Nak). | ★ | XS–S | 📋 ready |
 | **[Weaver] Fresh-episode/reclaim error-branch coverage** | `fireEpisode`'s stale-mark reclaim path (NanoID-mint + `marks.replace` failures, 41.4% cov), `bumpDispatchCount`/`bumpEffectDispatch` failure-log branches (50%), `sweeper.deleteEffect` conflict/delete-failure (44.4%), and `reconcileConsumers` supervisor Add/UpdateSpec/Reset/Remove + health-sink-delete failure paths (62.7%) are the lowest-covered branches in an otherwise 86.8%-covered package (`internal/weaver/evaluator.go`, `reconciler.go`, `engine.go`). | ★ | S–M | 📋 ready |
-| **[Bootstrap] Stale `lattice.bootstrap.json` vs. recreated Core KV — no freshness probe** | `LoadOrGenerate` skips `SeedPrimordial` whenever the local JSON says `status="committed"` — it never probes Core KV for the bootstrap op tracker, so a recreated/empty Core KV behind a surviving file comes up "ready" with silently-empty reads; recurred 3× (`docs/components/bootstrap.md` §Known gap). | ★★ | S–M | 📋 ready · `cmd/bootstrap/main.go:68-126`, `internal/bootstrap/nanoid.go:331` |
+| **[Bootstrap] `make up` pre-empts the freshness probe with the worse recovery** | With kernel processes up (`PROC_HEALTHY=1` — the recreated-containers case that recurred 3×), `make up` deletes `lattice.bootstrap.json` on a verify mismatch, so bootstrap mints **fresh** NanoIDs and orphans existing references; the binary's stable-id probe never fires. Reconcile the layers: distinguish an empty bucket (probe wins) from a real id mismatch (delete wins). Consumer: any stack recreated out-of-band under a live kernel. | ★★ | S | 📋 ready · `Makefile:151-163` |
+| **[Bootstrap] `cmd/bootstrap` has no test files — the seed decision is inspection-only** | The probe, re-seed, and two-phase reopen are covered in `internal/bootstrap`, but the branch that *decides* to re-seed lives in `package main` and is untested. Consumer: the freshness probe's own decision path. Either extract the decision into `internal/bootstrap` or add a `cmd/bootstrap` test binary. | ★ | XS–S | 📋 ready · `cmd/bootstrap/main.go:110-140` |
 | **[CI] `edge-browser-store` reds the gate on a slow headless-Chrome cold start** | `wasmbrowsertest` waits a chromedp-hardcoded 20s for Chrome's DevTools banner and exposes no knob for it (`test-edge-idb-conformance`). `-p 1` already removed self-contention, yet one cold start still overran on a loaded runner — observed on main, green on re-run, whole gate red meanwhile. Nothing retries the suite. Retry once on the `websocket url timeout reached` signature alone, so real failures stay unmasked. | ★★ | XS–S | 📋 ready |
 | **[Weaver] Drain the `__effect` windows polluted before the attempt-booking fix** | Gating collapse-only reclaims stops new unanswerable episodes but cannot drain windows already filled. The live stack raises standing `LensEffectMismatch` on `leaseApplicationComplete` for `missing_onboarding`/`triggerLoom` and `missing_signature`/`assignTask`, each 20 pending slots deep, and they cannot self-clear (one close flips one slot). Needs a reset of the affected `__effect` keys, or a window-age bound so a stale window ages out. | ★★ | XS–S | 📋 ready |
 
@@ -118,10 +119,16 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
 > 🎯 **Build-ready now.** Every ✅ ratified row in the feature tables below is Andrew-gated or
 > driver-blocked, so the live picks are the **📋 ready rows in Component maintenance** above. Top of that
-> stack now: **[Bootstrap] stale `lattice.bootstrap.json` freshness probe** (★★, the documented Known gap,
-> recurred 3×), then **[CI] `edge-browser-store` retry** (★★ XS–S) and **[Weaver] drain the polluted
-> `__effect` windows** (★★ XS–S). A stale callout starves the lane — whoever ships the top pick
-> renames this to the next.
+> stack now: **[CI] `edge-browser-store` retry** (★★ XS–S), then **[Weaver] drain the polluted
+> `__effect` windows** (★★ XS–S) and **[Bootstrap] `make up` pre-empts the freshness probe** (★★ S —
+> the residual the probe left, filed with it). A stale callout starves the lane — whoever ships the top
+> pick renames this to the next.
+
+> 📐 **Awaiting Andrew — one contract edit staged uncommitted in `main`.**
+> `docs/contracts/07-primordial-bootstrap.md` §7.4 makes `lattice.bootstrap.json` authoritative for the
+> skip-seeding decision; `a44651f` makes **Core KV** the authority (the file stays authoritative for the
+> *identity* of the set). The uncommitted diff is the proposal. Consumers: `cmd/bootstrap` only — no
+> package or app reads §7.4 semantics. Ratify by committing it, or say the word and I'll revert.
 
 ### Security & trust boundary
 | Item | What it is | Imp | Size | State |
@@ -186,6 +193,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-20 · `a44651f` · [bootstrap] Core KV, not `lattice.bootstrap.json`, decides whether to seed — a recreated bucket behind a committed file re-seeds at the file's stable NanoIDs, reopening the two-phase window first
 - 2026-07-20 · `dcfe4af` · [gateway] heartbeat armed with the §5.6 interval-derived TTL — the last bare-`KVPut` emitter no longer leaks a `health.gateway.<instance>` key per restart; fixture bucket mirrors bootstrap
 - 2026-07-20 · `5b58f66` · [weaver] `__effect` window counts attempts, not dispatches — a collapse-only reclaim books no unanswerable episode, and a sweep-won close is credited; both LensEffectMismatch false-alarm biases
 - 2026-07-19 · `3a5cd35` · [health] classifyKey classifies component heartbeats structurally — gateway/bridge/objmgr/chronicler/vault/4 vertical apps no longer read "unknown" forever, and their error issues can reach red
