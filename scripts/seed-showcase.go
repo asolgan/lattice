@@ -71,6 +71,9 @@ const (
 	wellnessTplID = "nh8YmMryPJbSzhCyTLxR"
 	cafeTplID     = "7HRxY1Ymcjv2kuWoR1uC"
 	instance1ID   = "w3wX6tCr9EQMDo7zKu6P"
+	studioID      = "aZmZkW2ws3mUHhRnWTJL"
+	sessionID     = "wvgK4ajnFVyfYJbuhYhJ"
+	providerID    = "fkCFqiGUn5t9En8hoCrc"
 
 	// CreateLocation mints vtx.<locationType>.<id> — the type-specific prefix,
 	// not a generic "location" one (location-domain's ddls.go).
@@ -82,6 +85,9 @@ const (
 	clinicTplKey   = "vtx.service." + clinicTplID
 	wellnessTplKey = "vtx.service." + wellnessTplID
 	cafeTplKey     = "vtx.service." + cafeTplID
+	studioKey      = "vtx.studio." + studioID
+	sessionKey     = "vtx.session." + sessionID
+	providerKey    = "vtx.provider." + providerID
 
 	tenant1Name  = "Riley Chen"
 	tenant1Email = "riley.chen@showcase.dev.lattice.local"
@@ -144,6 +150,10 @@ func main() {
 		fmt.Println("==> template wellness: " + wellnessTplKey + " availableAt building, permits CreateBooking/CancelBooking")
 		seedCafeTemplate(ctx, conn, adminKey)
 		fmt.Println("==> template cafe: " + cafeTplKey + " availableAt building, permits OpenTab/Settle")
+		seedWellnessEntities(ctx, conn, adminKey)
+		fmt.Println("==> studio+session: " + studioKey + " locatedAt building; " + sessionKey + " bookable")
+		seedClinicProvider(ctx, conn, adminKey)
+		fmt.Println("==> provider: " + providerKey + " practicesAt building")
 		seedLocationPresentation(ctx, conn, adminKey)
 		return
 	}
@@ -217,6 +227,16 @@ func main() {
 
 	seedCafeTemplate(ctx, conn, adminKey)
 	fmt.Println("==> template cafe: " + cafeTplKey + " availableAt building, permits OpenTab/Settle")
+
+	// --- browsable dispatch-target entities: a located studio with one
+	// bookable session, and a provider practicing at the building (facet-
+	// entity-browse-design.md §4 step 2 — without these the browse view is
+	// correct and empty) --
+
+	seedWellnessEntities(ctx, conn, adminKey)
+	fmt.Println("==> studio+session: " + studioKey + " locatedAt building; " + sessionKey + " bookable")
+	seedClinicProvider(ctx, conn, adminKey)
+	fmt.Println("==> provider: " + providerKey + " practicesAt building")
 
 	// --- one completed instance for tenant1 (the Activity timeline seed) --
 
@@ -407,6 +427,70 @@ func seedCafeTemplate(ctx context.Context, conn *substrate.Conn, adminKey string
 			map[string]any{"service": cafeTplKey, "operation": opMeta},
 			&processor.ContextHint{Reads: []string{cafeTplKey, opMeta}})
 	}
+}
+
+// seedWellnessEntities mints the showcase wellness studio — locatedAt the
+// showcase building, the authZ-free browse-reachability link facet-entity-
+// browse-design.md §3 F1 adds — and one bookable class session at it, with
+// fixed checked-in handles so reruns converge. Per-mutation idempotent,
+// mirroring seedClinicTemplate: an already-seeded stack layers in whatever
+// is missing. The session's startsAt is computed at seed time (24h out on
+// the 15-minute booking grid) and NOT refreshed by a rerun — an aged demo
+// session is still browsable, just past; tombstone it to re-mint fresh.
+func seedWellnessEntities(ctx context.Context, conn *substrate.Conn, adminKey string) {
+	if !alive(ctx, conn, studioKey) {
+		submitOp(ctx, conn, adminKey, "CreateStudio", "studio",
+			map[string]any{"name": "Riverside Movement Studio", "studioId": studioID, "location": buildingKey},
+			&processor.ContextHint{Reads: []string{buildingKey}})
+	}
+	if !alive(ctx, conn, sessionKey) {
+		start := time.Now().UTC().Add(24 * time.Hour).Truncate(15 * time.Minute)
+		end := start.Add(time.Hour)
+		submitOp(ctx, conn, adminKey, "CreateSession", "session",
+			map[string]any{"studio": studioKey, "sessionId": sessionID, "name": "Vinyasa Flow",
+				"startsAt": start.Format(time.RFC3339), "endsAt": end.Format(time.RFC3339), "capacity": 12},
+			&processor.ContextHint{
+				Reads: []string{studioKey},
+				// The studio's per-cell slot claims: absent until something
+				// books the cell, so optional (Contract #2 §2.5).
+				OptionalReads: slotClaimKeys(studioKey, start, end),
+			})
+	}
+}
+
+// seedClinicProvider mints the showcase clinic provider and assigns it to
+// practice at the showcase building — the practicesAt link the provider
+// browse walk (edgeEntityProviders) resolves through. Fixed handle;
+// per-mutation idempotent like the template seeders.
+func seedClinicProvider(ctx context.Context, conn *substrate.Conn, adminKey string) {
+	if !alive(ctx, conn, providerKey) {
+		submitOp(ctx, conn, adminKey, "CreateProvider", "provider",
+			map[string]any{"fullName": "Dr. Maya Patel", "specialty": "Family Medicine", "providerId": providerID}, nil)
+	}
+	practicesLnk := "lnk.provider." + providerID + ".practicesAt." + strings.TrimPrefix(buildingKey, "vtx.")
+	if !alive(ctx, conn, practicesLnk) {
+		submitOp(ctx, conn, adminKey, "AssignProviderSite", "clinicSiteAssignment",
+			map[string]any{"provider": providerKey, "building": buildingKey},
+			&processor.ContextHint{
+				Reads: []string{providerKey, buildingKey},
+				// The per-pair link is read on demand by the script (create /
+				// revive / no-op), so it is declared optional, mirroring
+				// clinic-domain's own site_integration_test submit.
+				OptionalReads: []string{practicesLnk},
+			})
+	}
+}
+
+// slotClaimKeys enumerates the studio's per-cell slot-claim aspect keys a
+// CreateSession span covers (15-minute grid) — the declared optionalReads
+// for the double-book guard. Mirrors seed-classic-demo.go's helper.
+func slotClaimKeys(hub string, start, end time.Time) []string {
+	var keys []string
+	for cur := start; cur.Before(end); cur = cur.Add(15 * time.Minute) {
+		code := strings.ToLower(strings.NewReplacer("-", "", ":", "").Replace(cur.UTC().Format(time.RFC3339)))
+		keys = append(keys, hub+".slot"+code)
+	}
+	return keys
 }
 
 // seedLocationPresentation layers the class-2 display names onto the three

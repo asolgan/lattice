@@ -7,8 +7,9 @@
 // edge-manifest package has been correctly installed (co-installed with its
 // dependency chain). Asserts:
 //
-//	5 Lens meta-vertices (class=meta.lens), one per canonicalName
-//	  (edgeIdentity/edgeServices/edgeCatalog/edgeTasks/edgeInstances), each
+//	7 Lens meta-vertices (class=meta.lens), one per canonicalName
+//	  (edgeIdentity/edgeServices/edgeCatalog/edgeTasks/edgeInstances/
+//	  edgeEntitySessions/edgeEntityProviders), each
 //	  with a spec aspect whose targetType is nats_subject, personal=true,
 //	  subjectPrefix=lattice.sync.user, stream=SYNC, and a cypherRule
 //	  containing its manifest.<ns> literal.
@@ -43,11 +44,13 @@ const (
 )
 
 var emExpectedLenses = map[string]string{
-	"edgeIdentity":  "manifest.me",
-	"edgeServices":  "manifest.svc",
-	"edgeCatalog":   "manifest.op",
-	"edgeTasks":     "manifest.task",
-	"edgeInstances": "manifest.inst",
+	"edgeIdentity":        "manifest.me",
+	"edgeServices":        "manifest.svc",
+	"edgeCatalog":         "manifest.op",
+	"edgeTasks":           "manifest.task",
+	"edgeInstances":       "manifest.inst",
+	"edgeEntitySessions":  "manifest.ent",
+	"edgeEntityProviders": "manifest.ent",
 }
 
 func main() {
@@ -112,7 +115,7 @@ func main() {
 
 	fmt.Printf("verify-package-edge-manifest: scanning %d Core KV keys...\n", len(allKeys))
 
-	// 1. Five Lens meta-vertices, each a nats_subject Personal Lens keyed
+	// 1. Seven Lens meta-vertices, each a nats_subject Personal Lens keyed
 	// under its own manifest.<ns> namespace.
 	for canonical, ns := range emExpectedLenses {
 		lensKey, err := pkgverify.FindMetaByCanonical(ctx, coreKV, allKeys, canonical)

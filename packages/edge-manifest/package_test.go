@@ -33,21 +33,24 @@ func TestPackage_NoDDLsOrPermissions(t *testing.T) {
 	}
 }
 
-// manifestLensNames are the five Personal Lenses (edge-showcase-app-
-// design.md §3.2). readGrantLensName is their Fire 2 read-grant producer
-// (nats-kv, actorAggregate) — a structurally different class (never
-// Personal, never nats-subject) that TestPackage_LensesAreNatsSubjectPersonal/
+// manifestLensNames are the seven Personal Lenses (edge-showcase-app-
+// design.md §3.2; the two manifest.ent entity lenses per
+// facet-entity-browse-design.md). readGrantLensName is their Fire 2
+// read-grant producer (nats-kv, actorAggregate) — a structurally different
+// class (never Personal, never nats-subject) that
+// TestPackage_LensesAreNatsSubjectPersonal/
 // TestPackage_LensRowKeysAreManifestNamespaced correctly exclude.
 var manifestLensNames = map[string]bool{
 	"edgeIdentity": true, "edgeServices": true, "edgeCatalog": true,
 	"edgeTasks": true, "edgeInstances": true,
+	"edgeEntitySessions": true, "edgeEntityProviders": true,
 }
 
 const readGrantLensName = "edgeManifestReadGrants"
 
-func TestPackage_SixLenses(t *testing.T) {
-	if got := len(Package.Lenses); got != 6 {
-		t.Fatalf("expected 6 lenses (5 manifest + 1 read-grant producer), got %d", got)
+func TestPackage_EightLenses(t *testing.T) {
+	if got := len(Package.Lenses); got != 8 {
+		t.Fatalf("expected 8 lenses (7 manifest + 1 read-grant producer), got %d", got)
 	}
 	names := map[string]bool{}
 	for _, l := range Package.Lenses {
@@ -148,11 +151,13 @@ func TestPackage_ReadGrantLensIsActorAggregateNatsKV(t *testing.T) {
 // is excluded.
 func TestPackage_LensRowKeysAreManifestNamespaced(t *testing.T) {
 	want := map[string]string{
-		"edgeIdentity":  `"manifest.me" AS ns`,
-		"edgeServices":  `"manifest.svc" AS ns`,
-		"edgeCatalog":   `"manifest.op" AS ns`,
-		"edgeTasks":     `"manifest.task" AS ns`,
-		"edgeInstances": `"manifest.inst" AS ns`,
+		"edgeIdentity":        `"manifest.me" AS ns`,
+		"edgeServices":        `"manifest.svc" AS ns`,
+		"edgeCatalog":         `"manifest.op" AS ns`,
+		"edgeTasks":           `"manifest.task" AS ns`,
+		"edgeInstances":       `"manifest.inst" AS ns`,
+		"edgeEntitySessions":  `"manifest.ent" AS ns`,
+		"edgeEntityProviders": `"manifest.ent" AS ns`,
 	}
 	for _, l := range Package.Lenses {
 		if l.CanonicalName == readGrantLensName {

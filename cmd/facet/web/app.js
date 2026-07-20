@@ -41,12 +41,18 @@ const TYPE_LABELS = {
   tab: "Tab",
   booking: "Booking",
   appointment: "Appointment",
-  session: "Session",
+  session: "Class session",
   studio: "Studio",
   menuitem: "Menu item",
 };
 function typeLabel(type) {
   return TYPE_LABELS[type] || (type ? titleCase(type) : "Item");
+}
+
+// indefinite prepends the right article — "an Appointment", "a Class
+// session" — for copy that names a type mid-sentence.
+function indefinite(label) {
+  return (/^[aeiou]/i.test(label) ? "an " : "a ") + label;
 }
 
 // prettify is the last rung of the floor-rule ladder (design §2):
@@ -163,6 +169,8 @@ function services() { return rowsByNs("manifest.svc"); }
 function ops() { return rowsByNs("manifest.op"); }
 function tasks() { return rowsByNs("manifest.task").filter((t) => !isExpired(t.data.expiresAt)); }
 function instances() { return rowsByNs("manifest.inst"); }
+function entities() { return rowsByNs("manifest.ent"); }
+function entitiesByType(type) { return entities().filter((e) => e.data.entityType === type); }
 
 function opByFullKey(fullKey) {
   if (!fullKey) return null;
@@ -400,6 +408,7 @@ function renderView(view) {
   updateBadges();
   if (view === "home") renderHome();
   else if (view === "services") renderServices();
+  else if (view === "browse") renderBrowse();
   else if (view === "tasks") renderTasks();
   else if (view === "activity") renderActivity();
   else if (view === "me") renderMe();
@@ -536,9 +545,15 @@ function opButton(o, ctx) {
   // An op whose declared dispatch.targetType can't be resolved from this
   // context is not submittable from here — offering it anyway is how "Book a
   // class" reached the Processor with a vtx.identity where a vtx.session was
-  // required. Say what's missing instead of failing at submit time.
+  // required. Say what's missing — and when the Nearby view actually has
+  // entities of that type, link straight to it instead of dead-ending.
   if (d.dispatchTargetField && !resolveTargetKey(d, ctx)) {
-    return `<div class="degraded-card">${esc(d.title || prettifyOpType(d.operationType))} — Open a ${esc(typeLabel(d.dispatchTargetType))} to do this; it can't be started from here.</div>`;
+    const label = typeLabel(d.dispatchTargetType);
+    const browsable = d.dispatchTargetType && entitiesByType(d.dispatchTargetType).length > 0;
+    const hint = browsable
+      ? `Open ${esc(indefinite(label))} to do this — <a href="#" data-goto="browse">browse ${esc(label)}s</a>.`
+      : `Open ${esc(indefinite(label))} to do this; it can't be started from here.`;
+    return `<div class="degraded-card">${esc(d.title || prettifyOpType(d.operationType))} — ${hint}</div>`;
   }
   // A {me.<type>} contextParam is filled from the identity's own declared
   // anchors and never rendered, so an unresolvable one has no field the
@@ -552,6 +567,7 @@ function opButton(o, ctx) {
   if (ctx.serviceKey) attrs.push(`data-service-key="${esc(ctx.serviceKey)}"`);
   if (ctx.taskKey) attrs.push(`data-task-key="${esc(ctx.taskKey)}"`);
   if (ctx.scopedTo) attrs.push(`data-scoped-to="${esc(ctx.scopedTo)}"`);
+  if (ctx.entityKey) attrs.push(`data-entity-key="${esc(ctx.entityKey)}"`);
   return `<button class="primary-btn ${toneClass(d.tone)}" style="margin-bottom:8px" ${attrs.join(" ")}>${esc(label)}</button>`;
 }
 
@@ -562,6 +578,61 @@ function instanceRow(i) {
     <div class="row1"><span class="title">${iconGlyph(d.templateIcon)} ${esc(d.templateName || "Service")}</span><span class="badge ${status === "open" ? "queued" : "confirmed"}">${esc(status)}</span></div>
     <div class="meta">${esc(relativeTime(d.completedAt))}</div>
   </div>`;
+}
+
+// -------------------------------------------------------------- Nearby
+//
+// The browse surface (facet-entity-browse-design.md §4 step 5): typed,
+// reachability-bounded manifest.ent rows, grouped by entityType. Selecting
+// one opens the entity detail, whose ops render through the EXISTING
+// opButton/resolveTargetKey path with ctx.entityKey set — this view only
+// feeds dispatch resolution, it never changes it. Deliberately not a graph
+// browser (§3 F3): only entities a declared dispatch.targetType names are
+// ever projected.
+
+function renderBrowse() {
+  const ents = entities();
+  if (!ents.length) { $("view-browse").innerHTML = `<div class="empty">Nothing nearby to book yet.</div>`; return; }
+  const byType = new Map();
+  for (const e of ents) {
+    const t = e.data.entityType || "other";
+    if (!byType.has(t)) byType.set(t, []);
+    byType.get(t).push(e);
+  }
+  let html = "";
+  for (const [t, list] of byType) {
+    list.sort((a, b) => String(a.data.startsAt || a.data.title || "").localeCompare(String(b.data.startsAt || b.data.title || "")));
+    html += `<h3 class="category-heading">${esc(typeLabel(t))}s</h3>` + list.map(entityRow).join("");
+  }
+  $("view-browse").innerHTML = html;
+}
+
+function entityRow(e) {
+  const d = e.data;
+  return `<div class="card" data-goto="entity" data-key="${esc(e.key)}" style="flex-direction:row;align-items:center;gap:12px;margin-bottom:8px">
+    <div style="flex:1">
+      <div class="title">${esc(d.title || prettify(d.entityKey))}</div>
+      <div class="subtitle">${esc(d.subtitle || "")}${d.startsAt ? ` &middot; ${esc(relativeTime(d.startsAt))}` : ""}</div>
+    </div>
+  </div>`;
+}
+
+// openEntityDetail is the seam the dispatch gate has been waiting on
+// (app.js resolveTargetKey's ctx.entityKey candidate): the entity's
+// offerable ops are exactly those whose declared dispatch.targetType IS
+// this entity's type.
+function openEntityDetail(key) {
+  const row = state.rows.get(key);
+  if (!row) return;
+  const d = row.data;
+  const myOps = ops().filter((o) => o.data.dispatchTargetType === d.entityType);
+  showModal(`
+    <button class="close-x" data-close>&times;</button>
+    <h2>${esc(d.title || prettify(d.entityKey))}</h2>
+    <p class="lead">${esc(d.subtitle || "")}${d.startsAt ? ` &middot; ${esc(relativeTime(d.startsAt))}` : ""}</p>
+    <h3 class="category-heading">Operations</h3>
+    ${myOps.length ? myOps.map((o) => opButton(o, { entityKey: d.entityKey })).join("") : `<div class="empty">Nothing to do here yet.</div>`}
+  `);
 }
 
 // ---------------------------------------------------------------- Tasks
@@ -1198,15 +1269,21 @@ function onGlobalClick(e) {
       serviceKey: openOp.dataset.serviceKey || null,
       taskKey: openOp.dataset.taskKey || null,
       scopedTo: openOp.dataset.scopedTo || null,
+      entityKey: openOp.dataset.entityKey || null,
     });
     return;
   }
 
   const goto = e.target.closest("[data-goto]");
   if (goto) {
+    e.preventDefault();
     const view = goto.dataset.goto;
     if (view === "service") { openServiceDetail(goto.dataset.key); return; }
     if (view === "task") { openTaskDetail(goto.dataset.key); return; }
+    if (view === "entity") { openEntityDetail(goto.dataset.key); return; }
+    // A plain view jump can originate inside a modal (the degraded card's
+    // "browse" link) — close it so the target view is actually visible.
+    hideModal();
     setView(view);
     return;
   }

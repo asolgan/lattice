@@ -49,12 +49,19 @@ func studioVertexTypeDDL() pkgmgr.DDLSpec {
 		PermittedCommands: []string{"CreateStudio", "TombstoneStudio"},
 		Description: "Wellness studio DDL. Vertex shape: vtx.studio.<NanoID>, class=studio, root data = {} " +
 			"(minimal, D5 — the data lives in the .profile aspect). CreateStudio mints the studio + writes the " +
-			".profile aspect {name (required)} atomically. TombstoneStudio soft-deletes one (no cascade onto its " +
+			".profile aspect {name (required)} atomically, and — when the optional location param is supplied — " +
+			"the studio locatedAt location LINK (lnk.studio.<id>.locatedAt.<locType>.<locId>, class \"locatedAt\"; " +
+			"source = the later-arriving studio, target = the pre-existing location, Contract #1 §1.1). locatedAt " +
+			"carries NO authorization meaning — it exists so reachability walks (edge-manifest's entity lenses) " +
+			"can find the studio from a resident's containedIn chain; service-access authZ stays entirely on " +
+			"service-location's availableAt. A studio with no location is legal and simply un-browsable. " +
+			"TombstoneStudio soft-deletes one (no cascade onto its " +
 			"sessions — the projection lenses anchor on the live root, mirroring clinic-domain's no-cascade rule).",
 		Script: studioDDLScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"name":{"type":"string","description":"The studio's display name (CreateStudio; required)."},` +
 			`"studioId":{"type":"string","description":"Optional bare NanoID for the new studio vertex (CreateStudio); absent → minted."},` +
+			`"location":{"type":"string","description":"Optional vtx.<locType>.<NanoID> location the studio is at (CreateStudio; validated alive + class=location; writes the locatedAt link). Listed in ContextHint.Reads when supplied."},` +
 			`"studioKey":{"type":"string","description":"vtx.studio.<NanoID> of an existing studio (TombstoneStudio; required, validated alive)."}},` +
 			`"required":[]}`,
 		OutputSchema: `{"type":"object","properties":` +
@@ -62,6 +69,7 @@ func studioVertexTypeDDL() pkgmgr.DDLSpec {
 		FieldDescription: map[string]string{
 			"name":      "The studio's display name. Stored on the .profile aspect (CreateStudio; required).",
 			"studioId":  "Optional bare NanoID (no dots / key segments) for the new studio vertex. Absent → minted with nanoid.new().",
+			"location":  "Optional full vtx.<locType>.<NanoID> key of a location-domain location (e.g. a building) the studio is at. Validated alive + class=location; CreateStudio writes the studio locatedAt location link (no authZ meaning — browse reachability only). MUST be listed in ContextHint.Reads when supplied.",
 			"studioKey": "Full vtx.studio.<NanoID> key of an existing studio vertex to tombstone (TombstoneStudio).",
 		},
 		Examples: []pkgmgr.ExampleSpec{
@@ -70,6 +78,13 @@ func studioVertexTypeDDL() pkgmgr.DDLSpec {
 				Payload: map[string]any{"name": "Sunrise Yoga Room"},
 				ExpectedOutcome: "Mints vtx.studio.<NanoID> (class=studio, root {}) + the .profile aspect " +
 					"{name}. Returns primaryKey (the studio key).",
+			},
+			{
+				Name:    "CreateStudio — register a studio at a location",
+				Payload: map[string]any{"name": "Sunrise Yoga Room", "location": "vtx.building.<NanoID>"},
+				ExpectedOutcome: "Mints the studio + .profile as above, validates the location is alive + " +
+					"class=location, and writes lnk.studio.<id>.locatedAt.building.<NanoID> (class locatedAt). " +
+					"Rejects a dead / wrong-class location.",
 			},
 			{
 				Name:            "TombstoneStudio — remove a studio",
@@ -380,7 +395,9 @@ def execute(state, op):
     fail("InvalidState: this aspect-type DDL is declaration-only; its op is owned by a vertexType DDL")
 `
 
-// studioDDLScript handles CreateStudio + TombstoneStudio. Known-key reads only.
+// studioDDLScript handles CreateStudio + TombstoneStudio. Known-key reads
+// only — the optional location endpoint is a required declared read (state)
+// when the param is supplied, never a kv.Read.
 const studioDDLScript = `
 def make_vtx(key, cls, data):
     return {"op": "create", "key": key,
@@ -390,6 +407,12 @@ def make_aspect(vtx_key, local_name, cls, data):
     return {"op": "create", "key": vtx_key + "." + local_name,
             "document": {"class": cls, "isDeleted": False,
                          "vertexKey": vtx_key, "localName": local_name, "data": data}}
+
+def make_link(key, source, target, cls, local_name, data):
+    return {"op": "create", "key": key,
+            "document": {"class": cls, "isDeleted": False,
+                         "sourceVertex": source, "targetVertex": target,
+                         "localName": local_name, "data": data}}
 
 def make_tombstone(key):
     return {"op": "tombstone", "key": key,
@@ -417,6 +440,27 @@ def bare_nanoid_or_mint(p, name):
             fail("InvalidArgument: " + name + ": must carry no dots / key segments, wildcards, or whitespace; got " + v)
     return v
 
+def optional_string(p, name):
+    if not hasattr(p, name):
+        return None
+    v = getattr(p, name)
+    if v == None or type(v) != type(""):
+        return None
+    v = v.strip()
+    if len(v) == 0:
+        return None
+    return v
+
+def parts_of(key, name, want_type):
+    parts = key.split(".")
+    if len(parts) != 3 or parts[0] != "vtx":
+        fail("InvalidArgument: " + name + ": required vtx.<type>.<NanoID> (exactly 3 segments); got " + key)
+    if parts[1] == "":
+        fail("InvalidArgument: " + name + ": empty type segment; required vtx.<type>.<NanoID>; got " + key)
+    if want_type != "" and parts[1] != want_type:
+        fail("InvalidArgument: " + name + ": required vtx." + want_type + ".<NanoID>; got " + key)
+    return parts[1], parts[2]
+
 def vertex_alive(state, key):
     if key not in state:
         return False
@@ -426,6 +470,23 @@ def vertex_alive(state, key):
     if hasattr(doc, "isDeleted") and doc.isDeleted:
         return False
     return True
+
+def class_of(state, key):
+    if key not in state:
+        return None
+    doc = state[key]
+    if doc == None:
+        return None
+    if not hasattr(doc, "class"):
+        return None
+    return getattr(doc, "class")
+
+def require_live_typed(state, key, name, want_class):
+    if not vertex_alive(state, key):
+        fail("UnknownEndpoint: " + name + ": " + key + " is absent or tombstoned")
+    cls = class_of(state, key)
+    if cls != want_class:
+        fail("WrongClass: " + name + ": " + key + " has class " + str(cls) + ", required " + want_class)
 
 def execute(state, op):
     ot = op.operationType
@@ -439,6 +500,12 @@ def execute(state, op):
             make_vtx(skey, "studio", {}),
             make_aspect(skey, "profile", "studioProfile", {"name": name}),
         ]
+        loc = optional_string(p, "location")
+        if loc != None:
+            ltype, lid = parts_of(loc, "location", "")
+            require_live_typed(state, loc, "location", "location")
+            mutations.append(make_link("lnk.studio." + sid + ".locatedAt." + ltype + "." + lid,
+                                       skey, loc, "locatedAt", "locatedAt", {}))
         events = [{"class": "wellness.studioCreated", "data": {"studioKey": skey}}]
         return {"mutations": mutations, "events": events, "response": {"primaryKey": skey}}
 

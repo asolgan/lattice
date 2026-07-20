@@ -153,7 +153,8 @@ func main() {
 	// --- Wellness: studio + bookable session ---------------------------------
 
 	studioReply := submitOp(ctx, conn, adminKey, "CreateStudio", "studio",
-		map[string]any{"name": "Classic Demo Studio"}, nil)
+		map[string]any{"name": "Classic Demo Studio", "location": unitKey},
+		&processor.ContextHint{Reads: []string{unitKey}})
 	studioKey := studioReply.PrimaryKey
 	fmt.Printf("==> studio:          %s\n", studioKey)
 

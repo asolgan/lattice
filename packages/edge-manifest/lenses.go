@@ -2,8 +2,9 @@ package edgemanifest
 
 import "github.com/asolgan/lattice/internal/pkgmgr"
 
-// Lenses returns the package's five Personal-Lens declarations
-// (edge-showcase-app-design.md §3.2) — the first real `nats-subject` /
+// Lenses returns the package's seven Personal-Lens declarations
+// (edge-showcase-app-design.md §3.2; the two manifest.ent entity lenses per
+// facet-entity-browse-design.md) — the first real `nats-subject` /
 // Personal Lens package in the repo (the adapter plumbing shipped latent in
 // Fire 0; this is its first production consumer) — plus ONE read-grant
 // PRODUCER lens, edgeManifestReadGrants (Fire 2 fix, added building
@@ -31,8 +32,9 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // console-operator, clinic-domain — is the OTHER kind, a Postgres
 // GrantTable feeding Path A; this is Path B, and edge-manifest is Path B's
 // first package producer). One combined `cap-read.edgeManifest.<actor>`
-// slice covers all four non-self anchor kinds (service/op/task/instance) —
-// no need for four separate lenses, since the actor's effective readable
+// slice covers all six non-self anchor kinds
+// (service/op/task/instance/session/provider) — no need for separate
+// lenses, since the actor's effective readable
 // set is already a union over every slice class, and one slice may itself
 // list many anchors.
 //
@@ -123,6 +125,28 @@ func Lenses() []pkgmgr.LensSpec {
 			Engine:        "full",
 			IntoKey:       []string{"__actor", "ns", "entityId"},
 			Spec:          edgeInstancesSpec,
+		},
+		{
+			CanonicalName: "edgeEntitySessions",
+			Class:         "meta.lens",
+			Adapter:       "nats-subject",
+			SubjectPrefix: manifestSubjectPrefix,
+			Stream:        manifestStream,
+			Personal:      true,
+			Engine:        "full",
+			IntoKey:       []string{"__actor", "ns", "entityId"},
+			Spec:          edgeEntitySessionsSpec,
+		},
+		{
+			CanonicalName: "edgeEntityProviders",
+			Class:         "meta.lens",
+			Adapter:       "nats-subject",
+			SubjectPrefix: manifestSubjectPrefix,
+			Stream:        manifestStream,
+			Personal:      true,
+			Engine:        "full",
+			IntoKey:       []string{"__actor", "ns", "entityId"},
+			Spec:          edgeEntityProvidersSpec,
 		},
 		{
 			CanonicalName:  "edgeManifestReadGrants",
@@ -348,12 +372,72 @@ RETURN
   inst.outcome.data.completedAt AS completedAt
 `
 
+// edgeEntitySessionsSpec projects one `manifest.ent.<sessionId>` row per
+// wellness class session reachable from the actor's residence chain — the
+// browse rows that give a declared `dispatch.targetType: "session"` something
+// to resolve against (facet-entity-browse-design.md §3 F2). Reachability is
+// wellness-domain's authZ-free `studio locatedAt location` link off the same
+// containedIn walk edgeServices uses (NEVER availableAt — that edge is
+// service-access authZ, §3 F1). `entityType` is a literal stamped per walk,
+// exactly as edgeIdentity's selfAnchors stamps its type — the engine has no
+// vertex-type-from-key function, and the type is a declaration of what the
+// walk means. One lens per entity kind: the engine has no UNION, and a
+// row-per-entity cypher carrying two unrelated kinds would cross-product
+// (the same constraint the package doc comment names for edgeCatalog's
+// scope-downs). The schedule instant projects as `startsAt`, not the
+// design's `when` — WHEN is a CASE keyword in this engine's lexer and an
+// alias by that name fails to parse.
+const edgeEntitySessionsSpec = `
+MATCH (identity:identity {key: $actorKey})
+OPTIONAL MATCH (identity)-[:residesIn]->(home)-[:containedIn*0..]->(container)
+OPTIONAL MATCH (container)<-[:locatedAt]-(studio:studio)
+OPTIONAL MATCH (studio)<-[:atStudio]-(sess:session)
+WITH sess, studio
+WHERE sess.key <> null
+RETURN
+  sess.key AS anchor,
+  "manifest.ent" AS ns,
+  nanoIdFromKey(sess.key) AS entityId,
+  sess.key AS entityKey,
+  "session" AS entityType,
+  sess.schedule.data.name AS title,
+  studio.profile.data.name AS subtitle,
+  sess.schedule.data.startsAt AS startsAt
+`
+
+// edgeEntityProvidersSpec projects one `manifest.ent.<providerId>` row per
+// clinic provider reachable from the actor's residence chain — the browse
+// rows for `dispatch.targetType: "provider"` (CreateAppointment). The
+// provider's own `practicesAt` link (clinic-domain site.go) already lands on
+// a location-domain building, so this walk needs no new DDL anywhere. Same
+// row shape as edgeEntitySessions minus `startsAt` (a provider is not a
+// scheduled thing); the renderer treats the shape generically by entityType.
+const edgeEntityProvidersSpec = `
+MATCH (identity:identity {key: $actorKey})
+OPTIONAL MATCH (identity)-[:residesIn]->(home)-[:containedIn*0..]->(container)
+OPTIONAL MATCH (container)<-[:practicesAt]-(prov:provider)
+WITH prov
+WHERE prov.key <> null
+RETURN
+  prov.key AS anchor,
+  "manifest.ent" AS ns,
+  nanoIdFromKey(prov.key) AS entityId,
+  prov.key AS entityKey,
+  "provider" AS entityType,
+  prov.profile.data.fullName AS title,
+  prov.profile.data.specialty AS subtitle
+`
+
 // edgeManifestReadGrantsSpec is edge-manifest's single combined read-grant
-// producer for all four non-self-anchored manifest lenses (edgeServices,
-// edgeCatalog, edgeTasks, edgeInstances) — an actorAggregate lens mirroring
+// producer for all six non-self-anchored manifest lenses (edgeServices,
+// edgeCatalog, edgeTasks, edgeInstances, edgeEntitySessions,
+// edgeEntityProviders) — an actorAggregate lens mirroring
 // internal/bootstrap/lenses.go's CapabilityReadLensDefinition shape exactly
 // (one row per actor, a readableAnchors[] array), just walking THIS
 // package's reachability chains instead of the trivial self-anchor.
+// The session/provider anchor branches land in the SAME change as their
+// lenses (facet-entity-browse-design.md §3 F4): without them Refractor's D1
+// readableAnchors fail-closed gate silently drops every manifest.ent row.
 //
 // Each anchor kind's OPTIONAL MATCH is independent of the others (no shared
 // WITH-scoping), so a tenant reachable to N services and M tasks produces
@@ -372,11 +456,16 @@ OPTIONAL MATCH (container)<-[:availableAt]-(tpl:service)
 OPTIONAL MATCH (tpl)-[:permitsOperation]->(op:meta)
 OPTIONAL MATCH (identity)<-[:assignedTo]-(task:task)
 OPTIONAL MATCH (identity)<-[:providedTo]-(inst:service)
+OPTIONAL MATCH (container)<-[:locatedAt]-(studio:studio)
+OPTIONAL MATCH (studio)<-[:atStudio]-(sess:session)
+OPTIONAL MATCH (container)<-[:practicesAt]-(prov:provider)
 RETURN
   identity.key AS actorKey,
   collect(DISTINCT {anchorType: 'service', anchorId: nanoIdFromKey(tpl.key), via: ['availableAt']}) +
   collect(DISTINCT {anchorType: 'meta', anchorId: nanoIdFromKey(op.key), via: ['permitsOperation']}) +
   collect(DISTINCT {anchorType: 'task', anchorId: nanoIdFromKey(task.key), via: ['assignedTo']}) +
-  collect(DISTINCT {anchorType: 'service', anchorId: nanoIdFromKey(inst.key), via: ['providedTo']})
+  collect(DISTINCT {anchorType: 'service', anchorId: nanoIdFromKey(inst.key), via: ['providedTo']}) +
+  collect(DISTINCT {anchorType: 'session', anchorId: nanoIdFromKey(sess.key), via: ['locatedAt', 'atStudio']}) +
+  collect(DISTINCT {anchorType: 'provider', anchorId: nanoIdFromKey(prov.key), via: ['practicesAt']})
   AS readableAnchors
 `

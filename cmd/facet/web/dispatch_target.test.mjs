@@ -118,3 +118,35 @@ test("an op with no targetField resolves to nothing at all", () => {
   const openTab = { dispatchAuthContext: "self", dispatchClass: "tab" };
   assert.equal(resolveTargetKey(openTab, { serviceKey: SERVICE }), undefined);
 });
+
+// The browse view's whole contract: with ctx.entityKey set (an entity
+// detail is open), the SAME op that degrades on a service card renders a
+// real, submittable button.
+test("opButton offers a typed-target op when an entity of that type is in view", () => {
+  const { opButton } = loadApp();
+  const createBooking = {
+    key: "manifest.op.x",
+    data: {
+      title: "Book a class",
+      operationType: "CreateBooking",
+      dispatchClass: "booking",
+      dispatchAuthContext: "self",
+      dispatchTargetField: "session",
+      dispatchTargetType: "session",
+    },
+  };
+  const degraded = opButton(createBooking, { serviceKey: SERVICE });
+  assert.match(degraded, /degraded-card/);
+  assert.doesNotMatch(degraded, /<button/);
+
+  const offered = opButton(createBooking, { entityKey: SESSION });
+  assert.match(offered, /<button/);
+  assert.match(offered, /data-entity-key="vtx\.session\./);
+});
+
+test("indefinite article follows the label's leading sound", () => {
+  const { indefinite } = loadApp();
+  assert.equal(indefinite("Appointment"), "an Appointment");
+  assert.equal(indefinite("Class session"), "a Class session");
+  assert.equal(indefinite("Provider"), "a Provider");
+});
