@@ -523,8 +523,7 @@ RETURN
   a.encounter.data.documentedAt      AS documented_at,
   a.encounter.data.followUpRequested AS follow_up_requested,
   a.encounter.data.followUpDate      AS follow_up_date,
-  [nanoIdFromKey(p.key)] +
-    [(a)-[:withProvider]->(pr2:provider)-[:practicesAt]->(b:building) | nanoIdFromKey(b.key)]
+  [nanoIdFromKey(p.key)] + [(pr)-[:practicesAt]->(b:building) | nanoIdFromKey(b.key)]
                                      AS authz_anchors
 `
 
