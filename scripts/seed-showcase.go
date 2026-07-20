@@ -43,6 +43,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -136,8 +137,8 @@ func main() {
 	adminKey := bootstrap.BootstrapIdentityKey
 
 	if alive(ctx, conn, buildingKey) {
-		fmt.Println("==> showcase world already loaded (building", buildingKey, "is alive) — recovering tenant keys, no ops submitted.")
-		recoverAndPrint(ctx, conn)
+		fmt.Println("==> showcase world already loaded (building", buildingKey, "is alive) — recovering persona keys, layering in any missing increment.")
+		recoverTenants(ctx, conn, adminKey)
 		retireLegacyTemplates(ctx, conn)
 		// The building's liveness only proves the ORIGINAL world loaded; a
 		// later increment (e.g. the §7.4 clinic template, the wellness
@@ -318,16 +319,29 @@ func seedTenant(ctx context.Context, conn *substrate.Conn, adminKey, consumerRol
 // would quietly accumulate a second, third, fourth staff identity all wired to
 // the same building. The worksAt link IS the identity of the persona here, so
 // recovering by that link is what makes the rerun safe.
+//
+// A tombstoned worksAt link is recovered and RE-WIRED, not treated as an
+// absent persona: the identity behind it still holds the fixed staff email, so
+// minting a replacement collides on the identity index and fails the seed.
+// That is the wedge an unwire left behind — the persona existed, was
+// unreachable, and could not be re-minted either.
 func ensureStaff(ctx context.Context, conn *substrate.Conn, adminKey, roleKey, buildingKey, name, email string) string {
 	js := conn.JetStream()
 	coreKV, err := js.KeyValue(ctx, bootstrap.CoreKVBucket)
 	must(err, "open core-kv")
 	allKeys, err := pkgverify.ListAllKeys(ctx, coreKV)
 	must(err, "list core-kv keys")
-	if existing := findLinkedIdentity(ctx, coreKV, allKeys, "worksAt", buildingKey); existing != "" {
-		return existing
+	existing, live := findLinkedIdentity(ctx, coreKV, allKeys, "worksAt", buildingKey)
+	if existing == "" {
+		return seedStaff(ctx, conn, adminKey, roleKey, buildingKey, name, email)
 	}
-	return seedStaff(ctx, conn, adminKey, roleKey, buildingKey, name, email)
+	if !live {
+		submitOp(ctx, conn, adminKey, "WireWorksAt", "serviceLocation",
+			map[string]any{"identity": existing, "location": buildingKey},
+			wireHint(existing, "worksAt", buildingKey))
+		fmt.Printf("==> healed:          re-wired %s worksAt building (link was tombstoned)\n", existing)
+	}
+	return existing
 }
 
 // seedStaff mints the showcase staff persona: an identity holding
@@ -607,60 +621,94 @@ func retireLegacyTemplates(ctx context.Context, conn *substrate.Conn) {
 	}
 }
 
-// recoverAndPrint scans Core KV for the residesIn links into the two fixed
-// units (and the worksAt link into the building) to recover the (minted, not
-// fixed) tenant + staff identity keys on an idempotent rerun, and prints them
-// in the same machine-readable form the from-scratch path does.
-func recoverAndPrint(ctx context.Context, conn *substrate.Conn) {
+// recoverTenants scans Core KV for the residesIn links into the two fixed
+// units to recover the (minted, not fixed) tenant identity keys on an
+// idempotent rerun, re-wiring any whose residence was unwired, and prints them
+// in the same machine-readable form the from-scratch path does. The staff
+// persona is the same recovery one relation over, and ensureStaff owns it —
+// including printing FACET_STAFF_NANOID.
+func recoverTenants(ctx context.Context, conn *substrate.Conn, adminKey string) {
 	js := conn.JetStream()
 	coreKV, err := js.KeyValue(ctx, bootstrap.CoreKVBucket)
 	must(err, "open core-kv")
 	allKeys, err := pkgverify.ListAllKeys(ctx, coreKV)
 	must(err, "list core-kv keys")
 
-	tenant1Key := findResidentOf(ctx, coreKV, allKeys, unit1Key)
-	tenant2Key := findResidentOf(ctx, coreKV, allKeys, unit2Key)
-	if tenant1Key != "" {
-		fmt.Println("FACET_TENANT1_NANOID=" + strings.TrimPrefix(tenant1Key, "vtx.identity."))
-	}
-	if tenant2Key != "" {
-		fmt.Println("FACET_TENANT2_NANOID=" + strings.TrimPrefix(tenant2Key, "vtx.identity."))
-	}
-	if staffKey := findLinkedIdentity(ctx, coreKV, allKeys, "worksAt", buildingKey); staffKey != "" {
-		fmt.Println("FACET_STAFF_NANOID=" + strings.TrimPrefix(staffKey, "vtx.identity."))
+	for _, t := range []struct {
+		envVar  string
+		unitKey string
+	}{
+		{"FACET_TENANT1_NANOID", unit1Key},
+		{"FACET_TENANT2_NANOID", unit2Key},
+	} {
+		tenantKey, live := findResidentOf(ctx, coreKV, allKeys, t.unitKey)
+		if tenantKey == "" {
+			continue
+		}
+		if !live {
+			// Same wedge the staff persona hit: the tenant survives its unwire
+			// holding a fixed showcase email, so the residence has to be
+			// re-wired rather than re-seeded from a new identity.
+			submitOp(ctx, conn, adminKey, "WireResidesIn", "serviceLocation",
+				map[string]any{"identity": tenantKey, "location": t.unitKey},
+				wireHint(tenantKey, "residesIn", t.unitKey))
+			fmt.Printf("==> healed:          re-wired %s residesIn %s (link was tombstoned)\n", tenantKey, t.unitKey)
+		}
+		fmt.Println(t.envVar + "=" + strings.TrimPrefix(tenantKey, "vtx.identity."))
 	}
 }
 
-// findResidentOf scans for a live lnk.identity.<id>.residesIn.unit.<unitId>
-// key (service-location's WireResidesIn shape) and returns its source
-// identity key, or "" if none found.
-func findResidentOf(ctx context.Context, coreKV jetstream.KeyValue, allKeys map[string]struct{}, unitKey string) string {
+// findResidentOf scans for a lnk.identity.<id>.residesIn.unit.<unitId> key
+// (service-location's WireResidesIn shape) and returns its source identity key
+// plus whether that link is still alive.
+func findResidentOf(ctx context.Context, coreKV jetstream.KeyValue, allKeys map[string]struct{}, unitKey string) (string, bool) {
 	return findLinkedIdentity(ctx, coreKV, allKeys, "residesIn", unitKey)
 }
 
-// findLinkedIdentity scans for a live lnk.identity.<id>.<relation>.<type>.<id>
-// key into targetKey and returns its source identity key, or "" if none found.
-// Both identity spines share this shape, so residence and workplace recovery
-// are the same scan with a different relation segment.
-func findLinkedIdentity(ctx context.Context, coreKV jetstream.KeyValue, allKeys map[string]struct{}, relation, targetKey string) string {
+// findLinkedIdentity scans for a lnk.identity.<id>.<relation>.<type>.<id> key
+// into targetKey and returns its source identity key. Both identity spines
+// share this shape, so residence and workplace recovery are the same scan with
+// a different relation segment.
+//
+// A LIVE link always wins. A tombstoned one is still returned, with
+// alive=false, because the persona behind it survives the unwire: its email is
+// a fixed showcase constant, so treating the dead link as "no persona" and
+// minting a replacement collides on the identity index and fails the whole
+// seed. The caller re-wires instead (WireWorksAt / WireResidesIn revive a
+// tombstoned link).
+//
+// Candidates are visited in sorted order so a world carrying several dead
+// links into the same target resolves identically on every rerun, rather than
+// on Go's map iteration order.
+func findLinkedIdentity(ctx context.Context, coreKV jetstream.KeyValue, allKeys map[string]struct{}, relation, targetKey string) (string, bool) {
 	suffix := "." + relation + "." + strings.TrimPrefix(targetKey, "vtx.")
+	candidates := make([]string, 0, 4)
 	for k := range allKeys {
-		if !strings.HasPrefix(k, "lnk.identity.") || !strings.HasSuffix(k, suffix) {
-			continue
+		if strings.HasPrefix(k, "lnk.identity.") && strings.HasSuffix(k, suffix) {
+			candidates = append(candidates, k)
 		}
+	}
+	sort.Strings(candidates)
+
+	var tombstoned string
+	for _, k := range candidates {
 		env, err := pkgverify.GetEnvelope(ctx, coreKV, k)
 		if err != nil {
 			continue
 		}
-		if del, _ := env["isDeleted"].(bool); del {
+		src, _ := env["sourceVertex"].(string)
+		if src == "" {
 			continue
 		}
-		src, _ := env["sourceVertex"].(string)
-		if src != "" {
-			return src
+		if del, _ := env["isDeleted"].(bool); del {
+			if tombstoned == "" {
+				tombstoned = src
+			}
+			continue
 		}
+		return src, true
 	}
-	return ""
+	return tombstoned, false
 }
 
 // alive reports whether key resolves to a live (non-tombstoned) Core KV doc.
