@@ -51,6 +51,14 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 //   - WirePermitsOperation: the service + the op-meta vertex.
 //   - the Unwire* ops: the deterministic link key (computed from the endpoints
 //     by the caller — see the key shapes above).
+//
+// Every Wire* op ADDITIONALLY requires its deterministic link key in
+// ContextHint.OptionalReads (Contract #2 §2.5) — optional, not required,
+// because a first wire legitimately finds it absent. It is what lets the
+// script tell a tombstoned link apart from an absent one and revive the
+// former with an update; a caller that omits it can wire a link once and,
+// after an Unwire*, never re-wire it (the script would emit a create against
+// a key that already exists at a later revision → RevisionConflict).
 func DDLs() []pkgmgr.DDLSpec {
 	return []pkgmgr.DDLSpec{serviceLocationDDL()}
 }
@@ -78,7 +86,7 @@ func serviceLocationDDL() pkgmgr.DDLSpec {
 			"at the op (residesIn target=location; availableAt/unavailableAt source=a service template " +
 			"[its envelope class ends in .template], target=location; permitsOperation source=service, " +
 			"target=an op-meta vertex). residesIn and worksAt cardinality are multiple. Each Unwire op tombstones the link " +
-			"by its deterministic key.",
+			"by its deterministic key, and a later Wire of the same endpoints revives it.",
 		Script: serviceLocationDDLScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"identity":{"type":"string","description":"vtx.identity.<NanoID> of the person — the residesIn link source (WireResidesIn) or the worksAt link source (WireWorksAt); required, validated alive."},` +
@@ -103,7 +111,9 @@ func serviceLocationDDL() pkgmgr.DDLSpec {
 				ExpectedOutcome: "Validates the identity (alive) and the unit (alive + class=location), then writes " +
 					"lnk.identity.<idNanoID>.residesIn.unit.<unitNanoID> (class=residesIn, source=identity, target=location). " +
 					"Returns primaryKey (the link key). Idempotent: a replay where the link already exists alive commits " +
-					"nothing and omits primaryKey. residesIn cardinality is multiple (an identity may reside in many locations).",
+					"nothing and omits primaryKey. A link previously tombstoned by UnwireResidesIn is REVIVED (a resident who " +
+					"moved out can move back into the same unit). residesIn cardinality is multiple (an identity may reside in " +
+					"many locations).",
 			},
 			{
 				Name:    "WireWorksAt — place a staff member at their workplace",
@@ -111,7 +121,8 @@ func serviceLocationDDL() pkgmgr.DDLSpec {
 				ExpectedOutcome: "Validates the identity (alive) and the building (alive + class=location), then writes " +
 					"lnk.identity.<staffNanoID>.worksAt.building.<buildingNanoID> (class=worksAt, source=identity, target=location). " +
 					"Returns primaryKey (the link key). Idempotent: a replay where the link already exists alive commits nothing " +
-					"and omits primaryKey. worksAt cardinality is multiple. The link is pure topology — it grants no service access " +
+					"and omits primaryKey; a link previously tombstoned by UnwireWorksAt is REVIVED. worksAt cardinality is " +
+					"multiple. The link is pure topology — it grants no service access " +
 					"(it is not a capabilityServiceAccess input); it scopes where a staff actor's world and read grants derive from.",
 			},
 			{
@@ -154,11 +165,30 @@ func serviceLocationDDL() pkgmgr.DDLSpec {
 // op-meta. The links carry empty data {} — they are pure topology the cap.svc
 // lens walks.
 const serviceLocationDDLScript = `
+def link_document(source, target, cls, local_name, data):
+    return {"class": cls, "isDeleted": False,
+            "sourceVertex": source, "targetVertex": target,
+            "localName": local_name, "data": data}
+
 def make_link(key, source, target, cls, local_name, data):
     return {"op": "create", "key": key,
-            "document": {"class": cls, "isDeleted": False,
-                         "sourceVertex": source, "targetVertex": target,
-                         "localName": local_name, "data": data}}
+            "document": link_document(source, target, cls, local_name, data)}
+
+def revive_link(key, source, target, cls, local_name, data):
+    # Re-wire of a TOMBSTONED link. It must be an update, not a create: a
+    # create asserts revision 0 (step 8) and the tombstone already sits at a
+    # later revision, so a create here fails RevisionConflict. An update
+    # asserts the revision the key was hydrated at, which is what a revive
+    # actually means — resurrect this document from the state we just read.
+    #
+    # An update writes the whole document and step 8 re-stamps only the
+    # lastModified* triplet, so the revived link carries no createdAt /
+    # createdBy / createdByOp: a script cannot carry them forward because the
+    # hydrated document does not expose them (VertexDoc). Its birth is
+    # therefore readable only from lastModified* until scripts can see create
+    # provenance — the general gap, shared by every script-authored update.
+    return {"op": "update", "key": key,
+            "document": link_document(source, target, cls, local_name, data)}
 
 def make_tombstone(key):
     return {"op": "tombstone", "key": key,
@@ -265,13 +295,23 @@ def require_live_opmeta(state, key, name):
         fail("NotAnOpMeta: " + name + ": " + key + " carries no data.operationType")
 
 def wire(state, src, target, relation, src_type, src_id, tgt_type, tgt_id):
-    # Idempotent wire: if the link exists alive, return ok no-op (no committed
-    # key → no primaryKey). The link key is deterministic and known to the caller.
+    # The link key is deterministic and declared by the caller as an OPTIONAL
+    # read (it is legitimately absent on a first wire), so all three states are
+    # visible in the step-4 snapshot and each gets its own mutation shape:
+    #
+    #   alive      → idempotent no-op (nothing committed → no primaryKey)
+    #   absent     → create (conditioned on absence)
+    #   tombstoned → revive as an update (conditioned on the current revision)
+    #
+    # A caller that declares neither read sees an absent key in every state and
+    # would emit a create for a tombstoned link, which cannot commit.
     lnk_key = "lnk." + src_type + "." + src_id + "." + relation + "." + tgt_type + "." + tgt_id
     existing = state[lnk_key] if lnk_key in state else None
-    if existing != None and not (hasattr(existing, "isDeleted") and existing.isDeleted):
+    if existing == None:
+        return lnk_key, [make_link(lnk_key, src, target, relation, relation, {})]
+    if not (hasattr(existing, "isDeleted") and existing.isDeleted):
         return lnk_key, []
-    return lnk_key, [make_link(lnk_key, src, target, relation, relation, {})]
+    return lnk_key, [revive_link(lnk_key, src, target, relation, relation, {})]
 
 def unwire(state, lnk_key):
     existing = state[lnk_key] if lnk_key in state else None

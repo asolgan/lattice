@@ -301,7 +301,7 @@ func seedTenant(ctx context.Context, conn *substrate.Conn, adminKey, consumerRol
 		&processor.ContextHint{Reads: []string{tenantKey, consumerRoleKey}})
 	submitOp(ctx, conn, adminKey, "WireResidesIn", "serviceLocation",
 		map[string]any{"identity": tenantKey, "location": unitKey},
-		&processor.ContextHint{Reads: []string{tenantKey, unitKey}})
+		wireHint(tenantKey, "residesIn", unitKey))
 	submitOp(ctx, conn, adminKey, "UpdateIdentityState", "identity",
 		map[string]any{"identityKey": tenantKey, "newState": "claimed"},
 		&processor.ContextHint{Reads: []string{tenantKey, tenantKey + ".state"}})
@@ -359,7 +359,7 @@ func seedStaff(ctx context.Context, conn *substrate.Conn, adminKey, roleKey, bui
 		&processor.ContextHint{Reads: []string{staffKey, roleKey}})
 	submitOp(ctx, conn, adminKey, "WireWorksAt", "serviceLocation",
 		map[string]any{"identity": staffKey, "location": buildingKey},
-		&processor.ContextHint{Reads: []string{staffKey, buildingKey}})
+		wireHint(staffKey, "worksAt", buildingKey))
 	submitOp(ctx, conn, adminKey, "UpdateIdentityState", "identity",
 		map[string]any{"identityKey": staffKey, "newState": "claimed"},
 		&processor.ContextHint{Reads: []string{staffKey, staffKey + ".state"}})
@@ -375,10 +375,10 @@ func seedTemplate(ctx context.Context, conn *substrate.Conn, adminKey, requestSe
 		map[string]any{"family": family, "templateId": templateID, "presentation": presentation}, nil)
 	submitOp(ctx, conn, adminKey, "WireAvailableAt", "serviceLocation",
 		map[string]any{"service": tplKey, "location": buildingKey},
-		&processor.ContextHint{Reads: []string{tplKey, buildingKey}})
+		wireHint(tplKey, "availableAt", buildingKey))
 	submitOp(ctx, conn, adminKey, "WirePermitsOperation", "serviceLocation",
 		map[string]any{"service": tplKey, "operation": requestServiceMeta},
-		&processor.ContextHint{Reads: []string{tplKey, requestServiceMeta}})
+		wireHint(tplKey, "permitsOperation", requestServiceMeta))
 }
 
 // seedClinicTemplate mints the clinic "book an appointment" service
@@ -407,22 +407,22 @@ func seedClinicTemplate(ctx context.Context, conn *substrate.Conn, adminKey stri
 			}}, nil)
 	}
 
-	availableAtLnk := "lnk.service." + clinicTplID + ".availableAt." + strings.TrimPrefix(buildingKey, "vtx.")
+	availableAtLnk := linkKey(clinicTplKey, "availableAt", buildingKey)
 	if !alive(ctx, conn, availableAtLnk) {
 		submitOp(ctx, conn, adminKey, "WireAvailableAt", "serviceLocation",
 			map[string]any{"service": clinicTplKey, "location": buildingKey},
-			&processor.ContextHint{Reads: []string{clinicTplKey, buildingKey}})
+			wireHint(clinicTplKey, "availableAt", buildingKey))
 	}
 
 	for _, opType := range []string{"CreateAppointment", "RescheduleAppointment", "SetAppointmentStatus"} {
 		opMeta := findOpMetaByType(ctx, conn, opType)
-		permitsLnk := "lnk.service." + clinicTplID + ".permitsOperation." + strings.TrimPrefix(opMeta, "vtx.")
+		permitsLnk := linkKey(clinicTplKey, "permitsOperation", opMeta)
 		if alive(ctx, conn, permitsLnk) {
 			continue
 		}
 		submitOp(ctx, conn, adminKey, "WirePermitsOperation", "serviceLocation",
 			map[string]any{"service": clinicTplKey, "operation": opMeta},
-			&processor.ContextHint{Reads: []string{clinicTplKey, opMeta}})
+			wireHint(clinicTplKey, "permitsOperation", opMeta))
 	}
 }
 
@@ -446,22 +446,22 @@ func seedWellnessTemplate(ctx context.Context, conn *substrate.Conn, adminKey st
 			}}, nil)
 	}
 
-	availableAtLnk := "lnk.service." + wellnessTplID + ".availableAt." + strings.TrimPrefix(buildingKey, "vtx.")
+	availableAtLnk := linkKey(wellnessTplKey, "availableAt", buildingKey)
 	if !alive(ctx, conn, availableAtLnk) {
 		submitOp(ctx, conn, adminKey, "WireAvailableAt", "serviceLocation",
 			map[string]any{"service": wellnessTplKey, "location": buildingKey},
-			&processor.ContextHint{Reads: []string{wellnessTplKey, buildingKey}})
+			wireHint(wellnessTplKey, "availableAt", buildingKey))
 	}
 
 	for _, opType := range []string{"CreateBooking", "CancelBooking"} {
 		opMeta := findOpMetaByType(ctx, conn, opType)
-		permitsLnk := "lnk.service." + wellnessTplID + ".permitsOperation." + strings.TrimPrefix(opMeta, "vtx.")
+		permitsLnk := linkKey(wellnessTplKey, "permitsOperation", opMeta)
 		if alive(ctx, conn, permitsLnk) {
 			continue
 		}
 		submitOp(ctx, conn, adminKey, "WirePermitsOperation", "serviceLocation",
 			map[string]any{"service": wellnessTplKey, "operation": opMeta},
-			&processor.ContextHint{Reads: []string{wellnessTplKey, opMeta}})
+			wireHint(wellnessTplKey, "permitsOperation", opMeta))
 	}
 }
 
@@ -485,22 +485,22 @@ func seedCafeTemplate(ctx context.Context, conn *substrate.Conn, adminKey string
 			}}, nil)
 	}
 
-	availableAtLnk := "lnk.service." + cafeTplID + ".availableAt." + strings.TrimPrefix(buildingKey, "vtx.")
+	availableAtLnk := linkKey(cafeTplKey, "availableAt", buildingKey)
 	if !alive(ctx, conn, availableAtLnk) {
 		submitOp(ctx, conn, adminKey, "WireAvailableAt", "serviceLocation",
 			map[string]any{"service": cafeTplKey, "location": buildingKey},
-			&processor.ContextHint{Reads: []string{cafeTplKey, buildingKey}})
+			wireHint(cafeTplKey, "availableAt", buildingKey))
 	}
 
 	for _, opType := range []string{"OpenTab", "Settle"} {
 		opMeta := findOpMetaByType(ctx, conn, opType)
-		permitsLnk := "lnk.service." + cafeTplID + ".permitsOperation." + strings.TrimPrefix(opMeta, "vtx.")
+		permitsLnk := linkKey(cafeTplKey, "permitsOperation", opMeta)
 		if alive(ctx, conn, permitsLnk) {
 			continue
 		}
 		submitOp(ctx, conn, adminKey, "WirePermitsOperation", "serviceLocation",
 			map[string]any{"service": cafeTplKey, "operation": opMeta},
-			&processor.ContextHint{Reads: []string{cafeTplKey, opMeta}})
+			wireHint(cafeTplKey, "permitsOperation", opMeta))
 	}
 }
 
@@ -694,6 +694,25 @@ func findOpMetaByType(ctx context.Context, conn *substrate.Conn, operationType s
 		os.Exit(1)
 	}
 	return opMetaKey
+}
+
+// linkKey builds the deterministic 6-segment link key for "source <relation>
+// target" from the two vtx.<type>.<id> endpoint keys (Contract #1 §1.1).
+func linkKey(source, relation, target string) string {
+	return "lnk." + strings.TrimPrefix(source, "vtx.") + "." + relation + "." + strings.TrimPrefix(target, "vtx.")
+}
+
+// wireHint is the ContextHint every service-location Wire* op needs: both
+// endpoints as required reads, plus the deterministic link key as an OPTIONAL
+// read. The link key is absent on a first wire and tombstoned after an
+// Unwire*, so it cannot be a required read — but without it declared the
+// script cannot see a tombstone, emits a create, and the re-wire fails
+// RevisionConflict.
+func wireHint(source, relation, target string) *processor.ContextHint {
+	return &processor.ContextHint{
+		Reads:         []string{source, target},
+		OptionalReads: []string{linkKey(source, relation, target)},
+	}
 }
 
 func submitOp(ctx context.Context, conn *substrate.Conn, actorKey, operationType, class string, payload map[string]any, hint *processor.ContextHint) *processor.OperationReply {

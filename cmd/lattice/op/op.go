@@ -41,12 +41,13 @@ func NewCommand(natsURL, outputFmt, defaultActor *string) *cobra.Command {
 // newSubmitCommand creates the op submit subcommand.
 func newSubmitCommand(natsURL, outputFmt, defaultActor *string) *cobra.Command {
 	var (
-		lane          string
-		operationType string
-		actor         string
-		payload       string
-		class         string
-		contextReads  string
+		lane                 string
+		operationType        string
+		actor                string
+		payload              string
+		class                string
+		contextReads         string
+		contextOptionalReads string
 	)
 
 	cmd := &cobra.Command{
@@ -96,9 +97,14 @@ and opTrackerKey. On rejection, prints the error code and message.`,
 			if class != "" {
 				env.Class = class
 			}
-			if contextReads != "" {
-				reads := strings.Split(contextReads, ",")
-				env.ContextHint = &processor.ContextHint{Reads: reads}
+			if contextReads != "" || contextOptionalReads != "" {
+				env.ContextHint = &processor.ContextHint{}
+				if contextReads != "" {
+					env.ContextHint.Reads = strings.Split(contextReads, ",")
+				}
+				if contextOptionalReads != "" {
+					env.ContextHint.OptionalReads = strings.Split(contextOptionalReads, ",")
+				}
 			}
 
 			ctx, cancel := context.WithTimeout(context.Background(), opReplyTimeout)
@@ -153,6 +159,7 @@ and opTrackerKey. On rejection, prints the error code and message.`,
 	cmd.Flags().StringVar(&payload, "payload", "", "payload: @file.json for file, - for stdin, or inline JSON")
 	cmd.Flags().StringVar(&class, "class", "", "DDL class hint (optional)")
 	cmd.Flags().StringVar(&contextReads, "context-hint-reads", "", "comma-separated context hint read keys (optional)")
+	cmd.Flags().StringVar(&contextOptionalReads, "context-hint-optional-reads", "", "comma-separated context hint OPTIONAL read keys — absence-tolerant, for read-before-create/revive patterns (optional)")
 	_ = cmd.MarkFlagRequired("operation-type")
 	return cmd
 }

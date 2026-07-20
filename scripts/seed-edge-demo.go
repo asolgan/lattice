@@ -121,7 +121,7 @@ func main() {
 
 	submitOp(ctx, conn, adminKey, "WireResidesIn", "serviceLocation",
 		map[string]any{"identity": tenantKey, "location": unitKey},
-		&processor.ContextHint{Reads: []string{tenantKey, unitKey}})
+		wireHint(tenantKey, "residesIn", unitKey))
 	fmt.Println("==> wired:           tenant residesIn unit")
 
 	// facet-app-ux.md §3.0: "Fire 2's seed identity is always pre-claimed" —
@@ -157,7 +157,7 @@ func main() {
 
 	submitOp(ctx, conn, adminKey, "WireAvailableAt", "serviceLocation",
 		map[string]any{"service": templateKey, "location": buildingKey},
-		&processor.ContextHint{Reads: []string{templateKey, buildingKey}})
+		wireHint(templateKey, "availableAt", buildingKey))
 	fmt.Println("==> wired:           template availableAt building")
 
 	// --- RequestService op-meta lookup + permitsOperation wiring --------------
@@ -167,7 +167,7 @@ func main() {
 
 	submitOp(ctx, conn, adminKey, "WirePermitsOperation", "serviceLocation",
 		map[string]any{"service": templateKey, "operation": opMetaKey},
-		&processor.ContextHint{Reads: []string{templateKey, opMetaKey}})
+		wireHint(templateKey, "permitsOperation", opMetaKey))
 	fmt.Println("==> wired:           template permitsOperation RequestService")
 
 	fmt.Println()
@@ -222,6 +222,25 @@ func findRequestServiceOpMeta(ctx context.Context, conn *substrate.Conn) string 
 // submitOp submits an operation as actorKey over NATS (the bootstrap-actor
 // setup path, not the Gateway) and fatals on a transport error, mirroring
 // verify-real-actor-write-auth.go's helper of the same name.
+// linkKey builds the deterministic 6-segment link key for "source <relation>
+// target" from the two vtx.<type>.<id> endpoint keys (Contract #1 §1.1).
+func linkKey(source, relation, target string) string {
+	return "lnk." + strings.TrimPrefix(source, "vtx.") + "." + relation + "." + strings.TrimPrefix(target, "vtx.")
+}
+
+// wireHint is the ContextHint every service-location Wire* op needs: both
+// endpoints as required reads, plus the deterministic link key as an OPTIONAL
+// read. The link key is absent on a first wire and tombstoned after an
+// Unwire*, so it cannot be a required read — but without it declared the
+// script cannot see a tombstone, emits a create, and the re-wire fails
+// RevisionConflict.
+func wireHint(source, relation, target string) *processor.ContextHint {
+	return &processor.ContextHint{
+		Reads:         []string{source, target},
+		OptionalReads: []string{linkKey(source, relation, target)},
+	}
+}
+
 func submitOp(ctx context.Context, conn *substrate.Conn, actorKey, operationType, class string, payload map[string]any, hint *processor.ContextHint) *processor.OperationReply {
 	return submitOpWithAuthContext(ctx, conn, actorKey, operationType, class, payload, hint, nil)
 }

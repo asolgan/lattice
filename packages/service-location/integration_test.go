@@ -183,8 +183,32 @@ func seedOpMeta(t *testing.T, ctx context.Context, conn *substrate.Conn, id, opT
 	return key
 }
 
+// linkKeyOf builds the deterministic 6-segment link key for "source <relation>
+// target" from the two vtx.<type>.<id> endpoint keys (Contract #1 §1.1).
+func linkKeyOf(source, relation, target string) string {
+	return "lnk." + strings.TrimPrefix(source, "vtx.") + "." + relation + "." + strings.TrimPrefix(target, "vtx.")
+}
+
+// wireHint is the read declaration every Wire* op requires (ddls.go): both
+// endpoints fail-closed, plus the deterministic link key as an OPTIONAL read.
+// It is optional because a first wire legitimately finds it absent — and it is
+// required because without it the script cannot tell a tombstoned link from an
+// absent one, so a re-wire after an Unwire* emits a create over a live key.
+func wireHint(source, relation, target string) *processor.ContextHint {
+	return &processor.ContextHint{
+		Reads:         []string{source, target},
+		OptionalReads: []string{linkKeyOf(source, relation, target)},
+	}
+}
+
 func submit(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer,
 	label, op string, payload map[string]any, reads []string, outcome processor.MessageOutcome) {
+	t.Helper()
+	submitHint(t, ctx, conn, cp, cons, label, op, payload, &processor.ContextHint{Reads: reads}, outcome)
+}
+
+func submitHint(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *processor.CommitPath, cons jetstream.Consumer,
+	label, op string, payload map[string]any, hint *processor.ContextHint, outcome processor.MessageOutcome) {
 	t.Helper()
 	pb, _ := json.Marshal(payload)
 	env := &processor.OperationEnvelope{
@@ -195,7 +219,7 @@ func submit(t *testing.T, ctx context.Context, conn *substrate.Conn, cp *process
 		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
 		Class:         "serviceLocation",
 		Payload:       json.RawMessage(pb),
-		ContextHint:   &processor.ContextHint{Reads: reads},
+		ContextHint:   hint,
 	}
 	testutil.PublishOp(t, conn, env)
 	testutil.DriveOne(t, ctx, cp, cons, outcome)
@@ -215,9 +239,9 @@ func TestSL_ResidesIn_WireUnwire(t *testing.T) {
 	unitKey := seedLocation(t, ctx, conn, "unit", unitID)
 
 	lnk := "lnk.identity." + idID + ".residesIn.unit." + unitID
-	submit(t, ctx, conn, cp, cons, "slResWire1", "WireResidesIn",
+	submitHint(t, ctx, conn, cp, cons, "slResWire1", "WireResidesIn",
 		map[string]any{"identity": idKey, "location": unitKey},
-		[]string{idKey, unitKey}, processor.OutcomeAccepted)
+		wireHint(idKey, "residesIn", unitKey), processor.OutcomeAccepted)
 
 	doc := readDoc(t, ctx, conn, lnk)
 	if doc["class"] != "residesIn" {
@@ -252,9 +276,9 @@ func TestSL_WorksAt_WireUnwire(t *testing.T) {
 	bldgKey := seedLocation(t, ctx, conn, "building", bldgID)
 
 	lnk := "lnk.identity." + idID + ".worksAt.building." + bldgID
-	submit(t, ctx, conn, cp, cons, "slWorkWire1", "WireWorksAt",
+	submitHint(t, ctx, conn, cp, cons, "slWorkWire1", "WireWorksAt",
 		map[string]any{"identity": idKey, "location": bldgKey},
-		[]string{idKey, bldgKey}, processor.OutcomeAccepted)
+		wireHint(idKey, "worksAt", bldgKey), processor.OutcomeAccepted)
 
 	doc := readDoc(t, ctx, conn, lnk)
 	if doc["class"] != "worksAt" {
@@ -275,6 +299,81 @@ func TestSL_WorksAt_WireUnwire(t *testing.T) {
 	}
 }
 
+// TestSL_ResidesIn_Rewire proves a tombstoned residesIn link can be REVIVED:
+// wire → unwire → re-wire the same endpoints. The re-wire must find the
+// tombstone (the link key is an optional read) and emit an update; a create
+// would assert revision 0 against a key already at a later revision and fail
+// RevisionConflict, which is what stranded a resident who moved out — they
+// could never be moved back into the same unit.
+func TestSL_ResidesIn_Rewire(t *testing.T) {
+	ctx, conn := setupSLEnv(t)
+	cp, cons := newSLPipeline(t, ctx, conn, "resrewire")
+
+	idID := "SLremoveinQRHJKMNPQR"
+	idKey := "vtx.identity." + idID
+	seedVertex(t, ctx, conn, idKey, "identity", map[string]any{"state": "claimed"})
+	unitID := "SLrewireunQRHJKMNPQR"
+	unitKey := seedLocation(t, ctx, conn, "unit", unitID)
+
+	lnk := "lnk.identity." + idID + ".residesIn.unit." + unitID
+	submitHint(t, ctx, conn, cp, cons, "slResRewire1", "WireResidesIn",
+		map[string]any{"identity": idKey, "location": unitKey},
+		wireHint(idKey, "residesIn", unitKey), processor.OutcomeAccepted)
+	submit(t, ctx, conn, cp, cons, "slResRewire2", "UnwireResidesIn",
+		map[string]any{"linkKey": lnk}, []string{lnk}, processor.OutcomeAccepted)
+	submitHint(t, ctx, conn, cp, cons, "slResRewire3", "WireResidesIn",
+		map[string]any{"identity": idKey, "location": unitKey},
+		wireHint(idKey, "residesIn", unitKey), processor.OutcomeAccepted)
+
+	assertLinkRevived(t, ctx, conn, lnk, "residesIn", idKey, unitKey)
+}
+
+// TestSL_WorksAt_Rewire is the worksAt half of the same revive vector — the
+// case that stranded the showcase staff persona: their workplace link was
+// unwired while testing and no WireWorksAt could re-establish it.
+func TestSL_WorksAt_Rewire(t *testing.T) {
+	ctx, conn := setupSLEnv(t)
+	cp, cons := newSLPipeline(t, ctx, conn, "workrewire")
+
+	idID := "SLrewirestQRHJKMNPQR"
+	idKey := "vtx.identity." + idID
+	seedVertex(t, ctx, conn, idKey, "identity", map[string]any{"state": "claimed"})
+	bldgID := "SLrewirebdQRHJKMNPQR"
+	bldgKey := seedLocation(t, ctx, conn, "building", bldgID)
+
+	lnk := "lnk.identity." + idID + ".worksAt.building." + bldgID
+	submitHint(t, ctx, conn, cp, cons, "slWorkRewire1", "WireWorksAt",
+		map[string]any{"identity": idKey, "location": bldgKey},
+		wireHint(idKey, "worksAt", bldgKey), processor.OutcomeAccepted)
+	submit(t, ctx, conn, cp, cons, "slWorkRewire2", "UnwireWorksAt",
+		map[string]any{"linkKey": lnk}, []string{lnk}, processor.OutcomeAccepted)
+	submitHint(t, ctx, conn, cp, cons, "slWorkRewire3", "WireWorksAt",
+		map[string]any{"identity": idKey, "location": bldgKey},
+		wireHint(idKey, "worksAt", bldgKey), processor.OutcomeAccepted)
+
+	assertLinkRevived(t, ctx, conn, lnk, "worksAt", idKey, bldgKey)
+}
+
+// assertLinkRevived asserts a re-wired link is alive again and still carries
+// its full body — the revive writes the whole document, so a partial one would
+// leave the lens walking an edge with no endpoints.
+func assertLinkRevived(t *testing.T, ctx context.Context, conn *substrate.Conn, lnk, class, source, target string) {
+	t.Helper()
+	doc := readDoc(t, ctx, conn, lnk)
+	if del, _ := doc["isDeleted"].(bool); del {
+		t.Fatalf("%s link should be alive after re-wire; got isDeleted=true", class)
+	}
+	if doc["class"] != class {
+		t.Fatalf("re-wired link class = %v, want %s", doc["class"], class)
+	}
+	if got, _ := doc["sourceVertex"].(string); got != source {
+		t.Fatalf("re-wired sourceVertex = %q, want %q", got, source)
+	}
+	if got, _ := doc["targetVertex"].(string); got != target {
+		t.Fatalf("re-wired targetVertex = %q, want %q", got, target)
+	}
+}
+
 // TestSL_WorksAt_RejectsNonLocation proves worksAt carries the SAME
 // location-class guard as residesIn: a workplace that is alive but not
 // class=location is rejected. Without this the staff spine could be anchored on
@@ -291,9 +390,9 @@ func TestSL_WorksAt_RejectsNonLocation(t *testing.T) {
 	notLocKey := "vtx.building." + notLocID
 	seedVertex(t, ctx, conn, notLocKey, "service", nil)
 
-	submit(t, ctx, conn, cp, cons, "slWorkNonLoc", "WireWorksAt",
+	submitHint(t, ctx, conn, cp, cons, "slWorkNonLoc", "WireWorksAt",
 		map[string]any{"identity": idKey, "location": notLocKey},
-		[]string{idKey, notLocKey}, processor.OutcomeRejected)
+		wireHint(idKey, "worksAt", notLocKey), processor.OutcomeRejected)
 }
 
 // TestSL_WorksAt_Multiple proves worksAt cardinality is multiple: one staff
@@ -308,12 +407,12 @@ func TestSL_WorksAt_Multiple(t *testing.T) {
 	bldgAKey := seedLocation(t, ctx, conn, "building", "SLmumtiwaQRHJKMNPQRS")
 	bldgBKey := seedLocation(t, ctx, conn, "building", "SLmumtiwbQRHJKMNPQRS")
 
-	submit(t, ctx, conn, cp, cons, "slWorkMultiA", "WireWorksAt",
+	submitHint(t, ctx, conn, cp, cons, "slWorkMultiA", "WireWorksAt",
 		map[string]any{"identity": idKey, "location": bldgAKey},
-		[]string{idKey, bldgAKey}, processor.OutcomeAccepted)
-	submit(t, ctx, conn, cp, cons, "slWorkMultiB", "WireWorksAt",
+		wireHint(idKey, "worksAt", bldgAKey), processor.OutcomeAccepted)
+	submitHint(t, ctx, conn, cp, cons, "slWorkMultiB", "WireWorksAt",
 		map[string]any{"identity": idKey, "location": bldgBKey},
-		[]string{idKey, bldgBKey}, processor.OutcomeAccepted)
+		wireHint(idKey, "worksAt", bldgBKey), processor.OutcomeAccepted)
 
 	for _, loc := range []string{bldgAKey, bldgBKey} {
 		locID := strings.TrimPrefix(loc, "vtx.building.")
@@ -337,9 +436,9 @@ func TestSL_AvailableAt_Wire(t *testing.T) {
 	bldgKey := seedLocation(t, ctx, conn, "building", bldgID)
 
 	lnk := "lnk.service." + tplID + ".availableAt.building." + bldgID
-	submit(t, ctx, conn, cp, cons, "slAvail1", "WireAvailableAt",
+	submitHint(t, ctx, conn, cp, cons, "slAvail1", "WireAvailableAt",
 		map[string]any{"service": tplKey, "location": bldgKey},
-		[]string{tplKey, bldgKey}, processor.OutcomeAccepted)
+		wireHint(tplKey, "availableAt", bldgKey), processor.OutcomeAccepted)
 
 	doc := readDoc(t, ctx, conn, lnk)
 	if doc["class"] != "availableAt" {
@@ -365,9 +464,9 @@ func TestSL_UnavailableAt_Wire(t *testing.T) {
 	penthKey := seedLocation(t, ctx, conn, "unit", penthID)
 
 	lnk := "lnk.service." + tplID + ".unavailableAt.unit." + penthID
-	submit(t, ctx, conn, cp, cons, "slUnav1", "WireUnavailableAt",
+	submitHint(t, ctx, conn, cp, cons, "slUnav1", "WireUnavailableAt",
 		map[string]any{"service": tplKey, "location": penthKey},
-		[]string{tplKey, penthKey}, processor.OutcomeAccepted)
+		wireHint(tplKey, "unavailableAt", penthKey), processor.OutcomeAccepted)
 
 	doc := readDoc(t, ctx, conn, lnk)
 	if doc["class"] != "unavailableAt" {
@@ -389,9 +488,9 @@ func TestSL_PermitsOperation_Wire(t *testing.T) {
 	opKey := seedOpMeta(t, ctx, conn, opID, "BookLaundry")
 
 	lnk := "lnk.service." + svcID + ".permitsOperation.meta." + opID
-	submit(t, ctx, conn, cp, cons, "slPerm1", "WirePermitsOperation",
+	submitHint(t, ctx, conn, cp, cons, "slPerm1", "WirePermitsOperation",
 		map[string]any{"service": svcKey, "operation": opKey},
-		[]string{svcKey, opKey}, processor.OutcomeAccepted)
+		wireHint(svcKey, "permitsOperation", opKey), processor.OutcomeAccepted)
 
 	doc := readDoc(t, ctx, conn, lnk)
 	if doc["class"] != "permitsOperation" {
@@ -419,9 +518,9 @@ func TestSL_AvailableAt_RejectsInstance(t *testing.T) {
 	bldgID := "SLinstbmdgQRHJKMNPQR"
 	bldgKey := seedLocation(t, ctx, conn, "building", bldgID)
 
-	submit(t, ctx, conn, cp, cons, "slAvailInst", "WireAvailableAt",
+	submitHint(t, ctx, conn, cp, cons, "slAvailInst", "WireAvailableAt",
 		map[string]any{"service": instKey, "location": bldgKey},
-		[]string{instKey, bldgKey}, processor.OutcomeRejected)
+		wireHint(instKey, "availableAt", bldgKey), processor.OutcomeRejected)
 
 	lnk := "lnk.service." + instID + ".availableAt.building." + bldgID
 	if _, err := conn.KVGet(ctx, testutil.HarnessCoreBucket, lnk); err == nil {
@@ -444,9 +543,9 @@ func TestSL_ResidesIn_RejectsNonLocation(t *testing.T) {
 	notLocKey := "vtx.unit." + notLocID
 	seedVertex(t, ctx, conn, notLocKey, "service", nil)
 
-	submit(t, ctx, conn, cp, cons, "slResNonLoc", "WireResidesIn",
+	submitHint(t, ctx, conn, cp, cons, "slResNonLoc", "WireResidesIn",
 		map[string]any{"identity": idKey, "location": notLocKey},
-		[]string{idKey, notLocKey}, processor.OutcomeRejected)
+		wireHint(idKey, "residesIn", notLocKey), processor.OutcomeRejected)
 }
 
 // TestSL_PermitsOperation_RejectsNonOpMeta proves the op-meta guard: a
@@ -463,9 +562,9 @@ func TestSL_PermitsOperation_RejectsNonOpMeta(t *testing.T) {
 	badOpKey := "vtx.meta." + badOpID
 	seedVertex(t, ctx, conn, badOpKey, "meta", map[string]any{"canonicalName": "someLens"})
 
-	submit(t, ctx, conn, cp, cons, "slPermNoOp", "WirePermitsOperation",
+	submitHint(t, ctx, conn, cp, cons, "slPermNoOp", "WirePermitsOperation",
 		map[string]any{"service": svcKey, "operation": badOpKey},
-		[]string{svcKey, badOpKey}, processor.OutcomeRejected)
+		wireHint(svcKey, "permitsOperation", badOpKey), processor.OutcomeRejected)
 }
 
 // TestSL_ResidesIn_Multiple proves residesIn cardinality is multiple: an
@@ -480,12 +579,12 @@ func TestSL_ResidesIn_Multiple(t *testing.T) {
 	unitAKey := seedLocation(t, ctx, conn, "unit", "SLmumtiuaQRHJKMNPQRS")
 	unitBKey := seedLocation(t, ctx, conn, "unit", "SLmumtiubQRHJKMNPQRS")
 
-	submit(t, ctx, conn, cp, cons, "slMultiA", "WireResidesIn",
+	submitHint(t, ctx, conn, cp, cons, "slMultiA", "WireResidesIn",
 		map[string]any{"identity": idKey, "location": unitAKey},
-		[]string{idKey, unitAKey}, processor.OutcomeAccepted)
-	submit(t, ctx, conn, cp, cons, "slMultiB", "WireResidesIn",
+		wireHint(idKey, "residesIn", unitAKey), processor.OutcomeAccepted)
+	submitHint(t, ctx, conn, cp, cons, "slMultiB", "WireResidesIn",
 		map[string]any{"identity": idKey, "location": unitBKey},
-		[]string{idKey, unitBKey}, processor.OutcomeAccepted)
+		wireHint(idKey, "residesIn", unitBKey), processor.OutcomeAccepted)
 
 	for _, loc := range []string{unitAKey, unitBKey} {
 		locID := strings.TrimPrefix(loc, "vtx.unit.")
