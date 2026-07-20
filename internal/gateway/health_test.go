@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/asolgan/lattice/internal/gateway/revocation"
+	"github.com/asolgan/lattice/internal/healthkv"
 	"github.com/asolgan/lattice/internal/jsstore"
 	"github.com/asolgan/lattice/internal/substrate"
 )
@@ -32,9 +33,43 @@ func newHealthTestConn(t *testing.T) (*substrate.Conn, context.Context) {
 	t.Cleanup(cancel)
 
 	js := conn.JetStream()
-	_, err = js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{Bucket: "health-kv"})
+	// TTL-capable, mirroring how bootstrap provisions health-kv (PlatformBuckets
+	// PerKeyTTL ⇒ LimitMarkerTTL, primordial.go): the heartbeat is written with
+	// a per-key TTL, so a fixture bucket without it would reject every write for
+	// a reason the real bucket never has.
+	_, err = js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
+		Bucket:         "health-kv",
+		LimitMarkerTTL: time.Second,
+	})
 	require.NoError(t, err)
 	return conn, ctx
+}
+
+// TestHeartbeater_EmitArmsHeartbeatTTL pins the heartbeat key as TTL-armed on
+// every write, matching every other Contract #5 §5.6 emitter. An untimed write
+// leaks one permanent health.gateway.<instance> key per restart, and the health
+// rollup counts each leaked key as a stale component — enough of them and
+// overall platform health can never read green again.
+func TestHeartbeater_EmitArmsHeartbeatTTL(t *testing.T) {
+	conn, ctx := newHealthTestConn(t)
+
+	hb := NewHeartbeater(conn, "health-kv", "gw-ttl", &Metrics{}, nil)
+	hb.emit(ctx, "healthy")
+
+	// The write lands (a TTL-less bucket would have rejected it outright)...
+	_, err := conn.KVGet(ctx, "health-kv", "health.gateway.gw-ttl")
+	require.NoError(t, err)
+
+	// ...and the key carries the §5.6 interval-derived TTL, not an unbounded one.
+	require.Equal(t, DefaultHeartbeatEvery*healthkv.DefaultTTLMultiplier, hb.heartbeatTTL(),
+		"heartbeat TTL must follow the shared interval × DefaultTTLMultiplier convention")
+
+	stream, err := conn.JetStream().Stream(ctx, "KV_health-kv")
+	require.NoError(t, err)
+	info, err := stream.Info(ctx)
+	require.NoError(t, err)
+	require.True(t, info.Config.AllowMsgTTL,
+		"health-kv must be TTL-capable for the heartbeat to age out (bootstrap provisions it so)")
 }
 
 func TestHeartbeater_EmitWritesContract5Doc(t *testing.T) {

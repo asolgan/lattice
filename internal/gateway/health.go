@@ -12,6 +12,7 @@ import (
 
 	"github.com/asolgan/lattice/internal/gateway/auth"
 	"github.com/asolgan/lattice/internal/gateway/revocation"
+	"github.com/asolgan/lattice/internal/healthkv"
 	"github.com/asolgan/lattice/internal/substrate"
 )
 
@@ -20,6 +21,14 @@ const healthVersion = "0.1.0"
 
 // DefaultHeartbeatEvery is the Contract #5 §5.6 / NFR-O1 heartbeat cadence floor.
 const DefaultHeartbeatEvery = 10 * time.Second
+
+// heartbeatTTL is the per-write NATS-TTL the heartbeat key is re-armed with:
+// the Contract #5 §5.6 interval-derived convention every other emitter already
+// shares (healthkv.DefaultTTLMultiplier), so a Gateway instance that stops
+// heartbeating ages out of Health KV instead of lingering as a stale component.
+func (h *Heartbeater) heartbeatTTL() time.Duration {
+	return h.every * healthkv.DefaultTTLMultiplier
+}
 
 const (
 	severityError   = "error"
@@ -350,7 +359,13 @@ func (h *Heartbeater) emit(ctx context.Context, status string) {
 		h.logger.Error("gateway: marshal heartbeat", "error", err)
 		return
 	}
-	if _, err := h.conn.KVPut(ctx, h.bucket, doc.Key, raw); err != nil {
+	// TTL-armed like every other emitter (healthkv.Reporter, the Weaver
+	// heartbeater): the Contract #5 §5.6 derived TTL = interval ×
+	// DefaultTTLMultiplier, re-armed on each write. An untimed KVPut leaks one
+	// permanent health.gateway.<instance> key per restart, and the rollup counts
+	// every leaked key as a stale component — enough of them and overall health
+	// can never read green again.
+	if _, err := h.conn.KVPutWithTTL(ctx, h.bucket, doc.Key, raw, h.heartbeatTTL()); err != nil {
 		h.logger.Warn("gateway: heartbeat write failed", "error", err)
 	}
 }
