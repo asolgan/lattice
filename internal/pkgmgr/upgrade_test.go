@@ -123,9 +123,9 @@ func TestUpgrade_ReAddsRemovedEntity(t *testing.T) {
 	if del, _ := revived["isDeleted"].(bool); del {
 		t.Fatalf("%s should be live again after the re-add", permKey)
 	}
-	// The entity must come back whole. A tombstone is written stripped, so a
-	// revive that only flipped isDeleted would leave a bodyless permission that
-	// every consumer reads as malformed.
+	// The entity must come back whole — a revive that only flipped isDeleted
+	// without restoring the body would leave a bodyless permission that every
+	// consumer reads as malformed.
 	data, ok := revived["data"].(map[string]any)
 	if !ok || data["operationType"] != "SampleOp" {
 		t.Fatalf("revived permission lost its body: %+v", revived)

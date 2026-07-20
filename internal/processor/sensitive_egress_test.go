@@ -608,3 +608,81 @@ func TestEgressReads_MACMintFailure_HydrationFailsClosed(t *testing.T) {
 		t.Fatalf("expected Hydrate to fail closed when Vault.MAC errors, got nil")
 	}
 }
+
+// seedDeletedCiphertextAspect writes a tombstoned sensitive aspect that still
+// carries its at-rest ciphertext — the shape step 8 produces, since a
+// tombstone preserves the prior document body and flips only isDeleted.
+func seedDeletedCiphertextAspect(t *testing.T, ctx context.Context, conn *substrate.Conn, key, class string) {
+	t.Helper()
+	doc := []byte(`{"class":"` + class + `","isDeleted":true,"data":{"ct":"Y2lwaGVydGV4dA==","nonce":"bm9uY2U=","keyId":"k1"}}`)
+	if _, err := conn.KVPut(ctx, testCoreBucket, key, doc); err != nil {
+		t.Fatalf("seed deleted aspect %s: %v", key, err)
+	}
+}
+
+// TestEgressReads_DeletedSensitiveKey_HydrationFailsClosed: a tombstoned
+// sensitive aspect must never be minted into a $sensitiveRef — the bridge
+// would unwrap it at the egress boundary and hand a deleted subject's PII to
+// a third party. Same rule as the Refractor's soft-deleted piiKey guard
+// (internal/refractor/pipeline/secure.go).
+func TestEgressReads_DeletedSensitiveKey_HydrationFailsClosed(t *testing.T) {
+	t.Parallel()
+	ctx, conn, _, _, _ := setupTestPipeline(t)
+	h := newEgressTestHydrator(t, ctx, conn, nil)
+
+	aspectKey := "vtx.identity." + testNanoID2 + ".ssn"
+	seedDeletedCiphertextAspect(t, ctx, conn, aspectKey, "ssn")
+
+	env := newTestEnvelope(testNanoID1)
+	env.ContextHint = &ContextHint{EgressReads: []string{aspectKey}}
+
+	if _, err := h.Hydrate(ctx, env); err == nil {
+		t.Fatalf("expected Hydrate to fail closed on a deleted sensitive aspect, got nil")
+	}
+}
+
+// TestReads_DeletedSensitiveKey_HydrationFailsClosed: the plaintext
+// disposition is guarded identically — a tombstoned sensitive aspect never
+// decrypts into a script's context. The guard precedes the nil-Vault early
+// return, so it holds even for a pipeline that never wired a Vault.
+func TestReads_DeletedSensitiveKey_HydrationFailsClosed(t *testing.T) {
+	t.Parallel()
+	ctx, conn, _, _, _ := setupTestPipeline(t)
+	h := newEgressTestHydrator(t, ctx, conn, nil)
+
+	aspectKey := "vtx.identity." + testNanoID2 + ".ssn"
+	seedDeletedCiphertextAspect(t, ctx, conn, aspectKey, "ssn")
+
+	env := newTestEnvelope(testNanoID1)
+	env.ContextHint = &ContextHint{Reads: []string{aspectKey}}
+
+	if _, err := h.Hydrate(ctx, env); err == nil {
+		t.Fatalf("expected Hydrate to fail closed on a deleted sensitive aspect, got nil")
+	}
+}
+
+// TestReads_DeletedNonSensitiveKey_HydratesNormally: the guard is scoped to
+// sensitive classes — an ordinary tombstoned aspect still hydrates, so a
+// script can read-before-create against it.
+func TestReads_DeletedNonSensitiveKey_HydratesNormally(t *testing.T) {
+	t.Parallel()
+	ctx, conn, _, _, _ := setupTestPipeline(t)
+	h := newEgressTestHydrator(t, ctx, conn, nil)
+
+	aspectKey := "vtx.identity." + testNanoID2 + ".nickname"
+	doc := []byte(`{"class":"nickname","isDeleted":true,"data":{"value":"Andy"}}`)
+	if _, err := conn.KVPut(ctx, testCoreBucket, aspectKey, doc); err != nil {
+		t.Fatalf("seed nickname aspect: %v", err)
+	}
+
+	env := newTestEnvelope(testNanoID1)
+	env.ContextHint = &ContextHint{Reads: []string{aspectKey}}
+
+	state, err := h.Hydrate(ctx, env)
+	if err != nil {
+		t.Fatalf("Hydrate: %v", err)
+	}
+	if got := state.Context.Hydrated[aspectKey]; !got.IsDeleted || got.Data["value"] != "Andy" {
+		t.Fatalf("doc = %+v, want the tombstoned non-sensitive aspect unchanged", got)
+	}
+}

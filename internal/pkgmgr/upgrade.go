@@ -36,16 +36,6 @@ type UpgradeResult struct {
 	Reason      string
 }
 
-// preservedProvenanceFields are the immutable create-provenance fields an
-// upgrade carries forward onto an update mutation. The Processor's step-8
-// commit rebuilds an updated entity's value from the supplied document and
-// re-stamps the lastModified* triplet, but does NOT preserve createdAt/
-// createdBy/createdByOp — so an in-place body change would otherwise reset a
-// surviving entity's creation provenance (Contract #1 §1.3, createdAt is
-// immutable). The client reads the committed entry for the body diff anyway,
-// so it carries these forward at no extra read.
-var preservedProvenanceFields = []string{"createdAt", "createdBy", "createdByOp"}
-
 // Upgrade applies an in-place version upgrade of an already-installed package
 // (Contract #8 §8.6). It rebuilds the package manifest on version-independent
 // keys (§8.1), diffs the new key set + bodies against the installed package's
@@ -236,10 +226,14 @@ func (i *Installer) diffManifest(ctx context.Context, oldKeys []string, newOps [
 				continue
 			}
 			// Re-adding an entity whose key a prior removal tombstoned. Revive it
-			// under the same per-key OCC every other update carries. No provenance
-			// is grafted: a tombstone is written stripped (isDeleted + the
-			// lastModified triplet, no createdAt), so the revived entity honestly
-			// carries this install's creation stamp rather than a resurrected one.
+			// under the same per-key OCC every other update carries. The revived
+			// entity keeps its original creation provenance: an entity's identity
+			// is its key, so the same key coming back is the same entity, and
+			// Contract #1 §1.3 makes createdAt immutable for its whole life. The
+			// carry is the Processor's to make — step 8 sources the creation
+			// triplet from the stored document for every update and tombstone,
+			// and drops whatever the mutation supplied — so this branch neither
+			// needs to graft it nor could override it.
 			out = append(out, installMutation{Op: "update", Key: op.Key, Document: op.Document, ExpectedRevision: &rev})
 			sum.revived++
 			continue
@@ -254,13 +248,7 @@ func (i *Installer) diffManifest(ctx context.Context, oldKeys []string, newOps [
 		if logicalDocEqual(op.Document, committed) {
 			continue // body-equality skip — no update needed
 		}
-		updateDoc := cloneDoc(op.Document)
-		for _, f := range preservedProvenanceFields {
-			if v, ok := committed[f]; ok {
-				updateDoc[f] = v
-			}
-		}
-		out = append(out, installMutation{Op: "update", Key: op.Key, Document: updateDoc, ExpectedRevision: &rev})
+		out = append(out, installMutation{Op: "update", Key: op.Key, Document: op.Document, ExpectedRevision: &rev})
 		sum.updated++
 	}
 
@@ -378,14 +366,4 @@ func jsonEqual(a, b any) bool {
 		return false
 	}
 	return bytes.Equal(ab, bb)
-}
-
-// cloneDoc returns a shallow copy of a logical document map so an upgrade can
-// graft carried-forward provenance onto it without mutating the rebuilt batch.
-func cloneDoc(d map[string]any) map[string]any {
-	out := make(map[string]any, len(d)+len(preservedProvenanceFields))
-	for k, v := range d {
-		out[k] = v
-	}
-	return out
 }

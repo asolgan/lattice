@@ -51,6 +51,16 @@ func decryptSensitiveDoc(ctx context.Context, conn *substrate.Conn, bucket strin
 	if !ok || !ref.Sensitive {
 		return nil
 	}
+	if doc.IsDeleted {
+		// A soft-deleted sensitive aspect must never yield plaintext, and must
+		// never be handed onward as an egress ref the bridge can open — the
+		// same rule the Refractor enforces on a soft-deleted piiKey
+		// (internal/refractor/pipeline/secure.go). The tombstone retains the
+		// aspect's ciphertext (step 8 preserves the prior document), so the
+		// deletion flag is the only thing standing between a dead aspect and a
+		// live decrypt: fail closed here rather than relying on an erased body.
+		return fmt.Errorf("read deleted sensitive aspect %s", doc.Key)
+	}
 	vertexKey, vertexType, _, _, ok := substrate.ParseAspectKey(doc.Key)
 	if !ok || vertexType != "identity" {
 		// A malformed or non-identity-anchored sensitive aspect should never
