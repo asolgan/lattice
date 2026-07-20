@@ -441,10 +441,12 @@ refresh time, then commits a `CreateRole` op on that just-declared class.)
 **Uninstall** reads the package's `.manifest` aspect (`declaredKeys`) and submits
 `UninstallPackage`, which tombstones each declared key (cascade-style) and rejects
 any protected key (defense in depth). The script accepts an optional per-key
-`expectedRevision` for OCC; the client currently submits tombstones
-**unconditionally** — see the [package-install contract](../contracts/08-package-install.md)
-and `cmd/processor/CONTRACT-AMENDMENT-REQUEST.md` for the documented window and the
-per-key-revision follow-up.
+`expectedRevision` for OCC, and the client supplies it: before submitting it
+`KVGet`s each declared key and conditions that key's tombstone on the observed
+revision, so a concurrent write to a declared key fails the whole atomic batch
+loudly (`ErrUninstallConflict`) — the package stays fully installed, never a
+partial state — see the
+[package-install contract](../contracts/08-package-install.md) per-key-OCC note.
 
 ## Kernel protection (§3.4)
 

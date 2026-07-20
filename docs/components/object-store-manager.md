@@ -132,7 +132,7 @@ The component runs as a **bootstrap-provisioned service actor** —
 **Built.** Loop B, the never-attached reconcile, and the owner-tombstone-cascade are all implemented
 and CI-gated (`make test-object-gc`). The service actor is seeded primordially.
 
-**Known gap:** the heartbeat is a **static `"healthy"`** — it cannot degrade, so a dead cascade
-consumer would still report green (the platform's canonical false-green; tracked as
-`heartbeat-false-green-aggregation` on the Lattice board — port the Loom/Weaver `aggregateStatus`
-rule).
+The heartbeat **degrades**: `emitHeartbeat` computes its status via `aggregateStatus` over the
+open issue set (Contract #5 §5.2/§5.3 — issues empty iff `healthy`, a warning ⇒ `degraded`, an
+error ⇒ `unhealthy`), mirroring the Loom/Weaver/Bridge heartbeaters, so a heartbeat carrying
+issues can never self-report green.

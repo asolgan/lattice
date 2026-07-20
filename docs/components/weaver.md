@@ -844,5 +844,4 @@ What ships today in `internal/weaver` + `cmd/weaver`, and what is deliberately d
 - Refractor negative/filter-retraction projection (true emit-only-when-violating).
 - Lane-2 on-demand evaluation (built, unexercised in demo).
 - The Augur's autonomy boundary (`augur.autoApply` — a proposal skipping the human gate) — parsed + validated, not enabled; Andrew-gated (Fire 3).
-- Full temporal scheduler / op-vertex pruner (#47/#49).
 - Real external adapters (Stripe/background-check) — Phase 3 integration.
