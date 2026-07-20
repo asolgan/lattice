@@ -15,7 +15,7 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // this variable when dispatching `install identity-hygiene`.
 var Package = pkgmgr.Definition{
 	Name:        "identity-hygiene",
-	Version:     "0.1.0",
+	Version:     "0.2.0",
 	Description: "Duplicate-identity detection + operator-approved merge.",
 	Depends:     []string{"identity-domain"},
 	DDLs:        DDLs(),

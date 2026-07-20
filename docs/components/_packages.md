@@ -200,6 +200,11 @@ to the substrate directly. The flow:
    version is a no-op. A **different** version, or a same-version `--force`,
    takes the in-place **upgrade** path (F-004 — see
    [Upgrade / dev-loop refresh](#upgrade--in-place-dev-loop-refresh-f-004) below).
+   The flip side: **a content edit under `packages/<x>/` must bump that
+   manifest's `version`**, or plain install no-ops it and no running stack ever
+   sees the change. CI enforces this per pushed range
+   (`make lint-package-version`, `scripts/lint-package-version.go`; test files
+   and `*.md` are exempt).
 3. **Submit `InstallPackage`.** `cmd/lattice-pkg` publishes the op (operator
    credential = the admin identity from `lattice.bootstrap.json`). The kernel
    script iterates the mutation set, enforces the install guardrails (key-shape,

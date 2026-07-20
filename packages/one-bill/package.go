@@ -24,7 +24,7 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
 	Name:        "one-bill",
-	Version:     "0.1.0",
+	Version:     "0.2.0",
 	Description: "Café vertical Inc 3 — combined-statement lens: loftspace-ledger + cafe-ledger transactions, tagged by source, into one leaseAppKey-keyed read model.",
 	Depends:     []string{"loftspace-ledger", "cafe-ledger"},
 	Lenses:      Lenses(),

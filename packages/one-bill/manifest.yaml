@@ -1,5 +1,5 @@
 name: one-bill
-version: 0.1.0
+version: 0.2.0
 description: |
   Café vertical Inc 3 — the combined-statement lens. No vertex types, links,
   or permissions of its own: two Lenses (oneBillRentEntries, oneBillCafeEntries)

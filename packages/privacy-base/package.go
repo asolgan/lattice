@@ -24,7 +24,7 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
 	Name:        "privacy-base",
-	Version:     "0.1.0",
+	Version:     "0.2.0",
 	Description: "Per-identity PII key-custody envelope (piiKey) backing crypto-shred.",
 	DDLs:        DDLs(),
 	Lenses:      Lenses(),
