@@ -98,11 +98,15 @@ This config provides the deployment a stable reference set for the primordial Na
 
 **Re-running `make up` on an existing deployment** detects the existing `lattice.bootstrap.json` and skips re-seeding. `make up` is idempotent in the sense that running it twice produces the same end state — NOT in the sense that it rewrites primordial vertices.
 
+**Core KV, not the file, is the authority on whether a bucket has been seeded.** `lattice.bootstrap.json` is file-local: it records what a bootstrap run once did on *some* Core KV, not what *this* Core KV holds. The two can disagree — a recreated or wiped bucket behind a surviving `status="committed"` file — and a deployment that skipped seeding on the file's word alone would come up "ready" with silently-empty reads. Bootstrap therefore probes the bucket (the op tracker key) after provisioning and seeds on the bucket's answer.
+
+The file remains authoritative for the *identity* of the primordial set: on that disagreement the re-seed reuses the file's NanoIDs, so restored keys are exactly the ones existing packages and data already reference. Because the op tracker is written first (§7.7) it marks a seed *started*, not finished, so a re-seed against a `committed` file first rewrites the file to `status="in-progress"`, keeping the two-phase window that makes an interrupted run retryable.
+
 If an operator wants a fresh deployment, the procedure is:
 1. `make down` — clears all NATS buckets, drops Postgres data, deletes `lattice.bootstrap.json`
 2. `make up` — re-seeds from scratch with new NanoIDs
 
-This is consistent with the immutability principle: primordial keys aren't reassigned in place.
+This is consistent with the immutability principle: primordial keys aren't reassigned in place — a re-seed restores absent keys at their recorded ids.
 
 ### 7.5 Readiness Gate
 
