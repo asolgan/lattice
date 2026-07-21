@@ -139,7 +139,12 @@ assert-main-checkout:
 ## (`lattice bootstrap verify`) before trusting it — a stack whose containers
 ## were recreated out-of-band (bypassing `make down`) looks process-healthy but
 ## seeds against a stale primordial ID set, so reads silently return empty
-## while writes still succeed. A mismatch forces the fresh re-bootstrap below.
+## while writes still succeed. On a mismatch, `bootstrap probe-empty` decides
+## the recovery: an empty Core KV (the recreated-containers case) keeps the file
+## so the bootstrap binary re-seeds the primordial set at its committed stable
+## NanoIDs; a Core KV populated with a different set discards the stale file and
+## mints fresh. A probe error keeps the file — the conservative, non-destructive
+## choice — leaving the binary's own PrimordialSeeded probe the final say.
 up: assert-main-checkout
 	@PROC_HEALTHY=0; \
 	if docker compose ps --status running --services 2>/dev/null | grep -qx nats && \
@@ -157,9 +162,15 @@ up: assert-main-checkout
 	if [ "$$FRESH" = "1" ]; then \
 		echo "==> Kernel already up (NATS + Postgres healthy, processor + refractor running, bootstrap fresh) — reusing. For a clean rebuild, run 'make down' first."; \
 	else \
-		if [ "$$PROC_HEALTHY" = "1" ]; then \
-			echo "==> Kernel processes look up but $(BOOTSTRAP_JSON) is stale/mismatched against Core KV (reads would silently return empty) — forcing a fresh re-bootstrap."; \
-			rm -f $(BOOTSTRAP_JSON); \
+		if [ "$$PROC_HEALTHY" = "1" ] && [ -f "$(BOOTSTRAP_JSON)" ]; then \
+			PROBE_RC=0; \
+			NATS_URL=$(NATS_URL) NATS_NKEY=$(NKEY_LATTICE_CLI) ./bin/lattice bootstrap probe-empty >/dev/null 2>&1 || PROBE_RC=$$?; \
+			if [ "$$PROBE_RC" = "1" ]; then \
+				echo "==> $(BOOTSTRAP_JSON) names a primordial set Core KV does not hold, and Core KV is populated with a different one — discarding the stale file and minting fresh."; \
+				rm -f $(BOOTSTRAP_JSON); \
+			else \
+				echo "==> Core KV empty behind a surviving $(BOOTSTRAP_JSON) (recreated stack) — keeping it; bootstrap re-seeds the primordial set at its stable NanoIDs so existing references stay valid."; \
+			fi; \
 		fi; \
 		set -e; \
 		echo "==> Starting NATS + Postgres..."; \

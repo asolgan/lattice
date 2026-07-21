@@ -3,10 +3,39 @@ package bootstrap
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/asolgan/lattice/internal/substrate"
 )
+
+// CoreKVEmpty reports whether Core KV holds no entries at all — the state a
+// stack recreated out-of-band (a new, unseeded NATS) presents. It is the
+// file-independent discriminator `make up` needs after a `bootstrap verify`
+// mismatch: an empty bucket is the recreated-containers case, where the
+// surviving lattice.bootstrap.json must be KEPT so the bootstrap binary
+// re-seeds the primordial set at its stable NanoIDs (PrimordialSeeded) and
+// existing references stay valid; a populated bucket whose set the file does
+// not match is a genuine stale-file mismatch, where the file must be discarded
+// and a fresh set minted.
+//
+// A missing bucket counts as empty. Tombstones count as content — KVListKeys
+// does not filter them — which is the conservative choice: a bucket that ever
+// held a graph reads as populated, so the destructive discard-and-mint path is
+// taken only when Core KV demonstrably holds a different set.
+func CoreKVEmpty(ctx context.Context, conn *substrate.Conn) (bool, error) {
+	if err := conn.KVStatus(ctx, CoreKVBucket); err != nil {
+		if errors.Is(err, substrate.ErrBucketNotFound) {
+			return true, nil
+		}
+		return false, fmt.Errorf("probe Core KV status: %w", err)
+	}
+	keys, err := conn.KVListKeys(ctx, CoreKVBucket)
+	if err != nil {
+		return false, fmt.Errorf("list Core KV keys: %w", err)
+	}
+	return len(keys) == 0, nil
+}
 
 // VerifyKernel checks that all kernel Core KV keys and infrastructure
 // elements exist with correct envelopes. Returns a (possibly empty)

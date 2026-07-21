@@ -102,6 +102,55 @@ func TestPrimordialSeeded_SeededBucketReportsSeeded(t *testing.T) {
 	require.True(t, seeded, "a seeded Core KV must report seeded")
 }
 
+// TestCoreKVEmpty_EmptyThenPopulated pins the file-independent discriminator
+// make up uses after a verify mismatch: a provisioned-but-unseeded Core KV
+// reports empty (keep the file, re-seed at stable NanoIDs), and a seeded Core
+// KV reports populated (a different set is live, discard the stale file).
+func TestCoreKVEmpty_EmptyThenPopulated(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	seeder, nc := newFreshnessSeeder(ctx, t)
+
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+
+	empty, err := bootstrap.CoreKVEmpty(ctx, conn)
+	require.NoError(t, err)
+	require.True(t, empty, "a provisioned but unseeded Core KV must report empty")
+
+	require.NoError(t, seeder.SeedPrimordial(ctx))
+
+	empty, err = bootstrap.CoreKVEmpty(ctx, conn)
+	require.NoError(t, err)
+	require.False(t, empty, "a seeded Core KV must report populated")
+}
+
+// TestCoreKVEmpty_MissingBucketReportsEmpty covers the absent-bucket branch: a
+// stack whose NATS was recreated may not have re-provisioned Core KV yet, and
+// that must read as empty (keep the file), not as an error.
+func TestCoreKVEmpty_MissingBucketReportsEmpty(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, nc := newFreshnessSeeder(ctx, t)
+
+	js, err := jetstream.New(nc)
+	require.NoError(t, err)
+	require.NoError(t, js.DeleteKeyValue(ctx, bootstrap.CoreKVBucket))
+
+	conn, err := substrate.Wrap(nc)
+	require.NoError(t, err)
+
+	empty, err := bootstrap.CoreKVEmpty(ctx, conn)
+	require.NoError(t, err)
+	require.True(t, empty, "an absent Core KV bucket must report empty, not error")
+}
+
 // TestPrimordialSeeded_RecreatedBucketReSeeds is the regression for the
 // stale-file gap: after Core KV is destroyed and re-provisioned — the state a
 // surviving status="committed" file would otherwise mask — the probe reports
