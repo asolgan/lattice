@@ -780,25 +780,48 @@ func wireHint(source, relation, target string) *processor.ContextHint {
 	}
 }
 
+// Capability grants land through the Refractor capability-lens projection, so
+// an op submitted shortly after a package install can be AuthDenied until the
+// actor's capability doc catches up — on a fresh world (first bring-up, the
+// demo's nightly reset) the seed must wait that lag out rather than die.
+// AuthDenied past the window, or any other rejection, is fatal as a real denial.
+const (
+	authDeniedRetryWindow   = 4 * time.Minute
+	authDeniedRetryInterval = 5 * time.Second
+)
+
 func submitOp(ctx context.Context, conn *substrate.Conn, actorKey, operationType, class string, payload map[string]any, hint *processor.ContextHint) *processor.OperationReply {
-	reqID, err := substrate.NewNanoID()
-	must(err, "generate requestId")
-	payloadBytes, err := json.Marshal(payload)
-	must(err, "marshal payload")
-	env := &processor.OperationEnvelope{
-		RequestID:     reqID,
-		Lane:          processor.LaneDefault,
-		OperationType: operationType,
-		Actor:         actorKey,
-		Class:         class,
-		SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
-		Payload:       payloadBytes,
-		ContextHint:   hint,
+	deadline := time.Now().Add(authDeniedRetryWindow)
+	for {
+		// A denied op commits nothing (no tracker), so every attempt is a
+		// fresh envelope with its own requestId, evaluated from scratch.
+		reqID, err := substrate.NewNanoID()
+		must(err, "generate requestId")
+		payloadBytes, err := json.Marshal(payload)
+		must(err, "marshal payload")
+		env := &processor.OperationEnvelope{
+			RequestID:     reqID,
+			Lane:          processor.LaneDefault,
+			OperationType: operationType,
+			Actor:         actorKey,
+			Class:         class,
+			SubmittedAt:   time.Now().UTC().Format(time.RFC3339),
+			Payload:       payloadBytes,
+			ContextHint:   hint,
+		}
+		reply, err := output.SubmitOp(ctx, conn, env)
+		must(err, "submit "+operationType)
+		if reply.Status == processor.ReplyStatusAccepted {
+			return reply
+		}
+		if reply.Error != nil && reply.Error.Code == processor.ErrCodeAuthDenied && time.Now().Before(deadline) {
+			fmt.Fprintf(os.Stderr, "==> %s: AuthDenied — retrying in %s (capability projection may still be catching up)\n", operationType, authDeniedRetryInterval)
+			time.Sleep(authDeniedRetryInterval)
+			continue
+		}
+		mustAccepted(reply, operationType)
+		return reply
 	}
-	reply, err := output.SubmitOp(ctx, conn, env)
-	must(err, "submit "+operationType)
-	mustAccepted(reply, operationType)
-	return reply
 }
 
 func mustAccepted(reply *processor.OperationReply, context string) {
