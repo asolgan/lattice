@@ -225,7 +225,7 @@ row in `docs/vendors.md`.
 |---|---|---|---|
 | **F20.1** | §3.2 — `LOUPE_DEMO_MODE`: method default-deny middleware, fail-closed flag + boot guard, reveal denial (§2.2), `/api/demo` + visitor banner | Loupe | ✅ SHIPPED 2026-07-19 |
 | **F20.2** | §7 — demo polish: suppress write affordances per view, restore the three read-only control POSTs, `/login` disclaimer | Loupe | ✅ SHIPPED 2026-07-19 (departures in §7.5) |
-| **F20.3** | §3.1 — the `demoOperator` grant package | Lattice (cross-lane) | filed (lattice.md row, 📋 ready) |
+| **F20.3** | §3.1 — the `demoOperator` grant package | Lattice (cross-lane) | ✅ SHIPPED 2026-07-21 (`7b74ce70`, `packages/demo-operator`) — role + read lens + the 3 `ctrl.*.read` grants, no write; not wired into up-full (exposure-gated) |
 | **F20.4** | §3.3 — Caddy subdomain + README | deploy (cross-lane) | 🚧 Andrew-gated on public launch |
 | **F20.5** | §6 — the public-origin posture: `LOUPE_PUBLIC_ORIGIN` (origin gate + `Secure` cookie), the dev-auth⇒demo boot coupling, the credential-exchange rate limiter, the SSE cap posture. **Blocks F20.4** — without it no visitor can log in | Loupe | ✅ SHIPPED 2026-07-19 (`ca941e58`) |
 
