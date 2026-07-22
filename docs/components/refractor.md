@@ -148,9 +148,11 @@ shape**) or injected by the fan-out envelope (the **PL.2 shape**) — never both
   the Interest Set KV is configured, the resulting revision is best-effort recorded into that
   device's Interest Set doc (`revisionCursor`, preserving its existing `types`/`anchors` filter) —
   bookkeeping only; the Edge itself decides warm-vs-cold hydration from its own local cursor, not
-  from this field. Wired in `cmd/refractor/main.go` via `controlSvc.SetPersonalHydrator(p)`
-  alongside `InstallPersonalLens` — one Personal Lens pipeline per deployment, so this is a single
-  handle, not a per-ruleID registry (mirrors `SetPersonalInterestKV`).
+  from this field. Wired in `cmd/refractor/main.go` via `controlSvc.RegisterPersonalHydrator(r.ID, p)`
+  alongside `InstallPersonalLens` — a deployment installs one Personal Lens pipeline per
+  `nats_subject` rule (edge-manifest alone ships ten), so this is a per-ruleID registry like
+  `RegisterReprojector`: the "hydrate" op fans out to every registered pipeline for the requesting
+  identity and reports the max revision across all of them.
 - **Deferred to later PL fires** (`personal-secure-lens-design.md` §7): Vault-ciphertext +
   transient-key composition (PL.5, 🚧 gated on Vault Phase A).
 

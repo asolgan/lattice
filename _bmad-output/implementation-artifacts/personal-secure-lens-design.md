@@ -475,7 +475,7 @@ fire (the one D1-gated step), and confidentiality + hydration extend it. **Depen
 > interface (implemented on `NatsSubjectAdapter`). `revision` is `Progress().LastAppliedSeq` captured
 > *before* reprojection, so a concurrent incremental delta can never carry a lower revision than the
 > bulk snapshot it raced. Control RPC `lattice.ctrl.refractor.personal.hydrate` (`control.Hydrator`
-> interface, `Service.SetPersonalHydrator`, wired in `cmd/refractor/main.go` alongside
+> interface, `Service.RegisterPersonalHydrator`, wired in `cmd/refractor/main.go` alongside
 > `InstallPersonalLens`) — request `{identityId, deviceId?}`, response
 > `{personalHydrate:{hydrated,revision}}`. When `deviceId` is given, best-effort records the revision
 > into that device's Interest Set doc via the new `personalinterest.SetRevisionCursor` (the

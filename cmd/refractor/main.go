@@ -617,10 +617,12 @@ func main() {
 				return
 			}
 			// The Hydration Hook (personal-secure-lens-design.md §3.5, Fire
-			// PL.4): the "personal.hydrate" control RPC dispatches to this
-			// lens's own pipeline. One Personal Lens per deployment, so this
-			// is a single handle, not a per-ruleID registry.
-			controlSvc.SetPersonalHydrator(p)
+			// PL.4): the "personal.hydrate" control RPC fans out to every
+			// registered Personal Lens pipeline for the requesting identity —
+			// a deployment installs one per nats_subject rule (edge-manifest
+			// alone ships ten), so this is a per-ruleID registry like every
+			// other per-lens control hook, not a single overwritten handle.
+			controlSvc.RegisterPersonalHydrator(r.ID, p)
 			// The syncgap gap-detection read (edge-syncgap-control-rpc-
 			// design.md §3.2): the "personal.syncgap" control RPC answers the
 			// Edge node's warm-resume freshness check off the control host's

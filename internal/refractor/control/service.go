@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -231,12 +232,15 @@ type Service struct {
 	// Interest Set, personal-secure-lens-design.md §3.3). nil until
 	// SetPersonalInterestKV is called; those two ops fail closed until then.
 	personalInterestKV *substrate.KV
-	// personalHydrator backs the "hydrate" op (personal-secure-lens-design.md
-	// §3.5, Fire PL.4). nil until SetPersonalHydrator is called; the op fails
-	// closed until then. There is exactly one Personal Lens pipeline per
-	// deployment, so — like personalInterestKV — this is a single handle, not
-	// a per-ruleID registry.
-	personalHydrator Hydrator
+	// personalHydratorByRuleID backs the "hydrate" op (personal-secure-lens-
+	// design.md §3.5, Fire PL.4). Empty until RegisterPersonalHydrator is
+	// called; the op fails closed while empty. A deployment installs one
+	// Personal Lens pipeline per nats_subject rule (edge-manifest alone ships
+	// ten — edgeTasksQueued, edgeTasks, edgeCatalog, …), so — like
+	// reprojectorByRuleID — this is a per-ruleID registry: the "hydrate" op
+	// fans out to every registered pipeline for the requesting identity, not
+	// just whichever rule happened to register last.
+	personalHydratorByRuleID map[string]Hydrator
 	// coreKV backs the "sessionkey" op's piiKey envelope point-read
 	// (edge-lattice-full-design.md §3.6, EDGE.4). nil until SetCoreKV is
 	// called; the op fails closed until then.
@@ -250,8 +254,9 @@ type Service struct {
 	// earliest still-retained sequence, read from the control host's own
 	// full-grant substrate connection (edge-syncgap-control-rpc-design.md
 	// §3.2). nil until SetSyncFirstSeq is called; the op fails closed until
-	// then. Like personalHydrator, a single handle per deployment (one
-	// personal lens), cleared to nil when that lens rule unloads.
+	// then. Unlike personalHydratorByRuleID, every Personal Lens rule shares
+	// one SYNC stream (edge-manifest's manifestStream), so a single handle is
+	// correct here — cleared to nil when that stream's lens rule unloads.
 	syncFirstSeq func(ctx context.Context) (uint64, error)
 	// capability authorizes every dispatchEndpoint op (FR30,
 	// control-plane-capability-authz-design.md). Defaults to the fail-closed
@@ -272,14 +277,15 @@ type Service struct {
 // misconfiguration, never normal production traffic.
 func NewService() *Service {
 	return &Service{
-		resumerByRuleID:      make(map[string]Resumer),
-		pauserByRuleID:       make(map[string]Pauser),
-		rebuilderByRuleID:    make(map[string]Rebuilder),
-		deleterByRuleID:      make(map[string]Deleter),
-		rowNullifierByRuleID: make(map[string]RowNullifier),
-		reprojectorByRuleID:  make(map[string]Reprojector),
-		reporters:            make(map[string]*health.Reporter),
-		capability:           newDenyAllChecker(nil),
+		resumerByRuleID:          make(map[string]Resumer),
+		pauserByRuleID:           make(map[string]Pauser),
+		rebuilderByRuleID:        make(map[string]Rebuilder),
+		deleterByRuleID:          make(map[string]Deleter),
+		rowNullifierByRuleID:     make(map[string]RowNullifier),
+		reprojectorByRuleID:      make(map[string]Reprojector),
+		personalHydratorByRuleID: make(map[string]Hydrator),
+		reporters:                make(map[string]*health.Reporter),
+		capability:               newDenyAllChecker(nil),
 	}
 }
 
@@ -325,14 +331,27 @@ func (s *Service) SetPersonalInterestKV(kv *substrate.KV) {
 	s.mu.Unlock()
 }
 
-// SetPersonalHydrator registers the Hydrator the "hydrate" op dispatches to
-// (personal-secure-lens-design.md §3.5, Fire PL.4). Thread-safe; may be
-// called at any time. Until called, the op fails closed with an error
-// response. Pass nil to clear (e.g. on lens teardown).
-func (s *Service) SetPersonalHydrator(h Hydrator) {
+// RegisterPersonalHydrator registers the Hydrator the "hydrate" op dispatches
+// to for ruleID (personal-secure-lens-design.md §3.5, Fire PL.4). A
+// deployment installs one Personal Lens pipeline per nats_subject rule, so —
+// like RegisterReprojector — this is a per-ruleID registry: "hydrate" fans
+// out to every registered entry for the requesting identity. Overwrites any
+// prior registration for ruleID (safe for hot-reload). Panics if h is nil.
+func (s *Service) RegisterPersonalHydrator(ruleID string, h Hydrator) {
+	if h == nil {
+		panic("control: RegisterPersonalHydrator: Hydrator must not be nil")
+	}
 	s.mu.Lock()
-	s.personalHydrator = h
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+	s.personalHydratorByRuleID[ruleID] = h
+}
+
+// UnregisterPersonalHydrator removes the Hydrator entry for ruleID (e.g. on
+// lens teardown). No-op if ruleID is not registered.
+func (s *Service) UnregisterPersonalHydrator(ruleID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.personalHydratorByRuleID, ruleID)
 }
 
 // SetCoreKV registers the Core KV handle the "sessionkey" op reads the
@@ -914,38 +933,68 @@ func (s *Service) personalDeregister(ctx context.Context, body ControlRequest) C
 	return ControlResponse{PersonalDeregister: &PersonalDeregisterResult{Deregistered: true}}
 }
 
-// personalHydrate runs a cold bulk projection for one identity through the
-// registered Hydrator (personal-secure-lens-design.md §3.5, Fire PL.4). Fails
-// closed if SetPersonalHydrator hasn't been called, or if identityId is
-// missing from the request body. On success, if a deviceId was also given and
-// the Interest Set KV is configured, best-effort records the resulting
-// revision as that device's cursor (personalinterest.SetRevisionCursor) —
-// bookkeeping only, not load-bearing for correctness (§3.5), so a cursor-write
-// failure is logged but does not fail the op: the data has already been
-// delivered.
+// personalHydrate runs a cold bulk projection for one identity through EVERY
+// registered Personal Lens Hydrator (personal-secure-lens-design.md §3.5,
+// Fire PL.4). A device's manifest mirror is populated by N independent
+// Personal Lens pipelines (edge-manifest alone ships ten), so a single
+// pipeline's cold catch-up is not a full rehydrate — every registered
+// pipeline must run so no lens's rows are silently skipped. Fails closed if
+// no Hydrator is registered, or if identityId is missing from the request
+// body. All-or-nothing: if any pipeline errors, the op reports the aggregated
+// error and does not claim Hydrated, since a partially-hydrated device is not
+// a safe resume point. Revision is the highest high-water mark across every
+// pipeline that ran — every Personal Lens rule shares one SYNC stream, so
+// that maximum is the correct resume cursor for the whole device. On success,
+// if a deviceId was also given and the Interest Set KV is configured,
+// best-effort records the resulting revision as that device's cursor
+// (personalinterest.SetRevisionCursor) — bookkeeping only, not load-bearing
+// for correctness (§3.5), so a cursor-write failure is logged but does not
+// fail the op: the data has already been delivered.
 func (s *Service) personalHydrate(ctx context.Context, body ControlRequest) ControlResponse {
 	s.mu.Lock()
-	hydrator := s.personalHydrator
+	hydrators := make(map[string]Hydrator, len(s.personalHydratorByRuleID))
+	for ruleID, h := range s.personalHydratorByRuleID {
+		hydrators[ruleID] = h
+	}
 	kv := s.personalInterestKV
 	s.mu.Unlock()
-	if hydrator == nil {
-		return ControlResponse{Error: "hydrate: personal hydrator not configured"}
+	if len(hydrators) == 0 {
+		return ControlResponse{Error: "hydrate: no personal hydrator configured"}
 	}
 	if body.IdentityID == "" {
 		return ControlResponse{Error: "hydrate: identityId is required"}
 	}
-	revision, err := hydrator.Hydrate(ctx, body.IdentityID)
-	if err != nil {
-		return ControlResponse{Error: err.Error()}
+
+	ruleIDs := make([]string, 0, len(hydrators))
+	for ruleID := range hydrators {
+		ruleIDs = append(ruleIDs, ruleID)
 	}
+	sort.Strings(ruleIDs)
+
+	var errs []error
+	var highWater uint64
+	for _, ruleID := range ruleIDs {
+		revision, err := hydrators[ruleID].Hydrate(ctx, body.IdentityID)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("rule %q: %w", ruleID, err))
+			continue
+		}
+		if revision > highWater {
+			highWater = revision
+		}
+	}
+	if len(errs) > 0 {
+		return ControlResponse{Error: fmt.Sprintf("hydrate: %s", errors.Join(errs...))}
+	}
+
 	if body.DeviceID != "" && kv != nil {
-		if cerr := personalinterest.SetRevisionCursor(ctx, kv, body.IdentityID, body.DeviceID, revision,
+		if cerr := personalinterest.SetRevisionCursor(ctx, kv, body.IdentityID, body.DeviceID, highWater,
 			time.Now().UTC().Format(time.RFC3339)); cerr != nil {
 			slog.Warn("control: hydrate: record revision cursor", "identityId", body.IdentityID,
 				"deviceId", body.DeviceID, "err", cerr)
 		}
 	}
-	return ControlResponse{PersonalHydrate: &PersonalHydrateResult{Hydrated: true, Revision: revision}}
+	return ControlResponse{PersonalHydrate: &PersonalHydrateResult{Hydrated: true, Revision: highWater}}
 }
 
 // personalSessionKey mints a transient Vault session key for the requesting

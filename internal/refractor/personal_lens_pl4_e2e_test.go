@@ -35,9 +35,10 @@ func TestPersonalLens_PL4_E2E_HydrateBulkProjectsThenCompletes(t *testing.T) {
 	leaseID := pl2NanoID("pl4-hydrate-lease")
 	leaseKey := substrate.VertexKey("lease", leaseID)
 
+	lensID := pl2NanoID("pl4-hydrate-lens")
 	cypher := `MATCH (identity {key: $actorKey})-[:holds]->(l:lease) ` +
 		`RETURN l.key AS anchor, "lease" AS kind, l.id AS entityId, l.monthlyRent AS monthlyRent`
-	p, _ := activatePersonalLens(t, h, pl2NanoID("pl4-hydrate-lens"), cypher, []string{"entityId"}, nil)
+	p, _ := activatePersonalLens(t, h, lensID, cypher, []string{"entityId"}, nil)
 
 	// Seed the identity's slice BEFORE registering any control listener or
 	// hydrate call — hydrate must find the CURRENT state via reprojection,
@@ -64,7 +65,7 @@ func TestPersonalLens_PL4_E2E_HydrateBulkProjectsThenCompletes(t *testing.T) {
 	// Allow-all stub: this e2e drives the personal-lens hydrate path, not
 	// capability enforcement (a nil/unconfigured checker fails closed).
 	ctrlSvc.SetCapabilityChecker(control.NewStubCapabilityChecker(nil))
-	ctrlSvc.SetPersonalHydrator(p)
+	ctrlSvc.RegisterPersonalHydrator(lensID, p)
 	ctrlSvc.SetPersonalInterestKV(h.interestKV)
 	ctrlCtx, ctrlCancel := context.WithCancel(h.ctx)
 	t.Cleanup(ctrlCancel)
@@ -123,9 +124,10 @@ func TestPersonalLens_PL4_E2E_HydrateNoLease_PublishesOnlyMarker(t *testing.T) {
 	recipient := pl2NanoID("pl4-empty-recipient")
 	identityKey := substrate.VertexKey("identity", recipient)
 
+	lensID := pl2NanoID("pl4-empty-lens")
 	cypher := `MATCH (identity {key: $actorKey})-[:holds]->(l:lease) ` +
 		`RETURN l.key AS anchor, "lease" AS kind, l.id AS entityId, l.monthlyRent AS monthlyRent`
-	p, _ := activatePersonalLens(t, h, pl2NanoID("pl4-empty-lens"), cypher, []string{"entityId"}, nil)
+	p, _ := activatePersonalLens(t, h, lensID, cypher, []string{"entityId"}, nil)
 
 	writePL2Vertex(t, h, identityKey, "identity", map[string]any{"name": "recipient"})
 
@@ -140,7 +142,7 @@ func TestPersonalLens_PL4_E2E_HydrateNoLease_PublishesOnlyMarker(t *testing.T) {
 	// Allow-all stub: this e2e drives the personal-lens hydrate path, not
 	// capability enforcement (a nil/unconfigured checker fails closed).
 	ctrlSvc.SetCapabilityChecker(control.NewStubCapabilityChecker(nil))
-	ctrlSvc.SetPersonalHydrator(p)
+	ctrlSvc.RegisterPersonalHydrator(lensID, p)
 	ctrlCtx, ctrlCancel := context.WithCancel(h.ctx)
 	t.Cleanup(ctrlCancel)
 	require.NoError(t, ctrlSvc.StartNATSListener(ctrlCtx, h.conn.NATS()))

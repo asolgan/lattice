@@ -157,12 +157,14 @@ func (s *Service) SetSyncFirstSeq(fn func(ctx context.Context) (uint64, error))
 ```
 
   The wiring site is the existing `projection.IsPersonalLens(r)` branch in `cmd/refractor/main.go`
-  (beside `controlSvc.SetPersonalHydrator`, ~:609): a closure over the host's `substrate.Conn` and the
-  **lens rule's `r.Into.Stream`** — the authoritative stream name (the same value the adapter and the
-  hydrator are wired from; a `"SYNC"` literal here could gap-check the wrong stream in a deployment
-  whose personal lens targets a differently-named one, and a wrong-stream `FirstSeq` can yield a false
-  "not gapped"). Same nil-clear semantics as `SetPersonalHydrator` when the personal lens rule
-  unloads. The request deliberately carries no stream parameter, so the op can never be turned into an
+  (beside `controlSvc.RegisterPersonalHydrator(r.ID, p)`): a closure over the host's `substrate.Conn`
+  and the **lens rule's `r.Into.Stream`** — the authoritative stream name (the same value the adapter
+  and the hydrator are wired from; a `"SYNC"` literal here could gap-check the wrong stream in a
+  deployment whose personal lens targets a differently-named one, and a wrong-stream `FirstSeq` can
+  yield a false "not gapped"). Unlike the hydrator (a per-ruleID registry, since each Personal Lens
+  pipeline is distinct), every Personal Lens rule shares one SYNC stream, so `syncFirstSeq` stays a
+  single handle, nil-cleared when that stream's lens rule unloads. The request deliberately carries no
+  stream parameter, so the op can never be turned into an
   info oracle for other streams; the handler is lensID-independent (like `sessionkey` — the subject's
   `personal` token is a fixed pseudo-lensId, and `CapabilityKVChecker.Authorize` matches on
   operationType + scope, not lensID, with the transport ACL pinning Edge connections to the exact

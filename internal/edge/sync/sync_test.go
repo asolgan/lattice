@@ -209,7 +209,7 @@ func startControlService(t *testing.T, ctx context.Context, conn *substrate.Conn
 	t.Helper()
 	svc := control.NewService()
 	svc.SetCapabilityChecker(control.NewStubCapabilityChecker(nil))
-	svc.SetPersonalHydrator(h)
+	svc.RegisterPersonalHydrator("rule-1", h)
 	svc.SetPersonalInterestKV(interestKV)
 	// The syncgap seam reads the live SYNC stream's earliest retained sequence
 	// on the control host's own connection, mirroring cmd/refractor's

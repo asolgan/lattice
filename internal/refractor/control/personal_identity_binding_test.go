@@ -66,7 +66,7 @@ func TestControl_PersonalHydrate_VerifiedActorOverridesBodyIdentity(t *testing.T
 	svc := control.NewService()
 	svc.SetCapabilityChecker(control.NewStubCapabilityChecker(nil))
 	svc.SetActorVerifier(av)
-	svc.SetPersonalHydrator(h)
+	svc.RegisterPersonalHydrator("rule-1", h)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -95,7 +95,7 @@ func TestControl_PersonalHydrate_VerifiedActorFillsEmptyBodyIdentity(t *testing.
 	svc := control.NewService()
 	svc.SetCapabilityChecker(control.NewStubCapabilityChecker(nil))
 	svc.SetActorVerifier(av)
-	svc.SetPersonalHydrator(h)
+	svc.RegisterPersonalHydrator("rule-1", h)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -191,7 +191,7 @@ func TestControl_PersonalHydrate_NoVerifierPreservesSelfAssertedBody(t *testing.
 	h := &fakeHydrator{revision: 7}
 	svc := control.NewService()
 	svc.SetCapabilityChecker(control.NewStubCapabilityChecker(nil))
-	svc.SetPersonalHydrator(h)
+	svc.RegisterPersonalHydrator("rule-1", h)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
