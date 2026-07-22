@@ -53,7 +53,7 @@ GATEWAY_READ_MODELS_DIR ?= $(abspath ./deploy/gateway-read-models)
 # Origins allowed to call POST /v1/operations cross-origin — the vertical apps'
 # own dev ports, since the browser-direct write path (real-actor-write-auth-e2e-
 # design.md §3.1) has the FE call the Gateway directly from its own origin.
-GATEWAY_CORS_ORIGINS ?= http://localhost:7788,http://localhost:7799,http://localhost:7801,http://localhost:7802,http://localhost:7810,http://127.0.0.1:7810
+GATEWAY_CORS_ORIGINS ?= http://localhost:7788,http://127.0.0.1:7788,http://localhost:7799,http://127.0.0.1:7799,http://localhost:7801,http://127.0.0.1:7801,http://localhost:7802,http://127.0.0.1:7802,http://localhost:7810,http://127.0.0.1:7810
 
 # Per-component dev NKey seeds (NATS account-level write restriction, Path A —
 # deploy/nats-server.conf's permission matrix). Each binary's NATS_NKEY points at
