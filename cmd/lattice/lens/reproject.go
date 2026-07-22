@@ -72,12 +72,18 @@ func newReprojectCommand(natsURL, outputFmt, defaultActor *string) *cobra.Comman
 			if *outputFmt == "json" {
 				return output.PrintJSON(resp.Reproject)
 			}
-			state := "converged (no write)"
+			// "no projection" is distinct from "converged": the lens produced no
+			// row for this actor at all, so nothing was compared and nothing
+			// written. Reporting that as converged would let a mistyped actor key
+			// read as a clean bill of health.
+			state := "no projection for this actor"
 			switch {
 			case resp.Reproject.Deleted:
 				state = "healed: row deleted"
 			case resp.Reproject.Wrote:
 				state = "healed: row written"
+			case resp.Reproject.Converged:
+				state = "converged (no write)"
 			}
 			fmt.Printf("%s\t%s\tprojectionSeq=%d\n", resp.Reproject.Actor, state, resp.Reproject.ProjectionSeq)
 			return nil
