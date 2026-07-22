@@ -1436,14 +1436,40 @@ test-object-gc:
 ## whole configuration surface is the WASM_HEADLESS env var). Two Chromes
 ## cold-starting at once on one runner can both miss that window under load;
 ## serialized, each gets the full budget to itself.
+##
+## Serializing removed the suite's self-contention but not the runner's: a
+## single cold start can still overrun the 20s budget when the host is busy
+## with the other CI jobs, and the whole gate goes red for something that is a
+## load artifact of the harness, not a defect in the code under test. So the
+## suite is retried ONCE — and only when the failure output carries chromedp's
+## cold-start signature. Every other failure (a conformance break, a compile
+## error, a timeout inside a test, a Chrome that is missing rather than slow)
+## fails immediately and unretried, so a real regression can never hide behind
+## the retry. Matching on the signature rather than on "it failed" is the whole
+## point: a blanket retry would mask exactly the failures this gate exists for.
 WASM_BROWSER_TEST_VERSION ?= v0.11.0
+EDGE_IDB_COLD_START_SIGNATURE := websocket url timeout reached
+EDGE_IDB_CONFORMANCE_TEST = PATH="$$PATH:$$(go env GOPATH)/bin" GOOS=js GOARCH=wasm \
+	go test -p 1 -exec wasmbrowsertest ./internal/edge/store/... ./internal/edge/browser/... -count=1 -timeout 3m
+
 .PHONY: test-edge-idb-conformance
 test-edge-idb-conformance:
 	@echo "==> Installing wasmbrowsertest $(WASM_BROWSER_TEST_VERSION)..."
 	go install github.com/agnivade/wasmbrowsertest@$(WASM_BROWSER_TEST_VERSION)
 	@echo "==> Running the Edge store + browser-host suites in headless Chrome..."
-	PATH="$$PATH:$$(go env GOPATH)/bin" GOOS=js GOARCH=wasm \
-		go test -p 1 -exec wasmbrowsertest ./internal/edge/store/... ./internal/edge/browser/... -count=1 -timeout 3m
+	@log=$$(mktemp); rcfile=$$(mktemp); \
+	{ $(EDGE_IDB_CONFORMANCE_TEST); echo $$? >"$$rcfile"; } 2>&1 | tee "$$log"; \
+	status=$$(cat "$$rcfile" 2>/dev/null); [ -n "$$status" ] || status=1; \
+	if [ "$$status" -eq 0 ]; then rm -f "$$log" "$$rcfile"; exit 0; fi; \
+	if ! grep -q '$(EDGE_IDB_COLD_START_SIGNATURE)' "$$log"; then \
+		echo "==> FAILED (exit $$status) — not the headless-Chrome cold-start signature; not retrying."; \
+		rm -f "$$log" "$$rcfile"; exit "$$status"; \
+	fi; \
+	rm -f "$$log" "$$rcfile"; \
+	echo "==> A headless Chrome missed chromedp's hardcoded 20s DevTools-banner budget"; \
+	echo "==> ('$(EDGE_IDB_COLD_START_SIGNATURE)') — a runner-load artifact, not a code"; \
+	echo "==> defect. Retrying the suite once; a second miss fails the gate."; \
+	$(EDGE_IDB_CONFORMANCE_TEST)
 
 ## test-edge-consumer-parity — the browser Edge node's transport-shell gate
 ## (edge-browser-node-design.md §2.3/§5). The browser node's NATS transport is
