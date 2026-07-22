@@ -12,7 +12,10 @@
 //     (tab→leaseapp). Charge OCC-conditions an accumulate onto
 //     .status.totalCents (the providerSlotClaim precedent: a real
 //     accumulator must not lose a concurrent update, unlike an idempotent
-//     status flip). Settle OCC-conditions the close (.status.value →
+//     status flip). VoidCharge OCC-conditions the mirror-image decrement,
+//     clamped at 0 rather than rejected on an over-void — operator/
+//     frontOfHouse only, no self-service grant (a POS correction is a
+//     staff decision). Settle OCC-conditions the close (.status.value →
 //     settled, settledAt stamped) and releases the guard.
 //
 //   - The `tabStatus` aspect type (DDL `tabStatus`) — the step-6 write gate
@@ -68,15 +71,16 @@ import "github.com/operatinggraph/lattice/internal/pkgmgr"
 // Package is the static, install-time bundle.
 var Package = pkgmgr.Definition{
 	Name:    "cafe-domain",
-	Version: "0.7.1",
-	Description: "Café house-tab POS session domain: the tab vertex type (OpenTab/Charge/Settle, OCC-conditioned " +
-		"running total) + the tabStatus aspect type + the cafeTabSettlement actorAggregate convergence lens " +
-		"(missing_account/missing_charge) + the §10.8 playbook dispatching directOp(CreateAccount)/" +
+	Version: "0.7.2",
+	Description: "Café house-tab POS session domain: the tab vertex type (OpenTab/Charge/VoidCharge/Settle, " +
+		"OCC-conditioned running total) + the tabStatus aspect type + the cafeTabSettlement actorAggregate " +
+		"convergence lens (missing_account/missing_charge) + the §10.8 playbook dispatching directOp(CreateAccount)/" +
 		"directOp(DebitAccount) (cafe-ledger) to post a settled tab onto the resident's house-tab account + " +
 		"edge-manifest descriptor metadata (OpenTab/Settle, Fire 5 Inc 4) so the two self-scope ops are " +
 		"Facet-renderable + the menuItem self-order catalog (CreateMenuItem/RetireMenuItem, the menuCatalog " +
 		"lens) a self-service Charge binds against, deriving amountCents from a catalog entry rather than " +
-		"trusting a caller-supplied number. Depends lease-signing + cafe-ledger.",
+		"trusting a caller-supplied number. VoidCharge corrects a mis-tapped charge (operator/frontOfHouse " +
+		"only, no self-service grant). Depends lease-signing + cafe-ledger.",
 	Depends:       []string{"lease-signing", "cafe-ledger"},
 	DDLs:          DDLs(),
 	Lenses:        Lenses(),

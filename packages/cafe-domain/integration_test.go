@@ -86,6 +86,7 @@ func domainCapDoc() *processor.CapabilityDoc {
 			{OperationType: "CreditAccount", Scope: "any"},
 			{OperationType: "OpenTab", Scope: "any"},
 			{OperationType: "Charge", Scope: "any"},
+			{OperationType: "VoidCharge", Scope: "any"},
 			{OperationType: "Settle", Scope: "any"},
 			{OperationType: "CreateMenuItem", Scope: "any"},
 			{OperationType: "RetireMenuItem", Scope: "any"},
@@ -373,6 +374,195 @@ func TestCharge_RejectsNonPositiveAmount(t *testing.T) {
 		ContextHint:   &processor.ContextHint{Reads: []string{tabKey, tabKey + ".status"}},
 	}
 	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+}
+
+func TestVoidCharge_SubtractsFromTotalCents(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	cp, cons := newDomainPipeline(t, ctx, conn, "voidsub")
+
+	leaseKey := seedLease(t, ctx, conn, "BBCAFEDMNVSUBLEASEHJ")
+	tabKey := openTab(t, ctx, conn, cp, cons, "cdopentabvoi00000001", leaseKey)
+
+	chargeEnv := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("cdchargevoid000000001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "Charge",
+		Actor:         domainActorKey,
+		SubmittedAt:   "2026-07-22T12:05:00Z",
+		Class:         "tab",
+		Payload:       json.RawMessage(`{"tabKey":"` + tabKey + `","amountCents":850}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{tabKey, tabKey + ".status"}},
+	}
+	testutil.PublishOp(t, conn, chargeEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	voidEnv := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("cdvoidchgone00000001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "VoidCharge",
+		Actor:         domainActorKey,
+		SubmittedAt:   "2026-07-22T12:06:00Z",
+		Class:         "tab",
+		Payload:       json.RawMessage(`{"tabKey":"` + tabKey + `","amountCents":350}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{tabKey, tabKey + ".status"}},
+	}
+	testutil.PublishOp(t, conn, voidEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	statusDoc := readDoc(t, ctx, conn, tabKey+".status")
+	statusData, _ := statusDoc["data"].(map[string]any)
+	if got, _ := statusData["totalCents"].(float64); got != 500 {
+		t.Fatalf("status.totalCents = %v, want 500 (850-350)", got)
+	}
+	if got, _ := statusData["value"].(string); got != "open" {
+		t.Fatalf("status.value = %q, want open (voiding does not close the tab)", got)
+	}
+}
+
+// TestVoidCharge_ClampsAtZero proves an over-void — subtracting more than the
+// tab's current running total — corrects cleanly to 0 rather than rejecting
+// or going negative (verticals.md — "decrement not below 0").
+func TestVoidCharge_ClampsAtZero(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	cp, cons := newDomainPipeline(t, ctx, conn, "voidclamp")
+
+	leaseKey := seedLease(t, ctx, conn, "BBCAFEDMNCLAMPLEASEH")
+	tabKey := openTab(t, ctx, conn, cp, cons, "cdopentabclm00000001", leaseKey)
+
+	chargeEnv := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("cdchargeclamp0000001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "Charge",
+		Actor:         domainActorKey,
+		SubmittedAt:   "2026-07-22T12:05:00Z",
+		Class:         "tab",
+		Payload:       json.RawMessage(`{"tabKey":"` + tabKey + `","amountCents":300}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{tabKey, tabKey + ".status"}},
+	}
+	testutil.PublishOp(t, conn, chargeEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	voidEnv := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("cdvoidclampbig000001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "VoidCharge",
+		Actor:         domainActorKey,
+		SubmittedAt:   "2026-07-22T12:06:00Z",
+		Class:         "tab",
+		Payload:       json.RawMessage(`{"tabKey":"` + tabKey + `","amountCents":9000}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{tabKey, tabKey + ".status"}},
+	}
+	testutil.PublishOp(t, conn, voidEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	statusDoc := readDoc(t, ctx, conn, tabKey+".status")
+	statusData, _ := statusDoc["data"].(map[string]any)
+	if got, _ := statusData["totalCents"].(float64); got != 0 {
+		t.Fatalf("status.totalCents = %v, want 0 (clamped, not negative)", got)
+	}
+}
+
+func TestVoidCharge_RejectsNonPositiveAmount(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	cp, cons := newDomainPipeline(t, ctx, conn, "voidbadamt")
+
+	leaseKey := seedLease(t, ctx, conn, "BBCAFEDMNVBADLEASEHJ")
+	tabKey := openTab(t, ctx, conn, cp, cons, "cdopentabvba00000001", leaseKey)
+
+	env := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("cdvoidbadamt000000001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "VoidCharge",
+		Actor:         domainActorKey,
+		SubmittedAt:   "2026-07-22T12:05:00Z",
+		Class:         "tab",
+		Payload:       json.RawMessage(`{"tabKey":"` + tabKey + `","amountCents":0}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{tabKey, tabKey + ".status"}},
+	}
+	testutil.PublishOp(t, conn, env)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+}
+
+// TestVoidCharge_RejectsAfterSettle proves a settled tab's total is frozen —
+// once dispatched to the ledger, it cannot be corrected via VoidCharge.
+func TestVoidCharge_RejectsAfterSettle(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	cp, cons := newDomainPipeline(t, ctx, conn, "voidaftersettle")
+
+	leaseKey := seedLease(t, ctx, conn, "BBCAFEDMNVASLEASEHJK")
+	tabKey := openTab(t, ctx, conn, cp, cons, "cdopentabvas00000001", leaseKey)
+
+	settleEnv := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("cdsettlevas000000001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "Settle",
+		Actor:         domainActorKey,
+		SubmittedAt:   "2026-07-22T13:00:00Z",
+		Class:         "tab",
+		Payload:       json.RawMessage(`{"tabKey":"` + tabKey + `"}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{tabKey, tabKey + ".status"}},
+	}
+	testutil.PublishOp(t, conn, settleEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	voidEnv := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("cdvoidvas000000000001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "VoidCharge",
+		Actor:         domainActorKey,
+		SubmittedAt:   "2026-07-22T13:05:00Z",
+		Class:         "tab",
+		Payload:       json.RawMessage(`{"tabKey":"` + tabKey + `","amountCents":500}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{tabKey, tabKey + ".status"}},
+	}
+	testutil.PublishOp(t, conn, voidEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
+}
+
+// TestVoidCharge_RejectsForConsumer proves the fraud-vector gate: a resident
+// (consumer, scope=self on OpenTab/Charge/Settle only) has no VoidCharge
+// grant at all — a self-order mis-tap can only be corrected by staff.
+func TestVoidCharge_RejectsForConsumer(t *testing.T) {
+	ctx, conn := setupDomainEnv(t)
+	testutil.SeedCapDoc(t, ctx, conn, domainConsumerCapDoc())
+	cp, cons := newDomainPipeline(t, ctx, conn, "voidconsumer")
+
+	seedIdentity(t, ctx, conn, domainConsumerID)
+	leaseKey := seedLeaseWithApplicant(t, ctx, conn, "BBCAFEDMNVCNLEASEHJK", domainConsumerID)
+	applicationForLnk := "lnk.leaseapp.BBCAFEDMNVCNLEASEHJK.applicationFor.identity." + domainConsumerID
+
+	openReqID := testutil.GenReqID("cdopentabvcn00000001")
+	openEnv := &processor.OperationEnvelope{
+		RequestID:     openReqID,
+		Lane:          processor.LaneDefault,
+		OperationType: "OpenTab",
+		Actor:         domainConsumerKey,
+		SubmittedAt:   "2026-07-22T12:00:00Z",
+		Class:         "tab",
+		Payload:       json.RawMessage(`{"leaseAppKey":"` + leaseKey + `"}`),
+		ContextHint: &processor.ContextHint{
+			Reads:         []string{leaseKey},
+			OptionalReads: []string{leaseKey + ".cafeOpenTab", applicationForLnk},
+		},
+		AuthContext: &processor.AuthContext{Target: domainConsumerKey},
+	}
+	testutil.PublishOp(t, conn, openEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+	tabKey := "vtx.tab." + nanoIDFromRequestID(openReqID)
+
+	voidEnv := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("cdvoidvcn0000000001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "VoidCharge",
+		Actor:         domainConsumerKey,
+		SubmittedAt:   "2026-07-22T12:05:00Z",
+		Class:         "tab",
+		Payload:       json.RawMessage(`{"tabKey":"` + tabKey + `","amountCents":100}`),
+		ContextHint:   &processor.ContextHint{Reads: []string{tabKey, tabKey + ".status"}},
+		AuthContext:   &processor.AuthContext{Target: domainConsumerKey},
+	}
+	testutil.PublishOp(t, conn, voidEnv)
 	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeRejected)
 }
 

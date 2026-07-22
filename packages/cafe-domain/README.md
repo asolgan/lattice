@@ -23,7 +23,7 @@ composition lens unioning `ledgerHistory` + `cafeLedgerHistory` by `leaseAppKey`
 | **Vertex types** (1) | `tab` (root `{}`, D5, `.status` aspect) |
 | **Aspect types** (1) | `tabStatus` — `vtx.tab.<id>.status`, `{value, totalCents, openedAt, leaseAppKey, settledAt?}` |
 | **Links** (1) | `openFor` (tab → leaseapp) |
-| **Operations** (3) | `OpenTab` · `Charge` · `Settle` |
+| **Operations** (4) | `OpenTab` · `Charge` · `VoidCharge` · `Settle` |
 | **Convergence lens** (1) | `cafeTabSettlement` (one row per tab, `missing_account`/`missing_charge`) → `weaver-targets` (`nats-kv`, `full` engine, actorAggregate) |
 | **Weaver playbook** (1) | `cafeTabSettlement` — `missing_account` → `directOp(CreateAccount)` · `missing_charge` → `directOp(DebitAccount)` (both cafe-ledger) |
 
@@ -43,12 +43,15 @@ lnk.cafetransaction.<id>.settles.tab.<id>     (cafetransaction → tab; written 
 ## OCC-conditioned running total, not append-only line items
 
 Unlike `cafe-ledger`'s append-only transaction history, a tab's `.status.totalCents` is a real
-in-progress accumulator (`Charge` adds to it) — there is no per-item ledger during the POS session, so
-the aspect is upserted directly, OCC-conditioned on its own current revision (the `providerSlotClaim`
-precedent): two concurrent `Charge` calls racing the same tab must not lose an update, so the loser
-gets `RevisionConflict` and retries, rather than one charge silently overwriting the other's total.
-`Settle` freezes `totalCents`, flips `value` to `settled`, and stamps `settledAt` — also
-OCC-conditioned. Both reject a tab that is not currently `open` (`TabNotOpen`).
+in-progress accumulator (`Charge` adds to it, `VoidCharge` subtracts — clamped at 0 rather than going
+negative) — there is no per-item ledger during the POS session, so the aspect is upserted directly,
+OCC-conditioned on its own current revision (the `providerSlotClaim` precedent): two concurrent
+`Charge`/`VoidCharge` calls racing the same tab must not lose an update, so the loser gets
+`RevisionConflict` and retries, rather than one call silently overwriting the other's total.
+`VoidCharge` is operator/`frontOfHouse` only — no self-service grant, since a POS correction is a
+staff decision even to reverse a resident's own self-order mis-tap. `Settle` freezes `totalCents`,
+flips `value` to `settled`, and stamps `settledAt` — also OCC-conditioned. All three reject a tab that
+is not currently `open` (`TabNotOpen`).
 
 ## Weaver posts the settled total, never a direct cross-package write
 

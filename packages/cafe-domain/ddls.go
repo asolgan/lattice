@@ -39,7 +39,7 @@ func tabVertexTypeDDL() pkgmgr.DDLSpec {
 	return pkgmgr.DDLSpec{
 		CanonicalName:     "tab",
 		Class:             "meta.ddl.vertexType",
-		PermittedCommands: []string{"OpenTab", "Charge", "Settle"},
+		PermittedCommands: []string{"OpenTab", "Charge", "VoidCharge", "Settle"},
 		Description: "Café house-tab session DDL. Vertex shape: vtx.tab.<NanoID>, class=tab, root data = {} " +
 			"(minimal, D5 — the running total lives on the .status aspect). OpenTab{leaseAppKey} validates the lease " +
 			"is alive, rejects OpenTabAlreadyExists if the lease already has an open tab (the per-lease " +
@@ -53,22 +53,28 @@ func tabVertexTypeDDL() pkgmgr.DDLSpec {
 			"same tab must not lose an update, so totalCents is a real accumulator, not an idempotent set). A " +
 			"self-service caller instead submits Charge{tabKey, menuItemKey}: amountCents is derived from the " +
 			"referenced menuItem's own .price.priceCents, never trusted from the caller (the menuItem catalog " +
-			"this DDL's sibling exists to bound a self-submitted charge against). Settle{tabKey} closes an " +
+			"this DDL's sibling exists to bound a self-submitted charge against). VoidCharge{tabKey, amountCents} " +
+			"(operator/frontOfHouse only — no self-service grant, a POS correction is a staff decision even when " +
+			"reversing a resident's own self-order mis-tap) subtracts a positive amount from an OPEN tab's running " +
+			"total, same OCC-conditioned upsert as Charge, clamped at 0 rather than rejected when the void exceeds " +
+			"the current total (an over-void is a caller mistake worth correcting cleanly, not a hard failure). " +
+			"Settle{tabKey} closes an " +
 			"OPEN tab (.status.value → settled, settledAt stamped, totalCents frozen), also OCC-conditioned, and " +
 			"tombstones the lease's cafeOpenTabGuard so a later OpenTab can claim it again. Settling emits tab.settled " +
 			"— the cafeTabSettlement lens (lenses.go) picks up a settled tab with totalCents>0 and dispatches the " +
 			"resident's café-ledger posting (opening a cafeaccount via CreateAccount on first use, then " +
-			"DebitAccount{tabRef}) through Weaver, never a direct cross-package write from this script. Both Charge " +
-			"and Settle reject a tab that is not currently open (TabNotOpen) — a settled tab cannot be charged again " +
-			"or double-settled. OpenTab, Charge, and Settle all grant scope=self to consumer: a resident may open, " +
+			"DebitAccount{tabRef}) through Weaver, never a direct cross-package write from this script. Charge, " +
+			"VoidCharge, and Settle all reject a tab that is not currently open (TabNotOpen) — a settled tab's " +
+			"total is frozen and already dispatched to the ledger, so it cannot be charged, voided, or settled again. " +
+			"OpenTab, Charge, and Settle all grant scope=self to consumer: a resident may open, " +
 			"self-order on, or settle a tab for their OWN lease only, verified via the lease's " +
 			"applicationFor→identity link (AuthDenied otherwise).",
 		Script: tabDDLScript,
 		InputSchema: `{"type":"object","properties":` +
 			`{"leaseAppKey":{"type":"string","description":"vtx.leaseapp.<NanoID> the tab is opened for (OpenTab; required, validated alive)."},` +
 			`"tabId":{"type":"string","description":"Optional bare NanoID for the new tab vertex (OpenTab); absent → minted."},` +
-			`"tabKey":{"type":"string","description":"vtx.tab.<NanoID> of an existing tab (Charge/Settle; required, validated alive + open)."},` +
-			`"amountCents":{"type":"number","description":"The charge amount in integer cents; required for an operator Charge, must be > 0."},` +
+			`"tabKey":{"type":"string","description":"vtx.tab.<NanoID> of an existing tab (Charge/VoidCharge/Settle; required, validated alive + open)."},` +
+			`"amountCents":{"type":"number","description":"The amount in integer cents; required for an operator Charge (added to the total) or a VoidCharge (subtracted, clamped at 0), must be > 0."},` +
 			`"menuItemKey":{"type":"string","description":"vtx.menuitem.<NanoID> of a live catalog item (self-service Charge only); amountCents is derived from it, ignoring any caller-supplied amountCents."}},` +
 			`"required":[]}`,
 		OutputSchema: `{"type":"object","properties":` +
@@ -76,8 +82,8 @@ func tabVertexTypeDDL() pkgmgr.DDLSpec {
 		FieldDescription: map[string]string{
 			"leaseAppKey": "Full vtx.leaseapp.<NanoID> key of the resident lease the tab is opened for (OpenTab; required, validated alive). Denormalized onto the tab's own .status aspect so Charge/Settle need no extra declared read to recover it.",
 			"tabId":       "Optional bare NanoID (no dots / key segments) for the new tab vertex (vtx.tab.<tabId>). Absent → minted with nanoid.new() (OpenTab).",
-			"tabKey":      "Full vtx.tab.<NanoID> key of an existing tab (Charge/Settle; required, validated alive + class=tab + currently open).",
-			"amountCents": "The charge amount in integer cents; required for an operator Charge (must be a positive number), added to the tab's running .status.totalCents. Ignored for a self-service Charge — see menuItemKey.",
+			"tabKey":      "Full vtx.tab.<NanoID> key of an existing tab (Charge/VoidCharge/Settle; required, validated alive + class=tab + currently open).",
+			"amountCents": "The amount in integer cents; required for an operator Charge (must be a positive number, added to the tab's running .status.totalCents) or a VoidCharge (must be a positive number, subtracted from .status.totalCents and clamped at 0). Ignored for a self-service Charge — see menuItemKey.",
 			"menuItemKey": "Full vtx.menuitem.<NanoID> key of a live catalog item (self-service Charge only; required when the caller has no operator grant). amountCents is derived from the item's own .price.priceCents, never trusted from the caller.",
 		},
 		Examples: []pkgmgr.ExampleSpec{
@@ -105,6 +111,14 @@ func tabVertexTypeDDL() pkgmgr.DDLSpec {
 					"retired, or AuthDenied if the tab's lease is not identified-by the caller.",
 			},
 			{
+				Name:    "VoidCharge — correct a mis-tapped charge (operator/frontOfHouse only)",
+				Payload: map[string]any{"tabKey": "vtx.tab.<NanoID>", "amountCents": 450},
+				ExpectedOutcome: "Validates the tab is alive + open, subtracts 450 from .status.totalCents " +
+					"(OCC-conditioned on the aspect's current revision), clamped at 0 rather than going negative. " +
+					"Returns primaryKey. Rejects TabNotOpen if the tab is already settled, or InvalidArgument if " +
+					"amountCents <= 0.",
+			},
+			{
 				Name:    "Settle — close a tab for house-account posting",
 				Payload: map[string]any{"tabKey": "vtx.tab.<NanoID>"},
 				ExpectedOutcome: "Validates the tab is alive + open, sets .status.value to settled and stamps " +
@@ -116,16 +130,18 @@ func tabVertexTypeDDL() pkgmgr.DDLSpec {
 }
 
 // tabStatusAspectTypeDDL declares the .status aspect (class tabStatus) — the
-// step-6 write gate for OpenTab (mints)/Charge (accumulates)/Settle (closes),
-// all owned by the tab vertexType DDL's own script. Declaration-only.
+// step-6 write gate for OpenTab (mints)/Charge (accumulates)/VoidCharge
+// (decrements)/Settle (closes), all owned by the tab vertexType DDL's own
+// script. Declaration-only.
 func tabStatusAspectTypeDDL() pkgmgr.DDLSpec {
 	return pkgmgr.DDLSpec{
 		CanonicalName:     "tabStatus",
 		Class:             "meta.ddl.aspectType",
-		PermittedCommands: []string{"OpenTab", "Charge", "Settle"},
+		PermittedCommands: []string{"OpenTab", "Charge", "VoidCharge", "Settle"},
 		Description: "Tab status aspect (café). Stored as vtx.tab.<NanoID>.status (class tabStatus) = " +
 			"{value: open|settled, totalCents, openedAt, leaseAppKey, settledAt?}. Non-sensitive. Written by OpenTab " +
-			"(mints, value=open, totalCents=0), Charge (OCC-conditioned accumulate onto totalCents), and Settle " +
+			"(mints, value=open, totalCents=0), Charge (OCC-conditioned accumulate onto totalCents), VoidCharge " +
+			"(OCC-conditioned decrement of totalCents, clamped at 0), and Settle " +
 			"(OCC-conditioned close, value=settled, settledAt stamped) — all owned by the tab vertexType DDL's script. " +
 			"Declaration-only: no op handler of its own.",
 		Script: aspectDeclarationOnlyScript,
@@ -279,11 +295,16 @@ def execute(state, op):
     fail("aspect-type DDL: not an operation handler: " + op.operationType)
 `
 
-// tabDDLScript handles OpenTab, Charge, Settle. Known-key reads only: Charge
-// and Settle both declare tabKey + tabKey+".status" in ContextHint.Reads so
-// the current .status revision is hydrated for OCC conditioning (the
-// providerSlotClaim precedent — an accumulator must not lose a concurrent
-// update, unlike an idempotent status flip's unconditioned upsert). OpenTab
+// tabDDLScript handles OpenTab, Charge, VoidCharge, Settle. Known-key reads
+// only: Charge, VoidCharge, and Settle all declare tabKey + tabKey+".status"
+// in ContextHint.Reads so the current .status revision is hydrated for OCC
+// conditioning (the providerSlotClaim precedent — an accumulator must not
+// lose a concurrent update, unlike an idempotent status flip's unconditioned
+// upsert). VoidCharge carries no self-scope grant (permissions.go) — a POS
+// correction is a staff decision even when it reverses a resident's own
+// self-order mis-tap, so the script has no ownership-check branch for it
+// (the capability plane denies a scope=self caller before this script ever
+// runs). OpenTab
 // declares <leaseAppKey>.cafeOpenTab in ContextHint.OptionalReads (Contract
 // #2 §2.5 class-(d) read-before-create/dedup) so the per-lease open-tab
 // guard's current state — absent, tombstoned, or alive — is hydrated
@@ -671,6 +692,47 @@ def execute(state, op):
                         "leaseAppKey": existing.data.get("leaseAppKey")}
         mutations = [make_aspect_upsert_occ(tab_key, "status", "tabStatus", status_data, existing.revision)]
         events = [{"class": "tab.charged", "data": {"tabKey": tab_key, "amountCents": amount_cents, "totalCents": new_total}}]
+        return {"mutations": mutations, "events": events,
+                "response": {"primaryKey": tab_key}}
+
+    if ot == "VoidCharge":
+        # Operator/frontOfHouse-only correction (permissions.go grants no
+        # scope=self): a POS void is a staff decision, even when reversing a
+        # resident's own self-order mis-tap -- letting a resident void their
+        # own charge would let them un-charge an item after it was ordered,
+        # unlike Charge/Settle where self-scope is safe because the resident
+        # only ever acts on their own tab in the forward direction.
+        tab_key = required_string(p, "tabKey")
+        parts_of(tab_key, "tabKey", "tab")
+        if not vertex_alive(state, tab_key):
+            fail("UnknownTab: " + tab_key)
+        if class_of(state, tab_key) != "tab":
+            fail("WrongClass: tabKey: " + tab_key)
+
+        amount_cents = require_number(p, "amountCents")
+        if amount_cents <= 0:
+            fail("InvalidArgument: amountCents: required positive number")
+
+        existing = require_open_status(state, tab_key)
+
+        # Staff-standing confinement: the lease comes from the tab's OWN
+        # .status aspect (never the payload), same derivation as Charge/Settle.
+        if not workplace_exempt():
+            require_workplace([leaseapp_unit(existing.data.get("leaseAppKey"))],
+                              "cannot void a charge on tab " + tab_key)
+
+        # Clamped, not rejected: an over-void (voiding more than the tab's
+        # current running total) is a caller mistake worth correcting
+        # cleanly to 0, not a hard failure that leaves the wrong total
+        # standing.
+        new_total = existing.data.get("totalCents") - amount_cents
+        if new_total < 0:
+            new_total = 0
+        status_data = {"value": "open", "totalCents": new_total,
+                        "openedAt": existing.data.get("openedAt"),
+                        "leaseAppKey": existing.data.get("leaseAppKey")}
+        mutations = [make_aspect_upsert_occ(tab_key, "status", "tabStatus", status_data, existing.revision)]
+        events = [{"class": "tab.chargeVoided", "data": {"tabKey": tab_key, "amountCents": amount_cents, "totalCents": new_total}}]
         return {"mutations": mutations, "events": events,
                 "response": {"primaryKey": tab_key}}
 

@@ -24,9 +24,17 @@ import "github.com/operatinggraph/lattice/internal/pkgmgr"
 // the POS beat the package doc above already describes as the trusted-tool
 // app's job. Naming the role makes that posture honest: the shipped café FE
 // submits as `operator` (root-equivalent) today, and `frontOfHouse` reaches
-// exactly the three tab ops and nothing else. The menu catalog
+// exactly the four tab ops below and nothing else. The menu catalog
 // (CreateMenuItem / RetireMenuItem) stays operator-only — pricing is not a
 // front-desk decision, and the self-service Charge derivation trusts it.
+//
+// VoidCharge (corrects a mis-tapped charge) grants ONLY `operator` +
+// `frontOfHouse`, at scope=any — no `consumer` grant, unlike its three
+// siblings above. A POS void is a staff decision even when it reverses a
+// resident's own self-order mis-tap: letting a resident submit it directly
+// would let them un-charge an item after ordering it, a fraud vector Charge
+// and Settle don't share (a resident only ever acts on their own tab in the
+// forward direction there).
 func Permissions() []pkgmgr.PermissionSpec {
 	return []pkgmgr.PermissionSpec{
 		{
@@ -52,6 +60,12 @@ func Permissions() []pkgmgr.PermissionSpec {
 			Scope:         "self",
 			Note:          "Grants a consumer the right to self-order on THEIR OWN house tab (the tab's lease must be identified-by the caller's own identity); amountCents is derived from a menuItem catalog entry, never trusted from the caller.",
 			GrantsTo:      []string{"consumer"},
+		},
+		{
+			OperationType: "VoidCharge",
+			Scope:         "any",
+			Note:          "Grants the operator and front-of-house staff the right to submit VoidCharge (corrects a mis-tapped charge by subtracting from an open tab's running total, clamped at 0). No self-service grant — a POS correction is a staff decision, even to reverse a resident's own self-order mis-tap.",
+			GrantsTo:      []string{"operator", "frontOfHouse"},
 		},
 		{
 			OperationType: "Settle",
