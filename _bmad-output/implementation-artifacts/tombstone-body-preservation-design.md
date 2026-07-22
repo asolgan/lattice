@@ -1,6 +1,6 @@
 # Design — Tombstone body preservation as posture (a tombstone may never blank a body)
 
-**Status: 📐 awaiting-Andrew (ratification)**
+**Status: ✅ Andrew-ratified (2026-07-22).** Build runs through the Lattice lane (Fire 1 → Fire 2, §6).
 **Author: Winston (Designer fire, 2026-07-22)**
 **Backlog row:** `planning-artifacts/backlog/lattice.md` → *Component maintenance* → "[Processor] A tombstone now retains the entity body".
 **Grounded demand:** the step-8 document-preservation fix (`7e5f1e6`, 2026-07-19) made body-preservation the runtime truth; the board filed the residual posture question — *whether a tombstone may ever blank a body* — as a Contract #3 call for Andrew.
@@ -13,7 +13,7 @@
 
 **No architectural fork.** This codifies shipped behavior; the one judgment call (silent-ignore vs warn vs reject on a tombstone-with-document) is designed through in §5 with warn→reject recommended, mirroring the script-read-posture warn→block precedent.
 
-**Frozen-contract changes (staged UNCOMMITTED in `main` — the diff is the proposal).**
+**Frozen-contract changes (ratified 2026-07-22, committed with this design).**
 - **Contract #3 §3.3 (`tombstone`)** — two sharpening sentences: a tombstone mutation carries no `document` (one supplied is not honored); body erasure is not a tombstone capability — sensitive-content erasure is crypto-shred (§3.10/§3.11), keyspace reclaim is the (shelved) hard-delete verb. Affected consumers: script authors + the three in-repo emitters (all cleaned in Fire 1); no runtime semantics change.
 - **Contract #8 (UpgradePackage payload example)** — the tombstone example row drops its `"document": { "isDeleted": true, "data": {} }` husk, which today *teaches* the pattern this design retires. Affected consumers: `internal/pkgmgr` (the only payload producer; cleaned in Fire 1).
 
@@ -99,7 +99,7 @@ blank a body?**
 - **Contract #4's operator-tombstone-then-resubmit** (tombstoning a `vtx.op.` tracker to permit
   retry) is unaffected — it keys off `isDeleted`, not the body.
 
-## 4. Contract surface (both edits staged UNCOMMITTED)
+## 4. Contract surface (both edits ratified + committed)
 
 - **Contract #3 §3.3 `tombstone` paragraph** — append: *"A tombstone mutation carries no `document`;
   one supplied is not honored (warned today, rejected once the emitter sweep lands — §5). A

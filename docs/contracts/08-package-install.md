@@ -198,7 +198,7 @@ upgrade is a true in-place update; every NanoID cross-reference stays valid.
   "mutations": [
     { "op": "update",    "key": "vtx.meta.AbCd…", "document": { "class": "meta.lens", "data": {} } },
     { "op": "create",    "key": "vtx.meta.WxYz…", "document": { "class": "meta.ddl.vertexType", "data": {} } },
-    { "op": "tombstone", "key": "vtx.permission.MnPq…", "document": { "isDeleted": true, "data": {} } }
+    { "op": "tombstone", "key": "vtx.permission.MnPq…" }
   ]
 }
 ```

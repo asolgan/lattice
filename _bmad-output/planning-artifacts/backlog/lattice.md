@@ -47,7 +47,7 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | **[Loom] Guardless-step recovery check-before-act probe** | On total `loom-state` loss + a re-triggered `StartLoomPattern`, a fresh instance replays guards from cursor 0 (re-runs an already-applied guarded step). | ★ | S–M | 🗄️ shelved-backup (Andrew: no new engine Core-KV reads) |
-| **[Processor] Tombstone body-preservation posture** | May a tombstone ever blank a body? Runtime already preserves the body (step 8); three emitters still ship an inert blanking husk and the UpgradePackage schema forces it. Posture ratification + Contract #3/#8 clarifying edits (staged uncommitted) + emitter sweep with a warn→reject parser gate. | ★★ | S | 📐 awaiting-Andrew · [design](../../implementation-artifacts/tombstone-body-preservation-design.md) |
+| **[Processor] Tombstone body-preservation posture** | May a tombstone ever blank a body? Runtime already preserves the body (step 8); three emitters still ship an inert blanking husk and the UpgradePackage schema forces it. Posture ratified + Contract #3/#8 clarifying edits landed; build = emitter sweep with a warn→reject parser gate. | ★★ | S | ✅ Andrew-ratified · [design](../../implementation-artifacts/tombstone-body-preservation-design.md) |
 | **[Weaver] Fresh-episode/reclaim error-branch coverage** | `fireEpisode`'s stale-mark reclaim path (NanoID-mint + `marks.replace` failures, 41.4% cov), `bumpDispatchCount`/`bumpEffectDispatch` failure-log branches (50%), `sweeper.deleteEffect` conflict/delete-failure (44.4%), and `reconcileConsumers` supervisor Add/UpdateSpec/Reset/Remove + health-sink-delete failure paths (62.7%) are the lowest-covered branches in an otherwise 86.8%-covered package (`internal/weaver/evaluator.go`, `reconciler.go`, `engine.go`). | ★ | S–M | 📋 ready |
 | **[Bootstrap] `cmd/bootstrap` has no test files — the seed decision is inspection-only** | The probe, re-seed, and two-phase reopen are covered in `internal/bootstrap`, but the branch that *decides* to re-seed lives in `package main` and is untested. Consumer: the freshness probe's own decision path. Either extract the decision into `internal/bootstrap` or add a `cmd/bootstrap` test binary. | ★ | XS–S | 📋 ready · `cmd/bootstrap/main.go:110-140` |
 | **[Refractor] Personal Lens rows never retract** | No stored key-state to diff against (`NatsSubjectAdapter`), so a stale multi-row anchor (e.g. a completed task) never gets a `Delete`, live or via cold `Hydrate`. Blocks the verticals staff-worlds claim beat. | ★★ | M | ✅ Andrew-ratified · [design](../../implementation-artifacts/personal-lens-retraction-design.md) |
@@ -114,8 +114,8 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 > (★★ M, ✅ Andrew-ratified · [design](../../implementation-artifacts/personal-lens-retraction-design.md)).
 > Then the **📋 ready rows in Component maintenance**: **[Weaver] fresh-episode/reclaim
 > error-branch coverage** (★ S–M) and **[Bootstrap] `cmd/bootstrap` tests** (★ XS–S).
-> **[Processor] tombstone-body posture call** is 🏗️ designing (Designer fire 2026-07-22), not
-> build-ready yet. Every ✅ ratified row in the feature tables below stays Andrew-gated or
+> **[Processor] tombstone body-preservation posture** (★★ S) is ✅ Andrew-ratified and build-ready
+> — Fire 1 is the emitter sweep. Every ✅ ratified row in the feature tables below stays Andrew-gated or
 > driver-blocked. A stale callout starves the lane — whoever ships the top pick renames this
 > to the next.
 
