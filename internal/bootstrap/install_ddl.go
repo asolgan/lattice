@@ -157,8 +157,7 @@ def execute(state, op):
         # rejects the whole op when data.protected == true. This script does
         # NOT (and cannot, with empty hydrated state) backstop that.
 
-        mut = {"op": "tombstone", "key": key,
-               "document": {"isDeleted": True, "data": {}}}
+        mut = {"op": "tombstone", "key": key}
         if expected != None:
             if type(expected) != type(0):
                 fail("InvalidArgument: expectedRevision must be an integer: " + key)
@@ -231,9 +230,12 @@ def execute(state, op):
             local = _aspect_local_name(key)
             if len(local) > 0 and local[0] == "_":
                 fail("InvalidArgument: underscore-prefixed aspect not allowed: " + key)
-        if "document" not in m or type(m["document"]) != type({}):
-            fail("InvalidArgument: mutation requires a document dict: " + key)
-        out_mut = {"op": mop, "key": key, "document": m["document"]}
+        if mop == "tombstone":
+            out_mut = {"op": mop, "key": key}
+        else:
+            if "document" not in m or type(m["document"]) != type({}):
+                fail("InvalidArgument: mutation requires a document dict: " + key)
+            out_mut = {"op": mop, "key": key, "document": m["document"]}
         if "expectedRevision" in m and m["expectedRevision"] != None:
             expected = m["expectedRevision"]
             if type(expected) != type(0):
@@ -317,7 +319,7 @@ var uninstallPackageExamples = []any{
 	},
 }
 
-const upgradePackageInputSchema = `{"type":"object","required":["name","fromVersion","toVersion","mutations"],"properties":{"name":{"type":"string"},"fromVersion":{"type":"string"},"toVersion":{"type":"string"},"mutations":{"type":"array","items":{"type":"object","required":["op","key","document"],"properties":{"op":{"type":"string","enum":["create","update","tombstone"]},"key":{"type":"string"},"document":{"type":"object"},"expectedRevision":{"type":"integer"}}}}}}`
+const upgradePackageInputSchema = `{"type":"object","required":["name","fromVersion","toVersion","mutations"],"properties":{"name":{"type":"string"},"fromVersion":{"type":"string"},"toVersion":{"type":"string"},"mutations":{"type":"array","items":{"type":"object","required":["op","key"],"properties":{"op":{"type":"string","enum":["create","update","tombstone"]},"key":{"type":"string"},"document":{"type":"object"},"expectedRevision":{"type":"integer"}}}}}}`
 
 // UpgradePackage is multi-key with no single principal entity, so the reply
 // carries no primaryKey. The committed key set is the key set of
@@ -331,7 +333,7 @@ var upgradePackageFieldDescription = map[string]any{
 	"mutations":                    "The pre-computed diff delta: create new entities, update changed bodies, tombstone removed entities — applied in one atomic batch.",
 	"mutations[].op":               "One of 'create' / 'update' / 'tombstone'.",
 	"mutations[].key":              "The version-independent Contract #1 key the mutation targets (vtx.* or lnk.*).",
-	"mutations[].document":         "The logical document body. Provenance is stamped by the Processor; protected kernel/auth roots are rejected at commit time.",
+	"mutations[].document":         "The logical document body. Required for create/update; a tombstone carries none — one supplied is not honored. Provenance is stamped by the Processor; protected kernel/auth roots are rejected at commit time.",
 	"mutations[].expectedRevision": "Optional NATS revision for OCC on an update/tombstone — the mutation fails if the key was modified since the diff's read.",
 }
 
@@ -347,8 +349,7 @@ var upgradePackageExamples = []any{
 					"document": map[string]any{"class": "meta.lens", "isDeleted": false, "data": map[string]any{}}},
 				map[string]any{"op": "create", "key": "vtx.meta.WxYz123456789AbCdEfG",
 					"document": map[string]any{"class": "meta.ddl.vertexType", "isDeleted": false, "data": map[string]any{}}},
-				map[string]any{"op": "tombstone", "key": "vtx.permission.MnPqRsTuVwXyZ1234567",
-					"document": map[string]any{"isDeleted": true, "data": map[string]any{}}},
+				map[string]any{"op": "tombstone", "key": "vtx.permission.MnPqRsTuVwXyZ1234567"},
 			},
 		},
 		"expectedOutcome": "Commits the mixed delta in one atomic batch; changed lens/DDL meta-vertices are re-projected and the DDL cache is invalidated in-commit (no restart).",

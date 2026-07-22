@@ -279,7 +279,6 @@ func (i *Installer) diffManifest(ctx context.Context, oldKeys []string, newOps [
 		out = append(out, installMutation{
 			Op:               "tombstone",
 			Key:              k,
-			Document:         map[string]any{"isDeleted": true, "data": map[string]any{}},
 			ExpectedRevision: &rev,
 		})
 		sum.tombstoned++

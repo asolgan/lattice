@@ -1,6 +1,6 @@
 # Privacy-worker
 
-**Component reference** | Audience: implementers + architects | Contract authority: `docs/contracts/03-processor-mutation-semantics.md` §3.10/§3.11 (crypto-shredding); design: `vault-crypto-shredding-design.md` §2.4 (Fire 3/4b)
+**Component reference** | Audience: implementers + architects | Contract authority: `docs/contracts/03-mutation-batch-event-list.md` §3.10/§3.11 (crypto-shredding); design: `vault-crypto-shredding-design.md` §2.4 (Fire 3/4b)
 
 ---
 

@@ -1,9 +1,11 @@
 package processor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -368,5 +370,75 @@ def execute(state, op):
 	}
 	if *m.ExpectedRevision != 42 {
 		t.Fatalf("ExpectedRevision: got %d want 42", *m.ExpectedRevision)
+	}
+}
+
+// TestParseMutations_TombstoneBare verifies a huskless tombstone (no
+// "document" key at all — the shape every in-repo emitter produces post
+// tombstone-body-preservation-design.md Fire 1) parses cleanly with a nil
+// Document and no warning.
+func TestParseMutations_TombstoneBare(t *testing.T) {
+	var logBuf bytes.Buffer
+	prevDefault := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	defer slog.SetDefault(prevDefault)
+
+	exec := NewExecutor(NewStarlarkRunner(0, 0), testLogger())
+	script := `
+def execute(state, op):
+    return {"mutations": [{"op": "tombstone", "key": "vtx.meta.AAAAAAAAAAAAAAAAAAAA"}], "events": []}
+`
+	sc := buildContext(script)
+	res, err := exec.Execute(context.Background(), sc.Operation, HydratedState{Context: sc})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(res.Mutations) != 1 {
+		t.Fatalf("expected 1 mutation, got %d", len(res.Mutations))
+	}
+	if m := res.Mutations[0]; m.Document != nil {
+		t.Fatalf("expected nil Document on a bare tombstone, got %+v", m.Document)
+	}
+	if strings.Contains(logBuf.String(), "unhonored document") {
+		t.Fatalf("bare tombstone must not warn: %s", logBuf.String())
+	}
+}
+
+// TestParseMutations_TombstoneWithDocumentWarnsAndDrops verifies the Fire 1
+// posture (tombstone-body-preservation-design.md §5): a tombstone mutation
+// carrying a "document" has it silently dropped (never honored) but the
+// drop is no longer silent — a structured warning is logged carrying the
+// requestId, mutation index, and key. Fire 2 sequences this to a reject once
+// warn sightings are clean.
+func TestParseMutations_TombstoneWithDocumentWarnsAndDrops(t *testing.T) {
+	var logBuf bytes.Buffer
+	prevDefault := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logBuf, nil)))
+	defer slog.SetDefault(prevDefault)
+
+	exec := NewExecutor(NewStarlarkRunner(0, 0), testLogger())
+	const tombKey = "vtx.meta.BBBBBBBBBBBBBBBBBBBB"
+	script := `
+def execute(state, op):
+    return {"mutations": [{"op": "tombstone", "key": "` + tombKey + `",
+        "document": {"isDeleted": True, "data": {}}}], "events": []}
+`
+	sc := buildContext(script)
+	res, err := exec.Execute(context.Background(), sc.Operation, HydratedState{Context: sc})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(res.Mutations) != 1 {
+		t.Fatalf("expected 1 mutation, got %d", len(res.Mutations))
+	}
+	if m := res.Mutations[0]; m.Document != nil {
+		t.Fatalf("a supplied tombstone document must be dropped, not honored: %+v", m.Document)
+	}
+	logged := logBuf.String()
+	if !strings.Contains(logged, "unhonored document") {
+		t.Fatalf("expected an unhonored-document warning, got: %s", logged)
+	}
+	if !strings.Contains(logged, sc.Operation.RequestID) || !strings.Contains(logged, tombKey) {
+		t.Fatalf("warning missing requestId/key detail: %s", logged)
 	}
 }

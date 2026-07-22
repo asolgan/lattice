@@ -38,7 +38,7 @@ const metaVertexPrefix = "vtx.meta."
 type installMutation struct {
 	Op               string         `json:"op"`
 	Key              string         `json:"key"`
-	Document         map[string]any `json:"document"`
+	Document         map[string]any `json:"document,omitempty"`
 	ExpectedRevision *uint64        `json:"expectedRevision,omitempty"`
 }
 

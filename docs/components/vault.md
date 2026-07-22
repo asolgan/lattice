@@ -1,6 +1,6 @@
 # Vault
 
-**Component reference** | Audience: implementers + architects | Contract authority: `docs/contracts/03-processor-mutation-semantics.md` §3.10 (sensitive-aspect encryption at rest) / §3.11 (sensitive-object encryption); design: `vault-crypto-shredding-design.md`
+**Component reference** | Audience: implementers + architects | Contract authority: `docs/contracts/03-mutation-batch-event-list.md` §3.10 (sensitive-aspect encryption at rest) / §3.11 (sensitive-object encryption); design: `vault-crypto-shredding-design.md`
 
 ---
 

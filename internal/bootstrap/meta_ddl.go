@@ -67,8 +67,7 @@ def make_update(key, data):
             "document": {"isDeleted": False, "data": data}}
 
 def make_tombstone(key):
-    return {"op": "tombstone", "key": key,
-            "document": {"isDeleted": True, "data": {}}}
+    return {"op": "tombstone", "key": key}
 
 def required_string(p, name):
     if not hasattr(p, name):
