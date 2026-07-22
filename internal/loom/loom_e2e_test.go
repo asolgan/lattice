@@ -3,6 +3,7 @@ package loom_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"sync"
@@ -778,6 +779,25 @@ func waitSubmitted(t *testing.T, fp *fakeProcessor, n int64) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("fake processor never reached %d submitted systemOp(s) (have %d)", n, atomic.LoadInt64(&fp.submitted))
+}
+
+// waitTaskCreated blocks until the fake processor has recorded the CreateTask
+// that mints taskKey, or fails the test on timeout. Deterministic sync for the
+// outbox relay round-trip: waitTaskKey returns on the loom-state write-ahead
+// token, which is durably written BEFORE the relay publishes CreateTask and the
+// fake processor records it — so reading taskCreated once right after
+// waitTaskKey races the relay. msg/args describe the awaited task for the
+// failure message.
+func waitTaskCreated(t *testing.T, fp *fakeProcessor, taskKey, msg string, args ...any) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if fp.taskCreated(taskKey) {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("CreateTask minting %s never recorded: %s", taskKey, fmt.Sprintf(msg, args...))
 }
 
 func waitPending(t *testing.T, ctx context.Context, conn *substrate.Conn, instanceID string) {

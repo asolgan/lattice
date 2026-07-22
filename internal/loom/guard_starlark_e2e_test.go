@@ -341,7 +341,7 @@ func TestGuardE2E_DisasterRecoveryCursorRebuild_StarlarkGuard(t *testing.T) {
 
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
 	taskKey1 := waitTaskKey(t, ctx, conn, instanceID, 1)
-	require.True(t, fp.taskCreated(taskKey1), "step 1 (SetPhone) CreateTask minted")
+	waitTaskCreated(t, fp, taskKey1, "step 1 (SetPhone) CreateTask minted")
 	require.Equal(t, 1, fp.createTaskCount(), "only SetPhone created — SetName was guard-skipped (no task)")
 
 	// --- Disaster: lose loom-state entirely (cursor, token, outbox all gone). ---
@@ -364,7 +364,7 @@ func TestGuardE2E_DisasterRecoveryCursorRebuild_StarlarkGuard(t *testing.T) {
 	// The re-driven instance guard-replays: name still present → step 0 skipped
 	// again (NO second SetName task); phone still absent → lands on step 1.
 	taskKey1b := waitTaskKey(t, ctx, conn, instanceID2, 1)
-	require.True(t, fp.taskCreated(taskKey1b), "re-driven instance lands on SetPhone (step 1), not SetName (step 0)")
+	waitTaskCreated(t, fp, taskKey1b, "re-driven instance lands on SetPhone (step 1), not SetName (step 0)")
 
 	// CreateTask accounting: gen-1 SetPhone (1) + gen-2's own SetPhone (1) = 2.
 	// Crucially NO SetName task was ever created in either generation — step 0's

@@ -175,7 +175,7 @@ func TestOnboardingE2E_UserTaskFlow(t *testing.T) {
 	for i, op := range steps {
 		// The step submits CreateTask and WAITS on a live token.<taskKey>.
 		taskKey := waitTaskKey(t, ctx, conn, instanceID, i)
-		require.True(t, fp.taskCreated(taskKey), "step %d must submit CreateTask minting %s", i, taskKey)
+		waitTaskCreated(t, fp, taskKey, "step %d must submit CreateTask minting %s", i, taskKey)
 
 		// The user performs the bound op → auto-complete → orchestration.taskCompleted(taskKey)
 		// → Loom correlates and advances.
@@ -242,7 +242,7 @@ func TestOnboardingE2E_LongWaitRestartExactlyOnce(t *testing.T) {
 
 	instanceID := submitStartLoomPattern(t, ctx, conn, patternID, subjectKey)
 	taskKey0 := waitTaskKey(t, ctx, conn, instanceID, 0)
-	require.True(t, fp.taskCreated(taskKey0), "step 0 CreateTask must have committed before crash")
+	waitTaskCreated(t, fp, taskKey0, "step 0 CreateTask must have committed before crash")
 	require.Equal(t, 1, fp.createTaskCount(), "exactly one CreateTask before the user acts")
 
 	// Crash generation 1 with the user not having acted (token still live). Wait
@@ -403,7 +403,7 @@ func TestOnboardingE2E_CreatedTaskDisarmsForUnboundedWait(t *testing.T) {
 	// Step 0 parks on a live userTask token; CreateTask has committed (task vertex
 	// minted).
 	taskKey0 := waitTaskKey(t, ctx, conn, instanceID, 0)
-	require.True(t, fp.taskCreated(taskKey0), "step 0 CreateTask must commit (task vertex minted)")
+	waitTaskCreated(t, fp, taskKey0, "step 0 CreateTask must commit (task vertex minted)")
 
 	// Wait WELL PAST the creation-deadline without acting. The deadline fires, the
 	// probe sees the task vertex, disarms, and the instance stays running at
