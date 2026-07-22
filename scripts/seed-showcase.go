@@ -73,7 +73,6 @@ const (
 	cafeTplID     = "7HRxY1Ymcjv2kuWoR1uC"
 	instance1ID   = "w3wX6tCr9EQMDo7zKu6P"
 	studioID      = "aZmZkW2ws3mUHhRnWTJL"
-	sessionID     = "wvgK4ajnFVyfYJbuhYhJ"
 	providerID    = "fkCFqiGUn5t9En8hoCrc"
 
 	// CreateLocation mints vtx.<locationType>.<id> — the type-specific prefix,
@@ -87,7 +86,6 @@ const (
 	wellnessTplKey = "vtx.service." + wellnessTplID
 	cafeTplKey     = "vtx.service." + cafeTplID
 	studioKey      = "vtx.studio." + studioID
-	sessionKey     = "vtx.session." + sessionID
 	providerKey    = "vtx.provider." + providerID
 
 	tenant1Name  = "Riley Chen"
@@ -153,8 +151,8 @@ func main() {
 		fmt.Println("==> template wellness: " + wellnessTplKey + " availableAt building, permits CreateBooking/CancelBooking")
 		seedCafeTemplate(ctx, conn, adminKey)
 		fmt.Println("==> template cafe: " + cafeTplKey + " availableAt building, permits OpenTab/Settle")
-		seedWellnessEntities(ctx, conn, adminKey)
-		fmt.Println("==> studio+session: " + studioKey + " locatedAt building; " + sessionKey + " bookable")
+		sessKey := seedWellnessEntities(ctx, conn, adminKey)
+		fmt.Println("==> studio+session: " + studioKey + " locatedAt building; " + sessKey + " bookable")
 		seedClinicProvider(ctx, conn, adminKey)
 		fmt.Println("==> provider: " + providerKey + " practicesAt building")
 		seedLocationPresentation(ctx, conn, adminKey)
@@ -246,8 +244,8 @@ func main() {
 	// entity-browse-design.md §4 step 2 — without these the browse view is
 	// correct and empty) --
 
-	seedWellnessEntities(ctx, conn, adminKey)
-	fmt.Println("==> studio+session: " + studioKey + " locatedAt building; " + sessionKey + " bookable")
+	sessKey := seedWellnessEntities(ctx, conn, adminKey)
+	fmt.Println("==> studio+session: " + studioKey + " locatedAt building; " + sessKey + " bookable")
 	seedClinicProvider(ctx, conn, adminKey)
 	fmt.Println("==> provider: " + providerKey + " practicesAt building")
 
@@ -540,23 +538,29 @@ func seedCafeTemplate(ctx context.Context, conn *substrate.Conn, adminKey string
 
 // seedWellnessEntities mints the showcase wellness studio — locatedAt the
 // showcase building, the authZ-free browse-reachability link facet-entity-
-// browse-design.md §3 F1 adds — and one bookable class session at it, with
-// fixed checked-in handles so reruns converge. Per-mutation idempotent,
-// mirroring seedClinicTemplate: an already-seeded stack layers in whatever
-// is missing. The session's startsAt is computed at seed time (24h out on
-// the 15-minute booking grid) and NOT refreshed by a rerun — an aged demo
-// session is still browsable, just past; tombstone it to re-mint fresh.
-func seedWellnessEntities(ctx context.Context, conn *substrate.Conn, adminKey string) {
+// browse-design.md §3 F1 adds — and one bookable class session at it. The
+// studio keeps its fixed checked-in handle; the SESSION id rolls by UTC day
+// (a deterministic derivation over the day) so a reseed against a world the
+// nightly wipe did NOT clear — a redeploy, or a box whose reset timer lapsed —
+// still mints a class that starts in the FUTURE, instead of leaving the last
+// deploy's now-past session as the only thing Nearby can offer (a demo visitor
+// then can't book). Two reseeds on the same UTC day converge on the same id
+// (per-mutation idempotent, mirroring seedClinicTemplate). Past sessions from
+// prior days linger in Core KV but the Nearby renderer hides them by startsAt;
+// the nightly wipe clears them for good. Returns the live session key.
+func seedWellnessEntities(ctx context.Context, conn *substrate.Conn, adminKey string) string {
 	if !alive(ctx, conn, studioKey) {
 		submitOp(ctx, conn, adminKey, "CreateStudio", "studio",
 			map[string]any{"name": "Riverside Movement Studio", "studioId": studioID, "location": buildingKey},
 			&processor.ContextHint{Reads: []string{buildingKey}})
 	}
-	if !alive(ctx, conn, sessionKey) {
-		start := time.Now().UTC().Add(24 * time.Hour).Truncate(15 * time.Minute)
-		end := start.Add(time.Hour)
+	start := time.Now().UTC().Add(24 * time.Hour).Truncate(15 * time.Minute)
+	end := start.Add(time.Hour)
+	sessID := substrate.DeriveNanoID("showcase-wellness-session", start.Format("2006-01-02"))
+	sessKey := "vtx.session." + sessID
+	if !alive(ctx, conn, sessKey) {
 		submitOp(ctx, conn, adminKey, "CreateSession", "session",
-			map[string]any{"studio": studioKey, "sessionId": sessionID, "name": "Vinyasa Flow",
+			map[string]any{"studio": studioKey, "sessionId": sessID, "name": "Vinyasa Flow",
 				"startsAt": start.Format(time.RFC3339), "endsAt": end.Format(time.RFC3339), "capacity": 12},
 			&processor.ContextHint{
 				Reads: []string{studioKey},
@@ -565,6 +569,7 @@ func seedWellnessEntities(ctx context.Context, conn *substrate.Conn, adminKey st
 				OptionalReads: slotClaimKeys(studioKey, start, end),
 			})
 	}
+	return sessKey
 }
 
 // seedClinicProvider mints the showcase clinic provider and assigns it to

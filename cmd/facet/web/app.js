@@ -198,6 +198,21 @@ function instances() { return rowsByNs("manifest.inst"); }
 function entities() { return rowsByNs("manifest.ent"); }
 function entitiesByType(type) { return entities().filter((e) => e.data.entityType === type); }
 
+// A time-anchored entity (a class session) is offerable only while it is still
+// upcoming — a browse view exists to book something that hasn't happened yet.
+// Rows with no startsAt (a clinic provider, a café) are always current; a
+// present-but-unparseable startsAt is left visible rather than silently hidden.
+// Time is read live, so a demo world that outlived its seed drops its stale
+// sessions on the next render even before the nightly reseed replaces them.
+function isUpcoming(e) {
+  const s = e && e.data && e.data.startsAt;
+  if (!s) return true;
+  const t = Date.parse(s);
+  return isNaN(t) || t > Date.now();
+}
+function upcomingEntities() { return entities().filter(isUpcoming); }
+function upcomingEntitiesByType(type) { return upcomingEntities().filter((e) => e.data.entityType === type); }
+
 function opByFullKey(fullKey) {
   if (!fullKey) return null;
   const key = "manifest.op." + lastSeg(fullKey);
@@ -654,7 +669,7 @@ function opButton(o, ctx) {
   // entities of that type, link straight to it instead of dead-ending.
   if (d.dispatchTargetField && !resolveTargetKey(d, ctx)) {
     const label = typeLabel(d.dispatchTargetType);
-    const browsable = d.dispatchTargetType && entitiesByType(d.dispatchTargetType).length > 0;
+    const browsable = d.dispatchTargetType && upcomingEntitiesByType(d.dispatchTargetType).length > 0;
     const hint = browsable
       ? `Open ${esc(indefinite(label))} to do this — <a href="#" data-goto="browse">browse ${esc(label)}s</a>.`
       : `Open ${esc(indefinite(label))} to do this; it can't be started from here.`;
@@ -704,7 +719,7 @@ function instanceRow(i) {
 // ever projected.
 
 function renderBrowse() {
-  const ents = entities();
+  const ents = upcomingEntities();
   if (!ents.length) { $("view-browse").innerHTML = `<div class="empty">Nothing nearby to book yet.</div>`; return; }
   const byType = new Map();
   for (const e of ents) {
