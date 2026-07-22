@@ -347,11 +347,13 @@ platform being temporarily behind must be *observable and waitable*, not raced).
 |---|---|---|---|
 | 1 | `reproject` ctrl verb + CLI (1a, built first) + convergence sweep + `CapabilityCoverageDivergence` health signal (1b) + incident-repro e2e | M–L | **SHIPPED** — verb heals the reproduced loss end-to-end; the sweep finds the hole with nobody naming the actor, heals it, alerts, then goes quiet with zero writes |
 | 2 | seed readiness wait + demo runbook | S | **SHIPPED** — demo-up seeds behind an auth-plane convergence wait rather than a fixed timeout |
+| 3 | background retry (§10) — decouple demo-Loupe start from `demo-up.sh`'s synchronous path | S | **SHIPPED** (`9359fce2`) — `lattice-demo-loupe-retry.timer` retries every 5m (bounded 120s/tick) until the drain finishes; `provision-demo-operator.sh` reuses a world-tagged pending identity across retries instead of re-minting one per tick; live-verified on the demo box |
 
 Fire 1 is platform code (Lattice lane, `internal/refractor` + `cmd/refractor`;
-`internal/substrate` untouched); Fire 2 is `scripts/` + `deploy/demo/` only. Fire 1's verb half
-alone already turns the demo box's reset-window wedge into a one-command targeted heal; the sweep
-half removes the class.
+`internal/substrate` untouched); Fire 2 and Fire 3 are `scripts/` + `deploy/demo/` only. Fire 1's
+verb half alone already turns the demo box's reset-window wedge into a one-command targeted heal;
+the sweep half removes the class; Fire 3 removes the human-latency step from recovering a
+still-converging (not lost) grant after a reset that outruns any fixed wait budget.
 
 ## 10. Incident — 2026-07-22 nightly reset outran Fire 2's wait budget
 
