@@ -2,6 +2,14 @@
 
 Rolled from `verticals.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-19 · `7341ad73` · Facet entity browse — Nearby view + `manifest.ent` lenses, wellness `locatedAt`; live-verified booking E2E — [design](../../implementation-artifacts/facet-entity-browse-design.md)
+- 2026-07-18 · `fe2d0e5e` · Display names N2 (renderer floor rule) — typed label ladder (prettify/anchorLabel/identityLabel); no bare NanoID as a primary label, "Unnamed" gone; live-verified on the showcase resident (header/Me/tasks/places)
+- 2026-07-18 · `e1ddf8a2` · Facet token-refresh fix — NATS + Gateway-submit + session cookie all now survive past the 30m login JWT (TokenHandler/TokenSource, Acquire dead-conn rebuild, sliding-session refresh endpoint)
+- 2026-07-18 · `90f0b7a2` · Display names N1 (pkg) — location `.presentation` aspect + `SetLocationPresentation` op + named seeds + `edgeIdentity` anchor name projection; op path proven e2e + verify-package 38-assert green
+- 2026-07-18 · `4cc6e906` · Facet café OpenTab leaseAppKey auto-fill — manifest self-anchored keys indexed by vtx type; a `<type>Key` field with one match fills read-only (hidden input), ambiguous/absent falls back to editable; node vectors
+- 2026-07-18 · `c6f2c0d3` · Wellness Studios tab — CreateStudio form + per-studio inline CreateSession (slot-cell optionalReads mirror `slot_cells`); op path proven end-to-end, studio + session committed + projected
+- 2026-07-18 · `6e7d742a` · Facet demo-persona login posture (FACET_DEMO_PERSONAS) — persona cards, fenced dev-login, claim gate; the hosted-demo surface (deploy/demo, `83397459`), live-verified
+- 2026-07-18 · `f29bb89` · Facet 2nd-renderer spike Inc 1 — SwiftUI client, live-verified — [design §7.10](../../implementation-artifacts/edge-showcase-app-design.md)
 - 2026-07-18 · `a14f67d` · Facet 2nd-renderer spike Inc 3 — descriptor-form renderer, live-verified confirmed write — [design §7.12](../../implementation-artifacts/edge-showcase-app-design.md)
 - 2026-07-18 · `339f0a1` · Facet 2nd-renderer spike Inc 2 — write path (enqueue), live-verified confirmed write — [design §7.11](../../implementation-artifacts/edge-showcase-app-design.md)
 - 2026-07-18 · `16ef550` · Landlord sign-in reload race — `init()` awaits `loadIdentities()` before `applyMode()`; live-verified
