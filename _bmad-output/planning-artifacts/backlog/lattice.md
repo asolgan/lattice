@@ -52,7 +52,7 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 | **[Weaver] Fresh-episode/reclaim error-branch coverage** | `fireEpisode`'s stale-mark reclaim path (NanoID-mint + `marks.replace` failures, 41.4% cov), `bumpDispatchCount`/`bumpEffectDispatch` failure-log branches (50%), `sweeper.deleteEffect` conflict/delete-failure (44.4%), and `reconcileConsumers` supervisor Add/UpdateSpec/Reset/Remove + health-sink-delete failure paths (62.7%) are the lowest-covered branches in an otherwise 86.8%-covered package (`internal/weaver/evaluator.go`, `reconciler.go`, `engine.go`). | ★ | S–M | 📋 ready |
 | **[Bootstrap] `cmd/bootstrap` has no test files — the seed decision is inspection-only** | The probe, re-seed, and two-phase reopen are covered in `internal/bootstrap`, but the branch that *decides* to re-seed lives in `package main` and is untested. Consumer: the freshness probe's own decision path. Either extract the decision into `internal/bootstrap` or add a `cmd/bootstrap` test binary. | ★ | XS–S | 📋 ready · `cmd/bootstrap/main.go:110-140` |
 | **[CI] `edge-browser-store` reds the gate on a slow headless-Chrome cold start** | `wasmbrowsertest` waits a chromedp-hardcoded 20s for Chrome's DevTools banner and exposes no knob for it (`test-edge-idb-conformance`). `-p 1` already removed self-contention, yet one cold start still overran on a loaded runner — observed on main, green on re-run, whole gate red meanwhile. Nothing retries the suite. Retry once on the `websocket url timeout reached` signature alone, so real failures stay unmasked. | ★★ | XS–S | 📋 ready |
-| **[Refractor] Capability first-projection loss — a new actor's first holdsRole can mint no `cap.roles` doc** | A fresh identity's first AssignRole projected no doc (absent 30+ min; survives Refractor restart; nothing re-drives it), while a later holdsRole on a doc-holding actor folds the same role in seconds — silent grant loss at the auth plane. Suspect: actor-aggregate fan-out vs adjacency-build ordering. Blocks Loupe F20 exposure. Repro: demo box 2026-07-22. | ★★★ | M–L | 📋 ready |
+| **[Refractor] Capability first-projection loss — a new actor's first holdsRole can mint no `cap.roles` doc** | A fresh identity's first AssignRole projected no doc (absent 30+ min; survives Refractor restart; nothing re-drives it), while a later holdsRole on a doc-holding actor folds the same role in seconds — silent grant loss at the auth plane. Suspect: actor-aggregate fan-out vs adjacency-build ordering. Blocks Loupe F20 exposure. Repro: demo box 2026-07-22. | ★★★ | M–L | 🏗️ designing (Designer) · next: ground fan-out ordering in code |
 
 ### Survey log (round-robin rotation)
 
@@ -113,10 +113,10 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
 > 🎯 **Build-ready now.** Every ✅ ratified row in the feature tables below is Andrew-gated or
-> driver-blocked, so the live picks are the **📋 ready rows in Component maintenance** above. Top of that
-> stack now: the ★★★ **[Refractor] capability first-projection loss** (silent grant loss at the auth
-> plane; blocks Loupe F20 exposure), then **[CI] `edge-browser-store` retry** (★★ XS–S — Whetstone's lane),
-> the Steward's own **[Weaver] fresh-episode/reclaim error-branch coverage** (★ S–M) and
+> driver-blocked, so the live picks are the **📋 ready rows in Component maintenance** above. The ★★★
+> **[Refractor] capability first-projection loss** is 🏗️ with the Designer (design lands before the next
+> Steward fire). Top of the buildable stack now: **[CI] `edge-browser-store` retry** (★★ XS–S — Whetstone's
+> lane), the Steward's own **[Weaver] fresh-episode/reclaim error-branch coverage** (★ S–M) and
 > **[Bootstrap] `cmd/bootstrap` tests** (★ XS–S).
 > A stale callout starves the lane — whoever ships the top pick renames this to the next.
 
