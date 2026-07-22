@@ -2,6 +2,8 @@
 
 Rolled from `verticals.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-18 · `16ef550` · Landlord sign-in reload race — `init()` awaits `loadIdentities()` before `applyMode()`; live-verified
+- 2026-07-18 · `86f8c76` · Café self-order — `menuitem` DDL + `menuCatalog` lens; self-Charge derives amountCents from the catalog, never the caller; Resident item picker; verified via embedded-NATS tests, not live-browser (new entity)
 - 2026-07-18 · `—` · Facet Fire 5 residual (2) closed — café resident self-service (OpenTab/Settle asSelf) proven live end-to-end via Core KV, not just the FE toast — [design §7.9](../../implementation-artifacts/edge-showcase-app-design.md)
 - 2026-07-18 · `934c487` · `make seed-classic-demo` — one leaseapp/listing/appointment/tab, live-verified via loftspace-app/clinic-app/cafe-app read APIs
 - 2026-07-17 · `c8962ff` · Facet Fire 5 Inc 5 — café-app real per-resident self-service auth (Me bar), exercises OpenTab/Settle scope=self in-browser — [design §7.8](../../implementation-artifacts/edge-showcase-app-design.md)
