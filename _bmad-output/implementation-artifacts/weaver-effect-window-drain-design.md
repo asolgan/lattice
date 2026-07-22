@@ -1,6 +1,6 @@
 # Weaver `__effect` window drain (`resetConfidence` control verb) — design
 
-**Status: 📐 awaiting-Andrew (ratification)** · Designer fire 2026-07-21 · lane row: backlog/lattice.md → Component maintenance → *[Weaver] Drain the `__effect` windows polluted before the attempt-booking fix*
+**Status: ✅ Andrew-ratified (2026-07-21)** · Designer fire 2026-07-21 · lane row: backlog/lattice.md → Component maintenance → *[Weaver] Drain the `__effect` windows polluted before the attempt-booking fix*
 
 ## For Andrew
 
