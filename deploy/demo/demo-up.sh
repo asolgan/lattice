@@ -84,6 +84,7 @@ FACET_STORE_DIR=./facet-store \
 	FACET_DEV_AUTH=1 \
 	FACET_PG_DSN="${FACET_PG_DSN:-postgres://facet_app:facet_app_dev@localhost:5432/lattice?sslmode=disable}" \
 	FACET_DEMO_PERSONAS="$personas" \
+	NATS_NKEY=deploy/nkeys/facet.nk \
 	nohup ./bin/facet >facet.log 2>&1 </dev/null &
 
 for _ in $(seq 1 30); do

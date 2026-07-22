@@ -79,6 +79,7 @@ NKEY_LATTICE_PKG ?= $(NKEY_DIR)/lattice-pkg.nk
 NKEY_LATTICE_CLI ?= $(NKEY_DIR)/lattice.nk
 NKEY_GATEWAY ?= $(NKEY_DIR)/gateway.nk
 NKEY_CHRONICLER ?= $(NKEY_DIR)/chronicler.nk
+NKEY_FACET ?= $(NKEY_DIR)/facet.nk
 
 # VAULT_KEK_FILE — the Processor's sensitive-aspect crypto master KEK
 # (Contract #3 §3.10, internal/vault). UNLIKE the nkey seeds above (transport
@@ -1080,7 +1081,7 @@ up-facet:
 	@pkill -f "bin/facet" 2>/dev/null || true
 	@echo "==> Starting facet in background (FACET_DEV_AUTH=1 — sign in at /login as a showcase tenant)..."
 	@FACET_STORE_DIR=./facet-store NATS_URL=$(NATS_URL) EDGE_GATEWAY_URL=http://localhost:8080 \
-		FACET_DEV_AUTH=1 FACET_PG_DSN="$(FACET_PG_DSN)" \
+		FACET_DEV_AUTH=1 FACET_PG_DSN="$(FACET_PG_DSN)" NATS_NKEY=$(NKEY_FACET) \
 		./bin/facet >facet.log 2>&1 </dev/null & \
 	sleep 1; \
 	echo "==> Facet ready: http://127.0.0.1:7810/login (sign in with a showcase tenant NanoID from 'make seed-showcase' output)"
@@ -1115,7 +1116,7 @@ up-facet-edge: build-edge-wasm
 	@pkill -f "bin/facet" 2>/dev/null || true
 	@echo "==> Starting facet in BROWSER-NATIVE mode (FACET_BROWSER_ENGINE=1 — the browser runs the engine in-page over ws://127.0.0.1:9222)..."
 	@FACET_STORE_DIR=./facet-store NATS_URL=$(NATS_URL) EDGE_GATEWAY_URL=http://localhost:8080 \
-		FACET_DEV_AUTH=1 FACET_PG_DSN="$(FACET_PG_DSN)" \
+		FACET_DEV_AUTH=1 FACET_PG_DSN="$(FACET_PG_DSN)" NATS_NKEY=$(NKEY_FACET) \
 		FACET_BROWSER_ENGINE=1 FACET_EDGE_WASM_DIR=bin/edge-wasm \
 		FACET_EDGE_SHELL_DIR=internal/edge/browser/shell EDGE_WS_URL=ws://127.0.0.1:9222 \
 		./bin/facet >facet.log 2>&1 </dev/null & \
@@ -1151,7 +1152,7 @@ run-facet:
 	go build -o bin/facet ./cmd/facet
 	@echo "==> Facet app on http://127.0.0.1:7810 (Ctrl-C to stop)..."
 	NATS_URL=$(NATS_URL) EDGE_GATEWAY_URL=http://localhost:8080 FACET_DEV_AUTH=$${FACET_DEV_AUTH:-1} \
-		FACET_PG_DSN="$(FACET_PG_DSN)" ./bin/facet
+		FACET_PG_DSN="$(FACET_PG_DSN)" NATS_NKEY=$(NKEY_FACET) ./bin/facet
 
 ## install-onebill — Install the Café Inc 3 "one-bill" composition lens (Café
 ## vertical row, ★★★): re-projects loftspace-ledger's + cafe-ledger's posted

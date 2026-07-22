@@ -208,7 +208,7 @@ func TestConfigParses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse config: %v", err)
 	}
-	if got, want := len(opts.Nkeys), 16; got != want {
+	if got, want := len(opts.Nkeys), 17; got != want {
 		t.Errorf("NKey users = %d, want %d", got, want)
 	}
 	// Every user must carry an explicit publish allow-list (default-deny on
@@ -241,8 +241,8 @@ func TestAuthCalloutConfigured(t *testing.T) {
 	if !nkeys.IsValidPublicCurveKey(ac.XKey) {
 		t.Errorf("auth_callout.xkey = %q, want a valid public CURVE key (day-one encryption, design §7)", ac.XKey)
 	}
-	if len(ac.AuthUsers) != 16 {
-		t.Errorf("auth_callout.auth_users = %d entries, want 16 (every component bypasses the callout)", len(ac.AuthUsers))
+	if len(ac.AuthUsers) != 17 {
+		t.Errorf("auth_callout.auth_users = %d entries, want 17 (every component bypasses the callout)", len(ac.AuthUsers))
 	}
 }
 
@@ -794,6 +794,11 @@ func TestRegistryDrivenWriteIsolation(t *testing.T) {
 // bootstrap matrix component must be able to self-report its heartbeat
 // (health.<component>.<inst>); a missing grant here silences a component's
 // monitoring silently, so this is a positive pin, not just a denial check.
+//
+// facet is excluded from the plain-KVPut loop: it has no $JS.API.> grant, so
+// a bare KVPut (which opens a KV handle via STREAM.INFO) is structurally
+// denied — that is the intended fail-closed shape (design §8 finding #5;
+// TestFacetHealthKVWriteVector below pins its real write path, KVPutWithTTL).
 func TestHealthKVSharedWriteAccess(t *testing.T) {
 	t.Parallel()
 	url := startServerFromConf(t)
@@ -802,6 +807,9 @@ func TestHealthKVSharedWriteAccess(t *testing.T) {
 	provision(t, boot, "health-kv")
 
 	for _, name := range nonBootstrapComponentNames() {
+		if name == "facet" {
+			continue
+		}
 		name := name
 		t.Run("allowed/"+name, func(t *testing.T) {
 			t.Parallel()
@@ -812,6 +820,133 @@ func TestHealthKVSharedWriteAccess(t *testing.T) {
 				t.Fatalf("%s KVPut health-kv: want success, got %v", name, err)
 			}
 		})
+	}
+}
+
+// TestFacetHealthKVWriteVector pins facet's narrowest-in-matrix credential
+// (facet-host-health-emission-design.md §4.1, ratified A2): it can write its
+// own heartbeat via the Reporter's actual mechanism (KVPutWithTTL — a bare
+// js.PublishMsg to the KV subject, no handle open), but every broader surface
+// — a plain KVPut (which opens a handle via STREAM.INFO), core-kv, and the
+// backing stream's admin API — stays denied.
+func TestFacetHealthKVWriteVector(t *testing.T) {
+	t.Parallel()
+	url := startServerFromConf(t)
+
+	boot := connectAs(t, url, "bootstrap")
+	// health-kv is PerKeyTTL in bootstrap.PlatformBuckets() (LimitMarkerTTL on
+	// the backing stream) — mirror that here, unlike the plain `provision`
+	// helper other subtests use, so KVPutWithTTL below has a TTL-capable
+	// bucket to write into.
+	provCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := boot.JetStream().CreateKeyValue(provCtx, jetstream.KeyValueConfig{Bucket: "health-kv", LimitMarkerTTL: time.Second}); err != nil {
+		t.Fatalf("provision health-kv (TTL-capable): %v", err)
+	}
+	provision(t, boot, bootstrap.CoreKVBucket)
+
+	c := connectAs(t, url, "facet")
+
+	t.Run("allowed/KVPutWithTTL", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if _, err := c.KVPutWithTTL(ctx, "health-kv", "health.facet.test", []byte("v"), 30*time.Second); err != nil {
+			t.Fatalf("facet KVPutWithTTL health-kv: want success, got %v", err)
+		}
+	})
+
+	t.Run("denied/plain-KVPut", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), deniedTimeout)
+		defer cancel()
+		if _, err := c.KVPut(ctx, "health-kv", "health.facet.test2", []byte("v")); err == nil {
+			t.Error("facet plain KVPut health-kv: want transport denial (no $JS.API.> to open a KV handle), got success")
+		}
+	})
+
+	t.Run("denied/core-kv", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), deniedTimeout)
+		defer cancel()
+		if _, err := c.KVPutWithTTL(ctx, bootstrap.CoreKVBucket, "rogue.key", []byte("forged"), 30*time.Second); err == nil {
+			t.Error("facet KVPutWithTTL core-kv: want transport denial, got success")
+		}
+	})
+
+	t.Run("denied/backing-stream-admin", func(t *testing.T) {
+		if _, err := c.NATS().Request("$JS.API.STREAM.INFO.KV_health-kv", []byte("{}"), deniedTimeout); err == nil {
+			t.Error("facet STREAM.INFO.KV_health-kv: want transport denial, got success")
+		}
+	})
+
+	t.Run("denied/ops", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), deniedTimeout)
+		defer cancel()
+		if err := c.Publish(ctx, "ops.default", []byte("forged"), nil); err == nil {
+			t.Error("facet Publish ops.default: want transport denial (no core-operations publish), got success")
+		}
+	})
+}
+
+// TestFacetSubscribeConfinement pins A2's one mechanism addition (design §4.2):
+// facet is the first matrix row whose subscribe side is NOT the uniform ">" —
+// it is pinned to _INBOX.> (the pub-ack reply inbox KVPutWithTTL's js.PublishMsg
+// awaits). A raw nats.Connect (not the substrate wrapper) is required here: a
+// denied SUBSCRIBE is not a synchronous error from Subscribe() itself — the
+// server permits the local subscription and then delivers an async
+// "Permissions Violation for Subscription" error over the connection's
+// ErrorHandler, which substrate.Conn does not expose.
+func TestFacetSubscribeConfinement(t *testing.T) {
+	t.Parallel()
+	url := startServerFromConf(t)
+
+	nkeyOpt, err := nats.NkeyOptionFromSeed(seedPath(t, "facet"))
+	if err != nil {
+		t.Fatalf("load facet nkey seed: %v", err)
+	}
+
+	// nats.go's permissions-violation callback always passes a nil
+	// *Subscription (processTransientError dispatches asyncErrorCB(nc, nil,
+	// err) unconditionally) — the offending subject is embedded only in the
+	// error text ("Permissions Violation for Subscription to %q"), so the
+	// violation is matched by substring, not by identity.
+	violations := make(chan string, 4)
+	nc, err := nats.Connect(url, nkeyOpt, nats.ErrorHandler(func(_ *nats.Conn, _ *nats.Subscription, err error) {
+		if err != nil {
+			violations <- err.Error()
+		}
+	}))
+	if err != nil {
+		t.Fatalf("connect as facet: %v", err)
+	}
+	t.Cleanup(nc.Close)
+
+	deniedSubject := "lattice.sync.user.someidentity12345678"
+	if _, err := nc.Subscribe(deniedSubject, func(*nats.Msg) {}); err != nil {
+		t.Fatalf("Subscribe(%q): want local acceptance (denial is async), got %v", deniedSubject, err)
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	select {
+	case msg := <-violations:
+		if !strings.Contains(msg, deniedSubject) {
+			t.Errorf("permissions violation = %q, want it to name %q", msg, deniedSubject)
+		}
+	case <-time.After(deniedTimeout):
+		t.Errorf("Subscribe(%q): want a subscribe-permissions violation, got none", deniedSubject)
+	}
+
+	allowedSubject := "_INBOX.facet-test.1"
+	if _, err := nc.Subscribe(allowedSubject, func(*nats.Msg) {}); err != nil {
+		t.Fatalf("Subscribe(%q): %v", allowedSubject, err)
+	}
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	select {
+	case subj := <-violations:
+		t.Errorf("unexpected subscribe-permissions violation for %q (want _INBOX.> allowed)", subj)
+	case <-time.After(deniedTimeout):
+		// No violation arrived — the allowed subscribe is confirmed silent.
 	}
 }
 

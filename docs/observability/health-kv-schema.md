@@ -278,6 +278,37 @@ and a read-auth posture present. `issues[]` codes: `AdminActorUnconfigured` (err
 (error), `ReadModelUnreachable` (warning), `NoAuthPosture` (warning). `metrics` is empty at v1 (no counters
 wired yet).
 
+### Facet
+
+Source package: `internal/healthkv/` (shared `Reporter`), wired from `cmd/facet/health.go`.
+`cmd/facet` is the Edge showcase app host — a per-identity multi-tenant process (`engineManager`)
+whose per-identity engine connections stay confined to the natsauth callout and carry no platform
+credential; this heartbeat is emitted over a SECOND, host-level connection authenticated by its own
+narrowest-in-matrix NKey (`internal/natsperm.Matrix`'s `facet` row: publish only `$KV.health-kv.>` +
+`$JS.FC.>`, subscribe pinned to `_INBOX.>` — no `$JS.API.>`, so even a plain `KVPut` is denied; the
+Reporter's `KVPutWithTTL` is the only write this credential can perform).
+
+| Key Pattern | Frequency | Source File | Emitter | TTL |
+|---|---|---|---|---|
+| `health.facet.<instance>` | ≥ 10s heartbeat (`FACET_HEARTBEAT_EVERY`) | `cmd/facet/health.go` | `healthkv.Reporter.Run()` | Category A — `interval×10`, re-armed |
+
+**`<instance>`** follows `facet-<NanoID>` (overridable via `FACET_INSTANCE`). The heartbeat is gated
+on a configured host credential (`NATS_NKEY` / `NATS_CREDS`) — unconfigured means no reporter runs (a
+warn log, not a failure); an absent card is itself the operator signal, same posture as the vertical
+apps' "gated on a live NATS dial."
+
+`healthProbe` re-checks the host health connection and, in host-engine mode, the in-process engine
+fleet's aggregate connectivity — never per-identity detail (no identity NanoID ever appears in the
+marshaled document). In browser-native mode (`FACET_BROWSER_ENGINE`) the engines live in-page,
+invisible to the host by design, so the fleet metrics are absent entirely rather than fabricated as
+zero. `issues[]` codes: `NatsUnreachable` (error — the host health connection itself is down),
+`EngineSyncDegraded` (warning — N engines are in sync-manager restart-backoff, the row's demanded
+signal), `EngineNatsDisconnected` (warning — N engines' per-identity NATS connection is currently
+down; a distinct axis from sync-loop crash-looping), `ReadModelUnreachable` (warning — the
+`identityCredentialsRead` Postgres pool, mirrors the vertical apps). `metrics`: `mode`
+(`host-engine` | `browser-native`), and in host-engine mode only: `engines_active`, `engines_pinned`,
+`engines_sync_degraded`, `engines_nats_disconnected`.
+
 ### Bootstrap
 
 Source package: `internal/bootstrap/`
@@ -617,6 +648,33 @@ the scan failed; `timers*` only when the temporal lane is wired).
   "issues": [{"code": "AdminActorUnconfigured", "severity": "error", "message": "<string>", "since": "<RFC3339>"}]
 }
 ```
+
+### `health.facet.<instance>` — Facet heartbeat
+
+```json
+{
+  "key": "health.facet.<instance>",
+  "component": "facet",
+  "instance": "<instance>",
+  "version": "1.0",
+  "status": "starting | healthy | degraded | unhealthy | shuttingDown",
+  "heartbeatAt": "<RFC3339>",
+  "startedAt": "<RFC3339>",
+  "uptime": "<ISO-8601-duration>",
+  "metrics": {
+    "mode": "host-engine | browser-native",
+    "engines_active": <int>,
+    "engines_pinned": <int>,
+    "engines_sync_degraded": <int>,
+    "engines_nats_disconnected": <int>
+  },
+  "issues": [{"code": "EngineSyncDegraded", "severity": "warning", "message": "<string>", "since": "<RFC3339>"}]
+}
+```
+
+The four `engines_*` metrics are present only in host-engine mode; browser-native mode's `metrics`
+carries `mode` alone (the engines live in-page, invisible to the host — see the component section
+above).
 
 ### `<lensId>` — Per-lens reporter status (bare NanoID key)
 

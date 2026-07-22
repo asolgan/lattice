@@ -44,6 +44,13 @@ type Component struct {
 	// micro.Service discovery). Without it, a responder goes silent under
 	// enforcement.
 	AllowResponses bool
+	// SubscribeAllow overrides the default unrestricted subscribe grant
+	// ("gates writes only; reads are unrestricted", the matrix's stance for
+	// trusted platform daemons). Nil renders the default `[">"]`; a non-nil
+	// list pins the component's subscribe side to exactly those subjects —
+	// for a component whose only subscribe need is its own publish-ack reply
+	// inbox (facet-host-health-emission-design.md §4.2).
+	SubscribeAllow []string
 }
 
 // protectedStreamDenies returns the JetStream stream-admin verbs a non-owner
@@ -346,6 +353,16 @@ var Matrix = []Component{
 		Desc:          "vertical app (P5 reader); writes go browser-direct through the Gateway — holds NO core-operations (ops.>) publish so a compromised app cannot forge an env.Actor (#75 Fire 2b)",
 		ExtraPubAllow: []string{"$JS.API.>", "$JS.ACK.>"},
 	},
+	{
+		Name: "facet",
+		Desc: "edge showcase app host — health-plane-only platform credential; " +
+			"per-identity engine traffic stays on the natsauth callout connections",
+		// No ExtraPubAllow at all: Allow() derives $KV.health-kv.> (SharedWrite)
+		// + $JS.FC.>; KVPutWithTTL needs nothing else (no $JS.API.>, no KV-handle
+		// open). The narrowest user in the matrix, by design — this host fronts
+		// the hosted demo (facet-host-health-emission-design.md §4.1, ratified A2).
+		SubscribeAllow: []string{"_INBOX.>"},
+	},
 }
 
 // WebsocketPort is the port the WebSocket listener binds. Explicit, never a
@@ -440,7 +457,11 @@ authorization {
 			b.WriteString("          deny: [" + quoteList(deny) + "]\n")
 		}
 		b.WriteString("        }\n")
-		b.WriteString("        subscribe { allow: [\">\"] }\n")
+		if c.SubscribeAllow != nil {
+			b.WriteString("        subscribe { allow: [" + quoteList(c.SubscribeAllow) + "] }\n")
+		} else {
+			b.WriteString("        subscribe { allow: [\">\"] }\n")
+		}
 		if c.AllowResponses {
 			b.WriteString("        allow_responses: true\n")
 		}

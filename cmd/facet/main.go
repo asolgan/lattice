@@ -45,13 +45,31 @@
 //	                   LOFTSPACE_APP_PG_DSN). Unset: GET /api/credentials
 //	                   reports the read model as unconfigured; nothing else
 //	                   in Facet depends on it.
+//	NATS_NKEY          OPTIONAL host-level NKey seed file (the `facet` matrix
+//	                   row, natsperm.Matrix) authenticating a SECOND, platform
+//	                   connection used only for the Contract #5 health
+//	                   heartbeat. NATS_CREDS is the alternative creds-file
+//	                   form. Unconfigured: no reporter runs (one warn log) —
+//	                   the absent card is itself the operator signal, and
+//	                   older launchers keep working unchanged.
+//	FACET_INSTANCE     OPTIONAL health-kv instance id (default: auto-
+//	                   generated facet-<NanoID>)
+//	FACET_HEARTBEAT_EVERY  OPTIONAL heartbeat interval (default: 10s)
 //
-// No Health-KV reporting: EDGE.3's per-identity NATS connection is confined
-// by natsauth's issued permission set to exactly `lattice.sync.user.<U>` +
-// its own `_INBOX.edge.<U>.>` + the personal.* control RPCs (internal/
-// gateway/natsauth/natsauth.go) — publishing to health-kv is a permissions
-// violation, not a missing grant to request; cmd/edge itself has never
-// reported health for the same structural reason.
+// Two NATS planes, never conflated: every per-identity engine connection
+// (engine.go) stays confined by natsauth's issued permission set —
+// `lattice.sync.user.<U>` + its own `_INBOX.edge.<U>.>` + the personal.*
+// control RPCs, plus the identity's own durable-scoped JetStream consumer/
+// ack grants (`$JS.API.CONSUMER.*.SYNC.…`/`$JS.ACK.SYNC.…`, internal/gateway/
+// natsauth/natsauth.go's PermissionsFor) — publishing to health-kv on those
+// connections is a permissions violation, not a missing grant; `cmd/edge` is
+// on the user side of this line and stays credential-less for the same
+// structural reason. The host-level health connection above is a separate,
+// platform NKey credential scoped to publish-only-to-health-kv (facet-host-
+// health-emission-design.md §3/§4) — the host is already trusted
+// server-side infrastructure (the dev/demo signing key, the FACET_PG_DSN
+// Protected-lens role, every session cookie), so this adds no new trust
+// boundary, only a narrowly-scoped one.
 //
 // Logs to stderr in slog text format. Blocks until SIGINT/SIGTERM.
 package main
@@ -72,7 +90,10 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/operatinggraph/lattice/internal/bootstrap"
 	"github.com/operatinggraph/lattice/internal/edge/agent"
+	"github.com/operatinggraph/lattice/internal/healthkv"
+	"github.com/operatinggraph/lattice/internal/substrate"
 )
 
 const (
@@ -194,6 +215,57 @@ func run(logger *slog.Logger) error {
 		bootToken:      os.Getenv("EDGE_TOKEN"),
 		personas:       personas,
 	}
+	// Contract #5 heartbeat — a SECOND, host-level connection distinct from
+	// every per-identity engine connection above (see the doc comment's
+	// "two NATS planes"). Gated on a configured platform NKey/creds file:
+	// unconfigured means no reporter runs, mirroring the vertical apps'
+	// "gated on a live NATS dial" posture (facet-host-health-emission-
+	// design.md §4.4).
+	nkeySeed := envOrDefault("NATS_NKEY", "")
+	credsFile := envOrDefault("NATS_CREDS", "")
+	switch {
+	case nkeySeed == "" && credsFile == "":
+		logger.Warn("NATS_NKEY/NATS_CREDS unset; no health-kv heartbeat will be emitted for this facet host")
+	default:
+		// A health-connection failure degrades to "no heartbeat", exactly
+		// like the unconfigured case — it must never abort the whole host
+		// (the per-identity engine plane this process exists to serve is
+		// unrelated to this optional, secondary credential), mirroring the
+		// FACET_PG_DSN pool's own warn-and-continue posture above.
+		healthConn, err := substrate.Connect(context.Background(), substrate.ConnectOpts{
+			URL:           natsURL,
+			Name:          "lattice-facet-health",
+			MaxReconnects: -1,
+			ReconnectWait: 1 * time.Second,
+			NKeySeedFile:  nkeySeed,
+			CredsFile:     credsFile,
+		})
+		if err != nil {
+			logger.Warn("facet health connection failed; no health-kv heartbeat will be emitted for this facet host", "error", err)
+			break
+		}
+		defer healthConn.Close()
+
+		instance := envOrDefault("FACET_INSTANCE", "")
+		if instance == "" {
+			id, err := substrate.NewNanoID()
+			if err != nil {
+				return fmt.Errorf("generate health-kv instance id: %w", err)
+			}
+			instance = "facet-" + id
+		}
+		reporter := healthkv.New(healthkv.Config{
+			Conn:      healthConn,
+			Bucket:    bootstrap.HealthKVBucket,
+			Component: "facet",
+			Instance:  instance,
+			Interval:  envDuration("FACET_HEARTBEAT_EVERY", 10*time.Second, logger),
+			Probe:     func(ctx context.Context) healthkv.Snapshot { return srv.healthProbe(ctx, healthConn) },
+			Logger:    logger,
+		})
+		go reporter.Run(ctx)
+	}
+
 	mux := http.NewServeMux()
 	srv.registerRoutes(mux)
 
@@ -270,4 +342,17 @@ func envOrDefault(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func envDuration(key string, def time.Duration, logger *slog.Logger) time.Duration {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d <= 0 {
+		logger.Warn("ignoring invalid duration env; using default", "key", key, "value", v, "default", def)
+		return def
+	}
+	return d
 }

@@ -247,6 +247,40 @@ func (m *engineManager) Purge(identityID string) error {
 	return nil
 }
 
+// engineFleetSnapshot is a read-only point-in-time summary of every engine
+// this manager currently holds — the health probe's dependency signal for
+// the crash-looping-engine axis (facet-host-health-emission-design.md §4.3).
+type engineFleetSnapshot struct {
+	Total            int
+	Pinned           int
+	SyncDegraded     int
+	NatsDisconnected int
+}
+
+// healthSnapshot folds every entry's feed.connectivityState() (the sticky
+// sync-manager-in-restart-backoff bit) and its NATS connection's live
+// IsConnected() — two distinct axes (ce050a7 deliberately separated
+// crash-looping-sync-manager from mere connectivity) — into aggregate counts
+// only, never per-identity detail (design §8.2/§9: no identity id may appear
+// in a marshaled heartbeat).
+func (m *engineManager) healthSnapshot() engineFleetSnapshot {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s := engineFleetSnapshot{Total: len(m.entries)}
+	for _, e := range m.entries {
+		if e.pinned {
+			s.Pinned++
+		}
+		if _, syncDegraded := e.eng.feed.connectivityState(); syncDegraded {
+			s.SyncDegraded++
+		}
+		if !e.eng.conn.NATS().IsConnected() {
+			s.NatsDisconnected++
+		}
+	}
+	return s
+}
+
 // CloseAll stops every running engine — process shutdown.
 func (m *engineManager) CloseAll() {
 	m.mu.Lock()
