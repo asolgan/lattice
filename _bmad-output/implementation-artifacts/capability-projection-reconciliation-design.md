@@ -219,6 +219,20 @@ token is the pipeline's **last-applied stream sequence, captured before re-evalu
   either genuinely missing (the bug — create heals it) or hard-deleted-never-existed; a
   concurrent real event's CAS create simply wins the loop (`guardCASMaxAttempts` path, already
   tested).
+- **The token is per-PROCESS and starts at zero** (found live, Fire 1b): `lastAppliedSeq` is
+  in-process state, so a freshly started pipeline holds no token until its consumer acks its
+  first message. A reconciliation write over an *existing* row at token 0 loses to that row's
+  stored watermark and is dropped by the guard **without an error**, which the caller reads as a
+  successful heal — an unbounded recompute → write → reject loop that churns the auth plane and
+  holds `CapabilityCoverageDivergence` open on a divergence it never repaired. So a write that
+  would overwrite or retract an existing row **requires a nonzero token** and is refused
+  (`ErrNoOrderingToken`) otherwise; the sweep abandons the pass, since the condition is
+  per-pipeline and clears as soon as the consumer acks anything (it acks every Core KV event,
+  ack-and-skip included). Creating an **absent** row at token 0 stays allowed — the guard's
+  absent-key branch takes Create, and that is the lost-first-projection case, which must keep
+  healing from a cold pipeline. The residual — a *quiet* stream leaves a restarted pipeline
+  tokenless, so stale-row reconciliation stays inert until traffic arrives — is filed as its own
+  row (seed `lastAppliedSeq` from the durable's persisted ack floor at startup).
 
 **Staged edit (UNCOMMITTED, the proposal):** `docs/contracts/06-capability-kv.md` §6.2 amendment
 gains one bullet defining the reconciliation write class, its token, its always-loses guarantee,
