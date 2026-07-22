@@ -22,6 +22,7 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 | **Facet for staff — front-desk/operations worlds** | The site demo's Front-Desk/Operations personas on the same binary — a staff world derives from `worksAt`/`holdsRole` as residents' from `residesIn`; staff catalog + claimable role-queue over the manifest, PII worklists via the Protected plane; first staff role narrower than root. | Cross-vertical | Sally + FE + pkg | ★★★ | XL | 🏗️ building · [design](../../implementation-artifacts/facet-staff-worlds-design.md) · F1–F4 + F5 Inc 1–2 shipped · 🚧 next: claim beat blocked-on mirror-delivery ([lattice.md](lattice.md)) |
 | **`RecordIdentityPII` is unscoped for front-desk staff** | identity-domain grants `frontOfHouse` a PII **write** on an arbitrary identity, predating the staff read spine. F4's location-derived confinement cannot reach it — a walk-in identity has no location to confine against. Needs a scoping rule or a written "this is correct". | Cross-vertical | pkg | ★★ | S | 📋 ready · consumer: multi-org staff deployment · [§3.2](../../implementation-artifacts/facet-staff-worlds-design.md) |
 | **Provider-site assignment renders blank when unprofiled** | `AssignProviderSite` (`packages/clinic-domain/site.go`) only validates the building is alive + `class=location`, never that `SetSiteProfile` ran first — a provider assigned to an unnamed building shows as `"Dr. X · "` in the staff site-management list (`cmd/clinic-app/web/app.js:1010`, no fallback). Live-verified: an assignment against a never-profiled building predates this run. | Clinic | FE | ★ | XS | 📋 ready |
+| **No way to correct a mis-tapped café charge** | `Charge` (`packages/cafe-domain`) only ever adds to `tab.status.totalCents` — no `VoidCharge`/decrement op exists (op inventory grepped: OpenTab/Charge/Settle only), so a resident's wrong self-order tap or front-desk mis-ring can only be fixed by settling the wrong total. Live-verified: self-order Charge→Settle→ledger posting all correct; the gap is the missing correction path. | Café | pkg | ★★ | S | 📋 ready · mirror Charge's OCC-conditioned totalCents pattern, decrement not below 0 |
 
 **Explicitly descoped (ambitious-PO pass, 2026-07-09):** structured diagnosis/procedure coding (ICD/CPT),
 vitals, and e-prescribing were considered and deliberately NOT filed — a certified EHR is out of scope for a
@@ -41,11 +42,9 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic ↔ Café ↔ We
 **Wellness joined** 2026-07-09 (`cmd/wellness-app` shipped, live on :7802) — fold it into rotation; see
 [agents/vertical-po/SKILL.md](../../../agents/vertical-po/SKILL.md) §1.
 
-- **Rotation to date:** LoftSpace ×15, Clinic ×13, Café ×4, Wellness ×1.
+- **Rotation to date:** LoftSpace ×15, Clinic ×13, Café ×5, Wellness ×1.
 - **Method:** reuse the already-up shared stack (detect NATS :4222 / app :7788/:7799/:7801/:7802), drive the real flow via `/api/op` + the lens projections as the product owner, file scored items. All four apps exist + are exercisable live (`:7788` / `:7799` / `:7801` / `:7802`).
 - **Live-stack note:** a stale bootstrap JSON vs. a recreated Core KV was a recurring dev-loop trap (2026-07-03, 2026-07-04) that silently emptied reads; `make up` now self-heals it (`109f59a`, 2026-07-05) — re-verify empty-read reports as a real product bug first.
-- **2026-07-10:** Clinic — drove staff booking/schedule/ledger live; found + confirmed `/api/ledger` unauthenticated (any caller reads any patient's billing history); filed.
-- **2026-07-10:** Café — drove POS OpenTab/Charge/Settle live; found stale post-write state, mirrored LoftSpace's existing fix; filed.
 - **2026-07-10 — REQUEST fulfilled:** LoftSpace — live-verified no account surface exists; filed "manage sign-in methods", blocked-on multi-credential design Fires 2+4.
 - **2026-07-11:** Clinic — drove booking/schedule/ledger live; booking form is provider-first with no specialty search, filed FE-only fix; no platform block.
 - **2026-07-11:** Café — drove OpenTab/Charge/Settle live; found no per-lease open-tab guard (2 concurrent open tabs same lease), filed pkg fix; no platform block.
@@ -55,7 +54,8 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic ↔ Café ↔ We
 - **2026-07-18:** LoftSpace — drove Applicant Browse/Apply/My Applications live (clean) + Landlord console; caught a live reload race hard-failing sign-in with `RotateClaimKey requires state=unclaimed, got claimed`, root-caused + filed.
 - **2026-07-18:** Wellness — first-ever PO exercise (live since 07-09, never driven); found empty studios/sessions, hand-minted one + proved self-service booking/cancel end-to-end live, filed the seed gap + missing studio-admin FE.
 - **2026-07-22:** Clinic — drove no-show→ledger auto-charge live (first-ever verify, converged once an account existed, as designed) + multi-site provider assignment; found unprofiled-site rows render blank, filed FE-only fix.
-- **Next:** Café.
+- **2026-07-22:** Café — drove self-order OpenTab→Charge→Settle→ledger live end-to-end (all correct); found no charge-correction op exists, filed pkg fix.
+- **Next:** LoftSpace.
 
 ## Done log — verticals (newest first)
 
