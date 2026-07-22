@@ -1,6 +1,6 @@
 # Facet host health emission (`health.facet.<instance>`) — design
 
-**Status: ✅ RATIFIED — Option A2 (Andrew, 2026-07-21)** · Designer fire 2026-07-21 · lane row: backlog/lattice.md → Component maintenance → *[Refractor/Facet] Facet host health emission*
+**Status: ✅ SHIPPED — Option A2** (ratified Andrew 2026-07-21; built 2026-07-22, `77a9dea8`) · Designer fire 2026-07-21 · Done log: backlog/lattice.md
 
 ## Ratification record
 

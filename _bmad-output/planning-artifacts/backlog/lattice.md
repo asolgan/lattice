@@ -47,7 +47,6 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | **[Loom] Guardless-step recovery check-before-act probe** | On total `loom-state` loss + a re-triggered `StartLoomPattern`, a fresh instance replays guards from cursor 0 (re-runs an already-applied guarded step). | ★ | S–M | 🗄️ shelved-backup (Andrew: no new engine Core-KV reads) |
-| **[Refractor/Facet] Facet host health emission (`health.facet.<instance>`)** | A crash-looping per-user sync engine is FE-visible (syncDegraded frame) but invisible to the Lamplighter. Ratified A2: the host gets its own narrowest-in-matrix NKey (publish health-kv only, subscribe pinned `_INBOX.>`); per-identity engine plane untouched. Consumer: Lamplighter/health rollup. | ★★ | S–M | ✅ ratified (2026-07-21) · [design](../../implementation-artifacts/facet-host-health-emission-design.md) |
 | **[Processor] A tombstone now retains the entity body** | Step 8 now preserves a tombstoned document's body. Callers passing `{"isDeleted":true,"data":{}}` to blank a body (`pkgmgr/upgrade.go`, `bootstrap/install_ddl.go:161,351`, `meta_ddl.go:71`) are no-ops — the parser discards a tombstone's document — so a dropped package entity keeps its `data` under `isDeleted:true`. No consumer depends on body-erasure; crypto-shred is the sanctioned eraser. Whether a tombstone may blank a body is Contract #3. | ★★ | S | 📋 needs-Andrew · posture call |
 | **[Weaver] Fresh-episode/reclaim error-branch coverage** | `fireEpisode`'s stale-mark reclaim path (NanoID-mint + `marks.replace` failures, 41.4% cov), `bumpDispatchCount`/`bumpEffectDispatch` failure-log branches (50%), `sweeper.deleteEffect` conflict/delete-failure (44.4%), and `reconcileConsumers` supervisor Add/UpdateSpec/Reset/Remove + health-sink-delete failure paths (62.7%) are the lowest-covered branches in an otherwise 86.8%-covered package (`internal/weaver/evaluator.go`, `reconciler.go`, `engine.go`). | ★ | S–M | 📋 ready |
 | **[Bootstrap] `cmd/bootstrap` has no test files — the seed decision is inspection-only** | The probe, re-seed, and two-phase reopen are covered in `internal/bootstrap`, but the branch that *decides* to re-seed lives in `package main` and is untested. Consumer: the freshness probe's own decision path. Either extract the decision into `internal/bootstrap` or add a `cmd/bootstrap` test binary. | ★ | XS–S | 📋 ready · `cmd/bootstrap/main.go:110-140` |
@@ -113,14 +112,14 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 **forks** (Gateway, read-path auth, Vault, multi-cell, HA-NATS) and **frozen-contract** changes are
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
-> 🎯 **Build-ready now.** Top of the stack: **[Refractor] inert `emptyBehavior`** (★★ S — proven
+> 🎯 **Build-ready now.** Top of the stack: **[Refractor] role-queued task's Personal-Lens row**
+> (★★★ M — F5 claim is its consumer) and **[Refractor] inert `emptyBehavior`** (★★ S — proven
 > live, auth-plane; the last-role-revocation half of the reconciliation work, which the shipped
-> sweep now inherits the empty semantics of) and **[Refractor] role-queued task's Personal-Lens row**
-> (★★★ M — F5 claim is its consumer). **[Refractor/Facet] host health emission** (★★ S–M) is
-> ✅ ratified (A2) and build-ready. Then the **📋 ready rows in Component maintenance**: **[Weaver]
-> fresh-episode/reclaim error-branch coverage** (★ S–M) and **[Bootstrap] `cmd/bootstrap` tests**
-> (★ XS–S). Every ✅ ratified row in the feature tables below stays Andrew-gated or driver-blocked.
-> A stale callout starves the lane — whoever ships the top pick renames this to the next.
+> sweep now inherits the empty semantics of). Then the **📋 ready rows in Component maintenance**:
+> **[Weaver] fresh-episode/reclaim error-branch coverage** (★ S–M) and **[Bootstrap]
+> `cmd/bootstrap` tests** (★ XS–S). Every ✅ ratified row in the feature tables below stays
+> Andrew-gated or driver-blocked. A stale callout starves the lane — whoever ships the top pick
+> renames this to the next.
 
 ### Security & trust boundary
 | Item | What it is | Imp | Size | State |
@@ -186,6 +185,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-22 · `77a9dea8` · [facet] host health emission — `health.facet.<instance>` via a second host-level NKey connection (natsperm `facet` row, publish health-kv-only + `_INBOX.>` subscribe); Lamplighter now sees a crash-looping sync engine
 - 2026-07-22 · `ac4d46b8` · [refractor] auth-plane convergence sweep heals graph↔Capability-KV divergence via the reproject path — `CapabilityCoverageDivergence` + `reconciled` counter; closes the projection-reconciliation item
 - 2026-07-22 · `222f66a5` · [CI] `edge-browser-store` retries once on the `websocket url timeout reached` signature alone — a cold-start miss no longer reds the gate, every other failure still fails unretried
 - 2026-07-22 · `52fc791f` · [weaver] `resetConfidence` control verb + CLI drains a target's `__effect` confidence windows — the disable<reset<revoke ladder's middle rung; grants to control-authz + console-operator, never demo-operator
