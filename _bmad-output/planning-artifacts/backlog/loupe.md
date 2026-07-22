@@ -26,7 +26,7 @@ buildable-first; F11–F13 gated on lattice cross-lane asks (§6 there).
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | **F13 — Chronicler Time Machine** | Flow-history browser + map scrubber + ledger browser (platform-edges brief §4 L1–L3); overrides the Chronicler design's "rides F6" display note (Loupe scope). | ★★★ | L | 🚧 L1 reconciled (shipped Flows tab satisfies it, no rebuild) + L2 v1 SHIPPED (flow-liveness scrubber); L2-full/L3 blocked-on: Chronicler archive mode (lattice, unscheduled) · [UX §4](../../implementation-artifacts/loupe-platform-edges-ux.md) |
-| **F21 — demo-operator cold re-mint survives a world reset** | Hosted Loupe dies on every world rotation: the re-minted operator's grant never projects (`AuthDenied NoCapabilityEntry`), the 4m poll in `provision-demo-operator.sh` gives up, `demo-up.sh` degrades to no-Loupe (Facet unaffected). Cold path never exercised — F20 re-used a live world's marker. | ★★★ | M | 📋 filed 2026-07-21 — demo 502; nightly 09:10 UTC reset reproduces |
+| **F21 — demo-operator cold re-mint survives a world reset** | Hosted Loupe died on every world rotation: a reset rescans ~13k events, so the re-minted operator's grant sat behind the backlog and the 4m poll expired, degrading `demo-up.sh` to no-Loupe. Root cause = the auth-plane class in [the reconciliation design](../../implementation-artifacts/capability-projection-reconciliation-design.md). | ★★★ | M | ✅ provisioning now waits on convergence; `lens reproject` repairs a lost doc |
 
 ## New capability surfaces — 2026-07-18 PO survey
 
