@@ -50,7 +50,7 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 | **[Processor] Tombstone body-preservation posture** | May a tombstone ever blank a body? Runtime already preserves the body (step 8); three emitters still ship an inert blanking husk and the UpgradePackage schema forces it. Posture ratified + Contract #3/#8 clarifying edits landed; build = emitter sweep with a warn→reject parser gate. | ★★ | S | ✅ Andrew-ratified · [design](../../implementation-artifacts/tombstone-body-preservation-design.md) |
 | **[Weaver] Fresh-episode/reclaim error-branch coverage** | `fireEpisode`'s stale-mark reclaim path (NanoID-mint + `marks.replace` failures, 41.4% cov), `bumpDispatchCount`/`bumpEffectDispatch` failure-log branches (50%), `sweeper.deleteEffect` conflict/delete-failure (44.4%), and `reconcileConsumers` supervisor Add/UpdateSpec/Reset/Remove + health-sink-delete failure paths (62.7%) are the lowest-covered branches in an otherwise 86.8%-covered package (`internal/weaver/evaluator.go`, `reconciler.go`, `engine.go`). | ★ | S–M | 📋 ready |
 | **[Bootstrap] `cmd/bootstrap` has no test files — the seed decision is inspection-only** | The probe, re-seed, and two-phase reopen are covered in `internal/bootstrap`, but the branch that *decides* to re-seed lives in `package main` and is untested. Consumer: the freshness probe's own decision path. Either extract the decision into `internal/bootstrap` or add a `cmd/bootstrap` test binary. | ★ | XS–S | 📋 ready · `cmd/bootstrap/main.go:110-140` |
-| **[Refractor] Personal Lens rows never retract** | No stored key-state to diff against (`NatsSubjectAdapter`), so a stale multi-row anchor never gets a `Delete`, live or via cold `Hydrate` — and (confirmed live 2026-07-22) the same D1-gate/sibling-pipeline race also silently blocks a *fresh* anchor from ever arriving, with no self-heal. Blocks the verticals staff-worlds claim beat both directions. | ★★ | M | ✅ Andrew-ratified · [design](../../implementation-artifacts/personal-lens-retraction-design.md) |
+| **[Refractor] Personal Lens rows never retract** | No stored key-state to diff against (`NatsSubjectAdapter`), so a stale multi-row anchor never gets a `Delete`, live or via cold `Hydrate` — and (confirmed live 2026-07-22) the same D1-gate/sibling-pipeline race also silently blocks a *fresh* anchor from ever arriving, with no self-heal. Blocks the verticals staff-worlds claim beat both directions. | ★★ | M | 🏗️ building · [design](../../implementation-artifacts/personal-lens-retraction-design.md) · R1 ✅ shipped · next: R2 Edge-side consumption |
 
 ### Survey log (round-robin rotation)
 
@@ -110,8 +110,10 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 **forks** (Gateway, read-path auth, Vault, multi-cell, HA-NATS) and **frozen-contract** changes are
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
-> 🎯 **Build-ready now.** Top of the stack: **[Refractor] Personal Lens rows never retract**
-> (★★ M, ✅ Andrew-ratified · [design](../../implementation-artifacts/personal-lens-retraction-design.md)).
+> 🎯 **Build-ready now.** **[Refractor] Personal Lens rows never retract** is 🏗️ **in-flight** —
+> R1 (server-side frame production) ✅ shipped 2026-07-22; **resume with R2** (Edge-client frame
+> consumption — `Store.ApplyKeySet`, `Sources` attribution, `frameHW` guard, sync-manager `keyset`
+> handling, the live claim-beat proof) per [design §7](../../implementation-artifacts/personal-lens-retraction-design.md).
 > Then the **📋 ready rows in Component maintenance**: **[Weaver] fresh-episode/reclaim
 > error-branch coverage** (★ S–M) and **[Bootstrap] `cmd/bootstrap` tests** (★ XS–S).
 > **[Processor] tombstone body-preservation posture** (★★ S) is ✅ Andrew-ratified and build-ready
@@ -182,6 +184,8 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 ## Done log — lattice (newest first)
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
+
+- 2026-07-22 · `5c6162cb` · [refractor] Personal Lens retraction R1 — per-actor keyset frames close the never-retracts gap; identity-tombstone redelivery-loop defect fixed structurally; R2 (Edge consumption) next
 
 - 2026-07-22 · `c2abdfbe` · [refractor] `Pipeline.Run` seeds `lastAppliedSeq` from the durable's persisted ack floor at startup — closes the reconciliation-token residual, quiet-stream restarts no longer stay inert
 - 2026-07-22 · `baf3cb30` · [refractor,rbac-domain] `capabilityRoles` emptyBehavior:delete now fires on last-role revocation — RealnessFiltered generalized for mixed map/scalar list columns; rbac-domain 0.3.0→0.3.1
