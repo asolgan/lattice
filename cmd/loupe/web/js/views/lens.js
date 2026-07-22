@@ -411,6 +411,15 @@ function contentsPanel(lens) {
         "this projection lives in a Postgres table; set LOUPE_PG_DSN (a read-only role) to browse it here"));
       return;
     }
+    if (body.subjectDelta) {
+      rowsBox.appendChild(el("div", "muted", "no stored rows — nats_subject target; per-actor delta stream, not a read-model bucket"));
+      if (body.personal) {
+        rowsBox.appendChild(el("div", "muted small",
+          "this is a Personal Lens" + (body.stream ? " over stream " + body.stream : "") +
+          " — see the Edge Fleet tab for the subscriber roster"));
+      }
+      return;
+    }
     const rows = body.rows || [];
     status.textContent = rows.length + " of " + body.total + " row(s)" +
       (body.bucket ? " · bucket " + body.bucket : "") +

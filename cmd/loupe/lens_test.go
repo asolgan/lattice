@@ -302,9 +302,10 @@ func TestSelectLensRows(t *testing.T) {
 }
 
 // TestLensRowsTarget pins the CONTENTS panel's target decision: nats_kv is
-// bucket-browsable, postgres routes to the read seam, and a blank or unknown
-// targetType is an ERROR — a malformed spec must not masquerade as either
-// browsable state.
+// bucket-browsable, postgres routes to the read seam, nats_subject is a
+// per-actor delta stream with no stored rows by design, and a blank or
+// unknown targetType is an ERROR — a malformed spec must not masquerade as
+// any browsable state.
 func TestLensRowsTarget(t *testing.T) {
 	kv := lensFullSpec{Found: true, TargetType: "nats_kv", Target: map[string]any{"bucket": "b1"}}
 	if kind, bucket, _ := lensRowsTarget(kv); kind != rowsTargetKV || bucket != "b1" {
@@ -318,11 +319,41 @@ func TestLensRowsTarget(t *testing.T) {
 	if kind, _, _ := lensRowsTarget(pg); kind != rowsTargetPG {
 		t.Errorf("postgres = %q, want the pg seam", kind)
 	}
+	subject := lensFullSpec{Found: true, TargetType: "nats_subject", Target: map[string]any{"personal": true, "stream": "SYNC"}}
+	if kind, _, _ := lensRowsTarget(subject); kind != rowsTargetSubject {
+		t.Errorf("nats_subject = %q, want the subject-delta state", kind)
+	}
 	for _, tt := range []string{"", "mystery"} {
 		spec := lensFullSpec{Found: true, TargetType: tt}
 		if kind, _, msg := lensRowsTarget(spec); kind != rowsTargetBad || msg == "" {
 			t.Errorf("targetType %q = %q/%q, want bad+message", tt, kind, msg)
 		}
+	}
+}
+
+// TestLensRowsSubject pins the honest no-stored-rows response for a
+// nats_subject target, including the Personal Lens roster pointer.
+func TestLensRowsSubject(t *testing.T) {
+	s := &server{}
+
+	rec := httptest.NewRecorder()
+	s.lensRowsSubject(rec, lensFullSpec{Target: map[string]any{"personal": true, "stream": "SYNC"}})
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["targetType"] != "nats_subject" || body["subjectDelta"] != true || body["personal"] != true || body["stream"] != "SYNC" {
+		t.Errorf("personal subject body = %v", body)
+	}
+
+	rec = httptest.NewRecorder()
+	s.lensRowsSubject(rec, lensFullSpec{Target: map[string]any{}})
+	body = nil
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["targetType"] != "nats_subject" || body["subjectDelta"] != true || body["personal"] != false || body["stream"] != "" {
+		t.Errorf("non-personal subject body = %v", body)
 	}
 }
 

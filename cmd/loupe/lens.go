@@ -370,13 +370,16 @@ func selectLensRows(keys []string, q string, limit int) (selected []string, tota
 
 // The CONTENTS panel's target decision: a nats_kv target browses its bucket,
 // a postgres target routes to the read seam (pg.go — real rows with a
-// configured LOUPE_PG_DSN, the pg-pending shape without one), and a
-// blank/unknown targetType is an error — a malformed spec must not
-// masquerade as either browsable state.
+// configured LOUPE_PG_DSN, the pg-pending shape without one), a nats_subject
+// target is a per-actor delta stream with no stored rows to browse by design
+// (rowsTargetSubject — the Personal Lens transport; roster lives on the Edge
+// Fleet tab, not here), and a blank/unknown targetType is an error — a
+// malformed spec must not masquerade as any browsable state.
 const (
-	rowsTargetKV  = "kv"
-	rowsTargetPG  = "pg"
-	rowsTargetBad = "bad"
+	rowsTargetKV      = "kv"
+	rowsTargetPG      = "pg"
+	rowsTargetSubject = "subject"
+	rowsTargetBad     = "bad"
 )
 
 func lensRowsTarget(spec lensFullSpec) (kind, bucket, errMsg string) {
@@ -389,6 +392,8 @@ func lensRowsTarget(spec lensFullSpec) (kind, bucket, errMsg string) {
 		return rowsTargetKV, bucket, ""
 	case "postgres":
 		return rowsTargetPG, "", ""
+	case "nats_subject":
+		return rowsTargetSubject, "", ""
 	default:
 		return rowsTargetBad, "", "unknown targetType " + strconv.Quote(spec.TargetType)
 	}
@@ -500,6 +505,9 @@ func (s *server) lensRows(w http.ResponseWriter, r *http.Request, id string) {
 	case rowsTargetPG:
 		s.lensRowsPG(ctx, w, id, spec, limit, q)
 		return
+	case rowsTargetSubject:
+		s.lensRowsSubject(w, spec)
+		return
 	case rowsTargetBad:
 		s.writeError(w, http.StatusBadGateway, "lens "+id+": "+errMsg)
 		return
@@ -532,5 +540,22 @@ func (s *server) lensRows(w http.ResponseWriter, r *http.Request, id string) {
 		"total":      total,
 		"truncated":  truncated,
 		"limit":      limit,
+	})
+}
+
+// lensRowsSubject answers a nats_subject target's Contents request: by design
+// there are no stored rows to browse (the target is a per-actor delta
+// stream, not a read-model bucket or table). A Personal target's live roster
+// is the Edge Fleet tab (edge.go), so the response names it; a non-personal
+// nats_subject target (the direct-shape PL.1 case) gets the plain honest
+// empty state.
+func (s *server) lensRowsSubject(w http.ResponseWriter, spec lensFullSpec) {
+	personal, _ := spec.Target["personal"].(bool)
+	stream, _ := spec.Target["stream"].(string)
+	s.writeJSON(w, http.StatusOK, map[string]any{
+		"targetType":   "nats_subject",
+		"subjectDelta": true,
+		"personal":     personal,
+		"stream":       stream,
 	})
 }
