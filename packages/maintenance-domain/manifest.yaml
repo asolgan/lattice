@@ -1,0 +1,34 @@
+name: maintenance-domain
+version: 0.1.0
+description: |
+  Cross-vertical maintenance work orders: vtx.workorder.<NanoID> raised at a
+  location by ReportIssue and closed by ResolveWorkOrder, the op an FR28
+  role-queued task grants its claimant (the §10.6 auto-complete closes the
+  task, so no separate completion op exists). `.resolution` is the
+  read-before-write terminal marker — an identical re-submit is an idempotent
+  no-op so an offline device's drain retry cannot fail the work, a differing
+  one is rejected so a resolution never silently flips. Both ops carry F4's
+  canonical workplace write-confinement guard. ResolveWorkOrder carries an
+  op-meta with the full edge-manifest descriptor vocabulary
+  (presentation/inputSchema/dispatch authContext=task) so a Facet client can
+  render and submit it from the task row alone.
+depends:
+  - location-domain
+declares:
+  ddls:
+    - canonicalName: workOrder
+      class: meta.ddl.vertexType
+    - canonicalName: workOrderReport
+      class: meta.ddl.aspectType
+    - canonicalName: workOrderResolution
+      class: meta.ddl.aspectType
+  permissions:
+    - operationType: ReportIssue
+      scope: any
+      grantsTo: [operator, frontOfHouse, backOfHouse]
+    - operationType: ResolveWorkOrder
+      scope: any
+      grantsTo: [operator]
+  opMetas:
+    - operationType: ResolveWorkOrder
+    - operationType: ReportIssue

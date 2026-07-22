@@ -195,6 +195,34 @@ func TestPackage_LensRowKeysAreManifestNamespaced(t *testing.T) {
 	}
 }
 
+// TestPackage_TaskLensesNameBothScopedSubjects pins the two subjects a task's
+// scopedName resolves from, because losing either one silently regresses the
+// renderer's display-name floor to a bare NanoID (display-name-convention-
+// design.md §2): a lease task names its applied-for unit, and a maintenance
+// task names its work order's own report summary. Both task lenses must carry
+// both — edgeTasksQueued shows the work before it is claimed, edgeTasks after.
+func TestPackage_TaskLensesNameBothScopedSubjects(t *testing.T) {
+	for _, name := range []string{"edgeTasks", "edgeTasksQueued"} {
+		var spec string
+		for _, l := range Package.Lenses {
+			if l.CanonicalName == name {
+				spec = l.Spec
+			}
+		}
+		if spec == "" {
+			t.Fatalf("%s: lens not found", name)
+		}
+		for _, lit := range []string{
+			"scopedUnit.presentation.data.name",
+			"tgt.report.data.summary",
+		} {
+			if !strings.Contains(spec, lit) {
+				t.Errorf("%s: scopedName no longer resolves %q — the renderer falls back to a bare NanoID", name, lit)
+			}
+		}
+	}
+}
+
 // TestPackage_SpecsParseUnderFullEngine runs every lens's cypher through the
 // same lex/parse/AST-visitor pipeline Refractor uses at activation
 // (ruleengine/full.Engine.Parse) — a live-graph-free syntax + supported-

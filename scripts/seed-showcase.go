@@ -94,6 +94,8 @@ const (
 	tenant2Email = "sam.okafor@showcase.dev.lattice.local"
 	staffName    = "Dana Whitfield"
 	staffEmail   = "dana.whitfield@showcase.dev.lattice.local"
+	maintName    = "Theo Marsh"
+	maintEmail   = "theo.marsh@showcase.dev.lattice.local"
 
 	// The staff-worklist beat: a vacant third unit + a walk-in applicant whose
 	// signed lease application sits undecided on the staff persona's worklist
@@ -174,6 +176,8 @@ func main() {
 		fmt.Printf("==> staff:           %s (%s) worksAt building, holds frontOfHouse\n", staffKey, staffName)
 		seedStaffWorklistApplication(ctx, conn, adminKey, staffKey)
 		fmt.Println("FACET_STAFF_NANOID=" + strings.TrimPrefix(staffKey, "vtx.identity."))
+		maintKey := seedMaintenanceBeat(ctx, conn, adminKey)
+		fmt.Println("FACET_MAINT_NANOID=" + strings.TrimPrefix(maintKey, "vtx.identity."))
 		return
 	}
 	consumerRoleKey := "vtx.role." + pkgmgr.RoleID("identity-domain", "consumer")
@@ -289,11 +293,95 @@ func main() {
 
 	retireLegacyTemplates(ctx, conn)
 
+	maintKey := seedMaintenanceBeat(ctx, conn, adminKey)
+
 	fmt.Println()
 	fmt.Println("==> showcase world seeded.")
 	fmt.Println("FACET_TENANT1_NANOID=" + strings.TrimPrefix(tenant1Key, "vtx.identity."))
 	fmt.Println("FACET_TENANT2_NANOID=" + strings.TrimPrefix(tenant2Key, "vtx.identity."))
 	fmt.Println("FACET_STAFF_NANOID=" + strings.TrimPrefix(staffKey, "vtx.identity."))
+	fmt.Println("FACET_MAINT_NANOID=" + strings.TrimPrefix(maintKey, "vtx.identity."))
+}
+
+// seedMaintenanceBeat loads the offline maintenance beat
+// (facet-staff-worlds-design.md §6 F5): a back-of-house tech who worksAt the
+// building, and a work order at Unit 1 queued to their role — claimable from
+// the tech's own Facet mirror, resolvable under the task's ephemeral grant.
+//
+// The tech is a SECOND staff persona and is deliberately not the front-desk
+// one: the whole F5 argument is that a maintenance world is nameless (D3 —
+// unit/equipment-scoped work carries no resident PII, which is what lets it
+// ride the SYNC plane at all), while the front desk's worklist is
+// PII-bearing and server-paned. One binary, two staff worlds, different
+// shapes — that only shows if two personas exist.
+//
+// The work order + its task roll their ids by UTC day, the wellness session's
+// own reason: a reseed against a world the nightly wipe did NOT clear must
+// still offer an UNRESOLVED work order, or the demo's maintenance tab is
+// permanently a list of finished work. Two reseeds on the same day converge on
+// the same ids (per-mutation idempotent, like every seeder here).
+//
+// Returns the tech's identity key.
+func seedMaintenanceBeat(ctx context.Context, conn *substrate.Conn, adminKey string) string {
+	backOfHouseRoleKey := "vtx.role." + pkgmgr.RoleID("identity-domain", "backOfHouse")
+	techKey := ensureMaintenanceTech(ctx, conn, adminKey, backOfHouseRoleKey)
+	fmt.Printf("==> maintenance:     %s (%s) worksAt building, holds backOfHouse\n", techKey, maintName)
+
+	day := time.Now().UTC().Format("2006-01-02")
+	woID := substrate.DeriveNanoID("showcase-workorder", day)
+	woKey := "vtx.workorder." + woID
+	if !alive(ctx, conn, woKey) {
+		submitOp(ctx, conn, adminKey, "ReportIssue", "workOrder",
+			map[string]any{"workOrderId": woID, "location": unit1Key, "priority": "urgent",
+				"summary": "Basement riser valve is weeping — no phone signal down there"},
+			&processor.ContextHint{Reads: []string{unit1Key}})
+	}
+
+	taskID := substrate.DeriveNanoID("showcase-workorder-task", day)
+	taskKey := "vtx.task." + taskID
+	if !alive(ctx, conn, taskKey) {
+		resolveMeta := findOpMetaByType(ctx, conn, "ResolveWorkOrder")
+		submitOp(ctx, conn, adminKey, "CreateTask", "task",
+			map[string]any{"taskId": taskID, "queue": backOfHouseRoleKey,
+				"forOperation": resolveMeta, "scopedTo": woKey,
+				"expiresAt": time.Now().UTC().AddDate(0, 0, 30).Format(time.RFC3339)},
+			&processor.ContextHint{
+				Reads: []string{backOfHouseRoleKey, resolveMeta, woKey},
+				// CreateTask's own absence-tolerant reads: the dedup key and
+				// the assignee availability aspect, neither of which exists on
+				// a queue-only task (Contract #2 §2.5 class (d)).
+				OptionalReads: []string{taskKey},
+			})
+	}
+	fmt.Println("==> work order:      " + woKey + " at Unit 1, queued to backOfHouse via " + taskKey)
+	return techKey
+}
+
+// ensureMaintenanceTech resolves the showcase maintenance persona, minting it
+// only if absent. It looks the persona up by its holdsRole link rather than by
+// worksAt (ensureStaff's probe): TWO personas now work at the building, so a
+// worksAt scan can no longer tell them apart, while the role is exactly what
+// distinguishes them. A tombstoned worksAt link is re-wired rather than read as
+// absent — the same revive path ensureStaff needed once a retraction vector had
+// unwired its persona.
+func ensureMaintenanceTech(ctx context.Context, conn *substrate.Conn, adminKey, roleKey string) string {
+	js := conn.JetStream()
+	coreKV, err := js.KeyValue(ctx, bootstrap.CoreKVBucket)
+	must(err, "open core-kv")
+	allKeys, err := pkgverify.ListAllKeys(ctx, coreKV)
+	must(err, "list core-kv keys")
+
+	existing, _ := findLinkedIdentity(ctx, coreKV, allKeys, "holdsRole", roleKey)
+	if existing == "" {
+		return seedStaff(ctx, conn, adminKey, roleKey, buildingKey, maintName, maintEmail)
+	}
+	if !alive(ctx, conn, linkKey(existing, "worksAt", buildingKey)) {
+		submitOp(ctx, conn, adminKey, "WireWorksAt", "serviceLocation",
+			map[string]any{"identity": existing, "location": buildingKey},
+			wireHint(existing, "worksAt", buildingKey))
+		fmt.Printf("==> healed:          re-wired %s worksAt building (link was absent or tombstoned)\n", existing)
+	}
+	return existing
 }
 
 // seedTenant mints an unclaimed identity, grants consumer, wires residesIn,

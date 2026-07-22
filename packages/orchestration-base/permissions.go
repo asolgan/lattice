@@ -17,9 +17,10 @@ import "github.com/asolgan/lattice/internal/pkgmgr"
 // platform-injected on the commit path, not a submitted op).
 //
 // ClaimTask is granted to `operator` as the platform-wide baseline (operators
-// may always claim any queued task) and to `frontOfHouse`, the shipped
-// front-of-house staff role whose queued work is the whole point of the FR28
-// role-queue. Any package establishing a FURTHER role-queue (e.g. a
+// may always claim any queued task) and to `frontOfHouse` + `backOfHouse`, the
+// two shipped staff roles whose queued work is the whole point of the FR28
+// role-queue — back-of-house is the maintenance tech who claims a queued work
+// order (facet-staff-worlds-design.md §6 F5). Any package establishing a FURTHER role-queue (e.g. a
 // "leasing-team" role) must likewise grant that role ClaimTask — the Epic-12
 // cap.roles decomposition lets each package contribute its own role grants,
 // since orchestration-base cannot know a downstream package's role names.
@@ -40,8 +41,8 @@ func Permissions() []pkgmgr.PermissionSpec {
 		{
 			OperationType: "ClaimTask",
 			Scope:         "any",
-			Note:          "Grants the operator and front-of-house staff the right to submit ClaimTask operations (FR28 platform-wide baseline; the script further requires the claimant to hold the task's own queued role, so this grant claims nothing on its own).",
-			GrantsTo:      []string{"operator", "frontOfHouse"},
+			Note:          "Grants the operator and both staff roles the right to submit ClaimTask operations (FR28 platform-wide baseline; the script further requires the claimant to hold the task's own queued role, so this grant claims nothing on its own).",
+			GrantsTo:      []string{"operator", "frontOfHouse", "backOfHouse"},
 		},
 		{
 			OperationType: "ReAssignTask",

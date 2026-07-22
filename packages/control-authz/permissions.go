@@ -46,21 +46,21 @@ func componentPermissions(component string, verbs []string) []pkgmgr.PermissionS
 // server-side, so a broad scope=any grant never lets one identity act on
 // another's interest set).
 //
-// `frontOfHouse` is here for the same reason `consumer` is, and it is not
-// optional: registering Personal Lens interest is the FIRST thing a client
-// does, so without this grant a staff device cannot sync at all — the sync
-// manager fails "personal.register: actor lacks the control grant" and retries
-// forever, leaving the whole staff world empty rather than partially degraded.
-// Any future role whose holders sign into a mirroring client needs adding here
-// too.
+// `frontOfHouse` and `backOfHouse` are here for the same reason `consumer` is,
+// and it is not optional: registering Personal Lens interest is the FIRST thing
+// a client does, so without this grant a staff device cannot sync at all — the
+// sync manager fails "personal.register: actor lacks the control grant" and
+// retries forever, leaving the whole staff world empty rather than partially
+// degraded. Any future role whose holders sign into a mirroring client needs
+// adding here too — that rule is pinned by a test rather than left to memory.
 func personalLensPermissions(verbs ...string) []pkgmgr.PermissionSpec {
 	perms := make([]pkgmgr.PermissionSpec, 0, len(verbs))
 	for _, verb := range verbs {
 		perms = append(perms, pkgmgr.PermissionSpec{
 			OperationType: "ctrl.refractor." + verb,
 			Scope:         "any",
-			Note:          "Authorizes control-operator, or any consumer / frontOfHouse identity acting on its own Personal Lens interest set (bound server-side, §3.4), to invoke the refractor control plane's " + verb + " op.",
-			GrantsTo:      []string{"control-operator", "consumer", "frontOfHouse"},
+			Note:          "Authorizes control-operator, or any consumer / frontOfHouse / backOfHouse identity acting on its own Personal Lens interest set (bound server-side, §3.4), to invoke the refractor control plane's " + verb + " op.",
+			GrantsTo:      []string{"control-operator", "consumer", "frontOfHouse", "backOfHouse"},
 		})
 	}
 	return perms

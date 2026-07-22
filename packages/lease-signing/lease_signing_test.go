@@ -107,7 +107,7 @@ func installLeaseDeps(t *testing.T, ctx context.Context, conn *substrate.Conn) {
 	stop := testutil.RunMetaInstallPipeline(t, ctx, conn)
 	defer stop()
 	inst := pkgmgr.NewInstaller(conn, bootstrap.BootstrapIdentityKey)
-	inst.RoleIDs = map[string]string{"operator": bootstrap.RoleOperatorID, "consumer": lsConsumerRoleID, "frontOfHouse": pkgmgr.RoleID("identity-domain", "frontOfHouse")}
+	inst.RoleIDs = map[string]string{"operator": bootstrap.RoleOperatorID, "consumer": lsConsumerRoleID, "frontOfHouse": pkgmgr.RoleID("identity-domain", "frontOfHouse"), "backOfHouse": pkgmgr.RoleID("identity-domain", "backOfHouse")}
 	if _, err := inst.Install(ctx, orchestrationbase.Package); err != nil {
 		t.Fatalf("install orchestration-base: %v", err)
 	}

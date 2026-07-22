@@ -270,9 +270,13 @@ const (
 // has no vertex-type-from-key function, and the type is a declaration of
 // what the walk means, not a derivation from what it returned. One
 // OPTIONAL MATCH per anchor type; adding a type is one more walk plus one
-// more collect entry. Contract #1 direction: the leaseapp is the
-// later-arriving source of `applicationFor`, so the walk into the
-// pre-existing identity runs backwards. A degenerate {key:null} entry when
+// more collect entry. Two types ship: `leaseapp` (a resident's own lease
+// application) and `workplace` (a staff actor's worksAt location — the
+// anchor a standing staff op like ReportIssue fills its `location` from, so
+// the form asks only for what is genuinely typed). Contract #1 direction:
+// the leaseapp is the later-arriving source of `applicationFor`, so the walk
+// into the pre-existing identity runs backwards; `worksAt` runs forwards off
+// the identity and is matched once for the `anchors` grouping already. A degenerate {key:null} entry when
 // the identity has no lease is the same expected shape roles/anchors carry
 // and is dropped client-side.
 const edgeIdentitySpec = `
@@ -293,7 +297,8 @@ RETURN
   collect(DISTINCT {key: role.key, name: role.canonicalName.data.value}) AS roles,
   collect(DISTINCT {key: loc.key, name: loc.presentation.data.name, container: container.key, containerName: container.presentation.data.name, relation: 'residesIn'}) +
   collect(DISTINCT {key: work.key, name: work.presentation.data.name, container: workContainer.key, containerName: workContainer.presentation.data.name, relation: 'worksAt'}) AS anchors,
-  collect(DISTINCT {type: 'leaseapp', key: leaseapp.key}) AS selfAnchors
+  collect(DISTINCT {type: 'leaseapp', key: leaseapp.key}) +
+  collect(DISTINCT {type: 'workplace', key: work.key}) AS selfAnchors
 `
 
 // edgeServicesSpec projects one `manifest.svc.<tplId>` row per service
@@ -380,14 +385,18 @@ RETURN
 // assignedTo only — FR28 role-queued tasks are deferred (see the package
 // doc comment above).
 //
-// scopedName projects the display name of the task's scoped target's subject
-// (class-4 relational label, display-name-convention-design.md §2): a
-// SignLease task scopedTo a leaseapp carries the applied-for unit's
-// `.presentation` name, so the renderer composes "Unit 1 lease" instead of a
-// bare NanoID. Mirrors the `templateName` idiom on edgeInstances — rides
-// inline on the already-readable task row, no separate read-grant. Null when
-// the target has no `appliesToUnit` subject (non-leaseapp scopes fall to the
-// renderer's typed floor).
+// scopedName projects the display name of the task's scoped target
+// (class-4 relational label, display-name-convention-design.md §2), from
+// whichever of two subjects the target actually has: a SignLease task
+// scopedTo a leaseapp carries the applied-for unit's `.presentation` name
+// ("Unit 1 lease"), and a maintenance task scopedTo a work order carries
+// that order's own `.report` summary ("Boiler in the basement is cycling").
+// Both ride inline on the already-readable task row, the `templateName`
+// idiom on edgeInstances — no separate read-grant. The work-order summary is
+// safe to carry here precisely because maintenance work is unit/equipment-
+// scoped and its summary is declared PII-free (D3 forbids plaintext identity
+// PII on the SYNC plane, which is why NO name arrives this way). Null when
+// the target is neither, and the renderer falls to its typed floor.
 const edgeTasksSpec = `
 MATCH (identity:identity {key: $actorKey})<-[:assignedTo]-(task:task)
 WHERE task.data.status = "open"
@@ -403,7 +412,8 @@ RETURN
   op.key AS forOperationKey,
   op.data.operationType AS operationType,
   tgt.key AS scopedTo,
-  scopedUnit.presentation.data.name AS scopedName,
+  (CASE WHEN scopedUnit.presentation.data.name <> null THEN scopedUnit.presentation.data.name
+        ELSE tgt.report.data.summary END) AS scopedName,
   task.data.expiresAt AS expiresAt
 `
 
@@ -604,7 +614,8 @@ RETURN
   op.key AS forOperationKey,
   op.data.operationType AS operationType,
   tgt.key AS scopedTo,
-  scopedUnit.presentation.data.name AS scopedName,
+  (CASE WHEN scopedUnit.presentation.data.name <> null THEN scopedUnit.presentation.data.name
+        ELSE tgt.report.data.summary END) AS scopedName,
   task.data.expiresAt AS expiresAt,
   role.key AS queuedRole,
   role.canonicalName.data.value AS queuedRoleName

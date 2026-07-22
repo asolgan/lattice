@@ -65,7 +65,7 @@ func TestPackage_DeclaresControlOperatorRoleDistinctFromPrimordialOperator(t *te
 // scope=any, and every op grants to control-operator ALONE except the five
 // identity-bound Personal Lens ops
 // (register/deregister/hydrate/sessionkey/syncgap), which additionally grant to
-// every role whose holders run a syncing client — consumer and frontOfHouse
+// every role whose holders run a syncing client — consumer, frontOfHouse and backOfHouse
 // (§3.4-confined — see personalLensPermissions). A role missing from that set
 // cannot register Personal Lens interest at all, so its holders' clients sync
 // nothing; this test is where that omission surfaces.
@@ -77,7 +77,7 @@ func TestPackage_EveryControlOpHasExpectedGrantees(t *testing.T) {
 		"ctrl.refractor.read", "ctrl.refractor.rebuild", "ctrl.refractor.pause", "ctrl.refractor.resume",
 		"ctrl.refractor.delete",
 	}
-	wantPersonalLensGrantees := []string{"control-operator", "consumer", "frontOfHouse"}
+	wantPersonalLensGrantees := []string{"control-operator", "consumer", "frontOfHouse", "backOfHouse"}
 	wantControlOperatorAndConsumer := []string{
 		"ctrl.refractor.register", "ctrl.refractor.deregister", "ctrl.refractor.hydrate", "ctrl.refractor.sessionkey",
 		"ctrl.refractor.syncgap",

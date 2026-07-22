@@ -47,6 +47,7 @@ import (
 	locationdomain "github.com/asolgan/lattice/packages/location-domain"
 	loftspacedomain "github.com/asolgan/lattice/packages/loftspace-domain"
 	loftspaceledger "github.com/asolgan/lattice/packages/loftspace-ledger"
+	maintenancedomain "github.com/asolgan/lattice/packages/maintenance-domain"
 	objectsbase "github.com/asolgan/lattice/packages/objects-base"
 	onebill "github.com/asolgan/lattice/packages/one-bill"
 	orchestrationbase "github.com/asolgan/lattice/packages/orchestration-base"
@@ -107,6 +108,7 @@ var packageRegistry = map[string]pkgmgr.Definition{
 	"console-operator":       consoleoperator.Package,
 	"demo-operator":          demooperator.Package,
 	"wellness-domain":        wellnessdomain.Package,
+	"maintenance-domain":     maintenancedomain.Package,
 }
 
 func main() {
