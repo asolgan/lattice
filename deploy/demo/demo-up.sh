@@ -23,9 +23,14 @@ echo "==> Building facet binary..."
 go build -o bin/facet ./cmd/facet
 
 echo "==> Loading the showcase dataset (idempotent)..."
-seed_out="$(make seed-showcase 2>&1 | tee /dev/stderr)"
-tenant1="$(sed -n 's/^FACET_TENANT1_NANOID=//p' <<<"$seed_out")"
-tenant2="$(sed -n 's/^FACET_TENANT2_NANOID=//p' <<<"$seed_out")"
+# Under systemd fd 2 is a journal socket, which open(2) refuses (ENXIO), so a
+# /dev/stderr path-open cannot carry the live copy — tee to a temp file: the
+# pipeline's stdout streams to the journal, the file feeds the id extraction.
+seed_log="$(mktemp)"
+make seed-showcase 2>&1 | tee "$seed_log"
+tenant1="$(sed -n 's/^FACET_TENANT1_NANOID=//p' "$seed_log")"
+tenant2="$(sed -n 's/^FACET_TENANT2_NANOID=//p' "$seed_log")"
+rm -f "$seed_log"
 if [[ -z "$tenant1" || -z "$tenant2" ]]; then
 	echo "demo-up: seed-showcase did not print both tenant ids" >&2
 	exit 1
