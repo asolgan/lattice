@@ -11,7 +11,9 @@ Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=__REPO__
 ExecStart=__REPO__/deploy/demo/demo-up.sh
-TimeoutStartSec=1800
+# Same rescan applies at boot: demo-up.sh provisions the demo operator, which
+# waits for the auth plane to converge before Loupe can start.
+TimeoutStartSec=4200
 
 [Install]
 WantedBy=multi-user.target
