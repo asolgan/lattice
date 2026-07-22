@@ -33,10 +33,11 @@ func TestPackage_NoDDLsOrPermissions(t *testing.T) {
 	}
 }
 
-// manifestLensNames are the ten Personal Lenses (edge-showcase-app-
+// manifestLensNames are the eleven Personal Lenses (edge-showcase-app-
 // design.md §3.2; the three manifest.ent entity lenses per
 // facet-entity-browse-design.md; the two staff siblings per
-// facet-staff-worlds-design.md §3.3). readGrantLensNames are their read-grant
+// facet-staff-worlds-design.md §3.3; the workplace-spine work-order lens per
+// its §6 F5). readGrantLensNames are their read-grant
 // producers (nats-kv, actorAggregate) — a structurally different class (never
 // Personal, never nats-subject) that
 // TestPackage_LensesAreNatsSubjectPersonal/
@@ -47,6 +48,7 @@ var manifestLensNames = map[string]bool{
 	"edgeEntitySessions": true, "edgeEntityProviders": true,
 	"edgeEntityBookings": true,
 	"edgeCatalogRoles": true, "edgeTasksQueued": true,
+	"edgeStaffWorkOrders": true,
 }
 
 const readGrantLensName = "edgeManifestReadGrants"
@@ -61,9 +63,9 @@ var readGrantLensNames = map[string]bool{
 	"edgeManifestStaffReadGrants": true,
 }
 
-func TestPackage_TwelveLenses(t *testing.T) {
-	if got := len(Package.Lenses); got != 12 {
-		t.Fatalf("expected 12 lenses (10 manifest + 2 read-grant producers), got %d", got)
+func TestPackage_ThirteenLenses(t *testing.T) {
+	if got := len(Package.Lenses); got != 13 {
+		t.Fatalf("expected 13 lenses (11 manifest + 2 read-grant producers), got %d", got)
 	}
 	names := map[string]bool{}
 	for _, l := range Package.Lenses {
@@ -180,6 +182,9 @@ func TestPackage_LensRowKeysAreManifestNamespaced(t *testing.T) {
 		// the renderer never learns which path a row arrived by.
 		"edgeCatalogRoles": `"manifest.op" AS ns`,
 		"edgeTasksQueued":  `"manifest.task" AS ns`,
+		// The work-order lens is its own namespace: it answers "what work
+		// exists at my workplace", not "what has been handed to me".
+		"edgeStaffWorkOrders": `"manifest.work" AS ns`,
 	}
 	for _, l := range Package.Lenses {
 		if readGrantLensNames[l.CanonicalName] {

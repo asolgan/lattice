@@ -188,6 +188,17 @@ func Lenses() []pkgmgr.LensSpec {
 			Spec:          edgeTasksQueuedSpec,
 		},
 		{
+			CanonicalName: "edgeStaffWorkOrders",
+			Class:         "meta.lens",
+			Adapter:       "nats-subject",
+			SubjectPrefix: manifestSubjectPrefix,
+			Stream:        manifestStream,
+			Personal:      true,
+			Engine:        "full",
+			IntoKey:       []string{"__actor", "ns", "entityId"},
+			Spec:          edgeStaffWorkOrdersSpec,
+		},
+		{
 			CanonicalName:  "edgeManifestStaffReadGrants",
 			Class:          "meta.lens",
 			Adapter:        "nats-kv",
@@ -621,6 +632,62 @@ RETURN
   role.canonicalName.data.value AS queuedRoleName
 `
 
+// edgeStaffWorkOrdersSpec projects one `manifest.work.<workOrderId>` row per
+// maintenance work order at a place the actor worksAt — FORK-S1 A's per-row
+// domain worklist, the half of a staff world that is MIRROR rather than
+// server-pane.
+//
+// Why this is a different lens from edgeTasksQueued rather than a column on
+// it: a task row exists only because somebody queued a task. A work order at
+// your building with no task on it — unqueued, claimed by a colleague, or
+// already resolved — is domain state your world should still show, and it is
+// what §3.6 means by "what work exists at my workplace" as opposed to "what
+// has been handed to me." The two lenses answer different questions and a
+// device offline needs both.
+//
+// The walk runs DOWN from the workplace: `(work)<-[:containedIn*0..]-(place)`
+// enumerates the workplace itself (0 hops) and everything contained in it
+// transitively, then `(place)<-[:locatedAt]-(wo:workorder)` takes the orders
+// at each. Every shipped variable-length walk before this one runs UP
+// (a resident's residence to its containers), because that is the direction
+// a resident's reachability has; a staff actor's is the mirror image — you
+// work at the building, the work is in the units. The engine handles it with
+// the same code either way (executor.traverseRel filters each hop through
+// directionMatches, and Adjacency records every edge under both endpoints),
+// so this is a new direction for the corpus, not a new engine capability.
+//
+// D3 holds without effort here, and that is the whole reason FORK-S1 A is
+// safe to build: a work order carries a summary, a priority and a place —
+// unit/equipment-scoped facts. No identity, no name, nothing sealed. The one
+// field that could carry resident PII is the free-text summary, which is why
+// maintenance-domain's own field description tells the reporter to keep it
+// out; nothing on this row can leak a name because no name is joined into it.
+//
+// `status` derives from the `.resolution` aspect's presence, the same
+// read-before-write terminal marker ResolveWorkOrder consults — so a resolve
+// that drains after a device reconnects flips this row to "resolved" on the
+// mirror without any second write to model it.
+const edgeStaffWorkOrdersSpec = `
+MATCH (identity:identity {key: $actorKey})-[:worksAt]->(work)
+OPTIONAL MATCH (work)<-[:containedIn*0..]-(place)<-[:locatedAt]-(wo:workorder)
+WITH wo, place, work
+WHERE wo.key <> null
+RETURN
+  wo.key AS anchor,
+  "manifest.work" AS ns,
+  nanoIdFromKey(wo.key) AS entityId,
+  wo.key AS workOrderKey,
+  wo.report.data.summary AS summary,
+  wo.report.data.priority AS priority,
+  wo.report.data.reportedAt AS reportedAt,
+  place.key AS placeKey,
+  place.presentation.data.name AS placeName,
+  work.key AS workplaceKey,
+  (CASE WHEN wo.resolution.data.resolvedAt <> null THEN "resolved" ELSE "open" END) AS status,
+  wo.resolution.data.resolvedAt AS resolvedAt,
+  wo.resolution.data.notes AS resolutionNotes
+`
+
 // edgeManifestStaffReadGrantsSpec is the Path B read-grant slice covering the
 // two anchor kinds the staff lenses introduce: role-granted op metas and
 // role-queued tasks. Without it Refractor's D1 readableAnchors gate silently
@@ -638,10 +705,12 @@ const edgeManifestStaffReadGrantsSpec = `
 MATCH (identity:identity {key: $actorKey})-[:holdsRole]->(role:role)
 OPTIONAL MATCH (role)<-[:grantedBy]-(perm:permission)-[:forOperation]->(op:meta)
 OPTIONAL MATCH (role)<-[:queuedFor]-(task:task)
+OPTIONAL MATCH (identity)-[:worksAt]->(work)<-[:containedIn*0..]-(place)<-[:locatedAt]-(wo:workorder)
 RETURN
   identity.key AS actorKey,
   collect(DISTINCT {anchorType: 'meta', anchorId: nanoIdFromKey(op.key), via: ['holdsRole', 'grantedBy', 'forOperation']}) +
-  collect(DISTINCT {anchorType: 'task', anchorId: nanoIdFromKey(task.key), via: ['holdsRole', 'queuedFor']})
+  collect(DISTINCT {anchorType: 'task', anchorId: nanoIdFromKey(task.key), via: ['holdsRole', 'queuedFor']}) +
+  collect(DISTINCT {anchorType: 'workorder', anchorId: nanoIdFromKey(wo.key), via: ['worksAt', 'containedIn', 'locatedAt']})
   AS readableAnchors
 `
 

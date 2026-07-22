@@ -203,6 +203,21 @@ h2.section-title { font-size: 14px; text-transform: uppercase; letter-spacing: 0
 .timeline-item .meta { color: var(--text-dim); font-size: 12px; }
 .timeline-item .error-msg { color: var(--red); font-size: 12px; }
 .timeline-item .actions { display: flex; gap: 8px; margin-top: 2px; }
+/* The work-order rows reuse .timeline-item, so the Pending chip needs a rule
+   here too — the .card one is positioned absolutely against a card. */
+.timeline-item .pending-chip {
+  font-size: 10px; font-weight: 700; text-transform: uppercase;
+  color: var(--yellow); border: 1px solid var(--yellow); border-radius: 999px;
+  padding: 1px 7px; white-space: nowrap;
+}
+.timeline-item .btn { align-self: flex-start; }
+/* Offline is a NORMAL state for the maintenance half, not an error: the list
+   is complete and still actionable, so this reads as information rather than
+   the red/degraded treatment the Protected pane gets when it cannot load. */
+.offline-note {
+  border: 1px dashed var(--border); border-radius: 10px;
+  padding: 8px 12px; margin-bottom: 10px;
+}
 
 /* ---- forms / descriptor renderer (§3.6) ---- */
 

@@ -44,6 +44,7 @@ const TYPE_LABELS = {
   session: "Class session",
   studio: "Studio",
   menuitem: "Menu item",
+  workorder: "Work order",
 };
 function typeLabel(type) {
   return TYPE_LABELS[type] || (type ? titleCase(type) : "Item");
@@ -178,6 +179,10 @@ const state = {
   // must not: it is cross-identity Protected data, session-scoped, and
   // unavailable offline while the manifest half keeps working.
   worklist: { status: "idle", applications: [], schedule: [], day: "" },
+  // Host↔NATS connectivity, mirrored from the connectivity frame. Defaults
+  // TRUE so a device that has not yet heard a frame does not accuse itself of
+  // being offline.
+  connected: true,
 };
 
 const maxOutboxHistory = 50;
@@ -196,6 +201,10 @@ function ops() { return rowsByNs("manifest.op"); }
 function tasks() { return rowsByNs("manifest.task").filter((t) => !isExpired(t.data.expiresAt)); }
 function instances() { return rowsByNs("manifest.inst"); }
 function entities() { return rowsByNs("manifest.ent"); }
+// Work orders at this actor's workplace (edgeStaffWorkOrders). Unlike the
+// Protected worklist pane these are MIRROR rows, so they render — and stay
+// actionable — with no connection at all.
+function workOrders() { return rowsByNs("manifest.work"); }
 function entitiesByType(type) { return entities().filter((e) => e.data.entityType === type); }
 
 // A time-anchored entity (a class session) is offerable only while it is still
@@ -266,6 +275,12 @@ const feedHandlers = {
   connectivity(fr) {
     if (fr.connected) hideReconnectBanner(); else showReconnectBanner();
     setSyncDegradedBanner(!!fr.syncDegraded && !!fr.connected);
+    // Kept in state as well as in the banner: the Work screen has to say two
+    // OPPOSITE things at once while disconnected — the Protected pane is
+    // unavailable, and the mirror-backed work orders are fine and still
+    // actionable — so a single global banner cannot carry it.
+    state.connected = !!fr.connected;
+    scheduleRender();
   },
   open() {
     if (!hasBootstrapped) {
@@ -823,7 +838,90 @@ function loadWorklist() {
 function renderWorklist() {
   const places = staffWorkplaces();
   const where = places.length ? places.map((p) => anchorLabel(p)).join(", ") : "";
-  $("view-worklist").innerHTML = worklistHTML(state.worklist, where);
+  $("view-worklist").innerHTML =
+    workOrdersHTML(workOrders(), tasks(), state.connected) + worklistHTML(state.worklist, where);
+}
+
+// --------------------------------------------- Work orders (mirror, offline)
+
+// The maintenance half of a staff world, and the deliberate opposite of the
+// pane below it (facet-staff-worlds-design.md FORK-S1: B is the server pane,
+// A is this). Its consumer is the tech in a basement with no signal, so every
+// property here is chosen for that person:
+//
+//   - it renders from `manifest.work` MIRROR rows, so it is complete offline;
+//   - claiming and resolving stay live while disconnected, because both go
+//     through the durable intent queue and drain on reconnect;
+//   - it says "queued — will sync" rather than hiding or failing, because a
+//     tech who cannot tell whether their work was recorded will redo it.
+//
+// Nothing here carries a name. That is not restraint, it is D3: a work order
+// is unit/equipment-scoped by construction, so there is no identity PII on
+// the row to leak onto the SYNC plane in the first place.
+function workOrdersHTML(orders, tsks, connected) {
+  if (!orders.length) return "";
+  const open = orders.filter((w) => w.data.status !== "resolved");
+  const done = orders.filter((w) => w.data.status === "resolved");
+  const offline = connected === false;
+  return `
+    <div class="category-heading">Work orders${open.length ? ` (${open.length})` : ""}</div>
+    ${offline ? `<div class="meta offline-note">Offline — this list is your local copy. Anything you claim or resolve is queued and syncs when you are back.</div>` : ""}
+    ${open.length
+      ? sortWorkOrders(open).map((w) => workOrderRow(w, tsks)).join("")
+      : `<div class="empty">Nothing open here.</div>`}
+    ${done.length ? `<div class="category-heading">Resolved</div>${sortWorkOrders(done).map((w) => workOrderRow(w, tsks)).join("")}` : ""}`;
+}
+
+// Urgent first, then oldest-reported first: the two orderings a tech walking a
+// building actually works in.
+function sortWorkOrders(list) {
+  const rank = (p) => (p === "urgent" ? 0 : p === "normal" ? 1 : 2);
+  return [...list].sort((a, b) =>
+    rank(a.data.priority) - rank(b.data.priority) ||
+    String(a.data.reportedAt || "").localeCompare(String(b.data.reportedAt || "")));
+}
+
+// taskForWorkOrder finds the live task scopedTo a work order, if any. A work
+// order and its task are separate rows on purpose (the lens doc comment says
+// why): work can exist at your building with no task on it at all, and that
+// row still belongs in the list — it simply carries no affordance.
+function taskForWorkOrder(workOrderKey, tsks) {
+  return tsks.find((t) => t.data.scopedTo === workOrderKey) || null;
+}
+
+function workOrderRow(w, tsks) {
+  const d = w.data;
+  const t = taskForWorkOrder(d.workOrderKey, tsks);
+  const resolved = d.status === "resolved";
+  // A queued row is claimable by anyone holding the role; an assigned one is
+  // already someone's. `assignee` is projected only by edgeTasks (the assigned
+  // lens), so its presence IS the distinction — the same test the Tasks screen
+  // makes, not a second parallel rule.
+  const claimable = !!t && !resolved && !t.data.assignee;
+  const mine = !!t && !resolved && !!t.data.assignee;
+  const pending = w.pending || (t && t.pending);
+  return `
+    <div class="timeline-item" data-workorder="${esc(d.workOrderKey)}">
+      <div class="row1">
+        <span class="title">${esc(d.summary || typeLabel("workorder"))}</span>
+        ${d.priority === "urgent" && !resolved ? `<span class="badge queued">urgent</span>` : ""}
+        ${resolved ? `<span class="badge confirmed">resolved</span>` : ""}
+        ${pending ? `<span class="pending-chip">Pending</span>` : ""}
+      </div>
+      <div class="meta">${esc(d.placeName || typeLabel(vtxTypeOf(d.placeKey)))}</div>
+      ${resolved && d.resolutionNotes ? `<div class="meta">${esc(d.resolutionNotes)}</div>` : ""}
+      ${claimable ? `<button class="btn" data-claim-task data-key="${esc(t.key)}">Claim</button>` : ""}
+      ${mine ? `<button class="btn" data-goto="task" data-key="${esc(t.key)}">Resolve</button>` : ""}
+    </div>`;
+}
+
+// vtxTypeOf pulls the type segment out of a vtx key so a place with no
+// `.presentation` name still gets a TYPED label ("Unit") rather than a bare
+// NanoID — the display-name floor rule (N2), applied to the one field on this
+// row that can legitimately be unnamed.
+function vtxTypeOf(key) {
+  const parts = String(key || "").split(".");
+  return parts.length === 3 && parts[0] === "vtx" ? parts[1] : "";
 }
 
 // worklistHTML is the pane's markup as a pure function of its loaded state.
