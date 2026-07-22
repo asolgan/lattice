@@ -33,6 +33,31 @@ authorizes() {
 	! grep -q "AuthDenied" <<<"$out"
 }
 
+# corePending: how many Core KV CDC events the Refractor pipelines have yet to
+# apply, summed across every consumer on the backing stream. Zero-ish means the
+# auth plane reflects the graph; a large number means a projection for a
+# just-assigned role has not been reached yet.
+#
+# A world wipe destroys the source stream and its durables, so the Refractor
+# rebuilds them and rescans every key for every lens — tens of thousands of
+# events, tens of minutes on this box. Waiting on THIS rather than on a fixed
+# timeout is the difference between provisioning that works after a reset and
+# provisioning that reliably gives up during one.
+corePending() {
+	curl -s "http://127.0.0.1:8222/jsz?consumers=1&limit=500" 2>/dev/null | python3 -c '
+import json,sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    print(-1); sys.exit(0)
+t=0
+for a in d.get("account_details",[]):
+    for s in a.get("stream_detail",[]):
+        if s["name"]!="KV_core-kv": continue
+        for c in s.get("consumer_detail",[]): t+=c.get("num_pending",0)
+print(t)' 2>/dev/null || echo -1
+}
+
 if [[ -f "$MARKER" ]]; then
 	existing="$(jq -r '.operatorActorKey // empty' "$MARKER")"
 	if [[ -n "$existing" ]] && authorizes "$existing"; then
@@ -63,11 +88,29 @@ NATS_URL="$NATS_URL" NATS_NKEY="$NKEY_CLI" ./bin/lattice op submit \
 	--context-hint-reads "$OP_KEY,$ROLE_KEY" >/dev/null
 echo "==> demoOperator assigned; waiting for the capability projection..."
 
-deadline=$((SECONDS + 240))
+# Wait for the projection, not for a stopwatch. The deadline is generous
+# because the honest bound is "however long the rescan takes", and progress is
+# reported so a run that is merely slow is distinguishable from one that is
+# stuck. While the pipelines still have a backlog the grant simply has not been
+# reached yet, so a denial in that window is expected and not evidence of a
+# gap; only a denial after the backlog drains means the projection was lost —
+# and that is what `lattice lens reproject` exists to repair.
+PROVISION_TIMEOUT_SECONDS="${PROVISION_TIMEOUT_SECONDS:-2700}"
+deadline=$((SECONDS + PROVISION_TIMEOUT_SECONDS))
+lastReport=0
 until authorizes "$OP_KEY"; do
 	if ((SECONDS >= deadline)); then
-		echo "provision-demo-operator: grant never authorized within 4m (capability projection gap?)" >&2
+		pend="$(corePending)"
+		echo "provision-demo-operator: grant never authorized within ${PROVISION_TIMEOUT_SECONDS}s (core-kv pending=${pend})." >&2
+		if [[ "$pend" =~ ^[0-9]+$ ]] && ((pend < 20)); then
+			echo "provision-demo-operator: the pipelines are drained, so this is a lost projection, not lag." >&2
+			echo "provision-demo-operator: heal it with: ./bin/lattice lens reproject <capabilityRoles lensId> --actor-key $OP_KEY" >&2
+		fi
 		exit 1
+	fi
+	if ((SECONDS - lastReport >= 60)); then
+		lastReport=$SECONDS
+		echo "==> still waiting (${SECONDS}s elapsed, core-kv pending=$(corePending))..."
 	fi
 	sleep 5
 done

@@ -43,6 +43,19 @@ outbox entry confirms (DONE). The operator inspector is deliberately not exposed
 
 ## Operational notes
 
+- **A reset world is not ready when the processes are.** `make down` destroys the Core KV stream
+  and every Refractor durable with it, so the next start rebuilds them and rescans every key for
+  every lens — on this box roughly 13k events at ~15/s, i.e. **ten to twenty minutes** during which
+  the auth plane still answers for no new actor. The demo is up when the projections have caught
+  up, not when the ports are listening. Watch it with
+  `curl -s 'http://127.0.0.1:8222/jsz?consumers=1&limit=500'` (sum `num_pending` over the
+  `KV_core-kv` consumers), or the Refractor's Health KV entry, whose `CapabilityLensLagging` issue
+  clears on its own. `provision-demo-operator.sh` waits this out rather than failing at a fixed
+  timeout.
+- **A grant that never authorizes after the backlog drains is a lost projection, not lag** — the
+  class described in `capability-projection-reconciliation-design.md`. Repair one actor with
+  `./bin/lattice lens reproject <capabilityRoles lensId> --actor-key <vtx.identity.…>`; it
+  recomputes from the graph and costs nothing when the actor is already converged.
 - **Reset cadence**: `lattice-demo-reset.timer` (09:10 UTC). Manual reset: `systemctl start
   lattice-demo-reset.service`. Logs: `journalctl -u lattice-demo*` plus the stack's own `*.log`
   files in `/opt/lattice`.
