@@ -155,7 +155,7 @@ Several things deliberately stay out of `make up`:
 **For the AI agent implementing Story 1.4 (Dev Harness):**
 
 The `make up` target's implementation:
-1. Idempotence check: if `lattice.bootstrap.json` exists, skip seeding and proceed directly to step 5 (start services + poll readiness)
+1. Idempotence check: probe Core KV (the op tracker key) after provisioning and skip seeding on the bucket's answer per §7.4 — `lattice.bootstrap.json` supplies the stable NanoID set, never the skip decision
 2. Bucket provisioning: create `core-kv`, `health-kv`, `capability-kv`, `weaver-state` buckets; all configured with `allow_msg_ttl: true`
 3. NanoID generation: invoke substrate's `nanoid.New()` for each primordial NanoID; assemble into the bootstrap config
 4. Direct KV writes: for each primordial entry in §7.2 inventory, construct the document with proper envelope fields (provenance referencing the bootstrap identity and bootstrap op tracker), write to Core KV via NATS direct write
