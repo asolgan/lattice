@@ -35,7 +35,7 @@ needs a Sally UX pass → Winston adjudicates (Andrew-delegated for this program
 
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **F20 — Hosted-demo read-only operator** | Loupe in the public demo as the behind-the-scenes view: a `demoOperator` role stripped to inspect-only grants, so every write is capability-denied at the platform — proving "even the console is capability-scoped" live; one-tap demo login; own subdomain + visitor disclaimer. Exposed only at public-launch. | ★★ | M | 🏗️ Loupe-side CLOSED (F20.1+F20.5+F20.2 SHIPPED) · F20.3 cross-lane (lattice) is the last exposure dep · exposure Andrew-gated · [design + exposure checklist](../../implementation-artifacts/loupe-f20-demo-operator-ux.md) |
+| **F20 — Hosted-demo read-only operator** | Loupe in the public demo as the behind-the-scenes view: a `demoOperator` role stripped to inspect-only grants, so every write is capability-denied at the platform — proving "even the console is capability-scoped" live; one-tap demo login; own subdomain + visitor disclaimer. Exposed only at public-launch. | ★★ | M | 🚧 exposure blocked-on [Refractor] cap first-projection loss + Andrew-gated · Loupe-side CLOSED (F20.1/2/3/5) · [design + exposure checklist](../../implementation-artifacts/loupe-f20-demo-operator-ux.md) |
 
 ## Component maintenance
 
