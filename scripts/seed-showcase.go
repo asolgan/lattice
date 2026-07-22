@@ -800,18 +800,20 @@ func wireHint(source, relation, target string) *processor.ContextHint {
 	}
 }
 
-// Capability grants land through the Refractor capability-lens projection, so
-// an op submitted shortly after a package install can be AuthDenied until the
-// actor's capability doc catches up — on a fresh world (first bring-up, the
-// demo's nightly reset) the seed must wait that lag out rather than die.
-// AuthDenied past the window, or any other rejection, is fatal as a real denial.
+// Capability grants land through the Refractor capability-lens projection, and
+// on a fresh world (first bring-up, the demo's nightly reset) — especially on a
+// small box still digesting the package-install CDC burst — that lag can run
+// minutes. Every projection-dependent guard in this seed shares one bounded
+// window: an op AuthDenied because the actor's capability doc hasn't caught up
+// is retried, and a granted role is polled for until it shows in
+// cap.roles.<actor>. Lag past the window, or any other rejection, is fatal.
 const (
-	authDeniedRetryWindow   = 4 * time.Minute
-	authDeniedRetryInterval = 5 * time.Second
+	projectionLagWindow     = 4 * time.Minute
+	projectionRetryInterval = 5 * time.Second
 )
 
 func submitOp(ctx context.Context, conn *substrate.Conn, actorKey, operationType, class string, payload map[string]any, hint *processor.ContextHint) *processor.OperationReply {
-	deadline := time.Now().Add(authDeniedRetryWindow)
+	deadline := time.Now().Add(projectionLagWindow)
 	for {
 		// A denied op commits nothing (no tracker), so every attempt is a
 		// fresh envelope with its own requestId, evaluated from scratch.
@@ -835,8 +837,8 @@ func submitOp(ctx context.Context, conn *substrate.Conn, actorKey, operationType
 			return reply
 		}
 		if reply.Error != nil && reply.Error.Code == processor.ErrCodeAuthDenied && time.Now().Before(deadline) {
-			fmt.Fprintf(os.Stderr, "==> %s: AuthDenied — retrying in %s (capability projection may still be catching up)\n", operationType, authDeniedRetryInterval)
-			time.Sleep(authDeniedRetryInterval)
+			fmt.Fprintf(os.Stderr, "==> %s: AuthDenied — retrying in %s (capability projection may still be catching up)\n", operationType, projectionRetryInterval)
+			time.Sleep(projectionRetryInterval)
 			continue
 		}
 		mustAccepted(reply, operationType)
@@ -869,12 +871,12 @@ func mustSHA256Hex(s string) string {
 }
 
 // waitForRoleGrant polls actorKey's cap.roles.<actor> projection until it
-// carries operationType (mirrors seed-edge-demo.go's helper of the same
-// name — Contract #6's async re-projection has no synchronous "done" signal).
+// carries operationType — Contract #6's async re-projection has no synchronous
+// "done" signal, so the only wait is a bounded poll (projectionLagWindow).
 func waitForRoleGrant(ctx context.Context, conn *substrate.Conn, actorKey, operationType string) {
 	rolesKey, err := capabilitykv.RolesKeyFromActor(actorKey)
 	must(err, "derive roles key")
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(projectionLagWindow)
 	for {
 		entry, err := conn.KVGet(ctx, bootstrap.CapabilityKVBucket, rolesKey)
 		if err == nil {
@@ -890,7 +892,7 @@ func waitForRoleGrant(ctx context.Context, conn *substrate.Conn, actorKey, opera
 			os.Exit(1)
 		}
 		if time.Now().After(deadline) {
-			fmt.Fprintf(os.Stderr, "FATAL %s never appeared in %s within 5s\n", operationType, rolesKey)
+			fmt.Fprintf(os.Stderr, "FATAL %s never appeared in %s within %s\n", operationType, rolesKey, projectionLagWindow)
 			os.Exit(1)
 		}
 		time.Sleep(100 * time.Millisecond)
