@@ -1,6 +1,6 @@
 # Personal Lens retraction — authoritative keyset frames (reconcile-at-the-edge)
 
-**Status: 📐 awaiting-Andrew (ratification)** · Author: Winston (Designer fire, 2026-07-22) ·
+**Status: ✅ Andrew-ratified (2026-07-22).** Build runs through the Lattice lane (fires R1 → R2, §7). · Author: Winston (Designer fire, 2026-07-22) ·
 **Component:** Refractor (`internal/refractor/{pipeline,adapter,projection}`) + Edge client (`internal/edge/{sync,store}`, `cmd/facet`, `internal/edge/browser`)
 **Backlog row:** [lattice.md](../planning-artifacts/backlog/lattice.md) → Component maintenance → *[Refractor] Personal Lens rows never retract* (★★, M).
 **Demand:** the [staff-worlds F5 Inc-2 residual](facet-staff-worlds-design.md) (§6) — live-proven on the showcase stack: a completed work-order task stayed on the tech's mirror un-retracted, and the verticals board's ★★★ staff-worlds row is **blocked today** on exactly this ("claim beat blocked-on mirror-delivery"; the delivery half shipped `5c5cb236`, this is the retraction half).
