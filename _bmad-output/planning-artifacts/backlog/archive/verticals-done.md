@@ -2,6 +2,8 @@
 
 Rolled from `verticals.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-18 · `a14f67d` · Facet 2nd-renderer spike Inc 3 — descriptor-form renderer, live-verified confirmed write — [design §7.12](../../implementation-artifacts/edge-showcase-app-design.md)
+- 2026-07-18 · `339f0a1` · Facet 2nd-renderer spike Inc 2 — write path (enqueue), live-verified confirmed write — [design §7.11](../../implementation-artifacts/edge-showcase-app-design.md)
 - 2026-07-18 · `16ef550` · Landlord sign-in reload race — `init()` awaits `loadIdentities()` before `applyMode()`; live-verified
 - 2026-07-18 · `86f8c76` · Café self-order — `menuitem` DDL + `menuCatalog` lens; self-Charge derives amountCents from the catalog, never the caller; Resident item picker; verified via embedded-NATS tests, not live-browser (new entity)
 - 2026-07-18 · `—` · Facet Fire 5 residual (2) closed — café resident self-service (OpenTab/Settle asSelf) proven live end-to-end via Core KV, not just the FE toast — [design §7.9](../../implementation-artifacts/edge-showcase-app-design.md)
