@@ -86,9 +86,17 @@ jobs:
         run: make vet
 
       - name: Lint
+        # skip-cache: a restored analysis cache makes the verdict depend on
+        # which packages the run happened to re-analyze. staticcheck's
+        # interprocedural facts (e.g. that t.Fatalf does not return) are lost
+        # for packages served from cache, so SA5011 fires on correct code in
+        # some runs and not others — the same commit linting clean or dirty by
+        # cache state alone. A full analysis every run is the only verdict
+        # that means anything.
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.11.4
+          skip-cache: true
 
       - name: Conventions lint (CLAUDE.md key-shapes + no history comments)
         # Static check: rejects `asp.` key prefixes (Contract #1) and
