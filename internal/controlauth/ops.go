@@ -59,4 +59,5 @@ var RefractorOps = map[string]OpMeta{
 	"hydrate":    {Verb: "hydrate", Read: false},
 	"sessionkey": {Verb: "sessionkey", Read: false},
 	"syncgap":    {Verb: "syncgap", Read: true},
+	"reproject":  {Verb: "reproject", Read: false},
 }

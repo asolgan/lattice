@@ -69,6 +69,11 @@ type ControlRequest struct {
 	// legitimate, maximally-conservative value that must reach the server, so
 	// the handler answers gapped=true and the device re-hydrates.
 	Cursor uint64 `json:"cursor"`
+
+	// ActorKey is used by the "reproject" op
+	// (capability-projection-reconciliation-design.md §3.1): the Contract #1
+	// vertex key of the actor whose row is reconciled against the graph.
+	ActorKey string `json:"actorKey,omitempty"`
 }
 
 // ControlResponse is the JSON payload returned by the control service.
@@ -92,6 +97,21 @@ type ControlResponse struct {
 	PersonalHydrate    *PersonalHydrateResult    `json:"personalHydrate,omitempty"`    // present only for "hydrate" op
 	PersonalSessionKey *PersonalSessionKeyResult `json:"personalSessionKey,omitempty"` // present only for "sessionkey" op
 	PersonalSyncGap    *PersonalSyncGapResult    `json:"personalSyncGap,omitempty"`    // present only for "syncgap" op
+	Reproject          *ReprojectResult          `json:"reproject,omitempty"`          // present only for "reproject" op
+}
+
+// ReprojectResult is the synchronous acknowledgement returned by the
+// "reproject" op (capability-projection-reconciliation-design.md §3.1).
+// Converged reports that the stored row already matched the recomputed one,
+// so nothing was written; Wrote reports that a divergence was healed.
+// ProjectionSeq is the ordering token the write carried — the pipeline's
+// last-applied stream sequence captured before re-evaluation.
+type ReprojectResult struct {
+	Actor         string `json:"actor"`
+	Converged     bool   `json:"converged"`
+	Deleted       bool   `json:"deleted,omitempty"`
+	Wrote         bool   `json:"wrote"`
+	ProjectionSeq uint64 `json:"projectionSeq"`
 }
 
 // RebuildResult is the async acknowledgement returned by the "rebuild" op.

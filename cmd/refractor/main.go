@@ -724,6 +724,13 @@ func main() {
 		controlSvc.RegisterPauser(r.ID, p)
 		controlSvc.RegisterRebuilder(r.ID, p)
 		controlSvc.RegisterRowNullifier(r.ID, p)
+		// Per-actor reconciliation is defined only for actor-aggregate lenses
+		// (capability-projection-reconciliation-design.md §3.1); the pipeline
+		// refuses structurally besides, so the registry is the routing gate
+		// rather than a second source of truth about lens kind.
+		if projection.IsActorAggregate(r) {
+			controlSvc.RegisterReprojector(r.ID, reprojectorFor(p))
+		}
 
 		logger.Info("lens pipeline started", "lensId", r.ID, "target", r.Into.Target, "table", r.Into.Table, "bucket", r.Into.Bucket)
 	}
@@ -1076,4 +1083,28 @@ func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// reprojectorFor bridges a pipeline to the control service's Reprojector.
+// The two carry structurally identical results under different types so that
+// internal/control never imports internal/pipeline; this composition root is
+// the one place that knows both.
+func reprojectorFor(p *pipeline.Pipeline) control.Reprojector {
+	return pipelineReprojector{p: p}
+}
+
+type pipelineReprojector struct{ p *pipeline.Pipeline }
+
+func (r pipelineReprojector) Reproject(ctx context.Context, actorKey string) (control.Reprojection, error) {
+	res, err := r.p.Reproject(ctx, actorKey)
+	if err != nil {
+		return control.Reprojection{}, err
+	}
+	return control.Reprojection{
+		Actor:         res.Actor,
+		Converged:     res.Converged,
+		Deleted:       res.Deleted,
+		Wrote:         res.Wrote,
+		ProjectionSeq: res.ProjectionSeq,
+	}, nil
 }

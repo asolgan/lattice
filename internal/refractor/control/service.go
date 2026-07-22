@@ -38,6 +38,13 @@ const validateTimeout = 5 * time.Second
 // one actor rather than a whole-lens rebuild.
 const hydrateTimeout = 30 * time.Second
 
+// reprojectTimeout bounds the "reproject" op
+// (capability-projection-reconciliation-design.md §3.1). One actor's
+// re-evaluation is a single anchored cypher plus at most one guarded write —
+// the same order of work as one CDC event — so it needs far less headroom
+// than the bulk hydrate.
+const reprojectTimeout = 30 * time.Second
+
 // sessionKeyTimeout bounds the "sessionkey" op (edge-lattice-full-design.md
 // §3.6, EDGE.4): one piiKey point-read plus one Vault crypto call, closer in
 // shape to register/deregister than to the bulk hydrate op.
@@ -110,6 +117,28 @@ type Hydrator interface {
 	Hydrate(ctx context.Context, identityID string) (revision uint64, err error)
 }
 
+// Reprojector is implemented by any actor-aggregate pipeline that can
+// re-execute ONE actor's projection and reconcile the stored row against it
+// (capability-projection-reconciliation-design.md §3.1). *pipeline.Pipeline
+// implements the same method against its own result type; cmd/refractor
+// bridges the two. Both the interface and Reprojection are defined here so
+// internal/control does not import internal/pipeline (architecture boundary).
+//
+// Unlike Hydrator there is one Reprojector per auth-plane lens, so the
+// service keeps a per-ruleID registry rather than a single handle.
+type Reprojector interface {
+	Reproject(ctx context.Context, actorKey string) (Reprojection, error)
+}
+
+// Reprojection mirrors pipeline.Reprojection across the package boundary.
+type Reprojection struct {
+	Actor         string
+	Converged     bool
+	Deleted       bool
+	Wrote         bool
+	ProjectionSeq uint64
+}
+
 // RowNullifier is implemented by any component that can remove ONE projected row
 // (by its Into.Key values) from a rule's target store, independent of the rule's
 // own CDC stream. *pipeline.Pipeline satisfies this via its Delete method (the
@@ -162,6 +191,9 @@ type PersonalDeregisterResult = controlwire.PersonalDeregisterResult
 // PersonalHydrateResult is the acknowledgement returned by the "hydrate" op.
 type PersonalHydrateResult = controlwire.PersonalHydrateResult
 
+// ReprojectResult is the acknowledgement returned by the "reproject" op.
+type ReprojectResult = controlwire.ReprojectResult
+
 // PersonalSessionKeyResult is the acknowledgement returned by the "sessionkey" op.
 type PersonalSessionKeyResult = controlwire.PersonalSessionKeyResult
 
@@ -191,6 +223,7 @@ type Service struct {
 	rebuilderByRuleID    map[string]Rebuilder
 	deleterByRuleID      map[string]Deleter
 	rowNullifierByRuleID map[string]RowNullifier
+	reprojectorByRuleID  map[string]Reprojector
 	reporters            map[string]*health.Reporter
 	microSvc             micro.Service // set by StartNATSListener; nil until started
 	ruleGetter           RuleGetter    // set via SetRuleGetter; used by validate op
@@ -244,6 +277,7 @@ func NewService() *Service {
 		rebuilderByRuleID:    make(map[string]Rebuilder),
 		deleterByRuleID:      make(map[string]Deleter),
 		rowNullifierByRuleID: make(map[string]RowNullifier),
+		reprojectorByRuleID:  make(map[string]Reprojector),
 		reporters:            make(map[string]*health.Reporter),
 		capability:           newDenyAllChecker(nil),
 	}
@@ -444,6 +478,29 @@ func (s *Service) UnregisterRowNullifier(ruleID string) {
 	delete(s.rowNullifierByRuleID, ruleID)
 }
 
+// RegisterReprojector registers the Reprojector the "reproject" op dispatches
+// to for ruleID (capability-projection-reconciliation-design.md §3.1). Only
+// actor-aggregate lenses register one; the op answers "not registered" for
+// every other lens, and the pipeline refuses structurally besides.
+// Overwrites any prior registration (safe for hot-reload).
+// Panics if r is nil.
+func (s *Service) RegisterReprojector(ruleID string, r Reprojector) {
+	if r == nil {
+		panic("control: RegisterReprojector: Reprojector must not be nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reprojectorByRuleID[ruleID] = r
+}
+
+// UnregisterReprojector removes the Reprojector entry for ruleID.
+// No-op if ruleID is not registered.
+func (s *Service) UnregisterReprojector(ruleID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.reprojectorByRuleID, ruleID)
+}
+
 // ResumeRule unblocks a structural pause for the given ruleID.
 // Returns an error if ruleID is not registered.
 // Pipeline.Resume sets health KV to active internally; this method does not touch health KV directly.
@@ -501,7 +558,7 @@ const controlSubjectPrefix = controlwire.SubjectPrefix
 // supportedOps enumerates the per-op endpoint suffixes registered under
 // the NATS Services framework. The op name is taken from the trailing
 // subject token; see opFromSubject.
-var supportedOps = []string{"health", "validate", "rebuild", "pause", "resume", "delete", "register", "deregister", "hydrate", "sessionkey", "syncgap"}
+var supportedOps = []string{"health", "validate", "rebuild", "pause", "resume", "delete", "register", "deregister", "hydrate", "sessionkey", "syncgap", "reproject"}
 
 // StartNATSListener registers the Refractor control plane as a NATS
 // micro-service named "refractor-control". One endpoint is added per
@@ -666,6 +723,10 @@ func (s *Service) dispatchEndpoint(op string, req micro.Request) {
 		sgCtx, sgCancel := context.WithTimeout(context.Background(), syncGapTimeout)
 		defer sgCancel()
 		s.respondMicro(req, s.personalSyncGap(sgCtx, body))
+	case "reproject":
+		rpCtx, rpCancel := context.WithTimeout(context.Background(), reprojectTimeout)
+		defer rpCancel()
+		s.respondMicro(req, s.reprojectActor(rpCtx, lensID, body))
 	default:
 		// Unreachable — supportedOps gates the endpoint registration.
 		s.respondMicro(req, ControlResponse{Error: fmt.Sprintf("unknown operation: %s", op)})
@@ -725,6 +786,39 @@ func (s *Service) rebuildRule(ruleID string, truncate bool) ControlResponse {
 		}
 	}()
 	return ControlResponse{Rebuild: &RebuildResult{Started: true}}
+}
+
+// reprojectActor re-executes one actor's projection for ruleID and reconciles
+// the stored row against it (capability-projection-reconciliation-design.md
+// §3.1). Synchronous, unlike rebuild: the work is one anchored cypher plus at
+// most one guarded write, and the caller — an operator healing a known-dark
+// actor, or Fire 1b's sweep — needs the outcome, not an accepted-ack.
+//
+// Fails closed when ruleID has no registered Reprojector: only actor-aggregate
+// lenses register one, so this is the "wrong lens kind" answer as well as the
+// "unknown lens" answer. A converged actor is reported, not treated as an
+// error — it is the expected steady-state result.
+func (s *Service) reprojectActor(ctx context.Context, ruleID string, body ControlRequest) ControlResponse {
+	s.mu.Lock()
+	r, ok := s.reprojectorByRuleID[ruleID]
+	s.mu.Unlock()
+	if !ok {
+		return ControlResponse{Error: fmt.Sprintf("reproject: rule %q is not an actor-aggregate lens", ruleID)}
+	}
+	if body.ActorKey == "" {
+		return ControlResponse{Error: "reproject: actorKey is required"}
+	}
+	res, err := r.Reproject(ctx, body.ActorKey)
+	if err != nil {
+		return ControlResponse{Error: err.Error()}
+	}
+	return ControlResponse{Reproject: &ReprojectResult{
+		Actor:         res.Actor,
+		Converged:     res.Converged,
+		Deleted:       res.Deleted,
+		Wrote:         res.Wrote,
+		ProjectionSeq: res.ProjectionSeq,
+	}}
 }
 
 // pauseRule calls the registered Pauser for ruleID to halt its fetch loop.

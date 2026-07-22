@@ -29,6 +29,7 @@ func NewCommand(natsURL, outputFmt, defaultActor *string) *cobra.Command {
 	cmd.AddCommand(newDeactivateCommand(natsURL, outputFmt, defaultActor))
 	cmd.AddCommand(newLagCommand(natsURL, outputFmt))
 	cmd.AddCommand(newEmitDDLCommand(natsURL, outputFmt))
+	cmd.AddCommand(newReprojectCommand(natsURL, outputFmt, defaultActor))
 	return cmd
 }
 

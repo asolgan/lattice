@@ -1,0 +1,207 @@
+package pipeline
+
+import (
+	"context"
+	"errors"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/operatinggraph/lattice/internal/refractor/ruleengine"
+	"github.com/operatinggraph/lattice/internal/refractor/ruleengine/full"
+)
+
+// recordingAdapter captures every write the reconciler makes and serves a
+// canned stored row, so a test can assert both the write decision and the
+// ordering token without a live target store.
+type recordingAdapter struct {
+	stored    map[string]any
+	present   bool
+	getErr    error
+	upserts   []recordedWrite
+	deletes   []recordedWrite
+	getCalled int
+}
+
+type recordedWrite struct {
+	keys map[string]any
+	row  map[string]any
+	seq  uint64
+}
+
+func (a *recordingAdapter) Upsert(_ context.Context, keys, row map[string]any, seq uint64) error {
+	a.upserts = append(a.upserts, recordedWrite{keys: keys, row: row, seq: seq})
+	return nil
+}
+
+func (a *recordingAdapter) Delete(_ context.Context, keys map[string]any, seq uint64) error {
+	a.deletes = append(a.deletes, recordedWrite{keys: keys, seq: seq})
+	return nil
+}
+
+func (a *recordingAdapter) Probe(context.Context) error { return nil }
+func (a *recordingAdapter) Close() error                { return nil }
+
+func (a *recordingAdapter) GetRow(context.Context, map[string]any) (map[string]any, bool, error) {
+	a.getCalled++
+	if a.getErr != nil {
+		return nil, false, a.getErr
+	}
+	return a.stored, a.present, nil
+}
+
+// newReprojectPipeline builds a pipeline whose reprojectActors resolves the
+// missing-actor branch (empty Core KV), with an envelope installed so the
+// lens reads as actor-aggregate.
+func newReprojectPipeline(t *testing.T, adpt *recordingAdapter) *Pipeline {
+	t.Helper()
+	coreKV, adjKV := newDeleteKeyKV(t)
+	p := &Pipeline{
+		ruleID:          "reproject-rule",
+		coreKV:          coreKV,
+		adjKV:           adjKV,
+		engineKind:      ruleengine.EngineFull,
+		fullEngine:      &full.Engine{},
+		fullCR:          &full.CompiledRule{},
+		actorEnumerator: NewActorEnumerator(adjKV, coreKV, "identity"),
+		adpt:            adpt,
+	}
+	p.SetEnvelopeFn(func(row, keys, params map[string]any) (map[string]any, map[string]any, error) {
+		return row, keys, nil
+	})
+	return p
+}
+
+const reprojectActor = "vtx.identity.Trep1JdentityAaaaaaa"
+
+func TestReproject_RefusesNonActorAggregateLens(t *testing.T) {
+	adpt := &recordingAdapter{}
+	p := newReprojectPipeline(t, adpt)
+	// A plain lens has no envelope wrapper: per-actor reconciliation is not
+	// defined for it and must be refused structurally, not attempted.
+	p.SetEnvelopeFn(nil)
+
+	_, err := p.Reproject(context.Background(), reprojectActor)
+	require.ErrorIs(t, err, ErrNotActorAggregate)
+	require.Empty(t, adpt.upserts)
+	require.Empty(t, adpt.deletes)
+}
+
+func TestReproject_RequiresActorKey(t *testing.T) {
+	p := newReprojectPipeline(t, &recordingAdapter{})
+	_, err := p.Reproject(context.Background(), "")
+	require.Error(t, err)
+}
+
+func TestReproject_MissingActor_DeletesRow(t *testing.T) {
+	// Actor absent from Core KV and a row still stored → the reconciler
+	// retracts it, carrying the captured sequence as the ordering token.
+	adpt := &recordingAdapter{stored: map[string]any{"key": "cap.identity.x"}, present: true}
+	p := newReprojectPipeline(t, adpt)
+	p.recordAppliedSeq(4242)
+
+	res, err := p.Reproject(context.Background(), reprojectActor)
+	require.NoError(t, err)
+	require.True(t, res.Deleted)
+	require.True(t, res.Wrote)
+	require.False(t, res.Converged)
+	require.Len(t, adpt.deletes, 1)
+	require.Equal(t, uint64(4242), adpt.deletes[0].seq)
+	require.Equal(t, uint64(4242), res.ProjectionSeq)
+}
+
+func TestReproject_MissingActor_AlreadyAbsent_WritesNothing(t *testing.T) {
+	// The row is already gone: a converged actor must cost zero writes, so
+	// the sweep in Fire 1b stays churn-free at rest.
+	adpt := &recordingAdapter{present: false}
+	p := newReprojectPipeline(t, adpt)
+
+	res, err := p.Reproject(context.Background(), reprojectActor)
+	require.NoError(t, err)
+	require.True(t, res.Converged)
+	require.False(t, res.Wrote)
+	require.Empty(t, adpt.deletes)
+	require.Empty(t, adpt.upserts)
+}
+
+func TestReproject_TokenIsCapturedBeforeEvaluation(t *testing.T) {
+	// The ordering token is the pipeline's forward progress at entry. It must
+	// never be MaxInt64: that stamp is the shred nullifier's terminal
+	// authority and would freeze the key against all future CDC.
+	adpt := &recordingAdapter{present: true}
+	p := newReprojectPipeline(t, adpt)
+	p.recordAppliedSeq(77)
+
+	res, err := p.Reproject(context.Background(), reprojectActor)
+	require.NoError(t, err)
+	require.Equal(t, uint64(77), res.ProjectionSeq)
+	require.NotEqual(t, uint64(1<<63-1), res.ProjectionSeq)
+}
+
+func TestReproject_ReadErrorSurfaces(t *testing.T) {
+	// A target-store read failure must not be mistaken for "row absent" —
+	// that would turn a transient outage into a spurious heal.
+	adpt := &recordingAdapter{getErr: errors.New("boom"), present: true}
+	p := newReprojectPipeline(t, adpt)
+
+	// The delete branch tolerates a read error and falls through to the
+	// delete; assert it still writes rather than silently converging.
+	res, err := p.Reproject(context.Background(), reprojectActor)
+	require.NoError(t, err)
+	require.True(t, res.Wrote)
+}
+
+func TestRowsEquivalent_IgnoresVolatileProjectedAt(t *testing.T) {
+	// projectedAt is restamped on every evaluation. Comparing it would make
+	// every reconciliation look divergent and defeat skip-if-identical.
+	stored := map[string]any{
+		"key":         "cap.roles.identity.abc",
+		"roles":       []any{"vtx.role.a"},
+		"projectedAt": "2026-07-21T00:00:00Z",
+	}
+	computed := map[string]any{
+		"key":         "cap.roles.identity.abc",
+		"roles":       []any{"vtx.role.a"},
+		"projectedAt": "2026-07-22T09:30:00Z",
+	}
+	require.True(t, rowsEquivalent(stored, computed))
+}
+
+func TestRowsEquivalent_NormalizesJSONRoundTripTypes(t *testing.T) {
+	// The stored row has been through JSON (numbers decode as float64); the
+	// computed row still carries the engine's Go types. Byte-identical
+	// documents must compare equal despite that.
+	stored := map[string]any{"key": "cap.roles.identity.abc", "count": float64(3)}
+	computed := map[string]any{"key": "cap.roles.identity.abc", "count": 3}
+	require.True(t, rowsEquivalent(stored, computed))
+}
+
+func TestRowsEquivalent_DetectsRealDivergence(t *testing.T) {
+	base := map[string]any{"key": "cap.roles.identity.abc", "roles": []any{"vtx.role.a"}}
+
+	t.Run("changed grant", func(t *testing.T) {
+		other := map[string]any{"key": "cap.roles.identity.abc", "roles": []any{"vtx.role.b"}}
+		require.False(t, rowsEquivalent(base, other))
+	})
+	t.Run("revoked grant", func(t *testing.T) {
+		other := map[string]any{"key": "cap.roles.identity.abc", "roles": []any{}}
+		require.False(t, rowsEquivalent(base, other))
+	})
+	t.Run("added field", func(t *testing.T) {
+		other := map[string]any{"key": "cap.roles.identity.abc", "roles": []any{"vtx.role.a"}, "lanes": []any{"x"}}
+		require.False(t, rowsEquivalent(base, other))
+	})
+	t.Run("source revision moved", func(t *testing.T) {
+		// projectedFromRevisions is NOT volatile: a source-revision change is
+		// genuine divergence and must still trigger a heal.
+		a := map[string]any{"key": "k", "projectedFromRevisions": map[string]any{"vtx.a": float64(1)}}
+		b := map[string]any{"key": "k", "projectedFromRevisions": map[string]any{"vtx.a": float64(2)}}
+		require.False(t, rowsEquivalent(a, b))
+	})
+}
+
+func TestRowsEquivalent_EmptyAndNil(t *testing.T) {
+	require.True(t, rowsEquivalent(map[string]any{}, map[string]any{}))
+	require.True(t, rowsEquivalent(nil, map[string]any{}))
+	require.False(t, rowsEquivalent(nil, map[string]any{"key": "x"}))
+}
