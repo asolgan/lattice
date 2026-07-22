@@ -75,7 +75,7 @@ func TestPackage_EveryControlOpHasExpectedGrantees(t *testing.T) {
 		"ctrl.weaver.resetConfidence",
 		"ctrl.loom.read", "ctrl.loom.pause", "ctrl.loom.resume",
 		"ctrl.refractor.read", "ctrl.refractor.rebuild", "ctrl.refractor.pause", "ctrl.refractor.resume",
-		"ctrl.refractor.delete",
+		"ctrl.refractor.delete", "ctrl.refractor.reproject",
 	}
 	wantPersonalLensGrantees := []string{"control-operator", "consumer", "frontOfHouse", "backOfHouse"}
 	wantControlOperatorAndConsumer := []string{

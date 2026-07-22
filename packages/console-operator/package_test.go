@@ -154,7 +154,8 @@ func TestPackage_EveryOpGrantsOnlyToConsoleOperatorScopeAny(t *testing.T) {
 		"ctrl.weaver.resetConfidence",
 		"ctrl.loom.read", "ctrl.loom.pause", "ctrl.loom.resume",
 		"ctrl.refractor.read", "ctrl.refractor.rebuild", "ctrl.refractor.pause", "ctrl.refractor.resume",
-		"ctrl.refractor.delete", "ctrl.refractor.register", "ctrl.refractor.deregister", "ctrl.refractor.hydrate",
+		"ctrl.refractor.delete", "ctrl.refractor.reproject",
+		"ctrl.refractor.register", "ctrl.refractor.deregister", "ctrl.refractor.hydrate",
 		"ctrl.refractor.sessionkey", "ctrl.refractor.syncgap",
 		"InstallPackage", "UninstallPackage", "UpgradePackage",
 	}
