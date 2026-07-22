@@ -198,6 +198,17 @@ func (s *Sweeper) pass(ctx context.Context) {
 	healed := 0
 	for _, actor := range candidates {
 		res, rerr := s.p.Reproject(ctx, actor)
+		if errors.Is(rerr, ErrNoOrderingToken) {
+			// The pipeline has applied nothing this process, so every write
+			// that would correct an existing row loses to its stored
+			// watermark. Abandon the whole pass rather than repeat the refusal
+			// per actor: the condition is per-pipeline, and it clears on its
+			// own the moment the consumer acks anything (which it does for
+			// every Core KV event, including ack-and-skip).
+			slog.Warn("pipeline: sweep: pass abandoned — no ordering token yet",
+				"ruleId", s.p.ruleID, "actor", actor)
+			return
+		}
 		if rerr != nil {
 			slog.Warn("pipeline: sweep: reproject failed",
 				"ruleId", s.p.ruleID, "actor", actor, "err", rerr)

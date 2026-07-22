@@ -143,6 +143,9 @@ func TestReproject_ReadErrorSurfaces(t *testing.T) {
 	// that would turn a transient outage into a spurious heal.
 	adpt := &recordingAdapter{getErr: errors.New("boom"), present: true}
 	p := newReprojectPipeline(t, adpt)
+	// A retraction over a stored row needs a token that outranks its watermark;
+	// without one the write is refused before the read error is even reached.
+	p.recordAppliedSeq(55)
 
 	// The delete branch tolerates a read error and falls through to the
 	// delete; assert it still writes rather than silently converging.

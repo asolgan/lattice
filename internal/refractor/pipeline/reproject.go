@@ -18,6 +18,23 @@ import (
 // nor can answer — a per-actor reprojection request.
 var ErrNotActorAggregate = errors.New("pipeline: reproject: lens is not actor-aggregate")
 
+// ErrNoOrderingToken is returned when reconciliation would have to OVERWRITE or
+// RETRACT an existing row while the pipeline has no usable ordering token — its
+// last-applied sequence is still zero because this process has not applied
+// anything yet.
+//
+// The §6.2 guard rejects any write whose projectionSeq is `<=` the stored one,
+// so such a write cannot land: it would be dropped by the guard while every
+// caller read it as a successful heal. Refusing is strictly better than that
+// silence — otherwise the sweep recomputes, rewrites, and is rejected again on
+// every tick forever, churning the auth plane while holding
+// CapabilityCoverageDivergence open on a divergence it never actually repaired.
+//
+// Creating an ABSENT row is unaffected: the guard's absent-key branch takes
+// Create, which has no stored watermark to lose to, so the lost-first-projection
+// case this whole design exists for still heals from a cold pipeline.
+var ErrNoOrderingToken = errors.New("pipeline: reproject: pipeline has applied no events, so it holds no ordering token and the guard would reject the write")
+
 // Reprojection reports what one Reproject call did to one actor's row.
 type Reprojection struct {
 	// Actor is the vertex key that was re-evaluated.
@@ -94,6 +111,9 @@ func (p *Pipeline) Reproject(ctx context.Context, actorKey string) (Reprojection
 					continue
 				}
 			}
+			if seq == 0 {
+				return Reprojection{}, ErrNoOrderingToken
+			}
 			if derr := adpt.Delete(ctx, result.Keys, seq); derr != nil {
 				return Reprojection{}, fmt.Errorf("pipeline: reproject %q: delete: %w", actorKey, derr)
 			}
@@ -110,6 +130,11 @@ func (p *Pipeline) Reproject(ctx context.Context, actorKey string) (Reprojection
 			if present && rowsEquivalent(stored, result.Row) {
 				out.Converged = true
 				continue
+			}
+			// A divergent row that already exists can only be corrected by a
+			// write that outranks its stored watermark.
+			if present && seq == 0 {
+				return Reprojection{}, ErrNoOrderingToken
 			}
 		}
 
