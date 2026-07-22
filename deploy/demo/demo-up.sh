@@ -30,16 +30,18 @@ seed_log="$(mktemp)"
 make seed-showcase 2>&1 | tee "$seed_log"
 tenant1="$(sed -n 's/^FACET_TENANT1_NANOID=//p' "$seed_log")"
 tenant2="$(sed -n 's/^FACET_TENANT2_NANOID=//p' "$seed_log")"
+staff="$(sed -n 's/^FACET_STAFF_NANOID=//p' "$seed_log")"
 rm -f "$seed_log"
-if [[ -z "$tenant1" || -z "$tenant2" ]]; then
-	echo "demo-up: seed-showcase did not print both tenant ids" >&2
+if [[ -z "$tenant1" || -z "$tenant2" || -z "$staff" ]]; then
+	echo "demo-up: seed-showcase did not print all three persona ids" >&2
 	exit 1
 fi
 
-# Labels match scripts/seed-showcase.go's two tenants (Riley in unit1, Sam in
-# unit2). The ids rotate with every fresh world, so they are fed per-start
-# rather than checked in anywhere.
-personas="$(printf '[{"id":"%s","label":"Riley Chen","sub":"Resident · Unit 1"},{"id":"%s","label":"Sam Okafor","sub":"Resident · Unit 2"}]' "$tenant1" "$tenant2")"
+# Labels match scripts/seed-showcase.go's personas (Riley in unit1, Sam in
+# unit2, Dana the frontOfHouse staff — her world composes from worksAt +
+# holdsRole, the staff-worlds spine). The ids rotate with every fresh world,
+# so they are fed per-start rather than checked in anywhere.
+personas="$(printf '[{"id":"%s","label":"Riley Chen","sub":"Resident · Unit 1"},{"id":"%s","label":"Sam Okafor","sub":"Resident · Unit 2"},{"id":"%s","label":"Dana Whitfield","sub":"Staff · Front of house"}]' "$tenant1" "$tenant2" "$staff")"
 
 echo "==> Restarting facet in demo-persona posture..."
 pkill -f "bin/facet" 2>/dev/null || true
