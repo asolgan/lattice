@@ -73,6 +73,12 @@ test("a role-queued task renders a claim affordance, not a detail link", () => {
   assert.match(html, /frontOfHouse/);
   // Nobody owns it yet, so opening a detail view to act on it would be wrong.
   assert.doesNotMatch(html, /data-goto="task"/);
+  // The claim button must carry the Core-KV vertex key (data.taskKey), never
+  // the manifest row's own SYNC-plane storage key ("manifest.task.T1") — the
+  // two look alike, but the Processor's hydrate step reads contextHint.reads
+  // against Core KV, so the manifest-namespaced form fails HydrationMiss.
+  assert.match(html, /data-key="vtx\.task\.T1"/);
+  assert.doesNotMatch(html, /data-key="manifest\.task\.T1"/);
 });
 
 test("a directly-assigned task stays an openable detail row", () => {

@@ -587,7 +587,7 @@ function taskRow(t) {
         <div class="subtitle">${esc(scopedLabel(d.scopedTo, d.scopedName))}${due}</div>
         <div class="subtitle">Queued to ${esc(role)}</div>
       </div>
-      <button class="btn" data-claim-task data-key="${esc(t.key)}">Claim</button>
+      <button class="btn" data-claim-task data-key="${esc(d.taskKey)}">Claim</button>
     </div>`;
   }
 
@@ -612,6 +612,12 @@ function taskRow(t) {
 // No authContext: authority here is the standing role grant, and the script
 // takes the claimant from the trusted envelope actor rather than any payload
 // field, so there is nothing for the client to assert.
+//
+// taskKey MUST be the Core-KV vertex key (edgeTasksQueuedSpec's projected
+// data.taskKey), never the manifest row's own SYNC-plane storage key
+// ("manifest.task.<id>") — the two look alike but the Processor's hydrate
+// step reads contextHint.reads against Core KV, so the manifest-namespaced
+// form fails closed with HydrationMiss.
 function claimTask(taskKey) {
   const m = me() || {};
   const actorId = bareKeyId(m.identityKey);
@@ -910,7 +916,7 @@ function workOrderRow(w, tsks) {
       </div>
       <div class="meta">${esc(d.placeName || typeLabel(vtxTypeOf(d.placeKey)))}</div>
       ${resolved && d.resolutionNotes ? `<div class="meta">${esc(d.resolutionNotes)}</div>` : ""}
-      ${claimable ? `<button class="btn" data-claim-task data-key="${esc(t.key)}">Claim</button>` : ""}
+      ${claimable ? `<button class="btn" data-claim-task data-key="${esc(t.data.taskKey)}">Claim</button>` : ""}
       ${mine ? `<button class="btn" data-goto="task" data-key="${esc(t.key)}">Resolve</button>` : ""}
     </div>`;
 }

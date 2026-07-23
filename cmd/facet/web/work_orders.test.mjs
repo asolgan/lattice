@@ -80,6 +80,12 @@ test("a queued work order offers Claim; a claimed one offers Resolve", () => {
   const claimable = workOrdersHTML([woOpen], [queuedTask], true);
   assert.match(claimable, /data-claim-task/);
   assert.doesNotMatch(claimable, /Resolve/);
+  // The claim button must carry the Core-KV vertex key (data.taskKey), never
+  // the manifest row's own SYNC-plane storage key ("manifest.task.T1") — the
+  // two look alike, but the Processor's hydrate step reads contextHint.reads
+  // against Core KV, so the manifest-namespaced form fails HydrationMiss.
+  assert.match(claimable, /data-key="vtx\.task\.T1"/);
+  assert.doesNotMatch(claimable, /data-key="manifest\.task\.T1"/);
 
   const mine = workOrdersHTML([woOpen], [myTask], true);
   assert.match(mine, /Resolve/);
