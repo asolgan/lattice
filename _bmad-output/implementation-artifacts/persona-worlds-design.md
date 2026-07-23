@@ -1,6 +1,7 @@
 # Persona worlds — the Provider archetype, unified sign-in, and verticals as skins
 
-**Status: 📐 AWAITING RATIFICATION (Andrew) — drafted 2026-07-23 (Winston, interactive session).**
+**Status: ✅ RATIFIED (Andrew, 2026-07-23, interactive) — forks F1–F4 decided per recommendation; the §3.5
+archetype ladder folded at ratification. Fires build-ready per §8 sequencing.**
 **Board rows:** [verticals lane](../planning-artifacts/backlog/verticals.md) *Persona worlds* · [lattice lane](../planning-artifacts/backlog/lattice.md) *Persona-worlds platform seams*.
 **Extends:** [facet-staff-worlds-design.md](facet-staff-worlds-design.md) (the staff half of this move, SHIPPED),
 [edge-showcase-app-design.md](edge-showcase-app-design.md) (descriptor vocabulary + manifest plane),
@@ -33,7 +34,7 @@ human archetype**, canonical role name **`provider`** — matching the shipped d
 ### Forks
 
 **F1 — Role granularity: one platform `provider` role vs per-vertical roles (`practitioner`, `instructor`, …).
-(recommended: ONE role, `provider`, seeded by identity-domain.)** Vertical scoping comes from the *binding*
+DECIDED: ONE role, `provider`, seeded by identity-domain (Andrew, 2026-07-23).** Vertical scoping comes from the *binding*
 (which provider entity your identity is `identifiedBy`-bound to) and the entity's own topology, exactly as
 `consumer` is one role scoped by `residesIn`/`identifiedBy` and `frontOfHouse` is one role scoped by `worksAt`.
 - *Road not taken — per-vertical roles:* multiplies `personalLensPermissions` + grant rows per vertical with no
@@ -41,7 +42,7 @@ human archetype**, canonical role name **`provider`** — matching the shipped d
   staff-worlds adjudication ("reuse `frontOfHouse`; do not mint `frontDesk`").
 
 **F2 — The whoami surface: extend Gateway `GET /v1/actor` with `roles[]` + `anchors[]` vs a new per-app endpoint
-or app-side capability-kv reads. (recommended: EXTEND `/v1/actor`.)** It already exists, is already called by
+or app-side capability-kv reads. DECIDED: EXTEND `/v1/actor` (Andrew, 2026-07-23).** It already exists, is already called by
 every app's auth path, and the Gateway already reads `capability-kv` legitimately. Apps asking "who am I, which
 hats" get one authenticated answer; nobody grows a new capability-kv consumer (`cap.roles.*` stays
 Processor/Refractor/Gateway-only).
@@ -50,7 +51,7 @@ Processor/Refractor/Gateway-only).
   Core KV.
 
 **F3 — Provider-entity granularity: per-domain entities + one generic `vtx.serviceprovider` in service-domain
-vs one shared provider type everywhere. (recommended: PER-DOMAIN.)** Clinic keeps `vtx.provider` (rich:
+vs one shared provider type everywhere. DECIDED: PER-DOMAIN (Andrew, 2026-07-23).** Clinic keeps `vtx.provider` (rich:
 hours, time-off, `practicesAt`); wellness mints `vtx.instructor` (leads sessions, teaches at a studio);
 service-domain mints a lean generic `vtx.serviceprovider` for template-attached vendors (the laundry operator)
 — `providedBy` is already type-open (`service-domain/ddls.go:33,158-175`), so templates point at whichever
@@ -60,7 +61,7 @@ entity fits. Each binds to a login identically: `<entity> identifiedBy identity`
   data-placement.
 
 **F4 — Session topology: per-app cookie sessions on one shared sign-in kit vs central SSO/redirect.
-(recommended: PER-APP COOKIE, shared kit.)** Same identity plane, same credential, same code — but each app
+DECIDED: PER-APP COOKIE on the shared kit (Andrew, 2026-07-23).** Same identity plane, same credential, same code — but each app
 sets its own HttpOnly cookie after its own `/login`, exactly Facet's shipped pattern. Answers "similar or
 same?": **same sign-in system, per-app session.**
 - *Road not taken — SSO now:* cross-origin cookie/redirect infrastructure for five localhost apps ahead of any
@@ -127,6 +128,7 @@ An archetype = a **role** (what you may do) + a **binding/topology link** (where
 | Front-of-house | `frontOfHouse` | `worksAt` → building | ✅ (staff-worlds) |
 | Back-of-house | `backOfHouse` | `worksAt` → building | ✅ (staff-worlds) |
 | **Provider** | **`provider`** (new) | **`<providerEntity> identifiedBy identity`** (new) + the entity's own topology (`practicesAt`, `teachesAt`, `providedBy`) | this design |
+| Owner-operator | `operator` today (root); `proprietor` carve-out named-deferred (§3.5) | the `'*'` wildcard anchor — the scope is the whole business | ✅ (as root) |
 
 No platform component ever branches on an archetype name. The Processor authorizes grants; Refractor projects
 reachability + read grants; renderers group by provenance. FR24's list grows a word; the runtime grows none.
@@ -175,6 +177,32 @@ docs union per-hat anchors. The renderer groups by provenance — "My home / My 
 *switcher* is a presentation filter over real bindings, never an identity change. **Green bar for the whole
 design:** seed this human; one Facet login shows all three worlds correctly scoped; the wellness app shows
 member+instructor hats; the LoftSpace app shows only the resident hat; front-desk scope covers Building A only.
+
+### 3.5 The full ladder — where the landlord and the owner sit
+
+Single-tenancy makes the sorting rule crisp: **the installation IS the tenant business**, and archetypes
+classify people by their relationship to it — service flows *to* you (customer), you *are* the business
+(front/back-of-house), service flows *through* you to its customers (provider), or the business *answers to*
+you (**owner-operator** — the slot the PRD already reserves as FR24's `operator` actor type; Journey 4's
+VP-Ops persona; Loupe is explicitly its console). Five human archetypes, the AI agent riding across all of
+them. Everyone — the owner included — is graph content; other businesses appear inside the graph as provider
+entities with scoped logins, never as tenants (multi-tenancy is multi-cell territory, parked).
+
+Two corollaries this design leans on:
+
+- **"Landlord" is a domain role, not an archetype.** In the owner-operator configuration (the showcase world:
+  the building operator hosting clinic/café/studio) landlord-humans are the owner archetype and `manages`
+  scopes their own portfolio. In a manager-serving-owners configuration they are external principals —
+  provider-shaped mechanically (real identity + binding + link-scoped grants + a curated op set) even though
+  colloquially they're B2B clients. The machinery is identical either way, which is why §7.2 migrates the
+  landlord's submit actor and deliberately does not re-taxonomize them.
+- **The `operator` role conflates platform-root with business-root.** Right for dev/demo; wrong posture for a
+  real client, where the proprietor of the experience business needs wildcard reads, executive/decision ops,
+  and convergence direction — but not package lifecycle or raw writes. The carve-out precedent already ships
+  (`consoleOperator` "not root — no anchor"; `demoOperator` read-only wildcard); a **`proprietor`** role is
+  the third slice. **Named-deferred; trigger: a real client deployment.** The small-business collapse is §3.4
+  again from the top of the authority gradient: one human holding `proprietor` + `frontOfHouse` + `provider`
+  is three hats, one login.
 
 ## 4. World discovery — what's added
 
@@ -283,7 +311,8 @@ change; (c) `make provision-readpath` after Protected/GrantTable DDL; (d) packag
 
 **Deferred, named:** generic declarable entity-browse/collections (consumer: café `tab` + clinic `appointment`
 targetType dead-ends — files as its own lattice-lane demand); café supplier (trigger §7.4); OIDC/real IdP (kit
-is the seam); cross-app SSO (F4); landlord re-taxonomization (§ For-Andrew c).
+is the seam); cross-app SSO (F4); landlord re-taxonomization (§ For-Andrew c); the `proprietor` business-root
+carve-out (§3.5; trigger: a real client deployment).
 
 ## 9. Reconciliation (didn't-we-already / duplicate-or-diverge / new state?)
 
