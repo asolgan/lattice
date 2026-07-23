@@ -2,6 +2,16 @@
 
 Rolled from `lattice.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-19 · `73557e8` · [refractor] grant-lens DiffRetraction scoped to its own `grant_source` (now a declared LensSpec field, enforced per write) + fail closed on a non-KeyLister adapter at activation
+- 2026-07-19 · `1e7f49c` · [service-location] Wire* revives a tombstoned link — update semantics + the link key as an optionalRead at every dispatcher; `op submit --context-hint-optional-reads`; unwire→re-wire vectors
+- 2026-07-19 · `ce050a7` · [facet,edge] silent per-user sync wedge — syncDegraded connectivity axis: OnRunEstablished seam + sticky feed bit + FE banner, browser-host frame parity; health.facet half re-filed (needs-design)
+- 2026-07-19 · `045e7ac` · [lint,packages] version-bump gate (scripts/lint-package-version.go + CI step) + healed 11 drifted packages the audit exposed (12th, orchestration-base, healed by F2's own bump)
+- 2026-07-19 · `fa03893` · [substrate] ConsumerSupervisor primitive vectors — Outstanding counts unacked in-flight (rebuild-completion regression pin), cancelAll 0→100%, fail-loud unknown/deleted-durable accessors
+- 2026-07-19 · `2bcefbb` · [bootstrap] seed idempotency + crash recovery — seedPrimordialPerKey 63.6→100% (real-server revision-conflict race), LoadOrGenerate 76.9→92.3%
+- 2026-07-19 · `d5db348` · [objmgr] cascade retry/malformed-input branches — cascadeDetach 60→91.4%, both key parsers →100%, package 67.5→74.7%
+- 2026-07-19 · `6c3adac` · [processor/outbox] consumer decision surface — New/handle →100% (poison Term, publish-failure Nak with aspect retained, tombstone-failure Ack), package 78.1→95.9%
+- 2026-07-19 · `af6b7a0` · [loom] guard-sandbox Starlark Value interfaces — str/bool/dir/getattr/iterate + unhashable negatives, targeted methods 0→100%
+- 2026-07-19 · `3a39324` · [weaver] doc drift — dropped the stale op-vertex-pruner deferred bullet
 - 2026-07-19 · `3a39324` · [objmgr] doc drift — static-healthy-heartbeat Known-gap replaced with the shipped aggregateStatus behavior
 - 2026-07-19 · `3a39324` · [core] doc drift — processor.md UninstallPackage now documents the shipped per-key OCC
 - 2026-07-19 · `28e2be3` · [refractor] rebuild completion watched `NumPending`, so an unacked in-flight message read as drained and persisted health `active` on a paused mid-rebuild lens — new `OutstandingForConsumer` (+`NumAckPending`)

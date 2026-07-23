@@ -48,7 +48,6 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 |---|---|---|---|---|
 | **[Loom] Guardless-step recovery check-before-act probe** | On total `loom-state` loss + a re-triggered `StartLoomPattern`, a fresh instance replays guards from cursor 0 (re-runs an already-applied guarded step). | ★ | S–M | 🗄️ shelved-backup (Andrew: no new engine Core-KV reads) |
 | **[Processor] Tombstone-with-document warn→reject flip (Fire 2)** | Fire 1 (emitter sweep + parser warn) shipped `6b68fde4`; flip the warn to a reject once warn sightings are clean (stale stored scripts clear via world recreation). | ★★ | XS | 🚧 seq behind clean warn-window · [design](../../implementation-artifacts/tombstone-body-preservation-design.md) §6 |
-| **[Bootstrap] `cmd/bootstrap` has no test files — the seed decision is inspection-only** | The probe, re-seed, and two-phase reopen are covered in `internal/bootstrap`, but the branch that *decides* to re-seed lives in `package main` and is untested. Consumer: the freshness probe's own decision path. Either extract the decision into `internal/bootstrap` or add a `cmd/bootstrap` test binary. | ★ | XS–S | 📋 ready · `cmd/bootstrap/main.go:110-140` |
 
 ### Survey log (round-robin rotation)
 
@@ -108,10 +107,11 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 **forks** (Gateway, read-path auth, Vault, multi-cell, HA-NATS) and **frozen-contract** changes are
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
-> 🎯 **Build-ready now.** No `✅ Andrew-ratified, build-ready` design is currently unblocked — top
-> pick is the **📋 ready row in Component maintenance**: **[Bootstrap] `cmd/bootstrap` tests**
-> (★ XS–S). Every ✅ ratified row in the feature tables below stays Andrew-gated or driver-blocked.
-> A stale callout starves the lane — whoever ships the top pick renames this to the next.
+> 🎯 **Build-ready now.** No `✅ Andrew-ratified, build-ready` design is currently unblocked, and
+> Component maintenance has no open `📋 ready` row (the parking lot's items are excluded by policy).
+> Every ✅ ratified row in the feature tables below stays Andrew-gated or driver-blocked. Next unit of
+> work is a fresh Surveyor filing (rotation: Weaver) or a Designer pass stocking a new ratified design.
+> A stale callout starves the lane — whoever ships the next pick renames this.
 
 ### Security & trust boundary
 | Item | What it is | Imp | Size | State |
@@ -177,6 +177,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-22 · `737e687e` · [bootstrap] `DecideReseed` extracted from `cmd/bootstrap`'s untested probe-then-reopen branch into `internal/bootstrap`, covered by 4 embedded-NATS tests
 - 2026-07-22 · `907d0d34` · [weaver] fresh-episode/reclaim error-branch coverage — `fireEpisode` stale-mark reclaim + dispatch/effect-bump + `reconcileConsumers` Add/Remove faults; package 86.5%→87.9%
 - 2026-07-22 · `6e1c7557` · [gateway] `GATEWAY_CORS_ORIGINS` dev default gains `127.0.0.1` twins for all four vertical apps (only :7810 had both) — live-verified via CORS preflight, closes the silent-write-block
 - 2026-07-22 · `6b68fde4` · [processor,bootstrap,pkgmgr] tombstone body-preservation Fire 1 — emitter sweep drops the isDeleted/data husk, schema relaxed, parser warns (not silently drops) a tombstone-with-document; Fire 2 (warn→reject) next
@@ -202,14 +203,4 @@ One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archiv
 - 2026-07-19 · `7e5f1e6` · [processor] step 8 preserves the stored document across update/tombstone — creation triplet carries over (unforgeable), a tombstone keeps its whole body; sensitive aspects gain the soft-delete decrypt guard
 - 2026-07-19 · `e0ab660` · [refractor] ProtectedAdapter forwards ListKeys — the wrapper broke the KeyLister assertion, so landlordUnitsRead + landlordLeaseApplicationsRead silently never retracted; adapter-set invariant pinned
 - 2026-07-19 · `3d93697` · [pkgmgr] diffManifest revives a tombstoned key on re-add — deterministic entity keys made a dropped-then-re-added lens/role permanently uninstallable (create asserts rev 0 over subject history)
-- 2026-07-19 · `73557e8` · [refractor] grant-lens DiffRetraction scoped to its own `grant_source` (now a declared LensSpec field, enforced per write) + fail closed on a non-KeyLister adapter at activation
-- 2026-07-19 · `1e7f49c` · [service-location] Wire* revives a tombstoned link — update semantics + the link key as an optionalRead at every dispatcher; `op submit --context-hint-optional-reads`; unwire→re-wire vectors
-- 2026-07-19 · `ce050a7` · [facet,edge] silent per-user sync wedge — syncDegraded connectivity axis: OnRunEstablished seam + sticky feed bit + FE banner, browser-host frame parity; health.facet half re-filed (needs-design)
-- 2026-07-19 · `045e7ac` · [lint,packages] version-bump gate (scripts/lint-package-version.go + CI step) + healed 11 drifted packages the audit exposed (12th, orchestration-base, healed by F2's own bump)
-- 2026-07-19 · `fa03893` · [substrate] ConsumerSupervisor primitive vectors — Outstanding counts unacked in-flight (rebuild-completion regression pin), cancelAll 0→100%, fail-loud unknown/deleted-durable accessors
-- 2026-07-19 · `2bcefbb` · [bootstrap] seed idempotency + crash recovery — seedPrimordialPerKey 63.6→100% (real-server revision-conflict race), LoadOrGenerate 76.9→92.3%
-- 2026-07-19 · `d5db348` · [objmgr] cascade retry/malformed-input branches — cascadeDetach 60→91.4%, both key parsers →100%, package 67.5→74.7%
-- 2026-07-19 · `6c3adac` · [processor/outbox] consumer decision surface — New/handle →100% (poison Term, publish-failure Nak with aspect retained, tombstone-failure Ack), package 78.1→95.9%
-- 2026-07-19 · `af6b7a0` · [loom] guard-sandbox Starlark Value interfaces — str/bool/dir/getattr/iterate + unhashable negatives, targeted methods 0→100%
-- 2026-07-19 · `3a39324` · [weaver] doc drift — dropped the stale op-vertex-pruner deferred bullet
 - *(older entries rolled to [archive/lattice-done.md](archive/lattice-done.md); includes `94c8224` hello-lattice NFR-P3 flake fix)*
