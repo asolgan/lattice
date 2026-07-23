@@ -20,6 +20,7 @@ the row is `🚧 blocked-on:` it (a missing *lens* is package work, built here).
 | **Edge showcase app (Facet)** | Discovery-driven personal client on the Edge foundation: hardcodes only IdP login + connect; services, ops, forms, tasks arrive as data via `edge-manifest` personal lenses + a descriptor vocabulary (#52/#54/#55). PWA-first. | Cross-vertical | Sally + FE Engineer + pkg | ★★★ | XL | 🏗️ building · [design §7.12](../../implementation-artifacts/edge-showcase-app-design.md) · 2nd-renderer spike Inc 3 shipped (descriptor-form renderer, live-verified confirmed write) · next: literal iOS build only |
 | **Clinical notes are write-only** | `RecordEncounter` PHI (`ddls.go:333-336`) captured, never projected. The cited `clinicPatientsRead` Secure-Lens precedent does NOT extend — that decrypts identity-anchored Vault ciphertext; this is raw plaintext on a non-identity vertex, and that exact shortcut was already REJECTED pre-Vault (`vault-crypto-shredding-design.md` ratification decision #2). | Clinic | pkg | ★★★ | M | 🚧 blocked-on: Vault extended to non-identity content (architectural fork, Andrew) |
 | **CreateBooking has no double-book / past-time guard** | `wellness-domain` `CreateBooking` (`ddls.go:1002-1082`) claims a free seat but never checks the booker already holds one on that session (unlike clinic's `PatientDoubleBook` slot-claim / café's `OpenTabAlreadyExists`), nor that `session.schedule.startsAt` is still future (unlike clinic's `ScheduleInPast`). Live-confirmed: identity `MQsmTTAgNkngkdEjQz9L` holds 2 live bookings on session `wvgK4ajnFVyfYJbuhYhJ`, whose class already ended. | Wellness | pkg | ★★ | S | 📋 ready |
+| **StartVisitSeries has no active-series dedup guard** | `clinic-reminders` `StartVisitSeries` (`visitseries.go:335-374`) mints a new recurring series unconditionally — no check for an existing active series against the same patient+provider (unlike wellness's `CreateBooking` gap above, this ships duplicate reminder cadences, not double-booked slots). Live-confirmed: two calls for `vtx.patient.m2fjUW4jjBRjkaoJ3TS3` + `vtx.provider.fkCFqiGUn5t9En8hoCrc` both committed — 2 active series (30d + 14d intervals) on `/api/staff/visit-series`. | Clinic | pkg | ★★ | S | 📋 ready |
 
 **Explicitly descoped (ambitious-PO pass, 2026-07-09):** structured diagnosis/procedure coding (ICD/CPT),
 vitals, and e-prescribing were considered and deliberately NOT filed — a certified EHR is out of scope for a
@@ -39,7 +40,7 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic ↔ Café ↔ We
 **Wellness joined** 2026-07-09 (`cmd/wellness-app` shipped, live on :7802) — fold it into rotation; see
 [agents/vertical-po/SKILL.md](../../../agents/vertical-po/SKILL.md) §1.
 
-- **Rotation to date:** LoftSpace ×16, Clinic ×13, Café ×5, Wellness ×2.
+- **Rotation to date:** LoftSpace ×16, Clinic ×14, Café ×5, Wellness ×2.
 - **Method:** reuse the already-up shared stack (detect NATS :4222 / app :7788/:7799/:7801/:7802), drive the real flow via `/api/op` + the lens projections as the product owner, file scored items. All four apps exist + are exercisable live (`:7788` / `:7799` / `:7801` / `:7802`).
 - **Live-stack note:** a stale bootstrap JSON vs. a recreated Core KV was a recurring dev-loop trap (2026-07-03, 2026-07-04) that silently emptied reads; `make up` now self-heals it (`109f59a`, 2026-07-05) — re-verify empty-read reports as a real product bug first.
 - **2026-07-12:** Clinic — drove booking/My Appointments live + code-verified permission pins; found self-service patients can book but never reschedule/cancel themselves (operator-only ops), filed.
@@ -50,6 +51,7 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic ↔ Café ↔ We
 - **2026-07-22:** Café — drove self-order OpenTab→Charge→Settle→ledger live end-to-end (all correct); found no charge-correction op exists, filed pkg fix.
 - **2026-07-22:** LoftSpace — drove Apply live via `127.0.0.1` origin, got silent write failures; root-caused to Gateway CORS default, confirmed clean via `localhost`, filed platform fix (lattice.md).
 - **2026-07-22:** Wellness — drove studios/sessions/bookings live on the shared stack; found `CreateBooking` has no double-book or past-time guard, confirmed via a live duplicate booking, filed pkg fix.
+- **2026-07-23:** Clinic — drove staff visit-series + Care→Wellness referral live; found `StartVisitSeries` has no active-series dedup guard, confirmed via 2 live duplicate series, filed pkg fix.
 - **Next:** Café.
 
 ## Done log — verticals (newest first)
