@@ -422,46 +422,35 @@ func seedTenant(ctx context.Context, conn *substrate.Conn, adminKey, consumerRol
 // the same building. The worksAt link IS the identity of the persona here, so
 // recovering by that link is what makes the rerun safe.
 //
-// A tombstoned worksAt link is recovered and RE-WIRED, not treated as an
-// absent persona: the identity behind it still holds the fixed staff email, so
-// minting a replacement collides on the identity index and fails the seed.
-// That is the wedge an unwire left behind — the persona existed, was
+// A tombstoned (or never-created) worksAt link is recovered and (re-)wired,
+// not treated as an absent persona: the identity behind it still holds the
+// fixed staff email, so minting a replacement collides on the identity index
+// and fails the seed. That is the wedge an unwire (or a seed death between
+// AssignRole and WireWorksAt) left behind — the persona existed, was
 // unreachable, and could not be re-minted either.
+//
+// Looked up by its holdsRole link, not by a worksAt scan of the building:
+// once a second persona (the maintenance tech, F5) also worksAt the same
+// building, a worksAt-only scan can no longer tell the two apart and — since
+// findLinkedIdentity returns the alphabetically-first live candidate — can
+// silently resolve to the WRONG identity. Mirrors ensureMaintenanceTech's own
+// role-scoped lookup, added when that ambiguity first appeared.
 func ensureStaff(ctx context.Context, conn *substrate.Conn, adminKey, roleKey, buildingKey, name, email string) string {
 	js := conn.JetStream()
 	coreKV, err := js.KeyValue(ctx, bootstrap.CoreKVBucket)
 	must(err, "open core-kv")
 	allKeys, err := pkgverify.ListAllKeys(ctx, coreKV)
 	must(err, "list core-kv keys")
-	existing, live := findLinkedIdentity(ctx, coreKV, allKeys, "worksAt", buildingKey)
+
+	existing, _ := findLinkedIdentity(ctx, coreKV, allKeys, "holdsRole", roleKey)
 	if existing == "" {
-		// No worksAt link at all — but the persona may still exist: a seed
-		// that dies between AssignRole and WireWorksAt leaves the staff
-		// identity role-linked yet unwired, and its fixed email forbids
-		// minting a replacement (identity index). Adopt it by its holdsRole
-		// link and finish the remaining wiring; both pending ops are
-		// deterministic here (a wired persona is caught by the worksAt scan
-		// above, so this one is pre-WireWorksAt and pre-state-flip). A death
-		// between CreateUnclaimedIdentity and AssignRole is the residual
-		// wedge this cannot see — a fresh world (`make down` + reseed) is
-		// the remedy there.
-		if orphan, orphanLive := findLinkedIdentity(ctx, coreKV, allKeys, "holdsRole", roleKey); orphan != "" && orphanLive {
-			submitOp(ctx, conn, adminKey, "WireWorksAt", "serviceLocation",
-				map[string]any{"identity": orphan, "location": buildingKey},
-				wireHint(orphan, "worksAt", buildingKey))
-			submitOp(ctx, conn, adminKey, "UpdateIdentityState", "identity",
-				map[string]any{"identityKey": orphan, "newState": "claimed"},
-				&processor.ContextHint{Reads: []string{orphan, orphan + ".state"}})
-			fmt.Printf("==> healed:          adopted %s (held frontOfHouse, was never wired worksAt) — wired + claimed\n", orphan)
-			return orphan
-		}
 		return seedStaff(ctx, conn, adminKey, roleKey, buildingKey, name, email)
 	}
-	if !live {
+	if !alive(ctx, conn, linkKey(existing, "worksAt", buildingKey)) {
 		submitOp(ctx, conn, adminKey, "WireWorksAt", "serviceLocation",
 			map[string]any{"identity": existing, "location": buildingKey},
 			wireHint(existing, "worksAt", buildingKey))
-		fmt.Printf("==> healed:          re-wired %s worksAt building (link was tombstoned)\n", existing)
+		fmt.Printf("==> healed:          re-wired %s worksAt building (link was absent or tombstoned)\n", existing)
 	}
 	return existing
 }
