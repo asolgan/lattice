@@ -1007,7 +1007,7 @@ function renderProviderSitesList() {
     const row = document.createElement("div");
     row.className = "hours-row";
     const label = document.createElement("span");
-    label.textContent = `${ps.providerName} · ${ps.siteName}`;
+    label.textContent = `${ps.providerName} · ${ps.siteName || "(unnamed site)"}`;
     row.appendChild(label);
     const rm = document.createElement("button");
     rm.type = "button";
