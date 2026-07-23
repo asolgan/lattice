@@ -177,6 +177,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-22 · `1ab88603` · [bootstrap] `VerifyKernel`/`InspectKernel` (the `make verify-kernel` gate logic) gain embedded-NATS defect-injection tests; package 71.2%→82.9%
 - 2026-07-22 · `737e687e` · [bootstrap] `DecideReseed` extracted from `cmd/bootstrap`'s untested probe-then-reopen branch into `internal/bootstrap`, covered by 4 embedded-NATS tests
 - 2026-07-22 · `907d0d34` · [weaver] fresh-episode/reclaim error-branch coverage — `fireEpisode` stale-mark reclaim + dispatch/effect-bump + `reconcileConsumers` Add/Remove faults; package 86.5%→87.9%
 - 2026-07-22 · `6e1c7557` · [gateway] `GATEWAY_CORS_ORIGINS` dev default gains `127.0.0.1` twins for all four vertical apps (only :7810 had both) — live-verified via CORS preflight, closes the silent-write-block
