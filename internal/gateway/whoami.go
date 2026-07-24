@@ -51,7 +51,23 @@ type whoamiResponse struct {
 // token's own verified `email`/`email_verified` claims, never from
 // client-supplied input, so the probe cannot become an arbitrary-email
 // existence oracle.
+//
+// Handles its own CORS/preflight (mirrors handleOperationStatus): a browser
+// GET carrying `Authorization` triggers a preflight OPTIONS regardless of
+// method, so this route answers the preflight before the GET-only guard —
+// the natural browser-direct caller is an FE rendering the whoami hats
+// (persona-worlds-design.md §10), which fails preflight without this.
 func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
+	if len(s.corsOrigins) > 0 {
+		w.Header().Set("Vary", "Origin")
+	}
+	if origin := r.Header.Get("Origin"); s.allowedOrigin(origin) {
+		writeCORSHeaders(w, origin, "GET, OPTIONS")
+	}
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "GET required")
 		return

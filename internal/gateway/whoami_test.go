@@ -425,6 +425,69 @@ func TestHandleWhoami_RolesAnchors_NilResolver(t *testing.T) {
 	}
 }
 
+// TestHandleWhoami_CORS_PreflightAndActualRequest proves GET /v1/actor answers
+// its own preflight — a browser GET carrying `Authorization` always triggers
+// an OPTIONS preflight regardless of method, so (like handleOperationStatus)
+// this is not covered by handleOperations' CORS path. Without it, an FE
+// rendering the whoami hats browser-direct fails preflight.
+func TestHandleWhoami_CORS_PreflightAndActualRequest(t *testing.T) {
+	priv := newTestKey(t)
+	authn := testAuthenticator(t, priv, "k1")
+	token := signToken(t, priv, "k1", "NcxqoP292Z4a7uPKftM6")
+	s := newTestServer(t, authn, nil)
+	s.ConfigureCORS([]string{"http://localhost:7788"})
+
+	mux := http.NewServeMux()
+	s.RegisterRoutes(mux)
+
+	preflight := httptest.NewRequest(http.MethodOptions, "/v1/actor", nil)
+	preflight.Header.Set("Origin", "http://localhost:7788")
+	pw := httptest.NewRecorder()
+	mux.ServeHTTP(pw, preflight)
+	if pw.Code != http.StatusNoContent {
+		t.Fatalf("preflight status = %d, want 204, body=%s", pw.Code, pw.Body.String())
+	}
+	if got := pw.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:7788" {
+		t.Fatalf("preflight Access-Control-Allow-Origin = %q, want the allowed origin", got)
+	}
+
+	actual := httptest.NewRequest(http.MethodGet, "/v1/actor", nil)
+	actual.Header.Set("Origin", "http://localhost:7788")
+	actual.Header.Set("Authorization", "Bearer "+token)
+	aw := httptest.NewRecorder()
+	mux.ServeHTTP(aw, actual)
+	if aw.Code != http.StatusOK {
+		t.Fatalf("actual status = %d, want 200, body=%s", aw.Code, aw.Body.String())
+	}
+	if got := aw.Header().Get("Access-Control-Allow-Origin"); got != "http://localhost:7788" {
+		t.Fatalf("actual Access-Control-Allow-Origin = %q, want the allowed origin", got)
+	}
+}
+
+// TestHandleWhoami_CORS_DisallowedOrigin_NoHeaders is the fail-closed check: a
+// preflight from an origin NOT in the allow-list gets no CORS headers (Vary:
+// Origin still set), so the browser refuses the cross-origin call.
+func TestHandleWhoami_CORS_DisallowedOrigin_NoHeaders(t *testing.T) {
+	priv := newTestKey(t)
+	authn := testAuthenticator(t, priv, "k1")
+	s := newTestServer(t, authn, nil)
+	s.ConfigureCORS([]string{"http://localhost:7788"})
+
+	mux := http.NewServeMux()
+	s.RegisterRoutes(mux)
+
+	preflight := httptest.NewRequest(http.MethodOptions, "/v1/actor", nil)
+	preflight.Header.Set("Origin", "http://evil.example")
+	pw := httptest.NewRecorder()
+	mux.ServeHTTP(pw, preflight)
+	if got := pw.Header().Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("Access-Control-Allow-Origin = %q, want empty for a disallowed origin", got)
+	}
+	if got := pw.Header().Get("Vary"); got != "Origin" {
+		t.Fatalf("Vary = %q, want Origin even on a denied-CORS response", got)
+	}
+}
+
 // TestHandleWhoami_RolesAnchors_EmptyOmitted proves a resolver reporting no
 // roles/anchors (e.g. a fresh identity with neither) omits both fields via
 // omitempty — the same wire shape as the unconfigured case.
