@@ -624,6 +624,105 @@ correct, plus 401 on a gated API, 302→`/login` on browser nav, and `/api/claim
 unauthenticated. **Residual filed:** the kit has no production verify-only branch or revocation checker,
 which loftspace/clinic's read boundaries already wire — a lattice-lane row, consumer W1/W2.
 
+### Fire W1 fire brief (build note, 2026-07-24)
+
+**1 · Scope sentence (verbatim §8):** *"Fires W1–W4 `[verticals]` — clinic / loftspace / wellness / café
+reworks per §7, one fire each, any order. Green (each): sign-in-first; pickers + both mints deleted; every
+hat's offered op set == the same identity's Facet catalog (§6.4 script); RLS tests keep passing with session
+subjects; café/wellness read boundaries authenticated. Depend on: P1+P2; W1–W3 also on W0."* — clinic's §7.1
+hats: patient (self-book/cancel, My Appointments), front-desk (book-for-anyone, Schedule, Follow-ups,
+Availability, Sites), provider (My Schedule via own binding).
+
+**Split (W1 is L; §4 multi-fire).** **Inc 1 (this fire) — the session spine:** sign-in-first, both mints
+deleted, every read and write carries the verified session subject, `asSelf` becomes *derived* rather than
+chosen. **Inc 2 — the hats:** whoami `roles[]`/`anchors[]`-driven surface gating, the provider hat on its own
+`identifiedBy` binding, the front-desk picker split (actor→data selection), and the §6.4 op-set parity audit
+against Facet's catalog. Inc 1 is independently shippable and green: it is the whole parity invariant §6.1–6.3
+(no foreign-subject mint, session-keyed read boundary); §6.4 (offered ⊆ discovered) is Inc 2's bar.
+
+**2 · Verified touch-list (scouted live @ `e04ff757`):**
+- **Blocker, resolved in-fire (not bounced):** `internal/appsession.NewAuthenticators` is dev-mode-only —
+  `signer.go:91-94` hardcodes `KeySourceConfig{DevMode: true}` and `:107` passes `nil` as the revocation-checker
+  slot. Clinic ships **both** things that would drop: a pinned-issuer production branch
+  (`readauth.go:137-160`, `_JWT_PUBLIC_KEY` + required `_JWT_ISSUER` + `_KID` + `_AUDIENCE`) and a real
+  revocation checker (`main.go:156-159`, `revocation.New(revKV)`). Adopting the kit as-is is a security
+  regression, so the kit gains the production branch + a `revocationChecker` parameter **in this fire** — five
+  lines mirroring clinic's own shipped code, the §2 "small and mirrors an established pattern" case, not a new
+  mechanism. Closes the filed lattice row (`lattice.md:144`, consumer named "W1/W2").
+- **Mints deleted:** `readauth.go:228-263` `handleDevToken` (**any-subject** — subject straight from the request
+  body at `:242-254`, no caller identity at all) and `readauth.go:274-301` `handleStaffDevToken` (**fixed
+  root-equivalent** — `bootstrap.BootstrapIdentityKey` via `main.go:98`, unauthenticated, no body, no test).
+  Routes `server.go:78,83`.
+- **Superseded by the kit:** `devSigner`/`mint` (`readauth.go:69-94`), `setupReadAuth` (`:100-161`),
+  `parsePublicKeyPEM` (`:164-174`), `isTruthy` (`:304-310`), `isLoopbackHost`/`hostOf` (`main.go:274-295`),
+  `devTokenTTL` (`:62`).
+- **Read boundary:** `authenticateRead` (`readauth.go:190-223`) keeps its shape but sources the subject from
+  `appsession.Identity(ctx)` instead of the `Authorization` header (`:194-197`); the credential-binding
+  resolve it did per-request (`:211-221`) is now done once at login by the kit (`session.go:394`). The five RLS
+  `set_config` call sites are untouched: `appointments.go:197,292`, `visitseries.go:54`, `patients.go:62`,
+  `ledger.go:130`.
+- **Wiring:** `main.go:131-217` (kit construction, mirroring `cmd/facet/main.go:136-151,209-240`),
+  `server.go:26-85` (inner mux + `RequireSession`, mirroring `cmd/facet/server.go:63-88`).
+- **New:** `cmd/clinic-app/web/login.html` — clinic-branded, mechanism copied from `cmd/facet/web/login.html`
+  (whoami bounce · `/api/login-options` · `POST /api/dev-login`), **claim form dropped** (Facet-only ceremony).
+- **FE (`web/app.js`, 4113 lines):** the four token caches collapse to one session token —
+  `readTokenCache:82`/`readToken:91`, `providerTokenCache:134`/`providerReadToken:136`,
+  `selfTokenCache:191`/`selfWriteToken:206`, `staffTokenCache:379`/`staffReadToken:381`, plus the whole claim
+  ceremony (`:227-352`, `mintDeviceToken:265`, `postOpAsSubject:280`, `ensureClaimedDevice:299`,
+  `runClaimCeremony:311`). `submitOp:471-493` takes the session token; `authedGet`/`authedGetAsProvider`/
+  `authedGetAsStaff` (`:114,159,398`) collapse to one cookie-authenticated getter.
+- **Tests:** six RLS files present a session cookie instead of a Bearer header —
+  `appointments_rls_test.go:180-262`, `provider_schedule_rls_test.go:117-178`,
+  `staff_appointments_rls_test.go:106-155`, `staff_patients_rls_test.go:96-175`, `visitseries_test.go:95-185`,
+  `ledger_rls_test.go:86-137`; `readauth_test.go` loses the three `handleDevToken` tests (`:401,411,438`) and
+  its `setupReadAuth`/`isTruthy` coverage (now the kit's).
+
+**3 · Precedents to mirror:** `cmd/facet` end-to-end — it is the kit's only current consumer and shipped
+this exact shape yesterday (`a2e71712`): construction `main.go:209-234`, inner-mux delegation
+`server.go:63-88`, the `Identity`+`ViaCookie` handler pattern `credentials.go:116-132`, and the browser's
+write-token-from-refresh path `web/boot.mjs:150`. The kit's production branch mirrors clinic's own
+`readauth.go:137-160` verbatim, not a new design.
+
+**4 · Increment order + green checks:** (1) kit production branch + revocation param → `go test
+./internal/appsession/... ./cmd/facet/...`; (2) clinic server wiring + mint deletion + test rewires →
+`go test ./cmd/clinic-app/...`; (3) login page + FE collapse → `node --check web/app.js`, live curl.
+Gates: `go build ./...`, `make vet`, `golangci-lint run ./...`, `STRICT=1 go run ./scripts/lint-conventions.go`,
+all `scripts/lint-*.go`. Live: cycle `bin/clinic-app` per the Makefile recipe, then
+whoami → login-options → dev-login → gated read → refresh → logout, plus one browser load.
+
+**5 · In-scope gotchas:** the cookie name is derived (`<AppName>_session` → `clinic-app_session`), so the
+`AppName` string is load-bearing, not cosmetic. `IsAuthExempt` is **exact-match only** (`session.go:168`) — the
+SPA's static assets sit under `/` and are reachable only *after* a session exists, which is correct but means
+`/api/config` (`server.go:89`) becomes gated; the login page must therefore be self-contained (Facet's is).
+`resolve` **fails closed** on a present-but-invalid cookie and falls back to `FallbackIdentityID` only when the
+cookie is **absent** (`session.go:225-232`) — clinic sets no fallback, so anonymous is genuinely anonymous.
+A bare `:7799` bind yields host `""` → **not** loopback → dev auth refused (`signer.go:121`); the Makefile binds
+`localhost` (`Makefile:719,1226`). `asSelf` stops being a checkbox and becomes derived
+(`sessionIdentity == identityKeyForPatient(selected)`) — the `#book-self`/`#appts-self` markup
+(`index.html:43,156`) and its enable/disable sync (`app.js:662-688`) go with it. `CLINIC_APP_DEMO_PERSONAS`
+is left unset (free-form dev sign-in by identity id, exactly Facet's dev-loop posture) — the fence is
+available, not mandatory.
+
+**6 · Adjacent finds:** `/api/staff/dev-token` had **no test at all** — an unauthenticated root-equivalent
+mint on every clinic dev stack; deleted here, noted because the same shape exists in the three sibling apps
+(loftspace/wellness/café) and dies with W2–W4, already scoped by §8, so no new row. The ungated reads
+(`/api/providers`, `/api/sites`, `/api/provider-sites`, `/api/residents`, `/api/appointments`,
+`/api/wellness/sessions` — `server.go:69-82`) become session-gated as a side effect of `RequireSession`;
+that is a tightening, and none of them is reachable pre-login by design.
+
+**7 · Non-goals (Inc 1):** no role/hat-driven surface gating (Inc 2); no provider `identifiedBy` rework —
+the Schedule tab's provider dropdown stays a data-selection filter for now (Inc 2 splits it); no grants
+audit / §6.4 parity script (Inc 2); no `lint-conventions` parity gate flip (§8(e), after W1–W4); no changes to
+the five RLS `set_config` call sites or any package/DDL content; no sibling-app adoption (W2–W4); no contract
+text.
+
+**Scope-diff gate: PASS** — every touch traces to "sign-in-first; pickers + both mints deleted; RLS tests keep
+passing with session subjects". One narrowing recorded (hats deferred to Inc 2, so §6.4 op-set parity is not
+this increment's bar) and one in-fire enabler recorded (the kit's production branch — required for the
+adoption to not regress security, mirrors clinic's own shipped code, closes an already-filed row rather than
+widening scope). Dependencies re-verified both ways: P1 shipped (`/v1/actor` roles+anchors — Inc 2 consumes
+them, Inc 1 does not), P2 shipped (`a2e71712`), W0 shipped (`a8069d16`).
+
 ## 10a. Non-goals
 
 No OIDC/IdP build; no SSO; no runtime archetype enum; no generic collections surface (named-deferred); no café
