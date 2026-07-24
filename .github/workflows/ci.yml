@@ -9,6 +9,7 @@ on:
       - '_bmad/**'
       - '_bmad-output/**'
       - 'agents/**'
+      - 'website/**'
       - 'LICENSE'
   pull_request:
     paths-ignore: *doc-paths

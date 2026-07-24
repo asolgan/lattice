@@ -1,0 +1,268 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>About Lattice — the story and the reasons</title>
+  <meta name="description" content="Where Lattice comes from, the bets underneath it — one graph, one write path, one substrate — and the AI agent organization that builds and operates it.">
+  <meta property="og:title" content="About Lattice — the story and the reasons">
+  <meta property="og:description" content="Where Lattice comes from and the bets underneath it: one graph, one write path, one substrate — built by an AI agent org under human ratification.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://operatinggraph.com/about">
+  <meta property="og:image" content="https://operatinggraph.com/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="About Lattice — the story and the reasons">
+  <meta name="twitter:description" content="Where Lattice comes from and the bets underneath it: one graph, one write path, one substrate.">
+  <meta name="twitter:image" content="https://operatinggraph.com/assets/og.png">
+  <link rel="canonical" href="https://operatinggraph.com/about">
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+  <link rel="stylesheet" href="assets/css/site.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "AboutPage",
+    "name": "About Lattice",
+    "url": "https://operatinggraph.com/about",
+    "description": "Where Lattice comes from, the bets underneath it, and the AI agent organization that builds and operates it.",
+    "author": {"@type": "Person", "name": "Andrew Solgan"}
+  }
+  </script>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="index.html" aria-label="Lattice home">
+      <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
+        <g stroke="#9aa5c3" stroke-width="1.6" stroke-linecap="round" fill="none">
+          <path d="M6 11h7.5M18.5 11H26"/><path d="M6 21h20"/>
+          <path d="M11 6v20"/><path d="M21 6v7.5M21 18.5V26"/>
+        </g>
+        <circle cx="21" cy="11" r="5" fill="none" stroke="#e8b45c" stroke-width="1.8"/>
+        <circle cx="21" cy="11" r="1.6" fill="#e8b45c"/>
+      </svg>
+      LATTICE
+    </a>
+    <div class="nav-links">
+      <a href="index.html#thesis" class="hide-sm">Platform</a>
+      <a href="index.html#converge" class="hide-sm">Weaver</a>
+      <a href="index.html#demo">Demo</a>
+      <a href="index.html#agents" class="hide-sm">Agent&nbsp;org</a>
+      <a href="index.html#status" class="hide-sm">Status</a>
+      <a href="index.html#roadmap" class="hide-sm">Roadmap</a>
+      <a href="about.html" class="current hide-sm" aria-current="page">About</a>
+      <a href="index.html#run">Run&nbsp;it</a>
+      <a class="btn" href="https://github.com/operatinggraph/lattice" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header class="page-head">
+  <div class="wrap">
+    <span class="eyebrow">ABOUT · <b>the story and the reasons</b></span>
+    <h1>Why Lattice exists.</h1>
+    <p class="lede">The front page shows what Lattice does. This is the longer read — where it
+       comes from, the bets underneath it, and the AI agent organization that builds it.</p>
+  </div>
+</header>
+
+<section id="bet">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">The bet</span>
+      <h2>State is the integration surface.</h2>
+      <p>Lattice is an experiment in what application infrastructure should look like when the
+         system is expected to change continuously, explain itself clearly, and safely include AI
+         agents as first-class actors.</p>
+    </div>
+    <div class="prose">
+      <p>Modern applications hide their real shape behind service code, private conventions,
+         framework-specific models and API glue. Humans can learn those conventions over time. AI
+         agents usually cannot: they guess at schemas, call APIs without enough context, and work
+         around state they cannot inspect or reason about directly.</p>
+      <p>Lattice takes the opposite bet: <b>the application state itself should be the integration
+         surface</b>. The system should be able to describe what exists, what may be done, who may
+         do it, and what a valid change looks like — without a hand-written SDK for every new
+         actor, human or machine.</p>
+    </div>
+  </div>
+</section>
+
+<section id="origin">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Where it comes from</span>
+      <h2>Experience businesses, and a broken promise.</h2>
+      <p>The original product pressure came from <b>experience businesses</b> — places where one
+         person's relationship with the operator spans leases, payments, access, events, services,
+         staff interactions, preferences, history and support.</p>
+    </div>
+    <div class="prose">
+      <p>Residential communities, coworking buildings, campuses, clubs, hospitality groups,
+         mixed-use properties. These businesses invent new workflows constantly: a new membership
+         bundle, lease rule, access policy, concierge service, compliance requirement, staff
+         process. None of that should take weeks of engineering coordination — but in normal
+         software, every new capability crosses too many seams: database schema, service code,
+         authorization, API shape, event stream, reporting view, workflow logic, UI assumptions.</p>
+      <p>That is the broken promise Lattice is aimed at. "Just spin up a new idea" only works if
+         the architecture makes the right path easier than the bypass. So Lattice makes platform
+         discipline structural: a valid change goes through the same deterministic write path, the
+         same schema validation, the same authorization model and the same projection machinery
+         whether it was initiated by a human, a service, or an AI agent.</p>
+      <blockquote>What if application state were structured so humans, services, and AI agents
+         could all reason over the same model safely?</blockquote>
+      <p>The answer Lattice is testing is a living system, not a faster deployment script:
+         capabilities should be authorable, reviewable, reversible, observable and evolvable
+         inside the running platform. Meetings are replaced by intent plus review — not intent
+         alone. Human judgment stays in the loop; coordination overhead is what gets compressed.</p>
+    </div>
+  </div>
+</section>
+
+<section id="one-graph">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">One model</span>
+      <h2>Why one graph.</h2>
+      <p>Most platforms end up with state spread across a relational schema, a document store, an
+         authorization engine and a search index — each with its own shape, its own migration
+         story, and its own blind spots when anyone, human or AI, tries to reason across them.</p>
+    </div>
+    <div class="prose">
+      <p>Lattice instead models everything — business entities, their data, their relationships,
+         their types, their operations, even authorization itself — as one graph: <b>vertices</b>
+         (the entities), <b>aspects</b> (their data, addressable independently so each can be
+         versioned, encrypted or migrated on its own), and <b>links</b> (typed, directional
+         relationships that double as the authorization graph). That collapse buys three things a
+         conventional stack can't:</p>
+      <ul>
+        <li><b>One traversal model for everything.</b> "Can this identity run this operation on
+            this vertex?" is the same kind of graph walk as "what leases does this resident hold?"
+            — there is no separate policy engine with its own mental model to keep in sync with
+            the data.</li>
+        <li><b>The graph describes itself to agents.</b> Types, operations and schemas are
+            themselves vertices with aspects and links, so an AI agent discovers what it may do by
+            walking from its own identity — not from a hand-written SDK or out-of-band API
+            docs.</li>
+        <li><b>Uniform mechanics for change.</b> Every mutation — "create a lease", "install a
+            capability package", "propose a new rule" — takes the same deterministic write path,
+            the same validation, the same authorization, and emits the same kind of change event
+            for projections to pick up.</li>
+      </ul>
+      <p>A fourth strength appears once the platform is running: <b>extension without
+         fragmentation</b>. A new capability never has to choose between bolting onto data it
+         doesn't own and standing up its own silo. Because a vertex's data lives in
+         independently-addressable aspects, a new package attaches its <em>own</em> aspects to
+         <em>existing</em> vertices — an identity gains a loyalty tier the day a loyalty package
+         installs — and links into the graph from there, inheriting everything already known about
+         that entity without copying any of it. What's actually protected is the write path: the
+         graph grows outward by accretion, never by replication, and every accretion passes the
+         same gate as everything else.</p>
+      <p>The cost is real — a graph-of-everything is a less familiar shape than
+         tables-plus-services. Closing that gap is the Refractor's whole job: it continuously
+         projects the graph into <b>lenses</b> — materialized views that land in ordinary Postgres
+         tables or NATS KV — so anything that wants a familiar relational shape gets one, kept
+         live off the same change stream as every other reader and rebuildable from the ledger at
+         will. You don't give up the graph to get the table. You get both, and the table is just a
+         projection.</p>
+    </div>
+  </div>
+</section>
+
+<section id="nats">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">One substrate</span>
+      <h2>Why NATS.</h2>
+      <p><a href="https://nats.io" target="_blank" rel="noopener">NATS</a> is a lightweight,
+         open-source messaging system — a single small Go-embeddable binary that, via JetStream,
+         doubles as a durable event log, a key-value store and a pub/sub fabric. Lattice needed
+         exactly that combination.</p>
+    </div>
+    <div class="prose">
+      <p>One substrate that can be a ledger, a fast KV layer and a message bus means there is no
+         Kafka-plus-Redis-plus-broker stack to stitch together, and no three consistency models to
+         reconcile by hand. JetStream provides all three in one dependency: ordered streams for
+         operations and events, atomic-batch KV for the core graph, lightweight pub/sub for
+         everything in between — all addressable through the same key and subject conventions.</p>
+      <p>The unification matters beyond convenience. The Processor's commit pipeline depends on
+         <b>atomic batch publish</b> — a write lands as a whole (vertices, aspects, links, outbox
+         event) or not at all — and NATS's atomic batch is what makes that guarantee cheap. The
+         Refractor's lens projections depend on <b>durable CDC consumers</b> reading the same
+         change stream that fed the graph, so read models can always be rebuilt from the ledger
+         rather than drifting from it. And because NATS is a single small embeddable binary, it is
+         also what makes Edge Lattice possible: a sovereign client node runs the same substrate
+         locally, offline, and reconciles by revision when it reconnects — there is no separate
+         edge stack to design.</p>
+      <p>In short: NATS isn't a queue bolted onto the side. It is the addressable, ledgered,
+         atomically-batched foundation the rest of the architecture is built to assume.</p>
+    </div>
+  </div>
+</section>
+
+<section id="builders">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">The builders</span>
+      <h2>As much an experiment in AI-driven development as a platform.</h2>
+      <p>Lattice is deliberately developed by AI agents. The agents write everything — the code,
+         the tests, the contracts, the documentation — under a human ratification gate.</p>
+    </div>
+    <div class="prose">
+      <p>The first phases ran as a structured, human-orchestrated loop, organized with the
+         <a href="https://github.com/bmad-code-org/BMAD-METHOD" target="_blank" rel="noopener">BMAD
+         method</a>: analyst, architect, delivery, engineer and reviewer roles, each story
+         implemented by a fresh agent against a self-contained brief, then hunted by independent
+         adversarial reviewers.</p>
+      <p>Phase 3 turned that loop autonomous. A scheduled agent organization now runs the flywheel
+         with no human starting it: surveyor roles file demand, designer roles write the designs,
+         a steward builds behind the full gate suite, and product-owner roles exercise the shipped
+         apps to file the next round of demand — supply and demand, self-sustaining. The human is
+         needed for exactly two things: ratifying frozen-contract changes and settling final
+         architectural forks. It is an active, maturing experiment — the loop still gets steered —
+         but the trajectory is the point: the system increasingly improves itself.</p>
+      <p>The human is <b>Andrew Solgan</b>, and the role is architect and supervisor, not
+         implementer: set the vision and the binding architectural decisions, freeze the data
+         contracts, pressure-test proposals, adjudicate the agents' output, steer course. The goal
+         is to see how far a rigorously-supervised, contract-first agentic process can carry a
+         genuinely complex distributed system.</p>
+      <p>None of this is a marketing claim — the paper trail is versioned in the open repository:
+         the live planning boards, 90+ design documents, and every ratification decision.</p>
+    </div>
+    <div class="hero-ctas" style="margin-top:30px">
+      <a class="btn" href="index.html#agents">Meet the team</a>
+      <a class="btn" href="https://github.com/operatinggraph/lattice/tree/main/_bmad-output/planning-artifacts/backlog" target="_blank" rel="noopener">Read the live boards</a>
+      <a class="btn primary" href="mailto:hello@operatinggraph.com?subject=Lattice">Get in touch</a>
+    </div>
+  </div>
+</section>
+
+<section id="next">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Keep going</span>
+      <h2>See it, then run it.</h2>
+    </div>
+    <div class="hero-ctas">
+      <a class="btn primary" href="index.html#demo">See it run</a>
+      <a class="btn" href="index.html#run">Run it yourself</a>
+      <a class="btn" href="https://github.com/operatinggraph/lattice" target="_blank" rel="noopener">Read the source</a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-inner">
+    <div>© 2026 Andrew Solgan. All rights reserved. · Lattice — the operating graph.</div>
+    <div>
+      <a href="about.html">About</a> ·
+      <a href="https://github.com/operatinggraph/lattice" target="_blank" rel="noopener">GitHub</a> ·
+      <a href="mailto:hello@operatinggraph.com">Contact</a>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

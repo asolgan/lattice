@@ -1,0 +1,692 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Lattice — the operating graph</title>
+  <meta name="description" content="Lattice is a graph-native, agent-native platform that runs a whole business on one living graph — capabilities install like apps, evolve while everything runs, and stay safe for humans and AI agents to change together.">
+  <meta property="og:title" content="Lattice — the operating graph">
+  <meta property="og:description" content="One living graph runs the business. Built by an AI agent org under human ratification; designed for AI-assisted teams and, tomorrow, their customers' agents.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://operatinggraph.com/">
+  <meta property="og:image" content="https://operatinggraph.com/assets/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Lattice — the operating graph">
+  <meta name="twitter:description" content="One living graph runs the business. Built by an AI agent org under human ratification.">
+  <meta name="twitter:image" content="https://operatinggraph.com/assets/og.png">
+  <link rel="canonical" href="https://operatinggraph.com/">
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+  <link rel="stylesheet" href="assets/css/site.css">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Lattice",
+    "url": "https://operatinggraph.com/",
+    "description": "A graph-native, agent-native business platform: the whole business runs on one living graph, where capabilities install like packages and evolve while everything runs — safe for humans and AI agents to change together.",
+    "applicationCategory": "BusinessApplication",
+    "operatingSystem": "Linux, macOS",
+    "author": {"@type": "Person", "name": "Andrew Solgan"},
+    "license": "https://github.com/operatinggraph/lattice/blob/main/LICENSE"
+  }
+  </script>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap nav-inner">
+    <a class="brand" href="#top" aria-label="Lattice home">
+      <svg width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
+        <g stroke="#9aa5c3" stroke-width="1.6" stroke-linecap="round" fill="none">
+          <path d="M6 11h7.5M18.5 11H26"/><path d="M6 21h20"/>
+          <path d="M11 6v20"/><path d="M21 6v7.5M21 18.5V26"/>
+        </g>
+        <circle cx="21" cy="11" r="5" fill="none" stroke="#e8b45c" stroke-width="1.8"/>
+        <circle cx="21" cy="11" r="1.6" fill="#e8b45c"/>
+      </svg>
+      LATTICE
+    </a>
+    <div class="nav-links">
+      <a href="#thesis" class="hide-sm">Platform</a>
+      <a href="#converge" class="hide-sm">Weaver</a>
+      <a href="#demo">Demo</a>
+      <a href="#agents" class="hide-sm">Agent&nbsp;org</a>
+      <a href="#status" class="hide-sm">Status</a>
+      <a href="#roadmap" class="hide-sm">Roadmap</a>
+      <a href="about.html" class="hide-sm">About</a>
+      <a href="#run">Run&nbsp;it</a>
+      <a class="btn" href="https://github.com/operatinggraph/lattice" target="_blank" rel="noopener">GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<header id="top" class="hero">
+  <canvas id="lattice-canvas" aria-hidden="true"></canvas>
+  <div class="wrap hero-inner">
+    <span class="eyebrow">LATTICE · <b>a graph-native, agent-native business platform</b></span>
+    <h1>The business is a graph.<br><span class="refract">Run it on one.</span></h1>
+    <p class="lede">
+      A business never stops changing — its software rarely keeps up. Lattice runs the whole
+      business on one living graph, where new capabilities install like apps and evolve while
+      everything runs — safe for humans and AI agents to change together.
+    </p>
+    <div class="hero-ctas">
+      <a class="btn primary" href="#demo">See it run</a>
+      <a class="btn" href="https://github.com/operatinggraph/lattice" target="_blank" rel="noopener">Read the source</a>
+    </div>
+    <div class="hero-badges">
+      <span class="chip">Go</span>
+      <span class="chip">NATS JetStream</span>
+      <span class="chip">CQRS · lens projections</span>
+      <span class="chip">declarative convergence</span>
+      <span class="chip">built by an AI agent org</span>
+    </div>
+  </div>
+  <a class="scroll-cue" href="#thesis" aria-label="Scroll down to the platform overview">
+    <svg width="26" height="26" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M5 9l7 7 7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </a>
+</header>
+
+<section id="thesis">
+  <div class="wrap">
+    <div class="sec-head">
+      <h2>Change it while it runs.</h2>
+      <p>Most platforms freeze a business into someone else's data model — every new idea becomes an
+         integration project. Lattice is the opposite bet: your business runs on its own instance of
+         one living graph, and every capability on it is a package your team authors, reviews, reverses
+         and evolves — AI-assisted — <em>while the business runs</em>. We build and operate the
+         platform; you grow what runs on it.</p>
+    </div>
+    <div class="cards3">
+      <div class="card">
+        <span class="k cyan">Authored &amp; reviewed</span>
+        <h3>Proposed, not deployed</h3>
+        <p>A new lease rule, membership tier or access policy is authored as a package — by a person
+           or an AI agent — and passes human review and deterministic validation before it is ever
+           real. Intent plus review, not intent alone.</p>
+      </div>
+      <div class="card">
+        <span class="k violet">Reversible &amp; observable</span>
+        <h3>Attributed and replayable</h3>
+        <p>One writer, one write path. Who submitted a change, which capability allowed it and what it
+           touched is all recorded — so you can watch it live, scrub the history, and roll it back.
+           Nothing mutates state in the dark.</p>
+      </div>
+      <div class="card">
+        <span class="k rose">Evolvable, live</span>
+        <h3>Grows while it runs</h3>
+        <p>Install or upgrade a package and its entities, operations, lenses and roles come online in
+           the running platform — no restart, no migration window. The system grows a capability
+           instead of being taken down to change one.</p>
+      </div>
+    </div>
+    <pre class="code"><span class="cm"># a capability is just a declaration — authored, reviewed, versioned, reversible</span>
+<span class="key">entities</span>:
+  - <span class="val">unit</span>                  <span class="cm"># vtx.unit.&lt;id&gt; — aspects: .address, .listing</span>
+<span class="key">operations</span>:
+  - <span class="val">SetListing</span>            <span class="cm"># write path: operations → the one Processor</span>
+  - <span class="val">AssignUnitOwner</span>
+<span class="key">lenses</span>:
+  - <span class="val">availableListings</span>     <span class="cm"># read path: CDC → Refractor → NATS-KV</span>
+  - <span class="val">renewalsRead</span>          <span class="cm"># Postgres + RLS: tenant OR landlord may read a row</span></pre>
+    <p style="margin-top:18px;color:var(--muted);max-width:760px">
+      A package declares entities, operations, lenses, permissions and orchestration. Install one and
+      your instance grows a capability. Install two and they already know each other — they share the
+      graph.
+    </p>
+    <p class="positioning">Enterprise-grade coherence — one model for the whole business — without the
+      enterprise price tag, the year-long rollout, or the army of integrators.</p>
+  </div>
+</section>
+
+<section id="layers">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">End to end</span>
+      <h2>AI-assisted at every layer.</h2>
+      <p>The same pattern repeats up the stack: people set direction and hold the gates, AI does the
+         heavy lifting — and all of it works because the graph explains itself.</p>
+    </div>
+    <div class="cards3">
+      <div class="card">
+        <span class="k gold">Our agents</span>
+        <h3>build the platform</h3>
+        <p>Lattice itself is designed, built and operated by an AI agent organization, with one human
+           principal ratifying every design and every contract change. The showcase verticals — leasing,
+           clinic, café, wellness — are working references that prove the patterns, not products for
+           sale. The paper trail is <a href="#agents">public</a>.</p>
+      </div>
+      <div class="card">
+        <span class="k cyan">Your team</span>
+        <h3>builds your business on it</h3>
+        <p>Your business runs on its own Lattice instance. Your people — AI-assisted — author and
+           evolve the packages and verticals it actually needs, web and mobile, against a graph that
+           describes itself: entities, operations, permissions, all discoverable. New ideas become
+           installed capabilities, not integration projects.</p>
+      </div>
+      <div class="card">
+        <span class="k violet">Your customers' agents</span>
+        <h3>act on their behalf</h3>
+        <p>Customers get clean front-ends today — and a graph their own assistants can safely act on:
+           every operation is typed, authorized and attributed, so booking, renewing and approving can
+           be delegated without fear. Edge Lattice puts each person's own slice of the graph on their
+           own device, offline-first. Facet — the personal client built on it — turns that slice into
+           the whole app: what you can see and do arrives as data, not as app releases. Both run today;
+           the hosted demo is Facet, live.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Architecture</span>
+      <h2>A small core with sharp invariants.</h2>
+      <p>Underneath, it's one graph of facts — vertices, their data in aspects, relationships as links
+         — and <b style="color:var(--muted)">everything is a package</b>. Two paths, no exceptions:
+         writes are operations through one writer; reads are lens projections. Every other component
+         is a client of those two paths.</p>
+    </div>
+    <div class="diagram-wrap">
+      <svg viewBox="0 0 960 360" role="img" aria-label="Lattice architecture. External apps submit writes through the Gateway to the core-operations stream, which the Processor consumes and commits to the Core KV graph; the Processor emits the core-events stream, which the Refractor projects into lenses that apps read back through the Gateway. Loom, Weaver, Bridge and the Chronicler ride the same two streams.">
+        <defs>
+          <marker id="arr" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto">
+            <path d="M0 0 L8 4 L0 8 z" fill="#6b7699"/>
+          </marker>
+        </defs>
+
+        <!-- stream names — the two rails everything rides -->
+        <text class="dg-tag" x="326" y="52" text-anchor="middle" fill="#59d8ff">core-operations</text>
+        <text class="dg-tag" x="632" y="52" text-anchor="middle" fill="#59d8ff">core-events</text>
+
+        <!-- top spine: apps -> Gateway -> Processor -> Core KV -> Refractor -> Lenses -->
+        <rect class="dg-box" x="32"  y="64" width="126" height="56" rx="10"/>
+        <text class="dg-label" x="95" y="90" text-anchor="middle">Your apps</text>
+        <text class="dg-sub"   x="95" y="108" text-anchor="middle">external actors</text>
+
+        <rect class="dg-box" x="186" y="64" width="126" height="56" rx="10" style="stroke:#59d8ff"/>
+        <text class="dg-label" x="249" y="90" text-anchor="middle">Gateway</text>
+        <text class="dg-sub"   x="249" y="108" text-anchor="middle">trust boundary</text>
+
+        <rect class="dg-box core" x="340" y="64" width="126" height="56" rx="10"/>
+        <text class="dg-label" x="403" y="90" text-anchor="middle">Processor</text>
+        <text class="dg-sub"   x="403" y="108" text-anchor="middle">the sole writer</text>
+
+        <rect class="dg-box core" x="494" y="64" width="126" height="56" rx="10"/>
+        <text class="dg-label" x="557" y="90" text-anchor="middle">Core KV</text>
+        <text class="dg-sub"   x="557" y="108" text-anchor="middle">graph of facts</text>
+
+        <rect class="dg-box" x="648" y="64" width="126" height="56" rx="10"/>
+        <text class="dg-label" x="711" y="90" text-anchor="middle">Refractor</text>
+        <text class="dg-sub"   x="711" y="108" text-anchor="middle">projection engine</text>
+
+        <rect class="dg-box" x="802" y="64" width="126" height="56" rx="10"/>
+        <text class="dg-label" x="865" y="90" text-anchor="middle">Lenses</text>
+        <text class="dg-sub"   x="865" y="108" text-anchor="middle">read models · RLS</text>
+
+        <line class="dg-flow" x1="158" y1="92" x2="182" y2="92"/>
+        <text class="dg-tag" x="170" y="56" text-anchor="middle">JWT</text>
+        <line class="dg-flow" x1="312" y1="92" x2="336" y2="92"/>
+        <line class="dg-flow" x1="466" y1="92" x2="490" y2="92"/>
+        <line class="dg-flow" x1="620" y1="92" x2="644" y2="92"/>
+        <line class="dg-flow" x1="774" y1="92" x2="798" y2="92"/>
+
+        <!-- read loop-back: apps read lenses back through the Gateway -->
+        <path class="dg-flow" d="M 865 124 C 865 158, 130 158, 96 124"/>
+        <text class="dg-tag" x="243" y="144" text-anchor="middle">read path · RLS (P5)</text>
+
+        <!-- orchestration cluster: rides the same two streams -->
+        <rect class="dg-box" x="201" y="256" width="120" height="52" rx="10"/>
+        <text class="dg-label" x="261" y="278" text-anchor="middle">Loom</text>
+        <text class="dg-sub"   x="261" y="294" text-anchor="middle">procedures</text>
+
+        <rect class="dg-box" x="347" y="256" width="120" height="52" rx="10"/>
+        <text class="dg-label" x="407" y="278" text-anchor="middle">Weaver</text>
+        <text class="dg-sub"   x="407" y="294" text-anchor="middle">convergence</text>
+
+        <rect class="dg-box" x="493" y="256" width="120" height="52" rx="10"/>
+        <text class="dg-label" x="553" y="278" text-anchor="middle">Bridge</text>
+        <text class="dg-sub"   x="553" y="294" text-anchor="middle">external I/O</text>
+
+        <rect class="dg-box" x="639" y="256" width="120" height="52" rx="10"/>
+        <text class="dg-label" x="699" y="278" text-anchor="middle">Chronicler</text>
+        <text class="dg-sub"   x="699" y="294" text-anchor="middle">history</text>
+
+        <!-- stream-mediated feedback: submit ops up, consume events down -->
+        <line class="dg-flow" x1="360" y1="254" x2="360" y2="122"/>
+        <text class="dg-tag" x="366" y="200" text-anchor="start">submit ops</text>
+        <line class="dg-flow" x1="600" y1="122" x2="600" y2="254"/>
+        <text class="dg-tag" x="606" y="200" text-anchor="start">consume events</text>
+      </svg>
+    </div>
+    <p class="diagram-cap">
+      Two durable streams are the rails everything rides. External actors reach the graph only through
+      the <b style="color:var(--muted)">Gateway</b>, which authenticates each one and stamps an
+      unforgeable identity on every write. Writes land on <b style="color:var(--muted)">core-operations</b>;
+      the Processor commits them and emits <b style="color:var(--muted)">core-events</b>, which the
+      Refractor projects into lenses. Loom, Weaver, Bridge and the Chronicler are clients of those same
+      two streams — they consume events and submit operations, exactly as your apps do.
+    </p>
+
+    <div class="strip-head">
+      <h3>Meet the components</h3>
+      <span class="hint">scroll → · each links to its reference doc</span>
+    </div>
+    <div class="strip">
+      <a class="comp-card" href="https://github.com/operatinggraph/lattice/blob/main/docs/components/processor.md" target="_blank" rel="noopener">
+        <div class="top"><span class="dotc core"></span><span class="cat core">Core</span></div>
+        <span class="nm">Processor</span>
+        <span class="ds">The sole writer — authorizes, validates, commits and attributes every mutation.</span>
+        <span class="lk">docs →</span>
+      </a>
+      <a class="comp-card" href="https://github.com/operatinggraph/lattice/blob/main/docs/components/refractor.md" target="_blank" rel="noopener">
+        <div class="top"><span class="dotc core"></span><span class="cat core">Core</span></div>
+        <span class="nm">Refractor</span>
+        <span class="ds">Projects the graph into query-ready lenses, continuously, via change-data-capture.</span>
+        <span class="lk">docs →</span>
+      </a>
+      <a class="comp-card" href="https://github.com/operatinggraph/lattice/blob/main/docs/components/substrate.md" target="_blank" rel="noopener">
+        <div class="top"><span class="dotc core"></span><span class="cat core">Core</span></div>
+        <span class="nm">Substrate</span>
+        <span class="ds">The NATS / KV primitive layer — key shapes, atomic batch, durable consumers.</span>
+        <span class="lk">docs →</span>
+      </a>
+      <a class="comp-card" href="https://github.com/operatinggraph/lattice/blob/main/docs/components/loom.md" target="_blank" rel="noopener">
+        <div class="top"><span class="dotc orch"></span><span class="cat orch">Orchestration</span></div>
+        <span class="nm">Loom</span>
+        <span class="ds">Runs deterministic, resumable multi-step procedures.</span>
+        <span class="lk">docs →</span>
+      </a>
+      <a class="comp-card" href="https://github.com/operatinggraph/lattice/blob/main/docs/components/weaver.md" target="_blank" rel="noopener">
+        <div class="top"><span class="dotc orch"></span><span class="cat orch">Orchestration</span></div>
+        <span class="nm">Weaver</span>
+        <span class="ds">The convergence engine — plans and dispatches operations to reach declared goals.</span>
+        <span class="lk">docs →</span>
+      </a>
+      <a class="comp-card" href="https://github.com/operatinggraph/lattice/blob/main/docs/components/augur.md" target="_blank" rel="noopener">
+        <div class="top"><span class="dotc orch"></span><span class="cat orch">Orchestration</span></div>
+        <span class="nm">Augur</span>
+        <span class="ds">The Weaver's AI reasoning tier — proposes a fix when the planner can't, under human review.</span>
+        <span class="lk">docs →</span>
+      </a>
+      <a class="comp-card" href="https://github.com/operatinggraph/lattice/blob/main/docs/components/bridge.md" target="_blank" rel="noopener">
+        <div class="top"><span class="dotc orch"></span><span class="cat orch">Orchestration</span></div>
+        <span class="nm">Bridge</span>
+        <span class="ds">The one component that calls the outside world — idempotently, via pluggable adapters.</span>
+        <span class="lk">docs →</span>
+      </a>
+      <a class="comp-card" href="https://github.com/operatinggraph/lattice/blob/main/docs/components/chronicler.md" target="_blank" rel="noopener">
+        <div class="top"><span class="dotc orch"></span><span class="cat orch">Orchestration</span></div>
+        <span class="nm">The Chronicler</span>
+        <span class="ds">Materializes durable, append-only history from the platform's event streams.</span>
+        <span class="lk">docs →</span>
+      </a>
+      <a class="comp-card" href="https://github.com/operatinggraph/lattice/blob/main/docs/components/gateway.md" target="_blank" rel="noopener">
+        <div class="top"><span class="dotc sec"></span><span class="cat sec">Security</span></div>
+        <span class="nm">Gateway</span>
+        <span class="ds">The edge trust boundary — authenticates every actor and bounds what they can read.</span>
+        <span class="lk">docs →</span>
+      </a>
+      <a class="comp-card" href="https://github.com/operatinggraph/lattice/blob/main/docs/components/vault.md" target="_blank" rel="noopener">
+        <div class="top"><span class="dotc sec"></span><span class="cat sec">Security</span></div>
+        <span class="nm">Vault</span>
+        <span class="ds">Per-identity key custody and crypto-shredding — the physical right to be forgotten.</span>
+        <span class="lk">docs →</span>
+      </a>
+      <a class="comp-card" href="https://github.com/operatinggraph/lattice/blob/main/docs/components/object-store-manager.md" target="_blank" rel="noopener">
+        <div class="top"><span class="dotc plat"></span><span class="cat plat">Platform</span></div>
+        <span class="nm">Object-store-manager</span>
+        <span class="ds">The byte-janitor — reclaims blob storage once its vertex is gone.</span>
+        <span class="lk">docs →</span>
+      </a>
+      <a class="comp-card" href="https://github.com/operatinggraph/lattice/blob/main/docs/components/loupe.md" target="_blank" rel="noopener">
+        <div class="top"><span class="dotc plat"></span><span class="cat plat">Platform</span></div>
+        <span class="nm">Loupe</span>
+        <span class="ds">The operator console — browse the live graph, drive the engines, replay history.</span>
+        <span class="lk">docs →</span>
+      </a>
+      <a class="comp-card" href="https://github.com/operatinggraph/lattice/blob/main/docs/components/bootstrap.md" target="_blank" rel="noopener">
+        <div class="top"><span class="dotc plat"></span><span class="cat plat">Platform</span></div>
+        <span class="nm">Bootstrap</span>
+        <span class="ds">One-shot provisioning — seeds every bucket, stream and the primordial graph.</span>
+        <span class="lk">docs →</span>
+      </a>
+    </div>
+  </div>
+</section>
+
+<section id="converge">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Convergence</span>
+      <h2>Declare the outcome. The graph gets there.</h2>
+      <p>Most systems tell the computer <em>how</em>, step by step. Lattice Weaver lets a package declare
+         <em>what should be true</em> — a goal, expressed as a lens over the graph — and then makes it
+         so. It watches for the gap between the world and the goal, and closes it.</p>
+    </div>
+    <p style="color:var(--muted);max-width:780px;margin-bottom:34px">
+      The important part: Weaver doesn't run a fixed playbook. Given a goal and the operations a package
+      exposes, it <b style="color:var(--text)">plans</b> — searching for the sequence of operations that
+      reaches the goal, dispatching the next step, watching the result, and re-planning as reality
+      changes. It carries no business logic of its own; every goal and every operation is package data.
+      The same engine drives a lease to <span style="font-family:var(--mono);font-size:14px;color:var(--c-operator)">renewed</span>,
+      an unpaid balance to <span style="font-family:var(--mono);font-size:14px;color:var(--c-operator)">settled</span>,
+      an orphaned document to <span style="font-family:var(--mono);font-size:14px;color:var(--c-operator)">shredded</span>.
+    </p>
+    <div class="cards3">
+      <div class="card">
+        <span class="k gold">Plans, not scripts</span>
+        <h3>Chains operations to a goal</h3>
+        <p>Give it a target outcome and the operations available; Weaver synthesizes the ordered steps
+           that reach it, dispatches the next one, and re-plans when it completes. The lease-renewal you
+           see in the demo below is a real goal-authored target running this way.</p>
+      </div>
+      <div class="card">
+        <span class="k gold">Fair under load</span>
+        <h3>Governs its own dispatch</h3>
+        <p>A goal can declare rate budgets; Weaver paces its actions with a priority-fair scheduler, so a
+           surge of work can't storm the system and urgent rows go first. Convergence, throttled to what
+           the platform can absorb.</p>
+      </div>
+      <div class="card">
+        <span class="k gold">Self-correcting</span>
+        <h3>Catches goals that fight</h3>
+        <p>When two goals would ping-pong the same data — each undoing the other — Weaver detects the
+           oscillation and freezes both, surfacing the conflict to an operator instead of corrupting
+           state in a silent loop.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="demo">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Interactive demo</span>
+      <h2>One graph, four lenses.</h2>
+      <p>For example: one mixed-use building — homes, a clinic, a café, a wellness studio. Toggle its
+         packages, then switch personas. It's the same graph every time — each persona sees only their
+         projection of it. That's the security model, not a visualization trick: access is a lens.</p>
+    </div>
+
+    <div class="demo-shell">
+      <div class="demo-ribbon">
+        A deterministic walkthrough with canned data — not a live instance. <b>The flows, lens names
+        and key shapes mirror the real stack</b>, and the packages mirror Lattice's showcase verticals.
+        The hosted demo is the real stack — real lenses, real operations, reset nightly.
+      </div>
+
+      <div class="demo-body">
+        <div class="demo-controls">
+          <div class="ctrl-group">
+            <span class="ctrl-label">Packages</span>
+            <span class="pkg-toggles"></span>
+          </div>
+          <div class="ctrl-group">
+            <span class="ctrl-label">Lens</span>
+            <span class="persona-tabs"></span>
+          </div>
+        </div>
+
+        <div class="demo-main">
+          <div class="graph-pane">
+            <svg class="graph-svg" viewBox="0 0 660 600" role="img" aria-label="A property graph: people, units, leases, appointments and bookings connected by typed links, recolored per persona."></svg>
+            <div class="graph-cap"></div>
+          </div>
+          <div class="panel-pane">
+            <div class="panel-title"></div>
+            <div class="panel-sub"></div>
+            <div class="panel-cards"></div>
+          </div>
+        </div>
+
+        <div class="emergence"></div>
+
+        <div class="ticker">
+          <div class="tk-label">Write path · live</div>
+          <div class="tk-lines"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="demo-live-cta">
+      <a class="btn primary" href="https://demo.operatinggraph.com/login" target="_blank" rel="noopener">Sign in to the live one →</a>
+      <a class="btn" href="https://loupe.demo.operatinggraph.com/login" target="_blank" rel="noopener">Behind the scenes — the read-only console →</a>
+    </div>
+  </div>
+</section>
+
+<section id="agents">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">The part almost nobody else can show you</span>
+      <h2>Built — and operated — by an AI agent organization.</h2>
+      <p>Lattice's continuous improvement runs as an autonomous agent org: agents survey demand,
+         design features, build them, and hunt each other's bugs — with a human ratification gate on
+         every design and every frozen contract. It's the top layer of the same pattern the platform
+         offers your team: AI does the work, humans hold the gates. And it isn't a marketing claim —
+         the paper trail is in the repository.</p>
+    </div>
+    <div class="loop-row">
+      <span class="loop-step">Surveyor files demand</span><span class="loop-arrow">→</span>
+      <span class="loop-step">Designer writes the design</span><span class="loop-arrow">→</span>
+      <span class="loop-step human">human ratifies</span><span class="loop-arrow">→</span>
+      <span class="loop-step">Steward builds</span><span class="loop-arrow">→</span>
+      <span class="loop-step">3 adversarial reviews</span><span class="loop-arrow">→</span>
+      <span class="loop-step">CI green</span>
+    </div>
+    <p class="team-lead">Those steps are played by a small cast — most of them one AI architect wearing
+      several hats, with a human holding the gate.</p>
+    <div class="strip-head">
+      <h3>Meet the team</h3>
+      <span class="hint">one human · an AI organization</span>
+    </div>
+    <div class="strip">
+      <div class="comp-card principal">
+        <div class="top"><span class="dotc human"></span><span class="cat human">Human · Principal</span></div>
+        <span class="nm">Andrew</span>
+        <span class="ds">Founder and principal. Sets direction and ratifies every design and every frozen-contract change — the one human in the loop.</span>
+      </div>
+      <div class="comp-card">
+        <div class="top"><span class="dotc ai"></span><span class="cat ai">AI · Architect</span></div>
+        <span class="nm">Winston</span>
+        <span class="ds">Chief architect and tech lead. Designs the platform, builds it, reviews it, and is the only actor that commits — the workhorse, wearing most of the hats.</span>
+      </div>
+      <div class="comp-card">
+        <div class="top"><span class="dotc ai"></span><span class="cat ai">AI · UX</span></div>
+        <span class="nm">Sally</span>
+        <span class="ds">UX designer. Shapes how every app and console feels before a line of front-end is built.</span>
+      </div>
+      <div class="comp-card">
+        <div class="top"><span class="dotc ai"></span><span class="cat ai">AI · Delivery</span></div>
+        <span class="nm">Bob</span>
+        <span class="ds">Delivery lead. Turns a rough idea into a build-ready story with everything the engineer needs.</span>
+      </div>
+      <div class="comp-card">
+        <div class="top"><span class="dotc ai"></span><span class="cat ai">AI · Engineer</span></div>
+        <span class="nm">Amelia</span>
+        <span class="ds">Engineer. Implements each story against its acceptance criteria, on the one write path like everyone else.</span>
+      </div>
+      <div class="comp-card">
+        <div class="top"><span class="dotc ai"></span><span class="cat ai">AI · QA</span></div>
+        <span class="nm">Quinn</span>
+        <span class="ds">Quality. Guards test coverage and hunts flaky, non-deterministic tests before they rot the suite.</span>
+      </div>
+      <div class="comp-card">
+        <div class="top"><span class="dotc ai"></span><span class="cat ai">AI · Docs</span></div>
+        <span class="nm">Paige</span>
+        <span class="ds">Technical writer. Keeps the documentation true to the code as the platform evolves under it.</span>
+      </div>
+      <div class="comp-card">
+        <div class="top"><span class="dotc ai"></span><span class="cat ai">AI · Background</span></div>
+        <span class="nm">Always-on routines</span>
+        <span class="ds">Unnamed loops hydrate the backlog, watch platform health, build front-ends, and adversarially review every change — three independent hunters per substantial diff.</span>
+      </div>
+    </div>
+    <p style="color:var(--muted);max-width:760px">
+      Three independent review lenses — a blind hunter that sees only the diff, an edge-case hunter,
+      and an acceptance auditor — run on every substantial change. Frozen contracts can only be
+      amended by a staged, human-approved diff. The planning boards, 100+ design documents, and every
+      ratification decision are versioned in the open repo.
+    </p>
+    <p class="positioning">Plenty of tools now make it safe for AI to write your app's code. Lattice
+      makes it safe for AI to <em>operate the business itself</em> — the same graph, one writer, a
+      human ratifying every change.</p>
+    <div class="stat-chips">
+      <span class="chip">100+ design docs</span>
+      <span class="chip">live planning boards, in-repo</span>
+      <span class="chip">3-layer adversarial review</span>
+      <span class="chip">green CI on every change</span>
+      <span class="chip">frozen contracts, human-gated</span>
+    </div>
+    <div class="hero-ctas" style="margin-top:30px">
+      <a class="btn" href="https://github.com/operatinggraph/lattice/tree/main/_bmad-output/planning-artifacts/backlog" target="_blank" rel="noopener">Read the live boards</a>
+      <a class="btn" href="https://github.com/operatinggraph/lattice/tree/main/_bmad-output/implementation-artifacts" target="_blank" rel="noopener">Read the design docs</a>
+      <a class="btn" href="about.html">The story behind it</a>
+    </div>
+  </div>
+</section>
+
+<section id="status">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Honest status</span>
+      <h2>Where it stands.</h2>
+      <p>A platform you can run today, with the roadmap in the open. The "not yet" column is
+         deliberate — it's what makes the "today" column trustworthy.</p>
+    </div>
+    <div class="cols2">
+      <div class="status-list now">
+        <h3>Runs today</h3>
+        <ul>
+          <li>The full core: Processor (the sole writer), Core KV graph, Refractor + lenses — NATS-KV and Postgres with row-level security</li>
+          <li>Orchestration: Loom procedures, and Weaver's deterministic goal-regression planner — it plans and dispatches the operations that drive the graph to a declared goal (lease renewal runs this way, as a goal, not a script)</li>
+          <li>The Gateway trust boundary with real-actor write authorization end-to-end: the verticals submit as role-scoped users straight from the browser — genuine allow-and-deny — with JWT validation, actor stamping, revocation and RLS-enforced reads. And there is no path around it: the app processes are denied the operations stream at the transport layer, and allow-all authorization refuses to boot outside tests</li>
+          <li>Operator login for the console — a scoped, non-root operator role, not a superuser</li>
+          <li>Crypto-shredding: sensitive aspect fields shredded end-to-end with audited reveal in the console; the object-store mechanism for whole documents is proven, its first vertical consumer is next</li>
+          <li>The Augur — Weaver's AI reasoning tier: when the deterministic planner can't reach a goal it proposes a fix a human reviews before anything dispatches. Live on the real stack, CI-gated</li>
+          <li>Four vertical apps end-to-end on the real stack: LoftSpace (apply → decide → sign → renew), Clinic (slot-grid booking with double-book prevention by construction — patients book for themselves), Café (house-tab ledger, payment and settlement, a combined statement) and Wellness (class schedule, booking, rosters) — and they compose: a completed Clinic visit can book a Wellness class through the shared graph, no integration code</li>
+          <li>Loupe operator console: system map, vertex inspector, lens explorer, event stream, and the Chronicler-backed Time Machine (v1 replay) — and a public read-only copy runs over the live demo world at <a href="https://loupe.demo.operatinggraph.com/login" target="_blank" rel="noopener">loupe.demo.operatinggraph.com</a>: every write is capability-denied by the platform, because even the console holds a scoped role, not a key to the kingdom</li>
+          <li>Edge Lattice — the sovereign per-user node: your own slice of the graph mirrored on your device, offline-first — optimistic edits reconciled by revision, per-identity confinement enforced at the connection layer itself, on-device key sessions for protected fields, and the same engine compiled to WebAssembly running in the browser</li>
+          <li>Facet — the discovery-driven personal client, live: sign in and your world arrives as data over your personal lens — services, forms, tasks, and staff worlds (a staff member's app derives from where they work, with PII worklists behind row-level security) — rendered from a fixed widget vocabulary, zero app change when a new service is wired in. The hosted demo at <a href="https://demo.operatinggraph.com/login" target="_blank" rel="noopener">demo.operatinggraph.com</a> is Facet over the showcase building, resident and staff sign-in alike</li>
+          <li>AI-proposed capability changes land through a live review console: an agent authors the package diff, a human reviews and applies it in Loupe, and the server re-validates before anything installs</li>
+          <li>A package-based platform: install or upgrade a capability and its entities, operations, lenses and permissions come with it — new DDL, lenses, roles and operations activate live, no restart — every change guarded by a multi-job CI with package-verify and convergence e2e gates</li>
+        </ul>
+      </div>
+      <div class="status-list next">
+        <h3>In flight &amp; deferred — by design</h3>
+        <ul>
+          <li>Whole-document crypto-shredding — the object-store mechanism is live; its first vertical consumer (lease documents) is queued</li>
+          <li>Multi-cell sharding and HA clustering — designed and ratified, deliberately deferred until a production-scale driver exists</li>
+          <li>External vendor adapters are development fakes today; the bridge and its async adapter contract are real</li>
+          <li>The hosted demo runs the dev-trust posture on purpose — demo personas over the real pipeline, reset nightly; production identity federation arrives with the first design partner</li>
+          <li>No production deployments yet — this is a platform seeking its first design partners</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="roadmap">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">The road ahead</span>
+      <h2>Designed in the open.</h2>
+      <p>What's next is already specified and ratified — sequenced, not shipped. Like everything else,
+         the roadmap lives in the public repository.</p>
+    </div>
+    <div class="cards3">
+      <div class="card">
+        <span class="k gold">Sandbox · next</span>
+        <h3>Per-visitor sandboxes</h3>
+        <p>The hosted demo is live — the real stack over a shared showcase world, reset nightly. Next:
+           throwaway per-visitor instances, so you can install a package into your own world and watch
+           Weaver converge on it in real time, then throw the whole world away.</p>
+      </div>
+      <div class="card">
+        <span class="k gold">Scale · deferred</span>
+        <h3>Multi-cell &amp; HA</h3>
+        <p>Horizontal sharding across cells and high-availability clustering — designed and ratified,
+           deliberately deferred until a production-scale driver exists. The architecture already
+           assumes it; the single-node build doesn't need it yet.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="run">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Try it for yourself</span>
+      <h2>Run it yourself.</h2>
+      <p>The demo above is a simulation. This is not:</p>
+    </div>
+    <div class="run-grid">
+      <pre class="code" style="margin-top:0"><span class="cm"># requires Docker + Go</span>
+git clone https://github.com/operatinggraph/lattice
+cd lattice
+make up-full        <span class="cm"># kernel + orchestration + packages + Loupe → :7777</span>
+make up-loftspace   <span class="cm"># LoftSpace vertical → :7788</span>
+make up-clinic      <span class="cm"># Clinic vertical → :7799</span>
+make up-cafe        <span class="cm"># Café vertical → :7801</span>
+make up-wellness    <span class="cm"># Wellness vertical → :7802</span>
+make up-facet       <span class="cm"># Facet, the personal client → :7810</span></pre>
+      <div class="run-note">
+        <p>What you'll see:</p>
+        <ul>
+          <li><b>Loupe</b> at <span style="font-family:var(--mono)">:7777</span> — the live graph, every lens, the event stream, the Time Machine</li>
+          <li><b>LoftSpace</b> at <span style="font-family:var(--mono)">:7788</span> — browse listings, apply, sign, renew</li>
+          <li><b>Clinic</b> at <span style="font-family:var(--mono)">:7799</span> — providers, slot-grid booking, staff views</li>
+          <li><b>Café</b> at <span style="font-family:var(--mono)">:7801</span> and <b>Wellness</b> at <span style="font-family:var(--mono)">:7802</span> — tabs &amp; settlement; classes &amp; rosters</li>
+          <li><b>Facet</b> at <span style="font-family:var(--mono)">:7810</span> — sign in as a resident or staff; the whole app arrives as data over your personal lens</li>
+        </ul>
+        <p style="margin-top:14px;color:var(--faint);font-size:14px">
+          Source-available: cloning and running locally for evaluation is welcome — see the LICENSE
+          for exact terms.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="license">
+  <div class="wrap">
+    <div class="sec-head">
+      <span class="eyebrow">Licensing &amp; contact</span>
+      <h2>Source-available, deliberately.</h2>
+    </div>
+    <div class="license-box">
+      <p><b>Lattice is source-available, not open source.</b> The code is public to read, run locally,
+         and evaluate; all other rights are reserved. That's a deliberate posture — the platform's
+         value should be legible without being given away.</p>
+      <p>If what you've seen maps to something you're building — commercial licensing, a design
+         partnership, or acquiring the IP outright — I'd like to talk.</p>
+      <p class="contact">
+        <a class="btn primary" href="mailto:hello@operatinggraph.com?subject=Lattice">Get in touch</a>
+        &nbsp;<a class="btn" href="https://github.com/operatinggraph/lattice" target="_blank" rel="noopener">github.com/operatinggraph/lattice</a>
+      </p>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap foot-inner">
+    <div>© 2026 Andrew Solgan. All rights reserved. · Lattice — the operating graph.</div>
+    <div>
+      <a href="about.html">About</a> ·
+      <a href="https://github.com/operatinggraph/lattice" target="_blank" rel="noopener">GitHub</a> ·
+      <a href="mailto:hello@operatinggraph.com">Contact</a>
+    </div>
+    <!-- TODO(runbook step 7): analytics snippet slot (Cloudflare Web Analytics) -->
+  </div>
+</footer>
+
+<script src="assets/js/hero.js"></script>
+<script src="assets/js/demo.js"></script>
+</body>
+</html>

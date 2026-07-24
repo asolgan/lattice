@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OG image source — draw &amp; export assets/og.png (1200×630)</title>
+<style>
+  @font-face {
+    font-family: "Space Grotesk";
+    src: url("fonts/space-grotesk-700.woff2") format("woff2");
+    font-weight: 700; font-display: block;
+  }
+  @font-face {
+    font-family: "Plex Mono";
+    src: url("fonts/plex-mono-600.woff2") format("woff2");
+    font-weight: 600; font-display: block;
+  }
+  body { background: #222; margin: 0; display: grid; place-items: center; min-height: 100vh; }
+  canvas { width: 600px; height: 315px; box-shadow: 0 8px 40px rgba(0,0,0,.5); }
+</style>
+</head>
+<body>
+<canvas id="og" width="1200" height="630"></canvas>
+<script>
+async function draw() {
+  await document.fonts.load('700 72px "Space Grotesk"');
+  await document.fonts.load('600 24px "Plex Mono"');
+  await document.fonts.ready;
+
+  const c = document.getElementById('og');
+  const x = c.getContext('2d');
+
+  x.fillStyle = '#0b0e17';
+  x.fillRect(0, 0, 1200, 630);
+
+  // lattice grid
+  const step = 88;
+  x.strokeStyle = 'rgba(154,165,195,0.10)';
+  x.lineWidth = 1.4;
+  for (let gx = step; gx < 1200; gx += step) {
+    x.beginPath(); x.moveTo(gx, 0); x.lineTo(gx, 630); x.stroke();
+  }
+  for (let gy = step; gy < 630; gy += step) {
+    x.beginPath(); x.moveTo(0, gy); x.lineTo(1200, gy); x.stroke();
+  }
+
+  // a few accent links between intersections (persona hues, low alpha)
+  const hues = ['rgba(89,216,255,0.35)', 'rgba(167,139,250,0.35)', 'rgba(251,123,162,0.30)'];
+  const links = [
+    [9, 1, 10, 2], [10, 2, 11, 2], [8, 5, 9, 4], [9, 4, 10, 4],
+    [10, 4, 10, 2], [11, 2, 12, 3], [8, 1, 9, 1], [12, 5, 11, 6]
+  ];
+  links.forEach((l, i) => {
+    x.strokeStyle = hues[i % hues.length];
+    x.lineWidth = 1.6;
+    x.beginPath();
+    x.moveTo(l[0] * step, l[1] * step);
+    x.lineTo(l[2] * step, l[3] * step);
+    x.stroke();
+  });
+
+  // nodes at the intersections the links touch
+  const nodes = new Map();
+  links.forEach(l => { nodes.set(l[0] + ',' + l[1], 0); nodes.set(l[2] + ',' + l[3], 0); });
+  x.fillStyle = '#9aa5c3';
+  nodes.forEach((_, k) => {
+    const [nx, ny] = k.split(',').map(Number);
+    x.beginPath(); x.arc(nx * step, ny * step, 3.4, 0, 7); x.fill();
+  });
+
+  // the loupe: one circled gold node (the favicon motif)
+  const lx = 10 * step, ly = 2 * step;
+  x.strokeStyle = '#e8b45c'; x.lineWidth = 3;
+  x.beginPath(); x.arc(lx, ly, 22, 0, 7); x.stroke();
+  x.fillStyle = '#e8b45c';
+  x.beginPath(); x.arc(lx, ly, 5.5, 0, 7); x.fill();
+
+  // dark left panel for text legibility
+  const panel = x.createLinearGradient(0, 0, 860, 0);
+  panel.addColorStop(0, 'rgba(11,14,23,0.94)');
+  panel.addColorStop(0.75, 'rgba(11,14,23,0.72)');
+  panel.addColorStop(1, 'rgba(11,14,23,0)');
+  x.fillStyle = panel;
+  x.fillRect(0, 0, 860, 630);
+
+  // wordmark
+  x.fillStyle = '#e8ecf7';
+  x.font = '600 26px "Plex Mono"';
+  x.save();
+  x.translate(84, 118);
+  x.fillText('L A T T I C E', 0, 0);
+  x.restore();
+
+  // headline
+  x.fillStyle = '#e8ecf7';
+  x.font = '700 76px "Space Grotesk"';
+  x.fillText('The business is a graph.', 80, 300);
+  const grad = x.createLinearGradient(80, 0, 700, 0);
+  grad.addColorStop(0, '#59d8ff'); grad.addColorStop(0.55, '#a78bfa'); grad.addColorStop(1, '#fb7ba2');
+  x.fillStyle = grad;
+  x.fillText('Run it on one.', 80, 392);
+
+  // subline + domain
+  x.fillStyle = '#9aa5c3';
+  x.font = '600 24px "Plex Mono"';
+  x.fillText('graph-native · agent-native · built by an AI agent org', 82, 474);
+  x.fillStyle = '#e8b45c';
+  x.fillText('operatinggraph.com', 82, 552);
+
+  window.__og = c.toDataURL('image/png');
+  document.title = 'READY ' + window.__og.length;
+}
+draw();
+</script>
+</body>
+</html>
