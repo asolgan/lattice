@@ -290,6 +290,13 @@ func startResolveEchoService(t *testing.T, verifier *ActorVerifier) *resolveEcho
 		micro.WithEndpointSubject("controlauth.test.resolve")); err != nil {
 		t.Fatalf("AddEndpoint: %v", err)
 	}
+	// Block until the endpoint's subscription is registered on the server —
+	// the test client requests over a separate connection, so without this the
+	// request can outrace the responder's SUB propagation ("no responders
+	// available", a CI-under-load flake).
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("flush responder subscription: %v", err)
+	}
 
 	return &resolveEchoService{natsURL: url, svc: svc, nc: nc}
 }

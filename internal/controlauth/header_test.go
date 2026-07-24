@@ -82,6 +82,13 @@ func startEchoService(t *testing.T) *echoService {
 		micro.WithEndpointSubject("controlauth.test.echo")); err != nil {
 		t.Fatalf("AddEndpoint: %v", err)
 	}
+	// Block until the endpoint's subscription is registered on the server —
+	// the test client requests over a separate connection, so without this the
+	// request can outrace the responder's SUB propagation ("no responders
+	// available", a CI-under-load flake).
+	if err := nc.Flush(); err != nil {
+		t.Fatalf("flush responder subscription: %v", err)
+	}
 
 	return &echoService{natsURL: url, svc: svc, nc: nc}
 }
