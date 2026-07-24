@@ -1405,19 +1405,33 @@ async function providerAppointments(provider) {
   return state.slotApptCache[provider];
 }
 
+// forPatient narrows RLS-scoped rows to one patient's.
+//
+// RLS answers "what may this session see", which is not the same question as
+// "whose record is on screen". A patient session gets exactly its own rows and
+// this is a no-op; a front-desk session holds the clinic-wide wildcard grant, so
+// the same endpoint hands back the whole practice and the selected patient is a
+// VIEW choice the client makes. Narrowing here rather than by a `?patientKey=`
+// argument keeps the server free of any client-supplied identifier: this can only
+// ever hide rows the session was already entitled to, never reveal one.
+function forPatient(rows, patientKey) {
+  if (!patientKey) return [];
+  return (rows || []).filter((r) => r.patientKey === patientKey);
+}
+
 // patientAppointments fetches (and caches per patient) the selected patient's
 // appointments across ALL providers — so the slot picker can exclude a time the
 // patient is already booked elsewhere, which the op rejects as a PatientDoubleBook.
 // Invalidated on a successful booking alongside the provider cache.
 //
-// Reads the PROTECTED /api/my-appointments endpoint (RLS, patient-self anchor)
-// rather than a client-supplied `?patient=` filter — the rows come back scoped
-// to the signed-in identity, which is exactly what this needs.
+// The narrowing is load-bearing here, not cosmetic: unnarrowed, a front-desk
+// session would treat every appointment in the practice as one patient's and
+// block nearly every slot the picker could offer.
 async function patientAppointments(patient) {
   if (state.slotPatientApptCache[patient]) return state.slotPatientApptCache[patient];
   try {
     const data = await appGet("/api/my-appointments");
-    state.slotPatientApptCache[patient] = data.appointments || [];
+    state.slotPatientApptCache[patient] = forPatient(data.appointments, patient);
   } catch (e) {
     state.slotPatientApptCache[patient] = [];
   }
@@ -2036,10 +2050,10 @@ async function loadAppts() {
   }
   $("#appts-summary").textContent = "loading…";
   try {
-    // The PROTECTED, RLS-scoped, session-authenticated read (see
-    // patientAppointments' doc above the sibling slot-picker call).
+    // The PROTECTED, RLS-scoped, session-authenticated read, narrowed to the
+    // patient on screen (see forPatient above the sibling slot-picker call).
     const data = await appGet("/api/my-appointments");
-    state.appts = data.appointments || [];
+    state.appts = forPatient(data.appointments, state.patient);
   } catch (e) {
     grid.innerHTML = "";
     empty.hidden = false;
@@ -2358,7 +2372,7 @@ async function loadMySeries() {
   }
   try {
     const data = await appGet("/api/my-visit-series");
-    state.mySeries = data.series || [];
+    state.mySeries = forPatient(data.series, state.patient);
   } catch (e) {
     state.mySeries = [];
     renderMySeries();
@@ -2649,8 +2663,7 @@ function bookSeriesOccurrence(s) {
 
 // renderMySeries fills the My Appointments tab's "Recurring visit series" panel
 // with the selected patient's own series — state.mySeries, the PROTECTED,
-// RLS-scoped fetch (/api/my-visit-series), already scoped server-side to this
-// patient (no client-side filter needed).
+// RLS-scoped fetch (/api/my-visit-series) narrowed to the patient on screen.
 function renderMySeries() {
   const list = $("#my-series-list");
   const empty = $("#my-series-empty");

@@ -159,7 +159,7 @@ func TestPackage_NoCommandOverlapAcrossVertexTypes(t *testing.T) {
 //   - consumer (scope self) — patient self-booking / self-reschedule /
 //     self-cancel.
 //
-// Plus the eleven projection lenses and the location-domain dependency.
+// Plus the twelve projection lenses and the location-domain dependency.
 func TestPackage_Permissions(t *testing.T) {
 	type wantGrant struct {
 		scope     string
@@ -224,8 +224,8 @@ func TestPackage_Permissions(t *testing.T) {
 		t.Fatalf("expected Depends=[location-domain], got %v", got)
 	}
 
-	if got := len(Package.Lenses); got != 11 {
-		t.Fatalf("expected 11 lenses, got %d", got)
+	if got := len(Package.Lenses); got != 12 {
+		t.Fatalf("expected 12 lenses, got %d", got)
 	}
 	lensByName := map[string]pkgmgr.LensSpec{}
 	for _, l := range Package.Lenses {
@@ -275,6 +275,16 @@ func TestPackage_Permissions(t *testing.T) {
 	if l, ok := lensByName["providerIdentityReadGrants"]; !ok ||
 		l.Adapter != "postgres" || !l.GrantTable || l.Protected || !l.DiffRetraction || l.GrantSource != "cap-read.provider.clinic" {
 		t.Fatalf("unexpected providerIdentityReadGrants shape: %+v", lensByName["providerIdentityReadGrants"])
+	}
+	if l, ok := lensByName["patientIdentityReadGrants"]; !ok ||
+		l.Adapter != "postgres" || !l.GrantTable || l.Protected || !l.DiffRetraction || l.GrantSource != "cap-read.patient.clinic" {
+		t.Fatalf("unexpected patientIdentityReadGrants shape: %+v", lensByName["patientIdentityReadGrants"])
+	}
+	// The two identity-bridge producers must stay on DISTINCT grant_sources:
+	// each retracts only its own rows, so sharing one would make either
+	// producer's diff revoke the other's grants wholesale.
+	if lensByName["patientIdentityReadGrants"].GrantSource == lensByName["providerIdentityReadGrants"].GrantSource {
+		t.Fatal("the patient and provider identity-bridge producers share a grant_source")
 	}
 	if got := len(Package.WeaverTargets); got != 0 {
 		t.Fatalf("expected 0 weaverTargets, got %d", got)

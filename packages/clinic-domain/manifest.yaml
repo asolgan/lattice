@@ -1,5 +1,5 @@
 name: clinic-domain
-version: 0.24.0
+version: 0.25.0
 depends:
   - location-domain
 description: |
@@ -82,9 +82,12 @@ description: |
   is mutually exclusive, and idempotently grants the identity-domain `provider` role via holdsRole. SetProviderHours,
   SetProviderTimeOff, SetAppointmentStatus, and RescheduleAppointment additionally grant `provider` scope=any: the
   script confines a bound, non-operator, non-workplace caller to the SPECIFIC provider it is identifiedBy-bound to
-  (persona-worlds-design.md Fire W0). providerIdentityReadGrants is the new cap-read.provider.clinic GrantTable
-  producer (mirrors service-location's staffReadGrants shape) that lets a bound login inherit its provider entity's
-  own read anchors.
+  (persona-worlds-design.md Fire W0). providerIdentityReadGrants and patientIdentityReadGrants are the
+  cap-read.provider.clinic / cap-read.patient.clinic GrantTable producers (mirroring service-location's
+  staffReadGrants shape) that let a signed-in login inherit the read anchors of the clinic entity it is bound to —
+  a bound provider and an identifiedBy-bound patient respectively. They are what make a person's LOGIN the principal
+  of their protected reads instead of the clinic entity standing in as its own actor; clinicPatientsRead's rows
+  anchor per-patient to match, so the front desk reads the whole roster and a patient reads only their own record.
 declares:
   ddls:
     - canonicalName: patient
@@ -160,6 +163,9 @@ declares:
       adapter: postgres
       engine: full
     - canonicalName: providerIdentityReadGrants
+      adapter: postgres
+      engine: full
+    - canonicalName: patientIdentityReadGrants
       adapter: postgres
       engine: full
   permissions:

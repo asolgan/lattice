@@ -34,6 +34,15 @@ const (
 	clinicRLSTestRole   = "clinic_rls_test_reader"
 	subPatientA         = "AAAAAAAAAAAAAAAAAAAA"
 	subPatientB         = "BBBBBBBBBBBBBBBBBBBB"
+
+	// Patient C and the LOGIN that is identifiedBy-bound to it are deliberately
+	// DIFFERENT NanoIDs. A and B collapse the two (their session subject is the
+	// patient's own id), which is the shape the app minted before it was
+	// sign-in-first and the reason a broken identity→patient bridge could stay
+	// invisible to a green suite: every assertion still passed while the actual
+	// login could see nothing. C is the shape a real session has.
+	subPatientC  = "CCCCCCCCCCCCCCCCCCCC"
+	subIdentityC = "DDDDDDDDDDDDDDDDDDDD"
 )
 
 func skipIfNoPostgresRLS(t *testing.T) string {
@@ -154,6 +163,16 @@ func TestReadBoundary_RLS_Enforcement(t *testing.T) {
 	exec(`INSERT INTO actor_read_grants (actor_id, anchor_id, grant_source, projection_seq, is_deleted)
 	      VALUES ($1, $1, 'cap-read', 1, false)`, subPatientB)
 
+	// Patient C, reachable only through the identity bridge: the row anchors on
+	// the PATIENT, while the grant's actor is the bound LOGIN — exactly what
+	// patientIdentityReadGrants projects. No self-grant exists for C, so if the
+	// bridge row were missing or its actor/anchor columns were transposed, C's
+	// session would read nothing.
+	exec(`INSERT INTO read_clinic_appointments (appointment_id, entity_key, starts_at, status, patient_key, patient_name, authz_anchors, projection_seq)
+	      VALUES ('appt-C', 'vtx.appointment.appt-C', '2026-07-03T15:00:00Z', 'scheduled', 'vtx.patient.`+subPatientC+`', 'Carol Okafor', $1, 1)`, []string{subPatientC})
+	exec(`INSERT INTO actor_read_grants (actor_id, anchor_id, grant_source, projection_seq, is_deleted)
+	      VALUES ($1, $2, 'cap-read.patient.clinic', 1, false)`, subIdentityC, subPatientC)
+
 	// The reader pool runs as the non-superuser role.
 	reader := poolInSchema(t, dsn, clinicRLSTestRole)
 	defer reader.Close()
@@ -191,6 +210,31 @@ func TestReadBoundary_RLS_Enforcement(t *testing.T) {
 		}
 		if len(rows) != 1 || rows[0].EntityKey != "vtx.appointment.appt-A" {
 			t.Fatalf("A must see exactly appt-A, got %+v", rows)
+		}
+	})
+
+	// The bridge itself: a session whose subject is a LOGIN, not a patient.
+	t.Run("a bound login reads its patient's rows and only those", func(t *testing.T) {
+		code, rows := get(t, cookieFor(subIdentityC))
+		if code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", code)
+		}
+		if len(rows) != 1 || rows[0].EntityKey != "vtx.appointment.appt-C" {
+			t.Fatalf("the bound login must see exactly appt-C (the identity→patient grant bridge is what makes a real sign-in work), got %+v", rows)
+		}
+	})
+
+	t.Run("an unbound login sees nothing", func(t *testing.T) {
+		// subPatientC is the patient's own id. It anchors the row but is NOT the
+		// actor of any grant, so a session presenting it must read nothing —
+		// this is what fails if the bridge is ever collapsed back into a
+		// patient-as-actor self-grant.
+		code, rows := get(t, cookieFor(subPatientC))
+		if code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", code)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("a patient id presented as a session subject must read nothing, got %+v", rows)
 		}
 	})
 

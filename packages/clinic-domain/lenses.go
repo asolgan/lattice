@@ -222,13 +222,14 @@ func Lenses() []pkgmgr.LensSpec {
 			// handleStaffPatients replaces that vector, reading THIS table as a
 			// JWT-authenticated actor.
 			//
-			// Unlike clinicAppointmentsRead / providerAppointmentsRead there is no
-			// per-patient self-anchor to carve out here — "the whole roster" has no
-			// single-row owner, so every row projects an EMPTY authz_anchors set:
-			// only an actor holding the reserved WildcardAnchor grant (D1 design
-			// §3.4 M5, internal/refractor/adapter.WildcardAnchor) ever matches a
-			// row, mirroring handleStaffAppointments' no-separate-staff-projection
-			// note.
+			// Each row anchors on its own patient's NanoID, so exactly two kinds
+			// of actor match it: one holding the reserved WildcardAnchor grant
+			// (D1 design §3.4 M5, internal/refractor/adapter.WildcardAnchor) —
+			// the front desk, who needs the whole roster — and, via
+			// patientIdentityReadGrants, the signed-in identity the row's own
+			// patient is identifiedBy. The roster as a WHOLE still has no owner
+			// but a single row does, and a person being able to find their own
+			// record is what lets a patient session know which patient it is.
 			//
 			// NAME comes straight off .demographics (non-sensitive). email/phone
 			// are SECURE columns (Contract #3 §3.10, Vault Fire 5 — the
@@ -236,10 +237,12 @@ func Lenses() []pkgmgr.LensSpec {
 			// landlordLeaseApplicationsRead's applicant_email/applicant_phone
 			// exactly): the OPTIONAL-matched identifiedBy identity's sensitive
 			// .email/.phone aspects are RETURNed as ciphertext envelopes whole
-			// (id.<aspect>.data) and decrypted at projection into this
-			// staff-wildcard-anchored table — the only actors who can ever read
-			// a row here already hold the WildcardAnchor grant, so decrypted
-			// contact never reaches an unauthorized reader. A patient with no
+			// (id.<aspect>.data) and decrypted at projection into this table.
+			// Decrypted contact therefore reaches exactly two readers, and the
+			// self-anchor above does not widen that: the WildcardAnchor holder,
+			// who is the front desk this contact belongs to operationally, and
+			// the person the row is about, reading their own email and phone.
+			// A patient with no
 			// identifiedBy link (identityKey null) or a shredded identity
 			// projects null email/phone — never an error (right-to-erasure and
 			// the pre-Vault/no-backfill posture both fall through the same
@@ -364,6 +367,27 @@ func Lenses() []pkgmgr.LensSpec {
 			DiffRetraction: true,
 			Engine:         "full",
 			Spec:           providerIdentityReadGrantsSpec,
+		},
+		{
+			// patientIdentityReadGrants — providerIdentityReadGrants' patient
+			// sibling, and the producer that makes a patient's LOGIN the
+			// principal of their own protected reads. Without it, a person who
+			// signs in and whose identity is the target of a patient's
+			// identifiedBy link matches no grant row at all, and every
+			// patient-anchored read (clinicAppointmentsRead via
+			// /api/my-appointments, /api/my-visit-series, their own roster row)
+			// returns empty — the reads are wired, the grant simply is not
+			// there. Same actor-different-from-anchor shape, same
+			// DiffRetraction transport (an unbind tombstones the link, not a
+			// vertex), same own-grant_source scoping.
+			CanonicalName:  "patientIdentityReadGrants",
+			Class:          "meta.lens",
+			Adapter:        "postgres",
+			GrantTable:     true,
+			GrantSource:    "cap-read.patient.clinic",
+			DiffRetraction: true,
+			Engine:         "full",
+			Spec:           patientIdentityReadGrantsSpec,
 		},
 	}
 }
@@ -527,7 +551,7 @@ RETURN
   id.key                       AS identity_key,
   id.email.data                AS email,
   id.phone.data                AS phone,
-  []                           AS authz_anchors
+  [nanoIdFromKey(p.key)]       AS authz_anchors
 `
 
 // clinicAppointmentsReadSpec is the PATIENT-anchored protected Postgres read
@@ -647,4 +671,30 @@ RETURN
   nanoIdFromKey(i.key)       AS actor_id,
   nanoIdFromKey(pr.key)      AS anchor_id,
   'cap-read.provider.clinic' AS grant_source
+`
+
+// patientIdentityReadGrantsSpec projects one grant row per (login identity,
+// clinic patient) pair — the patient hat's read-grant producer, the sibling of
+// providerIdentityReadGrantsSpec above. It is what makes a patient's own
+// LOGIN, rather than the patient vertex standing in as its own actor, the
+// principal of the patient-anchored protected reads: clinicPatientReadGrants
+// grants the patient NanoID to itself, which only ever helped while a token
+// could be minted with the patient vertex's id as its subject.
+//
+// Unlike the provider producer there is no role MATCH. Provider-hood is a
+// ROLE, so the grant must not outlive it; being the person a patient record is
+// about is not a role at all — it is exactly what identifiedBy asserts, and a
+// patient who has not (yet) been granted `consumer` still owns their own
+// record. Roles gate the OPS a person may submit; anchors gate the ROWS they
+// may read, and those are different questions.
+//
+// Retraction rides DiffRetraction, not an anchor tombstone, for the same
+// reason the provider producer does: unbinding tombstones the identifiedBy
+// LINK, not either vertex, so the shrinking row set is the revocation
+// transport, scoped to this producer's own grant_source.
+const patientIdentityReadGrantsSpec = `MATCH (p:patient)-[:identifiedBy]->(i:identity)
+RETURN
+  nanoIdFromKey(i.key)      AS actor_id,
+  nanoIdFromKey(p.key)      AS anchor_id,
+  'cap-read.patient.clinic' AS grant_source
 `

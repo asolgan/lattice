@@ -442,3 +442,79 @@ func ruleengineFilterByKey(rows []ruleengine.ProjectionResult, col, id string) [
 	}
 	return out
 }
+
+// TestPatientIdentityReadGrants is TestProviderIdentityReadGrants' patient
+// sibling: the bridge that makes a person's LOGIN the actor of their own
+// patient-anchored reads, instead of the patient vertex standing in as its own
+// actor. The grant exists for exactly as long as the identifiedBy link does.
+//
+// Unlike the provider producer there is deliberately NO role predicate — being
+// the person a record is about is asserted by identifiedBy, not by a role — so
+// the role cases below assert the opposite of the provider ones: a bound
+// patient is granted whether or not any role is held.
+func TestPatientIdentityReadGrants(t *testing.T) {
+	if testing.Short() {
+		t.Skip("requires NATS")
+	}
+	t.Run("a bound patient grants one row, actor-different-from-anchor", func(t *testing.T) {
+		f := newLensFixture(t)
+		f.vtx(t, "carol", "identity")
+		f.vtx(t, "patCarol", "patient")
+		f.aspect(t, "patCarol", "demographics", "patientDemographics", map[string]any{"fullName": "Carol Okafor"})
+		f.edge(t, "identifiedBy", "patCarol", "carol")
+
+		rows := f.project(t, patientIdentityReadGrantsSpec)
+		require.Len(t, rows, 1)
+		v := rows[0].Values
+		require.Equal(t, f.ids["carol"], v["actor_id"], "the BOUND LOGIN is the grant's actor, not the patient entity")
+		require.Equal(t, f.ids["patCarol"], v["anchor_id"], "the grant anchors on the patient entity's own NanoID")
+		require.Equal(t, "cap-read.patient.clinic", v["grant_source"])
+	})
+
+	t.Run("a patient with no identifiedBy grants nothing", func(t *testing.T) {
+		f := newLensFixture(t)
+		f.vtx(t, "patCarol", "patient")
+		f.aspect(t, "patCarol", "demographics", "patientDemographics", map[string]any{"fullName": "Carol Okafor"})
+
+		require.Empty(t, f.project(t, patientIdentityReadGrantsSpec))
+	})
+
+	t.Run("an identity bound to no patient grants nothing", func(t *testing.T) {
+		f := newLensFixture(t)
+		f.vtx(t, "carol", "identity")
+
+		require.Empty(t, f.project(t, patientIdentityReadGrantsSpec))
+	})
+
+	t.Run("the grant does not depend on holding any role", func(t *testing.T) {
+		f := newLensFixture(t)
+		f.vtx(t, "carol", "identity")
+		f.vtx(t, "patCarol", "patient")
+		f.aspect(t, "patCarol", "demographics", "patientDemographics", map[string]any{"fullName": "Carol Okafor"})
+		f.edge(t, "identifiedBy", "patCarol", "carol")
+
+		rows := f.project(t, patientIdentityReadGrantsSpec)
+		require.Len(t, rows, 1, "a patient who has not been granted `consumer` still owns their own record")
+	})
+
+	t.Run("one bound patient grants exactly one row per pair", func(t *testing.T) {
+		f := newLensFixture(t)
+		f.vtx(t, "carol", "identity")
+		f.vtx(t, "dan", "identity")
+		f.vtx(t, "patCarol", "patient")
+		f.aspect(t, "patCarol", "demographics", "patientDemographics", map[string]any{"fullName": "Carol Okafor"})
+		f.vtx(t, "patDan", "patient")
+		f.aspect(t, "patDan", "demographics", "patientDemographics", map[string]any{"fullName": "Dan Ruiz"})
+		f.edge(t, "identifiedBy", "patCarol", "carol")
+		f.edge(t, "identifiedBy", "patDan", "dan")
+
+		rows := f.project(t, patientIdentityReadGrantsSpec)
+		require.Len(t, rows, 2)
+		byActor := map[string]string{}
+		for _, r := range rows {
+			byActor[r.Values["actor_id"].(string)] = r.Values["anchor_id"].(string)
+		}
+		require.Equal(t, f.ids["patCarol"], byActor[f.ids["carol"]], "each login anchors on its OWN patient")
+		require.Equal(t, f.ids["patDan"], byActor[f.ids["dan"]])
+	})
+}

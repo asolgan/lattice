@@ -26,8 +26,8 @@ func TestWorkplaceAnchor_AppointmentsUseComprehension(t *testing.T) {
 
 // TestWorkplaceAnchor_ProviderLensUnchanged holds the v1 boundary: only the
 // two tables the design names are workplace-scoped. The provider schedule and
-// the patient roster are not — clinicPatientsRead in particular is wildcard-only
-// (empty authz_anchors), so a building token must not start opening it.
+// the patient roster are not — each anchors on its own subject (the provider,
+// the patient), never on a building, so a workplace token must not open either.
 func TestWorkplaceAnchor_ProviderLensUnchanged(t *testing.T) {
 	if strings.Contains(providerAppointmentsReadSpec, "practicesAt]->(b:building)") {
 		t.Error("providerAppointmentsRead must not gain a workplace anchor in v1")
