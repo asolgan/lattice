@@ -48,7 +48,6 @@ Open items only (shipped ones are in the Done log). Grouped by component tag.
 |---|---|---|---|---|
 | **[Loom] Guardless-step recovery check-before-act probe** | On total `loom-state` loss + a re-triggered `StartLoomPattern`, a fresh instance replays guards from cursor 0 (re-runs an already-applied guarded step). | ★ | S–M | 🗄️ shelved-backup (Andrew: no new engine Core-KV reads) |
 | **[Refractor] Personal-lens `manifest.me` frozen when an identity gains links after first projection** | An identity later gaining hats (worksAt, more holdsRole, new selfAnchor types) keeps a stale me-row — the update-over-existing write is dropped (guarded-write ordering-token reconciliation). Live-proven on multi-hat Sam; presentation-only (authz correct), blocks the multi-hat hat display. | ★★ | M | 📋 ready · [design](../../implementation-artifacts/persona-worlds-design.md) §10 |
-| **[rbac/pattern] Idempotent `holdsRole` mint can't revive a tombstoned link** | The "grant-if-not-alive" idiom (rbac `AssignRole` `ddls.go:337-340`; mirrored by W0's clinic/wellness/service bind ops + service `WireProvidedBy`) emits `op:create` on a *tombstoned* link → step-8 CreateOnly RevisionConflicts forever. So a `RevokeRole`d identity can never be re-granted/re-bound. Add revive-on-tombstone (CAS) at the shared idiom, or document the one-way constraint. | ★★ | S | 📋 ready |
 | **[Processor] Tombstone-with-document warn→reject flip (Fire 2)** | Fire 1 (emitter sweep + parser warn) shipped `6b68fde4`; flip the warn to a reject once warn sightings are clean (stale stored scripts clear via world recreation). | ★★ | XS | 🚧 seq behind clean warn-window · [design](../../implementation-artifacts/tombstone-body-preservation-design.md) §6 |
 
 ### Survey log (round-robin rotation)
@@ -110,15 +109,15 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
 > 🎯 **Build-ready now.** Persona-worlds P1+P2 (the lattice half) are shipped; W1–W5 are verticals-lane.
-> Open `📋 ready` here: the rbac tombstoned-`holdsRole`
-> revive (★★, spans rbac+clinic+wellness+service bind ops), the me-row reconciliation gap, `/v1/actor`
-> CORS (dual-enumeration S1 fully shipped; S2 is Designer-lane). Every `✅ ratified` row stays Andrew-gated
+> Open `📋 ready` here: the me-row reconciliation gap, `/v1/actor`
+> CORS (rbac tombstoned-`holdsRole` revive shipped; dual-enumeration S1 shipped, S2 is Designer-lane).
+> Every `✅ ratified` row stays Andrew-gated
 > or driver-blocked. A stale callout starves the lane — whoever ships the next pick renames this.
 
 ### Security & trust boundary
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **Forgeable `authContext.target` defeats scope=any self/workplace guards** | Guards keying a self-exemption on `authContextTarget != ""` are forgeable by any scope=any holder; cafe/wellness/maintenance/lease-signing share it, clinic fixed in W1 Inc 2a. A blanket platform blank was tried + REVERTED (breaks identity onboarding's legitimate scope=any+non-actor target) — the fix is per-op semantic, not one platform change. | ★★★ | M–L | 📐 needs per-op design (→ Designer) · [find](../../implementation-artifacts/authcontext-target-forgery-platform-fix-design.md) §Falsified |
+| **Forgeable `authContext.target` defeats scope=any self/workplace guards** | Guards keying a self-exemption on `authContextTarget != ""` are forgeable by any scope=any holder; cafe/wellness/maintenance/lease-signing share it, clinic fixed in W1 Inc 2a. A blanket platform blank was tried + REVERTED (breaks identity onboarding's legitimate scope=any+non-actor target) — the fix is per-op semantic, not one platform change. | ★★★ | M–L | 📐 awaiting-Andrew · [design](../../implementation-artifacts/authcontext-target-validated-primitive-design.md) |
 | NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | ✅ effectively done · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) §Fire-3-status · only deferred Fire 4 (prod mTLS) remains |
 | **`/v1/actor` lacks CORS headers** | `handleWhoami` writes no CORS block unlike `handleOperations` (`gateway.go:423-431`); today's only caller is server-side Go, so browser-direct whoami calls fail preflight. | ★ | XS | 📋 ready · consumer: a vertical FE calling whoami browser-direct (the appsession kit resolves server-side, so none yet) |
 | **Keyed identity-index hashes (HMAC)** | Unkeyed `sha256NanoID` contact hashes are dictionary-testable with substrate access and persist in JetStream history post-shred; a Vault-keyed HMAC bounds it but needs a MAC primitive + key custody at every hash computer, and must migrate ALL index consumers (identityindex, provision probe, dedup) in one stroke. | ★ now / ★★ prod | M | 🗄️ shelved (revive: production threat model) · [analysis](../../implementation-artifacts/dedup-over-encrypted-pii-design.md) §9.1/§10-C |
@@ -183,6 +182,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-24 · `473929e3` · [rbac,clinic,wellness,service] revive a tombstoned grant instead of failing — grant_link/revive at 6 sites so a RevokeRole'd identity + re-bound provider can be re-granted; pkg versions bumped
 - 2026-07-24 · `68ffc584` · [lint,edge-manifest] dual-enumeration S1 done — `lint-lens-anchors` CI gate (every non-self Personal-lens anchor kind needs a producer branch) + provider-world coverage; testkit now spans all 3 personas
 - 2026-07-24 · `385c26a7` · [edge-manifest,test] read-grant/lens dual-enumeration coverage proof (Stage-1 testkit) — asserts every non-self anchor a Personal lens projects is granted, no vacuous pass; resident+staff personas
 - 2026-07-24 · `56841e13` · [leaseconvergence,CI] fixed `TestRenewalConvergence_TwoTenantsDivergeThenDeclinePath`'s non-unique landlord-name RevisionConflict + widened `test-lease-convergence`'s `-run` filter so CI actually runs it
