@@ -206,3 +206,48 @@ func TestManifestAnchorCoverage_StaffWorld(t *testing.T) {
 		},
 		[]string{edgeManifestStaffReadGrantsSpec})
 }
+
+// --- Provider persona --------------------------------------------------------
+//
+// A provider-hat identity reaches the three anchor kinds
+// edgeManifestProviderReadGrants covers, each off the actor's OWN inbound
+// identifiedBy binding to a role entity (a person wearing three provider hats):
+//
+//	providerId ←identifiedBy— prov(provider)      ←withProvider— appt(appointment)
+//	providerId ←identifiedBy— sp(serviceprovider) ←providedBy—  tpl(service) ←instanceOf— inst(service)
+//	providerId ←identifiedBy— instr(instructor)   ←ledBy—       sess(session)
+func emProviderWorld(t *testing.T) *emFixture {
+	f := newEmFixture(t)
+	f.vtx(t, "providerId", "identity")
+	f.vtx(t, "prov", "provider")
+	f.vtx(t, "appt", "appointment")
+	f.vtx(t, "sp", "serviceprovider")
+	f.vtx(t, "tpl", "service")
+	f.vtx(t, "inst", "service")
+	f.vtx(t, "instr", "instructor")
+	f.vtx(t, "sess", "session")
+
+	f.edge(t, "identifiedBy", "prov", "providerId")
+	f.edge(t, "withProvider", "appt", "prov")
+	f.edge(t, "identifiedBy", "sp", "providerId")
+	f.edge(t, "providedBy", "tpl", "sp")
+	f.edge(t, "instanceOf", "inst", "tpl")
+	f.edge(t, "identifiedBy", "instr", "providerId")
+	f.edge(t, "ledBy", "sess", "instr")
+	return f
+}
+
+// TestManifestAnchorCoverage_ProviderWorld asserts edgeManifestProviderReadGrants
+// covers every anchor the three provider-hat lenses project (own appointments,
+// own service queue, own led sessions) — the slice persona-worlds Fire W0 added
+// alongside its lenses so D1 would not silently drop every provider-hat row.
+func TestManifestAnchorCoverage_ProviderWorld(t *testing.T) {
+	f := emProviderWorld(t)
+	f.assertAnchorsCovered(t, f.key("providerId"),
+		[]dataLens{
+			{"edgeProviderSchedule", edgeProviderScheduleSpec},
+			{"edgeProviderQueue", edgeProviderQueueSpec},
+			{"edgeInstructorSessions", edgeInstructorSessionsSpec},
+		},
+		[]string{edgeManifestProviderReadGrantsSpec})
+}

@@ -104,6 +104,13 @@ jobs:
         # history/changelog comments. STRICT=1 fails the build on any finding.
         run: STRICT=1 go run ./scripts/lint-conventions.go
 
+      - name: Lens anchor-coverage lint (read-grant dual-enumeration seam)
+        # Every non-self anchor kind a Personal (nats-subject) lens projects
+        # must have a read-grant producer branch in the same package, or
+        # Refractor's D1 gate silently drops every row of that lens. STRICT=1
+        # fails the build on any uncovered anchor kind.
+        run: STRICT=1 go run ./scripts/lint-lens-anchors.go
+
       - name: Package version-bump gate (packages/ content edits bump the manifest)
         # A packages/ semantic change at an unchanged manifest version is
         # invisible to running stacks — plain install no-ops it. Diffs the
