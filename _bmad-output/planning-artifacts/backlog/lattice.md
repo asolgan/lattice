@@ -117,6 +117,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Security & trust boundary
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
+| **Forgeable `authContext.target` defeats scope=any self/workplace guards** | Guards keying a self-exemption on `authContextTarget != ""` are forgeable by any scope=any holder; cafe/wellness/maintenance/lease-signing share it, clinic fixed in W1 Inc 2a. A blanket platform blank was tried + REVERTED (breaks identity onboarding's legitimate scope=any+non-actor target) — the fix is per-op semantic, not one platform change. | ★★★ | M–L | 📐 needs per-op design (→ Designer) · [find](../../implementation-artifacts/authcontext-target-forgery-platform-fix-design.md) §Falsified |
 | NATS account-level write restriction | Close the fabricated-KV-write surface at the substrate (account-level); today defended only by overwrite-by-reprojection. | ★★ | M | ✅ effectively done · [design](../../implementation-artifacts/nats-account-write-restriction-design.md) §Fire-3-status · only deferred Fire 4 (prod mTLS) remains |
 | **`/v1/actor` lacks CORS headers** | `handleWhoami` writes no CORS block unlike `handleOperations` (`gateway.go:423-431`); today's only caller is server-side Go, so browser-direct whoami calls fail preflight. | ★ | XS | 📋 ready · consumer: a vertical FE calling whoami browser-direct (the appsession kit resolves server-side, so none yet) |
 | **Keyed identity-index hashes (HMAC)** | Unkeyed `sha256NanoID` contact hashes are dictionary-testable with substrate access and persist in JetStream history post-shred; a Vault-keyed HMAC bounds it but needs a MAC primitive + key custody at every hash computer, and must migrate ALL index consumers (identityindex, provision probe, dedup) in one stroke. | ★ now / ★★ prod | M | 🗄️ shelved (revive: production threat model) · [analysis](../../implementation-artifacts/dedup-over-encrypted-pii-design.md) §9.1/§10-C |
@@ -181,7 +182,6 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
-- 2026-07-24 · `b8e3f7d6` · [processor] blank a forgeable `authContext.target` unless the resolved grant validated it (scope=self or task ephemeralGrant) — roots out the scope=any/service self/workplace-guard forgery
 - 2026-07-24 · `56841e13` · [leaseconvergence,CI] fixed `TestRenewalConvergence_TwoTenantsDivergeThenDeclinePath`'s non-unique landlord-name RevisionConflict + widened `test-lease-convergence`'s `-run` filter so CI actually runs it
 - 2026-07-24 · `17aecdbf` · [appsession] Kit gained its production verify-only (`_JWT_PUBLIC_KEY`/`_ISSUER`) branch + `revocationChecker` param — clinic W1 Inc 1 adoption; closes the production-verifier gap (Facet passes nil, unchanged)
 - 2026-07-24 · `a2e71712` · [appsession,facet] Facet's session block extracted to a shared `internal/appsession` kit — the five-FE sign-in seam (persona-worlds P2); closes the platform-seams item

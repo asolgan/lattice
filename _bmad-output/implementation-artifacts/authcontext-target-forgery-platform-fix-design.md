@@ -1,9 +1,44 @@
 # Platform fix — forgeable `authContext.target` defeats scope=any self/workplace guards
 
-**Status:** SHIPPED `b8e3f7d6` (Lattice Steward fire, 2026-07-24) — 3-layer adversarial review clean
-(no security defect, no legitimate-flow break, sole chokepoint confirmed). Discharges the ★★★ security row in
+**Status: FALSIFIED + REVERTED** (`b8e3f7d6` shipped then reverted `a9915791`, Lattice Steward fire
+2026-07-24). The blanket platform blank is architecturally wrong — see **§Falsified** below. The item
+returns to the board as `📐 needs per-op design`. The three-layer adversarial review passed it (it
+reasoned from the same false premise this doc first stated: "operators submit with no target"); **CI's
+`TestRecordPII_TaskScopedNotConfinedToUnclaimed` is what caught the break** — a reminder that green
+review + green local ≠ correct, and the full suite is the real gate.
+
+## §Falsified — why a platform blank cannot work
+
+The fix blanked `authContext.target` on every authorized path except platform scope=self and task
+ephemeralGrant. That assumed **scope=any never legitimately carries a target**. FALSE:
+`identity-domain` `RecordIdentityPII` is submitted by a front-desk actor holding a **platform
+scope=any** grant with `authContext.target = <the claimed onboarding identity>` (≠ the actor) as a
+*legitimate* signal — the script's `authContextTarget != ""` branch (`ddls.go:1320`) exempts it from
+the "unclaimed-only" walk-in confinement so front-desk can record PII for a claimed onboarding
+identity. `TestRecordPII_TaskScopedNotConfinedToUnclaimed` (real `CapabilityPipeline`) asserts this;
+the blank made it `rejected`.
+
+The forged clinic-booking target and this legitimate identity-onboarding target are **both** platform
+scope=any with a non-actor target — **indistinguishable at the platform level.** Which one is a
+forgery is a per-op semantic question (does *this* op's guard trust the target for a security
+confinement, or merely as a routing/subject hint?). A single platform rule cannot answer it, so the
+root fix is **per-op**, not one processor change. clinic's W1 Inc 2a `authContextTarget == op.actor`
+keying is the right shape *for ops whose exemption is a self-check* — but it would itself break
+identity onboarding, which genuinely needs `target != actor`. Each of cafe / wellness / maintenance /
+lease-signing / identity needs its own exploitability verdict (is the target trusted for security, and
+if so must it equal actor). That is Designer-lane work.
+
+**What stands:** the vulnerability is real (cafe/wellness/maintenance/lease-signing keying `!= ""` are
+forgeable); clinic is already fixed in-package. What's retired is the *one-platform-change* approach.
+
+---
+
+The original design follows, kept for the record (its premise §"Why no legitimate flow breaks" is the
+one CI falsified).
+
+**Discharges the ★★★ security row in
 `backlog/lattice.md` (Security & trust boundary) and the cross-package adjacent-find filed in
-[`persona-worlds-design.md`](persona-worlds-design.md) §Fire W1 Inc 2a as-built.
+[`persona-worlds-design.md`](persona-worlds-design.md) §Fire W1 Inc 2a as-built.**
 
 ## The vulnerability
 
