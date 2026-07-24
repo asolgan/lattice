@@ -62,6 +62,7 @@ dated run-logs live in git history. Rotate LoftSpace ↔ Clinic ↔ Café ↔ We
 
 One line per shipped item (`date · SHA · title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-23 · `1e8dc41b` · Clinic front-desk (`frontOfHouse`) can book + register again — grants audit + workplace confinement; closes a forgeable-`authContext.target` bypass (persona-worlds W1 Inc 2a)
 - 2026-07-24 · `17aecdbf` · Clinic is sign-in-first — session-keyed reads/writes, both dev-token mints deleted, appsession production branch, patient identity read-grant bridge (persona-worlds W1 Inc 1+1b)
 - 2026-07-23 · `626763bc` · Persona-worlds W0 — provider archetype spine (role + per-domain bindings + operator-only Bind* + provider grants/guards + clinic GrantTable + 3 edge-manifest hat lenses + seeds); live-verified
 - 2026-07-23 · `8c246540` · Clinic booking date/time field now snaps to the 15-minute grid — off-grid `min` was rejecting legal grid times and suggesting off-grid ones; Andrew-reported, live-verified (change-time snap + submit-time backstop)
@@ -95,5 +96,4 @@ One line per shipped item (`date · SHA · title`). Oldest roll to `archive/` pa
 - 2026-07-19 · `dda7ad98` · Facet dispatch targets resolve by declared type — `dispatch.targetType` vocabulary + renderer gate; unresolvable ops degrade instead of failing at the Processor; live-verified both directions
 - 2026-07-19 · `502d3b4d` · Wellness classic-demo seed — `seed-classic-demo` mints a studio + one bookable session (15-min grid, slot-claim optionalReads); both ops accepted live and projected through to `/api/studios` + `/api/sessions`
 - 2026-07-19 · `074c0b86` · Facet session idle gate + auth-death bounce — renewal gated on activity (30m window); a terminal 401 or a whoami-confirmed dead cookie closes the feed and bounces to `/login`, both modes; live-verified
-- 2026-07-19 · `4185b3c0` · Display names N3 (self-name) — me-lens projects the sealed `name` envelope, `edge/vault.SelfName` decrypts it in-engine on both hosts; fixes a Refractor hot-reload bug that silently refused Personal Lens cypher edits
 - *(older entries rolled to [archive/verticals-done.md](archive/verticals-done.md))*

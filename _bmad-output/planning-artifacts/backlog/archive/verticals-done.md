@@ -2,6 +2,7 @@
 
 Rolled from `verticals.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-19 · `4185b3c0` · Display names N3 (self-name) — me-lens projects the sealed `name` envelope, `edge/vault.SelfName` decrypts it in-engine on both hosts; fixes a Refractor hot-reload bug that silently refused Personal Lens cypher edits
 - 2026-07-19 · `a02784ee` · Display names N2-tail (scoped-target name lens) — edgeTasks walks task→leaseapp→unit, projects the unit's `.presentation` name; Facet task rows read "Unit 1 lease" not a bare NanoID
 - 2026-07-19 · `7341ad73` · Facet entity browse — Nearby view + `manifest.ent` lenses, wellness `locatedAt`; live-verified booking E2E — [design](../../implementation-artifacts/facet-entity-browse-design.md)
 - 2026-07-18 · `fe2d0e5e` · Display names N2 (renderer floor rule) — typed label ladder (prettify/anchorLabel/identityLabel); no bare NanoID as a primary label, "Unnamed" gone; live-verified on the showcase resident (header/Me/tasks/places)

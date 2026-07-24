@@ -878,6 +878,42 @@ front-desk booking grant — required so the grant does not over-widen past the 
 mirrors the sibling ops, not a new mechanism). Dependencies re-verified: identity-domain front-desk grants
 already shipped (`permissions.go:41`), so register-patient is fully restorable within clinic-domain.
 
+**As-built — Inc 2a SHIPPED (2026-07-23, merged to `main`).** clinic-domain 0.25.0→0.26.0 grants `frontOfHouse`
+`CreateAppointment` (scope=any, workplace-confined) + `CreatePatient` (unconfined). A signed-in front-desk
+session can again book and register; the confinement is proven live (Dana books at her building = accepted, an
+off-site provider = rejected, registers a patient = accepted) and by `frontdesk_confinement_test.go`.
+
+*Deviations from the brief (mid-build residuals, recorded per the process):*
+- **Two sibling test fixtures needed the holdsRole link.** The new `CreateAppointment` workplace guard reads the
+  holdsRole *graph link* to decide root (`actor_holds_operator`), not the cap-doc Roles. `clinic-reminders` and
+  `clinic-ledger` fixtures seeded the operator cap-doc role WITHOUT the link (a shortcut that worked only while
+  `CreateAppointment` had no link-reading guard), so both reddened; each gains `SeedHoldsRole(...operator)` —
+  making the fixture realistic (in production the cap-doc role is projected FROM that link), not adding
+  authority. The brief should have anticipated this (a brief-quality miss: adding a guard to a widely-driven op
+  exposes every fixture that drives it as a bare-cap-doc operator).
+- **The confinement guard was forgeable as first written — the adversarial review caught it (CONFIRMED,
+  high-severity), and the root-cause fix landed in the same fire.** Step 3 authorizes a scope=**any** grant
+  WITHOUT inspecting `authContext.target` (`step3_auth_capability.go` `matchPlatformPermission` "any" case), and
+  the Gateway forwards the client's `authContext` verbatim (`gateway.go:753`) into `op.authContextTarget`
+  (`starlark_runner.go:432`). Both `workplace_exempt()` AND `require_workplace()` keyed their self-exemption on
+  `authContextTarget != ""`, so a front-desk actor holding the new scope=any booking grant could attach any
+  target and skip confinement (book cross-building). Fixed by keying the exemption on `authContextTarget ==
+  op.actor` in **both** functions — the genuine scope=self path always carries `target == actor` (step 3
+  *requires* it for scope=self), so equality admits exactly that path and nothing a scope=any caller can
+  manufacture; a scope=any caller setting `target == its own actor` gains nothing, since the op's own
+  identifiedBy check then binds the patient to the caller's identity (the legitimate self-book). This also closes
+  the **pre-existing** identical bypass on `RescheduleAppointment`/`SetAppointmentStatus` (same shared helpers).
+  `frontdesk_confinement_test.go` gains `TestFrontDesk_ForgedTargetCannotSkipConfinement` (both forgery shapes
+  rejected); it accepted-then-rejected across the two-location fix, so it discriminates the vulnerable state.
+
+*Adjacent find, filed (cross-package security):* the `authContextTarget != ""` self/workplace-exemption pattern
+is duplicated in **cafe-domain, wellness-domain, maintenance-domain, lease-signing** — cafe's is the same
+workplace multi-org gate and is exploitable by the same mechanism; the others use it for self-service checks that
+need per-op exploitability verification. The **root enabler is platform-level** (scope=any authorization forwards
+an unvalidated `authContext.target` to scripts), so the clean fix may be one processor change (zero/ignore
+`authContext.target` when authorization did not go through a scope=self grant) rather than per-package edits.
+Filed to `lattice.md` as a security row; clinic is fixed here to make its own new grant sound.
+
 ## 10a. Non-goals
 
 No OIDC/IdP build; no SSO; no runtime archetype enum; no generic collections surface (named-deferred); no café
