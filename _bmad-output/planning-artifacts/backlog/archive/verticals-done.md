@@ -2,6 +2,7 @@
 
 Rolled from `verticals.md` when its live Done log passed ~25 entries. Full detail is in git.
 
+- 2026-07-19 · `dda7ad98` · Facet dispatch targets resolve by declared type — `dispatch.targetType` vocabulary + renderer gate; unresolvable ops degrade instead of failing at the Processor; live-verified both directions
 - 2026-07-19 · `502d3b4d` · Wellness classic-demo seed — `seed-classic-demo` mints a studio + one bookable session (15-min grid, slot-claim optionalReads); both ops accepted live and projected through to `/api/studios` + `/api/sessions`
 - 2026-07-19 · `074c0b86` · Facet session idle gate + auth-death bounce — renewal gated on activity (30m window); a terminal 401 or a whoami-confirmed dead cookie closes the feed and bounces to `/login`, both modes; live-verified
 - 2026-07-19 · `4185b3c0` · Display names N3 (self-name) — me-lens projects the sealed `name` envelope, `edge/vault.SelfName` decrypts it in-engine on both hosts; fixes a Refractor hot-reload bug that silently refused Personal Lens cypher edits
