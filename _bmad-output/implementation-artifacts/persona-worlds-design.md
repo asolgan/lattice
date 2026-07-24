@@ -723,57 +723,50 @@ adoption to not regress security, mirrors clinic's own shipped code, closes an a
 widening scope). Dependencies re-verified both ways: P1 shipped (`/v1/actor` roles+anchors — Inc 2 consumes
 them, Inc 1 does not), P2 shipped (`a2e71712`), W0 shipped (`a8069d16`).
 
-**🏗️ CHECKPOINT (2026-07-24) — Inc 1 built and gate-green, deliberately NOT merged.**
-Worktree `.claude/worktrees/persona-w1-clinic`, branch `fire/persona-w1-clinic`. All gates pass there
-(`go build`, `make vet`, `golangci-lint` 0 issues, `go test ./internal/appsession/... ./cmd/facet/...
-./cmd/clinic-app/...` incl. the six RLS suites against live Postgres, `lint-conventions`, `lint-board`,
-`lint-package-version`). It is held back because the adversarial + edge-case reviews found the increment
-**authorization-incomplete**, not because anything is red.
+**As-built — Inc 1 + Inc 1b SHIPPED (2026-07-24, merged to `main`).** Clinic is sign-in-first: a person
+signs in at `/login`, and every read and write is keyed on that verified session. Both dev-token mints are
+gone — the any-subject one (subject straight from the request body, no caller auth) and the unauthenticated
+root-equivalent one. The FE's four token caches and the device-claim ceremony collapse onto one session
+token; `asSelf` is derived from the signed-in identity rather than declared by a checkbox. The kit gained
+its production verify-only branch + revocation checker (closing the filed lattice row; Facet passes nil,
+unchanged). `adminActor` retired to `bootstrapLoaded`, removing the last `BootstrapIdentityKey` reference
+from `cmd/clinic-app` that §6's parity gate will reject.
 
-*Done in the worktree:* the kit's production verify-only branch + `revocationChecker` parameter
-(`internal/appsession/signer.go`, closes the filed lattice row); clinic wired onto the kit (inner mux +
-`RequireSession`, login page, session-keyed `authenticateRead`); **both** dev-token mints deleted; the FE's
-four token caches + the claim ceremony collapsed onto one session token; `asSelf` derived rather than
-checkboxed; `adminActor` retired to `bootstrapLoaded` (removing the last `BootstrapIdentityKey` reference
-from `cmd/clinic-app`, which §6's parity gate will require).
+*Inc 1b — the bridge the reviews caught.* `clinicPatientReadGrants` makes the **patient vertex** its own
+actor, which only ever worked while a token could be minted with that NanoID as its subject; moving the RLS
+principal to the session identity left a real patient reading nothing.
+**`patientIdentityReadGrants`** mirrors W0's provider producer (identity actor → patient anchor, its own
+`cap-read.patient.clinic` source so neither producer's diff retracts the other's) with **no role
+predicate** — being the person a record is about is what `identifiedBy` asserts, and a patient not yet
+granted `consumer` still owns their own record. `clinicPatientsRead` now anchors per-patient instead of
+projecting an empty anchor set, so a patient session can find its own roster row; decrypted contact
+therefore reaches the wildcard holder and the person the row is about, and nobody else. The FE narrows
+`my-appointments`/`my-visit-series` to the patient on screen — unnarrowed, a wildcard front-desk session
+made the slot picker treat every appointment in the practice as blocking.
 
-*Why it cannot merge — the blocker (§7.1's "retires entity-as-actor", underestimated in the brief).* Clinic's
-whole patient read path anchors on the **patient vertex as actor**: `clinicPatientReadGrantsSpec`
-(`packages/clinic-domain/lenses.go:617`) projects `actor_id = nanoIdFromKey(p.key)`, and the pre-fire FE
-minted its token for exactly that patient-vertex id. Moving the RLS principal to the **session identity**
-without a bridging producer means a real patient login matches no grant row and every patient-anchored
-protected read returns empty. W0 already shipped the pattern to mirror for the provider hat —
-`providerIdentityReadGrantsSpec` (`lenses.go:643`), identity actor → entity anchor, both MATCHes required —
-so this is package work in this lane, not a platform gap. The green test suite did **not** catch it because
-the RLS tests use the patient NanoID *as* the session subject, so they exercise a shape the login page can
-no longer produce.
+*Test lesson, pinned:* the suite stayed green across a dead read path because its RLS cases use the patient
+NanoID **as** the session subject, collapsing the two ids the bridge exists to keep apart. Inc 1b adds a case
+whose subject is a distinct identity, plus `TestPatientIdentityReadGrants` proving the cypher itself against
+a real graph the way its provider sibling already was. The first version of that RLS case passed while
+hand-seeding its own grant row — it proved the RLS mechanism, not the producer; that is why the fixture test
+exists alongside it.
 
-*Inc 1b, the resume list (in order):* (1) ship `patientIdentityReadGrants` mirroring
-`providerIdentityReadGrantsSpec` (`MATCH (p:patient)-[:identifiedBy]->(i:identity)`, identity actor,
-patient anchor), with a package version bump + `make provision-readpath`, and **re-anchor at least one RLS
-test on a distinct identity NanoID** so the two ids can never silently collapse again. (2) Give a patient
-session a way to resolve *which patient it is* — `read_clinic_patients` projects `[] AS authz_anchors`
-(`lenses.go:519-531`), i.e. wildcard-only, so `actingAsSelf()` is structurally false for every non-wildcard
-session and the self-service affordances never render. (3) `handleMyAppointments`/`handleMyVisitSeries`
-apply no patient predicate — under a wildcard front-desk session they return the whole practice, which
-three FE call sites treat as one patient's rows; the sharpest edge is the booking slot picker, which then
-treats every appointment in the clinic as blocking and offers almost no slots. Narrow client-side by
-`patientKey`, or add an RLS-gated `?patientKey=` narrowing.
-
-*Also carried forward (reviews, non-blocking, ranked):* the kit can only ever *set* a cookie via its own
-minter, so the production verify-only posture it just gained is unreachable end-to-end — an external
-token has no way in, and the FE's write path 404s on `/api/session/refresh` with a message naming the wrong
-cause; the FE has no proactive refresh loop, so a browse-only session hard-lapses at 30 min mid-work
-(Facet's `boot.mjs` refresher is the pattern); five plain `api()` reads never detect a lapse and degrade to
-silent empties, one of which makes the slot picker offer already-taken times; `asSelf` is computed once
-per render from `state.patient` but applied per-row, and the per-row form `actingAsSelf(patientKey)` already
-exists unused; a failed whoami is terminal and un-retried, leaving a patient rendered as staff with
-sign-out hidden; `_JWT_AUDIENCE` is the one env var not `TrimSpace`d (whitespace ⇒ every token fails
-`ErrWrongAudience` with no startup signal); `parsePublicKeyPEM` accepts any PKIX key type, so an Ed25519
-PEM boots clean and fails every verification. **Deployment note, pre-existing but now load-bearing for the
-whole app rather than six reads:** `loopback` derives from the *bind* address, so a reverse proxy to
-`127.0.0.1` (the shape the hosted demo box already runs) both permits the in-process minter and drops the
-cookie's `Secure` flag — `CLINIC_APP_DEMO_PERSONAS` must be set before clinic is ever proxied.
+*Carried into Inc 2 (reviews, non-blocking, ranked):* the kit can only ever *set* a cookie via its own
+minter, so the production verify-only posture it just gained is unreachable end-to-end — an external token
+has no way in, and the FE's write path 404s on `/api/session/refresh` with a message naming the wrong cause;
+the FE has no proactive refresh loop, so a browse-only session hard-lapses at 30 min mid-work (Facet's
+`boot.mjs` refresher is the pattern); five plain `api()` reads never detect a lapse and degrade to silent
+empties, one of which makes the slot picker offer already-taken times; `asSelf` is computed once per render
+from `state.patient` but applied per-row, and the per-row form `actingAsSelf(patientKey)` already exists
+unused; a failed whoami is terminal and un-retried, leaving a patient rendered as staff with sign-out
+hidden; `_JWT_AUDIENCE` is the one env var not `TrimSpace`d (whitespace ⇒ every token fails
+`ErrWrongAudience` with no startup signal); `parsePublicKeyPEM` accepts any PKIX key type, so an Ed25519 PEM
+boots clean and fails every verification. **Deployment note, pre-existing but now load-bearing for the whole
+app rather than six reads:** `loopback` derives from the *bind* address, so a reverse proxy to `127.0.0.1`
+(the shape the hosted demo box already runs) both permits the in-process minter and drops the cookie's
+`Secure` flag — `CLINIC_APP_DEMO_PERSONAS` must be set before clinic is ever proxied. **Cleanup:**
+`clinicPatientReadGrants` (patient-as-actor) is now vestigial for any real session and is the honest tail of
+§7.1's "retires entity-as-actor"; it stays until Inc 2 so the A/B RLS cases keep their shape.
 
 *Residual with a named consumer:* `/api/my-schedule` has **zero FE callers** after Inc 1 — the Schedule tab
 reads the wildcard staff model and narrows client-side, deliberately, since `/api/my-schedule` answers only
