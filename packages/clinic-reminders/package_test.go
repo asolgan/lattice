@@ -149,27 +149,46 @@ func TestPackage_Depends(t *testing.T) {
 	}
 }
 
-// TestPackage_Permissions pins the eight ops granted to operator (scope any).
+// TestPackage_Permissions pins the eight ops at scope=any. Five are operator-only;
+// the three front-desk Follow-ups-tab ops (Start/Pause/ResumeVisitSeries) grant
+// {operator, frontOfHouse} — the script's workplace guard confines the front-desk
+// leg. AdvanceVisitSeries stays operator-only (Weaver's directOp).
 func TestPackage_Permissions(t *testing.T) {
-	want := map[string]bool{
-		"RecordAppointmentReminder": false, "RecordFollowUpReminder": false,
-		"RecordAppointmentReminderNotification": false, "RecordFollowUpReminderNotification": false,
-		"StartVisitSeries": false, "PauseVisitSeries": false, "ResumeVisitSeries": false, "AdvanceVisitSeries": false,
+	// operationType -> the exact GrantsTo set expected.
+	want := map[string][]string{
+		"RecordAppointmentReminder":             {"operator"},
+		"RecordFollowUpReminder":                {"operator"},
+		"RecordAppointmentReminderNotification": {"operator"},
+		"RecordFollowUpReminderNotification":    {"operator"},
+		"StartVisitSeries":                      {"operator", "frontOfHouse"},
+		"PauseVisitSeries":                      {"operator", "frontOfHouse"},
+		"ResumeVisitSeries":                     {"operator", "frontOfHouse"},
+		"AdvanceVisitSeries":                    {"operator"},
 	}
+	seen := map[string]bool{}
 	if len(Package.Permissions) != len(want) {
 		t.Fatalf("expected %d permissions, got %d", len(want), len(Package.Permissions))
 	}
 	for _, p := range Package.Permissions {
-		if _, ok := want[p.OperationType]; !ok {
+		wantGrants, ok := want[p.OperationType]
+		if !ok {
 			t.Fatalf("unexpected permission op %q", p.OperationType)
 		}
-		if p.Scope != "any" || len(p.GrantsTo) != 1 || p.GrantsTo[0] != "operator" {
-			t.Fatalf("unexpected permission: %+v", p)
+		if p.Scope != "any" {
+			t.Fatalf("%s scope = %q, want any", p.OperationType, p.Scope)
 		}
-		want[p.OperationType] = true
+		if len(p.GrantsTo) != len(wantGrants) {
+			t.Fatalf("%s GrantsTo = %v, want %v", p.OperationType, p.GrantsTo, wantGrants)
+		}
+		for i, g := range wantGrants {
+			if p.GrantsTo[i] != g {
+				t.Fatalf("%s GrantsTo = %v, want %v", p.OperationType, p.GrantsTo, wantGrants)
+			}
+		}
+		seen[p.OperationType] = true
 	}
-	for op, seen := range want {
-		if !seen {
+	for op := range want {
+		if !seen[op] {
 			t.Fatalf("missing permission for %q", op)
 		}
 	}

@@ -388,6 +388,123 @@ def vertex_alive_of_class(state, key, want_class):
     doc = state[key]
     return hasattr(doc, "class") and getattr(doc, "class") == want_class
 
+# Front-desk workplace confinement — the frontOfHouse standing guard for the
+# staff visit-series ops (Start/Pause/Resume). Mirrors clinic-domain's
+# CreateAppointment confinement (ddls.go) — same helpers, resolved through the
+# same withProvider -> practicesAt edge clinicAppointmentsRead anchors on — with
+# ONE deliberate divergence: require_workplace here is OPERATOR-EXEMPT ONLY. The
+# appointment version also exempts authContextTarget == op.actor (the consumer
+# self-book path), safe there only because a downstream identifiedBy patient
+# binding backstops it. These ops carry no consumer/scope=self grant and no such
+# backstop, and a scope=any caller can attach ANY target (the Gateway forwards
+# authContext verbatim; step 3 authorizes scope=any without inspecting target),
+# so a self exemption would let a front-desk actor forge target==actor and skip
+# confinement entirely — hence root is the only exemption.
+WORKPLACE_ROLE_PAGE_LIMIT = 50
+WORKPLACE_PARENT_PAGE_LIMIT = 20
+WORKPLACE_MAX_DEPTH = 8
+
+def actor_holds_operator(actor_key):
+    # Root is proven from the GRAPH, mirroring the kernel's own root-grant lens
+    # (internal/bootstrap/lenses.go: MATCH (identity)-[:holdsRole]->(role) WHERE
+    # role.canonicalName.data.value = 'operator') — never a compile-time constant
+    # (the primordial operator id is loaded at runtime, invisible to this
+    # package-init script text).
+    # read-posture: (e) relation=holdsRole epoch=none — an identity holds few
+    # roles, so this is never a keyspace scan; a role granted concurrently can
+    # only widen authority, and the confined branch is the safe one.
+    page, _ = kv.Links(actor_key, "holdsRole", "out", None, WORKPLACE_ROLE_PAGE_LIMIT)
+    for lk in page:
+        if lk.isDeleted:
+            continue
+        # read-posture: (e) per-candidate follow-up read off the enumeration above
+        # (data-derived key — the role is unknown until it resolves).
+        cn = kv.Read(lk.targetVertex + ".canonicalName")
+        if cn != None and not cn.isDeleted and cn.data.get("value") == "operator":
+            return True
+    return False
+
+def worksAt_covers(actor_id, location_key):
+    # Walks the location's containedIn chain upward, testing the actor's
+    # deterministic worksAt link at each level; the location itself is tested
+    # first, so staff wired to an exact unit OR to a containing building both
+    # match. A tombstoned link is ABSENT — kv.Read returns the tombstone doc
+    # (not None), so the '<> None' cafe/clinic form would let a moved-on staff
+    # member keep writing; test isDeleted explicitly.
+    cur = location_key
+    for _ in range(WORKPLACE_MAX_DEPTH):
+        if cur == None:
+            return False
+        parts = cur.split(".")
+        if len(parts) != 3:
+            return False
+        # read-posture: (e) per-candidate follow-up read off the containedIn
+        # enumeration below (the ancestor chain is not knowable client-side).
+        lnk = kv.Read("lnk.identity." + actor_id + ".worksAt." + parts[1] + "." + parts[2])
+        if lnk != None and not lnk.isDeleted:
+            return True
+        # read-posture: (e) relation=containedIn epoch=none — a location has at
+        # most a few parents; containment is provisioned topology, not written
+        # concurrently with this op.
+        page, _ = kv.Links(cur, "containedIn", "out", None, WORKPLACE_PARENT_PAGE_LIMIT)
+        nxt = None
+        for lk in page:
+            if not lk.isDeleted:
+                nxt = lk.targetVertex
+        cur = nxt
+    return False
+
+def sites_for_provider(provider):
+    # A provider's practicesAt sites — the buildings clinicAppointmentsRead
+    # anchors its workplace read token on, so write confinement and read
+    # confinement resolve through exactly the same edge. provider may be None
+    # (a series whose withProvider link is absent), which yields []. ALL sites
+    # are returned: staff at any one of a provider's buildings are equally
+    # entitled to that provider's series.
+    # read-posture: (e) relation=practicesAt epoch=none (a site assigned
+    # concurrently with this write can only WIDEN the confining set, never narrow
+    # it, so the confined branch stays the safe one) — a per-candidate follow-up
+    # enumeration off the provider (data-derived hub); a provider practises at a
+    # handful of sites at most.
+    if provider == None:
+        return []
+    spage, _ = kv.Links(provider, "practicesAt", "out")
+    sites = []
+    for lk in spage:
+        if not lk.isDeleted:
+            sites.append(lk.targetVertex)
+    return sites
+
+def series_provider(series_key):
+    # The series' OWN provider, resolved from its withProvider link (never a
+    # payload field — Pause/Resume carry only seriesKey). Mirrors clinic-domain's
+    # appointment_provider. StartVisitSeries writes exactly one withProvider link
+    # (deterministic key), so this never fans out.
+    # read-posture: (e) relation=withProvider epoch=none.
+    ppage, _ = kv.Links(series_key, "withProvider", "out")
+    provider = None
+    for lk in ppage:
+        if not lk.isDeleted:
+            provider = lk.targetVertex
+    return provider
+
+def require_workplace(location_keys, what):
+    # OPERATOR-EXEMPT ONLY (see the block comment above): no authContextTarget ==
+    # op.actor self exemption, because these ops have no consumer self path to
+    # protect and no identifiedBy backstop to make a self exemption safe.
+    # location_keys is a LIST — covering ANY one authorizes (a provider may
+    # practise at several buildings, and staff at either are equally entitled);
+    # an EMPTY list (a target whose location cannot be resolved) is a DENIAL for
+    # anyone but an operator, so unwired topology fails CLOSED.
+    if actor_holds_operator(op.actor):
+        return
+    _, actor_id = parts_of(op.actor, "actor", "identity")
+    for loc in location_keys:
+        if loc != None and worksAt_covers(actor_id, loc):
+            return
+    fail("AuthDenied: " + op.actor + " does not worksAt any location covering " +
+         str(location_keys) + "; " + what)
+
 def execute(state, op):
     ot = op.operationType
     p = op.payload
@@ -409,6 +526,12 @@ def execute(state, op):
             fail("UnknownPatient: " + patient_key + " is absent, tombstoned, or not a patient")
         if not vertex_alive_of_class(state, provider_key, "provider"):
             fail("UnknownProvider: " + provider_key + " is absent, tombstoned, or not a provider")
+
+        # Staff-standing workplace confinement (frontOfHouse's scope=any grant):
+        # a front-desk actor may start a series only with a provider practising at
+        # a building it worksAt — resolved off the PAYLOAD provider (validated
+        # alive + class=provider just above). No-op for operator (root is exempt).
+        require_workplace(sites_for_provider(provider_key), "cannot start a visit series with provider " + provider_key)
 
         # At most one ACTIVE series per (patient, provider) pair (Cap-KV §06 — the
         # op's own logic licenses the check). The guard is a deterministic pointer
@@ -483,6 +606,11 @@ def execute(state, op):
         parts_of(series_key, "seriesKey", "visitseries")
         if not vertex_alive(state, series_key):
             fail("UnknownVisitSeries: " + series_key + " is absent or tombstoned")
+        # Staff-standing workplace confinement: a front-desk actor may pause/resume
+        # only a series whose provider practises at a building it worksAt —
+        # resolved off the series' OWN withProvider link (Pause/Resume carry no
+        # provider payload). No-op for operator (root is exempt).
+        require_workplace(sites_for_provider(series_provider(series_key)), "cannot change visit series " + series_key)
         paused = (ot == "PauseVisitSeries")
         mutations = [make_aspect_upsert(series_key, "paused", "visitSeriesPaused", {"value": paused})]
         events = [{"class": "clinic.visitSeriesPausedChanged", "data": {"seriesKey": series_key, "paused": paused}}]
@@ -671,14 +799,34 @@ func visitSeriesDueTarget() pkgmgr.WeaverTargetSpec {
 	}
 }
 
-// visitSeriesPermissions grants the four visit-series ops to the operator role
-// (scope any) — StartVisitSeries/Pause/Resume are staff-driven (the clinic-domain
-// Create*/SetAppointmentStatus idiom); AdvanceVisitSeries is Weaver's directOp
-// (dispatched under operator service-actor authority, the reminder-op idiom).
+// visitSeriesPermissions grants the four visit-series ops at scope=any.
+// StartVisitSeries / PauseVisitSeries / ResumeVisitSeries — the three ops the
+// front-desk Follow-ups tab submits (cmd/clinic-app/web/app.js) — also grant
+// `frontOfHouse`: the script's standing workplace guard confines a non-operator
+// caller to a series whose provider practises at a building it worksAt (mirrors
+// clinic-domain's CreateAppointment / RescheduleAppointment). Unlike those, the
+// guard here is OPERATOR-EXEMPT ONLY — these ops carry no consumer/scope=self
+// grant and no identifiedBy ownership backstop, so a forged authContextTarget ==
+// actor cannot be exempted (see require_workplace in visitSeriesScript).
+// AdvanceVisitSeries stays operator-only — it is Weaver's directOp, dispatched
+// under the operator service-actor (the reminder-op idiom), never a front-desk
+// action.
 func visitSeriesPermissions() []pkgmgr.PermissionSpec {
+	frontDeskOps := map[string]bool{startVisitSeriesOp: true, pauseVisitSeriesOp: true, resumeVisitSeriesOp: true}
 	ops := []string{startVisitSeriesOp, pauseVisitSeriesOp, resumeVisitSeriesOp, advanceVisitSeriesOp}
 	perms := make([]pkgmgr.PermissionSpec, 0, len(ops))
 	for _, op := range ops {
+		if frontDeskOps[op] {
+			perms = append(perms, pkgmgr.PermissionSpec{
+				OperationType: op,
+				Scope:         "any",
+				Note: "Grants the operator and front-of-house staff the right to submit " + op +
+					" operations (clinic recurring visit series). The script's standing workplace guard confines a " +
+					"non-operator caller to a series whose provider practises at a building it worksAt.",
+				GrantsTo: []string{"operator", "frontOfHouse"},
+			})
+			continue
+		}
 		perms = append(perms, pkgmgr.PermissionSpec{
 			OperationType: op,
 			Scope:         "any",
