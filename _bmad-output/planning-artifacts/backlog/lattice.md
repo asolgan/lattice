@@ -112,7 +112,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 > 🎯 **Build-ready now.** Persona-worlds P1+P2 (the lattice half) are shipped; W1–W5 are verticals-lane.
 > Open `📋 ready` here: the rbac tombstoned-`holdsRole`
 > revive (★★, spans rbac+clinic+wellness+service bind ops), the me-row reconciliation gap, `/v1/actor`
-> CORS (dual-enumeration S1 is now 🏗️ — testkit half shipped). Every `✅ ratified` row stays Andrew-gated
+> CORS (dual-enumeration S1 fully shipped; S2 is Designer-lane). Every `✅ ratified` row stays Andrew-gated
 > or driver-blocked. A stale callout starves the lane — whoever ships the next pick renames this.
 
 ### Security & trust boundary
@@ -156,7 +156,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
 | Elasticsearch target adapter | A third lens target adapter (only NATS-KV + Postgres ship; no consumer yet). | ★ | M | ✅ ratified (2026-07-02, OpenSearch pin + FTS-first interim) · [design](../../implementation-artifacts/search-target-adapter-design.md) · shelf — FTS interim consumer SHIPPED (`b105cf5`); OpenSearch adapter itself still has no consumer |
-| **Read-grant/lens dual-enumeration footgun** | Every non-self-anchored Personal lens re-states its reachability walk in a cap-read producer; drift = silent row drops (fail-closed) or over-grant. S1: lens-testkit coverage proof (anchors ⊆ grants over a seeded topology) + structural lint (every projected anchor kind has a producer branch). S2: one pkgmgr anchor-walk declaration compiles both (D1 runtime independence stays). | ★★★ | M (S1) · L (S2) | 🏗️ S1 building · testkit shipped (resident+staff) · next: provider world + structural lint · S2 → Designer |
+| **Read-grant/lens dual-enumeration footgun** | Every non-self-anchored Personal lens re-states its reachability walk in a cap-read producer; drift = silent row drops (fail-closed) or over-grant. S1: lens-testkit coverage proof (anchors ⊆ grants over a seeded topology) + structural lint (every projected anchor kind has a producer branch). S2: one pkgmgr anchor-walk declaration compiles both (D1 runtime independence stays). | ★★★ | M (S1) · L (S2) | 📐 S2 → Designer (single-source LensSpec) · S1 shipped: coverage testkit (3 personas) + `lint-lens-anchors` CI gate |
 | **[Refractor] Cross-instance projection-latency rollup** | Aggregate per-lens projection latency across Refractor instances into one per-component view (single-instance today, so per-instance == per-component). Link-tombstone re-projection half **subsumed** by the link-aspect reprojection design. | ★ | S | 🚧 seq behind HA-NATS multi-instance · [link-aspect design](../../implementation-artifacts/link-aspect-triggered-reprojection-plain-lenses-design.md) subsumes the tombstone half; no multi-instance consumer yet |
 
 ### Refinements & ops
@@ -183,6 +183,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-24 · `68ffc584` · [lint,edge-manifest] dual-enumeration S1 done — `lint-lens-anchors` CI gate (every non-self Personal-lens anchor kind needs a producer branch) + provider-world coverage; testkit now spans all 3 personas
 - 2026-07-24 · `385c26a7` · [edge-manifest,test] read-grant/lens dual-enumeration coverage proof (Stage-1 testkit) — asserts every non-self anchor a Personal lens projects is granted, no vacuous pass; resident+staff personas
 - 2026-07-24 · `56841e13` · [leaseconvergence,CI] fixed `TestRenewalConvergence_TwoTenantsDivergeThenDeclinePath`'s non-unique landlord-name RevisionConflict + widened `test-lease-convergence`'s `-run` filter so CI actually runs it
 - 2026-07-24 · `17aecdbf` · [appsession] Kit gained its production verify-only (`_JWT_PUBLIC_KEY`/`_ISSUER`) branch + `revocationChecker` param — clinic W1 Inc 1 adoption; closes the production-verifier gap (Facet passes nil, unchanged)
