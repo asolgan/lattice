@@ -150,19 +150,22 @@ next three (below) are the RLS-protected Postgres equivalents a real deployment'
 - **`clinicAppointments`** → `clinic-appointments`. One row per appointment (keyed by the appointment
   key), joined `OPTIONAL` to patient + provider — `0..1 × 0..1 = 1`, the §10.2 one-row-per-anchor
   shape (the op writes exactly one of each link). Projects schedule, status (+ `statusNote`),
-  `patientKey`/`providerKey` (for client-side "my appointments" / "provider schedule" scoping),
-  `patientName`/`providerName`/`providerSpecialty`, and `reminderSentAt` — a **null-safe soft read** of
-  the appointment's `.reminder` aspect written by the sibling `clinic-reminders` package (null until a
-  reminder fires, and null whenever clinic-reminders is not installed — a surfacing, never a build
-  dependency).
+  `patientKey`/`providerKey` (for client-side "my appointments" / "provider schedule" scoping by opaque
+  key), `providerName`/`providerSpecialty` (the deliberately-public provider directory), and
+  `reminderSentAt` — a **null-safe soft read** of the appointment's `.reminder` aspect written by the
+  sibling `clinic-reminders` package (null until a reminder fires, and null whenever clinic-reminders is
+  not installed — a surfacing, never a build dependency). The patient's **name is not projected here** —
+  it is PHI and lives only in the Protected `clinicAppointmentsRead` / `clinicPatientsRead` lenses.
 - **`clinicProviders`** → `clinic-providers`. The human-readable roster / booking picker — one row per
   **named** provider (`WHERE profile.fullName <> null`). Projects name / specialty / credentials / bio
   (so the editor can read-modify-write the full profile) plus the `timeOff` and `hours` arrays verbatim
   (non-scalar JSON columns) so the booking UI can compute open slots and the managers can
   read-modify-write the current ranges/windows. The op stays the authority; this is the display surface.
-- **`clinicPatients`** → `clinic-patients`. The patient-context switcher — one row per **named** patient.
-  **NAME ONLY**: DOB / email / phone are PHI the deferred Vault plane owns and are deliberately **not**
-  projected into a read model.
+- **`clinicPatients`** → `clinic-patients`. One row per **named** patient, projected by **opaque key
+  only**. This open (unauthenticated) roster carries patient keys for key-based scoping; a patient's
+  **name is PHI** — the fact a named person is a patient here is itself a disclosure — and is projected
+  ONLY into the Protected, RLS-scoped `clinicPatientsRead` lens (staff-anchored). DOB / email / phone
+  likewise never enter an open read model.
 
 ### Protected read models (D1.5, Contract #6 §6.14 RLS)
 
@@ -199,8 +202,10 @@ has no consumer; §10.4 ships `@at` one-shot) — that remains a deferred platfo
 
 - **PHI / Vault / crypto-shred.** All aspects directly on `patient`/`provider`/`appointment` are
   non-sensitive and stored plain under the trusted-tool posture (none of these is an identity vertex, so
-  step-6's `sensitiveAspectScope` would forbid a sensitive aspect there anyway) — this is why
-  `clinicPatients`/`clinicAppointments` project patient **name only**. Sensitive **contact** (email/phone)
+  step-6's `sensitiveAspectScope` would forbid a sensitive aspect there anyway). The open
+  `clinicPatients`/`clinicAppointments` lenses project the patient by **opaque key only** — a patient's
+  name is PHI (a named person being a patient here is itself a disclosure) and is projected solely into
+  the Protected, RLS-scoped `clinicPatientsRead` / `clinicAppointmentsRead` lenses. Sensitive **contact** (email/phone)
   lives on the linked `identifiedBy` identity instead, and its display + right-to-be-forgotten are fully
   wired via the Vault plane (Fire 5's Secure-Lens `clinicPatientsRead` columns + the platform's
   `ShredIdentityKey`) — clinic was that plane's forcing function. What remains deferred is the **clinical

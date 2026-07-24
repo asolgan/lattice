@@ -150,8 +150,9 @@ func rowByKey(rows []ruleengine.ProjectionResult, key string) map[string]any {
 }
 
 // TestClinicAppointments_JoinsPatientAndProvider proves the join: one row per
-// appointment, with the neighbour aspect-hops (patientName / providerName /
-// providerSpecialty) and anchor hops (startsAt / status) resolved.
+// appointment, with the provider neighbour aspect-hops (providerName /
+// providerSpecialty) and anchor hops (startsAt / status) resolved — and the patient
+// joined by OPAQUE KEY only (no patient name in this open, unauthenticated lens).
 func TestClinicAppointments_JoinsPatientAndProvider(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")
@@ -180,7 +181,8 @@ func TestClinicAppointments_JoinsPatientAndProvider(t *testing.T) {
 	require.Equal(t, "Annual checkup", v["reason"])
 	require.Equal(t, "scheduled", v["status"])
 	require.Equal(t, patientKey, v["patientKey"])
-	require.Equal(t, "Alice Rivera", v["patientName"], "neighbour aspect-hop p.demographics.data.fullName")
+	_, hasPatientName := v["patientName"]
+	require.False(t, hasPatientName, "patient name is PHI — never projected into the open (unauthenticated) clinicAppointments lens; names live only in Protected clinicAppointmentsRead")
 	require.Equal(t, providerKey, v["providerKey"])
 	require.Equal(t, "Dr. Sam Okafor", v["providerName"], "neighbour aspect-hop pr.profile.data.fullName")
 	require.Equal(t, "Cardiology", v["providerSpecialty"])
@@ -289,10 +291,11 @@ func TestClinicAppointments_UndocumentedVisitNullEncounter(t *testing.T) {
 	require.Nil(t, rows[0].Values["followUpDate"], "no .encounter aspect → null followUpDate")
 }
 
-// TestClinicPatients_RostersNamedPatients proves the patient roster projects one
-// row per NAMED patient (name only — no PHI), excluding a patient with no
-// .demographics aspect (the WHERE presence filter), mirroring clinicProviders.
-func TestClinicPatients_RostersNamedPatients(t *testing.T) {
+// TestClinicPatients_RostersKeysOnly proves the open patient roster projects one row
+// per NAMED patient by OPAQUE KEY only — never the name (patient names are PHI and
+// live only in the Protected, RLS-scoped clinicPatientsRead lens). A patient with no
+// .demographics aspect is excluded by the WHERE presence filter.
+func TestClinicPatients_RostersKeysOnly(t *testing.T) {
 	if testing.Short() {
 		t.Skip("requires NATS")
 	}
@@ -308,8 +311,10 @@ func TestClinicPatients_RostersNamedPatients(t *testing.T) {
 	v := rowByKey(rows, namedKey)
 	require.NotNil(t, v)
 	require.Equal(t, namedKey, v["patientKey"])
-	require.Equal(t, "Alice Rivera", v["name"])
-	// PHI must NOT be projected into the roster read model (Vault-plane deferred).
+	// No PII/PHI in the open roster: not the name, not DOB, not email — the
+	// Protected clinicPatientsRead plane owns them.
+	_, hasName := v["name"]
+	require.False(t, hasName, "patient name is PHI — the open roster projects keys only; names live in Protected clinicPatientsRead")
 	_, hasDOB := v["dob"]
 	require.False(t, hasDOB, "patient roster must not project DOB (PHI)")
 	_, hasEmail := v["email"]

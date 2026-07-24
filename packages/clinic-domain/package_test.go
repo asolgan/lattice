@@ -364,6 +364,20 @@ func TestPackage_ScriptGuards(t *testing.T) {
 		}
 	}
 
+	// A patient's NAME is PHI: it must NEVER be PROJECTED by an OPEN (unauthenticated,
+	// nats-kv) lens — a localhost reader dumping the bucket would otherwise learn a
+	// named person is a patient here, itself a disclosure. Patient names are projected
+	// ONLY into the Protected, RLS-scoped clinicPatientsRead / clinicAppointmentsRead
+	// lenses. (Provider directory names are a separate, deliberately-public roster the
+	// booking UI needs and stay in clinicProviders.) The `... AS` form is the RETURN
+	// projection; a `WHERE p.demographics.data.fullName <> null` presence filter reads
+	// the aspect without projecting its value and is fine.
+	for name, spec := range map[string]string{"clinicAppointmentsSpec": clinicAppointmentsSpec, "clinicPatientsSpec": clinicPatientsSpec} {
+		if strings.Contains(spec, "p.demographics.data.fullName AS") {
+			t.Errorf("open lens %s must NOT project the patient name (PHI); it belongs only in the Protected clinicPatientsRead", name)
+		}
+	}
+
 	// The provider script owns SetProviderHours (the .hours writer) + its validation.
 	for _, want := range []string{
 		`SetProviderHours`,                       // op handler

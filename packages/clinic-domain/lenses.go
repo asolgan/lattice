@@ -402,9 +402,14 @@ func Lenses() []pkgmgr.LensSpec {
 // key column is `key` (the appointment key, the IntoKey
 // default), so the read model is keyed by vtx.appointment.<id>; patientKey /
 // providerKey repeat the joined endpoints in the body so a reader can scope to
-// "my appointments" (by patient) or a "provider schedule" (by provider).
-// Neighbour columns (patientName / providerName / providerSpecialty) are null when
-// a link is absent (the reader treats them as absent). reminderSentAt is a null-safe
+// "my appointments" (by patient) or a "provider schedule" (by provider) by OPAQUE
+// KEY. The patient is projected by key ONLY — a patient's name is PHI (a localhost
+// reader of this open, unauthenticated lens would otherwise learn a named person is
+// a patient here) and is projected solely into the Protected, RLS-scoped
+// clinicAppointmentsRead / clinicPatientsRead lenses. The provider neighbour columns
+// (providerName / providerSpecialty) are the deliberately-public directory the
+// booking UI renders and are null when the withProvider link is absent (the reader
+// treats them as absent). reminderSentAt is a null-safe
 // read of the appointment's .reminder aspect (written by the clinic-reminders package
 // when the @at reminder fires): it is null until a reminder is sent, and null whenever
 // clinic-reminders is not installed — a soft read-model surfacing, never a build
@@ -434,7 +439,6 @@ RETURN
   a.status.data.value AS status,
   a.status.data.note AS statusNote,
   p.key AS patientKey,
-  p.demographics.data.fullName AS patientName,
   pr.key AS providerKey,
   pr.profile.data.fullName AS providerName,
   pr.profile.data.specialty AS providerSpecialty,
@@ -481,19 +485,19 @@ RETURN
   pr.timeOff.data.ranges AS timeOff,
   pr.hours.data.windows AS hours`
 
-// clinicPatientsSpec projects one row per NAMED patient — the roster the clinic FE
-// renders so a person picks who they are (the patient-context switcher) and scopes
-// "my appointments" by patientKey, instead of a raw vtx.patient.<id> key. Same flat
-// no-WITH shape as clinicProviders. The WHERE keeps only patients carrying a
-// `.demographics` aspect (the `<> null` aspect-presence idiom). NAME ONLY: DOB /
-// email / phone are the PHI the deferred Vault plane owns and are intentionally NOT
-// projected into this read model — the switcher needs only a human label.
+// clinicPatientsSpec projects one row per NAMED patient by OPAQUE KEY only — no
+// name. This open (unauthenticated) roster carries patient keys for key-based
+// scoping; a patient's NAME is PHI (the fact a named person is a patient here is
+// itself a disclosure) and is projected ONLY into the Protected, RLS-scoped
+// clinicPatientsRead lens (staff-anchored). The WHERE keeps only patients carrying a
+// `.demographics` aspect (the `<> null` aspect-presence idiom) so a ghost vertex
+// with no profile does not roster — the presence test reads the aspect but does not
+// project it.
 const clinicPatientsSpec = `MATCH (p:patient)
 WHERE p.demographics.data.fullName <> null
 RETURN
   p.key AS key,
-  p.key AS patientKey,
-  p.demographics.data.fullName AS name`
+  p.key AS patientKey`
 
 // clinicSitesSpec projects one row per NAMED clinic site — a location-domain
 // building carrying a `.site` aspect (SetSiteProfile). Same flat no-WITH shape
