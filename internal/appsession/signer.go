@@ -2,6 +2,7 @@ package appsession
 
 import (
 	"crypto"
+	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/x509"
 	"encoding/pem"
@@ -153,7 +154,7 @@ func idpAuthenticator(logger *slog.Logger, envPrefix string, revocationChecker a
 	verifier, err := auth.NewVerifier(auth.Config{
 		Keys:     map[string]crypto.PublicKey{kid: pub},
 		KeyInfo:  map[string]auth.KeyInfo{kid: {Spec: auth.BindingSpec{Mode: auth.ModeOpaque, Issuer: issuer}}},
-		Audience: os.Getenv(envPrefix + "_JWT_AUDIENCE"),
+		Audience: strings.TrimSpace(os.Getenv(envPrefix + "_JWT_AUDIENCE")),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build session verifier: %w", err)
@@ -162,7 +163,10 @@ func idpAuthenticator(logger *slog.Logger, envPrefix string, revocationChecker a
 	return auth.NewAuthenticator(verifier, revocationChecker), nil
 }
 
-// parsePublicKeyPEM decodes a PEM-encoded RSA or ECDSA public key (PKIX).
+// parsePublicKeyPEM decodes a PEM-encoded RSA or ECDSA public key (PKIX). Any
+// other key type is refused: the verifier accepts only RS*/ES* signatures (the
+// auth.allowedMethods closed set), so an Ed25519 or other PKIX key would parse
+// cleanly here yet fail every verification at runtime with no startup signal.
 func parsePublicKeyPEM(pemStr string) (crypto.PublicKey, error) {
 	block, _ := pem.Decode([]byte(pemStr))
 	if block == nil {
@@ -172,7 +176,12 @@ func parsePublicKeyPEM(pemStr string) (crypto.PublicKey, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse PKIX public key: %w", err)
 	}
-	return pub, nil
+	switch pub.(type) {
+	case *rsa.PublicKey, *ecdsa.PublicKey:
+		return pub, nil
+	default:
+		return nil, fmt.Errorf("unsupported public key type %T (only RSA and ECDSA are accepted)", pub)
+	}
 }
 
 // Truthy reads the platform's env-flag vocabulary.

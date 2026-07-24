@@ -2,6 +2,7 @@ package appsession
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -195,4 +196,54 @@ func TestNewAuthenticators_DevPosture_RevocationCheckerWired(t *testing.T) {
 	require.ErrorIs(t, err, auth.ErrTokenRevoked)
 	_, err = refresh.Authenticate(t.Context(), token)
 	require.ErrorIs(t, err, auth.ErrTokenRevoked)
+}
+
+// TestNewAuthenticators_IdPPosture_RejectsUnsupportedKeyType pins that a PKIX
+// key the verifier cannot use — Ed25519, since Verify accepts only RS*/ES*
+// signatures — is refused at startup rather than accepted into a verifier that
+// then fails every token with no signal.
+func TestNewAuthenticators_IdPPosture_RejectsUnsupportedKeyType(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	der, err := x509.MarshalPKIXPublicKey(pub)
+	require.NoError(t, err)
+	pemStr := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+
+	t.Setenv("TESTAPP_JWT_PUBLIC_KEY", pemStr)
+	t.Setenv("TESTAPP_JWT_ISSUER", "https://idp.example")
+
+	strict, refresh, err := NewAuthenticators(slog.Default(), "TESTAPP", nil, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsupported public key type")
+	require.Nil(t, strict)
+	require.Nil(t, refresh)
+}
+
+// TestNewAuthenticators_IdPPosture_AudienceIsTrimmed pins that whitespace around
+// the configured audience (a trailing newline from a config file, say) does not
+// silently reject every token whose aud is the intended value. Without the trim
+// the verifier expects "  clinic-app\n", which no real token carries.
+func TestNewAuthenticators_IdPPosture_AudienceIsTrimmed(t *testing.T) {
+	priv, pubPEM := idpKeyPair(t)
+	t.Setenv("TESTAPP_JWT_PUBLIC_KEY", pubPEM)
+	t.Setenv("TESTAPP_JWT_ISSUER", "https://idp.example")
+	t.Setenv("TESTAPP_JWT_AUDIENCE", "  clinic-app\n")
+
+	strict, _, err := NewAuthenticators(slog.Default(), "TESTAPP", nil, nil)
+	require.NoError(t, err)
+
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.RegisteredClaims{
+		Subject:   "idp-native-subject",
+		Issuer:    "https://idp.example",
+		Audience:  jwt.ClaimStrings{"clinic-app"},
+		IssuedAt:  jwt.NewNumericDate(time.Now()),
+		ExpiresAt: jwt.NewNumericDate(time.Now().Add(10 * time.Minute)),
+	})
+	tok.Header["kid"] = defaultIdPKeyID
+	signed, err := tok.SignedString(priv)
+	require.NoError(t, err)
+
+	actor, err := strict.Authenticate(t.Context(), signed)
+	require.NoError(t, err)
+	require.Equal(t, "idp-native-subject", actor.RawSubject)
 }
