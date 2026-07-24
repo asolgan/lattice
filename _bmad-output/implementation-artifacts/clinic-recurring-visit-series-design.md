@@ -153,3 +153,66 @@ rule): no new mechanism, just the follow-up convergence made to roll. It also de
 lattice's central claim — that "recurring business process" is a derived read-model projection, not an
 external scheduler — on a real vertical need, which is precisely the kind of forcing function the
 clinic vertical exists to provide.
+
+## 7. Fire brief — front-desk (`frontOfHouse`) grant + workplace confinement
+
+**1 · Scope sentence (verbatim, verticals board):** *"`StartVisitSeries` (Follow-ups tab) is
+`operator`-only in the clinic-reminders package (separate version + confinement helpers from
+clinic-domain); a real `frontOfHouse` session gets `AuthDenied`. Add the `frontOfHouse` grant +
+workplace confinement (mirror clinic-domain's `CreateAppointment`), consumer: front-desk Follow-ups
+tab."* Grant rationale: persona-worlds-design.md §7.1 (clinic front-desk hats include Follow-ups).
+
+**Scope decision (Winston — intent-preserving widening, recorded).** The named consumer is *the
+Follow-ups tab*, and that one staff surface submits three visit-series ops — `submitStartSeries` →
+`StartVisitSeries` and `toggleSeries` → `PauseVisitSeries`/`ResumeVisitSeries`
+(`cmd/clinic-app/web/app.js:2728,2778`); the patient view (`handleMyVisitSeries`) is read-only.
+Fixing only `Start` would leave a real `frontOfHouse` session still `AuthDenied` on Pause/Resume from
+the *same tab* — the identical bug class. So the grant + confinement land on **Start + Pause + Resume**
+(don't-over-split-coupled-work). `AdvanceVisitSeries` stays operator-only — it is Weaver's directOp,
+dispatched under the service-actor, never a front-desk action.
+
+**2 · The security divergence from `CreateAppointment` (the load-bearing decision).** clinic-domain's
+`workplace_exempt()` exempts `op.authContextTarget == op.actor` — safe *there* only because a
+downstream `identifiedBy` patient-binding check backstops the self-book path
+(`clinic-domain/ddls.go:2072-2079`, and its own comment says a scope=any caller forging `target==actor`
+"gains nothing" *because of* that second check). `StartVisitSeries`/Pause/Resume are **staff-only**
+(no `consumer`/`self` grant, no ownership backstop), so copying that exemption verbatim would let a
+`frontOfHouse` actor forge `target==actor` (the Gateway forwards authContext verbatim; step-3
+authorizes scope=any without inspecting target) and skip workplace confinement outright. **Therefore
+clinic-reminders' `require_workplace` is OPERATOR-EXEMPT ONLY — the `authContextTarget == op.actor`
+line is dropped.** A dedicated forged-target vector (frontOfHouse, cross-building provider,
+`target==actor`) asserts `Rejected`, pinning this divergence.
+
+**3 · Touch-list (file:line, mirror source in parens):**
+- `packages/clinic-reminders/visitseries.go` — `visitSeriesScript` gains the confinement helpers
+  `actor_holds_operator` / `worksAt_covers` / `sites_for_provider` (verbatim, incl. `# read-posture: (e)`
+  annotations, from `clinic-domain/ddls.go:1608-1757`), a `series_provider(series_key)` withProvider
+  resolver (mirrors `appointment_provider`, `ddls.go:1723-1736`), and an **operator-exempt-only**
+  `require_workplace`. Confinement calls: `StartVisitSeries` → `require_workplace(sites_for_provider(
+  provider_key), …)` after the provider-alive check; Pause/Resume →
+  `require_workplace(sites_for_provider(series_provider(series_key)), …)` after the liveness guard.
+  `visitSeriesPermissions()` special-cases Start/Pause/Resume to `{operator, frontOfHouse}` (Advance
+  stays `{operator}`). Confinement reads are all live class-(e) enumerations — **no `contextHint`
+  change**, no FE change.
+- `packages/clinic-reminders/manifest.yaml` — Start/Pause/Resume `grantsTo: [operator, frontOfHouse]`;
+  `version: 0.6.0`.
+- `packages/clinic-reminders/package.go` — `Version: "0.6.0"`.
+- `packages/clinic-reminders/package_test.go` — `TestPackage_Permissions` expects Start/Pause/Resume
+  `[operator, frontOfHouse]`, the rest operator-only.
+- `packages/clinic-reminders/frontdesk_confinement_test.go` (NEW) — mirrors clinic-domain's: two-building
+  topology, frontOfHouse `worksAt` A only; vectors = same-building accept / cross-building reject /
+  operator-unconfined / **forged-`target==actor` reject** / Pause+Resume confined.
+
+**4 · Gates:** `go build ./...`, `make vet`, `golangci-lint run ./...`,
+`STRICT=1 go run ./scripts/lint-conventions.go`, `go test ./packages/clinic-reminders/...`. `make
+verify-package-clinic-reminders` (stack gate) pins only the RecordAppointmentReminder permission — no
+edit needed. Live: `make reinstall-package PKG=clinic-reminders` (0.5.0→0.6.0 diff-applies in place, no
+teardown); the running stack picks up the new grants; no binary rebuild (package-only change).
+
+**5 · Non-goals:** no FE change (hat-gating is persona-worlds W1 in flight); no `AdvanceVisitSeries`
+grant; no `contextHint` change; no contract text; no self/consumer path.
+
+**Scope-diff gate: PASS** — every touch traces to the grant+confinement sentence; the one widening
+(Start→Start/Pause/Resume) is intent-preserving (the named "Follow-ups tab" consumer submits all three)
+and recorded above, never a substitution of an adjacent mechanism; the operator-exempt-only divergence
+is a *narrowing* of the mirrored precedent (fewer exemptions), grounded in the missing ownership backstop.
