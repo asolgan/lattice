@@ -773,6 +773,111 @@ reads the wildcard staff model and narrows client-side, deliberately, since `/ap
 for its own caller and takes no provider argument by design. Its consumer is **Inc 2's provider hat**
 (a signed-in provider viewing their own day); the handler and its RLS test stay for that.
 
+### Fire W1 Inc 2a fire brief (build note, 2026-07-23)
+
+**1 · Scope sentence (from §7.1 + §7 grants-audit intro):** *"every op the UI offers a hat must carry a real
+`GrantsTo` for that hat's role (the staff-wildcard default currently masks the gaps; e.g. staff booking has no
+`frontOfHouse` grant on clinic `CreateAppointment`)."* Inc 1 deleted the root-equivalent staff mint
+(`handleStaffDevToken`, subject = `bootstrap.BootstrapIdentityKey`), so the clinic "staff" session is now a
+genuine `frontOfHouse` identity — and every clinic-domain **front-desk service op** that only ever granted
+`operator` is now `AuthDenied`. This increment closes the clinic-domain half of the §6.4 grants audit for the
+front-desk *service* surface.
+
+**Live-confirmed break (grounding, not assumption).** Signed in on the running stack as Dana Whitfield
+(`noNa5Fc2vrkBojZ2QPAv`, `frontOfHouse` `worksAt` Riverside Building), `POST /v1/operations`:
+- `CreateAppointment` → `AuthDenied` `OperationNotPermitted`, `rolesCarryingPermission:["operator","consumer"]`.
+- `CreatePatient` → `AuthDenied`, `["operator"]`.
+- `CreateUnclaimedIdentity` → `ScriptFailed` (passed authz — identity-domain **already** grants `frontOfHouse`,
+  `permissions.go:41`), so the register-patient flow's identity half already works; only its `CreatePatient`
+  half (clinic-domain) is missing.
+
+**Decision — service ops vs practice-administration (Winston, §0; consistent with the shipped
+`BindProviderIdentity` principle "front-desk cannot create the entity … the grant would add only attack
+surface").** Front-desk *serves patients*; the practice *owner* administers the practice. So this fire restores
+only the pure front-desk **service** ops, and leaves administration/clinical ops `operator`/`provider`:
+- **Restore to `frontOfHouse`:** `CreateAppointment` (book-for-anyone) + `CreatePatient` (register a walk-in).
+- **Stay `operator`-only (correct denial, not a gap):** `CreateProvider`/`SetProviderProfile`/`TombstoneProvider`
+  (onboarding doctors = practice admin), `SetSiteProfile`/`AssignProviderSite`/`RemoveProviderSite`/
+  `CreateLocation` (site configuration), `CreateAccount` (billing setup). **Stay `operator`+`provider`:**
+  `SetProviderHours`/`SetProviderTimeOff` (a provider sets their own availability). **Stays `operator`-only,
+  belongs to the provider hat later:** `RecordEncounter` (clinical documentation — a clinician act, not
+  front-desk; the Inc 2b hat-gating hides the surface). The FE offering these to a front-desk session today is
+  the *staff-wildcard residue* Inc 2b's hat-gating removes; the grants correctly say no now.
+
+**2 · Verified touch-list (scouted live @ `eddb06e6`):**
+- **`permissions.go`** — `mk("CreateAppointment")` (the `scope=any` operator row, `:92`) becomes an explicit
+  spec `GrantsTo:["operator","frontOfHouse"]` (widens the **existing** `scope=any` row — not a second vertex,
+  per the permTag-identity note already in this file's header comment); `mk("CreatePatient")` (`:75`) becomes
+  `GrantsTo:["operator","frontOfHouse"]`.
+- **`ddls.go`** — `CreateAppointment`'s script (`if ot == "CreateAppointment":`, `:2013`) gains a
+  workplace-confinement branch right after `require_live_typed(state, provider, …)` (`:2020`):
+  `if not workplace_exempt(): require_workplace(sites_for_provider(provider), …)`. A **verbatim mirror** of the
+  branch `RescheduleAppointment` (`:2205`) and `SetAppointmentStatus` (`:2338`) already run — same
+  `workplace_exempt`/`sites_for_provider`/`require_workplace` helpers, resolved off the **payload** provider
+  (validated alive+class=provider just above) since no appointment exists yet. **No** `actor_bound_to_…` third
+  binder: a `provider` role holds no `CreateAppointment` grant (providers accept/reschedule their own
+  appointments, never originate them), so that branch cannot apply. `CreatePatient` needs **no** script change —
+  a patient vertex is practice-wide (no building), so front-desk registration is unconfined, exactly like
+  `operator` and like identity-domain's already-shipped `frontOfHouse` `CreateUnclaimedIdentity`.
+- **`package.go` + `manifest.yaml`** — version `0.25.0 → 0.26.0` (additive grants; live stacks re-install via
+  `refresh-clinic`).
+- **`scripts/verify-package-clinic-domain.go`** — `clinicOpGrants` (`:89`): `CreatePatient` +
+  `{"any","frontOfHouse"}`, `CreateAppointment` + `{"any","frontOfHouse"}`. Both add a grantee at the
+  **existing** `any` scope, so the `len(permIDs)==len(wantScopes)` vertex-count check is unchanged. Also
+  reconcile the audit's completeness: add the already-shipped `{"any","frontOfHouse"}` to `RescheduleAppointment`
+  + `SetAppointmentStatus` rows (the map asserts a subset today and silently omits them).
+- **`package_test.go`** — grant matrix (`:185-186` already list `frontOfHouse` on Reschedule/SetStatus); add it
+  to `CreateAppointment` + `CreatePatient` rows.
+- **NEW `frontdesk_confinement_test.go`** — the durable security proof, mirroring
+  `cafe-domain/workplace_confinement_test.go`: a `frontOfHouse` actor `worksAt` building A, provider PA
+  `practicesAt` A, provider PB `practicesAt` B, one patient. Vectors: front-desk `CreateAppointment` with PA =
+  **Accepted**; with PB = **Rejected** (the multi-org gate); front-desk `CreatePatient` = **Accepted**
+  (unconfined); operator with either provider = **Accepted** (unconfined). Harness: `setupClinicEnv` helpers
+  (`clSeedVertex`/`clSeedLink`/`SeedCapDoc`), a local `submitAs(actorKey,…)` (the default `clSubmit` hardcodes
+  the operator actor). `actor_holds_operator` reads the holdsRole link, so the front-desk actor — cap-doc
+  `Roles:["frontOfHouse"]`, no operator holdsRole — is confined exactly as cafe's is.
+
+**3 · Precedents to mirror:** `RescheduleAppointment`/`SetAppointmentStatus` confinement branches
+(`ddls.go:2203-2209,2336-2342`) verbatim; `cafe-domain/workplace_confinement_test.go` for the test harness;
+identity-domain `permissions.go:41` (`frontOfHouse` on `CreateUnclaimedIdentity`) for the unconfined-registration
+precedent; the `permTag`-identity header comment already in `permissions.go` for why a second `frontOfHouse`
+grant widens the existing `scope=any` row rather than minting a second vertex.
+
+**4 · Increment order + green checks:** (1) permissions.go + ddls.go confinement → `go test
+./packages/clinic-domain/...` (existing suite submits as operator = workplace-exempt, so no regression); (2)
+new confinement test + package_test/verify-map updates → same + `go run ./scripts/lint-conventions.go`; (3)
+version bump. Gates: `go build ./...`, `make vet`, `golangci-lint run ./...`,
+`STRICT=1 go run ./scripts/lint-conventions.go`, all `scripts/lint-*.go`, `make verify-package-clinic-domain`
+(needs the live stack). Live: `refresh-clinic`, then re-run the Dana probes — book at own building Accepted,
+book with an off-site provider Rejected, register a patient Accepted.
+
+**5 · In-scope gotchas:** `workplace_exempt()` returns true when `authContextTarget != ""` (consumer self-book)
+**or** `actor_holds_operator` — so the new branch fires **only** for a non-operator, non-self actor
+(front-desk), never touching the operator or patient-self paths. `sites_for_provider(provider)` returns `[]`
+for a provider with no `practicesAt` link → `require_workplace([],…)` fails closed → front-desk cannot book an
+unassigned provider (only operator can); this matches Reschedule/SetStatus exactly and is the safe direction.
+`CreatePatient`'s grant is unconfined by design — do **not** add a workplace branch to it (there is no location
+to confine to).
+
+**6 · Adjacent finds (filed now):** `StartVisitSeries` (the Follow-ups tab) lives in the **separate**
+`clinic-reminders` package (its own version + confinement helpers) and is `operator`-only — a `frontOfHouse`
+follow-up-series grant is the same audit, filed as its own row (consumer: front-desk Follow-ups tab) rather
+than folded here, to keep this a single-package capability change. `CreateAccount` (ledger) is left
+`operator`-only pending a product call on whether front-desk opens billing accounts (not a live-broken *service*
+workflow — booking/registration are).
+
+**7 · Non-goals (Inc 2a):** no FE change (the FE already submits `CreateAppointment`/`CreatePatient` with no
+`authContext` on the staff path — it only needed the grant to exist); no hat-driven surface gating (Inc 2b); no
+provider hat / `/api/my-schedule` consumer (Inc 2b); no `StartVisitSeries` grant (filed); no `RecordEncounter`
+grant (provider-hat/operator); no contract text; no changes to the five RLS `set_config` sites or any lens.
+
+**Scope-diff gate: PASS** — both grants trace to §7.1's front-desk service hats (book-for-anyone, register) and
+the §7 grants-audit intro's named `CreateAppointment` example. One narrowing recorded (`StartVisitSeries` filed
+not folded — separate package) and one in-fire security addition recorded (workplace confinement on the new
+front-desk booking grant — required so the grant does not over-widen past the staff-worlds §3.5 invariant,
+mirrors the sibling ops, not a new mechanism). Dependencies re-verified: identity-domain front-desk grants
+already shipped (`permissions.go:41`), so register-patient is fully restorable within clinic-domain.
+
 ## 10a. Non-goals
 
 No OIDC/IdP build; no SSO; no runtime archetype enum; no generic collections surface (named-deferred); no café
