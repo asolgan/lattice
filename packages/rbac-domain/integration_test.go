@@ -237,6 +237,72 @@ func TestRoleMgmt_RevokeRole(t *testing.T) {
 	_ = time.Now
 }
 
+// TestRoleMgmt_ReassignAfterRevoke proves the revive path: after RevokeRole
+// tombstones the holdsRole link, a second AssignRole that declares the link in
+// OptionalReads REVIVES it (op:update) rather than emitting a create that would
+// RevisionConflict against the tombstone's subject history forever. Closes the
+// "a RevokeRole'd identity can never be re-granted" one-way trap.
+func TestRoleMgmt_ReassignAfterRevoke(t *testing.T) {
+	ctx, conn := setupTestEnv(t)
+	cp, cons := newRbacPipeline(t, ctx, conn, "reassign")
+
+	seedIdentityVertex(t, ctx, conn, rmOperatorActorKey)
+	seedRoleVertex(t, ctx, conn, rmTargetRoleKey)
+	expectedLnk := "lnk.identity." + rmOperatorActorID + ".holdsRole.role." + rmTargetRoleID
+
+	assign := func(label, at string, optReads []string) {
+		env := &processor.OperationEnvelope{
+			RequestID:     testutil.GenReqID(label),
+			Lane:          processor.LaneDefault,
+			OperationType: "AssignRole",
+			Actor:         rmOperatorActorKey,
+			SubmittedAt:   at,
+			Class:         "rbac",
+			Payload: json.RawMessage(`{"actorKey":"` + rmOperatorActorKey +
+				`","roleKey":"` + rmTargetRoleKey + `"}`),
+			ContextHint: &processor.ContextHint{
+				Reads:         []string{rmOperatorActorKey, rmTargetRoleKey},
+				OptionalReads: optReads,
+			},
+		}
+		testutil.PublishOp(t, conn, env)
+		testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+	}
+
+	// Grant, then revoke (tombstones the link).
+	assign("RmReasgAsgn01", "2026-05-22T10:04:00Z", nil)
+	revokeEnv := &processor.OperationEnvelope{
+		RequestID:     testutil.GenReqID("RmReasgRvk001"),
+		Lane:          processor.LaneDefault,
+		OperationType: "RevokeRole",
+		Actor:         rmOperatorActorKey,
+		SubmittedAt:   "2026-05-22T10:05:00Z",
+		Class:         "rbac",
+		Payload: json.RawMessage(`{"actorKey":"` + rmOperatorActorKey +
+			`","roleKey":"` + rmTargetRoleKey + `"}`),
+		ContextHint: &processor.ContextHint{Reads: []string{expectedLnk}},
+	}
+	testutil.PublishOp(t, conn, revokeEnv)
+	testutil.DriveOne(t, ctx, cp, cons, processor.OutcomeAccepted)
+
+	// Re-grant: declaring the link in OptionalReads hydrates the tombstone, so
+	// the revive branch commits an update instead of a doomed create.
+	assign("RmReasgAsgn02", "2026-05-22T10:06:00Z", []string{expectedLnk})
+
+	entry, err := conn.KVGet(ctx, testutil.HarnessCoreBucket, expectedLnk)
+	if err != nil {
+		t.Fatalf("holdsRole link missing after re-assign: %v", err)
+	}
+	var lnkDoc map[string]any
+	_ = json.Unmarshal(entry.Value, &lnkDoc)
+	if isDeleted, _ := lnkDoc["isDeleted"].(bool); isDeleted {
+		t.Fatalf("re-assigned holdsRole link must be alive again; got isDeleted=true (revive failed)")
+	}
+	if lnkDoc["class"] != "holdsRole" {
+		t.Fatalf("revived link class = %v, want holdsRole", lnkDoc["class"])
+	}
+}
+
 // TestRoleMgmt_UnauthorizedDenied submits CreateRole as the consumer
 // actor (no rbac permissions). Expects OutcomeRejected; no vtx.role.*
 // keys should be written beyond the pre-seeded fixture.

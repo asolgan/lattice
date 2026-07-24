@@ -1583,8 +1583,19 @@ def execute(state, op):
         # BindInstructorIdentity's dispatcher (absence is the common
         # first-bind case, mirroring rbac's AssignRole idempotency check)
         existing_role_grant = kv.Read(holds_role_lnk)
-        if existing_role_grant == None or existing_role_grant.isDeleted:
+        if existing_role_grant == None:
             mutations.append(make_link(holds_role_lnk, identity_key, provider_role_key, "holdsRole", "holdsRole", {}))
+        elif existing_role_grant.isDeleted:
+            # Re-grant of a TOMBSTONED link: update, not create. A create asserts
+            # revision 0 and the tombstone sits at a later revision, so a create
+            # RevisionConflicts forever — a re-bound instructor whose prior grant
+            # was tombstoned could never be re-granted the provider role. The key
+            # is a declared optionalReads read, so its revision is hydrated for
+            # the update's OCC.
+            mutations.append({"op": "update", "key": holds_role_lnk,
+                              "document": {"class": "holdsRole", "isDeleted": False,
+                                           "sourceVertex": identity_key, "targetVertex": provider_role_key,
+                                           "localName": "holdsRole", "data": {}}})
 
         events = [{"class": "wellness.instructorIdentityBound",
                    "data": {"instructorKey": ikey, "identityKey": identity_key}}]

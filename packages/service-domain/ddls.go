@@ -662,8 +662,18 @@ def execute(state, op):
         # dispatcher (absence is the common first-bind case, mirroring rbac's
         # AssignRole idempotency check).
         existing_role_grant = kv.Read(holds_role_lnk)
-        if existing_role_grant == None or existing_role_grant.isDeleted:
+        if existing_role_grant == None:
             mutations.append(make_link(holds_role_lnk, identity_key, provider_role_key, "holdsRole", "holdsRole", {}))
+        elif existing_role_grant.isDeleted:
+            # Re-grant of a TOMBSTONED link: update, not create. A create asserts
+            # revision 0 and the tombstone sits at a later revision, so a create
+            # RevisionConflicts forever — a re-bound serviceprovider whose prior
+            # grant was tombstoned could never be re-granted the provider role.
+            # The key is a declared optionalReads read, so its revision is hydrated.
+            mutations.append({"op": "update", "key": holds_role_lnk,
+                              "document": {"class": "holdsRole", "isDeleted": False,
+                                           "sourceVertex": identity_key, "targetVertex": provider_role_key,
+                                           "localName": "holdsRole", "data": {}}})
 
         events = [{"class": "service.serviceProviderIdentityBound",
                    "data": {"serviceProviderKey": spkey, "identityKey": identity_key}}]
@@ -1161,7 +1171,18 @@ def execute(state, op):
         existing = state[provby_lnk] if provby_lnk in state else None
         if existing != None and not (hasattr(existing, "isDeleted") and existing.isDeleted):
             return {"mutations": [], "events": []}
-        mutations = [make_link(provby_lnk, template, provided_by, "providedBy", "providedBy", {})]
+        if existing != None:
+            # Re-wire of a TOMBSTONED link: update, not create. A create asserts
+            # revision 0 and the tombstone sits at a later revision, so a create
+            # RevisionConflicts forever — a provider unwired then re-wired onto
+            # the same template could never be re-wired. The key is a declared
+            # optionalReads read, so its revision is hydrated for the OCC.
+            mutations = [{"op": "update", "key": provby_lnk,
+                          "document": {"class": "providedBy", "isDeleted": False,
+                                       "sourceVertex": template, "targetVertex": provided_by,
+                                       "localName": "providedBy", "data": {}}}]
+        else:
+            mutations = [make_link(provby_lnk, template, provided_by, "providedBy", "providedBy", {})]
         events = [{"class": "service.providedByWired",
                    "data": {"service": template, "providedBy": provided_by, "linkKey": provby_lnk}}]
         return {"mutations": mutations, "events": events, "response": {"primaryKey": provby_lnk}}

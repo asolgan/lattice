@@ -146,6 +146,34 @@ def make_link(key, source, target, cls, local_name, data):
                          "sourceVertex": source, "targetVertex": target,
                          "localName": local_name, "data": data}}
 
+def revive_link(key, source, target, cls, local_name, data):
+    # Re-grant of a TOMBSTONED link. It must be an update, not a create: a
+    # create asserts revision 0 (step 8) and the tombstone already sits at a
+    # later revision, so a create RevisionConflicts forever — a RevokeRole'd
+    # actor could never be re-granted. An update asserts the revision the key
+    # was hydrated at, which is what a revive means. Seeing the tombstone at
+    # all requires the deterministic link key in the operation's read set,
+    # which is why it must be a caller-declared optionalReads entry (Contract
+    # #2 §2.5 — a first grant legitimately finds it absent, so it cannot be a
+    # required read). Mirrors service-location's revive_link verbatim.
+    return {"op": "update", "key": key,
+            "document": {"class": cls, "isDeleted": False,
+                         "sourceVertex": source, "targetVertex": target,
+                         "localName": local_name, "data": data}}
+
+def grant_link(state, key, source, target, cls, local_name):
+    # Three-state grant-if-not-alive: alive -> idempotent no-op (empty list),
+    # tombstoned -> revive as update, absent -> create. Absence covers both a
+    # never-granted link and a caller that did not declare the key as a read
+    # (the key is simply not in the hydrated snapshot); a declared optionalReads
+    # entry is what makes the revive branch reachable.
+    existing = state[key] if key in state else None
+    if existing != None and not (hasattr(existing, "isDeleted") and existing.isDeleted):
+        return []
+    if existing != None:
+        return [revive_link(key, source, target, cls, local_name, {})]
+    return [make_link(key, source, target, cls, local_name, {})]
+
 def make_tombstone(key):
     return {"op": "tombstone", "key": key,
             "document": {"isDeleted": True, "data": {}}}
@@ -331,13 +359,15 @@ def execute(state, op):
         if not vertex_alive(state, role_key):
             fail("UnknownRole: " + role_key)
         lnk_key = "lnk." + actor_type + "." + actor_id + ".holdsRole.role." + role_id
-        # Idempotent assign: if link exists alive, return ok no-op. No
-        # mutations means no committed key, so no primaryKey is returned
-        # (the link key is deterministic and already known to the caller).
-        existing = state[lnk_key] if lnk_key in state else None
-        if existing != None and not (hasattr(existing, "isDeleted") and existing.isDeleted):
+        # Idempotent + revive-aware grant (grant_link): alive -> no-op,
+        # tombstoned -> revive so a RevokeRole'd actor can be re-granted,
+        # absent -> create. No mutations means no committed key, so no
+        # primaryKey (the link key is deterministic and known to the caller).
+        # The revive branch is reachable only when the caller declares lnk_key
+        # in contextHint.optionalReads (see grant_link).
+        mutations = grant_link(state, lnk_key, actor_key, role_key, "holdsRole", "holdsRole")
+        if len(mutations) == 0:
             return {"mutations": [], "events": []}
-        mutations = [make_link(lnk_key, actor_key, role_key, "holdsRole", "holdsRole", {})]
         events = [{"class": "rbac.roleAssigned",
                    "data": {"actorKey": actor_key, "roleKey": role_key, "linkKey": lnk_key}}]
         return {"mutations": mutations, "events": events,
@@ -368,12 +398,14 @@ def execute(state, op):
         if not vertex_alive(state, role_key):
             fail("UnknownRole: " + role_key)
         lnk_key = "lnk.permission." + perm_id + ".grantedBy.role." + role_id
-        # Idempotent grant: if link exists alive, return ok no-op. No
-        # mutations means no committed key, so no primaryKey is returned.
-        existing = state[lnk_key] if lnk_key in state else None
-        if existing != None and not (hasattr(existing, "isDeleted") and existing.isDeleted):
+        # Idempotent + revive-aware grant (grant_link): alive -> no-op,
+        # tombstoned -> revive so a RevokePermission'd grant can be re-granted,
+        # absent -> create. No mutations means no committed key, so no
+        # primaryKey. The revive branch needs lnk_key in the caller's
+        # contextHint.optionalReads.
+        mutations = grant_link(state, lnk_key, perm_key, role_key, "grantedBy", "grantedBy")
+        if len(mutations) == 0:
             return {"mutations": [], "events": []}
-        mutations = [make_link(lnk_key, perm_key, role_key, "grantedBy", "grantedBy", {})]
         events = [{"class": "rbac.permissionGranted",
                    "data": {"permissionKey": perm_key, "roleKey": role_key, "linkKey": lnk_key}}]
         return {"mutations": mutations, "events": events,

@@ -1089,6 +1089,18 @@ def make_link(key, source, target, cls, local_name, data):
                          "sourceVertex": source, "targetVertex": target,
                          "localName": local_name, "data": data}}
 
+def revive_link(key, source, target, cls, local_name, data):
+    # Re-grant of a TOMBSTONED link: an update, not a create. A create asserts
+    # revision 0 (step 8) and the tombstone sits at a later revision, so a
+    # create RevisionConflicts forever — a re-bound provider whose prior grant
+    # was tombstoned could never be re-granted the role. The key is already a
+    # declared optionalReads read (posture d), so its revision is hydrated for
+    # the update's OCC. Mirrors service-location's revive_link.
+    return {"op": "update", "key": key,
+            "document": {"class": cls, "isDeleted": False,
+                         "sourceVertex": source, "targetVertex": target,
+                         "localName": local_name, "data": data}}
+
 def make_tombstone(key):
     return {"op": "tombstone", "key": key,
             "document": {"isDeleted": True, "data": {}}}
@@ -1442,8 +1454,10 @@ def execute(state, op):
         # yet this fire -- W1/W5 land it; absence is the common first-bind
         # case, mirroring rbac's AssignRole idempotency check)
         existing_role_grant = kv.Read(holds_role_lnk)
-        if existing_role_grant == None or existing_role_grant.isDeleted:
+        if existing_role_grant == None:
             mutations.append(make_link(holds_role_lnk, identity_key, provider_role_key, "holdsRole", "holdsRole", {}))
+        elif existing_role_grant.isDeleted:
+            mutations.append(revive_link(holds_role_lnk, identity_key, provider_role_key, "holdsRole", "holdsRole", {}))
 
         events = [{"class": "clinic.providerIdentityBound",
                    "data": {"providerKey": prkey, "identityKey": identity_key}}]
