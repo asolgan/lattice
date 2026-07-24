@@ -607,6 +607,23 @@ production-IdP branch (§5 keeps verify-only, F4 defers OIDC); no `/v1/actor` ch
 the green bar is unchanged, not widened; "depends on nothing" re-verified (the kit reads P1's `/v1/actor`
 only through the two fields it already decoded before P1).
 
+**As-built (2026-07-24, `a2e71712`):** shipped per brief, all gates green. Route paths, cookie name,
+status codes, guard order, timeouts, body caps and both asymmetries preserved verbatim (a line-by-line
+parity review against `6e12cce1` found no behavioral delta). Deviations, each deliberate: §5's
+"`POST /api/login`" stayed the shipped `/api/dev-login` (the FE assets address it by literal); no shared
+default login page — the kit takes the page as injected bytes, since each vertical's login UX belongs to
+its own fire (§7); `Config.EnvPrefix` was added so the operator-facing "disabled" message keeps naming
+`FACET_DEV_AUTH` (`web/login.html` renders `body.error` verbatim). Hardened past the original: the refresh
+endpoint no longer assumes a Signer exists whenever a refresh verifier does — the doc'd verify-only
+production posture would have panicked — and a mux-level test now proves Facet's `/api/claim` exemption is
+wired, not merely that the kit honors an exemption list. New coverage the original lacked: the
+credential→identity resolution (bound-credential success, resolved identity refused by the fence, resolve
+failure failing open). **Live-verified** on the running stack: `bin/facet` cycled per the `up-facet` recipe;
+whoami→login-options→dev-login (HttpOnly cookie)→whoami→refresh (rotated token)→logout→signed-out all
+correct, plus 401 on a gated API, 302→`/login` on browser nav, and `/api/claim` reaching its handler
+unauthenticated. **Residual filed:** the kit has no production verify-only branch or revocation checker,
+which loftspace/clinic's read boundaries already wire — a lattice-lane row, consumer W1/W2.
+
 ## 10a. Non-goals
 
 No OIDC/IdP build; no SSO; no runtime archetype enum; no generic collections surface (named-deferred); no café

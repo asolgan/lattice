@@ -109,10 +109,10 @@ ratified). Everything here needs design and is fair game **except** 🚧 Andrew-
 **forks** (Gateway, read-path auth, Vault, multi-cell, HA-NATS) and **frozen-contract** changes are
 designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 
-> 🎯 **Build-ready now.** No `✅ Andrew-ratified, build-ready` design is currently unblocked, and
-> Component maintenance has no open `📋 ready` row (the parking lot's items are excluded by policy).
-> Every ✅ ratified row in the feature tables below stays Andrew-gated or driver-blocked. Next unit of
-> work is a fresh Surveyor filing (rotation: Weaver) or a Designer pass stocking a new ratified design.
+> 🎯 **Build-ready now.** Persona-worlds P1+P2 (the lattice half) are shipped; W1–W5 are verticals-lane.
+> Open `📋 ready` here: the appsession production-verifier gap (below), the renewal e2e dead gate (★★★),
+> the read-grant dual-enumeration S1 (★★★), the rbac tombstoned-`holdsRole` revive, the me-row
+> reconciliation gap, `/v1/actor` CORS. Every `✅ ratified` row stays Andrew-gated or driver-blocked.
 > A stale callout starves the lane — whoever ships the next pick renames this.
 
 ### Security & trust boundary
@@ -141,7 +141,7 @@ designed-through, but the *fork decision* + the *contract commit* are Andrew's.
 ### Edge & personal lenses
 | Item | What it is | Imp | Size | State |
 |---|---|---|---|---|
-| **Persona-worlds platform seams (whoami hats + appsession kit)** | `GET /v1/actor` grows `roles[]`+`anchors[]` (the app-facing "which hats do I hold" answer) and Facet's session block (login page, cookie, refresh, login-time resolution, persona fence) extracts to a shared `internal/appsession` kit all five FE binaries adopt. | ★★★ | M | 🏗️ building · [design §8 P1–P2](../../implementation-artifacts/persona-worlds-design.md) · P1 whoami hats SHIPPED · next: P2 appsession kit |
+| **[appsession] Kit has no production verify-only branch or revocation checker** | `NewAuthenticators` is dev-mode-only; loftspace/clinic's shipped read boundaries already wire a pinned-issuer `<PREFIX>_JWT_PUBLIC_KEY` verifier + `revocation.New(revKV)`. Adopting the kit must not drop either, so `Config` needs to accept a caller-built `*auth.Authenticator` path (it already can) and the env-wiring helper needs the production branch. | ★★ | S–M | 📋 ready · consumer: W1/W2 clinic+loftspace kit adoption · [design §5](../../implementation-artifacts/persona-worlds-design.md) |
 | Personal / Secure Lens | Refractor projects a per-identity security-filtered subgraph stream; the Interest-Set watchlist; RLS-style link filtering. | ★★ | L | ✅ effectively done · [design](../../implementation-artifacts/personal-secure-lens-design.md) · Fires 1–5 shipped (D1 + Vault gates closed); PL.6 WS half subsumed by the ratified [EDGE.5 design](../../implementation-artifacts/edge-browser-node-design.md); multicast dedup stays deferred (bandwidth trigger) |
 | Edge Lattice (full) | The sovereign per-user node: local VAL (SQLite/IndexedDB), local Starlark, offline-first, reconcile-by-revision. EDGE.1–3 (Go node, offline loop, untrusted security turn-on) shipped; EDGE.4–5 per the §7 gates. | ★★★ | XL | ✅ effectively done · [design §7](../../implementation-artifacts/edge-lattice-full-design.md) · EDGE.1–4 + EDGE.5 W1–W4 all shipped + tested · [EDGE.5 design](../../implementation-artifacts/edge-browser-node-design.md) · attended :9222 browser Gate-3 run = optional live demo, not a gate |
 
@@ -184,6 +184,7 @@ Real but low-value; do **not** spend design or build effort here unless Andrew g
 
 One line per shipped item (`date · SHA · [tag] title`). Oldest roll to `archive/` past ~25.
 
+- 2026-07-24 · `a2e71712` · [appsession,facet] Facet's session block extracted to a shared `internal/appsession` kit — the five-FE sign-in seam (persona-worlds P2); closes the platform-seams item
 - 2026-07-23 · `a16b7589` · [gateway,identity-domain] whoami hats — `/v1/actor` reports roles[]+anchors[] via the new `identityAnchors` lens (persona-worlds P1; first Phase-0-brief fire)
 - 2026-07-22 · `1ab88603` · [bootstrap] `VerifyKernel`/`InspectKernel` (the `make verify-kernel` gate logic) gain embedded-NATS defect-injection tests; package 71.2%→82.9%
 - 2026-07-22 · `737e687e` · [bootstrap] `DecideReseed` extracted from `cmd/bootstrap`'s untested probe-then-reopen branch into `internal/bootstrap`, covered by 4 embedded-NATS tests
